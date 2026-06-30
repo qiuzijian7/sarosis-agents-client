@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AgentMemory — 技能页签 Mockup v2</title>
+<style>
+:root {
+	--vscode-foreground: #cccccc;
+	--vscode-descriptionForeground: #9d9d9d;
+	--vscode-editorWidget-background: #252526;
+	--vscode-widget-border: #454545;
+	--vscode-editor-background: #1e1e1e;
+	--vscode-input-background: #3c3c3c;
+	--vscode-input-border: #3c3c3c;
+	--vscode-input-foreground: #cccccc;
+	--vscode-focusBorder: #3794ff;
+	--vscode-list-hoverBackground: rgba(128,128,128,0.06);
+	--vscode-badge-background: rgba(128,128,128,0.2);
+	--vscode-badge-foreground: #888;
+	--vscode-button-background: #0e639c;
+	--vscode-button-foreground: #ffffff;
+	--vscode-button-hoverBackground: #1177bb;
+	--vscode-errorForeground: #f48771;
+	--vscode-editorWarning-foreground: #cca700;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--vscode-editor-background); color: var(--vscode-foreground); font-family: -apple-system, "Segoe UI", "Segoe WPC", sans-serif; font-size: 13px; }
+.memory-detail-container { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+/* View navigation */
+.md-view-nav { display: flex; gap: 2px; padding: 6px 20px 0; border-bottom: 1px solid var(--vscode-widget-border); flex-shrink: 0; background: var(--vscode-editorWidget-background); overflow-x: auto; }
+.md-view-tab { padding: 6px 14px; cursor: pointer; font-size: 12px; color: var(--vscode-descriptionForeground); border: 1px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; transition: all 0.15s; white-space: nowrap; }
+.md-view-tab:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+.md-view-tab.active { color: var(--vscode-foreground); background: var(--vscode-editor-background); border-color: var(--vscode-widget-border); border-bottom-color: var(--vscode-editor-background); margin-bottom: -1px; }
+
+/* Header */
+.md-header { padding: 16px 20px 8px; flex-shrink: 0; }
+.md-header h1 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+.md-header .subtitle { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 8px; }
+.md-stats { display: flex; gap: 10px; flex-wrap: wrap; }
+.md-stat { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); border-radius: 6px; padding: 6px 14px; }
+.md-stat .label { font-size: 10px; color: var(--vscode-descriptionForeground); }
+.md-stat .value { font-size: 16px; font-weight: 600; }
+.md-stat.l3 .value { color: #f0a04b; }
+.md-stat.confidence .value { color: #4ec9b0; }
+.md-stat.usage .value { color: #569cd6; }
+.md-stat.file .value { color: #b799ff; }
+
+/* Toolbar */
+.md-toolbar { display: flex; gap: 8px; padding: 8px 20px; border-bottom: 1px solid var(--vscode-widget-border); flex-shrink: 0; }
+.md-btn { padding: 4px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; border: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); color: var(--vscode-foreground); transition: all 0.15s; }
+.md-btn:hover { background: var(--vscode-button-hoverBackground); border-color: var(--vscode-focusBorder); }
+.md-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-button-background); }
+.md-btn.primary:hover { background: var(--vscode-button-hoverBackground); }
+.md-btn.success { color: #4ec9b0; border-color: rgba(78,201,176,0.3); }
+
+/* Filter bar */
+.md-filter-bar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; border-bottom: 1px solid var(--vscode-widget-border); flex-shrink: 0; }
+.md-filter-label { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.md-filter-chip { padding: 3px 10px; border-radius: 12px; font-size: 11px; cursor: pointer; border: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); color: var(--vscode-descriptionForeground); transition: all 0.15s; }
+.md-filter-chip:hover { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); }
+.md-filter-chip.active { background: var(--vscode-focusBorder); color: white; border-color: var(--vscode-focusBorder); }
+.md-search { margin-left: auto; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 4px 10px; color: var(--vscode-input-foreground); font-size: 12px; width: 200px; outline: none; }
+
+/* List */
+.md-list { flex: 1; overflow-y: auto; padding: 12px 20px; }
+.md-list::-webkit-scrollbar { width: 6px; }
+.md-list::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.3); border-radius: 3px; }
+
+/* Skill card */
+.skill-card { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); border-radius: 8px; margin-bottom: 10px; overflow: hidden; transition: border-color 0.15s; }
+.skill-card:hover { border-color: rgba(55,148,255,0.3); }
+.skill-card-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; cursor: pointer; }
+.skill-card-header:hover { background: var(--vscode-list-hoverBackground); }
+.skill-badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px; flex-shrink: 0; background: rgba(240,160,75,0.15); color: #f0a04b; }
+.skill-badge.new { background: rgba(78,201,176,0.2); color: #4ec9b0; }
+.skill-confidence { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 8px; flex-shrink: 0; }
+.skill-confidence.high { background: rgba(93,202,165,0.15); color: #5dcaa5; }
+.skill-confidence.mid { background: rgba(240,160,75,0.15); color: #f0a04b; }
+.skill-confidence.low { background: rgba(244,63,94,0.12); color: #f43f5e; }
+.skill-title { font-size: 13px; font-weight: 500; color: var(--vscode-foreground); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-file-status { font-size: 10px; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
+.skill-file-status.written { background: rgba(78,201,176,0.12); color: #4ec9b0; }
+.skill-file-status.pending { background: rgba(204,167,0,0.12); color: #cca700; }
+.skill-usage { font-size: 10px; color: #569cd6; flex-shrink: 0; }
+.skill-time { font-size: 10px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+.skill-expand { color: var(--vscode-descriptionForeground); font-size: 10px; flex-shrink: 0; transition: transform 0.2s; }
+.skill-card.expanded .skill-expand { transform: rotate(90deg); }
+
+.skill-content-box { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
+.skill-card.expanded .skill-content-box { max-height: 800px; overflow-y: auto; }
+.skill-content { padding: 0; }
+
+/* SKILL.md preview */
+.skill-md-preview { border-top: 1px solid rgba(128,128,128,0.06); }
+.skill-md-frontmatter { background: rgba(128,128,128,0.06); padding: 8px 14px; font-family: "Cascadia Code", "Consolas", monospace; font-size: 11px; color: var(--vscode-descriptionForeground); line-height: 1.6; border-bottom: 1px solid rgba(128,128,128,0.06); }
+.skill-md-frontmatter .fm-key { color: #569cd6; }
+.skill-md-frontmatter .fm-value { color: #ce9178; }
+.skill-md-body { padding: 12px 14px; }
+.skill-md-body h1 { font-size: 15px; font-weight: 600; margin-bottom: 8px; color: var(--vscode-foreground); }
+.skill-md-body h2 { font-size: 13px; font-weight: 600; margin: 10px 0 4px; color: #569cd6; }
+.skill-md-body h3 { font-size: 12px; font-weight: 600; margin: 8px 0 3px; color: #4ec9b0; }
+.skill-md-body p { font-size: 12px; line-height: 1.6; margin: 4px 0; color: var(--vscode-foreground); }
+.skill-md-body ul, .skill-md-body ol { margin: 4px 0 4px 20px; }
+.skill-md-body li { font-size: 12px; line-height: 1.6; margin: 2px 0; }
+.skill-md-body code { background: rgba(128,128,128,0.15); padding: 1px 4px; border-radius: 3px; font-family: "Cascadia Code", "Consolas", monospace; font-size: 11px; }
+.skill-md-body pre { background: rgba(0,0,0,0.3); padding: 8px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; }
+.skill-md-body pre code { background: transparent; padding: 0; }
+
+/* Meta + actions */
+.skill-meta { padding: 8px 14px; border-top: 1px solid rgba(128,128,128,0.06); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; background: rgba(128,128,128,0.03); }
+.skill-meta-chip { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--vscode-list-hoverBackground); color: var(--vscode-descriptionForeground); }
+.skill-meta-chip.tag { background: rgba(183,153,255,0.1); color: #b799ff; }
+.skill-meta-chip.session { background: rgba(86,156,214,0.1); color: #569cd6; }
+.skill-meta-chip.path { background: rgba(240,160,75,0.1); color: #f0a04b; font-family: "Cascadia Code", "Consolas", monospace; }
+.skill-actions { margin-left: auto; display: flex; gap: 4px; }
+.skill-action-btn { font-size: 10px; padding: 3px 8px; border-radius: 4px; cursor: pointer; border: 1px solid var(--vscode-widget-border); background: transparent; color: var(--vscode-descriptionForeground); transition: all 0.15s; }
+.skill-action-btn:hover { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder); }
+.skill-action-btn.primary { color: #4ec9b0; border-color: rgba(78,201,176,0.3); }
+.skill-action-btn.primary:hover { background: rgba(78,201,176,0.1); }
+.skill-action-btn.danger:hover { color: #f48771; border-color: #f48771; }
+
+/* Edit mode */
+.skill-edit-form { padding: 12px 14px; border-top: 1px solid rgba(128,128,128,0.06); }
+.skill-edit-field { margin-bottom: 10px; }
+.skill-edit-label { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); margin-bottom: 4px; display: block; }
+.skill-edit-input { width: 100%; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 6px 10px; color: var(--vscode-input-foreground); font-size: 12px; outline: none; font-family: inherit; }
+.skill-edit-input:focus { border-color: var(--vscode-focusBorder); }
+.skill-edit-textarea { min-height: 60px; resize: vertical; line-height: 1.5; font-family: inherit; }
+.skill-edit-steps { list-style: none; padding: 0; }
+.skill-edit-steps li { display: flex; gap: 6px; margin-bottom: 6px; align-items: flex-start; }
+.skill-edit-steps .step-num { flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; background: var(--vscode-button-background); color: white; font-size: 10px; display: flex; align-items: center; justify-content: center; margin-top: 4px; }
+.skill-edit-steps .step-input { flex: 1; }
+.skill-edit-steps .step-remove { flex-shrink: 0; background: none; border: none; color: #f48771; cursor: pointer; font-size: 14px; padding: 4px 8px; }
+.skill-edit-add-step { font-size: 11px; color: var(--vscode-focusBorder); cursor: pointer; border: none; background: none; padding: 4px 0; }
+.skill-edit-add-step:hover { text-decoration: underline; }
+.skill-edit-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* New skill indicator */
+.skill-card.new { border-color: rgba(78,201,176,0.4); }
+.skill-card.new .skill-card-header { border-left: 3px solid #4ec9b0; }
+
+/* Empty state */
+.md-empty { padding: 40px 20px; color: var(--vscode-descriptionForeground); font-size: 13px; text-align: center; }
+.md-empty .hint { font-size: 11px; margin-top: 8px; opacity: 0.6; }
+
+/* Info banner */
+.skill-info-banner { margin: 0 20px 8px; padding: 8px 12px; background: rgba(86,156,214,0.08); border: 1px solid rgba(86,156,214,0.2); border-radius: 6px; font-size: 11px; color: #569cd6; display: flex; align-items: center; gap: 6px; }
+</style>
+</head>
+<body>
+<div class="memory-detail-container">
+
+	<!-- View navigation -->
+	<div class="md-view-nav">
+		<div class="md-view-tab">🧠 记忆</div>
+		<div class="md-view-tab">📌 槽位</div>
+		<div class="md-view-tab">📖 教训</div>
+		<div class="md-view-tab">🔄 固化</div>
+		<div class="md-view-tab">📋 审计</div>
+		<div class="md-view-tab">🪝 钩子</div>
+		<div class="md-view-tab">🔀 提交</div>
+		<div class="md-view-tab">📊 报告</div>
+		<div class="md-view-tab active">⚡ 技能</div>
+	</div>
+
+	<!-- Header -->
+	<div class="md-header">
+		<h1>⚡ 技能 (saros-claw)</h1>
+		<div class="subtitle">从会话历史自动提取的可复用程序化技能 · 沉淀为标准 SKILL.md 格式 · 写入 ~/.saros/skills/</div>
+		<div class="md-stats">
+			<div class="md-stat l3"><div class="label">总技能</div><div class="value">5</div></div>
+			<div class="md-stat confidence"><div class="label">平均置信度</div><div class="value">0.78</div></div>
+			<div class="md-stat usage"><div class="label">总使用次数</div><div class="value">12</div></div>
+			<div class="md-stat file"><div class="label">已生成 SKILL.md</div><div class="value">4/5</div></div>
+		</div>
+	</div>
+
+	<!-- Info banner -->
+	<div class="skill-info-banner">
+		<span>💡 技能提取后会自动生成 SKILL.md 文件到 <code>~/.saros/skills/&lt;技能名&gt;/SKILL.md</code>，可在 Agent Studio 技能商城和 Claude Code 中直接使用</span>
+	</div>
+
+	<!-- Toolbar -->
+	<div class="md-toolbar">
+		<button class="md-btn primary">🔄 刷新</button>
+		<button class="md-btn">➕ 手动新增</button>
+		<button class="md-btn success">📁 生成全部 SKILL.md</button>
+		<button class="md-btn">⬇ 导出 JSON</button>
+	</div>
+
+	<!-- Filter bar -->
+	<div class="md-filter-bar">
+		<span class="md-filter-label">标签:</span>
+		<div class="md-filter-chip active">全部</div>
+		<div class="md-filter-chip">test</div>
+		<div class="md-filter-chip">deploy</div>
+		<div class="md-filter-chip">config</div>
+		<div class="md-filter-chip">error</div>
+		<span class="md-filter-label" style="margin-left:12px">状态:</span>
+		<div class="md-filter-chip active">全部</div>
+		<div class="md-filter-chip">已写入</div>
+		<div class="md-filter-chip">待写入</div>
+		<input class="md-search" type="text" placeholder="🔍 搜索技能..." value="">
+	</div>
+
+	<!-- Skill list -->
+	<div class="md-list">
+
+		<!-- Skill 1: expanded (new, SKILL.md written) -->
+		<div class="skill-card new expanded">
+			<div class="skill-card-header">
+				<span class="skill-badge new">⚡ NEW</span>
+				<span class="skill-confidence high">置信度 0.95</span>
+				<span class="skill-title">修复 TypeScript 编译错误</span>
+				<span class="skill-file-status written">📄 SKILL.md ✓</span>
+				<span class="skill-usage">◉ 使用 3 次</span>
+				<span class="skill-time">2026-06-30</span>
+				<span class="skill-expand">▶</span>
+			</div>
+			<div class="skill-content-box">
+				<div class="skill-content">
+					<!-- SKILL.md Preview -->
+					<div class="skill-md-preview">
+						<div class="skill-md-frontmatter">
+<span class="fm-key">name</span>: <span class="fm-value">fix-typescript-compile-errors</span><br>
+<span class="fm-key">description</span>: <span class="fm-value">当 TypeScript 项目出现编译错误时，自动定位错误文件和行号，分析错误类型（类型不匹配/缺失导入/语法错误），使用 replace_in_file 精确修复，并重新编译验证。</span><br>
+<span class="fm-key">version</span>: <span class="fm-value">1.0.0</span>
+						</div>
+						<div class="skill-md-body">
+							<h1>修复 TypeScript 编译错误</h1>
+							<h2>触发条件</h2>
+							<p>当遇到 TypeScript 编译错误或异常时自动触发。</p>
+							<h2>执行步骤</h2>
+							<ol>
+								<li>读取编译错误输出，提取错误文件路径和行号</li>
+								<li>使用 <code>read_file</code> 打开对应文件，定位到错误行</li>
+								<li>分析错误类型（类型不匹配 / 缺失导入 / 语法错误）</li>
+								<li>应用修复，使用 <code>replace_in_file</code> 进行精确修改</li>
+								<li>重新编译验证，确认错误已消除</li>
+							</ol>
+							<h2>预期结果</h2>
+							<p>TypeScript 编译通过，无错误输出，所有类型检查通过。</p>
+						</div>
+					</div>
+				</div>
+				<div class="skill-meta">
+					<span class="skill-meta-chip tag">#test</span>
+					<span class="skill-meta-chip tag">#error</span>
+					<span class="skill-meta-chip tag">#typescript</span>
+					<span class="skill-meta-chip session">来源: sess_abc123</span>
+					<span class="skill-meta-chip path">~/.saros/skills/fix-typescript-compile-errors/SKILL.md</span>
+					<div class="skill-actions">
+						<button class="skill-action-btn primary">📁 写入 SKILL.md</button>
+						<button class="skill-action-btn">✏ 编辑</button>
+						<button class="skill-action-btn">📋 复制</button>
+						<button class="skill-action-btn danger">🗑 删除</button>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Skill 2: collapsed (SKILL.md written) -->
+		<div class="skill-card">
+			<div class="skill-card-header">
+				<span class="skill-badge">⚡ 技能</span>
+				<span class="skill-confidence high">置信度 0.85</span>
+				<span class="skill-title">部署项目到 AnyDev 环境</span>
+				<span class="skill-file-status written">📄 SKILL.md ✓</span>
+				<span class="skill-usage">◉ 使用 5 次</span>
+				<span class="skill-time">2026-06-29</span>
+				<span class="skill-expand">▶</span>
+			</div>
+		</div>
+
+		<!-- Skill 3: collapsed (pending SKILL.md) -->
+		<div class="skill-card">
+			<div class="skill-card-header">
+				<span class="skill-badge">⚡ 技能</span>
+				<span class="skill-confidence mid">置信度 0.60</span>
+				<span class="skill-title">配置开发环境初始化</span>
+				<span class="skill-file-status pending">⏳ 待写入</span>
+				<span class="skill-usage">◉ 使用 2 次</span>
+				<span class="skill-time">2026-06-28</span>
+				<span class="skill-expand">▶</span>
+			</div>
+		</div>
+
+		<!-- Skill 4: edit mode -->
+		<div class="skill-card expanded">
+			<div class="skill-card-header">
+				<span class="skill-badge">⚡ 技能</span>
+				<span class="skill-confidence mid">置信度 0.70</span>
+				<span class="skill-title">调试和排查性能问题</span>
+				<span class="skill-file-status pending">⏳ 待写入</span>
+				<span class="skill-usage">◉ 使用 1 次</span>
+				<span class="skill-time">2026-06-27</span>
+				<span class="skill-expand">▶</span>
+			</div>
+			<div class="skill-content-box">
+				<div class="skill-edit-form">
+					<div class="skill-edit-field">
+						<label class="skill-edit-label">技能名称 (生成 SKILL.md 的 name 字段 + 目录名)</label>
+						<input class="skill-edit-input" type="text" value="debug-performance-issues">
+					</div>
+					<div class="skill-edit-field">
+						<label class="skill-edit-label">描述 (生成 SKILL.md 的 description 字段)</label>
+						<textarea class="skill-edit-input skill-edit-textarea">当项目出现性能问题时，使用性能分析器定位热点函数，分析 CPU profile，优化热点代码或添加缓存。</textarea>
+					</div>
+					<div class="skill-edit-field">
+						<label class="skill-edit-label">触发条件</label>
+						<input class="skill-edit-input" type="text" value="当需要优化性能时">
+					</div>
+					<div class="skill-edit-field">
+						<label class="skill-edit-label">执行步骤 (生成 SKILL.md 的 steps)</label>
+						<ol class="skill-edit-steps">
+							<li>
+								<span class="step-num">1</span>
+								<input class="skill-edit-input step-input" type="text" value="使用性能分析器定位热点函数">
+								<button class="step-remove">✕</button>
+							</li>
+							<li>
+								<span class="step-num">2</span>
+								<input class="skill-edit-input step-input" type="text" value="分析 CPU profile，找出耗时最长的调用栈">
+								<button class="step-remove">✕</button>
+							</li>
+							<li>
+								<span class="step-num">3</span>
+								<input class="skill-edit-input step-input" type="text" value="优化热点代码或添加缓存">
+								<button class="step-remove">✕</button>
+							</li>
+						</ol>
+						<button class="skill-edit-add-step">+ 添加步骤</button>
+					</div>
+					<div class="skill-edit-field">
+						<label class="skill-edit-label">预期结果</label>
+						<textarea class="skill-edit-input skill-edit-textarea">性能瓶颈消除，响应时间降低至可接受范围。</textarea>
+					</div>
+					<div class="skill-edit-field">
+						<label class="skill-edit-label">标签 (逗号分隔)</label>
+						<input class="skill-edit-input" type="text" value="performance, debug, profile">
+					</div>
+					<div class="skill-edit-actions">
+						<button class="md-btn primary">💾 保存并生成 SKILL.md</button>
+						<button class="md-btn">✕ 取消</button>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Skill 5: collapsed (low confidence) -->
+		<div class="skill-card">
+			<div class="skill-card-header">
+				<span class="skill-badge">⚡ 技能</span>
+				<span class="skill-confidence low">置信度 0.35</span>
+				<span class="skill-title">安全漏洞扫描和修复</span>
+				<span class="skill-file-status pending">⏳ 待写入</span>
+				<span class="skill-usage">◉ 使用 1 次</span>
+				<span class="skill-time">2026-06-25</span>
+				<span class="skill-expand">▶</span>
+			</div>
+		</div>
+
+	</div>
+</div>
+
+<script>
+// 点击卡片展开/折叠
+document.querySelectorAll('.skill-card-header').forEach(header => {
+	header.addEventListener('click', (e) => {
+		if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON') return;
+		if (e.target.classList.contains('skill-action-btn') || e.target.classList.contains('step-remove')) return;
+		const card = header.closest('.skill-card');
+		card.classList.toggle('expanded');
+	});
+});
+
+// 标签过滤
+document.querySelectorAll('.md-filter-chip').forEach(chip => {
+	chip.addEventListener('click', () => {
+		const parent = chip.parentElement;
+		// 只在同一组内切换 active
+		const siblings = parent.querySelectorAll('.md-filter-chip');
+		let inGroup = false;
+		siblings.forEach(s => {
+			if (s === chip) inGroup = true;
+			if (inGroup || s.previousElementSibling === chip) {}
+		});
+		// 简化：直接切换
+		chip.classList.toggle('active');
+	});
+});
+</script>
+</body>
+</html>

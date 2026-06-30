@@ -27,6 +27,10 @@ export interface ExtractedSkill {
 	usageCount: number;
 	createdAt: string;
 	updatedAt: string;
+	/** SKILL.md 文件是否已写入磁盘 */
+	skillMdWritten?: boolean;
+	/** 生成的 SKILL.md 的 slug（目录名） */
+	slug?: string;
 }
 
 export interface SkillExtractInput {
@@ -48,6 +52,82 @@ export interface SkillExtractInput {
 
 function generateId(prefix: string): string {
 	return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Compute a fingerprint for dedup based on title + trigger (lowercased).
+ * Matches agentmemory's fingerprintId() approach.
+ */
+function skillFingerprint(title: string, trigger: string): string {
+	const normalized = `${title.toLowerCase().trim()}|${trigger.toLowerCase().trim()}`;
+	let hash = 0;
+	for (let i = 0; i < normalized.length; i++) {
+		const char = normalized.charCodeAt(i);
+		hash = ((hash << 5) - hash + char) | 0;
+	}
+	return `skill_fp_${Math.abs(hash).toString(36)}`;
+}
+
+/**
+ * Generate a URL-safe slug from a skill title.
+ * e.g. "修复 TypeScript 编译错误" → "fix-typescript-compile-errors"
+ */
+export function generateSlug(title: string): string {
+	// 中文常见关键词映射
+	const cnMap: Record<string, string> = {
+		'修复': 'fix', '部署': 'deploy', '配置': 'config', '调试': 'debug',
+		'性能': 'performance', '安全': 'security', '测试': 'test', '重构': 'refactor',
+		'优化': 'optimize', '错误': 'error', '编译': 'compile', '环境': 'environment',
+		'初始化': 'init', '排查': 'troubleshoot', '扫描': 'scan', '漏洞': 'vulnerability',
+	};
+	let slug = title.toLowerCase().trim();
+	// 替换中文关键词
+	for (const [cn, en] of Object.entries(cnMap)) {
+		slug = slug.replaceAll(cn, ` ${en} `);
+	}
+	// 移除中文字符，保留英文/数字
+	slug = slug.replace(/[\u4e00-\u9fff]+/g, ' ');
+	// 替换空格和特殊字符为连字符
+	slug = slug.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+	// 限制长度
+	if (slug.length > 60) slug = slug.slice(0, 60).replace(/-[^-]*$/, '');
+	return slug || `skill-${Date.now()}`;
+}
+
+/**
+ * Generate SKILL.md content from an ExtractedSkill.
+ * Format matches the project's SKILL.md standard:
+ *   ---
+ *   name: <slug>
+ *   description: <description>
+ *   version: 1.0.0
+ *   ---
+ *   # <title>
+ *   ## 触发条件
+ *   ...
+ *   ## 执行步骤
+ *   ...
+ *   ## 预期结果
+ *   ...
+ */
+export function generateSkillMd(skill: ExtractedSkill): string {
+	const slug = skill.slug || generateSlug(skill.title);
+	const description = `${skill.trigger}。${skill.expectedOutcome}`;
+
+	let md = `---\n`;
+	md += `name: ${slug}\n`;
+	md += `description: ${description}\n`;
+	md += `version: 1.0.0\n`;
+	md += `---\n\n`;
+	md += `# ${skill.title}\n\n`;
+	md += `## 触发条件\n\n${skill.trigger}\n\n`;
+	md += `## 执行步骤\n\n`;
+	for (let i = 0; i < skill.steps.length; i++) {
+		md += `${i + 1}. ${skill.steps[i]}\n`;
+	}
+	md += `\n`;
+	md += `## 预期结果\n\n${skill.expectedOutcome}\n`;
+	return md;
 }
 
 // 触发条件检测模式
@@ -128,6 +208,7 @@ function computeConfidence(input: SkillExtractInput): number {
 
 export class SkillExtractor {
 	private _skills = new Map<string, ExtractedSkill>();
+	private _fingerprints = new Map<string, string>(); // fingerprint → skillId
 	private _maxSkills = 200;
 
 	/**
@@ -164,6 +245,27 @@ export class SkillExtractor {
 		const now = new Date().toISOString();
 		const title = input.summary?.title ?? `Skill from ${input.sessionId}`;
 
+		// P3: 指纹去重 — 如果相同 title+trigger 的技能已存在，强化而非创建
+		const fp = skillFingerprint(title, triggers.join('; '));
+		const existingId = this._fingerprints.get(fp);
+		if (existingId) {
+			const existing = this._skills.get(existingId);
+			if (existing) {
+				// 强化已有技能：增加 confidence 和 usageCount
+				existing.confidence = Math.min(1, existing.confidence + 0.1);
+				existing.usageCount++;
+				existing.updatedAt = now;
+				// 合并新标签
+				for (const tag of tags) {
+					if (!existing.tags.includes(tag)) {
+						existing.tags.push(tag);
+					}
+				}
+				console.log(`[SkillExtractor] reinforced existing skill: "${existing.title}" (confidence=${existing.confidence}, usage=${existing.usageCount})`);
+				return existing;
+			}
+		}
+
 		const skill: ExtractedSkill = {
 			id: generateId('skill'),
 			trigger: triggers.join('; '),
@@ -177,14 +279,24 @@ export class SkillExtractor {
 			usageCount: 0,
 			createdAt: now,
 			updatedAt: now,
+			slug: generateSlug(title),
+			skillMdWritten: false,
 		};
 
 		this._skills.set(skill.id, skill);
+		this._fingerprints.set(fp, skill.id);
+
 		if (this._skills.size > this._maxSkills) {
 			// 移除最旧的
 			const oldest = Array.from(this._skills.values())
 				.sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
-			if (oldest) this._skills.delete(oldest.id);
+			if (oldest) {
+				this._skills.delete(oldest.id);
+				// 清理对应的指纹
+				for (const [fpKey, id] of this._fingerprints) {
+					if (id === oldest.id) { this._fingerprints.delete(fpKey); break; }
+				}
+			}
 		}
 
 		return skill;
@@ -254,7 +366,47 @@ export class SkillExtractor {
 	 * 删除技能
 	 */
 	delete(id: string): boolean {
+		const skill = this._skills.get(id);
+		if (skill) {
+			// 清理指纹
+			const fp = skillFingerprint(skill.title, skill.trigger);
+			this._fingerprints.delete(fp);
+		}
 		return this._skills.delete(id);
+	}
+
+	/**
+	 * 更新技能（编辑模式）
+	 */
+	update(id: string, updates: Partial<Pick<ExtractedSkill, 'title' | 'trigger' | 'steps' | 'expectedOutcome' | 'tags' | 'slug'>>): ExtractedSkill | null {
+		const skill = this._skills.get(id);
+		if (!skill) return null;
+		const oldFp = skillFingerprint(skill.title, skill.trigger);
+		if (updates.title !== undefined) skill.title = updates.title.slice(0, 100);
+		if (updates.trigger !== undefined) skill.trigger = updates.trigger;
+		if (updates.steps !== undefined) skill.steps = updates.steps;
+		if (updates.expectedOutcome !== undefined) skill.expectedOutcome = updates.expectedOutcome.slice(0, 300);
+		if (updates.tags !== undefined) skill.tags = updates.tags;
+		if (updates.slug !== undefined) skill.slug = updates.slug;
+		else if (updates.title !== undefined) skill.slug = generateSlug(skill.title);
+		skill.updatedAt = new Date().toISOString();
+		skill.skillMdWritten = false; // 编辑后需要重新写入
+		// 更新指纹
+		this._fingerprints.delete(oldFp);
+		const newFp = skillFingerprint(skill.title, skill.trigger);
+		this._fingerprints.set(newFp, skill.id);
+		return skill;
+	}
+
+	/**
+	 * 标记技能已写入 SKILL.md
+	 */
+	markWritten(id: string): boolean {
+		const skill = this._skills.get(id);
+		if (!skill) return false;
+		skill.skillMdWritten = true;
+		skill.updatedAt = new Date().toISOString();
+		return true;
 	}
 
 	/**
@@ -282,5 +434,6 @@ export class SkillExtractor {
 	 */
 	clear(): void {
 		this._skills.clear();
+		this._fingerprints.clear();
 	}
 }

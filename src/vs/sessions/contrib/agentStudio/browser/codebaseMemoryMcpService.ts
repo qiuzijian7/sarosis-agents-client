@@ -170,7 +170,7 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 
 	// 索引配置：持久化 mode + 排除目录
 	private static readonly STORAGE_KEY_INDEX_CONFIG = 'codebaseMemory.indexConfig';
-	private static readonly DEFAULT_EXCLUDE_DIRS = ['node_modules', '.git', 'build', 'out', 'dist', '.vscode-test', 'extensions', 'test', 'tests', 'resources', 'dev', 'docs', 'doc', 'scripts', '.worktrees', 'deploy-package', 'cli'];
+	private static readonly DEFAULT_EXCLUDE_DIRS = ['node_modules', '.git', 'build', 'out', 'dist', '.vscode-test', 'extensions', 'test', 'tests', 'resources', 'dev', 'docs', 'doc', 'scripts', '.worktrees', 'deploy-package', 'cli', 'Intermediate', 'Saved', 'Binaries', 'Build'];
 
 	private _status: ICodebaseMemoryMcpStatus = {
 		state: 'not_installed',
@@ -1094,9 +1094,18 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 		if (stored) {
 			try {
 				const parsed = JSON.parse(stored);
+				const storedExcludes = Array.isArray(parsed.excludeDirs) ? parsed.excludeDirs : [];
+				// Merge: 确保新增的默认排除目录（如 Intermediate/Saved/Binaries）出现在列表中
+				const defaults = CodebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS;
+				const merged = [...storedExcludes];
+				for (const d of defaults) {
+					if (!merged.some(m => m.toLowerCase() === d.toLowerCase())) {
+						merged.push(d);
+					}
+				}
 				return {
 					mode: parsed.mode || 'fast',
-					excludeDirs: Array.isArray(parsed.excludeDirs) ? parsed.excludeDirs : CodebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS.slice(),
+					excludeDirs: merged,
 					subPath: typeof parsed.subPath === 'string' ? parsed.subPath : undefined,
 				};
 			} catch { /* fallthrough to default */ }

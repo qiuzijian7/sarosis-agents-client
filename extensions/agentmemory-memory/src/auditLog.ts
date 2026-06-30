@@ -19,7 +19,8 @@ export type AuditOperation =
 	| 'flush'
 	| 'dedup_skip'
 	| 'retention'
-	| 'cascade';
+	| 'cascade'
+	| 'skill_extract';
 
 export interface AuditEntry {
 	id: string;

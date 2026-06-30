@@ -220,6 +220,8 @@ export class CodebaseGraphStore {
 
 	// BM25 full-text index
 	private _bm25: BM25Index = new BM25Index();
+	// 延迟 BM25 索引：批量写入时跳过逐条 addDocument，最后一次性重建
+	private _deferBM25 = false;
 
 	// Layout cache
 	private _layout: Map<number, { x: number; y: number; z: number }> = new Map();
@@ -241,9 +243,11 @@ export class CodebaseGraphStore {
 				outDegree: existing.outDegree,
 			};
 			this._nodes.set(existingId, updated);
-			// Update BM25 index
-			this._bm25.removeDocument(existingId);
-			this._bm25.addDocument(existingId, `${node.name} ${node.qualifiedName} ${node.filePath || ''}`);
+			// Update BM25 index (skip if deferred)
+			if (!this._deferBM25) {
+				this._bm25.removeDocument(existingId);
+				this._bm25.addDocument(existingId, `${node.name} ${node.qualifiedName} ${node.filePath || ''}`);
+			}
 			return updated;
 		}
 
@@ -272,14 +276,35 @@ export class CodebaseGraphStore {
 		labelArr.push(id);
 		this._nodesByLabel.set(labelKey, labelArr);
 
-		// Add to BM25 index
-		this._bm25.addDocument(id, `${node.name} ${node.qualifiedName} ${node.filePath || ''}`);
+		// Add to BM25 index (skip if deferred — will be rebuilt in batch later)
+		if (!this._deferBM25) {
+			this._bm25.addDocument(id, `${node.name} ${node.qualifiedName} ${node.filePath || ''}`);
+		}
 
 		return newNode;
 	}
 
 	upsertNodeBatch(nodes: Parameters<typeof this.upsertNode>[0][]): GraphNode[] {
 		return nodes.map(n => this.upsertNode(n));
+	}
+
+	/** 开启/关闭 BM25 延迟模式：批量写入时跳过逐条索引更新，最后 rebuildBM25() 一次性构建 */
+	setDeferBM25(defer: boolean): void {
+		this._deferBM25 = defer;
+	}
+
+	/** 批量重建 BM25 索引（在 setDeferBM25(true) ... 写入 ... 之后调用） */
+	rebuildBM25(onProgress?: (done: number, total: number) => void): void {
+		this._bm25.clear();
+		const allNodes = Array.from(this._nodes.values());
+		const total = allNodes.length;
+		for (let i = 0; i < total; i++) {
+			const n = allNodes[i];
+			this._bm25.addDocument(n.id, `${n.name} ${n.qualifiedName} ${n.filePath || ''}`);
+			if (onProgress && (i % 10000 === 0 || i === total - 1)) {
+				onProgress(i + 1, total);
+			}
+		}
 	}
 
 	getNode(id: number): GraphNode | undefined {

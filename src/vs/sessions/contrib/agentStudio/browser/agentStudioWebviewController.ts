@@ -849,6 +849,25 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 	}
 
+	/**
+	 * Update the tab label of any open AgentSettingsEditorInput for the given
+	 * agentId. Called after an agent rename so the editor tab stays in sync.
+	 */
+	private _syncEditorLabelsForAgent(agentId: string, agentName: string): void {
+		try {
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			for (const group of groups) {
+				for (const editor of group.editors) {
+					if (editor instanceof AgentSettingsEditorInput && editor.agentId === agentId) {
+						editor.setAgentName(agentName);
+					}
+				}
+			}
+		} catch (err) {
+			this.logService.warn(`[AgentStudioWebviewController] _syncEditorLabelsForAgent failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
 	private async _dispatch(
 		type: RequestType,
 		payload: unknown,
@@ -863,8 +882,15 @@ export class AgentStudioWebviewController extends Disposable {
 				return this.agentStudioService.getAgent(p.id as string);
 			case "agents.create":
 				return this.agentStudioService.createAgent(p as Record<string, unknown>);
-			case "agents.update":
-				return this.agentStudioService.updateAgent(p.id as string, p.data as Record<string, unknown>);
+		case "agents.update": {
+			await this.agentStudioService.updateAgent(p.id as string, p.data as Record<string, unknown>);
+			// If the name changed, sync all open editor tab labels that show this agent.
+			const updatedAgent = await this.agentStudioService.getAgent(p.id as string);
+			if (updatedAgent && (p.data as Record<string, unknown>)?.name) {
+				this._syncEditorLabelsForAgent(updatedAgent.id, updatedAgent.name);
+			}
+			return undefined;
+		}
 			case "agents.delete": {
 				// 删除 Agent 前，先级联清理其 L0 对话与 L1 记忆。
 				// 即使记忆清理失败也不阻断 Agent 删除本身（独立 try/catch，仅记日志）。

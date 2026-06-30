@@ -7,6 +7,7 @@
 
 import { createDecorator } from "../../platform/instantiation/common/instantiation.js";
 import { Event } from "../../base/common/event.js";
+import { URI } from "../../base/common/uri.js";
 import type {
 	Agent,
 	AgentBinding,
@@ -58,6 +59,8 @@ export interface IAgentStudioService {
 	// Agents — chat-ready agent definitions (builtins + custom presets)
 	getAgents(): Promise<Agent[]>;
 	getAgent(id: string): Promise<Agent | undefined>;
+	/** Resolve the per-agent directory: ~/.saros/agents/{agentId}/ */
+	getAgentDir(agentId: string): Promise<URI>;
 	createAgent(data: Partial<Agent>): Promise<Agent>;
 	updateAgent(id: string, data: Partial<Agent>): Promise<void>;
 	deleteAgent(id: string): Promise<void>;

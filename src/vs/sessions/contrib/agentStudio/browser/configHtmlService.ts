@@ -21,7 +21,7 @@ import type {
 	ConfigMdChangeOrigin,
 } from '../common/agentStudio.js';
 import type { ConfigMdCapability, ChatMessage, AgentConfigMd } from '../../../common/agentStudioTypes.js';
-import { WORKSPACE_DATA_DIR, AGENTS_DIR } from '../common/constants.js';
+// constants import no longer needed (WORKSPACE_DATA_DIR/AGENTS_DIR) — using getAgentDir()
 import { postProcessImguiBlocks, IMGUI_SDK_SCRIPT, IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { ToolSecurityLevel } from '../common/providers.js';
@@ -626,27 +626,17 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	}
 
 	/**
-	 * Resolve the absolute filesystem URI for an agent's instance directory.
+	 * Resolve the absolute filesystem URI for an agent's config directory.
 	 *
-	 * `view.agentDir` is just the leaf folder name (e.g. `researcher-nlmniq3`),
-	 * NOT an absolute path. The actual location is
-	 *   `<workspace.path>/<WORKSPACE_DATA_DIR>/<AGENTS_DIR>/<view.agentDir>/`
+	 * New layout (unified): `~/.saros/agents/{agentId}/`
+	 * This directory contains agent.json, .agent.md, config.html, and HTML assets.
 	 *
-	 * Returns `undefined` when the agent has no bound `agentDir` or the workspace
-	 * has no `path` (e.g. global/in-memory workspaces).
+	 * Returns `undefined` only if the agent definition is missing.
 	 */
 	private async _resolveAgentDirUri(view: AgentRuntimeView): Promise<URI | undefined> {
-		if (!view.agentDir) { return undefined; }
-		if (!view.workspaceId) {
-			this.logService.warn(`[ConfigMD] Agent '${view.id}' has no workspaceId; cannot resolve agent dir`);
-			return undefined;
-		}
-		const workspace = await this.agentStudioService.getWorkspace(view.workspaceId);
-		if (!workspace?.path) {
-			this.logService.warn(`[ConfigMD] Workspace '${view.workspaceId}' has no path; cannot resolve agent dir for ${view.id}`);
-			return undefined;
-		}
-		return URI.joinPath(URI.file(workspace.path), WORKSPACE_DATA_DIR, AGENTS_DIR, view.agentDir);
+		if (!view?.id) { return undefined; }
+		// Use the unified agent directory: ~/.saros/agents/{agentId}/
+		return this.agentStudioService.getAgentDir(view.id);
 	}
 
 	private async _ensureState(agentId: string): Promise<IAgentMdState | null> {
@@ -654,14 +644,24 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		if (existing) { return existing; }
 
 		const view = await this._resolveAgentView(agentId);
-		if (!view?.configMd || !view.agentDir) {
+		if (!view?.id) {
 			return null;
 		}
+
+		// Auto-enable configMd if not explicitly configured — the new
+		// unified directory layout always has a writable agent dir.
+		const cfg: AgentConfigMd = view.configMd ?? { mdPath: 'config.html' } as AgentConfigMd;
 
 		const agentDirUri = await this._resolveAgentDirUri(view);
 		if (!agentDirUri) { return null; }
 
-		const cfg = view.configMd;
+		// Ensure the agent directory exists
+		try {
+			await this.fileService.resolve(agentDirUri);
+		} catch {
+			await this.fileService.createFolder(agentDirUri);
+		}
+
 		// ConfigHtml migration: the panel now stores raw HTML in `config.html`.
 		// Resolution order:
 		//   1) explicit cfg.mdPath (respect whatever was configured)
@@ -925,12 +925,12 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	 */
 	async previewToFile(agentId: string): Promise<{ path: string; version: number }> {
 		const view = await this._resolveAgentView(agentId);
-		if (!view?.agentDir) {
-			throw new Error(`Agent directory not found for ${agentId}`);
+		if (!view?.id) {
+			throw new Error(`Agent not found for ${agentId}`);
 		}
 		const agentDirUri = await this._resolveAgentDirUri(view);
 		if (!agentDirUri) {
-			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
+			throw new Error(`Cannot resolve agent directory for ${agentId}`);
 		}
 		const st = await this._ensureState(agentId);
 		if (!st) { throw new Error(`ConfigMD not configured for ${agentId}`); }
@@ -1520,12 +1520,12 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 	async uploadParser(agentId: string, content: string, fileName?: string): Promise<{ parserPath: string }> {
 		const view = await this._resolveAgentView(agentId);
-		if (!view?.agentDir) {
-			throw new Error(`Agent directory not found for ${agentId}`);
+		if (!view?.id) {
+			throw new Error(`Agent not found for ${agentId}`);
 		}
 		const agentDirUri = await this._resolveAgentDirUri(view);
 		if (!agentDirUri) {
-			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
+			throw new Error(`Cannot resolve agent directory for ${agentId}`);
 		}
 		const safeName = (fileName || 'parser.js').replace(/[^\w.\-]/g, '_');
 		const relPath = `ui/${safeName.endsWith('.js') ? safeName : safeName + '.js'}`;
@@ -1559,12 +1559,12 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 
 	async uploadStyles(agentId: string, content: string, fileName?: string): Promise<{ stylesPath: string }> {
 		const view = await this._resolveAgentView(agentId);
-		if (!view?.agentDir) {
-			throw new Error(`Agent directory not found for ${agentId}`);
+		if (!view?.id) {
+			throw new Error(`Agent not found for ${agentId}`);
 		}
 		const agentDirUri = await this._resolveAgentDirUri(view);
 		if (!agentDirUri) {
-			throw new Error(`Cannot resolve agent directory for ${agentId} (workspace has no path)`);
+			throw new Error(`Cannot resolve agent directory for ${agentId}`);
 		}
 		const safeName = (fileName || 'styles.css').replace(/[^\w.\-]/g, '_');
 		const relPath = `ui/${safeName.endsWith('.css') ? safeName : safeName + '.css'}`;

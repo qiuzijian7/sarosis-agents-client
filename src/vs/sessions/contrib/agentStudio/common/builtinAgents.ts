@@ -12,7 +12,7 @@ const LOBSTER_AVATAR = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.
 
 export function getBuiltinAgents(): Agent[] {
 	const now = new Date().toISOString();
-	return [
+	const agents: Agent[] = [
 		{
 			id: 'saros-claw',
 			name: 'Saros Claw',
@@ -386,4 +386,7 @@ Only report issues with high confidence (>= 80%). Flag low-confidence findings f
 			updatedAt: now,
 		},
 	];
+	for (const a of agents) { (a as Agent).version = '1.0.0'; }
+	return agents;
 }
+

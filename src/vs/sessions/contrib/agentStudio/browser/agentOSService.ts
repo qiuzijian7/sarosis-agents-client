@@ -16,6 +16,11 @@ import {
 } from '../common/providers.js';
 import { SlotRegistry } from './slotRegistry.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { URI } from '../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import {
 	repairToolName,
 	repairToolArguments,
@@ -64,6 +69,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private readonly _modelProviders: IModelProvider[] = [];
 	private _activeSelection: IModelSelection | undefined;
 	private readonly _logService: ILogService;
+	private _currentWorkspaceId: string = '';
 
 	// ─── Tool Execution Guard (P0 优化) ───────────────────────
 	private readonly _approvalService = new ToolApprovalService();
@@ -130,9 +136,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private _compressionBeforeTokens = 0;
 	private _compressionAfterTokens = 0;
 	private readonly _toolCallCounts = new Map<string, number>();
-	private _episodicExtractionCount = 0;
-	private _semanticExtractionCount = 0;
-	private _proceduralExtractionCount = 0;
+	private _l1ExtractionCount = 0;
+	private _l2ExtractionCount = 0;
+	private _l3ExtractionCount = 0;
 
 	/** 取（或惰性创建）某会话的稳定 conversationId。无 sessionId 时回退到随机串。 */
 	private _getOrCreateConversationId(sessionId: string | undefined): string {
@@ -164,10 +170,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	constructor(
 		@ILogService logService: ILogService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@IFileService private readonly _fileService: IFileService,
+		@IPathService private readonly _pathService: IPathService,
 	) {
 		super();
 		this._logService = logService;
 		this._slotRegistry = this._register(new SlotRegistry(logService));
+
+		// 获取当前工作区 ID 用于记忆元数据
+		const ws = this._workspaceContextService.getWorkspace();
+		this._currentWorkspaceId = ws.folders.length > 0 ? ws.folders[0].name : '';
 
 		// Bridge the OS-level ModelProvider list and active selection
 		// into the SlotRegistry so that ExecutionProviders can access them
@@ -175,6 +188,19 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		this._slotRegistry.setModelProviderBridge({
 			getModelProviders: () => this._modelProviders,
 			getActiveModelSelection: () => this._activeSelection,
+		});
+
+		// Load persisted dashboard stats
+		this._loadDashboardStats().catch(err => {
+			this._logService.warn('[AgentOS] Failed to load dashboard stats:', err);
+		});
+
+		// Save stats on dispose
+		this._register({
+			dispose: () => {
+				if (this._saveTimer) { clearTimeout(this._saveTimer); }
+				this._saveDashboardStats().catch(() => { /* best effort */ });
+			},
 		});
 	}
 
@@ -201,10 +227,83 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			compressionBeforeTokens: this._compressionBeforeTokens,
 			compressionAfterTokens: this._compressionAfterTokens,
 			toolCallCounts: new Map(this._toolCallCounts),
-			episodicExtractionCount: this._episodicExtractionCount,
-			semanticExtractionCount: this._semanticExtractionCount,
-			proceduralExtractionCount: this._proceduralExtractionCount,
+			l1ExtractionCount: this._l1ExtractionCount,
+			l2ExtractionCount: this._l2ExtractionCount,
+			l3ExtractionCount: this._l3ExtractionCount,
 		};
+	}
+
+	// ─── Dashboard Stats Persistence ──────────────────────────────────
+	// 统计数据持久化到 ~/.saros/dashboard-stats.json，重启后恢复。
+	// 防抖保存：统计变更后 2 秒内无新变更才落盘，避免频繁 IO。
+
+	private _saveTimer: ReturnType<typeof setTimeout> | undefined;
+	private static readonly SAVE_DEBOUNCE_MS = 2000;
+
+	private async _getStatsFileUri(): Promise<URI> {
+		const userHome = await this._pathService.userHome();
+		return URI.joinPath(userHome, '.saros', 'dashboard-stats.json');
+	}
+
+	private async _loadDashboardStats(): Promise<void> {
+		try {
+			const uri = await this._getStatsFileUri();
+			const content = await this._fileService.readFile(uri);
+			const data = JSON.parse(content.value.toString());
+			this._totalInputTokens = data.totalInputTokens ?? 0;
+			this._totalOutputTokens = data.totalOutputTokens ?? 0;
+			this._totalCachedTokens = data.totalCachedTokens ?? 0;
+			this._compressionCount = data.compressionCount ?? 0;
+			this._compressionIneffectiveCount = data.compressionIneffectiveCount ?? 0;
+			this._compressionBeforeTokens = data.compressionBeforeTokens ?? 0;
+			this._compressionAfterTokens = data.compressionAfterTokens ?? 0;
+			this._l1ExtractionCount = data.l1ExtractionCount ?? 0;
+			this._l2ExtractionCount = data.l2ExtractionCount ?? 0;
+			this._l3ExtractionCount = data.l3ExtractionCount ?? 0;
+			if (data.toolCallCounts && typeof data.toolCallCounts === 'object') {
+				for (const [k, v] of Object.entries(data.toolCallCounts)) {
+					this._toolCallCounts.set(k, Number(v) || 0);
+				}
+			}
+			this._logService.info('[AgentOS] Dashboard stats loaded:', {
+				tokens: this._totalInputTokens + this._totalOutputTokens + this._totalCachedTokens,
+				compression: this._compressionCount,
+				tools: this._toolCallCounts.size,
+			});
+		} catch { /* file doesn't exist yet */ }
+	}
+
+	private _scheduleSave(): void {
+		if (this._saveTimer) { clearTimeout(this._saveTimer); }
+		this._saveTimer = setTimeout(() => {
+			this._saveDashboardStats().catch(err => {
+				this._logService.warn('[AgentOS] Failed to save dashboard stats:', err);
+			});
+		}, AgentOSService.SAVE_DEBOUNCE_MS);
+	}
+
+	private async _saveDashboardStats(): Promise<void> {
+		const data = {
+			totalInputTokens: this._totalInputTokens,
+			totalOutputTokens: this._totalOutputTokens,
+			totalCachedTokens: this._totalCachedTokens,
+			compressionCount: this._compressionCount,
+			compressionIneffectiveCount: this._compressionIneffectiveCount,
+			compressionBeforeTokens: this._compressionBeforeTokens,
+			compressionAfterTokens: this._compressionAfterTokens,
+			l1ExtractionCount: this._l1ExtractionCount,
+			l2ExtractionCount: this._l2ExtractionCount,
+			l3ExtractionCount: this._l3ExtractionCount,
+			toolCallCounts: Object.fromEntries(this._toolCallCounts),
+			savedAt: new Date().toISOString(),
+		};
+		const uri = await this._getStatsFileUri();
+		const userHome = await this._pathService.userHome();
+		const dirUri = URI.joinPath(userHome, '.saros');
+		try {
+			await this._fileService.createFolder(dirUri);
+		} catch { /* dir may already exist */ }
+		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
 	}
 
 	/**
@@ -966,6 +1065,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 				this._compressionBeforeTokens += before;
 				this._compressionAfterTokens += after;
+				this._scheduleSave();
 			}
 				if (didCompress) {
 					this._lastCompressionTime = Date.now();
@@ -1040,8 +1140,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					);
 
 					// ── P0: 压缩摘要写入记忆 ──────────────────────────────────────
-					// 压缩摘要是宝贵的 Episodic 记忆，记录了"这段对话讲了什么"，
+					// 压缩摘要是宝贵的 Episodic (L1) 记忆，记录了"这段对话讲了什么"，
 					// 应该持久化到 memory 中供后续会话召回。
+					// IMemoryEntry.type 4-Tier: 'working' | 'episodic' | 'semantic' | 'procedural'
 					if (didCompress && compressionResult.summary && compressionResult.summary.length > 10) {
 						const memProviderForSummary = this.getActiveMemoryProvider();
 						if (memProviderForSummary) {
@@ -1059,6 +1160,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 											compressedCount: compressionResult.compressedMessageCount,
 											tokensSaved,
 											savePercent,
+											workspaceId: this._currentWorkspaceId,
 											sessionId: request.sessionId,
 											noticeId: `compression-${summaryTs}`,
 										},
@@ -1222,6 +1324,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					this._totalInputTokens += (u.inputTokens ?? 0);
 					this._totalOutputTokens += (u.outputTokens ?? 0);
 					this._totalCachedTokens += (u.cachedTokens ?? 0);
+					this._scheduleSave();
 				}
 				// 收集完整的助手消息数据
 					if (delta.type === 'text' && delta.content) {
@@ -1844,6 +1947,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 								owner: 'default',
 								userId: 'default',
 								agentId: request.agentId,
+								workspaceId: this._currentWorkspaceId,
 								role: 'assistant',
 								toolCalls: effectiveToolCalls.length,
 								toolResults: toolResults.length,
@@ -1994,6 +2098,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		for (const tc of toolCalls) {
 			if (tc.name) {
 				this._toolCallCounts.set(tc.name, (this._toolCallCounts.get(tc.name) ?? 0) + 1);
+				this._scheduleSave();
 			}
 		}
 
@@ -3539,7 +3644,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 		// fire-and-forget：不阻塞 AgentDriver 的 finally 块
 		void this._performEpisodicExtraction(agentId, sessionId, recentUserText, recentAssistantText);
-		this._episodicExtractionCount++;
+		this._l1ExtractionCount++;
+		this._scheduleSave();
 	}
 
 	/**
@@ -3678,7 +3784,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const timer = setTimeout(() => {
 			this._l2TimersByAgent.delete(agentId);
 			void this._performSemanticExtraction(agentId);
-			this._semanticExtractionCount++;
+			this._l2ExtractionCount++;
+			this._scheduleSave();
 		}, delay);
 		this._l2TimersByAgent.set(agentId, timer);
 	}
@@ -3804,7 +3911,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			return;
 		}
 		void this._performProceduralGeneration();
-		this._proceduralExtractionCount++;
+		this._l3ExtractionCount++;
+		this._scheduleSave();
 	}
 
 	/**

@@ -157,6 +157,18 @@ export interface IMarketplaceService {
 	 */
 	download(storeId: string, version: string, kind: PackageKind): Promise<IInstallResult>;
 
+	// ── 卸载 ──────────────────────────────────────────────
+	/**
+	 * 卸载已安装的资源包：删除本地安装目录 + 从 installed-packages.json 移除记录。
+	 */
+	uninstall(storeId: string, kind: PackageKind): Promise<void>;
+
+	// ── 已安装查询 ────────────────────────────────────────
+	/**
+	 * 读取本地 installed-packages.json，返回已安装的资源列表。
+	 */
+	getInstalled(): Promise<readonly { kind: PackageKind; storeId: string; version: string }[]>;
+
 	// ── 上传发布 ──────────────────────────────────────────
 	/**
 	 * 将本地资源打包发布到商城。localId 为本地资源标识（对应 manifest.id = slug）。

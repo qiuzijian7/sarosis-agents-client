@@ -81,11 +81,15 @@ export class EvolutionViewPane extends ViewPane {
 
 		// Empty state
 		this.emptyState = $('div.evolution-empty');
-		this.emptyState.innerHTML = `
-			<div class="empty-icon">🧬</div>
-			<div class="empty-text">No evolution records yet</div>
-			<div class="empty-hint">Agents will self-evolve as they learn from conversations.</div>
-		`;
+		const emptyIcon = $('div.empty-icon');
+		emptyIcon.textContent = '🧬';
+		this.emptyState.appendChild(emptyIcon);
+		const emptyText = $('div.empty-text');
+		emptyText.textContent = 'No evolution records yet';
+		this.emptyState.appendChild(emptyText);
+		const emptyHint = $('div.empty-hint');
+		emptyHint.textContent = 'Agents will self-evolve as they learn from conversations.';
+		this.emptyState.appendChild(emptyHint);
 		container.appendChild(this.emptyState);
 
 		// List container
@@ -125,7 +129,7 @@ export class EvolutionViewPane extends ViewPane {
 		this.listContainer.style.display = '';
 
 		// Render list items
-		this.listContainer.innerHTML = '';
+		this.listContainer.replaceChildren();
 		for (const record of this.records) {
 			const item = this._renderRecordItem(record);
 			this.listContainer.appendChild(item);

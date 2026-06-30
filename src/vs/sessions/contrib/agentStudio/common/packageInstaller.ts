@@ -30,6 +30,17 @@ export interface PackageManifest {
 	readonly files: readonly string[];
 	/** kind 专属原始字段（透传，installer 按需读取） */
 	readonly [key: string]: unknown;
+	/** Agent 依赖的 skill 包 slug 列表（仅 kind=agent 时有效，可选） */
+	readonly skillRefs?: readonly string[];
+	/** Agent 依赖的 mcp 包 slug 列表（仅 kind=agent 时有效，可选） */
+	readonly mcpRefs?: readonly string[];
+	/** HTML 文件清单（仅 kind=agent，含 ConfigHTML 渲染资源） */
+	readonly htmlFiles?: {
+		/** HTML 入口文件（相对包根路径，如 "html/index.html"） */
+		readonly entry: string;
+		/** 资源文件列表（相对包根路径） */
+		readonly assets?: readonly string[];
+	};
 }
 
 /** 打包准备结果：本地资源目录 + 清单，由 MarketplaceService 负责 tar 打包 */

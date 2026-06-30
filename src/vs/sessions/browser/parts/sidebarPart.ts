@@ -751,11 +751,13 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		// WorkspaceViewPane).
 		let wsPath: string | undefined;
 		let extraFolders: { path: string; name: string }[] = [];
+		let filesExclude: Record<string, boolean> | undefined;
 		try {
 			const fileService = this.instantiationService.invokeFunction(a => a.get(IFileService));
-			const { primaryPath, extraFolders: extras } = await this._resolveCodeWorkspaceFolders(fileUri, fileService);
+			const { primaryPath, extraFolders: extras, filesExclude: fe } = await this._resolveCodeWorkspaceFolders(fileUri, fileService);
 			wsPath = primaryPath;
 			extraFolders = extras;
+			filesExclude = fe;
 		} catch { /* parse failed — fall back to parent directory */ }
 
 		// Fallback: use the parent directory of the .code-workspace file
@@ -776,14 +778,15 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		if (existing) {
 			if (existing.path && norm(existing.path) !== norm(wsPath)) {
 				// Old workspace had the .code-workspace file path — fix it
-				target = await this._wsAgentStudioService.updateWorkspace(existing.id, { path: wsPath });
+				target = await this._wsAgentStudioService.updateWorkspace(existing.id, { path: wsPath, filesExclude });
 			} else {
-				target = existing;
+				target = await this._wsAgentStudioService.updateWorkspace(existing.id, { filesExclude });
 			}
 		} else {
 			target = await this._wsAgentStudioService.createWorkspace({
 				name,
 				path: wsPath,
+				filesExclude,
 			});
 		}
 
@@ -832,22 +835,26 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			// Resolve ALL folders from the .code-workspace file
 			let primaryPath: string | undefined;
 			let extraFolders: { path: string; name: string }[] = [];
+			let filesExclude: Record<string, boolean> | undefined;
 			try {
 				const result = await this._resolveCodeWorkspaceFolders(fileUri, fileService);
 				primaryPath = result.primaryPath;
 				extraFolders = result.extraFolders;
+				filesExclude = result.filesExclude;
 			} catch { /* parse or read failed — use fallback */ }
 
 			if (!primaryPath) {
 				primaryPath = URI.joinPath(fileUri, '..').fsPath;
 			}
 
-			// Fix primary path if needed
+			// Fix primary path and filesExclude if needed
 			const pathChanged = norm(ws.path) !== norm(primaryPath);
-			if (pathChanged) {
+			const excludeChanged = JSON.stringify(ws.filesExclude) !== JSON.stringify(filesExclude);
+			if (pathChanged || excludeChanged) {
 				try {
-					await this._wsAgentStudioService.updateWorkspace(ws.id, { path: primaryPath });
+					await this._wsAgentStudioService.updateWorkspace(ws.id, { path: primaryPath, filesExclude });
 					ws.path = primaryPath;
+					ws.filesExclude = filesExclude;
 				} catch { /* non-fatal */ }
 			}
 
@@ -869,14 +876,16 @@ export class SidebarPart extends AbstractPaneCompositePart {
 
 	/**
 	 * Parse a `.code-workspace` JSON file and resolve ALL folder paths.
-	 * Returns `{ primaryPath, extraFolders }` where `primaryPath` is the
-	 * resolved path of `folders[0]` (used as `workspace.path`) and
-	 * `extraFolders` is the rest (used as `workspace.relatedFolders`).
+	 * Returns `{ primaryPath, extraFolders, filesExclude }` where:
+	 * - `primaryPath` is the resolved path of `folders[0]` (used as `workspace.path`)
+	 * - `extraFolders` is the rest (used as `workspace.relatedFolders`)
+	 * - `filesExclude` is extracted from `settings.files.exclude` (used to hide
+	 *   entries in the workspace explorer tree, same as VS Code's native behavior)
 	 */
 	private async _resolveCodeWorkspaceFolders(
 		fileUri: URI,
 		fileService: IFileService,
-	): Promise<{ primaryPath: string | undefined; extraFolders: { path: string; name: string }[] }> {
+	): Promise<{ primaryPath: string | undefined; extraFolders: { path: string; name: string }[]; filesExclude?: Record<string, boolean> }> {
 		const content = await fileService.readFile(fileUri);
 		const parsed = JSON.parse(content.value.toString());
 		const folders: Array<{ path?: string; uri?: string; name?: string }> = parsed?.folders ?? [];
@@ -896,7 +905,9 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			.filter(f => resolveOne(f) !== undefined)
 			.map(f => ({ path: resolveOne(f)!, name: f.name || '' }));
 
-		return { primaryPath, extraFolders };
+		const filesExclude: Record<string, boolean> | undefined = parsed?.settings?.['files.exclude'];
+
+		return { primaryPath, extraFolders, filesExclude };
 	}
 
 	private createFooter(parent: HTMLElement): void {

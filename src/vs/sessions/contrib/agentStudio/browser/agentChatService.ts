@@ -1284,7 +1284,25 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 		}) ?? (() => {});
 
-		this._memoryEventUnsub = () => { unsubWritten(); unsubFailed(); };
+		// 技能提取事件桥接：sweep 中自动提取技能后通知 UI
+		const providerAny = provider as any;
+		const unsubSkill = providerAny?.onEvent?.('skill_extracted', (event: any) => {
+			if (!this._activeOnDelta) return;
+			const skillId = event.data?.['skillId'] as string ?? '';
+			const title = event.data?.['title'] as string ?? '未知技能';
+			this._activeOnDelta({
+				type: 'skill_extracted' as any,
+				content: `⚡ 技能已沉淀: ${title}`,
+				metadata: {
+					skillId,
+					title,
+					agentId: event.agentId ?? '',
+					clickable: true,
+				},
+			} as any);
+		}) ?? null;
+
+		this._memoryEventUnsub = () => { unsubWritten(); unsubFailed(); unsubSkill?.(); };
 	}
 
 	cancelStream(agentId: string, agentSessionId?: string): void {

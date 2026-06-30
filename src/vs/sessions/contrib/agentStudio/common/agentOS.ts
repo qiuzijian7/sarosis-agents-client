@@ -241,10 +241,10 @@ export interface IAgentOSDashboardStats {
 	compressionAfterTokens: number;
 	/** 工具调用次数（按工具名） */
 	toolCallCounts: Map<string, number>;
-	/** Episodic 自动提取触发次数 */
-	episodicExtractionCount: number;
-	/** Semantic 提取触发次数 */
-	semanticExtractionCount: number;
-	/** Procedural 生成触发次数 */
-	proceduralExtractionCount: number;
+	/** L1 Episodic 自动提取触发次数 */
+	l1ExtractionCount: number;
+	/** L2 Semantic 提取触发次数 */
+	l2ExtractionCount: number;
+	/** L3 Procedural 生成触发次数 */
+	l3ExtractionCount: number;
 }

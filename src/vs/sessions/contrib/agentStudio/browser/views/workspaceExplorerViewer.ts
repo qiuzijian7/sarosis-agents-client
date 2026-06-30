@@ -14,6 +14,8 @@ import { IFileService, IFileStat, FileKind } from '../../../../../platform/files
 import { basename, dirname, joinPath } from '../../../../../base/common/resources.js';
 import { localize } from '../../../../../nls.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { match as globMatch } from '../../../../../base/common/glob.js';
 import { IResourceLabel, ResourceLabels } from '../../../../../workbench/browser/labels.js';
 import { DisposableStore, IDisposable, dispose, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { FuzzyScore } from '../../../../../base/common/filters.js';
@@ -75,6 +77,12 @@ export interface IWorkspaceExplorerElement {
 	isRelatedFolder?: boolean;
 	/** True when this related-folder root is a git repository. */
 	isGitRepo?: boolean;
+	/**
+	 * Glob patterns (from .code-workspace `settings.files.exclude`) that
+	 * should hide matching child entries. Set on root nodes and propagated
+	 * to all descendants so getChildren can filter at any depth.
+	 */
+	excludePatterns?: string[];
 }
 
 //#endregion
@@ -111,6 +119,7 @@ export class WorkspaceExplorerDataSource implements IAsyncDataSource<IWorkspaceE
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) { }
 
 	hasChildren(element: IWorkspaceExplorerElement): boolean {
@@ -163,6 +172,16 @@ export class WorkspaceExplorerDataSource implements IAsyncDataSource<IWorkspaceE
 			this.logService.info(`[WorkspaceExplorer] Resolving: ${element.resource.toString()}`);
 			const stat: IFileStat = await this.fileService.resolve(element.resource, { resolveSingleChildDescendants: false });
 			if (stat.children) {
+				// Use exclude patterns propagated from the workspace root element
+				// (sourced from .code-workspace settings.files.exclude). Also merge
+				// any files.exclude from VS Code's configuration service for
+				// completeness (user/workspace settings).
+				const configExclude = this.configurationService.getValue<Record<string, boolean>>('files.exclude', { resource: element.resource }) ?? {};
+				const configPatterns = Object.entries(configExclude)
+					.filter(([, enabled]) => enabled === true)
+					.map(([pattern]) => pattern);
+				const allPatterns = [...new Set([...(element.excludePatterns ?? []), ...configPatterns])];
+
 				const filtered: string[] = [];
 				const children = stat.children
 					.filter((child: IFileStat) => {
@@ -172,12 +191,22 @@ export class WorkspaceExplorerDataSource implements IAsyncDataSource<IWorkspaceE
 							filtered.push(name);
 							return false;
 						}
+						// Filter out entries matching files.exclude patterns
+						for (const pattern of allPatterns) {
+							if (globMatch(pattern, name)) {
+								filtered.push(name);
+								return false;
+							}
+						}
 						return true;
 					})
 					.map((child: IFileStat) => ({
 						resource: child.resource,
 						name: basename(child.resource),
 						isDirectory: child.isDirectory,
+						// Propagate exclude patterns to children so nested
+						// directories also filter their contents.
+						excludePatterns: element.excludePatterns,
 					}));
 				// v27: dedupe consecutive identical resolutions to avoid flooding
 				// the log when a parent render loop (or a busy file watcher)

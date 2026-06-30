@@ -12,6 +12,7 @@
  */
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { Dimension } from '../../../../base/browser/dom.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -74,6 +75,9 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 
 	private _container: HTMLElement | undefined;
 	private _data: IDashboardData | undefined;
+	private _dataSubscription: IDisposable | undefined;
+	private _refreshTimer: IDisposable | undefined;
+	private _dateRange: 'today' | '7d' | '30d' | 'all' = '7d';
 
 	constructor(
 		group: IEditorGroup,
@@ -112,25 +116,55 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		await super.setInput(input, options, context, token);
 		if (!this._container) { return; }
 
+		this._logService.info(`${LOG_TAG} setInput called`);
+
+		// Dispose previous subscriptions (Singleton editor may reuse this pane)
+		this._dataSubscription?.dispose();
+		this._refreshTimer?.dispose();
+
+		// Initial render with cached data (may be empty on first open)
 		this._data = this._dashboardService.getData();
+		this._logService.info(`${LOG_TAG} initial getData:`, {
+			sessions: this._data.sessions.length,
+			kpis: this._data.kpis.length,
+			skills: this._data.skills.length,
+		});
 		this._render();
 
 		// Subscribe to data updates
-		this._register(this._dashboardService.onDidChangeData((data: IDashboardData) => {
+		this._dataSubscription = this._dashboardService.onDidChangeData((data: IDashboardData) => {
+			this._logService.info(`${LOG_TAG} onDidChangeData received:`, {
+				sessions: data.sessions.length,
+				kpis: data.kpis.length,
+				kpi0Value: data.kpis[0]?.value,
+				kpi1Value: data.kpis[1]?.value,
+			});
 			this._data = data;
 			this._render();
-		}));
+		});
 
-		// Refresh data
+		// Auto-refresh every 10 seconds
+		const timer = setInterval(() => {
+			this._dashboardService.refresh().catch(err => {
+				this._logService.warn(`${LOG_TAG} auto-refresh failed:`, err);
+			});
+		}, 10_000);
+		this._refreshTimer = { dispose: () => clearInterval(timer) };
+
+		// Initial refresh (async, will fire onDidChangeData when done)
 		this._dashboardService.refresh().catch(err => {
-			this._logService.warn(`${LOG_TAG} refresh failed:`, err);
+			this._logService.warn(`${LOG_TAG} initial refresh failed:`, err);
 		});
 	}
 
 	// ─── Render ──────────────────────────────────────────────────────────
 
 	private _render(): void {
-		if (!this._container || !this._data) { return; }
+		if (!this._container || !this._data) {
+			console.warn('[DashboardEditor] _render skipped: container or data is null');
+			return;
+		}
+		console.info('[DashboardEditor] _render: kpis=', this._data.kpis.length, 'sessions=', this._data.sessions.length);
 
 		// Clear container
 		while (this._container.firstChild) {
@@ -187,10 +221,27 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		// Date range selector
 		const dateRange = el('div');
 		dateRange.style.cssText = 'display: flex; background: var(--vscode-panel-background, #252526); border: 1px solid var(--vscode-panel-border, #3c3c3c); border-radius: 4px; overflow: hidden;';
-		for (const label of ['今日', '7天', '30天', '全部']) {
+		const rangeOptions: [string, 'today' | '7d' | '30d' | 'all'][] = [
+			['今日', 'today'],
+			['7天', '7d'],
+			['30天', '30d'],
+			['全部', 'all'],
+		];
+		for (const [label, range] of rangeOptions) {
 			const btn = el('button', undefined, label);
-			btn.style.cssText = `background: none; border: none; color: ${label === '7天' ? '#fff' : 'var(--vscode-descriptionForeground, #858585)'}; padding: 5px 12px; font-size: 12px; cursor: pointer;`;
-			if (label === '7天') { btn.style.background = 'var(--vscode-button-background, #0078d4)'; }
+			const isActive = this._dateRange === range;
+			btn.style.cssText = `background: ${isActive ? 'var(--vscode-button-background, #0078d4)' : 'none'}; border: none; color: ${isActive ? '#fff' : 'var(--vscode-descriptionForeground, #858585)'}; padding: 5px 12px; font-size: 12px; cursor: pointer;`;
+			btn.addEventListener('click', () => {
+				this._dateRange = range;
+				this._dashboardService.setDateRange(range);
+				console.info('[DashboardEditor] date range changed to:', range);
+				// Re-render to update active button state
+				this._render();
+				// Trigger data refresh
+				this._dashboardService.refresh().catch(err => {
+					this._logService.warn(`${LOG_TAG} date-range refresh failed:`, err);
+				});
+			});
 			dateRange.appendChild(btn);
 		}
 		controls.appendChild(dateRange);
@@ -214,7 +265,8 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 
 	private _renderKpiRow(): HTMLElement {
 		const row = el('div');
-		row.style.cssText = 'display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px;';
+		const count = this._data!.kpis.length;
+		row.style.cssText = `display: grid; grid-template-columns: repeat(${count}, 1fr); gap: 12px; margin-bottom: 20px;`;
 
 		for (const kpi of this._data!.kpis) {
 			row.appendChild(this._renderKpiCard(kpi));
@@ -596,9 +648,9 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 
 			// Episodic/Semantic/Procedural extraction info
 			const extractParts: string[] = [];
-			if (mem.episodicExtractionCount > 0) { extractParts.push(`Episodic ${mem.episodicExtractionCount}次`); }
-			if (mem.semanticExtractionCount > 0) { extractParts.push(`Semantic ${mem.semanticExtractionCount}次`); }
-			if (mem.proceduralExtractionCount > 0) { extractParts.push(`Procedural ${mem.proceduralExtractionCount}次`); }
+			if (mem.l1ExtractionCount > 0) { extractParts.push(`Episodic ${mem.l1ExtractionCount}次`); }
+			if (mem.l2ExtractionCount > 0) { extractParts.push(`Semantic ${mem.l2ExtractionCount}次`); }
+			if (mem.l3ExtractionCount > 0) { extractParts.push(`Procedural ${mem.l3ExtractionCount}次`); }
 			if (extractParts.length > 0) {
 				const extractInfo = el('div', undefined, `记忆提取: ${extractParts.join(' · ')}`);
 				extractInfo.style.cssText = 'font-size: 11px; color: var(--vscode-descriptionForeground, #858585); text-align: center; padding: 8px; background: var(--vscode-editor-background, #1e1e1e); border-radius: 4px; margin-bottom: 8px;';
@@ -831,6 +883,8 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 	}
 
 	override dispose(): void {
+		this._dataSubscription?.dispose();
+		this._refreshTimer?.dispose();
 		super.dispose();
 	}
 }

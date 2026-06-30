@@ -349,6 +349,9 @@ export class AgentChatPanel extends Disposable {
 	/** Edit a prior user message: truncate the conversation after it and regenerate from the new text. */
 	private readonly _onEditMessage?: (messageId: string, newText: string) => void;
 	private readonly _onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
+	private readonly _onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
+	private readonly _onOpenMcpSettings?: () => void;
+	private readonly _onOpenHtmlPreview?: () => void;
 	// New callbacks for missing features
 	private readonly _onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
 	private readonly _onQuestionClick?: (question: ISuggestedQuestion) => void;
@@ -400,6 +403,9 @@ export class AgentChatPanel extends Disposable {
 		onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 		onEditMessage?: (messageId: string, newText: string) => void;
 		onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
+		onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
+		onOpenMcpSettings?: () => void;
+		onOpenHtmlPreview?: () => void;
 		// New callbacks for missing features
 		onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
 		onQuestionClick?: (question: ISuggestedQuestion) => void;
@@ -451,6 +457,9 @@ export class AgentChatPanel extends Disposable {
 		this._onConfirmationAction = opts.onConfirmationAction;
 		this._onEditMessage = opts.onEditMessage;
 		this._onListSkills = opts.onListSkills;
+		this._onListMcpServers = opts.onListMcpServers;
+		this._onOpenMcpSettings = opts.onOpenMcpSettings;
+		this._onOpenHtmlPreview = opts.onOpenHtmlPreview;
 		// New callbacks
 		this._onAskUserSubmit = opts.onAskUserSubmit;
 		this._onQuestionClick = opts.onQuestionClick;
@@ -575,6 +584,10 @@ export class AgentChatPanel extends Disposable {
 		noticeId?: string;
 		status?: 'pending' | 'saved' | 'failed';
 		entries?: Array<{ type: string; content: string }>;
+		skillId?: string;
+		skillTitle?: string;
+		agentId?: string;
+		clickable?: boolean;
 	}): void {
 	const typeLabels: Record<string, string> = {
 		// 4-Tier Consolidation Model (agentmemory)
@@ -584,6 +597,8 @@ export class AgentChatPanel extends Disposable {
 		procedural: 'Procedural',
 		// Injection (context loaded into system prompt)
 		injected: '注入',
+		// Skill (extracted from sessions)
+		skill: '技能',
 		// Episodic sub-types
 		pattern: 'pattern', preference: 'preference', architecture: 'architecture',
 		bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
@@ -596,7 +611,8 @@ export class AgentChatPanel extends Disposable {
 		: (memType === 'semantic' ? 'memory-l2'
 		: (memType === 'procedural' ? 'memory-l3'
 		: (memType === 'injected' ? 'memory-injected'
-		: 'memory'))));
+		: (memType === 'skill' ? 'memory-skill'
+		: 'memory')))));
 		// 如果有注入记忆摘要列表，追加到 content 后面
 		let displayContent = info.content;
 		if (info.entries && info.entries.length > 0) {
@@ -605,9 +621,13 @@ export class AgentChatPanel extends Disposable {
 			).join('\n');
 			displayContent = `${info.content}\n\n${entryList}`;
 		}
+		// 技能沉淀消息：追加提示
+		if (memType === 'skill' && info.clickable) {
+			displayContent = `${info.content}\n\n💡 点击此消息可跳转到记忆详情 → 技能页签`;
+		}
 		this._addSystemMessage({
 			type: 'memory',
-			icon: '🧠',
+			icon: memType === 'skill' ? '⚡' : '🧠',
 			badge: typeLabel,
 			badgeClass,
 			content: displayContent,
@@ -860,7 +880,14 @@ export class AgentChatPanel extends Disposable {
 				if (msg.type === 'compression' && msg.rawData && this._onOpenCompressionDetail) {
 					this._onOpenCompressionDetail(msg.rawData);
 				} else if (msg.type === 'memory' && this._onOpenMemoryDetail && this._agent) {
-					this._onOpenMemoryDetail(this._agent.id, msg.rawData?.['memoryType'] as string | undefined, msg.rawData?.['assistantContentPreview'] as string | undefined);
+					const rawData = msg.rawData ?? {};
+					const memType = rawData['memoryType'] as string | undefined;
+					// 技能沉淀消息：跳转到技能页签
+					if (memType === 'skill') {
+						this._onOpenMemoryDetail(rawData['agentId'] as string ?? this._agent.id, 'skill', rawData['skillTitle'] as string | undefined);
+					} else {
+						this._onOpenMemoryDetail(this._agent.id, memType, rawData['assistantContentPreview'] as string | undefined);
+					}
 				} else if (msg.type === 'codebase' && this._onOpenCodebaseDetail) {
 					this._onOpenCodebaseDetail();
 				}
@@ -1420,6 +1447,18 @@ export class AgentChatPanel extends Disposable {
 		// Always render (matches React WorktreeSwitcher behavior); the dropdown
 		// loads worktree list lazily on open via _onLoadWorktrees.
 		this._renderHeaderWorktree(actions);
+
+		// HTML 预览按钮——使用 Codicon 原生图标（小眼睛）
+		const htmlPreviewBtn = append(actions, $("button.chat-header-action-btn.chat-header-btn"));
+		htmlPreviewBtn.title = 'HTML 预览';
+		const eyeIcon = append(htmlPreviewBtn, $("span.codicon.codicon-eye"));
+		eyeIcon.style.fontSize = '15px';
+		this._register(
+			addDisposableListener(htmlPreviewBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onOpenHtmlPreview?.();
+			}),
+		);
 
 		// 1. Message-nav (会话消息列表)
 		this._msgNavTrigger = this._appendHeaderActionBtn(actions, {
@@ -6264,19 +6303,19 @@ export class AgentChatPanel extends Disposable {
 			}),
 		);
 
-		// Tab bar
+		// Tab bar — 使用 Codicon 原生图标 + monaco-button 样式
 		const tabBar = append(this._settingsOverlayEl, $(".chat-settings-tabs"));
-		const tabs: { id: string; icon: string; label: string }[] = [
-			{ id: 'prompt', icon: '💬', label: 'Prompt' },
-			{ id: 'skills', icon: '🛠', label: '技能' },
-			{ id: 'memory', icon: '🧠', label: 'Memory' },
-			{ id: 'knowledge', icon: '📚', label: '知识库' },
-			{ id: 'rules', icon: '📏', label: '规则' },
+		const tabs: { id: string; codicon: string; label: string }[] = [
+			{ id: 'prompt', codicon: 'codicon codicon-comment-discussion', label: 'Prompt' },
+			{ id: 'skills', codicon: 'codicon codicon-tools', label: '技能' },
+			{ id: 'mcp', codicon: 'codicon codicon-server', label: 'MCP' },
+			{ id: 'knowledge', codicon: 'codicon codicon-library', label: '知识库' },
+			{ id: 'rules', codicon: 'codicon codicon-checklist', label: '规则' },
 		];
 		for (const tab of tabs) {
 			const tabBtn = append(tabBar, $("button.chat-settings-tab"));
 			if (tab.id === activeTab) { tabBtn.classList.add('active'); }
-			append(tabBtn, $("span.tab-icon", undefined, tab.icon));
+			append(tabBtn, $("span.tab-icon." + tab.codicon));
 			append(tabBtn, $("span.tab-label", undefined, tab.label));
 			this._register(
 				addDisposableListener(tabBtn, EventType.CLICK, () => {
@@ -6293,17 +6332,17 @@ export class AgentChatPanel extends Disposable {
 			this._renderSettingsPromptTab(contentArea);
 		} else if (activeTab === 'skills') {
 			this._renderSettingsSkillsTab(contentArea);
-		} else if (activeTab === 'memory') {
-			this._renderSettingsMemoryTab(contentArea);
+		} else if (activeTab === 'mcp') {
+			this._renderSettingsMcpTab(contentArea);
 		} else if (activeTab === 'knowledge') {
 			this._renderSettingsKnowledgeTab(contentArea);
 		} else if (activeTab === 'rules') {
 			this._renderSettingsRulesTab(contentArea);
 		}
 
-		// Footer with "Open full editor" button
+		// Footer with "Open full editor" button — 使用 VS Code 原生 monaco-button
 		const footer = append(this._settingsOverlayEl, $(".chat-settings-footer"));
-		const openFullBtn = append(footer, $("button.chat-settings-open-full-btn"));
+		const openFullBtn = append(footer, $("button.monaco-button.monaco-text-button.chat-settings-open-full-btn"));
 		openFullBtn.textContent = '在完整编辑器中打开 →';
 		this._register(
 			addDisposableListener(openFullBtn, EventType.CLICK, () => {
@@ -6327,7 +6366,7 @@ export class AgentChatPanel extends Disposable {
 		append(actions, $("span.dirty-hint", undefined, '● 未保存'));
 		const spacer = append(actions, $("div"));
 		spacer.style.flex = '1';
-		const saveBtn = append(actions, $("button.action-btn.primary", undefined, '保存'));
+		const saveBtn = append(actions, $("button.monaco-button.monaco-text-button.action-btn.primary", undefined, '保存'));
 		this._register(
 			addDisposableListener(saveBtn, EventType.CLICK, () => {
 				// TODO: save system prompt via callback
@@ -6363,59 +6402,48 @@ export class AgentChatPanel extends Disposable {
 		}
 	}
 
-	private _renderSettingsMemoryTab(container: HTMLElement): void {
+	/**
+	 * MCP 服务器配置页签——列出已连接的 MCP 服务器及工具数，
+	 * 提供按钮打开 VS Code 原生 MCP 设置界面。
+	 */
+	private _renderSettingsMcpTab(container: HTMLElement): void {
 		const desc = append(container, $(".chat-settings-tab-desc"));
-		desc.textContent = '记忆系统配置';
+		desc.textContent = 'MCP 服务器配置';
 
-		const section = append(container, $(".chat-settings-section.expanded"));
-		const sectionHeader = append(section, $(".config-section-header", undefined, '基础设置'));
-		sectionHeader.style.padding = '8px 12px';
-		sectionHeader.style.fontSize = '12px';
-		sectionHeader.style.fontWeight = '600';
-		sectionHeader.style.borderBottom = '1px solid rgba(128,128,128,0.1)';
+		// 获取 MCP 服务器列表
+		const servers = this._onListMcpServers?.() ?? [];
 
-		const body = append(section, $(".config-section-body"));
-		body.style.padding = '10px 12px';
-		body.style.display = 'flex';
-		body.style.flexDirection = 'column';
-		body.style.gap = '10px';
-
-		// Enable toggle
-		const row1 = append(body, $(".config-row"));
-		row1.style.display = 'flex';
-		row1.style.alignItems = 'center';
-		row1.style.justifyContent = 'space-between';
-		append(row1, $("span.config-row-label", undefined, '启用 Memory'));
-		const toggle1 = append(row1, $("div.toggle-switch.on"));
-		this._register(
-			addDisposableListener(toggle1, EventType.CLICK, (e) => {
-				e.stopPropagation();
-				toggle1.classList.toggle('on');
-			}),
-		);
-
-		// Strategy
-		const row2 = append(body, $(".config-row"));
-		row2.style.display = 'flex';
-		row2.style.alignItems = 'center';
-		row2.style.justifyContent = 'space-between';
-		append(row2, $("span.config-row-label", undefined, '策略'));
-		const select = append(row2, $("select.config-select")) as HTMLSelectElement;
-		for (const opt of ['full（完整记忆）', 'summary（摘要记忆）', 'hybrid（混合）']) {
-			const o = document.createElement('option');
-			o.textContent = opt;
-			select.appendChild(o);
+		if (servers.length === 0) {
+			append(container, $(".chat-settings-empty", undefined, '暂无已连接的 MCP 服务器'));
+		} else {
+			const list = append(container, $(".chat-settings-skills-list"));
+			for (const server of servers) {
+				const row = append(list, $(".chat-settings-skill-row"));
+				append(row, $("span.skill-icon.codicon.codicon-server"));
+				const info = append(row, $(".skill-info"));
+				append(info, $("span.skill-name", undefined, server.name));
+				const statusText = `${server.status} · ${server.toolCount} 个工具`;
+				append(info, $("span.skill-desc", undefined, statusText));
+				// 状态指示灯
+				const dot = append(row, $("span.mcp-status-dot"));
+				if (server.status === 'connected' || server.status === 'running') {
+					dot.style.background = '#4ec9b0';
+				} else if (server.status === 'error') {
+					dot.style.background = '#f48771';
+				} else {
+					dot.style.background = '#cccccc';
+				}
+			}
 		}
 
-		// Max entries
-		const row3 = append(body, $(".config-row"));
-		row3.style.display = 'flex';
-		row3.style.alignItems = 'center';
-		row3.style.justifyContent = 'space-between';
-		append(row3, $("span.config-row-label", undefined, '最大条目数'));
-		const input = append(row3, $("input.config-input")) as HTMLInputElement;
-		input.type = 'number';
-		input.value = '100';
+		// 操作按钮——使用 VS Code 原生 monaco-button
+		const actions = append(container, $(".chat-settings-tab-actions"));
+		const addBtn = append(actions, $("button.monaco-button.monaco-text-button.action-btn.primary", undefined, '配置 MCP 服务器'));
+		this._register(
+			addDisposableListener(addBtn, EventType.CLICK, () => {
+				this._onOpenMcpSettings?.();
+			}),
+		);
 	}
 
 	private _renderSettingsKnowledgeTab(container: HTMLElement): void {

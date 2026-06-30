@@ -20,6 +20,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
@@ -28,6 +29,7 @@ import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
 import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
+import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { IAgentStudioService, IAgentChatService, ChatMode } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
@@ -100,6 +102,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IModelService private readonly _modelService: IModelService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ILogService private readonly _logService: ILogService,
+		@IMcpService private readonly _mcpService: IMcpService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -493,20 +496,37 @@ export class NativeChatEditorPane extends EditorPane {
 									}
 									break;
 								}
-								case 'memory_injected': {
-									// 记忆上下文已注入 system prompt → 显示注入通知卡片
-									const memContent = (delta as any).content ?? '';
-									const memMeta = (delta as any).metadata ?? {};
-									if (memContent) {
-										this._chatPanel?.addMemoryNotice({
-											content: memContent,
-											memoryType: 'injected',
-											status: 'saved',
-											entries: memMeta.entries,
-										});
-									}
-									break;
+							case 'memory_injected': {
+								// 记忆上下文已注入 system prompt → 显示注入通知卡片
+								const memContent = (delta as any).content ?? '';
+								const memMeta = (delta as any).metadata ?? {};
+								if (memContent) {
+									this._chatPanel?.addMemoryNotice({
+										content: memContent,
+										memoryType: 'injected',
+										status: 'saved',
+										entries: memMeta.entries,
+									});
 								}
+								break;
+							}
+							case 'skill_extracted' as any: {
+								// 技能沉淀完成 → 显示技能沉淀通知卡片（可点击跳转）
+								const skillContent = (delta as any).content ?? '';
+								const skillMeta = (delta as any).metadata ?? {};
+								if (skillContent) {
+									this._chatPanel?.addMemoryNotice({
+										content: skillContent,
+										memoryType: 'skill',
+										status: 'saved',
+										skillId: skillMeta.skillId,
+										skillTitle: skillMeta.title,
+										agentId: skillMeta.agentId,
+										clickable: true,
+									});
+								}
+								break;
+							}
 								default:
 									break;
 							}
@@ -573,6 +593,40 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 			},
 			onListSkills: () => [],
+		onListMcpServers: () => {
+			// 从 IMcpService 获取 MCP 服务器列表
+			const servers = this._mcpService.servers.get();
+			return servers.map(server => ({
+				name: server.definition.label,
+				status: server.connectionState.get().state === 2 ? 'connected' : // McpConnectionState.Kind.Running = 2
+					server.connectionState.get().state === 1 ? 'starting' :
+					server.connectionState.get().state === 3 ? 'error' : 'stopped',
+				toolCount: server.tools.get().length,
+			}));
+		},
+		onOpenMcpSettings: () => {
+			// 打开 VS Code 原生 MCP 设置界面
+			this._commandService.executeCommand('workbench.action.openSettings', 'mcp').catch(err => {
+				this._logService.error('[NativeChatEditorPane] onOpenMcpSettings failed:', err);
+			});
+		},
+		onOpenHtmlPreview: () => {
+			// 在中间栏（当前激活的编辑器组）打开 config HTML 预览
+			if (!this._currentAgentId) {
+				this._logService.info('[NativeChatEditorPane] onOpenHtmlPreview: no agent selected');
+				return;
+			}
+			try {
+				const resource = URI.from({ scheme: 'saros-html-preview', path: `/${this._currentAgentId}` });
+				const input = new HtmlPreviewEditorInput(resource, 'HTML 预览', this._currentAgentId);
+				// 不传 group 参数 → 在当前激活的编辑器组（中间栏）打开
+				this._editorService.openEditor(input, { pinned: true }).catch(err => {
+					this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview failed:', err);
+				});
+			} catch (err) {
+				this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview error:', err);
+			}
+		},
 			onNewSession: async () => {
 				// Create a new session for the current agent
 				if (!this._currentAgentId) {
@@ -905,7 +959,13 @@ export class NativeChatEditorPane extends EditorPane {
 			this._editorService.openEditor(input, { pinned: true }).then(() => {
 				const pane = this._editorService.activeEditorPane;
 				if (pane instanceof MemoryDetailEditorPane) {
-					pane.navigateToTarget(memoryType ?? undefined, contentPreview);
+					// 技能沉淀消息点击：跳转到技能页签
+					if (memoryType === 'skill') {
+						(pane as any)._currentView = 'skills';
+						(pane as any)._renderFull();
+					} else {
+						pane.navigateToTarget(memoryType ?? undefined, contentPreview);
+					}
 				}
 			}).catch(err => {
 				this._logService.error('[NativeChatEditorPane] Failed to open memory detail:', err);

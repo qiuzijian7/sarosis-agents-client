@@ -16,6 +16,7 @@ import { IKeybindingService } from '../../../../../platform/keybinding/common/ke
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
@@ -24,9 +25,11 @@ import { $ } from '../../../../../base/browser/dom.js';
 import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
 import { GroupsOrder, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { AgentSettingsEditorInput } from '../agentSettingsEditorInput.js';
+import { AgentCreateEditorInput } from '../agentCreateEditorInput.js';
 import type { AgentBootstrapTemplates, IAgentHandOff, IAgentHooks, IAgentVisibility } from '../../../../common/agentStudioTypes.js';
 import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { joinPath } from '../../../../../base/common/resources.js';
+import { IMarketplaceService, IMarketplacePackage, PackageKind } from '../../common/marketplace.js';
 
 // ─── Preset Data Model ────────────────────────────────────────────────────────
 
@@ -1636,62 +1639,6 @@ export const PRESET_CATEGORIES: { id: PresetCategory | 'All'; label: string }[] 
 	{ id: 'Analytics', label: 'Data' },
 ];
 
-const AVAILABLE_MODELS = [
-	{ id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-	{ id: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
-	{ id: 'gpt-4o', label: 'GPT-4o' },
-	{ id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-	{ id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-];
-
-const AVAILABLE_SKILLS = [
-	'code-gen', 'code-review', 'refactor', 'code-explore', 'code-search', 'code-navigate', 'architecture-analysis',
-	'testing', 'bug-report', 'automation',
-	'web-search', 'summarize', 'analysis', 'data-analysis', 'visualization', 'sql',
-	'writing', 'editing', 'formatting', 'ui-design', 'prototyping', 'review',
-	'planning', 'delegation', 'tracking', 'deploy', 'ci-cd', 'monitoring',
-	'file-ops', 'terminal', 'image-gen',
-	'git', 'version-control', 'release-management', 'changelog', 'branch-management', 'commit', 'commit-message', 'create-draft-pr', 'create-pr', 'finishing-a-development-branch', 'github-auth', 'github-code-review', 'github-issues', 'github-pr-workflow', 'github-repo-management', 'merge', 'sync', 'sync-upstream', 'update-pr', 'using-git-worktrees',
-];
-
-const AVAILABLE_TOOLS = [
-	// Search
-	{ id: 'grep_search', label: 'Grep Search', description: '正则/精确文本搜索 (ripgrep)' },
-	{ id: 'search_files', label: 'Search Files', description: '模糊搜索文件/目录路径' },
-	// Filesystem
-	{ id: 'list_dir', label: 'List Dir', description: '列出目录内容' },
-	{ id: 'read_file', label: 'Read File', description: '读取本地文件内容' },
-	{ id: 'replace_in_file', label: 'Replace In File', description: '替换文件中的文本' },
-	{ id: 'edit_file', label: 'Edit File', description: '编辑/创建文件' },
-	{ id: 'write_to_file', label: 'Write To File', description: '写入/创建文件' },
-	// Terminal
-	{ id: 'terminal', label: 'Terminal', description: '执行命令行命令' },
-	// MCP
-	{ id: 'use_mcp_tool', label: 'Use MCP Tool', description: '调用 MCP Server 提供的工具' },
-	{ id: 'fetch_mcp_tools', label: 'Fetch MCP Tools', description: '获取 MCP Server 工具的详细描述' },
-	{ id: 'grep_mcp_tools', label: 'Grep MCP Tools', description: '按关键词搜索 MCP 工具' },
-	// Skills
-	{ id: 'use_skill', label: 'Use Skill', description: '加载并使用 Skill' },
-	// Vision
-	{ id: 'read_image', label: 'Read Image', description: '读取/分析图片' },
-	{ id: 'capture_screen', label: 'Capture Screen', description: '截取屏幕' },
-	// Web
-	{ id: 'web_preview', label: 'Web Preview', description: '预览前端 Web 页面' },
-	// Environment
-	{ id: 'get_env_info', label: 'Get Env Info', description: '获取环境变量信息' },
-	// Media generation
-	{ id: 'generate_picture', label: 'Generate Picture', description: 'AI 图像生成 (文生图/图生图)' },
-	// History context
-	{ id: 'read_history_context', label: 'Read History Context', description: '读取历史对话上下文' },
-	{ id: 'grep_history_context', label: 'Grep History Context', description: '按关键词搜索历史上下文' },
-	// Scheduler
-	{ id: 'cron', label: 'Cron', description: '创建/管理定时任务' },
-	// Notification
-	{ id: 'notify', label: 'Notify', description: '发送通知消息' },
-	// Download
-	{ id: 'display_download_links', label: 'Display Download Links', description: '生成文件下载链接' },
-];
-
 // ─── View Pane ────────────────────────────────────────────────────────────────
 
 /**
@@ -1709,11 +1656,17 @@ export class PresetAgentViewPane extends ViewPane {
 	private searchInput!: HTMLInputElement;
 	private customPresets: AgentPreset[] = [];
 	private activeCategory: PresetCategory | 'All' = 'All';
-	private activeTab: 'builtin' | 'custom' = 'builtin';
 	private isDeploying = false;
 
-	/** Dialog overlay elements */
-	private dialogOverlay: HTMLElement | null = null;
+	// ── Marketplace data (for version comparison: upgrade/delete buttons) ──
+	/** Server-side agent packages keyed by slug (e.g. "agent-coder" → package) */
+	private _marketPackages = new Map<string, IMarketplacePackage>();
+	/** Installed agent packages keyed by storeId (= slug), value = local version */
+	private _installedVersions = new Map<string, string>();
+	/** Upgrading preset IDs (to show spinner / disable button) */
+	private _upgradingIds = new Set<string>();
+	/** Deleting preset IDs */
+	private _deletingIds = new Set<string>();
 
 	/**
 	 * @deprecated Unused field — tracked via workspace change event but never read.
@@ -1733,19 +1686,30 @@ export class PresetAgentViewPane extends ViewPane {
 		@IHoverService hoverService: IHoverService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IDialogService private readonly dialogService: IDialogService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@IPathService private readonly pathService: IPathService,
+		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._loadCustomPresets();
+		this._loadCustomAgentsFromService();
 		this._listenActiveWorkspace();
+		// Listen for agent changes (create/update/delete) and refresh the list
+		this._register(this.agentStudioService.onDidChangeAgents(() => {
+			this._loadCustomAgentsFromService();
+		}));
 		// Sync builtin presets with .agent.md files so icons stay consistent
 		this._syncPresetsWithAgentMd().catch(err =>
 			console.warn('[PresetAgentView] Failed to sync with .agent.md files:', err),
+		);
+		// Load marketplace data for version comparison (upgrade/delete buttons)
+		this._loadMarketplaceData().catch(err =>
+			console.warn('[PresetAgentView] Failed to load marketplace data:', err),
 		);
 	}
 
@@ -1917,17 +1881,17 @@ export class PresetAgentViewPane extends ViewPane {
 
 		const actions = $('div.preset-header-actions');
 
-		const marketBtn = $('button.preset-market-btn');
-		marketBtn.textContent = '🛒 商城';
-		marketBtn.title = '打开 Agent 商城，浏览并部署更多智能体';
-		marketBtn.onclick = () => this.commandService.executeCommand('agentStudio.openMarket');
-		actions.appendChild(marketBtn);
+		const createBtn = $('button.preset-create-btn');
+		createBtn.textContent = '✏ 创建';
+		createBtn.title = '创建自定义 Agent';
+		createBtn.onclick = () => this._openCreateAgentPane();
+		actions.appendChild(createBtn);
 
-		const addBtn = $('button.preset-add-btn');
-		addBtn.textContent = '+ Custom';
-		addBtn.title = 'Create a custom agent preset';
-		addBtn.onclick = () => this._openCreateDialog();
-		actions.appendChild(addBtn);
+		const installBtn = $('button.preset-install-btn');
+		installBtn.textContent = '⬇ Install';
+		installBtn.title = '从 Agent 商城安装智能体';
+		installBtn.onclick = () => this.commandService.executeCommand('agentStudio.openMarket');
+		actions.appendChild(installBtn);
 
 		header.appendChild(actions);
 
@@ -1947,20 +1911,7 @@ export class PresetAgentViewPane extends ViewPane {
 		searchBox.appendChild(this.searchInput);
 		container.appendChild(searchBox);
 
-		// ── Tabs (Built-in / Custom) ─────────────────────────────────────────
-		const tabs = $('div.preset-tabs');
-		const builtinTab = $('button.preset-tab.active');
-		builtinTab.textContent = `Built-in (${BUILTIN_PRESETS.length})`;
-		builtinTab.onclick = () => this._switchTab('builtin', builtinTab, tabs);
-		tabs.appendChild(builtinTab);
-
-		const customTab = $('button.preset-tab');
-		customTab.textContent = `Custom (${this.customPresets.length})`;
-		customTab.onclick = () => this._switchTab('custom', customTab, tabs);
-		tabs.appendChild(customTab);
-		container.appendChild(tabs);
-
-		// ── Category Filters (only for Built-in tab) ────────────────────────
+		// ── Category Filters ───────────────────────────────────────────────
 		const filterRow = $('div.preset-category-filters');
 		for (const cat of PRESET_CATEGORIES) {
 			const btn = $('button.preset-cat-btn');
@@ -1982,28 +1933,96 @@ export class PresetAgentViewPane extends ViewPane {
 		container.appendChild(this.listContainer);
 	}
 
-	// ── Tab Switching ────────────────────────────────────────────────────────
-
-	private _switchTab(tab: 'builtin' | 'custom', activeTab: HTMLElement, tabsContainer: HTMLElement): void {
-		tabsContainer.querySelectorAll('.preset-tab').forEach(t => t.classList.remove('active'));
-		activeTab.classList.add('active');
-		this.activeTab = tab;
-		this.activeCategory = 'All';
-		// Reset category filter
-		const catFilters = this.element?.querySelectorAll('.preset-cat-btn');
-		catFilters?.forEach((b, i) => {
-			b.classList.toggle('active', i === 0);
-		});
-		this._renderPresets();
-	}
-
 	// ── Render Preset Cards ──────────────────────────────────────────────────
 
-	private _getFilteredPresets(): AgentPreset[] {
-		let presets = this.activeTab === 'builtin' ? BUILTIN_PRESETS : this.customPresets;
+	/**
+	 * Resolve the marketplace slug for a given preset.
+	 * Server slugs follow the pattern "agent-{presetId}", with special cases
+	 * (e.g. "data" → "agent-data-analyst").
+	 */
+	private _getMarketSlug(preset: AgentPreset): string {
+		// Special mapping for presets whose names differ from slug pattern
+		const slugOverrides: Record<string, string> = {
+			'data': 'agent-data-analyst',
+		};
+		return slugOverrides[preset.id] ?? `agent-${preset.id}`;
+	}
 
-		// Category filter (only for builtin)
-		if (this.activeTab === 'builtin' && this.activeCategory !== 'All') {
+	/**
+	 * Load marketplace agent packages + installed records for version comparison.
+	 * Called once on construction; safe to re-call to refresh.
+	 */
+	private async _loadMarketplaceData(): Promise<void> {
+		try {
+			// Fetch server-side agent packages
+			const { items } = await this.marketplaceService.listPackages({ kind: 'agent' as PackageKind, pageSize: 200 });
+			this._marketPackages.clear();
+			for (const pkg of items) {
+				this._marketPackages.set(pkg.slug, pkg);
+			}
+
+			// Fetch installed records (from installed-packages.json — marketplace-installed)
+			const installed = await this.marketplaceService.getInstalled();
+			this._installedVersions.clear();
+			for (const entry of installed) {
+				if (entry.kind === 'agent') {
+					this._installedVersions.set(entry.storeId, entry.version);
+				}
+			}
+
+			// Also load local builtin agent versions (from agentStudioService)
+			// so builtin agents that ship with the app show their version too.
+			try {
+				const agents = await this.agentStudioService.getAgents();
+				for (const agent of agents) {
+					const slug = this._getMarketSlug(agent as AgentPreset);
+					// Only set if not already present from installed-packages.json
+					// (marketplace-installed version takes priority)
+					if (agent.version && !this._installedVersions.has(slug)) {
+						this._installedVersions.set(slug, agent.version);
+					}
+				}
+			} catch { /* best-effort — local agent list may fail */ }
+
+			// Re-render to show upgrade/delete buttons
+			this._renderPresets();
+		} catch (err) {
+			console.warn('[PresetAgentView] Failed to load marketplace data:', err);
+		}
+	}
+
+	/**
+	 * Compare semver versions. Returns true if `server` > `local`.
+	 */
+	private _isVersionHigher(server: string | undefined, local: string | undefined): boolean {
+		if (!server) { return false; }
+		if (!local) { return true; }
+		const parseVer = (v: string) => v.split('.').map(n => parseInt(n, 10) || 0);
+		const s = parseVer(server);
+		const l = parseVer(local);
+		for (let i = 0; i < Math.max(s.length, l.length); i++) {
+			const sv = s[i] ?? 0;
+			const lv = l[i] ?? 0;
+			if (sv > lv) { return true; }
+			if (sv < lv) { return false; }
+		}
+		return false;
+	}
+
+	private _getFilteredPresets(): AgentPreset[] {
+		// Show all presets (builtin + custom) merged together
+		let presets = [...BUILTIN_PRESETS, ...this.customPresets];
+
+		// Deduplicate by ID (custom overrides builtin if same ID)
+		const seen = new Set<string>();
+		presets = presets.filter(p => {
+			if (seen.has(p.id)) { return false; }
+			seen.add(p.id);
+			return true;
+		});
+
+		// Category filter
+		if (this.activeCategory !== 'All') {
 			presets = presets.filter(p => p.category === this.activeCategory);
 		}
 
@@ -2030,28 +2049,16 @@ export class PresetAgentViewPane extends ViewPane {
 			if (presets.length === 0) {
 				const empty = $('div.preset-empty');
 				const emptyIcon = $('div.empty-icon');
-				emptyIcon.textContent = this.activeTab === 'custom' ? '🔧' : '🔍';
+				emptyIcon.textContent = '🔍';
 				empty.appendChild(emptyIcon);
 
 				const emptyText = $('p');
-				emptyText.textContent = this.activeTab === 'custom'
-					? 'No custom presets yet'
-					: 'No presets match your search';
+				emptyText.textContent = 'No presets match your search';
 				empty.appendChild(emptyText);
 
 				const emptyHint = $('p.empty-hint');
-				emptyHint.textContent = this.activeTab === 'custom'
-					? 'Create a custom preset to reuse agent configurations'
-					: 'Try adjusting your search or category filter';
+				emptyHint.textContent = 'Try adjusting your search or category filter';
 				empty.appendChild(emptyHint);
-
-				if (this.activeTab === 'custom') {
-					const createBtn = $('button.preset-deploy-btn');
-					createBtn.textContent = '+ Create Custom Preset';
-					createBtn.style.marginTop = '12px';
-					createBtn.onclick = () => this._openCreateDialog();
-					empty.appendChild(createBtn);
-				}
 
 				this.listContainer.appendChild(empty);
 				return;
@@ -2076,39 +2083,141 @@ export class PresetAgentViewPane extends ViewPane {
 	private _createPresetCard(preset: AgentPreset): HTMLElement {
 		const card = $('div.preset-card');
 
-		// ── Card Header (always visible) ─────────────────────────────────
-		const cardHeader = $('div.preset-card-header');
+		// ── Resolve marketplace status ──
+		const slug = this._getMarketSlug(preset);
+		const serverPkg = this._marketPackages.get(slug);
+		const localVersion = this._installedVersions.get(slug);
+		const serverVersion = serverPkg?.latestVersion;
+		const isInstalled = !!localVersion;
+		const canUpgrade = this._isVersionHigher(serverVersion, localVersion);
+		const isUpgrading = this._upgradingIds.has(preset.id);
+		const isDeleting = this._deletingIds.has(preset.id);
+		const isLoading = isUpgrading || isDeleting;
 
+		// ── Status class on card ──
+		if (isLoading) { card.classList.add('loading'); }
+		else if (canUpgrade) { card.classList.add('upgradable'); }
+		else if (isInstalled) { card.classList.add('installed'); }
+
+		// ── Status bar (left vertical accent) ──
+		const statusBar = $('div.preset-status-bar');
+		card.appendChild(statusBar);
+
+		// ── Icon ──
 		const iconEl = $('div.preset-icon');
 		iconEl.textContent = preset.icon;
-		cardHeader.appendChild(iconEl);
+		card.appendChild(iconEl);
 
-		const info = $('div.preset-info');
-		const nameEl = $('div.preset-name');
+		// ── Body (name + version badge + role + skills) ──
+		const body = $('div.preset-body');
+
+		const titleRow = $('div.preset-title-row');
+
+		const nameEl = $('span.preset-name');
 		nameEl.textContent = preset.name;
-		info.appendChild(nameEl);
+		titleRow.appendChild(nameEl);
+
+		// Version badge
+		if (isInstalled || serverVersion) {
+			const verBadge = $('span.preset-version-badge');
+			if (isLoading) {
+				verBadge.textContent = isUpgrading ? '升级中...' : '卸载中...';
+				verBadge.classList.add('outdated');
+			} else if (canUpgrade) {
+				verBadge.textContent = `v${localVersion} → v${serverVersion}`;
+				verBadge.classList.add('outdated');
+			} else if (isInstalled) {
+				verBadge.textContent = `v${localVersion}`;
+				verBadge.classList.add('installed');
+			} else {
+				verBadge.textContent = `v${serverVersion}`;
+				verBadge.classList.add('remote');
+			}
+			titleRow.appendChild(verBadge);
+		}
+		body.appendChild(titleRow);
 
 		const roleEl = $('div.preset-role');
 		roleEl.textContent = preset.role;
-		info.appendChild(roleEl);
-		cardHeader.appendChild(info);
+		body.appendChild(roleEl);
 
-		// Chat button in header
-		const chatBtn = $('button.preset-header-chat-btn');
-		chatBtn.textContent = '💬';
-		chatBtn.title = `Chat with ${preset.name}`;
-		chatBtn.onclick = (e) => {
-			e.stopPropagation();
-			this._chatWithPreset(preset);
-		};
-		cardHeader.appendChild(chatBtn);
+		// Skill chips (always visible, compact)
+		if (preset.skills.length > 0) {
+			const skillsEl = $('div.preset-skills');
+			for (const skill of preset.skills.slice(0, 3)) {
+				const chip = $('span.skill-chip');
+				chip.textContent = skill;
+				skillsEl.appendChild(chip);
+			}
+			if (preset.skills.length > 3) {
+				const more = $('span.skill-chip');
+				more.textContent = `+${preset.skills.length - 3}`;
+				more.classList.add('more');
+				skillsEl.appendChild(more);
+			}
+			body.appendChild(skillsEl);
+		}
+		card.appendChild(body);
 
-		// Card header click → open agent settings in editor pane
-		cardHeader.onclick = () => {
+		// ── Actions (right side) ──
+		const actions = $('div.preset-actions');
+
+		if (isLoading) {
+			// Spinner replaces all buttons during load
+			const spinner = $('div.preset-spinner');
+			actions.appendChild(spinner);
+		} else {
+			// Upgrade button (with red dot indicator)
+			if (canUpgrade) {
+				const upgradeBtn = $('button.preset-btn.upgrade') as HTMLButtonElement;
+				upgradeBtn.textContent = '⬆';
+				upgradeBtn.title = `升级 ${preset.name} (v${localVersion} → v${serverVersion})`;
+				const dot = $('span.preset-btn-dot');
+				upgradeBtn.appendChild(dot);
+				upgradeBtn.onclick = (e) => {
+					e.stopPropagation();
+					this._upgradePreset(preset, slug, serverVersion!);
+				};
+				actions.appendChild(upgradeBtn);
+			}
+
+			// Delete button — always shown for all agents
+			const deleteBtn = $('button.preset-btn.delete') as HTMLButtonElement;
+			deleteBtn.textContent = '🗑';
+			deleteBtn.title = `删除 ${preset.name}`;
+			deleteBtn.onclick = (e) => {
+				e.stopPropagation();
+				this._deletePreset(preset, slug);
+			};
+			actions.appendChild(deleteBtn);
+
+			// Duplicate button — create a copy of this agent
+			const dupBtn = $('button.preset-btn.duplicate') as HTMLButtonElement;
+			dupBtn.textContent = '📋';
+			dupBtn.title = `复制 ${preset.name}`;
+			dupBtn.onclick = (e) => {
+				e.stopPropagation();
+				this._duplicatePreset(preset);
+			};
+			actions.appendChild(dupBtn);
+
+			// Chat button (primary)
+			const chatBtn = $('button.preset-btn.chat') as HTMLButtonElement;
+			chatBtn.textContent = '💬';
+			chatBtn.title = `与 ${preset.name} 对话`;
+			chatBtn.onclick = (e) => {
+				e.stopPropagation();
+				this._chatWithPreset(preset);
+			};
+			actions.appendChild(chatBtn);
+		}
+
+		card.appendChild(actions);
+
+		// Click anywhere on the card (except buttons) → open agent settings editor pane
+		card.onclick = () => {
 			this._openPresetEditor(preset);
 		};
-
-		card.appendChild(cardHeader);
 
 		return card;
 	}
@@ -2153,6 +2262,131 @@ export class PresetAgentViewPane extends ViewPane {
 		}
 	}
 
+	// ── Open Create Agent Pane ─────────────────────────────────────────────
+
+	private async _openCreateAgentPane(): Promise<void> {
+		try {
+			const input = AgentCreateEditorInput.getInstance();
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			await this.editorService.openEditor(input, { pinned: true }, targetGroup);
+		} catch (err) {
+			this.notificationService.error(
+				`Failed to open create agent pane: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
+	// ── Duplicate Agent ────────────────────────────────────────────────────
+
+	private async _duplicatePreset(preset: AgentPreset): Promise<void> {
+		try {
+			// Create a copy with "(副本)" suffix in the name
+			const copyName = `${preset.name} (副本)`;
+			const agentData: Partial<import('../../../../common/agentStudioTypes.js').Agent> = {
+				name: copyName,
+				role: preset.role,
+				description: preset.description,
+				icon: preset.icon,
+				model: preset.model,
+				skills: [...preset.skills],
+				tools: preset.tools ? [...preset.tools] : [],
+				category: preset.category,
+				systemPrompt: preset.systemPrompt,
+				temperature: preset.temperature,
+				source: 'custom',
+			};
+			const created = await this.agentStudioService.createAgent(agentData);
+			this.notificationService.info(`已复制为 "${copyName}"`);
+
+			// Open the settings editor for the new duplicated agent
+			const input = new AgentSettingsEditorInput(created.id, created.name);
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			await this.editorService.openEditor(input, { pinned: true }, targetGroup);
+		} catch (err) {
+			this.notificationService.error(
+				`复制 Agent 失败: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
+	// ── Upgrade / Delete (marketplace-installed agents) ──────────────────────
+
+	private async _upgradePreset(preset: AgentPreset, slug: string, version: string): Promise<void> {
+		if (this._upgradingIds.has(preset.id)) { return; }
+		this._upgradingIds.add(preset.id);
+		this._renderPresets();
+
+		try {
+			this.notificationService.info(`正在升级 "${preset.name}" 到 v${version}...`);
+			await this.marketplaceService.download(slug, version, 'agent' as PackageKind);
+			// Update local version tracking
+			this._installedVersions.set(slug, version);
+			this.notificationService.info(`"${preset.name}" 已升级到 v${version}`);
+		} catch (err) {
+			this.notificationService.error(
+				`升级 "${preset.name}" 失败: ${err instanceof Error ? err.message : String(err)}`
+			);
+		} finally {
+			this._upgradingIds.delete(preset.id);
+			this._renderPresets();
+		}
+	}
+
+	private async _deletePreset(preset: AgentPreset, slug: string): Promise<void> {
+		if (this._deletingIds.has(preset.id)) { return; }
+
+		const localVersion = this._installedVersions.get(slug);
+		const isInstalled = !!localVersion;
+
+		// Confirm before deleting
+		const confirmed = await this.dialogService.confirm({
+			message: `确定要删除 "${preset.name}" 吗？`,
+			detail: isInstalled
+				? `这将从本地移除已安装的智能体 (v${localVersion})。\n该操作不可撤销。`
+				: `这将删除该 Agent 的定义和相关文件。\n该操作不可撤销。`,
+			primaryButton: '删除',
+			cancelButton: '取消',
+		});
+		if (!confirmed.confirmed) { return; }
+
+		this._deletingIds.add(preset.id);
+		this._renderPresets();
+
+		try {
+			// If installed from marketplace, uninstall it
+			if (isInstalled) {
+				await this.marketplaceService.uninstall(slug, 'agent' as PackageKind);
+				this._installedVersions.delete(slug);
+			}
+
+			// Also delete the agent from the service (removes custom-agents.json + agent dir)
+			try {
+				await this.agentStudioService.deleteAgent(preset.id);
+			} catch {
+				// Agent may be a builtin that can't be deleted — ignore
+			}
+
+			// Remove from local customPresets if present
+			const idx = this.customPresets.findIndex(p => p.id === preset.id);
+			if (idx >= 0) {
+				this.customPresets.splice(idx, 1);
+				await this._saveCustomPresets();
+			}
+
+			this._updateCustomTabCount();
+			this.notificationService.info(`"${preset.name}" 已删除`);
+		} catch (err) {
+			this.notificationService.error(
+				`删除 "${preset.name}" 失败: ${err instanceof Error ? err.message : String(err)}`
+			);
+		} finally {
+			this._deletingIds.delete(preset.id);
+			this._renderPresets();
+		}
+	}
+
 	// ── Custom Preset CRUD ───────────────────────────────────────────────────
 
 	private async _loadCustomPresets(): Promise<void> {
@@ -2194,6 +2428,48 @@ export class PresetAgentViewPane extends ViewPane {
 		this.customPresets = [];
 	}
 
+	/**
+	 * Load custom agents from the AgentStudioService and merge them into the
+	 * customPresets list. Called on init and whenever onDidChangeAgents fires.
+	 * Agents from the service (custom-agents.json) are converted to AgentPreset
+	 * format and merged with presets from presets.json, avoiding duplicates by ID.
+	 */
+	private async _loadCustomAgentsFromService(): Promise<void> {
+		try {
+			const agents = await this.agentStudioService.getAgents();
+			const customAgents = agents.filter(a => a.source === 'custom');
+
+			// Convert Agent[] to AgentPreset[] format
+			const servicePresets: AgentPreset[] = customAgents.map(a => ({
+				id: a.id,
+				name: a.name,
+				role: a.role,
+				description: a.description || '',
+				icon: a.icon || '🤖',
+				model: a.model || '',
+				skills: a.skills || [],
+				tools: a.tools,
+				category: (a.category as PresetCategory) || 'Development',
+				systemPrompt: a.systemPrompt,
+				temperature: a.temperature,
+			}));
+
+			// Load local presets from presets.json first (if not yet loaded)
+			await this._loadCustomPresets();
+
+			// Merge: service presets take precedence, but keep presets.json-only entries
+			const serviceIds = new Set(servicePresets.map(p => p.id));
+			const localOnly = this.customPresets.filter(p => !serviceIds.has(p.id));
+			this.customPresets = [...servicePresets, ...localOnly];
+
+			// Update tab count and re-render
+			this._updateCustomTabCount();
+			this._renderPresets();
+		} catch (err) {
+			console.warn('[PresetAgentView] Failed to load custom agents from service:', err);
+		}
+	}
+
 	private async _saveCustomPresets(): Promise<void> {
 		try {
 			const presetsUri = this._getCustomPresetsUri();
@@ -2231,253 +2507,11 @@ export class PresetAgentViewPane extends ViewPane {
 	}
 
 	private _updateCustomTabCount(): void {
-		const tab = this.element?.querySelectorAll('.preset-tab')[1];
-		if (tab) {
-			tab.textContent = `Custom (${this.customPresets.length})`;
-		}
 		// Update total count
 		const countBadge = this.element?.querySelector('.preset-count');
 		if (countBadge) {
 			countBadge.textContent = `${BUILTIN_PRESETS.length + this.customPresets.length} presets`;
 		}
-	}
-
-	// ── Create / Edit Dialog ─────────────────────────────────────────────────
-
-	private _openCreateDialog(): void {
-		this._showPresetDialog(null);
-	}
-
-	private _showPresetDialog(existingPreset: AgentPreset | null): void {
-		// Remove any existing dialog
-		this._closeDialog();
-
-		const isEdit = existingPreset !== null;
-		const overlay = $('div.preset-dialog-overlay');
-		this.dialogOverlay = overlay;
-
-		const dialog = $('div.preset-dialog');
-
-		// Title
-		const title = $('div.preset-dialog-title');
-		title.textContent = isEdit ? 'Edit Custom Preset' : 'Create Custom Preset';
-		dialog.appendChild(title);
-
-		// Form fields
-		const form = $('div.preset-dialog-form');
-
-		// Name
-		const nameField = this._createFormField('Name', 'text', existingPreset?.name ?? '', 'e.g. Code Reviewer');
-		form.appendChild(nameField);
-
-		// Role
-		const roleField = this._createFormField('Role', 'text', existingPreset?.role ?? '', 'e.g. Senior Code Reviewer');
-		form.appendChild(roleField);
-
-		// Icon (emoji picker simplified)
-		const iconRow = $('div.preset-dialog-field');
-		const iconLabel = $('label.preset-dialog-label');
-		iconLabel.textContent = 'Icon';
-		iconRow.appendChild(iconLabel);
-		const iconInput = document.createElement('input');
-		iconInput.type = 'text';
-		iconInput.className = 'preset-dialog-input preset-dialog-input-icon';
-		iconInput.value = existingPreset?.icon ?? '🔧';
-		iconInput.maxLength = 4;
-		iconRow.appendChild(iconInput);
-		form.appendChild(iconRow);
-
-		// Description
-		const descField = this._createTextAreaField('Description', existingPreset?.description ?? '', 'Describe what this agent does...');
-		form.appendChild(descField);
-
-		// Model
-		const modelRow = $('div.preset-dialog-field');
-		const modelLabel = $('label.preset-dialog-label');
-		modelLabel.textContent = 'Model';
-		modelRow.appendChild(modelLabel);
-		const modelSelect = document.createElement('select');
-		modelSelect.className = 'preset-dialog-select';
-		for (const m of AVAILABLE_MODELS) {
-			const opt = document.createElement('option');
-			opt.value = m.id;
-			opt.textContent = m.label;
-			if (m.id === (existingPreset?.model ?? 'claude-sonnet-4-20250514')) {
-				opt.selected = true;
-			}
-			modelSelect.appendChild(opt);
-		}
-		modelRow.appendChild(modelSelect);
-		form.appendChild(modelRow);
-
-		// Temperature
-		const tempField = this._createFormField('Temperature', 'number', String(existingPreset?.temperature ?? 0.3), '0.0 - 1.0');
-		form.appendChild(tempField);
-
-		// Skills (multi-select chips)
-		const skillsRow = $('div.preset-dialog-field');
-		const skillsLabel = $('label.preset-dialog-label');
-		skillsLabel.textContent = 'Skills';
-		skillsRow.appendChild(skillsLabel);
-		const skillsChips = $('div.preset-dialog-skills-chips');
-		const selectedSkills = new Set(existingPreset?.skills ?? []);
-		for (const skill of AVAILABLE_SKILLS) {
-			const chip = $('button.preset-skill-chip');
-			chip.textContent = skill;
-			if (selectedSkills.has(skill)) { chip.classList.add('selected'); }
-			chip.onclick = (e) => {
-				e.preventDefault();
-				chip.classList.toggle('selected');
-			};
-			skillsChips.appendChild(chip);
-		}
-		skillsRow.appendChild(skillsChips);
-		form.appendChild(skillsRow);
-
-		// Tools (multi-select chips — real tool binding)
-		const toolsRow = $('div.preset-dialog-field');
-		const toolsLabel = $('label.preset-dialog-label');
-		toolsLabel.textContent = 'Tools';
-		toolsRow.appendChild(toolsLabel);
-		const toolsHint = $('span.preset-dialog-hint');
-		toolsHint.textContent = 'Controls which toolsets the agent can actually invoke (unlike Skills which are descriptive labels)';
-		toolsRow.appendChild(toolsHint);
-		const toolsChips = $('div.preset-dialog-skills-chips');
-		const selectedTools = new Set(existingPreset?.tools ?? []);
-		for (const tool of AVAILABLE_TOOLS) {
-			const chip = $('button.preset-skill-chip');
-			chip.textContent = tool.id;
-			chip.title = tool.description;
-			if (selectedTools.has(tool.id)) { chip.classList.add('selected'); }
-			chip.onclick = (e) => {
-				e.preventDefault();
-				chip.classList.toggle('selected');
-			};
-			toolsChips.appendChild(chip);
-		}
-		toolsRow.appendChild(toolsChips);
-		form.appendChild(toolsRow);
-
-		// System Prompt
-		const promptField = this._createTextAreaField('System Prompt', existingPreset?.systemPrompt ?? '', 'Define the agent\'s behavior and persona...');
-		form.appendChild(promptField);
-
-		dialog.appendChild(form);
-
-		// Actions
-		const actions = $('div.preset-dialog-actions');
-		const cancelBtn = $('button.preset-dialog-btn-cancel');
-		cancelBtn.textContent = 'Cancel';
-		cancelBtn.onclick = () => this._closeDialog();
-		actions.appendChild(cancelBtn);
-
-		const saveBtn = $('button.preset-dialog-btn-save');
-		saveBtn.textContent = isEdit ? 'Save Changes' : 'Create Preset';
-		saveBtn.onclick = () => {
-			const name = (nameField.querySelector('input') as HTMLInputElement).value.trim();
-			const role = (roleField.querySelector('input') as HTMLInputElement).value.trim();
-			const icon = iconInput.value.trim() || '🔧';
-			const description = (descField.querySelector('textarea') as HTMLTextAreaElement).value.trim();
-			const model = modelSelect.value;
-			const temperature = parseFloat((tempField.querySelector('input') as HTMLInputElement).value) || 0.3;
-			const skills = Array.from(skillsChips.querySelectorAll('.preset-skill-chip.selected'))
-				.map(c => c.textContent ?? '');
-			const tools = Array.from(toolsChips.querySelectorAll('.preset-skill-chip.selected'))
-				.map(c => c.textContent ?? '');
-			const systemPrompt = (promptField.querySelector('textarea') as HTMLTextAreaElement).value.trim();
-
-			if (!name) {
-				this.notificationService.warn('Preset name is required');
-				return;
-			}
-			if (!role) {
-				this.notificationService.warn('Preset role is required');
-				return;
-			}
-
-			if (isEdit && existingPreset) {
-				const idx = this.customPresets.findIndex(p => p.id === existingPreset.id);
-				if (idx >= 0) {
-					this.customPresets[idx] = {
-						...existingPreset,
-						name, role, icon, description, model,
-						temperature: Math.max(0, Math.min(1, temperature)),
-						skills, tools: tools.length > 0 ? tools : undefined, systemPrompt,
-					};
-				}
-			} else {
-				const newPreset: AgentPreset = {
-					id: `custom-${Date.now()}`,
-					name, role, icon, description, model,
-					temperature: Math.max(0, Math.min(1, temperature)),
-					skills, tools: tools.length > 0 ? tools : undefined, systemPrompt,
-					category: 'Development', // default category for custom
-				};
-				this.customPresets.push(newPreset);
-			}
-
-			this._saveCustomPresets(); // fire-and-forget async save
-			this._updateCustomTabCount();
-			this._renderPresets();
-			this._closeDialog();
-			this.notificationService.info(isEdit ? 'Preset updated' : 'Custom preset created');
-		};
-		actions.appendChild(saveBtn);
-		dialog.appendChild(actions);
-
-		overlay.appendChild(dialog);
-		overlay.onclick = (e) => {
-			if (e.target === overlay) { this._closeDialog(); }
-		};
-
-		// Mount dialog to the view container
-		const viewEl = this.element;
-		if (viewEl) {
-			viewEl.appendChild(overlay);
-		}
-	}
-
-	private _closeDialog(): void {
-		if (this.dialogOverlay) {
-			this.dialogOverlay.remove();
-			this.dialogOverlay = null;
-		}
-	}
-
-	private _createFormField(label: string, type: string, value: string, placeholder: string): HTMLElement {
-		const field = $('div.preset-dialog-field');
-		const labelEl = $('label.preset-dialog-label');
-		labelEl.textContent = label;
-		field.appendChild(labelEl);
-
-		const input = document.createElement('input');
-		input.type = type;
-		input.className = 'preset-dialog-input';
-		input.value = value;
-		input.placeholder = placeholder;
-		if (type === 'number') {
-			input.min = '0';
-			input.max = '1';
-			input.step = '0.1';
-			input.className += ' preset-dialog-input-number';
-		}
-		field.appendChild(input);
-		return field;
-	}
-
-	private _createTextAreaField(label: string, value: string, placeholder: string): HTMLElement {
-		const field = $('div.preset-dialog-field');
-		const labelEl = $('label.preset-dialog-label');
-		labelEl.textContent = label;
-		field.appendChild(labelEl);
-
-		const textarea = document.createElement('textarea');
-		textarea.className = 'preset-dialog-textarea';
-		textarea.value = value;
-		textarea.placeholder = placeholder;
-		textarea.rows = 3;
-		field.appendChild(textarea);
-		return field;
 	}
 
 	// ── Layout ───────────────────────────────────────────────────────────────

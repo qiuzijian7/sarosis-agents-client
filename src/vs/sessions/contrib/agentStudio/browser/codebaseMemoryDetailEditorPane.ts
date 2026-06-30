@@ -21,6 +21,7 @@ import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput
 import { ICodebaseMemoryMcpService, IIndexConfig } from './codebaseMemoryMcpService.js';
 import { ICodebaseGraphService, IGraphStatus } from './codebaseGraphService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 
 const CSS_TEXT = `
 .cbm-container { padding: 24px 28px 48px; overflow-y: auto; height: 100%; box-sizing: border-box; font-size: 13px; color: var(--vscode-foreground); max-width: 900px; margin: 0 auto; }
@@ -55,8 +56,12 @@ const CSS_TEXT = `
 .cbm-stat-card .stat-label { font-size: 10px; color: var(--vscode-descriptionForeground); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
 .cbm-stat-card .stat-sub { font-size: 10px; color: var(--vscode-descriptionForeground); opacity: 0.7; margin-top: 2px; }
 .cbm-section { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); border-radius: 10px; margin-bottom: 12px; overflow: hidden; }
-.cbm-section-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--vscode-widget-border); background: rgba(255,255,255,0.02); }
+.cbm-section-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--vscode-widget-border); background: rgba(255,255,255,0.02); cursor: pointer; user-select: none; }
+.cbm-section-header:hover { background: rgba(255,255,255,0.05); }
 .cbm-section-header h2 { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.cbm-section-header .cbm-collapse-arrow { font-size: 10px; color: var(--vscode-descriptionForeground); transition: transform 0.15s ease; margin-right: 4px; }
+.cbm-section.collapsed .cbm-collapse-arrow { transform: rotate(-90deg); }
+.cbm-section.collapsed .cbm-section-body { display: none; }
 .cbm-section-header .badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
 .cbm-section-header .badge.accent { background: rgba(128,160,255,0.15); color: #80a0ff; }
 .cbm-section-header .badge.warn { background: rgba(220,220,170,0.15); color: #dcdcaa; }
@@ -95,6 +100,16 @@ const CSS_TEXT = `
 .cbm-log-line.warn { color: #dcdcaa; }
 .cbm-log-line.info { color: #569cd6; }
 .cbm-log-empty { color: var(--vscode-descriptionForeground); font-style: italic; }
+.cbm-section-log { background: var(--vscode-terminal-background, #1a1a28); border: 1px solid var(--vscode-widget-border); border-radius: 6px; padding: 8px 12px; font-family: var(--vscode-terminal-font-family, monospace); font-size: 11px; line-height: 1.6; max-height: 180px; overflow-y: auto; margin-top: 10px; display: none; }
+.cbm-section-log.visible { display: block; }
+.cbm-section-log .log-line { color: var(--vscode-terminal-foreground, #ccc); white-space: pre-wrap; word-break: break-all; }
+.cbm-section-log .log-line.success { color: #4ec9b0; }
+.cbm-section-log .log-line.error { color: #f48771; }
+.cbm-section-log .log-line.warn { color: #dcdcaa; }
+.cbm-section-log .log-line.info { color: #569cd6; }
+.cbm-progress-bar { height: 4px; background: var(--vscode-input-background); border-radius: 2px; overflow: hidden; margin-top: 8px; display: none; }
+.cbm-progress-bar.visible { display: block; }
+.cbm-progress-bar-fill { height: 100%; background: linear-gradient(90deg, #80a0ff, #c586c0); border-radius: 2px; transition: width 0.3s ease; width: 0%; }
 .cbm-lang-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 .cbm-lang-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
 .cbm-lang-badge.ts { background: rgba(86,156,214,0.15); color: #569cd6; }
@@ -129,6 +144,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		@ICodebaseMemoryMcpService private readonly cbmService: ICodebaseMemoryMcpService,
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 		super(CodebaseMemoryDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -162,47 +178,80 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 
 	private async _renderAll(): Promise<void> {
 		if (!this._container) { return; }
+		const t0 = Date.now();
+		this._logService.info('[CodebaseMemory]', `[render] start`);
+
 		const styleEl = this._container.querySelector('style');
 		clearNode(this._container);
 		if (styleEl) { this._container.appendChild(styleEl); }
 
-		// Fetch graph status (lightweight, no full array creation)
-		this._graphStatus = await this._graphService.getGraphStatus();
-		const hasData = this._graphService.hasGraphData();
-		const schema = hasData ? this._graphService.getGraphSchema() : null;
-		const indexStatus = hasData ? this._graphService.getIndexStatus() : null;
-		const isIndexing = this._graphService.isIndexing;
-
+		// 先渲染一个 loading 占位
 		this._content = append(this._container, $('div'));
+		this._content.style.cssText = 'padding:40px;text-align:center;color:var(--vscode-descriptionForeground);';
+		this._content.textContent = '⏳ 加载中...';
+		await this._yieldToUI();
+
+		// Fetch graph status (异步 I/O)
+		const tStatus = Date.now();
+		this._graphStatus = await this._graphService.getGraphStatus();
+		this._logService.info('[CodebaseMemory]', `[render] getGraphStatus: exists=${this._graphStatus.exists} (${Date.now() - tStatus}ms)`);
+
+		const hasData = this._graphService.hasGraphData();
+		this._logService.info('[CodebaseMemory]', `[render] hasGraphData=${hasData}`);
+
+		// 清除 loading，开始渲染实际内容
+		clearNode(this._content);
+		this._content.style.cssText = '';
 
 		// Header
-		this._renderHeader(isIndexing);
+		this._renderHeader(this._graphService.isIndexing);
 
-		// Stats dashboard (only when graph exists)
-		if (this._graphStatus.exists && hasData && schema && indexStatus) {
-			this._renderStats(schema, indexStatus);
-		}
+		// 同步 CPU 操作之间 yield
+		const isIndexing = this._graphService.isIndexing;
 
-		// Index config section
-		this._renderIndexConfig();
+		if (this._graphStatus.exists && hasData) {
+			await this._yieldToUI();
+			const tSchema = Date.now();
+			const schema = this._graphService.getGraphSchema();
+			this._logService.info('[CodebaseMemory]', `[render] getGraphSchema: ${schema.totalNodes} nodes, ${schema.totalEdges} edges (${Date.now() - tSchema}ms)`);
 
-		// Graph details section (only when graph exists)
-		if (this._graphStatus.exists && schema) {
-			this._renderGraphDetails(schema);
-			// Architecture analysis — deferred for large graphs to avoid UI freeze
-			// analyzeArchitecture() iterates all nodes+edges multiple times (~5-10s for 250k nodes)
-			if (schema.totalNodes < 50000) {
-				this._renderArchitecture();
-			} else {
-				// Show placeholder, defer analysis
-				this._renderArchitectureDeferred();
+			await this._yieldToUI();
+			const tIdx = Date.now();
+			const indexStatus = this._graphService.getIndexStatus();
+			this._logService.info('[CodebaseMemory]', `[render] getIndexStatus (${Date.now() - tIdx}ms)`);
+
+			// Stats dashboard
+			if (schema && indexStatus) {
+				this._renderStats(schema, indexStatus);
 			}
+
+			// Index config section
+			this._renderIndexConfig();
+
+			// Graph details section
+			this._renderGraphDetails(schema);
+
+			// Architecture analysis — deferred for large graphs to avoid UI freeze
+			// analyzeArchitecture() iterates all nodes+edges multiple times
+			// 阈值：节点 < 10k 且 边 < 50k 才同步计算，否则延迟
+			const isLargeGraph = schema.totalNodes >= 10000 || schema.totalEdges >= 50000;
+			if (isLargeGraph) {
+				this._renderArchitectureDeferred(schema.totalNodes, schema.totalEdges);
+			} else {
+				await this._yieldToUI();
+				const tArch = Date.now();
+				this._renderArchitecture();
+				this._logService.info('[CodebaseMemory]', `[render] renderArchitecture (${Date.now() - tArch}ms)`);
+			}
+
 			// Query console
 			this._renderQueryConsole();
 			// Analysis tools (P3 API)
 			this._renderAnalysisTools();
 			// Project management (multi-project)
 			this._renderProjectManager();
+		} else {
+			this._renderIndexConfig();
 		}
 
 		// Indexing progress section (only when indexing)
@@ -212,9 +261,16 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 
 		// Activity log
 		this._renderLogSection();
-
-		// Render existing log lines
 		this._renderLog();
+
+		this._logService.info('[CodebaseMemory]', `[render] done (${Date.now() - t0}ms)`);
+	}
+
+	/** Yield 到 UI 线程：让浏览器有机会渲染 DOM */
+	private _yieldToUI(): Promise<void> {
+		return new Promise<void>(resolve => {
+			requestAnimationFrame(() => setTimeout(resolve, 0));
+		});
 	}
 
 	// ─── Header ───────────────────────────────────────────────────────────
@@ -236,6 +292,42 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		statusEl.classList.add(statusCls);
 		append(statusEl, $('.dot'));
 		append(statusEl, $('.text')).textContent = statusText;
+	}
+
+	// ─── Section helpers ─────────────────────────────────────────────────
+
+	/** 创建可折叠的 section，返回 { section, body, logEl } */
+	private _createCollapsibleSection(title: string, icon: string, badgeText?: string, badgeCls?: string): { section: HTMLElement; body: HTMLElement; logEl: HTMLElement } {
+		const section = append(this._content!, $('.cbm-section'));
+		const header = append(section, $('.cbm-section-header'));
+		const arrow = append(header, $('.cbm-collapse-arrow'));
+		arrow.textContent = '▼';
+		const h2 = append(header, $('h2'));
+		h2.textContent = `${icon} ${title}`;
+		if (badgeText) {
+			const badge = append(header, $(`.badge.${badgeCls || 'accent'}`));
+			badge.textContent = badgeText;
+		}
+		const body = append(section, $('.cbm-section-body'));
+		const logEl = append(body, $('.cbm-section-log'));
+
+		// 折叠/展开
+		header.addEventListener('click', (e) => {
+			// 不折叠点击按钮/输入框区域
+			if ((e.target as HTMLElement).tagName === 'BUTTON' || (e.target as HTMLElement).tagName === 'INPUT') { return; }
+			section.classList.toggle('collapsed');
+		});
+
+		return { section, body, logEl };
+	}
+
+	/** 向 section log 添加日志行 */
+	private _appendSectionLog(logEl: HTMLElement, text: string, cls: string = ''): void {
+		const line = append(logEl, $('.log-line' + (cls ? '.' + cls : '')));
+		const time = new Date().toLocaleTimeString();
+		line.textContent = `[${time}] ${text}`;
+		logEl.classList.add('visible');
+		logEl.scrollTop = logEl.scrollHeight;
 	}
 
 	// ─── Stats Dashboard ──────────────────────────────────────────────────
@@ -276,13 +368,11 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		if (!this._content) { return; }
 		const config = this.cbmService.getIndexConfig();
 
-		const section = append(this._content, $('.cbm-section'));
-		const header = append(section, $('.cbm-section-header'));
-		append(header, $('h2')).textContent = '⚙️ Index Configuration';
-		const badge = append(header, $('.badge.accent'));
-		badge.textContent = config.mode.toUpperCase();
+		const { section, body, logEl } = this._createCollapsibleSection('Index Configuration', '⚙️', config.mode.toUpperCase(), 'accent');
+		const badge = section.querySelector('.badge')!;
 
-		const body = append(section, $('.cbm-section-body'));
+		// 日志栏移到 body 最后（在所有配置元素之后）
+		logEl.remove(); // 从当前位置移除
 
 		// Mode segmented control
 		const modeRow = append(body, $('.cbm-config-row'));
@@ -323,10 +413,15 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		const exclInput = append(exclRow, $('input.cbm-input')) as HTMLInputElement;
 		exclInput.type = 'text';
 		exclInput.value = config.excludeDirs.join(', ');
-		exclInput.placeholder = 'node_modules, .git, build, out, dist';
+		exclInput.placeholder = 'node_modules, .git, build, out, dist, Intermediate, Saved, Binaries';
 
 		// Action buttons
 		const btnGroup = append(body, $('.cbm-btn-group'));
+
+		// 进度条 + 日志栏（放在 button group 之后，body 末尾）
+		const progressEl = append(body, $('.cbm-progress-bar'));
+		const progressFill = append(progressEl, $('.cbm-progress-bar-fill'));
+		body.appendChild(logEl); // 日志栏移到末尾
 
 		// Index button (primary)
 		const indexBtn = append(btnGroup, $('.cbm-btn.primary')) as HTMLButtonElement;
@@ -348,23 +443,68 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			};
 			this.cbmService.setIndexConfig(newConfig);
 
+			// 清空日志，显示进度（用 clearNode 而非 innerHTML，避免 TrustedHTML 策略阻止）
+			clearNode(logEl);
+			progressEl.classList.add('visible');
+			progressFill.style.width = '0%';
+			section.classList.remove('collapsed');
+
 			indexBtn.textContent = '✗ Cancel Index';
 			indexBtn.title = 'Click to cancel indexing';
-			this._appendLogLine('▶ 开始索引代码库...');
+			this._appendSectionLog(logEl, '▶ 开始索引代码库...', 'info');
+
 			const folders = this._workspaceService.getWorkspace().folders;
 			if (folders.length === 0) {
-				this._appendLogLine('✗ 未打开工作区');
+				this._appendSectionLog(logEl, '✗ 未打开工作区', 'error');
+				progressEl.classList.remove('visible');
+				indexBtn.disabled = false;
+				indexBtn.textContent = '🔍 Index Codebase';
 				return;
 			}
 			const wsPath = folders[0].uri.fsPath;
-			const result = await this._graphService.indexWorkspace(wsPath, newConfig);
-			if (result.success) {
-				this.notificationService.info(`索引完成 (${result.duration}s)`);
-				this._appendLogLine(`✓ 索引完成: ${result.message} (${result.duration}s)`);
-			} else {
-				this.notificationService.warn(result.message);
-				this._appendLogLine(`✗ ${result.message}`);
+			this._appendSectionLog(logEl, `📁 工作区: ${wsPath}`);
+
+			// 订阅索引进度
+			let progressReceived = 0;
+			const progressDisposable = this._graphService.onDidIndexProgress(line => {
+				progressReceived++;
+				this._appendSectionLog(logEl, line);
+				// 从进度文字提取百分比：如 "解析中 (50/100) 50%"
+				const pctMatch = line.match(/(\d+)%/);
+				if (pctMatch) {
+					progressFill.style.width = pctMatch[1] + '%';
+				} else {
+					// 从 (N/total) 格式计算百分比
+					const match = line.match(/\((\d+)\/(\d+)\)/);
+					if (match) {
+						const pct = Math.min(100, Math.round(parseInt(match[1]) / parseInt(match[2]) * 100));
+						progressFill.style.width = pct + '%';
+					}
+				}
+			});
+
+			this._appendSectionLog(logEl, `📋 配置: mode=${newConfig.mode}, subPath=${newConfig.subPath || '(全部)'}, excludeDirs=${newConfig.excludeDirs.length}项`);
+			this._appendSectionLog(logEl, `▶ 调用 indexWorkspace...`);
+
+			try {
+				const result = await this._graphService.indexWorkspace(wsPath, newConfig);
+				progressDisposable.dispose();
+				this._appendSectionLog(logEl, `📊 进度事件收到 ${progressReceived} 条`);
+				if (result.success) {
+					this.notificationService.info(`索引完成 (${result.duration}s)`);
+					this._appendSectionLog(logEl, `✓ ${result.message} (${result.duration}s)`, 'success');
+					progressFill.style.width = '100%';
+					// 刷新整个面板
+					setTimeout(() => this._renderAll(), 500);
+				} else {
+					this.notificationService.warn(result.message);
+					this._appendSectionLog(logEl, `✗ ${result.message}`, 'error');
+				}
+			} catch (err: any) {
+				progressDisposable.dispose();
+				this._appendSectionLog(logEl, `✗ 索引异常: ${err?.message || err}`, 'error');
 			}
+
 			indexBtn.disabled = false;
 			indexBtn.textContent = '🔍 Index Codebase';
 			indexBtn.title = 'Scan and index current codebase';
@@ -391,13 +531,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	private _renderGraphDetails(schema: { nodeLabels: { label: string; count: number }[]; edgeTypes: { type: string; count: number }[]; totalNodes: number; totalEdges: number }): void {
 		if (!this._content || !this._graphStatus) { return; }
 
-		const section = append(this._content, $('.cbm-section'));
-		const header = append(section, $('.cbm-section-header'));
-		append(header, $('h2')).textContent = '📊 Graph Details';
-		const badge = append(header, $('.badge.green'));
-		badge.textContent = this._graphStatus.size ? this._formatSize(this._graphStatus.size) : 'graph.json';
-
-		const body = append(section, $('.cbm-section-body'));
+		const sizeText = this._graphStatus.size ? this._formatSize(this._graphStatus.size) : 'graph.json';
+		const { body } = this._createCollapsibleSection('Graph Details', '📊', sizeText, 'green');
 
 		// Node/edge type breakdown from schema (no array iteration needed)
 		const nodeTypesStr = schema.nodeLabels
@@ -458,13 +593,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		try { report = this._graphService.getArchitecture(); } catch { return; }
 		if (!report || report.totalNodes === 0) { return; }
 
-		const section = append(this._content, $('.cbm-section'));
-		const header = append(section, $('.cbm-section-header'));
-		append(header, $('h2')).textContent = '🏗️ Architecture';
-		const badge = append(header, $('.badge.green'));
-		badge.textContent = `${report.communities?.length || 0} communities`;
-
-		const body = append(section, $('.cbm-section-body'));
+		const { body, section } = this._createCollapsibleSection('Architecture', '🏗️', `${report.communities?.length || 0} communities`, 'green');
+		section.classList.add('collapsed'); // 默认折叠
 
 		// Languages
 		if (report.languages && report.languages.length > 0) {
@@ -515,18 +645,14 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	}
 
 	/** 大图架构分析：显示占位符，异步延迟计算 */
-	private _renderArchitectureDeferred(): void {
+	private _renderArchitectureDeferred(nodeCount: number, edgeCount: number): void {
 		if (!this._content) { return; }
-		const section = append(this._content, $('.cbm-section'));
-		const header = append(section, $('.cbm-section-header'));
-		append(header, $('h2')).textContent = '🏗️ Architecture';
-		const badge = append(header, $('.badge.warn'));
-		badge.textContent = 'Deferred';
+		const { body, section } = this._createCollapsibleSection('Architecture', '🏗️', 'Deferred', 'warn');
+		section.classList.add('collapsed'); // 默认折叠
 
-		const body = append(section, $('.cbm-section-body'));
 		const placeholder = append(body, $('div'));
 		placeholder.style.cssText = 'color:var(--vscode-descriptionForeground);font-size:12px;padding:8px 0;';
-		placeholder.textContent = '⏳ Architecture analysis deferred for large graphs (>50k nodes). Click to compute.';
+		placeholder.textContent = `⏳ Architecture analysis deferred for large graphs (${nodeCount} nodes, ${edgeCount} edges). Click to compute.`;
 
 		const computeBtn = append(body, $('.cbm-btn')) as HTMLButtonElement;
 		computeBtn.textContent = '🔍 Compute Now';
@@ -551,11 +677,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	private _renderQueryConsole(): void {
 		if (!this._content) { return; }
 
-		const section = append(this._content, $('.cbm-section'));
-		const header = append(section, $('.cbm-section-header'));
-		append(header, $('h2')).textContent = '🔍 Query Console';
-
-		const body = append(section, $('.cbm-section-body'));
+		const { body, section } = this._createCollapsibleSection('Query Console', '🔍');
+		section.classList.add('collapsed'); // 默认折叠
 
 		// Query input
 		const inputRow = append(body, $('.cbm-config-row'));
@@ -672,11 +795,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	private _renderAnalysisTools(): void {
 		if (!this._content) { return; }
 
-		const section = append(this._content, $('.cbm-section'));
-		const header = append(section, $('.cbm-section-header'));
-		append(header, $('h2')).textContent = '🔬 Analysis Tools';
-
-		const body = append(section, $('.cbm-section-body'));
+		const { body, section } = this._createCollapsibleSection('Analysis Tools', '🔬');
+		section.classList.add('collapsed'); // 默认折叠
 
 		// Trace Path
 		const traceRow = append(body, $('.cbm-config-row'));
@@ -856,11 +976,8 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 	private _renderProjectManager(): void {
 		if (!this._content) { return; }
 
-		const section = append(this._content, $('.cbm-section'));
-		const header = append(section, $('.cbm-section-header'));
-		append(header, $('h2')).textContent = '📁 Projects';
-
-		const body = append(section, $('.cbm-section-body'));
+		const { body, section } = this._createCollapsibleSection('Projects', '📁');
+		section.classList.add('collapsed'); // 默认折叠
 
 		try {
 			const projects = this._graphService.listProjects();

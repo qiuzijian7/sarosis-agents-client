@@ -15,7 +15,7 @@
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IAgentOSService } from '../common/agentOS.js';
+import { IAgentOSService, IAgentOSDashboardStats } from '../common/agentOS.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { ICodebaseGraphService } from './codebaseGraphService.js';
 import type { AgentStudioSession } from '../../../common/agentStudioTypes.js';
@@ -69,18 +69,18 @@ export interface IDashboardMemoryStat {
 	total: number;
 	/** Working (Working) — working 记忆 */
 	working: number;
-	/** Episodic (Episodic) — episodic 记忆（Episodic 自动提取） */
+	/** Episodic (L1) — long_term 记忆（L1 自动提取） */
 	episodic: number;
-	/** Semantic (Semantic) — scene 场景记忆（Semantic 提取） */
+	/** Semantic (L2) — scene 场景记忆（L2 场景提取） */
 	semantic: number;
-	/** Procedural (Procedural) — persona 人格记忆（Procedural 生成） */
+	/** Procedural (L3) — persona 人格记忆（L3 人格生成） */
 	procedural: number;
-	/** Episodic Episodic 提取触发次数 */
-	episodicExtractionCount: number;
-	/** Semantic Semantic 提取触发次数 */
-	semanticExtractionCount: number;
-	/** Procedural Procedural 生成触发次数 */
-	proceduralExtractionCount: number;
+	/** L1 Episodic 提取触发次数 */
+	l1ExtractionCount: number;
+	/** L2 Semantic 提取触发次数 */
+	l2ExtractionCount: number;
+	/** L3 Procedural 生成触发次数 */
+	l3ExtractionCount: number;
 	/** 记忆图谱节点数 */
 	graphNodes: number;
 	/** 记忆图谱边数 */
@@ -118,11 +118,15 @@ export interface IDashboardData {
 	lastUpdated: number;
 }
 
+export type DashboardDateRange = 'today' | '7d' | '30d' | 'all';
+
 export interface IAgentStudioDashboardService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeData: Event<IDashboardData>;
 	getData(): IDashboardData;
 	refresh(): Promise<IDashboardData>;
+	setDateRange(range: DashboardDateRange): void;
+	getDateRange(): DashboardDateRange;
 }
 
 // ─── Implementation ─────────────────────────────────────────────────────
@@ -135,6 +139,7 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 	readonly onDidChangeData = this._onDidChangeData.event;
 
 	private _cachedData: IDashboardData | undefined;
+	private _dateRange: DashboardDateRange = '7d';
 
 	constructor(
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
@@ -151,36 +156,86 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 	}
 
 	async refresh(): Promise<IDashboardData> {
+		console.info('[Dashboard] refresh() started');
 		try {
 			this._cachedData = await this._buildData();
+			console.info('[Dashboard] refresh() success:', {
+				sessions: this._cachedData.sessions.length,
+				kpis: this._cachedData.kpis.length,
+				skills: this._cachedData.skills.length,
+				alerts: this._cachedData.alerts.length,
+				totalTokens: this._cachedData.kpis[1]?.value ?? '0',
+				memoryTotal: this._cachedData.memory.total,
+				graphNodes: this._cachedData.graphStats.nodes,
+			});
 		} catch (err) {
-			// 出错时保留上次数据
-			console.warn('[Dashboard] refresh failed:', err);
+			console.warn('[Dashboard] refresh() FAILED:', err);
 		}
 		const data = this._cachedData ?? this._emptyData();
 		this._onDidChangeData.fire(data);
+		console.info('[Dashboard] onDidChangeData fired');
 		return data;
+	}
+
+	setDateRange(range: DashboardDateRange): void {
+		this._dateRange = range;
+		console.info('[Dashboard] setDateRange:', range);
+	}
+
+	getDateRange(): DashboardDateRange {
+		return this._dateRange;
 	}
 
 	// ─── Private: Build Dashboard Data from Real Sources ────────────────
 
 	private async _buildData(): Promise<IDashboardData> {
 		// 1. AgentOS 统计
-		const osStats = this._agentOSService.getDashboardStats();
+		let osStats: IAgentOSDashboardStats;
+		try {
+			osStats = this._agentOSService.getDashboardStats();
+		} catch (err) {
+			console.warn('[Dashboard] getDashboardStats failed:', err);
+			osStats = {
+				totalInputTokens: 0, totalOutputTokens: 0, totalCachedTokens: 0,
+				activeModelId: 'unknown', compressionCount: 0, compressionIneffectiveCount: 0,
+				compressionBeforeTokens: 0, compressionAfterTokens: 0,
+				toolCallCounts: new Map<string, number>(),
+				l1ExtractionCount: 0, l2ExtractionCount: 0, l3ExtractionCount: 0,
+			};
+		}
+		console.info('[Dashboard] osStats:', {
+			tokens: osStats.totalInputTokens + osStats.totalOutputTokens + osStats.totalCachedTokens,
+			compression: osStats.compressionCount,
+			tools: osStats.toolCallCounts.size,
+			model: osStats.activeModelId,
+		});
 
 		// 2. 会话列表
 		let sessions: IDashboardSession[] = [];
 		try {
 			const rawSessions = await this._agentStudioService.getSessions();
-		sessions = rawSessions
-			.filter((s: AgentStudioSession) => !s.archived)
-			.slice(-20)  // 最近 20 条
-			.reverse()   // 最新的在前
-			.map((s: AgentStudioSession) => this._convertSession(s, osStats.activeModelId));
-		} catch { /* ignore */ }
+			sessions = rawSessions
+				.filter((s: AgentStudioSession) => !s.archived)
+				.slice(-20)
+				.reverse()
+				.map((s: AgentStudioSession) => this._convertSession(s, osStats.activeModelId));
+			console.info('[Dashboard] sessions loaded:', sessions.length);
+		} catch (err) {
+			console.warn('[Dashboard] getSessions failed:', err);
+		}
 
 		// 3. 记忆统计
-		const memory = await this._buildMemoryStats(osStats);
+		let memory: IDashboardMemoryStat = {
+			total: 0, working: 0, episodic: 0, semantic: 0, procedural: 0,
+			l1ExtractionCount: osStats.l1ExtractionCount, l2ExtractionCount: osStats.l2ExtractionCount,
+			l3ExtractionCount: osStats.l3ExtractionCount,
+			graphNodes: 0, graphEdges: 0, totalSearches: 0, zeroResultSearches: 0, healthStatus: 'N/A',
+		};
+		try {
+			memory = await this._buildMemoryStats(osStats);
+		} catch (err) {
+			console.warn('[Dashboard] _buildMemoryStats failed:', err);
+		}
 
 		// 4. 代码图谱统计
 		let graphStats = { nodes: 0, edges: 0, files: 0, project: '', exists: false };
@@ -193,7 +248,10 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 				project: idx.project,
 				exists: idx.exists,
 			};
-		} catch { /* ignore */ }
+			console.info('[Dashboard] graphStats:', graphStats);
+		} catch (err) {
+			console.warn('[Dashboard] getIndexStatus failed:', err);
+		}
 
 		// 5. 工具调用统计 → Skills
 		const skills: IDashboardSkillUsage[] = Array.from(osStats.toolCallCounts.entries())
@@ -234,31 +292,41 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 
 		const kpis: IDashboardKpi[] = [
 			{
-				label: '会话总数',
-				value: String(sessions.length),
-				detail: runningCount > 0 ? `${runningCount} 活跃` : '无活跃会话',
-				breakdown: [
-					{ label: `活跃 ${runningCount}`, color: '#4ec9b0' },
-					{ label: `空闲 ${idleCount}`, color: '#dcdcaa' },
-				],
+				label: '代码图谱',
+				value: graphStats.exists ? graphStats.nodes.toLocaleString() : '0',
+				detail: graphStats.exists ? `${graphStats.edges.toLocaleString()} 边` : '未索引',
+				breakdown: graphStats.exists ? [
+					{ label: `节点 ${graphStats.nodes.toLocaleString()}`, color: '#0078d4' },
+					{ label: `边 ${graphStats.edges.toLocaleString()}`, color: '#4ec9b0' },
+				] : [{ label: '点击索引代码库', color: '#858585' }],
 				color: '#0078d4',
 			},
 			{
-				label: 'Token 消耗 (累计)',
+				label: '会话总数',
+				value: String(sessions.length),
+				detail: sessions.length === 0 ? '暂无会话' : (runningCount > 0 ? `${runningCount} 活跃` : '无活跃会话'),
+				breakdown: sessions.length > 0 ? [
+					{ label: `活跃 ${runningCount}`, color: '#4ec9b0' },
+					{ label: `空闲 ${idleCount}`, color: '#dcdcaa' },
+				] : [{ label: '开始对话后统计', color: '#858585' }],
+				color: '#4ec9b0',
+			},
+			{
+				label: 'Token 消耗',
 				value: totalTokens > 0 ? (totalTokens / 1000).toFixed(1) : '0',
-				unit: 'K',
-				detail: osStats.activeModelId,
-				breakdown: [
+				unit: totalTokens > 0 ? 'K' : undefined,
+				detail: totalTokens > 0 ? osStats.activeModelId : '开始对话后统计',
+				breakdown: totalTokens > 0 ? [
 					{ label: `输入 ${(osStats.totalInputTokens / 1000).toFixed(1)}K`, color: '#0078d4' },
 					{ label: `缓存 ${(osStats.totalCachedTokens / 1000).toFixed(1)}K`, color: '#89d185' },
 					{ label: `输出 ${(osStats.totalOutputTokens / 1000).toFixed(1)}K`, color: '#4ec9b0' },
-				],
-				color: '#4ec9b0',
+				] : [{ label: osStats.activeModelId, color: '#858585' }],
+				color: '#dcdcaa',
 			},
 			{
 				label: '压缩节省',
 				value: String(compression.savedPercent),
-				unit: '%',
+				unit: compression.compressionCount > 0 ? '%' : undefined,
 				detail: compression.compressionCount > 0
 					? `节省 ${(compression.savedTokens / 1000).toFixed(1)}K tokens`
 					: '尚未触发压缩',
@@ -266,34 +334,49 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 					{ label: `压缩 ${compression.compressionCount} 次`, color: '#dcdcaa' },
 					{ label: `低效 ${compression.ineffectiveCount} 次`, color: '#f48771' },
 				],
-				color: '#dcdcaa',
+				color: '#ce9178',
 			},
 			{
-				label: '记忆条数',
+				label: '记忆 (4-Tier)',
 				value: String(memory.total),
-				detail: `Episodic ${memory.episodic} · Semantic ${memory.semantic} · Procedural ${memory.procedural}`,
-				breakdown: [
+				detail: memory.total > 0
+					? `E ${memory.episodic} · S ${memory.semantic} · P ${memory.procedural}`
+					: '暂无记忆数据',
+				breakdown: memory.total > 0 ? [
 					{ label: `Working ${memory.working}`, color: '#0078d4' },
 					{ label: `Episodic ${memory.episodic}`, color: '#4ec9b0' },
 					{ label: `Semantic ${memory.semantic}`, color: '#c586c0' },
 					{ label: `Procedural ${memory.procedural}`, color: '#ce9178' },
-				],
+				] : [{ label: 'L1 提取 ' + memory.l1ExtractionCount + ' 次', color: '#858585' }],
 				color: '#c586c0',
 			},
 		];
 
-		return {
+		const result: IDashboardData = {
 			kpis,
 			sessions,
 			alerts,
 			skills,
 			compression,
 			memory,
-			budgets: [], // 暂无预算系统，留空
+			budgets: [],
 			tokenByModel,
 			graphStats,
 			lastUpdated: Date.now(),
 		};
+		console.info('[Dashboard] _buildData result:', {
+			kpi0: kpis[0]?.value, // 会话总数
+			kpi1: kpis[1]?.value, // Token 消耗
+			kpi2: kpis[2]?.value, // 压缩节省
+			kpi3: kpis[3]?.value, // 记忆条数
+			sessions: sessions.length,
+			skills: skills.length,
+			alerts: alerts.length,
+			memoryTotal: memory.total,
+			graphExists: graphStats.exists,
+			graphNodes: graphStats.nodes,
+		});
+		return result;
 	}
 
 	private _convertSession(s: AgentStudioSession, modelId: string): IDashboardSession {
@@ -325,7 +408,7 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 	}
 
 	private async _buildMemoryStats(osStats: {
-		episodicExtractionCount: number; semanticExtractionCount: number; proceduralExtractionCount: number;
+		l1ExtractionCount: number; l2ExtractionCount: number; l3ExtractionCount: number;
 	}): Promise<IDashboardMemoryStat> {
 		let total = 0;
 		let working = 0;
@@ -340,43 +423,50 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 
 		try {
 			const memProvider = this._agentOSService.getActiveMemoryProvider();
+			console.info('[Dashboard] memProvider:', memProvider ? `${memProvider.id} (${memProvider.name})` : 'null');
 			if (memProvider) {
 				// 1. 使用 getExtendedStats 获取完整统计（如果 Provider 支持）
 				if (memProvider.getExtendedStats) {
-					const ext = memProvider.getExtendedStats('*') as Record<string, unknown>;
-					working = Number(ext['shortTerm']) || 0;
-					// longTerm 包含 Episodic + Semantic + Procedural，需要用搜索细分
-					graphNodes = Number(ext['graphNodes']) || 0;
-					graphEdges = Number(ext['graphEdges']) || 0;
-					totalSearches = Number(ext['totalSearches']) || 0;
-					zeroResultSearches = Number(ext['zeroResultSearches']) || 0;
-					healthStatus = String(ext['healthStatus'] ?? 'N/A');
+					try {
+						const ext = memProvider.getExtendedStats('*') as Record<string, unknown>;
+						graphNodes = Number(ext['graphNodes']) || 0;
+						graphEdges = Number(ext['graphEdges']) || 0;
+						totalSearches = Number(ext['totalSearches']) || 0;
+						zeroResultSearches = Number(ext['zeroResultSearches']) || 0;
+						healthStatus = String(ext['healthStatus'] ?? 'N/A');
+						console.info('[Dashboard] getExtendedStats:', { graphNodes, graphEdges, totalSearches, healthStatus });
+					} catch (err) { console.warn('[Dashboard] getExtendedStats failed:', err); }
+				} else {
+					console.info('[Dashboard] getExtendedStats not supported by provider');
 				}
 
 				// 2. 搜索全量记忆，按 4-Tier 分类计数
+				// IMemoryEntry.type: 'working' | 'episodic' | 'semantic' | 'procedural'
 				const entries = await memProvider.searchMemory('*', '*');
 				total = entries.length;
+				console.info('[Dashboard] searchMemory result:', total, 'entries');
 				working = 0; episodic = 0; semantic = 0; procedural = 0;
 				for (const entry of entries) {
-					const memType = (entry.metadata?.['memoryType'] as string) ?? entry.type;
-					switch (entry.type) {
+					switch (entry.type as string) {
 						case 'working':
 							working++;
 							break;
 						case 'episodic':
-							// 按 metadata.memoryType 细分 Episodic/Semantic/Procedural
-							if (memType === 'scene') {
-								semantic++;       // Semantic Semantic
-							} else if (memType === 'persona') {
-								procedural++;     // Procedural Procedural
-							} else {
-								episodic++;       // Episodic Episodic (默认)
-							}
+							episodic++;
+							break;
+						case 'semantic':
+							semantic++;
+							break;
+						case 'procedural':
+							procedural++;
 							break;
 					}
 				}
+				console.info('[Dashboard] memory 4-Tier:', { working, episodic, semantic, procedural });
 			}
-		} catch { /* ignore */ }
+		} catch (err) {
+			console.warn('[Dashboard] _buildMemoryStats outer catch:', err);
+		}
 
 		return {
 			total,
@@ -384,9 +474,9 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 			episodic,
 			semantic,
 			procedural,
-			episodicExtractionCount: osStats.episodicExtractionCount,
-			semanticExtractionCount: osStats.semanticExtractionCount,
-			proceduralExtractionCount: osStats.proceduralExtractionCount,
+			l1ExtractionCount: osStats.l1ExtractionCount,
+			l2ExtractionCount: osStats.l2ExtractionCount,
+			l3ExtractionCount: osStats.l3ExtractionCount,
 			graphNodes,
 			graphEdges,
 			totalSearches,
@@ -396,7 +486,7 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 	}
 
 	private _buildAlerts(
-		osStats: { compressionIneffectiveCount: number; episodicExtractionCount: number; semanticExtractionCount: number; proceduralExtractionCount: number },
+		osStats: { compressionIneffectiveCount: number; l1ExtractionCount: number; l2ExtractionCount: number; l3ExtractionCount: number },
 		graphStats: { exists: boolean; nodes: number; files: number; project: string },
 		sessions: IDashboardSession[],
 		memory: IDashboardMemoryStat,
@@ -413,13 +503,13 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 			});
 		}
 
-		// Episodic (Episodic) 提取通知
-		if (osStats.episodicExtractionCount > 0) {
+		// Episodic (L1) 提取通知
+		if (osStats.l1ExtractionCount > 0) {
 			alerts.push({
 				id: 'l1-extraction',
 				type: 'info',
-				title: 'Episodic 记忆提取 (Episodic)',
-				description: `已触发 ${osStats.episodicExtractionCount} 次 Episodic 自动提取${osStats.semanticExtractionCount > 0 ? `，Semantic 场景提取 ${osStats.semanticExtractionCount} 次` : ''}${osStats.proceduralExtractionCount > 0 ? `，Procedural 人格生成 ${osStats.proceduralExtractionCount} 次` : ''}`,
+				title: 'Episodic 记忆提取 (L1)',
+				description: `已触发 ${osStats.l1ExtractionCount} 次 Episodic 自动提取${osStats.l2ExtractionCount > 0 ? `，Semantic 场景提取 ${osStats.l2ExtractionCount} 次` : ''}${osStats.l3ExtractionCount > 0 ? `，Procedural 人格生成 ${osStats.l3ExtractionCount} 次` : ''}`,
 			});
 		}
 
@@ -474,7 +564,7 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 			alerts: [{ id: 'empty', type: 'info', title: '等待数据', description: '开始对话后此处将显示 Agent 运行统计' }],
 			skills: [],
 			compression: { beforeTokens: 0, afterTokens: 0, savedTokens: 0, savedPercent: 0, compressionCount: 0, ineffectiveCount: 0, cacheLostTokens: 0 },
-			memory: { total: 0, working: 0, episodic: 0, semantic: 0, procedural: 0, episodicExtractionCount: 0, semanticExtractionCount: 0, proceduralExtractionCount: 0, graphNodes: 0, graphEdges: 0, totalSearches: 0, zeroResultSearches: 0, healthStatus: 'N/A' },
+			memory: { total: 0, working: 0, episodic: 0, semantic: 0, procedural: 0, l1ExtractionCount: 0, l2ExtractionCount: 0, l3ExtractionCount: 0, graphNodes: 0, graphEdges: 0, totalSearches: 0, zeroResultSearches: 0, healthStatus: 'N/A' },
 			budgets: [],
 			tokenByModel: [],
 			graphStats: { nodes: 0, edges: 0, files: 0, project: '', exists: false },

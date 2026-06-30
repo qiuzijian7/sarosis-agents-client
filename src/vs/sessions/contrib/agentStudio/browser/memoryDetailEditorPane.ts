@@ -13,6 +13,7 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IAgentOSService } from '../common/agentOS.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
 
 interface IMemoryEntry {
@@ -25,7 +26,7 @@ interface IMemoryEntry {
 
 type LayerFilter = 'all' | 'working' | 'episodic' | 'semantic' | 'procedural';
 type ScopeFilter = 'all' | 'workspace' | 'session' | 'agent';
-type ViewName = 'memories' | 'slots' | 'lessons' | 'consolidation' | 'audit' | 'hooks' | 'commits' | 'report';
+type ViewName = 'memories' | 'slots' | 'lessons' | 'consolidation' | 'audit' | 'hooks' | 'commits' | 'report' | 'skills';
 
 /** Check if a memory belongs to a specific 4-Tier */
 function matchesTier(mem: IMemoryEntry, tier: LayerFilter): boolean {
@@ -44,6 +45,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 	private _scopeFilter: ScopeFilter = 'all';
 	private _searchQuery: string = '';
 	private _targetContentPreview: string | null = null;
+	private _agentFilter: string = '__all__'; // '__all__' = 所有 agent，其他值 = 指定 agentId
+	private _currentWorkspaceId: string = ''; // 当前工作区 ID（用于工作区过滤）
 	private _currentView: ViewName = 'memories';
 
 	constructor(
@@ -52,8 +55,12 @@ export class MemoryDetailEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
+		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 	) {
 		super(MemoryDetailEditorPane.ID, group, telemetryService, themeService, storageService);
+		// 获取当前工作区 ID 用于过滤
+		const workspace = this._workspaceContextService.getWorkspace();
+		this._currentWorkspaceId = workspace.folders.length > 0 ? workspace.folders[0].name : '';
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
@@ -63,6 +70,40 @@ export class MemoryDetailEditorPane extends EditorPane {
 	}
 
 	private _loadMemoryPromise: Promise<void> | null = null;
+
+	/**
+	 * 根据当前 agent filter 加载记忆数据。
+	 * '__all__' → 加载所有 agent 的数据（searchAllAgents）
+	 * 其他值 → 加载指定 agent 的数据（searchMemory）
+	 */
+	private async _loadMemoryWithFilter(): Promise<void> {
+		if (this._agentFilter === '__all__') {
+			const memProvider = this._agentOSService.getActiveMemoryProvider();
+			if (!memProvider?.searchAllAgents) {
+				this._loadMemory();
+				return;
+			}
+			this._renderLoading();
+			try {
+				const results = await memProvider.searchAllAgents('');
+				console.log(`[MemoryDetailEditorPane] searchAllAgents returned: ${results?.length ?? 0} results`);
+				this._allMemories = (results || []).map((e: any) => ({
+					id: e.id || `mem_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+					type: e.type || (e.metadata?.['memoryType'] as string) || 'working',
+					content: e.content || '',
+					metadata: { ...e.metadata, agentId: e.agentId },
+					timestamp: e.timestamp,
+				}));
+				this._renderFull();
+			} catch (err) {
+				console.error('[MemoryDetailEditorPane] searchAllAgents failed:', err);
+				this._renderEmpty(`加载失败: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		} else {
+			this._agentId = this._agentFilter;
+			this._loadMemory();
+		}
+	}
 
 	override async setInput(input: MemoryDetailEditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
@@ -206,6 +247,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._renderLoading();
 		try {
 			const memProvider = this._agentOSService.getActiveMemoryProvider();
+			console.log(`[MemoryDetailEditorPane] _doLoadMemory: agentId=${this._agentId}, memProvider=${memProvider ? memProvider.id : 'null'}`);
 			if (!memProvider) {
 				if (this._allMemories.length > 0) {
 					// 服务不可用但已有缓存数据，直接使用缓存
@@ -215,7 +257,9 @@ export class MemoryDetailEditorPane extends EditorPane {
 				}
 				return;
 			}
+			console.log(`[MemoryDetailEditorPane] calling searchMemory(${this._agentId}, '')...`);
 			const results = await memProvider.searchMemory(this._agentId, '');
+			console.log(`[MemoryDetailEditorPane] searchMemory returned: ${results?.length ?? 'null'} results`);
 			const newMemories = (results || []).map(e => ({
 				id: e.id || `mem_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
 				type: e.type || (e.metadata?.['memoryType'] as string) || 'working',
@@ -229,12 +273,13 @@ export class MemoryDetailEditorPane extends EditorPane {
 				this._renderFull();
 			} else {
 				this._allMemories = newMemories;
+				console.log(`[MemoryDetailEditorPane] rendering ${newMemories.length} memories`);
 				this._renderFull();
 			}
 		} catch (err) {
+			console.error(`[MemoryDetailEditorPane] _doLoadMemory FAILED:`, err);
 			if (this._allMemories.length > 0) {
 				// 网络错误等但已有缓存数据，保留缓存并重新渲染（支持 navigateToTarget 跳转）
-				console.warn('[MemoryDetailEditorPane] _loadMemory failed, using cached data:', err);
 				this._renderFull();
 			} else {
 				this._renderEmpty(`加载失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -265,6 +310,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 			{ id: 'hooks', label: '🪝 钩子' },
 			{ id: 'commits', label: '🔀 提交' },
 			{ id: 'report', label: '📊 报告' },
+			{ id: 'skills', label: '⚡ 技能' },
 		];
 		for (const view of views) {
 			const tab = append(viewNav, $('.md-view-tab'));
@@ -293,12 +339,52 @@ export class MemoryDetailEditorPane extends EditorPane {
 			case 'hooks': this._renderHooksView(); return;
 			case 'commits': this._renderCommitsView(); return;
 			case 'report': this._renderReportView(); return;
+			case 'skills': this._renderSkillsView(); return;
 		}
 
 		// ── Memories view (default) ──
 		// Header
 		const header = append(this._container, $('.md-header'));
-		append(header, $('h1')).textContent = `🧠 记忆详情 (${this._agentId})`;
+		const memProvider = this._agentOSService.getActiveMemoryProvider();
+		const headerRow = append(header, $('div'));
+		headerRow.style.display = 'flex';
+		headerRow.style.alignItems = 'center';
+		headerRow.style.gap = '12px';
+		headerRow.style.marginBottom = '8px';
+		append(headerRow, $('h1')).textContent = '🧠 记忆详情';
+		// Agent 下拉框
+		const agentSelect = document.createElement('select');
+		agentSelect.style.background = 'var(--vscode-input-background)';
+		agentSelect.style.border = '1px solid var(--vscode-input-border)';
+		agentSelect.style.borderRadius = '4px';
+		agentSelect.style.padding = '3px 8px';
+		agentSelect.style.color = 'var(--vscode-input-foreground)';
+		agentSelect.style.fontSize = '12px';
+		agentSelect.style.cursor = 'pointer';
+		agentSelect.style.outline = 'none';
+		const allOption = document.createElement('option');
+		allOption.value = '__all__'; allOption.textContent = '全部 Agent';
+		agentSelect.appendChild(allOption);
+		const currentOption = document.createElement('option');
+		currentOption.value = this._agentId; currentOption.textContent = this._agentId;
+		agentSelect.appendChild(currentOption);
+		agentSelect.value = this._agentFilter;
+		// 异步加载有数据的 agent 列表
+		if (memProvider?.listAllAgentsWithData) {
+			memProvider.listAllAgentsWithData().then((agents: string[]) => {
+				for (const aid of agents) {
+					if (aid === this._agentId) continue;
+					const opt = document.createElement('option');
+					opt.value = aid; opt.textContent = aid;
+					agentSelect.appendChild(opt);
+				}
+			}).catch(() => {});
+		}
+		agentSelect.addEventListener('change', () => {
+			this._agentFilter = agentSelect.value;
+			this._loadMemoryWithFilter();
+		});
+		headerRow.appendChild(agentSelect);
 		const stats = append(header, $('.md-stats'));
 		this._addStat(stats, '总数', this._allMemories.length, '');
 		this._addStat(stats, 'Working', this._countByTier('working'), 'l0');
@@ -307,7 +393,6 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addStat(stats, 'Procedural', this._countByTier('procedural'), 'l3');
 
 		// Extended stats from AgentMemoryProvider (if available)
-		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		if (memProvider?.getExtendedStats) {
 			try {
 				const extStats = memProvider.getExtendedStats(this._agentId);
@@ -327,7 +412,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 		// Action toolbar
 		const toolbar = append(this._container, $('.md-toolbar'));
-		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._loadMemory());
+		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._loadMemoryWithFilter());
 		if (memProvider?.flush) {
 			this._addToolbarBtn(toolbar, '💾 Flush', '', async () => {
 				try { await memProvider.flush!(); this._loadMemory(); } catch { /* best effort */ }
@@ -845,11 +930,327 @@ export class MemoryDetailEditorPane extends EditorPane {
 					}
 				}
 			}
-		} catch (err) {
-			content.innerHTML = '';
-			append(content, $('.md-empty')).textContent = `报告生成失败: ${err instanceof Error ? err.message : String(err)}`;
+	} catch (err) {
+		content.innerHTML = '';
+		append(content, $('.md-empty')).textContent = `报告生成失败: ${err instanceof Error ? err.message : String(err)}`;
+	}
+}
+
+// ─── Skills View ──────────────────────────────────────────────────────
+
+private _renderSkillsView(): void {
+	if (!this._container) { return; }
+	const memProvider = this._agentOSService.getActiveMemoryProvider();
+	const header = append(this._container, $('.md-header'));
+	append(header, $('h1')).textContent = `⚡ 技能 (${this._agentId})`;
+	const subtitle = append(header, $('div'));
+	subtitle.style.fontSize = '11px';
+	subtitle.style.color = 'var(--vscode-descriptionForeground)';
+	subtitle.style.marginBottom = '8px';
+	subtitle.textContent = '从会话历史自动提取的可复用程序化技能 · 沉淀为标准 SKILL.md 格式 · 写入 ~/.saros/skills/';
+
+	// Stats
+	const stats = memProvider?.getSkillStats?.();
+	if (stats) {
+		const statsEl = append(header, $('.md-stats'));
+		this._addStat(statsEl, '总技能', stats.totalSkills, 'l3');
+		this._addStat(statsEl, '平均置信度', stats.avgConfidence, 'confidence');
+		this._addStat(statsEl, '总使用次数', stats.totalUsage, 'usage');
+		this._addStat(statsEl, '已生成 SKILL.md', `${stats.writtenCount}/${stats.totalSkills}`, 'file');
+	}
+
+	// Info banner
+	const banner = append(this._container, $('.md-card'));
+	banner.style.margin = '0 20px 8px';
+	banner.style.padding = '8px 12px';
+	banner.style.background = 'rgba(86,156,214,0.08)';
+	banner.style.border = '1px solid rgba(86,156,214,0.2)';
+	banner.style.borderRadius = '6px';
+	banner.style.fontSize = '11px';
+	banner.style.color = '#569cd6';
+	banner.textContent = '💡 技能提取后会自动生成 SKILL.md 文件到 ~/.saros/skills/<技能名>/SKILL.md，可在 Agent Studio 技能商城和 Claude Code 中直接使用';
+
+	// Toolbar
+	const toolbar = append(this._container, $('.md-toolbar'));
+	this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
+	this._addToolbarBtn(toolbar, '➕ 手动新增', '', () => this._addSkill(memProvider));
+	this._addToolbarBtn(toolbar, '📁 生成全部 SKILL.md', '', async () => {
+		if (!memProvider?.writeAllSkillFiles) return;
+		const result = await memProvider.writeAllSkillFiles();
+		alert(`写入完成: ${result.written} 成功, ${result.failed} 失败${result.errors.length ? '\n' + result.errors.join('\n') : ''}`);
+		this._renderFull();
+	});
+	this._addToolbarBtn(toolbar, '⬇ 导出 JSON', '', () => this._exportSkillsJson(memProvider));
+
+	if (!memProvider?.listSkills) {
+		this._renderEmpty('当前记忆服务不支持技能 API');
+		return;
+	}
+
+	try {
+		const skills = memProvider.listSkills();
+		if (!skills || skills.length === 0) {
+			this._renderEmpty('暂无技能记录。技能会在会话完成并执行固化后自动提取。');
+			return;
+		}
+
+		// Filter bar
+		const filterBar = append(this._container, $('.md-filter-bar'));
+		append(filterBar, $('.md-filter-label')).textContent = '状态:';
+		const allChip = append(filterBar, $('.md-filter-chip'));
+		allChip.textContent = '全部'; allChip.classList.add('active');
+		const writtenChip = append(filterBar, $('.md-filter-chip'));
+		writtenChip.textContent = '已写入';
+		const pendingChip = append(filterBar, $('.md-filter-chip'));
+		pendingChip.textContent = '待写入';
+		const search = document.createElement('input');
+		search.className = 'md-search'; search.type = 'text'; search.placeholder = '🔍 搜索技能...';
+		filterBar.appendChild(search);
+
+		const list = append(this._container, $('.md-list'));
+		const renderList = (filter: 'all' | 'written' | 'pending', query: string) => {
+			list.innerHTML = '';
+			let filtered = skills;
+			if (filter === 'written') filtered = filtered.filter((s: any) => s.skillMdWritten);
+			if (filter === 'pending') filtered = filtered.filter((s: any) => !s.skillMdWritten);
+			if (query) {
+				const q = query.toLowerCase();
+				filtered = filtered.filter((s: any) =>
+					s.title.toLowerCase().includes(q) ||
+					s.trigger.toLowerCase().includes(q) ||
+					s.tags.some((t: string) => t.includes(q))
+				);
+			}
+			for (const skill of filtered) {
+				this._renderSkillCard(list, skill, memProvider);
+			}
+			if (filtered.length === 0) {
+				append(list, $('.md-empty')).textContent = '无匹配技能';
+			}
+		};
+		renderList('all', '');
+
+		allChip.addEventListener('click', () => {
+			allChip.classList.add('active'); writtenChip.classList.remove('active'); pendingChip.classList.remove('active');
+			renderList('all', search.value);
+		});
+		writtenChip.addEventListener('click', () => {
+			writtenChip.classList.add('active'); allChip.classList.remove('active'); pendingChip.classList.remove('active');
+			renderList('written', search.value);
+		});
+		pendingChip.addEventListener('click', () => {
+			pendingChip.classList.add('active'); allChip.classList.remove('active'); writtenChip.classList.remove('active');
+			renderList('pending', search.value);
+		});
+		search.addEventListener('input', () => {
+			const active = filterBar.querySelector('.md-filter-chip.active') as HTMLElement;
+			const filter = active === writtenChip ? 'written' : active === pendingChip ? 'pending' : 'all';
+			renderList(filter, search.value.toLowerCase().trim());
+		});
+	} catch { this._renderEmpty('加载技能失败'); }
+}
+
+private _renderSkillCard(list: HTMLElement, skill: any, memProvider: any): void {
+	const card = append(list, $('.md-card'));
+	if (!skill.skillMdWritten && skill.confidence >= 0.8) {
+		card.style.borderColor = 'rgba(78,201,176,0.4)';
+		card.style.borderLeft = '3px solid #4ec9b0';
+	}
+
+	// Header
+	const headerEl = append(card, $('.md-card-header'));
+	const badge = append(headerEl, $('.md-badge'));
+	badge.textContent = skill.confidence >= 0.8 && !skill.skillMdWritten ? '⚡ NEW' : '⚡ 技能';
+	badge.className = `md-badge ${skill.confidence >= 0.8 && !skill.skillMdWritten ? 'l1' : 'l3'}`;
+
+	// Confidence
+	const confEl = append(headerEl, $('span'));
+	confEl.style.fontSize = '10px';
+	confEl.style.fontWeight = '600';
+	confEl.style.padding = '2px 6px';
+	confEl.style.borderRadius = '8px';
+	confEl.textContent = `置信度 ${skill.confidence.toFixed(2)}`;
+	const confCls = skill.confidence >= 0.7 ? 'high' : skill.confidence >= 0.5 ? 'mid' : 'low';
+	confEl.style.background = confCls === 'high' ? 'rgba(93,202,165,0.15)' : confCls === 'mid' ? 'rgba(240,160,75,0.15)' : 'rgba(244,63,94,0.12)';
+	confEl.style.color = confCls === 'high' ? '#5dcaa5' : confCls === 'mid' ? '#f0a04b' : '#f43f5e';
+
+	append(headerEl, $('.md-card-title')).textContent = skill.title;
+
+	// SKILL.md status
+	const statusEl = append(headerEl, $('span'));
+	statusEl.style.fontSize = '10px';
+	statusEl.style.padding = '2px 6px';
+	statusEl.style.borderRadius = '4px';
+	if (skill.skillMdWritten) {
+		statusEl.textContent = '📄 SKILL.md ✓';
+		statusEl.style.background = 'rgba(78,201,176,0.12)';
+		statusEl.style.color = '#4ec9b0';
+	} else {
+		statusEl.textContent = '⏳ 待写入';
+		statusEl.style.background = 'rgba(204,167,0,0.12)';
+		statusEl.style.color = '#cca700';
+	}
+
+	// Usage + time
+	const usageEl = append(headerEl, $('span'));
+	usageEl.style.fontSize = '10px'; usageEl.style.color = '#569cd6'; usageEl.style.flexShrink = '0';
+	usageEl.textContent = `◉ 使用 ${skill.usageCount} 次`;
+	const timeEl = append(headerEl, $('span'));
+	timeEl.style.fontSize = '10px'; timeEl.style.color = 'var(--vscode-descriptionForeground)'; timeEl.style.flexShrink = '0';
+	timeEl.textContent = new Date(skill.createdAt).toISOString().slice(0, 10);
+	const expand = append(headerEl, $('span'));
+	expand.textContent = '▶'; expand.style.fontSize = '10px'; expand.style.color = 'var(--vscode-descriptionForeground)';
+
+	// Expand/collapse
+	headerEl.addEventListener('click', () => card.classList.toggle('expanded'));
+
+	// Content (SKILL.md preview)
+	const contentBox = append(card, $('.md-content-box'));
+	card.classList.add('expanded');
+	const content = append(contentBox, $('.md-content'));
+
+	// Frontmatter
+	const fmEl = append(content, $('div'));
+	fmEl.style.background = 'rgba(128,128,128,0.06)';
+	fmEl.style.padding = '8px 12px';
+	fmEl.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+	fmEl.style.fontSize = '11px';
+	fmEl.style.color = 'var(--vscode-descriptionForeground)';
+	fmEl.style.lineHeight = '1.6';
+	fmEl.style.borderBottom = '1px solid rgba(128,128,128,0.06)';
+	fmEl.innerHTML = `<span style="color:#569cd6">name</span>: <span style="color:#ce9178">${skill.slug || '—'}</span><br>` +
+		`<span style="color:#569cd6">description</span>: <span style="color:#ce9178">${skill.trigger}。${skill.expectedOutcome}</span><br>` +
+		`<span style="color:#569cd6">version</span>: <span style="color:#ce9178">1.0.0</span>`;
+
+	// Body
+	const body = append(content, $('div'));
+	body.style.padding = '8px 12px';
+	const h1 = append(body, $('h1'));
+	h1.textContent = skill.title;
+	h1.style.fontSize = '15px'; h1.style.fontWeight = '600'; h1.style.margin = '0 0 8px';
+
+	const triggerSection = append(body, $('div'));
+	triggerSection.style.fontSize = '11px'; triggerSection.style.fontWeight = '600';
+	triggerSection.style.color = 'var(--vscode-descriptionForeground)';
+	triggerSection.style.marginBottom = '4px'; triggerSection.textContent = '触发条件';
+	const triggerText = append(body, $('div'));
+	triggerText.textContent = skill.trigger;
+	triggerText.style.fontSize = '12px'; triggerText.style.color = '#4ec9b0';
+	triggerText.style.padding = '6px 10px'; triggerText.style.background = 'rgba(78,201,176,0.08)';
+	triggerText.style.borderRadius = '4px'; triggerText.style.borderLeft = '3px solid #4ec9b0';
+	triggerText.style.marginBottom = '8px';
+
+	const stepsLabel = append(body, $('div'));
+	stepsLabel.style.fontSize = '11px'; stepsLabel.style.fontWeight = '600';
+	stepsLabel.style.color = 'var(--vscode-descriptionForeground)';
+	stepsLabel.style.marginBottom = '4px'; stepsLabel.textContent = '执行步骤';
+	const ol = append(body, $('ol'));
+	ol.style.paddingLeft = '20px';
+	for (let i = 0; i < skill.steps.length; i++) {
+		const li = append(ol, $('li'));
+		li.textContent = skill.steps[i];
+		li.style.fontSize = '12px'; li.style.lineHeight = '1.6'; li.style.margin = '2px 0';
+	}
+
+	const outcomeLabel = append(body, $('div'));
+	outcomeLabel.style.fontSize = '11px'; outcomeLabel.style.fontWeight = '600';
+	outcomeLabel.style.color = 'var(--vscode-descriptionForeground)';
+	outcomeLabel.style.marginTop = '8px'; outcomeLabel.style.marginBottom = '4px';
+	outcomeLabel.textContent = '预期结果';
+	const outcomeText = append(body, $('div'));
+	outcomeText.textContent = skill.expectedOutcome;
+	outcomeText.style.fontSize = '12px'; outcomeText.style.color = 'var(--vscode-foreground)';
+	outcomeText.style.padding = '6px 10px'; outcomeText.style.background = 'rgba(86,156,214,0.08)';
+	outcomeText.style.borderRadius = '4px'; outcomeText.style.borderLeft = '3px solid #569cd6';
+
+	// Meta + actions
+	const meta = append(card, $('.md-meta'));
+	if (skill.tags?.length) {
+		for (const tag of skill.tags) {
+			const chip = append(meta, $('.md-meta-chip'));
+			chip.textContent = `#${tag}`;
+			chip.className = 'md-meta-chip tag';
 		}
 	}
+	const sessionChip = append(meta, $('.md-meta-chip'));
+	sessionChip.textContent = `来源: ${skill.sourceSessionId?.slice(0, 20) ?? '—'}`;
+	sessionChip.className = 'md-meta-chip session';
+	if (skill.slug) {
+		const pathChip = append(meta, $('.md-meta-chip'));
+		pathChip.textContent = `~/.saros/skills/${skill.slug}/SKILL.md`;
+		pathChip.className = 'md-meta-chip';
+		pathChip.style.background = 'rgba(240,160,75,0.1)';
+		pathChip.style.color = '#f0a04b';
+		pathChip.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+	}
+
+	// Action buttons
+	const actions = append(meta, $('div'));
+	actions.style.marginLeft = 'auto'; actions.style.display = 'flex'; actions.style.gap = '4px';
+	this._addToolbarBtn(actions, '📁 写入 SKILL.md', '', async () => {
+		if (!memProvider?.writeSkillFile) return;
+		const result = await memProvider.writeSkillFile(skill.id);
+		alert(result.ok ? `SKILL.md 已写入: ${result.path}` : `写入失败: ${result.error}`);
+		this._renderFull();
+	});
+	this._addToolbarBtn(actions, '✏ 编辑', '', () => this._editSkill(memProvider, skill));
+	this._addToolbarBtn(actions, '🗑 删除', 'danger', async () => {
+		if (!confirm(`确定删除技能 "${skill.title}"？`)) return;
+		if (skill.skillMdWritten && memProvider?.deleteSkillFile) {
+			await memProvider.deleteSkillFile(skill.id);
+		}
+		memProvider?.deleteSkill?.(skill.id);
+		this._renderFull();
+	});
+}
+
+private _addSkill(memProvider: any): void {
+	const title = prompt('技能标题:');
+	if (!title) return;
+	const trigger = prompt('触发条件:') || '';
+	const stepsStr = prompt('执行步骤 (每行一步):') || '';
+	const steps = stepsStr.split('\n').filter(Boolean);
+	const outcome = prompt('预期结果 (可选):') || 'Task completed successfully';
+	const tagsStr = prompt('标签 (逗号分隔, 可选):') || '';
+	const tags = tagsStr ? tagsStr.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
+	void trigger; void tags; // 用于 extractSkill 输入构建
+	try {
+		const skill = memProvider?.extractSkill?.({
+			sessionId: `manual_${Date.now()}`,
+			summary: { title, narrative: outcome, keyDecisions: [], filesModified: [], toolsUsed: [] },
+			observations: steps.map((s: string, i: number) => ({ content: s, type: 'procedural', importance: 5, timestamp: Date.now() + i })),
+		});
+		if (!skill) { alert('技能提取失败: 观察太少或无法识别触发条件'); return; }
+		this._renderFull();
+	} catch (err) { alert(`新增失败: ${err instanceof Error ? err.message : String(err)}`); }
+}
+
+private _editSkill(memProvider: any, skill: any): void {
+	const title = prompt('技能标题:', skill.title);
+	if (!title) return;
+	const trigger = prompt('触发条件:', skill.trigger);
+	const stepsStr = prompt('执行步骤 (每行一步):', skill.steps.join('\n'));
+	const steps = stepsStr?.split('\n').filter(Boolean) ?? [];
+	const outcome = prompt('预期结果:', skill.expectedOutcome);
+	const tagsStr = prompt('标签 (逗号分隔):', skill.tags.join(','));
+	const tags = tagsStr ? tagsStr.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
+	try {
+		memProvider?.updateSkill?.(skill.id, { title, trigger, steps, expectedOutcome: outcome, tags });
+		this._renderFull();
+	} catch (err) { alert(`编辑失败: ${err instanceof Error ? err.message : String(err)}`); }
+}
+
+private _exportSkillsJson(memProvider: any): void {
+	if (!memProvider?.listSkills) return;
+	const skills = memProvider.listSkills();
+	const json = JSON.stringify(skills, null, 2);
+	const blob = new Blob([json], { type: 'application/json' });
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url; a.download = `skills_${this._agentId}_${Date.now()}.json`;
+	a.click();
+	URL.revokeObjectURL(url);
+}
 
 	private _addStat(parent: HTMLElement, label: string, value: string | number, cls: string): void {
 		const card = append(parent, $(`.md-stat.${cls}`));
@@ -885,10 +1286,22 @@ export class MemoryDetailEditorPane extends EditorPane {
 		let items = this._allMemories;
 		if (this._layerFilter !== 'all') { items = items.filter(m => matchesTier(m, this._layerFilter)); }
 		if (this._searchQuery) { items = items.filter(m => m.content.toLowerCase().includes(this._searchQuery)); }
-		// Scope filter (simplified — would need session/workspace metadata)
-		// For now, 'agent' = all, others filter by metadata
-		if (this._scopeFilter === 'session') {
+		// Scope filter
+		if (this._scopeFilter === 'workspace') {
+			// 按工作区过滤：metadata.workspaceId 或 metadata.workspace 匹配当前工作区
+			items = items.filter(m => {
+				const wsId = m.metadata?.['workspaceId'] as string ?? m.metadata?.['workspace'] as string ?? '';
+				// 如果记忆没有 workspaceId，也保留（兼容旧数据）
+				return !wsId || wsId === this._currentWorkspaceId;
+			});
+		} else if (this._scopeFilter === 'session') {
 			items = items.filter(m => m.metadata?.['sessionId'] || m.metadata?.['sessionKey']);
+		} else if (this._scopeFilter === 'agent') {
+			// 按当前 agent 过滤
+			items = items.filter(m => {
+				const mAgentId = m.metadata?.['agentId'] as string ?? m.metadata?.['agent'] as string ?? '';
+				return !mAgentId || mAgentId === this._agentId;
+			});
 		}
 		items = items.slice().sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 		return items;
@@ -972,6 +1385,15 @@ export class MemoryDetailEditorPane extends EditorPane {
 			badge.className = `md-badge ${typeClasses[item.type] || 'l0'}`;
 			badge.textContent = typeLabels[item.type] ?? item.type;
 			header.appendChild(badge);
+			// 当显示所有 agent 时，在 badge 后显示 agentId 标识
+			if (this._agentFilter === '__all__' && item.metadata?.['agentId']) {
+				const agentBadge = document.createElement('span');
+				agentBadge.className = 'md-badge';
+				agentBadge.style.background = 'rgba(128,128,128,0.1)';
+				agentBadge.style.color = 'var(--vscode-descriptionForeground)';
+				agentBadge.textContent = String(item.metadata['agentId']);
+				header.appendChild(agentBadge);
+			}
 			const title = document.createElement('span');
 			title.className = 'md-card-title';
 			title.textContent = item.content.slice(0, 80).replace(/\n/g, ' ');

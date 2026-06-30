@@ -69,7 +69,7 @@ import { HookSystem, type HookType, type HookContext, type HookResult, type Hook
 import { MemoryVerifier, type VerifyResult, type Citation, type VerifyEntry } from './verify.js';
 import { TeamMemoryManager, type TeamSharedItem, type TeamProfile, type TeamConfig, type BroadcastMessage, type SharedItemType } from './teamMemory.js';
 import { LeaseManager, type Lease, type AcquireResult } from './leases.js';
-import { SkillExtractor, type ExtractedSkill, type SkillExtractInput } from './skillExtract.js';
+import { SkillExtractor, type ExtractedSkill, type SkillExtractInput, generateSkillMd } from './skillExtract.js';
 import { TemporalGraph, type TemporalEdge, type TemporalNode, type TemporalEdgeType, type TemporalConflict } from './temporalGraph.js';
 import { FlowCompressor, type FlowPattern, type FlowCompressResult, type FlowEntry } from './flowCompress.js';
 import { ExportImportManager, type ExportPackage, type ExportEntry, type ImportResult } from './exportImport.js';
@@ -168,7 +168,7 @@ const HEALTH_MONITOR_INTERVAL_MS = 60_000; // 健康监控间隔
 
 // ─── KV Scope constants (1:1 parity with agentmemory schema.ts) ───────────
 // SQLite KV store uses scope-based namespacing, mirroring iii-engine StateKV.
-function kvScope(agentId: string, type: 'long' | 'short' | 'vector' | 'slots' | 'lessons' | 'meta'): string {
+function kvScope(agentId: string, type: 'long' | 'short' | 'vector' | 'slots' | 'lessons' | 'meta' | 'episodic' | 'semantic' | 'procedural' | 'skills'): string {
 	return `mem:${type}:${agentId}`;
 }
 const KV_KEY = 'data'; // single key per scope (full payload)
@@ -216,6 +216,26 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T | nul
 			return null;
 		}
 		return (await resp.json()) as T;
+	} catch (err) {
+		console.warn(`[AgentMemory] ${options?.method ?? 'GET'} ${url} FAILED: ${(err as Error).message}`);
+		return null;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+// ─── Raw fetch (text response, for JSONL/KV) ─────────────────────────────
+
+async function fetchText(url: string, options?: RequestInit): Promise<string | null> {
+	const ctrl = new AbortController();
+	const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		const resp = await fetch(url, { ...options, signal: ctrl.signal });
+		if (!resp.ok) {
+			console.warn(`[AgentMemory] ${options?.method ?? 'GET'} ${url} -> HTTP ${resp.status}`);
+			return null;
+		}
+		return await resp.text();
 	} catch (err) {
 		console.warn(`[AgentMemory] ${options?.method ?? 'GET'} ${url} FAILED: ${(err as Error).message}`);
 		return null;
@@ -333,7 +353,10 @@ async function kvList(scope: string, withValues = false): Promise<Record<string,
 }
 
 async function checkHealth(): Promise<boolean> {
-	const result = await fetchJson<{ status: string }>(`${serverBase()}/health`);
+	const url = `${serverBase()}/health`;
+	console.log(`[AgentMemory] checkHealth: GET ${url}`);
+	const result = await fetchJson<{ status: string }>(url);
+	console.log(`[AgentMemory] checkHealth: result=`, result, `status=${result?.status}`);
 	return result?.status === 'ok';
 }
 
@@ -923,24 +946,29 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		const now = Date.now();
 		if (!this._healthChecked || (!this._serverAvailable && (now - this._lastHealthCheckAt) > 30_000)) {
 			this._lastHealthCheckAt = now;
+			console.log(`[AgentMemory] _ensureLoaded: checking health for agent=${agentId}, serverBase=${serverBase()}`);
 			this._serverAvailable = await checkHealth();
 			this._healthChecked = true;
+			console.log(`[AgentMemory] _ensureLoaded: health check result=${this._serverAvailable}, agentId=${agentId}`);
 			if (!this._serverAvailable) {
-				this._logPersistenceFailure('health check', new Error('file server not available'));
+				console.warn(`[AgentMemory] _ensureLoaded: server NOT available! agentId=${agentId}, url=${serverBase()}/health`);
 			}
 		}
 
 		if (!this._serverAvailable) {
 			// 不标记为已加载，允许后续重试（30秒后）
+			console.warn(`[AgentMemory] _ensureLoaded: skipping load for ${agentId} (server unavailable)`);
 			return;
 		}
 
 		// Load from SQLite KV store (with legacy JSONL fallback migration)
+		console.log(`[AgentMemory] _ensureLoaded: loading from KV for agent=${agentId}`);
 		let [shortRaw, longRaw, vectorRaw] = await Promise.all([
 			kvGet(kvScope(agentId, 'short'), KV_KEY),
 			kvGet(kvScope(agentId, 'long'), KV_KEY),
 			kvGet(kvScope(agentId, 'vector'), KV_KEY),
 		]);
+		console.log(`[AgentMemory] _ensureLoaded: KV results for ${agentId}: short=${shortRaw?.length ?? 'null'}chars, long=${longRaw?.length ?? 'null'}chars, vector=${vectorRaw?.length ?? 'null'}chars`);
 
 		// Data migration: if KV is empty, try legacy JSONL files
 		if ((!shortRaw || shortRaw.trim().length === 0) && (!longRaw || longRaw.trim().length === 0)) {
@@ -965,8 +993,8 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			}
 		}
 
-		const shortEntries = this._parseJsonl(shortRaw);
-		const longEntries = this._parseJsonl(longRaw);
+		const shortEntries = this._parseJsonl(shortRaw ?? '');
+		const longEntries = this._parseJsonl(longRaw ?? '');
 
 		this._shortTerm.set(agentId, shortEntries);
 		this._longTerm.set(agentId, longEntries);
@@ -1022,6 +1050,9 @@ export class AgentMemoryProvider implements IMemoryProvider {
 
 		this._loaded.add(agentId);
 		console.log(`[AgentMemory] loaded agent=${agentId}: short=${shortEntries.length}, long=${longEntries.length}, vectors=${restoredVectors > 0 ? `${restoredVectors} restored` : 'computed'}`);
+
+		// Load persisted consolidation memories (Episodic/Semantic/Procedural) and skills
+		await this._loadConsolidationAndSkills(agentId);
 	}
 
 	private _parseJsonl(raw: string): InternalMemoryEntry[] {
@@ -1166,6 +1197,95 @@ export class AgentMemoryProvider implements IMemoryProvider {
 
 	private async _persistShortTerm(agentId: string): Promise<void> {
 		this._schedulePersist(agentId);
+	}
+
+	// ─── Consolidation & Skill persistence (P0/P1/P2) ────────────────────────
+
+	/**
+	 * Load persisted consolidation memories (Episodic/Semantic/Procedural) and skills from KV.
+	 */
+	private async _loadConsolidationAndSkills(agentId: string): Promise<void> {
+		try {
+			const [episodicRaw, semanticRaw, proceduralRaw, skillsRaw] = await Promise.all([
+				kvGet(kvScope(agentId, 'episodic'), KV_KEY),
+				kvGet(kvScope(agentId, 'semantic'), KV_KEY),
+				kvGet(kvScope(agentId, 'procedural'), KV_KEY),
+				kvGet(kvScope(agentId, 'skills'), KV_KEY),
+			]);
+
+			// Restore consolidation pipeline state
+			let pipeline = this._consolidation.get(agentId);
+			if (!pipeline) {
+				pipeline = new ConsolidationPipeline();
+				this._consolidation.set(agentId, pipeline);
+			}
+
+			if (episodicRaw && episodicRaw.trim().length > 0) {
+				const episodic = JSON.parse(episodicRaw) as EpisodicMemory[];
+				(pipeline as any)._episodic.set(agentId, episodic);
+			}
+			if (semanticRaw && semanticRaw.trim().length > 0) {
+				const semantic = JSON.parse(semanticRaw) as SemanticMemory[];
+				(pipeline as any)._semantic.set(agentId, semantic);
+			}
+			if (proceduralRaw && proceduralRaw.trim().length > 0) {
+				const procedural = JSON.parse(proceduralRaw) as ProceduralMemory[];
+				(pipeline as any)._procedural.set(agentId, procedural);
+			}
+
+			// Restore skills
+			if (skillsRaw && skillsRaw.trim().length > 0) {
+				const skills = JSON.parse(skillsRaw) as ExtractedSkill[];
+				for (const skill of skills) {
+					(this._skillExtractor as any)._skills.set(skill.id, skill);
+				}
+				console.log(`[AgentMemory] restored ${skills.length} skills for ${agentId}`);
+			}
+		} catch (err) {
+			console.warn(`[AgentMemory] _loadConsolidationAndSkills failed for ${agentId}:`, err);
+		}
+	}
+
+	/**
+	 * Persist consolidation memories and skills to KV.
+	 * Called after sweep completes.
+	 */
+	private async _persistConsolidationAndSkills(agentId: string): Promise<void> {
+		if (!this._serverAvailable) return;
+		try {
+			const pipeline = this._consolidation.get(agentId);
+			const writes: Promise<boolean>[] = [];
+
+			if (pipeline) {
+				const episodic = (pipeline as any)._episodic.get(agentId) as EpisodicMemory[] | undefined;
+				const semantic = (pipeline as any)._semantic.get(agentId) as SemanticMemory[] | undefined;
+				const procedural = (pipeline as any)._procedural.get(agentId) as ProceduralMemory[] | undefined;
+
+				if (episodic && episodic.length > 0) {
+					writes.push(kvSet(kvScope(agentId, 'episodic'), KV_KEY, JSON.stringify(episodic)));
+				}
+				if (semantic && semantic.length > 0) {
+					writes.push(kvSet(kvScope(agentId, 'semantic'), KV_KEY, JSON.stringify(semantic)));
+				}
+				if (procedural && procedural.length > 0) {
+					writes.push(kvSet(kvScope(agentId, 'procedural'), KV_KEY, JSON.stringify(procedural)));
+				}
+			}
+
+			// Persist skills
+			const allSkills = (this._skillExtractor as any)._skills as Map<string, ExtractedSkill>;
+			const agentSkills = Array.from(allSkills.values()).filter(s => s.sourceSessionId.includes(agentId) || true); // all skills (global)
+			if (agentSkills.length > 0) {
+				writes.push(kvSet(kvScope(agentId, 'skills'), KV_KEY, JSON.stringify(agentSkills)));
+			}
+
+			if (writes.length > 0) {
+				await Promise.all(writes);
+				console.log(`[AgentMemory] persisted consolidation+skills for ${agentId} (${writes.length} writes)`);
+			}
+		} catch (err) {
+			this._logPersistenceFailure(`_persistConsolidationAndSkills(${agentId})`, err);
+		}
 	}
 
 	// ─── P0: Sharded index persistence ───────────────────────────────────────
@@ -2129,6 +2249,114 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	/** Mark a skill as used */
 	markSkillUsed(id: string): boolean {
 		return this._skillExtractor.markUsed(id);
+	}
+
+	/** Update a skill (edit mode) */
+	updateSkill(id: string, updates: Partial<Pick<ExtractedSkill, 'title' | 'trigger' | 'steps' | 'expectedOutcome' | 'tags' | 'slug'>>): ExtractedSkill | null {
+		return this._skillExtractor.update(id, updates);
+	}
+
+	/** Delete a skill */
+	deleteSkill(id: string): boolean {
+		return this._skillExtractor.delete(id);
+	}
+
+	/** Get skill statistics */
+	getSkillStats(): { totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number } {
+		const stats = this._skillExtractor.getStats();
+		const skills = this._skillExtractor.list();
+		const writtenCount = skills.filter(s => s.skillMdWritten).length;
+		return { ...stats, writtenCount };
+	}
+
+	/** Generate SKILL.md content for a skill */
+	generateSkillMd(skillId: string): string | null {
+		const skill = this._skillExtractor.get(skillId);
+		if (!skill) return null;
+		return generateSkillMd(skill);
+	}
+
+	/** Get the target file path for a skill's SKILL.md */
+	getSkillMdPath(skillId: string): string | null {
+		const skill = this._skillExtractor.get(skillId);
+		if (!skill || !skill.slug) return null;
+		// Path: ~/.saros/skills/<slug>/SKILL.md
+		const home = (typeof process !== 'undefined' && process.env.HOME) || (typeof process !== 'undefined' && process.env.USERPROFILE) || '.';
+		return `${home}/.saros/skills/${skill.slug}/SKILL.md`;
+	}
+
+	/** Mark a skill as written to SKILL.md */
+	markSkillWritten(skillId: string): boolean {
+		return this._skillExtractor.markWritten(skillId);
+	}
+
+	/** Write a skill's SKILL.md file to ~/.saros/skills/<slug>/SKILL.md */
+	async writeSkillFile(skillId: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+		const skill = this._skillExtractor.get(skillId);
+		if (!skill) return { ok: false, error: 'skill not found' };
+		if (!skill.slug) return { ok: false, error: 'slug not set' };
+		const content = generateSkillMd(skill);
+		const url = `${serverBase()}/skill-md/${encodeURIComponent(skill.slug)}`;
+		const ctrl = new AbortController();
+		const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+		try {
+			const resp = await fetch(url, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: content,
+				signal: ctrl.signal,
+			});
+			if (resp.ok) {
+				this._skillExtractor.markWritten(skillId);
+				const result = await resp.json();
+				console.log(`[AgentMemory] wrote SKILL.md for "${skill.title}" → ${result.path}`);
+				return { ok: true, path: result.path };
+			} else {
+				return { ok: false, error: `HTTP ${resp.status}` };
+			}
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	/** Delete a skill's SKILL.md file */
+	async deleteSkillFile(skillId: string): Promise<{ ok: boolean; deleted?: boolean; error?: string }> {
+		const skill = this._skillExtractor.get(skillId);
+		if (!skill) return { ok: false, error: 'skill not found' };
+		if (!skill.slug) return { ok: false, error: 'slug not set' };
+		const url = `${serverBase()}/skill-md/${encodeURIComponent(skill.slug)}`;
+		const ctrl = new AbortController();
+		const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+		try {
+			const resp = await fetch(url, { method: 'DELETE', signal: ctrl.signal });
+			if (resp.ok) {
+				const result = await resp.json();
+				console.log(`[AgentMemory] deleted SKILL.md for "${skill.title}"`);
+				return { ok: true, deleted: result.deleted };
+			} else {
+				return { ok: false, error: `HTTP ${resp.status}` };
+			}
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	/** Write SKILL.md for all skills that haven't been written yet */
+	async writeAllSkillFiles(): Promise<{ written: number; failed: number; errors: string[] }> {
+		const skills = this._skillExtractor.list();
+		const pending = skills.filter(s => !s.skillMdWritten);
+		let written = 0;
+		let failed = 0;
+		const errors: string[] = [];
+		for (const skill of pending) {
+			const result = await this.writeSkillFile(skill.id);
+			if (result.ok) { written++; } else { failed++; errors.push(`${skill.title}: ${result.error}`); }
+		}
+		return { written, failed, errors };
 	}
 
 	// ─── Temporal Graph API ──────────────────────────────────────────────────
@@ -3187,6 +3415,55 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			this._audit.record('consolidate', agentId, [], consolResult);
 		}
 
+		// P1: Auto-extract skills from completed sessions
+		if (consolResult.newEpisodic > 0) {
+			const episodic = pipeline.getEpisodic(agentId);
+			if (episodic.length > 0) {
+				// Use the latest episodic memory to extract a skill
+				const latest = episodic[episodic.length - 1];
+				const skillInput: SkillExtractInput = {
+					sessionId: latest.sessionId,
+					summary: {
+						title: latest.title,
+						narrative: latest.narrative,
+						keyDecisions: latest.keyDecisions,
+						filesModified: latest.filesModified,
+						toolsUsed: [],
+					},
+					observations: remaining.map(e => ({
+						content: e.content,
+						type: e.type,
+						importance: e.importance ?? 0,
+						timestamp: e.timestamp ?? Date.now(),
+					})),
+				};
+				const extracted = this._skillExtractor.extract(skillInput);
+				if (extracted) {
+					console.log(`[AgentMemory] auto-extracted skill: "${extracted.title}" (confidence=${extracted.confidence})`);
+					this._audit.record('skill_extract', agentId, [], {
+						skillId: extracted.id,
+						title: extracted.title,
+						confidence: extracted.confidence,
+					});
+					this._eventBus.emitSync({
+						type: 'skill_extracted',
+						source: 'memoryProvider',
+						agentId,
+						data: { skillId: extracted.id, title: extracted.title },
+					});
+					// 自动写入 SKILL.md 文件
+					if (extracted.confidence >= 0.5) {
+						this.writeSkillFile(extracted.id).catch(err => {
+							console.warn(`[AgentMemory] auto-write SKILL.md failed for "${extracted.title}":`, err);
+						});
+					}
+				}
+			}
+		}
+
+		// P0/P2: Persist consolidation memories + skills to SQLite KV
+		await this._persistConsolidationAndSkills(agentId);
+
 		// Reflect: auto-update slots from recent observations
 		const reflectResult = this._reflector.reflect(agentId, remaining, this._slots);
 		if (reflectResult.todosAdded + reflectResult.preferencesAdded + reflectResult.conventionsAdded > 0) {
@@ -3584,6 +3861,60 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		return true;
 	}
 
+	/**
+	 * List all agent IDs that have memory data in the KV store.
+	 * Scans KV scopes matching `mem:long:*` to find agents with data.
+	 */
+	async listAllAgentsWithData(): Promise<string[]> {
+		if (!this._serverAvailable) return [];
+		try {
+			// Query the KV store for all scopes starting with 'mem:long:'
+			const url = `${serverBase()}/kv-list-agents`;
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+			try {
+				const resp = await fetch(url, { signal: ctrl.signal });
+				if (resp.ok) {
+					const agents = await resp.json() as string[];
+					return agents;
+				}
+			} finally {
+				clearTimeout(timer);
+			}
+		} catch (err) {
+			console.warn('[AgentMemory] listAllAgentsWithData failed:', err);
+		}
+		return [];
+	}
+
+	/**
+	 * Search memories across ALL agents (not just one).
+	 * Used by the memory detail panel's "all agents" view.
+	 */
+	async searchAllAgents(query: string): Promise<Array<IMemoryEntry & { agentId: string }>> {
+		const agentIds = await this.listAllAgentsWithData();
+		const allResults: Array<IMemoryEntry & { agentId: string }> = [];
+
+		for (const aid of agentIds) {
+			await this._ensureLoaded(aid);
+			const long = this._longTerm.get(aid) ?? [];
+			const short = this._shortTerm.get(aid) ?? [];
+			const entries = [
+				...long.filter(e => !e.supersededBy),
+				...short.filter(e => !e.supersededBy),
+			];
+			for (const e of entries) {
+				const entry = this._toPublicEntry(e) as IMemoryEntry & { agentId: string };
+				entry.agentId = aid;
+				allResults.push(entry);
+			}
+		}
+
+		// Sort by timestamp descending, limit to 200
+		allResults.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+		return allResults.slice(0, 200);
+	}
+
 	async searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]> {
 		await this._ensureLoaded(agentId);
 
@@ -3603,6 +3934,16 @@ export class AgentMemoryProvider implements IMemoryProvider {
 				...long.filter(e => !e.supersededBy),
 				...short.filter(e => !e.supersededBy),
 			];
+
+			// 如果当前 agent 无数据，尝试从其他有数据的 agent 加载（fallback）
+			if (allEntries.length === 0 && this._serverAvailable) {
+				console.log(`[AgentMemory] searchMemory: no data for agent=${agentId}, trying fallback...`);
+				const fallbackResult = await this._fallbackLoadFromAnyAgent(agentId);
+				if (fallbackResult.length > 0) {
+					return fallbackResult;
+				}
+			}
+
 			return allEntries
 				.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
 				.slice(0, 100)
@@ -3629,6 +3970,49 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		this._eventBus.emitSync({ type: 'memory_searched', source: 'memoryProvider', agentId, data: { query: query.slice(0, 80), resultCount: results.length, durationMs: Date.now() - startTime } });
 
 		return results;
+	}
+
+	/**
+	 * Fallback: 当当前 agentId 无数据时，尝试从 KV 中查找有数据的 agent 并加载。
+	 * 这种情况发生在用户切换了 agent 但历史数据属于另一个 agentId（如 saros-claw → coder）。
+	 */
+	private async _fallbackLoadFromAnyAgent(currentAgentId: string): Promise<IMemoryEntry[]> {
+		try {
+			// 尝试已知的常见 agentId
+			const candidates = ['saros-claw', 'default', 'claw'];
+			for (const candidateId of candidates) {
+				if (candidateId === currentAgentId) continue;
+				const longRaw = await kvGet(kvScope(candidateId, 'long'), KV_KEY);
+				if (longRaw && longRaw.trim().length > 1) {
+					console.log(`[AgentMemory] fallback: found data for agent=${candidateId} (${longRaw.length} chars), loading...`);
+					// 加载到当前 agentId 的内存
+					await this._ensureLoaded(candidateId);
+					const long = this._longTerm.get(candidateId) ?? [];
+					const short = this._shortTerm.get(candidateId) ?? [];
+					const allEntries = [
+						...long.filter(e => !e.supersededBy),
+						...short.filter(e => !e.supersededBy),
+					];
+					if (allEntries.length > 0) {
+						// 也复制到当前 agentId 下，避免下次再 fallback
+						this._longTerm.set(currentAgentId, long);
+						this._shortTerm.set(currentAgentId, short);
+						this._bm25.set(currentAgentId, this._bm25.get(candidateId) ?? new BM25Index());
+						this._vector.set(currentAgentId, this._vector.get(candidateId) ?? new VectorIndex());
+						this._loaded.add(currentAgentId);
+						this._schedulePersist(currentAgentId);
+						console.log(`[AgentMemory] fallback: loaded ${allEntries.length} entries from ${candidateId} → ${currentAgentId}`);
+						return allEntries
+							.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
+							.slice(0, 100)
+							.map(e => this._toPublicEntry(e));
+					}
+				}
+			}
+		} catch (err) {
+			console.warn('[AgentMemory] fallback load failed:', err);
+		}
+		return [];
 	}
 
 	// ─── Hybrid search (BM25 + Vector + substring, RRF fusion) ───────────────
@@ -3819,9 +4203,23 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	// ─── Helpers ─────────────────────────────────────────────────────────────
 
 	private _toPublicEntry(entry: InternalMemoryEntry, score?: number): IMemoryEntry {
+		// Map internal storage type ('short_term'/'long_term') to 4-Tier contract type
+		// ('working'/'episodic'/'semantic'/'procedural')
+		let publicType: 'working' | 'episodic' | 'semantic' | 'procedural';
+		const metaType = (entry.metadata?.['memoryType'] as string) ?? '';
+		if (entry.type === 'short_term') {
+			publicType = 'working';
+		} else if (metaType === 'scene') {
+			publicType = 'semantic';
+		} else if (metaType === 'persona') {
+			publicType = 'procedural';
+		} else {
+			// 'long_term' or unknown → default to episodic
+			publicType = 'episodic';
+		}
 		return {
 			id: entry.id,
-			type: entry.type,
+			type: publicType,
 			content: entry.content,
 			metadata: {
 				...entry.metadata,

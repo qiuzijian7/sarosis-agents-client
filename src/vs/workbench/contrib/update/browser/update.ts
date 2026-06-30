@@ -210,6 +210,7 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 	private updateStateContextKey: IContextKey<string>;
 	private majorMinorUpdateAvailableContextKey: IContextKey<boolean>;
 	private _updatePromptShown = false;
+	private _restartPromptShown = false;
 
 	constructor(
 		@IStorageService storageService: IStorageService,
@@ -267,20 +268,26 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 				this.promptForUpdate(state.update);
 				break;
 			}
-			case StateType.Ready: {
-				const productVersion = state.update.productVersion;
-				if (productVersion) {
-					const currentVersion = tryParseVersion(this.productService.version);
-					const nextVersion = tryParseVersion(productVersion);
-					this.majorMinorUpdateAvailableContextKey.set(Boolean(currentVersion && nextVersion && isMajorMinorUpdate(currentVersion, nextVersion)));
-				}
-				break;
+		case StateType.Ready: {
+			const productVersion = state.update.productVersion;
+			if (productVersion) {
+				const currentVersion = tryParseVersion(this.productService.version);
+				const nextVersion = tryParseVersion(productVersion);
+				this.majorMinorUpdateAvailableContextKey.set(Boolean(currentVersion && nextVersion && isMajorMinorUpdate(currentVersion, nextVersion)));
 			}
+			// vssaros: 下载完成后弹窗询问是否重启
+			this.promptForRestart();
+			break;
+		}
 		}
 
 		// 离开 AvailableForDownload 状态时重置提示标志，以便下次检测到更新可再次提示
 		if (state.type !== StateType.AvailableForDownload) {
 			this._updatePromptShown = false;
+		}
+		// 离开 Ready 状态时重置重启提示标志
+		if (state.type !== StateType.Ready) {
+			this._restartPromptShown = false;
 		}
 
 		let badge: IBadge | undefined = undefined;
@@ -328,6 +335,32 @@ export class UpdateContribution extends Disposable implements IWorkbenchContribu
 			this.updateService.downloadUpdate(true);
 		}
 		// "暂不"：保持 AvailableForDownload 状态，活动栏徽章持续提示
+	}
+
+	/**
+	 * vssaros: 更新下载完成后弹窗，让用户选择"立即重启"或"稍后重启"。
+	 * 选"重启" → 立即退出并应用更新；选"稍后" → 保持 Ready 状态，
+	 * 活动栏徽章持续提示，用户下次重启时自动应用。
+	 */
+	private async promptForRestart(): Promise<void> {
+		// 防止重复弹窗
+		if (this._restartPromptShown) {
+			return;
+		}
+		this._restartPromptShown = true;
+
+		const res = await this.dialogService.confirm({
+			type: 'info',
+			message: nls.localize('updateReadyMsg', "Update downloaded. Restart now to apply the update?"),
+			detail: nls.localize('updateReadyDetail', "The update will be applied when {0} restarts.", this.productService.nameShort),
+			primaryButton: nls.localize({ key: 'restartNow', comment: ['&& denotes a mnemonic'] }, "&&Restart"),
+			cancelButton: nls.localize('restartLater', "La&&ter")
+		});
+
+		if (res.confirmed) {
+			this.updateService.quitAndInstall();
+		}
+		// "稍后"：保持 Ready 状态，活动栏徽章持续提示，下次重启时自动应用
 	}
 
 	private registerGlobalActivityActions(): void {

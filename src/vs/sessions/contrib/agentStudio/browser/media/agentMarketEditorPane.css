@@ -291,3 +291,404 @@
 	opacity: 0.6;
 	cursor: default;
 }
+
+/* ── Hero actions (upload / custom) ──────────────────────────── */
+.agent-market-search-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 1 1 260px;
+	max-width: 520px;
+}
+
+.agent-market-hero-actions {
+	display: flex;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+.agent-market-action-btn {
+	padding: 5px 14px;
+	font-size: 12px;
+	font-weight: 500;
+	border: 1px solid var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.4));
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	font-family: inherit;
+	transition: all 0.15s ease;
+}
+
+.agent-market-action-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+	border-color: var(--vscode-focusBorder);
+}
+
+/* ── Error state ─────────────────────────────────────────────── */
+.agent-market-error {
+	padding: 32px;
+	text-align: center;
+	color: #f85149;
+	font-size: 13px;
+	grid-column: 1 / -1;
+}
+
+/* ── Card action badges & buttons ────────────────────────────── */
+.agent-market-dep-warning {
+	font-size: 11px;
+	padding: 4px 10px;
+	margin-top: 8px;
+	border-radius: 4px;
+	background: rgba(204, 153, 51, 0.12);
+	color: #cc9933;
+	border: 1px solid rgba(204, 153, 51, 0.25);
+	cursor: pointer;
+	transition: background 0.15s ease;
+}
+
+.agent-market-dep-warning:hover {
+	background: rgba(204, 153, 51, 0.2);
+}
+
+.agent-market-badge {
+	flex: 0 0 auto;
+	font-size: 11px;
+	padding: 3px 10px;
+	border-radius: 4px;
+	white-space: nowrap;
+}
+
+.agent-market-badge.installing {
+	background: rgba(14, 99, 156, 0.15);
+	color: var(--vscode-button-background);
+}
+
+.agent-market-badge.upgrading {
+	background: rgba(204, 153, 51, 0.15);
+	color: #cc9933;
+}
+
+.agent-market-btn {
+	flex: 0 0 auto;
+	font-size: 11px;
+	padding: 3px 12px;
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	font-family: inherit;
+	white-space: nowrap;
+	transition: opacity 0.15s ease;
+}
+
+.agent-market-btn:hover {
+	opacity: 0.85;
+}
+
+.agent-market-btn.install {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.agent-market-btn.delete {
+	background: rgba(248, 81, 73, 0.12);
+	color: #f85149;
+	border: 1px solid rgba(248, 81, 73, 0.3);
+}
+
+.agent-market-btn.upgrade {
+	background: rgba(204, 153, 51, 0.15);
+	color: #cc9933;
+	border: 1px solid rgba(204, 153, 51, 0.4);
+}
+
+/* ── Overlay dialog ──────────────────────────────────────────── */
+.am-overlay {
+	animation: am-fade-in 0.15s ease;
+}
+
+@keyframes am-fade-in {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+.am-dialog-head span {
+	color: var(--vscode-foreground);
+}
+
+.am-dialog-body {
+	padding: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.am-label {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
+	margin-top: 10px;
+	margin-bottom: 2px;
+}
+
+.am-label:first-child {
+	margin-top: 0;
+}
+
+.am-input {
+	width: 100%;
+	box-sizing: border-box;
+	padding: 6px 10px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	font-family: inherit;
+	outline: none;
+}
+
+.am-input:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+textarea.am-input {
+	resize: vertical;
+	line-height: 1.5;
+}
+
+select.am-input {
+	cursor: pointer;
+}
+
+.am-dialog-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding: 14px 18px;
+	border-top: 1px solid var(--vscode-panel-border);
+}
+
+.am-btn-primary {
+	padding: 6px 18px;
+	font-size: 12px;
+	font-weight: 500;
+	border: none;
+	border-radius: 4px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	cursor: pointer;
+	font-family: inherit;
+}
+
+.am-btn-primary:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.am-btn-primary:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.am-btn-secondary {
+	padding: 6px 18px;
+	font-size: 12px;
+	font-weight: 500;
+	border: 1px solid var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.4));
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	font-family: inherit;
+}
+
+.am-btn-secondary:hover {
+	background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+/* ── Install from file dialog ── */
+.am-file-display {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 14px;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 4px;
+	background: var(--vscode-editor-background, #1e1e1e);
+	margin-bottom: 16px;
+}
+
+.am-file-icon {
+	font-size: 20px;
+	flex-shrink: 0;
+}
+
+.am-file-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.am-file-name {
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.am-file-path {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.am-browse-btn {
+	padding: 4px 12px;
+	font-size: 11px;
+	border: 1px solid var(--vscode-button-background, #0e639c);
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-button-background, #0e639c);
+	cursor: pointer;
+	font-family: inherit;
+	flex-shrink: 0;
+}
+
+.am-browse-btn:hover:not(:disabled) {
+	background: rgba(14 99 156 0.12);
+}
+
+.am-browse-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* Loading spinner */
+.am-install-loading {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 20px 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+}
+
+.am-install-spinner {
+	width: 16px;
+	height: 16px;
+	border: 2px solid var(--vscode-panel-border, #3c3c3c);
+	border-top-color: var(--vscode-button-background, #0e639c);
+	border-radius: 50%;
+	animation: am-spin 0.6s linear infinite;
+}
+
+@keyframes am-spin { to { transform: rotate(360deg); } }
+
+/* Preview card */
+.am-install-preview-card {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 12px 16px;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 6px;
+	background: var(--vscode-editor-background, #1e1e1e);
+	margin-bottom: 16px;
+}
+
+.am-install-preview-avatar {
+	width: 44px;
+	height: 44px;
+	border-radius: 8px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 26px;
+	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.04));
+	flex-shrink: 0;
+}
+
+.am-install-preview-meta {
+	flex: 1;
+	min-width: 0;
+}
+
+.am-install-preview-name {
+	font-size: 15px;
+	font-weight: 700;
+	color: var(--vscode-editor-foreground);
+}
+
+.am-install-preview-version {
+	display: inline-block;
+	margin-left: 6px;
+	padding: 1px 6px;
+	font-size: 10px;
+	border-radius: 8px;
+	background: rgba(137 209 133 0.15);
+	color: #89d185;
+	border: 1px solid rgba(137 209 133 0.25);
+}
+
+.am-install-preview-role {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+/* Form fields */
+.am-install-form-group {
+	margin-bottom: 12px;
+}
+
+.am-install-form-label {
+	display: block;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 4px;
+}
+
+.am-install-form-input {
+	width: 100%;
+	padding: 6px 10px;
+	background: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #d4d4d4);
+	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	border-radius: 4px;
+	font-size: 13px;
+	font-family: inherit;
+	outline: none;
+}
+
+.am-install-form-input:focus {
+	border-color: var(--vscode-focusBorder, #0e639c);
+}
+
+/* Read-only info grid */
+.am-install-info-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 8px;
+	margin-bottom: 16px;
+}
+
+.am-install-info-item {
+	padding: 8px 12px;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 4px;
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.am-install-info-item-label {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	text-transform: uppercase;
+}
+
+.am-install-info-item-value {
+	font-size: 12px;
+	color: var(--vscode-editor-foreground);
+	margin-top: 2px;
+}

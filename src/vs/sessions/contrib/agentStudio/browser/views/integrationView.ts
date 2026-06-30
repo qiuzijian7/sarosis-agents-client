@@ -20,7 +20,6 @@ import { URI } from '../../../../../base/common/uri.js';
 import { autorun, IObservable } from '../../../../../base/common/observable.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IAgentOSService } from '../../common/agentOS.js';
-import { IToolDefinition } from '../../common/providers.js';
 import { ISkillRegistry, ISkillDefinition } from '../../common/skills.js';
 import { ISkillInstallService, ISkillHubEntry } from '../../common/skillHubTypes.js';
 import { IEventBridgeService } from '../../common/eventBridge.js';
@@ -45,7 +44,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type IntegrationTab = 'skill' | 'tools' | 'mcp' | 'kb';
+type IntegrationTab = 'skill' | 'mcp' | 'kb';
 
 interface KnowledgeBaseItem {
 	id: string;
@@ -56,15 +55,6 @@ interface KnowledgeBaseItem {
 	path: string;
 }
 
-interface ToolDefinitionUI {
-	id: string;
-	name: string;
-	category: 'builtin' | 'custom';
-	description: string;
-	icon: string;
-	enabled: boolean;
-	provider?: string;
-}
 
 interface McpServerUI {
 	id: string;
@@ -84,15 +74,7 @@ interface McpToolUI {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function categorizeToolCategory(category: string | undefined): 'builtin' | 'custom' {
-	if (!category) { return 'custom'; }
-	if (category === 'utility' || category === 'filesystem' || category === 'web' || category === 'shell') { return 'builtin'; }
-	return 'custom';
-}
 
-function toolCategoryIcon(c: 'builtin' | 'custom'): string {
-	return c === 'custom' ? '🧩' : '🔧';
-}
 
 function skillIconFor(s: ISkillDefinition): string {
 	switch (s.category) {
@@ -141,12 +123,6 @@ export class IntegrationViewPane extends ViewPane {
 	private skillsCountBadge!: HTMLElement;
 	private skillsSearchInput!: HTMLInputElement;
 
-	// ── Tools state ───────────────────────────────────────────────
-	private tools: ToolDefinitionUI[] = [];
-	private toolsActiveTab = 'all';
-	private toolsRetryCount = 0;
-	private readonly toolsMaxRetries = 10;
-
 	// ── MCP state ─────────────────────────────────────────────────
 	private mcpTools: McpToolUI[] = [];
 	private mcpServers: McpServerUI[] = [];
@@ -163,8 +139,6 @@ export class IntegrationViewPane extends ViewPane {
 	private kbSearchInput!: HTMLInputElement;
 
 	// ── Tools/MCP search state ────────────────────────────────────
-	private toolsSearchQuery = '';
-	private toolsSearchInput!: HTMLInputElement;
 	private mcpSearchQuery = '';
 	private mcpSearchInput!: HTMLInputElement;
 	private static readonly MCP_DISABLED_STORAGE_KEY = 'agentStudio.mcpDisabledServers';
@@ -263,7 +237,11 @@ export class IntegrationViewPane extends ViewPane {
 			const data = event.data;
 			if (data?.action === 'add' && data.presetId) {
 				if (!IntegrationViewPane._isNonMcpServer(data.presetId)) {
-					// Don't add to _startingMcpIds — EditorPane already started the server
+					// Explicitly enable the newly installed MCP server — this clears
+					// any stale "disabled" state persisted from a previous failed auto-start.
+					const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
+					this._setMcpServerEnabled(sanitize(data.presetId), true);
+					this._setMcpServerEnabled(data.presetId, true);
 				}
 			} else if (data?.action === 'remove' && data.serverId) {
 				this._startingMcpIds.delete(data.serverId);
@@ -323,7 +301,6 @@ export class IntegrationViewPane extends ViewPane {
 		this.tabBar = $('div.integration-tab-bar');
 		const tabDefs: { id: IntegrationTab; label: string; icon: string }[] = [
 			{ id: 'skill', label: '\u6280\u80FD', icon: '\u{1F4A1}' }, // 技能
-			{ id: 'tools', label: '\u5DE5\u5177', icon: '\u{1F527}' }, // 工具
 			{ id: 'mcp', label: 'MCP', icon: '\u{1F50C}' },
 			{ id: 'kb', label: '\u77E5\u8BC6\u5E93', icon: '\u{1F4DA}' }, // 知识库
 		];
@@ -369,7 +346,7 @@ export class IntegrationViewPane extends ViewPane {
 		// Update tab button styles
 		const allTabs = this.tabBar.querySelectorAll('.integration-tab');
 		allTabs.forEach(b => b.classList.remove('active'));
-		const tabOrder: IntegrationTab[] = ['skill', 'tools', 'mcp', 'kb'];
+		const tabOrder: IntegrationTab[] = ['skill', 'mcp', 'kb'];
 		const idx = tabOrder.indexOf(tab);
 		if (idx >= 0) {
 			allTabs[idx].classList.add('active');
@@ -393,16 +370,6 @@ export class IntegrationViewPane extends ViewPane {
 					// Already built: re-attach DOM and refresh
 					this._buildSkillsDom();
 					this._refreshSkills();
-				}
-				break;
-			case 'tools':
-				if (!this.tabsRendered.has('tools')) {
-					this._buildToolsDom();
-					this.tabsRendered.add('tools');
-					void this._reloadTools();
-				} else {
-					this._buildToolsDom();
-					this._renderToolsList();
 				}
 				break;
 			case 'mcp':
@@ -993,207 +960,6 @@ export class IntegrationViewPane extends ViewPane {
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	//  TOOLS TAB
-	// ══════════════════════════════════════════════════════════════════════════
-
-	private _buildToolsDom(): void {
-		const container = this.contentContainer;
-		clearNode(container);
-
-		// Header
-		const header = $('div.tools-header');
-		const title = $('h3.tools-title');
-		title.classList.add('integration-section-title');
-		title.textContent = '\u{1F527} Built-in Tools';
-		header.appendChild(title);
-
-		const refreshBtn = $('button.tools-add-btn');
-		refreshBtn.textContent = '\u21BB Refresh';
-		refreshBtn.title = 'Reload tools from active provider';
-		refreshBtn.onclick = () => { void this._reloadTools(); };
-		header.appendChild(refreshBtn);
-		container.appendChild(header);
-
-		// Sub-tabs
-		const tabs = $('div.tools-tabs');
-		const tabDefs = [
-			{ id: 'all', label: 'All' },
-			{ id: 'builtin', label: 'Built-in' },
-			{ id: 'custom', label: 'Custom' },
-		];
-		for (const tab of tabDefs) {
-			const btn = $('button.tools-tab');
-			btn.textContent = tab.label;
-			if (tab.id === 'all') { btn.classList.add('active'); }
-			btn.onclick = () => {
-				tabs.querySelectorAll('.tools-tab').forEach(b => b.classList.remove('active'));
-				btn.classList.add('active');
-				this.toolsActiveTab = tab.id;
-				this._renderToolsList();
-			};
-			tabs.appendChild(btn);
-		}
-		container.appendChild(tabs);
-
-		// Search bar
-		const searchRow = $('div.skills-search-row');
-		this.toolsSearchInput = $('input.skills-search-input') as HTMLInputElement;
-		this.toolsSearchInput.type = 'text';
-		this.toolsSearchInput.placeholder = '\u{1F50D} \u641C\u7D22\u5DE5\u5177...'; // 🔍 搜索工具...
-		this.toolsSearchInput.oninput = () => {
-			this.toolsSearchQuery = this.toolsSearchInput.value.trim().toLowerCase();
-			this._renderToolsList();
-		};
-		searchRow.appendChild(this.toolsSearchInput);
-		const toolsClearBtn = $('button.skills-search-clear-btn');
-		toolsClearBtn.textContent = '\u2715';
-		toolsClearBtn.title = 'Clear search';
-		toolsClearBtn.onclick = () => {
-			this.toolsSearchInput.value = '';
-			this.toolsSearchQuery = '';
-			this._renderToolsList();
-		};
-		searchRow.appendChild(toolsClearBtn);
-		container.appendChild(searchRow);
-
-		// List
-		const listContainer = $('div.integration-tools-list');
-		listContainer.id = 'integration-tools-list';
-		container.appendChild(listContainer);
-	}
-
-	private async _reloadTools(): Promise<void> {
-		const next: ToolDefinitionUI[] = [];
-
-		try {
-			const toolsWithState = await this.agentOSService.listAllToolsWithState('viewer');
-			for (const tool of toolsWithState) {
-				const cat = categorizeToolCategory(tool.category);
-				next.push({
-					id: tool.name,
-					name: tool.name,
-					category: cat,
-					description: tool.description ?? '',
-					icon: toolCategoryIcon(cat),
-					enabled: tool.enabled ?? true,
-					provider: (tool as IToolDefinition).source ?? 'unknown',
-				});
-			}
-
-			if (next.length === 0 && this.toolsRetryCount < this.toolsMaxRetries) {
-				this.toolsRetryCount++;
-				setTimeout(() => { void this._reloadTools(); }, 2000);
-				return;
-			}
-
-			if (next.length > 0) {
-				this.toolsRetryCount = 0;
-			}
-		} catch (err) {
-			this.logService.error('[IntegrationView] Failed to load tools:', err);
-			if (this.toolsRetryCount < this.toolsMaxRetries) {
-				this.toolsRetryCount++;
-				setTimeout(() => { void this._reloadTools(); }, 2000);
-				return;
-			}
-		}
-
-		this.tools = next;
-		this._renderToolsList();
-	}
-
-	private _renderToolsList(): void {
-		const listEl = this.contentContainer.querySelector('#integration-tools-list') as HTMLElement;
-		if (!listEl) { return; }
-		clearNode(listEl);
-
-		let filtered = this.toolsActiveTab === 'all'
-			? this.tools
-			: this.tools.filter(t => t.category === this.toolsActiveTab);
-
-		if (this.toolsSearchQuery) {
-			filtered = filtered.filter(t =>
-				t.name.toLowerCase().includes(this.toolsSearchQuery) ||
-				t.description.toLowerCase().includes(this.toolsSearchQuery)
-			);
-		}
-
-		if (filtered.length === 0) {
-			const empty = $('div.tools-empty');
-			const p = $('p');
-			p.textContent = 'No tools available. Try refreshing to see built-in tools.';
-			empty.appendChild(p);
-			listEl.appendChild(empty);
-			return;
-		}
-
-		for (const tool of filtered) {
-			const item = $('div.tool-item');
-			item.classList.toggle('tool-enabled', tool.enabled);
-
-			const toggleContainer = $('div.tool-toggle');
-			const toggle = $('input.tool-toggle-input') as HTMLInputElement;
-			toggle.type = 'checkbox';
-			toggle.checked = tool.enabled;
-			toggle.title = tool.enabled ? 'Disable this tool' : 'Enable this tool';
-			toggle.onchange = async () => {
-				try {
-					if (toggle.checked) {
-						await this.agentOSService.enableTool('viewer', tool.id);
-					} else {
-						await this.agentOSService.disableTool('viewer', tool.id);
-					}
-					tool.enabled = toggle.checked;
-					item.classList.toggle('tool-enabled', tool.enabled);
-				} catch (err) {
-					this.logService.error('[IntegrationView] Failed to toggle tool:', err);
-					toggle.checked = !toggle.checked;
-				}
-			};
-			toggleContainer.appendChild(toggle);
-			const toolSlider = $('span.toggle-slider');
-			toggleContainer.appendChild(toolSlider);
-			item.appendChild(toggleContainer);
-
-			const iconEl = $('span.tool-icon');
-			iconEl.textContent = tool.icon;
-			item.appendChild(iconEl);
-
-			const info = $('div.tool-info');
-			const nameRow = $('div.tool-name-row');
-			const nameEl = $('span.tool-name');
-			nameEl.textContent = tool.name;
-			nameRow.appendChild(nameEl);
-
-			const categoryBadge = $('span.tool-category');
-			categoryBadge.textContent = tool.category;
-			categoryBadge.classList.add(`cat-${tool.category}`);
-			nameRow.appendChild(categoryBadge);
-			info.appendChild(nameRow);
-
-			const descEl = $('div.tool-desc');
-			descEl.textContent = tool.description;
-			info.appendChild(descEl);
-
-			if (tool.provider) {
-				const providerEl = $('div.tool-provider');
-				providerEl.textContent = `\u{1F4E6} ${tool.provider}`;
-				info.appendChild(providerEl);
-			}
-			item.appendChild(info);
-
-			// Action buttons (hover-visible) — only for custom tools
-			if (tool.category === 'custom') {
-				const actions = this._createActionButtons('skill', tool.id, tool.name, { showUpload: true, showDelete: true });
-				item.appendChild(actions);
-				this._attachHoverActions(item);
-			}
-
-			listEl.appendChild(item);
-		}
-	}
-
-	// ══════════════════════════════════════════════════════════════════════════
 	//  MCP TAB
 	// ══════════════════════════════════════════════════════════════════════════
 
@@ -1256,6 +1022,8 @@ export class IntegrationViewPane extends ViewPane {
 					sarosServerNames.add(name.toLowerCase());
 				}
 			}
+			this.logService.info('[MCP-Debug] saros mcp.json server names:', Array.from(sarosServerNames));
+			this.logService.info('[MCP-Debug] _mcpDisabledIds:', Array.from(this._mcpDisabledIds));
 
 			// 1. Fast path: try AgentOSService (tools via McpToolProvider)
 			const toolsWithState = await this.agentOSService.listAllToolsWithState('viewer');
@@ -1267,8 +1035,20 @@ export class IntegrationViewPane extends ViewPane {
 			const toolList: McpToolUI[] = [];
 
 			for (const tool of mcpTools) {
-				const parts = tool.name.split('__');
-				const serverId = parts.length >= 2 ? parts[0] : ((tool as any).serverId ?? 'unknown');
+				// McpToolProvider sets category = "mcp:sanitize(server.definition.id)"
+				// e.g. "mcp:mcp_config_usrlocal_tapd" — extract serverId by matching
+				// sarosServerNames as a suffix of the sanitized definition ID.
+				const catParts = (tool.category || '').split(':');
+				const rawDefId = catParts.length >= 2 ? catParts[1].toLowerCase() : '';
+				let serverId = 'unknown';
+				for (const name of sarosServerNames) {
+					const sanitizedName = name.replace(/[^A-Za-z0-9_]/g, '_').toLowerCase();
+					if (rawDefId && rawDefId.endsWith(sanitizedName)) {
+						serverId = name;
+						break;
+					}
+				}
+				this.logService.info(`[MCP-Debug] tool: name=${tool.name} category=${tool.category} serverId=${serverId}`);
 				// Skip non-MCP server IDs and 'unknown' (not a real MCP tool)
 				if (IntegrationViewPane._isNonMcpServer(serverId) || serverId === 'unknown') { continue; }
 				const descMatch = tool.description?.match(/\[via MCP server "([^"]+)"/);
@@ -1296,21 +1076,17 @@ export class IntegrationViewPane extends ViewPane {
 				for (const server of servers) {
 					const defId = server.definition.id;
 					const label = server.definition.label;
+					this.logService.info(`[MCP-Debug] mcpService server: defId=${defId} label=${label} inWhitelist=${sarosServerNames.has(label.toLowerCase())}`);
 					// Skip non-MCP server IDs (e.g. model providers)
 					if (IntegrationViewPane._isNonMcpServer(defId)) { continue; }
 					// Only show servers configured in ~/.saros/mcp.json
 					if (!sarosServerNames.has(label.toLowerCase())) { continue; }
-						// Normalize to the install name (label), not the full definition ID.
-						// McpToolProvider uses <sanitize(installName)> as the tool prefix.
-						// Using sanitize(defId) would produce "mcp_config_xxx_name" which
-						// doesn't match the simple prefix → duplicate server entries.
 						const normName = sanitize(label);
 						const normDefId = sanitize(defId);
-						// Prefer the simple name, but check both keys in serverMap
-						// in case step 1 (McpToolProvider) uses the full defId prefix.
 						const mapKey = serverMap.has(normName) ? normName
 							: serverMap.has(normDefId) ? normDefId
 							: normName;
+						this.logService.info(`[MCP-Debug] mcpService resolved: label=${label} normName=${normName} normDefId=${normDefId} mapKey=${mapKey} cacheState=${server.cacheState.get()} connState=${JSON.stringify(server.connectionState.get())}`);
 						// Store server ref with BOTH possible keys for consistent toggle lookup
 						this._mcpServerRefs.set(mapKey, server);
 						if (normDefId !== mapKey) {
@@ -1429,6 +1205,7 @@ export class IntegrationViewPane extends ViewPane {
 		// 6. Auto-start enabled servers that are not running (fire-and-forget, non-blocking)
 		this.logService.info('[MCP-AutoStart] _reloadMcp done. serverMap:', this.mcpServers.map(s => ({
 			id: s.id,
+			name: s.name,
 			status: s.status,
 			toolCount: s.toolCount,
 			enabled: this._isMcpServerEnabled(s.id),
@@ -1436,9 +1213,18 @@ export class IntegrationViewPane extends ViewPane {
 			hasRef: this._mcpServerRefs.has(s.id),
 		})));
 		this.logService.info('[MCP-AutoStart] _mcpServerRefs keys:', Array.from(this._mcpServerRefs.keys()));
+		this.logService.info('[MCP-AutoStart] _mcpDisabledIds:', Array.from(this._mcpDisabledIds));
 		for (const srv of this.mcpServers) {
 			if (IntegrationViewPane._isNonMcpServer(srv.id)) { continue; }
-			const enabled = this._isMcpServerEnabled(srv.id);
+			let enabled = this._isMcpServerEnabled(srv.id);
+			// If this server is in the saros mcp.json whitelist but marked as disabled,
+			// it's likely a stale disable from a previous auto-start failure. Clear it
+			// so the server can be auto-started normally.
+			if (!enabled && sarosServerNames.has(srv.name.toLowerCase())) {
+				this.logService.info(`[MCP-AutoStart] clearing stale disabled state for "${srv.id}" (in mcp.json whitelist)`);
+				this._setMcpServerEnabled(srv.id, true);
+				enabled = true;
+			}
 			const notRunning = srv.status !== 'connected';
 			const notStarting = !this._startingMcpIds.has(srv.id);
 			if (enabled && notRunning && notStarting) {
@@ -1607,13 +1393,10 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			]);
 
 			if (!started) {
-				this.logService.warn(`[MCP-AutoStart] Auto-start timed out for ${serverId}, marking as disabled`);
-				this._setMcpServerEnabled(serverId, false);
+				this.logService.warn(`[MCP-AutoStart] Auto-start timed out for ${serverId}, will retry on next reload`);
 			}
 		} catch (err) {
 			this.logService.warn(`[MCP-AutoStart] Auto-start FAILED for ${serverId}:`, err);
-			// Mark as disabled so it won't retry on next load
-			this._setMcpServerEnabled(serverId, false);
 		} finally {
 			this._startingMcpIds.delete(serverId);
 			this.logService.info(`[MCP-AutoStart] "${serverId}" finally: connState=${JSON.stringify(ref.connectionState.get())} cacheState=${ref.cacheState.get()}`);
@@ -2228,10 +2011,9 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 					await this._reloadKb();
 					break;
 				}
-				case 'tools':
-				case 'mcp':
-					this.notificationService.info(`Cannot delete built-in ${tab}. Disable it via the toggle instead.`);
-					return;
+			case 'mcp':
+				this.notificationService.info(`Cannot delete built-in ${tab}. Disable it via the toggle instead.`);
+				return;
 			}
 			this.notificationService.info(`\u2705 Deleted "${name}".`);
 		} catch (err) {
@@ -2244,7 +2026,6 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 	private _tabToKind(tab: IntegrationTab): PackageKind | undefined {
 		switch (tab) {
 			case 'skill': return 'skill';
-			case 'tools': return 'skill'; // tools are packaged as skills for marketplace purposes
 			case 'mcp': return 'mcp';
 			case 'kb': return 'knowledge';
 		}
@@ -2253,7 +2034,6 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 	private _refreshActiveTab(): void {
 		switch (this.activeTab) {
 			case 'skill': this._refreshSkills(); break;
-			case 'tools': void this._reloadTools(); break;
 			case 'mcp': void this._reloadMcp(); break;
 			case 'kb': void this._reloadKb(); break;
 		}

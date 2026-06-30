@@ -613,6 +613,38 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 
 
+	// ── 卸载 ──────────────────────────────────────────────
+	async uninstall(storeId: string, kind: PackageKind): Promise<void> {
+		this.logService.info(`[Marketplace] 卸载 ${kind}/${storeId}`);
+
+		// 1. 删除安装目录
+		const installDir = await this.resolveInstallDir(kind, storeId);
+		if (await this.fileService.exists(installDir)) {
+			await this.fileService.del(installDir, { recursive: true });
+		}
+		// agent 可能安装在 agents/custom/{id} 子目录（installer 路径）
+		if (kind === 'agent') {
+			const customDir = URI.joinPath(await this.pathService.userHome(), '.saros', 'agents', 'custom', storeId);
+			if (await this.fileService.exists(customDir)) {
+				await this.fileService.del(customDir, { recursive: true });
+			}
+			// Also clean up the unified agent directory ~/.saros/agents/{agentId}/
+			const agentDir = URI.joinPath(await this.pathService.userHome(), '.saros', 'agents', storeId);
+			if (await this.fileService.exists(agentDir)) {
+				await this.fileService.del(agentDir, { recursive: true });
+			}
+		}
+
+		// 2. 从 installed-packages.json 中移除
+		await this.removeInstalled(kind, storeId);
+
+		this.logService.info(`[Marketplace] 卸载完成: ${kind}/${storeId}`);
+	}
+
+	async getInstalled(): Promise<readonly { kind: PackageKind; storeId: string; version: string }[]> {
+		return this.readInstalled();
+	}
+
 	// ── 内部：installed-packages.json ─────────────────────────
 	private async getInstalledFileUri(): Promise<URI> {
 		const userHome = await this.pathService.userHome();
@@ -647,6 +679,18 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		entries.push(entry);
 		await this.fileService.createFolder(URI.joinPath(installedFileUri, '..'));
 		await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
+	}
+
+	private async removeInstalled(kind: PackageKind, storeId: string): Promise<void> {
+		const installedFileUri = await this.getInstalledFileUri();
+		try {
+			if (!await this.fileService.exists(installedFileUri)) { return; }
+			const content = await this.fileService.readFile(installedFileUri);
+			const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
+			const filtered = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
+			if (filtered.length === entries.length) { return; }
+			await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
+		} catch { /* ignore */ }
 	}
 
 	// ── 内部：目录解析（回退用）──────────────────────────────

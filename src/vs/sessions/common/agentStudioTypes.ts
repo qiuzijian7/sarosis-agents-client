@@ -268,6 +268,14 @@ export interface AgentExportData {
 		readonly memoryMd?: string;
 		/** Skill directive files (SKILL.md format) */
 		readonly skillDirectives?: Record<string, string>;
+		/** ConfigHTML: MD 源文件内容（用于跨工作区导入导出） */
+		readonly configMd?: string;
+		/** ConfigHTML: 渲染后的 HTML 入口文件名（如 "index.html"） */
+		readonly htmlEntry?: string;
+		/** ConfigHTML: 渲染后的 HTML 内容 */
+		readonly htmlContent?: string;
+		/** ConfigHTML: 自定义样式内容 */
+		readonly htmlStyles?: string;
 	};
 }
 
@@ -516,6 +524,12 @@ export interface AgentConfigMd {
 	 * Requests for unlisted capabilities are rejected.
 	 */
 	capabilities?: ConfigMdCapability[];
+
+	/** ConfigHTML: HTML 入口文件名（相对 htmlInstallDir，如 "index.html"） */
+	htmlPath?: string;
+
+	/** ConfigHTML: HTML 资源安装目录（绝对路径，由 installer 设置） */
+	htmlInstallDir?: string;
 }
 
 /**
@@ -571,6 +585,14 @@ export interface Workspace {
 	 * Not persisted — computed at runtime from IWorktreeService state.
 	 */
 	worktreeStatus?: 'none' | 'pending' | 'ready' | 'failed';
+	/**
+	 * File exclusion patterns sourced from a .code-workspace file's
+	 * `settings.files.exclude`. When set, the workspace explorer tree
+	 * hides entries matching these glob patterns (same semantics as
+	 * VS Code's native files.exclude). Keys are glob patterns, values
+	 * are boolean (true = excluded).
+	 */
+	filesExclude?: Record<string, boolean>;
 }
 
 /**

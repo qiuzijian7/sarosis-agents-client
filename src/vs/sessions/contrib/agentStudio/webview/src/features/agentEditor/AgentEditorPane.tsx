@@ -33,7 +33,7 @@ function nowMs(): number {
 }
 
 /* ── Tab definitions ─────────────────────────────────────────── */
-type TabId = 'prompt' | 'skills' | 'memory' | 'knowledge' | 'configmd' | 'tools' | 'mcp' | 'rules';
+type TabId = 'prompt' | 'skills' | 'memory' | 'knowledge' | 'configmd' | 'mcp' | 'rules';
 
 interface TabDef {
 	id: TabId;
@@ -46,7 +46,6 @@ const TABS: TabDef[] = [
 	{ id: 'skills',    label: '技能配置',     icon: '🛠' },
 	{ id: 'memory',    label: 'Memory',       icon: '🧠' },
 	{ id: 'knowledge', label: '知识库',       icon: '📚' },
-	{ id: 'tools',     label: 'Tool 配置',    icon: '🔧' },
 	{ id: 'mcp',       label: 'MCP 配置',    icon: '🔌' },
 	{ id: 'rules',     label: 'Rule 配置',    icon: '📏' },
 	{ id: 'configmd',  label: 'ConfigHtml',  icon: '📝' },
@@ -1112,6 +1111,88 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 
 	const [activeTab, setActiveTab] = useState<TabId>('prompt');
 
+	// ── Rename state ───────────────────────────────────────────────────
+	const [isRenaming, setIsRenaming] = useState(false);
+	const [renameValue, setRenameValue] = useState('');
+	const [renameError, setRenameError] = useState('');
+	const [renameSaving, setRenameSaving] = useState(false);
+	const renameInputRef = useRef<HTMLInputElement>(null);
+
+	// Start rename: populate input with current name and focus
+	const handleStartRename = useCallback(() => {
+		if (!agent) return;
+		setRenameValue(agent.name);
+		setRenameError('');
+		setIsRenaming(true);
+		// Focus after render
+		setTimeout(() => {
+			renameInputRef.current?.focus();
+			renameInputRef.current?.select();
+		}, 0);
+	}, [agent]);
+
+	const handleCancelRename = useCallback(() => {
+		setIsRenaming(false);
+		setRenameError('');
+		setRenameValue('');
+	}, []);
+
+	const handleConfirmRename = useCallback(async () => {
+		if (!agent || !agentId) return;
+		const newName = renameValue.trim();
+		if (!newName) {
+			setRenameError('名称不能为空');
+			return;
+		}
+		if (newName === agent.name) {
+			// No change — just exit
+			setIsRenaming(false);
+			setRenameError('');
+			return;
+		}
+		setRenameSaving(true);
+		setRenameError('');
+		try {
+			// Check for duplicate name (excluding self)
+			const allAgents = await sendRequest<unknown, Array<{ id: string; name: string }>>(
+				'agents.list', {}
+			);
+			const duplicate = allAgents?.find(
+				a => a.id !== agentId && a.name.toLowerCase() === newName.toLowerCase()
+			);
+			if (duplicate) {
+				setRenameError(`已存在名为 "${newName}" 的 Agent`);
+				setRenameSaving(false);
+				return;
+			}
+			// Perform the rename
+			await updateAgent(agentId, { name: newName });
+			// Notify host to update editor tab label
+			window.postMessage({
+				type: 'agentStudio:agent-renamed',
+				agentId,
+				newName,
+			}, '*');
+			setIsRenaming(false);
+			setRenameError('');
+			setRenameSaving(false);
+		} catch (err) {
+			setRenameError(`重命名失败: ${err instanceof Error ? err.message : String(err)}`);
+			setRenameSaving(false);
+		}
+	}, [agent, agentId, renameValue, updateAgent]);
+
+	const handleRenameKeyDown = useCallback((e: React.KeyboardEvent) => {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			handleConfirmRename();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			handleCancelRename();
+		}
+	}, [handleConfirmRename, handleCancelRename]);
+
+
 	// ── System Prompt state ──────────────────────────────────────────
 	// Prefer agent.customPrompt (user override), fallback to agent.systemPrompt (builtin default)
 	const initialPrompt = agent?.customPrompt || agent?.systemPrompt || '';
@@ -1311,6 +1392,31 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 		setPromptDirty(false);
 	}, [agentId, prompt, updateAgent]);
 
+	// ── Header button handlers ──
+	const handleChat = useCallback(() => {
+		window.postMessage({ type: 'agentStudio:close-self' }, '*');
+		// Trigger agent selection to open chat
+		window.postMessage({ type: 'agentStudio:select-agent', agentId }, '*');
+	}, [agentId]);
+
+	const handleExport = useCallback(async () => {
+		if (!agentId) return;
+		try {
+			const result = await sendRequest<{ agentId: string }, { version: number; exportedAt: string; agent: Record<string, unknown>; files: Record<string, unknown> }>(
+				'agents.export', { agentId }
+			);
+			const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${agentId}-export.json`;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			console.error('[AgentEditorPane] Export failed:', err);
+		}
+	}, [agentId]);
+
 
 
 	const handleConfigMdChange = useCallback((value: string) => {
@@ -1382,34 +1488,107 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 
 	return (
 		<div className="agent-editor-pane">
+			{/* ── Header: Agent Summary Card ────────────────────── */}
+			{agent && (
+				<div className="agent-editor-header">
+					<div className="agent-header-avatar">{agent.icon || '🤖'}</div>
+					<div className="agent-header-meta">
+						<div className="agent-header-title-line">
+							{isRenaming ? (
+								<div className="agent-header-rename">
+									<input
+										ref={renameInputRef}
+										className="agent-rename-input"
+										type="text"
+										value={renameValue}
+										onChange={(e) => { setRenameValue(e.target.value); setRenameError(''); }}
+										onKeyDown={handleRenameKeyDown}
+										disabled={renameSaving}
+										placeholder="输入新名称"
+									/>
+									<button
+										className="agent-rename-btn confirm"
+										onClick={handleConfirmRename}
+										disabled={renameSaving}
+										title="确认重命名"
+									>
+										{renameSaving ? '⏳' : '✓'}
+									</button>
+									<button
+										className="agent-rename-btn cancel"
+										onClick={handleCancelRename}
+										disabled={renameSaving}
+										title="取消"
+									>
+										✕
+									</button>
+								</div>
+							) : (
+								<>
+									<span
+										className="agent-header-title editable"
+										onDoubleClick={handleStartRename}
+										title="双击重命名"
+									>
+										{agent.name}
+									</span>
+									<button
+										className="agent-rename-trigger"
+										onClick={handleStartRename}
+										title="重命名 Agent"
+									>
+										✏️
+									</button>
+									{agent.version && (
+										<span className="agent-header-version">✓ v{agent.version}</span>
+									)}
+								</>
+							)}
+						</div>
+						{renameError && (
+							<div className="agent-header-rename-error">{renameError}</div>
+						)}
+						<div className="agent-header-desc">{agent.description || agent.role}</div>
+						<div className="agent-header-stats">
+							<span className="stat-item"><span className="stat-icon">🛠</span> <span className="stat-value">{agent.skills?.length || 0}</span> skills</span>
+							<span className="stat-item"><span className="stat-icon">🤖</span> <span className="stat-value">{agent.model || 'default'}</span></span>
+							{agent.category && (
+								<span className="stat-item"><span className="stat-icon">📂</span> {agent.category}</span>
+							)}
+						</div>
+					</div>
+					<div className="agent-header-actions">
+						<button className="header-btn" onClick={handleExport} title="导出 Agent">
+							📦 导出
+						</button>
+						<button className="header-btn primary" onClick={handleChat} title={`与 ${agent.name} 对话`}>
+							💬 对话
+						</button>
+					</div>
+				</div>
+			)}
+
 			{/* ── Tab Bar ────────────────────────────────────────── */}
 			<div className="agent-editor-tabs">
-				{TABS.map(tab => (
-					<button
-						key={tab.id}
-						className={`agent-editor-tab ${activeTab === tab.id ? 'active' : ''}`}
-						onClick={() => {
-							const t0 = nowMs();
-							console.log(
-								`${PERF_TAG} TAB_CLICK | ${nowLabel()} | ` +
-								`${activeTab} → ${tab.id}, agentId=${agentId}, hasConfigMd=${!!agent?.configMd}`
-							);
-							setActiveTab(tab.id);
-							// Use requestAnimationFrame to capture the time of the *next* paint triggered by this tab switch.
-							// Note: requestAnimationFrame fires before the actual paint, so the elapsed time is a lower bound.
-							requestAnimationFrame(() => {
-								const elapsed = nowMs() - t0;
-								console.log(
-									`${PERF_TAG} TAB_SWITCH_PAINT | ${nowLabel()} | ` +
-									`${tab.id}, paint-Δt≈${elapsed.toFixed(1)}ms (lower bound)`
-								);
-							});
-						}}
-					>
-						<span className="tab-icon">{tab.icon}</span>
-						<span className="tab-label">{tab.label}</span>
-					</button>
-				))}
+				{TABS.map(tab => {
+					// Badge counts per tab
+					let badge: number | undefined;
+					if (tab.id === 'skills' && agent?.skills) { badge = agent.skills.length; }
+					if (tab.id === 'mcp') { /* MCP count TBD */ }
+					return (
+						<button
+							key={tab.id}
+							className={`agent-editor-tab ${activeTab === tab.id ? 'active' : ''}`}
+							onClick={() => { setActiveTab(tab.id); }}
+						>
+							<span className="tab-icon">{tab.icon}</span>
+							<span className="tab-label">{tab.label}</span>
+							{badge !== undefined && badge > 0 && (
+								<span className="tab-badge">{badge}</span>
+							)}
+						</button>
+					);
+				})}
 			</div>
 
 			{/* ── Tab Content ───────────────────────────────────── */}
@@ -1566,22 +1745,6 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 						)}
 					</div>
 					</TabErrorBoundary>
-				)}
-
-				{/* ── Tab: Tools (placeholder) ─────────────────── */}
-				{activeTab === 'tools' && (
-					<div className="editor-tab-body">
-						<div className="editor-tab-desc">
-							Tool 配置：管理 Agent 可调用的工具列表。
-						</div>
-						<div className="placeholder-panel">
-							<div className="placeholder-icon">🔧</div>
-							<div className="placeholder-text">Tool 配置功能即将上线</div>
-							<div className="placeholder-hint">
-								将通过 Agent 目录下的 <code>tools.md</code> 文件进行配置。
-							</div>
-						</div>
-					</div>
 				)}
 
 				{/* ── Tab: MCP (placeholder) ──────────────────── */}

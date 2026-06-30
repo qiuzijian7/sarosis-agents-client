@@ -146,6 +146,8 @@ import { AgentMarketEditorPane } from './agentMarketEditorPane.js';
 import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
 import { AgentSettingsEditorPane } from './agentSettingsEditorPane.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
+import { AgentCreateEditorPane } from './agentCreateEditorPane.js';
+import { AgentCreateEditorInput } from './agentCreateEditorInput.js';
 import { McpServerEditorPane } from './mcpServerEditorPane.js';
 import { McpServerEditorInput } from './mcpServerEditorInput.js';
 import { McpDetailEditorPane } from './mcpDetailEditorPane.js';
@@ -610,6 +612,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(AgentMarketEditorInput)
+	]
+);
+
+// Register AgentCreateEditorPane so that the "Create Agent" page opens
+// in the editor area. Triggered by the "✏ 创建" button in the Preset
+// Agent sidebar view.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		AgentCreateEditorPane,
+		AgentCreateEditorPane.ID,
+		localize('agentCreateEditor', "Create Agent"),
+	),
+	[
+		new SyncDescriptor(AgentCreateEditorInput)
 	]
 );
 

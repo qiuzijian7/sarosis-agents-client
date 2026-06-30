@@ -1223,6 +1223,15 @@ export class WorkspaceViewPane extends ViewPane {
 			this.treeContainer.style.display = 'block';
 			this.emptyStateContainer.style.display = 'none';
 
+			// Resolve files.exclude patterns for this workspace:
+			// 1. Use stored ws.filesExclude if available
+			// 2. Otherwise, scan the workspace path directory for .code-workspace
+			//    files and read settings.files.exclude from them
+			const excludePatterns = await this._resolveExcludePatterns(activeWs);
+			if (excludePatterns && excludePatterns.length > 0) {
+				this.logService.info(`[WorkspaceViewPane] Exclude patterns: ${excludePatterns.join(', ')}`);
+			}
+
 			// Build root nodes for the active workspace:
 			//   1. The workspace's primary home directory (`path`)
 			//   2. Each related folder (linked code repository)
@@ -1230,7 +1239,7 @@ export class WorkspaceViewPane extends ViewPane {
 
 			// ── 1. Primary home directory root ──
 			if (activeWs.path) {
-				const homeRoot = await this._buildRealOrVirtualRoot(activeWs, activeWs.path, activeWs.name, false, false);
+				const homeRoot = await this._buildRealOrVirtualRoot(activeWs, activeWs.path, activeWs.name, false, false, excludePatterns);
 				workspaceRoots.push(homeRoot);
 			} else {
 				// No home directory — render as a virtual workspace root
@@ -1243,7 +1252,7 @@ export class WorkspaceViewPane extends ViewPane {
 					continue;
 				}
 				const rfName = rf.name || this._basename(rf.path);
-				const rfRoot = await this._buildRealOrVirtualRoot(activeWs, rf.path, rfName, true, !!rf.isGitRepo);
+				const rfRoot = await this._buildRealOrVirtualRoot(activeWs, rf.path, rfName, true, !!rf.isGitRepo, excludePatterns);
 				workspaceRoots.push(rfRoot);
 			}
 
@@ -1299,13 +1308,89 @@ export class WorkspaceViewPane extends ViewPane {
 	}
 
 	/**
+	 * Resolve files.exclude patterns for a workspace:
+	 * 1. Use stored ws.filesExclude if available
+	 * 2. Otherwise, scan the workspace path directory for .code-workspace
+	 *    files and read settings.files.exclude from ALL of them (merged).
+	 * Returns an array of glob pattern strings (only enabled entries).
+	 */
+	private async _resolveExcludePatterns(ws: Workspace): Promise<string[] | undefined> {
+		// 1. Use stored filesExclude on the workspace object
+		if (ws.filesExclude) {
+			const patterns = Object.entries(ws.filesExclude)
+				.filter(([, v]) => v === true)
+				.map(([k]) => k);
+			if (patterns.length > 0) {
+				this.logService.info(`[WorkspaceViewPane] Exclude patterns from stored filesExclude: ${patterns.join(', ')}`);
+				return patterns;
+			}
+		}
+
+		// 2. Scan workspace path directory for .code-workspace files
+		if (!ws.path) { return undefined; }
+		try {
+			const dirUri = URI.file(ws.path);
+			const stat = await this.fileService.resolve(dirUri);
+			if (!stat.children || stat.children.length === 0) {
+				this.logService.info(`[WorkspaceViewPane] _resolveExcludePatterns: no children in "${ws.path}"`);
+				return undefined;
+			}
+
+			// Find ALL .code-workspace files in the directory
+			const wsFiles = stat.children.filter(c =>
+				!c.isDirectory && c.name.toLowerCase().endsWith('.code-workspace')
+			);
+			if (wsFiles.length === 0) {
+				this.logService.info(`[WorkspaceViewPane] _resolveExcludePatterns: no .code-workspace files in "${ws.path}"`);
+				return undefined;
+			}
+
+			this.logService.info(`[WorkspaceViewPane] _resolveExcludePatterns: found ${wsFiles.length} .code-workspace file(s): ${wsFiles.map(f => f.name).join(', ')}`);
+
+			// Read ALL .code-workspace files and merge their files.exclude settings
+			const mergedExclude: Record<string, boolean> = {};
+			for (const wsFile of wsFiles) {
+				try {
+					const content = await this.fileService.readFile(wsFile.resource);
+					const parsed = JSON.parse(content.value.toString());
+					const filesExclude: Record<string, boolean> | undefined = parsed?.settings?.['files.exclude'];
+					if (filesExclude) {
+						this.logService.info(`[WorkspaceViewPane] _resolveExcludePatterns: "${wsFile.name}" has files.exclude: ${JSON.stringify(filesExclude)}`);
+						Object.assign(mergedExclude, filesExclude);
+					}
+				} catch { /* read/parse failed for this file — skip */ }
+			}
+
+			const patterns = Object.entries(mergedExclude)
+				.filter(([, v]) => v === true)
+				.map(([k]) => k);
+
+			if (patterns.length === 0) {
+				this.logService.info(`[WorkspaceViewPane] _resolveExcludePatterns: no enabled files.exclude patterns found`);
+				return undefined;
+			}
+
+			// Persist to the workspace so subsequent loads don't need to re-read
+			try {
+				await this.agentStudioService.updateWorkspace(ws.id, { filesExclude: mergedExclude });
+			} catch { /* non-fatal */ }
+
+			return patterns;
+		} catch (err) {
+			this.logService.warn(`[WorkspaceViewPane] _resolveExcludePatterns failed:`, err);
+			return undefined;
+		}
+	}
+
+	/**
 	 * Build a root tree node for a directory path. If the path exists as a
 	 * directory the node becomes a real filesystem root (children resolved
 	 * lazily via IFileService); otherwise it falls back to a virtual root
 	 * showing a "path missing" info child.
 	 */
-	private async _buildRealOrVirtualRoot(ws: Workspace, path: string, name: string, isRelatedFolder: boolean, isGitRepo: boolean): Promise<IWorkspaceExplorerElement> {
+	private async _buildRealOrVirtualRoot(ws: Workspace, path: string, name: string, isRelatedFolder: boolean, isGitRepo: boolean, excludePatterns?: string[]): Promise<IWorkspaceExplorerElement> {
 		const uri = URI.file(path);
+
 		let pathExists = false;
 		try {
 			const stat = await this.fileService.stat(uri);
@@ -1323,6 +1408,7 @@ export class WorkspaceViewPane extends ViewPane {
 				workspaceId: ws.id,
 				isRelatedFolder,
 				isGitRepo,
+				excludePatterns,
 			};
 		}
 
@@ -1343,6 +1429,7 @@ export class WorkspaceViewPane extends ViewPane {
 			workspaceId: ws.id,
 			isRelatedFolder,
 			isGitRepo,
+			excludePatterns,
 			children: infoChildren,
 		};
 	}

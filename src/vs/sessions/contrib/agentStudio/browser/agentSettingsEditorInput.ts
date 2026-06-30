@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../base/common/uri.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 
 /**
@@ -18,7 +19,7 @@ export class AgentSettingsEditorInput extends EditorInput {
 	static readonly ID = 'workbench.editor.agentStudio.agentSettings';
 
 	private readonly _agentId: string;
-	private readonly _agentName: string;
+	private _agentName: string;
 
 	constructor(agentId: string, agentName?: string) {
 		super();
@@ -29,6 +30,21 @@ export class AgentSettingsEditorInput extends EditorInput {
 	get agentId(): string {
 		return this._agentId;
 	}
+
+	get agentName(): string {
+		return this._agentName;
+	}
+
+	/** Update the agent name (used when the agent is renamed). */
+	setAgentName(name: string): void {
+		if (this._agentName !== name) {
+			this._agentName = name;
+			this._onDidChangeName.fire();
+		}
+	}
+
+	private readonly _onDidChangeName = this._register(new Emitter<void>());
+	readonly onDidChangeName = this._onDidChangeName.event;
 
 	override get typeId(): string {
 		return AgentSettingsEditorInput.ID;

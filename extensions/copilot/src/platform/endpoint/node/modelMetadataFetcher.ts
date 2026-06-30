@@ -240,8 +240,19 @@ export class ModelMetadataFetcher extends Disposable implements IModelMetadataFe
 			copilotToken = (await this._authService.getCopilotToken()).token;
 		} catch (e) {
 			const err = e as Error;
-			if (err.message?.includes('GitHubLoginFailed') || err.constructor?.name === 'GitHubLoginFailedError') {
-				this._logService.info('Skipping model metadata fetch: GitHub login not available (VsSaros TOF mode)');
+			const errName = err.constructor?.name;
+			// VsSaros: When the user has no Copilot access (not signed up, subscription
+			// expired, GitHub login failed, etc.), silently skip model metadata fetching
+			// instead of throwing. This allows BYOK model providers to work without errors.
+			if (
+				err.message?.includes('GitHubLoginFailed') ||
+				errName === 'GitHubLoginFailedError' ||
+				errName === 'NotSignedUpError' ||
+				errName === 'SubscriptionExpiredError' ||
+				errName === 'EnterpriseManagedError' ||
+				errName === 'ContactSupportError'
+			) {
+				this._logService.info(`Skipping model metadata fetch: no Copilot access (${errName})`);
 				return;
 			}
 			throw e;

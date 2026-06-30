@@ -14,15 +14,11 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { $, clearNode } from '../../../../base/browser/dom.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Dimension } from '../../../../base/browser/dom.js';
-import { autorun } from '../../../../base/common/observable.js';
-import { timeout } from '../../../../base/common/async.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { renderMarkdown } from '../../../../base/browser/markdownRenderer.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { McpDetailEditorInput } from './mcpDetailEditorInput.js';
 import { IEventBridgeService } from '../common/eventBridge.js';
-import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
-import { startServerAndWaitForLiveTools } from '../../../../workbench/contrib/mcp/common/mcpTypesUtils.js';
 import { IWorkbenchMcpManagementService } from '../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
 import { IInstallableMcpServer } from '../../../../platform/mcp/common/mcpManagement.js';
 import { IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
@@ -30,6 +26,7 @@ import { BUNDLED_MCP_PRESETS } from '../common/bundled-tools/bundledMcpPresets.j
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { URI } from '../../../../base/common/uri.js';
+import { IMarketplaceService } from '../common/marketplace.js';
 
 // ─── Unified detail model (from knot market OR bundled preset) ────────────────
 
@@ -105,6 +102,9 @@ export class McpDetailEditorPane extends EditorPane {
 	private _model: IMcpDetailModel | undefined;
 	private _installing = false;
 	private _installed = false;
+	private _localVersion: string | undefined;
+	private _serverVersion: string | undefined;
+	private _marketSlug: string | undefined;
 	private readonly _renderDisposables = this._register(new DisposableStore());
 
 	constructor(
@@ -113,10 +113,10 @@ export class McpDetailEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
-		@IMcpService private readonly mcpService: IMcpService,
 		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
 		@IFileService private readonly fileService: IFileService,
 		@IPathService private readonly pathService: IPathService,
+		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 	) {
 		super(McpDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -145,7 +145,8 @@ export class McpDetailEditorPane extends EditorPane {
 		if (!this._model) {
 			this._model = await this._resolveMcpDetailModelFromDisk(input.marketId);
 		}
-		await this._refreshInstalledState();
+		this._marketSlug = input.marketId;
+		await this._refreshInstallState();
 		this._render();
 	}
 
@@ -191,14 +192,40 @@ export class McpDetailEditorPane extends EditorPane {
 	//  INSTALL STATE
 	// ══════════════════════════════════════════════════════════════════════════
 
-	private async _refreshInstalledState(): Promise<void> {
+	private async _refreshInstallState(): Promise<void> {
 		this._installed = false;
-		if (!this._model) { return; }
+		this._localVersion = undefined;
+		this._serverVersion = undefined;
+		if (!this._marketSlug) { return; }
+
+		// 1. Read local installed version from installed-packages.json
 		try {
-			const installed = await this.mcpManagementService.getInstalled();
-			const norm = sanitize(this._model.name);
-			this._installed = installed.some(s => s.name === this._model!.name || sanitize(s.name) === norm);
+			const installed = await this.marketplaceService.getInstalled();
+			const entry = installed.find(e => e.kind === 'mcp' && e.storeId === this._marketSlug);
+			if (entry) {
+				this._installed = true;
+				this._localVersion = entry.version;
+			}
 		} catch { /* ignore */ }
+
+		// 2. Get server latest version
+		try {
+			const pkg = await this.marketplaceService.getPackage(this._marketSlug);
+			this._serverVersion = pkg.latestVersion;
+		} catch { /* ignore — may not be a marketplace package */ }
+	}
+
+	/** Compare semver versions: returns >0 if a>b, 0 if equal, <0 if a<b */
+	private static _compareVersions(a: string, b: string): number {
+		const pa = a.split('.').map(n => parseInt(n, 10) || 0);
+		const pb = b.split('.').map(n => parseInt(n, 10) || 0);
+		for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+			const va = pa[i] || 0;
+			const vb = pb[i] || 0;
+			if (va > vb) return 1;
+			if (va < vb) return -1;
+		}
+		return 0;
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -405,35 +432,86 @@ export class McpDetailEditorPane extends EditorPane {
 	private _buildActionButton(): HTMLElement {
 		const wrap = $('div');
 		wrap.style.flexShrink = '0';
-
-		const btn = $('button') as HTMLButtonElement;
-		btn.style.padding = '8px 22px';
-		btn.style.fontSize = '13px';
-		btn.style.fontWeight = '600';
-		btn.style.border = 'none';
-		btn.style.borderRadius = '6px';
-		btn.style.cursor = 'pointer';
-		btn.style.whiteSpace = 'nowrap';
+		wrap.style.display = 'flex';
+		wrap.style.gap = '8px';
 
 		if (this._installing) {
+			const btn = $('button') as HTMLButtonElement;
 			btn.textContent = '⏳ 安装中...';
 			btn.disabled = true;
+			btn.style.padding = '8px 22px';
+			btn.style.fontSize = '13px';
+			btn.style.fontWeight = '600';
+			btn.style.border = 'none';
+			btn.style.borderRadius = '6px';
+			btn.style.cursor = 'not-allowed';
 			btn.style.background = 'var(--vscode-button-secondaryBackground)';
 			btn.style.color = 'var(--vscode-button-secondaryForeground)';
-		} else if (this._installed) {
-			btn.textContent = '🗑 删除';
-			btn.style.background = 'var(--vscode-inputValidation-errorBackground, #5a1d1d)';
-			btn.style.color = 'var(--vscode-errorForeground, #f48771)';
-			btn.style.border = '1px solid var(--vscode-inputValidation-errorBorder, #be1100)';
-			btn.onclick = () => { void this._uninstall(); };
-		} else {
+			wrap.appendChild(btn);
+			return wrap;
+		}
+
+		if (!this._installed) {
+			// Not installed → Install button
+			const btn = $('button') as HTMLButtonElement;
 			btn.textContent = '⬇ 安装';
+			btn.style.padding = '8px 22px';
+			btn.style.fontSize = '13px';
+			btn.style.fontWeight = '600';
+			btn.style.border = 'none';
+			btn.style.borderRadius = '6px';
+			btn.style.cursor = 'pointer';
 			btn.style.background = 'var(--vscode-button-background)';
 			btn.style.color = 'var(--vscode-button-foreground)';
 			btn.onclick = () => { void this._install(); };
+			wrap.appendChild(btn);
+		} else {
+			// Installed → check if upgrade available
+			const canUpgrade = this._localVersion && this._serverVersion &&
+				McpDetailEditorPane._compareVersions(this._serverVersion, this._localVersion) > 0;
+
+			if (canUpgrade) {
+				// Upgrade button
+				const upBtn = $('button') as HTMLButtonElement;
+				upBtn.textContent = `⬆ 升级到 v${this._serverVersion}`;
+				upBtn.style.padding = '8px 22px';
+				upBtn.style.fontSize = '13px';
+				upBtn.style.fontWeight = '600';
+				upBtn.style.border = 'none';
+				upBtn.style.borderRadius = '6px';
+				upBtn.style.cursor = 'pointer';
+				upBtn.style.background = 'var(--vscode-button-background)';
+				upBtn.style.color = 'var(--vscode-button-foreground)';
+				upBtn.onclick = () => { void this._install(); };
+				wrap.appendChild(upBtn);
+			} else {
+				// Already latest — show version badge
+				const badge = $('span');
+				badge.textContent = `✓ v${this._localVersion || '?'}`;
+				badge.style.padding = '8px 14px';
+				badge.style.fontSize = '13px';
+				badge.style.fontWeight = '600';
+				badge.style.background = 'rgba(78, 201, 176, 0.15)';
+				badge.style.color = '#4ec9b0';
+				badge.style.borderRadius = '6px';
+				wrap.appendChild(badge);
+			}
+
+			// Delete button (always shown when installed)
+			const delBtn = $('button') as HTMLButtonElement;
+			delBtn.textContent = '🗑 删除';
+			delBtn.style.padding = '8px 22px';
+			delBtn.style.fontSize = '13px';
+			delBtn.style.fontWeight = '600';
+			delBtn.style.border = '1px solid var(--vscode-inputValidation-errorBorder, #be1100)';
+			delBtn.style.borderRadius = '6px';
+			delBtn.style.cursor = 'pointer';
+			delBtn.style.background = 'var(--vscode-inputValidation-errorBackground, #5a1d1d)';
+			delBtn.style.color = 'var(--vscode-errorForeground, #f48771)';
+			delBtn.onclick = () => { void this._uninstall(); };
+			wrap.appendChild(delBtn);
 		}
 
-		wrap.appendChild(btn);
 		return wrap;
 	}
 
@@ -442,74 +520,106 @@ export class McpDetailEditorPane extends EditorPane {
 	// ══════════════════════════════════════════════════════════════════════════
 
 	private async _install(): Promise<void> {
-		if (!this._model || this._installing) { return; }
-		const model = this._model;
+		if (!this._marketSlug || this._installing) { return; }
 		this._installing = true;
 		this._render();
 
 		try {
-			const config = buildInstallableConfig(model);
-			const installable: IInstallableMcpServer = { name: model.name, config };
-			console.log('[McpDetail] Installing MCP server:', model.name);
-			await this.mcpManagementService.install(installable);
+			const version = this._serverVersion || 'latest';
+			console.log('[McpDetail] Installing MCP:', this._marketSlug, version);
+			const result = await this.marketplaceService.download(this._marketSlug, version, 'mcp');
 
-			// Wait for IMcpService to discover & create the live server instance
-			const server = await this._waitForMcpServer(model.name, 10000);
-			if (server) {
-				await startServerAndWaitForLiveTools(server, { promptType: 'all-untrusted', autoTrustChanges: true });
-				console.log('[McpDetail] Server started:', model.name);
-			} else {
-				console.warn('[McpDetail] Server not discovered after install:', model.name);
-			}
-			this._installed = true;
-			this.eventBridgeService.emit('mcp:servers-changed', { action: 'add', presetId: sanitize(model.name) });
+			// Sync to VS Code MCP config
+			await this._syncToVsCodeConfig(this._marketSlug);
+
+			this.eventBridgeService.emit('mcp:servers-changed', { action: 'add', presetId: sanitize(this._marketSlug) });
+			console.log('[McpDetail] Installed:', this._marketSlug, result.version);
 		} catch (err) {
 			console.error('[McpDetail] Install failed:', err);
 		} finally {
 			this._installing = false;
-			await this._refreshInstalledState();
+			await this._refreshInstallState();
 			this._render();
 		}
 	}
 
 	private async _uninstall(): Promise<void> {
-		if (!this._model) { return; }
-		const model = this._model;
+		if (!this._marketSlug) { return; }
 		try {
-			const installed = await this.mcpManagementService.getInstalled();
-			const norm = sanitize(model.name);
-			const match = installed.find(s => s.name === model.name || sanitize(s.name) === norm);
-			if (match) {
-				await this.mcpManagementService.uninstall(match);
-				console.log('[McpDetail] Uninstalled:', match.name);
+			console.log('[McpDetail] Uninstalling MCP:', this._marketSlug);
+			// 1. Uninstall from marketplace (removes ~/.saros/mcp/{slug}/ + installed-packages.json)
+			await this.marketplaceService.uninstall(this._marketSlug, 'mcp');
+
+			// 2. Remove from ~/.saros/mcp.json
+			await this._removeFromMcpJson(this._marketSlug);
+
+			// 3. Uninstall from VS Code MCP config
+			try {
+				const installed = await this.mcpManagementService.getInstalled();
+				const match = installed.find(s => s.name === this._marketSlug || sanitize(s.name) === sanitize(this._marketSlug!));
+				if (match) {
+					await this.mcpManagementService.uninstall(match);
+				}
+			} catch (e) {
+				console.warn('[McpDetail] VS Code config uninstall failed (non-fatal):', e);
 			}
-			this.eventBridgeService.emit('mcp:servers-changed', { action: 'remove', serverId: norm });
+
+			this.eventBridgeService.emit('mcp:servers-changed', { action: 'remove', serverId: sanitize(this._marketSlug) });
+			console.log('[McpDetail] Uninstalled:', this._marketSlug);
 		} catch (err) {
 			console.error('[McpDetail] Uninstall failed:', err);
 		} finally {
-			await this._refreshInstalledState();
+			await this._refreshInstallState();
 			this._render();
 		}
 	}
 
-	private async _waitForMcpServer(presetName: string, maxWaitMs: number): Promise<any> {
-		const startTime = Date.now();
-		while (Date.now() - startTime < maxWaitMs) {
-			let found: any = undefined;
-			const d = autorun(reader => {
-				const currentServers = this.mcpService.servers.read(reader);
-				for (const s of currentServers) {
-					const defId = s.definition?.id ?? '';
-					const label = s.definition?.label ?? '';
-					if (label === presetName || defId === presetName || defId.endsWith('.' + presetName)) {
-						found = s;
-					}
-				}
-			});
-			d.dispose();
-			if (found) { return found; }
-			await timeout(300);
+	/** Sync MCP config from ~/.saros/mcp/{slug}/config.json to VS Code MCP config */
+	private async _syncToVsCodeConfig(slug: string): Promise<void> {
+		try {
+			const userHome = await this.pathService.userHome();
+			const configUri = URI.joinPath(userHome, '.saros', 'mcp', slug, 'config.json');
+			if (!await this.fileService.exists(configUri)) { return; }
+			const content = await this.fileService.readFile(configUri);
+			const config = JSON.parse(content.value.toString());
+			const transport = config.transport || 'stdio';
+			let serverConfig: IMcpServerConfiguration;
+			if (transport === 'stdio') {
+				serverConfig = {
+					type: McpServerType.LOCAL,
+					command: config.command || '',
+					...(config.args ? { args: config.args } : {}),
+					...(config.env ? { env: config.env } : {}),
+				};
+			} else {
+				serverConfig = {
+					type: McpServerType.REMOTE,
+					url: config.url || '',
+					...(config.headers ? { headers: config.headers } : {}),
+				};
+			}
+			const installable: IInstallableMcpServer = { name: slug, config: serverConfig };
+			await this.mcpManagementService.install(installable);
+		} catch (e) {
+			console.warn('[McpDetail] Failed to sync to VS Code config (non-fatal):', e);
 		}
-		return undefined;
+	}
+
+	/** Remove a server entry from ~/.saros/mcp.json */
+	private async _removeFromMcpJson(slug: string): Promise<void> {
+		try {
+			const userHome = await this.pathService.userHome();
+			const mcpJsonUri = URI.joinPath(userHome, '.saros', 'mcp.json');
+			if (!await this.fileService.exists(mcpJsonUri)) { return; }
+			const content = await this.fileService.readFile(mcpJsonUri);
+			const data = JSON.parse(content.value.toString());
+			if (data.servers && slug in data.servers) {
+				delete data.servers[slug];
+				const { VSBuffer } = await import('../../../../base/common/buffer.js');
+				await this.fileService.writeFile(mcpJsonUri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
+			}
+		} catch (e) {
+			console.warn('[McpDetail] Failed to remove from mcp.json (non-fatal):', e);
+		}
 	}
 }

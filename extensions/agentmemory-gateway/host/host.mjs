@@ -109,6 +109,87 @@ async function main() {
 				return;
 			}
 
+			// ── List all agents with data ─────────────────────────────────
+			if (url.pathname === '/kv-list-agents' && req.method === 'GET') {
+				const rows = db.prepare("SELECT DISTINCT scope FROM kv_store WHERE scope LIKE 'mem:long:%' AND length(value) > 1").all();
+				const agents = rows.map(r => r.scope.replace('mem:long:', ''));
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify(agents));
+				return;
+			}
+
+			// ── SKILL.md file endpoints ────────────────────────────────────
+			// Write SKILL.md: PUT /skill-md/<slug>
+			// Delete SKILL.md: DELETE /skill-md/<slug>
+			const skillMatch = url.pathname.match(/^\/skill-md\/([^/]+)$/);
+			if (skillMatch) {
+				const slug = sanitize(skillMatch[1]);
+				const home = process.env.HOME || process.env.USERPROFILE || '.';
+				const skillsDir = path.join(home, '.saros', 'skills', slug);
+				const skillFile = path.join(skillsDir, 'SKILL.md');
+
+				if (req.method === 'PUT') {
+					pendingWrites++;
+					try {
+						const chunks = [];
+						for await (const chunk of req) { chunks.push(chunk); }
+						const body = Buffer.concat(chunks).toString('utf8');
+						fs.mkdirSync(skillsDir, { recursive: true });
+						const tmpPath = skillFile + `.tmp_${Date.now()}`;
+						fs.writeFileSync(tmpPath, body, 'utf8');
+						fs.renameSync(tmpPath, skillFile);
+						emit('log', `${TAG} wrote SKILL.md: ${skillFile} (${body.length} bytes)`);
+						res.writeHead(200, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ ok: true, path: skillFile, bytes: body.length }));
+					} catch (err) {
+						res.writeHead(500, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ error: err.message }));
+					} finally {
+						pendingWrites--;
+					}
+					return;
+				}
+
+				if (req.method === 'DELETE') {
+					pendingWrites++;
+					try {
+						let deleted = false;
+						if (fs.existsSync(skillFile)) {
+							fs.unlinkSync(skillFile);
+							deleted = true;
+						}
+						// Also try to remove the directory if empty
+						try { fs.rmdirSync(skillsDir); } catch { /* not empty, ignore */ }
+						emit('log', `${TAG} deleted SKILL.md: ${skillFile}`);
+						res.writeHead(200, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ ok: true, deleted, path: skillFile }));
+					} catch (err) {
+						res.writeHead(500, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ error: err.message }));
+					} finally {
+						pendingWrites--;
+					}
+					return;
+				}
+
+				if (req.method === 'GET') {
+					try {
+						if (fs.existsSync(skillFile)) {
+							const content = fs.readFileSync(skillFile, 'utf8');
+							res.writeHead(200, { 'Content-Type': 'application/json' });
+							res.end(JSON.stringify({ exists: true, content, path: skillFile }));
+						} else {
+							res.writeHead(200, { 'Content-Type': 'application/json' });
+							res.end(JSON.stringify({ exists: false }));
+						}
+					} catch (err) {
+						res.writeHead(500, { 'Content-Type': 'application/json' });
+						res.end(JSON.stringify({ error: err.message }));
+					}
+					return;
+				}
+			}
+
 			// ── Batch flush (for beforeunload) ──────────────────────────────
 			if (url.pathname === '/flush-all' && req.method === 'POST') {
 				const chunks = [];

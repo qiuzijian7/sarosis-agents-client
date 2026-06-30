@@ -10,7 +10,8 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -73,7 +74,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IWorkspaceLifecycleService private readonly workspaceLifecycleService: IWorkspaceLifecycleService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
@@ -269,7 +270,10 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			if (customPath) {
 				this._globalDataUri = URI.file(customPath);
 			} else {
-				this._globalDataUri = URI.joinPath(this.environmentService.userHome, '.saros');
+				// Use userRoamingDataHome's parent as the user home directory.
+				// In VS Code, userRoamingDataHome is typically ~/.vscode-oss,
+				// so we go up one level to get ~/.saros
+				this._globalDataUri = URI.joinPath(this.environmentService.userRoamingDataHome, '..', '.saros');
 			}
 			this.logService.debug(`[AgentStudio] Global data directory: ${this._globalDataUri.toString()}`);
 		}
@@ -482,6 +486,39 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		agents.push(agent);
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, agents);
 
+		// Create the agent's directory: ~/.saros/agents/{agentId}/
+		// Write agent.json and .agent.md so the agent has a persistent home dir.
+		try {
+			const agentDir = await this.getAgentDir(id);
+			try {
+				await this.fileService.resolve(agentDir);
+			} catch {
+				await this.fileService.createFolder(agentDir);
+			}
+			// Write agent.json
+			const agentJsonUri = joinPath(agentDir, 'agent.json');
+			await this.fileService.writeFile(agentJsonUri, VSBuffer.fromString(JSON.stringify(agent, null, 2)));
+			// Write .agent.md
+			const toolsLine = agent.tools?.length ? `\ntools: ${agent.tools.join(', ')}` : '';
+			const categoryLine = agent.category ? `\ncategory: ${agent.category}` : '';
+			const agentMdContent = `---
+name: ${agent.name}
+description: ${agent.description || ''}
+model: ${agent.model || 'claude-sonnet-4-20250514'}${toolsLine}${categoryLine}
+icon: "${agent.icon || '🤖'}"
+---
+
+# ${agent.name}
+
+${agent.systemPrompt || ''}
+`;
+			const agentMdUri = joinPath(agentDir, '.agent.md');
+			await this.fileService.writeFile(agentMdUri, VSBuffer.fromString(agentMdContent));
+			this.logService.info(`[AgentStudio] Created agent dir + files at ${agentDir.toString()}`);
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] createAgent: failed to create agent dir for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+		}
+
 		// If bootstrapTemplates were provided, create a .agent.md file so the
 		// agent appears in the native chat mode picker with its icon and metadata.
 		const bootstrap = (data as any).bootstrapTemplates;
@@ -518,21 +555,28 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/**
-	 * Creates a `.agent.md` file in `~/.saros/agents/custom/` so the agent
+	 * Resolve the per-agent directory: `~/.saros/agents/{agentId}/`.
+	 * Contains agent.json, .agent.md, config.html, and HTML assets.
+	 */
+	async getAgentDir(agentId: string): Promise<URI> {
+		const agentsDir = await this._getSarosAgentsDir();
+		return joinPath(agentsDir, agentId);
+	}
+
+	/**
+	 * Creates a `.agent.md` file in `~/.saros/agents/{agentId}/` so the agent
 	 * appears in the native chat mode picker with its icon and metadata.
 	 * If the agentsMd content lacks YAML front matter with an `icon` field,
 	 * prepends one using the agent's `icon` property.
 	 */
 	private async _createAgentMdFile(agent: Agent, agentsMdContent: string): Promise<void> {
-		const agentsDir = joinPath(await this._getSarosAgentsDir(), 'custom');
-		const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-		const fileUri = joinPath(agentsDir, `${slug}.agent.md`);
+		const agentDir = await this.getAgentDir(agent.id);
 
 		// Ensure the directory exists
 		try {
-			await this.fileService.resolve(agentsDir);
+			await this.fileService.resolve(agentDir);
 		} catch {
-			await this.fileService.createFolder(agentsDir);
+			await this.fileService.createFolder(agentDir);
 		}
 
 		// If the content already has YAML front matter with icon, use as-is.
@@ -551,20 +595,23 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			}
 		}
 
+		const fileUri = joinPath(agentDir, '.agent.md');
 		await this.fileService.writeFile(fileUri, VSBuffer.fromString(content));
 		this.logService.info(`[AgentStudio] Created .agent.md at ${fileUri.toString()}`);
 	}
 
 	/**
-	 * Ensures every builtin agent has a corresponding `.agent.md` file in
-	 * `~/.saros/agents/` so it appears in the native chat mode picker with
-	 * its preset icon. Only creates files that don't already exist — never
-	 * overwrites user edits.
+	 * Ensures every builtin agent has a dedicated directory at
+	 * `~/.saros/agents/{agentId}/` containing:
+	 *   - agent.json   (agent definition, for config/reading)
+	 *   - .agent.md    (YAML front matter + system prompt, for chat mode picker)
+	 *
+	 * Only creates files that don't already exist — never overwrites user edits.
 	 */
 	async ensureBuiltinAgentMdFiles(): Promise<void> {
 		const agentsDir = await this._getSarosAgentsDir();
 
-		// Ensure the directory exists
+		// Ensure ~/.saros/agents/ exists
 		try {
 			await this.fileService.resolve(agentsDir);
 		} catch {
@@ -577,12 +624,51 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 		const builtinAgents = getBuiltinAgents();
 		for (const agent of builtinAgents) {
-			const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-			const fileUri = joinPath(agentsDir, `${slug}.agent.md`);
+			const agentDir = joinPath(agentsDir, agent.id);
 
-			// Skip if the file already exists — don't overwrite user edits
+			// Ensure per-agent directory exists
 			try {
-				await this.fileService.resolve(fileUri);
+				await this.fileService.resolve(agentDir);
+			} catch {
+				try {
+					await this.fileService.createFolder(agentDir);
+				} catch (err) {
+					this.logService.warn(`[AgentStudio] Failed to create dir for "${agent.name}": ${err}`);
+					continue;
+				}
+			}
+
+			// Write agent.json if it doesn't exist
+			const agentJsonUri = joinPath(agentDir, 'agent.json');
+			try {
+				await this.fileService.resolve(agentJsonUri);
+			} catch {
+				const agentData = {
+					id: agent.id,
+					name: agent.name,
+					role: agent.role,
+					description: agent.description,
+					icon: agent.icon,
+					model: agent.model,
+					skills: agent.skills,
+					tools: agent.tools,
+					category: agent.category,
+					systemPrompt: agent.systemPrompt,
+					version: agent.version,
+					source: 'builtin',
+				};
+				try {
+					await this.fileService.writeFile(agentJsonUri, VSBuffer.fromString(JSON.stringify(agentData, null, 2)));
+					this.logService.info(`[AgentStudio] Seeded agent.json for "${agent.name}" at ${agentJsonUri.toString()}`);
+				} catch (err) {
+					this.logService.warn(`[AgentStudio] Failed to seed agent.json for "${agent.name}": ${err}`);
+				}
+			}
+
+			// Write .agent.md if it doesn't exist
+			const agentMdUri = joinPath(agentDir, '.agent.md');
+			try {
+				await this.fileService.resolve(agentMdUri);
 				continue; // File exists, skip
 			} catch {
 				// File doesn't exist — proceed to create it
@@ -603,8 +689,8 @@ ${agent.systemPrompt || ''}
 `;
 
 			try {
-				await this.fileService.writeFile(fileUri, VSBuffer.fromString(content));
-				this.logService.info(`[AgentStudio] Seeded .agent.md for builtin agent "${agent.name}" at ${fileUri.toString()}`);
+				await this.fileService.writeFile(agentMdUri, VSBuffer.fromString(content));
+				this.logService.info(`[AgentStudio] Seeded .agent.md for builtin agent "${agent.name}" at ${agentMdUri.toString()}`);
 			} catch (err) {
 				this.logService.warn(`[AgentStudio] Failed to seed .agent.md for "${agent.name}": ${err instanceof Error ? err.message : String(err)}`);
 			}
@@ -642,8 +728,14 @@ ${agent.systemPrompt || ''}
 			const builtin = this._getBuiltinAgents().find(a => a.id === id);
 			if (!builtin) { throw new Error(`Agent not found: ${id}`); }
 			const now = new Date().toISOString();
-			agents.push({ ...builtin, ...defPatch, id, source: 'builtin', updatedAt: now });
+			const overrideAgent = { ...builtin, ...defPatch, id, source: 'builtin' as const, updatedAt: now };
+			agents.push(overrideAgent);
 			await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, agents);
+			// Sync .agent.md and agent.json files
+			if (defPatch.name || defPatch.description || defPatch.icon || defPatch.model || defPatch.tools || defPatch.systemPrompt) {
+				await this._updateAgentMdFile(overrideAgent);
+				await this._updateAgentJsonFile(overrideAgent);
+			}
 			this._onDidChangeAgents.fire();
 			return;
 		}
@@ -654,6 +746,8 @@ ${agent.systemPrompt || ''}
 		const updatedAgent = agents[idx];
 		if (defPatch.name || defPatch.description || defPatch.icon || defPatch.model || defPatch.tools || defPatch.systemPrompt) {
 			await this._updateAgentMdFile(updatedAgent);
+			// Also sync agent.json in ~/.saros/agents/{agentId}/
+			await this._updateAgentJsonFile(updatedAgent);
 		}
 
 		this._onDidChangeAgents.fire();
@@ -713,38 +807,24 @@ ${agent.systemPrompt || ''}
 		if (filtered.length === agents.length) { return; }
 		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, filtered);
 
-		// Also delete the .agent.md file from ~/.saros/agents/ or ~/.saros/agents/custom/
+		// Also delete the agent directory ~/.saros/agents/{agentId}/
 		if (agent) {
-			await this._deleteAgentMdFile(agent.name);
+			await this._deleteAgentDir(agent.id);
 		}
 
 		this._onDidChangeAgents.fire();
 	}
 
 	/**
-	 * Deletes the `.agent.md` file for the given agent name from
-	 * `~/.saros/agents/` and `~/.saros/agents/custom/`.
+	 * Deletes the entire agent directory at `~/.saros/agents/{agentId}/`.
+	 * Also tries legacy slug-based .agent.md for backward compat.
 	 */
-	private async _deleteAgentMdFile(agentName: string): Promise<void> {
-		const slug = agentName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-		const fileName = `${slug}.agent.md`;
-
-		const sarosAgentsDir = await this._getSarosAgentsDir();
-
-		// Try both the root agents dir and the custom subdirectory
-		const locations = [
-			joinPath(sarosAgentsDir, fileName),
-			joinPath(sarosAgentsDir, 'custom', fileName),
-		];
-
-		for (const fileUri of locations) {
-			try {
-				await this.fileService.del(fileUri);
-				this.logService.info(`[AgentStudio] Deleted .agent.md at ${fileUri.toString()}`);
-			} catch {
-				// File doesn't exist — ignore
-			}
-		}
+	private async _deleteAgentDir(agentId: string): Promise<void> {
+		const agentDir = await this.getAgentDir(agentId);
+		try {
+			await this.fileService.del(agentDir, { recursive: true });
+			this.logService.info(`[AgentStudio] Deleted agent dir at ${agentDir.toString()}`);
+		} catch { /* dir may not exist */ }
 	}
 
 	/**
@@ -753,41 +833,23 @@ ${agent.systemPrompt || ''}
 	 * changed, the old file is deleted and a new one is created.
 	 */
 	private async _updateAgentMdFile(agent: Agent): Promise<void> {
-		const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-		const fileName = `${slug}.agent.md`;
-
-		const sarosAgentsDir = await this._getSarosAgentsDir();
-
-		// Try to find existing file in custom/ or root
-		const candidates = [
-			joinPath(sarosAgentsDir, 'custom', fileName),
-			joinPath(sarosAgentsDir, fileName),
-		];
-
-		let existingUri: URI | undefined;
-		let existingContent: string | undefined;
-		for (const uri of candidates) {
-			try {
-				const buf = await this.fileService.readFile(uri);
-				existingContent = buf.value.toString();
-				existingUri = uri;
-				break;
-			} catch {
-				// Not found — try next
-			}
-		}
-
-		// Determine target directory (custom/ for user agents, root for builtin)
-		const targetDir = existingUri
-			? joinPath(existingUri, '..')
-			: joinPath(await this._getSarosAgentsDir(), 'custom');
-		const targetUri = joinPath(targetDir, fileName);
+		const agentDir = await this.getAgentDir(agent.id);
+		const targetUri = joinPath(agentDir, '.agent.md');
 
 		// Ensure directory exists
 		try {
-			await this.fileService.resolve(targetDir);
+			await this.fileService.resolve(agentDir);
 		} catch {
-			await this.fileService.createFolder(targetDir);
+			await this.fileService.createFolder(agentDir);
+		}
+
+		// Try to read existing content to preserve user edits
+		let existingContent: string | undefined;
+		try {
+			const buf = await this.fileService.readFile(targetUri);
+			existingContent = buf.value.toString();
+		} catch {
+			// No existing file — will create new
 		}
 
 		// Build updated YAML front matter
@@ -814,16 +876,28 @@ icon: "${agent.icon || '🤖'}"
 		const content = `${frontMatter}\n\n${body}\n`;
 		await this.fileService.writeFile(targetUri, VSBuffer.fromString(content));
 
-		// If name changed and old file exists at a different path, delete it
-		if (existingUri && existingUri.toString() !== targetUri.toString()) {
-			try {
-				await this.fileService.del(existingUri);
-			} catch {
-				// Ignore — best effort
-			}
-		}
-
 		this.logService.info(`[AgentStudio] Updated .agent.md at ${targetUri.toString()}`);
+	}
+
+	/**
+	 * Update the agent.json file in ~/.saros/agents/{agentId}/ when the agent
+	 * definition changes (e.g. rename, description, icon, etc.).
+	 */
+	private async _updateAgentJsonFile(agent: Agent): Promise<void> {
+		try {
+			const agentDir = await this.getAgentDir(agent.id);
+			const agentJsonUri = joinPath(agentDir, 'agent.json');
+			// Ensure directory exists
+			try {
+				await this.fileService.resolve(agentDir);
+			} catch {
+				await this.fileService.createFolder(agentDir);
+			}
+			await this.fileService.writeFile(agentJsonUri, VSBuffer.fromString(JSON.stringify(agent, null, 2)));
+			this.logService.info(`[AgentStudio] Updated agent.json at ${agentJsonUri.toString()}`);
+		} catch (err) {
+			this.logService.warn(`[AgentStudio] Failed to update agent.json for ${agent.id}: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	async getLastSelectedAgentId(): Promise<string | null> {
@@ -1055,6 +1129,7 @@ icon: "${agent.icon || '🤖'}"
 			agents: data.agents || [],
 			connections: data.connections || [],
 			layout: data.layout,
+			filesExclude: data.filesExclude,
 			createdAt: now,
 			updatedAt: now,
 		};

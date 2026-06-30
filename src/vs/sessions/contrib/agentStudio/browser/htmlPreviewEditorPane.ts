@@ -101,12 +101,21 @@ export class HtmlPreviewEditorPane extends EditorPane {
 		this._disposeWebview();
 
 		try {
-			const buf = await this._fileService.readFile(input.resource);
+			let html: string;
+			// saros-html-preview scheme has no file system provider —
+			// get HTML from IConfigHtmlService instead of reading from disk.
+			if (input.resource.scheme === 'saros-html-preview') {
+				const agentId = input.agentId ?? input.resource.path.replace(/^\//, '');
+				const result = await this._configHtmlService.renderHtml(agentId);
+				html = result.html;
+			} else {
+				const buf = await this._fileService.readFile(input.resource);
+				html = buf.value.toString();
+			}
 			if (token.isCancellationRequested) {
 				return;
 			}
 
-			const html = buf.value.toString();
 			const wrappedHtml = this._wrapHtmlForWebview(html);
 
 			// Permit the webview to read sibling resources from the file's

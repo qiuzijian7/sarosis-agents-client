@@ -27,9 +27,10 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
-import { ICodebaseGraphService, VisualizationData } from './codebaseGraphService.js';
+import { ICodebaseGraphService } from './codebaseGraphService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 
 const LOG_TAG = '[CodebaseGraphViewer]';
@@ -41,6 +42,7 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 	private _container: HTMLElement | undefined;
 	private _webview: IWebviewElement | undefined;
 	private _statusEl: HTMLElement | undefined;
+	private _webviewReadyResolve: (() => void) | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -52,6 +54,7 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 		@IOpenerService private readonly _openerService: IOpenerService,
+		@IFileService private readonly _fileService: IFileService,
 	) {
 		super(CodebaseGraphViewerEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -83,14 +86,17 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 
 	private async _loadVisualization(token: CancellationToken): Promise<void> {
 		try {
-			const DOWNSAMPLE_THRESHOLD = 50000;
+			const t0 = Date.now();
+			this._logService.info(LOG_TAG, `[load] step 0: start`);
 
-			// 1. 轻量级检查：图中是否有数据（不创建完整数组）
+			// 1. 轻量级检查：图中是否有数据
 			let hasData = this._graphService.hasGraphData();
+			this._logService.info(LOG_TAG, `[load] step 1: hasData=${hasData} (${Date.now() - t0}ms)`);
 
-			// 2. 如果图为空，尝试加载已保存的 graph.json
+			// 2. 如果图为空，尝试加载已保存的 graph 文件
 			if (!hasData) {
 				this._showLoading('正在加载代码图谱...');
+				await this._yieldToUI();
 				const folders = this._workspaceService.getWorkspace().folders;
 				if (folders.length === 0) {
 					this._showError('未打开工作区。');
@@ -98,7 +104,9 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 				}
 				const wsUri = folders[0].uri;
 				const graphFileUri = URI.joinPath(wsUri, '.codebase-memory', 'graph.db.zst');
+				this._logService.info(LOG_TAG, `[load] step 2: loading graph file: ${graphFileUri.fsPath}`);
 				const loaded = await this._graphService.loadGraph(graphFileUri.fsPath);
+				this._logService.info(LOG_TAG, `[load] step 2 done: loaded=${loaded} (${Date.now() - t0}ms)`);
 				if (!loaded) {
 					this._showError('代码图谱为空。请在 Codebase Memory 面板中索引代码库。');
 					return;
@@ -113,20 +121,11 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 				return;
 			}
 
-			this._showLoading('正在准备图谱数据...');
+			// 3. 获取节点总数
+			const totalNodes = this._graphService.getTotalNodeCount();
+			this._logService.info(LOG_TAG, `[load] step 3: totalNodes=${totalNodes} (${Date.now() - t0}ms)`);
 
-			// 3. 让 UI 有机会渲染 loading 状态
-			await new Promise<void>(resolve => setTimeout(resolve, 0));
-
-			// 4. 获取预计算的可视化数据（service 层已计算位置/颜色/大小，webview 直接渲染）
-			const vizData = this._graphService.getVisualizationData(DOWNSAMPLE_THRESHOLD);
-
-			if (token.isCancellationRequested) { return; }
-
-			this._logService.info(LOG_TAG, `Visualization data ready: ${vizData.nodes.length}/${vizData.totalNodes} nodes, ${vizData.edges.length} edges`);
-			this._showLoading(`正在渲染 ${vizData.nodes.length} 个节点...`);
-
-			// 5. 获取 graph 文件路径用于显示
+			// 4. 获取 graph 文件路径
 			let graphPath = '';
 			try {
 				const status = await this._graphService.getGraphStatus();
@@ -135,8 +134,64 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 
 			if (token.isCancellationRequested) { return; }
 
-			// 6. 在 webview 中渲染（数据已预计算，webview 直接渲染）
-			this._renderGraphDirect(vizData, graphPath, vizData.totalNodes > vizData.nodes.length, vizData.totalNodes);
+			// 5. 创建 webview（不含数据，数据通过 postMessage 分批发送）
+			this._logService.info(LOG_TAG, `[load] step 5: creating webview (empty)...`);
+			this._showLoading(`正在初始化 3D 渲染器...`);
+			await this._yieldToUI();
+			await this._createWebview(graphPath, totalNodes);
+			this._logService.info(LOG_TAG, `[load] step 5b: webview ready`);
+
+			// 6. 分批发送节点数据到 webview
+			const NODE_BATCH = 2000;
+			const EDGE_BATCH = 5000;
+			let nodeOffset = 0;
+			let loadedNodeIds = new Set<string>();
+
+			this._logService.info(LOG_TAG, `[load] step 6: sending nodes in batches of ${NODE_BATCH}...`);
+			while (nodeOffset < totalNodes) {
+				if (token.isCancellationRequested) { break; }
+
+				const tBatch = Date.now();
+				const { nodes, total } = this._graphService.getVisualizationNodes(nodeOffset, NODE_BATCH);
+				if (nodes.length === 0) { break; }
+
+				// 收集已加载节点 ID
+				for (const n of nodes) { loadedNodeIds.add(n.id); }
+
+				// 发送批次到 webview
+				this._webview?.postMessage({ type: 'nodes-batch', nodes, offset: nodeOffset, total });
+				nodeOffset += nodes.length;
+
+				this._logService.info(LOG_TAG, `[load] nodes batch: ${nodes.length} (offset ${nodeOffset - nodes.length}, ${Date.now() - tBatch}ms)`);
+
+				// yield 让 UI 更新
+				await new Promise<void>(resolve => setTimeout(resolve, 0));
+			}
+
+			// 7. 分批发送边数据
+			const totalEdges = this._graphService.getTotalEdgeCount();
+			this._logService.info(LOG_TAG, `[load] step 7: sending ${totalEdges} edges in batches of ${EDGE_BATCH}...`);
+			let edgeOffset = 0;
+			let totalEdgesSent = 0;
+
+			while (edgeOffset < totalEdges) {
+				if (token.isCancellationRequested) { break; }
+
+				const tBatch = Date.now();
+				const edges = this._graphService.getVisualizationEdges(loadedNodeIds, edgeOffset, EDGE_BATCH);
+				if (edges.length === 0) { break; }
+
+				this._webview?.postMessage({ type: 'edges-batch', edges, offset: edgeOffset });
+				totalEdgesSent += edges.length;
+				edgeOffset += edges.length;
+
+				this._logService.info(LOG_TAG, `[load] edges batch: ${edges.length} (total ${totalEdgesSent}/${totalEdges}, ${Date.now() - tBatch}ms)`);
+				await new Promise<void>(resolve => setTimeout(resolve, 0));
+			}
+
+			// 8. 通知 webview 加载完成
+			this._webview?.postMessage({ type: 'load-complete', totalNodes, totalEdges: totalEdgesSent });
+			this._logService.info(LOG_TAG, `[load] step 8: done. ${nodeOffset} nodes, ${totalEdgesSent}/${totalEdges} edges (total ${Date.now() - t0}ms)`);
 
 		} catch (err: any) {
 			const msg = err?.message || String(err);
@@ -147,19 +202,22 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 
 	// ─── Rendering: Three.js 3D Graph with Force-Directed Layout ─────────
 
-	private _renderGraphDirect(vizData: VisualizationData, graphPath: string, wasDownsampled: boolean, totalNodes: number): void {
-		if (!this._container) { return; }
+	private _createWebview(graphPath: string, totalNodes: number): Promise<void> {
+		if (!this._container) { return Promise.resolve(); }
 
 		this._clearStatus();
 		this._disposeWebview();
 
 		const graphPathDisplay = graphPath || 'N/A';
-		const totalEdges = vizData.edges.length;
+		this._logService.info(LOG_TAG, `Creating webview (totalNodes=${totalNodes}, graphPath=${graphPathDisplay})`);
 
-		this._logService.info(LOG_TAG, `Rendering graph: ${vizData.nodes.length} nodes (total: ${totalNodes}, downsampled: ${wasDownsampled}), ${totalEdges} edges`);
+		// 创建 webview-ready Promise（等待 webview 的 initScene 完成后再发送数据）
+		this._webviewReadyResolve = undefined;
+		const readyPromise = new Promise<void>((resolve) => {
+			this._webviewReadyResolve = resolve;
+		});
 
-		// 数据已限制大小（10k 节点 + 50k 边 ≈ 5MB），直接内嵌 HTML
-		const html = this._makeHtmlTemplate(graphPathDisplay, wasDownsampled, totalNodes, totalEdges, vizData);
+		const html = this._makeHtmlTemplate(graphPathDisplay, totalNodes);
 
 		this._webview = this._webviewService.createWebviewElement({
 			title: 'Codebase Graph 3D Visualization',
@@ -179,29 +237,37 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 		this._webview.mountTo(this._container, mainWindow);
 		this._webview.setHtml(html);
 
-		// 消息处理：open-file, refresh-graph
+		// 消息处理
 		this._register(this._webview.onMessage((msg: any) => {
 			if (msg.type === 'open-file') {
+				this._logService.info(LOG_TAG, `Received open-file: filePath=${msg.filePath}, qualifiedName=${msg.qualifiedName}`);
 				this._openFileInEditor(msg.filePath, msg.qualifiedName);
 			} else if (msg.type === 'refresh-graph') {
 				this._logService.info(LOG_TAG, 'Refresh requested by user');
 				this._loadVisualization(CancellationToken.None).catch(err => {
 					this._logService.error(LOG_TAG, 'Refresh failed:', err);
 				});
+			} else if (msg.type === 'webview-ready') {
+				this._logService.info(LOG_TAG, 'Webview ready, starting data transfer...');
+				this._webviewReadyResolve?.();
+			} else if (msg.type === 'debug') {
+				this._logService.info(LOG_TAG, `[webview] ${msg.msg}`);
 			}
 		}));
 
-		this._logService.info(LOG_TAG, `Webview mounted with embedded data (${vizData.nodes.length} nodes, ${vizData.edges.length} edges)`);
+		this._logService.info(LOG_TAG, `Webview mounted (empty, awaiting data via postMessage)`);
+
+		// 返回 readyPromise（带 10 秒超时 fallback，避免 webview 不发 ready 时永久阻塞）
+		return Promise.race([
+			readyPromise,
+			new Promise<void>((resolve) => setTimeout(resolve, 10000)),
+		]);
 	}
 
 	/**
-	 * 生成 webview HTML 模板（不含 graph 数据，数据通过 postMessage 传递）
+	 * 生成 webview HTML 模板（不含 graph 数据，数据通过 postMessage 分批传递）
 	 */
-	private _makeHtmlTemplate(graphPathDisplay: string, wasDownsampled: boolean, totalNodes: number, totalEdges: number, vizData: VisualizationData): string {
-		const warning = wasDownsampled
-			? `<div id="downsample-warn" style="position:absolute;top:60px;left:50%;transform:translateX(-50%);background:rgba(220,220,170,0.15);color:#dcdcaa;padding:6px 16px;border-radius:6px;font-size:12px;z-index:10;">⚠️ 数据已降级：显示 ${totalNodes} 个节点中的 10000 个（按连接数排序）。在 Codebase Memory 面板中切换过滤条件可探索子集。</div>`
-			: '';
-
+	private _makeHtmlTemplate(graphPathDisplay: string, totalNodes: number): string {
 		return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -213,7 +279,10 @@ export class CodebaseGraphViewerEditorPane extends EditorPane {
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
 #canvas-container { width: 100vw; height: 100vh; position: relative; }
-#loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 18px; z-index: 100; }
+#loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 18px; z-index: 100; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+#loading .spinner { width: 36px; height: 36px; border: 3px solid rgba(128,160,255,0.15); border-top-color: #80a0ff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+#loading .sub { font-size: 11px; color: #666; }
 #info-panel { position: absolute; top: 20px; left: 20px; background: rgba(6,9,15,0.95); color: #fff; padding: 16px 20px; border-radius: 12px; font-size: 13px; max-width: 420px; display: none; z-index: 100; backdrop-filter: blur(12px); border: 1px solid rgba(128,160,255,0.25); box-shadow: 0 8px 32px rgba(0,0,0,0.5); overflow: hidden; }
 #info-panel h3 { margin: 0 0 10px 0; font-size: 15px; color: #80a0ff; text-shadow: 0 0 10px rgba(128,160,255,0.3); }
 #info-panel .meta { color: #aaa; font-size: 12px; margin-bottom: 12px; }
@@ -228,69 +297,16 @@ body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-syste
 #controls { position: absolute; top: 20px; right: 20px; z-index: 10; }
 #controls button { background: rgba(0,0,0,0.7); color: #fff; border: 1px solid rgba(255,255,255,0.2); padding: 8px 14px; margin-left: 8px; border-radius: 6px; cursor: pointer; font-size: 12px; }
 #controls button:hover { background: rgba(255,255,255,0.15); }
-#filter-panel { position: absolute; top: 0; left: 0; width: 260px; height: 100vh; background: rgba(6,9,15,0.95); color: #ccc; overflow-y: auto; z-index: 20; border-right: 1px solid rgba(128,160,255,0.15); backdrop-filter: blur(10px); font-size: 12px; }
-#filter-panel .fp-header { padding: 14px 16px 10px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-#filter-panel .fp-stats { font-size: 13px; color: #80a0ff; font-weight: 600; }
-#filter-panel .fp-section { padding: 10px 16px; }
-#filter-panel .fp-section-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #666; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
-#filter-panel .fp-allnone { display: flex; gap: 4px; }
-#filter-panel .fp-allnone button { background: rgba(255,255,255,0.08); color: #aaa; border: none; padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 10px; }
-#filter-panel .fp-allnone button:hover { background: rgba(255,255,255,0.2); color: #fff; }
-#filter-panel .fp-group-title { font-size: 11px; color: #888; margin: 10px 0 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; display: flex; align-items: center; gap: 4px; user-select: none; }
-#filter-panel .fp-group-title:hover { color: #fff; }
-#filter-panel .fp-group-title .fp-toggle { font-size: 9px; color: #666; transition: transform 0.15s ease; }
-#filter-panel .fp-group-title.collapsed .fp-toggle { transform: rotate(-90deg); }
-#filter-panel .fp-group-content { overflow: hidden; transition: max-height 0.2s ease; }
-#filter-panel .fp-group-content.collapsed { display: none; }
-#filter-panel .fp-item { display: flex; align-items: center; gap: 6px; padding: 3px 0; cursor: pointer; }
-#filter-panel .fp-item:hover { color: #fff; }
-#filter-panel .fp-item input { accent-color: #80a0ff; cursor: pointer; }
-#filter-panel .fp-item label { flex: 1; cursor: pointer; font-size: 12px; text-transform: capitalize; }
-#filter-panel .fp-item .fp-count { color: #555; font-size: 11px; font-family: monospace; }
-#filter-panel .fp-checkbox { display: flex; align-items: center; gap: 6px; padding: 6px 0; }
-#filter-panel .fp-checkbox input { accent-color: #80a0ff; cursor: pointer; }
-#filter-panel .fp-checkbox label { cursor: pointer; font-size: 12px; }
-#filter-panel .fp-search { margin: 8px 0; }
-#filter-panel .fp-search input { width: 100%; padding: 5px 8px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; color: #fff; font-size: 12px; outline: none; }
-#filter-panel .fp-search input:focus { border-color: rgba(128,160,255,0.5); }
-#filter-panel .fp-search input::placeholder { color: #555; }
-#filter-panel .fp-dir-list { margin-top: 6px; }
-#filter-panel .fp-dir-item { padding: 2px 0 2px 8px; cursor: pointer; font-size: 11px; color: #888; }
-#filter-panel .fp-dir-item:hover { color: #fff; }
-#filter-panel .fp-dir-item.active { color: #80a0ff; }
 #graph-path { position: absolute; top: 20px; right: 20px; color: #555; font-size: 11px; max-width: 400px; text-align: right; z-index: 10; word-break: break-all; font-family: monospace; }
 </style>
 </head>
 <body>
 <div id="canvas-container">
-  <div id="filter-panel">
-    <div class="fp-header">
-      <span class="fp-stats" id="fp-stats">— nodes / — edges</span>
-    </div>
-    <div class="fp-section">
-      <div class="fp-section-title">
-        <span>Filters</span>
-        <div class="fp-allnone">
-          <button onclick="setAllFilters(true)">All</button>
-          <button onclick="setAllFilters(false)">None</button>
-        </div>
-      </div>
-      <div class="fp-group-title collapsed" onclick="toggleGroup('fp-node-types', this)"><span class="fp-toggle">▼</span>Nodes</div>
-      <div id="fp-node-types" class="fp-group-content collapsed"></div>
-      <div class="fp-group-title collapsed" onclick="toggleGroup('fp-edge-types', this)"><span class="fp-toggle">▼</span>Edges</div>
-      <div id="fp-edge-types" class="fp-group-content collapsed"></div>
-      <div class="fp-checkbox">
-        <input type="checkbox" id="fp-show-labels" checked onchange="toggleLabels()">
-        <label for="fp-show-labels">Show labels</label>
-      </div>
-      <div class="fp-search">
-        <input type="text" id="fp-search-input" placeholder="Search nodes..." oninput="onSearchNodes()">
-      </div>
-      <div class="fp-group-title collapsed" onclick="toggleGroup('fp-dir-list', this)"><span class="fp-toggle">▼</span>Directories</div>
-      <div id="fp-dir-list" class="fp-group-content collapsed"></div>
-    </div>
+  <div id="loading">
+    <div class="spinner"></div>
+    <div id="loading-text">Initializing 3D renderer...</div>
+    <div class="sub">Codebase Graph Viewer (${totalNodes} nodes)</div>
   </div>
-  <div id="loading">⏳ Waiting for graph data...</div>
   <div id="info-panel">
     <span class="close-btn" onclick="closeInfoPanel()">×</span>
     <h3 id="info-title"></h3>
@@ -303,13 +319,12 @@ body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-syste
       <div class="label">Node type</div>
       <div class="value" id="info-type"></div>
     </div>
-    <button class="open-btn" onclick="openCodeFile()">📂 Open in editor</button>
+    <button class="open-btn" onclick="openCodeFile()">Open in editor</button>
   </div>
   <div id="controls">
-    <button onclick="refreshGraphData()">🔄 Refresh</button>
-    <button onclick="resetCamera()">🎥 Reset View</button>
+    <button onclick="refreshGraphData()">Refresh</button>
+    <button onclick="resetCamera()">Reset View</button>
   </div>
-  ${warning}
   <div id="graph-path">GRAPH: ${graphPathDisplay}</div>
   <div id="stats"></div>
 </div>
@@ -322,19 +337,19 @@ body { overflow: hidden; background: #06090f; font-family: 'Inter', -apple-syste
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script>
-// ─── State (InstancedMesh — single draw call for all nodes) ──────────
-// ─── Embedded graph data (pre-computed by extension host) ────────────
-const VIZ_DATA = ${JSON.stringify(vizData)};
-let scene, camera, renderer;
-let composer = null;      // EffectComposer for Bloom post-processing
-let nodeMesh = null;       // InstancedMesh
+// ─── State ──────────────────────────────────────────────────────────
+let scene, camera, renderer, composer = null;
+let nodeMesh = null;
 let edgeLines = null;
 let nodeLabels = [];
-let nodeVisible = [];       // per-node visibility (for filtering)
-let originalMatrices = [];  // stored for filter toggle restore
+let allNodes = [];     // accumulates nodes from batches
+let allEdges = [];     // accumulates edges from batches
+let nodeMap = new Map(); // id → index
+let edgesNeedRebuild = false; // 标记边线需要重建（load-complete 时一次性构建）
+let nodesNeedRebuild = false; // 标记节点 mesh 需要重建
 let selectedNode = null;
-let showLabels = true;
 let animationId = null;
+let sceneReady = false;
 const tempObj = new THREE.Object3D();
 const tempColor = new THREE.Color();
 
@@ -347,105 +362,73 @@ const EDGE_TYPE_COLORS = {
 };
 const DEFAULT_EDGE_COLOR = '#1C8585';
 
-// ─── Initialization (data has pre-computed x/y/z/size/color) ─────────
-function initWithData(data) {
-  if (typeof THREE === 'undefined') {
-    document.getElementById('loading').innerHTML = '⚠️ Three.js failed to load from CDN.';
-    document.getElementById('loading').style.color = '#f48771';
-    return;
-  }
-  // VIZ_DATA is already set as const from embedded data
-  const container = document.getElementById('canvas-container');
-
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x06090f);
-
-  camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100000);
-  camera.position.set(0, 0, 800);
-
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  container.appendChild(renderer.domElement);
-
-  // ── Bloom 后处理（对齐 codebase-memory-mcp 的视觉效果）──────────
-  // 颜色值 > 1.0 的节点会发光，产生光晕效果
-  if (typeof THREE.EffectComposer !== 'undefined') {
-    composer = new THREE.EffectComposer(renderer);
-    composer.addPass(new THREE.RenderPass(scene, camera));
-    const bloomPass = new THREE.UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      0.4,   // strength — 降低，避免过曝看不清节点
-      0.4,   // radius
-      0.6    // threshold — 提高，只有最亮的节点才发光
-    );
-    composer.addPass(bloomPass);
-  }
-
-  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-  const pl1 = new THREE.PointLight(0xffffff, 0.6); pl1.position.set(500, 500, 500); scene.add(pl1);
-  const pl2 = new THREE.PointLight(0x6040ff, 0.4); pl2.position.set(-300, -200, -300); scene.add(pl2);
-
-  initControls();
-
-  // No layout computation needed — positions are pre-computed!
-  document.getElementById('loading').style.display = 'none';
-  document.getElementById('stats').innerText = 'Nodes: ' + data.nodes.length + ' | Edges: ' + data.edges.length;
-  renderGraph(data.nodes, data.edges);
-
-  window.addEventListener('resize', onWindowResize);
-  animate();
+function setLoadingText(text) {
+  var el = document.getElementById('loading-text');
+  if (el) el.textContent = text;
 }
 
-// ─── Simple Orbit Controls (with damping + idle auto-rotate) ─────────
-let isDragging = false;
-let previousMouse = { x: 0, y: 0 };
+// ─── Init scene (empty, nodes added incrementally) ──────────────────
+function initScene() {
+  try {
+    console.log('[webview] initScene start, THREE=' + (typeof THREE !== 'undefined'));
+    if (typeof THREE === 'undefined') {
+      setLoadingText('Three.js failed to load from CDN.');
+      return false;
+    }
+    const container = document.getElementById('canvas-container');
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x06090f);
+    camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100000);
+    camera.position.set(0, 0, 800);
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    container.appendChild(renderer.domElement);
+
+    if (typeof THREE.EffectComposer !== 'undefined') {
+      composer = new THREE.EffectComposer(renderer);
+      composer.addPass(new THREE.RenderPass(scene, camera));
+      composer.addPass(new THREE.UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight), 0.4, 0.4, 0.6));
+    }
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    var pl1 = new THREE.PointLight(0xffffff, 0.6); pl1.position.set(500,500,500); scene.add(pl1);
+    var pl2 = new THREE.PointLight(0x6040ff, 0.4); pl2.position.set(-300,-200,-300); scene.add(pl2);
+
+    initControls();
+    sceneReady = true;
+    console.log('[webview] initScene done, sceneReady=true');
+    if(vscode) vscode.postMessage({type:'debug', msg:'initScene done, sceneReady=true'});
+    window.addEventListener('resize', onWindowResize);
+    animate();
+    return true;
+  } catch(err) {
+    console.error('[webview] initScene error:', err);
+    setLoadingText('Render init failed: ' + (err.message || err));
+    return false;
+  }
+}
+
+// ─── Controls (orbit + damping) ──────────────────────────────────────
+let isDragging = false, previousMouse = { x: 0, y: 0 };
 let spherical = { radius: 150, phi: Math.PI / 2, theta: 0 };
-// 目标球面坐标（lerp 目标，实现阻尼效果）
 let targetSpherical = { radius: 150, phi: Math.PI / 2, theta: 0 };
 let target = new THREE.Vector3(0, 0, 0);
 let lastInteractionTime = Date.now();
-const IDLE_AUTO_ROTTE_DELAY = 60000; // 60 秒无交互后自动旋转
-const DAMPING_FACTOR = 0.08; // 阻尼系数（对齐 codebase-memory-mcp OrbitControls）
+const DAMPING_FACTOR = 0.08;
 
 function initControls() {
-  const canvas = renderer.domElement;
-
-  canvas.addEventListener('mousedown', (e) => {
-    if (e.button === 0) { isDragging = true; previousMouse = { x: e.clientX, y: e.clientY }; lastInteractionTime = Date.now(); }
-  });
-
-  canvas.addEventListener('mousemove', (e) => {
-    if (!isDragging) { checkHover(e); return; }
-    const dx = e.clientX - previousMouse.x;
-    const dy = e.clientY - previousMouse.y;
-    targetSpherical.theta -= dx * 0.005;
-    targetSpherical.phi -= dy * 0.005;
-    targetSpherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, targetSpherical.phi));
-    previousMouse = { x: e.clientX, y: e.clientY };
-    lastInteractionTime = Date.now();
-  });
-
-  canvas.addEventListener('mouseup', () => { isDragging = false; lastInteractionTime = Date.now(); });
-  canvas.addEventListener('mouseleave', () => { isDragging = false; });
-
-  canvas.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    targetSpherical.radius *= (1 + e.deltaY * 0.001);
-    targetSpherical.radius = Math.max(10, Math.min(50000, targetSpherical.radius));
-    lastInteractionTime = Date.now();
-  }, { passive: false });
-
-  canvas.addEventListener('click', (e) => {
-    if (Math.abs(e.clientX - previousMouse.x) < 5 && Math.abs(e.clientY - previousMouse.y) < 5) {
-      checkClick(e);
-    }
-    lastInteractionTime = Date.now();
-  });
+  var canvas = renderer.domElement;
+  canvas.addEventListener('mousedown', function(e) { if(e.button===0){isDragging=true;previousMouse={x:e.clientX,y:e.clientY};lastInteractionTime=Date.now();} });
+  canvas.addEventListener('mousemove', function(e) { if(!isDragging){checkHover(e);return;} var dx=e.clientX-previousMouse.x,dy=e.clientY-previousMouse.y; targetSpherical.theta-=dx*0.005; targetSpherical.phi-=dy*0.005; targetSpherical.phi=Math.max(0.1,Math.min(Math.PI-0.1,targetSpherical.phi)); previousMouse={x:e.clientX,y:e.clientY}; lastInteractionTime=Date.now(); });
+  canvas.addEventListener('mouseup', function() { isDragging=false; lastInteractionTime=Date.now(); });
+  canvas.addEventListener('mouseleave', function() { isDragging=false; });
+  canvas.addEventListener('wheel', function(e) { e.preventDefault(); targetSpherical.radius*=(1+e.deltaY*0.001); targetSpherical.radius=Math.max(10,Math.min(50000,targetSpherical.radius)); lastInteractionTime=Date.now(); }, {passive:false});
+  canvas.addEventListener('click', function(e) { if(Math.abs(e.clientX-previousMouse.x)<5&&Math.abs(e.clientY-previousMouse.y)<5){checkClick(e);} lastInteractionTime=Date.now(); });
 }
 
 function updateCamera() {
-  // 阻尼 lerp：spherical 平滑追赶 targetSpherical
   spherical.theta += (targetSpherical.theta - spherical.theta) * DAMPING_FACTOR;
   spherical.phi += (targetSpherical.phi - spherical.phi) * DAMPING_FACTOR;
   spherical.radius += (targetSpherical.radius - spherical.radius) * DAMPING_FACTOR;
@@ -455,456 +438,194 @@ function updateCamera() {
   camera.lookAt(target);
 }
 
-function resetCamera() {
-  targetSpherical = { radius: 150, phi: Math.PI / 2, theta: 0 };
-  target = new THREE.Vector3(0, 0, 0);
-  lastInteractionTime = Date.now();
+function resetCamera() { targetSpherical = { radius: 150, phi: Math.PI/2, theta: 0 }; target = new THREE.Vector3(0,0,0); lastInteractionTime = Date.now(); }
+
+// ─── Incremental node/edge addition ──────────────────────────────────
+function addNodesBatch(nodes) {
+  if (!nodes || nodes.length === 0) return;
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    nodeMap.set(n.id, allNodes.length);
+    allNodes.push(n);
+  }
+  // 节点也需要重建 mesh，但每批重建太重
+  // 策略：第一批立即重建（让用户快速看到内容），后续批次累积到 load-complete
+  if (allNodes.length <= 2000) {
+    rebuildNodeMesh();
+  } else {
+    nodesNeedRebuild = true;
+  }
+  updateStats();
 }
 
-// ─── Render Graph (InstancedMesh — single draw call) ─────────────────
-function renderGraph(nodes, edges) {
-  // Cleanup old (dispose textures to prevent memory leaks)
+function addEdgesBatch(edges) {
+  if (!edges || edges.length === 0) return;
+  for (var i = 0; i < edges.length; i++) {
+    allEdges.push(edges[i]);
+  }
+  // 不每批重建边线（234k 边 × 47 批 = 极重），标记需要重建，在 load-complete 时一次性构建
+  edgesNeedRebuild = true;
+  updateStats();
+}
+
+function rebuildNodeMesh() {
+  // Remove old mesh
   if (nodeMesh) { scene.remove(nodeMesh); nodeMesh.geometry.dispose(); nodeMesh.material.dispose(); }
-  nodeLabels.forEach(l => {
-    if (l) {
-      scene.remove(l);
-      if (l.material && l.material.map) { l.material.map.dispose(); }
-      if (l.material) { l.material.dispose(); }
-    }
-  });
-  if (edgeLines) { scene.remove(edgeLines); }
-  nodeMesh = null; nodeLabels = []; edgeLines = null; originalMatrices = []; nodeVisible = [];
+  nodeLabels.forEach(function(l) { if(l){scene.remove(l); if(l.material.map)l.material.map.dispose(); if(l.material)l.material.dispose();} });
+  nodeLabels = [];
+  if (allNodes.length === 0) return;
 
-  if (nodes.length === 0) { return; }
+  var scale = Math.max(1, Math.sqrt(allNodes.length) * 5);
+  var posScale = 50 / scale;
 
-  const scale = Math.max(1, Math.sqrt(nodes.length) * 5);
-  const posScale = 50 / scale;
-
-  // ── InstancedMesh for all nodes (1 draw call instead of N) ──
-  const geometry = new THREE.SphereGeometry(1, 24, 16);
-  const material = new THREE.MeshBasicMaterial({ toneMapped: false });
-  nodeMesh = new THREE.InstancedMesh(geometry, material, nodes.length);
+  var geometry = new THREE.SphereGeometry(1, 24, 16);
+  var material = new THREE.MeshBasicMaterial({ toneMapped: false });
+  nodeMesh = new THREE.InstancedMesh(geometry, material, allNodes.length);
   nodeMesh.frustumCulled = false;
-  nodeMesh.userData = { nodes: nodes };
+  nodeMesh.userData = { nodes: allNodes };
 
-  const colorArray = new Float32Array(nodes.length * 3);
-
-  for (let i = 0; i < nodes.length; i++) {
-    const n = nodes[i];
-    // Use pre-computed position/size (scaled)
+  var colorArray = new Float32Array(allNodes.length * 3);
+  for (var i = 0; i < allNodes.length; i++) {
+    var n = allNodes[i];
     tempObj.position.set(n.x * posScale, n.y * posScale, n.z * posScale);
     tempObj.scale.setScalar(n.size * 0.5);
     tempObj.updateMatrix();
     nodeMesh.setMatrixAt(i, tempObj.matrix);
-    originalMatrices.push(tempObj.matrix.clone());
-    nodeVisible.push(true);
-
-    // Use pre-computed color with mild brightness boost
     tempColor.set(n.color);
-    const brightness = (tempColor.r + tempColor.g + tempColor.b) / 3;
+    var brightness = (tempColor.r + tempColor.g + tempColor.b) / 3;
     tempColor.multiplyScalar(1.0 + brightness * 0.3);
-    colorArray[i * 3] = tempColor.r;
-    colorArray[i * 3 + 1] = tempColor.g;
-    colorArray[i * 3 + 2] = tempColor.b;
+    colorArray[i*3] = tempColor.r; colorArray[i*3+1] = tempColor.g; colorArray[i*3+2] = tempColor.b;
   }
-
   nodeMesh.instanceMatrix.needsUpdate = true;
   nodeMesh.instanceColor = new THREE.InstancedBufferAttribute(colorArray, 3);
   scene.add(nodeMesh);
 
-  // ── Labels (top 80 by pre-computed size) ──
-  if (showLabels) {
-    const dpr = Math.min(window.devicePixelRatio, 2); // DPR 适配高清屏
-    const labelCanvas = document.createElement('canvas');
-    const ctx = labelCanvas.getContext('2d');
-    const fontSize = 32;
-    const font = '600 ' + fontSize + 'px Inter, system-ui, sans-serif';
-
-    const labeled = nodes.map((n, i) => ({ node: n, idx: i, size: n.size }))
-      .sort((a, b) => b.size - a.size)
-      .slice(0, 80);
-
-    labeled.forEach(({ node, idx }) => {
-      const text = node.name || node.id || '?';
-      const shortText = text.length > 24 ? text.substring(0, 22) + '...' : text;
-
-      ctx.font = font;
-      const metrics = ctx.measureText(shortText);
-      const tw = Math.ceil(metrics.width) + 16;
-      const th = fontSize + 8;
-      labelCanvas.width = tw * dpr;
-      labelCanvas.height = th * dpr;
-      ctx.scale(dpr, dpr);
-
-      ctx.font = font;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = 'rgba(0,0,0,0.9)';
-      ctx.fillStyle = node.color;
-      ctx.strokeText(shortText, tw / 2, th / 2);
-      ctx.fillText(shortText, tw / 2, th / 2);
-
-      const texture = new THREE.CanvasTexture(labelCanvas);
-      texture.minFilter = THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
-      const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false });
-      const sprite = new THREE.Sprite(spriteMat);
-      sprite.position.set(node.x * posScale, node.y * posScale, node.z * posScale);
-      sprite.position.y += node.size * 0.5 + 2;
-      const worldW = Math.max(4, node.size * 1.5);
-      const worldH = worldW * (th / tw);
-      sprite.scale.set(worldW, worldH, 1);
-      sprite.userData = { nodeIndex: idx };
-      scene.add(sprite);
-      nodeLabels[idx] = sprite;
-    });
-  }
-
-  // ── Edges (Float32Array + BufferGeometry — same as before) ──
-  if (edges.length > 0) {
-    const nodeMap = new Map();
-    nodes.forEach((node, i) => { nodeMap.set(node.id, i); });
-
-    const positions = [];
-    const colors = [];
-    let validCount = 0;
-
-    edges.forEach(edge => {
-      const si = nodeMap.get(edge.source);
-      const ti = nodeMap.get(edge.target);
-      if (si !== undefined && ti !== undefined) {
-        const sn = nodes[si], tn = nodes[ti];
-        positions.push(
-          sn.x * posScale, sn.y * posScale, sn.z * posScale,
-          tn.x * posScale, tn.y * posScale, tn.z * posScale
-        );
-        const edgeColorHex = EDGE_TYPE_COLORS[edge.type] || DEFAULT_EDGE_COLOR;
-        const ec = new THREE.Color(edgeColorHex);
-        const sCluster = (sn.filePath || '').split('/').slice(0, 2).join('/');
-        const tCluster = (tn.filePath || '').split('/').slice(0, 2).join('/');
-        const intensity = sCluster === tCluster ? 0.25 : 0.06;
-        colors.push(
-          ec.r * intensity, ec.g * intensity, ec.b * intensity,
-          ec.r * intensity, ec.g * intensity, ec.b * intensity
-        );
-        validCount++;
-      }
-    });
-
-    if (validCount > 0) {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-      const mat = new THREE.LineBasicMaterial({
-        vertexColors: true, transparent: true, opacity: 1.0,
-        blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
-      });
-      edgeLines = new THREE.LineSegments(geo, mat);
-      scene.add(edgeLines);
-    }
-  }
+  // Labels for top 80 nodes
+  var labeled = allNodes.map(function(n,i){return {node:n,idx:i};}).sort(function(a,b){return b.node.size-a.node.size;}).slice(0,80);
+  labeled.forEach(function(item) {
+    var node = item.node, idx = item.idx;
+    var text = node.name || node.id || '?';
+    var shortText = text.length > 24 ? text.substring(0,22)+'...' : text;
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d');
+    var fontSize = 32;
+    ctx.font = '600 ' + fontSize + 'px Inter, system-ui, sans-serif';
+    var metrics = ctx.measureText(shortText);
+    var tw = Math.ceil(metrics.width) + 16, th = fontSize + 8;
+    canvas.width = tw, canvas.height = th;
+    ctx.font = '600 ' + fontSize + 'px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+    ctx.fillStyle = node.color;
+    ctx.strokeText(shortText, tw/2, th/2);
+    ctx.fillText(shortText, tw/2, th/2);
+    var texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter; texture.magFilter = THREE.LinearFilter; texture.generateMipmaps = false;
+    var spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false });
+    var sprite = new THREE.Sprite(spriteMat);
+    sprite.position.set(node.x * posScale, node.y * posScale, node.z * posScale);
+    sprite.position.y += node.size * 0.5 + 2;
+    var worldW = Math.max(4, node.size * 1.5);
+    sprite.scale.set(worldW, worldW * (th/tw), 1);
+    sprite.userData = { nodeIndex: idx };
+    scene.add(sprite);
+    nodeLabels[idx] = sprite;
+  });
 
   targetSpherical.radius = scale * 3 + 100;
-  buildFilterPanel(nodes, edges);
 }
 
-// ─── Filter System ─────────────────────────────────────────────────────
-let allNodes = [];
-let allEdges = [];
-let activeNodeTypes = new Set();
-let activeEdgeTypes = new Set();
-let activeDir = null;
-let searchQuery = '';
+function rebuildEdgeLines() {
+  if (edgeLines) { scene.remove(edgeLines); edgeLines.geometry.dispose(); edgeLines.material.dispose(); edgeLines = null; }
+  if (allEdges.length === 0 || allNodes.length === 0) return;
 
-function getTopDir(filePath) {
-  if (!filePath) return '(unknown)';
-  var parts = filePath.replace(/\\\\/g, '/').split('/').filter(function(p) { return p && p !== '.'; });
-  return parts[0] || '(root)';
-}
-
-// ─── Collapse/Expand Group ────────────────────────────────────────────
-function toggleGroup(contentId, titleEl) {
-  var content = document.getElementById(contentId);
-  if (!content) return;
-  var isCollapsed = content.classList.toggle('collapsed');
-  if (titleEl) { titleEl.classList.toggle('collapsed', isCollapsed); }
-}
-
-function buildFilterPanel(nodes, edges) {
-  allNodes = nodes;
-  allEdges = edges;
-
-  var nodeTypeCounts = {};
-  nodes.forEach(function(n) {
-    var t = (n.type || 'unknown').toLowerCase();
-    nodeTypeCounts[t] = (nodeTypeCounts[t] || 0) + 1;
-  });
-
-  var edgeTypeCounts = {};
-  edges.forEach(function(e) {
-    var t = (e.type || 'UNKNOWN').toLowerCase();
-    edgeTypeCounts[t] = (edgeTypeCounts[t] || 0) + 1;
-  });
-
-  var dirCounts = {};
-  nodes.forEach(function(n) {
-    var d = getTopDir(n.filePath);
-    dirCounts[d] = (dirCounts[d] || 0) + 1;
-  });
-
-  document.getElementById('fp-stats').innerText = nodes.length + ' nodes / ' + edges.length + ' edges';
-
-  var nodeContainer = document.getElementById('fp-node-types');
-  nodeContainer.innerHTML = '';
-  activeNodeTypes = new Set();
-  Object.entries(nodeTypeCounts).sort(function(a, b) { return b[1] - a[1]; }).forEach(function(entry) {
-    var type = entry[0], count = entry[1];
-    activeNodeTypes.add(type);
-    var item = document.createElement('div');
-    item.className = 'fp-item';
-    item.innerHTML = '<input type="checkbox" checked data-type="' + type + '" data-kind="node" onchange="onFilterChange()">' +
-      '<label>' + type + '</label><span class="fp-count">' + count + '</span>';
-    nodeContainer.appendChild(item);
-  });
-
-  var edgeContainer = document.getElementById('fp-edge-types');
-  edgeContainer.innerHTML = '';
-  activeEdgeTypes = new Set();
-  Object.entries(edgeTypeCounts).sort(function(a, b) { return b[1] - a[1]; }).forEach(function(entry) {
-    var type = entry[0], count = entry[1];
-    activeEdgeTypes.add(type);
-    var item = document.createElement('div');
-    item.className = 'fp-item';
-    item.innerHTML = '<input type="checkbox" checked data-type="' + type + '" data-kind="edge" onchange="onFilterChange()">' +
-      '<label>' + type + '</label><span class="fp-count">' + count + '</span>';
-    edgeContainer.appendChild(item);
-  });
-
-  var dirContainer = document.getElementById('fp-dir-list');
-  dirContainer.innerHTML = '';
-  Object.entries(dirCounts).sort(function(a, b) { return b[1] - a[1]; }).forEach(function(entry) {
-    var dir = entry[0], count = entry[1];
-    var item = document.createElement('div');
-    item.className = 'fp-dir-item';
-    item.innerHTML = dir + ' <span class="fp-count">' + count + '</span>';
-    item.onclick = function() { onDirClick(dir, item); };
-    dirContainer.appendChild(item);
-  });
-}
-
-function onFilterChange() {
-  activeNodeTypes = new Set();
-  activeEdgeTypes = new Set();
-  document.querySelectorAll('#fp-node-types input').forEach(function(cb) {
-    if (cb.checked) activeNodeTypes.add(cb.dataset.type);
-  });
-  document.querySelectorAll('#fp-edge-types input').forEach(function(cb) {
-    if (cb.checked) activeEdgeTypes.add(cb.dataset.type);
-  });
-  applyFilters();
-}
-
-function setAllFilters(state) {
-  document.querySelectorAll('#filter-panel input[type=checkbox][data-type]').forEach(function(cb) {
-    cb.checked = state;
-  });
-  onFilterChange();
-}
-
-function onDirClick(dir, el) {
-  if (activeDir === dir) {
-    activeDir = null;
-    el.classList.remove('active');
-  } else {
-    document.querySelectorAll('.fp-dir-item').forEach(function(e) { e.classList.remove('active'); });
-    activeDir = dir;
-    el.classList.add('active');
-  }
-  applyFilters();
-}
-
-function onSearchNodes() {
-  searchQuery = document.getElementById('fp-search-input').value.toLowerCase().trim();
-  applyFilters();
-}
-
-function applyFilters() {
-  var visibleNodeCount = 0;
   var scale = Math.max(1, Math.sqrt(allNodes.length) * 5);
   var posScale = 50 / scale;
 
-  allNodes.forEach(function(node, i) {
-    var type = (node.type || 'unknown').toLowerCase();
-    var isVisible = activeNodeTypes.has(type);
-    if (isVisible && activeDir) {
-      var dir = getTopDir(node.filePath);
-      if (dir !== activeDir) isVisible = false;
-    }
-    // Search dimming
-    var isDimmed = false;
-    if (isVisible && searchQuery) {
-      var name = (node.name || node.id || '').toLowerCase();
-      var qualName = (node.qualifiedName || '').toLowerCase();
-      if (!name.includes(searchQuery) && !qualName.includes(searchQuery)) {
-        isDimmed = true;
-      }
-    }
+  // 限制最大边数，避免 234k 边卡死 webview
+  var MAX_RENDER_EDGES = 50000;
+  var edgesToRender = allEdges.length > MAX_RENDER_EDGES ? allEdges.slice(0, MAX_RENDER_EDGES) : allEdges;
 
-    nodeVisible[i] = isVisible;
-    // Toggle InstancedMesh instance: scale=0 to hide, restore original to show
-    if (nodeMesh && originalMatrices[i]) {
-      if (isVisible) {
-        nodeMesh.setMatrixAt(i, originalMatrices[i]);
-      } else {
-        tempObj.position.set(0, 0, 0);
-        tempObj.scale.setScalar(0);
-        tempObj.updateMatrix();
-        nodeMesh.setMatrixAt(i, tempObj.matrix);
-      }
-    }
-    // Dim non-matching nodes by reducing color intensity
-    if (nodeMesh && nodeMesh.instanceColor) {
-      if (isDimmed) {
-        tempColor.set(node.color);
-        tempColor.multiplyScalar(0.1);
-      } else {
-        tempColor.set(node.color);
-        var brightness = (tempColor.r + tempColor.g + tempColor.b) / 3;
-        tempColor.multiplyScalar(1.0 + brightness * 0.3);
-      }
-      nodeMesh.instanceColor.setXYZ(i, tempColor.r, tempColor.g, tempColor.b);
-    }
-    if (nodeLabels[i]) {
-      nodeLabels[i].visible = isVisible && showLabels && !isDimmed;
-    }
-    if (isVisible && !isDimmed) visibleNodeCount++;
-  });
+  // 预分配 Float32Array（避免 push 扩容 + GC）
+  var maxFloats = edgesToRender.length * 6;
+  var positions = new Float32Array(maxFloats);
+  var colors = new Float32Array(maxFloats);
+  var offset = 0;
+  var validCount = 0;
 
-  if (nodeMesh) {
-    nodeMesh.instanceMatrix.needsUpdate = true;
-    if (nodeMesh.instanceColor) nodeMesh.instanceColor.needsUpdate = true;
+  // 缓存颜色对象
+  var colorCache = {};
+  var tmpColor = new THREE.Color();
+
+  for (var i = 0; i < edgesToRender.length; i++) {
+    var edge = edgesToRender[i];
+    var si = nodeMap.get(edge.source), ti = nodeMap.get(edge.target);
+    if (si === undefined || ti === undefined) continue;
+    var sn = allNodes[si], tn = allNodes[ti];
+
+    positions[offset] = sn.x * posScale;
+    positions[offset + 1] = sn.y * posScale;
+    positions[offset + 2] = sn.z * posScale;
+    positions[offset + 3] = tn.x * posScale;
+    positions[offset + 4] = tn.y * posScale;
+    positions[offset + 5] = tn.z * posScale;
+
+    // 缓存颜色解析
+    var hex = EDGE_TYPE_COLORS[edge.type] || DEFAULT_EDGE_COLOR;
+    if (!colorCache[hex]) {
+      tmpColor.set(hex);
+      colorCache[hex] = { r: tmpColor.r, g: tmpColor.g, b: tmpColor.b };
+    }
+    var c = colorCache[hex];
+    var intensity = 0.15;
+    var r = c.r * intensity, g = c.g * intensity, b = c.b * intensity;
+    colors[offset] = r; colors[offset + 1] = g; colors[offset + 2] = b;
+    colors[offset + 3] = r; colors[offset + 4] = g; colors[offset + 5] = b;
+
+    offset += 6;
+    validCount++;
   }
 
-  if (edgeLines) {
-    // 复用 geometry：不销毁，只更新 buffer 数据（避免 GC 压力）
-    edgeLines.visible = false;
-  }
-
-  var visibleEdgeCount = 0;
-  if (allEdges.length > 0) {
-    var nodeMap = new Map();
-    allNodes.forEach(function(node, i) { nodeMap.set(node.id, i); });
-
-    // 预分配 Float32Array（最大可能大小 = allEdges.length * 6）
-    var maxFloats = allEdges.length * 6;
-    var positions = new Float32Array(maxFloats);
-    var colors = new Float32Array(maxFloats);
-    var offset = 0;
-
-    allEdges.forEach(function(edge) {
-      var type = (edge.type || 'UNKNOWN').toLowerCase();
-      if (!activeEdgeTypes.has(type)) return;
-      var si = nodeMap.get(edge.source);
-      var ti = nodeMap.get(edge.target);
-      if (si === undefined || ti === undefined) return;
-      if (!nodeVisible[si] || !nodeVisible[ti]) return;
-      var sn = allNodes[si], tn = allNodes[ti];
-      positions[offset] = sn.x * posScale;
-      positions[offset + 1] = sn.y * posScale;
-      positions[offset + 2] = sn.z * posScale;
-      positions[offset + 3] = tn.x * posScale;
-      positions[offset + 4] = tn.y * posScale;
-      positions[offset + 5] = tn.z * posScale;
-      var edgeColorHex = EDGE_TYPE_COLORS[edge.type] || DEFAULT_EDGE_COLOR;
-      var ec = new THREE.Color(edgeColorHex);
-      var sCluster = (sn.filePath || '').split('/').slice(0, 2).join('/');
-      var tCluster = (tn.filePath || '').split('/').slice(0, 2).join('/');
-      var intensity = sCluster === tCluster ? 0.25 : 0.06;
-      var r = ec.r * intensity, g = ec.g * intensity, b = ec.b * intensity;
-      colors[offset] = r; colors[offset + 1] = g; colors[offset + 2] = b;
-      colors[offset + 3] = r; colors[offset + 4] = g; colors[offset + 5] = b;
-      offset += 6;
-      visibleEdgeCount++;
-    });
-
-    if (visibleEdgeCount > 0) {
-      if (edgeLines) {
-        // 复用已有 geometry：更新 buffer attribute 数据
-        var posAttr = edgeLines.geometry.getAttribute('position');
-        var colAttr = edgeLines.geometry.getAttribute('color');
-        if (posAttr.array.length >= offset) {
-          // 复制到现有 buffer
-          posAttr.array.set(positions.subarray(0, offset));
-          posAttr.needsUpdate = true;
-          posAttr.count = offset / 3;
-          colAttr.array.set(colors.subarray(0, offset));
-          colAttr.needsUpdate = true;
-          colAttr.count = offset / 3;
-          edgeLines.geometry.setDrawRange(0, offset / 3);
-          edgeLines.visible = true;
-        } else {
-          // buffer 不够大，需要重建
-          scene.remove(edgeLines);
-          edgeLines.geometry.dispose();
-          edgeLines.material.dispose();
-          edgeLines = null;
-        }
-      }
-      if (!edgeLines) {
-        var geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.BufferAttribute(positions.subarray(0, offset), 3));
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors.subarray(0, offset), 3));
-        var material = new THREE.LineBasicMaterial({
-          vertexColors: true, transparent: true, opacity: 1.0,
-          blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false
-        });
-        edgeLines = new THREE.LineSegments(geometry, material);
-        scene.add(edgeLines);
-      }
-    }
-  }
-
-  document.getElementById('fp-stats').innerText =
-    visibleNodeCount + ' / ' + allNodes.length + ' nodes | ' +
-    visibleEdgeCount + ' / ' + allEdges.length + ' edges';
-}
-
-function refreshGraphData() {
-  if (vscode) {
-    vscode.postMessage({ type: 'refresh-graph' });
+  if (validCount > 0) {
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions.subarray(0, offset), 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors.subarray(0, offset), 3));
+    var mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 1.0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    edgeLines = new THREE.LineSegments(geo, mat);
+    scene.add(edgeLines);
   }
 }
 
-// ─── Interaction ──────────────────────────────────────────────────────
+function updateStats() {
+  document.getElementById('stats').innerText = 'Nodes: ' + allNodes.length + ' | Edges: ' + allEdges.length;
+}
+
+// ─── Interaction ────────────────────────────────────────────────────
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 function checkHover(event) {
-  const rect = renderer.domElement.getBoundingClientRect();
+  var rect = renderer.domElement.getBoundingClientRect();
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  if (!nodeMesh) { return; }
-  const intersects = raycaster.intersectObject(nodeMesh);
+  if (!nodeMesh) return;
+  var intersects = raycaster.intersectObject(nodeMesh);
   renderer.domElement.style.cursor = intersects.length > 0 ? 'pointer' : 'default';
 }
 
 function checkClick(event) {
-  const rect = renderer.domElement.getBoundingClientRect();
+  var rect = renderer.domElement.getBoundingClientRect();
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  if (!nodeMesh) { return; }
-  const intersects = raycaster.intersectObject(nodeMesh);
+  if (!nodeMesh) { if(vscode) vscode.postMessage({type:'debug', msg:'checkClick: nodeMesh is null'}); return; }
+  var intersects = raycaster.intersectObject(nodeMesh);
+  if(vscode) vscode.postMessage({type:'debug', msg:'checkClick: intersects=' + intersects.length});
   if (intersects.length > 0 && intersects[0].instanceId !== undefined) {
-    const idx = intersects[0].instanceId;
-    const nodes = nodeMesh.userData.nodes;
-    if (nodes && nodes[idx]) {
-      showInfoPanel(nodes[idx], event);
-    }
+    var idx = intersects[0].instanceId;
+    if(vscode) vscode.postMessage({type:'debug', msg:'checkClick: idx=' + idx + ', allNodes[idx]=' + (allNodes[idx] ? allNodes[idx].name : 'undefined')});
+    if (allNodes[idx]) showInfoPanel(allNodes[idx], event);
   } else {
     closeInfoPanel();
   }
@@ -912,102 +633,92 @@ function checkClick(event) {
 
 function showInfoPanel(node, clickEvent) {
   selectedNode = node;
-  const panel = document.getElementById('info-panel');
+  var panel = document.getElementById('info-panel');
   document.getElementById('info-title').innerText = node.name || node.id || 'Unknown';
   document.getElementById('info-meta').innerText = 'In: ' + node.inDegree + ' | Out: ' + node.outDegree;
   document.getElementById('info-path').innerText = node.filePath || 'N/A';
   document.getElementById('info-type').innerText = node.type || 'unknown';
   panel.style.display = 'block';
-
-  // Position panel near the click / node, with boundary clamping
+  if(vscode) vscode.postMessage({type:'debug', msg:'showInfoPanel: node=' + node.name + ', filePath=' + node.filePath});
   if (clickEvent) {
-    const container = document.getElementById('canvas-container');
-    const rect = container.getBoundingClientRect();
-    const pw = panel.offsetWidth;
-    const ph = panel.offsetHeight;
-    // Default: place below-right of cursor, offset slightly
-    let x = clickEvent.clientX - rect.left + 16;
-    let y = clickEvent.clientY - rect.top + 16;
-
-    // Clamp right edge
-    if (x + pw > rect.width - 10) { x = clickEvent.clientX - rect.left - pw - 16; }
-    // Clamp bottom edge
-    if (y + ph > rect.height - 10) { y = clickEvent.clientY - rect.top - ph - 16; }
-    // Clamp left edge
-    if (x < 10) { x = 10; }
-    // Clamp top edge
-    if (y < 10) { y = 10; }
-
-    panel.style.left = x + 'px';
-    panel.style.top = y + 'px';
-  } else {
-    // Fallback: top-left
-    panel.style.left = '20px';
-    panel.style.top = '20px';
+    var rect = document.getElementById('canvas-container').getBoundingClientRect();
+    var pw = panel.offsetWidth, ph = panel.offsetHeight;
+    var x = clickEvent.clientX - rect.left + 16, y = clickEvent.clientY - rect.top + 16;
+    if (x + pw > rect.width - 10) x = clickEvent.clientX - rect.left - pw - 16;
+    if (y + ph > rect.height - 10) y = clickEvent.clientY - rect.top - ph - 16;
+    if (x < 10) x = 10; if (y < 10) y = 10;
+    panel.style.left = x + 'px'; panel.style.top = y + 'px';
   }
 }
 
-function closeInfoPanel() {
-  selectedNode = null;
-  document.getElementById('info-panel').style.display = 'none';
-}
+function closeInfoPanel() { selectedNode = null; document.getElementById('info-panel').style.display = 'none'; }
 
 function openCodeFile() {
-  if (!selectedNode || !selectedNode.filePath) { return; }
-  const msg = { type: 'open-file', filePath: selectedNode.filePath, qualifiedName: selectedNode.qualifiedName };
-  if (vscode) {
-    vscode.postMessage(msg);
-  }
+  if(vscode) vscode.postMessage({type:'debug', msg:'openCodeFile called, selectedNode=' + (selectedNode ? selectedNode.name : 'null') + ', filePath=' + (selectedNode ? selectedNode.filePath : 'null')});
+  if (!selectedNode || !selectedNode.filePath) return;
+  if (vscode) vscode.postMessage({ type: 'open-file', filePath: selectedNode.filePath, qualifiedName: selectedNode.qualifiedName });
 }
 
-function toggleLabels() {
-  showLabels = document.getElementById('fp-show-labels').checked;
-  nodeLabels.forEach((l, i) => {
-    if (l) { l.visible = showLabels && nodeVisible[i]; }
-  });
-}
+function refreshGraphData() { if (vscode) vscode.postMessage({ type: 'refresh-graph' }); }
 
-// ─── Animation Loop (Bloom + idle auto-rotate) ──────────────────────
+// ─── Animation ──────────────────────────────────────────────────────
 function animate() {
   animationId = requestAnimationFrame(animate);
   updateCamera();
-  // 空闲自动旋转：60 秒无交互后缓慢旋转（对齐 codebase-memory-mcp 的 IdleAutoRotate）
-  const idleTime = Date.now() - lastInteractionTime;
-  if (!isDragging && idleTime > IDLE_AUTO_ROTTE_DELAY) {
-    targetSpherical.theta += 0.0008;
-  }
-  // 使用 EffectComposer 渲染（含 Bloom），回退到普通渲染
-  if (composer) {
-    composer.render();
-  } else {
-    renderer.render(scene, camera);
-  }
+  if (composer) composer.render(); else renderer.render(scene, camera);
 }
 
 function onWindowResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  if (composer) { composer.setSize(window.innerWidth, window.innerHeight); }
+  if (composer) composer.setSize(window.innerWidth, window.innerHeight);
 }
 
-// ─── VS Code webview API (for open-file, refresh messages) ──────────
-// ─── Global error handler (display errors in webview instead of black screen) ──
+// ─── Error handler ──────────────────────────────────────────────────
 window.addEventListener('error', function(e) {
-  var loading = document.getElementById('loading');
-  if (loading) {
-    loading.innerHTML = '⚠️ Error: ' + (e.message || 'unknown');
-    loading.style.color = '#f48771';
-    loading.style.fontSize = '14px';
+  setLoadingText('Error: ' + (e.message || 'unknown'));
+});
+
+// ─── VS Code API ─────────────────────────────────────────────────────
+const vscode = (function() { try { return acquireVsCodeApi(); } catch(e) { return null; } })();
+
+// ─── Message handler: receive data batches from extension ───────────
+window.addEventListener('message', function(e) {
+  var msg = e.data;
+  if (!msg || !msg.type) return;
+  if (msg.type !== 'nodes-batch' && msg.type !== 'edges-batch' && msg.type !== 'load-complete') return; // skip other messages
+  if (allNodes.length === 0 && msg.type === 'nodes-batch') { if(vscode) vscode.postMessage({type:'debug', msg:'FIRST nodes-batch received! offset=' + msg.offset + ', count=' + msg.nodes.length}); }
+  if (msg.type === 'nodes-batch') {
+    if (!sceneReady) { if(vscode) vscode.postMessage({type:'debug', msg:'nodes-batch DROPPED, scene not ready'}); return; }
+    addNodesBatch(msg.nodes);
+    setLoadingText('Loading nodes ' + Math.min(msg.offset + msg.nodes.length, msg.total) + '/' + msg.total + '...');
+    if (allNodes.length <= 4000) { if(vscode) vscode.postMessage({type:'debug', msg:'nodes-batch: added=' + msg.nodes.length + ', total=' + allNodes.length}); }
+  } else if (msg.type === 'edges-batch') {
+    if (!sceneReady) { return; }
+    addEdgesBatch(msg.edges);
+    setLoadingText('Loading edges ' + allEdges.length + '...');
+  } else if (msg.type === 'load-complete') {
+    if(vscode) vscode.postMessage({type:'debug', msg:'load-complete: allNodes=' + allNodes.length + ', allEdges=' + allEdges.length});
+    try {
+      if (nodesNeedRebuild) { rebuildNodeMesh(); nodesNeedRebuild = false; if(vscode) vscode.postMessage({type:'debug', msg:'nodeMesh rebuilt, children=' + scene.children.length}); }
+      if (edgesNeedRebuild) { rebuildEdgeLines(); edgesNeedRebuild = false; if(vscode) vscode.postMessage({type:'debug', msg:'edgeLines rebuilt'}); }
+      document.getElementById('loading').style.display = 'none';
+      updateStats();
+      if(vscode) vscode.postMessage({type:'debug', msg:'load-complete done, scene.children=' + scene.children.length + ', nodeMesh=' + (nodeMesh?'yes':'no') + ', edgeLines=' + (edgeLines?'yes':'no')});
+    } catch(err) {
+      if(vscode) vscode.postMessage({type:'debug', msg:'load-complete ERROR: ' + (err.message||err)});
+      setLoadingText('Render error: ' + (err.message || err));
+    }
   }
 });
 
-const vscode = (function() {
-  try { return acquireVsCodeApi(); } catch(e) { return null; }
-})();
-
-// ─── Start: data is embedded in HTML, initialize immediately ────────
-initWithData(VIZ_DATA);
+// ─── Start ──────────────────────────────────────────────────────────
+var ok = initScene();
+if (ok) {
+  setLoadingText('Waiting for graph data...');
+  if (vscode) vscode.postMessage({ type: 'webview-ready' });
+}
 </script>
 </body>
 </html>`;
@@ -1018,11 +729,25 @@ initWithData(VIZ_DATA);
 		if (!filePath) { return; }
 		try {
 			const folders = this._workspaceService.getWorkspace().folders;
-			if (folders.length === 0) { return; }
+			if (folders.length === 0) { this._logService.warn(LOG_TAG, `open-file: no workspace folders`); return; }
 
-			const wsUri = folders[0].uri;
-			const fileUri = URI.joinPath(wsUri, filePath);
+			// 尝试每个 workspace folder，找到文件实际所在的根
+			let fileUri: URI | undefined;
+			for (const folder of folders) {
+				const tryUri = URI.joinPath(folder.uri, filePath);
+				try {
+					const stat = await this._fileService.stat(tryUri);
+					if (stat) { fileUri = tryUri; break; }
+				} catch { /* try next folder */ }
+			}
 
+			// Fallback: 用第一个 folder
+			if (!fileUri) {
+				fileUri = URI.joinPath(folders[0].uri, filePath);
+				this._logService.warn(LOG_TAG, `open-file: file not found in any folder, trying: ${fileUri.fsPath}`);
+			}
+
+			this._logService.info(LOG_TAG, `open-file: ${filePath} → ${fileUri.fsPath}`);
 			await this._openerService.open(fileUri, { fromUserGesture: true, openToSide: false });
 			this._logService.info(LOG_TAG, `Opened file: ${filePath}`);
 		} catch (err: any) {
@@ -1038,16 +763,32 @@ initWithData(VIZ_DATA);
 		this._disposeWebview();
 
 		this._statusEl = document.createElement('div');
-		this._statusEl.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:var(--vscode-descriptionForeground);font-size:14px;';
+		this._statusEl.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;display:flex;flex-direction:column;align-items:center;gap:16px;';
 
-		const icon = document.createElement('div');
-		icon.style.cssText = 'margin-bottom:12px;font-size:24px;';
-		icon.textContent = '⏳';
-		this._statusEl.appendChild(icon);
+		// 旋转动画 spinner
+		const spinner = document.createElement('div');
+		spinner.style.cssText = 'width:40px;height:40px;border:3px solid rgba(128,160,255,0.15);border-top-color:#80a0ff;border-radius:50%;animation:saros-spin 0.8s linear infinite;';
+		this._statusEl.appendChild(spinner);
 
+		// 注入 keyframes（只注入一次）
+		if (!document.getElementById('saros-graph-loading-style')) {
+			const style = document.createElement('style');
+			style.id = 'saros-graph-loading-style';
+			style.textContent = '@keyframes saros-spin{to{transform:rotate(360deg)}}';
+			document.head.appendChild(style);
+		}
+
+		// 加载消息
 		const msg = document.createElement('div');
+		msg.style.cssText = 'color:var(--vscode-descriptionForeground);font-size:14px;';
 		msg.textContent = message;
 		this._statusEl.appendChild(msg);
+
+		// 副标题：加载阶段提示
+		const subMsg = document.createElement('div');
+		subMsg.style.cssText = 'color:var(--vscode-disabledForeground);font-size:11px;margin-top:-8px;';
+		subMsg.textContent = 'Codebase Graph Viewer';
+		this._statusEl.appendChild(subMsg);
 
 		this._container.appendChild(this._statusEl);
 	}
@@ -1077,6 +818,14 @@ initWithData(VIZ_DATA);
 			this._statusEl.remove();
 			this._statusEl = undefined;
 		}
+	}
+
+	/** Yield 到 UI 线程：让浏览器有机会渲染 DOM 更新后再执行后续 CPU 密集操作 */
+	private _yieldToUI(): Promise<void> {
+		return new Promise<void>(resolve => {
+			// requestAnimationFrame 确保 DOM 已渲染，再 setTimeout(0) 让出微任务队列
+			requestAnimationFrame(() => setTimeout(resolve, 0));
+		});
 	}
 
 	private _disposeWebview(): void {

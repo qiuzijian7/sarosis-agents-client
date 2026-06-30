@@ -13,56 +13,234 @@
 	border-right: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128,128,128,0.25)));
 }
 
-/* ── Header ─────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * Header — Agent Summary Card
+ * ═══════════════════════════════════════════════════════════════════════════════ */
 .agent-editor-header {
 	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 8px 12px;
+	align-items: flex-start;
+	gap: 14px;
+	padding: 16px 20px;
 	border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128,128,128,0.2)));
+	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
 	flex-shrink: 0;
 }
 
-.agent-editor-title {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	font-size: 13px;
-	font-weight: 600;
-}
-
-.agent-editor-icon {
-	font-size: 14px;
-}
-
-.agent-editor-close {
-	width: 24px;
-	height: 24px;
+.agent-header-avatar {
+	width: 48px;
+	height: 48px;
+	border-radius: 10px;
 	display: flex;
 	align-items: center;
 	justify-content: center;
+	font-size: 28px;
+	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.04));
+	flex-shrink: 0;
+}
+
+.agent-header-meta {
+	flex: 1;
+	min-width: 0;
+}
+
+.agent-header-title-line {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 4px;
+}
+
+.agent-header-title {
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--vscode-editor-foreground);
+}
+
+.agent-header-title.editable {
+	cursor: pointer;
+	border-radius: 4px;
+	padding: 2px 6px;
+	margin: -2px -6px;
+	transition: background 0.12s;
+}
+
+.agent-header-title.editable:hover {
+	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.06));
+}
+
+.agent-rename-trigger {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
 	border: none;
 	background: transparent;
 	color: var(--vscode-descriptionForeground);
-	border-radius: 4px;
 	cursor: pointer;
+	border-radius: 4px;
+	font-size: 12px;
+	opacity: 0;
+	transition: opacity 0.12s, background 0.12s;
 }
 
-.agent-editor-close:hover {
-	background-color: var(--vscode-list-hoverBackground);
+.agent-header-title-line:hover .agent-rename-trigger {
+	opacity: 0.7;
+}
+
+.agent-rename-trigger:hover {
+	opacity: 1 !important;
+	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.08));
+}
+
+.agent-header-rename {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.agent-rename-input {
+	font-size: 15px;
+	font-weight: 600;
+	padding: 3px 8px;
+	background: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #d4d4d4);
+	border: 1px solid var(--vscode-focusBorder, #0e639c);
+	border-radius: 4px;
+	outline: none;
+	font-family: inherit;
+	min-width: 120px;
+	max-width: 280px;
+}
+
+.agent-rename-input:focus {
+	border-color: var(--vscode-focusBorder, #0e639c);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder, #0e639c);
+}
+
+.agent-rename-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	border: 1px solid var(--vscode-panel-border, #464647);
+	background: var(--vscode-editor-background);
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	border-radius: 4px;
+	font-size: 13px;
+	transition: background 0.12s, border-color 0.12s;
+}
+
+.agent-rename-btn.confirm:hover {
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #fff);
+	border-color: var(--vscode-button-background, #0e639c);
+}
+
+.agent-rename-btn.cancel:hover {
+	background: var(--vscode-inputOption-hoverBackground, rgba(255 255 255 0.1));
+	border-color: var(--vscode-errorForeground, #f48771);
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+.agent-rename-btn:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.agent-header-rename-error {
+	font-size: 11px;
+	color: var(--vscode-errorForeground, #f48771);
+	margin-top: 4px;
+	padding: 3px 8px;
+	background: rgba(244 135 113 0.1);
+	border-left: 2px solid var(--vscode-errorForeground, #f48771);
+	border-radius: 3px;
+}
+
+.agent-header-version {
+	padding: 2px 8px;
+	font-size: 10px;
+	font-weight: 500;
+	border-radius: 8px;
+	background: rgba(137 209 133 0.12);
+	color: #89d185;
+	border: 1px solid rgba(137 209 133 0.25);
+	flex-shrink: 0;
+}
+
+.agent-header-desc {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.4;
+}
+
+.agent-header-stats {
+	display: flex;
+	gap: 12px;
+	margin-top: 8px;
+	flex-wrap: wrap;
+}
+
+.agent-header-stats .stat-item {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.8;
+}
+
+.agent-header-stats .stat-icon { font-size: 12px; }
+.agent-header-stats .stat-value {
+	color: var(--vscode-textLink-foreground, #569cd6);
+	font-weight: 500;
+}
+
+.agent-header-actions {
+	display: flex;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.agent-header-actions .header-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 5px 10px;
+	font-size: 12px;
+	border: 1px solid var(--vscode-panel-border, #464647);
+	border-radius: 4px;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	transition: background 0.12s, color 0.12s, border-color 0.12s;
+	font-family: inherit;
+}
+
+.agent-header-actions .header-btn:hover {
+	background: var(--vscode-list-hoverBackground);
 	color: var(--vscode-foreground);
+	border-color: var(--vscode-button-background, #0e639c);
 }
 
-.agent-editor-close svg {
-	width: 14px;
-	height: 14px;
+.agent-header-actions .header-btn.primary {
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+	border-color: var(--vscode-button-background, #0e639c);
+}
+
+.agent-header-actions .header-btn.primary:hover {
+	background: var(--vscode-button-hoverBackground, #1177bb);
 }
 
 /* ── Tab bar ───────────────────────────────────────────────────── */
 .agent-editor-tabs {
 	display: flex;
-	gap: 2px;
-	padding: 4px 8px;
+	gap: 0;
+	padding: 0 12px;
 	border-bottom: 1px solid var(--as-border, var(--vscode-panel-border, rgba(128,128,128,0.2)));
 	flex-shrink: 0;
 	overflow-x: auto;
@@ -71,35 +249,57 @@
 .agent-editor-tab {
 	display: flex;
 	align-items: center;
-	gap: 4px;
-	padding: 4px 10px;
+	gap: 5px;
+	padding: 8px 12px;
 	border: none;
 	background: transparent;
 	color: var(--vscode-descriptionForeground);
-	border-radius: 4px;
+	border-bottom: 2px solid transparent;
 	cursor: pointer;
-	font-size: 11px;
+	font-size: 12px;
 	font-family: inherit;
 	white-space: nowrap;
-	transition: background-color 100ms, color 100ms;
+	transition: color 0.12s, border-color 0.12s;
 }
 
 .agent-editor-tab:hover {
-	background: var(--vscode-list-hoverBackground);
 	color: var(--vscode-foreground);
 }
 
 .agent-editor-tab.active {
-	background: var(--vscode-list-activeSelectionBackground, rgba(59,130,246,0.15));
-	color: var(--vscode-list-activeSelectionForeground, var(--vscode-textLink-foreground, #3b82f6));
+	color: var(--vscode-foreground);
+	border-bottom-color: var(--vscode-button-background, #0e639c);
+	font-weight: 500;
 }
 
 .tab-icon {
-	font-size: 12px;
+	font-size: 13px;
 }
 
 .tab-label {
-	font-size: 11px;
+	font-size: 12px;
+}
+
+/* Tab badge (count indicator) */
+.tab-badge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 5px;
+	font-size: 9px;
+	font-weight: 600;
+	border-radius: 8px;
+	background: var(--vscode-badge-background, #4d4d4d);
+	color: var(--vscode-badge-foreground, #d4d4d4);
+	min-width: 16px;
+	height: 14px;
+	line-height: 14px;
+	text-align: center;
+}
+
+.agent-editor-tab.active .tab-badge {
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
 }
 
 /* ── Tab content area ──────────────────────────────────────────── */

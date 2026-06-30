@@ -5,7 +5,7 @@
  *  renders a chat panel.
  *--------------------------------------------------------------------------------------------*/
 
-import React, { useEffect, useState, Component } from 'react';
+import React, { useEffect, useState, useCallback, Component } from 'react';
 import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
 import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
@@ -110,19 +110,18 @@ function AgentSettingsPanel(): React.ReactElement {
 	const { loadWorkspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
 	const { loadProviders } = useProviderStore();
 
-	// Read the agentId from host-injected initial data
-	const [agentId, setAgentId] = useState<string | null>(null);
-
-	useEffect(() => {
-		const initialData = (window as unknown as Record<string, unknown>).__AGENT_STUDIO_INITIAL_DATA__ as
+	// Read agentId from host-injected initial data (set by App component)
+	const agentId = (() => {
+		const data = (window as unknown as Record<string, unknown>).__AGENT_STUDIO_INITIAL_DATA__ as
 			{ type: string; agentId: string } | null | undefined;
-		if (initialData?.type === 'agent-settings' && initialData.agentId) {
-			setAgentId(initialData.agentId);
+		if (data?.type === 'agent-settings' && data.agentId) {
+			return data.agentId;
 		}
-	}, []);
+		return null;
+	})();
 
 	useEffect(() => {
-		console.log('[AgentSettingsPanel] init useEffect fired');
+		console.log('[AgentSettingsPanel] init useEffect fired, agentId:', agentId);
 		loadWorkspaces().then(() => {
 			const store = useWorkspaceStore.getState();
 			if (store.workspaces.length > 0 && !store.activeWorkspaceId) {
@@ -137,7 +136,7 @@ function AgentSettingsPanel(): React.ReactElement {
 			const { agents } = useAgentStore.getState();
 			console.log('[AgentSettingsPanel] loadAgents completed, agents count:', agents.length);
 		});
-	}, []);
+	}, [agentId]);
 
 	useEffect(() => {
 		if (activeWorkspaceId) {
@@ -198,6 +197,9 @@ function AgentSettingsPanel(): React.ReactElement {
 
 export function App(): React.ReactElement {
 	const [panelType, setPanelType] = useState<PanelType>(initialPanelType);
+	const [initialData, setInitialData] = useState<unknown>(
+		(window as any).__AGENT_STUDIO_INITIAL_DATA__ ?? null
+	);
 
 	useEffect(() => {
 		const onPoolActivate = (e: Event) => {
@@ -205,6 +207,10 @@ export function App(): React.ReactElement {
 			const newType = detail?.panelType ?? undefined;
 			// Update the global so any code that reads it directly still works
 			(window as any).__AGENT_STUDIO_PANEL_TYPE__ = newType;
+			if (detail?.initialData !== undefined) {
+				(window as any).__AGENT_STUDIO_INITIAL_DATA__ = detail.initialData;
+				setInitialData(detail.initialData);
+			}
 			setPanelType(newType === '__pooled__' ? undefined : newType);
 		};
 		window.addEventListener('agentStudio:pool-activate', onPoolActivate);
@@ -233,8 +239,11 @@ export function App(): React.ReactElement {
 					</PanelErrorBoundary>
 				</div>
 			);
-		case 'agent-settings':
-			return <AgentSettingsPanel />;
+		case 'agent-settings': {
+			// Use initialData as key to force re-mount when agentId changes (pool reuse)
+			const agentId = (initialData as { type?: string; agentId?: string } | null)?.agentId;
+			return <AgentSettingsPanel key={agentId ?? 'no-agent'} />;
+		}
 		default:
 			// Chat is now handled natively by NativeChatEditorPane.
 			// If we reach here, the webview was activated without a valid panel type.

@@ -24,6 +24,9 @@ import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { ITreeSitterLibraryService } from '../../../../editor/common/services/treeSitter/treeSitterLibraryService.js';
+import { getModuleLocation } from '../../../../workbench/services/treeSitter/browser/treeSitterLibraryService.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import type { Parser as TreeSitterParser, Language as TreeSitterLanguage } from '@vscode/tree-sitter-wasm';
 import { CodebaseGraphStore } from './codebaseGraphStore.js';
 import { CypherEngine } from './codebaseGraphCypher.js';
@@ -134,6 +137,9 @@ export interface ICodebaseGraphService {
 	getGraphData(): GraphData;
 	getGraphDataDownsampled(maxNodes: number): GraphData;
 	getVisualizationData(maxNodes: number): VisualizationData;
+	getVisualizationNodes(offset: number, limit: number): { nodes: VisualizationNode[]; total: number };
+	getVisualizationEdges(nodeIds: Set<string>, offset: number, limit: number): GraphEdge[];
+	getTotalEdgeCount(): number;
 	hasGraphData(): boolean;
 	getTotalNodeCount(): number;
 	searchNodes(pattern: string, nodeType?: string): GraphNode[];
@@ -236,9 +242,11 @@ const DEFAULT_EXCLUDE_DIRS = [
 	'scripts', '.worktrees', 'deploy-package', 'cli', '.sarosworkspace',
 	'.codebase-memory', 'target', '__pycache__', '.next', '.nuxt',
 	'coverage', '.cache', 'tmp', 'temp',
+	'Intermediate', 'Saved', 'Binaries', 'Build',
 ];
 
 const MAX_FILE_SIZE = 1024 * 1024; // 1 MB
+const MAX_LINE_LENGTH = 10000;   // 超过此行长的文件跳过（minified/生成代码会导致 tree-sitter 挂起）
 
 // ─── GraphStore (legacy compatibility wrapper) ─────────────────────────────
 
@@ -375,6 +383,9 @@ class GraphStore {
 		const BATCH_SIZE = 5000;
 		const total = data.nodes.length + data.edges.length;
 
+		// 延迟 BM25：加载阶段跳过逐条索引，完成后一次性重建
+		this._store.setDeferBM25(true);
+
 		for (let i = 0; i < data.nodes.length; i += BATCH_SIZE) {
 			const end = Math.min(i + BATCH_SIZE, data.nodes.length);
 			for (let j = i; j < end; j++) {
@@ -392,6 +403,10 @@ class GraphStore {
 			if (onProgress) { onProgress(data.nodes.length + end, total); }
 			await new Promise<void>(resolve => setTimeout(resolve, 0));
 		}
+
+		// 批量重建 BM25 索引
+		this._store.setDeferBM25(false);
+		this._store.rebuildBM25();
 	}
 
 	get nodeCount(): number {
@@ -475,12 +490,17 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _lspResolver: LspCrossResolver | undefined;
 	private _crossRepoEnabled = false;
 
+	// ─── Worker Pool (parallel tree-sitter parsing) ────────────────────
+	private _parserWorkers: Worker[] = [];
+	private _workerInitPromise: Promise<boolean> | undefined;
+
 	constructor(
 		@ILogService private readonly _logService: ILogService,
 		@IFileService private readonly _fileService: IFileService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 		@ITreeSitterLibraryService private readonly _treeSitterLib: ITreeSitterLibraryService,
 		@ICommandService private readonly _commandService: ICommandService,
+		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
 	) {
 		super();
 	}
@@ -499,6 +519,247 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		}
 		this._indexLocked = true;
 		return () => { this._indexLocked = false; };
+	}
+
+	// ─── Worker Pool: parallel tree-sitter parsing ──────────────────────
+
+	/**
+	 * 初始化 Worker 池：读取 tree-sitter.js + WASM 文件，创建 N 个 Worker。
+	 * 失败时返回 false，调用方 fallback 到主线程解析。
+	 */
+	private async _ensureWorkerPool(): Promise<boolean> {
+		if (this._workerInitPromise) { return this._workerInitPromise; }
+		this._workerInitPromise = this._initWorkerPool();
+		return this._workerInitPromise;
+	}
+
+	private async _initWorkerPool(): Promise<boolean> {
+		try {
+			// 1. 读取 tree-sitter.js (AMD 模块)
+			const wasmDir = getModuleLocation(this._environmentService);
+			const tsJsUri = FileAccess.asFileUri(`${wasmDir}/tree-sitter.js`);
+			const tsJsContent = (await this._fileService.readFile(tsJsUri)).value.toString();
+
+			// 2. 读取 tree-sitter.wasm (运行时 WASM)
+			const tsWasmUri = FileAccess.asFileUri(`${wasmDir}/tree-sitter.wasm`);
+			const tsWasmBytes = new Uint8Array((await this._fileService.readFile(tsWasmUri)).value.buffer);
+
+			// 3. 读取各语言的 WASM 文件
+			const langWasms: Record<string, Uint8Array> = {};
+			const langs = [...new Set(Object.values(EXTENSION_TO_WASM_LANG))];
+			for (const lang of langs) {
+				try {
+					const uri = FileAccess.asFileUri(`${wasmDir}/tree-sitter-${lang}.wasm`);
+					langWasms[lang] = new Uint8Array((await this._fileService.readFile(uri)).value.buffer);
+				} catch { /* skip unavailable */ }
+			}
+			this._logService.info('[CodebaseGraph]', `Worker pool: loaded tree-sitter.js (${tsJsContent.length}B), runtime WASM (${tsWasmBytes.length}B), ${Object.keys(langWasms).length} langs`);
+
+			// 4. 构建 Worker 代码 (AMD shim + tree-sitter.js + 解析逻辑)
+			const workerCode = this._buildWorkerCode(tsJsContent);
+			const blob = new Blob([workerCode], { type: 'application/javascript' });
+			const workerUrl = URL.createObjectURL(blob);
+
+			// 5. 创建 Worker 池
+			const poolSize = Math.min(4, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+			const initPromises: Promise<Worker | null>[] = [];
+			for (let i = 0; i < poolSize; i++) {
+				initPromises.push(this._createAndInitWorker(workerUrl, tsWasmBytes, langWasms));
+			}
+			const workers = await Promise.all(initPromises);
+			this._parserWorkers = workers.filter((w): w is Worker => w !== null);
+
+			if (this._parserWorkers.length === 0) {
+				this._logService.warn('[CodebaseGraph]', 'Worker pool: all workers failed to init, fallback to main thread');
+				return false;
+			}
+			this._logService.info('[CodebaseGraph]', `Worker pool ready: ${this._parserWorkers.length}/${poolSize} workers`);
+			return true;
+		} catch (err: any) {
+			this._logService.warn('[CodebaseGraph]', `Worker pool init failed: ${err?.message || err}, fallback to main thread`);
+			return false;
+		}
+	}
+
+	private _createAndInitWorker(url: string, tsWasmBytes: Uint8Array, langWasms: Record<string, Uint8Array>): Promise<Worker | null> {
+		return new Promise((resolve) => {
+			let worker: Worker;
+			try {
+				worker = new Worker(url);
+			} catch {
+				resolve(null);
+				return;
+			}
+			const timeout = setTimeout(() => { worker.terminate(); resolve(null); }, 15000);
+			worker.addEventListener('message', function initHandler(e: MessageEvent) {
+				if (e.data.type === 'init-done') {
+					clearTimeout(timeout);
+					worker.removeEventListener('message', initHandler);
+					resolve(worker);
+				} else if (e.data.type === 'init-error') {
+					clearTimeout(timeout);
+					worker.terminate();
+					resolve(null);
+				}
+			});
+			// 复制并 transfer WASM buffers (每个 worker 需要独立副本)
+			const tsWasmCopy = tsWasmBytes.slice().buffer;
+			const langWasmsCopy: Record<string, ArrayBuffer> = {};
+			const transferList: ArrayBuffer[] = [tsWasmCopy];
+			for (const [k, v] of Object.entries(langWasms)) {
+				const copy = v.slice().buffer;
+				langWasmsCopy[k] = copy;
+				transferList.push(copy);
+			}
+			worker.postMessage({ type: 'init', tsWasm: tsWasmCopy, langWasms: langWasmsCopy }, transferList);
+		});
+	}
+
+	/**
+	 * 构建 Worker 代码：AMD shim + tree-sitter.js 内联 + AST 遍历逻辑。
+	 */
+	private _buildWorkerCode(tsJsContent: string): string {
+		return `
+// === AMD Loader Shim (捕获 @vscode/tree-sitter-wasm 的 define 调用) ===
+let _tsModule;
+self.define = function(deps, factory) {
+  if (typeof deps === 'function') { _tsModule = deps(); }
+  else if (Array.isArray(deps) && typeof factory === 'function') {
+    const mockDeps = deps.map(function(d) {
+      if (d === 'exports') return (_tsModule = {});
+      if (d === 'require') return function() { return undefined; };
+      return undefined;
+    });
+    const result = factory.apply(null, mockDeps);
+    _tsModule = result || _tsModule;
+  } else { _tsModule = deps; }
+};
+self.define.amd = true;
+// CommonJS shim (某些 UMD 模块会检查 module.exports)
+self.module = { exports: {} };
+self.exports = self.module.exports;
+
+// === Tree-sitter.js (AMD module, inlined) ===
+${tsJsContent}
+
+// === Fallback: 如果 AMD shim 未捕获模块，尝试从全局/CommonJS 获取 ===
+if (!_tsModule) {
+  if (self.module && self.module.exports && self.module.exports.Parser) {
+    _tsModule = self.module.exports;
+  } else if (typeof self.TreeSitter !== 'undefined') {
+    _tsModule = self.TreeSitter;
+  }
+}
+
+// === Worker Logic ===
+let Parser = null, Language = null, languages = {}, initDone = false;
+
+const AST_TO_NODE_TYPE = ${JSON.stringify(AST_TO_NODE_TYPE)};
+
+async function doInit(tsWasm, langWasms) {
+  const TS = _tsModule;
+  if (!TS || !TS.Parser) throw new Error('TreeSitter module not loaded (AMD shim failed, _tsModule=' + (TS ? Object.keys(TS) : 'null') + ')');
+  // 用 blob URL 加载 tree-sitter.wasm
+  const wasmBlob = new Blob([tsWasm]);
+  const wasmUrl = URL.createObjectURL(wasmBlob);
+  await TS.Parser.init({ locateFile: function() { return wasmUrl; } });
+  Parser = TS.Parser;
+  Language = TS.Language;
+  // 加载语言 WASM
+  let langLoaded = 0;
+  for (const langName in langWasms) {
+    try { languages[langName] = await Language.load(langWasms[langName]); langLoaded++; } catch(e) {}
+  }
+  initDone = true;
+}
+
+function walkAST(node, source, filePath, nodes, edges) {
+  const nodeType = AST_TO_NODE_TYPE[node.type];
+  if (nodeType) {
+    let name = null;
+    const children = node.children || [];
+    for (let i = 0; i < children.length; i++) {
+      if (children[i].type === 'name' || children[i].type === 'identifier') {
+        name = source.substring(children[i].startIndex, children[i].endIndex);
+        break;
+      }
+    }
+    if (name) {
+      const qualifiedName = filePath + '::' + name;
+      const startLine = node.startPosition ? node.startPosition.row + 1 : undefined;
+      const endLine = node.endPosition ? node.endPosition.row + 1 : undefined;
+      nodes.push({ id: qualifiedName, name: name, type: nodeType, filePath: filePath, qualifiedName: qualifiedName, inDegree: 0, outDegree: 0, startLine: startLine, endLine: endLine });
+      edges.push({ source: filePath, target: qualifiedName, type: 'CONTAINS' });
+    }
+  }
+  if (node.children) {
+    for (let i = 0; i < node.children.length; i++) {
+      walkAST(node.children[i], source, filePath, nodes, edges);
+    }
+  }
+}
+
+self.onmessage = async function(e) {
+  const msg = e.data;
+  if (msg.type === 'init') {
+    try {
+      await doInit(msg.tsWasm, msg.langWasms);
+      self.postMessage({ type: 'init-done', langCount: Object.keys(languages).length });
+    } catch(err) {
+      self.postMessage({ type: 'init-error', error: err.message || String(err) });
+    }
+  } else if (msg.type === 'parse') {
+    try {
+      const lang = languages[msg.langName];
+      if (!lang) { self.postMessage({ type: 'parse-result', id: msg.id, nodes: [], edges: [] }); return; }
+      const parser = new Parser();
+      parser.setLanguage(lang);
+      const tree = parser.parse(msg.source);
+      const nodes = [], edges = [];
+      if (tree) { walkAST(tree.rootNode, msg.source, msg.filePath, nodes, edges); }
+      self.postMessage({ type: 'parse-result', id: msg.id, nodes: nodes, edges: edges });
+    } catch(err) {
+      self.postMessage({ type: 'parse-result', id: msg.id, nodes: [], edges: [], error: err.message || String(err) });
+    }
+  }
+};
+`;
+	}
+
+	/**
+	 * 通过 Worker 解析单个文件（带 15 秒超时，防止 tree-sitter 挂起导致死锁）
+	 */
+	private _parseViaWorker(worker: Worker, id: number, source: string, langName: string, filePath: string): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+		return new Promise((resolve) => {
+			let resolved = false;
+			const handler = (e: MessageEvent) => {
+				if (e.data.type === 'parse-result' && e.data.id === id) {
+					if (resolved) { return; }
+					resolved = true;
+					clearTimeout(timeout);
+					worker.removeEventListener('message', handler);
+					resolve({ nodes: e.data.nodes || [], edges: e.data.edges || [] });
+				}
+			};
+			worker.addEventListener('message', handler);
+
+			// 15 秒超时：某些文件（如生成的代码、超长行）可能导致 tree-sitter 挂起
+			const timeout = setTimeout(() => {
+				if (resolved) { return; }
+				resolved = true;
+				worker.removeEventListener('message', handler);
+				this._logService.warn('[CodebaseGraph]', `⏱ Worker parse timeout (15s), skipping: ${filePath}`);
+				resolve({ nodes: [], edges: [] }); // 跳过该文件，继续处理下一个
+			}, 15000);
+
+			worker.postMessage({ type: 'parse', id, source, langName, filePath });
+		});
+	}
+
+	private _disposeWorkers(): void {
+		for (const w of this._parserWorkers) { w.terminate(); }
+		this._parserWorkers = [];
+		this._workerInitPromise = undefined;
 	}
 
 	// ─── Main Index Method ──────────────────────────────────────────────
@@ -537,27 +798,114 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				return { success: false, message: '索引已取消', duration: 0 };
 			}
 
-			// 2. Parse files
-			let nodesExtracted = 0;
-			let edgesExtracted = 0;
+		// 2. Parse files
+		let nodesExtracted = 0;
+		let edgesExtracted = 0;
 
+		// 开启 BM25 延迟模式：解析阶段跳过逐条索引更新，解析完成后一次性重建
+		this._graph.store.setDeferBM25(true);
+
+		// 尝试初始化 Worker 池（将 tree-sitter 解析移到独立线程，避免阻塞 UI）
+		this._onDidIndexProgress.fire('🔧 初始化并行解析器...');
+		const workersReady = await this._ensureWorkerPool();
+
+		if (workersReady && this._parserWorkers.length > 0) {
+			// ── Worker 池并行解析：每个 Worker 从共享队列取文件 ──
+			this._onDidIndexProgress.fire(`🚀 并行解析 (${this._parserWorkers.length} workers)...`);
+			let fileIdx = 0;
+			const nextFile = (): number => {
+				if (cts.token.isCancellationRequested || fileIdx >= files.length) { return -1; }
+				return fileIdx++;
+			};
+
+			const workerTask = async (worker: Worker, workerId: number) => {
+				// Worker 崩溃时记录日志（不阻止循环继续，但该 worker 的后续请求会超时被跳过）
+				worker.onerror = (e: ErrorEvent) => {
+					this._logService.warn('[CodebaseGraph]', `Worker ${workerId} crashed: ${e.message || e.error?.message || 'unknown'}`);
+				};
+
+				while (true) {
+					const idx = nextFile();
+					if (idx === -1) { break; }
+
+					const filePath = files[idx];
+					const ext = this._getExtension(filePath);
+					const langName = EXTENSION_TO_WASM_LANG[ext];
+					if (!langName) { continue; }
+
+					// 主线程读取文件内容 (async I/O)
+					let source: string;
+					try {
+						const content = await this._fileService.readFile(URI.file(filePath));
+						source = content.value.toString();
+					} catch { continue; }
+					if (source.length > MAX_FILE_SIZE) { continue; }
+					// 跳过超长行文件（minified/生成代码会导致 tree-sitter 挂起）
+					if (source.indexOf('\n', 0) === -1 && source.length > 50000) { continue; } // 单行超 50K
+					// 快速检测最长行（只检查前 100 行，避免开销）
+					let maxLineLen = 0;
+					const lines = source.split('\n');
+					const checkLines = Math.min(lines.length, 100);
+					for (let li = 0; li < checkLines; li++) { if (lines[li].length > maxLineLen) { maxLineLen = lines[li].length; } }
+					if (maxLineLen > MAX_LINE_LENGTH) { continue; }
+
+					// 诊断日志：每 500 文件记录当前解析路径，便于定位卡死文件
+					if (idx % 500 === 0) {
+						this._logService.info('[CodebaseGraph]', `Worker ${workerId}: #${idx}/${filesScanned} ${filePath}`);
+					}
+
+					// Worker 线程解析 (不阻塞主线程，15s 超时自动跳过)
+					const relPath = this._getRelativePath(filePath);
+					const result = await this._parseViaWorker(worker, idx, source, langName, relPath);
+
+					for (const node of result.nodes) { this._graph.addNode(node); nodesExtracted++; }
+					for (const edge of result.edges) { this._graph.addEdge(edge); edgesExtracted++; }
+
+					if (idx % 50 === 0) {
+						const pct = Math.round(idx / filesScanned * 100);
+						this._onDidIndexProgress.fire(`🔍 解析中 (${idx}/${filesScanned}) ${pct}% - ${nodesExtracted} 节点, ${edgesExtracted} 边`);
+					}
+					// 定期 yield 让 UI 刷新
+					if (idx > 0 && idx % 50 === 0) {
+						await new Promise<void>(resolve => setTimeout(resolve, 0));
+					}
+				}
+			};
+
+			// 启动所有 Worker 并行处理
+			await Promise.all(this._parserWorkers.map((w, i) => workerTask(w, i)));
+		} else {
+			// ── Fallback: 主线程解析 (Worker 不可用时) ──
+			this._onDidIndexProgress.fire('🔍 主线程解析中...');
+			const YIELD_INTERVAL = 20;
 			for (let i = 0; i < files.length; i++) {
 				if (cts.token.isCancellationRequested) { break; }
 				if (i % 50 === 0) {
-					this._onDidIndexProgress.fire(`🔍 解析中 (${i}/${filesScanned})...`);
+					const pct = Math.round(i / filesScanned * 100);
+					this._onDidIndexProgress.fire(`🔍 解析中 (${i}/${filesScanned}) ${pct}% - ${nodesExtracted} 节点, ${edgesExtracted} 边`);
 				}
-
 				const filePath = files[i];
 				const result = await this._parseFile(filePath, cts.token);
-				for (const node of result.nodes) {
-					this._graph.addNode(node);
-					nodesExtracted++;
-				}
-				for (const edge of result.edges) {
-					this._graph.addEdge(edge);
-					edgesExtracted++;
+				for (const node of result.nodes) { this._graph.addNode(node); nodesExtracted++; }
+				for (const edge of result.edges) { this._graph.addEdge(edge); edgesExtracted++; }
+				if (i > 0 && i % YIELD_INTERVAL === 0) {
+					await new Promise<void>(resolve => setTimeout(resolve, 0));
 				}
 			}
+		}
+
+		// 解析完成，释放 Worker 池
+		this._disposeWorkers();
+
+		// 批量重建 BM25 索引
+		this._graph.store.setDeferBM25(false);
+		this._onDidIndexProgress.fire(`📝 构建 BM25 索引 (${nodesExtracted} 节点)...`);
+		await new Promise<void>(resolve => setTimeout(resolve, 0));
+		this._graph.store.rebuildBM25((done, total) => {
+			if (done % 50000 === 0 || done === total) {
+				this._onDidIndexProgress.fire(`📝 BM25 索引: ${done}/${total}...`);
+			}
+		});
 
 			// 3. Match calls to definitions
 			this._onDidIndexProgress.fire('🔗 匹配调用关系...');
@@ -625,6 +973,7 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._isIndexing = false;
 			this._indexCts?.dispose();
 			this._indexCts = undefined;
+			this._disposeWorkers(); // 安全清理 Worker 池
 			releaseLock();
 		}
 	}
@@ -643,8 +992,26 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			? URI.joinPath(URI.file(rootPath), subPath).fsPath
 			: rootPath;
 		const results: string[] = [];
+		this._logService.info('[CodebaseGraph]', `[scan] start: ${scanPath}, excludeDirs=${[...excludeDirs].join(',')}`);
+		this._onDidIndexProgress.fire(`📁 扫描目录: ${scanPath}`);
 		await this._scanDir(URI.file(scanPath), excludeDirs, results, token, 0);
+		this._logService.info('[CodebaseGraph]', `[scan] done: ${results.length} files`);
+		this._onDidIndexProgress.fire(`📁 扫描完成: 找到 ${results.length} 个源文件`);
 		return results;
+	}
+
+	// 大小写不敏感的排除目录集合
+	private _excludeLowerCache: Set<string> | undefined;
+	private _excludeLowerKey: string = '';
+	private _isExcluded(name: string, excludeDirs: Set<string>): boolean {
+		if (excludeDirs.has(name)) { return true; }
+		// 构建大小写不敏感集合（缓存，避免每次重建）
+		const key = [...excludeDirs].sort().join(',');
+		if (this._excludeLowerKey !== key) {
+			this._excludeLowerCache = new Set([...excludeDirs].map(d => d.toLowerCase()));
+			this._excludeLowerKey = key;
+		}
+		return this._excludeLowerCache?.has(name.toLowerCase()) ?? false;
 	}
 
 	private async _scanDir(dirUri: URI, excludeDirs: Set<string>, results: string[], token: CancellationToken, depth: number): Promise<void> {
@@ -660,18 +1027,32 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		if (!stat.children) { return; }
 
+		let dirCount = 0, fileCount = 0;
 		for (const child of stat.children) {
 			if (token.isCancellationRequested) { return; }
-			if (excludeDirs.has(child.name) || (child.name.startsWith('.') && child.name !== '.' && child.name !== '..')) {
+			if (this._isExcluded(child.name, excludeDirs) || (child.name.startsWith('.') && child.name !== '.' && child.name !== '..')) {
 				continue;
 			}
 			if (child.isDirectory) {
+				dirCount++;
 				await this._scanDir(child.resource, excludeDirs, results, token, depth + 1);
 			} else if (child.isFile) {
+				fileCount++;
 				const ext = this._getExtension(child.name);
 				if (ext && EXTENSION_TO_WASM_LANG[ext]) {
 					results.push(child.resource.fsPath);
 				}
+			}
+		}
+
+		// 每处理 10 个子目录或根目录，记录日志 + fire 进度（避免日志过多）
+		if (depth <= 1 || dirCount > 10) {
+			const dirName = dirUri.fsPath.split(/[\\/]/).pop() || dirUri.fsPath;
+			const logMsg = `[scan] depth=${depth} dir=${dirName} dirs=${dirCount} files=${fileCount} total=${results.length}`;
+			this._logService.info('[CodebaseGraph]', logMsg);
+			// 每 20 个文件或根目录才 fire UI 进度（避免 UI 刷新太频繁）
+			if (depth <= 1 || results.length % 20 < 5) {
+				this._onDidIndexProgress.fire(`📁 扫描中: ${results.length} 文件 (当前: ${dirName})`);
 			}
 		}
 	}
@@ -724,6 +1105,15 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			if (source.length > MAX_FILE_SIZE) {
 				this._logService.debug('[CodebaseGraph]', `File too large: ${filePath}`);
 				return { nodes: [], edges: [] };
+			}
+			// 跳过超长行文件（minified/生成代码会导致 tree-sitter 挂起）
+			if (source.indexOf('\n', 0) === -1 && source.length > 50000) { return { nodes: [], edges: [] }; }
+			{
+				let maxLineLen = 0;
+				const lines = source.split('\n');
+				const checkLines = Math.min(lines.length, 100);
+				for (let li = 0; li < checkLines; li++) { if (lines[li].length > maxLineLen) { maxLineLen = lines[li].length; } }
+				if (maxLineLen > MAX_LINE_LENGTH) { return { nodes: [], edges: [] }; }
 			}
 
 			const tree = parser.parse(source);
@@ -952,9 +1342,11 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	getVisualizationData(maxNodes: number): VisualizationData {
 		const store = this._graph.store;
 		const project = this._projectName;
+		const tStart = Date.now();
 
-		// 1. 高效获取 top-N 节点（直接迭代 store Map，不创建全量数组）
+		// 1. 高效获取 top-N 节点
 		let topNodes = store.getTopNodesByDegree(project, maxNodes);
+		this._logService.info('[CodebaseGraph]', `getViz [1] getTopNodesByDegree: ${topNodes.length} nodes (${Date.now() - tStart}ms)`);
 
 		// Fallback: if project-specific query returns 0, try without project filter
 		if (topNodes.length === 0) {
@@ -962,16 +1354,18 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			const allNodes = store.getAllNodes();
 			allNodes.sort((a, b) => ((b.inDegree || 0) + (b.outDegree || 0)) - ((a.inDegree || 0) + (a.outDegree || 0)));
 			topNodes = allNodes.slice(0, maxNodes);
+			this._logService.info('[CodebaseGraph]', `getViz [1-fallback] sorted+slice: ${topNodes.length} nodes (${Date.now() - tStart}ms)`);
 		}
-
-		this._logService.info('[CodebaseGraph]', `getVisualizationData: ${topNodes.length} nodes selected (project="${project}", store total=${store.getNodeCount()})`);
 
 		const keptIds = new Set(topNodes.map(n => n.id));
 
 		// 2. 高效获取这些节点之间的边
+		const tEdges = Date.now();
 		const storeEdges = store.getEdgesBetweenNodes(keptIds);
+		this._logService.info('[CodebaseGraph]', `getViz [2] getEdgesBetweenNodes: ${storeEdges.length} edges (${Date.now() - tEdges}ms)`);
 
-		// 3. 计算环形布局（按文件路径哈希聚类，参考 codebase-memory-mcp layout3d.c）
+		// 3. 计算环形布局
+		const tLayout = Date.now();
 		const nodes: VisualizationNode[] = topNodes.map(storeNode => {
 			const connections = (storeNode.inDegree || 0) + (storeNode.outDegree || 0);
 			const fp = storeNode.filePath || storeNode.qualifiedName || storeNode.name || '';
@@ -1012,8 +1406,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 				outDegree: storeNode.outDegree || 0,
 			};
 		});
+		this._logService.info('[CodebaseGraph]', `getViz [3] layout+nodes: ${nodes.length} (${Date.now() - tLayout}ms)`);
 
 		// 4. 转换边为 GraphEdge 格式（string IDs），限制总数避免 HTML 过大
+		const tEdgeConv = Date.now();
 		const MAX_EDGES = 100000;
 		const allEdges: GraphEdge[] = storeEdges.map(({ edge }) => {
 			const srcStr = this._graph['_revIdMap'].get(edge.sourceId) || String(edge.sourceId);
@@ -1024,9 +1420,84 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		const EDGE_PRIORITY: Record<string, number> = { CALLS: 0, IMPORTS: 1, DEFINES: 2, DEFINES_METHOD: 3, IMPLEMENTS: 4, INHERITS: 5, HANDLES: 6, USAGE: 7 };
 		allEdges.sort((a, b) => (EDGE_PRIORITY[a.type] ?? 99) - (EDGE_PRIORITY[b.type] ?? 99));
 		const edges = allEdges.slice(0, MAX_EDGES);
+		this._logService.info('[CodebaseGraph]', `getViz [4] edgeConvert+sort: ${edges.length}/${allEdges.length} edges (${Date.now() - tEdgeConv}ms, total ${Date.now() - tStart}ms)`);
 
 		return { nodes, edges, totalNodes: this._graph.nodeCount };
 	}
+
+	/**
+	 * 分批获取可视化节点（用于增量加载，避免一次性嵌入大量 JSON 到 HTML）
+	 * 返回按 degree 降序排列的节点，从 offset 开始取 limit 个
+	 */
+	getVisualizationNodes(offset: number, limit: number): { nodes: VisualizationNode[]; total: number } {
+		const store = this._graph.store;
+		const project = this._projectName;
+		const total = store.getNodeCount(project);
+
+		// 获取 top-N 节点（按 degree 降序），取 offset..offset+limit 切片
+		// getTopNodesByDegree 返回按 degree 排序的数组，我们取 offset 之后的 limit 个
+		// 为避免每次重新排序，第一次调用时缓存全量排序结果
+		let sortedNodes = this._cachedSortedNodes;
+		if (!sortedNodes || sortedNodes.length === 0 || this._cachedSortedProject !== project) {
+			sortedNodes = store.getTopNodesByDegree(project, total);
+			this._cachedSortedNodes = sortedNodes;
+			this._cachedSortedProject = project;
+		}
+
+		const batch = sortedNodes.slice(offset, offset + limit);
+		const nodes: VisualizationNode[] = batch.map(storeNode => {
+			const connections = (storeNode.inDegree || 0) + (storeNode.outDegree || 0);
+			const fp = storeNode.filePath || storeNode.qualifiedName || storeNode.name || '';
+			const parts = fp.replace(/\\/g, '/').split('/');
+			const clusterKey = parts.slice(0, 3).join('/');
+			const h = CodebaseGraphService._fnv1a(clusterKey);
+			const angle = ((h & 0xFFFF) / 65535) * Math.PI * 2;
+			const radius = 500 + ((h >> 16) & 0xFF) / 255 * 250;
+			const seed = CodebaseGraphService._fnv1a(storeNode.qualifiedName || fp);
+			const jx = ((seed & 0xFF) / 255 - 0.5) * 40;
+			const jy = (((seed >> 8) & 0xFF) / 255 - 0.5) * 40;
+			const z = -Math.min(connections, 20) * 15;
+			const strId = this._graph['_revIdMap'].get(storeNode.id) || String(storeNode.id);
+			return {
+				id: strId, name: storeNode.name, type: storeNode.label,
+				filePath: storeNode.filePath, qualifiedName: storeNode.qualifiedName,
+				x: radius * Math.cos(angle) + jx, y: radius * Math.sin(angle) + jy, z,
+				size: CodebaseGraphService._nodeSize(connections),
+				color: CodebaseGraphService._stellarColor(connections),
+				inDegree: storeNode.inDegree || 0, outDegree: storeNode.outDegree || 0,
+			};
+		});
+
+		return { nodes, total };
+	}
+
+	/**
+	 * 分批获取边（直接从 store 获取，webview 会过滤掉端点未加载的边）
+	 */
+	getVisualizationEdges(_nodeIds: Set<string>, offset: number, limit: number): GraphEdge[] {
+		// 直接从 store 获取所有边，按 offset/limit 分批返回
+		// webview 的 addEdgesBatch 会自动跳过端点不在 nodeMap 中的边
+		const allStoreEdges = this._graph.store.getAllEdges();
+		const batch: GraphEdge[] = [];
+
+		for (let i = offset; i < Math.min(offset + limit, allStoreEdges.length); i++) {
+			const edge = allStoreEdges[i];
+			// 尝试从 _revIdMap 获取 string ID，fallback 到 String(numericId)
+			const srcStr = this._graph['_revIdMap'].get(edge.sourceId) || String(edge.sourceId);
+			const tgtStr = this._graph['_revIdMap'].get(edge.targetId) || String(edge.targetId);
+			batch.push({ source: srcStr, target: tgtStr, type: edge.type });
+		}
+
+		return batch;
+	}
+
+	/** 获取边的总数 */
+	getTotalEdgeCount(): number {
+		return this._graph.store.getAllEdges().length;
+	}
+
+	private _cachedSortedNodes: any[] = [];
+	private _cachedSortedProject: string = '';
 
 	searchNodes(pattern: string, nodeType?: string): GraphNode[] {
 		const regex = new RegExp(pattern, 'i');
@@ -1410,8 +1881,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	}
 
 	async loadGraph(sourcePath: string): Promise<boolean> {
+		const tStart = Date.now();
 		// sourcePath can be: graph.db.zst (new), graph.db.gz (old compressed), or graph.json (old plain)
-		// Try compressed formats first
 		const compressedPaths = [sourcePath];
 		if (sourcePath.endsWith('.json')) {
 			compressedPaths.push(
@@ -1426,13 +1897,16 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		for (const p of compressedPaths) {
 			try {
+				this._logService.info('[CodebaseGraph]', `[loadGraph] trying: ${p}`);
 				const persistence = new GraphPersistence(this._fileService);
 				const loaded = await persistence.load(this._graph.store, p);
 				if (loaded) {
-					this._logService.info('[CodebaseGraph]', `Graph loaded (compressed): ${p}`);
+					this._logService.info('[CodebaseGraph]', `[loadGraph] loaded ${p} (${Date.now() - tStart}ms), store nodes=${this._graph.nodeCount}`);
 					return true;
 				}
-			} catch { /* try next */ }
+			} catch (err: any) {
+				this._logService.debug('[CodebaseGraph]', `[loadGraph] failed ${p}: ${err?.message || err}`);
+			}
 		}
 
 		// Fall back to plain JSON
@@ -1467,5 +1941,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			return rel.replace(/\\/g, '/');
 		}
 		return absPath.replace(/\\/g, '/');
+	}
+
+	override dispose(): void {
+		this._disposeWorkers();
+		super.dispose();
 	}
 }

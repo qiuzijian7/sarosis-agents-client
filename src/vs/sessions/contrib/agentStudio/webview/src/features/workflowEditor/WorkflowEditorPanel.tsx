@@ -63,7 +63,6 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const autoSwitchChatToWorkflowAgent = useCallback(async (_workflowAgentId: string) => {
 		// No-op: chat panel auto-switching is handled natively.
 	}, []);
-	}, []);
 
 	// Load initial data from the host-injected __AGENT_STUDIO_INITIAL_DATA__
 	// Retry up to 20 times (total 2s) for cold-path webviews where the inline

@@ -18,6 +18,7 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
+import { IConfigHtmlService } from '../../../../common/agentStudioService.js';
 import { Agent } from '../../../../common/agentStudioTypes.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
@@ -32,6 +33,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IPathService private readonly pathService: IPathService,
+		@IConfigHtmlService private readonly configHtmlService: IConfigHtmlService,
 	) {
 		super();
 	}
@@ -45,8 +47,43 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		const exportData = JSON.parse(raw) as {
 			agent: Partial<Agent>;
 			agentConfig?: Record<string, unknown>;
-			files?: { agentsMd?: string; soulMd?: string; identityMd?: string; toolsMd?: string; memoryMd?: string };
+			files?: { agentsMd?: string; soulMd?: string; identityMd?: string; toolsMd?: string; memoryMd?: string; configMd?: string; htmlEntry?: string; htmlContent?: string; htmlStyles?: string };
 		};
+
+		// ── Resolve target agent dir: ~/.saros/agents/{agentId}/ ──
+		const agentId = exportData.agent.id || manifest.id;
+		const agentDir = await this.agentStudioService.getAgentDir(agentId);
+
+		// Ensure directory exists (create if first install)
+		try {
+			await this.fileService.resolve(agentDir);
+		} catch {
+			await this.fileService.createFolder(agentDir);
+		}
+
+		// ── Install HTML/ConfigHTML files into the agent dir ──
+		let htmlPath: string | undefined;
+		if (manifest.htmlFiles?.entry) {
+			// Copy html/ directory from package to agent dir
+			const htmlSourceDir = URI.joinPath(extractedDir, 'html');
+			if (await this.fileService.exists(htmlSourceDir)) {
+				const destHtmlDir = URI.joinPath(agentDir, 'html');
+				await this._copyDirectory(htmlSourceDir, destHtmlDir);
+			}
+			htmlPath = manifest.htmlFiles.entry.replace(/^html\//, '');
+		} else if (exportData.files?.htmlContent) {
+			// Fallback: write inline HTML content to config.html
+			const configHtmlUri = URI.joinPath(agentDir, 'config.html');
+			await this.fileService.writeFile(configHtmlUri, VSBuffer.fromString(exportData.files.htmlContent));
+			htmlPath = 'config.html';
+		}
+
+		// ── Install config source (MD/HTML source file) ──
+		if (exportData.files?.configMd) {
+			const configFileName = exportData.agent.configMd?.mdPath || 'config.html';
+			const configUri = URI.joinPath(agentDir, configFileName);
+			await this.fileService.writeFile(configUri, VSBuffer.fromString(exportData.files.configMd));
+		}
 
 		// 复用 createAgent 落地：写 custom-agents.json + .agent.md（若有 agentsMd）
 		const createData: Partial<Agent> & { bootstrapTemplates?: { agentsMd?: string } } = {
@@ -60,10 +97,28 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		}
 
 		await this.agentStudioService.createAgent(createData);
-		this.logService.info(`[AgentInstaller] 安装完成: ${manifest.id} v${manifest.version}`);
+		this.logService.info(`[AgentInstaller] 安装完成: ${manifest.id} v${manifest.version}${htmlPath ? ' (含 ConfigHTML)' : ''}`);
 
-		const targetDir = await this.resolveAgentsCustomDir();
-		return { kind: 'agent', storeId: manifest.id, version: manifest.version, targetDir: targetDir.fsPath };
+		return { kind: 'agent', storeId: manifest.id, version: manifest.version, targetDir: agentDir.fsPath };
+	}
+
+	/**
+	 * Recursively copy a directory's contents.
+	 */
+	private async _copyDirectory(src: URI, dest: URI): Promise<void> {
+		const entries = await this.fileService.resolve(src);
+		if (!entries.children) { return; }
+		await this.fileService.createFolder(dest);
+		for (const child of entries.children) {
+			const srcChild = URI.joinPath(src, child.name);
+			const destChild = URI.joinPath(dest, child.name);
+			if (child.isDirectory) {
+				await this._copyDirectory(srcChild, destChild);
+			} else {
+				const content = await this.fileService.readFile(srcChild);
+				await this.fileService.writeFile(destChild, content.value);
+			}
+		}
 	}
 
 	async preparePack(localId: string): Promise<IPreparePackResult> {
@@ -72,13 +127,54 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			throw new Error(`agent 不存在: ${localId}`);
 		}
 
-		// 读取 .agent.md 引导文件（若存在）
-		const slug = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-		const agentMdUri = URI.joinPath(await this.resolveAgentsCustomDir(), `${slug}.agent.md`);
+		// Resolve the agent's directory: ~/.saros/agents/{agentId}/
+		const agentDir = await this.agentStudioService.getAgentDir(localId);
+
+		// Read .agent.md from the agent directory
+		const agentMdUri = URI.joinPath(agentDir, '.agent.md');
 		let agentMd: string | undefined;
 		if (await this.fileService.exists(agentMdUri)) {
 			agentMd = (await this.fileService.readFile(agentMdUri)).value.toString();
 		}
+
+		// ── 收集 ConfigHTML 内容（从 agent 目录直接读取） ──
+		let configMdContent: string | undefined;
+		let htmlEntry: string | undefined;
+		let htmlContent: string | undefined;
+		let htmlStyles: string | undefined;
+		let htmlFilesManifest: PackageManifest['htmlFiles'] | undefined;
+
+		// Try reading config.html from the agent directory
+		const configFileName = agent.configMd?.mdPath || 'config.html';
+		const configUri = URI.joinPath(agentDir, configFileName);
+		if (await this.fileService.exists(configUri)) {
+			try {
+				configMdContent = (await this.fileService.readFile(configUri)).value.toString();
+				// If it's HTML, use directly; if MD, try rendering
+				const isHtml = configMdContent.toLowerCase().includes('<!doctype') || /<html[\s>]/i.test(configMdContent);
+				if (isHtml) {
+					htmlContent = configMdContent;
+					htmlEntry = 'index.html';
+				} else {
+					// Try configHtmlService for rendering
+					try {
+						const renderResult = await this.configHtmlService.renderHtml(localId);
+						htmlContent = renderResult.html;
+						htmlEntry = 'index.html';
+					} catch { /* best-effort */ }
+				}
+			} catch { /* read error, skip */ }
+		}
+
+		// Try configHtmlService for styles
+		try {
+			const state = await this.configHtmlService.resolveState(localId);
+			if (state) {
+				htmlStyles = state.stylesContent;
+				if (!configMdContent) { configMdContent = state.markdown; }
+				if (!htmlContent) { htmlContent = state.html; htmlEntry = 'index.html'; }
+			}
+		} catch { /* best-effort */ }
 
 		// 组装 AgentExportData
 		const exportData = {
@@ -88,25 +184,65 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 				id: agent.id, name: agent.name, role: agent.role, description: agent.description,
 				icon: agent.icon, model: agent.model, skills: agent.skills, tools: agent.tools,
 				category: agent.category, systemPrompt: agent.systemPrompt, temperature: agent.temperature,
+				configMd: agent.configMd,
 				source: 'custom',
 			},
 			agentConfig: {},
-			files: { agentMd },
+			files: {
+				agentMd,
+				configMd: configMdContent,
+				htmlEntry,
+				htmlContent,
+				htmlStyles,
+			},
 		};
 
 		// 写入临时目录供 tar 打包
 		const userHome = await this.pathService.userHome();
 		const tmpBase = path.join(userHome.fsPath, '.saros', 'tmp');
 		await this.fileService.createFolder(URI.file(tmpBase));
-		
+
 		const tmpDir = path.join(tmpBase, `saros-agent-pack-${Date.now()}`);
 		await this.fileService.createFolder(URI.file(tmpDir));
-		
+
 		await this.fileService.writeFile(URI.joinPath(URI.file(tmpDir), 'agent.json'), VSBuffer.fromString(JSON.stringify(exportData, null, 2)));
 		const files = ['agent.json'];
 		if (agentMd) {
 			await this.fileService.writeFile(URI.joinPath(URI.file(tmpDir), 'AGENTS.md'), VSBuffer.fromString(agentMd));
 			files.push('AGENTS.md');
+		}
+
+		// Write HTML files to html/ directory in the package
+		if (htmlContent) {
+			const htmlDir = path.join(tmpDir, 'html');
+			await this.fileService.createFolder(URI.file(htmlDir));
+			await this.fileService.writeFile(
+				URI.joinPath(URI.file(htmlDir), 'index.html'),
+				VSBuffer.fromString(htmlContent),
+			);
+			files.push('html/index.html');
+			if (htmlStyles) {
+				await this.fileService.writeFile(
+					URI.joinPath(URI.file(htmlDir), 'styles.css'),
+					VSBuffer.fromString(htmlStyles),
+				);
+				files.push('html/styles.css');
+			}
+			htmlFilesManifest = {
+				entry: 'html/index.html',
+				assets: htmlStyles ? ['html/styles.css'] : [],
+			};
+		}
+
+		// Write config source file (if available)
+		if (configMdContent) {
+			const configDir = path.join(tmpDir, 'config');
+			await this.fileService.createFolder(URI.file(configDir));
+			await this.fileService.writeFile(
+				URI.joinPath(URI.file(configDir), configFileName),
+				VSBuffer.fromString(configMdContent),
+			);
+			files.push(`config/${configFileName}`);
 		}
 
 		const manifest: PackageManifest = {
@@ -118,16 +254,12 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			category: agent.category,
 			author: 'saros',
 			files,
+			htmlFiles: htmlFilesManifest,
 		};
 		return { localDir: URI.file(tmpDir), manifest };
 	}
 
 	getInstalledVersion(storeId: string): string | undefined {
 		return undefined;
-	}
-
-	private async resolveAgentsCustomDir(): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', 'agents', 'custom');
 	}
 }

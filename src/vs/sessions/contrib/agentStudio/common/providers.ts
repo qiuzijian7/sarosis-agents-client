@@ -502,6 +502,37 @@ export interface IMemoryProvider {
 	/** Get git commit statistics */
 	getCommitStats?(): Record<string, unknown>;
 
+	// ─── Skill Extract APIs (for memory detail panel) ─────────────────────
+
+	/** Get skill statistics */
+	getSkillStats?(): { totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number };
+
+	/** List all extracted skills */
+	listSkills?(filter?: { tags?: string[]; minConfidence?: number }): Array<Record<string, unknown>>;
+
+	/** Write a skill's SKILL.md file to ~/.saros/skills/<slug>/SKILL.md */
+	writeSkillFile?(skillId: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+
+	/** Delete a skill's SKILL.md file */
+	deleteSkillFile?(skillId: string): Promise<{ ok: boolean; deleted?: boolean; error?: string }>;
+
+	/** Write SKILL.md for all pending skills */
+	writeAllSkillFiles?(): Promise<{ written: number; failed: number; errors: string[] }>;
+
+	/** Update a skill (edit mode) */
+	updateSkill?(id: string, updates: Record<string, unknown>): Record<string, unknown> | null;
+
+	/** Delete a skill */
+	deleteSkill?(id: string): boolean;
+
+	// ─── Cross-Agent APIs (for memory detail panel) ────────────────────────
+
+	/** List all agent IDs that have memory data */
+	listAllAgentsWithData?(): Promise<string[]>;
+
+	/** Search memories across ALL agents */
+	searchAllAgents?(query: string): Promise<Array<Record<string, unknown>>>;
+
 	// ─── Memory Lifecycle Events (for accurate UI feedback) ──────────────────
 	// 替代旧的 fire-and-forget + 假"已保存" UI 反馈模式。
 	// Provider 在 writeMemory 成功/失败时通过这些回调通知调用方，
@@ -871,6 +902,7 @@ export interface IChatStreamDelta {
 	| 'memory_writing' | 'memory_written' | 'memory_write_failed'
 	| 'memory_episodic_extracted' | 'memory_semantic_extracted' | 'memory_procedural_extracted'
 	| 'memory_injected'
+	| 'skill_extracted'
 	| 'codebase_operation';
 	readonly content?: string;
 	readonly toolCallId?: string;

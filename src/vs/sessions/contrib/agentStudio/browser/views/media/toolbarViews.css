@@ -1159,6 +1159,37 @@ button.primary:hover,
 	background: var(--vscode-button-secondaryHoverBackground);
 }
 
+.preset-install-btn {
+	padding: 2px 8px;
+	font-size: 11px;
+	border-radius: 4px;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.preset-install-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.preset-create-btn {
+	padding: 2px 8px;
+	font-size: 11px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	transition: all 0.12s;
+}
+
+.preset-create-btn:hover {
+	background: var(--vscode-list-hoverBackground);
+	color: var(--vscode-foreground);
+	border-color: var(--vscode-button-background);
+}
+
 .preset-search-box {
 	display: flex;
 	align-items: center;
@@ -1328,132 +1359,252 @@ button.primary:hover,
 	background: var(--vscode-scrollbarSlider-hoverBackground);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * Agent Preset Card — 重新设计
+ * 布局: [status-bar] [icon] [body(name+version / role / skills)] [actions]
+ * 状态: installed(绿) / upgradable(橙) / loading(spinner) / default
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
 .preset-card {
 	display: flex;
-	flex-direction: column;
-	padding: 10px 12px;
-	margin-bottom: 6px;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 10px 8px 14px;
+	margin-bottom: 4px;
 	border: 1px solid var(--vscode-panel-border);
 	border-radius: 8px;
-	transition: border-color 0.15s;
 	cursor: pointer;
+	transition: border-color 0.15s, background 0.15s;
+	position: relative;
 }
 
 .preset-card:hover {
 	border-color: var(--vscode-button-background);
+	background: var(--vscode-list-hoverBackground);
 }
 
-.preset-card.expanded {
-	border-color: var(--vscode-focusBorder);
-	background: var(--vscode-editor-inactiveSelectionBackground, rgba(50 50 255 / 0.05));
+.preset-card.loading {
+	pointer-events: none;
+	opacity: 0.65;
 }
 
-.preset-card-header {
-	display: flex;
-	align-items: flex-start;
-	gap: 10px;
+/* ── Status bar (left vertical accent) ── */
+.preset-status-bar {
+	position: absolute;
+	left: 0;
+	top: 50%;
+	transform: translateY(-50%);
+	width: 3px;
+	height: 60%;
+	border-radius: 0 2px 2px 0;
+	background: transparent;
 }
 
+.preset-card.installed .preset-status-bar {
+	background: var(--vscode-testing-iconPassed, #89d185);
+	opacity: 0.6;
+}
+
+.preset-card.upgradable .preset-status-bar {
+	background: var(--vscode-editorWarning-foreground, #ce9178);
+	opacity: 0.7;
+}
+
+/* ── Icon ── */
 .preset-icon {
-	font-size: 24px;
-	flex-shrink: 0;
+	font-size: 22px;
 	line-height: 1;
+	flex-shrink: 0;
+	width: 32px;
+	height: 32px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 6px;
+	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.04));
 }
 
-.preset-info {
+/* ── Body ── */
+.preset-body {
 	flex: 1;
 	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.preset-title-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
 }
 
 .preset-name {
 	font-weight: 600;
 	font-size: 13px;
 	color: var(--vscode-editor-foreground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .preset-role {
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
-}
-
-.preset-desc {
-	font-size: 12px;
-	margin-top: 3px;
-	color: var(--vscode-foreground);
-	line-height: 1.4;
-	display: -webkit-box;
-	-webkit-line-clamp: 2;
-	-webkit-box-orient: vertical;
+	white-space: nowrap;
 	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
-.preset-card.expanded .preset-desc {
-	-webkit-line-clamp: unset;
-}
-
-.preset-chevron {
+/* ── Version badge ── */
+.preset-version-badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 6px;
+	font-size: 10px;
+	font-weight: 500;
+	border-radius: 8px;
 	flex-shrink: 0;
-	font-size: 12px;
+	white-space: nowrap;
+}
+
+.preset-version-badge.installed {
+	background: rgba(137 209 133 0.15);
+	color: var(--vscode-testing-iconPassed, #89d185);
+	border: 1px solid rgba(137 209 133 0.25);
+}
+
+.preset-version-badge.installed::before {
+	content: "✓ ";
+	font-size: 9px;
+}
+
+.preset-version-badge.remote {
+	background: var(--vscode-badge-background);
 	color: var(--vscode-descriptionForeground);
-	padding-top: 4px;
-	transition: transform 0.15s;
 }
 
-/* Header chat button (inline in card header) */
-.preset-header-chat-btn {
-	flex-shrink: 0;
-	padding: 3px 8px;
-	margin-left: auto;
-	font-size: 11px;
-	border: none;
-	border-radius: 4px;
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-	cursor: pointer;
+.preset-version-badge.outdated {
+	background: rgba(206 145 120 0.15);
+	color: var(--vscode-editorWarning-foreground, #ce9178);
+	border: 1px solid rgba(206 145 120 0.25);
 }
 
-.preset-header-chat-btn:hover {
-	background: var(--vscode-button-hoverBackground);
-}
-
+/* ── Skill chips ── */
 .preset-skills {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 4px;
-	margin-top: 6px;
+	gap: 3px;
+	margin-top: 2px;
 }
 
-.skill-tag {
-	padding: 2px 6px;
-	font-size: 10px;
-	border-radius: 10px;
-	background: var(--vscode-badge-background);
-	color: var(--vscode-badge-foreground);
+.preset-skills .skill-chip {
+	padding: 1px 6px;
+	font-size: 9px;
+	border-radius: 8px;
+	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.04));
+	color: var(--vscode-textLink-foreground, #569cd6);
+	border: 1px solid var(--vscode-panel-border);
 }
 
-/* Quick deploy button (collapsed state) */
-.preset-quick-actions {
+.preset-skills .skill-chip.more {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* ── Actions (right side) ── */
+.preset-actions {
 	display: flex;
-	justify-content: flex-end;
-	margin-top: 4px;
-	opacity: 0;
-	transition: opacity 0.15s;
+	align-items: center;
+	gap: 3px;
+	flex-shrink: 0;
 }
 
-.preset-card:hover .preset-quick-actions {
-	opacity: 1;
-}
-
-.preset-quick-deploy {
-	padding: 2px 8px;
-	font-size: 11px;
+/* ── Icon buttons ── */
+.preset-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border: none;
 	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	font-size: 13px;
+	transition: background 0.12s, color 0.12s;
+	position: relative;
+}
+
+.preset-btn:hover:not(:disabled) {
+	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.08));
+	color: var(--vscode-editor-foreground);
+}
+
+.preset-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+/* Chat — primary accent */
+.preset-btn.chat {
 	background: var(--vscode-button-background);
 	color: var(--vscode-button-foreground);
 }
-
-.preset-quick-deploy:hover {
+.preset-btn.chat:hover:not(:disabled) {
 	background: var(--vscode-button-hoverBackground);
+}
+
+/* Upgrade — warning tone */
+.preset-btn.upgrade {
+	color: var(--vscode-editorWarning-foreground, #ce9178);
+}
+.preset-btn.upgrade:hover:not(:disabled) {
+	background: rgba(206 145 120 0.12);
+}
+
+/* Upgrade red dot indicator */
+.preset-btn-dot {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--vscode-errorForeground, #f48771);
+	border: 1px solid var(--vscode-editor-background);
+}
+
+/* Delete — danger on hover */
+.preset-btn.delete:hover:not(:disabled) {
+	background: rgba(244 135 113 0.12);
+	color: var(--vscode-errorForeground, #f48771);
+}
+
+/* Duplicate — blue accent on hover */
+.preset-btn.duplicate:hover:not(:disabled) {
+	background: rgba(86 156 214 0.12);
+	color: var(--vscode-textLink-foreground, #569cd6);
+}
+
+/* Settings — blue accent */
+.preset-btn.settings:hover:not(:disabled) {
+	color: var(--vscode-textLink-foreground, #569cd6);
+}
+
+/* ── Spinner ── */
+.preset-spinner {
+	width: 14px;
+	height: 14px;
+	border: 2px solid var(--vscode-panel-border);
+	border-top-color: var(--vscode-button-background);
+	border-radius: 50%;
+	animation: preset-spin 0.6s linear infinite;
+	margin: 0 6px;
+}
+
+@keyframes preset-spin {
+	to { transform: rotate(360deg); }
 }
 
 /* Expanded details */
@@ -1524,7 +1675,7 @@ button.primary:hover,
 	background: var(--vscode-button-secondaryHoverBackground);
 }
 
-.preset-delete-btn {
+.preset-delete-btn-dialog {
 	padding: 6px 12px;
 	border-radius: 4px;
 	font-size: 12px;
@@ -1533,7 +1684,7 @@ button.primary:hover,
 	border: 1px solid var(--vscode-errorForeground);
 }
 
-.preset-delete-btn:hover {
+.preset-delete-btn-dialog:hover {
 	background: var(--vscode-errorBackground, rgba(255 0 0 / 0.1));
 }
 
