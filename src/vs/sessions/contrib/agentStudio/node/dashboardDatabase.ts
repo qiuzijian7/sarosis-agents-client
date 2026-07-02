@@ -13,7 +13,7 @@
  * 使用 VS Code 内置的 @vscode/sqlite3 原生模块。
  */
 
-import * as fs from 'fs';
+import * as fs from 'node:fs';
 import type { Database, RunResult } from '@vscode/sqlite3';
 import { dirname } from '../../../../base/common/path.js';
 
