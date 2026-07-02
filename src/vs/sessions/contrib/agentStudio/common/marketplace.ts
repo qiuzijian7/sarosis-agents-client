@@ -100,8 +100,6 @@ export interface IInstallResult {
 
 /** 发布选项 */
 export interface IPublishOptions {
-	/** 更新说明 */
-	readonly changelog?: string;
 	/** 版本号（覆盖 manifest 中的 version） */
 	readonly version?: string;
 	/** 显示名称（覆盖 manifest 中的 name） */
@@ -112,6 +110,14 @@ export interface IPublishOptions {
 	readonly category?: string;
 	/** 作者（覆盖 manifest 中的 author） */
 	readonly author?: string;
+	/** 可见性：公开或私有 */
+	readonly visibility?: 'public' | 'private';
+	/** 标签列表 */
+	readonly tags?: readonly string[];
+	/** 使用指南（Markdown 格式） */
+	readonly useGuide?: string;
+	/** 变更日志（随上传版本提交，作为 x-changelog 请求头） */
+	readonly changelog?: string;
 }
 
 /** 列表查询参数 */

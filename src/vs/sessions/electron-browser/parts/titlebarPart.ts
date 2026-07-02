@@ -22,6 +22,7 @@ import { IEditorGroupsContainer } from '../../../workbench/services/editor/commo
 import { CodeWindow, mainWindow } from '../../../base/browser/window.js';
 import { TitlebarPart, TitleService } from '../../browser/parts/titlebarPart.js';
 import { isMacintosh } from '../../../base/common/platform.js';
+import { IOpenerService } from '../../../platform/opener/common/opener.js';
 
 export class NativeTitlebarPart extends TitlebarPart {
 
@@ -41,8 +42,9 @@ export class NativeTitlebarPart extends TitlebarPart {
 		@IHostService hostService: IHostService,
 		@IProductService productService: IProductService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
+		@IOpenerService openerService: IOpenerService,
 	) {
-		super(id, targetWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService);
+		super(id, targetWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService);
 
 		this.handleWindowsAlwaysOnTop(targetWindow.vscodeWindowId, contextKeyService);
 	}
@@ -130,8 +132,9 @@ class MainNativeTitlebarPart extends NativeTitlebarPart {
 		@IHostService hostService: IHostService,
 		@IProductService productService: IProductService,
 		@INativeHostService nativeHostService: INativeHostService,
+		@IOpenerService openerService: IOpenerService,
 	) {
-		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService);
+		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService, openerService);
 	}
 }
 
@@ -154,9 +157,10 @@ class AuxiliaryNativeTitlebarPart extends NativeTitlebarPart implements IAuxilia
 		@IHostService hostService: IHostService,
 		@IProductService productService: IProductService,
 		@INativeHostService nativeHostService: INativeHostService,
+		@IOpenerService openerService: IOpenerService,
 	) {
 		const id = AuxiliaryNativeTitlebarPart.COUNTER++;
-		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService);
+		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService, openerService);
 	}
 
 	override get preventZoom(): boolean {

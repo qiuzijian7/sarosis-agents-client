@@ -811,11 +811,13 @@ export class SplitView<TLayoutContext = undefined, TView extends IView<TLayoutCo
 		}
 
 		const viewItem = this.viewItems[index];
+		console.log(`[SplitView] setViewVisible: index=${index}, visible=${visible}, currentSize=${viewItem.size}, cachedSize=${viewItem.cachedVisibleSize}, splitSize=${this.size}, contentSize=${this.contentSize}`);
 		viewItem.setVisible(visible);
 
 		this.distributeEmptySpace(index);
 		this.layoutViews();
 		this.saveProportions();
+		console.log(`[SplitView] setViewVisible done: index=${index}, newSize=${viewItem.size}, allSizes=${this.viewItems.map(v => v.size)}`);
 	}
 
 	/**
@@ -1045,10 +1047,13 @@ export class SplitView<TLayoutContext = undefined, TView extends IView<TLayoutCo
 
 			const item = this.viewItems[index];
 			size = Math.round(size);
+			const beforeClamp = size;
 			size = clamp(size, item.minimumSize, Math.min(item.maximumSize, this.size));
+			console.log(`[SplitView] resizeView: index=${index}, requestedSize=${beforeClamp}, clampedSize=${size}, minSize=${item.minimumSize}, maxSize=${item.maximumSize}, splitSize=${this.size}, contentSize=${this.contentSize}`);
 
 			item.size = size;
 			this.relayout(lowPriorityIndexes, highPriorityIndexes);
+			console.log(`[SplitView] resizeView done: index=${index}, newSize=${item.size}, allSizes=${this.viewItems.map(v => v.size)}`);
 		} finally {
 			this.state = State.Idle;
 		}
@@ -1199,6 +1204,17 @@ export class SplitView<TLayoutContext = undefined, TView extends IView<TLayoutCo
 				const sashItem: ISashItem = { sash, disposable };
 
 				this.sashItems.splice(index - 1, 0, sashItem);
+			}
+
+			// [Sarosis] Validate view.element before appending
+			// Fix: "Failed to execute 'appendChild' on 'Node': parameter 1 is not of type 'Node'"
+			if (!view.element) {
+				const viewInfo = (view as unknown as { constructor?: { name?: string } }).constructor?.name || 'unknown';
+				throw new Error(`[SplitView] Cannot append view.element: view.element is ${view.element} (view type: ${viewInfo})`);
+			}
+			if (!(view.element instanceof Node)) {
+				const viewInfo = (view as unknown as { constructor?: { name?: string } }).constructor?.name || 'unknown';
+				throw new Error(`[SplitView] Cannot append view.element: view.element is not a Node (type: ${typeof view.element}, value: ${view.element}, view type: ${viewInfo})`);
 			}
 
 			container.appendChild(view.element);

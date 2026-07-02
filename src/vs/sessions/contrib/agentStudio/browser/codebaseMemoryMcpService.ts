@@ -95,6 +95,8 @@ export type IndexMode = 'full' | 'moderate' | 'fast';
 export interface IIndexConfig {
 	mode: IndexMode;
 	excludeDirs: string[];
+	/** 保留目录（即使父目录被排除也不跳过），相对路径如 "Content/Script" */
+	keepDirs?: string[];
 	/** Optional sub-directory path relative to workspace root (e.g. "src/vs/sessions"). Empty = index entire workspace. */
 	subPath?: string;
 }
@@ -1106,6 +1108,7 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 				return {
 					mode: parsed.mode || 'fast',
 					excludeDirs: merged,
+					keepDirs: Array.isArray(parsed.keepDirs) ? parsed.keepDirs : undefined,
 					subPath: typeof parsed.subPath === 'string' ? parsed.subPath : undefined,
 				};
 			} catch { /* fallthrough to default */ }

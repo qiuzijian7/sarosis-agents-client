@@ -18,7 +18,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { generateUuid } from '../../../../base/common/uuid.js';
+
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
@@ -27,6 +27,7 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 
 const USER_SAROS_DIR = '.saros';
 const WORKFLOWS_DIR = 'workflows';
+const WORKFLOW_FILE = 'workflow.json';
 const DEFAULT_WORKFLOW_PRESET_ID = 'workflow-agent';
 
 export class WorkflowStorageService extends Disposable implements IWorkflowStorageService {
@@ -74,6 +75,23 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		}
 	}
 
+	// ─── ID generation ───────────────────────────────────────────────────
+
+	/**
+	 * 从名称生成工作流 ID，格式：wf-{slug}
+	 * 示例："My Workflow" → "wf-my-workflow"
+	 */
+	private _generateId(name: string): string {
+		const slug = name
+			.toLowerCase()
+			.replace(/[^a-z0-9\s_-]/g, '')
+			.replace(/[\s_]+/g, '-')
+			.replace(/-+/g, '-')
+			.replace(/^-|-$/g, '')
+			.slice(0, 40);
+		return `wf-${slug || 'workflow'}`;
+	}
+
 	// ─── CRUD ────────────────────────────────────────────────────────────
 
 	async listWorkflows(workspaceId?: string): Promise<IStoredWorkflow[]> {
@@ -86,15 +104,19 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 
 			const workflows: IStoredWorkflow[] = [];
 			for (const child of stat.children) {
-				if (child.isDirectory || !child.name.endsWith('.json')) { continue; }
+				// 目录式存储：每个工作流在 {id}/workflow.json
+				if (!child.isDirectory) {
+					continue;
+				}
 				try {
-					const content = await this._fileService.readFile(child.resource);
+					const workflowFile = URI.joinPath(child.resource, WORKFLOW_FILE);
+					const content = await this._fileService.readFile(workflowFile);
 					const wf = JSON.parse(content.value.toString()) as IStoredWorkflow;
 					if (wf && wf.id) {
 						workflows.push(wf);
 					}
 				} catch (parseErr) {
-					this._logService.warn('[WorkflowStorage] Failed to parse workflow file', child.resource.toString(), parseErr);
+					this._logService.warn('[WorkflowStorage] Failed to parse workflow file in', child.resource.toString(), parseErr);
 				}
 			}
 			// 按更新时间倒序
@@ -109,7 +131,9 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	async getWorkflow(id: string, workspaceId?: string): Promise<IStoredWorkflow | undefined> {
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (!dir) { return undefined; }
-		const uri = URI.joinPath(dir, `${id}.json`);
+		// 目录式存储：{workflowsDir}/{id}/workflow.json
+		const workflowDir = URI.joinPath(dir, id);
+		const uri = URI.joinPath(workflowDir, WORKFLOW_FILE);
 		try {
 			const content = await this._fileService.readFile(uri);
 			return JSON.parse(content.value.toString()) as IStoredWorkflow;
@@ -125,6 +149,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 			presetId?: string;
 			agentId?: string;
 			steps?: IStoredWorkflow['steps'];
+			slug?: string;
 		},
 		workspaceId?: string,
 	): Promise<IStoredWorkflow> {
@@ -135,7 +160,12 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		await this._ensureDir(dir);
 
 		const now = Date.now();
-		const id = generateUuid();
+		const id = data.slug
+			? (() => {
+				const sanitized = data.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+				return sanitized ? `wf-${sanitized}` : this._generateId(data.name || 'workflow');
+			})()
+			: this._generateId(data.name || 'workflow');
 		const activeWsId = workspaceId ?? this._studioService.getActiveWorkspaceId();
 		const workflow: IStoredWorkflow = {
 			id,
@@ -150,7 +180,10 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 			workspaceId: activeWsId,
 		};
 
-		const uri = URI.joinPath(dir, `${id}.json`);
+		// 目录式存储：{workflowsDir}/{id}/workflow.json
+		const workflowDir = URI.joinPath(dir, id);
+		await this._ensureDir(workflowDir);
+		const uri = URI.joinPath(workflowDir, WORKFLOW_FILE);
 		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(workflow, null, 2)));
 		this._logService.info('[WorkflowStorage] Created workflow', id, 'at', uri.toString());
 		this._onDidChangeWorkflows.fire();
@@ -172,7 +205,10 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 			id: existing.id, // id 不可变
 			updatedAt: Date.now(),
 		};
-		const uri = URI.joinPath(dir, `${id}.json`);
+		// 目录式存储：{workflowsDir}/{id}/workflow.json
+		const workflowDir = URI.joinPath(dir, id);
+		await this._ensureDir(workflowDir);
+		const uri = URI.joinPath(workflowDir, WORKFLOW_FILE);
 		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(updated, null, 2)));
 		this._onDidChangeWorkflows.fire();
 		return updated;
@@ -181,12 +217,13 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	async deleteWorkflow(id: string, workspaceId?: string): Promise<void> {
 		const dir = await this._resolveWorkflowsDir(workspaceId);
 		if (!dir) { return; }
-		const uri = URI.joinPath(dir, `${id}.json`);
+		// 目录式存储：删除整个 {id}/ 目录
+		const workflowDir = URI.joinPath(dir, id);
 		try {
-			await this._fileService.del(uri);
+			await this._fileService.del(workflowDir, { recursive: true });
 			this._onDidChangeWorkflows.fire();
 		} catch (err) {
-			this._logService.warn('[WorkflowStorage] delete failed', uri.toString(), err);
+			this._logService.warn('[WorkflowStorage] delete failed', workflowDir.toString(), err);
 		}
 	}
 

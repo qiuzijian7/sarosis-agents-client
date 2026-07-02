@@ -17,6 +17,7 @@ import { SkillInstaller } from './installers/skillInstaller.js';
 import { AgentInstaller } from './installers/agentInstaller.js';
 import { McpInstaller } from './installers/mcpInstaller.js';
 import { KnowledgeInstaller } from './installers/knowledgeInstaller.js';
+import { WorkflowInstaller } from './installers/workflowInstaller.js';
 
 export class PackageInstallerRegistry extends Disposable implements IPackageInstallerRegistry {
 	declare readonly _serviceBrand: undefined;
@@ -27,14 +28,14 @@ export class PackageInstallerRegistry extends Disposable implements IPackageInst
 		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
-		// 注册四类资源的 installer
-		// skill/agent: 完整（registry reload + 版本溯源）
-		// mcp: 文件落地（config.json），平台 IMcpService 自动注册留后续增强
-		// knowledge: 文件落地（docs/index.json），RAG registry 留后续增强
+		// 注册五类资源的 installer
+		// skill/agent/mcp/knowledge: 完整（registry reload + 版本溯源）
+		// workflow: 导入到工作区 .sarosisworkspace/workflows/
 		this.register(instantiationService.createInstance(SkillInstaller));
 		this.register(instantiationService.createInstance(AgentInstaller));
 		this.register(instantiationService.createInstance(McpInstaller));
 		this.register(instantiationService.createInstance(KnowledgeInstaller));
+		this.register(instantiationService.createInstance(WorkflowInstaller));
 	}
 
 	register(installer: IPackageInstaller): void {

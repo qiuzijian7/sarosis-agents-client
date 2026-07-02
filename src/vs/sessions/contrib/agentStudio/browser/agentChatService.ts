@@ -1302,7 +1302,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			} as any);
 		}) ?? null;
 
-		this._memoryEventUnsub = () => { unsubWritten(); unsubFailed(); unsubSkill?.(); };
+		this._memoryEventUnsub = () => {
+		unsubWritten();
+		unsubFailed();
+		if (typeof unsubSkill === 'function') { unsubSkill(); }
+	};
 	}
 
 	cancelStream(agentId: string, agentSessionId?: string): void {

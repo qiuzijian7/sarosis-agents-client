@@ -491,16 +491,21 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 	}
 
 	async openPaneComposite(id?: string, focus?: boolean): Promise<PaneComposite | undefined> {
+		console.log('[PaneCompositePart] openPaneComposite called, id:', id, 'focus:', focus);
 		if (typeof id === 'string' && this.getPaneComposite(id)) {
+			console.log('[PaneCompositePart] openPaneComposite: descriptor found, calling doOpenPaneComposite');
 			return this.doOpenPaneComposite(id, focus);
 		}
 
+		console.log('[PaneCompositePart] openPaneComposite: descriptor NOT found, waiting for extensions');
 		await this.extensionService.whenInstalledExtensionsRegistered();
 
 		if (typeof id === 'string' && this.getPaneComposite(id)) {
+			console.log('[PaneCompositePart] openPaneComposite: descriptor found after wait, calling doOpenPaneComposite');
 			return this.doOpenPaneComposite(id, focus);
 		}
 
+		console.log('[PaneCompositePart] openPaneComposite: returning undefined');
 		return undefined;
 	}
 

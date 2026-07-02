@@ -16,6 +16,7 @@ import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { $, clearNode } from '../../../../../base/browser/dom.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
+import { EditorsOrder } from '../../../../../workbench/common/editor.js';
 import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
 import { IWorkflowStorageService, type IStoredWorkflow } from '../../common/workflowStorage.js';
 import { IWorkflowExecutionService } from '../../common/workflowExecutionService.js';
@@ -24,6 +25,7 @@ import type { Agent } from '../../../../common/agentStudioTypes.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
 import { AGENT_STUDIO_CHAT_VIEW_ID } from '../../common/constants.js';
 import { WorkflowEditorInput } from '../workflowEditorInput.js';
+import { WorkflowMarketEditorInput } from '../workflowMarketEditorInput.js';
 
 /**
  * Workflow View - 工作流管理面板 (ActivityBar Sidebar)
@@ -95,11 +97,11 @@ export class WorkflowViewPane extends ViewPane {
 		createBtn.onclick = () => { void this._showCreateForm(); };
 		actionsGroup.appendChild(createBtn);
 
-		const refreshBtn = $('button.workflow-refresh-btn');
-		refreshBtn.textContent = '↻ Refresh';
-		refreshBtn.title = 'Refresh Workflow list';
-		refreshBtn.onclick = () => { void this._reload(); };
-		actionsGroup.appendChild(refreshBtn);
+		const installBtn = $('button.workflow-install-btn');
+		installBtn.textContent = '⬇ Install';
+		installBtn.title = 'Install Workflow from Marketplace';
+		installBtn.onclick = () => { void this._openMarketplace(); };
+		actionsGroup.appendChild(installBtn);
 
 		this._headerContainer.appendChild(actionsGroup);
 		this._root.appendChild(this._headerContainer);
@@ -132,6 +134,12 @@ export class WorkflowViewPane extends ViewPane {
 		}
 	}
 
+	/** Open the Workflow Marketplace editor */
+	private async _openMarketplace(): Promise<void> {
+		const input = WorkflowMarketEditorInput.getInstance();
+		await this.editorService.openEditor(input, { pinned: true });
+	}
+
 	private _renderLoading(): void {
 		clearNode(this._listContainer);
 		const loading = $('div.workflow-loading');
@@ -153,40 +161,75 @@ export class WorkflowViewPane extends ViewPane {
 			const item = $('div.workflow-item');
 			item.title = wf.description || wf.name;
 
-			// ── Main row: name + delete button ──
-			const topRow = $('div.workflow-item-top');
+			// ── Status bar (left vertical accent) ──
+			const statusBar = $('div.workflow-status-bar');
+			item.appendChild(statusBar);
 
-			const nameEl = $('div.workflow-item-name');
+			// ── Icon ──
+			const iconEl = $('div.workflow-icon');
+			iconEl.textContent = '🔀';
+			item.appendChild(iconEl);
+
+			// ── Body (name + version badge + description) ──
+			const body = $('div.workflow-body');
+
+			const titleRow = $('div.workflow-title-row');
+
+			const nameEl = $('span.workflow-item-name');
 			nameEl.textContent = wf.name;
-			topRow.appendChild(nameEl);
+			titleRow.appendChild(nameEl);
 
-			const delBtn = $('button.workflow-del-btn');
-			delBtn.textContent = '×';
-			delBtn.title = 'Delete this workflow';
-			delBtn.onclick = (e) => {
-				e.stopPropagation();
-				void this._handleDelete(wf);
-			};
-			topRow.appendChild(delBtn);
-
-			item.appendChild(topRow);
+			// Version badge
+			if (wf.version) {
+				const verBadge = $('span.workflow-version-badge');
+				verBadge.textContent = `v${wf.version}`;
+				verBadge.classList.add('installed');
+				titleRow.appendChild(verBadge);
+			}
+			body.appendChild(titleRow);
 
 			if (wf.description) {
 				const descEl = $('div.workflow-item-desc');
 				descEl.textContent = wf.description.length > 80
 					? wf.description.substring(0, 80) + '...'
 					: wf.description;
-				item.appendChild(descEl);
+				body.appendChild(descEl);
 			}
 
 			const metaEl = $('div.workflow-item-meta');
 			const stepCount = wf.steps?.length ?? 0;
 			const parts: string[] = [];
-			parts.push(`${wf.name} · workflow`);
 			parts.push(`${stepCount} steps`);
 			parts.push(wf.isActive ? 'Active' : 'Inactive');
 			metaEl.textContent = parts.join(' · ');
-			item.appendChild(metaEl);
+			body.appendChild(metaEl);
+
+			item.appendChild(body);
+
+			// ── Actions (right side) ──
+			const actions = $('div.workflow-actions');
+
+			// Duplicate button
+			const dupBtn = $('button.workflow-btn.duplicate') as HTMLButtonElement;
+			dupBtn.textContent = '📋';
+			dupBtn.title = `复制 ${wf.name}`;
+			dupBtn.onclick = (e) => {
+				e.stopPropagation();
+				void this._handleDuplicate(wf);
+			};
+			actions.appendChild(dupBtn);
+
+			// Delete button — always shown
+			const delBtn = $('button.workflow-btn.delete') as HTMLButtonElement;
+			delBtn.textContent = '🗑';
+			delBtn.title = `删除 ${wf.name}`;
+			delBtn.onclick = (e) => {
+				e.stopPropagation();
+				void this._handleDelete(wf);
+			};
+			actions.appendChild(delBtn);
+
+			item.appendChild(actions);
 
 			item.onclick = () => this._openWorkflow(wf);
 			this._listContainer.appendChild(item);
@@ -272,6 +315,23 @@ export class WorkflowViewPane extends ViewPane {
 		nameRow.appendChild(nameInput);
 		form.appendChild(nameRow);
 
+		// Slug input (becomes workflow ID: wf-{slug})
+		const slugRow = $('div.workflow-form-row');
+		const slugLabel = $('label.workflow-form-label');
+		slugLabel.textContent = 'Slug';
+		slugRow.appendChild(slugLabel);
+		// Prefix indicator
+		const slugPrefix = $('span.workflow-form-slug-prefix');
+		slugPrefix.textContent = 'wf-';
+		slugRow.appendChild(slugPrefix);
+		const slugInput = $('input.workflow-form-text');
+		slugInput.setAttribute('type', 'text');
+		slugInput.setAttribute('placeholder', 'my-workflow');
+		slugInput.id = 'workflow-create-slug';
+		slugInput.style.flex = '1';
+		slugRow.appendChild(slugInput);
+		form.appendChild(slugRow);
+
 		// Description input
 		const descRow = $('div.workflow-form-row');
 		const descLabel = $('label.workflow-form-label');
@@ -338,9 +398,11 @@ export class WorkflowViewPane extends ViewPane {
 
 	private async _handleCreate(): Promise<void> {
 		const nameInput = this._root.querySelector('#workflow-create-name') as HTMLInputElement;
+		const slugInput = this._root.querySelector('#workflow-create-slug') as HTMLInputElement;
 		const descInput = this._root.querySelector('#workflow-create-desc') as HTMLInputElement;
 
 		const name = nameInput?.value?.trim();
+		const slug = slugInput?.value?.trim();
 		const description = descInput?.value?.trim();
 
 		if (!name) {
@@ -354,6 +416,7 @@ export class WorkflowViewPane extends ViewPane {
 				name,
 				description: description || '',
 				steps: [],
+				slug: slug || undefined,
 			});
 
 			// 2. Create a dedicated agent for this workflow
@@ -390,10 +453,50 @@ export class WorkflowViewPane extends ViewPane {
 	private async _handleDelete(wf: IStoredWorkflow): Promise<void> {
 		try {
 			await this.workflowStorage.deleteWorkflow(wf.id);
+
+			// 如果该工作流的编辑器已打开，立刻关闭
+			for (const { editor, groupId } of this.editorService.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)) {
+				if (editor instanceof WorkflowEditorInput && editor.workflow.id === wf.id) {
+					await this.editorService.closeEditor({ editor, groupId });
+				}
+			}
+
 			this._workflows = this._workflows.filter(w => w.id !== wf.id);
 			this._renderList();
 		} catch (err) {
 			this._flashMessage(err instanceof Error ? err.message : 'Failed to delete workflow');
+		}
+	}
+
+	/**
+	 * 复制工作流：创建一个副本（名称加 " (副本)" 后缀），
+	 * 复制所有节点图、步骤、描述，但生成新的 id 和 agentId（新 agent 在打开时自动创建）。
+	 */
+	private async _handleDuplicate(wf: IStoredWorkflow): Promise<void> {
+		try {
+			const copyName = `${wf.name} (副本)`;
+			const copy = await this.workflowStorage.createWorkflow({
+				name: copyName,
+				description: wf.description,
+				steps: wf.steps ? [...wf.steps] : [],
+			});
+
+			// 复制节点图和连接（如果有）
+			if (wf.nodes || wf.connections) {
+				await this.workflowStorage.updateWorkflow(copy.id, {
+					nodes: wf.nodes ? wf.nodes.map(n => ({ ...n, data: n.data ? { ...n.data } : undefined })) : undefined,
+					connections: wf.connections ? wf.connections.map(c => ({ ...c })) : undefined,
+					version: wf.version,
+					category: wf.category,
+					author: wf.author,
+				});
+			}
+
+			this._workflows = [copy, ...this._workflows];
+			this._renderList();
+			this.notificationService.info(`已复制工作流 "${copyName}"`);
+		} catch (err) {
+			this._flashMessage(err instanceof Error ? err.message : 'Failed to duplicate workflow');
 		}
 	}
 
@@ -466,6 +569,7 @@ export class WorkflowViewPane extends ViewPane {
 			const systemPrompt = this._buildWorkflowSystemPrompt(wf);
 
 			return await this.agentStudioService.createAgent({
+				id: wf.id,
 				name: agentName,
 				role: 'Workflow Manager',
 				description: `Manages and executes workflow: ${wf.name}`,
@@ -498,6 +602,38 @@ export class WorkflowViewPane extends ViewPane {
 		lines.push('');
 		lines.push('You are responsible for both executing AND editing this workflow graph.');
 		lines.push('Users may ask you to add, remove, or modify nodes. You have full control.');
+		lines.push('');
+
+		// ── Workflow tool instructions ─────────────────────────────────
+		lines.push('## Workflow Tools');
+		lines.push('');
+		lines.push('Available workflow editing tools:');
+		lines.push('- `workflow_list` — List all workflows in the current workspace');
+		lines.push('- `workflow_get` — Get the full state of a workflow (nodes, connections, metadata)');
+		lines.push('- `workflow_get_schema` — Get available node types and their data schemas');
+		lines.push('- `workflow_apply` — Apply a complete workflow definition (replaces all nodes/connections)');
+		lines.push('');
+		lines.push('Workflow creation/modification process:');
+		lines.push(`1. First call \`workflow_get\` with workflow_id="${wf.id}" to see the current state`);
+		lines.push('2. Call `workflow_get_schema` if you need to understand available node types');
+		lines.push('3. Generate the complete workflow JSON with ALL nodes and connections');
+		lines.push('4. Call `workflow_apply` with workflow_id, nodes, connections, and optional name/description');
+		lines.push('');
+		lines.push('Node types you can create:');
+		lines.push('- System: `start`, `end` (every workflow MUST have both)');
+		lines.push('- Basic: `prompt`, `agent`, `skill`, `tool`, `task`');
+		lines.push('- Control flow: `ifElse`, `switch`, `condition`, `loop`, `parallel`, `askUser`');
+		lines.push('- Layout: `group` (visual container, no execution logic)');
+		lines.push('');
+		lines.push('Guidelines:');
+		lines.push('- Every workflow MUST have exactly one `start` and one `end` node');
+		lines.push('- Position nodes with horizontal spacing of ~300px and vertical spacing of ~150px');
+		lines.push('- Start node typically at {x: 80, y: 250}');
+		lines.push('- Each connection requires: `id` (unique), `from` (source node id), `to` (target node id)');
+		lines.push('- `workflow_apply` replaces the ENTIRE workflow — always provide ALL nodes and connections');
+		lines.push('- Use descriptive labels for nodes so the workflow is readable');
+		lines.push('- For branching nodes (ifElse, switch), include the branches array with unique IDs');
+		lines.push('- Explain your changes briefly to the user after applying');
 		lines.push('');
 
 		if (wf.description) {
@@ -647,17 +783,18 @@ export class WorkflowViewPane extends ViewPane {
 			.workflow-create-btn:hover {
 				background: var(--vscode-button-hoverBackground);
 			}
-			.workflow-refresh-btn {
-				background: none;
-				border: 1px solid var(--vscode-panel-border);
-				color: var(--vscode-foreground);
-				padding: 2px 8px;
+			.workflow-install-btn {
+				background: var(--vscode-button-background);
+				border: none;
+				color: var(--vscode-button-foreground);
+				padding: 3px 10px;
 				border-radius: 3px;
 				cursor: pointer;
 				font-size: 11px;
+				font-weight: 600;
 			}
-			.workflow-refresh-btn:hover {
-				background: var(--vscode-toolbar-hoverBackground);
+			.workflow-install-btn:hover {
+				background: var(--vscode-button-hoverBackground);
 			}
 			.workflow-list {
 				flex: 1;
@@ -665,60 +802,122 @@ export class WorkflowViewPane extends ViewPane {
 				padding: 4px 0;
 			}
 			.workflow-item {
+				display: flex;
+				align-items: center;
+				gap: 10px;
 				padding: 8px 12px;
 				cursor: pointer;
 				border-bottom: 1px solid var(--vscode-panel-border);
 				transition: background 0.1s;
+				position: relative;
 			}
 			.workflow-item:hover {
 				background: var(--vscode-list-hoverBackground);
 			}
-			.workflow-item-top {
+			.workflow-status-bar {
+				position: absolute;
+				left: 0;
+				top: 0;
+				bottom: 0;
+				width: 3px;
+				background: var(--vscode-button-background, #007acc);
+				opacity: 0;
+				transition: opacity 0.15s;
+			}
+			.workflow-item:hover .workflow-status-bar {
+				opacity: 1;
+			}
+			.workflow-icon {
+				flex-shrink: 0;
+				width: 28px;
+				height: 28px;
+				border-radius: 6px;
 				display: flex;
 				align-items: center;
-				justify-content: space-between;
-				gap: 8px;
+				justify-content: center;
+				font-size: 14px;
+				background: linear-gradient(135deg, #3498db, #2980b9);
+			}
+			.workflow-body {
+				flex: 1;
+				min-width: 0;
+				display: flex;
+				flex-direction: column;
+				gap: 2px;
+			}
+			.workflow-title-row {
+				display: flex;
+				align-items: center;
+				gap: 6px;
 			}
 			.workflow-item-name {
 				font-weight: 600;
 				font-size: 13px;
-				margin-bottom: 2px;
 				color: var(--vscode-foreground);
-				flex: 1;
 				overflow: hidden;
 				text-overflow: ellipsis;
 				white-space: nowrap;
 			}
-			.workflow-del-btn {
+			.workflow-version-badge {
 				flex-shrink: 0;
-				background: transparent;
-				border: 1px solid var(--vscode-panel-border);
-				color: var(--vscode-errorForeground);
-				padding: 1px 6px;
+				font-size: 10px;
+				padding: 1px 5px;
 				border-radius: 3px;
-				cursor: pointer;
-				font-size: 12px;
-				font-weight: 700;
-				line-height: 1;
+				font-weight: 600;
+			}
+			.workflow-version-badge.installed {
+				background: var(--vscode-badge-background, #4d4d4d);
+				color: var(--vscode-badge-foreground, #fff);
+			}
+			.workflow-version-badge.outdated {
+				background: var(--vscode-statusBarItem-errorBackground, #c4314b);
+				color: var(--vscode-statusBarItem-errorForeground, #fff);
+			}
+			.workflow-version-badge.remote {
+				background: var(--vscode-textLink-foreground, #007acc);
+				color: #fff;
+			}
+			.workflow-actions {
+				display: flex;
+				gap: 4px;
+				flex-shrink: 0;
 				opacity: 0;
 				transition: opacity 0.15s;
 			}
-			.workflow-item:hover .workflow-del-btn {
+			.workflow-item:hover .workflow-actions {
 				opacity: 1;
 			}
-			.workflow-del-btn:hover {
+			.workflow-btn {
+				background: transparent;
+				border: 1px solid var(--vscode-panel-border);
+				color: var(--vscode-foreground);
+				padding: 3px 6px;
+				border-radius: 3px;
+				cursor: pointer;
+				font-size: 12px;
+				line-height: 1;
+			}
+			.workflow-btn:hover {
+				background: var(--vscode-toolbar-hoverBackground);
+			}
+			.workflow-btn.delete {
+				color: var(--vscode-errorForeground);
+			}
+			.workflow-btn.delete:hover {
 				background: var(--vscode-inputValidation-errorBackground);
 				border-color: var(--vscode-errorForeground);
 			}
 			.workflow-item-desc {
 				font-size: 11px;
 				color: var(--vscode-descriptionForeground);
-				margin-bottom: 4px;
 				line-height: 1.4;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
 			}
 			.workflow-item-meta {
 				font-size: 10px;
-				color: var(--vscode-badge-foreground);
+				color: var(--vscode-descriptionForeground);
 			}
 			.workflow-empty,
 			.workflow-loading {
@@ -747,6 +946,16 @@ export class WorkflowViewPane extends ViewPane {
 				font-weight: 600;
 				color: var(--vscode-descriptionForeground);
 				text-align: right;
+			}
+			.workflow-form-slug-prefix {
+				flex-shrink: 0;
+				font-size: 12px;
+				font-weight: 600;
+				color: var(--vscode-textPreformat-foreground);
+				background: var(--vscode-textBlockQuote-background);
+				padding: 4px 6px;
+				border-radius: 3px;
+				border: 1px solid var(--vscode-input-border);
 			}
 			.workflow-form-static {
 				flex: 1;

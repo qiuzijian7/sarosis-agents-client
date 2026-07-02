@@ -17,6 +17,11 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { AgentStudioWebviewController } from './agentStudioWebviewController.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
+import { WorkflowToolbar } from './workflowToolbar.js';
+import { IMarketplaceService } from '../common/marketplace.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { ITofAuthService } from '../common/tofAuth.js';
 
 /**
  * WorkflowEditorPane — WebView-based workflow editor using ReactFlow.
@@ -33,6 +38,7 @@ export class WorkflowEditorPane extends EditorPane {
 	private _container: HTMLElement | undefined;
 	private _webviewController: AgentStudioWebviewController | undefined;
 	private _currentWorkflowId: string | undefined;
+	private _toolbar: WorkflowToolbar | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -41,6 +47,10 @@ export class WorkflowEditorPane extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
+		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+		@INotificationService private readonly notificationService: INotificationService,
+		@IEditorService private readonly editorService: IEditorService,
+		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 	) {
 		super(WorkflowEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -49,6 +59,9 @@ export class WorkflowEditorPane extends EditorPane {
 		this._container = DOM.$('div.workflow-editor-pane');
 		this._container.style.width = '100%';
 		this._container.style.height = '100%';
+		this._container.style.display = 'flex';
+		this._container.style.flexDirection = 'column';
+		this._container.style.overflow = 'hidden';
 		parent.appendChild(this._container);
 	}
 
@@ -110,9 +123,42 @@ export class WorkflowEditorPane extends EditorPane {
 			// Fall back to the input's snapshot
 		}
 
+		// ── 创建工具栏（版本号 + 删除 + 上传 + 升级按钮） ──
+		// 旧的工具栏会在 _disposeWebview() 中被清理
+		this._toolbar = new WorkflowToolbar(
+			this._container!,
+			workflowData,
+			this.marketplaceService,
+			this.notificationService,
+			this.workflowStorageService,
+			this.tofAuthService,
+		);
+		this._toolbar.render();
+		// 删除后关闭编辑器标签页
+		this._toolbar.onDidRequestDelete(async (wf) => {
+			try {
+				await this.workflowStorageService.deleteWorkflow(wf.id);
+				this.notificationService.info(`已删除工作流 "${wf.name}"`);
+			} catch (err) {
+				this.notificationService.error(
+					`删除工作流失败: ${err instanceof Error ? err.message : String(err)}`
+				);
+				return;
+			}
+			if (this.input) {
+				this.editorService.closeEditor({ editor: this.input, groupId: this.group.id });
+			}
+		});
+
+		// 工具栏下方的 webview 容器
+		const webviewContainer = DOM.$('div.workflow-webview-container');
+		webviewContainer.style.flex = '1';
+		webviewContainer.style.overflow = 'hidden';
+		this._container.appendChild(webviewContainer);
+
 		this._webviewController = this.instantiationService.createInstance(
 			AgentStudioWebviewController,
-			this._container,
+			webviewContainer,
 			'workflow-editor' as const,
 			// Pass the workflow data as initialData — injected as __AGENT_STUDIO_INITIAL_DATA__
 			{ type: 'workflow', workflow: workflowData },
@@ -144,6 +190,10 @@ export class WorkflowEditorPane extends EditorPane {
 	}
 
 	private _disposeWebview(): void {
+		if (this._toolbar) {
+			this._toolbar.dispose();
+			this._toolbar = undefined;
+		}
 		if (this._webviewController) {
 			this._webviewController.dispose();
 			this._webviewController = undefined;

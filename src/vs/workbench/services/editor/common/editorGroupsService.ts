@@ -1068,6 +1068,17 @@ export interface IEditorGroup {
 	 * Create the editor actions for the current active editor.
 	 */
 	createEditorActions(disposables: DisposableStore, menuId?: MenuId): IActiveEditorActions;
+
+	/**
+	 * Set trailing content to be displayed on the right side of the
+	 * breadcrumbs-below-tabs area. Pass `undefined` to hide the trailing
+	 * content.
+	 *
+	 * This is used by editor panes (e.g., `HtmlPreviewEditorPane`) to
+	 * display mode-toggle buttons (edit/preview/html) inline with the
+	 * breadcrumbs path.
+	 */
+	setTrailingBreadcrumbsContent(content: HTMLElement | undefined): void;
 }
 
 export function isEditorGroup(obj: unknown): obj is IEditorGroup {

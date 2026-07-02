@@ -2114,6 +2114,14 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		return { actions, onDidChange };
 	}
 
+	/**
+	 * Set trailing content to be displayed on the right side of the
+	 * breadcrumbs-below-tabs area. Delegates to `EditorTitleControl`.
+	 */
+	setTrailingBreadcrumbsContent(content: HTMLElement | undefined): void {
+		this.titleControl.setTrailingBreadcrumbsContent(content);
+	}
+
 	//#endregion
 
 	//#region Themable

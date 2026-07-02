@@ -6098,6 +6098,264 @@
 }
 
 /* ═══════════════════════════════════════════════════════
+   Clarify Card — LLM clarify tool (interactive question/options)
+   ═══════════════════════════════════════════════════════ */
+.clarify-card {
+	border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.15));
+	border-radius: 8px;
+	padding: 12px 14px;
+	margin: 8px 0;
+	background: var(--vscode-editorHoverWidget-background, rgba(128, 128, 128, 0.06));
+}
+.clarify-card.answered { opacity: 0.75; }
+
+.clarify-card-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 8px;
+}
+
+.clarify-card-question {
+	font-size: 13px;
+	line-height: 1.6;
+	margin-bottom: 10px;
+	color: var(--vscode-foreground, #cccccc);
+}
+
+.clarify-options {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.clarify-option {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 8px 12px;
+	border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.2));
+	border-radius: 6px;
+	background: var(--vscode-input-background, rgba(128, 128, 128, 0.05));
+	cursor: pointer;
+	transition: all 0.15s ease;
+	text-align: left;
+	width: 100%;
+	color: var(--vscode-foreground, #cccccc);
+	font-size: 12px;
+}
+.clarify-option:hover {
+	border-color: var(--vscode-focusBorder, #007fd4);
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.1));
+}
+.clarify-option.selected {
+	border-color: var(--vscode-focusBorder, #007fd4);
+	background: var(--vscode-list-activeSelectionBackground, rgba(0, 127, 212, 0.15));
+}
+.clarify-option:disabled { cursor: default; opacity: 0.6; }
+
+.clarify-option-marker {
+	font-size: 14px;
+	flex-shrink: 0;
+	color: var(--vscode-charts-blue, #60a5fa);
+	margin-top: 1px;
+}
+.clarify-option:not(.selected) .clarify-option-marker {
+	color: var(--vscode-descriptionForeground, rgba(128, 128, 128, 0.6));
+}
+
+.clarify-option-body {
+	flex: 1;
+	min-width: 0;
+}
+.clarify-option-label {
+	line-height: 1.5;
+	word-break: break-word;
+}
+
+.clarify-actions {
+	margin-top: 10px;
+	display: flex;
+	justify-content: flex-end;
+}
+
+.clarify-submit {
+	min-width: 80px;
+}
+.clarify-submit:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.clarify-answer {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 12px;
+	border-radius: 6px;
+	background: var(--vscode-charts-green, rgba(52, 211, 153, 0.1));
+}
+.clarify-answer .codicon { color: var(--vscode-charts-green, #34d399); }
+.clarify-answer-text { color: var(--vscode-foreground, #cccccc); font-size: 12px; }
+
+/* ═══════════════════════════════════════════════════════
+   Kanban Tool Result Cards
+   ═══════════════════════════════════════════════════════ */
+.kanban-result-card { padding: 4px 0; }
+.kanban-result-table { display: flex; flex-direction: column; gap: 2px; }
+.kanban-result-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px;
+	border-radius: 4px;
+	font-size: 12px;
+}
+.kanban-result-header {
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground, #888);
+	border-bottom: 1px solid rgba(128,128,128,0.15);
+	padding-bottom: 6px;
+	margin-bottom: 4px;
+}
+.kanban-col-id { width: 70px; flex-shrink: 0; color: var(--vscode-textLink-foreground, #4fc3f7); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+.kanban-col-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kanban-col-status { width: 80px; flex-shrink: 0; text-align: center; }
+.kanban-status-badge {
+	display: inline-block;
+	padding: 2px 8px;
+	border-radius: 10px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+}
+.kanban-status-triage { background: rgba(128,128,128,0.2); color: #aaa; }
+.kanban-status-todo { background: rgba(96,165,250,0.15); color: #60a5fa; }
+.kanban-status-ready { background: rgba(96,165,250,0.2); color: #60a5fa; }
+.kanban-status-running { background: rgba(251,191,36,0.15); color: #fbbf24; }
+.kanban-status-blocked { background: rgba(248,113,113,0.15); color: #f87171; }
+.kanban-status-done { background: rgba(52,211,153,0.15); color: #34d399; }
+.kanban-status-cancelled { background: rgba(128,128,128,0.15); color: #888; text-decoration: line-through; }
+.kanban-status-archived { background: rgba(128,128,128,0.1); color: #666; }
+
+.kanban-detail-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 8px 12px;
+}
+.kanban-detail-row {
+	display: flex;
+	gap: 8px;
+	font-size: 12px;
+}
+.kanban-detail-label { color: var(--vscode-descriptionForeground, #888); min-width: 100px; }
+.kanban-detail-value { color: var(--vscode-foreground, #ccc); flex: 1; word-break: break-word; }
+
+/* ═══════════════════════════════════════════════════════
+   Workflow List Card
+   ═══════════════════════════════════════════════════════ */
+.workflow-list-card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 4px 0;
+}
+.workflow-list-item {
+	border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.15));
+	border-radius: 6px;
+	padding: 8px 12px;
+	background: var(--vscode-input-background, rgba(128,128,128,0.05));
+}
+.workflow-list-item-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 600;
+	font-size: 13px;
+}
+.workflow-list-item-name { color: var(--vscode-foreground, #ccc); }
+.workflow-list-item-meta { display: flex; gap: 12px; margin-top: 4px; }
+.workflow-list-item-nodes { font-size: 11px; color: var(--vscode-descriptionForeground, #888); }
+.workflow-list-item-desc { font-size: 11px; color: var(--vscode-descriptionForeground, #888); margin-top: 4px; display: block; }
+
+/* ═══════════════════════════════════════════════════════
+   Memory Search/List Cards
+   ═══════════════════════════════════════════════════════ */
+.memory-search-card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 4px 0;
+}
+.memory-search-item {
+	border-left: 3px solid var(--vscode-charts-blue, #4fc3f7);
+	padding: 6px 12px;
+	background: var(--vscode-input-background, rgba(128,128,128,0.05));
+	border-radius: 0 4px 4px 0;
+}
+.memory-search-item-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.memory-type-badge {
+	padding: 2px 8px;
+	border-radius: 3px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	background: var(--vscode-charts-purple, rgba(180,120,255,0.2));
+	color: #c8a0ff;
+}
+.memory-tag-badge {
+	padding: 1px 6px;
+	border-radius: 3px;
+	font-size: 10px;
+	background: rgba(128,128,128,0.15);
+	color: var(--vscode-descriptionForeground, #888);
+}
+.memory-search-item-content {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--vscode-foreground, #ccc);
+	display: block;
+}
+.memory-search-item-score {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #888);
+	margin-top: 4px;
+	display: block;
+}
+
+.memory-list-card {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 4px 0;
+}
+.memory-list-group {
+	border: 1px solid var(--vscode-widget-border, rgba(128,128,128,0.1));
+	border-radius: 6px;
+	overflow: hidden;
+}
+.memory-list-group-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 12px;
+	background: var(--vscode-input-background, rgba(128,128,128,0.05));
+	font-size: 12px;
+	font-weight: 600;
+}
+.memory-list-group-label { color: var(--vscode-foreground, #ccc); }
+.memory-list-item {
+	padding: 6px 12px;
+	border-top: 1px solid rgba(128,128,128,0.08);
+	font-size: 12px;
+}
+.memory-list-item-content {
+	color: var(--vscode-descriptionForeground, #888);
+	line-height: 1.5;
+}
+
+/* ═══════════════════════════════════════════════════════
    AskUser Card — Workflow interactive input
    ═══════════════════════════════════════════════════════ */
 

@@ -711,6 +711,12 @@ export interface IToolDefinition {
 	readonly securityLevel?: ToolSecurityLevel;
 	/** 声明式可用性条件列表（所有条件需同时满足） */
 	readonly availability?: IToolAvailability[];
+	/**
+	 * 所属工具集 — 用于 toolset 驱动的工具过滤。
+	 * 值由 toolsetConfig.ts 的 TOOLSET_DEFINITIONS 定义。
+	 * 如果未设置，getAllToolDefinitions() 会自动推断。
+	 */
+	readonly toolset?: string;
 }
 
 export interface IToolCall {

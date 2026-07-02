@@ -44,6 +44,7 @@
 .monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container {
 	display: flex;
 	position: relative; /* position tabs border bottom or editor actions (when tabs wrap) relative to this container */
+	align-items: center; /* vertically center items */
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.empty {

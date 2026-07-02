@@ -48,7 +48,7 @@ export class HtmlPreviewEditorInput extends EditorInput {
 	}
 
 	private readonly _resource: URI;
-	private readonly _title: string;
+	private _title: string;
 	private readonly _agentId: string | undefined;
 	private readonly _workspaceId: string | undefined;
 	private readonly _workspaceSessionId: string | undefined;
@@ -77,6 +77,19 @@ export class HtmlPreviewEditorInput extends EditorInput {
 
 	override getName(): string {
 		return this._title;
+	}
+
+	/**
+	 * Update the tab title at runtime (e.g. once the owning agent's display
+	 * name has been resolved asynchronously). Fires {@link onDidChangeLabel}
+	 * so the editor tab refreshes.
+	 */
+	setName(name: string): void {
+		if (this._title === name) {
+			return;
+		}
+		this._title = name;
+		this._onDidChangeLabel.fire();
 	}
 
 	get agentId(): string | undefined {

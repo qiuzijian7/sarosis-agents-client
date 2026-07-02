@@ -15,7 +15,7 @@
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IAgentOSService, IAgentOSDashboardStats } from '../common/agentOS.js';
+import { IAgentOSService, IAgentOSDashboardStats, IDailyBucket } from '../common/agentOS.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { ICodebaseGraphService } from './codebaseGraphService.js';
 import type { AgentStudioSession } from '../../../common/agentStudioTypes.js';
@@ -115,6 +115,8 @@ export interface IDashboardData {
 	budgets: IDashboardBudget[];
 	tokenByModel: IDashboardTokenByModel[];
 	graphStats: { nodes: number; edges: number; files: number; project: string; exists: boolean };
+	/** 按天聚合的指标数据（支持趋势图），从 SQLite 查询 */
+	dailyBuckets: IDailyBucket[];
 	lastUpdated: number;
 }
 
@@ -352,6 +354,28 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 			},
 		];
 
+		// 10. 时间序列数据（从 SQLite 查询，按 dateRange 过滤）
+		let dailyBuckets: IDailyBucket[] = [];
+		try {
+			const rangeMs = this._dateRange === 'today' ? 24 * 60 * 60 * 1000
+				: this._dateRange === '7d' ? 7 * 24 * 60 * 60 * 1000
+					: this._dateRange === '30d' ? 30 * 24 * 60 * 60 * 1000
+						: 365 * 24 * 60 * 60 * 1000; // 'all' → 1 year max
+			dailyBuckets = await this._agentOSService.queryDashboardDailyBuckets(rangeMs);
+			console.info('[Dashboard] dailyBuckets:', dailyBuckets.length, 'days');
+		} catch (err) {
+			console.warn('[Dashboard] queryDailyBuckets failed:', err);
+		}
+
+		// 11. 采集当前快照（fire-and-forget）
+		if (this._agentOSService.captureDashboardSnapshot) {
+			this._agentOSService.captureDashboardSnapshot({
+				sessionCount: sessions.length,
+				memoryTotal: memory.total,
+				graphNodes: graphStats.nodes,
+			}).catch(() => {});
+		}
+
 		const result: IDashboardData = {
 			kpis,
 			sessions,
@@ -362,6 +386,7 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 			budgets: [],
 			tokenByModel,
 			graphStats,
+			dailyBuckets,
 			lastUpdated: Date.now(),
 		};
 		console.info('[Dashboard] _buildData result:', {
@@ -568,6 +593,7 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 			budgets: [],
 			tokenByModel: [],
 			graphStats: { nodes: 0, edges: 0, files: 0, project: '', exists: false },
+			dailyBuckets: [],
 			lastUpdated: Date.now(),
 		};
 	}

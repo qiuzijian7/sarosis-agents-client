@@ -117,6 +117,10 @@ export class PaneCompositeBar extends Disposable {
 			() => this.compositeBar.getCompositeBarItems(),
 		);
 
+		console.log('[PaneCompositeBar] Constructor - location:', this.location);
+		console.log('[PaneCompositeBar] Constructor - cachedViewContainers:', this.cachedViewContainers);
+		console.log('[PaneCompositeBar] Constructor - getViewContainers():', this.getViewContainers());
+
 		const cachedItems = this.cachedViewContainers
 			.map(container => ({
 				id: container.id,
@@ -125,8 +129,14 @@ export class PaneCompositeBar extends Disposable {
 				order: container.order,
 				pinned: container.pinned,
 			}));
+		console.log('[PaneCompositeBar] Constructor - cachedItems:', cachedItems);
+
 		this.compositeBar = this.createCompositeBar(cachedItems);
+		console.log('[PaneCompositeBar] Constructor - compositeBar items after create:', this.compositeBar.getCompositeBarItems());
+
 		this.onDidRegisterViewContainers(this.getViewContainers());
+		console.log('[PaneCompositeBar] Constructor - compositeBar items after onDidRegisterViewContainers:', this.compositeBar.getCompositeBarItems());
+
 		this.registerListeners();
 	}
 

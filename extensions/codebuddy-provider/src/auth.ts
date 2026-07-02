@@ -377,40 +377,64 @@ export class CodeBuddyAuth {
 		const platform = this._getPlatform();
 		const url = `${serverUrl}/v2/plugin/auth/state?platform=${platform}`;
 
-		console.log(`[CodeBuddy] Requesting auth state: platform=${platform}`);
+		console.log(`[CodeBuddy] Requesting auth state: platform=${platform}, url=${url}`);
 
-		const response = await fetch(url, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'X-No-Authorization': 'true',
-				'X-No-User-Id': 'true',
-				'X-No-Enterprise-Id': 'true',
-				'X-No-Department-Info': 'true',
-			},
-			body: '{}',
-		});
+		// fetch with explicit timeout — without this, a misconfigured system proxy
+		// (e.g. ProxyEnable=1 pointing at a dead 127.0.0.1:8888 Fiddler port) causes
+		// the request to hang silently with no error log, so the user only sees the
+		// "Requesting auth state" line and the login UI stuck at "正在打开浏览器…".
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), 30_000);
+		try {
+			const response = await fetch(url, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'X-No-Authorization': 'true',
+					'X-No-User-Id': 'true',
+					'X-No-Enterprise-Id': 'true',
+					'X-No-Department-Info': 'true',
+				},
+				body: '{}',
+				signal: controller.signal,
+			});
 
-		if (!response.ok) {
-			const errText = await response.text().catch(() => response.statusText);
-			throw new Error(`Request auth state failed: HTTP ${response.status} - ${errText}`);
+			if (!response.ok) {
+				const errText = await response.text().catch(() => response.statusText);
+				throw new Error(`Request auth state failed: HTTP ${response.status} - ${errText}`);
+			}
+
+			const data = await response.json() as { data?: { state?: string; authUrl?: string } };
+			if (!data.data?.state || !data.data?.authUrl) {
+				throw new Error('Invalid auth state response: missing state or authUrl');
+			}
+
+			// iOA mode: append ?ioa=1 to authUrl
+			let authUrl = data.data.authUrl;
+			if (this._detectIOAMode()) {
+				const separator = authUrl.includes('?') ? '&' : '?';
+				authUrl += `${separator}ioa=1`;
+				console.log('[CodeBuddy] iOA mode: appended ioa=1 to authUrl');
+			}
+
+			console.log(`[CodeBuddy] Auth state received: state=${data.data.state}`);
+			return { state: data.data.state, authUrl };
+		} catch (err) {
+			// Node's fetch wraps the real cause (e.g. ECONNREFUSED) in err.cause —
+			// surface it so users can see the underlying network/proxy error rather
+			// than a useless "fetch failed" message.
+			const cause = (err as { cause?: { code?: string; message?: string; address?: string; port?: number } })?.cause;
+			const causeStr = cause
+				? ` (cause: ${cause.code ?? ''} ${cause.message ?? ''}${cause.address ? ` at ${cause.address}:${cause.port}` : ''})`
+				: '';
+			if (err instanceof Error && err.name === 'AbortError') {
+				throw new Error(`请求 CodeBuddy auth state 超时（30s）。可能原因：系统代理设置异常（请检查 Windows 设置 → 网络 → 代理），或网络无法访问 ${serverUrl}。${causeStr}`);
+			}
+			console.error('[CodeBuddy] _requestAuthState failed:', err, 'cause:', cause);
+			throw new Error(`请求 CodeBuddy auth state 失败：${err instanceof Error ? err.message : String(err)}${causeStr}`);
+		} finally {
+			clearTimeout(timeoutId);
 		}
-
-		const data = await response.json() as { data?: { state?: string; authUrl?: string } };
-		if (!data.data?.state || !data.data?.authUrl) {
-			throw new Error('Invalid auth state response: missing state or authUrl');
-		}
-
-		// iOA mode: append ?ioa=1 to authUrl
-		let authUrl = data.data.authUrl;
-		if (this._detectIOAMode()) {
-			const separator = authUrl.includes('?') ? '&' : '?';
-			authUrl += `${separator}ioa=1`;
-			console.log('[CodeBuddy] iOA mode: appended ioa=1 to authUrl');
-		}
-
-		console.log(`[CodeBuddy] Auth state received: state=${data.data.state}`);
-		return { state: data.data.state, authUrl };
 	}
 
 	private async _pollForToken(state: string, cancellationToken: vscode.CancellationToken): Promise<ICodeBuddyTokenData> {
@@ -426,44 +450,56 @@ export class CodeBuddyAuth {
 			}
 
 			try {
-				const response = await fetch(url, {
-					method: 'GET',
-					headers: {
-						'X-No-Authorization': 'true',
-						'X-No-User-Id': 'true',
-						'X-No-Enterprise-Id': 'true',
-						'X-No-Department-Info': 'true',
-					},
-				});
+				// Per-attempt timeout — without this a single hung poll fetch can stall
+				// the whole login flow for the default socket timeout (~minutes).
+				const controller = new AbortController();
+				const timeoutId = setTimeout(() => controller.abort(), 10_000);
+				try {
+					const response = await fetch(url, {
+						method: 'GET',
+						headers: {
+							'X-No-Authorization': 'true',
+							'X-No-User-Id': 'true',
+							'X-No-Enterprise-Id': 'true',
+							'X-No-Department-Info': 'true',
+						},
+						signal: controller.signal,
+					});
 
-				if (!response.ok) {
-					console.warn(`[CodeBuddy] Poll attempt ${attempt + 1} failed: HTTP ${response.status}`);
-					await new Promise(resolve => setTimeout(resolve, intervalMs));
-					continue;
-				}
+					if (!response.ok) {
+						console.warn(`[CodeBuddy] Poll attempt ${attempt + 1} failed: HTTP ${response.status}`);
+						await new Promise(resolve => setTimeout(resolve, intervalMs));
+						continue;
+					}
 
-				const data = await response.json() as {
-					data?: {
-						accessToken?: string;
-						refreshToken?: string;
-						expiresAt?: number;
+					const data = await response.json() as {
+						data?: {
+							accessToken?: string;
+							refreshToken?: string;
+							expiresAt?: number;
+						};
 					};
-				};
 
-				if (data.data?.accessToken) {
-					console.log('[CodeBuddy] Token received from poll');
-					const expiresAt = this._calcExpiry(data.data.expiresAt);
-					return {
-						accessToken: data.data.accessToken,
-						refreshToken: data.data.refreshToken,
-						expiresAt,
-						source: 'cli_external_link',
-					};
+					if (data.data?.accessToken) {
+						console.log('[CodeBuddy] Token received from poll');
+						const expiresAt = this._calcExpiry(data.data.expiresAt);
+						return {
+							accessToken: data.data.accessToken,
+							refreshToken: data.data.refreshToken,
+							expiresAt,
+							source: 'cli_external_link',
+						};
+					}
+
+					console.debug(`[CodeBuddy] Poll attempt ${attempt + 1}: token not ready yet`);
+				} finally {
+					clearTimeout(timeoutId);
 				}
-
-				console.debug(`[CodeBuddy] Poll attempt ${attempt + 1}: token not ready yet`);
 			} catch (err) {
-				console.warn(`[CodeBuddy] Poll attempt ${attempt + 1} error:`, err);
+				// AbortError on a single poll is expected when the 10s timeout fires —
+				// log + continue to next attempt rather than aborting the whole login.
+				const cause = (err as { cause?: { code?: string; message?: string } })?.cause;
+				console.warn(`[CodeBuddy] Poll attempt ${attempt + 1} error:`, err instanceof Error ? err.message : err, 'cause:', cause);
 			}
 
 			await new Promise(resolve => setTimeout(resolve, intervalMs));
@@ -493,15 +529,25 @@ export class CodeBuddyAuth {
 			const serverUrl = this._getServerUrl();
 			const url = `${serverUrl}/v2/plugin/auth/token/refresh`;
 
-			const response = await fetch(url, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'X-Refresh-Token': this._cachedToken.refreshToken,
-					'X-Auth-Refresh-Source': 'plugin',
-				},
-				body: '{}',
-			});
+			// Refresh can also hang on a misconfigured system proxy; give it a 15s
+			// hard timeout so callers don't sit on a stuck refresh.
+			const controller = new AbortController();
+			const timeoutId = setTimeout(() => controller.abort(), 15_000);
+			let response: Response;
+			try {
+				response = await fetch(url, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-Refresh-Token': this._cachedToken.refreshToken,
+						'X-Auth-Refresh-Source': 'plugin',
+					},
+					body: '{}',
+					signal: controller.signal,
+				});
+			} finally {
+				clearTimeout(timeoutId);
+			}
 
 			// Handle 401/403: refresh_token is invalid, clear token and prompt re-login
 			if (response.status === 401 || response.status === 403) {
@@ -540,7 +586,10 @@ export class CodeBuddyAuth {
 			console.log('[CodeBuddy] Token refreshed successfully');
 			return true;
 		} catch (err) {
-			console.error('[CodeBuddy] Token refresh error:', err);
+			// Surface err.cause (e.g. ECONNREFUSED on a dead proxy) so logs are
+			// actionable instead of just "TypeError: fetch failed".
+			const cause = (err as { cause?: { code?: string; message?: string; address?: string; port?: number } })?.cause;
+			console.error('[CodeBuddy] Token refresh error:', err instanceof Error ? err.message : err, 'cause:', cause);
 			return false;
 		}
 	}

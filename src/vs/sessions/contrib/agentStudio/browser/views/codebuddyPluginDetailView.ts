@@ -120,7 +120,17 @@ export function renderCodebuddyAuthSection(
 			// Re-render to update status
 			setTimeout(() => { rerender(); }, 1000);
 		} catch (err) {
-			setMsg(localize('codebuddy.loginFailed', '❌ 登录失败：{0}', err instanceof Error ? err.message : String(err)), 'error');
+			// Node fetch wraps the real network reason (e.g. ECONNREFUSED on a dead
+			// system proxy) in err.cause — surface it so the user can see the
+			// underlying problem instead of an opaque "fetch failed".
+			const cause = (err as { cause?: { code?: string; message?: string; address?: string; port?: number } })?.cause;
+			const baseMsg = err instanceof Error ? err.message : String(err);
+			const causeMsg = cause
+				? ` (cause: ${cause.code ?? ''} ${cause.message ?? ''}${cause.address ? ` at ${cause.address}:${cause.port}` : ''})`
+				: '';
+			const fullMsg = baseMsg + causeMsg;
+			console.error('[CodeBuddy] login button onclick error:', err, 'cause:', cause);
+			setMsg(localize('codebuddy.loginFailed', '❌ 登录失败：{0}', fullMsg), 'error');
 			loginBtn.disabled = false;
 			logoutBtn.disabled = false;
 		}

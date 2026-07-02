@@ -491,8 +491,13 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 					});
 					this.logService.info(`[Marketplace] 已创建新包: ${localId}`);
 				} catch (createErr) {
-					// 创建失败可能是因为包已存在（并发情况），忽略错误继续上传
-					this.logService.info(`[Marketplace] 创建包跳过: ${createErr instanceof Error ? createErr.message : String(createErr)}`);
+					const msg = createErr instanceof Error ? createErr.message : String(createErr);
+					// 服务端校验失败（slug 冲突/格式非法等）→ 直接抛出让客户端处理
+					if (/slug|conflict|already exists|409|conflict/i.test(msg)) {
+						throw createErr;
+					}
+					// 其他错误（网络抖动/并发创建）→ 忽略，继续上传
+					this.logService.info(`[Marketplace] 创建包跳过: ${msg}`);
 				}
 			}
 		}

@@ -415,6 +415,14 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		exclInput.value = config.excludeDirs.join(', ');
 		exclInput.placeholder = 'node_modules, .git, build, out, dist, Intermediate, Saved, Binaries';
 
+		// Keep dirs (保留目录：即使父目录被排除也保留)
+		const keepRow = append(body, $('.cbm-config-row'));
+		append(keepRow, $('.cbm-config-label')).textContent = 'Keep';
+		const keepInput = append(keepRow, $('input.cbm-input')) as HTMLInputElement;
+		keepInput.type = 'text';
+		keepInput.value = (config.keepDirs || []).join(', ');
+		keepInput.placeholder = 'Content/Script, Content/Blueprints (保留被排除目录的子目录)';
+
 		// Action buttons
 		const btnGroup = append(body, $('.cbm-btn-group'));
 
@@ -439,11 +447,9 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			const newConfig: IIndexConfig = {
 				mode: mode as IIndexConfig['mode'],
 				excludeDirs: exclInput.value.split(',').map(s => s.trim()).filter(s => s),
+				keepDirs: keepInput.value.split(',').map(s => s.trim()).filter(s => s),
 				subPath: pathInput.value.trim() || undefined,
 			};
-			this.cbmService.setIndexConfig(newConfig);
-
-			// 清空日志，显示进度（用 clearNode 而非 innerHTML，避免 TrustedHTML 策略阻止）
 			clearNode(logEl);
 			progressEl.classList.add('visible');
 			progressFill.style.width = '0%';
@@ -483,7 +489,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 				}
 			});
 
-			this._appendSectionLog(logEl, `📋 配置: mode=${newConfig.mode}, subPath=${newConfig.subPath || '(全部)'}, excludeDirs=${newConfig.excludeDirs.length}项`);
+			this._appendSectionLog(logEl, `📋 配置: mode=${newConfig.mode}, subPath=${newConfig.subPath || '(全部)'}, exclude=${newConfig.excludeDirs.length}项, keep=${newConfig.keepDirs?.length || 0}项`);
 			this._appendSectionLog(logEl, `▶ 调用 indexWorkspace...`);
 
 			try {
@@ -518,6 +524,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			const newConfig: IIndexConfig = {
 				mode: mode as IIndexConfig['mode'],
 				excludeDirs: exclInput.value.split(',').map(s => s.trim()).filter(s => s),
+				keepDirs: keepInput.value.split(',').map(s => s.trim()).filter(s => s),
 				subPath: pathInput.value.trim() || undefined,
 			};
 			this.cbmService.setIndexConfig(newConfig);

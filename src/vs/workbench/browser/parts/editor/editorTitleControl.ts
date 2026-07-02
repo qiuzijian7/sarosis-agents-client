@@ -42,6 +42,11 @@ export class EditorTitleControl extends Themable {
 	private readonly breadcrumbsControlDisposables = this._register(new DisposableStore());
 	private get breadcrumbsControl() { return this.breadcrumbsControlFactory?.control; }
 
+	/** Container for the breadcrumbs control (left side). */
+	private breadcrumbsControlContainer: HTMLElement | undefined;
+	/** Container for trailing content in the breadcrumbs area (right side). */
+	private breadcrumbsTrailingContainer: HTMLElement | undefined;
+
 	constructor(
 		private readonly parent: HTMLElement,
 		private readonly editorPartsView: IEditorPartsView,
@@ -81,11 +86,22 @@ export class EditorTitleControl extends Themable {
 			return undefined; // Single tabs have breadcrumbs inlined. No tabs have no breadcrumbs.
 		}
 
-		// Breadcrumbs container
+		// Breadcrumbs container — flex row so breadcrumbs (left) and trailing
+		// content (right) can sit on the same line.
 		const breadcrumbsContainer = $('.breadcrumbs-below-tabs');
 		this.parent.appendChild(breadcrumbsContainer);
 
-		const breadcrumbsControlFactory = this.breadcrumbsControlDisposables.add(this.instantiationService.createInstance(BreadcrumbsControlFactory, breadcrumbsContainer, this.groupView, {
+		// Left: breadcrumbs control container (takes available space).
+		this.breadcrumbsControlContainer = document.createElement('div');
+		this.breadcrumbsControlContainer.className = 'breadcrumbs-control-container';
+		breadcrumbsContainer.appendChild(this.breadcrumbsControlContainer);
+
+		// Right: trailing content container (fits content, hidden by default).
+		this.breadcrumbsTrailingContainer = document.createElement('div');
+		this.breadcrumbsTrailingContainer.className = 'breadcrumbs-trailing-content';
+		breadcrumbsContainer.appendChild(this.breadcrumbsTrailingContainer);
+
+		const breadcrumbsControlFactory = this.breadcrumbsControlDisposables.add(this.instantiationService.createInstance(BreadcrumbsControlFactory, this.breadcrumbsControlContainer, this.groupView, {
 			showFileIcons: true,
 			showSymbolIcons: true,
 			showDecorationColors: false,
@@ -224,5 +240,33 @@ export class EditorTitleControl extends Themable {
 			total: tabsControlHeight + breadcrumbsControlHeight,
 			offset: tabsControlHeight
 		};
+	}
+
+	/**
+	 * Set trailing content to be displayed on the right side of the
+	 * breadcrumbs-below-tabs area. Pass `undefined` to hide the trailing
+	 * content.
+	 *
+	 * This is used by editor panes (e.g., `HtmlPreviewEditorPane`) to
+	 * display mode-toggle buttons (edit/preview/html) inline with the
+	 * breadcrumbs path.
+	 */
+	setTrailingBreadcrumbsContent(content: HTMLElement | undefined): void {
+		if (!this.breadcrumbsTrailingContainer) {
+			return;
+		}
+
+		// Clear previous content.
+		clearNode(this.breadcrumbsTrailingContainer);
+
+		if (content) {
+			this.breadcrumbsTrailingContainer.appendChild(content);
+			this.breadcrumbsTrailingContainer.style.display = 'flex';
+		} else {
+			this.breadcrumbsTrailingContainer.style.display = 'none';
+		}
+
+		// Breadcrumbs visibility / layout may change — relayout.
+		this.groupView.relayout();
 	}
 }

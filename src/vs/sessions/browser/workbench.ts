@@ -306,11 +306,15 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	private sideBarPartView!: ISerializableView;
 	private editorPartView!: ISerializableView;
 	private agentEditorPartView!: ISerializableView;
+	private panelPartView!: ISerializableView;
 
 	/** Whether the Agent editor (right column) is currently collapsed */
 	private isRightColumnCollapsed = false;
 	/** Saved width of the Agent editor before collapse (for restore) */
 	private preToggleWidth = 500;
+
+	/** Whether the Panel (Output/Debug/Terminal) is currently visible */
+	private isPanelVisible = false;
 
 	private readonly partVisibility: IPartVisibilityState = {
 		sidebar: true,
@@ -866,16 +870,29 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// initial grid dimensions reflect the previous session.
 		this.restoreLayoutPreferences(storageService);
 
-		// Create Parts (only Titlebar and Sidebar; Editor created separately below)
+		// Create Parts (Titlebar, Sidebar, Panel; Editor created separately below)
+		// [Sarosis] PanelPart, SidebarPart, AuxiliaryBarPart, ChatBarPart are
+		// instantiated by AgenticPaneCompositePartService, but their `create()`
+		// method must be called explicitly so that `element` is initialized.
 		for (const { id, role, classes } of [
 			{ id: Parts.TITLEBAR_PART, role: 'none', classes: ['titlebar'] },
 			{ id: Parts.SIDEBAR_PART, role: 'none', classes: ['sidebar', 'left'] },
+			{ id: Parts.PANEL_PART, role: 'complementary', classes: ['panel'] },
 		]) {
+			const part = this.getPart(id);
+			// Skip if already created (element is set)
+			if (part.element && part.element instanceof HTMLElement) {
+				continue;
+			}
+
 			const partContainer = this.createPartContainer(id, role, classes);
 
 			mark(`code/willCreatePart/${id}`);
-			this.getPart(id).create(partContainer);
+			part.create(partContainer);
 			mark(`code/didCreatePart/${id}`);
+
+			// Append to main container (grid will move it later)
+			this.mainContainer.appendChild(partContainer);
 		}
 
 		// Create Editor Part (hidden by default)
@@ -1209,6 +1226,20 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		document.addEventListener('agent-studio:toggle-right-column', toggleHandler);
 		this._register({ dispose: () => document.removeEventListener('agent-studio:toggle-right-column', toggleHandler) });
 
+		// ── Output 伸缩按钮：在中间栏（编辑器）下方显示/隐藏 Panel（Output/Debug/Terminal） ──
+		const outputToggleHandler: EventListener = () => {
+			this.setPartHidden(this.isPanelVisible, Parts.PANEL_PART);
+		};
+		document.addEventListener('agent-studio:toggle-output', outputToggleHandler);
+		this._register({ dispose: () => document.removeEventListener('agent-studio:toggle-output', outputToggleHandler) });
+
+		// ── Panel 切换按钮（Ctrl+J）：与 VS Code 原生行为一致，切换 Panel 显示/隐藏 ──
+		const panelToggleHandler: EventListener = () => {
+			this.setPartHidden(this.isPanelVisible, Parts.PANEL_PART);
+		};
+		document.addEventListener('agent-studio:toggle-panel', panelToggleHandler);
+		this._register({ dispose: () => document.removeEventListener('agent-studio:toggle-panel', panelToggleHandler) });
+
 		// ── 弹出聊天按钮：隐藏右侧栏 + 弹出独立浮动聊天窗口 ──
 		let popoutWindow: HTMLElement | null = null;
 		let popoutOriginalParent: HTMLElement | null = null;
@@ -1220,11 +1251,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		let popoutOverlayPrevZ = '';
 		let popoutRepositionOverlay: (() => void) | null = null;
 
-		/** Hide / show the titlebar popout+collapse buttons in the titlebar. */
+		/** Hide / show the titlebar toggle-sidebar button (only the sidebar toggle, not feedback/output). */
 		const setToggleContainerVisible = (visible: boolean) => {
-			const tc = document.getElementById('agent-studio-titlebar-toggle-container');
-			if (tc) {
-				tc.style.display = visible ? '' : 'none';
+			const btn = document.querySelector('#agent-studio-titlebar-toggle-container .titlebar-toggle-sidebar-btn') as HTMLElement | null;
+			if (btn) {
+				btn.style.display = visible ? '' : 'none';
 			}
 		};
 
@@ -1657,11 +1688,36 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		const editorPart = this.getPart(Parts.EDITOR_PART);
 		const agentEditorPart = this.getPart(Parts.AGENT_EDITOR_PART);
 		const sideBar = this.getPart(Parts.SIDEBAR_PART);
+		const panelPart = this.getPart(Parts.PANEL_PART);
+
+		// [Sarosis] Validate that all parts have their `create()` method called.
+		// The `element` property is set in `create()` (see paneCompositePart.ts line 232).
+		// If `create()` hasn't been called, `element` is undefined and the grid
+		// deserialization will fail with "appendChild: parameter 1 is not of type 'Node'".
+		const partsToValidate = [
+			{ name: 'TitleBar', part: titleBar },
+			{ name: 'SideBar', part: sideBar },
+			{ name: 'Editor', part: editorPart },
+			{ name: 'Panel', part: panelPart },
+			{ name: 'AgentEditor', part: agentEditorPart },
+		];
+		for (const { name, part } of partsToValidate) {
+			if (!part.element || !(part.element instanceof HTMLElement)) {
+				// Part hasn't been created yet — call create() with a container
+				console.warn(`[Workbench] ${name} part has no element — calling create()...`);
+				const container = document.createElement('div');
+				container.classList.add('part', name.toLowerCase());
+				container.id = part.getId();
+				part.create(container);
+				this.mainContainer.appendChild(container);
+			}
+		}
 
 		// View references for parts in the grid
 		this.titleBarPartView = titleBar;
 		this.sideBarPartView = sideBar;
 		this.editorPartView = editorPart;
+		this.panelPartView = panelPart;
 		// Wrap the agent editor part view to constrain its maximum width to
 		// 1/2 of the app window. The grid/sash system reads maximumWidth to
 		// clamp sash dragging. The wrapper re-fires onDidChange on window
@@ -1674,10 +1730,20 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			[Parts.TITLEBAR_PART]: this.titleBarPartView,
 			[Parts.SIDEBAR_PART]: this.sideBarPartView,
 			[Parts.EDITOR_PART]: this.editorPartView,
+			[Parts.PANEL_PART]: this.panelPartView,
 			[Parts.AGENT_EDITOR_PART]: this.agentEditorPartView
 		};
 
-		const fromJSON = ({ type }: { type: string }) => viewMap[type];
+		const fromJSON = ({ type }: { type: string }) => {
+			const view = viewMap[type];
+			// [Sarosis] Debug: log each view's element status during grid deserialization
+			const elemStatus = !view ? 'VIEW_UNDEFINED' : !view.element ? 'ELEMENT_UNDEFINED' : !(view.element instanceof Node) ? `NOT_NODE(type=${typeof view.element})` : 'OK';
+			console.log(`[Workbench] fromJSON: type=${type}, view=${view?.constructor?.name ?? 'undefined'}, element=${elemStatus}`);
+			if (!view || !view.element || !(view.element instanceof Node)) {
+				console.error(`[Workbench] CRITICAL: view for type=${type} has invalid element!`);
+			}
+			return view;
+		};
 		const workbenchGrid = SerializableGrid.deserialize(
 			this.createGridDescriptor(),
 			{ fromJSON },
@@ -1690,7 +1756,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		this.workbenchGrid.edgeSnapping = this.mainWindowFullscreen;
 
 		// Listen for part visibility changes (for parts in grid)
-		for (const part of [titleBar, sideBar, editorPart, agentEditorPart]) {
+		for (const part of [titleBar, sideBar, editorPart, agentEditorPart, panelPart]) {
 			this._register(part.onDidVisibilityChange(visible => {
 				if (part === sideBar) {
 					this.setSideBarHidden(!visible);
@@ -1759,7 +1825,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 *   ├─ TitleBar [height=titleBarHeight, full width]
 	 *   └─ contentRow (HORIZONTAL) [height=fill]:
 	 *       ├─ Sidebar  [width=sideBarSize]
-	 *       ├─ File editor  [width=editorWidth]
+	 *       ├─ EditorColumn (VERTICAL) [width=editorWidth]:
+	 *       │   ├─ File editor  [height=editorHeight]
+	 *       │   └─ Panel        [height=panelHeight]
 	 *       └─ Agent editor [width=agentEditorWidth]
 	 */
 	private createDesktopGridDescriptor(width: number, height: number): ISerializedGrid {
@@ -1773,6 +1841,10 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// Sizing rules
 		const agentEditorWidth = Math.max(480, Math.round(width / 2));
 		const editorWidth = Math.max(320, width - sideBarSize - agentEditorWidth);
+
+		// Panel sizing: 30% of the content height (below editor), hidden by default
+		const contentHeight = height - titleBarHeight;
+		const panelHeight = this.isPanelVisible ? Math.round(contentHeight * 0.35) : 0;
 
 		// ── TitleBar: full-width top row ──
 		const titleBarNode: ISerializedLeafNode = {
@@ -1794,8 +1866,23 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		const editorNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.EDITOR_PART },
-			size: editorWidth,
+			size: Math.max(0, contentHeight - panelHeight),
 			visible: true
+		};
+
+		// ── Panel (Output / Debug Console / Terminal) ──
+		const panelNode: ISerializedLeafNode = {
+			type: 'leaf',
+			data: { type: Parts.PANEL_PART },
+			size: panelHeight,
+			visible: this.isPanelVisible
+		};
+
+		// ── Editor Column (VERTICAL): Editor | Panel ──
+		const editorColumnNode: ISerializedNode = {
+			type: 'branch',
+			data: [editorNode, panelNode],
+			size: editorWidth
 		};
 
 		// ── Agent Editor ──
@@ -1806,11 +1893,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			visible: true
 		};
 
-		// ── Content row (HORIZONTAL): Sidebar | File editor | Agent editor ──
+		// ── Content row (HORIZONTAL): Sidebar | EditorColumn | Agent editor ──
 		const contentRow: ISerializedNode = {
 			type: 'branch',
-			data: [sideBarNode, editorNode, agentEditorNode],
-			size: Math.max(0, height - titleBarHeight)
+			data: [sideBarNode, editorColumnNode, agentEditorNode],
+			size: Math.max(0, contentHeight)
 		};
 
 		// ── Root (VERTICAL): TitleBar | contentRow ──
@@ -1959,13 +2046,23 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// so we never add the SIDEBAR_HIDDEN class. The content panel
 		// collapses/expands instead of the entire sidebar disappearing.
 		return coalesce([
-			LayoutClasses.PANEL_HIDDEN, // No panel in this layout
+			this.isPanelVisible ? undefined : LayoutClasses.PANEL_HIDDEN,
 			LayoutClasses.AUXILIARYBAR_HIDDEN, // No auxiliary bar in this layout
 			LayoutClasses.CHATBAR_HIDDEN, // No chat bar in this layout
 			LayoutClasses.STATUSBAR_HIDDEN, // agents window never has a status bar
 			this.mainWindowFullscreen ? LayoutClasses.FULLSCREEN : undefined,
 			this.layoutPolicy.viewportClass.get() === 'phone' ? LayoutClasses.PHONE_LAYOUT : undefined,
 		]);
+	}
+
+	/**
+	 * Updates the `nopanel` CSS class on the workbench container based on
+	 * the current panel visibility state. The CSS rule
+	 * `.monaco-workbench.nopanel .part.panel { display: none !important; }`
+	 * hides the panel element when this class is present.
+	 */
+	private updateLayoutClasses(): void {
+		this.mainContainer.classList.toggle(LayoutClasses.PANEL_HIDDEN, !this.isPanelVisible);
 	}
 
 	//#endregion
@@ -2076,9 +2173,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				return true;
 			case Parts.EDITOR_PART:
 				return true; // Editor is always visible in this layout
-			case Parts.AGENT_EDITOR_PART:
-				return true; // Agent editor (right column) is always visible
-			case Parts.AUXILIARYBAR_PART:
+		case Parts.AGENT_EDITOR_PART:
+			return true; // Agent editor (right column) is always visible
+		case Parts.PANEL_PART:
+			return this.isPanelVisible;
+		case Parts.AUXILIARYBAR_PART:
 			case Parts.PANEL_PART:
 			case Parts.CHATBAR_PART:
 			case Parts.ACTIVITYBAR_PART:
@@ -2089,7 +2188,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}
 	}
 
-	setPartHidden(hidden: boolean, part: Parts): void {
+	async setPartHidden(hidden: boolean, part: Parts): Promise<void> {
 		switch (part) {
 			case Parts.SIDEBAR_PART:
 				this.setSideBarHidden(hidden);
@@ -2115,7 +2214,114 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				}
 			}
 			break;
-			// Panel, AuxiliaryBar, ChatBar are not in this layout - no-op
+			// Panel toggle: show/hide the panel (Output/Debug/Terminal) below the editor
+		case Parts.PANEL_PART:
+			if (hidden === !this.isPanelVisible) {
+				break; // Already in the desired state
+			}
+			try {
+				this.workbenchGrid.setViewVisible(this.panelPartView, !hidden);
+				this.isPanelVisible = !hidden;
+				this.updateLayoutClasses();
+				if (!hidden) {
+					// [Sarosis] Panel was created with size=0 when initially
+					// hidden. setViewVisible only toggles visibility — it does
+					// NOT restore a non-zero size. We must explicitly resize
+					// the panel to a proper height after making it visible.
+					const contentHeight = this._mainContainerDimension.height - DEFAULT_CUSTOM_TITLEBAR_HEIGHT;
+					const targetPanelHeight = Math.round(contentHeight * 0.35);
+					this.workbenchGrid.resizeView(this.panelPartView, { width: this.workbenchGrid.getViewSize(this.panelPartView).width, height: targetPanelHeight });
+
+					// When showing, ensure a pane composite is open
+					const allComposites = this.paneCompositeService.getPaneComposites(ViewContainerLocation.Panel);
+					console.log('[Workbench] Panel composites:', allComposites.map(c => c.id));
+					const activePanel = this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Panel);
+					console.log('[Workbench] Panel activePanel:', activePanel?.getId?.() ?? 'none');
+					if (!activePanel) {
+						const lastActive = this.paneCompositeService.getLastActivePaneCompositeId(ViewContainerLocation.Panel);
+						console.log('[Workbench] Panel lastActive:', lastActive ?? 'none');
+						// Try last active, then default view container, then first available composite
+						let compositeToOpen: string | undefined = lastActive;
+						if (!compositeToOpen) {
+							const defaultContainer = this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Panel);
+							compositeToOpen = defaultContainer?.id;
+							console.log('[Workbench] Panel defaultContainer:', compositeToOpen ?? 'none');
+						}
+						if (!compositeToOpen) {
+							compositeToOpen = allComposites.length > 0 ? allComposites[0].id : undefined;
+						}
+						console.log('[Workbench] Panel opening composite:', compositeToOpen ?? 'none');
+				if (compositeToOpen) {
+					await this.paneCompositeService.openPaneComposite(compositeToOpen, ViewContainerLocation.Panel, true);
+					// [Sarosis] showComposite() appends content to DOM which
+					// can trigger a grid relayout using stale size=0. Re-resize
+					// after composite is open to ensure proper panel height.
+					// Use requestAnimationFrame to ensure the resize happens
+					// after the browser processes the DOM changes from showComposite.
+					try {
+						const currentWidth = this.workbenchGrid.getViewSize(this.panelPartView).width;
+						const currentHeight = this.workbenchGrid.getViewSize(this.panelPartView).height;
+						console.log('[Workbench] Panel before re-resize: currentWidth:', currentWidth, 'currentHeight:', currentHeight, 'targetHeight:', targetPanelHeight);
+						this.workbenchGrid.resizeView(this.panelPartView, { width: currentWidth, height: targetPanelHeight });
+						console.log('[Workbench] Panel re-resized after composite open, height:', targetPanelHeight);
+					} catch (e) {
+						console.error('[Workbench] Panel re-resize failed:', e);
+					}
+
+					// Also schedule another resize on the next frame, since
+					// showComposite's DOM mutations may trigger a grid relayout
+					// that resets the panel size back to 0.
+					requestAnimationFrame(() => {
+						try {
+							const w = this.workbenchGrid.getViewSize(this.panelPartView).width;
+							const h = this.workbenchGrid.getViewSize(this.panelPartView).height;
+							console.log('[Workbench] Panel rAF check: currentHeight:', h, 'targetHeight:', targetPanelHeight);
+							if (h < 100) {
+								this.workbenchGrid.resizeView(this.panelPartView, { width: w, height: targetPanelHeight });
+								console.log('[Workbench] Panel re-resized in rAF, height:', targetPanelHeight);
+							}
+
+							// [Sarosis Debug] Inspect panel DOM to understand why content is invisible
+							const panelPart = this.getPart(Parts.PANEL_PART);
+							const panelEl = panelPart.element;
+							if (panelEl) {
+								const rect = panelEl.getBoundingClientRect();
+								const computedDisplay = getComputedStyle(panelEl).display;
+								const inlineDisplay = panelEl.style.display;
+								console.log('[Workbench] Panel DOM rect:', { width: rect.width, height: rect.height, top: rect.top, left: rect.left, display: computedDisplay, visibility: getComputedStyle(panelEl).visibility });
+								console.log('[Workbench] Panel inline style display:', inlineDisplay || '(empty)');
+								console.log('[Workbench] Panel classList:', Array.from(panelEl.classList));
+								// Check content area
+								const contentArea = panelEl.querySelector('.content');
+								if (contentArea) {
+									const caRect = contentArea.getBoundingClientRect();
+									console.log('[Workbench] Panel contentArea rect:', { width: caRect.width, height: caRect.height, childCount: contentArea.children.length });
+									for (let i = 0; i < contentArea.children.length; i++) {
+										const child = contentArea.children[i] as HTMLElement;
+										const childRect = child.getBoundingClientRect();
+										console.log(`[Workbench] Panel contentArea child[${i}]:`, { id: child.id, className: child.className, width: childRect.width, height: childRect.height, display: getComputedStyle(child).display, offsetParent: !!child.offsetParent });
+									}
+								} else {
+									console.log('[Workbench] Panel contentArea NOT FOUND');
+								}
+								// Check composite bar
+								const compositeBar = panelEl.querySelector('.composite-bar-container');
+								if (compositeBar) {
+									const cbRect = compositeBar.getBoundingClientRect();
+									console.log('[Workbench] Panel compositeBar rect:', { width: cbRect.width, height: cbRect.height, childCount: compositeBar.children.length });
+								} else {
+									console.log('[Workbench] Panel compositeBar NOT FOUND');
+								}
+							}
+						} catch (e) {
+							console.error('[Workbench] Panel rAF inspection failed:', e);
+						}
+					});
+				}
+					}
+				}
+			} catch { /* Grid not ready */ }
+			break;
 		}
 	}
 

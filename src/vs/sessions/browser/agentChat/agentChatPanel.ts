@@ -121,6 +121,29 @@ const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
 	get_current_time: { done: '获取时间', running: '正在获取时间' },
 	math_eval: { done: '计算', running: '正在计算' },
 	echo: { done: 'Echo', running: 'Echo' },
+	clarify: { done: '等待用户选择', running: '正在等待用户选择' },
+	mcp_tool_search: { done: '搜索 MCP 工具', running: '正在搜索 MCP 工具' },
+	mcp_tool_call: { done: '执行 MCP 工具', running: '正在执行 MCP 工具' },
+	memory_remember: { done: '保存记忆', running: '正在保存记忆' },
+	memory_search: { done: '搜索记忆', running: '正在搜索记忆' },
+	memory_delete: { done: '删除记忆', running: '正在删除记忆' },
+	memory_list: { done: '列出记忆', running: '正在列出记忆' },
+	kanban_create: { done: '创建看板任务', running: '正在创建看板任务' },
+	kanban_complete: { done: '完成看板任务', running: '正在完成看板任务' },
+	kanban_block: { done: '阻塞任务', running: '正在阻塞任务' },
+	kanban_unblock: { done: '解除阻塞', running: '正在解除阻塞' },
+	kanban_show: { done: '查看任务详情', running: '正在查看任务' },
+	kanban_list: { done: '列出看板任务', running: '正在列出看板任务' },
+	kanban_heartbeat: { done: '刷新任务', running: '正在刷新任务' },
+	kanban_comment: { done: '评论任务', running: '正在评论任务' },
+	kanban_link: { done: '关联任务', running: '正在关联任务' },
+	kanban_specify: { done: '指定任务', running: '正在指定任务' },
+	kanban_decompose: { done: '分解任务', running: '正在分解任务' },
+	kanban_swarm: { done: '群智调度', running: '正在群智调度' },
+	workflow_list: { done: '列出工作流', running: '正在列出工作流' },
+	workflow_get: { done: '查看工作流', running: '正在查看工作流' },
+	workflow_get_schema: { done: '获取工作流结构', running: '正在获取工作流结构' },
+	workflow_apply: { done: '应用工作流', running: '正在应用工作流' },
 	todo: { done: '更新待办', running: '正在更新待办' },
 	execute_code: { done: '执行代码', running: '正在执行代码' },
 	session_search: { done: '搜索会话', running: '正在搜索会话' },
@@ -348,12 +371,13 @@ export class AgentChatPanel extends Disposable {
 	private readonly _onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 	/** Edit a prior user message: truncate the conversation after it and regenerate from the new text. */
 	private readonly _onEditMessage?: (messageId: string, newText: string) => void;
-	private readonly _onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
+	private readonly _onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string; activation?: string; source?: string; version?: string; enabled: boolean; category?: string }>;
 	private readonly _onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 	private readonly _onOpenMcpSettings?: () => void;
 	private readonly _onOpenHtmlPreview?: () => void;
 	// New callbacks for missing features
 	private readonly _onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
+	private readonly _onClarifySubmit?: (toolCallId: string, selection: string) => void;
 	private readonly _onQuestionClick?: (question: ISuggestedQuestion) => void;
 	private readonly _onReferenceClick?: (ref: IReferenceItem) => void;
 	private readonly _onTipAction?: (tipId: string, actionId: string) => void;
@@ -402,12 +426,13 @@ export class AgentChatPanel extends Disposable {
 		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
 		onConfirmationAction?: (confirmationId: string, buttonId: string) => void;
 		onEditMessage?: (messageId: string, newText: string) => void;
-		onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string }>;
+		onListSkills: () => ReadonlyArray<{ id: string; name: string; description: string; activation?: string; source?: string; version?: string; enabled: boolean; category?: string }>;
 		onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 		onOpenMcpSettings?: () => void;
 		onOpenHtmlPreview?: () => void;
 		// New callbacks for missing features
 		onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
+		onClarifySubmit?: (toolCallId: string, selection: string) => void;
 		onQuestionClick?: (question: ISuggestedQuestion) => void;
 		onReferenceClick?: (ref: IReferenceItem) => void;
 		onTipAction?: (tipId: string, actionId: string) => void;
@@ -462,6 +487,7 @@ export class AgentChatPanel extends Disposable {
 		this._onOpenHtmlPreview = opts.onOpenHtmlPreview;
 		// New callbacks
 		this._onAskUserSubmit = opts.onAskUserSubmit;
+		this._onClarifySubmit = opts.onClarifySubmit;
 		this._onQuestionClick = opts.onQuestionClick;
 		this._onReferenceClick = opts.onReferenceClick;
 		this._onTipAction = opts.onTipAction;
@@ -2470,7 +2496,7 @@ export class AgentChatPanel extends Disposable {
 			if (msg.toolCalls && msg.toolCalls.length > 0) {
 				const section = append(bubble, $(".tool-calls-section"));
 				for (const tc of msg.toolCalls) {
-					section.appendChild(this._createToolCallCard(tc));
+					section.appendChild(this._maybeCreateClarifyCard(tc) ?? this._createToolCallCard(tc));
 				}
 			}
 		} else if (!isUser && msg.toolCalls && msg.toolCalls.length > 0) {
@@ -2478,7 +2504,7 @@ export class AgentChatPanel extends Disposable {
 			// 参考 void：工具调用作为独立的进度卡片渲染
 			const section = append(bubble, $(".tool-calls-section"));
 			for (const tc of msg.toolCalls) {
-				section.appendChild(this._createToolCallCard(tc));
+				section.appendChild(this._maybeCreateClarifyCard(tc) ?? this._createToolCallCard(tc));
 			}
 		}
 
@@ -2822,6 +2848,104 @@ export class AgentChatPanel extends Disposable {
 		return indicator;
 	}
 
+	// --- Clarify tool card (LLM asks user to choose) ---
+
+	/**
+	 * 检测 clarify 工具调用。如果 tc.name === 'clarify' 且 args 可解析，
+	 * 返回交互式 clarify 卡片；否则返回 null（由调用方 fallback 到普通工具卡）。
+	 *
+	 * clarify args 格式（JSON 字符串）：
+	 *   { "question": "...", "options": ["选项A", "选项B", ...] }
+	 */
+	private _maybeCreateClarifyCard(tc: IToolCall): HTMLElement | null {
+		const key = (tc.name || '').toLowerCase();
+		if (key !== 'clarify') { return null; }
+
+		// 解析 args
+		let parsed: { question?: string; options?: string[] } = {};
+		try {
+			parsed = tc.args ? JSON.parse(tc.args) : {};
+		} catch {
+			// args 可能是流式增量（不完整 JSON），此时不渲染 clarify 卡片
+			return null;
+		}
+		if (!parsed.question || !Array.isArray(parsed.options) || parsed.options.length === 0) {
+			return null;
+		}
+
+		// 已回答？检测 result
+		const isAnswered = tc.status === 'success' && tc.result && tc.result.length > 0;
+		const isPending = !isAnswered;
+
+		const card = $('.clarify-card');
+		if (isAnswered) { card.classList.add('answered'); }
+
+		// Header — 使用 Codicon 原生图标
+		const header = append(card, $('.clarify-card-header'));
+		const icon = append(header, $('span.codicon.codicon-question'));
+		icon.style.color = 'var(--vscode-charts-blue, #60a5fa)';
+		icon.style.fontSize = '16px';
+		const title = append(header, $('span.clarify-card-title', undefined, '需要澄清'));
+		title.style.fontWeight = '600';
+		title.style.fontSize = '13px';
+
+		// Question
+		const questionEl = append(card, $('.clarify-card-question'));
+		questionEl.textContent = parsed.question;
+
+		// Options — 单选按钮组，参考 VS Code 原生 Button + radio 样式
+		if (isPending) {
+			let selectedIdx = -1;
+			const optionsDiv = append(card, $('.clarify-options'));
+			parsed.options.forEach((opt, idx) => {
+			const optBtn = append(optionsDiv, $('button.clarify-option')) as HTMLButtonElement;
+			append(optBtn, $('span.clarify-option-marker.codicon'));
+				const body = append(optBtn, $('span.clarify-option-body'));
+				append(body, $('span.clarify-option-label', undefined, opt));
+
+				this._register(addDisposableListener(optBtn, EventType.CLICK, () => {
+					selectedIdx = idx;
+					// 更新所有选项的选中状态
+					optionsDiv.querySelectorAll('.clarify-option').forEach((el, i) => {
+						el.classList.toggle('selected', i === idx);
+						const m = el.querySelector('.clarify-option-marker');
+						if (m) {
+							m.className = 'clarify-option-marker codicon ' + (i === idx ? 'codicon-check' : 'codicon-circle-outline');
+						}
+					});
+					submitBtn.disabled = false;
+				}));
+			});
+
+			// Submit button — VS Code 原生 monaco-button
+			const actions = append(card, $('.clarify-actions'));
+			const submitBtn = append(actions, $('button.monaco-button.monaco-text-button.clarify-submit')) as HTMLButtonElement;
+			submitBtn.textContent = '提交';
+			submitBtn.disabled = true;
+			this._register(addDisposableListener(submitBtn, EventType.CLICK, () => {
+				if (selectedIdx < 0) { return; }
+				const selection = parsed.options![selectedIdx];
+				submitBtn.disabled = true;
+				submitBtn.textContent = '已提交';
+				// 禁用所有选项
+				optionsDiv.querySelectorAll('.clarify-option').forEach(el => {
+					(el as HTMLButtonElement).disabled = true;
+				});
+				// 调用回调
+				this._onClarifySubmit?.(tc.id, selection);
+			}));
+		}
+
+		// Answered summary
+		if (isAnswered) {
+			const answerDiv = append(card, $('.clarify-answer'));
+			append(answerDiv, $('span.codicon.codicon-check'));
+			append(answerDiv, $('span.clarify-answer-text', undefined, tc.result!));
+		}
+
+		return card;
+	}
+
 	// --- Tool call card (Void ToolHeaderWrapper parity) ---
 
 	private _createToolCallCard(tc: IToolCall): HTMLElement {
@@ -2981,10 +3105,14 @@ export class AgentChatPanel extends Disposable {
 			} catch { /* not JSON, skip */ }
 		}
 
-		// 结果（按工具类型分流：终端 / 列表 / 通用代码块）
-		if (tc.result) {
-			const resultText = this._toolResultText(tc.result);
-			if (TOOL_TERMINAL_TOOLS.has(key)) {
+	// 结果（按工具类型分流：终端 / 列表 / 通用代码块 / 增强卡片）
+	if (tc.result) {
+		const resultText = tc.result;
+		// 尝试增强渲染——kanban/workflow/memory 等结构化结果用专用卡片
+		const enhanced = this._maybeCreateEnhancedResult(key, tc.result);
+		if (enhanced) {
+			innerBox.appendChild(enhanced);
+		} else if (TOOL_TERMINAL_TOOLS.has(key)) {
 				const term = append(innerBox, $('.tool-children-terminal'));
 				const codeBox = append(term, $('.tool-terminal-code'));
 				append(codeBox, $('pre')).textContent = resultText;
@@ -3118,6 +3246,172 @@ export class AgentChatPanel extends Disposable {
 		l2.setAttribute('x1', '12'); l2.setAttribute('y1', '17'); l2.setAttribute('x2', '12.01'); l2.setAttribute('y2', '17');
 		svg.appendChild(l2);
 		parent.appendChild(svg);
+	}
+
+	// --- Enhanced result rendering (kanban / workflow / memory) ---
+
+	/**
+	 * 尝试为结构化工具结果创建增强渲染卡片。
+	 * 支持：kanban_list / kanban_show / workflow_list / memory_search / memory_list
+	 * 返回 null 表示无增强（fallback 到通用代码块）。
+	 */
+	private _maybeCreateEnhancedResult(key: string, resultText: string): HTMLElement | null {
+		// ── kanban_list: 表格形式展示任务列表 ──
+		if (key === 'kanban_list') {
+			return this._createKanbanListCard(resultText);
+		}
+		// ── kanban_show: 任务详情卡片 ──
+		if (key === 'kanban_show') {
+			return this._createKanbanShowCard(resultText);
+		}
+		// ── workflow_list: 工作流列表卡片 ──
+		if (key === 'workflow_list') {
+			return this._createWorkflowListCard(resultText);
+		}
+		// ── memory_search: 记忆搜索结果卡片 ──
+		if (key === 'memory_search') {
+			return this._createMemorySearchCard(resultText);
+		}
+		// ── memory_list: 记忆列表卡片 ──
+		if (key === 'memory_list') {
+			return this._createMemoryListCard(resultText);
+		}
+		return null;
+	}
+
+	/** kanban_list 结果 → 表格卡片 */
+	private _createKanbanListCard(resultText: string): HTMLElement | null {
+		const text = this._toolResultText(resultText);
+		// 尝试解析为结构化数据（kanban_list handler 返回文本格式）
+		const lines = text.split('\n').filter(l => l.trim());
+		if (lines.length <= 1) { return null; }
+
+		const card = $('.kanban-result-card');
+		const tableWrap = append(card, $('.kanban-result-table'));
+		// 表头
+		const header = append(tableWrap, $('.kanban-result-row.kanban-result-header'));
+		append(header, $('span.kanban-col-id', undefined, '#'));
+		append(header, $('span.kanban-col-title', undefined, '标题'));
+		append(header, $('span.kanban-col-status', undefined, '状态'));
+		// 解析每行（格式: `#abc123  [status]  title`）
+		for (const line of lines) {
+			const m = line.match(/#([a-f0-9]{6})\s+\[(\w+)\]\s+(.+)/i);
+			if (!m) { continue; }
+			const status = m[2].toLowerCase();
+			const row = append(tableWrap, $('.kanban-result-row'));
+			append(row, $('span.kanban-col-id', undefined, `#${m[1]}`));
+			append(row, $('span.kanban-col-title', undefined, m[3].trim()));
+			const badge = append(row, $('span.kanban-col-status.kanban-status-badge'));
+			badge.textContent = status;
+			badge.classList.add(`kanban-status-${status}`);
+		}
+		return card;
+	}
+
+	/** kanban_show 结果 → 详情卡片 */
+	private _createKanbanShowCard(resultText: string): HTMLElement | null {
+		const text = this._toolResultText(resultText);
+		const card = $('.kanban-detail-card');
+		for (const line of text.split('\n')) {
+			const m = line.match(/^\s+(.+?):\s+(.*)/);
+			if (m) {
+				const row = append(card, $('.kanban-detail-row'));
+				append(row, $('span.kanban-detail-label', undefined, m[1]));
+				append(row, $('span.kanban-detail-value', undefined, m[2]));
+			}
+		}
+		return card;
+	}
+
+	/** workflow_list 结果 → 工作流卡片网格 */
+	private _createWorkflowListCard(resultText: string): HTMLElement | null {
+		const text = this._toolResultText(resultText);
+		let data: any[];
+		try { data = JSON.parse(text); } catch { return null; }
+		if (!Array.isArray(data) || data.length === 0) { return null; }
+
+		const card = $('.workflow-list-card');
+		for (const wf of data) {
+			const item = append(card, $('.workflow-list-item'));
+			const header = append(item, $('.workflow-list-item-header'));
+			append(header, $('span.codicon.codicon-circuit-board'));
+			append(header, $('span.workflow-list-item-name', undefined, wf.name || '(unnamed)'));
+			const meta = append(item, $('.workflow-list-item-meta'));
+			if (typeof wf.nodeCount === 'number') {
+				append(meta, $('span.workflow-list-item-nodes', undefined, `${wf.nodeCount} 节点`));
+			}
+			if (wf.description) {
+				append(item, $('span.workflow-list-item-desc', undefined, wf.description));
+			}
+		}
+		return card;
+	}
+
+	/** memory_search 结果 → 搜索结果列表 */
+	private _createMemorySearchCard(resultText: string): HTMLElement | null {
+		const text = this._toolResultText(resultText);
+		let data: any[];
+		try { data = JSON.parse(text); } catch { return null; }
+		if (!Array.isArray(data) || data.length === 0) { return null; }
+
+		const card = $('.memory-search-card');
+		for (const mem of data) {
+			const item = append(card, $('.memory-search-item'));
+			const header = append(item, $('.memory-search-item-header'));
+			if (mem.type) {
+				const typeBadge = append(header, $('span.memory-type-badge'));
+				typeBadge.textContent = mem.type;
+			}
+			if (mem.tags && Array.isArray(mem.tags)) {
+				for (const tag of mem.tags.slice(0, 3)) {
+					append(header, $('span.memory-tag-badge', undefined, tag));
+				}
+			}
+			if (mem.content) {
+				const preview = mem.content.length > 120 ? mem.content.substring(0, 120) + '…' : mem.content;
+				append(item, $('span.memory-search-item-content', undefined, preview));
+			}
+			if (mem.score !== undefined) {
+				append(item, $('span.memory-search-item-score', undefined, `相关度: ${(mem.score * 100).toFixed(0)}%`));
+			}
+		}
+		return card;
+	}
+
+	/** memory_list 结果 → 分组列表 */
+	private _createMemoryListCard(resultText: string): HTMLElement | null {
+		const text = this._toolResultText(resultText);
+		let data: any[];
+		try { data = JSON.parse(text); } catch { return null; }
+		if (!Array.isArray(data) || data.length === 0) { return null; }
+
+		// 按类型分组
+		const groups: Record<string, any[]> = {};
+		for (const mem of data) {
+			const type = mem.type || 'unknown';
+			if (!groups[type]) { groups[type] = []; }
+			groups[type].push(mem);
+		}
+
+		const card = $('.memory-list-card');
+		for (const [type, entries] of Object.entries(groups)) {
+			const section = append(card, $('.memory-list-group'));
+			const header = append(section, $('.memory-list-group-header'));
+			const label = type === 'episodic' ? '情景记忆' :
+				type === 'semantic' ? '语义记忆' :
+				type === 'procedural' ? '过程记忆' :
+				type === 'working' ? '工作记忆' : type;
+			append(header, $('span.codicon.codicon-database'));
+			append(header, $('span.memory-list-group-label', undefined, `${label} (${entries.length})`));
+			for (const mem of entries) {
+				const item = append(section, $('.memory-list-item'));
+				if (mem.content) {
+					const preview = mem.content.length > 80 ? mem.content.substring(0, 80) + '…' : mem.content;
+					append(item, $('span.memory-list-item-content', undefined, preview));
+				}
+			}
+		}
+		return card;
 	}
 
 	/** 状态感知标题（void titleOfBuiltinToolName）。 */
@@ -6377,7 +6671,7 @@ export class AgentChatPanel extends Disposable {
 
 	private _renderSettingsSkillsTab(container: HTMLElement): void {
 		const desc = append(container, $(".chat-settings-tab-desc"));
-		desc.textContent = '已启用的技能列表';
+		desc.textContent = '已启用的技能配置';
 
 		const list = append(container, $(".chat-settings-skills-list"));
 		const skills = this._onListSkills();
@@ -6386,12 +6680,40 @@ export class AgentChatPanel extends Disposable {
 		} else {
 			for (const skill of skills) {
 				const row = append(list, $(".chat-settings-skill-row"));
-				append(row, $("span.skill-icon", undefined, '🛠'));
+				// Codicon 图标（按来源区分）
+				const iconCodicon = skill.source === 'builtin' ? 'codicon codicon-symbol-namespace' :
+					skill.source === 'marketplace' ? 'codicon codicon-package' :
+					skill.source === 'user' ? 'codicon codicon-person' : 'codicon codicon-tools';
+				append(row, $("span.skill-icon." + iconCodicon));
 				const info = append(row, $(".skill-info"));
-				append(info, $("span.skill-name", undefined, skill.name));
-				append(info, $("span.skill-desc", undefined, skill.description));
-				const toggle = append(row, $("div.toggle-switch.on"));
-				toggle.title = '点击切换';
+				const nameRow = append(info, $("div.skill-name-row"));
+				append(nameRow, $("span.skill-name", undefined, skill.name));
+				if (skill.version) {
+					append(nameRow, $("span.skill-version", undefined, `v${skill.version}`));
+				}
+				if (skill.description) {
+					append(info, $("span.skill-desc", undefined, skill.description));
+				}
+				// 激活模式标签
+				if (skill.activation) {
+					const meta = append(info, $("div.skill-meta"));
+					const modeLabel = skill.activation === 'always' ? '始终激活' :
+						skill.activation === 'auto' ? '自动匹配' : '手动调用';
+					const modeBadge = append(meta, $("span.skill-mode-badge"));
+					modeBadge.textContent = modeLabel;
+					if (skill.category) {
+						append(meta, $("span.skill-category", undefined, skill.category));
+					}
+					if (skill.source) {
+						const sourceLabels: Record<string, string> = {
+							builtin: '内置', user: '用户', marketplace: '商城', extension: '扩展', memory: '记忆',
+						};
+						append(meta, $("span.skill-source-badge", undefined, sourceLabels[skill.source] ?? skill.source));
+					}
+				}
+				// 启用/禁用开关
+				const toggle = append(row, $("div.toggle-switch" + (skill.enabled ? ".on" : "")));
+				toggle.title = skill.enabled ? '已启用（点击禁用）' : '已禁用（点击启用）';
 				this._register(
 					addDisposableListener(toggle, EventType.CLICK, (e) => {
 						e.stopPropagation();
@@ -6400,6 +6722,17 @@ export class AgentChatPanel extends Disposable {
 				);
 			}
 		}
+
+		// 操作按钮
+		const actions = append(container, $(".chat-settings-tab-actions"));
+		const openFullBtn = append(actions, $("button.monaco-button.monaco-text-button.action-btn.primary", undefined, '完整配置 →'));
+		this._register(
+			addDisposableListener(openFullBtn, EventType.CLICK, () => {
+				this._activeHeaderPanel = null;
+				this._render();
+				this._onOpenSettings?.();
+			}),
+		);
 	}
 
 	/**

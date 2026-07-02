@@ -1,0 +1,1107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sarosis 多聊天窗口 Mockup</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   VS Code Dark+ Inspired Theme
+   ══════════════════════════════════════════════════════════════════ */
+:root {
+	--bg-base: #1e1e1e;
+	--bg-side: #252526;
+	--bg-active: #2d2d30;
+	--bg-hover: #2a2d2e;
+	--bg-elevated: #333333;
+	--border: #3c3c3c;
+	--border-light: #464647;
+	--fg: #d4d4d4;
+	--fg-muted: #858585;
+	--fg-dim: #6b6b6b;
+	--accent: #007acc;
+	--accent-light: #1f9cf0;
+	--accent-bg: #094771;
+	--green: #4ec9b0;
+	--yellow: #dcdcaa;
+	--orange: #ce9178;
+	--red: #f48771;
+	--blue: #569cd6;
+	--purple: #c586c0;
+	--tab-active: #1e1e1e;
+	--tab-inactive: #2d2d30;
+	--msg-user: #1a3a5c;
+	--msg-user-border: #1e4a6e;
+	--msg-assistant: #252526;
+	--msg-assistant-border: #3c3c3c;
+	--card-bg: #2d2d30;
+	--card-border: #464647;
+	--sash: #007acc;
+	--sash-hover: #1f9cf0;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+	height: 100%;
+	overflow: hidden;
+}
+body {
+	background: var(--bg-base);
+	color: var(--fg);
+	font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+	font-size: 13px;
+	display: flex;
+	flex-direction: column;
+}
+
+/* ── Title Bar ── */
+.titlebar {
+	height: 35px;
+	background: #3c3c3c;
+	display: flex;
+	align-items: center;
+	padding: 0 12px;
+	gap: 8px;
+	flex-shrink: 0;
+	border-bottom: 1px solid #2d2d2d;
+}
+.titlebar-icon { width: 16px; height: 16px; }
+.titlebar-title {
+	font-size: 12px;
+	color: #cccccc;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.titlebar-spacer { flex: 1; }
+.titlebar-actions { display: flex; gap: 4px; }
+.titlebar-btn {
+	width: 28px; height: 28px;
+	display: flex; align-items: center; justify-content: center;
+	cursor: pointer; border-radius: 4px;
+	color: #cccccc;
+}
+.titlebar-btn:hover { background: rgba(255,255,255,0.08); }
+
+/* ── Main Body ── */
+.body-row { display: flex; flex: 1; overflow: hidden; }
+
+/* ── Sidebar (left) ── */
+.sidebar {
+	width: 48px;
+	background: #333333;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	padding: 8px 0;
+	gap: 4px;
+	flex-shrink: 0;
+}
+.sidebar-icon {
+	width: 35px; height: 35px;
+	display: flex; align-items: center; justify-content: center;
+	cursor: pointer; border-radius: 4px;
+	color: #858585;
+	font-size: 18px;
+	position: relative;
+}
+.sidebar-icon.active { color: #fff; }
+.sidebar-icon.active::before {
+	content: '';
+	position: absolute; left: 0; top: 50%;
+	transform: translateY(-50%);
+	width: 2px; height: 24px;
+	background: #fff; border-radius: 0 2px 2px 0;
+}
+.sidebar-icon:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+/* ── Editor Area (center) ── */
+.editor-area {
+	flex: 1;
+	background: var(--bg-base);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	border-right: 1px solid var(--border);
+}
+.editor-tabs {
+	height: 35px;
+	background: var(--bg-active);
+	display: flex;
+	align-items: stretch;
+	border-bottom: 1px solid var(--border);
+}
+.editor-tab {
+	padding: 0 14px;
+	display: flex; align-items: center; gap: 6px;
+	cursor: pointer; font-size: 12px;
+	color: var(--fg-muted);
+	border-right: 1px solid var(--border);
+	background: var(--tab-inactive);
+}
+.editor-tab.active {
+	background: var(--tab-active);
+	color: #fff;
+}
+.editor-tab-icon { font-size: 14px; }
+.editor-body {
+	flex: 1;
+	padding: 20px;
+	color: var(--fg-dim);
+	font-size: 13px;
+	line-height: 1.8;
+	overflow: auto;
+}
+.editor-body .code-line { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12.5px; }
+.editor-body .ln { color: var(--fg-dim); margin-right: 12px; }
+
+/* ── Chat Bar (right) — Multi-Window Area ── */
+.chatbar {
+	width: 480px;
+	background: var(--bg-side);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	flex-shrink: 0;
+}
+
+/* ── Chat Toolbar ── */
+.chat-toolbar {
+	height: 36px;
+	background: var(--bg-active);
+	display: flex;
+	align-items: center;
+	padding: 0 8px;
+	gap: 4px;
+	border-bottom: 1px solid var(--border);
+	flex-shrink: 0;
+}
+.chat-toolbar-title {
+	font-size: 11px;
+	color: var(--fg-muted);
+	margin-right: auto;
+	padding-left: 4px;
+	letter-spacing: 0.5px;
+	text-transform: uppercase;
+}
+.tool-btn {
+	width: 28px; height: 24px;
+	display: flex; align-items: center; justify-content: center;
+	cursor: pointer; border-radius: 4px;
+	color: var(--fg-muted);
+	font-size: 14px;
+	border: none;
+	background: transparent;
+}
+.tool-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.tool-btn.active { background: var(--accent-bg); color: var(--accent-light); }
+.tool-btn-split {
+	width: 28px; height: 24px;
+	display: flex; align-items: center; justify-content: center;
+	cursor: pointer; border-radius: 4px;
+	color: var(--fg-muted);
+	font-size: 13px;
+	border: 1px solid var(--border-light);
+	background: transparent;
+}
+.tool-btn-split:hover { background: rgba(31,156,240,0.15); color: var(--accent-light); border-color: var(--accent); }
+
+/* ── Chat Tab Bar (multi-chat tabs) ── */
+.chat-tab-bar {
+	height: 32px;
+	background: var(--bg-active);
+	display: flex;
+	align-items: stretch;
+	overflow-x: auto;
+	overflow-y: hidden;
+	border-bottom: 1px solid var(--border);
+	flex-shrink: 0;
+}
+.chat-tab-bar::-webkit-scrollbar { height: 2px; }
+.chat-tab-bar::-webkit-scrollbar-thumb { background: var(--border-light); }
+
+.chat-tab {
+	min-width: 100px;
+	max-width: 180px;
+	padding: 0 8px 0 12px;
+	display: flex; align-items: center; gap: 6px;
+	cursor: pointer; font-size: 12px;
+	color: var(--fg-muted);
+	border-right: 1px solid var(--border);
+	background: var(--tab-inactive);
+	white-space: nowrap;
+	overflow: hidden;
+	position: relative;
+	transition: background 0.15s;
+}
+.chat-tab:hover { background: var(--bg-hover); }
+.chat-tab.active {
+	background: var(--tab-active);
+	color: #fff;
+}
+.chat-tab.active::after {
+	content: '';
+	position: absolute; top: 0; left: 0; right: 0;
+	height: 1px;
+	background: var(--accent-light);
+}
+.chat-tab-label {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.chat-tab-dot {
+	width: 6px; height: 6px;
+	border-radius: 50%;
+	background: var(--accent-light);
+	flex-shrink: 0;
+}
+.chat-tab-dot.streaming {
+	background: var(--green);
+	animation: pulse 1.2s ease-in-out infinite;
+}
+.chat-tab-dot.idle { background: var(--fg-dim); }
+.chat-tab-dot.error { background: var(--red); }
+@keyframes pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.3; }
+}
+.chat-tab-close {
+	width: 16px; height: 16px;
+	display: flex; align-items: center; justify-content: center;
+	border-radius: 3px;
+	font-size: 14px;
+	color: var(--fg-dim);
+	flex-shrink: 0;
+	opacity: 0;
+	transition: opacity 0.15s;
+}
+.chat-tab:hover .chat-tab-close { opacity: 0.7; }
+.chat-tab-close:hover { background: rgba(244,135,113,0.2); color: var(--red); opacity: 1; }
+.chat-tab-new {
+	width: 32px;
+	display: flex; align-items: center; justify-content: center;
+	cursor: pointer; font-size: 16px;
+	color: var(--fg-muted);
+	flex-shrink: 0;
+}
+.chat-tab-new:hover { color: #fff; background: var(--bg-hover); }
+
+/* ── Split View Container ── */
+.split-container {
+	flex: 1;
+	display: flex;
+	overflow: hidden;
+	position: relative;
+}
+.split-horizontal { flex-direction: row; }
+.split-vertical { flex-direction: column; }
+
+/* ── Sash (split divider) ── */
+.sash {
+	background: var(--border);
+	flex-shrink: 0;
+	position: relative;
+	z-index: 10;
+}
+.sash.horizontal { width: 1px; cursor: col-resize; }
+.sash.horizontal:hover { background: var(--sash-hover); }
+.sash.vertical { height: 1px; cursor: row-resize; }
+.sash.vertical:hover { background: var(--sash-hover); }
+.sash::after {
+	content: '';
+	position: absolute;
+	background: transparent;
+}
+.sash.horizontal::after { width: 6px; left: -3px; top: 0; bottom: 0; }
+.sash.vertical::after { height: 6px; top: -3px; left: 0; right: 0; }
+
+/* ── Chat Panel (individual window) ── */
+.chat-panel {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	min-width: 200px;
+	min-height: 120px;
+	background: var(--bg-side);
+}
+.chat-panel-header {
+	height: 28px;
+	display: flex;
+	align-items: center;
+	padding: 0 8px;
+	gap: 6px;
+	border-bottom: 1px solid var(--border);
+	flex-shrink: 0;
+	background: var(--bg-active);
+}
+.chat-panel-agent {
+	display: flex; align-items: center; gap: 6px;
+	font-size: 12px;
+	color: var(--fg);
+}
+.agent-avatar {
+	width: 18px; height: 18px;
+	border-radius: 50%;
+	background: linear-gradient(135deg, #6366f1, #8b5cf6);
+	display: flex; align-items: center; justify-content: center;
+	font-size: 10px; color: #fff;
+	flex-shrink: 0;
+}
+.agent-name { font-weight: 500; }
+.agent-mode-badge {
+	font-size: 9px;
+	padding: 1px 6px;
+	border-radius: 8px;
+	background: rgba(78,201,176,0.15);
+	color: var(--green);
+	border: 1px solid rgba(78,201,176,0.3);
+}
+.chat-panel-actions { margin-left: auto; display: flex; gap: 2px; }
+.panel-action-btn {
+	width: 22px; height: 20px;
+	display: flex; align-items: center; justify-content: center;
+	cursor: pointer; border-radius: 3px;
+	color: var(--fg-dim);
+	font-size: 13px;
+}
+.panel-action-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+/* ── Messages Container ── */
+.messages-container {
+	flex: 1;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+.messages-container::-webkit-scrollbar { width: 6px; }
+.messages-container::-webkit-scrollbar-track { background: transparent; }
+.messages-container::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+/* ── Chat Message ── */
+.chat-message { display: flex; gap: 8px; max-width: 92%; }
+.chat-message.assistant { align-self: flex-start; }
+.chat-message.user { align-self: flex-end; flex-direction: row-reverse; }
+
+.msg-avatar {
+	width: 28px; height: 28px;
+	border-radius: 50%;
+	display: flex; align-items: center; justify-content: center;
+	font-size: 12px; color: #fff;
+	flex-shrink: 0;
+}
+.msg-avatar.assistant { background: linear-gradient(135deg, #4a90d9, #6366f1); }
+.msg-avatar.user { background: #3a7a5c; }
+.msg-avatar.tool { background: linear-gradient(135deg, #d97706, #f59e0b); }
+
+.msg-bubble {
+	background: var(--msg-assistant);
+	border: 1px solid var(--msg-assistant-border);
+	border-radius: 10px;
+	padding: 10px 14px;
+	font-size: 13px;
+	line-height: 1.65;
+	max-width: 100%;
+	word-wrap: break-word;
+}
+.chat-message.user .msg-bubble {
+	background: var(--msg-user);
+	border-color: var(--msg-user-border);
+}
+.msg-bubble code {
+	background: var(--bg-base);
+	padding: 1px 5px;
+	border-radius: 3px;
+	font-family: 'Cascadia Code', 'Consolas', monospace;
+	font-size: 12px;
+	color: var(--orange);
+}
+.msg-bubble pre {
+	background: var(--bg-base);
+	border-radius: 6px;
+	padding: 8px 10px;
+	margin: 6px 0;
+	font-family: 'Cascadia Code', 'Consolas', monospace;
+	font-size: 12px;
+	overflow-x: auto;
+}
+.msg-bubble pre code { background: none; padding: 0; color: var(--fg); }
+
+.msg-thinking {
+	font-size: 12px;
+	color: var(--fg-dim);
+	font-style: italic;
+	margin-bottom: 6px;
+	padding-left: 4px;
+	border-left: 2px solid var(--border-light);
+	padding-left: 8px;
+}
+
+/* ── Tool Call Card ── */
+.tool-card {
+	background: var(--card-bg);
+	border: 1px solid var(--card-border);
+	border-radius: 8px;
+	margin: 8px 0;
+	overflow: hidden;
+	font-size: 12px;
+}
+.tool-card-header {
+	padding: 6px 10px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+	background: rgba(255,255,255,0.03);
+}
+.tool-card-icon { font-size: 14px; }
+.tool-card-name { font-weight: 500; color: var(--blue); }
+.tool-card-status { margin-left: auto; font-size: 11px; }
+.tool-card-status.running { color: var(--accent-light); }
+.tool-card-status.success { color: var(--green); }
+.tool-card-status.error { color: var(--red); }
+.tool-card-body {
+	padding: 8px 10px;
+	font-family: 'Cascadia Code', 'Consolas', monospace;
+	font-size: 11.5px;
+	color: var(--fg-muted);
+	max-height: 120px;
+	overflow-y: auto;
+	border-top: 1px solid var(--border);
+}
+.tool-card-body::-webkit-scrollbar { width: 4px; }
+.tool-card-body::-webkit-scrollbar-thumb { background: var(--border-light); }
+
+/* ── Streaming indicator ── */
+.streaming-dots {
+	display: inline-flex;
+	gap: 3px;
+	align-items: center;
+}
+.streaming-dots span {
+	width: 4px; height: 4px;
+	border-radius: 50%;
+	background: var(--accent-light);
+	animation: bounce 1.4s ease-in-out infinite;
+}
+.streaming-dots span:nth-child(2) { animation-delay: 0.2s; }
+.streaming-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce {
+	0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+	40% { transform: scale(1); opacity: 1; }
+}
+
+/* ── Composer (input area) ── */
+.composer {
+	border-top: 1px solid var(--border);
+	padding: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	flex-shrink: 0;
+	background: var(--bg-side);
+}
+.composer-skills {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+.skill-chip {
+	font-size: 10px;
+	padding: 2px 8px;
+	border-radius: 10px;
+	background: rgba(86,156,214,0.12);
+	color: var(--blue);
+	border: 1px solid rgba(86,156,214,0.25);
+	cursor: pointer;
+}
+.skill-chip:hover { background: rgba(86,156,214,0.2); }
+.composer-input-row { display: flex; gap: 6px; align-items: flex-end; }
+.composer-textarea {
+	flex: 1;
+	background: var(--bg-base);
+	border: 1px solid var(--border-light);
+	border-radius: 8px;
+	padding: 8px 12px;
+	color: var(--fg);
+	font-size: 13px;
+	font-family: inherit;
+	resize: none;
+	min-height: 36px;
+	max-height: 100px;
+	outline: none;
+	line-height: 1.5;
+}
+.composer-textarea:focus { border-color: var(--accent); }
+.composer-send {
+	width: 36px; height: 36px;
+	border: none;
+	border-radius: 8px;
+	background: var(--accent);
+	color: #fff;
+	cursor: pointer;
+	display: flex; align-items: center; justify-content: center;
+	font-size: 16px;
+	flex-shrink: 0;
+}
+.composer-send:hover { background: var(--accent-light); }
+.composer-send:disabled { background: var(--border-light); cursor: not-allowed; }
+.composer-footer {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 10px;
+	color: var(--fg-dim);
+}
+.composer-mode {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px;
+	border-radius: 4px;
+	background: var(--bg-active);
+	cursor: pointer;
+}
+.composer-mode-icon { font-size: 12px; color: var(--purple); }
+.composer-context {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.context-bar {
+	width: 60px; height: 3px;
+	background: var(--border);
+	border-radius: 2px;
+	overflow: hidden;
+}
+.context-bar-fill { height: 100%; background: var(--green); width: 35%; }
+.context-bar-fill.warn { background: #dcdcaa; }
+.context-bar-fill.danger { background: var(--red); }
+
+/* ── Drop Zone (split target overlay) ── */
+.drop-zone-overlay {
+	position: absolute;
+	z-index: 100;
+	pointer-events: none;
+	display: none;
+}
+.drop-zone-overlay.show { display: flex; }
+.drop-zone-target {
+	position: absolute;
+	background: rgba(31,156,240,0.15);
+	border: 2px dashed var(--accent-light);
+	border-radius: 6px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 24px;
+	color: var(--accent-light);
+	transition: all 0.15s;
+}
+.drop-zone-target.hover {
+	background: rgba(31,156,240,0.3);
+}
+
+/* ── Badge ── */
+.badge {
+	font-size: 9px;
+	padding: 1px 5px;
+	border-radius: 8px;
+	background: var(--accent-bg);
+	color: var(--accent-light);
+}
+
+/* ── Info Callout ── */
+.info-callout {
+	position: fixed;
+	bottom: 16px;
+	right: 16px;
+	width: 320px;
+	background: var(--bg-elevated);
+	border: 1px solid var(--border-light);
+	border-radius: 10px;
+	padding: 14px 16px;
+	font-size: 12px;
+	line-height: 1.6;
+	color: var(--fg-muted);
+	box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+	z-index: 999;
+}
+.info-callout-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: #fff;
+	margin-bottom: 8px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.info-callout ul { padding-left: 16px; margin: 6px 0; }
+.info-callout li { margin: 3px 0; }
+.info-callout strong { color: var(--accent-light); }
+.info-callout-close {
+	position: absolute;
+	top: 8px; right: 8px;
+	width: 20px; height: 20px;
+	display: flex; align-items: center; justify-content: center;
+	cursor: pointer;
+	border-radius: 4px;
+	color: var(--fg-dim);
+	font-size: 16px;
+}
+.info-callout-close:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+/* ── Annotations ── */
+.annotation {
+	position: absolute;
+	font-size: 10px;
+	color: var(--accent-light);
+	background: rgba(0,122,204,0.1);
+	border: 1px solid rgba(0,122,204,0.3);
+	border-radius: 4px;
+	padding: 2px 6px;
+	white-space: nowrap;
+	pointer-events: none;
+	z-index: 50;
+}
+.annotation::before {
+	content: '';
+	position: absolute;
+	left: -8px; top: 50%;
+	width: 8px; height: 1px;
+	background: var(--accent-light);
+}
+</style>
+</head>
+<body>
+
+<!-- ════════ Title Bar ════════ -->
+<div class="titlebar">
+	<svg class="titlebar-icon" viewBox="0 0 16 16" fill="none">
+		<path d="M8 1L14.5 5V11L8 15L1.5 11V5L8 1Z" stroke="#569cd6" stroke-width="1.2" fill="rgba(86,156,214,0.15)"/>
+	</svg>
+	<span class="titlebar-title">Sarosis Agents — multi-chat-window-mockup.ts</span>
+	<div class="titlebar-spacer"></div>
+	<div class="titlebar-actions">
+		<div class="titlebar-btn" title="布局">🗗</div>
+		<div class="titlebar-btn" title="设置">⚙</div>
+	</div>
+</div>
+
+<!-- ════════ Body Row ════════ -->
+<div class="body-row">
+
+	<!-- ── Sidebar ── -->
+	<div class="sidebar">
+		<div class="sidebar-icon active" title="资源管理器">📁</div>
+		<div class="sidebar-icon" title="搜索">🔍</div>
+		<div class="sidebar-icon" title="Agent Studio">🤖</div>
+		<div class="sidebar-icon" title="工作流">⚡</div>
+		<div class="sidebar-icon" title="商城">📦</div>
+		<div style="flex:1"></div>
+		<div class="sidebar-icon" title="账户">👤</div>
+		<div class="sidebar-icon" title="设置">⚙</div>
+	</div>
+
+	<!-- ── Editor Area (center) ── -->
+	<div class="editor-area">
+		<div class="editor-tabs">
+			<div class="editor-tab active">
+				<span class="editor-tab-icon">📄</span>
+				main.ts
+				<span style="margin-left:4px;font-size:10px;color:var(--fg-dim)">●</span>
+			</div>
+			<div class="editor-tab">
+				<span class="editor-tab-icon">📄</span>
+				utils.ts
+			</div>
+		</div>
+		<div class="editor-body">
+			<div class="code-line"><span class="ln">1</span><span style="color:var(--purple)">import</span> <span style="color:var(--fg)">{ AgentOS }</span> <span style="color:var(--purple)">from</span> <span style="color:var(--orange)">'./agentOS'</span>;</div>
+			<div class="code-line"><span class="ln">2</span></div>
+			<div class="code-line"><span class="ln">3</span><span style="color:var(--blue)">const</span> <span style="color:var(--blue)">agent</span> = <span style="color:var(--purple)">new</span> <span style="color:var(--yellow)">AgentOS</span>({</div>
+			<div class="code-line"><span class="ln">4</span>  model: <span style="color:var(--orange)">'gpt-4o'</span>,</div>
+			<div class="code-line"><span class="ln">5</span>  tools: [<span style="color:var(--orange)">'file_read'</span>, <span style="color:var(--orange)">'file_write'</span>, <span style="color:var(--orange)">'terminal'</span>],</div>
+			<div class="code-line"><span class="ln">6</span>  chatMode: <span style="color:var(--orange)">'craft'</span>,</div>
+			<div class="code-line"><span class="ln">7</span>});</div>
+			<div class="code-line"><span class="ln">8</span></div>
+			<div class="code-line"><span class="ln">9</span><span style="color:var(--green)">// Run agent loop</span></div>
+			<div class="code-line"><span class="ln">10</span><span style="color:var(--purple)">await</span> agent.<span style="color:var(--yellow)">run</span>();</div>
+			<div class="code-line" style="margin-top:20px;color:var(--fg-dim);font-style:italic">// ↑ 编辑器区域（示例代码）</div>
+		</div>
+	</div>
+
+	<!-- ════════ Chat Bar (Right) — Multi-Window ════════ -->
+	<div class="chatbar">
+
+		<!-- ── Chat Toolbar ── -->
+		<div class="chat-toolbar">
+			<span class="chat-toolbar-title">Chat</span>
+
+			<!-- New chat button -->
+			<button class="tool-btn" title="新建对话 (Ctrl+N)">✚</button>
+
+			<!-- Split buttons -->
+			<button class="tool-btn-split" title="水平分屏" onclick="toggleSplit('horizontal')">⬌</button>
+			<button class="tool-btn-split" title="垂直分屏" onclick="toggleSplit('vertical')">⬍</button>
+
+			<div style="width:1px;height:16px;background:var(--border);margin:0 4px"></div>
+
+			<!-- History -->
+			<button class="tool-btn" title="历史会话">🕐</button>
+
+			<!-- Settings -->
+			<button class="tool-btn" title="Agent 设置">⚙</button>
+
+			<div style="flex:1"></div>
+
+			<!-- Collapse -->
+			<button class="tool-btn" title="折叠侧栏">›</button>
+		</div>
+
+		<!-- ── Chat Tab Bar ── -->
+		<div class="chat-tab-bar">
+			<div class="chat-tab active" onclick="switchTab(this, 0)">
+				<span class="chat-tab-dot streaming"></span>
+				<span class="chat-tab-label">重构认证模块</span>
+				<span class="chat-tab-close">✕</span>
+			</div>
+			<div class="chat-tab" onclick="switchTab(this, 1)">
+				<span class="chat-tab-dot"></span>
+				<span class="chat-tab-label">API 设计讨论</span>
+				<span class="chat-tab-close">✕</span>
+			</div>
+			<div class="chat-tab" onclick="switchTab(this, 2)">
+				<span class="chat-tab-dot idle"></span>
+				<span class="chat-tab-label">Bug 修复 #142</span>
+				<span class="chat-tab-close">✕</span>
+			</div>
+			<div class="chat-tab-new" title="新建对话">+</div>
+		</div>
+
+		<!-- ── Split Container (两个 panel 水平排列) ── -->
+		<div class="split-container split-horizontal" id="splitContainer">
+
+			<!-- ════════ Panel 1 (left, active streaming) ════════ -->
+			<div class="chat-panel" id="panel1">
+				<div class="chat-panel-header">
+					<div class="chat-panel-agent">
+						<div class="agent-avatar">C</div>
+						<span class="agent-name">Claw</span>
+						<span class="agent-mode-badge">craft</span>
+					</div>
+					<div class="chat-panel-actions">
+						<div class="panel-action-btn" title="分屏">⬌</div>
+						<div class="panel-action-btn" title="更多">⋯</div>
+					</div>
+				</div>
+
+				<div class="messages-container">
+					<!-- User message -->
+					<div class="chat-message user">
+						<div class="msg-avatar user">我</div>
+						<div class="msg-bubble">
+							帮我重构 <code>auth.ts</code> 中的 <code>requestAuthState</code> 方法，添加 30s timeout
+						</div>
+					</div>
+
+					<!-- Assistant thinking -->
+					<div class="chat-message assistant">
+						<div class="msg-avatar assistant">C</div>
+						<div class="msg-bubble">
+							<div class="msg-thinking">💭 分析 <code>auth.ts</code> 中的 fetch 调用，需要添加 AbortController + setTimeout 模式...</div>
+							我来帮你重构。先看一下当前的实现：
+
+							<pre><code><span style="color:var(--purple)">async</span> <span style="color:var(--blue)">_requestAuthState</span>(): <span style="color:var(--blue)">Promise</span>&lt;<span style="color:var(--yellow)">AuthState</span>&gt; {
+  <span style="color:var(--purple)">const</span> url = <span style="color:var(--orange)">'/api/auth/state'</span>;
+  <span style="color:var(--green)">// 添加 30s 超时</span>
+  <span style="color:var(--purple)">const</span> controller = <span style="color:var(--purple)">new</span> <span style="color:var(--yellow)">AbortController</span>();
+  <span style="color:var(--purple)">const</span> timeoutId = <span style="color:var(--yellow)">setTimeout</span>(
+    () =&gt; controller.<span style="color:var(--yellow)">abort</span>(), <span style="color:var(--orange)">30000</span>);
+  <span style="color:var(--purple)">try</span> {
+    <span style="color:var(--purple)">const</span> res = <span style="color:var(--purple)">await</span> <span style="color:var(--yellow)">fetch</span>(url, {
+      signal: controller.signal
+    });
+    <span style="color:var(--purple)">return await</span> res.<span style="color:var(--yellow)">json</span>();
+  } <span style="color:var(--purple)">catch</span> (err) {
+    <span style="color:var(--green)">// 提取 err.cause 真实原因</span>
+    ...
+  } <span style="color:var(--purple)">finally</span> {
+    <span style="color:var(--yellow)">clearTimeout</span>(timeoutId);
+  }
+}</code></pre>
+						</div>
+					</div>
+
+					<!-- Tool call card -->
+					<div class="chat-message assistant">
+						<div class="msg-avatar assistant">C</div>
+						<div style="width:100%">
+							<div class="tool-card">
+								<div class="tool-card-header">
+									<span class="tool-card-icon">📝</span>
+									<span class="tool-card-name">file_read</span>
+									<span style="color:var(--fg-dim);font-size:11px">auth.ts</span>
+									<span class="tool-card-status success">✓ done</span>
+								</div>
+								<div class="tool-card-body">Read 248 lines from extensions/codebuddy-provider/src/auth.ts</div>
+							</div>
+							<div class="tool-card">
+								<div class="tool-card-header">
+									<span class="tool-card-icon">✏️</span>
+									<span class="tool-card-name">file_write</span>
+									<span style="color:var(--fg-dim);font-size:11px">auth.ts</span>
+									<span class="tool-card-status running">● running</span>
+								</div>
+							</div>
+						</div>
+					</div>
+
+					<!-- Streaming text -->
+					<div class="chat-message assistant">
+						<div class="msg-avatar assistant">C</div>
+						<div class="msg-bubble">
+							正在写入修改... <span class="streaming-dots"><span></span><span></span><span></span></span>
+						</div>
+					</div>
+				</div>
+
+				<!-- Composer 1 -->
+				<div class="composer">
+					<div class="composer-skills">
+						<span class="skill-chip">⚡ craft</span>
+						<span class="skill-chip">📎 auth.ts</span>
+					</div>
+					<div class="composer-input-row">
+						<textarea class="composer-textarea" placeholder="输入消息..." rows="1"></textarea>
+						<button class="composer-send">▶</button>
+					</div>
+					<div class="composer-footer">
+						<div class="composer-mode">
+							<span class="composer-mode-icon">⚡</span>
+							craft
+						</div>
+						<span>Claw · gpt-4o</span>
+						<div class="composer-context">
+							<span>3.2K / 128K</span>
+							<div class="context-bar"><div class="context-bar-fill" style="width:25%"></div></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- ── Sash (divider) ── -->
+			<div class="sash horizontal" id="sash1"></div>
+
+			<!-- ════════ Panel 2 (right, second chat) ════════ -->
+			<div class="chat-panel" id="panel2" style="display:none">
+				<div class="chat-panel-header">
+					<div class="chat-panel-agent">
+						<div class="agent-avatar">C</div>
+						<span class="agent-name">Claw</span>
+						<span class="agent-mode-badge" style="background:rgba(220,220,170,0.12);color:var(--yellow);border-color:rgba(220,220,170,0.3)">ask</span>
+					</div>
+					<div class="chat-panel-actions">
+						<div class="panel-action-btn" title="关闭分屏" onclick="closeSplit()">✕</div>
+						<div class="panel-action-btn" title="更多">⋯</div>
+					</div>
+				</div>
+
+				<div class="messages-container">
+					<div class="chat-message user">
+						<div class="msg-avatar user">我</div>
+						<div class="msg-bubble">
+							我们项目的 API 应该用 RESTful 还是 RPC 风格？给个建议
+						</div>
+					</div>
+
+					<div class="chat-message assistant">
+						<div class="msg-avatar assistant">C</div>
+						<div class="msg-bubble">
+							这取决于你的使用场景。两种风格各有优势：
+
+							<p style="margin:8px 0"><strong style="color:var(--blue)">RESTful</strong> 适合：</p>
+							<ul style="padding-left:20px;margin:4px 0 8px">
+								<li>资源 CRUD 操作（文件、用户、订单）</li>
+								<li>需要 HTTP 缓存语义</li>
+								<li>面向外部公开 API</li>
+							</ul>
+
+							<p style="margin:8px 0"><strong style="color:var(--purple)">RPC</strong> 适合：</p>
+							<ul style="padding-left:20px;margin:4px 0 8px">
+								<li>动作/命令型操作（执行、转换、计算）</li>
+								<li>内部微服务通信</li>
+								<li>需要强类型 schema</li>
+							</ul>
+
+							对于 Sarosis 的场景，我建议<strong>混合方案</strong>：商城用 RESTful（资源 CRUD），Agent 执行用 RPC（动作驱动）。
+						</div>
+					</div>
+				</div>
+
+				<!-- Composer 2 -->
+				<div class="composer">
+					<div class="composer-input-row">
+						<textarea class="composer-textarea" placeholder="输入消息..." rows="1"></textarea>
+						<button class="composer-send">▶</button>
+					</div>
+					<div class="composer-footer">
+						<div class="composer-mode">
+							<span class="composer-mode-icon">💬</span>
+							ask
+						</div>
+						<span>Claw · gpt-4o</span>
+						<div class="composer-context">
+							<span>1.8K / 128K</span>
+							<div class="context-bar"><div class="context-bar-fill" style="width:14%"></div></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+		</div>
+	</div>
+</div>
+
+<!-- ════════ Info Callout ════════ -->
+<div class="info-callout" id="infoCallout">
+	<div class="info-callout-title">
+		💡 多聊天窗口 Mockup
+	</div>
+	<div class="info-callout-close" onclick="document.getElementById('infoCallout').style.display='none'">✕</div>
+	<p>本原型展示右侧栏多聊天窗口功能设计：</p>
+	<ul>
+		<li><strong>多标签页</strong>：顶部 tab 栏管理多个会话，流式状态用圆点指示</li>
+		<li><strong>分屏</strong>：点击 <strong>⬌</strong> 水平分屏，<strong>⬍</strong> 垂直分屏</li>
+		<li><strong>独立 Panel</strong>：每个窗口独立 agent/mode/composer/消息流</li>
+		<li><strong>状态保留</strong>：切换 tab 不销毁旧 panel，流式不断</li>
+		<li><strong>拖拽分屏</strong>：拖动 tab 到分屏按钮即可创建新面板</li>
+	</ul>
+	<p style="margin-top:8px;color:var(--fg-dim)">点击工具栏 ⬌ 按钮可切换分屏模式</p>
+</div>
+
+<script>
+// ── Tab switching (保留 panel DOM，切换 display) ──
+let splitMode = null; // null | 'horizontal' | 'vertical'
+
+function switchTab(tabEl, index) {
+	// Update tab active state
+	document.querySelectorAll('.chat-tab').forEach(t => t.classList.remove('active'));
+	tabEl.classList.add('active');
+
+	// In real implementation: switch panel visibility
+	// For mockup: just visual feedback
+	console.log('Switched to tab', index);
+}
+
+// ── Toggle split view ──
+function toggleSplit(direction) {
+	const container = document.getElementById('splitContainer');
+	const panel2 = document.getElementById('panel2');
+	const sash = document.getElementById('sash1');
+
+	if (splitMode === direction) {
+		// Close split
+		closeSplit();
+		return;
+	}
+
+	// Open split
+	splitMode = direction;
+	container.className = 'split-container split-' + direction;
+	panel2.style.display = 'flex';
+
+	// Update sash orientation
+	if (direction === 'horizontal') {
+		sash.className = 'sash horizontal';
+	} else {
+		sash.className = 'sash vertical';
+	}
+
+	// Set flex sizes (50/50)
+	const panels = container.querySelectorAll('.chat-panel');
+	panels.forEach(p => p.style.flex = '1');
+}
+
+function closeSplit() {
+	const container = document.getElementById('splitContainer');
+	const panel2 = document.getElementById('panel2');
+
+	splitMode = null;
+	container.className = 'split-container split-horizontal';
+	panel2.style.display = 'none';
+
+	// Panel 1 takes full width
+	const panel1 = document.getElementById('panel1');
+	panel1.style.flex = '1';
+}
+
+// ── Sash drag (simplified) ──
+(function initSash() {
+	const sash = document.getElementById('sash1');
+	let isDragging = false;
+	let startCoord = 0;
+	let startSize = 0;
+	let dimension = 'width';
+
+	sash.addEventListener('mousedown', (e) => {
+		if (!splitMode) return;
+		isDragging = true;
+		dimension = splitMode === 'horizontal' ? 'width' : 'height';
+		startCoord = splitMode === 'horizontal' ? e.clientX : e.clientY;
+		startSize = document.getElementById('panel1').getBoundingClientRect()[dimension];
+		document.body.style.cursor = splitMode === 'horizontal' ? 'col-resize' : 'row-resize';
+		document.body.style.userSelect = 'none';
+		e.preventDefault();
+	});
+
+	document.addEventListener('mousemove', (e) => {
+		if (!isDragging) return;
+		const currentCoord = splitMode === 'horizontal' ? e.clientX : e.clientY;
+		const delta = currentCoord - startCoord;
+		const containerSize = document.getElementById('splitContainer').getBoundingClientRect()[dimension];
+		const newSize = Math.max(150, Math.min(containerSize - 150, startSize + delta));
+		const ratio = newSize / containerSize;
+
+		const panel1 = document.getElementById('panel1');
+		const panel2 = document.getElementById('panel2');
+		panel1.style.flex = ratio.toString();
+		panel2.style.flex = (1 - ratio).toString();
+	});
+
+	document.addEventListener('mouseup', () => {
+		if (isDragging) {
+			isDragging = false;
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
+		}
+	});
+})();
+
+// ── Auto-grow textarea ──
+document.querySelectorAll('.composer-textarea').forEach(ta => {
+	ta.addEventListener('input', () => {
+		ta.style.height = 'auto';
+		ta.style.height = Math.min(100, ta.scrollHeight) + 'px';
+	});
+});
+
+// ── Enter to send (mock) ──
+document.querySelectorAll('.composer-textarea').forEach(ta => {
+	ta.addEventListener('keydown', (e) => {
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			// Mock: just clear
+			ta.value = '';
+			ta.style.height = 'auto';
+		}
+	});
+});
+</script>
+
+</body>
+</html>

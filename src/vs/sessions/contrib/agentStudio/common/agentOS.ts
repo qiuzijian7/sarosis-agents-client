@@ -219,6 +219,29 @@ export interface IAgentOSService {
 	 * 数据在 executeAgentTurn 流程中实时累积，供 Dashboard UI 展示。
 	 */
 	getDashboardStats(): IAgentOSDashboardStats;
+
+	/**
+	 * 获取 Dashboard 时间序列快照（用于趋势图）。
+	 * @param rangeMs 向前查询的时间范围（毫秒），如 7 * 24 * 60 * 60 * 1000 = 7天
+	 */
+	queryDashboardSnapshots(rangeMs: number): Promise<IDashboardMetricsSnapshot[]>;
+
+	/**
+	 * 获取 Dashboard 按天聚合数据（趋势图降采样）。
+	 * @param rangeMs 向前查询的时间范围（毫秒）
+	 */
+	queryDashboardDailyBuckets(rangeMs: number): Promise<IDailyBucket[]>;
+
+	/**
+	 * 采集并保存 Dashboard 时间序列快照。
+	 * 调用时机：periodic timer、executeAgentTurn 完成、dispose。
+	 * fire-and-forget，调用方无需 await。
+	 */
+	captureDashboardSnapshot(options?: {
+		sessionCount?: number;
+		memoryTotal?: number;
+		graphNodes?: number;
+	}): Promise<void>;
 }
 
 /** AgentOS Dashboard 统计数据快照 */
@@ -247,4 +270,46 @@ export interface IAgentOSDashboardStats {
 	l2ExtractionCount: number;
 	/** L3 Procedural 生成触发次数 */
 	l3ExtractionCount: number;
+}
+
+/** Dashboard 时间序列快照（SQLite metrics_snapshots 表行） */
+export interface IDashboardMetricsSnapshot {
+	/** 快照时间戳（ISO 8601） */
+	ts: string;
+	/** 累计输入 Token */
+	inputTokens: number;
+	/** 累计输出 Token */
+	outputTokens: number;
+	/** 累计缓存 Token */
+	cachedTokens: number;
+	/** 压缩总次数 */
+	compressionCount: number;
+	/** 记忆总条数 */
+	memoryTotal: number;
+	/** 代码图谱节点数 */
+	graphNodes: number;
+	/** 活跃会话数 */
+	sessionCount: number;
+	/** 当前活跃模型 */
+	activeModel?: string;
+}
+
+/** Dashboard 按天聚合数据（趋势图降采样） */
+export interface IDailyBucket {
+	/** 日期（YYYY-MM-DD） */
+	day: string;
+	/** 当日累计输入 Token */
+	input_tokens: number;
+	/** 当日累计输出 Token */
+	output_tokens: number;
+	/** 当日累计缓存 Token */
+	cached_tokens: number;
+	/** 当日压缩次数 */
+	compression_count: number;
+	/** 当日记忆总数 */
+	memory_total: number;
+	/** 当日代码图谱节点数 */
+	graph_nodes: number;
+	/** 当日活跃会话数 */
+	session_count: number;
 }

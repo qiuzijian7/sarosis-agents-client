@@ -39,10 +39,10 @@ export class PanelPart extends AbstractPaneCompositePart {
 
 	//#region IView
 
-	readonly minimumWidth: number = 300;
-	readonly maximumWidth: number = Number.POSITIVE_INFINITY;
-	readonly minimumHeight: number = 77;
-	readonly maximumHeight: number = Number.POSITIVE_INFINITY;
+		readonly minimumWidth: number = 300;
+		readonly maximumWidth: number = Number.POSITIVE_INFINITY;
+		readonly minimumHeight: number = 77;
+		readonly maximumHeight: number = Number.POSITIVE_INFINITY;
 
 	get preferredHeight(): number | undefined {
 		return this.layoutService.mainContainerDimension.height * 0.4;
@@ -71,6 +71,21 @@ export class PanelPart extends AbstractPaneCompositePart {
 	static readonly MARGIN_BOTTOM = 10;
 	static readonly MARGIN_LEFT = 10;
 	static readonly MARGIN_RIGHT = 10;
+
+	override async create(parent: HTMLElement): Promise<void> {
+		const result = await super.create(parent);
+		// [Sarosis Debug] Log registered composites and composite bar state
+		const composites = this.getPaneComposites();
+		console.log('[PanelPart] Registered pane composites:', composites.map(c => ({ id: c.id, name: c.name, order: c.order })));
+		const compositeBar = (this as any).paneCompositeBar?.value;
+		if (compositeBar) {
+			const items = compositeBar.getItems?.() ?? [];
+			console.log('[PanelPart] CompositeBar visible items:', items.map((i: any) => i.id));
+		} else {
+			console.log('[PanelPart] CompositeBar not created');
+		}
+		return result;
+	}
 
 	constructor(
 		@INotificationService notificationService: INotificationService,
@@ -175,17 +190,71 @@ export class PanelPart extends AbstractPaneCompositePart {
 			return;
 		}
 
+		// [Sarosis Debug] Trace when layout receives height <= 0
+		if (height <= 0) {
+			console.trace(`[PanelPart] layout height<=0: height=${height}, width=${width}, top=${top}, left=${left}`);
+		}
+
 		// Layout content with reduced dimensions to account for visual margins and border
 		const borderTotal = 2; // 1px border on each side
 		const marginLeft = this.layoutService.isVisible(Parts.SIDEBAR_PART) ? 0 : PanelPart.MARGIN_LEFT;
+		// 右侧不再留 MARGIN_RIGHT，让内容铺满到右边框
 		super.layout(
-			width - marginLeft - PanelPart.MARGIN_RIGHT - borderTotal,
+			width - marginLeft - borderTotal,
 			height - PanelPart.MARGIN_BOTTOM - borderTotal,
 			top, left
 		);
 
 		// Restore the full grid-allocated dimensions so that Part.relayout() works correctly.
 		Part.prototype.layout.call(this, width, height, top, left);
+
+		// [Sarosis Debug] Inspect width chain after layout settles
+		setTimeout(() => this._inspectWidthChain(width), 200);
+	}
+
+	private _inspectWidthChain(gridWidth: number): void {
+		const container = this.getContainer();
+		if (!container) { return; }
+
+		const content = container.querySelector('.content') as HTMLElement | null;
+		const pane = container.querySelector('.pane') as HTMLElement | null;
+		const paneBody = container.querySelector('.pane-body') as HTMLElement | null;
+		const monaco = container.querySelector('.monaco-editor') as HTMLElement | null;
+		const replEl = container.querySelector('.repl') as HTMLElement | null;
+		const scrollable = container.querySelector('.monaco-scrollable-element') as HTMLElement | null;
+
+		const log: any = { gridWidth };
+
+		if (container) {
+			const r = container.getBoundingClientRect();
+			log.panel = { rectW: r.width, inlineStyleW: container.style.width, classList: [...container.classList], computedW: getComputedStyle(container).width };
+		}
+		if (content) {
+			const r = content.getBoundingClientRect();
+			log.content = { rectW: r.width, rectX: r.x, rectRight: r.right, inlineStyleW: content.style.width, computedW: getComputedStyle(content).width, boxSizing: getComputedStyle(content).boxSizing, padding: getComputedStyle(content).paddingRight };
+		}
+		if (pane) {
+			const r = pane.getBoundingClientRect();
+			log.pane = { rectW: r.width, rectX: r.x, rectRight: r.right, inlineStyleW: pane.style.width, computedW: getComputedStyle(pane).width };
+		}
+		if (paneBody) {
+			const r = paneBody.getBoundingClientRect();
+			log.paneBody = { rectW: r.width, rectX: r.x, rectRight: r.right, inlineStyleW: paneBody.style.width, computedW: getComputedStyle(paneBody).width, paddingR: getComputedStyle(paneBody).paddingRight, classes: [...paneBody.classList] };
+		}
+		if (monaco) {
+			const r = monaco.getBoundingClientRect();
+			log.monacoEditor = { rectW: r.width, rectX: r.x, rectRight: r.right, inlineStyleW: monaco.style.width, computedW: getComputedStyle(monaco).width, inlineStyleR: monaco.style.right };
+		}
+		if (scrollable) {
+			const r = scrollable.getBoundingClientRect();
+			log.monacoScrollable = { rectW: r.width, rectX: r.x, rectRight: r.right, inlineStyleW: scrollable.style.width, computedW: getComputedStyle(scrollable).width };
+		}
+		if (replEl) {
+			const r = replEl.getBoundingClientRect();
+			log.repl = { rectW: r.width, rectX: r.x, rectRight: r.right, inlineStyleW: replEl.style.width, computedW: getComputedStyle(replEl).width };
+		}
+
+		console.log('[PanelPart] Width chain inspect:', JSON.stringify(log, null, 2));
 	}
 
 	protected override shouldShowCompositeBar(): boolean {

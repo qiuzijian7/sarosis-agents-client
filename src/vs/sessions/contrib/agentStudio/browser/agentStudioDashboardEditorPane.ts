@@ -357,6 +357,8 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		const body = el('div');
 		body.style.padding = '14px';
 
+		const buckets = this._data?.dailyBuckets || [];
+
 		// Legend
 		const legend = el('div');
 		legend.style.cssText = 'display: flex; gap: 14px; margin-bottom: 10px; font-size: 11px;';
@@ -371,7 +373,15 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		}
 		body.appendChild(legend);
 
-		// SVG Chart
+		// If no real data, show empty state
+		if (buckets.length === 0) {
+			const empty = el('div', undefined, '暂无趋势数据，开始对话后将自动采集');
+			empty.style.cssText = 'text-align: center; color: var(--vscode-descriptionForeground, #858585); font-size: 12px; padding: 70px 0;';
+			body.appendChild(empty);
+			return body;
+		}
+
+		// SVG Chart with real data
 		const chartContainer = el('div');
 		chartContainer.style.cssText = 'position: relative; height: 200px;';
 		const svg = svgEl('svg');
@@ -379,6 +389,17 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		svg.setAttribute('height', '200');
 		svg.setAttribute('viewBox', '0 0 400 200');
 		svg.setAttribute('preserveAspectRatio', 'none');
+
+		// Compute max value for Y-axis scaling
+		let maxValue = 0;
+		for (const b of buckets) {
+			const inputK = b.input_tokens / 1000;
+			const cacheK = b.cached_tokens / 1000;
+			const outputK = b.output_tokens / 1000;
+			maxValue = Math.max(maxValue, inputK, cacheK, outputK);
+		}
+		if (maxValue === 0) { maxValue = 1; }
+		const yScale = 160 / maxValue; // 160px chart area
 
 		// Grid lines
 		for (const y of [40, 80, 120, 160]) {
@@ -393,27 +414,45 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 			svg.appendChild(line);
 		}
 
-		// Input area
+		// Generate path data for input/cache/output lines
+		const count = buckets.length;
+		const stepX = count > 1 ? 400 / (count - 1) : 200;
+		const generatePath = (accessor: (b: typeof buckets[0]) => number): string => {
+			let d = '';
+			for (let i = 0; i < count; i++) {
+				const x = Math.round(i * stepX);
+				const y = Math.max(0, Math.min(160, 160 - (accessor(buckets[i]) / 1000) * yScale));
+				d += (i === 0 ? 'M' : 'L') + x + ',' + Math.round(y) + ' ';
+			}
+			return d.trim();
+		};
+		const generateArea = (accessor: (b: typeof buckets[0]) => number): string => {
+			const linePath = generatePath(accessor);
+			const lastX = Math.round((count - 1) * stepX);
+			return linePath + ' L' + lastX + ',200 L0,200 Z';
+		};
+
+		// Input line + area
 		const inputArea = svgEl('path');
-		inputArea.setAttribute('d', 'M0,140 L57,120 Episodic14,100 Episodic71,110 Semantic29,70 Semantic86,85 Procedural43,55 L400,60 L400,200 Working,200 Z');
+		inputArea.setAttribute('d', generateArea(b => b.input_tokens));
 		inputArea.setAttribute('fill', '#0078d4');
 		inputArea.setAttribute('opacity', '0.15');
 		svg.appendChild(inputArea);
 		const inputLine = svgEl('path');
-		inputLine.setAttribute('d', 'M0,140 L57,120 Episodic14,100 Episodic71,110 Semantic29,70 Semantic86,85 Procedural43,55 L400,60');
+		inputLine.setAttribute('d', generatePath(b => b.input_tokens));
 		inputLine.setAttribute('fill', 'none');
 		inputLine.setAttribute('stroke', '#0078d4');
 		inputLine.setAttribute('stroke-width', '1.5');
 		svg.appendChild(inputLine);
 
-		// Cache area
+		// Cache line + area
 		const cacheArea = svgEl('path');
-		cacheArea.setAttribute('d', 'M0,165 L57,155 Episodic14,140 Episodic71,150 Semantic29,120 Semantic86,130 Procedural43,105 L400,110 L400,200 Working,200 Z');
+		cacheArea.setAttribute('d', generateArea(b => b.cached_tokens));
 		cacheArea.setAttribute('fill', '#89d185');
 		cacheArea.setAttribute('opacity', '0.15');
 		svg.appendChild(cacheArea);
 		const cacheLine = svgEl('path');
-		cacheLine.setAttribute('d', 'M0,165 L57,155 Episodic14,140 Episodic71,150 Semantic29,120 Semantic86,130 Procedural43,105 L400,110');
+		cacheLine.setAttribute('d', generatePath(b => b.cached_tokens));
 		cacheLine.setAttribute('fill', 'none');
 		cacheLine.setAttribute('stroke', '#89d185');
 		cacheLine.setAttribute('stroke-width', '1.5');
@@ -421,23 +460,28 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 
 		// Output line
 		const outputLine = svgEl('path');
-		outputLine.setAttribute('d', 'M0,180 L57,175 Episodic14,168 Episodic71,172 Semantic29,160 Semantic86,165 Procedural43,155 L400,158');
+		outputLine.setAttribute('d', generatePath(b => b.output_tokens));
 		outputLine.setAttribute('fill', 'none');
 		outputLine.setAttribute('stroke', '#4ec9b0');
 		outputLine.setAttribute('stroke-width', '1.5');
 		svg.appendChild(outputLine);
 
-		// X labels
-		const dates = ['6/20', '6/21', '6/22', '6/23', '6/24', '6/25', '6/26'];
-		dates.forEach((d, i) => {
+		// X labels (date format: MM/DD)
+		const maxLabels = 7;
+		const labelStep = Math.max(1, Math.floor(count / maxLabels));
+		for (let i = 0; i < count; i += labelStep) {
+			const b = buckets[i];
+			const dateStr = b.day.length >= 10 ? b.day.slice(5) : b.day; // "07-01" from "2026-07-01"
 			const text = svgEl('text');
-			text.setAttribute('x', String(i * 57));
+			const x = Math.round(i * stepX);
+			text.setAttribute('x', String(Math.max(5, Math.min(395, x))));
 			text.setAttribute('y', '195');
 			text.setAttribute('fill', 'var(--vscode-descriptionForeground, #6b6b6b)');
 			text.setAttribute('font-size', '9');
-			text.textContent = d;
+			text.setAttribute('text-anchor', x < 20 ? 'start' : x > 380 ? 'end' : 'middle');
+			text.textContent = dateStr;
 			svg.appendChild(text);
-		});
+		}
 
 		chartContainer.appendChild(svg);
 		body.appendChild(chartContainer);

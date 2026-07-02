@@ -5,7 +5,7 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
-import { IAgentOSService, IAgentOSDashboardStats } from '../common/agentOS.js';
+import { IAgentOSService, IAgentOSDashboardStats, IDashboardMetricsSnapshot, IDailyBucket } from '../common/agentOS.js';
 import {
 	IModelProvider, IModelSelection, ModelAuthStatus,
 	IMemoryProvider, IToolProvider, IPlanningProvider,
@@ -17,10 +17,25 @@ import {
 import { SlotRegistry } from './slotRegistry.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
-import { URI } from '../../../../base/common/uri.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
+import { join } from '../../../../base/common/path.js';
+import {
+	ToolsetPriority, getToolsetForTool,
+	getToolsetPriority, isToolsetDeferrable, isBridgeTool,
+	TOOL_SEARCH_BRIDGE_TOOLS,
+} from '../common/toolsetConfig.js';
+import {
+	assembleToolDefs, IAssemblyResult, DEFAULT_TOOL_SEARCH_CONFIG,
+} from '../common/toolSearchAssembler.js';
+import {
+	dispatchBridgeTool, buildDispatcherContext, IDispatcherContext,
+} from '../common/toolSearchDispatcher.js';
+
+// DashboardDatabase 是 Node 专用模块（使用 fs / @vscode/sqlite3），
+// 不能在浏览器端静态导入，否则浏览器会报错：
+//   "Failed to resolve module specifier 'fs'"
+// 因此这里只做类型声明，实际使用通过动态 import() 完成。
+type DashboardDatabase = InstanceType<typeof import('../node/dashboardDatabase.js')['DashboardDatabase']>;
 import {
 	repairToolName,
 	repairToolArguments,
@@ -77,6 +92,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	/** Agent Loop 级别的 AbortController — 用于取消整个循环 */
 	private _loopAbortController: AbortController | undefined;
+
+	// ─── Tool Search 三层分离状态（Assembly + Dispatcher）─────────────
+	// 参考 Hermes-Agent：assembly 结果缓存 + dispatcher context 缓存
+	// 避免每次工具调用都重建 catalog
+	/** 最近一次 Assembly 结果（含 deferredDefs） */
+	private _lastAssembly: IAssemblyResult | undefined;
+	/** 最近一次 Dispatcher 上下文（含 catalog + scopedNames） */
+	private _lastDispatcherCtx: IDispatcherContext | undefined;
 
 	/** 用于构建统一 ChatMessage 格式的流适配器（AG-UI → ChatMessage） */
 	private _chatMessageStream: AGUIChatMessageBuilder | undefined;
@@ -140,6 +163,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private _l2ExtractionCount = 0;
 	private _l3ExtractionCount = 0;
 
+	/** Dashboard SQLite 数据库实例，替代原有 JSON 文件持久化 */
+	private _dashboardDb: DashboardDatabase | undefined;
+
 	/** 取（或惰性创建）某会话的稳定 conversationId。无 sessionId 时回退到随机串。 */
 	private _getOrCreateConversationId(sessionId: string | undefined): string {
 		const key = sessionId || '__nosession__';
@@ -171,7 +197,6 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	constructor(
 		@ILogService logService: ILogService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
-		@IFileService private readonly _fileService: IFileService,
 		@IPathService private readonly _pathService: IPathService,
 	) {
 		super();
@@ -190,16 +215,19 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			getActiveModelSelection: () => this._activeSelection,
 		});
 
-		// Load persisted dashboard stats
-		this._loadDashboardStats().catch(err => {
-			this._logService.warn('[AgentOS] Failed to load dashboard stats:', err);
+		// Init Dashboard SQLite database and load persisted stats
+		this._initDashboardDb().catch(err => {
+			this._logService.warn('[AgentOS] Failed to init dashboard DB:', err);
 		});
 
-		// Save stats on dispose
+		// Save stats & close DB on dispose
 		this._register({
 			dispose: () => {
 				if (this._saveTimer) { clearTimeout(this._saveTimer); }
 				this._saveDashboardStats().catch(() => { /* best effort */ });
+				if (this._dashboardDb) {
+					this._dashboardDb.close().catch(() => { /* best effort */ });
+				}
 			},
 		});
 	}
@@ -233,44 +261,131 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		};
 	}
 
+	/**
+	 * 查询 Dashboard 时间序列快照（用于趋势图）。
+	 */
+	async queryDashboardSnapshots(rangeMs: number): Promise<IDashboardMetricsSnapshot[]> {
+		if (!this._dashboardDb?.ready) {
+			return [];
+		}
+		try {
+			return await this._dashboardDb.querySnapshots(rangeMs);
+		} catch (err) {
+			this._logService.warn('[AgentOS] queryDashboardSnapshots failed:', err);
+			return [];
+		}
+	}
+
+	/**
+	 * 查询 Dashboard 按天聚合数据（趋势图降采样）。
+	 */
+	async queryDashboardDailyBuckets(rangeMs: number): Promise<IDailyBucket[]> {
+		if (!this._dashboardDb?.ready) {
+			return [];
+		}
+		try {
+			return await this._dashboardDb.dailyBuckets(rangeMs);
+		} catch (err) {
+			this._logService.warn('[AgentOS] queryDashboardDailyBuckets failed:', err);
+			return [];
+		}
+	}
+
+	/**
+	 * 采集并保存 Dashboard 时间序列快照。
+	 * 调用时机：periodic timer、executeAgentTurn 完成、dispose。
+	 */
+	async captureDashboardSnapshot(options?: { sessionCount?: number; memoryTotal?: number; graphNodes?: number }): Promise<void> {
+		if (!this._dashboardDb?.ready) {
+			return;
+		}
+		try {
+			await this._dashboardDb.insertSnapshot({
+				ts: new Date().toISOString(),
+				inputTokens: this._totalInputTokens,
+				outputTokens: this._totalOutputTokens,
+				cachedTokens: this._totalCachedTokens,
+				compressionCount: this._compressionCount,
+				memoryTotal: options?.memoryTotal ?? 0,
+				graphNodes: options?.graphNodes ?? 0,
+				sessionCount: options?.sessionCount ?? 0,
+				activeModel: this._activeSelection?.modelId,
+			});
+		} catch (err) {
+			this._logService.warn('[AgentOS] captureDashboardSnapshot failed:', err);
+		}
+	}
+
 	// ─── Dashboard Stats Persistence ──────────────────────────────────
-	// 统计数据持久化到 ~/.saros/dashboard-stats.json，重启后恢复。
+	// 统计数据持久化到 ~/.saros/dashboard/dashboard.db (SQLite)，重启后恢复。
 	// 防抖保存：统计变更后 2 秒内无新变更才落盘，避免频繁 IO。
 
 	private _saveTimer: ReturnType<typeof setTimeout> | undefined;
 	private static readonly SAVE_DEBOUNCE_MS = 2000;
 
-	private async _getStatsFileUri(): Promise<URI> {
+	private async _getDashboardDbPath(): Promise<string> {
 		const userHome = await this._pathService.userHome();
-		return URI.joinPath(userHome, '.saros', 'dashboard-stats.json');
+		const homePath = userHome.fsPath ?? userHome.path;
+		return join(homePath, '.saros', 'dashboard', 'dashboard.db');
+	}
+
+	private async _initDashboardDb(): Promise<void> {
+		// DashboardDatabase 只能在 Node 环境运行（依赖 fs / @vscode/sqlite3）
+		// 浏览器端跳过，所有统计回退到纯内存模式。
+		if (typeof process === 'undefined' || !process.versions?.node) {
+			this._logService.info('[AgentOS] Skipping Dashboard DB (non-Node environment)');
+			return;
+		}
+
+		try {
+			const dbPath = await this._getDashboardDbPath();
+			// 动态 import：确保打包工具不会把 node/dashboardDatabase 打进浏览器 bundle
+			const { DashboardDatabase } = await import('../node/dashboardDatabase.js');
+			this._dashboardDb = new DashboardDatabase();
+			await this._dashboardDb.initialize(dbPath);
+			this._logService.info('[AgentOS] Dashboard DB initialized:', dbPath);
+
+			// 从 SQLite 加载已持久化的累计统计
+			await this._loadDashboardStats();
+		} catch (err) {
+			this._logService.warn('[AgentOS] Failed to init Dashboard DB:', err);
+		}
 	}
 
 	private async _loadDashboardStats(): Promise<void> {
+		if (!this._dashboardDb?.ready) {
+			return; // DB 未就绪，使用内存默认值
+		}
 		try {
-			const uri = await this._getStatsFileUri();
-			const content = await this._fileService.readFile(uri);
-			const data = JSON.parse(content.value.toString());
-			this._totalInputTokens = data.totalInputTokens ?? 0;
-			this._totalOutputTokens = data.totalOutputTokens ?? 0;
-			this._totalCachedTokens = data.totalCachedTokens ?? 0;
-			this._compressionCount = data.compressionCount ?? 0;
-			this._compressionIneffectiveCount = data.compressionIneffectiveCount ?? 0;
-			this._compressionBeforeTokens = data.compressionBeforeTokens ?? 0;
-			this._compressionAfterTokens = data.compressionAfterTokens ?? 0;
-			this._l1ExtractionCount = data.l1ExtractionCount ?? 0;
-			this._l2ExtractionCount = data.l2ExtractionCount ?? 0;
-			this._l3ExtractionCount = data.l3ExtractionCount ?? 0;
-			if (data.toolCallCounts && typeof data.toolCallCounts === 'object') {
-				for (const [k, v] of Object.entries(data.toolCallCounts)) {
-					this._toolCallCounts.set(k, Number(v) || 0);
+			const allStats = await this._dashboardDb.getAllStats();
+
+			this._totalInputTokens = Number(allStats['totalInputTokens']) || 0;
+			this._totalOutputTokens = Number(allStats['totalOutputTokens']) || 0;
+			this._totalCachedTokens = Number(allStats['totalCachedTokens']) || 0;
+			this._compressionCount = Number(allStats['compressionCount']) || 0;
+			this._compressionIneffectiveCount = Number(allStats['compressionIneffectiveCount']) || 0;
+			this._compressionBeforeTokens = Number(allStats['compressionBeforeTokens']) || 0;
+			this._compressionAfterTokens = Number(allStats['compressionAfterTokens']) || 0;
+			this._l1ExtractionCount = Number(allStats['l1ExtractionCount']) || 0;
+			this._l2ExtractionCount = Number(allStats['l2ExtractionCount']) || 0;
+			this._l3ExtractionCount = Number(allStats['l3ExtractionCount']) || 0;
+
+			// 工具调用计数从专门的表加载
+			try {
+				const toolCounts = await this._dashboardDb.getToolCallCounts();
+				for (const [k, v] of Object.entries(toolCounts)) {
+					this._toolCallCounts.set(k, v);
 				}
-			}
-			this._logService.info('[AgentOS] Dashboard stats loaded:', {
+			} catch { /* tool_call_stats may be empty */ }
+
+			this._logService.info('[AgentOS] Dashboard stats loaded from SQLite:', {
 				tokens: this._totalInputTokens + this._totalOutputTokens + this._totalCachedTokens,
 				compression: this._compressionCount,
 				tools: this._toolCallCounts.size,
 			});
-		} catch { /* file doesn't exist yet */ }
+		} catch (err) {
+			this._logService.warn('[AgentOS] Failed to load dashboard stats from DB:', err);
+		}
 	}
 
 	private _scheduleSave(): void {
@@ -283,27 +398,31 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	}
 
 	private async _saveDashboardStats(): Promise<void> {
-		const data = {
-			totalInputTokens: this._totalInputTokens,
-			totalOutputTokens: this._totalOutputTokens,
-			totalCachedTokens: this._totalCachedTokens,
-			compressionCount: this._compressionCount,
-			compressionIneffectiveCount: this._compressionIneffectiveCount,
-			compressionBeforeTokens: this._compressionBeforeTokens,
-			compressionAfterTokens: this._compressionAfterTokens,
-			l1ExtractionCount: this._l1ExtractionCount,
-			l2ExtractionCount: this._l2ExtractionCount,
-			l3ExtractionCount: this._l3ExtractionCount,
-			toolCallCounts: Object.fromEntries(this._toolCallCounts),
-			savedAt: new Date().toISOString(),
-		};
-		const uri = await this._getStatsFileUri();
-		const userHome = await this._pathService.userHome();
-		const dirUri = URI.joinPath(userHome, '.saros');
+		if (!this._dashboardDb?.ready) {
+			return; // DB 未就绪，跳过保存
+		}
 		try {
-			await this._fileService.createFolder(dirUri);
-		} catch { /* dir may already exist */ }
-		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
+			// 批量保存累计统计
+			await this._dashboardDb.setAllStats({
+				totalInputTokens: String(this._totalInputTokens),
+				totalOutputTokens: String(this._totalOutputTokens),
+				totalCachedTokens: String(this._totalCachedTokens),
+				compressionCount: String(this._compressionCount),
+				compressionIneffectiveCount: String(this._compressionIneffectiveCount),
+				compressionBeforeTokens: String(this._compressionBeforeTokens),
+				compressionAfterTokens: String(this._compressionAfterTokens),
+				l1ExtractionCount: String(this._l1ExtractionCount),
+				l2ExtractionCount: String(this._l2ExtractionCount),
+				l3ExtractionCount: String(this._l3ExtractionCount),
+			});
+
+			// 保存工具调用计数
+			const toolCounts: Record<string, number> = {};
+			this._toolCallCounts.forEach((v, k) => { toolCounts[k] = v; });
+			await this._dashboardDb.setToolCallCounts(toolCounts);
+		} catch (err) {
+			this._logService.warn('[AgentOS] Failed to save dashboard stats to DB:', err);
+		}
 	}
 
 	/**
@@ -1972,73 +2091,191 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	/**
 	 * 获取指定 agent 的已启用工具列表
+	 *
+	 * 三层分离架构（参考 Hermes-Agent）：
+	 *   1. Assembly 层 (toolSearchAssembler.ts): classify + threshold gate + bridge schema
+	 *   2. Dispatch 层 (toolSearchDispatcher.ts): catalog + BM25 + scope 门控
+	 *   3. Executor 层 (本文件): unwrap tool_call 为真实工具名，走完整 guardrail/approval 链
 	 */
 	private async _getEnabledTools(agentId: string): Promise<IToolDefinition[]> {
-		const allToolsWithState = await this.listAllToolsWithState(agentId);
-		const enabled = allToolsWithState.filter(t => t.enabled);
+		// 类型别名：工具定义 + 运行时 toolset 推断 + enabled 状态
+		type TTool = IToolDefinition & { enabled: boolean; toolset: string };
 
-	// ─── 工具数量限制 ──────────────────────────────────────────
-	// MCP 工具被替换为 2 个桥接工具（mcp_tool_search + mcp_tool_call），
-	// 避免发送大量 MCP 工具 schema 导致请求体过大和 API 超时。
-	const MAX_TOOLS_FOR_LLM = 30;
-	const filtered = this._filterToolsForLLM(enabled, MAX_TOOLS_FOR_LLM);
+		const allWithState = await this.listAllToolsWithState(agentId);
+		const enabled = allWithState.filter(t => t.enabled) as TTool[];
 
-	// 将桥接工具排在前面：LLM 需要优先知道 mcp_tool_search/mcp_tool_call 的存在
-	const sorted = filtered.sort((a, b) => {
-		const bridge = new Set(['mcp_tool_search', 'mcp_tool_call']);
-		const aBridge = bridge.has(a.name) ? 0 : 1;
-		const bBridge = bridge.has(b.name) ? 0 : 1;
-		return aBridge - bBridge;
-	});
-	this._logService.info(`[AgentOS] _getEnabledTools: ${filtered.length}/${enabled.length}/${allToolsWithState.length} tools (MCP tools replaced with bridge) for agent ${agentId}`);
-	return sorted.map(({ enabled: _, ...toolDef }) => toolDef);
+		// Step 1: 分离 MCP 工具（它们由 mcp_tool_search/mcp_tool_call 桥接处理）
+		const mcpOriginal = enabled.filter(t => t.category?.startsWith('mcp:'));
+		const builtin = enabled.filter(t => !t.category?.startsWith('mcp:'));
+
+		// Step 2: 推断 toolset（toolsetConfig 的 auto-infer）
+		const tagged: TTool[] = builtin.map(t => ({
+			...t,
+			toolset: (t.toolset ?? getToolsetForTool(t.name)) as string,
+		}));
+
+		// Step 3: Agent.tools[] 配置过滤
+		const agentTools = this._getAgentToolsConfig(agentId);
+		let scoped = tagged;
+		if (agentTools?.length) {
+			const toolSet = new Set(agentTools);
+			scoped = tagged.filter(t =>
+				toolSet.has(t.name) || isBridgeTool(t.name) || t.name === 'mcp_tool_search' || t.name === 'mcp_tool_call'
+			);
+			this._logService.info(`[AgentOS] _getEnabledTools: agent ${agentId} tools config -> ${scoped.length}/${tagged.length}`);
+		}
+
+		// Step 4: 按优先级填充 30 个名额
+		const MAX = 30;
+		const byPriority = (p: ToolsetPriority) => scoped.filter(t => getToolsetPriority(t.toolset) === p);
+		const direct = [...byPriority(ToolsetPriority.Always), ...byPriority(ToolsetPriority.High)];
+		const rem = MAX - direct.length;
+		if (rem > 0) {
+			const med = byPriority(ToolsetPriority.Medium);
+			const low = byPriority(ToolsetPriority.Low);
+			direct.push(...med.slice(0, rem));
+			const afterMed = rem - med.length;
+			if (afterMed > 0) { direct.push(...low.slice(0, afterMed)); }
+		}
+
+		// Step 5: Assembly 层 — 超出名额的 deferrable 工具交由 assembleToolDefs 处理
+		const included = new Set(direct.map(t => t.name));
+		const deferred = scoped.filter(t => !included.has(t.name) && isToolsetDeferrable(t.toolset));
+		const assembly = assembleToolDefs([...direct, ...deferred], {
+			contextLength: undefined,  // auto + 20K token fallback
+			config: DEFAULT_TOOL_SEARCH_CONFIG,
+		});
+		// assembleToolDefs 在未激活时返回全部工具（passthrough），无需额外处理
+		const finalTools = assembly.toolDefs;
+
+		// 缓存 Assembly + Dispatcher（Executor 层使用）
+		this._lastAssembly = assembly;
+		this._lastDispatcherCtx = buildDispatcherContext(assembly, DEFAULT_TOOL_SEARCH_CONFIG);
+
+		// Step 6: 桥接工具排前面
+		const BRIDGE_NAMES = new Set([
+			'mcp_tool_search', 'mcp_tool_call',
+			TOOL_SEARCH_BRIDGE_TOOLS.search, TOOL_SEARCH_BRIDGE_TOOLS.describe, TOOL_SEARCH_BRIDGE_TOOLS.call,
+		]);
+		finalTools.sort((a, b) => (BRIDGE_NAMES.has(a.name) ? 0 : 1) - (BRIDGE_NAMES.has(b.name) ? 0 : 1));
+
+		// 日志
+		if (mcpOriginal.length) {
+			this._logService.info(`[AgentOS] _getEnabledTools: replaced ${mcpOriginal.length} MCP tools with bridge tools`);
+		}
+		if (assembly.activated) {
+			this._logService.info(`[AgentOS] _getEnabledTools: Tool Search activated — ${assembly.deferredCount} deferred (~${assembly.deferredTokens} tokens, thresh ~${assembly.thresholdTokens})`);
+		}
+		this._logService.info(`[AgentOS] _getEnabledTools: ${finalTools.length}/${enabled.length}/${allWithState.length} tools (assembly-driven) for ${agentId}`);
+
+		return finalTools.map(({ enabled: _, toolset: __, ...toolDef }) => toolDef);
+	}
+
+	// _filterToolsForLLM 已被三层分离架构替代（Assembly 层 → assembleToolDefs）
+
+	/**
+	 * 获取 Agent 的 tools[] 配置。
+	 */
+	private _getAgentToolsConfig(agentId?: string): string[] | undefined {
+		if (!agentId) { return undefined; }
+		try {
+			const studioService = (this as any)._studioService;
+			if (!studioService) { return undefined; }
+			const agents = studioService.getAgentsSync?.();
+			if (!agents) { return undefined; }
+			const agent = agents.find((a: any) => a.id === agentId);
+			return agent?.tools;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
-	 * 过滤工具列表以适应 LLM 请求大小限制。
+	 * 执行 Tool Search 桥接工具（三层分离的 Executor 层入口）。
 	 *
-	 * 策略（Tool Search 渐进式披露）：
-	 * 1. MCP 工具被替换为 2 个桥接工具（mcp_tool_search + mcp_tool_call），
-	 *    不发送原始 MCP 工具定义，大幅减少 schema 体积。
-	 * 2. 核心 builtin 工具（文件操作、搜索、终端等）全部保留。
-	 * 3. 桥接工具（mcp_tool_search, mcp_tool_call）始终保留。
-	 * 4. 其他 builtin 工具按名称排序，填满剩余名额。
+	 * 参考 Hermes-Agent `model_tools.py` 的桥接分发 + `tool_executor.py` 的 unwrap：
+	 *   - tool_search / tool_describe: 调用 Dispatch 层返回结果文本
+	 *   - tool_call: Dispatch 层解析为 (underlyingName, args) + scope 门控，
+	 *     然后由本方法执行真实工具（走完整 guardrail/approval 链）
 	 */
-	_filterToolsForLLM(tools: Array<IToolDefinition & { enabled: boolean }>, maxCount: number): Array<IToolDefinition & { enabled: boolean }> {
-		// 核心 builtin 工具名（文件操作 + 搜索 + 终端 + 任务管理）
-		const coreBuiltinTools = new Set([
-			'file_read', 'file_write', 'file_list', 'search_files', 'terminal',
-			'grep_search', 'replace_in_file', 'read_file', 'write_to_file',
-			'list_dir', 'edit_file', 'delegate_task', 'todo', 'memory_remember',
-			'memory_search', 'web_search',
-			// MCP 桥接工具 — 始终保留
-			'mcp_tool_search', 'mcp_tool_call',
-		]);
-
-		// 分离：MCP 原始工具（被替换）vs 核心 builtin vs 桥接工具 vs 其他 builtin
-		const mcpOriginalTools = tools.filter(t => t.category?.startsWith('mcp:'));
-		const coreBuiltin = tools.filter(t => !t.category?.startsWith('mcp:') && coreBuiltinTools.has(t.name));
-		const otherBuiltin = tools.filter(t => !t.category?.startsWith('mcp:') && !coreBuiltinTools.has(t.name));
-
-		// MCP 工具替换为桥接工具（已在 coreBuiltin 中，因为 mcp_tool_search/mcp_tool_call 在 coreBuiltinTools 集合中）
-		// 不发送 mcpOriginalTools，LLM 通过 mcp_tool_search + mcp_tool_call 访问
-		const result = [...coreBuiltin];
-		const remaining = maxCount - result.length;
-		if (remaining > 0) {
-			result.push(...otherBuiltin.slice(0, remaining));
+	private async _executeBridgeTool(
+		bridgeToolName: string,
+		args: Record<string, unknown>,
+		agentId: string | undefined,
+		toolCallId: string,
+	): Promise<IToolResult> {
+		// 确保 dispatcher context 可用（_getEnabledTools 已构建，这是防御）
+		if (!this._lastDispatcherCtx || !this._lastAssembly) {
+			const tools = (await this.listAllToolsWithState(agentId ?? '')).filter(t => t.enabled);
+			const assembly = assembleToolDefs(tools, { config: DEFAULT_TOOL_SEARCH_CONFIG });
+			this._lastAssembly = assembly;
+			this._lastDispatcherCtx = buildDispatcherContext(assembly, DEFAULT_TOOL_SEARCH_CONFIG);
 		}
 
-		if (mcpOriginalTools.length > 0) {
-			this._logService.info(`[AgentOS] _filterToolsForLLM: replaced ${mcpOriginalTools.length} MCP tools with 2 bridge tools (mcp_tool_search, mcp_tool_call)`);
-		}
-		if (tools.length - mcpOriginalTools.length > result.length) {
-			const dropped = tools.length - mcpOriginalTools.length - result.length;
-			const droppedNames = otherBuiltin.slice(remaining).map(t => t.name);
-			this._logService.info(`[AgentOS] _filterToolsForLLM: dropped ${dropped} non-essential tools: [${droppedNames.slice(0, 15).join(', ')}${droppedNames.length > 15 ? '...' : ''}]`);
+		const dispatchResult = dispatchBridgeTool(bridgeToolName, args, this._lastDispatcherCtx);
+
+		// search / describe / error → 直接返回文本
+		if (dispatchResult.type !== 'call_resolved') {
+			return {
+				toolCallId, success: dispatchResult.success,
+				content: [{ type: 'text', text: dispatchResult.text ?? '' }],
+			};
 		}
 
-		return result;
+		// call_resolved: executor unwrap — 走完整 guardrail/approval 链
+		const underlyingName = dispatchResult.underlyingName!;
+		const underlyingArgs = dispatchResult.underlyingArgs ?? {};
+		this._logService.info(`[AgentOS] Bridge tool_call unwrapped → executing "${underlyingName}"`);
+
+		// 一次收集所有工具（用于 approval lookup + provider 匹配）
+		const providers = this._slotRegistry.getToolProviders();
+		const allTools: IToolDefinition[] = [];
+		for (const p of providers) {
+			try { allTools.push(...await p.listTools(agentId ?? '')); } catch { /* ignore */ }
+		}
+		const targetTool = allTools.find(t => t.name === underlyingName);
+		if (!targetTool) {
+			return {
+				toolCallId, success: false,
+				content: [{ type: 'text', text: `Error: Tool "${underlyingName}" not found in any provider.` }],
+			};
+		}
+
+		// Approval（真实工具的安全级别）
+		if (!await this._approvalService.checkAndApprove(
+			{ id: toolCallId, name: underlyingName, arguments: underlyingArgs }, targetTool,
+		)) {
+			this._logService.info(`[AgentOS] Bridge tool_call: "${underlyingName}" denied`);
+			return {
+				toolCallId, success: false,
+				content: [{ type: 'text', text: `Tool "${underlyingName}" execution was denied by the user.` }],
+			};
+		}
+
+		// 执行真实工具（超时保护）
+		const timeoutMs = getTimeoutForTool(underlyingName, targetTool, targetTool.source);
+		for (const p of providers) {
+			try {
+				const ptools = await p.listTools(agentId ?? '');
+				if (ptools.some(t => t.name === underlyingName)) {
+					return await executeWithTimeout(
+						p, agentId ?? '',
+						{ id: toolCallId, name: underlyingName, arguments: underlyingArgs },
+						timeoutMs,
+						this._loopAbortController?.signal,
+					);
+				}
+			} catch (err) {
+				this._logService.warn(`[AgentOS] Bridge tool_call: "${underlyingName}" via ${p.id}: ${sanitizeToolError(err)}`);
+			}
+		}
+		return {
+			toolCallId, success: false,
+			content: [{ type: 'text', text: `Error: No provider could execute "${underlyingName}".` }],
+		};
 	}
+
+
 
 	/**
 	 * 等待 MCP 工具变为可用。
@@ -2099,6 +2336,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			if (tc.name) {
 				this._toolCallCounts.set(tc.name, (this._toolCallCounts.get(tc.name) ?? 0) + 1);
 				this._scheduleSave();
+				// 实时写入 SQLite（fire-and-forget）
+				if (this._dashboardDb?.ready) {
+					this._dashboardDb.incrementToolCall(tc.name).catch(() => {});
+				}
 			}
 		}
 
@@ -2146,11 +2387,41 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 模型又会就这条错误生成一段冗长的"我尝试调用了不存在的工具"道歉，
 			// 形成视觉噪声循环。这里直接返回一个静默的成功占位即可。
 			if (PHANTOM_TOOL_NAMES.has(toolCall.name)) {
-				this._logService.info(`[AgentOS] Phantom tool "${toolCall.name}" silently acknowledged (UI indicator only)`);
+			this._logService.info(`[AgentOS] Phantom tool "${toolCall.name}" silently acknowledged (UI indicator only)`);
 				results.push({
 					toolCallId: toolCall.id,
 					content: { ok: true, phantom: true },
 					success: true,
+				});
+				continue;
+			}
+
+			// ─── Step 0.5: Tool Search bridge tool short-circuit ───
+			// tool_search / tool_call / tool_describe 是 _filterToolsForLLM
+			// 动态创建的桥接工具，不在任何 provider 中注册。如果不短路，
+			// repairToolName 会把 "tool_call" 错误修复为 "mcp_tool_call"
+			// （substring containment: "mcp_tool_call".includes("tool_call")）。
+			if (isBridgeTool(toolCall.name)) {
+				this._logService.info(`[AgentOS] Bridge tool "${toolCall.name}" short-circuited`);
+				const argValidity0 = classifyArgumentValidity(toolCall.arguments || '');
+				let bridgeArgs: Record<string, unknown>;
+				if (argValidity0 === 'valid') {
+					bridgeArgs = JSON.parse(toolCall.arguments!);
+				} else if (argValidity0 === 'empty') {
+					bridgeArgs = {};
+				} else {
+					bridgeArgs = repairToolArguments(toolCall.arguments || '') ?? {};
+				}
+				const bridgeResult = await this._executeBridgeTool(
+					toolCall.name, bridgeArgs, agentId, toolCall.id,
+				);
+				const limitedStr0 = safeStringifyToolResult(bridgeResult.content);
+				let finalContent0: unknown = bridgeResult.content;
+				try { finalContent0 = JSON.parse(limitedStr0); } catch { finalContent0 = { __truncated__: true, content: limitedStr0 }; }
+				results.push({
+					toolCallId: toolCall.id,
+					content: finalContent0,
+					success: bridgeResult.success,
 				});
 				continue;
 			}
@@ -2395,9 +2666,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				continue;
 			}
 
-			// Tool name repair
+			// Tool name repair — skip for bridge tools (they're dynamic, not in any provider)
 			let targetToolName = toolCall.name;
-			if (!validNameSet.has(targetToolName)) {
+			if (!isBridgeTool(targetToolName) && !validNameSet.has(targetToolName)) {
 				const repaired = repairToolName(targetToolName, availableToolNames);
 				if (repaired) {
 					this._logService.warn(`[AgentOS] [parallel] Repaired tool name "${targetToolName}" → "${repaired}"`);
@@ -2489,6 +2760,25 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const toolProviders = this._slotRegistry.getToolProviders();
 		const executionPromises = entriesToExecute.map(async (entry) => {
 			const { toolCall, targetToolName, args } = entry;
+
+			// ── Bridge tool: execute via _executeBridgeTool ──
+			// tool_search / tool_call / tool_describe 不在任何 provider 中注册，
+			// 需要特殊处理（Dispatch 层解析 + Executor 层执行真实工具）。
+			if (isBridgeTool(targetToolName)) {
+				this._logService.info(`[AgentOS] [parallel] Bridge tool "${targetToolName}" executing`);
+				const bridgeResult = await this._executeBridgeTool(
+					targetToolName, args, agentId, toolCall.id,
+				);
+				const limitedStrB = safeStringifyToolResult(bridgeResult.content);
+				let finalContentB: unknown = bridgeResult.content;
+				try { finalContentB = JSON.parse(limitedStrB); } catch { finalContentB = { __truncated__: true, content: limitedStrB }; }
+				return {
+					originalIndex: entry.originalIndex,
+					toolCallId: toolCall.id,
+					content: finalContentB,
+					success: bridgeResult.success,
+				};
+			}
 
 			// Approval check
 			const toolDef = toolDefMap.get(targetToolName);

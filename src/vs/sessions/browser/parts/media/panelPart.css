@@ -82,3 +82,23 @@
 .agent-sessions-workbench .part.panel .terminal-wrapper {
 	background-color: var(--vscode-agentsPanel-background);
 }
+
+/* Ensure panel content fills the full width (override any right gap) */
+.agent-sessions-workbench .part.panel > .content,
+.agent-sessions-workbench .part.panel > .content .pane,
+.agent-sessions-workbench .part.panel > .content .pane-body,
+.agent-sessions-workbench .part.panel > .content .repl,
+.agent-sessions-workbench .part.panel > .content .output-view,
+.agent-sessions-workbench .part.panel > .content .pane-body.output-view,
+.agent-sessions-workbench .part.panel > .content .monaco-editor,
+.agent-sessions-workbench .part.panel > .content .pane-body > .monaco-editor,
+.agent-sessions-workbench .part.panel > .content .pane-body.output-view .monaco-editor,
+.agent-sessions-workbench .part.panel > .content .pane-body.output-view .monaco-scrollable-element {
+	width: 100% !important;
+	max-width: none !important;
+	right: auto !important;
+	left: 0 !important;
+	box-sizing: border-box !important;
+}
+
+

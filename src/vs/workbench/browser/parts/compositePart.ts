@@ -130,6 +130,7 @@ export abstract class CompositePart<T extends Composite, MementoType extends obj
 	}
 
 	private doOpenComposite(id: string, focus: boolean = false): Composite | undefined {
+		console.log('[CompositePart] doOpenComposite called, id:', id, 'focus:', focus, 'element exists:', !!this.element);
 
 		// Use a generated token to avoid race conditions from long running promises
 		const currentCompositeOpenToken = defaultGenerator.nextId();
@@ -145,9 +146,11 @@ export abstract class CompositePart<T extends Composite, MementoType extends obj
 
 		// Create composite
 		const composite = this.createComposite(id, true);
+		console.log('[CompositePart] doOpenComposite: composite created, id:', composite?.getId(), 'token match:', this.currentCompositeOpenToken === currentCompositeOpenToken);
 
 		// Check if another composite opened meanwhile and return in that case
 		if ((this.currentCompositeOpenToken !== currentCompositeOpenToken) || (this.activeComposite && this.activeComposite.getId() !== composite.getId())) {
+			console.log('[CompositePart] doOpenComposite: token mismatch, returning undefined');
 			return undefined;
 		}
 
@@ -215,6 +218,7 @@ export abstract class CompositePart<T extends Composite, MementoType extends obj
 	}
 
 	protected showComposite(composite: Composite): void {
+		console.log('[CompositePart] showComposite called, id:', composite.getId());
 
 		// Remember Composite
 		this.activeComposite = composite;

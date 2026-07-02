@@ -23,6 +23,7 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { Action2, registerAction2, MenuId } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
+import { ResourceContextKey } from '../../../../workbench/common/contextkeys.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 
@@ -154,6 +155,8 @@ import { McpDetailEditorPane } from './mcpDetailEditorPane.js';
 import { McpDetailEditorInput } from './mcpDetailEditorInput.js';
 import { SkillMarketEditorPane } from './skillMarketEditorPane.js';
 import { SkillMarketEditorInput } from './skillMarketEditorInput.js';
+import { WorkflowMarketEditorPane } from './workflowMarketEditorPane.js';
+import { WorkflowMarketEditorInput } from './workflowMarketEditorInput.js';
 import { MarketplaceEditorPane } from './marketplaceEditorPane.js';
 import { MarketplaceEditorInput } from './marketplaceEditorInput.js';
 import { NativeChatEditorPane } from './nativeChatEditorPane.js';
@@ -196,6 +199,8 @@ import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
 import { HtmlPreviewEditorPane } from './htmlPreviewEditorPane.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
+import { HtmlFileEditorPane } from './htmlFileEditorPane.js';
+import { FileEditorInput } from '../../../../workbench/contrib/files/browser/editors/fileEditorInput.js';
 import { UrlPreviewEditorPane } from './urlPreviewEditorPane.js';
 import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
 import { CompressionDetailEditorPane } from './compressionDetailEditorPane.js';
@@ -694,6 +699,56 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
+// Register HtmlFileEditorPane — extends TextFileEditor with a 3-mode
+// segmented toggle (编辑 / HTML / 预览) for .html files. Registered to
+// handle FileEditorInput so that HTML files opened from the file explorer
+// use this pane instead of the plain TextFileEditor. The pane inherits
+// all of TextFileEditor's behaviour for non-HTML files, but the toggle
+// only appears for HTML (the EditorTitle menu action's when-clause checks
+// the active editor id AND the resource suffix).
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		HtmlFileEditorPane,
+		'agentStudio.htmlFileEditor',
+		localize('htmlFileEditor', "HTML File Editor"),
+	),
+	[
+		new SyncDescriptor(FileEditorInput)
+	]
+);
+
+// Register the 编辑 / HTML / 预览 toggle as a MenuId.EditorTitle action.
+// The when-clause restricts it to HtmlFileEditorPane being the active editor.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: HtmlFileEditorPane.TOGGLE_MODE_ACTION_ID,
+			title: localize2('htmlFileToggleMode', '编辑 / HTML / 预览'),
+			f1: false,
+			menu: [{
+				id: MenuId.EditorTitle,
+				group: 'navigation',
+				when: ContextKeyExpr.and(
+					ContextKeyExpr.equals(ActiveEditorContext.key, 'agentStudio.htmlFileEditor'),
+					ResourceContextKey.Extension.isEqualTo('.html'),
+				),
+				order: 1,
+			}],
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const pane = editorService.activeEditorPane;
+		if (pane instanceof HtmlFileEditorPane) {
+			// Cycle: edit → source → preview → edit
+			const next = pane.currentMode === 'edit' ? 'source'
+				: pane.currentMode === 'source' ? 'preview' : 'edit';
+			pane.setMode(next);
+		}
+	}
+});
+
 // Register UrlPreviewEditorPane — renders an external URL inside the editor
 // area. Opened when the user clicks a hyperlink in an LLM chat response;
 // the page loads in the middle column instead of an external browser.
@@ -837,6 +892,20 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(SkillMarketEditorInput)
+	]
+);
+
+// Register WorkflowMarketEditorPane so that the Workflow Marketplace page opens
+// in the editor area. Triggered by clicking "Install" in the Workflow
+// sidebar view.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		WorkflowMarketEditorPane,
+		WorkflowMarketEditorPane.ID,
+		localize('workflowMarketEditor', "Workflow Marketplace"),
+	),
+	[
+		new SyncDescriptor(WorkflowMarketEditorInput)
 	]
 );
 

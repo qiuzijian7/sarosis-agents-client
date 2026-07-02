@@ -94,6 +94,8 @@ export interface VisualizationData {
 export interface IIndexConfig {
 	mode: 'fast' | 'moderate' | 'full';
 	excludeDirs: string[];
+	/** 保留目录（即使父目录被排除也不跳过），相对路径如 "Content/Script" */
+	keepDirs?: string[];
 	subPath?: string;
 	crossRepoIntelligence?: boolean;
 }
@@ -790,7 +792,7 @@ self.onmessage = async function(e) {
 			// 1. Scan files
 			const excludeDirs = new Set([...DEFAULT_EXCLUDE_DIRS, ...config.excludeDirs]);
 			this._onDidIndexProgress.fire('📁 扫描文件...');
-			const files = await this._scanFiles(rootPath, excludeDirs, config.subPath, cts.token);
+			const files = await this._scanFiles(rootPath, excludeDirs, config.subPath, cts.token, config.keepDirs);
 			const filesScanned = files.length;
 			this._onDidIndexProgress.fire(`📁 找到 ${filesScanned} 个源文件`);
 
@@ -987,14 +989,26 @@ self.onmessage = async function(e) {
 
 	// ─── File Scanning ───────────────────────────────────────────────────────
 
-	private async _scanFiles(rootPath: string, excludeDirs: Set<string>, subPath: string | undefined, token: CancellationToken): Promise<string[]> {
+	private _scanFileCount = 0; // 扫描累计计数（用于进度频率控制）
+	private _scanRootPath = ''; // 扫描根路径（用于计算相对路径判断 keepDirs）
+
+	private async _scanFiles(rootPath: string, excludeDirs: Set<string>, subPath: string | undefined, token: CancellationToken, keepDirs?: string[]): Promise<string[]> {
 		const scanPath = subPath
 			? URI.joinPath(URI.file(rootPath), subPath).fsPath
 			: rootPath;
 		const results: string[] = [];
-		this._logService.info('[CodebaseGraph]', `[scan] start: ${scanPath}, excludeDirs=${[...excludeDirs].join(',')}`);
+		this._scanFileCount = 0;
+		this._scanRootPath = scanPath.replace(/\\/g, '/');
+		// 构建 keepDirs 匹配集合（大小写不敏感，标准化为 / 分隔）
+		const keepSet = new Set<string>();
+		if (keepDirs) {
+			for (const k of keepDirs) {
+				keepSet.add(k.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase());
+			}
+		}
+		this._logService.info('[CodebaseGraph]', `[scan] start: ${scanPath}, excludeDirs=${[...excludeDirs].join(',')}, keepDirs=${[...keepSet].join(',')}`);
 		this._onDidIndexProgress.fire(`📁 扫描目录: ${scanPath}`);
-		await this._scanDir(URI.file(scanPath), excludeDirs, results, token, 0);
+		await this._scanDir(URI.file(scanPath), excludeDirs, results, token, 0, keepSet);
 		this._logService.info('[CodebaseGraph]', `[scan] done: ${results.length} files`);
 		this._onDidIndexProgress.fire(`📁 扫描完成: 找到 ${results.length} 个源文件`);
 		return results;
@@ -1014,7 +1028,7 @@ self.onmessage = async function(e) {
 		return this._excludeLowerCache?.has(name.toLowerCase()) ?? false;
 	}
 
-	private async _scanDir(dirUri: URI, excludeDirs: Set<string>, results: string[], token: CancellationToken, depth: number): Promise<void> {
+	private async _scanDir(dirUri: URI, excludeDirs: Set<string>, results: string[], token: CancellationToken, depth: number, keepSet: Set<string>): Promise<void> {
 		if (token.isCancellationRequested) { return; }
 		if (depth > 30) { return; }
 
@@ -1030,30 +1044,59 @@ self.onmessage = async function(e) {
 		let dirCount = 0, fileCount = 0;
 		for (const child of stat.children) {
 			if (token.isCancellationRequested) { return; }
-			if (this._isExcluded(child.name, excludeDirs) || (child.name.startsWith('.') && child.name !== '.' && child.name !== '..')) {
+			if (child.name.startsWith('.') && child.name !== '.' && child.name !== '..') {
 				continue;
+			}
+			// 检查排除规则 + keepDirs 例外
+			if (this._isExcluded(child.name, excludeDirs)) {
+				// 如果是目录，检查是否在 keepDirs 中（通过相对路径匹配）
+				if (child.isDirectory && keepSet.size > 0) {
+					const childPath = child.resource.fsPath.replace(/\\/g, '/');
+					const relPath = this._scanRootPath && childPath.startsWith(this._scanRootPath)
+						? childPath.substring(this._scanRootPath.length).replace(/^\/+/, '')
+						: child.name;
+					// 检查 relPath 或其父路径是否匹配 keepSet 中的任一条目
+					const relPathLower = relPath.toLowerCase();
+					let shouldKeep = false;
+					for (const keep of keepSet) {
+						// 精确匹配或 keep 是 relPath 的子路径前缀
+						if (relPathLower === keep || relPathLower.startsWith(keep + '/') || keep.startsWith(relPathLower + '/')) {
+							shouldKeep = true;
+							break;
+						}
+					}
+					if (shouldKeep) {
+						this._logService.info('[CodebaseGraph]', `[scan] keeping excluded dir: ${relPath}`);
+						// 继续扫描此目录
+					} else {
+						continue;
+					}
+				} else {
+					continue;
+				}
 			}
 			if (child.isDirectory) {
 				dirCount++;
-				await this._scanDir(child.resource, excludeDirs, results, token, depth + 1);
+				await this._scanDir(child.resource, excludeDirs, results, token, depth + 1, keepSet);
 			} else if (child.isFile) {
 				fileCount++;
 				const ext = this._getExtension(child.name);
 				if (ext && EXTENSION_TO_WASM_LANG[ext]) {
 					results.push(child.resource.fsPath);
+					this._scanFileCount++;
+					// 每 50 个文件 fire 一次进度
+					if (this._scanFileCount % 50 === 0) {
+						const dirName = dirUri.fsPath.split(/[\\/]/).pop() || '';
+						this._onDidIndexProgress.fire(`📁 扫描中: ${results.length} 文件 (${dirName})`);
+					}
 				}
 			}
 		}
 
-		// 每处理 10 个子目录或根目录，记录日志 + fire 进度（避免日志过多）
-		if (depth <= 1 || dirCount > 10) {
+		// 根目录和深层目录都记录日志
+		if (depth <= 2 || dirCount > 5) {
 			const dirName = dirUri.fsPath.split(/[\\/]/).pop() || dirUri.fsPath;
-			const logMsg = `[scan] depth=${depth} dir=${dirName} dirs=${dirCount} files=${fileCount} total=${results.length}`;
-			this._logService.info('[CodebaseGraph]', logMsg);
-			// 每 20 个文件或根目录才 fire UI 进度（避免 UI 刷新太频繁）
-			if (depth <= 1 || results.length % 20 < 5) {
-				this._onDidIndexProgress.fire(`📁 扫描中: ${results.length} 文件 (当前: ${dirName})`);
-			}
+			this._logService.info('[CodebaseGraph]', `[scan] depth=${depth} dir=${dirName} dirs=${dirCount} files=${fileCount} total=${results.length}`);
 		}
 	}
 

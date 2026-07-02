@@ -47,6 +47,7 @@ import { IFileDialogService } from '../../../platform/dialogs/common/dialogs.js'
 import { IFileService } from '../../../platform/files/common/files.js';
 import { URI } from '../../../base/common/uri.js';
 import type { Workspace } from '../../contrib/agentStudio/common/types.js';
+import { ICodebaseMemoryMcpService, IIndexConfig } from '../../contrib/agentStudio/browser/codebaseMemoryMcpService.js';
 
 /** CSS class names for sidebar content collapsed/expanded states */
 const SIDEBAR_CONTENT_COLLAPSED_CLASS = 'sidebar-content-collapsed';
@@ -885,7 +886,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	private async _resolveCodeWorkspaceFolders(
 		fileUri: URI,
 		fileService: IFileService,
-	): Promise<{ primaryPath: string | undefined; extraFolders: { path: string; name: string }[]; filesExclude?: Record<string, boolean> }> {
+	): Promise<{ primaryPath: string | undefined; extraFolders: { path: string; name: string }[]; filesExclude?: Record<string, boolean>; codebaseMemory?: { excludeDirs?: string[]; keepDirs?: string[]; mode?: string } }> {
 		const content = await fileService.readFile(fileUri);
 		const parsed = JSON.parse(content.value.toString());
 		const folders: Array<{ path?: string; uri?: string; name?: string }> = parsed?.folders ?? [];
@@ -906,6 +907,28 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			.map(f => ({ path: resolveOne(f)!, name: f.name || '' }));
 
 		const filesExclude: Record<string, boolean> | undefined = parsed?.settings?.['files.exclude'];
+
+		// 提取 codebase-memory 配置并应用到 index config
+		const codebaseMemoryRaw = parsed?.settings?.['codebase-memory'];
+		if (codebaseMemoryRaw && typeof codebaseMemoryRaw === 'object') {
+			try {
+				const cbmService = this.instantiationService.invokeFunction(a => a.get(ICodebaseMemoryMcpService));
+				if (cbmService) {
+					const currentConfig = cbmService.getIndexConfig();
+					const newConfig: IIndexConfig = {
+						mode: (codebaseMemoryRaw.mode as any) || currentConfig.mode,
+						excludeDirs: Array.isArray(codebaseMemoryRaw.excludeDirs)
+							? codebaseMemoryRaw.excludeDirs
+							: currentConfig.excludeDirs,
+						keepDirs: Array.isArray(codebaseMemoryRaw.keepDirs)
+							? codebaseMemoryRaw.keepDirs
+							: currentConfig.keepDirs,
+						subPath: currentConfig.subPath,
+					};
+					cbmService.setIndexConfig(newConfig);
+				}
+			} catch { /* service not available yet */ }
+		}
 
 		return { primaryPath, extraFolders, filesExclude };
 	}

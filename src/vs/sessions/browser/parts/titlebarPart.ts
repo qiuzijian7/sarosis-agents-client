@@ -31,6 +31,8 @@ import { ITitlebarPart, ITitleProperties, ITitleVariable, IAuxiliaryTitlebarPart
 import { MenuId } from '../../../platform/actions/common/actions.js';
 import { Menus } from '../menus.js';
 import { CustomMenubarControl } from '../../../workbench/browser/parts/titlebar/menubarControl.js';
+import { IOpenerService } from '../../../platform/opener/common/opener.js';
+import { URI } from '../../../base/common/uri.js';
 
 /**
  * VS Code native-layout titlebar for agent sessions.
@@ -102,6 +104,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IHostService private readonly hostService: IHostService,
 		@IProductService protected readonly productService: IProductService,
+		@IOpenerService private readonly openerService: IOpenerService,
 	) {
 		super(id, { hasTitle: false }, themeService, storageService, layoutService);
 
@@ -194,23 +197,57 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 
 				// ── 伸缩按钮：折叠右侧栏（弹出按钮已移至 Chat Editor 标题栏右侧，
 				// 通过 MenuId.EditorTitle 在 chat editor 激活时自动渲染） ──
-				if (primaryWindowControlsLocation === 'right') {
-					const toggleContainer = append(this.rightContent, $('div.titlebar-toggle-container'));
-					toggleContainer.id = 'agent-studio-titlebar-toggle-container';
+			if (primaryWindowControlsLocation === 'right') {
+				const toggleContainer = append(this.rightContent, $('div.titlebar-toggle-container'));
+				toggleContainer.id = 'agent-studio-titlebar-toggle-container';
 
-					// 折叠按钮
-					const toggleBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
-					toggleBtn.classList.add('codicon', 'codicon-layout-sidebar-left');
-					toggleBtn.title = 'Toggle Sidebar Content';
-					toggleBtn.setAttribute('aria-label', 'Toggle Sidebar Content');
-					toggleBtn.addEventListener('click', (e) => {
-						e.preventDefault();
-						e.stopPropagation();
-						document.dispatchEvent(new CustomEvent('agent-studio:toggle-right-column'));
-					});
-					// 将容器移到 window-controls-container 之前
-					this.rightContent.insertBefore(toggleContainer, this.windowControlsContainer);
-				}
+				// 反馈按钮 — opens the same web URL as the helpFeedback menu item
+				const feedbackBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
+				feedbackBtn.classList.add('codicon', 'codicon-feedback');
+				feedbackBtn.title = '反馈';
+				feedbackBtn.setAttribute('aria-label', '反馈');
+				feedbackBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					this.openerService.open(URI.parse('https://www.tapd.cn/tapd_fe/30076258/storywall'));
+				});
+
+				// Output 伸缩按钮 — toggle output panel below the middle column
+				const outputBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
+				outputBtn.classList.add('codicon', 'codicon-output');
+				outputBtn.title = 'Toggle Output';
+				outputBtn.setAttribute('aria-label', 'Toggle Output');
+				outputBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					document.dispatchEvent(new CustomEvent('agent-studio:toggle-output'));
+				});
+
+				// Panel 切换按钮 — 切换面板显示/隐藏（Ctrl+J），与 VS Code 原生行为一致
+				const panelBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
+				panelBtn.classList.add('codicon', 'codicon-panel-bottom');
+				panelBtn.title = 'Toggle Panel (Ctrl+J)';
+				panelBtn.setAttribute('aria-label', 'Toggle Panel');
+				panelBtn.style.marginLeft = '4px';
+				panelBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					document.dispatchEvent(new CustomEvent('agent-studio:toggle-panel'));
+				});
+
+				// 折叠按钮
+				const toggleBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
+				toggleBtn.classList.add('codicon', 'codicon-layout-sidebar-left', 'titlebar-toggle-sidebar-btn');
+				toggleBtn.title = 'Toggle Sidebar Content';
+				toggleBtn.setAttribute('aria-label', 'Toggle Sidebar Content');
+				toggleBtn.addEventListener('click', (e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					document.dispatchEvent(new CustomEvent('agent-studio:toggle-right-column'));
+				});
+				// 将容器移到 window-controls-container 之前
+				this.rightContent.insertBefore(toggleContainer, this.windowControlsContainer);
+			}
 				if (isWeb) {
 					append(
 						primaryWindowControlsLocation === 'left' ? this.rightContent : this.leftContent,
@@ -345,8 +382,9 @@ export class MainTitlebarPart extends TitlebarPart {
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IHostService hostService: IHostService,
 		@IProductService productService: IProductService,
+		@IOpenerService openerService: IOpenerService,
 	) {
-		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService);
+		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService);
 	}
 }
 
@@ -371,9 +409,10 @@ export class AuxiliaryTitlebarPart extends TitlebarPart implements IAuxiliaryTit
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IHostService hostService: IHostService,
 		@IProductService productService: IProductService,
+		@IOpenerService openerService: IOpenerService,
 	) {
 		const id = AuxiliaryTitlebarPart.COUNTER++;
-		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService);
+		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService);
 	}
 
 	override get preventZoom(): boolean {

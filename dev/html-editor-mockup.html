@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HTML Editor UI Mockup</title>
+<style>
+:root {
+  --deck-chrome-bg: rgba(15, 23, 42, 0.94);
+  --deck-chrome-border: rgba(255, 255, 255, 0.14);
+  --deck-chrome-text: #e2e8f0;
+  --deck-chrome-muted: #94a3b8;
+  --deck-chrome-accent: #22d3ee;
+  --deck-chrome-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  --deck-chrome-surface: rgba(30, 41, 59, 0.92);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: #0f172a;
+  color: var(--deck-chrome-text);
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* ===== 画布区域 ===== */
+#canvas {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(160deg, #0c1222 0%, #070b14 50%, #0a1628 100%);
+  padding: 40px;
+  overflow: auto;
+}
+.slide-preview {
+  width: 100%;
+  max-width: 960px;
+  min-height: 540px;
+  margin: 0 auto;
+  background: #1a1a2e;
+  border-radius: 12px;
+  padding: 60px;
+  position: relative;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+}
+
+/* ===== 左上角悬浮控件 ===== */
+.deck-left-hover-anchor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10000;
+  padding: 0.5rem 0.65rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 280px;
+  min-height: 44px;
+  pointer-events: auto;
+  background: transparent;
+}
+.deck-left-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+.deck-left-row--tools {
+  flex-wrap: nowrap;
+  max-width: 420px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.edit-toggle, .sidebar-pages-toggle, .deck-btn-save, .deck-btn-add, .deck-btn-unlock {
+  position: relative;
+  z-index: 10001;
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-bg);
+  color: var(--deck-chrome-text);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.25s ease;
+  white-space: nowrap;
+  backdrop-filter: blur(12px);
+}
+.deck-btn-save, .deck-btn-add, .deck-btn-unlock {
+  display: none;
+}
+body.deck-edit-mode .deck-btn-save,
+body.deck-edit-mode .deck-btn-add,
+body.deck-edit-mode .deck-btn-unlock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.edit-toggle.active {
+  background: var(--deck-chrome-accent);
+  color: var(--deck-chrome-bg);
+  border-color: var(--deck-chrome-accent);
+}
+
+/* ===== 编辑工具栏 ===== */
+.deck-edit-chrome {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-bg);
+  box-shadow: var(--deck-chrome-shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+  backdrop-filter: blur(12px);
+}
+body.deck-edit-mode .deck-edit-chrome {
+  display: flex;
+  opacity: 1;
+  pointer-events: auto;
+}
+.deck-edit-chrome button {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-surface);
+  color: var(--deck-chrome-text);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.deck-edit-chrome button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--deck-chrome-accent) 18%, var(--deck-chrome-surface));
+}
+.deck-edit-chrome button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.deck-edit-chrome .deck-btn-done {
+  width: auto;
+  padding: 0 12px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--deck-chrome-bg);
+  background: var(--deck-chrome-accent);
+  border-color: color-mix(in srgb, var(--deck-chrome-accent) 70%, #000);
+}
+.deck-edit-chrome .deck-btn-done:hover {
+  filter: brightness(1.08);
+}
+.deck-edit-chrome svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+/* ===== 添加元素菜单 ===== */
+.deck-add-element-menu {
+  position: fixed;
+  top: 60px;
+  left: 200px;
+  z-index: 10002;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-bg);
+  box-shadow: var(--deck-chrome-shadow);
+  backdrop-filter: blur(12px);
+}
+.deck-add-element-menu button {
+  text-align: left;
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-surface);
+  color: var(--deck-chrome-text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.deck-add-element-menu button:hover {
+  background: color-mix(in srgb, var(--deck-chrome-accent) 18%, var(--deck-chrome-surface));
+}
+
+/* ===== 右侧幻灯片侧栏 ===== */
+.slide-sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 200px;
+  background: var(--deck-chrome-bg);
+  border-left: 1px solid var(--deck-chrome-border);
+  z-index: 9500;
+  transform: translateX(0);
+  transition: transform 0.28s ease;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 8px;
+  gap: 8px;
+  box-shadow: -8px 0 32px rgba(0,0,0,0.35);
+  backdrop-filter: blur(12px);
+}
+.slide-sidebar h3 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--deck-chrome-muted);
+  margin: 0 4px 4px;
+}
+.filmstrip-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.filmstrip-item {
+  position: relative;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background: color-mix(in srgb, var(--deck-chrome-surface) 80%, transparent);
+  padding: 6px;
+  cursor: grab;
+}
+.filmstrip-item.is-current {
+  border-color: var(--deck-chrome-accent);
+}
+.filmstrip-thumb-host {
+  width: 100%;
+  aspect-ratio: 16/9;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #020617;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--deck-chrome-muted);
+  font-size: 0.7rem;
+}
+.filmstrip-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+  gap: 4px;
+}
+.filmstrip-actions button {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-surface);
+  color: var(--deck-chrome-text);
+  cursor: pointer;
+}
+.filmstrip-actions button:hover {
+  filter: brightness(1.12);
+}
+.filmstrip-copy {
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.filmstrip-item:hover .filmstrip-copy {
+  opacity: 1;
+}
+.filmstrip-num {
+  font-size: 11px;
+  color: var(--deck-chrome-muted);
+}
+.sidebar-bottom {
+  display: flex;
+  gap: 4px;
+  margin-top: auto;
+}
+.sidebar-bottom button {
+  flex: 1;
+  font-size: 11px;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-surface);
+  color: var(--deck-chrome-text);
+  cursor: pointer;
+}
+
+/* ===== RTE 富文本工具栏 ===== */
+.rte-toolbar {
+  position: fixed;
+  z-index: 9600;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  min-width: 200px;
+  max-width: 320px;
+  padding: 6px;
+  background: var(--deck-chrome-bg);
+  border: 1px solid var(--deck-chrome-border);
+  border-radius: 10px;
+  box-shadow: var(--deck-chrome-shadow);
+  backdrop-filter: blur(12px);
+}
+.rte-toolbar-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.rte-toolbar button {
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-surface);
+  color: var(--deck-chrome-text);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.rte-toolbar button:hover {
+  background: color-mix(in srgb, var(--deck-chrome-accent) 18%, var(--deck-chrome-surface));
+}
+.rte-toolbar button.is-active {
+  outline: 2px solid var(--deck-chrome-accent);
+  outline-offset: 1px;
+}
+.rte-drawer-trigger {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.rte-drawer-trigger.is-open {
+  background: color-mix(in srgb, var(--deck-chrome-accent) 22%, var(--deck-chrome-surface));
+  border-color: color-mix(in srgb, var(--deck-chrome-accent) 45%, var(--deck-chrome-border));
+}
+.rte-drawer-card {
+  margin-top: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--deck-chrome-border);
+  background: color-mix(in srgb, var(--deck-chrome-surface) 88%, transparent);
+}
+.rte-drawer-card-inner {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+.rte-drawer-card-inner--font {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.rte-drawer-card-inner--scale {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.rte-drawer-card-inner button {
+  padding: 6px 6px;
+  font-size: 11px;
+}
+.rte-px-custom {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--deck-chrome-border) 65%, transparent);
+}
+.rte-px-custom input[type="number"] {
+  width: 4.5rem;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--deck-chrome-border);
+  background: var(--deck-chrome-bg);
+  color: var(--deck-chrome-text);
+  font-size: 12px;
+}
+.rte-px-custom button {
+  padding: 4px 10px;
+}
+.rte-toolbar-meta {
+  font-size: 10px;
+  color: var(--deck-chrome-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+}
+
+/* ===== 幻灯片对象 ===== */
+.slide-object {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: auto;
+  outline: 1px dashed color-mix(in srgb, var(--deck-chrome-muted) 40%, transparent);
+  border-radius: 4px;
+  padding: 8px;
+}
+.slide-object.is-selected {
+  outline: 2px solid var(--deck-chrome-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--deck-chrome-accent) 25%, transparent);
+}
+.slide-object-move {
+  position: absolute;
+  left: -22px;
+  top: 4px;
+  width: 20px;
+  height: 28px;
+  border: 1px solid var(--deck-chrome-border);
+  border-radius: 6px;
+  background: var(--deck-chrome-bg);
+  color: var(--deck-chrome-muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.slide-object-delete {
+  position: absolute;
+  left: -22px;
+  top: 36px;
+  width: 20px;
+  height: 22px;
+  border: 1px solid var(--deck-chrome-border);
+  border-radius: 6px;
+  background: var(--deck-chrome-bg);
+  color: var(--deck-chrome-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+}
+.slide-object-delete:hover {
+  color: #f87171;
+  background: color-mix(in srgb, #f87171 12%, var(--deck-chrome-bg));
+}
+.slide-object-resize {
+  position: absolute;
+  border-radius: 3px;
+  background: var(--deck-chrome-accent);
+  z-index: 4;
+  border: 1px solid var(--deck-chrome-border);
+  padding: 0;
+  box-sizing: border-box;
+}
+.slide-object-resize--se {
+  right: -7px;
+  bottom: -7px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+.slide-object-resize--e {
+  right: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 32px;
+  border-radius: 4px;
+  cursor: ew-resize;
+}
+.slide-object-resize--s {
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 32px;
+  height: 10px;
+  border-radius: 4px;
+  cursor: ns-resize;
+}
+.slide-object.is-selected .slide-object-resize {
+  display: block;
+}
+.slide-object-resize {
+  display: none;
+}
+.slide-object.is-selected .slide-object-resize {
+  display: block;
+}
+.slide-object-text {
+  min-height: 1.2em;
+  outline: none;
+  font-size: 1rem;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: #e2e8f0;
+}
+
+/* ===== 吸附线 ===== */
+.snap-line-v, .snap-line-h {
+  position: absolute;
+  background: #f472b6;
+  pointer-events: none;
+  z-index: 7;
+  opacity: 0.85;
+}
+.snap-line-v {
+  width: 1px;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+}
+.snap-line-h {
+  height: 1px;
+  left: 0;
+  right: 0;
+  top: 50%;
+}
+
+/* ===== 进度条 ===== */
+.progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--deck-chrome-accent), #a78bfa);
+  width: 33%;
+  z-index: 8000;
+  pointer-events: none;
+}
+
+/* ===== 导航圆点 ===== */
+.nav-dots {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 0.45rem;
+  z-index: 8000;
+}
+.nav-dots button {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  background: color-mix(in srgb, var(--deck-chrome-text) 22%, transparent);
+  cursor: pointer;
+}
+.nav-dots button.active {
+  background: var(--deck-chrome-accent);
+  transform: scale(1.15);
+}
+
+/* ===== 标注说明 ===== */
+.annotation {
+  position: fixed;
+  z-index: 99999;
+  background: #1e293b;
+  border: 1px solid var(--deck-chrome-accent);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--deck-chrome-accent);
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.annotation::before {
+  content: '';
+  position: absolute;
+  border: 6px solid transparent;
+}
+.annotation.left::before {
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border-right-color: var(--deck-chrome-accent);
+}
+.annotation.right::before {
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  border-left-color: var(--deck-chrome-accent);
+}
+.annotation.top::before {
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-bottom-color: var(--deck-chrome-accent);
+}
+.annotation.bottom::before {
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-top-color: var(--deck-chrome-accent);
+}
+</style>
+</head>
+<body class="deck-edit-mode deck-sidebar-open">
+
+<!-- 进度条 -->
+<div class="progress-bar"></div>
+
+<!-- 左上角悬浮控件区 -->
+<div class="deck-left-hover-anchor" id="deckLeftHover">
+  <div class="deck-left-row">
+    <button type="button" class="edit-toggle active" id="editToggle">Edit</button>
+    <button type="button" class="sidebar-pages-toggle active" id="pagesToggle">Pages</button>
+    <button type="button" class="deck-btn-save" id="btnSave">Save</button>
+    <button type="button" class="deck-btn-add" id="btnAddElement">Add element</button>
+    <button type="button" class="deck-btn-unlock" id="btnUnlockLayout">Unlock layout</button>
+  </div>
+  <div class="deck-edit-chrome deck-left-row deck-left-row--tools" id="deckEditChrome">
+    <button type="button" id="btnUndo" aria-label="Undo" title="Undo (Ctrl+Z)">
+      <svg viewBox="0 0 24 24"><path d="M9 14l-4-4 4-4M5 10h8a5 5 0 010 10h-2"/></svg>
+    </button>
+    <button type="button" id="btnRedo" aria-label="Redo" title="Redo (Ctrl+Y)">
+      <svg viewBox="0 0 24 24"><path d="M15 14l4-4-4-4M19 10h-8a5 5 0 000 10h2"/></svg>
+    </button>
+    <button type="button" class="deck-btn-done" id="btnDoneEdit">Done</button>
+  </div>
+</div>
+
+<!-- 添加元素菜单 -->
+<div class="deck-add-element-menu" id="deckAddElementMenu">
+  <button type="button">Text</button>
+  <button type="button">Image</button>
+  <button type="button">Video</button>
+</div>
+
+<!-- 画布区域 -->
+<div id="canvas">
+  <div class="slide-preview">
+    <!-- 幻灯片对象示例 -->
+    <div class="slide-object is-selected" style="left:8%;top:15%;width:80%;min-height:1em;">
+      <button class="slide-object-move">⠿</button>
+      <button class="slide-object-delete">×</button>
+      <button class="slide-object-resize slide-object-resize--se"></button>
+      <button class="slide-object-resize slide-object-resize--e"></button>
+      <button class="slide-object-resize slide-object-resize--s"></button>
+      <div class="slide-object-text" contenteditable="true">Editable Deck Reference — selected object</div>
+    </div>
+
+    <div class="slide-object" style="left:8%;top:42%;width:70%;">
+      <button class="slide-object-move">⠿</button>
+      <button class="slide-object-delete">×</button>
+      <button class="slide-object-resize slide-object-resize--se"></button>
+      <button class="slide-object-resize slide-object-resize--e"></button>
+      <button class="slide-object-resize slide-object-resize--s"></button>
+      <div class="slide-object-text" contenteditable="false">Press E for edit mode. Hover the top-left for Edit, Pages, Save, then Undo / Redo / Done (exit).</div>
+    </div>
+
+    <div class="slide-object" style="left:55%;top:58%;width:35%;height:120px;">
+      <button class="slide-object-move">⠿</button>
+      <button class="slide-object-delete">×</button>
+      <button class="slide-object-resize slide-object-resize--se"></button>
+      <button class="slide-object-resize slide-object-resize--e"></button>
+      <button class="slide-object-resize slide-object-resize--s"></button>
+      <div style="width:100%;height:100%;background:linear-gradient(135deg,#22d3ee44,#a78bfa44);border-radius:12px;border:1px solid rgba(255,255,255,0.12);"></div>
+    </div>
+
+    <!-- 吸附线示例 -->
+    <div class="snap-line-v"></div>
+    <div class="snap-line-h"></div>
+  </div>
+</div>
+
+<!-- 导航圆点 -->
+<nav class="nav-dots" id="navDots">
+  <button class="active"></button>
+  <button></button>
+  <button></button>
+</nav>
+
+<!-- 右侧侧栏 -->
+<aside class="slide-sidebar" id="slideSidebar">
+  <h3>Slides</h3>
+  <div class="filmstrip-list">
+    <div class="filmstrip-item is-current">
+      <div class="filmstrip-thumb-host">Slide 1</div>
+      <div class="filmstrip-actions">
+        <span class="filmstrip-num">1</span>
+        <div class="filmstrip-actions-group">
+          <button class="filmstrip-copy">Copy</button>
+          <button>×</button>
+        </div>
+      </div>
+    </div>
+    <div class="filmstrip-item">
+      <div class="filmstrip-thumb-host">Slide 2</div>
+      <div class="filmstrip-actions">
+        <span class="filmstrip-num">2</span>
+        <div class="filmstrip-actions-group">
+          <button class="filmstrip-copy">Copy</button>
+          <button>×</button>
+        </div>
+      </div>
+    </div>
+    <div class="filmstrip-item">
+      <div class="filmstrip-thumb-host">Slide 3</div>
+      <div class="filmstrip-actions">
+        <span class="filmstrip-num">3</span>
+        <div class="filmstrip-actions-group">
+          <button class="filmstrip-copy">Copy</button>
+          <button>×</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="sidebar-bottom">
+    <button id="btnExport">Export HTML</button>
+    <button id="btnNewPage">+New Page</button>
+  </div>
+</aside>
+
+<!-- RTE 富文本工具栏 -->
+<div class="rte-toolbar" id="rteToolbar" style="top:60px;left:50%;transform:translateX(-50%);">
+  <div class="rte-toolbar-main">
+    <button type="button" data-cmd="bold" class="is-active"><strong>B</strong></button>
+    <button type="button" data-cmd="italic"><em>I</em></button>
+    <button type="button" class="rte-drawer-trigger" data-rte-drawer="font">Font</button>
+    <button type="button" class="rte-drawer-trigger" data-rte-drawer="scale">Scale</button>
+    <button type="button" class="rte-drawer-trigger is-open" data-rte-drawer="px">Px</button>
+  </div>
+  <div class="rte-drawer-card" id="rteDrawerPx" style="display:block;">
+    <div class="rte-drawer-card-inner">
+      <span class="rte-toolbar-meta">Pixel size</span>
+      <button data-size-px="24">24</button>
+      <button data-size-px="36">36</button>
+      <button data-size-px="48">48</button>
+      <button data-size-px="72">72</button>
+      <button data-size-px="96">96</button>
+      <button data-size-custom>Custom...</button>
+      <div class="rte-px-custom">
+        <label class="rte-toolbar-meta">Px (8-400)</label>
+        <input type="number" min="8" max="400" value="24" />
+        <button>Apply</button>
+        <button>Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 标注说明 -->
+<div class="annotation left" style="top:16px;left:320px;">
+  左上角悬浮控件区<br>
+  • Edit: 进入编辑模式<br>
+  • Pages: 切换侧栏<br>
+  • Save: 保存 (Ctrl+S)<br>
+  • Add element: 添加元素<br>
+  • Unlock layout: 解锁布局<br>
+  • Undo/Redo: 撤销/重做<br>
+  • Done: 退出编辑模式<br>
+  <small style="opacity:0.7">hover-reveal: 鼠标移入显示, 移出 400ms 后隐藏</small>
+</div>
+
+<div class="annotation top" style="top:160px;left:50%;transform:translateX(-50%);">
+  RTE 富文本工具栏<br>
+  • B/I: 加粗/斜体<br>
+  • Font: 字体选择 (Serif/Sans/Mono/Body)<br>
+  • Scale: 比例字号 (S/M/L/XL)<br>
+  • Px: 像素字号 (24/36/48/72/96/自定义)<br>
+  <small style="opacity:0.7">仅在文本聚焦时显示, 跟随光标定位</small>
+</div>
+
+<div class="annotation right" style="top:200px;right:220px;">
+  幻灯片对象 (data-slide-object)<br>
+  • ⠿ 拖拽手柄: 移动元素<br>
+  • × 删除按钮: 删除元素<br>
+  • 方块: SE/E/S 三向缩放<br>
+  • 蓝色描边: 选中状态<br>
+  • 虚线: 未选中<br>
+  <small style="opacity:0.7">Ctrl+点击: 多选</small>
+</div>
+
+<div class="annotation bottom" style="top:50%;left:50%;transform:translateX(-50%);">
+  吸附对齐线 (粉色)<br>
+  • 8px 阈值<br>
+  • 对齐: 幻灯片中心 + 其他对象边缘/中心<br>
+  <small style="opacity:0.7">prefers-reduced-motion 时禁用</small>
+</div>
+
+<div class="annotation left" style="top:20px;right:220px;text-align:right;">
+  右侧幻灯片侧栏<br>
+  • 缩略图列表<br>
+  • 当前页高亮 (蓝色边框)<br>
+  • Copy: 复制幻灯片<br>
+  • ×: 删除幻灯片<br>
+  • Export HTML: 导出<br>
+  • +New Page: 新建页<br>
+  <small style="opacity:0.7">拖拽重排序, 200px 宽</small>
+</div>
+
+<div class="annotation bottom" style="bottom:30px;left:50%;transform:translateX(-50%);">
+  导航圆点 + 进度条<br>
+  • 底部居中圆点导航<br>
+  • 顶部 3px 进度条<br>
+  <small style="opacity:0.7">编辑模式下滚轮导航禁用</small>
+</div>
+
+<div class="annotation top" style="top:120px;left:200px;">
+  添加元素菜单<br>
+  • Text: 文本元素<br>
+  • Image: 图片元素<br>
+  • Video: 视频元素<br>
+  <small style="opacity:0.7">点击 Add element 展开</small>
+</div>
+
+<script>
+// 交互演示
+document.querySelectorAll('.rte-drawer-trigger').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.classList.toggle('is-open');
+  });
+});
+document.querySelectorAll('.slide-object').forEach(obj => {
+  obj.addEventListener('click', (e) => {
+    if (e.target.closest('.slide-object-delete')) return;
+    document.querySelectorAll('.slide-object').forEach(o => o.classList.remove('is-selected'));
+    obj.classList.add('is-selected');
+  });
+});
+</script>
+</body>
+</html>

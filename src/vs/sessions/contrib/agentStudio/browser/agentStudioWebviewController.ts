@@ -3639,6 +3639,7 @@ export class AgentStudioWebviewController extends Disposable {
 			const agentName = wf.name || 'Workflow Agent';
 			const systemPrompt = this._buildWorkflowSystemPrompt(wf);
 			const agent = await this.agentStudioService.createAgent({
+				id: wf.id,
 				name: agentName,
 				role: 'Workflow Manager',
 				description: `Manages and executes workflow: ${wf.name}`,
@@ -3653,7 +3654,7 @@ export class AgentStudioWebviewController extends Disposable {
 				source: 'custom',
 				category: 'workflow',
 				icon: '🔀',
-			} as any);
+			}) as any;
 			if (agent?.id) {
 				await this.workflowStorageService.updateWorkflow(wf.id, { agentId: agent.id });
 				wf.agentId = agent.id; // Update in-memory so callers see the new agentId.
@@ -3677,6 +3678,39 @@ export class AgentStudioWebviewController extends Disposable {
 		lines.push('You are responsible for both executing AND editing this workflow graph.');
 		lines.push('Users may ask you to add, remove, or modify nodes. You have full control.');
 		lines.push('');
+
+		// ── Workflow tool instructions ─────────────────────────────────
+		lines.push('## Workflow Tools');
+		lines.push('');
+		lines.push('Available workflow editing tools:');
+		lines.push('- `workflow_list` — List all workflows in the current workspace');
+		lines.push('- `workflow_get` — Get the full state of a workflow (nodes, connections, metadata)');
+		lines.push('- `workflow_get_schema` — Get available node types and their data schemas');
+		lines.push('- `workflow_apply` — Apply a complete workflow definition (replaces all nodes/connections)');
+		lines.push('');
+		lines.push('Workflow creation/modification process:');
+		lines.push(`1. First call \`workflow_get\` with workflow_id="${wf.id}" to see the current state`);
+		lines.push('2. Call `workflow_get_schema` if you need to understand available node types');
+		lines.push('3. Generate the complete workflow JSON with ALL nodes and connections');
+		lines.push('4. Call `workflow_apply` with workflow_id, nodes, connections, and optional name/description');
+		lines.push('');
+		lines.push('Node types you can create:');
+		lines.push('- System: `start`, `end` (every workflow MUST have both)');
+		lines.push('- Basic: `prompt`, `agent`, `skill`, `tool`, `task`');
+		lines.push('- Control flow: `ifElse`, `switch`, `condition`, `loop`, `parallel`, `askUser`');
+		lines.push('- Layout: `group` (visual container, no execution logic)');
+		lines.push('');
+		lines.push('Guidelines:');
+		lines.push('- Every workflow MUST have exactly one `start` and one `end` node');
+		lines.push('- Position nodes with horizontal spacing of ~300px and vertical spacing of ~150px');
+		lines.push('- Start node typically at {x: 80, y: 250}');
+		lines.push('- Each connection requires: `id` (unique), `from` (source node id), `to` (target node id)');
+		lines.push('- `workflow_apply` replaces the ENTIRE workflow — always provide ALL nodes and connections');
+		lines.push('- Use descriptive labels for nodes so the workflow is readable');
+		lines.push('- For branching nodes (ifElse, switch), include the branches array with unique IDs');
+		lines.push('- Explain your changes briefly to the user after applying');
+		lines.push('');
+
 		if (wf.description) {
 			lines.push('## Workflow Description');
 			lines.push(wf.description);

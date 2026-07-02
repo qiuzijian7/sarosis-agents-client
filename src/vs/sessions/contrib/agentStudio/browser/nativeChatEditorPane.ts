@@ -21,6 +21,7 @@ import { IModelService } from '../../../../editor/common/services/model.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
+import { ISkillRegistry } from '../common/skills.js';
 import { SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
@@ -103,6 +104,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ILogService private readonly _logService: ILogService,
 		@IMcpService private readonly _mcpService: IMcpService,
+		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -592,7 +594,18 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.error('[NativeChatEditorPane] onOpenSettings failed:', err);
 				}
 			},
-			onListSkills: () => [],
+			onListSkills: () => {
+			return this._skillRegistry.getSkills().map(s => ({
+				id: s.id,
+				name: s.name ?? s.id,
+				description: s.description ?? '',
+				activation: s.activation,
+				source: s.source,
+				version: s.version,
+				enabled: s.enabled,
+				category: s.category,
+			}));
+		},
 		onListMcpServers: () => {
 			// 从 IMcpService 获取 MCP 服务器列表
 			const servers = this._mcpService.servers.get();
@@ -863,6 +876,11 @@ export class NativeChatEditorPane extends EditorPane {
 					);
 					this._refreshLiveWorkflowMessage();
 				});
+			},
+			onClarifySubmit: (toolCallId: string, selection: string) => {
+				// 用户在 clarify 卡片中选择了选项 → 将选择作为新消息发送给 LLM
+				this._logService.info('[NativeChatEditorPane] onClarifySubmit:', toolCallId, selection);
+				void this._sendMessageInternal?.(selection);
 			},
 			onQuestionClick: (question: { label: string }) => {
 				// Send the suggested question as a new user message.

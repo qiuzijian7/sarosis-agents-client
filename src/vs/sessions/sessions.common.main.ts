@@ -284,6 +284,9 @@ import { IDebugVisualizerService } from '../workbench/contrib/debug/common/debug
 registerSingleton(IDebugService, NullDebugService, InstantiationType.Delayed);
 registerSingleton(IDebugVisualizerService, NullDebugVisualizerService, InstantiationType.Delayed);
 
+// Debug (contribution - registers Debug Console pane composite in Panel)
+import '../workbench/contrib/debug/browser/debug.contribution.js';
+
 // Process Explorer
 import '../workbench/contrib/processExplorer/browser/processExplorer.contribution.js';
 
@@ -319,6 +322,9 @@ registerSingleton(IExtensionsWorkbenchService, ExtensionsWorkbenchService, Insta
 // Output View
 import '../workbench/contrib/output/browser/output.contribution.js';
 import '../workbench/contrib/output/browser/outputView.js';
+
+// [Sarosis] Register Output as a ViewContainer in the Panel (bottom area)
+import './contrib/outputPanel/browser/outputPanel.contribution.js';
 
 // Terminal
 import '../workbench/contrib/terminal/terminal.all.js';
@@ -473,8 +479,10 @@ import './contrib/browserView/browser/sessionBrowserView.contribution.js';
 import './contrib/editor/browser/editor.contribution.js';
 
 import './contrib/terminal/browser/sessionsTerminalContribution.js';
-import './contrib/chatDebug/browser/chatDebug.contribution.js';
-import './contrib/output/browser/output.contribution.js'; // [Sarosis] 把原生 Output 视图从 Panel 搬到 Sidebar
+// [Sarosis] Chat Debug 面板已移除，调试控制台（Debug Console / REPL）现在出现在 Panel 中
+// import './contrib/chatDebug/browser/chatDebug.contribution.js';
+// [Sarosis] Output 视图保留在 Panel（不再搬到 Sidebar），与 Debug Console、Terminal 并列
+// import './contrib/output/browser/output.contribution.js';
 import './contrib/welcome/browser/welcome.contribution.js';
 import './contrib/aquarium/browser/aquarium.contribution.js';
 import './contrib/policyBlocked/browser/policyBlocked.contribution.js';

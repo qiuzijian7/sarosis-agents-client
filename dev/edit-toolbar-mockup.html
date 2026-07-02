@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Edit Mode Toolbar UI Mockup</title>
+<style>
+:root {
+  --tb-bg: rgba(24, 24, 27, 0.96);
+  --tb-border: rgba(255, 255, 255, 0.12);
+  --tb-text: #e4e4e7;
+  --tb-muted: #71717a;
+  --tb-accent: #22d3ee;
+  --tb-accent-bg: rgba(34, 211, 238, 0.12);
+  --tb-hover: rgba(63, 63, 70, 0.8);
+  --tb-shadow: 0 10px 38px rgba(0, 0, 0, 0.45);
+  --tb-radius: 8px;
+  --tb-btn-size: 34px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: #1a1a2e;
+  color: var(--tb-text);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 60px 20px;
+  min-height: 100vh;
+  gap: 40px;
+}
+
+h1 { font-size: 18px; color: var(--tb-muted); font-weight: 400; }
+h2 { font-size: 14px; color: var(--tb-accent); font-weight: 600; margin-top: 30px; }
+
+/* ===== 方案 A: 紧凑横排工具栏 ===== */
+.toolbar-a {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--tb-bg);
+  border: 1px solid var(--tb-border);
+  border-radius: var(--tb-radius);
+  box-shadow: var(--tb-shadow);
+  backdrop-filter: blur(16px);
+}
+.toolbar-a .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tb-btn-size);
+  height: var(--tb-btn-size);
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tb-text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.toolbar-a .btn:hover { background: var(--tb-hover); }
+.toolbar-a .btn.active { background: var(--tb-accent-bg); color: var(--tb-accent); }
+.toolbar-a .sep { width: 1px; height: 20px; background: var(--tb-border); margin: 0 3px; flex-shrink: 0; }
+.toolbar-a select {
+  height: var(--tb-btn-size);
+  padding: 0 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tb-text);
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+.toolbar-a select:hover { background: var(--tb-hover); }
+
+/* ===== 方案 B: 分组卡片式 ===== */
+.toolbar-b {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 4px;
+  background: var(--tb-bg);
+  border: 1px solid var(--tb-border);
+  border-radius: 10px;
+  box-shadow: var(--tb-shadow);
+  backdrop-filter: blur(16px);
+}
+.toolbar-b .group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+}
+.toolbar-b .group + .group {
+  border-left: 1px solid var(--tb-border);
+}
+.toolbar-b .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tb-btn-size);
+  height: var(--tb-btn-size);
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tb-text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.toolbar-b .btn:hover { background: var(--tb-hover); }
+.toolbar-b .btn.active { background: var(--tb-accent-bg); color: var(--tb-accent); }
+.toolbar-b select {
+  height: var(--tb-btn-size);
+  padding: 0 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tb-text);
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+.toolbar-b select:hover { background: var(--tb-hover); }
+
+/* ===== 方案 C: 双行式（功能多时换行） ===== */
+.toolbar-c {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--tb-bg);
+  border: 1px solid var(--tb-border);
+  border-radius: 10px;
+  box-shadow: var(--tb-shadow);
+  backdrop-filter: blur(16px);
+  max-width: 520px;
+}
+.toolbar-c .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tb-text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.toolbar-c .btn:hover { background: var(--tb-hover); }
+.toolbar-c .btn.active { background: var(--tb-accent-bg); color: var(--tb-accent); }
+.toolbar-c .sep { width: 1px; height: 20px; background: var(--tb-border); margin: 0 3px; }
+.toolbar-c select {
+  height: 32px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tb-text);
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+.toolbar-c select:hover { background: var(--tb-hover); }
+
+/* ===== 弹出面板（字号/字体/颜色） ===== */
+.popover {
+  position: absolute;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--tb-bg);
+  border: 1px solid var(--tb-border);
+  border-radius: 8px;
+  box-shadow: var(--tb-shadow);
+  backdrop-filter: blur(16px);
+  z-index: 100;
+  margin-top: 4px;
+}
+.popover.open { display: flex; }
+.popover-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tb-text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: nowrap;
+}
+.popover-item:hover { background: var(--tb-hover); }
+.popover-item.active { color: var(--tb-accent); }
+.popover-wrap { position: relative; display: inline-flex; }
+
+/* ===== 颜色面板 ===== */
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  padding: 4px;
+}
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.1s, transform 0.1s;
+}
+.color-swatch:hover { border-color: var(--tb-accent); transform: scale(1.1); }
+
+/* ===== 模拟页面内容 ===== */
+.demo-content {
+  width: 100%;
+  max-width: 700px;
+  background: #0f0f23;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 40px;
+  position: relative;
+}
+.demo-text {
+  font-size: 16px;
+  line-height: 1.7;
+  color: #d4d4d8;
+  outline: 2px solid rgba(34, 211, 238, 0.4);
+  outline-offset: 4px;
+  border-radius: 4px;
+  padding: 12px;
+}
+
+/* ===== 标注 ===== */
+.label {
+  font-size: 11px;
+  color: var(--tb-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+/* ===== 输入框弹窗 ===== */
+.input-popover {
+  position: absolute;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: var(--tb-bg);
+  border: 1px solid var(--tb-border);
+  border-radius: 8px;
+  box-shadow: var(--tb-shadow);
+  backdrop-filter: blur(16px);
+  z-index: 100;
+  margin-top: 4px;
+}
+.input-popover.open { display: flex; }
+.input-popover input {
+  width: 200px;
+  padding: 5px 8px;
+  border: 1px solid var(--tb-border);
+  border-radius: 5px;
+  background: rgba(0,0,0,0.3);
+  color: var(--tb-text);
+  font-size: 12px;
+  outline: none;
+}
+.input-popover input:focus { border-color: var(--tb-accent); }
+.input-popover button {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 5px;
+  background: var(--tb-accent);
+  color: #000;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+</style>
+</head>
+<body>
+
+<h1>Edit Mode 工具栏 UI Mockup — 3 种方案</h1>
+
+<!-- ===== 方案 A: 紧凑横排 ===== -->
+<div>
+  <div class="label">方案 A — 紧凑横排（推荐：功能少时简洁干净）</div>
+  <div class="toolbar-a" style="position:relative;">
+    <button class="btn active" title="Bold"><strong>B</strong></button>
+    <button class="btn" title="Italic"><em>I</em></button>
+    <button class="btn" title="Underline"><u>U</u></button>
+    <button class="btn" title="Strikethrough"><s>S</s></button>
+    <div class="sep"></div>
+
+    <!-- 字号下拉 -->
+    <div class="popover-wrap">
+      <button class="btn" id="a-size-trigger" title="Font Size" onclick="togglePopover('a-size')">Aa ▾</button>
+      <div class="popover" id="a-size">
+        <button class="popover-item" onclick="setActive(this)">XS — 12px</button>
+        <button class="popover-item" onclick="setActive(this)">S — 14px</button>
+        <button class="popover-item active" onclick="setActive(this)">M — 16px</button>
+        <button class="popover-item" onclick="setActive(this)">L — 20px</button>
+        <button class="popover-item" onclick="setActive(this)">XL — 24px</button>
+        <button class="popover-item" onclick="setActive(this)">XXL — 32px</button>
+      </div>
+    </div>
+
+    <!-- 字体下拉 -->
+    <div class="popover-wrap">
+      <button class="btn" title="Font Family" onclick="togglePopover('a-font')">Font ▾</button>
+      <div class="popover" id="a-font">
+        <button class="popover-item" style="font-family:Georgia,serif" onclick="setActive(this)">Georgia (Serif)</button>
+        <button class="popover-item" style="font-family:system-ui" onclick="setActive(this)">System UI (Sans)</button>
+        <button class="popover-item" style="font-family:'Courier New',monospace" onclick="setActive(this)">Courier (Mono)</button>
+        <button class="popover-item" style="font-family:'Times New Roman',serif" onclick="setActive(this)">Times</button>
+        <button class="popover-item" style="font-family:Arial,sans-serif" onclick="setActive(this)">Arial</button>
+      </div>
+    </div>
+
+    <!-- 颜色 -->
+    <div class="popover-wrap">
+      <button class="btn" title="Text Color" onclick="togglePopover('a-color')" style="border-bottom:3px solid #f44;">A</button>
+      <div class="popover" id="a-color" style="padding:8px;">
+        <div class="color-grid">
+          <div class="color-swatch" style="background:#000000" title="Black"></div>
+          <div class="color-swatch" style="background:#ffffff" title="White"></div>
+          <div class="color-swatch" style="background:#ef4444" title="Red"></div>
+          <div class="color-swatch" style="background:#f97316" title="Orange"></div>
+          <div class="color-swatch" style="background:#eab308" title="Yellow"></div>
+          <div class="color-swatch" style="background:#22c55e" title="Green"></div>
+          <div class="color-swatch" style="background:#06b6d4" title="Cyan"></div>
+          <div class="color-swatch" style="background:#3b82f6" title="Blue"></div>
+          <div class="color-swatch" style="background:#8b5cf6" title="Purple"></div>
+          <div class="color-swatch" style="background:#ec4899" title="Pink"></div>
+          <div class="color-swatch" style="background:#6b7280" title="Gray"></div>
+          <div class="color-swatch" style="background:#a855f7" title="Violet"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sep"></div>
+    <button class="btn" title="Align Left">⬅</button>
+    <button class="btn active" title="Align Center">≡</button>
+    <button class="btn" title="Align Right">➡</button>
+    <div class="sep"></div>
+    <button class="btn" title="Bullet List">•</button>
+    <button class="btn" title="Numbered List">1.</button>
+    <div class="sep"></div>
+
+    <!-- 链接弹出输入 -->
+    <div class="popover-wrap">
+      <button class="btn" title="Insert Link" onclick="toggleInput('a-link')">🔗</button>
+      <div class="input-popover" id="a-link">
+        <input type="text" placeholder="https://example.com" />
+        <button>OK</button>
+      </div>
+    </div>
+
+    <!-- 图片弹出输入 -->
+    <div class="popover-wrap">
+      <button class="btn" title="Insert Image" onclick="toggleInput('a-image')">🖼</button>
+      <div class="input-popover" id="a-image">
+        <input type="text" placeholder="https://example.com/img.png" />
+        <button>OK</button>
+      </div>
+    </div>
+
+    <div class="sep"></div>
+    <button class="btn" title="Undo (Ctrl+Z)">↶</button>
+    <button class="btn" title="Redo (Ctrl+Y)">↷</button>
+  </div>
+</div>
+
+<!-- ===== 方案 B: 分组卡片式 ===== -->
+<div>
+  <div class="label">方案 B — 分组卡片式（功能分组更清晰）</div>
+  <div class="toolbar-b" style="position:relative;">
+    <div class="group">
+      <button class="btn active" title="Bold"><strong>B</strong></button>
+      <button class="btn" title="Italic"><em>I</em></button>
+      <button class="btn" title="Underline"><u>U</u></button>
+      <button class="btn" title="Strikethrough"><s>S</s></button>
+    </div>
+    <div class="group">
+      <div class="popover-wrap">
+        <button class="btn" onclick="togglePopover('b-size')">Aa ▾</button>
+        <div class="popover" id="b-size">
+          <button class="popover-item" onclick="setActive(this)">12px</button>
+          <button class="popover-item" onclick="setActive(this)">14px</button>
+          <button class="popover-item active" onclick="setActive(this)">16px</button>
+          <button class="popover-item" onclick="setActive(this)">20px</button>
+          <button class="popover-item" onclick="setActive(this)">24px</button>
+          <button class="popover-item" onclick="setActive(this)">32px</button>
+        </div>
+      </div>
+      <div class="popover-wrap">
+        <button class="btn" onclick="togglePopover('b-font')">Font ▾</button>
+        <div class="popover" id="b-font">
+          <button class="popover-item" style="font-family:Georgia,serif" onclick="setActive(this)">Georgia</button>
+          <button class="popover-item" style="font-family:system-ui" onclick="setActive(this)">System</button>
+          <button class="popover-item" style="font-family:monospace" onclick="setActive(this)">Mono</button>
+        </div>
+      </div>
+      <div class="popover-wrap">
+        <button class="btn" style="border-bottom:3px solid #ef4444" onclick="togglePopover('b-color')">A</button>
+        <div class="popover" id="b-color" style="padding:8px;">
+          <div class="color-grid">
+            <div class="color-swatch" style="background:#000"></div>
+            <div class="color-swatch" style="background:#fff"></div>
+            <div class="color-swatch" style="background:#ef4444"></div>
+            <div class="color-swatch" style="background:#22c55e"></div>
+            <div class="color-swatch" style="background:#3b82f6"></div>
+            <div class="color-swatch" style="background:#eab308"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <button class="btn" title="Left">⬅</button>
+      <button class="btn active" title="Center">≡</button>
+      <button class="btn" title="Right">➡</button>
+    </div>
+    <div class="group">
+      <button class="btn" title="UL">•</button>
+      <button class="btn" title="OL">1.</button>
+    </div>
+    <div class="group">
+      <div class="popover-wrap">
+        <button class="btn" onclick="toggleInput('b-link')">🔗</button>
+        <div class="input-popover" id="b-link">
+          <input type="text" placeholder="URL..." />
+          <button>OK</button>
+        </div>
+      </div>
+      <div class="popover-wrap">
+        <button class="btn" onclick="toggleInput('b-image')">🖼</button>
+        <div class="input-popover" id="b-image">
+          <input type="text" placeholder="Image URL..." />
+          <button>OK</button>
+        </div>
+      </div>
+    </div>
+    <div class="group">
+      <button class="btn" title="Undo">↶</button>
+      <button class="btn" title="Redo">↷</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 方案 C: 双行式 ===== -->
+<div>
+  <div class="label">方案 C — 双行式（功能多时自动换行）</div>
+  <div class="toolbar-c" style="position:relative;">
+    <button class="btn active"><strong>B</strong></button>
+    <button class="btn"><em>I</em></button>
+    <button class="btn"><u>U</u></button>
+    <button class="btn"><s>S</s></button>
+    <div class="sep"></div>
+    <div class="popover-wrap">
+      <button class="btn" onclick="togglePopover('c-size')">Aa ▾</button>
+      <div class="popover" id="c-size">
+        <button class="popover-item" onclick="setActive(this)">12px</button>
+        <button class="popover-item active" onclick="setActive(this)">16px</button>
+        <button class="popover-item" onclick="setActive(this)">24px</button>
+      </div>
+    </div>
+    <div class="popover-wrap">
+      <button class="btn" onclick="togglePopover('c-font')">Font ▾</button>
+      <div class="popover" id="c-font">
+        <button class="popover-item" onclick="setActive(this)">Serif</button>
+        <button class="popover-item" onclick="setActive(this)">Sans</button>
+      </div>
+    </div>
+    <div class="popover-wrap">
+      <button class="btn" style="border-bottom:3px solid #f44" onclick="togglePopover('c-color')">A</button>
+      <div class="popover" id="c-color" style="padding:8px;">
+        <div class="color-grid">
+          <div class="color-swatch" style="background:#ef4444"></div>
+          <div class="color-swatch" style="background:#22c55e"></div>
+          <div class="color-swatch" style="background:#3b82f6"></div>
+          <div class="color-swatch" style="background:#000"></div>
+        </div>
+      </div>
+    </div>
+    <div class="sep"></div>
+    <button class="btn">⬅</button>
+    <button class="btn active">≡</button>
+    <button class="btn">➡</button>
+    <div class="sep"></div>
+    <button class="btn">•</button>
+    <button class="btn">1.</button>
+    <div class="sep"></div>
+    <div class="popover-wrap">
+      <button class="btn" onclick="toggleInput('c-link')">🔗</button>
+      <div class="input-popover" id="c-link">
+        <input type="text" placeholder="https://..." />
+        <button>OK</button>
+      </div>
+    </div>
+    <div class="popover-wrap">
+      <button class="btn" onclick="toggleInput('c-image')">🖼</button>
+      <div class="input-popover" id="c-image">
+        <input type="text" placeholder="Image URL..." />
+        <button>OK</button>
+      </div>
+    </div>
+    <div class="sep"></div>
+    <button class="btn">↶</button>
+    <button class="btn">↷</button>
+  </div>
+</div>
+
+<!-- ===== 模拟实际使用场景 ===== -->
+<h2>模拟实际使用场景</h2>
+<div class="demo-content">
+  <div class="demo-text" contenteditable="true">这是一段可编辑的文本。当用户点击此文本时，上方工具栏会出现在文本附近。用户可以加粗、斜体、改变字号、字体、颜色等。点击此文本试试编辑效果。</div>
+</div>
+
+<!-- ===== 设计说明 ===== -->
+<h2>设计说明</h2>
+<div style="max-width:600px;font-size:13px;line-height:1.8;color:var(--tb-muted);">
+  <p><strong style="color:var(--tb-accent)">交互改进：</strong></p>
+  <ul style="padding-left:20px;margin:10px 0;">
+    <li>字号 / 字体：点击按钮弹出下拉面板（popover），选择后自动关闭</li>
+    <li>文字颜色：点击弹出 12 色色板网格，点击色块应用颜色</li>
+    <li>链接 / 图片：点击弹出内联输入框，输入 URL 后点 OK 确认</li>
+    <li>工具栏在点击元素时出现，鼠标移出 200ms 后自动隐藏</li>
+    <li>点击工具栏外部时关闭所有打开的 popover</li>
+  </ul>
+  <p><strong style="color:var(--tb-accent)">视觉风格：</strong></p>
+  <ul style="padding-left:20px;margin:10px 0;">
+    <li>暗色背景 rgba(24,24,27,0.96) + backdrop-filter blur</li>
+    <li>按钮 34x34px，无边框，hover 时显示灰色背景</li>
+    <li>激活状态用青色 #22d3ee 高亮</li>
+    <li>分组间用 1px 竖线分隔</li>
+    <li>圆角 8px，阴影柔和</li>
+  </ul>
+</div>
+
+<script>
+function togglePopover(id) {
+  // 关闭其他 popover
+  document.querySelectorAll('.popover, .input-popover').forEach(function (p) {
+    if (p.id !== id) p.classList.remove('open');
+  });
+  var el = document.getElementById(id);
+  if (el) el.classList.toggle('open');
+}
+
+function toggleInput(id) {
+  document.querySelectorAll('.popover, .input-popover').forEach(function (p) {
+    if (p.id !== id) p.classList.remove('open');
+  });
+  var el = document.getElementById(id);
+  if (el) {
+    el.classList.toggle('open');
+    if (el.classList.contains('open')) {
+      var input = el.querySelector('input');
+      if (input) input.focus();
+    }
+  }
+}
+
+function setActive(btn) {
+  var siblings = btn.parentElement.querySelectorAll('.popover-item');
+  siblings.forEach(function (s) { s.classList.remove('active'); });
+  btn.classList.add('active');
+  // 关闭 popover
+  btn.parentElement.classList.remove('open');
+}
+
+// 点击外部关闭所有 popover
+document.addEventListener('click', function (e) {
+  if (!e.target.closest('.popover') && !e.target.closest('.popover-wrap')) {
+    document.querySelectorAll('.popover, .input-popover').forEach(function (p) {
+      p.classList.remove('open');
+    });
+  }
+});
+</script>
+</body>
+</html>

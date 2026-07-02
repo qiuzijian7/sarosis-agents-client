@@ -246,7 +246,12 @@ export class ChatBarPart extends AbstractPaneCompositePart { // TODO: should not
 				return this._skillRegistry.getSkills().map(s => ({
 					id: s.id,
 					name: s.name ?? s.id,
-					description: (s as any).description ?? '',
+					description: s.description ?? '',
+					activation: s.activation,
+					source: s.source,
+					version: s.version,
+					enabled: s.enabled,
+					category: s.category,
 				}));
 			},
 			// New callbacks for missing features

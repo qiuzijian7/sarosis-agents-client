@@ -1016,6 +1016,8 @@ export class TestEditorGroupView implements IEditorGroupView {
 	layout(_width: number, _height: number): void { }
 	relayout() { }
 	createEditorActions(_menuDisposable: IDisposable): { actions: IToolbarActions; onDidChange: Event<IMenuChangeEvent> } { throw new Error('not implemented'); }
+
+	setTrailingBreadcrumbsContent(_content: HTMLElement | undefined): void { }
 }
 
 export class TestEditorGroupAccessor implements IEditorGroupsView {

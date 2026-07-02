@@ -37,6 +37,7 @@ import { INativeEnvironmentService } from '../../../../../../platform/environmen
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel, IAgentTurnRequest, IChatStreamDelta } from '../../../common/providers.js';
+import { getToolsetForTool } from '../../../common/toolsetConfig.js';
 import { BUNDLED_TOOL_DEFINITIONS } from '../../../common/bundled-tools/bundledTools.js';
 import { ISkillRegistry } from '../../../common/skills.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
@@ -167,6 +168,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	) {
 		super();
 		this._registerCoreTools();
+		this._registerCompatibilityTools();
 		this._registerMemoryTools();
 		this._registerSkillTools();
 		this._registerBundledTools();
@@ -475,12 +477,14 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// 跳过 stub 工具 — 它们只有 schema 定义，没有实际 handler 实现
 		// 暴露 stub 工具给 LLM 会导致 LLM 尝试调用，返回 "not yet implemented" 错误
 		if (t.isStub) { continue; }
+		// 自动推断 toolset（如果 definition 中未显式设置）
+		const toolset = t.definition.toolset ?? getToolsetForTool(name);
 		// 如果工具有动态描述构建器，使用它生成动态描述
 		if (t.descriptionBuilder) {
 			const dynamicDesc = t.descriptionBuilder(_agentId);
-			out.push({ ...t.definition, description: dynamicDesc });
+			out.push({ ...t.definition, description: dynamicDesc, toolset });
 		} else {
-			out.push(t.definition);
+			out.push({ ...t.definition, toolset });
 		}
 	}
 	return out;
@@ -491,9 +495,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 */
 	async getAllToolDefinitions(_agentId: string): Promise<IToolDefinition[]> {
 		const out: IToolDefinition[] = [];
-		for (const t of this._tools.values()) {
+		for (const [name, t] of this._tools) {
 			if (t.available && !t.available()) { continue; }
-			out.push(t.definition);
+			const toolset = t.definition.toolset ?? getToolsetForTool(name);
+			out.push({ ...t.definition, toolset });
 		}
 		return out;
 	}
@@ -633,6 +638,48 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this.logService.info('[BuiltinTools] _registerCoreTools: starting to register core tools');
 		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
 
+		// ── clarify: 向用户提问 ─────────────────────────────────────────
+		// 参考 Hermes-Agent tools/clarify_tool.py。
+		// 工具返回结构化 JSON，UI 端 nativeChatEditorPane 的 onClarifySubmit 回调
+		// 将用户选择作为新消息发送给 LLM（fire-and-forget 模式）。
+		this.register({
+			definition: {
+				name: 'clarify',
+				description: [
+					'Ask the user a clarifying question with optional multiple-choice options.',
+					'Use this when requirements are ambiguous and you need user input to proceed.',
+					'The question is presented to the user; their response will arrive as a new message.',
+				].join(' '),
+				inputSchema: {
+					type: 'object',
+					properties: {
+						question: { type: 'string', description: 'The question to ask the user' },
+						options: {
+							type: 'array',
+							items: { type: 'string' },
+							description: 'Multiple-choice options (1-4 items). Omit for open-ended questions.',
+							maxItems: 4,
+						},
+					},
+					required: ['question'],
+				},
+				category: 'clarify',
+				source: this.id,
+			},
+			handler: async args => {
+				const question = String(args['question'] ?? '').trim();
+				if (!question) {
+					return text('Error: question parameter is required');
+				}
+				const options = Array.isArray(args['options']) ? (args['options'] as unknown[]).map(String) : undefined;
+				// 返回结构化内容 — webview 端检测 clarify 卡片并渲染交互 UI
+				return [{
+					type: 'text' as const,
+					text: JSON.stringify({ __clarify__: true, question, options }),
+				}];
+			},
+		});
+
 		// ── utility ─────────────────────────────────────────────────────
 		this.register({
 			definition: {
@@ -686,6 +733,44 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				// eslint-disable-next-line no-new-func
 				const fn = new Function(`"use strict"; return (${expr});`);
 				return text(String(fn()));
+			},
+		});
+
+		// ── clarify（用户交互：LLM 需要用户澄清意图）──
+		this.register({
+			definition: {
+				name: 'clarify',
+				description: 'Ask the user to clarify their intent when the LLM is uncertain or needs to choose between options. ' +
+					'The question is displayed to the user as an interactive card with selectable options. ' +
+					'The options parameter should be a JSON array of strings. ' +
+					'Use this when: (1) requirements are ambiguous, (2) multiple valid approaches exist, ' +
+					'or (3) the user needs to choose between workflow/configuration options. ' +
+					'Example: clarify({question: "Which approach?", options: ["Approach A", "Approach B"]})',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						question: { type: 'string', description: 'The question to ask the user.' },
+						options: { type: 'string', description: 'JSON array of option strings, e.g. ["Option A", "Option B"].' },
+					},
+					required: ['question', 'options'],
+				},
+				category: 'utility',
+				source: this.id,
+			},
+			handler: async args => {
+				const question = args['question'] as string | undefined;
+				const optionsRaw = args['options'] as string | undefined;
+				if (!question || !optionsRaw) {
+					throw new Error('clarify: "question" and "options" are required');
+				}
+				let options: string[] = [];
+				try {
+					options = JSON.parse(optionsRaw);
+				} catch {
+					throw new Error('clarify: "options" must be a valid JSON array of strings');
+				}
+				const preview = options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+				return text(`Waiting for user to choose from:\n${preview}\n\n(The user will see an interactive card and their selection will be sent as a new message.)`);
 			},
 		});
 
@@ -963,10 +1048,199 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		return null;
 	}
 
+	/**
+	 * 注册兼容性工具 — Hermes 命名对齐 + 缺失核心工具。
+	 *
+	 * 问题：bundledTools.ts 中某些工具名与实际 handler 注册名不一致，
+	 * 或 Hermes 核心工具在 Sarosis 中缺少 handler。这导致 LLM 调用时
+	 * 报 "Tool does not exist"。
+	 *
+	 * 修复策略：
+	 * 1. 命名不匹配 → 注册别名 handler（schema 用 Hermes 名，handler 委托给真实实现）
+	 * 2. 缺失核心工具 → 实现基础 handler（todo 用 in-memory，patch 用文件读写）
+	 * 3. 平台不适用 → 返回友好提示（web_search 建议 http_get，process 建议 terminal）
+	 */
+	private _registerCompatibilityTools(): void {
+		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
+
+		// ── 别名: skills_list → list_skills ─────────────────────────
+		this.register({
+			definition: {
+				name: 'skills_list',
+				description: 'List all available skills with their names, categories, and descriptions. (Alias for list_skills)',
+				inputSchema: { type: 'object', properties: { category: { type: 'string', description: 'Filter by category (optional)' } } },
+				category: 'skills', source: this.id,
+			},
+			handler: async (args, _signal, agentId) => {
+				const skills = this.skillRegistry?.getSkills() ?? [];
+				const cat = String(args['category'] ?? '');
+				const filtered = cat ? skills.filter(s => s.category === cat) : skills;
+				if (filtered.length === 0) { return text('No skills found.'); }
+				return text(filtered.map(s => `- ${s.name}: ${s.description ?? ''}`).join('\n'));
+			},
+		});
+
+		// ── 别名: skill_view → read_skill ───────────────────────────
+		this.register({
+			definition: {
+				name: 'skill_view',
+				description: 'View the full content of a specific skill by name or ID. (Alias for read_skill)',
+				inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Skill name or ID to view' } }, required: ['name'] },
+				category: 'skills', source: this.id,
+			},
+			handler: async (args) => {
+				const name = String(args['name'] ?? '').trim();
+				if (!name) { return text('Error: name is required'); }
+				const skills = this.skillRegistry?.getSkills() ?? [];
+				const skill = skills.find(s => s.id === name || s.name.toLowerCase() === name.toLowerCase());
+				if (!skill) { return text(`Skill "${name}" not found. Use skills_list to see available skills.`); }
+				return text(`# Skill: ${skill.name}\n\n${skill.prompt?.slice(0, 8192) ?? '(no content)'}`);
+			},
+		});
+
+		// ── 别名: memory → memory_remember (Hermes 旧名) ───────────
+		const memStore = new Map<string, string>();
+		this.register({
+			definition: {
+				name: 'memory',
+				description: 'Save or recall persistent memory. Action "save" stores content; "recall" retrieves by key.',
+				inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['save', 'recall', 'search', 'clear'], description: 'Action to perform' }, key: { type: 'string' }, content: { type: 'string' }, query: { type: 'string' } }, required: ['action'] },
+				category: 'memory', source: this.id,
+			},
+			handler: async (args, _signal, agentId) => {
+				const action = String(args['action'] ?? 'save');
+				if (action === 'save') {
+					const content = String(args['content'] ?? '');
+					const key = String(args['key'] ?? 'default');
+					if (!content) { return text('Error: content is required for save action'); }
+					const provider = this.agentOS?.getActiveMemoryProvider?.();
+					if (provider) {
+						try {
+							await provider.writeMemory(agentId ?? '', { id: `mem_${key}`, type: 'episodic', content, timestamp: Date.now() });
+							return text(`Memory saved under key "${key}" (${content.length} chars).`);
+						} catch { /* fallback */ }
+					}
+					memStore.set(key, content);
+					return text(`Memory saved under key "${key}" (local only, ${content.length} chars).`);
+				}
+				if (action === 'search' || action === 'recall') {
+					const query = String(args['query'] ?? args['key'] ?? '');
+					if (!query) { return text('Error: query is required for search/recall action'); }
+					const provider = this.agentOS?.getActiveMemoryProvider?.();
+					if (provider) {
+						try {
+							const results = await provider.searchMemory(agentId ?? '', query);
+							if (results.length) { return text(results.map(r => `- [${r.type}] ${r.content}`).join('\n')); }
+						} catch { /* fallback */ }
+					}
+					// local fallback
+					const found = memStore.get(query);
+					return found ? text(`Found: ${found}`) : text('No memories found.');
+				}
+				return text(`Unknown action: ${action}`);
+			},
+		});
+
+		// ── todo: in-memory task list ───────────────────────────────
+		const _todoStore: Array<{ id: string; text: string; status: string }> = [];
+		this.register({
+			definition: {
+				name: 'todo',
+				description: 'Manage a task list for tracking multi-step work. Add, list, update, and remove tasks.',
+				inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['add', 'list', 'update', 'remove', 'clear'], description: 'Action to perform' }, id: { type: 'string', description: 'Task ID (for update/remove)' }, text: { type: 'string', description: 'Task description (for add)' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'], description: 'Task status (for update)' } }, required: ['action'] },
+				category: 'todo', source: this.id,
+			},
+			handler: async (args) => {
+				const action = String(args['action'] ?? '');
+				switch (action) {
+					case 'add': {
+						const t = String(args['text'] ?? '');
+						if (!t) { return text('Error: text is required for add action'); }
+						const id = `todo_${Date.now().toString(36)}`;
+						_todoStore.push({ id, text: t, status: 'pending' });
+						return text(`Added task ${id}: ${t}`);
+					}
+					case 'list': {
+						if (_todoStore.length === 0) { return text('(no tasks)'); }
+						return text(_todoStore.map(t => `- [${t.status}] ${t.id}: ${t.text}`).join('\n'));
+					}
+					case 'update': {
+						const id = String(args['id'] ?? '');
+						const status = String(args['status'] ?? '');
+						const task = _todoStore.find(t => t.id === id);
+						if (!task) { return text(`Error: Task ${id} not found`); }
+						if (status) { task.status = status; }
+						return text(`Updated task ${id} → ${task.status}`);
+					}
+					case 'remove': {
+						const id = String(args['id'] ?? '');
+						const idx = _todoStore.findIndex(t => t.id === id);
+						if (idx === -1) { return text(`Error: Task ${id} not found`); }
+						_todoStore.splice(idx, 1);
+						return text(`Removed task ${id}`);
+					}
+					case 'clear':
+						_todoStore.length = 0;
+						return text('All tasks cleared.');
+					default:
+						return text(`Unknown action: ${action}`);
+				}
+			},
+		});
+
+		// ── patch: 基础文件补丁 ──────────────────────────────────
+		this.register({
+			definition: {
+				name: 'patch',
+				description: 'Apply a patch to a file by searching for text and replacing it. Safer than file_write for targeted edits.',
+				inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'File path to patch' }, search: { type: 'string', description: 'Text to search for' }, replace: { type: 'string', description: 'Replacement text' }, replace_all: { type: 'boolean', description: 'Replace all occurrences (default: false)' } }, required: ['path', 'search', 'replace'] },
+				category: 'file', source: this.id,
+			},
+			handler: async (args, _signal, agentId) => {
+				const filePath = String(args['path'] ?? '');
+				const search = String(args['search'] ?? '');
+				const replace = String(args['replace'] ?? '');
+				const replaceAll = Boolean(args['replace_all']);
+				if (!filePath || !search) { return text('Error: path and search are required'); }
+				try {
+					const resolved = await this._resolveAndCheckWorkspacePath(agentId, filePath);
+					const fs = await import('fs/promises');
+					let content = await fs.readFile(resolved, 'utf-8');
+					if (replaceAll) {
+						content = content.split(search).join(replace);
+					} else {
+						const idx = content.indexOf(search);
+						if (idx === -1) { return text(`Search text not found in ${filePath}`); }
+						content = content.slice(0, idx) + replace + content.slice(idx + search.length);
+					}
+					await fs.writeFile(resolved, content, 'utf-8');
+					return text(`Patched ${filePath} (${replaceAll ? 'all occurrences' : 'first occurrence'})`);
+				} catch (e) {
+					return text(`Error patching ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
+				}
+			},
+		});
+
+		// ── web_search / web_extract / process / session_search / execute_code ──
+		// 平台不适用 — 返回友好提示
+		for (const [name, desc, msg] of [
+			['web_search', 'Search the web for information.', 'Web search is not natively available. Use http_get for specific URLs or configure an MCP search server.'],
+			['web_extract', 'Extract content from a web page.', 'Use http_get to fetch web page content. web_extract is not natively available.'],
+			['process', 'Manage background processes.', 'Process management is not available. Use terminal with background=true.'],
+			['session_search', 'Search past conversation sessions.', 'Session search is not yet available. Past conversations are stored in ~/.saros/sessions/.'],
+			['execute_code', 'Execute a Python script in a sandbox.', 'Code execution sandbox is not available. Use the terminal tool to run scripts.'],
+		] as const) {
+			this.register({
+				definition: { name, description: desc, inputSchema: { type: 'object', properties: {} }, category: 'utility', source: this.id },
+				handler: async () => text(msg),
+			});
+		}
+
+		this.logService.info('[BuiltinTools] _registerCompatibilityTools: registered aliases + missing core tools');
+	}
+
 	private _registerMemoryTools(): void {
 		const self = this;
-
-		// ── memory_remember ─────────────────────────────────────
 		this.register({
 			definition: {
 				name: 'memory_remember',

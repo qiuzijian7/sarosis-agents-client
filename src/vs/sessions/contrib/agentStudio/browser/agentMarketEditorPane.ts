@@ -167,6 +167,12 @@ export class AgentMarketEditorPane extends EditorPane {
 		installFileBtn.onclick = () => this._showInstallFromFileDialog();
 		heroActions.appendChild(installFileBtn);
 
+		const refreshBtn = $$('button.agent-market-action-btn') as HTMLButtonElement;
+		refreshBtn.textContent = '🔄 刷新';
+		refreshBtn.title = '刷新商城数据';
+		refreshBtn.onclick = () => this._refresh();
+		heroActions.appendChild(refreshBtn);
+
 		searchRow.appendChild(heroActions);
 		hero.appendChild(searchRow);
 
@@ -269,6 +275,16 @@ export class AgentMarketEditorPane extends EditorPane {
 			// Upgrade check failure should not block browsing
 			console.warn('[AgentMarket] upgrade check failed:', err);
 		}
+	}
+
+	/** 刷新商城数据：重新加载包列表 + 升级检查 */
+	private async _refresh(): Promise<void> {
+		this._packages = [];
+		this._packageDetails.clear();
+		this._upgrades.clear();
+		this._installedSlugs.clear();
+		await this._loadPackages();
+		await this._loadUpgrades();
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════

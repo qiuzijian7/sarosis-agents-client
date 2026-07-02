@@ -15,7 +15,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { ISkillRegistry } from '../common/skills.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING, AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING } from '../common/constants.js';
-import { filterToolsByChatMode } from '../common/chatModeConfig.js';
+import { filterToolsByChatMode, getModeSystemPrompt } from '../common/chatModeConfig.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -215,6 +215,17 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					.filter(s => agentSkillIds.has(s.id));  // 只保留 agent 配置的技能
 
 				let mergedSystemPrompt = request.systemPrompt || '';
+
+				// ── 注入 Chat Mode 系统提示词 ─────────────────────────────────
+				// 每个模式有特定的行为指令（如 workflow 模式的工具使用流程），
+				// 放在 Persona Memory 之前，确保模式行为指令紧随 agent 的 base prompt。
+				{
+					const chatMode = request.chatMode || 'craft';
+					const modePrompt = getModeSystemPrompt(chatMode);
+					if (modePrompt) {
+						mergedSystemPrompt = mergedSystemPrompt + '\n\n' + modePrompt;
+					}
+				}
 
 				// ── 注入 Persona Memory（永久事实，最高优先级）────────────────────
 				//

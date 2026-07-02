@@ -349,8 +349,21 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 	}
 
-	private _generateId(): string {
-		return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+	/**
+	 * 从名称生成 Agent ID。
+	 * 规则：名称转 slug + 短随机后缀，确保可读性和唯一性。
+	 * 示例："My Coding Agent" → "my-coding-agent-x7k2m"
+	 */
+	private _generateId(name: string): string {
+		const slug = name
+			.toLowerCase()
+			.replace(/[^a-z0-9\s_-]/g, '')   // 移除特殊字符
+			.replace(/[\s_]+/g, '-')          // 空格/下划线 → 连字符
+			.replace(/-+/g, '-')              // 去重连字符
+			.replace(/^-|-$/g, '')            // 去首尾连字符
+			.slice(0, 40);                    // 限制长度
+		const suffix = Math.random().toString(36).substring(2, 7);
+		return `${slug || 'agent'}-${suffix}`;
 	}
 
 	// ─── Builtin / custom agent resolution ────────────────────────────────
@@ -456,7 +469,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			agentDir?: string; memoryConfig?: AgentBinding['memoryConfig'];
 		};
 		const now = new Date().toISOString();
-		const id = data.id || this._generateId();
+		const id = data.id || this._generateId(data.name || 'agent');
 		const agent: Agent = {
 			id, name: data.name || 'New Agent', role: data.role || 'assistant',
 			description: data.description || '', icon: data.icon || '🤖',
@@ -956,9 +969,10 @@ icon: "${agent.icon || '🤖'}"
 				try {
 					await this.fileService.stat(localDirUri);
 					// Local data directory exists — auto-create a workspace entry
+					const wsName = folderUri.path.split('/').pop() || 'Workspace';
 					const ws: Workspace = {
-						id: this._generateId(),
-						name: folderUri.path.split('/').pop() || 'Workspace',
+						id: this._generateId(wsName),
+						name: wsName,
 						path: folderUri.fsPath,
 						relatedFolders: [],
 						agents: [],
@@ -1121,7 +1135,7 @@ icon: "${agent.icon || '🤖'}"
 		}
 
 		const newWorkspace: Workspace = {
-			id: this._generateId(),
+			id: this._generateId(data.name || 'New Workspace'),
 			name: data.name || 'New Workspace',
 			description: data.description,
 			path: wsPath,
@@ -1476,7 +1490,7 @@ icon: "${agent.icon || '🤖'}"
 			throw new Error(`Workspace not found: ${workspaceId}`);
 		}
 		const newConnection: Connection = {
-			id: this._generateId(),
+			id: this._generateId(connection.label || connection.type || 'connection'),
 			...connection,
 		};
 		workspaces[index].connections.push(newConnection);
@@ -1556,7 +1570,7 @@ icon: "${agent.icon || '🤖'}"
 		const sessions = await this._readJsonFile<AgentStudioSession>(this._getGlobalDataUri(), DATA_FILE_SESSIONS);
 		const now = new Date().toISOString();
 		const newSession: AgentStudioSession = {
-			id: this._generateId(),
+			id: this._generateId(data.name || 'New Session'),
 			name: data.name || 'New Session',
 			workspaceId: data.workspaceId || '',
 			activeAgentId: data.activeAgentId,

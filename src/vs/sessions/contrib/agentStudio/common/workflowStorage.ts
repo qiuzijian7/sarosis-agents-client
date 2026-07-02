@@ -56,6 +56,20 @@ export interface IStoredWorkflow extends IWorkflow {
 	 * nodeIds reference entries in `nodes[].id`.
 	 */
 	breakpoints?: string[];
+
+	// 发布相关字段（可选）
+	/** 工作流版本号 */
+	version?: string;
+	/** 工作流分类 */
+	category?: string;
+	/** 作者 */
+	author?: string;
+	/** 可见性：公开或私有 */
+	visibility?: 'public' | 'private';
+	/** 标签列表 */
+	tags?: string[];
+	/** 使用指南（Markdown 格式） */
+	useGuide?: string;
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -195,6 +209,8 @@ export interface IWorkflowStorageService {
 		presetId?: string;
 		agentId?: string;
 		steps?: IStoredWorkflow['steps'];
+		/** Optional slug — when provided, the workflow ID becomes `wf-{slug}`. Otherwise auto-generated from name. */
+		slug?: string;
 	}, workspaceId?: string): Promise<IStoredWorkflow>;
 
 	/** 更新工作流（合并字段）并写回文件。 */
