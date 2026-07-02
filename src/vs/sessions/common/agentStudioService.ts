@@ -248,6 +248,7 @@ export interface IChatStreamDelta {
 	| "memory_writing" | "memory_written" | "memory_write_failed"
 	| "memory_episodic_extracted" | "memory_semantic_extracted" | "memory_procedural_extracted"
 	| "memory_injected"
+	| "skill_extracted"
 	| "codebase_operation";
 	readonly content?: string;
 	readonly toolCallId?: string;

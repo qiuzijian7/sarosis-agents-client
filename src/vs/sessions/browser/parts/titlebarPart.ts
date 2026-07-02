@@ -212,18 +212,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 					this.openerService.open(URI.parse('https://www.tapd.cn/tapd_fe/30076258/storywall'));
 				});
 
-				// Output 伸缩按钮 — toggle output panel below the middle column
-				const outputBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
-				outputBtn.classList.add('codicon', 'codicon-output');
-				outputBtn.title = 'Toggle Output';
-				outputBtn.setAttribute('aria-label', 'Toggle Output');
-				outputBtn.addEventListener('click', (e) => {
-					e.preventDefault();
-					e.stopPropagation();
-					document.dispatchEvent(new CustomEvent('agent-studio:toggle-output'));
-				});
-
-				// Panel 切换按钮 — 切换面板显示/隐藏（Ctrl+J），与 VS Code 原生行为一致
+				// [Sarosis] 移除 Toggle Output 按钮（用户要求）\n\n				// Panel 切换按钮 — 切换面板显示/隐藏（Ctrl+J），与 VS Code 原生行为一致
 				const panelBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
 				panelBtn.classList.add('codicon', 'codicon-panel-bottom');
 				panelBtn.title = 'Toggle Panel (Ctrl+J)';

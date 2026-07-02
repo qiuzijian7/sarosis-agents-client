@@ -23,7 +23,8 @@ import { ICommandService } from '../../../../../platform/commands/common/command
 import { URI } from '../../../../../base/common/uri.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
-import { GroupsOrder, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { GroupsOrder, IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { EditorInput } from '../../../../../workbench/common/editor/editorInput.js';
 import { AgentSettingsEditorInput } from '../agentSettingsEditorInput.js';
 import { AgentCreateEditorInput } from '../agentCreateEditorInput.js';
 import type { AgentBootstrapTemplates, IAgentHandOff, IAgentHooks, IAgentVisibility } from '../../../../common/agentStudioTypes.js';
@@ -2224,16 +2225,48 @@ export class PresetAgentViewPane extends ViewPane {
 
 	// ── Chat ─────────────────────────────────────────────────────────────────
 
+	/**
+	 * 点击预设的"💬聊天"按钮：
+	 * 1. 遍历已打开的编辑器 pane，查找是否有 agentId 匹配的聊天框
+	 * 2. 若有 → 聚焦该聊天框 + 聚焦输入框
+	 * 3. 若无 → 在 agent editor part 中打开新的聊天 tab
+	 */
 	private async _chatWithPreset(preset: AgentPreset): Promise<void> {
 		if (this.isDeploying) { return; }
 		this.isDeploying = true;
 
 		try {
-			// Directly select the preset by ID — builtin agents share the same ID.
-			this.agentStudioService.fireSelectAgent(preset.id);
-			this.notificationService.info(
-				`Chatting with "${preset.name}".`
-			);
+			// 1. 查找已有的匹配聊天框
+			const found = this._findChatPaneForAgent(preset.id);
+			if (found) {
+				// 切换到该 tab 并聚焦输入框
+				if (found.group) {
+					await found.group.openEditor(found.input, { pinned: true });
+				}
+				// 聚焦聊天输入框 — 通过 visibleEditorPanes 找到对应的 NativeChatEditorPane
+				for (const pane of this.editorService.visibleEditorPanes) {
+					if (pane.input === found.input) {
+						(pane as any).focusInput?.();
+						break;
+					}
+				}
+				return;
+			} else {
+				// 2. 打开新聊天 tab — 默认开在独立的 group 中
+				const { NativeChatEditorInput } = await import('../nativeChatEditorInput.js');
+				const input = NativeChatEditorInput.create(undefined, preset.id, undefined, preset.name);
+				// 找到 agent part，创建新 group 确保新聊天开在独立 group 中
+				const agentPart = (this.editorGroupsService as any).agentPart;
+				if (agentPart?.activeGroup) {
+					const newGroup = agentPart.addGroup(agentPart.activeGroup, 3 /* GroupDirection.RIGHT */);
+					await newGroup.openEditor(input, { pinned: true });
+				} else {
+					await this.editorService.openEditor(input, { pinned: true });
+				}
+				this.notificationService.info(
+					`已打开 "${preset.name}" 聊天框。`
+				);
+			}
 		} catch (err) {
 			this.notificationService.error(
 				`Failed to start chat with "${preset.name}": ${err instanceof Error ? err.message : String(err)}`
@@ -2241,6 +2274,30 @@ export class PresetAgentViewPane extends ViewPane {
 		} finally {
 			this.isDeploying = false;
 		}
+	}
+
+	/**
+	 * 在所有编辑器 group 中查找 agentId 匹配的 NativeChatEditorInput。
+	 *
+	 * **修复**：旧实现仅遍历 `visibleEditorPanes`，导致后台（非活跃）
+	 * tab 中的 chat 无法被找到，造成重复打开。
+	 * 新实现遍历所有 group 的 `editors` 数组，覆盖后台 tab。
+	 *
+	 * @returns 匹配的 input 及其 group，或 undefined
+	 */
+	private _findChatPaneForAgent(agentId: string): { input: EditorInput; group: IEditorGroup | undefined } | undefined {
+		for (const group of this.editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
+			for (const editor of group.editors) {
+				// 检查 typeId 匹配 NativeChatEditorInput（避免动态 import 的类型问题）
+				if (editor.typeId === 'workbench.editors.nativeChatInput') {
+					const ed = editor as any;
+					if (ed.agentId === agentId) {
+						return { input: editor, group };
+					}
+				}
+			}
+		}
+		return undefined;
 	}
 
 	// ── Open Preset Editor ──────────────────────────────────────────────────

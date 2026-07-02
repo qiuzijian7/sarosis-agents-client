@@ -229,6 +229,16 @@ import { IPaneCompositePartService } from '../../../../workbench/services/paneco
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService, IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
+/**
+ * Type-safe accessor for the agent editor part (AGENT_EDITOR_PART).
+ *
+ * This replaces the `(editorGroupsService as any).agentPart` pattern with
+ * a single centralized cast, reducing `as any` usage from 3 call sites to 1.
+ */
+function getAgentPart(editorGroupsService: IEditorGroupsService): IEditorGroupsService | undefined {
+	return (editorGroupsService as unknown as { agentPart?: IEditorGroupsService }).agentPart;
+}
+
 // --- Icons -----------------------------------------------------------------------
 
 // Toolbar icons
@@ -963,17 +973,18 @@ registerAction2(class extends Action2 {
 
 	async run(accessor: ServicesAccessor, entry: { name?: string; value?: unknown; fullName?: string; modelDescription?: string }): Promise<void> {
 		const editorService = accessor.get(IEditorService);
+		const logService = accessor.get(ILogService);
 		// Find the active NativeChatEditorPane
 		for (const editor of editorService.visibleEditorPanes) {
 			if (editor instanceof NativeChatEditorPane) {
 				const name = entry?.fullName || entry?.name || 'Attachment';
 				const content = typeof entry?.value === 'string' ? entry.value : String(entry?.value ?? '');
 				editor.addContentToChat(name, content);
-				console.log(`[agentStudio.addToChat] Added "${name}" (${content.length} chars) to chat`);
+				logService.debug(`[agentStudio.addToChat] Added "${name}" (${content.length} chars) to chat`);
 				return;
 			}
 		}
-		console.warn(`[agentStudio.addToChat] No NativeChatEditorPane found in visibleEditorPanes. Visible: ${editorService.visibleEditorPanes.map(e => e.constructor.name).join(', ')}`);
+		logService.warn(`[agentStudio.addToChat] No NativeChatEditorPane found in visibleEditorPanes. Visible: ${editorService.visibleEditorPanes.map(e => e.constructor.name).join(', ')}`);
 	}
 });
 
@@ -1137,42 +1148,56 @@ registerAction2(class extends Action2 {
 		const editorGroupsService = accessor.get(IEditorGroupsService);
 		const layoutService = accessor.get(IWorkbenchLayoutService);
 
-		// Locate the chat editor + its group EXPLICITLY (do NOT trust the
-		// global active editor — when the popout button is clicked, focus may
-		// be on the main editor area, which would cause moveEditorToNewWindow
-		// to pop out the wrong file).
-		let targetGroup: IEditorGroup | undefined;
-		let targetEditor: EditorInput | undefined;
+		// 收集所有聊天编辑器 tab（支持多 group 多聊天窗口）。
+		// 记录每个 editor 所在 group 的序号（0-based），用于 pop out 时在
+		// aux window 中重建等量 group、pop in 时按 groupIndex 精确恢复分屏。
+		const chatEditors: EditorInput[] = [];
+		const editorToGroupIndex = new Map<EditorInput, number>();
+		let groupCount = 0;
 		for (const group of editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
+			let hasChatInGroup = false;
 			for (const ed of group.editors) {
 				if (
 					(ed instanceof AgentStudioEditorInput && ed.panelType === 'chat') ||
 					ed instanceof NativeChatEditorInput
 				) {
-					targetGroup = group;
-					targetEditor = ed;
-					break;
+					chatEditors.push(ed);
+					editorToGroupIndex.set(ed, groupCount);
+					hasChatInGroup = true;
 				}
 			}
-			if (targetEditor) { break; }
+			if (hasChatInGroup) {
+				groupCount++;
+			}
 		}
 
-		if (!targetGroup || !targetEditor) {
-			// Nothing to pop out
+		if (chatEditors.length === 0) {
 			return;
 		}
 
-		// Remember the editor type for re-opening after aux window closes
-		const isNativeChat = targetEditor instanceof NativeChatEditorInput;
+		const isNativeChat = chatEditors.some(ed => ed instanceof NativeChatEditorInput);
 
 		try {
-			// Open an auxiliary BrowserWindow (independent OS window with
-			// native window controls) and move the chat editor into it.
+			// Open an auxiliary BrowserWindow and recreate the multi-group layout.
+			// **修复**: 旧实现把所有聊天 editor 移进 aux window 的同一个 group，
+			// 破坏了原有的分屏结构。新实现按 groupIndex 在 aux window 中重建等量 group。
 			const auxPart = await editorGroupsService.createAuxiliaryEditorPart();
-			targetGroup.moveEditors(
-				[{ editor: targetEditor, options: { preserveFocus: false } }],
-				auxPart.activeGroup,
-			);
+			const auxGroups = [auxPart.activeGroup];
+			for (let i = 1; i < groupCount; i++) {
+				const g = auxPart.addGroup(auxGroups[auxGroups.length - 1], 3 /* GroupDirection.RIGHT */);
+				if (g) { auxGroups.push(g); }
+			}
+			// 将每个聊天 editor 从源 group 移到 aux window 中对应的 group
+			for (const editor of chatEditors) {
+				const gi = editorToGroupIndex.get(editor) ?? 0;
+				const targetAuxGroup = auxGroups[Math.min(gi, auxGroups.length - 1)];
+				for (const srcGroup of editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
+					if (srcGroup.editors.includes(editor)) {
+						srcGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], targetAuxGroup);
+						break;
+					}
+				}
+			}
 
 			// Hide the Agent editor (right column) after popping out
 			layoutService.setPartHidden(true, Parts.AGENT_EDITOR_PART);
@@ -1183,33 +1208,129 @@ registerAction2(class extends Action2 {
 				toggleContainer.style.display = 'none';
 			}
 
-			// When the auxiliary window is closed, re-show the Agent editor
-			// and re-open the chat editor in the main window's right column.
-			auxPart.onWillDispose(() => {
-				// Restore right column visibility first
-				layoutService.setPartHidden(false, Parts.AGENT_EDITOR_PART);
-
-				// Restore titlebar toggle buttons
-				const tc = mainWindow.document.getElementById('agent-studio-titlebar-toggle-container');
-				if (tc) {
-					tc.style.display = '';
+			// 保存挪出的所有编辑器快照（含 groupIndex），用于 aux window 关闭后
+			// 按 groupIndex 精确恢复分屏布局。
+			const movedEditors = chatEditors.map(ed => {
+				const gi = editorToGroupIndex.get(ed) ?? 0;
+				if (ed instanceof NativeChatEditorInput) {
+					return { chatId: ed.chatId, agentId: ed.agentId, sessionId: ed.sessionId, name: ed.name, groupIndex: gi };
 				}
-
-				// Dispatch a custom event so workbench.ts can re-open the chat
-				// editor in the main window's agent part (it has the context
-				// needed to target the correct group). Use a small delay to
-				// ensure the right column is fully laid out first.
-				setTimeout(() => {
-					mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:reopen-chat', {
-						detail: { isNativeChat }
-					}));
-				}, 100);
+				return { chatId: (ed as any).panelType || 'chat', agentId: undefined, sessionId: undefined, name: 'Agent Chat', groupIndex: gi };
 			});
+
+		// When the auxiliary window is closed, re-show the Agent editor,
+		// restore titlebar toggle buttons, then proactively move the ORIGINAL
+		// EditorInput instances back into agentPart (preserving _runtimeState),
+		// before dispatching reopen-chat for layout fine-tuning.
+		//
+		// **修复**: 旧实现只派发事件不主动 move，依赖 VS Code 自动 move back。
+		// 但 NativeChatEditorInput 是瞬态的（无 serializer），VS Code 可能直接丢弃，
+		// 导致 pop in handler 走 NativeChatEditorInput.create() 创建全新实例，
+		// 新实例 _runtimeState = undefined → pane 内容空白。
+		// 新实现主动 moveEditors 原实例回 agentPart 对应 group，保留聊天状态。
+		auxPart.onWillDispose(() => {
+			layoutService.setPartHidden(false, Parts.AGENT_EDITOR_PART);
+
+			const tc = mainWindow.document.getElementById('agent-studio-titlebar-toggle-container');
+			if (tc) {
+				tc.style.display = '';
+			}
+
+			// ① 在 agentPart 上按 groupIndex 创建目标 groups
+			const agentPart = getAgentPart(editorGroupsService);
+			const baseGroup = agentPart?.activeGroup ?? editorGroupsService.activeGroup;
+			const targetGroups: IEditorGroup[] = [baseGroup];
+			for (let i = 1; i < groupCount; i++) {
+				const g = editorGroupsService.addGroup(targetGroups[targetGroups.length - 1], 3 /* GroupDirection.RIGHT */);
+				if (g) { targetGroups.push(g); }
+			}
+
+			// ② 主动把原 EditorInput 实例从 aux groups（或任何其他 part）移回
+			//    agentPart 对应的 targetGroups[groupIndex]。
+			//    原实例携带 _runtimeState（messages / 流式状态），是内容保留的关键。
+			for (const editor of chatEditors) {
+				const gi = editorToGroupIndex.get(editor) ?? 0;
+				const target = targetGroups[Math.min(gi, targetGroups.length - 1)];
+				// 找到 editor 当前所在的 group（aux window 或已被 VS Code 自动 move back）
+				let sourceGroup: IEditorGroup | undefined;
+				for (const part of editorGroupsService.parts) {
+					for (const g of part.groups) {
+						if (g.editors.includes(editor)) {
+							sourceGroup = g;
+							break;
+						}
+					}
+					if (sourceGroup) { break; }
+				}
+				if (sourceGroup && sourceGroup !== target) {
+					sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], target);
+				} else if (!sourceGroup) {
+					// aux 已销毁 editor 实例 — fallback 用快照 create 新实例（内容会丢失）
+					const snap = movedEditors.find(s => s.chatId === (editor as any).chatId);
+					if (snap) {
+						const input = NativeChatEditorInput.create(
+							snap.chatId, snap.agentId, snap.sessionId, snap.name,
+						);
+						target.openEditor(input, { pinned: true });
+					}
+				}
+			}
+
+			// ③ 派发 reopen-chat 事件让 workbench 做布局微调（清理多余 group 等）
+			requestAnimationFrame(() => {
+				mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:reopen-chat', {
+					detail: { isNativeChat, editors: movedEditors, groupCount }
+				}));
+			});
+		});
 		} catch {
 			// Last-resort fallback: dispatch the legacy in-window overlay event
 			// (kept for backward compatibility with the older floating-overlay impl).
 			mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:popout-chat'));
 		}
+	}
+});
+
+// ── 编辑器标题栏 "+" 新建聊天按钮（popout 按钮左侧）──────────────────────
+// 与 agentStudio.popoutChat 同属 MenuId.EditorTitle / navigation 组，
+// order: -2 比 popout 的 order: -1 更小 → 渲染在 popout 按钮左侧。
+// 点击后在当前活跃 session 中新建一个 chat。
+registerAction2(class extends Action2 {
+	constructor() {
+		const chatEditorActive = ContextKeyExpr.or(
+			ActiveEditorContext.isEqualTo('workbench.editor.agentStudio'),
+			ActiveEditorContext.isEqualTo('workbench.editor.nativeChat'),
+		);
+		super({
+			id: 'agentStudio.newChatInEditor',
+			title: localize2('agentStudio.newChatInEditor', '新建聊天'),
+			f1: false,
+			icon: Codicon.add,
+			menu: [{
+				id: MenuId.EditorTitle,
+				when: chatEditorActive,
+				group: 'navigation',
+				order: -2,
+			}],
+			precondition: chatEditorActive,
+		});
+	}
+	run(accessor: ServicesAccessor): void {
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const logService = accessor.get(ILogService);
+		const agentPart = getAgentPart(editorGroupsService);
+		if (!agentPart?.activeGroup) {
+			return;
+		}
+		const input = NativeChatEditorInput.create();
+		// 每个新聊天默认开在独立的 group 中——仅当用户手动拖拽时，
+		// 才允许同一 group 下存在多个聊天 tab。
+		const newGroup = agentPart.addGroup(agentPart.activeGroup, 3 /* GroupDirection.RIGHT */);
+		newGroup.openEditor(input, { pinned: true }).then(() => {
+			// Chat editor opened successfully in agent part
+		}).catch((err: any) => {
+			logService.error('[newChatInEditor] failed to open editor:', err);
+		});
 	}
 });
 
@@ -1261,10 +1382,21 @@ class NativeChatEditorInputSerializer implements IEditorSerializer {
 		if (!(editorInput instanceof NativeChatEditorInput)) {
 			return undefined;
 		}
-		return JSON.stringify({ type: 'native-chat' });
+		return JSON.stringify({
+			type: 'native-chat',
+			chatId: editorInput.chatId,
+			agentId: editorInput.agentId,
+			sessionId: editorInput.sessionId,
+			name: editorInput.name,
+		});
 	}
-	deserialize(_instantiationService: IInstantiationService, _serialized: string): EditorInput | undefined {
-		return NativeChatEditorInput.getInstance();
+	deserialize(_instantiationService: IInstantiationService, serialized: string): EditorInput | undefined {
+		try {
+			const data = JSON.parse(serialized);
+			return NativeChatEditorInput.create(data.chatId, data.agentId, data.sessionId, data.name);
+		} catch {
+			return NativeChatEditorInput.getInstance();
+		}
 	}
 }
 

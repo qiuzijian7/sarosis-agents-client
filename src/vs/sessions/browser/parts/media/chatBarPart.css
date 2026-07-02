@@ -3,6 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+/* ChatBarPart is hidden by default (chatBar: false in layoutPolicy).
+ * These styles are retained for layout-system compatibility when the
+ * part is instantiated but not visible. */
+
 .monaco-workbench.nochatbar .part.chatbar {
 	display: none !important;
 	visibility: hidden !important;
@@ -43,7 +47,7 @@
 }
 
 .monaco-workbench .part.chatbar > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item:focus {
-	outline: 0 !important; /* activity bar indicates focus custom */
+	outline: 0 !important;
 }
 
 .monaco-workbench .part.chatbar > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item .action-label {
@@ -57,7 +61,7 @@
 
 .monaco-workbench .part.chatbar > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item .action-label::before {
 	position: absolute;
-	left: 5px; /* place icon in center */
+	left: 5px;
 }
 
 .monaco-workbench .part.chatbar > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item.checked:not(:focus) .active-item-indicator:before,

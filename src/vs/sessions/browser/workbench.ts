@@ -118,6 +118,17 @@ interface IPartVisibilityState {
 	chatBar: boolean;
 }
 
+interface IAgentChatLayoutState {
+	groupCount: number;
+	editors: Array<{
+		chatId: string;
+		agentId?: string;
+		sessionId?: string;
+		name?: string;
+		groupIndex: number;
+	}>;
+}
+
 //#endregion
 
 export interface IAgentWorkbenchLayoutService extends IWorkbenchLayoutService {
@@ -353,6 +364,16 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	readonly openedDefaultEditors = false;
 
+	/**
+	 * Storage key for persisting the Agent Chat editor layout (groups + chat
+	 * editors) across window reloads. Workspace-scoped because the layout is
+	 * tied to the current workspace.
+	 */
+	private static readonly AGENT_CHAT_LAYOUT_KEY = 'sarosis.agentChatLayout.v1';
+
+	/** Storage service reference for layout persistence operations. */
+	private _storageService: IStorageService | undefined;
+
 	//#endregion
 
 	//#region Services
@@ -585,6 +606,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	}
 
 	private registerListeners(lifecycleService: ILifecycleService, storageService: IStorageService, configurationService: IConfigurationService, hostService: IHostService, dialogService: IDialogService): void {
+		// Keep a reference for layout persistence helpers used later.
+		this._storageService = storageService;
+
 		// Command: close the mobile sidebar drawer (no-op outside phone layout).
 		// Routes through the proper close path so the mobile nav/history stack
 		// stays in sync (avoids extra Android back-button presses).
@@ -617,6 +641,16 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			}
 		}));
 		this._register(lifecycleService.onWillShutdown(() => this.storeLayoutPreferences(storageService)));
+
+	// [Sarosis] Persist the Agent Chat editor layout (groups, chatIds,
+		// agent/session ids) so it survives window reloads. Saved on shutdown
+		// and also on storage flush so crashes do not lose the layout.
+		this._register(storageService.onWillSaveState(e => {
+			if (e.reason === WillSaveStateReason.SHUTDOWN) {
+				this._storeAgentChatLayout();
+			}
+		}));
+		this._register(lifecycleService.onWillShutdown(() => this._storeAgentChatLayout()));
 
 		// Lifecycle
 		this._register(lifecycleService.onWillShutdown(event => this._onWillShutdown.fire(event)));
@@ -1125,7 +1159,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// drag-gate / relocation guard is needed — only a close-guard.
 		// Fire-and-forget: the method is async (it awaits stale-purge +
 		// deterministic editor opens) but restoreParts itself is sync.
-		this._openAgentStudioEditors().catch(err => console.error('[Sarosis] Failed to open Agent Studio editors', err));
+		this._openAgentStudioEditors().catch(err => this.logService.error('[Sarosis] Failed to open Agent Studio editors', err));
 
 		// [Sarosis] Now that every part is wired up and the editor grid
 		// has been (re)built, apply persisted layout preferences that
@@ -1260,15 +1294,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		};
 
 		const popoutHandler: EventListener = () => {
-			console.warn('[Sarosis][Popout] handler invoked, wasPoppedOut=' + wasPoppedOut);
 			if (!this.workbenchGrid || !this.agentEditorPartView) {
-				console.warn('[Sarosis][Popout] grid or agentEditorPartView not ready, aborting');
 				return;
 			}
 			try {
 				if (wasPoppedOut) {
 					// ── 关闭弹出窗口：恢复右侧栏 ──
-					console.warn('[Sarosis][Popout] closing popout window, restoring agent editor');
 
 					// 显示 titlebar 上的弹出按钮和伸缩按钮
 					setToggleContainerVisible(true);
@@ -1279,9 +1310,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 						if (paneInside && popoutOriginalParent) {
 							try {
 								popoutOriginalParent.appendChild(paneInside);
-								console.warn('[Sarosis][Popout] pane moved back to original parent');
 							} catch (e) {
-								console.error('[Sarosis][Popout] failed to restore pane:', e);
+								this.logService.error('[Sarosis][Popout] failed to restore pane:', e);
 							}
 						}
 						popoutWindow.remove();
@@ -1289,8 +1319,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					popoutWindow = null;
 					popoutOriginalParent = null;
 
-					// 恢复 webview 覆盖层的 z-index（恢复右侧栏后，控制器的 ResizeObserver
-					// 会自动把覆盖层 iframe 同步回 pane 的原位置）。
+					// 恢复 webview 覆盖层的 z-index
 					if (popoutOverlay) {
 						popoutOverlay.style.zIndex = popoutOverlayPrevZ;
 						popoutOverlay = null;
@@ -1303,7 +1332,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: w, height: 1000 });
 					this.isRightColumnCollapsed = false;
 					wasPoppedOut = false;
-					console.warn('[Sarosis][Popout] agent editor restored, width=' + w);
 				} else {
 					// ── 弹出聊天窗口 ──
 				// 先保存 agent editor 当前宽度（用于恢复）
@@ -1314,8 +1342,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				}
 
 					// ① 在右侧栏仍可见时，先定位 pane 和它对应的 webview 覆盖层。
-					// 覆盖层是 body 直接子节点中、包含 iframe.webview 且 rect 与 pane
-					// 重合的那个绝对定位元素。必须在 collapse 之前找，否则 pane rect 为 0。
 					const agentPartContainer = document.getElementById(Parts.AGENT_EDITOR_PART);
 					const pane = agentPartContainer?.querySelector('.agent-studio-editor-pane') as HTMLElement | null;
 					let overlay: HTMLElement | null = null;
@@ -1328,19 +1354,16 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 							return Math.abs(r.left - pr.left) < 6 && Math.abs(r.top - pr.top) < 6 &&
 								Math.abs(r.width - pr.width) < 6 && Math.abs(r.height - pr.height) < 6;
 						}) as HTMLElement | undefined) || null;
-						console.warn('[Sarosis][Popout] pane found, overlay(webview) found=' + !!overlay);
 					}
 
 				// ② 隐藏右侧栏（与收缩按钮效果一致）
 				this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
 				this.isRightColumnCollapsed = true;
 
-					// 隐藏 titlebar 上的弹出按钮和伸缩按钮（右侧栏已隐藏，这两个按钮不再有用）
+					// 隐藏 titlebar 上的弹出按钮和伸缩按钮
 					setToggleContainerVisible(false);
 
-					console.warn('[Sarosis][Popout] agent editor hidden, toggle buttons hidden, creating floating window');
-
-					// 创建浮动窗口（用 DOM API 构建，避免 innerHTML 触发 Trusted Types 拦截）
+					// 创建浮动窗口
 					const win = document.createElement('div');
 					win.className = 'agent-chat-popout-window';
 
@@ -1361,27 +1384,23 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					win.appendChild(popoutTitlebar);
 					win.appendChild(contentArea);
 
-					// ★ 先把浮窗挂到 body，确保窗口立即可见。
+					// 先把浮窗挂到 body
 					document.body.appendChild(win);
 					popoutWindow = win;
 					wasPoppedOut = true;
-					console.warn('[Sarosis][Popout] floating window created and appended to body');
 
 					// 关闭按钮
 					popoutCloseBtn.addEventListener('click', () => {
-						console.warn('[Sarosis][Popout] close button clicked');
 						popoutHandler(new (globalThis as any).Event('click'));
 					});
 
-					// ③ 把 pane 移入浮窗内容区（pane 会撑满内容区，其 rect == 内容区 rect，
-					// 控制器的 ResizeObserver 随后会自动把覆盖层 iframe 同步到这个新位置）。
+					// ③ 把 pane 移入浮窗内容区
 					if (pane) {
 						try {
 							popoutOriginalParent = pane.parentElement;
 							contentArea.appendChild(pane);
-							console.warn('[Sarosis][Popout] pane moved into floating window');
 						} catch (e) {
-							console.error('[Sarosis][Popout] failed to move pane into floating window:', e);
+							this.logService.error('[Sarosis][Popout] failed to move pane into floating window:', e);
 							popoutOriginalParent = null;
 							const ph = document.createElement('div');
 							ph.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground);font-size:13px;text-align:center;';
@@ -1389,7 +1408,6 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 							contentArea.appendChild(ph);
 						}
 					} else {
-						console.warn('[Sarosis][Popout] .agent-studio-editor-pane not found — showing placeholder');
 						const ph = document.createElement('div');
 						ph.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:var(--vscode-descriptionForeground);font-size:13px;text-align:center;';
 						ph.textContent = 'Chat panel not available. Please reopen the Agent Chat tab.';
@@ -1449,7 +1467,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					document.addEventListener('mouseup', onMouseUp);
 				}
 			} catch (err) {
-				console.error('[Sarosis][Popout] handler error:', err);
+				this.logService.error('[Sarosis][Popout] handler error:', err);
 			}
 		};
 		document.addEventListener('agent-studio:popout-chat', popoutHandler);
@@ -1475,18 +1493,15 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					)
 				)
 			);
-			console.warn(`[Sarosis][AgentEditor] reopenIfLast(${panelType}) stillExists=${stillExists} (across ${editorPartsForCheck.length} parts)`);
 			if (stillExists) {
 				return;
 			}
 			const target = agentPart.activeGroup;
 			if (panelType === 'native-chat') {
 				const input = NativeChatEditorInput.getInstance();
-				console.warn(`[Sarosis][AgentEditor] reopenIfLast → re-opening native-chat in group ${target.id}`);
 				target.openEditor(input, { pinned: true, sticky: true });
 			} else {
 				const input = AgentStudioEditorInput.getOrCreate(panelType as any);
-				console.warn(`[Sarosis][AgentEditor] reopenIfLast → re-opening '${panelType}' in group ${target.id}`);
 				target.openEditor(input, { pinned: true, sticky: true });
 			}
 		};
@@ -1494,10 +1509,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			this._register(group.onDidCloseEditor(e => {
 				if (e.editor instanceof AgentStudioEditorInput) {
 					const panelType = e.editor.panelType;
-					console.warn(`[Sarosis][AgentEditor] onDidCloseEditor fired: panelType='${panelType}' group=${group.id} → scheduling reopenIfLast`);
 					queueMicrotask(() => reopenIfLast(panelType));
 				} else if (e.editor instanceof NativeChatEditorInput) {
-					console.warn(`[Sarosis][AgentEditor] onDidCloseEditor fired: native-chat group=${group.id} → scheduling reopenIfLast`);
 					queueMicrotask(() => reopenIfLast('native-chat'));
 				}
 			}));
@@ -1513,96 +1526,132 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		// that group into canvasGroup. If it doesn't exist at all, open it
 		// directly in canvasGroup (never create a new group).
 		const reopenChatHandler: EventListener = (e) => {
-			const detail = (e as CustomEvent).detail as { isNativeChat?: boolean } | undefined;
-			const panelType = detail?.isNativeChat ? 'native-chat' : 'chat';
-			console.warn(`[Sarosis][AgentEditor] reopen-chat event: panelType='${panelType}', groups=${agentPart.groups.length}`);
+			const detail = (e as CustomEvent).detail as { isNativeChat?: boolean; editors?: Array<{ chatId: string; agentId?: string; sessionId?: string; name?: string; groupIndex?: number }>; groupCount?: number } | undefined;
+			const savedEditors = detail?.editors ?? [];
+			const targetGroupCount = detail?.groupCount ?? 1;
 
-			// Check if the editor already exists in any group (VS Code auto-moved it back)
-			const existingGroup = agentPart.groups.find(g =>
-				g.editors.some(ed =>
-					(ed instanceof AgentStudioEditorInput && ed.panelType === panelType) ||
-					(ed instanceof NativeChatEditorInput && panelType === 'native-chat')
-				)
-			);
-
-			if (existingGroup && existingGroup !== canvasGroup) {
-				// Editor was auto-moved back into a NEW group — merge it into canvasGroup
-				console.warn(`[Sarosis][AgentEditor] merging group#${existingGroup.id} into canvasGroup#${canvasGroup.id}`);
-				agentPart.mergeAllGroups(canvasGroup);
-				return;
+			// **修复**: 旧实现即使 VS Code 自动 move back 了原 EditorInput 实例，
+			// 也走 mergeAllGroups + return 丢失分屏；fallback 时 NativeChatEditorInput.create()
+			// 创建全新实例，_runtimeState = undefined → pane 内容空白。
+			// 新实现：按 chatId 复用已存在实例（带 _runtimeState），按 groupIndex 分配到对应 group。
+			const existingByChatId = new Map<string, NativeChatEditorInput>();
+			for (const g of agentPart.groups) {
+				for (const ed of g.editors) {
+					if (ed instanceof NativeChatEditorInput) {
+						existingByChatId.set(ed.chatId, ed);
+					}
+				}
 			}
 
-			if (existingGroup === canvasGroup) {
-				// Editor is already in canvasGroup — nothing to do
-				console.warn(`[Sarosis][AgentEditor] editor already in canvasGroup, no action needed`);
-				return;
+			// 创建目标 groups（按 targetGroupCount）
+			const groups: IEditorGroup[] = [canvasGroup];
+			for (let i = 1; i < targetGroupCount; i++) {
+				const g = agentPart.addGroup(groups[groups.length - 1].id, 3 /* GroupDirection.RIGHT */);
+				if (g) { groups.push(g); }
 			}
 
-			// Editor doesn't exist anywhere — open it in canvasGroup (not activeGroup,
-			// which might be a different group and cause a new split)
-			console.warn(`[Sarosis][AgentEditor] opening editor in canvasGroup#${canvasGroup.id}`);
-			if (panelType === 'native-chat') {
-				const input = NativeChatEditorInput.getInstance();
-				canvasGroup.openEditor(input, { pinned: true, sticky: true });
-			} else {
-				const input = AgentStudioEditorInput.getOrCreate(panelType as any);
-				canvasGroup.openEditor(input, { pinned: true, sticky: true });
+			// 按 groupIndex 把每个 editor 放回它原来的 group。
+			// 优先复用已存在实例（保留 _runtimeState，pane 内容不丢失）。
+			for (const saved of savedEditors) {
+				const gi = Math.min(saved.groupIndex ?? 0, groups.length - 1);
+				const targetGroup = groups[gi];
+				const existing = existingByChatId.get(saved.chatId);
+				if (existing) {
+					// 复用原实例：找到它当前所在的 group，moveEditors 到 targetGroup
+					let sourceGroup: IEditorGroup | undefined;
+					for (const g of agentPart.groups) {
+						if (g.editors.includes(existing)) {
+							sourceGroup = g;
+							break;
+						}
+					}
+					if (sourceGroup && sourceGroup !== targetGroup) {
+						sourceGroup.moveEditors([{ editor: existing, options: { preserveFocus: false } as any }], targetGroup);
+					} else if (!sourceGroup) {
+						// 已存在实例但找不到所在 group — 直接 openEditor
+						targetGroup.openEditor(existing, { pinned: true });
+					}
+					// 如果 sourceGroup === targetGroup，无需操作
+				} else {
+					// Fallback：原实例已丢失 — create 新实例（内容会丢失）
+					const input = NativeChatEditorInput.create(
+						saved.chatId,
+						saved.agentId,
+						saved.sessionId,
+						saved.name,
+					);
+					targetGroup.openEditor(input, { pinned: true, sticky: targetGroupCount === 1 });
+				}
+			}
+
+			// 清理 VS Code 自动 move back 创建的多余空 group
+			const extraEmptyGroups = agentPart.groups.filter(g => !groups.includes(g) && g.editors.length === 0);
+			for (const g of extraEmptyGroups) {
+				agentPart.mergeGroup(g, canvasGroup);
 			}
 		};
 		document.addEventListener('agent-studio:reopen-chat', reopenChatHandler);
 		this._register({ dispose: () => document.removeEventListener('agent-studio:reopen-chat', reopenChatHandler) });
 
-		// ── Single Chat layout (every launch) ────────────────────────────
+		// ── Restore Agent Chat layout from previous session (if any) ─────
 		// The Agent part is created with `restorePreviousState: false`, so it
-		// always boots as a single empty group. Chat occupies the full width.
-		// Users can split the group manually via the editor UI.
-		if (agentPart.groups.length > 1) {
-			agentPart.mergeAllGroups(canvasGroup);
+		// always boots as a single empty group. If a layout was persisted before
+		// the last window reload, recreate the groups and reopen the chat
+		// editors in their original positions. Otherwise fall back to the
+		// default single Chat tab.
+		const savedLayout = this._restoreAgentChatLayout();
+		const shouldRestoreLayout = savedLayout && savedLayout.editors.length > 0;
+
+		if (shouldRestoreLayout) {
+			const groups: IEditorGroup[] = [canvasGroup];
+			for (let i = 1; i < savedLayout!.groupCount; i++) {
+				const g = agentPart.addGroup(groups[groups.length - 1].id, 3 /* GroupDirection.RIGHT */);
+				if (g) { groups.push(g); }
+			}
+
+			for (const saved of savedLayout!.editors) {
+				const gi = Math.min(saved.groupIndex, groups.length - 1);
+				const targetGroup = groups[gi];
+				const input = NativeChatEditorInput.create(
+					saved.chatId,
+					saved.agentId,
+					saved.sessionId,
+					saved.name,
+				);
+				targetGroup.openEditor(input, { pinned: true, sticky: savedLayout!.groupCount === 1 });
+			}
+
+			// Clear the persisted layout so it is applied only once.
+			this._storageService?.remove(Workbench.AGENT_CHAT_LAYOUT_KEY, StorageScope.WORKSPACE);
+		} else {
+			// ── Single Chat layout (every launch) ────────────────────────────
+			// The Agent part is created with `restorePreviousState: false`, so it
+			// always boots as a single empty group. Chat occupies the full width.
+			// Users can split the group manually via the editor UI.
+			if (agentPart.groups.length > 1) {
+				agentPart.mergeAllGroups(canvasGroup);
+			}
+			const leftGroup = agentPart.activeGroup;
+
+			// Remove any stale AgentStudioEditorInput already sitting in the left
+			// group (shouldn't happen with restore disabled, but keep it
+			// deterministic).
+			const existingAgentEditors = leftGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput || ed instanceof NativeChatEditorInput);
+			if (existingAgentEditors.length > 0) {
+				await leftGroup.closeEditors(existingAgentEditors, { preserveFocus: true });
+			}
+
+			const chatInput = AgentStudioEditorInput.getOrCreate('chat');
+
+			// Open Chat (React webview) in the single group.
+			try {
+				await leftGroup.openEditor(chatInput, { pinned: true, sticky: true });
+			} catch (e) {
+				this.logService.error('[Sarosis][AgentEditor] openEditor(chat) threw', e);
+			}
+
+			leftGroup.focus();
 		}
-		const leftGroup = agentPart.activeGroup;
-
-		// ── Diagnostic logging helper ────────────────────────────────────
-		const dumpAgent = (tag: string) => {
-			const groupsInfo = agentPart.groups.map(g => {
-				const eds = g.editors.map(ed => ed instanceof AgentStudioEditorInput ? `AS:${ed.panelType}` : ed.typeId).join(', ');
-				return `  group#${g.id} (active=${g.id === agentPart.activeGroup.id}) [${g.editors.length}]: ${eds}`;
-			}).join('\n');
-			console.warn(`[Sarosis][AgentEditor] === ${tag} ===\n  agentPart.groups.length=${agentPart.groups.length}\n${groupsInfo}`);
-		};
-
-		// Surface the relevant editor-tab configuration values that decide
-		// whether a tab bar shows and whether editors get auto-closed.
-		try {
-			const cfg = this.instantiationService.invokeFunction(accessor => accessor.get(IConfigurationService));
-			console.warn(`[Sarosis][AgentEditor] config: showTabs=${JSON.stringify(cfg.getValue('workbench.editor.showTabs'))}, limit.enabled=${JSON.stringify(cfg.getValue('workbench.editor.limit.enabled'))}, limit.value=${JSON.stringify(cfg.getValue('workbench.editor.limit.value'))}, limit.perEditorGroup=${JSON.stringify(cfg.getValue('workbench.editor.limit.perEditorGroup'))}`);
-		} catch (e) {
-			console.warn('[Sarosis][AgentEditor] failed to read editor config', e);
-		}
-
-		dumpAgent('BEFORE rebuild');
-
-		// Remove any stale AgentStudioEditorInput already sitting in the left
-		// group (shouldn't happen with restore disabled, but keep it
-		// deterministic).
-		const existingAgentEditors = leftGroup.editors.filter(ed => ed instanceof AgentStudioEditorInput || ed instanceof NativeChatEditorInput);
-		if (existingAgentEditors.length > 0) {
-			console.warn(`[Sarosis][AgentEditor] purging ${existingAgentEditors.length} pre-existing AS editor(s) from left group`);
-			await leftGroup.closeEditors(existingAgentEditors, { preserveFocus: true });
-		}
-
-		const chatInput = AgentStudioEditorInput.getOrCreate('chat');
-
-		// Open Chat (React webview, full-featured: provider/model/chatmode selectors,
-		// markdown rendering, syntax highlight, tool-call cards, attachments, slash menu, etc.)
-		// in the single group. Native AgentChatPanel is kept on the side ChatBar for
-		// lightweight quick-send entry.
-		try {
-			await leftGroup.openEditor(chatInput, { pinned: true, sticky: true });
-		} catch (e) {
-			console.error('[Sarosis][AgentEditor] openEditor(chat) threw', e);
-		}
-
-		leftGroup.focus();
 
 		// Guard groups added later within the agent part (user splits).
 		this._register(agentPart.onDidAddGroup(newGroup => {
@@ -1681,6 +1730,67 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 	//#endregion
 
+	// [Sarosis] Save the current Agent Chat editor layout (groups and
+	// editor metadata) to workspace storage so it can be restored after a
+	// window reload. Also saves an empty layout when no chat editors are
+	// present, ensuring closed chats stay closed on restart.
+	private _storeAgentChatLayout(): void {
+		const storageService = this._storageService;
+		const agentPart = (this.editorGroupService as SessionsEditorParts | undefined)?.agentPart;
+		if (!storageService || !agentPart) {
+			return;
+		}
+
+		const groups = agentPart.groups;
+		const editors: IAgentChatLayoutState['editors'] = [];
+		for (let i = 0; i < groups.length; i++) {
+			for (const ed of groups[i].editors) {
+				if (ed instanceof NativeChatEditorInput) {
+					editors.push({
+						chatId: ed.chatId,
+						agentId: ed.agentId,
+						sessionId: ed.sessionId,
+						name: ed.name,
+						groupIndex: i
+					});
+				}
+			}
+		}
+
+		const state: IAgentChatLayoutState = {
+			groupCount: groups.length,
+			editors
+		};
+		storageService.store(
+			Workbench.AGENT_CHAT_LAYOUT_KEY,
+			JSON.stringify(state),
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE
+		);
+	}
+
+	// [Sarosis] Read the persisted Agent Chat layout from workspace storage,
+	// if any. Returns undefined when the key is missing or malformed.
+	private _restoreAgentChatLayout(): IAgentChatLayoutState | undefined {
+		const storageService = this._storageService;
+		if (!storageService) {
+			return undefined;
+		}
+		const raw = storageService.get(Workbench.AGENT_CHAT_LAYOUT_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return undefined;
+		}
+		try {
+			const parsed = JSON.parse(raw) as IAgentChatLayoutState;
+			if (parsed && typeof parsed.groupCount === 'number' && Array.isArray(parsed.editors)) {
+				return parsed;
+			}
+		} catch {
+			/* ignore malformed state */
+		}
+		return undefined;
+	}
+
 	//#region Workbench Layout Creation
 
 	createWorkbenchLayout(): void {
@@ -1704,7 +1814,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		for (const { name, part } of partsToValidate) {
 			if (!part.element || !(part.element instanceof HTMLElement)) {
 				// Part hasn't been created yet — call create() with a container
-				console.warn(`[Workbench] ${name} part has no element — calling create()...`);
+				this.logService.warn(`[Workbench] ${name} part has no element — calling create()...`);
 				const container = document.createElement('div');
 				container.classList.add('part', name.toLowerCase());
 				container.id = part.getId();
@@ -1735,14 +1845,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		};
 
 		const fromJSON = ({ type }: { type: string }) => {
-			const view = viewMap[type];
-			// [Sarosis] Debug: log each view's element status during grid deserialization
-			const elemStatus = !view ? 'VIEW_UNDEFINED' : !view.element ? 'ELEMENT_UNDEFINED' : !(view.element instanceof Node) ? `NOT_NODE(type=${typeof view.element})` : 'OK';
-			console.log(`[Workbench] fromJSON: type=${type}, view=${view?.constructor?.name ?? 'undefined'}, element=${elemStatus}`);
-			if (!view || !view.element || !(view.element instanceof Node)) {
-				console.error(`[Workbench] CRITICAL: view for type=${type} has invalid element!`);
-			}
-			return view;
+			return viewMap[type];
 		};
 		const workbenchGrid = SerializableGrid.deserialize(
 			this.createGridDescriptor(),
@@ -2224,100 +2327,47 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				this.isPanelVisible = !hidden;
 				this.updateLayoutClasses();
 				if (!hidden) {
-					// [Sarosis] Panel was created with size=0 when initially
-					// hidden. setViewVisible only toggles visibility — it does
-					// NOT restore a non-zero size. We must explicitly resize
-					// the panel to a proper height after making it visible.
+					// Panel was created with size=0 when initially hidden. Restore proper height.
 					const contentHeight = this._mainContainerDimension.height - DEFAULT_CUSTOM_TITLEBAR_HEIGHT;
 					const targetPanelHeight = Math.round(contentHeight * 0.35);
 					this.workbenchGrid.resizeView(this.panelPartView, { width: this.workbenchGrid.getViewSize(this.panelPartView).width, height: targetPanelHeight });
 
 					// When showing, ensure a pane composite is open
 					const allComposites = this.paneCompositeService.getPaneComposites(ViewContainerLocation.Panel);
-					console.log('[Workbench] Panel composites:', allComposites.map(c => c.id));
 					const activePanel = this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Panel);
-					console.log('[Workbench] Panel activePanel:', activePanel?.getId?.() ?? 'none');
 					if (!activePanel) {
 						const lastActive = this.paneCompositeService.getLastActivePaneCompositeId(ViewContainerLocation.Panel);
-						console.log('[Workbench] Panel lastActive:', lastActive ?? 'none');
 						// Try last active, then default view container, then first available composite
 						let compositeToOpen: string | undefined = lastActive;
 						if (!compositeToOpen) {
 							const defaultContainer = this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Panel);
 							compositeToOpen = defaultContainer?.id;
-							console.log('[Workbench] Panel defaultContainer:', compositeToOpen ?? 'none');
 						}
 						if (!compositeToOpen) {
 							compositeToOpen = allComposites.length > 0 ? allComposites[0].id : undefined;
 						}
-						console.log('[Workbench] Panel opening composite:', compositeToOpen ?? 'none');
-				if (compositeToOpen) {
-					await this.paneCompositeService.openPaneComposite(compositeToOpen, ViewContainerLocation.Panel, true);
-					// [Sarosis] showComposite() appends content to DOM which
-					// can trigger a grid relayout using stale size=0. Re-resize
-					// after composite is open to ensure proper panel height.
-					// Use requestAnimationFrame to ensure the resize happens
-					// after the browser processes the DOM changes from showComposite.
-					try {
-						const currentWidth = this.workbenchGrid.getViewSize(this.panelPartView).width;
-						const currentHeight = this.workbenchGrid.getViewSize(this.panelPartView).height;
-						console.log('[Workbench] Panel before re-resize: currentWidth:', currentWidth, 'currentHeight:', currentHeight, 'targetHeight:', targetPanelHeight);
-						this.workbenchGrid.resizeView(this.panelPartView, { width: currentWidth, height: targetPanelHeight });
-						console.log('[Workbench] Panel re-resized after composite open, height:', targetPanelHeight);
-					} catch (e) {
-						console.error('[Workbench] Panel re-resize failed:', e);
-					}
-
-					// Also schedule another resize on the next frame, since
-					// showComposite's DOM mutations may trigger a grid relayout
-					// that resets the panel size back to 0.
-					requestAnimationFrame(() => {
-						try {
-							const w = this.workbenchGrid.getViewSize(this.panelPartView).width;
-							const h = this.workbenchGrid.getViewSize(this.panelPartView).height;
-							console.log('[Workbench] Panel rAF check: currentHeight:', h, 'targetHeight:', targetPanelHeight);
-							if (h < 100) {
-								this.workbenchGrid.resizeView(this.panelPartView, { width: w, height: targetPanelHeight });
-								console.log('[Workbench] Panel re-resized in rAF, height:', targetPanelHeight);
+						if (compositeToOpen) {
+							await this.paneCompositeService.openPaneComposite(compositeToOpen, ViewContainerLocation.Panel, true);
+							// Re-resize after composite is open to ensure proper panel height
+							try {
+								const currentWidth = this.workbenchGrid.getViewSize(this.panelPartView).width;
+								
+								this.workbenchGrid.resizeView(this.panelPartView, { width: currentWidth, height: targetPanelHeight });
+							} catch (e) {
+								this.logService.error('[Workbench] Panel re-resize failed:', e);
 							}
 
-							// [Sarosis Debug] Inspect panel DOM to understand why content is invisible
-							const panelPart = this.getPart(Parts.PANEL_PART);
-							const panelEl = panelPart.element;
-							if (panelEl) {
-								const rect = panelEl.getBoundingClientRect();
-								const computedDisplay = getComputedStyle(panelEl).display;
-								const inlineDisplay = panelEl.style.display;
-								console.log('[Workbench] Panel DOM rect:', { width: rect.width, height: rect.height, top: rect.top, left: rect.left, display: computedDisplay, visibility: getComputedStyle(panelEl).visibility });
-								console.log('[Workbench] Panel inline style display:', inlineDisplay || '(empty)');
-								console.log('[Workbench] Panel classList:', Array.from(panelEl.classList));
-								// Check content area
-								const contentArea = panelEl.querySelector('.content');
-								if (contentArea) {
-									const caRect = contentArea.getBoundingClientRect();
-									console.log('[Workbench] Panel contentArea rect:', { width: caRect.width, height: caRect.height, childCount: contentArea.children.length });
-									for (let i = 0; i < contentArea.children.length; i++) {
-										const child = contentArea.children[i] as HTMLElement;
-										const childRect = child.getBoundingClientRect();
-										console.log(`[Workbench] Panel contentArea child[${i}]:`, { id: child.id, className: child.className, width: childRect.width, height: childRect.height, display: getComputedStyle(child).display, offsetParent: !!child.offsetParent });
+							// Schedule another resize on the next frame
+							requestAnimationFrame(() => {
+								try {
+									const w = this.workbenchGrid.getViewSize(this.panelPartView).width;
+									const h = this.workbenchGrid.getViewSize(this.panelPartView).height;
+									if (h < 100) {
+										this.workbenchGrid.resizeView(this.panelPartView, { width: w, height: targetPanelHeight });
 									}
-								} else {
-									console.log('[Workbench] Panel contentArea NOT FOUND');
-								}
-								// Check composite bar
-								const compositeBar = panelEl.querySelector('.composite-bar-container');
-								if (compositeBar) {
-									const cbRect = compositeBar.getBoundingClientRect();
-									console.log('[Workbench] Panel compositeBar rect:', { width: cbRect.width, height: cbRect.height, childCount: compositeBar.children.length });
-								} else {
-									console.log('[Workbench] Panel compositeBar NOT FOUND');
-								}
-							}
-						} catch (e) {
-							console.error('[Workbench] Panel rAF inspection failed:', e);
+								} catch { /* ignore */ }
+							});
 						}
-					});
-				}
 					}
 				}
 			} catch { /* Grid not ready */ }

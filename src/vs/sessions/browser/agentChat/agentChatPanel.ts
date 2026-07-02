@@ -551,6 +551,14 @@ export class AgentChatPanel extends Disposable {
 		console.warn(`[AgentChatPanel] setMessages: total=${messages.length} aggregate=${(tAgg - t0).toFixed(1)}ms render=${(tRender - tAgg).toFixed(1)}ms total=${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
+	/**
+	 * Returns the current in-memory messages array (shallow copy).
+	 * Used by NativeChatEditorPane to save runtime state on tab switch.
+	 */
+	getMessages(): IAgentChatMessage[] {
+		return [...this._messages];
+	}
+
 	addMessage(message: IAgentChatMessage): void {
 		this._messages.push(message);
 		this._appendMessageDom(message);

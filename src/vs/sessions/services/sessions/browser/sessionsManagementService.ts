@@ -350,21 +350,28 @@ class SessionsManagementService extends Disposable implements ISessionsManagemen
 	}
 
 	openNewChatInSession(session: ISession): void {
+		console.log('[SessionsManagement] openNewChatInSession: called, sessionId=', session.sessionId);
 		const provider = this._getProvider(session);
 		if (!provider) {
+			console.warn('[SessionsManagement] openNewChatInSession: provider not found:', session.providerId);
 			this.logService.warn(`[SessionsManagement] openNewChatInSession: provider '${session.providerId}' not found`);
 			return;
 		}
 
 		// Reuse an existing untitled chat if one exists, otherwise create a new one
 		const existingUntitled = session.chats.get().find(c => c.status.get() === SessionStatus.Untitled);
+		console.log('[SessionsManagement] openNewChatInSession: existingUntitled=', !!existingUntitled, 'chats count=', session.chats.get().length);
 		const chat = existingUntitled ?? provider.addChat(session.sessionId);
+		console.log('[SessionsManagement] openNewChatInSession: chat created/reused, resource=', chat.resource.toString());
 
 		this.setActiveSession(session);
 
 		// Set the chat as the active chat
 		if (this._activeChatObservable) {
 			this._activeChatObservable.set(chat, undefined);
+			console.log('[SessionsManagement] openNewChatInSession: activeChat set to new chat');
+		} else {
+			console.warn('[SessionsManagement] openNewChatInSession: _activeChatObservable is null!');
 		}
 
 		this._isNewChatInSessionContext.set(true);

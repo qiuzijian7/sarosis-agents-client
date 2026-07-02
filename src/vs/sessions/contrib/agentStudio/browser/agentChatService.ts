@@ -72,10 +72,21 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	private readonly configurationService: IConfigurationService;
 	private readonly studioService: IAgentStudioService;
 
-	/** 当前活跃的 onDelta 回调（供 provider 事件桥接使用） */
-	private _activeOnDelta: ((delta: IChatStreamDelta) => void) | null = null;
+	/**
+	 * 当前活跃的 onDelta 回调集合。
+	 *
+	 * 历史实现是单例 `_activeOnDelta`，第二个并发 sendMessage 会覆盖第一个的
+	 * 回调，导致第一个流的 memory 事件无法到达 UI（跨流串台根因）。
+	 * 改为按 streamKey（agentId::sessionId）分桶，支持同一 agent 下多个会话
+	 * 并发流式输出。
+	 */
+	private readonly _activeOnDeltas = new Map<string, (delta: IChatStreamDelta) => void>();
+	/** 每个 streamKey 的创建时间，用于在内存事件桥接时选出"最近一次"流。 */
+	private readonly _streamCreatedAt = new Map<string, number>();
 	/** provider 事件取消订阅函数 */
 	private _memoryEventUnsub: (() => void) | null = null;
+	/** 内存事件桥接是否已建立（幂等，只建立一次） */
+	private _memoryBridgeReady = false;
 
 	/** In-memory cache: compositeKey → messages */
 	private readonly _historyCache = new Map<string, ChatMessage[]>();
@@ -764,8 +775,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 订阅 provider 的 onMemoryWritten/onMemoryWriteFailed 事件，
 		// 将真实的写入结果转发给 onDelta，使 UI 卡片从 pending → saved/failed。
 		// 替代旧的 fire-and-forget + 假"已保存"信号模式。
-		this._activeOnDelta = onDelta;
-		this._setupMemoryEventBridge();
+		// 并发修复：每个 streamKey 独立注册回调，而非覆盖单例。
+		this._activeOnDeltas.set(streamKey, onDelta);
+		this._streamCreatedAt.set(streamKey, Date.now());
+		this._ensureMemoryEventBridge();
 
 		let fullContent = "";
 		let fullThinking = "";
@@ -1177,21 +1190,35 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			throw error;
 		} finally {
 			this._activeStreams.delete(streamKey);
-			// 不清除 _activeOnDelta：writeMemory 是 fire-and-forget，
-			// 其完成事件可能在流结束后才到达，需要 onDelta 仍可调用。
+			// 并发修复：移除本次流的回调与计时戳。writeMemory 完成事件若晚到，
+			// 桥接会按 agentId 路由到该 agent 仍活跃的最近一次流；若已无活跃流则安全 no-op。
+			this._activeOnDeltas.delete(streamKey);
+			this._streamCreatedAt.delete(streamKey);
 		}
+	}
+
+	/**
+	 * 服务销毁时取消 memory 事件桥接订阅，避免泄漏。
+	 * 该字段此前仅被赋值、未被读取，现通过 dispose 真正消费它。
+	 */
+	override dispose(): void {
+		this._memoryEventUnsub?.();
+		this._memoryEventUnsub = null;
+		super.dispose();
 	}
 
 	/**
 	 * 订阅 memory provider 的 lifecycle 事件，桥接为 onDelta 调用。
 	 * 替代旧的 fire-and-forget + 假"已保存" UI 信号。
+	 *
+	 * 幂等：只建立一次订阅；并发修复后用 {@link _getOnDeltaForAgent} 按 agentId
+	 * 把事件路由到该 agent 最近一次活跃流的 onDelta，避免多会话串台。
 	 */
-	private _setupMemoryEventBridge(): void {
-		// 清理上一次的订阅
-		if (this._memoryEventUnsub) {
-			this._memoryEventUnsub();
-			this._memoryEventUnsub = null;
+	private _ensureMemoryEventBridge(): void {
+		if (this._memoryBridgeReady) {
+			return;
 		}
+		this._memoryBridgeReady = true;
 
 		// Dedup: track processed noticeIds to prevent duplicate display
 		const processedNoticeIds = new Set<string>();
@@ -1206,7 +1233,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 
 		const unsubWritten = provider.onMemoryWritten((agentId, data) => {
-			if (!this._activeOnDelta) return;
+			const onDelta = this._getOnDeltaForAgent(agentId);
+			if (!onDelta) {
+				return;
+			}
 			if (data.noticeId) {
 				// Dedup: skip if this noticeId was already processed
 				if (processedNoticeIds.has(data.noticeId)) {
@@ -1216,7 +1246,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 				// L0 写入完成：contentLength 为 0 时移除 pending 卡片，不显示"已保存"
 				if (!data.contentLength || data.contentLength === 0) {
-					this._activeOnDelta({
+					onDelta({
 						type: 'memory_written' as any,
 						content: '',
 						metadata: { noticeId: data.noticeId, memoryType: data.memoryType, remove: true },
@@ -1234,7 +1264,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
 				};
 				const memLabel = memTypeLabels[data.memoryType ?? ''] ?? data.memoryType ?? 'Working';
-				this._activeOnDelta({
+				onDelta({
 					type: 'memory_written' as any,
 					content: `${memLabel} 已保存 ${data.contentLength}字`,
 					metadata: { noticeId: data.noticeId, memoryType: data.memoryType },
@@ -1266,7 +1296,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
 				};
 				const label = typeLabels[memType] ?? memType ?? 'Episodic';
-				this._activeOnDelta({
+				onDelta({
 					type: 'memory_extracted' as any,
 					content: `${label} 已提取`,
 					metadata: { memoryType: memType, status: 'saved' },
@@ -1275,8 +1305,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		});
 
 		const unsubFailed = provider.onMemoryWriteFailed?.((_agentId, data) => {
-			if (this._activeOnDelta && data.noticeId) {
-				this._activeOnDelta({
+			const onDelta = this._getOnDeltaForAgent(_agentId);
+			if (onDelta && data.noticeId) {
+				onDelta({
 					type: 'memory_write_failed' as any,
 					content: `Working 写入失败: ${data.error}`,
 					metadata: { noticeId: data.noticeId, error: data.error },
@@ -1287,26 +1318,55 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 技能提取事件桥接：sweep 中自动提取技能后通知 UI
 		const providerAny = provider as any;
 		const unsubSkill = providerAny?.onEvent?.('skill_extracted', (event: any) => {
-			if (!this._activeOnDelta) return;
+			const agentId = event.agentId ?? '';
+			const onDelta = this._getOnDeltaForAgent(agentId);
+			if (!onDelta) {
+				return;
+			}
 			const skillId = event.data?.['skillId'] as string ?? '';
 			const title = event.data?.['title'] as string ?? '未知技能';
-			this._activeOnDelta({
+			onDelta({
 				type: 'skill_extracted' as any,
 				content: `⚡ 技能已沉淀: ${title}`,
 				metadata: {
 					skillId,
 					title,
-					agentId: event.agentId ?? '',
+					agentId,
 					clickable: true,
 				},
 			} as any);
 		}) ?? null;
 
 		this._memoryEventUnsub = () => {
-		unsubWritten();
-		unsubFailed();
-		if (typeof unsubSkill === 'function') { unsubSkill(); }
-	};
+			unsubWritten();
+			unsubFailed();
+			if (typeof unsubSkill === 'function') { unsubSkill(); }
+		};
+	}
+
+	/**
+	 * 并发路由：给定 agentId，返回该 agent 最近一次活跃流的 onDelta 回调。
+	 *
+	 * 内存 provider 的 onMemoryWritten/onMemoryWriteFailed 是全局事件，不直接携带
+	 * sessionId，因此按 agentId 前缀匹配所有 streamKey（agentId 或 agentId::sessionId），
+	 * 选取创建时间最新的一条。当两个 chat 属于不同 agent 时路由无歧义；同 agent 多会话时
+	 * 路由到最近发起的流（memory 事件通常紧跟对应生成，可接受）。
+	 */
+	private _getOnDeltaForAgent(agentId: string): ((delta: IChatStreamDelta) => void) | undefined {
+		if (!agentId) {
+			return undefined;
+		}
+		let bestKey: string | undefined;
+		let bestTime = -1;
+		for (const [key, time] of this._streamCreatedAt) {
+			if (key === agentId || key.startsWith(`${agentId}::`)) {
+				if (time > bestTime) {
+					bestTime = time;
+					bestKey = key;
+				}
+			}
+		}
+		return bestKey ? this._activeOnDeltas.get(bestKey) : undefined;
 	}
 
 	cancelStream(agentId: string, agentSessionId?: string): void {
@@ -1320,6 +1380,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			controller.abort();
 			this._activeStreams.delete(streamKey);
 		}
+		// 并发修复：同步移除该流的回调与计时戳，避免内存事件桥接路由到已取消的流。
+		this._activeOnDeltas.delete(streamKey);
+		this._streamCreatedAt.delete(streamKey);
 	}
 
 	// ─── Agent Session CRUD (Root mode) ──────────────────────────────────────

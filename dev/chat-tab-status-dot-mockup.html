@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>聊天页签状态灯 Mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #1e1e1e;
+    color: #cccccc;
+    padding: 40px;
+  }
+  h2 { color: #4ec9b0; margin-bottom: 12px; font-size: 16px; }
+  .section { margin-bottom: 40px; }
+
+  /* ── Mock VS Code editor tab bar ── */
+  .tabs-container {
+    display: flex;
+    background: #2d2d2d;
+    border-bottom: 1px solid #252526;
+    height: 36px;
+    align-items: stretch;
+    padding: 0;
+  }
+  .tab {
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    height: 35px;
+    cursor: pointer;
+    border-right: 1px solid #252526;
+    font-size: 13px;
+    color: #969696;
+    background: transparent;
+    position: relative;
+    user-select: none;
+    transition: background 0.15s, color 0.15s;
+  }
+  .tab:hover { background: #2a2d2e; color: #cccccc; }
+  .tab.active {
+    background: #1e1e1e;
+    color: #ffffff;
+  }
+  .tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    background: #007acc;
+  }
+  .tab .monaco-icon-label {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* ── Status dot (the actual feature) ── */
+  .tab .monaco-icon-label.chat-tab-status::before,
+  .chat-tab-status::before {
+    content: '' !important;
+    display: inline-block !important;
+    font-family: inherit !important;
+    font-size: 0 !important;
+    font-weight: normal !important;
+    line-height: 7px !important;
+    text-decoration: none !important;
+    border: 0 !important;
+    outline: 0 !important;
+    padding: 0 !important;
+    margin: 0 6px 0 2px !important;
+    width: 7px !important;
+    min-width: 7px !important;
+    max-width: 7px !important;
+    height: 7px !important;
+    min-height: 7px !important;
+    max-height: 7px !important;
+    aspect-ratio: 1 / 1 !important;
+    border-radius: 50% !important;
+    vertical-align: middle !important;
+    background: transparent !important;
+    flex: 0 0 7px !important;
+    align-self: center !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+  }
+  .tab .monaco-icon-label.chat-tab-status-running::before,
+  .chat-tab-status-running::before {
+    background: #3fb950 !important;
+    box-shadow: 0 0 4px rgba(63, 185, 80, 0.6) !important;
+    animation: chat-tab-status-pulse 1.4s ease-in-out infinite !important;
+  }
+  .tab .monaco-icon-label.chat-tab-status-error::before,
+  .chat-tab-status-error::before {
+    background: #f85149 !important;
+    box-shadow: 0 0 4px rgba(248, 81, 73, 0.5) !important;
+  }
+  .tab .monaco-icon-label.chat-tab-status-pending::before,
+  .chat-tab-status-pending::before {
+    background: #d6deeb !important;
+    opacity: 0.85 !important;
+  }
+  @keyframes chat-tab-status-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.8); }
+  }
+
+  .tab-label-text { margin-left: 0; }
+  .tab-close {
+    margin-left: 8px;
+    opacity: 0.5;
+    font-size: 16px;
+    line-height: 1;
+  }
+  .tab:hover .tab-close { opacity: 1; }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    gap: 30px;
+    flex-wrap: wrap;
+    margin-top: 16px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #cccccc;
+  }
+  .dot-demo {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .dot-demo.running {
+    background: #3fb950;
+    box-shadow: 0 0 4px rgba(63, 185, 80, 0.6);
+    animation: chat-tab-status-pulse 1.4s ease-in-out infinite;
+  }
+  .dot-demo.error { background: #f85149; box-shadow: 0 0 4px rgba(248, 81, 73, 0.5); }
+  .dot-demo.pending { background: #d6deeb; opacity: 0.85; }
+  .dot-demo.idle { background: transparent; border: 1px dashed #555; }
+
+  /* ── Controls ── */
+  .controls {
+    margin-top: 24px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .controls button {
+    background: #0e639c;
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .controls button:hover { background: #1177bb; }
+  .controls button.danger { background: #a1260d; }
+  .controls button.danger:hover { background: #c42b17; }
+  .controls button.success { background: #1a6f3a; }
+  .controls button.success:hover { background: #228a48; }
+  .controls button.secondary { background: #3a3d41; }
+  .controls button.secondary:hover { background: #4a4d51; }
+
+  .hint {
+    margin-top: 12px;
+    font-size: 12px;
+    color: #888;
+  }
+
+  /* ── Fake chat content area ── */
+  .chat-area {
+    background: #1e1e1e;
+    border: 1px solid #2d2d2d;
+    border-top: none;
+    height: 120px;
+    padding: 16px;
+    font-size: 13px;
+    color: #888;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+</style>
+</head>
+<body>
+
+<div class="section">
+  <h2>① 四种状态灯图例</h2>
+  <div class="legend">
+    <div class="legend-item"><span class="dot-demo running"></span> 执行中 (running) — 绿色脉冲</div>
+    <div class="legend-item"><span class="dot-demo error"></span> 报错 (error) — 红色</div>
+    <div class="legend-item"><span class="dot-demo pending"></span> 未读 (pending) — 白色</div>
+    <div class="legend-item"><span class="dot-demo idle"></span> 空闲 (idle) — 无灯</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>② 实际页签效果（点击 tab 可模拟焦点切换 → pending 白灯消失）</h2>
+  <div class="tabs-container" id="tabs">
+    <div class="tab active" data-chat="1">
+      <span class="monaco-icon-label chat-tab-status chat-tab-status-running">
+        <span class="tab-label-text">Claw 助手</span>
+      </span>
+    </div>
+    <div class="tab" data-chat="2">
+      <span class="monaco-icon-label chat-tab-status chat-tab-status-error">
+        <span class="tab-label-text">代码审查员</span>
+      </span>
+    </div>
+    <div class="tab" data-chat="3">
+      <span class="monaco-icon-label chat-tab-status chat-tab-status-pending">
+        <span class="tab-label-text">PM 规划师</span>
+      </span>
+    </div>
+    <div class="tab" data-chat="4">
+      <span class="monaco-icon-label chat-tab-status">
+        <span class="tab-label-text">文档助手</span>
+      </span>
+    </div>
+  </div>
+  <div class="chat-area" id="chatArea">
+    👆 点击上方页签切换焦点 — pending(白灯) 切换后消失
+  </div>
+  <div class="controls">
+    <button class="success" onclick="setAll('running')">全部设为执行中</button>
+    <button class="danger" onclick="setAll('error')">全部设为报错</button>
+    <button class="secondary" onclick="setAll('pending')">全部设为未读</button>
+    <button class="secondary" onclick="setAll('idle')">全部设为空闲</button>
+  </div>
+  <div class="hint">说明：点击页签 = 模拟用户焦点切换，该 tab 的 pending(白灯) 会立即变为 idle(无灯)</div>
+</div>
+
+<div class="section">
+  <h2>③ 对比：active tab 也有状态灯</h2>
+  <div class="tabs-container">
+    <div class="tab active">
+      <span class="monaco-icon-label chat-tab-status chat-tab-status-running">
+        <span class="tab-label-text">当前活跃 (执行中)</span>
+      </span>
+    </div>
+    <div class="tab">
+      <span class="monaco-icon-label chat-tab-status chat-tab-status-pending">
+        <span class="tab-label-text">后台未读</span>
+      </span>
+    </div>
+    <div class="tab">
+      <span class="monaco-icon-label chat-tab-status chat-tab-status-error">
+        <span class="tab-label-text">后台报错</span>
+      </span>
+    </div>
+  </div>
+  <div class="hint">active tab 的状态灯保留（活跃中=执行中是合理的），只有 pending 会在焦点切换时清除</div>
+</div>
+
+<script>
+  const tabs = document.querySelectorAll('#tabs .tab');
+  const chatArea = document.getElementById('chatArea');
+  const statusText = {
+    'running': '🔄 正在执行...',
+    'error': '❌ 执行报错',
+    'pending': '✅ 执行完毕（用户未查看）',
+    'idle': '💬 空闲',
+  };
+
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      // 焦点切换 → pending → idle（白灯消失）
+      const label = tab.querySelector('.monaco-icon-label');
+      if (label.classList.contains('chat-tab-status-pending')) {
+        label.classList.remove('chat-tab-status-pending');
+        // 保留 chat-tab-status 基类但不加状态类 = idle(无灯)
+      }
+      const status = ['chat-tab-status-running','chat-tab-status-error','chat-tab-status-pending']
+        .find(s => label.classList.contains(s))?.replace('chat-tab-status-','') || 'idle';
+      chatArea.textContent = statusText[status];
+    });
+  });
+
+  function setAll(status) {
+    tabs.forEach(tab => {
+      const label = tab.querySelector('.monaco-icon-label');
+      label.classList.remove('chat-tab-status-running','chat-tab-status-error','chat-tab-status-pending');
+      if (status !== 'idle') {
+        label.classList.add('chat-tab-status-' + status);
+      }
+    });
+    const activeTab = document.querySelector('#tabs .tab.active');
+    if (activeTab) {
+      const s = status === 'idle' ? 'idle' : status;
+      chatArea.textContent = statusText[s] || '💬 空闲';
+    }
+  }
+</script>
+
+</body>
+</html>
