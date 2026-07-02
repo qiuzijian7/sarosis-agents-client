@@ -17,6 +17,18 @@ import { MessageFormatConverter } from '../common/adapters/messageFormatConverte
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
 
+/**
+ * Safe access to Node.js require() in Electron renderer.
+ * In web mode (no require available), returns undefined.
+ * Used for debug-only file writes that need fs/fs-promises.
+ */
+function nodeRequire(moduleName: string): any {
+	if (typeof globalThis !== 'undefined' && typeof (globalThis as any).require === 'function') {
+		try { return (globalThis as any).require(moduleName); } catch { return undefined; }
+	}
+	return undefined;
+}
+
 // ─── Provider Definition ────────────────────────────────────────────────────
 
 export interface IBYOKProviderDefinition {
@@ -675,9 +687,13 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			if (!logsHome) { return; }
 
 			const dirPath = join(logsHome.fsPath, 'chat-streams');
-			const dirExists = await import('fs/promises').then(fs => fs.access(dirPath).then(() => true).catch(() => false));
+			const fsPromises = nodeRequire('fs/promises');
+			if (!fsPromises) { return; }
+			const dirExists = await fsPromises.access(dirPath).then(() => true).catch(() => false);
 			if (!dirExists) {
-				await import('fs').then(fs => fs.promises.mkdir(dirPath, { recursive: true }));
+				const fs = nodeRequire('fs');
+				if (!fs) { return; }
+				await fs.promises.mkdir(dirPath, { recursive: true });
 			}
 
 			const timestamp = Date.now();
@@ -694,8 +710,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 				body,
 			};
 
-			const { writeFile } = await import('fs/promises');
-			await writeFile(filePath, JSON.stringify(debugObj, null, 2), 'utf-8');
+			await fsPromises.writeFile(filePath, JSON.stringify(debugObj, null, 2), 'utf-8');
 			this._logService.info(`[BYOK:${this.id}] Debug request written to: ${filePath}`);
 		} catch (err) {
 			this._logService.warn(`[BYOK:${this.id}] _debugWriteRequest failed:`, err);
@@ -715,9 +730,13 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			if (!logsHome) { return; }
 
 			const dirPath = join(logsHome.fsPath, 'chat-streams');
-			const dirExists = await import('fs/promises').then(fs => fs.access(dirPath).then(() => true).catch(() => false));
+			const fsPromises = nodeRequire('fs/promises');
+			if (!fsPromises) { return; }
+			const dirExists = await fsPromises.access(dirPath).then(() => true).catch(() => false);
 			if (!dirExists) {
-				await import('fs').then(fs => fs.promises.mkdir(dirPath, { recursive: true }));
+				const fs = nodeRequire('fs');
+				if (!fs) { return; }
+				await fs.promises.mkdir(dirPath, { recursive: true });
 			}
 
 			const timestamp = Date.now();
@@ -748,8 +767,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 				dataLines,
 			};
 
-			const { writeFile } = await import('fs/promises');
-			await writeFile(filePath, JSON.stringify(debugObj, null, 2), 'utf-8');
+			await fsPromises.writeFile(filePath, JSON.stringify(debugObj, null, 2), 'utf-8');
 			this._logService.info(`[BYOK:${this.id}] Debug response written to: ${filePath}`);
 		} catch (err) {
 			this._logService.warn(`[BYOK:${this.id}] _debugWriteResponse failed:`, err);

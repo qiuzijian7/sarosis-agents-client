@@ -1204,8 +1204,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				if (!filePath || !search) { return text('Error: path and search are required'); }
 				try {
 					const resolved = await this._resolveAndCheckWorkspacePath(agentId, filePath);
-					const fs = await import('fs/promises');
-					let content = await fs.readFile(resolved, 'utf-8');
+					const fileUri = URI.file(resolved);
+					const buf = await this.fileService.readFile(fileUri);
+					let content = buf.value.toString();
 					if (replaceAll) {
 						content = content.split(search).join(replace);
 					} else {
@@ -1213,7 +1214,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 						if (idx === -1) { return text(`Search text not found in ${filePath}`); }
 						content = content.slice(0, idx) + replace + content.slice(idx + search.length);
 					}
-					await fs.writeFile(resolved, content, 'utf-8');
+					await this.fileService.writeFile(fileUri, VSBuffer.fromString(content));
 					return text(`Patched ${filePath} (${replaceAll ? 'all occurrences' : 'first occurrence'})`);
 				} catch (e) {
 					return text(`Error patching ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
