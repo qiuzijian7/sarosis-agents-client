@@ -103,6 +103,12 @@ export class NativeChatEditorInput extends EditorInput {
 	 * the input instance is retained per chat.
 	 */
 	private _tabStatus: ChatTabStatus = 'idle';
+	/**
+	 * Whether this chat tab is in CLI-style mode (compact terminal-like
+	 * rendering instead of rich bubble UI). Persisted across tab switches
+	 * and serialized so it survives reloads.
+	 */
+	private _cliMode: boolean = false;
 
 	constructor(chatId: string = 'default', agentId?: string, sessionId?: string, name?: string) {
 		super();
@@ -188,6 +194,18 @@ export class NativeChatEditorInput extends EditorInput {
 		return this._tabStatus;
 	}
 
+	/** Whether this chat tab is in CLI-style mode. */
+	get cliMode(): boolean {
+		return this._cliMode;
+	}
+
+	/** Toggle CLI-style mode and fire label change so the tab can update its visual indicator. */
+	setCliMode(enabled: boolean): void {
+		if (this._cliMode === enabled) { return; }
+		this._cliMode = enabled;
+		(this as any)._onDidChangeLabel.fire();
+	}
+
 	override get typeId(): string {
 		return NativeChatEditorInput.TypeID;
 	}
@@ -218,6 +236,9 @@ export class NativeChatEditorInput extends EditorInput {
 	 */
 	override getLabelExtraClasses(): string[] {
 		const classes = ['chat-tab-status'];
+		if (this._cliMode) {
+			classes.push('cli-mode');
+		}
 		if (this._tabStatus !== 'idle') {
 			classes.push(`chat-tab-status-${this._tabStatus}`);
 		}

@@ -284,6 +284,14 @@ export function toSessionId(providerId: string, resource: URI): string {
 export interface ISessionCapabilities {
 	/** Whether this session supports multiple chats. */
 	readonly supportsMultipleChats: boolean;
+	/**
+	 * Whether the session's runtime already runs `worktreeCreated` tasks
+	 * itself (e.g. an agent host that installs dependencies and starts
+	 * watch server-side). When `true`, the workbench
+	 * {@link WorktreeCreatedTaskDispatcher} skips auto-dispatching those
+	 * tasks to avoid double-execution.
+	 */
+	readonly runsWorktreeCreatedTasks?: boolean;
 }
 
 /**

@@ -1,0 +1,146 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* ═══════════════════════════════════════════════════════════════════
+   xterm.js CLI Panel — input area + status bar styling.
+   
+   The xterm.js terminal instance handles its own rendering (ANSI colors,
+   character grid). This CSS only styles the DOM elements around it:
+   the container layout, input textarea, and status bar.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.xterm-cli-panel {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+	background: var(--vscode-editor-background, #1e1e1e);
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', Consolas, monospace);
+	font-size: 13px;
+}
+
+/* ── xterm terminal container ── */
+.xterm-cli-terminal {
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+	position: relative;
+}
+
+.xterm-cli-terminal .xterm {
+	padding: 4px 8px;
+}
+
+.xterm-cli-terminal .xterm-viewport {
+	/* Custom scrollbar — thinner, matching VS Code theme */
+	scrollbar-width: thin;
+}
+
+.xterm-cli-terminal .xterm-viewport::-webkit-scrollbar {
+	width: 6px;
+}
+
+.xterm-cli-terminal .xterm-viewport::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.xterm-cli-terminal .xterm-viewport::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background, rgba(121,121,121,0.4));
+	border-radius: 3px;
+}
+
+.xterm-cli-terminal .xterm-viewport::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100,100,100,0.7));
+}
+
+/* ── Input area ── */
+.xterm-cli-input-area {
+	flex-shrink: 0;
+	border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+	padding: 4px 12px 6px 8px;
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.xterm-cli-prompt-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+}
+
+.xterm-cli-prompt-symbol {
+	color: var(--vscode-testing-iconPassed, #4ade80);
+	font-weight: 700;
+	font-size: 13px;
+	line-height: 22px;
+	flex-shrink: 0;
+	user-select: none;
+}
+
+.xterm-cli-textarea {
+	flex: 1;
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', monospace);
+	font-size: 13px;
+	line-height: 1.4;
+	color: var(--vscode-foreground, #d4d4d4);
+	background: transparent;
+	border: none;
+	outline: none;
+	resize: none;
+	padding: 2px 0;
+	min-height: 20px;
+	max-height: 200px;
+	overflow-y: auto;
+}
+
+.xterm-cli-textarea::placeholder {
+	color: var(--vscode-input-placeholderForeground, #888);
+	opacity: 0.7;
+}
+
+.xterm-cli-textarea:focus {
+	outline: none;
+}
+
+/* ── Status bar ── */
+.xterm-cli-status {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 2px 12px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #888);
+	flex-shrink: 0;
+	border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.15));
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.xterm-status-left {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.xterm-status-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-variant-numeric: tabular-nums;
+}
+
+/* ── Spinner (DOM status bar only; xterm uses Braille chars) ── */
+.xterm-spinner {
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	border: 1.5px solid currentColor;
+	border-top-color: transparent;
+	border-radius: 50%;
+	animation: xterm-spin 0.8s linear infinite;
+	flex-shrink: 0;
+}
+
+@keyframes xterm-spin {
+	to { transform: rotate(360deg); }
+}

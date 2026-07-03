@@ -112,3 +112,12 @@ generated-images/message-list-mockup.html
 *graph.db.zst
 *.codebase-memory
 *.worktrees
+.worktrees/
+
+# Transpile outputs — tsgo/esbuild generates旁路 .js files next to .ts sources.
+# Already-tracked .js source files (third-party libs, test fixtures) are
+# unaffected by .gitignore; only untracked transpile artifacts are ignored.
+src/vs/**/*.js
+!src/vs/base/browser/dompurify/dompurify.js
+!src/vs/base/common/marked/marked.js
+!src/vs/base/common/semver/semver.js

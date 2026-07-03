@@ -25,6 +25,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
 import { ResourceContextKey } from '../../../../workbench/common/contextkeys.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 
 // Codebase-Memory-MCP bootstrap — auto-detect, install, and start on app launch.
@@ -1334,6 +1335,48 @@ registerAction2(class extends Action2 {
 	}
 });
 
+// ─── Toggle CLI Style Command ─────────────────────────────────────
+// Toggles the chat panel between the default rich-bubble UI and a
+// compact terminal-style layout. Appears in the editor tab context
+// menu (right-click on a chat tab) and is bound to Ctrl+Shift+L.
+// The preference is stored on the NativeChatEditorInput and survives
+// tab switches + reloads (via the serializer).
+registerAction2(class extends Action2 {
+	constructor() {
+		const chatEditorActive = ContextKeyExpr.or(
+			ActiveEditorContext.isEqualTo('workbench.editor.agentStudio'),
+			ActiveEditorContext.isEqualTo('workbench.editor.nativeChat'),
+		);
+		super({
+			id: 'agentStudio.toggleCliStyle',
+			title: localize2('agentStudio.toggleCliStyle', '切换 CLI 风格'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+			menu: [{
+				id: MenuId.EditorTitleContext,
+				when: chatEditorActive,
+				group: '2_agentStudio',
+				order: 1,
+			}],
+			keybinding: {
+				weight: 200, // KeybindingWeight.WorkbenchContrib
+				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyL,
+				when: chatEditorActive,
+			},
+			precondition: chatEditorActive,
+		});
+	}
+	run(accessor: ServicesAccessor): void {
+		const editorService = accessor.get(IEditorService);
+		for (const pane of editorService.visibleEditorPanes) {
+			if (pane instanceof NativeChatEditorPane) {
+				pane.toggleCliMode();
+				return;
+			}
+		}
+	}
+});
+
 // --- EditorInput Serializers ----------------------------------------------------
 // EditorPart persists the grid layout (groups + sashes) on shutdown and
 // restores it on startup. Each editor in a group is round-tripped via its
@@ -1388,12 +1431,17 @@ class NativeChatEditorInputSerializer implements IEditorSerializer {
 			agentId: editorInput.agentId,
 			sessionId: editorInput.sessionId,
 			name: editorInput.name,
+			cliMode: editorInput.cliMode,
 		});
 	}
 	deserialize(_instantiationService: IInstantiationService, serialized: string): EditorInput | undefined {
 		try {
 			const data = JSON.parse(serialized);
-			return NativeChatEditorInput.create(data.chatId, data.agentId, data.sessionId, data.name);
+			const input = NativeChatEditorInput.create(data.chatId, data.agentId, data.sessionId, data.name);
+			if (data.cliMode) {
+				input.setCliMode(true);
+			}
+			return input;
 		} catch {
 			return NativeChatEditorInput.getInstance();
 		}

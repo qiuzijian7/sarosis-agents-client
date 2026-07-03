@@ -1118,7 +1118,7 @@ export interface IDocumentToIndex {
 
 // ─── Kanban Provider Interface ─────────────────────────────────────────────────
 
-export const enum KanbanPriority {
+export enum KanbanPriority {
 	Critical = 'critical',
 	High = 'high',
 	Medium = 'medium',

@@ -18,7 +18,8 @@ import { SlotRegistry } from './slotRegistry.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
-import { join } from '../../../../base/common/path.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { joinPath } from '../../../../base/common/resources.js';
 import {
 	ToolsetPriority, getToolsetForTool,
 	getToolsetPriority, isToolsetDeferrable, isBridgeTool,
@@ -31,11 +32,7 @@ import {
 	dispatchBridgeTool, buildDispatcherContext, IDispatcherContext,
 } from '../common/toolSearchDispatcher.js';
 
-// DashboardDatabase 是 Node 专用模块（使用 fs / @vscode/sqlite3），
-// 不能在浏览器端静态导入，否则浏览器会报错：
-//   "Failed to resolve module specifier 'fs'"
-// 因此这里只做类型声明，实际使用通过动态 import() 完成。
-type DashboardDatabase = InstanceType<typeof import('../node/dashboardDatabase.js')['DashboardDatabase']>;
+import { DashboardFileStorage } from './dashboardFileStorage.js';
 import {
 	repairToolName,
 	repairToolArguments,
@@ -163,8 +160,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private _l2ExtractionCount = 0;
 	private _l3ExtractionCount = 0;
 
-	/** Dashboard SQLite 数据库实例，替代原有 JSON 文件持久化 */
-	private _dashboardDb: DashboardDatabase | undefined;
+	/** Dashboard 文件存储实例（IFileService+JSON，替代 SQLite 原生模块） */
+	private _dashboardStorage: DashboardFileStorage | undefined;
 
 	/** 取（或惰性创建）某会话的稳定 conversationId。无 sessionId 时回退到随机串。 */
 	private _getOrCreateConversationId(sessionId: string | undefined): string {
@@ -198,6 +195,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		@ILogService logService: ILogService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IPathService private readonly _pathService: IPathService,
+		@IFileService private readonly _fileService: IFileService,
 	) {
 		super();
 		this._logService = logService;
@@ -215,19 +213,16 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			getActiveModelSelection: () => this._activeSelection,
 		});
 
-		// Init Dashboard SQLite database and load persisted stats
-		this._initDashboardDb().catch(err => {
-			this._logService.warn('[AgentOS] Failed to init dashboard DB:', err);
+		// Init Dashboard file storage and load persisted stats
+		this._initDashboardStorage().catch(err => {
+			this._logService.warn('[AgentOS] Failed to init dashboard storage:', err);
 		});
 
-		// Save stats & close DB on dispose
+		// Save stats on dispose
 		this._register({
 			dispose: () => {
 				if (this._saveTimer) { clearTimeout(this._saveTimer); }
 				this._saveDashboardStats().catch(() => { /* best effort */ });
-				if (this._dashboardDb) {
-					this._dashboardDb.close().catch(() => { /* best effort */ });
-				}
 			},
 		});
 	}
@@ -265,11 +260,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * 查询 Dashboard 时间序列快照（用于趋势图）。
 	 */
 	async queryDashboardSnapshots(rangeMs: number): Promise<IDashboardMetricsSnapshot[]> {
-		if (!this._dashboardDb?.ready) {
+		if (!this._dashboardStorage?.ready) {
 			return [];
 		}
 		try {
-			return await this._dashboardDb.querySnapshots(rangeMs);
+			return await this._dashboardStorage.querySnapshots(rangeMs);
 		} catch (err) {
 			this._logService.warn('[AgentOS] queryDashboardSnapshots failed:', err);
 			return [];
@@ -280,11 +275,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * 查询 Dashboard 按天聚合数据（趋势图降采样）。
 	 */
 	async queryDashboardDailyBuckets(rangeMs: number): Promise<IDailyBucket[]> {
-		if (!this._dashboardDb?.ready) {
+		if (!this._dashboardStorage?.ready) {
 			return [];
 		}
 		try {
-			return await this._dashboardDb.dailyBuckets(rangeMs);
+			return await this._dashboardStorage.dailyBuckets(rangeMs);
 		} catch (err) {
 			this._logService.warn('[AgentOS] queryDashboardDailyBuckets failed:', err);
 			return [];
@@ -296,11 +291,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * 调用时机：periodic timer、executeAgentTurn 完成、dispose。
 	 */
 	async captureDashboardSnapshot(options?: { sessionCount?: number; memoryTotal?: number; graphNodes?: number }): Promise<void> {
-		if (!this._dashboardDb?.ready) {
+		if (!this._dashboardStorage?.ready) {
 			return;
 		}
 		try {
-			await this._dashboardDb.insertSnapshot({
+			await this._dashboardStorage.insertSnapshot({
 				ts: new Date().toISOString(),
 				inputTokens: this._totalInputTokens,
 				outputTokens: this._totalOutputTokens,
@@ -317,36 +312,34 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	}
 
 	// ─── Dashboard Stats Persistence ──────────────────────────────────
-	// 统计数据持久化到 ~/.saros/dashboard/dashboard.db (SQLite)，重启后恢复。
+	// 统计数据持久化到 ~/.saros/dashboard/ (JSON/JSONL 文件)，重启后恢复。
+	// 使用 IFileService（通过 IPC 委托主进程），在 EXE 打包后也能正常工作。
 	// 防抖保存：统计变更后 2 秒内无新变更才落盘，避免频繁 IO。
 
 	private _saveTimer: ReturnType<typeof setTimeout> | undefined;
 	private static readonly SAVE_DEBOUNCE_MS = 2000;
 
-	private async _getDashboardDbPath(): Promise<string> {
-		const userHome = await this._pathService.userHome();
-		const homePath = userHome.fsPath ?? userHome.path;
-		return join(homePath, '.saros', 'dashboard', 'dashboard.db');
-	}
+	private async _initDashboardStorage(): Promise<void> {
+		try {
+			const userHome = await this._pathService.userHome();
+			const dirUri = joinPath(userHome, '.saros', 'dashboard');
 
-	private async _initDashboardDb(): Promise<void> {
-		// DashboardDatabase 依赖 fs + @vscode/sqlite3 (原生模块)。
-		// 在 VS Code/E4M 渲染进程中无论是 esbuild 打包成 ESM (import 内联进 sessions.desktop.main.js)
-		// 还是 AMD 模块加载，都会触发 CSP 拦截 (node:fs) 或 ESM specifier 解析失败 (bare fs)。
-		// 渲染端 sandbox 根本不具备加载 Node 原生模块的能力。
-		//
-		// 因此暂时关闭：_dashboardDb 保持 undefined，所有统计回退到纯内存模式。
-		// TODO: 通过 Electron 主进程 IPC 或 VS Code 服务层实现 DB 持久化。
-		// 参考：base/parts/sandbox/electron-browser/preload.ts（仅暴露有限的 electron API）。
-		this._logService.info('[AgentOS] Skipping Dashboard DB (renderer sandbox — fs/sqlite3 unavailable)');
+			this._dashboardStorage = this._register(new DashboardFileStorage(this._fileService, this._logService));
+			await this._dashboardStorage.initialize(dirUri);
+
+			// 从文件存储加载已持久化的累计统计
+			await this._loadDashboardStats();
+		} catch (err) {
+			this._logService.warn('[AgentOS] Failed to init dashboard storage:', err);
+		}
 	}
 
 	private async _loadDashboardStats(): Promise<void> {
-		if (!this._dashboardDb?.ready) {
-			return; // DB 未就绪，使用内存默认值
+		if (!this._dashboardStorage?.ready) {
+			return; // 存储未就绪，使用内存默认值
 		}
 		try {
-			const allStats = await this._dashboardDb.getAllStats();
+			const allStats = await this._dashboardStorage.getAllStats();
 
 			this._totalInputTokens = Number(allStats['totalInputTokens']) || 0;
 			this._totalOutputTokens = Number(allStats['totalOutputTokens']) || 0;
@@ -359,21 +352,21 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			this._l2ExtractionCount = Number(allStats['l2ExtractionCount']) || 0;
 			this._l3ExtractionCount = Number(allStats['l3ExtractionCount']) || 0;
 
-			// 工具调用计数从专门的表加载
+			// 工具调用计数
 			try {
-				const toolCounts = await this._dashboardDb.getToolCallCounts();
+				const toolCounts = await this._dashboardStorage.getToolCallCounts();
 				for (const [k, v] of Object.entries(toolCounts)) {
 					this._toolCallCounts.set(k, v);
 				}
-			} catch { /* tool_call_stats may be empty */ }
+			} catch { /* tool call stats may be empty */ }
 
-			this._logService.info('[AgentOS] Dashboard stats loaded from SQLite:', {
+			this._logService.info('[AgentOS] Dashboard stats loaded from file storage:', {
 				tokens: this._totalInputTokens + this._totalOutputTokens + this._totalCachedTokens,
 				compression: this._compressionCount,
 				tools: this._toolCallCounts.size,
 			});
 		} catch (err) {
-			this._logService.warn('[AgentOS] Failed to load dashboard stats from DB:', err);
+			this._logService.warn('[AgentOS] Failed to load dashboard stats:', err);
 		}
 	}
 
@@ -387,12 +380,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	}
 
 	private async _saveDashboardStats(): Promise<void> {
-		if (!this._dashboardDb?.ready) {
-			return; // DB 未就绪，跳过保存
+		if (!this._dashboardStorage?.ready) {
+			return; // 存储未就绪，跳过保存
 		}
 		try {
 			// 批量保存累计统计
-			await this._dashboardDb.setAllStats({
+			await this._dashboardStorage.setAllStats({
 				totalInputTokens: String(this._totalInputTokens),
 				totalOutputTokens: String(this._totalOutputTokens),
 				totalCachedTokens: String(this._totalCachedTokens),
@@ -408,9 +401,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 保存工具调用计数
 			const toolCounts: Record<string, number> = {};
 			this._toolCallCounts.forEach((v, k) => { toolCounts[k] = v; });
-			await this._dashboardDb.setToolCallCounts(toolCounts);
+			await this._dashboardStorage.setToolCallCounts(toolCounts);
 		} catch (err) {
-			this._logService.warn('[AgentOS] Failed to save dashboard stats to DB:', err);
+			this._logService.warn('[AgentOS] Failed to save dashboard stats:', err);
 		}
 	}
 
@@ -2325,9 +2318,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			if (tc.name) {
 				this._toolCallCounts.set(tc.name, (this._toolCallCounts.get(tc.name) ?? 0) + 1);
 				this._scheduleSave();
-				// 实时写入 SQLite（fire-and-forget）
-				if (this._dashboardDb?.ready) {
-					this._dashboardDb.incrementToolCall(tc.name).catch(() => {});
+				// 实时写入文件存储（fire-and-forget）
+				if (this._dashboardStorage?.ready) {
+					this._dashboardStorage.incrementToolCall(tc.name).catch(() => {});
 				}
 			}
 		}

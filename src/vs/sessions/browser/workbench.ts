@@ -126,6 +126,7 @@ interface IAgentChatLayoutState {
 		sessionId?: string;
 		name?: string;
 		groupIndex: number;
+		cliMode?: boolean;
 	}>;
 }
 
@@ -1618,6 +1619,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					saved.sessionId,
 					saved.name,
 				);
+				if (saved.cliMode) {
+					input.setCliMode(true);
+				}
 				targetGroup.openEditor(input, { pinned: true, sticky: savedLayout!.groupCount === 1 });
 			}
 
@@ -1751,7 +1755,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 						agentId: ed.agentId,
 						sessionId: ed.sessionId,
 						name: ed.name,
-						groupIndex: i
+						groupIndex: i,
+						cliMode: ed.cliMode,
 					});
 				}
 			}

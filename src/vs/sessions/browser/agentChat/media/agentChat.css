@@ -6443,6 +6443,510 @@
 	border-color: var(--vscode-charts-blue, #60a5fa);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   CLI Mode Styles
+
+   Activated when the messages container has the `cli-mode` class
+   (set by AgentChatPanel.setCliMode). Overrides the rich-bubble layout
+   with a compact, terminal-inspired presentation for higher information
+   density and faster scrolling.
+
+   Design goals:
+   - No avatar circles, no rounded bubbles, no gradients
+   - Monospace font, tighter line-height, single-row tool calls
+   - User messages as shell prompts, assistant as indented plain text
+   - Tool calls collapse to a single status line (expandable on click)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Container & font ── */
+.chat-messages.cli-mode {
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', Consolas, monospace);
+	font-size: 12.5px;
+	line-height: 1.5;
+	padding: 0;
+}
+
+/* ── Message row: remove flex avatar layout, use flat block flow ── */
+.chat-messages.cli-mode .chat-message {
+	display: block;
+	padding: 1px 12px;
+	margin-bottom: 0;
+	gap: 0;
+	align-items: stretch;
+	contain: none;
+}
+
+/* Hide the avatar wrapper entirely — CLI mode has no avatars */
+.chat-messages.cli-mode .chat-message-avatar,
+.chat-messages.cli-mode .chat-avatar-icon,
+.chat-messages.cli-mode .chat-avatar-fallback {
+	display: none;
+}
+
+/* ── Bubbles: no background / border / radius ── */
+.chat-messages.cli-mode .chat-bubble,
+.chat-messages.cli-mode .chat-bubble.assistant,
+.chat-messages.cli-mode .chat-bubble.user {
+	background: transparent;
+	border: none;
+	border-radius: 0;
+	box-shadow: none;
+	padding: 0;
+	max-width: 100%;
+	flex: none;
+	min-width: 0;
+	color: inherit;
+}
+
+/* ── User message: shell prompt style ── */
+.chat-messages.cli-mode .chat-message.user {
+	text-align: left;
+	color: var(--vscode-foreground, #d4d4d4);
+}
+
+.chat-messages.cli-mode .chat-message.user .chat-bubble.user::before {
+	content: '❯ ';
+	color: var(--vscode-testing-iconPassed, #4ade80);
+	font-weight: 700;
+}
+
+/* ── Assistant marker (dot + optional name) ── */
+.chat-messages.cli-mode .chat-message.assistant::before {
+	content: '●';
+	color: var(--vscode-textLink-foreground, #4aa3ff);
+	font-size: 10px;
+	margin-right: 6px;
+	vertical-align: middle;
+}
+
+/* ── Assistant content: indented, full width ── */
+.chat-messages.cli-mode .chat-bubble.assistant {
+	padding-left: 16px;
+}
+
+/* ── Markdown body: inherit mono font, tighten spacing ── */
+.chat-messages.cli-mode .markdown-body {
+	font-family: inherit;
+	font-size: 12.5px;
+	line-height: 1.5;
+}
+
+.chat-messages.cli-mode .markdown-body p {
+	margin: 0 0 4px;
+}
+
+.chat-messages.cli-mode .markdown-body pre,
+.chat-messages.cli-mode .markdown-body .code-block {
+	border-radius: 0;
+	border-left: 2px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+	border-top: none;
+	border-right: none;
+	border-bottom: none;
+	background: rgba(0,0,0,0.15);
+	padding: 4px 8px;
+	margin: 2px 0;
+	font-size: 12px;
+}
+
+/* ── Thinking card: single dim italic line ── */
+.chat-messages.cli-mode .thinking-card {
+	background: none;
+	border: none;
+	border-left: 2px solid rgba(128,128,128,0.2);
+	border-radius: 0;
+	padding: 1px 8px;
+	margin: 0 0 2px 16px;
+	font-size: 11.5px;
+	font-style: italic;
+	color: var(--vscode-descriptionForeground, #888);
+}
+
+.chat-messages.cli-mode .thinking-card-header {
+	display: none;
+}
+
+.chat-messages.cli-mode .thinking-card-body {
+	display: block !important;
+}
+
+/* Thinking indicator: compact, no card */
+.chat-messages.cli-mode .thinking-indicator {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground, #888);
+	font-style: italic;
+	padding-left: 16px;
+}
+
+.chat-messages.cli-mode .thinking-indicator-dots {
+	display: none;
+}
+
+.chat-messages.cli-mode .thinking-indicator-label::after {
+	content: '...';
+}
+
+/* ── Tool call card: single-line collapsed by default ── */
+.chat-messages.cli-mode .tool-calls-section {
+	gap: 0;
+	margin-bottom: 0;
+}
+
+.chat-messages.cli-mode .tool-header-wrapper,
+.chat-messages.cli-mode .tool-call-card {
+	border: none;
+	border-radius: 0;
+	background: transparent;
+	box-shadow: none;
+	margin: 0;
+	font-size: 11.5px;
+	overflow: visible;
+}
+
+/* Header row: force to single line, hide chevron */
+.chat-messages.cli-mode .tool-header,
+.chat-messages.cli-mode .tool-call-card-header {
+	padding: 1px 0 1px 16px;
+	gap: 6px;
+	cursor: pointer;
+	border-bottom: none;
+	font-size: 11.5px;
+}
+
+.chat-messages.cli-mode .tool-header-chevron,
+.chat-messages.cli-mode .tool-call-card-toggle {
+	display: none;
+}
+
+.chat-messages.cli-mode .tool-header-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+/* Compact tool name + desc */
+.chat-messages.cli-mode .tool-header-title,
+.chat-messages.cli-mode .tool-call-name,
+.chat-messages.cli-mode .tool-call-card-name {
+	font-size: 12px;
+	font-weight: 500;
+}
+
+.chat-messages.cli-mode .tool-header-desc1,
+.chat-messages.cli-mode .tool-call-card-summary {
+	font-size: 11px;
+	margin-left: 4px;
+}
+
+.chat-messages.cli-mode .tool-header-desc2,
+.chat-messages.cli-mode .tool-call-duration {
+	font-size: 10px;
+}
+
+/* Loading dots: replace with inline text */
+.chat-messages.cli-mode .tool-header-loading-dots::after {
+	content: '...';
+}
+
+/* Tool body: hide by default, thin left border when expanded */
+.chat-messages.cli-mode .tool-call-body,
+.chat-messages.cli-mode .tool-call-card-body {
+	border-top: none;
+	border-left: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+	margin-left: 24px;
+	padding: 2px 8px;
+	animation: none;
+}
+
+/* Approval row: keep visible but compact */
+.chat-messages.cli-mode .tool-approval-row {
+	padding: 2px 0 2px 16px;
+}
+
+.chat-messages.cli-mode .tool-approval-btn {
+	font-size: 11px;
+	padding: 2px 8px;
+}
+
+/* ── Sub-agent cards: compact ── */
+.chat-messages.cli-mode .subagent-card,
+.chat-messages.cli-mode .wf-card {
+	border-radius: 4px;
+	font-size: 11.5px;
+}
+
+.chat-messages.cli-mode .wf-trace {
+	padding: 0;
+}
+
+/* ── Compression / memory notice cards: single line ── */
+.chat-messages.cli-mode .compression-notice-card,
+.chat-messages.cli-mode .memory-notice-card {
+	padding: 2px 12px;
+	border-radius: 0;
+	border-left: 2px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+	border-top: none;
+	border-right: none;
+	border-bottom: none;
+	background: transparent;
+	font-size: 11.5px;
+}
+
+/* ── Message action buttons: hide in CLI mode ── */
+.chat-messages.cli-mode .chat-msg-actions {
+	display: none;
+}
+
+/* ── Streaming cursor: terminal block style ── */
+.chat-messages.cli-mode .streaming-container::after {
+	content: '▋';
+	color: var(--vscode-textLink-foreground, #4aa3ff);
+	animation: cli-blink 1s step-end infinite;
+	margin-left: 1px;
+}
+
+@keyframes cli-blink {
+	50% { opacity: 0; }
+}
+
+/* Override rich mode's blink-cursor */
+.chat-messages.cli-mode .chat-bubble.has-tool-cards .streaming-container::after,
+.chat-messages.cli-mode .chat-bubble:has(.wf-trace) .streaming-container::after {
+	content: '▋';
+}
+
+/* ── Scrollbar: thinner in CLI mode ── */
+.chat-messages.cli-mode::-webkit-scrollbar {
+	width: 6px;
+}
+
+.chat-messages.cli-mode::-webkit-scrollbar-thumb {
+	border-radius: 0;
+}
+
+/* ── Empty state: terminal-style prompt ── */
+.chat-messages.cli-mode .chat-messages-empty {
+	font-family: inherit;
+	font-size: 12.5px;
+	color: var(--vscode-descriptionForeground, #888);
+	padding: 8px 12px;
+}
+
+.chat-messages.cli-mode .chat-messages-empty::before {
+	content: '$ ';
+	color: var(--vscode-testing-iconPassed, #4ade80);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CLI Mode — Input Area
+
+   When the root container has `cli-mode`, the composer (textarea +
+   toolbar) switches to the same terminal-inspired flat style used by
+   the messages list. The goal is zero visual gap between the last
+   message and the input, and zero padding between the typed text and
+   its surrounding box.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* In CLI mode the messages flow from the top down (terminal-style),
+   with zero padding so the last line sits flush against the input.
+   The wrapper also gets zero padding/gap to eliminate any residual
+   space between the message list and the input area. */
+.chat-messages.cli-mode {
+	padding: 0;
+}
+
+.cli-mode .chat-messages-wrapper {
+	padding: 0;
+	margin: 0;
+	gap: 0;
+}
+
+/* Hide the scroll-to-bottom button in CLI mode — terminal output
+   does not have a "jump to bottom" affordance. !important overrides
+   the inline display style set by the JS scroll handler. */
+.cli-mode .scroll-to-bottom-btn,
+.cli-mode .scroll-to-bottom-btn.chat-scroll-bottom-btn {
+	display: none !important;
+}
+
+/* The resize divider is hidden — CLI input is single-line. */
+.cli-mode .composer-resize-handle {
+	display: none;
+}
+
+/* System-message bar: keep but make it a single flat line.
+   The sysmsg-list itself is fully hidden (display:none) to avoid
+   its border-top adding a visible gap between messages and input. */
+.cli-mode .sysmsg-bar {
+	display: none;
+}
+
+.cli-mode .sysmsg-list {
+	display: none;
+	border-top: none;
+}
+
+/* Input area: zero padding, no border, so the textarea sits flush
+   against the last message line. */
+.cli-mode .chat-input-area {
+	padding: 0;
+	background: transparent;
+	border-top: none;
+}
+
+/* Composer box: flat, no rounded corners, no background, no shadow.
+   Lay out as a single row: [prompt] [textarea] [send].
+   The ❯ prompt is prepended via ::before so the textarea visually
+   begins right after the shell prompt symbol. */
+.cli-mode .chat-composer-box {
+	background: transparent;
+	border: none;
+	border-radius: 0;
+	box-shadow: none;
+	flex-direction: row;
+	align-items: center;
+	padding: 0 8px;
+	min-height: 22px;
+}
+
+.cli-mode .chat-composer-box::before {
+	content: '❯';
+	color: var(--vscode-testing-iconPassed, #4ade80);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 12.5px;
+	font-weight: 700;
+	margin-right: 6px;
+	flex-shrink: 0;
+}
+
+/* Hide skill chips and attachment bar in CLI mode — the input is a
+   single terminal line. The toolbar is kept but stripped down to
+   just the send button (left toolbar and provider/model tags hidden). */
+.cli-mode .skill-chips-bar,
+.cli-mode .chat-attachment-bar,
+.cli-mode .chat-toolbar-left,
+.cli-mode .chat-toolbar-divider,
+.cli-mode .chat-toolbar-btn.provider-tag,
+.cli-mode .chat-toolbar-btn.model-tag,
+.cli-mode .chat-toolbar-btn.mode-tag,
+.cli-mode .chat-toolbar-btn.agent-tag {
+	display: none;
+}
+
+/* Textarea: monospace, single line, zero padding, prompt symbol
+   prepended via a wrapper. The textarea itself fills remaining width.
+   !important overrides the JS auto-resize logic that sets height inline. */
+.cli-mode .chat-composer-textarea {
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', Consolas, monospace) !important;
+	font-size: 12.5px !important;
+	line-height: 1.5 !important;
+	padding: 2px 0 !important;
+	margin: 0 !important;
+	min-height: 22px !important;
+	height: 22px !important;
+	max-height: 22px !important;
+	resize: none !important;
+	overflow: hidden !important;
+	white-space: nowrap !important;
+	border-radius: 0 !important;
+	background: transparent !important;
+	flex: 1;
+}
+
+.cli-mode .chat-composer-textarea::placeholder {
+	color: var(--vscode-input-placeholderForeground, #666);
+	opacity: 0.8;
+}
+
+/* Toolbar: keep visible but strip to just the send button row.
+   Zero padding so it sits flush at the end of the input line. */
+.cli-mode .chat-composer-toolbar {
+	padding: 0;
+	margin: 0;
+	border-radius: 0;
+	gap: 0;
+	flex-shrink: 0;
+}
+
+.cli-mode .provider-model-chip-wrap {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+/* Hide the context-usage ring in CLI mode (visual noise). */
+.cli-mode .context-usage-ring,
+.cli-mode .context-usage-ring-wrap {
+	display: none;
+}
+
+/* Send button: small, inline at the end of the input row. */
+.cli-mode .chat-send-circle {
+	width: 16px;
+	height: 16px;
+	border-radius: 0;
+	margin-left: 4px;
+}
+
+/* ── Residual gap elimination in CLI mode ── */
+/* Rich-only footers / actions add vertical space that breaks the
+   terminal-line look; hide them entirely in CLI mode. */
+.chat-messages.cli-mode .chat-bubble-footer,
+.chat-messages.cli-mode .chat-msg-actions,
+.chat-messages.cli-mode .message-meta,
+.chat-messages.cli-mode .chat-bubble-reactions {
+	display: none;
+}
+
+/* Force the last block inside every message body to have no trailing
+   margin/padding, so the message text sits flush against the input row. */
+.chat-messages.cli-mode .message-content > *:last-child {
+	margin-bottom: 0 !important;
+	padding-bottom: 0 !important;
+}
+
+/* Tighten markdown spacing while preserving a minimal gap between blocks. */
+.chat-messages.cli-mode .message-content p,
+.chat-messages.cli-mode .message-content ul,
+.chat-messages.cli-mode .message-content ol,
+.chat-messages.cli-mode .message-content blockquote,
+.chat-messages.cli-mode .message-content pre,
+.chat-messages.cli-mode .message-content .code-block,
+.chat-messages.cli-mode .message-content hr {
+	margin: 0 0 2px;
+}
+
+.chat-messages.cli-mode .message-content ul,
+.chat-messages.cli-mode .message-content ol {
+	padding-left: 16px;
+}
+
+/* Ensure the very last message row does not keep the rich-mode user padding. */
+.chat-messages.cli-mode .chat-message:last-child,
+.chat-messages.cli-mode .chat-message.user:last-child {
+	padding-bottom: 1px;
+}
+
+/* ── Tab indicator: small CLI badge when cli mode is on ── */
+.chat-tab-status.cli-mode::before {
+	content: '>_';
+	background: none !important;
+	width: auto !important;
+	min-width: auto !important;
+	max-width: auto !important;
+	height: auto !important;
+	min-height: auto !important;
+	max-height: auto !important;
+	font-size: 9px !important;
+	font-family: var(--vscode-editor-font-family, monospace) !important;
+	font-weight: 700 !important;
+	color: var(--vscode-testing-iconPassed, #4ade80) !important;
+	margin: 0 4px 0 2px !important;
+	padding: 0 !important;
+	border-radius: 0 !important;
+	box-shadow: none !important;
+	animation: none !important;
+}
+
 .askuser-option-marker {
 	flex-shrink: 0;
 	width: 16px;

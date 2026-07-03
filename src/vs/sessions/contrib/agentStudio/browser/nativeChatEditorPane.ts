@@ -34,6 +34,8 @@ import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInp
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
+import { XtermCliPanel } from '../../../browser/agentChat/xtermTui/xtermCliPanel.js';
+import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
 import { IAgentStudioService, IAgentChatService, ChatMode } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
@@ -47,6 +49,7 @@ import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatT
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
 import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
 import * as DOM from '../../../../base/browser/dom.js';
+import { clearNode } from '../../../../base/browser/dom.js';
 
 /**
  * EditorPane that hosts AgentChatPanel natively in the DOM.
@@ -65,7 +68,7 @@ export class NativeChatEditorPane extends EditorPane {
 	private static _nextPaneId = 1;
 
 	private _container: HTMLElement | undefined;
-	private _chatPanel: AgentChatPanel | undefined;
+	private _chatPanel: IChatPanel | undefined;
 	/** 多实例调试：每个 pane 的唯一标识（递增计数器），用于日志区分。 */
 	private readonly _paneId: number = NativeChatEditorPane._nextPaneId++;
 	private _isInitialized = false;
@@ -226,7 +229,13 @@ export class NativeChatEditorPane extends EditorPane {
 		const t0 = performance.now();
 		this._logService.debug(`[NativeChatEditorPane][Init] _initChatPanel START`);
 
-		this._chatPanel = this._register(new AgentChatPanel({
+		// Choose panel type based on cliMode.
+		// - XtermCliPanel: xterm.js-based TUI rendering (true terminal emulator)
+		// - AgentChatPanel: rich bubble UI (default)
+		// Both implement IChatPanel so the rest of the pane code is agnostic.
+		const useCliPanel = this.input instanceof NativeChatEditorInput && this.input.cliMode;
+		const PanelCtor = useCliPanel ? XtermCliPanel : AgentChatPanel;
+		this._chatPanel = this._register(new PanelCtor({
 			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => {
 				// 防重入：如果正在发送中，忽略重复调用
 				if (this._isSending) {
@@ -1773,6 +1782,62 @@ export class NativeChatEditorPane extends EditorPane {
 		if (this._chatPanel && this._container && !this._container.contains(this._chatPanel.element)) {
 			this._container.appendChild(this._chatPanel.element);
 		}
+
+		// Sync CLI mode from the input — each tab remembers its own CLI mode.
+		// If the cliMode differs from the currently active panel type, swap panels.
+		this._syncPanelType(input.cliMode);
+	}
+
+	/**
+	 * Ensure the active panel matches the desired cliMode. If the current
+	 * panel type doesn't match (e.g. switching from a rich tab to a CLI tab),
+	 * save state → dispose old panel → create new panel → restore state.
+	 *
+	 * Called from setInput() when switching tabs and from toggleCliMode()
+	 * when the user explicitly toggles CLI mode.
+	 */
+	private _syncPanelType(desiredCliMode: boolean): void {
+		if (!this._chatPanel) { return; }
+		const currentIsCli = this._chatPanel instanceof XtermCliPanel;
+		if (currentIsCli === desiredCliMode) { return; }
+
+		// Save runtime state
+		const messages = this._chatPanel.getMessages();
+		const agent = this._chatPanel.getAgent();
+		const streamPhase = (this._chatPanel as any)?._streamPhase ?? 'idle';
+		const isSending = this._isSending;
+
+		// Dispose old panel
+		this._chatPanel.dispose();
+		this._chatPanel = undefined;
+		this._isInitialized = false;
+
+		if (this._container) {
+			clearNode(this._container);
+		}
+
+		// Create new panel
+		this._initChatPanel();
+
+		// Restore state — capture panel reference locally. Use type assertion
+		// because TypeScript's control-flow analysis narrows `this._chatPanel`
+		// to `never` after the `= undefined` assignment above, even though
+		// `_initChatPanel()` creates a new panel internally.
+		const newPanel = this._chatPanel as IChatPanel | undefined;
+		if (newPanel) {
+			if (agent) {
+				newPanel.setAgent(agent);
+			}
+			newPanel.setMessages(messages);
+			newPanel.setStreamPhase(streamPhase as any);
+			if (isSending) {
+				newPanel.setSending(true);
+			}
+			newPanel.focusInput();
+		}
+
+		// Re-populate provider/model lists
+		void this._refreshModelSelector();
 	}
 
 	/**
@@ -2024,6 +2089,25 @@ export class NativeChatEditorPane extends EditorPane {
 	addContentToChat(name: string, content: string): void {
 		this._chatPanel?.addTextContext(name, content);
 	}
+
+	/**
+	 * Toggle CLI-style mode on the current chat tab.
+	 *
+	 * Instead of toggling a CSS class on the existing panel, this method
+	 * **swaps the entire panel implementation**: it saves the current
+	 * runtime state (messages, stream phase, sending flag), disposes the
+	 * old panel, creates a new one of the opposite type (AgentChatPanel ↔
+	 * CliChatEditorPanel), and restores the state into it. This keeps the
+	 * CLI rendering logic completely isolated from the rich bubble UI.
+	 */
+	toggleCliMode(): void {
+		if (!(this.input instanceof NativeChatEditorInput)) { return; }
+		const next = !this.input.cliMode;
+		this.input.setCliMode(next);
+		this._syncPanelType(next);
+	}
+
+
 
 	/**
 	 * P0-2: 读取文件内容并添加为聊天上下文附件。

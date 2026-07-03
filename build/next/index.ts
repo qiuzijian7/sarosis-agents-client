@@ -1533,11 +1533,19 @@ async function main(): Promise<void> {
 					await fs.promises.mkdir(outDirPath, { recursive: true });
 					await fs.promises.writeFile(path.join(outDirPath, 'date'), getGitCommitDate(), 'utf8');
 
-					console.log(`[transpile] ${SRC_DIR} → ${outDir}${options.excludeTests ? ' (excluding tests)' : ''}`);
-					const t1 = Date.now();
-					await transpile(outDir, options.excludeTests);
-					await copyAllNonTsFiles(outDir, options.excludeTests);
-					console.log(`[transpile] Done in ${Date.now() - t1}ms`);
+				console.log(`[transpile] ${SRC_DIR} → ${outDir}${options.excludeTests ? ' (excluding tests)' : ''}`);
+				const t1 = Date.now();
+				await transpile(outDir, options.excludeTests);
+				await copyAllNonTsFiles(outDir, options.excludeTests);
+				// Post-transpile: inject missing const enum exports (esbuild workaround)
+				const { execSync } = await import('child_process');
+				try {
+					execSync('node build/fix-const-enums.cjs', { stdio: 'pipe' });
+					console.log('[transpile] Injected const enum exports');
+				} catch (e) {
+					console.warn('[transpile] fix-const-enums.cjs failed (non-fatal):', e);
+				}
+				console.log(`[transpile] Done in ${Date.now() - t1}ms`);
 				}
 				break;
 

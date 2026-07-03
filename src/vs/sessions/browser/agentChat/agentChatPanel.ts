@@ -53,6 +53,8 @@ import {
 	PlanTask,
 } from "./agentChatTypes.js";
 
+import type { IChatPanel } from "./iChatPanel.js";
+
 // Mode options metadata — mirrors webview ChatComposer.tsx modeOptions
 const MODE_OPTIONS: IModeOption[] = [
 	{
@@ -176,7 +178,7 @@ const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
 const TOOL_TERMINAL_TOOLS = new Set(['terminal', 'run_command', 'run_persistent_command', 'run_terminal_cmd', 'process', 'execute_code']);
 const TOOL_LIST_TOOLS = new Set(['file_list', 'search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep']);
 
-export class AgentChatPanel extends Disposable {
+export class AgentChatPanel extends Disposable implements IChatPanel {
 	// -- DOM refs --
 	private readonly _container: HTMLElement;
 	private _messagesContainer!: HTMLElement;
@@ -531,6 +533,10 @@ export class AgentChatPanel extends Disposable {
 		this._render();
 	}
 
+	getAgent(): IAgentInfo | null {
+		return this._agent;
+	}
+
 	setAvailableAgents(agents: IAgentInfo[]): void {
 		this._availableAgents = agents;
 		// Re-render tabs to reflect the new list of available agents
@@ -558,6 +564,48 @@ export class AgentChatPanel extends Disposable {
 	getMessages(): IAgentChatMessage[] {
 		return [...this._messages];
 	}
+
+	/** Whether CLI-style compact rendering is currently active. */
+	getCliMode(): boolean {
+		return this._messagesContainer?.classList.contains('cli-mode') ?? false;
+	}
+
+	/**
+	 * Toggle CLI-style mode on or off.
+	 *
+	 * When enabled, the root container and the messages container receive the
+	 * `cli-mode` CSS class. The root class drives the input-area styling, while
+	 * the messages class drives the compact terminal-style message rendering.
+	 * Existing messages are re-rendered so the change takes effect immediately.
+	 *
+	 * @param enabled true to enable CLI mode, false to restore rich UI
+	 */
+	setCliMode(enabled: boolean): void {
+		if (!this._messagesContainer || !this._container) { return; }
+		const isOn = this._messagesContainer.classList.contains('cli-mode');
+		if (isOn === enabled) { return; }
+		if (enabled) {
+			this._container.classList.add('cli-mode');
+			this._messagesContainer.classList.add('cli-mode');
+		} else {
+			this._container.classList.remove('cli-mode');
+			this._messagesContainer.classList.remove('cli-mode');
+		}
+		// Re-render so all existing messages pick up the new style
+		this._renderMessages();
+		this._scrollToBottom(false);
+		// CLI mode changes font-size / line-height / padding on every message,
+		// so scrollHeight/clientHeight/trackHeight all shift. The synchronous
+		// _refreshScrollMarkers() inside _renderMessages reads stale layout
+		// because the browser hasn't reflowed yet. Defer two frames so the new
+		// CSS has been applied and measured before recomputing thumb + markers.
+		requestAnimationFrame(() => {
+			this._refreshScrollMarkers();
+			this._scheduleScrollbarUpdate();
+		});
+	}
+
+
 
 	addMessage(message: IAgentChatMessage): void {
 		this._messages.push(message);

@@ -22,7 +22,6 @@ import { IActionWidgetDropdownAction } from '../../../../platform/actionWidget/b
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
-import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { IQuickInputButton, IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IWorkbenchContribution } from '../../../../workbench/common/contributions.js';
@@ -871,12 +870,11 @@ class RunScriptNotAvailableAction extends Action2 {
 
 registerAction2(RunScriptNotAvailableAction);
 
-// Register F5 keybinding at module level to ensure it's in the registry
-// before the keybinding resolver is cached. The command handler is
-// registered later by RunScriptContribution.
-KeybindingsRegistry.registerKeybindingRule({
-	id: RUN_SCRIPT_ACTION_PRIMARY_ID,
-	primary: KeyCode.F5,
-	weight: KeybindingWeight.WorkbenchContrib + 100,
-	when: IsAuxiliaryWindowContext.toNegated()
-});
+// F5 restored to default debug-start. The Run Primary Task command can
+// still be triggered via the titlebar Run button or command palette.
+// KeybindingsRegistry.registerKeybindingRule({
+// 	id: RUN_SCRIPT_ACTION_PRIMARY_ID,
+// 	primary: KeyCode.F5,
+// 	weight: KeybindingWeight.WorkbenchContrib + 100,
+// 	when: IsAuxiliaryWindowContext.toNegated()
+// });

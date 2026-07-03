@@ -6,7 +6,7 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import type { ICheckpointService } from '../common/checkpointService.js';
 import type { ICommandService } from '../../../../platform/commands/common/commands.js';
-import type { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
+import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
 import type { ICheckpointInfo } from '../../../browser/agentChat/agentChatTypes.js';
 
 /**
@@ -37,7 +37,7 @@ export class CheckpointManager extends Disposable {
 	/**
 	 * Refresh the checkpoint bar with the latest checkpoints for the active session.
 	 */
-	async refreshBar(panel: AgentChatPanel | undefined, agentId: string | null, sessionId: string | null): Promise<void> {
+	async refreshBar(panel: IChatPanel | undefined, agentId: string | null, sessionId: string | null): Promise<void> {
 		if (!agentId || !sessionId || !panel) {
 			panel?.setCheckpoint(null);
 			return;
@@ -83,7 +83,7 @@ export class CheckpointManager extends Disposable {
 	 * Handle a checkpoint action (undoAll / keepAll / openDiff).
 	 */
 	async handleAction(
-		panel: AgentChatPanel | undefined,
+		panel: IChatPanel | undefined,
 		agentId: string | null,
 		sessionId: string | null,
 		action: 'undoAll' | 'keepAll' | 'openDiff',

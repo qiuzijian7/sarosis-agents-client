@@ -3,21 +3,20 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { IObservable, observableValue, transaction } from '../../../../base/common/observable.js';
+import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { IObservable, ISettableObservable, observableValue, transaction } from '../../../../base/common/observable.js';
 import { joinPath, dirname, isEqual } from '../../../../base/common/resources.js';
 import { parse } from '../../../../base/common/jsonc.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ISession } from '../../../services/sessions/common/session.js';
 import { IJSONEditingService } from '../../../../workbench/services/configuration/common/jsonEditing.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IPreferencesService } from '../../../../workbench/services/preferences/common/preferences.js';
 import { CommandString } from '../../../../workbench/contrib/tasks/common/taskConfiguration.js';
-import { TaskRunSource } from '../../../../workbench/contrib/tasks/common/tasks.js';
-import { ITaskService } from '../../../../workbench/contrib/tasks/common/taskService.js';
+import { ISessionTaskRunnerRegistry } from './sessionTaskRunner.js';
 
 export type TaskStorageTarget = 'user' | 'workspace';
 type TaskRunOnOption = 'default' | 'folderOpen' | 'worktreeCreated';
@@ -62,8 +61,24 @@ interface ITasksJson {
 	tasks?: ITaskEntry[];
 }
 
+/**
+ * Payload fired by {@link ISessionsTasksService.onDidRunTask} after a
+ * session task has been successfully dispatched to its runner.
+ */
+export interface ISessionTaskRunEvent {
+	readonly task: ITaskEntry;
+	readonly session: ISession;
+}
+
 export interface ISessionsTasksService {
 	readonly _serviceBrand: undefined;
+
+	/**
+	 * Fires after a session task has been successfully dispatched to its
+	 * runner via {@link runTask}. Does not fire when the task throws or when
+	 * no runner is registered for the session.
+	 */
+	readonly onDidRunTask: Event<ISessionTaskRunEvent>;
 
 	/**
 	 * Observable list of tasks with `inAgents: true`, automatically
@@ -71,6 +86,23 @@ export interface ISessionsTasksService {
 	 * storage target the task was loaded from.
 	 */
 	getSessionTasks(session: ISession): IObservable<readonly ISessionTaskWithTarget[]>;
+
+	/**
+	 * Returns a one-shot snapshot of the session tasks (with `inAgents: true`)
+	 * for the given session, reading from both workspace and user `tasks.json`.
+	 *
+	 * Unlike {@link getSessionTasks}, this method does NOT touch the shared
+	 * `_sessionTasks` observable, so it is safe to call concurrently for
+	 * multiple sessions.
+	 */
+	getSessionTasksOnce(session: ISession): Promise<readonly ISessionTaskWithTarget[]>;
+
+	/**
+	 * Returns a one-shot snapshot of **all** tasks (with or without
+	 * `inAgents`) declared for the given session, reading from both workspace
+	 * and user `tasks.json`.
+	 */
+	getAllTasks(session: ISession): Promise<readonly ISessionTaskWithTarget[]>;
 
 	/**
 	 * Returns tasks that do NOT have `inAgents: true` — used as
@@ -102,10 +134,13 @@ export interface ISessionsTasksService {
 	removeTask(taskLabel: string, session: ISession, target: TaskStorageTarget): Promise<void>;
 
 	/**
-	 * Runs a task via the task service, looking it up by label in the
-	 * workspace folder corresponding to the session worktree.
+	 * Runs a task via the registered task runner, looking it up by label in
+	 * the workspace folder corresponding to the session worktree.
+	 *
+	 * May resolve to an {@link IDisposable} that stops the launched task; see
+	 * {@link ISessionTaskRunner.runTask}.
 	 */
-	runTask(task: ITaskEntry, session: ISession): Promise<void>;
+	runTask(task: ITaskEntry, session: ISession): Promise<IDisposable | undefined>;
 
 	/**
 	 * Observable label of the pinned task for the given repository.
@@ -148,7 +183,23 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 	private static readonly _PINNED_TASK_LABELS_KEY = 'agentSessions.pinnedTaskLabels';
 	private static readonly _BROWSER_URLS_KEY = 'agentSessions.browserUrls';
 	private static readonly _PINNED_BROWSERS_KEY = 'agentSessions.pinnedBrowsers';
-	private readonly _sessionTasks = observableValue<readonly ISessionTaskWithTarget[]>(this, []);
+	private readonly _onDidRunTask = this._register(new Emitter<ISessionTaskRunEvent>());
+	readonly onDidRunTask = this._onDidRunTask.event;
+	/**
+	 * Per-folder task observables. Keyed by folder URI string so that
+	 * multiple sessions pointing at the same folder share one observable,
+	 * while sessions on different folders get independent lists. This
+	 * eliminates the race where switching active sessions overwrites the
+	 * shared observable with a different folder's tasks.
+	 */
+	private readonly _sessionTasksByFolder = new Map<string, ISettableObservable<readonly ISessionTaskWithTarget[]>>();
+	/**
+	 * Monotonic token used to discard stale async refreshes. When the
+	 * folder changes (or the service is disposed), the token is bumped so
+	 * that an in-flight `_refreshSessionTasks` for the previous folder
+	 * doesn't clobber the current folder's observable.
+	 */
+	private _refreshToken = 0;
 	private readonly _fileWatcher = this._register(new MutableDisposable());
 	private readonly _pinnedTaskLabels: Map<string, string>;
 	private readonly _pinnedTaskObservables = new Map<string, ReturnType<typeof observableValue<string | undefined>>>();
@@ -164,8 +215,7 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 		@IFileService private readonly _fileService: IFileService,
 		@IJSONEditingService private readonly _jsonEditingService: IJSONEditingService,
 		@IPreferencesService private readonly _preferencesService: IPreferencesService,
-		@ITaskService private readonly _taskService: ITaskService,
-		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@ISessionTaskRunnerRegistry private readonly _taskRunnerRegistry: ISessionTaskRunnerRegistry,
 		@IStorageService private readonly _storageService: IStorageService,
 	) {
 		super();
@@ -176,13 +226,31 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 
 	getSessionTasks(session: ISession): IObservable<readonly ISessionTaskWithTarget[]> {
 		const folder = this._getSessionFolder(session);
+		const key = folder?.toString() ?? '__no-folder__';
+
+		// Get or create a per-folder observable so that sessions on
+		// different folders don't clobber each other's task list.
+		let obs = this._sessionTasksByFolder.get(key);
+		if (!obs) {
+			obs = observableValue<readonly ISessionTaskWithTarget[]>('sessionTasks', []);
+			this._sessionTasksByFolder.set(key, obs);
+		}
+
 		this._ensureFileWatch(folder);
 		// Trigger initial read only when the folder changes; the file watcher handles subsequent updates
 		if (!isEqual(this._lastRefreshedFolder, folder)) {
 			this._lastRefreshedFolder = folder;
-			this._refreshSessionTasks(folder);
+			this._refreshSessionTasks(folder, obs);
 		}
-		return this._sessionTasks;
+		return obs;
+	}
+
+	async getSessionTasksOnce(session: ISession): Promise<readonly ISessionTaskWithTarget[]> {
+		return this._readTasksFromBothTargets(session, t => !!t.inAgents);
+	}
+
+	async getAllTasks(session: ISession): Promise<readonly ISessionTaskWithTarget[]> {
+		return this._readTasksFromBothTargets(session, () => true);
 	}
 
 	async getNonSessionTasks(session: ISession): Promise<readonly INonSessionTaskEntry[]> {
@@ -331,24 +399,14 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 		}
 	}
 
-	async runTask(task: ITaskEntry, session: ISession): Promise<void> {
-		const repo = this._getSessionRepo(session);
-		const cwd = repo?.workingDirectory ?? repo?.uri;
-		if (!cwd) {
-			return;
+	async runTask(task: ITaskEntry, session: ISession): Promise<IDisposable | undefined> {
+		const runner = this._taskRunnerRegistry.getRunner(session);
+		if (!runner) {
+			return undefined;
 		}
-
-		const workspaceFolder = this._workspaceContextService.getWorkspaceFolder(cwd);
-		if (!workspaceFolder) {
-			return;
-		}
-
-		const resolvedTask = await this._taskService.getTask(workspaceFolder, task.label);
-		if (!resolvedTask) {
-			return;
-		}
-
-		await this._taskService.run(resolvedTask, undefined, TaskRunSource.User);
+		const handle = await runner.runTask(task, session);
+		this._onDidRunTask.fire({ task, session });
+		return handle;
 	}
 
 	getPinnedTaskLabel(repository: URI | undefined): IObservable<string | undefined> {
@@ -483,6 +541,32 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 		return !!task.label;
 	}
 
+	/**
+	 * Reads tasks from both workspace and user `tasks.json` for a session,
+	 * filtering each entry through `predicate` (in addition to the supported-type
+	 * check) and tagging it with its storage target.
+	 */
+	private async _readTasksFromBothTargets(
+		session: ISession,
+		predicate: (task: ITaskEntry) => boolean
+	): Promise<ISessionTaskWithTarget[]> {
+		const result: ISessionTaskWithTarget[] = [];
+		const targets: TaskStorageTarget[] = ['workspace', 'user'];
+		for (const target of targets) {
+			const uri = this._getTasksJsonUri(session, target);
+			if (!uri) {
+				continue;
+			}
+			const json = await this._readTasksJson(uri);
+			for (const task of json.tasks ?? []) {
+				if (predicate(task) && this._isSupportedTask(task)) {
+					result.push({ task, target });
+				}
+			}
+		}
+		return result;
+	}
+
 	private _ensureFileWatch(folder: URI | undefined): void {
 		const tasksUri = this._getWorkspaceTasksJsonUri(folder);
 		if (!tasksUri) {
@@ -509,21 +593,32 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 
 		disposables.add(this._fileService.onDidFilesChange(e => {
 			if (e.affects(tasksUri) || (userUri && e.affects(userUri))) {
-				this._refreshSessionTasks(folder);
+				const key = folder?.toString() ?? '__no-folder__';
+				const obs = this._sessionTasksByFolder.get(key);
+				if (obs) {
+					this._refreshSessionTasks(folder, obs);
+				}
 			}
 		}));
 
 		this._fileWatcher.value = disposables;
 	}
 
-	private async _refreshSessionTasks(folder: URI | undefined): Promise<void> {
+	private async _refreshSessionTasks(folder: URI | undefined, target: ISettableObservable<readonly ISessionTaskWithTarget[]>): Promise<void> {
+		// Capture the current token so we can discard this refresh if
+		// the folder changed (or the service was disposed) while we were
+		// waiting on async file reads.
+		const token = ++this._refreshToken;
+
 		if (!folder) {
-			transaction(tx => this._sessionTasks.set([], tx));
+			transaction(tx => target.set([], tx));
 			return;
 		}
 
 		const tasksUri = this._getWorkspaceTasksJsonUri(folder);
 		const tasksJson = tasksUri ? await this._readTasksJson(tasksUri) : {};
+		// Discard if a newer refresh has started.
+		if (token !== this._refreshToken) { return; }
 		const sessionTasks: ISessionTaskWithTarget[] = (tasksJson.tasks ?? [])
 			.filter(t => t.inAgents && this._isSupportedTask(t))
 			.map(t => ({ task: t, target: 'workspace' as TaskStorageTarget }));
@@ -531,11 +626,13 @@ export class SessionsTasksService extends Disposable implements ISessionsTasksSe
 		// Also include user-level session tasks
 		const userUri = this._getUserTasksJsonUri();
 		const userJson = userUri ? await this._readTasksJson(userUri) : {};
+		// Discard if a newer refresh has started.
+		if (token !== this._refreshToken) { return; }
 		const userSessionTasks: ISessionTaskWithTarget[] = (userJson.tasks ?? [])
 			.filter(t => t.inAgents && this._isSupportedTask(t))
 			.map(t => ({ task: t, target: 'user' as TaskStorageTarget }));
 
-		transaction(tx => this._sessionTasks.set([...sessionTasks, ...userSessionTasks], tx));
+		transaction(tx => target.set([...sessionTasks, ...userSessionTasks], tx));
 	}
 
 	private _loadPinnedTaskLabels(): Map<string, string> {

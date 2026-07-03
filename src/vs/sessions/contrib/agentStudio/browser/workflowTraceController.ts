@@ -7,7 +7,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 import { IAgentChatService } from '../../../common/agentStudioService.js';
-import type { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
+import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
 import type { ILiveWorkflowAskUser, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveCollectVariable } from '../../../browser/agentChat/agentChatTypes.js';
 import type { IAgentChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 
@@ -16,7 +16,7 @@ import type { IAgentChatMessage } from '../../../browser/agentChat/agentChatType
  * The pane implements this to provide callbacks the controller needs.
  */
 export interface IWorkflowPaneCallbacks {
-	readonly chatPanel: AgentChatPanel | undefined;
+	readonly chatPanel: IChatPanel | undefined;
 	readonly currentAgentId: string | null;
 	readonly currentSessionId: string | null;
 	onWorkflowAgentChanged(agentId: string, sessionId: string): void;

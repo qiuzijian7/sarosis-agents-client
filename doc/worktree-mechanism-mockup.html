@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sarosis Worktree 处理机制</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --bg-card: #16213e;
+    --bg-elevated: #0f3460;
+    --border: #1a4068;
+    --accent: #e94560;
+    --accent2: #533483;
+    --green: #00b894;
+    --orange: #fdcb6e;
+    --yellow: #ffeaa7;
+    --blue: #74b9ff;
+    --cyan: #00cec9;
+    --red: #ff7675;
+    --text: #dfe6e9;
+    --text-dim: #95a5a6;
+    --text-bright: #ffffff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
+
+  .header {
+    text-align: center;
+    padding: 48px 24px 36px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 40px;
+  }
+  .header h1 { color: var(--text-bright); font-size: 30px; margin-bottom: 8px; }
+  .header .subtitle { color: var(--accent); font-size: 15px; }
+  .header .badges { margin-top: 16px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .badge {
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    padding: 4px 14px; border-radius: 12px; font-size: 12px; color: var(--text-dim);
+  }
+  .badge.green { border-color: var(--green); color: var(--green); }
+  .badge.accent { border-color: var(--accent); color: var(--accent); }
+
+  .section { margin-bottom: 48px; }
+  .section-title {
+    font-size: 22px; color: var(--text-bright); margin-bottom: 8px;
+    padding-left: 14px; border-left: 4px solid var(--accent);
+  }
+  .section-desc { color: var(--text-dim); margin-bottom: 20px; font-size: 14px; padding-left: 18px; }
+
+  .grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+  .grid-3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .grid-4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; transition: border-color .2s, transform .2s;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .card .icon { font-size: 28px; margin-bottom: 12px; }
+  .card h3 { color: var(--text-bright); font-size: 16px; margin-bottom: 8px; }
+  .card p { font-size: 13px; color: var(--text-dim); }
+  .card .tag {
+    display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 8px;
+    margin-top: 10px; font-weight: 600;
+  }
+  .tag-green { background: rgba(0,184,148,.15); color: var(--green); }
+  .tag-blue { background: rgba(116,185,255,.15); color: var(--blue); }
+  .tag-orange { background: rgba(253,203,110,.15); color: var(--orange); }
+  .tag-accent { background: rgba(233,69,96,.15); color: var(--accent); }
+
+  .code-block {
+    background: #0d1b2a; border: 1px solid var(--border); border-radius: 8px;
+    margin: 12px 0; overflow: hidden;
+  }
+  .code-header {
+    background: var(--bg-elevated); padding: 8px 16px; font-size: 12px;
+    color: var(--text-dim); border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .code-header .lang { color: var(--cyan); }
+  pre { padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+  pre code { font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace; }
+  .kw { color: #e94560; } .str { color: var(--green); }
+  .prop { color: var(--blue); } .com { color: #4a5568; font-style: italic; }
+  .type { color: var(--yellow); } .fn { color: var(--cyan); }
+
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; margin: 16px 0; }
+  .flow-node {
+    flex: 1; min-width: 120px; background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 8px; text-align: center; position: relative;
+  }
+  .flow-node .ftitle { font-size: 12px; color: var(--text-bright); font-weight: 600; margin-bottom: 4px; }
+  .flow-node .fdesc { font-size: 10px; color: var(--text-dim); }
+  .flow-arrow { display: flex; align-items: center; color: var(--accent); font-size: 20px; padding: 0 4px; }
+  .flow-node.green { border-color: var(--green); }
+  .flow-node.green .ftitle { color: var(--green); }
+  .flow-node.orange { border-color: var(--orange); }
+  .flow-node.orange .ftitle { color: var(--orange); }
+  .flow-node.accent { border-color: var(--accent); }
+  .flow-node.accent .ftitle { color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th { background: var(--bg-elevated); color: var(--text-bright); text-align: left; padding: 10px 14px; border-bottom: 2px solid var(--border); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text-dim); }
+  td:first-child { color: var(--text); font-weight: 500; }
+  td .yes { color: var(--green); } td .no { color: var(--red); }
+  tr:hover td { background: rgba(255,255,255,.03); }
+
+  .callout {
+    border-left: 4px solid var(--blue); background: rgba(116,185,255,.08);
+    padding: 14px 20px; border-radius: 0 8px 8px 0; margin: 16px 0; font-size: 13px;
+  }
+  .callout.warn { border-color: var(--red); background: rgba(255,118,117,.08); }
+  .callout.success { border-color: var(--green); background: rgba(0,184,148,.08); }
+  .callout b { color: var(--text-bright); }
+
+  .lifecycle {
+    display: flex; flex-direction: column; gap: 0; margin: 16px 0;
+  }
+  .lc-step {
+    display: flex; gap: 16px; padding: 14px 0;
+    border-bottom: 1px solid var(--border); position: relative;
+  }
+  .lc-step:last-child { border-bottom: none; }
+  .lc-num {
+    flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: bold; font-size: 14px; color: white;
+  }
+  .lc-num.s1 { background: var(--accent); }
+  .lc-num.s2 { background: var(--orange); }
+  .lc-num.s3 { background: var(--green); }
+  .lc-num.s4 { background: var(--blue); }
+  .lc-num.s5 { background: var(--accent2); }
+  .lc-num.s6 { background: #636e72; }
+  .lc-body h3 { color: var(--text-bright); font-size: 14px; margin-bottom: 4px; }
+  .lc-body p { font-size: 12px; color: var(--text-dim); }
+  .lc-body code { color: var(--orange); font-size: 11px; }
+
+  .arch-layer {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; margin-bottom: 12px;
+  }
+  .arch-layer .layer-title {
+    font-size: 14px; color: var(--text-bright); font-weight: 600; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .arch-layer .layer-title .layer-tag {
+    font-size: 10px; padding: 2px 8px; border-radius: 6px;
+  }
+
+  .file-tree {
+    background: #0d1b2a; border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px;
+    margin: 12px 0; line-height: 1.8;
+  }
+  .ft-dir { color: var(--blue); font-weight: 600; }
+  .ft-file { color: var(--text); }
+  .ft-desc { color: var(--text-dim); font-style: italic; }
+  .ft-new { color: var(--green); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Sarosis Worktree 处理机制</h1>
+  <div class="subtitle">本项目（sarosis-agents-client）worktree 子系统全景</div>
+  <div class="badges">
+    <span class="badge accent">fork 独有 contrib/worktree/</span>
+    <span class="badge green">WorktreeCreatedTaskDispatcher</span>
+    <span class="badge">ISessionTaskRunnerRegistry</span>
+    <span class="badge">Checkpoint 系统</span>
+    <span class="badge green">两阶段创建</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- 1. 整体架构 -->
+  <div class="section">
+    <h2 class="section-title">整体架构：六层模型</h2>
+    <p class="section-desc">本项目的 worktree 机制由六层组成，从底层数据模型到上层 UI，每层职责清晰。</p>
+
+    <div class="arch-layer">
+      <div class="layer-title">Layer 1: 数据模型 <span class="layer-tag tag-blue">session.ts</span></div>
+      <div class="grid grid-2">
+        <div class="card" style="padding:14px;">
+          <h3 style="font-size:14px;">ISessionWorkspace</h3>
+          <div class="code-block" style="margin:8px 0;">
+            <pre><code><span class="prop">repositories</span>: <span class="type">ISessionRepository</span>[]  <span class="com">// 非 folders</span>
+<span class="prop">label</span>: <span class="type">string</span>
+<span class="prop">icon</span>: <span class="type">ThemeIcon</span>
+<span class="com">// 无 uri, 无 isVirtualWorkspace</span></code></pre>
+          </div>
+        </div>
+        <div class="card" style="padding:14px;">
+          <h3 style="font-size:14px;">ISessionRepository</h3>
+          <div class="code-block" style="margin:8px 0;">
+            <pre><code><span class="prop">uri</span>: <span class="type">URI</span>                <span class="com">// 源仓库 URI</span>
+<span class="prop">workingDirectory</span>: <span class="type">URI</span>      <span class="com">// worktree 路径</span>
+<span class="prop">detail</span>: <span class="type">string</span>           <span class="com">// 分支名等</span>
+<span class="prop">baseBranchName</span>: <span class="type">string</span>     <span class="com">// 基分支</span>
+<span class="com">// git 信息平铺，无嵌套 gitRepository</span></code></pre>
+          </div>
+        </div>
+      </div>
+      <div class="callout">
+        <b>worktree 判断逻辑</b>（本项目独有）：上游用 <code>gitRepository.workTreeUri</code>（仅 worktree 时非空），本项目用 <code>workingDirectory !== uri</code> 判断。<code>_isWorktree(repo) = !isEqual(repo.workingDirectory, repo.uri)</code>
+      </div>
+    </div>
+
+    <div class="arch-layer">
+      <div class="layer-title">Layer 2: Worktree 管理子系统 <span class="layer-tag tag-green">contrib/worktree/ (fork 独有)</span></div>
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">上游 VS Code 没有这个子系统。本项目在 <code>sessions/contrib/worktree/</code> 下实现了完整的 worktree 管理。</p>
+      <div class="file-tree">
+<span class="ft-dir">src/vs/sessions/contrib/worktree/</span>
+├── <span class="ft-dir">common/</span>
+│   ├── <span class="ft-file">worktreeTypes.ts</span>          <span class="ft-desc"># 接口、枚举、常量</span>
+│   ├── <span class="ft-file">worktreeService.ts</span>        <span class="ft-desc"># IWorktreeService 接口</span>
+│   ├── <span class="ft-file">worktreeCheckpointService.ts</span> <span class="ft-desc"># IWorktreeCheckpointService 接口</span>
+│   └── <span class="ft-file">workspaceAdapter.ts</span>       <span class="ft-desc"># IWorkspaceAdapterService 接口</span>
+├── <span class="ft-dir">browser/</span>
+│   ├── <span class="ft-file">worktreeService.ts</span>        <span class="ft-desc"># WorktreeService 主实现（CRUD+状态+事件）</span>
+│   ├── <span class="ft-file">worktreeCheckpointServiceImpl.ts</span> <span class="ft-desc"># Checkpoint Browser 实现</span>
+│   ├── <span class="ft-file">worktreeAdapterService.ts</span> <span class="ft-desc"># 工作区适配器</span>
+│   ├── <span class="ft-file">worktreeView.ts</span>           <span class="ft-desc"># WorktreeViewPane 树视图面板</span>
+│   ├── <span class="ft-file">worktreeDataProvider.ts</span>   <span class="ft-desc"># 树数据提供器</span>
+│   ├── <span class="ft-file">worktreeCheckpointCommands.ts</span> <span class="ft-desc"># Checkpoint 命令</span>
+│   ├── <span class="ft-file">worktree.contribution.ts</span> <span class="ft-desc"># 服务注册</span>
+│   └── <span class="ft-file">worktreeCheckpoint.contribution.ts</span> <span class="ft-desc"># Checkpoint 命令注册</span>
+└── <span class="ft-dir">node/</span>
+    └── <span class="ft-file">worktreeCheckpointServiceImpl.ts</span> <span class="ft-desc"># Checkpoint Node 实现</span>
+      </div>
+    </div>
+
+    <div class="arch-layer">
+      <div class="layer-title">Layer 3: 自动任务派发 <span class="layer-tag tag-accent">WorktreeCreatedTaskDispatcher</span></div>
+      <div class="grid grid-3">
+        <div class="card" style="padding:14px;">
+          <div class="icon">📡</div>
+          <h3 style="font-size:14px;">WorktreeCreatedTaskDispatcher</h3>
+          <p>监听 <code>onDidChangeSessions.added</code>，检测到 <code>_isWorktree(repo)</code> 后自动派发 <code>worktreeCreated</code> 任务。session 归档/移除时 dispose 句柄。</p>
+          <span class="tag tag-accent">核心派发器</span>
+        </div>
+        <div class="card" style="padding:14px;">
+          <div class="icon">⚙️</div>
+          <h3 style="font-size:14px;">ISessionTaskRunnerRegistry</h3>
+          <p>可插拔 runner 注册表。按 priority 选择最高优先级 runner。<code>SessionTaskRunnerRegistry</code> 继承 Disposable。</p>
+          <span class="tag tag-blue">注册表</span>
+        </div>
+        <div class="card" style="padding:14px;">
+          <div class="icon">▶️</div>
+          <h3 style="font-size:14px;">WorkbenchSessionTaskRunner</h3>
+          <p>默认 runner（priority=0）。用 <code>ITaskService</code> 在本地 worktree 跑任务，返回 <code>terminate</code> 句柄。</p>
+          <span class="tag tag-green">默认 runner</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arch-layer">
+      <div class="layer-title">Layer 4: 任务配置 <span class="layer-tag tag-orange">sessionsTasksService</span></div>
+      <div class="grid grid-2">
+        <div class="card" style="padding:14px;">
+          <h3 style="font-size:14px;">SessionsTasksService</h3>
+          <p>读写 <code>tasks.json</code>，管理 <code>inAgents</code> 任务。支持 <code>getSessionTasks</code>（observable）、<code>getSessionTasksOnce</code>（快照）、<code>getAllTasks</code>、<code>runTask</code>（返回 IDisposable）。<code>onDidRunTask</code> 事件。</p>
+        </div>
+        <div class="card" style="padding:14px;">
+          <h3 style="font-size:14px;">tasks.json 配置</h3>
+          <div class="code-block" style="margin:8px 0;">
+            <pre><code>{
+  <span class="prop">"tasks"</span>: [{
+    <span class="prop">"label"</span>: <span class="str">"Install & Watch"</span>,
+    <span class="prop">"command"</span>: <span class="str">"npm ci && npm run watch"</span>,
+    <span class="prop">"inAgents"</span>: <span class="kw">true</span>,
+    <span class="prop">"runOptions"</span>: { <span class="prop">"runOn"</span>: <span class="str">"worktreeCreated"</span> }
+  }]
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arch-layer">
+      <div class="layer-title">Layer 5: Run UI <span class="layer-tag tag-blue">runScriptAction</span></div>
+      <div class="grid grid-4">
+        <div class="card" style="padding:12px;text-align:center;">
+          <div class="icon">▶️</div>
+          <h3 style="font-size:13px;">F5 = Run Primary</h3>
+          <p style="font-size:11px;">标题栏 Run 主按钮</p>
+        </div>
+        <div class="card" style="padding:12px;text-align:center;">
+          <div class="icon">📂</div>
+          <h3 style="font-size:13px;">Run on Worktree Creation</h3>
+          <p style="font-size:11px;">下拉框分组</p>
+        </div>
+        <div class="card" style="padding:12px;text-align:center;">
+          <div class="icon">🌐</div>
+          <h3 style="font-size:13px;">Browser 验证</h3>
+          <p style="font-size:11px;">Pin URL 打开集成浏览器</p>
+        </div>
+        <div class="card" style="padding:12px;text-align:center;">
+          <div class="icon">✨</div>
+          <h3 style="font-size:13px;">Generate Task</h3>
+          <p style="font-size:11px;">AI 生成运行命令</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="arch-layer">
+      <div class="layer-title">Layer 6: Checkpoint 系统 <span class="layer-tag tag-green">fork 独有</span></div>
+      <div class="grid grid-2">
+        <div class="card" style="padding:14px;">
+          <h3 style="font-size:14px;">IWorktreeCheckpointService</h3>
+          <p>独立检查点服务（非上游 GitService 内嵌）。支持 snapshot/restore。Browser + Node 双实现。</p>
+          <span class="tag tag-green">独立服务</span>
+        </div>
+        <div class="card" style="padding:14px;">
+          <h3 style="font-size:14px;">Checkpoint 命令</h3>
+          <p><code>worktreeCheckpointCommands.ts</code> 注册 UI 命令。用户可在 worktree 树视图中创建/恢复检查点。</p>
+          <span class="tag tag-blue">UI 命令</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. 生命周期 -->
+  <div class="section">
+    <h2 class="section-title">Worktree 完整生命周期</h2>
+    <p class="section-desc">从创建到归档的 6 个阶段，每阶段标注关键组件和方法。</p>
+    <div class="lifecycle">
+      <div class="lc-step">
+        <div class="lc-num s1">1</div>
+        <div class="lc-body">
+          <h3>创建 Worktree</h3>
+          <p><code>WorktreeService.createWorktree(info)</code> 在 workbench Browser 进程执行 <code>git worktree add</code>。支持两阶段创建模式（<code>IWorktreeInfoOptions</code> → <code>IWorktreeInfo</code>）。状态变为 <code>WorktreeStatus.Pending</code>。</p>
+        </div>
+      </div>
+      <div class="lc-step">
+        <div class="lc-num s2">2</div>
+        <div class="lc-body">
+          <h3>Session 绑定</h3>
+          <p>Provider 创建 session，设置 <code>workspace.repositories[0].workingDirectory</code> 指向 worktree 路径（与 <code>uri</code> 不同）。通过 <code>onDidChangeSessions.added</code> 通知 dispatcher。</p>
+        </div>
+      </div>
+      <div class="lc-step">
+        <div class="lc-num s3">3</div>
+        <div class="lc-body">
+          <h3>自动任务派发</h3>
+          <p><code>WorktreeCreatedTaskDispatcher._trackSession()</code> 检测到 <code>_isWorktree(repo) = !isEqual(workingDirectory, uri)</code> 为 true 后，调用 <code>_dispatchWorktreeCreatedTasks()</code> 读取所有 <code>runOn: 'worktreeCreated'</code> 任务并执行（如 <code>npm ci && npm run watch</code>）。agent-host session 受 <code>chat.agentHost.runWorktreeCreatedTasks</code> 配置控制。</p>
+        </div>
+      </div>
+      <div class="lc-step">
+        <div class="lc-num s4">4</div>
+        <div class="lc-body">
+          <h3>开发与验证</h3>
+          <p>用户在 worktree 中修改源码 → watch 自动增量编译 → 按 F5 运行 pinned 任务 → 浏览器/终端/断点验证。可选创建 Checkpoint（<code>IWorktreeCheckpointService</code> snapshot 工作树状态）。</p>
+        </div>
+      </div>
+      <div class="lc-step">
+        <div class="lc-num s5">5</div>
+        <div class="lc-body">
+          <h3>归档（Archived）</h3>
+          <p>用户归档 session → <code>session.isArchived</code> 变为 true → dispatcher 的 autorun 检测到后调用 <code>taskHandles.clear()</code> → 自动 dispose 所有 watch/dev server 进程句柄。</p>
+        </div>
+      </div>
+      <div class="lc-step">
+        <div class="lc-num s6">6</div>
+        <div class="lc-body">
+          <h3>移除与清理</h3>
+          <p>用户删除 session → <code>onDidChangeSessions.removed</code> 触发 → <code>_sessionDisposables.deleteAndDispose(sessionId)</code> 清理整个 DisposableStore（含 autorun、task handles）。可选 <code>WorktreeService.removeWorktree()</code> 删除物理 worktree 目录。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. 自动派发流程 -->
+  <div class="section">
+    <h2 class="section-title">自动任务派发流程（详细时序）</h2>
+    <div class="flow">
+      <div class="flow-node accent">
+        <div class="ftitle">Session Added</div>
+        <div class="fdesc">onDidChangeSessions.added</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="ftitle">_trackSession</div>
+        <div class="fdesc">检查 capabilities.runsWorktreeCreatedTasks</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="ftitle">autorun 监听</div>
+        <div class="fdesc">loading / status / workspace</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node green">
+        <div class="ftitle">_isWorktree?</div>
+        <div class="fdesc">workingDirectory ≠ uri</div>
+      </div>
+    </div>
+    <div class="flow" style="margin-top:0;">
+      <div class="flow-node green">
+        <div class="ftitle">dispatched = true</div>
+        <div class="fdesc">dispose autorun</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node orange">
+        <div class="ftitle">getConfig</div>
+        <div class="fdesc">agent-host? 配置开关</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="ftitle">getSessionTasksOnce</div>
+        <div class="fdesc">读取 inAgents 任务</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node orange">
+        <div class="ftitle">filter runOn</div>
+        <div class="fdesc">仅 worktreeCreated</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node green">
+        <div class="ftitle">runTask</div>
+        <div class="fdesc">via RunnerRegistry</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node green">
+        <div class="ftitle">track handle</div>
+        <div class="fdesc">taskHandles.add()</div>
+      </div>
+    </div>
+    <div class="callout success">
+      <b>句柄管理</b>：<code>runTask</code> 返回 <code>IDisposable</code>（terminate 句柄）。若 session 已归档则立即 dispose，否则加入 <code>taskHandles</code>。归档时 <code>taskHandles.clear()</code> 批量停止所有 watch 进程。
+    </div>
+  </div>
+
+  <!-- 4. WorktreeService 能力 -->
+  <div class="section">
+    <h2 class="section-title">WorktreeService 能力矩阵（fork 独有）</h2>
+    <div class="grid grid-4">
+      <div class="card">
+        <div class="icon">📋</div>
+        <h3>listWorktrees</h3>
+        <p>列出仓库所有 worktree（<code>git worktree list --porcelain</code>）</p>
+        <span class="tag tag-blue">查询</span>
+      </div>
+      <div class="card">
+        <div class="icon">➕</div>
+        <h3>createWorktree</h3>
+        <p>创建新 worktree。支持两阶段模式和单阶段模式</p>
+        <span class="tag tag-green">创建</span>
+      </div>
+      <div class="card">
+        <div class="icon">🗑️</div>
+        <h3>removeWorktree</h3>
+        <p>删除 worktree（<code>git worktree remove --force</code>）</p>
+        <span class="tag tag-accent">删除</span>
+      </div>
+      <div class="card">
+        <div class="icon">🧹</div>
+        <h3>pruneWorktrees</h3>
+        <p>修剪无效 worktree 引用（<code>git worktree prune</code>）</p>
+        <span class="tag tag-orange">维护</span>
+      </div>
+      <div class="card">
+        <div class="icon">🔄</div>
+        <h3>resetWorktree</h3>
+        <p>重置 worktree 到基线状态</p>
+        <span class="tag tag-orange">维护</span>
+      </div>
+      <div class="card">
+        <div class="icon">📍</div>
+        <h3>selectedWorktree</h3>
+        <p>选中状态 observable，驱动 Changes 视图</p>
+        <span class="tag tag-blue">状态</span>
+      </div>
+      <div class="card">
+        <div class="icon">📊</div>
+        <h3>WorktreeStatus</h3>
+        <p>状态机：None → Pending → Ready/Failed</p>
+        <span class="tag tag-blue">状态</span>
+      </div>
+      <div class="card">
+        <div class="icon">📡</div>
+        <h3>事件</h3>
+        <p>onDidChangeWorktrees / onDidChangeWorktreeState / onDidRemoveWorktree</p>
+        <span class="tag tag-blue">事件</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. UI Mockup -->
+  <div class="section">
+    <h2 class="section-title">UI Mockup：Worktree 树视图</h2>
+    <p class="section-desc">侧边栏的 Worktree 视图面板，展示所有 worktree 及其状态。</p>
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin:16px 0;">
+      <div style="background:var(--bg-elevated);padding:10px 16px;font-size:13px;color:var(--text-bright);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
+        <span style="font-size:16px;">🌳</span> Worktrees
+        <span style="margin-left:auto;display:flex;gap:8px;">
+          <span style="font-size:14px;cursor:pointer;color:var(--text-dim);">➕</span>
+          <span style="font-size:14px;cursor:pointer;color:var(--text-dim);">🔄</span>
+        </span>
+      </div>
+      <div style="padding:12px;font-family:'Cascadia Code',Consolas,monospace;font-size:12px;">
+        <div style="padding:6px 8px;border-radius:4px;color:var(--text-dim);">📂 G:\AIProjects\vscode</div>
+        <div style="padding:6px 8px 6px 24px;border-radius:4px;">
+          <span style="color:var(--green);">●</span> <span style="color:var(--text);">main</span> <span style="color:var(--text-dim);">(主工作树)</span>
+        </div>
+        <div style="padding:6px 8px 6px 24px;border-radius:4px;background:rgba(233,69,96,.08);">
+          <span style="color:var(--accent);">●</span> <span style="color:var(--text);">feat-codegraph</span> <span style="color:var(--text-dim);">→ .worktrees/feat-codegraph</span>
+          <div style="margin-top:4px;font-size:11px;color:var(--text-dim);">
+            <span style="color:var(--orange);">📌 active session</span> · 3 outgoing · 0 incoming
+          </div>
+        </div>
+        <div style="padding:6px 8px 6px 24px;border-radius:4px;">
+          <span style="color:var(--blue);">●</span> <span style="color:var(--text);">feat-kanban</span> <span style="color:var(--text-dim);">→ .worktrees/feat-kanban</span>
+          <div style="margin-top:4px;font-size:11px;color:var(--text-dim);">
+            <span style="color:var(--text-dim);">archived</span> · 5 outgoing · 2 incoming
+          </div>
+        </div>
+        <div style="padding:6px 8px 6px 24px;border-radius:4px;">
+          <span style="color:var(--text-dim);">●</span> <span style="color:var(--text-dim);">bugfix-header (detached)</span>
+        </div>
+        <div style="padding:6px 8px;margin-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text-dim);">
+          <span style="color:var(--green);">●</span> Ready &nbsp;
+          <span style="color:var(--orange);">●</span> Active &nbsp;
+          <span style="color:var(--blue);">●</span> Archived &nbsp;
+          <span style="color:var(--text-dim);">●</span> Detached
+        </div>
+      </div>
+    </div>
+    <div class="callout">
+      <b>右键菜单</b>：Open（在新窗口打开 worktree）· Open in Terminal · Create Checkpoint · Restore Checkpoint · Remove · Prune · Reset
+    </div>
+  </div>
+
+  <!-- 6. Checkpoint 机制 -->
+  <div class="section">
+    <h2 class="section-title">Checkpoint 机制</h2>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="icon">📸</div>
+        <h3>Snapshot（创建检查点）</h3>
+        <p>捕获当前 worktree 的工作树状态（含 untracked 文件），用临时 git index + <code>write-tree</code> 生成 tree object，<code>commit-tree</code> 创建悬挂 commit，<code>update-ref</code> 指向 checkpoint ref。</p>
+        <span class="tag tag-green">Browser + Node 双实现</span>
+      </div>
+      <div class="card">
+        <div class="icon">⏮️</div>
+        <h3>Restore（恢复检查点）</h3>
+        <p>将 worktree 工作树恢复到指定 checkpoint 的状态。通过 <code>git diff</code> 计算差异，<code>git restore</code> 恢复文件。</p>
+        <span class="tag tag-accent">恢复</span>
+      </div>
+    </div>
+    <div class="flow" style="margin-top:16px;">
+      <div class="flow-node green">
+        <div class="ftitle">📸 Snapshot</div>
+        <div class="fdesc">captureWorkingTreeAsTree</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="ftitle">🌳 write-tree</div>
+        <div class="fdesc">生成 tree object</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="ftitle">📝 commit-tree</div>
+        <div class="fdesc">悬挂 commit</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node orange">
+        <div class="ftitle">📌 update-ref</div>
+        <div class="fdesc">checkpoint ref</div>
+      </div>
+      <div class="flow-arrow">↔</div>
+      <div class="flow-node accent">
+        <div class="ftitle">⏮️ Restore</div>
+        <div class="fdesc">computeFileDiffs + restore</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7. 两阶段创建 -->
+  <div class="section">
+    <h2 class="section-title">两阶段创建模式（兼容 opencode）</h2>
+    <p class="section-desc">fork 独有：先返回 worktree 信息，再实际创建。兼容 opencode 的工作流。</p>
+    <div class="flow">
+      <div class="flow-node accent">
+        <div class="ftitle">阶段 1: Info</div>
+        <div class="fdesc">IWorktreeInfoOptions → IWorktreeInfo</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node">
+        <div class="ftitle">用户确认</div>
+        <div class="fdesc">name / branch / directory</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node green">
+        <div class="ftitle">阶段 2: Create</div>
+        <div class="fdesc">git worktree add</div>
+      </div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node green">
+        <div class="ftitle">WorktreeStatus.Ready</div>
+        <div class="fdesc">onDidChangeWorktreeState</div>
+      </div>
+    </div>
+    <div class="code-block">
+      <div class="code-header"><span>worktreeTypes.ts</span><span class="lang">typescript</span></div>
+      <pre><code><span class="com">// 阶段 1 输入</span>
+<span class="kw">interface</span> <span class="type">IWorktreeInfoOptions</span> {
+  <span class="prop">name</span>?: <span class="type">string</span>;
+  <span class="prop">branch</span>?: <span class="type">string</span>;
+  <span class="prop">detached</span>?: <span class="type">boolean</span>;
+}
+
+<span class="com">// 阶段 1 输出 / 阶段 2 输入</span>
+<span class="kw">interface</span> <span class="type">IWorktreeInfo</span> {
+  <span class="prop">name</span>: <span class="type">string</span>;
+  <span class="prop">branch</span>?: <span class="type">string</span>;
+  <span class="prop">directory</span>: <span class="type">string</span>;
+}
+
+<span class="com">// 旧版单阶段</span>
+<span class="kw">interface</span> <span class="type">ICreateWorktreeInfo</span> {
+  <span class="prop">folderPath</span>: <span class="type">string</span>;
+  <span class="prop">name</span>: <span class="type">string</span>;
+  <span class="prop">label</span>: <span class="type">string</span>;
+  <span class="prop">isBranch</span>: <span class="type">boolean</span>;
+  <span class="prop">cwd</span>: <span class="type">string</span>;
+}</code></pre>
+    </div>
+  </div>
+
+  <!-- 8. 与上游差异 -->
+  <div class="section">
+    <h2 class="section-title">与上游 VS Code 的关键差异</h2>
+    <table>
+      <tr><th>维度</th><th>上游 VS Code</th><th>本项目 (fork)</th><th>差异程度</th></tr>
+      <tr><td>数据模型</td><td><code>folders[].gitRepository.workTreeUri</code></td><td><code>repositories[].workingDirectory</code></td><td class="no">🔴 高（结构性）</td></tr>
+      <tr><td>worktree 创建位置</td><td>agent-host Node 进程</td><td>workbench Browser 进程</td><td class="no">🔴 高</td></tr>
+      <tr><td>worktree CRUD</td><td>基本操作</td><td>完整 CRUD + prune + reset</td><td class="yes">🟢 fork 更强</td></tr>
+      <tr><td>worktree UI</td><td>无</td><td>树视图 + 命令面板</td><td class="yes">🟢 fork 独有</td></tr>
+      <tr><td>Checkpoint</td><td>在 GitService 中</td><td>独立服务 + UI 命令</td><td class="yes">🟢 fork 更强</td></tr>
+      <tr><td>两阶段创建</td><td>无</td><td>有（opencode 兼容）</td><td class="yes">🟢 fork 独有</td></tr>
+      <tr><td>状态管理</td><td>无</td><td>WorktreeStatus 状态机</td><td class="yes">🟢 fork 独有</td></tr>
+      <tr><td>自动任务派发</td><td>有（检测 workTreeUri）</td><td>有（检测 _isWorktree）</td><td class="yes">🟢 已适配</td></tr>
+      <tr><td>runner 注册表</td><td>有</td><td>有（已移植）</td><td class="yes">🟢 已对齐</td></tr>
+      <tr><td>AgentHost runner</td><td>有（terminal-based）</td><td>❌ 缺失</td><td class="no">🟡 中</td></tr>
+      <tr><td>配置开关</td><td><code>chat.agentHost.runWorktreeCreatedTasks</code></td><td>有（ANY_AGENT_HOST_PROVIDER_RE）</td><td class="yes">🟢 已恢复</td></tr>
+      <tr><td>worktree 误触发防护</td><td>workTreeUri 天然区分</td><td>_isWorktree() 判断 uri≠workingDirectory</td><td class="yes">🟢 已修复</td></tr>
+    </table>
+    <div class="callout warn">
+      <b>关键风险</b>：数据模型结构性差异（<code>folders[].gitRepository.workTreeUri</code> vs <code>repositories[].workingDirectory</code>）导致每次从上游移植代码都需要适配层。<code>AgentHost runner</code> 缺失，对 agent-host session 可能无法正确执行远程任务。
+    </div>
+  </div>
+
+  <!-- 9. 完整流程图 -->
+  <div class="section">
+    <h2 class="section-title">完整流程图</h2>
+    <div class="code-block">
+      <div class="code-header"><span>从创建到清理的完整流程</span><span class="lang">mermaid</span></div>
+      <pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                    用户在 Chat 中要求实现功能                      │
+└──────────────────────────┬──────────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Provider 创建 Session                                           │
+│  ├─ WorktreeService.createWorktree() → git worktree add          │
+│  ├─ WorktreeStatus: None → Pending → Ready                       │
+│  └─ workspace.repositories[0] = { uri: repo, workingDirectory: wt }│
+└──────────────────────────┬──────────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  onDidChangeSessions.added → WorktreeCreatedTaskDispatcher       │
+│  ├─ _trackSession(session)                                       │
+│  ├─ autorun: 等待 loading=false, status≠Untitled                 │
+│  ├─ _isWorktree(repo)? → workingDirectory ≠ uri = true           │
+│  ├─ 配置检查: agent-host? chat.agentHost.runWorktreeCreatedTasks │
+│  ├─ getSessionTasksOnce → 过滤 runOn: 'worktreeCreated'          │
+│  └─ runTask → WorkbenchSessionTaskRunner → ITaskService.run      │
+│     └─ 返回 IDisposable (terminate 句柄) → taskHandles.add()     │
+└──────────────────────────┬──────────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  开发循环                                                        │
+│  ├─ 用户修改 src/ 文件 → watch 自动增量编译 out/                  │
+│  ├─ 按 F5 → RunScriptContribution → runTask(pinnedTask)          │
+│  ├─ 启动 Electron dev 实例（scripts/code.bat）                    │
+│  ├─ 验证: 浏览器(simpleBrowser) / 终端(日志) / DevTools(断点)    │
+│  └─ 可选: IWorktreeCheckpointService.snapshot() 创建检查点        │
+└──────────────────────────┬──────────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  归档 Session                                                    │
+│  ├─ session.isArchived = true                                    │
+│  ├─ dispatcher autorun 检测到 → taskHandles.clear()              │
+│  └─ 自动 dispose 所有 watch/dev server 进程句柄                   │
+└──────────────────────────┬──────────────────────────────────────┘
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  移除 Session（可选）                                             │
+│  ├─ onDidChangeSessions.removed → _sessionDisposables.deleteAndDispose │
+│  ├─ WorktreeService.removeWorktree() → git worktree remove       │
+│  └─ WorktreeStatus → None                                        │
+└─────────────────────────────────────────────────────────────────┘</code></pre>
+    </div>
+  </div>
+
+  <!-- 10. 文件清单 -->
+  <div class="section">
+    <h2 class="section-title">关键文件清单</h2>
+    <table>
+      <tr><th>文件</th><th>职责</th><th>来源</th></tr>
+      <tr><td><code>contrib/worktree/common/worktreeTypes.ts</code></td><td>接口、枚举、常量</td><td>fork 独有</td></tr>
+      <tr><td><code>contrib/worktree/browser/worktreeService.ts</code></td><td>WorktreeService 主实现</td><td>fork 独有</td></tr>
+      <tr><td><code>contrib/worktree/browser/worktreeView.ts</code></td><td>树视图面板</td><td>fork 独有</td></tr>
+      <tr><td><code>contrib/worktree/browser/worktreeCheckpointServiceImpl.ts</code></td><td>Checkpoint Browser 实现</td><td>fork 独有</td></tr>
+      <tr><td><code>contrib/chat/browser/worktreeCreatedTaskDispatcher.ts</code></td><td>自动任务派发器</td><td><span class="tag tag-green" style="display:inline;">已移植+优化</span></td></tr>
+      <tr><td><code>contrib/chat/browser/sessionTaskRunner.ts</code></td><td>Runner 接口与注册表</td><td><span class="tag tag-green" style="display:inline;">已移植</span></td></tr>
+      <tr><td><code>contrib/chat/browser/workbenchSessionTaskRunner.ts</code></td><td>默认 workbench runner</td><td><span class="tag tag-green" style="display:inline;">已移植</span></td></tr>
+      <tr><td><code>contrib/chat/browser/sessionsTasksService.ts</code></td><td>任务读写+执行+事件</td><td><span class="tag tag-orange" style="display:inline;">已改造</span></td></tr>
+      <tr><td><code>contrib/chat/browser/runScriptAction.ts</code></td><td>F5/Run UI</td><td>原有</td></tr>
+      <tr><td><code>services/sessions/common/session.ts</code></td><td>ISession/ISessionWorkspace/ISessionRepository</td><td><span class="tag tag-orange" style="display:inline;">已扩展</span></td></tr>
+      <tr><td><code>common/agentHostSessionsProvider.ts</code></td><td>isAgentHostProvider/isLocalAgentHostProviderId</td><td>原有</td></tr>
+    </table>
+  </div>
+
+</div>
+</body>
+</html>
