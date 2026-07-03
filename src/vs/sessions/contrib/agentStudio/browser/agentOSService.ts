@@ -330,26 +330,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	}
 
 	private async _initDashboardDb(): Promise<void> {
-		// DashboardDatabase 只能在 Node 环境运行（依赖 fs / @vscode/sqlite3）
-		// 浏览器端跳过，所有统计回退到纯内存模式。
-		if (typeof process === 'undefined' || !process.versions?.node) {
-			this._logService.info('[AgentOS] Skipping Dashboard DB (non-Node environment)');
-			return;
-		}
-
-		try {
-			const dbPath = await this._getDashboardDbPath();
-			// 动态 import：确保打包工具不会把 node/dashboardDatabase 打进浏览器 bundle
-			const { DashboardDatabase } = await import('../node/dashboardDatabase.js');
-			this._dashboardDb = new DashboardDatabase();
-			await this._dashboardDb.initialize(dbPath);
-			this._logService.info('[AgentOS] Dashboard DB initialized:', dbPath);
-
-			// 从 SQLite 加载已持久化的累计统计
-			await this._loadDashboardStats();
-		} catch (err) {
-			this._logService.warn('[AgentOS] Failed to init Dashboard DB:', err);
-		}
+		// DashboardDatabase 依赖 fs + @vscode/sqlite3 (原生模块)。
+		// 在 VS Code/E4M 渲染进程中无论是 esbuild 打包成 ESM (import 内联进 sessions.desktop.main.js)
+		// 还是 AMD 模块加载，都会触发 CSP 拦截 (node:fs) 或 ESM specifier 解析失败 (bare fs)。
+		// 渲染端 sandbox 根本不具备加载 Node 原生模块的能力。
+		//
+		// 因此暂时关闭：_dashboardDb 保持 undefined，所有统计回退到纯内存模式。
+		// TODO: 通过 Electron 主进程 IPC 或 VS Code 服务层实现 DB 持久化。
+		// 参考：base/parts/sandbox/electron-browser/preload.ts（仅暴露有限的 electron API）。
+		this._logService.info('[AgentOS] Skipping Dashboard DB (renderer sandbox — fs/sqlite3 unavailable)');
 	}
 
 	private async _loadDashboardStats(): Promise<void> {

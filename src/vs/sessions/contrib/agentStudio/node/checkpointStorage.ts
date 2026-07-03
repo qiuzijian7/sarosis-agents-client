@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as fs from 'node:fs';
+import * as fs from 'fs';
 import { URI } from '../../../../base/common/uri.js';
 import type { Database, RunResult } from '@vscode/sqlite3';
 import type { ICheckpoint, IFileSnapshot, IFileSnapshotData } from '../common/checkpointTypes.js';
