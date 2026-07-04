@@ -19,18 +19,58 @@
 	background: var(--vscode-editor-background, #1e1e1e);
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', Consolas, monospace);
 	font-size: 13px;
+	/* 关键：允许 flex 子项收缩到 0，防止 xterm 容器被拉伸 */
+	min-height: 0;
 }
 
-/* ── xterm terminal container ── */
-.xterm-cli-terminal {
-	flex: 1;
+/* ── xterm content wrapper ──
+   关键修复布局结构：
+   - wrapper 占据所有可用空间（flex: 1）
+   - xterm 容器绝对定位于 wrapper 底部
+   - xterm 容器高度由 JS 根据内容行数设置
+   - 这样：
+     1. 输入区永远在面板最底部
+     2. xterm 内容紧贴输入区上方
+     3. 没有"显示区与输入区巨大间隔"
+     4. 内容超出时 xterm 内部滚动
+*/
+.xterm-cli-content-wrapper {
+	flex: 1 1 auto;
 	min-height: 0;
-	overflow: hidden;
 	position: relative;
+	overflow: hidden;
+}
+
+/* ── xterm terminal container ──
+   绝对定位于 wrapper 底部，高度由 JS 设置
+*/
+.xterm-cli-terminal {
+	position: absolute;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	min-height: 40px;
+	max-height: 100%;
+	overflow: hidden;
+	width: 100%;
+	/* 默认高度：JS 会在 layout() 中覆盖 */
+	height: 200px;
 }
 
 .xterm-cli-terminal .xterm {
 	padding: 4px 8px;
+	height: 100%;
+	width: 100%;
+}
+
+.xterm-cli-terminal .xterm .xterm-viewport,
+.xterm-cli-terminal .xterm-viewport {
+	width: 100% !important;
+	height: 100% !important;
+	overflow-y: auto !important;
+	overflow-x: hidden !important;
+	/* 关键：禁止 xterm 内容超出容器宽度（防止水平溢出） */
+	box-sizing: border-box;
 }
 
 .xterm-cli-terminal .xterm-viewport {

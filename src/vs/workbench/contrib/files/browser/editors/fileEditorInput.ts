@@ -332,6 +332,32 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 			return editorPanes.find(editorPane => editorPane.typeId === BINARY_FILE_EDITOR_ID);
 		}
 
+		// [Sarosis 2026-07-04] Use HtmlFileEditorPane for .html/.htm files when
+		// it has been registered. The default `TextFileEditor` would also work
+		// but it doesn't render the trailing-breadcrumbs 编辑 / HTML / 预览
+		// mode toggle that HtmlFileEditorPane provides. Without this branch
+		// the registered HtmlFileEditorPane is never selected for .html files
+		// because `find` falls through to the `TextFileEditor` match below.
+		const resource = this.resource;
+		if (resource) {
+			const lowerPath = resource.path.toLowerCase();
+			if (lowerPath.endsWith('.html') || lowerPath.endsWith('.htm')) {
+				const htmlPane = editorPanes.find(editorPane => editorPane.typeId === 'agentStudio.htmlFileEditor');
+				if (htmlPane) {
+					return htmlPane;
+				}
+			}
+
+			// [Sarosis 2026-07-04] Use MdFileEditorPane for .md files when
+			// registered (provides trailing-breadcrumbs 预览 / Markdown toggle).
+			if (lowerPath.endsWith('.md') || lowerPath.endsWith('.markdown') || lowerPath.endsWith('.mdown') || lowerPath.endsWith('.mkdn')) {
+				const mdPane = editorPanes.find(editorPane => editorPane.typeId === 'agentStudio.mdFileEditor');
+				if (mdPane) {
+					return mdPane;
+				}
+			}
+		}
+
 		return editorPanes.find(editorPane => editorPane.typeId === TEXT_FILE_EDITOR_ID);
 	}
 

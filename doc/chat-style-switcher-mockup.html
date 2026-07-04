@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chat Style Switcher — Web vs CLI 效果图</title>
+<style>
+/* ════════════════════════════════════════════════════════════════
+   全局
+   ════════════════════════════════════════════════════════════════ */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 24px;
+}
+h1 {
+  font-size: 22px; font-weight: 600; margin-bottom: 8px; color: #fff;
+}
+.subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
+.container {
+  display: flex; gap: 20px; flex-wrap: wrap;
+}
+.panel-card {
+  flex: 1; min-width: 520px; max-width: 720px;
+  background: #252526; border: 1px solid #3c3c3c;
+  border-radius: 8px; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.panel-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; background: #2d2d2d;
+  border-bottom: 1px solid #3c3c3c;
+  font-size: 13px; font-weight: 600; color: #ccc;
+}
+.badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.badge.web { background: #1a5276; color: #5dade2; }
+.badge.cli { background: #52341a; color: #f5a623; }
+
+/* ════════════════════════════════════════════════════════════════
+   模拟编辑器 Tab 栏
+   ════════════════════════════════════════════════════════════════ */
+.editor-tabs {
+  display: flex; background: #2d2d2d;
+  border-bottom: 1px solid #1e1e1e; padding-left: 8px;
+}
+.editor-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px; font-size: 12px; color: #888;
+  border-right: 1px solid #1e1e1e; cursor: pointer;
+  position: relative; white-space: nowrap;
+}
+.editor-tab.active {
+  background: #1e1e1e; color: #fff;
+}
+.editor-tab.active::after {
+  content: ''; position: absolute; bottom: 0; left: 0; right: 0;
+  height: 1px; background: #007acc;
+}
+.editor-tab .tab-icon { font-size: 14px; }
+.editor-tab .tab-close { opacity: 0.4; font-size: 14px; }
+.editor-tab .cli-tag {
+  background: #52341a; color: #f5a623; padding: 1px 5px;
+  border-radius: 3px; font-size: 9px; font-family: monospace;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Web / Rich 样式
+   ════════════════════════════════════════════════════════════════ */
+.chat-web {
+  display: flex; flex-direction: column;
+  height: 600px; background: #1e1e1e;
+}
+.chat-web .toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 16px; background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+}
+.chat-web .toolbar-left { display: flex; align-items: center; gap: 10px; }
+.chat-web .agent-avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: #fff;
+}
+.chat-web .agent-name { font-size: 13px; font-weight: 600; color: #ccc; }
+.chat-web .agent-role { font-size: 11px; color: #888; }
+.chat-web .toolbar-right { display: flex; align-items: center; gap: 8px; }
+.chat-web .mode-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 4px;
+  background: #1a3a5a; color: #4da6ff; font-weight: 600;
+}
+.chat-web .model-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 4px;
+  background: #3a3a3a; color: #aaa;
+}
+.chat-web .cli-toggle-btn {
+  background: none; border: 1px solid #555; color: #aaa;
+  font-size: 11px; padding: 3px 10px; border-radius: 4px;
+  cursor: pointer; transition: all 0.2s;
+}
+.chat-web .cli-toggle-btn:hover { border-color: #007acc; color: #007acc; }
+
+.chat-web .messages {
+  flex: 1; overflow-y: auto; padding: 16px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+/* 消息气泡 */
+.msg-bubble {
+  max-width: 85%; padding: 12px 16px;
+  border-radius: 12px; font-size: 13px; line-height: 1.6;
+  position: relative;
+}
+.msg-bubble.user {
+  align-self: flex-end;
+  background: #2a4a6a; color: #e0e8f0;
+  border-bottom-right-radius: 4px;
+}
+.msg-bubble.assistant {
+  align-self: flex-start;
+  background: #2d2d2d; color: #d4d4d4;
+  border: 1px solid #3c3c3c;
+  border-bottom-left-radius: 4px;
+}
+.msg-bubble .msg-header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 6px; font-size: 11px;
+}
+.msg-bubble.user .msg-header { color: #8ab4d8; }
+.msg-bubble.assistant .msg-header { color: #888; }
+.msg-bubble .msg-avatar {
+  width: 20px; height: 20px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #fff;
+}
+.msg-bubble .msg-avatar.user { background: #2a4a6a; }
+.msg-bubble .msg-avatar.bot { background: linear-gradient(135deg, #667eea, #764ba2); }
+
+/* 富文本内容 */
+.msg-bubble .msg-content p { margin-bottom: 8px; }
+.msg-bubble .msg-content p:last-child { margin-bottom: 0; }
+.msg-bubble .msg-content code {
+  background: #1e1e1e; padding: 1px 5px; border-radius: 3px;
+  font-family: 'Cascadia Code', 'JetBrains Mono', monospace;
+  font-size: 12px; color: #ce9178;
+}
+.msg-bubble .msg-content pre {
+  background: #1e1e1e; padding: 10px 12px; border-radius: 6px;
+  border: 1px solid #3c3c3c; margin: 8px 0; overflow-x: auto;
+}
+.msg-bubble .msg-content pre code {
+  background: none; padding: 0; font-size: 12px; color: #d4d4d4;
+}
+.msg-bubble .msg-content ul, .msg-bubble .msg-content ol {
+  margin: 8px 0 8px 20px;
+}
+.msg-bubble .msg-content li { margin-bottom: 4px; }
+.msg-bubble .msg-content strong { color: #569cd6; }
+.msg-bubble .msg-content a { color: #4da6ff; text-decoration: none; }
+.msg-bubble .msg-content a:hover { text-decoration: underline; }
+
+/* 工具卡片 */
+.tool-card {
+  align-self: flex-start; width: 85%;
+  background: #1a1a2e; border: 1px solid #3c3c5c;
+  border-radius: 8px; overflow: hidden; margin: 4px 0;
+}
+.tool-card-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; cursor: pointer;
+  background: #1a1a2e; user-select: none;
+}
+.tool-card-header:hover { background: #222240; }
+.tool-card-icon { font-size: 14px; }
+.tool-card-name {
+  font-size: 12px; font-weight: 600; color: #c586c0;
+  font-family: 'Cascadia Code', monospace;
+}
+.tool-card-status {
+  margin-left: auto; font-size: 11px; padding: 1px 6px;
+  border-radius: 3px;
+}
+.tool-card-status.running { background: #5a5a1a; color: #f0e442; }
+.tool-card-status.success { background: #1a5a2a; color: #4ec9b0; }
+.tool-card-status.error { background: #5a1a1a; color: #f44747; }
+.tool-card-body {
+  padding: 8px 12px; font-size: 11px;
+  font-family: 'Cascadia Code', monospace; color: #888;
+  border-top: 1px solid #3c3c5c;
+}
+.tool-card-body .arg-row { display: flex; gap: 6px; margin-bottom: 3px; }
+.tool-card-body .arg-key { color: #569cd6; }
+.tool-card-body .arg-val { color: #ce9178; word-break: break-all; }
+.tool-card-body .result-preview {
+  margin-top: 6px; padding-top: 6px;
+  border-top: 1px dashed #444; color: #6a9955;
+}
+
+/* Thinking 卡片 */
+.thinking-card {
+  align-self: flex-start; width: 85%;
+  background: #1e1e1e; border: 1px solid #3c3c3c;
+  border-radius: 8px; margin: 4px 0;
+}
+.thinking-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; cursor: pointer;
+}
+.thinking-header .think-icon { font-size: 13px; color: #888; }
+.thinking-header .think-label { font-size: 11px; color: #888; font-style: italic; }
+.thinking-header .think-toggle { margin-left: auto; color: #666; font-size: 12px; }
+.thinking-body {
+  padding: 8px 12px 12px 12px;
+  font-size: 12px; color: #999; line-height: 1.5;
+  border-top: 1px solid #3c3c3c; display: none;
+}
+.thinking-card.expanded .thinking-body { display: block; }
+.thinking-card.expanded .think-toggle::after { content: '▾'; }
+.thinking-card .think-toggle::after { content: '▸'; }
+
+/* Footer */
+.msg-bubble-footer {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 8px; font-size: 10px; color: #666;
+}
+.msg-bubble-footer .footer-item { display: flex; align-items: center; gap: 4px; }
+.msg-bubble-footer .footer-item .icon { font-size: 12px; }
+
+/* 输入区 */
+.chat-web .input-area {
+  padding: 12px 16px; background: #252526;
+  border-top: 1px solid #3c3c3c;
+}
+.chat-web .input-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px;
+}
+.chat-web .input-toolbar .chip {
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
+  background: #333; color: #aaa; cursor: pointer;
+}
+.chat-web .input-toolbar .chip.active { background: #1a3a5a; color: #4da6ff; }
+.chat-web .input-box {
+  display: flex; align-items: flex-end; gap: 8px;
+  background: #1e1e1e; border: 1px solid #3c3c3c;
+  border-radius: 8px; padding: 8px 12px;
+}
+.chat-web .input-box textarea {
+  flex: 1; background: none; border: none; outline: none;
+  color: #d4d4d4; font-family: inherit; font-size: 13px;
+  resize: none; height: 36px; line-height: 1.5;
+}
+.chat-web .input-box .send-btn {
+  background: #007acc; border: none; color: #fff;
+  width: 28px; height: 28px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; font-size: 13px;
+}
+.chat-web .input-box .send-btn:disabled { background: #333; cursor: not-allowed; }
+
+/* ════════════════════════════════════════════════════════════════
+   CLI / xterm 样式
+   ════════════════════════════════════════════════════════════════ */
+.chat-cli {
+  display: flex; flex-direction: column;
+  height: 600px; background: #0c0c0c;
+}
+.chat-cli .toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 12px; background: #1a1a1a;
+  border-bottom: 1px solid #333;
+}
+.chat-cli .toolbar-left { display: flex; align-items: center; gap: 8px; }
+.chat-cli .agent-mini {
+  font-size: 11px; color: #569cd6; font-weight: 600;
+}
+.chat-cli .agent-sep { color: #555; }
+.chat-cli .model-mini {
+  font-size: 11px; color: #888; font-family: monospace;
+}
+.chat-cli .cli-toggle-btn {
+  background: none; border: 1px solid #444; color: #888;
+  font-size: 10px; padding: 2px 8px; border-radius: 3px;
+  cursor: pointer; font-family: monospace;
+}
+.chat-cli .cli-toggle-btn:hover { border-color: #f5a623; color: #f5a623; }
+
+/* 终端区域 */
+.chat-cli .terminal-area {
+  flex: 1; overflow-y: auto;
+  padding: 8px 12px;
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 13px; line-height: 1.5;
+}
+
+/* 用户消息 */
+.cli-user-msg {
+  color: #6a9955; margin-bottom: 8px;
+  display: flex; gap: 6px; align-items: flex-start;
+}
+.cli-user-msg .prompt { color: #569cd6; flex-shrink: 0; }
+.cli-user-msg .text { color: #dcdcaa; }
+
+/* 助手消息 */
+.cli-assistant-msg {
+  margin-bottom: 12px;
+}
+
+/* Tool Trail Tree */
+.cli-tool-tree {
+  margin-bottom: 6px; padding-left: 0;
+  font-size: 12px; line-height: 1.6;
+}
+.cli-tool-tree .tree-line {
+  white-space: pre; color: #888;
+}
+.cli-tool-tree .tree-icon { display: inline-block; width: 16px; }
+.cli-tool-tree .tree-name {
+  color: #c586c0; font-weight: 600;
+}
+.cli-tool-tree .tree-status {
+  display: inline-block; margin-left: 4px;
+}
+.cli-tool-tree .tree-status.running { color: #f0e442; }
+.cli-tool-tree .tree-status.running::before { content: '⠹ '; }
+.cli-tool-tree .tree-status.success { color: #4ec9b0; }
+.cli-tool-tree .tree-status.success::before { content: '✓ '; }
+.cli-tool-tree .tree-status.error { color: #f44747; }
+.cli-tool-tree .tree-status.error::before { content: '✗ '; }
+.cli-tool-tree .tree-duration { color: #666; font-size: 11px; }
+.cli-tool-tree .tree-args {
+  color: #777; font-size: 11px; padding-left: 20px;
+  white-space: pre-wrap; word-break: break-all;
+}
+.cli-tool-tree .tree-args .arg-key { color: #569cd6; }
+.cli-tool-tree .tree-args .arg-val { color: #ce9178; }
+
+/* Thinking section */
+.cli-thinking {
+  margin-bottom: 6px; font-size: 12px;
+}
+.cli-thinking .think-label {
+  color: #888; font-style: italic;
+}
+.cli-thinking .think-label::before { content: '▸ '; color: #666; }
+.cli-thinking.expanded .think-label::before { content: '▾ '; color: #666; }
+.cli-thinking .think-body {
+  display: none; padding-left: 16px;
+  color: #999; font-size: 12px; line-height: 1.5;
+  margin-top: 4px;
+}
+.cli-thinking.expanded .think-body { display: block; }
+
+/* Markdown content in CLI */
+.cli-md {
+  padding-left: 0; color: #d4d4d4; font-size: 13px; line-height: 1.6;
+}
+.cli-md .md-h {
+  color: #569cd6; font-weight: 600; margin-top: 8px;
+}
+.cli-md .md-p { margin-bottom: 6px; }
+.cli-md .md-code {
+  color: #ce9178; background: #1a1a1a;
+  padding: 1px 4px; border-radius: 2px;
+  font-size: 12px;
+}
+.cli-md .md-pre {
+  background: #1a1a1a; border-left: 2px solid #569cd6;
+  padding: 8px 12px; margin: 6px 0; overflow-x: auto;
+  font-size: 12px; white-space: pre;
+}
+.cli-md .md-pre .kw { color: #569cd6; }
+.cli-md .md-pre .str { color: #ce9178; }
+.cli-md .md-pre .fn { color: #dcdcaa; }
+.cli-md .md-pre .com { color: #6a9955; }
+.cli-md .md-pre .num { color: #b5cea8; }
+.cli-md .md-ul { margin-left: 16px; margin-bottom: 6px; }
+.cli-md .md-li { margin-bottom: 3px; list-style: none; }
+.cli-md .md-li::before { content: '• '; color: #569cd6; }
+.cli-md .md-strong { color: #569cd6; font-weight: 600; }
+
+/* CLI Footer */
+.cli-footer {
+  color: #555; font-size: 11px;
+  margin-top: 6px; padding-top: 4px;
+  border-top: 1px solid #222;
+}
+.cli-footer .mode { color: #f5a623; }
+.cli-footer .sep { color: #333; margin: 0 4px; }
+.cli-footer .model { color: #888; }
+.cli-footer .duration { color: #555; }
+
+/* CLI 输入区 */
+.chat-cli .cli-input-area {
+  padding: 4px 12px; background: #0c0c0c;
+  border-top: 1px solid #222;
+}
+.chat-cli .cli-input-row {
+  display: flex; align-items: center; gap: 6px;
+}
+.chat-cli .cli-prompt {
+  color: #569cd6; font-family: monospace; font-size: 14px;
+  flex-shrink: 0;
+}
+.chat-cli .cli-input {
+  flex: 1; background: none; border: none; outline: none;
+  color: #d4d4d4; font-family: 'Cascadia Code', monospace;
+  font-size: 13px; padding: 4px 0;
+}
+.chat-cli .cli-input::placeholder { color: #444; }
+.chat-cli .cli-status {
+  display: flex; justify-content: space-between;
+  padding: 2px 0; font-size: 10px; color: #444;
+  font-family: monospace;
+}
+.chat-cli .cli-status .left { display: flex; align-items: center; gap: 6px; }
+.chat-cli .cli-status .spinner { color: #f0e442; }
+.chat-cli .cli-status .right { color: #555; }
+
+/* ════════════════════════════════════════════════════════════════
+   对比标注
+   ════════════════════════════════════════════════════════════════ */
+.annotations {
+  max-width: 1400px; margin-top: 24px;
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.annot-card {
+  background: #252526; border: 1px solid #3c3c3c;
+  border-radius: 8px; padding: 16px;
+}
+.annot-card h3 {
+  font-size: 14px; font-weight: 600; margin-bottom: 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+.annot-card h3 .badge { font-size: 9px; }
+.annot-list { list-style: none; font-size: 12px; line-height: 1.8; }
+.annot-list li {
+  display: flex; gap: 8px;
+  padding: 3px 0; border-bottom: 1px solid #2a2a2a;
+}
+.annot-list li:last-child { border-bottom: none; }
+.annot-list .label {
+  color: #888; min-width: 120px; flex-shrink: 0;
+}
+.annot-list .value { color: #d4d4d4; }
+
+/* 切换箭头 */
+.switch-arrow {
+  position: fixed; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: #333; border: 2px solid #555;
+  border-radius: 50%; width: 48px; height: 48px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; color: #f5a623; z-index: 100;
+  opacity: 0; pointer-events: none;
+}
+</style>
+</head>
+<body>
+
+<h1>Chat Style Switcher — Web vs CLI</h1>
+<p class="subtitle">聊天框 Web（富文本）样式与 CLI（xterm.js TUI）样式切换前后对比效果图</p>
+
+<div class="container">
+
+<!-- ══════════════════════════════════════════════════════════════
+     左侧：Web / Rich 样式
+     ══════════════════════════════════════════════════════════════ -->
+<div class="panel-card">
+  <div class="panel-header">
+    <span class="badge web">Web / Rich</span>
+    <span>传统富文本聊天界面 — 气泡 + 头像 + 卡片</span>
+  </div>
+
+  <!-- Tab 栏 -->
+  <div class="editor-tabs">
+    <div class="editor-tab active">
+      <span class="tab-icon">💬</span>
+      <span>PM Chat</span>
+      <span class="tab-close">×</span>
+    </div>
+    <div class="editor-tab">
+      <span class="tab-icon">🤖</span>
+      <span>Code Review</span>
+      <span class="tab-close">×</span>
+    </div>
+  </div>
+
+  <div class="chat-web">
+    <!-- 工具栏 -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="agent-avatar">PM</div>
+        <div>
+          <div class="agent-name">Project Manager</div>
+          <div class="agent-role">Claude · craft mode</div>
+        </div>
+      </div>
+      <div class="toolbar-right">
+        <span class="mode-badge">Craft</span>
+        <span class="model-badge">claude-sonnet-4</span>
+        <button class="cli-toggle-btn">⇄ CLI</button>
+      </div>
+    </div>
+
+    <!-- 消息区 -->
+    <div class="messages">
+      <!-- 用户消息 -->
+      <div class="msg-bubble user">
+        <div class="msg-header">
+          <div class="msg-avatar user">U</div>
+          <span>You</span>
+          <span>· 14:23</span>
+        </div>
+        <div class="msg-content">
+          <p>帮我分析 <code>workbench.ts</code> 中的布局持久化逻辑，看看有没有内存泄漏的风险</p>
+        </div>
+      </div>
+
+      <!-- Thinking 卡片 -->
+      <div class="thinking-card">
+        <div class="think-header" onclick="this.parentElement.classList.toggle('expanded')">
+          <span class="think-icon">💭</span>
+          <span class="think-label">Thinking...</span>
+          <span class="think-toggle"></span>
+        </div>
+        <div class="think-body">
+          用户要求分析 workbench.ts 的布局持久化逻辑。我需要先读取文件内容，然后检查 IAgentChatLayoutState 接口的存储和恢复逻辑，重点关注 DisposableStore 的生命周期管理...
+        </div>
+      </div>
+
+      <!-- 工具卡片 -->
+      <div class="tool-card">
+        <div class="tool-card-header" onclick="this.parentElement.querySelector('.tool-card-body').style.display = this.parentElement.querySelector('.tool-card-body').style.display === 'none' ? 'block' : 'none'">
+          <span class="tool-card-icon">🔧</span>
+          <span class="tool-card-name">read_file</span>
+          <span class="tool-card-status success">✓ 1.2s</span>
+        </div>
+        <div class="tool-card-body" style="display:none">
+          <div class="arg-row"><span class="arg-key">filePath:</span><span class="arg-val">"workbench.ts"</span></div>
+          <div class="arg-row"><span class="arg-key">limit:</span><span class="arg-val">100</span></div>
+          <div class="result-preview">→ 读取了 100 行，发现 _storageService 引用...</div>
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-card-header" onclick="this.parentElement.querySelector('.tool-card-body').style.display = this.parentElement.querySelector('.tool-card-body').style.display === 'none' ? 'block' : 'none'">
+          <span class="tool-card-icon">🔍</span>
+          <span class="tool-card-name">search_content</span>
+          <span class="tool-card-status running">running...</span>
+        </div>
+        <div class="tool-card-body" style="display:none">
+          <div class="arg-row"><span class="arg-key">pattern:</span><span class="arg-val">"_storeAgentChatLayout|_restoreAgentChatLayout"</span></div>
+          <div class="arg-row"><span class="arg-key">path:</span><span class="arg-val">"src/vs/sessions"</span></div>
+        </div>
+      </div>
+
+      <!-- 助手消息 -->
+      <div class="msg-bubble assistant">
+        <div class="msg-header">
+          <div class="msg-avatar bot">PM</div>
+          <span>Project Manager</span>
+          <span>· 14:23</span>
+        </div>
+        <div class="msg-content">
+          <p>已分析 <code>workbench.ts</code> 的布局持久化逻辑，发现以下情况：</p>
+          <pre><code><span style="color:#569cd6">private</span> <span style="color:#dcdcaa">_storeAgentChatLayout</span>(): <span style="color:#4ec9b0">void</span> {
+  <span style="color:#6a9955">// 保存 group/editor 布局到 workspace storage</span>
+  <span style="color:#569cd6">const</span> state: IAgentChatLayoutState = {
+    groups: <span style="color:#569cd6">this</span>._serializeGroups(),
+    cliMode: <span style="color:#569cd6">this</span>._cliMode,
+  };
+  <span style="color:#569cd6">this</span>._storageService.store(AGENT_CHAT_LAYOUT_KEY, <span style="color:#569cd6">JSON</span>.stringify(state));
+}</code></pre>
+          <p><strong>风险评估：</strong></p>
+          <ul>
+            <li>✅ <code>DisposableStore</code> 在 <code>dispose()</code> 中正确释放</li>
+            <li>✅ <code>onWillShutdown</code> 回调有 <code>try-catch</code> 保护</li>
+            <li>⚠️ <code>_restoreAgentChatLayout</code> 未处理反序列化失败</li>
+          </ul>
+        </div>
+        <div class="msg-bubble-footer">
+          <span class="footer-item"><span class="icon">📋</span> Copy</span>
+          <span class="footer-item"><span class="icon">👍</span></span>
+          <span class="footer-item"><span class="icon">👎</span></span>
+          <span class="footer-item">⏱ 3.2s</span>
+          <span class="footer-item">🪙 1,247 tokens</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 输入区 -->
+    <div class="input-area">
+      <div class="input-toolbar">
+        <span class="chip active">📎 workbench.ts</span>
+        <span class="chip">🎨 Craft</span>
+        <span class="chip">🧠 Memory</span>
+      </div>
+      <div class="input-box">
+        <textarea placeholder="Ask anything... (Shift+Enter for newline)"></textarea>
+        <button class="send-btn">↑</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     右侧：CLI / xterm 样式
+     ══════════════════════════════════════════════════════════════ -->
+<div class="panel-card">
+  <div class="panel-header">
+    <span class="badge cli">CLI / TUI</span>
+    <span>xterm.js 终端风格 — 紧凑布局 + ANSI 渲染 + 工具树</span>
+  </div>
+
+  <!-- Tab 栏（带 CLI 标识） -->
+  <div class="editor-tabs">
+    <div class="editor-tab active">
+      <span class="tab-icon">💬</span>
+      <span>PM Chat</span>
+      <span class="cli-tag">&gt;_</span>
+      <span class="tab-close">×</span>
+    </div>
+    <div class="editor-tab">
+      <span class="tab-icon">🤖</span>
+      <span>Code Review</span>
+      <span class="tab-close">×</span>
+    </div>
+  </div>
+
+  <div class="chat-cli">
+    <!-- 简洁工具栏 -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <span class="agent-mini">Project Manager</span>
+        <span class="agent-sep">·</span>
+        <span class="model-mini">claude-sonnet-4</span>
+      </div>
+      <button class="cli-toggle-btn">⇄ Rich</button>
+    </div>
+
+    <!-- 终端区域 -->
+    <div class="terminal-area">
+
+      <!-- 用户消息 -->
+      <div class="cli-user-msg">
+        <span class="prompt">❯</span>
+        <span class="text">帮我分析 workbench.ts 中的布局持久化逻辑，看看有没有内存泄漏的风险</span>
+      </div>
+
+      <!-- 助手消息 -->
+      <div class="cli-assistant-msg">
+
+        <!-- Thinking 折叠 -->
+        <div class="cli-thinking" onclick="this.classList.toggle('expanded')">
+          <div class="think-label">Thinking · 0.8s</div>
+          <div class="think-body">
+            用户要求分析 workbench.ts 的布局持久化逻辑。我需要先读取文件内容，
+            然后检查 IAgentChatLayoutState 接口的存储和恢复逻辑...
+          </div>
+        </div>
+
+        <!-- Tool Trail Tree -->
+        <div class="cli-tool-tree">
+          <div class="tree-line"><span class="tree-icon">├─</span><span class="tree-name">read_file</span> <span class="tree-status success"></span><span class="tree-duration">1.2s</span></div>
+          <div class="tree-args">
+<span class="arg-key">filePath:</span> <span class="arg-val">"workbench.ts"</span>
+<span class="arg-key">limit:</span> <span class="arg-val">100</span>
+→ 读取了 100 行，发现 _storageService 引用...</div>
+
+          <div class="tree-line"><span class="tree-icon">├─</span><span class="tree-name">search_content</span> <span class="tree-status running"></span></div>
+          <div class="tree-args">
+<span class="arg-key">pattern:</span> <span class="arg-val">"_storeAgentChatLayout|_restoreAgentChatLayout"</span>
+<span class="arg-key">path:</span> <span class="arg-val">"src/vs/sessions"</span></div>
+
+          <div class="tree-line"><span class="tree-icon">└─</span><span style="color:#555">2 tools</span></div>
+        </div>
+
+        <!-- Markdown 内容（ANSI 渲染模拟） -->
+        <div class="cli-md">
+          <div class="md-p">已分析 <span class="md-code">workbench.ts</span> 的布局持久化逻辑，发现以下情况：</div>
+
+          <div class="md-pre"><span class="kw">private</span> <span class="fn">_storeAgentChatLayout</span>(): <span class="kw">void</span> {
+  <span class="com">// 保存 group/editor 布局到 workspace storage</span>
+  <span class="kw">const</span> state: IAgentChatLayoutState = {
+    groups: <span class="kw">this</span>._serializeGroups(),
+    cliMode: <span class="kw">this</span>._cliMode,
+  };
+  <span class="kw">this</span>._storageService.store(AGENT_CHAT_LAYOUT_KEY, <span class="kw">JSON</span>.stringify(state));
+}</div>
+
+          <div class="md-p"><span class="md-strong">风险评估：</span></div>
+          <div class="md-ul">
+            <div class="md-li">✅ <span class="md-code">DisposableStore</span> 在 <span class="md-code">dispose()</span> 中正确释放</div>
+            <div class="md-li">✅ <span class="md-code">onWillShutdown</span> 回调有 <span class="md-code">try-catch</span> 保护</div>
+            <div class="md-li">⚠️ <span class="md-code">_restoreAgentChatLayout</span> 未处理反序列化失败</div>
+          </div>
+        </div>
+
+        <!-- CLI Footer -->
+        <div class="cli-footer">
+          <span class="mode">▣ craft</span>
+          <span class="sep">·</span>
+          <span class="model">claude-sonnet-4</span>
+          <span class="sep">·</span>
+          <span class="duration">3.2s · 1,247 tokens</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- CLI 输入区 -->
+    <div class="cli-input-area">
+      <div class="cli-input-row">
+        <span class="cli-prompt">❯</span>
+        <input class="cli-input" placeholder="Ask anything..." />
+      </div>
+      <div class="cli-status">
+        <div class="left">
+          <span class="spinner">⠹</span>
+          <span>Running tools...</span>
+        </div>
+        <div class="right">1,247 / 200K tokens (0.6%)</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     对比标注
+     ══════════════════════════════════════════════════════════════ -->
+<div class="annotations">
+  <div class="annot-card">
+    <h3><span class="badge web">Web / Rich</span> 特征</h3>
+    <ul class="annot-list">
+      <li><span class="label">消息布局</span><span class="value">气泡式（左右对齐），圆角 12px</span></li>
+      <li><span class="label">头像</span><span class="value">圆形头像（28px），渐变色背景</span></li>
+      <li><span class="label">工具卡片</span><span class="value">独立卡片，可折叠，带图标 + 状态徽章</span></li>
+      <li><span class="label">Thinking</span><span class="value">独立折叠卡片，💭 图标 + 斜体标签</span></li>
+      <li><span class="label">代码块</span><span class="value">深色背景 + 圆角边框 + 语法高亮</span></li>
+      <li><span class="label">输入区</span><span class="value">多行 textarea + 工具栏 chips + 圆角发送按钮</span></li>
+      <li><span class="label">Footer</span><span class="value">复制/评分/耗时/token 数（图标式）</span></li>
+      <li><span class="label">字体</span><span class="value">系统无衬线字体 13px</span></li>
+      <li><span class="label">间距</span><span class="value">消息间距 16px，内部 padding 12-16px</span></li>
+      <li><span class="label">Tab 标识</span><span class="value">无特殊标识</span></li>
+    </ul>
+  </div>
+
+  <div class="annot-card">
+    <h3><span class="badge cli">CLI / TUI</span> 特征</h3>
+    <ul class="annot-list">
+      <li><span class="label">消息布局</span><span class="value">全宽流式，无气泡，❯ prompt 前缀</span></li>
+      <li><span class="label">头像</span><span class="value">无头像，用颜色区分角色（绿=用户，紫=助手）</span></li>
+      <li><span class="label">工具卡片</span><span class="value">树形结构（├─└─│），Braille spinner (⠹)</span></li>
+      <li><span class="label">Thinking</span><span class="value">▸/▾ 折叠标记，紧凑单行</span></li>
+      <li><span class="label">代码块</span><span class="value">左侧蓝色竖线 + 无圆角，ANSI 色码</span></li>
+      <li><span class="label">输入区</span><span class="value">单行 input + ❯ prompt，底部状态栏</span></li>
+      <li><span class="label">Footer</span><span class="value">▣ craft · model · duration · tokens（纯文本）</span></li>
+      <li><span class="label">字体</span><span class="value">等宽字体（Cascadia Code / JetBrains Mono）13px</span></li>
+      <li><span class="label">间距</span><span class="value">消息间距 8-12px，padding 极小</span></li>
+      <li><span class="label">Tab 标识</span><span class="value"><code style="background:#52341a;color:#f5a623;padding:1px 4px;border-radius:2px;font-family:monospace;font-size:9px">&gt;_</code> 标识</span></li>
+      <li><span class="label">Spinner</span><span class="value">Braille 字符动画 (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏)</span></li>
+      <li><span class="label">状态栏</span><span class="value">底部 token 使用量 + spinner 状态</span></li>
+      <li><span class="label">渲染引擎</span><span class="value">xterm.js Terminal（ANSI 转义序列）</span></li>
+      <li><span class="label">密度</span><span class="value">高密度（同屏可显示更多内容）</span></li>
+    </ul>
+  </div>
+</div>
+
+<script>
+// 简单的 spinner 动画
+const spinners = document.querySelectorAll('.cli-status .spinner');
+const frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+let idx = 0;
+setInterval(() => {
+  idx = (idx + 1) % frames.length;
+  spinners.forEach(s => s.textContent = frames[idx]);
+}, 80);
+
+// Thinking 卡片切换
+document.querySelectorAll('.cli-thinking').forEach(el => {
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    el.classList.toggle('expanded');
+  });
+});
+</script>
+
+</body>
+</html>

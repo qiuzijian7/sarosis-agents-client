@@ -24,6 +24,7 @@ import { AST_NODE_MAP, extractName, extractCalleeName, extractImportNames, extra
 export interface PipelineNode {
 	id: string;
 	name: string;
+	label?: string;          // 节点标签（用于 findNodesByLabel），与 type 对应
 	type: string;           // function, class, interface, route, file, etc.
 	filePath: string;
 	qualifiedName: string;
@@ -116,6 +117,7 @@ export class CodebaseGraphPipeline {
 				nodes.push({
 					id: nodeId,
 					name,
+					label: nodeType,  // 修复：定义节点缺少 label，导致 findNodesByLabel 无法找到
 					type: nodeType,
 					filePath,
 					qualifiedName: name,
@@ -129,15 +131,16 @@ export class CodebaseGraphPipeline {
 		// Create file node
 		if (node.type === 'program' || node.type === 'source_file' || node.type === 'module') {
 			const fileName = filePath.split('/').pop() || filePath;
-			nodes.push({
-				id: fileId,
-				name: fileName,
-				type: 'file',
-				filePath,
-				qualifiedName: filePath,
-				startLine: 1,
-				endLine: 1,
-			});
+		nodes.push({
+			id: fileId,
+			name: fileName,
+			label: 'file',
+			type: 'file',
+			filePath,
+			qualifiedName: filePath,
+			startLine: 1,
+			endLine: 1,
+		});
 		}
 
 		for (const child of node.children || []) {

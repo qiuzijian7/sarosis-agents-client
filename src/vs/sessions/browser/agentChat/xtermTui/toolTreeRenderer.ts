@@ -107,8 +107,6 @@ const TOOL_ICONS: Record<string, string> = {
 	todo: '\u2699', todowrite: '\u2699',
 	// Clarify / question
 	clarify: '\u2192', question: '\u2192',
-	// MCP
-	mcp_tool_search: '\u2699', mcp_tool_call: '\u2699',
 	// Memory
 	memory_remember: '\u2699', memory_search: '\u2699', memory_delete: '\u2699',
 	memory_list: '\u2699', recall: '\u2699', memory: '\u2699',

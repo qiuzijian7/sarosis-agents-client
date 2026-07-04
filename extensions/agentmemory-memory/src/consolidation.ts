@@ -61,6 +61,37 @@ const DECAY_DAYS = 60;
 const DECAY_FACTOR = 0.92;
 const MIN_STRENGTH = 0.1;
 
+// LLM system prompts for semantic/procedural extraction (1:1 parity with agentmemory)
+const SEMANTIC_EXTRACTION_SYS = `You are a knowledge extraction engine. Given session summaries from a coding agent, extract stable cross-session facts.
+
+Output ONLY valid XML:
+<facts>
+<fact confidence="0.8">A specific, concrete technical fact that applies across sessions</fact>
+<fact confidence="0.6">A softer observation or preference pattern</fact>
+</facts>
+
+Guidelines:
+- Facts should be specific and actionable, not vague generalities
+- Confidence: 0.8+ for clear repeated patterns, 0.5-0.7 for single observations
+- Prefer technical facts (architecture, dependencies, constraints, conventions) over conversational trivia
+- Max 10 facts`;
+
+const PROCEDURAL_EXTRACTION_SYS = `You are a workflow extraction engine. Given cross-session facts from a coding agent, extract reusable procedural patterns.
+
+Output ONLY valid XML:
+<procedures>
+<procedure name="Pattern Name" trigger="when this situation occurs">
+<step>Concrete first step</step>
+<step>Concrete second step</step>
+</procedure>
+</procedures>
+
+Guidelines:
+- Only extract patterns supported by at least 2 facts mentioning similar workflows
+- Each step should be concrete and actionable
+- Trigger should describe when the agent should apply this procedure
+- Max 5 procedures`;
+
 interface InternalEntry {
 	id: string;
 	content: string;
@@ -75,6 +106,14 @@ export class ConsolidationPipeline {
 	private _semantic = new Map<string, SemanticMemory[]>();
 	private _procedural = new Map<string, ProceduralMemory[]>();
 	private _lastConsolidated = new Map<string, number>();
+
+	/** Optional LLM summarizer (1:1 parity with agentmemory's provider.summarize) */
+	private _summarizer?: (systemPrompt: string, userPrompt: string) => Promise<string>;
+
+	/** Set the LLM summarizer for high-quality semantic/procedural extraction */
+	setSummarizer(fn: (systemPrompt: string, userPrompt: string) => Promise<string>): void {
+		this._summarizer = fn;
+	}
 
 	/**
 	 * Run full consolidation pipeline for an agent.
@@ -100,10 +139,10 @@ export class ConsolidationPipeline {
 		const newEpisodic = await this._extractEpisodic(agentId, longEntries);
 
 		// 2. Semantic: extract cross-session facts from episodic memories
-		const newSemantic = this._extractSemantic(agentId);
+		const newSemantic = await this._extractSemantic(agentId);
 
 		// 3. Procedural: extract workflow patterns from semantic memories
-		const newProcedural = this._extractProcedural(agentId);
+		const newProcedural = await this._extractProcedural(agentId);
 
 		// 4. Apply decay
 		this._applyDecay(agentId);
@@ -164,7 +203,7 @@ export class ConsolidationPipeline {
 	}
 
 	/** Extract semantic memories (cross-session facts) from episodic memories */
-	private _extractSemantic(agentId: string): number {
+	private async _extractSemantic(agentId: string): Promise<number> {
 		const episodic = this._episodic.get(agentId) ?? [];
 		if (episodic.length < SEMANTIC_THRESHOLD) return 0;
 
@@ -172,7 +211,41 @@ export class ConsolidationPipeline {
 		const existingFacts = new Set(semantic.map(s => s.fact.toLowerCase()));
 		let newCount = 0;
 
-		// Aggregate concepts across episodic memories
+		// LLM-driven extraction (1:1 parity with agentmemory's mem::consolidate-pipeline semantic tier)
+		if (this._summarizer) {
+			try {
+				const recent = episodic.slice(-10);
+				const summaries = recent.map(e => `Session: ${e.title}\n${e.narrative}`).join('\n\n---\n\n');
+				const prompt = `Extract stable cross-session facts from these session summaries. Output XML only:\n\n<facts>\n<fact confidence="0.8">A stable technical fact</fact>\n</facts>\n\n${summaries}`;
+				const result = await this._summarizer(SEMANTIC_EXTRACTION_SYS, prompt);
+				const factsXml = /<fact\b[^>]*>([\s\S]*?)<\/fact>/gi;
+				let match;
+				while ((match = factsXml.exec(result)) !== null) {
+					const fact = match[1].trim();
+					if (!fact || fact.length < 10 || existingFacts.has(fact.toLowerCase())) continue;
+					const confMatch = /confidence="([\d.]+)"/.exec(result.slice(match.index));
+					const confidence = confMatch ? parseFloat(confMatch[1]) : 0.7;
+					semantic.push({
+						id: `sem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+						fact,
+						confidence,
+						sourceSessionIds: recent.map(e => e.sessionId),
+						sourceMemoryIds: recent.map(e => e.id),
+						accessCount: 0,
+						lastAccessedAt: new Date().toISOString(),
+						strength: confidence,
+						createdAt: new Date().toISOString(),
+						updatedAt: new Date().toISOString(),
+					});
+					existingFacts.add(fact.toLowerCase());
+					newCount++;
+				}
+				this._semantic.set(agentId, semantic);
+				return newCount;
+			} catch { /* fallback to rule-based */ }
+		}
+
+		// Rule-based fallback: extract facts from episodic keyDecisions/narratives
 		const conceptFreq = new Map<string, string[]>();
 		for (const epi of episodic) {
 			for (const concept of epi.concepts) {
@@ -182,17 +255,14 @@ export class ConsolidationPipeline {
 			}
 		}
 
-		// Extract facts from episodic narratives
-		const recent = episodic.slice(-20); // Last 20 sessions
+		const recent = episodic.slice(-20);
 		for (const epi of recent) {
 			const facts = epi.keyDecisions.length > 0
 				? epi.keyDecisions
 				: epi.narrative.split(/[.\n]/).filter(s => s.trim().length > 15 && s.trim().length < 150);
-
 			for (const fact of facts) {
 				const trimmed = fact.trim();
 				if (!trimmed || existingFacts.has(trimmed.toLowerCase())) continue;
-
 				semantic.push({
 					id: `sem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
 					fact: trimmed,
@@ -215,30 +285,66 @@ export class ConsolidationPipeline {
 	}
 
 	/** Extract procedural memories (workflow patterns) from semantic memories */
-	private _extractProcedural(agentId: string): number {
+	private async _extractProcedural(agentId: string): Promise<number> {
 		const semantic = this._semantic.get(agentId) ?? [];
 		const procedural = this._procedural.get(agentId) ?? [];
 
-		// Find recurring patterns (same fact appearing in multiple sessions)
+		// LLM-driven extraction (1:1 parity with agentmemory)
+		if (this._summarizer && semantic.length >= 3) {
+			try {
+				const facts = semantic.slice(-15).map(s => s.fact).join('\n');
+				const prompt = `Extract reusable workflow patterns from these cross-session facts. Output XML only:\n\n<procedures>\n<procedure name="Pattern Name" trigger="when to apply">\n<step>First step</step>\n<step>Second step</step>\n</procedure>\n</procedures>\n\n${facts}`;
+				const result = await this._summarizer(PROCEDURAL_EXTRACTION_SYS, prompt);
+				const procRegex = /<procedure\s+name="([^"]+)"\s*(?:trigger="([^"]*)")?>([\s\S]*?)<\/procedure>/gi;
+				let match;
+				const existingNames = new Set(procedural.map(p => p.name.toLowerCase()));
+				let newCount = 0;
+				while ((match = procRegex.exec(result)) !== null) {
+					const name = match[1].trim();
+					const trigger = match[2]?.trim() ?? '';
+					const stepsXml = match[3];
+					const steps: string[] = [];
+					for (const sm of stepsXml.matchAll(/<step>([\s\S]*?)<\/step>/g)) {
+						steps.push(sm[1].trim());
+					}
+					if (!name || steps.length < 2 || existingNames.has(name.toLowerCase())) continue;
+					procedural.push({
+						id: `proc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+						name,
+						steps,
+						triggerCondition: trigger,
+						expectedOutcome: '',
+						frequency: 1,
+						sourceSessionIds: [],
+						tags: [],
+						strength: 0.7,
+						createdAt: new Date().toISOString(),
+						updatedAt: new Date().toISOString(),
+					});
+					existingNames.add(name.toLowerCase());
+					newCount++;
+				}
+				this._procedural.set(agentId, procedural);
+				return newCount;
+			} catch { /* fallback to rule-based */ }
+		}
+
+		// Rule-based fallback: group by keyword frequency
 		const patternFreq = new Map<string, SemanticMemory[]>();
 		for (const sem of semantic) {
-			// Group by concept keywords
-			const keywords = sem.fact.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+			const keywords = sem.fact.toLowerCase().split(/\s+/).filter((w: string) => w.length > 4);
 			for (const kw of keywords) {
 				const arr = patternFreq.get(kw) ?? [];
 				arr.push(sem);
 				patternFreq.set(kw, arr);
 			}
 		}
-
 		let newCount = 0;
 		const existingNames = new Set(procedural.map(p => p.name.toLowerCase()));
-
 		for (const [keyword, sems] of patternFreq) {
 			if (sems.length < PROCEDURAL_THRESHOLD) continue;
 			const name = keyword.charAt(0).toUpperCase() + keyword.slice(1);
 			if (existingNames.has(name.toLowerCase())) continue;
-
 			procedural.push({
 				id: `proc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
 				name,
@@ -254,7 +360,6 @@ export class ConsolidationPipeline {
 			existingNames.add(name.toLowerCase());
 			newCount++;
 		}
-
 		this._procedural.set(agentId, procedural);
 		return newCount;
 	}

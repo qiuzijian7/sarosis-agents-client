@@ -52,11 +52,11 @@ export async function itAsync(name: string, fn: () => Promise<void>): Promise<vo
 	}
 }
 
-export function assert(condition: boolean, message: string): void {
+export function assert(condition: boolean, message: string = 'assertion failed'): void {
 	if (!condition) throw new Error(`Assertion failed: ${message}`);
 }
 
-export function assertEqual<T>(actual: T, expected: T, message: string): void {
+export function assertEqual<T>(actual: T, expected: T, message: string = 'assertEqual failed'): void {
 	if (actual !== expected) {
 		throw new Error(`Assertion failed: ${message}\n  expected: ${JSON.stringify(expected)}\n  actual:   ${JSON.stringify(actual)}`);
 	}

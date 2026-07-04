@@ -4,26 +4,30 @@
  *--------------------------------------------------------------------------------------------*/
 
 /* ═══════════════════════════════════════════════════════════════════
-   CSS Variables — matching saros-webui warm color scheme
+   CSS Variables — Void-inspired theme-adaptive palette.
+   Text colors follow the user's editor settings, so chat feels like
+   reading code — softer than hardcoded #e6edf3 white. Background uses
+   VSCode input/sidebar tones for clear visual separation.
    Aliases: --as-* → --ec-* (so chat-enhanced/chat-cards rules in this
-   file resolve to the same warm palette used by the editor chat panel)
+   file resolve to the same palette used by the editor chat panel)
    ═══════════════════════════════════════════════════════════════════ */
 :root {
-	--ec-bg-primary: #0f1419;
-	--ec-bg-secondary: #161b22;
-	--ec-bg-tertiary: #1c2128;
-	--ec-bg-hover: #21262d;
-	--ec-bg-active: #262c36;
-	--ec-border-primary: #30363d;
-	--ec-border-secondary: #21262d;
-	--ec-text-primary: #e6edf3;
-	--ec-text-secondary: #8b949e;
-	--ec-text-muted: #484f58;
-	--ec-accent: #58a6ff;
-	--ec-accent-hover: #79c0ff;
-	--ec-success: #4ade80;
-	--ec-warning: #f59e0b;
-	--ec-error: #e94560;
+	--ec-bg-primary: var(--vscode-editor-background, #0f1419);
+	--ec-bg-secondary: var(--vscode-sideBar-background, #161b22);
+	--ec-bg-tertiary: var(--vscode-input-background, #313131);
+	--ec-bg-hover: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
+	--ec-bg-active: var(--vscode-list-activeSelectionBackground, rgba(255,255,255,0.08));
+	--ec-border-primary: var(--vscode-panel-border, rgba(128,128,128,0.35));
+	--ec-border-secondary: var(--vscode-sideBar-border, rgba(128,128,128,0.2));
+	/* Editor foreground is ~#cccccc in dark themes — noticeably softer than #e6edf3 */
+	--ec-text-primary: var(--vscode-editor-foreground, #cccccc);
+	--ec-text-secondary: var(--vscode-descriptionForeground, #999999);
+	--ec-text-muted: var(--vscode-input-placeholderForeground, #777777);
+	--ec-accent: var(--vscode-focusBorder, #58a6ff);
+	--ec-accent-hover: var(--vscode-textLink-activeForeground, #79c0ff);
+	--ec-success: var(--vscode-testing-iconPassed, #4ade80);
+	--ec-warning: var(--vscode-editorWarning-foreground, #f59e0b);
+	--ec-error: var(--vscode-errorForeground, #e94560);
 
 	/* Aliases for chat-enhanced / chat-cards rules ported from webview. */
 	--as-bg-primary: var(--ec-bg-primary);
@@ -38,10 +42,10 @@
 	--as-fg-muted: var(--ec-text-muted);
 	--as-accent: var(--ec-accent);
 	--as-accent-hover: var(--ec-accent-hover);
-	--as-accent-bg: rgba(88, 166, 255, 0.08);
+	--as-accent-bg: color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 12%, transparent);
 	--as-success: var(--ec-success);
-	--as-warning: #eab308;
-	--as-warning-bg: rgba(234, 179, 8, 0.05);
+	--as-warning: var(--ec-warning);
+	--as-warning-bg: color-mix(in srgb, var(--ec-warning) 8%, transparent);
 	--as-diff-add-bg: rgba(46, 160, 67, 0.15);
 	--as-diff-remove-bg: rgba(248, 81, 73, 0.15);
 }
@@ -283,9 +287,9 @@
 	/* Hide native scrollbar — custom overlay handles scrolling */
 	scrollbar-width: none;
 	min-height: 0;
-	/* Hint browser to optimize scroll compositing + isolate paint/layout */
-	will-change: scroll-position;
-	contain: layout style paint;
+	/* 禁用浏览器滚动锚定：流式输出时内容持续追加到底部，
+	   浏览器锚定会试图维持位置从而抵消用户的滚轮向上操作 */
+	overflow-anchor: none;
 }
 
 .chat-messages-empty {
@@ -804,8 +808,9 @@
 	max-width: 85%;
 	padding: 10px 14px;
 	border-radius: 14px;
-	font-size: 13px;
-	line-height: 1.6;
+	font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+	font-size: 12.5px;
+	line-height: 1.5;
 	word-break: break-word;
 	position: relative;
 	/* Allow text selection inside chat bubbles (overrides .monaco-workbench user-select: none) */
@@ -1098,15 +1103,15 @@
 	position: relative;
 }
 
-.chat-user-edit-overlay {
-	position: absolute;
-	top: 0;
-	right: 0;
-	width: calc(100% - 0px);
+/* Void-style 内联编辑：消息气泡被 composer 替换，宽度变为 100% */
+.chat-message.user.chat-message-edit-mode {
 	max-width: 100%;
-	box-sizing: border-box;
-	z-index: 5;
-	/* 继承 chat-message 的宽度而不是 bubble 的 85% */
+}
+.chat-message.user.chat-message-edit-mode .chat-bubble {
+	max-width: 100%;
+	background: transparent;
+	border: none;
+	box-shadow: none;
 	padding: 0;
 }
 
@@ -1118,6 +1123,7 @@
 	transition: border-color 0.2s;
 	display: flex;
 	flex-direction: column;
+	position: relative;
 }
 .chat-user-edit-composer:focus-within {
 	border-color: rgba(124, 185, 255, 0.4);
@@ -1128,15 +1134,16 @@
 	padding: 12px 16px 6px;
 	background: transparent;
 	color: var(--ec-text-primary);
+	font-size: 14px;
 	border: none;
 	outline: none;
-	font-size: 14px;
-	line-height: 1.5;
-	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 	resize: none;
-	box-sizing: border-box;
+	line-height: 1.5;
 	min-height: 24px;
-	max-height: 120px;
+	max-height: 500px;
+	border-radius: 16px 16px 0 0;
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+	box-sizing: border-box;
 }
 .chat-user-edit-input::placeholder {
 	color: var(--ec-text-muted);
@@ -1309,8 +1316,8 @@
    Ported from chat-enhanced.css (markdown + code + tables)
    ═══════════════════════════════════════════════════════════════════ */
 .message-content {
-	font-size: 13px;
-	line-height: 1.7;
+	font-size: 12.5px;
+	line-height: 1.55;
 	word-break: break-word;
 	color: inherit;
 	user-select: text;
@@ -1318,7 +1325,7 @@
 }
 
 .message-content p {
-	margin: 0 0 8px;
+	margin: 0 0 6px;
 }
 
 .message-content p:last-child {
@@ -1327,7 +1334,7 @@
 
 .message-content h1, .message-content h2, .message-content h3,
 .message-content h4, .message-content h5, .message-content h6 {
-	margin: 12px 0 6px;
+	margin: 10px 0 4px;
 	font-weight: 600;
 	line-height: 1.3;
 }
@@ -1374,6 +1381,27 @@
 	text-decoration: underline;
 }
 
+/* 文件路径链接（data-file）—— 虚线底划线 + 文件图标提示 */
+.msg-file-link {
+	cursor: pointer;
+	text-decoration: none;
+	border-bottom: 1px dashed color-mix(in srgb, var(--ec-accent) 60%, transparent);
+}
+
+.msg-file-link:hover {
+	border-bottom-style: solid;
+	color: var(--ec-accent);
+}
+
+/* URL 链接（自动识别）—— 与 markdown 链接一致 */
+.msg-url-link {
+	text-decoration: none;
+}
+
+.msg-url-link:hover {
+	text-decoration: underline;
+}
+
 .message-content strong {
 	font-weight: 600;
 }
@@ -1387,7 +1415,7 @@
 .streaming-text {
 	white-space: pre-wrap;
 	word-break: break-word;
-	line-height: 1.6;
+	line-height: 1.5;
 	user-select: text;
 	-webkit-user-select: text;
 }
@@ -2348,6 +2376,11 @@
 	border-color: rgba(52, 211, 153, 0.4);
 }
 
+.code-block-copy-btn.copy-failed {
+	color: #f85149;
+	border-color: rgba(248, 81, 73, 0.4);
+}
+
 .code-block-apply-btn {
 	background: rgba(52, 211, 153, 0.12);
 	border: 1px solid rgba(52, 211, 153, 0.3);
@@ -2901,12 +2934,15 @@
 .tool-header-wrapper .tool-header {
 	box-sizing: border-box;
 	width: 100%;
-	border: 1px solid var(--void-border-3);
+	border: 1px solid rgba(128,128,128,0.15);
 	border-radius: 4px;
 	padding: 2px 8px;
-	background: var(--void-bg-3);
+	background: rgba(0,0,0,0.08);
 	overflow: hidden;
-	transition: border-color 0.15s ease, background 0.15s ease;
+	transition: border-color 0.15s ease, filter 0.15s ease;
+}
+.tool-header-wrapper .tool-header:hover {
+	filter: brightness(0.95);
 }
 .tool-header-wrapper.tool-card-error .tool-header {
 	border-color: color-mix(in srgb, var(--void-warning) 55%, var(--void-border-3));
@@ -2918,7 +2954,7 @@
 }
 .tool-header-wrapper.tool-card-approval .tool-header {
 	border-color: color-mix(in srgb, var(--void-warning) 70%, var(--void-border-3));
-	background: color-mix(in srgb, var(--void-warning) 6%, var(--void-bg-3));
+	background: color-mix(in srgb, var(--void-warning) 6%, transparent);
 }
 
 .tool-header-row {
@@ -2969,10 +3005,11 @@
 .tool-header-chevron-expanded { transform: rotate(90deg); }
 
 .tool-header-title {
-	color: var(--void-fg-2);
+	color: var(--void-fg-3);
 	flex-shrink: 0;
-	font-size: 12px;
-	font-weight: 500;
+	font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+	font-size: 11.5px;
+	font-weight: normal;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -3045,9 +3082,9 @@
 }
 .tool-children-wrapper { cursor: default; user-select: none; max-width: 100%; box-sizing: border-box; }
 .tool-children-wrapper-inner { padding: 0 8px; min-width: 100%; overflow: hidden; max-width: 100%; box-sizing: border-box; }
-.tool-children-wrapper.tool-children-bg { background: var(--void-bg-2); border-radius: 3px; }
+.tool-children-wrapper.tool-children-bg { background: rgba(0,0,0,0.06); border-radius: 3px; }
 
-.tool-code-children { padding: 4px; border-radius: 2px; overflow: auto; font-size: 12px; max-width: 100%; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word; }
+.tool-code-children { padding: 4px; border-radius: 2px; overflow: auto; font-size: 11.5px; max-width: 100%; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word; }
 .tool-code-children-selectable { user-select: text; cursor: auto; max-width: 100%; }
 .tool-code-children pre,
 .tool-children-wrapper pre {
@@ -3055,13 +3092,13 @@
 	white-space: pre-wrap;
 	word-break: break-word;
 	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
-	font-size: 12px;
-	line-height: 1.5;
-	color: var(--void-fg-2);
+	font-size: 11.5px;
+	line-height: 1.45;
+	color: var(--void-fg-4);
 	max-width: 100%;
 	overflow-x: auto;
 }
-.tool-children-terminal pre { white-space: pre; color: var(--void-fg-1); max-width: 100%; overflow-x: auto; }
+.tool-children-terminal pre { white-space: pre; color: var(--void-fg-2); max-width: 100%; overflow-x: auto; }
 .tool-children-terminal .tool-terminal-code {
 	user-select: text;
 	cursor: auto;
@@ -3081,8 +3118,8 @@
 	white-space: nowrap;
 	width: 100%;
 	overflow: auto;
-	font-size: 12px;
-	color: var(--void-fg-2);
+	font-size: 11.5px;
+	color: var(--void-fg-4);
 	padding: 1px 0;
 	max-width: 100%;
 	box-sizing: border-box;
@@ -3160,8 +3197,9 @@
 	align-items: center;
 	gap: 6px;
 	padding: 6px 0;
+	font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
 	font-size: 11px;
-	color: var(--ec-text-secondary);
+	color: var(--void-fg-3);
 	animation: ec-step-pulse 1.5s ease-in-out infinite;
 }
 
@@ -3234,9 +3272,53 @@
 	flex-shrink: 0;
 	user-select: none;
 	transition: opacity 0.15s;
+	position: relative;
 }
 .chat-bubble-footer-item:hover {
 	opacity: 0.85;
+}
+
+/* ── Pill 样式 badge（积分/Tokens/耗时）── */
+.chat-bubble-footer-item.chat-footer-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 9px;
+	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25));
+	border-radius: 14px;
+	background: var(--vscode-editorWidget-background, rgba(255,255,255,0.03));
+	color: var(--vscode-foreground, #ccc);
+	opacity: 0.9;
+	font-size: 11px;
+	line-height: 1.2;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+.chat-bubble-footer-item.chat-footer-pill:hover {
+	opacity: 1;
+	background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
+	border-color: var(--vscode-focusBorder, rgba(128,128,128,0.5));
+}
+.chat-footer-pill-icon {
+	font-size: 12px;
+	opacity: 0.85;
+	line-height: 1;
+}
+.chat-footer-pill-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #aaa);
+}
+.chat-footer-pill-value {
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--vscode-foreground, #ddd);
+	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
+}
+.chat-footer-pill-info {
+	font-size: 11px;
+	opacity: 0.55;
+	margin-left: 2px;
+	cursor: help;
 }
 
 /* Info item icon */
@@ -3287,18 +3369,17 @@
 	position: absolute;
 	bottom: calc(100% + 6px);
 	left: 50%;
-	transform: translateX(-50%);
 	background: var(--vscode-editorWidget-background, #2d2d2d);
 	border: 1px solid var(--vscode-editorWidget-border, #4a4a4a);
 	border-radius: 8px;
 	padding: 10px 14px;
 	min-width: 180px;
 	box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-	z-index: 100;
+	z-index: 1000;
 	opacity: 0;
 	pointer-events: none;
-	transition: opacity 0.18s ease, transform 0.18s ease;
 	transform: translateX(-50%) translateY(4px);
+	transition: opacity 0.18s ease, transform 0.18s ease;
 }
 .chat-bubble-footer-item.score-item:hover .score-popup,
 .score-popup:hover {
@@ -3341,18 +3422,17 @@
 	position: absolute;
 	bottom: calc(100% + 6px);
 	left: 50%;
-	transform: translateX(-50%);
 	background: var(--vscode-editorWidget-background, #2d2d2d);
 	border: 1px solid var(--vscode-editorWidget-border, #4a4a4a);
 	border-radius: 8px;
 	padding: 12px 14px;
 	min-width: 240px;
 	box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-	z-index: 100;
+	z-index: 1000;
 	opacity: 0;
 	pointer-events: none;
-	transition: opacity 0.18s ease, transform 0.18s ease;
 	transform: translateX(-50%) translateY(4px);
+	transition: opacity 0.18s ease, transform 0.18s ease;
 }
 .chat-bubble-footer-item.tokens-item:hover .tokens-popup,
 .tokens-popup:hover {
@@ -3365,23 +3445,26 @@
 	color: var(--vscode-descriptionForeground, #888);
 	text-transform: uppercase;
 	letter-spacing: 0.5px;
-	margin-bottom: 10px;
 }
-.tokens-popup-total {
+
+/* 标题行：左侧标题 + 右侧总计 */
+.tokens-popup-header {
 	display: flex;
 	justify-content: space-between;
-	align-items: baseline;
-	padding: 4px 0 8px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
-	margin-bottom: 8px;
+	align-items: center;
+	margin-bottom: 10px;
 }
-.tokens-popup-total .label {
-	font-size: 12px;
-	color: var(--vscode-foreground, #bbb);
-	font-weight: 500;
+.tokens-popup-total-inline {
+	display: flex;
+	align-items: center;
+	gap: 4px;
 }
-.tokens-popup-total .value {
-	font-size: 18px;
+.tokens-popup-total-inline .label {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #888);
+}
+.tokens-popup-total-inline .value {
+	font-size: 13px;
 	font-weight: 700;
 	color: var(--vscode-foreground, #d4d4d4);
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
@@ -3398,6 +3481,9 @@
 	justify-content: space-between;
 	align-items: center;
 }
+.tokens-popup-group-title .group-name {
+	color: var(--vscode-descriptionForeground, #aaa);
+}
 .tokens-popup-group-title .group-value {
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
 	font-size: 11px;
@@ -3405,13 +3491,23 @@
 }
 .tokens-popup-sub-row {
 	display: flex;
-	justify-content: space-between;
 	align-items: center;
+	gap: 6px;
 	font-size: 11px;
 	padding: 2px 0 2px 12px;
 }
+.tokens-popup-sub-row .sub-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.tokens-popup-sub-row .sub-dot.hit { background: #4ade80; }
+.tokens-popup-sub-row .sub-dot.miss { background: #f87171; }
+.tokens-popup-sub-row .sub-dot.write { background: #fbbf24; }
 .tokens-popup-sub-row .sub-label {
 	color: var(--vscode-descriptionForeground, #888);
+	flex: 1;
 }
 .tokens-popup-sub-row .sub-value {
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
@@ -3422,9 +3518,6 @@
 	color: #4ade80;
 }
 .tokens-popup-hit-rate {
-	display: flex;
-	align-items: center;
-	gap: 6px;
 	margin-top: 10px;
 	padding-top: 8px;
 	border-top: 1px solid var(--vscode-editorWidget-border, #3c3c3c);
@@ -3432,17 +3525,62 @@
 	color: var(--vscode-descriptionForeground, #bbb);
 }
 .tokens-popup-hit-rate .rate-icon {
-	font-size: 14px;
+	font-size: 13px;
 }
 .tokens-popup-hit-rate .rate-value {
 	font-family: var(--vscode-editor-font-family, 'JetBrains Mono', 'Fira Code', monospace);
 	font-size: 14px;
 	font-weight: 600;
 	color: #4ade80;
+	margin-left: auto;
 }
 .tokens-popup-hit-rate .rate-label {
 	color: var(--vscode-descriptionForeground, #888);
-	font-size: 11px;
+	margin-left: 4px;
+}
+
+/* 命中率进度条 */
+.tokens-popup-hit-bar {
+	margin-top: 6px;
+	width: 100%;
+	height: 4px;
+	border-radius: 2px;
+	background: rgba(255,255,255,0.1);
+	overflow: hidden;
+}
+.tokens-popup-hit-bar-fill {
+	height: 100%;
+	border-radius: 2px;
+	background: linear-gradient(90deg, #4ade80, #22c55e);
+	transition: width 0.3s ease;
+}
+
+/* 命中率图例 */
+.tokens-popup-legend {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 6px;
+}
+.tokens-popup-legend .legend-item {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #888);
+}
+.tokens-popup-legend .legend-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.tokens-popup-legend .legend-dot.hit { background: #4ade80; }
+.tokens-popup-legend .legend-dot.miss { background: #f87171; }
+.tokens-popup-legend .legend-dot.write { background: #fbbf24; }
+.tokens-popup-legend .legend-label {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #888);
 }
 
 /* --- Duration popup --- */
@@ -3450,18 +3588,17 @@
 	position: absolute;
 	bottom: calc(100% + 6px);
 	left: 50%;
-	transform: translateX(-50%);
 	background: var(--vscode-editorWidget-background, #2d2d2d);
 	border: 1px solid var(--vscode-editorWidget-border, #4a4a4a);
 	border-radius: 8px;
 	padding: 10px 14px;
 	min-width: 170px;
 	box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-	z-index: 100;
+	z-index: 1000;
 	opacity: 0;
 	pointer-events: none;
-	transition: opacity 0.18s ease, transform 0.18s ease;
 	transform: translateX(-50%) translateY(4px);
+	transition: opacity 0.18s ease, transform 0.18s ease;
 }
 .chat-bubble-footer-item.duration-item:hover .duration-popup,
 .duration-popup:hover {
@@ -5993,6 +6130,160 @@
 .chat-settings-skill-row .skill-name { font-size: 12px; color: var(--as-fg-primary, var(--vscode-foreground, #ccc)); }
 .chat-settings-skill-row .skill-desc { font-size: 11px; color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888)); }
 
+/* ── Skills 双栏拖拽面板（与 AgentSettingsEditorPane 对齐）── */
+.chat-settings-overlay .skills-dnd-panel {
+	display: flex;
+	gap: 12px;
+	min-height: 280px;
+	flex: 1;
+	padding: 0 12px 8px;
+	overflow: hidden;
+}
+
+.chat-settings-overlay .skills-column {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.chat-settings-overlay .skills-column-header {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	padding: 4px 0;
+}
+
+.chat-settings-overlay .skills-filter-input {
+	width: 100%;
+	padding: 5px 10px;
+	background: var(--vscode-input-background, #3c3c3c);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	color: var(--vscode-input-foreground, #ccc);
+	font-size: 12px;
+	outline: none;
+	box-sizing: border-box;
+}
+
+.chat-settings-overlay .skills-filter-input:focus {
+	border-color: var(--vscode-focusBorder, #0e639c);
+}
+
+.chat-settings-overlay .skills-list {
+	flex: 1;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.chat-settings-overlay .skills-empty {
+	padding: 20px;
+	text-align: center;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	font-size: 12px;
+}
+
+.chat-settings-overlay .skill-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 10px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	font-size: 12px;
+}
+
+.chat-settings-overlay .skill-item.installed {
+	background: rgba(137, 209, 133, 0.08);
+	border-color: rgba(137, 209, 133, 0.2);
+}
+
+.chat-settings-overlay .skill-item.available:hover {
+	background: var(--as-bg-hover, rgba(255, 255, 255, 0.04));
+	border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+
+.chat-settings-overlay .skill-item-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.chat-settings-overlay .skill-item-name {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--as-fg-primary, var(--vscode-editor-foreground, #ccc));
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.chat-settings-overlay .skill-item-cat {
+	font-size: 10px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+}
+
+.chat-settings-overlay .skill-item-icon {
+	font-size: 14px;
+	flex-shrink: 0;
+}
+
+.chat-settings-overlay .skill-add-btn,
+.chat-settings-overlay .skill-remove-btn {
+	width: 22px;
+	height: 22px;
+	border: 1px solid var(--vscode-panel-border, #464647);
+	border-radius: 4px;
+	background: transparent;
+	color: var(--as-fg-secondary, #999);
+	cursor: pointer;
+	font-size: 12px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	padding: 0;
+}
+
+.chat-settings-overlay .skill-add-btn:hover {
+	background: var(--as-accent, #3b82f6);
+	color: #fff;
+	border-color: var(--as-accent, #3b82f6);
+}
+
+.chat-settings-overlay .skill-remove-btn:hover {
+	background: #f48771;
+	color: #fff;
+	border-color: #f48771;
+}
+
+/* ── MCP 服务器列表项 ── */
+.chat-settings-overlay .mcp-server-item {
+	background: var(--as-bg-secondary, #252525);
+	border-color: var(--vscode-panel-border, rgba(128, 128, 128, 0.15));
+}
+
+.chat-settings-overlay .mcp-server-item:hover {
+	background: var(--as-bg-hover, rgba(128, 128, 128, 0.08));
+}
+
+.chat-settings-overlay .mcp-status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.chat-settings-overlay .mcp-server-list {
+	gap: 6px;
+}
+
 .chat-settings-rules-list {
 	flex: 1;
 	overflow-y: auto;
@@ -6677,6 +6968,36 @@
 .chat-messages.cli-mode .wf-trace {
 	padding: 0;
 }
+
+/* ── update_plan 专用计划卡片 ──────────────────────────────────────────────── */
+.plan-card { border-radius: 8px; margin: 6px 0; }
+.plan-card-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.plan-card-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.plan-card-title-row .tool-header-title { font-size: 13px; font-weight: 600; color: var(--vscode-foreground); }
+.plan-card-title-row .tool-header-success-icon svg { stroke: var(--vscode-charts-green); width: 16px; height: 16px; }
+.plan-card-spinner { width: 16px; height: 16px; }
+
+.plan-card-progress { height: 4px; border-radius: 2px; background: var(--vscode-toolbar-hoverBackground); overflow: hidden; }
+.plan-card-progress-bar { height: 100%; border-radius: 2px; background: var(--vscode-charts-green); transition: width 0.4s ease; }
+
+.plan-card-steps { display: flex; flex-direction: column; gap: 1px; }
+.plan-card-step { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.plan-card-step-dot { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center;
+	font-size: 12px; line-height: 1; border-radius: 50%; flex-shrink: 0; }
+.plan-card-step.step-completed .plan-card-step-dot { background: rgba(34,197,94,0.12); color: var(--vscode-charts-green); border: 1px solid var(--vscode-charts-green); }
+.plan-card-step.step-in_progress .plan-card-step-dot { background: rgba(245,158,11,0.12); color: #f59e0b; border: 1px solid #f59e0b; }
+.plan-card-step.step-in_progress .plan-card-step-dot.pulse { animation: plan-pulse 1.6s ease-in-out infinite; }
+@keyframes plan-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(245,158,11,0.3); } 50% { box-shadow: 0 0 0 5px rgba(245,158,11,0); } }
+.plan-card-step.step-pending .plan-card-step-dot { background: transparent; color: var(--vscode-descriptionForeground); border: 1px dashed var(--vscode-descriptionForeground); }
+
+.plan-card-step-text { font-size: 12px; line-height: 1.4; color: var(--vscode-foreground); }
+.plan-card-step.step-completed .plan-card-step-text { color: var(--vscode-descriptionForeground); }
+.plan-card-step.step-in_progress .plan-card-step-text { color: var(--vscode-foreground); font-weight: 500; }
+.plan-card-step.step-pending .plan-card-step-text { color: var(--vscode-descriptionForeground); opacity: 0.7; }
+
+.plan-card-footer { display: flex; align-items: flex-start; gap: 6px; padding-top: 2px; border-top: 1px solid var(--vscode-toolbar-hoverBackground); }
+.plan-card-footer-icon { color: var(--vscode-descriptionForeground); font-size: 11px; line-height: 1.5; }
+.plan-card-footer-text { font-size: 11px; color: var(--vscode-descriptionForeground); line-height: 1.5; }
 
 /* ── Compression / memory notice cards: single line ── */
 .chat-messages.cli-mode .compression-notice-card,

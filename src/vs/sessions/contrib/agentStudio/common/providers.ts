@@ -707,6 +707,10 @@ export interface IToolDefinition {
 	readonly inputSchema: Record<string, unknown>; // JSON Schema
 	readonly category?: string;  // e.g. 'filesystem', 'browser', 'search'
 	readonly source?: string;      // provider id
+	/** 工具列表中的简短摘要（参考 OpenClaw displaySummary） */
+	readonly displaySummary?: string;
+	/** 回放安全标记 — 标记工具在不完整回合恢复时可安全重放（参考 OpenClaw tool-replay-safety） */
+	readonly replaySafe?: boolean;
 	/** 安全等级 — 决定是否需要用户审批（默认 safe） */
 	readonly securityLevel?: ToolSecurityLevel;
 	/** 声明式可用性条件列表（所有条件需同时满足） */
@@ -732,6 +736,8 @@ export interface IToolResult {
 	readonly error?: string;
 	/** 结构化执行元数据 — 参考 OpenClaw 的 AgentToolResult.details */
 	readonly metadata?: IToolResultMetadata;
+	/** 工具特定结构化数据，供 UI 渲染（如 update_plan 的计划步骤） */
+	readonly details?: Record<string, unknown>;
 }
 
 /**

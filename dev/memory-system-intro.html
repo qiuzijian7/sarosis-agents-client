@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sarosis Memory System — 智能体记忆架构</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        primary: { 50: '#EEF2FF', 100: '#E0E7FF', 200: '#C7D2FE', 300: '#A5B4FC', 400: '#818CF8', 500: '#6366F1', 600: '#4F46E5', 700: '#4338CA', 800: '#3730A3', 900: '#312E81' },
+        accent: { 50: '#F0FDF4', 500: '#22C55E', 600: '#16A34A', 700: '#15803D' },
+        memory: { working: '#F59E0B', episodic: '#3B82F6', semantic: '#8B5CF6', procedural: '#10B981', tier0: '#6B7280' }
+      }
+    }
+  }
+}
+</script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
+body { font-family: 'Inter', system-ui, sans-serif; }
+code, pre { font-family: 'JetBrains Mono', monospace; }
+.gradient-hero { background: linear-gradient(135deg, #312E81 0%, #4338CA 30%, #6366F1 60%, #4F46E5 100%); }
+.gradient-card { background: linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(139,92,246,0.06) 100%); }
+.text-gradient { background: linear-gradient(135deg, #6366F1, #8B5CF6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.pulse-dot { animation: pulse 2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+.flow-arrow { transition: transform 0.3s ease; }
+.tier-card:hover .flow-arrow { transform: translateX(4px); }
+</style>
+</head>
+<body class="bg-gray-50 text-gray-900 antialiased">
+
+<!-- ═══ Navigation ═══ -->
+<nav class="fixed top-4 left-4 right-4 z-50 max-w-6xl mx-auto bg-white/90 backdrop-blur-xl border border-gray-200/60 rounded-2xl shadow-sm px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <div class="w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center">
+      <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+    </div>
+    <span class="font-bold text-lg tracking-tight">Sarosis <span class="text-primary-600">Memory</span></span>
+  </div>
+  <div class="hidden md:flex items-center gap-6 text-sm text-gray-600">
+    <a href="#architecture" class="hover:text-primary-600 transition-colors cursor-pointer">架构</a>
+    <a href="#features" class="hover:text-primary-600 transition-colors cursor-pointer">特性</a>
+    <a href="#cache" class="hover:text-primary-600 transition-colors cursor-pointer">缓存优化</a>
+    <a href="#modules" class="hover:text-primary-600 transition-colors cursor-pointer font-medium text-primary-600">模块详解</a>
+    <a href="#guide" class="hover:text-primary-600 transition-colors cursor-pointer">使用指南</a>
+    <a href="#compare" class="hover:text-primary-600 transition-colors cursor-pointer">对比</a>
+  </div>
+</nav>
+
+<!-- ═══ Hero ═══ -->
+<header class="gradient-hero pt-32 pb-20 px-6 text-white text-center">
+  <div class="max-w-4xl mx-auto">
+    <span class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/15 text-sm font-medium mb-6">
+      <span class="pulse-dot w-2 h-2 rounded-full bg-accent-500"></span> v2.2 新上线 — 对齐 agentmemory 缓存模型
+    </span>
+    <h1 class="text-4xl md:text-6xl font-extrabold leading-tight mb-6 tracking-tight">
+      让 AI 智能体<br><span class="text-accent-500">永不遗忘</span> 的记忆系统
+    </h1>
+    <p class="text-lg md:text-xl text-white/80 max-w-2xl mx-auto mb-8 leading-relaxed">
+      Sarosis Memory 为 AI 编程助手提供四级分层记忆架构（Working → Episodic → Semantic → Procedural），
+      结合 13 项缓存命中率优化，让智能体在长对话中保持上下文连贯，降低 LLM token 成本。
+    </p>
+    <div class="flex flex-wrap justify-center gap-4">
+      <a href="#architecture" class="cursor-pointer px-6 py-3 bg-white text-primary-700 font-semibold rounded-xl hover:bg-gray-100 transition-colors shadow-lg">了解架构</a>
+      <a href="#guide" class="cursor-pointer px-6 py-3 bg-white/15 border border-white/30 text-white font-semibold rounded-xl hover:bg-white/20 transition-colors">快速开始</a>
+    </div>
+  </div>
+</header>
+
+<!-- ═══ Stats Bar ═══ -->
+<section class="max-w-6xl mx-auto -mt-10 px-6 relative z-10">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 text-center">
+      <div class="text-3xl font-extrabold text-primary-600 mb-1">4-Tier</div>
+      <div class="text-sm text-gray-500">记忆层级模型</div>
+    </div>
+    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 text-center">
+      <div class="text-3xl font-extrabold text-accent-600 mb-1">P0-P13</div>
+      <div class="text-sm text-gray-500">缓存优化项</div>
+    </div>
+    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 text-center">
+      <div class="text-3xl font-extrabold text-amber-500 mb-1">181+</div>
+      <div class="text-sm text-gray-500">单元测试</div>
+    </div>
+    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 text-center">
+      <div class="text-3xl font-extrabold text-purple-500 mb-1">200K</div>
+      <div class="text-sm text-gray-500">Max 上下文窗口</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Architecture ═══ -->
+<section id="architecture" class="max-w-6xl mx-auto px-6 py-20">
+  <div class="text-center mb-14">
+    <span class="text-sm font-semibold text-primary-600 uppercase tracking-wider">Architecture</span>
+    <h2 class="text-3xl md:text-4xl font-extrabold mt-2 mb-4">4-Tier 记忆层级模型</h2>
+    <p class="text-gray-500 max-w-2xl mx-auto">从原始对话到可复用的程序性知识，逐层提取与固化，对齐 agentmemory 的 Working → Episodic → Semantic → Procedural 管线。</p>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+    <div class="tier-card bg-white rounded-2xl border border-amber-200 p-6 hover:shadow-lg transition-shadow cursor-pointer group">
+      <div class="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center mb-4">
+        <svg class="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      </div>
+      <h3 class="font-bold text-lg mb-2">Working<br><span class="text-sm font-normal text-gray-400">工作记忆</span></h3>
+      <p class="text-sm text-gray-500 leading-relaxed mb-3">当前会话的原始对话流，每轮 fire-and-forget 写入。Direct Mode per-iteration 捕获 assistant + 工具摘要。</p>
+      <span class="inline-flex items-center gap-1 text-xs text-amber-600 font-medium">
+        瞬时 <span class="flow-arrow group-hover:translate-x-1 inline-block">→</span>
+      </span>
+    </div>
+
+    <div class="tier-card bg-white rounded-2xl border border-blue-200 p-6 hover:shadow-lg transition-shadow cursor-pointer group">
+      <div class="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center mb-4">
+        <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+      </div>
+      <h3 class="font-bold text-lg mb-2">Episodic<br><span class="text-sm font-normal text-gray-400">情景记忆</span></h3>
+      <p class="text-sm text-gray-500 leading-relaxed mb-3">L1 自动提取每 3 轮触发，从对话中提取结构化长期事实。BM25 + Vector 混合搜索召回。</p>
+      <span class="inline-flex items-center gap-1 text-xs text-blue-600 font-medium">
+        自动提取 <span class="flow-arrow group-hover:translate-x-1 inline-block">→</span>
+      </span>
+    </div>
+
+    <div class="tier-card bg-white rounded-2xl border border-purple-200 p-6 hover:shadow-lg transition-shadow cursor-pointer group">
+      <div class="w-10 h-10 rounded-xl bg-purple-100 flex items-center justify-center mb-4">
+        <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+      </div>
+      <h3 class="font-bold text-lg mb-2">Semantic<br><span class="text-sm font-normal text-gray-400">语义记忆</span></h3>
+      <p class="text-sm text-gray-500 leading-relaxed mb-3">LLM 驱动的 ConsolidationPipeline，跨会话提取稳定事实与概念。XML &lt;facts&gt; 解析 + 规则回退。</p>
+      <span class="inline-flex items-center gap-1 text-xs text-purple-600 font-medium">
+        固化提炼 <span class="flow-arrow group-hover:translate-x-1 inline-block">→</span>
+      </span>
+    </div>
+
+    <div class="tier-card bg-white rounded-2xl border border-emerald-200 p-6 hover:shadow-lg transition-shadow cursor-pointer group">
+      <div class="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center mb-4">
+        <svg class="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+      </div>
+      <h3 class="font-bold text-lg mb-2">Procedural<br><span class="text-sm font-normal text-gray-400">程序记忆</span></h3>
+      <p class="text-sm text-gray-500 leading-relaxed mb-3">XML &lt;procedures&gt; 解析 + LLM summarizer，提取可复用的多步骤工作流。RoutineManager 编排执行。</p>
+      <span class="inline-flex items-center gap-1 text-xs text-emerald-600 font-medium">可复用</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Features ═══ -->
+<section id="features" class="bg-white py-20 px-6">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-14">
+      <span class="text-sm font-semibold text-primary-600 uppercase tracking-wider">Features</span>
+      <h2 class="text-3xl md:text-4xl font-extrabold mt-2 mb-4">核心记忆机制特色</h2>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+      <div class="gradient-card rounded-2xl border border-primary-100 p-8 hover:shadow-md transition-shadow cursor-pointer">
+        <div class="w-12 h-12 rounded-xl bg-primary-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        </div>
+        <h3 class="font-bold text-xl mb-3">冻结快照注入</h3>
+        <p class="text-gray-500 leading-relaxed">
+          会话首轮一次性注入 <code class="text-xs bg-primary-50 text-primary-700 px-1.5 py-0.5 rounded">&lt;agentmemory-context&gt;</code>，
+          会话内不再刷新。确保前缀消息稳定，最大化 LLM KV Cache 命中率。
+        </p>
+      </div>
+
+      <div class="gradient-card rounded-2xl border border-primary-100 p-8 hover:shadow-md transition-shadow cursor-pointer">
+        <div class="w-12 h-12 rounded-xl bg-accent-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-accent-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+        </div>
+        <h3 class="font-bold text-xl mb-3">三因子保留评分</h3>
+        <p class="text-gray-500 leading-relaxed">
+          <code class="text-xs bg-accent-50 text-accent-700 px-1.5 py-0.5 rounded">importance × recency × access</code> 加权评估记忆价值，
+          低分记忆自动降级到短期区而非直接删除，保持全文可检索性。
+        </p>
+      </div>
+
+      <div class="gradient-card rounded-2xl border border-primary-100 p-8 hover:shadow-md transition-shadow cursor-pointer">
+        <div class="w-12 h-12 rounded-xl bg-purple-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
+        </div>
+        <h3 class="font-bold text-xl mb-3">Core/Archival 分层</h3>
+        <p class="text-gray-500 leading-relaxed">
+          Pinned 核心记忆不受 token budget 限制，优先级保留。
+          超预算时低分条目自动降级 <span class="text-purple-600 font-medium">(auto-page)</span>，
+          保证关键信息始终可见。
+        </p>
+      </div>
+
+      <div class="gradient-card rounded-2xl border border-primary-100 p-8 hover:shadow-md transition-shadow cursor-pointer">
+        <div class="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        </div>
+        <h3 class="font-bold text-xl mb-3">BM25 + 向量混合搜索</h3>
+        <p class="text-gray-500 leading-relaxed">
+          前缀二分查找 <span class="text-amber-600 font-medium">O(log n)</span> + 同义词加权扩展 + RRF 融合排序，
+          精确匹配 > 同义词 > 前缀三层递进。
+        </p>
+      </div>
+
+      <div class="gradient-card rounded-2xl border border-primary-100 p-8 hover:shadow-md transition-shadow cursor-pointer">
+        <div class="w-12 h-12 rounded-xl bg-rose-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-rose-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+        </div>
+        <h3 class="font-bold text-xl mb-3">多层去重保护</h3>
+        <p class="text-gray-500 leading-relaxed">
+          BloomFilter 预过滤 → SHA-256 精准去重 → toolCallId 维度去重。
+          防止流式重试、compaction 重放导致重复记忆写入。
+        </p>
+      </div>
+
+      <div class="gradient-card rounded-2xl border border-primary-100 p-8 hover:shadow-md transition-shadow cursor-pointer">
+        <div class="w-12 h-12 rounded-xl bg-cyan-100 flex items-center justify-center mb-5">
+          <svg class="w-6 h-6 text-cyan-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
+        </div>
+        <h3 class="font-bold text-xl mb-3">注入幂等 + 上下文缓存</h3>
+        <p class="text-gray-500 leading-relaxed">
+          同一 session 仅注入一次 context；跨请求结果缓存（fingerprint + TTL），
+          记忆状态不变时跳过全部组装管线。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Cache Optimization ═══ -->
+<section id="cache" class="py-20 px-6 bg-gray-50">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-14">
+      <span class="text-sm font-semibold text-accent-600 uppercase tracking-wider">Cache Optimization</span>
+      <h2 class="text-3xl md:text-4xl font-extrabold mt-2 mb-4">13 项缓存命中率优化</h2>
+      <p class="text-gray-500 max-w-2xl mx-auto">对齐 agentmemory 源码，从算法级到应用级逐层优化 LLM 缓存命中率。</p>
+    </div>
+
+    <div class="overflow-x-auto rounded-2xl border border-gray-200 bg-white shadow-sm">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="text-left px-6 py-4 font-semibold text-gray-600">#</th>
+            <th class="text-left px-6 py-4 font-semibold text-gray-600">优化项</th>
+            <th class="text-left px-6 py-4 font-semibold text-gray-600">层级</th>
+            <th class="text-left px-6 py-4 font-semibold text-gray-600">描述</th>
+            <th class="text-center px-6 py-4 font-semibold text-gray-600">状态</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P0</td>
+            <td class="px-6 py-4 font-medium">ContextBlock 抽象 + 固定组装管线</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">应用级</span></td>
+            <td class="px-6 py-4 text-gray-500">priority+recency 双重排序，固定块不受 budget 截断，保证跨轮次前缀一致</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P1</td>
+            <td class="px-6 py-4 font-medium">BM25 惰性排序缓存 + lowerBound</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full">算法级</span></td>
+            <td class="px-6 py-4 text-gray-500">倒排索引词条惰性缓存，写时失效；前缀匹配二分查找 O(log n)</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P3</td>
+            <td class="px-6 py-4 font-medium">跨请求 Context 结果缓存</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">应用级</span></td>
+            <td class="px-6 py-4 text-gray-500">fingerprint + 版本号 + 60s TTL，记忆未变时跳过组装管线</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P4</td>
+            <td class="px-6 py-4 font-medium">Pre-compact 注入位置修复</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">应用级</span></td>
+            <td class="px-6 py-4 text-gray-500">注入消息放在固定 system 之后、摘要之前，保留前缀缓存</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P6</td>
+            <td class="px-6 py-4 font-medium">SessionContextCache 复合键</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">应用级</span></td>
+            <td class="px-6 py-4 text-gray-500">agentId::sessionId 复合键，避免跨 session 串数据</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P7</td>
+            <td class="px-6 py-4 font-medium">注入幂等去重</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">应用级</span></td>
+            <td class="px-6 py-4 text-gray-500">同一 session 仅注入一次 agentmemory-context</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P10</td>
+            <td class="px-6 py-4 font-medium">BM25 同义词加权扩展</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full">算法级</span></td>
+            <td class="px-6 py-4 text-gray-500">精确=1.0, 同义词=0.7, 前缀=0.5×weight 三层递进</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P11</td>
+            <td class="px-6 py-4 font-medium">读取时写回 accessCount</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">应用级</span></td>
+            <td class="px-6 py-4 text-gray-500">loadContext 选中后 fire-and-forget 写回 KV，提升热点记忆评分</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+          <tr class="hover:bg-gray-50 transition-colors cursor-pointer">
+            <td class="px-6 py-4 font-mono text-xs text-primary-600">P13</td>
+            <td class="px-6 py-4 font-medium">三因子加权评分</td>
+            <td class="px-6 py-4"><span class="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">应用级</span></td>
+            <td class="px-6 py-4 text-gray-500">importance×0.5 + recency×0.3 + access×0.2</td>
+            <td class="px-6 py-4 text-center"><span class="text-accent-600">✅</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Usage Guide ═══ -->
+<section id="guide" class="py-20 px-6 bg-white">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-14">
+      <span class="text-sm font-semibold text-primary-600 uppercase tracking-wider">Getting Started</span>
+      <h2 class="text-3xl md:text-4xl font-extrabold mt-2 mb-4">使用指南</h2>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div class="bg-gray-50 rounded-2xl border border-gray-200 p-8">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="w-8 h-8 rounded-lg bg-primary-600 text-white flex items-center justify-center text-sm font-bold">1</span>
+          <h3 class="font-bold text-lg">AgentMemory 服务（自动启动）</h3>
+        </div>
+        <div class="bg-gray-900 rounded-xl p-4 mb-4">
+          <pre class="text-green-400 text-sm"><code><span class="text-gray-500"># 生产模式：Sarosis 主进程自动拉起</span>
+<span class="text-gray-500"># startAgentMemoryGateway → npx @agentmemory/agentmemory</span>
+<span class="text-gray-500"># 监听 127.0.0.1:3111，无需手动干预</span>
+
+<span class="text-gray-500"># 开发模式：手动启动独立服务</span>
+cd extensions/agentmemory-memory
+npm install && npm run compile
+node out/host.mjs   <span class="text-gray-500"># HTTP 端点: GET/PUT /kv/...</span></code></pre>
+        </div>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          <strong>自动启动</strong>：主进程通过 startAgentMemoryGateway 以子进程方式启动。<br>
+          <strong>手动启动</strong>：开发调试时直接运行 host.mjs，管理 SQLite KV Store 和 BM25/Vector 索引。
+        </p>
+      </div>
+
+      <div class="bg-gray-50 rounded-2xl border border-gray-200 p-8">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="w-8 h-8 rounded-lg bg-primary-600 text-white flex items-center justify-center text-sm font-bold">2</span>
+          <h3 class="font-bold text-lg">运行单元测试</h3>
+        </div>
+        <div class="bg-gray-900 rounded-xl p-4 mb-4">
+          <pre class="text-green-400 text-sm"><code>cd extensions/agentmemory-memory
+npx tsc -p ./tsconfig.json
+node out/__tests__/runAllTests.js
+
+<span class="text-gray-500"># 输出: 181 passed, 0 failed</span></code></pre>
+        </div>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          181 个单元测试覆盖全部核心模块：BM25 搜索、向量索引、去重、RRF 融合、4-Tier 类型映射、技能提取、Lesson 衰减、Project Profile、Slots 编辑、Routines 编排等。
+        </p>
+      </div>
+
+      <div class="bg-gray-50 rounded-2xl border border-gray-200 p-8">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="w-8 h-8 rounded-lg bg-primary-600 text-white flex items-center justify-center text-sm font-bold">3</span>
+          <h3 class="font-bold text-lg">通过 AgentOS 使用记忆</h3>
+        </div>
+        <div class="bg-gray-900 rounded-xl p-4 mb-4">
+          <pre class="text-green-400 text-sm"><code><span class="text-gray-500">// Agent 对话中自动记忆</span>
+<span class="text-gray-500">// 1. 每轮 fire-and-forget 写 working memory</span>
+<span class="text-gray-500">// 2. 每 3 轮触发 L1 自动提取 Episodic</span>
+<span class="text-gray-500">// 3. LLM 工具: memory_remember/search/delete/list</span>
+<span class="text-gray-500">// 4. 会话开始注入 &lt;agentmemory-context&gt;</span></code></pre>
+        </div>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          完全自动化，无需手动配置。Agent 可直接调用 memory_remember 工具写入自定义记忆。
+        </p>
+      </div>
+
+      <div class="bg-gray-50 rounded-2xl border border-gray-200 p-8">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="w-8 h-8 rounded-lg bg-primary-600 text-white flex items-center justify-center text-sm font-bold">4</span>
+          <h3 class="font-bold text-lg">配置 Token 预算与策略</h3>
+        </div>
+        <div class="bg-gray-900 rounded-xl p-4 mb-4">
+          <pre class="text-green-400 text-sm"><code><span class="text-gray-500">// Agent 请求参数</span>
+{
+  memoryStrategy: "full",    <span class="text-gray-500">// summary | full</span>
+  memoryScope: "agent",      <span class="text-gray-500">// agent | global</span>
+  memoryMaxEntries: 50       <span class="text-gray-500">// 可选</span>
+}
+
+<span class="text-gray-500">// memoryProvider 内部常量</span>
+TOKEN_BUDGET = 4000          <span class="text-gray-500">// context 组装预算</span>
+RETENTION_FLOOR = 0.01       <span class="text-gray-500">// 保留评分阈值</span></code></pre>
+        </div>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          summary 策略仅注入 Episodic 记忆，full 策略同时注入 Working 最近上下文。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Comparison ═══ -->
+<section id="compare" class="py-20 px-6 bg-gray-50">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-14">
+      <span class="text-sm font-semibold text-primary-600 uppercase tracking-wider">Comparison</span>
+      <h2 class="text-3xl md:text-4xl font-extrabold mt-2 mb-4">与 agentmemory 功能对比</h2>
+      <p class="text-gray-500 max-w-2xl mx-auto">sarosis 经过 P0-P13 优化 + Q1-Q6 对齐，核心记忆能力已全面对标 agentmemory v0.9.27。</p>
+    </div>
+
+    <div class="overflow-x-auto rounded-2xl border border-gray-200 bg-white shadow-sm">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="bg-gray-50 border-b border-gray-200">
+            <th class="text-left px-6 py-4 font-semibold text-gray-600">功能维度</th>
+            <th class="text-center px-6 py-4 font-semibold text-gray-600">agentmemory</th>
+            <th class="text-center px-6 py-4 font-semibold text-gray-600">sarosis</th>
+            <th class="text-center px-6 py-4 font-semibold text-gray-600">领先方</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          <tr><td class="px-6 py-3 font-medium">4-Tier 记忆模型</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">BM25 + 向量混合搜索</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr><td class="px-6 py-3 font-medium">LRU 搜索缓存</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">跨请求 Context 缓存</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+          <tr><td class="px-6 py-3 font-medium">Anthropic cache_control</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">冻结快照注入</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+          <tr><td class="px-6 py-3 font-medium">anti-thrashing 压缩</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">ContextBlock priority 分层</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+          <tr><td class="px-6 py-3 font-medium">Core/Archival + auto-page</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">三因子保留评分</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr><td class="px-6 py-3 font-medium">Skills 提取 + SKILL.md</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">Lessons 衰减 + 强化</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr><td class="px-6 py-3 font-medium">文件路径暂存 enrich</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">注入幂等去重</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr><td class="px-6 py-3 font-medium">toolCallId 维度去重</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">代码图谱 (22-pass)</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Modules Detailed Guide ═══ -->
+<section id="modules" class="py-20 px-6 bg-white">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-14">
+      <span class="text-sm font-semibold text-primary-600 uppercase tracking-wider">Module Guide</span>
+      <h2 class="text-3xl md:text-4xl font-extrabold mt-2 mb-4">9 大模块详细使用指南</h2>
+      <p class="text-gray-500 max-w-2xl mx-auto">每个模块的原理、API 签名、典型用法</p>
+    </div>
+
+    <!-- Module 1: Memory -->
+    <div class="mb-8 rounded-2xl border border-amber-200 bg-amber-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center text-2xl">🧠</div>
+        <div>
+          <h3 class="font-bold text-2xl">1. 记忆 (Memory)</h3>
+          <p class="text-sm text-gray-500">4-Tier 记忆层级</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">四级分层记忆模型，对齐 agentmemory：Working → Episodic → Semantic → Procedural。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• <strong>Working</strong>: 每轮 fire-and-forget</li>
+            <li>• <strong>Episodic</strong>: L1 自动提取（每 3 轮）</li>
+            <li>• <strong>Semantic</strong>: LLM 跨会话固化</li>
+            <li>• <strong>Procedural</strong>: XML 步骤提取</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>await memProvider.writeMemory(agentId, {
+  type: 'working',
+  content: 'user message',
+  metadata: { source: 'user_input' }
+});
+
+const ctx = await memProvider.loadContext(
+  agentId, sessionId, query,
+  { scope: 'agent' }
+);</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module 2: Slots -->
+    <div class="mb-8 rounded-2xl border border-pink-200 bg-pink-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-pink-100 flex items-center justify-center text-2xl">📌</div>
+        <div>
+          <h3 class="font-bold text-2xl">2. 槽位 (Slots)</h3>
+          <p class="text-sm text-gray-500">可编辑固定记忆</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">8 个固定槽位（persona、user_preferences、project_context 等），可设置 pinned 标志优先注入。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• <strong>sizeLimit</strong>: 500~2000 字符</li>
+            <li>• <strong>pinned</strong>: 受 budget 保护</li>
+            <li>• <strong>readonly</strong>: 不可修改</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>const slots = memProvider._slots;
+slots.set(agentId, 'persona',
+  'You are a coding assistant');
+slots.append(agentId, 'user_preferences',
+  'use tabs over spaces');
+slots.pin(agentId, 'project_context', true);
+const ctx = slots.buildContext(agentId);</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module 3: Lessons -->
+    <div class="mb-8 rounded-2xl border border-blue-200 bg-blue-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-blue-100 flex items-center justify-center text-2xl">📖</div>
+        <div>
+          <h3 class="font-bold text-2xl">3. 教训 (Lessons)</h3>
+          <p class="text-sm text-gray-500">经验沉淀与衰减</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">从对话中自动提取经验（"should/must/always"模式 + 错误模式），支持强化、衰减、软删除。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• DECAY_DAYS=60, FACTOR=0.95</li>
+            <li>• MIN_CONFIDENCE=0.2</li>
+            <li>• 24h 提取节流</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>const le = memProvider._lessons;
+const lessons = le.extract(agentId, entries);
+le.reinforce(agentId, lessonId);
+le.delete(agentId, lessonId);
+const top = le.getTopLessons(agentId, 5);</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module 4: Consolidation -->
+    <div class="mb-8 rounded-2xl border border-purple-200 bg-purple-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-purple-100 flex items-center justify-center text-2xl">🔄</div>
+        <div>
+          <h3 class="font-bold text-2xl">4. 固化 (Consolidation)</h3>
+          <p class="text-sm text-gray-500">4-Tier 跨层提取</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">LLM 驱动的 4-Tier 提取管道，XML 解析 (<code class="text-xs">&lt;facts&gt;</code>, <code class="text-xs">&lt;procedures&gt;</code>) + 规则回退。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• Episodic: 3 轮后触发</li>
+            <li>• Semantic: 5 条 episodic 后</li>
+            <li>• Procedural: 3 条 semantic 后</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>const pipe = new ConsolidationPipeline();
+pipe.setSummarizer(async (prompt) => {
+  return '<facts><fact>...</fact></facts>';
+});
+await pipe.consolidateEpisodic(agentId, entries);
+await pipe.consolidateSemantic(agentId);
+await pipe.consolidateProcedural(agentId);</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module 5: Audit -->
+    <div class="mb-8 rounded-2xl border border-rose-200 bg-rose-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-rose-100 flex items-center justify-center text-2xl">📋</div>
+        <div>
+          <h3 class="font-bold text-2xl">5. 审计 (Audit)</h3>
+          <p class="text-sm text-gray-500">全量操作日志</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">记录所有记忆操作（write/search/delete/decay/sweep/reinforce/consolidate 等）用于诊断和合规。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• 16 种 AuditOperation</li>
+            <li>• <code class="text-xs">cache_hit</code> (P3 新增)</li>
+            <li>• getSummary() 统计</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>const audit = memProvider._audit;
+audit.record('write', agentId, [entry.id], {
+  contentLength: content.length
+});
+const summary = audit.getSummary();
+// { write: 42, cache_hit: 8, ... }</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module 6: Hooks -->
+    <div class="mb-8 rounded-2xl border border-amber-200 bg-amber-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center text-2xl">🪝</div>
+        <div>
+          <h3 class="font-bold text-2xl">6. 钩子 (Hooks)</h3>
+          <p class="text-sm text-gray-500">生命周期事件订阅</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">事件驱动钩子系统，支持 session_start、session_end、prompt_submit、subtask、tool_call 等生命周期事件。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• trigger(): 同步触发</li>
+            <li>• register(): 注册处理器</li>
+            <li>• triggerAndCollect(): 收集结果</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>const hooks = memProvider._hooks;
+hooks.register('session_end',
+  async (ctx) => {
+    // 清理资源
+});
+await hooks.triggerAndCollect(
+  'prompt_submit', { agentId, userMessage }
+);</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module 7: Commits -->
+    <div class="mb-8 rounded-2xl border border-indigo-200 bg-indigo-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-indigo-100 flex items-center justify-center text-2xl">✅</div>
+        <div>
+          <h3 class="font-bold text-2xl">7. 提交 (Commits)</h3>
+          <p class="text-sm text-gray-500">记忆与代码关联</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">将记忆条目与 Git 提交关联，记录每条记忆的"作者"和"代码变更上下文"。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• link(): 关联提交</li>
+            <li>• getHistory(): 查询历史</li>
+            <li>• 跨 session 跟踪</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>commits.link(agentId, memoryId, {
+  commitHash: 'abc123',
+  filePath: 'src/memoryProvider.ts',
+  diffSummary: 'Added P12 auto-page'
+});
+const history = commits.getHistory(memoryId);</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module 8: Report -->
+    <div class="mb-8 rounded-2xl border border-teal-200 bg-teal-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-teal-100 flex items-center justify-center text-2xl">📊</div>
+        <div>
+          <h3 class="font-bold text-2xl">8. 报告 (Report)</h3>
+          <p class="text-sm text-gray-500">记忆健康度报告</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">生成 Agent 记忆系统健康度报告，包括记忆分布、衰减情况、Top 概念、Top 教训、最近活动等。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• byType 分布</li>
+            <li>• avgStrength</li>
+            <li>• topConcepts/Lessons</li>
+            <li>• recentActivity</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>const report = memProvider.generateReport(
+  agentId,
+  { includeRaw: false, maxEntries: 100 }
+);
+// { totalMemories: 142,
+//   byType: { working: 30, episodic: 80 },
+//   topConcepts: [...], ... }</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Module 9: Skills -->
+    <div class="mb-8 rounded-2xl border border-orange-200 bg-orange-50/30 p-8">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-12 h-12 rounded-xl bg-orange-100 flex items-center justify-center text-2xl">⚡</div>
+        <div>
+          <h3 class="font-bold text-2xl">9. 技能 (Skills)</h3>
+          <p class="text-sm text-gray-500">可复用知识沉淀</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">原理</h4>
+          <p class="text-sm text-gray-600 leading-relaxed mb-3">从重复工作流中提取可复用技能，生成 SKILL.md 文件保存到 <code class="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">~/.saros/skills/&lt;slug&gt;/</code>。</p>
+          <ul class="text-sm text-gray-600 space-y-1">
+            <li>• 指纹去重（相同 trigger → 强化）</li>
+            <li>• 自动生成 SKILL.md</li>
+            <li>• frontmatter + markdown body</li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="font-semibold text-sm text-gray-700 mb-2 uppercase tracking-wider">用法</h4>
+          <div class="bg-gray-900 rounded-xl p-4">
+            <pre class="text-green-400 text-xs"><code>const skill = se.extract({
+  sessionId, agentId,
+  observations: [...],
+  trigger: 'config-update'
+});
+se.reinforce(skill.id);
+se.markWritten(skill.id);
+const md = generateSkillMd(skill);</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ═══ Footer ═══ -->
+<footer class="border-t border-gray-200 bg-white py-12 px-6 text-center">
+  <div class="max-w-6xl mx-auto">
+    <div class="flex items-center justify-center gap-3 mb-4">
+      <div class="w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center">
+        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+      </div>
+      <span class="font-bold text-lg">Sarosis Memory System</span>
+    </div>
+    <p class="text-sm text-gray-400 mb-2">对齐 agentmemory v0.9.27 · 181 测试用例 · 13 项缓存优化</p>
+    <p class="text-xs text-gray-300">2026-07-04 · All optimizations verified with 153 test cases baseline + 28 new alignment tests</p>
+  </div>
+</footer>
+
+</body>
+</html>

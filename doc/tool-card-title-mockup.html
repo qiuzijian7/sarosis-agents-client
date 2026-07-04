@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Tool Card Header — 当前 vs Void 风格对比</title>
+<style>
+:root {
+  --vscode-editor-background: #1e1e1e;
+  --vscode-input-background: #3c3c3c;
+  --vscode-sideBar-background: #252526;
+  --vscode-editor-foreground: #cccccc;
+  --vscode-input-placeholderForeground: #999;
+  --vscode-list-deemphasizedForeground: #777;
+  --vscode-commandCenter-inactiveBorder: rgba(128,128,128,0.25);
+  --vscode-commandCenter-border: rgba(128,128,128,0.3);
+  --vscode-charts-yellow: #cca700;
+  --vscode-focusBorder: #007fd4;
+  --bg-primary: #1e1e1e;
+}
+body { background: var(--bg-primary); color: #ccc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; font-size: 13px; }
+h2 { font-size: 14px; color: #888; margin: 24px 0 8px; }
+h2 span { color: #6cb6ff; }
+.section { margin-bottom: 20px; }
+.label { font-size: 11px; color: #666; margin-bottom: 4px; display: block; }
+.desc { font-size: 10px; color: #555; margin-top: 4px; line-height: 1.4; }
+
+/* ═══ 助手气泡背景 ═══ */
+.assistant-bubble {
+  background: var(--vscode-input-background);
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 14px;
+  border-bottom-left-radius: 4px;
+  padding: 10px 14px;
+  max-width: 85%;
+}
+
+/* ═══ 当前工具卡片 ═══ */
+.cur-tool-wrapper { margin: 4px 0; max-width: 100%; }
+.cur-tool-header {
+  box-sizing: border-box; width: 100%;
+  border: 1px solid var(--vscode-commandCenter-inactiveBorder);
+  border-radius: 4px;
+  padding: 2px 8px;
+  background: var(--vscode-editor-background);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.cur-tool-row {
+  display: flex; align-items: center; width: 100%;
+  gap: 8px; min-height: 24px; justify-content: space-between;
+  user-select: none;
+}
+.cur-tool-left { display: flex; align-items: center; overflow: hidden; min-width: 0; margin-left: 4px; }
+.cur-tool-chevron { color: var(--vscode-input-placeholderForeground); margin-right: 2px; font-size: 12px; flex-shrink: 0; }
+.cur-tool-icon { margin-right: 6px; color: var(--vscode-input-placeholderForeground); flex-shrink: 0; font-size: 13px; }
+.cur-tool-title { color: var(--vscode-input-placeholderForeground); font-size: 11.5px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cur-tool-desc { color: var(--vscode-list-deemphasizedForeground); font-size: 11px; font-style: italic; margin-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cur-tool-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.cur-tool-success { color: #4ec9b0; font-size: 13px; }
+.cur-tool-duration { color: var(--vscode-list-deemphasizedForeground); font-size: 11px; }
+.cur-tool-loading { color: var(--vscode-input-placeholderForeground); font-size: 11px; animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* ═══ Void 风格工具卡片 ═══ */
+.void-tool-wrapper { margin: 4px 0; max-width: 100%; }
+.void-tool-header {
+  box-sizing: border-box; width: 100%;
+  border: 1px solid var(--vscode-commandCenter-inactiveBorder);
+  border-radius: 4px;
+  padding: 2px 8px;
+  /* Void: 融入气泡背景 */
+  background: transparent;
+  transition: border-color 0.15s ease, filter 0.15s ease;
+}
+.void-tool-header:hover { filter: brightness(0.95); }
+
+/* ═══ 推荐方案（Void + 适度反差）═══ */
+.opt-tool-wrapper { margin: 4px 0; max-width: 100%; }
+.opt-tool-header {
+  box-sizing: border-box; width: 100%;
+  border: 1px solid rgba(128,128,128,0.15);
+  border-radius: 4px;
+  padding: 2px 8px;
+  /* 比气泡背景略深一点点，有轻微视觉层次但不过分 */
+  background: rgba(0,0,0,0.08);
+  transition: border-color 0.15s ease, filter 0.15s ease;
+}
+.opt-tool-header:hover { filter: brightness(0.95); border-color: rgba(128,128,128,0.25); }
+
+/* 颜色标注 */
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 2px; border: 1px solid rgba(128,128,128,0.2); }
+
+code { background: rgba(128,128,128,0.1); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h2>📋 当前风格 <span>（卡片用编辑器背景，比气泡深，视觉压迫感强）</span></h2>
+<div class="section">
+  <div class="assistant-bubble">
+    <div style="margin-bottom:6px;color:#ccc;">LLM 消息正文...</div>
+    <div class="cur-tool-wrapper">
+      <div class="cur-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">🔍</span>
+            <span class="cur-tool-title">search_files</span>
+            <span class="cur-tool-desc">读取文件 src/utils/helper.ts</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-duration">1.2s</span>
+            <span class="cur-tool-success">✓</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cur-tool-wrapper">
+      <div class="cur-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">⚙️</span>
+            <span class="cur-tool-title">execute_command</span>
+            <span class="cur-tool-desc">npm run build</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-duration">3.5s</span>
+            <span class="cur-tool-success">✓</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:4px;color:#ccc;">另一个工具正在运行...</div>
+    <div class="cur-tool-wrapper">
+      <div class="cur-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">📄</span>
+            <span class="cur-tool-title">write_file</span>
+            <span class="cur-tool-desc">写入文件 output.json</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-loading">◌</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    卡片 bg: <span class="swatch" style="background:var(--vscode-editor-background)"></span> <code>#1e1e1e</code>（编辑器背景）<br>
+    气泡 bg: <span class="swatch" style="background:var(--vscode-input-background)"></span> <code>#3c3c3c</code>（输入框背景）<br>
+    → 卡片比气泡深约 2×，形成"嵌套方块"感，视觉压迫
+  </div>
+</div>
+
+<h2>🎨 Void 风格 <span>（卡片融入气泡背景，用边框区分）</span></h2>
+<div class="section">
+  <div class="assistant-bubble">
+    <div style="margin-bottom:6px;color:#ccc;">LLM 消息正文...</div>
+    <div class="void-tool-wrapper">
+      <div class="void-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">🔍</span>
+            <span class="cur-tool-title">search_files</span>
+            <span class="cur-tool-desc">读取文件 src/utils/helper.ts</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-duration">1.2s</span>
+            <span class="cur-tool-success">✓</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="void-tool-wrapper">
+      <div class="void-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">⚙️</span>
+            <span class="cur-tool-title">execute_command</span>
+            <span class="cur-tool-desc">npm run build</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-duration">3.5s</span>
+            <span class="cur-tool-success">✓</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:4px;color:#ccc;">另一个工具正在运行...</div>
+    <div class="void-tool-wrapper">
+      <div class="void-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">📄</span>
+            <span class="cur-tool-title">write_file</span>
+            <span class="cur-tool-desc">写入文件 output.json</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-loading">◌</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    卡片 bg: <code>transparent</code>（完全融入气泡）<br>
+    → 仅用细边框勾勒卡片边界，视觉负担最小
+  </div>
+</div>
+
+<h2>✅ 推荐方案 <span>（保留微弱层次感 + Void 融合理念）</span></h2>
+<div class="section">
+  <div class="assistant-bubble">
+    <div style="margin-bottom:6px;color:#ccc;">LLM 消息正文...</div>
+    <div class="opt-tool-wrapper">
+      <div class="opt-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">🔍</span>
+            <span class="cur-tool-title">search_files</span>
+            <span class="cur-tool-desc">读取文件 src/utils/helper.ts</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-duration">1.2s</span>
+            <span class="cur-tool-success">✓</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="opt-tool-wrapper">
+      <div class="opt-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">⚙️</span>
+            <span class="cur-tool-title">execute_command</span>
+            <span class="cur-tool-desc">npm run build</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-duration">3.5s</span>
+            <span class="cur-tool-success">✓</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:4px;color:#ccc;">另一个工具正在运行...</div>
+    <div class="opt-tool-wrapper">
+      <div class="opt-tool-header">
+        <div class="cur-tool-row">
+          <div class="cur-tool-left">
+            <span class="cur-tool-chevron">▶</span>
+            <span class="cur-tool-icon">📄</span>
+            <span class="cur-tool-title">write_file</span>
+            <span class="cur-tool-desc">写入文件 output.json</span>
+          </div>
+          <div class="cur-tool-right">
+            <span class="cur-tool-loading">◌</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="desc">
+    卡片 bg: <span class="swatch" style="background:rgba(0,0,0,0.08)"></span> <code>rgba(0,0,0,0.08)</code><br>
+    边框: 比气泡边框更细 <code>rgba(128,128,128,0.15)</code><br>
+    → 有微弱的层次感（可知是可展开区域），但不破坏气泡整体性
+  </div>
+</div>
+
+</body>
+</html>

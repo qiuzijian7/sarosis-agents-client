@@ -8,6 +8,16 @@ import { runDedupTests } from './dedup.test.js';
 import { runRRFTests } from './rrf.test.js';
 import { runVectorTests } from './vectorIndex.test.js';
 import { runConcurrencyTests } from './concurrency.test.js';
+import { runMemoryTypesTests } from './memoryTypes.test.js';
+import { runSkillExtractTests } from './skillExtract.test.js';
+import { runConsolidationTests } from './consolidation.test.js';
+import { runVectorDimensionTests } from './vectorIndexDim.test.js';
+import { runLessonsTests } from './lessons.test.js';
+import { runContextBuilderTests } from './contextBuilder.test.js';
+import { runRetentionScoringTests } from './retentionScoring.test.js';
+import { runProjectProfileTests } from './projectProfile.test.js';
+import { runSlotEditingTests } from './slotEditing.test.js';
+import { runRoutineAndInsightTests } from './insights.test.js';
 import { printSummary } from './testRunner.js';
 
 async function main(): Promise<void> {
@@ -25,6 +35,26 @@ async function main(): Promise<void> {
 
 	// Concurrency tests (async)
 	await runConcurrencyTests();
+
+	// ─── New tests for recent modifications ───
+	console.log('\n📦 Recent Feature Tests\n');
+	runMemoryTypesTests();
+	runVectorDimensionTests();
+	runLessonsTests();
+
+	await runSkillExtractTests();
+	runConsolidationTests();
+	// ConsolidationPipeline uses itAsync — wait for async tests to complete
+	await new Promise(r => setTimeout(r, 500));
+
+	runContextBuilderTests();
+
+	// ─── Q1/Q2/Q3/Q4/Q6: agentmemory feature alignment tests ───
+	console.log('\n📦 AgentMemory Feature Alignment Tests\n');
+	runRetentionScoringTests();
+	runProjectProfileTests();
+	runSlotEditingTests();
+	runRoutineAndInsightTests();
 
 	printSummary();
 }

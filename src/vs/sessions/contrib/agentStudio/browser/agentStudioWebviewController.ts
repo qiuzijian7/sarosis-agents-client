@@ -3082,7 +3082,7 @@ export class AgentStudioWebviewController extends Disposable {
 		// Listen for AI-driven workflow changes (from workflow_apply tool)
 		// and push the updated state to the webview workflow editor.
 		this._register(
-			workflowAppliedEmitter.event(({ workflow, description }) => {
+			workflowAppliedEmitter.event(({ workflow, description }: { workflow: import('../common/workflowStorage.js').IStoredWorkflow; description?: string }) => {
 				this.logService.info(
 					`[AgentStudio] workflow_apply tool applied changes to ${workflow.id}, notifying webview`,
 				);

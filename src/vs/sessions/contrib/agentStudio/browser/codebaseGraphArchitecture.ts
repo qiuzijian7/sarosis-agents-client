@@ -58,6 +58,14 @@ export interface Community {
 	size: number;
 	nodes: number[];
 	avgInDegree: number;
+	/** 内部边密度：internal/(internal+boundary), 1.0=完全封闭 */
+	cohesion?: number;
+	/** 按 inDegree+outDegree 排序的代表性节点名 (top 5) */
+	topNodes?: string[];
+	/** 顶层包/目录名 */
+	packages?: string[];
+	/** 社区内边类型 (如 ["CALLS", "IMPORTS"]) */
+	edgeTypes?: string[];
 }
 
 export interface ArchitectureReport {
@@ -271,14 +279,71 @@ function detectCommunities(nodes: GraphNode[], edges: GraphEdge[]): Community[] 
 	}
 
 	const nodeMap = new Map(nodes.map(n => [n.id, n]));
-	const communities: Community[] = [];
-	for (const [commId, nodeIds] of commMap) {
-		const commNodes = nodeIds.map(id => nodeMap.get(id)).filter(Boolean) as GraphNode[];
-		const avgInDegree = commNodes.reduce((s, n) => s + n.inDegree, 0) / (commNodes.length || 1);
-		communities.push({ id: commId, size: commNodes.length, nodes: nodeIds, avgInDegree });
+
+	// 预计算边所属社区（加速 cohesion 计算）
+	const nodeCommunities = new Map(assignments);
+	const internalEdges = new Map<number, number>();   // commId → internal edge count
+	const boundaryEdges = new Map<number, number>();   // commId → boundary edge count
+	const commEdgeTypes = new Map<number, Set<string>>(); // commId → edge types
+
+	for (const edge of edges) {
+		const srcComm = nodeCommunities.get(edge.sourceId);
+		const tgtComm = nodeCommunities.get(edge.targetId);
+		if (srcComm === undefined || tgtComm === undefined) { continue; }
+
+		if (srcComm === tgtComm) {
+			internalEdges.set(srcComm, (internalEdges.get(srcComm) || 0) + 1);
+		} else {
+			boundaryEdges.set(srcComm, (boundaryEdges.get(srcComm) || 0) + 1);
+			boundaryEdges.set(tgtComm, (boundaryEdges.get(tgtComm) || 0) + 1);
+		}
+		// 记录边类型
+		if (!commEdgeTypes.has(srcComm)) { commEdgeTypes.set(srcComm, new Set()); }
+		if (!commEdgeTypes.has(tgtComm)) { commEdgeTypes.set(tgtComm, new Set()); }
+		commEdgeTypes.get(srcComm)!.add(edge.type);
+		commEdgeTypes.get(tgtComm)!.add(edge.type);
 	}
 
-	return communities.sort((a, b) => b.size - a.size);
+	const communities: Community[] = [];
+	for (const [commId, memberIds] of commMap) {
+		// 跳过单例社区
+		if (memberIds.length < 2) { continue; }
+
+		const commNodes = memberIds.map(id => nodeMap.get(id)).filter(Boolean) as GraphNode[];
+		const avgInDegree = commNodes.reduce((s, n) => s + n.inDegree, 0) / (commNodes.length || 1);
+
+		// Cohesion: 内部边 / (内部边 + 边界边)
+		const internal = internalEdges.get(commId) || 0;
+		const boundary = boundaryEdges.get(commId) || 0;
+		const cohesion = internal + boundary > 0 ? internal / (internal + boundary) : 0;
+
+		// Top nodes: 按 inDegree+outDegree 排序前 5
+		const topNodes = commNodes
+			.sort((a, b) => (b.inDegree + b.outDegree) - (a.inDegree + a.outDegree))
+			.slice(0, 5)
+			.map(n => n.name);
+
+		// Packages: 从 qualifiedName 提取顶层目录名
+		const pkgSet = new Set<string>();
+		for (const n of commNodes) {
+			if (n.filePath) {
+				const pkg = n.filePath.split(/[\\/]/)[0] || n.filePath.split('/')[0];
+				if (pkg && pkg !== '.') { pkgSet.add(pkg); }
+			}
+		}
+		const packages = [...pkgSet].slice(0, 5);
+
+		// Edge types
+		const types = commEdgeTypes.get(commId);
+		const edgeTypes = types ? [...types] : [];
+
+		communities.push({
+			id: commId, size: commNodes.length, nodes: memberIds,
+			avgInDegree, cohesion, topNodes, packages, edgeTypes,
+		});
+	}
+
+	return communities.sort((a, b) => b.size - a.size).slice(0, 12); // 同 C 版 top 12
 }
 
 // ─── Service Analysis (P1) ───────────────────────────────────────────────────

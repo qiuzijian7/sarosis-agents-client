@@ -125,21 +125,30 @@ describe('ConcurrentLock — Multi-Agent Simulation', () => {
 	itAsync('10 agents writing concurrently — no data race', async () => {
 		const lock = new ConcurrentLock();
 		const results: number[] = [];
-		let sharedCounter = 0;
+		const counters: number[] = new Array(10).fill(0);
 
+		// Each agent has its OWN lock key → runs in parallel.
+		// The test verifies: (1) no deadlock, (2) all agents complete.
+		// Each agent writes to its own slot (no shared mutable state → no race).
+		// A shared read-modify-write counter would race because these are
+		// truly parallel (different lock keys); we avoid that by design.
 		const agents = Array.from({ length: 10 }, (_, i) =>
 			lock.withLock(`agent-${i}`, async () => {
-				// Each agent increments shared counter safely (own lock key = parallel)
-				const start = sharedCounter;
 				await new Promise(r => setTimeout(r, Math.random() * 20));
-				sharedCounter = start + 1;
+				counters[i] = i + 1;
 				results.push(i);
 			})
 		);
 
 		await Promise.all(agents);
-		assertEqual(sharedCounter, 10, 'counter incremented 10 times');
 		assertEqual(results.length, 10, 'all agents completed');
+		// Each slot was written exactly once
+		let total = 0;
+		for (let i = 0; i < 10; i++) {
+			assertEqual(counters[i], i + 1, `agent ${i} slot correct`);
+			total += counters[i];
+		}
+		assertEqual(total, 55, 'all slots sum to 55 (1+2+...+10)');
 	});
 
 	itAsync('same agent — writes serialized', async () => {

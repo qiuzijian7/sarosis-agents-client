@@ -5,6 +5,7 @@
  *  与现有 _buildSystemPrompt 的区别：
  *    - _buildSystemPrompt：简单的字符串拼接
  *    - ContextBuilder：结构化构建（来源 + 优先级 + token 预算 + 格式化）
+ *    - ContextBlock：1:1 对齐 agentmemory ContextBlock（priority + recency + budget）
  *
  *  上下文来源（按优先级）：
  *    1. persona slot        — Agent 人格（固定）
@@ -38,6 +39,89 @@ export interface ContextBuildResult {
 	budget: number;
 	overflow: number;
 }
+
+// ─── P0: ContextBlock 抽象（1:1 对齐 agentmemory context.ts）───
+
+export interface ContextBlock {
+	/** 块类型 */
+	type: 'slot' | 'lesson' | 'episodic' | 'semantic' | 'procedural' | 'working';
+	/** 块内容（Markdown） */
+	content: string;
+	/** 估算 token 数（char/3） */
+	tokens: number;
+	/** 时间戳（用于排序） */
+	recency: number;
+	/** 排序优先级：0=固定槽位(永不变), 1=核心记忆, 2=动态召回 */
+	priority: number;
+	/** 来源 ID 列表（用于访问记录） */
+	sourceIds?: string[];
+}
+
+/** 按 budget 贪心截断（固定优先级块不受截断） */
+export function selectWithBudgetAndPriority(
+	blocks: ContextBlock[],
+	budget: number,
+): { selected: ContextBlock[]; usedTokens: number; truncated: boolean } {
+	const selected: ContextBlock[] = [];
+	let usedTokens = 0;
+
+	// 先按 (priority ASC, recency DESC) 排序
+	const sorted = [...blocks].sort((a, b) => {
+		if (a.priority !== b.priority) return a.priority - b.priority;
+		return b.recency - a.recency;
+	});
+
+	for (const block of sorted) {
+		// 固定槽位（priority=0）不受 budget 限制
+		if (block.priority === 0) {
+			selected.push(block);
+			usedTokens += block.tokens;
+			continue;
+		}
+		if (usedTokens + block.tokens > budget) continue;
+		selected.push(block);
+		usedTokens += block.tokens;
+	}
+
+	return {
+		selected: selected.sort((a, b) => {
+			// 最终输出：先固定槽位，再按 recency 降序
+			if (a.priority === 0 && b.priority !== 0) return -1;
+			if (b.priority === 0 && a.priority !== 0) return 1;
+			return b.recency - a.recency;
+		}),
+		usedTokens,
+		truncated: selected.length < blocks.length,
+	};
+}
+
+/**
+ * 组装 <agentmemory-context> 标签
+ * 对齐 agentmemory context.ts 的输出格式
+ */
+export function wrapAgentMemoryContext(
+	blocks: ContextBlock[],
+	budget: number,
+	project?: string,
+): { text: string; usedTokens: number; truncated: boolean } {
+	const { selected, usedTokens, truncated } = selectWithBudgetAndPriority(blocks, budget);
+	if (selected.length === 0) return { text: '', usedTokens: 0, truncated: false };
+
+	const body = selected.map(b => b.content).join('\n\n');
+	const projectAttr = project ? ` project="${escapeXmlAttr(project)}"` : '';
+	const header = `<agentmemory-context${projectAttr}>`;
+	const footer = `</agentmemory-context>`;
+	const text = `${header}\n${body}\n${footer}`;
+	const totalTokens = Math.ceil(text.length / 3);
+
+	return { text, usedTokens: totalTokens, truncated };
+}
+
+function escapeXmlAttr(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── Original ContextBuilder (preserved) ────────────────────────────────
 
 function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);

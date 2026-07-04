@@ -35,6 +35,7 @@ export interface GraphNode {
 	inDegree: number;
 	outDegree: number;
 	community?: number;      // Leiden 社区 ID
+	type?: string;           // 节点类型别名（与 label 对齐，便于跨模块统一访问）
 }
 
 export interface GraphEdge {
@@ -56,6 +57,7 @@ export interface FileHash {
 
 export interface SearchParams {
 	project?: string;
+	query?: string;            // (P0) BM25 全文搜索 — 自然语言查询, 驼峰分词感知
 	namePattern?: string;     // regex
 	qnPattern?: string;       // (P1) qualified name regex
 	label?: string;            // node type filter
@@ -78,6 +80,10 @@ export interface SearchParams {
 export interface SearchResult {
 	nodes: GraphNode[];
 	total: number;
+	/** 当 query (BM25) 路径时附带 BM25 评分 (nodeId → score) */
+	scores?: Map<number, number>;
+	/** 当 total > nodes.length 时, 表示还有更多结果可用 offset+limit pagination */
+	hasMore?: boolean;
 }
 
 // ─── BM25 Full-Text Search ───────────────────────────────────────────────────
@@ -427,10 +433,83 @@ export class CodebaseGraphStore {
 
 	// ─── Search ────────────────────────────────────────────────────────────
 
+	/**
+	 * BM25 结构加权重排（对齐 codebase-memory-mcp C 实现）。
+	 * 噪声标签（File/Folder/Module/Variable）默认从 BM25 结果中排除，
+	 * Function/Method/Route 节点获得额外评分加成。
+	 */
+	private static readonly BM25_BOOST: Record<string, number> = {
+		'function': 10, 'method': 10, 'route': 8,
+		'class': 5, 'interface': 5, 'struct': 5,
+	};
+	private static readonly BM25_NOISE_LABELS = new Set([
+		'file', 'folder', 'module', 'variable', 'package',
+	]);
+
 	search(params: SearchParams): SearchResult {
 		let candidates: GraphNode[];
+		let scores: Map<number, number> | undefined;
 
-		// Label filter
+		// ── BM25 全文搜索路径 (P0) ──────────────────────────────────────
+		if (params.query && params.query.trim()) {
+			const limit = params.limit ?? 200;
+			// 如有 filePattern，多抽样以补偿后过滤损失
+			const oversample = params.filePattern ? limit * 10 : limit * 3;
+			const bm25Scores = this._bm25.search(params.query.trim(), oversample);
+
+			// filePattern regex (如已提供)
+			let fileRegex: RegExp | undefined;
+			if (params.filePattern) {
+				fileRegex = this._globToRegex(params.filePattern);
+			}
+
+			// 结构加权重排 + 噪声标签过滤
+			const boosted = new Map<number, number>();
+			for (const [nodeId, bm25Score] of bm25Scores) {
+				const node = this._nodes.get(nodeId);
+				if (!node) { continue; }
+				// 噪声标签过滤
+				const nodeType = node.type ?? node.label;
+				if (nodeType && CodebaseGraphStore.BM25_NOISE_LABELS.has(nodeType.toLowerCase())) { continue; }
+				// 项目过滤
+				if (params.project && node.project !== params.project) { continue; }
+				// label 过滤
+				if (params.label && node.type !== params.label) { continue; }
+				// filePattern 过滤
+				if (fileRegex && node.filePath && !fileRegex.test(node.filePath)) { continue; }
+				// 结构 boosting
+				const typeKey = node.type?.toLowerCase() || '';
+				const boost = CodebaseGraphStore.BM25_BOOST[typeKey] || 0;
+				boosted.set(nodeId, bm25Score + boost);
+			}
+
+			// 按评分排序
+			const sortedIds = [...boosted.entries()]
+				.sort((a, b) => b[1] - a[1]);
+
+			candidates = [];
+			for (const [nodeId] of sortedIds) {
+				const node = this._nodes.get(nodeId);
+				if (node) { candidates.push(node); }
+			}
+
+			// Brand filter — degree / relType 仍需应用
+			candidates = this._applyFilterChain(candidates, params, /* skipName */ true);
+
+			const total = candidates.length;
+			const offset = params.offset || 0;
+			const paged = candidates.slice(offset, offset + (params.limit || 200));
+
+			// 收集评分
+			scores = new Map();
+			for (const node of paged) {
+				if (boosted.has(node.id)) { scores.set(node.id, boosted.get(node.id)!); }
+			}
+
+			return { nodes: paged, total, scores, hasMore: offset + paged.length < total };
+		}
+
+		// ── Regex / label 搜索路径 (原有逻辑) ────────────────────────────
 		if (params.label) {
 			candidates = this.findNodesByLabel(params.project || '', params.label);
 		} else if (params.filePattern) {
@@ -450,14 +529,52 @@ export class CodebaseGraphStore {
 			candidates = candidates.filter(n => n.project === params.project);
 		}
 
+		candidates = this._applyFilterChain(candidates, params, /* skipName */ false);
+
+		const total = candidates.length;
+		const offset = params.offset || 0;
+		const paged = candidates.slice(offset, offset + (params.limit || 100));
+
+		// Include directly connected nodes (P1)
+		if (params.includeConnected && paged.length > 0) {
+			const connectedSet = new Set(paged.map(n => n.id));
+			const connectedNodes: GraphNode[] = [];
+			for (const node of paged) {
+				for (const edge of this.getEdgesBySource(node.id)) {
+					if (!connectedSet.has(edge.targetId)) {
+						const target = this._nodes.get(edge.targetId);
+						if (target && target.project === (params.project || target.project)) {
+							connectedSet.add(target.id);
+							connectedNodes.push(target);
+						}
+					}
+				}
+				for (const edge of this.getEdgesByTarget(node.id)) {
+					if (!connectedSet.has(edge.sourceId)) {
+						const source = this._nodes.get(edge.sourceId);
+						if (source && source.project === (params.project || source.project)) {
+							connectedSet.add(source.id);
+							connectedNodes.push(source);
+						}
+					}
+				}
+			}
+			paged.push(...connectedNodes.slice(0, (params.limit || 100) * 2));
+		}
+
+		return { nodes: paged, total, hasMore: offset + paged.length < total };
+	}
+
+	/** 统一的过滤链（degree / relType / namePattern / qnPattern / excludeLabels / sort） */
+	private _applyFilterChain(candidates: GraphNode[], params: SearchParams, skipName: boolean): GraphNode[] {
 		// Exclude labels filter (P1)
 		if (params.excludeLabels && params.excludeLabels.length > 0) {
 			const excludeSet = new Set(params.excludeLabels);
 			candidates = candidates.filter(n => !excludeSet.has(n.label));
 		}
 
-		// Name pattern filter
-		if (params.namePattern) {
+		// Name pattern filter (skip if BM25 already handled relevance)
+		if (!skipName && params.namePattern) {
 			const flags = params.caseSensitive ? '' : 'i';
 			const regex = new RegExp(params.namePattern, flags);
 			candidates = candidates.filter(n =>
@@ -486,7 +603,7 @@ export class CodebaseGraphStore {
 			candidates = candidates.filter(n => n.outDegree <= params.maxOutDegree!);
 		}
 
-		// Relationship type filter — keep nodes that have edges of the specified type
+		// Relationship type filter
 		if (params.relType) {
 			const dir = params.relDirection || 'both';
 			candidates = candidates.filter(n => {
@@ -514,41 +631,7 @@ export class CodebaseGraphStore {
 			});
 		}
 
-		const total = candidates.length;
-		const offset = params.offset || 0;
-		const limit = params.limit || 100;
-		const nodes = candidates.slice(offset, offset + limit);
-
-		// Include directly connected nodes (P1)
-		if (params.includeConnected && nodes.length > 0) {
-			const connectedSet = new Set(nodes.map(n => n.id));
-			const connectedNodes: GraphNode[] = [];
-			for (const node of nodes) {
-				// Outgoing edges
-				for (const edge of this.getEdgesBySource(node.id)) {
-					if (!connectedSet.has(edge.targetId)) {
-						const target = this._nodes.get(edge.targetId);
-						if (target && target.project === (params.project || target.project)) {
-							connectedSet.add(target.id);
-							connectedNodes.push(target);
-						}
-					}
-				}
-				// Incoming edges
-				for (const edge of this.getEdgesByTarget(node.id)) {
-					if (!connectedSet.has(edge.sourceId)) {
-						const source = this._nodes.get(edge.sourceId);
-						if (source && source.project === (params.project || source.project)) {
-							connectedSet.add(source.id);
-							connectedNodes.push(source);
-						}
-					}
-				}
-			}
-			nodes.push(...connectedNodes.slice(0, limit * 2)); // cap connected nodes
-		}
-
-		return { nodes, total };
+		return candidates;
 	}
 
 	ftsSearch(query: string, limit: number = 50): Map<number, number> {

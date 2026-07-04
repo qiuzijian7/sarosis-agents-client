@@ -28,7 +28,7 @@ export interface MemorySlot {
 	content: string;
 	sizeLimit: number;
 	description: string;
-	pinned: boolean;
+	pinned: boolean;   // Q3: pinned slot 优先注入，不受 budget 限制
 	readonly: boolean;
 	createdAt: string;
 	updatedAt: string;
@@ -89,6 +89,30 @@ export class SlotRegistry {
 	getPinned(agentId: string): MemorySlot[] {
 		const slots = this._ensure(agentId);
 		return Array.from(slots.values()).filter(s => s.pinned && s.content.length > 0);
+	}
+
+	/** Q3: Pin/unpin a slot at runtime */
+	pin(agentId: string, label: SlotName, pinned: boolean = true): void {
+		const slots = this._ensure(agentId);
+		const slot = slots.get(label);
+		if (slot) { slot.pinned = pinned; slot.updatedAt = new Date().toISOString(); }
+	}
+
+	/** List all slots for an agent */
+	list(agentId: string): MemorySlot[] {
+		return Array.from(this._ensure(agentId).values());
+	}
+
+	/** Q3: Build context with pinned slots first */
+	buildContext(agentId: string): string {
+		const all = this.list(agentId).filter(s => s.content.length > 0);
+		const pinned = all.filter(s => s.pinned);
+		const unpinned = all.filter(s => !s.pinned);
+		const parts: string[] = [];
+		for (const s of [...pinned, ...unpinned]) {
+			parts.push(`## ${s.description} (${s.label})\n${s.content}`);
+		}
+		return parts.join('\n\n');
 	}
 
 	/** Get all slots */

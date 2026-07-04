@@ -31,7 +31,7 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
-import { IFileService, FileType } from '../../../../../../platform/files/common/files.js';
+import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
@@ -43,25 +43,33 @@ import { ISkillRegistry } from '../../../common/skills.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { ITerminalService } from '../../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IAgentStudioService, ITaskOrchestrationService, IAgentTaskBoardService } from '../../../../../common/agentStudioService.js';
-import { TaskBoardStatus, TaskSource } from '../../../common/types.js';
 import { ITriageService } from '../../../common/triageService.js';
-import { ISwarmService, SwarmWorkerSpec } from '../../../common/swarmService.js';
+import { ISwarmService } from '../../../common/swarmService.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { IAgentOSService } from '../../../common/agentOS.js';
 import { SubAgentType, SubAgentResult, UnifiedSubAgentDispatch } from '../../../common/unifiedSubAgentDispatch.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
-import { IWorkflowStorageService, IStoredWorkflow } from '../../../common/workflowStorage.js';
+import { IWorkflowStorageService } from '../../../common/workflowStorage.js';
 import { resolveWorkspacePath } from '../../../common/workspacePathResolver.js';
-import { IMcpService, IMcpServer, McpConnectionState } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
+import { IPathService } from '../../../../../../workbench/services/path/common/pathService.js';
+import { SkillManagerTool, SKILL_CREATE_TOOL_SCHEMA, SKILL_CREATE_TOOL_DESCRIPTION } from '../../skillManagerTool.js';
+import type { Agent } from '../../../../../common/agentStudioTypes.js';
+import { AgentType } from '../../../../../common/agentStudioTypes.js';
+import { ICodebaseGraphService } from '../../codebaseGraphService.js';
+import { AdrManager } from '../../codebaseGraphAdr.js';
+import { registerCodebaseTools } from './codebaseTools.js';
+import { registerKanbanTools } from './kanbanTools.js';
+import { registerWorkflowTools } from './workflowTools.js';
 
 
-type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string) => Promise<IToolResultContent[]>;
+type ToolHandlerResult = IToolResultContent[] | { content: IToolResultContent[]; details?: Record<string, unknown> };
+type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string) => Promise<ToolHandlerResult>;
 
 /**
  * Kanban 工具中已实现真实 handler 的名字集合。
  * 这些工具由 _registerKanbanTools() 注册，_registerBundledTools() 会跳过它们的 stub。
  */
-	const KANBAN_TOOLS_WITH_HANDLER = new Set<string>([
+const KANBAN_TOOLS_WITH_HANDLER = new Set<string>([
 	'kanban_create',
 	'kanban_complete',
 	'kanban_block',
@@ -87,13 +95,136 @@ const WORKFLOW_TOOLS_WITH_HANDLER = new Set<string>([
 	'workflow_apply',
 ]);
 
+
 /**
  * Module-level Emitter for AI-driven workflow changes.
- * Defined outside the class to avoid TDZ (Temporal Dead Zone) issues
- * with static field initializers referencing the class itself.
- * The controller subscribes to `.event`; the workflow_apply handler fires it.
+ * Extracted to workflowShared.ts to break cyclic dependency with workflowTools.ts.
  */
-export const workflowAppliedEmitter = new Emitter<{ workflow: IStoredWorkflow; description?: string }>();
+export { workflowAppliedEmitter } from './workflowShared.js';
+
+
+// ─── new_agent 工具 — 独立导出函数，便于 TDD 测试 ────────────────────────────
+
+/**
+ * 将 agent 名称转换为 URL 友好的 slug 格式。
+ *
+ * 规则：
+ *   - 小写字母、数字、连字符
+ *   - 空格/下划线 → 连字符
+ *   - 移除其他特殊字符
+ *   - 去除首尾连字符
+ *   - 最多 40 字符
+ *
+ * 示例：
+ *   "Code Reviewer"   → "code-reviewer"
+ *   "My Coding Agent"  → "my-coding-agent"
+ *   "UI/UX Designer"   → "uiux-designer"
+ *
+ * 导出为独立函数以便单元测试。
+ */
+export function slugifyAgentName(name: string): string {
+	return name
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9\s_-]/g, '')   // 移除特殊字符
+		.replace(/[\s_]+/g, '-')          // 空格/下划线 → 连字符
+		.replace(/-+/g, '-')              // 去重连字符
+		.replace(/^-|-$/g, '')            // 去首尾连字符
+		.slice(0, 40);                    // 限制长度
+}
+
+/**
+ * handleNewAgentTool — 创建持久化 Agent 定义。
+ *
+ * 与 delegate_task 的区别：
+ *   - delegate_task 创建一次性子代理，执行完即销毁
+ *   - new_agent 创建持久化 Agent，保存到 ~/.saros/agents/{id}/，可被后续复用
+ *
+ * Agent 命名规则：
+ *   - 名称自动转为 slug 格式（小写、连字符分隔，如 "Code Reviewer" → "code-reviewer"）
+ *   - id 与 slug 名称一致，无随机后缀（确保可读性和可预测性）
+ *
+ * 导出为独立函数以便单元测试（避免实例化整个 BuiltinToolProvider）。
+ *
+ * @param args LLM 传入的工具参数
+ * @param studioService Agent Studio 服务（提供 createAgent）
+ * @returns IToolResultContent[] — JSON 格式的创建结果
+ */
+export async function handleNewAgentTool(
+	args: Record<string, unknown>,
+	studioService: Pick<IAgentStudioService, 'createAgent'>,
+): Promise<IToolResultContent[]> {
+	const rawName = args['name'] as string | undefined;
+	const role = args['role'] as string | undefined;
+	const description = args['description'] as string | undefined;
+
+	// 1. 验证必填字段
+	const missing: string[] = [];
+	if (!rawName?.trim()) { missing.push('name'); }
+	if (!role?.trim()) { missing.push('role'); }
+	if (!description?.trim()) { missing.push('description'); }
+	if (missing.length > 0) {
+		return [{ type: 'text', text: JSON.stringify({
+			success: false,
+			error: `Missing required parameter(s): ${missing.join(', ')}`,
+		}) }];
+	}
+
+	// 2. Slug 化名称并对齐 _generateId 的 slug 逻辑（但去掉随机后缀）
+	const slugName = slugifyAgentName(rawName!);
+	if (!slugName) {
+		return [{ type: 'text', text: JSON.stringify({
+			success: false,
+			error: `Invalid agent name "${rawName}": slug results in empty string after normalization. Use at least one alphanumeric character.`,
+		}) }];
+	}
+
+	// 3. 构建 Partial<Agent> — 提供 id 以绕过 _generateId 的随机后缀
+	const trimmedRole = role!.trim();
+	const trimmedDesc = description!.trim();
+	const agentData: Partial<Agent> = {
+		id: slugName,
+		name: slugName,
+		role: trimmedRole,
+		description: trimmedDesc,
+		source: 'custom',
+	};
+	// systemPrompt: 用户提供则使用，否则基于 role + description 自动生成
+	agentData.systemPrompt = args['systemPrompt']
+		? (args['systemPrompt'] as string)
+		: `You are a ${trimmedRole}. ${trimmedDesc}`;
+	if (args['model']) { agentData.model = args['model'] as string; }
+	if (args['tools']) { agentData.tools = args['tools'] as string[]; }
+	if (args['skills']) { agentData.skills = args['skills'] as string[]; }
+	if (args['category']) { agentData.category = args['category'] as string; }
+	if (args['agentType']) {
+		agentData.agentType = (args['agentType'] === 'planner')
+			? AgentType.Planner
+			: AgentType.Worker;
+	}
+
+	// 4. 调用 studioService.createAgent
+	try {
+		const agent = await studioService.createAgent(agentData);
+		return [{ type: 'text', text: JSON.stringify({
+			success: true,
+			id: agent.id,
+			name: agent.name,
+			role: agent.role,
+			description: agent.description,
+			agentType: agent.agentType ?? 'worker',
+			category: agent.category,
+			systemPrompt: agent.systemPrompt || '(auto-generated)',
+			message: `Agent "${agent.name}" created successfully. Use delegate_task to assign tasks to it.`,
+		}) }];
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return [{ type: 'text', text: JSON.stringify({
+			success: false,
+			error: `Failed to create agent: ${msg}`,
+		}) }];
+	}
+}
 
 interface IToolDescriptor {
 	readonly definition: IToolDefinition;
@@ -127,6 +258,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	private readonly _onDidChangeTools = this._register(new Emitter<void>());
 	readonly onDidChangeTools: Event<void> = this._onDidChangeTools.event;
 
+	/** Skill Manager 工具实例 —— 提供 skill_create 能力 */
+	private _skillManagerTool!: SkillManagerTool;
+
 	// v17: worktree path inherited from the parent agent's execution context.
 	// Set by `setParentWorktreePath()` before each turn; cleared on turn end.
 	// Used by the `delegate_task` tool to propagate the worktree to sub-agents.
@@ -148,6 +282,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		return this._parentWorktreePath;
 	}
 
+	/** ADR Manager 实例 —— 提供 manage_adr 能力 */
+	private _adrManager!: AdrManager;
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
@@ -164,9 +301,17 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	@ICheckpointService private readonly checkpointService: ICheckpointService,
 	@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 	@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
-	@IMcpService private readonly mcpService: IMcpService,
+	@IPathService private readonly pathService: IPathService,
+	@ICodebaseGraphService private readonly codebaseGraphService: ICodebaseGraphService,
 	) {
 		super();
+		this._skillManagerTool = new SkillManagerTool(
+			this.fileService,
+			this.pathService,
+			this.skillRegistry,
+			this.logService,
+		);
+		this._adrManager = new AdrManager(this.fileService);
 		this._registerCoreTools();
 		this._registerCompatibilityTools();
 		this._registerMemoryTools();
@@ -175,193 +320,16 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerDelegationTools();
 		this._registerKanbanTools();
 		this._registerWorkflowTools();
-		this._registerMcpBridgeTools();
+		this._registerCodebaseTools();
+		// _registerMcpBridgeTools() 已废弃 — MCP 工具统一走 tool_search/tool_describe/tool_call
+		// 保留方法定义以备审计/兼容老调用
 	}
 
-	// ─── MCP Bridge Tools ──────────────────────────────────────────────────
-
-	/**
-	 * 注册 MCP 桥接工具：用 2 个桥接工具替代 N 个 MCP 工具定义。
-	 *
-	 * LLM 先用 mcp_tool_search 搜索可用工具，再用 mcp_tool_call 执行。
-	 * 这样大幅减少发送给 LLM 的工具 schema 数量，避免 API 超时。
-	 *
-	 * 设计参考：Hermes-Agent 的 Tool Search progressive disclosure 机制。
-	 */
-	private _registerMcpBridgeTools(): void {
-
-		// ── mcp_tool_search: 搜索 MCP 工具 ──────────────────────────────
-		this._tools.set('mcp_tool_search', {
-			definition: {
-				name: 'mcp_tool_search',
-				description: [
-					'Search available MCP tools by keyword. Returns tool names and short descriptions.',
-					'Use this to find MCP tools before calling them with mcp_tool_call.',
-					'Pass "list" to see ALL available MCP tools.',
-					'Example: mcp_tool_search("architecture") → [{name: "get_architecture", description: "..."}]',
-					'Example: mcp_tool_search("list") → all MCP tools',
-				].join('\n'),
-				inputSchema: {
-					type: 'object',
-					properties: {
-						query: {
-							type: 'string',
-							description: 'Search query (matches tool name, description, and server name, case-insensitive). Pass "list" to see all tools.',
-						},
-					},
-					required: ['query'],
-				},
-				category: 'utility',
-				source: this.id,
-				securityLevel: ToolSecurityLevel.Safe,
-			},
-			handler: async (args: Record<string, unknown>): Promise<IToolResultContent[]> => {
-				const query = String(args.query ?? '').toLowerCase().trim();
-				if (!query) {
-					return [{ type: 'text', text: 'Error: query parameter is required. Pass "list" to see all tools.' }];
-				}
-
-				const listAll = query === 'list' || query === '*' || query === 'all';
-				const servers = this.mcpService.servers.get();
-				const results: Array<{ name: string; description: string; server: string }> = [];
-
-				for (const server of servers) {
-					const connState = server.connectionState.get();
-					if (connState.state !== McpConnectionState.Kind.Running) { continue; }
-					const serverLabel = server.definition.label;
-					const tools = server.tools.get();
-					for (const tool of tools) {
-						const toolName = tool.referenceName || tool.definition.name;
-						const desc = tool.definition.description || '';
-						// Match: list all, or query in tool name / description / server name
-						if (listAll ||
-							toolName.toLowerCase().includes(query) ||
-							desc.toLowerCase().includes(query) ||
-							serverLabel.toLowerCase().includes(query)) {
-							results.push({
-								name: toolName,
-								description: desc.slice(0, 200),
-								server: serverLabel,
-							});
-						}
-					}
-				}
-
-				if (results.length === 0) {
-					return [{ type: 'text', text: `No MCP tools found matching "${query}". Try different keywords or use mcp_tool_search("list") to see all available tools.` }];
-				}
-
-				const lines = results.map(r => `  - ${r.name}: ${r.description} [server: ${r.server}]`);
-				return [{ type: 'text', text: `Found ${results.length} MCP tool(s):\n${lines.join('\n')}\n\nUse mcp_tool_call(name, args) to execute any of these tools.` }];
-			},
-		});
-
-		// ── mcp_tool_call: 执行 MCP 工具 ───────────────────────────────
-		this._tools.set('mcp_tool_call', {
-			definition: {
-				name: 'mcp_tool_call',
-				description: [
-					'Execute an MCP tool by name, or inspect its parameter schema.',
-					'Use mcp_tool_search first to find available tools.',
-					'Pass describe_only=true to see the full parameter schema without executing.',
-					'Example: mcp_tool_call("get_architecture", {"project": "my-project"})',
-					'Example: mcp_tool_call("search_code", {"query": "auth"}, describe_only=true)',
-				].join('\n'),
-				inputSchema: {
-					type: 'object',
-					properties: {
-						name: {
-							type: 'string',
-							description: 'The MCP tool name (returned by mcp_tool_search)',
-						},
-						args: {
-							type: 'object',
-							description: 'Arguments object to pass to the MCP tool. Check the tool description for required parameters.',
-							additionalProperties: true,
-						},
-						describe_only: {
-							type: 'boolean',
-							description: 'If true, return the tool\'s full parameter schema without executing. Useful to check required parameters before calling.',
-						},
-					},
-					required: ['name'],
-				},
-				category: 'utility',
-				source: this.id,
-				securityLevel: ToolSecurityLevel.Cautious,
-			},
-			handler: async (args: Record<string, unknown>): Promise<IToolResultContent[]> => {
-				const toolName = String(args.name ?? '').trim();
-				const toolArgs = (args.args as Record<string, unknown>) ?? {};
-				const describeOnly = Boolean(args.describe_only);
-
-				if (!toolName) {
-					return [{ type: 'text', text: 'Error: name parameter is required' }];
-				}
-
-				const servers = this.mcpService.servers.get();
-				let foundServer: IMcpServer | undefined;
-				let foundTool: any | undefined;
-
-				for (const server of servers) {
-					const connState = server.connectionState.get();
-					if (connState.state !== McpConnectionState.Kind.Running) {
-						// Try to start the server if it's stopped
-						if (connState.state === McpConnectionState.Kind.Stopped || connState.state === McpConnectionState.Kind.Error) {
-							try { await server.start(); } catch { continue; }
-						} else { continue; }
-					}
-					const tools = server.tools.get();
-					for (const tool of tools) {
-						const refName = tool.referenceName || tool.definition.name;
-						if (refName === toolName || tool.definition.name === toolName || tool.id === toolName) {
-							foundServer = server;
-							foundTool = tool;
-							break;
-						}
-					}
-					if (foundTool) { break; }
-				}
-
-			if (!foundServer || !foundTool) {
-				return [{ type: 'text', text: `Error: MCP tool "${toolName}" not found. Use mcp_tool_search to find available tools.` }];
-			}
-
-				// describe_only mode: return the tool's full schema without executing
-				if (describeOnly) {
-					const schema = foundTool.definition.inputSchema || {};
-					const desc = foundTool.definition.description || '';
-					return [{ type: 'text', text: `Tool: ${toolName}\nDescription: ${desc}\nParameters:\n${JSON.stringify(schema, null, 2)}` }];
-				}
-
-			try {
-					const result = await foundTool.call(toolArgs, undefined, CancellationToken.None);
-					const contents: IToolResultContent[] = [];
-					if (Array.isArray(result.content)) {
-						for (const c of result.content) {
-							if (c?.type === 'text') {
-								contents.push({ type: 'text', text: String(c.text ?? '') });
-							} else if (c?.type === 'image') {
-								contents.push({ type: 'image', data: String(c.data ?? ''), mimeType: String(c.mimeType ?? 'image/png') });
-							} else {
-								contents.push({ type: 'text', text: JSON.stringify(c) });
-							}
-						}
-					}
-					if (result.isError) {
-						const errorText = contents.map(c => c.type === 'text' ? c.text : '').join('\n');
-						return [{ type: 'text', text: `MCP tool "${toolName}" returned an error:\n${errorText}` }];
-					}
-					return contents.length > 0 ? contents : [{ type: 'text', text: `MCP tool "${toolName}" executed successfully (no output).` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `Error executing MCP tool "${toolName}": ${msg}` }];
-				}
-			},
-		});
-
-		this.logService.info('[BuiltinToolProvider] Registered MCP bridge tools: mcp_tool_search, mcp_tool_call');
-	}
+	// ─── MCP Bridge Tools (DEPRECATED) ───────────────────────────────────────
+	// 2026-07-03: 统一为单套桥接 tool_search/tool_describe/tool_call（对齐 Hermes-Agent）
+	// MCP 工具现在通过 'mcp' toolset 纳入 deferrable 池，
+	// LLM 通过统一的 tool_search → tool_describe → tool_call 路径发现和调用。
+	// 原 _registerMcpBridgeTools() 方法体已删除，MCP 桥接工具不再注册。
 
 	/**
 	 * 检查请求的路径是否在允许的工作区目录内，并将相对路径解析为绝对路径。
@@ -495,11 +463,15 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 */
 	async getAllToolDefinitions(_agentId: string): Promise<IToolDefinition[]> {
 		const out: IToolDefinition[] = [];
+		let stubCount = 0;
+		let unavailableCount = 0;
 		for (const [name, t] of this._tools) {
-			if (t.available && !t.available()) { continue; }
+			if (t.available && !t.available()) { unavailableCount++; continue; }
+			if (t.isStub) { stubCount++; continue; }
 			const toolset = t.definition.toolset ?? getToolsetForTool(name);
 			out.push({ ...t.definition, toolset });
 		}
+		this.logService.info(`[BuiltinTools] getAllToolDefinitions: ${out.length} tools (skipped ${stubCount} stubs, ${unavailableCount} unavailable), total registered=${this._tools.size}`);
 		return out;
 	}
 
@@ -568,6 +540,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	async executeTool(_agentId: string, toolCall: IToolCall, signal?: AbortSignal): Promise<IToolResult> {
 		const t = this._tools.get(toolCall.name);
 		if (!t) {
+			this.logService.warn(`[BuiltinTools] executeTool: tool "${toolCall.name}" NOT FOUND (callId=${toolCall.id}). Registered tools: ${[...this._tools.keys()].slice(0, 20).join(', ')}${this._tools.size > 20 ? '...' : ''}`);
 			return {
 				toolCallId: toolCall.id,
 				success: false,
@@ -575,7 +548,11 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				error: `Unknown tool: ${toolCall.name}`,
 			};
 		}
+		if (t.isStub) {
+			this.logService.warn(`[BuiltinTools] executeTool: tool "${toolCall.name}" is a STUB — should have been filtered by listTools. Args: ${JSON.stringify(toolCall.arguments).slice(0, 200)}`);
+		}
 		if (t.available && !t.available()) {
+			this.logService.warn(`[BuiltinTools] executeTool: tool "${toolCall.name}" not available in this environment`);
 			return {
 				toolCallId: toolCall.id,
 				success: false,
@@ -594,17 +571,25 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			};
 		}
 		const startTime = Date.now();
+		const argKeys = Object.keys(toolCall.arguments ?? {});
+		this.logService.info(`[BuiltinTools] executeTool: "${toolCall.name}" (callId=${toolCall.id}, args=[${argKeys.join(',')}])`);
 		try {
-			const content = await t.handler(toolCall.arguments ?? {}, signal, _agentId);
-			return {
+			const raw = await t.handler(toolCall.arguments ?? {}, signal, _agentId);
+			const content = Array.isArray(raw) ? raw : raw.content;
+			const details = Array.isArray(raw) ? undefined : raw.details;
+			const result: IToolResult = {
 				toolCallId: toolCall.id,
 				success: true,
 				content,
 				metadata: { executionTimeMs: Date.now() - startTime },
+				...(details ? { details } : {}),
 			};
+			const contentSummary = content.map(c => c.type === 'text' ? (c.text ?? '').slice(0, 100) : `[${c.type}]`).join(' | ');
+			this.logService.info(`[BuiltinTools] executeTool: "${toolCall.name}" OK (${Date.now() - startTime}ms) → ${contentSummary}`);
+			return result;
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.logService.warn(`[BuiltinTools] ${toolCall.name} failed: ${msg}`);
+			this.logService.warn(`[BuiltinTools] executeTool: "${toolCall.name}" FAILED (${Date.now() - startTime}ms): ${msg}`);
 			return {
 				toolCallId: toolCall.id,
 				success: false,
@@ -614,6 +599,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			};
 		}
 	}
+
 
 	// ─── 公共注册接口 ───────────────────────────────────────────────────
 
@@ -1063,40 +1049,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	private _registerCompatibilityTools(): void {
 		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
 
-		// ── 别名: skills_list → list_skills ─────────────────────────
-		this.register({
-			definition: {
-				name: 'skills_list',
-				description: 'List all available skills with their names, categories, and descriptions. (Alias for list_skills)',
-				inputSchema: { type: 'object', properties: { category: { type: 'string', description: 'Filter by category (optional)' } } },
-				category: 'skills', source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const skills = this.skillRegistry?.getSkills() ?? [];
-				const cat = String(args['category'] ?? '');
-				const filtered = cat ? skills.filter(s => s.category === cat) : skills;
-				if (filtered.length === 0) { return text('No skills found.'); }
-				return text(filtered.map(s => `- ${s.name}: ${s.description ?? ''}`).join('\n'));
-			},
-		});
-
-		// ── 别名: skill_view → read_skill ───────────────────────────
-		this.register({
-			definition: {
-				name: 'skill_view',
-				description: 'View the full content of a specific skill by name or ID. (Alias for read_skill)',
-				inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Skill name or ID to view' } }, required: ['name'] },
-				category: 'skills', source: this.id,
-			},
-			handler: async (args) => {
-				const name = String(args['name'] ?? '').trim();
-				if (!name) { return text('Error: name is required'); }
-				const skills = this.skillRegistry?.getSkills() ?? [];
-				const skill = skills.find(s => s.id === name || s.name.toLowerCase() === name.toLowerCase());
-				if (!skill) { return text(`Skill "${name}" not found. Use skills_list to see available skills.`); }
-				return text(`# Skill: ${skill.name}\n\n${skill.prompt?.slice(0, 8192) ?? '(no content)'}`);
-			},
-		});
+		// skills_list 和 skill_view 已在 _registerSkillTools 中注册（含 Hermes 兼容格式）
 
 		// ── 别名: memory → memory_remember (Hermes 旧名) ───────────
 		const memStore = new Map<string, string>();
@@ -1141,52 +1094,84 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 		});
 
-		// ── todo: in-memory task list ───────────────────────────────
-		const _todoStore: Array<{ id: string; text: string; status: string }> = [];
-		this.register({
-			definition: {
-				name: 'todo',
-				description: 'Manage a task list for tracking multi-step work. Add, list, update, and remove tasks.',
-				inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['add', 'list', 'update', 'remove', 'clear'], description: 'Action to perform' }, id: { type: 'string', description: 'Task ID (for update/remove)' }, text: { type: 'string', description: 'Task description (for add)' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'], description: 'Task status (for update)' } }, required: ['action'] },
-				category: 'todo', source: this.id,
+	// ── update_plan: LLM 自主规划（对齐 OpenClaw update_plan）─────────
+	// 极简模型：LLM 传入完整步骤列表（替换语义），系统仅校验约束。
+	// 步骤状态：pending | in_progress | completed
+	// 约束：最多一个 in_progress（对齐 OpenClaw PLAN_STEP_STATUSES）
+	// 2026-07-04: 替代旧的 todo 工具（CRUD 式 task list），
+	// 对齐 OpenClaw 的交织式规划：update_plan → 执行工具 → update_plan（更新状态）
+	this.register({
+		definition: {
+			name: 'update_plan',
+			displaySummary: 'Track short work plan.',
+			replaySafe: true,
+			description: 'Update current run plan. ' +
+				'Use for non-trivial multi-step work; keep plan current while executing. ' +
+				'Short steps; max one in_progress; skip for simple one-step work.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					plan: {
+						type: 'array',
+						description: 'Ordered list of steps (replaces previous plan).',
+						minItems: 1,
+						items: {
+							type: 'object',
+							properties: {
+								step: { type: 'string', description: 'Short step description.' },
+								status: {
+									type: 'string',
+									enum: ['pending', 'in_progress', 'completed'],
+									description: 'pending | in_progress | completed.',
+								},
+							},
+							required: ['step', 'status'],
+							additionalProperties: true,
+						},
+					},
+					explanation: {
+						type: 'string',
+						description: 'Optional short note explaining what changed.',
+					},
+				},
+				required: ['plan'],
 			},
-			handler: async (args) => {
-				const action = String(args['action'] ?? '');
-				switch (action) {
-					case 'add': {
-						const t = String(args['text'] ?? '');
-						if (!t) { return text('Error: text is required for add action'); }
-						const id = `todo_${Date.now().toString(36)}`;
-						_todoStore.push({ id, text: t, status: 'pending' });
-						return text(`Added task ${id}: ${t}`);
-					}
-					case 'list': {
-						if (_todoStore.length === 0) { return text('(no tasks)'); }
-						return text(_todoStore.map(t => `- [${t.status}] ${t.id}: ${t.text}`).join('\n'));
-					}
-					case 'update': {
-						const id = String(args['id'] ?? '');
-						const status = String(args['status'] ?? '');
-						const task = _todoStore.find(t => t.id === id);
-						if (!task) { return text(`Error: Task ${id} not found`); }
-						if (status) { task.status = status; }
-						return text(`Updated task ${id} → ${task.status}`);
-					}
-					case 'remove': {
-						const id = String(args['id'] ?? '');
-						const idx = _todoStore.findIndex(t => t.id === id);
-						if (idx === -1) { return text(`Error: Task ${id} not found`); }
-						_todoStore.splice(idx, 1);
-						return text(`Removed task ${id}`);
-					}
-					case 'clear':
-						_todoStore.length = 0;
-						return text('All tasks cleared.');
-					default:
-						return text(`Unknown action: ${action}`);
+			category: 'todo', source: this.id,
+		},
+		handler: async (args) => {
+			const plan = args['plan'];
+			if (!Array.isArray(plan) || plan.length === 0) {
+				return text('update_plan error: "plan" must be a non-empty array of steps');
+			}
+			// 校验约束：最多一个 in_progress（对齐 OpenClaw）
+			const inProgressCount = plan.filter(
+				(s: any) => s?.status === 'in_progress'
+			).length;
+			if (inProgressCount > 1) {
+				return text(`update_plan error: at most one step may be in_progress (found ${inProgressCount})`);
+			}
+			// 校验每个步骤
+			for (const s of plan) {
+				if (!s || typeof s.step !== 'string' || !s.step.trim()) {
+					return text('update_plan error: each step must have a non-empty "step" string');
 				}
-			},
-		});
+				if (!['pending', 'in_progress', 'completed'].includes(s.status)) {
+					return text(`update_plan error: invalid status "${s.status}" for step "${s.step}"`);
+				}
+			}
+			const explanation = args['explanation'] as string | undefined;
+			// 对齐 OpenClaw: content: [] — LLM 不重复看到计划文本
+			// details 供 UI 渲染结构化计划卡片（进度条 + 步骤状态）
+			return {
+				content: [] as IToolResultContent[],
+				details: {
+					status: 'updated' as const,
+					plan: plan as Array<{ step: string; status: string }>,
+					...(explanation ? { explanation } : {}),
+				},
+			};
+		},
+	});
 
 		// ── patch: 基础文件补丁 ──────────────────────────────────
 		this.register({
@@ -1484,34 +1469,73 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					const allSkills = this.skillRegistry.getSkills();
 					const byName = allSkills.find(s => s.name.toLowerCase() === skillId.toLowerCase());
 					if (byName) {
-						const content = byName.prompt.slice(0, MAX_SKILL_BYTES);
-						return text([
-							`# Skill: ${byName.name}`,
-							byName.description ? `_${byName.description}_` : '',
-							`Activation: ${byName.activation}`,
-							byName.match ? `Match keywords: ${byName.match.join(', ')}` : '',
-							byName.recommendedTools ? `Recommended tools: ${byName.recommendedTools.join(', ')}` : '',
-							'',
-							'---',
-							'',
-							content,
-						].filter(Boolean).join('\n'));
+						// 对齐 Hermes 格式：JSON {success, name, description, content, ...}
+						return text(JSON.stringify({
+							success: true,
+							name: byName.name,
+							id: byName.id,
+							description: byName.description ?? '',
+							category: byName.category ?? '',
+							activation: byName.activation,
+							content: (byName.prompt ?? '').slice(0, MAX_SKILL_BYTES),
+							match: byName.match ?? [],
+							recommendedTools: byName.recommendedTools ?? [],
+						}, null, 2));
 					}
-					throw new Error(`Skill not found: "${skillId}". Use list_skills to see available skill ids.`);
+					return text(JSON.stringify({
+						success: false,
+						error: `Skill not found: "${skillId}". Use list_skills to see available skill ids.`,
+					}));
 				}
 
-				const content = skill.prompt.slice(0, MAX_SKILL_BYTES);
-				return text([
-					`# Skill: ${skill.name}`,
-					skill.description ? `_${skill.description}_` : '',
-					`Activation: ${skill.activation}`,
-					skill.match ? `Match keywords: ${skill.match.join(', ')}` : '',
-					skill.recommendedTools ? `Recommended tools: ${skill.recommendedTools.join(', ')}` : '',
-					'',
-					'---',
-					'',
-					content,
-				].filter(Boolean).join('\n'));
+				// 对齐 Hermes 格式
+				return text(JSON.stringify({
+					success: true,
+					name: skill.name,
+					id: skill.id,
+					description: skill.description ?? '',
+					category: skill.category ?? '',
+					activation: skill.activation,
+					content: (skill.prompt ?? '').slice(0, MAX_SKILL_BYTES),
+					match: skill.match ?? [],
+					recommendedTools: skill.recommendedTools ?? [],
+				}, null, 2));
+			},
+		});
+
+		// ── skill_view 别名（Hermes 命名）──────────────────────────
+		this.register({
+			definition: {
+				name: 'skill_view',
+				description: 'View the content of a skill or a specific file within a skill directory. (Alias for read_skill)',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						name: { type: 'string', description: 'Skill name or ID to view' },
+					},
+					required: ['name'],
+				},
+				category: 'skills',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const name = String(args['name'] ?? '').trim();
+				if (!name) { return text(JSON.stringify({ success: false, error: 'name is required' })); }
+				const skills = this.skillRegistry?.getSkills() ?? [];
+				const skill = skills.find(s => s.id === name || s.name.toLowerCase() === name.toLowerCase());
+				if (!skill) {
+					return text(JSON.stringify({
+						success: false,
+						error: `Skill "${name}" not found. Use skills_list to see available skills.`,
+					}));
+				}
+				return text(JSON.stringify({
+					success: true,
+					name: skill.name,
+					id: skill.id,
+					description: skill.description ?? '',
+					content: (skill.prompt ?? '').slice(0, MAX_SKILL_BYTES),
+				}, null, 2));
 			},
 		});
 
@@ -1552,25 +1576,217 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					skills = skills.filter(s => (s.category ?? '').toLowerCase() === category);
 				}
 
-				if (skills.length === 0) {
-					return text('No skills found matching the given criteria.');
+				// 对齐 Hermes skills_list 返回格式：JSON {skills, categories, count, hint}
+				// 参考 Hermes tools/skills_tool.py::skills_list()
+				const skillItems = skills.map(s => ({
+					name: s.name,
+					id: s.id,
+					description: s.description || '',
+					category: s.category ?? '',
+					activation: s.activation,
+					source: s.source ?? '',
+				}));
+				const categories = [...new Set(skills.map(s => s.category).filter(Boolean) as string[])].sort();
+				const result: Record<string, any> = {
+					success: true,
+					skills: skillItems,
+					categories,
+					count: skillItems.length,
+				};
+				if (skillItems.length === 0) {
+					// 对齐 Hermes：空结果时给出存储路径和创建指引，避免 LLM 用 file_list 查错目录
+					result.message = 'No skills found. Skills directory is ~/.saros/skills/. Use skill_create to create new skills.';
+					result.hint = 'Use skill_create(name="<slug>", content="<SKILL.md>") to create a new skill.';
+				} else {
+					result.hint = 'Use read_skill or skill_view to see full content';
+					result.storagePath = '~/.saros/skills/';
 				}
-
-				const rows = skills.map(s => [
-					`- **${s.name}** (id: \`${s.id}\`)`,
-					`  ${s.description || 'No description'}`,
-					`  Activation: ${s.activation} | Source: ${s.source}${s.category ? ` | Category: ${s.category}` : ''}`,
-				].join('\n'));
-
-				return text([
-					`Found ${skills.length} skill(s):`,
-					'',
-					...rows,
-				].join('\n'));
+				return text(JSON.stringify(result, null, 2));
 			},
 		});
 
-		this.logService.info('[BuiltinTools] _registerSkillTools: read_skill and list_skills registered');
+		// ── skills_list 别名（Hermes 命名）──────────────────────────
+		// Hermes 用 skills_list，Sarosis 用 list_skills。注册别名对齐。
+		// 参考 Hermes tools/skills_tool.py::skills_list()
+		this.register({
+			definition: {
+				name: 'skills_list',
+				description: 'List all available skills (progressive disclosure tier 1 - minimal metadata). Returns only name + description to minimize token usage. (Alias for list_skills)',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						category: { type: 'string', description: 'Optional category filter (e.g., "mlops")' },
+					},
+				},
+				category: 'skills',
+				source: this.id,
+			},
+			handler: async (args) => {
+				const category = String(args['category'] ?? '').toLowerCase().trim();
+				let skills = [...this.skillRegistry.getSkills()].filter(s => s.enabled !== false);
+				if (category) {
+					skills = skills.filter(s => (s.category ?? '').toLowerCase() === category);
+				}
+				// 对齐 Hermes 格式：始终返回 message/hint 告知技能存储位置
+				// Hermes 在空目录时提示路径，避免 LLM 用 file_list 去猜测目录位置
+				const skillItems = skills.map(s => ({
+					name: s.name,
+					id: s.id,
+					description: s.description || '',
+					category: s.category ?? '',
+				}));
+				const categories = [...new Set(skills.map(s => s.category).filter(Boolean) as string[])].sort();
+				const base = {
+					success: true,
+					skills: skillItems,
+					categories,
+					count: skillItems.length,
+				};
+				if (skillItems.length === 0) {
+					return text(JSON.stringify({
+						...base,
+						message: 'No skills found. Skills directory is ~/.saros/skills/. Use skill_create to create new skills.',
+						hint: 'Use skill_create(name="<slug>", content="<SKILL.md>") to create a new skill.',
+					}, null, 2));
+				}
+				return text(JSON.stringify({
+					...base,
+					hint: 'Use skill_view(name) to see full content',
+					storagePath: '~/.saros/skills/',
+				}, null, 2));
+			},
+		});
+
+		// ── skill_create: 创建新技能 ──────────────────────────────────
+		// 参考 Hermes-Agent 的 skill_manage(action="create")。
+		// 让 Agent 把成功的经验固化为可复用技能，写入 ~/.saros/skills/<name>/SKILL.md
+		this.register({
+			definition: {
+				name: 'skill_create',
+				description: SKILL_CREATE_TOOL_DESCRIPTION,
+				inputSchema: SKILL_CREATE_TOOL_SCHEMA as Record<string, unknown>,
+				category: 'skills',
+				source: this.id,
+				securityLevel: ToolSecurityLevel.Dangerous,
+			},
+			handler: async (args: Record<string, unknown>): Promise<IToolResultContent[]> => {
+				const name = String(args['name'] ?? '').trim();
+				const content = String(args['content'] ?? '');
+				const category = args['category'] ? String(args['category']).trim() || undefined : undefined;
+
+				if (!name) {
+					return text('Error: name is required.');
+				}
+				if (!content) {
+					return text('Error: content is required. Provide the full SKILL.md text (frontmatter + body).');
+				}
+
+				const result = await this._skillManagerTool.createSkill({ name, content, category });
+				if (result.success) {
+					return text([
+						result.message,
+						'',
+						'The skill is now available for activation via /skill or list_skills.',
+						'Use read_skill to verify its content.',
+					].join('\n'));
+				}
+				return text(`Error: ${result.error ?? result.message}`);
+			},
+		});
+
+		this.logService.info('[BuiltinTools] _registerSkillTools: read_skill, list_skills, and skill_create registered');
+
+		// ── skill_manage: 对齐 Hermes skill_manager_tool.py ──────────────────
+		// Hermes 支持 6 种 action：create / edit / patch / delete / write_file / remove_file
+		// Sarosis 当前支持 create/edit（委托 skill_create），patch/delete 返回友好提示
+		this.register({
+			definition: {
+				name: 'skill_manage',
+				description: [
+					'Manage skills (create, edit, patch, delete). Skills are your procedural memory — reusable approaches for recurring task types.',
+					'Actions: create (full SKILL.md + optional category), patch (old_string/new_string for fixes), edit (full rewrite), delete.',
+					'Create when: complex task succeeded (5+ calls), errors overcome, user-corrected approach worked.',
+					'Update when: instructions stale/wrong, missing steps found during use.',
+				].join(' '),
+				inputSchema: {
+					type: 'object',
+					properties: {
+						action: { type: 'string', enum: ['create', 'patch', 'edit', 'delete'], description: 'The action to perform.' },
+						name: { type: 'string', description: 'Skill name (lowercase, hyphens/underscores, max 64 chars).' },
+						content: { type: 'string', description: 'Full SKILL.md content (YAML frontmatter + markdown body). Required for create and edit.' },
+						old_string: { type: 'string', description: 'Text to find in the file (required for patch). Must be unique unless replace_all=true.' },
+						new_string: { type: 'string', description: 'Replacement text (required for patch). Can be empty to delete matched text.' },
+						replace_all: { type: 'boolean', description: 'For patch: replace all occurrences (default: false).' },
+						category: { type: 'string', description: 'Optional category for organizing the skill (e.g., devops, data-science).' },
+					},
+					required: ['action', 'name'],
+				},
+				category: 'skills',
+				source: this.id,
+			},
+			handler: async (args: Record<string, unknown>): Promise<IToolResultContent[]> => {
+				const action = String(args['action'] ?? 'create');
+				const name = String(args['name'] ?? '').trim();
+				const content = String(args['content'] ?? '');
+				const category = args['category'] ? String(args['category']).trim() || undefined : undefined;
+
+				if (!name) { return text('Error: name is required'); }
+
+				if (action === 'create' || action === 'edit') {
+					if (!content) { return text('Error: content is required for create/edit. Provide the full SKILL.md text (frontmatter + body).'); }
+					const result = await this._skillManagerTool.createSkill({ name, content, category });
+					if (result.success) {
+						return text(`${result.message}\n\nThe skill is now available. Use read_skill to verify.`);
+					}
+					return text(`Error: ${result.error ?? result.message}`);
+				}
+
+				if (action === 'patch') {
+					const oldString = String(args['old_string'] ?? '');
+					const newString = String(args['new_string'] ?? '');
+					const replaceAll = Boolean(args['replace_all']);
+					if (!oldString) { return text('Error: old_string is required for patch'); }
+					// 读取技能文件 → 替换 → 写回
+					try {
+						const skills = this.skillRegistry?.getSkills() ?? [];
+						const skill = skills.find(s => s.id === name || s.name.toLowerCase() === name.toLowerCase());
+						if (!skill) { return text(`Error: Skill "${name}" not found. Use list_skills to see available skills.`); }
+						// 使用 patch 工具的逻辑：读取 → 替换 → 写回
+						const path = require('path');
+						const os = require('os');
+						const fs = await import('fs/promises');
+						const skillPath = path.join(os.homedir(), '.saros', 'skills', name, 'SKILL.md');
+						let fileContent = await fs.readFile(skillPath, 'utf-8');
+						if (replaceAll) {
+							fileContent = fileContent.split(oldString).join(newString);
+						} else {
+							const idx = fileContent.indexOf(oldString);
+							if (idx === -1) { return text(`old_string not found in ${name}/SKILL.md`); }
+							fileContent = fileContent.slice(0, idx) + newString + fileContent.slice(idx + oldString.length);
+						}
+						await fs.writeFile(skillPath, fileContent, 'utf-8');
+						return text(`Patched skill "${name}" successfully.`);
+					} catch (e) {
+						return text(`Error patching skill "${name}": ${e instanceof Error ? e.message : String(e)}`);
+					}
+				}
+
+				if (action === 'delete') {
+					try {
+						const path = require('path');
+						const os = require('os');
+						const fs = await import('fs/promises');
+						const skillPath = path.join(os.homedir(), '.saros', 'skills', name);
+						await fs.rm(skillPath, { recursive: true, force: true });
+						return text(`Skill "${name}" deleted successfully.`);
+					} catch (e) {
+						return text(`Error deleting skill "${name}": ${e instanceof Error ? e.message : String(e)}`);
+					}
+				}
+
+				return text(`Unknown action: ${action}. Use: create, patch, edit, delete`);
+			},
+		});
 	}
 
 	/**
@@ -1787,7 +2003,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	}
 
 	/**
-	 * 注册委派/子代理相关工具（delegate_task）。
+	 * 注册委派/子代理相关工具（delegate_task, new_agent）。
 	 * 这些工具需要真实的 handler，不能只是 stub。
 	 */
 	private _registerDelegationTools(): void {
@@ -1795,10 +2011,11 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this.register({
 			definition: {
 				name: 'delegate_task',
-				description: 'Delegate a task (or multiple tasks) to a sub-agent. ' +
-					'The sub-agent runs independently and returns its result. ' +
-					'Use this when a task can be performed in parallel or requires a separate context. ' +
-					'Supports both single task (task) and batch tasks (tasks).',
+				displaySummary: 'Delegate to sub-agent(s) for parallel execution.',
+				description: 'Delegate task(s) to a sub-agent. **PREFER BATCH MODE** (tasks: [...]) when you have 2+ independent investigations — ' +
+					'this runs them in parallel and aggregates results. ' +
+					'Use single mode (task: "...") only for one-off delegations. ' +
+					'Each sub-agent runs independently in its own context.',
 				inputSchema: {
 					type: 'object',
 					properties: {
@@ -1898,6 +2115,64 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 		});
 		this.logService.info('[BuiltinTools] _registerDelegationTools: delegate_task registered');
+
+		// ── new_agent — 创建持久化 Agent 定义 ──────────────────────────────
+		// 与 delegate_task 的区别：new_agent 创建可复用的持久化 Agent，
+		// 而 delegate_task 创建一次性子代理。详见 handleNewAgentTool 文档。
+		this.register({
+			definition: {
+				name: 'new_agent',
+				description: [
+					'Create a new persistent agent definition that can be reused for future tasks.',
+					'',
+					'The created agent is saved to ~/.saros/agents/{agentId}/ and becomes available',
+					'for delegation (delegate_task), orchestration plans, and manual invocation.',
+					'',
+					'## When to use:',
+					'- You need a specialized agent that does not exist yet',
+					'- A task requires a role/toolset combination not covered by existing agents',
+					'- You want to create a reusable team member for ongoing work',
+					'',
+					'## When NOT to use:',
+					'- For a one-off task (use delegate_task instead)',
+					'- The agent already exists (use delegate_task to invoke it)',
+				].join('\n'),
+				inputSchema: {
+					type: 'object',
+					properties: {
+						name: { type: 'string', description: 'Human-readable agent name (e.g. "Code Reviewer")' },
+						role: { type: 'string', description: 'Agent role/specialty (e.g. "Reviewer", "Researcher", "Developer")' },
+						description: { type: 'string', description: 'What this agent does and when to use it' },
+						systemPrompt: { type: 'string', description: 'Custom system prompt for the agent' },
+						model: { type: 'string', description: 'LLM model (default: inherits workspace default)' },
+						tools: {
+							type: 'array',
+							items: { type: 'string' },
+							description: 'Enabled tool names (default: all core tools)',
+						},
+						skills: {
+							type: 'array',
+							items: { type: 'string' },
+							description: 'Skill names to enable',
+						},
+						category: { type: 'string', description: 'Category label (default: "General")' },
+						agentType: {
+							type: 'string',
+							enum: ['planner', 'worker'],
+							description: 'planner = can orchestrate sub-tasks; worker = executes tasks (default: worker)',
+						},
+					},
+					required: ['name', 'role', 'description'],
+				},
+				category: 'delegation',
+				source: this.id,
+				securityLevel: ToolSecurityLevel.Cautious,
+			},
+			handler: async (args) => {
+				return handleNewAgentTool(args, this.studioService);
+			},
+		});
+		this.logService.info('[BuiltinTools] _registerDelegationTools: new_agent registered');
 	}
 
 	/**
@@ -1918,644 +2193,17 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * agentId → workspaceId 通过 studioService.getAgent(agentId) 解析。
 	 */
 	private _registerKanbanTools(): void {
-		// 辅助：从 agentId 解析当前 agent 及其运行 workspaceId
-		// （agent 是全局定义，运行 workspace 取自 getActiveWorkspaceId）。
-		const resolveWorkspaceId = async (agentId: string | undefined): Promise<{ workspaceId: string; assigneeId?: string; assigneeName?: string } | undefined> => {
-			if (!agentId) { return undefined; }
-			try {
-				const workspaceId = this.studioService.getActiveWorkspaceId();
-				if (workspaceId) {
-					const agent = await this.studioService.getAgent(agentId);
-					return { workspaceId, assigneeId: agent?.id ?? agentId, assigneeName: agent?.name };
-				}
-			} catch (err) {
-				this.logService.warn(`[BuiltinTools] kanban: failed to resolve workspace for agent ${agentId}:`, err);
-			}
-			return undefined;
-		};
-
-		// ─── kanban_create ────────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_create',
-				description: 'Create a new kanban task card. The task starts in the "triage" column ' +
-					'(awaiting decomposition/refinement). Use this to break down work into trackable cards. ' +
-					'Optionally assign to a named agent.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						title: { type: 'string', description: 'Task title' },
-						description: { type: 'string', description: 'Task description (optional)' },
-						assignee: { type: 'string', description: 'Assignee name (optional)' },
-					},
-					required: ['title'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const title = args['title'] as string | undefined;
-				if (!title || !title.trim()) {
-					throw new Error('kanban_create: "title" is required');
-				}
-				const description = args['description'] as string | undefined;
-				const assignee = args['assignee'] as string | undefined;
-
-				const ctx = await resolveWorkspaceId(agentId);
-				if (!ctx) {
-					return [{ type: 'text', text: 'kanban_create error: could not resolve a workspace for the current agent.' }];
-				}
-				try {
-					const task = await this.taskBoardService.createTask({
-						title: title.trim(),
-						description,
-						status: TaskBoardStatus.Triage,
-						source: TaskSource.Manual,
-						workspaceId: ctx.workspaceId,
-						assigneeName: assignee,
-					});
-					return [{ type: 'text', text: `Created kanban task #${task.id.slice(-6)} "${task.title}" (status: triage).` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_create error: ${msg}` }];
-				}
-			},
+		registerKanbanTools({
+			register: (def) => this.register(def),
+			studioService: this.studioService,
+			taskBoardService: this.taskBoardService,
+			orchestrationService: this.orchestrationService,
+			swarmService: this.swarmService,
+			triageService: this.triageService,
+			logService: this.logService,
 		});
-
-		// ─── kanban_complete ──────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_complete',
-				description: 'Mark a kanban task as completed, with an optional result summary. ' +
-					'Moves the task to the "done" column.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task_id: { type: 'string', description: 'Task ID to complete (full ID or last-6 short ID)' },
-						result: { type: 'string', description: 'Result summary (optional)' },
-					},
-					required: ['task_id'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const taskId = args['task_id'] as string | undefined;
-				if (!taskId) {
-					throw new Error('kanban_complete: "task_id" is required');
-				}
-				const result = args['result'] as string | undefined;
-				try {
-					const resolvedId = await this._resolveKanbanTaskId(taskId, agentId);
-					if (!resolvedId) {
-						return [{ type: 'text', text: `kanban_complete error: task "${taskId}" not found.` }];
-					}
-					await this.taskBoardService.updateTask(resolvedId, {
-						status: TaskBoardStatus.Done,
-						...(result ? { description: result } : {}),
-					});
-					return [{ type: 'text', text: `Completed kanban task #${resolvedId.slice(-6)}.` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_complete error: ${msg}` }];
-				}
-			},
-		});
-
-		// ─── kanban_block ─────────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_block',
-				description: 'Block a kanban task, indicating it is waiting on a dependency or needs human input. ' +
-					'Moves the task to the "blocked" status. A reason is required.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task_id: { type: 'string', description: 'Task ID to block (full ID or last-6 short ID)' },
-						reason: { type: 'string', description: 'Reason for blocking' },
-					},
-					required: ['task_id', 'reason'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const taskId = args['task_id'] as string | undefined;
-				const reason = args['reason'] as string | undefined;
-				if (!taskId) {
-					throw new Error('kanban_block: "task_id" is required');
-				}
-				if (!reason || !reason.trim()) {
-					throw new Error('kanban_block: "reason" is required');
-				}
-				try {
-					const resolvedId = await this._resolveKanbanTaskId(taskId, agentId);
-					if (!resolvedId) {
-						return [{ type: 'text', text: `kanban_block error: task "${taskId}" not found.` }];
-					}
-					const existing = await this.taskBoardService.getTask(resolvedId);
-					const note = `[BLOCKED] ${reason.trim()}`;
-					const newDesc = existing?.description ? `${existing.description}\n${note}` : note;
-					await this.taskBoardService.updateTask(resolvedId, {
-						status: TaskBoardStatus.Blocked,
-						description: newDesc,
-					});
-					return [{ type: 'text', text: `Blocked kanban task #${resolvedId.slice(-6)}: ${reason.trim()}` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_block error: ${msg}` }];
-				}
-			},
-		});
-
-		// ─── kanban_unblock ───────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_unblock',
-				description: 'Unblock a kanban task that was previously blocked. Moves it back to the "todo" column.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task_id: { type: 'string', description: 'Task ID to unblock (full ID or last-6 short ID)' },
-					},
-					required: ['task_id'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const taskId = args['task_id'] as string | undefined;
-				if (!taskId) {
-					throw new Error('kanban_unblock: "task_id" is required');
-				}
-				try {
-					const resolvedId = await this._resolveKanbanTaskId(taskId, agentId);
-					if (!resolvedId) {
-						return [{ type: 'text', text: `kanban_unblock error: task "${taskId}" not found.` }];
-					}
-					await this.taskBoardService.updateTask(resolvedId, { status: TaskBoardStatus.Todo });
-					return [{ type: 'text', text: `Unblocked kanban task #${resolvedId.slice(-6)} (status: todo).` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_unblock error: ${msg}` }];
-				}
-			},
-		});
-
-		this.logService.info('[BuiltinTools] _registerKanbanTools: kanban_create/complete/block/unblock registered');
-
-		// ─── kanban_show ──────────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_show',
-				description: 'Show the full details of a single kanban task: title, description, status, ' +
-					'assignee, priority, dependencies, and timestamps.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task_id: { type: 'string', description: 'Task ID to show (full ID or last-6 short ID)' },
-					},
-					required: ['task_id'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const taskId = args['task_id'] as string | undefined;
-				if (!taskId) {
-					throw new Error('kanban_show: "task_id" is required');
-				}
-				try {
-					const resolvedId = await this._resolveKanbanTaskId(taskId, agentId);
-					if (!resolvedId) {
-						return [{ type: 'text', text: `kanban_show error: task "${taskId}" not found.` }];
-					}
-					const task = await this.taskBoardService.getTask(resolvedId);
-					if (!task) {
-						return [{ type: 'text', text: `kanban_show error: task "${taskId}" not found.` }];
-					}
-					const lines = [
-						`Task #${task.id.slice(-6)} (${task.id})`,
-						`  title:        ${task.title}`,
-						`  status:       ${task.status}`,
-						`  priority:     ${task.priority ?? '(none)'}`,
-						`  assignee:     ${task.assigneeName ?? '(unassigned)'}`,
-						`  source:       ${task.source}${task.sourceId ? ` (${task.sourceId})` : ''}`,
-						`  dependencies: ${task.dependencies && task.dependencies.length ? task.dependencies.map(d => `#${d.slice(-6)}`).join(', ') : '(none)'}`,
-						`  createdAt:    ${task.createdAt}`,
-						`  updatedAt:    ${task.updatedAt}`,
-						...(task.completedAt ? [`  completedAt:  ${task.completedAt}`] : []),
-						``,
-						`  description:`,
-						task.description ? task.description.split('\n').map(l => `    ${l}`).join('\n') : '    (empty)',
-					];
-					return [{ type: 'text', text: lines.join('\n') }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_show error: ${msg}` }];
-				}
-			},
-		});
-
-		// ─── kanban_list ──────────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_list',
-				description: 'List kanban tasks in the current workspace, optionally filtered by status. ' +
-					'Returns a compact one-line-per-task summary. Use status="triage|todo|ready|running|blocked|done|cancelled|archived".',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						status: { type: 'string', description: 'Filter by status (optional). One of: triage, todo, ready, running, blocked, done, cancelled, archived.' },
-						limit: { type: 'number', description: 'Max number of tasks to return (default 50)' },
-					},
-					required: [],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const statusFilter = args['status'] as string | undefined;
-				const limit = typeof args['limit'] === 'number' ? args['limit'] as number : 50;
-				try {
-					const ctx = await this._resolveKanbanWorkspaceId(agentId);
-					const tasks = await this.taskBoardService.getTasks(ctx);
-					let filtered = tasks;
-					if (statusFilter) {
-						const wanted = statusFilter.trim().toLowerCase();
-						filtered = tasks.filter(t => t.status === wanted);
-					}
-					filtered = filtered.slice(0, Math.max(1, limit));
-					if (filtered.length === 0) {
-						return [{ type: 'text', text: statusFilter ? `No kanban tasks with status "${statusFilter}".` : 'No kanban tasks found.' }];
-					}
-					const header = `${filtered.length} task(s)${statusFilter ? ` (status=${statusFilter})` : ''}:`;
-					const rows = filtered.map(t => {
-						const assignee = t.assigneeName ? ` @${t.assigneeName}` : '';
-						const prio = t.priority ? ` [${t.priority}]` : '';
-						return `  #${t.id.slice(-6)} ${t.status.padEnd(9)}${prio}${assignee} — ${t.title}`;
-					});
-					return [{ type: 'text', text: [header, ...rows].join('\n') }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_list error: ${msg}` }];
-				}
-			},
-		});
-
-		// ─── kanban_heartbeat ─────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_heartbeat',
-				description: 'Signal that work on a task is still actively progressing. Refreshes the task\'s ' +
-					'last-active timestamp so diagnostics do not flag it as stuck or stranded. Call periodically ' +
-					'during long-running work.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task_id: { type: 'string', description: 'Task ID to heartbeat (full ID or last-6 short ID)' },
-						note: { type: 'string', description: 'Optional short progress note (appended as a comment)' },
-					},
-					required: ['task_id'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const taskId = args['task_id'] as string | undefined;
-				if (!taskId) {
-					throw new Error('kanban_heartbeat: "task_id" is required');
-				}
-				const note = args['note'] as string | undefined;
-				try {
-					const resolvedId = await this._resolveKanbanTaskId(taskId, agentId);
-					if (!resolvedId) {
-						return [{ type: 'text', text: `kanban_heartbeat error: task "${taskId}" not found.` }];
-					}
-					if (note && note.trim()) {
-						// Append a heartbeat comment; updateTask refreshes updatedAt anyway.
-						const existing = await this.taskBoardService.getTask(resolvedId);
-						const stamp = new Date().toISOString();
-						const line = `[HEARTBEAT ${stamp}] ${note.trim()}`;
-						const newDesc = existing?.description ? `${existing.description}\n${line}` : line;
-						await this.taskBoardService.updateTask(resolvedId, { description: newDesc });
-					} else {
-						// No-content touch: re-write title to bump updatedAt without semantic change.
-						const existing = await this.taskBoardService.getTask(resolvedId);
-						await this.taskBoardService.updateTask(resolvedId, { title: existing?.title ?? '' });
-					}
-					return [{ type: 'text', text: `Heartbeat recorded for kanban task #${resolvedId.slice(-6)}.` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_heartbeat error: ${msg}` }];
-				}
-			},
-		});
-
-		// ─── kanban_comment ───────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_comment',
-				description: 'Add a comment to a kanban task. The comment is appended to the task description ' +
-					'with an author + timestamp prefix. Use this to record progress, findings, or blackboard updates.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task_id: { type: 'string', description: 'Task ID to comment on (full ID or last-6 short ID)' },
-						body: { type: 'string', description: 'Comment text' },
-					},
-					required: ['task_id', 'body'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const taskId = args['task_id'] as string | undefined;
-				const body = args['body'] as string | undefined;
-				if (!taskId) {
-					throw new Error('kanban_comment: "task_id" is required');
-				}
-				if (!body || !body.trim()) {
-					throw new Error('kanban_comment: "body" is required');
-				}
-				try {
-					const resolvedId = await this._resolveKanbanTaskId(taskId, agentId);
-					if (!resolvedId) {
-						return [{ type: 'text', text: `kanban_comment error: task "${taskId}" not found.` }];
-					}
-					const ctx = await this._resolveKanbanWorkspaceId(agentId);
-					let authorName = 'agent';
-					if (agentId) {
-						try {
-							const agent = await this.studioService.getAgent(agentId);
-							if (agent?.name) { authorName = agent.name; }
-						} catch { /* ignore */ }
-					}
-					void ctx;
-					const existing = await this.taskBoardService.getTask(resolvedId);
-					const stamp = new Date().toISOString();
-					const line = `[COMMENT ${authorName} ${stamp}] ${body.trim()}`;
-					const newDesc = existing?.description ? `${existing.description}\n${line}` : line;
-					await this.taskBoardService.updateTask(resolvedId, { description: newDesc });
-					return [{ type: 'text', text: `Comment added to kanban task #${resolvedId.slice(-6)}.` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_comment error: ${msg}` }];
-				}
-			},
-		});
-
-		// ─── kanban_link ──────────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_link',
-				description: 'Create a dependency link between two kanban tasks: the child task depends on the ' +
-					'parent task (the parent must complete before the child can start). Used to express task ordering.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						parent_id: { type: 'string', description: 'Parent task ID — must complete first (full or short ID)' },
-						child_id: { type: 'string', description: 'Child task ID — depends on the parent (full or short ID)' },
-					},
-					required: ['parent_id', 'child_id'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const parentArg = args['parent_id'] as string | undefined;
-				const childArg = args['child_id'] as string | undefined;
-				if (!parentArg) {
-					throw new Error('kanban_link: "parent_id" is required');
-				}
-				if (!childArg) {
-					throw new Error('kanban_link: "child_id" is required');
-				}
-				try {
-					const parentId = await this._resolveKanbanTaskId(parentArg, agentId);
-					if (!parentId) {
-						return [{ type: 'text', text: `kanban_link error: parent task "${parentArg}" not found.` }];
-					}
-					const childId = await this._resolveKanbanTaskId(childArg, agentId);
-					if (!childId) {
-						return [{ type: 'text', text: `kanban_link error: child task "${childArg}" not found.` }];
-					}
-					if (parentId === childId) {
-						return [{ type: 'text', text: 'kanban_link error: a task cannot depend on itself.' }];
-					}
-					const child = await this.taskBoardService.getTask(childId);
-					const deps = new Set<string>(child?.dependencies ?? []);
-					if (deps.has(parentId)) {
-						return [{ type: 'text', text: `kanban_link: #${childId.slice(-6)} already depends on #${parentId.slice(-6)}.` }];
-					}
-					deps.add(parentId);
-					await this.taskBoardService.updateTask(childId, { dependencies: Array.from(deps) });
-					return [{ type: 'text', text: `Linked: kanban task #${childId.slice(-6)} now depends on #${parentId.slice(-6)}.` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_link error: ${msg}` }];
-				}
-			},
-		});
-
-		this.logService.info('[BuiltinTools] _registerKanbanTools: 9 kanban tools registered (create/complete/block/unblock/show/list/heartbeat/comment/link)');
-
-		// ─── kanban_specify ───────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_specify',
-				description: 'Refine a rough kanban task into a structured specification (Goal / Approach / ' +
-					'Acceptance criteria / Out of scope) using an LLM, then move it from triage to todo.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task_id: { type: 'string', description: 'Task ID to specify (full or last-6 short ID)' },
-					},
-					required: ['task_id'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const taskId = args['task_id'] as string | undefined;
-				if (!taskId) {
-					throw new Error('kanban_specify: "task_id" is required');
-				}
-				try {
-					const resolvedId = await this._resolveKanbanTaskId(taskId, agentId);
-					if (!resolvedId) {
-						return [{ type: 'text', text: `kanban_specify error: task "${taskId}" not found.` }];
-					}
-					const updated = await this.triageService.specify(resolvedId);
-					return [{ type: 'text', text: `Specified kanban task #${resolvedId.slice(-6)} (status: ${updated.status}).\n\n${updated.description ?? ''}` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_specify error: ${msg}` }];
-				}
-			},
-		});
-
-		// ─── kanban_decompose ─────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_decompose',
-				description: 'Decompose a kanban task into 2-N concrete subtasks using an LLM, creating child ' +
-					'tasks with parent dependencies. fanout=true → independent/parallel subtasks; false → sequential.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task_id: { type: 'string', description: 'Parent task ID to decompose (full or last-6 short ID)' },
-						fanout: { type: 'boolean', description: 'true=parallel/independent subtasks (default), false=sequential' },
-						max_subtasks: { type: 'number', description: 'Maximum number of subtasks (default 6, hard cap 12)' },
-						assignee: { type: 'string', description: 'Default assignee for created subtasks (optional)' },
-					},
-					required: ['task_id'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const taskId = args['task_id'] as string | undefined;
-				if (!taskId) {
-					throw new Error('kanban_decompose: "task_id" is required');
-				}
-				const fanout = typeof args['fanout'] === 'boolean' ? args['fanout'] as boolean : undefined;
-				const maxSubTasks = typeof args['max_subtasks'] === 'number' ? args['max_subtasks'] as number : undefined;
-				const assignee = args['assignee'] as string | undefined;
-				try {
-					const resolvedId = await this._resolveKanbanTaskId(taskId, agentId);
-					if (!resolvedId) {
-						return [{ type: 'text', text: `kanban_decompose error: task "${taskId}" not found.` }];
-					}
-					const children = await this.triageService.decompose(resolvedId, { fanout, maxSubTasks, assignee });
-					const list = children.map(c => `  #${c.id.slice(-6)} — ${c.title}`).join('\n');
-					return [{ type: 'text', text: `Decomposed kanban task #${resolvedId.slice(-6)} into ${children.length} subtask(s):\n${list}` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_decompose error: ${msg}` }];
-				}
-			},
-		});
-
-		this.logService.info('[BuiltinTools] _registerKanbanTools: kanban_specify/decompose registered (LLM triage)');
-
-		// ─── kanban_swarm ─────────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'kanban_swarm',
-				description: 'Spawn a multi-agent swarm: build a kanban topology (root → parallel workers → ' +
-					'verifier → synthesizer), run workers in parallel as sub-agents, then verify and synthesize ' +
-					'their outputs into a final result. Use for complex goals that benefit from parallel specialized agents.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						title: { type: 'string', description: 'Swarm title (becomes the root task title)' },
-						goal: { type: 'string', description: 'Overall goal, injected into every worker context' },
-						workers: {
-							type: 'array',
-							description: 'Worker specs (at least 1)',
-							items: {
-								type: 'object',
-								properties: {
-									title: { type: 'string', description: 'Worker card title' },
-									body: { type: 'string', description: 'What this worker should do' },
-									profile: { type: 'string', description: 'Worker role/persona (optional)' },
-									priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Scheduling priority' },
-								},
-								required: ['title', 'body'],
-							},
-						},
-						enable_verifier: { type: 'boolean', description: 'Enable verifier stage (default true when >=2 workers)' },
-						enable_synthesizer: { type: 'boolean', description: 'Enable synthesizer stage (default true)' },
-					},
-					required: ['title', 'workers'],
-				},
-				category: 'kanban',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const title = args['title'] as string | undefined;
-				const rawWorkers = args['workers'] as Array<Record<string, unknown>> | undefined;
-				if (!title) {
-					throw new Error('kanban_swarm: "title" is required');
-				}
-				if (!Array.isArray(rawWorkers) || rawWorkers.length === 0) {
-					throw new Error('kanban_swarm: "workers" must be a non-empty array');
-				}
-				const workers: SwarmWorkerSpec[] = [];
-				for (const w of rawWorkers) {
-					const wTitle = w['title'] as string | undefined;
-					const wBody = w['body'] as string | undefined;
-					if (!wTitle || !wBody) { continue; }
-					const priority = w['priority'] as 'low' | 'medium' | 'high' | undefined;
-					workers.push({
-						title: wTitle,
-						body: wBody,
-						profile: w['profile'] as string | undefined,
-						priority,
-					});
-				}
-				if (workers.length === 0) {
-					throw new Error('kanban_swarm: no valid workers (each needs title + body)');
-				}
-				try {
-					const workspaceId = await this._resolveKanbanWorkspaceId(agentId);
-					const swarmId = await this.swarmService.createSwarm({
-						title,
-						goal: args['goal'] as string | undefined,
-						workspaceId,
-						workers,
-						enableVerifier: typeof args['enable_verifier'] === 'boolean' ? args['enable_verifier'] as boolean : undefined,
-						enableSynthesizer: typeof args['enable_synthesizer'] === 'boolean' ? args['enable_synthesizer'] as boolean : undefined,
-					});
-					return [{ type: 'text', text: `Swarm "${title}" started (${swarmId}) with ${workers.length} worker(s). The topology is on the board; workers run in parallel, then verify + synthesize.` }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `kanban_swarm error: ${msg}` }];
-				}
-			},
-		});
-
-		this.logService.info('[BuiltinTools] _registerKanbanTools: kanban_swarm registered (multi-agent collaboration)');
 	}
 
-	/**
-	 * 解析 kanban 工具传入的 task_id —— 支持完整 ID 或末 6 位短 ID。
-	 * 先尝试精确匹配，再在当前 agent 的 workspace 任务里按短 ID 后缀匹配。
-	 */
-	private async _resolveKanbanTaskId(taskId: string, agentId: string | undefined): Promise<string | undefined> {
-		// 1. 精确匹配
-		const exact = await this.taskBoardService.getTask(taskId);
-		if (exact) { return exact.id; }
-
-		// 2. 短 ID（末 6 位）后缀匹配，限定在当前 workspace 内
-		// （agent 全局，运行 workspace 取自 getActiveWorkspaceId）。
-		let workspaceId: string | undefined;
-		if (agentId) {
-			try {
-				workspaceId = this.studioService.getActiveWorkspaceId();
-			} catch { /* ignore */ }
-		}
-		const all = await this.taskBoardService.getTasks(workspaceId);
-		const normalized = taskId.replace(/^#/, '');
-		const matches = all.filter(t => t.id.endsWith(normalized));
-		if (matches.length === 1) { return matches[0].id; }
-		return undefined;
-	}
-
-	/**
-	 * 解析当前 agent 所属的 workspaceId（用于 kanban_list / kanban_comment 等需要按 workspace 过滤的工具）。
-	 * agentId 缺失或解析失败时返回 undefined（调用方据此回退到全量查询）。
-	 */
-	private async _resolveKanbanWorkspaceId(agentId: string | undefined): Promise<string | undefined> {
-		if (!agentId) { return undefined; }
-		try {
-			// agent 是全局定义；运行 workspace 取自 getActiveWorkspaceId。
-			return this.studioService.getActiveWorkspaceId();
-		} catch {
-			return undefined;
-		}
-	}
 
 	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal): Promise<void> {
 		// Hard global cap on files we will read+grep regardless of `limit`.
@@ -2639,541 +2287,35 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		await walk(dir);
 	}
 
-	// ─── Workflow AI Editing Tools ────────────────────────────────────────
-
-	/**
-	 * Workflow node type schema — describes all available node types the AI
-	 * can create when generating workflows.
-	 */
-	private static readonly WORKFLOW_NODE_SCHEMA = {
-		nodeTypes: [
-			{
-				type: 'start', label: 'Start', category: 'system',
-				description: 'Entry point of the workflow. Every workflow must have exactly one Start node.',
-				dataSchema: { label: 'string (default: "Start")' },
-				positionHint: { x: 80, y: 250 },
-			},
-			{
-				type: 'end', label: 'End', category: 'system',
-				description: 'Exit point of the workflow. Every workflow must have exactly one End node.',
-				dataSchema: { label: 'string (default: "End")' },
-				positionHint: { x: 600, y: 250 },
-			},
-			{
-				type: 'prompt', label: 'Prompt', category: 'basic',
-				description: 'A prompt template with variable substitution.',
-				dataSchema: { label: 'string', prompt: 'string (template text)', variables: 'Record<string, string> (optional)' },
-			},
-			{
-				type: 'agent', label: 'Agent', category: 'basic',
-			description: 'Execute a specific agent. Use agentId to reference an existing agent from availableAgents. ' +
-				'IMPORTANT: Also populate agentConfig with { providerId, modelId } from the agent\'s model field.',
-			dataSchema: {
-				label: 'string',
-				agentId: 'string — MUST be one of the availableAgents ids',
-				agentConfig: '{ providerId?: string (preferred), modelId?: string (the agent\'s model) }',
-			},
-		},
-			{
-				type: 'skill', label: 'Skill', category: 'basic',
-				description: 'Execute a named skill with arguments.',
-				dataSchema: { label: 'string', skillName: 'string', skillArgs: 'Record<string, string> (optional)' },
-			},
-			{
-				type: 'tool', label: 'Tool', category: 'basic',
-				description: 'Execute a tool with parameters.',
-				dataSchema: { label: 'string', toolName: 'string', toolParams: 'Record<string, string> (optional)' },
-			},
-			{
-				type: 'task', label: 'Task', category: 'basic',
-				description: 'A discrete task with an optional executor.',
-				dataSchema: { label: 'string', executorId: 'string (optional)', taskId: 'string (optional)' },
-			},
-			{
-			type: 'ifElse', label: 'If/Else', category: 'controlFlow',
-			description: 'Binary conditional branching (True/False). ' +
-				'Output port IDs: "branch-0" (True) and "branch-1" (False). Connections from this node MUST specify fromPort.',
-			dataSchema: {
-				label: 'string',
-				evaluationTarget: 'string',
-				branches: '[{ id: string, label: string, condition: string }] (2 branches: True and False)',
-			},
-			outputPorts: ['branch-0', 'branch-1'],
-		},
-		{
-			type: 'switch', label: 'Switch', category: 'controlFlow',
-			description: 'Multi-way branching with 2-N cases. ' +
-				'Output port IDs: "branch-0", "branch-1", ..., "branch-{N-1}". Last branch is Default. Each connection from this node MUST specify fromPort.',
-			dataSchema: {
-				label: 'string',
-				evaluationTarget: 'string',
-				branches: '[{ id: string, label: string, condition: string }] (N branches, last one is Default)',
-			},
-			outputPortPattern: 'branch-{index}',
-		},
-		{
-			type: 'ifElse', label: 'If/Else', category: 'controlFlow',
-			description: 'Binary conditional branching. ' +
-				'Output port IDs: "branch-0" (True) and "branch-1" (False). Connections from this node MUST specify fromPort.',
-			dataSchema: {
-				label: 'string',
-				evaluationTarget: 'string',
-				branches: '[{ id: string, label: string, condition: string }] (2 branches: True/False)',
-			},
-			outputPorts: ['branch-0', 'branch-1'],
-		},
-		{
-			type: 'switch', label: 'Switch', category: 'controlFlow',
-			description: 'Multi-way branching based on evaluation target. ' +
-				'Output port IDs: "branch-0", "branch-1", ..., "branch-{N-1}" (one per branch, last one is Default). Connections from this node MUST specify fromPort.',
-			dataSchema: {
-				label: 'string',
-				evaluationTarget: 'string',
-				branches: '[{ id: string, label: string, condition: string, isDefault?: boolean }] (N branches, last one is Default)',
-			},
-			outputPortPattern: 'branch-{index}',
-		},
-			{
-			type: 'askUser', label: 'Ask User', category: 'controlFlow',
-			description: 'Present a question and branch based on user selection. ' +
-				'Output port IDs: "option-0", "option-1", ..., "option-{N-1}" (one per option). Each connection from this node MUST specify fromPort.',
-			dataSchema: { label: 'string', questionText: 'string', options: '[{ label: string, description?: string }]', multiSelect: 'boolean (optional)' },
-			outputPortPattern: 'option-{index}',
-		},
-			{
-				type: 'group', label: 'Group', category: 'layout',
-				description: 'Visual grouping container. Does NOT participate in execution logic. Child nodes reference this via parentId.',
-				dataSchema: { label: 'string', style: '{ width?: number, height?: number }' },
-			},
-		],
-		positioningGuidelines: {
-			horizontalSpacing: 300,
-			verticalSpacing: 150,
-			startPosition: { x: 80, y: 250 },
-		},
-		connectionRules: {
-			noSelfLoops: true,
-			startNodeCannotHaveInputs: true,
-			endNodeCannotHaveOutputs: true,
-			noDuplicateEdges: true,
-			portHandlesRequired: 'For multi-port nodes (ifElse, switch, condition, askUser), connections MUST include fromPort. ' +
-				'ifElse/condition: fromPort = "branch-0" or "branch-1". ' +
-				'switch: fromPort = "branch-{index}". ' +
-				'askUser: fromPort = "option-{index}". ' +
-				'Single-port nodes (start, end, task, prompt, agent, skill, tool, loop, parallel) do not need fromPort.',
-		},
-		portNaming: {
-			ifElse: { pattern: 'branch-{index}', ports: ['branch-0 (True)', 'branch-1 (False)'] },
-			switch: { pattern: 'branch-{index}', example: 'branch-0, branch-1, branch-2, ...' },
-			condition: { pattern: 'branch-{index}', ports: ['branch-0 (True)', 'branch-1 (False)'] },
-			askUser: { pattern: 'option-{index}', example: 'option-0, option-1, ...' },
-		},
-	};
+	// ─── Workflow AI Editing Tools (extracted to workflowTools.ts) ──────
 
 	private _registerWorkflowTools(): void {
-		const resolveWorkspaceId = (): string | undefined => {
-			return this.studioService.getActiveWorkspaceId();
-		};
-
-		// ── workflow_list ──────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'workflow_list',
-				description: 'List all workflows in the current workspace. Returns workflow IDs, names, and descriptions.',
-				inputSchema: {
-					type: 'object',
-					properties: {},
-					required: [],
-				},
-				category: 'workflow',
-				source: this.id,
-			},
-			handler: async (_args, _signal, _agentId) => {
-				const wsId = resolveWorkspaceId();
-				if (!wsId) {
-					return [{ type: 'text', text: 'No active workspace. Please select a workspace first.' }];
-				}
-				try {
-					const workflows = await this.workflowStorageService.listWorkflows(wsId);
-					if (workflows.length === 0) {
-						return [{ type: 'text', text: 'No workflows found in the current workspace. Create one first using the Workflow Editor.' }];
-					}
-					const summary = workflows.map(w => ({
-						id: w.id,
-						name: w.name || '(unnamed)',
-						description: w.description || '',
-						nodeCount: w.nodes?.length ?? 0,
-						connectionCount: w.connections?.length ?? 0,
-					}));
-					return [{ type: 'text', text: JSON.stringify(summary, null, 2) }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `workflow_list error: ${msg}` }];
-				}
-			},
+		registerWorkflowTools({
+			register: (def) => this.register(def),
+			workflowStorageService: this.workflowStorageService,
+			studioService: this.studioService,
+			logService: this.logService,
 		});
-
-		// ── workflow_get ───────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'workflow_get',
-				description: 'Get the full state of a specific workflow by ID. Returns all nodes, edges, and metadata. ' +
-					'Use this before modifying a workflow so you can see the current structure.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						workflow_id: { type: 'string', description: 'The workflow ID (from workflow_list).' },
-					},
-					required: ['workflow_id'],
-				},
-				category: 'workflow',
-				source: this.id,
-			},
-			handler: async (args, _signal, _agentId) => {
-				const wsId = resolveWorkspaceId();
-				if (!wsId) {
-					return [{ type: 'text', text: 'No active workspace.' }];
-				}
-				const workflowId = args['workflow_id'] as string | undefined;
-				if (!workflowId) {
-					return [{ type: 'text', text: 'workflow_get error: workflow_id is required.' }];
-				}
-				try {
-					const wf = await this.workflowStorageService.getWorkflow(workflowId, wsId);
-					if (!wf) {
-						return [{ type: 'text', text: `Workflow "${workflowId}" not found.` }];
-					}
-					// Return a clean summary for AI consumption
-					const summary = {
-						id: wf.id,
-						name: wf.name,
-						description: wf.description,
-						nodes: wf.nodes ?? [],
-						connections: wf.connections ?? [],
-					};
-					return [{ type: 'text', text: JSON.stringify(summary, null, 2) }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `workflow_get error: ${msg}` }];
-				}
-			},
-		});
-
-		// ── workflow_get_schema ─────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'workflow_get_schema',
-				description: 'Get the schema of all available workflow node types, INCLUDING the list of ' +
-					'available agents you can reference. Use this to understand what node types are available, ' +
-					'their required data fields, valid agentId values, and positioning guidelines before creating or modifying a workflow.',
-				inputSchema: {
-					type: 'object',
-					properties: {},
-					required: [],
-				},
-				category: 'workflow',
-				source: this.id,
-			},
-			handler: async () => {
-				// Dynamically fetch available agents so the AI knows valid agentId values
-				let availableAgents: Array<{ id: string; name: string; role: string; model: string }> = [];
-				try {
-					const agents = await this.studioService.getAgents();
-					availableAgents = agents.map(a => ({
-						id: a.id,
-						name: a.name,
-						role: a.role,
-						model: a.model,
-					}));
-				} catch (err) {
-					this.logService.warn('[BuiltinTools] workflow_get_schema: failed to fetch agents:', err);
-				}
-
-				// Enhance the agent node type description to reference available agents
-				const enhancedNodeTypes = BuiltinToolProvider.WORKFLOW_NODE_SCHEMA.nodeTypes.map(nt => {
-					if (nt.type === 'agent') {
-						const agentIds = availableAgents.map(a => a.id).join(', ');
-						return {
-							...nt,
-							description: nt.description +
-								` IMPORTANT: agentId MUST be one of: [${agentIds || '(no agents available — ask the user to create one first)'}]. ` +
-								'Use the exact agent.id value. If the user wants an agent node but the right agent does not exist, ' +
-								'ask them to create it first.',
-							dataSchema: {
-								...nt.dataSchema,
-								agentId: `string — one of: [${agentIds || '(none)'}]`,
-								agentConfig: '{ modelId?: string (the model to use for this step), tools?: string[], memory?: string }',
-							},
-						};
-					}
-					return nt;
-				});
-
-				const schema = {
-					...BuiltinToolProvider.WORKFLOW_NODE_SCHEMA,
-					nodeTypes: enhancedNodeTypes,
-					availableAgents,
-				};
-
-				return [{ type: 'text', text: JSON.stringify(schema, null, 2) }];
-			},
-		});
-
-		// ── workflow_apply ──────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'workflow_apply',
-				description: 'Apply a complete workflow definition (all nodes and connections) to create or replace a workflow. ' +
-					'IMPORTANT: Always include the Start and End nodes. Provide ALL nodes and connections — this replaces the entire workflow. ' +
-					'Use this for major structural changes. For small edits, get the current workflow via workflow_get, modify it, and apply.\n\n' +
-					'NODE FORMAT (CRITICAL): Each node must have id, type, position, and a data object containing all content.\n' +
-					'Example: { "id":"dev","type":"agent","position":{"x":320,"y":200},"data":{"label":"Coder","agentId":"coder","agentConfig":{"modelId":"claude-sonnet-4-20250514"}} }\n' +
-					'DO NOT put label/agentId/agentConfig at the top level — they go inside data.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						workflow_id: { type: 'string', description: 'The workflow ID to update (from workflow_list).' },
-						name: { type: 'string', description: 'Workflow name (optional, preserved if omitted).' },
-						description: { type: 'string', description: 'Workflow description (optional, preserved if omitted).' },
-						nodes: {
-							type: 'array',
-							description: 'All nodes. Each node: { id(string), type(string), position({x,y}), data({label, ...typeFields}) }. ' +
-								'CRITICAL: put label/agentId/agentConfig/other content inside `data`, NOT at top level.',
-							items: {
-								type: 'object',
-								properties: {
-									id: { type: 'string', description: 'Unique node id' },
-									type: { type: 'string', description: 'Node type from workflow_get_schema' },
-									position: {
-										type: 'object',
-										properties: { x: { type: 'number' }, y: { type: 'number' } },
-										required: ['x', 'y'],
-									},
-									data: {
-										type: 'object',
-										description: 'Content fields: label (required), plus type-specific fields (agentId, agentConfig, prompt, etc.)',
-									},
-								},
-								required: ['id', 'type', 'position'],
-							},
-						},
-						connections: {
-							type: 'array',
-							description: 'All connections (edges) between nodes. Each connection: id (string), from (source node id), to (target node id). ' +
-								'CRITICAL for multi-port nodes (ifElse/switch/condition/askUser): MUST also include fromPort (string). ' +
-								'ifElse/condition: fromPort is "branch-0" or "branch-1". switch: "branch-0", "branch-1", etc. askUser: "option-0", "option-1", etc.',
-							items: {
-								type: 'object',
-								properties: {
-									id: { type: 'string', description: 'Unique edge id' },
-									from: { type: 'string', description: 'Source node id' },
-									to: { type: 'string', description: 'Target node id' },
-									fromPort: { type: 'string', description: 'Required for multi-port nodes (branch-0, option-0, etc.)' },
-								},
-								required: ['id', 'from', 'to'],
-							},
-						},
-						change_description: { type: 'string', description: 'Brief description of what changed (for user feedback).' },
-					},
-					required: ['workflow_id', 'nodes', 'connections'],
-				},
-				category: 'workflow',
-				source: this.id,
-			},
-			handler: async (args, _signal, _agentId) => {
-				const wsId = resolveWorkspaceId();
-				if (!wsId) {
-					return [{ type: 'text', text: 'workflow_apply error: No active workspace.' }];
-				}
-
-				const workflowId = args['workflow_id'] as string | undefined;
-				if (!workflowId) {
-					return [{ type: 'text', text: 'workflow_apply error: workflow_id is required.' }];
-				}
-
-				const nodes = args['nodes'] as Array<Record<string, unknown>> | undefined;
-				const connections = args['connections'] as Array<Record<string, unknown>> | undefined;
-				const name = args['name'] as string | undefined;
-				const description = args['description'] as string | undefined;
-				const changeDescription = args['change_description'] as string | undefined;
-
-				if (!Array.isArray(nodes)) {
-					return [{ type: 'text', text: 'workflow_apply error: nodes must be an array.' }];
-				}
-				if (!Array.isArray(connections)) {
-					return [{ type: 'text', text: 'workflow_apply error: connections must be an array.' }];
-				}
-
-				try {
-					// Validate: must have Start and End nodes
-					const hasStart = nodes.some(n => n.type === 'start' || n.id === 'start');
-					const hasEnd = nodes.some(n => n.type === 'end' || n.id === 'end');
-					if (!hasStart || !hasEnd) {
-						return [{ type: 'text', text: 'workflow_apply validation error: Workflow must have both a Start node and an End node.' }];
-					}
-
-					// Normalize node format: AI may send fields (label, agentId, agentConfig etc.)
-					// at the top level instead of nested inside `data`. Move them into `data`
-					// so loadWorkflow() in the webview sees them correctly.
-					const fixups: string[] = [];
-					const KNOWN_META_KEYS = new Set(['id', 'type', 'position', 'parentId', 'style', 'data', 'name']);
-					for (const node of nodes) {
-						const data = (node.data as Record<string, unknown>) || {};
-						let hasMoved = false;
-						const movedFields: string[] = [];
-						for (const key of Object.keys(node)) {
-							if (!KNOWN_META_KEYS.has(key) && !(key in data)) {
-								data[key] = node[key];
-								movedFields.push(key);
-								hasMoved = true;
-							}
-						}
-						if (hasMoved) {
-							fixups.push(`Node "${node.id}" (${node.type}): moved ${movedFields.join(', ')} into data`);
-						}
-						if (hasMoved || Object.keys(data).length > 0) {
-							(node as Record<string, unknown>).data = data;
-						}
-						// Ensure label is always set (fallback to id)
-						if (!data.label) {
-							data.label = (node.name as string) || (node.id as string) || (node.type as string);
-							(node as Record<string, unknown>).data = data;
-							fixups.push(`Node "${node.id}": set label="${data.label}" (was missing)`);
-						}
-					}
-
-					// Auto-populate agent node configs from the workflow's bound agent.
-					// AI may forget to set agentConfig.providerId / modelId; we fill them here
-					// as a server-side guarantee so agent nodes never show "No provider selected".
-					try {
-						const existingWf = await this.workflowStorageService.getWorkflow(workflowId, wsId);
-						if (existingWf?.agentId) {
-							const workflowAgent = await this.studioService.getAgent(existingWf.agentId);
-							if (workflowAgent?.model) {
-								const defaultModelId = typeof workflowAgent.model === 'string'
-									? workflowAgent.model
-									: Array.isArray(workflowAgent.model)
-										? workflowAgent.model[0]
-										: (workflowAgent.model as { primary: string })?.primary;
-								const defaultProviderId = (workflowAgent as any).providerId || '';
-
-								for (const node of nodes) {
-									if (node.type === 'agent') {
-										const data = (node.data as Record<string, unknown>) || {};
-										if (!data.agentId) {
-											data.agentId = existingWf.agentId;
-											fixups.push(`Node "${node.id}" (agent): auto-set agentId="${existingWf.agentId}"`);
-										}
-										const cfg = (data.agentConfig as Record<string, unknown>) || {};
-										if (!cfg.providerId && !cfg.modelId) {
-											data.agentConfig = {
-												providerId: defaultProviderId || '',
-												modelId: defaultModelId || '',
-											};
-											fixups.push(`Node "${node.id}" (agent): auto-set agentConfig={ providerId:"${defaultProviderId || ''}", modelId:"${defaultModelId || ''}" }`);
-										} else if (!cfg.modelId && defaultModelId) {
-											cfg.modelId = defaultModelId;
-											data.agentConfig = cfg;
-											fixups.push(`Node "${node.id}" (agent): auto-set modelId="${defaultModelId}" (was missing)`);
-										} else if (cfg.modelId && !cfg.providerId && defaultProviderId) {
-											cfg.providerId = defaultProviderId;
-											data.agentConfig = cfg;
-											fixups.push(`Node "${node.id}" (agent): auto-set providerId="${defaultProviderId}" (was missing)`);
-										}
-										(node as Record<string, unknown>).data = data;
-									}
-								}
-							}
-						}
-					} catch {
-						// Non-fatal: if we can't resolve the agent, proceed with whatever the AI provided
-					}
-
-					// v6: Auto-default prompt templates for AI-generated workflow nodes.
-					//   - All nodes with a `data.prompt` field get a placeholder when empty.
-					//   - The FIRST prompt-bearing node (in BFS order from Start) defaults to `{{input}}`.
-					//   - All other prompt-bearing nodes default to `{{$prev.output}}` (most recent upstream output).
-					try {
-						const PROMPT_NODE_TYPES = new Set(['prompt', 'agent']);
-						const promptBearing: string[] = [];  // node ids in BFS order
-						const seen = new Set<string>(['start']);
-						const queue: string[] = ['start'];
-						// Build adjacency list once for the BFS
-						const adj = new Map<string, string[]>();
-						for (const c of connections as Array<{ from: string; to: string }>) {
-							const list = adj.get(c.from) ?? [];
-							list.push(c.to);
-							adj.set(c.from, list);
-						}
-						while (queue.length > 0) {
-							const cur = queue.shift()!;
-							for (const next of adj.get(cur) ?? []) {
-								if (seen.has(next)) { continue; }
-								seen.add(next);
-								const nn = nodes.find(n => n.id === next);
-								if (nn && PROMPT_NODE_TYPES.has(nn.type as string)) {
-									promptBearing.push(next);
-								}
-								queue.push(next);
-							}
-						}
-
-						for (let i = 0; i < promptBearing.length; i++) {
-							const nid = promptBearing[i];
-							const node = nodes.find(n => n.id === nid);
-							if (!node) { continue; }
-							const data = (node.data as Record<string, unknown>) || {};
-							const currentPrompt = (data.prompt as string | undefined) ?? '';
-							if (currentPrompt.trim().length > 0) { continue; }  // AI explicitly set it
-							const defaultTpl = i === 0
-								? '{{input}}'                       // first prompt-bearing node
-								: '{{$prev.output}}';               // all others
-							data.prompt = defaultTpl;
-							(node as Record<string, unknown>).data = data;
-							fixups.push(
-								`Node "${nid}" (${node.type}): auto-set prompt="${defaultTpl}" ` +
-								`(${i === 0 ? 'first prompt node → {{input}}' : 'downstream → {{$prev.output}}'})`,
-							);
-						}
-					} catch (err) {
-						// Non-fatal — proceed without the prompt defaults.
-						this.logService.warn('[BuiltinTools] workflow_apply: prompt template defaulting failed', err);
-					}
-
-					// Build the patch
-					const patch: Partial<IStoredWorkflow> = {
-						nodes: nodes as unknown as IStoredWorkflow['nodes'],
-						connections: connections as unknown as IStoredWorkflow['connections'],
-					};
-					if (name !== undefined) { patch.name = name; }
-					if (description !== undefined) { patch.description = description; }
-
-					const updated = await this.workflowStorageService.updateWorkflow(workflowId, patch, wsId);
-
-					// Notify the controller to push changes to the webview
-					workflowAppliedEmitter.fire({ workflow: updated, description: changeDescription });
-
-					const nodeCount = nodes.length;
-					const connCount = connections.length;
-					let resultText = `Workflow "${updated.name || workflowId}" updated successfully. ${nodeCount} nodes, ${connCount} connections applied.`;
-					if (fixups.length > 0) {
-						resultText += '\n\n[Format fixes applied — please use the correct format next time to avoid these automatic corrections:]';
-						for (const f of fixups) {
-							resultText += `\n  • ${f}`;
-						}
-						resultText += '\n\nReminder: put all content fields (label, agentId, agentConfig, etc.) inside the `data` object in each node.';
-					}
-					return [{ type: 'text', text: resultText }];
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return [{ type: 'text', text: `workflow_apply error: ${msg}` }];
-				}
-			},
-		});
-
-		this.logService.info('[BuiltinTools] _registerWorkflowTools: 4 workflow tools registered (list/get/schema/apply)');
 	}
 
+
+	// ─── Codebase Tools (built-in, no external MCP binary) ─────────────────
+	//
+	// Extracted to codebaseTools.ts for maintainability.
+	// See codebaseTools.ts for the full implementation.
+	//
+	private _registerCodebaseTools(): void {
+		registerCodebaseTools({
+			register: (def) => this.register(def),
+			codebaseGraphService: this.codebaseGraphService,
+			workspaceService: this.workspaceService,
+			fileService: this.fileService,
+			logService: this.logService,
+			adrManager: this._adrManager,
+		});
+	}
+
+	// ── Memory helpers ──────────────────────────────────────────
 	// ── Memory helpers ──────────────────────────────────────────
 
 	private _getMemFile(agentId: string, fileName: string): URI {
@@ -3210,5 +2352,3 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	}
 }
 
-// FileType 仅在某些类型守卫处使用，确保 import 不被 tree-shake 报 unused
-void FileType;

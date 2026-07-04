@@ -98,9 +98,17 @@ suite('ToolSearchAssembler — isDeferrableTool', () => {
 		assert.strictEqual(isDeferrableTool(makeTool('tool_call', 'Call', undefined, 'tool-search')), false);
 	});
 
-	test('MCP bridge tools are NOT deferrable', () => {
-		assert.strictEqual(isDeferrableTool(makeTool('mcp_tool_search', 'MCP search', undefined, 'mcp-bridge')), false);
-		assert.strictEqual(isDeferrableTool(makeTool('mcp_tool_call', 'MCP call', undefined, 'mcp-bridge')), false);
+	test('2026-07-03: MCP tools are deferrable via unified bridge (tool_search)', () => {
+		// 2026-07-03: 统一为单套桥接，MCP 工具通过 'mcp' toolset 纳入 deferrable 池
+		// MCP 工具现在通过统一的 tool_search/tool_describe/tool_call 路径按需发现
+		const mcpTool = makeTool('get_architecture', 'Get arch', undefined, 'mcp');
+		assert.strictEqual(isDeferrableTool(mcpTool), true, 'MCP tools should be deferrable');
+	});
+
+	test('2026-07-03: core tool double-protection (whitelist + toolset)', () => {
+		// 即使 toolset 标记为 deferrable=true，核心工具也强制不可延迟
+		const coreToolInDeferrableToolset = makeTool('file_read', 'Read', undefined, 'kanban');
+		assert.strictEqual(isDeferrableTool(coreToolInDeferrableToolset), false, 'core tool whitelisted regardless of toolset');
 	});
 
 	test('medium/low priority tools ARE deferrable', () => {

@@ -82,7 +82,7 @@ import { SentinelManager, type Sentinel, type SentinelTrigger, type SentinelType
 import { MigrationManager, type MigratableEntry, type MigrationResult } from './migrate.js';
 import { ImageRefManager, type ImageRef, type ImageRefStats } from './imageRefs.js';
 import { MeshCoordinator, type MeshNode, type MeshMessage, type MeshTopology, type DistributionStrategy, type TaskDistribution } from './meshCoord.js';
-import { ContextBuilder, type ContextSource, type ContextBuildResult } from './contextBuilder.js';
+import { ContextBuilder, type ContextSource, type ContextBuildResult, type ContextBlock, selectWithBudgetAndPriority, wrapAgentMemoryContext } from './contextBuilder.js';
 import { HealthMonitor, type HealthStatus, type HealthCheck, type HealthSnapshot, type HealthTrend, type HealthAlert } from './healthMonitor.js';
 import { AccessPatternAnalyzer, type AccessPattern, type BurstDetection, type AccessHeatmap } from './accessPatterns.js';
 import { QuotaManager, type QuotaConfig, type QuotaUsage, type QuotaCheckResult, type QuotaDimension, type EnforcementPolicy } from './quotaManager.js';
@@ -179,6 +179,8 @@ const MIN_STRENGTH = 0.1;
 const REINFORCE_INCREMENT = 0.1;
 const MAX_STRENGTH = 1.0;
 const STRENGTH_FLOOR = 0.15;
+/** Q1: 三因子保留评分阈值（对齐 agentmemory retension.ts） */
+const RETENTION_FLOOR = 0.01;
 const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const MAX_LONG_TERM_ENTRIES = 5000;
 const LOW_IMPORTANCE_THRESHOLD = 3;
@@ -196,6 +198,8 @@ interface InternalMemoryEntry extends IMemoryEntry {
 	isLatest?: boolean;       // is this the latest version?
 	// Auto-forget TTL (from agentmemory source)
 	forgetAfter?: number;     // timestamp when this entry should be auto-forgotten
+	// P12: Core/Archival 分层（对齐 agentmemory working-memory.ts CoreMemoryEntry.pinned）
+	pinned?: boolean;          // pinned=true → core memory，不受 budget 截断
 }
 
 // ─── File server helpers ────────────────────────────────────────────────────
@@ -522,9 +526,18 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	private _bloomFilters = new Map<string, BloomFilter>();
 	private _recentSearches = new RecentSearchesManager();
 	private _searchCache = new SearchCache<IMemoryEntry[]>(100, 5 * 60 * 1000); // P3-3: LRU cache, 5min TTL
+	/** P3: 跨请求 Context 结果缓存。当记忆状态未变化时直接复用 systemPrompt 等结果。 */
+	private _contextCache = new Map<string, { result: IMemoryContext; fingerprint: string; ts: number }>();
+	private readonly _contextCacheTtlMs = 60 * 1000; // 1 分钟 TTL，平衡命中率与新鲜度
+	/** P3: 每 agent 的 context 结果缓存版本号，写操作时递增 */
+	private _contextGeneration = new Map<string, number>();
+	/** Start context cache（agentmemory 模式）：会话创建时预计算 context，首轮后直接复用 */
+	private _sessionContextCache = new Map<string, IMemoryContext>();
 
 	// ─── Round 10: accessTracker, circuitBreaker, fallbackChain, sentinels, migrate, imageRefs, meshCoord, contextBuilder, healthMonitor, accessPatterns
 	private _accessTracker = new AccessTracker();
+	/** P9: toolCallId 维度去重 — 防止流式重试/compaction 重放时重复写入 */
+	private _seenToolCallIds = new Map<string, Set<string>>();
 	private _circuitRegistry = new CircuitBreakerRegistry();
 	private _sentinelManager = new SentinelManager();
 	private _migrationManager = new MigrationManager();
@@ -828,8 +841,11 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		this._slidingWindows.delete(agentId);
 		this._temporalGraphs.delete(agentId);
 		this._bloomFilters.delete(agentId);
+		this._seenToolCallIds.delete(agentId);
 		// Search cache
 		this._searchCache.invalidateAgent(agentId);
+		// P3: Context result cache invalidation
+		this._invalidateContextCache(agentId);
 		// Log cleanup
 		console.log(`[AgentMemory] Agent '${agentId}' removed — all per-agent data structures cleaned`);
 	}
@@ -908,6 +924,8 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		this._bloomFilters.clear();
 		this._recentSearches.clear();
 		this._searchCache.clear();
+		this._contextCache.clear();
+		this._sessionContextCache.clear();
 		// Round 10 modules
 		this._accessTracker.clear();
 		this._circuitRegistry.clear();
@@ -1081,7 +1099,7 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		const md = raw.metadata ?? {};
 		return {
 			id: raw.id ?? `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-			type: raw.type ?? 'long_term',
+			type: raw.type ?? 'episodic',
 			content: raw.content ?? '',
 			metadata: md,
 			timestamp: raw.timestamp ?? Date.now(),
@@ -1197,6 +1215,70 @@ export class AgentMemoryProvider implements IMemoryProvider {
 
 	private async _persistShortTerm(agentId: string): Promise<void> {
 		this._schedulePersist(agentId);
+	}
+
+	/**
+	 * P11: Write-through on read — 持久化 accessCount/lastAccessedAt 更新。
+	 * 内部条目已在内存中更新，此处触发 debounced 持久化到 KV。
+	 */
+	private async _persistEntries(agentId: string, _entries: InternalMemoryEntry[]): Promise<void> {
+		this._schedulePersist(agentId);
+	}
+
+	/**
+	 * Q1: 三因子保留评分（对齐 agentmemory retension.ts）
+	 * retentionScore = (importance/10) * recencyFactor * accessFactor * 0.1
+	 * 时间衰减：1 / (1 + days * 0.05) — 90天后趋近0.18
+	 * 访问增强：1 + log2(accessCount + 1) * 0.1
+	 */
+	private _computeRetentionScore(importance: number, timestamp: number, accessCount: number, now: number): number {
+		const days = (now - timestamp) / (1000 * 60 * 60 * 24);
+		const recencyFactor = 1 / (1 + days * 0.05);
+		const accessFactor = 1 + Math.log2(accessCount + 1) * 0.1;
+		return (importance / 10) * recencyFactor * accessFactor * 0.1;
+	}
+
+	/**
+	 * P12: auto-page — 将低分 unpinned 条目从 longTerm 降级到 shortTerm。
+	 * 对齐 agentmemory working-memory.ts L194-253 的 mem::auto-page 机制。
+	 * 当 longTerm 超 budget 且有未入选条目时，将评分最低的降级以降低后续 loadContext 的噪声。
+	 */
+	private async _autoPage(
+		agentId: string,
+		unpinnedEntries: InternalMemoryEntry[],
+		budgetResult: { selected: IMemoryEntry[]; tokensUsed: number; truncated: boolean },
+	): Promise<void> {
+		const selectedIds = new Set(budgetResult.selected.map(e => e.id));
+		const notSelected = unpinnedEntries.filter(e => !selectedIds.has(e.id));
+		if (notSelected.length === 0) return;
+
+		// 按三因子评分升序排列（最低分先降级）
+		const now = Date.now();
+		const score = (e: InternalMemoryEntry): number => {
+			const importanceScore = (e.importance ?? 5) / 10;
+			const recencyDays = (now - (e.timestamp ?? now)) / (1000 * 60 * 60 * 24);
+			const recencyScore = 1 / (1 + recencyDays * 0.1);
+			const accessScore = Math.log2((e.accessCount ?? 0) + 1) / 10;
+			return importanceScore * 0.5 + recencyScore * 0.3 + accessScore * 0.2;
+		};
+		notSelected.sort((a, b) => score(a) - score(b));
+
+		// 降级：从 longTerm 移除，加入 shortTerm 末尾
+		const long = this._longTerm.get(agentId) ?? [];
+		const short = this._shortTerm.get(agentId) ?? [];
+		const toDemote = notSelected.slice(0, Math.min(5, notSelected.length)); // 每次最多降级 5 条
+		const demoteIds = new Set(toDemote.map(e => e.id));
+
+		this._longTerm.set(agentId, long.filter(e => !demoteIds.has(e.id)));
+		this._shortTerm.set(agentId, [...short, ...toDemote]);
+
+		// 持久化
+		this._schedulePersist(agentId);
+		this._audit.record('retention', agentId, toDemote.map(e => e.id), {
+			action: 'auto_page',
+			count: toDemote.length,
+			reason: 'budget_truncated',
+		});
 	}
 
 	// ─── Consolidation & Skill persistence (P0/P1/P2) ────────────────────────
@@ -3324,10 +3406,22 @@ export class AgentMemoryProvider implements IMemoryProvider {
 				}
 			}
 
-			// 2. Strength below floor
-			if (!shouldEvict && entry.strength < STRENGTH_FLOOR) {
-				shouldEvict = true;
-				reason = 'strength_below_floor';
+			// 2. Q1 三因子保留评分（对齐 agentmemory retention 模型）
+			// retentionScore = (importance/10) * recencyFactor * accessFactor * 0.1
+			// 低于 RETENTION_FLOOR 的非 pinned 条目降级到 shortTerm 而非直接删除
+			if (!shouldEvict && entry.pinned !== true) {
+				const retScore = this._computeRetentionScore(
+					entry.importance ?? 5, entry.timestamp ?? now, entry.accessCount ?? 0, now,
+				);
+				if (retScore < RETENTION_FLOOR) {
+					// 降级到 shortTerm（而非直接删除，保留可检索性）
+					const short = this._shortTerm.get(agentId) ?? [];
+					short.push({ ...entry, strength: retScore * 10 });
+					while (short.length > SHORT_TERM_LIMIT) short.shift();
+					this._shortTerm.set(agentId, short);
+					shouldEvict = true;
+					reason = 'retention_below_floor';
+				}
 			}
 
 			// 3. Low importance + old
@@ -3491,6 +3585,8 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		const session = this._activeSessions.get(agentId);
 		if (!session) return null;
 		this._activeSessions.delete(agentId);
+		// 清除 session context 缓存（P6: 用复合键）
+		this._sessionContextCache.delete(`${agentId}::${session.sessionId}`);
 
 		const durationMs = Date.now() - session.startedAt;
 		const summary: InternalMemoryEntry = {
@@ -3522,8 +3618,27 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	): Promise<IMemoryContext> {
 		await this._ensureLoaded(agentId);
 
+		// P3: 跨请求 Context 结果缓存。在记忆状态未变化且查询选项相同时直接复用。
+		const cacheKey = `${agentId}::${query ?? ''}::${JSON.stringify(options ?? {})}`;
+		const fingerprint = this._computeContextFingerprint(agentId, query, options);
+		const cached = this._contextCache.get(cacheKey);
+		if (cached && cached.fingerprint === fingerprint && (Date.now() - cached.ts) < this._contextCacheTtlMs) {
+			this._audit.record('cache_hit', 'context_result', [], { agentId, query: query ?? '' });
+			return cached.result;
+		}
+
+		// ── Start context cache（agentmemory 模式）──────────────────────────
+		// 会话首次调用时预计算 context 并缓存整个 session 生命周期内复用，
+		// 对齐 agentmemory 的 startContextCache 模式（session.created 预载 → chat.system.transform 复用）。
+		// 注意：有显式 query 时不使用 session 缓存（需要 semantic search）。
+		const isNewSession = !this._activeSessions.has(agentId);
+		if (!isNewSession && this._sessionContextCache.has(`${agentId}::${sessionId}`) && (!query || query.trim().length === 0)) {
+			this._audit.record('cache_hit', 'session_context', [], { agentId });
+			return this._sessionContextCache.get(`${agentId}::${sessionId}`)!;
+		}
+
 		// Track session
-		if (!this._activeSessions.has(agentId)) {
+		if (isNewSession) {
 			this._startSession(agentId, sessionId);
 			// Fire session.started trigger + session_start hook
 			this._triggerSystem.fireSync('session.started', { agentId, sessionId });
@@ -3536,6 +3651,7 @@ export class AgentMemoryProvider implements IMemoryProvider {
 
 		// If we have a query, do hybrid search for long-term memories
 		// but STILL include short-term memories and structured context (Slots/WorkingMemory/Consolidation)
+		let result: IMemoryContext;
 		if (query && query.trim().length > 0) {
 			const results = await this._hybridSearch(agentId, query, 10);
 			// Include recent short-term (Working) memories — these are the current session's context
@@ -3544,13 +3660,13 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			const structuredPrompt = this._slots.buildSystemPrompt(agentId)
 				+ '\n\n' + this._workingMemory.buildContext(agentId)
 				+ (this._consolidation.get(agentId)?.buildContext(agentId) ?? '');
-			return {
+			result = {
 				shortTermMemories: topShort,
 				longTermMemories: results,
 				systemPrompt: structuredPrompt,
 				relevantDocuments: [],
 			};
-		}
+		} else {
 
 		// No query → return top entries by strength (adaptive token budget)
 		const eligibleLong = [...longEntries]
@@ -3566,15 +3682,36 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		// Window entries first (recently accessed), then by strength
 		const mergedLong = [...fromWindow, ...fromLong];
 
-		// Use token budget instead of fixed count
-		const publicEntries = mergedLong.map(e => this._toPublicEntry(e));
+		// P13: 三因子加权评分（对齐 agentmemory working-memory.ts scoreEntry）
+		// importance*0.5 + recency*0.3 + access*0.2
+		const now = Date.now();
+		const threeFactorScore = (e: IMemoryEntry): number => {
+			const importanceScore = (e.importance ?? 5) / 10;
+			const recencyDays = (now - (e.timestamp ?? now)) / (1000 * 60 * 60 * 24);
+			const recencyScore = 1 / (1 + recencyDays * 0.1);
+			const accessScore = Math.log2((e.metadata?.['accessCount'] as number ?? 0) + 1) / 10;
+			return importanceScore * 0.5 + recencyScore * 0.3 + accessScore * 0.2;
+		};
+
+		// P12: Core/Archival 分层（对齐 agentmemory working-memory.ts L108-127）
+		// pinned=true 的 core memory 优先选入，不受 budget 截断；
+		// 其余按三因子评分排序，贪心填充剩余预算。
+		const pinnedEntries = mergedLong.filter(e => e.pinned === true);
+		const unpinnedEntries = mergedLong.filter(e => e.pinned !== true);
+
+		// Use token budget — pinned 不受 budget 限制
+		const pinnedPublic = pinnedEntries.map(e => this._toPublicEntry(e));
+		const pinnedTokens = pinnedPublic.reduce((sum, e) => sum + Math.ceil(e.content.length / 3), 0);
+		const remainingBudget = Math.max(0, this._tokenBudget - pinnedTokens);
+
+		const unpinnedPublic = unpinnedEntries.map(e => this._toPublicEntry(e));
 		const budgetResult = selectWithBudget(
-			publicEntries,
-			this._tokenBudget,
-			e => e.metadata?.['strength'] as number ?? 0.5,
+			unpinnedPublic,
+			remainingBudget,
+			threeFactorScore,
 			e => e.content,
 		);
-		const topLong = budgetResult.selected;
+		const topLong = [...pinnedPublic, ...budgetResult.selected];
 
 		// Record accessed entries in sliding window
 		for (const e of topLong) {
@@ -3588,6 +3725,25 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			});
 		}
 
+		// P11: Write-through on read — increment accessCount + update lastAccessedAt
+		// 对齐 agentmemory working-memory.ts L124-131
+		const accessedIds = new Set(topLong.map(e => e.id));
+		const entriesToUpdate = mergedLong.filter(e => accessedIds.has(e.id));
+		const accessTs = now;
+		for (const entry of entriesToUpdate) {
+			entry.accessCount = (entry.accessCount ?? 0) + 1;
+			entry.lastAccessedAt = accessTs;
+		}
+		// 异步写回 KV（fire-and-forget，不阻塞 loadContext）
+		this._persistEntries(agentId, entriesToUpdate).catch(() => {});
+
+		// P12: auto-page — 降级低分条目（fire-and-forget）
+		// 当总 token 超 budget 且有 unpinned 条目未入选时，将最低分条目降级到 shortTerm
+		// 下一轮 loadContext 不再考虑这些条目（降低长期记忆噪声）
+		if (budgetResult.truncated && unpinnedEntries.length > budgetResult.selected.length) {
+			this._autoPage(agentId, unpinnedEntries, budgetResult).catch(() => {});
+		}
+
 		const topShort = shortEntries.slice(-15).map(e => this._toPublicEntry(e));
 
 		this._audit.record('search', agentId, [], {
@@ -3597,7 +3753,7 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			truncated: budgetResult.truncated,
 		});
 
-		return {
+		result = {
 			shortTermMemories: topShort,
 			longTermMemories: topLong,
 			systemPrompt: this._slots.buildSystemPrompt(agentId)
@@ -3608,6 +3764,18 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		};
 	}
 
+	// P3: Cache the assembled context result for cross-request reuse
+	this._contextCache.set(cacheKey, { result, fingerprint, ts: Date.now() });
+
+	// Start context cache: 新会话首轮结果缓存到 session 生命周期
+	// 仅当无显式 query 时缓存（有 query 的结果是语义搜索相关的，不应跨请求复用）
+	if (isNewSession && (!query || query.trim().length === 0)) {
+		this._sessionContextCache.set(`${agentId}::${sessionId}`, result);
+	}
+
+	return result;
+}
+
 	async writeMemory(agentId: string, entry: IMemoryEntry): Promise<void> {
 		// Extract noticeId from metadata for UI correlation (pending → saved/failed)
 		const noticeId = (entry.metadata?.['noticeId'] as string | undefined);
@@ -3617,6 +3785,8 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			const didEmit = await this._writeMemoryInner(agentId, entry);
 			// P3-3: Invalidate search cache for this agent (new memory changes search results)
 			this._searchCache.invalidateAgent(agentId);
+			// P3: Context result cache also invalid — memory state changed
+			this._invalidateContextCache(agentId);
 			// Only emit a guarantee event if _writeMemoryInner did NOT already emit one
 			// (early returns: empty content, duplicate, buffered user).
 			// contentLength: 0 signals the UI to remove the pending card (nothing meaningful saved).
@@ -3655,6 +3825,18 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		// Privacy filter
 		const sanitizedContent = stripPrivateData(stripUndefinedLiterals(entry.content));
 		if (!sanitizedContent) return false;
+
+		// P9: toolCallId 维度去重 — 防止流式重试/compaction 重放时重复写入同一工具调用
+		const toolCallId = entry.metadata?.['toolCallId'] as string | undefined;
+		if (toolCallId) {
+			let seen = this._seenToolCallIds.get(agentId);
+			if (!seen) { seen = new Set(); this._seenToolCallIds.set(agentId, seen); }
+			if (seen.has(toolCallId)) {
+				this._audit.record('dedup_skip', agentId, [entry.id], { reason: 'toolCallId_dup', toolCallId });
+				return false;
+			}
+			seen.add(toolCallId);
+		}
 
 		// BloomFilter pre-filter (fast probabilistic check before SHA-256)
 		let bloom = this._bloomFilters.get(agentId);
@@ -3764,6 +3946,7 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			strength: 1.0,
 			accessCount: 0,
 			lastAccessedAt: Date.now(),
+			pinned: entry.metadata?.['pinned'] === true, // P12: 支持 pinned core memory
 		};
 
 		// Contradiction detection: check for similar existing memories
@@ -3799,7 +3982,7 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		const provenance = this._provenance.get(agentId) ?? new ProvenanceTracker();
 		this._provenance.set(agentId, provenance);
 		const sourceIds = (md['sourceIds'] as string[]) ?? [];
-		provenance.record(internal.id, 'long_term', sourceIds.length > 0 ? sourceIds : [internal.id]);
+		provenance.record(internal.id, entry.type, sourceIds.length > 0 ? sourceIds : [internal.id]);
 		graph.extractFromMemory(internal.id, sanitizedContent, agentId);
 
 		// Extract temporal relationships into temporal graph
@@ -4203,18 +4386,15 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	// ─── Helpers ─────────────────────────────────────────────────────────────
 
 	private _toPublicEntry(entry: InternalMemoryEntry, score?: number): IMemoryEntry {
-		// Map internal storage type ('short_term'/'long_term') to 4-Tier contract type
-		// ('working'/'episodic'/'semantic'/'procedural')
+		// 4-Tier Consolidation Model type mapping (1:1 parity with agentmemory):
+		//   working / episodic / semantic / procedural
+		// No deprecated aliases: short_term, long_term, scene, persona, l0-l3
+		const VALID_TYPES = new Set(['working', 'episodic', 'semantic', 'procedural']);
 		let publicType: 'working' | 'episodic' | 'semantic' | 'procedural';
-		const metaType = (entry.metadata?.['memoryType'] as string) ?? '';
-		if (entry.type === 'short_term') {
-			publicType = 'working';
-		} else if (metaType === 'scene') {
-			publicType = 'semantic';
-		} else if (metaType === 'persona') {
-			publicType = 'procedural';
+		if (VALID_TYPES.has(entry.type)) {
+			publicType = entry.type as typeof publicType;
 		} else {
-			// 'long_term' or unknown → default to episodic
+			// 遗留数据默认映射为 episodic（兼容旧 JSONL 文件中的 short_term/long_term）
 			publicType = 'episodic';
 		}
 		return {
@@ -4234,23 +4414,113 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		};
 	}
 
+	// ─── P3: Context 结果缓存 helpers ──────────────────────────────────────
+
+	/**
+	 * 计算当前 context 结果缓存的指纹。
+	 * 基于 agent 维度版本号 + 记忆条目数量 + 查询/选项，确保记忆状态变化后缓存失效。
+	 */
+	private _computeContextFingerprint(agentId: string, query?: string, options?: any): string {
+		const long = this._longTerm.get(agentId) ?? [];
+		const short = this._shortTerm.get(agentId) ?? [];
+		const gen = this._contextGeneration.get(agentId) ?? 0;
+		return JSON.stringify({
+			agentId,
+			gen,
+			longCount: long.length,
+			shortCount: short.length,
+			query: query ?? '',
+			scope: options?.scope ?? 'agent',
+			consolidated: this._consolidation.has(agentId),
+		});
+	}
+
+	/**
+	 * 失效指定 agent 的 context 结果缓存，并递增版本号。
+	 */
+	private _invalidateContextCache(agentId: string): void {
+		const gen = (this._contextGeneration.get(agentId) ?? 0) + 1;
+		this._contextGeneration.set(agentId, gen);
+		for (const key of this._contextCache.keys()) {
+			if (key.startsWith(`${agentId}::`)) {
+				this._contextCache.delete(key);
+			}
+		}
+		// 写操作后 session context 也需失效（P6: 清除该 agent 所有 session 缓存）
+		for (const key of this._sessionContextCache.keys()) {
+			if (key.startsWith(`${agentId}::`)) {
+				this._sessionContextCache.delete(key);
+			}
+		}
+	}
+
+	// ─── System prompt assembly ─────────────────────────────────────────────
+
 	private _buildSystemPrompt(longTerm: IMemoryEntry[], shortTerm: IMemoryEntry[]): string {
-		const out: string[] = [];
+		const blocks: ContextBlock[] = [];
+		const now = Date.now();
+
+		// P0: 使用 ContextBlock 抽象 + 固定优先级排序
+		// 优先级：0=fixed, 1=core(lessons), 2=dynamic(episodic/working)
+		// 同一 priority 内按 recency 降序 — 保证稳定前缀 → 更高 KV cache 命中率
+
+		// 1. Lessons blocks (priority=1, core memory — more stable, higher priority)
+		const lessons = this._lessons.getLessons('');
+		const topLessons = (lessons ?? []).filter(l => !l.deleted).slice(0, 5);
+		if (topLessons.length > 0) {
+			const items: string[] = [];
+			for (const lesson of topLessons) {
+				const ctx = lesson.context ? ` (context: ${lesson.context.slice(0, 80)})` : '';
+				items.push(`- ${lesson.content.replace(/\s+/g, ' ').slice(0, 200)}${ctx}`);
+			}
+			const mostRecent = topLessons.reduce((acc, l) => {
+				const t = new Date(l.lastReinforcedAt || l.updatedAt).getTime();
+				return t > acc ? t : acc;
+			}, 0);
+			blocks.push({
+				type: 'lesson',
+				content: `## Lessons Learned\n${items.join('\n')}`,
+				tokens: Math.ceil(`## Lessons Learned\n${items.join('\n')}`.length / 3),
+				recency: mostRecent || now,
+				priority: 1,
+				sourceIds: topLessons.map(l => l.id),
+			});
+		}
+
+		// 2. Long-term memory blocks (priority=2, dynamic recall)
 		if (longTerm.length > 0) {
-			out.push('## Long-term memory');
+			const items: string[] = [];
 			for (const e of longTerm.slice(0, 10)) {
 				const imp = e.importance ? ` [${e.importance}/10]` : '';
-				out.push(`-${imp} ${e.content.replace(/\s+/g, ' ').slice(0, 240)}`);
+				items.push(`-${imp} ${e.content.replace(/\s+/g, ' ').slice(0, 240)}`);
 			}
+			blocks.push({
+				type: 'episodic',
+				content: `## Long-term memory\n${items.join('\n')}`,
+				tokens: Math.ceil(`## Long-term memory\n${items.join('\n')}`.length / 3),
+				recency: Math.max(...longTerm.map(e => e.timestamp ?? 0), now),
+				priority: 2,
+			});
 		}
+
+		// 3. Recent context blocks (priority=2, dynamic recall)
 		if (shortTerm.length > 0) {
-			out.push('');
-			out.push('## Recent context');
+			const items: string[] = [];
 			for (const e of shortTerm.slice(-15)) {
-				out.push(`- ${e.content.replace(/\s+/g, ' ').slice(0, 240)}`);
+				items.push(`- ${e.content.replace(/\s+/g, ' ').slice(0, 240)}`);
 			}
+			blocks.push({
+				type: 'working',
+				content: `## Recent context\n${items.join('\n')}`,
+				tokens: Math.ceil(`## Recent context\n${items.join('\n')}`.length / 3),
+				recency: Math.max(...shortTerm.map(e => e.timestamp ?? 0), now),
+				priority: 2,
+			});
 		}
-		return out.join('\n');
+
+		// Unified assembly pipeline with stable ordering
+		const { selected } = selectWithBudgetAndPriority(blocks, this._tokenBudget);
+		return selected.map(b => b.content).join('\n\n');
 	}
 
 	// ─── Sketches API ────────────────────────────────────────────────────────

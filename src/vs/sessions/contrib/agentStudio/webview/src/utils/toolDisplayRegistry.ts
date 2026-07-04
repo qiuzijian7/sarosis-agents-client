@@ -245,7 +245,13 @@ const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
 			detailKeys: ['query'],
 		},
 
-		// ── Task / Todo ──
+		// ── Task / Planning ──
+		update_plan: {
+			emoji: '📋',
+			title: 'Plan',
+			label: 'Plan',
+			detailKeys: ['plan', 'explanation'],
+		},
 		todo: {
 			emoji: '📋',
 			title: 'Todo',

@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { mark } from '../../../../base/common/performance.js';
-import { IAction } from '../../../../base/common/actions.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IEditorOpenContext, IFileEditorInputOptions } from '../../../../workbench/common/editor.js';
@@ -28,30 +27,34 @@ import { IHostService } from '../../../../workbench/services/host/browser/host.j
 import { IEditorOptions as ICodeEditorOptions } from '../../../../editor/common/config/editorOptions.js';
 import { IFilesConfigurationService } from '../../../../workbench/services/filesConfiguration/common/filesConfigurationService.js';
 import { TextFileEditor } from '../../../../workbench/contrib/files/browser/editors/textFileEditor.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
-import { IActionViewItem } from '../../../../base/browser/ui/actionbar/actionbar.js';
-import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Dimension } from '../../../../base/browser/dom.js';
 import { wrapHtmlWithEditorRuntime } from './htmlEditorRuntime.js';
+import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
+import { IConfigHtmlService } from '../../../common/agentStudioService.js';
 
 /**
  * HtmlFileEditorPane — extends TextFileEditor with a 3-mode segmented toggle
- * (编辑 / HTML / 预览) for `.html` files.
+ * (编辑 / HTML / 预览) for `.html` files, displayed in the editor group's
+ * trailing breadcrumbs (next to the file path breadcrumb) so it looks
+ * identical to {@link HtmlPreviewEditorPane}.
  *
  * Modes:
- *   - **edit** (default): standard CodeEditorWidget, fully editable. This is
- *     exactly what TextFileEditor provides.
- *   - **source** (HTML): same CodeEditorWidget but switched to read-only so the
- *     user can browse the HTML source without accidentally editing it.
- *   - **preview**: a webview rendering the HTML file's content, so the user
- *     sees the rendered page instead of source code.
+ *   - **edit** (default for HTML files): a webview rendering the HTML with
+ *     injected editor runtime — drag, resize, RTE, undo/redo, save/export.
+ *     Functionally identical to the edit page in HtmlPreviewEditorPane.
+ *   - **HTML**: same CodeEditorWidget (inherited from TextFileEditor) but
+ *     switched to read-only so the user can browse the HTML source without
+ *     accidentally editing it.
+ *   - **preview**: a webview rendering the HTML file's content.
  *
  * For non-HTML files the pane behaves identically to TextFileEditor — the
- * toggle is hidden (via EditorTitle menu `when` clause) and the editor stays
- * in edit mode.
+ * toggle is hidden (only set up when the active input is an HTML file) and
+ * the editor stays in edit mode.
  *
  * Architecture:
  *   `createEditorControl` is overridden to create two sibling containers
@@ -60,9 +63,19 @@ import { wrapHtmlWithEditorRuntime } from './htmlEditorRuntime.js';
  *   `super.createEditorControl(editorContainer, …)` — we just pass a
  *   different parent element. `layout` is overridden to size both containers
  *   and the webview follows its container automatically.
+ *
+ * The trailing-breadcrumbs toggle is implemented by setting a custom
+ * content element on the editor group via `setTrailingBreadcrumbsContent`.
+ * The element contains three connected buttons (编辑 / HTML / 预览) that
+ * call `_setMode` on click and update their active state.
  */
 export class HtmlFileEditorPane extends TextFileEditor {
 
+	/**
+	 * Action id (kept for backward compatibility — no longer registered as a
+	 * menu action). The toggle is now rendered into the editor group's
+	 * trailing breadcrumbs via `setTrailingBreadcrumbsContent`.
+	 */
 	static readonly TOGGLE_MODE_ACTION_ID = 'agentStudio.htmlFile.toggleMode';
 
 	/** Custom ID so the editor-title toolbar toggle only shows for this pane. */
@@ -78,8 +91,13 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	/** Container for the edit-mode webview. */
 	private _editWebviewContainer: HTMLElement | undefined;
 	private _rawHtml: string | undefined;
-	private _mode: 'edit' | 'source' | 'preview' = 'edit';
+	private _mode: 'edit' | 'source' | 'preview' = 'preview';
 	private _isHtml: boolean = false;
+
+	/** Trailing breadcrumbs content container (the 3-button toggle). */
+	private _trailingBreadcrumbsContent: HTMLElement | undefined;
+	/** Toggle buttons inside the trailing-breadcrumbs container. */
+	private _toggleButtons: { el: HTMLElement; mode: 'edit' | 'source' | 'preview' }[] = [];
 
 	constructor(
 		group: IEditorGroup,
@@ -102,6 +120,8 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		@IHostService hostService: IHostService,
 		@IFilesConfigurationService filesConfigurationService: IFilesConfigurationService,
 		@IWebviewService private readonly _webviewService: IWebviewService,
+		@ILogService private readonly _logService: ILogService,
+		@IConfigHtmlService private readonly _configHtmlService: IConfigHtmlService,
 	) {
 		super(
 			group,
@@ -133,6 +153,23 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	 * the CodeEditorWidget inside the given parent.
 	 */
 	protected override createEditorControl(parent: HTMLElement, initialOptions: ICodeEditorOptions): void {
+		// [Sarosis 2026-07-04] Make the parent the positioning context for our
+		// `position: absolute; inset: 0` containers. Without this, the absolute
+		// containers (preview / edit webview) would resolve `inset: 0` against
+		// the nearest positioned ancestor — which is the editor group's
+		// `.title` element (`.editor-group-container > .title` has
+		// `position: relative` for the breadcrumbs layout, see
+		// editorgroupview.css:177-181). The result: when the preview or edit
+		// webview is shown, it overflows UP and covers the tab + breadcrumb
+		// area, hiding the editor title entirely.
+		//
+		// We cannot modify the CSS class (`.editor-instance`) from here, so
+		// the simplest correct fix is to set `position: relative` on the
+		// inline `parent.style`. The class's `height: 100%` continues to
+		// drive the box height, while inline `position: relative` scopes our
+		// `position: absolute` children to this element only.
+		parent.style.position = 'relative';
+
 		// Wrapper to hold both containers, positioned absolutely.
 		this._editorContainer = document.createElement('div');
 		this._editorContainer.style.position = 'absolute';
@@ -164,7 +201,24 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		mark('code/didCreateTextFileEditorControl');
 	}
 
-	override async setInput(input: FileEditorInput, options: IFileEditorInputOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+	override async setInput(input: FileEditorInput | HtmlPreviewEditorInput, options: IFileEditorInputOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		// Handle HtmlPreviewEditorInput (saros-html-preview:// scheme)
+		if (input instanceof HtmlPreviewEditorInput) {
+			// Skip super.setInput since HtmlPreviewEditorInput isn't a FileEditorInput
+			this._isHtml = true;
+			try {
+				const agentId = input.agentId ?? input.resource.path.replace(/^\//, '');
+				const result = await this._configHtmlService.renderHtml(agentId);
+				this._rawHtml = result.html;
+			} catch (err) {
+				this._logService.warn('[HtmlFileEditorPane] renderHtml failed:', err);
+				this._rawHtml = `Failed to render: ${err}`;
+			}
+			this._setupTrailingBreadcrumbsContent();
+			this._setMode('preview', true);
+			return;
+		}
+
 		await super.setInput(input, options, context, token);
 
 		// Detect HTML files — only show the 3-mode toggle for these.
@@ -172,42 +226,31 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		this._isHtml = resource.path.toLowerCase().endsWith('.html') || resource.path.toLowerCase().endsWith('.htm');
 
 		if (this._isHtml) {
-			// Capture the raw HTML for the preview webview. We read it from
-			// the text model that super.setInput already resolved and set on
-			// the CodeEditorWidget.
+			// Capture the raw HTML for the preview / edit webviews. We read
+			// it from the text model that super.setInput already resolved
+			// and set on the CodeEditorWidget.
 			const control = this.getControl();
 			const model = control?.getModel();
 			this._rawHtml = model?.getValue() ?? '';
+
+			// Set up the trailing-breadcrumbs toggle (编辑 / HTML / 预览).
+			this._setupTrailingBreadcrumbsContent();
 		} else {
 			this._rawHtml = undefined;
+			// Make sure no leftover toggle from a previous HTML input is shown.
+			this._cleanupTrailingBreadcrumbsContent();
 		}
 
-		// Reset to edit mode for each new input.
-		this._setMode('edit', /* force */ true);
+		// Reset to preview mode for each new input.
+		this._setMode('preview', /* force */ true);
 	}
 
-	/**
-	 * Called by the editor toolbar's actionViewItemProvider for each action
-	 * in the MenuId.EditorTitle menu. Returns a custom 3-segment toggle for
-	 * our registered action when an HTML file is active.
-	 */
-	override getActionViewItem(action: IAction, options: IBaseActionViewItemOptions): IActionViewItem | undefined {
-		if (action.id === HtmlFileEditorPane.TOGGLE_MODE_ACTION_ID) {
-			return new HtmlFileSegmentedToggleViewItem(
-				action,
-				() => this._mode,
-				mode => this._setMode(mode),
-			);
-		}
-		return super.getActionViewItem(action, options);
-	}
-
-	/** Current view mode — exposed for the registered toggle command. */
+	/** Current view mode — exposed for any external mode switch. */
 	get currentMode(): 'edit' | 'source' | 'preview' {
 		return this._mode;
 	}
 
-	/** Public entry point for the registered toggle command / keyboard. */
+	/** Public entry point for any external mode switch (e.g. test code). */
 	setMode(mode: 'edit' | 'source' | 'preview'): void {
 		this._setMode(mode);
 	}
@@ -243,7 +286,9 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			this._editWebviewContainer.style.display = useVisualEditor ? '' : 'none';
 		}
 
-		// Toggle readonly on the code editor (source mode = read-only)
+		// Toggle readonly on the code editor (source mode = read-only,
+		// or when visual editor is shown the underlying text widget is
+		// hidden but we keep it read-only to be safe).
 		if (control) {
 			const readOnly = mode === 'source' || useVisualEditor;
 			control.updateOptions({ readOnly });
@@ -256,6 +301,9 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		if (useVisualEditor) {
 			this._ensureEditWebview();
 		}
+
+		// Update the toggle button active-state in the trailing breadcrumbs.
+		this._updateToggleButtonStyles();
 	}
 
 	private _ensurePreviewWebview(): void {
@@ -297,16 +345,28 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	 * Create or update the edit-mode webview that renders the HTML with the
 	 * full editor runtime injected (drag, resize, RTE, undo/redo, save).
 	 * When the user saves inside the webview, the cleaned HTML is posted
-	 * back to the host and written into the text model.
+	 * back to the host via `htmlEditor.saveContent` and written into the
+	 * text model.
+	 *
+	 * Mirrors the behavior of {@link HtmlPreviewEditorPane._ensureEditWebview}
+	 * so the visual editing experience is consistent between the standalone
+	 * preview editor and the text-editor HTML file view.
 	 */
 	private _ensureEditWebview(): void {
 		if (!this._editWebviewContainer) {
 			return;
 		}
 
-		// If the edit webview already exists, just refresh its HTML.
+		// If the edit webview already exists, refresh its HTML and tell it
+		// to re-enter edit mode. setHtml alone does NOT re-execute <script>
+		// tags on the same document, so we must post a follow-up message.
 		if (this._editWebview) {
+			this._logService.warn('[HtmlFileEditorPane] _ensureEditWebview: REFRESHING existing edit webview (setHtml + enterEditMode)');
 			this._editWebview.setHtml(wrapHtmlWithEditorRuntime(this._rawHtml ?? ''));
+			setTimeout(() => {
+				this._logService.info('[HtmlFileEditorPane] _ensureEditWebview: posting enterEditMode after setHtml');
+				this._editWebview?.postMessage({ type: 'htmlEditor.enterEditMode' });
+			}, 200);
 			return;
 		}
 
@@ -331,14 +391,25 @@ export class HtmlFileEditorPane extends TextFileEditor {
 
 		this._register(this._editWebview);
 
-		// Handle save/export messages from the editor runtime
+		// Handle save / export / sync messages from the editor runtime.
+		// `htmlEditor.syncContent` is emitted on every content change inside
+		// the visual editor so we can keep the underlying text model in sync
+		// (the user can switch to source mode and see live HTML).
 		this._register(this._editWebview.onMessage(async (e) => {
 			const msg = e.message as { type?: string; html?: string } | undefined;
 			if (!msg || !msg.type) {
 				return;
 			}
+			this._logService.info(`[HtmlFileEditorPane] editWebview.onMessage: type=${msg.type} htmlLen=${typeof msg.html === 'string' ? msg.html.length : 'n/a'}`);
+			if (msg.type === 'htmlEditor.syncContent') {
+				if (typeof msg.html === 'string') {
+					this._rawHtml = msg.html;
+				}
+				return;
+			}
 			if (msg.type === 'htmlEditor.saveContent' || msg.type === 'htmlEditor.exportContent') {
 				if (typeof msg.html === 'string') {
+					this._logService.info('[HtmlFileEditorPane] calling _applyEditedHtml from saveContent');
 					this._applyEditedHtml(msg.html);
 				}
 			}
@@ -354,6 +425,7 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	 * preview mode reflects the latest edits.
 	 */
 	private _applyEditedHtml(html: string): void {
+		this._logService.info(`[HtmlFileEditorPane] _applyEditedHtml: htmlLen=${html.length} _webviewExists=${!!this._webview}`);
 		this._rawHtml = html;
 		const control = this.getControl();
 		const model = control?.getModel();
@@ -363,6 +435,12 @@ export class HtmlFileEditorPane extends TextFileEditor {
 				range: model.getFullModelRange(),
 				text: html,
 			}]);
+		}
+		// Refresh the preview webview (if mounted) so the latest HTML
+		// shows up the next time the user switches to preview mode.
+		if (this._webview) {
+			this._logService.info('[HtmlFileEditorPane] _applyEditedHtml: refreshing preview webview');
+			this._webview.setHtml(this._wrapHtmlForWebview(html));
 		}
 	}
 
@@ -394,6 +472,121 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		// layout call is needed for the webview.
 	}
 
+	// ─── Trailing-breadcrumbs toggle (编辑 / HTML / 预览) ──────────────────
+
+	/**
+	 * Set up the trailing breadcrumbs content (3-mode toggle buttons).
+	 * The container is attached to the editor group via
+	 * `setTrailingBreadcrumbsContent`, so it appears next to the file path
+	 * breadcrumb below the editor tab — identical look to
+	 * {@link HtmlPreviewEditorPane}.
+	 */
+	private _setupTrailingBreadcrumbsContent(): void {
+		// Clear any existing trailing content (e.g. from a previous input).
+		this._cleanupTrailingBreadcrumbsContent();
+
+		this._trailingBreadcrumbsContent = this._createTrailingBreadcrumbsContent();
+		this.group.setTrailingBreadcrumbsContent(this._trailingBreadcrumbsContent);
+	}
+
+	/**
+	 * Clean up the trailing breadcrumbs content. Detaches the element from
+	 * the editor group and clears the local button references so the next
+	 * setInput can rebuild from scratch.
+	 */
+	private _cleanupTrailingBreadcrumbsContent(): void {
+		if (this._trailingBreadcrumbsContent) {
+			this.group.setTrailingBreadcrumbsContent(undefined);
+			this._trailingBreadcrumbsContent = undefined;
+		}
+		this._toggleButtons = [];
+	}
+
+	/**
+	 * Build the 3-button connected segmented toggle (编辑 / HTML / 预览)
+	 * that gets injected into the editor group's trailing breadcrumbs area.
+	 * Returns the container element ready to be passed to
+	 * `group.setTrailingBreadcrumbsContent`.
+	 */
+	private _createTrailingBreadcrumbsContent(): HTMLElement {
+		const container = document.createElement('div');
+		container.className = 'html-file-mode-toggle';
+		container.style.display = 'inline-flex';
+		container.style.alignItems = 'center';
+		container.style.gap = '0';
+		container.style.whiteSpace = 'nowrap';
+
+		const labels: { label: string; mode: 'edit' | 'source' | 'preview' }[] = [
+			{ label: '编辑', mode: 'edit' },
+			{ label: 'HTML', mode: 'source' },
+			{ label: '预览', mode: 'preview' },
+		];
+
+		this._toggleButtons = [];
+
+		for (let i = 0; i < labels.length; i++) {
+			const { label, mode } = labels[i];
+			const btn = document.createElement('a');
+			btn.classList.add('html-file-seg-btn');
+			btn.setAttribute('role', 'button');
+			btn.setAttribute('aria-pressed', String(mode === this._mode));
+			btn.tabIndex = 0;
+			btn.textContent = label;
+			btn.style.display = 'inline-block';
+			btn.style.whiteSpace = 'nowrap';
+			btn.style.padding = '2px 8px';
+			btn.style.fontSize = '11px';
+			btn.style.lineHeight = '18px';
+			btn.style.cursor = 'pointer';
+			btn.style.borderRadius = '3px';
+			btn.style.border = '1px solid var(--vscode-contrastBorder, var(--vscode-widget-border, rgba(255,255,255,0.1)))';
+			btn.style.textDecoration = 'none';
+			btn.style.backgroundColor = 'transparent';
+
+			// Connected look: middle buttons have no border radius on either
+			// side, first button has left radius, last button has right radius.
+			if (i > 0) {
+				btn.style.borderTopLeftRadius = '0';
+				btn.style.borderBottomLeftRadius = '0';
+				btn.style.borderLeft = 'none';
+			}
+			if (i < labels.length - 1) {
+				btn.style.borderTopRightRadius = '0';
+				btn.style.borderBottomRightRadius = '0';
+			}
+
+			this._register(DOM.addDisposableListener(btn, DOM.EventType.CLICK, (e) => {
+				DOM.EventHelper.stop(e, true);
+				this._logService.info(`[HtmlFileEditorPane] toggle button clicked: mode=${mode}`);
+				this._setMode(mode);
+			}));
+
+			container.appendChild(btn);
+			this._toggleButtons.push({ el: btn, mode });
+		}
+
+		this._updateToggleButtonStyles();
+
+		return container;
+	}
+
+	/** Refresh the active state of the toggle buttons to match the current mode. */
+	private _updateToggleButtonStyles(): void {
+		if (!this._toggleButtons) {
+			return;
+		}
+		for (const { el, mode } of this._toggleButtons) {
+			const active = mode === this._mode;
+			el.setAttribute('aria-pressed', String(active));
+			el.style.backgroundColor = active
+				? 'var(--vscode-list-activeSelectionBackground, #094771)'
+				: 'var(--vscode-editorWidget-background, transparent)';
+			el.style.color = active
+				? 'var(--vscode-list-activeSelectionForeground, #ffffff)'
+				: 'var(--vscode-foreground, #cccccc)';
+		}
+	}
+
 	override clearInput(): void {
 		// Dispose preview webview on input clear
 		if (this._webview) {
@@ -411,8 +604,9 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		if (this._previewContainer) {
 			DOM.clearNode(this._previewContainer);
 		}
+		this._cleanupTrailingBreadcrumbsContent();
 		this._rawHtml = undefined;
-		this._mode = 'edit';
+		this._mode = 'preview';
 		this._isHtml = false;
 		super.clearInput();
 	}
@@ -430,101 +624,3 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	}
 }
 
-/**
- * Custom toolbar view item rendering a connected "编辑 / HTML / 预览"
- * segmented control (3 buttons). Stateless — pulls the current mode from
- * the pane on render.
- */
-class HtmlFileSegmentedToggleViewItem extends BaseActionViewItem {
-
-	private readonly _buttons: { el: HTMLElement; mode: 'edit' | 'source' | 'preview' }[] = [];
-	private readonly _getMode: () => 'edit' | 'source' | 'preview';
-	private readonly _onModeChange: (mode: 'edit' | 'source' | 'preview') => void;
-
-	constructor(
-		action: IAction,
-		getMode: () => 'edit' | 'source' | 'preview',
-		onModeChange: (mode: 'edit' | 'source' | 'preview') => void,
-	) {
-		super(undefined, action);
-		this._getMode = getMode;
-		this._onModeChange = onModeChange;
-	}
-
-	override render(container: HTMLElement): void {
-		super.render(container);
-
-		while (container.firstChild) {
-			container.removeChild(container.firstChild);
-		}
-
-		container.classList.add('html-file-segmented-toggle');
-		container.style.display = 'inline-flex';
-		container.style.alignItems = 'center';
-		container.style.alignSelf = 'center';
-		container.style.marginRight = '4px';
-		container.style.userSelect = 'none';
-
-		const labels: { label: string; mode: 'edit' | 'source' | 'preview' }[] = [
-			{ label: '编辑', mode: 'edit' },
-			{ label: 'HTML', mode: 'source' },
-			{ label: '预览', mode: 'preview' },
-		];
-
-		for (let i = 0; i < labels.length; i++) {
-			const { label, mode } = labels[i];
-			const btn = this._createButton(label, mode);
-			// Connected look: middle buttons have no border radius on either side,
-			// first button has left radius, last button has right radius.
-			if (i > 0) {
-				btn.style.borderTopLeftRadius = '0';
-				btn.style.borderBottomLeftRadius = '0';
-				btn.style.borderLeft = 'none';
-			}
-			if (i < labels.length - 1) {
-				btn.style.borderTopRightRadius = '0';
-				btn.style.borderBottomRightRadius = '0';
-			}
-			container.appendChild(btn);
-			this._buttons.push({ el: btn, mode });
-		}
-
-		this._updateActiveStyles(this._getMode());
-	}
-
-	private _createButton(label: string, mode: 'edit' | 'source' | 'preview'): HTMLElement {
-		const btn = document.createElement('a');
-		btn.classList.add('html-file-seg-btn');
-		btn.setAttribute('role', 'button');
-		btn.setAttribute('aria-pressed', 'false');
-		btn.tabIndex = 0;
-		btn.textContent = label;
-		btn.style.display = 'inline-block';
-		btn.style.padding = '2px 8px';
-		btn.style.fontSize = '11px';
-		btn.style.lineHeight = '18px';
-		btn.style.cursor = 'pointer';
-		btn.style.borderRadius = '3px';
-		btn.style.border = '1px solid var(--vscode-contrastBorder, var(--vscode-widget-border, rgba(255,255,255,0.1)))';
-		btn.style.textDecoration = 'none';
-		this._register(DOM.addDisposableListener(btn, DOM.EventType.CLICK, e => {
-			DOM.EventHelper.stop(e, true);
-			this._onModeChange(mode);
-			this._updateActiveStyles(mode);
-		}));
-		return btn;
-	}
-
-	private _updateActiveStyles(mode: 'edit' | 'source' | 'preview'): void {
-		for (const { el, mode: btnMode } of this._buttons) {
-			const active = btnMode === mode;
-			el.setAttribute('aria-pressed', String(active));
-			el.style.background = active
-				? 'var(--vscode-list-activeSelectionBackground, #094771)'
-				: 'var(--vscode-editorWidget-background, transparent)';
-			el.style.color = active
-				? 'var(--vscode-list-activeSelectionForeground, #ffffff)'
-				: 'var(--vscode-foreground, #cccccc)';
-		}
-	}
-}

@@ -74,6 +74,29 @@ describe('BM25Index', () => {
 		assertEqual(results[0].id, 'd1', 'correct CJK doc');
 	});
 
+	it('prefix matching finds partial terms', () => {
+		const idx = new BM25Index();
+		idx.add('d1', 'deployment configuration');
+		idx.add('d2', 'development environment');
+		idx.add('d3', 'design document');
+
+		// "deploy" is a prefix of "deployment" — should still match d1
+		const results = idx.search('deploy');
+		assert(results.length > 0, 'prefix search has results');
+		assert(results.some(r => r.id === 'd1'), 'd1 matched via prefix');
+	});
+
+	it('prefix matching does not dominate exact matches', () => {
+		const idx = new BM25Index();
+		idx.add('d1', 'configure config configuration');
+		idx.add('d2', 'configure the system');
+
+		const results = idx.search('config');
+		assert(results.length > 0, 'has results');
+		// d1 contains both exact "config" and prefix "configuration" → higher score
+		assertEqual(results[0].id, 'd1', 'exact + prefix doc ranks highest');
+	});
+
 	it('score is positive for matching docs', () => {
 		const idx = new BM25Index();
 		idx.add('d1', 'machine learning models');

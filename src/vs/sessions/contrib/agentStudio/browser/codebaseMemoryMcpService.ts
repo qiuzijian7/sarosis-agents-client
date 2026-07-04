@@ -4,11 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Codebase-Memory-MCP Service — 检测、安装、升级、配置 MCP 服务器。
+ * Codebase Memory Service — 索引配置管理 + 团队图谱共享 (Git)
  *
- * 安装方式：从 GitHub 下载 install.sh/install.ps1 脚本并执行，
- * 脚本自动下载预编译二进制到系统路径。
- * 安装完成后自动配置 MCP 服务器到用户级配置。
+ * 设计变更（2026-07-03）：
+ *   原本此服务负责下载/安装/配置 codebase-memory-mcp.exe 外部二进制，
+ *   并通过 MCP stdio 协议与之通信。
+ *   现已移除所有外部二进制相关逻辑，改为：
+ *   - 索引功能委托给内置 ICodebaseGraphService（基于 tree-sitter WASM）
+ *   - 团队共享仍通过 Git 推送到远程仓库
+ *   - 索引配置持久化到 workspace storage
+ *
+ *   这样 Agent 系统通过 builtinToolProvider 暴露的内置 codebase 工具
+ *   （search_graph / query_graph / get_architecture 等）直接调用
+ *   ICodebaseGraphService，无需外部 MCP 服务器中转。
  */
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -16,65 +24,27 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentStudioLogService } from './agentStudioLogService.js';
-import { IWorkbenchMcpManagementService } from '../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
-import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
-import { McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
-import { IInstallableMcpServer } from '../../../../platform/mcp/common/mcpManagement.js';
-import { McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
-import { ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
-import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import type { ToolProgress } from '../../../../workbench/contrib/chat/common/tools/languageModelToolsService.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { ICodebaseGraphService, IIndexConfig as IGraphIndexConfig } from './codebaseGraphService.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-
-export type CodebaseMemoryState = 'not_installed' | 'installing' | 'installed' | 'running';
-
-export interface ICodebaseMemoryMcpStatus {
-	state: CodebaseMemoryState;
-	binaryPath?: string;
-	version?: string;
-	latestVersion?: string;
-	mcpConfigured: boolean;
-	mcpRunning: boolean;
-	installLog: string[];
-}
 
 export const ICodebaseMemoryMcpService = createDecorator<ICodebaseMemoryMcpService>('ICodebaseMemoryMcpService');
 
 export interface ICodebaseMemoryMcpService {
 	readonly _serviceBrand: undefined;
-	readonly onDidStatusChange: Event<ICodebaseMemoryMcpStatus>;
-	readonly onDidInstallLog: Event<string>;
-	/** Fired after a successful install/upgrade, so bootstrap can auto-start the server. */
-	readonly onDidInstallComplete: Event<void>;
+	/** Fired with progress lines during indexing. */
+	readonly onDidIndexProgress: Event<string>;
+	/** Fired after indexing completes (success or failure). */
+	readonly onDidIndexComplete: Event<IIndexResult>;
 	/** Fired after a graph sync attempt (push to remote Git repo). */
 	readonly onDidSyncGraph: Event<ISyncGraphResult>;
-	/** Fired with progress lines during index_repository execution. */
-	readonly onDidIndexProgress: Event<string>;
-	/** Fired after index_repository completes (success or failure). */
-	readonly onDidIndexComplete: Event<IIndexResult>;
-	getStatus(): ICodebaseMemoryMcpStatus;
-	refreshStatus(): Promise<void>;
-	/** Detect binary, configure MCP if found (no download). For bootstrap use. */
-	ensureConfigured(): Promise<boolean>;
-	install(): Promise<void>;
-	upgrade(): Promise<void>;
-	openEditor(): Promise<void>;
-	/** Sync graph to remote Git repository for team sharing. */
-	syncGraph(workspacePath?: string): Promise<ISyncGraphResult>;
-	/** Get local graph status (exists, size, last modified, git info). */
-	getGraphStatus(workspacePath?: string): Promise<IGraphStatus>;
-	/** Pull graph from remote Git repository (team sharing). */
-	pullGraph(workspacePath?: string): Promise<IPullGraphResult>;
-	/** Index the workspace repository (calls MCP index_repository tool). */
+	/** Index the workspace repository (delegates to ICodebaseGraphService). */
 	indexRepository(workspacePath?: string): Promise<IIndexResult>;
 	/** Whether an indexing operation is currently in progress. */
 	readonly isIndexing: boolean;
@@ -86,6 +56,12 @@ export interface ICodebaseMemoryMcpService {
 	setIndexConfig(config: IIndexConfig): void;
 	/** Write .cbmignore file with exclude patterns before indexing. */
 	writeCbmIgnore(excludeDirs: string[], targetPath?: string): Promise<void>;
+	/** Sync graph to remote Git repository for team sharing. */
+	syncGraph(workspacePath?: string): Promise<ISyncGraphResult>;
+	/** Get local graph status (exists, size, last modified, git info). */
+	getGraphStatus(workspacePath?: string): Promise<IGraphStatus>;
+	/** Pull graph from remote Git repository (team sharing). */
+	pullGraph(workspacePath?: string): Promise<IPullGraphResult>;
 }
 
 /** Index mode controls how many files are indexed. */
@@ -113,6 +89,8 @@ export interface IGraphStatus {
 	graphPath?: string;
 	size?: number;
 	lastModified?: string;
+	nodeCount?: number;
+	edgeCount?: number;
 	gitBranch?: string;
 	gitCommit?: string;
 	gitRemote?: string;
@@ -132,11 +110,7 @@ export interface IIndexResult {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const SERVER_NAME = 'codebase-memory-mcp';
-const LOG_TAG = '[CodebaseMemoryMcp]';
-const GITHUB_LATEST_API = 'https://api.github.com/repos/DeusData/codebase-memory-mcp/releases/latest';
-const INSTALL_SCRIPT_WIN = 'https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.ps1';
-const INSTALL_SCRIPT_UNIX = 'https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh';
+const LOG_TAG = '[CodebaseMemory]';
 
 /** Remote Git repository for team graph sharing. */
 const GRAPH_SYNC_REMOTE = 'https://git.woa.com/zijianqiu/vssaros-codebase-memory.git';
@@ -146,414 +120,287 @@ const GRAPH_SYNC_REMOTE = 'https://git.woa.com/zijianqiu/vssaros-codebase-memory
 export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMemoryMcpService {
 	_serviceBrand: undefined;
 
-	private readonly _onDidStatusChange = this._register(new Emitter<ICodebaseMemoryMcpStatus>());
-	readonly onDidStatusChange = this._onDidStatusChange.event;
-
-	private readonly _onDidInstallLog = this._register(new Emitter<string>());
-	readonly onDidInstallLog = this._onDidInstallLog.event;
-
-	private readonly _onDidInstallComplete = this._register(new Emitter<void>());
-	readonly onDidInstallComplete = this._onDidInstallComplete.event;
-
-	private readonly _onDidSyncGraph = this._register(new Emitter<ISyncGraphResult>());
-	readonly onDidSyncGraph = this._onDidSyncGraph.event;
-
 	private readonly _onDidIndexProgress = this._register(new Emitter<string>());
 	readonly onDidIndexProgress = this._onDidIndexProgress.event;
 
 	private readonly _onDidIndexComplete = this._register(new Emitter<IIndexResult>());
 	readonly onDidIndexComplete = this._onDidIndexComplete.event;
 
+	private readonly _onDidSyncGraph = this._register(new Emitter<ISyncGraphResult>());
+	readonly onDidSyncGraph = this._onDidSyncGraph.event;
+
 	// 索引状态管理：防止重复索引 + 支持取消
 	private _isIndexing = false;
 	get isIndexing(): boolean { return this._isIndexing; }
 	private _indexCts?: CancellationTokenSource;
-	private static readonly INDEX_TIMEOUT_MS = 30 * 60 * 1000; // 30 分钟超时
 
 	// 索引配置：持久化 mode + 排除目录
 	private static readonly STORAGE_KEY_INDEX_CONFIG = 'codebaseMemory.indexConfig';
 	private static readonly DEFAULT_EXCLUDE_DIRS = ['node_modules', '.git', 'build', 'out', 'dist', '.vscode-test', 'extensions', 'test', 'tests', 'resources', 'dev', 'docs', 'doc', 'scripts', '.worktrees', 'deploy-package', 'cli', 'Intermediate', 'Saved', 'Binaries', 'Build'];
 
-	private _status: ICodebaseMemoryMcpStatus = {
-		state: 'not_installed',
-		mcpConfigured: false,
-		mcpRunning: false,
-		installLog: [],
-	};
-
 	constructor(
 		@IAgentStudioLogService private readonly logService: ILogService,
-		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
-		@IMcpService private readonly mcpService: IMcpService,
+		@ICodebaseGraphService private readonly graphService: ICodebaseGraphService,
 		@IFileService private readonly fileService: IFileService,
-		@IPathService private readonly pathService: IPathService,
-		@ITerminalService private readonly terminalService: ITerminalService,
 		@IStorageService private readonly storageService: IStorageService,
-		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
+
+		// 转发 graphService 的索引进度事件（统一出口）
+		this._register(this.graphService.onDidIndexProgress(line => {
+			this._onDidIndexProgress.fire(line);
+		}));
+		this._register(this.graphService.onDidIndexComplete(result => {
+			// 映射 IGraphIndexResult → IIndexResult（结构兼容，仅取共同字段）
+			const mapped: IIndexResult = {
+				success: result.success,
+				message: result.message,
+				duration: result.duration,
+			};
+			this._isIndexing = false;
+			this._onDidIndexComplete.fire(mapped);
+		}));
 	}
 
-	getStatus(): ICodebaseMemoryMcpStatus {
-		return { ...this._status, installLog: [...this._status.installLog] };
-	}
+	// ─── Index Repository (delegates to ICodebaseGraphService) ────────────────
 
-	private _setStatus(patch: Partial<ICodebaseMemoryMcpStatus>): void {
-		this._status = { ...this._status, ...patch };
-		this._onDidStatusChange.fire(this.getStatus());
-	}
-
-	private _log(line: string): void {
-		this._status.installLog.push(line);
-		this._onDidInstallLog.fire(line);
-		this.logService.info(LOG_TAG, line);
-	}
-
-	/** Refresh status: detect binary, version, MCP config, running state. */
-	async refreshStatus(): Promise<void> {
-		const binaryPath = await this._detectBinary();
-		const version = binaryPath ? this._detectVersion(binaryPath) : undefined;
-		const latestVersion = await this._fetchLatestVersion().catch(() => undefined);
-
-		let mcpConfigured = false;
-		try {
-			const installed = await this.mcpManagementService.getInstalled();
-			mcpConfigured = installed.some(s => s.name === SERVER_NAME);
-		} catch { /* ignore */ }
-		// Also check ~/.saros/mcp.json
-		if (!mcpConfigured) {
-			const sarosConfig = await this._readSarosMcpConfig();
-			mcpConfigured = !!sarosConfig?.servers?.[SERVER_NAME];
+	async indexRepository(workspacePath?: string): Promise<IIndexResult> {
+		// 0. 防止重复索引
+		if (this._isIndexing) {
+			const result: IIndexResult = { success: false, message: '索引正在进行中，请等待完成或取消后再试' };
+			return result;
 		}
 
-		const mcpRunning = this._isMcpRunning();
-
-		const state: CodebaseMemoryState = mcpRunning ? 'running' : (binaryPath ? 'installed' : 'not_installed');
-		this._setStatus({ state, binaryPath, version, latestVersion, mcpConfigured, mcpRunning });
-	}
-
-	/** Detect binary, sync ~/.saros/mcp.json → VS Code config. For bootstrap use. */
-	async ensureConfigured(): Promise<boolean> {
-		// 1. Ensure ~/.saros/mcp.json exists with default codebase-memory-mcp entry
-		await this._ensureSarosMcpConfig();
-
-		// 2. ALWAYS update config with thirdparty path (regardless of binary detection)
-		//    This ensures the config always points to <appRoot>/resources/thirdparty/.../codebase-memory-mcp.exe
-		//    even before the binary is installed there. Old configs with system paths are overwritten.
-		const thirdpartyPath = this._getThirdpartyBinaryPath();
-		await this._updateSarosMcpConfig(SERVER_NAME, {
-			type: McpServerType.LOCAL,
-			command: thirdpartyPath,
-			env: { CBM_WORKERS: '16' },
-		});
-		this.logService.info(LOG_TAG, 'Config updated to thirdparty path:', thirdpartyPath);
-
-		// 3. Only sync to VS Code config if binary exists
-		//    (prevents VS Code from auto-starting a non-existent binary → Error state)
-		const binaryExists = await this._detectBinary();
-		if (binaryExists) {
-			await this._syncToVsCodeConfig();
-			this._clearDisabledState();
-			this.logService.info(LOG_TAG, 'Binary found, synced to VS Code config.');
-		} else {
-			this.logService.info(LOG_TAG, 'Binary not found yet, skipping VS Code config sync (prevents Error state).');
-		}
-
-		// 4. Refresh status
-		await this.refreshStatus();
-		return this._status.mcpConfigured;
-	}
-
-	/** Clear disabled state for codebase-memory-mcp (stored by IntegrationView). */
-	private _clearDisabledState(): void {
-		const STORAGE_KEY = 'agentStudio.mcpDisabledServers';
-		const idsToClear = ['codebase_memory_mcp', 'mcp_config_usrlocal_codebase_memory_mcp'];
-		try {
-			const raw = this.storageService.get(STORAGE_KEY, StorageScope.WORKSPACE, '[]');
-			if (!raw) { return; }
-			const arr: string[] = JSON.parse(raw);
-			const filtered = arr.filter((id: string) => !idsToClear.includes(id));
-			if (filtered.length !== arr.length) {
-				this.storageService.store(STORAGE_KEY, JSON.stringify(filtered), StorageScope.WORKSPACE, StorageTarget.USER);
-				this.logService.info(LOG_TAG, 'Cleared disabled state for codebase-memory-mcp.');
+		// 1. Resolve workspace path
+		let wsPath = workspacePath;
+		let baseWsUri: URI | undefined;
+		if (!wsPath) {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			if (folders.length === 0) {
+				const result: IIndexResult = { success: false, message: 'No workspace folder open' };
+				this._onDidIndexComplete.fire(result);
+				return result;
 			}
-		} catch { /* ignore parse errors */ }
-	}
+			baseWsUri = folders[0].uri;
+			wsPath = baseWsUri.fsPath;
+		}
 
-	/** Install: download + execute install script, then configure MCP. */
-	async install(): Promise<void> {
-		if (this._status.state === 'installing') { return; }
-		this._setStatus({ state: 'installing' });
-		this._log('▶ 开始安装 codebase-memory-mcp...');
+		// 1b. 读取索引配置：如果配置了 subPath，只索引子目录（避免大型工作区全量索引导致内存爆炸）
+		const indexConfig = this.getIndexConfig();
+		this.logService.info(LOG_TAG, `Index config: mode=${indexConfig.mode}, subPath=${indexConfig.subPath || '(none)'}, excludeDirs=${indexConfig.excludeDirs.length} items`);
+		if (indexConfig.subPath && indexConfig.subPath.trim() && baseWsUri) {
+			const fullUri = URI.joinPath(baseWsUri, indexConfig.subPath.trim());
+			wsPath = fullUri.fsPath;
+		} else if (baseWsUri) {
+			// subPath 为空时警告：大型工作区全量索引可能超时
+			this._onDidIndexProgress.fire(`⚠ 未设置索引路径，将索引整个工作区。如索引超时，请在配置中设置"索引路径"（如 src/vs/sessions）`);
+		}
+		this.logService.info(LOG_TAG, `Repo path for indexing: ${wsPath}`);
+
+		this._isIndexing = true;
+		this._indexCts = new CancellationTokenSource();
+
+		this.logService.info(LOG_TAG, `Starting indexWorkspace for "${wsPath}"...`);
+		this._onDidIndexProgress.fire(`▶ 开始索引代码库: ${wsPath}`);
+
+		const startTime = Date.now();
 
 		try {
-			await this._runInstallScript();
-			this._log('✓ 安装脚本执行完成');
-
-			// Detect the newly installed binary
-			const binaryPath = await this._detectBinary();
-			if (!binaryPath) {
-				this._log('⚠ 未能检测到已安装的二进制文件，可能需要重启或手动添加 PATH');
-				this._setStatus({ state: 'not_installed' });
-				return;
+			// 2. 写入 .cbmignore 排除规则到索引目录
+			if (indexConfig.excludeDirs.length > 0) {
+				this._onDidIndexProgress.fire(`▶ 写入 .cbmignore (排除: ${indexConfig.excludeDirs.join(', ')})`);
+				try {
+					await this.writeCbmIgnore(indexConfig.excludeDirs, wsPath);
+				} catch (e: any) {
+					this.logService.warn(LOG_TAG, `Failed to write .cbmignore: ${e.message || e}`);
+				}
 			}
-			this._log(`✓ 检测到二进制: ${binaryPath}`);
 
-			// Configure MCP: write to ~/.saros/mcp.json + sync to VS Code
-			await this._updateSarosMcpConfig(SERVER_NAME, {
-				type: McpServerType.LOCAL,
-				command: binaryPath,
-			});
-			await this._syncToVsCodeConfig();
-			this._log('✓ MCP 配置已写入 ~/.saros/mcp.json 并同步到 VS Code');
+			this._onDidIndexProgress.fire(`▶ 调用内置 tree-sitter 索引 (mode: ${indexConfig.mode})...`);
 
-			// Refresh full status
-			await this.refreshStatus();
-			this._log('✓ 安装完成！');
+			// 3. 委托给 ICodebaseGraphService.indexWorkspace()（基于 tree-sitter WASM，无外部二进制）
+			const graphConfig: IGraphIndexConfig = {
+				mode: indexConfig.mode,
+				excludeDirs: indexConfig.excludeDirs,
+				keepDirs: indexConfig.keepDirs,
+				subPath: indexConfig.subPath,
+			};
 
-			// Notify bootstrap to auto-start the server
-			this._onDidInstallComplete.fire();
-			this.logService.info(LOG_TAG, 'Fired onDidInstallComplete — bootstrap will auto-start the server.');
-		} catch (err) {
-			this._log(`✗ 安装失败: ${err}`);
-			this._setStatus({ state: 'not_installed' });
+			const graphResult = await this.graphService.indexWorkspace(wsPath, graphConfig, this._indexCts.token);
+
+			const duration = Math.round((Date.now() - startTime) / 1000);
+			const result: IIndexResult = {
+				success: graphResult.success,
+				message: graphResult.message,
+				duration,
+			};
+			this._onDidIndexProgress.fire(`✓ ${graphResult.message}`);
+			this._onDidIndexComplete.fire(result);
+			return result;
+
+		} catch (err: any) {
+			const duration = Math.round((Date.now() - startTime) / 1000);
+			const isCancelled = this._indexCts?.token.isCancellationRequested;
+			const msg = isCancelled
+				? `索引已取消 (${duration}s)`
+				: `索引失败: ${err.message || String(err)}`;
+			this._onDidIndexProgress.fire(`✗ ${msg}`);
+			this.logService.error(LOG_TAG, msg, err);
+			const result: IIndexResult = { success: false, message: msg, duration };
+			this._onDidIndexComplete.fire(result);
+			return result;
+		} finally {
+			this._isIndexing = false;
+			this._indexCts?.dispose();
+			this._indexCts = undefined;
 		}
 	}
 
-	/** Upgrade: same as install (install script overwrites existing binary). */
-	async upgrade(): Promise<void> {
-		this._log('▶ 开始升级 codebase-memory-mcp...');
-		await this.install();
+	/** 取消正在进行的索引操作 */
+	cancelIndex(): void {
+		if (this._isIndexing && this._indexCts) {
+			this._onDidIndexProgress.fire(`▶ 正在取消索引...`);
+			this._indexCts.cancel();
+			this.graphService.cancelIndex();
+		}
 	}
 
-	async openEditor(): Promise<void> {
-		// Implemented in EditorPane registration — this is a placeholder
-		// The EditorPane is opened via IEditorService from the contribution layer
-	}
+	// ─── Index Configuration ──────────────────────────────────────────────
 
-	// ─── Binary Detection ────────────────────────────────────────────────────
-
-	/** Get the thirdparty base directory: <appRoot>/resources/thirdparty/ */
-	private _getThirdpartyDir(): string {
-		const appRoot = this.environmentService.appRoot;
-		const sep = this._isWindows() ? '\\' : '/';
-		return `${appRoot}${sep}resources${sep}thirdparty`;
-	}
-
-	/** Get the tool-specific directory: <thirdparty>/<toolName>/ */
-	private _getToolDir(): string {
-		const sep = this._isWindows() ? '\\' : '/';
-		return `${this._getThirdpartyDir()}${sep}${SERVER_NAME}`;
-	}
-
-	/** Get the binary path: <thirdparty>/<toolName>/codebase-memory-mcp[.exe] */
-	private _getThirdpartyBinaryPath(): string {
-		const sep = this._isWindows() ? '\\' : '/';
-		const ext = this._isWindows() ? '.exe' : '';
-		return `${this._getToolDir()}${sep}${SERVER_NAME}${ext}`;
-	}
-
-	/** Detect if running on Windows (navigator.userAgent is always available in renderer). */
-	private _isWindows(): boolean {
-		// Check process.platform (Node.js global, available in Electron renderer)
-		if (typeof process !== 'undefined' && process.platform === 'win32') { return true; }
-		// Check navigator.platform (most reliable in Electron: "Win32" on Windows)
-		if (typeof navigator !== 'undefined' && typeof navigator.platform === 'string' && navigator.platform.startsWith('Win')) { return true; }
-		// Check navigator.userAgent (fallback)
-		if (typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string' && navigator.userAgent.includes('Win')) { return true; }
-		return false;
-	}
-
-	private async _detectBinary(): Promise<string | undefined> {
-		const candidates: string[] = [];
-
-		// Only check thirdparty directory: <appRoot>/resources/thirdparty/<toolName>/<toolName>[.exe]
-		const thirdpartyPath = this._getThirdpartyBinaryPath();
-		candidates.push(thirdpartyPath);
-
-		// Check candidate paths via IFileService
-		for (const c of candidates) {
+	getIndexConfig(): IIndexConfig {
+		const stored = this.storageService.get(
+			CodebaseMemoryMcpService.STORAGE_KEY_INDEX_CONFIG,
+			StorageScope.WORKSPACE,
+		);
+		if (stored) {
 			try {
-				const uri = URI.file(c);
-				if (await this.fileService.exists(uri)) {
-					this.logService.info(LOG_TAG, `Binary found at: ${c}`);
-					return c;
+				const parsed = JSON.parse(stored);
+				const storedExcludes = Array.isArray(parsed.excludeDirs) ? parsed.excludeDirs : [];
+				// Merge: 确保新增的默认排除目录（如 Intermediate/Saved/Binaries）出现在列表中
+				const defaults = CodebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS;
+				const merged = [...storedExcludes];
+				for (const d of defaults) {
+					if (!merged.some(m => m.toLowerCase() === d.toLowerCase())) {
+						merged.push(d);
+					}
+				}
+				return {
+					mode: parsed.mode || 'fast',
+					excludeDirs: merged,
+					keepDirs: Array.isArray(parsed.keepDirs) ? parsed.keepDirs : undefined,
+					subPath: typeof parsed.subPath === 'string' ? parsed.subPath : undefined,
+				};
+			} catch { /* fallthrough to default */ }
+		}
+		return { mode: 'fast', excludeDirs: CodebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS.slice() };
+	}
+
+	setIndexConfig(config: IIndexConfig): void {
+		this.storageService.store(
+			CodebaseMemoryMcpService.STORAGE_KEY_INDEX_CONFIG,
+			JSON.stringify(config),
+			StorageScope.WORKSPACE,
+			StorageTarget.USER,
+		);
+	}
+
+	async writeCbmIgnore(excludeDirs: string[], targetPath?: string): Promise<void> {
+		const folders = this.workspaceContextService.getWorkspace().folders;
+		if (folders.length === 0) { return; }
+		let baseUri = folders[0].uri;
+		if (targetPath && targetPath !== folders[0].uri.fsPath) {
+			baseUri = URI.file(targetPath);
+		}
+		const cbmIgnoreUri = URI.joinPath(baseUri, '.cbmignore');
+		const lines = excludeDirs.map(d => d.trim()).filter(d => d);
+		const content = lines.map(d => d.endsWith('/') ? d : `${d}/`).join('\n') + '\n';
+		await this.fileService.writeFile(cbmIgnoreUri, VSBuffer.fromString(content));
+	}
+
+	// ─── Graph Status ─────────────────────────────────────────────────────
+
+	async getGraphStatus(workspacePath?: string): Promise<IGraphStatus> {
+		// 1. Resolve workspace path
+		let wsPath = workspacePath;
+		let baseWsUri: URI | undefined;
+		if (!wsPath) {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			if (folders.length === 0) {
+				return { exists: false };
+			}
+			baseWsUri = folders[0].uri;
+			wsPath = baseWsUri.fsPath;
+		}
+
+		// 1b. 读取索引配置：如果配置了 subPath，graph 文件在子目录的 .codebase-memory 中
+		const indexConfig = this.getIndexConfig();
+		let checkPath = wsPath;
+		if (indexConfig.subPath && indexConfig.subPath.trim() && baseWsUri) {
+			const fullUri = URI.joinPath(baseWsUri, indexConfig.subPath.trim());
+			checkPath = fullUri.fsPath;
+		}
+
+		// 2. Check graph dir using IFileService (works in sandbox/renderer)
+		//    当使用 subPath 时，graph 在 {subPath}/.codebase-memory；否则在 workspace 根目录
+		const candidates = [
+			URI.joinPath(URI.file(checkPath), '.codebase-memory'),
+			URI.joinPath(URI.file(wsPath), '.sarosworkspace', '.codebase-memory'),
+			URI.joinPath(URI.file(wsPath), '.codebase-memory'),
+		];
+
+		let graphDirUri: URI | undefined;
+		for (const candidate of candidates) {
+			try {
+				if (await this.fileService.exists(candidate)) {
+					graphDirUri = candidate;
+					break;
 				}
 			} catch { /* ignore */ }
 		}
 
-		this.logService.info(LOG_TAG, `Binary not found at: ${candidates.join(', ')}`);
-		return undefined;
-	}
+		// 3. Get graph.db.zst stats (if dir exists)
+		if (graphDirUri) {
+			const graphFileUri = URI.joinPath(graphDirUri, 'graph.db.zst');
+			let size: number | undefined;
+			let lastModified: string | undefined;
+			let graphPath: string | undefined;
 
-	private _detectVersion(binaryPath: string): string | undefined {
-		const cp = this._node('child_process');
-		if (!cp) { return undefined; }
-		try {
-			return cp.execSync(`"${binaryPath}" --version`, { encoding: 'utf-8', timeout: 3000 }).trim();
-		} catch { return undefined; }
-	}
-
-	// ─── Install Script Execution (via Terminal) ─────────────────────────────
-
-	private async _runInstallScript(): Promise<void> {
-		const isWin = this._isWindows();
-
-		// Diagnostic: log platform detection details
-		const procPlatform = (typeof process !== 'undefined' && process.platform) || 'undefined';
-		const navPlatform = (typeof navigator !== 'undefined' && navigator.platform) || 'undefined';
-		const navUA = (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent.substring(0, 60) : 'undefined';
-		this._log(`▶ 平台检测: isWin=${isWin}, process.platform=${procPlatform}, navigator.platform=${navPlatform}`);
-		this.logService.info(LOG_TAG, `Platform: process=${procPlatform}, nav.platform=${navPlatform}, nav.ua=${navUA}...`);
-
-		const toolDir = this._getToolDir();
-
-		// Ensure the tool directory exists: <appRoot>/resources/thirdparty/<toolName>/
-		try {
-			await this.fileService.createFolder(URI.file(toolDir));
-			this._log(`📁 已创建目录: ${toolDir}`);
-		} catch { /* might already exist */ }
-
-		const command = isWin
-			? `powershell -ExecutionPolicy Bypass -Command "iwr -Uri '${INSTALL_SCRIPT_WIN}' -OutFile $env:TEMP\\cbm-install.ps1; & $env:TEMP\\cbm-install.ps1 --skip-config --dir='${toolDir}'"`
-			: `curl -fsSL '${INSTALL_SCRIPT_UNIX}' | bash -s -- --skip-config --dir='${toolDir}'`;
-
-		this._log(`▶ 执行安装命令 (${isWin ? 'Windows PowerShell' : 'Unix bash'})...`);
-		this._log(`$ ${command}`);
-
-		// Create a terminal and run the install command
-		const terminal = await this.terminalService.createAndFocusTerminal({
-			config: { name: 'Codebase Memory MCP Installer' } as any,
-		});
-		terminal.sendText(command, true);
-		this._log('📋 安装脚本已在终端中启动，请在终端中查看详细输出...');
-
-		// Wait for the install to complete by polling for the binary
-		const maxWaitMs = 300000; // 5 min
-		const pollIntervalMs = 3000;
-		const startTime = Date.now();
-		let pollCount = 0;
-
-		while (Date.now() - startTime < maxWaitMs) {
-			await new Promise(r => setTimeout(r, pollIntervalMs));
-			pollCount++;
-			const binaryPath = await this._detectBinary();
-			if (binaryPath) {
-				this._log(`✓ 安装完成！检测到二进制: ${binaryPath}`);
-				return;
-			}
-			// Show progress every 10s
-			if (pollCount % 3 === 0) {
-				const elapsed = Math.floor((Date.now() - startTime) / 1000);
-				this._log(`⏳ 等待安装完成... (${elapsed}s)`);
-			}
-		}
-		this._log('⚠ 安装超时（5分钟），请检查终端输出确认安装状态');
-	}
-
-	// ─── ~/.saros/mcp.json Config Management ──────────────────────────────────
-
-	/** Get ~/.saros/mcp.json URI. */
-	private async _getSarosMcpConfigUri(): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', 'mcp.json');
-	}
-
-	/** Ensure ~/.saros/mcp.json exists, create with default codebase-memory-mcp if not. */
-	private async _ensureSarosMcpConfig(): Promise<void> {
-		const configUri = await this._getSarosMcpConfigUri();
-		try {
-			const exists = await this.fileService.exists(configUri);
-			if (exists) { return; }
-		} catch { /* ignore */ }
-
-		const defaultConfig = {
-			servers: {
-				[SERVER_NAME]: {
-					type: 'stdio',
-					command: this._getThirdpartyBinaryPath(),
-					env: { CBM_WORKERS: '16' },
-				},
-			},
-		};
-		const dirUri = URI.joinPath(configUri, '..');
-		try { await this.fileService.createFolder(dirUri); } catch { /* might already exist */ }
-		await this.fileService.writeFile(configUri, VSBuffer.fromString(JSON.stringify(defaultConfig, null, 2)));
-		this.logService.info(LOG_TAG, 'Created ~/.saros/mcp.json with default config.');
-	}
-
-	/** Read and parse ~/.saros/mcp.json. Returns undefined on error. */
-	private async _readSarosMcpConfig(): Promise<{ servers: Record<string, any> } | undefined> {
-		const configUri = await this._getSarosMcpConfigUri();
-		try {
-			const content = await this.fileService.readFile(configUri);
-			return JSON.parse(content.value.toString());
-		} catch (e) {
-			this.logService.warn(LOG_TAG, 'Failed to read ~/.saros/mcp.json:', e);
-			return undefined;
-		}
-	}
-
-	/** Update a single server entry in ~/.saros/mcp.json. Merges with existing config to preserve env etc. */
-	private async _updateSarosMcpConfig(name: string, config: any): Promise<void> {
-		const data = await this._readSarosMcpConfig() ?? { servers: {} };
-		data.servers = data.servers ?? {};
-		data.servers[name] = { ...data.servers[name], ...config };
-		const configUri = await this._getSarosMcpConfigUri();
-		await this.fileService.writeFile(configUri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
-	}
-
-	/** Sync all servers from ~/.saros/mcp.json to VS Code user config.
-	 * Always reinstalls to ensure command paths are up-to-date (e.g. PATH → full path). */
-	private async _syncToVsCodeConfig(): Promise<void> {
-		const data = await this._readSarosMcpConfig();
-		if (!data?.servers) { return; }
-
-		for (const [name, config] of Object.entries(data.servers)) {
 			try {
-				const installable: IInstallableMcpServer = {
-					name,
-					config: config as any,
-				};
-				await this.mcpManagementService.install(installable, { target: ConfigurationTarget.USER });
-				this.logService.info(LOG_TAG, `Synced "${name}" to VS Code user config (command: ${(config as any)?.command}).`);
-			} catch (e) {
-				this.logService.warn(LOG_TAG, `Failed to sync "${name}":`, e);
+				const stat = await this.fileService.stat(graphFileUri);
+				if (stat) {
+					graphPath = graphFileUri.fsPath;
+					size = stat.size;
+					lastModified = new Date(stat.mtime).toISOString();
+				}
+			} catch { /* file doesn't exist yet */ }
+
+			// If graph.db.zst exists on disk, use it
+			if (graphPath) {
+				// 4. Get git info (only if child_process is available)
+				let gitBranch: string | undefined;
+				let gitCommit: string | undefined;
+				let gitRemote: string | undefined;
+				const graphDir = graphDirUri.fsPath;
+				try { gitBranch = this._gitExec('rev-parse --abbrev-ref HEAD', graphDir); } catch { /* not a git repo */ }
+				try { gitCommit = this._gitExec('rev-parse --short HEAD', graphDir); } catch { /* no commits */ }
+				try { gitRemote = this._gitExec('remote get-url origin', graphDir); } catch { /* no remote */ }
+
+				// 5. Get node/edge counts from ICodebaseGraphService if graph is loaded in memory
+				let nodeCount: number | undefined;
+				let edgeCount: number | undefined;
+				try {
+					if (this.graphService.hasGraphData()) {
+						nodeCount = this.graphService.getTotalNodeCount();
+						edgeCount = this.graphService.getTotalEdgeCount();
+					}
+				} catch { /* graph not loaded */ }
+
+				return { exists: true, graphPath, size, lastModified, nodeCount, edgeCount, gitBranch, gitCommit, gitRemote };
 			}
 		}
-	}
 
-	// ─── MCP Running Check ───────────────────────────────────────────────────
-
-	private _isMcpRunning(): boolean {
-		const servers = this.mcpService.servers.get();
-		const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_').toLowerCase();
-		const target = sanitize(SERVER_NAME);
-		return servers.some(s => {
-			const id = sanitize(s.definition.id);
-			const label = sanitize(s.definition.label);
-			return (id === target || label === target) &&
-				s.connectionState.get().state === 2 /* McpConnectionState.Kind.Running */;
-		});
-	}
-
-	// ─── GitHub Latest Version ───────────────────────────────────────────────
-
-	private async _fetchLatestVersion(): Promise<string | undefined> {
-		// Use fetch (available in Electron renderer) to check GitHub releases
-		try {
-			const resp = await fetch(GITHUB_LATEST_API, {
-				headers: {
-					'Accept': 'application/vnd.github.v3+json',
-					'User-Agent': 'VsSaros-CodebaseMemoryMcp', // GitHub API requires User-Agent
-				},
-				signal: AbortSignal.timeout(5000),
-			});
-			if (!resp.ok) { return undefined; }
-			const json = await resp.json() as { tag_name?: string };
-			return json.tag_name;
-		} catch { return undefined; }
+		return { exists: false };
 	}
 
 	// ─── Graph Sync (Team Sharing) ────────────────────────────────────────────
@@ -591,7 +438,7 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 		if (!fs.existsSync(graphDir)) {
 			const result: ISyncGraphResult = {
 				success: false,
-				message: `Graph directory not found: ${graphDir}. Run index_repository first.`,
+				message: `Graph directory not found: ${graphDir}. Run indexRepository first.`,
 			};
 			this._onDidSyncGraph.fire(result);
 			return result;
@@ -676,150 +523,6 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 		}
 	}
 
-	// ─── Graph Status & Pull ─────────────────────────────────────────────
-
-	async getGraphStatus(workspacePath?: string): Promise<IGraphStatus> {
-		// 1. Resolve workspace path
-		let wsPath = workspacePath;
-		let baseWsUri: URI | undefined;
-		if (!wsPath) {
-			const folders = this.workspaceContextService.getWorkspace().folders;
-			if (folders.length === 0) {
-				return { exists: false };
-			}
-			baseWsUri = folders[0].uri;
-			wsPath = baseWsUri.fsPath;
-		}
-
-		// 1b. 读取索引配置：如果配置了 subPath，graph 文件在子目录的 .codebase-memory 中
-		const indexConfig = this.getIndexConfig();
-		let checkPath = wsPath;
-		if (indexConfig.subPath && indexConfig.subPath.trim() && baseWsUri) {
-			const fullUri = URI.joinPath(baseWsUri, indexConfig.subPath.trim());
-			checkPath = fullUri.fsPath;
-		}
-
-		// 2. Check graph dir using IFileService (works in sandbox/renderer)
-		//    当使用 subPath 时，graph 在 {subPath}/.codebase-memory；否则在 workspace 根目录
-		const candidates = [
-			URI.joinPath(URI.file(checkPath), '.codebase-memory'),
-			URI.joinPath(URI.file(wsPath), '.sarosworkspace', '.codebase-memory'),
-			URI.joinPath(URI.file(wsPath), '.codebase-memory'),
-		];
-
-		let graphDirUri: URI | undefined;
-		for (const candidate of candidates) {
-			try {
-				if (await this.fileService.exists(candidate)) {
-					graphDirUri = candidate;
-					break;
-				}
-			} catch { /* ignore */ }
-		}
-
-		// 3. Get graph.db.zst stats (if dir exists)
-		if (graphDirUri) {
-			const graphFileUri = URI.joinPath(graphDirUri, 'graph.db.zst');
-			let size: number | undefined;
-			let lastModified: string | undefined;
-			let graphPath: string | undefined;
-
-			try {
-				const stat = await this.fileService.stat(graphFileUri);
-				if (stat) {
-					graphPath = graphFileUri.fsPath;
-					size = stat.size;
-					lastModified = new Date(stat.mtime).toISOString();
-				}
-			} catch { /* file doesn't exist yet */ }
-
-			// If graph.db.zst exists on disk, use it
-			if (graphPath) {
-				// 4. Get git info (only if child_process is available)
-				let gitBranch: string | undefined;
-				let gitCommit: string | undefined;
-				let gitRemote: string | undefined;
-				const graphDir = graphDirUri.fsPath;
-				try { gitBranch = this._gitExec('rev-parse --abbrev-ref HEAD', graphDir); } catch { /* not a git repo */ }
-				try { gitCommit = this._gitExec('rev-parse --short HEAD', graphDir); } catch { /* no commits */ }
-				try { gitRemote = this._gitExec('remote get-url origin', graphDir); } catch { /* no remote */ }
-
-				return { exists: true, graphPath, size, lastModified, gitBranch, gitCommit, gitRemote };
-			}
-		}
-
-		// 5. Fallback: check if project is indexed in MCP server memory via list_projects
-		return await this._checkProjectIndexedViaMcp(checkPath);
-	}
-
-	/** Check if project is indexed via MCP list_projects tool (graph in memory). */
-	private async _checkProjectIndexedViaMcp(wsPath: string): Promise<IGraphStatus> {
-		try {
-			const servers = this.mcpService.servers.get();
-			const server = servers.find(s =>
-				s.definition.label === SERVER_NAME
-				|| s.definition.id === SERVER_NAME
-				|| s.definition.id.includes('codebase_memory_mcp')
-				|| s.definition.id.includes('codebase-memory-mcp')
-			);
-			if (!server) { return { exists: false }; }
-
-			// Ensure server is started
-			const connState = server.connectionState.get();
-			if (connState.state !== McpConnectionState.Kind.Running) {
-				this.logService.info(LOG_TAG, 'Starting server for list_projects check...');
-				await server.start({ promptType: 'all-untrusted' });
-			}
-
-			const tools = server.tools.get();
-			const tool = tools.find(t => t.definition.name === 'list_projects');
-			if (!tool) {
-				this.logService.info(LOG_TAG, 'list_projects tool not found');
-				return { exists: false };
-			}
-
-			const callResult = await tool.call(
-				{},
-				undefined,
-				CancellationToken.None,
-			);
-
-			// Parse result content
-			let text = '';
-			const content = (callResult as any).content;
-			if (Array.isArray(content)) {
-				text = content.map((c: any) => c.text || '').join('\n').trim();
-			} else if (typeof content === 'string') {
-				text = content;
-			}
-
-			if (!text) { return { exists: false }; }
-
-			const data = JSON.parse(text);
-			const projects = data.projects || [];
-			const normalizedWs = wsPath.replace(/\\/g, '/').toLowerCase();
-
-			const project = projects.find((p: any) => {
-				const rootPath = (p.root_path || '').replace(/\\/g, '/').toLowerCase();
-				return rootPath === normalizedWs;
-			});
-
-			if (project) {
-				this.logService.info(LOG_TAG, `Project indexed (in memory): ${project.name}, nodes=${project.nodes}, edges=${project.edges}`);
-				return {
-					exists: true,
-					size: project.size_bytes,
-					lastModified: undefined, // not available from list_projects
-				};
-			}
-
-			return { exists: false };
-		} catch (err: any) {
-			this.logService.warn(LOG_TAG, `list_projects check failed: ${err?.message || err}`);
-			return { exists: false };
-		}
-	}
-
 	async pullGraph(workspacePath?: string): Promise<IPullGraphResult> {
 		// 1. Resolve workspace path
 		let wsPath = workspacePath;
@@ -893,249 +596,6 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 			this.logService.warn(LOG_TAG, result.message);
 			return result;
 		}
-	}
-
-	// ─── Index Repository (via IMcpService) ────────────────────────────────
-
-	async indexRepository(workspacePath?: string): Promise<IIndexResult> {
-		// 0. 防止重复索引
-		if (this._isIndexing) {
-			const result: IIndexResult = { success: false, message: '索引正在进行中，请等待完成或取消后再试' };
-			return result;
-		}
-
-		// 1. Resolve workspace path
-		let wsPath = workspacePath;
-		let baseWsUri: URI | undefined;
-		if (!wsPath) {
-			const folders = this.workspaceContextService.getWorkspace().folders;
-			if (folders.length === 0) {
-				const result: IIndexResult = { success: false, message: 'No workspace folder open' };
-				this._onDidIndexComplete.fire(result);
-				return result;
-			}
-			baseWsUri = folders[0].uri;
-			wsPath = baseWsUri.fsPath;
-		}
-
-		// 1b. 读取索引配置：如果配置了 subPath，只索引子目录（避免大型工作区全量索引导致内存爆炸）
-		const indexConfig = this.getIndexConfig();
-		this.logService.info(LOG_TAG, `Index config: mode=${indexConfig.mode}, subPath=${indexConfig.subPath || '(none)'}, excludeDirs=${indexConfig.excludeDirs.length} items`);
-		if (indexConfig.subPath && indexConfig.subPath.trim() && baseWsUri) {
-			const fullUri = URI.joinPath(baseWsUri, indexConfig.subPath.trim());
-			wsPath = fullUri.fsPath;
-		} else if (baseWsUri) {
-			// subPath 为空时警告：大型工作区全量索引可能超时
-			this._onDidIndexProgress.fire(`⚠ 未设置索引路径，将索引整个工作区。如索引超时，请在配置中设置"索引路径"（如 src/vs/sessions）`);
-		}
-		this.logService.info(LOG_TAG, `Repo path for indexing: ${wsPath}`);
-
-		this._isIndexing = true;
-		this._indexCts = new CancellationTokenSource();
-		// 超时自动取消（10 分钟）
-		const timeoutHandle = setTimeout(() => {
-			this._indexCts?.cancel();
-			this._onDidIndexProgress.fire(`⏰ 索引超时（${CodebaseMemoryMcpService.INDEX_TIMEOUT_MS / 60000}分钟），正在取消...`);
-		}, CodebaseMemoryMcpService.INDEX_TIMEOUT_MS);
-
-		this.logService.info(LOG_TAG, `Starting index_repository for "${wsPath}"...`);
-		this._onDidIndexProgress.fire(`▶ 开始索引代码库: ${wsPath}`);
-
-		const startTime = Date.now();
-
-		try {
-		// 2. Find the MCP server by name (try label first, then id substring match)
-		const servers = this.mcpService.servers.get();
-		const server = servers.find(s =>
-			s.definition.label === SERVER_NAME
-			|| s.definition.id === SERVER_NAME
-			|| s.definition.id.includes('codebase_memory_mcp')
-			|| s.definition.id.includes('codebase-memory-mcp')
-		);
-		if (!server) {
-			const available = servers.map(s => `"${s.definition.label}" (id=${s.definition.id})`).join(', ');
-			this.logService.info(LOG_TAG, `Server lookup failed. Available: ${available}`);
-			const result: IIndexResult = { success: false, message: `MCP server "${SERVER_NAME}" not found. Available: ${available || 'none'}` };
-			this._onDidIndexComplete.fire(result);
-			return result;
-		}
-		this.logService.info(LOG_TAG, `Server discovered: ${server.definition.label}, state=${server.connectionState.get().state}`);
-
-		// 3. Ensure server is started
-		const connState = server.connectionState.get();
-		if (connState.state !== McpConnectionState.Kind.Running) {
-			this._onDidIndexProgress.fire(`▶ 启动 MCP 服务器 "${SERVER_NAME}"...`);
-			await server.start();
-		}
-
-			// 4. Wait for tools to be available
-			const tools = server.tools.get();
-			const tool = tools.find(t => t.definition.name === 'index_repository');
-			if (!tool) {
-				const result: IIndexResult = { success: false, message: 'Tool "index_repository" not found on the MCP server.' };
-				this._onDidIndexComplete.fire(result);
-				return result;
-			}
-
-			// 4b. 删除已有项目，强制重新索引（否则 codebase-memory-mcp 检测到已有索引会跳过持久化）
-			const deleteTool = tools.find(t => t.definition.name === 'delete_project');
-			if (deleteTool) {
-				// 项目名 = repo_path 去掉冒号 + 分隔符替换为 - + 盘符大写
-				// 例：g:\Foo\Bar → G-Foo-Bar（codebase-memory-mcp 的命名规则）
-				const projectName = wsPath.replace(/:/g, '').replace(/[\\\/]/g, '-').replace(/^([a-z])/, (_, c) => c.toUpperCase());
-				this._onDidIndexProgress.fire(`▶ 删除已有索引 (${projectName})...`);
-				try {
-					await deleteTool.call({ project: projectName }, undefined, CancellationToken.None);
-					this.logService.info(LOG_TAG, `Deleted existing project: ${projectName}`);
-				} catch (e: any) {
-					// 项目可能不存在，忽略错误
-					this.logService.info(LOG_TAG, `delete_project (may not exist): ${e?.message || e}`);
-				}
-			}
-
-			// 5. Call the tool (with persistence=true to write .codebase-memory/graph.db.zst)
-			// 写入 .cbmignore 排除规则到索引目录
-			if (indexConfig.excludeDirs.length > 0) {
-				this._onDidIndexProgress.fire(`▶ 写入 .cbmignore (排除: ${indexConfig.excludeDirs.join(', ')})`);
-				try {
-					await this.writeCbmIgnore(indexConfig.excludeDirs, wsPath);
-				} catch (e: any) {
-					this.logService.warn(LOG_TAG, `Failed to write .cbmignore: ${e.message || e}`);
-				}
-			}
-			this._onDidIndexProgress.fire(`▶ 调用 index_repository 工具 (mode: ${indexConfig.mode})...`);
-
-			// 心跳定时器：索引大型代码库可能耗时较长，定期报告进度避免用户以为卡住
-			let heartbeatCount = 0;
-			const heartbeatTimer = setInterval(() => {
-				heartbeatCount++;
-				this._onDidIndexProgress.fire(`⏳ 索引进行中... (${heartbeatCount * 5}s)`);
-			}, 5000);
-
-			// 进度回调：接收 MCP 服务器发送的 progress notifications
-			const progressCb: ToolProgress = {
-				report: (step) => {
-					if (step.message) {
-						this._onDidIndexProgress.fire(`📊 ${step.message}`);
-					}
-				}
-			};
-
-			let callResult;
-			try {
-				callResult = await tool.callWithProgress(
-					{ repo_path: wsPath, mode: indexConfig.mode, persistence: true },
-					progressCb,
-					undefined,
-					this._indexCts.token,
-				);
-			} finally {
-				clearInterval(heartbeatTimer);
-			}
-
-			// 6. Parse result
-			const duration = Math.round((Date.now() - startTime) / 1000);
-			const content = callResult.content;
-			let text = '';
-			if (Array.isArray(content)) {
-				text = content.map((c: any) => c.text || '').join('\n').trim();
-			}
-			this.logService.info(LOG_TAG, `index_repository result: isError=${callResult.isError}, text=${text.substring(0, 200)}`);
-
-			// 检查 MCP 工具是否返回了错误
-			if (callResult.isError) {
-				const msg = text || 'MCP 工具返回了错误';
-				this._onDidIndexProgress.fire(`✗ ${msg}`);
-				this.logService.error(LOG_TAG, `index_repository error: ${msg}`);
-				const result: IIndexResult = { success: false, message: msg, duration };
-				this._onDidIndexComplete.fire(result);
-				return result;
-			}
-
-			if (!text) { text = '索引完成'; }
-
-			this._onDidIndexProgress.fire(`✓ ${text}`);
-			const result: IIndexResult = { success: true, message: text, duration };
-			this._onDidIndexComplete.fire(result);
-			return result;
-
-		} catch (err: any) {
-			const duration = Math.round((Date.now() - startTime) / 1000);
-			const isCancelled = this._indexCts?.token.isCancellationRequested;
-			const msg = isCancelled
-				? `索引已取消 (${duration}s)`
-				: `索引失败: ${err.message || String(err)}`;
-			this._onDidIndexProgress.fire(`✗ ${msg}`);
-			this.logService.error(LOG_TAG, msg, err);
-			const result: IIndexResult = { success: false, message: msg, duration };
-			this._onDidIndexComplete.fire(result);
-			return result;
-		} finally {
-			clearTimeout(timeoutHandle);
-			this._isIndexing = false;
-			this._indexCts?.dispose();
-			this._indexCts = undefined;
-		}
-	}
-
-	/** 取消正在进行的索引操作 */
-	cancelIndex(): void {
-		if (this._isIndexing && this._indexCts) {
-			this._onDidIndexProgress.fire(`▶ 正在取消索引...`);
-			this._indexCts.cancel();
-		}
-	}
-
-	// ─── Index Configuration ──────────────────────────────────────────────
-
-	getIndexConfig(): IIndexConfig {
-		const stored = this.storageService.get(
-			CodebaseMemoryMcpService.STORAGE_KEY_INDEX_CONFIG,
-			StorageScope.WORKSPACE,
-		);
-		if (stored) {
-			try {
-				const parsed = JSON.parse(stored);
-				const storedExcludes = Array.isArray(parsed.excludeDirs) ? parsed.excludeDirs : [];
-				// Merge: 确保新增的默认排除目录（如 Intermediate/Saved/Binaries）出现在列表中
-				const defaults = CodebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS;
-				const merged = [...storedExcludes];
-				for (const d of defaults) {
-					if (!merged.some(m => m.toLowerCase() === d.toLowerCase())) {
-						merged.push(d);
-					}
-				}
-				return {
-					mode: parsed.mode || 'fast',
-					excludeDirs: merged,
-					keepDirs: Array.isArray(parsed.keepDirs) ? parsed.keepDirs : undefined,
-					subPath: typeof parsed.subPath === 'string' ? parsed.subPath : undefined,
-				};
-			} catch { /* fallthrough to default */ }
-		}
-		return { mode: 'fast', excludeDirs: CodebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS.slice() };
-	}
-
-	setIndexConfig(config: IIndexConfig): void {
-		this.storageService.store(
-			CodebaseMemoryMcpService.STORAGE_KEY_INDEX_CONFIG,
-			JSON.stringify(config),
-			StorageScope.WORKSPACE,
-			StorageTarget.USER,
-		);
-	}
-
-	async writeCbmIgnore(excludeDirs: string[], targetPath?: string): Promise<void> {
-		const folders = this.workspaceContextService.getWorkspace().folders;
-		if (folders.length === 0) { return; }
-		let baseUri = folders[0].uri;
-		if (targetPath && targetPath !== folders[0].uri.fsPath) {
-			baseUri = URI.file(targetPath);
-		}
-		const cbmIgnoreUri = URI.joinPath(baseUri, '.cbmignore');
-		const lines = excludeDirs.map(d => d.trim()).filter(d => d);
-		const content = lines.map(d => d.endsWith('/') ? d : `${d}/`).join('\n') + '\n';
-		await this.fileService.writeFile(cbmIgnoreUri, VSBuffer.fromString(content));
 	}
 
 	// ─── Node.js Module Loader ───────────────────────────────────────────────

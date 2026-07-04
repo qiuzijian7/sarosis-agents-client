@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Toolbar Tag — 当前 vs Void 风格对比</title>
+<style>
+:root {
+  /* 模拟 VSCode 暗色主题 */
+  --vscode-input-background: #3c3c3c;
+  --vscode-input-placeholderForeground: #999;
+  --vscode-editor-background: #1e1e1e;
+  --vscode-sideBar-background: #252526;
+  --vscode-commandCenter-border: rgba(128,128,128,0.3);
+  --vscode-commandCenter-activeBorder: rgba(128,128,128,0.6);
+  --vscode-focusBorder: #007fd4;
+  --bg-primary: #1e1e1e;
+}
+body { background: var(--bg-primary); color: #ccc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; }
+h2 { font-size: 14px; color: #888; margin: 20px 0 8px; }
+h2 span { color: #4da3ff; }
+.section { margin-bottom: 24px; }
+.toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+/* ═══ 当前风格 ═══ */
+.cur-toolbar { background: #252526; }
+.cur-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 6px;
+  font-size: 12px; font-weight: 500;
+  border: 1px solid rgba(128,128,128,0.2);
+  background: rgba(255,255,255,0.06);
+  color: #ccc;
+  cursor: pointer; white-space: nowrap;
+  transition: all 0.15s;
+}
+.cur-tag:hover { background: rgba(255,255,255,0.12); border-color: #4da3ff; color: #fff; }
+.cur-tag.mode { color: #4da3ff; }
+.cur-tag svg { width: 12px; height: 12px; stroke: currentColor; flex-shrink: 0; }
+.cur-tag-chevron { width: 10px; height: 10px; margin-left: 2px; }
+
+/* ═══ Void 风格 ═══ */
+.void-toolbar { background: var(--vscode-input-background); }
+.void-tag {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 6px; border-radius: 4px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--vscode-input-placeholderForeground);
+  cursor: pointer; white-space: nowrap;
+  transition: filter 0.15s;
+  line-height: 1.3;
+}
+.void-tag:hover { filter: brightness(0.85); }
+.void-tag.bordered {
+  border: 1px solid var(--vscode-commandCenter-border);
+  padding: 2px 5px;
+}
+.void-tag svg { width: 11px; height: 11px; stroke: currentColor; flex-shrink: 0; }
+.void-tag-chevron { width: 9px; height: 9px; margin-left: 1px; }
+
+/* ═══ 推荐的优化方案（Void 风格 + 微调） ═══ */
+.opt-toolbar { background: var(--vscode-input-background); }
+.opt-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 5px;
+  font-size: 11.5px; font-weight: normal;
+  background: transparent;
+  border: 1px solid rgba(128,128,128,0.2);
+  color: #b0b0b0;
+  cursor: pointer; white-space: nowrap;
+  transition: all 0.15s;
+  line-height: 1.2;
+}
+.opt-tag:hover { filter: brightness(0.9); border-color: rgba(128,128,128,0.4); }
+.opt-tag.mode { color: #6cb6ff; border-color: rgba(108,182,255,0.25); }
+.opt-tag svg { width: 12px; height: 12px; opacity: 0.7; flex-shrink: 0; }
+.opt-tag-chevron { width: 10px; height: 10px; margin-left: 2px; opacity: 0.5; }
+
+/* 标签 */
+.label { font-size: 11px; color: #666; margin-bottom: 2px; display: block; }
+.desc { font-size: 10px; color: #555; margin-top: 2px; }
+.composer-bg {
+  background: var(--vscode-input-background);
+  border: 1px solid rgba(128,128,128,0.2);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-top: 6px;
+}
+
+.bar-divider { width: 1px; height: 16px; background: rgba(128,128,128,0.2); margin: 0 2px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<h2>📋 当前风格 <span>（背景色突出、hover 换色）</span></h2>
+<div class="section">
+  <span class="label">Provider + Model tag</span>
+  <div class="toolbar cur-toolbar">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2"><path d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2"><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+    <div class="bar-divider"></div>
+    <span class="cur-tag mode">
+      <svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+      Craft
+      <svg class="cur-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+    <span class="cur-tag">
+      <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      Provider
+      <svg class="cur-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+    <span class="cur-tag">
+      <svg viewBox="0 0 24 24"><line x1="4" y1="17" x2="16" y2="17"/><polyline points="8 13 4 17 8 21"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      deepseek-v4-pro-ioa
+      <svg class="cur-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+  </div>
+  <div class="desc">背景色 #2a2a2a | 文字 #ccc/#4da3ff | hover 背景 + 边框变蓝</div>
+</div>
+
+<h2>🎨 Void 风格 <span>（融入输入框背景、仅用 brightness 反馈）</span></h2>
+<div class="section">
+  <span class="label">ChatMode + Model tag（Void 原版）</span>
+  <div class="toolbar void-toolbar">
+    <span class="void-tag bordered">
+      <svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+      Craft
+      <svg class="void-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+    <span class="void-tag">
+      <svg viewBox="0 0 24 24"><line x1="4" y1="17" x2="16" y2="17"/><polyline points="8 13 4 17 8 21"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      deepseek-v4-pro-ioa
+      <svg class="void-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+  </div>
+  <div class="desc">背景透明融入输入框 | 文字 placeholder 灰 | hover → brightness(0.85) 微暗 | 字号 11px</div>
+
+  <div class="composer-bg">
+    <span style="color:#999;font-size:12px;">输入框背景区</span>
+    <div class="toolbar void-toolbar" style="margin-top:4px;padding:4px 0;">
+      <span class="void-tag bordered">Craft ▾</span>
+      <span class="void-tag">deepseek-v4-pro-ioa ▾</span>
+    </div>
+    <div class="desc">Void 风格下 tag 与输入框背景完全融合，视觉上只留下文字和边框</div>
+  </div>
+</div>
+
+<h2>✅ 推荐优化方案 <span>（Void 风格 + 适度调整）</span></h2>
+<div class="section">
+  <span class="label">Provider + Model + Agent tag</span>
+  <div class="toolbar opt-toolbar">
+    <span class="opt-tag mode">
+      <svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>
+      Craft
+      <svg class="opt-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+    <span class="opt-tag">
+      <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      CodeBuddy
+      <svg class="opt-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+    <span class="opt-tag">
+      <svg viewBox="0 0 24 24"><line x1="4" y1="17" x2="16" y2="17"/><polyline points="8 13 4 17 8 21"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      deepseek-v4-pro-ioa
+      <svg class="opt-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+    <span class="opt-tag">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a4 4 0 014-4h8a4 4 0 014 4v2"/></svg>
+      claw
+      <svg class="opt-tag-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+    </span>
+  </div>
+  <div class="desc">背景透明融入输入框 | 边框 subtle | hover brightness(0.9) | 字号 11.5px | Mode tag 蓝色边框区分</div>
+</div>
+
+</body>
+</html>

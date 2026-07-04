@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>update_plan Tool Card — Mockup</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface-hover: #22263a;
+  --border: #2a2d3a;
+  --text-primary: #e4e7ec;
+  --text-secondary: #9ca3b2;
+  --text-muted: #6b7280;
+  --accent: #6366f1;
+  --accent-soft: rgba(99, 102, 241, 0.12);
+  --success: #22c55e;
+  --success-soft: rgba(34, 197, 94, 0.10);
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.12);
+  --pulse: #6366f1;
+  --done: #475569;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 100vh;
+  padding: 48px 24px;
+}
+
+.chat-container {
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ── Chat Bubble Wrapper ── */
+.bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bubble-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding-left: 4px;
+}
+
+/* ── Plan Card ── */
+.plan-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+.plan-card:hover { border-color: #3b4058; }
+
+/* Header */
+.plan-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+}
+
+.plan-icon {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.plan-header-text {
+  flex: 1;
+  display: flex; flex-direction: column; gap: 2px;
+}
+
+.plan-tool-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.3px;
+}
+
+.plan-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Progress Bar */
+.plan-progress {
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.progress-bar {
+  flex: 1; height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--success);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.progress-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Steps */
+.plan-steps {
+  padding: 0 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+  cursor: default;
+}
+.step:hover { background: var(--surface-hover); }
+
+.step-indicator {
+  width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.step.completed .step-indicator {
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1.5px solid var(--success);
+}
+
+.step.in_progress .step-indicator {
+  background: var(--warning-soft);
+  color: var(--warning);
+  border: 1.5px solid var(--warning);
+  animation: pulse-ring 2s ease-in-out infinite;
+}
+
+.step.pending .step-indicator {
+  background: transparent;
+  color: var(--done);
+  border: 1.5px dashed var(--done);
+}
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245,158,11,0.3); }
+  50% { box-shadow: 0 0 0 6px rgba(245,158,11,0); }
+}
+
+.step-text {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+.step.completed .step-text { color: var(--text-secondary); text-decoration: line-through; text-decoration-color: var(--success); text-decoration-thickness: 1.5px; }
+.step.in_progress .step-text { color: var(--text-primary); font-weight: 500; }
+.step.pending .step-text { color: var(--text-muted); }
+
+.step-index {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-top: 1px;
+  min-width: 18px;
+  text-align: right;
+}
+
+/* Footer / Explanation */
+.plan-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.footer-icon { color: var(--text-muted); font-size: 13px; margin-top: 1px; }
+.footer-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* ── Empty State ── */
+.plan-empty {
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* ── Section Headings ── */
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 4px 16px 0;
+  margin-top: 4px;
+}
+
+/* ── Separator ── */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 16px;
+  opacity: 0.5;
+}
+</style>
+</head>
+<body>
+
+<div class="chat-container">
+
+  <!-- ── Example 1: Plan Created ── -->
+  <div class="bubble">
+    <div class="bubble-label">Assistant Tool Call — Plan Created</div>
+    <div class="plan-card">
+      <div class="plan-card-header">
+        <div class="plan-icon">📋</div>
+        <div class="plan-header-text">
+          <span class="plan-tool-name">update_plan</span>
+          <span class="plan-subtitle">Plan created — 4 steps</span>
+        </div>
+      </div>
+
+      <div class="plan-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 25%;"></div>
+        </div>
+        <span class="progress-label">1 / 4</span>
+      </div>
+
+      <div class="plan-steps">
+        <div class="step in_progress">
+          <div class="step-indicator">▶</div>
+          <span class="step-text">Analyze the current codebase structure and identify refactor targets</span>
+          <span class="step-index">1</span>
+        </div>
+        <div class="step pending">
+          <div class="step-indicator">○</div>
+          <span class="step-text">Extract shared utilities into a common module</span>
+          <span class="step-index">2</span>
+        </div>
+        <div class="step pending">
+          <div class="step-indicator">○</div>
+          <span class="step-text">Update all imports across the project</span>
+          <span class="step-index">3</span>
+        </div>
+        <div class="step pending">
+          <div class="step-indicator">○</div>
+          <span class="step-text">Run tests and verify nothing is broken</span>
+          <span class="step-index">4</span>
+        </div>
+      </div>
+
+      <div class="plan-footer">
+        <span class="footer-icon">✏</span>
+        <span class="footer-text">Starting with codebase analysis: search_graph → trace_path → get_architecture</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Example 2: Plan In Progress - Mid Execution ── -->
+  <div class="bubble">
+    <div class="bubble-label">Assistant Tool Call — Progress Update</div>
+    <div class="plan-card">
+      <div class="plan-card-header">
+        <div class="plan-icon">📋</div>
+        <div class="plan-header-text">
+          <span class="plan-tool-name">update_plan</span>
+          <span class="plan-subtitle">Plan updated — 2 of 4 completed</span>
+        </div>
+      </div>
+
+      <div class="plan-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 50%;"></div>
+        </div>
+        <span class="progress-label">2 / 4</span>
+      </div>
+
+      <div class="plan-steps">
+        <div class="step completed">
+          <div class="step-indicator">✓</div>
+          <span class="step-text">Analyze the current codebase structure and identify refactor targets</span>
+          <span class="step-index">1</span>
+        </div>
+        <div class="step completed">
+          <div class="step-indicator">✓</div>
+          <span class="step-text">Extract shared utilities into a common module</span>
+          <span class="step-index">2</span>
+        </div>
+        <div class="step in_progress">
+          <div class="step-indicator">▶</div>
+          <span class="step-text">Update all imports across the project</span>
+          <span class="step-index">3</span>
+        </div>
+        <div class="step pending">
+          <div class="step-indicator">○</div>
+          <span class="step-text">Run tests and verify nothing is broken</span>
+          <span class="step-index">4</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Example 3: Simple Plan ── -->
+  <div class="bubble">
+    <div class="bubble-label">Assistant Tool Call — Simple Task</div>
+    <div class="plan-card">
+      <div class="plan-card-header">
+        <div class="plan-icon">📋</div>
+        <div class="plan-header-text">
+          <span class="plan-tool-name">update_plan</span>
+          <span class="plan-subtitle">Plan created — 2 steps</span>
+        </div>
+      </div>
+
+      <div class="plan-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 0%;"></div>
+        </div>
+        <span class="progress-label">0 / 2</span>
+      </div>
+
+      <div class="plan-steps">
+        <div class="step pending">
+          <div class="step-indicator">○</div>
+          <span class="step-text">Read the target file and understand the current implementation</span>
+          <span class="step-index">1</span>
+        </div>
+        <div class="step pending">
+          <div class="step-indicator">○</div>
+          <span class="step-text">Apply the requested changes using patch</span>
+          <span class="step-index">2</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Example 4: All Completed ── -->
+  <div class="bubble">
+    <div class="bubble-label">Assistant Tool Call — Plan Complete</div>
+    <div class="plan-card">
+      <div class="plan-card-header">
+        <div class="plan-icon">✅</div>
+        <div class="plan-header-text">
+          <span class="plan-tool-name">update_plan</span>
+          <span class="plan-subtitle">All steps completed</span>
+        </div>
+      </div>
+
+      <div class="plan-progress">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 100%;"></div>
+        </div>
+        <span class="progress-label">3 / 3</span>
+      </div>
+
+      <div class="plan-steps">
+        <div class="step completed">
+          <div class="step-indicator">✓</div>
+          <span class="step-text">Search for all usages of ProcessObjectArray in the engine codebase</span>
+          <span class="step-index">1</span>
+        </div>
+        <div class="step completed">
+          <div class="step-indicator">✓</div>
+          <span class="step-text">Modify the FastReferenceCollector to log processing time</span>
+          <span class="step-index">2</span>
+        </div>
+        <div class="step completed">
+          <div class="step-indicator">✓</div>
+          <span class="step-text">Verify the build compiles successfully</span>
+          <span class="step-index">3</span>
+        </div>
+      </div>
+
+      <div class="plan-footer">
+        <span class="footer-icon">✏</span>
+        <span class="footer-text">All changes applied. FastReferenceCollector.h patched, build verified.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Example 5: Error State ── -->
+  <div class="bubble">
+    <div class="bubble-label">Assistant Tool Call — Validation Error</div>
+    <div class="plan-card" style="border-color: rgba(239,68,68,0.3);">
+      <div class="plan-card-header" style="background: rgba(239,68,68,0.06);">
+        <div class="plan-icon" style="background: #ef4444;">⚠</div>
+        <div class="plan-header-text">
+          <span class="plan-tool-name" style="color:#ef4444;">update_plan</span>
+          <span class="plan-subtitle">Validation failed</span>
+        </div>
+      </div>
+
+      <div class="plan-steps">
+        <div class="step in_progress" style="opacity:0.5;">
+          <div class="step-indicator">▶</div>
+          <span class="step-text">Task A: Do something</span>
+          <span class="step-index">1</span>
+        </div>
+        <div class="step in_progress" style="opacity:0.5;">
+          <div class="step-indicator">▶</div>
+          <span class="step-text">Task B: Do something else</span>
+          <span class="step-index">2</span>
+        </div>
+      </div>
+
+      <div class="plan-footer" style="background: rgba(239,68,68,0.04);">
+        <span class="footer-icon" style="color:#ef4444;">⚠</span>
+        <span class="footer-text" style="color:#fca5a5;">
+          update_plan error: at most one step may be in_progress (found 2)
+        </span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

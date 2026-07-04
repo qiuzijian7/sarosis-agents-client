@@ -834,7 +834,7 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 		const blockTools = new Set([
 			'bash', 'terminal', 'run_command', 'run_terminal_cmd', 'execute_code', 'process',
 			'write', 'write_file', 'rewrite_file', 'edit', 'edit_file', 'replace_in_file',
-			'apply_patch', 'patch', 'todowrite', 'todo', 'question', 'clarify',
+			'apply_patch', 'patch', 'todowrite', 'todo', 'update_plan', 'question', 'clarify',
 		]);
 		return blockTools.has(name);
 	}
@@ -851,9 +851,8 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 			web_fetch: '%', http_get: '%', web_search: '◈',
 			delegate_task: '│', task: '│', subagent: '│',
 			skill_manage: '→', read_skill: '→', skill_view: '→', list_skills: '→', skills_list: '→',
-			todo: '⚙', todowrite: '⚙',
+			todo: '⚙', todowrite: '⚙', update_plan: '⚙',
 			clarify: '→', question: '→',
-			mcp_tool_search: '⚙', mcp_tool_call: '⚙',
 			memory_remember: '⚙', memory_search: '⚙', memory_delete: '⚙', memory_list: '⚙',
 			recall: '⚙', memory: '⚙',
 		};

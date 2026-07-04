@@ -362,7 +362,7 @@ export class CypherEngine {
 		this._store = store;
 	}
 
-	execute(query: string, project?: string): CypherResult {
+	execute(query: string, project?: string, maxRows?: number): CypherResult {
 		const tokens = lex(query);
 		const ast = new Parser(tokens).parse();
 
@@ -406,6 +406,11 @@ export class CypherEngine {
 		// Apply SKIP / LIMIT
 		if (ast.skip) { rows = rows.slice(ast.skip); }
 		if (ast.limit) { rows = rows.slice(0, ast.limit); }
+
+		// Apply maxRows ceiling (enforced even if query has its own LIMIT)
+		if (maxRows && maxRows > 0 && rows.length > maxRows) {
+			rows = rows.slice(0, maxRows);
+		}
 
 		// Project return items
 		const resultRows = rows.map(row =>

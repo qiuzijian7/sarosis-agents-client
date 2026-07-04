@@ -124,6 +124,10 @@ import '../workbench/contrib/localization/electron-browser/localization.contribu
 // Explorer
 import '../workbench/contrib/files/electron-browser/fileActions.contribution.js';
 
+// [Sarosis 2026-07-04] 覆盖标准 revealInExplorer / revealFileInOS，修复
+// 文本编辑器右键菜单中两个按钮失效的问题。
+import './contrib/files/browser/revealCommands.contribution.js';
+
 // CodeEditor Contributions
 import '../workbench/contrib/codeEditor/electron-browser/codeEditor.contribution.js';
 

@@ -36,6 +36,8 @@ export class MemoryDetailEditorInput extends EditorInput {
 	public targetMemoryId: string | null = null;
 	/** 目标层级过滤（点击系统栏条目时设置，如 working/episodic） */
 	public targetLayer: string | null = null;
+	/** 是否从 Agent 聊天框跳转而来（true → 默认仅显示当前 agent 数据，false → 默认显示全部 agent） */
+	public fromAgentChat: boolean = false;
 
 	constructor(agentId?: string) {
 		super();
@@ -55,7 +57,7 @@ export class MemoryDetailEditorInput extends EditorInput {
 	}
 
 	override getName(): string {
-		return `记忆详情 (${this._agentId})`;
+		return '记忆详情';
 	}
 
 	override toUntyped(): IUntypedEditorInput {

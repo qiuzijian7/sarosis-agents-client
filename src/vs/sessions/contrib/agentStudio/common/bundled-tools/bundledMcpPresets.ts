@@ -39,16 +39,10 @@ export interface IMcpServerPreset {
 }
 
 // ── Hardcoded fallback (used when JSON loading fails) ─────────────────────
+// Note: "codebase-memory-mcp" external binary preset was removed (2026-07-03).
+// Codebase indexing now uses the built-in ICodebaseGraphService (tree-sitter WASM).
+// Codebase tools (search_graph, query_graph, etc.) are registered by builtinToolProvider._registerCodebaseTools().
 const FALLBACK_PRESETS: readonly IMcpServerPreset[] = [
-	{
-		id: "codebase-memory-mcp",
-		name: "Codebase Memory",
-		description: "Code intelligence engine: full-indexes repositories into a knowledge graph of functions, classes, call chains, and cross-service links. 14 MCP tools for structural queries.",
-		transportType: "stdio",
-		command: "codebase-memory-mcp",
-		icon: "🧠",
-		builtin: true,
-	},
 	{
 		id: "filesystem",
 		name: "Filesystem",

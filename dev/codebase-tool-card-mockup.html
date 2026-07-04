@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodebaseGraph 工具卡片 — Mockup 效果图</title>
+<style>
+:root {
+    --bg: #1e1e1e;
+    --surface: #252526;
+    --border: #3c3c3c;
+    --text: #cccccc;
+    --text-muted: #808080;
+    --accent: #569cd6;
+    --accent2: #4ec9b0;
+    --warn: #ce9178;
+    --green: #6a9955;
+    --func: #dcdcaa;
+    --class: #4ec9b0;
+    --file: #569cd6;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Consolas, monospace;
+    padding: 24px;
+    line-height: 1.5;
+}
+
+h2 { color: var(--accent); margin-bottom: 16px; font-size: 18px; }
+h3 { color: var(--accent2); margin: 16px 0 8px; font-size: 14px; }
+hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+/* ========== 场景 1: search_graph 结果卡片 ========== */
+.tool-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    overflow: hidden;
+}
+.card-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: #2d2d2d;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+}
+.card-header .tool-icon { font-size: 18px; }
+.card-header .tool-name { color: var(--accent); font-weight: 600; font-size: 13px; }
+.card-header .tool-time { color: var(--text-muted); font-size: 11px; margin-left: auto; }
+.card-header .collapse-icon { color: var(--text-muted); font-size: 12px; }
+
+.card-body { padding: 10px 14px; font-size: 12px; }
+
+/* Summary strip */
+.summary-strip {
+    display: flex; gap: 16px;
+    padding: 8px 14px;
+    background: #2a2a2a;
+    font-size: 11px;
+}
+.summary-strip .stat { color: var(--text-muted); }
+.summary-strip .stat strong { color: var(--text); }
+
+/* Result list */
+.result-list { list-style: none; }
+.result-item {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid #333;
+    font-size: 12px;
+}
+.result-item:last-child { border-bottom: none; }
+
+.result-item .rank {
+    color: var(--text-muted); font-size: 10px; min-width: 20px; text-align: right;
+}
+.result-item .icon {
+    font-size: 12px; min-width: 16px; text-align: center;
+}
+.result-item .name {
+    color: var(--func); font-weight: 600;
+}
+.result-item .name.class-name { color: var(--class); }
+.result-item .name.file-name { color: var(--file); }
+.result-item .file {
+    color: var(--text-muted); font-size: 10px;
+    margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px;
+}
+.result-item .score {
+    color: var(--warn); font-size: 10px; min-width: 40px; text-align: right;
+}
+
+/* Badge */
+.badge {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; font-weight: 600;
+}
+.badge-func { background: #3a3a20; color: var(--func); border: 1px solid #5a5a30; }
+.badge-class { background: #1e3a30; color: var(--class); border: 1px solid #2a5a40; }
+.badge-route { background: #2a1e30; color: #c586c0; border: 1px solid #4a2e50; }
+.badge-file { background: #1e2a3a; color: var(--file); border: 1px solid #2a3a5a; }
+
+/* Pagination hint */
+.page-hint {
+    color: var(--text-muted); font-size: 10px;
+    padding: 4px 14px 8px;
+    font-style: italic;
+}
+
+/* ========== 场景 2: search_code 结果卡片 ========== */
+.code-block {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    margin: 4px 0 8px;
+    overflow: hidden;
+}
+.code-block .code-header {
+    display: flex; justify-content: space-between;
+    padding: 3px 10px;
+    background: #2a2a2a;
+    font-size: 10px; color: var(--text-muted);
+}
+.code-block pre {
+    padding: 8px 10px;
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text);
+    overflow-x: auto;
+}
+.code-block .line-num { color: #555; user-select: none; margin-right: 10px; }
+.code-block .highlight { background: #4a3a10; }
+
+/* ========== 场景 3: get_architecture 卡片 ========== */
+.arch-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+}
+.arch-card {
+    background: #2a2a2a;
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+.arch-card .arch-label { color: var(--text-muted); font-size: 10px; text-transform: uppercase; }
+.arch-card .arch-value { color: var(--text); font-size: 18px; font-weight: 700; }
+.arch-card .arch-sub { color: var(--text-muted); font-size: 10px; }
+.arch-card .arch-sub em { color: var(--accent2); font-style: normal; }
+
+.lang-bar {
+    display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 6px;
+}
+.lang-bar span { display: block; }
+.lang-bar .c { background: #569cd6; width: 65%; }
+.lang-bar .h { background: #4ec9b0; width: 20%; }
+.lang-bar .py { background: #ce9178; width: 10%; }
+.lang-bar .other { background: #555; width: 5%; }
+
+/* Community card */
+.community-list {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+}
+.comm-card {
+    background: #2a2a2a;
+    border-radius: 6px;
+    padding: 8px 10px;
+    border-left: 3px solid var(--accent);
+}
+.comm-card .comm-name { color: var(--accent2); font-size: 12px; font-weight: 600; }
+.comm-card .comm-stats { color: var(--text-muted); font-size: 10px; margin-top: 4px; }
+.comm-card .comm-top { color: var(--func); font-size: 10px; margin-top: 4px; }
+
+/* ========== 场景 4: trace_path 卡片 ========== */
+.trace-path {
+    display: flex; flex-direction: column;
+    gap: 2px;
+    padding: 4px 0;
+}
+.trace-hop {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+.trace-hop .hop-num {
+    color: var(--text-muted); font-size: 9px; min-width: 16px;
+}
+.trace-hop .hop-arrow { color: var(--text-muted); }
+.trace-hop .hop-name { color: var(--func); }
+.trace-hop .hop-risk {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px; margin-left: auto;
+}
+.risk-low { background: #1e3a1e; color: #6a9955; }
+.risk-med { background: #3a3a1e; color: #dcdcaa; }
+.risk-high { background: #3a1e1e; color: #ce9178; }
+.risk-crit { background: #3a1010; color: #f44747; }
+
+/* ========== index_repository: 进度条 + 统计 ========== */
+.progress-bar {
+    width: 100%; height: 6px;
+    background: #333; border-radius: 3px; overflow: hidden;
+}
+.progress-bar .fill {
+    height: 100%; background: linear-gradient(90deg, #569cd6, #4ec9b0);
+    border-radius: 3px; transition: width 0.3s;
+}
+.index-log {
+    max-height: 120px; overflow-y: auto;
+    font-size: 11px; color: var(--text-muted);
+    padding: 4px 0;
+}
+.index-log .log-line { padding: 1px 0; }
+.index-log .log-line::before {
+    content: "▸ "; color: var(--accent);
+}
+.index-stats-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin-top: 8px;
+}
+.index-stat {
+    background: #2a2a2a; border-radius: 4px; padding: 8px 10px; text-align: center;
+}
+.index-stat .stat-num { font-size: 20px; font-weight: 700; color: var(--accent2); }
+.index-stat .stat-label { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+.index-stat.warn .stat-num { color: var(--warn); }
+
+/* ========== 标签页切换 ========== */
+.tabs { display: flex; gap: 0; margin-bottom: 0; }
+.tab {
+    padding: 6px 14px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 4px 4px 0 0;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.tab.active { 
+    background: var(--surface); color: var(--text);
+    font-weight: 600;
+}
+</style>
+</head>
+<body>
+
+<h2>📊 CodebaseGraph 工具卡片 — Mockup 效果图</h2>
+
+<!-- ==================== 场景 1 ==================== -->
+<h3>场景 1: search_graph — BM25 全文搜索</h3>
+<div class="tool-card">
+    <div class="card-header">
+        <span class="tool-icon">🔍</span>
+        <span class="tool-name">search_graph</span>
+        <span class="tool-time">3ms</span>
+        <span class="collapse-icon">▼</span>
+    </div>
+    <div class="summary-strip">
+        <span class="stat">Query: <strong>cloud client update settings</strong></span>
+        <span class="stat">Results: <strong>12,847</strong> total</span>
+        <span class="stat">Showing: <strong>10</strong> / 200</span>
+        <span class="stat">★ Range: <strong>10.0 – 20.0</strong></span>
+    </div>
+    <div class="card-body">
+        <ul class="result-list">
+            <li class="result-item">
+                <span class="rank">#1</span>
+                <span class="icon">🔧</span>
+                <span class="name">UpdateCloudClient</span>
+                <span class="badge badge-func">Function</span>
+                <span class="file">Source/Cloud/CloudClient.cpp</span>
+                <span class="score">20.0</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#2</span>
+                <span class="icon">🔧</span>
+                <span class="name">UpdateClientSettings</span>
+                <span class="badge badge-func">Function</span>
+                <span class="file">Source/Config/ClientSettings.cpp</span>
+                <span class="score">15.2</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#3</span>
+                <span class="icon">📦</span>
+                <span class="name class-name">CloudClientManager</span>
+                <span class="badge badge-class">Class</span>
+                <span class="file">Source/Cloud/CloudClientManager.h</span>
+                <span class="score">14.8</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#4</span>
+                <span class="icon">🔧</span>
+                <span class="name">ApplyCloudSettings</span>
+                <span class="badge badge-func">Function</span>
+                <span class="file">Source/Config/ConfigManager.cpp</span>
+                <span class="score">13.5</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#5</span>
+                <span class="icon">🌐</span>
+                <span class="name">POST /api/cloud/update</span>
+                <span class="badge badge-route">Route</span>
+                <span class="file">Source/Api/CloudController.cpp</span>
+                <span class="score">13.0</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#6</span>
+                <span class="icon">🔧</span>
+                <span class="name">UpdateClientConfig</span>
+                <span class="badge badge-func">Function</span>
+                <span class="file">Source/Cloud/CloudConfig.cpp</span>
+                <span class="score">12.1</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#7</span>
+                <span class="icon">📦</span>
+                <span class="name class-name">SettingsProvider</span>
+                <span class="badge badge-class">Class</span>
+                <span class="file">Source/Config/SettingsProvider.h</span>
+                <span class="score">10.5</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#8</span>
+                <span class="icon">🔧</span>
+                <span class="name">UpdateCloudClientInternal</span>
+                <span class="badge badge-func">Function</span>
+                <span class="file">Source/Cloud/CloudClient.cpp</span>
+                <span class="score">10.5</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#9</span>
+                <span class="icon">🔧</span>
+                <span class="name">ClientUpdateHandler</span>
+                <span class="badge badge-func">Function</span>
+                <span class="file">Source/Network/UpdateHandler.cpp</span>
+                <span class="score">10.3</span>
+            </li>
+            <li class="result-item">
+                <span class="rank">#10</span>
+                <span class="icon">📦</span>
+                <span class="name class-name">UpdateBatchProcessor</span>
+                <span class="badge badge-class">Class</span>
+                <span class="file">Source/Cloud/UpdateBatch.cpp</span>
+                <span class="score">10.0</span>
+            </li>
+        </ul>
+    </div>
+    <div class="page-hint">
+        ⚡ hasMore = true — 共 12,847 结果，当前显示前 10 条。用 offset=10 翻页查看更多。
+    </div>
+</div>
+
+<hr>
+
+<!-- ==================== 场景 1b: index_repository ==================== -->
+<h3>场景 2: index_repository — 工作区索引（进行中）</h3>
+<div class="tool-card">
+    <div class="card-header">
+        <span class="tool-icon">⚙️</span>
+        <span class="tool-name">index_repository</span>
+        <span class="tool-time" style="color:#4ec9b0;">进行中…</span>
+        <span class="collapse-icon">▼</span>
+    </div>
+    <div class="summary-strip">
+        <span class="stat">Mode: <strong>full</strong></span>
+        <span class="stat">Repo: <strong>f:\GR_qiuzijian_main\S1Game</strong></span>
+        <span class="stat">Files: <strong>135,940</strong></span>
+    </div>
+    <div class="card-body">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+            <span style="font-size:11px;color:var(--text-muted);">🔍 解析中 (3,650 / 135,940) — 3%</span>
+            <span style="font-size:11px;color:var(--accent2);margin-left:auto;">46,348 nodes · 46,348 edges</span>
+        </div>
+        <div class="progress-bar">
+            <div class="fill" style="width:3%;"></div>
+        </div>
+        <div class="index-log" style="margin-top:8px;">
+            <div class="log-line">📁 扫描文件... 找到 135,940 个源文件</div>
+            <div class="log-line">🌳 Tree-sitter 解析... 1,350/135,940 (1%) — 15,884 nodes</div>
+            <div class="log-line">🌳 Tree-sitter 解析... 2,500/135,940 (2%) — 37,000 nodes</div>
+            <div class="log-line">🌳 Tree-sitter 解析中... 3,650/135,940 (3%) — 46,348 nodes</div>
+            <div class="log-line">🔗 匹配调用关系... (pending)</div>
+            <div class="log-line">🔬 运行扩展 pass... (pending)</div>
+            <div class="log-line">🏘️ 社区检测 (Leiden)... (pending)</div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== 场景 1c: index_repository 完成 ==================== -->
+<h3>场景 3: index_repository — 索引完成</h3>
+<div class="tool-card">
+    <div class="card-header">
+        <span class="tool-icon">✅</span>
+        <span class="tool-name">index_repository</span>
+        <span class="tool-time">8m 42s</span>
+        <span class="collapse-icon">▼</span>
+    </div>
+    <div class="summary-strip">
+        <span class="stat">Status: <strong style="color:#6a9955;">✓ success</strong></span>
+        <span class="stat">Mode: <strong>full</strong></span>
+        <span class="stat">Files: <strong>135,940 scanned</strong></span>
+    </div>
+    <div class="card-body">
+        <div class="index-stats-grid">
+            <div class="index-stat">
+                <div class="stat-num">47,320</div>
+                <div class="stat-label">Total Nodes</div>
+            </div>
+            <div class="index-stat">
+                <div class="stat-num">89,154</div>
+                <div class="stat-label">Total Edges</div>
+            </div>
+            <div class="index-stat">
+                <div class="stat-num">6</div>
+                <div class="stat-label">Languages</div>
+            </div>
+            <div class="index-stat warn">
+                <div class="stat-num">4,283</div>
+                <div class="stat-label">Skipped Files</div>
+            </div>
+        </div>
+        <div class="index-log" style="margin-top:8px; max-height:80px;">
+            <div class="log-line">📁 扫描文件... 找到 135,940 个源文件</div>
+            <div class="log-line">🌳 Tree-sitter 解析完成 — 47,320 nodes (elapsed: 7m12s)</div>
+            <div class="log-line">🔗 匹配调用关系... 89,154 edges (elapsed: 45s)</div>
+            <div class="log-line">🔬 扩展 pass 完成 — 12,401 SEMANTICALLY_RELATED edges</div>
+            <div class="log-line">🏘️ Leiden 社区检测 — 8 communities detected (elapsed: 320ms)</div>
+            <div class="log-line" style="color:var(--warn);">⚠ Skipped 4,283 files (Binaries, Intermediate, Saved)</div>
+            <div class="log-line">📦 Dump verify: graph.db.zst integrity OK</div>
+        </div>
+    </div>
+</div>
+
+<hr>
+<h3>场景 4: search_code — 代码搜索 + 图谱富化</h3>
+<div class="tool-card">
+    <div class="card-header">
+        <span class="tool-icon">📝</span>
+        <span class="tool-name">search_code</span>
+        <span class="tool-time">45ms</span>
+        <span class="collapse-icon">▼</span>
+    </div>
+    <div class="summary-strip">
+        <span class="stat">Pattern: <strong>UpdateCloudClient.*settings</strong></span>
+        <span class="stat">Mode: <strong>compact</strong></span>
+        <span class="stat">Matches: <strong>23</strong></span>
+        <span class="stat">Showing: <strong>3</strong> / 10</span>
+    </div>
+    <div class="card-body">
+        <ul class="result-list" style="flex-direction: column; align-items: stretch;">
+            <li style="padding: 6px 0;">
+                <div style="display: flex; gap: 8px; align-items: baseline;">
+                    <span class="name">UpdateCloudClient</span>
+                    <span class="badge badge-func">Function</span>
+                    <span class="file" style="margin-left: auto;">Source/Cloud/CloudClient.cpp:42</span>
+                </div>
+                <div class="code-block" style="margin-top: 4px;">
+                    <div class="code-header"><span>Source/Cloud/CloudClient.cpp</span><span>L39 — L48</span></div>
+                    <pre><span class="line-num">39</span>  void CloudClient::ProcessUpdate(const FUpdateRequest& Req) {
+<span class="line-num">40</span>      UE_LOG(LogCloud, Verbose, TEXT("Processing update request..."));
+<span class="line-num">41</span>  
+<span class="line-num">42</span>  <span class="highlight">    UpdateCloudClient(Req.Settings, Req.TargetConfig);</span>
+<span class="line-num">43</span>      NotifyListeners(ECloudEvent::ClientUpdated);
+<span class="line-num">44</span>  }
+<span class="line-num">45</span>  
+<span class="line-num">46</span>  <span class="highlight">void UpdateCloudClient(const FCloudSettings& Settings, const FTargetConfig& Cfg) {</span>
+<span class="line-num">47</span>      CurrentSettings = Settings;
+<span class="line-num">48</span>      TargetConfig = Cfg;</pre>
+                </div>
+            </li>
+            <li style="padding: 6px 0;">
+                <div style="display: flex; gap: 8px; align-items: baseline;">
+                    <span class="name">ClientUpdateHandler</span>
+                    <span class="badge badge-func">Function</span>
+                    <span class="file" style="margin-left: auto;">Source/Network/UpdateHandler.cpp:156</span>
+                </div>
+                <div class="code-block" style="margin-top: 4px;">
+                    <div class="code-header"><span>Source/Network/UpdateHandler.cpp</span><span>L154 — L160</span></div>
+                    <pre><span class="line-num">154</span>  FUpdateResponse ClientUpdateHandler::Handle(const FUpdatePacket& Packet) {
+<span class="line-num">155</span>      auto& Cloud = GetCloudClient();
+<span class="line-num">156</span>  <span class="highlight">    Cloud.UpdateCloudClient(Packet.Settings, Packet.Config);</span>
+<span class="line-num">157</span>      return FPendingResponse::Ok();
+<span class="line-num">158</span>  }</pre>
+                </div>
+            </li>
+        </ul>
+    </div>
+</div>
+
+<hr>
+
+<!-- ==================== 场景 3 ==================== -->
+<h3>场景 3: get_architecture — 架构总览</h3>
+<div class="tool-card">
+    <div class="card-header">
+        <span class="tool-icon">🏗️</span>
+        <span class="tool-name">get_architecture</span>
+        <span class="tool-time">12ms</span>
+        <span class="collapse-icon">▼</span>
+    </div>
+    <div class="card-body">
+        <div class="arch-grid">
+            <div class="arch-card">
+                <div class="arch-label">Total Nodes</div>
+                <div class="arch-value">47,320</div>
+            </div>
+            <div class="arch-card">
+                <div class="arch-label">Total Edges</div>
+                <div class="arch-value">89,154</div>
+            </div>
+            <div class="arch-card">
+                <div class="arch-label">Languages</div>
+                <div class="arch-value">6</div>
+                <div class="arch-sub"><em>C++</em> 65% · C 20% · Python 10% · Other 5%</div>
+            </div>
+            <div class="arch-card">
+                <div class="arch-label">Packages</div>
+                <div class="arch-value">18</div>
+                <div class="arch-sub">Source/Cloud · Source/Config · Source/Network · ...</div>
+            </div>
+        </div>
+        <div class="lang-bar">
+            <span class="c"></span><span class="h"></span><span class="py"></span><span class="other"></span>
+        </div>
+    </div>
+    <div class="card-body" style="border-top: 1px solid var(--border);">
+        <div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">🏘️ Communities (Leiden) — 8 detected</div>
+        <div class="community-list">
+            <div class="comm-card">
+                <div class="comm-name">CloudService</div>
+                <div class="comm-stats">342 nodes · cohesion 0.82 · CloudClient.cpp, CloudManager.h ...</div>
+                <div class="comm-top">Top: CloudClientManager, UpdateCloudClient, CloudConfig</div>
+            </div>
+            <div class="comm-card" style="border-left-color: #ce9178;">
+                <div class="comm-name">ConfigEngine</div>
+                <div class="comm-stats">215 nodes · cohesion 0.74 · ConfigManager.cpp, SettingsProvider.h ...</div>
+                <div class="comm-top">Top: ConfigManager, SettingsProvider, ConfigSerializer</div>
+            </div>
+            <div class="comm-card" style="border-left-color: #4ec9b0;">
+                <div class="comm-name">NetworkLayer</div>
+                <div class="comm-stats">189 nodes · cohesion 0.68 · UpdateHandler.cpp, HttpRequest.cpp ...</div>
+                <div class="comm-top">Top: UpdateHandler, HttpTransport, NetworkManager</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<hr>
+
+<!-- ==================== 场景 4 ==================== -->
+<h3>场景 6: trace_path — 调用链追踪</h3>
+<div class="tool-card">
+    <div class="card-header">
+        <span class="tool-icon">🔗</span>
+        <span class="tool-name">trace_path</span>
+        <span class="tool-time">8ms</span>
+        <span class="collapse-icon">▼</span>
+    </div>
+    <div class="summary-strip">
+        <span class="stat">Source: <strong>UpdateCloudClient</strong></span>
+        <span class="stat">Mode: <strong>calls</strong></span>
+        <span class="stat">Depth: <strong>3</strong></span>
+        <span class="stat">Hops: <strong>12</strong></span>
+    </div>
+    <div class="card-body">
+        <div class="trace-path">
+            <div class="trace-hop">
+                <span class="hop-num">H0</span>
+                <span class="hop-name">UpdateCloudClient</span>
+                <span class="hop-risk risk-low">Low</span>
+            </div>
+            <div class="trace-hop">
+                <span class="hop-num">H1</span>
+                <span class="hop-arrow">→</span>
+                <span class="hop-name">ProcessUpdate</span>
+                <span class="hop-risk risk-low">Low</span>
+            </div>
+            <div class="trace-hop">
+                <span class="hop-num">H1</span>
+                <span class="hop-arrow">→</span>
+                <span class="hop-name">ApplyCloudSettings</span>
+                <span class="hop-risk risk-med">Med</span>
+            </div>
+            <div class="trace-hop">
+                <span class="hop-num">H2</span>
+                <span class="hop-arrow">&nbsp;&nbsp;→</span>
+                <span class="hop-name">SyncConfigToServer</span>
+                <span class="hop-risk risk-high">High</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<hr>
+
+<h3 style="color: var(--text-muted); margin-top: 24px;">
+    💡 设计要点：卡片折叠 + 摘要条 + 结构化渲染（图标/颜色/Badge/分数/代码高亮/风险标签）
+</h3>
+
+</body>
+</html>

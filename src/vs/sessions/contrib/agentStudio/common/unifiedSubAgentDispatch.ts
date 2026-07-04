@@ -15,6 +15,7 @@
 
 import { IterationBudget } from './iterationBudget.js';
 import type { IAgentTurnRequest, IChatStreamDelta, IChatMessage } from './providers.js';
+import { SubagentTokenCollector, type SubagentTokenUsage } from './subagentTokenCollector.js';
 
 // ─── SubAgent Types (inspired by OpenCode's agent types) ──────────────────
 
@@ -119,6 +120,8 @@ export interface SubAgentInstance {
 	readonly priority: 'low' | 'medium' | 'high';
 	readonly options: SubAgentOptions;
 	result?: SubAgentResult;
+	/** Per-sub-agent token usage collector (inspired by deer-flow SubagentTokenCollector). */
+	readonly tokenCollector: SubagentTokenCollector;
 }
 
 export type SubAgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled';
@@ -134,6 +137,8 @@ export interface SubAgentResult {
 	readonly apiCalls?: number;
 	/** Token usage (if available from the LLM response) */
 	readonly tokensUsed?: { input: number; output: number };
+	/** Detailed per-turn token usage (inspired by deer-flow SubagentTokenCollector). */
+	readonly tokenUsage?: SubagentTokenUsage;
 	/** Why the sub-agent stopped executing */
 	readonly exitReason?: SubAgentExitReason;
 	/** Tool call trace — list of tools invoked with their status */
@@ -420,6 +425,7 @@ export class UnifiedSubAgentDispatch {
 			priority: options?.priority ?? 'medium',
 			options: options ?? {},
 			result: undefined,
+			tokenCollector: new SubagentTokenCollector(),
 		};
 
 		this._activeSubAgents.set(subAgentId, subAgent);
@@ -486,6 +492,7 @@ export class UnifiedSubAgentDispatch {
 				executeFn,
 				request,
 				subAgent.budget,
+				subAgent.tokenCollector,
 				(event) => this._emit(eventSink, {
 					...event,
 					subAgentId: subAgent.id,
@@ -510,6 +517,7 @@ export class UnifiedSubAgentDispatch {
 				durationMs: Date.now() - startedAt,
 				apiCalls: execResult.apiCallCount,
 				tokensUsed: execResult.tokensUsed,
+				tokenUsage: subAgent.tokenCollector.getUsage(),
 				exitReason,
 				toolTrace: execResult.toolTrace,
 				filesModified: execResult.filesModified.length > 0 ? execResult.filesModified : undefined,
@@ -555,6 +563,7 @@ export class UnifiedSubAgentDispatch {
 				error: errMsg,
 				completedAt: Date.now(),
 				durationMs: Date.now() - startedAt,
+				tokenUsage: subAgent.tokenCollector.getUsage(),
 				exitReason,
 			};
 			subAgent.status = 'error';
@@ -874,6 +883,7 @@ export class UnifiedSubAgentDispatch {
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
 		request: IAgentTurnRequest,
 		budget: IterationBudget,
+		tokenCollector: SubagentTokenCollector,
 		emitEvent?: (partial: Omit<SubAgentEvent, 'subAgentId' | 'subAgentType' | 'task' | 'parentId' | 'timestamp'> & { type: SubAgentEventType }) => void,
 	): Promise<_ExecResult> {
 		let output = '';
@@ -1025,6 +1035,14 @@ export class UnifiedSubAgentDispatch {
 					tokensUsed.input += inTok;
 					tokensUsed.output += outTok;
 				}
+				// Record to SubagentTokenCollector for detailed per-turn tracking
+				// (inspired by deer-flow SubagentTokenCollector)
+				tokenCollector.recordUsage({
+					inputTokens: inTok,
+					outputTokens: outTok,
+					cacheHitTokens: delta.usage.cachedTokens,
+					cacheWriteTokens: delta.usage.cacheWriteTokens,
+				});
 			}
 
 			// ── Terminal events ──

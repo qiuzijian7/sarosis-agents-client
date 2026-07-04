@@ -125,19 +125,28 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 	 * module loader (required for browser renderer compatibility).
 	 */
 	private async _initTerminal(): Promise<void> {
-		const mod = await importAMDNodeModule<typeof import('@xterm/xterm')>('@xterm/xterm', 'lib/xterm.js');
+		const xtermMod = await importAMDNodeModule<typeof import('@xterm/xterm')>('@xterm/xterm', 'lib/xterm.js');
 		if (this._store.isDisposed) { return; }
 
-		const Terminal = mod.Terminal;
+		const Terminal = xtermMod.Terminal;
+
+
+		// 对齐 Hermes-Agent TUI 的文本渲染策略：
+		// - 最小化 lineHeight（1.0，无额外行间距）
+		// - letterSpacing=0（零字符间距）
+		// - 较小的 fontSize（12px，增加信息密度）
+		// Hermes-Agent 纯 ANSI 渲染器中不控制这些属性，
+		// 但我们用 xterm.js 必须显式设置
 		this._terminal = new Terminal({
 			fontFamily: 'var(--vscode-editor-font-family, JetBrains Mono, monospace)',
-			fontSize: 13,
-			lineHeight: 1.3,
+			fontSize: 12,
+			lineHeight: 1.0,
+			letterSpacing: 0,
 			cursorBlink: false,
 			cursorStyle: 'bar',
 			disableStdin: true,
 			scrollback: 5000,
-			convertEol: false,
+			convertEol: true,
 			allowProposedApi: true,
 			theme: {
 				background: '#1e1e1e',
@@ -146,10 +155,23 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 		});
 		this._terminal.open(this._terminalEl);
 
+		// 手动计算 cols 和 rows，基于容器尺寸
+		// 避免依赖 @xterm/addon-fit（未安装）
+		// xterm 字符宽度 ≈ 7.5px (13px font * 0.6 char-width)
+		// xterm 行高 ≈ 18px (13px font * 1.3 lineHeight + padding)
+		this._refitTerminal();
+
+		// ResizeObserver: 监听 xterm 容器尺寸变化，自动重新计算 cols
+		// 解决水平溢出问题：容器宽度变化时，xterm 自动调整列数
+		const resizeObserver = new ResizeObserver(() => {
+			this._refitTerminal();
+		});
+		resizeObserver.observe(this._terminalEl);
+		this._disposables.add({ dispose: () => resizeObserver.disconnect() });
+
 		// Track terminal dimensions
 		this._disposables.add(this._terminal.onResize(({ cols }) => {
 			this._cols = cols;
-			this._rerender();
 		}));
 
 		// Copy selection to clipboard
@@ -165,21 +187,111 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 			this._pendingRender = false;
 			this._rerender();
 		}
+
+		// 关键：xterm 加载完成后，DOM 布局已稳定，重新计算 xterm 容器高度
+		// 修复从 web 切换到 CLI 时的空白问题：
+		// - _initChatPanel() 调用 panel.layout() 时 wrapper 高度为 0（DOM 未布局完成）
+		// - xterm 异步加载完成后，wrapper 已有正确高度
+		// - 此处需要主动 layout 一次
+		this._recomputeLayout();
 	}
 
 	get element(): HTMLElement { return this._container; }
+
+	// ═══════════════════════════════════════════════════════════════════
+	// Terminal refit
+	// ═══════════════════════════════════════════════════════════════════
+
+	/**
+	 * 手动计算 xterm 的 cols 和 rows，基于容器尺寸。
+	 * 避免依赖 @xterm/addon-fit（项目未安装）。
+	 * 字符宽度估算：13px 字体下，等宽字符约 7.8px 宽。
+	 * 行高估算：13px * 1.3 = 16.9px，加 padding ≈ 18px。
+	 */
+	private _refitTerminal(): void {
+		const term = this._terminal;
+		if (!term || !this._terminalEl) { return; }
+		const rect = this._terminalEl.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) { return; }
+
+		// 对齐 Hermes-Agent 的最小化间距策略：
+		// fontSize=12px，等宽字符约 7.2px 宽（12 * 0.6）
+		// lineHeight=1.0，行高约 12px + cell padding
+		const charWidth = 7.2;
+		const lineHeightEstimate = 14; // 12px font * 1.0 + 2px cell padding
+		const padding = 20; // 左右 padding 4px*2 + scrollbar 12px
+
+		const cols = Math.max(20, Math.floor((rect.width - padding) / charWidth));
+		const rows = Math.max(3, Math.floor((rect.height - padding) / lineHeightEstimate));
+
+		this._cols = cols;
+		try {
+			(term as any).resize?.(cols, rows);
+		} catch { /* ignore */ }
+	}
+
+	/**
+	 * 强制重新计算 xterm 容器高度。
+	 * 与 `layout()` 不同：使用 `requestAnimationFrame` 等待 DOM 布局完成，
+	 * 并使用容器的 `getBoundingClientRect()`（而非 `clientHeight`）来读取实际高度。
+	 *
+	 * 解决"从 web 切换到 CLI 后仍有空白"问题：
+	 * - `_initChatPanel()` 第一次调用 `panel.layout()` 时，wrapper 高度为 0（DOM 未布局完成）
+	 * - `layout()` 检测到 0 高度后直接 return，xterm 容器高度永远保持默认 200px
+	 * - xterm 异步加载完成后，需要再调用一次 layout 才能正确计算
+	 */
+	private _recomputeLayout(): void {
+		requestAnimationFrame(() => {
+			if (!this._container || !this._terminalEl) { return; }
+			const wrapper = this._container.querySelector('.xterm-cli-content-wrapper') as HTMLElement | null;
+			if (!wrapper) { return; }
+
+			const rect = wrapper.getBoundingClientRect();
+			const wrapperHeight = rect.height;
+			if (wrapperHeight <= 0) {
+				// wrapper 还未布局完成，再重试一次
+				this._recomputeLayout();
+				return;
+			}
+
+			const term = this._terminal;
+			let contentLines = 1;
+			if (term) {
+				try {
+					contentLines = term.buffer.active.length;
+				} catch { /* ignore */ }
+			}
+
+			const lineHeight = 14;  // 12px font * 1.0 lineHeight + 2px cell padding
+			const contentHeight = contentLines * lineHeight + 12;
+			const newHeight = Math.max(40, Math.min(contentHeight, wrapperHeight));
+
+			this._terminalEl.style.height = `${newHeight}px`;
+			this._terminalEl.style.width = `${rect.width}px`;
+
+			// 重新计算 cols/rows
+			this._refitTerminal();
+		});
+	}
 
 	// ═══════════════════════════════════════════════════════════════════
 	// DOM construction
 	// ═══════════════════════════════════════════════════════════════════
 
 	private _buildDOM(): void {
+		// Wrapper for xterm — fills available space, contains the xterm
+		// container which is positioned at the bottom. This way:
+		// - Input is always at the very bottom of the panel
+		// - xterm content sticks to the bottom of the available area
+		// - No huge gap between content and input
+		const contentWrapper = document.createElement('div');
+		contentWrapper.className = 'xterm-cli-content-wrapper';
+
 		// xterm container (Terminal instance is created asynchronously in _initTerminal)
 		this._terminalEl = document.createElement('div');
 		this._terminalEl.className = 'xterm-cli-terminal';
-		this._terminalEl.style.flex = '1';
-		this._terminalEl.style.overflow = 'hidden';
-		this._terminalEl.style.position = 'relative';
+
+		contentWrapper.appendChild(this._terminalEl);
 
 		// Input area (DOM textarea)
 		const inputArea = document.createElement('div');
@@ -207,7 +319,7 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 		this._statusBar.className = 'xterm-cli-status';
 
 		// Assemble
-		this._container.appendChild(this._terminalEl);
+		this._container.appendChild(contentWrapper);
 		this._container.appendChild(inputArea);
 		this._container.appendChild(this._statusBar);
 
@@ -267,6 +379,10 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 			return;
 		}
 
+		// 重新计算 cols — 手动根据容器宽度算出正确的列数，
+		// 确保长行在终端宽度处换行，不溢出。
+		this._refitTerminal();
+
 		term.reset();
 
 		const parts: string[] = [];
@@ -279,7 +395,11 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 			}
 		}
 
-		term.write(parts.join(''));
+		term.write(parts.join(''), () => {
+			// 渲染完成后重新计算 xterm 容器高度，让内容贴底显示
+			// 使用 _recomputeLayout() 等待 DOM 布局稳定（避免 wrapperHeight=0 的问题）
+			this._recomputeLayout();
+		});
 		this._renderStatusBar();
 	}
 
@@ -537,8 +657,16 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 		this._textarea?.focus();
 	}
 
-	layout(_width: number, _height: number): void {
-		// xterm handles its own layout via the container
+	layout(width: number, height: number): void {
+		// 委托给 _recomputeLayout —— 内部使用 rAF 等待 DOM 布局完成
+		// 即使首次调用时 wrapper 高度为 0，rAF 也会重试直到布局完成
+		// 同时更新输入框的宽度
+		if (this._textarea) {
+			this._textarea.style.maxWidth = `${width - 40}px`;
+		}
+		// width/height 参数保留用于将来扩展
+		void width; void height;
+		this._recomputeLayout();
 	}
 
 	// ═══════════════════════════════════════════════════════════════════

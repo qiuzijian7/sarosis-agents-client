@@ -124,8 +124,6 @@ const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
 	math_eval: { done: '计算', running: '正在计算' },
 	echo: { done: 'Echo', running: 'Echo' },
 	clarify: { done: '等待用户选择', running: '正在等待用户选择' },
-	mcp_tool_search: { done: '搜索 MCP 工具', running: '正在搜索 MCP 工具' },
-	mcp_tool_call: { done: '执行 MCP 工具', running: '正在执行 MCP 工具' },
 	memory_remember: { done: '保存记忆', running: '正在保存记忆' },
 	memory_search: { done: '搜索记忆', running: '正在搜索记忆' },
 	memory_delete: { done: '删除记忆', running: '正在删除记忆' },
@@ -147,6 +145,7 @@ const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
 	workflow_get_schema: { done: '获取工作流结构', running: '正在获取工作流结构' },
 	workflow_apply: { done: '应用工作流', running: '正在应用工作流' },
 	todo: { done: '更新待办', running: '正在更新待办' },
+	update_plan: { done: '更新计划', running: '正在更新计划' },
 	execute_code: { done: '执行代码', running: '正在执行代码' },
 	session_search: { done: '搜索会话', running: '正在搜索会话' },
 	read_file: { done: '读取文件', running: '正在读取文件' },
@@ -174,9 +173,25 @@ const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
 	open_persistent_terminal: { done: '打开终端', running: '正在打开终端' },
 	kill_persistent_terminal: { done: '关闭终端', running: '正在关闭终端' },
 	read_lint_errors: { done: '读取诊断', running: '正在读取诊断' },
+	// ── Codebase 工具 ──
+	search_graph: { done: '搜索知识图谱', running: '正在搜索知识图谱' },
+	search_code: { done: '搜索代码', running: '正在搜索代码' },
+	get_architecture: { done: '获取架构概览', running: '正在获取架构概览' },
+	trace_path: { done: '追踪调用链', running: '正在追踪调用链' },
+	query_graph: { done: 'Cypher 查询', running: '正在执行 Cypher 查询' },
+	index_repository: { done: '索引代码库', running: '正在索引代码库' },
+	get_code_snippet: { done: '获取代码片段', running: '正在获取代码片段' },
+	get_graph_schema: { done: '获取图结构', running: '正在获取图结构' },
+	detect_changes: { done: '检测变更', running: '正在检测变更' },
+	list_projects: { done: '列出项目', running: '正在列出项目' },
+	delete_project: { done: '删除项目', running: '正在删除项目' },
+	index_status: { done: '索引状态', running: '正在查询索引状态' },
+	ingest_traces: { done: '摄入 Trace', running: '正在摄入 Trace' },
+	manage_adr: { done: '管理 ADR', running: '正在管理 ADR' },
 };
 const TOOL_TERMINAL_TOOLS = new Set(['terminal', 'run_command', 'run_persistent_command', 'run_terminal_cmd', 'process', 'execute_code']);
 const TOOL_LIST_TOOLS = new Set(['file_list', 'search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep']);
+const TOOL_CODEBASE_TOOLS = new Set(['search_graph', 'search_code', 'get_architecture', 'trace_path', 'query_graph', 'index_repository', 'get_code_snippet', 'get_graph_schema', 'detect_changes', 'list_projects', 'delete_project', 'index_status', 'ingest_traces', 'manage_adr']);
 
 export class AgentChatPanel extends Disposable implements IChatPanel {
 	// -- DOM refs --
@@ -190,6 +205,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _customScrollbar: HTMLElement | null = null;
 	private _scrollbarTrack: HTMLElement | null = null;
 	private _scrollbarThumb: HTMLElement | null = null;
+	// ── Dropdown outside-click disposable（防止累积泄漏导致卡顿）──
+	private _worktreeDropdownOutsideClick: IDisposable | null = null;
+	private _modeDropdownOutsideClick: IDisposable | null = null;
+	private _providerDropdownOutsideClick: IDisposable | null = null;
+	private _modelDropdownOutsideClick: IDisposable | null = null;
 	private _scrollbarPopup: HTMLElement | null = null;
 	private _scrollbarPopupPreview: HTMLElement | null = null;
 	private _scrollbarUpdateRaf: number | null = null;
@@ -200,8 +220,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _systemMsgBar: HTMLElement | null = null;
 	private _systemMsgList: HTMLElement | null = null;
 	private _systemMsgExpanded = false;
-	/** Tracks if the user manually collapsed the panel — prevents auto-expand. */
-	private _systemMsgUserCollapsed = false;
 
 	// -- State --
 	private _messages: IAgentChatMessage[] = [];
@@ -236,6 +254,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _showScrollBtn = false;
 	// 智能滚动状态（匹配 React isAtBottomRef / wasLoadingRef）
 	private _isAtBottom = true;
+	// 用户正在拖拽自定义滚动条 thumb — 流式 rAF 钉底循环必须暂停，否则两者互相冲突
+	private _isDraggingScrollbar = false;
 	private _wasLoading = false;
 	// 流式结束后的宽限期标志——slow-path 重建（footer/token popup/语法高亮）
 	// 会增加内容高度，非流式路径的 80px 阈值检查会误判为"用户滚离"而禁用自动滚动。
@@ -311,10 +331,14 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _msgNavTrigger: HTMLElement | null = null;
 	private _modeDropdownEl: HTMLElement | null = null;
 	private _modeTrigger: HTMLElement | null = null;
+	// 当前 mode 下拉菜单实际使用的触发器（默认 = _modeTrigger；编辑消息时 = 编辑 composer 内的 mode 按钮）
+	private _modeDropdownTrigger: HTMLElement | null = null;
 	private _providerDropdownEl: HTMLElement | null = null;
 	private _providerTrigger: HTMLElement | null = null;
+	private _providerDropdownTrigger: HTMLElement | null = null;
 	private _modelDropdownEl: HTMLElement | null = null;
 	private _modelTrigger: HTMLElement | null = null;
+	private _modelDropdownTrigger: HTMLElement | null = null;
 	private _historyOverlayEl: HTMLElement | null = null;
 
 	// -- Tabs state --
@@ -377,6 +401,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private readonly _onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 	private readonly _onOpenMcpSettings?: () => void;
 	private readonly _onOpenHtmlPreview?: () => void;
+	private readonly _onGetAgentSkills?: () => string[];
+	private readonly _onAddSkill?: (skillId: string) => Promise<void>;
+	private readonly _onRemoveSkill?: (skillId: string) => Promise<void>;
 	// New callbacks for missing features
 	private readonly _onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
 	private readonly _onClarifySubmit?: (toolCallId: string, selection: string) => void;
@@ -432,6 +459,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		onListMcpServers?: () => ReadonlyArray<{ name: string; status: string; toolCount: number }>;
 		onOpenMcpSettings?: () => void;
 		onOpenHtmlPreview?: () => void;
+		onGetAgentSkills?: () => string[];
+		onAddSkill?: (skillId: string) => Promise<void>;
+		onRemoveSkill?: (skillId: string) => Promise<void>;
 		// New callbacks for missing features
 		onAskUserSubmit?: (askUserId: string, executionId: string, nodeId: string, selection: string | string[]) => void;
 		onClarifySubmit?: (toolCallId: string, selection: string) => void;
@@ -487,6 +517,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._onListMcpServers = opts.onListMcpServers;
 		this._onOpenMcpSettings = opts.onOpenMcpSettings;
 		this._onOpenHtmlPreview = opts.onOpenHtmlPreview;
+		this._onGetAgentSkills = opts.onGetAgentSkills;
+		this._onAddSkill = opts.onAddSkill;
+		this._onRemoveSkill = opts.onRemoveSkill;
 		// New callbacks
 		this._onAskUserSubmit = opts.onAskUserSubmit;
 		this._onClarifySubmit = opts.onClarifySubmit;
@@ -550,8 +583,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._renderMessages();
 		const tRender = performance.now();
 		// 加载历史消息 → 标记 wasLoading，确保 instant 滚动
+		// 双重 rAF：首帧等布局计算，次帧等级联布局（代码块/工具卡异步插入后）
 		this._wasLoading = true;
-		this._scrollToBottom(false);
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => this._scrollToBottom(false));
+		});
 		// 消息变化影响 inputBaselineTokens，需要重新计算 context ring
 		this._updateContextRing();
 		console.warn(`[AgentChatPanel] setMessages: total=${messages.length} aggregate=${(tAgg - t0).toFixed(1)}ms render=${(tRender - tAgg).toFixed(1)}ms total=${(performance.now() - t0).toFixed(1)}ms`);
@@ -593,7 +629,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 		// Re-render so all existing messages pick up the new style
 		this._renderMessages();
-		this._scrollToBottom(false);
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => this._scrollToBottom(false));
+		});
 		// CLI mode changes font-size / line-height / padding on every message,
 		// so scrollHeight/clientHeight/trackHeight all shift. The synchronous
 		// _refreshScrollMarkers() inside _renderMessages reads stale layout
@@ -801,10 +839,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			...msg,
 		});
 		this._renderSystemMsgPanel();
-		// 有新消息时自动展开（但如果用户手动折叠了则不自动展开）
-		if (!this._systemMsgExpanded && !this._systemMsgUserCollapsed) {
-			this._toggleSystemMsgPanel();
-		}
+		// 不自动展开：系统栏仅在用户手动点击时才展开
 	}
 
 	/** 清空系统消息 */
@@ -816,14 +851,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	/** 切换系统消息面板展开/收起 */
 	private _toggleSystemMsgPanel(): void {
 		this._systemMsgExpanded = !this._systemMsgExpanded;
-		// Track user's manual collapse/expand choice
-		if (this._systemMsgExpanded) {
-			// User manually expanded → clear the collapsed flag
-			this._systemMsgUserCollapsed = false;
-		} else {
-			// User manually collapsed → set flag to prevent auto-expand
-			this._systemMsgUserCollapsed = true;
-		}
 		this._renderSystemMsgPanel();
 	}
 
@@ -1092,7 +1119,51 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			}, 2000) as unknown as number;
 			// 调度延迟滚动追赶异步 DOM 变化
 			this._schedulePostStreamScroll();
+			// Agent loop 结束 → 补齐最后一条 assistant 消息的 footer
+			// （loop 中所有消息的 footer 都被 _isSending 检查跳过）
+			this._revealFootersAfterLoop();
 		}
+	}
+
+	/**
+	 * Agent loop 结束后调用 —— 为最后一条 assistant 消息补齐 footer。
+	 *
+	 * 设计原因：loop 进行中（`_isSending === true`）时所有消息的 footer
+	 * （复制/积分/token 消耗/耗时）都被隐藏，避免在迭代过程中刷屏。
+	 * loop 结束后只补齐**最后一条** assistant 消息的 footer —— 用户可见
+	 * 的"本轮统计"已在该消息上累计（多次 usage 事件累加）。
+	 *
+	 * 注意：中间迭代消息保持无 footer，避免视觉噪音。
+	 */
+	private _revealFootersAfterLoop(): void {
+		// 找到最后一条 assistant 消息
+		const messages = this.getMessages();
+		let lastAssistantIdx = -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (messages[i].role === 'assistant') {
+				lastAssistantIdx = i;
+				break;
+			}
+		}
+		if (lastAssistantIdx < 0) { return; }
+		const lastAssistant = messages[lastAssistantIdx];
+		// 找到对应 DOM
+		const lastAssistantEl = this._findMessageElementById(lastAssistant.id);
+		if (!lastAssistantEl) { return; }
+		const bubble = lastAssistantEl.querySelector('.chat-bubble');
+		if (!bubble) { return; }
+		// 补齐 footer（如果还没有）
+		if (!bubble.querySelector('.chat-bubble-footer')) {
+			bubble.appendChild(this._createFooter(lastAssistant));
+		}
+	}
+
+	/**
+	 * 根据消息 id 查找 DOM 元素。
+	 */
+	private _findMessageElementById(id: string): HTMLElement | null {
+		if (!this._messagesContainer) { return null; }
+		return this._messagesContainer.querySelector(`[data-msg-id="${id}"]`);
 	}
 
 	/**
@@ -1150,6 +1221,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 * 用于 provider/model 变化时避免 _render() 全量重建（header + 消息列表 + 输入区域）。
 	 */
 	private _refreshInputArea(): void {
+		// 保存当前输入内容（切换 provider/model 时不应清空输入框）
+		const savedValue = this._textarea?.value ?? '';
+		const savedAttachments = this._attachments.slice();
 		if (this._inputAreaEl && this._inputAreaEl.isConnected) {
 			this._inputAreaEl.remove();
 		}
@@ -1163,6 +1237,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			this._systemMsgList.remove();
 		}
 		this._renderInputArea();
+		// 恢复输入内容和附件
+		if (this._textarea && savedValue) {
+			this._textarea.value = savedValue;
+		}
+		this._attachments = savedAttachments;
 	}
 
 	setWorktrees(items: ReadonlyArray<IWorktreeItem>): void {
@@ -1297,9 +1376,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._renderSettingsOverlay();
 	}
 
-		// 初始加载后滚动到底部
+		// 初始加载后滚动到底部（双重 rAF 等布局完成）
 		this._wasLoading = true;
-		this._scrollToBottom(true);
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => this._scrollToBottom(true));
+		});
 	}
 
 	private _closeAllDropdowns(): void {
@@ -1998,12 +2079,18 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				scrollRafId = requestAnimationFrame(() => {
 					scrollRafId = null;
 					const atBottom = checkAtBottom();
-					if (atBottom) {
-						this._isAtBottom = true;
-						// 用户手动滚到底部 → 清零未读计数
-						if (this._unreadCount > 0) {
-							this._unreadCount = 0;
-							this._updateScrollBadge();
+					// 拖拽滚动条期间不更新 _isAtBottom（由 MOUSE_DOWN/UP 控制）
+					if (!this._isDraggingScrollbar) {
+						if (atBottom) {
+							this._isAtBottom = true;
+							// 用户手动滚到底部 → 清零未读计数
+							if (this._unreadCount > 0) {
+								this._unreadCount = 0;
+								this._updateScrollBadge();
+							}
+						} else if (!this._isSending) {
+							// 非流式期间，滚离底部 → 暂停自动跟随
+							this._isAtBottom = false;
 						}
 					}
 					// 流式期间由 _startStreamScroll rAF 循环持续钉底，
@@ -2106,12 +2193,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		);
 
 		// Thumb drag
-		let isDragging = false;
 		let dragStartY = 0;
 		let dragStartScrollTop = 0;
 		this._register(
 			addDisposableListener(this._scrollbarThumb, EventType.MOUSE_DOWN, (e: MouseEvent) => {
-				isDragging = true;
+				this._isDraggingScrollbar = true;
+				// 拖拽开始立即暂停自动钉底，防止流式 rAF 循环把视图拉回底部
+				this._isAtBottom = false;
 				dragStartY = e.clientY;
 				dragStartScrollTop = this._messagesContainer.scrollTop;
 				this._scrollbarThumb?.classList.add('dragging');
@@ -2120,7 +2208,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		);
 		this._register(
 			addDisposableListener(document, EventType.MOUSE_MOVE, (e: MouseEvent) => {
-				if (!isDragging || !this._scrollbarThumb || !this._scrollbarTrack || !this._messagesContainer) { return; }
+				if (!this._isDraggingScrollbar || !this._scrollbarThumb || !this._scrollbarTrack || !this._messagesContainer) { return; }
 				const deltaY = e.clientY - dragStartY;
 				const maxScroll = this._messagesContainer.scrollHeight - this._messagesContainer.clientHeight;
 				const trackH = this._scrollbarTrack.offsetHeight - this._scrollbarThumb.offsetHeight;
@@ -2130,9 +2218,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		);
 		this._register(
 			addDisposableListener(document, EventType.MOUSE_UP, () => {
-				if (isDragging) {
-					isDragging = false;
+				if (this._isDraggingScrollbar) {
+					this._isDraggingScrollbar = false;
 					this._scrollbarThumb?.classList.remove('dragging');
+					// 拖拽结束：检测是否在底部，恢复自动跟随
+					if (checkAtBottom()) {
+						this._isAtBottom = true;
+					}
 				}
 			}),
 		);
@@ -2294,10 +2386,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			const streamingText = existingEl.querySelector('.streaming-text') as HTMLSpanElement | null;
 
 			if (streamingContainer) {
-				// 节流 markdown 渲染：delta 到达时用 textContent 立即显示（0 成本），
-				// 定时器每 200ms 做一次完整 markdown 渲染（格式化追上）。
-				// 参考 Void chatListRenderer.ts 的 WindowIntervalTimer progressive rendering。
-				streamingContainer.textContent = msg.content;
+				// 节流 markdown 渲染：delta 到达时仅更新缓存内容，不立即操作 DOM。
+				// 定时器每 200ms 做一次增量/全量 markdown 渲染。
+				// 首次渲染之前（_streamingMdLastRendered 为空）用 textContent 显示纯文本，
+				// 让用户立即看到输出；首次 markdown 渲染后不再覆盖，由增量更新追加。
+				if (!this._streamingMdLastRendered) {
+					streamingContainer.textContent = msg.content;
+				}
 				this._streamingMdTarget = { container: streamingContainer };
 				this._streamingMdLastContent = msg.content;
 				if (this._streamingMdTimer === null) {
@@ -2361,12 +2456,15 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				const idsMatch = newToolIds.every((id, i) => existingIds[i] === id);
 				if (idsMatch) {
 					// 流式刚结束 → 移除光标 + streaming-container class + 追加 footer
+					// Agent loop 进行中（_isSending === true）时跳过 footer 渲染，
+					// 避免复制/积分/token 消耗信息在中间迭代中刷屏。
+					// loop 结束后由 setSending(false) 统一补齐。
 					const bubble = existingEl.querySelector('.chat-bubble');
 					if (bubble) {
 						bubble.querySelectorAll('.streaming-cursor').forEach(el => el.remove());
 						const sc = bubble.querySelector('.streaming-container');
 						if (sc) { sc.classList.remove('streaming-container'); }
-						if (!bubble.querySelector('.chat-bubble-footer')) {
+						if (!this._isSending && !bubble.querySelector('.chat-bubble-footer')) {
 							bubble.appendChild(this._createFooter(msg));
 						}
 					}
@@ -2410,8 +2508,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (streamingContainer) {
 			// P2+: 增量更新工具卡状态（running → success/error 等），不重建整条消息
 			this._updateToolCardStatuses(existingEl, msg);
-			// 节流 markdown 渲染（同 fast path 1，含 P0 增量更新）
-			streamingContainer.textContent = msg.content;
+			// 节流 markdown 渲染：delta 到达时仅更新缓存内容，不立即操作 DOM。
+			// 首次渲染之前（_streamingMdLastRendered 为空）用 textContent 显示纯文本。
+			if (!this._streamingMdLastRendered) {
+				streamingContainer.textContent = msg.content;
+			}
 			this._streamingMdTarget = { container: streamingContainer };
 			this._streamingMdLastContent = msg.content;
 			if (this._streamingMdTimer === null) {
@@ -2551,7 +2652,23 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			this._renderMarkdownContent(contentEl, msg.content);
 			if (msg.toolCalls && msg.toolCalls.length > 0) {
 				const section = append(bubble, $(".tool-calls-section"));
-				for (const tc of msg.toolCalls) {
+				// 2026-07-04: update_plan 是"替换语义"，只渲染最后一张卡片
+				// 避免累积多张卡片导致用户混淆
+				const filteredCalls: typeof msg.toolCalls = [];
+				let lastUpdatePlanIndex = -1;
+				for (let i = 0; i < msg.toolCalls.length; i++) {
+					if (msg.toolCalls[i].name === 'update_plan') {
+						lastUpdatePlanIndex = i;
+					}
+				}
+				for (let i = 0; i < msg.toolCalls.length; i++) {
+					const tc = msg.toolCalls[i];
+					if (tc.name === 'update_plan' && i !== lastUpdatePlanIndex) {
+						continue; // 跳过非最后的 update_plan
+					}
+					filteredCalls.push(tc);
+				}
+				for (const tc of filteredCalls) {
 					section.appendChild(this._maybeCreateClarifyCard(tc) ?? this._createToolCallCard(tc));
 				}
 			}
@@ -2658,7 +2775,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 
 		// Footer: copy | score | tokens | duration — 仅在 LLM 流式输出结束后显示
-		if (!isUser && !msg.isStreaming) {
+		// Agent loop 进行中（_isSending === true）时暂时不渲染 footer，避免：
+		//   - 复制/积分/token 消耗信息刷屏
+		//   - 用户看到部分统计就误以为循环结束
+		// loop 结束后由 setSending(false) → _revealFootersAfterLoop() 统一补齐最后一条消息的 footer
+		if (!isUser && !msg.isStreaming && !this._isSending) {
 			bubble.appendChild(this._createFooter(msg));
 		}
 
@@ -2696,21 +2817,24 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// ── 分隔线 ──
 		append(footer, $(".chat-bubble-footer-sep"));
 
-		// ── 积分（来自 tokenUsage.credit）──
+		// ── 积分（pill 样式，$ 图标 + 积分 + 数值）──
 		if (msg.tokenUsage?.credit !== undefined && msg.tokenUsage.credit > 0) {
-			const scoreWrap = append(footer, $("span.chat-bubble-footer-item"));
-			const scoreIcon = append(scoreWrap, $('span.chat-bubble-footer-icon'));
-			scoreIcon.textContent = '◎';
-			append(scoreWrap, $('span', undefined, `${msg.tokenUsage.credit.toFixed(2)}`));
-			scoreWrap.title = `积分: ${msg.tokenUsage.credit}`;
+			const scoreWrap = append(footer, $("span.chat-bubble-footer-item.chat-footer-pill"));
+			// $ 图标（圆形 $）
+			append(scoreWrap, $('span.chat-footer-pill-icon.codicon.codicon-credit-card'));
+			append(scoreWrap, $('span.chat-footer-pill-label', undefined, '积分'));
+			append(scoreWrap, $('span.chat-footer-pill-value', undefined, `: ${msg.tokenUsage.credit.toFixed(2)}`));
 		}
 
-		// ── Tokens ──
+		// ── Tokens（pill 样式 + tokens-popup 详情）──
 		if (msg.tokenUsage?.total !== undefined && msg.tokenUsage.total > 0) {
-			const tokenWrap = append(footer, $("span.chat-bubble-footer-item.tokens-item"));
-			const tokenIcon = append(tokenWrap, $('span.chat-bubble-footer-icon'));
-			tokenIcon.textContent = '◈';
-			append(tokenWrap, $('span', undefined, `${msg.tokenUsage.total.toLocaleString()}`));
+			const tokenWrap = append(footer, $("span.chat-bubble-footer-item.chat-footer-pill.tokens-item"));
+			// clipboard 图标
+			append(tokenWrap, $('span.chat-footer-pill-icon.codicon.codicon-clippy'));
+			append(tokenWrap, $('span.chat-footer-pill-label', undefined, 'Tokens'));
+			append(tokenWrap, $('span.chat-footer-pill-value', undefined, `: ${msg.tokenUsage.total.toLocaleString()}`));
+			// 信息小图标，提示 hover 查看明细
+			append(tokenWrap, $('span.chat-footer-pill-info.codicon.codicon-info'));
 
 			// ── Token 消耗明细 Popup ──
 			const tu = msg.tokenUsage;
@@ -2718,34 +2842,37 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			const cacheWrite = tu.cacheWrite ?? 0;
 			const cacheMiss = tu.cacheMiss ?? Math.max(0, tu.input - cachedRead - cacheWrite);
 			const reasoning = tu.reasoning ?? 0;
-			const contentTokens = tu.output - reasoning;
+			const contentTokens = Math.max(0, tu.output - reasoning);
 			const hitRate = tu.cacheHitRate ?? (tu.input > 0 ? (cachedRead / tu.input) * 100 : 0);
 
 			const popup = append(tokenWrap, $('div.tokens-popup'));
-			// Title
-			append(popup, $('div.tokens-popup-title', undefined, 'Token 消耗明细'));
-			// 总计
-			const totalRow = append(popup, $('div.tokens-popup-total'));
-			append(totalRow, $('span.label', undefined, '总计'));
-			append(totalRow, $('span.value', undefined, tu.total.toLocaleString()));
+			// 标题行：左侧 "Token 消耗明细" + 右侧 "总计 X"
+			const titleRow = append(popup, $('div.tokens-popup-header'));
+			append(titleRow, $('span.tokens-popup-title', undefined, 'Token 消耗明细'));
+			const totalEl = append(titleRow, $('span.tokens-popup-total-inline'));
+			append(totalEl, $('span.label', undefined, '总计'));
+			append(totalEl, $('span.value', undefined, tu.total.toLocaleString()));
 			// 输入分组
 			const inputGroup = append(popup, $('div.tokens-popup-group'));
 			const inputTitle = append(inputGroup, $('div.tokens-popup-group-title'));
-			append(inputTitle, $('span', undefined, '输入'));
+			append(inputTitle, $('span.group-name', undefined, '输入'));
 			append(inputTitle, $('span.group-value', undefined, tu.input.toLocaleString()));
 			if (cachedRead > 0 || cacheMiss > 0 || cacheWrite > 0) {
 				if (cachedRead > 0) {
 					const row = append(inputGroup, $('div.tokens-popup-sub-row'));
+					append(row, $('span.sub-dot.hit'));
 					append(row, $('span.sub-label', undefined, '缓存命中'));
 					append(row, $('span.sub-value.highlight', undefined, cachedRead.toLocaleString()));
 				}
 				if (cacheMiss > 0) {
 					const row = append(inputGroup, $('div.tokens-popup-sub-row'));
+					append(row, $('span.sub-dot.miss'));
 					append(row, $('span.sub-label', undefined, '缓存未命中'));
 					append(row, $('span.sub-value', undefined, cacheMiss.toLocaleString()));
 				}
 				if (cacheWrite > 0) {
 					const row = append(inputGroup, $('div.tokens-popup-sub-row'));
+					append(row, $('span.sub-dot.write'));
 					append(row, $('span.sub-label', undefined, '缓存写入'));
 					append(row, $('span.sub-value', undefined, cacheWrite.toLocaleString()));
 				}
@@ -2753,7 +2880,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// 输出分组
 			const outputGroup = append(popup, $('div.tokens-popup-group'));
 			const outputTitle = append(outputGroup, $('div.tokens-popup-group-title'));
-			append(outputTitle, $('span', undefined, '输出'));
+			append(outputTitle, $('span.group-name', undefined, '输出'));
 			append(outputTitle, $('span.group-value', undefined, tu.output.toLocaleString()));
 			if (reasoning > 0 || contentTokens > 0) {
 				if (reasoning > 0) {
@@ -2765,26 +2892,39 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				append(row, $('span.sub-label', undefined, '回复内容'));
 				append(row, $('span.sub-value', undefined, contentTokens.toLocaleString()));
 			}
-			// 缓存命中率
+			// 缓存命中率（带进度条）
 			if (hitRate > 0 || cachedRead > 0) {
 				const hitRateEl = append(popup, $('div.tokens-popup-hit-rate'));
-				append(hitRateEl, $('span.rate-icon', undefined, '⚡'));
+				append(hitRateEl, $('span.rate-icon.codicon.codicon-flame'));
 				append(hitRateEl, $('span.rate-label', undefined, '缓存命中率'));
 				append(hitRateEl, $('span.rate-value', undefined, `${hitRate.toFixed(1)}%`));
+				// 进度条
+				const bar = append(hitRateEl, $('div.tokens-popup-hit-bar'));
+				const fill = append(bar, $('div.tokens-popup-hit-bar-fill'));
+				fill.style.width = `${Math.max(0, Math.min(100, hitRate))}%`;
+				// 底部图例
+				const legend = append(hitRateEl, $('div.tokens-popup-legend'));
+				const lg1 = append(legend, $('span.legend-item'));
+				append(lg1, $('span.legend-dot.hit'));
+				append(lg1, $('span.legend-label', undefined, '命中'));
+				const lg2 = append(legend, $('span.legend-item'));
+				append(lg2, $('span.legend-dot.write'));
+				append(lg2, $('span.legend-label', undefined, '写入'));
+				const lg3 = append(legend, $('span.legend-item'));
+				append(lg3, $('span.legend-dot.miss'));
+				append(lg3, $('span.legend-label', undefined, '未命中'));
 			}
 		}
 
-		// ── 耗时（单次 LLM 开始到结束，由上游在流式结束时写入 metadata.durationMs）──
+		// ── 耗时（pill 样式，时钟图标 + 耗时 + 数值）──
 		const durMs = typeof (msg.metadata?.durationMs) === 'number'
 			? (msg.metadata.durationMs as number)
 			: 0;
 		if (durMs > 0) {
-			const durWrap = append(footer, $("span.chat-bubble-footer-item.duration-item"));
-			const durIcon = append(durWrap, $('span.chat-bubble-footer-icon'));
-			durIcon.textContent = '⏱';
-			const durText = append(durWrap, $('span'));
-			durText.textContent = this._formatDuration(durMs);
-			durWrap.title = `耗时: ${this._formatDuration(durMs)}`;
+			const durWrap = append(footer, $("span.chat-bubble-footer-item.chat-footer-pill.duration-item"));
+			append(durWrap, $('span.chat-footer-pill-icon.codicon.codicon-watch'));
+			append(durWrap, $('span.chat-footer-pill-label', undefined, '耗时'));
+			append(durWrap, $('span.chat-footer-pill-value', undefined, `: ${this._formatDuration(durMs)}`));
 		}
 
 		return footer;
@@ -2822,7 +2962,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 
 		// 3. 追加 footer（如果尚不存在）
-		if (!bubble.querySelector('.chat-bubble-footer')) {
+		// Agent loop 进行中（_isSending === true）时跳过 footer 渲染，
+		// 避免复制/积分/token 消耗信息在中间迭代中刷屏。
+		// loop 结束后由 setSending(false) 统一补齐。
+		if (!this._isSending && !bubble.querySelector('.chat-bubble-footer')) {
 			bubble.appendChild(this._createFooter(msg));
 		}
 	}
@@ -3006,6 +3149,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	private _createToolCallCard(tc: IToolCall): HTMLElement {
 		const key = (tc.name || '').toLowerCase();
+
+		// ── update_plan: 专用计划卡片 ──
+		if (key === 'update_plan') {
+			return this._createPlanCard(tc);
+		}
+
 		const isRunning = tc.status === 'running';
 		const isError = tc.status === 'error';
 		const isSuccess = tc.status === 'success' || (!isRunning && !isError && tc.status !== 'approval_required' && tc.status !== 'rejected' && tc.status !== 'canceled');
@@ -3274,6 +3423,98 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		parent.appendChild(svg);
 	}
 
+	// ── update_plan 专用计划卡片 ──────────────────────────────────────────
+
+	private _createPlanCard(tc: IToolCall): HTMLElement {
+		// _parsePlanArgs 期望 Record<string, unknown>，但 IToolCall.args 是 JSON 字符串
+		let parsedArgs: Record<string, unknown> | undefined = undefined;
+		if (tc.args) {
+			try { parsedArgs = JSON.parse(tc.args); } catch { /* invalid JSON */ }
+		}
+		const planData = this._parsePlanArgs(parsedArgs);
+		const isRunning = tc.status === 'running';
+		const statusClass = isRunning ? 'tool-card-running'
+			: tc.status === 'error' ? 'tool-card-error'
+			: 'tool-card-success';
+
+		const wrapper = $(`.tool-header-wrapper.${statusClass}.plan-card`);
+		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
+
+		const body = append(wrapper, $('.plan-card-body'));
+
+		// 标题行
+		const titleRow = append(body, $('.plan-card-title-row'));
+		const titleContainer = append(titleRow, $('.tool-header-title-container'));
+		const titleEl = append(titleContainer, $('span.tool-header-title'));
+		const doneCount = planData ? planData.plan.filter(s => s.status === 'completed').length : 0;
+		const totalCount = planData ? planData.plan.length : 0;
+		titleEl.textContent = isRunning
+			? `更新计划 · ${doneCount}/${totalCount}`
+			: `已更新计划 · ${doneCount}/${totalCount}`;
+
+		if (isRunning) {
+			const spinner = append(titleRow, $('.plan-card-spinner'));
+			this._svgSpinner(spinner, '');
+		} else {
+			const check = append(titleRow, $('span.tool-header-success-icon'));
+			this._svgCheck(check, '');
+		}
+
+		// 进度条
+		if (planData && totalCount > 0) {
+			const progressRow = append(body, $('.plan-card-progress'));
+			const bar = append(progressRow, $('.plan-card-progress-bar'));
+			const pct = Math.round((doneCount / totalCount) * 100);
+			bar.style.width = `${pct}%`;
+		}
+
+		// 步骤列表
+		if (planData && planData.plan.length > 0) {
+			const stepsEl = append(body, $('.plan-card-steps'));
+			for (let i = 0; i < planData.plan.length; i++) {
+				const s = planData.plan[i];
+				const stepRow = append(stepsEl, $(`.plan-card-step.step-${s.status}`));
+				const dot = append(stepRow, $('span.plan-card-step-dot'));
+				if (s.status === 'completed') {
+					dot.textContent = '✓';
+				} else if (s.status === 'in_progress') {
+					dot.textContent = '▶';
+					dot.classList.add('pulse');
+				} else {
+					dot.textContent = '·';
+				}
+				const stepText = append(stepRow, $('span.plan-card-step-text'));
+				stepText.textContent = s.step;
+			}
+		}
+
+		// explanation（如果有）
+		if (planData?.explanation) {
+			const footer = append(body, $('.plan-card-footer'));
+			const icon = append(footer, $('span.plan-card-footer-icon'));
+			icon.textContent = '✏';
+			const text = append(footer, $('span.plan-card-footer-text'));
+			text.textContent = planData.explanation;
+		}
+
+		return wrapper;
+	}
+
+	private _parsePlanArgs(args: Record<string, unknown> | undefined): {
+		plan: Array<{ step: string; status: string }>;
+		explanation?: string;
+	} | null {
+		if (!args) { return null; }
+		const plan = args['plan'];
+		if (!Array.isArray(plan) || plan.length === 0) { return null; }
+		const steps = plan.map((s: any, i: number) => ({
+			step: typeof s?.step === 'string' ? s.step : `Step ${i + 1}`,
+			status: ['pending', 'in_progress', 'completed'].includes(s?.status) ? s.status : 'pending',
+		}));
+		const explanation = typeof args['explanation'] === 'string' ? args['explanation'] : undefined;
+		return { plan: steps, explanation };
+	}
+
 	private _svgCheck(parent: HTMLElement, className: string): void {
 		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
 		svg.setAttribute('class', className);
@@ -3332,7 +3573,248 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (key === 'memory_list') {
 			return this._createMemoryListCard(resultText);
 		}
+		// ── codebase tools: 知识图谱结构化卡片 ──
+		if (TOOL_CODEBASE_TOOLS.has(key)) {
+			return this._createCodebaseResultCard(key, resultText);
+		}
 		return null;
+	}
+
+	/** Codebase 工具结果 → 结构化卡片（search_graph / search_code / get_architecture / trace_path / index_repository） */
+	private _createCodebaseResultCard(key: string, resultText: string): HTMLElement | null {
+		try {
+			const data = JSON.parse(resultText);
+			if (!data) { return null; }
+
+			const card = $('.codebase-result-card');
+
+			// ── search_graph: BM25 搜索结果列表 ──
+			if (key === 'search_graph' && data.nodes && Array.isArray(data.nodes)) {
+				return this._renderSearchGraphCard(card, data);
+			}
+			// ── search_code: 代码搜索 + 上下文 ──
+			if (key === 'search_code' && data.results && Array.isArray(data.results)) {
+				return this._renderSearchCodeCard(card, data);
+			}
+			// ── get_architecture: 架构总览 ──
+			if (key === 'get_architecture' && (data.totalNodes || data.languages)) {
+				return this._renderArchitectureCard(card, data);
+			}
+			// ── trace_path: 调用链追踪 ──
+			if (key === 'trace_path' && (data.hops || data.path)) {
+				return this._renderTracePathCard(card, data);
+			}
+			// ── index_repository: 索引进度/完成 ──
+			if (key === 'index_repository') {
+				return this._renderIndexRepoCard(card, data);
+			}
+			// ── 其他 codebase 工具：紧凑统计卡 ──
+			return this._renderCodebaseSummaryCard(card, key, data);
+		} catch {
+			return null;
+		}
+	}
+
+	/** search_graph — 排名列表 */
+	private _renderSearchGraphCard(card: HTMLElement, data: any): HTMLElement {
+		const nodes = data.nodes || [];
+		const total = data.total ?? nodes.length;
+		const hasMore = data.hasMore ?? false;
+		const semResults = data.semantic_results || [];
+
+		// Summary strip
+		const strip = append(card, $('.codebase-summary'));
+		append(strip, $('span.codebase-stat', undefined, `${nodes.length} / ${total} results`));
+		if (hasMore) {
+			append(strip, $('span.codebase-stat.codebase-stat-more', undefined, 'hasMore → paginate'));
+		}
+		if (semResults.length > 0) {
+			append(strip, $('span.codebase-stat', undefined, `+${semResults.length} semantic`));
+		}
+
+		// Column headers
+		const hdr = append(card, $('.codebase-result-row.codebase-result-header'));
+		append(hdr, $('span.codebase-col-rank', undefined, '#'));
+		append(hdr, $('span.codebase-col-name', undefined, 'Symbol'));
+		append(hdr, $('span.codebase-col-type', undefined, 'Type'));
+		append(hdr, $('span.codebase-col-file', undefined, 'File'));
+		append(hdr, $('span.codebase-col-score', undefined, 'Score'));
+
+		const maxShow = Math.min(nodes.length, 10);
+		for (let i = 0; i < maxShow; i++) {
+			const n = nodes[i];
+			const row = append(card, $('.codebase-result-row'));
+			append(row, $('span.codebase-col-rank', undefined, String(i + 1)));
+			append(row, $('span.codebase-col-name', undefined, n.name || n.id || '?'));
+			append(row, $('span.codebase-col-type', undefined, n.type || ''));
+			const file = (n.filePath || '').split('/').pop() || n.filePath || '';
+			append(row, $('span.codebase-col-file', undefined, file));
+			const score = data.scores && data.scores[n.id] ? data.scores[n.id].toFixed(1) : (n.score ? n.score.toFixed(1) : '-');
+			append(row, $('span.codebase-col-score', undefined, score));
+		}
+
+		// Semantic results section
+		if (semResults.length > 0) {
+			append(card, $('.codebase-section-title', undefined, '🔮 Semantic Results'));
+			for (let i = 0; i < Math.min(semResults.length, 5); i++) {
+				const s = semResults[i];
+				const srow = append(card, $('.codebase-result-row.codebase-semantic-row'));
+				append(srow, $('span.codebase-col-name', undefined, s.name || s.id));
+				append(srow, $('span.codebase-col-type', undefined, s.type || ''));
+				const sScore = s.score ? s.score.toFixed(2) : '-';
+				append(srow, $('span.codebase-col-score', undefined, sScore));
+			}
+		}
+
+		if (hasMore) {
+			append(card, $('.codebase-page-hint', undefined, `⚡ hasMore = true — 共 ${total} 条结果，当前显示前 ${maxShow} 条。用 offset=${maxShow} 翻页查看更多。`));
+		}
+
+		return card;
+	}
+
+	/** search_code — 代码匹配 + 上下文 */
+	private _renderSearchCodeCard(card: HTMLElement, data: any): HTMLElement {
+		const results = data.results || [];
+		const total = data.total ?? results.length;
+		const mode = data.mode || 'compact';
+
+		const strip = append(card, $('.codebase-summary'));
+		append(strip, $('span.codebase-stat', undefined, `${results.length} / ${total} matches`));
+		append(strip, $('span.codebase-stat', undefined, `mode: ${mode}`));
+
+		for (let i = 0; i < Math.min(results.length, 5); i++) {
+			const r = results[i];
+			const entry = append(card, $('.codebase-search-code-entry'));
+
+			const meta = append(entry, $('.codebase-search-code-meta'));
+			const sym = r.symbol ? ` [${r.type || ''} ${r.symbol}]` : '';
+			append(meta, $('span', undefined, `${r.filePath || ''}:${r.lineNo || ''}${sym}`));
+
+			if (r.text) {
+				append(entry, $('pre.codebase-search-code-line', undefined, r.text));
+			}
+			if (r.context) {
+				const ctx = append(entry, $('.codebase-search-code-context'));
+				append(ctx, $('pre', undefined, r.context));
+			}
+		}
+
+		return card;
+	}
+
+	/** get_architecture — 架构总览 */
+	private _renderArchitectureCard(card: HTMLElement, data: any): HTMLElement {
+		// Stats grid
+		const grid = append(card, $('.codebase-arch-grid'));
+		const stats: [string, any, string][] = [
+			['Total Nodes', data.totalNodes, ''],
+			['Total Edges', data.totalEdges, ''],
+			['Languages', Array.isArray(data.languages) ? data.languages.length : Object.keys(data.languages || {}).length, ''],
+			['Packages', data.packages ? data.packages.length : 0, ''],
+		];
+		for (const [label, value, ] of stats) {
+			if (value === null || value === undefined) { continue; }
+			const cell = append(grid, $('.codebase-arch-stat'));
+			append(cell, $('.codebase-arch-value', undefined, String(value)));
+			append(cell, $('.codebase-arch-label', undefined, label));
+		}
+
+		// Communities
+		const communities = data.communities || [];
+		if (communities.length > 0) {
+			append(card, $('.codebase-section-title', undefined, `🏘️ Communities (${communities.length})`));
+			const cGrid = append(card, $('.codebase-comm-grid'));
+			for (const c of communities.slice(0, 6)) {
+				const cc = append(cGrid, $('.codebase-comm-card'));
+				append(cc, $('.codebase-comm-name', undefined, c.label || c.name || ''));
+				const mems = c.members || c.size || 0;
+				const coh = c.cohesion != null ? ` · cohesion ${(c.cohesion * 100).toFixed(0)}%` : '';
+				append(cc, $('.codebase-comm-stats', undefined, `${mems} nodes${coh}`));
+				if (c.topNodes && c.topNodes.length > 0) {
+					const tops = c.topNodes.slice(0, 3).map((n: any) => n.name || n).join(', ');
+					append(cc, $('.codebase-comm-top', undefined, `Top: ${tops}`));
+				}
+			}
+		}
+
+		return card;
+	}
+
+	/** trace_path — 调用链追踪 */
+	private _renderTracePathCard(card: HTMLElement, data: any): HTMLElement {
+		const hops = data.hops || data.path || [];
+		if (!Array.isArray(hops) || hops.length === 0) { return card; }
+
+		const strip = append(card, $('.codebase-summary'));
+		append(strip, $('span.codebase-stat', undefined, `${hops.length} hops`));
+		if (data.mode) { append(strip, $('span.codebase-stat', undefined, `mode: ${data.mode}`)); }
+
+		for (let i = 0; i < Math.min(hops.length, 15); i++) {
+			const h = hops[i];
+			const row = append(card, $('.codebase-trace-hop'));
+			append(row, $('span.codebase-hop-num', undefined, `H${i}`));
+			if (i > 0) { append(row, $('span.codebase-hop-arrow', undefined, '→')); }
+			append(row, $('span.codebase-hop-name', undefined, h.name || h.function || h.callee || h.caller || '?'));
+
+			const risk = h.risk || (h.depth >= 3 ? 'High' : h.depth >= 2 ? 'Med' : 'Low');
+			const riskClass = risk === 'Critical' ? 'codebase-risk-crit' : risk === 'High' ? 'codebase-risk-high' : risk === 'Med' ? 'codebase-risk-med' : 'codebase-risk-low';
+			append(row, $('span.codebase-hop-risk.' + riskClass, undefined, risk));
+		}
+
+		return card;
+	}
+
+	/** index_repository — 索引进度/完成 */
+	private _renderIndexRepoCard(card: HTMLElement, data: any): HTMLElement {
+		const strip = append(card, $('.codebase-summary'));
+		if (data.success !== false) {
+			append(strip, $('span.codebase-stat.codebase-stat-ok', undefined, '✓ success'));
+		} else {
+			append(strip, $('span.codebase-stat.codebase-stat-err', undefined, '✗ failed'));
+		}
+		if (data.message) {
+			append(strip, $('span.codebase-stat', undefined, data.message));
+		}
+
+		const grid = append(card, $('.codebase-arch-grid'));
+		if (data.filesScanned) {
+			const cell = append(grid, $('.codebase-arch-stat'));
+			append(cell, $('.codebase-arch-value', undefined, String(data.filesScanned)));
+			append(cell, $('.codebase-arch-label', undefined, 'Files Scanned'));
+		}
+		if (data.nodesExtracted) {
+			const cell = append(grid, $('.codebase-arch-stat'));
+			append(cell, $('.codebase-arch-value', undefined, String(data.nodesExtracted)));
+			append(cell, $('.codebase-arch-label', undefined, 'Nodes'));
+		}
+		if (data.edgesExtracted) {
+			const cell = append(grid, $('.codebase-arch-stat'));
+			append(cell, $('.codebase-arch-value', undefined, String(data.edgesExtracted)));
+			append(cell, $('.codebase-arch-label', undefined, 'Edges'));
+		}
+		const excludedDirs = data.excludedDirs || data.skipped || [];
+		if (excludedDirs.length > 0) {
+			append(card, $('.codebase-page-hint', undefined, `⏭️ Skipped: ${Array.isArray(excludedDirs) ? excludedDirs.length : excludedDirs} paths (e.g. ${String(Array.isArray(excludedDirs) ? excludedDirs.slice(0, 3).join(', ') : excludedDirs)})`));
+		}
+
+		return card;
+	}
+
+	/** 其他 codebase 工具 — 紧凑摘要卡 */
+	private _renderCodebaseSummaryCard(card: HTMLElement, key: string, data: any): HTMLElement {
+		// 提取关键字段
+		const keys = Object.keys(data).filter(k => !['success', 'message', 'hint', '_scopePath', '_scoped'].includes(k));
+		const grid = append(card, $('.codebase-arch-grid'));
+		for (const k of keys.slice(0, 6)) {
+			const v = data[k];
+			if (v === null || v === undefined) { continue; }
+			const display = typeof v === 'object' ? JSON.stringify(v).substring(0, 60) : String(v);
+			const cell = append(grid, $('.codebase-arch-stat'));
+			append(cell, $('.codebase-arch-value', undefined, display));
+			append(cell, $('.codebase-arch-label', undefined, k));
+		}
+		return card;
 	}
 
 	/** kanban_list 结果 → 表格卡片 */
@@ -3576,7 +4058,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (seconds < 60) { return `${seconds.toFixed(1)}s`; }
 		const minutes = Math.floor(seconds / 60);
 		const remainSec = Math.round(seconds % 60);
-		return `${minutes}m${remainSec}s`;
+		return `${minutes}m ${remainSec}s`;
 	}
 
 	// --- Sub-agent card (enhanced panel-style matching React screenshot) ---
@@ -4659,82 +5141,74 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _openUserEditOverlay(msg: IAgentChatMessage): void {
 		const msgEl = this._messagesContainer?.querySelector(`[data-msg-id="${msg.id}"]`) as HTMLElement | null;
 		if (!msgEl) { return; }
-		if (msgEl.querySelector(".chat-user-edit-overlay")) { return; }
+		if (msgEl.querySelector(".chat-user-edit-composer")) { return; }
 
 		const bubble = msgEl.querySelector(".chat-bubble") as HTMLElement | null;
 		if (!bubble) { return; }
 
+		// Void-style inline edit: 气泡内容替换为 composer，消息宽度变为 100%
 		const origContent = bubble.querySelector(".message-content") as HTMLElement | null;
 		const origActions = bubble.querySelector(".chat-msg-actions") as HTMLElement | null;
 		if (origContent) { origContent.style.display = "none"; }
 		if (origActions) { origActions.style.display = "none"; }
+		msgEl.classList.add('chat-message-edit-mode');
 
-		const overlay = append(msgEl, $(".chat-user-edit-overlay"));
-
-		// Composer card（镜像 chat-composer-box）
-		const card = append(overlay, $(".chat-user-edit-composer"));
-		const textarea = append(card, $("textarea.chat-user-edit-input")) as HTMLTextAreaElement;
+		// Composer（与底部 chat-composer-box 完全一致）
+		const composer = append(bubble, $(".chat-user-edit-composer"));
+		const textarea = append(composer, $("textarea.chat-user-edit-input")) as HTMLTextAreaElement;
 		textarea.value = msg.content;
 		textarea.placeholder = "编辑消息...";
-		textarea.rows = Math.min(10, Math.max(2, msg.content.split("\n").length));
+		textarea.rows = 1;
+		textarea.style.height = 'auto';
+		textarea.style.height = `${Math.min(textarea.scrollHeight, 500)}px`;
 
-		// Toolbar（镜像 chat-composer-toolbar）
-		const toolbar = append(card, $(".chat-user-edit-toolbar"));
+		// Auto-resize — 与底部主输入框行为一致，最大高度 500px
+		this._register(addDisposableListener(textarea, EventType.INPUT, () => {
+			textarea.style.height = 'auto';
+			textarea.style.height = `${Math.min(textarea.scrollHeight, 500)}px`;
+		}));
 
-		// 左侧工具图标（附件、语音）——编辑场景仅视觉保留，点击提示或静默
+		// Toolbar — 与底部 composer toolbar 完全一致
+		const toolbar = append(composer, $(".chat-user-edit-toolbar"));
 		const leftTools = append(toolbar, $("span.chat-user-edit-toolbar-left"));
-		const attachBtn = this._appendEditToolbarBtn(leftTools, {
-			title: "附件（编辑时不可用）",
-			svgPath: "M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"
-		});
-		this._register(addDisposableListener(attachBtn, EventType.CLICK, (e) => {
-			e.stopPropagation();
-			// 编辑时附件功能暂不启用，可扩展为允许追加附件后重新发送
-		}));
-		const micBtn = this._appendEditToolbarBtn(leftTools, {
-			title: "语音输入（编辑时不可用）",
-			svgPath: "M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"
-		});
-		this._register(addDisposableListener(micBtn, EventType.CLICK, (e) => {
-			e.stopPropagation();
-		}));
+		const attachBtn = this._appendEditToolbarBtn(leftTools, { title: "上传附件", svgPath: "M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" });
+		this._register(addDisposableListener(attachBtn, EventType.CLICK, (e) => { e.stopPropagation(); this._fileInput?.click(); }));
+		this._register(addDisposableListener(this._appendEditToolbarBtn(leftTools, { title: "语音输入", svgPath: "M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3zM19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8" }), EventType.CLICK, (e) => e.stopPropagation()));
 		append(leftTools, $(".chat-user-edit-toolbar-divider"));
-
-		// 中间模式/Provider/Model 标签（仅展示当前状态）
 		const modeOpt = MODE_OPTIONS.find(m => m.id === this._chatMode) || MODE_OPTIONS[0];
-		this._appendEditToolbarBtn(leftTools, {
-			title: '当前模式',
-			svgPath: modeOpt.icon,
-			hasLabel: true,
-			label: modeOpt.label,
-			cssClass: 'mode-tag'
-		});
+		const modeBtn = this._appendEditToolbarBtn(leftTools, { title: '切换模式', svgPath: modeOpt.icon, hasLabel: true, label: modeOpt.label, showChevron: true, cssClass: 'mode-tag' });
+		this._register(addDisposableListener(modeBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			if (this._modeDropdownEl) {
+				this._closeModeDropdown();
+			} else {
+				this._openModeDropdown(modeBtn);
+			}
+		}));
 		const curProvider = this._providers.find(p => p.id === this._currentProvider)?.label || this._currentProvider || 'Provider';
-		this._appendEditToolbarBtn(leftTools, {
-			title: '当前 Provider',
-			svgPath: 'M2 3h20v14H2zM8 21h8M12 17v4',
-			hasLabel: true,
-			label: curProvider,
-			cssClass: 'provider-tag',
-			showChevron: true,
-		});
+		const providerBtn = this._appendEditToolbarBtn(leftTools, { title: '切换 Provider', svgPath: 'M2 3h20v14H2zM8 21h8M12 17v4', hasLabel: true, label: curProvider, showChevron: true, cssClass: 'provider-tag' });
+		this._register(addDisposableListener(providerBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			if (this._providerDropdownEl) {
+				this._closeProviderDropdown();
+			} else {
+				this._openProviderDropdown(providerBtn);
+			}
+		}));
 		const curModel = this._currentModel || 'Model';
-		this._appendEditToolbarBtn(leftTools, {
-			title: '当前 Model',
-			svgPath: 'M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M12 12v7M8 12v7M16 12v7M5 3h14l-2 4H7L5 3z',
-			hasLabel: true,
-			label: curModel,
-			cssClass: 'model-tag',
-			showChevron: true,
-		});
-
-		// 右侧：context-usage ring + send circle（与底部 composer 完全一致）
+		const modelBtn = this._appendEditToolbarBtn(leftTools, { title: '切换模型', svgPath: 'M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M12 12v7M8 12v7M16 12v7M5 3h14l-2 4H7L5 3z', hasLabel: true, label: curModel, showChevron: true, cssClass: 'model-tag' });
+		this._register(addDisposableListener(modelBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			if (this._modelDropdownEl) {
+				this._closeModelDropdown();
+			} else {
+				this._openModelDropdown(modelBtn);
+			}
+		}));
 		const right = append(toolbar, $('span.chat-user-edit-toolbar-right'));
 		this._renderEditContextUsageRing(right);
-
 		const sendBtn = append(right, $('button.chat-send-circle')) as HTMLButtonElement;
 		sendBtn.title = '重新生成';
-		// 与底部发送按钮完全相同的箭头 SVG
 		const sendSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
 		sendSvg.setAttribute('width', '10'); sendSvg.setAttribute('height', '10');
 		sendSvg.setAttribute('viewBox', '0 0 24 24'); sendSvg.setAttribute('fill', 'none');
@@ -4748,8 +5222,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		sendSvg.appendChild(sendPoly);
 		sendBtn.appendChild(sendSvg);
 
-		// Esc 取消（显示在 toolbar 下方左侧，与快捷键提示一致）
-		const hintsRow = append(card, $(".chat-user-edit-hints-row"));
+		const hintsRow = append(composer, $(".chat-user-edit-hints-row"));
 		const hints = append(hintsRow, $("span.chat-user-edit-hints"));
 		const escKbd = document.createElement('kbd');
 		escKbd.textContent = 'Esc';
@@ -4757,10 +5230,23 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		hints.appendChild(document.createTextNode(' 取消'));
 
 		const restore = () => {
-			overlay.remove();
+			composer.remove();
+			msgEl.classList.remove('chat-message-edit-mode');
 			if (origContent) { origContent.style.display = ""; }
 			if (origActions) { origActions.style.display = ""; }
 		};
+
+		// 点击 composer 外部区域时自动关闭编辑框
+		const onOutsideMousedown = (e: MouseEvent) => {
+			if (!composer.isConnected) { return; } // 已关闭
+			const target = e.target as HTMLElement | null;
+			if (!target) { return; }
+			if (composer.contains(target) || (e.target as HTMLElement)?.closest?.('.chat-composer-box, .chat-input-area, .chat-send-circle, .provider-dropdown, .mode-dropdown-composer')) {
+				return; // 点击在 composer 内部、底部输入区域或 mode/provider/model 下拉菜单 → 不关闭
+			}
+			restore();
+		};
+		this._register(addDisposableListener(mainWindow.document, EventType.MOUSE_DOWN, onOutsideMousedown));
 
 		const commit = () => {
 			const newText = textarea.value.trim();
@@ -4777,18 +5263,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			this._onEditMessage?.(msg.id, newText);
 		};
 
-		this._register(addDisposableListener(sendBtn, EventType.CLICK, (e) => {
-			e.stopPropagation();
-			commit();
-		}));
+		this._register(addDisposableListener(sendBtn, EventType.CLICK, (e) => { e.stopPropagation(); commit(); }));
 		this._register(addDisposableListener(textarea, EventType.KEY_DOWN, (e: KeyboardEvent) => {
-			if (e.key === "Escape") {
-				e.preventDefault();
-				restore();
-			} else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-				e.preventDefault();
-				commit();
-			}
+			if (e.key === "Escape") { e.preventDefault(); restore(); }
+			else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); commit(); }
 		}));
 		textarea.focus();
 		textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -5005,6 +5483,115 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// the parent element covers all <a> tags rendered by renderMarkdown,
 		// including those added during streaming updates.
 		this._attachLinkInterceptor(parent);
+		this._linkifyPlainText(parent);
+	}
+
+	/**
+	 * 扫描文本节点中的文件路径和网址，转为可点击的超链接。
+	 * 已位于 <a>/<pre>/<code>/script/style 内的文本节点跳过。
+	 */
+	private static readonly _FILE_PATH_RE
+		= /(?<![\/\w.\-])(?:(?:\.{0,2}\/)?[\w.\-]+(?:\/[\w.\-]+)*\/[\w.\-]+?\.(?:tsx?|jsx?|mjs|cjs|py[3w]?|rb|php|go|rs|java|kt|swift|scala|cs|cpp|cxx|h|hpp|vue|svelte|astro|prisma|md|mdx|css|scss|less|html?|json|ya?ml|toml|xml|svg|png|jpe?g|gif|webp|bmp|ico|sh|bash|zsh|fish|ps1|bat|cmd|sql|graphql|env|config|ini|cfg|lock|txt|log|tf|tfvars|proto|sqlx|dart|lua|r|jl|nim|zig))(?:[#:]\d+)?(?<![\/\w.\-])/g;
+	private static readonly _URL_RE
+		= /(?<!["'>=])(https?:\/\/[^\s<>"'，。；：！？、]+)/g;
+
+	private _linkifyPlainText(parent: HTMLElement): void {
+		const walker = document.createTreeWalker(parent, NodeFilter.SHOW_TEXT, {
+			acceptNode: (node: Text) => {
+				// 跳过已位于链接/代码块/预格式化/脚本/样式/页脚内的文本
+				let el: HTMLElement | null = node.parentElement;
+				while (el && el !== parent) {
+					const tag = el.tagName;
+					if (tag === 'A' || tag === 'PRE' || tag === 'CODE' || tag === 'SCRIPT' || tag === 'STYLE') {
+						return NodeFilter.FILTER_REJECT;
+					}
+					if (el.classList.contains('tool-code-children')
+						|| el.classList.contains('tool-children-wrapper')
+						|| el.classList.contains('chat-bubble-footer')) {
+						return NodeFilter.FILTER_REJECT;
+					}
+					el = el.parentElement;
+				}
+				return NodeFilter.FILTER_ACCEPT;
+			},
+		});
+
+		let node: Text | null;
+		const nodesToReplace: Array<{ node: Text; parts: Array<string | { type: 'file' | 'url'; text: string }> }> = [];
+		while ((node = walker.nextNode() as Text | null)) {
+			const text = node.textContent ?? '';
+			if (text.length < 3) { continue; }
+			const combined = this._parseLinkifyText(text);
+			if (combined) {
+				nodesToReplace.push({ node, parts: combined });
+			}
+		}
+
+		for (const { node, parts } of nodesToReplace) {
+			const frag = document.createDocumentFragment();
+			for (const part of parts) {
+				if (typeof part === 'string') {
+					frag.appendChild(document.createTextNode(part));
+				} else if (part.type === 'file') {
+					const a = document.createElement('a');
+					a.setAttribute('data-file', part.text);
+					a.textContent = part.text;
+					a.className = 'msg-file-link';
+					// 阻止默认导航行为（由 _attachLinkInterceptor 处理）
+					a.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+					frag.appendChild(a);
+				} else {
+					const a = document.createElement('a');
+					a.href = part.text;
+					a.textContent = part.text;
+					a.target = '_blank';
+					a.rel = 'noopener noreferrer';
+					a.className = 'msg-url-link';
+					frag.appendChild(a);
+				}
+			}
+			node.parentNode?.replaceChild(frag, node);
+		}
+	}
+
+	/** 将文本拆分为纯文本 + 文件路径 + 网址的混合数组 */
+	private _parseLinkifyText(text: string): Array<string | { type: 'file' | 'url'; text: string }> | null {
+		// 找到所有匹配的文件路径和网址位置
+		const matches: Array<{ index: number; length: number; type: 'file' | 'url'; text: string }> = [];
+
+		// 文件路径
+		AgentChatPanel._FILE_PATH_RE.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		while ((m = AgentChatPanel._FILE_PATH_RE.exec(text)) !== null) {
+			matches.push({ index: m.index, length: m[0].length, type: 'file', text: m[0] });
+		}
+		// 网址（排除已被文件路径匹配覆盖的区域）
+		AgentChatPanel._URL_RE.lastIndex = 0;
+		while ((m = AgentChatPanel._URL_RE.exec(text)) !== null) {
+			const urlStart = m.index, urlEnd = m.index + m[0].length;
+			const overlaps = matches.some(fm => fm.index < urlEnd && (fm.index + fm.length) > urlStart);
+			if (!overlaps) {
+				matches.push({ index: m.index, length: m[0].length, type: 'url', text: m[0] });
+			}
+		}
+
+		if (matches.length === 0) { return null; }
+
+		// 按位置排序，构建分段数组
+		matches.sort((a, b) => a.index - b.index);
+		const result: Array<string | { type: 'file' | 'url'; text: string }> = [];
+		let cursor = 0;
+		for (const match of matches) {
+			if (match.index > cursor) {
+				result.push(text.slice(cursor, match.index));
+			}
+			result.push({ type: match.type, text: match.text });
+			cursor = match.index + match.length;
+		}
+		if (cursor < text.length) {
+			result.push(text.slice(cursor));
+		}
+		return result;
 	}
 
 	/**
@@ -5047,6 +5634,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			},
 		});
 		this._attachLinkInterceptor(container);
+		this._linkifyPlainText(container);
 		this._streamingMdLastRendered = newContent;
 		return true;
 	}
@@ -5089,26 +5677,33 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				copySvg.setAttribute('width', '12');
 				copySvg.setAttribute('height', '12');
 				copyBtn.appendChild(copySvg);
-				copyBtn.addEventListener('click', (e) => {
+				copyBtn.addEventListener('click', async (e) => {
 					e.stopPropagation();
-					navigator.clipboard.writeText(code).then(() => {
-						copyBtn.textContent = '';
-						// P2+: 复用缓存 check SVG 模板
+					const ok = await this._copyToClipboard(code);
+					copyBtn.textContent = '';
+					if (ok) {
+						// 成功：复用缓存 check SVG 模板
 						const copiedSvg = this._svgCheckSmall();
 						copiedSvg.setAttribute('width', '12');
 						copiedSvg.setAttribute('height', '12');
 						copyBtn.appendChild(copiedSvg);
 						copyBtn.classList.add('copied');
-						setTimeout(() => {
-							copyBtn.textContent = '';
-							// P2+: 复用缓存 copy SVG 模板
-							const copySvg2 = this._svgCopyIcon();
-							copySvg2.setAttribute('width', '12');
-							copySvg2.setAttribute('height', '12');
-							copyBtn.appendChild(copySvg2);
-							copyBtn.classList.remove('copied');
-						}, 1500);
-					}).catch(() => { /* ignore */ });
+						copyBtn.title = 'Copied';
+					} else {
+						// 失败：显示错误状态
+						copyBtn.classList.add('copy-failed');
+						copyBtn.title = 'Copy failed';
+					}
+					setTimeout(() => {
+						copyBtn.textContent = '';
+						const copySvg2 = this._svgCopyIcon();
+						copySvg2.setAttribute('width', '12');
+						copySvg2.setAttribute('height', '12');
+						copyBtn.appendChild(copySvg2);
+						copyBtn.classList.remove('copied');
+						copyBtn.classList.remove('copy-failed');
+						copyBtn.title = 'Copy code';
+					}, 1500);
 				});
 				actions.appendChild(copyBtn);
 
@@ -5176,10 +5771,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	}
 
 	/**
-	 * Attach a click interceptor on `parent` that catches clicks on `<a>` tags
-	 * with http/https hrefs and routes them to `onOpenLink` (which opens the
-	 * URL in the workbench editor area). Non-http links (e.g. `command:`,
-	 * `file:`) are left to the default handler.
+	 * Attach a click interceptor on `parent` that catches clicks on `<a>` tags.
+	 * - http/https links → route to `onOpenLink` (opens in browser/webview)
+	 * - `data-file` links → route to `onOpenFile` (opens in editor area)
+	 * Non-http links without data-file (e.g. `command:`, `file:`) are left alone.
 	 */
 	private _attachLinkInterceptor(parent: HTMLElement): void {
 		const handler = (e: MouseEvent) => {
@@ -5187,6 +5782,14 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			if (!target) { return; }
 			const anchor = target.closest('a') as HTMLAnchorElement | null;
 			if (!anchor) { return; }
+			// 文件路径链接
+			const filePath = anchor.getAttribute('data-file');
+			if (filePath) {
+				e.preventDefault();
+				e.stopPropagation();
+				this._onOpenFile?.(filePath);
+				return;
+			}
 			const href = anchor.getAttribute('data-href') || anchor.href;
 			if (!href) { return; }
 			// Only intercept http(s) links.
@@ -5217,6 +5820,14 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			const p = parts[k];
 			if (p.kind === 'text' && p.text.trim().length > 0) { lastTextIdx = k; }
 		}
+		// 2026-07-04: update_plan 是"替换语义"——多张卡片只保留最后一张
+		let lastUpdatePlanIndex = -1;
+		for (let k = 0; k < parts.length; k++) {
+			const p = parts[k] as any;
+			if (p.kind === 'tool' && p.tool?.name === 'update_plan') {
+				lastUpdatePlanIndex = k;
+			}
+		}
 		for (let k = 0; k < parts.length; k++) {
 			const part = parts[k];
 			if (part.kind === 'text') {
@@ -5227,7 +5838,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				}
 				this._renderMarkdownContent(segEl, part.text);
 			} else {
-				bubble.appendChild(this._createToolCallCard(part.tool));
+				// 跳过非最后的 update_plan 卡片（替换语义）
+				const toolPart = (part as any).tool;
+				if (toolPart?.name === 'update_plan' && k !== lastUpdatePlanIndex) { continue; }
+				bubble.appendChild(this._createToolCallCard(toolPart));
 			}
 		}
 	}
@@ -5317,6 +5931,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._register(
 			addDisposableListener(this._textarea, EventType.INPUT, () => {
 				const t = this._textarea;
+				// 保存消息区滚动位置：textarea 高度变化会挤压 flex 布局的消息区，
+				// 浏览器自动调整 scrollTop 导致滚动条跳动。保存后恢复即可避免。
+				const savedScrollTop = this._messagesContainer?.scrollTop ?? 0;
 				t.style.height = "auto";
 				// 如果用户调整过高度，使用 max（内容高度和用户调整高度的较大值）作为高度
 				// 否则使用 min（内容高度不超过 resizeMaxH）
@@ -5326,6 +5943,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 					? Math.min(Math.max(t.scrollHeight, this._resizeMaxH), maxAllowed)
 					: Math.min(t.scrollHeight, this._resizeMaxH);
 				t.style.height = newHeight + "px";
+				// 恢复滚动位置，消除输入引起的滚动条跳动
+				if (this._messagesContainer && this._messagesContainer.scrollTop !== savedScrollTop) {
+					this._messagesContainer.scrollTop = savedScrollTop;
+				}
 
 				// Detect /skill /command patterns — show slash menu
 				const val = t.value;
@@ -5743,24 +6364,24 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _renderSendButtonSvg(): void {
 		clearNode(this._sendBtn);
 		if (this._isSending) {
-			// Stop icon
+			// Stop icon — 使用与发送箭头相同 14x14 尺寸，方块填充 viewBox 核心区域
 			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-			svg.setAttribute("width", "10");
-			svg.setAttribute("height", "10");
+			svg.setAttribute("width", "14");
+			svg.setAttribute("height", "14");
 			svg.setAttribute("viewBox", "0 0 24 24");
 			svg.setAttribute("fill", "currentColor");
 			const rect = document.createElementNS(
 				"http://www.w3.org/2000/svg",
 				"rect",
 			);
-			rect.setAttribute("x", "6");
-			rect.setAttribute("y", "6");
-			rect.setAttribute("width", "12");
-			rect.setAttribute("height", "12");
-			rect.setAttribute("rx", "2");
+			rect.setAttribute("x", "4");
+			rect.setAttribute("y", "4");
+			rect.setAttribute("width", "16");
+			rect.setAttribute("height", "16");
+			rect.setAttribute("rx", "3");
 			svg.appendChild(rect);
 			this._sendBtn.appendChild(svg);
-			this._sendBtn.title = "取消执行";
+			this._sendBtn.title = "停止生成 (Escape)";
 		} else {
 			// Arrow up icon
 			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -6501,7 +7122,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// 异步加载 worktree 列表（参考 React WorktreeSwitcher 的逻辑）
 		this._loadWorktreesAndRender(list, loadingEl);
 
-		this._registerOutsideClickClose(this._worktreeDropdownEl, this._worktreeTrigger, () => this._closeWorktreeDropdown());
+		this._disposeOutsideClick(this._worktreeDropdownOutsideClick);
+		this._worktreeDropdownOutsideClick = this._registerOutsideClickClose(this._worktreeDropdownEl, this._worktreeTrigger, () => this._closeWorktreeDropdown());
 	}
 
 	private async _loadWorktreesAndRender(list: HTMLElement, loadingEl: HTMLElement): Promise<void> {
@@ -6585,6 +7207,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	}
 
 	private _closeWorktreeDropdown(): void {
+		this._disposeOutsideClick(this._worktreeDropdownOutsideClick);
+		this._worktreeDropdownOutsideClick = null;
 		if (this._worktreeDropdownEl) {
 			this._worktreeDropdownEl.remove();
 			this._worktreeDropdownEl = null;
@@ -6710,7 +7334,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		const textarea = append(container, $("textarea.chat-settings-prompt-editor")) as HTMLTextAreaElement;
 		textarea.spellcheck = false;
 		textarea.placeholder = '输入系统提示词...';
-		textarea.value = 'You are an AI coding assistant. Follow the user\'s instructions and use tools to solve coding tasks.';
+		// 使用当前 agent 的实际系统提示词，而非硬编码默认值
+		textarea.value = this._agent?.customPrompt ?? '';
 
 		const actions = append(container, $(".chat-settings-tab-actions"));
 		append(actions, $("span.dirty-hint", undefined, '● 未保存'));
@@ -6727,68 +7352,103 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	private _renderSettingsSkillsTab(container: HTMLElement): void {
 		const desc = append(container, $(".chat-settings-tab-desc"));
-		desc.textContent = '已启用的技能配置';
+		desc.textContent = '为 Agent 配置技能。点击右侧可用技能添加，点击左侧已安装技能移除。';
 
-		const list = append(container, $(".chat-settings-skills-list"));
-		const skills = this._onListSkills();
-		if (skills.length === 0) {
-			append(list, $(".chat-settings-empty", undefined, '暂无已启用的技能'));
-		} else {
-			for (const skill of skills) {
-				const row = append(list, $(".chat-settings-skill-row"));
-				// Codicon 图标（按来源区分）
-				const iconCodicon = skill.source === 'builtin' ? 'codicon codicon-symbol-namespace' :
-					skill.source === 'marketplace' ? 'codicon codicon-package' :
-					skill.source === 'user' ? 'codicon codicon-person' : 'codicon codicon-tools';
-				append(row, $("span.skill-icon." + iconCodicon));
-				const info = append(row, $(".skill-info"));
-				const nameRow = append(info, $("div.skill-name-row"));
-				append(nameRow, $("span.skill-name", undefined, skill.name));
-				if (skill.version) {
-					append(nameRow, $("span.skill-version", undefined, `v${skill.version}`));
-				}
-				if (skill.description) {
-					append(info, $("span.skill-desc", undefined, skill.description));
-				}
-				// 激活模式标签
-				if (skill.activation) {
-					const meta = append(info, $("div.skill-meta"));
-					const modeLabel = skill.activation === 'always' ? '始终激活' :
-						skill.activation === 'auto' ? '自动匹配' : '手动调用';
-					const modeBadge = append(meta, $("span.skill-mode-badge"));
-					modeBadge.textContent = modeLabel;
-					if (skill.category) {
-						append(meta, $("span.skill-category", undefined, skill.category));
+		const panel = append(container, $(".skills-dnd-panel"));
+
+		// Left: installed skills
+		const leftCol = append(panel, $(".skills-column"));
+		const leftHeader = append(leftCol, $(".skills-column-header"));
+		leftHeader.textContent = '已安装技能';
+		const leftList = append(leftCol, $(".skills-list"));
+
+		// Right: available skills
+		const rightCol = append(panel, $(".skills-column"));
+		const rightHeader = append(rightCol, $(".skills-column-header"));
+		rightHeader.textContent = '可用技能';
+		const rightFilter = append(rightCol, $('input.skills-filter-input')) as HTMLInputElement;
+		rightFilter.type = 'text';
+		rightFilter.placeholder = '搜索技能...';
+		const rightList = append(rightCol, $(".skills-list"));
+
+		const allSkills = this._onListSkills();
+		const agentSkillIds = this._onGetAgentSkills?.() ?? [];
+
+		const renderSkillsLists = (filterText: string = '') => {
+			// Installed skills
+			leftList.replaceChildren();
+			if (agentSkillIds.length === 0) {
+				const empty = append(leftList, $(".skills-empty"));
+				empty.textContent = '暂无已安装技能';
+			} else {
+				for (const skillId of agentSkillIds) {
+					const skill = allSkills.find(s => s.id === skillId);
+					const item = append(leftList, $(".skill-item.installed"));
+					const info = append(item, $(".skill-item-info"));
+					const nameEl = append(info, $("span.skill-item-name"));
+					nameEl.textContent = skill?.name || skillId;
+					if (skill?.category) {
+						append(info, $("span.skill-item-cat", undefined, skill.category));
 					}
-					if (skill.source) {
-						const sourceLabels: Record<string, string> = {
-							builtin: '内置', user: '用户', marketplace: '商城', extension: '扩展', memory: '记忆',
-						};
-						append(meta, $("span.skill-source-badge", undefined, sourceLabels[skill.source] ?? skill.source));
-					}
-				}
-				// 启用/禁用开关
-				const toggle = append(row, $("div.toggle-switch" + (skill.enabled ? ".on" : "")));
-				toggle.title = skill.enabled ? '已启用（点击禁用）' : '已禁用（点击启用）';
-				this._register(
-					addDisposableListener(toggle, EventType.CLICK, (e) => {
+					const removeBtn = append(item, $("button.skill-remove-btn")) as HTMLButtonElement;
+					removeBtn.title = '移除';
+					removeBtn.textContent = '✕';
+					this._register(addDisposableListener(removeBtn, EventType.CLICK, async (e) => {
 						e.stopPropagation();
-						toggle.classList.toggle('on');
-					}),
-				);
+						removeBtn.disabled = true;
+						try {
+							await this._onRemoveSkill?.(skillId);
+							const idx = agentSkillIds.indexOf(skillId);
+							if (idx >= 0) { agentSkillIds.splice(idx, 1); }
+							renderSkillsLists(rightFilter.value);
+						} catch {
+							removeBtn.disabled = false;
+						}
+					}));
+				}
 			}
-		}
 
-		// 操作按钮
-		const actions = append(container, $(".chat-settings-tab-actions"));
-		const openFullBtn = append(actions, $("button.monaco-button.monaco-text-button.action-btn.primary", undefined, '完整配置 →'));
-		this._register(
-			addDisposableListener(openFullBtn, EventType.CLICK, () => {
-				this._activeHeaderPanel = null;
-				this._render();
-				this._onOpenSettings?.();
-			}),
-		);
+			// Available skills
+			rightList.replaceChildren();
+			const available = allSkills.filter(s =>
+				!agentSkillIds.includes(s.id) &&
+				(!filterText || s.name.toLowerCase().includes(filterText.toLowerCase()))
+			);
+			if (available.length === 0) {
+				const empty = append(rightList, $(".skills-empty"));
+				empty.textContent = filterText ? '未找到匹配的技能' : '无可用技能';
+			} else {
+				for (const skill of available) {
+					const item = append(rightList, $(".skill-item.available"));
+					const info = append(item, $(".skill-item-info"));
+					const nameEl = append(info, $("span.skill-item-name"));
+					nameEl.textContent = skill.name;
+					if (skill.category) {
+						append(info, $("span.skill-item-cat", undefined, skill.category));
+					}
+					const addBtn = append(item, $("button.skill-add-btn")) as HTMLButtonElement;
+					addBtn.title = '添加';
+					addBtn.textContent = '+';
+					this._register(addDisposableListener(addBtn, EventType.CLICK, async (e) => {
+						e.stopPropagation();
+						addBtn.disabled = true;
+						try {
+							await this._onAddSkill?.(skill.id);
+							agentSkillIds.push(skill.id);
+							renderSkillsLists(rightFilter.value);
+						} catch {
+							addBtn.disabled = false;
+						}
+					}));
+				}
+			}
+		};
+
+		this._register(addDisposableListener(rightFilter, EventType.INPUT, () => {
+			renderSkillsLists(rightFilter.value);
+		}));
+
+		renderSkillsLists();
 	}
 
 	/**
@@ -6797,24 +7457,25 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 */
 	private _renderSettingsMcpTab(container: HTMLElement): void {
 		const desc = append(container, $(".chat-settings-tab-desc"));
-		desc.textContent = 'MCP 服务器配置';
+		desc.textContent = 'MCP（Model Context Protocol）配置：连接外部工具和数据源。';
 
-		// 获取 MCP 服务器列表
 		const servers = this._onListMcpServers?.() ?? [];
 
 		if (servers.length === 0) {
-			append(container, $(".chat-settings-empty", undefined, '暂无已连接的 MCP 服务器'));
+			const placeholder = append(container, $(".chat-settings-empty"));
+			placeholder.textContent = '暂无已连接的 MCP 服务器';
 		} else {
-			const list = append(container, $(".chat-settings-skills-list"));
+			const list = append(container, $(".skills-list.mcp-server-list"));
 			for (const server of servers) {
-				const row = append(list, $(".chat-settings-skill-row"));
-				append(row, $("span.skill-icon.codicon.codicon-server"));
-				const info = append(row, $(".skill-info"));
-				append(info, $("span.skill-name", undefined, server.name));
-				const statusText = `${server.status} · ${server.toolCount} 个工具`;
-				append(info, $("span.skill-desc", undefined, statusText));
+				const item = append(list, $(".skill-item.mcp-server-item"));
+				append(item, $("span.skill-item-icon.codicon.codicon-server"));
+				const info = append(item, $(".skill-item-info"));
+				const nameEl = append(info, $("span.skill-item-name"));
+				nameEl.textContent = server.name;
+				const statusEl = append(info, $("span.skill-item-cat"));
+				statusEl.textContent = `${server.status} · ${server.toolCount} 个工具`;
 				// 状态指示灯
-				const dot = append(row, $("span.mcp-status-dot"));
+				const dot = append(item, $("span.mcp-status-dot"));
 				if (server.status === 'connected' || server.status === 'running') {
 					dot.style.background = '#4ec9b0';
 				} else if (server.status === 'error') {
@@ -7168,12 +7829,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// Mode dropdown (composer)
 	// =========================================================
 
-	private _openModeDropdown(): void {
+	private _openModeDropdown(customTrigger?: HTMLElement | null): void {
 		this._closeAllDropdowns();
-		if (this._modeTrigger) { this._modeTrigger.classList.add('open'); }
+		this._modeDropdownTrigger = customTrigger ?? this._modeTrigger;
+		if (this._modeDropdownTrigger) { this._modeDropdownTrigger.classList.add('open'); }
 
 		this._modeDropdownEl = append(mainWindow.document.body, $(".mode-dropdown-composer"));
-		this._positionDropdownAbove(this._modeDropdownEl, this._modeTrigger);
+		this._positionDropdownAbove(this._modeDropdownEl, this._modeDropdownTrigger);
 
 		// — Disable plan mode for non-planner agents (mirrors webview behaviour)
 		const isPlanner = this._agent?.agentType === 'planner';
@@ -7217,27 +7879,32 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			}
 		}
 
-		this._registerOutsideClickClose(this._modeDropdownEl, this._modeTrigger, () => this._closeModeDropdown());
+		this._disposeOutsideClick(this._modeDropdownOutsideClick);
+		this._modeDropdownOutsideClick = this._registerOutsideClickClose(this._modeDropdownEl, this._modeDropdownTrigger, () => this._closeModeDropdown());
 	}
 
 	private _closeModeDropdown(): void {
+		this._disposeOutsideClick(this._modeDropdownOutsideClick);
+		this._modeDropdownOutsideClick = null;
 		if (this._modeDropdownEl) {
 			this._modeDropdownEl.remove();
 			this._modeDropdownEl = null;
 		}
-		if (this._modeTrigger) { this._modeTrigger.classList.remove('open'); }
+		if (this._modeDropdownTrigger) { this._modeDropdownTrigger.classList.remove('open'); }
+		this._modeDropdownTrigger = null;
 	}
 
 	// =========================================================
 	// Provider dropdown (composer)
 	// =========================================================
 
-	private _openProviderDropdown(): void {
+	private _openProviderDropdown(customTrigger?: HTMLElement | null): void {
 		this._closeAllDropdowns();
-		if (this._providerTrigger) { this._providerTrigger.classList.add('open'); }
+		this._providerDropdownTrigger = customTrigger ?? this._providerTrigger;
+		if (this._providerDropdownTrigger) { this._providerDropdownTrigger.classList.add('open'); }
 
 		this._providerDropdownEl = append(mainWindow.document.body, $(".provider-dropdown"));
-		this._positionDropdownAbove(this._providerDropdownEl, this._providerTrigger);
+		this._positionDropdownAbove(this._providerDropdownEl, this._providerDropdownTrigger);
 
 		if (this._providers.length === 0) {
 			append(this._providerDropdownEl, $(".provider-dropdown-empty", undefined, '暂无可用 Provider'));
@@ -7258,27 +7925,32 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			}
 		}
 
-		this._registerOutsideClickClose(this._providerDropdownEl, this._providerTrigger, () => this._closeProviderDropdown());
+		this._disposeOutsideClick(this._providerDropdownOutsideClick);
+		this._providerDropdownOutsideClick = this._registerOutsideClickClose(this._providerDropdownEl, this._providerDropdownTrigger, () => this._closeProviderDropdown());
 	}
 
 	private _closeProviderDropdown(): void {
+		this._disposeOutsideClick(this._providerDropdownOutsideClick);
+		this._providerDropdownOutsideClick = null;
 		if (this._providerDropdownEl) {
 			this._providerDropdownEl.remove();
 			this._providerDropdownEl = null;
 		}
-		if (this._providerTrigger) { this._providerTrigger.classList.remove('open'); }
+		if (this._providerDropdownTrigger) { this._providerDropdownTrigger.classList.remove('open'); }
+		this._providerDropdownTrigger = null;
 	}
 
 	// =========================================================
 	// Model dropdown (composer)
 	// =========================================================
 
-	private _openModelDropdown(): void {
+	private _openModelDropdown(customTrigger?: HTMLElement | null): void {
 		this._closeAllDropdowns();
-		if (this._modelTrigger) { this._modelTrigger.classList.add('open'); }
+		this._modelDropdownTrigger = customTrigger ?? this._modelTrigger;
+		if (this._modelDropdownTrigger) { this._modelDropdownTrigger.classList.add('open'); }
 
 		this._modelDropdownEl = append(mainWindow.document.body, $(".provider-dropdown.model-dropdown"));
-		this._positionDropdownAbove(this._modelDropdownEl, this._modelTrigger);
+		this._positionDropdownAbove(this._modelDropdownEl, this._modelDropdownTrigger);
 
 		// Filter models by current provider when set
 		const filtered = this._currentProvider
@@ -7307,15 +7979,19 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			}
 		}
 
-		this._registerOutsideClickClose(this._modelDropdownEl, this._modelTrigger, () => this._closeModelDropdown());
+		this._disposeOutsideClick(this._modelDropdownOutsideClick);
+		this._modelDropdownOutsideClick = this._registerOutsideClickClose(this._modelDropdownEl, this._modelDropdownTrigger, () => this._closeModelDropdown());
 	}
 
 	private _closeModelDropdown(): void {
+		this._disposeOutsideClick(this._modelDropdownOutsideClick);
+		this._modelDropdownOutsideClick = null;
 		if (this._modelDropdownEl) {
 			this._modelDropdownEl.remove();
 			this._modelDropdownEl = null;
 		}
-		if (this._modelTrigger) { this._modelTrigger.classList.remove('open'); }
+		if (this._modelDropdownTrigger) { this._modelDropdownTrigger.classList.remove('open'); }
+		this._modelDropdownTrigger = null;
 	}
 
 	// =========================================================
@@ -7514,13 +8190,17 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		el.style.zIndex = '10000';
 	}
 
-	private _registerOutsideClickClose(panel: HTMLElement, trigger: HTMLElement | null, onClose: () => void): void {
+	private _disposeOutsideClick(d: IDisposable | null): void {
+		if (d) { d.dispose(); }
+	}
+
+	private _registerOutsideClickClose(panel: HTMLElement, trigger: HTMLElement | null, onClose: () => void): IDisposable {
 		const handler = addDisposableListener(mainWindow.document.body, EventType.CLICK, (e: MouseEvent) => {
 			if (panel.contains(e.target as Node)) { return; }
 			if (trigger && trigger.contains(e.target as Node)) { return; }
 			onClose();
 		});
-		this._register(handler);
+		return this._register(handler);
 	}
 
 	// Actions
@@ -8112,7 +8792,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				return;
 			}
 			// 用户滚离底部 → 跳过钉底但保持循环存活，等待 _isAtBottom 恢复
-			if (this._isAtBottom) {
+			// 用户正在拖拽滚动条 → 暂停钉底，避免互相冲突
+			if (this._isAtBottom && !this._isDraggingScrollbar) {
 				this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
 			}
 			this._streamScrollRaf = requestAnimationFrame(tick);

@@ -74,6 +74,7 @@ export class NativeChatEditorPane extends EditorPane {
 	private _isInitialized = false;
 	private _defaultAgentSelected = false;
 	private _currentAgentId: string | null = null;
+	private _currentAgentSkills: string[] = [];
 	private _currentSessionId: string | null = null;
 	private _currentChatMode: ChatMode | undefined = undefined;
 	private _currentWorkspaceId: string | null = null;
@@ -331,13 +332,16 @@ export class NativeChatEditorPane extends EditorPane {
 						(delta) => {
 							if (!delta) return;
 
-							// Inter-turn gap: agent loop continued after `done` set _isSending=false.
-							// Re-activate streaming state so the panel uses the streaming scroll path
-							// (avoids the non-streaming 80px threshold falsely disabling auto-scroll
-							// when content growth between turns makes distFromBottom >= 80).
-							if (!this._isSending && (delta.type === 'text' || delta.type === 'thinking' || delta.type === 'tool_start' || delta.type === 'tool_result')) {
-								this._chatPanel?.setSending(true);
-								this._isSending = true;
+							// Inter-turn safety net: 如果 _isSending 因某种原因被置 false
+							// （如错误、取消、或 done 之后），当新一轮 agent loop 真正有
+							// 交互性 delta 到来时，重新激活 sending 状态，确保按钮显示
+							// stop 图标、输入框禁用、流式滚动路径生效。
+							if (!this._isSending) {
+								const reActivateTypes = ['text', 'thinking', 'tool_start', 'tool_args', 'tool_end', 'tool_result', 'phase_change'];
+								if (reActivateTypes.includes(delta.type)) {
+									this._chatPanel?.setSending(true);
+									this._isSending = true;
+								}
 							}
 
 							switch (delta.type) {
@@ -445,33 +449,34 @@ export class NativeChatEditorPane extends EditorPane {
 										});
 									}
 									break;
-								case 'done': {
-									// Edge case: if no content ever arrived, ensure msg exists for done-state
-									if (!assistantAdded && assistantId === null) {
-										ensureAssistantMsg();
-									}
-									if (assistantMsg && assistantId) {
-										if (assistantMsg.toolCalls) {
-											for (const tc of assistantMsg.toolCalls) {
-												if (tc.status === 'running') { tc.status = 'success'; }
-											}
-										}
-										// 单次 LLM 开始到结束的耗时（ms）
-										const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
-										this._applyStreamPhase('idle');
-										this._chatPanel?.updateMessage(assistantId, {
-											toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
-											isStreaming: false,
-											isThinking: false,
-											streamPhase: 'idle',
-											metadata: { ...(assistantMsg.metadata || {}), durationMs },
-										});
-									}
-									this._chatPanel?.setSending(false);
-									this._isSending = false;
-									break;
+							case 'done': {
+								// Edge case: if no content ever arrived, ensure msg exists for done-state
+								if (!assistantAdded && assistantId === null) {
+									ensureAssistantMsg();
 								}
-								case 'error':
+								if (assistantMsg && assistantId) {
+									if (assistantMsg.toolCalls) {
+										for (const tc of assistantMsg.toolCalls) {
+											if (tc.status === 'running') { tc.status = 'success'; }
+										}
+									}
+									// 单次 LLM 开始到结束的耗时（ms）
+									const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
+									this._applyStreamPhase('idle');
+									this._chatPanel?.updateMessage(assistantId, {
+										toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
+										isStreaming: false,
+										isThinking: false,
+										streamPhase: 'idle',
+										metadata: { ...(assistantMsg.metadata || {}), durationMs },
+									});
+								}
+								// done handler 不再调用 setSending(false)——
+								// sending 在整个 agent loop 期间保持 true。
+								// 仅当 loop 完成时才置 false（await sendMessage 之后）。
+								break;
+							}
+							case 'error':
 									// Ensure assistant msg exists to show error state
 									if (!assistantAdded && assistantId === null) {
 										ensureAssistantMsg();
@@ -639,6 +644,9 @@ export class NativeChatEditorPane extends EditorPane {
 							}
 						},
 					);
+					// Agent loop fully completed (not per-turn) — reset sending state
+					this._chatPanel?.setSending(false);
+					this._isSending = false;
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] sendMessage failed:', err);
 					this._chatPanel?.setSending(false);
@@ -723,6 +731,22 @@ export class NativeChatEditorPane extends EditorPane {
 			this._commandService.executeCommand('workbench.action.openSettings', 'mcp').catch(err => {
 				this._logService.error('[NativeChatEditorPane] onOpenMcpSettings failed:', err);
 			});
+		},
+		onGetAgentSkills: () => {
+			return this._currentAgentSkills;
+		},
+		onAddSkill: async (skillId: string) => {
+			if (!this._currentAgentId) { return; }
+			if (this._currentAgentSkills.includes(skillId)) { return; }
+			const newSkills = [...this._currentAgentSkills, skillId];
+			await this._agentStudioService.updateAgent(this._currentAgentId, { skills: newSkills } as any);
+			this._currentAgentSkills = newSkills;
+		},
+		onRemoveSkill: async (skillId: string) => {
+			if (!this._currentAgentId) { return; }
+			const newSkills = this._currentAgentSkills.filter(s => s !== skillId);
+			await this._agentStudioService.updateAgent(this._currentAgentId, { skills: newSkills } as any);
+			this._currentAgentSkills = newSkills;
 		},
 		onOpenHtmlPreview: () => {
 			// 在中间栏（当前激活的编辑器组）打开 config HTML 预览
@@ -820,6 +844,9 @@ export class NativeChatEditorPane extends EditorPane {
 						const sessions = await this._chatService.listAgentSessions(agentId);
 						if (sessions.length > 0) {
 							this._currentSessionId = sessions[0].id;
+							if (this.input instanceof NativeChatEditorInput) {
+								this.input.setAgentInfo(this.input.name, agentId, sessions[0].id);
+							}
 							try {
 								const history = await this._chatService.getHistory(agentId, this._currentSessionId);
 								this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
@@ -827,11 +854,14 @@ export class NativeChatEditorPane extends EditorPane {
 								this._chatPanel?.setMessages([]);
 							}
 							this._activateCheckpointSession(agentId, this._currentSessionId);
-						} else {
-							this._currentSessionId = null;
-							this._chatPanel?.setMessages([]);
-							this._chatPanel?.setCheckpoint(null);
+					} else {
+						this._currentSessionId = null;
+						if (this.input instanceof NativeChatEditorInput) {
+							this.input.setAgentInfo(this.input.name, agentId, null);
 						}
+						this._chatPanel?.setMessages([]);
+						this._chatPanel?.setCheckpoint(null);
+					}
 					}
 					await this._refreshSessionList();
 				} catch (err) {
@@ -1065,6 +1095,13 @@ export class NativeChatEditorPane extends EditorPane {
 		this._isInitialized = true;
 		this._logService.debug(`[NativeChatEditorPane][Init] _initChatPanel panel constructed + appended t=${(performance.now() - t0).toFixed(1)}ms`);
 
+		// 主动调用一次 panel.layout()，确保面板使用正确的容器尺寸初始化
+		// （xterm TUI 需要根据容器高度计算内部布局）
+		if (this._container) {
+			const rect = this._container.getBoundingClientRect();
+			this._chatPanel.layout(rect.width, rect.height);
+		}
+
 		// 设置系统消息面板的详情回调
 		this._chatPanel?.setOpenCompressionDetailCallback((data) => {
 			const input = CompressionDetailEditorInput.getOrCreate(data as any);
@@ -1076,6 +1113,7 @@ export class NativeChatEditorPane extends EditorPane {
 			const input = MemoryDetailEditorInput.getOrCreate(agentId);
 			input.targetMemoryId = null;
 			input.targetLayer = memoryType ?? null;
+			input.fromAgentChat = true; // 标记从聊天框跳转，仅显示当前 agent 数据
 			this._editorService.openEditor(input, { pinned: true }).then(() => {
 				const pane = this._editorService.activeEditorPane;
 				if (pane instanceof MemoryDetailEditorPane) {
@@ -1252,6 +1290,7 @@ export class NativeChatEditorPane extends EditorPane {
 					return;
 				}
 				this._currentAgentId = agentId;
+				this._currentAgentSkills = emp.skills ?? [];
 				this._logService.debug(`[NativeChatEditorPane#${this._paneId}] _selectAndLoadAgent: setting _currentAgentId to ${agentId}`);
 				this._chatPanel.setAgent({
 					id: emp.id,
@@ -1265,21 +1304,36 @@ export class NativeChatEditorPane extends EditorPane {
 					model: emp.model,
 					provider: undefined,
 				});
-				// 更新 tab 标签 + 持久化 agentId/sessionId 到 input（拖拽到新 group 时恢复用）
-				if (this.input instanceof NativeChatEditorInput) {
-					this.input.setAgentInfo(emp.name, emp.id);
-				}
-				// Auto-create or get active session for this agent
-				try {
+		// Auto-create or get active session for this agent
+			try {
+				// 窗口重载恢复：优先使用 input 上的 sessionId
+				const restoredSessionId = (this.input instanceof NativeChatEditorInput) ? this.input.sessionId : undefined;
+				let session: IAgentSessionMeta;
+				if (restoredSessionId) {
+					// 尝试查找恢复的 session
+					const allSessions = await this._chatService.listAgentSessions(agentId);
+					const restored = allSessions.find(s => s.id === restoredSessionId);
+					if (restored) {
+						session = restored;
+						this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: restored session ${session.id} from editor input`);
+					} else {
+						session = await this._chatService.getOrCreateActiveSession(agentId);
+					}
+				} else {
 					this._logService.debug(`[NativeChatEditorPane][Init] calling getOrCreateActiveSession t=${(performance.now() - t0).toFixed(1)}ms`);
-					const session = await this._chatService.getOrCreateActiveSession(agentId);
+					session = await this._chatService.getOrCreateActiveSession(agentId);
+				}
 					// Race guard after async: discard if a newer load superseded this one.
 					if (gen !== this._loadGeneration) {
 						this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: gen=${gen} superseded after getOrCreateActiveSession, discarding`);
 						return;
 					}
-					this._currentSessionId = session.id;
-					this._logService.debug(`[NativeChatEditorPane][Init] getOrCreateActiveSession done session=${session.id} t=${(performance.now() - t0).toFixed(1)}ms`);
+				this._currentSessionId = session.id;
+				// 持久化 agentId + sessionId 到 input，窗口重载恢复时使用
+				if (this.input instanceof NativeChatEditorInput) {
+					this.input.setAgentInfo(emp.name, agentId, session.id);
+				}
+				this._logService.debug(`[NativeChatEditorPane][Init] getOrCreateActiveSession done session=${session.id} t=${(performance.now() - t0).toFixed(1)}ms`);
 
 					// Load history messages for this session
 					try {
@@ -1443,6 +1497,9 @@ export class NativeChatEditorPane extends EditorPane {
 				const session = await this._chatService.getOrCreateActiveSession(agentId);
 				sessionId = session.id;
 				this._currentSessionId = sessionId;
+				if (this.input instanceof NativeChatEditorInput) {
+					this.input.setAgentInfo(this.input.name, agentId, sessionId);
+				}
 				this._activateCheckpointSession(agentId, sessionId);
 			} catch (err) {
 				this._logService.error('[NativeChatEditorPane] _ensureSession failed:', err);
@@ -1534,21 +1591,37 @@ export class NativeChatEditorPane extends EditorPane {
 					}))
 				);
 
-				// 默认选中 claw agent（多级 fallback）：
-				//   1. id / presetId 完全等于 'saros-claw' / 'claw'
-				//   2. id / presetId / name / role 不区分大小写包含 'claw'
-				//   3. 上面都没匹配到 → 列表第一个 agent
-				if (!this._defaultAgentSelected && agents.length > 0) {
-					const lower = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');
-					const matchExact = (a: any) => a.id === 'saros-claw' || a.id === 'claw' || (a as any).presetId === 'claw' || (a as any).presetId === 'saros-claw';
-					const matchFuzzy = (a: any) => lower(a.id).includes('claw') || lower((a as any).presetId).includes('claw') || lower(a.name).includes('claw') || lower(a.role).includes('claw');
-					const target = agents.find(matchExact) ?? agents.find(matchFuzzy) ?? agents[0];
+			// 默认选中 agent（多级 fallback）：
+			//   1. 窗口重载恢复的 input.agentId（优先）
+			//   2. id / presetId 完全等于 'saros-claw' / 'claw'
+			//   3. id / presetId / name / role 不区分大小写包含 'claw'
+			//   4. 上面都没匹配到 → 列表第一个 agent
+			if (!this._defaultAgentSelected && agents.length > 0) {
+				const lower = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');
+				const matchExact = (a: any) => a.id === 'saros-claw' || a.id === 'claw' || (a as any).presetId === 'claw' || (a as any).presetId === 'saros-claw';
+				const matchFuzzy = (a: any) => lower(a.id).includes('claw') || lower((a as any).presetId).includes('claw') || lower(a.name).includes('claw') || lower(a.role).includes('claw');
+
+				// 1. 窗口重载恢复的 agentId 优先
+				const restoredAgentId = (this.input instanceof NativeChatEditorInput) ? this.input.agentId : undefined;
+				let target: any | undefined;
+				if (restoredAgentId) {
+					target = agents.find(a => a.id === restoredAgentId || (a as any).presetId === restoredAgentId);
 					if (target) {
-						this._defaultAgentSelected = true;
-						console.info(`[NativeChatEditorPane] _loadAvailableAgents: defaulting to agent "${target.id}" (${target.name})`);
-						await this._selectAndLoadAgent(target.id);
+						this._logService.info(`[NativeChatEditorPane] _loadAvailableAgents: restoring agent "${target.id}" from editor input`);
 					}
 				}
+
+				// 2-4. claw 精确/模糊/fallback
+				if (!target) {
+					target = agents.find(matchExact) ?? agents.find(matchFuzzy) ?? agents[0];
+				}
+
+				if (target) {
+					this._defaultAgentSelected = true;
+					console.info(`[NativeChatEditorPane] _loadAvailableAgents: defaulting to agent "${target.id}" (${target.name})`);
+					await this._selectAndLoadAgent(target.id);
+				}
+			}
 			}
 		} catch (err) {
 			this._logService.info('[NativeChatEditorPane] _loadAvailableAgents failed:', err);
@@ -1588,12 +1661,15 @@ export class NativeChatEditorPane extends EditorPane {
 				const key = `${it.provider.id}:${it.model.id}`;
 				if (!seenModels.has(key)) {
 					seenModels.add(key);
-					models.push({
-						id: it.model.id,
-						label: it.model.name,
-						provider: it.provider.id,
-						maxInputTokens: it.model.maxAllowedSize ?? it.model.contextWindow ?? it.model.maxInputTokens,
-					});
+				models.push({
+					id: it.model.id,
+					label: it.model.name,
+					provider: it.provider.id,
+					// 与 _resolveContextWindow 对齐：maxInputTokens 是单次请求的上限，
+				// maxAllowedSize 是 input+output 总量，不应作为分母（会使进度条百分比虚低）。
+				maxInputTokens: it.model.maxInputTokens ?? it.model.contextWindow ?? it.model.maxAllowedSize,
+					supportsImages: it.model.supportsImages,
+				});
 				}
 			}
 
@@ -1608,9 +1684,9 @@ export class NativeChatEditorPane extends EditorPane {
 				const matched = items.find(
 					it => it.provider.id === selection.providerId && it.model.id === selection.modelId,
 				);
-				this._currentMaxContextTokens = matched?.model.maxAllowedSize
+				this._currentMaxContextTokens = matched?.model.maxInputTokens
 					?? matched?.model.contextWindow
-					?? matched?.model.maxInputTokens
+					?? matched?.model.maxAllowedSize
 					?? undefined;
 			} else {
 				this._currentMaxContextTokens = undefined;
@@ -1756,6 +1832,12 @@ export class NativeChatEditorPane extends EditorPane {
 			this._currentAgentId = input.agentId ?? null;
 			this._defaultAgentSelected = saved.agentLoaded;
 
+			// 恢复此 tab 保存的 model selection（每个 tab 独立切换 model）
+			// 全局 IModelSelectorService 是单例，切换 tab 时需要恢复该 tab 的选择
+			if (saved.modelSelection) {
+				this._modelSelector.setSelection(saved.modelSelection);
+			}
+
 			// 恢复 agent 显示（如有）
 			if (input.agentId) {
 				void this._restoreAgentDisplay(input.agentId, saved);
@@ -1833,6 +1915,12 @@ export class NativeChatEditorPane extends EditorPane {
 			if (isSending) {
 				newPanel.setSending(true);
 			}
+			// 主动调用一次 layout()，确保新创建的 xterm panel 正确布局
+			// 修复：从 web 切换到 CLI 时的空白问题
+			if (this._container) {
+				const rect = this._container.getBoundingClientRect();
+				newPanel.layout(rect.width, rect.height);
+			}
 			newPanel.focusInput();
 		}
 
@@ -1854,11 +1942,15 @@ export class NativeChatEditorPane extends EditorPane {
 		const streamPhase = (this._chatPanel as any)?._streamPhase ?? 'idle';
 		const isSending = (this._chatPanel as any)?._isSending ?? false;
 
+		// 保存当前 tab 的 model selection（全局单例 IModelSelectorService 的当前值）
+		const modelSel = this._modelSelector.getSelection();
+
 		currentInput.saveRuntimeState({
 			messages: [...messages],  // shallow copy
 			streamPhase,
 			isSending,
 			agentLoaded: this._defaultAgentSelected,
+			modelSelection: modelSel ? { ...modelSel } : undefined,
 		});
 
 		this._logService.debug(`[NativeChatEditorPane#${this._paneId}] saved runtime state for ${this._currentInputChatId}: msgs=${messages.length}, phase=${streamPhase}`);
@@ -1875,6 +1967,7 @@ export class NativeChatEditorPane extends EditorPane {
 			if (gen !== this._loadGeneration) { return; }  // race guard
 			if (emp && this._chatPanel) {
 				this._currentAgentId = agentId;
+				this._currentAgentSkills = emp.skills ?? [];
 				this._chatPanel.setAgent({
 					id: emp.id,
 					name: emp.name,
@@ -1920,6 +2013,12 @@ export class NativeChatEditorPane extends EditorPane {
 		if (this._container) {
 			this._container.style.width = `${dimension.width}px`;
 			this._container.style.height = '100%';
+		}
+		// Propagate layout to the active chat panel so that
+		// panel-specific layout (e.g. xterm TUI height recalculation)
+		// runs when the editor is resized or the panel type changes.
+		if (this._chatPanel) {
+			this._chatPanel.layout(dimension.width, dimension.height);
 		}
 	}
 

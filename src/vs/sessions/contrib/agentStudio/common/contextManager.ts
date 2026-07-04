@@ -1605,6 +1605,13 @@ ${conversationText}
 	private static readonly TAIL_MAX_MESSAGES = 15;
 	/** 上下文窗口硬地板：低于此值按此值计算阈值，避免小窗口频繁压缩。 */
 	private static readonly MINIMUM_CONTEXT_WINDOW = 64000;
+	/**
+	 * 压缩计算用上下文窗口硬顶：即使模型宣称支持 1M+ 的 context window
+	 * （如 Gemini 2.5 Pro），实际压缩阈值也不应按此计算——否则在 1M×0.4=400K
+	 * 之前永远不会触发压缩，导致 token 消耗失控。将用于压缩判定（阈值、保护尾预算）
+	 * 的有效窗口限制在 200K，保证在 ~80K token 时即可触发压缩。
+	 */
+	private static readonly MAXIMUM_COMPRESSION_WINDOW = 200000;
 	/** 摘要 LLM 调用的最大输出 token。 */
 	private static readonly SUMMARY_MAX_TOKENS = 1200;
 	/** 摘要前缀：明确标注该内容仅供参考，不可当作指令执行。 */
@@ -1667,11 +1674,14 @@ ${conversationText}
 		// 触发判定的 effectiveTokens——有真实值就用真实值，从根本上消除口径割裂。
 		const hasRealUsage = typeof realPromptTokens === 'number' && realPromptTokens > 0;
 		const effectiveTokens = hasRealUsage ? realPromptTokens! : estimatedTokens;
-		// P2: 消除硬编码——阈值基于真实上下文窗口（含硬地板）计算。
-		const effectiveWindow = Math.max(
+		// P2: 消除硬编码——阈值基于真实上下文窗口（含硬地板+硬顶）计算。
+		// 硬顶防止宣称 1M+ 窗口的模型（如 Gemini 2.5 Pro）在 400K token
+		// 之前永远不触发压缩，导致 token 开销失控。
+		const effectiveWindowRaw = Math.max(
 			contextWindow ?? ContextManager.MINIMUM_CONTEXT_WINDOW,
 			ContextManager.MINIMUM_CONTEXT_WINDOW
 		);
+		const effectiveWindow = Math.min(effectiveWindowRaw, ContextManager.MAXIMUM_COMPRESSION_WINDOW);
 		const thresholdTokens = effectiveWindow * compressionConfig.compressionThreshold;
 
 		// 诊断数据：跳过压缩时一并带回 metadata，供调用方打印日志，
@@ -1864,6 +1874,18 @@ ${conversationText}
 			...tail,
 		];
 
+		// ── 保证 agent.systemPrompt 不被截断 ──
+		// 系统消息中长度最大的一条是 agent 自身 systemPrompt + chat mode + tools。
+		// 压缩后此消息必须完整保留，如长度异常减小则记录警告。
+		const sysMsg = compressedMessages.find(m => m.role === 'system' && !this._isSummaryMessage(m));
+		if (sysMsg) {
+			const origSys = systemMessages.find(m => m.role === 'system' && !this._isSummaryMessage(m));
+			if (origSys && sysMsg.content !== origSys.content) {
+				this._log('warn',
+					`[Compression] System message content changed after compaction! original=${origSys.content.length}chars compressed=${sysMsg.content.length}chars`);
+			}
+		}
+
 		const sanitized = this._sanitizeToolPairs(compressedMessages);
 		const estimatedTokensAfter = this._estimateTokens(sanitized as any);
 
@@ -1901,8 +1923,16 @@ ${conversationText}
 
 		// ── Pre-compact memory injection ──────────────────────────────────
 		// After compression succeeds, inject relevant memories to preserve context
-		// that would otherwise be lost. The callback provides the injected context
-		// which is prepended as a system message to the compressed result.
+		// that would otherwise be lost. The callback provides the injected context.
+		//
+		// P4 缓存优化（2026-07-04）：对齐 agentmemory 的 context 注入位置策略。
+		// 注入消息不再放在 finalMessages 最前面（会破坏所有 system prefix cache），
+		// 而是放在固定 system 消息之后、摘要消息之前。这样：
+		//   [固定 system (Agent Persona/规则)] ← 缓存命中
+		//   [注入的记忆上下文]                  ← 缓存断裂点
+		//   [摘要 system + head + tail]        ← 新内容
+		// Anthropic cache_control 仍标记最后一个 system message（通常是摘要），
+		// 固定前缀不受注入影响，KV cache 只在注入位置起失效。
 		let finalMessages = sanitized;
 		let injectedTokens = 0;
 		if (preCompactInject && estimatedTokens > estimatedTokensAfter) {
@@ -1921,9 +1951,22 @@ ${conversationText}
 					contextWindow: effectiveWindow,
 				});
 				if (injectResult?.injectedContext) {
+					// P4: Separate fixed system messages (stable prefix) from dynamic messages.
+					// Inject the memory context AFTER fixed system, preserving cache prefix.
+					const fixedSystem = sanitized.filter(m =>
+						m.role === 'system' &&
+						!this._isSummaryMessage(m) &&
+						!this._isInjectedContextMessage(m)
+					);
+					const dynamicMessages = sanitized.filter(m =>
+						!(m.role === 'system' &&
+						  !this._isSummaryMessage(m) &&
+						  !this._isInjectedContextMessage(m))
+					);
 					finalMessages = [
-						{ role: 'system', content: injectResult.injectedContext } as ChatMessage,
-						...sanitized,
+						...fixedSystem,
+						{ role: 'system' as const, content: injectResult.injectedContext } as ChatMessage,
+						...dynamicMessages,
 					];
 					injectedTokens = injectResult.totalTokens;
 					this._log('info',
@@ -2109,10 +2152,11 @@ ${conversationText}
 	} {
 		const estimatedTokens = this._estimateTokens(messages as any);
 		const messageCount = messages.length;
-		const effectiveWindow = Math.max(
+		const effectiveWindowRaw = Math.max(
 			contextWindow ?? ContextManager.MINIMUM_CONTEXT_WINDOW,
 			ContextManager.MINIMUM_CONTEXT_WINDOW
 		);
+		const effectiveWindow = Math.min(effectiveWindowRaw, ContextManager.MAXIMUM_COMPRESSION_WINDOW);
 		const needsCompression = estimatedTokens > effectiveWindow * this._config.compressionThreshold;
 
 		return {

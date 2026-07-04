@@ -562,13 +562,24 @@ async function copyAllNonTsFiles(outDir: string, excludeTests: boolean): Promise
 
 	const allFiles = [...new Set([...files, ...dtsFiles])];
 
-	await Promise.all(allFiles.map(file => {
+	// Filter out stale .js files that have corresponding .ts sources —
+	// the transpile step already generated the correct .js output.
+	// Copying a stale .js from src/ would overwrite the fresh transpiled .js in out/.
+	const filesToCopy = allFiles.filter(file => {
+		if (file.endsWith('.js') && !file.endsWith('.d.ts')) {
+			const tsPath = path.join(REPO_ROOT, SRC_DIR, file.replace(/\.js$/, '.ts'));
+			return !fs.existsSync(tsPath); // Keep only if no .ts source exists
+		}
+		return true;
+	});
+
+	await Promise.all(filesToCopy.map(file => {
 		const srcPath = path.join(REPO_ROOT, SRC_DIR, file);
 		const destPath = path.join(REPO_ROOT, outDir, file);
 		return copyFile(srcPath, destPath);
 	}));
 
-	console.log(`[resources] Copied ${allFiles.length} files`);
+	console.log(`[resources] Copied ${filesToCopy.length} files`);
 }
 
 /**

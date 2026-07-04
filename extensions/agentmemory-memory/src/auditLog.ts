@@ -20,7 +20,8 @@ export type AuditOperation =
 	| 'dedup_skip'
 	| 'retention'
 	| 'cascade'
-	| 'skill_extract';
+	| 'skill_extract'
+	| 'cache_hit';
 
 export interface AuditEntry {
 	id: string;

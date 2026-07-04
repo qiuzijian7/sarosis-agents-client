@@ -38,6 +38,8 @@ interface ICatalogEntry {
 	name: string;
 	description: string;
 	schema: IToolDefinition;
+	/** MCP 服务器名（如 "codebase-memory"），非 MCP 工具为空 */
+	serverName: string;
 	/** 预分词的搜索文本 */
 	tokens: string[];
 }
@@ -51,12 +53,22 @@ function tokenize(text: string): string[] {
 
 function entrySearchText(td: IToolDefinition): string {
 	const name = td.name ?? '';
-	const desc = td.description ?? '';
+	// 清理 MCP 描述中的 "[via MCP server \"X\"]" 噪声前缀
+	const rawDesc = td.description ?? '';
+	const desc = rawDesc.replace(/^\[via MCP server "[^"]*"\]\s*/, '');
 	const params = (td.inputSchema as any)?.properties ?? {};
 	const paramNames = Object.keys(params).join(' ');
 	// snake_case / dotted / hyphenated 名称拆分为单词
 	const nameWords = name.replace(/[_\-\.:]/g, ' ');
-	return `${nameWords} ${desc} ${paramNames}`;
+	// 提取 MCP 服务器名作为额外搜索关键词（如 "codebase-memory"）
+	const serverName = extractMcpServerName(td.category);
+	return `${nameWords} ${desc} ${paramNames} ${serverName}`;
+}
+
+/** 从 category 提取 MCP 服务器名（如 "mcp:codebase_memory" → "codebase memory"） */
+function extractMcpServerName(category?: string): string {
+	if (!category || !category.startsWith('mcp:')) { return ''; }
+	return category.slice(4).replace(/[_\-\.]/g, ' ');
 }
 
 function buildCatalog(deferred: IToolDefinition[]): ICatalogEntry[] {
@@ -67,6 +79,7 @@ function buildCatalog(deferred: IToolDefinition[]): ICatalogEntry[] {
 			name: td.name,
 			description: td.description ?? '',
 			schema: td,
+			serverName: extractMcpServerName(td.category),
 			tokens: tokenize(entrySearchText(td)),
 		});
 	}
@@ -187,9 +200,19 @@ export function dispatchToolSearch(
 			success: true,
 		};
 	}
-	const lines = hits.map(h => `  - ${h.name}: ${(h.description || '').slice(0, 120)}`);
+	const lines = hits.map(h => {
+		const serverTag = h.schema.category?.startsWith('mcp:')
+			? ` [MCP:${h.schema.category.slice(4)}]` : '';
+		// 清理 MCP 描述噪声
+		const cleanDesc = (h.description || '').replace(/^\[via MCP server "[^"]*"\]\s*/, '').slice(0, 120);
+		return `  - ${h.name}${serverTag}: ${cleanDesc}`;
+	});
+
+	// 中性引导（对齐 OpenClaw：search 方法仅返回结果列表，不附加领域引导）
+	// 不区分 MCP/非 MCP —— 让 LLM 通过 tool_describe 自行判断工具能力
+	const guidance = '\n\nUse tool_describe to load a tool\'s schema, then tool_call to execute.';
 	return {
-		text: `Found ${hits.length} tool(s):\n${lines.join('\n')}\n\nUse tool_describe to see parameters, then tool_call to execute.`,
+		text: `Found ${hits.length} tool(s):\n${lines.join('\n')}${guidance}`,
 		success: true,
 	};
 }
@@ -241,9 +264,10 @@ export interface IResolveResult {
  * 仅做解析和基本校验，不做 scope 检查（scope 检查由 Executor 在执行前做）。
  */
 export function resolveUnderlyingCall(args: Record<string, unknown>): IResolveResult {
-	const name = String(args.name ?? '').trim();
+	// 兼容 LLM 使用 "tool" 替代 "name" 的情况（如 MCP 风格的 {server, tool, arguments}）
+	const name = String(args.name ?? args.tool ?? '').trim();
 	if (!name) {
-		return { underlyingName: null, underlyingArgs: {}, error: "tool_call requires a 'name' argument" };
+		return { underlyingName: null, underlyingArgs: {}, error: "tool_call requires a 'name' (or 'tool') argument" };
 	}
 	if (isBridgeTool(name)) {
 		return {
@@ -306,6 +330,9 @@ export interface IDispatcherContext {
 /**
  * 构建 Dispatcher 上下文。
  * 参考 Hermes `_tool_search_scoped_names` — 缓存 scoped names 以避免每次重建。
+ * 
+ * 2026-07-03: 新增 Catalog 指纹复用（借鉴 OpenClaw `catalogEntriesFingerprint` + `ReusableCatalogSnapshot`）。
+ * deferredDefs 未变化时复用预构建的 ICatalogEntry[]（含预分词 tokens），避免 BM25 文档统计重复计算。
  */
 export function buildDispatcherContext(
 	assembly: IAssemblyResult,
@@ -313,6 +340,72 @@ export function buildDispatcherContext(
 ): IDispatcherContext {
 	const scopedNames = scopedDeferrableNames(assembly.deferredDefs);
 	return { assembly, scopedNames, config };
+}
+
+// ─── Catalog 指纹复用（借鉴 OpenClaw `reusableCatalogSnapshots`）─────────
+//
+// OpenClaw 设计：工具集未变化时，catalog entries（含预分词 tokens）可跨 session 复用。
+// Sarosis 实现：模块级 LRU 缓存，fingerprint = 工具名列表排序哈希。
+// 工具集不变 → 跳过 buildCatalog() 的 tokenize + entry 构造 → 节省 ~5ms。
+
+/** 缓存的 Catalog 条目（含预分词 tokens） */
+interface CachedCatalog {
+	fingerprint: string;
+	entries: ICatalogEntry[];
+}
+
+/** LRU 上限：对齐 OpenClaw `reusableCatalogSnapshots` Map */
+const CATALOG_CACHE_MAX = 4;
+const _catalogCache = new Map<string, CachedCatalog>();
+
+/**
+ * 计算 deferredDefs 的指纹。
+ * 参考 OpenClaw `catalogEntriesFingerprint`：
+ *   - 包含 id/source/sourceName/name/label/description/parameters
+ *   - 排序后连接，确保顺序无关
+ *   - 完整 description + inputSchema（参数变化也会失效缓存）
+ */
+function computeCatalogFingerprint(deferredDefs: IToolDefinition[]): string {
+	const parts = deferredDefs
+		.map(t => {
+			// 稳定的 JSON 序列化（key 排序）
+			let schemaStr: string;
+			try {
+				schemaStr = JSON.stringify(t.inputSchema ?? {});
+			} catch {
+				schemaStr = '{}';
+			}
+			return `${t.name ?? ''}|${t.category ?? ''}|${(t.description ?? '').replace(/\s+/g, ' ').trim()}|${schemaStr}`;
+		})
+		.sort();
+	return parts.join('\n');
+}
+
+/**
+ * 构建 Catalog（带指纹缓存）。
+ * 参考 OpenClaw `applyToolCatalogCompaction` 的 fingerprint 复用逻辑。
+ */
+export function buildCatalogCached(deferredDefs: IToolDefinition[]): ICatalogEntry[] {
+	const fingerprint = computeCatalogFingerprint(deferredDefs);
+	const cached = _catalogCache.get(fingerprint);
+	if (cached) {
+		// 命中：移到最后（LRU 语义）
+		_catalogCache.delete(fingerprint);
+		_catalogCache.set(fingerprint, cached);
+		return cached.entries;
+	}
+
+	// 未命中：构建新 catalog
+	const entries = buildCatalog(deferredDefs);
+
+	// LRU 驱逐
+	while (_catalogCache.size >= CATALOG_CACHE_MAX) {
+		const oldest = _catalogCache.keys().next().value;
+		if (oldest !== undefined) { _catalogCache.delete(oldest); }
+	}
+	_catalogCache.set(fingerprint, { fingerprint, entries });
+
+	return entries;
 }
 
 export interface IToolCallDispatchResult {
@@ -339,7 +432,9 @@ export function dispatchBridgeTool(
 	args: Record<string, unknown>,
 	ctx: IDispatcherContext,
 ): IToolCallDispatchResult {
-	const catalog = buildCatalog(ctx.assembly.deferredDefs);
+	// 2026-07-03: 使用 buildCatalogCached 替代 buildCatalog
+	// 借鉴 OpenClaw catalog 指纹复用：deferredDefs 不变时跳过 tokenize + entry 构造
+	const catalog = buildCatalogCached(ctx.assembly.deferredDefs);
 
 	if (bridgeToolName === TOOL_SEARCH_BRIDGE_TOOLS.search) {
 		const r = dispatchToolSearch(args, catalog, ctx.config);

@@ -25,7 +25,8 @@
 import { IToolDefinition } from './providers.js';
 import {
 	ToolsetPriority, getToolsetForTool, getToolsetPriority,
-	isToolsetDeferrable, isBridgeTool, TOOL_SEARCH_BRIDGE_TOOLS,
+	isToolsetDeferrable, isBridgeTool, isCoreTool, isCoreToolset,
+	TOOL_SEARCH_BRIDGE_TOOLS,
 } from './toolsetConfig.js';
 
 // ─── Token 估算 ──────────────────────────────────────────────────────────
@@ -82,9 +83,15 @@ export const DEFAULT_TOOL_SEARCH_CONFIG: IToolSearchConfig = {
  *   - toolset 标记为 deferrable=false 的不可折叠
  */
 export function isDeferrableTool(tool: IToolDefinition): boolean {
+	// 2026-07-03: 统一单套桥接 — 不再有 mcp_tool_search/mcp_tool_call
+	// 桥接工具自身不可折叠
 	if (isBridgeTool(tool.name)) { return false; }
-	if (tool.name === 'mcp_tool_search' || tool.name === 'mcp_tool_call') { return false; }
+	// 双重保护第一层：核心工具白名单 — 永远直接发送给 LLM
+	// 对齐 Hermes `is_deferrable_tool_name` 中的 `_core_tool_names()` 检查
+	if (isCoreTool(tool.name)) { return false; }
 	const toolsetId = (tool as any).toolset ?? getToolsetForTool(tool.name);
+	// 双重保护第二层：核心 toolset — 整体保护，对齐 Hermes `_HERMES_CORE_TOOLS`
+	if (isCoreToolset(toolsetId)) { return false; }
 	if (!isToolsetDeferrable(toolsetId)) { return false; }
 	// Always 优先级的工具不可折叠（即使 toolset 标记了 deferrable）
 	if (getToolsetPriority(toolsetId) === ToolsetPriority.Always) { return false; }
@@ -104,8 +111,8 @@ export function classifyTools(
 	const visible: Array<IToolDefinition & { enabled: boolean }> = [];
 	const deferrable: Array<IToolDefinition & { enabled: boolean }> = [];
 	for (const td of toolDefs) {
-		if (isBridgeTool(td.name) || td.name === 'mcp_tool_search' || td.name === 'mcp_tool_call') {
-			// 桥接工具已在列表中（二次 assembly），跳过
+		// 2026-07-03: 统一单套桥接 — 桥接工具已在列表中（二次 assembly）时跳过
+		if (isBridgeTool(td.name)) {
 			continue;
 		}
 		if (isDeferrableTool(td)) {
@@ -143,20 +150,66 @@ export function shouldActivate(
 // ─── 桥接工具 schema ──────────────────────────────────────────────────────
 
 /**
+ * 从 deferred 工具列表生成数据驱动的摘要。
+ * 参考 OpenClaw `formatToolSearchCatalogDirectory`：
+ *   - 按工具名排序（确定性）
+ *   - 列出前 N 个工具的 name + 简短描述
+ *   - 不预设任何领域关键词，完全从工具自身字段提取
+ *
+ * 设计原则：搜索算法应该是数据驱动的，不依赖硬编码的领域分类。
+ * OpenClaw 的 `scoreEntry` 仅从 entry 的 name/id/label/description 评分，
+ * 不预设 "codebase"/"memory" 等关键词——Sarosis 对齐此设计。
+ */
+function summarizeDeferredTools(
+	deferred: Array<IToolDefinition & { enabled: boolean }>,
+	maxShow = 6,
+): string {
+	// 按工具名排序（确定性输出）
+	const sorted = [...deferred]
+		.filter(t => t.name)
+		.sort((a, b) => (a.name! < b.name! ? -1 : a.name! > b.name! ? 1 : 0));
+
+	const shown = sorted.slice(0, maxShow);
+	const omitted = sorted.length - shown.length;
+
+	const lines = shown.map(t => {
+		// 清理 MCP 描述噪声前缀
+		const rawDesc = t.description ?? '';
+		const desc = rawDesc.replace(/^\[via MCP server "[^"]*"\]\s*/, '').trim();
+		const shortDesc = desc.length > 80 ? desc.slice(0, 77).trimEnd() + '...' : desc;
+		return shortDesc ? `${t.name} (${shortDesc})` : t.name;
+	});
+
+	if (omitted > 0) {
+		lines.push(`... and ${omitted} more`);
+	}
+	return lines.join('; ');
+}
+
+/**
  * 构建 3 个桥接工具的 schema。
- * 参考 Hermes `bridge_tool_schemas`。
+ * 参考 OpenClaw `createToolSearchTools`：描述中性，不引导到特定领域。
+ *
+ * 设计原则（对齐 OpenClaw）：
+ *   - 桥接工具描述应中性，不预设 "code analysis" 等领域引导
+ *   - OpenClaw 的 tool_search 描述仅为 "Search the effective Tool Search catalog."
+ *   - 工具分类摘要从 deferred 工具自身字段提取（数据驱动）
  */
 export function bridgeToolSchemas(
 	deferred: Array<IToolDefinition & { enabled: boolean }>,
 	config: IToolSearchConfig,
 ): Array<IToolDefinition & { enabled: boolean }> {
 	const count = deferred.length;
+
+	// 从 deferred 工具中提取分类摘要（数据驱动，无硬编码领域词）
+	const categoryHints = summarizeDeferredTools(deferred);
+
 	const descSearch = (
-		`Search ${count} additional tools that are loaded on demand. ` +
+		`Search ${count} additional tools not listed above. ` +
+		`Available tools include: ${categoryHints}. ` +
 		`Returns up to ${config.maxSearchLimit} matches with name and description. ` +
 		`Follow with tool_describe to load a tool's full parameter schema, ` +
-		`then tool_call to invoke it. ` +
-		`Tools listed at the top of this system prompt are already available and do not need to be searched.`
+		`then tool_call to invoke it.`
 	);
 	const descDescribe = (
 		`Load the full JSON schema for one tool returned by tool_search. ` +
@@ -267,11 +320,13 @@ export function assembleToolDefs(
 	const contextLength = options?.contextLength;
 
 	// 防御：过滤掉已存在的桥接工具（二次 assembly）
-	const incoming = toolDefs.filter(td =>
-		!isBridgeTool(td.name) && td.name !== 'mcp_tool_search' && td.name !== 'mcp_tool_call'
-	);
+	// 2026-07-03: 统一为单套桥接（对齐 Hermes-Agent）
+	// MCP 工具不再有专属的 mcp_tool_search/mcp_tool_call，而是通过 'mcp' toolset
+	// 纳入 deferrable 池，LLM 通过统一的 tool_search/tool_describe/tool_call 路径发现。
+	const incoming = toolDefs.filter(td => !isBridgeTool(td.name));
 
 	const { visible, deferrable } = classifyTools(incoming);
+
 	if (deferrable.length === 0) {
 		return {
 			toolDefs: incoming,
@@ -288,10 +343,17 @@ export function assembleToolDefs(
 	const thresholdTokens = Math.floor((contextLength ?? 0) * (config.thresholdPct / 100.0));
 
 	if (!shouldActivateResult) {
-		// 未激活：passthrough，但保留 deferred 信息供日志
+		// 未激活：passthrough + 桥接工具
+		// 2026-07-03: passthrough 模式也必须包含桥接工具。
+		// incoming 包含所有工具（visible + deferrable 含 MCP），
+		// _getEnabledTools Step 5b 会根据 mcpToolNameSet 移除 MCP 直发工具。
+		// 桥接工具则保留给 LLM 通过 tool_search 发现 MCP/非核心工具。
+		// 设计：桥接工具始终发送（token 开销仅 ~300 chars），
+		// 确保 LLM 总有通路访问 codebase 等 MCP 工具。
+		const bridge = bridgeToolSchemas(deferrable, config);
 		return {
-			toolDefs: incoming,
-			activated: false,
+			toolDefs: [...incoming, ...bridge],
+			activated: false,  // false → Step 5b 移除 MCP 直发工具，bridge 工具保留
 			deferredCount: deferrable.length,
 			deferredTokens: deferrableTokens,
 			thresholdTokens,

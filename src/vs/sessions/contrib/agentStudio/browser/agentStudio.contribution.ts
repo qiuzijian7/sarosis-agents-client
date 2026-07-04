@@ -8,6 +8,8 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../workbench/common/views.js';
@@ -23,7 +25,6 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { Action2, registerAction2, MenuId } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js';
-import { ResourceContextKey } from '../../../../workbench/common/contextkeys.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { KeyMod, KeyCode } from '../../../../base/common/keyCodes.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
@@ -164,7 +165,8 @@ import { NativeChatEditorPane } from './nativeChatEditorPane.js';
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
 import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
-import { WorkspaceViewPane } from './views/workspaceView.js';
+import { SessionsExplorerView, SessionsExplorerEmptyView } from '../../files/browser/filesView.js';
+import { WorkspaceFolderSyncContribution } from './workspaceFolderSync.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
 import { TasksViewPane } from './views/tasksView.js';
 import { ScheduleViewPane } from './views/scheduleView.js';
@@ -191,6 +193,9 @@ import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { SESSIONS_SCM_WORKTREE_VIEW_ID } from '../../sourceControl/browser/sourceControl.contribution.js';
 import { WorktreeItem } from '../../worktree/browser/worktreeDataProvider.js';
 import { URI } from '../../../../base/common/uri.js';
+import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
+import { WorkspaceFolderCountContext } from '../../../../workbench/common/contextkeys.js';
+import { IsPhoneLayoutContext } from '../../../common/contextkeys.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
@@ -198,9 +203,9 @@ import { TaskOverviewEditorPane } from './taskOverviewEditorPane.js';
 import { TaskOverviewEditorInput } from './taskOverviewEditorInput.js';
 import { TaskDetailEditorPane } from './taskDetailEditorPane.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
-import { HtmlPreviewEditorPane } from './htmlPreviewEditorPane.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import { HtmlFileEditorPane } from './htmlFileEditorPane.js';
+import { MdFileEditorPane } from './mdFileEditorPane.js';
 import { FileEditorInput } from '../../../../workbench/contrib/files/browser/editors/fileEditorInput.js';
 import { UrlPreviewEditorPane } from './urlPreviewEditorPane.js';
 import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
@@ -243,7 +248,7 @@ function getAgentPart(editorGroupsService: IEditorGroupsService): IEditorGroupsS
 // --- Icons -----------------------------------------------------------------------
 
 // Toolbar icons
-const workspaceIcon = registerIcon('agent-studio-workspace', Codicon.repo, localize('workspaceIcon', "Workspace"));
+const workspaceIcon = registerIcon('agent-studio-workspace', Codicon.folder, localize('workspaceIcon', "Workspace"));
 const presetAgentIcon = registerIcon('agent-studio-preset-agent', Codicon.robot, localize('presetAgentIcon', "Preset Agent"));
 const tasksIcon = registerIcon('agent-studio-tasks', Codicon.tasklist, localize('tasksIcon', "Tasks"));
 const scheduleIcon = registerIcon('agent-studio-schedule', Codicon.calendar, localize('scheduleIcon', "Schedule"));
@@ -695,28 +700,9 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
-// Register HtmlPreviewEditorPane — renders standalone HTML files (e.g.
-// ConfigMD's `.preview.html`) inside the editor area using a directly
-// DOM-mounted webview iframe, bypassing the OverlayWebview path which
-// fails to render on this fork's Chromium build.
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		HtmlPreviewEditorPane,
-		HtmlPreviewEditorPane.ID,
-		localize('htmlPreviewEditor', "HTML Preview"),
-	),
-	[
-		new SyncDescriptor(HtmlPreviewEditorInput)
-	]
-);
-
-// Register HtmlFileEditorPane — extends TextFileEditor with a 3-mode
-// segmented toggle (编辑 / HTML / 预览) for .html files. Registered to
-// handle FileEditorInput so that HTML files opened from the file explorer
-// use this pane instead of the plain TextFileEditor. The pane inherits
-// all of TextFileEditor's behaviour for non-HTML files, but the toggle
-// only appears for HTML (the EditorTitle menu action's when-clause checks
-// the active editor id AND the resource suffix).
+// Register HtmlFileEditorPane — unified HTML editor: handles both
+// standard .html files (FileEditorInput, 3-mode toggle) and
+// saros-html-preview:// scheme (HtmlPreviewEditorInput, agent config preview).
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(
 		HtmlFileEditorPane,
@@ -724,41 +710,35 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 		localize('htmlFileEditor', "HTML File Editor"),
 	),
 	[
+		new SyncDescriptor(FileEditorInput),
+		new SyncDescriptor(HtmlPreviewEditorInput)
+	]
+);
+
+// Register MdFileEditorPane — extends TextFileEditor with a 2-mode
+// segmented toggle (预览 / Markdown) for .md files.
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		MdFileEditorPane,
+		'agentStudio.mdFileEditor',
+		localize('mdFileEditor', "Markdown File Editor"),
+	),
+	[
 		new SyncDescriptor(FileEditorInput)
 	]
 );
 
-// Register the 编辑 / HTML / 预览 toggle as a MenuId.EditorTitle action.
-// The when-clause restricts it to HtmlFileEditorPane being the active editor.
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: HtmlFileEditorPane.TOGGLE_MODE_ACTION_ID,
-			title: localize2('htmlFileToggleMode', '编辑 / HTML / 预览'),
-			f1: false,
-			menu: [{
-				id: MenuId.EditorTitle,
-				group: 'navigation',
-				when: ContextKeyExpr.and(
-					ContextKeyExpr.equals(ActiveEditorContext.key, 'agentStudio.htmlFileEditor'),
-					ResourceContextKey.Extension.isEqualTo('.html'),
-				),
-				order: 1,
-			}],
-		});
-	}
-
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const editorService = accessor.get(IEditorService);
-		const pane = editorService.activeEditorPane;
-		if (pane instanceof HtmlFileEditorPane) {
-			// Cycle: edit → source → preview → edit
-			const next = pane.currentMode === 'edit' ? 'source'
-				: pane.currentMode === 'source' ? 'preview' : 'edit';
-			pane.setMode(next);
-		}
-	}
-});
+// NOTE (2026-07-04): The 编辑 / HTML / 预览 toggle for HTML files opened via
+// HtmlFileEditorPane is now rendered directly into the editor group's
+// trailing breadcrumbs (via `setTrailingBreadcrumbsContent` inside
+// HtmlFileEditorPane.setInput). The previous EditorTitle action registration
+// for `HtmlFileEditorPane.TOGGLE_MODE_ACTION_ID` has been removed because it
+// duplicated the visual control — keeping both produced a redundant toggle
+// (one in the toolbar, one in the trailing breadcrumbs).
+//
+// The constant `HtmlFileEditorPane.TOGGLE_MODE_ACTION_ID` is kept on the
+// class for backward compatibility with any callers that still reference
+// the id, but it is no longer registered as a menu action.
 
 // Register UrlPreviewEditorPane — renders an external URL inside the editor
 // area. Opened when the user clicks a hyperlink in an LLM chat response;
@@ -1109,6 +1089,38 @@ registerAction2(class extends Action2 {
 		const id = agentId ?? 'default';
 		const input = MemoryDetailEditorInput.getOrCreate(id);
 		await editorService.openEditor(input, { pinned: true });
+	}
+});
+
+// ─── Codebase Memory Init Command ────────────────────────────────────
+// Opens the Memory Detail editor pane, switches to the Codebase tab,
+// and automatically triggers indexing if no graph exists.
+//
+// Can be invoked from:
+//   1. Command Palette (F1 → "Codebase Memory Init")
+//   2. Any code that calls commandService.executeCommand('agentStudio.codebaseMemoryInit')
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.codebaseMemoryInit',
+			title: localize2('agentStudio.codebaseMemoryInit', 'Codebase Memory Init'),
+			f1: true,
+			category: localize2('agentStudio.category', 'Agent Studio'),
+		});
+	}
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const agentStudioService = accessor.get(IAgentStudioService);
+		const agentId = (await agentStudioService.getLastSelectedAgentId()) ?? 'default';
+		const input = MemoryDetailEditorInput.getOrCreate(agentId);
+		await editorService.openEditor(input, { pinned: true });
+		// 等待 editor pane 渲染完成
+		await new Promise(r => setTimeout(r, 200));
+		// 获取打开的 EditorPane 并调用 activateCodebaseViewAndIndex
+		const activeEditorPane = editorService.activeEditorPane;
+		if (activeEditorPane instanceof MemoryDetailEditorPane) {
+			await activeEditorPane.activateCodebaseViewAndIndex();
+		}
 	}
 });
 
@@ -2195,15 +2207,45 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 
 		// --- ActivityBar icons (workspace → search → sourcecontrol → tasks → agents → workflow → integration → plugins) ---
 
-		// 1. Workspace (order: 10)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.workspace',
-			title: localize2('agentStudio.workspace.title', "Workspace"),
-			icon: workspaceIcon,
-			viewId: AGENT_STUDIO_WORKSPACE_VIEW_ID,
-			order: 10,
-			viewCtor: WorkspaceViewPane,
-		});
+		// 1. Workspace (order: 10) — uses the SAME native VS Code Explorer view
+		//    as the sessions Files tab, with conditional view switching based on
+		//    WorkspaceFolderCountContext (Explorer when folders exist, EmptyView otherwise).
+		//    Uses manual registration (not _registerToolIcon) because the Explorer
+		//    requires the conditional when-clause pattern from files.contribution.ts.
+		{
+			const container = viewContainerRegistry.registerViewContainer({
+				id: 'agentStudio.workspace',
+				title: localize2('agentStudio.workspace.title', "Workspace"),
+				icon: workspaceIcon,
+				ctorDescriptor: new SyncDescriptor(ViewPaneContainer, ['agentStudio.workspace', { mergeViewWithContainerWhenSingleView: true }]),
+				storageId: 'agentStudio.workspace',
+				hideIfEmpty: false,
+				order: 10,
+				windowEnablement: WindowEnablement.Both,
+			}, ViewContainerLocation.Sidebar, { isDefault: true, doNotRegisterOpenCommand: true });
+
+			// Explorer: shown when workspace folders exist
+			viewsRegistry.registerViews([{
+				id: AGENT_STUDIO_WORKSPACE_VIEW_ID,
+				name: localize2('agentStudio.workspace.title', "Workspace"),
+				ctorDescriptor: new SyncDescriptor(SessionsExplorerView),
+				canToggleVisibility: false,
+				canMoveView: false,
+				when: ContextKeyExpr.and(WorkspaceFolderCountContext.notEqualsTo('0'), IsPhoneLayoutContext.negate()),
+				windowEnablement: WindowEnablement.Both,
+			}], container);
+
+			// Empty state: shown when no workspace folders exist
+			viewsRegistry.registerViews([{
+				id: 'agentStudio.workspaceView.empty',
+				name: localize2('agentStudio.workspace.title', "Workspace"),
+				ctorDescriptor: new SyncDescriptor(SessionsExplorerEmptyView),
+				canToggleVisibility: false,
+				canMoveView: false,
+				when: ContextKeyExpr.and(WorkspaceFolderCountContext.isEqualTo('0'), IsPhoneLayoutContext.negate()),
+				windowEnablement: WindowEnablement.Both,
+			}], container);
+		}
 
 		// 2. Search (order: 20) - [Sarosis] Reuse native VSCode SearchView with workspace selector
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
@@ -2556,13 +2598,56 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const viewsService = accessor.get(IViewsService);
-		let view = viewsService.getViewWithId<WorkspaceViewPane>(AGENT_STUDIO_WORKSPACE_VIEW_ID);
-		if (!view) {
-			view = await viewsService.openView<WorkspaceViewPane>(AGENT_STUDIO_WORKSPACE_VIEW_ID);
+		const agentStudioService = accessor.get(IAgentStudioService);
+		const fileDialogService = accessor.get(IFileDialogService);
+		const dialogService = accessor.get(IDialogService);
+		const notificationService = accessor.get(INotificationService);
+		const logService = accessor.get(ILogService);
+
+		// Open folder picker for the workspace home directory
+		const picked = await fileDialogService.showOpenDialog({
+			title: localize('createWorkspace.pickFolder', "选择工作区主目录"),
+			canSelectFolders: true,
+			canSelectFiles: false,
+			canSelectMany: false,
+			openLabel: localize('createWorkspace.openLabel', "选择此文件夹"),
+		});
+
+		if (!picked || picked.length === 0) {
+			return; // Cancelled
 		}
-		if (view) {
-			await view.showCreateWorkspace();
+
+		const homeUri = picked[0];
+		const extUri = accessor.get(IUriIdentityService).extUri;
+		const name = extUri.basenameOrAuthority(homeUri) || localize('createWorkspace.defaultName', "未命名工作区");
+
+		// Confirm if the folder is non-empty
+		try {
+			const stat = await accessor.get(IFileService).resolve(homeUri);
+			if (stat.isDirectory && stat.children && stat.children.length > 0) {
+				const confirmed = await dialogService.confirm({
+					type: 'info',
+					message: localize('createWorkspaceNonEmpty', "所选文件夹已包含文件"),
+					detail: localize('createWorkspaceNonEmptyDetail', "工作区元数据（.sarosworkspace）将写入该文件夹，与已有文件共存（不会删除或修改它们）。是否继续？"),
+					primaryButton: localize('createWorkspaceContinue', "继续"),
+				});
+				if (!confirmed.confirmed) {
+					return;
+				}
+			}
+		} catch {
+			// If we can't stat the folder, proceed anyway
+		}
+
+		try {
+			const workspace = await agentStudioService.createWorkspace({ name, path: homeUri.fsPath });
+			if (workspace) {
+				await agentStudioService.setActiveWorkspace(workspace.id);
+				notificationService.info(localize('createWorkspaceSuccess', "工作区 \"{0}\" 已创建", name));
+			}
+		} catch (err) {
+			logService.error('[CreateWorkspace] Failed:', err);
+			notificationService.error(localize('createWorkspaceError', "创建工作区失败: {0}", (err as Error)?.message ?? String(err)));
 		}
 	}
 });
@@ -2583,13 +2668,45 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const viewsService = accessor.get(IViewsService);
-		let view = viewsService.getViewWithId<WorkspaceViewPane>(AGENT_STUDIO_WORKSPACE_VIEW_ID);
-		if (!view) {
-			view = await viewsService.openView<WorkspaceViewPane>(AGENT_STUDIO_WORKSPACE_VIEW_ID);
+		const agentStudioService = accessor.get(IAgentStudioService);
+		const fileDialogService = accessor.get(IFileDialogService);
+		const notificationService = accessor.get(INotificationService);
+		const logService = accessor.get(ILogService);
+
+		// Resolve the target workspace
+		const workspaces = await agentStudioService.getWorkspaces();
+		if (workspaces.length === 0) {
+			notificationService.warn(localize('addRelatedNoWorkspace', "请先创建一个工作区，再添加关联仓库。"));
+			return;
 		}
-		if (view) {
-			await view.showAddRelatedFolder();
+		const activeId = agentStudioService.getActiveWorkspaceId();
+		const targetWs = (activeId ? workspaces.find(w => w.id === activeId) : undefined) ?? workspaces[0];
+		if (!targetWs) {
+			return;
+		}
+
+		// Pick a folder
+		const picked = await fileDialogService.showOpenDialog({
+			title: localize('addRelatedFolder.pickFolder', "选择要关联的代码仓库目录"),
+			canSelectFolders: true,
+			canSelectFiles: false,
+			canSelectMany: false,
+			openLabel: localize('addRelatedFolder.openLabel', "关联此文件夹"),
+		});
+
+		if (!picked || picked.length === 0) {
+			return; // Cancelled
+		}
+
+		const folderPath = picked[0].fsPath;
+		const extUri = accessor.get(IUriIdentityService).extUri;
+
+		try {
+			await agentStudioService.addRelatedFolder(targetWs.id, folderPath);
+			notificationService.info(localize('addRelatedDone', "已添加关联仓库: {0}", extUri.basenameOrAuthority(picked[0])));
+		} catch (err) {
+			logService.error('[AddRelatedFolder] Failed:', err);
+			notificationService.error(localize('addRelatedError', "添加关联仓库失败: {0}", (err as Error)?.message ?? String(err)));
 		}
 	}
 });
@@ -2602,14 +2719,18 @@ registerAction2(class extends Action2 {
 // avoid duplicate controls.
 
 // ─── Workspace Folder Sync ──────────────────────────────────────────────────
-// NOTE: VS Code workspace-folder synchronization for the active AgentStudio
-// workspace is now owned exclusively by `SourceControlWorkspaceSyncContribution`
-// (see sessions/contrib/sourceControl/browser/sourceControl.contribution.ts).
+// Workspace folder synchronization for the active AgentStudio workspace is
+// now handled independently by `WorkspaceFolderSyncContribution`
+// (see workspaceFolderSync.ts), which updates VS Code native workspace folders
+// whenever the active workspace changes. This drives the native Explorer view
+// auto-refresh and works independently of Source Control.
 //
-// That contribution performs *multi-root* synchronization — it writes the
-// active workspace's home directory PLUS every related folder (and worktree)
-// into the VS Code workspace folders, so the Git extension discovers all linked
-// repositories and the SCM view shows their status.
+// The legacy Source Control sync in `SourceControlWorkspaceSyncContribution`
+// (sessions/contrib/sourceControl/browser/sourceControl.contribution.ts) also
+// performs multi-root sync for SCM purposes, but it is no longer the sole
+// owner of workspace folder synchronization.
+
+registerWorkbenchContribution2(WorkspaceFolderSyncContribution.ID, WorkspaceFolderSyncContribution, WorkbenchPhase.BlockStartup);
 //
 // The previous single-folder `AgentStudioWorkspaceSyncContribution` was removed
 // to avoid a double-write race: it overwrote the SCM contribution's multi-root

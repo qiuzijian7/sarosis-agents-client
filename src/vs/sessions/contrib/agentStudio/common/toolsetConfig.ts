@@ -59,9 +59,9 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		prefixes: ['file_', 'search_files', 'terminal', 'memory_'],
 		exactNames: [
 			'echo', 'get_current_time', 'math_eval', 'http_get',
-			'todo', 'memory', 'patch', 'process',
+			'update_plan', 'memory', 'patch', 'process',
 			'web_search', 'web_extract',
-			'skills_list', 'skill_view', 'skill_manage',
+			'skills_list', 'skill_view', 'skill_manage', 'skill_create',
 			'session_search', 'execute_code', 'delegate_task',
 			'read_skill', 'list_skills',
 		],
@@ -73,6 +73,13 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		priority: ToolsetPriority.Always,
 		prefixes: ['mcp_tool_'],
 		deferrable: false,
+	},
+	{
+		id: 'mcp',
+		label: 'MCP Tools',
+		priority: ToolsetPriority.Medium,
+		prefixes: ['mcp_'],
+		deferrable: true,
 	},
 	{
 		id: 'tool-search',
@@ -89,10 +96,24 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		deferrable: false,
 	},
 	{
+		id: 'codebase',
+		label: 'Codebase',
+		priority: ToolsetPriority.High,
+		prefixes: [],
+		exactNames: [
+			'search_graph', 'query_graph', 'get_architecture', 'get_code_snippet',
+			'get_graph_schema', 'index_repository', 'index_status', 'list_projects',
+			'delete_project', 'detect_changes', 'trace_path', 'ingest_traces',
+			'manage_adr', 'search_code',
+		],
+		deferrable: false,
+	},
+	{
 		id: 'delegation',
 		label: 'Delegation',
 		priority: ToolsetPriority.High,
 		prefixes: ['delegate_'],
+		exactNames: ['new_agent'],
 		deferrable: false,
 	},
 	{
@@ -204,4 +225,66 @@ export function isBridgeTool(toolName: string): boolean {
 	return toolName === TOOL_SEARCH_BRIDGE_TOOLS.search
 		|| toolName === TOOL_SEARCH_BRIDGE_TOOLS.describe
 		|| toolName === TOOL_SEARCH_BRIDGE_TOOLS.call;
+}
+
+// ─── 核心工具白名单（双重保护，对齐 Hermes `toolsets._HERMES_CORE_TOOLS`）──
+//
+// 设计：核心工具的"双重保护"机制 — 即使 toolset 标记为 deferrable=true，
+// 核心工具名也会在 `isCoreTool()` 检查中返回 true，从而强制不被延迟。
+//
+// 实际场景：MCP 工具可能注册到与核心工具同名/类似名的 key，
+// 但核心工具必须永远直接发送给 LLM（对齐 Hermes `tool_search.py:163-186`）。
+
+/** 核心工具白名单 — 永远直接发送给 LLM，永不延迟（对齐 Hermes `_HERMES_CORE_TOOLS`） */
+export const CORE_TOOLS: ReadonlySet<string> = new Set([
+	// 文件操作 — 任何 Agent 的基础
+	'file_read', 'file_write', 'file_edit', 'file_delete',
+	'read_file', 'write_file', 'patch', 'search_files',
+	'read_dir', 'list_files',
+	// 终端 / 进程 — 关键调试能力
+	'terminal', 'process', 'read_terminal', 'close_terminal',
+	// 记忆 / 任务规划
+	'memory', 'memory_search', 'memory_write', 'memory_list',
+	'update_plan',
+	// 搜索 / 提取
+	'web_search', 'web_extract', 'http_get',
+	// Session 搜索
+	'session_search',
+	// 技能调用 — 任何 Agent 都需要
+	'skills_list', 'skill_view', 'skill_manage', 'skill_create',
+	'read_skill', 'list_skills',
+	// 浏览器（用于 LLM 看到浏览器工具但实际被沙箱限制时仍可调用基础导航）
+	'browser_navigate', 'browser_snapshot', 'browser_click',
+	'browser_type', 'browser_scroll', 'browser_back',
+	// 委派 / 代码执行
+	'delegate_task', 'new_agent', 'execute_code',
+	// 工具搜索桥接工具 — 本身就不能被延迟
+	TOOL_SEARCH_BRIDGE_TOOLS.search,
+	TOOL_SEARCH_BRIDGE_TOOLS.describe,
+	TOOL_SEARCH_BRIDGE_TOOLS.call,
+	// 通用实用工具
+	'echo', 'get_current_time', 'math_eval',
+]);
+
+/** 核心工具的 toolset 集合（用于批量检查） */
+export const CORE_TOOLSET_IDS: ReadonlySet<string> = new Set([
+	'core', 'mcp-bridge', 'tool-search',
+]);
+
+/**
+ * 判断工具是否为核心工具（双重保护第一层）。
+ * 对齐 Hermes `is_deferrable_tool_name` 中的 `_core_tool_names()` 检查。
+ *
+ * 即使 toolset 标记为 deferrable=true，核心工具也强制返回 true。
+ */
+export function isCoreTool(toolName: string): boolean {
+	return CORE_TOOLS.has(toolName);
+}
+
+/**
+ * 判断 toolset 是否为受保护的核心 toolset（双重保护第二层）。
+ * 对齐 Hermes `_HERMES_CORE_TOOLS` 整体保护机制。
+ */
+export function isCoreToolset(toolsetId: string): boolean {
+	return CORE_TOOLSET_IDS.has(toolsetId);
 }

@@ -145,33 +145,16 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 			}
 
-			// Step 2: Planning 分析意图（如果有 Planning Provider）
-			const planningProvider = this._agentOS.getActivePlanningProvider();
-			if (planningProvider && memoryContext) {
-				try {
-					const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
-					if (lastUserMessage) {
-						const plan = await planningProvider.analyzeIntent(lastUserMessage.content, memoryContext);
-						this._logService.info(`[AgentDriver] Planning result: intent="${plan.intent}", complexity=${plan.estimatedComplexity}, steps=${plan.steps.length}`);
+		// Step 2: (removed) Planning Provider 预分析阶段
+		// 2026-07-04: 对齐 OpenClaw — 不在执行前做预分析。
+		// OpenClaw 信任 LLM 自主规划能力，通过 update_plan 工具让 LLM 在执行中交织规划。
+		// 旧的 PlanningProvider 基于正则关键词匹配复杂度 + 硬编码步骤模板，产出无实际指导价值。
+		// 现在由 LLM 通过 update_plan 工具自行规划，替代旧的 todo 工具。
 
-						// 如果规划了复杂任务，yield planning 信息给 UI
-						if (plan.estimatedComplexity === 'high' || plan.estimatedComplexity === 'medium') {
-							yield {
-								type: 'thinking',
-								content: `[Planning] Intent: ${plan.intent}\n[Planning] Complexity: ${plan.estimatedComplexity}\n[Planning] Steps: ${plan.steps.length}`,
-							};
-						}
-					}
-				} catch (error) {
-					this._logService.error('[AgentDriver] Planning analysis failed:', error);
-					// Planning 失败不阻塞主流程
-				}
-			}
-
-		// Step 3: 解析并注入已激活的 Skills + 已安装技能清单
-		const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
-		let enrichedRequest = request;
-		this._logService.info(`[AgentDriver] Step 3: enriching request (memoryCtx=${memoryContext ? 'yes' : 'no'}, planningCtx=${memoryContext ? 'yes' : 'no'})`);
+	// Step 3: 解析并注入已激活的 Skills + 已安装技能清单
+	const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
+	let enrichedRequest = request;
+	this._logService.info(`[AgentDriver] Step 3: enriching request (memoryCtx=${memoryContext ? 'yes' : 'no'})`);
 
 			try {
 				// 3a. 生成已安装技能清单 —— 借鉴 OpenClaw 轻量目录模式
@@ -215,6 +198,15 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					.filter(s => agentSkillIds.has(s.id));  // 只保留 agent 配置的技能
 
 				let mergedSystemPrompt = request.systemPrompt || '';
+
+				// ── 注入 Agent 自身 systemPrompt（最高优先级）────────────────
+				// 修复：agent.systemPrompt 历史上从未被注入到 system message 中，
+				// 导致用户为 agent 配置的专用指令（"你是安全审计员..."等）完全失效。
+				// 放在最前面作为 agent 的核心身份，所有其他注入段（chat mode、persona、tools）都在其后。
+				const agentSelfPrompt = typeof agent?.systemPrompt === 'string' ? agent.systemPrompt.trim() : '';
+				if (agentSelfPrompt) {
+					mergedSystemPrompt = agentSelfPrompt + (mergedSystemPrompt ? '\n\n' + mergedSystemPrompt : '');
+				}
 
 				// ── 注入 Chat Mode 系统提示词 ─────────────────────────────────
 				// 每个模式有特定的行为指令（如 workflow 模式的工具使用流程），
@@ -397,12 +389,15 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							const summary = firstDesc.slice(0, 80);
 							return `  - ${label}: ${toolCount} tool(s)${summary ? `. ${summary}` : ''}`;
 						});
+						// MCP 工具通过统一的 tool_search → tool_describe → tool_call 路径按需发现
 						const mcpSection = [
 							'',
 							'## MCP Servers',
 							'',
-							'MCP tools are available via bridge tools. Use `mcp_tool_search(query)` to find tools, then `mcp_tool_call(name, args)` to execute.',
+							'MCP tools are discovered via tool_search, not listed here. Use tool_search with descriptive ' +
+							'keywords to find tools, tool_describe to inspect them, and tool_call to invoke.',
 							'',
+							'Servers available:',
 							...serverLines,
 							'',
 						].join('\n');
@@ -444,6 +439,20 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						}
 
 						if (enabledTools.length > 0) {
+							// ── 工具排序（对齐 OpenClaw toolOrder）─────────────────
+							// 将高频分析工具排在前面，避免 LLM 在前几项找到 search_files/terminal 后就停止扫描
+							const HIGH_PRIORITY_TOOLS = new Set([
+								'search_graph', 'query_graph', 'get_architecture', 'trace_path',
+								'search_code', 'get_code_snippet', 'index_repository', 'index_status',
+								'detect_changes', 'update_plan',
+								'tool_search', 'tool_describe', 'tool_call',
+							]);
+							const sortedTools = [...enabledTools].sort((a, b) => {
+								const aPri = HIGH_PRIORITY_TOOLS.has(a.name) ? 0 : 1;
+								const bPri = HIGH_PRIORITY_TOOLS.has(b.name) ? 0 : 1;
+								return aPri - bPri || a.name.localeCompare(b.name);
+							});
+
 							const toolSection = [
 								'',
 								'## Available Tools',
@@ -454,7 +463,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 								'',
 								'Available tools:',
 								'',
-								...enabledTools.map(t => `- ${t.name}: ${t.description || 'No description'}`),
+								...sortedTools.map(t => {
+									const desc = (t as any).displaySummary || t.description || 'No description';
+									return `- ${t.name}: ${desc}`;
+								}),
 								'',
 							];
 
@@ -467,97 +479,19 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 								'- To search files, use: **search_files** with {"path": "<directory>", "pattern": "<pattern>"}',
 							);
 
-							// ─── 动态 MCP 工具引导（描述驱动，无硬编码）──────────────
-							// 不按工具名后缀硬编码匹配，而是：
-							// 1. 按服务器分组 MCP 工具
-							// 2. 从描述中提取使用引导（"Use INSTEAD OF", "First call"等）
-							// 3. 识别分析类工具（描述含 architecture/search/trace/structure 等）
-							// 4. 添加通用指令：分析任务优先使用专用工具而非逐文件读取
-							const mcpTools = enabledTools.filter(t => t.category?.startsWith('mcp:'));
-							if (mcpTools.length > 0) {
-								// 按服务器分组
-								const byServer = new Map<string, typeof mcpTools>();
-								for (const t of mcpTools) {
-									const serverId = t.category!.slice(4); // strip 'mcp:'
-									const arr = byServer.get(serverId) || [];
-									arr.push(t);
-									byServer.set(serverId, arr);
-								}
-
-								// 描述中的使用引导模式（从工具描述自动提取，非硬编码工具名）
-								const guidancePatterns = [
-									/\bUSE INSTEAD OF\b/i,
-									/\bFirst call\b/i,
-									/\bIMPORTANT\b/i,
-									/\bCALL THIS FIRST\b/i,
-									/\brecommended\b/i,
-									/\bMUST\b/i,
-								];
-
-								// 分析类关键词（描述中含这些词的工具更适合代码分析任务）
-								const analysisKeywords = [
-									'architecture', 'structure', 'search', 'trace', 'graph',
-									'code', 'function', 'class', 'call', 'dependency',
-									'relationship', 'snippet', 'path', 'change',
-								];
-
-								toolSection.push(
-									'',
-									'## ⚡ Specialized Tools (MCP) — PREFER THESE for analysis tasks',
-									'',
-									'You have access to specialized MCP tools that provide capabilities beyond basic',
-									'file reading. These tools can analyze code structure, search knowledge graphs,',
-									'trace call paths, and more — FAR more efficiently than reading files one by one.',
-									'',
-									'**When to prefer MCP tools over read_file/grep_search:**',
-									'- Analyzing project architecture, framework, or code structure (分析架构/框架/结构)',
-									'- Searching for code patterns, function definitions, or relationships (搜索代码/找函数)',
-									'- Tracing how functions call each other or data flows (追踪调用链/数据流)',
-									'- Understanding dependencies, modules, or service boundaries (依赖分析)',
-									'- Any task that would otherwise require reading many files sequentially',
-									'',
-									'**Available MCP tools (use EXACT names from the list above):**',
-								);
-
-								// 按服务器列出工具，从描述中提取使用引导
-								for (const [serverId, tools] of byServer) {
-									toolSection.push(`\n[Server: ${serverId}]`);
-									for (const t of tools) {
-										// 去掉 [via MCP server "X"] 前缀，获取原始描述
-										const rawDesc = (t.description || '').replace(/^\[via MCP server "[^"]*"\]\s*/, '');
-										// 检查描述中是否包含使用引导
-										const hasGuidance = guidancePatterns.some(p => p.test(rawDesc));
-										// 检查是否为分析类工具
-										const descLower = rawDesc.toLowerCase();
-										const isAnalysisTool = analysisKeywords.some(kw => descLower.includes(kw));
-
-										if (hasGuidance) {
-											// 高亮显示有使用引导的工具
-											toolSection.push(`- **${t.name}**: ${rawDesc}`);
-										} else if (isAnalysisTool) {
-											toolSection.push(`- **${t.name}**: ${rawDesc}`);
-										} else {
-											toolSection.push(`- ${t.name}: ${rawDesc}`);
-										}
-									}
-								}
-
-								toolSection.push(
-									'',
-									'**CRITICAL**: For code analysis tasks, you MUST try the appropriate MCP tool',
-									'INSTEAD of manually reading files with read_file/grep_search. MCP tools provide',
-									'structural understanding that file-by-file reading cannot. Only fall back to',
-									'read_file/grep_search if MCP tools return errors or are not applicable.',
-									'',
-									'**Tips:**',
-									'- Read each tool\'s description above — many contain usage guidance like',
-									'  "Use INSTEAD OF grep" or "First call X to find Y".',
-									'- If a tool mentions another tool in its description, follow that workflow.',
-									'- If tools return "not indexed" or similar errors, look for an indexing tool',
-									'  (description contains "index" or "build") and call it first.',
-									'',
-								);
-							}
+							// ─── 通用执行原则（对齐 OpenClaw — 无领域特定引导）─────────
+							// OpenClaw 依赖工具自身的 name+description 让 LLM 自行判断何时使用。
+							// system prompt 只提供通用原则，不硬编码 "use X for Y task" 领域引导。
+							// 工具列表已在 ## Available Tools 中以 `name: description` 格式列出。
+							toolSection.push(
+								'',
+								'## General Tool Usage',
+								'',
+								'When a specialized tool exists in the available tools list above, use it directly.',
+								'Do not simulate or manually reimplement what a tool does by chaining basic operations.',
+								'Review each tool\'s description to understand its capabilities and use the most efficient one.',
+								'',
+							);
 						}
 
 							toolSection.push(
@@ -1311,7 +1245,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				return undefined;
 			}
 
-			return this._composeWorkspaceContextText(workspace.name, workspaceRoot, /* isWorktree */ false);
+			return this._composeWorkspaceContextText(workspace.name, workspaceRoot, /* isWorktree */ false, workspace.relatedFolders);
 		} catch {
 			return undefined;
 		}
@@ -1330,12 +1264,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		workspaceName: string,
 		rootDir: string,
 		isWorktree: boolean,
+		relatedFolders?: Array<{ path: string; name?: string; isGitRepo?: boolean }>,
 	): Promise<string> {
 		// ── .saros/AGENT.md 人写规则注入（借鉴 Claude Code 双系统设计）──
-		// 用户可以在工作区根目录放置 .saros/AGENT.md 文件，写入一锤定音的约束
-		// （例如"永远用 pnpm"、"提交前跑 npm test"），这些规则会无条件覆盖 AI
-		// 自动抽取的偏好，优先级最高。
-		// 参见：doc/Memory-Strategy.md §四.4 / §五.3
 		let agentMdSection = '';
 		try {
 			const agentMdUri = URI.joinPath(URI.file(rootDir), '.saros', 'AGENT.md');
@@ -1349,7 +1280,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 			}
 		} catch (err) {
-			// 文件不存在或读取失败不影响主流程
 			this._logService.debug(`[AgentDriver] .saros/AGENT.md not found or unreadable: ${err instanceof Error ? err.message : String(err)}`);
 		}
 
@@ -1367,6 +1297,44 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		} else {
 			lines.push(`The workspace root directory is: ${rootDir}`);
 		}
+
+		// ── 列出所有关联目录 ──────────────────────────────────────────
+		// 工作区可能关联多个代码仓库（如 S1Game + UE5EA）。
+		// LLM 需要知道所有目录才能正确搜索所有代码。
+		const dirs = (relatedFolders ?? []).filter(f => f?.path && f.path !== rootDir);
+		if (dirs.length > 0) {
+			lines.push('');
+			lines.push('### Related Directories');
+			lines.push('This workspace also includes the following directories. When searching code or analyzing the project structure, you should search ALL of these:');
+			for (const f of dirs) {
+				const name = f.name || f.path.split(/[\\/]/).pop() || f.path;
+				const gitTag = f.isGitRepo ? ' [git]' : '';
+				lines.push(`  - ${name}: ${f.path}${gitTag}`);
+			}
+		}
+
+		// ── Codebase 工具摘要（对齐 OpenClaw coreToolSummaries — 工具名+用途）─
+		// 不写 "use X for Y task" 领域引导，依赖工具描述让 LLM 自行判断。
+		lines.push('');
+		lines.push('### Codebase Tools (Direct)');
+		lines.push('IMPORTANT: The codebase graph persists across sessions and auto-loads on startup. ' +
+			'Use index_status to check if the graph is ready. Only call index_repository if the graph is NOT already loaded ' +
+			'(it will skip automatically if loaded, but you can avoid wasting a turn by checking first).');
+		lines.push('- index_repository: Build code knowledge graph (one-time; skips if already loaded unless force=true).');
+		lines.push('- index_status: Check graph status (loaded node/edge/file counts).');
+		lines.push('- search_graph: BM25 full-text search or name_pattern regex. query="..." for natural language. file_pattern/label filter. Pagination via limit+offset+hasMore.');
+		lines.push('- search_code: Grep-style text search enriched with graph structure. mode=compact|full|files, context lines.');
+		lines.push('- query_graph: Cypher queries (MATCH, WHERE, RETURN, ORDER BY, LIMIT).');
+		lines.push('- get_architecture: Overview with communities, languages, packages, hotspots. aspects for dimensions.');
+		lines.push('- trace_path: Call chain tracing (mode=calls|data_flow|cross_service).');
+		lines.push('- get_code_snippet: Read source code by qualifiedName, with neighbor context.');
+		lines.push('If a tool returns "no graph loaded", call index_repository first (one-time only).');
+
+
+
+
+
+
 
 		lines.push(
 			'',
@@ -1386,6 +1354,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			? `${agentMdSection}\n\n${workspaceContextText}`
 			: workspaceContextText;
 	}
+
+
+
+
 
 	// ─── 兼容层：将旧 IChatSendOptions 适配为 IAgentTurnRequest ──
 

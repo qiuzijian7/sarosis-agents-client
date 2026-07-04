@@ -251,6 +251,11 @@ import '../workbench/contrib/files/browser/explorerViewlet.js';
 import '../workbench/contrib/files/browser/fileActions.contribution.js';
 import '../workbench/contrib/files/browser/files.contribution.js';
 
+// [Sarosis 2026-07-04] 覆盖标准 revealInExplorer，修复会话窗口里
+// 文本编辑器右键菜单 "Reveal in Explorer View" 按钮失效的问题。
+// (revealFileInOS 仅在 desktop 主进程中替换，详见 sessions.desktop.main.ts)
+import './contrib/files/browser/revealCommands.contribution.js';
+
 // Bulk Edit
 import '../workbench/contrib/bulkEdit/browser/bulkEditService.js';
 // import '../workbench/contrib/bulkEdit/browser/preview/bulkEdit.contribution.js';

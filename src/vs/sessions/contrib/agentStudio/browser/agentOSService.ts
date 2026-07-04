@@ -20,6 +20,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { joinPath } from '../../../../base/common/resources.js';
+import { URI } from '../../../../base/common/uri.js';
 import {
 	ToolsetPriority, getToolsetForTool,
 	getToolsetPriority, isToolsetDeferrable, isBridgeTool,
@@ -31,6 +32,12 @@ import {
 import {
 	dispatchBridgeTool, buildDispatcherContext, IDispatcherContext,
 } from '../common/toolSearchDispatcher.js';
+import {
+	correctSchemaReferences,
+} from '../common/schemaCorrector.js';
+import {
+	detectFocusModeWithProbe, IFocusModeResult, IFileProbe,
+} from '../common/focusMode.js';
 
 import { DashboardFileStorage } from './dashboardFileStorage.js';
 import {
@@ -66,10 +73,28 @@ import {
 import {
 	SurroundingsRemover,
 } from '../common/toolExtractionUtils.js';
+import {
+	DelegationLedgerManager,
+} from '../common/delegationLedger.js';
+import {
+	DurableContextManager, buildDurableContextSystemMessage,
+	type DurableContextSnapshot,
+} from '../common/durableContextMiddleware.js';
+import {
+	SubagentLimitMiddleware,
+	DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+} from '../common/subagentLimitMiddleware.js';
+import {
+	TokenUsageLedger,
+	type SubagentTokenUsage,
+} from '../common/subagentTokenCollector.js';
 
 import { AGUIChatMessageBuilder } from '../common/adapters/aguiAdapter.js';
 import { ContextManager } from '../common/contextManager.js';
 import type { ChatMessage } from '../common/types.js';
+
+// MCP 工具不直发 schema（会导致 API 400），仅通过 tool_search 桥接发现。
+// 系统提示词（agentDriverService.ts）中已有 MCP 工具摘要指引。
 
 // ─── Agent OS Service Implementation ────────────────────────────────────
 
@@ -90,6 +115,16 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	/** Agent Loop 级别的 AbortController — 用于取消整个循环 */
 	private _loopAbortController: AbortController | undefined;
 
+	// ─── Delegation Ledger + Durable Context（借鉴 deer-flow）───────────
+	/** Tracks all sub-agent delegations with live status updates. */
+	private readonly _delegationLedger = new DelegationLedgerManager();
+	/** Survives summarization compression — injected as hidden system message before each LLM call. */
+	private readonly _durableContext = new DurableContextManager();
+	/** Applied before tool execution to truncate excess sub-agent calls. */
+	private readonly _subagentLimitMw = new SubagentLimitMiddleware(DEFAULT_MAX_CONCURRENT_SUBAGENTS);
+	/** Session-level token usage aggregation across all sub-agents. */
+	private readonly _tokenUsageLedger = new TokenUsageLedger();
+
 	// ─── Tool Search 三层分离状态（Assembly + Dispatcher）─────────────
 	// 参考 Hermes-Agent：assembly 结果缓存 + dispatcher context 缓存
 	// 避免每次工具调用都重建 catalog
@@ -97,6 +132,41 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private _lastAssembly: IAssemblyResult | undefined;
 	/** 最近一次 Dispatcher 上下文（含 catalog + scopedNames） */
 	private _lastDispatcherCtx: IDispatcherContext | undefined;
+
+	// ─── Tool Defs LRU 缓存（对齐 Hermes-Agent `model_tools._TOOL_DEFS_CACHE_MAX = 8`）──
+	// 2026-07-03 改造：Map-based LRU + 多维缓存键
+	// 缓存键维度：agentId | registryGeneration | configFingerprint | contextWindow
+	// registryGeneration: 注册表版本（MCP 重连、plugin 加载时递增）→ 对齐 Hermes `registry._generation`
+	// configFingerprint: config mtime+size 指纹 → 对齐 Hermes `cfg_fp`
+	// contextWindow: 模型上下文窗口 → 模型切换时自动失效
+	private static readonly TOOL_DEFS_CACHE_MAX = 8;
+	private _cachedToolDefs = new Map<string, IToolDefinition[]>();
+
+	/**
+	 * 注册表版本号 — 当 MCP/builtin 工具集变化时递增，触发缓存失效。
+	 * 对齐 Hermes-Agent `registry._generation`。
+	 * 默认 0，注册表首次就绪后设为 1，工具集变化时通过 `_bumpToolDefsCache()` 递增。
+	 */
+	private _registryGeneration = 0;
+
+	/**
+	 * config 文件指纹（mtime + size）— config 修改时变化，触发缓存失效。
+	 * 对齐 Hermes-Agent `cfg_fp`。
+	 * 默认空，调用 `_getConfigFingerprint()` 时实时计算。
+	 */
+
+	/**
+	 * 当前 agent loop 使用的模型 provider 和 modelId。
+	 * 由 agent loop 入口设置（对齐 Hermes `_resolve_active_context_length` 实时查表）。
+	 */
+	private _currentModelProvider: IModelProvider | undefined;
+	private _currentModelId: string | undefined;
+
+	/**
+	 * Focus 模式检测结果缓存（对齐 Hermes `auto` / `focus` 编码姿态切换）。
+	 * 工作区不变时复用，避免每次 _getEnabledTools 都重新检测。
+	 */
+	private _focusModeCache: { workspaceKey: string; result: IFocusModeResult } | undefined;
 
 	/** 用于构建统一 ChatMessage 格式的流适配器（AG-UI → ChatMessage） */
 	private _chatMessageStream: AGUIChatMessageBuilder | undefined;
@@ -149,6 +219,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	// ─── Dashboard 统计追踪 ──────────────────────────────────────────
 	// 在 executeAgentTurn 流程中实时累积，供 IAgentStudioDashboardService 读取。
 	private _totalInputTokens = 0;
+	/** P7: 注入幂等去重 — 同一 session 只注入一次 agentmemory-context */
+	private _injectedSessions = new Set<string>();
+	/** P8: 文件路径暂存 — 工具执行时收集涉及的文件路径，下一轮 loadContext 时批量 enrich */
+	private _stashedFiles = new Map<string, Set<string>>();
+	private static readonly MAX_STASHED_FILES = 20;
 	private _totalOutputTokens = 0;
 	private _totalCachedTokens = 0;
 	private _compressionCount = 0;
@@ -217,6 +292,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		this._initDashboardStorage().catch(err => {
 			this._logService.warn('[AgentOS] Failed to init dashboard storage:', err);
 		});
+
+		// 2026-07-03: 注册 Tool Defs 缓存失效监听（对齐 Hermes `registry._generation`）
+		// 当 MCP/builtin 工具集动态变化时递增 _registryGeneration
+		this._registerToolSetChangeListeners();
 
 		// Save stats on dispose
 		this._register({
@@ -377,6 +456,58 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				this._logService.warn('[AgentOS] Failed to save dashboard stats:', err);
 			});
 		}, AgentOSService.SAVE_DEBOUNCE_MS);
+	}
+
+	// ─── P8: 文件路径暂存 helpers ──────────────────────────────────────────
+
+	/**
+	 * 从工具调用参数中提取涉及的文件路径。
+	 * 对齐 agentmemory plugin extractFilePaths（FILE_KEYS + FILE_TOOLS）。
+	 */
+	private _extractFilePathsFromToolCall(tc: IToolCallInfo): string[] {
+		const FILE_KEYS = ['filePath', 'file_path', 'path', 'file', 'pattern', 'uri', 'target_file'];
+		const FILE_TOOLS = new Set(['read_file', 'write_to_file', 'replace_in_file', 'edit_file',
+			'create_file', 'delete_file', 'search_file', 'list_dir', 'execute_command']);
+		const paths: string[] = [];
+		if (!tc.name || !FILE_TOOLS.has(tc.name)) return paths;
+		try {
+			const argsStr = typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments ?? {});
+			const parsed = JSON.parse(argsStr);
+			for (const key of FILE_KEYS) {
+				const v = parsed[key];
+				if (typeof v === 'string' && v.length > 0) paths.push(v);
+			}
+		} catch { /* ignore parse errors */ }
+		return paths;
+	}
+
+	/**
+	 * 暂存文件路径到 session stash。
+	 * 下一轮 loadContext 时会消费这些路径做批量 enrich。
+	 */
+	private _stashFilePaths(sessionKey: string, filePaths: string[]): void {
+		if (filePaths.length === 0) return;
+		let stash = this._stashedFiles.get(sessionKey);
+		if (!stash) { stash = new Set(); this._stashedFiles.set(sessionKey, stash); }
+		for (const fp of filePaths) stash.add(fp);
+		// 限制 stash 大小
+		if (stash.size > AgentOSService.MAX_STASHED_FILES) {
+			const keep = [...stash].slice(-AgentOSService.MAX_STASHED_FILES);
+			stash.clear();
+			for (const f of keep) stash.add(f);
+		}
+	}
+
+	/**
+	 * 消费并返回暂存的文件路径（读取后清空 stash）。
+	 * 在 loadContext 注入逻辑中调用。
+	 */
+	private _consumeStashedFiles(sessionKey: string): string[] {
+		const stash = this._stashedFiles.get(sessionKey);
+		if (!stash || stash.size === 0) return [];
+		const files = [...stash];
+		stash.clear();
+		return files;
 	}
 
 	private async _saveDashboardStats(): Promise<void> {
@@ -541,6 +672,70 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 	getActiveMemoryProvider(): IMemoryProvider | undefined {
 		return this._slotRegistry.getActiveMemoryProvider();
+	}
+
+	// ─── Delegation Ledger + Durable Context accessors（借鉴 deer-flow）──
+
+	/** Get the delegation ledger manager for external inspection. */
+	get delegationLedger(): DelegationLedgerManager { return this._delegationLedger; }
+
+	/** Get the durable context manager for checkpoint persistence. */
+	get durableContext(): DurableContextManager { return this._durableContext; }
+
+	/** Get the session-level token usage ledger across all sub-agents. */
+	get tokenUsageLedger(): TokenUsageLedger { return this._tokenUsageLedger; }
+
+	/** Get the subagent limit middleware for configuration inspection. */
+	get subagentLimitMiddleware(): SubagentLimitMiddleware { return this._subagentLimitMw; }
+
+	/** Render the current delegation ledger as a compact text block for debugging. */
+	renderDelegationLedger(): string {
+		return this._delegationLedger.render();
+	}
+
+	/** Reset the delegation ledger and durable context (for new sessions). */
+	resetDelegationState(): void {
+		this._delegationLedger.reset();
+		this._durableContext.reset();
+		this._tokenUsageLedger.reset();
+	}
+
+	/** Serialize durable context for checkpoint persistence. */
+	saveDurableContextSnapshot(): DurableContextSnapshot {
+		return this._durableContext.snapshot();
+	}
+
+	/** Restore durable context from a persisted checkpoint. */
+	restoreDurableContextSnapshot(snapshot: DurableContextSnapshot): void {
+		this._durableContext.restore(snapshot);
+		// Optionally repopulate delegation ledger from the snapshot
+		if (snapshot.delegationLedger) {
+			for (const entry of snapshot.delegationLedger) {
+				// Re-register completed entries into the live ledger
+				if (entry.status === 'completed') {
+					this._delegationLedger.markCompleted(entry.callId, entry.resultBrief);
+				} else if (entry.status === 'failed') {
+					this._delegationLedger.markFailed(entry.callId, entry.resultBrief);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Record a completed sub-agent's token usage into the session-level ledger.
+	 * Call this after each sub-agent execution completes (e.g., from delegate_task tool result).
+	 */
+	recordSubagentTokenUsage(
+		subAgentId: string,
+		subAgentType: string,
+		task: string,
+		startedAt: number,
+		completedAt: number,
+		usage: SubagentTokenUsage,
+	): void {
+		this._tokenUsageLedger.recordCompletion(
+			subAgentId, subAgentType, task, startedAt, completedAt, usage,
+		);
 	}
 
 	/**
@@ -781,6 +976,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				} catch { /* best effort */ }
 			}
 		}
+		// P7: 清理注入幂等标记
+		this._injectedSessions.delete(request.sessionId || request.agentId);
+		// P8: 清理文件路径暂存
+		this._stashedFiles.delete(request.agentId);
 	}
 
 	/**
@@ -883,12 +1082,18 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				const recallScope: 'agent' | 'global' = request.memoryScope ?? 'agent';
 				const recallOptions = { scope: recallScope };
 
-				const memoryContext = await memoryProvider.loadContext(
-					request.agentId,
-					request.sessionId || '',
-					recallQuery,
-					recallOptions,
-				);
+			const memoryContext = await memoryProvider.loadContext(
+				request.agentId,
+				request.sessionId || '',
+				recallQuery,
+				recallOptions,
+			);
+
+				// P7: 注入幂等去重 — 同一 session 只注入一次 agentmemory-context
+				// 后续轮次 memoryProvider 的 _sessionContextCache 会命中（返回相同 context），
+				// 但注入操作本身（blocks 组装 + message splice）无需重复执行。
+				const sessionKey = request.sessionId || request.agentId;
+				const alreadyInjected = this._injectedSessions.has(sessionKey);
 
 				// ─── 按 memoryConfig.strategy 过滤 memoryContext ────────────
 				// 'summary' → 仅注入 Episodic（longTermMemories：摘要 / 长期记忆）
@@ -941,7 +1146,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					blocks.push(memoryContext.systemPrompt.trim());
 				}
 
-				if (blocks.length > 0) {
+				// P8: 消费暂存的文件路径，注入到 context（对齐 agentmemory stashedFiles）
+				const stashedFiles = this._consumeStashedFiles(request.agentId);
+				if (stashedFiles.length > 0) {
+					const fileList = stashedFiles.slice(0, 10).join('\n');
+					blocks.push(`## Recently Touched Files\n${fileList}`);
+				}
+
+				if (blocks.length > 0 && !alreadyInjected) {
 					// 对齐 agentmemory 源码：使用 <agentmemory-context> 标签 + token 估算
 					const usedTokens = Math.ceil(blocks.join('\n\n').length / 3);
 					const result = `<agentmemory-context>\n${blocks.join('\n\n')}\n</agentmemory-context>`;
@@ -958,6 +1170,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						role: 'system',
 						content: result,
 					});
+					this._injectedSessions.add(sessionKey);
 					this._logService.info(
 						`[AgentOS] Injected agentmemory-context (strategy=${strategy}, ${result.length} chars, ` +
 						`~${usedTokens} tokens, blocks=${blocks.length}, ` +
@@ -1005,6 +1218,28 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			this._logService.info(`[AgentOS] No memory provider registered — skipping memory injection`);
 		}
 
+		// ─── Inject Durable Context（借鉴 deer-flow DurableContextMiddleware）────
+		// Durable context survives summarization compression and keeps the LLM
+		// aware of prior sub-agent delegations, active goals, and critical skill
+		// context even when older messages have been dropped.
+		const durableCtxMsg = buildDurableContextSystemMessage(this._durableContext);
+		if (durableCtxMsg) {
+			// Inject right after system prompt, before user messages
+			let insertIdx = 0;
+			for (let i = 0; i < messages.length; i++) {
+				if (messages[i]?.role === 'system') {
+					insertIdx = i + 1;
+				} else {
+					break;
+				}
+			}
+			messages.splice(insertIdx, 0, durableCtxMsg);
+			this._logService.info(
+				`[AgentOS] Injected durable context (${durableCtxMsg.content.length} chars, ` +
+				`ledger entries: ${this._delegationLedger.getAllEntries().length})`
+			);
+		}
+
 		// ─── 3. Agent Loop（带工具执行） ─────────────────────────
 		// 初始化循环级 AbortController — 用于超时和取消
 		this._loopAbortController = new AbortController();
@@ -1012,6 +1247,49 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const MAX_TOOL_ITERATIONS = 50;
 		let iteration = 0;
 		let invalidToolNameCount = 0;
+
+		// ─── Tool Call Loop Detection（借鉴 OpenClaw `detectToolCallLoop`）──────────
+		// 检测同一工具+相同参数的重复调用，防止 LLM 陷入死循环。
+		// OpenClaw 风格参数化配置：5 种检测器阈值可调。
+		const TOOL_LOOP_WINDOW = 10;       // 检查窗口（OpenClaw: 30）
+		const TOOL_LOOP_THRESHOLD = 3;      // generic_repeat 阈值（OpenClaw warn: 10, critical: 20）
+		const _toolCallHistory: Array<{ name: string; argsHash: string }> = [];
+
+		function detectToolCallLoop(name: string, args: Record<string, unknown>): { loop: boolean; count: number } {
+			const argsHash = JSON.stringify(args ?? {}).slice(0, 200);
+			const signature = `${name}:${argsHash}`;
+			let count = 0;
+			for (const h of _toolCallHistory) {
+				if (`${h.name}:${h.argsHash}` === signature) { count++; }
+			}
+			_toolCallHistory.push({ name, argsHash });
+			if (_toolCallHistory.length > TOOL_LOOP_WINDOW) { _toolCallHistory.shift(); }
+			return { loop: count >= TOOL_LOOP_THRESHOLD, count: count + 1 };
+		}
+
+		// ─── 工具失败恢复提示（借鉴 Hermes-Agent `_tool_failure_recovery_hint`）──
+		// Hermes-Agent: 工具失败后注入针对性恢复建议，引导 LLM 换方案而非盲目重试。
+		// 不对成功结果注入任何提示。
+		function getToolFailureRecoveryHint(toolName: string): string | null {
+			const hints: Record<string, string> = {
+				terminal: 'For terminal failures, try a diagnostic command first (e.g., `pwd && ls`), ' +
+					'then use an absolute path, a simpler command, or a different tool such as file_read/patch.',
+				search_files: 'Search returned no results. Try a narrower directory, a simpler pattern, ' +
+					'or use search_graph / query_graph to explore code by structure instead of by text.',
+				file_read: 'File read failed. Check the path exists with file_list, or try search_graph ' +
+					'to locate the file by its function/class names.',
+				file_write: 'File write failed. Verify the parent directory exists, check write permissions, ' +
+					'or try patch for targeted edits instead of full rewrites.',
+				patch: 'Patch failed. The search text may not match exactly — try reading the file first ' +
+					'to verify the current content, then use a smaller or more unique search string.',
+				file_list: 'Directory listing failed. Check the path exists with `pwd` or an absolute path.',
+				index_repository: 'Indexing failed. The workspace may already have a graph loaded — ' +
+					'check index_status first, or try a different mode (fast/moderate/full).',
+				search_graph: 'Graph search returned no results. Try a wider name pattern, a different label filter, ' +
+					'or check index_status to verify the graph is loaded.',
+			};
+			return hints[toolName] ?? null;
+		}
 
 
 		// ─── Plan-Execute-Reflect 反思阶段跟踪 ───────────────────
@@ -1037,6 +1315,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			error: (msg: string, error?: unknown) => this._logService.error(msg, error),
 			debug: (msg: string) => this._logService.debug(msg),
 		});
+		// 设置当前 model（用于 _getEnabledTools 实时查表 context window）
+		// 对齐 Hermes-Agent `model_tools._resolve_active_context_length()` 每次实时查表
+		this._setCurrentModel(modelProvider, selection.modelId);
 		// 解析模型真实上下文窗口（token），用于计算压缩阈值
 		const compressionWindow = await this._resolveContextWindow(modelProvider, selection.modelId);
 		// P1: 上一轮 LLM 响应回传的真实 prompt token（provider usage，含 cache）。
@@ -1426,6 +1707,31 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					this._totalOutputTokens += (u.outputTokens ?? 0);
 					this._totalCachedTokens += (u.cachedTokens ?? 0);
 					this._scheduleSave();
+					// ─── P5: Cache hit rate monitoring — persist cache metrics to memory observation ──
+					// Aligns with agentmemory: cache_read/cache_write tokens become first-class memory observations.
+					if ((u.cachedTokens ?? 0) > 0 || (u.cacheWriteTokens ?? 0) > 0) {
+						const memProvider = this.getActiveMemoryProvider();
+						if (memProvider) {
+							const memTs = Date.now();
+							void memProvider.writeMemory(request.agentId, {
+								id: `cache-metric-${memTs}`,
+								type: 'working',
+								content: `Cache usage: read=${u.cachedTokens ?? 0}, write=${u.cacheWriteTokens ?? 0}, total=${u.inputTokens ?? 0 + (u.outputTokens ?? 0)}`,
+								metadata: {
+									agentId: request.agentId,
+									workspaceId: this._currentWorkspaceId,
+									source: 'cache_metrics',
+									cacheReadTokens: u.cachedTokens ?? 0,
+									cacheWriteTokens: u.cacheWriteTokens ?? 0,
+									inputTokens: u.inputTokens ?? 0,
+									outputTokens: u.outputTokens ?? 0,
+								},
+								timestamp: memTs,
+							}).catch(err => {
+								this._logService.warn(`[AgentOS][CacheMetrics] failed to write cache metric: ${err}`);
+							});
+						}
+					}
 				}
 				// 收集完整的助手消息数据
 					if (delta.type === 'text' && delta.content) {
@@ -1519,19 +1825,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				assistantToolCalls.push(toolCallAssembler.finalize());
 			}
 
-			this._logService.info(`[AgentOS] Model response: textLen=${assistantContent.length}, toolCalls=${assistantToolCalls.length}`);
-			if (assistantContent.length === 0 && assistantToolCalls.length === 0) {
-				this._logService.warn(`[AgentOS] Model returned empty response — no text and no tool calls. The model may not support tool calling or the prompt was too large.`);
-			}
+		this._logService.info(`[AgentOS] Model response: textLen=${assistantContent.length}, toolCalls=${assistantToolCalls.length}`);
+		if (assistantContent.length === 0 && assistantToolCalls.length === 0) {
+			this._logService.warn(`[AgentOS] Model returned empty response — no text and no tool calls. The model may not support tool calling or the prompt was too large.`);
+		}
 
-			// ─── 检查是否需要执行工具（含文本解析兜底）──────────────────
+		// ─── 诊断日志：记录原生 tool calls 的名称 ──────────────────────
+		if (assistantToolCalls.length > 0) {
+			this._logService.info(`[AgentOS] Native tool calls from API: ${assistantToolCalls.map(tc => tc.name).join(', ')}`);
+		}
+
+		// ─── 检查是否需要执行工具（含文本解析兜底）──────────────────
 			let effectiveToolCalls = assistantToolCalls;
 			if (effectiveToolCalls.length === 0 && assistantContent) {
 				// 尝试从纯文本中解析工具调用（兼容不严格遵循 OpenAI 格式的模型）
 				// 传入 enabledTools 以支持从纯参数 JSON 推断工具名
 				const extracted = this._tryExtractToolCallsFromText(assistantContent, thinkingContent, enabledTools);
-				if (extracted.length > 0) {
-					this._logService.info(`[AgentOS] Extracted ${extracted.length} tool calls from text output`);
+			if (extracted.length > 0) {
+				this._logService.info(`[AgentOS] Extracted ${extracted.length} tool calls from text output: [${extracted.map(tc => tc.name).join(', ')}]`);
 					effectiveToolCalls = extracted;
 
 					// ── Clean assistantContent using the unified sanitizer pipeline
@@ -1562,6 +1873,25 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 							defaultShow: tc.defaultShow,
 						};
 					}
+				}
+			}
+
+			// ─── 白名单过滤原生工具调用 ──────────────────────────────────────
+			// 模型有时会幻觉出不存在的工具名（如 ForceGC）。在执行前过滤掉
+			// 不在 enabledTools 中的工具调用，避免无效执行和 repairToolName 误匹配。
+			if (effectiveToolCalls.length > 0 && enabledTools.length > 0) {
+				const toolNameSet = new Set(enabledTools.map(t => t.name));
+				const validCalls = effectiveToolCalls.filter(tc => {
+					if (toolNameSet.has(tc.name)) { return true; }
+					// 2026-07-03: 统一单套桥接 — 接受所有桥接工具调用（tool_search/tool_describe/tool_call）
+					if (isBridgeTool(tc.name)) { return true; }
+					if (PHANTOM_TOOL_NAMES.has(tc.name)) { return true; }
+					this._logService.warn(`[AgentOS] Filtered out hallucinated tool call: "${tc.name}" (not in enabled tools)`);
+					return false;
+				});
+				if (validCalls.length < effectiveToolCalls.length) {
+					this._logService.info(`[AgentOS] Whitelist filtered native tool calls: ${effectiveToolCalls.length} → ${validCalls.length}`);
+					effectiveToolCalls = validCalls;
 				}
 			}
 
@@ -1772,11 +2102,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const serverExecutedCalls = effectiveToolCalls.filter(tc =>
 				tc.serverExecuted === true || isServerSideProvider
 			);
-			const localExecutedCalls = isServerSideProvider
+			let localExecutedCalls = isServerSideProvider
 				? []
 				: effectiveToolCalls.filter(tc => tc.serverExecuted !== true);
 
-			if (serverExecutedCalls.length > 0) {
+		/**
+		 * 将工具失败恢复提示追加到结果文本中。
+		 * 借鉴 Hermes-Agent: 工具失败后告诉 LLM "试试别的方案"，而非让它盲目重试。
+		 */
+		function appendRecoveryHint(resultStr: string, toolCallId: string): string {
+			const tc = localExecutedCalls.find(c => c.id === toolCallId);
+			if (!tc) { return resultStr; }
+			const hint = getToolFailureRecoveryHint(tc.name);
+			if (!hint) { return resultStr; }
+			return resultStr + `\n\n[Hint: ${hint}]`;
+		}
+
+		if (serverExecutedCalls.length > 0) {
 				this._logService.info(`[AgentOS] ${serverExecutedCalls.length} tool calls were server-executed (skipping local execution): ${serverExecutedCalls.map(tc => tc.name).join(', ')}`);
 				for (const tc of serverExecutedCalls) {
 					const serverResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({
@@ -1836,6 +2178,42 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const toolResults: Array<{ toolCallId: string; content: any; success: boolean }> = [];
 			// If all tool calls were server-executed, skip the local execution block entirely.
 		if (localExecutedCalls.length > 0) {
+			// ── Tool Call Loop Detection（借鉴 OpenClaw `detectToolCallLoop`）──────
+			// 在执行前检测同一工具+相同参数的重复调用
+			const filteredCalls = localExecutedCalls.filter(tc => {
+				const rawArgs = typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments ?? {});
+				let args: Record<string, unknown>;
+				try { args = JSON.parse(rawArgs) as Record<string, unknown>; } catch { args = {}; }
+				const { loop, count } = detectToolCallLoop(tc.name, args);
+				if (loop) {
+					this._logService.warn(`[AgentOS] Tool call loop detected: "${tc.name}" called ${count} times with same args — blocking`);
+					return false;  // 阻止执行
+				}
+				return true;
+			});
+			if (filteredCalls.length < localExecutedCalls.length) {
+				// 为被阻止的工具生成错误结果
+				const blockedCalls = localExecutedCalls.filter(tc => !filteredCalls.includes(tc));
+				for (const tc of blockedCalls) {
+					toolResults.push({
+						toolCallId: tc.id,
+						content: [{ type: 'text', text: `Error: Tool "${tc.name}" was called too many times with the same arguments. This looks like a loop — try a different approach or provide more specific arguments.` }],
+						success: false,
+					});
+					yield { type: 'tool_start', content: '', toolCallId: tc.id, toolName: tc.name };
+					yield { type: 'tool_result', content: `Error: Loop detected for "${tc.name}"`, toolCallId: tc.id };
+					yield { type: 'tool_end', toolCallId: tc.id, success: false };
+				}
+				if (filteredCalls.length === 0) {
+					// 全部被阻止 → 跳过执行，直接进入下一轮
+					this._logService.warn(`[AgentOS] All ${localExecutedCalls.length} tool calls blocked by loop detection`);
+					for (const tr of toolResults) {
+						messages.push({ role: 'tool', content: (tr.content[0] as any)?.text ?? '', toolCallId: tr.toolCallId });
+					}
+					continue;
+				}
+				localExecutedCalls = filteredCalls;
+			}
 			// ── Hook: pre_tool_use ────────────────────────────────────────
 			if (memoryProvider?.triggerHook) {
 				for (const tc of localExecutedCalls) {
@@ -1850,9 +2228,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						// Streaming parallel: yield as each tool finishes, in completion order.
 						for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId, request.worktreePath)) {
 							toolResults.push(toolResult);
-							// Emit tool_result + tool_end for THIS tool immediately (do not
-							// wait for the rest of the batch).
-							const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
+							const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
+							const resultStr = !toolResult.success
+								? appendRecoveryHint(rawStr, toolResult.toolCallId)
+								: rawStr;
 							messages.push({
 								role: 'tool',
 								content: resultStr,
@@ -1876,7 +2255,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						const serial = await this._executeToolCalls(localExecutedCalls, request.agentId, request.worktreePath);
 						for (const toolResult of serial) {
 							toolResults.push(toolResult);
-							const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
+							const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
+							const resultStr = !toolResult.success
+								? appendRecoveryHint(rawStr, toolResult.toolCallId)
+								: rawStr;
 							messages.push({
 								role: 'tool',
 								content: resultStr,
@@ -1919,6 +2301,28 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					}
 				}
 			} // end if (localExecutedCalls.length > 0)
+
+			// ─── Update Delegation Ledger with tool results（借鉴 deer-flow）──────
+			// After tool execution, update the ledger so subsequent LLM turns
+			// see the correct status of each delegated sub-agent task.
+			for (const tr of toolResults) {
+				const tc = localExecutedCalls.find(c => c.id === tr.toolCallId);
+				if (!tc || !this._subagentLimitMw.isDelegationCall(tc)) { continue; }
+
+				const resultText = typeof tr.content === 'string'
+					? tr.content
+					: (tr.content?.text ?? (tr.content?.error ? `Error: ${tr.content.error}` : JSON.stringify(tr.content ?? '')));
+
+				if (tr.success) {
+					this._delegationLedger.markCompleted(tc.id, resultText);
+				} else {
+					this._delegationLedger.markFailed(tc.id, resultText);
+				}
+			}
+
+			// Persist updated ledger into durable context so it survives
+			// summarization compression on the next round.
+			this._durableContext.updateFromLedger(this._delegationLedger.getAllEntries());
 
 			// ── Hook: post_tool_use / post_tool_failure ───────────────────
 			if (memoryProvider?.triggerHook) {
@@ -1972,6 +2376,16 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						break;
 					}
 				}
+			}
+
+			// ─── shouldTerminateToolBatch（借鉴 OpenClaw）──────────────
+			// 所有工具返回 terminate=true 时提前结束 agent loop
+			// 当前 Sarosis 的 IToolResult 没有 terminate 字段，但预留接口
+			// 为将来扩展（如 "任务已完成"信号工具）做准备
+			if (toolResults.length > 0 && toolResults.every(r => (r as any).terminate === true)) {
+				this._logService.info(`[AgentOS] All ${toolResults.length} tool results signaled terminate — ending loop early`);
+				yield { type: 'done' };
+				break;
 			}
 
 			// ─── codebase memory 工具调用检测 ──────────────────────────────────
@@ -2083,10 +2497,44 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		// 类型别名：工具定义 + 运行时 toolset 推断 + enabled 状态
 		type TTool = IToolDefinition & { enabled: boolean; toolset: string };
 
+		// 实时查表 model context length（对齐 Hermes `_resolve_active_context_length` 每次实时查）
+		// 失败/未设置时回退 undefined → assembleToolDefs 自动走 20K token 固定阈值
+		const contextWindow = (this._currentModelProvider && this._currentModelId)
+			? await this._resolveContextWindow(this._currentModelProvider, this._currentModelId)
+			: undefined;
+
 		const allWithState = await this.listAllToolsWithState(agentId);
 		const enabled = allWithState.filter(t => t.enabled) as TTool[];
 
-		// Step 1: 分离 MCP 工具（它们由 mcp_tool_search/mcp_tool_call 桥接处理）
+		// 多维缓存键（对齐 Hermes `model_tools.get_tool_definitions` 的 cache_key）
+		// 维度：agentId | registryGeneration | configFingerprint | contextWindow | 工具状态快照
+		const cacheKey = [
+			agentId,
+			this._registryGeneration,
+			this._getConfigFingerprint(),
+			contextWindow ?? 'undefined',
+			...allWithState.map(t => `${t.name}:${t.enabled ? '1' : '0'}`).sort(),
+		].join('|');
+
+		// LRU 命中检查（Map 保持插入顺序，命中时 re-insert 移到末尾实现 LRU）
+		const cached = this._cachedToolDefs.get(cacheKey);
+		if (cached) {
+			this._cachedToolDefs.delete(cacheKey); // 移到末尾（LRU 语义）
+			this._cachedToolDefs.set(cacheKey, cached);
+			this._logService.info(`[AgentOS] _getEnabledTools: cache hit — ${cached.length} tools (gen=${this._registryGeneration}, ctxWin=${contextWindow ?? '?'})`);
+			return cached;
+		}
+
+		// 缓存未命中：清理可能存在的旧版本（不同 ctxWindow 会有多个旧 key）
+		// 超过上限时驱逐最旧（Map 头部）
+		while (this._cachedToolDefs.size >= AgentOSService.TOOL_DEFS_CACHE_MAX) {
+			const oldest = this._cachedToolDefs.keys().next().value;
+			if (oldest !== undefined) {
+				this._cachedToolDefs.delete(oldest);
+			}
+		}
+
+		// Step 1: 分离 MCP 工具，标记为 'mcp' toolset（Medium 优先级，可延迟）
 		const mcpOriginal = enabled.filter(t => t.category?.startsWith('mcp:'));
 		const builtin = enabled.filter(t => !t.category?.startsWith('mcp:'));
 
@@ -2095,62 +2543,169 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			...t,
 			toolset: (t.toolset ?? getToolsetForTool(t.name)) as string,
 		}));
+		// MCP 工具统一标记为 'mcp' toolset，参与装配管线（对齐 Hermes）
+		const mcpTagged: TTool[] = mcpOriginal.map(t => ({
+			...t,
+			toolset: 'mcp',  // Medium priority, deferrable
+		}));
 
-		// Step 3: Agent.tools[] 配置过滤
+		// Step 3: Agent.tools[] + enabledToolsets + disabledToolsets 配置过滤
 		const agentTools = this._getAgentToolsConfig(agentId);
-		let scoped = tagged;
-		if (agentTools?.length) {
-			const toolSet = new Set(agentTools);
-			scoped = tagged.filter(t =>
-				toolSet.has(t.name) || isBridgeTool(t.name) || t.name === 'mcp_tool_search' || t.name === 'mcp_tool_call'
-			);
-			this._logService.info(`[AgentOS] _getEnabledTools: agent ${agentId} tools config -> ${scoped.length}/${tagged.length}`);
+		const agentToolsets = this._getAgentEnabledToolsets(agentId);
+		const agentDisabledToolsets = this._getAgentDisabledToolsets(agentId);
+		const allTagged = [...tagged, ...mcpTagged];
+		let scoped = allTagged;
+
+		// Step 3a: 自动 focus 模式（对齐 Hermes `auto` / `focus` 编码姿态切换）
+		// 仅在用户未显式设置 enabledToolsets 时生效
+		if (!agentToolsets?.length) {
+			const focusResult = await this._detectFocusModeIfNeeded();
+			if (focusResult.mode === 'focus' && focusResult.recommendedToolsets.length > 0) {
+				const focusSet = new Set(focusResult.recommendedToolsets);
+				const beforeFocus = scoped.length;
+				scoped = scoped.filter(t =>
+					focusSet.has(t.toolset) || isBridgeTool(t.name)
+				);
+				this._logService.info(`[AgentOS] _getEnabledTools: focus mode auto-applied [${focusResult.recommendedToolsets.join(', ')}] (${focusResult.reason}) -> ${scoped.length}/${beforeFocus} tools`);
+			}
 		}
 
+		// 按 toolset 过滤：只保留 Agent 声明的 toolset 中的工具
+		if (agentToolsets?.length) {
+			const toolsetSet = new Set(agentToolsets);
+			scoped = scoped.filter(t =>
+				toolsetSet.has(t.toolset) || isBridgeTool(t.name)
+			);
+			this._logService.info(`[AgentOS] _getEnabledTools: agent ${agentId} enabledToolsets [${agentToolsets.join(', ')}] -> ${scoped.length}/${allTagged.length} tools`);
+		}
+		if (agentTools?.length) {
+			const toolSet = new Set(agentTools);
+			scoped = allTagged.filter(t =>
+				toolSet.has(t.name) || isBridgeTool(t.name)
+			);
+			this._logService.info(`[AgentOS] _getEnabledTools: agent ${agentId} tools config -> ${scoped.length}/${allTagged.length}`);
+		}
+
+		// Step 3b: disabledToolsets 减法（对齐 Hermes `model_tools.py:399-433`）
+		// 在 enabledToolsets 之后应用，确保即使工具集被 enabled 包含也可以被禁用
+		if (agentDisabledToolsets?.length) {
+			const beforeDisable = scoped.length;
+			const disabledSet = new Set(agentDisabledToolsets);
+			scoped = scoped.filter(t => {
+				if (isBridgeTool(t.name)) { return true; } // 桥接工具永远保护
+				if (!disabledSet.has(t.toolset)) { return true; } // 未禁用
+				// 核心保护（对齐 Hermes `bundle_non_core_tools` #33924）：
+				// Always 优先级的 toolset 即使在 disabled 列表中也保留（不能让 LLM 失去核心工具）
+				if (getToolsetPriority(t.toolset) === ToolsetPriority.Always) { return true; }
+				return false; // 剥离
+			});
+			const afterDisable = scoped.length;
+			if (beforeDisable !== afterDisable) {
+				this._logService.info(`[AgentOS] _getEnabledTools: agent ${agentId} disabledToolsets [${agentDisabledToolsets.join(', ')}] (with core protection) -> ${afterDisable}/${beforeDisable} tools`);
+			}
+		}
+
+		// Step 3c: update_plan 门控（对齐 OpenClaw — 默认禁用，高级模型自动启用）
+		// OpenClaw: update_plan 仅对 strict-agentic 契约活跃（GPT-5 系列）启用。
+		// Sarosis: 模型能力自动检测 + agent 显式配置覆盖。
+		const updatePlanEnabled = this._shouldEnableUpdatePlan(agentId);
+		if (!updatePlanEnabled) {
+			const beforePlan = scoped.length;
+			scoped = scoped.filter(t => t.name !== 'update_plan');
+			if (beforePlan !== scoped.length) {
+				this._logService.info(`[AgentOS] _getEnabledTools: update_plan disabled (model not capable or explicitly disabled) -> ${scoped.length}/${beforePlan} tools`);
+			}
+		}
+
+		// MCP 工具名集合（用于 passthrough 模式下移除直发 MCP 工具，统一通过 tool_search 发现）
+		const mcpToolNameSet = new Set(mcpOriginal.map(t => t.name));
+
 		// Step 4: 按优先级填充 30 个名额
+		// 2026-07-03: MCP 工具归入 'mcp' toolset (Medium 优先级)，但不进 direct 列表
+		// 全部走 tool_search 路径（对齐 Hermes-Agent 单套桥接）
 		const MAX = 30;
 		const byPriority = (p: ToolsetPriority) => scoped.filter(t => getToolsetPriority(t.toolset) === p);
 		const direct = [...byPriority(ToolsetPriority.Always), ...byPriority(ToolsetPriority.High)];
 		const rem = MAX - direct.length;
 		if (rem > 0) {
-			const med = byPriority(ToolsetPriority.Medium);
+			const med = byPriority(ToolsetPriority.Medium).filter(t => !mcpToolNameSet.has(t.name));
 			const low = byPriority(ToolsetPriority.Low);
 			direct.push(...med.slice(0, rem));
 			const afterMed = rem - med.length;
 			if (afterMed > 0) { direct.push(...low.slice(0, afterMed)); }
 		}
 
-		// Step 5: Assembly 层 — 超出名额的 deferrable 工具交由 assembleToolDefs 处理
+		// Step 5: Assembly 层
+		// 直接给 assembleToolDefs 的工具集：direct + 全部 MCP 工具 + 非 MCP 的 deferrable
+		// MCP 工具是 isToolsetDeferrable=true，会被 classifyTools 归入 deferrable
+		// 当 Tool Search 激活时统一用 tool_search/tool_describe/tool_call 替换
 		const included = new Set(direct.map(t => t.name));
-		const deferred = scoped.filter(t => !included.has(t.name) && isToolsetDeferrable(t.toolset));
-		const assembly = assembleToolDefs([...direct, ...deferred], {
-			contextLength: undefined,  // auto + 20K token fallback
+		const nonMcpDeferred = scoped.filter(t =>
+			!included.has(t.name) && isToolsetDeferrable(t.toolset) && !mcpToolNameSet.has(t.name)
+		);
+		const allDeferred = [...nonMcpDeferred, ...mcpTagged];
+		const assembly = assembleToolDefs([...direct, ...allDeferred], {
+			contextLength: contextWindow,  // 实时查表的 context length（对齐 Hermes）
 			config: DEFAULT_TOOL_SEARCH_CONFIG,
 		});
 		// assembleToolDefs 在未激活时返回全部工具（passthrough），无需额外处理
-		const finalTools = assembly.toolDefs;
+		let finalTools = assembly.toolDefs;
+
+		// Step 5b: passthrough 模式下精选 MCP 工具直发（借鉴 OpenClaw directory 模式）
+		// 不发送全部 66 个 MCP schema（太大），但直发 3-6 个关键 codebase 工具的精简版 schema
+		// （仅 name + description，不含完整 inputSchema），让 LLM 知道这些工具存在。
+		// 其余 MCP 工具仍然通过 tool_search 发现。
+		if (!assembly.activated && mcpOriginal.length > 0) {
+			// 不直发 MCP schema（会导致 API 400），仅保留桥接工具
+			finalTools = finalTools.filter(td => !mcpToolNameSet.has(td.name));
+			this._logService.info(`[AgentOS] _getEnabledTools: passthrough — removed ${mcpOriginal.length} MCP direct tools (API safe), discoverable via tool_search`);
+		}
 
 		// 缓存 Assembly + Dispatcher（Executor 层使用）
 		this._lastAssembly = assembly;
 		this._lastDispatcherCtx = buildDispatcherContext(assembly, DEFAULT_TOOL_SEARCH_CONFIG);
 
 		// Step 6: 桥接工具排前面
-		const BRIDGE_NAMES = new Set([
-			'mcp_tool_search', 'mcp_tool_call',
+		const BRIDGE_NAMES: Set<string> = new Set([
 			TOOL_SEARCH_BRIDGE_TOOLS.search, TOOL_SEARCH_BRIDGE_TOOLS.describe, TOOL_SEARCH_BRIDGE_TOOLS.call,
 		]);
 		finalTools.sort((a, b) => (BRIDGE_NAMES.has(a.name) ? 0 : 1) - (BRIDGE_NAMES.has(b.name) ? 0 : 1));
 
+		// Step 7: Schema 修正（对齐 Hermes `model_tools.py:454-510`）
+		// 修正对不可用工具的描述引用，避免 LLM 幻觉调用
+		const beforeCorrection = finalTools.length;
+		finalTools = correctSchemaReferences(finalTools);
+		if (finalTools.length !== beforeCorrection || finalTools.some((t, i) => t !== finalTools[i])) {
+			this._logService.info(`[AgentOS] _getEnabledTools: schema correction applied`);
+		}
+
 		// 日志
 		if (mcpOriginal.length) {
-			this._logService.info(`[AgentOS] _getEnabledTools: replaced ${mcpOriginal.length} MCP tools with bridge tools`);
+			this._logService.info(`[AgentOS] _getEnabledTools: ${mcpOriginal.length} MCP tools — ${assembly.activated ? 'folded into unified bridge' : 'deferred behind tool_search'}`);
 		}
 		if (assembly.activated) {
 			this._logService.info(`[AgentOS] _getEnabledTools: Tool Search activated — ${assembly.deferredCount} deferred (~${assembly.deferredTokens} tokens, thresh ~${assembly.thresholdTokens})`);
 		}
 		this._logService.info(`[AgentOS] _getEnabledTools: ${finalTools.length}/${enabled.length}/${allWithState.length} tools (assembly-driven) for ${agentId}`);
 
-		return finalTools.map(({ enabled: _, toolset: __, ...toolDef }) => toolDef);
+		const result = finalTools.map(({ enabled: _, toolset: __, ...toolDef }) => toolDef);
+		// 排序：codebase 分析工具 + 桥接工具排在前面（对齐 OpenClaw toolOrder）
+		// 避免 LLM 在前 10 个工具中找到 search_files/terminal 后停止扫描
+		const PRIORITY_NAMES = new Set([
+			'search_graph', 'query_graph', 'get_architecture', 'trace_path',
+			'search_code', 'get_code_snippet', 'index_repository', 'index_status',
+			'detect_changes', 'update_plan',
+			'tool_search', 'tool_describe', 'tool_call',
+		]);
+		result.sort((a, b) => {
+			const aPri = PRIORITY_NAMES.has(a.name) ? 0 : 1;
+			const bPri = PRIORITY_NAMES.has(b.name) ? 0 : 1;
+			return aPri - bPri || a.name.localeCompare(b.name);
+		});
+		// 更新 LRU 缓存
+		this._cachedToolDefs.set(cacheKey, result);
+		this._logService.info(`[AgentOS] _getEnabledTools: cache miss — computed ${result.length} tools (gen=${this._registryGeneration}, ctxWin=${contextWindow ?? '?'})`);
+		return result;
 	}
 
 	// _filterToolsForLLM 已被三层分离架构替代（Assembly 层 → assembleToolDefs）
@@ -2170,6 +2725,100 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		} catch {
 			return undefined;
 		}
+	}
+
+	/**
+	 * 获取 Agent 的 enabledToolsets 配置。
+	 * 对齐 Hermes 的 `agent.enabled_toolsets`：只发送属于这些 toolset 的工具。
+	 *
+	 * 未设置或空 → 全部 toolset（向后兼容）。
+	 */
+	private _getAgentEnabledToolsets(agentId?: string): string[] | undefined {
+		if (!agentId) { return undefined; }
+		try {
+			const studioService = (this as any)._studioService;
+			if (!studioService) { return undefined; }
+			const agents = studioService.getAgentsSync?.();
+			if (!agents) { return undefined; }
+			const agent = agents.find((a: any) => a.id === agentId);
+			return agent?.enabledToolsets?.length ? agent.enabledToolsets : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * 获取 Agent 的 disabledToolsets 配置。
+	 * 对齐 Hermes 的 `agent.disabled_toolsets`：在 enabled 之后作为减法步骤应用。
+	 *
+	 * **核心保护**（对齐 Hermes `bundle_non_core_tools` #33924）：Always 优先级的
+	 * toolset（core / mcp-bridge / tool-search）即使在 disabled 列表中也不会被
+	 * 完全剥离，只剥离其非核心部分。
+	 */
+	private _getAgentDisabledToolsets(agentId?: string): string[] | undefined {
+		if (!agentId) { return undefined; }
+		try {
+			const studioService = (this as any)._studioService;
+			if (!studioService) { return undefined; }
+			const agents = studioService.getAgentsSync?.();
+			if (!agents) { return undefined; }
+			const agent = agents.find((a: any) => a.id === agentId);
+			return agent?.disabledToolsets?.length ? agent.disabledToolsets : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * update_plan 门控。
+	 *
+	 * 默认启用 update_plan，Agent 可通过 enableUpdatePlan: false 显式关闭。
+	 */
+	private _shouldEnableUpdatePlan(agentId?: string): boolean {
+		if (agentId) {
+			const planFlag = this._getAgentConfigBool(agentId, 'enableUpdatePlan');
+			if (planFlag === false) { return false; }
+		}
+		return true;
+	}
+
+	private _getAgentConfigBool(agentId: string, field: string): boolean | undefined {
+		try {
+			const studioService = (this as any)._studioService;
+			if (!studioService) { return undefined; }
+			const agents = studioService.getAgentsSync?.();
+			if (!agents) { return undefined; }
+			const agent = agents.find((a: any) => a.id === agentId);
+			const val = agent?.[field];
+			return typeof val === 'boolean' ? val : undefined;
+		} catch { return undefined; }
+	}
+
+	/**
+	 * 延迟工具解析 — 借鉴 OpenClaw `resolveDeferredTool()`。
+	 *
+	 * 当 LLM 调用的工具不在当前已加载的工具列表中时，尝试从所有 provider 重新扫描。
+	 * 场景：MCP 服务器在 agent loop 进行中刚连接，新工具尚未被 _getEnabledTools 缓存。
+	 *
+	 * @param toolName 工具名
+	 * @param agentId Agent ID
+	 * @returns 工具定义，或 undefined（未找到）
+	 */
+	private async _resolveDeferredTool(
+		toolName: string,
+		agentId: string | undefined,
+	): Promise<IToolDefinition | undefined> {
+		try {
+			const providers = this._slotRegistry.getToolProviders();
+			for (const p of providers) {
+				try {
+					const tools = await p.listTools(agentId ?? '');
+					const found = tools.find(t => t.name === toolName);
+					if (found) { return found; }
+				} catch { /* ignore provider errors */ }
+			}
+		} catch { /* best effort */ }
+		return undefined;
 	}
 
 	/**
@@ -2207,7 +2856,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		// call_resolved: executor unwrap — 走完整 guardrail/approval 链
 		const underlyingName = dispatchResult.underlyingName!;
 		const underlyingArgs = dispatchResult.underlyingArgs ?? {};
-		this._logService.info(`[AgentOS] Bridge tool_call unwrapped → executing "${underlyingName}"`);
+		this._logService.info(`[AgentOS] Bridge tool_call unwrapped → executing "${underlyingName}" (args=${JSON.stringify(underlyingArgs).slice(0, 200)})`);
 
 		// 一次收集所有工具（用于 approval lookup + provider 匹配）
 		const providers = this._slotRegistry.getToolProviders();
@@ -2314,6 +2963,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const results: Array<{ toolCallId: string; content: any; success: boolean }> = [];
 
 		// ─── Dashboard 统计：工具调用计数 ──
+		// P8: 同时收集文件路径用于下一轮 enrich
 		for (const tc of toolCalls) {
 			if (tc.name) {
 				this._toolCallCounts.set(tc.name, (this._toolCallCounts.get(tc.name) ?? 0) + 1);
@@ -2321,6 +2971,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				// 实时写入文件存储（fire-and-forget）
 				if (this._dashboardStorage?.ready) {
 					this._dashboardStorage.incrementToolCall(tc.name).catch(() => {});
+				}
+				// P8: 暂存文件路径
+				const filePaths = this._extractFilePathsFromToolCall(tc);
+				if (filePaths.length > 0) {
+					const sessionKey = agentId; // agentId 维度暂存
+					this._stashFilePaths(sessionKey, filePaths);
 				}
 			}
 		}
@@ -2352,10 +3008,44 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const toolDefMap = new Map<string, IToolDefinition>();
 		for (const t of allAvailableTools) { toolDefMap.set(t.name, t); }
 
+		// ─── Subagent Limit Middleware（借鉴 deer-flow SubagentLimitMiddleware）───
+		// Truncate excess sub-agent delegation calls (delegate_task / task) before
+		// execution to prevent the LLM from spawning too many parallel sub-agents
+		// in a single turn. More reliable than prompt-based limits.
+		const limitResult = this._subagentLimitMw.apply(toolCalls);
+		if (limitResult.wasTruncated) {
+			this._logService.warn(
+				`[AgentOS] SubagentLimitMiddleware truncated ${limitResult.droppedCalls.length} excess sub-agent calls ` +
+				`(original: ${limitResult.originalTaskCount}, kept: ${limitResult.keptTaskCount}, max: ${this._subagentLimitMw.maxConcurrent})`
+			);
+			// Track dropped calls in the delegation ledger as cancelled
+			for (const dropped of limitResult.droppedCalls) {
+				this._delegationLedger.markCancelled(dropped.id);
+			}
+		}
+		const truncatedCalls = limitResult.toolCalls;
+
+		// ─── Track delegate_task calls in the delegation ledger ───
+		for (const tc of truncatedCalls) {
+			if (this._subagentLimitMw.isDelegationCall(tc)) {
+				let parsedArgs: Record<string, unknown> = {};
+				if (typeof tc.arguments === 'string') {
+					try { parsedArgs = JSON.parse(tc.arguments) as Record<string, unknown>; } catch { /* ignore */ }
+				}
+				const taskDesc = String(parsedArgs.task ?? parsedArgs.description ?? tc.name);
+				const subagentType = String(parsedArgs.agent_type ?? parsedArgs.type ?? '');
+				this._delegationLedger.markDelegated(tc.id, taskDesc, subagentType);
+			}
+		}
+
+		// Update durable context with the latest ledger state so it survives
+		// summarization compression on the next round.
+		this._durableContext.updateFromLedger(this._delegationLedger.getAllEntries());
+
 		// Deduplicate tool calls before execution
-		const uniqueCalls = deduplicateToolCalls(toolCalls);
-		if (uniqueCalls.length < toolCalls.length) {
-			this._logService.info(`[AgentOS] Deduplicated tool calls: ${toolCalls.length} → ${uniqueCalls.length}`);
+		const uniqueCalls = deduplicateToolCalls(truncatedCalls);
+		if (uniqueCalls.length < truncatedCalls.length) {
+			this._logService.info(`[AgentOS] Deduplicated tool calls: ${truncatedCalls.length} → ${uniqueCalls.length}`);
 		}
 
 		for (const toolCall of uniqueCalls) {
@@ -2379,10 +3069,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			// ─── Step 0.5: Tool Search bridge tool short-circuit ───
-			// tool_search / tool_call / tool_describe 是 _filterToolsForLLM
-			// 动态创建的桥接工具，不在任何 provider 中注册。如果不短路，
-			// repairToolName 会把 "tool_call" 错误修复为 "mcp_tool_call"
-			// （substring containment: "mcp_tool_call".includes("tool_call")）。
+			// tool_search / tool_call / tool_describe 是动态桥接工具，
+			// 不在任何 provider 中注册。跳过 repairToolName 避免误修。
 			if (isBridgeTool(toolCall.name)) {
 				this._logService.info(`[AgentOS] Bridge tool "${toolCall.name}" short-circuited`);
 				const argValidity0 = classifyArgumentValidity(toolCall.arguments || '');
@@ -2408,7 +3096,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				continue;
 			}
 
-			// ─── Step 1: Tool name repair ─────────────────────────
+			// ─── Step 1: Tool name repair + Deferred Tool Resolution ──
+			// 借鉴 OpenClaw `resolveDeferredTool`：执行时按需加载工具。
+			// 如果工具不在当前 validNameSet 中，尝试：
+			//   a) 名称修复（模糊匹配）
+			//   b) 延迟解析：从所有 provider 重新加载（MCP 动态发现的工具可能未在初始列表中）
 			let targetToolName = toolCall.name;
 			if (!validNameSet.has(targetToolName)) {
 				const repaired = repairToolName(targetToolName, availableToolNames);
@@ -2416,16 +3108,27 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					this._logService.warn(`[AgentOS] Repaired tool name "${targetToolName}" → "${repaired}"`);
 					targetToolName = repaired;
 				} else {
+					// 延迟工具解析：尝试从 provider 重新发现（MCP 工具可能刚连接）
+					const deferredTool = await this._resolveDeferredTool(targetToolName, agentId);
+					if (deferredTool) {
+						this._logService.info(`[AgentOS] Deferred tool resolved: "${targetToolName}" found via provider re-scan`);
+						// 添加到 availableTools 供后续使用
+						allAvailableTools.push(deferredTool);
+						availableToolNames.push(deferredTool.name);
+						validNameSet.add(deferredTool.name);
+						targetToolName = deferredTool.name;
+					} else {
 					// Tool not found — return error with available tool names
-					this._logService.warn(`[AgentOS] Tool "${toolCall.name}" not found and not repairable`);
+					this._logService.warn(`[AgentOS] Tool "${toolCall.name}" not found and not repairable. Valid tools (${availableToolNames.length}): ${availableToolNames.slice(0, 30).join(', ')}${availableToolNames.length > 30 ? '...' : ''}`);
 					results.push({
 						toolCallId: toolCall.id,
 						content: formatToolNotFoundResult(toolCall.name, repaired, availableToolNames),
 						success: false,
 					});
 					continue;
-				}
-			}
+					}  // end else (deferredTool not found)
+				}  // end if (!deferredTool)
+			}  // end if (!validNameSet.has)
 
 			// ─── Step 2: Argument parsing & repair ─────────────────
 			const argValidity = classifyArgumentValidity(toolCall.arguments || '');
@@ -2656,6 +3359,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					this._logService.warn(`[AgentOS] [parallel] Repaired tool name "${targetToolName}" → "${repaired}"`);
 					targetToolName = repaired;
 				} else {
+					this._logService.warn(`[AgentOS] [parallel] Tool "${toolCall.name}" not found and not repairable. Valid tools (${availableToolNames.length}): ${availableToolNames.slice(0, 30).join(', ')}${availableToolNames.length > 30 ? '...' : ''}`);
 					executionEntries.push({
 						originalIndex: i,
 						toolCall,
@@ -2939,6 +3643,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const results: IToolCallInfo[] = [];
 		if (!text || text.length < 5) { return results; }
 
+		// 构建工具名白名单 Set — 用于过滤 Python function-call 格式提取时的误匹配
+		const enabledToolNames = enabledTools ? new Set(enabledTools.map(t => t.name)) : undefined;
+
 		this._logService.info(`[AgentOS] _tryExtractToolCallsFromText: attempting extraction from ${text.length} chars (thinking: ${thinkingContent?.length ?? 0} chars)`);
 
 		// 1. 尝试从 ```json 代码块中提取（支持嵌套大括号）
@@ -3006,7 +3713,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		//    或 ```python\ntool_name(arg1="val1")\n```
 		//    常见于不支持 function calling 的模型（如 qwen3.5:9b）
 		if (results.length === 0) {
-			const pythonResults = this._extractToolCallsFromPythonSyntax(text);
+			const pythonResults = this._extractToolCallsFromPythonSyntax(text, enabledToolNames);
 			if (pythonResults.length > 0) {
 				this._logService.info(`[AgentOS] _tryExtractToolCallsFromText: found ${pythonResults.length} tool call(s) in Python function-call format`);
 				results.push(...pythonResults);
@@ -3038,6 +3745,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					}
 				} catch { /* not valid JSON */ }
 			}
+		}
+
+		// ─── 统一白名单过滤 ──────────────────────────────────────────
+		// 所有提取路径（JSON/XML/Bracket/ReAct/Python）的最终结果都需要通过白名单。
+		// 这防止 LLM 分析代码时输出的函数名（如 ForceGC, OnPostGarbageCollection）
+		// 被误解析为工具调用。
+		if (enabledToolNames && enabledToolNames.size > 0 && results.length > 0) {
+			const before = results.length;
+			const filtered = results.filter(tc => {
+				if (enabledToolNames!.has(tc.name)) { return true; }
+				this._logService.info(`[AgentOS] _tryExtractToolCallsFromText: filtered out "${tc.name}" (not in enabled tools)`);
+				return false;
+			});
+			if (filtered.length < before) {
+				this._logService.info(`[AgentOS] _tryExtractToolCallsFromText: whitelist filtered ${before} → ${filtered.length} tool calls`);
+			}
+			results.length = 0;
+			results.push(...filtered);
 		}
 
 		if (results.length > 0) {
@@ -3312,7 +4037,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 *
 	 * 这是 qwen3.5 等不支持原生 function calling 的模型常见的输出格式。
 	 */
-	private _extractToolCallsFromPythonSyntax(text: string): IToolCallInfo[] {
+	private _extractToolCallsFromPythonSyntax(text: string, enabledTools?: Set<string>): IToolCallInfo[] {
 		const results: IToolCallInfo[] = [];
 
 		// 先提取 ```python 代码块中的内容
@@ -3341,6 +4066,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					'if', 'for', 'while', 'with', 'class', 'def', 'return', 'import', 'from',
 					'true', 'false', 'none', 'null', 'self', 'super']);
 				if (skipNames.has(funcName.toLowerCase())) { continue; }
+
+				// 白名单过滤：如果提供了 enabledTools，只保留精确匹配已注册工具名的调用
+				// 这防止 LLM 分析代码时输出的函数名（如 OnPostGarbageCollection）被误解析为工具调用
+				if (enabledTools && enabledTools.size > 0) {
+					if (!enabledTools.has(funcName)) {
+						continue;
+					}
+				} else {
+					// enabledTools 为空 — 记录警告，这可能导致误匹配
+					this._logService.warn(`[AgentOS] _extractToolCallsFromPythonSyntax: enabledTools is empty, cannot filter "${funcName}"`);
+				}
 
 				// 解析参数
 				const args = this._parsePythonKwargs(argsStr);
@@ -4319,6 +5055,125 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			this._logService.warn(`[AgentOS] _resolveContextWindow failed for ${modelId}, falling back to ${FALLBACK}: ${err}`);
 		}
 		return FALLBACK;
+	}
+
+	/**
+	 * Tool Defs 缓存失效触发 — 对齐 Hermes-Agent `model_tools._clear_tool_defs_cache()`。
+	 *
+	 * 当工具集动态变化时调用（MCP 重连、builtin 工具热加载、plugin 加载等）。
+	 * 外部调用方可通过 (agentOSService as any)._bumpToolDefsCache() 触发。
+	 */
+	public _bumpToolDefsCache(): void {
+		this._registryGeneration++;
+		this._logService.info(`[AgentOS] Tool defs cache invalidated, generation=${this._registryGeneration}`);
+	}
+
+	/**
+	 * 注册 Tool Set 变化监听器 — 对齐 Hermes `registry._generation` 失效机制。
+	 *
+	 * 监听以下事件源：
+	 *   1. SlotRegistry.onDidChangeSlots（工具 provider 增删，如果存在）
+	 *   2. IMcpService.onDidChangeMcpServers（MCP 服务器增删/重连）
+	 *   3. ConfigService.onDidChangeConfiguration（用户配置修改）
+	 *
+	 * 任何事件触发时递增 _registryGeneration，强制 LRU 缓存下次 miss。
+	 */
+	private _registerToolSetChangeListeners(): void {
+		let listenerCount = 0;
+
+		// ① SlotRegistry: 工具 provider 增删（如果存在）
+		const onChangeSlots = (this._slotRegistry as any).onDidChangeSlots;
+		if (onChangeSlots) {
+			this._register(onChangeSlots(() => {
+				this._bumpToolDefsCache();
+			}));
+			listenerCount++;
+		}
+
+		// ② IMcpService: MCP 服务器变化（动态注入的 MCP 工具）
+		const mcpService = (this as any)._mcpService;
+		if (mcpService?.onDidChangeMcpServers) {
+			this._register(mcpService.onDidChangeMcpServers(() => {
+				this._bumpToolDefsCache();
+			}));
+			listenerCount++;
+			this._logService.info('[AgentOS] Registered MCP server change listener for cache invalidation');
+		}
+
+		// ③ IConfigurationService: 配置变化（影响工具集定义）
+		const configService = (this as any)._configService;
+		if (configService?.onDidChangeConfiguration) {
+			this._register(configService.onDidChangeConfiguration((e: any) => {
+				// 只在工具集相关配置变化时触发
+				if (e.affectsConfiguration?.('agentStudio.tools') ||
+					e.affectsConfiguration?.('agentStudio.toolset') ||
+					e.affectsConfiguration?.('agentStudio.disabledToolsets')) {
+					this._bumpToolDefsCache();
+				}
+			}));
+			listenerCount++;
+		}
+
+		this._logService.info(`[AgentOS] Tool set change listeners registered (${listenerCount} active) for cache invalidation`);
+	}
+
+	/**
+	 * 获取 config 指纹（mtime + size）— 对齐 Hermes-Agent `cfg_fp`。
+	 * 失败时返回空字符串，缓存退化到只依赖 registryGeneration。
+	 */
+	private _getConfigFingerprint(): string {
+		try {
+			// 尝试获取 Agent Studio 配置文件路径
+			const configPath = (this as any)._configService?.getConfigPath?.();
+			if (!configPath) { return ''; }
+			const stat = (this as any)._fileService?.stat?.(configPath);
+			if (stat) {
+				return `${stat.mtime}:${stat.size}`;
+			}
+		} catch { /* 忽略 */ }
+		return '';
+	}
+
+	/**
+	 * 设置当前 agent loop 使用的模型（每次循环入口调用，确保 context window 实时查表）。
+	 * 对齐 Hermes-Agent `model_tools._resolve_active_context_length()` 每次实时查表的设计。
+	 */
+	public _setCurrentModel(provider: IModelProvider | undefined, modelId: string | undefined): void {
+		this._currentModelProvider = provider;
+		this._currentModelId = modelId;
+	}
+
+	/**
+	 * 检测 focus 模式（带缓存，对齐 Hermes `auto` / `focus` 编码姿态切换）。
+	 * 工作区不变时复用检测结果，避免每次 _getEnabledTools 都重新检测。
+	 */
+	private async _detectFocusModeIfNeeded(): Promise<IFocusModeResult> {
+		const ws = this._workspaceContextService.getWorkspace();
+		const workspaceKey = ws.folders.map(f => f.uri.fsPath).sort().join('|');
+
+		if (this._focusModeCache && this._focusModeCache.workspaceKey === workspaceKey) {
+			return this._focusModeCache.result;
+		}
+
+		const folders = ws.folders.map(f => f.uri.fsPath);
+		// 使用带 probe 的版本（detectFocusMode 的 checkFileExists 是占位实现，永远返回 false）
+		const probe: IFileProbe = {
+			exists: async (path: string) => {
+				try {
+					await this._fileService.resolve(URI.file(path));
+					return true;
+				} catch { return false; }
+			},
+			listFolder: async (path: string) => {
+				try {
+					const stat = await this._fileService.resolve(URI.file(path));
+					return (stat.children ?? []).map(c => c.name);
+				} catch { return []; }
+			},
+		};
+		const result = await detectFocusModeWithProbe(folders, probe, this._logService);
+		this._focusModeCache = { workspaceKey, result };
+		return result;
 	}
 
 	/**

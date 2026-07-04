@@ -12,9 +12,15 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
+import { ICodebaseMemoryMcpService, IIndexConfig } from './codebaseMemoryMcpService.js';
+import { ICodebaseGraphService } from './codebaseGraphService.js';
+import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
+import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
 
 interface IMemoryEntry {
 	id: string;
@@ -26,7 +32,7 @@ interface IMemoryEntry {
 
 type LayerFilter = 'all' | 'working' | 'episodic' | 'semantic' | 'procedural';
 type ScopeFilter = 'all' | 'workspace' | 'session' | 'agent';
-type ViewName = 'memories' | 'slots' | 'lessons' | 'consolidation' | 'audit' | 'hooks' | 'commits' | 'report' | 'skills';
+type ViewName = 'memories' | 'slots' | 'lessons' | 'consolidation' | 'audit' | 'hooks' | 'commits' | 'report' | 'skills' | 'codebase';
 
 /** Check if a memory belongs to a specific 4-Tier */
 function matchesTier(mem: IMemoryEntry, tier: LayerFilter): boolean {
@@ -56,6 +62,10 @@ export class MemoryDetailEditorPane extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
+		@ICodebaseGraphService private readonly _codebaseGraphService: ICodebaseGraphService,
+		@IEditorService private readonly _editorService: IEditorService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super(MemoryDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 		// 获取当前工作区 ID 用于过滤
@@ -111,7 +121,9 @@ export class MemoryDetailEditorPane extends EditorPane {
 		if (input.targetLayer) {
 			this._layerFilter = input.targetLayer as LayerFilter;
 		}
-		await this._loadMemory();
+		// 从聊天框跳转 → 默认仅显示当前 agent；从侧边栏打开 → 默认全部 agent
+		this._agentFilter = input.fromAgentChat ? this._agentId : '__all__';
+		await this._loadMemoryWithFilter();
 	}
 
 	private _injectStyles(): void {
@@ -311,6 +323,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 			{ id: 'commits', label: '🔀 提交' },
 			{ id: 'report', label: '📊 报告' },
 			{ id: 'skills', label: '⚡ 技能' },
+			{ id: 'codebase', label: '🧬 代码图谱' },
 		];
 		for (const view of views) {
 			const tab = append(viewNav, $('.md-view-tab'));
@@ -340,6 +353,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 			case 'commits': this._renderCommitsView(); return;
 			case 'report': this._renderReportView(); return;
 			case 'skills': this._renderSkillsView(); return;
+			case 'codebase': this._renderCodebaseView(); return;
 		}
 
 		// ── Memories view (default) ──
@@ -365,17 +379,18 @@ export class MemoryDetailEditorPane extends EditorPane {
 		const allOption = document.createElement('option');
 		allOption.value = '__all__'; allOption.textContent = '全部 Agent';
 		agentSelect.appendChild(allOption);
+		// 当前 agent 选项（仅在非全部模式下显示为单独选项）
 		const currentOption = document.createElement('option');
-		currentOption.value = this._agentId; currentOption.textContent = this._agentId;
+		currentOption.value = this._agentId; currentOption.textContent = `当前 Agent (${this._agentId})`;
 		agentSelect.appendChild(currentOption);
 		agentSelect.value = this._agentFilter;
-		// 异步加载有数据的 agent 列表
+		// 异步加载有其他数据的 agent 列表
 		if (memProvider?.listAllAgentsWithData) {
 			memProvider.listAllAgentsWithData().then((agents: string[]) => {
 				for (const aid of agents) {
 					if (aid === this._agentId) continue;
 					const opt = document.createElement('option');
-					opt.value = aid; opt.textContent = aid;
+					opt.value = aid; opt.textContent = `Agent (${aid})`;
 					agentSelect.appendChild(opt);
 				}
 			}).catch(() => {});
@@ -1741,5 +1756,398 @@ private _exportSkillsJson(memProvider: any): void {
 		panel.appendChild(closeBtn);
 
 		this._container.appendChild(panel);
+	}
+
+	// ─── Codebase View ──────────────────────────────────────────────────────
+	//
+	// 嵌入 Memory EditorPane 的代码图谱面板。
+	// 替代独立的 CodebaseMemoryDetailEditorPane 入口。
+	// 提供状态显示、索引操作、配置、进度日志、以及跳转到完整详情/3D 图谱。
+
+	private _cbmLogEl: HTMLElement | null = null;
+	private _cbmProgressDisposable: { dispose: () => void } | null = null;
+
+	private async _renderCodebaseView(): Promise<void> {
+		if (!this._container) { return; }
+
+		const config = this._cbmService.getIndexConfig();
+		const container = this._container;
+		container.style.padding = '0';
+		// 设置基础文字颜色，确保所有子元素继承的默认颜色是亮的
+		container.style.color = 'var(--vscode-foreground)';
+
+		// Loading
+		const loading = append(container, $('div'));
+		loading.style.cssText = 'padding:40px;text-align:center;color:var(--vscode-foreground);';
+		loading.textContent = '⏳ 加载代码图谱状态...';
+		await new Promise(r => setTimeout(r, 0));
+
+		// Fetch status
+		const status = await this._codebaseGraphService.getGraphStatus();
+		const hasData = this._codebaseGraphService.hasGraphData();
+		const isIndexing = this._codebaseGraphService.isIndexing;
+
+		loading.remove();
+
+		// ── Header ───────────────────────────────────────────────────────
+		const header = append(container, $('.md-header'));
+		header.style.padding = '16px 20px';
+		const h1 = append(header, $('h1'));
+		h1.textContent = '🧬 代码图谱';
+		h1.style.fontSize = '18px';
+		h1.style.fontWeight = '600';
+		h1.style.margin = '0 0 4px';
+
+		const subtitle = append(header, $('div'));
+		subtitle.textContent = '基于内置 tree-sitter WASM · 无需外部二进制';
+		subtitle.style.fontSize = '11px';
+		subtitle.style.color = 'var(--vscode-descriptionForeground)';
+
+		// Status badge
+		const statusRow = append(header, $('div'));
+		statusRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;';
+		const badge = append(statusRow, $('span'));
+		const statusCls = isIndexing ? 'indexing' : (status.exists ? 'ready' : 'empty');
+		badge.className = `md-status-badge ${statusCls}`;
+		badge.style.cssText = 'padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;';
+		badge.textContent = isIndexing ? '⏳ 索引中...' : (status.exists ? '✓ 已就绪' : '○ 未索引');
+		if (statusCls === 'indexing') {
+			badge.style.background = 'rgba(86,156,214,0.15)';
+			badge.style.color = '#569cd6';
+		} else if (statusCls === 'ready') {
+			badge.style.background = 'rgba(78,201,176,0.15)';
+			badge.style.color = '#4ec9b0';
+		} else {
+			badge.style.background = 'rgba(128,128,128,0.1)';
+			badge.style.color = 'var(--vscode-descriptionForeground)';
+		}
+
+		// ── Action buttons ───────────────────────────────────────────────
+		const btnRow = append(header, $('div'));
+		btnRow.style.cssText = 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;';
+
+		const indexBtn = append(btnRow, $('button')) as HTMLButtonElement;
+		indexBtn.className = 'md-btn';
+		indexBtn.textContent = isIndexing ? '⏳ 索引中...' : '▶ 索引代码库';
+		indexBtn.disabled = isIndexing;
+		indexBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-button-background);color:var(--vscode-button-foreground);font-size:12px;';
+		indexBtn.addEventListener('click', async () => {
+			indexBtn.disabled = true;
+			indexBtn.textContent = '⏳ 索引中...';
+			try {
+				const result = await this._cbmService.indexRepository();
+				if (result.success) {
+					this._notificationService.info(`索引完成 (${result.duration}s)`);
+				} else {
+					this._notificationService.warn(`索引失败: ${result.message}`);
+				}
+			} catch (err: any) {
+				this._notificationService.error(`索引错误: ${err?.message || err}`);
+			}
+			this._renderCodebaseView();
+		});
+
+		if (isIndexing) {
+			const cancelBtn = append(btnRow, $('button'));
+			cancelBtn.className = 'md-btn';
+			cancelBtn.textContent = '✖ 取消';
+			cancelBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-input-background);color:var(--vscode-foreground);font-size:12px;';
+			cancelBtn.addEventListener('click', () => {
+				this._cbmService.cancelIndex();
+			});
+		}
+
+		const detailBtn = append(btnRow, $('button'));
+		detailBtn.className = 'md-btn';
+		detailBtn.textContent = '📋 完整详情';
+		detailBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-input-background);color:var(--vscode-foreground);font-size:12px;';
+		detailBtn.addEventListener('click', () => {
+			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
+			this._editorService.openEditor(input, { pinned: true });
+		});
+
+		if (status.exists || hasData) {
+			const graph3dBtn = append(btnRow, $('button'));
+			graph3dBtn.className = 'md-btn';
+			graph3dBtn.textContent = '🌐 3D 图谱';
+			graph3dBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-input-background);color:var(--vscode-foreground);font-size:12px;';
+			graph3dBtn.addEventListener('click', () => {
+				const input = CodebaseGraphViewerEditorInput.getOrCreate();
+				this._editorService.openEditor(input, { pinned: true });
+			});
+
+			const syncBtn = append(btnRow, $('button')) as HTMLButtonElement;
+			syncBtn.className = 'md-btn';
+			syncBtn.textContent = '⬆ 团队同步';
+			syncBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-input-background);color:var(--vscode-foreground);font-size:12px;';
+			syncBtn.addEventListener('click', async () => {
+				syncBtn.disabled = true;
+				syncBtn.textContent = '⏳ 同步中...';
+				try {
+					const result = await this._cbmService.syncGraph();
+					if (result.success) {
+						this._notificationService.info(result.message);
+					} else {
+						this._notificationService.warn(result.message);
+					}
+				} catch (err: any) {
+					this._notificationService.error(`同步失败: ${err?.message || err}`);
+				}
+				syncBtn.disabled = false;
+				syncBtn.textContent = '⬆ 团队同步';
+			});
+		}
+
+		// ── Stats ────────────────────────────────────────────────────────
+		if (status.exists || hasData) {
+			const statsSection = append(container, $('div'));
+			statsSection.style.cssText = 'padding:12px 20px;';
+			const statsTitle = append(statsSection, $('div'));
+			statsTitle.textContent = '📊 统计';
+			statsTitle.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:8px;color:var(--vscode-descriptionForeground);';
+
+			const statsGrid = append(statsSection, $('div'));
+			statsGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;';
+
+			const addStat = (label: string, value: string | number) => {
+				const card = append(statsGrid, $('div'));
+				card.style.cssText = 'padding:8px 12px;border-radius:4px;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);';
+				const l = append(card, $('div'));
+				l.textContent = label;
+				l.style.cssText = 'font-size:10px;color:var(--vscode-descriptionForeground);';
+				const v = append(card, $('div'));
+				v.textContent = String(value);
+				// 关键修复：value 使用主前景色，确保深色背景下可读
+				v.style.cssText = 'font-size:16px;font-weight:600;margin-top:2px;color:var(--vscode-foreground);';
+			};
+
+			if (hasData) {
+				const schema = this._codebaseGraphService.getGraphSchema();
+				addStat('节点', schema.totalNodes);
+				addStat('边', schema.totalEdges);
+			}
+			if (status.size) {
+				addStat('文件大小', `${(status.size / 1024 / 1024).toFixed(2)} MB`);
+			}
+			if (status.lastModified) {
+				addStat('更新时间', new Date(status.lastModified).toLocaleString());
+			}
+			if (status.graphPath) {
+				const pathEl = append(statsSection, $('div'));
+				// 关键修复：路径文字使用主前景色而非 descriptionForeground
+				pathEl.style.cssText = 'font-size:11px;color:var(--vscode-foreground);margin-top:8px;padding:4px 8px;background:var(--vscode-input-background);border-radius:3px;font-family:monospace;word-break:break-all;';
+				pathEl.textContent = `📄 ${status.graphPath}`;
+			}
+		}
+
+		// ── Index Config ─────────────────────────────────────────────────
+		const configSection = append(container, $('div'));
+		configSection.style.cssText = 'padding:12px 20px;';
+		// ── Index Config — 重写为网格化布局 ─────────────────────────────
+		// 标题行：左标题 + 右模式徽章
+		const titleRow = append(configSection, $('div'));
+		titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
+		const configTitle = append(titleRow, $('div'));
+		configTitle.textContent = '⚙ Index Configuration';
+		configTitle.style.cssText = 'font-size:12px;font-weight:600;color:var(--vscode-foreground);';
+		const modeBadge = append(titleRow, $('span'));
+		modeBadge.className = 'cbm-mode-badge';
+		modeBadge.textContent = (config.mode || 'fast').toUpperCase();
+		modeBadge.style.cssText = 'padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600;background:rgba(86,156,214,0.15);color:#569cd6;';
+
+		// 工具函数：渲染一个 label + 控件行
+		const renderConfigRow = (
+			label: string,
+			placeholder: string,
+			initialValue: string,
+		): HTMLInputElement => {
+			const row = append(configSection, $('div'));
+			row.style.cssText = 'display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;margin-bottom:8px;';
+			const lbl = append(row, $('label'));
+			lbl.textContent = label;
+			lbl.style.cssText = 'font-size:11px;color:var(--vscode-foreground);font-weight:500;text-align:right;';
+			const input = document.createElement('input');
+			input.type = 'text';
+			input.value = initialValue;
+			input.placeholder = placeholder;
+			input.style.cssText = 'width:100%;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);border-radius:3px;padding:4px 8px;font-size:11px;color:var(--vscode-foreground);font-family:var(--vscode-editor-font-family,monospace);';
+			row.appendChild(input);
+			return input;
+		};
+
+		// ── Mode：3 个并排按钮（segmented control） ─────────────────────
+		const modeRow = append(configSection, $('div'));
+		modeRow.style.cssText = 'display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;margin-bottom:10px;';
+		const modeLbl = append(modeRow, $('label'));
+		modeLbl.textContent = 'Mode';
+		modeLbl.style.cssText = 'font-size:11px;color:var(--vscode-foreground);font-weight:500;text-align:right;';
+		const modeGroup = append(modeRow, $('div'));
+		modeGroup.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border:1px solid var(--vscode-input-border);border-radius:4px;overflow:hidden;';
+		const modeOptions: Array<{ value: 'fast' | 'moderate' | 'full'; label: string; icon: string }> = [
+			{ value: 'fast', label: 'Fast', icon: '⚡' },
+			{ value: 'moderate', label: 'Moderate', icon: '⚙' },
+			{ value: 'full', label: 'Full', icon: '🔬' },
+		];
+		let currentMode: 'fast' | 'moderate' | 'full' = (config.mode || 'fast') as any;
+		const updateModeBadge = () => {
+			modeBadge.textContent = currentMode.toUpperCase();
+		};
+		const modeButtons: HTMLButtonElement[] = [];
+		for (const opt of modeOptions) {
+			const btn = document.createElement('button');
+			btn.type = 'button';
+			btn.textContent = `${opt.icon} ${opt.label}`;
+			btn.dataset.value = opt.value;
+			const isActive = currentMode === opt.value;
+			btn.style.cssText = `padding:5px 4px;cursor:pointer;border:none;border-right:1px solid var(--vscode-input-border);background:${isActive ? 'var(--vscode-button-background)' : 'var(--vscode-input-background)'};color:${isActive ? 'var(--vscode-button-foreground)' : 'var(--vscode-foreground)'};font-size:11px;font-weight:${isActive ? '600' : '500'};`;
+			if (opt === modeOptions[modeOptions.length - 1]) { btn.style.borderRight = 'none'; }
+			btn.addEventListener('click', () => {
+				currentMode = opt.value;
+				for (const b of modeButtons) {
+					const active = b.dataset.value === currentMode;
+					b.style.background = active ? 'var(--vscode-button-background)' : 'var(--vscode-input-background)';
+					b.style.color = active ? 'var(--vscode-button-foreground)' : 'var(--vscode-foreground)';
+					b.style.fontWeight = active ? '600' : '500';
+				}
+				updateModeBadge();
+			});
+			modeButtons.push(btn);
+			modeGroup.appendChild(btn);
+		}
+
+		// ── Index Path ─────────────────────────────────────────────────
+		const subInput = renderConfigRow(
+			'Index Path',
+			'Leave empty for entire workspace, or e.g. src/vs/sessions',
+			config.subPath || '',
+		);
+
+		// ── Exclude (逗号分隔) ─────────────────────────────────────────
+		const exclInput = renderConfigRow(
+			'Exclude',
+			'node_modules, .git, build, out, dist, ...',
+			config.excludeDirs.join(', '),
+		);
+
+		// ── Keep (新增：保留目录) ──────────────────────────────────────
+		const keepInput = renderConfigRow(
+			'Keep',
+			'Content/Script, src/core (即使父目录被排除也不跳过)',
+			(config.keepDirs || []).join(', '),
+		);
+
+		// ── Action 按钮组 ──────────────────────────────────────────────
+		const btnRow2 = append(configSection, $('div'));
+		btnRow2.style.cssText = 'display:flex;gap:6px;margin-top:14px;';
+
+		// Index Codebase 按钮（紫色）
+		const triggerBtn = document.createElement('button') as HTMLButtonElement;
+		triggerBtn.textContent = isIndexing ? '⏳ 索引中...' : '🔍 Index Codebase';
+		triggerBtn.disabled = isIndexing;
+		triggerBtn.style.cssText = 'padding:6px 14px;border-radius:4px;cursor:pointer;border:1px solid #6366f1;background:#6366f1;color:#fff;font-size:12px;font-weight:500;';
+		triggerBtn.addEventListener('click', async () => {
+			triggerBtn.disabled = true;
+			triggerBtn.textContent = '⏳ 索引中...';
+			try {
+				const result = await this._cbmService.indexRepository();
+				if (result.success) {
+					this._notificationService.info(`索引完成 (${result.duration}s)`);
+				} else {
+					this._notificationService.warn(`索引失败: ${result.message}`);
+				}
+			} catch (err: any) {
+				this._notificationService.error(`索引错误: ${err?.message || err}`);
+			}
+			this._renderCodebaseView();
+		});
+		btnRow2.appendChild(triggerBtn);
+
+		// Save Config 按钮
+		const saveBtn = document.createElement('button') as HTMLButtonElement;
+		saveBtn.textContent = '💾 Save Config';
+		saveBtn.style.cssText = 'padding:6px 14px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-button-background);color:var(--vscode-button-foreground);font-size:12px;font-weight:500;';
+		saveBtn.addEventListener('click', () => {
+			const parseList = (raw: string): string[] =>
+				raw.split(/[,\n]/)
+					.map(s => s.trim())
+					.filter(Boolean);
+			const newConfig: IIndexConfig = {
+				mode: currentMode,
+				excludeDirs: parseList(exclInput.value),
+				keepDirs: parseList(keepInput.value),
+				subPath: subInput.value.trim() || undefined,
+			};
+			this._cbmService.setIndexConfig(newConfig);
+			this._notificationService.info('配置已保存');
+		});
+		btnRow2.appendChild(saveBtn);
+
+		// ── Progress Log ─────────────────────────────────────────────────
+		const logSection = append(container, $('div'));
+		logSection.style.cssText = 'padding:12px 20px;';
+		const logTitle = append(logSection, $('div'));
+		logTitle.textContent = '📝 索引日志';
+		logTitle.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:6px;color:var(--vscode-descriptionForeground);';
+
+		this._cbmLogEl = append(logSection, $('div'));
+		this._cbmLogEl.style.cssText = 'max-height:300px;overflow-y:auto;background:var(--vscode-textCodeBlock-background);border:1px solid var(--vscode-input-border);border-radius:4px;padding:8px;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;line-height:1.6;color:var(--vscode-foreground);';
+
+		// Subscribe to progress events (dispose on re-render)
+		if (this._cbmProgressDisposable) {
+			this._cbmProgressDisposable.dispose();
+		}
+		const progDisp = this._register(this._codebaseGraphService.onDidIndexProgress(line => {
+			if (this._cbmLogEl) {
+				const lineEl = document.createElement('div');
+				lineEl.textContent = `[${new Date().toLocaleTimeString()}] ${line}`;
+				// 关键修复：日志行文字使用主前景色，确保可读
+				lineEl.style.color = line.startsWith('✓') ? '#4ec9b0' : (line.startsWith('✗') ? '#f48771' : (line.startsWith('⚠') ? '#f0a04b' : 'var(--vscode-foreground)'));
+				this._cbmLogEl.appendChild(lineEl);
+				this._cbmLogEl.scrollTop = this._cbmLogEl.scrollHeight;
+			}
+		}));
+		const completeDisp = this._register(this._codebaseGraphService.onDidIndexComplete(result => {
+			if (this._cbmLogEl) {
+				const lineEl = document.createElement('div');
+				lineEl.textContent = `[${new Date().toLocaleTimeString()}] ${result.success ? '✓' : '✗'} ${result.message} (${result.duration}s)`;
+				lineEl.style.color = result.success ? '#4ec9b0' : '#f48771';
+				this._cbmLogEl.appendChild(lineEl);
+				this._cbmLogEl.scrollTop = this._cbmLogEl.scrollHeight;
+			}
+			if (result.success) {
+				this._notificationService.info(`索引完成 (${result.duration}s)`);
+				setTimeout(() => this._renderCodebaseView(), 500);
+			}
+		}));
+		this._cbmProgressDisposable = {
+			dispose: () => { progDisp.dispose(); completeDisp.dispose(); }
+		};
+
+		// Empty state hint
+		if (!status.exists && !hasData && !isIndexing) {
+			const hint = append(logSection, $('div'));
+			hint.textContent = '💡 点击"索引代码库"按钮开始构建代码图谱。索引完成后，Agent 可使用 search_graph、query_graph、get_architecture 等工具查询代码结构。';
+			// 关键修复：提示文字用主前景色，确保可读
+			hint.style.cssText = 'color:var(--vscode-foreground);font-size:11px;padding:8px;background:var(--vscode-input-background);border-radius:3px;margin-top:4px;';
+		}
+	}
+
+	/**
+	 * 外部调用入口：切换到 codebase 视图并触发索引。
+	 * 供 `agentStudio.codebaseMemoryInit` 命令使用。
+	 */
+	async activateCodebaseViewAndIndex(): Promise<void> {
+		this._currentView = 'codebase';
+		this._renderFull();
+		// 等待 DOM 渲染完成
+		await new Promise(r => setTimeout(r, 100));
+		// 自动触发索引（如果未在索引中且无图谱数据）
+		if (!this._codebaseGraphService.isIndexing && !this._codebaseGraphService.hasGraphData()) {
+			try {
+				await this._cbmService.indexRepository();
+			} catch (err: any) {
+				this._notificationService.error(`自动索引失败: ${err?.message || err}`);
+			}
+		}
 	}
 }

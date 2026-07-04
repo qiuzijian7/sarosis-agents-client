@@ -325,20 +325,68 @@ export function repairToolName(
 	}
 
 	// 5. Substring containment — only if exactly one candidate matches
-	const containedBy = validNames.filter((n) =>
-		n.toLowerCase().includes(lowerName),
-	);
-	if (containedBy.length === 1) {
-		return containedBy[0];
+	// 参考 Hermes：fuzzy match 使用 cutoff=0.7，substring 太宽松容易误匹配。
+	// 添加最小长度限制（≥4 chars）防止 "Task"→"delegate_task" 等短名误匹配。
+	const MIN_SUBSTR_LENGTH = 4;
+	if (lowerName.length >= MIN_SUBSTR_LENGTH) {
+		const containedBy = validNames.filter((n) =>
+			n.toLowerCase().includes(lowerName),
+		);
+		if (containedBy.length === 1) {
+			return containedBy[0];
+		}
 	}
-	const contains = validNames.filter((n) =>
-		lowerName.includes(n.toLowerCase()),
-	);
-	if (contains.length === 1) {
-		return contains[0];
+	if (lowerName.length >= MIN_SUBSTR_LENGTH) {
+		const contains = validNames.filter((n) => {
+			const nl = n.toLowerCase();
+			return nl.length >= MIN_SUBSTR_LENGTH && lowerName.includes(nl);
+		});
+		if (contains.length === 1) {
+			return contains[0];
+		}
+	}
+
+	// 6. Fuzzy match (difflib equivalent) — last resort
+	// 参考 Hermes repair_tool_call 的 get_close_matches(lowered, valid_tool_names, n=1, cutoff=0.7)
+	// 使用 Levenshtein 距离的简化版：相似度 ≥ 0.7 时匹配
+	const fuzzyMatch = validNames.find((n) => {
+		const nl = n.toLowerCase();
+		if (nl.length < 3 || lowerName.length < 3) { return false; }
+		const maxLen = Math.max(nl.length, lowerName.length);
+		const dist = _levenshtein(lowerName, nl);
+		const similarity = 1 - dist / maxLen;
+		return similarity >= 0.7;
+	});
+	if (fuzzyMatch) {
+		return fuzzyMatch;
 	}
 
 	return undefined;
+}
+
+/**
+ * Levenshtein 距离 — 参考 Hermes 的 difflib.get_close_matches。
+ * 用于 fuzzy match 的最后手段。
+ */
+function _levenshtein(a: string, b: string): number {
+	const m = a.length;
+	const n = b.length;
+	if (m === 0) { return n; }
+	if (n === 0) { return m; }
+	const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+	for (let i = 0; i <= m; i++) { dp[i][0] = i; }
+	for (let j = 0; j <= n; j++) { dp[0][j] = j; }
+	for (let i = 1; i <= m; i++) {
+		for (let j = 1; j <= n; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			dp[i][j] = Math.min(
+				dp[i - 1][j] + 1,
+				dp[i][j - 1] + 1,
+				dp[i - 1][j - 1] + cost,
+			);
+		}
+	}
+	return dp[m][n];
 }
 
 // ─── Argument Coercion & Repair ─────────────────────────────────────
@@ -900,63 +948,114 @@ const NEVER_PARALLEL_TOOLS = new Set([
 	"clarify",
 	"delegate_task",
 	"memory",
-	"todo",
+	"todo", "update_plan",
+	"memory_remember",
+	"memory_search",
+	"memory_delete",
+	"skill_manage",
+	"cronjob",
+	"send_message",
+	"html_preview",
 ]);
 
 /**
+ * Read-only tools with no shared mutable session state — safe to parallelize.
+ * 参考 Hermes `_PARALLEL_SAFE_TOOLS`。
+ */
+const PARALLEL_SAFE_TOOLS = new Set([
+	// 基础只读
+	"file_read", "file_list", "search_files", "search_content",
+	"echo", "get_current_time", "math_eval", "http_get",
+	// 技能
+	"skills_list", "skill_view", "read_skill", "list_skills",
+	// 搜索
+	"web_search", "web_extract", "session_search",
+	// 工作流
+	"workflow_list", "workflow_get", "workflow_get_schema",
+	// 看板
+	"kanban_show", "kanban_list",
+	// Codebase 知识图谱（全部只读，安全并行）
+	"search_graph", "query_graph", "get_architecture", "get_code_snippet",
+	"get_graph_schema", "trace_path", "search_code",
+	"index_status", "list_projects",
+	"detect_changes", "ingest_traces",
+]);
+
+/**
+ * File tools that can run concurrently when targeting independent paths.
+ * 参考 Hermes `_PATH_SCOPED_TOOLS`。
+ */
+const PATH_SCOPED_TOOLS = new Set([
+	"file_read", "file_write", "file_list", "patch",
+]);
+
+/**
+ * Patterns that indicate a terminal command may modify/delete files.
+ * 参考 Hermes `_DESTRUCTIVE_PATTERNS`。
+ */
+const DESTRUCTIVE_CMD_RE = /(?:^|\s|&&|\|\||;|`)(?:\b(?:rm|rmdir|cp|install|mv|truncate|dd|shred)\s|sed\s+-i|git\s+(?:reset|clean|checkout)\s)/;
+const REDIRECT_OVERWRITE_RE = /[^>]>[^>]|^>[^>]/;
+
+/**
  * Determine whether a batch of tool calls can be safely executed in parallel.
- * Borrowed from Hermes-Agent's `_should_parallelize_tool_batch()`.
+ * 参考 Hermes-Agent `_should_parallelize_tool_batch`。
  *
- * Rules:
- *  - Any call to a NEVER_PARALLEL tool → serial
- *  - All calls are SAFE_PARALLEL → parallel
- *  - Mixed write tools with overlapping paths → serial
- *  - Otherwise → parallel (conservative default)
+ * 策略（与 Hermes 对齐 — 默认串行）：
+ *  1. Any NEVER_PARALLEL tool → serial
+ *  2. Any terminal command that looks destructive → serial
+ *  3. PATH_SCOPED tools → parallel only if paths don't overlap
+ *  4. PARALLEL_SAFE tools → parallel
+ *  5. Everything else → serial (conservative default)
  */
 export function shouldParallelizeToolBatch(calls: IToolCallInfo[]): boolean {
 	if (calls.length <= 1) {
-		return false; // No need for parallelism
+		return false;
 	}
 
-	// Check for never-parallel tools
+	// 1. Check for never-parallel tools
 	for (const tc of calls) {
 		if (NEVER_PARALLEL_TOOLS.has(tc.name)) {
 			return false;
 		}
 	}
 
-	// Check for write-like tools — if any two write to overlapping paths, serial
-	const writeLikeNames = new Set([
-		"file_write",
-		"edit_file",
-		"patch",
-		"create_file",
-		"delete_file",
-	]);
-	const writeCalls = calls.filter((tc) => writeLikeNames.has(tc.name));
-	if (writeCalls.length > 1) {
-		// Extract paths from arguments and check for overlap
-		const paths: string[] = [];
-		for (const tc of writeCalls) {
+	// 2. Check for destructive terminal commands
+	for (const tc of calls) {
+		if (tc.name === 'terminal') {
 			try {
-				const args = JSON.parse(tc.arguments || "{}");
-				if (args.path) {
-					paths.push(String(args.path));
+				const args = JSON.parse(tc.arguments || '{}');
+				const cmd = String(args.command ?? '');
+				if (DESTRUCTIVE_CMD_RE.test(cmd) || REDIRECT_OVERWRITE_RE.test(cmd)) {
+					return false;
 				}
-				if (args.file) {
-					paths.push(String(args.file));
-				}
-			} catch {
-				/* ignore */
-			}
+			} catch { /* ignore */ }
 		}
-		// If any two paths overlap (one is a prefix of the other), go serial
+	}
+
+	// 3. Check path-scoped tools for overlap
+	const pathScopedCalls = calls.filter(tc => PATH_SCOPED_TOOLS.has(tc.name));
+	if (pathScopedCalls.length > 1) {
+		const paths: string[] = [];
+		for (const tc of pathScopedCalls) {
+			try {
+				const args = JSON.parse(tc.arguments || '{}');
+				const p = String(args.path ?? args.file ?? '');
+				if (p) { paths.push(p); }
+			} catch { /* ignore */ }
+		}
 		for (let i = 0; i < paths.length; i++) {
 			for (let j = i + 1; j < paths.length; j++) {
 				if (paths[i].startsWith(paths[j]) || paths[j].startsWith(paths[i])) {
 					return false;
 				}
 			}
+		}
+	}
+
+	// 4. All remaining calls must be PARALLEL_SAFE or PATH_SCOPED (already checked)
+	for (const tc of calls) {
+		if (!PARALLEL_SAFE_TOOLS.has(tc.name) && !PATH_SCOPED_TOOLS.has(tc.name)) {
+			return false; // unknown tool — conservative serial
 		}
 	}
 

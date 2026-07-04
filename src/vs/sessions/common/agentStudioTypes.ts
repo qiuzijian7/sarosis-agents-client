@@ -1,4 +1,4 @@
-/*---------------------------------------------------------------------------------------------
+﻿/*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
@@ -104,7 +104,7 @@ export interface IAgentVisibility {
  * Controls the level of restriction on agent tool access and file system operations.
  * Inspired by OpenHuman's SandboxMode and OpenClaw's AgentSandboxConfig.
  */
-export const enum SandboxMode {
+export enum SandboxMode {
 	/** No restrictions — agent can use all declared tools freely (default) */
 	None = 'none',
 	/** Read-only — agent can only read files and search, cannot edit/execute */
@@ -185,7 +185,7 @@ export interface ISkillDirective {
  * Aligned with VS Code's ICustomAgent.target field for cross-platform agent compatibility.
  * Determines which platform(s) the agent's instructions and tool references are designed for.
  */
-export const enum AgentTarget {
+export enum AgentTarget {
 	/** Optimized for GitHub Copilot */
 	Copilot = 'copilot',
 	/** Optimized for VS Code native chat */
@@ -200,7 +200,7 @@ export const enum AgentTarget {
  * Agent source type, tracking where the agent definition originated.
  * Aligned with VS Code's IAgentSource for security auditing and trust decisions.
  */
-export const enum AgentSource {
+export enum AgentSource {
 	/** Created locally by the user */
 	Local = 'local',
 	/** Part of the built-in preset collection */
@@ -211,7 +211,7 @@ export const enum AgentSource {
 	Imported = 'imported',
 }
 
-export const enum AgentStatus {
+export enum AgentStatus {
 	Idle = 'idle',
 	Working = 'working',
 	Thinking = 'thinking',
@@ -219,13 +219,13 @@ export const enum AgentStatus {
 	Offline = 'offline',
 }
 
-export const enum ConnectionType {
+export enum ConnectionType {
 	Subagent = 'subagent',
 	Collaboration = 'collaboration',
 	DataFlow = 'data-flow',
 }
 
-export const enum DelegationStatus {
+export enum DelegationStatus {
 	Pending = 'pending',
 	Running = 'running',
 	Done = 'done',
@@ -238,7 +238,7 @@ export const enum DelegationStatus {
  * - planner: Can decompose goals into tasks (orchestration). Multiple allowed per workspace.
  * - worker: Executes assigned tasks. No orchestration capabilities.
  */
-export const enum AgentType {
+export enum AgentType {
 	/** Can decompose goals into sub-tasks. Multiple planners allowed per workspace. */
 	Planner = 'planner',
 	/** Regular worker agent — executes tasks. */
@@ -316,6 +316,28 @@ export interface Agent {
 	model: string;
 	skills: string[];
 	tools?: string[];
+	/**
+	 * 启用的工具集 ID 列表。
+	 * 只发送属于这些工具集的工具给 LLM（空/未设置 = 全部工具集）。
+	 *
+	 * 对齐 Hermes 的 `agent.enabled_toolsets`：非代码类 Agent 可以只启用
+	 * 相关工具集，减少无关工具对 LLM 的噪音。
+	 *
+	 * 可用值：core / mcp-bridge / tool-search / workflow / delegation /
+	 *         memory / skill / browser / kanban / utility / mcp
+	 */
+	enabledToolsets?: string[];
+	/**
+	 * 禁用的工具集 ID 列表（减法，在 enabledToolsets 之后应用）。
+	 *
+	 * 对齐 Hermes 的 `agent.disabled_toolsets`：在 `enabled_toolsets` 之后
+	 * 作为减法步骤应用，确保即使工具集被 enabled 包含也可以被禁用。
+	 *
+	 * **重要**：禁用的 toolset 中的工具**仅当**它们不在 Always 优先级的
+	 * 核心 toolset（core / mcp-bridge / tool-search）中时才会被移除。
+	 * 这是 Hermes `bundle_non_core_tools` 的核心保护机制。
+	 */
+	disabledToolsets?: string[];
 	category: string;
 	systemPrompt?: string;
 	temperature?: number;
@@ -997,7 +1019,7 @@ export class AgentStudioSession {
 	}
 }
 
-export const enum TaskBoardStatus {
+export enum TaskBoardStatus {
 	/** New: awaiting decomposition / refinement before it is actionable */
 	Triage = 'triage',
 	Todo = 'todo',
@@ -1011,7 +1033,7 @@ export const enum TaskBoardStatus {
 	Archived = 'archived',
 }
 
-export const enum TaskSource {
+export enum TaskSource {
 	Manual = 'manual',
 	Delegation = 'delegation',
 }
@@ -1096,7 +1118,7 @@ export interface TaskBoard {
  * - root: Original workspace, canvas is fully editable
  * - fork: Branch created by scheduled task or manually, canvas is read-only
  */
-export const enum WorkspaceMode {
+export enum WorkspaceMode {
 	Root = 'root',
 	Fork = 'fork',
 }
@@ -1104,7 +1126,7 @@ export const enum WorkspaceMode {
 /**
  * Source of a Fork
  */
-export const enum WorkspaceSessionSource {
+export enum WorkspaceSessionSource {
 	/** Created automatically by a scheduled task */
 	ScheduledTask = 'scheduled_task',
 	/** Created manually by the user */
@@ -1114,7 +1136,7 @@ export const enum WorkspaceSessionSource {
 /**
  * Runtime status of a Fork
  */
-export const enum WorkspaceSessionStatus {
+export enum WorkspaceSessionStatus {
 	/** Created, waiting for execution */
 	Pending = 'pending',
 	/** Running */
@@ -1201,7 +1223,7 @@ export interface WorkspaceRootInfo {
 /**
  * Status of an orchestration plan (the overall plan lifecycle).
  */
-export const enum OrchestrationPlanStatus {
+export enum OrchestrationPlanStatus {
 	/** Planner generated the plan, waiting for user approval */
 	PendingApproval = 'pending_approval',
 	/** User approved, executing agent creation & task dispatch */
@@ -1219,7 +1241,7 @@ export const enum OrchestrationPlanStatus {
 /**
  * Status of an individual planned task within an orchestration.
  */
-export const enum PlanTaskStatus {
+export enum PlanTaskStatus {
 	/** Waiting for dependencies or approval */
 	Pending = 'pending',
 	/** Actively running */
@@ -1237,7 +1259,7 @@ export const enum PlanTaskStatus {
 /**
  * Task review status for human-in-the-loop approval workflow.
  */
-export const enum TaskReviewStatus {
+export enum TaskReviewStatus {
 	/** Task is completed and waiting for human review */
 	Pending = 'pending',
 	/** Task has been reviewed and approved by human */

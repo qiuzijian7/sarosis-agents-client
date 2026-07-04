@@ -28,6 +28,13 @@ export interface IChatRuntimeState {
 	isSending: boolean;
 	/** Whether agent has been loaded for this chat. */
 	agentLoaded: boolean;
+	/**
+	 * Per-chat model selection (providerId + modelId + agentId).
+	 * When the user switches models in one chat tab, only that tab's
+	 * selection should change — not all tabs.
+	 * Saved/restored alongside other runtime state on tab switch.
+	 */
+	modelSelection?: { providerId: string; modelId: string; agentId?: string };
 }
 
 /**
@@ -155,7 +162,7 @@ export class NativeChatEditorInput extends EditorInput {
 	 * @param agentId Agent ID
 	 * @param sessionId Optional session ID to persist (for drag-to-new-group restore)
 	 */
-	setAgentInfo(agentName: string, agentId: string, sessionId?: string): void {
+	setAgentInfo(agentName: string, agentId: string, sessionId?: string | null): void {
 		let changed = false;
 		if (this._name !== agentName) {
 			this._name = agentName;
@@ -165,8 +172,9 @@ export class NativeChatEditorInput extends EditorInput {
 			this._agentId = agentId;
 			changed = true;
 		}
-		if (sessionId !== undefined && this._sessionId !== sessionId) {
-			this._sessionId = sessionId;
+		// sessionId === undefined: 不修改; null | string: 显式设置（null = 清除）
+		if (sessionId !== undefined && this._sessionId !== (sessionId || undefined)) {
+			this._sessionId = sessionId || undefined;
 			changed = true;
 		}
 		if (changed) {

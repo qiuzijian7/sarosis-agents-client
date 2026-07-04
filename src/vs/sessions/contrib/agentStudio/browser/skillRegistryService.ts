@@ -419,47 +419,133 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 	// _loadBuiltins() 已移除 - 技能现在从 skills/ 目录文件加载（参考 Hermes-Agent 模式）
 
-	private async _scanFolder(dir: URI, source: 'user' | 'builtin'): Promise<void> {
+	// ─── 技能子文件夹递归扫描（对齐 Hermes-Agent `os.walk` + `iter_skill_index_files`）────
+
+	/**
+	 * 递归扫描时永久跳过的目录名（对齐 Hermes-Agent `EXCLUDED_SKILL_DIRS`）。
+	 * VCS、依赖缓存、构建产物 — 不包含技能文件。
+	 */
+	private static readonly EXCLUDED_SKILL_DIRS = new Set([
+		'.git', '.github', '.hub', '.archive', '.venv', 'venv',
+		'node_modules', 'site-packages', '__pycache__', '.tox',
+		'.nox', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+		'out', 'dist', 'build', '.vscode', '.codebuddy',
+	]);
+
+	/**
+	 * 技能内部的辅助目录 — 当父目录已存在 SKILL.md 时跳过递扫。
+	 * 对齐 Hermes-Agent `SKILL_SUPPORT_DIRS`。
+	 * 这些目录包含渐进披露数据（references/templates/assets/scripts），不是独立技能。
+	 */
+	private static readonly SKILL_SUPPORT_DIRS = new Set([
+		'references', 'templates', 'assets', 'scripts',
+	]);
+
+	/**
+	 * 递归扫描目录，发现所有嵌套子目录中的 SKILL.md 技能文件。
+	 *
+	 * 对齐 Hermes-Agent `iter_skill_index_files()` + `os.walk()`：
+	 *   1. 从根目录递归遍历所有子目录
+	 *   2. 每个目录查找 SKILL.md，找到则 parseSkill
+	 *   3. 自动跳过 EXCLUDED_SKILL_DIRS 中的目录
+	 *   4. 当遇到目录下有 SKILL.md 时，跳过其 SKILL_SUPPORT_DIRS 子目录
+	 *   5. category 自动从相对路径提取：skills/code/review/SKILL.md → category "code"
+	 *
+	 * @param dir 根目录 URI
+	 * @param source 来源标识（builtin / user）
+	 * @param depth 当前递归深度（内部使用，外部不传）
+	 * @param parentHasSkill 父目录是否已找到 SKILL.md（用于 support dirs 剪枝）
+	 * @param relativePath 从根目录到当前 dir 的相对路径段（数组）
+	 */
+	private async _scanFolderRecursive(
+		dir: URI,
+		source: 'user' | 'builtin',
+		depth: number = 0,
+		parentHasSkill: boolean = false,
+		relativePath: string[] = [],
+	): Promise<number> {
+		// 深度保护：最多 10 层（防御性编程）
+		if (depth > 10) {
+			this.logService.warn(`[SkillRegistry] _scanFolderRecursive: max depth reached at ${dir.toString()}`);
+			return 0;
+		}
+
 		let stat: IFileStat;
 		try {
 			stat = await this.fileService.resolve(dir);
 		} catch {
-			this.logService.debug(`[SkillRegistry] _scanFolder: dir not found: ${dir.toString()}`);
-			return; // 目录不存在
-		}
-		if (!stat.isDirectory || !stat.children) {
-			this.logService.debug(`[SkillRegistry] _scanFolder: not a dir or no children: ${dir.toString()}`);
-			return;
+			if (depth === 0) {
+				this.logService.debug(`[SkillRegistry] _scanFolderRecursive: dir not found: ${dir.toString()}`);
+			}
+			return 0;
 		}
 
-		this.logService.debug(`[SkillRegistry] _scanFolder(${source}): scanning ${dir.toString()}, ${stat.children.length} children`);
-		let loaded = 0;
+		if (!stat.isDirectory || !stat.children) {
+			return 0;
+		}
+
+		// ① 检查当前目录是否有 SKILL.md
+		let thisDirHasSkill = false;
+		const skillFile = URI.joinPath(dir, 'SKILL.md');
+		try {
+			const content = await this.fileService.readFile(skillFile);
+			const text = content.value.toString();
+			// 从路径提取 category（对齐 Hermes `_get_category_from_path`）
+			// e.g. skills/code/review/ → category "code"
+			if (!relativePath.length && depth === 0) {
+				// 根目录本身有 SKILL.md（特殊：focal skill）
+			}
+			const parsedSkill = this._parseSkillFile(dir, text, source);
+			if (parsedSkill) {
+				// 自动从路径推断 category（如果 frontmatter 未显式设置）
+				let skill = parsedSkill;
+				if (!skill.category && relativePath.length > 0) {
+					skill = { ...skill, category: relativePath[0] }; // 最顶层的子文件夹名作为 category
+				}
+				if (this._skills.has(skill.id)) {
+					const existing = this._skills.get(skill.id)!;
+					this.logService.info(`[SkillRegistry] Skill "${skill.id}" overwritten: ${existing.source} → ${skill.source} (from ${dir.fsPath})`);
+				}
+				this._skills.set(skill.id, skill);
+				thisDirHasSkill = true;
+				this.logService.debug(`[SkillRegistry] _scanFolderRecursive: loaded skill "${skill.id}" (depth=${depth}, cat="${skill.category ?? '-'}", path="${relativePath.join('/')}")`);
+			}
+		} catch {
+			// SKILL.md 不存在 — 继续往下扫描子目录
+		}
+
+		// ② 递归扫描子目录
+		let loaded = thisDirHasSkill ? 1 : 0;
 		for (const child of stat.children) {
 			if (!child.isDirectory) { continue; }
-			const skillFile = URI.joinPath(child.resource, 'SKILL.md');
-			this.logService.debug(`[SkillRegistry] _scanFolder: checking ${skillFile.toString()}`);
-			try {
-				const content = await this.fileService.readFile(skillFile);
-				const text = content.value.toString();
-				this.logService.debug(`[SkillRegistry] _scanFolder: read ${text.length} chars from ${skillFile.toString()}`);
-				const skill = this._parseSkillFile(child.resource, text, source);
-				if (skill) {
-					if (this._skills.has(skill.id)) {
-						const existing = this._skills.get(skill.id)!;
-						this.logService.info(`[SkillRegistry] Skill "${skill.id}" overwritten: ${existing.source} → ${skill.source} (from ${child.resource.fsPath})`);
-					}
-					this._skills.set(skill.id, skill);
-					loaded++;
-					this.logService.debug(`[SkillRegistry] _scanFolder: loaded skill ${skill.id}`);
-				} else {
-					this.logService.warn(`[SkillRegistry] _scanFolder: parse returned null for ${skillFile.toString()}`);
-				}
-			} catch (e) {
-				// SKILL.md 可缺失，忽略
-				this.logService.debug(`[SkillRegistry] _scanFolder: readFile failed for ${skillFile.toString()}: ${e}`);
-			}
+
+			const dirName = child.name;
+			// 跳过排除目录
+			if (SkillRegistry.EXCLUDED_SKILL_DIRS.has(dirName)) { continue; }
+			// 如果当前目录有 SKILL.md，跳过其 support 子目录
+			if (thisDirHasSkill && SkillRegistry.SKILL_SUPPORT_DIRS.has(dirName)) { continue; }
+			// 如果父目录有 SKILL.md 且当前是 support dir，跳过
+			if (parentHasSkill && SkillRegistry.SKILL_SUPPORT_DIRS.has(dirName)) { continue; }
+
+			loaded += await this._scanFolderRecursive(
+				child.resource,
+				source,
+				depth + 1,
+				thisDirHasSkill,
+				depth === 0 ? [dirName] : [...relativePath, dirName],
+			);
 		}
-		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()}`);
+
+		return loaded;
+	}
+
+	/**
+	 * 旧版单层扫描方法（已废弃 — 内部委托给 _scanFolderRecursive）。
+	 * 保留签名兼容性，行为已改为递归扫描。
+	 */
+	private async _scanFolder(dir: URI, source: 'user' | 'builtin'): Promise<void> {
+		const loaded = await this._scanFolderRecursive(dir, source);
+		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()} (recursive)`);
 	}
 
 	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'builtin'): ISkillDefinition | undefined {
