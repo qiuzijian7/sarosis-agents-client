@@ -23,6 +23,7 @@ import { CodeWindow, mainWindow } from '../../../base/browser/window.js';
 import { TitlebarPart, TitleService } from '../../browser/parts/titlebarPart.js';
 import { isMacintosh } from '../../../base/common/platform.js';
 import { IOpenerService } from '../../../platform/opener/common/opener.js';
+import { IWorkbenchEnvironmentService } from '../../../workbench/services/environment/common/environmentService.js';
 
 export class NativeTitlebarPart extends TitlebarPart {
 
@@ -43,10 +44,24 @@ export class NativeTitlebarPart extends TitlebarPart {
 		@IProductService productService: IProductService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@IOpenerService openerService: IOpenerService,
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 	) {
-		super(id, targetWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService);
+		super(id, targetWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService, environmentService);
 
 		this.handleWindowsAlwaysOnTop(targetWindow.vscodeWindowId, contextKeyService);
+	}
+
+	/**
+	 * Override: use the native OS shell to open the logs folder in the
+	 * system file explorer (e.g., Windows Explorer / macOS Finder),
+	 * rather than inside VS Code's own file explorer.
+	 */
+	protected override _handleFeedback(): void {
+		const logsPath = this.environmentService.logsHome.fsPath;
+		// Open logs folder in OS file explorer via native shell
+		this.nativeHostService.showItemInFolder(logsPath);
+		// Open TAPD feedback page
+		this.openerService.open('https://www.tapd.cn/tapd_fe/30076258/storywall');
 	}
 
 	protected override createContentArea(parent: HTMLElement): HTMLElement {
@@ -133,8 +148,9 @@ class MainNativeTitlebarPart extends NativeTitlebarPart {
 		@IProductService productService: IProductService,
 		@INativeHostService nativeHostService: INativeHostService,
 		@IOpenerService openerService: IOpenerService,
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 	) {
-		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService, openerService);
+		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService, openerService, environmentService);
 	}
 }
 
@@ -158,9 +174,10 @@ class AuxiliaryNativeTitlebarPart extends NativeTitlebarPart implements IAuxilia
 		@IProductService productService: IProductService,
 		@INativeHostService nativeHostService: INativeHostService,
 		@IOpenerService openerService: IOpenerService,
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 	) {
 		const id = AuxiliaryNativeTitlebarPart.COUNTER++;
-		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService, openerService);
+		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, nativeHostService, openerService, environmentService);
 	}
 
 	override get preventZoom(): boolean {

@@ -202,9 +202,14 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	}
 
 	override async setInput(input: FileEditorInput | HtmlPreviewEditorInput, options: IFileEditorInputOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
-		// Handle HtmlPreviewEditorInput (saros-html-preview:// scheme)
+		// Handle HtmlPreviewEditorInput (saros-html-preview:// scheme).
+		// These inputs use a virtual `saros-html-preview` URI which has no
+		// filesystem provider — we CANNOT wrap it in a `FileEditorInput` and
+		// forward to `super.setInput`.  Instead just render the HTML in a
+		// full-bleed preview webview without the 3-mode toggle.  Users who
+		// want source editing can open the backing `config.html` disk file
+		// directly from the file explorer.
 		if (input instanceof HtmlPreviewEditorInput) {
-			// Skip super.setInput since HtmlPreviewEditorInput isn't a FileEditorInput
 			this._isHtml = true;
 			try {
 				const agentId = input.agentId ?? input.resource.path.replace(/^\//, '');
@@ -214,8 +219,8 @@ export class HtmlFileEditorPane extends TextFileEditor {
 				this._logService.warn('[HtmlFileEditorPane] renderHtml failed:', err);
 				this._rawHtml = `Failed to render: ${err}`;
 			}
-			this._setupTrailingBreadcrumbsContent();
-			this._setMode('preview', true);
+			this._cleanupTrailingBreadcrumbsContent();
+			this._setMode('preview', /* force */ true);
 			return;
 		}
 

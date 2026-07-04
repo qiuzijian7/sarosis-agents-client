@@ -107,6 +107,9 @@ class CodeMain {
 		// This ensures the app opens the sessions workbench instead of the normal VS Code workbench.
 		(process as INodeProcess).isEmbeddedApp = true;
 
+		// Note: With VS Code's native timestamp subdir layout ({productRoot}/logs/YYYYMMDDTHHMMSSsss/),
+		// each startup creates a fresh directory — no overwriting, no archiving needed.
+
 		try {
 
 			// Init services

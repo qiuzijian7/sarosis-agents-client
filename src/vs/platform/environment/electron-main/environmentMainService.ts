@@ -4,12 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { memoize } from '../../../base/common/decorators.js';
-import { join } from '../../../base/common/path.js';
+import { join, resolve } from '../../../base/common/path.js';
 import { isLinux } from '../../../base/common/platform.js';
 import { createStaticIPCHandle } from '../../../base/parts/ipc/node/ipc.net.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../common/environment.js';
 import { NativeEnvironmentService } from '../node/environmentService.js';
 import { refineServiceDecorator } from '../../instantiation/common/instantiation.js';
+import { URI } from '../../../base/common/uri.js';
+import { toLocalISOString } from '../../../base/common/date.js';
 
 export const IEnvironmentMainService = refineServiceDecorator<IEnvironmentService, IEnvironmentMainService>(IEnvironmentService);
 
@@ -47,6 +49,40 @@ export class EnvironmentMainService extends NativeEnvironmentService implements 
 
 	@memoize
 	get backupHome(): string { return join(this.userDataPath, 'Backups'); }
+
+	/**
+	 * Override logsHome to store ALL VS Code native log files inside the
+	 * product directory for packaged EXE releases, using the original VS
+	 * Code timestamp sub-directory layout so all native log channels
+	 * (main, renderer, editSessions, mcpgateway, network-shared,
+	 * remoteTunnelService, sharedprocess, telemetry, terminal,
+	 * tunnelHostService, userDataSync, window1/, ...) end up under the
+	 * product folder.
+	 *
+	 * Packaged:
+	 *   {productRoot}/logs/20260704T233319/main.log
+	 *   {productRoot}/logs/20260704T233319/window1/renderer.log
+	 *   {productRoot}/logs/20260704T233319/editSessions.log
+	 *   ...
+	 *
+	 * Dev mode:
+	 *   {userDataPath}/logs/{timestamp}/...  (original VS Code behavior)
+	 *
+	 * Note: appRoot is at {productRoot}/resources/app/out/,
+	 * so resolve '..' x3 to reach productRoot.
+	 */
+	override get logsHome(): URI {
+		if (!this.args.logsPath) {
+			if (this.isBuilt) {
+				// Packaged EXE: VS Code native timestamp subdir under product logs
+				// Format matches the parent class: YYYYMMDDTHHMMSSsss
+				const key = toLocalISOString(new Date()).replace(/-|:|\.\d+Z$/g, '');
+				this.args.logsPath = resolve(this.appRoot, '..', '..', '..', 'logs', key);
+			}
+			// Dev mode: fall through to parent class (original behavior)
+		}
+		return super.logsHome;
+	}
 
 	@memoize
 	get mainIPCHandle(): string { return createStaticIPCHandle(this.userDataPath, 'main', this.productService.version); }

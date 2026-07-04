@@ -58,8 +58,8 @@ export class CheckpointManager extends Disposable {
 						(f as any).status === 'created' ? 'created'
 							: (f as any).status === 'deleted' ? 'deleted'
 								: 'modified';
-					byPath.set((f as any).path ?? (f as any).uri ?? '', {
-						path: (f as any).path ?? (f as any).uri ?? '',
+					byPath.set((f as any).path ?? (f as any).fsPath ?? (f as any).uri ?? '', {
+						path: (f as any).path ?? (f as any).fsPath ?? (f as any).uri ?? '',
 						status,
 					});
 				}

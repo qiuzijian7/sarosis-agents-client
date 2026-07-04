@@ -32,7 +32,6 @@ import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
 import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
-import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { XtermCliPanel } from '../../../browser/agentChat/xtermTui/xtermCliPanel.js';
 import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
@@ -749,21 +748,76 @@ export class NativeChatEditorPane extends EditorPane {
 			this._currentAgentSkills = newSkills;
 		},
 		onOpenHtmlPreview: () => {
-			// 在中间栏（当前激活的编辑器组）打开 config HTML 预览
+			// 打开 agent 的 config.html 文件（检查并创建默认文件，用文本编辑器打开）
 			if (!this._currentAgentId) {
 				this._logService.info('[NativeChatEditorPane] onOpenHtmlPreview: no agent selected');
 				return;
 			}
-			try {
-				const resource = URI.from({ scheme: 'saros-html-preview', path: `/${this._currentAgentId}` });
-				const input = new HtmlPreviewEditorInput(resource, 'HTML 预览', this._currentAgentId);
-				// 不传 group 参数 → 在当前激活的编辑器组（中间栏）打开
-				this._editorService.openEditor(input, { pinned: true }).catch(err => {
-					this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview failed:', err);
-				});
+			(async () => {
+				try {
+					const agentId = this._currentAgentId!;
+					const agentDir = await this._agentStudioService.getAgentDir(agentId);
+					const configHtmlUri = URI.joinPath(agentDir, 'config.html');
+
+					// 检查 config.html 是否存在，不存在则创建默认文件
+					if (!(await this._fileService.exists(configHtmlUri))) {
+						const safeName = agentId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+						const defaultHtml = `<!DOCTYPE html>
+<html lang="zh-CN" data-template-edit-mode="slots">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${safeName} · Panel</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    line-height: 1.6;
+    color: #1f2328;
+    background: #ffffff;
+    padding: 40px 28px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 28px; margin: 0 0 8px; }
+  .lead { color: #57606a; margin: 0 0 28px; }
+  .card {
+    border: 1px solid #d0d7de;
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 14px 0;
+  }
+  .card h2 { font-size: 17px; margin: 0 0 6px; }
+  .card p { margin: 0; color: #424a53; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 data-edit-slot data-slot-type="text">${safeName} 的面板</h1>
+    <p class="lead" data-edit-slot data-slot-type="text">在 AI 中描述你想要的页面，或直接编辑这段 HTML。</p>
+    <div class="card">
+      <h2 data-edit-slot data-slot-type="text">开始使用</h2>
+      <p data-edit-slot data-slot-type="text">这是一个零依赖、可在浏览器内编辑的单文件 HTML 文档。</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+						await this._fileService.createFolder(agentDir);
+						await this._fileService.writeFile(configHtmlUri, VSBuffer.fromString(defaultHtml));
+						this._logService.info(`[NativeChatEditorPane] Created default config.html for agent ${agentId}`);
+					}
+
+					// 在中心（中间栏）的文本编辑器中打开 config.html
+					// GroupsOrder.GRID_APPEARANCE[0] 对应中间栏主编辑器组
+					const centerGroup = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE)[0];
+					await this._editorService.openEditor({ resource: configHtmlUri }, centerGroup);
+					this._logService.info(`[NativeChatEditorPane] Opened config.html for agent ${agentId} in center editor group`);
 				} catch (err) {
-				this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview error:', err);
-			}
+					this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview failed:', err);
+				}
+			})();
 		},
 			onNewSession: async () => {
 				// Create a new session for the current agent

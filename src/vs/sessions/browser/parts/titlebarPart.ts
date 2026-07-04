@@ -33,6 +33,7 @@ import { Menus } from '../menus.js';
 import { CustomMenubarControl } from '../../../workbench/browser/parts/titlebar/menubarControl.js';
 import { IOpenerService } from '../../../platform/opener/common/opener.js';
 import { URI } from '../../../base/common/uri.js';
+import { IWorkbenchEnvironmentService } from '../../../workbench/services/environment/common/environmentService.js';
 
 /**
  * VS Code native-layout titlebar for agent sessions.
@@ -104,13 +105,27 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IHostService private readonly hostService: IHostService,
 		@IProductService protected readonly productService: IProductService,
-		@IOpenerService private readonly openerService: IOpenerService,
+		@IOpenerService protected readonly openerService: IOpenerService,
+		@IWorkbenchEnvironmentService protected readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super(id, { hasTitle: false }, themeService, storageService, layoutService);
 
 		this.titleBarStyle = getTitleBarStyle(this.configurationService);
 
 		this.registerListeners(getWindowId(targetWindow));
+	}
+
+	/**
+	 * Handle feedback button click.
+	 * Subclasses (e.g., NativeTitlebarPart) may override to use native OS APIs
+	 * for opening the logs folder in the OS file explorer.
+	 */
+	protected _handleFeedback(): void {
+		const logsPath = this.environmentService.logsHome.fsPath;
+		// Open logs folder (default: via opener service)
+		this.openerService.open(URI.file(logsPath));
+		// Open TAPD feedback page
+		this.openerService.open(URI.parse('https://www.tapd.cn/tapd_fe/30076258/storywall'));
 	}
 
 	private registerListeners(targetWindowId: number): void {
@@ -201,7 +216,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 				const toggleContainer = append(this.rightContent, $('div.titlebar-toggle-container'));
 				toggleContainer.id = 'agent-studio-titlebar-toggle-container';
 
-				// 反馈按钮 — opens the same web URL as the helpFeedback menu item
+				// 反馈按钮 — opens logs folder in OS file explorer + TAPD feedback page
 				const feedbackBtn = append(toggleContainer, $('button.titlebar-toggle-right-column'));
 				feedbackBtn.classList.add('codicon', 'codicon-feedback');
 				feedbackBtn.title = '反馈';
@@ -209,7 +224,7 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 				feedbackBtn.addEventListener('click', (e) => {
 					e.preventDefault();
 					e.stopPropagation();
-					this.openerService.open(URI.parse('https://www.tapd.cn/tapd_fe/30076258/storywall'));
+					this._handleFeedback();
 				});
 
 				// [Sarosis] 移除 Toggle Output 按钮（用户要求）\n\n				// Panel 切换按钮 — 切换面板显示/隐藏（Ctrl+J），与 VS Code 原生行为一致
@@ -372,8 +387,9 @@ export class MainTitlebarPart extends TitlebarPart {
 		@IHostService hostService: IHostService,
 		@IProductService productService: IProductService,
 		@IOpenerService openerService: IOpenerService,
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 	) {
-		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService);
+		super(Parts.TITLEBAR_PART, mainWindow, contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService, environmentService);
 	}
 }
 
@@ -399,9 +415,10 @@ export class AuxiliaryTitlebarPart extends TitlebarPart implements IAuxiliaryTit
 		@IHostService hostService: IHostService,
 		@IProductService productService: IProductService,
 		@IOpenerService openerService: IOpenerService,
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 	) {
 		const id = AuxiliaryTitlebarPart.COUNTER++;
-		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService);
+		super(`workbench.parts.auxiliaryTitle.${id}`, getWindow(container), contextMenuService, configurationService, instantiationService, themeService, storageService, layoutService, contextKeyService, hostService, productService, openerService, environmentService);
 	}
 
 	override get preventZoom(): boolean {
