@@ -8,7 +8,7 @@
 echo "📦 自动更新版本号..."
 
 # 一次性更新 product.json 和 package.json（共享同一个 commitCount）
-node build/saros/set-all-versions.mjs
+node build/saros/set-all-versions.cjs
 
 # 将更新后的文件加入暂存区
 git add package.json product.json

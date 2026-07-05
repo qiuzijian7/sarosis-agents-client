@@ -21,7 +21,7 @@ Write-Host "  STEP: Set Version Number" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-node build/saros/set-all-versions.mjs
+node build/saros/set-all-versions.cjs
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
