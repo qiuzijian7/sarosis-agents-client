@@ -38,6 +38,8 @@ import {
 	IAgentSessionMeta,
 	IContextUsage,
 	ICheckpointInfo,
+	IQueueItem,
+	IQueueItemActionCallback,
 	ISuggestedQuestion,
 	IReferenceItem,
 	ILiveWorkflowAskUser,
@@ -220,6 +222,15 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _systemMsgBar: HTMLElement | null = null;
 	private _systemMsgList: HTMLElement | null = null;
 	private _systemMsgExpanded = false;
+	// ── 队列栏（位于系统栏下方、输入区上方）──
+	private _queueBar: HTMLElement | null = null;
+	private _queueList: HTMLElement | null = null;
+	private _queueExpanded = false;
+	private _queueItems: IQueueItem[] = [];
+	/** 队列项操作回调（promote / edit / delete / reorder） */
+	private _onQueueItemAction: IQueueItemActionCallback | null = null;
+	/** 正在编辑的队列项 id（用于 inline 编辑态） */
+	private _editingQueueId: string | null = null;
 
 	// -- State --
 	private _messages: IAgentChatMessage[] = [];
@@ -1014,6 +1025,256 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 	}
 
+	// =========================================================
+	// Queue bar（队列栏 — 待执行任务列表）
+	// =========================================================
+
+	/**
+	 * 注册队列项操作回调（外部驱动：收到 promote/edit/delete/reorder 后真正执行）
+	 */
+	setOnQueueItemAction(cb: IQueueItemActionCallback | null): void {
+		this._onQueueItemAction = cb;
+	}
+
+	/** 添加一个队列项到末尾 */
+	addQueueItem(item: IQueueItem): void {
+		this._queueItems = [...this._queueItems, item];
+		this._renderQueueBar();
+	}
+
+	/** 按 id 移除一个队列项 */
+	removeQueueItem(itemId: string): void {
+		const before = this._queueItems.length;
+		this._queueItems = this._queueItems.filter((it) => it.id !== itemId);
+		if (this._editingQueueId === itemId) {
+			this._editingQueueId = null;
+		}
+		if (this._queueItems.length !== before) {
+			this._renderQueueBar();
+		}
+	}
+
+	/** 按 id 更新一个队列项的内容/状态/元数据 */
+	updateQueueItem(itemId: string, updates: Partial<Omit<IQueueItem, 'id'>>): void {
+		const idx = this._queueItems.findIndex((it) => it.id === itemId);
+		if (idx < 0) { return; }
+		this._queueItems = this._queueItems.map((it) =>
+			it.id === itemId ? { ...it, ...updates } : it
+		);
+		this._renderQueueBar();
+	}
+
+	/** 获取所有队列项（只读快照） */
+	getQueueItems(): ReadonlyArray<IQueueItem> {
+		return this._queueItems.slice();
+	}
+
+	/** 清空所有队列项 */
+	clearQueueItems(): void {
+		if (this._queueItems.length === 0) { return; }
+		this._queueItems = [];
+		this._editingQueueId = null;
+		this._renderQueueBar();
+	}
+
+	/** 重排序：direction = 'up' 上移一位 / 'down' 下移一位 */
+	reorderQueueItem(itemId: string, direction: 'up' | 'down'): void {
+		const idx = this._queueItems.findIndex((it) => it.id === itemId);
+		if (idx < 0) { return; }
+		const target = direction === 'up' ? idx - 1 : idx + 1;
+		if (target < 0 || target >= this._queueItems.length) { return; }
+		const next = this._queueItems.slice();
+		const [it] = next.splice(idx, 1);
+		next.splice(target, 0, it);
+		this._queueItems = next;
+		this._renderQueueBar();
+	}
+
+	/** 切换队列栏展开/收起 */
+	private _toggleQueuePanel(): void {
+		this._queueExpanded = !this._queueExpanded;
+		// 收起时清掉正在编辑的项
+		if (!this._queueExpanded) {
+			this._editingQueueId = null;
+		}
+		this._renderQueueBar();
+	}
+
+	/** 渲染队列栏（栏 + 列表） */
+	private _renderQueueBar(): void {
+		const bar = this._queueBar;
+		const list = this._queueList;
+		if (!bar || !list) { return; }
+
+		const count = this._queueItems.length;
+
+		// 清空栏内容
+		while (bar.firstChild) { bar.removeChild(bar.firstChild); }
+
+		// 切换图标
+		const toggleEl = document.createElement('span');
+		toggleEl.className = 'queue-toggle-icon' + (this._queueExpanded ? ' expanded' : '');
+		toggleEl.textContent = '▶';
+		bar.appendChild(toggleEl);
+
+		if (count === 0) {
+			bar.style.display = 'none';
+			list.style.maxHeight = '0';
+			list.style.overflowY = 'hidden';
+			return;
+		}
+
+		bar.style.display = 'flex';
+		// 标签
+		const labelEl = document.createElement('span');
+		labelEl.className = 'queue-bar-label';
+		labelEl.textContent = `队列 (${count})`;
+		bar.appendChild(labelEl);
+
+		// 展开/收起列表
+		if (this._queueExpanded) {
+			list.style.maxHeight = '320px';
+			list.style.overflowY = 'auto';
+		} else {
+			list.style.maxHeight = '0';
+			list.style.overflowY = 'hidden';
+		}
+
+		// 重建列表
+		while (list.firstChild) { list.removeChild(list.firstChild); }
+		if (!this._queueExpanded) { return; }
+
+		for (const item of this._queueItems) {
+			list.appendChild(this._createQueueItemEl(item));
+		}
+	}
+
+	/** 创建单个队列项的 DOM */
+	private _createQueueItemEl(item: IQueueItem): HTMLElement {
+		const isEditing = this._editingQueueId === item.id;
+		const status = item.status ?? 'pending';
+
+		const row = document.createElement('div');
+		row.className = `queue-item queue-item-${status}`;
+		row.dataset.queueId = item.id;
+
+		// 左侧：执行/状态图标
+		const icon = document.createElement('span');
+		icon.className = 'queue-item-icon';
+		icon.title = status === 'executing' ? '执行中' : status === 'done' ? '已完成' : status === 'failed' ? '失败' : '待执行';
+		icon.textContent = status === 'executing' ? '◐' : status === 'done' ? '✓' : status === 'failed' ? '✕' : '▶';
+		row.appendChild(icon);
+
+		// 中间：内容（编辑态用 input，否则用 span）
+		if (isEditing) {
+			const input = document.createElement('input');
+			input.type = 'text';
+			input.className = 'queue-item-edit-input';
+			input.value = item.content;
+			input.addEventListener('keydown', (e) => {
+				if (e.key === 'Enter') {
+					e.preventDefault();
+					const v = input.value.trim();
+					if (v && v !== item.content) {
+						this._onQueueItemAction?.('edit', item.id, { newContent: v });
+					} else {
+						this._editingQueueId = null;
+						this._renderQueueBar();
+					}
+				} else if (e.key === 'Escape') {
+					e.preventDefault();
+					this._editingQueueId = null;
+					this._renderQueueBar();
+				}
+			});
+			// 自动聚焦
+			setTimeout(() => { input.focus(); input.select(); }, 0);
+			row.appendChild(input);
+
+			const editActions = document.createElement('span');
+			editActions.className = 'queue-item-edit-actions';
+			const okBtn = document.createElement('button');
+			okBtn.className = 'queue-item-action-btn success';
+			okBtn.title = '保存';
+			okBtn.textContent = '✓';
+			okBtn.addEventListener('click', () => {
+				const v = input.value.trim();
+				if (v && v !== item.content) {
+					this._onQueueItemAction?.('edit', item.id, { newContent: v });
+				} else {
+					this._editingQueueId = null;
+					this._renderQueueBar();
+				}
+			});
+			const cancelBtn = document.createElement('button');
+			cancelBtn.className = 'queue-item-action-btn';
+			cancelBtn.title = '取消';
+			cancelBtn.textContent = '✕';
+			cancelBtn.addEventListener('click', () => {
+				this._editingQueueId = null;
+				this._renderQueueBar();
+			});
+			editActions.appendChild(okBtn);
+			editActions.appendChild(cancelBtn);
+			row.appendChild(editActions);
+		} else {
+			const content = document.createElement('span');
+			content.className = 'queue-item-content';
+			content.textContent = item.content;
+			content.title = item.content;
+			row.appendChild(content);
+
+			// 右侧：操作按钮
+			const actions = document.createElement('span');
+			actions.className = 'queue-item-actions';
+
+			// 上移
+			const upBtn = document.createElement('button');
+			upBtn.className = 'queue-item-action-btn';
+			upBtn.title = '上移';
+			upBtn.textContent = '↑';
+			upBtn.addEventListener('click', () => {
+				this._onQueueItemAction?.('reorder', item.id, { newIndex: this._queueItems.findIndex((x) => x.id === item.id) - 1 });
+			});
+			actions.appendChild(upBtn);
+
+			// 编辑
+			const editBtn = document.createElement('button');
+			editBtn.className = 'queue-item-action-btn';
+			editBtn.title = '编辑';
+			editBtn.textContent = '✎';
+			editBtn.addEventListener('click', () => {
+				this._editingQueueId = item.id;
+				this._renderQueueBar();
+			});
+			actions.appendChild(editBtn);
+
+			// 提升（promote）：把任务从队列取出并发送出去执行
+			const promoteBtn = document.createElement('button');
+			promoteBtn.className = 'queue-item-action-btn accent';
+			promoteBtn.title = '执行此任务';
+			promoteBtn.textContent = '⏵';
+			promoteBtn.addEventListener('click', () => {
+				this._onQueueItemAction?.('promote', item.id);
+			});
+			actions.appendChild(promoteBtn);
+
+			// 删除
+			const delBtn = document.createElement('button');
+			delBtn.className = 'queue-item-action-btn danger';
+			delBtn.title = '删除';
+			delBtn.textContent = '🗑';
+			delBtn.addEventListener('click', () => {
+				this._onQueueItemAction?.('delete', item.id);
+			});
+			actions.appendChild(delBtn);
+
+			row.appendChild(actions);
+		}
+
+		return row;
+	}
+
 	updateMessage(
 		messageId: string,
 		updates: Partial<IAgentChatMessage>,
@@ -1236,6 +1497,14 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (this._systemMsgList && this._systemMsgList.isConnected) {
 			this._systemMsgList.remove();
 		}
+		// 队列栏同上：需手动清理
+		if (this._queueBar && this._queueBar.isConnected) {
+			this._queueBar.remove();
+		}
+		if (this._queueList && this._queueList.isConnected) {
+			this._queueList.remove();
+		}
+		this._editingQueueId = null;
 		this._renderInputArea();
 		// 恢复输入内容和附件
 		if (this._textarea && savedValue) {
@@ -3831,14 +4100,18 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		append(header, $('span.kanban-col-id', undefined, '#'));
 		append(header, $('span.kanban-col-title', undefined, '标题'));
 		append(header, $('span.kanban-col-status', undefined, '状态'));
-		// 解析每行（格式: `#abc123  [status]  title`）
+		// 解析每行 — 同时兼容两种后端格式:
+		//   (1) `  #abc123  [triage]  任务标题`          (历史带方括号)
+		//   (2) `  #abc123  triage    — 任务标题`        (当前无方括号+破折号)
 		for (const line of lines) {
-			const m = line.match(/#([a-f0-9]{6})\s+\[(\w+)\]\s+(.+)/i);
+			const m = line.match(/#([a-f0-9]{6})\s+(?:\[(\w+)\]|(\w+))\s*[—\-]?\s*(.*)/i);
 			if (!m) { continue; }
-			const status = m[2].toLowerCase();
+			const status = (m[2] || m[3] || '').toLowerCase();
+			const title = (m[4] || '').replace(/^[—\-\s]+/, '').trim();
+			if (!status || !title) { continue; }
 			const row = append(tableWrap, $('.kanban-result-row'));
 			append(row, $('span.kanban-col-id', undefined, `#${m[1]}`));
-			append(row, $('span.kanban-col-title', undefined, m[3].trim()));
+			append(row, $('span.kanban-col-title', undefined, title));
 			const badge = append(row, $('span.kanban-col-status.kanban-status-badge'));
 			badge.textContent = status;
 			badge.classList.add(`kanban-status-${status}`);
@@ -5887,6 +6160,20 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._systemMsgBar.style.display = 'none'; // 初始隐藏（无消息时）
 		this._register(addDisposableListener(this._systemMsgBar, EventType.CLICK, () => this._toggleSystemMsgPanel()));
 		this._renderSystemMsgPanel();
+
+		// ── 队列栏（待执行任务列表，位于系统栏下方、输入区上方）──
+		this._queueBar = append(this._container, $('.queue-bar'));
+		this._queueList = append(this._container, $('.queue-list'));
+		this._queueBar.style.display = 'none'; // 初始隐藏（无队列项时）
+		this._register(addDisposableListener(this._queueBar, EventType.CLICK, (e) => {
+			// 防止点击 action 按钮时触发 toggle
+			const t = e.target as HTMLElement;
+			if (t.closest('.queue-item-action-btn, .queue-item-edit-input, .queue-item-edit-actions')) {
+				return;
+			}
+			this._toggleQueuePanel();
+		}));
+		this._renderQueueBar();
 
 		const inputArea = append(this._container, $(".chat-input-area"));
 		this._inputAreaEl = inputArea;

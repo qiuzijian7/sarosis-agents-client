@@ -1,12 +1,12 @@
 /*---------------------------------------------------------------------------------------------
- *  Copyright (c) Microsoft Corporation. All rights reserved.
- *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *  Agent Studio - Task Overview EditorPane (Native DOM)
+ *
+ *  VS Code native kanban board using DOM rendering instead of webview/React.
+ *  Direct service calls, no postMessage overhead, instant rendering.
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import * as DOM from '../../../../base/browser/dom.js';
-import { mainWindow } from '../../../../base/browser/window.js';
-import { URI } from '../../../../base/common/uri.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -15,80 +15,65 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
-import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import {
 	IAgentTaskBoardService,
 	IAgentStudioService,
-	IAgentDelegationService,
 	ITaskOrchestrationService,
 } from '../common/agentStudio.js';
-import { ITriageService } from '../common/triageService.js';
 import { IKanbanDiagnosticsService } from '../common/kanbanDiagnosticsService.js';
-import { ISwarmService, SwarmWorkerSpec } from '../common/swarmService.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import type { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
+import { ISwarmService } from '../common/swarmService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-
-interface IIncomingMessage {
-	readonly id?: string;
-	readonly direction?: string;
-	readonly type?: string;
-	readonly payload?: unknown;
-}
+import { TaskBoardNativeRenderer, type TaskBoardRenderData, type TaskBoardFilter, type EmployeeInfo, type SwarmInfo } from './taskBoardNativeRenderer.js';
+import { TaskBoardStatus, TaskSource, type TaskBoardRecord } from '../../../common/agentStudioTypes.js';
 
 /**
- * Task Overview EditorPane — Kanban board rendered as a WebView using the
- * shared React TaskBoardPanel component.
+ * Task Overview EditorPane — Native DOM kanban board.
  *
- * Architecture: identical to `HtmlPreviewEditorPane` — we own a `<div>`
- * container, create an `IWebviewElement`, and mount it via
- * `webview.mountTo(container, mainWindow)`. The webview loads the same
- * `webview.js` bundle used by the main Agent Studio panel, but with
- * `window.__AGENT_STUDIO_PANEL_TYPE__ = 'taskboard'` so React renders
- * only the `TaskBoardPanel`.
- *
- * Communication: the React app uses `sendRequest()` from `messageClient.ts`
- * which sends `postMessage` to the host. We route `taskBoard.*` requests
- * to the appropriate service and also handle `taskBoard.openTaskDetail`
- * to open the task detail editor.
+ * Architecture: we own a `<div>` container and use TaskBoardNativeRenderer
+ * to render the kanban UI with vanilla DOM. Services are called directly
+ * (no postMessage bridge), and service events trigger automatic UI refreshes.
  */
 export class TaskOverviewEditorPane extends EditorPane {
 
 	static readonly ID = 'workbench.editor.taskOverview';
 
 	private _container: HTMLElement | undefined;
-	private _webview: IWebviewElement | undefined;
+	private _renderer: TaskBoardNativeRenderer | undefined;
+	private _isInitialized = false;
+
+	// Filter state
+	private _boardFilterWsId = 'all';
+	private _employeeFilter = 'all';
+	private _hiddenColumnKeys = new Set<string>();
+	private _focusedTaskId: string | null = null;
+
+	// Cached employee info (loaded once)
+	private _allEmployees: EmployeeInfo[] = [];
 
 	constructor(
 		group: IEditorGroup,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
-		@IWebviewService private readonly _webviewService: IWebviewService,
 		@ILogService private readonly _logService: ILogService,
-		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
 		@IAgentTaskBoardService private readonly _taskBoardService: IAgentTaskBoardService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
-		@IAgentDelegationService private readonly _delegationService: IAgentDelegationService,
 		@ITaskOrchestrationService private readonly _taskOrchestrationService: ITaskOrchestrationService,
-		@ITriageService private readonly _triageService: ITriageService,
 		@IKanbanDiagnosticsService private readonly _diagnosticsService: IKanbanDiagnosticsService,
 		@ISwarmService private readonly _swarmService: ISwarmService,
 		@IEditorService private readonly _editorService: IEditorService,
+		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 	) {
 		super(TaskOverviewEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected createEditor(parent: HTMLElement): void {
-		this._container = document.createElement('div');
-		this._container.classList.add('task-overview-editor');
+		this._container = DOM.$('div.task-overview-editor');
 		this._container.style.width = '100%';
 		this._container.style.height = '100%';
 		this._container.style.position = 'relative';
-		this._container.style.background = 'var(--vscode-editor-background)';
+		this._container.style.overflow = 'hidden';
 		parent.appendChild(this._container);
 	}
 
@@ -100,122 +85,13 @@ export class TaskOverviewEditorPane extends EditorPane {
 	): Promise<void> {
 		await super.setInput(input, options, context, token);
 
-		// Re-create webview on every setInput (pane may have been moved between groups)
-		this._disposeWebview();
-
-		try {
-			const mediaUri = this._getMediaUri();
-
-			this._webview = this._webviewService.createWebviewElement({
-				title: 'Task Overview',
-				options: {
-					enableFindWidget: false,
-					retainContextWhenHidden: true,
-				},
-				contentOptions: {
-					allowScripts: true,
-					localResourceRoots: [mediaUri],
-				},
-				extension: undefined,
-			});
-
-			this._register(this._webview);
-
-			// Route messages from the webview to host services
-			this._register(this._webview.onMessage(async (e) => {
-				await this._handleMessage(e.message as IIncomingMessage);
-			}));
-
-			// Push task-board change events into the webview
-			this._register(this._taskBoardService.onDidChangeTaskBoard(() => {
-				if (this._webview) {
-					void this._webview.postMessage({
-						direction: 'toWebview',
-						type: 'taskBoard.changed',
-						data: {},
-					});
-				}
-			}));
-
-			// Push board (multi-board) change events into the webview
-			this._register(this._taskBoardService.onDidChangeBoards(() => {
-				if (this._webview) {
-					void this._webview.postMessage({
-						direction: 'toWebview',
-						type: 'boards.changed',
-						data: {},
-					});
-				}
-			}));
-
-			// Push orchestration plan events into the webview
-			this._register(this._taskOrchestrationService.onDidChangePlan((plan) => {
-				if (this._webview) {
-					void this._webview.postMessage({
-						direction: 'toWebview',
-						type: 'orchestration.planUpdated',
-						data: plan,
-					});
-				}
-			}));
-
-			// Push focus/highlight task events into the webview
-			this._register(this._taskOrchestrationService.onDidFocusTask((taskTitle: string) => {
-				if (this._webview) {
-					void this._webview.postMessage({
-						direction: 'toWebview',
-						type: 'taskBoard.focusTask',
-						data: { taskTitle },
-					});
-				}
-			}));
-
-			// Push kanban diagnostics (alerts) into the webview
-			this._register(this._diagnosticsService.onDidDetectDiagnostic((diagnostic) => {
-				if (this._webview) {
-					void this._webview.postMessage({
-						direction: 'toWebview',
-						type: 'diagnostics.detected',
-						data: diagnostic,
-					});
-				}
-			}));
-			this._register(this._diagnosticsService.onDidChangeDiagnostics((diagnostics) => {
-				if (this._webview) {
-					void this._webview.postMessage({
-						direction: 'toWebview',
-						type: 'diagnostics.changed',
-						data: diagnostics,
-					});
-				}
-			}));
-
-			// Push swarm status updates into the webview
-			this._register(this._swarmService.onDidUpdateSwarm((status) => {
-				if (this._webview) {
-					void this._webview.postMessage({
-						direction: 'toWebview',
-						type: 'swarm.updated',
-						data: status,
-					});
-				}
-			}));
-
-			// Mount and set HTML
-			this._webview.mountTo(this._container!, mainWindow);
-			this._webview.setHtml(this._getWebviewHtml(mediaUri));
-
-			this._logService.info('[TaskOverviewEditorPane] WebView mounted');
-		} catch (err) {
-			this._logService.error('[TaskOverviewEditorPane] Failed to create webview:', err);
-			if (this._container) {
-				DOM.clearNode(this._container);
-				const errorEl = document.createElement('div');
-				errorEl.style.padding = '20px';
-				errorEl.style.color = 'var(--vscode-errorForeground, #f48771)';
-				errorEl.textContent = `任务看板加载失败: ${err instanceof Error ? err.message : String(err)}`;
-				this._container.appendChild(errorEl);
-			}
+		// First time initialization
+		if (!this._isInitialized) {
+			this._isInitialized = true;
+			this._initialize(input);
+		} else {
+			// Refresh data when re-opened
+			void this._refresh();
 		}
 	}
 
@@ -227,390 +103,339 @@ export class TaskOverviewEditorPane extends EditorPane {
 	}
 
 	override clearInput(): void {
-		this._disposeWebview();
 		super.clearInput();
 	}
 
 	override dispose(): void {
-		this._disposeWebview();
+		this._renderer?.dispose();
+		this._renderer = undefined;
+		this._container = undefined;
 		super.dispose();
 	}
 
-	// ─── Media URI ──────────────────────────────────────────────────────────
+	// ─── Initialization ─────────────────────────────────────────────────
 
-	private _getMediaUri(): URI {
-		const appRoot = (this._environmentService as INativeEnvironmentService).appRoot;
-		return URI.joinPath(
-			URI.file(appRoot),
-			'src', 'vs', 'sessions', 'contrib', 'agentStudio', 'webview', 'media',
-		);
+	private _initialize(_input: EditorInput): void {
+		if (!this._container) { return; }
+
+		// Create renderer
+		this._renderer = new TaskBoardNativeRenderer();
+		this._renderer.create(this._container);
+
+		// Subscribe to renderer events
+		this._register(this._renderer.onStatusChange(({ taskId, status, source }) => {
+			this._taskBoardService.updateTaskStatus(taskId, status);
+		}));
+
+		this._register(this._renderer.onDelete(({ taskId, source }) => {
+			this._taskBoardService.deleteTask(taskId);
+		}));
+
+		this._register(this._renderer.onArchive(({ taskId, source }) => {
+			this._taskBoardService.archiveTask(taskId);
+		}));
+
+		this._register(this._renderer.onCreateRequest(() => {
+			void this._handleCreateTask();
+		}));
+
+		this._register(this._renderer.onPlanRequest(() => {
+			// Open orchestration plan dialog
+			this._logService.info('[TaskOverviewEditorPane] Plan request — opening orchestration dialog');
+			// TODO: open OrchestrationPlanModal equivalent
+		}));
+
+		this._register(this._renderer.onDiagnosticsRequest((e) => {
+			void this._handleRunDiagnostics();
+		}));
+
+		this._register(this._renderer.onTaskOpen(({ taskId, taskTitle }) => {
+			// Legacy: open in TaskDetailEditor (kept for programmatic triggers)
+			const input = TaskDetailEditorInput.getOrCreate(taskId, taskTitle || 'Task');
+			void this._editorService.openEditor(input, { pinned: false });
+		}));
+
+		this._register(this._renderer.onTaskDetailRequest(({ task, employees, allTasks }) => {
+			void this._handleTaskDetail(task, employees, allTasks);
+		}));
+
+		this._register(this._renderer.onBoardFilterChange((wsId) => {
+			this._boardFilterWsId = wsId;
+			void this._refresh();
+		}));
+
+		this._register(this._renderer.onFilterChange((filter) => {
+			this._employeeFilter = filter.employeeFilter;
+			this._hiddenColumnKeys = filter.hiddenColumnKeys;
+			void this._refresh();
+		}));
+
+		this._register(this._renderer.onChatJump(({ agentId, agentName }) => {
+			void this._handleChatJump(agentId, agentName);
+		}));
+
+		this._register(this._renderer.onSwarmCancel((swarmId) => {
+			this._swarmService.cancelSwarm(swarmId);
+		}));
+
+		// Subscribe to service events for automatic refresh
+		this._register(this._taskBoardService.onDidChangeTaskBoard(() => {
+			void this._refresh();
+		}));
+
+		this._register(this._taskBoardService.onDidChangeBoards(() => {
+			void this._refresh();
+		}));
+
+		this._register(this._taskOrchestrationService.onDidFocusTask(async (taskTitle: string) => {
+			const tasks = await this._getFilteredTasks();
+			const task = tasks.find(t => t.title === taskTitle);
+			if (task) {
+				this._focusedTaskId = task.id;
+				void this._refresh();
+				setTimeout(() => {
+					const el = this._container?.querySelector(`[data-task-id="${task.id}"]`);
+					el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+				}, 100);
+			}
+		}));
+
+		this._register(this._swarmService.onDidUpdateSwarm(() => {
+			void this._refreshSwarms();
+		}));
+
+		// Load initial data
+		void this._refresh();
 	}
 
-	// ─── WebView HTML ───────────────────────────────────────────────────────
+	// ─── Data Loading ───────────────────────────────────────────────────
 
-	private _getWebviewHtml(mediaUri: URI): string {
-		const nonce = this._generateNonce();
-		// NOTE: DO NOT append cache busters — asWebviewUri handles caching internally
-		const scriptUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.js')).toString();
-		const styleUri = asWebviewUri(URI.joinPath(mediaUri, 'webview.css')).toString();
-
-		return `<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' vscode-webview: vscode-resource:; style-src 'unsafe-inline' vscode-webview: vscode-resource:; img-src data: https: vscode-webview: vscode-resource:; font-src data: vscode-webview: vscode-resource:;">
-	<title>Task Overview</title>
-	<link rel="stylesheet" nonce="${nonce}" href="${styleUri}">
-	<style nonce="${nonce}">
-		body { margin: 0; padding: 0; overflow: hidden; height: 100vh; background: var(--as-bg-primary, var(--vscode-editor-background)); color: var(--as-fg-primary, var(--vscode-foreground)); font-family: var(--vscode-font-family); }
-		@keyframes as-spin { to { transform: rotate(360deg); } }
-		#root { width: 100%; height: 100%; }
-	</style>
-</head>
-<body>
-	<div id="root">
-		<div id="as-preload" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px;color:var(--vscode-descriptionForeground);font-family:var(--vscode-font-family);">
-			<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="animation:as-spin 1s linear infinite;opacity:0.7;">
-				<path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-			</svg>
-			<span style="font-size:13px;letter-spacing:0.4px;opacity:0.8;">Task Board 加载中...</span>
-		</div>
-	</div>
-	<script nonce="${nonce}">
-		window.__AGENT_STUDIO_PANEL_TYPE__ = 'taskboard';
-		window.__AGENT_STUDIO_CSP_NONCE__ = '${nonce}';
-		window.__AS_BUNDLE_LOADED__ = false;
-	</script>
-	<!-- ESM module entry -->
-	<script nonce="${nonce}" type="module" src="${scriptUri}"></script>
-</body>
-</html>`;
-	}
-
-	private _generateNonce(): string {
-		const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-		let result = '';
-		for (let i = 0; i < 32; i++) {
-			result += chars.charAt(Math.floor(Math.random() * chars.length));
-		}
-		return result;
-	}
-
-	// ─── Message Router ─────────────────────────────────────────────────────
-
-	private async _handleMessage(message: IIncomingMessage): Promise<void> {
-		if (!message || message.direction !== 'toHost' || !message.type) {
-			return;
-		}
-
-		const { id, type, payload } = message;
-		const p = (payload ?? {}) as Record<string, unknown>;
-
-		this._logService.info(`[TaskOverviewEditorPane] _handleMessage: type=${type}, id=${id}`);
+	private async _refresh(): Promise<void> {
+		if (!this._renderer || !this._container) { return; }
 
 		try {
-			const result = await this._dispatch(type, p);
-			if (id) {
-				this._sendResponse(id, type, result);
-			}
-		} catch (err: unknown) {
-			const error = err instanceof Error ? err : new Error(String(err));
-			this._logService.error(`[TaskOverviewEditorPane] Error handling ${type}:`, error);
-			if (id) {
-				this._sendError(id, type, error.message);
-			}
-		}
-	}
-
-	private async _dispatch(type: string, p: Record<string, unknown>): Promise<unknown> {
-		switch (type) {
-			// ─── Task Board CRUD ──────────────────────────────────
-			case 'taskBoard.list':
-				return this._taskBoardService.getTasks(p.workspaceId as string | undefined, p.boardId as string | undefined);
-			case 'taskBoard.create':
-				return this._taskBoardService.createTask(p as Record<string, unknown>);
-			case 'taskBoard.update':
-				return this._taskBoardService.updateTask(p.id as string, p as Record<string, unknown>);
-			case 'taskBoard.delete':
-				return this._taskBoardService.deleteTask(p.id as string);
-			case 'taskBoard.archive':
-				return this._taskBoardService.archiveTask(p.id as string);
-
-			// ─── Board management (multi-board isolation, P2) ─────
-			case 'board.list':
-				return this._taskBoardService.listBoards(p.workspaceId as string | undefined);
-			case 'board.create':
-				return this._taskBoardService.createBoard(p.name as string, p.workspaceId as string);
-			case 'board.rename':
-				return this._taskBoardService.renameBoard(p.boardId as string, p.name as string);
-			case 'board.delete':
-				return this._taskBoardService.deleteBoard(p.boardId as string);
-
-			// ─── Attachments (P2) ─────────────────────────────────
-			case 'attachment.add':
-				return this._taskBoardService.addAttachment(
-					p.taskId as string,
-					p.name as string,
-					p.mimeType as string,
-					p.base64Content as string,
-				);
-			case 'attachment.remove':
-				return this._taskBoardService.removeAttachment(p.taskId as string, p.attachmentId as string);
-			case 'attachment.read':
-				return this._taskBoardService.readAttachment(p.taskId as string, p.attachmentId as string);
-
-			// ─── Workspace ───────────────────────────────────────
-			case 'workspace.list':
-				return this._agentStudioService.getWorkspaces();
-			case 'workspace.get':
-				return this._agentStudioService.getWorkspace(p.id as string);
-			case 'workspace.create':
-				return this._agentStudioService.createWorkspace(p as Record<string, unknown>);
-			case 'workspace.createWithWorktree':
-				return this._agentStudioService.createWorkspaceWithWorktree(
-					p.name as string,
-					p as any,
-				);
-			case 'workspace.assignWorktree':
-				return this._agentStudioService.assignWorktreeToWorkspace(
-					p.workspaceId as string,
-					p.worktreePath as string,
-					p.worktreeBranch as string | undefined,
-				);
-			case 'workspace.resetWorktree':
-				return this._agentStudioService.resetWorkspaceWorktree(p.workspaceId as string);
-			case 'workspace.removeWorktree':
-				return this._agentStudioService.removeWorkspaceWorktree(p.workspaceId as string);
-			case 'workspace.delete':
-				return this._agentStudioService.deleteWorkspace(p.id as string);
-			case 'workspace.update':
-				return this._agentStudioService.updateWorkspace(p.id as string, p as Record<string, unknown>);
-			case 'workspace.updateLayout':
-				return this._agentStudioService.updateWorkspaceLayout(p.workspaceId as string, {
-					nodes: p.nodes as any,
-					edges: p.edges as any,
-					viewport: p.viewport as any,
-				});
-			case 'workspace.active':
-				return { workspaceId: undefined };
-
-			// ─── Agents ───────────────────────────────────────────
-			case 'agents.list':
-				return this._agentStudioService.getAgents();
-			case 'agents.get':
-				return this._agentStudioService.getAgent(p.id as string);
-			case 'agents.create':
-				return this._agentStudioService.createAgent(p as Record<string, unknown>);
-			case 'agents.update':
-				return this._agentStudioService.updateAgent(p.id as string, p.data as Record<string, unknown>);
-			case 'agents.delete':
-				return this._agentStudioService.deleteAgent(p.id as string);
-			case 'agents.getLastSelected':
-				return { agentId: await this._agentStudioService.getLastSelectedAgentId() };
-			case 'agents.selected':
-				this._agentStudioService.fireSelectAgent(p.agentId as string | null);
-				return undefined;
-
-			// ─── Delegations ─────────────────────────────────────
-			case 'delegation.list':
-				return this._delegationService.getDelegations(p.workspaceId as string | undefined);
-			case 'delegation.get':
-				return this._delegationService.getDelegation(p.id as string);
-			case 'delegation.create':
-				return this._delegationService.createDelegation(p as Record<string, unknown>);
-			case 'delegation.update':
-				return this._delegationService.updateDelegation(p.id as string, p as Record<string, unknown>);
-			case 'delegation.delete':
-				return this._delegationService.deleteDelegation(p.id as string);
-			case 'delegation.autoPlan':
-				return this._delegationService.executePlan(p.goal as string, p.workspaceId as string);
-
-			// ─── Orchestration ───────────────────────────────────
-			case 'orchestration.listPlans':
-				return this._taskOrchestrationService.listPlans(p.workspaceId as string | undefined);
-			case 'orchestration.plan': {
-				const goal = p.goal as string;
-				const workspaceId = p.workspaceId as string;
-				const plannerId = p.plannerId as string | undefined;
-				return this._taskOrchestrationService.createPlan(goal, workspaceId, plannerId || '');
-			}
-			case 'orchestration.getPlan':
-				return this._taskOrchestrationService.getPlan(p.planId as string);
-			case 'orchestration.approve':
-				return this._taskOrchestrationService.approvePlan(p.planId as string);
-			case 'orchestration.reject':
-				return this._taskOrchestrationService.rejectPlan(p.planId as string);
-			case 'orchestration.taskAction':
-				return this._taskOrchestrationService.taskAction(
-					p.planId as string,
-					p.taskId as string,
-					p.action as any,
-				);
-			case 'orchestration.approveTask':
-				return this._taskOrchestrationService.approveTask(
-					p.planId as string,
-					p.taskId as string,
-					p.comment as string | undefined,
-				);
-			case 'orchestration.rejectTask':
-				return this._taskOrchestrationService.rejectTask(
-					p.planId as string,
-					p.taskId as string,
-					p.comment as string | undefined,
-				);
-			case 'orchestration.commentTask':
-				return this._taskOrchestrationService.commentTask(
-					p.planId as string,
-					p.taskId as string,
-					p.comment as string,
-				);
-			case 'orchestration.blockTask':
-				return this._taskOrchestrationService.blockTask(
-					p.planId as string,
-					p.taskId as string,
-					p.reason as string | undefined,
-				);
-			case 'orchestration.unblockTask':
-				return this._taskOrchestrationService.unblockTask(
-					p.planId as string,
-					p.taskId as string,
-				);
-			case 'orchestration.updateTask':
-				return this._taskOrchestrationService.updateTask(
-					p.planId as string,
-					p.taskId as string,
-					p.updates as Record<string, unknown>,
-				);
-			case 'orchestration.decomposeTask':
-				return this._taskOrchestrationService.decomposeTask(
-					p.planId as string,
-					p.taskId as string,
-					p.workspaceId as string,
-					p.plannerId as string,
-				);
-
-			// ─── Triage (LLM-driven specify / decompose) ─────────
-			case 'triage.specify':
-				return this._triageService.specify(p.taskId as string);
-			case 'triage.decompose':
-				return this._triageService.decompose(p.taskId as string, {
-					fanout: p.fanout as boolean | undefined,
-					maxSubTasks: p.maxSubTasks as number | undefined,
-					assignee: p.assignee as string | undefined,
-				});
-
-			// ─── Diagnostics / alerts ────────────────────────────
-			case 'diagnostics.run':
-				return this._diagnosticsService.runDiagnostics(p.workspaceId as string | undefined);
-			case 'diagnostics.list':
-				return this._diagnosticsService.getActiveDiagnostics();
-			case 'diagnostics.dismiss':
-				this._diagnosticsService.dismissDiagnostic(p.id as string);
-				return undefined;
-
-			// ─── Swarm (multi-agent collaboration) ───────────────
-			case 'swarm.create': {
-				const workers = Array.isArray(p.workers)
-					? (p.workers as Array<Record<string, unknown>>)
-						.filter((w) => w && typeof w.title === 'string' && typeof w.body === 'string')
-						.map((w): SwarmWorkerSpec => ({
-							title: w.title as string,
-							body: w.body as string,
-							profile: w.profile as string | undefined,
-							skills: Array.isArray(w.skills) ? (w.skills as string[]) : undefined,
-							priority: (w.priority === 'low' || w.priority === 'medium' || w.priority === 'high')
-								? (w.priority as 'low' | 'medium' | 'high')
-								: undefined,
-							maxRuntimeSeconds: typeof w.maxRuntimeSeconds === 'number' ? (w.maxRuntimeSeconds as number) : undefined,
-						}))
-					: [];
-				return this._swarmService.createSwarm({
-					title: p.title as string,
-					goal: p.goal as string | undefined,
-					workspaceId: p.workspaceId as string | undefined,
-					parentTaskId: p.parentTaskId as string | undefined,
-					workers,
-					enableVerifier: p.enableVerifier as boolean | undefined,
-					enableSynthesizer: p.enableSynthesizer as boolean | undefined,
-				});
-			}
-			case 'swarm.status':
-				return this._swarmService.getSwarmStatus(p.swarmId as string);
-			case 'swarm.list':
-				return this._swarmService.listSwarms(p.workspaceId as string | undefined);
-			case 'swarm.blackboard':
-				return this._swarmService.getBlackboard(p.swarmId as string);
-			case 'swarm.cancel':
-				this._swarmService.cancelSwarm(p.swarmId as string);
-				return undefined;
-
-
-			// ─── Open task detail in editor ──────────────────────
-			case 'taskBoard.openTaskDetail': {
-				const taskId = p.taskId as string;
-				const taskTitle = p.taskTitle as string;
-				if (taskId) {
-					const input = TaskDetailEditorInput.getOrCreate(taskId, taskTitle || 'Task');
-					this._editorService.openEditor(input, { pinned: false });
+			// Load agents (all, for assignee dropdown)
+			if (this._allEmployees.length === 0) {
+				try {
+					const agents = await this._agentStudioService.getAgents();
+					this._allEmployees = agents.map(e => ({ id: e.id, name: e.name }));
+				} catch {
+					this._allEmployees = [];
 				}
-				return undefined;
 			}
 
-			// ─── Open overview (no-op, already here) ─────────────
-			case 'taskBoard.openOverview':
-				return undefined;
+			// Load tasks
+			const wsId = this._boardFilterWsId === 'all' ? undefined : this._boardFilterWsId;
+			const tasks = await this._taskBoardService.getTasks(wsId);
 
-			// ─── Worktrees ───────────────────────────────────────
-			case 'worktree.list': {
-				const wsId = this._agentStudioService.getActiveWorkspaceId()
-					|| (p.workspaceId as string)
-					|| undefined;
-				if (!wsId) { return []; }
-				const raw = await this._agentStudioService.getWorktrees(wsId);
-				return raw.map((wt: any) => ({
-					path: wt.path,
-					branch: wt.branch || wt.name || 'HEAD',
-					repoRoot: wt.repoRoot,
-					repoName: wt.repoName,
+			// Load workspaces
+			const workspaces = await this._agentStudioService.getWorkspaces();
+
+			// Load swarms
+			let swarms: SwarmInfo[] = [];
+			try {
+				const activeWsId = this._agentStudioService.getActiveWorkspaceId() || undefined;
+				const swarmMap = this._swarmService.listSwarms(activeWsId);
+				swarms = Object.values(swarmMap)
+					.filter((s: any) => !activeWsId || !s.workspaceId || s.workspaceId === activeWsId)
+					.sort((a: any, b: any) => b.createdAt - a.createdAt)
+					.map((s: any) => ({
+						swarmId: s.swarmId,
+						title: s.title,
+						phase: s.phase,
+						isActive: s.phase !== 'done' && s.phase !== 'cancelled' && s.phase !== 'failed' && s.phase !== 'interrupted',
+						totalWorkers: (s.workers?.length ?? 0) + (s.verifier ? 1 : 0) + (s.synthesizer ? 1 : 0),
+						doneWorkers: (s.workers?.filter((w: any) => w.status === 'done').length ?? 0) +
+							(s.verifier?.status === 'done' ? 1 : 0) + (s.synthesizer?.status === 'done' ? 1 : 0),
+					}));
+			} catch {
+				// Swarms not loaded yet
+			}
+
+			const filter: TaskBoardFilter = {
+				boardFilterWsId: this._boardFilterWsId,
+				employeeFilter: this._employeeFilter,
+				hiddenColumnKeys: this._hiddenColumnKeys,
+			};
+
+			const renderData: TaskBoardRenderData = {
+				tasks,
+				employees: this._allEmployees,
+				workspaces: workspaces.map(w => ({ id: w.id, name: w.name })),
+				swarms,
+				filter,
+				isLoading: false,
+				collapsed: false,
+				draggingTaskId: null,
+				dragOverColumn: null,
+				focusedTaskId: this._focusedTaskId,
+			};
+
+			this._renderer.render(renderData);
+
+			// Clear focus after render
+			this._focusedTaskId = null;
+
+		} catch (err) {
+			this._logService.error('[TaskOverviewEditorPane] Failed to refresh:', err);
+			if (this._container) {
+				DOM.clearNode(this._container);
+				const errorEl = DOM.$('div');
+				errorEl.style.padding = '20px';
+				errorEl.style.color = 'var(--vscode-errorForeground, #f48771)';
+				errorEl.textContent = `任务看板加载失败: ${err instanceof Error ? err.message : String(err)}`;
+				this._container.appendChild(errorEl);
+			}
+		}
+	}
+
+	private async _refreshSwarms(): Promise<void> {
+		if (!this._renderer) { return; }
+		try {
+			const activeWsId = this._agentStudioService.getActiveWorkspaceId() || undefined;
+			const swarmMap = this._swarmService.listSwarms(activeWsId);
+			const swarms: SwarmInfo[] = Object.values(swarmMap)
+				.filter((s: any) => !activeWsId || !s.workspaceId || s.workspaceId === activeWsId)
+				.sort((a: any, b: any) => b.createdAt - a.createdAt)
+				.map((s: any) => ({
+					swarmId: s.swarmId,
+					title: s.title,
+					phase: s.phase,
+					isActive: s.phase !== 'done' && s.phase !== 'cancelled' && s.phase !== 'failed' && s.phase !== 'interrupted',
+					totalWorkers: (s.workers?.length ?? 0) + (s.verifier ? 1 : 0) + (s.synthesizer ? 1 : 0),
+					doneWorkers: (s.workers?.filter((w: any) => w.status === 'done').length ?? 0) +
+						(s.verifier?.status === 'done' ? 1 : 0) + (s.synthesizer?.status === 'done' ? 1 : 0),
 				}));
+			this._renderer.updateSwarmBar(swarms);
+		} catch {
+			// Ignore swarm refresh errors
+		}
+	}
+
+	private async _getFilteredTasks(): Promise<TaskBoardRecord[]> {
+		const wsId = this._boardFilterWsId === 'all' ? undefined : this._boardFilterWsId;
+		return await this._taskBoardService.getTasks(wsId);
+	}
+
+	// ─── Create Task ────────────────────────────────────────────────────
+
+	private async _handleCreateTask(): Promise<void> {
+		if (!this._renderer || !this._container) { return; }
+
+		const allTasks = await this._getFilteredTasks();
+		const result = await this._renderer.showCreateTaskModal(
+			this._container,
+			this._allEmployees,
+			allTasks,
+		);
+
+		if (result) {
+			const wsId = this._boardFilterWsId === 'all'
+				? (this._agentStudioService.getActiveWorkspaceId() || undefined)
+				: this._boardFilterWsId;
+
+			// Create task in todo, then auto-start execution by transitioning to running.
+			// updateTaskStatus → running triggers the Agent dispatch chain in AgentTaskBoardService:
+			//   ensureTaskAgent() → assign agent   →   executeTaskForBoard() → agent picks up task
+			const created = await this._taskBoardService.createTask({
+				title: result.title,
+				description: result.description,
+				assigneeId: result.assigneeId,
+				assigneeName: result.assigneeName,
+				priority: result.priority,
+				dependencies: result.dependencies,
+				status: 'todo' as TaskBoardStatus,
+				source: 'manual' as TaskSource,
+				workspaceId: wsId,
+			} as any);
+			// Auto-start: transition to running to trigger agent dispatch chain
+			this._taskBoardService.updateTaskStatus(created.id, 'running' as TaskBoardStatus);
+		}
+	}
+
+	// ─── Task Detail ────────────────────────────────────────────────────
+
+	private async _handleTaskDetail(
+		task: TaskBoardRecord,
+		employees: EmployeeInfo[],
+		allTasks: TaskBoardRecord[],
+	): Promise<void> {
+		if (!this._renderer || !this._container) { return; }
+
+		const result = await this._renderer.showTaskDetailModal(
+			this._container,
+			task,
+			employees,
+			allTasks,
+		);
+
+		switch (result.action) {
+			case 'statusChange':
+				if (result.status && result.status !== task.status) {
+					this._taskBoardService.updateTaskStatus(result.taskId, result.status);
+				}
+				break;
+			case 'delete':
+				this._taskBoardService.deleteTask(result.taskId);
+				break;
+			case 'archive':
+				this._taskBoardService.archiveTask(result.taskId);
+				break;
+			case 'block':
+				this._taskBoardService.updateTask(result.taskId, { status: 'blocked' as TaskBoardStatus } as any);
+				break;
+			case 'unblock':
+				this._taskBoardService.updateTask(result.taskId, { status: 'todo' as TaskBoardStatus } as any);
+				break;
+		}
+		// Refresh is automatic via onDidChangeTaskBoard event
+	}
+
+	// ─── Chat Jump ──────────────────────────────────────────────────────
+
+	private async _handleChatJump(agentId: string, agentName: string): Promise<void> {
+		// 1. Find existing chat tab for this agent
+		for (const group of this._editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
+			for (const editor of group.editors) {
+				if ((editor as any).typeId === 'workbench.editors.nativeChatInput' && (editor as any).agentId === agentId) {
+					// Found — focus the tab
+					await group.openEditor(editor, { pinned: true });
+					for (const pane of this._editorService.visibleEditorPanes) {
+						if ((pane as any).input === editor) {
+							// Force history reload: setInput skips reload for same chatId.
+							// Call _selectAndLoadAgent directly to re-fetch session & messages.
+							void (pane as any)._selectAndLoadAgent?.(agentId);
+							(pane as any).focusInput?.();
+							return;
+						}
+					}
+					return;
+				}
 			}
+		}
 
-			default:
-				this._logService.warn(`[TaskOverviewEditorPane] Unhandled message type: ${type}`);
-				return undefined;
+		// 2. Not found — create a new chat tab for this agent.
+		// Task execution is fire-and-forget, so messages may not be persisted yet.
+		// The new tab's setInput→_selectAndLoadAgent will load whatever is available.
+		try {
+			const { NativeChatEditorInput } = await import('./nativeChatEditorInput.js');
+			const input = NativeChatEditorInput.create(undefined, agentId, undefined, agentName);
+			await this._editorService.openEditor(input, { pinned: true });
+		} catch (err) {
+			this._logService.error('[TaskOverviewEditorPane] Failed to open chat for agent:', err);
 		}
 	}
 
-	private _sendResponse(id: string, type: string, data: unknown): void {
-		if (!this._webview) { return; }
-		void this._webview.postMessage({
-			id,
-			direction: 'toWebview',
-			type: `${type}.response`,
-			data,
-		});
-	}
+	// ─── Diagnostics ────────────────────────────────────────────────────
 
-	private _sendError(id: string, type: string, message: string): void {
-		if (!this._webview) { return; }
-		void this._webview.postMessage({
-			id,
-			direction: 'toWebview',
-			type: `${type}.response`,
-			error: { code: 'ERROR', message },
-		});
-	}
-
-	// ─── Lifecycle ──────────────────────────────────────────────────────────
-
-	private _disposeWebview(): void {
-		if (this._webview) {
-			this._webview.dispose();
-			this._webview = undefined;
-		}
-		if (this._container) {
-			DOM.clearNode(this._container);
+	private async _handleRunDiagnostics(): Promise<void> {
+		try {
+			const wsId = this._agentStudioService.getActiveWorkspaceId() || undefined;
+			const results = await this._diagnosticsService.runDiagnostics(wsId);
+			const count = (results as unknown as unknown[])?.length ?? 0;
+			this._logService.info(`[TaskOverviewEditorPane] Diagnostics completed: ${count} issues found`);
+		} catch (err) {
+			this._logService.error('[TaskOverviewEditorPane] Diagnostics failed:', err);
 		}
 	}
 }

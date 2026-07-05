@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务卡片优化 Mockup</title>
+<style>
+:root {
+	--bg-primary: #1e1e1e;
+	--bg-secondary: #252526;
+	--bg-tertiary: #2d2d30;
+	--border: #3c3c3c;
+	--border-subtle: #2a2a2a;
+	--fg-primary: #cccccc;
+	--fg-secondary: #999999;
+	--fg-muted: #6a6a6a;
+	--accent: #007acc;
+	--danger: #f44747;
+	--success: #4ec9b0;
+	--warning: #cca700;
+	--info: #569cd6;
+	--font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+	--font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace;
+	--radius: 6px;
+	--radius-sm: 4px;
+	--transition: 150ms ease;
+	--shadow-sm: 0 1px 2px rgba(0,0,0,0.2);
+	--shadow-md: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+	font-family: var(--font);
+	font-size: 13px;
+	background: #0d0d0d;
+	color: var(--fg-primary);
+	padding: 30px;
+	display: flex;
+	flex-direction: column;
+	gap: 30px;
+	min-height: 100vh;
+}
+
+body > h1 {
+	font-size: 16px;
+	font-weight: 600;
+	margin-bottom: 8px;
+	color: var(--fg-primary);
+}
+
+body > p.subtitle {
+	font-size: 12px;
+	color: var(--fg-muted);
+	margin-bottom: 20px;
+}
+
+.section {
+	margin-bottom: 16px;
+}
+
+.section h2 {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--fg-secondary);
+	margin-bottom: 12px;
+	letter-spacing: 0.3px;
+}
+
+.cards-grid {
+	display: flex;
+	gap: 14px;
+	flex-wrap: wrap;
+}
+
+.column-preview {
+	background: var(--bg-secondary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 10px;
+	width: 280px;
+	flex-shrink: 0;
+}
+
+.column-preview-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 6px 10px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--fg-secondary);
+}
+
+.column-preview-cards {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════ */
+/*  新版任务卡片 - Card v2                                        */
+/* ═══════════════════════════════════════════════════════════════ */
+
+.tcard {
+	background: linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 0;
+	cursor: grab;
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--fg-primary);
+	transition: all var(--transition);
+	position: relative;
+	overflow: hidden;
+	box-shadow: var(--shadow-sm);
+	display: flex;
+	flex-direction: column;
+}
+
+.tcard::before {
+	content: "";
+	position: absolute;
+	left: 0; top: 0; bottom: 0;
+	width: 3px;
+	background: var(--priority-color, transparent);
+	transition: width var(--transition);
+}
+
+.tcard:hover {
+	border-color: var(--accent);
+	box-shadow: var(--shadow-md);
+	transform: translateY(-1px);
+}
+
+.tcard:active { cursor: grabbing; }
+
+.tcard.dragging {
+	opacity: 0.5;
+	transform: rotate(2deg);
+}
+
+.tcard.focused {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* Card content layout */
+.tcard-body {
+	padding: 8px 10px 6px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.tcard-title {
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--fg-primary);
+	line-height: 1.4;
+	word-break: break-word;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.tcard-id {
+	font-size: 10px;
+	color: var(--fg-muted);
+	font-family: var(--font-mono, monospace);
+	opacity: 0.7;
+	line-height: 1;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	margin-bottom: 2px;
+}
+
+.tcard-desc {
+	font-size: 11px;
+	color: var(--fg-secondary);
+	line-height: 1.5;
+	word-break: break-word;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+/* Tags row: assignee + priority */
+.tcard-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: 2px;
+}
+
+.tcard-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 10px;
+	padding: 2px 6px;
+	border-radius: 8px;
+	background: var(--bg-tertiary);
+	color: var(--fg-secondary);
+	font-weight: 400;
+	white-space: nowrap;
+	max-width: 140px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.tcard-tag.assignee {
+	background: var(--bg-tertiary);
+	color: var(--fg-primary);
+}
+
+.tcard-avatar {
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 9px;
+	font-weight: 600;
+	color: #fff;
+}
+
+.tcard-avatar.blue   { background: #4fc1ff; }
+.tcard-avatar.green  { background: #4ec9b0; }
+.tcard-avatar.purple { background: #c586c0; }
+.tcard-avatar.orange { background: #ce9178; }
+.tcard-avatar.red    { background: #f44747; }
+.tcard-avatar.gray   { background: #6a6a6a; }
+
+.tcard-priority {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	font-size: 10px;
+	padding: 2px 6px;
+	border-radius: 8px;
+	font-weight: 500;
+}
+.tcard-priority.high   { background: #f4474720; color: #f44747; }
+.tcard-priority.medium { background: #cca70020; color: #cca700; }
+.tcard-priority.low    { background: #4ec9b020; color: #4ec9b0; }
+
+/* Footer row: status dot + meta info */
+.tcard-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+	padding: 4px 10px 6px 12px;
+	border-top: 1px solid var(--border-subtle);
+	background: rgba(0,0,0,0.15);
+}
+
+.tcard-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 10px;
+	color: var(--fg-muted);
+}
+
+.tcard-status-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.tcard-status-dot.blocked  { background: var(--danger); }
+.tcard-status-dot.running  { background: var(--warning); animation: pulse 1.5s infinite; }
+.tcard-status-dot.ready    { background: var(--success); }
+.tcard-status-dot.todo     { background: var(--info); }
+
+@keyframes pulse {
+	0%, 100% { opacity: 1; }
+	50%      { opacity: 0.4; }
+}
+
+.tcard-meta-icons {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 11px;
+	color: var(--fg-muted);
+}
+
+.tcard-meta-icon {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.tcard-meta-icon .icon { font-size: 11px; opacity: 0.8; }
+
+/* Hover actions */
+.tcard-actions {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	display: none;
+	gap: 2px;
+	background: var(--bg-primary);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 2px;
+	box-shadow: var(--shadow-sm);
+}
+.tcard:hover .tcard-actions { display: flex; }
+.tcard-action-btn {
+	border: none;
+	background: transparent;
+	color: var(--fg-muted);
+	cursor: pointer;
+	padding: 2px 4px;
+	border-radius: 2px;
+	font-size: 11px;
+}
+.tcard-action-btn:hover {
+	background: var(--bg-hover, var(--bg-tertiary));
+	color: var(--fg-primary);
+}
+.tcard-action-btn.danger:hover { color: var(--danger); }
+
+/* Drag handle */
+.tcard-drag-handle {
+	position: absolute;
+	top: 50%;
+	right: 2px;
+	transform: translateY(-50%);
+	color: var(--fg-muted);
+	opacity: 0;
+	font-size: 10px;
+	transition: opacity var(--transition);
+}
+.tcard:hover .tcard-drag-handle { opacity: 0.4; }
+
+/* Priority left border accents */
+.tcard[data-priority="high"]   { --priority-color: var(--danger); }
+.tcard[data-priority="medium"] { --priority-color: var(--warning); }
+.tcard[data-priority="low"]    { --priority-color: var(--success); }
+
+/* Compact mode (no desc) */
+.tcard.compact { padding: 0; }
+
+/* Demo layouts */
+.kanban-mock {
+	display: grid;
+	grid-template-columns: repeat(3, 280px);
+	gap: 14px;
+}
+
+.kanban-col {
+	background: var(--bg-secondary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 10px;
+	min-height: 200px;
+}
+
+.kanban-col-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 4px 4px 10px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--fg-secondary);
+	border-bottom: 1px solid var(--border-subtle);
+	margin-bottom: 10px;
+}
+
+.kanban-col-header .count {
+	background: var(--bg-tertiary);
+	padding: 1px 7px;
+	border-radius: 8px;
+	font-size: 11px;
+}
+
+.cards-stack { display: flex; flex-direction: column; gap: 8px; }
+
+/* Hover state demo */
+.tcard.hovered {
+	border-color: var(--accent);
+	box-shadow: var(--shadow-md);
+	transform: translateY(-1px);
+}
+</style>
+</head>
+<body>
+
+<h1>任务卡片优化设计 v2</h1>
+<p class="subtitle">对比展示：当前样式 vs 优化样式（视觉层级、紧凑度、可操作性）</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!--  PART 1 — 卡片结构示意                                  -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="section">
+	<h2>1. 卡片结构（解剖图）</h2>
+	<div class="cards-grid">
+
+		<!-- 完整卡片 -->
+		<div class="tcard" data-priority="high" style="width:280px;">
+			<div class="tcard-body">
+				<div class="tcard-id">#jwt-auth-8f3a</div>
+				<div class="tcard-title">实现用户登录模块的 JWT 鉴权逻辑（含 refresh token 机制）</div>
+				<div class="tcard-desc">实现基于 JWT 的用户登录鉴权模块，包括 access/refresh token、中间件、角色权限检查、登录失败限制</div>
+				<div class="tcard-tags">
+					<span class="tcard-tag assignee">
+						<span class="tcard-avatar blue">SC</span>
+						Saros Coder
+					</span>
+					<span class="tcard-priority high">🔴 高</span>
+				</div>
+			</div>
+			<div class="tcard-footer">
+				<span class="tcard-status">
+					<span class="tcard-status-dot running"></span>
+					执行中 · 2/5
+				</span>
+				<span class="tcard-meta-icons">
+					<span class="tcard-meta-icon"><span class="icon">🔗</span>2</span>
+					<span class="tcard-meta-icon"><span class="icon">💬</span>3</span>
+				</span>
+			</div>
+		</div>
+
+		<!-- 简洁卡片（无描述） -->
+		<div class="tcard" data-priority="medium" style="width:280px;">
+			<div class="tcard-body">
+				<div class="tcard-id">#test1-a1b2</div>
+				<div class="tcard-title">test1</div>
+				<div class="tcard-tags">
+					<span class="tcard-tag assignee">
+						<span class="tcard-avatar purple">GR</span>
+						gr-gc 专家
+					</span>
+					<span class="tcard-priority medium">🟡 中</span>
+				</div>
+			</div>
+			<div class="tcard-footer">
+				<span class="tcard-status">
+					<span class="tcard-status-dot todo"></span>
+					待执行
+				</span>
+			</div>
+		</div>
+
+		<!-- 阻塞态卡片 -->
+		<div class="tcard" data-priority="high" style="width:280px;">
+			<div class="tcard-body">
+				<div class="tcard-id">#fix-hidpi-c3d4</div>
+				<div class="tcard-title">修复 UI 在高分屏下的文字渲染问题</div>
+				<div class="tcard-desc">4K 显示器下 text-shadow 模糊，部分 emoji 错位，需要在 macOS/Windows 平台分别验证</div>
+				<div class="tcard-tags">
+					<span class="tcard-tag assignee">
+						<span class="tcard-avatar orange">FD</span>
+						Frontend Dev
+					</span>
+					<span class="tcard-priority high">🔴 高</span>
+				</div>
+			</div>
+			<div class="tcard-footer">
+				<span class="tcard-status">
+					<span class="tcard-status-dot blocked"></span>
+					阻塞 · 等待依赖
+				</span>
+				<span class="tcard-meta-icons">
+					<span class="tcard-meta-icon"><span class="icon">🔗</span>3</span>
+				</span>
+			</div>
+		</div>
+
+		<!-- 多人协作 -->
+		<div class="tcard" data-priority="low" style="width:280px;">
+			<div class="tcard-body">
+				<div class="tcard-id">#docs-v2-e5f6</div>
+				<div class="tcard-title">编写用户手册 v2.0 章节</div>
+				<div class="tcard-desc">从原 v1.5 升级到 v2.0，新增"AI 协作"和"工作流引擎"两个章节</div>
+				<div class="tcard-tags">
+					<span class="tcard-tag assignee">
+						<span class="tcard-avatar green">TW</span>
+						Tech Writer
+					</span>
+					<span class="tcard-tag assignee">
+						<span class="tcard-avatar gray">+2</span>
+					</span>
+					<span class="tcard-priority low">🟢 低</span>
+				</div>
+			</div>
+			<div class="tcard-footer">
+				<span class="tcard-status">
+					<span class="tcard-status-dot ready"></span>
+					就绪 · 等待认领
+				</span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!--  PART 2 — 看板对比                                    -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="section">
+	<h2>2. 看板实际效果对比</h2>
+	<div class="kanban-mock">
+
+		<div class="kanban-col">
+			<div class="kanban-col-header">
+				<span>📋 待执行 <span class="count">2</span></span>
+				<span style="opacity:0.5">＋</span>
+			</div>
+			<div class="cards-stack">
+				<div class="tcard" data-priority="medium">
+					<div class="tcard-body">
+						<div class="tcard-id">#task-a1b2</div>
+						<div class="tcard-title">test1</div>
+						<div class="tcard-tags">
+							<span class="tcard-tag assignee">
+								<span class="tcard-avatar purple">GR</span>
+								gr-gc 专家
+							</span>
+							<span class="tcard-priority medium">🟡 中</span>
+						</div>
+					</div>
+					<div class="tcard-footer">
+						<span class="tcard-status">
+							<span class="tcard-status-dot todo"></span>
+							待执行
+						</span>
+					</div>
+				</div>
+				<div class="tcard" data-priority="low">
+					<div class="tcard-body">
+						<div class="tcard-id">#eslint-x7y8</div>
+						<div class="tcard-title">添加 ESLint 配置以统一代码风格</div>
+						<div class="tcard-desc">在 monorepo 根目录配置共享的 ESLint config，统一所有包的代码风格</div>
+						<div class="tcard-tags">
+							<span class="tcard-tag assignee">
+								<span class="tcard-avatar green">EE</span>
+								E2E Expert
+							</span>
+							<span class="tcard-priority low">🟢 低</span>
+						</div>
+					</div>
+					<div class="tcard-footer">
+						<span class="tcard-status">
+							<span class="tcard-status-dot todo"></span>
+							待执行
+						</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="kanban-col">
+			<div class="kanban-col-header">
+				<span>⚡ 执行中 <span class="count">1</span></span>
+			</div>
+			<div class="cards-stack">
+				<div class="tcard" data-priority="high">
+					<div class="tcard-body">
+						<div class="tcard-id">#jwt-auth-8f3a</div>
+						<div class="tcard-title">实现用户登录模块的 JWT 鉴权逻辑</div>
+						<div class="tcard-desc">RS256 签名，refresh token 7天有效期，中间件从 Authorization header 提取验证</div>
+						<div class="tcard-tags">
+							<span class="tcard-tag assignee">
+								<span class="tcard-avatar blue">SC</span>
+								Saros Coder
+							</span>
+							<span class="tcard-priority high">🔴 高</span>
+						</div>
+					</div>
+					<div class="tcard-footer">
+						<span class="tcard-status">
+							<span class="tcard-status-dot running"></span>
+							执行中 · 2/5
+						</span>
+						<span class="tcard-meta-icons">
+							<span class="tcard-meta-icon"><span class="icon">🔗</span>2</span>
+						</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="kanban-col">
+			<div class="kanban-col-header">
+				<span>✅ 完成 <span class="count">1</span></span>
+			</div>
+			<div class="cards-stack">
+				<div class="tcard" data-priority="medium" style="opacity:0.65;">
+					<div class="tcard-body">
+						<div class="tcard-id" style="opacity:0.5;">#db-schema-z9a0</div>
+						<div class="tcard-title" style="text-decoration:line-through;color:var(--fg-muted);">
+							设计数据库用户表结构
+						</div>
+						<div class="tcard-tags">
+							<span class="tcard-tag assignee">
+								<span class="tcard-avatar green">DB</span>
+								DB Designer
+							</span>
+						</div>
+					</div>
+					<div class="tcard-footer">
+						<span class="tcard-status">
+							<span class="tcard-status-dot ready"></span>
+							已完成 · 2h ago
+						</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+	</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!--  PART 3 — 交互态                                      -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="section">
+	<h2>3. 交互态：Hover / Dragging / Actions</h2>
+	<div class="cards-grid">
+
+		<!-- Default -->
+		<div class="column-preview" style="width:300px;">
+			<div class="column-preview-header">默认态 (Default)</div>
+			<div class="tcard" data-priority="medium">
+				<div class="tcard-body">
+					<div class="tcard-id">#task-a1b2</div>
+					<div class="tcard-title">test1</div>
+					<div class="tcard-tags">
+						<span class="tcard-tag assignee">
+							<span class="tcard-avatar purple">GR</span>
+							gr-gc 专家
+						</span>
+						<span class="tcard-priority medium">🟡 中</span>
+					</div>
+				</div>
+				<div class="tcard-footer">
+					<span class="tcard-status">
+						<span class="tcard-status-dot todo"></span>
+						待执行
+					</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- Hover -->
+		<div class="column-preview" style="width:300px;">
+			<div class="column-preview-header">悬停态 (Hover) — 浮动 + 蓝色边框 + 操作按钮浮现</div>
+			<div class="tcard hovered" data-priority="medium" style="position:relative;">
+				<div class="tcard-actions">
+					<button class="tcard-action-btn" title="归档">📦</button>
+					<button class="tcard-action-btn danger" title="删除">🗑</button>
+				</div>
+				<div class="tcard-drag-handle">⋮⋮</div>
+				<div class="tcard-body">
+					<div class="tcard-id">#task-a1b2</div>
+					<div class="tcard-title">test1</div>
+					<div class="tcard-tags">
+						<span class="tcard-tag assignee">
+							<span class="tcard-avatar purple">GR</span>
+							gr-gc 专家
+						</span>
+						<span class="tcard-priority medium">🟡 中</span>
+					</div>
+				</div>
+				<div class="tcard-footer">
+					<span class="tcard-status">
+						<span class="tcard-status-dot todo"></span>
+						待执行
+					</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- Dragging -->
+		<div class="column-preview" style="width:300px;">
+			<div class="column-preview-header">拖拽态 (Dragging) — 半透明 + 旋转</div>
+			<div class="tcard dragging" data-priority="medium">
+				<div class="tcard-body">
+					<div class="tcard-id">#task-a1b2</div>
+					<div class="tcard-title">test1</div>
+					<div class="tcard-tags">
+						<span class="tcard-tag assignee">
+							<span class="tcard-avatar purple">GR</span>
+							gr-gc 专家
+						</span>
+						<span class="tcard-priority medium">🟡 中</span>
+					</div>
+				</div>
+				<div class="tcard-footer">
+					<span class="tcard-status">
+						<span class="tcard-status-dot todo"></span>
+						待执行
+					</span>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+</body>
+</html>

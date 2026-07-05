@@ -350,7 +350,7 @@ export class AgentStudioWebviewController extends Disposable {
 			.appRoot;
 		return URI.joinPath(
 			URI.file(appRoot),
-			"src",
+			"out",
 			"vs",
 			"sessions",
 			"contrib",

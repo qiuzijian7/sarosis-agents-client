@@ -799,6 +799,186 @@
 	white-space: nowrap;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   Queue bar (队列栏) — 待执行任务列表
+   位于系统栏下方、输入区上方。
+   收起态：紧凑摘要条 + 计数；展开态：max-height 限制的列表。
+   每行操作：上移 ↑ / 编辑 ✎ / 执行(⏵ promote) / 删除 🗑
+   ═══════════════════════════════════════════════════════════════════ */
+.queue-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 14px;
+	background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.06));
+	border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.15));
+	cursor: pointer;
+	user-select: none;
+	transition: background 0.15s;
+	flex-shrink: 0;
+}
+.queue-bar:hover {
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.1));
+}
+.queue-toggle-icon {
+	font-size: 10px;
+	color: var(--ec-text-secondary, #999);
+	display: inline-block;
+	transition: transform 0.2s ease;
+	flex-shrink: 0;
+	width: 12px;
+	text-align: center;
+}
+.queue-toggle-icon.expanded {
+	transform: rotate(90deg);
+}
+.queue-bar-label {
+	font-size: 11.5px;
+	color: var(--ec-text-primary, #c9d1d9);
+	font-weight: 500;
+}
+
+.queue-list {
+	max-height: 0;
+	overflow: hidden;
+	transition: max-height 0.25s ease;
+	background: var(--vscode-editor-background, #1e1e1e);
+	border-top: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.1));
+}
+.queue-list::-webkit-scrollbar { width: 6px; }
+.queue-list::-webkit-scrollbar-track { background: transparent; }
+.queue-list::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.2); border-radius: 3px; }
+
+.queue-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 14px;
+	border-bottom: 1px solid rgba(128, 128, 128, 0.06);
+	transition: background 0.1s;
+}
+.queue-item:last-child {
+	border-bottom: none;
+}
+.queue-item:hover {
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.06));
+}
+.queue-item-executing {
+	background: rgba(124, 185, 255, 0.08);
+}
+.queue-item-done {
+	opacity: 0.55;
+}
+.queue-item-done .queue-item-content {
+	text-decoration: line-through;
+}
+.queue-item-failed {
+	background: rgba(239, 68, 68, 0.08);
+}
+
+.queue-item-icon {
+	font-size: 11px;
+	color: var(--ec-text-secondary, #8b949e);
+	flex-shrink: 0;
+	width: 14px;
+	text-align: center;
+	font-weight: bold;
+}
+.queue-item-executing .queue-item-icon {
+	color: var(--ec-accent, #58a6ff);
+	animation: queue-item-pulse 1.2s ease-in-out infinite;
+}
+@keyframes queue-item-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.4; }
+}
+.queue-item-done .queue-item-icon {
+	color: var(--ec-success, #4ade80);
+}
+.queue-item-failed .queue-item-icon {
+	color: var(--ec-error, #e94560);
+}
+
+.queue-item-content {
+	flex: 1;
+	min-width: 0;
+	font-size: 12.5px;
+	color: var(--ec-text-primary, #c9d1d9);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	line-height: 1.4;
+}
+
+.queue-item-actions {
+	display: flex;
+	gap: 2px;
+	flex-shrink: 0;
+}
+.queue-item-action-btn {
+	width: 22px;
+	height: 22px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--ec-text-muted, #6e7681);
+	cursor: pointer;
+	font-size: 13px;
+	padding: 0;
+	transition: background 0.12s, color 0.12s;
+}
+.queue-item-action-btn:hover {
+	background: rgba(128, 128, 128, 0.12);
+	color: var(--ec-text-primary, #e6edf3);
+}
+.queue-item-action-btn.danger:hover {
+	background: rgba(239, 68, 68, 0.12);
+	color: var(--ec-error, #f87171);
+}
+.queue-item-action-btn.accent {
+	color: var(--ec-accent, #58a6ff);
+}
+.queue-item-action-btn.accent:hover {
+	background: rgba(88, 166, 255, 0.18);
+	color: var(--ec-accent-hover, #79c0ff);
+}
+.queue-item-action-btn.success {
+	color: var(--ec-success, #4ade80);
+}
+.queue-item-action-btn.success:hover {
+	background: rgba(74, 222, 128, 0.14);
+	color: var(--ec-success, #34d399);
+}
+
+/* Inline edit mode for a queue item */
+.queue-item-edit-input {
+	flex: 1;
+	min-width: 0;
+	padding: 3px 8px;
+	background: var(--vscode-input-background, #1c1c1c);
+	color: var(--ec-text-primary, #c9d1d9);
+	border: 1px solid var(--ec-accent, #58a6ff);
+	border-radius: 4px;
+	font-size: 12.5px;
+	font-family: inherit;
+	outline: none;
+}
+.queue-item-edit-input:focus {
+	border-color: var(--ec-accent-hover, #79c0ff);
+}
+.queue-item-edit-actions {
+	display: flex;
+	gap: 4px;
+	flex-shrink: 0;
+}
+.queue-item-edit-actions .queue-item-action-btn {
+	width: 24px;
+	height: 24px;
+}
+
 .chat-message.user {
 	flex-direction: row-reverse;
 	padding-bottom: 36px;
@@ -836,11 +1016,11 @@
 }
 
 .chat-bubble.user {
-	background: linear-gradient(135deg, var(--ec-accent), color-mix(in srgb, var(--ec-accent) 85%, #000));
-	color: white;
-	border-bottom-right-radius: 4px;
+	background: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-editor-foreground, #c9d1d9);
+	/* Void-style: uniform rounded corners, no accent gradient, no shadow */
+	border-bottom-right-radius: 14px;
 	max-width: 75%;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
 
@@ -7102,6 +7282,15 @@
 }
 
 .cli-mode .sysmsg-list {
+	display: none;
+	border-top: none;
+}
+
+/* Queue bar: also hidden in CLI mode (队列栏是 GUI 模式专属) */
+.cli-mode .queue-bar {
+	display: none;
+}
+.cli-mode .queue-list {
 	display: none;
 	border-top: none;
 }

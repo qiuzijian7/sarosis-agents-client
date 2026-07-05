@@ -265,6 +265,10 @@ const desktopResourcePatterns = [
 	// Webview pre scripts
 	'vs/workbench/contrib/webview/browser/pre/*.js',
 
+	// Agent Studio webview (workflow editor, chat, etc.)
+	'vs/sessions/contrib/agentStudio/webview/media/webview.js',
+	'vs/sessions/contrib/agentStudio/webview/media/webview.css',
+
 	// Shell scripts
 	'vs/base/node/*.sh',
 	'vs/workbench/contrib/terminal/common/scripts/*.sh',

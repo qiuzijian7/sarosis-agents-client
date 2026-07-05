@@ -475,6 +475,31 @@ export interface ICheckpointInfo {
 	readonly files: ReadonlyArray<{ path: string; status: 'modified' | 'created' | 'deleted' }>;
 }
 
+/**
+ * 队列项 —— 等待执行的待办任务。
+ * 渲染在系统栏下方、输入区上方的"队列栏"中。
+ */
+export interface IQueueItem {
+	readonly id: string;
+	/** 任务描述（展示在队列行） */
+	readonly content: string;
+	/** 入队时间戳（毫秒） */
+	readonly timestamp: number;
+	/** 任务状态 */
+	readonly status?: 'pending' | 'executing' | 'done' | 'failed';
+	/** 可选元数据（attach/file/agentId 等） */
+	readonly metadata?: Record<string, unknown>;
+}
+
+/** 队列项操作类型 */
+export type QueueItemActionType = 'promote' | 'edit' | 'delete' | 'reorder';
+/** 队列项操作回调（promote/edit/delete/reorder, itemId, newIndex?） */
+export type IQueueItemActionCallback = (
+	action: QueueItemActionType,
+	itemId: string,
+	extra?: { newIndex?: number; newContent?: string }
+) => void;
+
 // ── AskUser Card ─────────────────────────────────────────
 // Interactive card for workflow user input
 

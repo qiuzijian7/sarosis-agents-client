@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务详情 Mockup</title>
+<style>
+:root {
+	--bg-primary: #1e1e1e;
+	--bg-secondary: #252526;
+	--bg-tertiary: #2d2d30;
+	--bg-hover: #3e3e42;
+	--bg-input: #3c3c3c;
+	--border: #3c3c3c;
+	--border-focus: #007acc;
+	--fg-primary: #cccccc;
+	--fg-secondary: #999999;
+	--fg-muted: #6a6a6a;
+	--accent: #007acc;
+	--accent-hover: #1a8ad4;
+	--danger: #f44747;
+	--success: #4ec9b0;
+	--warning: #cca700;
+	--info: #569cd6;
+	--font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+	--font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+	--radius: 6px;
+	--radius-sm: 4px;
+	--shadow: 0 8px 32px rgba(0,0,0,0.5);
+	--transition: 150ms ease;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+	font-family: var(--font);
+	font-size: 13px;
+	background: #0d0d0d;
+	color: var(--fg-primary);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 100vh;
+	padding: 40px;
+}
+
+/* ── Modal Overlay ── */
+.modal-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(0,0,0,0.55);
+	backdrop-filter: blur(2px);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 1000;
+}
+
+/* ── Modal Shell ── */
+.modal {
+	background: var(--bg-primary);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	width: 560px;
+	max-width: 95vw;
+	max-height: 85vh;
+	display: flex;
+	flex-direction: column;
+	box-shadow: var(--shadow);
+	animation: modalIn 0.15s ease;
+}
+@keyframes modalIn {
+	from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+	to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Header ── */
+.modal-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	padding: 16px 20px 12px;
+	border-bottom: 1px solid var(--border);
+	flex-shrink: 0;
+}
+.modal-header-left {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+	flex: 1;
+}
+.modal-header-left .task-id {
+	font-size: 11px;
+	color: var(--fg-muted);
+	font-family: var(--font-mono);
+}
+.modal-header-left .task-title {
+	font-size: 16px;
+	font-weight: 600;
+	color: var(--fg-primary);
+	line-height: 1.3;
+	word-break: break-word;
+}
+.modal-close {
+	border: none;
+	background: transparent;
+	color: var(--fg-muted);
+	font-size: 18px;
+	cursor: pointer;
+	padding: 2px 6px;
+	border-radius: var(--radius-sm);
+	line-height: 1;
+	flex-shrink: 0;
+	margin-left: 12px;
+}
+.modal-close:hover {
+	background: var(--bg-hover);
+	color: var(--fg-primary);
+}
+
+/* ── Body ── */
+.modal-body {
+	padding: 16px 20px;
+	overflow-y: auto;
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+/* ── Status Row (editable) ── */
+.status-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+.status-row .label {
+	font-size: 12px;
+	color: var(--fg-secondary);
+	white-space: nowrap;
+	min-width: 48px;
+}
+.status-select {
+	font-size: 12px;
+	padding: 4px 8px;
+	background: var(--bg-input);
+	color: var(--fg-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	outline: none;
+	cursor: pointer;
+	font-family: var(--font);
+}
+.status-select:focus {
+	border-color: var(--border-focus);
+}
+
+/* ── Meta Grid ── */
+.meta-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 12px 16px;
+}
+.meta-item {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.meta-item .label {
+	font-size: 11px;
+	color: var(--fg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+}
+.meta-item .value {
+	font-size: 13px;
+	color: var(--fg-primary);
+}
+.meta-item .assignee-avatar {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+.avatar-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.avatar-dot.blue  { background: #4fc1ff; }
+.avatar-dot.green { background: #4ec9b0; }
+.avatar-dot.purple { background: #c586c0; }
+.avatar-dot.orange{ background: #ce9178; }
+
+/* ── Priority Badge ── */
+.priority-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px;
+	border-radius: 10px;
+	font-size: 12px;
+	font-weight: 500;
+}
+.priority-badge.high   { background: #f4474720; color: #f44747; }
+.priority-badge.medium { background: #cca70020; color: #cca700; }
+.priority-badge.low    { background: #4ec9b020; color: #4ec9b0; }
+
+/* ── Description ── */
+.desc-section {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.desc-section .label {
+	font-size: 11px;
+	color: var(--fg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+}
+.desc-content {
+	font-size: 13px;
+	color: var(--fg-primary);
+	line-height: 1.6;
+	background: var(--bg-secondary);
+	border-radius: var(--radius-sm);
+	padding: 10px 12px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 120px;
+	overflow-y: auto;
+}
+
+/* ── Dependencies ── */
+.deps-section {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.deps-section .label {
+	font-size: 11px;
+	color: var(--fg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+}
+.dep-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.dep-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 8px;
+	border-radius: 10px;
+	font-size: 11px;
+	background: var(--bg-tertiary);
+	color: var(--fg-secondary);
+	border: 1px solid var(--border);
+	cursor: pointer;
+	transition: all var(--transition);
+}
+.dep-chip:hover {
+	background: var(--bg-hover);
+	color: var(--fg-primary);
+	border-color: var(--fg-muted);
+}
+.dep-chip .status-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.dep-chip .status-dot.done { background: var(--success); }
+.dep-chip .status-dot.progress { background: var(--warning); }
+.dep-chip .status-dot.waiting { background: var(--fg-muted); }
+
+/* ── Attachment Section ── */
+.attachments-section {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.attachments-section .label {
+	font-size: 11px;
+	color: var(--fg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+}
+.attachment-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	border-radius: var(--radius-sm);
+	background: var(--bg-secondary);
+	font-size: 12px;
+	cursor: pointer;
+	transition: background var(--transition);
+}
+.attachment-item:hover {
+	background: var(--bg-hover);
+}
+.attachment-icon {
+	font-size: 14px;
+}
+.attachment-name {
+	flex: 1;
+	color: var(--fg-primary);
+}
+.attachment-size {
+	font-size: 11px;
+	color: var(--fg-muted);
+	font-family: var(--font-mono);
+}
+
+/* ── Timestamps ── */
+.timestamps {
+	display: flex;
+	gap: 24px;
+	font-size: 11px;
+	color: var(--fg-muted);
+	padding-top: 4px;
+	border-top: 1px solid var(--border);
+}
+.timestamp-item {
+	display: flex;
+	gap: 4px;
+}
+.timestamp-item .ts-label {
+	color: var(--fg-muted);
+}
+.timestamp-item .ts-value {
+	color: var(--fg-secondary);
+	font-family: var(--font-mono);
+}
+
+/* ── Footer ── */
+.modal-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 20px;
+	border-top: 1px solid var(--border);
+	flex-shrink: 0;
+}
+.footer-actions {
+	display: flex;
+	gap: 8px;
+}
+.footer-right {
+	display: flex;
+	gap: 8px;
+}
+
+/* ── Buttons ── */
+.btn {
+	font-size: 12px;
+	padding: 5px 12px;
+	border: none;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	font-family: var(--font);
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	transition: all var(--transition);
+	white-space: nowrap;
+}
+.btn-primary {
+	background: var(--accent);
+	color: #ffffff;
+}
+.btn-primary:hover {
+	background: var(--accent-hover);
+}
+.btn-secondary {
+	background: var(--bg-input);
+	color: var(--fg-primary);
+	border: 1px solid var(--border);
+}
+.btn-secondary:hover {
+	background: var(--bg-hover);
+}
+.btn-danger {
+	background: transparent;
+	color: var(--danger);
+	border: 1px solid var(--danger);
+}
+.btn-danger:hover {
+	background: #f4474720;
+}
+.btn-ghost {
+	background: transparent;
+	color: var(--fg-secondary);
+}
+.btn-ghost:hover {
+	background: var(--bg-hover);
+	color: var(--fg-primary);
+}
+.btn-icon {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: var(--radius-sm);
+}
+
+/* ── Divider ── */
+.divider {
+	border: none;
+	border-top: 1px solid var(--border);
+	margin: 2px 0;
+}
+
+/* ── Tooltip ── */
+[title] { position: relative; }
+
+/* ── Scrollbar ── */
+.modal-body::-webkit-scrollbar { width: 6px; }
+.modal-body::-webkit-scrollbar-thumb {
+	background: var(--bg-hover);
+	border-radius: 3px;
+}
+
+/* ── Dark mode only (already applied) ── */
+
+/* ── Optional: comment/activity section ── */
+.activity-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.activity-item {
+	display: flex;
+	gap: 8px;
+	font-size: 12px;
+	padding: 6px 0;
+}
+.activity-item + .activity-item {
+	border-top: 1px solid var(--border);
+}
+.activity-author {
+	color: var(--info);
+	font-weight: 500;
+	white-space: nowrap;
+}
+.activity-text {
+	color: var(--fg-secondary);
+	flex: 1;
+}
+.activity-time {
+	color: var(--fg-muted);
+	font-size: 11px;
+	white-space: nowrap;
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!--  TASK DETAIL MODAL                                     -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="modal-overlay">
+<div class="modal">
+
+	<!-- ─── Header ─── -->
+	<div class="modal-header">
+		<div class="modal-header-left">
+			<span class="task-id">#task-8f3a2c1d</span>
+			<h2 class="task-title">实现用户登录模块的 JWT 鉴权逻辑</h2>
+		</div>
+		<button class="modal-close" title="关闭 (Esc)">✕</button>
+	</div>
+
+	<!-- ─── Body ─── -->
+	<div class="modal-body">
+
+		<!-- Status + Priority 行 -->
+		<div class="status-row">
+			<span class="label">状态</span>
+			<select class="status-select">
+				<option value="triage">🗂 待规划</option>
+				<option value="todo">📋 待执行</option>
+				<option value="ready">✅ 就绪</option>
+				<option value="running" selected>⚡ 执行中</option>
+				<option value="blocked">🚫 阻塞</option>
+				<option value="done">✔ 已完成</option>
+				<option value="cancelled">⏹ 取消</option>
+				<option value="archived">📦 归档</option>
+			</select>
+
+			<span style="margin-left:16px" class="label">优先级</span>
+			<span class="priority-badge high">🔴 高</span>
+		</div>
+
+		<!-- Metadata Grid -->
+		<div class="meta-grid">
+			<div class="meta-item">
+				<span class="label">负责人</span>
+				<span class="value">
+					<span class="assignee-avatar">
+						<span class="avatar-dot blue"></span>
+						Saros Coder
+					</span>
+				</span>
+			</div>
+			<div class="meta-item">
+				<span class="label">来源</span>
+				<span class="value">🗂 任务编排</span>
+			</div>
+			<div class="meta-item">
+				<span class="label">工作区</span>
+				<span class="value">VsSaros_S1Game</span>
+			</div>
+			<div class="meta-item">
+				<span class="label">Worktree</span>
+				<span class="value" style="font-family:var(--font-mono);font-size:12px;">
+					feat-jwt-auth
+				</span>
+			</div>
+		</div>
+
+		<div class="divider"></div>
+
+		<!-- Description -->
+		<div class="desc-section">
+			<span class="label">描述</span>
+			<div class="desc-content">实现基于 JWT 的用户登录鉴权模块，包括：
+- Access Token 生成与验证（RS256）
+- Refresh Token 机制（7 天有效期）
+- 中间件：自动从 Authorization header 提取并验证 token
+- 用户角色权限检查（admin / user / guest）
+- 登录失败次数限制（5 次/15 分钟锁定）
+
+验收标准：
+- 所有 API 接口返回标准 JSON 格式 { code, data, message }
+- 单元测试覆盖率 ≥ 80%
+- 集成测试包含 token 过期/刷新场景</div>
+		</div>
+
+		<!-- Dependencies -->
+		<div class="deps-section">
+			<span class="label">依赖任务 (2)</span>
+			<div class="dep-chips">
+				<div class="dep-chip" title="点击打开依赖任务详情">
+					<span class="status-dot done"></span>
+					设计数据库用户表结构
+				</div>
+				<div class="dep-chip" title="点击打开依赖任务详情">
+					<span class="status-dot progress"></span>
+					搭建项目基础框架
+				</div>
+			</div>
+		</div>
+
+		<!-- Attachments -->
+		<div class="attachments-section">
+			<span class="label">附件 (1)</span>
+			<div class="attachment-item" title="点击下载">
+				<span class="attachment-icon">📄</span>
+				<span class="attachment-name">jwt-auth-design.md</span>
+				<span class="attachment-size">12.4 KB</span>
+			</div>
+		</div>
+
+		<div class="divider"></div>
+
+		<!-- Activity / Comments -->
+		<div class="activity-section">
+			<span class="label" style="font-size:11px;color:var(--fg-muted);text-transform:uppercase;letter-spacing:0.4px;">最近活动</span>
+			<div class="activity-item">
+				<span class="activity-author">Saros Planner</span>
+				<span class="activity-text">从编排计划 "Auth System" 拆解</span>
+				<span class="activity-time">7/5 13:02</span>
+			</div>
+			<div class="activity-item">
+				<span class="activity-author">Saros Coder</span>
+				<span class="activity-text">认领任务，开始执行</span>
+				<span class="activity-time">7/5 13:15</span>
+			</div>
+			<div class="activity-item">
+				<span class="activity-author">System</span>
+				<span class="activity-text">检测到依赖 "搭建项目基础框架" 阻塞，自动暂停</span>
+				<span class="activity-time">7/5 14:30</span>
+			</div>
+		</div>
+
+		<!-- Timestamps -->
+		<div class="timestamps">
+			<div class="timestamp-item">
+				<span class="ts-label">创建</span>
+				<span class="ts-value">2026-07-05 13:02:17</span>
+			</div>
+			<div class="timestamp-item">
+				<span class="ts-label">更新</span>
+				<span class="ts-value">2026-07-05 14:30:42</span>
+			</div>
+		</div>
+
+	</div>
+
+	<!-- ─── Footer ─── -->
+	<div class="modal-footer">
+		<div class="footer-actions">
+			<button class="btn btn-danger" title="删除此任务">
+				🗑 删除
+			</button>
+			<button class="btn btn-secondary" title="归档任务">
+				📦 归档
+			</button>
+			<button class="btn btn-secondary" title="阻塞/取消阻塞">
+				🚫 标记阻塞
+			</button>
+		</div>
+		<div class="footer-right">
+			<button class="btn btn-secondary" title="关闭">
+				取消
+			</button>
+			<button class="btn btn-primary" title="保存修改 (Ctrl+S)">
+				💾 保存
+			</button>
+		</div>
+	</div>
+
+</div>
+</div>
+
+</body>
+</html>

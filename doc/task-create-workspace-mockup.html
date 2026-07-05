@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>创建任务 — 增加workspace/worktree Mockup</title>
+<style>
+:root {
+	--bg-primary: #1e1e1e;
+	--bg-secondary: #252526;
+	--bg-tertiary: #2d2d30;
+	--bg-input: #3c3c3c;
+	--border: #3c3c3c;
+	--border-focus: #007acc;
+	--fg-primary: #cccccc;
+	--fg-secondary: #999999;
+	--fg-muted: #6a6a6a;
+	--accent: #007acc;
+	--accent-hover: #1a8ad4;
+	--danger: #f44747;
+	--success: #4ec9b0;
+	--warning: #cca700;
+	--font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+	--font-mono: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+	--radius: 6px;
+	--radius-sm: 4px;
+	--shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+	font-family: var(--font);
+	font-size: 13px;
+	background: #0d0d0d;
+	color: var(--fg-primary);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 100vh;
+	gap: 30px;
+	flex-wrap: wrap;
+	padding: 40px;
+}
+
+/* ═══ Modal Shell ═══ */
+.modal-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(0,0,0,0.55);
+	backdrop-filter: blur(2px);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 1000;
+}
+
+.modal {
+	background: var(--bg-primary);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	width: 480px;
+	max-width: 95vw;
+	max-height: 90vh;
+	overflow-y: auto;
+	box-shadow: var(--shadow);
+	animation: modalIn 0.15s ease;
+}
+@keyframes modalIn {
+	from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+	to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.modal-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 20px 12px;
+	border-bottom: 1px solid var(--border);
+	font-weight: 600;
+	font-size: 14px;
+}
+.modal-close {
+	border: none; background: transparent; color: var(--fg-muted);
+	font-size: 18px; cursor: pointer; padding: 2px 6px; border-radius: 3px;
+}
+.modal-close:hover { color: var(--fg-primary); background: var(--bg-tertiary); }
+
+.modal-body {
+	padding: 16px 20px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.modal-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding: 12px 20px;
+	border-top: 1px solid var(--border);
+}
+
+/* ═══ Form Fields ═══ */
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.field-label {
+	font-size: 11px;
+	color: var(--fg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+}
+.field-label .required {
+	color: var(--danger);
+	margin-left: 1px;
+}
+.field-hint {
+	font-size: 10px;
+	color: var(--fg-muted);
+	opacity: 0.7;
+	margin-top: 1px;
+}
+
+.input {
+	font-size: 12px;
+	padding: 6px 10px;
+	background: var(--bg-input);
+	color: var(--fg-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	outline: none;
+	font-family: var(--font);
+}
+.input:focus { border-color: var(--border-focus); }
+
+.textarea {
+	font-size: 12px;
+	padding: 6px 10px;
+	background: var(--bg-input);
+	color: var(--fg-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	outline: none;
+	resize: vertical;
+	font-family: var(--font);
+	min-height: 60px;
+}
+.textarea:focus { border-color: var(--border-focus); }
+
+.select {
+	font-size: 12px;
+	padding: 6px 10px;
+	background: var(--bg-input);
+	color: var(--fg-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	outline: none;
+	cursor: pointer;
+	font-family: var(--font);
+}
+.select:focus { border-color: var(--border-focus); }
+.select option {
+	background: var(--bg-primary);
+	color: var(--fg-primary);
+}
+.select:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+/* ═══ Row ═══ */
+.field-row {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 12px;
+}
+
+/* ═══ Buttons ═══ */
+.btn {
+	font-size: 12px;
+	padding: 6px 14px;
+	border: none;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	font-family: var(--font);
+	transition: background 0.15s;
+}
+.btn-primary {
+	background: var(--accent);
+	color: #ffffff;
+}
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-secondary {
+	background: var(--bg-input);
+	color: var(--fg-primary);
+	border: 1px solid var(--border);
+}
+.btn-secondary:hover { background: var(--bg-tertiary); }
+
+/* ═══ Worktree section ═══ */
+.wt-section {
+	background: var(--bg-secondary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 10px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.wt-preview {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	background: var(--bg-primary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	font-size: 12px;
+}
+
+.wt-preview .wt-icon {
+	font-size: 14px;
+	opacity: 0.7;
+}
+
+.wt-preview .wt-path {
+	flex: 1;
+	color: var(--fg-primary);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wt-preview .wt-branch {
+	color: var(--warning);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	white-space: nowrap;
+	padding: 1px 6px;
+	background: #cca70015;
+	border-radius: 8px;
+}
+
+.wt-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.wt-actions .btn {
+	font-size: 11px;
+	padding: 4px 10px;
+}
+
+/* ═══ Divider ═══ */
+.divider {
+	border: none;
+	border-top: 1px solid var(--border);
+	margin: 2px 0;
+}
+
+/* ═══ Section header ═══ */
+.section-title {
+	font-size: 11px;
+	color: var(--fg-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.section-title::after {
+	content: "";
+	flex: 1;
+	height: 1px;
+	background: var(--border);
+}
+
+/* ═══ Layout: Side-by-side ═══ */
+.panels {
+	display: flex;
+	gap: 40px;
+	align-items: flex-start;
+}
+
+.panel {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+}
+
+.panel-label {
+	font-size: 12px;
+	color: var(--fg-muted);
+	margin-bottom: 4px;
+}
+
+/* ═══ Loading spinner ═══ */
+.spinner {
+	display: inline-block;
+	width: 14px;
+	height: 14px;
+	border: 2px solid var(--fg-muted);
+	border-top-color: transparent;
+	border-radius: 50%;
+	animation: spin 0.6s linear infinite;
+	margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Compact "no worktree" state */
+.wt-empty {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	background: var(--bg-secondary);
+	border: 1px dashed var(--border);
+	border-radius: var(--radius-sm);
+	color: var(--fg-muted);
+	font-size: 11px;
+}
+
+.wt-empty-action {
+	margin-left: auto;
+	font-size: 11px;
+	padding: 3px 8px;
+}
+</style>
+</head>
+<body>
+
+<div class="panels">
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!--  PANEL 1: 创建任务 — 含 workspace + worktree          -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="panel">
+	<div class="panel-label">创建任务（含 workspace/worktree）</div>
+	<div class="modal">
+		<div class="modal-header">
+			<span>📋 创建任务</span>
+			<button class="modal-close">✕</button>
+		</div>
+
+		<div class="modal-body">
+
+			<!-- ── 任务标题 ── -->
+			<div class="field">
+				<span class="field-label">任务标题<span class="required"> *</span></span>
+				<input class="input" placeholder="简要描述这个任务" value="实现用户登录模块的 JWT 鉴权逻辑">
+			</div>
+
+			<!-- ── 任务描述 ── -->
+			<div class="field">
+				<span class="field-label">任务描述</span>
+				<textarea class="textarea" placeholder="补充细节、验收标准等（可选）">实现基于 JWT 的用户登录鉴权模块，包括 Access Token + Refresh Token、中间件验证、角色权限控制</textarea>
+			</div>
+
+			<div class="divider"></div>
+
+			<!-- ── ⭐ NEW: 工作区选择 ── -->
+			<div class="section-title">🏢 执行环境</div>
+
+			<div class="field-row">
+				<div class="field">
+					<span class="field-label">工作区</span>
+					<select class="select">
+						<option value="">当前工作区（VsSaros_S1Game）</option>
+						<option value="sarosis-agents-client">sarosis-agents-client</option>
+						<option value="VsSaros_S1Game" selected>VsSaros_S1Game</option>
+						<option value="backend-services">backend-services</option>
+					</select>
+					<span class="field-hint">任务所属的工作区，默认为当前看板工作区</span>
+				</div>
+
+				<div class="field">
+					<span class="field-label">Git 工作分支 (Worktree)</span>
+					<select class="select">
+						<option value="">不指定（在主仓库中执行）</option>
+						<option value="feat-jwt-auth" selected>feat-jwt-auth</option>
+						<option value="feat-ui-refactor">feat-ui-refactor</option>
+						<option value="feat-api-v2">feat-api-v2</option>
+					</select>
+					<span class="field-hint">为 Agent 创建独立的工作目录和分支</span>
+				</div>
+			</div>
+
+			<!-- ── ⭐ NEW: Worktree 详情预览 ── -->
+			<div class="wt-section">
+				<div class="wt-preview">
+					<span class="wt-icon">🌿</span>
+					<span class="wt-path">f:\GR_qiuzijian_main\S1Game\.saros-worktrees\feat-jwt-auth</span>
+					<span class="wt-branch">feat-jwt-auth</span>
+				</div>
+				<div class="wt-actions">
+					<button class="btn btn-secondary">🔄 检测已有 worktree</button>
+					<button class="btn btn-secondary">➕ 新建 worktree 分支</button>
+				</div>
+			</div>
+
+			<div class="divider"></div>
+
+			<!-- ── 负责人 + 优先级 ── -->
+			<div class="field-row">
+				<div class="field">
+					<span class="field-label">负责员工 (Agent)</span>
+					<select class="select">
+						<option value="">未指派（自动分配）</option>
+						<option value="saros-claw">Saros Claw</option>
+						<option value="saros-coder" selected>Saros Coder</option>
+						<option value="saros-planner">Saros Planner</option>
+					</select>
+				</div>
+				<div class="field">
+					<span class="field-label">优先级</span>
+					<select class="select">
+						<option value="low">🟢 低</option>
+						<option value="medium" selected>🟡 中</option>
+						<option value="high">🔴 高</option>
+					</select>
+				</div>
+			</div>
+
+			<!-- ── 依赖任务 ── -->
+			<div class="field">
+				<span class="field-label">依赖任务</span>
+				<select class="select">
+					<option value="">选择需要先完成的任务…</option>
+					<option>设计数据库用户表结构</option>
+					<option>搭建项目基础框架</option>
+				</select>
+			</div>
+
+		</div>
+
+		<div class="modal-footer">
+			<button class="btn btn-secondary">取消</button>
+			<button class="btn btn-primary">🚀 创建并执行</button>
+		</div>
+	</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!--  PANEL 2: 无 worktree 状态                              -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="panel">
+	<div class="panel-label">worktree 未选择状态</div>
+	<div class="modal" style="width:440px;">
+		<div class="modal-header">
+			<span>📋 创建任务</span>
+			<button class="modal-close">✕</button>
+		</div>
+		<div class="modal-body">
+
+			<div class="field">
+				<span class="field-label">任务标题<span class="required"> *</span></span>
+				<input class="input" placeholder="简要描述这个任务" value="test1">
+			</div>
+
+			<div class="section-title">🏢 执行环境</div>
+
+			<div class="field-row">
+				<div class="field">
+					<span class="field-label">工作区</span>
+					<select class="select">
+						<option selected>当前工作区（VsSaros_S1Game）</option>
+					</select>
+				</div>
+				<div class="field">
+					<span class="field-label">Git 工作分支</span>
+					<select class="select">
+						<option value="" selected>不指定（在主仓库中执行）</option>
+					</select>
+				</div>
+			</div>
+
+			<!-- worktree 未选择时的提示 -->
+			<div class="wt-empty">
+				<span>ℹ️</span>
+				<span>未选择 worktree — 任务将在主仓库中执行</span>
+				<button class="btn btn-secondary wt-empty-action">➕ 新建</button>
+			</div>
+
+			<div class="divider"></div>
+
+			<div class="field-row">
+				<div class="field">
+					<span class="field-label">负责员工</span>
+					<select class="select">
+						<option selected>未指派（自动分配）</option>
+					</select>
+				</div>
+				<div class="field">
+					<span class="field-label">优先级</span>
+					<select class="select">
+						<option selected>🟡 中</option>
+					</select>
+				</div>
+			</div>
+
+		</div>
+		<div class="modal-footer">
+			<button class="btn btn-secondary">取消</button>
+			<button class="btn btn-primary">🚀 创建并执行</button>
+		</div>
+	</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!--  PANEL 3: worktree 加载中状态                          -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="panel">
+	<div class="panel-label">worktree 加载中 + 新建弹窗</div>
+	<div class="modal" style="width:440px;">
+		<div class="modal-header">
+			<span>📋 创建任务</span>
+			<button class="modal-close">✕</button>
+		</div>
+		<div class="modal-body">
+
+			<div class="field">
+				<span class="field-label">任务标题<span class="required"> *</span></span>
+				<input class="input" placeholder="简要描述这个任务">
+			</div>
+
+			<div class="section-title">🏢 执行环境</div>
+
+			<div class="field-row">
+				<div class="field">
+					<span class="field-label">工作区</span>
+					<select class="select">
+						<option>VsSaros_S1Game</option>
+					</select>
+				</div>
+				<div class="field">
+					<span class="field-label">Git 工作分支</span>
+					<select class="select" disabled>
+						<option><span class="spinner"></span> 加载中…</option>
+					</select>
+				</div>
+			</div>
+
+			<div class="wt-section" style="opacity:0.7;">
+				<!-- 加载中状态 -->
+				<div class="wt-empty" style="justify-content:center;">
+					<span class="spinner"></span>
+					<span>正在加载 worktree 列表…</span>
+				</div>
+			</div>
+
+		</div>
+		<div class="modal-footer">
+			<button class="btn btn-secondary">取消</button>
+			<button class="btn btn-primary" disabled>🚀 创建并执行</button>
+		</div>
+	</div>
+</div>
+
+</div>
+
+</body>
+</html>

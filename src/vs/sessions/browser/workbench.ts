@@ -7,7 +7,7 @@ import '../../workbench/browser/style.js';
 import './media/style.css';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../base/common/lifecycle.js';
 import { Emitter, Event, setGlobalLeakWarningThreshold } from '../../base/common/event.js';
-import { getActiveDocument, getActiveElement, getClientArea, getWindowId, getWindows, IDimension, isAncestorUsingFlowTo, isHTMLElement, size, Dimension, runWhenWindowIdle } from '../../base/browser/dom.js';
+import { getActiveDocument, getActiveElement, getClientArea, getWindowId, getWindows, IDimension, isAncestorUsingFlowTo, isHTMLElement, size, Dimension, runWhenWindowIdle, addDisposableListener, EventType } from '../../base/browser/dom.js';
 import { DeferredPromise, RunOnceScheduler } from '../../base/common/async.js';
 import { isFullscreen, onDidChangeFullscreen, isChrome, isFirefox, isSafari } from '../../base/browser/browser.js';
 import { mark } from '../../base/common/performance.js';
@@ -1120,6 +1120,27 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		mark('code/didCreatePart/workbench.parts.agentEditor');
 
 		this.mainContainer.appendChild(agentEditorPartContainer);
+
+		// [Sarosis] 双击 agent editor part 标签栏空白区域 → 新建一个聊天窗口
+		// VS Code 标准 multiEditorTabsControl 已有 dblclick 在空白处创建新文件的逻辑
+		// (multiEditorTabsControl.ts:299)。这里在 capture 阶段拦截同一个事件，
+		// 当 target 是 .tabs-container 自身（不是 tab 子元素）时阻止标准行为，
+		// 改为触发 agentStudio.newChatInEditor 等价的逻辑：新建一个独立 group 打开 NativeChatEditorInput。
+		this._register(addDisposableListener(agentEditorPartContainer, EventType.DBLCLICK, (e: MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			if (!target) { return; }
+			const tabsContainer = target.closest('.tabs-container');
+			if (!tabsContainer) { return; }
+			if (target !== tabsContainer) { return; } // 命中 tab / 按钮 / actionbar → 不处理
+			// 命中"标签栏空白处" → 阻止标准 dblclick 创建新文件
+			e.stopPropagation();
+			e.preventDefault();
+			const part = (this.editorGroupService as SessionsEditorParts).agentPart;
+			if (!part?.activeGroup) { return; }
+			const input = NativeChatEditorInput.create();
+			const newGroup = part.addGroup(part.activeGroup, 3 /* GroupDirection.RIGHT */);
+			newGroup.openEditor(input, { pinned: true }).catch(() => { /* 创建失败静默忽略 */ });
+		}, true /* useCapture: 先于 multiEditorTabsControl 内部监听器触发 */));
 	}
 
 	private restore(lifecycleService: ILifecycleService): void {

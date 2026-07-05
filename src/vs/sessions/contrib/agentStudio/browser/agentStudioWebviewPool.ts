@@ -159,7 +159,7 @@ export class AgentStudioWebviewPool extends Disposable implements IAgentStudioWe
 		const appRoot = (this.environmentService as INativeEnvironmentService).appRoot;
 		return URI.joinPath(
 			URI.file(appRoot),
-			'src', 'vs', 'sessions', 'contrib', 'agentStudio', 'webview', 'media',
+			'out', 'vs', 'sessions', 'contrib', 'agentStudio', 'webview', 'media',
 		);
 	}
 
