@@ -456,7 +456,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const { localDir, manifest } = await installer.preparePack(localId);
 
 		// Apply user-provided overrides to manifest
-		const finalManifest = {
+		const finalManifest: Record<string, unknown> = {
 			...manifest,
 			name: opts.name || manifest.name,
 			version: opts.version || manifest.version,
@@ -464,6 +464,11 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			category: opts.category ?? manifest.category,
 			author: opts.author ?? manifest.author,
 		};
+		// Inject skillRefs/mcpRefs if provided
+		if (kind === 'agent') {
+			if (opts.skillRefs?.length) { finalManifest.skillRefs = opts.skillRefs; }
+			if (opts.mcpRefs?.length) { finalManifest.mcpRefs = opts.mcpRefs; }
+		}
 		const version = finalManifest.version;
 
 		// 1.5 预检：如果服务器已有同版本，拒绝上传；如果包不存在，先创建
@@ -548,6 +553,23 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 		// 4. 记录已安装
 		await this.upsertInstalled({ kind, storeId: localId, version: publishedVersion, installedAt: new Date().toISOString() });
+
+		// 4.5 同步本地 SKILL.md 的版本号，避免上传后显示"升级"按钮
+		const skillMdUri = URI.joinPath(localDir, 'SKILL.md');
+		if (await this.fileService.exists(skillMdUri)) {
+			try {
+				const mdContent = (await this.fileService.readFile(skillMdUri)).value.toString();
+				// Replace version in YAML frontmatter
+				const updated = mdContent.replace(
+					/(\n\s*version\s*:\s*).+/,
+					`$1${publishedVersion}`
+				);
+				if (updated !== mdContent) {
+					await this.fileService.writeFile(skillMdUri, VSBuffer.fromString(updated));
+					this.logService.info(`[Marketplace] 同步本地 SKILL.md 版本: ${publishedVersion}`);
+				}
+			} catch { /* non-critical */ }
+		}
 
 		this.logService.info(`[Marketplace] 发布成功: v${publishedVersion}`);
 		return { version: publishedVersion };

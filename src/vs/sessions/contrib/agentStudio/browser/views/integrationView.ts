@@ -566,18 +566,12 @@ export class IntegrationViewPane extends ViewPane {
 			nameEl.textContent = skill.name;
 			nameRow.appendChild(nameEl);
 
-			const catBadge = $('span.skill-category-badge');
-			catBadge.textContent = skill.category ?? 'misc';
-			nameRow.appendChild(catBadge);
-
-			const activationBadge = $('span.skill-category-badge');
-			activationBadge.textContent = skill.activation;
-			activationBadge.classList.add(`skill-activation-${skill.activation}`);
-			nameRow.appendChild(activationBadge);
-
-			const sourceBadge = $('span.skill-category-badge');
-			sourceBadge.textContent = skill.source;
-			nameRow.appendChild(sourceBadge);
+			// Version badge
+			if (skill.version) {
+				const verBadge = $('span.skill-version-badge');
+				verBadge.textContent = `v${skill.version}`;
+				nameRow.appendChild(verBadge);
+			}
 
 			info.appendChild(nameRow);
 
@@ -586,11 +580,12 @@ export class IntegrationViewPane extends ViewPane {
 			info.appendChild(descEl);
 			item.appendChild(info);
 
-			// Unified action buttons (hover-visible) — replaces old uninstall button
+			// Unified action buttons (hover-visible)
 			const skillActions = this._createActionButtons('skill', skill.id, skill.name, {
-				// Only show upload for locally installed skills (user), not marketplace-downloaded
-				showUpload: skill.source === 'user',
-				showDelete: skill.source === 'user' || skill.source === 'marketplace',
+				// Show upload for user and builtin (not marketplace-downloaded)
+				showUpload: skill.source === 'user' || skill.source === 'builtin',
+				// Show delete for all sources (user, builtin, marketplace)
+				showDelete: skill.source === 'user' || skill.source === 'builtin' || skill.source === 'marketplace',
 			});
 			// Mark marketplace skills for async upgrade check
 			if (skill.source === 'marketplace') {
@@ -1872,6 +1867,8 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			this.notificationService.info(`Uploading ${id} to marketplace...`);
 			const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from vsSarosis at ${new Date().toISOString()}` });
 			this.notificationService.info(`\u2705 Published ${id} v${result.version} to marketplace.`);
+			// Refresh skill list to update button states
+			if (tab === 'skill') { this._refreshSkills(); }
 		} catch (err) {
 			this.notificationService.error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
 		}

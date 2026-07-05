@@ -502,6 +502,10 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				if (!skill.category && relativePath.length > 0) {
 					skill = { ...skill, category: relativePath[0] }; // 最顶层的子文件夹名作为 category
 				}
+				// 内置技能默认分类
+				if (!skill.category && source === 'builtin') {
+					skill = { ...skill, category: 'utility' };
+				}
 				if (this._skills.has(skill.id)) {
 					const existing = this._skills.get(skill.id)!;
 					this.logService.info(`[SkillRegistry] Skill "${skill.id}" overwritten: ${existing.source} → ${skill.source} (from ${dir.fsPath})`);
@@ -574,7 +578,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			resource: folder,
 			contentHash: computeSkillContentHash(prompt),
 			enabled: true, // 默认启用
-			version: typeof meta.version === 'string' ? meta.version : undefined,
+			version: typeof meta.version === 'string' ? meta.version : (source === 'builtin' ? '1.0.0' : undefined),
 			storeId: typeof meta.storeId === 'string' ? meta.storeId : undefined,
 		};
 	}

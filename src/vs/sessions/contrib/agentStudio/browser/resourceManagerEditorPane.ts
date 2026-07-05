@@ -362,10 +362,29 @@ export class ResourceManagerEditorPane extends EditorPane {
 		row1.appendChild(icon);
 
 		const title = $('div');
-		title.textContent = item.name;
-		title.style.fontSize = '20px';
-		title.style.fontWeight = '600';
+		title.style.display = 'flex';
+		title.style.alignItems = 'baseline';
+		title.style.gap = '8px';
 		title.style.flex = '1';
+
+		const titleName = $('span');
+		titleName.textContent = item.name;
+		titleName.style.fontSize = '20px';
+		titleName.style.fontWeight = '600';
+		title.appendChild(titleName);
+
+		// Version badge next to title
+		if (item.version) {
+			const verBadge = $('span');
+			verBadge.textContent = `v${item.version}`;
+			verBadge.style.fontSize = '11px';
+			verBadge.style.padding = '2px 8px';
+			verBadge.style.borderRadius = '4px';
+			verBadge.style.background = 'var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15))';
+			verBadge.style.color = 'var(--vscode-textLink-foreground)';
+			verBadge.style.fontWeight = '500';
+			title.appendChild(verBadge);
+		}
 		row1.appendChild(title);
 
 		// Toggle / Edit / Delete
@@ -449,7 +468,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 		}
 
 		// Uninstall (skills only)
-		if (item.kind === 'skill' && item.source !== '📦 内置技能' && item.source !== '🧠 内存技能') {
+		if (item.kind === 'skill' && item.source !== '🧠 内存技能') {
 			const delBtn = $('button') as HTMLButtonElement;
 			delBtn.textContent = '🗑️ 卸载';
 			delBtn.style.padding = '5px 12px';
@@ -475,9 +494,9 @@ export class ResourceManagerEditorPane extends EditorPane {
 			actions.appendChild(delBtn);
 		}
 
-		// Marketplace status buttons (upload / upgrade) — only for local skills/mcps, not builtin/memory/marketplace
+		// Marketplace status buttons (upload / upgrade) — for local and builtin skills/mcps
 		if (!this._isMarketplacePreview && (item.kind === 'skill' || item.kind === 'mcp')) {
-			const isUploadable = !item.source.includes('内置') && !item.source.includes('内存') && !item.source.includes('商城');
+			const isUploadable = !item.source.includes('内存') && !item.source.includes('商城');
 			if (isUploadable) {
 				this._addMarketplaceStatusButtons(item, actions);
 			}
@@ -613,6 +632,8 @@ export class ResourceManagerEditorPane extends EditorPane {
 				try {
 					const result = await this.marketplaceService.publish(storeId, pkgKind as any, formData);
 					this.notificationService.info(`\u2705 ${item.name} v${result.version} 已上传到商城`);
+					// Trigger registry reload so integration view refreshes its skill list
+					await this.skillRegistry.reload();
 					this._renderDetail();
 				} catch (err) {
 					uploadBtn.textContent = '\u2B06 上传到商城';
@@ -742,18 +763,65 @@ export class ResourceManagerEditorPane extends EditorPane {
 			inputStyle(descInput);
 			body.appendChild(createField('描述', descInput));
 
-			// Category
-			const catInput = $('select') as HTMLSelectElement;
-			const categories = ['code', 'data', 'web', 'filesystem', 'shell', 'utility', 'other'];
+			// Category (multi-select tag style)
+			const categories = [
+				'code', 'data', 'web', 'filesystem', 'shell', 'utility',
+				'development', 'devops', 'git', 'ai-agents', 'mlops',
+				'creative', 'media', 'gaming', 'research', 'productivity',
+				'github', 'apple', 'security', 'note-taking', 'social-media',
+				'reasoning', 'text', 'email', 'meta', 'other'
+			];
+			// Normalize non-standard category names to valid ones
+			const normalizeCat = (c: string): string => {
+				const lower = c.toLowerCase().trim();
+				const map: Record<string, string> = {
+					'数据分析': 'data', 'data-science': 'data',
+					'dogfood': 'utility', 'mcp': 'utility', 'smart-home': 'other',
+				};
+				return map[lower] ?? c;
+			};
+			const initCats = new Set(item.tags?.map(normalizeCat).filter(t => categories.includes(t)) ?? []);
+			const selectedCats = new Set<string>(initCats);
+
+			const catField = createField('分类', $('div'));
+			const catRow = $('div');
+			catRow.style.display = 'flex';
+			catRow.style.flexWrap = 'wrap';
+			catRow.style.gap = '6px';
 			for (const cat of categories) {
-				const opt = $('option') as HTMLOptionElement;
-				opt.value = cat;
-				opt.textContent = cat;
-				if (item.tags?.includes(cat)) { opt.selected = true; }
-				catInput.appendChild(opt);
+				const chip = $('span') as HTMLSpanElement;
+				chip.textContent = cat;
+				chip.style.padding = '3px 10px';
+				chip.style.fontSize = '12px';
+				chip.style.borderRadius = '4px';
+				chip.style.cursor = 'pointer';
+				chip.style.userSelect = 'none';
+				chip.style.transition = 'background 0.15s';
+
+				const updateChipStyle = () => {
+					if (selectedCats.has(cat)) {
+						chip.style.background = 'var(--vscode-button-background)';
+						chip.style.color = 'var(--vscode-button-foreground)';
+						chip.style.border = '1px solid var(--vscode-button-background)';
+					} else {
+						chip.style.background = 'transparent';
+						chip.style.color = 'var(--vscode-descriptionForeground)';
+						chip.style.border = '1px solid var(--vscode-panel-border)';
+					}
+				};
+				updateChipStyle();
+				chip.onclick = () => {
+					if (selectedCats.has(cat)) {
+						selectedCats.delete(cat);
+					} else {
+						selectedCats.add(cat);
+					}
+					updateChipStyle();
+				};
+				catRow.appendChild(chip);
 			}
-			inputStyle(catInput);
-			body.appendChild(createField('分类', catInput));
+			catField.appendChild(catRow);
+			body.appendChild(catField);
 
 			// Author
 			const authorInput = $('input') as HTMLInputElement;
@@ -812,7 +880,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 					name,
 					version,
 					description: descInput.value.trim() || undefined,
-					category: catInput.value,
+					category: selectedCats.size > 0 ? Array.from(selectedCats).join(',') : undefined,
 					author: authorInput.value.trim() || undefined,
 					changelog: changelogInput.value.trim() || undefined,
 				});
@@ -1754,7 +1822,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 			source: this._skillSourceLabel(s.source),
 			author: undefined,
 			version: s.version,
-			tags: s.category ? [s.category] : [],
+			tags: s.category ? s.category.split(',').map(c => c.trim()).filter(Boolean) : [],
 			activation: s.activation,
 			enabled: s.enabled,
 			resource: s.resource ? { path: s.resource.fsPath } : undefined,

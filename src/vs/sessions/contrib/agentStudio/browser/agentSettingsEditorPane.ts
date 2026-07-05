@@ -17,12 +17,13 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { ISkillRegistry } from '../common/skills.js';
+import { IMarketplaceService, PackageKind } from '../common/marketplace.js';
 import type { Agent } from '../../../common/agentStudioTypes.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
-import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 
 const { $: $$ } = DOM;
 
@@ -65,6 +66,11 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _iconEl: HTMLElement | undefined;
 	private _descEl: HTMLElement | undefined;
 	private _statsEl: HTMLElement | undefined;
+	private _agentIdEl: HTMLElement | undefined;
+
+	// ── Upload state ──
+	private _uploadBtn: HTMLButtonElement | undefined;
+	private _isUploaded = false;
 
 	// ── Rename state ──
 	private _renameInput: HTMLInputElement | undefined;
@@ -87,8 +93,10 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
+		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IDialogService private readonly dialogService: IDialogService,
 		@IEditorService private readonly editorService: IEditorService,
 	) {
 		super(AgentSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
@@ -120,12 +128,16 @@ export class AgentSettingsEditorPane extends EditorPane {
 		// Load agent data
 		await this._loadAgentData();
 
+		// Check upload status (show/hide upload button)
+		await this._checkUploadStatus();
+
 		// Load skills
 		await this._loadSkills();
 
 		// Listen for agent changes (external updates)
-		this._register(this.agentStudioService.onDidChangeAgents(() => {
-			this._loadAgentData();
+		this._register(this.agentStudioService.onDidChangeAgents(async () => {
+			await this._loadAgentData();
+			await this._checkUploadStatus();
 		}));
 	}
 
@@ -166,15 +178,15 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _buildHeader(parent: HTMLElement): void {
 		const header = $$('div.agent-settings-header');
 
+		// ── Row 1: Avatar + Title line + Actions ──
+		const row1 = $$('div.agent-settings-row1');
+
 		// Avatar
 		this._iconEl = $$('div.agent-settings-avatar');
 		this._iconEl.textContent = '🤖';
-		header.appendChild(this._iconEl);
+		row1.appendChild(this._iconEl);
 
-		// Meta
-		const meta = $$('div.agent-settings-meta');
-
-		// Title line (name + version badge + rename trigger)
+		// Title line (name + rename trigger)
 		const titleLine = $$('div.agent-settings-title-line');
 
 		this._nameEl = $$('span.agent-settings-name');
@@ -221,20 +233,19 @@ export class AgentSettingsEditorPane extends EditorPane {
 		renameContainer.appendChild(this._renameError);
 
 		titleLine.appendChild(renameContainer);
-		meta.appendChild(titleLine);
+		row1.appendChild(titleLine);
 
-		// Description
-		this._descEl = $$('div.agent-settings-desc');
-		meta.appendChild(this._descEl);
-
-		// Stats
-		this._statsEl = $$('div.agent-settings-stats');
-		meta.appendChild(this._statsEl);
-
-		header.appendChild(meta);
-
-		// Actions
+		// Actions (in row1, right-aligned)
 		const actions = $$('div.agent-settings-actions');
+
+		const uploadBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		this._uploadBtn = uploadBtn as HTMLButtonElement;
+		uploadBtn.textContent = '📤 上传';
+		uploadBtn.title = '上传 Agent 到商城';
+		uploadBtn.style.display = 'none'; // shown after checking upload status
+		uploadBtn.onclick = () => this._handleUpload();
+		actions.appendChild(uploadBtn);
+
 		const configHtmlBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
 		configHtmlBtn.textContent = '🌐 ConfigHtml';
 		configHtmlBtn.title = '打开 ConfigHTML 预览';
@@ -251,7 +262,22 @@ export class AgentSettingsEditorPane extends EditorPane {
 		chatBtn.onclick = () => this._handleChat();
 		actions.appendChild(chatBtn);
 
-		header.appendChild(actions);
+		row1.appendChild(actions);
+		header.appendChild(row1);
+
+		// ── Row 2: Description + Stats ──
+		const row2 = $$('div.agent-settings-row2');
+
+		this._descEl = $$('div.agent-settings-desc');
+		row2.appendChild(this._descEl);
+
+		this._agentIdEl = $$('div.agent-settings-agentid');
+		row2.appendChild(this._agentIdEl);
+
+		this._statsEl = $$('div.agent-settings-stats');
+		row2.appendChild(this._statsEl);
+
+		header.appendChild(row2);
 		parent.appendChild(header);
 	}
 
@@ -447,6 +473,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		if (this._iconEl) { this._iconEl.textContent = this._agent.icon || '🤖'; }
 		if (this._nameEl) { this._nameEl.textContent = this._agent.name; }
 		if (this._descEl) { this._descEl.textContent = this._agent.description || this._agent.role; }
+		if (this._agentIdEl) { this._agentIdEl.textContent = `ID: ${this._agentId}`; }
 		if (this._statsEl) {
 			this._statsEl.replaceChildren();
 			const skillsCount = this._agent.skills?.length || 0;
@@ -658,11 +685,117 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	// ── ConfigMD ──
 
-	private _openConfigHtmlPreview(): void {
+	private async _openConfigHtmlPreview(): Promise<void> {
 		if (!this._agentId) { return; }
-		const resource = URI.from({ scheme: 'saros-html-preview', path: `/${this._agentId}` });
-		const input = new HtmlPreviewEditorInput(resource, 'HTML 预览', this._agentId);
-		this.editorService.openEditor(input, { pinned: true }, this.group);
+		try {
+			const agentDir = await this.agentStudioService.getAgentDir(this._agentId);
+			const configUri = URI.joinPath(agentDir, 'config.html');
+			this.editorService.openEditor({ resource: configUri, options: { pinned: true } }, this.group);
+		} catch (err) {
+			this.notificationService.error(`打开 ConfigHtml 失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ── Upload ──
+
+	private async _checkUploadStatus(): Promise<void> {
+		if (!this._agentId || !this._agent) { return; }
+		// Builtin agents cannot be uploaded; custom agents check marketplace
+		if (this._agent.source === 'builtin') {
+			this._isUploaded = true; // hide upload button
+		} else {
+			try {
+				await this.marketplaceService.getPackage(this._agentId);
+				this._isUploaded = true;
+			} catch {
+				this._isUploaded = false;
+			}
+		}
+		this._updateUploadBtn();
+	}
+
+	private _updateUploadBtn(): void {
+		if (this._uploadBtn) {
+			this._uploadBtn.style.display = this._isUploaded ? 'none' : '';
+		}
+	}
+
+	private async _handleUpload(): Promise<void> {
+		if (!this._agent || !this._agentId) { return; }
+		const name = this._agent.name;
+
+		const result = await this.dialogService.input({
+			title: `上传 "${name}" 到商城`,
+			message: `输入版本号 (如 1.0.0)`,
+			inputs: [{ value: this._agent.version || '1.0.0', placeholder: '版本号' }],
+			primaryButton: '上传',
+			cancelButton: '取消',
+		});
+		if (!result.confirmed) { return; }
+
+		const version = result.values?.[0]?.trim() || '1.0.0';
+
+		try {
+			// Collect skill and MCP references from the agent
+			const skillRefs = this._agent.skills || [];
+			const mcpRefs = this._agent.tools?.filter(t => t.startsWith('mcp:')) || [];
+
+			// Auto-upload missing skill/MCP dependencies first
+			const uploadedDeps = await this._uploadMissingDeps(skillRefs, mcpRefs, version);
+			if (uploadedDeps > 0) {
+				this.notificationService.info(`已自动上传 ${uploadedDeps} 个依赖`);
+			}
+
+			this.notificationService.info(`正在上传 "${name}" v${version}...`);
+			await this.marketplaceService.publish(this._agentId, 'agent' as PackageKind, {
+				name,
+				version,
+				description: this._agent.description || undefined,
+				category: this._agent.category || undefined,
+				skillRefs: skillRefs.length > 0 ? skillRefs : undefined,
+				mcpRefs: mcpRefs.length > 0 ? mcpRefs : undefined,
+			});
+			this.notificationService.info(`"${name}" v${version} 已上传到商城`);
+			this._isUploaded = true;
+			this._updateUploadBtn();
+		} catch (err) {
+			this.notificationService.error(
+				`上传 "${name}" 失败: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
+	/** Auto-upload missing dependencies before uploading the agent. Returns count of uploaded deps. */
+	private async _uploadMissingDeps(skillRefs: string[], _mcpRefs: string[], version: string): Promise<number> {
+		let uploadedCount = 0;
+		for (const slug of skillRefs) {
+			try {
+				const exists = await this._checkPackageExists(slug);
+				if (!exists) {
+					try {
+						this.notificationService.info(`正在上传关联 Skill: ${slug}...`);
+						await this.marketplaceService.publish(slug, 'skill' as PackageKind, { version });
+						uploadedCount++;
+					} catch {
+						// Skill may not exist locally — skip
+						this.notificationService.warn(`关联 Skill "${slug}" 无法上传（本地不存在或上传失败），已跳过`);
+					}
+				}
+			} catch {
+				// Best-effort — skip on check failure
+			}
+		}
+		return uploadedCount;
+	}
+
+	/** Check if a package exists on the marketplace server by slug. */
+	private async _checkPackageExists(slug: string): Promise<boolean> {
+		try {
+			await this.marketplaceService.getPackage(slug);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	// ── Export ──

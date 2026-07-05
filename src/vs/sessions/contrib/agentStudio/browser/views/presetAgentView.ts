@@ -1946,7 +1946,10 @@ export class PresetAgentViewPane extends ViewPane {
 		const slugOverrides: Record<string, string> = {
 			'data': 'agent-data-analyst',
 		};
-		return slugOverrides[preset.id] ?? `agent-${preset.id}`;
+		if (slugOverrides[preset.id]) { return slugOverrides[preset.id]; }
+		// Builtin presets use agent-{id} pattern on the marketplace server
+		const isBuiltin = BUILTIN_PRESETS.some(b => b.id === preset.id);
+		return isBuiltin ? `agent-${preset.id}` : preset.id;
 	}
 
 	/**
@@ -2192,6 +2195,19 @@ export class PresetAgentViewPane extends ViewPane {
 			};
 			actions.appendChild(deleteBtn);
 
+			// Upload button — only for locally created agents (not marketplace-installed)
+			const isCustom = this.customPresets.some(p => p.id === preset.id) || preset.id.startsWith('custom-');
+			if (isCustom && !isInstalled) {
+				const uploadBtn = $('button.preset-btn.upload') as HTMLButtonElement;
+				uploadBtn.textContent = '📤';
+				uploadBtn.title = `上传 "${preset.name}" 到商城`;
+				uploadBtn.onclick = (e) => {
+					e.stopPropagation();
+					this._publishPreset(preset);
+				};
+				actions.appendChild(uploadBtn);
+			}
+
 			// Duplicate button — create a copy of this agent
 			const dupBtn = $('button.preset-btn.duplicate') as HTMLButtonElement;
 			dupBtn.textContent = '📋';
@@ -2380,6 +2396,30 @@ export class PresetAgentViewPane extends ViewPane {
 			await this.marketplaceService.download(slug, version, 'agent' as PackageKind);
 			// Update local version tracking
 			this._installedVersions.set(slug, version);
+
+			// Auto-download missing dependencies
+			try {
+				const pkg = await this.marketplaceService.getPackage(slug);
+				const manifest = pkg.versions.find(v => v.version === version)?.manifest
+					|| pkg.versions.find(v => v.isLatest)?.manifest;
+				if (manifest) {
+					const skillRefs = (manifest as any).skillRefs as string[] | undefined;
+					const mcpRefs = (manifest as any).mcpRefs as string[] | undefined;
+					const allMissing = [
+						...(skillRefs || []).filter(s => !this._installedVersions.has(s)),
+						...(mcpRefs || []).filter(m => !this._installedVersions.has(m)),
+					];
+					if (allMissing.length > 0) {
+						for (const depSlug of allMissing) {
+							try {
+								await this.marketplaceService.download(depSlug, '', 'skill' as PackageKind);
+								this._installedVersions.set(depSlug, '1.0.0');
+							} catch { /* skip */ }
+						}
+					}
+				}
+			} catch { /* best-effort */ }
+
 			this.notificationService.info(`"${preset.name}" 已升级到 v${version}`);
 		} catch (err) {
 			this.notificationService.error(
@@ -2441,6 +2481,85 @@ export class PresetAgentViewPane extends ViewPane {
 		} finally {
 			this._deletingIds.delete(preset.id);
 			this._renderPresets();
+		}
+	}
+
+	// ── Publish (Upload) ─────────────────────────────────────────────────────
+
+	private async _publishPreset(preset: AgentPreset): Promise<void> {
+		const name = preset.name;
+
+		// Ask for version before publishing
+		const result = await this.dialogService.input({
+			title: `上传 "${name}" 到商城`,
+			message: `输入版本号 (如 1.0.0)`,
+			inputs: [{ value: '1.0.0', placeholder: '版本号' }],
+			primaryButton: '上传',
+			cancelButton: '取消',
+		});
+		if (!result.confirmed) { return; }
+
+		const version = result.values?.[0]?.trim() || '1.0.0';
+
+		try {
+			// Collect skill/MCP refs from preset
+			const skillRefs = preset.skills || [];
+			const mcpRefs = preset.tools?.filter(t => t.startsWith('mcp:')) || [];
+
+			// Auto-upload missing dependencies first
+			await this._uploadMissingDeps(skillRefs, version);
+
+			this.notificationService.info(`正在上传 "${name}" v${version}...`);
+			// Use preset.id directly — preparePack resolves agent by this ID
+			await this.marketplaceService.publish(preset.id, 'agent' as PackageKind, {
+				name,
+				version,
+				description: preset.description || undefined,
+				category: preset.category || undefined,
+				skillRefs: skillRefs.length > 0 ? skillRefs : undefined,
+				mcpRefs: mcpRefs.length > 0 ? mcpRefs : undefined,
+			});
+			// Track as installed after successful upload
+			const slug = this._getMarketSlug(preset);
+			this._installedVersions.set(slug, version);
+			this._renderPresets();
+			this.notificationService.info(`"${name}" v${version} 已上传到商城`);
+		} catch (err) {
+			this.notificationService.error(
+				`上传 "${name}" 失败: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
+	/** Auto-upload missing skill dependencies before uploading the agent. */
+	private async _uploadMissingDeps(skillRefs: string[], version: string): Promise<number> {
+		let uploadedCount = 0;
+		for (const slug of skillRefs) {
+			try {
+				const exists = await this._checkPackageExists(slug);
+				if (!exists) {
+					try {
+						this.notificationService.info(`正在上传关联 Skill: ${slug}...`);
+						await this.marketplaceService.publish(slug, 'skill' as PackageKind, { version });
+						uploadedCount++;
+					} catch {
+						this.notificationService.warn(`关联 Skill "${slug}" 无法上传（本地不存在或上传失败），已跳过`);
+					}
+				}
+			} catch { /* skip on check failure */ }
+		}
+		if (uploadedCount > 0) {
+			this.notificationService.info(`已自动上传 ${uploadedCount} 个关联 Skill`);
+		}
+		return uploadedCount;
+	}
+
+	private async _checkPackageExists(slug: string): Promise<boolean> {
+		try {
+			await this.marketplaceService.getPackage(slug);
+			return true;
+		} catch {
+			return false;
 		}
 	}
 

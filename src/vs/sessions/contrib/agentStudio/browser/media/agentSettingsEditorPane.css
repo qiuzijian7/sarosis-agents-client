@@ -29,12 +29,24 @@
 /* ── Header ── */
 .agent-settings-header {
 	display: flex;
-	align-items: flex-start;
-	gap: 14px;
+	flex-direction: column;
+	gap: 8px;
 	padding: 16px 20px;
 	border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
 	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
 	flex-shrink: 0;
+}
+
+.agent-settings-row1 {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+}
+
+.agent-settings-row2 {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
 }
 
 .agent-settings-avatar {
@@ -49,17 +61,12 @@
 	flex-shrink: 0;
 }
 
-.agent-settings-meta {
-	flex: 1;
-	min-width: 0;
-}
-
 .agent-settings-title-line {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	margin-bottom: 4px;
-	flex-wrap: wrap;
+	flex: 1;
+	min-width: 0;
 }
 
 .agent-settings-name {
@@ -171,7 +178,17 @@
 	font-size: 12px;
 	color: var(--vscode-descriptionForeground);
 	line-height: 1.4;
-	margin-bottom: 4px;
+	word-break: break-word;
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+	max-width: 100%;
+}
+
+.agent-settings-agentid {
+	font-size: 11px;
+	color: var(--vscode-textLink-foreground, #569cd6);
+	font-family: "Cascadia Code", "Consolas", monospace;
+	opacity: 0.8;
 }
 
 .agent-settings-stats {
@@ -277,16 +294,22 @@
 /* ── Tab Content ── */
 .agent-settings-tab-content {
 	flex: 1;
-	overflow-y: auto;
+	overflow: hidden;
 	padding: 20px 24px;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
 }
 
 .agent-settings-tab-pane {
 	display: none;
+	flex-direction: column;
+	flex: 1;
+	min-height: 0;
 }
 
 .agent-settings-tab-pane.active {
-	display: block;
+	display: flex;
 }
 
 .tab-pane-desc {
@@ -297,6 +320,7 @@
 	background: var(--vscode-editor-inactiveSelectionBackground, rgba(255 255 255 0.03));
 	border-radius: 6px;
 	border-left: 3px solid var(--vscode-button-background, #0e639c);
+	flex-shrink: 0;
 }
 
 .tab-pane-footer {
@@ -304,6 +328,7 @@
 	justify-content: flex-end;
 	gap: 8px;
 	margin-top: 12px;
+	flex-shrink: 0;
 }
 
 .tab-pane-placeholder {
@@ -319,7 +344,10 @@
 /* ── System Prompt Tab ── */
 .agent-settings-prompt-textarea {
 	width: 100%;
-	min-height: 300px;
+	max-width: 100%;
+	flex: 1;
+	min-height: 0;
+	box-sizing: border-box;
 	padding: 10px 14px;
 	background: var(--vscode-input-background, #3c3c3c);
 	color: var(--vscode-input-foreground, #d4d4d4);
@@ -328,7 +356,7 @@
 	font-size: 13px;
 	font-family: "Cascadia Code", "Consolas", monospace;
 	line-height: 1.6;
-	resize: vertical;
+	resize: none;
 	outline: none;
 	transition: border-color 0.12s;
 }

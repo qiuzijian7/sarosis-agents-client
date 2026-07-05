@@ -211,6 +211,13 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		// directly from the file explorer.
 		if (input instanceof HtmlPreviewEditorInput) {
 			this._isHtml = true;
+			this._cleanupTrailingBreadcrumbsContent();
+
+			// Start webview process creation immediately — this fires the
+			// IPC and spawns the out-of-process iframe.  In parallel we
+			// await renderHtml below, so the two slow operations overlap.
+			this._setMode('preview', /* force */ true);
+
 			try {
 				const agentId = input.agentId ?? input.resource.path.replace(/^\//, '');
 				const result = await this._configHtmlService.renderHtml(agentId);
@@ -219,8 +226,11 @@ export class HtmlFileEditorPane extends TextFileEditor {
 				this._logService.warn('[HtmlFileEditorPane] renderHtml failed:', err);
 				this._rawHtml = `Failed to render: ${err}`;
 			}
-			this._cleanupTrailingBreadcrumbsContent();
-			this._setMode('preview', /* force */ true);
+
+			// Webview is already mounted; just inject the resolved HTML.
+			if (this._webview) {
+				this._webview.setHtml(this._wrapHtmlForWebview(this._rawHtml ?? ''));
+			}
 			return;
 		}
 

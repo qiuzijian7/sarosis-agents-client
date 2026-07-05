@@ -268,7 +268,18 @@ export class SkillMarketEditorPane extends EditorPane {
 			errEl.style.textAlign = 'center';
 			errEl.style.padding = '40px';
 			errEl.style.color = 'var(--vscode-errorForeground)';
-			errEl.textContent = `加载失败: ${err instanceof Error ? err.message : String(err)}`;
+			const rawMsg = err instanceof Error ? err.message : String(err);
+			const isNetworkError = /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed/i.test(rawMsg);
+			errEl.textContent = isNetworkError
+				? '无法连接到商城服务器，请检查网络或服务器状态后重试'
+				: `加载失败: ${rawMsg}`;
+			const retryBtn = $('button');
+			retryBtn.textContent = '🔄 重试';
+			retryBtn.style.marginTop = '12px';
+			retryBtn.style.cursor = 'pointer';
+			retryBtn.onclick = () => this._loadPackages();
+			errEl.appendChild(document.createElement('br'));
+			errEl.appendChild(retryBtn);
 			this._gridEl.appendChild(errEl);
 		} finally {
 			this._loading = false;

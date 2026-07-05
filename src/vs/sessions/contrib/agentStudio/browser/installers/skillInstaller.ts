@@ -47,7 +47,9 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 		// 回写 storeId/version 到 frontmatter，使该 skill 可被升级检查溯源
 		const updated = this.injectFrontmatter(content, { storeId: manifest.id, version: manifest.version });
 
-		const targetDir = await this.resolveDir(manifest.id);
+		// 优先使用已注册技能的实际目录（目录名可能与 id 不同，如 P4Helper vs S1P4HelperSkill）
+		const existing = this.skillRegistry.getSkill(manifest.id);
+		const targetDir = existing?.resource ?? await this.resolveDir(manifest.id);
 		const targetSkillFile = URI.joinPath(targetDir, 'SKILL.md');
 
 		// 检查已存在：非 force 模式拒绝覆盖，force 模式先删除旧目录
@@ -168,7 +170,7 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 		return meta;
 	}
 
-	/** 向 frontmatter 注入字段（若不存在则添加） */
+	/** 向 frontmatter 注入/更新字段（存在则更新值，不存在则添加） */
 	private injectFrontmatter(text: string, fields: Record<string, string>): string {
 		if (!text.startsWith('---')) {
 			const fm = ['---', ...Object.entries(fields).map(([k, v]) => `${k}: ${JSON.stringify(v)}`), '---', ''].join('\n');
@@ -181,18 +183,21 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 		const header = text.slice(3, end);
 		const rest = text.slice(end + 4); // skip \n---
 		const lines = header.split('\n');
+
+		// Replace existing fields, track which already exist
 		const existing = new Set<string>();
-		for (const line of lines) {
+		const updatedLines = lines.map(line => {
 			const kv = /^([A-Za-z_][A-Za-z0-9_]*)\s*:/.exec(line.replace(/\r$/, ''));
-			if (kv) {
+			if (kv && fields[kv[1]] !== undefined) {
 				existing.add(kv[1]);
+				return `${kv[1]}: ${JSON.stringify(fields[kv[1]])}`;
 			}
-		}
+			return line;
+		});
+
+		// Add fields that don't exist yet
 		const toAdd = Object.entries(fields).filter(([k]) => !existing.has(k));
-		if (toAdd.length === 0) {
-			return text;
-		}
-		const newLines = [...lines, ...toAdd.map(([k, v]) => `${k}: ${JSON.stringify(v)}`)];
+		const newLines = [...updatedLines, ...toAdd.map(([k, v]) => `${k}: ${JSON.stringify(v)}`)];
 		return `---\n${newLines.join('\n')}\n---${rest}`;
 	}
 }

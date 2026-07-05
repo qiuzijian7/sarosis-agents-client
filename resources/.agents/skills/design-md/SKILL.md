@@ -35,7 +35,7 @@ from scratch (prototype, deck, landing page, component lab), use
 
 ```md
 ---
-version: alpha
+version: 1.0.0
 name: Heritage
 description: Architectural minimalism meets journalistic gravitas.
 colors:

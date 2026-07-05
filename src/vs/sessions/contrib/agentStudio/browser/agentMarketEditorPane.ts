@@ -216,9 +216,7 @@ export class AgentMarketEditorPane extends EditorPane {
 			const installed = await this.marketplaceService.getInstalled();
 			this._installedSlugs.clear();
 			for (const entry of installed) {
-				if (entry.kind === 'agent') {
-					this._installedSlugs.add(entry.storeId);
-				}
+				this._installedSlugs.add(entry.storeId);
 			}
 			console.log('[AgentMarket] 已安装记录:', installed.length, '条');
 
@@ -365,8 +363,13 @@ export class AgentMarketEditorPane extends EditorPane {
 		if (!grid) { return; }
 		grid.replaceChildren();
 
+		const rawMsg = err instanceof Error ? err.message : String(err);
+		const isNetworkError = /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed/i.test(rawMsg);
+
 		const errorEl = $$('div.agent-market-error');
-		errorEl.textContent = `❌ 加载失败：${err instanceof Error ? err.message : String(err)}`;
+		errorEl.textContent = isNetworkError
+			? '❌ 无法连接到商城服务器，请检查网络或服务器状态后重试'
+			: `❌ 加载失败：${rawMsg}`;
 		grid.appendChild(errorEl);
 	}
 
@@ -512,18 +515,25 @@ export class AgentMarketEditorPane extends EditorPane {
 			// Clear any stale upgrade entry
 			this._upgrades.delete(pkg.slug);
 
-			// Check dependencies after install
+			// Auto-download missing skill/MCP dependencies
 			const { missingSkills, missingMcps } = this._checkDeps(pkg.slug);
 			if (missingSkills.length > 0 || missingMcps.length > 0) {
-				const parts: string[] = [];
-				if (missingSkills.length > 0) { parts.push(`Skill: ${missingSkills.join(', ')}`); }
-				if (missingMcps.length > 0) { parts.push(`MCP: ${missingMcps.join(', ')}`); }
-				this.notificationService.warn(
-					`⚠️ ${pkg.name} v${result.version} 安装成功，但缺少以下依赖：${parts.join('；')}。在卡片中点击依赖警告可一键安装。`
-				);
-			} else {
-				this.notificationService.info(`✅ ${pkg.name} v${result.version} 安装成功`);
+				const allMissing = [
+					...missingSkills.map(s => ({ slug: s, kind: 'skill' as PackageKind })),
+					...missingMcps.map(m => ({ slug: m, kind: 'mcp' as PackageKind })),
+				];
+				this.notificationService.info(`正在自动安装 ${allMissing.length} 个关联依赖...`);
+				for (const dep of allMissing) {
+					try {
+						await this.marketplaceService.download(dep.slug, '', dep.kind);
+						this._installedSlugs.add(dep.slug);
+					} catch {
+						this.notificationService.warn(`依赖 ${dep.kind}:${dep.slug} 自动安装失败，已跳过`);
+					}
+				}
 			}
+
+			this.notificationService.info(`✅ ${pkg.name} v${result.version} 安装成功`);
 		} catch (err) {
 			this.notificationService.error(`安装失败: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {

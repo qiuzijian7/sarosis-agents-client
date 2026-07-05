@@ -118,6 +118,10 @@ export interface IPublishOptions {
 	readonly useGuide?: string;
 	/** 变更日志（随上传版本提交，作为 x-changelog 请求头） */
 	readonly changelog?: string;
+	/** 关联的 skill 包 slug 列表 */
+	readonly skillRefs?: readonly string[];
+	/** 关联的 MCP 包 slug 列表 */
+	readonly mcpRefs?: readonly string[];
 }
 
 /** 列表查询参数 */

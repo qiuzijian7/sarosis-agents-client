@@ -228,12 +228,6 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 			return false;
 		}
 
-		// 只能卸载 user / marketplace 的 skill（不允许卸载内置/扩展/内存技能）
-		if (skill.source !== 'user' && skill.source !== 'marketplace') {
-			this.logService.warn(`[SkillInstall] Cannot uninstall skill "${skillId}" with source "${skill.source}"`);
-			return false;
-		}
-
 		if (!skill.resource) {
 			return false;
 		}

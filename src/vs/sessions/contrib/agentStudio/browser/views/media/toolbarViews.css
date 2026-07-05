@@ -1949,6 +1949,16 @@ button.primary:hover,
 	color: var(--vscode-badge-foreground);
 }
 
+.skill-version-badge {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 3px;
+	background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15));
+	color: var(--vscode-textLink-foreground);
+	margin-left: 6px;
+	white-space: nowrap;
+}
+
 .skill-desc {
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
