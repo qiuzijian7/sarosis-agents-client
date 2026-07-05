@@ -1,7 +1,7 @@
 {
 	"nameShort": "VsSaros",
 	"nameLong": "VsSaros",
-	"version": "2.2.25903",
+	"version": "2.2.25907",
 	"applicationName": "vssaros",
 	"dataFolderName": ".vssaros",
 	"sharedDataFolderName": ".vssaros-shared",
