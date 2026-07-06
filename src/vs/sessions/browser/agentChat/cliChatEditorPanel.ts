@@ -302,7 +302,7 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 	// IChatPanel — Stream state
 	// ═════════════════════════════════════════════════════════════════
 
-	setSending(sending: boolean): void {
+	setSending(sending: boolean, _options?: { triggerExecuteNext?: boolean }): void {
 		this._isSending = sending;
 		this._sendBtn.textContent = sending ? '■' : '▶';
 		this._sendBtn.title = sending ? 'Stop' : 'Send';

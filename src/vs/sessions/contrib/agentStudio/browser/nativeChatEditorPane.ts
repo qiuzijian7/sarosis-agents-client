@@ -645,6 +645,8 @@ export class NativeChatEditorPane extends EditorPane {
 					this._isSending = false;
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] sendMessage failed:', err);
+					// sendMessage 抛出后没有 _sendMessageInternal line 644 收尾，必须这里手动
+					// 恢复 UI 状态并触发队列 dispatch（与正常完成路径一致）。
 					this._chatPanel?.setSending(false);
 					this._isSending = false;
 				}
@@ -663,7 +665,11 @@ export class NativeChatEditorPane extends EditorPane {
 					// 立即恢复 UI 状态——cancelStream 中断 AbortController 后，
 					// for-await 循环仅在下个 delta 到达时才 break，done/error delta
 					// 不会被发射，setSending(false) 不会被调用。这里手动恢复按钮 + 输入框。
-					this._chatPanel?.setSending(false);
+					// ⚠️ triggerExecuteNext=false —— _sendMessageInternal line 644 在 sendMessage
+					// await 真正退出后会再次 setSending(false) 并触发 executeNext()，这里手动
+					// 调用只更新 UI 状态（_isSending / _streamPhase / stream scroll / send button），
+					// 不触发队列 dispatch，避免与 line 644 双重触发。
+					this._chatPanel?.setSending(false, { triggerExecuteNext: false });
 					this._isSending = false;
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] cancelExecution failed:', err);
@@ -1257,15 +1263,30 @@ export class NativeChatEditorPane extends EditorPane {
 
 		// Listen for streaming deltas from task execution / external sendMessage calls.
 		// When the pane's agent matches, sync sending state (disable send button during
-		// task execution) and reload history when the stream completes.
+		// task execution).
 		this._register(this._chatService.onDidStreamDelta(({ agentId, delta }) => {
 			if (agentId !== this._currentAgentId) { return; }
 			if (!this._chatPanel) { return; }
-			// Update sending state based on stream lifecycle
+			// Update sending state based on stream lifecycle.
+			//
+			// ⚠️ 不要在此处调用 setSending(false) —— 这是"队列任务被同时推送"的 race condition 根因：
+			//   1) onDidStreamDelta('done') 同步 fire → setSending(false) → executeNext() → dispatch test3
+			//      （test3 _sendMessageInternal 进入 await _ensureSession 让出）
+			//   2) test2 for-await 退出 → sendMessage return → _sendMessageInternal line 644
+			//      setSending(false) **第二次** → executeNext() → dispatch test4
+			//   结果：test3 和 test4 几乎同时被 dispatch（test4 还没等 test3 真正完成就被推送给 LLM）。
+			//
+			// 正确做法：'done' 监听器只更新 UI 状态（_streamPhase / stream scroll / _isSending），
+			// 不调用 setSending(false)（避免触发 executeNext）。真正的 setSending(false) 由
+			// _sendMessageInternal line 644 在 sendMessage await 完成、流真正结束后调用，
+			// 此时再触发 executeNext() dispatch 下一个任务（保证 test3 真正完成才推 test4）。
+			//
+			// 另：不要在 done 监听器中调用 _selectAndLoadAgent / setMessages —— 同样会覆盖
+			// in-flight 消息导致内容丢失（参见历史 race condition 修复）。
 			if (delta.type === 'done' || delta.type === 'error') {
-				this._chatPanel.setSending(false);
-				// Reload history to show all messages from the completed stream
-				void this._selectAndLoadAgent(this._currentAgentId!);
+				// 流式结束的瞬时 UI 状态切换（_isSending / _streamPhase / stream scroll / send button）
+				// 由 _sendMessageInternal line 644 的 setSending(false) 统一处理 —— 那里会一并触发
+				// executeNext()。这里什么都不做，避免双重 dispatch。
 			} else if (delta.type === 'phase_change') {
 				const phase = (delta as any).phase as string;
 				this._chatPanel.setSending(phase !== 'idle');

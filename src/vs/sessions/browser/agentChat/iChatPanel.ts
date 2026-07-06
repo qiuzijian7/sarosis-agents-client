@@ -137,7 +137,16 @@ export interface IChatPanel extends IDisposable {
 	setOpenCodebaseDetailCallback(cb: () => void): void;
 
 	// ── Stream state ──
-	setSending(sending: boolean): void;
+	/**
+	 * 切换流式状态。
+	 * @param sending true = 开始流式，false = 结束流式
+	 * @param options.triggerExecuteNext false 表示只更新 UI 状态，不触发队列 executeNext。
+	 *   默认 true 保持向后兼容。**在 Pane 层的 onDidStreamDelta('done') 监听器和 onCancelExecution
+	 *   中必须传 false**，因为那里调用 setSending(false) 不是流真正结束（_sendMessageInternal
+	 *   line 644 会再次调用并触发 executeNext），提前 dispatch 会导致多个队列任务被同时推送
+	 *   给 LLM（test3 还没真正完成就推 test4）。
+	 */
+	setSending(sending: boolean, options?: { triggerExecuteNext?: boolean }): void;
 	setStreamPhase(phase: StreamPhase): void;
 	setStreamTextBuffer(buffer: string): void;
 	setStreamThinkingBuffer(buffer: string): void;

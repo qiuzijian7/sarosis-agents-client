@@ -1130,7 +1130,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 	}
 
-	setSending(sending: boolean): void {
+	setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): void {
+		const { triggerExecuteNext = true } = options;
 		this._isSending = sending;
 		this._updateSendButton();
 		if (sending) {
@@ -1175,7 +1176,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// （loop 中所有消息的 footer 都被 _isSending 检查跳过）
 			this._revealFootersAfterLoop();
 			// 自动执行队列中的待处理任务
-			this._queueManager.executeNext();
+			// ⚠️ 只有 sendMessage 真正结束后（_sendMessageInternal line 644）才触发 executeNext，
+			// 避免 done 监听器 + line 644 双重 setSending(false) 导致连续 dispatch 多个队列任务。
+			// 中间状态（流瞬时结束 / 用户点 Stop）只更新 UI 状态，不触发 dispatch。
+			if (triggerExecuteNext) {
+				this._queueManager.executeNext();
+			}
 		}
 	}
 
