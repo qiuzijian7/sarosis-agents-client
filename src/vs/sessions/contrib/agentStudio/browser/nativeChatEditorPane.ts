@@ -35,7 +35,7 @@ import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { XtermCliPanel } from '../../../browser/agentChat/xtermTui/xtermCliPanel.js';
 import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
-import { IAgentStudioService, IAgentChatService, ChatMode } from '../../../common/agentStudioService.js';
+import { IAgentStudioService, IAgentChatService, IAgentTaskBoardService, ChatMode } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { ICheckpointService } from '../common/checkpointService.js';
@@ -78,6 +78,31 @@ export class NativeChatEditorPane extends EditorPane {
 	private _currentChatMode: ChatMode | undefined = undefined;
 	private _currentWorkspaceId: string | null = null;
 	private _isSending = false;
+	/**
+	 * 标记当前流式 delta 来源是否为外部发送（如看板任务执行）。
+	 * 当 _isSending && !_isExternalSend → 面板自己的 _sendMessageInternal 回调处理 delta，
+	 *   onDidStreamDelta 监听器跳过（避免双重处理）。
+	 * 当 _isSending && _isExternalSend → 外部发送，onDidStreamDelta 监听器接管
+	 *   按钮状态 + 记忆 delta 处理（面板回调不会被调用）。
+	 */
+	private _isExternalSend = false;
+	/**
+	 * 当前流式 assistant 消息的共享状态，供 _sendMessageInternal 回调和
+	 * onDidStreamDelta 监听器共同访问，确保本地发送和外部发送（看板）走同一套
+	 * 流式 UI 路径（文本/工具/记忆/usage 卡片）。
+	 * 流式开始时由 _initStreamingMessage() 初始化，done/error 后由 _resetStreamingMessage() 清理。
+	 */
+	private _streamingAssistantId: string | null = null;
+	private _streamingAssistantMsg: IAgentChatMessage | null = null;
+	/** 看板变更后延迟 reload 的 timer，用于防止多个 board change 堆叠 reload。 */
+	private _taskBoardReloadTimer: ReturnType<typeof setTimeout> | null = null;
+	/**
+	 * 外部发送（看板任务）完成后设置的标志。
+	 * 为 true 时，onDidChangeTaskBoard 跳过 reload — 流式 UI 已正确显示所有内容，
+	 * 全量 setMessages 会覆盖流式 UI 导致闪烁。
+	 * 在下次用户主动操作（切换 agent / 手动发送）时清除。
+	 */
+	private _externalSendJustFinished = false;
 	private _currentMaxContextTokens: number | undefined;
 	/**
 	 * Whether this pane's editor tab is currently the active (focused) tab
@@ -109,6 +134,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 		@ITaskOrchestrationService private readonly _taskOrchestrationService: ITaskOrchestrationService,
 		@IAgentChatService private readonly _chatService: IAgentChatService,
+		@IAgentTaskBoardService private readonly _taskBoardService: IAgentTaskBoardService,
 		@IModelSelectorService private readonly _modelSelector: IModelSelectorService,
 		@ICheckpointService private readonly _checkpointService: ICheckpointService,
 		@ICommandService private readonly _commandService: ICommandService,
@@ -276,380 +302,40 @@ export class NativeChatEditorPane extends EditorPane {
 					};
 					this._chatPanel?.addMessage(userMsg);
 
-					// Set sending state BEFORE await — switches send button to stop icon immediately
-					this._chatPanel?.setSending(true);
-					this._isSending = true;
+				// Set sending state BEFORE await — switches send button to stop icon immediately
+				this._chatPanel?.setSending(true);
+				this._isSending = true;
+				this._isExternalSend = false; // 本地发送，onDidStreamDelta 监听器跳过
 
-					// Create assistant message immediately with isThinking=true so the user
-					// sees a "正在思考..." indicator while waiting for the first LLM delta.
-					let assistantId: string | null = `msg_${Date.now()}_assistant`;
-					const turnId = `turn_${Date.now()}`;
-					let assistantMsg: IAgentChatMessage | null = {
-						id: assistantId,
-						role: 'assistant',
-						content: '',
-						timestamp: Date.now(),
-						isStreaming: true,
-						isThinking: true,
-						streamPhase: 'llm_streaming',
-						turnId,
-					};
-					this._chatPanel?.addMessage(assistantMsg);
-					let assistantAdded = true;
+				// Create assistant message immediately with isThinking=true so the user
+				// sees a "正在思考..." indicator while waiting for the first LLM delta.
+				this._initStreamingMessage();
 
-					// No longer lazy — message is created above. This is kept as a no-op
-					// guard for any code paths that still call it.
-					const ensureAssistantMsg = () => {
-						if (assistantAdded) { return; }
-						// Fallback: should not normally reach here since message is pre-created.
-						assistantId = `msg_${Date.now()}_assistant`;
-						assistantMsg = {
-							id: assistantId,
-							role: 'assistant',
-							content: '',
-							timestamp: Date.now(),
-							isStreaming: true,
-							isThinking: true,
-							streamPhase: 'llm_streaming',
-							turnId: `turn_${Date.now()}`,
-						};
-						this._chatPanel?.addMessage(assistantMsg);
-						assistantAdded = true;
-					};
-
-					await this._chatService.sendMessage(
-						agentId,
-						fullText,
-						{
-							chatMode: this._currentChatMode,
-							agentSessionId: sessionId,
-							explicitSkillIds: explicitSkillIds,
-						},
-						(delta) => {
-							if (!delta) return;
-
-							// Inter-turn safety net: 如果 _isSending 因某种原因被置 false
-							// （如错误、取消、或 done 之后），当新一轮 agent loop 真正有
-							// 交互性 delta 到来时，重新激活 sending 状态，确保按钮显示
-							// stop 图标、输入框禁用、流式滚动路径生效。
-							if (!this._isSending) {
-								const reActivateTypes = ['text', 'thinking', 'tool_start', 'tool_args', 'tool_end', 'tool_result', 'phase_change'];
-								if (reActivateTypes.includes(delta.type)) {
-									this._chatPanel?.setSending(true);
-									this._isSending = true;
-								}
-							}
-
-							switch (delta.type) {
-								case 'text':
-									// First text delta → ensure assistant message exists, then update
-									ensureAssistantMsg();
-									if (!assistantMsg || !assistantId) return;
-									const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
-									assistantMsg.content = textContent;
-									this._applyStreamPhase('llm_streaming');
-									this._chatPanel?.setStreamTextBuffer(textContent);
-									this._chatPanel?.updateMessage(assistantId, {
-										content: textContent,
-										isStreaming: true,
-										isThinking: false,
-										streamPhase: 'llm_streaming',
-									});
-									break;
-								case 'thinking':
-									ensureAssistantMsg();
-									if (!assistantMsg || !assistantId) return;
-									const thinkingContent = delta.fullThinking !== undefined ? delta.fullThinking : ((assistantMsg.thinking ?? '') + (delta.content ?? ''));
-									assistantMsg.thinking = thinkingContent;
-									this._chatPanel?.setStreamThinkingBuffer(thinkingContent);
-									this._chatPanel?.updateMessage(assistantId, {
-										thinking: thinkingContent,
-										isThinking: true,
-									});
-									break;
-								case 'tool_start': {
-									// First tool delta → ensure assistant message exists
-									ensureAssistantMsg();
-									if (!assistantMsg || !assistantId) return;
-									if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
-									assistantMsg.toolCalls.push({
-										id: delta.toolCallId ?? `tool_${Date.now()}`,
-										name: delta.toolName ?? '',
-										args: '',
-										status: 'running',
-										displayName: delta.displayName,
-										renderType: delta.renderType,
-										defaultShow: delta.defaultShow,
-										textPosition: typeof delta.textPosition === 'number' ? delta.textPosition : (assistantMsg.content?.length ?? 0),
-									});
-									this._applyStreamPhase('tool_executing');
-									this._chatPanel?.updateMessage(assistantId, {
-										toolCalls: assistantMsg.toolCalls.slice(),
-										isStreaming: true,
-										isThinking: false,
-										streamPhase: 'tool_executing',
-									});
-									break;
-								}
-								case 'tool_args': {
-									if (!assistantMsg || !assistantId) return;
-									const argCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
-									if (argCall) {
-										argCall.args = (argCall.args ?? '') + (delta.content ?? '');
-										this._chatPanel?.updateMessage(assistantId, {
-											toolCalls: assistantMsg.toolCalls!.slice(),
-											isStreaming: true,
-											streamPhase: 'tool_executing',
-										});
-									}
-									break;
-								}
-								case 'tool_end': {
-									if (!assistantMsg || !assistantId) return;
-									const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
-									if (endCall) {
-										endCall.status = 'success';
-										// After a tool completes, the LLM will process the result and
-										// generate the next response. Show "正在思考..." while waiting.
-										this._applyStreamPhase('llm_streaming');
-										this._chatPanel?.updateMessage(assistantId, {
-											toolCalls: assistantMsg.toolCalls!.slice(),
-											isStreaming: true,
-											isThinking: true,
-											streamPhase: 'llm_streaming',
-										});
-									}
-									break;
-								}
-								case 'tool_result': {
-									if (!assistantMsg || !assistantId) return;
-									const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
-									if (resultCall) {
-										resultCall.result = delta.content;
-										if (resultCall.status === 'running') { resultCall.status = 'success'; }
-										this._chatPanel?.updateMessage(assistantId, {
-											toolCalls: assistantMsg.toolCalls!.slice(),
-										});
-									}
-									break;
-								}
-								case 'phase_change':
-									// Phase changes can arrive before any content — don't create msg for them
-									if (delta.phase) {
-										this._applyStreamPhase(delta.phase);
-									}
-									if (delta.phase && assistantId) {
-										this._chatPanel?.updateMessage(assistantId, {
-											streamPhase: delta.phase,
-											isStreaming: delta.phase !== 'idle',
-										});
-									}
-									break;
-							case 'done': {
-								// Edge case: if no content ever arrived, ensure msg exists for done-state
-								if (!assistantAdded && assistantId === null) {
-									ensureAssistantMsg();
-								}
-								if (assistantMsg && assistantId) {
-									if (assistantMsg.toolCalls) {
-										for (const tc of assistantMsg.toolCalls) {
-											if (tc.status === 'running') { tc.status = 'success'; }
-										}
-									}
-									// 单次 LLM 开始到结束的耗时（ms）
-									const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
-									this._applyStreamPhase('idle');
-									this._chatPanel?.updateMessage(assistantId, {
-										toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
-										isStreaming: false,
-										isThinking: false,
-										streamPhase: 'idle',
-										metadata: { ...(assistantMsg.metadata || {}), durationMs },
-									});
-								}
-								// done handler 不再调用 setSending(false)——
-								// sending 在整个 agent loop 期间保持 true。
-								// 仅当 loop 完成时才置 false（await sendMessage 之后）。
-								break;
-							}
-							case 'error':
-									// Ensure assistant msg exists to show error state
-									if (!assistantAdded && assistantId === null) {
-										ensureAssistantMsg();
-									}
-									if (assistantId) {
-										this._applyStreamPhase('error');
-										this._chatPanel?.updateMessage(assistantId, {
-											isStreaming: false,
-											isThinking: false,
-											streamPhase: 'error',
-											content: ((assistantMsg?.content) || '') + `\n\n⚠️ ${typeof delta.content === 'string' ? delta.content : '执行失败'}`,
-										});
-									}
-									this._chatPanel?.setSending(false);
-									this._isSending = false;
-									break;
-								case 'usage':
-									if (delta.usage && assistantMsg && assistantId) {
-										const input = delta.usage.inputTokens ?? 0;
-										const output = delta.usage.outputTokens ?? 0;
-										const total = delta.usage.totalTokens ?? (input + output);
-										const cachedRead = delta.usage.cachedTokens ?? 0;
-										const cacheWrite = delta.usage.cacheWriteTokens ?? 0;
-										const credit = delta.usage.credit;
-										const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
-										const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
-										const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: 0, cacheHitRate, credit };
-										assistantMsg.tokenUsage = tokenUsage;
-										this._chatPanel?.updateMessage(assistantId, { tokenUsage });
-										// 更新上下文环进度条
-										const limit = this._currentMaxContextTokens ?? 0;
-										if (limit > 0) {
-											this._chatPanel?.setStreamUsage({
-												input: delta.usage.inputTokens ?? 0,
-												output: delta.usage.outputTokens ?? 0,
-												seen: true,
-											});
-										}
-									}
-									break;
-								case 'context_compacted': {
-									// 上下文压缩完成：更新上下文环基线 + 添加压缩提示卡片
-									const compacted = (delta as any).compactedInputTokens ?? 0;
-									if (compacted > 0) {
-										this._chatPanel?.setCompactedBaseline(compacted);
-										// 持久化到 localStorage，窗口重载后可恢复 token 进度条基线
-										this._saveCompactedBaseline(compacted);
-									}
-									const limit = this._currentMaxContextTokens ?? 0;
-									if (limit > 0 && compacted > 0) {
-										const ratio = Math.max(0, Math.min(1, compacted / limit));
-										this._chatPanel?.setContextUsage({
-											used: compacted,
-											limit,
-											ratio,
-											percent: ratio * 100,
-										} as IContextUsage);
-									}
-									// 添加压缩提示卡片（对齐 webview 的 CompressionNoticeCard）
-									const origCount = (delta as any).compressionOriginalCount ?? 0;
-									const compCount = (delta as any).compressionCompressedCount ?? 0;
-									const tokensSaved = (delta as any).compressionTokensSaved ?? 0;
-									const durationMs = (delta as any).compressionDurationMs ?? 0;
-									if (origCount > 0 && compCount > 0 && compCount < origCount) {
-										this._chatPanel?.addCompressionNotice({
-											originalCount: origCount,
-											compressedCount: compCount,
-											tokensSaved,
-											durationMs,
-											beforeText: (delta as any).compressionBeforeText,
-											afterText: (delta as any).compressionAfterText,
-											summary: (delta as any).compressionSummary,
-										});
-									}
-									break;
-								}
-								case 'memory_extracted': {
-									// LLM 输出 <memory_extract> 标签被捕获 → 显示记忆卡片（同步，已提取）
-									const memContent = (delta as any).content ?? '';
-									const memMeta = (delta as any).metadata ?? {};
-									if (memContent) {
-										this._chatPanel?.addMemoryNotice({
-											content: memContent,
-											memoryType: memMeta.memoryType,
-											priority: memMeta.priority,
-											sceneName: memMeta.sceneName,
-											assistantContentPreview: memMeta.assistantContentPreview,
-											iteration: memMeta.iteration,
-											status: 'saved',
-										});
-									}
-									break;
-								}
-								case 'memory_writing': {
-									// L0 记忆写入开始 → 显示 pending 卡片（含 noticeId 供后续更新）
-									const memContent = (delta as any).content ?? '';
-									const memMeta = (delta as any).metadata ?? {};
-									if (memContent) {
-										this._chatPanel?.addMemoryNotice({
-											content: memContent,
-											memoryType: memMeta.memoryType,
-											priority: memMeta.priority,
-											sceneName: memMeta.sceneName,
-											assistantContentPreview: memMeta.assistantContentPreview,
-											iteration: memMeta.iteration,
-											noticeId: memMeta.noticeId,
-											status: 'pending',
-										});
-									}
-									break;
-								}
-								case 'memory_written': {
-									// L0 记忆写入成功 → 更新 pending 卡片为 saved（或移除空内容卡片）
-									const memMeta = (delta as any).metadata ?? {};
-									if (memMeta.noticeId) {
-										if (memMeta.remove) {
-											this._chatPanel?.removeMemoryNotice(memMeta.noticeId);
-										} else {
-											this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'saved', (delta as any).content);
-										}
-									}
-									break;
-								}
-								case 'memory_write_failed': {
-									// L0 记忆写入失败 → 更新 pending 卡片为 failed
-									const memMeta = (delta as any).metadata ?? {};
-									if (memMeta.noticeId) {
-										this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'failed', (delta as any).content);
-									}
-									break;
-								}
-							case 'memory_injected': {
-								// 记忆上下文已注入 system prompt → 显示注入通知卡片
-								const memContent = (delta as any).content ?? '';
-								const memMeta = (delta as any).metadata ?? {};
-								if (memContent) {
-									this._chatPanel?.addMemoryNotice({
-										content: memContent,
-										memoryType: 'injected',
-										status: 'saved',
-										entries: memMeta.entries,
-									});
-								}
-								break;
-							}
-							case 'skill_extracted' as any: {
-								// 技能沉淀完成 → 显示技能沉淀通知卡片（可点击跳转）
-								const skillContent = (delta as any).content ?? '';
-								const skillMeta = (delta as any).metadata ?? {};
-								if (skillContent) {
-									this._chatPanel?.addMemoryNotice({
-										content: skillContent,
-										memoryType: 'skill',
-										status: 'saved',
-										skillId: skillMeta.skillId,
-										skillTitle: skillMeta.title,
-										agentId: skillMeta.agentId,
-										clickable: true,
-									});
-								}
-								break;
-							}
-								default:
-									break;
-							}
-						},
-					);
-					// Agent loop fully completed (not per-turn) — reset sending state
-					this._chatPanel?.setSending(false);
-					this._isSending = false;
-				} catch (err) {
-					this._logService.error('[NativeChatEditorPane] sendMessage failed:', err);
-					// sendMessage 抛出后没有 _sendMessageInternal line 644 收尾，必须这里手动
-					// 恢复 UI 状态并触发队列 dispatch（与正常完成路径一致）。
-					this._chatPanel?.setSending(false);
-					this._isSending = false;
-				}
+				await this._chatService.sendMessage(
+					agentId,
+					fullText,
+					{
+						chatMode: this._currentChatMode,
+						agentSessionId: sessionId,
+						explicitSkillIds: explicitSkillIds,
+					},
+					(delta) => {
+						this._handleStreamDelta(delta);
+					},
+				);
+				// Agent loop fully completed (not per-turn) — reset sending state
+				this._chatPanel?.setSending(false);
+				this._isSending = false;
+				this._resetStreamingMessage();
+			} catch (err) {
+				this._logService.error('[NativeChatEditorPane] sendMessage failed:', err);
+				// sendMessage 抛出后没有 _sendMessageInternal line 644 收尾，必须这里手动
+				// 恢复 UI 状态并触发队列 dispatch（与正常完成路径一致）。
+				this._chatPanel?.setSending(false);
+				this._isSending = false;
+				this._isExternalSend = false;
+				this._resetStreamingMessage();
+			}
 			}),
 			onEditMessage: (messageId: string, newText: string) => {
 				void this._handleEditMessage(messageId, newText);
@@ -669,19 +355,20 @@ export class NativeChatEditorPane extends EditorPane {
 					// await 真正退出后会再次 setSending(false) 并触发 executeNext()，这里手动
 					// 调用只更新 UI 状态（_isSending / _streamPhase / stream scroll / send button），
 					// 不触发队列 dispatch，避免与 line 644 双重触发。
-					this._chatPanel?.setSending(false, { triggerExecuteNext: false });
-					this._isSending = false;
-				} catch (err) {
-					this._logService.error('[NativeChatEditorPane] cancelExecution failed:', err);
-				}
+				this._chatPanel?.setSending(false, { triggerExecuteNext: false });
+				this._isSending = false;
+				this._isExternalSend = false;
+			} catch (err) {
+				this._logService.error('[NativeChatEditorPane] cancelExecution failed:', err);
+			}
 			},
 			onToggleCollapse: () => {
 				document.dispatchEvent(new CustomEvent('agent-studio:toggle-right-column'));
 			},
-			onSelectAgent: (agentId: string) => {
-				this._logService.debug(`[NativeChatEditorPane#${this._paneId}] onSelectAgent (dropdown): agentId=${agentId} _currentAgentId=${this._currentAgentId}`);
-				this._selectAndLoadAgent(agentId);
-			},
+		onSelectAgent: (agentId: string) => {
+			this._logService.debug(`[NativeChatEditorPane#${this._paneId}] onSelectAgent (dropdown): agentId=${agentId} _currentAgentId=${this._currentAgentId}`);
+			this._selectAndLoadAgent(agentId, { force: true });
+		},
 			onChangeMode: (mode: ChatMode) => {
 				this._currentChatMode = mode;
 				// Persist the chat mode so it survives reloads.
@@ -1256,41 +943,83 @@ export class NativeChatEditorPane extends EditorPane {
 				this._chatPanel?.setAgent(null);
 				return;
 			}
-			await this._selectAndLoadAgent(agentId);
+			await this._selectAndLoadAgent(agentId, { force: true });
 		}));
 
 		// Orchestration plan listeners removed — task orchestration entry point is closed.
 
 		// Listen for streaming deltas from task execution / external sendMessage calls.
-		// When the pane's agent matches, sync sending state (disable send button during
-		// task execution).
+		//
+		// 当消息来源是面板自身（_sendMessageInternal）时，_isSending=true 且 _isExternalSend=false，
+		// 面板回调已经处理了所有 delta 类型（text/tool/memory/usage...），此处跳过避免双重处理。
+		//
+		// 当消息来源是外部（如看板 executeTaskForBoard 直接调用 agentChatService.sendMessage）时，
+		// 面板回调不会被调用，此处接管所有 delta 处理（与本地发送走同一套 _handleStreamDelta 路径）：
+		//   - 首个非 done/error delta → _initStreamingMessage() 创建占位消息 + setSending(true)
+		//   - text/thinking/tool_*/usage/phase_change → 通过 _handleStreamDelta 实时更新 UI
+		//   - done → finalize + _resetStreamingMessage() + 延迟 reload history
+		//   - error → finalize + setSending(false) + reset
 		this._register(this._chatService.onDidStreamDelta(({ agentId, delta }) => {
 			if (agentId !== this._currentAgentId) { return; }
 			if (!this._chatPanel) { return; }
-			// Update sending state based on stream lifecycle.
-			//
-			// ⚠️ 不要在此处调用 setSending(false) —— 这是"队列任务被同时推送"的 race condition 根因：
-			//   1) onDidStreamDelta('done') 同步 fire → setSending(false) → executeNext() → dispatch test3
-			//      （test3 _sendMessageInternal 进入 await _ensureSession 让出）
-			//   2) test2 for-await 退出 → sendMessage return → _sendMessageInternal line 644
-			//      setSending(false) **第二次** → executeNext() → dispatch test4
-			//   结果：test3 和 test4 几乎同时被 dispatch（test4 还没等 test3 真正完成就被推送给 LLM）。
-			//
-			// 正确做法：'done' 监听器只更新 UI 状态（_streamPhase / stream scroll / _isSending），
-			// 不调用 setSending(false)（避免触发 executeNext）。真正的 setSending(false) 由
-			// _sendMessageInternal line 644 在 sendMessage await 完成、流真正结束后调用，
-			// 此时再触发 executeNext() dispatch 下一个任务（保证 test3 真正完成才推 test4）。
-			//
-			// 另：不要在 done 监听器中调用 _selectAndLoadAgent / setMessages —— 同样会覆盖
-			// in-flight 消息导致内容丢失（参见历史 race condition 修复）。
-			if (delta.type === 'done' || delta.type === 'error') {
-				// 流式结束的瞬时 UI 状态切换（_isSending / _streamPhase / stream scroll / send button）
-				// 由 _sendMessageInternal line 644 的 setSending(false) 统一处理 —— 那里会一并触发
-				// executeNext()。这里什么都不做，避免双重 dispatch。
-			} else if (delta.type === 'phase_change') {
-				const phase = (delta as any).phase as string;
-				this._chatPanel.setSending(phase !== 'idle');
+			if (!delta) { return; }
+
+			// 面板自身发送时，回调已处理，跳过（避免 race condition 和双重处理）
+			if (this._isSending && !this._isExternalSend) { return; }
+
+		if (delta.type === 'done') {
+			// 外部发送最终结束（整个 agent loop 完成）— finalize + 重置状态。
+			// 注意：此 done 来自 agentChatService for-await 退出后的广播，
+			// 不是 turn 级别的 done（turn done 不广播给外部监听器）。
+			if (this._isExternalSend) {
+				this._handleStreamDelta(delta); // finalize assistant msg（不 reset）
+				this._resetStreamingMessage(); // 清理流式状态
+				this._applyStreamPhase('idle');
+				this._chatPanel.setSending(false);
+				this._isSending = false;
+				this._isExternalSend = false;
+				// 标记外部发送刚完成 — onDidChangeTaskBoard 跳过后续 reload 避免闪烁。
+				// 流式 UI 已正确显示所有内容，全量 setMessages 会覆盖导致闪烁。
+				this._externalSendJustFinished = true;
 			}
+			// 本地发送时 done 不做处理 — 由 _sendMessageInternal await 返回后统一收尾
+			} else {
+				// 首个非 done delta → 外部发送开始：初始化流式消息 + 标记外部发送
+				if (!this._isSending) {
+					this._isSending = true;
+					this._isExternalSend = true;
+					this._chatPanel.setSending(true);
+					this._initStreamingMessage();
+				}
+				// 走与本地发送完全相同的 delta 处理路径（流式文本/工具/记忆/usage 全部生效）
+				this._handleStreamDelta(delta);
+			}
+		}));
+
+		// Reload chat history when the task board changes and the current agent
+		// was assigned to a task that just completed (e.g. kanban-created task finished).
+		//
+		// 防闪烁策略：
+		// 1. 流式进行中（_isSending=true）跳过 — 清空流式内容会导致严重闪烁
+		// 2. 防抖 timer — 多个 board change 事件只触发最后一次 reload
+		this._register(this._taskBoardService.onDidChangeTaskBoard(() => {
+			if (!this._currentAgentId || !this._chatPanel) { return; }
+			// 流式进行中不 reload — 会清空正在显示的 streaming text/tool cards
+			if (this._isSending) { return; }
+			// 外部发送刚完成 — 流式 UI 已正确显示所有内容，跳过 reload 避免闪烁。
+			// 用户下次主动操作（切换 agent / 手动发送）时清除标志。
+			if (this._externalSendJustFinished) {
+				this._externalSendJustFinished = false;
+				return;
+			}
+			// 清除之前的 pending timer，只让最后一次 board change 触发 reload
+			if (this._taskBoardReloadTimer) { clearTimeout(this._taskBoardReloadTimer); }
+			this._taskBoardReloadTimer = setTimeout(() => {
+				this._taskBoardReloadTimer = null;
+				if (this._currentAgentId && !this._isSending) {
+					void this._selectAndLoadAgent(this._currentAgentId);
+				}
+			}, 1500);
 		}));
 
 		// Listen for worktree changes (agent binding or list changes)
@@ -1367,7 +1096,23 @@ export class NativeChatEditorPane extends EditorPane {
 	// WorkflowTraceController. The pane now delegates workflow trace events to
 	// this._workflowTrace via start() in _initChatPanel().
 
-	private async _selectAndLoadAgent(agentId: string): Promise<void> {
+	/**
+	 * 加载/切换 agent 并刷新聊天历史。
+	 *
+	 * @param agentId 要加载的 agent ID
+	 * @param options.force 跳过流式保护守卫。用户主动切换 agent 或首次加载时传 true；
+	 *   程序化 reload（board change timer、chat jump retry）保持默认 false，流式进行中跳过
+	 *   以避免清空正在显示的流式内容。
+	 */
+	private async _selectAndLoadAgent(agentId: string, options?: { force?: boolean }): Promise<void> {
+		// 流式进行中跳过程序化 reload — 避免清空流式内容导致严重闪烁。
+		// 用户主动切换（force=true）和首次加载（_currentAgentId=null）不受影响。
+		if (!options?.force && this._isSending && this._currentAgentId === agentId) {
+			this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: skipped (streaming in progress for ${agentId})`);
+			return;
+		}
+		// 手动/程序化 reload 时清除待处理的 board reload timer
+		if (this._taskBoardReloadTimer) { clearTimeout(this._taskBoardReloadTimer); this._taskBoardReloadTimer = null; }
 		const t0 = performance.now();
 		const gen = ++this._loadGeneration;
 		this._logService.debug(`[NativeChatEditorPane#${this._paneId}] _selectAndLoadAgent: agentId=${agentId} gen=${gen}`);
@@ -1379,6 +1124,13 @@ export class NativeChatEditorPane extends EditorPane {
 				if (gen !== this._loadGeneration) {
 					this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: gen=${gen} superseded by gen=${this._loadGeneration}, discarding`);
 					return;
+				}
+				// 切换 agent 时重置外部发送状态 — 旧 agent 的 onDidStreamDelta('done')
+				// 不会再被此 pane 处理（agentId 不匹配），避免 _isSending 卡住。
+				if (this._currentAgentId && this._currentAgentId !== agentId && this._isExternalSend) {
+					this._isSending = false;
+					this._isExternalSend = false;
+					this._chatPanel.setSending(false);
 				}
 				this._currentAgentId = agentId;
 				this._currentAgentSkills = emp.skills ?? [];
@@ -1556,6 +1308,342 @@ export class NativeChatEditorPane extends EditorPane {
 	}
 
 	/**
+	 * 初始化流式 assistant 消息：创建带 isThinking=true 的占位消息并存入共享字段。
+	 * 由 _sendMessageInternal（本地发送）开始时和 onDidStreamDelta（外部发送）首个 delta 到达时调用。
+	 */
+	private _initStreamingMessage(): void {
+		if (this._streamingAssistantId) { return; } // 已初始化
+		const id = `msg_${Date.now()}_assistant`;
+		const msg: IAgentChatMessage = {
+			id,
+			role: 'assistant',
+			content: '',
+			timestamp: Date.now(),
+			isStreaming: true,
+			isThinking: true,
+			streamPhase: 'llm_streaming',
+			turnId: `turn_${Date.now()}`,
+		};
+		this._chatPanel?.addMessage(msg);
+		this._streamingAssistantId = id;
+		this._streamingAssistantMsg = msg;
+	}
+
+	/**
+	 * 清理流式状态：done/error 后调用，避免下次流式时残留旧引用。
+	 */
+	private _resetStreamingMessage(): void {
+		this._streamingAssistantId = null;
+		this._streamingAssistantMsg = null;
+	}
+
+	/**
+	 * 共享的流式 delta 处理方法。
+	 * 供 _sendMessageInternal 回调（本地发送）和 onDidStreamDelta 监听器（外部发送，如看板任务）共同调用。
+	 * 读取/更新 _streamingAssistantId 和 _streamingAssistantMsg 共享字段。
+	 *
+	 * 调用前必须确保：
+	 * 1. 已通过 _initStreamingMessage() 初始化流式消息
+	 * 2. _isSending=true（按钮处于 stop 状态）
+	 */
+	private _handleStreamDelta(delta: any): void {
+		if (!delta) { return; }
+		const assistantId = this._streamingAssistantId;
+		const assistantMsg = this._streamingAssistantMsg;
+
+		// Inter-turn safety net: 如果 _isSending 因某种原因被置 false
+		// （如错误、取消、或 done 之后），当新一轮 agent loop 真正有
+		// 交互性 delta 到来时，重新激活 sending 状态，确保按钮显示
+		// stop 图标、输入框禁用、流式滚动路径生效。
+		if (!this._isSending) {
+			const reActivateTypes = ['text', 'thinking', 'tool_start', 'tool_args', 'tool_end', 'tool_result', 'phase_change'];
+			if (reActivateTypes.includes(delta.type)) {
+				this._chatPanel?.setSending(true);
+				this._isSending = true;
+			}
+		}
+
+		switch (delta.type) {
+			case 'text':
+				if (!assistantMsg || !assistantId) { return; }
+				{
+					const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
+					assistantMsg.content = textContent;
+					this._applyStreamPhase('llm_streaming');
+					this._chatPanel?.setStreamTextBuffer(textContent);
+					this._chatPanel?.updateMessage(assistantId, {
+						content: textContent,
+						isStreaming: true,
+						isThinking: false,
+						streamPhase: 'llm_streaming',
+					});
+				}
+				break;
+			case 'thinking':
+				if (!assistantMsg || !assistantId) { return; }
+				{
+					const thinkingContent = delta.fullThinking !== undefined ? delta.fullThinking : ((assistantMsg.thinking ?? '') + (delta.content ?? ''));
+					assistantMsg.thinking = thinkingContent;
+					this._chatPanel?.setStreamThinkingBuffer(thinkingContent);
+					this._chatPanel?.updateMessage(assistantId, {
+						thinking: thinkingContent,
+						isThinking: true,
+					});
+				}
+				break;
+			case 'tool_start': {
+				if (!assistantMsg || !assistantId) { return; }
+				if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
+				assistantMsg.toolCalls.push({
+					id: delta.toolCallId ?? `tool_${Date.now()}`,
+					name: delta.toolName ?? '',
+					args: '',
+					status: 'running',
+					displayName: delta.displayName,
+					renderType: delta.renderType,
+					defaultShow: delta.defaultShow,
+					textPosition: typeof delta.textPosition === 'number' ? delta.textPosition : (assistantMsg.content?.length ?? 0),
+				});
+				this._applyStreamPhase('tool_executing');
+				this._chatPanel?.updateMessage(assistantId, {
+					toolCalls: assistantMsg.toolCalls.slice(),
+					isStreaming: true,
+					isThinking: false,
+					streamPhase: 'tool_executing',
+				});
+				break;
+			}
+			case 'tool_args': {
+				if (!assistantMsg || !assistantId) { return; }
+				const argCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+				if (argCall) {
+					argCall.args = (argCall.args ?? '') + (delta.content ?? '');
+					this._chatPanel?.updateMessage(assistantId, {
+						toolCalls: assistantMsg.toolCalls!.slice(),
+						isStreaming: true,
+						streamPhase: 'tool_executing',
+					});
+				}
+				break;
+			}
+			case 'tool_end': {
+				if (!assistantMsg || !assistantId) { return; }
+				const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+				if (endCall) {
+					endCall.status = 'success';
+					this._applyStreamPhase('llm_streaming');
+					this._chatPanel?.updateMessage(assistantId, {
+						toolCalls: assistantMsg.toolCalls!.slice(),
+						isStreaming: true,
+						isThinking: true,
+						streamPhase: 'llm_streaming',
+					});
+				}
+				break;
+			}
+			case 'tool_result': {
+				if (!assistantMsg || !assistantId) { return; }
+				const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
+				if (resultCall) {
+					resultCall.result = delta.content;
+					if (resultCall.status === 'running') { resultCall.status = 'success'; }
+					this._chatPanel?.updateMessage(assistantId, {
+						toolCalls: assistantMsg.toolCalls!.slice(),
+					});
+				}
+				break;
+			}
+			case 'phase_change':
+				if (delta.phase) {
+					this._applyStreamPhase(delta.phase);
+				}
+				if (delta.phase && assistantId) {
+					this._chatPanel?.updateMessage(assistantId, {
+						streamPhase: delta.phase,
+						isStreaming: delta.phase !== 'idle',
+					});
+				}
+				break;
+			case 'done': {
+				if (assistantMsg && assistantId) {
+					if (assistantMsg.toolCalls) {
+						for (const tc of assistantMsg.toolCalls) {
+							if (tc.status === 'running') { tc.status = 'success'; }
+						}
+					}
+					const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
+					this._applyStreamPhase('idle');
+					this._chatPanel?.updateMessage(assistantId, {
+						toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
+						isStreaming: false,
+						isThinking: false,
+						streamPhase: 'idle',
+						metadata: { ...(assistantMsg.metadata || {}), durationMs },
+					});
+				}
+				// ⚠️ 不在此处调用 _resetStreamingMessage() — agent loop 中每次 LLM turn
+				// 结束都会 yield done，如果重置流式状态，下一轮 LLM delta 到达时
+				// _streamingAssistantId 为 null，delta 被丢弃。_resetStreamingMessage()
+				// 由调用方在最终 done（整个 agent loop 结束）后调用。
+				break;
+			}
+			case 'error':
+				if (assistantId) {
+					this._applyStreamPhase('error');
+					this._chatPanel?.updateMessage(assistantId, {
+						isStreaming: false,
+						isThinking: false,
+						streamPhase: 'error',
+						content: ((assistantMsg?.content) || '') + `\n\n⚠️ ${typeof delta.content === 'string' ? delta.content : '执行失败'}`,
+					});
+				}
+				this._chatPanel?.setSending(false);
+				this._isSending = false;
+				this._isExternalSend = false;
+				this._resetStreamingMessage();
+				break;
+			case 'usage':
+				if (delta.usage && assistantMsg && assistantId) {
+					const input = delta.usage.inputTokens ?? 0;
+					const output = delta.usage.outputTokens ?? 0;
+					const total = delta.usage.totalTokens ?? (input + output);
+					const cachedRead = delta.usage.cachedTokens ?? 0;
+					const cacheWrite = delta.usage.cacheWriteTokens ?? 0;
+					const credit = delta.usage.credit;
+					const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
+					const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
+					const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: 0, cacheHitRate, credit };
+					assistantMsg.tokenUsage = tokenUsage;
+					this._chatPanel?.updateMessage(assistantId, { tokenUsage });
+					const limit = this._currentMaxContextTokens ?? 0;
+					if (limit > 0) {
+						this._chatPanel?.setStreamUsage({
+							input: delta.usage.inputTokens ?? 0,
+							output: delta.usage.outputTokens ?? 0,
+							seen: true,
+						});
+					}
+				}
+				break;
+			case 'context_compacted': {
+				const compacted = (delta as any).compactedInputTokens ?? 0;
+				if (compacted > 0) {
+					this._chatPanel?.setCompactedBaseline(compacted);
+					this._saveCompactedBaseline(compacted);
+				}
+				const limit = this._currentMaxContextTokens ?? 0;
+				if (limit > 0 && compacted > 0) {
+					const ratio = Math.max(0, Math.min(1, compacted / limit));
+					this._chatPanel?.setContextUsage({
+						used: compacted,
+						limit,
+						ratio,
+						percent: ratio * 100,
+					} as IContextUsage);
+				}
+				const origCount = (delta as any).compressionOriginalCount ?? 0;
+				const compCount = (delta as any).compressionCompressedCount ?? 0;
+				const tokensSaved = (delta as any).compressionTokensSaved ?? 0;
+				const durationMs = (delta as any).compressionDurationMs ?? 0;
+				if (origCount > 0 && compCount > 0 && compCount < origCount) {
+					this._chatPanel?.addCompressionNotice({
+						originalCount: origCount,
+						compressedCount: compCount,
+						tokensSaved,
+						durationMs,
+						beforeText: (delta as any).compressionBeforeText,
+						afterText: (delta as any).compressionAfterText,
+						summary: (delta as any).compressionSummary,
+					});
+				}
+				break;
+			}
+			case 'memory_extracted': {
+				const memContent = delta.content ?? '';
+				const memMeta = delta.metadata ?? {};
+				if (memContent) {
+					this._chatPanel?.addMemoryNotice({
+						content: memContent,
+						memoryType: memMeta.memoryType,
+						priority: memMeta.priority,
+						sceneName: memMeta.sceneName,
+						assistantContentPreview: memMeta.assistantContentPreview,
+						iteration: memMeta.iteration,
+						status: 'saved',
+					});
+				}
+				break;
+			}
+			case 'memory_writing': {
+				const memContent = delta.content ?? '';
+				const memMeta = delta.metadata ?? {};
+				if (memContent) {
+					this._chatPanel?.addMemoryNotice({
+						content: memContent,
+						memoryType: memMeta.memoryType,
+						priority: memMeta.priority,
+						sceneName: memMeta.sceneName,
+						assistantContentPreview: memMeta.assistantContentPreview,
+						iteration: memMeta.iteration,
+						noticeId: memMeta.noticeId,
+						status: 'pending',
+					});
+				}
+				break;
+			}
+			case 'memory_written': {
+				const memMeta = delta.metadata ?? {};
+				if (memMeta.noticeId) {
+					if (memMeta.remove) {
+						this._chatPanel?.removeMemoryNotice(memMeta.noticeId);
+					} else {
+						this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'saved', delta.content);
+					}
+				}
+				break;
+			}
+			case 'memory_write_failed': {
+				const memMeta = delta.metadata ?? {};
+				if (memMeta.noticeId) {
+					this._chatPanel?.updateMemoryNotice(memMeta.noticeId, 'failed', delta.content);
+				}
+				break;
+			}
+			case 'memory_injected': {
+				const memContent = delta.content ?? '';
+				const memMeta = delta.metadata ?? {};
+				if (memContent) {
+					this._chatPanel?.addMemoryNotice({
+						content: memContent,
+						memoryType: 'injected',
+						status: 'saved',
+						entries: memMeta.entries,
+					});
+				}
+				break;
+			}
+			case 'skill_extracted': {
+				const skillContent = delta.content ?? '';
+				const skillMeta = delta.metadata ?? {};
+				if (skillContent) {
+					this._chatPanel?.addMemoryNotice({
+						content: skillContent,
+						memoryType: 'skill',
+						status: 'saved',
+						skillId: skillMeta.skillId,
+						skillTitle: skillMeta.title,
+						agentId: skillMeta.agentId,
+						clickable: true,
+					});
+				}
+				break;
+			}
+			default:
+				break;
+		}
+	}
+
+	/**
 	 * Recompute the tab status dot from a stream phase. Called on every
 	 * phase transition (live deltas + state restore on tab switch).
 	 */
@@ -1711,7 +1799,7 @@ export class NativeChatEditorPane extends EditorPane {
 				if (target) {
 					this._defaultAgentSelected = true;
 					console.info(`[NativeChatEditorPane] _loadAvailableAgents: defaulting to agent "${target.id}" (${target.name})`);
-					await this._selectAndLoadAgent(target.id);
+					await this._selectAndLoadAgent(target.id, { force: true });
 				}
 			}
 			}
@@ -1971,7 +2059,7 @@ export class NativeChatEditorPane extends EditorPane {
 			if (input.agentId) {
 				this._currentAgentId = input.agentId;
 				this._defaultAgentSelected = true;
-				void this._selectAndLoadAgent(input.agentId);
+				void this._selectAndLoadAgent(input.agentId, { force: true });
 			} else {
 				this._defaultAgentSelected = false;
 				this._loadAvailableAgents();
@@ -2415,6 +2503,7 @@ export class NativeChatEditorPane extends EditorPane {
 	}
 
 	override dispose(): void {
+		if (this._taskBoardReloadTimer) { clearTimeout(this._taskBoardReloadTimer); this._taskBoardReloadTimer = null; }
 		this._chatPanel = undefined;
 		this._isInitialized = false;
 		super.dispose();

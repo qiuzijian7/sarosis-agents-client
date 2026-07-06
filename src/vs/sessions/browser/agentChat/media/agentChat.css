@@ -800,6 +800,116 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   Tabbed panel — 任务列表 + 消息列表 tabs
+   替代旧的 systemMsgBar + queueBar 双栏设计
+   ═══════════════════════════════════════════════════════════════════ */
+.tabbed-panel {
+	background: var(--vscode-editorWidget-background, #252526);
+	border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.15));
+	border-radius: 8px;
+	overflow: hidden;
+	margin: 6px 14px;
+	transition: max-height 0.25s ease;
+	flex-shrink: 0;
+	max-height: 340px;
+}
+.tabbed-panel-header {
+	display: flex;
+	border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.12));
+	background: var(--vscode-tab-inactiveBackground, rgba(128, 128, 128, 0.04));
+	user-select: none; flex-shrink: 0;
+}
+.tbp-tab {
+	padding: 8px 16px; cursor: pointer; font-size: 12px; line-height: 1;
+	color: var(--vscode-descriptionForeground, #969696); text-align: center;
+	border-right: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.1));
+	position: relative; transition: color 0.15s, background 0.15s; white-space: nowrap;
+}
+.tbp-tab:hover { color: var(--vscode-foreground, #ccc); }
+.tbp-tab.active {
+	background: var(--vscode-editor-background, #1e1e1e);
+	color: var(--vscode-foreground, #ccc); font-weight: 500;
+}
+.tbp-tab.active::after {
+	content: ''; position: absolute; bottom: -1px; left: 0; right: 0;
+	height: 2px; background: var(--vscode-focusBorder, #007acc);
+}
+.tbp-body {
+	display: none; padding: 8px 14px; max-height: 280px;
+	overflow-y: auto; background: var(--vscode-editor-background, #1e1e1e);
+}
+.tbp-body.active { display: block; }
+.tbp-task-summary {
+	font-size: 12px; color: var(--vscode-descriptionForeground, #969696);
+	margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+}
+.tbp-status-dot {
+	width: 6px; height: 6px; border-radius: 50%;
+	background: var(--vscode-charts-yellow, #cca700);
+	animation: tbp-pulse 1.6s ease-in-out infinite;
+}
+@keyframes tbp-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.tbp-status-dot.executing { background: var(--vscode-charts-red, #f48771); }
+.tbp-task-list { display: flex; flex-direction: column; gap: 2px; }
+.tbp-task-item {
+	display: flex; align-items: center; padding: 6px 10px;
+	border-radius: 4px; gap: 10px; transition: background 0.12s;
+	cursor: default; font-size: 13px;
+}
+.tbp-task-item:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+.tbp-task-item.tbp-task-executing { background: rgba(244, 135, 113, 0.12); }
+.tbp-task-item.tbp-task-done { opacity: 0.5; }
+.tbp-task-status {
+	width: 15px; height: 15px; border-radius: 50%;
+	border: 2px solid var(--vscode-descriptionForeground, #6b6b6b); flex-shrink: 0;
+	display: flex; align-items: center; justify-content: center; font-size: 9px; line-height: 1;
+}
+.tbp-task-status.tbp-task-status-pending { border-color: #6b6b6b; }
+.tbp-task-item.tbp-task-executing .tbp-task-status {
+	border-color: var(--vscode-charts-red, #f48771);
+	background: var(--vscode-charts-red, #f48771);
+	box-shadow: 0 0 6px rgba(244, 135, 113, 0.5);
+}
+.tbp-task-item.tbp-task-executing .tbp-task-status::after {
+	content: ''; width: 5px; height: 5px; background: white; border-radius: 50%;
+}
+.tbp-task-item.tbp-task-done .tbp-task-status {
+	border-color: var(--vscode-charts-green, #89d185);
+	background: var(--vscode-charts-green, #89d185);
+}
+.tbp-task-item.tbp-task-done .tbp-task-status::after {
+	content: '\2713'; color: #1e1e1e; font-weight: bold;
+}
+.tbp-task-content {
+	flex: 1; line-height: 1.4; min-width: 0;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tbp-task-item.tbp-task-done .tbp-task-content { text-decoration: line-through; }
+.tbp-task-grip {
+	color: var(--vscode-descriptionForeground, #969696); cursor: grab;
+	font-size: 11px; letter-spacing: 1px; opacity: 0;
+	transition: opacity 0.15s; padding: 0 2px; flex-shrink: 0;
+}
+.tbp-task-item:hover .tbp-task-grip { opacity: 1; }
+.tbp-task-item:active .tbp-task-grip { cursor: grabbing; }
+.tbp-task-actions {
+	display: flex; gap: 2px; opacity: 0; transition: opacity 0.15s;
+}
+.tbp-task-item:hover .tbp-task-actions { opacity: 1; }
+.tbp-task-btn {
+	width: 22px; height: 22px; border: none; border-radius: 4px; cursor: pointer;
+	display: flex; align-items: center; justify-content: center; font-size: 11px;
+	color: var(--vscode-descriptionForeground, #969696); background: transparent;
+	transition: background 0.12s, color 0.12s;
+}
+.tbp-task-btn:hover { background: #3a3d41; color: var(--vscode-foreground, #ccc); }
+.tbp-task-btn.send:hover { background: var(--vscode-focusBorder, #007acc); color: #fff; }
+.tbp-task-btn.danger:hover { background: #5a1d1d; color: var(--vscode-charts-red, #f48771); }
+.tbp-task-dragging { opacity: 0.4; }
+.tbp-drop-above { border-top: 2px solid var(--vscode-focusBorder, #007acc); }
+.tbp-drop-below { border-bottom: 2px solid var(--vscode-focusBorder, #007acc); }
+
+/* ═══════════════════════════════════════════════════════════════════
    Queue bar (队列栏) — 待执行任务列表
    位于系统栏下方、输入区上方。
    收起态：紧凑摘要条 + 计数；展开态：max-height 限制的列表。

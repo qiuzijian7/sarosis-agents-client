@@ -57,9 +57,8 @@ import {
 } from "./agentChatTypes.js";
 
 import type { IChatPanel } from "./iChatPanel.js";
-import { QueueBarManager } from "./modules/queueBar.js";
-import { positionDropdownBelow, positionDropdownAbove, disposeOutsideClick, registerOutsideClickClose } from "./modules/dropdownHelpers.js";
-import { createCheckpointDetailCard } from "./modules/checkpointCard.js";
+import { TabbedPanelManager } from "./modules/tabbedPanel.js";
+import { positionDropdownAbove, disposeOutsideClick, registerOutsideClickClose } from "./modules/dropdownHelpers.js";
 import { renderContextUsageRing } from "./modules/contextRing.js";
 import { renderHistoryOverlay } from "./modules/historyOverlay.js";
 
@@ -225,30 +224,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// 未读消息计数——用户滚离底部时新消息累积，回到底部后清零
 	private _unreadCount = 0;
 	private _sendBtn!: HTMLElement;
-	private _systemMsgBar: HTMLElement | null = null;
-	private _systemMsgList: HTMLElement | null = null;
-	private _systemMsgExpanded = false;
-	// ── 队列栏（委托给 QueueBarManager 模块）──
-	private readonly _queueManager: QueueBarManager;
+	// ── Tabbed panel（替代 systemMsgBar + queueBar）──
+	private readonly _tabbedPanel: TabbedPanelManager;
 
 	// -- State --
 	private _messages: IAgentChatMessage[] = [];
-	/** 系统消息列表（压缩、记忆、代码库等非聊天消息） */
-	private _systemMessages: Array<{
-		id: string;
-		type: 'compression' | 'memory' | 'codebase';
-		icon: string;
-		badge: string;
-		badgeClass: string;
-		content: string;
-		details?: string[];
-		timestamp: number;
-		rawData?: Record<string, unknown>;
-		/** 记忆卡片状态：pending(写入中) → saved(已保存) → failed(失败) */
-		status?: 'pending' | 'saved' | 'failed';
-		/** 关联 ID，用于 updateMemoryNotice 匹配 */
-		noticeId?: string;
-	}> = [];
+
 	/** 系统消息面板回调（打开编辑器详情） */
 	private _onOpenCompressionDetail: ((data: Record<string, unknown>) => void) | null = null;
 	private _onOpenMemoryDetail: ((agentId: string, memoryType?: string, contentPreview?: string) => void) | null = null;
@@ -336,6 +317,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _streamThinkingBuffer: string = '';
 	private _compactedBaseline: number = 0;
 	private _checkpoint: ICheckpointInfo | null = null;
+	// _checkpoints written by setCheckpoint/setCheckpoints; read suppressed for now
+	// (previously rendered in _renderSystemMsgPanel; todo: render in tabbed panel msg tab)
 	private _checkpoints: ICheckpointInfo[] = [];
 	private _attachments: IChatAttachment[] = [];
 	private _fileInput: HTMLInputElement | null = null;
@@ -576,13 +559,17 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._onDecomposeTask = opts.onDecomposeTask;
 		this._onClosePlanDialog = opts.onClosePlanDialog;
 
-		// QueueBarManager — DOM 在 _renderInputArea 中创建
+		// TabbedPanelManager — 替代 systemMsgBar + queueBar，DOM 在 _renderInputArea 中创建
 		const self = this;
-		this._queueManager = this._register(new QueueBarManager({
+		this._tabbedPanel = this._register(new TabbedPanelManager({
 			get container() { return self._container; },
 			get textarea() { return self._textarea ?? null; },
 			get isSending() { return self._isSending; },
 			onSendMessage: (text) => { self._onSendMessage?.(text); },
+			get agentId() { return self._agent?.id; },
+			get onOpenCompressionDetail() { return self._onOpenCompressionDetail; },
+			get onOpenMemoryDetail() { return self._onOpenMemoryDetail; },
+			get onOpenCodebaseDetail() { return self._onOpenCodebaseDetail; },
 		}));
 
 		this._container = $(".chat-container");
@@ -700,7 +687,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	}
 
 	/**
-	 * 添加上下文压缩提示到系统消息面板。
+	 * 添加上下文压缩提示到系统消息面板（委托给 TabbedPanelManager）。
 	 */
 	addCompressionNotice(info: {
 		originalCount: number;
@@ -718,9 +705,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (savePercent > 0) { details.push(`-${savePercent}%`); }
 		if (info.tokensSaved > 0) { details.push(`节省 ${info.tokensSaved.toLocaleString()} tokens`); }
 		if (info.durationMs > 0) { details.push(`${(info.durationMs / 1000).toFixed(1)}s`); }
-		this._addSystemMessage({
+		this._tabbedPanel.addSystemMessage({
 			type: 'compression',
-			icon: '📦',
+			icon: '\u{1F4E6}',
 			badge: '压缩',
 			badgeClass: 'compression',
 			content: `上下文已压缩：${info.originalCount} → ${info.compressedCount} 条消息`,
@@ -730,8 +717,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	}
 
 	/**
-	 * 添加记忆提取提示到系统消息面板。
-	 * 支持三阶段生命周期：pending → saved → failed（对齐 agentmemory 写入模型）。
+	 * 添加记忆提取提示（委托给 TabbedPanelManager）。
 	 */
 	addMemoryNotice(info: {
 		content: string;
@@ -749,21 +735,16 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		clickable?: boolean;
 	}): void {
 	const typeLabels: Record<string, string> = {
-		// 4-Tier Consolidation Model (agentmemory)
 		working: 'Working',
 		episodic: 'Episodic',
 		semantic: 'Semantic',
 		procedural: 'Procedural',
-		// Injection (context loaded into system prompt)
 		injected: '注入',
-		// Skill (extracted from sessions)
 		skill: '技能',
-		// Episodic sub-types
 		pattern: 'pattern', preference: 'preference', architecture: 'architecture',
 		bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
 	};
 	const typeLabel = info.memoryType ? (typeLabels[info.memoryType] ?? info.memoryType) : '记忆';
-	// Map badge class to 4-Tier colors (direct type matching, no legacy mapping)
 	const memType = info.memoryType ?? '';
 	const badgeClass = memType === 'working' ? 'memory-l0'
 		: (memType === 'episodic' ? 'memory-l1'
@@ -772,7 +753,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		: (memType === 'injected' ? 'memory-injected'
 		: (memType === 'skill' ? 'memory-skill'
 		: 'memory')))));
-		// 如果有注入记忆摘要列表，追加到 content 后面
 		let displayContent = info.content;
 		if (info.entries && info.entries.length > 0) {
 			const entryList = info.entries.map((e, i) =>
@@ -780,13 +760,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			).join('\n');
 			displayContent = `${info.content}\n\n${entryList}`;
 		}
-		// 技能沉淀消息：追加提示
 		if (memType === 'skill' && info.clickable) {
 			displayContent = `${info.content}\n\n💡 点击此消息可跳转到记忆详情 → 技能页签`;
 		}
-		this._addSystemMessage({
+		this._tabbedPanel.addSystemMessage({
 			type: 'memory',
-			icon: memType === 'skill' ? '⚡' : '🧠',
+			icon: memType === 'skill' ? '\u26A1' : '\uD83E\uDDE0',
 			badge: typeLabel,
 			badgeClass,
 			content: displayContent,
@@ -796,26 +775,14 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		});
 	}
 
-	/**
-	 * 更新已有记忆卡片的状态（pending → saved/failed）。
-	 * 由 provider 事件桥接触发，提供真实的写入结果反馈。
-	 */
+	/** 更新已有记忆卡片的状态（委托给 TabbedPanelManager） */
 	updateMemoryNotice(noticeId: string, status: 'saved' | 'failed', newContent?: string): void {
-		const msg = this._systemMessages.find(m => m.noticeId === noticeId);
-		if (!msg) { return; }
-		msg.status = status;
-		if (newContent) { msg.content = newContent; }
-		this._renderSystemMsgPanel();
+		this._tabbedPanel.updateSystemMessage(noticeId, status, newContent);
 	}
 
-	/**
-	 * 移除已有记忆卡片（如写入内容为空时无需展示）。
-	 */
+	/** 移除已有记忆卡片（委托给 TabbedPanelManager） */
 	removeMemoryNotice(noticeId: string): void {
-		const idx = this._systemMessages.findIndex(m => m.noticeId === noticeId);
-		if (idx < 0) { return; }
-		this._systemMessages.splice(idx, 1);
-		this._renderSystemMsgPanel();
+		this._tabbedPanel.removeSystemMessage(noticeId);
 	}
 
 	/** 设置打开压缩详情编辑器的回调 */
@@ -833,26 +800,18 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._onOpenCodebaseDetail = cb;
 	}
 
-	/**
-	 * 添加代码库记忆操作提示到系统消息面板。
-	 */
-	addCodebaseNotice(info: {
-		operation: string;
-		detail?: string;
-	}): void {
+	/** 添加代码库记忆操作提示（委托给 TabbedPanelManager） */
+	addCodebaseNotice(info: { operation: string; detail?: string; }): void {
 		const opLabels: Record<string, string> = {
-			index: '索引',
-			search: '搜索',
-			graph: '图谱',
-			trace: '追踪',
-			changes: '变更检测',
+			index: '索引', search: '搜索', graph: '图谱',
+			trace: '追踪', changes: '变更检测',
 		};
 		const label = opLabels[info.operation] ?? info.operation;
 		const details: string[] = [];
 		if (info.detail) { details.push(info.detail); }
-		this._addSystemMessage({
+		this._tabbedPanel.addSystemMessage({
 			type: 'codebase',
-			icon: '🗂️',
+			icon: '\uD83D\uDDC2\uFE0F',
 			badge: label,
 			badgeClass: 'codebase',
 			content: info.detail || `代码库记忆操作: ${info.operation}`,
@@ -860,211 +819,24 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		});
 	}
 
-	/** 添加一条系统消息并刷新面板 */
-	private _addSystemMessage(msg: {
-		type: 'compression' | 'memory' | 'codebase';
-		icon: string;
-		badge: string;
-		badgeClass: string;
-		content: string;
-		details?: string[];
-		rawData?: Record<string, unknown>;
-		status?: 'pending' | 'saved' | 'failed';
-		noticeId?: string;
-	}): void {
-		this._systemMessages.push({
-			id: `sysmsg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-			timestamp: Date.now(),
-			...msg,
-		});
-		this._renderSystemMsgPanel();
-		// 不自动展开：系统栏仅在用户手动点击时才展开
-	}
-
-	/** 清空系统消息 */
+	/** 清空系统消息（委托给 TabbedPanelManager） */
 	clearSystemMessages(): void {
-		this._systemMessages = [];
-		this._renderSystemMsgPanel();
+		this._tabbedPanel.clearSystemMessages();
 	}
 
-	/** 切换系统消息面板展开/收起 */
-	private _toggleSystemMsgPanel(): void {
-		this._systemMsgExpanded = !this._systemMsgExpanded;
-		this._renderSystemMsgPanel();
-	}
-
-	/** 渲染系统消息面板（栏 + 列表） */
-	private _renderSystemMsgPanel(): void {
-		if (!this._systemMsgBar) { return; }
-		const bar = this._systemMsgBar;
-		const list = this._systemMsgList;
-		if (!list) { return; }
-
-		const cpCount = this._checkpoints.length;
-		const sysCount = this._systemMessages.length;
-		const totalCount = cpCount + sysCount;
-
-		// 清空栏内容
-		while (bar.firstChild) { bar.removeChild(bar.firstChild); }
-
-		// 切换图标
-		const toggleEl = document.createElement('span');
-		toggleEl.className = 'sysmsg-toggle-icon' + (this._systemMsgExpanded ? ' expanded' : '');
-		toggleEl.textContent = '▶';
-		bar.appendChild(toggleEl);
-
-		if (totalCount === 0) {
-			bar.style.display = 'none';
-			list.style.maxHeight = '0';
-			return;
-		}
-
-		bar.style.display = 'flex';
-
-		// ── 计数摘要 chips（每个类型一个 chip，显示个数） ──
-		if (cpCount > 0) {
-			const chip = document.createElement('span');
-			chip.className = 'summary-chip checkpoint';
-			const ic = document.createElement('span'); ic.className = 'chip-icon'; ic.textContent = '📝';
-			chip.appendChild(ic);
-			const cnt = document.createElement('span'); cnt.className = 'chip-count'; cnt.textContent = String(cpCount);
-			chip.appendChild(cnt);
-			const lbl = document.createElement('span'); lbl.className = 'chip-label'; lbl.textContent = '检查点';
-			chip.appendChild(lbl);
-			bar.appendChild(chip);
-		}
-
-		const types = new Set(this._systemMessages.map(m => m.type));
-		if (types.has('compression')) {
-			const compCount = this._systemMessages.filter(m => m.type === 'compression').length;
-			const chip = document.createElement('span');
-			chip.className = 'summary-chip compression';
-			const ic = document.createElement('span'); ic.className = 'chip-icon'; ic.textContent = '📦';
-			chip.appendChild(ic);
-			const cnt = document.createElement('span'); cnt.className = 'chip-count'; cnt.textContent = String(compCount);
-			chip.appendChild(cnt);
-			const lbl = document.createElement('span'); lbl.className = 'chip-label'; lbl.textContent = '压缩';
-			chip.appendChild(lbl);
-			bar.appendChild(chip);
-		}
-		if (types.has('memory')) {
-			const memCount = this._systemMessages.filter(m => m.type === 'memory').length;
-			const chip = document.createElement('span');
-			chip.className = 'summary-chip memory';
-			const ic = document.createElement('span'); ic.className = 'chip-icon'; ic.textContent = '🧠';
-			chip.appendChild(ic);
-			const cnt = document.createElement('span'); cnt.className = 'chip-count'; cnt.textContent = String(memCount);
-			chip.appendChild(cnt);
-			const lbl = document.createElement('span'); lbl.className = 'chip-label'; lbl.textContent = '记忆';
-			chip.appendChild(lbl);
-			bar.appendChild(chip);
-		}
-
-		// ── 渲染展开列表 ──
-		while (list.firstChild) { list.removeChild(list.firstChild); }
-
-		// 检查点详情卡片（从新到旧）
-		for (let i = this._checkpoints.length - 1; i >= 0; i--) {
-			const cp = this._checkpoints[i];
-			const isLatest = i === this._checkpoints.length - 1;
-			const seqNum = i + 1;
-			list.appendChild(this._createCheckpointDetailCard(cp, isLatest, seqNum));
-		}
-
-		// 其他系统消息（倒序：最新在前）
-		for (let mi = this._systemMessages.length - 1; mi >= 0; mi--) {
-			const msg = this._systemMessages[mi];
-			const item = document.createElement('div');
-			item.className = 'sysmsg-item sysmsg-item-clickable';
-			if (msg.status) { item.classList.add(`mem-status-${msg.status}`); }
-
-			const iconEl = document.createElement('span');
-			iconEl.className = 'sysmsg-item-icon';
-			// 状态指示器：pending(⏳) / saved(✅) / failed(❌) / 默认原 icon
-			if (msg.type === 'memory' && msg.status === 'pending') {
-				iconEl.textContent = '⏳';
-			} else if (msg.type === 'memory' && msg.status === 'saved') {
-				iconEl.textContent = '✅';
-			} else if (msg.type === 'memory' && msg.status === 'failed') {
-				iconEl.textContent = '❌';
-			} else {
-				iconEl.textContent = msg.icon;
-			}
-			item.appendChild(iconEl);
-
-			const body = document.createElement('div');
-			body.className = 'sysmsg-item-body';
-
-			const header = document.createElement('div');
-			header.className = 'sysmsg-item-header';
-			const badge = document.createElement('span');
-			badge.className = `sysmsg-item-badge ${msg.badgeClass}`;
-			badge.textContent = msg.badge;
-			header.appendChild(badge);
-			const time = document.createElement('span');
-			time.className = 'sysmsg-item-time';
-			time.textContent = new Date(msg.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-			header.appendChild(time);
-			body.appendChild(header);
-
-			const content = document.createElement('div');
-			content.className = 'sysmsg-item-content';
-			content.textContent = msg.content;
-			body.appendChild(content);
-
-			if (msg.details?.length) {
-				const detail = document.createElement('div');
-				detail.className = 'sysmsg-item-detail';
-				for (const d of msg.details) {
-					const span = document.createElement('span');
-					span.textContent = d;
-					detail.appendChild(span);
-				}
-				body.appendChild(detail);
-			}
-			item.appendChild(body);
-			item.addEventListener('click', (e) => {
-				e.stopPropagation();
-				if (msg.type === 'compression' && msg.rawData && this._onOpenCompressionDetail) {
-					this._onOpenCompressionDetail(msg.rawData);
-				} else if (msg.type === 'memory' && this._onOpenMemoryDetail && this._agent) {
-					const rawData = msg.rawData ?? {};
-					const memType = rawData['memoryType'] as string | undefined;
-					// 技能沉淀消息：跳转到技能页签
-					if (memType === 'skill') {
-						this._onOpenMemoryDetail(rawData['agentId'] as string ?? this._agent.id, 'skill', rawData['skillTitle'] as string | undefined);
-					} else {
-						this._onOpenMemoryDetail(this._agent.id, memType, rawData['assistantContentPreview'] as string | undefined);
-					}
-				} else if (msg.type === 'codebase' && this._onOpenCodebaseDetail) {
-					this._onOpenCodebaseDetail();
-				}
-			});
-			list.appendChild(item);
-		}
-
-		// 展开/收起
-		if (this._systemMsgExpanded) {
-			list.style.maxHeight = '300px';
-			list.style.overflowY = 'auto';
-		} else {
-			list.style.maxHeight = '0';
-			list.style.overflowY = 'hidden';
-		}
-	}
 
 
 	// =========================================================
-	// Queue bar（委托给 modules/queueBar.ts — QueueBarManager）
+	// Queue bar（委托给 modules/tabbedPanel.ts — TabbedPanelManager）
 	// =========================================================
 
 	setOnQueueItemAction(_cb: IQueueItemActionCallback | null): void { /* deprecated: handled internally */ }
-	addQueueItem(item: IQueueItem): void { this._queueManager.add(item); }
-	removeQueueItem(itemId: string): void { this._queueManager.remove(itemId); }
-	updateQueueItem(itemId: string, updates: Partial<Omit<IQueueItem, 'id'>>): void { this._queueManager.update(itemId, updates); }
-	getQueueItems(): ReadonlyArray<IQueueItem> { return this._queueManager.getItems(); }
-	clearQueueItems(): void { this._queueManager.clear(); }
-	reorderQueueItem(itemId: string, direction: 'up' | 'down'): void { this._queueManager.reorder(itemId, direction); }
+	addQueueItem(item: IQueueItem): void { this._tabbedPanel.add(item); }
+	removeQueueItem(itemId: string): void { this._tabbedPanel.remove(itemId); }
+	updateQueueItem(itemId: string, updates: Partial<Omit<IQueueItem, 'id'>>): void { this._tabbedPanel.update(itemId, updates); }
+	getQueueItems(): ReadonlyArray<IQueueItem> { return this._tabbedPanel.getItems(); }
+	clearQueueItems(): void { this._tabbedPanel.clear(); }
+	reorderQueueItem(itemId: string, direction: 'up' | 'down'): void { this._tabbedPanel.reorder(itemId, direction); }
 
 	updateMessage(
 		messageId: string,
@@ -1180,7 +952,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// 避免 done 监听器 + line 644 双重 setSending(false) 导致连续 dispatch 多个队列任务。
 			// 中间状态（流瞬时结束 / 用户点 Stop）只更新 UI 状态，不触发 dispatch。
 			if (triggerExecuteNext) {
-				this._queueManager.executeNext();
+				this._tabbedPanel.executeNext();
 			}
 		}
 	}
@@ -1287,17 +1059,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (this._inputAreaEl && this._inputAreaEl.isConnected) {
 			this._inputAreaEl.remove();
 		}
-		// 系统消息栏/列表是 _inputAreaEl 的兄弟元素（不是子元素），
-		// 不会被上面的 remove() 清除。需要手动移除，否则 _renderInputArea()
-		// 会创建新的，导致多个系统栏堆积。
-		if (this._systemMsgBar && this._systemMsgBar.isConnected) {
-			this._systemMsgBar.remove();
-		}
-		if (this._systemMsgList && this._systemMsgList.isConnected) {
-			this._systemMsgList.remove();
-		}
-		// 队列栏同上：需手动清理
-		this._queueManager.removeDom();
+		// TabbedPanel 需手动清理
+		this._tabbedPanel.removeDom();
 		this._renderInputArea();
 		// 恢复输入内容和附件
 		if (this._textarea && savedValue) {
@@ -1387,13 +1150,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	setCheckpoint(info: ICheckpointInfo | null): void {
 		this._checkpoint = info;
 		this._checkpoints = info ? [info] : [];
-		this._renderSystemMsgPanel();
 	}
 
 	setCheckpoints(list: ICheckpointInfo[]): void {
 		this._checkpoints = list;
 		this._checkpoint = list.length > 0 ? list[list.length - 1] : null;
-		this._renderSystemMsgPanel();
+		void (this._checkpoints.length);
 	}
 
 	focusInput(): void {
@@ -1643,15 +1405,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// Spacer
 		append(left, $(".chat-header-spacer"));
 
-		// Right: worktree pill + action buttons (message-nav / new / history / settings)
-		const actions = append(header, $(".chat-header-actions"));
+	// Right: action buttons (message-nav / new / history / settings / html preview)
+	const actions = append(header, $(".chat-header-actions"));
 
-		// Worktree pill — placed before message-nav button.
-		// Always render (matches React WorktreeSwitcher behavior); the dropdown
-		// loads worktree list lazily on open via _onLoadWorktrees.
-		this._renderHeaderWorktree(actions);
-
-		// HTML 预览按钮——使用 Codicon 原生图标（小眼睛）
+	// HTML 预览按钮——使用 Codicon 原生图标（小眼睛）
 		const htmlPreviewBtn = append(actions, $("button.chat-header-action-btn.chat-header-btn"));
 		htmlPreviewBtn.title = 'HTML 预览';
 		const eyeIcon = append(htmlPreviewBtn, $("span.codicon.codicon-eye"));
@@ -1776,70 +1533,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		return el;
 	}
 
-	// Header worktree pill
-	private _renderHeaderWorktree(parent: HTMLElement): void {
-		this._worktreeTrigger = append(parent, $(".chat-header-worktree"));
-		const btn = append(this._worktreeTrigger, $("button.chat-header-worktree-btn"));
-		btn.title = '切换 Worktree';
 
-		// Branch icon
-		const iconSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-		iconSvg.setAttribute('width', '14');
-		iconSvg.setAttribute('height', '14');
-		iconSvg.setAttribute('viewBox', '0 0 24 24');
-		iconSvg.setAttribute('fill', 'none');
-		iconSvg.setAttribute('stroke', 'currentColor');
-		iconSvg.setAttribute('stroke-width', '2');
-		iconSvg.setAttribute('stroke-linecap', 'round');
-		iconSvg.setAttribute('stroke-linejoin', 'round');
-		const iconPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-		iconPath.setAttribute('d', 'M6 3v12M18 9v12M6 21l12-12');
-		iconSvg.appendChild(iconPath);
-		btn.appendChild(iconSvg);
 
-		// Branch label（参考 React WorktreeSwitcher 的逻辑）
-		const current = this._worktrees.find(w => w.path === this._selectedWorktreePath);
-		const branchEl = append(btn, $("span.chat-header-worktree-branch"));
-		let label: string;
-		if (!this._selectedWorktreePath) {
-			label = '主仓库';
-		} else if (current?.branch) {
-			label = current.branch;
-		} else {
-			// fallback: use last segment of path
-			label = this._selectedWorktreePath.split(/[\\/]/).filter(Boolean).pop() || this._selectedWorktreePath;
-		}
-		branchEl.textContent = label;
-
-		// Chevron
-		const chevSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-		chevSvg.setAttribute('width', '12');
-		chevSvg.setAttribute('height', '12');
-		chevSvg.setAttribute('viewBox', '0 0 24 24');
-		chevSvg.setAttribute('fill', 'none');
-		chevSvg.setAttribute('stroke', 'currentColor');
-		chevSvg.setAttribute('stroke-width', '2.5');
-		chevSvg.setAttribute('stroke-linecap', 'round');
-		chevSvg.setAttribute('stroke-linejoin', 'round');
-		chevSvg.classList.add('chat-header-worktree-chevron');
-		const chevPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-		chevPath.setAttribute('d', 'M6 9l6 6 6-6');
-		chevSvg.appendChild(chevPath);
-		btn.appendChild(chevSvg);
-
-		this._register(
-			addDisposableListener(btn, EventType.CLICK, (e) => {
-				e.stopPropagation();
-				if (this._worktreeDropdownEl) {
-					this._closeWorktreeDropdown();
-				} else {
-					this._openWorktreeDropdown();
-				}
-			}),
-		);
-	}
-
-	// Agent dropdown — open / close / render
+// Agent dropdown — open / close / render
 
 	private _openAgentDropdown(): void {
 		if (this._dropdownOpen) { return; }
@@ -5924,15 +5620,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			document.addEventListener('mouseup', onUp);
 		}));
 
-		// ── 系统消息面板（可伸缩，位于消息区和输入框之间）──
-		this._systemMsgBar = append(this._container, $('.sysmsg-bar'));
-		this._systemMsgList = append(this._container, $('.sysmsg-list'));
-		this._systemMsgBar.style.display = 'none'; // 初始隐藏（无消息时）
-		this._register(addDisposableListener(this._systemMsgBar, EventType.CLICK, () => this._toggleSystemMsgPanel()));
-		this._renderSystemMsgPanel();
 
-		// ── 队列栏（委托给 QueueBarManager）──
-		this._queueManager.createDom();
+		// ── Tabbed panel（替代 system bar + queue bar）──
+		this._tabbedPanel.createDom();
 
 		const inputArea = append(this._container, $(".chat-input-area"));
 		this._inputAreaEl = inputArea;
@@ -6596,15 +6286,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// Checkpoint detail card (rendered in system message list)
 	// =========================================================
 
-	/**
-	 * Create a checkpoint detail card for the system message expanded list.
-	 * Shows checkpoint label, timestamp, file list, and inline action buttons
-	 * (撤销 / 保留 / 差异). Clicking a file opens its diff in the editor.
-	 */
-	private _createCheckpointDetailCard(cp: ICheckpointInfo, isLatest: boolean, seqNum: number): HTMLElement {
-		return createCheckpointDetailCard(cp, isLatest, seqNum, this._onCheckpointAction as any, this._onOpenFile);
-	}
-
 	// =========================================================
 	// P0-2: @mention file search (文件提及搜索)
 	// =========================================================
@@ -7078,7 +6759,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (this._worktreeTrigger) { this._worktreeTrigger.classList.add('open'); }
 
 		this._worktreeDropdownEl = append(mainWindow.document.body, $(".chat-worktree-dropdown"));
-		this._positionDropdownBelow(this._worktreeDropdownEl, this._worktreeTrigger);
+		// 输入框中 worktree 选择器 → 弹出方向：向上（避免被输入框遮挡）
+		this._positionDropdownAbove(this._worktreeDropdownEl, this._worktreeTrigger);
 
 		const head = append(this._worktreeDropdownEl, $(".chat-worktree-dropdown-header"));
 		head.textContent = 'Worktrees';
@@ -7205,7 +6887,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (this._workspaceTrigger) { this._workspaceTrigger.classList.add('open'); }
 
 		this._workspaceDropdownEl = append(mainWindow.document.body, $(".workspace-dropdown"));
-		this._positionDropdownBelow(this._workspaceDropdownEl, this._workspaceTrigger);
+		// 输入框中 workspace 选择器 → 弹出方向：向上（避免被输入框遮挡）
+		this._positionDropdownAbove(this._workspaceDropdownEl, this._workspaceTrigger);
 
 		// 如果有外部提供的加载回调，先异步加载
 		const renderItems = (list: IWorkspaceItem[]) => {
@@ -8055,9 +7738,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// Dropdown helpers (delegated to modules/dropdownHelpers.ts)
 	// =========================================================
 
-	private _positionDropdownBelow(el: HTMLElement, trigger: HTMLElement | null, rightAlign = false): void {
-		positionDropdownBelow(el, trigger, rightAlign);
-	}
 	private _positionDropdownAbove(el: HTMLElement, trigger: HTMLElement | null): void {
 		positionDropdownAbove(el, trigger);
 	}
@@ -8080,7 +7760,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// LLM 正在输出中 → 消息入队（排队等待执行）
 		if (this._isSending) {
 			const queueId = `queue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-			this._queueManager.add({
+			this._tabbedPanel.add({
 				id: queueId,
 				content: text || (hasAttachments ? `[${this._attachments.length} 个附件]` : ''),
 				timestamp: Date.now(),

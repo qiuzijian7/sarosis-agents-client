@@ -414,7 +414,7 @@ export class MemoryViewPane extends ViewPane {
 		items = items.slice(0, 50);
 
 		if (items.length === 0) {
-			body.innerHTML = '<div class="mv-empty">暂无记忆</div>';
+			append(body, $('.mv-empty', undefined, '暂无记忆'));
 			return;
 		}
 
@@ -448,7 +448,7 @@ export class MemoryViewPane extends ViewPane {
 		// Show loading in expanded layers
 		for (const tier of this._expandedTiers) {
 			const body = this._layerBodies.get(tier);
-			if (body) { clearNode(body); body.innerHTML = '<div class="mv-loading">加载中...</div>'; }
+			if (body) { clearNode(body); append(body, $('.mv-loading', undefined, '加载中...')); }
 		}
 
 		(async () => {

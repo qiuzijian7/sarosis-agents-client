@@ -1035,12 +1035,18 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (typeof delta.usage.credit === 'number') { usageCredit += delta.usage.credit; }
 				}
 				onDelta(delta as any);
-			// Broadcast delta for external panels (kanban, task overview) to stay in sync
-			this._onDidStreamDeltaEmitter.fire({
-				agentId,
-				sessionId: options.agentSessionId || '',
-				delta: delta as any,
-			});
+			// Broadcast delta for external panels (kanban, task overview) to stay in sync.
+			// ⚠️ 不广播 'done'/'error' delta — agent loop 中每次 LLM turn 结束都会 yield done，
+			// 如果广播给外部监听器，会过早 finalize + setSending(false) + _resetStreamingMessage()，
+			// 导致下一轮 LLM delta 到达时创建新的 assistant 消息卡片（冒泡消息 UI bug）。
+			// 最终 done 在 for-await 循环退出后统一广播（见下方）。
+			if (delta.type !== 'done' && delta.type !== 'error') {
+				this._onDidStreamDeltaEmitter.fire({
+					agentId,
+					sessionId: options.agentSessionId || '',
+					delta: delta as any,
+				});
+			}
 			}
 
 			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${Date.now() - t0_stream}ms`);
@@ -1052,6 +1058,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				this.logService.info(`[AgentChatService] Stream aborted by user, emitting done delta for UI cleanup`);
 				onDelta({ type: 'done' } as any);
 			}
+
+			// 广播 done delta 给外部监听器（看板 onDidStreamDelta）。
+			// for-await 循环内只广播了 stream 的实时 delta，normal/abort 完成
+			// 后都没广播 done → onDidStreamDelta 监听器无法重置按钮状态。
+			this._onDidStreamDeltaEmitter.fire({
+				agentId,
+				sessionId: options.agentSessionId || '',
+				delta: { type: 'done' } as any,
+			});
 
 			// 诊断日志：for-await 循环已退出，即将进入 finalization。
 			// 如果此日志不出现，说明 generator 的 finally 块阻塞了 for-await 退出。

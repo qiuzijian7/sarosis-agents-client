@@ -270,8 +270,8 @@ function injectStyles(): void {
 	min-height: 0;
 }
 .native-tb-column {
-	flex: 1;
-	min-width: 180px;
+	flex: 1 1 0;
+	min-width: 240px;
 	max-width: 360px;
 	display: flex;
 	flex-direction: column;
@@ -473,10 +473,10 @@ function injectStyles(): void {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding: 4px 10px 5px 12px;
+	padding: 5px 10px 6px 12px;
 	border-top: 1px solid var(--vscode-panel-border);
 	background: rgba(0,0,0,0.12);
-	font-size: 10px;
+	font-size: 11px;
 }
 .native-tb-card-status {
 	display: inline-flex;
@@ -502,9 +502,27 @@ function injectStyles(): void {
 .native-tb-card-meta-icons {
 	display: flex;
 	align-items: center;
-	gap: 6px;
+	gap: 4px;
 	color: var(--vscode-descriptionForeground);
 	opacity: 0.7;
+}
+.native-tb-card-meta-icons > span {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 22px;
+	height: 20px;
+	padding: 0 5px;
+	border-radius: 4px;
+	cursor: default;
+	font-size: 11px;
+}
+.native-tb-card-meta-icons > span[title*="跳转"] {
+	cursor: pointer;
+}
+.native-tb-card-meta-icons > span[title*="跳转"]:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	opacity: 1;
 }
 
 /* Hover actions (top-right) */
@@ -524,11 +542,12 @@ function injectStyles(): void {
 	display: flex;
 }
 .native-tb-card action-btn {
-	font-size: 10px;
-	padding: 1px 4px;
+	font-size: 13px;
+	padding: 3px 6px;
 	border: none;
-	border-radius: 2px;
+	border-radius: 3px;
 	cursor: pointer;
+	line-height: 1;
 	background: transparent;
 	color: var(--vscode-descriptionForeground);
 }
@@ -1418,8 +1437,8 @@ export class TaskBoardNativeRenderer {
 		if (task.assigneeId) {
 			const chatBtn = DOM.$('span', undefined, '💬');
 			chatBtn.title = '跳转到该Agent的聊天窗口';
+			// 内联样式仅设 cursor；size/padding/hover 由 .native-tb-card-meta-icons > span[title*="跳转"] 统一样式提供
 			chatBtn.style.cursor = 'pointer';
-			chatBtn.style.padding = '0 2px';
 			chatBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
 				this._onChatJump.fire({
@@ -1902,7 +1921,19 @@ export class TaskBoardNativeRenderer {
 					} else {
 						const chip = document.createElement('span');
 						chip.className = 'native-tb-file-chip';
-						chip.innerHTML = `<span style="font-size:14px">📄</span><span class="f-name" title="${file.name}">${file.name}</span><span class="f-size">${(file.size / 1024).toFixed(1)} KB</span>`;
+						const fIcon = document.createElement('span');
+						fIcon.style.fontSize = '14px';
+						fIcon.textContent = '📄';
+						chip.appendChild(fIcon);
+						const fName = document.createElement('span');
+						fName.className = 'f-name';
+						fName.title = file.name;
+						fName.textContent = file.name;
+						chip.appendChild(fName);
+						const fSize = document.createElement('span');
+						fSize.className = 'f-size';
+						fSize.textContent = `${(file.size / 1024).toFixed(1)} KB`;
+						chip.appendChild(fSize);
 						const rmBtn = document.createElement('button');
 						rmBtn.className = 'f-remove';
 						rmBtn.textContent = '✕';
@@ -1947,12 +1978,24 @@ export class TaskBoardNativeRenderer {
 						} else {
 							const chip = document.createElement('span');
 							chip.className = 'native-tb-file-chip';
-							chip.innerHTML = `<span style="font-size:14px">📄</span><span class="f-name" title="${file.name}">${file.name}</span><span class="f-size">${(file.size / 1024).toFixed(1)} KB</span>`;
-							const rmBtn = document.createElement('button');
-							rmBtn.className = 'f-remove';
-							rmBtn.textContent = '✕';
-							rmBtn.addEventListener('click', () => { chip.remove(); });
-							chip.appendChild(rmBtn);
+							const fIcon2 = document.createElement('span');
+							fIcon2.style.fontSize = '14px';
+							fIcon2.textContent = '📄';
+							chip.appendChild(fIcon2);
+							const fName2 = document.createElement('span');
+							fName2.className = 'f-name';
+							fName2.title = file.name;
+							fName2.textContent = file.name;
+							chip.appendChild(fName2);
+							const fSize2 = document.createElement('span');
+							fSize2.className = 'f-size';
+							fSize2.textContent = `${(file.size / 1024).toFixed(1)} KB`;
+							chip.appendChild(fSize2);
+							const rmBtn2 = document.createElement('button');
+							rmBtn2.className = 'f-remove';
+							rmBtn2.textContent = '✕';
+							rmBtn2.addEventListener('click', () => { chip.remove(); });
+							chip.appendChild(rmBtn2);
 							descAttachments.push({ name: file.name, mimeType: file.type, base64Content: content.split(',')[1] || '' });
 							descEditor.appendChild(chip);
 						}
@@ -1963,13 +2006,13 @@ export class TaskBoardNativeRenderer {
 			toolbar.appendChild(hiddenFileInput);
 
 			const pasteBtn = DOM.$('button.native-tb-desc-toolbar-btn');
-			pasteBtn.innerHTML = '🖼 粘贴图片';
+			pasteBtn.textContent = '🖼 粘贴图片';
 			pasteBtn.title = '提示: 直接从剪贴板 Ctrl+V 粘贴图片';
 			pasteBtn.addEventListener('click', () => { descEditor.focus(); });
 			toolbar.appendChild(pasteBtn);
 
 			const fileBtn = DOM.$('button.native-tb-desc-toolbar-btn');
-			fileBtn.innerHTML = '📎 选择文件';
+			fileBtn.textContent = '📎 选择文件';
 			fileBtn.title = '选择图片或文档文件';
 			fileBtn.addEventListener('click', () => { hiddenFileInput.click(); });
 			toolbar.appendChild(fileBtn);

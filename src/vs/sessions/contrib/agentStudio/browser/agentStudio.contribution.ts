@@ -79,15 +79,11 @@ import {
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
 	AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
 	AGENT_STUDIO_TASKS_VIEW_ID,
-	AGENT_STUDIO_SCHEDULE_VIEW_ID,
 	AGENT_STUDIO_INTEGRATION_VIEW_ID,
 	AGENT_STUDIO_SEARCH_VIEW_ID,
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
-	AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
-	AGENT_STUDIO_EVOLUTION_VIEW_ID,
 	AGENT_STUDIO_WORKFLOW_VIEW_ID,
 	AGENT_STUDIO_DASHBOARD_VIEW_ID,
-	AGENT_STUDIO_CHANNEL_VIEW_ID,
 	AGENT_STUDIO_WIKI_VIEW_ID,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
@@ -169,18 +165,18 @@ import { SessionsExplorerView, SessionsExplorerEmptyView } from '../../files/bro
 import { WorkspaceFolderSyncContribution } from './workspaceFolderSync.js';
 import { PresetAgentViewPane } from './views/presetAgentView.js';
 import { TasksViewPane } from './views/tasksView.js';
-import { ScheduleViewPane } from './views/scheduleView.js';
+
 import { IntegrationViewPane } from './views/integrationView.js';
 import { AgentStudioSearchViewPane } from './views/searchView.js';
 import { PluginsViewPane } from './views/pluginsView.js';
 import { ISettingsTabRegistry, SettingsTabRegistry } from './views/settingsTabRegistry.js';
-import { HealthMonitorViewPane } from './views/healthMonitorView.js';
-import { EvolutionViewPane } from './views/evolutionView.js';
+
+
 import { EvolutionDetailEditorPane } from './evolutionDetailEditorPane.js';
 import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
 import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
-import { ChannelViewPane } from './views/channelView.js';
+
 import { WikiViewPane } from './views/wikiView.js';
 import { WorkflowViewPane } from './views/workflowView.js';
 import { IWikiTagService } from './services/wikiTagService.js';
@@ -251,12 +247,9 @@ function getAgentPart(editorGroupsService: IEditorGroupsService): IEditorGroupsS
 const workspaceIcon = registerIcon('agent-studio-workspace', Codicon.folder, localize('workspaceIcon', "Workspace"));
 const presetAgentIcon = registerIcon('agent-studio-preset-agent', Codicon.robot, localize('presetAgentIcon', "Preset Agent"));
 const tasksIcon = registerIcon('agent-studio-tasks', Codicon.tasklist, localize('tasksIcon', "Tasks"));
-const scheduleIcon = registerIcon('agent-studio-schedule', Codicon.calendar, localize('scheduleIcon', "Schedule"));
 const integrationIcon = registerIcon('agent-studio-integration', Codicon.extensions, localize('integrationIcon', "Integration"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
-const evolutionIcon = registerIcon('agent-studio-evolution', Codicon.beaker, localize('evolutionIcon', "Self-Evolution"));
-const channelIcon = registerIcon('agent-studio-channel', Codicon.megaphone, localize('channelIcon', "Channel"));
 const wikiIcon = registerIcon('agent-studio-wiki', Codicon.book, localize('wikiIcon', "Wiki"));
 const workflowIcon = registerIcon('agent-studio-workflow', Codicon.listTree, localize('workflowIcon', "Workflow"));
 
@@ -2311,26 +2304,6 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 
 		// --- Remaining icons (after Plugins) ---
 
-		// Schedule (order: 90)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.schedule',
-			title: localize2('agentStudio.schedule.title', "Schedule"),
-			icon: scheduleIcon,
-			viewId: AGENT_STUDIO_SCHEDULE_VIEW_ID,
-			order: 90,
-			viewCtor: ScheduleViewPane,
-		});
-
-		// Channel (order: 100)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.channel',
-			title: localize2('agentStudio.channel.title', "Channel"),
-			icon: channelIcon,
-			viewId: AGENT_STUDIO_CHANNEL_VIEW_ID,
-			order: 100,
-			viewCtor: ChannelViewPane,
-		});
-
 		// Wiki (order: 110)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.wiki',
@@ -2339,26 +2312,6 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_WIKI_VIEW_ID,
 			order: 110,
 			viewCtor: WikiViewPane,
-		});
-
-		// Health Monitor (order: 120)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.healthMonitor',
-			title: localize2('agentStudio.healthMonitor.title', "Health Monitor"),
-			icon: Codicon.pulse,
-			viewId: AGENT_STUDIO_HEALTH_MONITOR_VIEW_ID,
-			order: 120,
-			viewCtor: HealthMonitorViewPane,
-		});
-
-		// Self-Evolution (order: 130)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.evolution',
-			title: localize2('agentStudio.evolution.title', "Self-Evolution"),
-			icon: evolutionIcon,
-			viewId: AGENT_STUDIO_EVOLUTION_VIEW_ID,
-			order: 130,
-			viewCtor: EvolutionViewPane,
 		});
 
 		// Dashboard (order: 140) — Agent 运维监控面板

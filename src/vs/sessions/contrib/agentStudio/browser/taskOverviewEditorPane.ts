@@ -525,8 +525,6 @@ export class TaskOverviewEditorPane extends EditorPane {
 					await group.openEditor(editor, { pinned: true });
 					for (const pane of this._editorService.visibleEditorPanes) {
 						if ((pane as any).input === editor) {
-							// Force history + worktree reload: setInput skips for same chatId.
-							void (pane as any)._selectAndLoadAgent?.(agentId);
 							// Sync worktree to chat panel UI
 							if (worktreePath) {
 								(pane as any)._chatPanel?.setSelectedWorktree?.(worktreePath);
