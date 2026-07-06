@@ -237,11 +237,8 @@ export class NativeChatEditorPane extends EditorPane {
 		const PanelCtor = useCliPanel ? XtermCliPanel : AgentChatPanel;
 		this._chatPanel = this._register(new PanelCtor({
 			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => {
-				// 防重入：如果正在发送中，忽略重复调用
-				if (this._isSending) {
-					this._logService.info('[NativeChatEditorPane] onSendMessage: already sending, ignoring duplicate');
-					return;
-				}
+				// 注：防重入逻辑已下移到 AgentChatPanel._handleSendMessage（流式时入队，非流式时直接发送）
+				// 此处不再拦截，让 Panel 的队列机制处理并发发送。
 				try {
 					// Converge the multi-layer session id: always resolve a concrete
 					// agent + session before sending so the stream never falls into the

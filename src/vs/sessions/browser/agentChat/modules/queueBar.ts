@@ -119,7 +119,8 @@ export class QueueBarManager extends Disposable {
 
 	/**
 	 * Auto-execute the first pending item (called when loop ends).
-	 * Marks as executing → sends → marks as done → removes after 600ms → recurses.
+	 * Marks as executing → sends → marks as done → removes after 600ms.
+	 * Does NOT recurse — the next item is popped on the NEXT setSending(false).
 	 */
 	executeNext(): void {
 		const idx = this._items.findIndex(it => it.status === 'pending' || !it.status);
@@ -130,7 +131,6 @@ export class QueueBarManager extends Disposable {
 		this.update(item.id, { status: 'done' });
 		setTimeout(() => {
 			this.remove(item.id);
-			this.executeNext();
 		}, 600);
 	}
 
