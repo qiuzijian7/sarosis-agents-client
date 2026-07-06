@@ -19,12 +19,14 @@ import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/servic
 import {
 	IAgentTaskBoardService,
 	IAgentStudioService,
+	IAgentChatService,
 	ITaskOrchestrationService,
 } from '../common/agentStudio.js';
 import { IKanbanDiagnosticsService } from '../common/kanbanDiagnosticsService.js';
 import { ISwarmService } from '../common/swarmService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { TaskBoardNativeRenderer, type TaskBoardRenderData, type TaskBoardFilter, type EmployeeInfo, type SwarmInfo } from './taskBoardNativeRenderer.js';
+import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
 import { TaskBoardStatus, TaskSource, type TaskBoardRecord } from '../../../common/agentStudioTypes.js';
 
 /**
@@ -48,6 +50,12 @@ export class TaskOverviewEditorPane extends EditorPane {
 	private _hiddenColumnKeys = new Set<string>();
 	private _focusedTaskId: string | null = null;
 
+	// Task queuing: when an agent already has running tasks, new tasks are queued.
+	// Key = assigneeId, value = array of queued task IDs.
+	private _queuedTasks = new Map<string, string[]>();
+	// Unsubscribe function for queued-task auto-start listener
+	private _queueListenerDispose: { dispose(): void } | null = null;
+
 	// Cached employee info (loaded once)
 	private _allEmployees: EmployeeInfo[] = [];
 
@@ -64,6 +72,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 		@ISwarmService private readonly _swarmService: ISwarmService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
+		@IAgentChatService private readonly _agentChatService: IAgentChatService,
 	) {
 		super(TaskOverviewEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -139,12 +148,6 @@ export class TaskOverviewEditorPane extends EditorPane {
 			void this._handleCreateTask();
 		}));
 
-		this._register(this._renderer.onPlanRequest(() => {
-			// Open orchestration plan dialog
-			this._logService.info('[TaskOverviewEditorPane] Plan request — opening orchestration dialog');
-			// TODO: open OrchestrationPlanModal equivalent
-		}));
-
 		this._register(this._renderer.onDiagnosticsRequest((e) => {
 			void this._handleRunDiagnostics();
 		}));
@@ -170,8 +173,8 @@ export class TaskOverviewEditorPane extends EditorPane {
 			void this._refresh();
 		}));
 
-		this._register(this._renderer.onChatJump(({ agentId, agentName }) => {
-			void this._handleChatJump(agentId, agentName);
+		this._register(this._renderer.onChatJump(({ agentId, agentName, workspaceId, worktreePath }) => {
+			void this._handleChatJump(agentId, agentName, workspaceId, worktreePath);
 		}));
 
 		this._register(this._renderer.onSwarmCancel((swarmId) => {
@@ -323,33 +326,142 @@ export class TaskOverviewEditorPane extends EditorPane {
 		if (!this._renderer || !this._container) { return; }
 
 		const allTasks = await this._getFilteredTasks();
+		const workspaces = await this._agentStudioService.getWorkspaces();
+		const activeWsId = this._agentStudioService.getActiveWorkspaceId() || '';
+		const boardWsId = this._boardFilterWsId === 'all' ? activeWsId : this._boardFilterWsId;
+
 		const result = await this._renderer.showCreateTaskModal(
 			this._container,
 			this._allEmployees,
 			allTasks,
+			workspaces.map(w => ({ id: w.id, name: w.name })),
+			boardWsId,
+			async (wsId: string) => {
+				try {
+					const raw = await this._agentStudioService.getWorktrees(wsId);
+					return raw.map((wt: any) => ({
+						path: wt.path,
+						branch: wt.branch || wt.name || 'HEAD',
+						repoRoot: wt.repoRoot,
+						repoName: wt.repoName,
+					}));
+				} catch {
+					return [];
+				}
+			},
+			async (agentId: string) => {
+				try {
+					const sessions = await this._agentChatService.listAgentSessions(agentId);
+					return sessions.map(s => ({ id: s.id, name: s.name, messageCount: (s as any).messageCount ?? 0, updatedAt: (s as any).updatedAt ?? '' }));
+				} catch {
+					return [];
+				}
+			},
 		);
 
-		if (result) {
-			const wsId = this._boardFilterWsId === 'all'
-				? (this._agentStudioService.getActiveWorkspaceId() || undefined)
-				: this._boardFilterWsId;
+		if (!result) { return; }
 
-			// Create task in todo, then auto-start execution by transitioning to running.
-			// updateTaskStatus → running triggers the Agent dispatch chain in AgentTaskBoardService:
-			//   ensureTaskAgent() → assign agent   →   executeTaskForBoard() → agent picks up task
-			const created = await this._taskBoardService.createTask({
-				title: result.title,
-				description: result.description,
-				assigneeId: result.assigneeId,
-				assigneeName: result.assigneeName,
-				priority: result.priority,
-				dependencies: result.dependencies,
-				status: 'todo' as TaskBoardStatus,
-				source: 'manual' as TaskSource,
-				workspaceId: wsId,
-			} as any);
-			// Auto-start: transition to running to trigger agent dispatch chain
-			this._taskBoardService.updateTaskStatus(created.id, 'running' as TaskBoardStatus);
+		// Rename selected session if user edited the title (sync back to source data)
+		if (result.agentSessionId && result.agentSessionName && result.assigneeId) {
+			try {
+				const sessions = await this._agentChatService.listAgentSessions(result.assigneeId);
+				const target = sessions.find(s => s.id === result.agentSessionId);
+				if (target && target.name !== result.agentSessionName) {
+					await this._agentChatService.renameAgentSession(result.assigneeId, result.agentSessionId, result.agentSessionName!);
+				}
+			} catch {
+				// Rename is optional, continue
+			}
+		}
+
+		const wsId = result.workspaceId || boardWsId;
+
+		const created = await this._taskBoardService.createTask({
+			title: result.title,
+			description: result.description,
+			assigneeId: result.assigneeId,
+			assigneeName: result.assigneeName,
+			priority: result.priority,
+			dependencies: result.dependencies,
+			status: 'todo' as TaskBoardStatus,
+			source: 'manual' as TaskSource,
+			workspaceId: wsId,
+			worktreePath: result.worktreePath,
+		} as any);
+
+		// Upload attachments from rich description editor
+		if (result.attachments && result.attachments.length > 0) {
+			for (const att of result.attachments) {
+				try {
+					await this._taskBoardService.addAttachment(created.id, att.name, att.mimeType, att.base64Content);
+				} catch {
+					// Attachment upload is best-effort
+				}
+			}
+		}
+
+		// Check if the assignee agent already has running tasks — if so, queue this one.
+		if (result.assigneeId) {
+			const agentRunningTasks = allTasks.filter(t =>
+				t.assigneeId === result.assigneeId &&
+				(t.status === 'running' as TaskBoardStatus || t.status === 'blocked' as TaskBoardStatus)
+			);
+			if (agentRunningTasks.length > 0) {
+				// Queue: don't auto-start, just leave in 'todo'.
+				// Auto-start when the agent's running task count drops to 0.
+				const queue = this._queuedTasks.get(result.assigneeId) || [];
+				queue.push(created.id);
+				this._queuedTasks.set(result.assigneeId, queue);
+				this._ensureQueueListener();
+				this._logService.info(`[TaskOverviewEditorPane] Task ${created.id} queued for agent ${result.assigneeName || result.assigneeId} (${agentRunningTasks.length} running)`);
+				return;
+			}
+		}
+
+		// No running tasks for this agent — auto-start immediately.
+		this._taskBoardService.updateTaskStatus(created.id, 'running' as TaskBoardStatus);
+	}
+
+	/** Ensure we listen for task board changes to auto-start queued tasks. */
+	private _ensureQueueListener(): void {
+		if (this._queueListenerDispose) { return; }
+		this._queueListenerDispose = this._taskBoardService.onDidChangeTaskBoard(() => {
+			void this._processQueuedTasks();
+		});
+		// Register cleanup
+		this._register({ dispose: () => { this._queueListenerDispose?.dispose(); this._queueListenerDispose = null; } });
+	}
+
+	private async _processQueuedTasks(): Promise<void> {
+		if (this._queuedTasks.size === 0) { return; }
+		const tasks = await this._getAllTasksAsync();
+		for (const [agentId, queuedIds] of this._queuedTasks.entries()) {
+			if (queuedIds.length === 0) {
+				this._queuedTasks.delete(agentId);
+				continue;
+			}
+			const hasRunning = tasks.some(t =>
+				t.assigneeId === agentId &&
+				(t.status === ('running' as TaskBoardStatus) || t.status === ('blocked' as TaskBoardStatus))
+			);
+			if (!hasRunning && queuedIds.length > 0) {
+				const nextTaskId = queuedIds.shift()!;
+				this._taskBoardService.updateTaskStatus(nextTaskId, 'running' as TaskBoardStatus);
+				this._logService.info(`[TaskOverviewEditorPane] Auto-starting queued task ${nextTaskId} for agent ${agentId}`);
+				if (queuedIds.length === 0) {
+					this._queuedTasks.delete(agentId);
+				}
+			}
+		}
+	}
+
+	/** Async task fetch (no filter) for queue listener use. */
+	private async _getAllTasksAsync(): Promise<TaskBoardRecord[]> {
+		try {
+			const wsId = this._boardFilterWsId === 'all' ? undefined : this._boardFilterWsId;
+			return await this._taskBoardService.getTasks(wsId);
+		} catch {
+			return [];
 		}
 	}
 
@@ -393,7 +505,18 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 	// ─── Chat Jump ──────────────────────────────────────────────────────
 
-	private async _handleChatJump(agentId: string, agentName: string): Promise<void> {
+	private async _handleChatJump(agentId: string, agentName: string, workspaceId?: string, worktreePath?: string): Promise<void> {
+		// Sync worktree binding first, so the chat pane picks it up when loading worktrees.
+		if (workspaceId && worktreePath) {
+			try {
+				await this._agentStudioService.upsertAgentBinding(workspaceId, agentId, {
+					worktreePath,
+				} as any);
+			} catch {
+				// worktree binding is optional, continue
+			}
+		}
+
 		// 1. Find existing chat tab for this agent
 		for (const group of this._editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
 			for (const editor of group.editors) {
@@ -402,9 +525,12 @@ export class TaskOverviewEditorPane extends EditorPane {
 					await group.openEditor(editor, { pinned: true });
 					for (const pane of this._editorService.visibleEditorPanes) {
 						if ((pane as any).input === editor) {
-							// Force history reload: setInput skips reload for same chatId.
-							// Call _selectAndLoadAgent directly to re-fetch session & messages.
+							// Force history + worktree reload: setInput skips for same chatId.
 							void (pane as any)._selectAndLoadAgent?.(agentId);
+							// Sync worktree to chat panel UI
+							if (worktreePath) {
+								(pane as any)._chatPanel?.setSelectedWorktree?.(worktreePath);
+							}
 							(pane as any).focusInput?.();
 							return;
 						}
@@ -415,8 +541,8 @@ export class TaskOverviewEditorPane extends EditorPane {
 		}
 
 		// 2. Not found — create a new chat tab for this agent.
-		// Task execution is fire-and-forget, so messages may not be persisted yet.
-		// The new tab's setInput→_selectAndLoadAgent will load whatever is available.
+		// The new tab's setInput→_selectAndLoadAgent will load history + worktrees,
+		// and pick up the binding we synced above.
 		try {
 			const { NativeChatEditorInput } = await import('./nativeChatEditorInput.js');
 			const input = NativeChatEditorInput.create(undefined, agentId, undefined, agentName);

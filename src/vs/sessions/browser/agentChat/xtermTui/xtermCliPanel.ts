@@ -18,6 +18,7 @@ import type {
 	ChatMode,
 	StreamPhase,
 	IWorktreeItem,
+	IWorkspaceItem,
 	ISessionInfo,
 	IAgentSessionMeta,
 	IContextUsage,
@@ -639,6 +640,8 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 	setAgentSessions(_sessions: ReadonlyArray<IAgentSessionMeta>): void { /* no-op */ }
 	setWorktrees(_items: ReadonlyArray<IWorktreeItem>): void { /* no-op */ }
 	setSelectedWorktree(_path: string): void { /* no-op */ }
+	setWorkspaces(_items: ReadonlyArray<IWorkspaceItem>): void { /* no-op */ }
+	setSelectedWorkspace(_id: string): void { /* no-op */ }
 	setCheckpoint(_info: ICheckpointInfo | null): void { /* no-op */ }
 	setCheckpoints(_list: ICheckpointInfo[]): void { /* no-op */ }
 

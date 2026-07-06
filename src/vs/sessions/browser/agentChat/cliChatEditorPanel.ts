@@ -18,6 +18,7 @@ import type {
 	ChatMode,
 	StreamPhase,
 	IWorktreeItem,
+	IWorkspaceItem,
 	ISessionInfo,
 	IAgentSessionMeta,
 	IContextUsage,
@@ -366,6 +367,14 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 
 	setSelectedWorktree(_path: string): void {
 		// Worktree selection tracked on pane level
+	}
+
+	setWorkspaces(_items: ReadonlyArray<IWorkspaceItem>): void {
+		// Workspace list tracked on pane level
+	}
+
+	setSelectedWorkspace(_id: string): void {
+		// Workspace selection tracked on pane level
 	}
 
 	setCheckpoint(_info: ICheckpointInfo | null): void {

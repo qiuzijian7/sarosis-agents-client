@@ -34,6 +34,7 @@ import {
 	StreamPhase,
 	IModeOption,
 	IWorktreeItem,
+	IWorkspaceItem,
 	ISessionInfo,
 	IAgentSessionMeta,
 	IContextUsage,
@@ -56,6 +57,11 @@ import {
 } from "./agentChatTypes.js";
 
 import type { IChatPanel } from "./iChatPanel.js";
+import { QueueBarManager } from "./modules/queueBar.js";
+import { positionDropdownBelow, positionDropdownAbove, disposeOutsideClick, registerOutsideClickClose } from "./modules/dropdownHelpers.js";
+import { createCheckpointDetailCard } from "./modules/checkpointCard.js";
+import { renderContextUsageRing } from "./modules/contextRing.js";
+import { renderHistoryOverlay } from "./modules/historyOverlay.js";
 
 // Mode options metadata — mirrors webview ChatComposer.tsx modeOptions
 const MODE_OPTIONS: IModeOption[] = [
@@ -222,15 +228,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _systemMsgBar: HTMLElement | null = null;
 	private _systemMsgList: HTMLElement | null = null;
 	private _systemMsgExpanded = false;
-	// ── 队列栏（位于系统栏下方、输入区上方）──
-	private _queueBar: HTMLElement | null = null;
-	private _queueList: HTMLElement | null = null;
-	private _queueExpanded = false;
-	private _queueItems: IQueueItem[] = [];
-	/** 队列项操作回调（promote / edit / delete / reorder） */
-	private _onQueueItemAction: IQueueItemActionCallback | null = null;
-	/** 正在编辑的队列项 id（用于 inline 编辑态） */
-	private _editingQueueId: string | null = null;
+	// ── 队列栏（委托给 QueueBarManager 模块）──
+	private readonly _queueManager: QueueBarManager;
 
 	// -- State --
 	private _messages: IAgentChatMessage[] = [];
@@ -299,7 +298,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	// P2: 懒加载 observer——setMessages 时断开旧的，避免泄漏
 	private _lazyLoadObserver: IntersectionObserver | null = null;
-	private _autoOrchestrateEnabled = false;
 	private _streamPhase: StreamPhase = 'idle';
 	private _currentProvider = "";
 	private _currentModel = "";
@@ -313,6 +311,21 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// Worktree / session / context / checkpoint state
 	private _worktrees: IWorktreeItem[] = [];
 	private _selectedWorktreePath = "";
+	// ── 工作区/分支选择器（输入区工具栏）──
+	/** 可用工作区列表（由外部通过 setWorkspaces() 设置） */
+	private _workspaces: IWorkspaceItem[] = [];
+	/** 当前选中的工作区 ID */
+	private _selectedWorkspaceId = "";
+	/** 工作区下拉触发器 */
+	private _workspaceTrigger: HTMLElement | null = null;
+	/** 工作区下拉面板 */
+	private _workspaceDropdownEl: HTMLElement | null = null;
+	/** 工作区下拉外部点击关闭 disposable */
+	private _workspaceDropdownOutsideClick: IDisposable | null = null;
+	/** 加载工作区列表的回调（外部注入） */
+	private readonly _onLoadWorkspaces?: () => Promise<ReadonlyArray<IWorkspaceItem>>;
+	/** 切换工作区的回调（外部注入，切换后重新加载 worktree 等） */
+	private readonly _onSelectWorkspace?: (workspaceId: string, workspaceName: string) => void;
 	private _chatMode: ChatMode = 'craft';
 	private _sessionInfo: ISessionInfo | null = null;
 	private _agentSessions: IAgentSessionMeta[] = [];
@@ -454,6 +467,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		onSelectWorktree?: (worktree: { path: string; branch: string }) => void;
 		onClearWorktree?: () => void;
 		onLoadWorktrees?: () => Promise<ReadonlyArray<IWorktreeItem>>;
+		// 工作区选择器（输入区工具栏，位于 worktree 下拉框左侧）
+		onLoadWorkspaces?: () => Promise<ReadonlyArray<IWorkspaceItem>>;
+		onSelectWorkspace?: (workspaceId: string, workspaceName: string) => void;
 		onScrollToMessage?: (messageId: string) => void;
 		onNewSession?: () => void;
 		onOpenSession?: (sessionId: string) => void;
@@ -512,6 +528,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._onSelectWorktree = opts.onSelectWorktree;
 		this._onClearWorktree = opts.onClearWorktree;
 		this._onLoadWorktrees = opts.onLoadWorktrees;
+		this._onLoadWorkspaces = opts.onLoadWorkspaces;
+		this._onSelectWorkspace = opts.onSelectWorkspace;
 		this._onScrollToMessage = opts.onScrollToMessage;
 		this._onNewSession = opts.onNewSession;
 		this._onOpenSession = opts.onOpenSession;
@@ -557,6 +575,16 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._onUpdateTask = opts.onUpdateTask;
 		this._onDecomposeTask = opts.onDecomposeTask;
 		this._onClosePlanDialog = opts.onClosePlanDialog;
+
+		// QueueBarManager — DOM 在 _renderInputArea 中创建
+		const self = this;
+		this._queueManager = this._register(new QueueBarManager({
+			get container() { return self._container; },
+			get textarea() { return self._textarea ?? null; },
+			get isSending() { return self._isSending; },
+			onSendMessage: (text) => { self._onSendMessage?.(text); },
+		}));
+
 		this._container = $(".chat-container");
 
 		// Initial render so the container has visible structure (tabs + empty state)
@@ -1025,255 +1053,18 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 	}
 
+
 	// =========================================================
-	// Queue bar（队列栏 — 待执行任务列表）
+	// Queue bar（委托给 modules/queueBar.ts — QueueBarManager）
 	// =========================================================
 
-	/**
-	 * 注册队列项操作回调（外部驱动：收到 promote/edit/delete/reorder 后真正执行）
-	 */
-	setOnQueueItemAction(cb: IQueueItemActionCallback | null): void {
-		this._onQueueItemAction = cb;
-	}
-
-	/** 添加一个队列项到末尾 */
-	addQueueItem(item: IQueueItem): void {
-		this._queueItems = [...this._queueItems, item];
-		this._renderQueueBar();
-	}
-
-	/** 按 id 移除一个队列项 */
-	removeQueueItem(itemId: string): void {
-		const before = this._queueItems.length;
-		this._queueItems = this._queueItems.filter((it) => it.id !== itemId);
-		if (this._editingQueueId === itemId) {
-			this._editingQueueId = null;
-		}
-		if (this._queueItems.length !== before) {
-			this._renderQueueBar();
-		}
-	}
-
-	/** 按 id 更新一个队列项的内容/状态/元数据 */
-	updateQueueItem(itemId: string, updates: Partial<Omit<IQueueItem, 'id'>>): void {
-		const idx = this._queueItems.findIndex((it) => it.id === itemId);
-		if (idx < 0) { return; }
-		this._queueItems = this._queueItems.map((it) =>
-			it.id === itemId ? { ...it, ...updates } : it
-		);
-		this._renderQueueBar();
-	}
-
-	/** 获取所有队列项（只读快照） */
-	getQueueItems(): ReadonlyArray<IQueueItem> {
-		return this._queueItems.slice();
-	}
-
-	/** 清空所有队列项 */
-	clearQueueItems(): void {
-		if (this._queueItems.length === 0) { return; }
-		this._queueItems = [];
-		this._editingQueueId = null;
-		this._renderQueueBar();
-	}
-
-	/** 重排序：direction = 'up' 上移一位 / 'down' 下移一位 */
-	reorderQueueItem(itemId: string, direction: 'up' | 'down'): void {
-		const idx = this._queueItems.findIndex((it) => it.id === itemId);
-		if (idx < 0) { return; }
-		const target = direction === 'up' ? idx - 1 : idx + 1;
-		if (target < 0 || target >= this._queueItems.length) { return; }
-		const next = this._queueItems.slice();
-		const [it] = next.splice(idx, 1);
-		next.splice(target, 0, it);
-		this._queueItems = next;
-		this._renderQueueBar();
-	}
-
-	/** 切换队列栏展开/收起 */
-	private _toggleQueuePanel(): void {
-		this._queueExpanded = !this._queueExpanded;
-		// 收起时清掉正在编辑的项
-		if (!this._queueExpanded) {
-			this._editingQueueId = null;
-		}
-		this._renderQueueBar();
-	}
-
-	/** 渲染队列栏（栏 + 列表） */
-	private _renderQueueBar(): void {
-		const bar = this._queueBar;
-		const list = this._queueList;
-		if (!bar || !list) { return; }
-
-		const count = this._queueItems.length;
-
-		// 清空栏内容
-		while (bar.firstChild) { bar.removeChild(bar.firstChild); }
-
-		// 切换图标
-		const toggleEl = document.createElement('span');
-		toggleEl.className = 'queue-toggle-icon' + (this._queueExpanded ? ' expanded' : '');
-		toggleEl.textContent = '▶';
-		bar.appendChild(toggleEl);
-
-		if (count === 0) {
-			bar.style.display = 'none';
-			list.style.maxHeight = '0';
-			list.style.overflowY = 'hidden';
-			return;
-		}
-
-		bar.style.display = 'flex';
-		// 标签
-		const labelEl = document.createElement('span');
-		labelEl.className = 'queue-bar-label';
-		labelEl.textContent = `队列 (${count})`;
-		bar.appendChild(labelEl);
-
-		// 展开/收起列表
-		if (this._queueExpanded) {
-			list.style.maxHeight = '320px';
-			list.style.overflowY = 'auto';
-		} else {
-			list.style.maxHeight = '0';
-			list.style.overflowY = 'hidden';
-		}
-
-		// 重建列表
-		while (list.firstChild) { list.removeChild(list.firstChild); }
-		if (!this._queueExpanded) { return; }
-
-		for (const item of this._queueItems) {
-			list.appendChild(this._createQueueItemEl(item));
-		}
-	}
-
-	/** 创建单个队列项的 DOM */
-	private _createQueueItemEl(item: IQueueItem): HTMLElement {
-		const isEditing = this._editingQueueId === item.id;
-		const status = item.status ?? 'pending';
-
-		const row = document.createElement('div');
-		row.className = `queue-item queue-item-${status}`;
-		row.dataset.queueId = item.id;
-
-		// 左侧：执行/状态图标
-		const icon = document.createElement('span');
-		icon.className = 'queue-item-icon';
-		icon.title = status === 'executing' ? '执行中' : status === 'done' ? '已完成' : status === 'failed' ? '失败' : '待执行';
-		icon.textContent = status === 'executing' ? '◐' : status === 'done' ? '✓' : status === 'failed' ? '✕' : '▶';
-		row.appendChild(icon);
-
-		// 中间：内容（编辑态用 input，否则用 span）
-		if (isEditing) {
-			const input = document.createElement('input');
-			input.type = 'text';
-			input.className = 'queue-item-edit-input';
-			input.value = item.content;
-			input.addEventListener('keydown', (e) => {
-				if (e.key === 'Enter') {
-					e.preventDefault();
-					const v = input.value.trim();
-					if (v && v !== item.content) {
-						this._onQueueItemAction?.('edit', item.id, { newContent: v });
-					} else {
-						this._editingQueueId = null;
-						this._renderQueueBar();
-					}
-				} else if (e.key === 'Escape') {
-					e.preventDefault();
-					this._editingQueueId = null;
-					this._renderQueueBar();
-				}
-			});
-			// 自动聚焦
-			setTimeout(() => { input.focus(); input.select(); }, 0);
-			row.appendChild(input);
-
-			const editActions = document.createElement('span');
-			editActions.className = 'queue-item-edit-actions';
-			const okBtn = document.createElement('button');
-			okBtn.className = 'queue-item-action-btn success';
-			okBtn.title = '保存';
-			okBtn.textContent = '✓';
-			okBtn.addEventListener('click', () => {
-				const v = input.value.trim();
-				if (v && v !== item.content) {
-					this._onQueueItemAction?.('edit', item.id, { newContent: v });
-				} else {
-					this._editingQueueId = null;
-					this._renderQueueBar();
-				}
-			});
-			const cancelBtn = document.createElement('button');
-			cancelBtn.className = 'queue-item-action-btn';
-			cancelBtn.title = '取消';
-			cancelBtn.textContent = '✕';
-			cancelBtn.addEventListener('click', () => {
-				this._editingQueueId = null;
-				this._renderQueueBar();
-			});
-			editActions.appendChild(okBtn);
-			editActions.appendChild(cancelBtn);
-			row.appendChild(editActions);
-		} else {
-			const content = document.createElement('span');
-			content.className = 'queue-item-content';
-			content.textContent = item.content;
-			content.title = item.content;
-			row.appendChild(content);
-
-			// 右侧：操作按钮
-			const actions = document.createElement('span');
-			actions.className = 'queue-item-actions';
-
-			// 上移
-			const upBtn = document.createElement('button');
-			upBtn.className = 'queue-item-action-btn';
-			upBtn.title = '上移';
-			upBtn.textContent = '↑';
-			upBtn.addEventListener('click', () => {
-				this._onQueueItemAction?.('reorder', item.id, { newIndex: this._queueItems.findIndex((x) => x.id === item.id) - 1 });
-			});
-			actions.appendChild(upBtn);
-
-			// 编辑
-			const editBtn = document.createElement('button');
-			editBtn.className = 'queue-item-action-btn';
-			editBtn.title = '编辑';
-			editBtn.textContent = '✎';
-			editBtn.addEventListener('click', () => {
-				this._editingQueueId = item.id;
-				this._renderQueueBar();
-			});
-			actions.appendChild(editBtn);
-
-			// 提升（promote）：把任务从队列取出并发送出去执行
-			const promoteBtn = document.createElement('button');
-			promoteBtn.className = 'queue-item-action-btn accent';
-			promoteBtn.title = '执行此任务';
-			promoteBtn.textContent = '⏵';
-			promoteBtn.addEventListener('click', () => {
-				this._onQueueItemAction?.('promote', item.id);
-			});
-			actions.appendChild(promoteBtn);
-
-			// 删除
-			const delBtn = document.createElement('button');
-			delBtn.className = 'queue-item-action-btn danger';
-			delBtn.title = '删除';
-			delBtn.textContent = '🗑';
-			delBtn.addEventListener('click', () => {
-				this._onQueueItemAction?.('delete', item.id);
-			});
-			actions.appendChild(delBtn);
-
-			row.appendChild(actions);
-		}
-
-		return row;
-	}
+	setOnQueueItemAction(_cb: IQueueItemActionCallback | null): void { /* deprecated: handled internally */ }
+	addQueueItem(item: IQueueItem): void { this._queueManager.add(item); }
+	removeQueueItem(itemId: string): void { this._queueManager.remove(itemId); }
+	updateQueueItem(itemId: string, updates: Partial<Omit<IQueueItem, 'id'>>): void { this._queueManager.update(itemId, updates); }
+	getQueueItems(): ReadonlyArray<IQueueItem> { return this._queueManager.getItems(); }
+	clearQueueItems(): void { this._queueManager.clear(); }
+	reorderQueueItem(itemId: string, direction: 'up' | 'down'): void { this._queueManager.reorder(itemId, direction); }
 
 	updateMessage(
 		messageId: string,
@@ -1383,6 +1174,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// Agent loop 结束 → 补齐最后一条 assistant 消息的 footer
 			// （loop 中所有消息的 footer 都被 _isSending 检查跳过）
 			this._revealFootersAfterLoop();
+			// 自动执行队列中的待处理任务
+			this._queueManager.executeNext();
 		}
 	}
 
@@ -1498,13 +1291,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			this._systemMsgList.remove();
 		}
 		// 队列栏同上：需手动清理
-		if (this._queueBar && this._queueBar.isConnected) {
-			this._queueBar.remove();
-		}
-		if (this._queueList && this._queueList.isConnected) {
-			this._queueList.remove();
-		}
-		this._editingQueueId = null;
+		this._queueManager.removeDom();
 		this._renderInputArea();
 		// 恢复输入内容和附件
 		if (this._textarea && savedValue) {
@@ -1523,6 +1310,19 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (this._agent) { this._render(); }
 	}
 
+	/** 设置工作区列表（外部调用） */
+	setWorkspaces(items: ReadonlyArray<IWorkspaceItem>): void {
+		this._workspaces = items.slice();
+		// 重新渲染输入区以刷新 workspace 触发器标签
+		if (this._agent) { this._render(); }
+	}
+
+	/** 设置当前选中工作区 */
+	setSelectedWorkspace(id: string): void {
+		this._selectedWorkspaceId = id || "";
+		if (this._agent) { this._render(); }
+	}
+
 	setChatMode(mode: ChatMode): void {
 		this._chatMode = mode;
 		if (this._agent) { this._render(); }
@@ -1536,8 +1336,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	setAgentSessions(sessions: ReadonlyArray<IAgentSessionMeta>): void {
 		// 按更新时间倒序排列（最新的在最前面）
 		this._agentSessions = sessions.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+		// 如果历史 overlay 已打开，重新渲染以反映最新会话列表
 		if (this._historyOverlayEl) {
-			this._renderHistoryOverlayContent();
+			this._historyOverlayEl.remove();
+			this._historyOverlayEl = null;
+			this._renderHistoryOverlay();
 		}
 	}
 
@@ -1655,6 +1458,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _closeAllDropdowns(): void {
 		this._closeAgentDropdown();
 		this._closeWorktreeDropdown();
+		this._closeWorkspaceDropdown();
 		// Message-nav overlay is closed via _activeHeaderPanel (managed in _render())
 		if (this._msgNavOverlayEl) {
 			this._msgNavOverlayEl.remove();
@@ -1828,46 +1632,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			}),
 		);
 
-		// Auto-orchestrate toggle (PM only)
-		if (emp.isPM) {
-			const orchBtn = append(left, $(".chat-header-action-btn.orchestrate"));
-			orchBtn.title = this._autoOrchestrateEnabled
-				? "自动编排模式已开启"
-				: "自动编排模式已关闭";
-			if (this._autoOrchestrateEnabled) {
-				orchBtn.classList.add("active", "orchestrate-active");
-			}
-			const orchSvg = append(orchBtn, $("svg"));
-			orchSvg.setAttribute("width", "15");
-			orchSvg.setAttribute("height", "15");
-			orchSvg.setAttribute("viewBox", "0 0 24 24");
-			orchSvg.setAttribute("fill", "none");
-			orchSvg.setAttribute("stroke", "currentColor");
-			orchSvg.setAttribute("stroke-width", "2");
-			const circle = document.createElementNS(
-				"http://www.w3.org/2000/svg",
-				"circle",
-			);
-			circle.setAttribute("cx", "12");
-			circle.setAttribute("cy", "12");
-			circle.setAttribute("r", "3");
-			orchSvg.appendChild(circle);
-			const sunPath = document.createElementNS(
-				"http://www.w3.org/2000/svg",
-				"path",
-			);
-			sunPath.setAttribute(
-				"d",
-				"M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83",
-			);
-			orchSvg.appendChild(sunPath);
-			this._register(
-				addDisposableListener(orchBtn, EventType.CLICK, () => {
-					this._autoOrchestrateEnabled = !this._autoOrchestrateEnabled;
-					this._render();
-				}),
-			);
-		}
+		// Auto-orchestrate toggle (PM only) — REMOVED: task orchestration entry point closed
 
 		// Spacer
 		append(left, $(".chat-header-spacer"));
@@ -4103,8 +3868,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// 解析每行 — 同时兼容两种后端格式:
 		//   (1) `  #abc123  [triage]  任务标题`          (历史带方括号)
 		//   (2) `  #abc123  triage    — 任务标题`        (当前无方括号+破折号)
+		// ID 段用 \S+ 捕获非空字符（兼容 6 位 hex、长 alphanum、含 -_）
 		for (const line of lines) {
-			const m = line.match(/#([a-f0-9]{6})\s+(?:\[(\w+)\]|(\w+))\s*[—\-]?\s*(.*)/i);
+			const m = line.match(/#(\S+)\s+(?:\[(\w+)\]|(\w+))\s*[—\-]?\s*(.*)/i);
 			if (!m) { continue; }
 			const status = (m[2] || m[3] || '').toLowerCase();
 			const title = (m[4] || '').replace(/^[—\-\s]+/, '').trim();
@@ -4419,8 +4185,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 		return saCard;
 	}
-
-	// --- LiveWorkflowTraceView -------------------}
 
 // --- LiveWorkflowTraceView -----------------------------------
 
@@ -6161,19 +5925,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._register(addDisposableListener(this._systemMsgBar, EventType.CLICK, () => this._toggleSystemMsgPanel()));
 		this._renderSystemMsgPanel();
 
-		// ── 队列栏（待执行任务列表，位于系统栏下方、输入区上方）──
-		this._queueBar = append(this._container, $('.queue-bar'));
-		this._queueList = append(this._container, $('.queue-list'));
-		this._queueBar.style.display = 'none'; // 初始隐藏（无队列项时）
-		this._register(addDisposableListener(this._queueBar, EventType.CLICK, (e) => {
-			// 防止点击 action 按钮时触发 toggle
-			const t = e.target as HTMLElement;
-			if (t.closest('.queue-item-action-btn, .queue-item-edit-input, .queue-item-edit-actions')) {
-				return;
-			}
-			this._toggleQueuePanel();
-		}));
-		this._renderQueueBar();
+		// ── 队列栏（委托给 QueueBarManager）──
+		this._queueManager.createDom();
 
 		const inputArea = append(this._container, $(".chat-input-area"));
 		this._inputAreaEl = inputArea;
@@ -6192,12 +5945,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			composerBox,
 			$("textarea.chat-composer-textarea"),
 		) as HTMLTextAreaElement;
-		this._textarea.rows = 1;
-		this._textarea.placeholder =
-			emp.isPM && this._autoOrchestrateEnabled
-				? "输入目标，自动创建团队并分派任务... (用 @name 手动指定员工)"
-				: `Message ${emp.name}...`;
-		this._textarea.disabled = this._isSending;
+		this._textarea.placeholder = `Message ${emp.name}...`;
+		// 流式输出过程中不再禁用输入框——用户可继续输入新消息排队
+		// this._textarea.disabled = this._isSending;  ← 已移除
 
 		// 恢复保存的输入框高度
 		try {
@@ -6450,6 +6200,50 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// Divider
 		append(leftToolbar, $(".chat-toolbar-divider"));
 
+		// ── 工作区选择器（左侧） ──
+		const wsLabel = this._workspaces.find(w => w.id === this._selectedWorkspaceId)?.name ||
+			this._workspaces[0]?.name || '工作区';
+		const workspaceBtn = this._appendToolbarBtn(leftToolbar, {
+			title: '切换工作区',
+			svgPath: 'M20.5 5.5H3.5a1 1 0 00-1 1v13a1 1 0 001 1h17a1 1 0 001-1v-13a1 1 0 00-1-1zM2 8.5h20M9 2.5v3M15 2.5v3',
+			hasLabel: true,
+			label: wsLabel,
+			showChevron: true,
+			cssClass: 'workspace-tag',
+		});
+		this._workspaceTrigger = workspaceBtn;
+		this._register(addDisposableListener(workspaceBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			if (this._workspaceDropdownEl) {
+				this._closeWorkspaceDropdown();
+			} else {
+				this._openWorkspaceDropdown();
+			}
+		}));
+
+		// ── Worktree 选择器（右侧） ──
+		const wtLabel = this._getWorktreeLabel();
+		const worktreeBtn = this._appendToolbarBtn(leftToolbar, {
+			title: '切换 Worktree',
+			svgPath: 'M6 3v12M18 9v12M6 21l12-12',
+			hasLabel: true,
+			label: wtLabel,
+			showChevron: true,
+			cssClass: 'worktree-tag',
+		});
+		this._worktreeTrigger = worktreeBtn;
+		this._register(addDisposableListener(worktreeBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			if (this._worktreeDropdownEl) {
+				this._closeWorktreeDropdown();
+			} else {
+				this._openWorktreeDropdown();
+			}
+		}));
+
+		// Divider
+		append(leftToolbar, $(".chat-toolbar-divider"));
+
 		// Mode tag (craft / ask / plan)
 		const modeOpt = MODE_OPTIONS.find(m => m.id === this._chatMode) || MODE_OPTIONS[0];
 		this._modeTrigger = this._appendToolbarBtn(leftToolbar, {
@@ -6650,7 +6444,41 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	private _renderSendButtonSvg(): void {
 		clearNode(this._sendBtn);
-		if (this._isSending) {
+		const hasInput = !!(this._textarea?.value.trim() || this._attachments.length > 0);
+		const isQueueing = this._isSending && hasInput;
+
+		if (isQueueing) {
+			// Queue icon — 双层堆叠文档（表示"追加到队列"）
+			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+			svg.setAttribute("width", "14");
+			svg.setAttribute("height", "14");
+			svg.setAttribute("viewBox", "0 0 24 24");
+			svg.setAttribute("fill", "none");
+			svg.setAttribute("stroke", "currentColor");
+			svg.setAttribute("stroke-width", "2");
+			svg.setAttribute("stroke-linecap", "round");
+			svg.setAttribute("stroke-linejoin", "round");
+			// 下层文档
+			const outer = document.createElementNS("http://www.w3.org/2000/svg", "path");
+			outer.setAttribute("d", "M4 5h12l4 4v12H4z");
+			svg.appendChild(outer);
+			// 上层文档（偏移）
+			const inner = document.createElementNS("http://www.w3.org/2000/svg", "path");
+			inner.setAttribute("d", "M2 4h12l4 4v12H2z");
+			svg.appendChild(inner);
+			// 加号
+			const plus = document.createElementNS("http://www.w3.org/2000/svg", "line");
+			plus.setAttribute("x1", "12"); plus.setAttribute("y1", "8");
+			plus.setAttribute("x2", "12"); plus.setAttribute("y2", "16");
+			plus.setAttribute("stroke-width", "3");
+			svg.appendChild(plus);
+			const plusH = document.createElementNS("http://www.w3.org/2000/svg", "line");
+			plusH.setAttribute("x1", "8"); plusH.setAttribute("y1", "12");
+			plusH.setAttribute("x2", "16"); plusH.setAttribute("y2", "12");
+			plusH.setAttribute("stroke-width", "3");
+			svg.appendChild(plusH);
+			this._sendBtn.appendChild(svg);
+		} else if (this._isSending) {
 			// Stop icon — 使用与发送箭头相同 14x14 尺寸，方块填充 viewBox 核心区域
 			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
 			svg.setAttribute("width", "14");
@@ -6668,7 +6496,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			rect.setAttribute("rx", "3");
 			svg.appendChild(rect);
 			this._sendBtn.appendChild(svg);
-			this._sendBtn.title = "停止生成 (Escape)";
 		} else {
 			// Arrow up icon
 			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -6696,7 +6523,6 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			polyline.setAttribute("points", "5 12 12 5 19 12");
 			svg.appendChild(polyline);
 			this._sendBtn.appendChild(svg);
-			this._sendBtn.title = "发送 (Enter)";
 		}
 	}
 
@@ -6704,23 +6530,23 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (!this._sendBtn) {
 			return;
 		}
-		this._sendBtn.classList.toggle("chat-cancel-circle", this._isSending);
-		if (this._textarea) {
-			this._textarea.disabled = this._isSending;
-		}
-		// 参考React：按钮禁用逻辑
-		// disabled = !input.trim() && attachments.length === 0 && !isLoading
-		const hasInput = (this._textarea?.value.trim() || this._attachments.length > 0);
+		const hasInput = !!(this._textarea?.value.trim() || this._attachments.length > 0);
+
+		// 流式输出过程中有输入内容 → 显示为「排队发送」按钮，不是「取消」按钮
+		const isQueueing = this._isSending && hasInput;
+		this._sendBtn.classList.toggle("chat-cancel-circle", this._isSending && !hasInput);
+		this._sendBtn.classList.toggle("chat-queue-circle", isQueueing);
+
+		// 流式输出过程中不再禁用输入框 (textarea.disabled 已在 _renderInputArea 移除)
+		// 按钮禁用逻辑：无输入且非发送中 → 禁用
 		const disabled = !hasInput && !this._isSending;
 		(this._sendBtn as HTMLButtonElement).disabled = disabled;
 
-		// 更新按钮标题（参考React）
-		if (this._isSending) {
-			if (hasInput) {
-				this._sendBtn.title = '发送新消息 (自动停止当前)';
-			} else {
-				this._sendBtn.title = '停止生成 (Escape)';
-			}
+		// 更新按钮标题
+		if (isQueueing) {
+			this._sendBtn.title = '排队发送 (Enter)';
+		} else if (this._isSending) {
+			this._sendBtn.title = '停止生成 (Escape)';
 		} else {
 			this._sendBtn.title = '发送 (Enter)';
 		}
@@ -6770,105 +6596,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 * (撤销 / 保留 / 差异). Clicking a file opens its diff in the editor.
 	 */
 	private _createCheckpointDetailCard(cp: ICheckpointInfo, isLatest: boolean, seqNum: number): HTMLElement {
-		const card = document.createElement('div');
-		card.className = 'cp-detail';
-
-		// Header
-		const header = document.createElement('div');
-		header.className = 'cp-detail-header';
-
-		const icon = document.createElement('span');
-		icon.className = 'cp-detail-icon';
-		icon.textContent = '📝';
-		header.appendChild(icon);
-
-		const title = document.createElement('span');
-		title.className = 'cp-detail-title';
-		title.textContent = `检查点 #${seqNum}: ${cp.label}`;
-		header.appendChild(title);
-
-		if (!isLatest) {
-			const ghost = document.createElement('span');
-			ghost.className = 'ghost-tag';
-			ghost.textContent = 'ghost';
-			header.appendChild(ghost);
-		}
-
-		const time = document.createElement('span');
-		time.className = 'cp-detail-time';
-		time.textContent = new Date(cp.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-		header.appendChild(time);
-
-		// Inline action buttons
-		const actions = document.createElement('div');
-		actions.className = 'cp-detail-actions';
-
-		const undoBtn = document.createElement('button');
-		undoBtn.className = 'cp-action-btn danger';
-		undoBtn.textContent = '撤销';
-		undoBtn.title = '撤销此检查点的所有文件改动';
-		undoBtn.addEventListener('click', (e) => {
-			e.stopPropagation();
-			this._onCheckpointAction?.('undoAll', { checkpointId: cp.id });
-		});
-		actions.appendChild(undoBtn);
-
-		const keepBtn = document.createElement('button');
-		keepBtn.className = 'cp-action-btn success';
-		keepBtn.textContent = '保留';
-		keepBtn.title = '保留此检查点的所有文件改动';
-		keepBtn.addEventListener('click', (e) => {
-			e.stopPropagation();
-			this._onCheckpointAction?.('keepAll', { checkpointId: cp.id });
-		});
-		actions.appendChild(keepBtn);
-
-		if (cp.files.length > 0) {
-			const diffBtn = document.createElement('button');
-			diffBtn.className = 'cp-action-btn diff';
-			diffBtn.textContent = '差异';
-			diffBtn.title = '查看此检查点的文件差异';
-			diffBtn.addEventListener('click', (e) => {
-				e.stopPropagation();
-				this._onCheckpointAction?.('openDiff', { checkpointId: cp.id });
-			});
-			actions.appendChild(diffBtn);
-		}
-
-		header.appendChild(actions);
-		card.appendChild(header);
-
-		// File list
-		if (cp.files.length > 0) {
-			const files = document.createElement('div');
-			files.className = 'cp-files';
-			for (const f of cp.files) {
-				const fileEl = document.createElement('div');
-				fileEl.className = 'cp-file';
-
-				const status = document.createElement('span');
-				status.className = `file-status ${f.status === 'modified' ? 'M' : f.status === 'created' ? 'A' : 'D'}`;
-				status.textContent = f.status === 'modified' ? 'M' : f.status === 'created' ? 'A' : 'D';
-				fileEl.appendChild(status);
-
-				const path = document.createElement('span');
-				path.className = 'file-path';
-				// Show shortened path: basename only for readability; full path in title tooltip
-				const displayName = f.path.replace(/\\/g, '/').split('/').pop() || f.path;
-				path.textContent = displayName;
-				path.title = f.path;
-				fileEl.appendChild(path);
-
-				fileEl.addEventListener('click', (e) => {
-					e.stopPropagation();
-					this._onOpenFile?.(f.path);
-				});
-				files.appendChild(fileEl);
-			}
-			card.appendChild(files);
-		}
-
-		return card;
+		return createCheckpointDetailCard(cp, isLatest, seqNum, this._onCheckpointAction as any, this._onOpenFile);
 	}
 
 	// =========================================================
@@ -7207,59 +6935,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// =========================================================
 
 	private _renderContextUsageRing(parent: HTMLElement): void {
-		const usage = this._contextUsage;
-		const ringEl = append(parent, $(".context-usage-ring"));
-		const pct = usage ? Math.max(0, Math.min(1, usage.ratio)) : 0;
-		const tooltipText = usage
-			? `上下文 ${Math.round(pct * 100)}% (${usage.used} / ${usage.limit})\n输入: ${usage.used} / 上下文窗口: ${usage.limit}`
-			: '上下文使用';
-		ringEl.title = tooltipText;
-		ringEl.style.cursor = 'pointer';
-		if (usage) {
-			if (pct >= 0.9) { ringEl.classList.add('danger'); }
-			else if (pct >= 0.7) { ringEl.classList.add('warn'); }
-		}
-
-		const size = 22;
-		const stroke = 2.5;
-		const r = (size / 2) - stroke;
-		const c = 2 * Math.PI * r;
-		const offset = c * (1 - pct);
-
-		const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-		svg.setAttribute("width", String(size));
-		svg.setAttribute("height", String(size));
-		svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
-		// SVG <title> 子元素确保鼠标悬停在 SVG 区域内时也能显示 tooltip
-		const svgTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
-		svgTitle.textContent = tooltipText;
-		svg.appendChild(svgTitle);
-
-		const bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-		bg.setAttribute("cx", String(size / 2));
-		bg.setAttribute("cy", String(size / 2));
-		bg.setAttribute("r", String(r));
-		bg.setAttribute("fill", "none");
-		bg.setAttribute("stroke", "currentColor");
-		bg.setAttribute("stroke-width", String(stroke));
-		bg.setAttribute("opacity", "0.2");
-		svg.appendChild(bg);
-
-		const fg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-		fg.setAttribute("cx", String(size / 2));
-		fg.setAttribute("cy", String(size / 2));
-		fg.setAttribute("r", String(r));
-		fg.setAttribute("fill", "none");
-		fg.setAttribute("stroke", "currentColor");
-		fg.setAttribute("stroke-width", String(stroke));
-		fg.setAttribute("stroke-dasharray", String(c));
-		fg.setAttribute("stroke-dashoffset", String(offset));
-		fg.setAttribute("stroke-linecap", "round");
-		fg.setAttribute("transform", `rotate(-90 ${size / 2} ${size / 2})`);
-		fg.classList.add('ring-progress');
-		svg.appendChild(fg);
-
-		ringEl.appendChild(svg);
+		renderContextUsageRing(parent, this._contextUsage);
 	}
 
 	// ── Context Usage 计算（匹配 React 3 层逻辑）─────────────────
@@ -7506,9 +7182,78 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 	}
 
+	/** 获取 worktree 触发器显示的标签文字 */
+	private _getWorktreeLabel(): string {
+		if (!this._selectedWorktreePath) { return '主仓库'; }
+		const current = this._worktrees.find(w => w.path === this._selectedWorktreePath);
+		if (current?.branch) { return current.branch; }
+		return this._selectedWorktreePath.split(/[\\/]/).filter(Boolean).pop() || this._selectedWorktreePath;
+	}
+
+	// =========================================================
+	// Workspace dropdown (input-area toolbar)
+	// =========================================================
+
+	private _openWorkspaceDropdown(): void {
+		this._closeAllDropdowns();
+		if (this._workspaceTrigger) { this._workspaceTrigger.classList.add('open'); }
+
+		this._workspaceDropdownEl = append(mainWindow.document.body, $(".workspace-dropdown"));
+		this._positionDropdownBelow(this._workspaceDropdownEl, this._workspaceTrigger);
+
+		// 如果有外部提供的加载回调，先异步加载
+		const renderItems = (list: IWorkspaceItem[]) => {
+			if (!this._workspaceDropdownEl) { return; }
+			// 清空
+			while (this._workspaceDropdownEl.firstChild) { this._workspaceDropdownEl.firstChild.remove(); }
+			for (const ws of list) {
+				const item = append(this._workspaceDropdownEl, $(".workspace-dropdown-item"));
+				if (ws.id === this._selectedWorkspaceId) {
+					item.classList.add('active');
+				}
+				append(item, $("span.workspace-dropdown-name", undefined, ws.name));
+				append(item, $("span.workspace-dropdown-path", undefined, ws.path));
+				this._register(addDisposableListener(item, EventType.CLICK, () => {
+					this._closeWorkspaceDropdown();
+					if (ws.id !== this._selectedWorkspaceId) {
+						this._selectedWorkspaceId = ws.id;
+						this._onSelectWorkspace?.(ws.id, ws.name);
+						this._render();
+					}
+				}));
+			}
+		};
+
+		const staticItems = this._workspaces;
+		if (staticItems.length > 0) {
+			renderItems(staticItems);
+		} else if (this._onLoadWorkspaces) {
+			this._onLoadWorkspaces().then(loaded => {
+				this._workspaces = loaded.slice();
+				renderItems(loaded as unknown as IWorkspaceItem[]);
+			}).catch(() => { /* 静默忽略 */ });
+		}
+
+		this._disposeOutsideClick(this._workspaceDropdownOutsideClick);
+		this._workspaceDropdownOutsideClick = this._registerOutsideClickClose(
+			this._workspaceDropdownEl, this._workspaceTrigger, () => this._closeWorkspaceDropdown()
+		);
+	}
+
+	private _closeWorkspaceDropdown(): void {
+		this._disposeOutsideClick(this._workspaceDropdownOutsideClick);
+		this._workspaceDropdownOutsideClick = null;
+		if (this._workspaceDropdownEl) {
+			this._workspaceDropdownEl.remove();
+			this._workspaceDropdownEl = null;
+		}
+		if (this._workspaceTrigger) { this._workspaceTrigger.classList.remove('open'); }
+	}
+
 	// =========================================================
 	// Settings overlay (right-side panel, unified with history)
 	// =========================================================
+
 
 	private _settingsOverlayEl: HTMLElement | null = null;
 
@@ -8261,7 +8006,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 							this._onSelectModel?.(m.id);
 							this._render();
 						}
-					}),
+					})
 				);
 			}
 		}
@@ -8286,208 +8031,35 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// =========================================================
 
 	private _renderHistoryOverlay(): void {
-		this._historyOverlayEl = append(this._container, $(".chat-history-overlay"));
-		this._renderHistoryOverlayContent();
-	}
-
-	private _renderHistoryOverlayContent(): void {
-		if (!this._historyOverlayEl) { return; }
-		clearNode(this._historyOverlayEl);
-
-		// Header (title + close button)
-		const header = append(this._historyOverlayEl, $(".chat-history-header"));
-		const historyTitle = append(header, $("span.chat-history-title", undefined, '聊天历史'));
-
-		// Close button (right-aligned)
-		const closeBtn = append(header, $("button.chat-history-close-btn"));
-		closeBtn.title = '关闭';
-		const closeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-		closeSvg.setAttribute('width', '16');
-		closeSvg.setAttribute('height', '16');
-		closeSvg.setAttribute('viewBox', '0 0 24 24');
-		closeSvg.setAttribute('fill', 'none');
-		closeSvg.setAttribute('stroke', 'currentColor');
-		closeSvg.setAttribute('stroke-width', '2');
-		closeSvg.setAttribute('stroke-linecap', 'round');
-		closeSvg.setAttribute('stroke-linejoin', 'round');
-		const closePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-		closePath.setAttribute('d', 'M18 6L6 18M6 6l12 12');
-		closeSvg.appendChild(closePath);
-		closeBtn.appendChild(closeSvg);
-		this._register(
-			addDisposableListener(closeBtn, EventType.CLICK, () => {
-				this._activeHeaderPanel = null;
-				this._render();
-			}),
+		this._historyOverlayEl = renderHistoryOverlay(
+			this._container,
+			{ agentSessions: this._agentSessions },
+			{
+				onRenameSession: this._onRenameSession,
+				onDeleteSession: this._onDeleteSession,
+				onOpenSession: this._onOpenSession,
+				onNewSession: this._onNewSession,
+				onClose: () => { this._activeHeaderPanel = null; this._render(); },
+			},
+			(d) => this._register(d),
 		);
-		void historyTitle;
-
-		// Content area (list or empty)
-		const content = append(this._historyOverlayEl, $(".chat-history-content"));
-		if (this._agentSessions.length === 0) {
-			append(content, $(".chat-history-empty", undefined, '当前 Agent 暂无历史会话'));
-		} else {
-			const list = append(content, $(".chat-history-list"));
-			for (const s of this._agentSessions) {
-				const item = append(list, $(".chat-history-item"));
-				const info = append(item, $(".chat-history-item-info"));
-				append(info, $("span.chat-history-item-name", undefined, s.name));
-				const time = append(info, $("span.chat-history-item-time"));
-				time.textContent = this._formatRelativeTime(s.updatedAt);
-
-				const actions = append(item, $(".chat-history-item-actions"));
-				const renameBtn = append(actions, $("button.chat-history-item-btn"));
-				renameBtn.title = '重命名';
-				// Rename icon (pencil)
-				const renameSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-				renameSvg.setAttribute('width', '14');
-				renameSvg.setAttribute('height', '14');
-				renameSvg.setAttribute('viewBox', '0 0 24 24');
-				renameSvg.setAttribute('fill', 'none');
-				renameSvg.setAttribute('stroke', 'currentColor');
-				renameSvg.setAttribute('stroke-width', '2');
-				renameSvg.setAttribute('stroke-linecap', 'round');
-				renameSvg.setAttribute('stroke-linejoin', 'round');
-				const renamePath1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-				renamePath1.setAttribute('d', 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7');
-				const renamePath2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-				renamePath2.setAttribute('d', 'M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z');
-				renameSvg.appendChild(renamePath1);
-				renameSvg.appendChild(renamePath2);
-				renameBtn.appendChild(renameSvg);
-				this._register(
-					addDisposableListener(renameBtn, EventType.CLICK, (e) => {
-						e.stopPropagation();
-						const next = mainWindow.prompt('新的会话名称', s.name);
-						if (next && next.trim() && next.trim() !== s.name) {
-							this._onRenameSession?.(s.id, next.trim());
-						}
-					}),
-				);
-				const delBtn = append(actions, $("button.chat-history-item-btn delete-btn"));
-				delBtn.title = '删除';
-				// Delete icon (trash)
-				const delSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-				delSvg.setAttribute('width', '14');
-				delSvg.setAttribute('height', '14');
-				delSvg.setAttribute('viewBox', '0 0 24 24');
-				delSvg.setAttribute('fill', 'none');
-				delSvg.setAttribute('stroke', 'currentColor');
-				delSvg.setAttribute('stroke-width', '2');
-				delSvg.setAttribute('stroke-linecap', 'round');
-				delSvg.setAttribute('stroke-linejoin', 'round');
-				const delPath1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-				delPath1.setAttribute('d', 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2');
-				delSvg.appendChild(delPath1);
-				delBtn.appendChild(delSvg);
-				this._register(
-					addDisposableListener(delBtn, EventType.CLICK, (e) => {
-						e.stopPropagation();
-						if (mainWindow.confirm(`确认删除会话「${s.name}」?`)) {
-							this._onDeleteSession?.(s.id);
-						}
-					}),
-				);
-
-				this._register(
-					addDisposableListener(item, EventType.CLICK, () => {
-						this._activeHeaderPanel = null;
-						this._onOpenSession?.(s.id);
-						this._render();
-					}),
-				);
-			}
-		}
-
-		// Footer (new session button)
-		const footer = append(this._historyOverlayEl, $(".chat-history-footer"));
-		const newBtn = append(footer, $("button.chat-history-new-btn"));
-		newBtn.textContent = '+ 新建对话';
-		this._register(
-			addDisposableListener(newBtn, EventType.CLICK, () => {
-				this._onNewSession?.();
-			}),
-		);
-	}
-
-	private _formatRelativeTime(iso: string): string {
-		try {
-			const t = new Date(iso).getTime();
-			const diff = Date.now() - t;
-			const mins = Math.floor(diff / 60000);
-			if (mins < 1) { return '刚刚'; }
-			if (mins < 60) { return `${mins} 分钟前`; }
-			const hours = Math.floor(mins / 60);
-			if (hours < 24) { return `${hours} 小时前`; }
-			const days = Math.floor(hours / 24);
-			if (days < 30) { return `${days} 天前`; }
-			return new Date(iso).toLocaleDateString('zh-CN');
-		} catch {
-			return iso;
-		}
 	}
 
 	// =========================================================
-	// Dropdown helpers
+	// Dropdown helpers (delegated to modules/dropdownHelpers.ts)
 	// =========================================================
 
 	private _positionDropdownBelow(el: HTMLElement, trigger: HTMLElement | null, rightAlign = false): void {
-		if (!trigger) { return; }
-		const rect = trigger.getBoundingClientRect();
-		el.style.position = 'fixed';
-		el.style.top = (rect.bottom + 4) + 'px';
-
-		// Clear previous position
-		el.style.right = '';
-		el.style.left = '';
-
-		if (rightAlign) {
-			el.style.right = (mainWindow.innerWidth - rect.right) + 'px';
-		} else {
-			// Default: left-align to trigger, but clamp to stay within viewport
-			const minWidth = Math.max(220, rect.width);
-			let leftPos = rect.left;
-			// Ensure dropdown doesn't overflow right edge (with 8px padding)
-			if (leftPos + minWidth > mainWindow.innerWidth - 8) {
-				leftPos = mainWindow.innerWidth - minWidth - 8;
-			}
-			// Don't go past left edge either
-			leftPos = Math.max(8, leftPos);
-			el.style.left = leftPos + 'px';
-		}
-		el.style.minWidth = Math.max(220, rect.width) + 'px';
-		el.style.zIndex = '10000';
+		positionDropdownBelow(el, trigger, rightAlign);
 	}
-
 	private _positionDropdownAbove(el: HTMLElement, trigger: HTMLElement | null): void {
-		if (!trigger) { return; }
-		const rect = trigger.getBoundingClientRect();
-		el.style.position = 'fixed';
-		el.style.bottom = (mainWindow.innerHeight - rect.top + 6) + 'px';
-
-		// Clamp left position to stay within viewport
-		const minWidth = Math.max(180, rect.width);
-		let leftPos = rect.left;
-		if (leftPos + minWidth > mainWindow.innerWidth - 8) {
-			leftPos = mainWindow.innerWidth - minWidth - 8;
-		}
-		leftPos = Math.max(8, leftPos);
-		el.style.left = leftPos + 'px';
-		el.style.minWidth = minWidth + 'px';
-		el.style.zIndex = '10000';
+		positionDropdownAbove(el, trigger);
 	}
-
 	private _disposeOutsideClick(d: IDisposable | null): void {
-		if (d) { d.dispose(); }
+		disposeOutsideClick(d);
 	}
-
 	private _registerOutsideClickClose(panel: HTMLElement, trigger: HTMLElement | null, onClose: () => void): IDisposable {
-		const handler = addDisposableListener(mainWindow.document.body, EventType.CLICK, (e: MouseEvent) => {
-			if (panel.contains(e.target as Node)) { return; }
-			if (trigger && trigger.contains(e.target as Node)) { return; }
-			onClose();
-		});
-		return this._register(handler);
+		return registerOutsideClickClose(panel, trigger, onClose, (d) => this._register(d));
 	}
 
 	// Actions
@@ -8495,8 +8067,28 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _handleSendMessage(): void {
 		const text = this._textarea?.value?.trim();
 		const hasAttachments = this._attachments.length > 0;
-		// 允许仅有附件无文本发送；正在发送中则阻止
-		if ((!text && !hasAttachments) || this._isSending) {
+		if (!text && !hasAttachments) {
+			return;
+		}
+
+		// LLM 正在输出中 → 消息入队（排队等待执行）
+		if (this._isSending) {
+			const queueId = `queue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			this._queueManager.add({
+				id: queueId,
+				content: text || (hasAttachments ? `[${this._attachments.length} 个附件]` : ''),
+				timestamp: Date.now(),
+				status: 'pending',
+			});
+
+			// 清空输入框
+			this._textarea.value = "";
+			this._textarea.style.height = "auto";
+			this._skillChips = [];
+			this._renderSkillChips();
+			this._attachments = [];
+			this._renderAttachmentPreviews();
+			this._updateSendButton();
 			return;
 		}
 
@@ -9373,11 +8965,18 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _renderAttachmentPreviews(): void {
 		const bars = this._container.querySelectorAll('.chat-attachment-bar');
 		for (const bar of bars) { clearNode(bar as HTMLElement); }
-		if (!this._attachments.length) { return; }
+		const composerBox = this._container.querySelector('.chat-composer-box') as HTMLElement;
+
+		if (!this._attachments.length) {
+			if (composerBox) { composerBox.classList.remove('has-attachments'); }
+			return;
+		}
 
 		const bar = this._container.querySelector('.chat-attachment-bar') as HTMLElement;
 		if (!bar) { return; }
 		bar.style.display = 'flex';
+		// 标记 composer box 有附件（视觉上让 textarea 底部圆角变平，与附件栏无缝连接）
+		if (composerBox) { composerBox.classList.add('has-attachments'); }
 
 		// Check if any image attachment and model doesn't support images
 		const hasImage = this._attachments.some(a => a.type === 'image');

@@ -1,0 +1,136 @@
+/*---------------------------------------------------------------------------------------------
+ *  History overlay renderer — extracted from agentChatPanel.ts
+ *  Renders session history list with rename/delete/select actions.
+ *--------------------------------------------------------------------------------------------*/
+
+import type { IDisposable } from '../../../../base/common/lifecycle.js';
+import { $, append, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
+import type { IAgentSessionMeta } from '../agentChatTypes.js';
+
+export interface HistoryCallbacks {
+	onRenameSession?: (sessionId: string, newName: string) => void;
+	onDeleteSession?: (sessionId: string) => void;
+	onOpenSession?: (sessionId: string) => void;
+	onNewSession?: () => void;
+	onClose: () => void;
+}
+
+export interface HistoryContext {
+	readonly agentSessions: ReadonlyArray<IAgentSessionMeta>;
+}
+
+export function renderHistoryOverlay(
+	container: HTMLElement,
+	context: HistoryContext,
+	cbs: HistoryCallbacks,
+	registerFn: (d: IDisposable) => IDisposable,
+): HTMLElement {
+	const overlay = append(container, $(".chat-history-overlay"));
+
+	// Header
+	const header = append(overlay, $(".chat-history-header"));
+	append(header, $("span.chat-history-title", undefined, '聊天历史'));
+
+	// Close button
+	const closeBtn = append(header, $("button.chat-history-close-btn"));
+	closeBtn.title = '关闭';
+	const closeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+	closeSvg.setAttribute('width', '16'); closeSvg.setAttribute('height', '16');
+	closeSvg.setAttribute('viewBox', '0 0 24 24');
+	closeSvg.setAttribute('fill', 'none'); closeSvg.setAttribute('stroke', 'currentColor');
+	closeSvg.setAttribute('stroke-width', '2'); closeSvg.setAttribute('stroke-linecap', 'round');
+	closeSvg.setAttribute('stroke-linejoin', 'round');
+	const closePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+	closePath.setAttribute('d', 'M18 6L6 18M6 6l12 12');
+	closeSvg.appendChild(closePath);
+	closeBtn.appendChild(closeSvg);
+	registerFn(addDisposableListener(closeBtn, EventType.CLICK, () => cbs.onClose()));
+
+	// Content
+	const content = append(overlay, $(".chat-history-content"));
+	if (context.agentSessions.length === 0) {
+		append(content, $(".chat-history-empty", undefined, '当前 Agent 暂无历史会话'));
+	} else {
+		const list = append(content, $(".chat-history-list"));
+		for (const s of context.agentSessions) {
+			const item = append(list, $(".chat-history-item"));
+			const info = append(item, $(".chat-history-item-info"));
+			append(info, $("span.chat-history-item-name", undefined, s.name));
+			const time = append(info, $("span.chat-history-item-time"));
+			time.textContent = formatRelativeTime(s.updatedAt);
+
+			const actions = append(item, $(".chat-history-item-actions"));
+			// Rename
+			const renameBtn = append(actions, $("button.chat-history-item-btn"));
+			renameBtn.title = '重命名';
+			const renameSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			renameSvg.setAttribute('width', '14'); renameSvg.setAttribute('height', '14');
+			renameSvg.setAttribute('viewBox', '0 0 24 24');
+			renameSvg.setAttribute('fill', 'none'); renameSvg.setAttribute('stroke', 'currentColor');
+			renameSvg.setAttribute('stroke-width', '2'); renameSvg.setAttribute('stroke-linecap', 'round');
+			renameSvg.setAttribute('stroke-linejoin', 'round');
+			const rp1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			rp1.setAttribute('d', 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7');
+			const rp2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			rp2.setAttribute('d', 'M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z');
+			renameSvg.append(rp1, rp2);
+			renameBtn.appendChild(renameSvg);
+			registerFn(addDisposableListener(renameBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				const next = mainWindow.prompt('新的会话名称', s.name);
+				if (next && next.trim() && next.trim() !== s.name) {
+					cbs.onRenameSession?.(s.id, next.trim());
+				}
+			}));
+
+			// Delete
+			const delBtn = append(actions, $("button.chat-history-item-btn delete-btn"));
+			delBtn.title = '删除';
+			const delSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			delSvg.setAttribute('width', '14'); delSvg.setAttribute('height', '14');
+			delSvg.setAttribute('viewBox', '0 0 24 24');
+			delSvg.setAttribute('fill', 'none'); delSvg.setAttribute('stroke', 'currentColor');
+			delSvg.setAttribute('stroke-width', '2'); delSvg.setAttribute('stroke-linecap', 'round');
+			delSvg.setAttribute('stroke-linejoin', 'round');
+			const dp1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			dp1.setAttribute('d', 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2');
+			delSvg.appendChild(dp1);
+			delBtn.appendChild(delSvg);
+			registerFn(addDisposableListener(delBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				if (mainWindow.confirm(`确认删除会话「${s.name}」?`)) {
+					cbs.onDeleteSession?.(s.id);
+				}
+			}));
+
+			registerFn(addDisposableListener(item, EventType.CLICK, () => {
+				cbs.onClose();
+				cbs.onOpenSession?.(s.id);
+			}));
+		}
+	}
+
+	// Footer
+	const footer = append(overlay, $(".chat-history-footer"));
+	const newBtn = append(footer, $("button.chat-history-new-btn"));
+	newBtn.textContent = '+ 新建对话';
+	registerFn(addDisposableListener(newBtn, EventType.CLICK, () => cbs.onNewSession?.()));
+
+	return overlay;
+}
+
+function formatRelativeTime(iso: string): string {
+	try {
+		const t = new Date(iso).getTime();
+		const diff = Date.now() - t;
+		const mins = Math.floor(diff / 60000);
+		if (mins < 1) return '刚刚';
+		if (mins < 60) return `${mins} 分钟前`;
+		const hours = Math.floor(mins / 60);
+		if (hours < 24) return `${hours} 小时前`;
+		const days = Math.floor(hours / 24);
+		if (days < 30) return `${days} 天前`;
+		return new Date(iso).toLocaleDateString('zh-CN');
+	} catch { return iso; }
+}

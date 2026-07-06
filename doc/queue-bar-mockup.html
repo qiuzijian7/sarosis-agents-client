@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>队列栏 Mockup — 拖拽排序</title>
+<style>
+:root {
+	--bg-primary:   #0d1117;
+	--bg-secondary: #161b22;
+	--bg-tertiary:  #21262d;
+	--fg-primary:   #c9d1d9;
+	--fg-secondary: #8b949e;
+	--fg-muted:     #6e7681;
+	--accent:       #58a6ff;
+	--accent-hover: #79c0ff;
+	--success:      #3fb950;
+	--warning:      #d29922;
+	--error:        #f85149;
+	--border:       #30363d;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+	background: var(--bg-primary);
+	color: var(--fg-primary);
+	display: flex;
+	justify-content: center;
+	padding: 40px 20px;
+	min-height: 100vh;
+}
+.chat-mockup {
+	width: 100%;
+	max-width: 720px;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	overflow: hidden;
+	background: var(--bg-secondary);
+}
+
+/* ── Header ── */
+.chat-header {
+	display: flex; align-items: center; gap: 10px;
+	padding: 10px 16px;
+	border-bottom: 1px solid var(--border);
+}
+.avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.name { font-weight: 600; font-size: 13px; }
+.status { font-size: 11px; color: var(--fg-muted); margin-left: 6px; }
+.status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--success); margin-right: 4px; }
+
+/* ── Messages ── */
+.messages { flex: 1; min-height: 180px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.msg { display: flex; gap: 8px; }
+.msg.user { flex-direction: row-reverse; }
+.msg-bubble {
+	max-width: 75%; padding: 8px 12px; border-radius: 12px; font-size: 12.5px; line-height: 1.5;
+}
+.msg.user .msg-bubble { background: var(--bg-tertiary); color: var(--fg-primary); border-bottom-right-radius: 4px; }
+.msg.assistant .msg-bubble { background: var(--bg-tertiary); color: var(--fg-primary); border: 1px solid var(--border); border-bottom-left-radius: 4px; flex: 1; }
+
+/* ── System bar ── */
+.sys-bar {
+	display: flex; align-items: center; gap: 8px;
+	padding: 5px 14px; background: rgba(128,128,128,.06);
+	border-top: 1px solid rgba(128,128,128,.15);
+	cursor: pointer; font-size: 11px; color: var(--fg-secondary); flex-shrink: 0;
+}
+.sys-bar .toggle { width: 12px; text-align: center; }
+.sys-bar .chip {
+	padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 600;
+}
+.chip-modified { background: rgba(245,158,11,.15); color: var(--warning); }
+.chip-compress { background: rgba(139,92,246,.15); color: #b799ff; }
+
+/* ── Queue bar ── */
+.queue-bar {
+	display: flex; align-items: center; gap: 8px;
+	padding: 5px 14px; background: rgba(128,128,128,.06);
+	border-top: 1px solid rgba(128,128,128,.15);
+	cursor: pointer; user-select: none; flex-shrink: 0;
+	font-size: 11.5px; font-weight: 500;
+}
+.queue-bar:hover { background: rgba(128,128,128,.1); }
+.queue-toggle-icon { font-size: 10px; color: var(--fg-secondary); width: 12px; text-align: center; transition: transform .2s; }
+.queue-toggle-icon.expanded { transform: rotate(90deg); }
+
+.queue-list {
+	max-height: 320px; overflow-y: auto;
+	background: var(--bg-primary);
+	border-top: 1px solid rgba(128,128,128,.1);
+}
+
+/* ── Queue item ── */
+.queue-item {
+	display: flex; align-items: center; gap: 10px;
+	padding: 7px 14px;
+	border-bottom: 1px solid rgba(128,128,128,.06);
+	transition: background .1s, border-color .15s, opacity .15s;
+	cursor: default;
+}
+.queue-item:hover { background: rgba(128,128,128,.04); }
+.queue-item:last-child { border-bottom: none; }
+
+.queue-item-grip {
+	flex-shrink: 0; width: 12px;
+	color: var(--fg-muted); cursor: grab;
+	font-size: 12px; line-height: 1; letter-spacing: -2px;
+	user-select: none; opacity: 0; transition: opacity .15s;
+}
+.queue-item:hover .queue-item-grip { opacity: .5; }
+.queue-item-grip:active { cursor: grabbing; }
+
+.queue-item-icon {
+	font-size: 11px; color: var(--fg-secondary); flex-shrink: 0; width: 14px; text-align: center; font-weight: bold;
+}
+
+.queue-item-content {
+	flex: 1; min-width: 0; font-size: 12.5px; color: var(--fg-primary);
+	white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4;
+}
+
+.queue-item-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.queue-action-btn {
+	width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+	border: none; border-radius: 4px; background: transparent; color: var(--fg-muted);
+	cursor: pointer; font-size: 13px; padding: 0; transition: background .12s, color .12s;
+}
+.queue-action-btn:hover { background: rgba(128,128,128,.12); color: var(--fg-primary); }
+.queue-action-btn.accent { color: var(--accent); }
+.queue-action-btn.accent:hover { background: rgba(88,166,255,.18); color: var(--accent-hover); }
+.queue-action-btn.danger:hover { background: rgba(248,81,73,.12); color: var(--error); }
+
+/* ── Drag feedback ── */
+.queue-item.dragging {
+	opacity: .3; background: rgba(88,166,255,.08) !important;
+}
+.drop-above { border-top: 2px solid var(--accent) !important; }
+.drop-below { border-bottom: 2px solid var(--accent) !important; }
+
+/* ── Input area ── */
+.queue-hint-banner {
+	display: flex; align-items: center; gap: 8px;
+	padding: 6px 16px; background: rgba(88,166,255,.08);
+	border-top: 1px solid rgba(88,166,255,.15);
+	font-size: 11.5px; color: var(--accent);
+}
+.queue-hint-banner .hint-icon { font-size: 13px; }
+.queue-hint-banner .hint-text { flex: 1; }
+.input-area {
+	padding: 10px 14px; background: var(--bg-secondary); flex-shrink: 0;
+}
+.composer {
+	display: flex; flex-direction: column;
+	background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 16px;
+	overflow: hidden; transition: border-color .2s;
+}
+.composer:focus-within { border-color: rgba(124,185,255,.4); }
+.composer textarea {
+	width: 100%; padding: 12px 16px 6px; background: transparent; color: var(--fg-primary);
+	font-size: 14px; border: none; outline: none; resize: none; line-height: 1.5;
+	min-height: 24px; font-family: inherit; box-sizing: border-box;
+}
+.composer textarea::placeholder { color: var(--fg-muted); opacity: .6; }
+.composer-toolbar {
+	display: flex; align-items: center; justify-content: space-between;
+	padding: 6px 8px 8px; gap: 4px;
+	border-top: 1px solid rgba(128,128,128,.12);
+}
+.toolbar-left { display: flex; align-items: center; gap: 2px; flex: 1; overflow: hidden; }
+.toolbar-tag {
+	display: inline-flex; align-items: center; gap: 4px;
+	padding: 2px 8px; border-radius: 6px; background: rgba(128,128,128,.08);
+	color: var(--fg-secondary); font-size: 11px; cursor: default; white-space: nowrap;
+}
+.toolbar-tag svg { width: 12px; height: 12px; flex-shrink: 0; }
+.send-btn {
+	width: 32px; height: 32px; border-radius: 50%; border: none;
+	background: var(--accent); color: #fff; cursor: pointer;
+	display: flex; align-items: center; justify-content: center;
+	flex-shrink: 0; transition: background .15s, transform .15s;
+}
+.send-btn:hover { background: var(--accent-hover); transform: scale(1.05); }
+.send-btn:disabled { background: rgba(128,128,128,.15); cursor: default; transform: none; }
+.send-btn svg { width: 14px; height: 14px; }
+
+/* ── Legend ── */
+.legend {
+	margin-top: 24px; padding: 16px; border: 1px solid var(--border); border-radius: 8px;
+	background: var(--bg-secondary); font-size: 12px; max-width: 720px; width: 100%;
+}
+.legend h3 { margin-bottom: 8px; font-size: 13px; color: var(--fg-primary); }
+.legend ul { list-style: none; display: flex; flex-wrap: wrap; gap: 12px; }
+.legend li { display: flex; align-items: center; gap: 6px; color: var(--fg-secondary); }
+.legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+</style>
+</head>
+<body>
+<div style="display:flex;flex-direction:column;align-items:center;gap:16px;width:100%;">
+
+<!-- Chat Mockup -->
+<div class="chat-mockup">
+	<!-- Header -->
+	<div class="chat-header">
+		<div class="avatar"></div>
+		<span class="name">Saros Claw</span>
+		<span class="status"><span class="status-dot"></span>idle</span>
+	</div>
+
+	<!-- Messages -->
+	<div class="messages">
+		<div class="msg user">
+			<div class="msg-bubble">帮我分析 gc_incremental_flow.html 的内存管理时机</div>
+		</div>
+		<div class="msg assistant">
+			<div class="msg-bubble">正在分析文件 <code>gc_incremental_flow.html</code>，识别 GC 触发时机：增量标记 — 并发扫描 — STW 压缩...</div>
+		</div>
+		<div class="msg assistant" style="align-items: center; gap: 6px; color: var(--accent);">
+			<div style="width: 6px; height: 6px; border-radius: 50%; background: var(--accent);"></div>
+			<span style="font-size:11px;">输出中...</span>
+		</div>
+	</div>
+
+	<!-- System bar (collapsed) -->
+	<div class="sys-bar">
+		<span class="toggle">▶</span>
+		<span>系统</span>
+		<span class="chip chip-modified">1 文件修改</span>
+		<span class="chip chip-compress">已压缩 757→20</span>
+	</div>
+
+	<!-- Queue bar (expanded) -->
+	<div class="queue-bar" id="queueBar">
+		<span class="toggle queue-toggle-icon expanded" id="toggleIcon">▶</span>
+		<span id="queueLabel">队列 (2)</span>
+	</div>
+	<div class="queue-list" id="queueList"></div>
+
+	<!-- Hint banner -->
+	<div class="queue-hint-banner">
+		<span class="hint-icon">💡</span>
+		<span class="hint-text">LLM 输出中，输入的内容将加入队列自动执行（支持拖拽排序）</span>
+	</div>
+
+	<!-- Input area -->
+	<div class="input-area">
+		<div class="composer">
+			<textarea placeholder="Message Saros Claw..." rows="1"></textarea>
+			<div class="composer-toolbar">
+				<div class="toolbar-left">
+					<span class="toolbar-tag">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.5 5.5H3.5a1 1 0 00-1 1v13a1 1 0 001 1h17a1 1 0 001-1v-13a1 1 0 00-1-1zM2 8.5h20M9 2.5v3M15 2.5v3"/></svg>
+						S1Game
+					</span>
+					<span class="toolbar-tag">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v12M18 9v12M6 21l12-12"/></svg>
+						main
+					</span>
+				</div>
+				<button class="send-btn disabled" disabled>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+						<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>
+					</svg>
+				</button>
+			</div>
+		</div>
+	</div>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+	<h3>队列项交互说明</h3>
+	<ul>
+		<li><span class="dot" style="background:var(--fg-muted)"></span> ⋮⋮ 拖拽手柄（hover 可见，按住拖拽排序）</li>
+		<li><span class="dot" style="background:var(--fg-muted)"></span> ▶ 待执行</li>
+		<li><span class="dot" style="background:var(--accent)"></span> ◐ 执行中（脉冲动画）</li>
+		<li><span class="dot" style="background:var(--success)"></span> ✓ 已完成</li>
+		<li><span class="dot" style="background:var(--error)"></span> ✕ 失败</li>
+		<li><span class="dot" style="background:var(--fg-muted)"></span> ↑ 上移 · ✎ 编辑 · ⏵ 执行 · 🗑 删除</li>
+	</ul>
+</div>
+</div>
+
+<script>
+// ── Queue data ──
+const items = [
+	{ id: 'q1', content: '看板中创建待执行任务，当任务执行时，对应agent聊天框中，没有显示消息', status: 'pending' },
+	{ id: 'q2', content: '看板卡片中增加workspace选择、增加worktree选择、设计mockup html效果图', status: 'pending' },
+];
+let editingId = null;
+let draggedId = null;
+
+// ── Render ──
+function render() {
+	const list = document.getElementById('queueList');
+	const label = document.getElementById('queueLabel');
+	label.textContent = `队列 (${items.length})`;
+	list.innerHTML = '';
+	if (items.length === 0) {
+		document.getElementById('queueBar').style.display = 'none';
+		return;
+	}
+	document.getElementById('queueBar').style.display = 'flex';
+	document.getElementById('toggleIcon').classList.add('expanded');
+
+	items.forEach(item => {
+		const row = createItemEl(item);
+		list.appendChild(row);
+	});
+}
+
+function createItemEl(item) {
+	const isEditing = editingId === item.id;
+	const row = document.createElement('div');
+	row.className = `queue-item queue-item-${item.status}`;
+	row.dataset.queueId = item.id;
+	row.draggable = true;
+
+	// Drag events
+	row.addEventListener('dragstart', e => {
+		if (isEditing || item.status !== 'pending') { e.preventDefault(); return; }
+		draggedId = item.id;
+		e.dataTransfer.setData('text/plain', item.id);
+		e.dataTransfer.effectAllowed = 'move';
+		row.classList.add('dragging');
+	});
+	row.addEventListener('dragend', () => {
+		row.classList.remove('dragging');
+		draggedId = null;
+		document.querySelectorAll('.drop-above, .drop-below').forEach(el => el.classList.remove('drop-above', 'drop-below'));
+	});
+	row.addEventListener('dragover', e => {
+		e.preventDefault();
+		e.dataTransfer.dropEffect = 'move';
+		document.querySelectorAll('.drop-above, .drop-below').forEach(el => el.classList.remove('drop-above', 'drop-below'));
+		const rect = row.getBoundingClientRect();
+		const midY = rect.top + rect.height / 2;
+		if (e.clientY < midY) {
+			row.classList.add('drop-above');
+		} else {
+			row.classList.add('drop-below');
+		}
+	});
+	row.addEventListener('dragleave', () => {
+		row.classList.remove('drop-above', 'drop-below');
+	});
+	row.addEventListener('drop', e => {
+		e.preventDefault(); e.stopPropagation();
+		row.classList.remove('drop-above', 'drop-below');
+		const srcId = e.dataTransfer.getData('text/plain');
+		if (!srcId || srcId === item.id) return;
+		const srcIdx = items.findIndex(i => i.id === srcId);
+		if (srcIdx < 0) return;
+		const rect = row.getBoundingClientRect();
+		const midY = rect.top + rect.height / 2;
+		let targetIdx = items.findIndex(i => i.id === item.id);
+		if (targetIdx < 0) return;
+		if (e.clientY >= midY) targetIdx++;
+		if (srcIdx < targetIdx) targetIdx--;
+		const [moved] = items.splice(srcIdx, 1);
+		items.splice(targetIdx, 0, moved);
+		render();
+	});
+
+	// Grip
+	const grip = document.createElement('span');
+	grip.className = 'queue-item-grip';
+	grip.title = '拖拽排序';
+	grip.textContent = '⋮⋮';
+	row.appendChild(grip);
+
+	// Icon
+	const icon = document.createElement('span');
+	icon.className = 'queue-item-icon';
+	icon.textContent = item.status === 'executing' ? '◐' : item.status === 'done' ? '✓' : item.status === 'failed' ? '✕' : '▶';
+	row.appendChild(icon);
+
+	// Content
+	if (isEditing) {
+		const input = document.createElement('input');
+		input.type = 'text';
+		input.style.cssText = 'flex:1;min-width:0;padding:3px 8px;background:#1c1c1c;color:var(--fg-primary);border:1px solid var(--accent);border-radius:4px;font-size:12.5px;outline:none;';
+		input.value = item.content;
+		input.addEventListener('keydown', e => {
+			if (e.key === 'Enter') { item.content = input.value.trim() || item.content; editingId = null; render(); }
+			if (e.key === 'Escape') { editingId = null; render(); }
+		});
+		setTimeout(() => { input.focus(); input.select(); }, 0);
+		row.appendChild(input);
+		// Save/Cancel buttons
+		const ea = document.createElement('span'); ea.style.cssText = 'display:flex;gap:4px;flex-shrink:0;';
+		const ok = document.createElement('button'); ok.className = 'queue-action-btn'; ok.style.color = 'var(--success)'; ok.textContent = '✓';
+		ok.onclick = () => { item.content = input.value.trim() || item.content; editingId = null; render(); };
+		const cancel = document.createElement('button'); cancel.className = 'queue-action-btn'; cancel.textContent = '✕';
+		cancel.onclick = () => { editingId = null; render(); };
+		ea.append(ok, cancel);
+		row.appendChild(ea);
+	} else {
+		const content = document.createElement('span');
+		content.className = 'queue-item-content';
+		content.textContent = item.content;
+		content.title = item.content;
+		row.appendChild(content);
+
+		const actions = document.createElement('span');
+		actions.className = 'queue-item-actions';
+
+		// Up
+		const up = mkBtn('↑', '上移', '');
+		up.onclick = () => { const idx = items.indexOf(item); if (idx > 0) { [items[idx],items[idx-1]]=[items[idx-1],items[idx]]; render(); } };
+		actions.appendChild(up);
+
+		// Edit
+		const edit = mkBtn('✎', '编辑', '');
+		edit.onclick = () => { editingId = item.id; render(); };
+		actions.appendChild(edit);
+
+		// Promote
+		const promote = mkBtn('⏵', '执行此任务', 'accent');
+		promote.onclick = () => { item.status = 'executing'; render(); setTimeout(() => { item.status = 'done'; render(); }, 2000); };
+		actions.appendChild(promote);
+
+		// Delete
+		const del = mkBtn('🗑', '删除', 'danger');
+		del.onclick = () => { items.splice(items.indexOf(item), 1); editingId = null; render(); };
+		actions.appendChild(del);
+
+		row.appendChild(actions);
+	}
+
+	return row;
+}
+
+function mkBtn(text, title, cls) {
+	const b = document.createElement('button');
+	b.className = `queue-action-btn${cls ? ' ' + cls : ''}`;
+	b.textContent = text; b.title = title;
+	return b;
+}
+
+// Toggle queue bar
+document.getElementById('queueBar').addEventListener('click', e => {
+	if (e.target.closest('.queue-action-btn')) return;
+	const icon = document.getElementById('toggleIcon');
+	const list = document.getElementById('queueList');
+	const expanded = icon.classList.toggle('expanded');
+	list.style.maxHeight = expanded ? (items.length * 36 + 8) + 'px' : '0';
+});
+
+render();
+</script>
+</body>
+</html>

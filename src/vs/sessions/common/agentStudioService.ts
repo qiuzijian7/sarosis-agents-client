@@ -496,6 +496,12 @@ export interface IAgentChatService {
 	 */
 	readonly onDidChangeAgentSessions: Event<{ agentId: string }>;
 
+	/**
+	 * Fired for every delta during any sendMessage call (task execution, user chat, etc.).
+	 * Allows external panels (kanban, task overview) to observe streaming in real-time.
+	 */
+	readonly onDidStreamDelta: Event<{ agentId: string; sessionId: string; delta: IChatStreamDelta }>;
+
 	sendMessage(
 		agentId: string,
 		message: string,

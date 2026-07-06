@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务描述 — 图文混排 Mockup</title>
+<style>
+:root {
+	--bg-primary: #1e1e1e; --bg-secondary: #252526; --bg-input: #3c3c3c;
+	--border: #3c3c3c; --border-focus: #007acc;
+	--fg-primary: #cccccc; --fg-secondary: #999; --fg-muted: #6a6a6a;
+	--accent: #007acc; --font: 'Segoe UI', system-ui, sans-serif;
+	--radius: 6px; --radius-sm: 4px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+	font-family:var(--font); font-size:13px;
+	background:#0d0d0d; color:var(--fg-primary);
+	display:flex; align-items:center; justify-content:center; min-height:100vh;
+	padding:40px; gap:30px; flex-wrap:wrap;
+}
+
+.modal {
+	background:var(--bg-primary); border:1px solid var(--border);
+	border-radius:8px; width:520px; box-shadow:0 8px 32px rgba(0,0,0,0.5);
+}
+.modal-header {
+	display:flex; align-items:center; justify-content:space-between;
+	padding:14px 20px 12px; border-bottom:1px solid var(--border);
+	font-weight:600; font-size:14px;
+}
+.modal-close {
+	border:none; background:transparent; color:var(--fg-muted);
+	font-size:18px; cursor:pointer; padding:2px 6px; border-radius:3px;
+}
+.modal-body { padding:16px 20px; display:flex; flex-direction:column; gap:10px; }
+.modal-footer {
+	display:flex; justify-content:flex-end; gap:8px;
+	padding:12px 20px; border-top:1px solid var(--border);
+}
+.field { display:flex; flex-direction:column; gap:4px; }
+.field-label { font-size:11px; color:var(--fg-muted); text-transform:uppercase; letter-spacing:0.3px; }
+.input, .select {
+	font-size:12px; padding:6px 10px; background:var(--bg-input);
+	color:var(--fg-primary); border:1px solid var(--border);
+	border-radius:var(--radius-sm); outline:none; font-family:var(--font);
+}
+.input:focus, .select:focus { border-color:var(--border-focus); }
+.btn {
+	font-size:12px; padding:6px 14px; border:none; border-radius:var(--radius-sm);
+	cursor:pointer; font-family:var(--font);
+}
+.btn-primary { background:var(--accent); color:#fff; }
+.btn-secondary { background:var(--bg-input); color:var(--fg-primary); border:1px solid var(--border); }
+
+/* ═══ Rich Editor ═══ */
+.rich-editor {
+	min-height:80px; max-height:180px;
+	background:var(--bg-input);
+	border:1px solid var(--border);
+	border-radius:var(--radius-sm);
+	padding:8px 10px;
+	font-size:12px; line-height:1.6;
+	color:var(--fg-primary);
+	outline:none;
+	overflow-y:auto;
+	cursor:text;
+	font-family:var(--font);
+	word-break:break-word;
+}
+.rich-editor:focus { border-color:var(--border-focus); }
+.rich-editor:empty::before {
+	content:"补充细节、验收标准等… 可粘贴图片、拖拽文件";
+	color:var(--fg-muted);
+	pointer-events:none;
+}
+
+/* Inline image */
+.rich-editor img.inline-img {
+	max-width:280px; max-height:160px;
+	border-radius:4px; border:1px solid var(--border);
+	margin:4px 4px 0 0; vertical-align:middle;
+	cursor:pointer; display:inline-block;
+}
+
+/* File chip */
+.file-chip {
+	display:inline-flex; align-items:center; gap:6px;
+	padding:3px 8px; border-radius:10px;
+	background:var(--bg-secondary); border:1px solid var(--border);
+	font-size:11px; color:var(--fg-primary); cursor:pointer;
+	margin:2px 4px 2px 0; vertical-align:middle;
+	white-space:nowrap;
+}
+.file-chip .file-icon { font-size:14px; }
+.file-chip .file-name { max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.file-chip .file-size { font-size:10px; color:var(--fg-muted); }
+.file-chip .file-remove {
+	border:none; background:transparent; color:var(--fg-muted);
+	cursor:pointer; font-size:11px; padding:0; line-height:1;
+}
+
+/* Drag highlight */
+.rich-editor.drag-over {
+	border-color:var(--accent); border-style:dashed;
+	background: #007acc10;
+}
+
+/* Toolbar row below editor */
+.toolbar-row {
+	display:flex; align-items:center; gap:6px;
+	padding:4px 0 0;
+}
+.toolbar-btn {
+	font-size:11px; padding:3px 8px; border-radius:3px;
+	border:1px solid var(--border); background:var(--bg-secondary);
+	color:var(--fg-secondary); cursor:pointer; font-family:var(--font);
+	display:inline-flex; align-items:center; gap:4px;
+}
+.toolbar-btn:hover { background:var(--bg-input); color:var(--fg-primary); }
+
+/* Attachments preview area */
+.attachments-info {
+	font-size:10px; color:var(--fg-muted);
+	padding:2px 0;
+}
+
+.panel { display:flex; flex-direction:column; align-items:center; gap:8px; }
+.panel-label { font-size:12px; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+
+<div class="panel">
+<div class="panel-label">创建任务 — 描述区支持图片+文件混排</div>
+
+<div class="modal">
+<div class="modal-header"><span>📋 创建任务</span><button class="modal-close">✕</button></div>
+
+<div class="modal-body">
+	<div class="field">
+		<span class="field-label">负责员工</span>
+		<select class="select"><option>Saros Coder</option></select>
+	</div>
+
+	<div class="field">
+		<span class="field-label">任务标题 / 会话名 *</span>
+		<input class="input" value="实现 JWT 鉴权模块">
+	</div>
+
+	<!-- ═══ Rich Description Editor ═══ -->
+	<div class="field">
+		<span class="field-label">任务描述 <span style="text-transform:none;font-weight:400;">(支持粘贴图片、拖拽文件)</span></span>
+		<div class="rich-editor" contenteditable="true"
+		     onpaste="handlePaste(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)">
+			实现基于 JWT 的用户登录鉴权模块：
+			<br>1. Access Token（RS256） + Refresh Token（7天有效期）
+			<br>2. 中间件从 Authorization header 提取验证
+			<br><br>
+			<!-- Inline image -->
+			<img class="inline-img" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='100' viewBox='0 0 280 100'%3E%3Crect fill='%23252' width='280' height='100' rx='4'/%3E%3Ctext x='140' y='45' text-anchor='middle' fill='%23666' font-size='11' font-family='sans-serif'%3E🖼  JWT鉴权流程图.png%3C/text%3E%3Ctext x='140' y='65' text-anchor='middle' fill='%23444' font-size='9' font-family='sans-serif'%3E280×120 · 8.2 KB%3C/text%3E%3C/svg%3E"
+			onclick="alert('点击预览图片')">
+			<br>
+			<!-- File chip -->
+			<span class="file-chip">
+				<span class="file-icon">📄</span>
+				<span class="file-name" title="auth-design-spec.md">auth-design-spec.md</span>
+				<span class="file-size">12 KB</span>
+				<button class="file-remove" onclick="this.parentElement.remove()">✕</button>
+			</span>
+		</div>
+
+		<!-- Toolbar -->
+		<div class="toolbar-row">
+			<button class="toolbar-btn" onclick="addImage()">
+				<span>🖼</span> 粘贴图片
+			</button>
+			<button class="toolbar-btn" onclick="document.querySelector('.rich-editor').focus()">
+				<span>📎</span> 选择文件
+			</button>
+		</div>
+
+		<div class="attachments-info">
+			📎 1 个附件已添加 — 将随任务一起保存
+		</div>
+	</div>
+
+	<div class="field">
+		<span class="field-label">优先级</span>
+		<select class="select"><option>🟡 中</option></select>
+	</div>
+</div>
+
+<div class="modal-footer">
+	<button class="btn btn-secondary">取消</button>
+	<button class="btn btn-primary">🚀 创建并执行</button>
+</div>
+</div>
+</div>
+
+
+<script>
+function handlePaste(e) {
+	const items = e.clipboardData?.items;
+	if (!items) return;
+	for (const item of Array.from(items)) {
+		if (item.type.startsWith('image/')) {
+			e.preventDefault();
+			alert('[模拟] 检测到粘贴的图片，将转为 base64 嵌入并收集为附件');
+		}
+	}
+}
+
+function handleDragOver(e) {
+	e.preventDefault();
+	document.querySelector('.rich-editor').classList.add('drag-over');
+}
+function handleDragLeave(e) {
+	document.querySelector('.rich-editor').classList.remove('drag-over');
+}
+function handleDrop(e) {
+	e.preventDefault();
+	document.querySelector('.rich-editor').classList.remove('drag-over');
+	const files = e.dataTransfer?.files;
+	if (files?.length) {
+		alert(`[模拟] 拖入了 ${files.length} 个文件：${Array.from(files).map(f=>f.name).join(', ')}`);
+	}
+}
+function addImage() {
+	alert('[模拟] 打开文件选择器，选择图片后转为 base64 内联');
+}
+</script>
+
+</body>
+</html>

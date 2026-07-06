@@ -46,7 +46,7 @@ import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
 import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
-import type { OrchestrationPlan } from '../../../common/agentStudioTypes.js';
+// OrchestrationPlan import removed — task orchestration entry point closed
 import * as DOM from '../../../../base/browser/dom.js';
 import { clearNode } from '../../../../base/browser/dom.js';
 
@@ -1003,6 +1003,28 @@ export class NativeChatEditorPane extends EditorPane {
 			onLoadWorktrees: async () => {
 				return await this._getWorktrees();
 			},
+			// 工作区选择器回调
+			onLoadWorkspaces: async () => {
+				await this._loadWorkspaces();
+				// 返回已加载的工作区列表（供 panel 下拉框渲染）
+				return this._agentStudioService.getWorkspaces().then(workspaces =>
+					workspaces.filter(ws => ws.path).map(ws => ({
+						id: ws.id,
+						name: ws.name,
+						path: ws.path!,
+					}))
+				);
+			},
+			/** 切换工作区 → 仅更新面板本地状态，不影响全局活跃工作区（侧边栏等） */
+			onSelectWorkspace: async (workspaceId: string, _workspaceName: string) => {
+				this._currentWorkspaceId = workspaceId;
+				// NOTE: 不调用 setActiveWorkspace() —— 保持聊天面板的工作区独立于侧边栏
+				// 清空旧 worktree 并重新加载新 workspace 的 worktree 列表
+				this._chatPanel?.setWorktrees([]);
+				this._chatPanel?.setSelectedWorktree('');
+				await this._loadWorktrees();
+				this._logService.debug(`[NativeChatEditorPane] onSelectWorkspace: switched to ${workspaceId}`);
+			},
 			// 参考 React WorktreeSwitcher 逻辑：清除 worktree 选择（切换到"主仓库"）
 			onClearWorktree: async () => {
 				const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
@@ -1234,28 +1256,22 @@ export class NativeChatEditorPane extends EditorPane {
 			await this._selectAndLoadAgent(agentId);
 		}));
 
-		// Listen for orchestration plan changes
-		this._register(this._taskOrchestrationService.onDidChangePlan((plan: OrchestrationPlan) => {
-			// When plan changes, show or update the orchestration plan dialog
-			if (plan.status === 'pending_approval') {
-				// Show dialog for pending approval plans
-				this._chatPanel?.showOrchestrationPlanDialog(plan);
-			} else if (plan.status === 'approved' || plan.status === 'executing') {
-				// For approved/executing plans, show dialog if it's not already open,
-				// or update the existing dialog
-				this._chatPanel?.showOrchestrationPlanDialog(plan);
-			} else if (plan.status === 'rejected' || plan.status === 'completed' || plan.status === 'error') {
-				// For terminal states, close the dialog if it's open
-				this._chatPanel?.closeOrchestrationPlanDialog();
-			}
-		}));
+		// Orchestration plan listeners removed — task orchestration entry point is closed.
 
-		// Listen for orchestration task changes — refresh the plan dialog if open
-		this._register(this._taskOrchestrationService.onDidChangeTask(async ({ planId }) => {
-			// Reload the plan and update the dialog if it's currently shown
-			const plan = await this._taskOrchestrationService.getPlan(planId);
-			if (plan) {
-				this._chatPanel?.showOrchestrationPlanDialog(plan);
+		// Listen for streaming deltas from task execution / external sendMessage calls.
+		// When the pane's agent matches, sync sending state (disable send button during
+		// task execution) and reload history when the stream completes.
+		this._register(this._chatService.onDidStreamDelta(({ agentId, delta }) => {
+			if (agentId !== this._currentAgentId) { return; }
+			if (!this._chatPanel) { return; }
+			// Update sending state based on stream lifecycle
+			if (delta.type === 'done' || delta.type === 'error') {
+				this._chatPanel.setSending(false);
+				// Reload history to show all messages from the completed stream
+				void this._selectAndLoadAgent(this._currentAgentId!);
+			} else if (delta.type === 'phase_change') {
+				const phase = (delta as any).phase as string;
+				this._chatPanel.setSending(phase !== 'idle');
 			}
 		}));
 
@@ -1273,6 +1289,9 @@ export class NativeChatEditorPane extends EditorPane {
 			// Reload worktree list
 			void this._loadWorktrees();
 		}));
+		// NOTE: 移除 agentStudio:workspace-changed 监听器 ——
+		// 聊天面板的 workspace 独立于侧边栏全局活跃工作区。
+		// 聊天面板仅通过自身的 workspace 下拉框切换，不跟随外部变更。
 
 		// Track whether this pane's editor tab is the active (focused) tab in
 		// its group. Used to decide the pending→idle transition of the tab
@@ -1425,6 +1444,7 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.info('[NativeChatEditorPane] getOrCreateActiveSession failed:', err);
 				}
 				// Load worktrees for the selected agent
+				await this._loadWorkspaces();
 				await this._loadWorktrees();
 				// Refresh chat-history panel
 				await this._refreshSessionList();
@@ -1782,7 +1802,8 @@ export class NativeChatEditorPane extends EditorPane {
 			return;
 		}
 		try {
-			const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
+			// 优先使用面板本地 workspace，若为空则从全局活跃工作区继承（仅首次加载）
+			const workspaceId = this._currentWorkspaceId || this._agentStudioService.getActiveWorkspaceId() || undefined;
 			if (!workspaceId) {
 				this._logService.info('[NativeChatEditorPane] _loadWorktrees: no workspaceId');
 				this._chatPanel.setWorktrees([]);
@@ -1818,9 +1839,36 @@ export class NativeChatEditorPane extends EditorPane {
 		}
 	}
 
+	/** 加载工作区列表（供 AgentChatPanel 的 onLoadWorkspaces 回调使用） */
+	private async _loadWorkspaces(): Promise<void> {
+		if (!this._chatPanel) { return; }
+		try {
+			const workspaces = await this._agentStudioService.getWorkspaces();
+			const items = workspaces
+				.filter(ws => ws.path) // 过滤掉没有路径的 legacy 虚拟工作区
+				.map(ws => ({
+					id: ws.id,
+					name: ws.name,
+					path: ws.path!,
+				}));
+			this._chatPanel.setWorkspaces(items);
+			// 设置当前选中的工作区：优用面板本地状态，若为空则从全局活跃工作区继承（仅首次加载）
+			if (!this._currentWorkspaceId) {
+				this._currentWorkspaceId = this._agentStudioService.getActiveWorkspaceId() || null;
+			}
+			const activeId = this._currentWorkspaceId || (items.length > 0 ? items[0].id : '');
+			if (activeId) {
+				this._chatPanel.setSelectedWorkspace(activeId);
+			}
+			this._logService.debug(`[NativeChatEditorPane] _loadWorkspaces: loaded ${items.length} workspaces, active=${activeId}`);
+		} catch (err) {
+			this._logService.info('[NativeChatEditorPane] _loadWorkspaces failed:', err);
+		}
+	}
+
 	/** 获取 worktree 列表（供 AgentChatPanel 的 onLoadWorktrees 回调使用） */
 	private async _getWorktrees(): Promise<ReadonlyArray<{ path: string; branch: string; outgoingChanges?: number; incomingChanges?: number; uncommittedChanges?: number }>> {
-		const workspaceId = this._agentStudioService.getActiveWorkspaceId() || this._currentWorkspaceId || undefined;
+		const workspaceId = this._currentWorkspaceId || this._agentStudioService.getActiveWorkspaceId() || undefined;
 		if (!workspaceId) {
 			this._logService.info('[NativeChatEditorPane] _getWorktrees: no workspaceId');
 			return [];
@@ -2051,8 +2099,8 @@ export class NativeChatEditorPane extends EditorPane {
 					this._isSending = true;
 				}
 
-				// 加载 worktree + session 列表（轻量，不阻塞渲染）
-				void this._loadWorktrees();
+				// 加载 workspace + worktree + session 列表（轻量，不阻塞渲染）
+				void this._loadWorkspaces().then(() => void this._loadWorktrees());
 				void this._refreshSessionList();
 
 				// 聚焦输入框

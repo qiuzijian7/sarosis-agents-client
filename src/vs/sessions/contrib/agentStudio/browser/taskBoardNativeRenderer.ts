@@ -50,7 +50,7 @@ export interface TaskBoardEvents {
 	readonly onDelete: Event<{ taskId: string; source: TaskSource }>;
 	readonly onArchive: Event<{ taskId: string; source: TaskSource }>;
 	readonly onCreateRequest: Event<void>;
-	readonly onPlanRequest: Event<void>;
+	// onPlanRequest removed — task orchestration entry point is now closed
 	readonly onDiagnosticsRequest: Event<MouseEvent>;
 	readonly onTaskOpen: Event<{ taskId: string; taskTitle: string }>;
 	readonly onFilterChange: Event<TaskBoardFilter>;
@@ -89,6 +89,33 @@ export interface TaskBoardRenderData {
 	draggingTaskId: string | null;
 	dragOverColumn: string | null;
 	focusedTaskId: string | null;
+}
+
+/** Result from showCreateTaskModal. */
+export interface CreateTaskResult {
+	title: string;
+	description?: string;
+	assigneeId?: string;
+	assigneeName?: string;
+	priority?: 'low' | 'medium' | 'high';
+	dependencies?: string[];
+	workspaceId?: string;
+	worktreePath?: string;
+	worktreeBranch?: string;
+	/** Selected chat session ID (used to link task to existing agent conversation). */
+	agentSessionId?: string;
+	/** Session name for new sessions. */
+	agentSessionName?: string;
+	/** Attachments collected from rich description editor. */
+	attachments?: { name: string; mimeType: string; base64Content: string }[];
+}
+
+/** Worktree info for the create task modal dropdown. */
+export interface WorktreeInfo {
+	path: string;
+	branch: string;
+	repoRoot?: string;
+	repoName?: string;
 }
 
 // ─── Style Injection ────────────────────────────────────────────────────────
@@ -615,8 +642,108 @@ function injectStyles(): void {
 	display: flex;
 	gap: 12px;
 }
-.native-tb-field-row > * {
-	flex: 1;
+
+/* === Rich description editor === */
+.native-tb-rich-desc {
+	min-height: 80px;
+	max-height: 180px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border);
+	border-radius: 3px;
+	padding: 8px 10px;
+	font-size: 12px;
+	line-height: 1.6;
+	outline: none;
+	overflow-y: auto;
+	cursor: text;
+	font-family: var(--vscode-font-family);
+	word-break: break-word;
+}
+.native-tb-rich-desc:focus {
+	border-color: var(--vscode-focusBorder);
+}
+.native-tb-rich-desc:empty::before {
+	content: "补充细节、验收标准等… 可粘贴图片、拖拽文件";
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.6;
+	pointer-events: none;
+}
+.native-tb-rich-desc.drag-over {
+	border-style: dashed;
+	border-color: var(--vscode-focusBorder);
+	background: #007acc10;
+}
+.native-tb-rich-desc img.inline-img {
+	max-width: 280px;
+	max-height: 160px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-panel-border);
+	margin: 4px 4px 0 0;
+	vertical-align: middle;
+	cursor: pointer;
+}
+/* File chip inside rich editor */
+.native-tb-file-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px;
+	border-radius: 10px;
+	background: var(--vscode-sideBar-background);
+	border: 1px solid var(--vscode-panel-border);
+	font-size: 11px;
+	color: var(--vscode-foreground);
+	cursor: default;
+	margin: 2px 4px 2px 0;
+	vertical-align: middle;
+	white-space: nowrap;
+}
+.native-tb-file-chip .f-name {
+	max-width: 120px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.native-tb-file-chip .f-size {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+}
+.native-tb-file-chip .f-remove {
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	font-size: 11px;
+	padding: 0;
+	line-height: 1;
+}
+/* Desc toolbar */
+.native-tb-desc-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 0 0;
+}
+.native-tb-desc-toolbar-btn {
+	font-size: 10px;
+	padding: 2px 6px;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-panel-border);
+	background: var(--vscode-sideBar-background);
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	font-family: var(--vscode-font-family);
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+}
+.native-tb-desc-toolbar-btn:hover {
+	background: var(--vscode-input-background);
+	color: var(--vscode-foreground);
+}
+.native-tb-desc-file-input {
+	display: none;
 }
 
 /* === Task Detail Modal === */
@@ -840,8 +967,7 @@ export class TaskBoardNativeRenderer {
 	private readonly _onCreateRequest = this._disposables.add(new Emitter<void>());
 	readonly onCreateRequest = this._onCreateRequest.event;
 
-	private readonly _onPlanRequest = this._disposables.add(new Emitter<void>());
-	readonly onPlanRequest = this._onPlanRequest.event;
+	// _onPlanRequest removed — task orchestration entry point closed
 
 	private readonly _onDiagnosticsRequest = this._disposables.add(new Emitter<MouseEvent>());
 	readonly onDiagnosticsRequest = this._onDiagnosticsRequest.event;
@@ -861,7 +987,7 @@ export class TaskBoardNativeRenderer {
 	private readonly _onTaskDetailRequest = this._disposables.add(new Emitter<{ task: TaskBoardRecord; employees: EmployeeInfo[]; allTasks: TaskBoardRecord[] }>());
 	readonly onTaskDetailRequest = this._onTaskDetailRequest.event;
 
-	private readonly _onChatJump = this._disposables.add(new Emitter<{ agentId: string; agentName: string; taskId: string }>());
+	private readonly _onChatJump = this._disposables.add(new Emitter<{ agentId: string; agentName: string; taskId: string; workspaceId?: string; worktreePath?: string }>());
 	readonly onChatJump = this._onChatJump.event;
 
 	private _rootEl: HTMLElement | null = null;
@@ -941,13 +1067,6 @@ export class TaskBoardNativeRenderer {
 		diagBtn.title = '看板健康巡检';
 		diagBtn.addEventListener('click', (e) => this._onDiagnosticsRequest.fire(e as MouseEvent));
 		right.appendChild(diagBtn);
-
-		// Plan button
-		const planBtn = DOM.$('button.native-tb-btn');
-		planBtn.textContent = '🎯 任务编排';
-		planBtn.title = 'AI 自动拆分任务、创建 Agent';
-		planBtn.addEventListener('click', () => this._onPlanRequest.fire());
-		right.appendChild(planBtn);
 
 		header.appendChild(right);
 		root.appendChild(header);
@@ -1158,12 +1277,7 @@ export class TaskBoardNativeRenderer {
 		header.appendChild(countEl);
 
 		// Add button
-		if (col.key === 'triage') {
-			const btn = DOM.$('button.native-tb-column-add-btn', undefined, '＋');
-			btn.title = '编排任务 - AI 自动拆分';
-			btn.addEventListener('click', (e) => { e.stopPropagation(); this._onPlanRequest.fire(); });
-			header.appendChild(btn);
-		} else if (col.key === 'todo') {
+		if (col.key === 'todo') {
 			const btn = DOM.$('button.native-tb-column-add-btn', undefined, '＋');
 			btn.title = '创建任务';
 			btn.addEventListener('click', (e) => { e.stopPropagation(); this._onCreateRequest.fire(); });
@@ -1308,7 +1422,13 @@ export class TaskBoardNativeRenderer {
 			chatBtn.style.padding = '0 2px';
 			chatBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
-				this._onChatJump.fire({ agentId: task.assigneeId!, agentName: task.assigneeName || task.assigneeId!, taskId: task.id });
+				this._onChatJump.fire({
+					agentId: task.assigneeId!,
+					agentName: task.assigneeName || task.assigneeId!,
+					taskId: task.id,
+					workspaceId: task.workspaceId,
+					worktreePath: task.worktreePath,
+				});
 			});
 			metaIcons.appendChild(chatBtn);
 		}
@@ -1525,25 +1645,6 @@ export class TaskBoardNativeRenderer {
 
 	// ─── Create Task Modal ────────────────────────────────────────────
 
-	export interface CreateTaskResult {
-		title: string;
-		description?: string;
-		assigneeId?: string;
-		assigneeName?: string;
-		priority?: 'low' | 'medium' | 'high';
-		dependencies?: string[];
-		workspaceId?: string;
-		worktreePath?: string;
-		worktreeBranch?: string;
-	}
-
-	export interface WorktreeInfo {
-		path: string;
-		branch: string;
-		repoRoot?: string;
-		repoName?: string;
-	}
-
 	/** Renders the create-task modal overlay and returns a promise that resolves when submitted or cancelled. */
 	showCreateTaskModal(
 		parent: HTMLElement,
@@ -1552,6 +1653,7 @@ export class TaskBoardNativeRenderer {
 		workspaces: { id: string; name: string }[],
 		activeWorkspaceId: string,
 		loadWorktrees: (workspaceId: string) => Promise<WorktreeInfo[]>,
+		loadSessions: (agentId: string) => Promise<{ id: string; name: string; messageCount: number; updatedAt: string }[]>,
 	): Promise<CreateTaskResult | null> {
 		return new Promise((resolve) => {
 			const overlay = DOM.$('div.native-tb-modal-overlay');
@@ -1568,26 +1670,310 @@ export class TaskBoardNativeRenderer {
 			// Body
 			const body = DOM.$('div.native-tb-modal-body');
 
-			// Title
+			// ★ 1. Assignee — top of form
+			const assigneeField = DOM.$('div.native-tb-field');
+			const assigneeLabel = DOM.$('span.native-tb-field-label');
+			assigneeLabel.appendChild(document.createTextNode('负责员工'));
+			assigneeLabel.style.fontSize = '12px';
+			assigneeLabel.style.fontWeight = '500';
+			assigneeField.appendChild(assigneeLabel);
+			const assigneeSelect = DOM.$('select.native-tb-filter-select') as HTMLSelectElement;
+			{
+				const opt = document.createElement('option');
+				opt.value = '';
+				opt.textContent = '未指派（自动分配）';
+				assigneeSelect.appendChild(opt);
+			}
+			for (const emp of employees) {
+				const opt = document.createElement('option');
+				opt.value = emp.id;
+				opt.textContent = emp.name;
+				assigneeSelect.appendChild(opt);
+			}
+			assigneeField.appendChild(assigneeSelect);
+			body.appendChild(assigneeField);
+
+			// ★ 2. Session selector (shown after agent selected)
+			const sessionSection = DOM.$('div');
+			const sessionLabel = DOM.$('span.native-tb-field-label', undefined, '关联会话');
+			sessionLabel.style.fontSize = '11px';
+			sessionLabel.style.color = 'var(--vscode-descriptionForeground)';
+			sessionLabel.style.textTransform = 'uppercase';
+			sessionLabel.style.letterSpacing = '0.4px';
+			sessionSection.appendChild(sessionLabel);
+
+			const sessionList = DOM.$('div');
+			sessionList.style.maxHeight = '120px';
+			sessionList.style.overflowY = 'auto';
+			sessionList.style.marginTop = '4px';
+			let selectedSessionId: string | undefined;
+			let selectedSessionName: string | undefined;
+
+			const sessionNewBtn = DOM.$('div');
+			sessionNewBtn.textContent = '＋ 新建会话（输入任务标题作为会话名）';
+			sessionNewBtn.style.fontSize = '11px';
+			sessionNewBtn.style.color = 'var(--vscode-focusBorder)';
+			sessionNewBtn.style.padding = '4px 8px';
+			sessionNewBtn.style.borderRadius = '4px';
+			sessionNewBtn.style.cursor = 'pointer';
+			sessionNewBtn.style.border = '1px dashed var(--vscode-panel-border)';
+			sessionNewBtn.addEventListener('click', () => {
+				selectedSessionId = undefined;
+				selectedSessionName = undefined;
+				titleInput.value = '';
+				titleInput.placeholder = '输入任务描述，将作为新会话名称';
+				// Highlight new session button
+				for (const child of Array.from(sessionList.children)) {
+					(child as HTMLElement).style.borderColor = 'transparent';
+					(child as HTMLElement).style.background = '';
+				}
+				sessionNewBtn.style.borderColor = 'var(--vscode-focusBorder)';
+				sessionNewBtn.style.background = '#007acc15';
+			});
+			sessionSection.appendChild(sessionList);
+			sessionSection.appendChild(sessionNewBtn);
+			body.appendChild(sessionSection);
+
+			const refreshSessions = async (agentId: string) => {
+				while (sessionList.firstChild) { sessionList.removeChild(sessionList.firstChild); }
+				sessionSection.style.display = 'block';
+				try {
+					const sessions = await loadSessions(agentId);
+					if (sessions.length === 0) {
+						const emptyMsg = DOM.$('div');
+						emptyMsg.textContent = '📭 该 Agent 暂无历史会话';
+						emptyMsg.style.fontSize = '11px';
+						emptyMsg.style.color = 'var(--vscode-descriptionForeground)';
+						emptyMsg.style.padding = '4px 0';
+						sessionList.appendChild(emptyMsg);
+						sessionNewBtn.textContent = '＋ 输入标题后将自动创建新会话';
+					} else {
+						for (const s of sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
+							const item = DOM.$('div');
+							item.style.display = 'flex';
+							item.style.alignItems = 'center';
+							item.style.gap = '6px';
+							item.style.padding = '4px 8px';
+							item.style.borderRadius = '4px';
+							item.style.fontSize = '11px';
+							item.style.cursor = 'pointer';
+							item.style.border = '1px solid transparent';
+							item.appendChild(DOM.$('span', undefined, '💬'));
+							item.appendChild(DOM.$('span', undefined, s.name));
+							item.appendChild(DOM.$('span', undefined, `${s.messageCount}条`));
+							const timeStr = s.updatedAt.slice(11, 16);
+							item.appendChild(DOM.$('span', undefined, timeStr));
+							item.addEventListener('click', () => {
+								selectedSessionId = s.id;
+								selectedSessionName = s.name;
+								titleInput.value = s.name;
+								titleInput.placeholder = s.name;
+								for (const c of Array.from(sessionList.children)) {
+									(c as HTMLElement).style.borderColor = 'transparent';
+									(c as HTMLElement).style.background = '';
+								}
+								item.style.borderColor = 'var(--vscode-focusBorder)';
+								item.style.background = '#007acc15';
+								sessionNewBtn.style.borderColor = '1px dashed var(--vscode-panel-border)';
+								sessionNewBtn.style.background = '';
+							});
+							sessionList.appendChild(item);
+						}
+						sessionNewBtn.textContent = '＋ 新建会话…';
+					}
+				} catch {
+					sessionList.appendChild(DOM.$('div', undefined, '加载会话失败'));
+				}
+			};
+			assigneeSelect.addEventListener('change', () => {
+				const agentId = assigneeSelect.value;
+				if (agentId) {
+					void refreshSessions(agentId);
+				} else {
+					sessionSection.style.display = 'none';
+					selectedSessionId = undefined;
+					selectedSessionName = undefined;
+					titleInput.placeholder = '简要描述这个任务';
+				}
+			});
+			// Hide session section initially
+			sessionSection.style.display = 'none';
+
+			const divider0 = DOM.$('div');
+			divider0.style.borderTop = '1px solid var(--vscode-panel-border)';
+			divider0.style.margin = '2px 0';
+			body.appendChild(divider0);
+
+			// ★ 3. Title / Session name
 			const titleField = DOM.$('div.native-tb-field');
 			const titleLabel = DOM.$('span.native-tb-field-label');
-			titleLabel.appendChild(document.createTextNode('任务标题'));
+			titleLabel.appendChild(document.createTextNode('任务标题 / 会话名'));
 			const titleRequired = DOM.$('span', undefined, ' *');
 			titleRequired.style.color = '#f87171';
 			titleLabel.appendChild(titleRequired);
 			titleField.appendChild(titleLabel);
 			const titleInput = DOM.$('input.native-tb-input') as HTMLInputElement;
 			titleInput.placeholder = '简要描述这个任务';
+			// Sync title changes back to the selected session item
+			titleInput.addEventListener('input', () => {
+				if (!selectedSessionId || !selectedSessionName) { return; }
+				if (titleInput.value === selectedSessionName) { return; }
+				selectedSessionName = titleInput.value;
+				// Update the selected session item's displayed name
+				for (const child of Array.from(sessionList.children)) {
+					if ((child as HTMLElement).style.borderColor?.includes('var(--vscode-focusBorder)') ||
+						(child as HTMLElement).style.borderColor === 'rgb(0, 122, 204)') {
+						const spans = (child as HTMLElement).querySelectorAll('span');
+						if (spans.length >= 2) { spans[1].textContent = selectedSessionName; }
+					}
+				}
+			});
 			titleField.appendChild(titleInput);
 			body.appendChild(titleField);
 
-			// Description
+			// Description — rich contenteditable with image paste & file drop support
 			const descField = DOM.$('div.native-tb-field');
-			descField.appendChild(DOM.$('span.native-tb-field-label', undefined, '任务描述'));
-			const descTextarea = DOM.$('textarea.native-tb-textarea') as HTMLTextAreaElement;
-			descTextarea.placeholder = '补充细节、验收标准等（可选）';
-			descTextarea.rows = 3;
-			descField.appendChild(descTextarea);
+			descField.appendChild(DOM.$('span.native-tb-field-label', undefined, '任务描述 (支持粘贴图片、拖拽文件)'));
+			const descEditor = DOM.$('div.native-tb-rich-desc');
+			descEditor.contentEditable = 'true';
+			descEditor.setAttribute('role', 'textbox');
+			descEditor.setAttribute('aria-multiline', 'true');
+
+			// Collected attachments
+			const descAttachments: { name: string; mimeType: string; base64Content: string }[] = [];
+
+			// Paste handler — detect images
+			descEditor.addEventListener('paste', (e: ClipboardEvent) => {
+				const items = e.clipboardData?.items;
+				if (!items) { return; }
+				for (const item of Array.from(items)) {
+					if (item.type.startsWith('image/')) {
+						e.preventDefault();
+						const file = item.getAsFile();
+						if (!file) { continue; }
+						const reader = new FileReader();
+						reader.onload = () => {
+							const img = document.createElement('img');
+							img.src = reader.result as string;
+							img.className = 'inline-img';
+							img.title = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+							descAttachments.push({ name: file.name, mimeType: file.type, base64Content: (reader.result as string).split(',')[1] || '' });
+							// Insert at cursor
+							const sel = window.getSelection();
+							if (sel && sel.rangeCount > 0 && descEditor.contains(sel.anchorNode)) {
+								sel.getRangeAt(0).insertNode(img);
+								sel.collapseToEnd();
+							} else {
+								descEditor.appendChild(img);
+							}
+						};
+						reader.readAsDataURL(file);
+						return;
+					}
+				}
+			});
+
+			// Drag-and-drop files
+			descEditor.addEventListener('dragover', (e: DragEvent) => { e.preventDefault(); descEditor.classList.add('drag-over'); });
+			descEditor.addEventListener('dragleave', () => { descEditor.classList.remove('drag-over'); });
+			descEditor.addEventListener('drop', (e: DragEvent) => {
+				e.preventDefault();
+				descEditor.classList.remove('drag-over');
+				const files = e.dataTransfer?.files;
+				if (!files) { return; }
+				for (const file of Array.from(files)) {
+					if (file.type.startsWith('image/')) {
+						const reader = new FileReader();
+						reader.onload = () => {
+							const img = document.createElement('img');
+							img.src = reader.result as string;
+							img.className = 'inline-img';
+							img.title = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+							descAttachments.push({ name: file.name, mimeType: file.type, base64Content: (reader.result as string).split(',')[1] || '' });
+							const sel = window.getSelection();
+							if (sel && sel.rangeCount > 0 && descEditor.contains(sel.anchorNode)) {
+								sel.getRangeAt(0).insertNode(img);
+								sel.collapseToEnd();
+							} else {
+								descEditor.appendChild(img);
+							}
+						};
+						reader.readAsDataURL(file);
+					} else {
+						const chip = document.createElement('span');
+						chip.className = 'native-tb-file-chip';
+						chip.innerHTML = `<span style="font-size:14px">📄</span><span class="f-name" title="${file.name}">${file.name}</span><span class="f-size">${(file.size / 1024).toFixed(1)} KB</span>`;
+						const rmBtn = document.createElement('button');
+						rmBtn.className = 'f-remove';
+						rmBtn.textContent = '✕';
+						rmBtn.addEventListener('click', () => {
+							const idx = descAttachments.findIndex(a => a.name === file.name);
+							if (idx !== -1) { descAttachments.splice(idx, 1); }
+							chip.remove();
+						});
+						chip.appendChild(rmBtn);
+						// Read as base64 for attachment storage
+						const reader = new FileReader();
+						reader.onload = () => descAttachments.push({ name: file.name, mimeType: file.type, base64Content: (reader.result as string).split(',')[1] || '' });
+						reader.readAsDataURL(file);
+						descEditor.appendChild(chip);
+						descEditor.appendChild(document.createTextNode(' '));
+					}
+				}
+			});
+			descField.appendChild(descEditor);
+
+			// Toolbar
+			const toolbar = DOM.$('div.native-tb-desc-toolbar');
+			const hiddenFileInput = document.createElement('input');
+			hiddenFileInput.type = 'file';
+			hiddenFileInput.multiple = true;
+			hiddenFileInput.accept = 'image/*,.pdf,.md,.txt,.doc,.docx,.xls,.xlsx';
+			hiddenFileInput.className = 'native-tb-desc-file-input';
+			hiddenFileInput.addEventListener('change', () => {
+				const files = hiddenFileInput.files;
+				if (!files) { return; }
+				for (const file of Array.from(files)) {
+					const reader = new FileReader();
+					reader.onload = () => {
+						const content = reader.result as string;
+						if (file.type.startsWith('image/')) {
+							const img = document.createElement('img');
+							img.src = content;
+							img.className = 'inline-img';
+							img.title = file.name;
+							descAttachments.push({ name: file.name, mimeType: file.type, base64Content: content.split(',')[1] || '' });
+							descEditor.appendChild(img);
+						} else {
+							const chip = document.createElement('span');
+							chip.className = 'native-tb-file-chip';
+							chip.innerHTML = `<span style="font-size:14px">📄</span><span class="f-name" title="${file.name}">${file.name}</span><span class="f-size">${(file.size / 1024).toFixed(1)} KB</span>`;
+							const rmBtn = document.createElement('button');
+							rmBtn.className = 'f-remove';
+							rmBtn.textContent = '✕';
+							rmBtn.addEventListener('click', () => { chip.remove(); });
+							chip.appendChild(rmBtn);
+							descAttachments.push({ name: file.name, mimeType: file.type, base64Content: content.split(',')[1] || '' });
+							descEditor.appendChild(chip);
+						}
+					};
+					reader.readAsDataURL(file);
+				}
+			});
+			toolbar.appendChild(hiddenFileInput);
+
+			const pasteBtn = DOM.$('button.native-tb-desc-toolbar-btn');
+			pasteBtn.innerHTML = '🖼 粘贴图片';
+			pasteBtn.title = '提示: 直接从剪贴板 Ctrl+V 粘贴图片';
+			pasteBtn.addEventListener('click', () => { descEditor.focus(); });
+			toolbar.appendChild(pasteBtn);
+
+			const fileBtn = DOM.$('button.native-tb-desc-toolbar-btn');
+			fileBtn.innerHTML = '📎 选择文件';
+			fileBtn.title = '选择图片或文档文件';
+			fileBtn.addEventListener('click', () => { hiddenFileInput.click(); });
+			toolbar.appendChild(fileBtn);
+			descField.appendChild(toolbar);
 			body.appendChild(descField);
 
 			// Divider
@@ -1638,7 +2024,7 @@ export class TaskBoardNativeRenderer {
 				wtSelect.appendChild(opt);
 			}
 			// Load worktrees on workspace change
-			const wtLoading = DOM.$('option');
+			const wtLoading = document.createElement('option');
 			wtLoading.value = '';
 			wtLoading.textContent = '加载中…';
 			wtLoading.disabled = true;
@@ -1715,26 +2101,8 @@ export class TaskBoardNativeRenderer {
 			divider2.style.margin = '2px 0';
 			body.appendChild(divider2);
 
-			// Row: assignee + priority
+			// Row: priority + deps
 			const row = DOM.$('div.native-tb-field-row');
-
-			const assigneeField = DOM.$('div.native-tb-field');
-			assigneeField.appendChild(DOM.$('span.native-tb-field-label', undefined, '负责员工'));
-			const assigneeSelect = DOM.$('select.native-tb-filter-select') as HTMLSelectElement;
-			{
-				const opt = document.createElement('option');
-				opt.value = '';
-				opt.textContent = '未指派（自动分配）';
-				assigneeSelect.appendChild(opt);
-			}
-			for (const emp of employees) {
-				const opt = document.createElement('option');
-				opt.value = emp.id;
-				opt.textContent = emp.name;
-				assigneeSelect.appendChild(opt);
-			}
-			assigneeField.appendChild(assigneeSelect);
-			row.appendChild(assigneeField);
 
 			const priorityField = DOM.$('div.native-tb-field');
 			priorityField.appendChild(DOM.$('span.native-tb-field-label', undefined, '优先级'));
@@ -1796,10 +2164,11 @@ export class TaskBoardNativeRenderer {
 				const wtPath = wtSelect.value || undefined;
 				const wt = wtPath ? currentWtList.find(w => w.path === wtPath) : undefined;
 				const wsId = wsSelect.value || activeWorkspaceId;
+				const descText = descEditor.innerText.trim() || undefined;
 				overlay.remove();
 				resolve({
 					title: titleInput.value.trim(),
-					description: descTextarea.value.trim() || undefined,
+					description: descText,
 					assigneeId: assigneeSelect.value || undefined,
 					assigneeName: emp?.name || undefined,
 					priority: prioritySelect.value as 'low' | 'medium' | 'high',
@@ -1807,6 +2176,9 @@ export class TaskBoardNativeRenderer {
 					workspaceId: wsId,
 					worktreePath: wt?.path,
 					worktreeBranch: wt?.branch,
+					agentSessionId: selectedSessionId,
+					attachments: descAttachments.length > 0 ? descAttachments.slice() : undefined,
+					agentSessionName: selectedSessionId ? selectedSessionName : undefined,
 				});
 			});
 			footer.appendChild(submitBtn);

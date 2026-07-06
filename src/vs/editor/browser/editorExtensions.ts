@@ -31,7 +31,7 @@ export type ServicesAccessor = InstantiationServicesAccessor;
 export type EditorContributionCtor = IConstructorSignature<IEditorContribution, [ICodeEditor]>;
 export type DiffEditorContributionCtor = IConstructorSignature<IDiffEditorContribution, [IDiffEditor]>;
 
-export const enum EditorContributionInstantiation {
+export enum EditorContributionInstantiation {
 	/**
 	 * The contribution is created eagerly when the {@linkcode ICodeEditor} is instantiated.
 	 * Only Eager contributions can participate in saving or restoring of view state.

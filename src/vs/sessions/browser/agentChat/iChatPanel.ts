@@ -12,6 +12,7 @@ import type {
 	ChatMode,
 	StreamPhase,
 	IWorktreeItem,
+	IWorkspaceItem,
 	ISessionInfo,
 	IAgentSessionMeta,
 	IContextUsage,
@@ -150,6 +151,10 @@ export interface IChatPanel extends IDisposable {
 	setAgentSessions(sessions: ReadonlyArray<IAgentSessionMeta>): void;
 	setWorktrees(items: ReadonlyArray<IWorktreeItem>): void;
 	setSelectedWorktree(path: string): void;
+	/** 设置工作区列表（供输入区工具栏 workspace 下拉框使用） */
+	setWorkspaces(items: ReadonlyArray<IWorkspaceItem>): void;
+	/** 设置当前选中的工作区 */
+	setSelectedWorkspace(id: string): void;
 	setCheckpoint(info: ICheckpointInfo | null): void;
 	setCheckpoints(list: ICheckpointInfo[]): void;
 

@@ -876,6 +876,39 @@
 	background: rgba(239, 68, 68, 0.08);
 }
 
+/* ── 拖拽排序 ── */
+.queue-item-grip {
+	flex-shrink: 0;
+	width: 12px;
+	color: var(--ec-text-muted, #6e7681);
+	cursor: grab;
+	font-size: 12px;
+	line-height: 1;
+	letter-spacing: -2px;
+	user-select: none;
+	opacity: 0;
+	transition: opacity 0.15s;
+}
+.queue-item:hover .queue-item-grip {
+	opacity: 0.5;
+}
+.queue-item-grip:active {
+	cursor: grabbing;
+}
+.queue-item.dragging {
+	opacity: 0.4;
+}
+.queue-item-dragging {
+	opacity: 0.3;
+	background: rgba(88, 166, 255, 0.08) !important;
+}
+.queue-drop-above {
+	border-top: 2px solid var(--ec-accent, #58a6ff) !important;
+}
+.queue-drop-below {
+	border-bottom: 2px solid var(--ec-accent, #58a6ff) !important;
+}
+
 .queue-item-icon {
 	font-size: 11px;
 	color: var(--ec-text-secondary, #8b949e);
@@ -944,6 +977,10 @@
 .queue-item-action-btn.accent:hover {
 	background: rgba(88, 166, 255, 0.18);
 	color: var(--ec-accent-hover, #79c0ff);
+}
+.queue-item-action-btn:disabled {
+	opacity: 0.35;
+	cursor: not-allowed;
 }
 .queue-item-action-btn.success {
 	color: var(--ec-success, #4ade80);
@@ -1770,52 +1807,68 @@
 	background-color: rgba(128, 128, 128, 0.03);
 }
 
-/* ── Attachment Bar ── */
+/* ── Attachment Bar ──
+   位于 textarea 和 toolbar 之间，视觉上与 textarea 无缝连接，
+   形成"文本 + 附件混排"的效果。图像显示为 48px 小预览卡。
+   ═══════════════════════════════════════════════════════════════════ */
 .chat-attachment-bar {
 	display: none;
 	flex-wrap: wrap;
-	gap: 4px;
-	padding: 4px 8px 0;
+	gap: 6px;
+	padding: 4px 14px 8px 14px;
+	background: var(--ec-bg-tertiary);
 }
 
 .chat-attachment-chip {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
-	padding: 2px 8px;
-	border-radius: 4px;
-	background: var(--ec-bg-tertiary);
-	border: 1px solid var(--ec-border-secondary);
-	font-size: 11px;
-	max-width: 180px;
+	gap: 5px;
+	padding: 4px 9px;
+	border-radius: 10px;
+	background: var(--vscode-input-background, #262626);
+	border: 1px solid var(--ec-border-secondary, rgba(128,128,128,0.2));
+	font-size: 11.5px;
+	max-width: 200px;
 	position: relative;
+	transition: border-color 0.12s;
+}
+.chat-attachment-chip:hover {
+	border-color: var(--ec-border-primary, rgba(128,128,128,0.35));
 }
 
 .chat-attachment-thumb {
-	width: 20px;
-	height: 20px;
-	border-radius: 3px;
+	width: 36px;
+	height: 36px;
+	border-radius: 6px;
 	object-fit: cover;
+	border: 1px solid rgba(128,128,128,0.15);
 }
 
-.chat-attachment-file-icon { font-size: 14px; flex-shrink: 0; }
+.chat-attachment-file-icon {
+	font-size: 15px;
+	flex-shrink: 0;
+}
 
 .chat-attachment-name {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	color: var(--ec-text-primary);
+	color: var(--ec-text-primary, #c9d1d9);
+	max-width: 110px;
 }
 
 .chat-attachment-remove {
 	cursor: pointer;
 	font-size: 10px;
-	color: var(--ec-text-secondary);
+	color: var(--ec-text-secondary, #8b949e);
 	flex-shrink: 0;
-	opacity: 0.6;
+	opacity: 0.55;
+	transition: opacity 0.12s, color 0.12s;
 }
-
-.chat-attachment-remove:hover { opacity: 1; color: #e94560; }
+.chat-attachment-remove:hover {
+	opacity: 1;
+	color: var(--ec-error, #e94560);
+}
 
 /* Warning overlay on image thumbnail when model doesn't support images */
 .chat-attachment-warn-overlay {
@@ -4221,6 +4274,12 @@
 	border-color: rgba(124, 185, 255, 0.4);
 }
 
+/* 有附件时：composer box 底部圆角变平（attachment bar 负责底部圆角），
+   形成 textarea → attachments → toolbar 无缝视觉流 */
+.chat-composer-box.has-attachments .chat-composer-textarea {
+	padding-bottom: 4px;
+}
+
 /* ── Skill chips bar ────────────────────────────── */
 .skill-chips-bar {
 	display: flex;
@@ -4412,6 +4471,16 @@
 
 .chat-send-circle.chat-cancel-circle:hover {
 	background: #ff5c75 !important;
+	transform: scale(1.08);
+}
+
+/* 排队发送状态 — 流式输出中用户输入了内容，按钮提示"加入队列" */
+.chat-send-circle.chat-queue-circle {
+	background: var(--ec-accent, #58a6ff) !important;
+	animation: cancel-pulse 1.5s ease-in-out infinite;
+}
+.chat-send-circle.chat-queue-circle:hover {
+	background: var(--ec-accent-hover, #79c0ff) !important;
 	transform: scale(1.08);
 }
 
@@ -5086,6 +5155,68 @@
 
 .chat-worktree-dropdown-changes-uncommitted {
 	color: var(--vscode-gitDecoration-conflictingResourceForeground, #bd2c00);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Workspace dropdown (input-area toolbar)
+   ═══════════════════════════════════════════════════════════════════ */
+.workspace-dropdown {
+	position: fixed;
+	width: 260px;
+	max-height: 280px;
+	overflow-y: auto;
+	background: #252a33;
+	border: 1px solid #3d444f;
+	border-radius: 8px;
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+	z-index: 10000;
+	padding: 4px;
+}
+.workspace-dropdown-item {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 7px 10px;
+	border-radius: 5px;
+	cursor: pointer;
+	color: #c9d1d9;
+	transition: background 0.12s;
+}
+.workspace-dropdown-item:hover {
+	background: #383f4b;
+}
+.workspace-dropdown-item.active {
+	background: #1c3a5e;
+	color: #79c0ff;
+}
+.workspace-dropdown-name {
+	font-size: 13px;
+	font-weight: 500;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.workspace-dropdown-path {
+	font-size: 10px;
+	color: #8b949e;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Toolbar workspace/worktree tag buttons
+   ═══════════════════════════════════════════════════════════════════ */
+.chat-toolbar-btn.workspace-tag,
+.chat-toolbar-btn.worktree-tag {
+	max-width: 90px;
+}
+.chat-toolbar-btn.workspace-tag .chat-toolbar-btn-label,
+.chat-toolbar-btn.worktree-tag .chat-toolbar-btn-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	display: block;
 }
 
 /* Message-nav dropdown */

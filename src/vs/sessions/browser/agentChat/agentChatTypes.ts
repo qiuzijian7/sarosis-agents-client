@@ -441,6 +441,13 @@ export interface IMessageNavItem {
 	readonly timestamp: number;
 }
 
+/** Workspace selector item — displayed in the input-area toolbar workspace dropdown */
+export interface IWorkspaceItem {
+	readonly id: string;
+	readonly name: string;
+	readonly path: string;
+}
+
 /** Session info bar payload */
 export interface ISessionInfo {
 	readonly mode: ChatMode;

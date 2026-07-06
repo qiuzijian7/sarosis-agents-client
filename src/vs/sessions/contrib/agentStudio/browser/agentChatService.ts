@@ -99,6 +99,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	readonly onDidChangeAgentSessions: Event<{ agentId: string }> =
 		this._onDidChangeAgentSessionsEmitter.event;
 
+	private readonly _onDidStreamDeltaEmitter = this._register(
+		new Emitter<{ agentId: string; sessionId: string; delta: IChatStreamDelta }>(),
+	);
+	readonly onDidStreamDelta: Event<{ agentId: string; sessionId: string; delta: IChatStreamDelta }> =
+		this._onDidStreamDeltaEmitter.event;
+
 	constructor(
 		@ILogService logService: ILogService,
 		@IAgentDriverService driverService: IAgentDriverService,
@@ -1029,6 +1035,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (typeof delta.usage.credit === 'number') { usageCredit += delta.usage.credit; }
 				}
 				onDelta(delta as any);
+			// Broadcast delta for external panels (kanban, task overview) to stay in sync
+			this._onDidStreamDeltaEmitter.fire({
+				agentId,
+				sessionId: options.agentSessionId || '',
+				delta: delta as any,
+			});
 			}
 
 			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${Date.now() - t0_stream}ms`);
@@ -1187,6 +1199,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				error,
 			);
 			onDelta({ type: "error", content: String(error) });
+		this._onDidStreamDeltaEmitter.fire({
+			agentId,
+			sessionId: options.agentSessionId || '',
+			delta: { type: 'error' as any, content: String(error) },
+		});
 			throw error;
 		} finally {
 			this._activeStreams.delete(streamKey);
