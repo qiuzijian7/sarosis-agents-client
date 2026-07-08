@@ -20,6 +20,7 @@ import type {
 	TaskBoardRecord,
 	TaskBoardStatus,
 	TaskBoard,
+	BoardLink,
 	TaskAttachment,
 	OrchestrationPlan,
 	PlanTask,
@@ -617,6 +618,9 @@ export interface IAgentTaskBoardService {
 	/** Fired when boards are created/renamed/deleted (multi-board isolation, P2). */
 	readonly onDidChangeBoards: Event<void>;
 
+	/** Fired when board hyperlinks are added or removed. */
+	readonly onDidChangeBoardLinks: Event<void>;
+
 	getTasks(workspaceId?: string, boardId?: string): Promise<TaskBoardRecord[]>;
 	getTask(id: string): Promise<TaskBoardRecord | undefined>;
 	createTask(data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord>;
@@ -641,6 +645,16 @@ export interface IAgentTaskBoardService {
 	/** Delete a board; its tasks are reassigned to the workspace's default board. */
 	deleteBoard(boardId: string): Promise<void>;
 
+	// ─── Board hyperlinks (看板超链接) ──────────────────────────────────
+	/** List all pinned board hyperlinks. */
+	listBoardLinks(): Promise<BoardLink[]>;
+	/** Add a new board hyperlink by name + URL. */
+	addBoardLink(name: string, url: string): Promise<BoardLink>;
+	/** Update an existing board hyperlink's name and/or URL. */
+	updateBoardLink(id: string, name: string, url: string): Promise<BoardLink>;
+	/** Remove a board hyperlink by id. */
+	removeBoardLink(id: string): Promise<void>;
+
 	// ─── Attachments (P2) ───────────────────────────────────────────────────
 	/**
 	 * Attach a file to a task. The binary content is stored in a side file;
@@ -652,6 +666,34 @@ export interface IAgentTaskBoardService {
 	removeAttachment(taskId: string, attachmentId: string): Promise<void>;
 	/** Read an attachment's content back as base64 (for download/preview). */
 	readAttachment(taskId: string, attachmentId: string): Promise<string>;
+
+	/**
+	 * Download a URL to a local temp file and return its absolute path.
+	 * Used by the TAPD-import flow and the task detail modal to fetch images/files
+	 * from an authenticated source (e.g. a logged-in TAPD session). The download
+	 * is delegated to the Playwright browser context that holds the auth cookies.
+	 * Returns undefined if the download fails (caller should silently skip).
+	 *
+	 * @param opts.sessionId Playwright session id (defaults to the Saros Claw agent).
+	 * @param opts.viewId Browser view id whose context provides the auth cookies.
+	 *   When omitted, a tracked TAPD page is located automatically if possible.
+	 */
+	downloadUrlToTemp(url: string, opts?: { sessionId?: string; viewId?: string }): Promise<string | undefined>;
+
+	/**
+	 * Download a URL (e.g. a TAPD work-item attachment) through the Playwright
+	 * browser context (so authenticated cookies are present) and return the file
+	 * as base64 together with its inferred name, mimeType and a temp file path.
+	 * The caller can attach the result to a task via `addAttachment`, or read the
+	 * temp path / base64 for other uses. Returns `undefined` on failure or when
+	 * the response is not a real file (e.g. an HTML login page).
+	 *
+	 * @param url The file URL to download.
+	 * @param opts.sessionId Playwright session id (defaults to the Saros Claw agent).
+	 * @param opts.viewId Browser view id whose context provides the auth cookies.
+	 *   When omitted, a tracked TAPD page is located automatically if possible.
+	 */
+	downloadUrlForAttachment(url: string, opts?: { sessionId?: string; viewId?: string }): Promise<{ name: string; mimeType: string; base64: string; tempPath: string } | undefined>;
 }
 
 // --- Task Orchestration Service ---
@@ -781,7 +823,7 @@ export interface ITaskOrchestrationService {
 	executeTaskForBoard(
 		workspaceId: string,
 		taskBoardRecordId: string,
-		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string; workflowId?: string; variableValues?: Record<string, string> },
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string; workflowId?: string; variableValues?: Record<string, string>; attachments?: IChatAttachmentSend[] },
 	): Promise<void>;
 
 	/**

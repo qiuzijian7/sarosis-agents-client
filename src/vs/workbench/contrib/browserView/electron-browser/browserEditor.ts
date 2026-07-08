@@ -526,6 +526,8 @@ export class BrowserEditor extends EditorPane {
 	}
 
 	override async setInput(input: BrowserEditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		this.logService.info(`[BrowserEditor] setInput: name="${input.getName()}", title="${input.getTitle()}", url="${input.url}", hasModel=${!!input.model}`);
+
 		await super.setInput(input, options, context, token);
 		if (token.isCancellationRequested) {
 			return;
@@ -547,6 +549,7 @@ export class BrowserEditor extends EditorPane {
 
 			// Resolve the browser view model from the input
 			model = await input.resolve();
+			this.logService.info(`[BrowserEditor] setInput: model resolved, model.title="${model?.title}", model.url="${model?.url}"`);
 		}
 
 		if (token.isCancellationRequested || this.input !== input) {
@@ -617,6 +620,35 @@ export class BrowserEditor extends EditorPane {
 		this.layout();
 		this.updateVisibility();
 		this.doScreenshot();
+
+		// Log title area dimensions to diagnose tab overflow issues
+		try {
+			// Walk up from our browser container to find the editor-group-container
+			let groupContainer = this._browserContainer.parentElement;
+			while (groupContainer && !groupContainer.classList.contains('editor-group-container')) {
+				groupContainer = groupContainer.parentElement;
+			}
+			if (groupContainer) {
+				const titleEl = groupContainer.querySelector(':scope > .title.tabs') as HTMLElement | null;
+				if (titleEl) {
+					const titleRect = titleEl.getBoundingClientRect();
+					const tabsContainer = titleEl.querySelector(':scope .tabs-container') as HTMLElement | null;
+					const tabsRect = tabsContainer?.getBoundingClientRect();
+					const isWrapping = titleEl.querySelector(':scope .tabs-and-actions-container.wrapping') !== null;
+					const tabCount = tabsContainer?.children.length ?? 0;
+					const scrollWidth = tabsContainer?.scrollWidth;
+					const offsetWidth = tabsContainer?.offsetWidth;
+					this.logService.info(
+						`[BrowserEditor] Title area: height=${titleRect.height}, tabsH=${tabsRect?.height}, ` +
+						`tabCount=${tabCount}, wrapping=${isWrapping}, ` +
+						`tabs-scrollW=${scrollWidth}, tabs-offsetW=${offsetWidth}, ` +
+						`window-innerW=${this.window.innerWidth}`
+					);
+				}
+			}
+		} catch {
+			// Don't throw if DOM query fails
+		}
 	}
 
 	protected override setEditorVisible(visible: boolean): void {
@@ -988,6 +1020,7 @@ export class BrowserEditor extends EditorPane {
 			for (const contribution of this._contributionInstances.values()) {
 				contribution.layout(dimension.width);
 			}
+			this.logService.info(`[BrowserEditor] layout: dimension=${dimension.width}x${dimension.height}`);
 		}
 
 		const whenContainerStylesLoaded = this.layoutService.whenContainerStylesLoaded(this.window);
@@ -1012,8 +1045,11 @@ export class BrowserEditor extends EditorPane {
 			const containerRect = this._browserContainer.getBoundingClientRect();
 			const cornerRadius = this.window.getComputedStyle(this._browserContainer).borderTopLeftRadius ?? '0';
 
+			this.logService.info(`[BrowserEditor] layoutBrowserContainer: rect=${containerRect.width}x${containerRect.height} at (${containerRect.left},${containerRect.top}), retries=${retries}, borderRadius=${cornerRadius}`);
+
 			// This can happen under certain conditions. Keep trying for a couple of frames to allow things to stabilize.
 			if ((containerRect.width === 0 || containerRect.height === 0) && retries > 0) {
+				this.logService.warn(`[BrowserEditor] layoutBrowserContainer: zero-size rect, retrying (${retries} left)`);
 				this.window.requestAnimationFrame(() => this.layoutBrowserContainer(retries - 1));
 				return;
 			}

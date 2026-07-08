@@ -13,7 +13,9 @@ import {
 	TaskBoardRecord,
 	TaskBoardStatus,
 	TaskSource,
+	BoardLink,
 } from '../../../common/agentStudioTypes.js';
+import type { TapdImportResult, TapdImportFilter, TapdImportFilterOptions } from './tapdImportService.js';
 
 // ─── Column Configuration ──────────────────────────────────────────────────
 
@@ -27,7 +29,6 @@ export interface ColumnDef {
 }
 
 export const COLUMNS: readonly ColumnDef[] = [
-	{ key: 'triage', statuses: ['triage' as TaskBoardStatus], dropStatus: 'triage' as TaskBoardStatus, label: '待规划', icon: '🗂', color: '#a855f7' },
 	{ key: 'todo', statuses: ['todo' as TaskBoardStatus, 'ready' as TaskBoardStatus], dropStatus: 'todo' as TaskBoardStatus, label: '待执行', icon: '📋', color: '#f59e0b' },
 	{ key: 'running', statuses: ['running' as TaskBoardStatus, 'blocked' as TaskBoardStatus], dropStatus: 'running' as TaskBoardStatus, label: '执行中', icon: '⚡', color: '#3b82f6' },
 	{ key: 'done', statuses: ['done' as TaskBoardStatus], dropStatus: 'done' as TaskBoardStatus, label: '执行结束', icon: '✅', color: '#10b981' },
@@ -56,6 +57,14 @@ export interface TaskBoardEvents {
 	readonly onFilterChange: Event<TaskBoardFilter>;
 	readonly onBoardFilterChange: Event<string>;
 	readonly onSwarmCancel: Event<string>;
+	/** User clicked "🔗 添加看板超链接" — the consumer should open the add-link flow. */
+	readonly onAddBoardLinkRequest: Event<void>;
+	/** User clicked a board hyperlink chip/tab — the consumer should open the embedded window. */
+	readonly onOpenBoardLink: Event<{ linkId: string }>;
+	/** User clicked the delete (✕) on a board hyperlink — the consumer should remove it. */
+	readonly onDeleteBoardLink: Event<{ linkId: string }>;
+	/** User clicked the edit (✎) on a board hyperlink — the consumer should open the edit modal. */
+	readonly onEditBoardLink: Event<{ linkId: string; name: string; url: string }>;
 }
 
 // ─── Employee / Agent info ──────────────────────────────────────────────────
@@ -63,6 +72,8 @@ export interface TaskBoardEvents {
 export interface EmployeeInfo {
 	id: string;
 	name: string;
+	/** Agent's real icon (emoji string like '🦞' or a data-URI image). Used for the card avatar. */
+	icon?: string;
 }
 
 // ─── Swarm info ─────────────────────────────────────────────────────────────
@@ -89,6 +100,8 @@ export interface TaskBoardRenderData {
 	draggingTaskId: string | null;
 	dragOverColumn: string | null;
 	focusedTaskId: string | null;
+	/** Pinned board hyperlinks shown as chips/tabs under the header. */
+	boardLinks?: BoardLink[];
 }
 
 /** Result from showCreateTaskModal. */
@@ -108,6 +121,8 @@ export interface CreateTaskResult {
 	agentSessionName?: string;
 	/** Attachments collected from rich description editor. */
 	attachments?: { name: string; mimeType: string; base64Content: string }[];
+	/** When true (default for "创建并执行"), the task auto-starts after creation. When false ("仅创建"), it stays in 'todo' without auto-execution. */
+	execute?: boolean;
 }
 
 /** Worktree info for the create task modal dropdown. */
@@ -238,6 +253,92 @@ function injectStyles(): void {
 .native-tb-btn-danger {
 	color: #f48771;
 }
+.native-tb-btn-accent {
+	background: #a855f7;
+	color: #fff;
+}
+.native-tb-btn-accent:hover {
+	background: #9333ea;
+}
+.native-tb-btn-primary {
+	background: #0e639c;
+	color: #fff;
+	border-color: #0e639c;
+}
+.native-tb-btn-primary:hover {
+	background: #1177bb;
+}
+.native-tb-input {
+	width: 100%;
+	padding: 7px 10px;
+	font-size: 13px;
+	background: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #ddd);
+	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	border-radius: 5px;
+	box-sizing: border-box;
+}
+.native-tb-input:focus {
+	outline: 1px solid #a855f7;
+	border-color: #a855f7;
+}
+
+/* === Board hyperlink bar === */
+.native-tb-links {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 8px 12px;
+	background: #232323;
+	border-bottom: 1px solid var(--vscode-panel-border, #2b2b2b);
+	min-height: 36px;
+	align-items: center;
+}
+.native-tb-links-empty {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+	font-style: italic;
+}
+.native-tb-link-chip {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 6px 4px 10px;
+	background: var(--vscode-editorWidget-background, #252526);
+	border: 1px solid var(--vscode-panel-border, #2b2b2b);
+	border-radius: 6px;
+	max-width: 280px;
+	cursor: pointer;
+	transition: border-color 0.12s, background 0.12s;
+}
+.native-tb-link-chip:hover {
+	border-color: #a855f7;
+	background: rgba(168,85,247,0.14);
+}
+.native-tb-link-icon {
+	font-size: 12px;
+}
+.native-tb-link-label {
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 200px;
+}
+.native-tb-link-del {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	border-radius: 4px;
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+	font-size: 12px;
+}
+.native-tb-link-del:hover {
+	background: rgba(255,80,80,0.18);
+	color: #ff6b6b;
+}
 
 /* === Swarms bar === */
 .native-tb-swarms {
@@ -262,12 +363,13 @@ function injectStyles(): void {
 
 /* === Columns === */
 .native-tb-columns {
-	flex: 1;
+	flex: 1 1 0;
 	display: flex;
 	gap: 0;
 	overflow-x: auto;
 	overflow-y: hidden;
 	min-height: 0;
+	max-height: 100%;
 }
 .native-tb-column {
 	flex: 1 1 0;
@@ -277,6 +379,9 @@ function injectStyles(): void {
 	flex-direction: column;
 	border-right: 1px solid var(--vscode-panel-border);
 	background: var(--vscode-sideBar-background);
+	min-height: 0;
+	max-height: 100%;
+	overflow: hidden;
 }
 .native-tb-column:last-child {
 	border-right: none;
@@ -326,10 +431,25 @@ function injectStyles(): void {
 .native-tb-cards {
 	flex: 1;
 	overflow-y: auto;
+	overflow-x: hidden;
 	padding: 4px 6px;
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
+	min-height: 0;
+	scrollbar-width: thin;
+	scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(128,128,128,0.45)) transparent;
+}
+.native-tb-cards::-webkit-scrollbar { width: 8px; }
+.native-tb-cards::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background, rgba(128,128,128,0.45));
+	border-radius: 4px;
+}
+.native-tb-cards::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground, rgba(128,128,128,0.65));
+}
+.native-tb-cards::-webkit-scrollbar-track {
+	background: transparent;
 }
 .native-tb-card {
 	position: relative;
@@ -413,6 +533,16 @@ function injectStyles(): void {
 	text-decoration: line-through;
 	opacity: 0.6;
 }
+.native-tb-card-url {
+	display: inline-block;
+	margin-top: 4px;
+	font-size: 11px;
+	color: var(--vscode-textLink-foreground, #3794ff);
+	text-decoration: none;
+	word-break: break-all;
+	cursor: pointer;
+}
+.native-tb-card-url:hover { text-decoration: underline; }
 .native-tb-card-done { opacity: 0.65; }
 .native-tb-card-archived .native-tb-card-title,
 .native-tb-card-archived .native-tb-card-desc { opacity: 0.5; }
@@ -792,6 +922,9 @@ function injectStyles(): void {
 	from { opacity: 0; transform: translateY(-8px) scale(0.98); }
 	to   { opacity: 1; transform: translateY(0) scale(1); }
 }
+@keyframes native-tb-spin {
+	to { transform: rotate(360deg); }
+}
 .native-tb-detail-header {
 	display: flex;
 	align-items: flex-start;
@@ -937,6 +1070,56 @@ function injectStyles(): void {
 .native-tb-detail-dep-dot.done    { background: #4ec9b0; }
 .native-tb-detail-dep-dot.active  { background: #cca700; }
 .native-tb-detail-dep-dot.waiting { background: var(--vscode-descriptionForeground); opacity: 0.5; }
+.native-tb-detail-title-input {
+	width: 100%;
+	font-size: 16px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+	border-radius: 4px;
+	padding: 4px 8px;
+	font-family: inherit;
+}
+.native-tb-textarea {
+	width: 100%;
+	min-height: 90px;
+	resize: vertical;
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--vscode-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+	border-radius: 4px;
+	padding: 8px 10px;
+	font-family: inherit;
+	box-sizing: border-box;
+}
+.native-tb-detail-deps-edit {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	max-height: 140px;
+	overflow-y: auto;
+	padding: 6px 8px;
+	background: var(--vscode-sideBar-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 4px;
+}
+.native-tb-dep-option {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 13px;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+}
+.native-tb-dep-option input { cursor: pointer; }
+.native-tb-detail-muted {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.7;
+}
 .native-tb-detail-timestamps {
 	display: flex;
 	gap: 20px;
@@ -963,10 +1146,408 @@ function injectStyles(): void {
 	display: flex;
 	gap: 8px;
 }
-`;
+
+/* === Edit Task Detail Modal — CreateTaskMirror Styles === */
+.edit-task-field { display: flex; flex-direction: column; gap: 5px; flex: 1; }
+.edit-task-field-label { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); margin-left: 3px; }
+.edit-task-required { color: #f44747; }
+.edit-task-input, .edit-task-textarea, .edit-task-select {
+	width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 13px;
+	color: var(--vscode-foreground);
+	background: var(--vscode-input-background,var(--vscode-editor-background));
+	border: 1px solid var(--vscode-input-border,var(--vscode-panel-border,rgba(128,128,128,0.4)));
+	border-radius: 4px; outline: none; font-family: inherit; transition: border-color 120ms;
+}
+.edit-task-input:focus,.edit-task-textarea:focus,.edit-task-select:focus { border-color: var(--vscode-focusBorder,#007acc); }
+.edit-task-textarea { resize: vertical; min-height: 240px; height: 320px; line-height: 1.5; font-family: var(--vscode-editor-font-family, monospace); }
+.edit-task-field-row { display: flex; gap: 12px; }
+.edit-task-desc-toolbar { display: flex; gap: 6px; margin-top: 2px; }
+.edit-task-desc-btn {
+	display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; font-size: 11px;
+	border: 1px solid var(--vscode-panel-border,rgba(128,128,128,0.35)); border-radius: 3px;
+	background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer;
+	transition: background 120ms,color 120ms;
+}
+.edit-task-desc-btn:hover { background: var(--vscode-toolbar-hoverBackground,rgba(128,128,128,0.15)); color: var(--vscode-foreground); }
+.edit-worktree-hint { font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0.75; margin-top: 2px; padding-left: 3px; }
+.edit-task-dep-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.edit-task-dep-chip {
+	display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 11px;
+	background: var(--vscode-badge-background,rgba(128,128,128,0.15));
+	color: var(--vscode-badge-foreground,var(--vscode-foreground));
+	border: 1px solid var(--vscode-panel-border,rgba(128,128,128,0.25)); max-width: 220px;
+}
+.edit-task-dep-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edit-task-dep-chip-remove {
+	flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+	width: 14px; height: 14px; border: none; background: transparent;
+	color: var(--vscode-descriptionForeground); font-size: 10px; cursor: pointer;
+	border-radius: 50%; opacity: 0.7; transition: background 120ms,opacity 120ms;
+}
+.edit-task-dep-chip-remove:hover { background: rgba(128,128,128,0.35); opacity: 1; }
+.edit-task-footer-btn {
+	padding: 5px 14px; font-size: 12px; border-radius: 4px;
+	border: 1px solid var(--vscode-button-border,rgba(128,128,128,0.4));
+	cursor: pointer; transition: background 120ms,opacity 120ms; font-family: inherit;
+}
+.edit-task-footer-btn-cancel { background: transparent; color: var(--vscode-foreground); }
+.edit-task-footer-btn-cancel:hover { background: var(--vscode-toolbar-hoverBackground,rgba(128,128,128,0.15)); }
+.edit-task-footer-btn-primary { background: var(--vscode-button-background,#0e639c); color: var(--vscode-button-foreground,#fff); border-color: var(--vscode-button-background,#0e639c); }
+.edit-task-footer-btn-primary:hover { background: var(--vscode-button-hoverBackground,#1177bb); }
+.edit-task-footer-btn-danger { background: transparent; color: #f44747; border-color: rgba(244,71,71,0.4); }
+.edit-task-footer-btn-danger:hover { background: rgba(244,71,71,0.1); }
+.edit-task-footer-btn-warning { background: transparent; color: #cca700; border-color: rgba(204,167,0,0.4); }
+.edit-task-footer-btn-warning:hover { background: rgba(204,167,0,0.08); }
+/* Attachment preview area (below textarea in edit mode) */
+.tb-att-preview { margin-top: 6px; padding: 6px; border-radius: 4px; background: var(--vscode-sideBar-background,rgba(128,128,128,0.06)); max-height: 200px; overflow-y: auto; }
+.tb-att-preview:empty { display: none; }
+/* Clickable attachment link list (below textarea in edit mode) */
+.tb-att-links { display: none; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.tb-att-links a.tb-att-link { cursor: pointer; }
+/* Markdown edit/preview toggle */
+.edit-task-desc-toolbar { flex-wrap: wrap; align-items: center; }
+.edit-task-md-toggle { display: inline-flex; gap: 0; margin-left: auto; border: 1px solid var(--vscode-input-border,var(--vscode-panel-border,rgba(128,128,128,0.4))); border-radius: 4px; overflow: hidden; }
+.edit-task-md-toggle button { border: none; border-radius: 0; background: transparent; color: var(--vscode-foreground); padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.edit-task-md-toggle button.active { background: var(--vscode-button-background,#007acc); color: var(--vscode-button-foreground,#fff); }
+/* Markdown preview panel */
+.tb-md-preview { box-sizing: border-box; width: 100%; min-height: 240px; height: 320px; overflow-y: auto; padding: 8px 10px; font-size: 13px; line-height: 1.6;
+	background: var(--vscode-input-background,var(--vscode-editor-background));
+	border: 1px solid var(--vscode-input-border,var(--vscode-panel-border,rgba(128,128,128,0.4))); border-radius: 4px; }
+.tb-md-preview .tb-md-h1 { font-size: 1.4em; font-weight: 700; margin: 8px 0 4px; }
+.tb-md-preview .tb-md-h2 { font-size: 1.25em; font-weight: 700; margin: 8px 0 4px; }
+.tb-md-preview .tb-md-h3,.tb-md-preview .tb-md-h4,.tb-md-preview .tb-md-h5,.tb-md-preview .tb-md-h6 { font-weight: 700; margin: 6px 0 3px; }
+.tb-md-preview .tb-md-p { margin: 4px 0; }
+.tb-md-preview .tb-md-ul,.tb-md-preview .tb-md-ol { margin: 4px 0; padding-left: 22px; }
+.tb-md-preview .tb-md-quote { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--vscode-panel-border,rgba(128,128,128,0.5)); color: var(--vscode-descriptionForeground); }
+.tb-md-preview .tb-md-pre { background: var(--vscode-textCodeBlock-background,rgba(128,128,128,0.12)); padding: 6px 8px; border-radius: 4px; overflow-x: auto; }
+.tb-md-preview .tb-md-pre code { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+.tb-md-preview .tb-md-code { background: var(--vscode-textCodeBlock-background,rgba(128,128,128,0.12)); padding: 1px 4px; border-radius: 3px; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+.tb-md-preview hr { border: none; border-top: 1px solid var(--vscode-panel-border,rgba(128,128,128,0.4)); margin: 8px 0; }
+.tb-att-img { max-width: 120px; max-height: 120px; margin: 3px 6px 3px 0; border-radius: 4px; border: 1px solid var(--vscode-panel-border,rgba(128,128,128,0.35)); cursor: pointer; object-fit: contain; transition: transform .15s; vertical-align: middle; }
+.tb-att-img:hover { transform: scale(1.5); z-index: 10; position: relative; }
+.tb-att-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--vscode-link-activeForeground,#3794ff); text-decoration: none; margin-right: 8px; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--vscode-input-border,rgba(128,128,128,0.35)); background: var(--vscode-button-secondaryBackground,transparent); }
+.tb-att-link:hover { background: var(--vscode-button-secondaryHoverBackground,rgba(56,148,255,0.12); text-decoration: underline; }
+/* === Image Lightbox (click-to-zoom overlay) === */
+.tb-lightbox-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 2000; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.tb-lightbox-img { max-width: 90vw; max-height: 90vh; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,0.5); }
+	`;
 
 	// Append to head
 	document.head.appendChild(style);
+}
+
+/**
+ * Render a task description string as rich HTML inside a container element.
+ *
+ * Supports:
+ * - Markdown image syntax  `![alt](path)` → <img> thumbnail (hover zoom)
+ * - Markdown link syntax   `[text](path)` → clickable <a> file link
+ * - Relative paths starting with `.sarosworkspace/` are resolved to
+ *   absolute `file:///` URLs so the renderer can load local files.
+ * - Remaining plain-text lines become <br>-separated text.
+ */
+function renderDescriptionHtml(container: HTMLElement, descText: string): void {
+	DOM.clearNode(container);
+	if (!descText) { return; }
+
+	// Split into tokens: markdown images/links and raw text segments.
+	const imgRe = /!\[([^\]]*)\]\(([^)]+)\)/g;
+	const linkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+	const tokens: Array<{ type: 'img' | 'link' | 'text'; content: string; alt?: string; linkText?: string }> = [];
+	let lastIndex = 0;
+	let match: RegExpExecArray | null;
+
+	// Collect all markdown image and link matches, preserving order
+	const allMatches: Array<{ index: number; length: number; type: 'img' | 'link'; alt?: string; href: string; linkText?: string }> = [];
+
+	while ((match = imgRe.exec(descText)) !== null) {
+		allMatches.push({ index: match.index, length: match[0].length, type: 'img', alt: match[1], href: match[2] });
+	}
+	while ((match = linkRe.exec(descText)) !== null) {
+		// Skip if already captured as image (image regex runs first)
+		if (allMatches.some(m => m.index === match!.index)) continue;
+		allMatches.push({ index: match.index, length: match[0].length, type: 'link', alt: undefined, href: match[2], linkText: match[1] });
+	}
+	allMatches.sort((a, b) => a.index - b.index);
+
+	for (const m of allMatches) {
+		if (m.index > lastIndex) {
+			tokens.push({ type: 'text', content: descText.substring(lastIndex, m.index) });
+		}
+		tokens.push({ type: m.type, content: m.href, alt: m.alt ?? m.href, ...(m.type === 'link' && m.linkText ? { linkText: m.linkText } : {}) });
+		lastIndex = m.index + m.length;
+	}
+	if (lastIndex < descText.length) {
+		tokens.push({ type: 'text', content: descText.substring(lastIndex) });
+	}
+
+	for (const token of tokens) {
+		switch (token.type) {
+			case 'img': {
+				const img = document.createElement('img');
+				img.className = 'tb-att-img';
+				img.alt = token.alt || '';
+				// Resolve .sarosworkspace/ relative paths to absolute file:///
+				let src = resolveAttachmentSrc(token.content);
+				if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) {
+					src = 'file:///' + src.replace(/\\/g, '/');
+				}
+				img.src = src;
+				img.title = `${token.alt} — 点击放大`;
+				img.addEventListener('click', () => showImageLightbox(token.content, token.alt));
+				container.appendChild(img);
+				break;
+			}
+			case 'link': {
+				const a = document.createElement('a');
+				a.className = 'tb-att-link';
+				let href = resolveAttachmentSrc(token.content);
+				if (!href.startsWith('data:') && !href.startsWith('http') && !href.startsWith('file:')) {
+					href = 'file:///' + href.replace(/\\/g, '/');
+				}
+				a.href = href;
+				a.target = '_blank';
+				const displayText = token.linkText || token.content.split(/[/\\]/).pop() || token.alt || token.content;
+				a.textContent = `📎 ${displayText}`;
+				container.appendChild(a);
+				break;
+			}
+			case 'text': {
+				const text = token.content.trim();
+				if (!text) break;
+				const lines = text.split('\n');
+				for (let i = 0; i < lines.length; i++) {
+					const span = document.createElement('span');
+					span.textContent = lines[i];
+					container.appendChild(span);
+					if (i < lines.length - 1) container.appendChild(document.createElement('br'));
+				}
+				break;
+			}
+		}
+	}
+}
+
+/** Open a local attachment path via the provided callback, or fall back to window.open. */
+/** Open a local file via OS default app, or fallback to file:// URL. Silently ignores missing files. */
+function openAttachmentFromPath(rawPath: string, openFile?: (path: string) => void): void {
+	try {
+		const absPath = resolveAttachmentSrc(rawPath);
+		if (!absPath || absPath.startsWith('data:')) { return; }
+		if (openFile) {
+			openFile(absPath);
+		} else {
+			const href = absPath.startsWith('file:') ? absPath : 'file:///' + absPath.replace(/\\/g, '/');
+			window.open(href, '_blank');
+		}
+	} catch {
+		/* File missing or path invalid — ignore silently */
+	}
+}
+
+/** Show a full-size image in an overlay lightbox. Closes on backdrop click / Escape key. */
+function showImageLightbox(src: string, alt?: string): void {
+	let resolved = resolveAttachmentSrc(src);
+	if (!resolved.startsWith('data:') && !resolved.startsWith('http') && !resolved.startsWith('file:')) {
+		resolved = 'file:///' + resolved.replace(/\\/g, '/');
+	}
+	const overlay = DOM.$('div.tb-lightbox-overlay', undefined,
+		DOM.$('img.tb-lightbox-img', { src: resolved, alt: alt || '' })
+	);
+	overlay.addEventListener('click', () => overlay.remove());
+	const escHandler = (e: KeyboardEvent) => {
+		if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
+	};
+	document.addEventListener('keydown', escHandler);
+	document.body.appendChild(overlay);
+}
+
+/** Check whether a file path/URL points to an image by its extension or data-URI MIME type. */
+function looksLikeImage(path: string): boolean {
+	if (/^data:image\/(png|jpe?g|gif|svg|webp);base64,/i.test(path)) return true;
+	const ext = path.split(/[?#]/)[0].split('/').pop()?.split('.').pop() || '';
+	return /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(ext);
+}
+
+/** Render inline markdown (bold/italic/code) + attachment tokens into a parent element. */
+function appendInlineMarkdown(parent: HTMLElement, text: string, openFile?: (path: string) => void): void {
+	// First pass: special attachment tokens (![](), [](), @image:/@file:)
+	const tokRe = /(!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\)|@(?:image|file):[^\s(]+\([^)]*\))/g;
+	let last = 0;
+	let m: RegExpExecArray | null;
+	const appendPlain = (s: string) => { if (s) { appendInlineStyles(parent, s); } };
+	while ((m = tokRe.exec(text)) !== null) {
+		if (m.index > last) { appendPlain(text.substring(last, m.index)); }
+		const tok = m[0];
+		if (tok.startsWith('@')) {
+			const mm = tok.match(/^@(image|file):([^\s(]+)\(([^)]*)\)$/);
+			if (mm && mm[3]) {
+				const type = mm[1]; const name = mm[2]; const path = mm[3];
+				// @image: only renders as <img> when the resolved path actually looks like an image; otherwise degrade to link.
+				if (type === 'image' && looksLikeImage(path)) {
+					const img = document.createElement('img');
+					img.className = 'tb-att-img';
+					let src = resolveAttachmentSrc(path);
+					if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) { src = 'file:///' + src.replace(/\\/g, '/'); }
+					img.src = src; img.alt = name; img.title = `${name} — 点击放大`;
+					img.addEventListener('click', () => showImageLightbox(path, name));
+					parent.appendChild(img);
+				} else {
+					const icon = type === 'image' ? (looksLikeImage(path) ? '🖼️' : '📎') : '📎';
+					const a = document.createElement('a');
+					a.className = 'tb-att-link'; a.textContent = `${icon} ${name}`; a.href = '#';
+					a.addEventListener('click', (e) => { e.preventDefault(); openAttachmentFromPath(path, openFile); });
+					parent.appendChild(a);
+				}
+			} else { appendPlain(tok); }
+		} else if (tok.startsWith('![')) {
+			const mm = tok.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+			if (mm) {
+				// Markdown ![alt](path) only renders as <img> when path looks like an image; otherwise degrade to link.
+				if (looksLikeImage(mm[2])) {
+					const img = document.createElement('img');
+					img.className = 'tb-att-img';
+					let src = resolveAttachmentSrc(mm[2]);
+					if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) { src = 'file:///' + src.replace(/\\/g, '/'); }
+					img.src = src; img.alt = mm[1] || ''; img.title = `${mm[1]} — 点击放大`;
+					img.addEventListener('click', () => showImageLightbox(mm[2], mm[1]));
+					parent.appendChild(img);
+				} else {
+					const label = mm[1] || mm[2].split(/[/\\]/).pop() || mm[2];
+					const a = document.createElement('a');
+					a.className = 'tb-att-link'; a.textContent = `📎 ${label}`; a.href = '#';
+					a.addEventListener('click', (e) => { e.preventDefault(); openAttachmentFromPath(mm[2], openFile); });
+					parent.appendChild(a);
+				}
+			} else { appendPlain(tok); }
+		} else {
+			const mm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+			if (mm) {
+				const a = document.createElement('a');
+				a.className = 'tb-att-link'; a.textContent = mm[1]; a.href = '#';
+				a.addEventListener('click', (e) => { e.preventDefault(); openAttachmentFromPath(mm[2], openFile); });
+				parent.appendChild(a);
+			} else { appendPlain(tok); }
+		}
+		last = tokRe.lastIndex;
+	}
+	if (last < text.length) { appendPlain(text.substring(last)); }
+}
+
+/** Render **bold**, *italic* and `code` inline syntax into a parent element. */
+function appendInlineStyles(parent: HTMLElement, text: string): void {
+	const re = /(\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`)/g;
+	let last = 0;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(text)) !== null) {
+		if (m.index > last) { parent.appendChild(document.createTextNode(text.substring(last, m.index))); }
+		if (m[2] !== undefined) {
+			const b = document.createElement('strong'); b.textContent = m[2]; parent.appendChild(b);
+		} else if (m[3] !== undefined) {
+			const el = document.createElement('em'); el.textContent = m[3]; parent.appendChild(el);
+		} else if (m[4] !== undefined) {
+			const c = document.createElement('code'); c.className = 'tb-md-code'; c.textContent = m[4]; parent.appendChild(c);
+		}
+		last = re.lastIndex;
+	}
+	if (last < text.length) { parent.appendChild(document.createTextNode(text.substring(last))); }
+}
+
+/**
+ * Render task description text (with markdown) as rich HTML inside a container.
+ * Supports headings, hr, blockquote, lists, code fences, bold/italic/code,
+ * and attachment tokens: `![alt](path)`, `[text](path)`, `@image:name(path)`, `@file:name(path)`.
+ */
+function renderTaskMarkdown(container: HTMLElement, text: string, openFile?: (path: string) => void): void {
+	DOM.clearNode(container);
+	if (!text) { return; }
+	const lines = text.split('\n');
+	const frag = document.createDocumentFragment();
+	const blockStartRe = /^(#{1,6})\s|^>\s?|^\s*[-*+]\s+|^\s*\d+\.\s+|^\s*```|^---+\s*$|^\*\*\*+\s*$/;
+	let i = 0;
+	const flushParagraph = (para: string[]) => {
+		if (para.length === 0) { return; }
+		const p = document.createElement('p');
+		p.className = 'tb-md-p';
+		appendInlineMarkdown(p, para.join('\n'), openFile);
+		frag.appendChild(p);
+	};
+	while (i < lines.length) {
+		const line = lines[i];
+		// Code fence
+		const fence = line.match(/^\s*```(\w*)\s*$/);
+		if (fence) {
+			i++;
+			const code: string[] = [];
+			while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
+			i++; // skip closing fence
+			const pre = document.createElement('pre'); pre.className = 'tb-md-pre';
+			const codeEl = document.createElement('code'); codeEl.textContent = code.join('\n');
+			pre.appendChild(codeEl); frag.appendChild(pre);
+			continue;
+		}
+		// Horizontal rule
+		if (/^\s*---+\s*$/.test(line) || /^\s*\*\*\*+\s*$/.test(line)) { frag.appendChild(document.createElement('hr')); i++; continue; }
+		// Heading
+		const h = line.match(/^(#{1,6})\s+(.*)$/);
+		if (h) {
+			const lvl = h[1].length;
+			const el = document.createElement('h' + lvl);
+			el.className = 'tb-md-h' + lvl;
+			appendInlineMarkdown(el, h[2], openFile);
+			frag.appendChild(el); i++; continue;
+		}
+		// Blockquote
+		if (/^>\s?/.test(line)) {
+			const quoteLines: string[] = [];
+			while (i < lines.length && /^>\s?/.test(lines[i])) { quoteLines.push(lines[i].replace(/^>\s?/, '')); i++; }
+			const bq = document.createElement('blockquote'); bq.className = 'tb-md-quote';
+			appendInlineMarkdown(bq, quoteLines.join('\n'), openFile);
+			frag.appendChild(bq); continue;
+		}
+		// Unordered list
+		if (/^\s*[-*+]\s+/.test(line)) {
+			const items: string[] = [];
+			while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, '')); i++; }
+			const ul = document.createElement('ul'); ul.className = 'tb-md-ul';
+			for (const it of items) { const li = document.createElement('li'); appendInlineMarkdown(li, it, openFile); ul.appendChild(li); }
+			frag.appendChild(ul); continue;
+		}
+		// Ordered list
+		if (/^\s*\d+\.\s+/.test(line)) {
+			const items: string[] = [];
+			while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, '')); i++; }
+			const ol = document.createElement('ol'); ol.className = 'tb-md-ol';
+			for (const it of items) { const li = document.createElement('li'); appendInlineMarkdown(li, it, openFile); ol.appendChild(li); }
+			frag.appendChild(ol); continue;
+		}
+		// Blank line
+		if (line.trim() === '') { i++; continue; }
+		// Paragraph: gather consecutive non-block lines
+		const para: string[] = [];
+		while (i < lines.length && lines[i].trim() !== '' && !blockStartRe.test(lines[i])) { para.push(lines[i]); i++; }
+		flushParagraph(para);
+	}
+	container.appendChild(frag);
+}
+
+/** Resolve `.sarosworkspace/...` relative paths using the workspace root. */
+function resolveAttachmentSrc(path: string): string {
+	if (path.startsWith('.sarosworkspace/') || path.startsWith('.sarosworkspace\\')) {
+		// Try to resolve via the active workspace path if available from the global state
+		try {
+			const wsRoot = (globalThis as any).__sarosWorkspaceRoot as string | undefined;
+			if (wsRoot) {
+				// Manual path join: ensure exactly one separator between parts.
+				// Keep the leading dot — .sarosworkspace is a hidden dir name.
+				const relPart = path.startsWith('.') ? path : '.' + path;
+				const normalized = wsRoot.replace(/[\\/]+$/, '').replace(/\\/g, '/') + '/' + relPart;
+				return normalized.replace(/\//g, '\\');  // Return native-style path for file:///
+			}
+		} catch { /* ignore */ }
+		// Fallback: return as-is; caller may still handle it
+	}
+	return path;
 }
 
 // ─── Renderer ───────────────────────────────────────────────────────────────
@@ -1002,6 +1583,18 @@ export class TaskBoardNativeRenderer {
 
 	private readonly _onSwarmCancel = this._disposables.add(new Emitter<string>());
 	readonly onSwarmCancel = this._onSwarmCancel.event;
+
+	private readonly _onAddBoardLinkRequest = this._disposables.add(new Emitter<void>());
+	readonly onAddBoardLinkRequest = this._onAddBoardLinkRequest.event;
+
+	private readonly _onOpenBoardLink = this._disposables.add(new Emitter<{ linkId: string }>());
+	readonly onOpenBoardLink = this._onOpenBoardLink.event;
+
+	private readonly _onDeleteBoardLink = this._disposables.add(new Emitter<{ linkId: string }>());
+	readonly onDeleteBoardLink = this._onDeleteBoardLink.event;
+
+	private readonly _onEditBoardLink = this._disposables.add(new Emitter<{ linkId: string; name: string; url: string }>());
+	readonly onEditBoardLink = this._onEditBoardLink.event;
 
 	private readonly _onTaskDetailRequest = this._disposables.add(new Emitter<{ task: TaskBoardRecord; employees: EmployeeInfo[]; allTasks: TaskBoardRecord[] }>());
 	readonly onTaskDetailRequest = this._onTaskDetailRequest.event;
@@ -1080,6 +1673,15 @@ export class TaskBoardNativeRenderer {
 
 		const right = DOM.$('div.native-tb-header-right');
 
+		// "🔗 添加看板超链接" — replaces the old "📥 导入 TAPD" button.
+		// Clicking opens the add-board-link modal; the resulting link is shown
+		// as a chip below the header and opens an embedded window on click.
+		const addLinkBtn = DOM.$('button.native-tb-btn.native-tb-btn-accent');
+		addLinkBtn.textContent = '🔗 添加看板超链接';
+		addLinkBtn.title = '绑定一个外部看板网页（如 TAPD / Jira），点击后在内嵌窗口中打开，可右键添加到看板待办';
+		addLinkBtn.addEventListener('click', () => this._onAddBoardLinkRequest.fire());
+		right.appendChild(addLinkBtn);
+
 		// Diagnostics button
 		const diagBtn = DOM.$('button.native-tb-btn');
 		diagBtn.textContent = data.isLoading ? '⏳ 巡检中' : '🩺 巡检';
@@ -1089,6 +1691,253 @@ export class TaskBoardNativeRenderer {
 
 		header.appendChild(right);
 		root.appendChild(header);
+
+		// Board hyperlink bar (chips). Clicking a chip opens the embedded window.
+		this._renderBoardLinkBar(root, data.boardLinks ?? []);
+	}
+
+	private _renderBoardLinkBar(root: HTMLElement, links: BoardLink[]): void {
+		const bar = DOM.$('div.native-tb-links');
+		if (links.length === 0) {
+			const empty = DOM.$('span.native-tb-links-empty');
+			empty.textContent = '暂无看板超链接 · 点击右上角「🔗 添加看板超链接」绑定外部看板网页';
+			bar.appendChild(empty);
+		} else {
+			for (const link of links) {
+				const chip = DOM.$('div.native-tb-link-chip');
+				chip.title = `${link.name}\n${link.url}\n点击在内嵌窗口中打开`;
+				const icon = DOM.$('span.native-tb-link-icon', undefined, this._linkIcon(link.url));
+				const label = DOM.$('span.native-tb-link-label', undefined, link.name);
+				const edit = DOM.$('span.native-tb-link-edit', undefined, '✎');
+				edit.title = '编辑此看板超链接';
+				edit.addEventListener('click', (e) => {
+					e.stopPropagation();
+					this._onEditBoardLink.fire({ linkId: link.id, name: link.name, url: link.url });
+				});
+				const del = DOM.$('span.native-tb-link-del', undefined, '✕');
+				del.title = '删除此看板超链接';
+				del.addEventListener('click', (e) => {
+					e.stopPropagation();
+					this._onDeleteBoardLink.fire({ linkId: link.id });
+				});
+				chip.appendChild(icon);
+				chip.appendChild(label);
+				chip.appendChild(edit);
+				chip.appendChild(del);
+				chip.addEventListener('click', () => this._onOpenBoardLink.fire({ linkId: link.id }));
+				bar.appendChild(chip);
+			}
+		}
+		root.appendChild(bar);
+	}
+
+	private _linkIcon(url: string): string {
+		if (/tapd/i.test(url)) { return '🟣'; }
+		if (/jira/i.test(url)) { return '🔵'; }
+		if (/github/i.test(url)) { return '🐙'; }
+		return '🌐';
+	}
+
+	/**
+	 * "🔗 添加看板超链接" modal: collects a board name + URL, then resolves
+	 * with `{ name, url }`. The consumer persists it via AgentTaskBoardService.
+	 */
+	showAddBoardLinkModal(
+		parent: HTMLElement,
+		onCreate: (name: string, url: string) => Promise<void> | void,
+	): void {
+		const overlay = DOM.$('div.native-tb-modal-overlay');
+		overlay.style.position = 'fixed';
+		overlay.style.inset = '0';
+		overlay.style.background = 'rgba(0,0,0,0.5)';
+		overlay.style.display = 'flex';
+		overlay.style.alignItems = 'center';
+		overlay.style.justifyContent = 'center';
+		overlay.style.zIndex = '1000';
+
+		const modal = DOM.$('div.native-tb-modal');
+		modal.style.cssText = `
+			width: 440px; background: var(--vscode-editorWidget-background, #252526);
+			border: 1px solid var(--vscode-panel-border, #2b2b2b); border-radius: 8px;
+			box-shadow: 0 8px 40px rgba(0,0,0,0.5); overflow: hidden; color: var(--vscode-foreground, #ddd);
+		`;
+
+		const header = DOM.$('div.native-tb-modal-header');
+		header.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--vscode-panel-border,#2b2b2b); font-size:14px; font-weight:600;';
+		header.appendChild(DOM.$('span', undefined, '🔗 添加看板超链接'));
+		const closeBtn = DOM.$('span', undefined, '✕');
+		closeBtn.style.cssText = 'cursor:pointer; color:var(--vscode-descriptionForeground,#9d9d9d);';
+		closeBtn.addEventListener('click', () => overlay.remove());
+		header.appendChild(closeBtn);
+		modal.appendChild(header);
+
+		const body = DOM.$('div');
+		body.style.cssText = 'padding:16px; display:flex; flex-direction:column; gap:14px;';
+		modal.appendChild(body);
+
+		const mkField = (labelText: string) => {
+			const wrap = DOM.$('div');
+			wrap.style.cssText = 'display:flex; flex-direction:column; gap:5px;';
+			const label = DOM.$('label');
+			label.textContent = labelText;
+			label.style.cssText = 'font-size:12px; color:var(--vscode-descriptionForeground,#9d9d9d);';
+			wrap.appendChild(label);
+			return wrap;
+		};
+
+		const nameField = mkField('看板名称');
+		const nameInput = DOM.$('input.native-tb-input') as HTMLInputElement;
+		nameInput.placeholder = '例如：TAPD 迭代看板';
+		nameField.appendChild(nameInput);
+
+		const urlField = mkField('看板链接（URL）');
+		const urlInput = DOM.$('input.native-tb-input') as HTMLInputElement;
+		urlInput.placeholder = 'https://www.tapd.cn/.../iterate/detail/...';
+		urlField.appendChild(urlInput);
+		const urlHint = DOM.$('span');
+		urlHint.textContent = '点击对应超链接将在编辑器内嵌窗口中打开此外部看板网页，可右键添加到看板待办。';
+		urlHint.style.cssText = 'font-size:11px; color:var(--vscode-descriptionForeground,#9d9d9d);';
+		urlField.appendChild(urlHint);
+
+		body.appendChild(nameField);
+		body.appendChild(urlField);
+
+		const errEl = DOM.$('div');
+		errEl.style.cssText = 'font-size:12px; color:#f48771; min-height:16px;';
+		body.appendChild(errEl);
+
+		const footer = DOM.$('div.native-tb-modal-footer');
+		footer.style.cssText = 'display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:1px solid var(--vscode-panel-border,#2b2b2b);';
+		const cancelBtn = DOM.$('button.native-tb-btn', undefined, '取消');
+		cancelBtn.addEventListener('click', () => overlay.remove());
+		const confirmBtn = DOM.$('button.native-tb-btn.native-tb-btn-primary', undefined, '添加');
+		footer.appendChild(cancelBtn);
+		footer.appendChild(confirmBtn);
+		modal.appendChild(footer);
+
+		overlay.appendChild(modal);
+		parent.appendChild(overlay);
+
+		const submit = async () => {
+			const name = nameInput.value.trim();
+			const url = urlInput.value.trim();
+			if (!name) { errEl.textContent = '请填写看板名称'; return; }
+			if (!/^https?:\/\//i.test(url)) { errEl.textContent = '请输入合法的 http/https 链接'; return; }
+			confirmBtn.toggleAttribute('disabled', true);
+			confirmBtn.style.opacity = '0.5';
+			try {
+				await onCreate(name, url);
+				overlay.remove();
+			} catch (err) {
+				errEl.textContent = err instanceof Error ? err.message : String(err);
+				confirmBtn.toggleAttribute('disabled', false);
+				confirmBtn.style.opacity = '1';
+			}
+		};
+		confirmBtn.addEventListener('click', submit);
+		urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { submit(); } });
+		nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { submit(); } });
+		overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); } });
+		setTimeout(() => nameInput.focus(), 30);
+	}
+
+	/**
+	 * "🔗 编辑看板超链接" modal: pre-filled with the existing link's name + URL.
+	 */
+	showEditBoardLinkModal(
+		parent: HTMLElement,
+		existing: { linkId: string; name: string; url: string },
+		onSave: (name: string, url: string) => Promise<void> | void,
+	): void {
+		const overlay = DOM.$('div.native-tb-modal-overlay');
+		overlay.style.position = 'fixed';
+		overlay.style.inset = '0';
+		overlay.style.background = 'rgba(0,0,0,0.5)';
+		overlay.style.display = 'flex';
+		overlay.style.alignItems = 'center';
+		overlay.style.justifyContent = 'center';
+		overlay.style.zIndex = '1000';
+
+		const modal = DOM.$('div.native-tb-modal');
+		modal.style.cssText = `
+			width: 440px; background: var(--vscode-editorWidget-background, #252526);
+			border: 1px solid var(--vscode-panel-border, #2b2b2b); border-radius: 8px;
+			box-shadow: 0 8px 40px rgba(0,0,0,0.5); overflow: hidden; color: var(--vscode-foreground, #ddd);
+		`;
+
+		const header = DOM.$('div.native-tb-modal-header');
+		header.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--vscode-panel-border,#2b2b2b); font-size:14px; font-weight:600;';
+		header.appendChild(DOM.$('span', undefined, '✎ 编辑看板超链接'));
+		const closeBtn = DOM.$('span', undefined, '✕');
+		closeBtn.style.cssText = 'cursor:pointer; color:var(--vscode-descriptionForeground,#9d9d9d);';
+		closeBtn.addEventListener('click', () => overlay.remove());
+		header.appendChild(closeBtn);
+		modal.appendChild(header);
+
+		const body = DOM.$('div');
+		body.style.cssText = 'padding:16px; display:flex; flex-direction:column; gap:14px;';
+		modal.appendChild(body);
+
+		const mkField = (labelText: string) => {
+			const wrap = DOM.$('div');
+			wrap.style.cssText = 'display:flex; flex-direction:column; gap:5px;';
+			const label = DOM.$('label');
+			label.textContent = labelText;
+			label.style.cssText = 'font-size:12px; color:var(--vscode-descriptionForeground,#9d9d9d);';
+			wrap.appendChild(label);
+			return wrap;
+		};
+
+		const nameField = mkField('看板名称');
+		const nameInput = DOM.$('input.native-tb-input') as HTMLInputElement;
+		nameInput.value = existing.name;
+		nameField.appendChild(nameInput);
+
+		const urlField = mkField('看板链接（URL）');
+		const urlInput = DOM.$('input.native-tb-input') as HTMLInputElement;
+		urlInput.value = existing.url;
+		urlField.appendChild(urlInput);
+
+		body.appendChild(nameField);
+		body.appendChild(urlField);
+
+		const errEl = DOM.$('div');
+		errEl.style.cssText = 'font-size:12px; color:#f48771; min-height:16px;';
+		body.appendChild(errEl);
+
+		const footer = DOM.$('div.native-tb-modal-footer');
+		footer.style.cssText = 'display:flex; justify-content:flex-end; gap:8px; padding:12px 16px; border-top:1px solid var(--vscode-panel-border,#2b2b2b);';
+		const cancelBtn = DOM.$('button.native-tb-btn', undefined, '取消');
+		cancelBtn.addEventListener('click', () => overlay.remove());
+		const saveBtn = DOM.$('button.native-tb-btn.native-tb-btn-primary', undefined, '保存');
+		footer.appendChild(cancelBtn);
+		footer.appendChild(saveBtn);
+		modal.appendChild(footer);
+
+		overlay.appendChild(modal);
+		parent.appendChild(overlay);
+
+		const submit = async () => {
+			const newName = nameInput.value.trim();
+			const newUrl = urlInput.value.trim();
+			if (!newName) { errEl.textContent = '请填写看板名称'; return; }
+			if (!/^https?:\/\//i.test(newUrl)) { errEl.textContent = '请输入合法的 http/https 链接'; return; }
+			saveBtn.toggleAttribute('disabled', true);
+			saveBtn.style.opacity = '0.5';
+			try {
+				await onSave(newName, newUrl);
+				overlay.remove();
+			} catch (err) {
+				errEl.textContent = err instanceof Error ? err.message : String(err);
+				saveBtn.toggleAttribute('disabled', false);
+				saveBtn.style.opacity = '1';
+			}
+		};
+		saveBtn.addEventListener('click', submit);
+		urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { submit(); } });
+		nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { submit(); } });
+		overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); } });
+		setTimeout(() => nameInput.focus(), 30);
 	}
 
 	// ─── Swarms ───────────────────────────────────────────────────────
@@ -1379,6 +2228,9 @@ export class TaskBoardNativeRenderer {
 			body.appendChild(desc);
 		}
 
+
+
+
 		// Tags: assignee + priority
 		const tags = DOM.$('div.native-tb-card-tags');
 
@@ -1387,8 +2239,26 @@ export class TaskBoardNativeRenderer {
 			const assigneeName = task.assigneeName || task.assigneeId || '';
 			const assigneeTag = DOM.$('span.native-tb-card-tag.assignee');
 			const avatar = DOM.$('span.native-tb-card-avatar');
-			avatar.textContent = assigneeName.slice(0, 2).toUpperCase();
-			avatar.style.background = this._avatarColor(assigneeName);
+			const emp = data.employees.find(e => e.id === task.assigneeId);
+			const icon = emp?.icon;
+			if (icon) {
+				if (icon.startsWith('data:')) {
+					// Image data-URI icon (e.g. SVG avatar)
+					avatar.style.backgroundImage = `url("${icon}")`;
+					avatar.style.backgroundSize = 'cover';
+					avatar.style.backgroundPosition = 'center';
+					avatar.style.backgroundColor = 'transparent';
+				} else {
+					// Emoji icon — show directly, no colored background
+					avatar.textContent = icon;
+					avatar.style.backgroundColor = 'transparent';
+					avatar.style.fontSize = '11px';
+					avatar.style.lineHeight = '14px';
+				}
+			} else {
+				avatar.textContent = assigneeName.slice(0, 2).toUpperCase();
+				avatar.style.background = this._avatarColor(assigneeName);
+			}
 			assigneeTag.appendChild(avatar);
 			assigneeTag.appendChild(document.createTextNode(assigneeName.length > 12 ? assigneeName.slice(0, 12) + '…' : assigneeName));
 			tags.appendChild(assigneeTag);
@@ -1493,16 +2363,30 @@ export class TaskBoardNativeRenderer {
 		task: TaskBoardRecord,
 		employees: EmployeeInfo[],
 		allTasks: TaskBoardRecord[],
-	): Promise<{ action: 'close' | 'statusChange' | 'delete' | 'archive' | 'block' | 'unblock'; status?: TaskBoardStatus; taskId: string }> {
+		options?: {
+			workspaces?: { id: string; name: string }[];
+			loadWorktrees?: (workspaceId: string) => Promise<WorktreeInfo[]>;
+			/** Download a URL to local disk and return the local file path (or undefined on failure). */
+			downloadUrl?: (url: string) => Promise<string | undefined>;
+			/** Workspace root path for resolving .sarosworkspace/ relative attachment paths. */
+			workspaceRoot?: string;
+			/** Open a local file (absolute path or .sarosworkspace/ relative) in the OS default app. */
+			openFile?: (path: string) => void;
+		},
+	): Promise<{ action: 'close' | 'statusChange' | 'delete' | 'archive' | 'block' | 'unblock' | 'edit'; status?: TaskBoardStatus; taskId: string; title?: string; description?: string; assigneeId?: string; assigneeName?: string; priority?: 'low' | 'medium' | 'high'; dependencies?: string[]; workspaceId?: string; worktreePath?: string; url?: string }> {
 		return new Promise((resolve) => {
+			// Expose workspace root for renderDescriptionHtml to resolve relative paths
+			if (options?.workspaceRoot) { (globalThis as any).__sarosWorkspaceRoot = options.workspaceRoot; }
 			const overlay = DOM.$('div.native-tb-detail-overlay');
 			const modal = DOM.$('div.native-tb-detail-modal');
 
-			// === Header ===
+			// === Header (mirror of CreateTaskModal: fixed title + close) ===
 			const header = DOM.$('div.native-tb-detail-header');
 			const headerLeft = DOM.$('div.native-tb-detail-header-left');
-			headerLeft.appendChild(DOM.$('span.native-tb-detail-id', undefined, `#${task.id.slice(0, 12)}`));
-			headerLeft.appendChild(DOM.$('h2.native-tb-detail-title', undefined, task.title));
+			headerLeft.appendChild(DOM.$('span.create-task-modal-title', undefined, '📋 编辑任务'));
+			const idBadge = DOM.$('span.native-tb-detail-id', undefined, `#${task.id.slice(0, 12)}`);
+			idBadge.style.marginTop = '2px';
+			headerLeft.appendChild(idBadge);
 			header.appendChild(headerLeft);
 
 			const closeBtn = DOM.$('button.native-tb-detail-close', undefined, '✕');
@@ -1511,110 +2395,411 @@ export class TaskBoardNativeRenderer {
 			header.appendChild(closeBtn);
 			modal.appendChild(header);
 
-			// === Body ===
+			// === Body — CreateTaskMirror form layout ===
 			const body = DOM.$('div.native-tb-detail-body');
 
-			// Status row (editable) + Priority
-			const statusRow = DOM.$('div.native-tb-detail-row');
-			statusRow.appendChild(DOM.$('span.native-tb-detail-row-label', undefined, '状态'));
+			const editable = task.status === 'todo';
+			let titleInput: HTMLInputElement | undefined;
+			let assigneeSelect: HTMLSelectElement | undefined;
+			let prioSelect: HTMLSelectElement | undefined;
+			let statusSelect: HTMLSelectElement | undefined;
+			let workspaceSelect: HTMLSelectElement | undefined;
+			let worktreeSelect: HTMLSelectElement | undefined;
+			let descInput: HTMLTextAreaElement | undefined;
+			let depsContainer: HTMLElement | undefined;
 
-			const statusSelect = DOM.$('select.native-tb-filter-select') as HTMLSelectElement;
-			const statusLabels: [TaskBoardStatus, string][] = [
-				['triage' as TaskBoardStatus, '🗂 待规划'],
-				['todo' as TaskBoardStatus, '📋 待执行'],
-				['ready' as TaskBoardStatus, '✅ 就绪'],
-				['running' as TaskBoardStatus, '⚡ 执行中'],
-				['blocked' as TaskBoardStatus, '🚫 阻塞'],
-				['done' as TaskBoardStatus, '✔ 已完成'],
-				['cancelled' as TaskBoardStatus, '⏹ 取消'],
-				['archived' as TaskBoardStatus, '📦 归档'],
-			];
-			for (const [val, label] of statusLabels) {
-				const opt = document.createElement('option');
-				opt.value = val;
-				opt.textContent = label;
-				if (val === task.status) { opt.selected = true; }
-				statusSelect.appendChild(opt);
-			}
-			statusRow.appendChild(statusSelect);
-
-			statusRow.appendChild(document.createTextNode('  '));
-			statusRow.appendChild(DOM.$('span.native-tb-detail-row-label', undefined, '优先级'));
-			const prioLabels: Record<string, string> = { high: '🔴 高', medium: '🟡 中', low: '🟢 低' };
-			const prioChip = DOM.$(`span.native-tb-priority-chip native-tb-priority-${task.priority || 'medium'}`, undefined, prioLabels[task.priority || 'medium'] ?? task.priority);
-			statusRow.appendChild(prioChip);
-			body.appendChild(statusRow);
-
-			// Meta grid
-			const meta = DOM.$('div.native-tb-detail-meta-grid');
-			const emp = employees.find(e => e.id === task.assigneeId);
-			meta.appendChild(this._detailMetaItem('负责人', emp?.name || task.assigneeName || task.assigneeId || '未指派'));
-			meta.appendChild(this._detailMetaItem('来源', task.source === 'delegation' ? '🤖 Agent委派' : '✋ 手动创建'));
-			meta.appendChild(this._detailMetaItem('看板', task.boardId || '默认看板'));
-			if (task.worktreePath) {
-				meta.appendChild(this._detailMetaItem('Worktree', task.worktreePath.split('/').pop() || task.worktreePath));
-			}
-			body.appendChild(meta);
-
-			// Description
-			if (task.description) {
-				const descSection = DOM.$('div');
-				descSection.appendChild(DOM.$('span.native-tb-detail-section-label', undefined, '描述'));
-				const descEl = DOM.$('div.native-tb-detail-desc', undefined, task.description);
-				descSection.appendChild(descEl);
-				body.appendChild(descSection);
-			}
-
-			// Dependencies
-			if (task.dependencies && task.dependencies.length > 0) {
-				const depsSection = DOM.$('div');
-				depsSection.appendChild(DOM.$('span.native-tb-detail-section-label', undefined, `依赖任务 (${task.dependencies.length})`));
-				const depsChips = DOM.$('div.native-tb-detail-deps');
-				for (const depId of task.dependencies) {
-					const depTask = allTasks.find(t => t.id === depId);
-					const depChip = DOM.$('a.native-tb-detail-dep-chip');
-					const dotClass = depTask ? (depTask.status === 'done' ? 'done' : (depTask.status === 'running' ? 'active' : 'waiting')) : 'waiting';
-					const dot = DOM.$(`span.native-tb-detail-dep-dot.${dotClass}`);
-					depChip.appendChild(dot);
-					depChip.appendChild(document.createTextNode(depTask?.title || depId));
-					depChip.title = depTask ? `状态: ${depTask.status}` : depId;
-					depsChips.appendChild(depChip);
+			// ── Field: 负责员工 ──────────────────────────────────────
+			{
+				const field = DOM.$('div.edit-task-field');
+				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '负责员工'));
+				assigneeSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				{
+					const opt = document.createElement('option'); opt.value = ''; opt.textContent = '未指派';
+					assigneeSelect.appendChild(opt);
 				}
-				depsSection.appendChild(depsChips);
-				body.appendChild(depsSection);
+				for (const e of employees) {
+					const opt = document.createElement('option'); opt.value = e.id; opt.textContent = e.name;
+					if (e.id === task.assigneeId) { opt.selected = true; }
+					assigneeSelect.appendChild(opt);
+				}
+				field.appendChild(assigneeSelect);
+				body.appendChild(field);
+			}
+
+			// ── Field: 任务标题/会话名 (含 URL 后缀) ─────────────────
+			{
+				const field = DOM.$('div.edit-task-field');
+				field.appendChild(DOM.$('span.edit-task-field-label', undefined, editable ? '任务标题 / 会话名' : '任务标题'));
+				if (editable) {
+					titleInput = DOM.$('input.edit-task-input') as HTMLInputElement;
+					// Merge title + url into one input value (title on line 1, URL on line 2 if present)
+					const rawTitle = task.title || '';
+					const rawUrl = task.url || '';
+					titleInput.value = rawUrl ? `${rawTitle}\n${rawUrl}` : rawTitle;
+					titleInput.placeholder = '简要描述这个任务\n（可选：第二行填写参考链接如 TAPD 需求地址）';
+					field.appendChild(titleInput);
+				} else {
+					// Read-only: show title + clickable link for URL
+					const wrapper = DOM.$('div');
+					wrapper.appendChild(DOM.$('div', undefined, task.title));
+					if (task.url) {
+						const a = DOM.$('a.native-tb-card-url') as HTMLAnchorElement;
+						a.href = task.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+						a.textContent = '🔗 ' + task.url; a.title = task.url;
+						wrapper.appendChild(a);
+					}
+					field.appendChild(wrapper);
+				}
+				body.appendChild(field);
+			}
+
+			// ── Field: 任务描述 ──────────────────────────────────────
+			{
+				const field = DOM.$('div.edit-task-field');
+				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '任务描述（支持粘贴图片、拖拽文件）'));
+
+				if (editable) {
+					descInput = DOM.$('textarea.edit-task-textarea') as HTMLTextAreaElement;
+					let descText = task.description || '';
+
+					// Toolbar: 粘贴图片 / 选择文件
+					const toolbar = DOM.$('div.edit-task-desc-toolbar');
+					const pasteBtn = DOM.$('button.edit-task-desc-btn', undefined, '📋 粘贴图片');
+					pasteBtn.title = '从剪贴板粘贴截图';
+					pasteBtn.addEventListener('click', async () => {
+						try {
+							const clipItems = await navigator.clipboard.read();
+							for (const item of clipItems) {
+								const imgType = item.types.find(t => t.startsWith('image/'));
+								if (imgType) {
+									const blob = await item.getType(imgType);
+									const reader = new FileReader();
+									reader.onload = () => { if (descInput && typeof reader.result === 'string') { descInput.value += `\n![image](data:${imgType};base64,${reader.result.split(',')[1]})`; } };
+									reader.readAsDataURL(blob);
+									break;
+								}
+							}
+						} catch { /* clipboard API not available */ }
+					});
+					toolbar.appendChild(pasteBtn);
+
+					const fileBtn = DOM.$('button.edit-task-desc-btn', undefined, '📎 选择文件');
+					fileBtn.title = '选择本地文件作为附件引用';
+					const fileInput = document.createElement('input');
+					fileInput.type = 'file'; fileInput.style.display = 'none';
+					fileInput.addEventListener('change', () => {
+						if (fileInput.files?.length && descInput) {
+							const f = fileInput.files[0];
+							descInput.value += `\n📎 ${f.name} (${(f.size / 1024).toFixed(0)}KB)`;
+						}
+					});
+				fileBtn.addEventListener('click', () => fileInput.click());
+				toolbar.appendChild(fileBtn);
+
+				// Edit / Preview markdown toggle — default to 预览
+				const mdToggle = DOM.$('div.edit-task-md-toggle');
+				const editBtn = DOM.$('button.edit-task-desc-btn', undefined, '编辑');
+				const prevBtn = DOM.$('button.edit-task-desc-btn.active', undefined, '预览');
+				mdToggle.appendChild(editBtn);
+				mdToggle.appendChild(prevBtn);
+				toolbar.appendChild(mdToggle);
+				field.appendChild(toolbar);
+
+					// Clickable attachment link list — parses @image:/@file: inline references
+					// from the textarea and renders them as clickable chips that open the file.
+					const attLinks = DOM.$('div.tb-att-links') as HTMLElement;
+					const openAttachment = (rawPath: string) => {
+						const absPath = resolveAttachmentSrc(rawPath);
+						if (options?.openFile) {
+							options.openFile(absPath);
+						} else {
+							const href = absPath.startsWith('file:') ? absPath : 'file:///' + absPath.replace(/\\/g, '/');
+							window.open(href, '_blank');
+						}
+					};
+					const refreshAttachmentLinks = () => {
+						DOM.clearNode(attLinks);
+						const text = descInput?.value || '';
+						const re = /@(image|file):([^\s(]+)\(([^)]*)\)/g;
+						let m: RegExpExecArray | null;
+						let count = 0;
+						while ((m = re.exec(text)) !== null) {
+							const type = m[1];
+							const name = m[2];
+							const path = m[3];
+							if (!path) { continue; }
+							// @image: + real image file → render <img> thumbnail
+							if (type === 'image' && looksLikeImage(path)) {
+								const img = document.createElement('img');
+								img.className = 'tb-att-img';
+								let src = resolveAttachmentSrc(path);
+								if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) {
+									src = 'file:///' + src.replace(/\\/g, '/');
+								}
+								img.src = src; img.alt = name; img.title = `${name} — 点击放大`;
+								img.addEventListener('click', () => showImageLightbox(path, name));
+								attLinks.appendChild(img);
+							} else {
+								const a = DOM.$('a.tb-att-link') as HTMLAnchorElement;
+								a.textContent = `${type === 'image' ? '🖼️' : '📎'} ${name}`;
+								a.title = `点击打开: ${path}`;
+								a.addEventListener('click', (e) => { e.preventDefault(); openAttachment(path); });
+								attLinks.appendChild(a);
+							}
+							count++;
+						}
+						attLinks.style.display = count > 0 ? '' : 'none';
+					};
+				descInput.addEventListener('input', () => { refreshAttachmentLinks(); });
+
+				// Markdown preview panel (toggled via the 编辑/预览 buttons)
+				const previewEl = DOM.$('div.tb-md-preview') as HTMLElement;
+				previewEl.style.display = 'none';
+
+				const showEdit = () => {
+					if (descInput) { descInput.style.display = ''; }
+					refreshAttachmentLinks();
+					previewEl.style.display = 'none';
+					editBtn.classList.add('active');
+					prevBtn.classList.remove('active');
+				};
+				const showPreview = () => {
+					if (!descInput) { return; }
+					descInput.style.display = 'none';
+					attLinks.style.display = 'none';
+					renderTaskMarkdown(previewEl, descInput.value, options?.openFile);
+					previewEl.style.display = '';
+					prevBtn.classList.add('active');
+					editBtn.classList.remove('active');
+				};
+				editBtn.addEventListener('click', showEdit);
+				prevBtn.addEventListener('click', showPreview);
+
+				// Set textarea value with TAPD description content (including inline @image:/@file: references)
+				descInput.value = descText;
+				descInput.placeholder = '补充细节、验收标准等…可粘贴图片、拖拽附件';
+				field.appendChild(descInput);
+				field.appendChild(attLinks);
+				field.appendChild(previewEl);
+
+				// Default to 预览 mode: hide textarea/att-links, render markdown
+				showPreview();
+			} else if (task.description) {
+					// Render description as rich HTML: images become <img> thumbnails,
+					// file links become clickable <a>, rest as text with line-breaks.
+					const descEl = DOM.$('div.native-tb-detail-desc') as HTMLElement;
+					renderDescriptionHtml(descEl, task.description);
+					field.appendChild(descEl);
+				}
+				body.appendChild(field);
+			}
+
+			// ── Field: 执行环境 (工作区 + Worktree side by side) ────
+			{
+				const row = DOM.$('div.edit-task-field-row');
+
+				// Workspace selector
+				const wsField = DOM.$('div.edit-task-field');
+				wsField.appendChild(DOM.$('span.edit-task-field-label', undefined, '工作区'));
+				workspaceSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				{
+					const opt = document.createElement('option'); opt.value = ''; opt.textContent = '— 不变更 —';
+					workspaceSelect.appendChild(opt);
+				}
+				const wsList = options?.workspaces ?? [];
+				for (const ws of wsList) {
+					const opt = document.createElement('option'); opt.value = ws.id; opt.textContent = ws.name;
+					if (ws.id === task.workspaceId) { opt.selected = true; }
+					workspaceSelect.appendChild(opt);
+				}
+				wsField.appendChild(workspaceSelect);
+				row.appendChild(wsField);
+
+				// Git Worktree selector
+				const wtField = DOM.$('div.edit-task-field');
+				wtField.appendChild(DOM.$('span.edit-task-field-label', undefined, 'Git 工作分支'));
+				worktreeSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				{
+					const opt = document.createElement('option'); opt.value = ''; opt.textContent = '不指定（主仓库执行）';
+					worktreeSelect.appendChild(opt);
+				}
+
+				const refreshWorktrees = async (wsId: string) => {
+					while (worktreeSelect.firstChild) { worktreeSelect.removeChild(worktreeSelect.firstChild); }
+					{
+						const opt = document.createElement('option'); opt.value = ''; opt.textContent = '不指定（主仓库执行）';
+						worktreeSelect.appendChild(opt);
+					}
+					if (!wsId || !options?.loadWorktrees) { return; }
+					try {
+						const wts = await options.loadWorktrees(wsId);
+						for (const wt of wts) {
+							const opt = document.createElement('option'); opt.value = wt.path;
+							opt.textContent = `🌿 ${wt.branch}${wt.repoName ? ` (${wt.repoName})` : ''}`;
+							if (wt.path === task.worktreePath) { opt.selected = true; }
+							worktreeSelect.appendChild(opt);
+						}
+					} catch { /* silent */ }
+				};
+
+				const initialWsId = task.workspaceId || workspaceSelect.value;
+				if (initialWsId) { void refreshWorktrees(initialWsId); }
+
+				workspaceSelect!.addEventListener('change', () => { void refreshWorktrees(workspaceSelect!.value); });
+
+				wtField.appendChild(worktreeSelect);
+				row.appendChild(wtField);
+				body.appendChild(row);
+
+				// Worktree path hint
+				if (task.worktreePath) {
+					const hint = DOM.$('div.edit-worktree-hint', undefined, `ℹ️ 选择 worktree 分支后在此预览路径: ${task.worktreePath}`);
+					body.appendChild(hint);
+				}
+			}
+
+			// ── Field: 优先级 ────────────────────────────────────────
+			{
+				const field = DOM.$('div.edit-task-field');
+				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '优先级'));
+				const prioLabels: Record<string, string> = { high: '🔴 高', medium: '🟡 中', low: '🟢 低' };
+				if (editable) {
+					prioSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+					for (const p of ['high', 'medium', 'low'] as const) {
+						const opt = document.createElement('option'); opt.value = p; opt.textContent = prioLabels[p];
+						if (p === (task.priority || 'medium')) { opt.selected = true; }
+						prioSelect.appendChild(opt);
+					}
+					field.appendChild(prioSelect);
+				} else {
+					const chip = DOM.$(`span.native-tb-priority-chip native-tb-priority-${task.priority || 'medium'}`, undefined, prioLabels[task.priority || 'medium'] ?? task.priority);
+					field.appendChild(chip);
+				}
+				body.appendChild(field);
+			}
+
+			// ── Field: 状态 ──────────────────────────────────────────
+			{
+				const field = DOM.$('div.edit-task-field');
+				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '状态'));
+				statusSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				const statusLabels: [TaskBoardStatus, string][] = [
+					['triage' as TaskBoardStatus, '🗂 待规划'],
+					['todo' as TaskBoardStatus, '📋 待执行'],
+					['ready' as TaskBoardStatus, '✅ 就绪'],
+					['running' as TaskBoardStatus, '⚡ 执行中'],
+					['blocked' as TaskBoardStatus, '🚫 阻塞'],
+					['done' as TaskBoardStatus, '✔ 已完成'],
+					['cancelled' as TaskBoardStatus, '⏹ 取消'],
+					['archived' as TaskBoardStatus, '📦 归档'],
+				];
+				for (const [val, label] of statusLabels) {
+					const opt = document.createElement('option'); opt.value = val; opt.textContent = label;
+					if (val === task.status) { opt.selected = true; }
+					statusSelect.appendChild(opt);
+				}
+				field.appendChild(statusSelect);
+				body.appendChild(field);
+			}
+
+			// ── Field: 依赖任务 ──────────────────────────────────────
+			{
+				const field = DOM.$('div.edit-task-field');
+				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '依赖任务'));
+
+				if (editable) {
+					const depSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+					{
+						const opt = document.createElement('option'); opt.value = '';
+						const availableCount = allTasks.filter(t => t.id !== task.id && t.status !== 'done' && t.status !== 'archived' && t.status !== 'cancelled').length;
+						opt.textContent = availableCount > 0 ? '选择需要先完成的任务…' : '无可选任务';
+						depSelect.appendChild(opt);
+					}
+					for (const t of allTasks) {
+						if (t.id === task.id) { continue; }
+						if (t.status === 'done' || t.status === 'archived' || t.status === 'cancelled') { continue; }
+						const opt = document.createElement('option'); opt.value = t.id;
+						opt.textContent = t.title ? `${t.title}（${t.id.slice(0, 8)}）` : t.id;
+						if (task.dependencies?.includes(t.id)) { opt.disabled = true; }
+						depSelect.appendChild(opt);
+					}
+					field.appendChild(depSelect);
+
+					// Selected dependency chips (like CreateTaskModal)
+					depsContainer = DOM.$('div.edit-task-dep-chips');
+					const depIds = task.dependencies || [];
+					const removeDep = (id: string) => {
+						const idx = depIds.indexOf(id);
+						if (idx >= 0) { depIds.splice(idx, 1); }
+						renderChips();
+					};
+					const addDep = (id: string) => {
+						if (id && !depIds.includes(id)) { depIds.push(id); renderChips(); }
+					};
+					const renderChips = () => {
+						if (!depsContainer) { return; }
+						while (depsContainer.firstChild) { depsContainer.removeChild(depsContainer.firstChild); }
+						for (const did of depIds) {
+							const dt = allTasks.find(t => t.id === did);
+							const chip = DOM.$('span.edit-task-dep-chip');
+							chip.appendChild(DOM.$('span.edit-task-dep-chip-label', undefined, dt?.title || did));
+							const rmBtn = DOM.$('button.edit-task-dep-chip-remove', undefined, '✕');
+							rmBtn.addEventListener('click', () => removeDep(did));
+							chip.appendChild(rmBtn);
+							chip.title = dt ? `状态: ${dt.status}` : did;
+							depsContainer.appendChild(chip);
+						}
+					};
+					renderChips();
+					depSelect.addEventListener('change', () => {
+						if (depSelect.value) { addDep(depSelect.value); depSelect.value = ''; }
+					});
+					field.appendChild(depsContainer);
+				} else if (task.dependencies && task.dependencies.length > 0) {
+					const depsChips = DOM.$('div.native-tb-detail-deps');
+					for (const depId of task.dependencies) {
+						const depTask = allTasks.find(t => t.id === depId);
+						const depChip = DOM.$('a.native-tb-detail-dep-chip');
+						const dotClass = depTask ? (depTask.status === 'done' ? 'done' : (depTask.status === 'running' ? 'active' : 'waiting')) : 'waiting';
+						depChip.appendChild(DOM.$(`span.native-tb-detail-dep-dot.${dotClass}`));
+						depChip.appendChild(document.createTextNode(depTask?.title || depId));
+						depChip.title = depTask ? `状态: ${depTask.status}` : depId;
+						depsChips.appendChild(depChip);
+					}
+					field.appendChild(depsChips);
+				}
+				body.appendChild(field);
 			}
 
 			// Timestamps
 			const ts = DOM.$('div.native-tb-detail-timestamps');
 			ts.appendChild(DOM.$('span', undefined, `创建 ${task.createdAt}`));
 			ts.appendChild(DOM.$('span', undefined, `更新 ${task.updatedAt}`));
-			if (task.completedAt) {
-				ts.appendChild(DOM.$('span', undefined, `完成 ${task.completedAt}`));
-			}
+			if (task.completedAt) { ts.appendChild(DOM.$('span', undefined, `完成 ${task.completedAt}`)); }
 			body.appendChild(ts);
 
 			modal.appendChild(body);
 
-			// === Footer ===
+			// === Footer (screenshot-1 layout: 删除 | 归档 | 标记阻塞 … 取消 | 保存) ===
 			const footer = DOM.$('div.native-tb-detail-footer');
 			const footerLeft = DOM.$('div.native-tb-detail-footer-left');
 
-			const deleteBtn = DOM.$('button.native-tb-btn.native-tb-btn-danger', undefined, '🗑 删除');
+			const deleteBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-danger', undefined, '🗑 删除');
 			deleteBtn.title = '删除此任务';
 			deleteBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'delete', taskId: task.id }); });
 			footerLeft.appendChild(deleteBtn);
 
-			const archiveBtn = DOM.$('button.native-tb-btn', undefined, '📦 归档');
+			const archiveBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-warning', undefined, '📦 归档');
 			archiveBtn.title = '归档任务';
 			archiveBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'archive', taskId: task.id }); });
 			footerLeft.appendChild(archiveBtn);
 
 			if (task.status === 'blocked') {
-				const unblockBtn = DOM.$('button.native-tb-btn', undefined, '✅ 取消阻塞');
+				const unblockBtn = DOM.$('button.edit-task-footer-btn', undefined, '✅ 取消阻塞');
 				unblockBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'unblock', taskId: task.id }); });
 				footerLeft.appendChild(unblockBtn);
 			} else if (task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'archived') {
-				const blockBtn = DOM.$('button.native-tb-btn', undefined, '🚫 标记阻塞');
+				const blockBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-warning', undefined, '🚫 标记阻塞');
 				blockBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'block', taskId: task.id }); });
 				footerLeft.appendChild(blockBtn);
 			}
@@ -1622,16 +2807,53 @@ export class TaskBoardNativeRenderer {
 			footer.appendChild(footerLeft);
 
 			const footerRight = DOM.$('div.native-tb-detail-footer-right');
-			const cancelBtn = DOM.$('button.native-tb-btn', undefined, '取消');
+			const cancelBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-cancel', undefined, '取消');
 			cancelBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'close', taskId: task.id }); });
 			footerRight.appendChild(cancelBtn);
 
-			const saveBtn = DOM.$('button.native-tb-btn.native-tb-btn-primary', undefined, '💾 保存');
-			saveBtn.title = '保存状态修改';
+			const saveBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-primary', undefined, '💾 保存');
+			saveBtn.title = editable ? '保存编辑内容' : '保存状态修改';
 			saveBtn.addEventListener('click', () => {
-				const newStatus = statusSelect.value as TaskBoardStatus;
-				overlay.remove();
-				resolve({ action: 'statusChange', status: newStatus, taskId: task.id });
+				const newStatus = statusSelect?.value as TaskBoardStatus || task.status;
+				if (editable) {
+					const editedAssigneeId = assigneeSelect?.value || undefined;
+					const emp = editedAssigneeId ? employees.find(e => e.id === editedAssigneeId) : undefined;
+					// Collect dependency IDs from visible chips
+					let depIds: string[] = task.dependencies || [];
+					if (depsContainer) {
+						const chips = depsContainer.querySelectorAll('.edit-task-dep-chip');
+						if (chips.length > 0) {
+							depIds = Array.from(chips).map(chip => {
+								const label = chip.querySelector('.edit-task-dep-chip-label')?.textContent;
+								const found = allTasks.find(t => t.title === label);
+								return found?.id || label || '';
+							}).filter(Boolean);
+						}
+					} // end if(depsContainer)
+					// Parse title (line 1) and optional URL (line 2) from the combined input
+					const rawVal = (titleInput?.value || task.title).trim();
+					const lines = rawVal.split('\n');
+					const saveTitle = lines[0].trim() || task.title;
+					const saveUrl = lines.slice(1).map(s => s.trim()).filter(Boolean)[0] || undefined;
+					overlay.remove();
+					resolve({
+						action: 'edit',
+						status: newStatus,
+						taskId: task.id,
+						title: saveTitle,
+						description: descInput?.value,
+						assigneeId: editedAssigneeId,
+						assigneeName: emp?.name || undefined,
+						priority: (prioSelect?.value as 'low' | 'medium' | 'high') || task.priority,
+						dependencies: depIds,
+						workspaceId: workspaceSelect?.value || undefined,
+						worktreePath: worktreeSelect?.value || undefined,
+						url: saveUrl,
+					});
+				} else {
+					overlay.remove();
+					resolve({ action: 'statusChange', status: newStatus, taskId: task.id });
+				}
 			});
 			footerRight.appendChild(saveBtn);
 
@@ -1653,13 +2875,6 @@ export class TaskBoardNativeRenderer {
 
 			parent.appendChild(overlay);
 		});
-	}
-
-	private _detailMetaItem(label: string, value: string): HTMLElement {
-		const item = DOM.$('div.native-tb-detail-meta-item');
-		item.appendChild(DOM.$('span.ntb-meta-label', undefined, label));
-		item.appendChild(DOM.$('span.ntb-meta-value', undefined, value));
-		return item;
 	}
 
 	// ─── Create Task Modal ────────────────────────────────────────────
@@ -2200,31 +3415,45 @@ export class TaskBoardNativeRenderer {
 			cancelBtn.addEventListener('click', () => { overlay.remove(); resolve(null); });
 			footer.appendChild(cancelBtn);
 
-			const submitBtn = DOM.$('button.native-tb-btn.native-tb-btn-primary', undefined, '🚀 创建并执行');
-			submitBtn.addEventListener('click', () => {
-				if (!titleInput.value.trim()) { return; }
-				const emp = employees.find(e => e.id === assigneeSelect.value);
-				const wtPath = wtSelect.value || undefined;
-				const wt = wtPath ? currentWtList.find(w => w.path === wtPath) : undefined;
-				const wsId = wsSelect.value || activeWorkspaceId;
-				const descText = descEditor.innerText.trim() || undefined;
-				overlay.remove();
-				resolve({
-					title: titleInput.value.trim(),
-					description: descText,
-					assigneeId: assigneeSelect.value || undefined,
-					assigneeName: emp?.name || undefined,
-					priority: prioritySelect.value as 'low' | 'medium' | 'high',
-					dependencies: selectedDeps.length > 0 ? selectedDeps : undefined,
-					workspaceId: wsId,
-					worktreePath: wt?.path,
-					worktreeBranch: wt?.branch,
-					agentSessionId: selectedSessionId,
-					attachments: descAttachments.length > 0 ? descAttachments.slice() : undefined,
-					agentSessionName: selectedSessionId ? selectedSessionName : undefined,
-				});
-			});
-			footer.appendChild(submitBtn);
+		const submitBtn = DOM.$('button.native-tb-btn.native-tb-btn-primary', undefined, '🚀 创建并执行');
+		const createOnlyBtn = DOM.$('button.native-tb-btn', undefined, '📝 仅创建');
+		createOnlyBtn.title = '创建任务但不自动执行';
+
+		const buildResult = (execute: boolean): CreateTaskResult => {
+			const emp = employees.find(e => e.id === assigneeSelect.value);
+			const wtPath = wtSelect.value || undefined;
+			const wt = wtPath ? currentWtList.find(w => w.path === wtPath) : undefined;
+			const wsId = wsSelect.value || activeWorkspaceId;
+			const descText = descEditor.innerText.trim() || undefined;
+			return {
+				title: titleInput.value.trim(),
+				description: descText,
+				assigneeId: assigneeSelect.value || undefined,
+				assigneeName: emp?.name || undefined,
+				priority: prioritySelect.value as 'low' | 'medium' | 'high',
+				dependencies: selectedDeps.length > 0 ? selectedDeps : undefined,
+				workspaceId: wsId,
+				worktreePath: wt?.path,
+				worktreeBranch: wt?.branch,
+				agentSessionId: selectedSessionId,
+				attachments: descAttachments.length > 0 ? descAttachments.slice() : undefined,
+				agentSessionName: selectedSessionId ? selectedSessionName : undefined,
+				execute,
+			};
+		};
+
+		submitBtn.addEventListener('click', () => {
+			if (!titleInput.value.trim()) { return; }
+			overlay.remove();
+			resolve(buildResult(true));
+		});
+		createOnlyBtn.addEventListener('click', () => {
+			if (!titleInput.value.trim()) { return; }
+			overlay.remove();
+			resolve(buildResult(false));
+		});
+		footer.appendChild(createOnlyBtn);
+		footer.appendChild(submitBtn);
 			modal.appendChild(footer);
 
 			overlay.appendChild(modal);
@@ -2243,6 +3472,780 @@ export class TaskBoardNativeRenderer {
 			parent.appendChild(overlay);
 			titleInput.focus();
 		});
+	}
+
+	/**
+	 * TAPD import modal with filtering + batch creation.
+	 *
+	 * The data layer is delegated to the consumer via callbacks (wired to
+	 * TapdImportService which talks to the TAPD MCP):
+	 *   - `onLoadOptions` → dropdown options (status / iteration / priority) from TAPD
+	 *   - `onQuery`       → filter the TAPD workitems, returns lightweight list items
+	 *   - `onCreate`      → create 'todo' tasks for the selected items (fetches full
+	 *                       detail + attachments for each, then persists)
+	 */
+	showTapdImportModal(
+		parent: HTMLElement,
+		onLoadOptions: (workspaceId?: string) => Promise<TapdImportFilterOptions>,
+		onQuery: (filters: TapdImportFilter) => Promise<TapdImportResult[]>,
+		onCreate: (items: TapdImportResult[], workspaceId?: string) => Promise<void>,
+		defaultWorkspaceId?: string,
+	): void {
+		const overlay = DOM.$('div.native-tb-modal-overlay');
+		const modal = DOM.$('div.native-tb-modal');
+		modal.style.width = '860px';
+
+		// Header
+		const header = DOM.$('div.native-tb-modal-header');
+		const titleWrap = DOM.$('span');
+		titleWrap.textContent = '📥 从 TAPD 批量导入任务';
+		const srcBadge = DOM.$('span');
+		srcBadge.textContent = '数据来源：TAPD MCP';
+		srcBadge.style.fontSize = '11px';
+		srcBadge.style.background = '#a855f720';
+		srcBadge.style.color = '#c084fc';
+		srcBadge.style.padding = '1px 8px';
+		srcBadge.style.borderRadius = '10px';
+		srcBadge.style.marginLeft = '8px';
+		titleWrap.appendChild(srcBadge);
+		header.appendChild(titleWrap);
+		const closeBtn = DOM.$('button.native-tb-modal-close', undefined, '✕');
+		closeBtn.addEventListener('click', () => overlay.remove());
+		header.appendChild(closeBtn);
+		modal.appendChild(header);
+
+		// Body
+		const body = DOM.$('div.native-tb-modal-body');
+
+		// ── Filter panel ──
+		const panel = DOM.$('div');
+		panel.style.background = 'var(--vscode-editorWidget-background, #2d2d30)';
+		panel.style.border = '1px solid var(--vscode-widget-border, #3c3c3c)';
+		panel.style.borderRadius = '8px';
+		panel.style.padding = '14px';
+		panel.style.display = 'flex';
+		panel.style.flexDirection = 'column';
+		panel.style.gap = '12px';
+
+		// Optional single URL
+		const urlField = DOM.$('div');
+		urlField.style.display = 'flex';
+		urlField.style.flexDirection = 'column';
+		urlField.style.gap = '5px';
+		const urlLabel = DOM.$('span');
+		urlLabel.textContent = '指定 TAPD 链接（可选）';
+		urlLabel.style.fontSize = '11px';
+		urlLabel.style.color = 'var(--vscode-descriptionForeground)';
+		urlField.appendChild(urlLabel);
+		const urlRow = DOM.$('div');
+		urlRow.style.display = 'flex';
+		urlRow.style.gap = '8px';
+		const urlInput = DOM.$('input.native-tb-input') as HTMLInputElement;
+		urlInput.placeholder = 'https://www.tapd.cn/tapd_fe/30076258/story/detail/1130076258001093952';
+		urlRow.appendChild(urlInput);
+		const clearUrlBtn = DOM.$('button.native-tb-btn', undefined, '✕');
+		clearUrlBtn.title = '清除链接';
+		clearUrlBtn.addEventListener('click', () => { urlInput.value = ''; });
+		urlRow.appendChild(clearUrlBtn);
+		urlField.appendChild(urlRow);
+		const urlHint = DOM.$('span');
+		urlHint.textContent = '填写后，列表仅显示该链接对应的单个 TAPD 单子，其余过滤条件仍可叠加。';
+		urlHint.style.fontSize = '11px';
+		urlHint.style.color = 'var(--vscode-descriptionForeground)';
+		urlField.appendChild(urlHint);
+		panel.appendChild(urlField);
+
+		// 5 filter fields grid
+		const grid = DOM.$('div');
+		grid.style.display = 'grid';
+		grid.style.gridTemplateColumns = 'repeat(5, 1fr)';
+		grid.style.gap = '12px';
+
+		const mkField = (labelText: string, withTapdBadge: boolean): { wrap: HTMLElement; control: HTMLElement } => {
+			const wrap = DOM.$('div');
+			wrap.style.display = 'flex';
+			wrap.style.flexDirection = 'column';
+			wrap.style.gap = '5px';
+			const label = DOM.$('span');
+			label.textContent = labelText;
+			label.style.fontSize = '11px';
+			label.style.color = 'var(--vscode-descriptionForeground)';
+			if (withTapdBadge) {
+				const badge = DOM.$('span');
+				badge.textContent = 'TAPD';
+				badge.style.fontSize = '9px';
+				badge.style.background = '#a855f720';
+				badge.style.color = '#c084fc';
+				badge.style.padding = '0 5px';
+				badge.style.borderRadius = '8px';
+				badge.style.marginLeft = '5px';
+				label.appendChild(badge);
+			}
+			wrap.appendChild(label);
+			return { wrap, control: wrap };
+		};
+
+		// Project (tree-picker, TAPD) — switching project reloads status / iteration / priority
+		const projF = mkField('项目', true);
+		projF.wrap.style.gridColumn = '1 / -1';
+		// Trigger button showing the current selection.
+		const projTrigger = DOM.$('div') as HTMLElement;
+		projTrigger.style.cssText = `
+			display:flex; align-items:center; gap:6px;
+			padding:4px 8px; border:1px solid var(--vscode-input-border, #555); border-radius:4px;
+			cursor:pointer; font-size:12px; min-height:26px;
+			background:var(--vscode-input-background, #3c3c3c);
+			color:var(--vscode-input-foreground, #ccc);
+		`;
+		const projIcon = DOM.$('span', undefined, '📂');
+		projTrigger.appendChild(projIcon);
+		const projLabel = DOM.$('span', undefined, '加载中…');
+		projLabel.style.flex = '1';
+		projLabel.style.overflow = 'hidden';
+		projLabel.style.textOverflow = 'ellipsis';
+		projLabel.style.whiteSpace = 'nowrap';
+		projTrigger.appendChild(projLabel);
+		const projArrow = DOM.$('span', undefined, '▾');
+		projArrow.style.fontSize = '10px';
+		projTrigger.appendChild(projArrow);
+		projF.wrap.appendChild(projTrigger);
+		grid.appendChild(projF.wrap);
+
+		// ── Project tree dropdown (popover) ──
+		let projDropdown: HTMLElement | null = null;
+		const closeProjDropdown = () => { if (projDropdown) { projDropdown.remove(); projDropdown = null; } };
+
+		const openProjTree = (projects: import('./tapdImportService.js').TapdImportProject[]) => {
+			closeProjDropdown();
+			const dd = DOM.$('div');
+			dd.style.cssText = `
+				position:absolute; z-index:1000;
+				border:1px solid var(--vscode-widget-border, #454545);
+				border-radius:8px; padding:0;
+				background:var(--vscode-sideBar-background, #252526);
+				box-shadow:0 6px 24px rgba(0,0,0,0.5);
+				min-width:280px; max-width:360px;
+			`;
+			// Search bar.
+			const searchRow = DOM.$('div');
+			searchRow.style.padding = '8px 8px 4px';
+			const searchInput = DOM.$('input') as HTMLInputElement;
+			searchInput.type = 'text';
+			searchInput.placeholder = '🔍 搜索项目…';
+			searchInput.style.cssText = `width:100%; box-sizing:border-box; padding:4px 8px; border:1px solid var(--vscode-input-border,#555); border-radius:4px; background:var(--vscode-input-background,#3c3c3c); color:var(--vscode-input-foreground,#ccc); font-size:12px; outline:none;`;
+			searchRow.appendChild(searchInput);
+			dd.appendChild(searchRow);
+
+			// Tree container.
+			const treeArea = DOM.$('div');
+			treeArea.style.cssText = `max-height:220px; overflow-y:auto; padding:4px 0;`;
+			dd.appendChild(treeArea);
+
+			// Footer.
+			const ddFooter = DOM.$('div');
+			ddFooter.style.cssText = `display:flex; justify-content:flex-end; gap:6px; padding:6px 8px; border-top:1px solid var(--vscode-widget-border,#454545);`;
+			const ddOk = DOM.$('button', undefined, '确定');
+			Object.assign(ddOk.style, { fontSize:'12px', padding:'2px 14px', borderRadius:'4px', background:'#a855f7', color:'#fff', border:'none', cursor:'pointer' });
+			const ddCancel = DOM.$('button', undefined, '取消');
+			Object.assign(ddCancel.style, { fontSize:'12px', padding:'2px 14px', borderRadius:'4px', background:'transparent', color:'var(--vscode-foreground,#ccc)', border:'1px solid var(--vscode-widget-border,#454545)', cursor:'pointer' });
+			ddFooter.appendChild(ddOk);
+			ddFooter.appendChild(ddCancel);
+			dd.appendChild(ddFooter);
+
+			// Track selected id.
+			let selectedId = currentWsId || '';
+			const expandedSet = new Set<string>();
+
+			// Render tree node.
+			const renderNode = (
+				p: import('./tapdImportService.js').TapdImportProject,
+				depth: number,
+			): HTMLElement => {
+				const row = DOM.$('div');
+				row.dataset.pid = p.id;
+				row.style.cssText = `display:flex; align-items:center; gap:4px; padding:3px 8px; cursor:pointer; font-size:12px; color:var(--vscode-foreground,#ccc);`;
+				if (selectedId === p.id) {
+					row.style.background = 'rgba(168,85,247,0.18)';
+					row.style.color = '#c084fc';
+				}
+
+				// Indent + expand toggle.
+				const indent = depth * 18;
+				const hasChildren = !!(p.children && p.children.length);
+				if (hasChildren) {
+					const twist = DOM.$('span', undefined, expandedSet.has(p.id) ? '▾' : '▶');
+					twist.style.fontSize = '9px';
+					twist.style.width = `${indent + 12}px`;
+					twist.style.textAlign = 'center';
+					twist.style.flexShrink = '0';
+					twist.style.cursor = 'pointer';
+					row.appendChild(twist);
+					twist.addEventListener('click', (e) => {
+						e.stopPropagation();
+						if (expandedSet.has(p.id)) { expandedSet.delete(p.id); } else { expandedSet.add(p.id); }
+						rebuildTree();
+					});
+				} else {
+					const spacer = DOM.$('span');
+					spacer.style.width = `${indent + 12}px`;
+					spacer.style.flexShrink = '0';
+					row.appendChild(spacer);
+				}
+
+				// Radio.
+				const radio = DOM.$('input') as HTMLInputElement;
+				radio.type = 'radio';
+				radio.name = '__tapd_proj_tree__';
+				radio.checked = selectedId === p.id;
+				radio.style.accentColor = '#a855f7';
+				radio.style.cursor = 'pointer';
+				row.appendChild(radio);
+
+				// Label.
+				const lbl = DOM.$('span', undefined, p.name);
+				lbl.style.overflow = 'hidden';
+				lbl.style.textOverflow = 'ellipsis';
+				lbl.style.whiteSpace = 'nowrap';
+				lbl.style.flex = '1';
+				row.appendChild(lbl);
+
+				// Click row → select.
+				row.addEventListener('click', () => {
+					selectedId = p.id;
+					rebuildTree();
+				});
+
+				return row;
+			};
+
+			const renderTreeRecursive = (
+				nodes: import('./tapdImportService.js').TapdImportProject[],
+				container: HTMLElement,
+				depth: number,
+			) => {
+				for (const p of nodes) {
+					container.appendChild(renderNode(p, depth));
+					if (p.children?.length && expandedSet.has(p.id)) {
+						renderTreeRecursive(p.children, container, depth + 1);
+					}
+				}
+			};
+
+			const rebuildTree = () => {
+				DOM.clearNode(treeArea);
+				renderTreeRecursive(projects.filter(p =>
+					!searchInput.value.trim() || p.name.toLowerCase().includes(searchInput.value.toLowerCase())
+				), treeArea, 0);
+			};
+
+			// Initial render.
+			rebuildTree();
+
+			// Search filter.
+			searchInput.addEventListener('input', () => { rebuildTree(); });
+
+			// Confirm → apply & reload filters.
+			const findProjName = (nodes: import('./tapdImportService.js').TapdImportProject[], id: string): string | undefined => {
+				for (const n of nodes) { if (n.id === id) { return n.name; } const c = n.children ? findProjName(n.children, id) : undefined; if (c) return c; }
+				return undefined;
+			};
+			ddOk.addEventListener('click', () => {
+				currentWsId = selectedId;
+				projLabel.textContent = selectedId
+					? (findProjName(projects, selectedId) ?? selectedId)
+					: '未选择';
+				closeProjDropdown();
+				void loadOptionsInto(currentWsId);
+			});
+			ddCancel.addEventListener('click', () => { closeProjDropdown(); });
+
+			// Position below the trigger.
+			const rect = projTrigger.getBoundingClientRect();
+			dd.style.top = `${rect.bottom + 4}px`;
+			dd.style.left = `${rect.left}px`;
+
+			document.body.appendChild(dd);
+			projDropdown = dd;
+
+			// Auto-close on outside click.
+			const onDocClick = (e: MouseEvent) => {
+				if (!dd.contains(e.target as Node)) { closeProjDropdown(); document.removeEventListener('click', onDocClick); }
+			};
+			setTimeout(() => document.addEventListener('click', onDocClick), 0);
+		};
+
+		// Click trigger → open the tree (projects are loaded async, so we store them).
+		let cachedProjects: import('./tapdImportService.js').TapdImportProject[] = [];
+		projTrigger.addEventListener('click', (e) => {
+			e.stopPropagation();
+			if (cachedProjects.length) { openProjTree(cachedProjects); }
+		});
+
+		// 标题 (text)
+		const titleF = mkField('标题', false);
+		const titleInput = DOM.$('input.native-tb-input') as HTMLInputElement;
+		titleInput.placeholder = '关键字…';
+		titleF.wrap.appendChild(titleInput);
+		// 处理人 (text)
+		const ownerF = mkField('处理人', false);
+		const ownerInput = DOM.$('input.native-tb-input') as HTMLInputElement;
+		ownerInput.placeholder = '如：张伟';
+		ownerF.wrap.appendChild(ownerInput);
+		// 状态 (select, TAPD)
+		const statusF = mkField('状态', true);
+		const statusSelect = DOM.$('select.native-tb-input') as HTMLSelectElement;
+		statusF.wrap.appendChild(statusSelect);
+		// 迭代 (select, TAPD)
+		const iterF = mkField('迭代', true);
+		const iterSelect = DOM.$('select.native-tb-input') as HTMLSelectElement;
+		iterF.wrap.appendChild(iterSelect);
+		// 优先级 (select, TAPD)
+		const prioF = mkField('优先级', true);
+		const prioSelect = DOM.$('select.native-tb-input') as HTMLSelectElement;
+		prioF.wrap.appendChild(prioSelect);
+
+		grid.appendChild(titleF.wrap);
+		grid.appendChild(ownerF.wrap);
+		grid.appendChild(statusF.wrap);
+		grid.appendChild(iterF.wrap);
+		grid.appendChild(prioF.wrap);
+		panel.appendChild(grid);
+
+		// Filter actions
+		const actions = DOM.$('div');
+		actions.style.display = 'flex';
+		actions.style.alignItems = 'center';
+		actions.style.gap = '8px';
+		const queryBtn = DOM.$('button.native-tb-btn.native-tb-btn-primary', undefined, '🔍 查询');
+		const resetBtn = DOM.$('button.native-tb-btn', undefined, '重置');
+		const actionsHint = DOM.$('span');
+		actionsHint.textContent = '状态 / 迭代 / 优先级下拉项由 TAPD MCP 拉取；查询经 stories_get / bugs_get / tasks_get 带参执行。';
+		actionsHint.style.fontSize = '12px';
+		actionsHint.style.color = 'var(--vscode-descriptionForeground)';
+		actions.appendChild(queryBtn);
+		actions.appendChild(resetBtn);
+		actions.appendChild(actionsHint);
+		panel.appendChild(actions);
+		body.appendChild(panel);
+
+		// Parsing indicator
+		const parsingBox = DOM.$('div');
+		parsingBox.style.display = 'none';
+		parsingBox.style.alignItems = 'center';
+		parsingBox.style.gap = '8px';
+		parsingBox.style.color = 'var(--vscode-editorWarning-foreground, #cca700)';
+		parsingBox.style.fontSize = '13px';
+		const spinner = DOM.$('span');
+		spinner.style.width = '13px';
+		spinner.style.height = '13px';
+		spinner.style.border = '2px solid var(--vscode-editorWarning-foreground, #cca700)';
+		spinner.style.borderTopColor = 'transparent';
+		spinner.style.borderRadius = '50%';
+		spinner.style.display = 'inline-block';
+		spinner.style.animation = 'native-tb-spin .7s linear infinite';
+		parsingBox.appendChild(spinner);
+		parsingBox.appendChild(DOM.$('span', undefined, '正在通过 TAPD MCP 拉取匹配的单子…'));
+		body.appendChild(parsingBox);
+
+		// Result header
+		const resultHead = DOM.$('div');
+		resultHead.style.display = 'flex';
+		resultHead.style.alignItems = 'center';
+		resultHead.style.gap = '10px';
+		resultHead.style.fontSize = '12px';
+		resultHead.style.color = 'var(--vscode-descriptionForeground)';
+		const selectAll = DOM.$('input') as HTMLInputElement;
+		selectAll.type = 'checkbox';
+		selectAll.style.width = '16px';
+		selectAll.style.height = '16px';
+		selectAll.style.accentColor = '#a855f7';
+		resultHead.appendChild(selectAll);
+		resultHead.appendChild(DOM.$('span', undefined, '全选'));
+		const resultCount = DOM.$('span');
+		resultCount.style.color = 'var(--vscode-foreground)';
+		resultCount.style.fontWeight = '600';
+		resultHead.appendChild(resultCount);
+		resultHead.appendChild(DOM.$('span', undefined, '条匹配'));
+		const singleNote = DOM.$('span');
+		singleNote.textContent = '· 已按指定链接过滤';
+		singleNote.style.color = '#c084fc';
+		singleNote.style.fontSize = '11px';
+		singleNote.style.display = 'none';
+		resultHead.appendChild(singleNote);
+		const headSpacer = DOM.$('span');
+		headSpacer.style.flex = '1';
+		resultHead.appendChild(headSpacer);
+		const selectedCount = DOM.$('span');
+		selectedCount.style.color = '#c084fc';
+		selectedCount.style.fontWeight = '600';
+		resultHead.appendChild(DOM.$('span', undefined, '已选 '));
+		resultHead.appendChild(selectedCount);
+		resultHead.appendChild(DOM.$('span', undefined, ' 条'));
+		body.appendChild(resultHead);
+
+		// Result list
+		const resultList = DOM.$('div');
+		resultList.style.border = '1px solid var(--vscode-widget-border, #3c3c3c)';
+		resultList.style.borderRadius = '8px';
+		resultList.style.overflow = 'hidden';
+		resultList.style.maxHeight = '300px';
+		resultList.style.overflowY = 'auto';
+		resultList.appendChild(DOM.$('div', undefined, '输入过滤条件后点击「查询」'));
+		(resultList.firstChild as HTMLElement).style.padding = '28px';
+		(resultList.firstChild as HTMLElement).style.textAlign = 'center';
+		(resultList.firstChild as HTMLElement).style.color = 'var(--vscode-descriptionForeground)';
+		(resultList.firstChild as HTMLElement).style.fontSize = '13px';
+		body.appendChild(resultList);
+
+		modal.appendChild(body);
+
+		// Footer
+		const footer = DOM.$('div.native-tb-modal-footer');
+		const footerHint = DOM.$('span');
+		footerHint.textContent = '勾选的单子将创建为「待执行」任务，assigneeId 留空，描述图与附件下载到本地。';
+		footerHint.style.fontSize = '12px';
+		footerHint.style.color = 'var(--vscode-descriptionForeground)';
+		footer.appendChild(footerHint);
+		const footerRight = DOM.$('span');
+		footerRight.style.display = 'flex';
+		footerRight.style.gap = '8px';
+		const cancelBtn = DOM.$('button.native-tb-btn', undefined, '取消');
+		cancelBtn.addEventListener('click', () => overlay.remove());
+		const createBtn = DOM.$('button.native-tb-btn.native-tb-btn-primary', undefined, '＋ 批量创建待执行任务 (0)');
+		createBtn.toggleAttribute('disabled', true);
+		createBtn.style.opacity = '0.5';
+		footerRight.appendChild(cancelBtn);
+		footerRight.appendChild(createBtn);
+		footer.appendChild(footerRight);
+		modal.appendChild(footer);
+
+		overlay.appendChild(modal);
+		parent.appendChild(overlay);
+
+		// ── State ──
+		let items: TapdImportResult[] = [];
+		let creating = false;
+		// Workspace (project) currently selected for TAPD queries.
+		let currentWsId = defaultWorkspaceId || '';
+
+		// ── Helpers ──
+		const TYPE_LABEL: Record<string, string> = { story: '需求', bug: '缺陷', task: '任务' };
+		const addOption = (sel: HTMLSelectElement, label: string, value: string) => {
+			const opt = document.createElement('option');
+			opt.value = value;
+			opt.textContent = label;
+			sel.appendChild(opt);
+		};
+		const fillSelect = (sel: HTMLSelectElement, values: string[]) => {
+			DOM.clearNode(sel);
+			addOption(sel, '全部', '');
+			for (const v of values) { addOption(sel, v, v); }
+		};
+		const updateCounts = () => {
+			const chks = Array.from(resultList.querySelectorAll('input[type=checkbox].rowchk')) as HTMLInputElement[];
+			const n = chks.filter(c => c.checked).length;
+			selectedCount.textContent = String(n);
+			createBtn.textContent = `＋ 批量创建待执行任务 (${n})`;
+			createBtn.toggleAttribute('disabled', n === 0 || creating);
+			createBtn.style.opacity = (n === 0 || creating) ? '0.5' : '1';
+		};
+
+		// ── Load TAPD dropdown options (projects + status/iteration/priority) ──
+		/** Flatten a project tree into a flat list for name lookups. */
+		const flattenProjects = (nodes: import('./tapdImportService.js').TapdImportProject[]): import('./tapdImportService.js').TapdImportProject[] => {
+			const out: import('./tapdImportService.js').TapdImportProject[] = [];
+			const walk = (n: import('./tapdImportService.js').TapdImportProject) => { out.push(n); n.children?.forEach(walk); };
+			nodes.forEach(walk);
+			return out;
+		};
+
+		const loadOptionsInto = async (requestedWs: string) => {
+			statusSelect.disabled = true;
+			iterSelect.disabled = true;
+			prioSelect.disabled = true;
+			projTrigger.style.opacity = '0.5';
+			projTrigger.style.pointerEvents = 'none';
+			try {
+				const first = await onLoadOptions(requestedWs);
+				const projects = (first.projects && first.projects.length) ? first.projects : [];
+
+				// Cache for the tree picker.
+				cachedProjects = projects;
+
+				// Update trigger label.
+				if (projects.length) {
+					const flat = flattenProjects(projects);
+					const picked = requestedWs ? flat.find(p => p.id === requestedWs) ?? null : null;
+					currentWsId = picked?.id || projects[0].id || requestedWs;
+					projLabel.textContent = picked?.name || projects[0]?.name || currentWsId || '未选择';
+				} else {
+					currentWsId = requestedWs;
+					projLabel.textContent = requestedWs ? `项目 ${requestedWs}` : '默认项目';
+				}
+
+				// Load status / iteration / priority for the resolved workspace.
+				const opts = (currentWsId === requestedWs) ? first : await onLoadOptions(currentWsId);
+				fillSelect(statusSelect, opts.statuses);
+				fillSelect(iterSelect, opts.iterations);
+				fillSelect(prioSelect, opts.priorities);
+			} catch (err) {
+				console.error('[TaskBoardNativeRenderer] load TAPD options failed:', err);
+			} finally {
+				statusSelect.disabled = false;
+				iterSelect.disabled = false;
+				prioSelect.disabled = false;
+				projTrigger.style.opacity = '1';
+				projTrigger.style.pointerEvents = '';
+			}
+		};
+
+		// Initial load (uses defaultWorkspaceId when provided).
+		void loadOptionsInto(currentWsId);
+
+		// ── Query ──
+		const runQuery = async () => {
+			items = [];
+			DOM.clearNode(resultList);
+			parsingBox.style.display = 'flex';
+			queryBtn.toggleAttribute('disabled', true);
+			try {
+				const filters: TapdImportFilter = {
+					url: urlInput.value.trim() || undefined,
+					name: titleInput.value.trim() || undefined,
+					owner: ownerInput.value.trim() || undefined,
+					status: statusSelect.value || undefined,
+					iteration: iterSelect.value || undefined,
+					priority: prioSelect.value || undefined,
+					workspaceId: currentWsId || undefined,
+				};
+				items = await onQuery(filters);
+				singleNote.style.display = urlInput.value.trim() ? 'inline' : 'none';
+				renderList();
+			} catch (err) {
+				DOM.clearNode(resultList);
+				const e = DOM.$('div');
+				e.textContent = `⚠ ${err instanceof Error ? err.message : String(err)}`;
+				e.style.padding = '20px';
+				e.style.color = 'var(--vscode-errorForeground, #f48771)';
+				resultList.appendChild(e);
+			} finally {
+				parsingBox.style.display = 'none';
+				queryBtn.toggleAttribute('disabled', false);
+			}
+		};
+
+		const renderList = () => {
+			DOM.clearNode(resultList);
+			if (!items.length) {
+				const empty = DOM.$('div', undefined, '没有匹配的单子');
+				empty.style.padding = '28px';
+				empty.style.textAlign = 'center';
+				empty.style.color = 'var(--vscode-descriptionForeground)';
+				empty.style.fontSize = '13px';
+				resultList.appendChild(empty);
+			} else {
+				items.forEach((it) => {
+					const row = DOM.$('div');
+					row.style.display = 'flex';
+					row.style.alignItems = 'flex-start';
+					row.style.gap = '10px';
+					row.style.padding = '10px 12px';
+					row.style.borderBottom = '1px solid var(--vscode-widget-border, #3c3c3c)';
+					row.style.background = 'var(--vscode-editorWidget-background, #252526)';
+					row.addEventListener('mouseenter', () => { row.style.background = 'var(--vscode-list-hoverBackground, #2d2d30)'; });
+					row.addEventListener('mouseleave', () => { row.style.background = row.classList.contains('selected') ? '#a855f70d' : 'var(--vscode-editorWidget-background, #252526)'; });
+					const chk = DOM.$('input') as HTMLInputElement;
+					chk.type = 'checkbox';
+					chk.className = 'rowchk';
+					chk.style.width = '16px';
+					chk.style.height = '16px';
+					chk.style.marginTop = '2px';
+					chk.style.accentColor = '#a855f7';
+					chk.addEventListener('change', () => {
+						row.classList.toggle('selected', chk.checked);
+						row.style.background = chk.checked ? '#a855f70d' : 'var(--vscode-editorWidget-background, #252526)';
+						updateCounts();
+					});
+					row.appendChild(chk);
+					const main = DOM.$('div');
+					main.style.flex = '1';
+					main.style.minWidth = '0';
+					const titleLine = DOM.$('div');
+					titleLine.style.fontSize = '13px';
+					titleLine.style.fontWeight = '500';
+					titleLine.style.lineHeight = '1.4';
+					titleLine.style.display = 'flex';
+					titleLine.style.gap = '8px';
+					titleLine.style.alignItems = 'center';
+					const typeTag = DOM.$('span', undefined, TYPE_LABEL[it.type || 'task'] || '任务');
+					typeTag.style.fontSize = '11px';
+					typeTag.style.padding = '1px 7px';
+					typeTag.style.borderRadius = '10px';
+					typeTag.style.background = it.type === 'bug' ? '#f4474720' : it.type === 'story' ? '#4ec9b020' : '#0e639c20';
+					typeTag.style.color = it.type === 'bug' ? '#f44747' : it.type === 'story' ? '#4ec9b0' : '#6cb6e6';
+					titleLine.appendChild(typeTag);
+					titleLine.appendChild(DOM.$('span', undefined, it.title || '(无标题)'));
+					main.appendChild(titleLine);
+					const meta = DOM.$('div');
+					meta.style.marginTop = '6px';
+					meta.style.display = 'flex';
+					meta.style.gap = '6px';
+					meta.style.flexWrap = 'wrap';
+					meta.style.fontSize = '11px';
+					meta.style.color = 'var(--vscode-descriptionForeground)';
+					const tag = (text: string, color?: string) => {
+						const t = DOM.$('span', undefined, text);
+						t.style.background = 'var(--vscode-chip-background, #3a3d41)';
+						t.style.padding = '1px 7px';
+						t.style.borderRadius = '10px';
+						if (color) { t.style.color = color; t.style.background = color + '20'; }
+						return t;
+					};
+					if (it.id) { meta.appendChild(tag(`#${it.id}`)); }
+					if (it.priority) { meta.appendChild(tag(`📝 ${it.priority}`, '#cca700')); }
+					if (it.status) { meta.appendChild(tag(`● ${it.status}`, '#6cb6e6')); }
+					if (it.assigneeName) { meta.appendChild(tag(`👤 ${it.assigneeName}`)); }
+					if (it.iteration) { meta.appendChild(tag(`🔁 ${it.iteration}`)); }
+					main.appendChild(meta);
+					row.appendChild(main);
+					resultList.appendChild(row);
+				});
+			}
+			resultCount.textContent = String(items.length);
+			selectAll.checked = false;
+			updateCounts();
+		};
+
+		queryBtn.addEventListener('click', () => void runQuery());
+		resetBtn.addEventListener('click', () => {
+			urlInput.value = '';
+			titleInput.value = '';
+			ownerInput.value = '';
+			statusSelect.value = '';
+			iterSelect.value = '';
+			prioSelect.value = '';
+			singleNote.style.display = 'none';
+		});
+		selectAll.addEventListener('change', () => {
+			const chks = Array.from(resultList.querySelectorAll('input[type=checkbox].rowchk')) as HTMLInputElement[];
+			chks.forEach(c => {
+				c.checked = selectAll.checked;
+				const row = c.closest('div') as HTMLElement;
+				row.classList.toggle('selected', c.checked);
+				row.style.background = c.checked ? '#a855f70d' : 'var(--vscode-editorWidget-background, #252526)';
+			});
+			updateCounts();
+		});
+
+		createBtn.addEventListener('click', async () => {
+			const chks = Array.from(resultList.querySelectorAll('input[type=checkbox].rowchk')) as HTMLInputElement[];
+			const chosen = items.filter((_, i) => chks[i]?.checked);
+			if (!chosen.length || creating) { return; }
+			creating = true;
+			createBtn.textContent = '⏳ 创建中…';
+			createBtn.toggleAttribute('disabled', true);
+			createBtn.style.opacity = '0.5';
+			try {
+				await onCreate(chosen, currentWsId);
+				overlay.remove();
+			} catch (err) {
+				console.error('[TaskBoardNativeRenderer] TAPD batch create failed:', err);
+			} finally {
+				creating = false;
+			}
+		});
+
+		// Close on overlay click / Escape
+		overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); } });
+		const escHandler = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
+		};
+		document.addEventListener('keydown', escHandler);
+
+		urlInput.focus();
+	}
+
+	/**
+	 * Shown when the user clicks "📥 导入 TAPD" but no TAPD MCP server is
+	 * connected locally. Explains the requirement and offers a one-click jump
+	 * into the MCP marketplace (filtered to the TAPD MCP) via `onGotoStore`.
+	 *
+	 * @param reason 'no-server' = no TAPD MCP installed at all;
+	 *               'not-running' = installed but failed to connect.
+	 */
+	showTapdMcpNotConnectedModal(
+		parent: HTMLElement,
+		opts: {
+			reason: 'no-server' | 'not-running';
+			onGotoStore: () => void;
+		},
+	): void {
+		const overlay = DOM.$('div.native-tb-modal-overlay');
+		const modal = DOM.$('div.native-tb-modal');
+		modal.style.width = '440px';
+
+		// Header
+		const header = DOM.$('div.native-tb-modal-header');
+		const title = DOM.$('span');
+		title.textContent = '⚠ TAPD MCP 未连接';
+		header.appendChild(title);
+		const closeBtn = DOM.$('button.native-tb-modal-close', undefined, '✕');
+		closeBtn.addEventListener('click', () => overlay.remove());
+		header.appendChild(closeBtn);
+		modal.appendChild(header);
+
+		// Body
+		const body = DOM.$('div.native-tb-modal-body');
+
+		const desc = DOM.$('div');
+		desc.textContent = opts.reason === 'no-server'
+			? '本地未检测到 TAPD MCP 服务器。导入 TAPD 单子需要先安装并连接 TAPD MCP，才能读取需求 / 缺陷 / 任务数据。'
+			: '本地 TAPD MCP 服务器已存在，但未能正常连接（启动失败或连接中断）。请确认其配置无误后，从商城重新安装或重连。';
+		desc.style.fontSize = '13px';
+		desc.style.lineHeight = '1.6';
+		desc.style.color = 'var(--vscode-foreground)';
+		body.appendChild(desc);
+
+		const hint = DOM.$('div');
+		hint.style.marginTop = '4px';
+		hint.style.fontSize = '12px';
+		hint.style.lineHeight = '1.6';
+		hint.style.color = 'var(--vscode-descriptionForeground)';
+		hint.style.background = 'var(--vscode-editorWidget-background, #2d2d30)';
+		hint.style.border = '1px solid var(--vscode-widget-border, #3c3c3c)';
+		hint.style.borderRadius = '6px';
+		hint.style.padding = '10px 12px';
+		hint.textContent = '💡 可前往 MCP 商城搜索 “tapd”，安装官方 TAPD MCP 服务器，安装后在集成视图中启动即可。';
+		body.appendChild(hint);
+
+		modal.appendChild(body);
+
+		// Footer
+		const footer = DOM.$('div.native-tb-modal-footer');
+		const cancelBtn = DOM.$('button.native-tb-btn', undefined, '取消');
+		cancelBtn.addEventListener('click', () => overlay.remove());
+		const gotoBtn = DOM.$('button.native-tb-btn.native-tb-btn-primary', undefined, '🛒 前往 MCP 商城安装');
+		gotoBtn.addEventListener('click', () => {
+			overlay.remove();
+			try {
+				opts.onGotoStore();
+			} catch (err) {
+				console.error('[TaskBoardNativeRenderer] open MCP store failed:', err);
+			}
+		});
+		footer.appendChild(cancelBtn);
+		footer.appendChild(gotoBtn);
+		modal.appendChild(footer);
+
+		overlay.appendChild(modal);
+		parent.appendChild(overlay);
+
+		// Close on overlay click / Escape
+		overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); } });
+		const escHandler = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
+		};
+		document.addEventListener('keydown', escHandler);
 	}
 
 	private _updateDepsOptions(select: HTMLSelectElement, allTasks: TaskBoardRecord[], selected: string[]): void {

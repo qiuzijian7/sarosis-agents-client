@@ -13,6 +13,12 @@ import type { IAgentStudioService, IAgentTaskBoardService, ITaskOrchestrationSer
 import { TaskBoardStatus, TaskSource } from '../../../common/types.js';
 import { SwarmWorkerSpec } from '../../../common/swarmService.js';
 import type { ISwarmService } from '../../../common/swarmService.js';
+import { IAgentOSService } from '../../../common/agentOS.js';
+import { IPlaywrightService } from '../../../../../../platform/browserView/common/playwrightService.js';
+import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
+import { ISessionsManagementService } from '../../../../../../sessions/services/sessions/common/sessionsManagement.js';
+import { BrowserEditorInput } from '../../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { IKanbanRecipeService, IKanbanRecipe } from './kanbanRecipeService.js';
 
 export interface KanbanToolContext {
 	register(definition: { definition: any; handler: any }): void;
@@ -22,25 +28,19 @@ export interface KanbanToolContext {
 	swarmService: ISwarmService;
 	triageService: any;
 	logService: ILogService;
+	/** Integrated-browser page reader (used by web_scrape_to_board). */
+	playwrightService: IPlaywrightService;
+	/** Editor service, to locate the focused/open browser page (pageId = editor.id). */
+	editorService: IEditorService;
+	/** Session management, to resolve the playwright sessionId for the active session. */
+	sessionsManagement: ISessionsManagementService;
+	/** Active model provider, used to parse the page snapshot into structured tasks. */
+	agentOS: IAgentOSService;
+	/** Persistent URL-matched extraction recipes for web_scrape_to_board. */
+	recipeService: IKanbanRecipeService;
 }
 
 export function registerKanbanTools(ctx: KanbanToolContext): void {
-	// 辅助：从 agentId 解析当前 agent 及其运行 workspaceId
-	// （agent 是全局定义，运行 workspace 取自 getActiveWorkspaceId）。
-	const resolveWorkspaceId = async (agentId: string | undefined): Promise<{ workspaceId: string; assigneeId?: string; assigneeName?: string } | undefined> => {
-		if (!agentId) { return undefined; }
-		try {
-			const workspaceId = ctx.studioService.getActiveWorkspaceId();
-			if (workspaceId) {
-				const agent = await ctx.studioService.getAgent(agentId);
-				return { workspaceId, assigneeId: agent?.id ?? agentId, assigneeName: agent?.name };
-			}
-		} catch (err) {
-			ctx.logService.warn(`[BuiltinTools] kanban: failed to resolve workspace for agent ${agentId}:`, err);
-		}
-		return undefined;
-	};
-
 	// ─── kanban_create ────────────────────────────────────────────────
 	ctx.register({
 		definition: {
@@ -60,27 +60,27 @@ export function registerKanbanTools(ctx: KanbanToolContext): void {
 			category: 'kanban',
 			source: 'saros.builtin-tools',
 		},
-		handler: async (args: Record<string, unknown>, _signal?: AbortSignal, agentId?: string) => {
+		handler: async (args: Record<string, unknown>, _signal?: AbortSignal, _agentId?: string) => {
 			const title = args['title'] as string | undefined;
 			if (!title || !title.trim()) {
 				throw new Error('kanban_create: "title" is required');
 			}
-			const description = args['description'] as string | undefined;
-			const assignee = args['assignee'] as string | undefined;
+		const description = args['description'] as string | undefined;
+		const assignee = args['assignee'] as string | undefined;
 
-			const workspaceId = await resolveWorkspaceId(agentId);
-			if (!workspaceId) {
-				return [{ type: 'text', text: 'kanban_create error: could not resolve a workspace for the current agent.' }];
-			}
-			try {
-				const task = await ctx.taskBoardService.createTask({
-					title: title.trim(),
-					description,
-					status: TaskBoardStatus.Triage,
-					source: TaskSource.Manual,
-					workspaceId: workspaceId.workspaceId,
-					assigneeName: assignee,
-				});
+		const workspaceId = ctx.studioService.getActiveWorkspaceId();
+		if (!workspaceId) {
+			return [{ type: 'text', text: 'kanban_create error: could not resolve a workspace for the current agent.' }];
+		}
+		try {
+			const task = await ctx.taskBoardService.createTask({
+				title: title.trim(),
+				description,
+				status: TaskBoardStatus.Triage,
+				source: TaskSource.Manual,
+				workspaceId: workspaceId,
+				assigneeName: assignee,
+			});
 				return [{ type: 'text', text: `Created kanban task #${task.id.slice(-6)} "${task.title}" (status: triage).` }];
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -624,6 +624,155 @@ export function registerKanbanTools(ctx: KanbanToolContext): void {
 	});
 
 	ctx.logService.info('[BuiltinTools] registerKanbanTools: kanban_swarm registered (multi-agent collaboration)');
+
+	// ─── web_scrape_to_board ──────────────────────────────────────────
+	// ─── web_recipe_create ─────────────────────────────────────────────
+	ctx.register({
+		definition: {
+			name: 'web_recipe_create',
+			description: 'Save a reusable scraping "recipe" that binds a URL pattern (regex) to a Playwright ' +
+				'extraction function. Once saved, opening a matching page and calling web_scrape_to_board will ' +
+				'extract tasks deterministically via the function instead of the LLM. Ideal for fixed sites ' +
+				'(TAPD / Jira / GitHub Issues). extract_fn must be a JS function of the form ' +
+				'async (page, args) => ({ boardName, sourceUrl, tasks: [{ title, description?, priority?, assignee?, sourceUrl? }] }) ' +
+				'or a bare array of task objects. `page` is the Playwright Page; args[0] is the page URL. ' +
+				'Return value must be JSON-serializable.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					name: { type: 'string', description: 'Unique recipe name (used to reference it later).' },
+					url_pattern: { type: 'string', description: 'Regex (source string) matched against the browser page URL.' },
+					url_flags: { type: 'string', description: 'Optional regex flags, e.g. "i" (default empty).' },
+					extract_fn: { type: 'string', description: 'JS function string: async (page, args) => ({ boardName, sourceUrl, tasks }) or a bare task array.' },
+					board_name: { type: 'string', description: 'Optional fixed board name (overrides function output).' },
+					max_tasks: { type: 'number', description: 'Optional per-recipe task cap (default 30, hard cap 100).' },
+				},
+				required: ['name', 'url_pattern', 'extract_fn'],
+			},
+			category: 'kanban',
+			source: 'saros.builtin-tools',
+		},
+		handler: async (args: Record<string, unknown>, _signal?: AbortSignal) => {
+			const name = args['name'] as string | undefined;
+			const urlPattern = args['url_pattern'] as string | undefined;
+			const extractFn = args['extract_fn'] as string | undefined;
+			if (!name || !name.trim()) {
+				return [{ type: 'text', text: 'web_recipe_create error: "name" is required.' }];
+			}
+			if (!urlPattern || !urlPattern.trim()) {
+				return [{ type: 'text', text: 'web_recipe_create error: "url_pattern" is required.' }];
+			}
+			if (!extractFn || !extractFn.trim()) {
+				return [{ type: 'text', text: 'web_recipe_create error: "extract_fn" is required.' }];
+			}
+			const recipe: IKanbanRecipe = {
+				name: name.trim(),
+				urlPattern: urlPattern,
+				urlFlags: typeof args['url_flags'] === 'string' && args['url_flags'].trim() ? args['url_flags'].trim() : undefined,
+				extractFn,
+				boardName: typeof args['board_name'] === 'string' && args['board_name'].trim() ? args['board_name'].trim() : undefined,
+				maxTasks: typeof args['max_tasks'] === 'number' ? args['max_tasks'] as number : undefined,
+			};
+			try {
+				ctx.recipeService.addRecipe(recipe);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				return [{ type: 'text', text: `web_recipe_create error: ${msg}` }];
+			}
+			return [{ type: 'text', text: `Saved recipe "${recipe.name}" (pattern: /${recipe.urlPattern}/${recipe.urlFlags ?? ''}). ` +
+				`Next time a page matching this URL is open, call web_scrape_to_board — it will use this recipe automatically, or pass recipe="${recipe.name}" to force it.` }];
+		},
+	});
+
+	// ─── web_recipe_list ──────────────────────────────────────────────
+	ctx.register({
+		definition: {
+			name: 'web_recipe_list',
+			description: 'List all saved web-scraping recipes (name, URL pattern, optional board name and task cap).',
+			inputSchema: {
+				type: 'object',
+				properties: {},
+				required: [],
+			},
+			category: 'kanban',
+			source: 'saros.builtin-tools',
+		},
+		handler: async () => {
+			const recipes = ctx.recipeService.getRecipes();
+			if (recipes.length === 0) {
+				return [{ type: 'text', text: 'No web-scraping recipes saved. Use web_recipe_create to add one.' }];
+			}
+			const lines = recipes.map(r =>
+				`  • ${r.name}  —  /${r.urlPattern}/${r.urlFlags ?? ''}` +
+				(r.boardName ? `  (board: ${r.boardName})` : '') +
+				(r.maxTasks ? `  (cap: ${r.maxTasks})` : ''),
+			);
+			return [{ type: 'text', text: `${recipes.length} recipe(s):\n${lines.join('\n')}` }];
+		},
+	});
+
+	// ─── web_recipe_remove ────────────────────────────────────────────
+	ctx.register({
+		definition: {
+			name: 'web_recipe_remove',
+			description: 'Delete a saved web-scraping recipe by name.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					name: { type: 'string', description: 'Recipe name to delete.' },
+				},
+				required: ['name'],
+			},
+			category: 'kanban',
+			source: 'saros.builtin-tools',
+		},
+		handler: async (args: Record<string, unknown>) => {
+			const name = args['name'] as string | undefined;
+			if (!name || !name.trim()) {
+				return [{ type: 'text', text: 'web_recipe_remove error: "name" is required.' }];
+			}
+			const removed = ctx.recipeService.removeRecipe(name.trim());
+			return [{ type: 'text', text: removed ? `Deleted recipe "${name.trim()}".` : `web_recipe_remove: no recipe named "${name.trim()}" found.` }];
+		},
+	});
+
+	// ─── web_scrape_to_board ──────────────────────────────────────────
+	ctx.register({
+		definition: {
+			name: 'web_scrape_to_board',
+			description: 'Scrape the currently focused/open browser page and automatically create a kanban board ' +
+				'populated with the tasks found on that page. If a saved recipe matches the page URL (or `recipe` ' +
+				'is given), extraction runs via that recipe\'s Playwright function for deterministic results; ' +
+				'otherwise the page snapshot is parsed by the LLM. Use for issue/backlog lists, planning docs, ' +
+				'or TODO lists.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					board_name: { type: 'string', description: 'Optional board name (defaults to the page title / recipe board name).' },
+					max_tasks: { type: 'number', description: 'Maximum number of tasks to create (default 30, hard cap 100).' },
+					recipe: { type: 'string', description: 'Force a specific recipe by name (skips URL auto-matching).' },
+					auto_match: { type: 'boolean', description: 'Auto-select a saved recipe by URL match (default true). Set false to always use LLM parsing.' },
+				},
+				required: [],
+			},
+			category: 'kanban',
+			source: 'saros.builtin-tools',
+		},
+		handler: async (args: Record<string, unknown>, _signal?: AbortSignal, _agentId?: string) => {
+			const page = _findActiveBrowserPage(ctx);
+			if (!page) {
+				return [{ type: 'text', text: 'web_scrape_to_board error: no browser page is open/focused. Open the target web page in the integrated browser first.' }];
+			}
+			return scrapeWebPageToBoard(ctx, {
+				pageId: page.pageId,
+				pageUrl: page.url,
+				boardName: typeof args['board_name'] === 'string' ? (args['board_name'] as string) : undefined,
+				maxTasks: typeof args['max_tasks'] === 'number' ? (args['max_tasks'] as number) : undefined,
+				recipe: typeof args['recipe'] === 'string' ? (args['recipe'] as string) : undefined,
+				autoMatch: args['auto_match'] === undefined ? undefined : Boolean(args['auto_match']),
+			});
+		},
+	});
 }
 
 async function _resolveKanbanTaskId(ctx: KanbanToolContext, taskId: string, agentId: string | undefined): Promise<string | undefined> {
@@ -654,4 +803,486 @@ async function _resolveKanbanWorkspaceId(ctx: KanbanToolContext, agentId: string
 	} catch {
 		return undefined;
 	}
+}
+
+// ─── web_scrape_to_board helpers ──────────────────────────────────────
+
+interface IScrapedTask {
+	title: string;
+	description?: string;
+	priority?: 'low' | 'medium' | 'high';
+	assignee?: string;
+	dueDate?: string;
+	tags?: string[];
+	sourceUrl?: string;
+}
+
+interface IScrapeResult {
+	boardName: string;
+	sourceUrl: string;
+	tasks: IScrapedTask[];
+}
+
+/**
+ * Find the currently focused/open browser page. Returns its pageId
+ * (= BrowserEditorInput.id, the Playwright view id) and URL. Prefers a visible
+ * browser editor; falls back to any open one.
+ */
+function _findActiveBrowserPage(ctx: KanbanToolContext): { pageId: string; url: string | undefined } | undefined {
+	const visible = new Set(ctx.editorService.visibleEditors);
+	let fallback: { pageId: string; url: string | undefined } | undefined;
+	for (const editor of ctx.editorService.editors) {
+		if (editor instanceof BrowserEditorInput) {
+			const candidate = { pageId: editor.id, url: editor.url };
+			if (visible.has(editor)) {
+				return candidate;
+			}
+			if (!fallback) {
+				fallback = candidate;
+			}
+		}
+	}
+	return fallback;
+}
+
+/**
+ * Parse a page snapshot (ARIA tree text) into structured tasks using the
+ * active LLM. Mirrors the LLM plumbing used by LlmTriageService, returning a
+ * best-effort result (empty tasks on parse failure — never throws for bad JSON).
+ */
+async function _parsePageIntoTasks(ctx: KanbanToolContext, pageContent: string): Promise<IScrapeResult> {
+	const system = 'You are a meticulous extraction assistant. You read a web page snapshot (an accessibility/ARIA tree) and turn visible, actionable items (issues, tickets, todos, backlog items, list entries) into structured kanban tasks. Ignore navigation, ads, and chrome.';
+	const user = [
+		'Below is a snapshot of a web page. Extract the tasks/items it lists and return ONLY a JSON object inside a ```json code fence with this exact shape:',
+		'{',
+		'  "boardName": "short board name derived from the page (e.g. its title or project name)",',
+		'  "sourceUrl": "the page URL if present, else empty string",',
+		'  "tasks": [',
+		'    { "title": "short imperative title", "description": "1-2 sentence detail if available", "priority": "low|medium|high (omit if unknown)", "assignee": "assignee name if shown (omit if unknown)", "dueDate": "due date if shown (omit if unknown)", "tags": ["tag1"] }',
+		'  ]',
+		'}',
+		'Only include items that are genuinely tasks or list entries. If the page has no extractable tasks, return {"boardName":"","sourceUrl":"","tasks":[]}.',
+		'',
+		'PAGE SNAPSHOT:',
+		pageContent,
+	].join('\n');
+
+	const raw = await _runLlm(ctx, system, user);
+	const json = _extractJson(raw);
+	if (!json) {
+		return { boardName: '', sourceUrl: '', tasks: [] };
+	}
+	try {
+		const obj = JSON.parse(json) as { boardName?: unknown; sourceUrl?: unknown; tasks?: unknown };
+		const tasks: IScrapedTask[] = Array.isArray(obj.tasks)
+			? (obj.tasks as unknown[])
+				.filter((t: any) => t && typeof t.title === 'string' && t.title.trim())
+				.map((t: any) => ({
+					title: t.title.trim(),
+					description: typeof t.description === 'string' ? t.description.trim() : undefined,
+					priority: t.priority === 'low' || t.priority === 'medium' || t.priority === 'high' ? t.priority : undefined,
+					assignee: typeof t.assignee === 'string' && t.assignee.trim() ? t.assignee.trim() : undefined,
+					dueDate: typeof t.dueDate === 'string' ? t.dueDate : undefined,
+					tags: Array.isArray(t.tags) ? t.tags.filter((x: any) => typeof x === 'string') : undefined,
+				}))
+			: [];
+		return {
+			boardName: typeof obj.boardName === 'string' ? obj.boardName : '',
+			sourceUrl: typeof obj.sourceUrl === 'string' ? obj.sourceUrl : '',
+			tasks,
+		};
+	} catch {
+		return { boardName: '', sourceUrl: '', tasks: [] };
+	}
+}
+
+/** Single non-streaming LLM completion via the active model provider. */
+async function _runLlm(ctx: KanbanToolContext, systemPrompt: string, userPrompt: string): Promise<string> {
+	const selection = ctx.agentOS.getActiveModelSelection();
+	if (!selection || !selection.providerId || !selection.modelId) {
+		throw new Error('no active model selection available');
+	}
+	const providers = ctx.agentOS.getModelProviders();
+	const provider = providers.find(p => p.id === selection.providerId);
+	if (!provider) {
+		throw new Error(`model provider "${selection.providerId}" not found`);
+	}
+
+	const messages: any[] = [
+		{ role: 'system', content: systemPrompt },
+		{ role: 'user', content: userPrompt },
+	];
+
+	let text = '';
+	const stream = provider.chat(
+		selection.modelId,
+		messages,
+		{ temperature: 0.2, systemPrompt },
+		selection.agentId ? { agentId: selection.agentId } : undefined,
+	);
+	for await (const delta of stream) {
+		if (delta.type === 'text' && delta.content) {
+			text += delta.content;
+		} else if (delta.type === 'error') {
+			throw new Error(delta.error || 'model returned an error');
+		} else if (delta.type === 'done') {
+			break;
+		}
+	}
+	return text.trim();
+}
+
+/** Extract the first JSON code-fence (or bare JSON) from an LLM response. */
+function _extractJson(raw: string): string | undefined {
+	const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+	if (fence && fence[1]) {
+		return fence[1].trim();
+	}
+	const firstObj = raw.indexOf('{');
+	const firstArr = raw.indexOf('[');
+	const start = (firstArr === -1) ? firstObj : (firstObj === -1 ? firstArr : Math.min(firstObj, firstArr));
+	if (start === -1) {
+		return undefined;
+	}
+	const lastObj = raw.lastIndexOf('}');
+	const lastArr = raw.lastIndexOf(']');
+	const end = Math.max(lastObj, lastArr);
+	if (end <= start) {
+		return undefined;
+	}
+	return raw.slice(start, end + 1).trim();
+}
+
+// ─── web_scrape_to_board: Recipe-mode helpers ────────────────────────
+
+/**
+ * Scrape the page using a saved recipe's Playwright extraction function.
+ * Runs `recipe.extractFn` in the page context via IPlaywrightService.invokeFunctionRaw
+ * (which awaits completion and returns the serialized result), then builds the
+ * board + tasks from the structured output.
+ */
+async function _scrapeWithRecipe(
+	ctx: KanbanToolContext,
+	recipe: IKanbanRecipe,
+	sessionId: string,
+	pageId: string,
+	pageUrl: string | undefined,
+	workspaceId: string,
+	args: Record<string, unknown>,
+): Promise<{ type: 'text'; text: string }[]> {
+	let raw: unknown;
+	try {
+		// invokeFunctionRaw signature: (sessionId, pageId, fnDef, ...args)
+		// Inside the function `args` is the array, so args[0] === pageUrl.
+		raw = await ctx.playwrightService.invokeFunctionRaw<unknown>(sessionId, pageId, recipe.extractFn, pageUrl);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return [{ type: 'text', text: `web_scrape_to_board error: recipe "${recipe.name}" extraction failed (${msg}). Check the extraction function and that the page finished loading.` }];
+	}
+
+	const parsed = _normalizeRecipeResult(raw, pageUrl);
+	if (parsed.tasks.length === 0) {
+		return [{ type: 'text', text: `web_scrape_to_board: recipe "${recipe.name}" returned no tasks from the page.` }];
+	}
+
+	const boardNameArg = (typeof args['board_name'] === 'string' && (args['board_name'] as string).trim())
+		? (args['board_name'] as string).trim()
+		: recipe.boardName;
+	const maxTasksArg = typeof args['max_tasks'] === 'number'
+		? (args['max_tasks'] as number)
+		: recipe.maxTasks;
+	const boardId = typeof args['board_id'] === 'string' ? (args['board_id'] as string) : undefined;
+	return _createBoardFromScrape(ctx, workspaceId, parsed, pageId, boardNameArg, maxTasksArg, boardId);
+}
+
+/**
+ * Normalize a recipe extraction result into IScrapeResult. The function may
+ * return either a bare array of task specs or an object { boardName, sourceUrl, tasks }.
+ */
+function _normalizeRecipeResult(raw: unknown, pageUrl: string | undefined): IScrapeResult {
+	let tasks: IScrapedTask[] = [];
+	let boardName = '';
+	let sourceUrl = pageUrl ?? '';
+
+	if (Array.isArray(raw)) {
+		tasks = raw.map(_sanitizeScrapedTask).filter((t): t is IScrapedTask => t !== undefined);
+	} else if (raw && typeof raw === 'object') {
+		const o = raw as Record<string, unknown>;
+		if (Array.isArray(o['tasks'])) {
+			tasks = (o['tasks'] as unknown[]).map(_sanitizeScrapedTask).filter((t): t is IScrapedTask => t !== undefined);
+		}
+		if (typeof o['boardName'] === 'string') {
+			boardName = o['boardName'];
+		}
+		if (typeof o['sourceUrl'] === 'string' && (o['sourceUrl'] as string).trim()) {
+			sourceUrl = o['sourceUrl'] as string;
+		}
+	}
+	return { boardName, sourceUrl, tasks };
+}
+
+/** Coerce an arbitrary task-like object into a well-formed IScrapedTask. */
+function _sanitizeScrapedTask(t: unknown): IScrapedTask | undefined {
+	if (!t || typeof t !== 'object') {
+		return undefined;
+	}
+	const o = t as Record<string, unknown>;
+	if (typeof o['title'] !== 'string' || !(o['title'] as string).trim()) {
+		return undefined;
+	}
+	return {
+		title: (o['title'] as string).trim(),
+		description: typeof o['description'] === 'string' ? (o['description'] as string).trim() : undefined,
+		priority: o['priority'] === 'low' || o['priority'] === 'medium' || o['priority'] === 'high' ? o['priority'] : undefined,
+		assignee: typeof o['assignee'] === 'string' && (o['assignee'] as string).trim() ? (o['assignee'] as string).trim() : undefined,
+		dueDate: typeof o['dueDate'] === 'string' ? (o['dueDate'] as string) : undefined,
+		tags: Array.isArray(o['tags']) ? (o['tags'] as unknown[]).filter((x: unknown) => typeof x === 'string') as string[] : undefined,
+		sourceUrl: typeof o['sourceUrl'] === 'string' && (o['sourceUrl'] as string).trim() ? (o['sourceUrl'] as string).trim() : undefined,
+	};
+}
+
+/**
+ * Create a board and its tasks from a normalized scrape result. Shared by the
+ * LLM path and the recipe path. `sourceId` is the browser pageId (used to
+ * de-dupe / trace the origin of the tasks).
+ */
+async function _createBoardFromScrape(
+	ctx: KanbanToolContext,
+	workspaceId: string,
+	parsed: IScrapeResult,
+	sourceId: string,
+	boardNameArg?: unknown,
+	maxTasksArg?: unknown,
+	boardId?: string,
+): Promise<{ type: 'text'; text: string }[]> {
+	// When a target board is supplied (e.g. the board-link "创建任务" action),
+	// append the scraped tasks to that existing board instead of making a new one.
+	if (boardId) {
+		return _addTasksFromScrape(ctx, workspaceId, parsed, sourceId, boardId, maxTasksArg);
+	}
+	const maxTasks = Math.min(Math.max(1, typeof maxTasksArg === 'number' ? maxTasksArg : 30), 100);
+	const boardName = (typeof boardNameArg === 'string' && boardNameArg.trim())
+		? boardNameArg.trim()
+		: (parsed.boardName?.trim() || '网页导入看板');
+	try {
+		const board = await ctx.taskBoardService.createBoard(boardName, workspaceId);
+		const created: { id: string; title: string }[] = [];
+		for (const t of parsed.tasks.slice(0, maxTasks)) {
+			const task = await ctx.taskBoardService.createTask({
+				title: t.title,
+				description: t.description,
+				status: TaskBoardStatus.Todo,
+				source: TaskSource.Web,
+				sourceId,
+				sourceUrl: t.sourceUrl ?? parsed.sourceUrl,
+				workspaceId,
+				priority: t.priority,
+				assigneeName: t.assignee,
+			});
+			created.push({ id: task.id, title: task.title });
+		}
+		return [{ type: 'text', text: `Created board "${board.name}" with ${created.length} task(s) scraped from the open page (source: web). First tasks: ${created.slice(0, 5).map(c => `#${c.id.slice(-6)} ${c.title}`).join('; ')}` }];
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return [{ type: 'text', text: `web_scrape_to_board error: failed to create board/tasks (${msg}).` }];
+	}
+}
+
+/**
+ * Append scraped tasks to an existing board (the "创建任务" board-link action).
+ * Mirrors the task-creation loop of {@link _createBoardFromScrape} but targets
+ * `boardId` directly and reports how many were added to its 待办 column.
+ */
+async function _addTasksFromScrape(
+	ctx: KanbanToolContext,
+	workspaceId: string,
+	parsed: IScrapeResult,
+	sourceId: string,
+	boardId: string,
+	maxTasksArg?: unknown,
+): Promise<{ type: 'text'; text: string }[]> {
+	const maxTasks = Math.min(Math.max(1, typeof maxTasksArg === 'number' ? maxTasksArg : 30), 100);
+	let boardName = boardId;
+	try {
+		const boards = await ctx.taskBoardService.listBoards(workspaceId);
+		const board = boards.find(b => b.id === boardId);
+		if (board?.name) { boardName = board.name; }
+	} catch {
+		// Best-effort name lookup; fall back to the raw id for the message.
+	}
+	try {
+		const created: { id: string; title: string }[] = [];
+		for (const t of parsed.tasks.slice(0, maxTasks)) {
+			const task = await ctx.taskBoardService.createTask({
+				title: t.title,
+				description: t.description,
+				status: TaskBoardStatus.Todo,
+				source: TaskSource.Web,
+				sourceId,
+				sourceUrl: t.sourceUrl ?? parsed.sourceUrl,
+				workspaceId,
+				boardId,
+				priority: t.priority,
+				assigneeName: t.assignee,
+			});
+			created.push({ id: task.id, title: task.title });
+		}
+		return [{ type: 'text', text: `Added ${created.length} task(s) to board "${boardName}" from the open page (source: web). First tasks: ${created.slice(0, 5).map(c => `#${c.id.slice(-6)} ${c.title}`).join('; ')}` }];
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return [{ type: 'text', text: `web_scrape_to_board error: failed to add tasks to board (${msg}).` }];
+	}
+}
+
+// ─── Shared scrape entry point (tool + browser context menu) ───────────
+
+/** Options for {@link scrapeWebPageToBoard}. `pageId` is the BrowserEditorInput.id / Playwright view id. */
+export interface IScrapeToBoardOptions {
+	pageId: string;
+	pageUrl?: string;
+	boardName?: string;
+	maxTasks?: number;
+	recipe?: string;
+	autoMatch?: boolean;
+	/**
+	 * When set, the scraped tasks are appended to this existing board's 待办
+	 * column instead of creating a new board. Used by the board-link "创建任务"
+	 * action; the `web_scrape_to_board` tool leaves it undefined to get a board.
+	 */
+	boardId?: string;
+}
+
+/**
+ * Core implementation behind both the `web_scrape_to_board` agent tool and the
+ * integrated browser's "Create Kanban Tasks" right-click action.
+ *
+ * Resolves the active workspace + playwright session, picks a recipe (explicit
+ * name, or URL auto-match), then either runs the recipe's Playwright extraction
+ * function or parses the page's ARIA snapshot with the LLM, and finally builds a
+ * board populated with the extracted tasks.
+ *
+ * Kept as a single shared function so the two call sites never drift apart.
+ */
+/**
+ * The built-in default agent used when scraping data without an active session.
+ * Per product requirement ("默认使用 Saros Claw 进行抓取数据"), when no agent
+ * session is focused we fall back to Saros Claw so `web_scrape_to_board` still
+ * works from a standalone integrated-browser page.
+ */
+export const SAROS_CLAW_AGENT_ID = 'saros-claw';
+const DEFAULT_SCRAPE_SESSION_ID = SAROS_CLAW_AGENT_ID;
+
+/**
+ * Resolve the Playwright `sessionId` used to read/scrape a browser page.
+ *
+ * The active agent session is preferred. When none is active (e.g. the
+ * integrated browser was opened standalone, or the agent chat is not focused),
+ * we default to the Saros Claw agent. This is safe because the Playwright
+ * service keeps page tracking **global** and replays tracked pages into every
+ * session group, so any valid `sessionId` can read a tracked page.
+ *
+ * @returns a non-empty sessionId, or `undefined` only if even the fallback
+ *          cannot be determined (should not happen with the constant fallback).
+ */
+export function resolveScrapeSessionId(ctx: KanbanToolContext): string | undefined {
+	const active = ctx.sessionsManagement.activeSession.read(undefined);
+	if (active?.resource) {
+		return active.resource.toString();
+	}
+	// Fallback: prefer a session owned by the Saros Claw agent if one exists.
+	for (const s of ctx.sessionsManagement.getSessions()) {
+		const type = s.sessionType;
+		const path = s.resource?.toString().toLowerCase() ?? '';
+		const title = s.title.get()?.toLowerCase() ?? '';
+		if (type === SAROS_CLAW_AGENT_ID || path.includes(SAROS_CLAW_AGENT_ID) || title.includes('saros claw')) {
+			return s.resource.toString();
+		}
+	}
+	// Final fallback: a constant session id for Saros Claw so the Playwright
+	// service can still create a session and read the globally-tracked page.
+	return DEFAULT_SCRAPE_SESSION_ID;
+}
+
+export async function scrapeWebPageToBoard(
+	ctx: KanbanToolContext,
+	opts: IScrapeToBoardOptions,
+): Promise<{ type: 'text'; text: string }[]> {
+	// Resolve the workspace that the tasks are created in.
+	let workspaceId: string | undefined;
+	try {
+		workspaceId = ctx.studioService.getActiveWorkspaceId();
+	} catch {
+		workspaceId = undefined;
+	}
+	if (!workspaceId) {
+		return [{ type: 'text', text: 'web_scrape_to_board error: no active workspace. Open a workspace first.' }];
+	}
+
+	// Resolve the playwright sessionId (defaults to Saros Claw when no
+	// active session is focused).
+	const sessionId = resolveScrapeSessionId(ctx);
+	if (!sessionId) {
+		return [{ type: 'text', text: 'web_scrape_to_board error: no active session found.' }];
+	}
+
+	const pageId = opts.pageId;
+	const pageUrl = opts.pageUrl;
+
+	// Integrated-browser views (e.g. a board hyperlink opened via the
+	// "创建看板任务" context menu) are only tracked by Playwright when the
+	// user explicitly shares them with the agent — otherwise getSummary /
+	// invokeFunctionRaw cannot find the page and silently fail. Track it here
+	// so the scrape works regardless of share state. startTrackingPage is
+	// idempotent (guarded by the global tracked-pages set) and safe to call
+	// for pages already opened via openPage.
+	try {
+		await ctx.playwrightService.startTrackingPage(pageId);
+		ctx.logService.info(`[BuiltinTools] web_scrape_to_board: tracked page ${pageId} for scraping`);
+	} catch (err) {
+		ctx.logService.warn(`[BuiltinTools] web_scrape_to_board: failed to track page ${pageId}:`, err);
+	}
+
+	// Resolve a recipe: explicit name wins; otherwise auto-match by URL.
+	let recipe: IKanbanRecipe | undefined;
+	const recipeName = opts.recipe;
+	if (recipeName && recipeName.trim()) {
+		recipe = ctx.recipeService.getRecipe(recipeName.trim());
+		if (!recipe) {
+			return [{ type: 'text', text: `web_scrape_to_board error: recipe "${recipeName.trim()}" not found. Use web_recipe_list to see saved recipes.` }];
+		}
+	} else {
+		const autoMatch = opts.autoMatch === undefined ? true : Boolean(opts.autoMatch);
+		if (autoMatch && pageUrl) {
+			recipe = ctx.recipeService.matchRecipe(pageUrl);
+		}
+	}
+
+	// Recipe path → deterministic extraction via Playwright function.
+	if (recipe) {
+		ctx.logService.info(`[BuiltinTools] web_scrape_to_board: using recipe "${recipe.name}" for ${pageUrl ?? pageId}`);
+		return _scrapeWithRecipe(ctx, recipe, sessionId, pageId, pageUrl, workspaceId, { board_name: opts.boardName, max_tasks: opts.maxTasks, board_id: opts.boardId } as Record<string, unknown>);
+	}
+
+	// LLM path → read ARIA snapshot and parse with the active model.
+	let summary: string;
+	try {
+		summary = await ctx.playwrightService.getSummary(sessionId, pageId);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return [{ type: 'text', text: `web_scrape_to_board error: failed to read the page (${msg}). Make sure the page finished loading.` }];
+	}
+	if (!summary || !summary.trim()) {
+		return [{ type: 'text', text: 'web_scrape_to_board error: the page returned no readable content.' }];
+	}
+	let parsed: IScrapeResult;
+	try {
+		parsed = await _parsePageIntoTasks(ctx, summary);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return [{ type: 'text', text: `web_scrape_to_board error: failed to parse page content (${msg}).` }];
+	}
+	if (parsed.tasks.length === 0) {
+		return [{ type: 'text', text: 'web_scrape_to_board: no tasks could be extracted from the page.' }];
+	}
+	return _createBoardFromScrape(ctx, workspaceId, parsed, pageId, opts.boardName, opts.maxTasks, opts.boardId);
 }

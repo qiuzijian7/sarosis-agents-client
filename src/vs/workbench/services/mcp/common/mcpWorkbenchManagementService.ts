@@ -11,6 +11,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { IMcpResourceScannerService, McpResourceTarget } from '../../../../platform/mcp/common/mcpResourceScannerService.js';
 import { isWorkspaceFolder, IWorkspaceContextService, IWorkspaceFolder, IWorkspaceFoldersChangeEvent } from '../../../../platform/workspace/common/workspace.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
+import { IWorkbenchEnvironmentService } from '../../environment/common/environmentService.js';
 import { MCP_CONFIGURATION_KEY, WORKSPACE_STANDALONE_CONFIGURATIONS } from '../../configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentService } from '../../remote/common/remoteAgentService.js';
@@ -117,6 +118,10 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 	private readonly workspaceMcpManagementService: IMcpManagementService;
 	private readonly remoteMcpManagementService: IMcpManagementService | undefined;
 
+	// VsSarosis: 用户级 MCP 配置统一读取 ~/.saros/mcp.json，
+	// 不再读取 VsSaros 用户配置目录下的 User/mcp.json。
+	private readonly sarosMcpResource: URI;
+
 	constructor(
 		private readonly mcpManagementService: IMcpManagementService,
 		@IAllowedMcpServersService allowedMcpServersService: IAllowedMcpServersService,
@@ -128,8 +133,13 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 		@IUserDataProfilesService private readonly userDataProfilesService: IUserDataProfilesService,
 		@IRemoteUserDataProfilesService private readonly remoteUserDataProfilesService: IRemoteUserDataProfilesService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super(allowedMcpServersService, logService);
+
+		// VsSarosis: 用户级 MCP 配置统一从 ~/.saros/mcp.json 读取，
+		// 不再读取 VsSaros 用户配置目录下的 User/mcp.json。
+		this.sarosMcpResource = URI.joinPath((this.environmentService as IWorkbenchEnvironmentService & { userHome: URI }).userHome, '.saros', 'mcp.json');
 
 		this.workspaceMcpManagementService = this._register(instantiationService.createInstance(WorkspaceMcpManagementService));
 		const remoteAgentConnection = remoteAgentService.getConnection();
@@ -139,7 +149,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 
 		this._register(this.mcpManagementService.onInstallMcpServer(e => {
 			this._onInstallMcpServer.fire(e);
-			if (uriIdentityService.extUri.isEqual(e.mcpResource, this.userDataProfileService.currentProfile.mcpResource)) {
+			if (uriIdentityService.extUri.isEqual(e.mcpResource, this.sarosMcpResource)) {
 				this._onInstallMcpServerInCurrentProfile.fire({ ...e, scope: LocalMcpServerScope.User });
 			}
 		}));
@@ -162,14 +172,14 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 
 		this._register(this.mcpManagementService.onUninstallMcpServer(e => {
 			this._onUninstallMcpServer.fire(e);
-			if (uriIdentityService.extUri.isEqual(e.mcpResource, this.userDataProfileService.currentProfile.mcpResource)) {
+			if (uriIdentityService.extUri.isEqual(e.mcpResource, this.sarosMcpResource)) {
 				this._onUninstallMcpServerInCurrentProfile.fire({ ...e, scope: LocalMcpServerScope.User });
 			}
 		}));
 
 		this._register(this.mcpManagementService.onDidUninstallMcpServer(e => {
 			this._onDidUninstallMcpServer.fire(e);
-			if (uriIdentityService.extUri.isEqual(e.mcpResource, this.userDataProfileService.currentProfile.mcpResource)) {
+			if (uriIdentityService.extUri.isEqual(e.mcpResource, this.sarosMcpResource)) {
 				this._onDidUninstallMcpServerInCurrentProfile.fire({ ...e, scope: LocalMcpServerScope.User });
 			}
 		}));
@@ -246,7 +256,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 				local: result.local ? this.toWorkspaceMcpServer(result.local, scope) : undefined
 			};
 			mcpServerInstallResult.push(workbenchResult);
-			if (this.uriIdentityService.extUri.isEqual(result.mcpResource, this.userDataProfileService.currentProfile.mcpResource)) {
+			if (this.uriIdentityService.extUri.isEqual(result.mcpResource, this.sarosMcpResource)) {
 				mcpServerInstallResultInCurrentProfile.push(workbenchResult);
 			}
 		}
@@ -278,7 +288,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 	async getInstalled(): Promise<IWorkbenchLocalMcpServer[]> {
 		const installed: IWorkbenchLocalMcpServer[] = [];
 		const [userServers, remoteServers, workspaceServers] = await Promise.all([
-			this.mcpManagementService.getInstalled(this.userDataProfileService.currentProfile.mcpResource),
+			this.mcpManagementService.getInstalled(this.sarosMcpResource),
 			this.remoteMcpManagementService?.getInstalled(await this.getRemoteMcpResource()) ?? Promise.resolve<ILocalMcpServer[]>([]),
 			this.workspaceMcpManagementService?.getInstalled() ?? Promise.resolve<ILocalMcpServer[]>([]),
 		]);
@@ -352,7 +362,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 			throw new Error(`Illegal target: ${options.target}`);
 		}
 
-		options.mcpResource = this.userDataProfileService.currentProfile.mcpResource;
+		options.mcpResource = this.sarosMcpResource;
 		const result = await this.mcpManagementService.install(server, options);
 		return this.toWorkspaceMcpServer(result, LocalMcpServerScope.User);
 	}
@@ -384,7 +394,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 		}
 
 		if (!options.mcpResource) {
-			options.mcpResource = this.userDataProfileService.currentProfile.mcpResource;
+			options.mcpResource = this.sarosMcpResource;
 		}
 		const result = await this.mcpManagementService.installFromGallery(server, options);
 		return this.toWorkspaceMcpServer(result, LocalMcpServerScope.User);
@@ -420,7 +430,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 			return this.remoteMcpManagementService.uninstall(server);
 		}
 
-		return this.mcpManagementService.uninstall(server, { mcpResource: this.userDataProfileService.currentProfile.mcpResource });
+		return this.mcpManagementService.uninstall(server, { mcpResource: this.sarosMcpResource });
 	}
 
 	private async getRemoteMcpResource(mcpResource?: URI): Promise<URI | undefined> {

@@ -152,10 +152,13 @@ export class BrowserEditorInput extends EditorInput {
 		if (this._model) {
 			void this._model.loadURL(url);
 		} else {
-			// If the model isn't created yet, update the initial data so that the URL is correct when the model is created
+			// If the model isn't created yet, update the initial data so that the URL is correct when the model is created.
+			// Preserve existing title/favicon so the tab label stays readable (e.g., "ID: 1093952" instead of a raw URL).
 			this._initialData = {
 				id: this._id,
-				url
+				url,
+				title: this._initialData.title,
+				favicon: this._initialData.favicon,
 			};
 			this._onDidChangeLabel.fire();
 		}

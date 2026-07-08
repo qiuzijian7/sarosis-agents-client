@@ -321,28 +321,38 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 		// 4. 委托 installer 安装；无 installer 则回退到通用解压
 		let result: IInstallResult;
-		const installer = this.installerRegistry.get(kind);
-		try {
-			if (installer) {
-				result = await installer.install(manifest, URI.file(extractDir), { force: true });
-			} else {
-				// 回退：直接解压到 ~/.saros/{subdir}/{id}/
-				const targetDir = await this.resolveInstallDir(kind, storeId);
-				await this.fileService.createFolder(targetDir);
-				result = { kind, storeId, version, targetDir: targetDir.fsPath };
-				this.logService.warn(`[Marketplace] 无 ${kind} installer，回退通用解压到 ${targetDir.fsPath}`);
+		// 防御性检查：manifest 包含 mcp 配置（即使 kind 被错分类为 skill 等）→ 走 MCP 路径
+		// 解决：商城把 MCP 包错误注册为 skill 类型时，SkillInstaller 会报"包内缺少 SKILL.md"
+		const isMcpByManifest = !!(manifest as any).mcp || !!(manifest as any).config;
+		if (isMcpByManifest) {
+			this.logService.info(`[Marketplace] manifest 含 mcp/config 字段，按 MCP 路径安装（kind=${kind} → mcp）`);
+			result = await this._installMcpFromManifest(storeId, version, manifest);
+		} else {
+			const installer = this.installerRegistry.get(kind);
+			try {
+				if (installer) {
+					result = await installer.install(manifest, URI.file(extractDir), { force: true });
+				} else {
+					// 回退：直接解压到 ~/.saros/{subdir}/{id}/
+					const targetDir = await this.resolveInstallDir(kind, storeId);
+					await this.fileService.createFolder(targetDir);
+					result = { kind, storeId, version, targetDir: targetDir.fsPath };
+					this.logService.warn(`[Marketplace] 无 ${kind} installer，回退通用解压到 ${targetDir.fsPath}`);
+				}
+			} catch (installErr) {
+				// 安装失败：回滚临时解压目录
+				try { await this.fileService.del(URI.file(extractDir), { recursive: true }); } catch { /* ignore */ }
+				throw installErr;
 			}
-		} catch (installErr) {
-			// 安装失败：回滚临时解压目录
-			try { await this.fileService.del(URI.file(extractDir), { recursive: true }); } catch { /* ignore */ }
-			throw installErr;
 		}
 
 		// 5. 清理临时目录 + 记录已安装
 		try { await this.fileService.del(URI.file(extractDir), { recursive: true }); } catch { /* ignore */ }
-		await this.upsertInstalled({ kind, storeId, version, installedAt: new Date().toISOString() });
+		// 记录已安装时使用 result.kind（而非参数 kind），解决商城 API 把 MCP 包错误标记为 skill 的情况
+		const installedKind = result.kind;
+		await this.upsertInstalled({ kind: installedKind, storeId, version: result.version, installedAt: new Date().toISOString() });
 
-		this.logService.info(`[Marketplace] 安装完成: ${kind}/${storeId} v${version}`);
+		this.logService.info(`[Marketplace] 安装完成: ${installedKind}/${storeId} v${result.version}`);
 		return result;
 	}
 
@@ -360,9 +370,16 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			throw new Error('未找到版本或 manifest 信息');
 		}
 
-		const manifest = ver.manifest;
+		return this._installMcpFromManifest(storeId, ver.version, ver.manifest);
+	}
+
+	/**
+	 * 从 manifest 安装 MCP（已被 _installMcpFromApi 和 download fallback 共用）。
+	 * 处理 manifest.mcp 或整个 manifest 即为 mcp config 的情况。
+	 */
+	private async _installMcpFromManifest(storeId: string, version: string, manifest: any): Promise<IInstallResult> {
 		const mcpConfig = manifest.mcp || manifest; // manifest.mcp 或 manifest 本身
-		const actualVersion = ver.version;
+		const actualVersion = version;
 
 		// 2. 写入 ~/.saros/mcp/{storeId}/
 		const userHome = await this.pathService.userHome();

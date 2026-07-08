@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agentmemory vs sarosis — 9 模块激活时机对比与优化</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={theme:{extend:{colors:{primary:{50:'#EEF2FF',500:'#6366F1',600:'#4F46E5'}}}}}</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+body{font-family:'Inter',system-ui,sans-serif;}
+code,pre{font-family:'JetBrains Mono',monospace; font-size:0.8rem;}
+.gradient-hero{background:linear-gradient(135deg,#312E81,#4338CA 30%,#6366F1 60%,#4F46E5 100%);}
+.t-cell{padding:8px 12px;vertical-align:top;font-size:0.82rem}
+.cell-am{background:#EEF2FF;border-left:3px solid #6366F1}
+.cell-sar{background:#FEF3C7;border-left:3px solid #D97706}
+.opt-card{border-left:4px solid;padding:14px 18px;margin:10px 0;border-radius:10px}
+.opt-high{border-color:#DC2626;background:#FEF2F2}
+.opt-mid{border-color:#D97706;background:#FFFBEB}
+.opt-low{border-color:#2563EB;background:#EFF6FF}
+.chain-line{font-size:0.75rem;color:#6B7280;line-height:1.8;padding-left:16px;border-left:2px dashed #D1D5DB;margin:8px 0}
+</style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<header class="gradient-hero py-12 px-6 text-white text-center">
+  <h1 class="text-3xl md:text-4xl font-extrabold mb-3">activation timing comparison</h1>
+  <p class="text-white/80">agentmemory vs sarosis-agents-client · 9 modules · 6 optimization recommendations</p>
+  <p class="text-xs text-white/40 font-mono mt-2">Source: G:\CustomWorkspaces\AIProjects\agentmemory / sarosis-agents-client</p>
+</header>
+
+<div class="max-w-6xl mx-auto px-4 py-10 space-y-8">
+
+<!-- Overview -->
+<div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+  <div class="bg-gray-800 px-6 py-3 text-white"><h2 class="font-bold">架构差异总览</h2></div>
+  <div class="p-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+      <div class="bg-blue-50 rounded-xl p-5">
+        <h3 class="font-bold text-blue-700 mb-2">agentmemory 激活模型</h3>
+        <ul class="space-y-2 text-gray-700">
+          <li><strong>4 条路径</strong>: Claude Code Hooks → HTTP POST → events → functions</li>
+          <li><strong>级联链</strong>: SessionStart→context, Stop→summarize→reflect, End→consolidate</li>
+          <li><strong>5 个定时器</strong>: auto-forget(1h), lesson-decay(24h), insight-decay(24h), consolidation(2h), recent-searches(1h)</li>
+          <li><strong>9 个事件触发器</strong>: session.started/stopped/ended, observation 等</li>
+          <li><strong>所有 timer 都 unref()</strong>: 不阻塞进程退出</li>
+        </ul>
+      </div>
+      <div class="bg-amber-50 rounded-xl p-5">
+        <h3 class="font-bold text-amber-700 mb-2">sarosis 激活模型</h3>
+        <ul class="space-y-2 text-gray-700">
+          <li><strong>2 条路径</strong>: AgentDriver finally 块 + memoryProvider 定时器</li>
+          <li><strong>级联链</strong>: loadContext → session_start → writeMemory → hooks → sweep</li>
+          <li><strong>1 个定时器</strong>: sweatTimer(6h) — 所有定期任务集中在此</li>
+          <li><strong>代理驱动 (Agent Turn)</strong>: 每轮对话前后触发主要逻辑</li>
+          <li><strong>无事件中间件</strong>: 直接调用而非 pub/sub</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Per-module comparison -->
+<div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+  <div class="bg-gray-800 px-6 py-3 text-white"><h2 class="font-bold">9 模块激活时机逐项对比</h2></div>
+  <div class="overflow-x-auto">
+    <table class="w-full">
+      <thead class="bg-gray-50 border-b border-gray-200 text-left">
+        <tr>
+          <th class="px-4 py-3 font-semibold text-sm w-8">#</th>
+          <th class="px-4 py-3 font-semibold text-sm w-20">模块</th>
+          <th class="px-4 py-3 font-semibold text-sm cell-am">agentmemory 激活时机</th>
+          <th class="px-4 py-3 font-semibold text-sm cell-sar">sarosis 激活时机</th>
+          <th class="px-4 py-3 font-semibold text-sm w-20">差距</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        <tr>
+          <td class="t-cell font-mono text-xs">1</td>
+          <td class="t-cell font-medium">🧠 记忆</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">SessionStart Hook → POST /session/start → mem::context<br>PreCompact Hook → POST /context → mem::context<br>PostToolUse Hook → POST /observe → mem::observe<br>Stop Hook → POST /summarize → mem::summarize</div>
+            每次工具调用都有 observe
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">agentDriver.executeTurn() → loadContext (每轮前)<br>agentDriver.finally → writeMemory (每轮后)<br>agentOSService per-iteration → writeMemory (工具迭代后)</div>
+            只有 turn 边界写入，无 per-tool-call observe
+          </td>
+          <td class="t-cell text-xs"><span class="text-amber-600 font-medium">⚠️ 缺少 per-tool-call 观察</span></td>
+        </tr>
+        <tr class="bg-gray-50">
+          <td class="t-cell font-mono text-xs">2</td>
+          <td class="t-cell font-medium">📌 槽位</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">SessionStart → mem::context → listPinnedSlots()<br>Stop Hook → summarize → slot-reflect (fire-and-forget)<br>MCP 工具: memory_slot_set/get/list (可被 LLM 调用)</div>
+            LLM 可自主编辑槽位 + 自动 reflect
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">loadContext → buildSystemPrompt (仅无 query 路径)<br>Reflector.reflect → slots.append (sweep 后)</div>
+            LLM 不可编辑槽位；有 query 路径缺 buildContext
+          </td>
+          <td class="t-cell text-xs"><span class="text-red-600 font-medium">❌ LLM 不可编辑</span></td>
+        </tr>
+        <tr>
+          <td class="t-cell font-mono text-xs">3</td>
+          <td class="t-cell font-medium">📖 教训</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">SessionStart → mem::context → top-10 lessons 注入<br>定时器: lesson-decay-sweep (每 24h)<br>MCP 工具: memory_lesson_save/recall (LLM 可调用)</div>
+            每次会话启动自动注入
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">loadContext → _buildSystemPrompt → getTopLessons (每次)<br>_sweepAgent → extract (每 6h)<br>无 MCP 工具暴露；无 session-start 触发</div>
+            extract 6h 间隔 vs agentmemory 24h decay
+          </td>
+          <td class="t-cell text-xs"><span class="text-red-600 font-medium">❌ extract 间隔太长</span></td>
+        </tr>
+        <tr class="bg-gray-50">
+          <td class="t-cell font-mono text-xs">4</td>
+          <td class="t-cell font-medium">🔄 固化</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">Stop Hook → summarize → consolidate-pipeline (if enabled)<br>SessionEnd Hook → consolidate-pipeline (if enabled)<br>定时器: consolidate-pipeline (每 2h)<br>MCP 工具: memory_consolidate</div>
+            每次 session 结束都触发，2h 定时器兜底
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">agentOSService → triggerEpisodicExtraction (每 3 轮)<br>memoryProvider → _sweepAgent → consolidateEpisodic (每 6h)<br>双触发路径重叠</div>
+            3 轮 vs 每次 session 结束
+          </td>
+          <td class="t-cell text-xs"><span class="text-amber-600 font-medium">⚠️ 双触发 + 3 轮阈值</span></td>
+        </tr>
+        <tr>
+          <td class="t-cell font-mono text-xs">5</td>
+          <td class="t-cell font-medium">📋 审计</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">所有写操作内部调用 recordAudit()<br>REST: GET /audit<br>MCP: memory_audit</div>
+            完全内嵌，被动日志
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">18 处 this._audit.record() 调用点<br>getSummary() 按需查询</div>
+            完全内嵌，无外部暴露
+          </td>
+          <td class="t-cell text-xs"><span class="text-green-600 font-medium">✅ 完全对齐</span></td>
+        </tr>
+        <tr class="bg-gray-50">
+          <td class="t-cell font-mono text-xs">6</td>
+          <td class="t-cell font-medium">🪝 钩子</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">13 个独立 Node.js 脚本 (shebang)<br>SessionStart/Stop/End/PreCompact/PostToolUse/PostToolFailure/PreToolUse/Notification/PromptSubmit/SubagentStart/Stop/TaskCompleted/PostCommit<br>每个钩子通过 stdin JSON → HTTP POST 回调</div>
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">HookSystem (内存内注册/触发)<br>session_start/end/prompt_submit/stop<br>双通道: _hooks.triggerAndCollect + _triggerSystem.fireSync</div>
+            无 subagent/subtask hook，无 PreToolUse
+          </td>
+          <td class="t-cell text-xs"><span class="text-amber-600 font-medium">⚠️ 缺 subagent/task hooks</span></td>
+        </tr>
+        <tr>
+          <td class="t-cell font-mono text-xs">7</td>
+          <td class="t-cell font-medium">✅ 提交</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">Git PostCommit Hook → post-commit.ts<br>运行 git rev-parse/log/diff-tree → POST /session/commit</div>
+            通过 .git/hooks/post-commit 触发
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">PostCommitCapture 注册 session_end hook<br>session 结束时检查最近的 git log</div>
+            通过 session_end hook 触发
+          </td>
+          <td class="t-cell text-xs"><span class="text-green-600 font-medium">✅ 设计等价</span></td>
+        </tr>
+        <tr class="bg-gray-50">
+          <td class="t-cell font-mono text-xs">8</td>
+          <td class="t-cell font-medium">📊 报告</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">无 mem::report 函数<br>mem::diagnostics (健康检查)<br>Viewer Dashboard (基于浏览器)</div>
+            agentmemory 也无完整的报告功能
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">generateReport() — 仅 UI 显式调用<br>无定时器、无 MCP 暴露</div>
+            完全被动
+          </td>
+          <td class="t-cell text-xs"><span class="text-green-600 font-medium">✅ 设计一致</span></td>
+        </tr>
+        <tr>
+          <td class="t-cell font-mono text-xs">9</td>
+          <td class="t-cell font-medium">⚡ 技能</td>
+          <td class="t-cell cell-am">
+            <div class="chain-line">mem::skill-extract — 仅手动调用<br>要求: session completed + 有 summary + ≥3 observations<br>MCP 工具: memory_skill_extract (LLM 可调用)</div>
+            无自动触发，但 LLM 可工具调用
+          </td>
+          <td class="t-cell cell-sar">
+            <div class="chain-line">_persistConsolidationAndSkills — sweep 后自动触发<br>SkillExtractor.extract + markWritten<br>无 MCP 工具暴露</div>
+            有自动触发，但 LLM 不可调用
+          </td>
+          <td class="t-cell text-xs"><span class="text-green-600 font-medium">✅ 各有优势</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Optimization Recommendations -->
+<div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+  <div class="bg-gray-800 px-6 py-3 text-white"><h2 class="font-bold">6 项优化建议</h2></div>
+  <div class="p-6 space-y-4">
+
+    <div class="opt-card opt-high">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-bold">高优先级</span>
+        <h3 class="font-bold">R1: 添加 per-tool-call 级别的观察 (observe)</h3>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 PostToolUse 时都调用 <code class="text-xs bg-red-50 px-1 rounded">mem::observe</code> 创建 CompressedObservation；sarosis 仅在 turn 边界写入一次 assistant + tool summary。</p>
+        </div>
+        <div>
+          <p class="text-gray-600"><strong>方案: </strong>在 <code class="text-xs bg-red-50 px-1 rounded">agentOSService._executeToolCalls</code> 每个 tool result 推送后，fire-and-forget 调用 <code class="text-xs bg-red-50 px-1 rounded">writeMemory</code> 写入工具结果观察（内存内，不持久化到 KV 以减少开销）。</p>
+        </div>
+      </div>
+      <div class="mt-2 bg-gray-900 rounded-xl p-3"><pre class="text-green-400 text-xs"><code><span class="text-gray-500">// agentOSService._executeToolCalls, after result push:</span>
+void memProvider.writeMemory(agentId, {
+  type: 'working', content: `Tool ${tc.name}: ${summary}`,
+  metadata: { toolCallId: tc.id, toolName: tc.name, observe: true }
+});</code></pre></div>
+    </div>
+
+    <div class="opt-card opt-high">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-bold">高优先级</span>
+        <h3 class="font-bold">R2: 让 LLM 可以通过 memory_remember 编辑 Slots</h3>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 暴露 <code class="text-xs bg-red-50 px-1 rounded">memory_slot_set</code> 工具给 LLM，可在对话中编辑槽位。sarosis 的 <code class="text-xs bg-red-50 px-1 rounded">memory_remember</code> 工具不支持 slot_id 参数。</p>
+        </div>
+        <div>
+          <p class="text-gray-600"><strong>方案: </strong>在 <code class="text-xs bg-red-50 px-1 rounded">builtinToolProvider.ts</code> 的 memory_remember handler 中添加 <code class="text-xs bg-red-50 px-1 rounded">slot_id</code> 参数。当 LLM 传入 slot_id 时，调用 <code class="text-xs bg-red-50 px-1 rounded">slots.set(agentId, slot_id, content)</code> 而非 writeMemory。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt-card opt-high">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-bold">高优先级</span>
+        <h3 class="font-bold">R3: Lesson extract 改为 session_end 触发 + 缩短间隔</h3>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 session 结束（summarize 后）触发 reflect → 立即提取教训。sarosis 的 lesson extract 仅在 6h sweep 定时器之后调用，新经验延迟最多 6 小时才能被纳入上下文。</p>
+        </div>
+        <div>
+          <p class="text-gray-600"><strong>方案: </strong>(A) 在 <code class="text-xs bg-red-50 px-1 rounded">_endSession</code> 后立即触发 <code class="text-xs bg-red-50 px-1 rounded">le.extract()</code>；(B) 在 ConsolidationPipeline.consolidateEpisodic 后触发；(C) 保持 sweep 中的 extract 作为兜底。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt-card opt-mid">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-bold">中优先级</span>
+        <h3 class="font-bold">R4: 简化 Consolidation 双触发为单一路径</h3>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 session 结束时通过 SessionEnd Hook → consolidate-pipeline，2h 定时器兜底。sarosis 有两条路径：agentOSService 每 3 轮 + sweep 每 6h。虽然 ConsolidationPipeline 有 1h throttle 防重复，但架构上不够清晰。</p>
+        </div>
+        <div>
+          <p class="text-gray-600"><strong>方案: </strong>移除 sweep 中的 consolidateEpisodic 调用，改为在 <code class="text-xs bg-amber-50 px-1 rounded">agentOSService.executeAgentTurn() finally</code> 块中（session_end 之后）触发 consolidation。这样与 agentmemory 的 Stop Hook → consolidate 对齐。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt-card opt-mid">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-bold">中优先级</span>
+        <h3 class="font-bold">R5: Slots buildContext 扩展到有 query 路径</h3>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div>
+          <p class="text-gray-600"><strong>差异: </strong>当 loadContext 有查询参数时（约 50% 调用），走 hybrid search 路径，该路径不调用 <code class="text-xs bg-amber-50 px-1 rounded">buildContext()</code>。agentmemory 的 mem::context 总是包含 slots + profile + lessons。</p>
+        </div>
+        <div>
+          <p class="text-gray-600"><strong>方案: </strong>在 loadContext 的 query 路径中，在 structuredPrompt 字符串后追加 <code class="text-xs bg-amber-50 px-1 rounded">slots.buildContext(agentId)</code>。</p>
+        </div>
+      </div>
+      <div class="mt-2 bg-gray-900 rounded-xl p-3"><pre class="text-green-400 text-xs"><code><span class="text-gray-500">// loadContext query path:</span>
+const structuredPrompt = this._slots.buildSystemPrompt(agentId)
+  + '\n\n' + this._workingMemory.buildContext(agentId)
+  + '\n\n' + this._slots.buildContext(agentId)  <span class="text-gray-500">// R5: add</span>
+  + (this._consolidation.get(agentId)?.buildContext(agentId) ?? '');</code></pre></div>
+    </div>
+
+    <div class="opt-card opt-low">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-bold">低优先级</span>
+        <h3 class="font-bold">R6: Sweep timer 方案对齐</h3>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 有 5 个独立定时器（auto-forget 1h, lesson-decay 24h, insight-decay 24h, consolidation 2h, recent-searches 1h），sarosis 只有 1 个 6h sweep timer 集中处理所有定期任务。</p>
+        </div>
+        <div>
+          <p class="text-gray-600"><strong>方案: </strong>将 sweep 拆分为独立定时器：<br>(1) retention sweep (6h) — 衰减 + 清理<br>(2) lesson decay (24h) — 教训衰减<br>(3) consolidation sweep (2h) — 固化兜底（如果 R4 实施则不需要）</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Activation Chain Visualization -->
+<div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+  <div class="bg-gray-800 px-6 py-3 text-white"><h2 class="font-bold">激活链路可视化</h2></div>
+  <div class="p-6 overflow-x-auto">
+    <h3 class="font-semibold text-sm text-gray-500 uppercase tracking-wider mb-4">agentmemory (参考目标)</h3>
+    <pre class="text-xs text-gray-700 leading-relaxed bg-blue-50 rounded-xl p-4 border border-blue-200">
+┌─────────────────────────────────────────────────────────────────────┐
+│ Claude Code Hook Layer                                             │
+│ SessionStart │ Stop │ End │ PostToolUse │ PostToolFailure │ PreCompact │ ...
+├─────────────────────────────────────────────────────────────────────┤
+│ POST /session/start   → mem::context (slots+profile+lessons+summary)│
+│ POST /observe          → mem::observe (per-tool-call observation)   │
+│ POST /summarize        → mem::summarize (LLM 摘要)                  │
+│ POST /session/end      → 标记 completed                             │
+│ POST /consolidate-...  → mem::consolidate-pipeline (if enabled)     │
+├─────────────────────────────────────────────────────────────────────┤
+│ Timer Layer (setInterval, unref'd)                                  │
+│ 1h: auto-forget │ 24h: lesson-decay, insight-decay │ 2h: consolidation│
+└─────────────────────────────────────────────────────────────────────┘</pre>
+
+    <h3 class="font-semibold text-sm text-gray-500 uppercase tracking-wider mt-8 mb-4">sarosis (现行)</h3>
+    <pre class="text-xs text-gray-700 leading-relaxed bg-amber-50 rounded-xl p-4 border border-amber-200">
+┌─────────────────────────────────────────────────────────────────────┐
+│ AgentDriver executeTurn()                                           │
+│ ├─ before: loadContext → session_start hook → context injection     │
+│ ├─ loop: model call → tool execute → per-iteration writeMemory      │
+│ └─ finally: writeMemory (assistant+user) → stop+session_end hooks   │
+├─────────────────────────────────────────────────────────────────────┤
+│ agentOSService trigger chain                                        │
+│ ├─ triggerEpisodicExtraction (每 3 轮, finally 块)                  │
+│ ├─ triggerSemanticExtraction (Episodic 完成后延迟)                  │
+│ └─ triggerProceduralGeneration (Semantic 完成后)                    │
+├─────────────────────────────────────────────────────────────────────┤
+│ Timer Layer (setInterval, 6h, unref'd)                              │
+│ _sweepAgent: decay + consolidate + lesson extract + skill persist   │
+└─────────────────────────────────────────────────────────────────────┘</pre>
+
+    <h3 class="font-semibold text-sm text-gray-500 uppercase tracking-wider mt-8 mb-4">sarosis (优化后: R1-R6)</h3>
+    <pre class="text-xs text-gray-700 leading-relaxed bg-green-50 rounded-xl p-4 border border-green-200">
+┌─────────────────────────────────────────────────────────────────────┐
+│ AgentDriver executeTurn()                                           │
+│ ├─ before: loadContext → session_start → context injection          │
+│ ├─ loop: model call → tool execute                                  │
+│ │   └─ <strong>R1: per-tool-call writeMemory (observe)</strong>                      │
+│ └─ finally: writeMemory → hooks → <strong>R4: consolidate-pipeline</strong>          │
+│                                → <strong>R3: lesson extract</strong>                  │
+├─────────────────────────────────────────────────────────────────────┤
+│ LLM tools                                                           │
+│ └─ <strong>R2: memory_remember(slot_id=...) → slots.set()</strong>                 │
+├─────────────────────────────────────────────────────────────────────┤
+│ Timer Layer                                                         │
+│ <strong>R6: 6h retention sweep + 24h lesson decay (独立)</strong>                │
+└─────────────────────────────────────────────────────────────────────┘</pre>
+  </div>
+</div>
+
+<!-- Summary -->
+<div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+  <div class="bg-gray-800 px-6 py-3 text-white"><h2 class="font-bold">总结</h2></div>
+  <div class="p-6">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 border-b">
+          <tr><th class="text-left px-4 py-2">建议</th><th class="text-left px-4 py-2">优先级</th><th class="text-left px-4 py-2">改动量</th><th class="text-left px-4 py-2">影响</th></tr>
+        </thead>
+        <tbody class="divide-y">
+          <tr><td class="px-4 py-2">R1: per-tool-call observe</td><td class="px-4 py-2"><span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">高</span></td><td class="px-4 py-2 text-xs text-gray-500">~10 行</td><td class="px-4 py-2 text-xs text-gray-600">提升 BM25 搜索精度，增加观察数据源</td></tr>
+          <tr class="bg-gray-50"><td class="px-4 py-2">R2: memory_remember + slot_id</td><td class="px-4 py-2"><span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">高</span></td><td class="px-4 py-2 text-xs text-gray-500">~30 行</td><td class="px-4 py-2 text-xs text-gray-600">LLM 可自主管理记忆槽位</td></tr>
+          <tr><td class="px-4 py-2">R3: lesson extract 提前到 session_end</td><td class="px-4 py-2"><span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">高</span></td><td class="px-4 py-2 text-xs text-gray-500">~20 行</td><td class="px-4 py-2 text-xs text-gray-600">新经验立即纳入上下文</td></tr>
+          <tr class="bg-gray-50"><td class="px-4 py-2">R4: 简化 consolidation 触发</td><td class="px-4 py-2"><span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">中</span></td><td class="px-4 py-2 text-xs text-gray-500">~30 行</td><td class="px-4 py-2 text-xs text-gray-600">消除双触发路径</td></tr>
+          <tr><td class="px-4 py-2">R5: slots buildContext 到 query 路径</td><td class="px-4 py-2"><span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">中</span></td><td class="px-4 py-2 text-xs text-gray-500">~5 行</td><td class="px-4 py-2 text-xs text-gray-600">50% 调用场景受益</td></tr>
+          <tr class="bg-gray-50"><td class="px-4 py-2">R6: 拆分 sweep timer</td><td class="px-4 py-2"><span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">低</span></td><td class="px-4 py-2 text-xs text-gray-500">~40 行</td><td class="px-4 py-2 text-xs text-gray-600">更精细的定时任务控制</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<footer class="border-t border-gray-200 bg-white py-8 px-6 text-center mt-8">
+  <p class="text-sm text-gray-400">Activation Timing Comparison · agentmemory v0.9.27 vs sarosis</p>
+  <p class="text-xs text-gray-300 mt-1">6 optimizations · 3 high · 2 medium · 1 low</p>
+</footer>
+
+</body>
+</html>

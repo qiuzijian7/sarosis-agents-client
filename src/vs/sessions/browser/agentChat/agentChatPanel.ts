@@ -55,6 +55,10 @@ import {
 	OrchestrationPlan,
 	PlanTask,
 } from "./agentChatTypes.js";
+import {
+	formatAttachmentHyperlink,
+	stripAttachmentHyperlinks,
+} from "./attachmentLink.js";
 
 import type { IChatPanel } from "./iChatPanel.js";
 import { TabbedPanelManager } from "./modules/tabbedPanel.js";
@@ -1076,7 +1080,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	setSelectedWorktree(path: string): void {
 		this._selectedWorktreePath = path || "";
-		if (this._agent) { this._render(); }
+		// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+		if (this._agent) { this._refreshInputArea(); }
 	}
 
 	/** 设置工作区列表（外部调用） */
@@ -1089,7 +1094,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	/** 设置当前选中工作区 */
 	setSelectedWorkspace(id: string): void {
 		this._selectedWorkspaceId = id || "";
-		if (this._agent) { this._render(); }
+		// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+		if (this._agent) { this._refreshInputArea(); }
 	}
 
 	setChatMode(mode: ChatMode): void {
@@ -5772,6 +5778,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				};
 				this._attachments.push(att);
 				this._renderAttachmentPreviews();
+				this._insertAttachmentHyperlink(att);
 			}
 		}));
 		} // end else (drag overlay 已存在则跳过)
@@ -6802,9 +6809,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				addDisposableListener(mainItem, EventType.CLICK, () => {
 					this._closeWorktreeDropdown();
 					if (this._selectedWorktreePath) {
-						this._selectedWorktreePath = '';
-						this._onClearWorktree?.();
-						this._render();
+					this._selectedWorktreePath = '';
+					this._onClearWorktree?.();
+					// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+					this._refreshInputArea();
 					}
 				}),
 			);
@@ -6843,9 +6851,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 						addDisposableListener(item, EventType.CLICK, () => {
 							this._closeWorktreeDropdown();
 							if (wt.path !== this._selectedWorktreePath) {
-								this._selectedWorktreePath = wt.path;
-								this._onSelectWorktree?.({ path: wt.path, branch: wt.branch });
-								this._render();
+							this._selectedWorktreePath = wt.path;
+							this._onSelectWorktree?.({ path: wt.path, branch: wt.branch });
+							// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+							this._refreshInputArea();
 							}
 						}),
 					);
@@ -6905,9 +6914,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				this._register(addDisposableListener(item, EventType.CLICK, () => {
 					this._closeWorkspaceDropdown();
 					if (ws.id !== this._selectedWorkspaceId) {
-						this._selectedWorkspaceId = ws.id;
-						this._onSelectWorkspace?.(ws.id, ws.name);
-						this._render();
+					this._selectedWorkspaceId = ws.id;
+					this._onSelectWorkspace?.(ws.id, ws.name);
+					// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+					this._refreshInputArea();
 					}
 				}));
 			}
@@ -7593,7 +7603,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 						if (opt.id !== this._chatMode) {
 							this._chatMode = opt.id;
 							this._onChangeMode?.(opt.id);
-							this._render();
+							// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+							this._refreshInputArea();
 						}
 					}),
 				);
@@ -7639,7 +7650,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 						if (p.id !== this._currentProvider) {
 							this._currentProvider = p.id;
 							this._onSelectProvider?.(p.id);
-							this._render();
+							// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+							this._refreshInputArea();
 						}
 					}),
 				);
@@ -7693,7 +7705,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 						if (m.id !== this._currentModel) {
 							this._currentModel = m.id;
 							this._onSelectModel?.(m.id);
-							this._render();
+							// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
+							this._refreshInputArea();
 						}
 					})
 				);
@@ -7756,13 +7769,16 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (!text && !hasAttachments) {
 			return;
 		}
+		// 去除输入框中嵌入的附件超链接占位符（真实数据走 attachments 通道）。
+		// 例如 "分析 [📄 notes.txt](saros-attachment://att-1)" → "分析"。
+		const cleanText = stripAttachmentHyperlinks(text ?? '');
 
 		// LLM 正在输出中 → 消息入队（排队等待执行）
 		if (this._isSending) {
 			const queueId = `queue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 			this._tabbedPanel.add({
 				id: queueId,
-				content: text || (hasAttachments ? `[${this._attachments.length} 个附件]` : ''),
+				content: cleanText || (hasAttachments ? `[${this._attachments.length} 个附件]` : ''),
 				timestamp: Date.now(),
 				status: 'pending',
 			});
@@ -7801,7 +7817,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._renderAttachmentPreviews();
 
 		// Send message with skill IDs + attachments
-		this._onSendMessage(text || '', explicitSkillIds, attachments);
+		this._onSendMessage(cleanText || '', explicitSkillIds, attachments);
 	}
 
 	// ─── Orchestration Plan Dialog ─────────────────────────────────────
@@ -8593,6 +8609,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 					if (currentTotal + file.size > MAX_TOTAL_SIZE) { return; }
 					this._attachments.push(att);
 					this._renderAttachmentPreviews();
+					this._insertAttachmentHyperlink(att);
 				}).catch(() => { /* ignore resize failures */ });
 			} else {
 				const reader = new FileReader();
@@ -8612,6 +8629,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 					if (currentTotal + file.size > MAX_TOTAL_SIZE) { return; }
 					this._attachments.push(att);
 					this._renderAttachmentPreviews();
+					this._insertAttachmentHyperlink(att);
 				};
 				reader.readAsDataURL(file);
 			}
@@ -8646,6 +8664,22 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			img.onerror = reject;
 			img.src = URL.createObjectURL(file);
 		});
+	}
+
+	/**
+	 * 将附件以「超链接」形式嵌入到输入框文本中（如 `[📄 notes.txt](saros-attachment://att-123)`），
+	 * 让用户在发送前能直观看到并点击附件。真实数据仍通过结构化 `attachments` 通道发送，
+	 * 发送时会由 `_handleSendMessage` 中的 stripAttachmentHyperlinks 去除这些占位超链接。
+	 */
+	private _insertAttachmentHyperlink(att: IChatAttachment): void {
+		if (!this._textarea) { return; }
+		const link = formatAttachmentHyperlink(att);
+		const prev = this._textarea.value;
+		this._textarea.value = prev ? `${prev} ${link}` : link;
+		// 重新计算高度，避免多行时被截断
+		this._textarea.style.height = 'auto';
+		this._textarea.style.height = `${Math.min(this._textarea.scrollHeight, this._resizeMaxH)}px`;
+		this._textarea.focus();
 	}
 
 	private _renderAttachmentPreviews(): void {

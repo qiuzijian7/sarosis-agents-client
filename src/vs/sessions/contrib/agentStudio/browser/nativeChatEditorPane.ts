@@ -35,7 +35,7 @@ import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { XtermCliPanel } from '../../../browser/agentChat/xtermTui/xtermCliPanel.js';
 import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
-import { IAgentStudioService, IAgentChatService, IAgentTaskBoardService, ChatMode } from '../../../common/agentStudioService.js';
+import { IAgentStudioService, IAgentChatService, IAgentTaskBoardService, ChatMode, IChatAttachmentSend } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { ICheckpointService } from '../common/checkpointService.js';
@@ -277,21 +277,13 @@ export class NativeChatEditorPane extends EditorPane {
 					const agentId = ensured.agentId;
 					const sessionId: string = ensured.sessionId;
 
-					// 将附件内容注入消息文本——文件附件以 <file> 标签包裹，
-					// 图片附件标注文件名（视觉能力取决于模型支持）
-					let fullText = text;
-					if (attachments && attachments.length > 0) {
-						for (const att of attachments) {
-							if (att.type === 'file') {
-								// 文本文件 data 为原文，二进制文件 data 为 base64
-								const isText = att.mimeType.startsWith('text/') || att.mimeType === 'application/json';
-								const content = isText ? att.data : `[binary file, ${att.size} bytes]`;
-								fullText += `\n\n<file name="${att.name}">\n${content}\n</file>`;
-							} else if (att.type === 'image') {
-								fullText += `\n\n[image: ${att.name}]`;
-							}
-						}
-					}
+					// 附件不再以占位文本注入消息，而是透传给 sendMessage 的 options.attachments，
+					// 由 agentDriverService.executeFromChatOptions → buildUserContentParts 构建多模态
+					// contentParts（图片 → image 块，文件 → 文本上下文），最终经 MessageFormatConverter
+					// 转换为各 LLM API 的多模态格式（OpenAI image_url / Anthropic base64 source /
+					// Gemini inline_data）。这样图片/文件的真实内容才能正确送达 LLM（旧逻辑只会
+					// 发送 [image: name] / [binary file, N bytes] 占位文本，丢失实际数据）。
+					const fullText = text;
 
 					// Optimistically add user message
 					const userMsg: IAgentChatMessage = {
@@ -318,6 +310,9 @@ export class NativeChatEditorPane extends EditorPane {
 						chatMode: this._currentChatMode,
 						agentSessionId: sessionId,
 						explicitSkillIds: explicitSkillIds,
+						// 透传附件：图片/文件真实内容经 agentDriverService 构建多模态
+						// contentParts，最终正确送达 LLM（修复此前仅发送占位文本的问题）。
+						attachments: attachments as IChatAttachmentSend[] | undefined,
 					},
 					(delta) => {
 						this._handleStreamDelta(delta);

@@ -6,6 +6,7 @@
 import { URI } from '../../../../base/common/uri.js';
 import { EditorInputCapabilities } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { PackageKind } from '../common/marketplace.js';
 
 /**
  * EditorInput for the VsSaros Marketplace page.
@@ -33,6 +34,14 @@ export class MarketplaceEditorInput extends EditorInput {
 	constructor() {
 		super();
 	}
+
+	/**
+	 * Optional initial navigation state, applied once when the editor pane
+	 * opens. Used to deep-link into the marketplace (e.g. jump to the TAPD MCP).
+	 * Consumed (and cleared) by MarketplaceEditorPane.setInput.
+	 */
+	public initialSearch?: string;
+	public initialCategory?: PackageKind;
 
 	override get typeId(): string {
 		return MarketplaceEditorInput.TypeID;

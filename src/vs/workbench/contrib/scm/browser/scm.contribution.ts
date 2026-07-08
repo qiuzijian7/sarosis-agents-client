@@ -708,3 +708,6 @@ registerAction2(class extends Action2 {
 });
 
 AccessibleViewRegistry.register(new SCMAccessibilityHelp());
+
+
+// alongside all other SCMHistoryTitle actions for proper visibility.

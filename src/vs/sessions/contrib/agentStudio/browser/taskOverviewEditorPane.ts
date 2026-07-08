@@ -15,7 +15,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { GroupsOrder, IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import {
 	IAgentTaskBoardService,
 	IAgentStudioService,
@@ -28,6 +28,9 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { TaskBoardNativeRenderer, type TaskBoardRenderData, type TaskBoardFilter, type EmployeeInfo, type SwarmInfo } from './taskBoardNativeRenderer.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
 import { TaskBoardStatus, TaskSource, type TaskBoardRecord } from '../../../common/agentStudioTypes.js';
+import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { URI } from '../../../../base/common/uri.js';
 
 /**
  * Task Overview EditorPane — Native DOM kanban board.
@@ -73,6 +76,8 @@ export class TaskOverviewEditorPane extends EditorPane {
 		@IEditorService private readonly _editorService: IEditorService,
 		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 		@IAgentChatService private readonly _agentChatService: IAgentChatService,
+		@IBrowserViewWorkbenchService private readonly _browserViewWorkbenchService: IBrowserViewWorkbenchService,
+		@IOpenerService private readonly _openerService: IOpenerService,
 	) {
 		super(TaskOverviewEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -181,12 +186,30 @@ export class TaskOverviewEditorPane extends EditorPane {
 			this._swarmService.cancelSwarm(swarmId);
 		}));
 
+		// Board hyperlink (看板超链接) events
+		this._register(this._renderer.onAddBoardLinkRequest(() => {
+			void this._handleAddBoardLink();
+		}));
+		this._register(this._renderer.onOpenBoardLink(({ linkId }) => {
+			void this._handleOpenBoardLink(linkId);
+		}));
+		this._register(this._renderer.onEditBoardLink(({ linkId, name, url }) => {
+			void this._handleEditBoardLink(linkId, name, url);
+		}));
+		this._register(this._renderer.onDeleteBoardLink(({ linkId }) => {
+			void this._handleDeleteBoardLink(linkId);
+		}));
+
 		// Subscribe to service events for automatic refresh
 		this._register(this._taskBoardService.onDidChangeTaskBoard(() => {
 			void this._refresh();
 		}));
 
 		this._register(this._taskBoardService.onDidChangeBoards(() => {
+			void this._refresh();
+		}));
+
+		this._register(this._taskBoardService.onDidChangeBoardLinks(() => {
 			void this._refresh();
 		}));
 
@@ -221,7 +244,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 			if (this._allEmployees.length === 0) {
 				try {
 					const agents = await this._agentStudioService.getAgents();
-					this._allEmployees = agents.map(e => ({ id: e.id, name: e.name }));
+					this._allEmployees = agents.map(e => ({ id: e.id, name: e.name, icon: e.icon }));
 				} catch {
 					this._allEmployees = [];
 				}
@@ -272,6 +295,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 				draggingTaskId: null,
 				dragOverColumn: null,
 				focusedTaskId: this._focusedTaskId,
+				boardLinks: await this._taskBoardService.listBoardLinks(),
 			};
 
 			this._renderer.render(renderData);
@@ -400,6 +424,12 @@ export class TaskOverviewEditorPane extends EditorPane {
 			}
 		}
 
+		// "仅创建"：创建后不自动执行（也不入队），直接返回。
+		if (result.execute === false) {
+			this._logService.info(`[TaskOverviewEditorPane] Task ${created.id} created without auto-execution (仅创建)`);
+			return;
+		}
+
 		// Check if the assignee agent already has running tasks — if so, queue this one.
 		if (result.assigneeId) {
 			const agentRunningTasks = allTasks.filter(t =>
@@ -474,11 +504,50 @@ export class TaskOverviewEditorPane extends EditorPane {
 	): Promise<void> {
 		if (!this._renderer || !this._container) { return; }
 
+		// Load workspaces for the workspace selector dropdown
+		let workspaces: { id: string; name: string }[] = [];
+		try {
+			const wsList = await this._agentStudioService.getWorkspaces();
+			workspaces = wsList.map(w => ({ id: w.id, name: w.name }));
+		} catch { /* no workspaces — selector will be hidden */ }
+
+		// Resolve workspace root for attachment path resolution
+		let workspaceRoot: string | undefined;
+		try {
+			const activeId = this._agentStudioService.getActiveWorkspaceId();
+			if (activeId) {
+				const ws = await this._agentStudioService.getWorkspace(activeId);
+				if (ws?.path) { workspaceRoot = ws.path; }
+			}
+		} catch { /* non-fatal */ }
+
 		const result = await this._renderer.showTaskDetailModal(
 			this._container,
 			task,
 			employees,
 			allTasks,
+			{
+				workspaces,
+				loadWorktrees: async (wsId: string) => {
+					try {
+						const raw = await this._agentStudioService.getWorktrees(wsId);
+						return raw.map((wt: any) => ({
+							path: wt.path,
+							branch: wt.branch || wt.name || 'HEAD',
+							repoRoot: wt.repoRoot,
+							repoName: wt.repoName,
+						}));
+					} catch { return []; }
+				},
+				downloadUrl: (url: string) => this._taskBoardService.downloadUrlToTemp(url),
+				workspaceRoot,
+				openFile: (path: string) => {
+					try {
+						const fileUri = URI.isUri(path) ? path : URI.file(path);
+						this._openerService.open(fileUri, { openExternal: true });
+					} catch { /* invalid path — ignore */ }
+				},
+			},
 		);
 
 		switch (result.action) {
@@ -496,10 +565,27 @@ export class TaskOverviewEditorPane extends EditorPane {
 			case 'block':
 				this._taskBoardService.updateTask(result.taskId, { status: 'blocked' as TaskBoardStatus } as any);
 				break;
-			case 'unblock':
-				this._taskBoardService.updateTask(result.taskId, { status: 'todo' as TaskBoardStatus } as any);
-				break;
+		case 'unblock':
+			this._taskBoardService.updateTask(result.taskId, { status: 'todo' as TaskBoardStatus } as any);
+			break;
+		case 'edit': {
+			const patch: Record<string, unknown> = {
+				title: result.title,
+				description: result.description,
+				assigneeId: result.assigneeId,
+				assigneeName: result.assigneeName,
+				priority: result.priority,
+				dependencies: result.dependencies,
+				status: result.status,
+			};
+			// Include workspace/worktree only if user changed them from the defaults
+			if (result.workspaceId !== undefined) { patch.workspaceId = result.workspaceId; }
+			if (result.worktreePath !== undefined) { patch.worktreePath = result.worktreePath; }
+			if (result.url !== undefined) { patch.url = result.url; }
+			this._taskBoardService.updateTask(result.taskId, patch as any);
+			break;
 		}
+	}
 		// Refresh is automatic via onDidChangeTaskBoard event
 	}
 
@@ -548,6 +634,58 @@ export class TaskOverviewEditorPane extends EditorPane {
 		} catch (err) {
 			this._logService.error('[TaskOverviewEditorPane] Failed to open chat for agent:', err);
 		}
+	}
+
+	// ─── Board Hyperlinks (看板超链接) ─────────────────────────────────
+
+	private async _handleAddBoardLink(): Promise<void> {
+		if (!this._renderer || !this._container) { return; }
+		this._renderer.showAddBoardLinkModal(this._container, async (name, url) => {
+			await this._taskBoardService.addBoardLink(name, url);
+			// Refresh is automatic via onDidChangeBoardLinks event.
+		});
+	}
+
+	private async _handleOpenBoardLink(linkId: string): Promise<void> {
+		const links = await this._taskBoardService.listBoardLinks();
+		const link = links.find(l => l.id === linkId);
+		if (!link) { return; }
+
+		this._logService.info(`[TaskOverviewEditorPane] _handleOpenBoardLink: id=${linkId}, name="${link.name}", url="${link.url}" (len=${link.url.length})`);
+
+		// Use the native Integrated Browser (Electron WebContentsView) instead of
+		// the sandboxed webview. This avoids CSP/sandbox restrictions and allows
+		// sites like TAPD to do OAuth login normally. Each board link gets a
+		// stable view ID derived from the link ID so the same link reuses one tab.
+		const browserViewId = `board-link-${linkId}`;
+		const input = this._browserViewWorkbenchService.getOrCreateLazy(browserViewId, {
+			url: link.url,
+			title: link.name,
+		});
+
+		this._logService.info(`[TaskOverviewEditorPane] BrowserEditorInput created: id=${browserViewId}, name="${input.getName()}", title="${input.getTitle()}", hasModel=${!!input.model}`);
+
+		// Navigate to the latest URL in case the link was edited since last open.
+		input.navigate(link.url);
+
+		this._logService.info(`[TaskOverviewEditorPane] After navigate: name="${input.getName()}", title="${input.getTitle()}"`);
+
+		// Open in the center editor area (groups[0]).
+		const groups = this._editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+		const targetGroup = groups[0];
+		await this._editorService.openEditor(input, { pinned: true }, targetGroup);
+	}
+
+	private async _handleDeleteBoardLink(linkId: string): Promise<void> {
+		await this._taskBoardService.removeBoardLink(linkId);
+	}
+
+	private async _handleEditBoardLink(linkId: string, name: string, url: string): Promise<void> {
+		if (!this._renderer || !this._container) { return; }
+		// Reuse the add-link modal structure for editing, pre-filled with current values.
+		this._renderer.showEditBoardLinkModal(this._container, { linkId, name, url }, async (newName, newUrl) => {
+			await this._taskBoardService.updateBoardLink(linkId, newName, newUrl);
+		});
 	}
 
 	// ─── Diagnostics ────────────────────────────────────────────────────

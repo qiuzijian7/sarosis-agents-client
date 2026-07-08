@@ -48,6 +48,8 @@ export interface TaskBoardRecord {
 	workflowId?: string;
 	/** v11: user-provided values for workflow template variables. */
 	variableValues?: Record<string, string>;
+	/** User-provided reference URL (e.g. a TAPD story link). */
+	url?: string;
 }
 
 // Delegation status → TaskBoard status mapping

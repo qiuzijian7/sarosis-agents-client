@@ -19,7 +19,8 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { ResourceManagerEditorInput, ResourceManagerEditorPane_ID } from './resourceManagerEditorInput.js';
 import { ISkillRegistry, ISkillDefinition, SkillActivation } from '../common/skills.js';
 import { ISkillInstallService } from '../common/skillHubTypes.js';
-import { IAgentOSService } from '../common/agentOS.js';
+
+
 import { renderMarkdown } from '../../../../base/browser/markdownRenderer.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -29,7 +30,9 @@ import { INotificationService } from '../../../../platform/notification/common/n
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type ResourceType = 'skill' | 'tool' | 'mcp' | 'knowledge' | 'workflow';
+// Note: MCP has its own dedicated McpDetailEditorPane, and tools are built-in.
+// This ResourceManager primarily handles skills (with optional knowledge/workflow support).
+type ResourceType = 'skill' | 'knowledge' | 'workflow';
 
 interface IResourceItem {
 	readonly id: string;
@@ -57,8 +60,6 @@ interface FileTreeNode {
 
 const TYPE_CONFIG: Record<ResourceType, { label: string; icon: string; storagePath: string }> = {
 	skill:     { label: 'Skills Library', icon: '💡', storagePath: '~/.saros/skills/' },
-	tool:      { label: 'Tools Library',  icon: '🔧', storagePath: '~/.saros/tools/' },
-	mcp:       { label: 'MCP Servers',    icon: '⚡', storagePath: '~/.saros/mcp/' },
 	knowledge: { label: 'Knowledge Base', icon: '📚', storagePath: '~/.saros/knowledge-base/' },
 	workflow:  { label: 'Workflows',      icon: '🔄', storagePath: '~/.saros/workflows/' },
 };
@@ -92,7 +93,6 @@ export class ResourceManagerEditorPane extends EditorPane {
 		@IDialogService private readonly dialogService: IDialogService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
-		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IFileService private readonly fileService: IFileService,
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@INotificationService private readonly notificationService: INotificationService,
@@ -329,8 +329,6 @@ export class ResourceManagerEditorPane extends EditorPane {
 		}
 		switch (item.kind) {
 			case 'skill': return ['使用说明', '文件', '版本历史', '评论', 'AI 评测'];
-			case 'mcp':   return ['描述', '使用说明', '工具说明', '评论'];
-			case 'tool':  return ['使用说明', '参数定义'];
 			case 'knowledge': return ['文档列表', '搜索', '统计'];
 			case 'workflow':  return ['流程定义', '运行记录', '设置'];
 		}
@@ -494,8 +492,8 @@ export class ResourceManagerEditorPane extends EditorPane {
 			actions.appendChild(delBtn);
 		}
 
-		// Marketplace status buttons (upload / upgrade) — for local and builtin skills/mcps
-		if (!this._isMarketplacePreview && (item.kind === 'skill' || item.kind === 'mcp')) {
+		// Marketplace status buttons (upload / upgrade) — for local and builtin skills
+		if (!this._isMarketplacePreview && item.kind === 'skill') {
 			const isUploadable = !item.source.includes('内存') && !item.source.includes('商城');
 			if (isUploadable) {
 				this._addMarketplaceStatusButtons(item, actions);
@@ -553,7 +551,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 	 * - In marketplace with same version → "✓ 最新" badge
 	 */
 	private _addMarketplaceStatusButtons(item: IResourceItem, actions: HTMLElement): void {
-		const pkgKind = item.kind === 'skill' ? 'skill' : 'mcp';
+		const pkgKind = 'skill';
 		const localVersion = item.version ?? '0';
 		const storeId = item.id;
 
@@ -776,7 +774,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 				const lower = c.toLowerCase().trim();
 				const map: Record<string, string> = {
 					'数据分析': 'data', 'data-science': 'data',
-					'dogfood': 'utility', 'mcp': 'utility', 'smart-home': 'other',
+					'dogfood': 'utility', 'smart-home': 'other',
 				};
 				return map[lower] ?? c;
 			};
@@ -910,8 +908,6 @@ export class ResourceManagerEditorPane extends EditorPane {
 	private _iconBgForKind(kind: ResourceType): string {
 		switch (kind) {
 			case 'skill': return 'linear-gradient(135deg,#9b59b6,#8e44ad)';
-			case 'mcp':   return 'linear-gradient(135deg,#f39c12,#e67e22)';
-			case 'tool':  return 'linear-gradient(135deg,#1abc9c,#16a085)';
 			case 'knowledge': return 'linear-gradient(135deg,#3498db,#2980b9)';
 			case 'workflow':  return 'linear-gradient(135deg,#e74c3c,#c0392b)';
 		}
@@ -925,10 +921,6 @@ export class ResourceManagerEditorPane extends EditorPane {
 		switch (item.kind) {
 			case 'skill':
 				return this._renderSkillTab(item, tabIdx);
-			case 'mcp':
-				return this._renderMcpTab(item, tabIdx);
-			case 'tool':
-				return this._renderToolTab(item, tabIdx);
 			case 'knowledge':
 			case 'workflow':
 				return this._renderPlaceholderTab(item, tabIdx);
@@ -959,24 +951,6 @@ export class ResourceManagerEditorPane extends EditorPane {
 			case 2: return this._renderVersionTab(skill);
 			case 3: return this._emptyHint('暂无评论');
 			case 4: return this._renderEvalTab(skill);
-			default: return this._emptyHint('未知标签页');
-		}
-	}
-
-	private _renderMcpTab(item: IResourceItem, tabIdx: number): HTMLElement {
-		switch (tabIdx) {
-			case 0: return this._renderMarkdownContent('', `# ${item.name}\n\n${item.description}`);
-			case 1: return this._renderMarkdownContent('', `# ${item.name} 使用说明\n\n${item.description}`);
-			case 2: return this._renderMcpToolsTab(item);
-			case 3: return this._emptyHint('暂无评论');
-			default: return this._emptyHint('未知标签页');
-		}
-	}
-
-	private _renderToolTab(item: IResourceItem, tabIdx: number): HTMLElement {
-		switch (tabIdx) {
-			case 0: return this._renderMarkdownContent('', `# ${item.name}\n\n${item.description}`);
-			case 1: return this._renderToolParams(item);
 			default: return this._emptyHint('未知标签页');
 		}
 	}
@@ -1694,100 +1668,6 @@ export class ResourceManagerEditorPane extends EditorPane {
 		return { total, rows };
 	}
 
-	private _renderMcpToolsTab(item: IResourceItem): HTMLElement {
-		const wrap = $('div');
-		wrap.style.maxWidth = '700px';
-
-		const card = $('div');
-		card.style.background = 'var(--vscode-widget-background)';
-		card.style.border = '1px solid var(--vscode-panel-border)';
-		card.style.borderRadius = '4px';
-		card.style.padding = '14px 16px';
-		card.style.marginBottom = '12px';
-
-		const name = $('div');
-		name.style.fontSize = '14px';
-		name.style.fontWeight = '600';
-		name.style.color = '#fff';
-		name.style.display = 'flex';
-		name.style.alignItems = 'center';
-		name.style.gap = '8px';
-		name.style.marginBottom = '5px';
-		const nameCode = $('code');
-		nameCode.style.background = '#333';
-		nameCode.style.padding = '2px 8px';
-		nameCode.style.borderRadius = '3px';
-		nameCode.style.fontSize = '12px';
-		nameCode.textContent = item.name;
-		name.appendChild(nameCode);
-		const safeBadge = $('span');
-		safeBadge.style.background = 'rgba(46,160,67,0.12)';
-		safeBadge.style.color = '#3fb950';
-		safeBadge.style.padding = '2px 8px';
-		safeBadge.style.borderRadius = '3px';
-		safeBadge.style.fontSize = '11px';
-		safeBadge.textContent = 'Safe';
-		name.appendChild(safeBadge);
-		card.appendChild(name);
-
-		const desc = $('div');
-		desc.textContent = item.description || 'MCP 服务器';
-		desc.style.color = 'var(--vscode-descriptionForeground)';
-		desc.style.fontSize = '13px';
-		desc.style.lineHeight = '1.6';
-		card.appendChild(desc);
-
-		wrap.appendChild(card);
-		return wrap;
-	}
-
-	private _renderToolParams(item: IResourceItem): HTMLElement {
-		const wrap = $('div');
-		wrap.style.maxWidth = '700px';
-
-		const card = $('div');
-		card.style.background = 'var(--vscode-widget-background)';
-		card.style.border = '1px solid var(--vscode-panel-border)';
-		card.style.borderRadius = '4px';
-		card.style.padding = '14px 16px';
-		card.style.marginBottom = '12px';
-
-		const name = $('div');
-		name.style.fontSize = '14px';
-		name.style.fontWeight = '600';
-		name.style.color = '#fff';
-		name.style.display = 'flex';
-		name.style.alignItems = 'center';
-		name.style.gap = '8px';
-		name.style.marginBottom = '5px';
-		const nameCode2 = $('code');
-		nameCode2.style.background = '#333';
-		nameCode2.style.padding = '2px 8px';
-		nameCode2.style.borderRadius = '3px';
-		nameCode2.style.fontSize = '12px';
-		nameCode2.textContent = item.name;
-		name.appendChild(nameCode2);
-		const safeBadge2 = $('span');
-		safeBadge2.style.background = 'rgba(46,160,67,0.12)';
-		safeBadge2.style.color = '#3fb950';
-		safeBadge2.style.padding = '2px 8px';
-		safeBadge2.style.borderRadius = '3px';
-		safeBadge2.style.fontSize = '11px';
-		safeBadge2.textContent = 'Safe';
-		name.appendChild(safeBadge2);
-		card.appendChild(name);
-
-		const desc = $('div');
-		desc.textContent = item.description || '工具';
-		desc.style.color = 'var(--vscode-descriptionForeground)';
-		desc.style.fontSize = '13px';
-		desc.style.lineHeight = '1.6';
-		card.appendChild(desc);
-
-		wrap.appendChild(card);
-		return wrap;
-	}
-
 	private _emptyHint(text: string): HTMLElement {
 		const p = $('p');
 		p.textContent = text;
@@ -1805,8 +1685,6 @@ export class ResourceManagerEditorPane extends EditorPane {
 	private _getItems(): IResourceItem[] {
 		switch (this._currentType) {
 			case 'skill': return this._getSkillItems();
-			case 'mcp':   return this._getMcpItems();
-			case 'tool':  return this._getToolItems();
 			case 'knowledge':
 			case 'workflow':
 				return [];
@@ -1839,20 +1717,4 @@ export class ResourceManagerEditorPane extends EditorPane {
 		}
 	}
 
-	private _getMcpItems(): IResourceItem[] {
-		return [];
-	}
-
-	private _getToolItems(): IResourceItem[] {
-		void this._loadToolsAsync();
-		return [];
-	}
-
-	private async _loadToolsAsync(): Promise<void> {
-		if (this._currentType !== 'tool') { return; }
-		try {
-			// listAllToolsWithState is a no-op here: tools are rendered on-demand in detail-only mode
-			await this.agentOSService.listAllToolsWithState('viewer');
-		} catch { /* ignore */ }
-	}
 }

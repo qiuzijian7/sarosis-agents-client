@@ -11,15 +11,19 @@ import { IFileService, FileSystemProviderCapabilities } from '../../../../platfo
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IPlaywrightService } from '../../../../platform/browserView/common/playwrightService.js';
 import { VSBuffer, encodeBase64, decodeBase64 } from '../../../../base/common/buffer.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IAgentTaskBoardService, ITaskOrchestrationService } from '../common/agentStudio.js';
-import type { TaskBoardRecord, TaskBoard, TaskAttachment } from '../common/types.js';
+import { IAgentTaskBoardService, ITaskOrchestrationService, IAgentStudioService } from '../common/agentStudio.js';
+import type { IChatAttachmentSend } from '../../../common/agentStudioService.js';
+import type { TaskBoardRecord, TaskBoard, BoardLink, TaskAttachment } from '../common/types.js';
 import { TaskBoardStatus, TaskSource, DEFAULT_BOARD_ID } from '../common/types.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING } from '../common/constants.js';
+import { SAROS_CLAW_AGENT_ID } from './providers/tool/kanbanTools.js';
 
 const DATA_FILE_TASKBOARD = 'taskboard.json';
 const DATA_FILE_BOARDS = 'boards.json';
+const DATA_FILE_BOARDLINKS = 'boardlinks.json';
 const ATTACHMENTS_DIR = 'attachments';
 
 /**
@@ -39,6 +43,9 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	private readonly _onDidChangeBoards = this._register(new Emitter<void>());
 	readonly onDidChangeBoards: Event<void> = this._onDidChangeBoards.event;
 
+	private readonly _onDidChangeBoardLinks = this._register(new Emitter<void>());
+	readonly onDidChangeBoardLinks: Event<void> = this._onDidChangeBoardLinks.event;
+
 	private _dataUri: URI | undefined;
 
 	/**
@@ -52,8 +59,9 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	/** One-time guard so the high-task-count warning does not spam the log. */
 	private _warnedHighTaskCount = false;
 
-	/** Lazy references to break cyclic dependency (agentTaskBoardService ↔ taskOrchestrationService) */
+	/** Lazy references to break cyclic dependency */
 	private _orchestrationService: ITaskOrchestrationService | undefined;
+	private _agentStudioService: IAgentStudioService | undefined;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -61,6 +69,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IPlaywrightService private readonly playwrightService: IPlaywrightService,
 	) {
 		super();
 	}
@@ -71,6 +80,19 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			this._orchestrationService = this.instantiationService.invokeFunction(accessor => accessor.get(ITaskOrchestrationService));
 		}
 		return this._orchestrationService!;
+	}
+
+	/**
+	 * Lazily resolve IAgentStudioService to avoid constructor-time cyclic
+	 * dependency (AgentStudioService itself injects IAgentTaskBoardService).
+	 */
+	private get agentStudioService(): IAgentStudioService {
+		if (!this._agentStudioService) {
+			this._agentStudioService = this.instantiationService.invokeFunction(
+				accessor => accessor.get(IAgentStudioService)
+			);
+		}
+		return this._agentStudioService;
 	}
 
 	private _getDataUri(): URI {
@@ -199,6 +221,28 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 
 	async createTask(data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord> {
 		const now = new Date().toISOString();
+
+		// Resolve defaults for workspace and main worktree when not explicitly
+		// provided. This lets every task-creation path (TAPD import, manual
+		// create, auto-plan, chat) automatically land in the current context
+		// without each caller having to pass workspaceId / worktreePath.
+		let workspaceId = data.workspaceId;
+		let worktreePath = data.worktreePath;
+
+		if (!workspaceId) {
+			workspaceId = this.agentStudioService.getActiveWorkspaceId() || '';
+		}
+		if (!worktreePath && workspaceId) {
+			try {
+				const worktrees = await this.agentStudioService.getWorktrees(workspaceId);
+				if (worktrees.length > 0) {
+					worktreePath = worktrees[0].path; // main/primary worktree
+				}
+			} catch {
+				// getWorktrees may throw (e.g. no git repo); silently skip.
+			}
+		}
+
 		const newTask: TaskBoardRecord = {
 			id: this._generateId(),
 			title: data.title || 'New Task',
@@ -206,10 +250,11 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			status: data.status || TaskBoardStatus.Todo,
 			source: data.source || TaskSource.Manual,
 			sourceId: data.sourceId,
+			tapdUrl: data.tapdUrl,
 			assigneeId: data.assigneeId,
 			assigneeName: data.assigneeName,
-			worktreePath: data.worktreePath,
-			workspaceId: data.workspaceId || '',
+			worktreePath,
+			workspaceId: workspaceId || '',
 			boardId: data.boardId || DEFAULT_BOARD_ID,
 			priority: data.priority || 'medium',
 			dependencies: data.dependencies || [],
@@ -220,7 +265,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		};
 		await this._withTasks(tasks => { tasks.push(newTask); });
 		this._onDidChangeTaskBoard.fire();
-		this.logService.trace(`[AgentStudio] TaskBoard: created task ${newTask.id}`);
+		this.logService.trace(`[AgentStudio] TaskBoard: created task ${newTask.id} ws=${workspaceId} wt=${worktreePath || '-'}`);
 		return newTask;
 	}
 
@@ -282,11 +327,16 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 					});
 					this._onDidChangeTaskBoard.fire();
 
+					// Resolve attachment content (files/images) and forward to the agent
+					// so the executing agent receives the same context the user attached
+					// to the task card (previously attachments were silently dropped).
+					const attachments = await this._resolveAttachmentPayloads(updated);
+
 					// Fire-and-forget: invoke the agent to actually execute the task
 					this.orchestrationService.executeTaskForBoard(
 						updated.workspaceId!,
 						id,
-						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId, worktreePath: updated.worktreePath, workflowId: updated.workflowId, variableValues: updated.variableValues },
+						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId, worktreePath: updated.worktreePath, workflowId: updated.workflowId, variableValues: updated.variableValues, attachments },
 					).catch(err => {
 						this.logService.warn(`[AgentStudio] TaskBoard: task execution failed for ${id}:`, err);
 					});
@@ -452,6 +502,108 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		this.logService.trace(`[AgentStudio] Board: deleted ${boardId} (${target?.name ?? '?'}), reassigned ${touched} task(s) to default`);
 	}
 
+	// ─── Board hyperlinks (看板超链接) ───────────────────────────────────
+
+	private async _readBoardLinks(): Promise<BoardLink[]> {
+		try {
+			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_BOARDLINKS);
+			const content = await this.fileService.readFile(uri);
+			const parsed = JSON.parse(content.value.toString());
+			return Array.isArray(parsed) ? parsed as BoardLink[] : [];
+		} catch {
+			return [];
+		}
+	}
+
+	private async _writeBoardLinks(links: BoardLink[]): Promise<void> {
+		const uri = URI.joinPath(this._getDataUri(), DATA_FILE_BOARDLINKS);
+		const content = VSBuffer.fromString(JSON.stringify(links, null, 2));
+		await this._atomicWriteFile(uri, content);
+	}
+
+	/** Run a read-modify-write cycle against the board-link list (serialized). */
+	private _withBoardLinks<R>(mutate: (links: BoardLink[]) => Promise<R> | R): Promise<R> {
+		return this._boardWriteQueue.queue(async () => {
+			const links = await this._readBoardLinks();
+			const result = await mutate(links);
+			await this._writeBoardLinks(links);
+			return result;
+		}) as Promise<R>;
+	}
+
+	/** List all pinned board hyperlinks. */
+	async listBoardLinks(): Promise<BoardLink[]> {
+		return await this._readBoardLinks();
+	}
+
+	/** Add a new board hyperlink. */
+	async addBoardLink(name: string, url: string): Promise<BoardLink> {
+		const trimmedName = name.trim() || '未命名看板';
+		const trimmedUrl = url.trim();
+		if (!trimmedUrl) {
+			throw new Error('看板链接 URL 不能为空');
+		}
+		try {
+			// Basic sanity check: must be an http(s) URL.
+			const parsed = new URL(trimmedUrl);
+			if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+				throw new Error('仅支持 http/https 链接');
+			}
+		} catch (e) {
+			throw new Error(`无效的链接地址: ${e instanceof Error ? e.message : String(e)}`);
+		}
+
+		const link: BoardLink = {
+			id: `link_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+			name: trimmedName,
+			url: trimmedUrl,
+			createdAt: new Date().toISOString(),
+		};
+		await this._withBoardLinks(links => { links.push(link); });
+		this._onDidChangeBoardLinks.fire();
+		this.logService.trace(`[AgentStudio] BoardLink: added ${link.id} (${link.name})`);
+		return link;
+	}
+
+	/** Update an existing board hyperlink's name and/or URL. */
+	async updateBoardLink(id: string, name: string, url: string): Promise<BoardLink> {
+		const trimmedName = name.trim() || '未命名看板';
+		const trimmedUrl = url.trim();
+		if (!trimmedUrl) {
+			throw new Error('看板链接 URL 不能为空');
+		}
+		try {
+			const parsed = new URL(trimmedUrl);
+			if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+				throw new Error('仅支持 http/https 链接');
+			}
+		} catch (e) {
+			throw new Error(`无效的链接地址: ${e instanceof Error ? e.message : String(e)}`);
+		}
+
+		let updated: BoardLink | undefined;
+		await this._withBoardLinks(links => {
+			const link = links.find(l => l.id === id);
+			if (!link) { throw new Error(`看板超链接 ${id} 不存在`); }
+			link.name = trimmedName;
+			link.url = trimmedUrl;
+			updated = link;
+		});
+		this._onDidChangeBoardLinks.fire();
+		this.logService.trace(`[AgentStudio] BoardLink: updated ${id} (${trimmedName})`);
+		return updated!;
+	}
+
+	/** Remove a board hyperlink by id. */
+	async removeBoardLink(id: string): Promise<void> {
+		await this._withBoardLinks(links => {
+			const idx = links.findIndex(l => l.id === id);
+			if (idx !== -1) { links.splice(idx, 1); }
+		});
+		this._onDidChangeBoardLinks.fire();
+		this.logService.trace(`[AgentStudio] BoardLink: removed ${id}`);
+	}
+
 	// ─── Attachments (P2) ───────────────────────────────────────────────────
 
 	private _generateAttachmentId(): string {
@@ -530,5 +682,212 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		const uri = this._attachmentUri(taskId, attachmentId);
 		const content = await this.fileService.readFile(uri);
 		return encodeBase64(content.value);
+	}
+
+	/**
+	 * Resolve a task's attachment *metadata* into concrete `IChatAttachmentSend`
+	 * payloads (with content) suitable for forwarding to the agent's
+	 * `sendMessage`. Attachment content is stored host-side as side files, so we
+	 * read each one back and inline it here.
+	 *
+	 * - Images (`image/*`): kept as base64 (`data` field).
+	 * - Text files (`text/*`): decoded to raw text so the agent sees the actual
+	 *   content rather than a base64 blob.
+	 * - Other binaries: kept as base64.
+	 *
+	 * Failures reading a single attachment are logged and skipped so one bad
+	 * file never blocks task execution.
+	 */
+	private async _resolveAttachmentPayloads(task: TaskBoardRecord): Promise<IChatAttachmentSend[]> {
+		const attachments = task.attachments;
+		if (!attachments || attachments.length === 0) {
+			return [];
+		}
+		const payloads: IChatAttachmentSend[] = [];
+		for (const att of attachments) {
+			try {
+				const base64 = await this.readAttachment(task.id, att.id);
+				const isImage = att.mimeType.startsWith('image/');
+				const data = (!isImage && att.mimeType.startsWith('text/'))
+					? decodeBase64(base64).toString()
+					: base64;
+				payloads.push({
+					id: att.id,
+					type: isImage ? 'image' : 'file',
+					name: att.name,
+					mimeType: att.mimeType,
+					data,
+					size: att.size,
+				});
+			} catch (err) {
+				this.logService.warn(`[AgentStudio] TaskBoard: failed to read attachment ${att.id} for task ${task.id}:`, err);
+			}
+		}
+		return payloads;
+	}
+
+	/**
+	 * Download `url` once and return everything needed for both the task
+	 * description (local temp path) and attachment metadata (name / mimeType /
+	 * base64). This avoids downloading the same URL twice when importing TAPD
+	 * workitems — the caller can later call `addAttachment` with the returned
+	 * base64 + mimeType + name.
+	 *
+	 * Same auth semantics as `downloadUrlToTemp` (Playwright browser context
+	 * cookies via `downloadBinary`).
+	 */
+	/**
+	 * Resolve the download directory for task attachments.
+	 * Prefers `{activeWorkspace.path}/.sarosworkspace/tmp/task-downloads/`
+	 * (workspace-local, survives across sessions). Falls back to the
+	 * agent-studio data dir if no workspace is active.
+	 */
+	private async _getDownloadDir(): Promise<URI> {
+		try {
+			const wsId = this.agentStudioService.getActiveWorkspaceId();
+			if (wsId) {
+				const ws = await this.agentStudioService.getWorkspace(wsId);
+				if (ws?.path) {
+					return URI.joinPath(URI.file(ws.path), '.sarosworkspace', 'tmp', 'task-downloads');
+				}
+			}
+		} catch { /* fall through */ }
+		// Fallback: agent-studio data directory
+		return URI.joinPath(this._getDataUri(), 'tmp', 'task-downloads');
+	}
+
+	async downloadUrlForAttachment(url: string, opts?: { sessionId?: string; viewId?: string }): Promise<{ name: string; mimeType: string; base64: string; tempPath: string } | undefined> {
+		const sessionId = opts?.sessionId ?? SAROS_CLAW_AGENT_ID;
+		const viewId = await this._resolveDownloadViewId(sessionId, opts?.viewId);
+		if (!viewId) { return undefined; }
+		try {
+			this.logService.info(`[TaskBoard] downloadUrlForAttachment via Playwright: url=${url} view=${viewId}`);
+			const dl = await this.playwrightService.downloadBinary(sessionId, viewId, url);
+			this.logService.info(`[TaskBoard] downloadUrlForAttachment status=${dl.status} contentType="${dl.contentType}" base64Len=${dl.base64.length}`);
+			if (!dl.ok) { this.logService.warn(`[TaskBoard] downloadUrlForAttachment HTTP ${dl.status}: ${url}`); return undefined; }
+			if (dl.contentType.includes('text/html')) { this.logService.warn(`[TaskBoard] downloadUrlForAttachment got HTML (not a real file): ${url}`); return undefined; }
+			const mimeType = dl.contentType || 'application/octet-stream';
+			const name = this._filenameFromUrl(url, dl.contentDisposition);
+			const tmpDir = await this._getDownloadDir();
+			const uri = URI.joinPath(tmpDir, name);
+			const content = decodeBase64(dl.base64);
+			await this.fileService.createFile(uri, content, { overwrite: true });
+			this.logService.info(`[TaskBoard] downloadUrlForAttachment OK: ${url} → ${uri.fsPath} (${content.byteLength} bytes)`);
+			return { name, mimeType, base64: dl.base64, tempPath: uri.fsPath };
+		} catch (err) {
+			this.logService.warn('[TaskBoard] downloadUrlForAttachment unexpected error:', err);
+			return undefined;
+		}
+	}
+
+	/**
+	 * Download `url` to a local temp file and return its filesystem path.
+	 *
+	 * The renderer process cannot issue `node:https` requests (the CSP
+	 * `script-src` directive blocks `import('node:https')`, and `require` is not
+	 * exposed here), and a plain `fetch` cannot carry the TAPD session cookie.
+	 * So we delegate the actual HTTP download to the **Playwright browser
+	 * context** that is already logged into TAPD: `page.request.fetch` reuses the
+	 * context's cookies and is not subject to CORS, so authenticated attachments
+	 * (including cross-origin `file.tapd.cn` images) download correctly.
+	 *
+	 * @param opts.sessionId Playwright session id. Defaults to the Saros Claw
+	 *   agent session (the one used for TAPD extraction).
+	 * @param opts.viewId The browser view id whose context provides the auth
+	 *   cookies. When omitted we try to locate a tracked TAPD page automatically.
+	 */
+	async downloadUrlToTemp(url: string, opts?: { sessionId?: string; viewId?: string }): Promise<string | undefined> {
+		const sessionId = opts?.sessionId ?? SAROS_CLAW_AGENT_ID;
+		const viewId = await this._resolveDownloadViewId(sessionId, opts?.viewId);
+		if (!viewId) {
+			this.logService.warn('[TaskBoard] downloadUrlToTemp: no browser view available (cannot authenticate download)');
+			return undefined;
+		}
+		try {
+			this.logService.info(`[TaskBoard] downloadUrlToTemp via Playwright: url=${url} view=${viewId}`);
+			const dl = await this.playwrightService.downloadBinary(sessionId, viewId, url);
+			this.logService.info(`[TaskBoard] downloadUrlToTemp status=${dl.status} contentType="${dl.contentType}" base64Len=${dl.base64.length}`);
+			if (!dl.ok) {
+				this.logService.warn(`[TaskBoard] downloadUrlToTemp HTTP ${dl.status}: ${url}`);
+				return undefined;
+			}
+			if (dl.contentType.includes('text/html')) {
+				this.logService.warn(`[TaskBoard] downloadUrlToTemp got HTML (likely TAPD login page / auth required, not a real file): ${url}`);
+			}
+			const tmpDir = await this._getDownloadDir();
+			const filename = this._filenameFromUrl(url, dl.contentDisposition);
+			const uri = URI.joinPath(tmpDir, filename);
+			// createFile (not writeFile) so the parent temp dir is created if missing.
+			const content = decodeBase64(dl.base64);
+			await this.fileService.createFile(uri, content, { overwrite: true });
+			this.logService.info(`[TaskBoard] downloadUrlToTemp OK: ${url} → ${uri.fsPath} (${content.byteLength} bytes)`);
+			return uri.fsPath;
+		} catch (err) {
+			this.logService.warn('[TaskBoard] downloadUrlToTemp unexpected error:', err);
+			return undefined;
+		}
+	}
+
+	/** Derive a safe local filename from a URL (last path segment, or a time-based fallback).
+	 *  If a Content-Disposition header is provided, it takes priority for extracting
+	 *  the real server-side filename (e.g. ZIP files from TAPD where URL path is /story). */
+	private _filenameFromUrl(url: string, contentDisposition = ''): string {
+		// Priority: Content-Disposition header → URL pathname → timestamp fallback
+		if (contentDisposition) {
+			// Try: attachment; filename="20260706T103214.zip" or filename*=UTF-8''...
+			const cdMatch = contentDisposition.match(/filename\s*=\s*(?:"([^"]+)"|([^;\s]+))/i);
+			if (cdMatch?.[1] || cdMatch?.[2]) {
+				const raw = decodeURIComponent(cdMatch[1] || cdMatch[2]);
+				const cleaned = raw.replace(/[\\/:*?"<>|]/g, '_').slice(0, 200);
+				if (cleaned) { return cleaned; }
+			}
+		}
+		try {
+			const urlObj = new URL(url);
+			const raw = decodeURIComponent(urlObj.pathname.split('/').pop() || '');
+			if (raw) {
+				// Strip a trailing query-only separator and keep it filesystem-safe.
+				const cleaned = raw.replace(/[\\/:*?"<>|]/g, '_').slice(0, 200);
+				if (cleaned) { return cleaned; }
+			}
+		} catch {
+			/* fall through */
+		}
+		return `file_${Date.now()}.bin`;
+	}
+
+	/** Resolve a viewId for authenticated downloads, with fallback logic. */
+	private async _resolveDownloadViewId(sessionId: string, preferredViewId?: string): Promise<string | undefined> {
+		if (preferredViewId) { return preferredViewId; }
+		try {
+			const tapdView = await this._findTapdViewId(sessionId);
+			if (tapdView) { return tapdView; }
+		} catch { /* fall through */ }
+		// If no TAPD-specific view is tracked, try any tracked page as
+		// a fallback viewId. PlaywrightSession.downloadBinary has a
+		// session-level `_tapdCookies` fallback that will provide auth
+		// even if the original browser view has been closed.
+		const pages = await this.playwrightService.getTrackedPages();
+		if (pages.length > 0) {
+			this.logService.trace(`[TaskBoard] _resolveDownloadViewId: no TAPD view found, falling back to viewId=${pages[0]} (session cookies will provide auth)`);
+			return pages[0];
+		}
+		return undefined;
+	}
+
+	/** Scan tracked pages for one whose summary references tapd.cn (best-effort). */
+	private async _findTapdViewId(sessionId: string): Promise<string | undefined> {
+		const pages = await this.playwrightService.getTrackedPages();
+		for (const vid of pages) {
+			try {
+				const summary = await this.playwrightService.getSummary(sessionId, vid);
+				if (summary && summary.includes('tapd.cn')) {
+					return vid;
+				}
+			} catch {
+				/* page may have been closed — skip */
+			}
+		}
+		return undefined;
 	}
 }

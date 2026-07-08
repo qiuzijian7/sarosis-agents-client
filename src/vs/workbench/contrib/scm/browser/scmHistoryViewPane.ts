@@ -1192,10 +1192,9 @@ class SCMHistoryViewModel extends Disposable {
 				// Otherwise fall back to the first visible repository. An empty
 				// visible set (e.g. a git-less workspace) yields undefined,
 				// clearing the Graph.
-				result = visible.length > 0 ? visible[0] : undefined;
-			}
-			console.log(`[SCMGraphDebug] this.repository derived RECOMPUTE: visible=${visible.length}[${visible.map(r => r.provider.rootUri?.fsPath ?? '<no-root>').join(', ')}] candidate=${candidate?.provider.rootUri?.fsPath ?? '<none>'} => result=${result?.provider.rootUri?.fsPath ?? 'undefined'}`);
-			return result;
+			result = visible.length > 0 ? visible[0] : undefined;
+		}
+		return result;
 		});
 
 		const closedRepository = observableFromEvent(this,
@@ -1280,7 +1279,6 @@ class SCMHistoryViewModel extends Disposable {
 		const historyItemRemoteRef = historyProvider?.historyItemRemoteRef.get();
 
 		if (!repository || !historyProvider) {
-			console.log(`[SCMGraphDebug] getHistoryItems: NO repository/historyProvider => returning [] (tree should clear)`);
 			this._scmHistoryItemCountCtx.set(0);
 			this.isViewModelEmpty.set(true, undefined);
 			return [];
@@ -1802,9 +1800,8 @@ export class SCMHistoryViewPane extends ViewPane {
 			let hadRepository = false;
 			this._visibilityDisposables.add(autorun(reader => {
 				const repository = this._treeViewModel.repository.read(reader);
-				const historyProvider = repository?.provider.historyProvider.read(reader);
-				console.log(`[SCMGraphDebug] "Repository change" autorun FIRED: repository=${repository?.provider.rootUri?.fsPath ?? 'undefined'} historyProvider=${historyProvider ? 'yes' : 'no'} hadRepository=${hadRepository}`);
-				if (!repository || !historyProvider) {
+			const historyProvider = repository?.provider.historyProvider.read(reader);
+			if (!repository || !historyProvider) {
 					// The active repository was cleared (e.g. switched to a git-less
 					// workspace, where SourceControlWorkspaceSync prunes
 					// visibleRepositories to empty). The tree input is only set once,
@@ -1813,10 +1810,8 @@ export class SCMHistoryViewPane extends ViewPane {
 					// (getHistoryItems returns [] when there is no repository).
 					if (hadRepository) {
 						hadRepository = false;
-						console.log(`[SCMGraphDebug]   -> cleared branch: calling refresh() to clear the tree`);
 						this.refresh();
 					} else {
-						console.log(`[SCMGraphDebug]   -> cleared branch but hadRepository=false, NOT refreshing (this may be the bug if tree still shows old commits)`);
 					}
 					return;
 				}
@@ -1953,7 +1948,6 @@ export class SCMHistoryViewPane extends ViewPane {
 			return;
 		}
 
-		console.log(`[SCMGraphDebug] _refresh: clearing repository state + updating children (repository=${this._treeViewModel?.repository.get()?.provider.rootUri?.fsPath ?? 'undefined'})`);
 		this._treeViewModel.clearRepositoryState();
 		await this._updateChildren();
 

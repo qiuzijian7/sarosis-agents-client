@@ -26,6 +26,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ITaskOrchestrationService, IAgentStudioService, IAgentTaskBoardService, IAgentChatService } from '../common/agentStudio.js';
+import type { IChatAttachmentSend } from '../../../common/agentStudioService.js';
 import type { OrchestrationTaskAction } from '../common/agentStudio.js';
 import type { OrchestrationPlan, PlanTask, Agent, ChatMessage } from '../common/types.js';
 import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource, AgentType } from '../common/types.js';
@@ -2123,7 +2124,7 @@ Goal: ${goal}`;
 	async executeTaskForBoard(
 		workspaceId: string,
 		taskBoardRecordId: string,
-		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string; workflowId?: string; variableValues?: Record<string, string> },
+		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string; workflowId?: string; variableValues?: Record<string, string>; attachments?: IChatAttachmentSend[] },
 	): Promise<void> {
 		const assigneeId = taskInfo?.assigneeId;
 		if (!assigneeId) {
@@ -2134,6 +2135,7 @@ Goal: ${goal}`;
 		const taskTitle = taskInfo?.title || 'Unknown Task';
 		const taskDesc = taskInfo?.description || taskTitle;
 		const sourceId = taskInfo?.sourceId;
+		const attachments = taskInfo?.attachments;
 
 		// Find the corresponding plan task (if any) for the planId
 		let planId: string | undefined;
@@ -2168,7 +2170,11 @@ Goal: ${goal}`;
 		}
 
 		// Build task prompt
-		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${taskTitle}\n**任务描述**: ${taskDesc}\n**任务来源**: 任务看板`;
+		let taskPrompt = `请执行以下任务:\n\n**任务标题**: ${taskTitle}\n**任务描述**: ${taskDesc}\n**任务来源**: 任务看板`;
+		if (attachments && attachments.length > 0) {
+			const lines = attachments.map(a => `- ${a.name} (${a.type}, ${a.mimeType})`).join('\n');
+			taskPrompt += `\n**附件** (${attachments.length}):\n${lines}`;
+		}
 
 		// v40: If agent is a workflow agent, delegate to workflowExecutionService
 		// so the chat panel renders SubAgent cards and full execution trace.
@@ -2187,6 +2193,9 @@ Goal: ${goal}`;
 						// v40: map common workflow template variables → task board fields
 						input: taskDesc,          // {{input}}
 						taskDescription: taskDesc, // {{taskDescription}}
+						// Forward attached files/images so the workflow's agent nodes
+						// can reference them (best-effort; node prompts decide usage).
+						attachments: taskInfo?.attachments,
 					},
 					agentId: assigneeId,
 					skipVariableCollection: true, // v40: variables pre-filled from task board
@@ -2231,7 +2240,7 @@ Goal: ${goal}`;
 			const chatMessage = await this.agentChatService.sendMessage(
 				assigneeId,
 				taskPrompt,
-				{ workspaceId, agentSessionId, worktreePath: taskInfo?.worktreePath },
+				{ workspaceId, agentSessionId, worktreePath: taskInfo?.worktreePath, attachments: taskInfo?.attachments },
 				(delta) => {
 					if (this._streamEventCallback) {
 						this._streamEventCallback('chat.stream.delta', {

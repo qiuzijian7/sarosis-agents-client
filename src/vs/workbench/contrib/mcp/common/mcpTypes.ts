@@ -741,7 +741,7 @@ export class UserInteractionRequiredError extends Error {
 
 export interface IMcpConfigPath {
 	id: string;
-	key: 'userLocalValue' | 'userRemoteValue' | 'workspaceValue' | 'workspaceFolderValue';
+	key: 'userLocalValue' | 'userRemoteValue' | 'workspaceValue' | 'workspaceFolderValue' | 'sarosValue';
 	label: string;
 	scope: StorageScope;
 	target: ConfigurationTarget;

@@ -51,6 +51,9 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 	private readonly _onDidCreateBrowserView = this._register(new Emitter<IBrowserViewCreatedEvent>());
 	readonly onDidCreateBrowserView: Event<IBrowserViewCreatedEvent> = this._onDidCreateBrowserView.event;
 
+	private readonly _onDidRequestCreateKanban = this._register(new Emitter<{ viewId: string; url: string }>());
+	readonly onDidRequestCreateKanban: Event<{ viewId: string; url: string }> = this._onDidRequestCreateKanban.event;
+
 	constructor(
 		@IEnvironmentMainService private readonly environmentMainService: IEnvironmentMainService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
@@ -480,6 +483,14 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 				click: () => webContents.reload()
 			}));
 		}
+
+		if (menu.items.length > 0) {
+			menu.append(new MenuItem({ type: 'separator' }));
+		}
+		menu.append(new MenuItem({
+			label: localize('browser.contextMenu.createKanbanTasks', '创建看板任务'),
+			click: () => { this._onDidRequestCreateKanban.fire({ viewId: view.id, url: params.pageURL }); }
+		}));
 
 		menu.append(new MenuItem({ type: 'separator' }));
 		menu.append(new MenuItem({

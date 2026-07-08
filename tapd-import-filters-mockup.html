@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>任务看板 - TAPD 导入（带过滤）Mockup v2</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --bg2: #252526; --bg3: #2d2d30; --border: #3c3c3c;
+    --fg: #cccccc; --fg-dim: #8a8a8a; --accent: #0e639c; --accent-hover: #1177bb;
+    --green: #4ec9b0; --amber: #cca700; --purple: #a855f7; --danger: #f44747; --chip: #3a3d41;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", -apple-system, sans-serif; background: var(--bg); color: var(--fg); height: 100vh; overflow: hidden; }
+  .topbar { height: 48px; display: flex; align-items: center; padding: 0 16px; background: var(--bg2); border-bottom: 1px solid var(--border); gap: 12px; }
+  .topbar .title { font-size: 14px; font-weight: 600; }
+  .topbar .spacer { flex: 1; }
+  .btn { border: 1px solid var(--border); background: var(--bg3); color: var(--fg); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
+  .btn:hover { background: #37373d; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-import { background: var(--purple); border-color: var(--purple); color: #fff; }
+  .btn-import:hover { background: #9333ea; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .board { display: flex; gap: 14px; padding: 16px; height: calc(100vh - 48px); overflow-x: auto; }
+  .col { width: 300px; flex-shrink: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; }
+  .col-head { padding: 10px 12px; font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  .col-head .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .col-body { padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  .card { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 13px; cursor: pointer; }
+  .card:hover { border-color: #555; }
+  .card .ct { font-weight: 500; line-height: 1.4; }
+  .card .meta { margin-top: 8px; display: flex; gap: 6px; align-items: center; color: var(--fg-dim); font-size: 11px; flex-wrap: wrap; }
+  .card .tag { background: var(--chip); padding: 1px 7px; border-radius: 10px; }
+  .card .tag.tapd { background: #a855f733; color: #c084fc; }
+  .empty { color: var(--fg-dim); font-size: 12px; text-align: center; padding: 20px 0; }
+
+  /* ── Modal ── */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(2px); display: none; align-items: center; justify-content: center; z-index: 100; }
+  .overlay.open { display: flex; }
+  .modal { width: 860px; max-width: 96vw; max-height: 92vh; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,.5); overflow: hidden; }
+  .m-head { padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .m-head h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .m-head .src { font-size: 11px; background: #a855f720; color: #c084fc; padding: 1px 8px; border-radius: 10px; }
+  .m-body { padding: 16px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+  .m-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+
+  /* ── Filter panel ── */
+  .filter-panel { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .url-field { display: flex; flex-direction: column; gap: 5px; }
+  .url-field label { font-size: 11px; color: var(--fg-dim); }
+  .url-field .row { display: flex; gap: 8px; }
+  .url-field input { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; padding: 8px 10px; font-size: 13px; font-family: monospace; }
+  .url-field input:focus { outline: 1px solid var(--accent); }
+  .url-field .hint-inline { font-size: 11px; color: var(--fg-dim); }
+
+  .filter-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 11px; color: var(--fg-dim); display: flex; align-items: center; gap: 5px; }
+  .field .tapd-src { font-size: 9px; background: #a855f720; color: #c084fc; padding: 0 5px; border-radius: 8px; }
+  .field input, .field select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; padding: 7px 9px; font-size: 13px; }
+  .field input:focus, .field select:focus { outline: 1px solid var(--accent); }
+  .field select:disabled { opacity: .6; }
+
+  .filter-actions { display: flex; gap: 8px; align-items: center; }
+  .hint { font-size: 12px; color: var(--fg-dim); }
+  .spinner { width: 13px; height: 13px; border: 2px solid var(--amber); border-top-color: transparent; border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Result list ── */
+  .result-head { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--fg-dim); }
+  .result-head .count { color: var(--fg); font-weight: 600; }
+  .result-head .spacer { flex: 1; }
+  .result-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; max-height: 300px; overflow-y: auto; }
+  .rrow { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--bg2); }
+  .rrow:last-child { border-bottom: none; }
+  .rrow:hover { background: var(--bg3); }
+  .rrow.selected { background: #a855f70d; }
+  .rrow input[type=checkbox] { width: 16px; height: 16px; margin-top: 2px; cursor: pointer; accent-color: var(--purple); }
+  .rrow .main { flex: 1; min-width: 0; }
+  .rrow .rtitle { font-size: 13px; font-weight: 500; line-height: 1.4; display: flex; gap: 8px; align-items: center; }
+  .rrow .rtitle .tid { font-family: monospace; font-size: 11px; color: var(--fg-dim); }
+  .rrow .meta { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--fg-dim); }
+  .rrow .meta .tag { background: var(--chip); padding: 1px 7px; border-radius: 10px; }
+  .rrow .meta .tag.t-story { background: #4ec9b020; color: var(--green); }
+  .rrow .meta .tag.t-bug { background: #f4474720; color: var(--danger); }
+  .rrow .meta .tag.t-task { background: #0e639c20; color: #6cb6e6; }
+  .rrow .meta .tag.t-prio { background: #cca70020; color: var(--amber); }
+  .rrow .meta .tag.t-status { background: #0e639c20; color: #6cb6e6; }
+  .rrow .url-icon { color: var(--fg-dim); cursor: pointer; font-size: 13px; text-decoration: none; }
+  .empty-result { padding: 28px; text-align: center; color: var(--fg-dim); font-size: 13px; }
+  .single-note { font-size: 11px; color: var(--purple); }
+  .new-flash { animation: flash 1s ease; }
+  @keyframes flash { 0% { border-color: var(--purple); box-shadow: 0 0 0 2px #a855f733; } 100% { border-color: var(--border); } }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <span class="title">🗂 任务看板</span>
+    <span class="spacer"></span>
+    <button class="btn" title="看板健康巡检">🩺 巡检</button>
+    <button class="btn btn-import" id="openImport">📥 导入 TAPD</button>
+  </div>
+
+  <div class="board">
+    <div class="col">
+      <div class="col-head"><span class="dot" style="background:#f59e0b"></span>待执行 <span class="tag" id="todoCount">1</span></div>
+      <div class="col-body" id="todoCol">
+        <div class="card">
+          <div class="ct">示例：重构任务卡片渲染逻辑</div>
+          <div class="meta"><span class="tag">📝 中优先级</span><span>未指派</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="col"><div class="col-head"><span class="dot" style="background:#cca700"></span>执行中</div><div class="col-body"><div class="empty">No tasks</div></div></div>
+    <div class="col"><div class="col-head"><span class="dot" style="background:#4ec9b0"></span>已完成</div><div class="col-body"><div class="empty">No tasks</div></div></div>
+  </div>
+
+  <!-- Import Modal (filter + batch) -->
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <div class="m-head">
+        <h2>📥 从 TAPD 批量导入任务 <span class="src">数据来源：TAPD MCP</span></h2>
+        <button class="btn" id="closeImport">✕</button>
+      </div>
+
+      <div class="m-body">
+        <!-- Filter panel -->
+        <div class="filter-panel">
+          <!-- Optional single URL -->
+          <div class="url-field">
+            <label>指定 TAPD 链接（可选）</label>
+            <div class="row">
+              <input id="fUrl" placeholder="https://www.tapd.cn/tapd_fe/30076258/story/detail/1130076258001093952" />
+              <button class="btn" id="clearUrl" title="清除链接">✕</button>
+            </div>
+            <span class="hint-inline">填写后，列表仅显示该链接对应的单个 TAPD 单子，其余过滤条件仍可叠加。</span>
+          </div>
+
+          <!-- 5 filter fields -->
+          <div class="filter-grid">
+            <div class="field">
+              <label>标题</label>
+              <input id="fName" placeholder="关键字…" />
+            </div>
+            <div class="field">
+              <label>处理人</label>
+              <input id="fOwner" placeholder="如：张伟" />
+            </div>
+            <div class="field">
+              <label>状态 <span class="tapd-src">TAPD</span></label>
+              <select id="fStatus" disabled><option>⟳ 加载中…</option></select>
+            </div>
+            <div class="field">
+              <label>迭代 <span class="tapd-src">TAPD</span></label>
+              <select id="fIteration" disabled><option>⟳ 加载中…</option></select>
+            </div>
+            <div class="field">
+              <label>优先级 <span class="tapd-src">TAPD</span></label>
+              <select id="fPriority" disabled><option>⟳ 加载中…</option></select>
+            </div>
+          </div>
+
+          <div class="filter-actions">
+            <button class="btn btn-primary" id="queryBtn">🔍 查询</button>
+            <button class="btn" id="resetBtn">重置</button>
+            <span class="hint">状态 / 迭代 / 优先级下拉项由 TAPD MCP 拉取；查询经 stories_get / bugs_get / tasks_get 带参执行。</span>
+          </div>
+        </div>
+
+        <!-- Parsing indicator -->
+        <div id="parsingBox" style="display:none; align-items:center; gap:8px; color:var(--amber); font-size:13px;">
+          <span class="spinner"></span> 正在通过 <b>TAPD MCP</b> 拉取匹配的单子…
+        </div>
+
+        <!-- Result list -->
+        <div class="result-head">
+          <input type="checkbox" id="selectAll" style="width:16px;height:16px;accent-color:var(--purple);" />
+          <span>全选</span>
+          <span class="count" id="resultCount">0</span><span>条匹配</span>
+          <span id="singleNote" class="single-note" style="display:none;">· 已按指定链接过滤</span>
+          <span class="spacer"></span>
+          <span>已选 <span class="count" id="selectedCount" style="color:var(--purple)">0</span> 条</span>
+        </div>
+        <div class="result-list" id="resultList">
+          <div class="empty-result">输入过滤条件后点击「查询」</div>
+        </div>
+      </div>
+
+      <div class="m-foot">
+        <span class="hint">勾选的单子将创建为「待执行」任务，assigneeId 留空，描述图与附件下载到本地。</span>
+        <span style="display:flex; gap:8px;">
+          <button class="btn" id="cancelBtn">取消</button>
+          <button class="btn btn-primary" id="createBtn" disabled>＋ 批量创建待执行任务 (<span id="createCount">0</span>)</button>
+        </span>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const overlay = $('overlay');
+
+  // ── Sample TAPD data (what the MCP query would return) ──
+  const SAMPLE = [
+    { id:'1130076258001093952', type:'bug',  title:'【参数报错】导出报表时日期格式解析失败', prio:'高', status:'测试中', owner:'张伟', iteration:'Sprint 24.07' },
+    { id:'1130076258001094101', type:'story',title:'报表导出支持自定义日期格式 yyyy-MM-dd',  prio:'中', status:'开发中', owner:'李娜', iteration:'Sprint 24.07' },
+    { id:'1130076258001094220', type:'task', title:'重构导出模块日期工具类',                prio:'中', status:'规划中', owner:'王强', iteration:'Sprint 24.07' },
+    { id:'1130076258001094305', type:'bug',  title:'用户中心登录失败偶发 500',             prio:'紧急', status:'已解决', owner:'赵敏', iteration:'Sprint 24.06' },
+    { id:'1130076258001094418', type:'story',title:'用户中心增加短信验证码登录',            prio:'高', status:'规划中', owner:'李娜', iteration:'Sprint 24.08' },
+    { id:'1130076258001094590', type:'task', title:'权限系统接口性能压测',                  prio:'低', status:'开发中', owner:'孙浩', iteration:'Sprint 24.07' },
+    { id:'1130076258001094677', type:'bug',  title:'网关限流阈值配置不生效',               prio:'高', status:'测试中', owner:'孙浩', iteration:'Sprint 24.08' },
+    { id:'1130076258001094733', type:'story',title:'网关支持按租户维度限流',                prio:'中', status:'规划中', owner:'赵敏', iteration:'Sprint 24.08' },
+  ];
+  const TYPE_LABEL = { story:'需求', bug:'缺陷', task:'任务' };
+  let current = [];
+
+  // ── Populate TAPD-sourced dropdowns (simulate MCP fetch) ──
+  function loadTapdDropdowns(){
+    const statuses = ['规划中','开发中','测试中','已解决','已验收','已关闭'];
+    const iterations = ['Sprint 24.06','Sprint 24.07','Sprint 24.08','Sprint 24.09','Sprint 24.10'];
+    const priorities = ['紧急','高','中','低','Nice To Have'];
+    const fill = (sel, items) => {
+      sel.innerHTML = '<option value="">全部</option>' + items.map(i=>`<option>${i}</option>`).join('');
+      sel.disabled = false;
+    };
+    setTimeout(()=>{ fill($('fStatus'), statuses); fill($('fIteration'), iterations); fill($('fPriority'), priorities); }, 600);
+  }
+
+  function openModal(){ overlay.classList.add('open'); loadTapdDropdowns(); }
+  function closeModal(){
+    overlay.classList.remove('open');
+    $('parsingBox').style.display='none';
+    $('createBtn').disabled=true; $('createCount').textContent='0';
+    $('resultList').innerHTML='<div class="empty-result">输入过滤条件后点击「查询」</div>';
+    $('resultCount').textContent='0'; $('selectedCount').textContent='0';
+    $('singleNote').style.display='none';
+  }
+
+  $('openImport').onclick = openModal;
+  $('closeImport').onclick = closeModal;
+  $('cancelBtn').onclick = closeModal;
+  overlay.onclick = e => { if(e.target===overlay) closeModal(); };
+  $('clearUrl').onclick = () => { $('fUrl').value=''; };
+
+  $('queryBtn').onclick = () => {
+    const url = $('fUrl').value.trim();
+    const name = $('fName').value.trim().toLowerCase();
+    const owner = $('fOwner').value.trim().toLowerCase();
+    const status = $('fStatus').value;
+    const it = $('fIteration').value;
+    const prio = $('fPriority').value;
+
+    $('resultList').style.display='none';
+    $('parsingBox').style.display='flex';
+    setTimeout(() => {
+      $('parsingBox').style.display='none';
+
+      // Specified URL → only that single item
+      if(url){
+        const m = url.match(/tapd\.cn\/.+?\/(story|bug|task)\/detail\/(\d+)/);
+        const id = m ? m[2] : null;
+        current = SAMPLE.filter(r => r.id === id);
+        if(!current.length){
+          // URL id not in sample set → synthesize one to visualize
+          current = [{ id: id||'unknown', type: (m&&m[1])||'story', title:'（指定链接对应的 TAPD 单子）', prio: prio||'中', status: status||'规划中', owner: owner||'—', iteration: it||'—' }];
+        }
+        $('singleNote').style.display='inline';
+      } else {
+        current = SAMPLE.filter(r =>
+          (!name || r.title.toLowerCase().includes(name)) &&
+          (!owner || r.owner.toLowerCase().includes(owner)) &&
+          (!status || r.status===status) &&
+          (!it || r.iteration===it) &&
+          (!prio || r.prio===prio)
+        );
+        $('singleNote').style.display='none';
+      }
+
+      renderResults();
+      $('resultList').style.display='flex';
+    }, 900);
+  };
+
+  $('resetBtn').onclick = () => {
+    $('fUrl').value=''; $('fName').value=''; $('fOwner').value='';
+    $('fStatus').value=''; $('fIteration').value=''; $('fPriority').value='';
+    $('singleNote').style.display='none';
+  };
+
+  function renderResults(){
+    const list = $('resultList');
+    if(!current.length){ list.innerHTML='<div class="empty-result">没有匹配的单子</div>'; }
+    else {
+      list.innerHTML = current.map(r => `
+        <div class="rrow" data-id="${r.id}">
+          <input type="checkbox" class="rowchk" />
+          <div class="main">
+            <div class="rtitle"><span class="tag t-${r.type}">${TYPE_LABEL[r.type]}</span> ${r.title} <a class="url-icon" title="打开 TAPD">🔗</a></div>
+            <div class="meta">
+              <span class="tid">#${r.id}</span>
+              <span class="tag t-prio">📝 ${r.prio}</span>
+              <span class="tag t-status">● ${r.status}</span>
+              <span>👤 ${r.owner}</span>
+              <span>🔁 ${r.iteration}</span>
+            </div>
+          </div>
+        </div>`).join('');
+      list.querySelectorAll('.rrow').forEach(row => {
+        const chk = row.querySelector('.rowchk');
+        chk.onchange = () => { row.classList.toggle('selected', chk.checked); updateCounts(); };
+      });
+    }
+    $('resultCount').textContent = current.length;
+    updateCounts();
+  }
+
+  $('selectAll').onchange = e => {
+    document.querySelectorAll('.rowchk').forEach(c => { c.checked = e.target.checked; c.closest('.rrow').classList.toggle('selected', c.checked); });
+    updateCounts();
+  };
+
+  function updateCounts(){
+    const n = [...document.querySelectorAll('.rowchk')].filter(c=>c.checked).length;
+    $('selectedCount').textContent = n;
+    $('createCount').textContent = n;
+    $('createBtn').disabled = n===0;
+  }
+
+  $('createBtn').onclick = () => {
+    const col = $('todoCol');
+    const chks = [...document.querySelectorAll('.rowchk')];
+    const chosen = current.filter((_,i)=> chks[i]?.checked);
+    chosen.forEach(r => {
+      const card = document.createElement('div');
+      card.className='card new-flash';
+      card.innerHTML = `
+        <div class="ct">${r.title}</div>
+        <div class="meta">
+          <span class="tag t-${r.type}">${TYPE_LABEL[r.type]}</span>
+          <span class="tag t-prio">📝 ${r.prio}</span>
+          <span>👤 ${r.owner}</span>
+          <span class="tag">📎 附件</span>
+          <span class="tag tapd">TAPD</span>
+        </div>`;
+      col.prepend(card);
+    });
+    const c = $('todoCount'); c.textContent = parseInt(c.textContent)+chosen.length;
+    closeModal();
+  };
+</script>
+</body>
+</html>

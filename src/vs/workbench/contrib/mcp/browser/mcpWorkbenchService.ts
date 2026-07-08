@@ -168,6 +168,9 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 	private _local: McpWorkbenchServer[] = [];
 	get local(): readonly McpWorkbenchServer[] { return [...this._local]; }
 
+	// VsSarosis: 用户级 MCP 配置统一位于 ~/.saros/mcp.json
+	private readonly sarosMcpResource: URI;
+
 	private readonly _onChange = this._register(new Emitter<IWorkbenchMcpServer | undefined>());
 	readonly onChange = this._onChange.event;
 
@@ -196,6 +199,8 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 		@IURLService urlService: IURLService,
 	) {
 		super();
+		// VsSarosis: 用户级 MCP 配置统一位于 ~/.saros/mcp.json
+		this.sarosMcpResource = URI.joinPath((this.environmentService as IWorkbenchEnvironmentService & { userHome: URI }).userHome, '.saros', 'mcp.json');
 		this._register(this.mcpManagementService.onDidInstallMcpServersInCurrentProfile(e => this.onDidInstallMcpServers(e)));
 		this._register(this.mcpManagementService.onDidUpdateMcpServersInCurrentProfile(e => this.onDidUpdateMcpServers(e)));
 		this._register(this.mcpManagementService.onDidUninstallMcpServerInCurrentProfile(e => this.onDidUninstallMcpServer(e)));
@@ -561,6 +566,10 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 	getMcpConfigPath(arg: URI | IWorkbenchLocalMcpServer): Promise<IMcpConfigPath | undefined> | IMcpConfigPath | undefined {
 		if (arg instanceof URI) {
 			const mcpResource = arg;
+			// VsSarosis: 用户级 MCP 配置统一位于 ~/.saros/mcp.json
+			if (this.uriIdentityService.extUri.isEqual(mcpResource, this.sarosMcpResource)) {
+				return this.getSarosMcpConfigPath(mcpResource);
+			}
 			for (const profile of this.userDataProfilesService.profiles) {
 				if (this.uriIdentityService.extUri.isEqual(profile.mcpResource, mcpResource)) {
 					return this.getUserMcpConfigPath(mcpResource);
@@ -596,6 +605,20 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 			key: 'userLocalValue',
 			target: ConfigurationTarget.USER_LOCAL,
 			label: localize('mcp.configuration.userLocalValue', 'Global in {0}', this.productService.nameShort),
+			scope: StorageScope.PROFILE,
+			order: McpCollectionSortOrder.User,
+			uri: mcpResource,
+			section: [],
+		};
+	}
+
+	// VsSarosis: ~/.saros/mcp.json 作为用户级 MCP 配置路径
+	private getSarosMcpConfigPath(mcpResource: URI): IMcpConfigPath {
+		return {
+			id: 'saros',
+			key: 'sarosValue',
+			target: ConfigurationTarget.USER_LOCAL,
+			label: '~/.saros/mcp.json',
 			scope: StorageScope.PROFILE,
 			order: McpCollectionSortOrder.User,
 			uri: mcpResource,

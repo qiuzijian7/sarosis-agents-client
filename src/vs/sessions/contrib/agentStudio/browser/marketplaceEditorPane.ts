@@ -7,6 +7,7 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
@@ -24,6 +25,10 @@ import { VSBuffer, decodeBase64 } from '../../../../base/common/buffer.js';
 import { MarketplaceEditorInput } from './marketplaceEditorInput.js';
 import { IMarketplaceService, PackageKind, IMarketplacePackage, IMarketplacePackageDetail } from '../common/marketplace.js';
 import { ITofAuthService } from '../common/tofAuth.js';
+import { IEventBridgeService } from '../common/eventBridge.js';
+import { IWorkbenchMcpManagementService } from '../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
+import { IInstallableMcpServer } from '../../../../platform/mcp/common/mcpManagement.js';
+import { IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
 import { IPlaywrightService } from '../../../../platform/browserView/common/playwrightService.js';
 import { ICodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
@@ -188,6 +193,9 @@ export class MarketplaceEditorPane extends EditorPane {
 		@IPlaywrightService private readonly playwrightService: IPlaywrightService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IBrowserViewWorkbenchService private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
+		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
+		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super(MarketplaceEditorPane.ID, group, telemetryService, themeService, storageService);
 
@@ -331,6 +339,7 @@ export class MarketplaceEditorPane extends EditorPane {
 		for (const opt of catOptions) {
 			const chip = document.createElement('div');
 			chip.className = 'mp-cat' + (opt.id === 'all' ? ' active' : '');
+			chip.dataset.cat = String(opt.id);
 			chip.textContent = opt.label;
 			chip.onclick = () => {
 				this._activeCategory = opt.id;
@@ -420,7 +429,36 @@ export class MarketplaceEditorPane extends EditorPane {
 	): Promise<void> {
 		await super.setInput(input, options, context, token);
 		if (!(input instanceof MarketplaceEditorInput)) { return; }
+
+		// Apply one-shot deep-link state (e.g. jump to TAPD MCP), then clear it.
+		if (input.initialSearch !== undefined || input.initialCategory !== undefined) {
+			this._applyInit(input.initialSearch, input.initialCategory);
+			input.initialSearch = undefined;
+			input.initialCategory = undefined;
+		}
+
 		await this._loadPackages();
+	}
+
+	/**
+	 * Apply a deep-link navigation (search query + category filter) requested by
+	 * the caller before the pane opened. Re-renders the grid if packages are
+	 * already loaded, and seeds the search box + active category chip.
+	 */
+	private _applyInit(search?: string, category?: PackageKind): void {
+		if (category) {
+			this._activeCategory = category;
+			this._container?.querySelectorAll<HTMLElement>('.mp-cat').forEach(c => {
+				c.classList.toggle('active', c.dataset.cat === String(category));
+			});
+		}
+		if (search !== undefined) {
+			this._searchQuery = search.toLowerCase();
+			if (this._searchInput) { this._searchInput.value = search; }
+		}
+		if (this._packages.length > 0) {
+			this._renderGrid();
+		}
 	}
 
 	/** Helper: show an empty-state message in the grid (avoids innerHTML / TrustedHTML CSP) */
@@ -829,6 +867,20 @@ export class MarketplaceEditorPane extends EditorPane {
 
 		try {
 			const result = await this.marketplaceService.download(pkg.slug, pkg.latestVersion, pkg.kind);
+
+			// MCP install 副作用：注册到 mcpManagementService + 通知 Integration view 刷新
+			// 使用 result.kind（而非 pkg.kind）判断：商城 API 可能把 MCP 包错误返回为 kind=skill，
+			// 但 _installMcpFromManifest 已在 download() 内按 manifest 内容正确路由并返回 kind=mcp
+			if (result.kind === 'mcp') {
+				this.logService.info(`[MarketplaceEditor] Install succeeded as mcp, syncing to VS Code config... slug=${pkg.slug}`);
+				await this._syncMcpToVsCode(pkg.slug);
+				const sanitize = (s: string) => s.replace(/[^A-Za-z0-9_]/g, '_');
+				this.logService.info(`[MarketplaceEditor] Emitting mcp:servers-changed (add, presetId=${sanitize(pkg.slug)})`);
+				this.eventBridgeService.emit('mcp:servers-changed', { action: 'add', presetId: sanitize(pkg.slug) });
+			} else {
+				this.logService.info(`[MarketplaceEditor] Install succeeded as kind=${result.kind}, skipping MCP sync.`);
+			}
+
 			this._showInstallSuccess(pkg, result.version);
 			this.notificationService.info(`\u2705 ${pkg.name} v${result.version} \u5B89\u88C5\u6210\u529F\u3002`);
 		} catch (err) {
@@ -836,6 +888,41 @@ export class MarketplaceEditorPane extends EditorPane {
 			this.notificationService.error(`\u5B89\u88C5\u5931\u8D25: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {
 			this._installingIds.delete(pkg.id);
+		}
+	}
+
+	/**
+	 * 同步 MCP config 到 VS Code mcpManagementService（注册到 mcpService.servers）
+	 * —— 参照 mcpServerEditorPane._syncMcpToVsCode，确保 Integration view 能识别。
+	 */
+	private async _syncMcpToVsCode(slug: string): Promise<void> {
+		try {
+			const userHome = await this.pathService.userHome();
+			const configUri = URI.joinPath(userHome, '.saros', 'mcp', slug, 'config.json');
+			if (!await this.fileService.exists(configUri)) { return; }
+			const content = await this.fileService.readFile(configUri);
+			const config = JSON.parse(content.value.toString());
+			const transport = config.transport || 'stdio';
+			let serverConfig: IMcpServerConfiguration;
+			if (transport === 'stdio') {
+				serverConfig = {
+					type: McpServerType.LOCAL,
+					command: config.command || '',
+					...(config.args ? { args: config.args } : {}),
+					...(config.env ? { env: config.env } : {}),
+				};
+			} else {
+				serverConfig = {
+					type: McpServerType.REMOTE,
+					url: config.url || '',
+					...(config.headers ? { headers: config.headers } : {}),
+				};
+			}
+			const installable: IInstallableMcpServer = { name: slug, config: serverConfig };
+			await this.mcpManagementService.install(installable);
+			this.logService.info(`[MarketplaceEditor] Successfully installed MCP "${slug}" to VS Code config (transport=${transport})`);
+		} catch (e) {
+			this.logService.warn(`[MarketplaceEditor] Failed to sync MCP "${slug}" to VS Code config (non-fatal):`, e);
 		}
 	}
 

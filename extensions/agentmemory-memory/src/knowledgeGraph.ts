@@ -6,6 +6,8 @@
  *  边类型: uses, imports, modifies, causes, fixes, depends_on, related_to
  *--------------------------------------------------------------------------------------------*/
 
+import { MemifyPipeline, type MemifyGraph, type MemifyResult } from './ontology.js';
+
 export type GraphNodeType = 'file' | 'function' | 'concept' | 'error' | 'decision' | 'pattern';
 export type GraphEdgeType = 'uses' | 'imports' | 'modifies' | 'causes' | 'fixes' | 'depends_on' | 'related_to';
 
@@ -217,6 +219,51 @@ export class KnowledgeGraph {
 	}
 
 	/** Search: find memories related to entities in the query */
+	/**
+	 * G4/G5: 用 MemifyPipeline 丰富化图谱（dedup → merge → refine → infer）。
+	 * 仅增量添加推理出的传递关系（id 以 inferred- 开头），不删除/重建已有节点与边，
+	 * 因此不会影响 graph.searchByEntities / _hybridSearch 等既有依赖。
+	 */
+	async enrichWithMemify(pipeline: MemifyPipeline): Promise<MemifyResult> {
+		const input: MemifyGraph = {
+			entities: Array.from(this._nodes.values()).map(n => ({
+				id: n.id,
+				type: n.type,
+				name: n.name,
+				properties: ((n as unknown as { properties?: Record<string, unknown> }).properties) ?? {},
+			})),
+			relations: Array.from(this._edges.values()).map(e => ({
+				id: e.id,
+				type: e.type,
+				source: e.sourceNodeId,
+				target: e.targetNodeId,
+			})),
+		};
+		const result = await pipeline.memify(input);
+		const now = new Date().toISOString();
+		let added = 0;
+		for (const rel of result.graph.relations) {
+			if (!rel.id.startsWith('inferred-')) continue;
+			if (!this._nodes.has(rel.source) || !this._nodes.has(rel.target)) continue;
+			if (this._edges.has(rel.id)) continue;
+			this._edges.set(rel.id, {
+				id: rel.id,
+				type: rel.type as GraphEdgeType,
+				sourceNodeId: rel.source,
+				targetNodeId: rel.target,
+				weight: 1,
+				sourceMemoryIds: [],
+				createdAt: now,
+			});
+			added++;
+		}
+		if (added > 0) {
+			// 记录一次审计（可选，忽略错误）
+			try { /* no-op: graph enrichment applied */ } catch { /* ignore */ }
+		}
+		return result;
+	}
+
 	searchByEntities(entityNames: string[], depth: number, limit: number): GraphRetrievalResult[] {
 		const nodes = this.bfs(entityNames, depth, limit);
 		const results: GraphRetrievalResult[] = [];

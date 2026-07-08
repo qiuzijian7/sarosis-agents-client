@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Memory — 9 大模块机制与使用总结</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={theme:{extend:{colors:{primary:{50:'#EEF2FF',500:'#6366F1',600:'#4F46E5',700:'#4338CA',800:'#3730A3'}}}}}</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+body{font-family:'Inter',system-ui,sans-serif;}
+code,pre{font-family:'JetBrains Mono',monospace;}
+.gradient-hero{background:linear-gradient(135deg,#312E81,#4338CA 30%,#6366F1 60%,#4F46E5 100%);}
+.module-card{border-left:4px solid transparent;transition:all .2s;}
+.module-card:hover{border-left-color:currentColor;transform:translateX(4px);}
+.toc-link{transition:all .2s;}
+.toc-link:hover{background:#EEF2FF;padding-left:1rem;}
+</style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<!-- Hero -->
+<header class="gradient-hero py-16 px-6 text-white text-center">
+  <h1 class="text-4xl md:text-5xl font-extrabold mb-4 tracking-tight">Agent Memory</h1>
+  <p class="text-xl text-white/80 mb-2">9 大核心模块 · 机制原理 · 使用说明</p>
+  <p class="text-sm text-white/50 font-mono">Sarosis Memory System — aligned with agentmemory v0.9.27</p>
+</header>
+
+<div class="max-w-7xl mx-auto px-4 py-12 flex gap-8">
+  <!-- Sidebar TOC -->
+  <nav class="hidden lg:block w-56 flex-shrink-0 sticky top-20 self-start">
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-4">
+      <h3 class="font-bold text-sm text-gray-500 uppercase tracking-wider mb-3">模块目录</h3>
+      <ul class="space-y-1 text-sm">
+        <li><a href="#m1" class="toc-link block py-1.5 px-2 rounded-lg text-amber-700 font-medium">🧠 记忆 Memory</a></li>
+        <li><a href="#m2" class="toc-link block py-1.5 px-2 rounded-lg text-pink-700 font-medium">📌 槽位 Slots</a></li>
+        <li><a href="#m3" class="toc-link block py-1.5 px-2 rounded-lg text-blue-700 font-medium">📖 教训 Lessons</a></li>
+        <li><a href="#m4" class="toc-link block py-1.5 px-2 rounded-lg text-purple-700 font-medium">🔄 固化 Consolidation</a></li>
+        <li><a href="#m5" class="toc-link block py-1.5 px-2 rounded-lg text-rose-700 font-medium">📋 审计 Audit</a></li>
+        <li><a href="#m6" class="toc-link block py-1.5 px-2 rounded-lg text-amber-700 font-medium">🪝 钩子 Hooks</a></li>
+        <li><a href="#m7" class="toc-link block py-1.5 px-2 rounded-lg text-indigo-700 font-medium">✅ 提交 Commits</a></li>
+        <li><a href="#m8" class="toc-link block py-1.5 px-2 rounded-lg text-teal-700 font-medium">📊 报告 Report</a></li>
+        <li><a href="#m9" class="toc-link block py-1.5 px-2 rounded-lg text-orange-700 font-medium">⚡ 技能 Skills</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="flex-1 min-w-0 space-y-8">
+
+<!-- M1: Memory -->
+<div id="m1" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-amber-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">🧠</span><h2 class="text-xl font-bold">1. 记忆 Memory</h2></div>
+    <p class="text-sm text-amber-100 mt-1">4-Tier 分层记忆模型 — 源文件: memoryProvider.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li><span class="font-medium text-amber-600">Working</span> — 当前会话原始对话流，每轮 fire-and-forget 写入</li>
+        <li><span class="font-medium text-blue-600">Episodic</span> — L1 自动提取（每 3 轮触发），结构化长期事实</li>
+        <li><span class="font-medium text-purple-600">Semantic</span> — LLM 跨会话固化，稳定概念与知识</li>
+        <li><span class="font-medium text-emerald-600">Procedural</span> — XML &lt;procedures&gt; 解析，可复用工作流步骤</li>
+        <li class="mt-2 pt-2 border-t border-gray-100"><span class="font-medium text-gray-700">缓存优化 (P0-P13)</span>: 跨请求结果缓存、SessionContextCache、注入幂等去重、BM25 前缀二分、同义词加权、三因子保留评分、Core/Archival 分层 + auto-page</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code><span class="text-gray-500">// 写入</span>
+await provider.writeMemory(agentId, {
+  type: 'working', content: '...',
+  metadata: { toolCallId: 'tc-1', pinned: true }
+});
+
+<span class="text-gray-500">// 加载上下文</span>
+const ctx = await provider.loadContext(
+  agentId, sessionId, query,
+  { scope: 'agent' }
+);
+
+<span class="text-gray-500">// 搜索</span>
+const results = await provider.searchMemory(
+  agentId, 'typescript config'
+);</code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">自动启动 (startAgentMemoryGateway)</span>
+        <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">SQLite KV Store</span>
+        <span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">BM25+Vector RRF</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">181 测试</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- M2: Slots -->
+<div id="m2" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-pink-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">📌</span><h2 class="text-xl font-bold">2. 槽位 Slots</h2></div>
+    <p class="text-sm text-pink-100 mt-1">可编辑固定记忆 — 源文件: slots.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li>8 个固定槽位: persona、user_preferences、project_context、tool_guidelines、guidance、pending_items、session_patterns、self_notes</li>
+        <li>每个槽有 <code class="text-xs bg-pink-50 px-1 rounded">sizeLimit</code> (500~2000 字符) 和 <code class="text-xs bg-pink-50 px-1 rounded">pinned</code> 标志</li>
+        <li>pinned 槽位 <strong>不受 token budget 截断</strong>，优先注入到 LLM 上下文</li>
+        <li>支持运行时动态 <code class="text-xs bg-pink-50 px-1 rounded">pin()/unpin()</code>；读写都有 sizeLimit 强制截断</li>
+        <li>懒加载初始化: 首次 <code class="text-xs bg-pink-50 px-1 rounded">_ensure()</code> 时按 SLOT_DEFINITIONS 创建空槽</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code>const slots = provider._slots;
+
+<span class="text-gray-500">// 设置 + 追加</span>
+slots.set(agentId, 'persona',
+  'You are a senior developer');
+slots.append(agentId, 'user_preferences',
+  'tab width: 4 spaces');
+
+<span class="text-gray-500">// Q3: 运行时固定</span>
+slots.pin(agentId, 'project_context', true);
+
+<span class="text-gray-500">// 构建上下文 (pinned 优先)</span>
+const ctx = slots.buildContext(agentId);
+slots.list(agentId); <span class="text-gray-500">// 列出全部</span></code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-pink-100 text-pink-700 px-2 py-0.5 rounded-full">8 个固定槽</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">sizeLimit 截断</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">pinned 优先</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- M3: Lessons -->
+<div id="m3" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-blue-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">📖</span><h2 class="text-xl font-bold">3. 教训 Lessons</h2></div>
+    <p class="text-sm text-blue-100 mt-1">经验沉淀与衰减 — 源文件: lessons.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li><strong>自动提取</strong>: 正则匹配 "should/must/always/never" 模式 + 错误模式 (error/fail/crash)</li>
+        <li><strong>衰减模型</strong>: Ebbinghaus 遗忘曲线 — 每 60 天衰减一次 (factor=0.95)</li>
+        <li><code class="text-xs bg-blue-50 px-1 rounded">confidence(t) = max(0.2, initial × 0.95^periods)</code></li>
+        <li><strong>强化</strong>: 每次 <code class="text-xs bg-blue-50 px-1 rounded">reinforce()</code> 调用 confidence+0.05 (封顶 1.0)</li>
+        <li><strong>软删除</strong>: <code class="text-xs bg-blue-50 px-1 rounded">delete()</code> 标记 deleted=true，不物理删除</li>
+        <li><strong>24h 节流</strong>: 同一 agent 同一窗口不重复提取</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code>const le = provider._lessons;
+
+<span class="text-gray-500">// 自动提取</span>
+const nl = le.extract(agentId, entries);
+le.reinforce(agentId, lessonId);
+le.delete(agentId, lessonId);
+
+<span class="text-gray-500">// 手动添加</span>
+le.add(agentId, content, context, tags);
+
+<span class="text-gray-500">// 查询</span>
+le.getTopLessons(agentId, 5);
+le.search(agentId, 'transaction');</code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">正则匹配提取</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">Ebbinghaus 衰减</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">24h 节流</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- M4: Consolidation -->
+<div id="m4" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-purple-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">🔄</span><h2 class="text-xl font-bold">4. 固化 Consolidation</h2></div>
+    <p class="text-sm text-purple-100 mt-1">4-Tier 跨层提取 — 源文件: consolidation.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li><strong>LLM 驱动管道</strong>: ConsolidationPipeline 分三步提取: Episodic → Semantic → Procedural</li>
+        <li><strong>XML 解析</strong>: LLM 返回 <code class="text-xs bg-purple-50 px-1 rounded">&lt;facts&gt;</code> / <code class="text-xs bg-purple-50 px-1 rounded">&lt;procedures&gt;</code>，程序化解析 + 规则回退</li>
+        <li><strong>阈值控制</strong>: Episodic ≥3 轮对话; Semantic ≥5 条 episodic; Procedural ≥3 条 semantic</li>
+        <li><strong>去重</strong>: 相同 fact 指纹去重（内容哈希）</li>
+        <li><code class="text-xs bg-purple-50 px-1 rounded">setSummarizer(fn)</code> 注入自定义 LLM 实现</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code>const pipe = new ConsolidationPipeline();
+pipe.setSummarizer(async (prompt) => {
+  <span class="text-gray-500">// 调用 LLM → 返回 XML</span>
+  return '<facts><fact>...</fact></facts>';
+});
+
+await pipe.consolidateEpisodic(agentId, entries);
+await pipe.consolidateSemantic(agentId);
+await pipe.consolidateProcedural(agentId);
+
+<span class="text-gray-500">// 查询结果</span>
+pipe.getSemantic(agentId);
+pipe.getProcedural(agentId);
+pipe.buildContext(agentId);</code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">LLM 驱动</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">XML 解析</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">规则回退</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">阈值触发</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- M5: Audit -->
+<div id="m5" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-rose-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">📋</span><h2 class="text-xl font-bold">5. 审计 Audit</h2></div>
+    <p class="text-sm text-rose-100 mt-1">全量操作日志 — 源文件: auditLog.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li>记录 16 种 <code class="text-xs bg-rose-50 px-1 rounded">AuditOperation</code>: write/search/delete/decay/sweep/reinforce/consolidate/session_start/end/contradiction/flush/dedup_skip/retention/cascade/skill_extract/cache_hit</li>
+        <li>每条记录: <code class="text-xs bg-rose-50 px-1 rounded">{id, timestamp, operation, agentId, targetIds, details}</code></li>
+        <li><code class="text-xs bg-rose-50 px-1 rounded">getSummary()</code> 按操作类型聚合计数</li>
+        <li>配合 <code class="text-xs bg-rose-50 px-1 rounded">_eventBus</code> 在关键操作后自动触发</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code>const audit = provider._audit;
+
+<span class="text-gray-500">// 自动记录（内部调用）</span>
+audit.record('write', agentId, [entry.id], {
+  contentLength: 200, source: 'l1_auto'
+});
+audit.record('cache_hit', agentId, [], {
+  query: 'config', type: 'context_result'
+});
+
+<span class="text-gray-500">// 查询统计</span>
+const summary = audit.getSummary();
+<span class="text-gray-500">// { write:42, search:15, cache_hit:8, dedup_skip:3 }</span></code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-rose-100 text-rose-700 px-2 py-0.5 rounded-full">16 种操作</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">自动记录</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">getSummary 统计</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- M6: Hooks -->
+<div id="m6" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-amber-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">🪝</span><h2 class="text-xl font-bold">6. 钩子 Hooks</h2></div>
+    <p class="text-sm text-amber-100 mt-1">生命周期事件订阅 — 源文件: hooks.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li><strong>事件驱动</strong>: session_start、session_end、prompt_submit、subtask、tool_call、stop 等</li>
+        <li><code class="text-xs bg-amber-50 px-1 rounded">trigger()</code> 同步触发所有已注册处理器</li>
+        <li><code class="text-xs bg-amber-50 px-1 rounded">triggerAndCollect()</code> 异步触发并收集 <code class="text-xs bg-amber-50 px-1 rounded">HookResult</code> (observeEntries + finalMessages)</li>
+        <li><code class="text-xs bg-amber-50 px-1 rounded">register()</code> 注册钩子处理器回调</li>
+        <li>配合 <code class="text-xs bg-amber-50 px-1 rounded">_triggerSystem</code> (fireSync) + <code class="text-xs bg-amber-50 px-1 rounded">_eventBus</code> (emitSync) 双通道</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code>const hooks = provider._hooks;
+
+<span class="text-gray-500">// 注册处理器</span>
+hooks.register('session_end', async (ctx) => {
+  <span class="text-gray-500">// { agentId, sessionId, timestamp }</span>
+  await cleanup(ctx.agentId);
+});
+
+<span class="text-gray-500">// 同步触发</span>
+hooks.trigger('session_start', { agentId, sessionId });
+
+<span class="text-gray-500">// 异步收集结果</span>
+const result = await hooks.triggerAndCollect(
+  'prompt_submit', { agentId, userMessage: '...' }
+);</code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">事件驱动</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">同步/异步</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">双通道触发</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- M7: Commits -->
+<div id="m7" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-indigo-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">✅</span><h2 class="text-xl font-bold">7. 提交 Commits</h2></div>
+    <p class="text-sm text-indigo-100 mt-1">记忆与代码关联 — 源文件: commits.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li>将记忆条目与 Git 提交关联，记录每条记忆的代码变更上下文</li>
+        <li><code class="text-xs bg-indigo-50 px-1 rounded">link()</code> 关联 commit hash + filePath + diffSummary</li>
+        <li><code class="text-xs bg-indigo-50 px-1 rounded">getHistory()</code> 查询某条记忆的所有关联提交</li>
+        <li>支持跨 session 追溯：记忆 → 哪次提交引入 → 改动了什么</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code>const commits = provider._commits;
+
+<span class="text-gray-500">// 关联记忆与提交</span>
+commits.link(agentId, memoryId, {
+  commitHash: 'abc123',
+  filePath: 'src/memoryProvider.ts',
+  diffSummary: 'Added auto-page mechanism'
+});
+
+<span class="text-gray-500">// 查询历史</span>
+const history = commits.getHistory(memoryId);</code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Git 关联</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">跨 session 追溯</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- M8: Report -->
+<div id="m8" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-teal-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">📊</span><h2 class="text-xl font-bold">8. 报告 Report</h2></div>
+    <p class="text-sm text-teal-100 mt-1">记忆健康度报告 — 源文件: report.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li>聚合 agent 记忆系统全维度健康数据</li>
+        <li><strong>分布</strong>: totalMemories / byType (working/episodic/semantic/procedural)</li>
+        <li><strong>质量</strong>: avgStrength / avgImportance / decayRatio</li>
+        <li><strong>热点</strong>: topConcepts (Top 10 概念频率) / topLessons (Top 5 教训)</li>
+        <li><strong>活动</strong>: recentActivity (最近 24h 写入/读取/搜索)</li>
+        <li>参数: <code class="text-xs bg-teal-50 px-1 rounded">includeRaw</code> (是否返回原始条目), <code class="text-xs bg-teal-50 px-1 rounded">maxEntries</code></li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code>const report = provider.generateReport(
+  agentId,
+  { includeRaw: false, maxEntries: 100 }
+);
+
+<span class="text-gray-500">// 输出</span>
+{
+  agentId: 'agent-1',
+  totalMemories: 142,
+  byType: { working:30, episodic:80,
+    semantic:20, procedural:12 },
+  avgStrength: 0.68,
+  topConcepts: [
+    {concept:'TypeScript',frequency:45}
+  ],
+  topLessons: [...],
+  recentActivity: {...}
+}</code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full">全维度健康数据</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">按需输出原始条目</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- M9: Skills -->
+<div id="m9" class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+  <div class="bg-orange-500 px-6 py-4 text-white">
+    <div class="flex items-center gap-3"><span class="text-2xl">⚡</span><h2 class="text-xl font-bold">9. 技能 Skills</h2></div>
+    <p class="text-sm text-orange-100 mt-1">可复用知识沉淀 — 源文件: skillExtract.ts</p>
+  </div>
+  <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">核心机制</h3>
+      <ul class="text-sm text-gray-600 space-y-1.5 leading-relaxed">
+        <li><strong>指纹去重</strong>: <code class="text-xs bg-orange-50 px-1 rounded">skillFingerprint(title, trigger)</code> — 相同指纹的技能被强化而非重新创建</li>
+        <li><strong>SKILL.md 生成</strong>: frontmatter (title/slug/confidence) + markdown body (编号步骤)</li>
+        <li><strong>写入路径</strong>: <code class="text-xs bg-orange-50 px-1 rounded">~/.saros/skills/&lt;slug&gt;/SKILL.md</code></li>
+        <li><strong>中文映射</strong>: <code class="text-xs bg-orange-50 px-1 rounded">generateSlug()</code> 自动将中文标题映射为英文 slug</li>
+        <li><strong>CRUD</strong>: extract / update / delete / markWritten / markUsed / getStats</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="font-semibold text-gray-700 mb-2 uppercase text-xs tracking-wider">使用说明</h3>
+      <div class="bg-gray-900 rounded-xl p-4 mb-3">
+        <pre class="text-green-400 text-xs"><code>const se = provider._skillExtractor;
+
+<span class="text-gray-500">// 从会话提取</span>
+const skill = se.extract({
+  sessionId, agentId,
+  observations: [{
+    content: 'Step 1: parse config',
+    timestamp: Date.now()
+  }],
+  trigger: 'config-update'
+});
+
+<span class="text-gray-500">// 强化 + 标记已写入</span>
+se.reinforce(skill.id);
+se.markWritten(skill.id);
+
+<span class="text-gray-500">// 生成 SKILL.md</span>
+const md = generateSkillMd(skill);
+<span class="text-gray-500">// → ~/.saros/skills/config-update/SKILL.md</span></code></pre>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">指纹去重</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">SKILL.md 自动生成</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">中文 slug 映射</span>
+        <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">CRUD 完整</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+  </main>
+</div>
+
+<!-- Footer -->
+<footer class="border-t border-gray-200 bg-white py-8 px-6 text-center mt-8">
+  <p class="text-sm text-gray-400">Sarosis Agent Memory System — 9 Modules · 181 Test Cases · P0-P13 Cache Optimization</p>
+  <p class="text-xs text-gray-300 mt-1">Aligned with agentmemory v0.9.27 · Updated 2026-07-04</p>
+</footer>
+
+</body>
+</html>

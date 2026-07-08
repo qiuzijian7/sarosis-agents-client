@@ -60,6 +60,10 @@ import { AdrManager } from '../../codebaseGraphAdr.js';
 import { registerCodebaseTools } from './codebaseTools.js';
 import { registerKanbanTools } from './kanbanTools.js';
 import { registerWorkflowTools } from './workflowTools.js';
+import { IPlaywrightService } from '../../../../../../platform/browserView/common/playwrightService.js';
+import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
+import { ISessionsManagementService } from '../../../../../../sessions/services/sessions/common/sessionsManagement.js';
+import { IKanbanRecipeService } from './kanbanRecipeService.js';
 
 
 type ToolHandlerResult = IToolResultContent[] | { content: IToolResultContent[]; details?: Record<string, unknown> };
@@ -82,6 +86,10 @@ const KANBAN_TOOLS_WITH_HANDLER = new Set<string>([
 	'kanban_specify',
 	'kanban_decompose',
 	'kanban_swarm',
+	'web_scrape_to_board',
+	'web_recipe_create',
+	'web_recipe_list',
+	'web_recipe_remove',
 ]);
 
 /**
@@ -303,6 +311,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
 	@IPathService private readonly pathService: IPathService,
 	@ICodebaseGraphService private readonly codebaseGraphService: ICodebaseGraphService,
+	@IPlaywrightService private readonly playwrightService: IPlaywrightService,
+	@IEditorService private readonly editorService: IEditorService,
+	@ISessionsManagementService private readonly sessionsManagement: ISessionsManagementService,
+	@IKanbanRecipeService private readonly recipeService: IKanbanRecipeService,
 	) {
 		super();
 		this._skillManagerTool = new SkillManagerTool(
@@ -315,6 +327,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerCoreTools();
 		this._registerCompatibilityTools();
 		this._registerMemoryTools();
+		this._registerUnifiedMemoryTools(); // G12: recall/improve/forget
 		this._registerSkillTools();
 		this._registerBundledTools();
 		this._registerDelegationTools();
@@ -1236,6 +1249,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					memory_type: { type: 'string', enum: ['working', 'episodic', 'semantic', 'procedural'], description: 'Memory type (default: episodic)' },
 					tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags for filtering' },
 					importance: { type: 'number', description: 'Importance score 0-10 (default: 5)' },
+					slot_id: { type: 'string', description: 'If set, write to a specific memory slot (persona/user_preferences/project_context/tool_guidelines/guidance) instead of creating a memory entry' },
 				}, required: ['content'] },
 				category: 'memory',
 				source: this.id,
@@ -1244,6 +1258,33 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				if (!agentId) { return [{ type: 'text', text: 'memory_remember error: agentId is required' }]; }
 				const content = args['content'] as string;
 				if (!content) { return [{ type: 'text', text: 'memory_remember error: content is required' }]; }
+				const slotId = args['slot_id'] as string | undefined;
+
+				// R2: slot_id 支持 — LLM 可直接编辑记忆槽位（对齐 agentmemory memory_slot_set）
+				if (slotId) {
+					const validSlots = ['persona', 'user_preferences', 'project_context', 'tool_guidelines', 'guidance', 'pending_items', 'session_patterns', 'self_notes'];
+					if (!validSlots.includes(slotId)) {
+						return [{ type: 'text', text: `memory_remember error: invalid slot_id "${slotId}". Valid: ${validSlots.join(', ')}` }];
+					}
+					const memProvider = this.agentOS.getActiveMemoryProvider();
+					if (memProvider) {
+						try {
+							await memProvider.writeMemory(agentId, {
+								id: `slot-${slotId}-${Date.now()}`,
+								type: 'episodic',
+								content,
+								timestamp: Date.now(),
+								importance: 8,
+								metadata: { slot_id: slotId, source: 'llm_slot_edit' },
+							});
+							return [{ type: 'text', text: `Slot "${slotId}" updated: ${content.slice(0, 100)}` }];
+						} catch (err) {
+							this.logService.warn('[BuiltinTools] memory_remember slot write failed:', err);
+							return [{ type: 'text', text: `Failed to update slot "${slotId}": ${err}` }];
+						}
+					}
+					return [{ type: 'text', text: 'memory_remember error: no memory provider available for slot write' }];
+				}
 				const memType: 'working' | 'episodic' = (args['memory_type'] as string || 'episodic') === 'working' ? 'working' : 'episodic';
 				const tags = Array.isArray(args['tags']) ? args['tags'] as string[] : undefined;
 				const importance = typeof args['importance'] === 'number' ? Math.max(0, Math.min(10, args['importance'] as number)) : 5;
@@ -1428,6 +1469,165 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		});
 
 		this.logService.info('[BuiltinTools] _registerMemoryTools: 4 memory tools registered');
+	}
+
+	// ─── G12: Unified Memory API (recall/improve/forget) ─────────────
+
+	/**
+	 * G12: 注册统一记忆 API 工具 — 对齐 cognee remember/recall/improve/forget
+	 */
+	private _registerUnifiedMemoryTools(): void {
+		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
+
+		// memory_recall: 语义化检索 (比 memory_search 更智能，支持多策略 + reranker)
+		this.register({
+			definition: {
+				name: 'memory_recall',
+				description: 'Recall memories using semantic search with multi-strategy support. More intelligent than memory_search — supports hybrid (BM25+Vector), graph-first, and vector-first strategies with automatic re-ranking.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						query: { type: 'string', description: 'What to recall (natural language query)' },
+						strategy: { type: 'string', enum: ['hybrid', 'graph_first', 'vector_first', 'graph_only', 'vector_only'], description: 'Search strategy (default: hybrid)' },
+						limit: { type: 'number', description: 'Max results (default: 10)' },
+					},
+					required: ['query'],
+				},
+				category: 'memory',
+				source: this.id,
+			},
+			handler: async (args, _signal, agentId) => {
+				if (!agentId) { return text('memory_recall error: agentId is required'); }
+				const query = args['query'] as string;
+				if (!query) { return text('memory_recall error: query is required'); }
+				const memProvider = this.agentOS.getActiveMemoryProvider();
+				if (!memProvider) { return text('memory_recall: no memory provider available'); }
+				const strategy = (args['strategy'] as string) ?? 'hybrid';
+				const limit = (args['limit'] as number) ?? 10;
+				try {
+					// G8/G9/G10/G2: 多策略召回 + rerank + GraphRAG + 长结果分块
+					const recallFn = (memProvider as any).recallFormatted;
+					if (typeof recallFn === 'function') {
+						return text(await recallFn.call(memProvider, agentId, query, strategy, limit));
+					}
+					// 回退：provider 不支持多策略时退回普通 searchMemory
+					const results = await memProvider.searchMemory(agentId, query);
+					const limited = results.slice(0, limit);
+					if (limited.length === 0) { return text('memory_recall: no results found'); }
+					const summary = limited.map((r: any, i: number) =>
+						`[${i + 1}] ${r.content?.slice(0, 200) ?? ''}`
+					).join('\n');
+					return text(`Recalled ${limited.length} memories:\n${summary}`);
+				} catch (err) {
+					return text(`memory_recall failed: ${err}`);
+				}
+			},
+		});
+
+		// memory_improve: 改进/强化已有记忆
+		this.register({
+			definition: {
+				name: 'memory_improve',
+				description: 'Improve an existing memory by reinforcing its importance or updating its content. Use this when you encounter information that confirms or enhances a previously saved memory.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						memory_id: { type: 'string', description: 'ID of the memory to improve' },
+						action: { type: 'string', enum: ['reinforce', 'update', 'merge'], description: 'reinforce=boost importance, update=replace content, merge=append content' },
+						new_content: { type: 'string', description: 'New or additional content (for update/merge actions)' },
+					},
+					required: ['memory_id', 'action'],
+				},
+				category: 'memory',
+				source: this.id,
+			},
+			handler: async (args, _signal, agentId) => {
+				if (!agentId) { return text('memory_improve error: agentId is required'); }
+				const memId = args['memory_id'] as string;
+				const action = args['action'] as string;
+				const newContent = args['new_content'] as string | undefined;
+				const memProvider = this.agentOS.getActiveMemoryProvider();
+				if (!memProvider) { return text('memory_improve: no memory provider available'); }
+
+				// reinforce: 通过 writeMemory 重新写入相同内容 (触发 accessCount++)
+				// update/merge: 写入新内容
+				try {
+					if (action === 'reinforce') {
+						// 强化 = 提升重要性/访问度（不再覆盖原内容）
+						const fn = (memProvider as any).reinforceMemory;
+						if (typeof fn === 'function') {
+							const ok = await fn.call(memProvider, agentId, memId);
+							return ok ? text(`Memory ${memId} reinforced.`) : text(`memory_improve: memory ${memId} not found`);
+						}
+						// 回退（旧行为，可能覆盖原内容）
+						await memProvider.writeMemory(agentId, {
+							id: memId,
+							type: 'episodic',
+							content: '(reinforced)',
+							metadata: { reinforced: true, source: 'memory_improve' },
+						});
+						return text(`Memory ${memId} reinforced.`);
+					}
+					if ((action === 'update' || action === 'merge') && newContent) {
+						await memProvider.writeMemory(agentId, {
+							id: `${memId}-${action}-${Date.now()}`,
+							type: 'episodic',
+							content: newContent,
+							metadata: { improves: memId, action, source: 'memory_improve' },
+						});
+						return text(`Memory ${memId} ${action}d with new content.`);
+					}
+					return text(`memory_improve: unknown action "${action}"`);
+				} catch (err) {
+					return text(`memory_improve failed: ${err}`);
+				}
+			},
+		});
+
+		// memory_forget: 删除记忆 (软删除)
+		this.register({
+			definition: {
+				name: 'memory_forget',
+				description: 'Forget (soft-delete) a memory entry. The memory is marked as deleted but not physically removed, preserving audit history.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						memory_id: { type: 'string', description: 'ID of the memory to forget' },
+						reason: { type: 'string', description: 'Optional reason for forgetting' },
+					},
+					required: ['memory_id'],
+				},
+				category: 'memory',
+				source: this.id,
+			},
+			handler: async (args, _signal, agentId) => {
+				if (!agentId) { return text('memory_forget error: agentId is required'); }
+				const memId = args['memory_id'] as string;
+				const reason = args['reason'] as string | undefined;
+				const memProvider = this.agentOS.getActiveMemoryProvider();
+				if (!memProvider) { return text('memory_forget: no memory provider available'); }
+				try {
+					// 软删除：标记原记忆为 superseded（不再被召回）
+					const fn = (memProvider as any).forgetMemory;
+					if (typeof fn === 'function') {
+						const ok = await fn.call(memProvider, agentId, memId, reason);
+						return ok
+							? text(`Memory ${memId} has been forgotten.${reason ? ` Reason: ${reason}` : ''}`)
+							: text(`memory_forget: memory ${memId} not found`);
+					}
+					// 回退（旧行为：仅写 forget 标记，原记忆仍可被召回）
+					await memProvider.writeMemory(agentId, {
+						id: `forget-${memId}-${Date.now()}`,
+						type: 'episodic',
+						content: `(forgotten: ${memId})`,
+						metadata: { forgets: memId, reason: reason ?? 'user_request', source: 'memory_forget' },
+					});
+					return text(`Memory ${memId} has been forgotten.${reason ? ` Reason: ${reason}` : ''}`);
+				} catch (err) {
+					return text(`memory_forget failed: ${err}`);
+				}
+			},
+		});
 	}
 
 	// ─── Skill 按需读取工具 ───────────────────────────────────────
@@ -2201,6 +2401,11 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			swarmService: this.swarmService,
 			triageService: this.triageService,
 			logService: this.logService,
+			playwrightService: this.playwrightService,
+			editorService: this.editorService,
+			sessionsManagement: this.sessionsManagement,
+			agentOS: this.agentOS,
+			recipeService: this.recipeService,
 		});
 	}
 

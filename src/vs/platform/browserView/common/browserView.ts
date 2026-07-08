@@ -254,6 +254,14 @@ export interface IBrowserViewService {
 	onDidCreateBrowserView: Event<IBrowserViewCreatedEvent>;
 
 	/**
+	 * Fires when the user selects "Create Kanban Tasks" from an integrated
+	 * browser page's context menu. `viewId` is the browser view id (== the
+	 * Playwright page id used by IPlaywrightService) and `url` is the page URL
+	 * at the moment of the click.
+	 */
+	onDidRequestCreateKanban: Event<{ viewId: string; url: string }>;
+
+	/**
 	 * Dynamic events that return an Event for a specific browser view ID.
 	 */
 	onDynamicDidNavigate(id: string): Event<IBrowserViewNavigationEvent>;

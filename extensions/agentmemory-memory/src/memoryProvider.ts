@@ -55,6 +55,12 @@ import { SnapshotManager, type SnapshotMeta, type SnapshotDiff } from './snapsho
 import { SignalHub, type Signal, type SignalType } from './signals.js';
 import { CheckpointManager, type Checkpoint, type CheckpointType } from './checkpoints.js';
 import { DiskManager, type DiskUsageStats } from './diskManager.js';
+// G8/G9/G10/G2/G4/G5/G13: cognee 对齐模块接入生产调用链
+import { executeSearch, SearchStrategy, type SearchResult } from './multiSearch.js';
+import { generateAnswerPrompt } from './answerGen.js';
+import { chunkText, ChunkStrategy } from './chunking.js';
+import { MemifyPipeline, DEFAULT_SOFTWARE_ONTOLOGY } from './ontology.js';
+import { DiskCacheAdapter, createFileBackedKVStore } from './diskCache.js';
 import { BranchAwareManager, type WorktreeInfo, type BranchSession, type MergeResult } from './branchAware.js';
 import { GovernanceManager, type GovernanceFilter, type BulkDeleteResult, type GovernanceDeleteResult } from './governance.js';
 import { RetentionScorer, type RetentionScore, type RetentionTiers, type RetentionResult, type DecayConfig } from './retention.js';
@@ -181,7 +187,8 @@ const MAX_STRENGTH = 1.0;
 const STRENGTH_FLOOR = 0.15;
 /** Q1: 三因子保留评分阈值（对齐 agentmemory retension.ts） */
 const RETENTION_FLOOR = 0.01;
-const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours (retention + cleanup)
+const LESSON_DECAY_INTERVAL_MS = 24 * 60 * 60 * 1000; // R6: 24 hours (lesson decay, 对齐 agentmemory lesson-decay-sweep)
 const MAX_LONG_TERM_ENTRIES = 5000;
 const LOW_IMPORTANCE_THRESHOLD = 3;
 const LOW_IMPORTANCE_MAX_DAYS = 90;
@@ -417,6 +424,8 @@ export class AgentMemoryProvider implements IMemoryProvider {
 
 	/** Periodic decay + eviction sweep timer */
 	private _sweepTimer: ReturnType<typeof setInterval> | undefined;
+	/** R6: 独立 24h 教训衰减定时器（对齐 agentmemory lesson-decay-sweep timer） */
+	private _lessonDecayTimer: ReturnType<typeof setInterval> | undefined;
 
 	/** Write debouncing: batch disk writes within 5s window */
 	private _dirtyAgents = new Set<string>();
@@ -589,6 +598,10 @@ export class AgentMemoryProvider implements IMemoryProvider {
 	private _sketchManager = new SketchManager();
 	private _externalEmbeddingProvider = createEmbeddingProvider();
 
+	// ─── cognee 对齐运行时（G4/G5/G13）───────────────────────────────────
+	private _memifyPipeline = new MemifyPipeline(DEFAULT_SOFTWARE_ONTOLOGY);
+	private _recallDiskCache?: DiskCacheAdapter<IMemoryEntry[]>;
+
 	constructor() {
 		// Start periodic sweep every 6 hours
 		this._sweepTimer = setInterval(() => {
@@ -601,6 +614,16 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			(this._sweepTimer as any).unref();
 		}
 
+		// R6: 独立 24h 教训衰减定时器（对齐 agentmemory lesson-decay-sweep setInterval 24h）
+		this._lessonDecayTimer = setInterval(() => {
+			this._runLessonDecay().catch(err => {
+				console.warn('[AgentMemory] lesson decay failed:', err);
+			});
+		}, LESSON_DECAY_INTERVAL_MS);
+		if (this._lessonDecayTimer && typeof (this._lessonDecayTimer as any).unref === 'function') {
+			(this._lessonDecayTimer as any).unref();
+		}
+
 		// Register default hooks
 		this._hooks.register(createSessionStartHook().type, createSessionStartHook().handler, createSessionStartHook().priority);
 		this._hooks.register(createUserPromptSubmitHook().type, createUserPromptSubmitHook().handler, createUserPromptSubmitHook().priority);
@@ -609,6 +632,21 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		this._hooks.register(createPostToolFailureHook().type, createPostToolFailureHook().handler, createPostToolFailureHook().priority);
 		this._hooks.register(createTaskCompletedHook().type, createTaskCompletedHook().handler, createTaskCompletedHook().priority);
 		this._hooks.register(createNotificationHook().type, createNotificationHook().handler, createNotificationHook().priority);
+
+		// G13: recall 结果磁盘 L2 缓存（无 fs 环境优雅降级为内存）
+		try {
+			this._recallDiskCache = new DiskCacheAdapter<IMemoryEntry[]>(createFileBackedKVStore(), 'recall_cache');
+		} catch { /* no disk cache available */ }
+
+		// R3/R4: 会话结束时触发「教训提取 + 固化 + 会话摘要」（修复 _endSession 死路径）
+		this._hooks.register('session_end', (ctx) => {
+			const summary = this._endSession(ctx.agentId);
+			if (summary) {
+				// 持久化会话摘要（轻量写入，立即落盘）
+				void this._writeMemoryInner(ctx.agentId, summary).catch(() => {});
+			}
+			return null;
+		}, 100);
 
 		// Config hot-reload: subscribe to ConfigManager changes and apply them
 		this._applyConfig();
@@ -860,6 +898,11 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		if (this._sweepTimer) {
 			clearInterval(this._sweepTimer);
 			this._sweepTimer = undefined;
+		}
+		// R6: 清理教训衰减定时器
+		if (this._lessonDecayTimer) {
+			clearInterval(this._lessonDecayTimer);
+			this._lessonDecayTimer = undefined;
 		}
 		if (this._periodicFlushTimer) {
 			clearInterval(this._periodicFlushTimer);
@@ -3375,6 +3418,21 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		}
 	}
 
+	/**
+	 * R6: 独立 24h 教训衰减定时任务。
+	 * 对齐 agentmemory lesson-decay-sweep — 每 24h 对所有 agent 的 lessons 执行衰减。
+	 */
+	private async _runLessonDecay(): Promise<void> {
+		const agentIds = Array.from(this._loaded);
+		for (const agentId of agentIds) {
+			// 触发教训衰减（内置 Ebbinghaus 遗忘模型 + 低置信度清理）
+			const lessons = this._lessons.getLessons(agentId);
+			if (lessons.length === 0) continue;
+			// 强制触发 extract 方法中的内部衰减逻辑
+			this._lessons.extract(agentId, []);
+		}
+	}
+
 	private async _sweepAgent(agentId: string): Promise<void> {
 		const longEntries = this._longTerm.get(agentId);
 		if (!longEntries) return;
@@ -3493,6 +3551,8 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			if (pruned.nodes > 0 || pruned.edges > 0) {
 				this._audit.record('cascade', agentId, [], { pruned });
 			}
+			// G4/G5: Memify 图谱丰富化（增量推理关系）
+			await this._runMemify(agentId);
 		}
 
 		// Extract lessons from long-term memories (throttled to 24h)
@@ -3588,6 +3648,19 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		// 清除 session context 缓存（P6: 用复合键）
 		this._sessionContextCache.delete(`${agentId}::${session.sessionId}`);
 
+		// R3: session_end 时立即触发教训提取（对齐 agentmemory Stop Hook → summarize → reflect）
+		const longEntries = this._longTerm.get(agentId) ?? [];
+		if (longEntries.length > 0) {
+			void Promise.resolve().then(() => {
+				this._lessons.extract(agentId, longEntries);
+			});
+		}
+
+		// R4: session_end 时触发固化管道（对齐 agentmemory SessionEnd Hook → consolidate-pipeline）
+		const pipeline = this._consolidation.get(agentId) ?? new ConsolidationPipeline();
+		this._consolidation.set(agentId, pipeline);
+		void pipeline.consolidate(agentId, longEntries).catch(() => {});
+
 		const durationMs = Date.now() - session.startedAt;
 		const summary: InternalMemoryEntry = {
 			id: `session-summary-${session.sessionId}-${Date.now()}`,
@@ -3657,8 +3730,10 @@ export class AgentMemoryProvider implements IMemoryProvider {
 			// Include recent short-term (Working) memories — these are the current session's context
 			const topShort = shortEntries.slice(-15).map(e => this._toPublicEntry(e));
 			// Build structured context (Slots + WorkingMemory + Consolidation)
+			// R5: 扩展到有 query 路径（对齐 agentmemory mem::context 总是注入 slots+profile+lessons）
 			const structuredPrompt = this._slots.buildSystemPrompt(agentId)
 				+ '\n\n' + this._workingMemory.buildContext(agentId)
+				+ '\n\n' + this._slots.buildContext(agentId)
 				+ (this._consolidation.get(agentId)?.buildContext(agentId) ?? '');
 			result = {
 				shortTermMemories: topShort,
@@ -3777,16 +3852,33 @@ export class AgentMemoryProvider implements IMemoryProvider {
 }
 
 	async writeMemory(agentId: string, entry: IMemoryEntry): Promise<void> {
+		// R2: slot_id 路由 — LLM 可直接编辑记忆槽位（对齐 agentmemory memory_slot_set）
+		const slotId = entry.metadata?.['slot_id'] as string | undefined;
+		if (slotId) {
+			try {
+				this._slots.set(agentId, slotId as any, entry.content);
+				this._audit.record('write', agentId, [entry.id], { slot: slotId, contentLength: entry.content.length });
+				return;
+			} catch (err) {
+				console.warn(`[AgentMemory] slot write failed for ${agentId}/${slotId}:`, err);
+				return;
+			}
+		}
+
 		// Extract noticeId from metadata for UI correlation (pending → saved/failed)
 		const noticeId = (entry.metadata?.['noticeId'] as string | undefined);
 		const memoryType = (entry.metadata?.['memoryType'] as string | undefined) ?? entry.type;
 
 		try {
-			const didEmit = await this._writeMemoryInner(agentId, entry);
+		const didEmit = await this._writeMemoryInner(agentId, entry);
+		// P3/P6: 仅当确有新内容写入时才失效缓存。
+		// 修复：observe / post_tool_use 等被 toolCallId 去重拦截的写入不再无故震荡 context/search 缓存。
+		if (didEmit) {
 			// P3-3: Invalidate search cache for this agent (new memory changes search results)
 			this._searchCache.invalidateAgent(agentId);
 			// P3: Context result cache also invalid — memory state changed
 			this._invalidateContextCache(agentId);
+		}
 			// Only emit a guarantee event if _writeMemoryInner did NOT already emit one
 			// (early returns: empty content, duplicate, buffered user).
 			// contentLength: 0 signals the UI to remove the pending card (nothing meaningful saved).
@@ -4329,6 +4421,201 @@ export class AgentMemoryProvider implements IMemoryProvider {
 		});
 
 		return results;
+	}
+
+	// ─── G8/G9/G10/G2: 多策略召回（multiSearch + rerank + GraphRAG + chunking）──────────
+
+	/** 将策略字符串映射为 multiSearch 的 SearchStrategy 枚举 */
+	private _mapStrategy(s: string): SearchStrategy {
+		switch (s) {
+			case 'graph_only': return SearchStrategy.GraphOnly;
+			case 'vector_only': return SearchStrategy.VectorOnly;
+			case 'graph_first': return SearchStrategy.GraphFirst;
+			case 'vector_first': return SearchStrategy.VectorFirst;
+			default: return SearchStrategy.Hybrid;
+		}
+	}
+
+	/** 构建 agent 全量条目 Map（长期 + 短期），供召回结果回填 */
+	private _buildEntryMap(agentId: string): Map<string, InternalMemoryEntry> {
+		const long = this._longTerm.get(agentId) ?? [];
+		const short = this._shortTerm.get(agentId) ?? [];
+		return new Map([...long, ...short].map(e => [e.id, e]));
+	}
+
+	/** 统计 query 词在文本中的命中次数（用于分块选取） */
+	private _countHits(text: string, query: string): number {
+		const q = query.toLowerCase();
+		return q.split(/\s+/).filter(t => t.length > 1)
+			.reduce((n, t) => n + (text.toLowerCase().split(t).length - 1), 0);
+	}
+
+	/**
+	 * G8/G9: 多策略语义召回。
+	 * 使用 multiSearch.executeSearch 调度 BM25/Vector/Graph 三路检索并 RRF 融合 + rerank，
+	 * 尊重传入的 strategy（hybrid/graph_first/vector_first/graph_only/vector_only）。
+	 * 结果经过 supersededBy 过滤，并缓存到磁盘 L2（G13）。
+	 */
+	async recall(agentId: string, query: string, strategy: string = 'hybrid', limit = 10): Promise<IMemoryEntry[]> {
+		await this._ensureLoaded(agentId);
+		const strat = this._mapStrategy(strategy);
+		const cacheKey = `${agentId}::${strategy}::${query}`;
+
+		// G13: 磁盘 L2 缓存
+		if (this._recallDiskCache) {
+			try {
+				const cached = await this._recallDiskCache.get(cacheKey);
+				if (cached) return cached as IMemoryEntry[];
+			} catch { /* ignore */ }
+		}
+
+		const entryMap = this._buildEntryMap(agentId);
+		const bm25 = this._bm25.get(agentId);
+		const vector = this._vector.get(agentId);
+		const graph = this._graphs.get(agentId);
+
+		const toResult = (id: string, score: number, source: SearchResult['source']): SearchResult => ({
+			id, content: entryMap.get(id)?.content ?? '', score, source,
+		});
+
+		const bm25Search = (q: string, l: number): SearchResult[] =>
+			(bm25?.search(q, l) ?? [])
+				.map(r => toResult(r.id, r.score, 'bm25'))
+				.filter(r => !entryMap.get(r.id)?.supersededBy);
+
+		const vectorSearch = async (q: string, l: number): Promise<SearchResult[]> =>
+			(await vector?.search(q, l) ?? [])
+				.map(r => toResult(r.id, r.score, 'vector'))
+				.filter(r => !entryMap.get(r.id)?.supersededBy);
+
+		const graphSearch = (q: string, l: number): SearchResult[] => {
+			const names = KnowledgeGraph.extractEntityNames(q);
+			const res = graph?.searchByEntities(names, 2, l) ?? [];
+			// 先过滤 superseded，再映射为 SearchResult（避免对映射后的结果取 obsId）
+			return res
+				.filter(r => !entryMap.get(r.obsId)?.supersededBy)
+				.map(r => toResult(r.obsId, r.score, 'graph'));
+		};
+
+		const results = await executeSearch(query, { strategy: strat, limit: limit * 2, rerank: true }, {
+			bm25Search, vectorSearch, graphSearch,
+		});
+
+		const final = results.slice(0, limit)
+			.map(r => entryMap.get(r.id))
+			.filter((e): e is InternalMemoryEntry => !!e && !e.supersededBy)
+			.map(e => this._toPublicEntry(e));
+
+		if (this._recallDiskCache) {
+			try { await this._recallDiskCache.set(cacheKey, final); } catch { /* ignore */ }
+		}
+		return final;
+	}
+
+	/**
+	 * G10 + G2: 在 recall 基础上生成 GraphRAG 结构化召回包。
+	 * 长结果经 chunking 截取最相关片段，并附图谱上下文（generateAnswerPrompt）。
+	 */
+	async recallFormatted(agentId: string, query: string, strategy: string = 'hybrid', limit = 10): Promise<string> {
+		const results = await this.recall(agentId, query, strategy, limit);
+		if (results.length === 0) return 'memory_recall: no results found';
+
+		// G2: 长结果分块，保留与 query 最相关的片段
+		const q = query.toLowerCase();
+		const trimmed = results.map(r => {
+			const c = r.content ?? '';
+			if (c.length <= 600) return c;
+			const chunks = chunkText(c, ChunkStrategy.Semantic, 600);
+			const best = chunks.slice().sort((a, b) => this._countHits(b.text, q) - this._countHits(a.text, q))[0];
+			return best?.text ?? c.slice(0, 600);
+		});
+
+		// G10: 图谱上下文 + GraphRAG 结构化包
+		const graphContext = this.getGraphContext(agentId, query);
+		const ans = generateAnswerPrompt({
+			query,
+			searchResults: results.map((r, i) => ({
+				content: trimmed[i],
+				score: this._countHits(trimmed[i], query),
+				source: ((r.metadata?.['source'] as string) ?? 'memory'),
+			})),
+			graphContext: graphContext || undefined,
+			agentMemory: '',
+		});
+		return `Recalled ${results.length} memories (strategy=${strategy}):\n\n${ans.prompt}`;
+	}
+
+	/** 图谱上下文字符串（G10 用） */
+	getGraphContext(agentId: string, query: string): string {
+		const graph = this._graphs.get(agentId);
+		if (!graph) return '';
+		const names = KnowledgeGraph.extractEntityNames(query);
+		const nodes = graph.bfs(names, 1, 10);
+		if (nodes.length === 0) return '';
+		return nodes.map(n => `${n.type}: ${n.name}`).join(', ');
+	}
+
+	/**
+	 * memory_improve (reinforce)：提升已有记忆的重要性/访问度，而不是覆盖其真实内容。
+	 * 修复此前用 content="(reinforced)" 重写导致原内容丢失的问题。
+	 */
+	async reinforceMemory(agentId: string, memId: string): Promise<boolean> {
+		const long = this._longTerm.get(agentId);
+		if (!long) return false;
+		const idx = long.findIndex(e => e.id === memId);
+		if (idx < 0) return false;
+		// importance/metadata 为 readonly，需以新对象替换数组元素
+		const entry = long[idx];
+		const updated: InternalMemoryEntry = {
+			...entry,
+			importance: Math.min(10, (entry.importance ?? 5) + 2),
+			accessCount: (entry.accessCount ?? 0) + 1,
+			lastAccessedAt: Date.now(),
+			strength: Math.min(1, (entry.strength ?? 1) + 0.1),
+			metadata: { ...(entry.metadata ?? {}), reinforced: true, source: 'memory_improve' },
+		};
+		long[idx] = updated;
+		await this._persistLongTerm(agentId);
+		return true;
+	}
+
+	/**
+	 * memory_forget：将目标记忆标记为 superseded（软删除），使其不再被召回。
+	 * 修复此前仅写入 forget-X 条目、原记忆仍可被 searchMemory 召回的问题。
+	 */
+	async forgetMemory(agentId: string, memId: string, reason?: string): Promise<boolean> {
+		const long = this._longTerm.get(agentId);
+		if (!long) return false;
+		const idx = long.findIndex(e => e.id === memId);
+		if (idx < 0) return false;
+		// supersededBy 可变；metadata 为 readonly，需以新对象替换数组元素
+		const entry = long[idx];
+		const updated: InternalMemoryEntry = {
+			...entry,
+			supersededBy: `forget-${memId}-${Date.now()}`,
+			metadata: { ...(entry.metadata ?? {}), forgotten: true, forgetReason: reason },
+		};
+		long[idx] = updated;
+		this._bm25.get(agentId)?.remove(memId);
+		this._vector.get(agentId)?.remove(memId);
+		await this._persistLongTerm(agentId);
+		// forget 应刷新上下文缓存，使下次 loadContext 不再注入该记忆
+		this._invalidateContextCache(agentId);
+		this._searchCache.invalidateAgent(agentId);
+		return true;
+	}
+
+	/** G4/G5: 对知识图谱运行 Memify 丰富化（增量添加推理关系） */
+	private async _runMemify(agentId: string): Promise<void> {
+		const graph = this._graphs.get(agentId);
+		if (!graph) return;
+		try {
+			const result = await graph.enrichWithMemify(this._memifyPipeline);
+			const inferred = result.passes.find(p => p.name === 'infer');
+			if (inferred && inferred.changes > 0) {
+				this._audit.record('consolidate', agentId, [], { memifyInferred: inferred.changes });
+			}
+		} catch { /* best effort */ }
 	}
 
 	// ─── Contradiction detection ────────────────────────────────────────────

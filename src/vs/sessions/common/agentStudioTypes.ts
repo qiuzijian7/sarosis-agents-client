@@ -1036,6 +1036,26 @@ export enum TaskBoardStatus {
 export enum TaskSource {
 	Manual = 'manual',
 	Delegation = 'delegation',
+	/** Imported from a TAPD workitem (story / bug / task) via the TAPD MCP. */
+	Tapd = 'tapd',
+	/** Created from a board hyperlink opened in the embedded editor window. */
+	BoardLink = 'boardLink',
+	/** Imported from a web page scraped via the integrated browser (web_scrape_to_board). */
+	Web = 'web',
+}
+
+/**
+ * A "看板超链接" (board hyperlink): an external board webpage the user can pin
+ * to the task board. Clicking it opens the page in the integrated browser
+ * (Electron WebContentsView, via IBrowserViewWorkbenchService), where the user
+ * can right-click → "创建看板任务" to scrape items into the task board's 待办
+ * column. The integrated browser shares the user's existing SSO/login state.
+ */
+export interface BoardLink {
+	readonly id: string;
+	name: string;
+	url: string;
+	createdAt: string;
 }
 
 export interface TaskBoardRecord {
@@ -1044,7 +1064,13 @@ export interface TaskBoardRecord {
 	description?: string;
 	status: TaskBoardStatus;
 	source: TaskSource;
-	sourceId?: string; // delegation ID if source=delegation
+	sourceId?: string; // delegation ID if source=delegation; TAPD URL if source=tapd; browser pageId if source=web
+	/** Original TAPD workitem URL when the task was imported from TAPD. */
+	tapdUrl?: string;
+	/** Original web page URL when the task was imported from a web page (source=web). */
+	sourceUrl?: string;
+	/** User-provided reference URL (e.g. a TAPD story link) shown on the task card and editable via the task editor. */
+	url?: string;
 	assigneeId?: string;
 	assigneeName?: string;
 	worktreePath?: string;

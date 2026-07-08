@@ -747,26 +747,6 @@ registerAction2(class extends Action2 {
 	run(): void { }
 });
 
-// --- Sidebar Footer: My Exceptions button --- //
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'sessions.action.myExceptions',
-			title: localize2('myExceptions', 'My Exceptions'),
-			icon: Codicon.warning,
-			menu: {
-				id: Menus.SidebarFooter,
-				group: 'navigation',
-				order: 1,
-			},
-		});
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const notificationService = accessor.get(INotificationService);
-		notificationService.info(localize('myExceptionsClicked', "My Exceptions button clicked"));
-		// TODO: open exceptions panel in editor area
-	}
-});
 
 // --- Sidebar Footer: Personal button (moved from activity bar) --- //
 registerAction2(class extends Action2 {

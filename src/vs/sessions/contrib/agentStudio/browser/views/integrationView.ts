@@ -38,23 +38,15 @@ import { IMarketplaceService, PackageKind } from '../../common/marketplace.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IAuthenticationQueryService } from '../../../../../workbench/services/authentication/common/authenticationQuery.js';
+import { IAuthenticationService } from '../../../../../workbench/services/authentication/common/authentication.js';
 import { IAgentStudioLogService } from '../agentStudioLogService.js';
 import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type IntegrationTab = 'skill' | 'mcp' | 'kb';
-
-interface KnowledgeBaseItem {
-	id: string;
-	name: string;
-	version: string;
-	description: string;
-	docCount: number;
-	path: string;
-}
-
+type IntegrationTab = 'skill' | 'mcp';
 
 interface McpServerUI {
 	id: string;
@@ -132,11 +124,6 @@ export class IntegrationViewPane extends ViewPane {
 	private _mcpServerRefs: Map<string, IMcpServer> = new Map();
 	/** Server IDs the user manually turned OFF (persisted in storage) */
 	private _mcpDisabledIds: Set<string> = new Set();
-
-	// ── Knowledge Base state ──────────────────────────────────────
-	private kbItems: KnowledgeBaseItem[] = [];
-	private kbSearchQuery = '';
-	private kbSearchInput!: HTMLInputElement;
 
 	// ── Tools/MCP search state ────────────────────────────────────
 	private mcpSearchQuery = '';
@@ -229,6 +216,8 @@ export class IntegrationViewPane extends ViewPane {
 		@IFileService private readonly fileService: IFileService,
 		@IPathService private readonly pathService: IPathService,
 		@IAgentStudioLogService private readonly logService: ILogService,
+		@IAuthenticationQueryService private readonly authenticationQueryService: IAuthenticationQueryService,
+		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -302,7 +291,6 @@ export class IntegrationViewPane extends ViewPane {
 		const tabDefs: { id: IntegrationTab; label: string; icon: string }[] = [
 			{ id: 'skill', label: '\u6280\u80FD', icon: '\u{1F4A1}' }, // 技能
 			{ id: 'mcp', label: 'MCP', icon: '\u{1F50C}' },
-			{ id: 'kb', label: '\u77E5\u8BC6\u5E93', icon: '\u{1F4DA}' }, // 知识库
 		];
 		for (const tab of tabDefs) {
 			const btn = $('button.integration-tab');
@@ -346,7 +334,7 @@ export class IntegrationViewPane extends ViewPane {
 		// Update tab button styles
 		const allTabs = this.tabBar.querySelectorAll('.integration-tab');
 		allTabs.forEach(b => b.classList.remove('active'));
-		const tabOrder: IntegrationTab[] = ['skill', 'mcp', 'kb'];
+		const tabOrder: IntegrationTab[] = ['skill', 'mcp'];
 		const idx = tabOrder.indexOf(tab);
 		if (idx >= 0) {
 			allTabs[idx].classList.add('active');
@@ -377,21 +365,11 @@ export class IntegrationViewPane extends ViewPane {
 					this._buildMcpDom();
 					this.tabsRendered.add('mcp');
 					void this._reloadMcp();
-				} else {
-					this._buildMcpDom();
-					this._renderMcpContent();
-				}
-				break;
-			case 'kb':
-				if (!this.tabsRendered.has('kb')) {
-					this._buildKbDom();
-					this.tabsRendered.add('kb');
-					void this._reloadKb();
-				} else {
-					this._buildKbDom();
-					this._renderKbList();
-				}
-				break;
+			} else {
+				this._buildMcpDom();
+				this._renderMcpContent();
+			}
+			break;
 		}
 	}
 
@@ -550,6 +528,13 @@ export class IntegrationViewPane extends ViewPane {
 					this.logService.error('[IntegrationView] Failed to toggle skill:', err);
 					toggle.checked = !toggle.checked;
 				}
+			};
+			toggleContainer.onclick = (ev) => {
+				ev.stopPropagation();
+				// CSS hides the native checkbox (opacity:0; width:0; height:0)
+				// and .toggle-slider covers the container, so clicks never reach the input.
+				toggle.checked = !toggle.checked;
+				toggle.dispatchEvent(new Event('change'));
 			};
 			const toggleSlider = $('span.toggle-slider');
 			toggleContainer.appendChild(toggle);
@@ -1211,15 +1196,10 @@ export class IntegrationViewPane extends ViewPane {
 		this.logService.info('[MCP-AutoStart] _mcpDisabledIds:', Array.from(this._mcpDisabledIds));
 		for (const srv of this.mcpServers) {
 			if (IntegrationViewPane._isNonMcpServer(srv.id)) { continue; }
-			let enabled = this._isMcpServerEnabled(srv.id);
-			// If this server is in the saros mcp.json whitelist but marked as disabled,
-			// it's likely a stale disable from a previous auto-start failure. Clear it
-			// so the server can be auto-started normally.
-			if (!enabled && sarosServerNames.has(srv.name.toLowerCase())) {
-				this.logService.info(`[MCP-AutoStart] clearing stale disabled state for "${srv.id}" (in mcp.json whitelist)`);
-				this._setMcpServerEnabled(srv.id, true);
-				enabled = true;
-			}
+			// Respect the user's explicit enable/disable intent. A disabled server
+			// (in _mcpDisabledIds) must NOT be auto-started or force-re-enabled here,
+			// otherwise the MCP toggle-off in the UI would be silently reverted.
+			const enabled = this._isMcpServerEnabled(srv.id);
 			const notRunning = srv.status !== 'connected';
 			const notStarting = !this._startingMcpIds.has(srv.id);
 			if (enabled && notRunning && notStarting) {
@@ -1304,25 +1284,50 @@ export class IntegrationViewPane extends ViewPane {
 		await this.fileService.writeFile(configUri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
 	}
 
-	/** Remove a single server entry from ~/.saros/mcp.json. */
-	private async _removeSarosMcpConfigEntry(name: string): Promise<void> {
-		const data = await this._readSarosMcpConfig();
-		if (!data?.servers || !(name in data.servers)) { return; }
-		delete data.servers[name];
+	/** Ensure a server name exists in ~/.saros/mcp.json whitelist (add if missing). */
+	private async _ensureServerInSarosConfig(name: string): Promise<void> {
+		const data = await this._readSarosMcpConfig() ?? { servers: {} };
+		if (data.servers && (name in data.servers)) { return; } // already present
+		data.servers = data.servers ?? Object.create(null);
+		data.servers[name] = {};
 		await this._writeSarosMcpConfig(data);
+		this.logService.info(`[IntegrationView] Ensured "${name}" in ~/.saros/mcp.json.`);
 	}
 
-	/** Uninstall a server from VS Code user config. */
-	private async _uninstallServerFromVsCode(name: string): Promise<void> {
+	/**
+	 * Revoke a disabled MCP server's stored OAuth grant (and, when the account is
+	 * only used by this server, its auth session) so that re-enabling it triggers
+	 * a fresh re-authentication.
+	 *
+	 * MCP servers that authenticate via VS Code's authentication service keep their
+	 * token session alive across stop/start. Without revoking the grant here, a
+	 * toggle OFF → ON cycle would silently reuse the cached token and never show
+	 * the auth prompt again. This mirrors the behaviour of the MCP "Disconnect
+	 * Account" / "Sign Out" server options.
+	 */
+	private async _revokeMcpAuth(serverRef: IMcpServer): Promise<void> {
 		try {
-			const installed = await this.mcpManagementService.getInstalled();
-			const server = installed.find(s => s.name === name);
-			if (server) {
-				await this.mcpManagementService.uninstall(server);
-				this.logService.info(`[IntegrationView] Uninstalled "${name}" from VS Code config.`);
+			const defId = serverRef.definition.id;
+			const label = serverRef.definition.label;
+			const authQuery = this.authenticationQueryService.mcpServer(defId);
+			for (const [providerId, accountName] of authQuery.getAllAccountPreferences()) {
+				const accountQuery = this.authenticationQueryService.provider(providerId).account(accountName);
+				// Revoke this server's access grant so the next connect re-prompts for auth.
+				accountQuery.mcpServer(defId).setAccessAllowed(false, label);
+				// If the account is used only by this server, also drop the session for a clean re-login.
+				if (accountQuery.entities().getEntityCount().total <= 1) {
+					const accounts = await this.authenticationService.getAccounts(providerId);
+					const account = accounts.find(a => a.label === accountName);
+					if (account) {
+						const sessions = await this.authenticationService.getSessions(providerId, undefined, { account });
+						for (const s of sessions) {
+							await this.authenticationService.removeSession(providerId, s.id);
+						}
+					}
+				}
 			}
-		} catch (e) {
-			this.logService.warn(`[IntegrationView] Failed to uninstall "${name}":`, e);
+		} catch (err) {
+			this.logService.warn('[IntegrationView] Failed to revoke MCP auth on disable (non-fatal):', err);
 		}
 	}
 
@@ -1545,8 +1550,14 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			const isEnabled = this._isMcpServerEnabled(group.server.id);
 			const toggleContainer = $('div.tool-toggle');
 			toggleContainer.style.flexShrink = '0';
-			// Prevent click from bubbling to groupHeader.onclick (which opens detail editor)
-			toggleContainer.onclick = (ev) => { ev.stopPropagation(); };
+			toggleContainer.onclick = (ev) => {
+				ev.stopPropagation();
+				// toolbarViews.css hides the native checkbox (opacity:0; width:0; height:0)
+				// and .toggle-slider covers the container, so clicks never reach the input.
+				// We must programmatically toggle and dispatch change.
+				toggle.checked = !toggle.checked;
+				toggle.dispatchEvent(new Event('change'));
+			};
 			const toggle = $('input.tool-toggle-input') as HTMLInputElement;
 			toggle.type = 'checkbox';
 			// Toggle reflects user intent (enabled/disabled) for installed servers
@@ -1563,6 +1574,9 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 						// ── Toggle ON ──
 						toggle.disabled = true;
 						this._setMcpServerEnabled(group.server.id, true);
+						// Ensure the server is in ~/.saros/mcp.json whitelist
+						// (may have been removed by a previous toggle-OFF before we stopped doing that)
+						await this._ensureServerInSarosConfig(group.server.name);
 						this._startingMcpIds.add(group.server.id);
 						if (this.tabsRendered.has('mcp')) { this._renderMcpContent(); }
 
@@ -1574,14 +1588,19 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 						}
 					} else {
 						// ── Toggle OFF ──
+						// Only stop the server and mark as disabled; keep it in the
+						// mcp.json whitelist so the item stays visible in the MCP view
+						// and can be re-enabled later.
 						this._setMcpServerEnabled(group.server.id, false);
 						if (serverRef) {
 							try { await serverRef.stop(); } catch { /* ignore */ }
+							// Revoke the stored OAuth grant/session for this server so that
+							// re-enabling it forces a fresh re-authentication (the cached
+							// token would otherwise be silently reused and skip the auth
+							// prompt). This mirrors VS Code's "Disconnect Account" action.
+							await this._revokeMcpAuth(serverRef);
 						}
-						// Remove from ~/.saros/mcp.json + uninstall from VS Code config
-						await this._removeSarosMcpConfigEntry(group.server.id);
-						await this._uninstallServerFromVsCode(group.server.id);
-						this.logService.info(`[IntegrationView] Server "${group.server.id}" removed from ~/.saros/mcp.json.`);
+						this.logService.info(`[IntegrationView] Server "${group.server.id}" disabled (stopped, kept in whitelist).`);
 					}
 				} catch (err) {
 					this.logService.error(`[IntegrationView] MCP server ${group.server.id} toggle failed:`, err);
@@ -1650,155 +1669,6 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			this._attachHoverActions(groupHeader);
 
 			listEl.appendChild(groupHeader);
-		}
-	}
-
-	// ══════════════════════════════════════════════════════════════════════════
-	//  KNOWLEDGE BASE TAB
-	// ══════════════════════════════════════════════════════════════════════════
-
-	private _buildKbDom(): void {
-		const container = this.contentContainer;
-		clearNode(container);
-
-		// Header
-		const header = $('div.skills-header');
-		const title = $('h3.skills-title');
-		title.classList.add('integration-section-title');
-		title.textContent = '\u{1F4DA} \u77E5\u8BC6\u5E93'; // 📚 知识库
-		header.appendChild(title);
-
-		const countBadge = $('span.skills-count');
-		countBadge.textContent = `${this.kbItems.length} bases`;
-		header.appendChild(countBadge);
-		container.appendChild(header);
-
-		// Search bar
-		const searchRow = $('div.skills-search-row');
-		this.kbSearchInput = $('input.skills-search-input') as HTMLInputElement;
-		this.kbSearchInput.type = 'text';
-		this.kbSearchInput.placeholder = '\u{1F50D} \u641C\u7D22\u77E5\u8BC6\u5E93...'; // 🔍 搜索知识库...
-		this.kbSearchInput.oninput = () => {
-			this.kbSearchQuery = this.kbSearchInput.value.trim().toLowerCase();
-			this._renderKbList();
-		};
-		searchRow.appendChild(this.kbSearchInput);
-		const clearBtn = $('button.skills-search-clear-btn');
-		clearBtn.textContent = '\u2715';
-		clearBtn.title = 'Clear search';
-		clearBtn.onclick = () => {
-			this.kbSearchInput.value = '';
-			this.kbSearchQuery = '';
-			this._renderKbList();
-		};
-		searchRow.appendChild(clearBtn);
-		container.appendChild(searchRow);
-
-		// List
-		const listContainer = $('div.integration-skills-list');
-		listContainer.id = 'integration-kb-list';
-		container.appendChild(listContainer);
-	}
-
-	private async _reloadKb(): Promise<void> {
-		const userHome = await this.pathService.userHome();
-		const kbDirUri = URI.joinPath(userHome, '.saros', 'knowledge-base');
-		const items: KnowledgeBaseItem[] = [];
-		try {
-			const stat = await this.fileService.resolve(kbDirUri);
-			if (!stat.children) { return; }
-			for (const entry of stat.children) {
-				if (!entry.isDirectory) { continue; }
-				const entryPath = entry.resource.fsPath;
-				// Read index.json for metadata
-				const indexUri = URI.joinPath(entry.resource, 'index.json');
-				let version = '1.0.0';
-				let name = entry.name;
-				let description = '';
-				let docCount = 0;
-				try {
-					const content = await this.fileService.readFile(indexUri);
-					const indexData = JSON.parse(content.value.toString());
-					version = indexData.version ?? '1.0.0';
-					name = indexData.name ?? entry.name;
-					description = indexData.description ?? '';
-				} catch { /* use defaults */ }
-				// Count docs
-				try {
-					const docsUri = URI.joinPath(entry.resource, 'docs');
-					const docsStat = await this.fileService.resolve(docsUri);
-					if (docsStat.children) {
-						docCount = docsStat.children.filter(c => c.name.endsWith('.md') || c.name.endsWith('.txt')).length;
-					}
-				} catch { /* no docs dir */ }
-				items.push({ id: entry.name, name, version, description, docCount, path: entryPath });
-			}
-		} catch {
-			// Directory doesn't exist — empty list
-		}
-		this.kbItems = items;
-		this._renderKbList();
-	}
-
-	private _renderKbList(): void {
-		const listEl = this.contentContainer.querySelector('#integration-kb-list') as HTMLElement;
-		if (!listEl) { return; }
-		clearNode(listEl);
-
-		let filtered = this.kbItems;
-		if (this.kbSearchQuery) {
-			filtered = filtered.filter(kb =>
-				kb.name.toLowerCase().includes(this.kbSearchQuery) ||
-				kb.description.toLowerCase().includes(this.kbSearchQuery) ||
-				kb.id.toLowerCase().includes(this.kbSearchQuery)
-			);
-		}
-
-		if (filtered.length === 0) {
-			const empty = $('div.skills-empty');
-			const p = $('p');
-			p.textContent = this.kbSearchQuery
-				? `\u6CA1\u6709\u5339\u914D\u7684\u77E5\u8BC6\u5E93"${this.kbSearchQuery}"\u3002` // 没有匹配的知识库
-				: '\u672A\u5B89\u88C5\u77E5\u8BC6\u5E93\u3002\u70B9\u51FB \u{1F6D2} \u5546\u57CE \u4E0B\u8F7D\u3002'; // 未安装知识库。点击 🛒 商城 下载。
-			empty.appendChild(p);
-			listEl.appendChild(empty);
-			return;
-		}
-
-		for (const kb of filtered) {
-			const item = $('div.skill-item');
-			item.classList.add('skill-enabled');
-
-			const iconEl = $('span.skill-icon');
-			iconEl.textContent = '\u{1F4DA}';
-			item.appendChild(iconEl);
-
-			const info = $('div.skill-info');
-			const nameRow = $('div.skill-name-row');
-			const nameEl = $('span.skill-name');
-			nameEl.textContent = kb.name;
-			nameRow.appendChild(nameEl);
-
-			const verBadge = $('span.skill-category-badge');
-			verBadge.textContent = `v${kb.version}`;
-			verBadge.style.color = 'var(--vscode-textLink-foreground)';
-			nameRow.appendChild(verBadge);
-
-			const catBadge = $('span.skill-category-badge');
-			catBadge.textContent = `${kb.docCount} docs`;
-			nameRow.appendChild(catBadge);
-			info.appendChild(nameRow);
-
-			const descEl = $('div.skill-desc');
-			descEl.textContent = kb.description || kb.path;
-			info.appendChild(descEl);
-			item.appendChild(info);
-
-			// Action buttons
-			const actions = this._createActionButtons('knowledge', kb.id, kb.name, { showUpload: true, showDelete: true });
-			item.appendChild(actions);
-
-			listEl.appendChild(item);
 		}
 	}
 
@@ -2001,13 +1871,6 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 					await this.skillInstallService.uninstallSkill(id);
 					this._refreshSkills();
 					break;
-				case 'kb': {
-					const userHome = await this.pathService.userHome();
-					const kbUri = URI.joinPath(userHome, '.saros', 'knowledge-base', id);
-					await this.fileService.del(kbUri, { recursive: true });
-					await this._reloadKb();
-					break;
-				}
 			case 'mcp':
 				this.notificationService.info(`Cannot delete built-in ${tab}. Disable it via the toggle instead.`);
 				return;
@@ -2024,7 +1887,6 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		switch (tab) {
 			case 'skill': return 'skill';
 			case 'mcp': return 'mcp';
-			case 'kb': return 'knowledge';
 		}
 	}
 
@@ -2032,7 +1894,6 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		switch (this.activeTab) {
 			case 'skill': this._refreshSkills(); break;
 			case 'mcp': void this._reloadMcp(); break;
-			case 'kb': void this._reloadKb(); break;
 		}
 	}
 }

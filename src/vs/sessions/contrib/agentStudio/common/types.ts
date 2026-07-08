@@ -51,6 +51,7 @@ export type {
 	ModelSpec,
 	TaskBoardRecord,
 	TaskBoard,
+	BoardLink,
 	TaskAttachment,
 	ToolCall,
 	RelatedFolder,

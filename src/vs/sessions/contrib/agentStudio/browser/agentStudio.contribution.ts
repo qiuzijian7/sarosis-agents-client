@@ -217,6 +217,8 @@ import { ICodebaseMemoryMcpService, CodebaseMemoryMcpService } from './codebaseM
 import { ICodebaseGraphService, CodebaseGraphService } from './codebaseGraphService.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher } from './codebaseGraphWatcher.js';
 import './codebaseGraphBootstrap.js';
+// Integrated browser "创建看板任务" right-click → kanban scrape. Self-registers.
+import './browserKanbanContextMenu.contribution.js';
 import { IAgentStudioDashboardService, AgentStudioDashboardService } from './agentStudioDashboardService.js';
 import { AgentStudioDashboardEditorPane } from './agentStudioDashboardEditorPane.js';
 import { AgentStudioDashboardEditorInput } from './agentStudioDashboardEditorInput.js';
@@ -565,6 +567,12 @@ registerSingleton(IKanbanDiagnosticsService, KanbanDiagnosticsService, Instantia
 // Swarm (multi-agent collaboration). Delayed: only instantiated when a swarm is
 // created from the board UI or the kanban_swarm tool.
 registerSingleton(ISwarmService, SwarmService, InstantiationType.Delayed);
+// Kanban scraping recipes (URL-matched, Playwright-function extraction). Delayed:
+// only instantiated when a recipe tool is called or a web_scrape_to_board runs.
+registerSingleton(IKanbanRecipeService, KanbanRecipeService, InstantiationType.Delayed);
+// Kanban browser-context-menu bridge: runs web_scrape_to_board from the
+// integrated browser's "创建看板任务" right-click action. Delayed.
+registerSingleton(IKanbanScrapeService, KanbanScrapeService, InstantiationType.Delayed);
 // Codebase-Memory-MCP service — detect, install, upgrade, configure MCP.
 // Delayed: instantiated by bootstrap contribution or EditorPane.
 registerSingleton(ICodebaseMemoryMcpService, CodebaseMemoryMcpService, InstantiationType.Delayed);
@@ -1542,6 +1550,8 @@ import { LlmTriageService } from './providers/triage/llmTriageService.js';
 import { IKanbanDiagnosticsService } from '../common/kanbanDiagnosticsService.js';
 import { KanbanDiagnosticsService } from './providers/diagnostics/kanbanDiagnosticsService.js';
 import { ISwarmService } from '../common/swarmService.js';
+import { IKanbanRecipeService, KanbanRecipeService } from './providers/tool/kanbanRecipeService.js';
+import { IKanbanScrapeService, KanbanScrapeService } from './providers/tool/kanbanScrapeService.js';
 import { SwarmService } from './providers/swarm/swarmService.js';
 import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
 import { SessionMemoryProvider } from './providers/memory/sessionMemoryProvider.js';

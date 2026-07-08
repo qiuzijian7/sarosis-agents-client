@@ -458,6 +458,32 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		}, AgentOSService.SAVE_DEBOUNCE_MS);
 	}
 
+	// ─── R1: per-tool-call observe ─────────────────────────────────────────
+
+	/**
+	 * R1: 每次工具调用完成后 fire-and-forget 写入观察记录。
+	 * 对齐 agentmemory PostToolUse Hook → mem::observe 机制。
+	 */
+	private _observeToolResult(agentId: string, toolResult: { toolCallId: string; content: any; success: boolean }): void {
+		const memProvider = this.getActiveMemoryProvider();
+		if (!memProvider) return;
+		const summary = typeof toolResult.content === 'string'
+			? toolResult.content.slice(0, 200)
+			: JSON.stringify(toolResult.content).slice(0, 200);
+		void memProvider.writeMemory(agentId, {
+			id: `observe-${toolResult.toolCallId}-${Date.now()}`,
+			type: 'working',
+			content: `Tool result (${toolResult.success ? 'ok' : 'failed'}): ${summary}`,
+			metadata: {
+				toolCallId: toolResult.toolCallId,
+				source: 'tool_observe',
+				success: toolResult.success,
+			},
+			timestamp: Date.now(),
+			importance: 3,
+		}).catch(() => {});
+	}
+
 	// ─── P8: 文件路径暂存 helpers ──────────────────────────────────────────
 
 	/**
@@ -2228,6 +2254,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						// Streaming parallel: yield as each tool finishes, in completion order.
 						for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId, request.worktreePath)) {
 							toolResults.push(toolResult);
+							// R1: per-tool-call observe (对齐 agentmemory PostToolUse Hook → mem::observe)
+							this._observeToolResult(request.agentId, toolResult);
 							const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
 							const resultStr = !toolResult.success
 								? appendRecoveryHint(rawStr, toolResult.toolCallId)
@@ -2255,6 +2283,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						const serial = await this._executeToolCalls(localExecutedCalls, request.agentId, request.worktreePath);
 						for (const toolResult of serial) {
 							toolResults.push(toolResult);
+							// R1: per-tool-call observe
+							this._observeToolResult(request.agentId, toolResult);
 							const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
 							const resultStr = !toolResult.success
 								? appendRecoveryHint(rawStr, toolResult.toolCallId)

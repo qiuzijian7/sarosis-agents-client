@@ -18,6 +18,8 @@ import { runRetentionScoringTests } from './retentionScoring.test.js';
 import { runProjectProfileTests } from './projectProfile.test.js';
 import { runSlotEditingTests } from './slotEditing.test.js';
 import { runRoutineAndInsightTests } from './insights.test.js';
+import { runCogneeAlignmentTests } from './cogneeAlignment.test.js';
+import { runOntologyMemifyTests } from './ontologyMemify.test.js';
 import { printSummary } from './testRunner.js';
 
 async function main(): Promise<void> {
@@ -55,6 +57,12 @@ async function main(): Promise<void> {
 	runProjectProfileTests();
 	runSlotEditingTests();
 	runRoutineAndInsightTests();
+
+	// ─── cognee alignment: G2/G8/G10 ───
+	runCogneeAlignmentTests();
+
+	// ─── cognee alignment: G4/G5/G13 ───
+	runOntologyMemifyTests();
 
 	printSummary();
 }

@@ -15,6 +15,16 @@
 	height: 22px;
 }
 
+/* Collapse the breadcrumbs area when the breadcrumbs control is hidden
+   (e.g. for non-file editors such as the integrated browser, whose resource
+   has no file provider). Without this, the hardcoded `height: 22px` above
+   reserves empty space below the tabs, growing the title area and pushing
+   the tab row upward out of the window. The JS layout already accounts for
+   this by reporting a 0 breadcrumbs height, so we must mirror it in CSS. */
+.monaco-workbench .part.editor > .content .editor-group-container > .title .breadcrumbs-below-tabs:has(.breadcrumbs-control.hidden) {
+	display: none;
+}
+
 .monaco-workbench .part.editor > .content .editor-group-container > .title .breadcrumbs-below-tabs .breadcrumbs-control-container {
 	flex: 1 1 auto;
 	min-width: 0; /* allow shrinking */

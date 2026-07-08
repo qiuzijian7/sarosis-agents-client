@@ -49,6 +49,13 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 	private readonly _onDidChangeBrowserViews = this._register(new Emitter<void>());
 	readonly onDidChangeBrowserViews: Event<void> = this._onDidChangeBrowserViews.event;
 
+	/**
+	 * Re-exposed from the main-process browser view service (via the IPC proxy)
+	 * so other workbench contributions can react to the "Create Kanban Tasks"
+	 * context-menu action on an integrated browser page.
+	 */
+	readonly onDidRequestCreateKanban: Event<{ viewId: string; url: string }>;
+
 	private static readonly _sharingAvailableContext = ContextKeyExpr.and(
 		ChatContextKeys.enabled,
 		ContextKeyExpr.has(`config.${ChatConfiguration.AgentEnabled}`),
@@ -89,6 +96,7 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 		const channel = mainProcessService.getChannel(ipcBrowserViewChannelName);
 		this._browserViewService = ProxyChannel.toService<IBrowserViewService>(channel);
 		this._mainWindowId = mainWindow.vscodeWindowId;
+		this.onDidRequestCreateKanban = this._browserViewService.onDidRequestCreateKanban;
 
 		this.sendKeybindings();
 		this._register(this.keybindingService.onDidUpdateKeybindings(() => this.sendKeybindings()));

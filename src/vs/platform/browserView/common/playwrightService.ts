@@ -16,6 +16,20 @@ export interface IInvokeFunctionResult {
 	deferredResultId?: string;
 }
 
+/** Result of {@link IPlaywrightService.downloadBinary}. */
+export interface IPlaywrightDownloadResult {
+	/** Whether the response status was in the 2xx range. */
+	ok: boolean;
+	/** HTTP status code. */
+	status: number;
+	/** Lower-cased `content-type` response header (empty if absent). */
+	contentType: string;
+	/** Raw `content-disposition` response header (empty if absent). Used to extract real filenames (e.g. ZIP files). */
+	contentDisposition: string;
+	/** Response body encoded as base64. */
+	base64: string;
+}
+
 /**
  * A service for using Playwright to connect to and automate the integrated browser.
  *
@@ -85,6 +99,25 @@ export interface IPlaywrightService {
 	 * @returns The result of the function execution.
 	 */
 	invokeFunctionRaw<T>(sessionId: string, pageId: string, fnDef: string, ...args: unknown[]): Promise<T>;
+
+	/**
+	 * Download a URL's bytes using the Playwright browser context that is
+	 * tracking `pageId`. The request is issued through the context's
+	 * {@link import('playwright-core').APIRequestContext} (`page.request`), which
+	 * shares the context's cookies/storage state — so authenticated resources
+	 * (e.g. a logged-in TAPD session) download correctly, and CORS does not apply
+	 * (it is a raw HTTP client, not a page `fetch`).
+	 *
+	 * Must be called from a context that has Node access (shared/extension
+	 * process). The renderer cannot issue `node:https` requests (CSP `script-src`
+	 * blocks `import('node:https')` and `require` is unavailable).
+	 *
+	 * @param sessionId Identifies the session whose browser context to use.
+	 * @param pageId The browser view ID whose context provides the auth cookies.
+	 * @param url The URL to download.
+	 * @returns The response status, content type, and body as base64.
+	 */
+	downloadBinary(sessionId: string, pageId: string, url: string): Promise<IPlaywrightDownloadResult>;
 
 	/**
 	 * Run a function with access to a Playwright page and return a result for tool output, including error handling.

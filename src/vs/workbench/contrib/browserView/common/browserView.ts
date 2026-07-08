@@ -130,6 +130,14 @@ export interface IBrowserViewWorkbenchService {
 	readonly onDidChangeSharingAvailable: Event<boolean>;
 
 	/**
+	 * Fires when the user selects "Create Kanban Tasks" from an integrated
+	 * browser page's context menu. Delegates to the main-process browser view
+	 * service over IPC; `viewId` is the browser view id (== Playwright page id)
+	 * and `url` is the page URL at the moment of the click.
+	 */
+	readonly onDidRequestCreateKanban: Event<{ viewId: string; url: string }>;
+
+	/**
 	 * Get all known browser views.
 	 */
 	getKnownBrowserViews(): Map<string, BrowserEditorInput>;

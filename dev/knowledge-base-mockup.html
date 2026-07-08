@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Sarosis - 知识库 View Mockup v3</title>
+<style>
+:root{
+  --bg:#1e1e1e; --bg-activitybar:#333333; --bg-sidebar:#252526; --bg-card:#2d2d2d;
+  --bg-hover:#2a2d2e; --bg-input:#1e1e1e; --bg-listhover:#2a2d2e; --bg-selected:#094771;
+  --border:#3c3c3c; --border-light:#454545;
+  --text:#cccccc; --text-muted:#9d9d9d; --text-bright:#ffffff;
+  --primary:#007acc; --primary-hover:#1f8ad2;
+  --success:#4ec9b0; --error:#f48771; --warning:#dcdcaa; --info:#569cd6;
+  --green:#6a9955; --orange:#ce9178; --purple:#c586c0;
+  --font:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+  --mono:'Consolas','Monaco',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{height:100%;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;overflow:hidden;}
+
+.workbench{display:flex;height:100vh;}
+
+/* ---- ActivityBar ---- */
+.activitybar{width:48px;background:var(--bg-activitybar);display:flex;flex-direction:column;align-items:center;padding:6px 0;flex-shrink:0;gap:2px;border-right:1px solid #000;}
+.ab-item{width:48px;height:48px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);cursor:pointer;position:relative;font-size:22px;transition:.12s;}
+.ab-item:hover{color:var(--text);}
+.ab-item.active{color:var(--text-bright);}
+.ab-item.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--text-bright);}
+.ab-item .badge{position:absolute;top:6px;right:6px;background:var(--error);color:#fff;font-size:9px;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 4px;}
+.ab-spacer{flex:1;}
+
+/* ---- Sidebar ---- */
+.sidebar{width:340px;background:var(--bg-sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;position:relative;}
+
+/* View header */
+.view-header{height:35px;display:flex;align-items:center;gap:4px;padding:0 4px 0 10px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.view-header .title{font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600;opacity:.8;display:flex;align-items:center;gap:6px;}
+.hdr-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:14px;border:1px solid transparent;}
+.hdr-btn:hover{background:var(--bg-hover);color:var(--text);}
+
+/* Vault switcher */
+.vault-bar{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.vault-select{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:5px 8px;cursor:pointer;color:var(--text);font-size:12px;position:relative;}
+.vault-select:hover{border-color:var(--primary);}
+.vault-select .vname{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vault-select .caret{color:var(--text-muted);font-size:10px;}
+.vault-icon{font-size:14px;color:var(--purple);}
+.ab-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:14px;border:1px solid transparent;}
+.ab-btn:hover{background:var(--bg-hover);color:var(--text);}
+
+/* Vault dropdown */
+.vault-menu{position:absolute;top:0;left:0;right:0;background:var(--bg-card);border:1px solid var(--border-light);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:50;margin-top:2px;display:none;overflow:hidden;}
+.vault-menu.show{display:block;}
+.vault-menu .grp-title{font-size:10px;text-transform:uppercase;color:var(--text-muted);padding:6px 10px 3px;letter-spacing:.5px;}
+.vault-menu .opt{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;font-size:12px;}
+.vault-menu .opt:hover{background:var(--bg-selected);}
+.vault-menu .opt .path{font-family:var(--mono);font-size:10px;color:var(--text-muted);margin-left:auto;}
+.vault-menu .opt .check{color:var(--primary);font-size:11px;width:14px;}
+.vault-menu .opt.add{color:var(--primary);}
+.vault-menu .divider{height:1px;background:var(--border);margin:4px 0;}
+
+/* Search */
+.search-row{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.search-box{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;}
+.search-box:focus-within{border-color:var(--primary);}
+.search-box input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:12px;}
+.search-box input::placeholder{color:var(--text-muted);}
+
+/* Scroll */
+.tree-scroll{flex:1;overflow-y:auto;}
+.tree-scroll::-webkit-scrollbar{width:10px;}
+.tree-scroll::-webkit-scrollbar-thumb{background:#424242;border-radius:5px;border:2px solid var(--bg-sidebar);}
+
+/* ===== Collapsible Section with toolbar ===== */
+.section{border-bottom:1px solid var(--border);position:relative;}
+.section > summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600;color:var(--text);user-select:none;}
+.section > summary::-webkit-details-marker{display:none;}
+.section > summary::before{content:'▾';font-size:10px;color:var(--text-muted);transition:.15s;}
+.section:not([open]) > summary::before{content:'▸';}
+.section > summary .title{flex:1;display:flex;align-items:center;gap:6px;}
+.section > summary .count{font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:0 6px;color:var(--text-muted);}
+.section > summary .cat{font-size:13px;}
+.section .sec-body{padding-bottom:4px;}
+
+/* Section toolbar row (right-aligned action buttons inside summary) */
+.sec-toolbar{display:flex;align-items:center;gap:1px;margin-left:4px;}
+.sec-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;color:var(--text-muted);font-size:13px;border:1px solid transparent;transition:.12s;}
+.sec-btn:hover{background:var(--bg-hover);color:var(--text);}
+.sec-btn.primary:hover{background:var(--primary);color:#fff;}
+
+/* Section colors */
+.sec-lib > summary .cat{color:var(--info);}
+.sec-notes > summary .cat{color:var(--purple);}
+
+/* ---- Dropdown / Popup base ---- */
+.dropdown{position:absolute;background:var(--bg-card);border:1px solid var(--border-light);border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.6);z-index:100;display:none;min-width:200px;overflow:hidden;}
+.dropdown.show{display:block;}
+.dropdown .dd-title{font-size:11px;font-weight:600;padding:8px 12px 4px;color:var(--text-bright);border-bottom:1px solid var(--border);}
+.dropdown .opt{display:flex;align-items:center;gap:10px;padding:7px 12px;cursor:pointer;font-size:12px;transition:.08s;}
+.dropdown .opt:hover{background:var(--bg-selected);}
+.dropdown .opt .ic{font-size:15px;width:18px;text-align:center;}
+.dropdown .opt .txt{flex:1;}
+.dropdown .opt .sub{font-size:10px;color:var(--text-muted);font-family:var(--mono);}
+.dropdown .divider{height:1px;background:var(--border);margin:3px 0;}
+
+/* Sort dropdown — wider, multi-column style like screenshot */
+.sort-dropdown{min-width:220px;padding:4px 0;}
+.sort-dd-group{padding:4px 8px;}
+.sort-dd-label{font-size:11px;font-weight:600;padding:2px 6px;color:var(--text-muted);}
+.sort-dd-opt{display:flex;align-items:center;gap:8px;padding:5px 10px;cursor:pointer;font-size:12px;border-radius:3px;}
+.sort-dd-opt:hover{background:var(--bg-selected);}
+.sort-dd-opt .ck{color:var(--primary);font-size:11px;width:16px;}
+
+/* File tree */
+.tree-node{display:flex;align-items:center;gap:4px;padding:2px 6px;cursor:pointer;font-size:13px;line-height:22px;border-radius:3px;white-space:nowrap;}
+.tree-node:hover{background:var(--bg-listhover);}
+.tree-node.selected{background:var(--bg-selected);}
+.tree-node .twist{width:14px;text-align:center;color:var(--text-muted);font-size:10px;cursor:pointer;flex-shrink:0;}
+.tree-node .ficon{width:16px;text-align:center;font-size:13px;flex-shrink:0;}
+.tree-node.dir .ficon{color:var(--warning);}
+.tree-node .fname{flex:1;overflow:hidden;text-overflow:ellipsis;}
+.tree-node .fmeta{font-size:10px;color:var(--text-muted);font-family:var(--mono);margin-left:6px;}
+.tree-node .status{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-left:4px;}
+.status.raw{background:var(--info);}
+.status.indexed{background:var(--green);}
+.status.modified{background:var(--warning);}
+
+/* Editor */
+.editor{flex:1;display:flex;flex-direction:column;background:var(--bg);}
+.editor-tabs{height:35px;background:var(--bg-sidebar);border-bottom:1px solid var(--border);display:flex;align-items:flex-end;}
+.editor-tab{padding:8px 14px;font-size:13px;color:var(--text-muted);border-right:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:6px;}
+.editor-tab.active{background:var(--bg);color:var(--text);border-top:1px solid var(--primary);}
+.editor-body{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:13px;}
+</style>
+</head>
+<body>
+<div class="workbench">
+
+  <!-- ===== ActivityBar ===== -->
+  <div class="activitybar">
+    <div class="ab-item" title="资源管理">🗂️</div>
+    <div class="ab-item" title="搜索">🔍</div>
+    <div class="ab-item" title="源代码管理">🌿</div>
+    <div class="ab-item" title="运行和调试">🐞</div>
+    <div class="ab-item" title="Agent 工作台">🤖</div>
+    <div class="ab-item" title="Workflow">🔀</div>
+    <div class="ab-item" title="Integration">🔌</div>
+    <div class="ab-item active" title="知识库">📚<span class="badge">2</span></div>
+    <div class="ab-item" title="插件">🧩</div>
+    <div class="ab-spacer"></div>
+    <div class="ab-item" title="账户">👤</div>
+  </div>
+
+  <!-- ===== Sidebar: Knowledge Base ===== -->
+  <div class="sidebar">
+
+    <!-- Header -->
+    <div class="view-header">
+      <span class="title"><span>📚</span> 知识库</span>
+      <span style="flex:1"></span>
+      <span class="hdr-btn" title="刷新">⟳</span>
+      <span class="hdr-btn" title="设置">⚙</span>
+    </div>
+
+    <!-- Vault switcher -->
+    <div class="vault-bar" id="vaultBar">
+      <span class="vault-icon">📦</span>
+      <div class="vault-select" id="vaultSelect">
+        <span class="vname">AI-Agent 知识库</span>
+        <span class="caret">▼</span>
+      </div>
+      <span class="ab-btn" title="新建笔记空间">＋</span>
+      <span class="ab-btn" title="更多操作">⋯</span>
+      <div class="vault-menu" id="vaultMenu">
+        <div class="grp-title">当前笔记</div>
+        <div class="opt"><span class="check">✓</span><span>📦</span><span>AI-Agent 知识库</span><span class="path">~/kb/ai-agent</span></div>
+        <div class="grp-title">其它笔记</div>
+        <div class="opt"><span class="check"></span><span>📦</span><span>个人笔记</span><span class="path">D:/notes</span></div>
+        <div class="opt"><span class="check"></span><span>📦</span><span>Obsidian-工作库</span><span class="path">D:/obsidian/work</span></div>
+        <div class="divider"></div>
+        <div class="opt add"><span>＋</span><span>配置文件夹为笔记…</span></div>
+        <div class="opt add"><span>＋</span><span>连接飞书知识库…</span></div>
+      </div>
+    </div>
+
+    <!-- Search -->
+    <div class="search-row">
+      <div class="search-box"><span>🔍</span><input placeholder="搜索知识库 (全文 / 标题 / 标签)…"></div>
+    </div>
+
+    <!-- Scroll area -->
+    <div class="tree-scroll">
+
+      <!-- ══════════ SECTION: 库 ══════════ -->
+      <details class="section sec-lib" open id="secLib">
+        <summary>
+          <span class="title"><span class="cat">📂</span> 库</span>
+          <span class="count">5</span>
+          <!-- 导入按钮组（右侧） -->
+          <div class="sec-toolbar">
+            <span class="sec-btn primary" data-dd="libImportDD" title="导入数据源">📥</span>
+          </div>
+        </summary>
+        <!-- 库的导入下拉弹窗 -->
+        <div class="dropdown show" id="libImportDD" style="top:38px;right:4px;">
+          <div class="opt"><span class="ic">📕</span><span class="txt">导入 Obsidian 库</span><span class="sub">.md + 双链</span></div>
+          <div class="opt"><span class="ic">📄</span><span class="txt">导入文件</span><span class="sub">PDF / DOC / MD / TXT …</span></div>
+          <div class="opt"><span class="ic">📁</span><span class="txt">导入文件夹</span><span class="sub">递归扫描</span></div>
+          <div class="divider"></div>
+          <div class="dd-title">从 URL 导入</div>
+          <div class="opt"><span class="ic">📘</span><span class="txt">飞书知识库</span><span class="sub">feishu.cn/wiki/…</span></div>
+          <div class="opt"><span class="ic">📕</span><span class="txt">小红书</span><span class="sub">xiaohongshu.com/…</span></div>
+          <div class="opt"><span class="ic">▶️</span><span class="txt">B 站视频</span><span class="sub">bilibili.com/video/…</span></div>
+          <div class="opt"><span class="ic">🎵</span><span class="txt">抖音</span><span class="sub">douyin.com/…</span></div>
+          <div class="opt"><span class="ic">💬</span><span class="txt">知乎文章</span><span class="sub">zhihu.com/question/…</span></div>
+        </div>
+        <div class="sec-body">
+          <div class="tree-node dir selected">
+            <span class="twist">▾</span><span class="ficon">📁</span><span class="fname">待处理导入</span>
+          </div>
+          <div class="tree-node" style="padding-left:24px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">飞书-产品需求文档.pdf</span>
+            <span class="fmeta">2.4MB</span><span class="status raw" title="未索引"></span>
+          </div>
+          <div class="tree-node" style="padding-left:24px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">obsidian-会议纪要.md</span>
+            <span class="fmeta">18KB</span><span class="status raw" title="未索引"></span>
+          </div>
+          <div class="tree-node" style="padding-left:24px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">agent-design.docx</span>
+            <span class="fmeta">1.1MB</span><span class="status raw" title="未索引"></span>
+          </div>
+          <div class="tree-node dir" style="padding-left:24px">
+            <span class="twist">▸</span><span class="ficon">📁</span><span class="fname">B站-架构演进</span>
+          </div>
+          <div class="tree-node" style="padding-left:24px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">知乎-RAG最佳实践.html</span>
+            <span class="fmeta">89KB</span><span class="status raw" title="未索引"></span>
+          </div>
+        </div>
+      </details>
+
+      <!-- ══════════ SECTION: 笔记 ══════════ -->
+      <details class="section sec-notes" open id="secNotes">
+        <summary>
+          <span class="title"><span class="cat">📦</span> 笔记</span>
+          <span class="count">12</span>
+          <!-- 工具栏按钮组（右侧） -->
+          <div class="sec-toolbar">
+            <span class="sec-btn" title="新建文件">✏️</span>
+            <span class="sec-btn" title="新建文件夹">📁＋</span>
+            <span class="sec-btn" data-dd="sortDD" title="排序">↑↓</span>
+            <span class="sec-btn" id="toggleAllBtn" title="全部折叠 / 全部展开">⊏</span>
+          </div>
+        </summary>
+        <!-- 排序下拉弹窗（仿截图风格） -->
+        <div class="dropdown sort-dropdown show" id="sortDD" style="top:38px;right:4px;">
+          <div class="sort-dd-group">
+            <div class="sort-dd-label">文件名</div>
+            <div class="sort-dd-opt"><span class="ck">✓</span> 文件名 (A-Z)</div>
+            <div class="sort-dd-opt"><span class="ck"></span> 文件名 (Z-A)</div>
+          </div>
+          <div class="sort-dd-group">
+            <div class="sort-dd-label">编辑时间</div>
+            <div class="sort-dd-opt"><span class="ck"></span> 编辑时间 (从新到旧)</div>
+            <div class="sort-dd-opt"><span class="ck"></span> 编辑时间 (从旧到新)</div>
+          </div>
+          <div class="sort-dd-group">
+            <div class="sort-dd-label">创建时间</div>
+            <div class="sort-dd-opt"><span class="ck"></span> 创建时间 (从新到旧)</div>
+            <div class="sort-dd-opt"><span class="ck">✓</span> 创建时间 (从旧到新)</div>
+          </div>
+        </div>
+        <div class="sec-body">
+          <div class="tree-node dir">
+            <span class="twist">▾</span><span class="ficon">📁</span><span class="fname">AI-Agent-Knowledge-Base</span>
+          </div>
+          <div class="tree-node dir" style="padding-left:24px">
+            <span class="twist">▾</span><span class="ficon">📁</span><span class="fname">[01]基础概念-02-架构设计</span>
+          </div>
+          <div class="tree-node" style="padding-left:48px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">01-基础概念.md</span>
+            <span class="fmeta">42KB · 18块</span><span class="status indexed" title="已索引"></span>
+          </div>
+          <div class="tree-node" style="padding-left:48px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">02-架构设计.md</span>
+            <span class="fmeta">61KB · 27块</span><span class="status indexed" title="已索引"></span>
+          </div>
+          <div class="tree-node dir" style="padding-left:24px">
+            <span class="twist">▾</span><span class="ficon">📁</span><span class="fname">[03]核心组件</span>
+          </div>
+          <div class="tree-node" style="padding-left:48px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">toolset-config.md</span>
+            <span class="fmeta">9KB · 6块</span><span class="status modified" title="已修改待重建索引"></span>
+          </div>
+          <div class="tree-node dir" style="padding-left:24px">
+            <span class="twist">▸</span><span class="ficon">📁</span><span class="fname">2026-06-02</span>
+          </div>
+          <div class="tree-node" style="padding-left:48px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">每日总结.md</span>
+            <span class="fmeta">15KB · 8块</span><span class="status indexed" title="已索引"></span>
+          </div>
+          <div class="tree-node" style="padding-left:24px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">README.md</span>
+            <span class="fmeta">3KB · 2块</span><span class="status indexed" title="已索引"></span>
+          </div>
+        </div>
+      </details>
+
+    </div><!-- /tree-scroll -->
+  </div><!-- /sidebar -->
+
+  <!-- ===== Editor ===== -->
+  <div class="editor">
+    <div class="editor-tabs">
+      <div class="editor-tab active">📄 02-架构设计.md</div>
+    </div>
+    <div class="editor-body">点击知识库中的文件可在编辑器中预览 / 编辑</div>
+  </div>
+
+</div>
+
+<script>
+// ── Toggle dropdowns by [data-dd] attribute ──
+document.querySelectorAll('[data-dd]').forEach(btn=>{
+  btn.addEventListener('click', e=>{
+    e.stopPropagation();
+    const ddId = btn.dataset.dd;
+    const dd = document.getElementById(ddId);
+    if(!dd) return;
+
+    // Close all others
+    document.querySelectorAll('.dropdown.show').forEach(d=>{ if(d.id!==ddId)d.classList.remove('show') });
+    // Toggle self
+    dd.classList.toggle('show');
+  });
+});
+document.addEventListener('click',()=>document.querySelectorAll('.dropdown').forEach(d=>d.classList.remove('show')));
+
+// ── Import options click ──
+document.querySelectorAll('#libImportDD .opt').forEach(o=>{
+  o.addEventListener('click',()=>{
+    console.log('import:', o.querySelector('.txt').textContent.trim());
+    document.getElementById('libImportDD').classList.remove('show');
+  });
+});
+
+// ── Sort options click ──
+document.querySelectorAll('#sortDD .sort-dd-opt').forEach(o=>{
+  o.addEventListener('click',()=>{
+    document.querySelectorAll('#sortDD .sort-dd-opt').forEach(x=>x.querySelector('.ck').textContent='');
+    o.querySelector('.ck').textContent='✓';
+    console.log('sort:', o.textContent.trim());
+    document.getElementById('sortDD').classList.remove('show');
+  });
+});
+
+// ── Vault menu toggle ──
+const vaultSelect = document.getElementById('vaultSelect');
+const vaultMenu = document.getElementById('vaultMenu');
+vaultSelect.addEventListener('click', e=>{ e.stopPropagation(); vaultMenu.classList.toggle('show'); });
+document.addEventListener('click', ()=>vaultMenu.classList.remove('show'));
+
+// ── Tree node selection ──
+document.querySelectorAll('.tree-node').forEach(n=>n.addEventListener('click', ()=>{
+  document.querySelectorAll('.tree-node').forEach(x=>x.classList.remove('selected'));
+  n.classList.add('selected');
+}));
+
+// ── Section toggle all (single button, two states) ──
+const toggleAllBtn = document.getElementById('toggleAllBtn');
+toggleAllBtn.addEventListener('click', ()=>{
+  const anyOpen = document.querySelector('details[open]');
+  if(anyOpen){
+    document.querySelectorAll('details[open]').forEach(d=>d.removeAttribute('open'));
+    toggleAllBtn.textContent='⊐'; toggleAllBtn.title='全部展开';
+  }else{
+    document.querySelectorAll('details').forEach(d=>d.setAttribute('open',''));
+    toggleAllBtn.textContent='⊏'; toggleAllBtn.title='全部折叠';
+  }
+});
+</script>
+</body>
+</html>

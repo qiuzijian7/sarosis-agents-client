@@ -6,10 +6,11 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IAgentDriverService, AgentTurnStatus } from '../common/agentDriver.js';
-import { IAgentTurnRequest, IMemoryContext, IMemoryProvider } from '../common/providers.js';
+import { IAgentTurnRequest, IMemoryContext, IMemoryProvider, ChatImageMimeType, IChatContentPart } from '../common/providers.js';
 import type { IChatStreamDelta } from '../common/providers.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IChatSendOptions } from '../common/agentStudio.js';
+import type { IChatAttachmentSend } from '../../../common/agentStudioService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISkillRegistry } from '../common/skills.js';
@@ -438,16 +439,23 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							this._logService.warn(`[AgentDriver] ⚠ MCP tools exist (${mcpEnabled.length}) but ALL filtered out by chatMode=${chatMode}! Check securityLevel inference.`);
 						}
 
-						if (enabledTools.length > 0) {
-							// ── 工具排序（对齐 OpenClaw toolOrder）─────────────────
-							// 将高频分析工具排在前面，避免 LLM 在前几项找到 search_files/terminal 后就停止扫描
-							const HIGH_PRIORITY_TOOLS = new Set([
-								'search_graph', 'query_graph', 'get_architecture', 'trace_path',
-								'search_code', 'get_code_snippet', 'index_repository', 'index_status',
-								'detect_changes', 'update_plan',
-								'tool_search', 'tool_describe', 'tool_call',
-							]);
-							const sortedTools = [...enabledTools].sort((a, b) => {
+					// MCP 工具不在此清单列出：它们经由 ## MCP Servers 通过 tool_search 桥接暴露，
+					// 且不会进入 API 的 tools 参数（agentOSService._getEnabledTools 在 passthrough
+					// 模式下已剥离 MCP 直发 schema，避免 API 400）。若在此列出，LLM 会直接调用它们，
+					// 而被 AgentOS 识别为"幻觉调用"（hallucinated）并丢弃，最终报错
+					// "Tool was not executed (conversation ended before execution)"。
+					const nonMcpTools = enabledTools.filter(t => !t.category?.startsWith('mcp:'));
+
+					if (nonMcpTools.length > 0) {
+						// ── 工具排序（对齐 OpenClaw toolOrder）─────────────────
+						// 将高频分析工具排在前面，避免 LLM 在前几项找到 search_files/terminal 后就停止扫描
+						const HIGH_PRIORITY_TOOLS = new Set([
+							'search_graph', 'query_graph', 'get_architecture', 'trace_path',
+							'search_code', 'get_code_snippet', 'index_repository', 'index_status',
+							'detect_changes', 'update_plan',
+							'tool_search', 'tool_describe', 'tool_call',
+						]);
+						const sortedTools = [...nonMcpTools].sort((a, b) => {
 								const aPri = HIGH_PRIORITY_TOOLS.has(a.name) ? 0 : 1;
 								const bPri = HIGH_PRIORITY_TOOLS.has(b.name) ? 0 : 1;
 								return aPri - bPri || a.name.localeCompare(b.name);
@@ -1371,37 +1379,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		options: IChatSendOptions,
 		priorMessages?: import('../common/providers.js').IChatMessage[],
 	): AsyncIterable<IChatStreamDelta> {
-		// Build content parts: text + image attachments
-		const contentParts: Array<import('../common/providers.js').IChatContentPart> = [];
-		if (message.trim()) {
-			contentParts.push({ type: 'text', text: message });
-		}
-		if (options.attachments) {
-			for (const att of options.attachments) {
-				if (att.type === 'image' && att.mimeType.startsWith('image/')) {
-					contentParts.push({
-						type: 'image',
-						data: att.data,
-						mimeType: att.mimeType as import('../common/providers.js').ChatImageMimeType,
-					});
-				}
-				// File attachments: include as text context in the message
-				if (att.type === 'file') {
-					const fileContext = `\n\n--- File: ${att.name} ---\n${att.data}\n--- End of ${att.name} ---`;
-					if (contentParts.length > 0 && contentParts[0].type === 'text') {
-						// Append to existing text part
-						(contentParts[0] as { type: 'text'; text: string }).text += fileContext;
-					} else {
-						contentParts.push({ type: 'text', text: fileContext });
-					}
-				}
-			}
-		}
+		// 构建多模态 contentParts：文本 + 图片附件（文件附件以文本上下文内联）。
+		// 提取为纯函数 buildUserContentParts 便于单测，且保证与 chat 输入框附件透传逻辑一致。
+		const contentParts = buildUserContentParts(message, options.attachments);
 
 		const userMessage: import('../common/providers.js').IChatMessage = {
 			role: 'user',
 			content: message,
-			contentParts: contentParts.length > 0 ? contentParts : undefined,
+			contentParts,
 		};
 
 		const request: IAgentTurnRequest = {
@@ -1425,4 +1410,54 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		};
 		yield* this.executeTurn(request);
 	}
+}
+
+/**
+ * 将用户文本消息 + 附件转换为多模态 contentParts（IChatContentPart[]）。
+ *
+ * 规则：
+ * - 无附件时返回 undefined，消息由 IChatMessage.content 字段承载（向后兼容，
+ *   避免给每条纯文本消息都附加 contentParts，影响历史序列化/Token 计算）。
+ * - 图片附件（type==='image' 且 mimeType 以 image/ 开头）→ image contentPart，
+ *   携带 base64 data + mimeType。下游 MessageFormatConverter 会将其转换为对应
+ *   LLM API 的多模态格式（OpenAI image_url / Anthropic base64 source / Gemini
+ *   inline_data），确保图片真实内容送达 LLM。
+ * - 文件附件（type==='file'）→ 以文本块形式内联到 text contentPart
+ *   （文本文件为原文，二进制文件为其 base64），供模型作为上下文阅读。
+ *
+ * 该纯函数同时被 executeFromChatOptions 调用，并被单测直接覆盖，
+ * 是"聊天输入框附件能否正确发送给 LLM"的核心逻辑。
+ */
+export function buildUserContentParts(
+	message: string,
+	attachments?: readonly IChatAttachmentSend[],
+): IChatContentPart[] | undefined {
+	if (!attachments || attachments.length === 0) {
+		return undefined;
+	}
+
+	const contentParts: IChatContentPart[] = [];
+	if (message.trim()) {
+		contentParts.push({ type: 'text', text: message });
+	}
+
+	for (const att of attachments) {
+		if (att.type === 'image' && att.mimeType.startsWith('image/')) {
+			contentParts.push({
+				type: 'image',
+				data: att.data,
+				mimeType: att.mimeType as ChatImageMimeType,
+			});
+		} else if (att.type === 'file') {
+			const fileContext = `\n\n--- File: ${att.name} ---\n${att.data}\n--- End of ${att.name} ---`;
+			if (contentParts.length > 0 && contentParts[0].type === 'text') {
+				// 追加到首个 text 块，避免产生过多零散文本块
+				(contentParts[0] as { type: 'text'; text: string }).text += fileContext;
+			} else {
+				contentParts.push({ type: 'text', text: fileContext });
+			}
+		}
+	}
+
+	return contentParts.length > 0 ? contentParts : undefined;
 }

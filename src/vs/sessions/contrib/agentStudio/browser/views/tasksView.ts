@@ -14,6 +14,7 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
+import { GroupsOrder, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IAgentTaskBoardService, ITaskOrchestrationService } from '../../common/agentStudio.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import { TaskBoardStatus, type TaskBoardRecord } from '../../common/types.js';
@@ -52,6 +53,7 @@ export class TasksViewPane extends ViewPane {
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		@ITaskOrchestrationService private readonly taskOrchestrationService: ITaskOrchestrationService,
 		@IEditorService private readonly editorService: IEditorService,
+		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -234,9 +236,10 @@ export class TasksViewPane extends ViewPane {
 	override setVisible(visible: boolean): void {
 		super.setVisible(visible);
 		if (visible) {
-			// Auto-open the Task Overview EditorPane when the Tasks view tab is clicked
+			// Auto-open the Task Overview EditorPane (任务看板) in the center editor area (groups[0]).
 			const input = TaskOverviewEditorInput.getOrCreate();
-			this.editorService.openEditor(input, { pinned: true });
+			const targetGroup = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME)[0];
+			this.editorService.openEditor(input, { pinned: true }, targetGroup);
 		}
 	}
 
@@ -246,8 +249,9 @@ export class TasksViewPane extends ViewPane {
 	 */
 	private async _openTaskInOverview(task: TaskBoardRecord): Promise<void> {
 		const input = TaskOverviewEditorInput.getOrCreate();
-		// Open the overview editor in the editor area
-		await this.editorService.openEditor(input, { pinned: false, preserveFocus: false });
+		// Open the overview editor in the center editor area (groups[0]).
+		const targetGroup = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME)[0];
+		await this.editorService.openEditor(input, { pinned: false, preserveFocus: false }, targetGroup);
 		// Trigger highlight on the matching task card via task title
 		this.taskOrchestrationService.focusTaskInBoard(task.title);
 	}

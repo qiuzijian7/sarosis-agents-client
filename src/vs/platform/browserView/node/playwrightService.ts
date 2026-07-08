@@ -8,7 +8,7 @@ import { DeferredPromise, disposableTimeout, raceTimeout } from '../../../base/c
 import { Emitter, Event } from '../../../base/common/event.js';
 import { ILogService } from '../../log/common/log.js';
 import { IAgentNetworkFilterService } from '../../networkFilter/common/networkFilterService.js';
-import { IInvokeFunctionResult, IPlaywrightService } from '../common/playwrightService.js';
+import { IInvokeFunctionResult, IPlaywrightDownloadResult, IPlaywrightService } from '../common/playwrightService.js';
 import { IBrowserViewGroupRemoteService } from '../node/browserViewGroupRemoteService.js';
 import { IBrowserViewGroup } from '../common/browserViewGroup.js';
 import { PlaywrightTab, DialogInterruptedError } from './playwrightTab.js';
@@ -33,6 +33,45 @@ declare module 'playwright-core' {
 
 const DEFERRED_RESULT_CLEANUP_MS = 5 * 60_000; // 5 minutes
 const SESSION_INACTIVITY_MS = 30 * 60_000; // 30 minutes
+
+/** Raw cookie shape returned by the CDP `Network.getCookies` command. */
+interface RawCDPCookie {
+	name: string;
+	value: string;
+	domain: string;
+	path: string;
+	expires?: number;
+	httpOnly?: boolean;
+	secure?: boolean;
+	sameSite?: string;
+}
+
+/** Cookie shape accepted by Playwright's APIRequestContext storageState. */
+interface PlaywrightDownloadCookie {
+	name: string;
+	value: string;
+	domain: string;
+	path: string;
+	expires: number;
+	httpOnly: boolean;
+	secure: boolean;
+	sameSite: 'Strict' | 'Lax' | 'None';
+}
+
+function toPlaywrightCookie(c: RawCDPCookie): PlaywrightDownloadCookie {
+	const sameSite: 'Strict' | 'Lax' | 'None' =
+		c.sameSite === 'Strict' || c.sameSite === 'Lax' || c.sameSite === 'None' ? c.sameSite : 'Lax';
+	return {
+		name: c.name,
+		value: c.value,
+		domain: c.domain,
+		path: c.path || '/',
+		expires: typeof c.expires === 'number' ? c.expires : -1,
+		httpOnly: !!c.httpOnly,
+		secure: !!c.secure,
+		sameSite,
+	};
+}
 
 
 /**
@@ -247,6 +286,11 @@ export class PlaywrightService extends Disposable implements IPlaywrightService 
 		return session.invokeFunctionRaw(pageId, fnDef, ...args);
 	}
 
+	async downloadBinary(sessionId: string, pageId: string, url: string): Promise<IPlaywrightDownloadResult> {
+		const session = await this._getOrCreateSession(sessionId);
+		return session.downloadBinary(pageId, url);
+	}
+
 	async invokeFunction(sessionId: string, pageId: string, fnDef: string, args: unknown[] = [], timeoutMs?: number): Promise<IInvokeFunctionResult> {
 		const session = await this._getOrCreateSession(sessionId);
 		return session.invokeFunction(pageId, fnDef, args, timeoutMs);
@@ -335,6 +379,28 @@ class PlaywrightSession extends Disposable {
 		promise: Promise<unknown>;
 	} & IDisposable>());
 
+	/** CDP request/response correlation for raw commands we send via the group. */
+	private _cdpRequestId = 1_000_000;
+	private readonly _cdpPending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+	/**
+	 * Cookies captured for a page view, keyed by view id. The TAPD browser
+	 * view can be closed/recreated between sequential attachment downloads
+	 * (our CDP Target attach/detach, or the host UI destroying the view),
+	 * after which `_getPage` can no longer resolve it. Cookies captured while
+	 * the page was alive stay valid for the duration of a single import, so we
+	 * reuse them for subsequent downloads of the same view instead of
+	 * requiring the page to remain matched in `_viewIdToPage`.
+	 */
+	private readonly _cookieCache = new Map<string, PlaywrightDownloadCookie[]>();
+
+	/**
+	 * Session-level fallback cookies. When any TAPD view captures cookies, they are
+	 * also stored here so that downloads can proceed even after the original browser
+	 * view has been closed (e.g. when the user opens a task detail modal later).
+	 */
+	private _tapdCookies: PlaywrightDownloadCookie[] | undefined;
+
 	constructor(
 		readonly sessionId: string,
 		private _browser: Browser,
@@ -347,8 +413,44 @@ class PlaywrightSession extends Disposable {
 		this._register(this.group);
 		this._register(this.group.onDidAddView(e => this._onViewAdded(e.viewId)));
 		this._register(this.group.onDidRemoveView(e => this._onViewRemoved(e.viewId)));
+		// Correlate responses to our own raw CDP commands (Playwright's own
+		// traffic shares the same transport but uses different IDs).
+		this._register(this.group.onCDPMessage(msg => this._onCDPMessage(msg)));
 
 		this._scanForNewContexts();
+	}
+
+	// --- Raw CDP command plumbing (for cookie retrieval) ---
+
+	private _onCDPMessage(msg: CDPResponse | CDPEvent): void {
+		if (typeof (msg as CDPResponse).id !== 'number') {
+			return; // events have no id
+		}
+		const id = (msg as CDPResponse).id!;
+		const pending = this._cdpPending.get(id);
+		if (!pending) {
+			return; // not ours
+		}
+		clearTimeout(pending.timer);
+		this._cdpPending.delete(id);
+		const response = msg as CDPResponse;
+		if (response.error) {
+			pending.reject(new Error(`CDP command failed: ${response.error.message}`));
+		} else {
+			pending.resolve(response.result);
+		}
+	}
+
+	private _sendCDP<T = unknown>(method: string, params?: unknown, sessionId?: string): Promise<T> {
+		const id = this._cdpRequestId++;
+		return new Promise<T>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this._cdpPending.delete(id);
+				reject(new Error(`CDP command "${method}" timed out`));
+			}, 15000);
+			this._cdpPending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+			void this.group.sendCDPMessage({ id, method, params, sessionId });
+		});
 	}
 
 	/** Register a disposable to be cleaned up when this session is disposed. */
@@ -380,6 +482,84 @@ class PlaywrightSession extends Disposable {
 	async invokeFunctionRaw<T>(pageId: string, fnDef: string, ...args: unknown[]): Promise<T> {
 		const fn = await this._compileFunction(fnDef);
 		return this._runAgainstPage(pageId, (page) => fn(page, args) as T);
+	}
+
+	async downloadBinary(pageId: string, url: string): Promise<IPlaywrightDownloadResult> {
+		// Resolve auth cookies in priority order:
+		// 1. per-view cache (fast path for repeated downloads of the same view)
+		// 2. session-level fallback (survives view close, used by task detail modal)
+		// 3. fresh CDP capture (only works while the view is still alive)
+		let cookies = this._cookieCache.get(pageId) ?? this._tapdCookies;
+		if (!cookies) {
+			const page = await this._getPage(pageId).catch(() => undefined);
+			const pageUrl = page?.url();
+			cookies = await this._getCookiesViaCDP(pageUrl);
+			this._cookieCache.set(pageId, cookies);
+			this._tapdCookies = cookies;
+		}
+
+		// The Electron/Chromium build here does NOT implement the CDP
+		// `Storage.getCookies` method, so Playwright's cookie-aware
+		// `page.request.fetch` fails. Instead we read the page's cookies via
+		// the supported `Network.getCookies` CDP command, then perform the
+		// download with a standalone, browser-less APIRequestContext that keeps
+		// cookies in pure JS memory — no CDP Storage domain involved, no CORS.
+		const { request } = await import('playwright-core');
+		const ctx = await request.newContext({
+			storageState: { cookies, origins: [] },
+			timeout: 30000,
+			ignoreHTTPSErrors: true,
+		});
+		try {
+			const resp = await ctx.fetch(url, { method: 'GET', timeout: 30000 });
+			const buf = await resp.body();
+			const contentType = (resp.headers()['content-type'] || '').toLowerCase();
+			const contentDisposition = (resp.headers()['content-disposition'] || '');
+			this.logService.info(`[PlaywrightSession] downloadBinary ${url} → status=${resp.status()} contentType="${contentType}" contentDisp="${contentDisposition}" bytes=${buf.length}`);
+			return {
+				ok: resp.ok(),
+				status: resp.status(),
+				contentType,
+				contentDisposition,
+				base64: buf.toString('base64'),
+			};
+		} finally {
+			await ctx.dispose();
+		}
+	}
+
+	/**
+	 * Fetch the TAPD page's cookies via the supported `Network.getCookies`
+	 * CDP command. We attach a dedicated, temporary CDP session to the page
+	 * target so we never disturb Playwright's own session.
+	 */
+	private async _getCookiesViaCDP(pageUrl: string | undefined): Promise<PlaywrightDownloadCookie[]> {
+		const targets = (await this._sendCDP<{ targetInfos: Array<{ targetId: string; type: string; url: string }> }>('Target.getTargets')).targetInfos ?? [];
+		let targetInfo = targets.find(t => t.type === 'page' && t.url === pageUrl);
+		if (!targetInfo) {
+			targetInfo = targets.find(t => t.type === 'page' && t.url.includes('tapd.cn'));
+		}
+		if (!targetInfo) {
+			targetInfo = targets.find(t => t.type === 'page');
+		}
+		if (!targetInfo) {
+			throw new Error('No page target available to read cookies for download');
+		}
+
+		const { sessionId } = await this._sendCDP<{ sessionId: string }>('Target.attachToTarget', { targetId: targetInfo.targetId, flatten: true });
+		try {
+			let result: { cookies: RawCDPCookie[] } | undefined;
+			try {
+				result = await this._sendCDP<{ cookies: RawCDPCookie[] }>('Network.getCookies', {}, sessionId);
+			} catch {
+				// Some Chromium builds require the Network domain enabled first.
+				await this._sendCDP('Network.enable', {}, sessionId).catch(() => { /* ignore */ });
+				result = await this._sendCDP<{ cookies: RawCDPCookie[] }>('Network.getCookies', {}, sessionId);
+			}
+			return (result?.cookies ?? []).map(toPlaywrightCookie);
+		} finally {
+			await this._sendCDP('Target.detachFromTarget', { sessionId }).catch(() => { /* ignore */ });
+		}
 	}
 
 	async invokeFunction(pageId: string, fnDef: string, args: unknown[] = [], timeoutMs?: number): Promise<IInvokeFunctionResult> {
@@ -636,6 +816,13 @@ class PlaywrightSession extends Disposable {
 
 	override dispose(): void {
 		this._stopScanning();
+		for (const { reject, timer } of this._cdpPending.values()) {
+			clearTimeout(timer);
+			reject(new Error('PlaywrightSession disposed'));
+		}
+		this._cdpPending.clear();
+		this._cookieCache.clear();
+		this._tapdCookies = undefined;
 		this._browser?.close().catch(() => { /* ignore */ });
 		for (const { page } of this._viewIdQueue) {
 			page.error(new Error('PlaywrightSession disposed'));
