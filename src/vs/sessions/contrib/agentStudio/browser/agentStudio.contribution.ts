@@ -85,6 +85,7 @@ import {
 	AGENT_STUDIO_WORKFLOW_VIEW_ID,
 	AGENT_STUDIO_DASHBOARD_VIEW_ID,
 	AGENT_STUDIO_WIKI_VIEW_ID,
+	AGENT_STUDIO_KB_VIEW_ID,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING,
@@ -159,6 +160,12 @@ import { MarketplaceEditorPane } from './marketplaceEditorPane.js';
 import { MarketplaceEditorInput } from './marketplaceEditorInput.js';
 import { NativeChatEditorPane } from './nativeChatEditorPane.js';
 import { NativeChatEditorInput } from './nativeChatEditorInput.js';
+
+
+import { ExplorerFolderContext } from '../../../../workbench/contrib/files/common/files.js';
+import { EditorContextKeys } from '../../../../editor/common/editorContextKeys.js';
+import { ResourceContextKey } from '../../../../workbench/common/contextkeys.js';
+import { Schemas } from '../../../../base/common/network.js';
 import './views/media/toolbarViews.css';
 import './views/media/toolsToggle.css';
 import { SessionsExplorerView, SessionsExplorerEmptyView } from '../../files/browser/filesView.js';
@@ -178,6 +185,11 @@ import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 
 import { WikiViewPane } from './views/wikiView.js';
+import { KnowledgeBaseViewPane } from './views/knowledgeBaseView.js';
+import { KnowledgeBaseNoteEditorPane } from './kbNoteEditorPane.js';
+import { KbNoteEditorInput } from './kbNoteEditorInput.js';
+import { KnowledgeBaseGraphEditorPane } from './kbGraphEditorPane.js';
+import { KbGraphEditorInput } from './kbGraphEditorInput.js';
 import { WorkflowViewPane } from './views/workflowView.js';
 import { IWikiTagService } from './services/wikiTagService.js';
 import { WikiTagServiceImpl } from './services/wikiTagServiceImpl.js';
@@ -253,6 +265,7 @@ const integrationIcon = registerIcon('agent-studio-integration', Codicon.extensi
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
 const wikiIcon = registerIcon('agent-studio-wiki', Codicon.book, localize('wikiIcon', "Wiki"));
+const kbIcon = registerIcon('agent-studio-knowledge-base', Codicon.book, localize('kbIcon', "Knowledge Base"));
 const workflowIcon = registerIcon('agent-studio-workflow', Codicon.listTree, localize('workflowIcon', "Workflow"));
 
 // --- Configuration ---------------------------------------------------------------
@@ -943,30 +956,98 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
-// Register a command to add content to the active chat panel (used by integrated browser's "Add to Chat" buttons)
+// Register KnowledgeBaseNoteEditorPane — 点击知识库文件后在中间栏打开的
+// WYSIWYG 笔记编辑器（Protyle/Lute 渲染管线，无模式切换，默认所见即所得）。
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		KnowledgeBaseNoteEditorPane,
+		KnowledgeBaseNoteEditorPane.ID,
+		localize('kbNoteEditor', "知识库笔记"),
+	),
+	[
+		new SyncDescriptor(KbNoteEditorInput)
+	]
+);
+
+// Register KnowledgeBaseGraphEditorPane — 「🕸️ 关系图谱」在中间栏打开的
+// 独立力导向图 EditorPane（对齐 SiYuan openGraph → 中心 Tab 范式）。
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		KnowledgeBaseGraphEditorPane,
+		KnowledgeBaseGraphEditorPane.ID,
+		localize('kbGraphEditor', "知识库关系图谱"),
+	),
+	[
+		new SyncDescriptor(KbGraphEditorInput)
+	]
+);
+
+// Register a unified command to add content/files to the active Agent Studio chat panel.
+// - From webview "Add to Chat" buttons → receives { name, value, fullName } entry object
+// - From Explorer/Editor "Add to Agent Chat" context menu → receives file URI
+// Routes to the most recently focused NativeChatEditorPane (supports multiple chat tabs).
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: 'agentStudio.addToChat',
-			title: localize2('agentStudio.addToChat', 'Add to Chat'),
+			title: localize2('agentStudio.addToChat', 'Add to Agent Chat'),
 			f1: false,
+			menu: [{
+				id: MenuId.ExplorerContext,
+				group: '5_chat_saros',
+				order: 0,
+				when: ContextKeyExpr.and(
+					AgentStudioActiveContext,
+					ExplorerFolderContext.negate(),
+					ContextKeyExpr.or(
+						ResourceContextKey.Scheme.isEqualTo(Schemas.file),
+						ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeRemote)
+					)
+				),
+			}, {
+				id: MenuId.EditorContext,
+				group: '1_chat_saros',
+				order: 1,
+				when: ContextKeyExpr.and(
+					AgentStudioActiveContext,
+					EditorContextKeys.hasNonEmptySelection.negate(),
+					ContextKeyExpr.or(
+						ResourceContextKey.Scheme.isEqualTo(Schemas.file),
+						ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeRemote),
+						ResourceContextKey.Scheme.isEqualTo(Schemas.untitled),
+						ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeUserData)
+					)
+				),
+			}],
 		});
 	}
 
-	async run(accessor: ServicesAccessor, entry: { name?: string; value?: unknown; fullName?: string; modelDescription?: string }): Promise<void> {
-		const editorService = accessor.get(IEditorService);
+	async run(accessor: ServicesAccessor, resourceOrEntry: URI | { name?: string; value?: unknown; fullName?: string; modelDescription?: string }): Promise<void> {
 		const logService = accessor.get(ILogService);
-		// Find the active NativeChatEditorPane
-		for (const editor of editorService.visibleEditorPanes) {
-			if (editor instanceof NativeChatEditorPane) {
-				const name = entry?.fullName || entry?.name || 'Attachment';
-				const content = typeof entry?.value === 'string' ? entry.value : String(entry?.value ?? '');
-				editor.addContentToChat(name, content);
-				logService.debug(`[agentStudio.addToChat] Added "${name}" (${content.length} chars) to chat`);
-				return;
-			}
+		const pane = NativeChatEditorPane.lastFocusedPane;
+
+		logService.info(`[agentStudio.addToChat] Triggered. lastFocusedPane=${pane ? `pane#${pane.paneId}` : 'null'}, argType=${URI.isUri(resourceOrEntry) ? 'URI' : 'entry'}`);
+
+		if (!pane) {
+			logService.warn('[agentStudio.addToChat] No focused NativeChatEditorPane found. User may not have clicked on an Agent Chat tab yet.');
+			return;
 		}
-		logService.warn(`[agentStudio.addToChat] No NativeChatEditorPane found in visibleEditorPanes. Visible: ${editorService.visibleEditorPanes.map(e => e.constructor.name).join(', ')}`);
+
+		// URI mode — from Explorer / Editor context menu ("Add to Agent Chat")
+		if (URI.isUri(resourceOrEntry)) {
+			const uri = resourceOrEntry as URI;
+			logService.info(`[agentStudio.addToChat] URI mode → pane.addFileToChat(${uri.toString()})`);
+			await pane.addFileToChat(uri);
+			return;
+		}
+
+		// Entry mode — from webview "Add to Chat" button
+		const entry = resourceOrEntry as { name?: string; value?: unknown; fullName?: string };
+		const name = entry?.fullName || entry?.name || 'Attachment';
+		const content = typeof entry?.value === 'string' ? entry.value : String(entry?.value ?? '');
+		logService.info(`[agentStudio.addToChat] Entry mode → pane.addContentToChat("${name}", ${content.length} chars)`);
+		pane.addContentToChat(name, content);
+		logService.debug(`[agentStudio.addToChat] Added "${name}" (${content.length} chars) to pane #${pane.paneId}`);
 	}
 });
 
@@ -2332,6 +2413,16 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewId: AGENT_STUDIO_DASHBOARD_VIEW_ID,
 			order: 140,
 			viewCtor: AgentStudioDashboardViewPane,
+		});
+
+		// Knowledge Base (order: 120) — 仿 SiYuan 的多 Vault 文件树
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.knowledgeBase',
+			title: localize2('agentStudio.knowledgeBase.title', "知识库"),
+			icon: kbIcon,
+			viewId: AGENT_STUDIO_KB_VIEW_ID,
+			order: 120,
+			viewCtor: KnowledgeBaseViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //

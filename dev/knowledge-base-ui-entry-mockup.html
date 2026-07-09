@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Sarosis - 知识库 View · UI 入口 Mockup v2 (图谱=中间栏 EditorPane)</title>
+<!--
+  方案 v3（按用户要求 + 对齐 SiYuan）：
+    SiYuan 把图谱设计成可装入「中心 Tab」的 Model（openGraph → wnd.split("lr").addTab(new Tab(...))），
+    入口有命令 graphView / 文档标题右键「关系图谱」。
+    本项目用 EditorInput + EditorPane + editorService.openEditor() 等价实现。
+
+  死入口模块 → 新增 UI 入口：
+    1) kbGraphView.ts (Canvas 力导向图谱)
+       → 视图头 [🕸️ 关系图谱] 按钮：在【中间栏文件编辑器】打开独立 EditorPane(KbGraphEditorPane)
+          （不切换左侧文件树；左侧保持文件树不变）
+       → 图谱 Tab 内：浮动工具条(重新布局/适配/图例) + 图例；双击节点 → 在左侧文件树定位
+
+    2) kbNoteEditorPane.ts (Protyle/Lute 三模编辑器)
+       → 【已移除左侧预览面板】。改为：点击文件节点 → 直接在中间栏打开 KbNoteEditorPane，
+         默认进入 ✏️ WYSIWYG 模式（所见即所得编辑）。
+       → 文件节点 hover [↗] 动作 → 同样在中间栏打开该笔记的 WYSIWYG 编辑器。
+-->
+<style>
+:root{
+  --bg:#1e1e1e; --bg-activitybar:#333333; --bg-sidebar:#252526; --bg-card:#2d2d2d;
+  --bg-hover:#2a2d2e; --bg-input:#1e1e1e; --bg-listhover:#2a2d2e; --bg-selected:#094771;
+  --border:#3c3c3c; --border-light:#454545;
+  --text:#cccccc; --text-muted:#9d9d9d; --text-bright:#ffffff;
+  --primary:#007acc; --primary-hover:#1f8ad2;
+  --success:#4ec9b0; --error:#f48771; --warning:#dcdcaa; --info:#569cd6;
+  --green:#6a9955; --orange:#ce9178; --purple:#c586c0;
+  --font:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+  --mono:'Consolas','Monaco',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{height:100%;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;overflow:hidden;}
+
+.workbench{display:flex;height:100vh;}
+
+/* ── ActivityBar ── */
+.activitybar{width:48px;background:var(--bg-activitybar);display:flex;flex-direction:column;align-items:center;padding:6px 0;flex-shrink:0;gap:2px;border-right:1px solid #000;}
+.ab-item{width:48px;height:48px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);cursor:pointer;position:relative;font-size:22px;}
+.ab-item:hover{color:var(--text);}
+.ab-item.active{color:var(--text-bright);}
+.ab-item.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--text-bright);}
+.ab-spacer{flex:1;}
+
+/* ── Sidebar (left, file tree — 始终保持) ── */
+.sidebar{width:360px;background:var(--bg-sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;position:relative;}
+.view-header{height:35px;display:flex;align-items:center;gap:4px;padding:0 4px 0 10px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.view-header .title{font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600;opacity:.8;display:flex;align-items:center;gap:6px;}
+.hdr-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:14px;border:1px solid transparent;}
+.hdr-btn:hover{background:var(--bg-hover);color:var(--text);}
+.hdr-btn.active{background:var(--primary);color:#fff;}
+
+.vault-bar{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.vault-select{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:5px 8px;cursor:pointer;color:var(--text);font-size:12px;}
+.vault-select:hover{border-color:var(--primary);}
+.vault-select .vname{font-weight:600;flex:1;}
+.vault-select .caret{color:var(--text-muted);font-size:10px;}
+.vault-icon{font-size:14px;color:var(--purple);}
+.ab-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:14px;border:1px solid transparent;}
+.ab-btn:hover{background:var(--bg-hover);color:var(--text);}
+
+.search-row{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.search-box{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;}
+.search-box:focus-within{border-color:var(--primary);}
+.search-box input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:12px;}
+.search-box input::placeholder{color:var(--text-muted);}
+
+.tree-scroll{flex:1;overflow-y:auto;}
+.tree-scroll::-webkit-scrollbar{width:10px;}
+.tree-scroll::-webkit-scrollbar-thumb{background:#424242;border-radius:5px;border:2px solid var(--bg-sidebar);}
+
+.section{border-bottom:1px solid var(--border);}
+.section > summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600;color:var(--text);user-select:none;}
+.section > summary::-webkit-details-marker{display:none;}
+.section > summary::before{content:'▾';font-size:10px;color:var(--text-muted);}
+.section:not([open]) > summary::before{content:'▸';}
+.section > summary .title{flex:1;display:flex;align-items:center;gap:6px;}
+.section > summary .count{font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:0 6px;color:var(--text-muted);}
+.section > summary .cat{font-size:13px;}
+.section .sec-body{padding-bottom:4px;}
+.sec-toolbar{display:flex;align-items:center;gap:1px;margin-left:4px;}
+.sec-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;color:var(--text-muted);font-size:13px;border:1px solid transparent;}
+.sec-btn:hover{background:var(--bg-hover);color:var(--text);}
+.sec-btn.primary:hover{background:var(--primary);color:#fff;}
+.sec-lib > summary .cat{color:var(--info);}
+.sec-notes > summary .cat{color:var(--purple);}
+
+.tree-node{display:flex;align-items:center;gap:4px;padding:2px 6px;cursor:pointer;font-size:13px;line-height:22px;border-radius:3px;white-space:nowrap;position:relative;}
+.tree-node:hover{background:var(--bg-listhover);}
+.tree-node.selected{background:var(--bg-selected);}
+.tree-node .twist{width:14px;text-align:center;color:var(--text-muted);font-size:10px;flex-shrink:0;}
+.tree-node .ficon{width:16px;text-align:center;font-size:13px;flex-shrink:0;}
+.tree-node.dir .ficon{color:var(--warning);}
+.tree-node .fname{flex:1;overflow:hidden;text-overflow:ellipsis;}
+.tree-node .fmeta{font-size:10px;color:var(--text-muted);font-family:var(--mono);margin-left:6px;}
+.tree-node .status{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-left:4px;}
+.status.raw{background:var(--info);}
+.status.indexed{background:var(--green);}
+.status.modified{background:var(--warning);}
+.tree-actions{display:none;gap:2px;margin-left:4px;}
+.tree-node:hover .tree-actions{display:flex;}
+.tree-act{width:20px;height:20px;display:flex;align-items:center;justify-content:center;border-radius:3px;color:var(--text-muted);font-size:12px;cursor:pointer;}
+.tree-act:hover{background:var(--primary);color:#fff;}
+
+/* ════════ Sidebar (left): file tree only — 预览面板已移除 ════════ */
+.kb-preview-render{font-size:13px;line-height:1.7;}
+.kb-preview-render h1{font-size:18px;margin:8px 0 6px;color:var(--text-bright);}
+.kb-preview-render h2{font-size:15px;margin:8px 0 4px;color:var(--text-bright);}
+.kb-preview-render p{margin:4px 0;}
+.kb-preview-render code{background:var(--bg-card);padding:1px 4px;border-radius:3px;font-family:var(--mono);color:var(--orange);}
+.kb-preview-render pre{background:var(--bg-card);padding:8px;border-radius:5px;overflow:auto;margin:6px 0;}
+.kb-preview-render pre code{background:none;color:var(--text);}
+.kb-wikilink{color:var(--info);cursor:pointer;border-bottom:1px dashed var(--info);}
+.kb-wikilink:hover{background:rgba(86,156,214,.15);}
+.kb-block-ref{color:var(--purple);cursor:pointer;border-bottom:1px dotted var(--purple);}
+/* WYSIWYG edit state */
+.kb-editor-content[contenteditable="true"]{outline:none;cursor:text;}
+.kb-editor-content[contenteditable="true"]:focus{box-shadow:inset 0 0 0 1px var(--primary);}
+.kb-edit-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;background:rgba(0,122,204,.15);color:var(--primary);font-size:11px;font-weight:600;border:1px solid rgba(0,122,204,.4);}
+
+/* ════════ Center editor (right) ════════ */
+.editor{flex:1;display:flex;flex-direction:column;background:var(--bg);min-width:0;}
+.editor-tabs{height:35px;background:var(--bg-sidebar);border-bottom:1px solid var(--border);display:flex;align-items:flex-end;flex-shrink:0;}
+.editor-tab{padding:8px 14px;font-size:13px;color:var(--text-muted);border-right:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:6px;}
+.editor-tab.active{background:var(--bg);color:var(--text);border-top:1px solid var(--primary);}
+.editor-tab .x{color:var(--text-muted);font-size:11px;}
+.editor-tab .x:hover{color:var(--error);}
+.editor-body{flex:1;position:relative;overflow:hidden;}
+
+/* generic editor pane (note — WYSIWYG only) */
+.kb-editor-pane{position:absolute;inset:0;display:flex;flex-direction:column;min-height:0;}
+.kb-editor-pane.hide{display:none;}
+.kb-editor-toolbar{display:flex;align-items:center;gap:2px;padding:5px 8px;border-bottom:1px solid var(--border);background:var(--bg-sidebar);}
+.kb-editor-toolbar .spacer{flex:1;}
+.kb-editor-content{flex:1;overflow:auto;padding:14px 18px;}
+.kb-editor-content.hide{display:none;}
+
+/* ════════ Graph editor pane (center tab) ════════ */
+.kb-graph-pane{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg);}
+.kb-graph-pane.hide{display:none;}
+.kb-graph-pane .graph-head{height:30px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted);flex-shrink:0;}
+.kb-graph-pane .graph-head .gtitle{font-weight:600;color:var(--text);}
+.kb-graph-stage{position:relative;flex:1;overflow:hidden;}
+.kb-graph-stage svg{width:100%;height:100%;display:block;}
+.graph-float{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:4px;z-index:5;}
+.graph-fbtn{width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:5px;background:var(--bg-card);border:1px solid var(--border-light);color:var(--text);cursor:pointer;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.4);}
+.graph-fbtn:hover{background:var(--bg-hover);border-color:var(--primary);}
+.graph-legend{position:absolute;left:8px;bottom:8px;background:var(--bg-card);border:1px solid var(--border-light);border-radius:6px;padding:8px 10px;font-size:11px;box-shadow:0 2px 8px rgba(0,0,0,.4);}
+.graph-legend .lg-row{display:flex;align-items:center;gap:6px;margin:2px 0;}
+.graph-legend .dot{width:10px;height:10px;border-radius:50%;}
+.graph-legend .ln{width:16px;height:2px;}
+.graph-legend .lg-title{font-weight:600;color:var(--text-bright);margin-bottom:4px;font-size:10px;text-transform:uppercase;letter-spacing:.5px;}
+.graph-hint{position:absolute;left:50%;top:8px;transform:translateX(-50%);background:var(--bg-card);border:1px solid var(--border-light);border-radius:14px;padding:3px 12px;font-size:11px;color:var(--text-muted);}
+
+.editor-empty{padding:24px;color:var(--text-muted);line-height:1.7;}
+.callout{border-left:3px solid var(--primary);background:rgba(0,122,204,.08);padding:8px 12px;border-radius:0 5px 5px 0;margin:10px 0;font-size:12px;color:var(--text);}
+</style>
+</head>
+<body>
+<div class="workbench">
+
+  <!-- ActivityBar -->
+  <div class="activitybar">
+    <div class="ab-item" title="资源管理">🗂️</div>
+    <div class="ab-item" title="搜索">🔍</div>
+    <div class="ab-item" title="Agent 工作台">🤖</div>
+    <div class="ab-item active" title="知识库">📚</div>
+    <div class="ab-spacer"></div>
+    <div class="ab-item" title="账户">👤</div>
+  </div>
+
+  <!-- Sidebar (left — file tree, always visible) -->
+  <div class="sidebar">
+    <!-- Header: 🕸️ 关系图谱 → 打开中间栏 EditorPane -->
+    <div class="view-header">
+      <span class="title"><span>📚</span> 知识库</span>
+      <span style="flex:1"></span>
+      <span class="hdr-btn" id="graphBtn" title="关系图谱（在中间栏打开）">🕸️</span>
+      <span class="hdr-btn" title="刷新">⟳</span>
+      <span class="hdr-btn" title="打开知识库文件夹">⚙</span>
+    </div>
+
+    <div class="vault-bar">
+      <span class="vault-icon">📦</span>
+      <div class="vault-select"><span class="vname">AI-Agent 知识库</span><span class="caret">▼</span></div>
+      <span class="ab-btn" title="新建笔记空间">＋</span>
+      <span class="ab-btn" title="更多操作">⋯</span>
+    </div>
+
+    <div class="search-row">
+      <div class="search-box"><span>🔍</span><input placeholder="搜索知识库 (全文 / 标题 / 标签)…"></div>
+    </div>
+
+    <div class="tree-scroll" id="treeScroll">
+      <details class="section sec-lib" open>
+        <summary><span class="title"><span class="cat">📂</span> 库</span><span class="count">5</span>
+          <div class="sec-toolbar"><span class="sec-btn primary" title="导入数据源">📥</span></div></summary>
+        <div class="sec-body">
+          <div class="tree-node dir"><span class="twist">▾</span><span class="ficon">📁</span><span class="fname">待处理导入</span></div>
+          <div class="tree-node" style="padding-left:24px"><span class="twist"></span><span class="ficon">📄</span><span class="fname">obsidian-会议纪要.md</span><span class="fmeta">18KB</span><span class="status raw"></span></div>
+        </div>
+      </details>
+
+      <details class="section sec-notes" open>
+        <summary><span class="title"><span class="cat">📦</span> 笔记</span><span class="count">12</span>
+          <div class="sec-toolbar"><span class="sec-btn" title="新建文件">✏️</span><span class="sec-btn" title="新建文件夹">📁＋</span><span class="sec-btn" title="排序">↑↓</span></div></summary>
+        <div class="sec-body">
+          <div class="tree-node dir"><span class="twist">▾</span><span class="ficon">📁</span><span class="fname">[01]基础概念-02-架构设计</span></div>
+          <div class="tree-node selected" style="padding-left:24px" onclick="openNote('02-架构设计.md')">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">02-架构设计.md</span>
+            <span class="fmeta">61KB · 27块</span><span class="status indexed"></span>
+            <span class="tree-actions"><span class="tree-act" title="用 WYSIWYG 编辑器打开" onclick="event.stopPropagation();openNote('02-架构设计.md')">↗</span></span>
+          </div>
+          <div class="tree-node" style="padding-left:24px" onclick="openNote('toolset-config.md')">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">toolset-config.md</span>
+            <span class="fmeta">9KB · 6块</span><span class="status modified"></span>
+            <span class="tree-actions"><span class="tree-act" title="用 WYSIWYG 编辑器打开" onclick="event.stopPropagation();openNote('toolset-config.md')">↗</span></span>
+          </div>
+          <div class="tree-node" style="padding-left:24px" onclick="openNote('README.md')"><span class="twist"></span><span class="ficon">📄</span><span class="fname">README.md</span><span class="fmeta">3KB · 2块</span><span class="status indexed"></span></div>
+          <div class="tree-node dir" style="padding-left:24px"><span class="twist">▸</span><span class="ficon">📁</span><span class="fname">2026-06-02</span></div>
+        </div>
+      </details>
+    </div>
+  </div><!-- /sidebar -->
+
+  <!-- Center editor -->
+  <div class="editor">
+    <div class="editor-tabs" id="editorTabs">
+      <div class="editor-tab active" data-tab="note" id="tabNote">📄 02-架构设计.md <span class="x">✕</span></div>
+      <div class="editor-tab" data-tab="graph" id="tabGraph" style="display:none">🕸️ 关系图谱 <span class="x">✕</span></div>
+    </div>
+    <div class="editor-body">
+
+      <!-- Empty state -->
+      <div class="editor-empty" id="editorEmpty">
+        点击左侧 <strong>文件节点</strong> 直接在中间栏以 <strong>WYSIWYG</strong> 打开编辑器；<br>
+        点击左侧「🕸️ 关系图谱」在中间栏打开 <strong>独立图谱 EditorPane</strong>。
+      </div>
+
+      <!-- Note editor pane (WYSIWYG only — 无模式切换) -->
+      <div class="kb-editor-pane hide" id="notePane">
+        <div class="kb-editor-toolbar">
+          <span class="kb-edit-badge">✏️ WYSIWYG</span>
+          <span class="spacer"></span>
+          <span style="font-size:11px;color:var(--text-muted)">KbNoteEditorPane · Lute 块级渲染</span>
+        </div>
+        <div class="kb-editor-content" id="editorContent" contenteditable="true">
+          <div class="kb-preview-render">
+            <h1>02-架构设计</h1>
+            <p>知识库采用 <strong>双轨数据模型</strong>（对齐 SiYuan kernel）：</p>
+            <ul><li>Vault（笔记本）= 磁盘文件夹</li><li>库 / 笔记 两个分区</li></ul>
+            <p>引用示例：参见 <span class="kb-wikilink">01-基础概念</span> 与 块 <span class="kb-block-ref">20260601-abc123</span>。</p>
+            <pre><code>export class KbNativeKernel { /* BM25 + 提及 */ }</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- ════════ Graph editor pane (independent center tab) ════════ -->
+      <div class="kb-graph-pane hide" id="graphPane">
+        <div class="graph-head">
+          <span class="gtitle">🕸️ 关系图谱</span>
+          <span>AI-Agent 知识库</span>
+          <span style="flex:1"></span>
+          <span>双击节点在左侧文件树定位</span>
+        </div>
+        <div class="kb-graph-stage">
+          <div class="graph-hint">拖拽节点 · 滚轮缩放 · 单击节点定位文件</div>
+          <svg viewBox="0 0 760 520" preserveAspectRatio="xMidYMid meet">
+            <line x1="380" y1="90"  x2="180" y2="200" stroke="#40a6ff" stroke-width="1.5" opacity="0.6"/>
+            <line x1="380" y1="90"  x2="580" y2="190" stroke="#40a6ff" stroke-width="1.5" opacity="0.6"/>
+            <line x1="180" y1="200" x2="240" y2="340" stroke="#a0a0a0" stroke-width="1.2" opacity="0.5"/>
+            <line x1="580" y1="190" x2="540" y2="360" stroke="#40a6ff" stroke-width="1.5" opacity="0.6"/>
+            <line x1="240" y1="340" x2="400" y2="460" stroke="#ff8c00" stroke-width="1.5" opacity="0.6"/>
+            <line x1="540" y1="360" x2="400" y2="460" stroke="#a0a0a0" stroke-width="1.2" opacity="0.5"/>
+            <line x1="380" y1="90"  x2="400" y2="460" stroke="#40a6ff" stroke-width="1" opacity="0.4"/>
+            <!-- tag node -->
+            <circle cx="400" cy="460" r="16" fill="#ff8c00"/>
+            <text x="400" y="484" fill="#fff" font-size="10" text-anchor="middle">#架构</text>
+            <!-- doc nodes -->
+            <circle cx="380" cy="90"  r="20" fill="#40a6ff"/>
+            <text x="380" y="116" fill="#fff" font-size="11" text-anchor="middle">02-架构设计</text>
+            <circle cx="180" cy="200" r="15" fill="#40a6ff"/>
+            <text x="180" y="222" fill="#fff" font-size="10" text-anchor="middle">01-基础概念</text>
+            <circle cx="580" cy="190" r="15" fill="#40a6ff"/>
+            <text x="580" y="212" fill="#fff" font-size="10" text-anchor="middle">toolset-config</text>
+            <circle cx="240" cy="340" r="13" fill="#40a6ff"/>
+            <text x="240" y="360" fill="#fff" font-size="10" text-anchor="middle">RAG实践</text>
+            <circle cx="540" cy="360" r="13" fill="#40a6ff"/>
+            <text x="540" y="380" fill="#fff" font-size="10" text-anchor="middle">会议纪要</text>
+          </svg>
+          <div class="graph-float">
+            <div class="graph-fbtn" title="重新布局">🔄</div>
+            <div class="graph-fbtn" title="适配视图">⤢</div>
+            <div class="graph-fbtn" title="切换图例">🏷️</div>
+          </div>
+          <div class="graph-legend">
+            <div class="lg-title">图例</div>
+            <div class="lg-row"><span class="dot" style="background:#40a6ff"></span> 文档节点</div>
+            <div class="lg-row"><span class="dot" style="background:#ff8c00"></span> 标签节点</div>
+            <div class="lg-row"><span class="ln" style="background:#40a6ff"></span> 双链引用</div>
+            <div class="lg-row"><span class="ln" style="background:#a0a0a0"></span> 块引用</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── 关系图谱：在中间栏打开独立 EditorPane（对齐 SiYuan openGraph → 中心 Tab） ──
+const graphBtn = document.getElementById('graphBtn');
+const tabGraph = document.getElementById('tabGraph');
+const tabNote  = document.getElementById('tabNote');
+const notePane = document.getElementById('notePane');
+const graphPane= document.getElementById('graphPane');
+const editorEmpty = document.getElementById('editorEmpty');
+
+function showGraph(){
+  editorEmpty.style.display='none';
+  tabGraph.style.display='flex';
+  tabGraph.classList.add('active'); tabNote.classList.remove('active');
+  graphPane.classList.remove('hide'); notePane.classList.add('hide');
+}
+graphBtn.addEventListener('click', showGraph);
+tabGraph.addEventListener('click', e=>{ if(e.target.classList.contains('x')){ tabGraph.style.display='none'; switchTo('note'); } else showGraph(); });
+
+// ── Note editor: 点击文件 → 直接在中间栏以 WYSIWYG 打开 (KbNoteEditorPane) ──
+function openNote(name){
+  editorEmpty.style.display='none';
+  tabNote.firstChild.textContent = '📄 ' + name + ' ';
+  switchTo('note');
+}
+function switchTo(which){
+  if(which==='note'){
+    tabNote.classList.add('active'); tabGraph.classList.remove('active');
+    notePane.classList.remove('hide'); graphPane.classList.add('hide');
+  }
+}
+
+// ── Tree node selection（高亮，点击本身由 inline onclick 触发 openNote） ──
+document.querySelectorAll('.tree-node').forEach(n=>n.addEventListener('click', e=>{
+  if(e.target.closest('.tree-actions')) return; // hover 出的 ↗ 单独处理
+  document.querySelectorAll('.tree-node').forEach(x=>x.classList.remove('selected'));
+  n.classList.add('selected');
+}));
+</script>
+</body>
+</html>

@@ -65,11 +65,17 @@ export class NativeChatEditorPane extends EditorPane {
 	static readonly ID = NativeChatEditorInput.EditorID;
 	/** 多实例计数器（仅调试用），每个 pane 创建时自增。 */
 	private static _nextPaneId = 1;
+	/**
+	 * 最近获得焦点的面板实例（跨所有 tab/分组共享）。
+	 * "Add File to Chat" 等外部操作通过此字段路由到正确的面板。
+	 */
+	static lastFocusedPane: NativeChatEditorPane | null = null;
 
 	private _container: HTMLElement | undefined;
 	private _chatPanel: IChatPanel | undefined;
 	/** 多实例调试：每个 pane 的唯一标识（递增计数器），用于日志区分。 */
 	private readonly _paneId: number = NativeChatEditorPane._nextPaneId++;
+	get paneId(): number { return this._paneId; }
 	private _isInitialized = false;
 	private _defaultAgentSelected = false;
 	private _currentAgentId: string | null = null;
@@ -1040,10 +1046,12 @@ export class NativeChatEditorPane extends EditorPane {
 		// status dot: a finished run leaves a white "pending" dot only when
 		// the user has not yet activated the tab; activating it clears it.
 		this._isTabActive = this.group.activeEditor === this.input;
+		if (this._isTabActive) { NativeChatEditorPane.lastFocusedPane = this; }
 		this._register(this.group.onDidActiveEditorChange((e) => {
 			const nowActive = e.editor === this.input;
 			if (nowActive === this._isTabActive) { return; }
 			this._isTabActive = nowActive;
+			if (nowActive) { NativeChatEditorPane.lastFocusedPane = this; }
 			// User just focused the tab → clear any unread "pending" dot.
 			if (nowActive && this.input instanceof NativeChatEditorInput) {
 				if (this.input.getTabStatus() === 'pending') {
@@ -2390,6 +2398,30 @@ export class NativeChatEditorPane extends EditorPane {
 	 */
 	addContentToChat(name: string, content: string): void {
 		this._chatPanel?.addTextContext(name, content);
+	}
+
+	/**
+	 * 将文件 URI 读取后添加为聊天附件（供 Explorer "Add to Agent Chat" 等外部命令调用）。
+	 */
+	async addFileToChat(uri: URI): Promise<void> {
+		this._logService.info(`[NativeChatEditorPane#addFileToChat] START paneId=${this._paneId}, uri=${uri.toString()}, _chatPanel=${this._chatPanel ? 'exists' : 'NULL'}`);
+		try {
+			const content = await this._fileService.readFile(uri);
+			const text = content.value.toString();
+			const fileName = uri.path.split(/[/\\]/).pop() || uri.path;
+			const maxSize = 100 * 1024; // 100KB
+			const truncated = text.length > maxSize ? text.slice(0, maxSize) + '\n... (truncated)' : text;
+
+			if (!this._chatPanel) {
+				this._logService.warn(`[NativeChatEditorPane#addFileToChat] _chatPanel is null — panel may not be initialized yet. paneId=${this._paneId}, file="${fileName}"`);
+				return;
+			}
+
+			this._chatPanel.addFileContext(fileName, truncated);
+			this._logService.info(`[NativeChatEditorPane#addFileToChat] OK "${fileName}" added (${text.length} chars, truncated=${text.length > maxSize}) to paneId=${this._paneId}`);
+		} catch (err) {
+			this._logService.error('[NativeChatEditorPane#addFileToChat] FAILED — readFile error:', uri.toString(), err);
+		}
 	}
 
 	/**

@@ -28,7 +28,7 @@ export interface ISystemMsg {
 
 export interface ITabbedPanelContext {
 	readonly container: HTMLElement;
-	readonly textarea: HTMLTextAreaElement | null;
+	readonly textarea: HTMLElement | null;
 	readonly isSending: boolean;
 	readonly onSendMessage: (text: string) => void;
 	readonly agentId?: string;
@@ -353,7 +353,8 @@ export class TabbedPanelManager extends Disposable {
 			editBtn.addEventListener('click', (e) => {
 				e.stopPropagation();
 				if (this.ctx.textarea) {
-					this.ctx.textarea.value = item.content;
+					this.ctx.textarea.textContent = item.content;
+					this.ctx.textarea.dispatchEvent(new Event('input'));
 					this.ctx.textarea.focus();
 				}
 				this.remove(item.id);

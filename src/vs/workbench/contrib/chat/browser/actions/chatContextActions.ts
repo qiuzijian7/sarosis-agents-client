@@ -52,6 +52,7 @@ import { isQuickChat } from '../widget/chatWidget.js';
 import { resizeImage } from '../chatImageUtils.js';
 import { registerPromptActions } from '../promptSyntax/promptFileActions.js';
 import { CHAT_CATEGORY } from './chatActions.js';
+import { AgentStudioActiveContext } from '../../../../../sessions/common/contextkeys.js';
 import { registerCreatePluginAction } from './createPluginAction.js';
 
 export function registerChatContextActions(): DisposableStore {
@@ -148,6 +149,7 @@ class AttachFileToChatAction extends AttachResourceAction {
 				order: 1,
 				when: ContextKeyExpr.and(
 					ChatContextKeys.enabled,
+					AgentStudioActiveContext.negate(),
 					ExplorerFolderContext.negate(),
 					ContextKeyExpr.or(
 						ResourceContextKey.Scheme.isEqualTo(Schemas.file),
@@ -171,6 +173,7 @@ class AttachFileToChatAction extends AttachResourceAction {
 				order: 2,
 				when: ContextKeyExpr.and(
 					ChatContextKeys.enabled,
+					AgentStudioActiveContext.negate(),
 					EditorContextKeys.hasNonEmptySelection.negate(),
 					ContextKeyExpr.or(
 						ResourceContextKey.Scheme.isEqualTo(Schemas.file),

@@ -1298,7 +1298,24 @@ function renderDescriptionHtml(container: HTMLElement, descText: string): void {
 				container.appendChild(img);
 				break;
 			}
-			case 'link': {
+		case 'link': {
+			// If the link target is an image file, render it as a thumbnail
+			// (clickable to enlarge) instead of a hyperlink — TAPD imports
+			// descriptions as `[name.png](url)` links.
+			if (looksLikeImage(token.content)) {
+				const img = document.createElement('img');
+				img.className = 'tb-att-img';
+				const alt = token.linkText || token.alt || token.content.split(/[/\\]/).pop() || token.content;
+				img.alt = alt;
+				let src = resolveAttachmentSrc(token.content);
+				if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) {
+					src = 'file:///' + src.replace(/\\/g, '/');
+				}
+				img.src = src;
+				img.title = `${alt} — 点击放大`;
+				img.addEventListener('click', () => showImageLightbox(token.content, alt));
+				container.appendChild(img);
+			} else {
 				const a = document.createElement('a');
 				a.className = 'tb-att-link';
 				let href = resolveAttachmentSrc(token.content);
@@ -1310,8 +1327,9 @@ function renderDescriptionHtml(container: HTMLElement, descText: string): void {
 				const displayText = token.linkText || token.content.split(/[/\\]/).pop() || token.alt || token.content;
 				a.textContent = `📎 ${displayText}`;
 				container.appendChild(a);
-				break;
 			}
+			break;
+		}
 			case 'text': {
 				const text = token.content.trim();
 				if (!text) break;
@@ -1376,26 +1394,40 @@ function appendInlineMarkdown(parent: HTMLElement, text: string, openFile?: (pat
 	let last = 0;
 	let m: RegExpExecArray | null;
 	const appendPlain = (s: string) => { if (s) { appendInlineStyles(parent, s); } };
+	// Diagnostic: log description so we can confirm the URL/path that
+	// arrives at the renderer (helps distinguish "wrong src" from
+	// "broken image vs renderer" vs "old out/ loaded").
+	console.log('[appendInlineMarkdown] text=', JSON.stringify(text.slice(0, 500)));
+	const renderImageThumb = (rawPath: string, alt: string) => {
+		const img = document.createElement('img');
+		img.className = 'tb-att-img';
+		let src = resolveAttachmentSrc(rawPath);
+		if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) { src = 'file:///' + src.replace(/\\/g, '/'); }
+		img.src = src; img.alt = alt; img.title = `${alt} — 点击放大`;
+		img.addEventListener('click', () => showImageLightbox(rawPath, alt));
+		img.addEventListener('load', () => { console.log(`[appendInlineMarkdown] img LOADED: alt="${alt}" src=${src} natural=${img.naturalWidth}x${img.naturalHeight}`); });
+		img.addEventListener('error', () => { console.warn(`[appendInlineMarkdown] img FAILED: alt="${alt}" src=${src} rawPath=${rawPath}`); });
+		console.log(`[appendInlineMarkdown] renderImageThumb: alt="${alt}" rawPath=${rawPath} resolvedSrc=${src}`);
+		return img;
+	};
 	while ((m = tokRe.exec(text)) !== null) {
 		if (m.index > last) { appendPlain(text.substring(last, m.index)); }
 		const tok = m[0];
+		console.log(`[appendInlineMarkdown] token: ${tok}`);
 		if (tok.startsWith('@')) {
 			const mm = tok.match(/^@(image|file):([^\s(]+)\(([^)]*)\)$/);
 			if (mm && mm[3]) {
 				const type = mm[1]; const name = mm[2]; const path = mm[3];
-				// @image: only renders as <img> when the resolved path actually looks like an image; otherwise degrade to link.
-				if (type === 'image' && looksLikeImage(path)) {
-					const img = document.createElement('img');
-					img.className = 'tb-att-img';
-					let src = resolveAttachmentSrc(path);
-					if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) { src = 'file:///' + src.replace(/\\/g, '/'); }
-					img.src = src; img.alt = name; img.title = `${name} — 点击放大`;
-					img.addEventListener('click', () => showImageLightbox(path, name));
-					parent.appendChild(img);
+				console.log(`[appendInlineMarkdown] @${type}: name=${name} path=${path}`);
+				// @image: is always rendered as <img> thumbnail (the user
+				// explicitly typed the @image: prefix — don't second-guess
+				// with an extension check; even if the path is a TAPD CDN
+				// URL without a .png suffix, treat it as an image).
+				if (type === 'image') {
+					parent.appendChild(renderImageThumb(path, name));
 				} else {
-					const icon = type === 'image' ? (looksLikeImage(path) ? '🖼️' : '📎') : '📎';
 					const a = document.createElement('a');
-					a.className = 'tb-att-link'; a.textContent = `${icon} ${name}`; a.href = '#';
+					a.className = 'tb-att-link'; a.textContent = `📎 ${name}`; a.href = '#';
 					a.addEventListener('click', (e) => { e.preventDefault(); openAttachmentFromPath(path, openFile); });
 					parent.appendChild(a);
 				}
@@ -1403,15 +1435,10 @@ function appendInlineMarkdown(parent: HTMLElement, text: string, openFile?: (pat
 		} else if (tok.startsWith('![')) {
 			const mm = tok.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
 			if (mm) {
-				// Markdown ![alt](path) only renders as <img> when path looks like an image; otherwise degrade to link.
+				console.log(`[appendInlineMarkdown] ![${mm[1]}](${mm[2]}) looksLikeImage=${looksLikeImage(mm[2])}`);
+				// Markdown ![alt](path) renders as <img> when path looks like an image; otherwise degrade to link.
 				if (looksLikeImage(mm[2])) {
-					const img = document.createElement('img');
-					img.className = 'tb-att-img';
-					let src = resolveAttachmentSrc(mm[2]);
-					if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) { src = 'file:///' + src.replace(/\\/g, '/'); }
-					img.src = src; img.alt = mm[1] || ''; img.title = `${mm[1]} — 点击放大`;
-					img.addEventListener('click', () => showImageLightbox(mm[2], mm[1]));
-					parent.appendChild(img);
+					parent.appendChild(renderImageThumb(mm[2], mm[1] || ''));
 				} else {
 					const label = mm[1] || mm[2].split(/[/\\]/).pop() || mm[2];
 					const a = document.createElement('a');
@@ -1423,10 +1450,19 @@ function appendInlineMarkdown(parent: HTMLElement, text: string, openFile?: (pat
 		} else {
 			const mm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
 			if (mm) {
-				const a = document.createElement('a');
-				a.className = 'tb-att-link'; a.textContent = mm[1]; a.href = '#';
-				a.addEventListener('click', (e) => { e.preventDefault(); openAttachmentFromPath(mm[2], openFile); });
-				parent.appendChild(a);
+				console.log(`[appendInlineMarkdown] [${mm[1]}](${mm[2]}) looksLikeImage=${looksLikeImage(mm[2])}`);
+				// A markdown link whose target is an image file should be
+				// rendered as a thumbnail (not a hyperlink) — TAPD imports
+				// descriptions as `[name.png](url)` links, and after the
+				// local-path rewrite they must still show as thumbnails.
+				if (looksLikeImage(mm[2])) {
+					parent.appendChild(renderImageThumb(mm[2], mm[1] || ''));
+				} else {
+					const a = document.createElement('a');
+					a.className = 'tb-att-link'; a.textContent = mm[1]; a.href = '#';
+					a.addEventListener('click', (e) => { e.preventDefault(); openAttachmentFromPath(mm[2], openFile); });
+					parent.appendChild(a);
+				}
 			} else { appendPlain(tok); }
 		}
 		last = tokRe.lastIndex;
@@ -2520,33 +2556,75 @@ export class TaskBoardNativeRenderer {
 					const refreshAttachmentLinks = () => {
 						DOM.clearNode(attLinks);
 						const text = descInput?.value || '';
-						const re = /@(image|file):([^\s(]+)\(([^)]*)\)/g;
+						console.log('[refreshAttachmentLinks] text=', JSON.stringify(text.slice(0, 500)));
+						// Match @image:/@file: tokens AND markdown ![alt](path) / [text](path)
+						const re = /(@(?:image|file):[^\s(]+\([^)]*\)|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\))/g;
 						let m: RegExpExecArray | null;
 						let count = 0;
+						const renderImageThumb = (rawPath: string, alt: string) => {
+							const img = document.createElement('img');
+							img.className = 'tb-att-img';
+							let src = resolveAttachmentSrc(rawPath);
+							if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) {
+								src = 'file:///' + src.replace(/\\/g, '/');
+							}
+							img.src = src; img.alt = alt; img.title = `${alt} — 点击放大`;
+							img.addEventListener('click', () => showImageLightbox(rawPath, alt));
+							img.addEventListener('load', () => { console.log(`[refreshAttachmentLinks] img LOADED: alt="${alt}" src=${src} natural=${img.naturalWidth}x${img.naturalHeight}`); });
+							img.addEventListener('error', () => { console.warn(`[refreshAttachmentLinks] img FAILED: alt="${alt}" src=${src} rawPath=${rawPath}`); });
+							console.log(`[refreshAttachmentLinks] renderImageThumb: alt="${alt}" rawPath=${rawPath} resolvedSrc=${src}`);
+							return img;
+						};
 						while ((m = re.exec(text)) !== null) {
-							const type = m[1];
-							const name = m[2];
-							const path = m[3];
-							if (!path) { continue; }
-							// @image: + real image file → render <img> thumbnail
-							if (type === 'image' && looksLikeImage(path)) {
-								const img = document.createElement('img');
-								img.className = 'tb-att-img';
-								let src = resolveAttachmentSrc(path);
-								if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) {
-									src = 'file:///' + src.replace(/\\/g, '/');
+							const tok = m[0];
+							let path = '';
+							let label = '';
+							if (tok.startsWith('@')) {
+								const mm = tok.match(/^@(image|file):([^\s(]+)\(([^)]*)\)$/);
+								if (!mm || !mm[3]) { continue; }
+								path = mm[3]; label = mm[2];
+								// @image: is always rendered as <img> thumbnail (the
+								// user explicitly typed the @image: prefix — don't
+								// second-guess with an extension check).
+								if (mm[1] === 'image') {
+									attLinks.appendChild(renderImageThumb(path, label));
+									count++; continue;
 								}
-								img.src = src; img.alt = name; img.title = `${name} — 点击放大`;
-								img.addEventListener('click', () => showImageLightbox(path, name));
-								attLinks.appendChild(img);
-							} else {
+								// @file: → link chip
 								const a = DOM.$('a.tb-att-link') as HTMLAnchorElement;
-								a.textContent = `${type === 'image' ? '🖼️' : '📎'} ${name}`;
+								a.textContent = `📎 ${label}`;
 								a.title = `点击打开: ${path}`;
 								a.addEventListener('click', (e) => { e.preventDefault(); openAttachment(path); });
-								attLinks.appendChild(a);
+								attLinks.appendChild(a); count++;
+							} else if (tok.startsWith('![')) {
+								const mm = tok.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+								if (!mm) { continue; }
+								path = mm[2]; label = mm[1] || path.split(/[/\\]/).pop() || path;
+								if (looksLikeImage(path)) {
+									attLinks.appendChild(renderImageThumb(path, label));
+								} else {
+									const a = DOM.$('a.tb-att-link') as HTMLAnchorElement;
+									a.textContent = `📎 ${label}`; a.title = `点击打开: ${path}`;
+									a.addEventListener('click', (e) => { e.preventDefault(); openAttachment(path); });
+									attLinks.appendChild(a);
+								}
+								count++;
+							} else {
+								// [text](path) — markdown link
+								const mm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+								if (!mm) { continue; }
+								path = mm[2]; label = mm[1];
+								// Image target → thumbnail; otherwise link chip
+								if (looksLikeImage(path)) {
+									attLinks.appendChild(renderImageThumb(path, label));
+								} else {
+									const a = DOM.$('a.tb-att-link') as HTMLAnchorElement;
+									a.textContent = label; a.title = `点击打开: ${path}`;
+									a.addEventListener('click', (e) => { e.preventDefault(); openAttachment(path); });
+									attLinks.appendChild(a);
+								}
+								count++;
 							}
-							count++;
 						}
 						attLinks.style.display = count > 0 ? '' : 'none';
 					};

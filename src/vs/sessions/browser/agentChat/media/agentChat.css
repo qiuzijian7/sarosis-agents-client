@@ -1946,6 +1946,78 @@
 	border-color: var(--ec-border-primary, rgba(128,128,128,0.35));
 }
 
+/* 内联附件芯片：嵌入 contentEditable 文本流，与文字混排显示 */
+.inline-attachment-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin: 0 2px;
+	padding: 1px 6px 1px 8px;
+	border-radius: 8px;
+	background: var(--vscode-input-background, #2a2a2a);
+	border: 1px solid var(--ec-border-secondary, rgba(128,128,128,0.25));
+	font-size: 12px;
+	line-height: 1.4;
+	vertical-align: baseline;
+	user-select: none;
+	white-space: nowrap;
+	max-width: 220px;
+	cursor: default;
+}
+.inline-attachment-chip-icon {
+	font-size: 12px;
+}
+.inline-attachment-chip-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	max-width: 160px;
+}
+.inline-attachment-chip-remove {
+	margin-left: 2px;
+	cursor: pointer;
+	opacity: 0.6;
+	font-size: 11px;
+	border-radius: 4px;
+	padding: 0 2px;
+}
+.inline-attachment-chip-remove:hover {
+	opacity: 1;
+	background: rgba(255,255,255,0.12);
+}
+
+/* 悬停图片 chip 时显示的缩略图浮层 */
+.inline-attachment-thumb-tip {
+	position: fixed;
+	z-index: 10000;
+	max-width: 240px;
+	padding: 6px;
+	background: var(--vscode-editorWidget-background, #252526);
+	border: 1px solid var(--ec-border-secondary, rgba(128,128,128,0.3));
+	border-radius: 8px;
+	box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+	pointer-events: none; /* 浮层不拦截鼠标，避免遮挡后触发 mouseleave */
+}
+.inline-attachment-thumb-tip-img {
+	display: block;
+	max-width: 220px;
+	max-height: 160px;
+	border-radius: 4px;
+	object-fit: contain;
+}
+.inline-attachment-thumb-tip-caption {
+	margin-top: 4px;
+	max-width: 220px;
+	font-size: 11px;
+	color: var(--ec-text-muted);
+	text-align: center;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+
+
 .chat-attachment-thumb {
 	width: 36px;
 	height: 36px;
@@ -4454,11 +4526,17 @@
 	border-radius: 16px 16px 0 0;
 	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 	box-sizing: border-box;
+	white-space: pre-wrap;
+	word-break: break-word;
 }
 
-.chat-composer-textarea::placeholder {
+/* contentEditable 无原生 ::placeholder，用 :empty 伪元素显示占位符 */
+.chat-composer-textarea:empty::before,
+.chat-composer-textarea > br:only-child::before {
+	content: attr(data-placeholder);
 	color: var(--ec-text-muted);
 	opacity: 0.6;
+	pointer-events: none;
 }
 
 /* Toolbar */

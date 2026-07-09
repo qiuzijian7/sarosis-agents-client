@@ -1,0 +1,631 @@
+/*---------------------------------------------------------------------------------------------
+ *  Knowledge Base View — SiYuan (b3-list) inspired dark theme.
+ *  Reuses VS Code CSS variables so it follows the active theme.
+ *--------------------------------------------------------------------------------------------*/
+
+.kb-view {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-width: 0;
+}
+
+/* ── View header ── */
+.kb-header {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 0 4px 0 10px;
+	height: 35px;
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	flex-shrink: 0;
+}
+.kb-header .kb-title {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: .5px;
+	font-weight: 600;
+	opacity: .8;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.kb-header .kb-spacer { flex: 1; }
+.kb-hbtn {
+	width: 26px;
+	height: 26px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 4px;
+	cursor: pointer;
+	color: var(--vscode-icon-foreground);
+	opacity: .75;
+	border: 1px solid transparent;
+}
+.kb-hbtn:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); opacity: 1; }
+
+/* ── Vault switcher ── */
+.kb-vault-bar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	flex-shrink: 0;
+	position: relative;
+}
+.kb-vault-select {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	padding: 5px 8px;
+	cursor: pointer;
+	color: var(--vscode-foreground);
+	font-size: 12px;
+	min-width: 0;
+}
+.kb-vault-select:hover { border-color: var(--vscode-focusBorder); }
+.kb-vault-select .kb-vname { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-vault-select .kb-caret { color: var(--vscode-descriptionForeground); font-size: 10px; }
+.kb-vault-icon { font-size: 14px; }
+.kb-abtn {
+	width: 26px; height: 26px;
+	display: flex; align-items: center; justify-content: center;
+	border-radius: 4px; cursor: pointer;
+	color: var(--vscode-icon-foreground); opacity: .8;
+	border: 1px solid transparent;
+}
+.kb-abtn:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); opacity: 1; }
+
+.kb-vault-menu {
+	position: absolute;
+	top: 100%; left: 8px; right: 8px;
+	background: var(--vscode-dropdown-background);
+	border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	box-shadow: 0 4px 16px rgba(0,0,0,.5);
+	z-index: 50;
+	margin-top: 2px;
+	display: none;
+	overflow: hidden;
+}
+.kb-vault-menu.show { display: block; }
+.kb-vault-menu .kb-grp {
+	font-size: 10px; text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+	padding: 6px 10px 3px; letter-spacing: .5px;
+}
+.kb-vault-menu .kb-opt {
+	display: flex; align-items: center; gap: 8px;
+	padding: 6px 10px; cursor: pointer; font-size: 12px;
+}
+.kb-vault-menu .kb-opt:hover { background: var(--vscode-list-hoverBackground); }
+.kb-vault-menu .kb-opt .kb-path { font-family: var(--vscode-font-family); font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
+.kb-vault-menu .kb-opt .kb-check { color: var(--vscode-button-background); font-size: 11px; width: 14px; }
+.kb-vault-menu .kb-opt.add { color: var(--vscode-button-background); }
+.kb-vault-menu .kb-divider { height: 1px; background: var(--vscode-panel-border, var(--vscode-sideBar-border)); margin: 4px 0; }
+
+/* ── Search ── */
+.kb-search-row {
+	display: flex; align-items: center; gap: 6px;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	flex-shrink: 0;
+}
+.kb-search-box {
+	flex: 1; display: flex; align-items: center; gap: 6px;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px; padding: 4px 8px;
+}
+.kb-search-box:focus-within { border-color: var(--vscode-focusBorder); }
+.kb-search-box input { flex: 1; background: none; border: none; outline: none; color: var(--vscode-foreground); font-size: 12px; }
+.kb-search-box input::placeholder { color: var(--vscode-input-placeholderForeground); }
+
+/* ── Scroll area ── */
+.kb-scroll { flex: 1; overflow-y: auto; }
+.kb-scroll::-webkit-scrollbar { width: 10px; }
+.kb-scroll::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, #424242); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
+
+/* ── Section (库 / 笔记) ── */
+.kb-section { border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border)); }
+.kb-section-header {
+	display: flex; align-items: center; gap: 6px;
+	padding: 5px 8px;
+	font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+	font-weight: 600; color: var(--vscode-foreground);
+	user-select: none; cursor: pointer;
+}
+.kb-section-header .kb-arrow { font-size: 10px; color: var(--vscode-descriptionForeground); transition: .15s; }
+.kb-section:not(.open) .kb-section-header .kb-arrow { transform: rotate(-90deg); }
+.kb-section-header .kb-title { flex: 1; display: flex; align-items: center; gap: 6px; }
+.kb-section-header .kb-count {
+	font-size: 10px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	border-radius: 10px; padding: 0 6px;
+}
+.kb-section-header .kb-cat { font-size: 13px; }
+.kb-section.sec-library .kb-cat { color: var(--vscode-textLink-foreground, #569cd6); }
+.kb-section.sec-notes .kb-cat { color: var(--vscode-symbolIcon-structForeground, #c586c0); }
+
+.kb-section-toolbar { display: flex; align-items: center; gap: 1px; margin-left: 4px; }
+.kb-sec-btn {
+	width: 22px; height: 22px;
+	display: flex; align-items: center; justify-content: center;
+	border-radius: 3px; cursor: pointer;
+	color: var(--vscode-icon-foreground); opacity: .8;
+	border: 1px solid transparent;
+}
+.kb-sec-btn:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); opacity: 1; }
+.kb-sec-btn.primary:hover { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+
+.kb-section-body { padding-bottom: 4px; display: none; }
+.kb-section.open .kb-section-body { display: block; }
+
+/* ── Tree node (b3-list-item style) ── */
+.kb-node {
+	display: flex; align-items: center; gap: 4px;
+	padding: 0 6px;
+	cursor: pointer;
+	font-size: 13px; line-height: 28px; min-height: 28px;
+	border-radius: var(--vscode-border-radius, 4px);
+	margin: 1px 8px;
+	white-space: nowrap;
+}
+.kb-node:hover { background: var(--vscode-list-hoverBackground); }
+.kb-node.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.kb-node .kb-twist {
+	width: 14px; text-align: center; color: var(--vscode-descriptionForeground);
+	font-size: 10px; cursor: pointer; flex-shrink: 0;
+}
+.kb-node .kb-twist.empty { visibility: hidden; }
+.kb-node .kb-ficon { width: 16px; text-align: center; font-size: 13px; flex-shrink: 0; }
+.kb-node.dir .kb-ficon { color: var(--vscode-symbolIcon-folderForeground, #dcb67a); }
+.kb-node .kb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.kb-node .kb-meta { font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 6px; font-family: var(--vscode-font-family); }
+.kb-node .kb-status { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-left: 4px; }
+.kb-status.raw { background: var(--vscode-textLink-foreground, #569cd6); }
+.kb-status.indexed { background: var(--vscode-testing-iconPassed, #6a9955); }
+.kb-status.modified { background: var(--vscode-editorWarning-foreground, #dcdcaa); }
+
+/* action buttons — hidden by default, shown on hover (SiYuan b3-list-item--hide-action) */
+.kb-node .kb-actions { display: none; align-items: center; gap: 1px; margin-left: 4px; }
+.kb-node:hover .kb-actions { display: flex; }
+.kb-node .kb-act {
+	width: 20px; height: 20px;
+	display: flex; align-items: center; justify-content: center;
+	border-radius: 3px; cursor: pointer;
+	color: var(--vscode-icon-foreground); opacity: .8;
+}
+.kb-node .kb-act:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); opacity: 1; }
+
+/* inline rename */
+.kb-rename-input {
+	flex: 1;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-focusBorder);
+	border-radius: 3px;
+	color: var(--vscode-foreground);
+	font-size: 13px;
+	padding: 2px 4px;
+	font-family: var(--vscode-font-family);
+}
+.kb-rename-msg { font-size: 10px; margin-left: 6px; }
+.kb-rename-msg.invalid { color: var(--vscode-errorForeground); }
+.kb-rename-msg.valid { color: var(--vscode-testing-iconPassed, #6a9955); }
+
+/* ── Dropdown popups (import / sort) ── */
+.kb-dropdown {
+	position: absolute;
+	background: var(--vscode-dropdown-background, #252526);
+	color: var(--vscode-foreground, #cccccc);
+	border: 1px solid var(--vscode-dropdown-border, #454545);
+	border-radius: 6px;
+	box-shadow: 0 6px 24px rgba(0,0,0,.6);
+	z-index: 100; display: none;
+	min-width: 220px; overflow: hidden;
+}
+.kb-dropdown.show { display: block; }
+.kb-dropdown .kb-dd-title {
+	font-size: 11px; font-weight: 600;
+	padding: 8px 12px 4px; color: var(--vscode-foreground);
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+}
+.kb-dropdown .kb-opt {
+	display: flex; align-items: center; gap: 10px;
+	padding: 7px 12px; cursor: pointer; font-size: 12px;
+	color: var(--vscode-foreground, #cccccc);
+}
+.kb-dropdown .kb-opt:hover { background: var(--vscode-list-hoverBackground, #2a2d2e); }
+.kb-dropdown .kb-opt .kb-ic { font-size: 15px; width: 18px; text-align: center; }
+.kb-dropdown .kb-opt .kb-txt { flex: 1; }
+.kb-dropdown .kb-opt .kb-sub { font-size: 10px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-font-family); }
+.kb-dropdown .kb-divider { height: 1px; background: var(--vscode-panel-border, var(--vscode-sideBar-border)); margin: 3px 0; }
+
+/* sort dropdown */
+.kb-sort-group { padding: 4px 8px; }
+.kb-sort-label { font-size: 11px; font-weight: 600; padding: 2px 6px; color: var(--vscode-descriptionForeground); }
+.kb-sort-opt { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer; font-size: 12px; border-radius: 3px; }
+.kb-sort-opt:hover { background: var(--vscode-list-hoverBackground); }
+.kb-sort-opt .kb-ck { color: var(--vscode-button-background); font-size: 11px; width: 16px; }
+
+/* loading / empty */
+.kb-loading, .kb-empty-inline { padding: 8px 14px; color: var(--vscode-descriptionForeground); font-size: 12px; }
+
+/* ── Search results (real recursive search over disk) ── */
+.kb-search-results { padding: 4px 0 8px; display: none; }
+.kb-search-results.show { display: block; }
+.kb-search-head {
+	padding: 6px 14px; font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	text-transform: none; letter-spacing: 0; font-weight: 400;
+}
+.kb-search-hit {
+	display: flex; align-items: center; gap: 6px;
+	padding: 0 14px; cursor: pointer; height: 30px; min-height: 30px;
+	border-radius: var(--vscode-border-radius, 4px);
+	margin: 1px 8px; white-space: nowrap;
+}
+.kb-search-hit:hover { background: var(--vscode-list-hoverBackground); }
+.kb-search-hit .kb-ficon { width: 16px; text-align: center; font-size: 13px; flex-shrink: 0; }
+.kb-search-hit .kb-name { flex: 0 0 auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+.kb-search-hit .kb-name mark {
+	background: var(--vscode-editor-findMatchHighlightBackground, #515c6a);
+	color: var(--vscode-editor-foreground, inherit);
+	border-radius: 2px; padding: 0 1px;
+}
+.kb-search-hit .kb-hit-badge {
+	font-size: 9px; padding: 0 5px; border-radius: 8px; flex-shrink: 0;
+	background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+}
+.kb-search-hit .kb-hit-path {
+	flex: 1; text-align: right; overflow: hidden; text-overflow: ellipsis;
+	font-size: 11px; color: var(--vscode-descriptionForeground);
+	font-family: var(--vscode-font-family);
+}
+.kb-search-hit .kb-hit-snippet {
+	flex-basis: 100%; max-width: 100%;
+	padding: 2px 0 2px 22px; margin: 0 14px 2px;
+	font-size: 11px; line-height: 1.4; color: var(--vscode-descriptionForeground);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	border-top: 1px dashed var(--vscode-panel-border, var(--vscode-sideBar-border));
+}
+
+/* ── Backlinks ([[双链]] 反链映射面板) ── */
+.kb-backlinks {
+	border-top: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	margin-top: 4px; padding: 6px 0 10px; flex-shrink: 0;
+}
+.kb-bl-hint, .kb-bl-empty {
+	padding: 4px 14px; font-size: 11px; color: var(--vscode-descriptionForeground);
+}
+.kb-bl-header {
+	padding: 4px 14px 6px; font-size: 11px; font-weight: 600;
+	text-transform: uppercase; letter-spacing: .5px; opacity: .85;
+}
+.kb-bl-group { margin-bottom: 6px; }
+.kb-bl-title {
+	padding: 2px 14px; font-size: 10px; color: var(--vscode-descriptionForeground);
+	text-transform: none; letter-spacing: 0;
+}
+.kb-bl-item {
+	display: flex; flex-direction: column; gap: 1px;
+	padding: 4px 14px 4px 22px; cursor: pointer; position: relative;
+	border-radius: var(--vscode-border-radius, 4px); margin: 1px 8px;
+}
+.kb-bl-item:hover { background: var(--vscode-list-hoverBackground); }
+.kb-bl-item.missing { cursor: default; opacity: .6; }
+.kb-bl-item.missing:hover { background: transparent; }
+.kb-bl-ic {
+	position: absolute; left: 12px; top: 5px; font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+.kb-bl-label {
+	font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kb-bl-snippet {
+	font-size: 11px; line-height: 1.4; color: var(--vscode-descriptionForeground);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Lute 块级预览面板 (Tier 3 — 复用 SiYuan Lute + Protyle 渲染) ── */
+.kb-lute-preview {
+	border-top: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	margin-top: 4px; padding: 8px 0 12px; flex-shrink: 0;
+	max-height: 50vh; overflow-y: auto;
+}
+
+.kb-preview-header {
+	display: flex; align-items: center; gap: 6px;
+	padding: 0 14px 8px;
+	font-size: 13px; font-weight: 600;
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	margin: 0 0 8px;
+}
+.kb-preview-icon { font-size: 13px; flex-shrink: 0; }
+.kb-preview-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-preview-open {
+	flex-shrink: 0; cursor: pointer; font-size: 14px; padding: 2px 6px;
+	border-radius: 3px; color: var(--vscode-descriptionForeground);
+}
+.kb-preview-open:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
+
+.kb-preview-render {
+	padding: 4px 14px; font-size: 13px; line-height: 1.7;
+	/* 继承 Protyle 块级样式 */
+}
+.kb-preview-render.protyle-wysiwyg [data-node-id] {
+	position: relative;
+}
+/* 双链高亮 */
+.kb-preview-render .kb-wikilink {
+	color: var(--vscode-textLink-foreground, #40a6ff);
+	background: var(--vscode-textLink-activeBackground, rgba(64,166,255,0.08));
+	border-radius: 3px; padding: 0 2px; cursor: pointer;
+	font-weight: 500;
+}
+.kb-preview-render .kb-wikilink:hover {
+	background: var(--vscode-textLink-activeBackground, rgba(64,166,255,0.2));
+	text-decoration: underline;
+}
+/* 块引用高亮 */
+.kb-preview-render .kb-blockref {
+	color: var(--vscode-textPreformat-foreground, #d4d4d4);
+	background: var(--vscode-textPreformat-background, rgba(128,128,128,0.15));
+	border-radius: 3px; padding: 0 2px; cursor: pointer;
+	font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em;
+}
+.kb-preview-render .kb-blockref:hover {
+	background: var(--vscode-textPreformat-background, rgba(128,128,128,0.3));
+}
+
+/* 预览错误 */
+.kb-preview-error {
+	padding: 12px 14px; font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* 预览统计 */
+.kb-preview-stats {
+	padding: 4px 14px; font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	border-top: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	margin-top: 8px; opacity: 0.7;
+}
+
+/* ── 笔记编辑器 (kbNoteEditorPane) 样式 ── */
+.kb-note-editor {
+	display: flex; flex-direction: column; height: 100%; min-height: 0;
+}
+.kb-note-toolbar {
+	display: flex; align-items: center; gap: 4px;
+	padding: 4px 8px; flex-shrink: 0;
+	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+}
+.kb-note-mode-btn {
+	font-size: 14px; padding: 3px 8px; cursor: pointer; border-radius: 4px;
+	opacity: 0.6; transition: opacity 0.15s;
+}
+.kb-note-mode-btn:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+.kb-note-mode-btn.active { opacity: 1; background: var(--vscode-toolbar-activeBackground); }
+.kb-note-mode-btn.disabled { opacity: 0.2; cursor: not-allowed; pointer-events: none; }
+
+.kb-note-preview {
+	flex: 1; overflow-y: auto; padding: 12px 16px;
+	font-size: 14px; line-height: 1.75;
+}
+.kb-note-source {
+	flex: 1; border: none; padding: 12px 16px; resize: none;
+	font-family: var(--vscode-editor-font-family, Consolas, monospace);
+	font-size: 13px; line-height: 1.6;
+	color: var(--vscode-editor-foreground);
+	background: var(--vscode-editor-background);
+	outline: none;
+}
+.kb-note-source:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+/* WYSIWYG 可编辑态（contentEditable 兜底，无 Protyle 内核时） */
+.kb-note-preview.kb-wysiwyg-edit {
+	outline: none; cursor: text;
+}
+.kb-note-preview.kb-wysiwyg-edit:focus {
+	box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+}
+
+
+/* ── Protyle 块级布局（对 SiYuan protyle.css 的精简复刻）
+   Lute.SpinBlockDOM 输出 Protyle 块级 DOM（h1-h6 / p / ul / ol / blockquote / pre /
+   table / div[data-type="Node*"] 等），没有 Protyle CSS 时浏览器默认 <p> 1em 内外距 +
+   <h*> 块距导致每块之间巨大留白。这里给出与 Protyle 一致的紧凑块布局：
+   块间 0 外距 + 小内距，标题/列表/引用/代码块/表格/分隔线/超链/图片
+   全部使用 Protyle 的尺寸与缩进。
+
+   ⚠️ 重要：Lute SpinBlockDOM 将所有真实内容块包裹在
+     <div data-type="NodeDocument"> 内，因此必须用**后代选择器**（空格）而非
+     直接子选择符（>），否则规则只命中外层包装、内部块仍用浏览器默认外距。 */
+.kb-note-preview.protyle-wysiwyg {
+	font-size: 16px;
+	line-height: 1.625;
+	word-break: break-word;
+	white-space: normal;
+	color: var(--vscode-foreground, #d4d4d4);
+}
+/* 全局零外距：预览区内所有元素统一清除外边距（穿透 NodeDocument 包装层） */
+.kb-note-preview.protyle-wysiwyg * { margin: 0; }
+
+/* 任意块的紧凑间距（后代选择器：覆盖 Protyle 包装 div 与裸 h*/p 标签） */
+.kb-note-preview.protyle-wysiwyg [data-node-id],
+.kb-note-preview.protyle-wysiwyg h1,
+.kb-note-preview.protyle-wysiwyg h2,
+.kb-note-preview.protyle-wysiwyg h3,
+.kb-note-preview.protyle-wysiwyg h4,
+.kb-note-preview.protyle-wysiwyg h5,
+.kb-note-preview.protyle-wysiwyg h6,
+.kb-note-preview.protyle-wysiwyg p,
+.kb-note-preview.protyle-wysiwyg ul,
+.kb-note-preview.protyle-wysiwyg ol,
+.kb-note-preview.protyle-wysiwyg blockquote,
+.kb-note-preview.protyle-wysiwyg pre,
+.kb-note-preview.protyle-wysiwyg table,
+.kb-note-preview.protyle-wysiwyg hr {
+	padding: 5px 2px;
+	min-height: 26px;
+}
+
+/* 标题：Protyle 字号梯度 */
+.kb-note-preview.protyle-wysiwyg h1,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeHeading"][data-subtype="h1"] {
+	font-size: 1.875em; font-weight: 700; padding: 12px 2px 6px;
+}
+.kb-note-preview.protyle-wysiwyg h2,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeHeading"][data-subtype="h2"] {
+	font-size: 1.5em; font-weight: 700; padding: 10px 2px 5px;
+}
+.kb-note-preview.protyle-wysiwyg h3,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeHeading"][data-subtype="h3"] {
+	font-size: 1.25em; font-weight: 600; padding: 8px 2px 4px;
+}
+.kb-note-preview.protyle-wysiwyg h4,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeHeading"][data-subtype="h4"] {
+	font-size: 1.125em; font-weight: 600;
+}
+.kb-note-preview.protyle-wysiwyg h5,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeHeading"][data-subtype="h5"] {
+	font-size: 1em; font-weight: 600;
+}
+.kb-note-preview.protyle-wysiwyg h6,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeHeading"][data-subtype="h6"] {
+	font-size: 0.875em; font-weight: 600; color: var(--vscode-descriptionForeground);
+}
+
+/* 段落 */
+.kb-note-preview.protyle-wysiwyg p,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeParagraph"] {
+	margin: 0; padding: 5px 2px;
+}
+
+/* 列表：Protyle 缩进 26px */
+.kb-note-preview.protyle-wysiwyg ul,
+.kb-note-preview.protyle-wysiwyg ol {
+	margin: 0; padding: 5px 2px 5px 28px; list-style-position: outside;
+}
+.kb-note-preview.protyle-wysiwyg li { margin: 0; padding: 3px 2px; }
+.kb-note-preview.protyle-wysiwyg li > p { padding: 0; min-height: 0; }
+.kb-note-preview.protyle-wysiwyg li[data-node-id] { padding: 3px 2px 3px 4px; }
+.kb-note-preview.protyle-wysiwyg [data-type="NodeList"] { padding: 5px 2px 5px 28px; }
+.kb-note-preview.protyle-wysiwyg [data-type="NodeListItem"] { padding: 3px 2px 3px 4px; }
+
+/* 引用块：Protyle 风格左边线 */
+.kb-note-preview.protyle-wysiwyg blockquote,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeBlockquote"] {
+	margin: 0; padding: 5px 2px 5px 12px;
+	border-left: 3px solid var(--vscode-textBlockQuote-border, #4a4a4a);
+	color: var(--vscode-textBlockQuote-foreground, #a0a0a0);
+	background: transparent;
+}
+.kb-note-preview.protyle-wysiwyg blockquote > :first-child { margin-top: 0; }
+.kb-note-preview.protyle-wysiwyg blockquote > :last-child { margin-bottom: 0; }
+
+/* 行内代码 */
+.kb-note-preview.protyle-wysiwyg code {
+	font-family: var(--vscode-editor-font-family, Consolas, monospace);
+	font-size: 0.9em;
+	padding: 1px 4px;
+	border-radius: 3px;
+	background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.18));
+	color: var(--vscode-textPreformat-foreground, #d4d4d4);
+}
+
+/* 代码块 */
+.kb-note-preview.protyle-wysiwyg pre,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeCodeBlock"] {
+	margin: 0; padding: 10px 12px;
+	border-radius: 6px;
+	background: var(--vscode-textCodeBlock-background, #1e1e1e);
+	overflow-x: auto;
+	font-family: var(--vscode-editor-font-family, Consolas, monospace);
+	font-size: 0.92em; line-height: 1.55;
+}
+.kb-note-preview.protyle-wysiwyg pre code { padding: 0; background: transparent; border-radius: 0; font-size: 1em; }
+
+/* 分隔线 */
+.kb-note-preview.protyle-wysiwyg hr,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeThematicBreak"] {
+	margin: 14px 0; padding: 0; min-height: 0; height: 1px;
+	border: 0; background: var(--vscode-editorWidget-border, #3a3a3a);
+}
+
+/* 表格 */
+.kb-note-preview.protyle-wysiwyg table,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeTable"] {
+	margin: 0; padding: 5px 2px; border-collapse: collapse;
+	width: 100%;
+}
+.kb-note-preview.protyle-wysiwyg th,
+.kb-note-preview.protyle-wysiwyg td {
+	border: 1px solid var(--vscode-editorWidget-border, #3a3a3a);
+	padding: 4px 8px; min-height: 26px;
+}
+.kb-note-preview.protyle-wysiwyg th { background: var(--vscode-editorWidget-background, rgba(255,255,255,0.03)); font-weight: 600; }
+
+/* 链接 */
+.kb-note-preview.protyle-wysiwyg a {
+	color: var(--vscode-textLink-foreground, #40a6ff);
+	text-decoration: none;
+}
+.kb-note-preview.protyle-wysiwyg a:hover { text-decoration: underline; }
+
+/* 图片：Protyle 最大宽度不超过容器 */
+.kb-note-preview.protyle-wysiwyg img,
+.kb-note-preview.protyle-wysiwyg [data-type="NodeImage"] img {
+	max-width: 100%; height: auto; display: inline-block;
+}
+
+/* 内联格式 */
+.kb-note-preview.protyle-wysiwyg strong { font-weight: 700; }
+.kb-note-preview.protyle-wysiwyg em { font-style: italic; }
+.kb-note-preview.protyle-wysiwyg del,
+.kb-note-preview.protyle-wysiwyg s { text-decoration: line-through; opacity: .7; }
+.kb-note-preview.protyle-wysiwyg mark {
+	background: var(--vscode-editor-findMatchHighlightBackground, #515c6a);
+	color: inherit; padding: 0 2px; border-radius: 2px;
+}
+
+/* 行内数学 / 块数学 */
+.kb-note-preview.protyle-wysiwyg .katex { font-size: 1.05em; }
+
+/* 任务列表复选框（Protyle NodeListItem + data-subtype="t"） */
+.kb-note-preview.protyle-wysiwyg [data-subtype="t"] input[type="checkbox"] {
+	margin-right: 6px; vertical-align: middle;
+}
+
+/* 双链 / 块引用高亮（由 highlightRefsInHtml 注入） */
+.kb-note-preview .kb-wikilink {
+	color: var(--vscode-textLink-foreground, #40a6ff);
+	background: var(--vscode-textLink-activeBackground, rgba(64,166,255,0.08));
+	border-radius: 3px; padding: 0 2px; cursor: pointer;
+	font-weight: 500;
+}
+.kb-note-preview .kb-wikilink:hover {
+	background: var(--vscode-textLink-activeBackground, rgba(64,166,255,0.2));
+	text-decoration: underline;
+}
+.kb-note-preview .kb-blockref {
+	color: var(--vscode-textPreformat-foreground, #d4d4d4);
+	background: var(--vscode-textPreformat-background, rgba(128,128,128,0.15));
+	border-radius: 3px; padding: 0 2px; cursor: pointer;
+	font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em;
+}
+.kb-note-preview .kb-blockref:hover {
+	background: var(--vscode-textPreformat-background, rgba(128,128,128,0.3));
+}
+
+
+
+

@@ -100,6 +100,7 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 				}
 
 			let description = result.description || '';
+			this.logService.info(`[BrowserKanban] TAPD description (raw, first 800 chars): ${description.slice(0, 800)}`);
 
 			const atts = (result.attachments || []).filter(a => !!a.downloadUrl);
 			this.logService.info(`[BrowserKanban] attachments with downloadUrl (to fetch locally): ${atts.length}`);
@@ -107,7 +108,7 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 			const attachmentData: { name: string; mimeType: string; base64: string }[] = [];
 			if (atts.length) {
 				progress.report({ message: `正在下载 ${atts.length} 个附件到本地…` });
-				const lines: string[] = ['', '### 📎 附件（已下载到本地）', ''];
+				const lines: string[] = [];
 				const seenUrls = new Set<string>();
 				const total = atts.length;
 				let downloaded = 0;
@@ -131,17 +132,76 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 					const dl = await this.taskBoardService.downloadUrlForAttachment(url, { sessionId: SAROS_CLAW_AGENT_ID, viewId });
 					this.logService.info(`[BrowserKanban] download result: ${att.name} → ${dl?.tempPath ?? 'FAILED (undefined)'}`);
 					if (dl) {
-						// Use relative path (.sarosworkspace/tmp/task-downloads/...) and
-						// markdown image/link syntax so the task detail UI can render
-						// thumbnails or clickable links.
+						// Use relative path (.sarosworkspace/tmp/task-downloads/...) so the
+						// task detail UI can resolve + render thumbnails / clickable links.
 						const relPath = `.sarosworkspace/tmp/task-downloads/${dl.name}`;
 						const isImage = dl.mimeType.startsWith('image/');
-						lines.push(isImage ? `![${att.name}](${relPath})` : `[${att.name}](${relPath})`);
+
+						// TAPD description images keep their original CDN URL
+						// (e.g. https://file.tapd.cn/compress/...?src=...) because
+						// the import runs with downloadAttachments:false. The
+						// `att.downloadUrl` returned by tapdImportService is the
+						// raw <img src> from the page, but after the playwright
+						// download round-trip the URL may be normalized/redirected
+						// so a plain `description.includes(url)` check misses.
+						//
+						// Strategy: rewrite any markdown image/link reference whose
+						// URL **contains** the download URL (or vice-versa) to the
+						// local path. Also handle the common case where TAPD wraps
+						// the real image in a `?src=...` query — strip the query
+						// string and match on the base path.
+						let replacedInline = false;
+						const tryReplace = (needle: string) => {
+							if (needle && description.includes(needle)) {
+								const before = description.length;
+								description = description.split(needle).join(relPath);
+								replacedInline = true;
+								this.logService.info(`[BrowserKanban] inline REPLACED with needle "${needle.length > 80 ? needle.slice(0, 80) + '…' : needle}" → ${relPath} (len ${before} → ${description.length})`);
+							} else {
+								this.logService.info(`[BrowserKanban] inline miss for needle "${needle.length > 80 ? needle.slice(0, 80) + '…' : needle}"`);
+							}
+						};
+						tryReplace(url);
+						if (!replacedInline) {
+							// Match the URL without query string
+							const base = url.split('?')[0];
+							if (base !== url) { tryReplace(base); }
+						}
+						if (!replacedInline) {
+							// Also try the URL-decoded form (TAPD often embeds
+							// `?src=/tfl/captures/.../tapd_xxx.png` whose slashes
+							// get URL-encoded in the description).
+							try { tryReplace(decodeURIComponent(url)); } catch { /* not decodable */ }
+						}
+						if (!replacedInline && isImage) {
+							// Last-resort: match by the TAPD base64 file id
+							// pattern `tapd_<digits>_base64_<digits>_<digits>.<ext>`
+							// embedded in the description's `![...](...)` URLs.
+							const idMatch = url.match(/(tapd_\d+_base64_\d+_\d+\.\w+)/);
+							if (idMatch) { tryReplace(idMatch[1]); }
+						}
+
+						// File attachments (not already shown inline) get a
+						// dedicated entry in an "附件" section. Inline description
+						// images are skipped here to avoid duplicating what's
+						// already rendered above.
+						if (!replacedInline) {
+							if (lines.length === 0) {
+								lines.push('', '### 📎 附件（已下载到本地）', '');
+							}
+							lines.push(isImage ? `![${att.name}](${relPath})` : `[${att.name}](${relPath})`);
+						}
+
+						// Always attach the binary so it appears in the card's
+						// attachment list regardless of where it's rendered.
 						attachmentData.push({ name: dl.name, mimeType: dl.mimeType, base64: dl.base64 });
 					}
 				}
-				description += lines.join('\n');
+				if (lines.length > 0) {
+					description += '\n' + lines.join('\n');
+				}
 			}
+			this.logService.info(`[BrowserKanban] TAPD description FINAL (first 800 chars): ${description.slice(0, 800)}`);
 
 			progress.report({ message: '正在创建任务卡片…' });
 			const priority = (['low', 'medium', 'high'].includes(result.priority ?? '')

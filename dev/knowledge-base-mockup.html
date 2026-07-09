@@ -3,6 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <title>Sarosis - 知识库 View Mockup v3</title>
+<!--
+  知识库 View Mockup (对齐 SiYuan 思源笔记 文件树 + 多笔记本机制)
+  实现映射：
+    browser/views/knowledgeBaseView.ts        KnowledgeBaseViewPane (主视图)
+    browser/views/knowledgeBase/kbTypes.ts     类型 + 14 种排序 + 导入项定义
+    browser/views/knowledgeBase/media/kbView.css  b3-list 暗色圆角列表样式
+    common/constants.ts                        AGENT_STUDIO_KB_VIEW_ID
+    browser/agentStudio.contribution.ts        _registerToolIcon 注册(order:120)
+-->
+
 <style>
 :root{
   --bg:#1e1e1e; --bg-activitybar:#333333; --bg-sidebar:#252526; --bg-card:#2d2d2d;

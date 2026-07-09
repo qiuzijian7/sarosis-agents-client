@@ -105,6 +105,7 @@ export const AGENT_STUDIO_EVOLUTION_VIEW_ID = 'agentStudio.evolutionView';
 export const AGENT_STUDIO_WORKFLOW_VIEW_ID = 'agentStudio.workflowView';
 export const AGENT_STUDIO_CHANNEL_VIEW_ID = 'agentStudio.channelView';
 export const AGENT_STUDIO_WIKI_VIEW_ID = 'agentStudio.wikiView';
+export const AGENT_STUDIO_KB_VIEW_ID = 'agentStudio.knowledgeBaseView';
 export const AGENT_STUDIO_WIKI_ROOT_SETTING = 'agentStudio.wiki.root';
 export const AGENT_STUDIO_WIKI_MAX_PROPOSAL_SETTING = 'agentStudio.wiki.maxProposalCount';
 export const AGENT_STUDIO_WORKTREE_VIEW_ID = 'agentStudio.worktreeView';

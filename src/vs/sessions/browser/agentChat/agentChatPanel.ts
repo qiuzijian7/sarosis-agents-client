@@ -55,10 +55,6 @@ import {
 	OrchestrationPlan,
 	PlanTask,
 } from "./agentChatTypes.js";
-import {
-	formatAttachmentHyperlink,
-	stripAttachmentHyperlinks,
-} from "./attachmentLink.js";
 
 import type { IChatPanel } from "./iChatPanel.js";
 import { TabbedPanelManager } from "./modules/tabbedPanel.js";
@@ -209,7 +205,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private readonly _container: HTMLElement;
 	private _messagesContainer!: HTMLElement;
 	private _messagesWrapper!: HTMLElement;
-	private _textarea!: HTMLTextAreaElement;
+	private _textarea!: HTMLElement;  // contentEditable div（支持文本+内联附件芯片混排）
 	private _scrollToBottomBtn!: HTMLElement;
 	private _scrollBadge: HTMLElement | null = null;
 	// ── 自定义滚动条覆盖层 ──
@@ -325,6 +321,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// (previously rendered in _renderSystemMsgPanel; todo: render in tabbed panel msg tab)
 	private _checkpoints: ICheckpointInfo[] = [];
 	private _attachments: IChatAttachment[] = [];
+	private _imageTooltip: HTMLElement | null = null;
 	private _fileInput: HTMLInputElement | null = null;
 	// -- Agent dropdown state --
 	private _availableAgents: IAgentInfo[] = [];
@@ -1058,7 +1055,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 */
 	private _refreshInputArea(): void {
 		// 保存当前输入内容（切换 provider/model 时不应清空输入框）
-		const savedValue = this._textarea?.value ?? '';
+		const savedValue = this._getComposerText();
 		const savedAttachments = this._attachments.slice();
 		if (this._inputAreaEl && this._inputAreaEl.isConnected) {
 			this._inputAreaEl.remove();
@@ -1068,9 +1065,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._renderInputArea();
 		// 恢复输入内容和附件
 		if (this._textarea && savedValue) {
-			this._textarea.value = savedValue;
+			this._setComposerText(savedValue);
 		}
 		this._attachments = savedAttachments;
+		// 恢复附件的内联芯片显示
+		if (savedAttachments.length > 0) {
+			this._renderInlineAttachmentChips();
+		}
 	}
 
 	setWorktrees(items: ReadonlyArray<IWorktreeItem>): void {
@@ -5642,12 +5643,16 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// Initialize skill chips bar visibility
 		this._renderSkillChips();
 
-		// Textarea
+		// ContentEditable div（替代 textarea，支持文本+内联附件芯片混排）
 		this._textarea = append(
 			composerBox,
-			$("textarea.chat-composer-textarea"),
-		) as HTMLTextAreaElement;
-		this._textarea.placeholder = `Message ${emp.name}...`;
+			$("div.chat-composer-textarea"),
+		) as HTMLElement;
+		this._textarea.setAttribute('contenteditable', 'true');
+		this._textarea.setAttribute('data-placeholder', `Message ${emp.name}...`);
+		this._textarea.setAttribute('role', 'textbox');
+		this._textarea.setAttribute('aria-multiline', 'true');
+		this._textarea.setAttribute('aria-label', `Message ${emp.name}...`);
 		// 流式输出过程中不再禁用输入框——用户可继续输入新消息排队
 		// this._textarea.disabled = this._isSending;  ← 已移除
 
@@ -5666,29 +5671,27 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// localStorage 不可用时忽略
 		}
 
-		// Auto-resize + slash command detection + slash menu
+		// Auto-resize + slash command detection + slash menu + mention
 		this._register(
 			addDisposableListener(this._textarea, EventType.INPUT, () => {
 				const t = this._textarea;
-				// 保存消息区滚动位置：textarea 高度变化会挤压 flex 布局的消息区，
+				// 保存消息区滚动位置：输入框高度变化会挤压 flex 布局的消息区，
 				// 浏览器自动调整 scrollTop 导致滚动条跳动。保存后恢复即可避免。
 				const savedScrollTop = this._messagesContainer?.scrollTop ?? 0;
 				t.style.height = "auto";
-				// 如果用户调整过高度，使用 max（内容高度和用户调整高度的较大值）作为高度
-				// 否则使用 min（内容高度不超过 resizeMaxH）
-				// 同时限制最大高度为 800px
 				const maxAllowed = 800;
 				const newHeight = this._userHasAdjustedHeight
 					? Math.min(Math.max(t.scrollHeight, this._resizeMaxH), maxAllowed)
 					: Math.min(t.scrollHeight, this._resizeMaxH);
 				t.style.height = newHeight + "px";
-				// 恢复滚动位置，消除输入引起的滚动条跳动
 				if (this._messagesContainer && this._messagesContainer.scrollTop !== savedScrollTop) {
 					this._messagesContainer.scrollTop = savedScrollTop;
 				}
 
+				// 获取纯文本（排除内联附件芯片内容）
+				const val = this._getComposerText();
+
 				// Detect /skill /command patterns — show slash menu
-				const val = t.value;
 				const slashMatch = val.match(/^\/(\w*)$/);
 				if (slashMatch) {
 					t.style.color = 'var(--ec-accent, #60a5fa)';
@@ -5706,8 +5709,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				}
 
 				// P0-2: @mention 文件搜索检测
-				// 检测光标前的 @query 模式（@后跟非空格字符）
-				const cursorPos = t.selectionStart;
+				const cursorPos = this._getCaretOffset();
 				const beforeCursor = val.slice(0, cursorPos);
 				const atMatch = beforeCursor.match(/@(\w[^\s]*)$/);
 				if (atMatch && this._onSearchFiles) {
@@ -5778,7 +5780,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				};
 				this._attachments.push(att);
 				this._renderAttachmentPreviews();
-				this._insertAttachmentHyperlink(att);
+				this._insertInlineAttachmentChip(att);
 			}
 		}));
 		} // end else (drag overlay 已存在则跳过)
@@ -5791,8 +5793,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			if (imageFiles.length > 0) { e.preventDefault(); this._addFiles(imageFiles, true); }
 		}));
 
-		// Attachment preview area (inserted between textarea and toolbar in composerBox)
-		append(composerBox, $(".chat-attachment-bar"));
+		// Attachment preview area — 已移至内联芯片模式（附件直接嵌入 contentEditable 文本流中）
+		// 旧 .chat-attachment-bar 不再需要，保留 class 选择器兼容旧逻辑
 
 		// Enter to send / slash menu navigation
 		this._register(
@@ -5852,12 +5854,45 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 						return;
 					}
 
-					// Backspace: if textarea is empty and we have skill chips, remove the last chip
-					if (e.key === 'Backspace' && !this._textarea.value && this._skillChips.length > 0) {
-						e.preventDefault();
-						const lastChip = this._skillChips[this._skillChips.length - 1];
-						this._removeSkillChip(lastChip.id);
-						return;
+					// Backspace: if composer is empty and we have skill chips, remove the last chip
+					// Also handle: if cursor is right after an inline attachment chip, delete the chip
+					if (e.key === 'Backspace') {
+						const sel = window.getSelection();
+						if (sel && sel.rangeCount > 0) {
+							const range = sel.getRangeAt(0);
+							const container = range.startContainer;
+							const offset = range.startOffset;
+							// 找到光标前紧邻的「有效节点」（跳过纯空白文本节点）
+							let prevNode: Node | null = null;
+							if (container.nodeType === Node.ELEMENT_NODE) {
+								prevNode = container.childNodes[offset - 1] ?? null;
+								// 若前一个是空白文本节点且再前一个是芯片，则定位到芯片（删除芯片）
+								if (prevNode && prevNode.nodeType === Node.TEXT_NODE && /^\s*$/.test(prevNode.textContent ?? '') && offset - 2 >= 0) {
+									const beforeThat = container.childNodes[offset - 2];
+									if (beforeThat && (beforeThat as HTMLElement).classList?.contains('inline-attachment-chip')) {
+										prevNode = beforeThat;
+									}
+								}
+							} else if (container.nodeType === Node.TEXT_NODE && offset === 0) {
+								prevNode = container.previousSibling;
+							}
+							if (prevNode && prevNode.nodeType === Node.ELEMENT_NODE && (prevNode as HTMLElement).classList.contains('inline-attachment-chip')) {
+								e.preventDefault();
+								const attId = (prevNode as HTMLElement).dataset.attId;
+								if (attId) {
+									this._attachments = this._attachments.filter(a => a.id !== attId);
+									(prevNode as ChildNode).remove();
+									this._updateSendButton();
+								}
+								return;
+							}
+						}
+						if (!this._getComposerText().trim() && this._skillChips.length > 0) {
+							e.preventDefault();
+							const lastChip = this._skillChips[this._skillChips.length - 1];
+							this._removeSkillChip(lastChip.id);
+							return;
+						}
 					}
 
 					if (e.key === "Enter" && !e.shiftKey) {
@@ -6047,8 +6082,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			addDisposableListener(this._sendBtn, EventType.CLICK, () => {
 				if (this._isSending) {
 					// 参考React：有输入/附件时发送新消息（自动停止当前），无输入时取消
-					if (this._textarea?.value.trim() || this._attachments.length > 0) {
-						this._handleSendMessage();
+				if (this._getComposerText().trim() || this._attachments.length > 0) {
+					this._handleSendMessage();
 					} else {
 						this._onCancelExecution();
 					}
@@ -6147,7 +6182,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	private _renderSendButtonSvg(): void {
 		clearNode(this._sendBtn);
-		const hasInput = !!(this._textarea?.value.trim() || this._attachments.length > 0);
+		const hasInput = !!(this._getComposerText().trim() || this._attachments.length > 0);
 		const isQueueing = this._isSending && hasInput;
 
 		if (isQueueing) {
@@ -6233,7 +6268,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (!this._sendBtn) {
 			return;
 		}
-		const hasInput = !!(this._textarea?.value.trim() || this._attachments.length > 0);
+		const hasInput = !!(this._getComposerText().trim() || this._attachments.length > 0);
 
 		// 流式输出过程中有输入内容 → 显示为「排队发送」按钮，不是「取消」按钮
 		const isQueueing = this._isSending && hasInput;
@@ -6373,28 +6408,45 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		const selected = this._mentionResults[this._mentionIndex];
 		if (!selected) { return; }
 
-		// 替换 textarea 中的 @query 为 @filename
-		const t = this._textarea;
-		if (!t) { return; }
-		const val = t.value;
-		const cursorPos = t.selectionStart;
-		const beforeCursor = val.slice(0, cursorPos);
-		const afterCursor = val.slice(cursorPos);
-		// 找到最后一个 @query 并替换
-		const atMatch = beforeCursor.match(/@(\w[^\s]*)$/);
-		if (atMatch) {
-			const replacement = `@${selected.name} `;
-			const newBefore = beforeCursor.slice(0, beforeCursor.length - atMatch[0].length) + replacement;
-			t.value = newBefore + afterCursor;
-			t.focus();
-			const newPos = newBefore.length;
-			t.setSelectionRange(newPos, newPos);
+		// 替换 contentEditable 中的 @query 为 @filename
+		const root = this._textarea;
+		if (!root) { return; }
+		const sel = window.getSelection();
+		if (sel && sel.rangeCount > 0) {
+			const range = sel.getRangeAt(0);
+			const container = range.endContainer;
+			if (container.nodeType === Node.TEXT_NODE) {
+				const textNode = container as Text;
+				const text = textNode.textContent ?? '';
+				const caretOffset = range.endOffset;
+				const beforeCursor = text.slice(0, caretOffset);
+				const afterCursor = text.slice(caretOffset);
+				// 找到最后一个 @query 并替换
+				const atMatch = beforeCursor.match(/@(\w[^\s]*)$/);
+				if (atMatch) {
+					const replacement = `@${selected.name} `;
+					const newBefore = beforeCursor.slice(0, beforeCursor.length - atMatch[0].length) + replacement;
+					textNode.textContent = newBefore + afterCursor;
+					// 光标移动到 replacement 之后
+					const newPos = newBefore.length;
+					const newRange = document.createRange();
+					newRange.setStart(textNode, newPos);
+					newRange.collapse(true);
+					sel.removeAllRanges();
+					sel.addRange(newRange);
+				}
+			} else {
+				// 退化为直接插入文件名文本
+				this._insertTextAtCaret(`@${selected.name} `);
+			}
 		}
 
 		// 添加文件作为上下文
 		this._onAddFileContext?.(selected.path);
 
 		this._closeMentionMenu();
+		// 触发 input 以更新高度/发送按钮
+		root.dispatchEvent(new Event('input'));
 	}
 
 	private _closeMentionMenu(): void {
@@ -6600,20 +6652,18 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _insertSlashSkill(skillId: string, skillName: string): void {
 		// Add skill chip
 		this._addSkillChip(skillId, skillName);
-		// Clear textarea (skill is now in chip)
-		this._textarea.value = '';
+		// Clear composer (skill is now in chip)
+		this._setComposerText('');
 		this._textarea.style.color = '';
 		this._textarea.removeAttribute('data-slash-command');
 		// Auto-resize and reposition cursor to end
 		this._textarea.style.height = 'auto';
-		// 使用新的高度计算逻辑（考虑用户是否调整过高度）
 		const maxAllowed = 800;
 		const newHeight = this._userHasAdjustedHeight
 			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
 			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
 		this._textarea.style.height = newHeight + 'px';
-		this._textarea.focus();
-		this._textarea.setSelectionRange(this._textarea.value.length, this._textarea.value.length);
+		this._focusComposerEnd();
 	}
 
 	private _closeSlashMenu(): void {
@@ -7764,32 +7814,29 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// Actions
 
 	private _handleSendMessage(): void {
-		const text = this._textarea?.value?.trim();
+		// 从 contentEditable 中提取纯文本（排除内联芯片元素）
+		const text = this._getComposerText().trim();
 		const hasAttachments = this._attachments.length > 0;
 		if (!text && !hasAttachments) {
 			return;
 		}
-		// 去除输入框中嵌入的附件超链接占位符（真实数据走 attachments 通道）。
-		// 例如 "分析 [📄 notes.txt](saros-attachment://att-1)" → "分析"。
-		const cleanText = stripAttachmentHyperlinks(text ?? '');
 
 		// LLM 正在输出中 → 消息入队（排队等待执行）
 		if (this._isSending) {
 			const queueId = `queue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 			this._tabbedPanel.add({
 				id: queueId,
-				content: cleanText || (hasAttachments ? `[${this._attachments.length} 个附件]` : ''),
+				content: text || (hasAttachments ? `[${this._attachments.length} 个附件]` : ''),
 				timestamp: Date.now(),
 				status: 'pending',
 			});
 
 			// 清空输入框
-			this._textarea.value = "";
+			this._setComposerText('');
 			this._textarea.style.height = "auto";
 			this._skillChips = [];
 			this._renderSkillChips();
 			this._attachments = [];
-			this._renderAttachmentPreviews();
 			this._updateSendButton();
 			return;
 		}
@@ -7800,10 +7847,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// Snapshot attachments before clearing
 		const attachments = this._attachments.length > 0 ? this._attachments.slice() : undefined;
 
-		// Clear textarea and skill chips
-		this._textarea.value = "";
+		// Clear composer content and skill chips
+		this._setComposerText('');
 		this._textarea.style.height = "auto";
-		// 重新计算高度（考虑用户是否调整过高度）
 		const maxAllowed = 800;
 		const newHeight = this._userHasAdjustedHeight
 			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
@@ -7812,12 +7858,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._skillChips = [];
 		this._renderSkillChips();
 
-		// Clear attachments + update preview
+		// Clear attachments (inline chips already cleared by _setComposerText)
 		this._attachments = [];
-		this._renderAttachmentPreviews();
 
 		// Send message with skill IDs + attachments
-		this._onSendMessage(cleanText || '', explicitSkillIds, attachments);
+		this._onSendMessage(text || '', explicitSkillIds, attachments);
 	}
 
 	// ─── Orchestration Plan Dialog ─────────────────────────────────────
@@ -8609,7 +8654,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 					if (currentTotal + file.size > MAX_TOTAL_SIZE) { return; }
 					this._attachments.push(att);
 					this._renderAttachmentPreviews();
-					this._insertAttachmentHyperlink(att);
+					this._insertInlineAttachmentChip(att);
 				}).catch(() => { /* ignore resize failures */ });
 			} else {
 				const reader = new FileReader();
@@ -8629,7 +8674,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 					if (currentTotal + file.size > MAX_TOTAL_SIZE) { return; }
 					this._attachments.push(att);
 					this._renderAttachmentPreviews();
-					this._insertAttachmentHyperlink(att);
+					this._insertInlineAttachmentChip(att);
 				};
 				reader.readAsDataURL(file);
 			}
@@ -8667,93 +8712,208 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	}
 
 	/**
-	 * 将附件以「超链接」形式嵌入到输入框文本中（如 `[📄 notes.txt](saros-attachment://att-123)`），
-	 * 让用户在发送前能直观看到并点击附件。真实数据仍通过结构化 `attachments` 通道发送，
-	 * 发送时会由 `_handleSendMessage` 中的 stripAttachmentHyperlinks 去除这些占位超链接。
+	 * 将附件以「内联芯片」形式嵌入到 contentEditable 输入框文本流中，
+	 * 让文本和图片/文件在输入框内混排显示（需求：移除底部独立预览区，附件嵌入文本流）。
+	 * 真实数据仍通过结构化 `attachments` 通道发送给 LLM。
 	 */
-	private _insertAttachmentHyperlink(att: IChatAttachment): void {
-		if (!this._textarea) { return; }
-		const link = formatAttachmentHyperlink(att);
-		const prev = this._textarea.value;
-		this._textarea.value = prev ? `${prev} ${link}` : link;
-		// 重新计算高度，避免多行时被截断
-		this._textarea.style.height = 'auto';
-		this._textarea.style.height = `${Math.min(this._textarea.scrollHeight, this._resizeMaxH)}px`;
-		this._textarea.focus();
+	private _insertInlineAttachmentChip(att: IChatAttachment): void {
+		const root = this._textarea;
+		if (!root) { return; }
+		const chip = this._createAttachmentChipNode(att);
+		const spaceBefore = document.createTextNode(' ');
+		const spaceAfter = document.createTextNode(' ');
+		root.focus();
+		const sel = window.getSelection();
+		if (sel && sel.rangeCount > 0) {
+			const range = sel.getRangeAt(0);
+			range.deleteContents();
+			const frag = document.createDocumentFragment();
+			frag.appendChild(spaceBefore);
+			frag.appendChild(chip);
+			frag.appendChild(spaceAfter);
+			range.insertNode(frag);
+			range.setStartAfter(spaceAfter);
+			range.collapse(true);
+			sel.removeAllRanges();
+			sel.addRange(range);
+		} else {
+			root.appendChild(spaceBefore);
+			root.appendChild(chip);
+			root.appendChild(spaceAfter);
+			this._focusComposerEnd();
+		}
+		// 触发 input 事件以更新自动高度与发送按钮状态
+		root.dispatchEvent(new Event('input'));
 	}
 
-	private _renderAttachmentPreviews(): void {
-		const bars = this._container.querySelectorAll('.chat-attachment-bar');
-		for (const bar of bars) { clearNode(bar as HTMLElement); }
-		const composerBox = this._container.querySelector('.chat-composer-box') as HTMLElement;
+	private _createAttachmentChipNode(att: IChatAttachment): HTMLElement {
+		const chip = document.createElement('span');
+		chip.className = 'inline-attachment-chip';
+		chip.dataset.attId = att.id;
+		chip.setAttribute('contenteditable', 'false');
 
-		if (!this._attachments.length) {
-			if (composerBox) { composerBox.classList.remove('has-attachments'); }
-			return;
-		}
+		const icon = document.createElement('span');
+		icon.className = 'inline-attachment-chip-icon';
+		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : '\u{1F4C4}';
+		chip.appendChild(icon);
 
-		const bar = this._container.querySelector('.chat-attachment-bar') as HTMLElement;
-		if (!bar) { return; }
-		bar.style.display = 'flex';
-		// 标记 composer box 有附件（视觉上让 textarea 底部圆角变平，与附件栏无缝连接）
-		if (composerBox) { composerBox.classList.add('has-attachments'); }
+		const label = document.createElement('span');
+		label.className = 'inline-attachment-chip-label';
+		label.textContent = att.name;
+		chip.appendChild(label);
 
-		// Check if any image attachment and model doesn't support images
-		const hasImage = this._attachments.some(a => a.type === 'image');
-		const currentModelInfo = this._models.find(m => m.id === this._currentModel);
-		const modelSupportsImages = currentModelInfo?.supportsImages ?? false;
-		const showWarning = hasImage && !modelSupportsImages;
+		const removeBtn = document.createElement('span');
+		removeBtn.className = 'inline-attachment-chip-remove';
+		removeBtn.textContent = '✕';
+		chip.appendChild(removeBtn);
+		this._register(addDisposableListener(removeBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			e.preventDefault();
+		this._attachments = this._attachments.filter(a => a.id !== att.id);
+		chip.remove();
+		this._hideImageTooltip();
+		this._updateSendButton();
+		}));
 
-		for (const att of this._attachments) {
-			const chip = append(bar, $('.chat-attachment-chip'));
-			if (att.type === 'image') {
-				const thumb = append(chip, $('img.chat-attachment-thumb')) as HTMLImageElement;
-				thumb.src = `data:${att.mimeType};base64,${att.data}`;
-				thumb.alt = att.name;
-				// Add warning icon overlay if model doesn't support images
-				if (!modelSupportsImages) {
-					const warnOverlay = append(chip, $('.chat-attachment-warn-overlay'));
-					warnOverlay.title = '当前模型不支持图片';
-					const warnIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-					warnIcon.setAttribute('width', '14');
-					warnIcon.setAttribute('height', '14');
-					warnIcon.setAttribute('viewBox', '0 0 24 24');
-					warnIcon.setAttribute('fill', 'currentColor');
-					const warnPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-					warnPath.setAttribute('d', 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z');
-					warnIcon.appendChild(warnPath);
-					warnOverlay.appendChild(warnIcon);
-				}
-				// Lightbox on click
-				this._register(addDisposableListener(thumb, EventType.CLICK, () => {
-					this._showLightbox(thumb.src);
-				}));
-			} else {
-				append(chip, $('span.chat-attachment-file-icon', undefined, '📄'));
-				// 点击文件附件时在编辑器中打开（有 filePath 的真实文件）或在编辑器中显示内容（纯内容附件）
-				chip.style.cursor = 'pointer';
-				chip.title = att.filePath || att.name;
-				this._register(addDisposableListener(chip, EventType.CLICK, (e) => {
-					// 排除删除按钮的点击
-					if ((e.target as HTMLElement).classList.contains('chat-attachment-remove')) { return; }
-					this._onOpenFile?.(att.filePath || att.name, att.filePath ? undefined : att.data);
-				}));
-			}
-			append(chip, $('span.chat-attachment-name', undefined, att.name));
-
-			const removeBtn = append(chip, $('span.chat-attachment-remove.codicon.codicon-close'));
-			this._register(addDisposableListener(removeBtn, EventType.CLICK, (e) => {
-				e.stopPropagation();
-				this._attachments = this._attachments.filter(a => a.id !== att.id);
-				this._renderAttachmentPreviews();
+		if (att.type === 'image' && att.data) {
+			this._register(addDisposableListener(chip, EventType.CLICK, (e) => {
+				if ((e.target as HTMLElement).classList.contains('inline-attachment-chip-remove')) { return; }
+				this._showLightbox(`data:${att.mimeType};base64,${att.data}`);
 			}));
+			// hover 时显示图片缩略图预览
+			this._register(addDisposableListener(chip, EventType.MOUSE_ENTER, () => {
+				if ((chip.querySelector('.inline-attachment-chip-remove') as HTMLElement)?.matches(':hover')) { return; }
+				this._showImageTooltip(att, chip);
+			}));
+			this._register(addDisposableListener(chip, EventType.MOUSE_LEAVE, () => this._hideImageTooltip()));
 		}
+		return chip;
+	}
 
-		// Show warning text if model doesn't support images
-		if (showWarning) {
-			const warningEl = append(bar, $('.chat-attachment-warning'));
-			warningEl.textContent = '当前模型不支持图片输入，图片附件将被忽略';
+	/** 将所有附件重渲染为内联芯片（用于 _refreshInputArea 重建输入框后恢复） */
+	private _renderInlineAttachmentChips(): void {
+		const root = this._textarea;
+		if (!root) { return; }
+		for (const att of this._attachments) {
+			if (root.querySelector(`.inline-attachment-chip[data-att-id="${att.id}"]`)) { continue; }
+			const spaceBefore = document.createTextNode(' ');
+			const spaceAfter = document.createTextNode(' ');
+			root.appendChild(spaceBefore);
+			root.appendChild(this._createAttachmentChipNode(att));
+			root.appendChild(spaceAfter);
 		}
+		if (this._attachments.length) { this._focusComposerEnd(); }
+	}
+
+	// ─── contentEditable 文本辅助方法 ───────────────────────────────
+
+	/** 提取输入框纯文本（排除内联附件芯片内容） */
+	private _getComposerText(): string {
+		const root = this._textarea;
+		if (!root) { return ''; }
+		let out = '';
+		const walk = (node: Node) => {
+			if (node.nodeType === Node.TEXT_NODE) {
+				out += node.textContent ?? '';
+				return;
+			}
+			if (node.nodeType !== Node.ELEMENT_NODE) { return; }
+			const el = node as HTMLElement;
+			if (el.classList.contains('inline-attachment-chip')) { return; }
+			const tag = el.tagName;
+			if (tag === 'BR') { out += '\n'; return; }
+			if (tag === 'DIV' || tag === 'P') {
+				if (out.length > 0 && !out.endsWith('\n')) { out += '\n'; }
+			}
+			for (const child of Array.from(el.childNodes)) { walk(child); }
+			if ((tag === 'DIV' || tag === 'P') && !out.endsWith('\n')) { out += '\n'; }
+		};
+		for (const child of Array.from(root.childNodes)) { walk(child); }
+		// 归一化不间断空格（contentEditable 常见）
+		return out.replace(/\u00A0/g, ' ');
+	}
+
+	/** 设置输入框纯文本内容（清空后写入，并重算高度） */
+	private _setComposerText(text: string): void {
+		const root = this._textarea;
+		if (!root) { return; }
+		clearNode(root);
+		if (text) { root.textContent = text; }
+		// 重新计算高度，避免多行时被截断
+		root.style.height = 'auto';
+		const maxAllowed = 800;
+		const newHeight = this._userHasAdjustedHeight
+			? Math.min(Math.max(root.scrollHeight, this._resizeMaxH), maxAllowed)
+			: Math.min(root.scrollHeight, this._resizeMaxH);
+		root.style.height = newHeight + 'px';
+	}
+
+	/** 返回光标在纯文本（排除芯片）中的偏移量，用于 / 与 @ 检测 */
+	private _getCaretOffset(): number {
+		const root = this._textarea;
+		if (!root) { return 0; }
+		const sel = window.getSelection();
+		if (!sel || sel.rangeCount === 0) { return 0; }
+		const range = sel.getRangeAt(0);
+		const pre = range.cloneRange();
+		pre.selectNodeContents(root);
+		pre.setEnd(range.endContainer, range.endOffset);
+		let offset = 0;
+		pre.cloneContents().childNodes.forEach((n) => {
+			if (n.nodeType === Node.TEXT_NODE) {
+				offset += (n.textContent ?? '').length;
+			} else if (n.nodeType === Node.ELEMENT_NODE) {
+				const el = n as HTMLElement;
+				if (!el.classList.contains('inline-attachment-chip')) {
+					offset += (el.textContent ?? '').length;
+				}
+			}
+		});
+		return offset;
+	}
+
+	/** 将光标定位到输入框末尾 */
+	private _focusComposerEnd(): void {
+		const root = this._textarea;
+		if (!root) { return; }
+		root.focus();
+		const sel = window.getSelection();
+		if (!sel) { return; }
+		const range = document.createRange();
+		range.selectNodeContents(root);
+		range.collapse(false);
+		sel.removeAllRanges();
+		sel.addRange(range);
+	}
+
+	/** 在光标处插入纯文本 */
+	private _insertTextAtCaret(text: string): void {
+		const root = this._textarea;
+		if (!root) { return; }
+		root.focus();
+		const sel = window.getSelection();
+		if (sel && sel.rangeCount > 0) {
+			const range = sel.getRangeAt(0);
+			range.deleteContents();
+			const node = document.createTextNode(text);
+			range.insertNode(node);
+			range.setStartAfter(node);
+			range.collapse(true);
+			sel.removeAllRanges();
+			sel.addRange(range);
+		} else {
+			root.appendChild(document.createTextNode(text));
+		}
+		root.dispatchEvent(new Event('input'));
+	}
+
+	/**
+	 * 底部独立附件预览区已移除（需求：附件以「内联芯片」形式嵌入输入框文本流）。
+	 * 保留该方法签名以兼容既有调用点，但不再渲染任何 DOM——附件通过
+	 * `_insertInlineAttachmentChip` / `_renderInlineAttachmentChips` 渲染到 contentEditable 中。
+	 */
+	private _renderAttachmentPreviews(): void {
+		// no-op
 	}
 
 	// --- Lightbox (full-screen image preview) ---
@@ -8787,6 +8947,57 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		document.body.appendChild(overlay);
 	}
 
+	/** 鼠标悬停在图片 chip 上时，在 chip 上方显示该图片的缩略图浮层 */
+	private _showImageTooltip(att: IChatAttachment, chip: HTMLElement): void {
+		if (!att.data) { return; }
+		this._hideImageTooltip();
+
+		const tip = document.createElement('div');
+		tip.className = 'inline-attachment-thumb-tip';
+
+		const img = document.createElement('img');
+		img.className = 'inline-attachment-thumb-tip-img';
+		img.src = `data:${att.mimeType};base64,${att.data}`;
+		tip.appendChild(img);
+
+		const caption = document.createElement('div');
+		caption.className = 'inline-attachment-thumb-tip-caption';
+		caption.textContent = att.name;
+		tip.appendChild(caption);
+
+		this._imageTooltip = tip;
+		document.body.appendChild(tip);
+
+		const position = () => {
+			const rect = chip.getBoundingClientRect();
+			const tipRect = tip.getBoundingClientRect();
+			let left = rect.left + rect.width / 2 - tipRect.width / 2;
+			let top = rect.top - tipRect.height - 8;
+			// 水平方向夹取到视口内
+			left = Math.max(8, Math.min(left, window.innerWidth - tipRect.width - 8));
+			// 若上方空间不足则翻转到 chip 下方
+			if (top < 8) { top = rect.bottom + 8; }
+			tip.style.left = `${Math.round(left)}px`;
+			tip.style.top = `${Math.round(top)}px`;
+		};
+		// 图片加载完成后尺寸才确定，需重新定位
+		if (img.complete) {
+			position();
+		} else {
+			img.addEventListener('load', position, { once: true });
+			// 兜底：若长时间未触发 load（如损坏图片），仍按默认尺寸定位
+			setTimeout(position, 60);
+		}
+	}
+
+	/** 移除图片缩略图浮层 */
+	private _hideImageTooltip(): void {
+		if (this._imageTooltip) {
+			this._imageTooltip.remove();
+			this._imageTooltip = null;
+		}
+	}
+
 	getAttachments(): ReadonlyArray<IChatAttachment> {
 		return this._attachments;
 	}
@@ -8814,6 +9025,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		};
 		this._attachments.push(att);
 		this._renderAttachmentPreviews();
+		this._insertInlineAttachmentChip(att);
 	}
 
 	/**
@@ -8832,18 +9044,20 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		};
 		this._attachments.push(att);
 		this._renderAttachmentPreviews();
+		this._insertInlineAttachmentChip(att);
 	}
 
-	/** Inject a workflow/taskboard prompt into the textarea and auto-send it */
+		/** Inject a workflow/taskboard prompt into the textarea and auto-send it */
 	injectPrompt(message: string): void {
 		if (!this._textarea) { return; }
-		this._textarea.value = message;
+		this._setComposerText(message);
 		this._textarea.dispatchEvent(new Event('input'));
 		// Auto-send after a microtask so the textarea resize settles
 		queueMicrotask(() => this._handleSendMessage());
 	}
 
 	override dispose(): void {
+		this._hideImageTooltip();
 		this._closeAgentDropdown();
 		this._abortController?.abort();
 		this._stopStreamScroll();
