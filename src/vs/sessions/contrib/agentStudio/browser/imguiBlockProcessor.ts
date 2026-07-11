@@ -709,7 +709,7 @@ export const IMGUI_SDK_SCRIPT = `(function(){
 		var stateAnchor = btn.getAttribute('data-imgui-state') || '';
 		// Optional confirm step — note: webview doesn't support window.confirm,
 		// so we use a 5s "armed" two-step gesture instead, mirroring the
-		// pattern already used by the ConfigMD Demo button.
+		// pattern already used by the ConfigHtml Demo button.
 		if (confirmMsg) {
 			if (!btn.__armed) {
 				btn.__armed = true;

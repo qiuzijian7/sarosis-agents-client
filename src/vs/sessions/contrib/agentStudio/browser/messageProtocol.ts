@@ -97,23 +97,13 @@ export type RequestType =
 	| 'orchestration.commentTask'
 	| 'orchestration.blockTask'
 	| 'orchestration.unblockTask'
-	| 'confightml.event'  // legacy: redirected to configmd.event
-	| 'configmd.getResource'      // resolve { md, html, parserScript, stylesContent }
-	| 'configmd.readSource'       // read raw MD content
-	| 'configmd.writeSource'      // overwrite MD content (from MD editor)
-	| 'configmd.applyPatch'       // apply structured patch (from HTML view)
-	| 'configmd.renderHtml'       // (re)render HTML from current MD
-	| 'configmd.event'            // forward HTML event to agent/model
-	| 'configmd.chatSend'         // send message to model (capability: chat.send)
-	| 'configmd.chatHistory'      // read chat history
-	| 'configmd.notify'           // show notification
-	| 'configmd.uploadParser'     // upload custom MD→HTML parser script
-	| 'configmd.uploadStyles'     // upload custom CSS for preview
-	| 'configmd.removeParser'     // restore built-in parser
-	| 'configmd.getInfo'          // get parser/styles info
-	| 'configmd.previewToFile'    // render & write a standalone .preview.html file
-	| 'configmd.htmlGenerate'    // ConfigHtml: ask the confightml skill to generate full HTML
-	| 'configmd.listAgents'      // list all agents that have config.md configured
+	| 'confightml.event'            // forward HTML event to agent/model
+	| 'confightml.getHtml'          // read agent's config.html content
+	| 'confightml.writeHtml'        // write agent's config.html content
+	| 'confightml.chatSend'         // send message to model (capability: chat.send)
+	| 'confightml.notify'           // show notification
+	| 'confightml.previewToFile'    // render & write a standalone .preview.html file
+	| 'confightml.htmlGenerate'    // ConfigHtml: ask the confightml skill to generate full HTML
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
@@ -174,11 +164,9 @@ export type EventType =
 	| 'agentSessions.changed'      // agent session list changed (create/rename/delete/update)
 	| 'worktree.changed'          // git worktree list changed (create/remove) — refresh worktree dropdowns
 	| 'agent.worktree.changed'    // active agent's binding worktree changed (switch) — refresh dropdowns + tool roots
-	| 'configmd.sourceChanged'    // MD content updated (file watcher / external edit)
-	| 'configmd.htmlRendered'     // new HTML rendered (push to preview)
-	| 'configmd.command'          // model-issued command for HTML view
-	| 'configmd.message'          // model-issued message for HTML view
-	| 'configmd.error'           // sync/render error
+	| 'confightml.htmlRendered'     // new HTML rendered (push to preview)
+	| 'confightml.command'          // model-issued command for HTML view
+	| 'confightml.error'           // sync/render error
 	| 'chat.toolApprovalRequest'
 	| 'chat.injectPrompt'        // host requests webview to inject a prompt into the chat (e.g. workflow run)
 	| 'workflow.loaded'          // host sends workflow data to webview editor
@@ -489,138 +477,66 @@ export interface ITaskBoardOpenOverviewPayload {
 	readonly taskTitle: string;
 }
 
-// ─── ConfigMD Payloads ──────────────────────────────────────────────────────
+// ─── ConfigHtml Payloads ──────────────────────────────────────────────────────
 
-export interface IConfigMdResourcePayload {
+export interface IConfigHtmlGetHtmlPayload {
 	readonly agentId: string;
-	}
+}
 
-export interface IConfigMdReadSourcePayload {
+export interface IConfigHtmlWriteHtmlPayload {
 	readonly agentId: string;
-	}
-
-export interface IConfigMdWriteSourcePayload {
-	readonly agentId: string;
-		readonly markdown: string;
+	readonly html: string;
 	/** Origin of the change to suppress echo loops */
 	readonly origin?: 'editor' | 'html' | 'model' | 'external';
 	/** Monotonic version supplied by client; rejected if stale (optimistic concurrency) */
 	readonly baseVersion?: number;
 }
 
-/**
- * Patch operations on the canonical MD file.
- * - replace-anchor: replace the body of an `<!-- agent-state:NAME --> ... <!-- /agent-state:NAME -->` block
- * - replace-bind: replace inline `<!-- agent-bind:NAME -->X<!-- /agent-bind:NAME -->`
- * - append: append text at the end of the document
- * - prepend: prepend text at the beginning
- * - replace-section: replace a heading-anchored section by heading text
- * - replace-all: overwrite the whole file (last resort)
- */
-export interface IConfigMdPatchOp {
-	readonly op:
-	| 'replace-anchor'
-	| 'replace-bind'
-	| 'append'
-	| 'prepend'
-	| 'replace-section'
-	| 'replace-all';
-	readonly anchor?: string;
-	readonly heading?: string;
-	readonly content: string;
-}
-
-export interface IConfigMdApplyPatchPayload {
+export interface IConfigHtmlEventPayload {
 	readonly agentId: string;
-		readonly patches: IConfigMdPatchOp[];
-	readonly origin?: 'editor' | 'html' | 'model' | 'external';
-	readonly baseVersion?: number;
-}
-
-export interface IConfigMdRenderHtmlPayload {
-	readonly agentId: string;
-		readonly markdown?: string;  // optional override; defaults to current file
-}
-
-export interface IConfigMdEventPayload {
-	readonly agentId: string;
-		readonly eventName: string;
+	readonly eventName: string;
 	readonly payload?: unknown;
 	readonly agentSessionId?: string;
 }
 
-export interface IConfigMdChatSendPayload {
+export interface IConfigHtmlChatSendPayload {
 	readonly agentId: string;
-		readonly message: string;
+	readonly message: string;
 	readonly context?: string;
 	readonly showInChat?: boolean;
 	readonly agentSessionId?: string;
 }
 
-export interface IConfigMdHtmlGeneratePayload {
+export interface IConfigHtmlHtmlGeneratePayload {
 	readonly agentId: string;
-		readonly message: string;
+	readonly message: string;
 	/** Current HTML in the editor (so the model can do incremental edits). */
 	readonly currentHtml?: string;
 	readonly model?: string;
 }
 
-export interface IConfigMdNotifyPayload {
+export interface IConfigHtmlNotifyPayload {
 	readonly agentId: string;
-		readonly message: string;
+	readonly message: string;
 	readonly level?: 'info' | 'success' | 'warning' | 'error';
 }
 
-// ─── ConfigMD Event Payloads (Host → WebView) ───────────────────────────────
+// ─── ConfigHtml Event Payloads (Host → WebView) ───────────────────────────────
 
-export interface IConfigMdSourceChangedPayload {
+export interface IConfigHtmlHtmlRenderedPayload {
 	readonly agentId: string;
-		readonly markdown: string;
-	readonly version: number;
-	readonly origin: 'editor' | 'html' | 'model' | 'external';
-}
-
-export interface IConfigMdHtmlRenderedPayload {
-	readonly agentId: string;
-		readonly html: string;
+	readonly html: string;
 	readonly version: number;
 	readonly stylesContent?: string;
 }
 
-export interface IConfigMdCommandPayload {
+export interface IConfigHtmlCommandPayload {
 	readonly agentId: string;
-		readonly command: {
+	readonly command: {
 		readonly name: string;
 		readonly params: Record<string, unknown>;
 		readonly id: string;
 	};
-}
-
-export interface IConfigMdUploadParserPayload {
-	readonly agentId: string;
-		readonly content: string;
-	readonly fileName?: string;
-}
-
-export interface IConfigMdUploadStylesPayload {
-	readonly agentId: string;
-		readonly content: string;
-	readonly fileName?: string;
-}
-
-export interface IConfigMdRemoveParserPayload {
-	readonly agentId: string;
-	}
-
-export interface IConfigMdInfoPayload {
-	readonly agentId: string;
-	}
-
-export interface IConfigMdInfo {
-	readonly parserSource: 'builtin' | 'custom';
-	readonly parserPath?: string;
-	readonly stylesPath?: string;
-	readonly hasStyles: boolean;
 }
 
 // ─── Files Payloads ────────────────────────────────────────────────────────
@@ -634,8 +550,8 @@ export interface IFileOpenPayload {
 	readonly path?: string;
 	/** Alternative: agent id + relative kind, resolved by host. */
 		readonly agentId?: string;
-	/** Which configMd-related file to open (only used when agentId is present). */
-	readonly kind?: 'configMd' | 'configMdParser' | 'configMdStyles';
+	/** Which config file to open (only used when agentId is present). */
+	readonly kind?: 'configHtml';
 	/** Whether to keep focus on the current view. Default: false. */
 	readonly preserveFocus?: boolean;
 	/** Whether to open as a pinned (non-preview) editor. Default: false. */
@@ -669,7 +585,7 @@ export interface IFileOpenPayload {
  * nothing is read from / written to disk, and there is no risk of
  * overwriting an existing agent file.
  *
- * Used by the ConfigMD "Demo" button, which loads a sample DSL into a
+ * Used by the ConfigHtml preview workflow to load sample content into a
  * throwaway editor for the user to inspect / copy from, rather than
  * mutating the agent's real config.md.
  */

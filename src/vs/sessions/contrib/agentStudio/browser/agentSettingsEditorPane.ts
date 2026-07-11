@@ -683,7 +683,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		}
 	}
 
-	// ── ConfigMD ──
+	// ── ConfigHtml ──
 
 	private async _openConfigHtmlPreview(): Promise<void> {
 		if (!this._agentId) { return; }

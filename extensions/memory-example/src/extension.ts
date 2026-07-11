@@ -8,21 +8,22 @@
 
 import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
 import { IAgentCapabilityPlugin, IAgentOSPluginContext, AgentCapability } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
 import { MemoryExampleProvider } from './memoryProvider.js';
 
 export class MemoryExamplePlugin extends Disposable implements IAgentCapabilityPlugin {
 	private readonly _provider: MemoryExampleProvider;
+	private _agentOS: IAgentOSPluginContext['agentOSService'] | undefined;
 
-	constructor(
-		@IAgentOSService private readonly _agentOS: IAgentOSService,
-	) {
+	constructor() {
 		super();
 		this._provider = this._register(new MemoryExampleProvider());
 	}
 
 	async activate(context: IAgentOSPluginContext): Promise<void> {
 		console.log('[MemoryExample] Activating memory-example provider...');
+		// NOTE: do NOT inject IAgentOSService via constructor DI — plugin is a
+		// separate module realm from the host bundle (see other example plugins).
+		this._agentOS = context.agentOSService;
 		this._agentOS.registerMemoryProvider(this._provider, 50);
 		console.log('[MemoryExample] Registered memory-example provider (priority=50)');
 	}
@@ -35,7 +36,7 @@ export class MemoryExamplePlugin extends Disposable implements IAgentCapabilityP
 
 // 插件入口
 export function activate(pluginContext: IAgentOSPluginContext): IAgentCapabilityPlugin {
-	return new MemoryExamplePlugin(
-		pluginContext.agentOS as any, // 类型转换，实际由 OS 注入
-	);
+	const plugin = new MemoryExamplePlugin();
+	void plugin.activate(pluginContext);
+	return plugin;
 }

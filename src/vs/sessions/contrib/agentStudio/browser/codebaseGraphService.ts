@@ -152,7 +152,7 @@ export interface ICodebaseGraphService {
 	executeCypher(query: string, maxRows?: number): { columns: string[]; rows: any[][] };
 	semanticSearch(query: string, limit?: number): { node: GraphNode; score: number; signals: Record<string, number> }[];
 
-	getArchitecture(): any;
+	getArchitecture(): Promise<any>;
 	getGraphSchema(): { nodeLabels: { label: string; count: number }[]; edgeTypes: { type: string; count: number }[]; totalNodes: number; totalEdges: number };
 	getIndexStatus(): { project: string; exists: boolean; nodeCount: number; edgeCount: number; fileCount: number };
 
@@ -180,7 +180,7 @@ export interface ICodebaseGraphService {
 		includeTests?: boolean;
 	}): any;
 
-	getArchitectureAdvanced(dimensions?: string[]): any;
+	getArchitectureAdvanced(dimensions?: string[]): Promise<any>;
 	getCodeSnippet(qualifiedName: string, contextLines?: number, includeNeighbors?: boolean): Promise<{ filePath: string; startLine: number; endLine: number; content: string; language: string; neighbors?: { name: string; content: string }[] } | null>;
 
 	listProjects(): { name: string; nodeCount: number; edgeCount: number; fileCount: number }[];
@@ -1713,8 +1713,8 @@ self.onmessage = async function(e) {
 
 	// ─── Analysis API ─────────────────────────────────────────────────────
 
-	getArchitecture(): any {
-		return analyzeArchitecture(this._graph.store, this._projectName);
+	async getArchitecture(): Promise<any> {
+		return await analyzeArchitecture(this._graph.store, this._projectName);
 	}
 
 	getGraphSchema(): { nodeLabels: { label: string; count: number }[]; edgeTypes: { type: string; count: number }[]; totalNodes: number; totalEdges: number } {
@@ -1829,8 +1829,8 @@ self.onmessage = async function(e) {
 		return tracePath(this._graph.store, this._projectName, sourceName, targetName, mode as any, maxDepth, direction, includeTests);
 	}
 
-	getArchitectureAdvanced(dimensions?: string[]): any {
-		const report: any = analyzeArchitecture(this._graph.store, this._projectName);
+	async getArchitectureAdvanced(dimensions?: string[]): Promise<any> {
+		const report: any = await analyzeArchitecture(this._graph.store, this._projectName);
 
 		try {
 			report.deadCode = detectDeadCodeEnhanced(this._graph.store, this._projectName);

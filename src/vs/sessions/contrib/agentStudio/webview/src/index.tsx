@@ -20,12 +20,12 @@ import { useOrchestrationStore } from './store/useOrchestrationStore.js';
 import { useDiagnosticsStore } from './store/useDiagnosticsStore.js';
 import { useSwarmStore } from './store/useSwarmStore.js';
 import { useDebugTraceStore } from './store/useDebugTraceStore.js';
-import { dispatchConfigMdEvent } from './features/configmd/configMdBridge.js';
+import { dispatchConfigHtmlEvent } from './features/configmd/configHtmlBridge.js';
 import './styles/globals.css';
 import './styles/themes.css';
 import './styles/chat-enhanced.css';
 import './styles/chat-cards.css';
-import './styles/configmd.css';
+import './styles/configHtml.css';
 import './styles/agent-editor.css';
 import './styles/void-tool-card.css';
 import '@xyflow/react/dist/style.css';
@@ -345,13 +345,12 @@ initMessageClient((type, data) => {
 			window.dispatchEvent(new CustomEvent('agentStudio:decomposition-progress', { detail: data }));
 			break;
 		}
-		case 'configmd.sourceChanged':
-		case 'configmd.htmlRendered':
-		case 'configmd.command':
-		case 'configmd.error': {
+		case 'confightml.htmlRendered':
+		case 'confightml.command':
+		case 'confightml.error': {
 			const detail = data as { agentId: string };
 			if (detail?.agentId) {
-				dispatchConfigMdEvent(detail.agentId, type, data);
+				dispatchConfigHtmlEvent(detail.agentId, type, data);
 			}
 			break;
 		}

@@ -28,7 +28,7 @@ export const IAgentExtensionRegistry = createDecorator<IAgentExtensionRegistry>(
 
 /**
  * An agent template contributed by a VS Code extension.
- * Structurally similar to AgentPreset but with additional source tracking.
+ * Structurally similar to Agent but with additional source tracking.
  */
 export interface IExtensionAgentTemplate {
 	/** Unique template ID. Convention: "{extensionId}.{templateName}" */

@@ -72,12 +72,11 @@ import type {
 	IProviderSelectPayload,
 	IWorkspaceSessionCreatePayload,
 	IOrchestrationTaskActionPayload,
-	IConfigMdEventPayload,
-	IConfigMdChatSendPayload,
-	IConfigMdHtmlGeneratePayload,
-	IConfigMdWriteSourcePayload,
-	IConfigMdApplyPatchPayload,
-	IConfigMdRenderHtmlPayload,
+	IConfigHtmlEventPayload,
+	IConfigHtmlChatSendPayload,
+	IConfigHtmlHtmlGeneratePayload,
+	IConfigHtmlWriteHtmlPayload,
+	IConfigHtmlGetHtmlPayload,
 	IFileOpenPayload,
 	IFileOpenUntitledTextPayload,
 	IFileApplyCodePayload,
@@ -1304,102 +1303,49 @@ export class AgentStudioWebviewController extends Disposable {
 				return;
 			}
 
-			// ─── ConfigMD ─────────────────────────────────────────
-			case "configmd.getResource":
-				return this._configHtmlService.resolveState((p.agentId) as string);
-			case "configmd.readSource":
-				return this._configHtmlService.readSource((p.agentId) as string);
-			case "configmd.writeSource": {
-				const wp = p as unknown as IConfigMdWriteSourcePayload;
-				return this._configHtmlService.writeSource((wp.agentId), wp.markdown, {
+			// ─── ConfigHtml ────────────────────────────────────────
+			case "confightml.getHtml": {
+				const gp = p as unknown as IConfigHtmlGetHtmlPayload;
+				return this._configHtmlService.getHtml(gp.agentId);
+			}
+			case "confightml.writeHtml": {
+				const wp = p as unknown as IConfigHtmlWriteHtmlPayload;
+				return this._configHtmlService.writeHtml(wp.agentId, wp.html, {
 					origin: wp.origin,
 					baseVersion: wp.baseVersion,
 				});
 			}
-			case "configmd.applyPatch": {
-				const ap = p as unknown as IConfigMdApplyPatchPayload;
-				return this._configHtmlService.applyPatch(ap.agentId, ap.patches, {
-					origin: ap.origin,
-					baseVersion: ap.baseVersion,
-				});
-			}
-			case "configmd.renderHtml": {
-				const rp = p as unknown as IConfigMdRenderHtmlPayload;
-				return this._configHtmlService.renderHtml((rp.agentId), rp.markdown);
-			}
-			case "confightml.event":
-			case "configmd.event": {
-				const ep = p as unknown as IConfigMdEventPayload;
+			case "confightml.event": {
+				const ep = p as unknown as IConfigHtmlEventPayload;
 				return this._configHtmlService.handleHtmlEvent(
-					(ep.agentId),
+					ep.agentId,
 					ep.eventName,
 					ep.payload,
 					ep.agentSessionId,
 				);
 			}
-			case "configmd.chatSend": {
-				const cp = p as unknown as IConfigMdChatSendPayload;
-				return this._configHtmlService.handleChatSend((cp.agentId), cp.message, {
+			case "confightml.chatSend": {
+				const cp = p as unknown as IConfigHtmlChatSendPayload;
+				return this._configHtmlService.handleChatSend(cp.agentId, cp.message, {
 					context: cp.context,
 					showInChat: cp.showInChat,
 					agentSessionId: cp.agentSessionId,
 				});
 			}
-			case "configmd.chatHistory":
-				return this.agentChatService.getHistory(
-					(p.agentId) as string,
-					p.sessionId as string | undefined,
-				);
-			case "configmd.notify":
+			case "confightml.notify":
 				this.logService.info(
-					`[ConfigMD] Notification from ${(p.agentId)}: ${p.message} [${p.level || "info"}]`,
+					`[ConfigHtml] Notification from ${(p.agentId)}: ${p.message} [${p.level || "info"}]`,
 				);
 				return undefined;
-			case "configmd.uploadParser":
-				return this._configHtmlService.uploadParser(
-					(p.agentId) as string,
-					p.content as string,
-					p.fileName as string | undefined,
-				);
-			case "configmd.uploadStyles":
-				return this._configHtmlService.uploadStyles(
-					(p.agentId) as string,
-					p.content as string,
-					p.fileName as string | undefined,
-				);
-			case "configmd.removeParser":
-				return this._configHtmlService.removeParser((p.agentId) as string);
-			case "configmd.getInfo":
-				return this._configHtmlService.getInfo((p.agentId) as string);
-			case "configmd.previewToFile":
+			case "confightml.previewToFile":
 				return this._configHtmlService.previewToFile((p.agentId) as string);
 
-			case "configmd.htmlGenerate": {
-				const hp = p as unknown as IConfigMdHtmlGeneratePayload;
-				return this._configHtmlService.htmlGenerate((hp.agentId), hp.message, {
+			case "confightml.htmlGenerate": {
+				const hp = p as unknown as IConfigHtmlHtmlGeneratePayload;
+				return this._configHtmlService.htmlGenerate(hp.agentId, hp.message, {
 					currentHtml: hp.currentHtml,
 					model: hp.model,
 				});
-			}
-
-			case "configmd.listAgents": {
-				// List all agents that have config.md configured AND a bound agentDir
-				// in the active workspace. configMd is a DEFINITION field (on Agent);
-				// agentDir is RUNTIME state (on AgentBinding).
-				const agents = await this.agentStudioService.getAgents();
-				const wsId = this.agentStudioService.getActiveWorkspaceId();
-				const bindings = wsId
-					? await this.agentStudioService.getAgentBindings(wsId)
-					: [];
-				const bindingByAgent = new Map(bindings.map(b => [b.agentId, b]));
-				return agents
-					.filter(a => a.configMd && bindingByAgent.get(a.id)?.agentDir)
-					.map(a => ({
-						id: a.id,
-						name: a.name,
-						role: a.role,
-						workspaceId: wsId,
-					}));
 			}
 			// ─── Files ────────────────────────────────────────────
 			case "files.open": {
@@ -1986,40 +1932,6 @@ export class AgentStudioWebviewController extends Disposable {
 					);
 			}
 
-			// Phase 3: parse `configmd-patch` and `configmd-command` blocks
-			// out of the assistant reply so the agent can drive imgui forms
-			// from the conversation (e.g. `imgui.set_one`, `imgui.toast`)
-			// without needing a separate "tool call" path. Errors here are
-			// non-fatal — the user-visible chat stream has already completed.
-			if (chatMessage?.content) {
-				try {
-					const { patches, commands } = this._configHtmlService.parseModelOutput(
-						chatMessage.content,
-					);
-					if (patches.length > 0) {
-						this.logService.info(
-							`[AgentStudio] Applying ${patches.length} configmd-patch op(s) from assistant reply`,
-						);
-						this._configHtmlService
-							.applyPatch(agentId, patches, { origin: "model" })
-							.catch((err: unknown) =>
-								this.logService.warn(
-									`[AgentStudio] applyPatch from model failed:`,
-									err,
-								),
-							);
-					}
-					for (const cmd of commands) {
-						this.logService.info(
-							`[AgentStudio] Pushing configmd-command '${cmd.name}' from assistant reply`,
-						);
-						this._configHtmlService.sendCommandToHtml(agentId, cmd);
-					}
-				} catch (err) {
-					this.logService.warn("[AgentStudio] parseModelOutput failed:", err);
-				}
-			}
-
 			this._sendEvent("chat.stream.complete", {
 				agentId,
 				sessionId: sessionIdForEvent,
@@ -2158,17 +2070,11 @@ export class AgentStudioWebviewController extends Disposable {
 					`Workspace '${wsId}' has no path; cannot resolve agent dir for ${agent.id}`,
 				);
 			}
-			const cfg = agent.configMd;
+			const cfg = agent.configHtml;
 			let rel: string | undefined;
-			switch (payload.kind || "configMd") {
-				case "configMd":
-					rel = cfg?.mdPath || "config.md";
-					break;
-				case "configMdParser":
-					rel = cfg?.parserPath;
-					break;
-				case "configMdStyles":
-					rel = cfg?.stylesPath;
+			switch (payload.kind || "configHtml") {
+				case "configHtml":
+					rel = cfg?.htmlPath || "config.html";
 					break;
 			}
 			if (!rel) {
@@ -2635,17 +2541,11 @@ export class AgentStudioWebviewController extends Disposable {
 					`Workspace '${wsId}' has no path; cannot resolve agent dir for ${agent.id}`,
 				);
 			}
-			const cfg = agent.configMd;
+			const cfg = agent.configHtml;
 			let rel: string | undefined;
-			switch (payload.kind || "configMd") {
-				case "configMd":
-					rel = cfg?.mdPath || "config.md";
-					break;
-				case "configMdParser":
-					rel = cfg?.parserPath;
-					break;
-				case "configMdStyles":
-					rel = cfg?.stylesPath;
+			switch (payload.kind || "configHtml") {
+				case "configHtml":
+					rel = cfg?.htmlPath || "config.html";
 					break;
 			}
 			if (!rel) {
@@ -2959,23 +2859,11 @@ export class AgentStudioWebviewController extends Disposable {
 			this._sendEvent(eventType as any, payload);
 		});
 
-		// Listen for ConfigMD source / html / command events to push to WebView
-		this._register(
-			this._configHtmlService.onDidChangeSource(
-				({ agentId, markdown, version, origin }) => {
-					this._sendEvent("configmd.sourceChanged", {
-						agentId,
-						markdown,
-						version,
-						origin,
-					});
-				},
-			),
-		);
+		// Listen for ConfigHtml html render / command events to push to WebView
 		this._register(
 			this._configHtmlService.onDidRenderHtml(
 				({ agentId, html, version, stylesContent }) => {
-					this._sendEvent("configmd.htmlRendered", {
+					this._sendEvent("confightml.htmlRendered", {
 						agentId,
 						html,
 						version,
@@ -2986,7 +2874,7 @@ export class AgentStudioWebviewController extends Disposable {
 		);
 		this._register(
 			this._configHtmlService.onDidEmitCommand(({ agentId, command }) => {
-				this._sendEvent("configmd.command", { agentId, command });
+				this._sendEvent("confightml.command", { agentId, command });
 			}),
 		);
 

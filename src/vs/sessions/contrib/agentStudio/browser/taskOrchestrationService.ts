@@ -26,7 +26,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ITaskOrchestrationService, IAgentStudioService, IAgentTaskBoardService, IAgentChatService } from '../common/agentStudio.js';
-import type { IChatAttachmentSend } from '../../../common/agentStudioService.js';
+import type { IChatAttachmentSend, ITaskExecutionInfo } from '../../../common/agentStudioService.js';
 import type { OrchestrationTaskAction } from '../common/agentStudio.js';
 import type { OrchestrationPlan, PlanTask, Agent, ChatMessage } from '../common/types.js';
 import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource, AgentType } from '../common/types.js';
@@ -74,6 +74,8 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	private _timeoutTimer: ReturnType<typeof setInterval> | undefined;
 	/** Serialise file writes to avoid race conditions */
 	private _writeLock = false;
+	/** Cached workflow list to avoid 1‑2s file I/O per task execution. */
+	private _workflowCache: { data: any[]; ts: number } | undefined;
 
 	/** Callback to push chat stream events to the webview. Set by AgentStudioWebviewController. */
 	private _streamEventCallback: ((eventType: string, payload: Record<string, unknown>) => void) | undefined;
@@ -1764,9 +1766,12 @@ Goal: ${goal}`;
 
 		// Build the task prompt — for downstream tasks, include the upstream result
 		let taskPrompt: string;
+		let taskInlineData: IChatAttachmentSend[] = [];
 		if (task.dependencies.length === 0) {
 			// Root task: use the original user message
-			taskPrompt = task.description || task.title;
+			const { cleanDescription: rootCleanDesc, extraAttachments: rootDataUris } = extractInlineDataUris(task.description || task.title);
+			taskInlineData = rootDataUris;
+			taskPrompt = rootCleanDesc;
 		} else {
 			// Downstream task: include upstream results
 			const plans = await this._readPlans();
@@ -1780,7 +1785,12 @@ Goal: ${goal}`;
 					}
 				}
 			}
-			taskPrompt = `请基于上游任务的结果执行以下任务:\n\n**任务标题**: ${task.title}\n**任务描述**: ${task.description || task.title}\n\n**上游任务输出**:\n${upstreamResults.join('\n\n') || '(无上游输出)'}`;
+			const { cleanDescription: upCleanDesc, extraAttachments: upInlineData } = extractInlineDataUris(task.description || task.title);
+			taskInlineData = upInlineData;
+			taskPrompt = `请基于上游任务的结果执行以下任务:\n\n**任务标题**: ${task.title}\n**任务描述**: ${upCleanDesc}\n\n**上游任务输出**:\n${upstreamResults.join('\n\n') || '(无上游输出)'}`;
+			if (upInlineData.length > 0) {
+				taskPrompt += `\n\n**内嵌附件**: 描述中包含 ${upInlineData.length} 个内嵌数据，已随附件发送给模型`;
+			}
 		}
 
 		try {
@@ -1801,7 +1811,7 @@ Goal: ${goal}`;
 			const chatMessage = await this.agentChatService.sendMessage(
 				task.assigneeId,
 				taskPrompt,
-				{ workspaceId: undefined, agentSessionId: resolvedSessionId },
+				{ workspaceId: undefined, agentSessionId: resolvedSessionId, attachments: taskInlineData.length > 0 ? taskInlineData : undefined, model: task.modelId, providerId: task.providerId, source: 'task' },
 				(delta) => {
 					if (this._streamEventCallback) {
 						this._streamEventCallback('chat.stream.delta', {
@@ -2017,9 +2027,13 @@ Goal: ${goal}`;
 			sourceId = boardTask.sourceId;
 		}
 
+		// Load agents once — used by both strategy 0 (verify existing assignee)
+		// and strategies 1-2 (name/role matching).  Previously called getAgents()
+		// twice in sequence which doubled the directory-scan cost (~100‑500ms each).
+		const agents = await this.agentStudioService.getAgents();
+
 		// Strategy 0: Already has a valid assignee — verify it still exists
 		if (currentAssigneeId) {
-			const agents = await this.agentStudioService.getAgents();
 			const existing = agents.find(e => e.id === currentAssigneeId);
 			if (existing) {
 				this.logService.info(`[Orchestration] ensureTaskAgent: Task "${taskTitle}" already has valid agent "${existing.name}" (${existing.id})`);
@@ -2036,7 +2050,6 @@ Goal: ${goal}`;
 			if (found) { planTask = found; break; }
 		}
 
-		const agents = await this.agentStudioService.getAgents();
 		const existingByName = new Map(agents.map(e => [e.name.toLowerCase(), e]));
 		const taskRole = planTask?.assigneeRole || currentAssigneeName || 'Agent';
 		const taskAssigneeName = planTask?.assigneeName || currentAssigneeName;
@@ -2117,15 +2130,19 @@ Goal: ${goal}`;
 	}
 
 	/**
-	 * Execute a task board item by invoking the assigned agent.
+	 * Execute a task that was created from the task board and just transitioned
+	 * to the 'running' status.
+	 *
 	 * Used when a task transitions to 'running' from the task board UI.
 	 * Also pushes chat.stream.* events to the webview.
 	 */
 	async executeTaskForBoard(
 		workspaceId: string,
 		taskBoardRecordId: string,
-		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string; workflowId?: string; variableValues?: Record<string, string>; attachments?: IChatAttachmentSend[] },
+		taskInfo?: ITaskExecutionInfo,
 	): Promise<void> {
+		const tEntry = performance.now();
+		console.info(`[PerfDiag] 🟢 executeTaskForBoard ENTER taskBoardRecordId=${taskBoardRecordId} t=${tEntry.toFixed(0)}ms`);
 		const assigneeId = taskInfo?.assigneeId;
 		if (!assigneeId) {
 			this.logService.warn(`[Orchestration] executeTaskForBoard: no assigneeId for task ${taskBoardRecordId}`);
@@ -2140,6 +2157,7 @@ Goal: ${goal}`;
 		// Find the corresponding plan task (if any) for the planId
 		let planId: string | undefined;
 		if (sourceId) {
+			const tPlan = performance.now();
 			const plans = await this._readPlans();
 			for (const plan of plans) {
 				if (plan.tasks.find(t => t.id === sourceId)) {
@@ -2147,10 +2165,12 @@ Goal: ${goal}`;
 					break;
 				}
 			}
+			console.info(`[PerfDiag] 🟢 _readPlans elapsed=${(performance.now() - tPlan).toFixed(0)}ms`);
 		}
 
 		// Resolve the agent's current session
 		let agentSessionId: string | undefined;
+		const tSession = performance.now();
 		try {
 			const session = await (this.agentChatService as any).getOrCreateActiveSession(
 				assigneeId,
@@ -2158,6 +2178,7 @@ Goal: ${goal}`;
 			);
 			agentSessionId = session?.id as string | undefined;
 		} catch { /* fall back to undefined */ }
+		console.info(`[PerfDiag] 🟢 getOrCreateSession elapsed=${(performance.now() - tSession).toFixed(0)}ms`);
 
 		const sessionIdForEvent = agentSessionId || '';
 
@@ -2169,16 +2190,37 @@ Goal: ${goal}`;
 			});
 		}
 
-		// Build task prompt
-		let taskPrompt = `请执行以下任务:\n\n**任务标题**: ${taskTitle}\n**任务描述**: ${taskDesc}\n**任务来源**: 任务看板`;
-		if (attachments && attachments.length > 0) {
-			const lines = attachments.map(a => `- ${a.name} (${a.type}, ${a.mimeType})`).join('\n');
-			taskPrompt += `\n**附件** (${attachments.length}):\n${lines}`;
-		}
+		// Build task prompt — extract inline data:image base64 URIs from the
+		// description (embedded by TAPD import) so they are sent as proper
+		// image contentParts instead of being inlined as raw base64 text.
+		const { cleanDescription: cleanDesc, extraAttachments: inlineData } = extractInlineDataUris(taskDesc);
+		const allAttachments = inlineData.length > 0
+			? [...(attachments || []), ...inlineData]
+			: (attachments || []);
+		const taskPrompt = _buildTaskPrompt({
+			title: taskTitle,
+			description: cleanDesc,
+			source: '任务看板',
+			inlineAttachmentCount: inlineData.length,
+			attachments: attachments || undefined,
+		});
 
 		// v40: If agent is a workflow agent, delegate to workflowExecutionService
 		// so the chat panel renders SubAgent cards and full execution trace.
-		const workflows = await this.workflowStorage.listWorkflows(workspaceId);
+		// Cache workflow list for 30s — most agents are NOT workflows, and the
+		// file I/O here costs 1–2s per task execution.
+		const WF_CACHE_TTL = 30_000;
+		const tWorkflow = performance.now();
+		let workflows: any[];
+		const nowWf = Date.now();
+		if (this._workflowCache && (nowWf - this._workflowCache.ts) < WF_CACHE_TTL) {
+			workflows = this._workflowCache.data;
+			console.info(`[PerfDiag] 🟢 listWorkflows cache HIT (age=${(nowWf - this._workflowCache.ts).toFixed(0)}ms)`);
+		} else {
+			workflows = await this.workflowStorage.listWorkflows(workspaceId);
+			this._workflowCache = { data: workflows, ts: nowWf };
+			console.info(`[PerfDiag] 🟢 listWorkflows elapsed=${(performance.now() - tWorkflow).toFixed(0)}ms (count=${workflows.length})`);
+		}
 		const matchingWorkflow = workflows.find(w => w.agentId === assigneeId);
 		if (matchingWorkflow && matchingWorkflow.id) {
 			this.logService.info(`[Orchestration] executeTaskForBoard: agent ${assigneeId} is a workflow agent (workflow=${matchingWorkflow.id}), delegating to workflowExecutionService`);
@@ -2236,11 +2278,31 @@ Goal: ${goal}`;
 		// Mark agent as busy while executing this board task
 		this._markAgentBusy(assigneeId);
 
+		// Notify the UI to open/focus this agent's chat in the Agent Studio area
+		// so the user can immediately see the task execution begin.
+		if (this._streamEventCallback) {
+			this._streamEventCallback('agent.openChat', {
+				agentId: assigneeId,
+				agentName: taskInfo?.assigneeName || assigneeId,
+				workspaceId,
+				worktreePath: taskInfo?.worktreePath,
+			});
+		}
+
 		try {
+			const tSend = performance.now();
+			console.info(`[PerfDiag] 🟢 executeTaskForBoard → sendMessage START elapsed=${(tSend - tEntry).toFixed(0)}ms`);
 			const chatMessage = await this.agentChatService.sendMessage(
 				assigneeId,
 				taskPrompt,
-				{ workspaceId, agentSessionId, worktreePath: taskInfo?.worktreePath, attachments: taskInfo?.attachments },
+				{ workspaceId, agentSessionId, worktreePath: taskInfo?.worktreePath, attachments: allAttachments, model: taskInfo?.modelId, providerId: taskInfo?.providerId, source: 'task',
+					taskCard: {
+						title: taskTitle,
+						description: cleanDesc,
+						source: '任务看板',
+						attachments: attachments?.map(a => ({ name: a.name, mimeType: a.mimeType })),
+					},
+				},
 				(delta) => {
 					if (this._streamEventCallback) {
 						this._streamEventCallback('chat.stream.delta', {
@@ -2677,6 +2739,8 @@ Keep the summary concise and focused on information needed to execute the task.`
 	private async _executeTask(planId: string, task: PlanTask): Promise<void> {
 		if (!task.assigneeId) { return; }
 
+		let inlineDataForTask: IChatAttachmentSend[] = [];
+
 		// Mark agent as busy while executing this task
 		this._markAgentBusy(task.assigneeId);
 
@@ -2720,7 +2784,19 @@ Keep the summary concise and focused on information needed to execute the task.`
 		}
 
 		// Build task prompt with exploration context if available
-		const taskPrompt = `请执行以下任务:\n\n**任务标题**: ${task.title}\n**任务描述**: ${task.description || task.title}\n**任务ID**: ${task.id}${task.dependencies.length > 0 ? `\n**依赖任务**: ${task.dependencies.join(', ')}` : ''}${explorationContext ? `\n\n**代码探索上下文**:\n${explorationContext}` : ''}`;
+		// Extract inline data:image base64 URIs from description so they flow
+		// through the contentParts pipeline instead of being raw base64 text.
+		const rawDesc = task.description || task.title;
+		const { cleanDescription: cleanDesc, extraAttachments: inlineData } = extractInlineDataUris(rawDesc);
+		inlineDataForTask = inlineData;
+		const taskPrompt = _buildTaskPrompt({
+			title: task.title,
+			description: cleanDesc,
+			taskId: task.id,
+			dependencies: task.dependencies.length > 0 ? task.dependencies : undefined,
+			inlineAttachmentCount: inlineData.length,
+			explorationContext,
+		});
 
 		// Resolve the agent's current (or default) session so messages are
 		// persisted under the same key that the webview loads.
@@ -2751,7 +2827,7 @@ Keep the summary concise and focused on information needed to execute the task.`
 			const chatMessage = await this.agentChatService.sendMessage(
 				task.assigneeId,
 				taskPrompt,
-				{ workspaceId: undefined, agentSessionId },
+				{ workspaceId: undefined, agentSessionId, attachments: inlineDataForTask.length > 0 ? inlineDataForTask : undefined, model: task.modelId, providerId: task.providerId, source: 'task' },
 				(delta) => {
 					// Forward stream deltas to the webview
 					if (this._streamEventCallback) {
@@ -3059,4 +3135,108 @@ Keep the summary concise and focused on information needed to execute the task.`
 		this._onDidChangePlan.fire(plan);
 		return task;
 	}
+}
+
+/**
+ * Extract inline `data:<mime>;base64,...` URIs from a task description
+ * (typically embedded by TAPD import for images, but also handles any other
+ * data URI that might appear — PDFs, text files, docs, etc.) and return a
+ * cleaned description text plus properly-typed attachment entries so the
+ * embedded data can be sent to the LLM via the contentParts pipeline instead
+ * of being inlined as raw base64 text in the prompt.
+ *
+ * - Image MIME (image/*)    → `type: 'image'` → image contentPart → LLM-native image format
+ * - Text MIME  (text/*)     → `type: 'file'`  → text contentPart  → inlined as plain text
+ * - Other binary MIME        → `type: 'file'`  → file contentPart  → inlined as base64
+ *
+ * - In the output text, each replaced URI is represented by a concise marker:
+ *   `[图片: N]` for images, `[文件: N]` for everything else (up to 3 each);
+ *   beyond that a summary line replaces all individual markers.
+ */
+/** Build the standard task execution prompt.
+ *  Shared by executeTaskForBoard, _executeTask, and _executeWorkflowTask
+ *  to ensure consistent prompt format across all execution paths. */
+function _buildTaskPrompt(opts: {
+	title: string;
+	description: string;
+	/** Task source label (e.g. "任务看板"). */
+	source?: string;
+	/** Task board record ID. */
+	taskId?: string;
+	/** Dependency task IDs. */
+	dependencies?: readonly string[];
+	/** Extra inline attachment info — when > 0, adds a suffix line. */
+	inlineAttachmentCount?: number;
+	/** External attachment list (files uploaded by user). */
+	attachments?: readonly IChatAttachmentSend[];
+	/** Optional exploration context block (from _executeTask). */
+	explorationContext?: string;
+}): string {
+	const { title, description, source, taskId, dependencies, inlineAttachmentCount, attachments, explorationContext } = opts;
+	let prompt = `请执行以下任务:\n\n**任务标题**: ${title}\n**任务描述**: ${description}`;
+	if (source) {
+		prompt += `\n**任务来源**: ${source}`;
+	}
+	if (taskId) {
+		prompt += `\n**任务ID**: ${taskId}`;
+	}
+	if (dependencies && dependencies.length > 0) {
+		prompt += `\n**依赖任务**: ${dependencies.join(', ')}`;
+	}
+	if (inlineAttachmentCount && inlineAttachmentCount > 0) {
+		prompt += `\n**内嵌附件**: 描述中包含 ${inlineAttachmentCount} 个内嵌数据，已随附件发送给模型`;
+	}
+	if (attachments && attachments.length > 0) {
+		const lines = attachments.map(a => `- ${a.name} (${a.type === 'image' ? '图片' : '文件'}, ${a.mimeType})`).join('\n');
+		prompt += `\n**附件** (${attachments.length}):\n${lines}`;
+	}
+	if (explorationContext) {
+		prompt += `\n\n**代码探索上下文**:\n${explorationContext}`;
+	}
+	return prompt;
+}
+
+function extractInlineDataUris(description: string): { cleanDescription: string; extraAttachments: IChatAttachmentSend[] } {
+	// Fast pre-check — skip regex entirely when no data URIs present.
+	// This avoids scanning multi-MB description strings on every render cycle.
+	const extraAttachments: IChatAttachmentSend[] = [];
+	if (!description || description.indexOf('data:') === -1) {
+		return { cleanDescription: description, extraAttachments };
+	}
+	// Match: [prefix]data:<mimeType>;base64,<data>[)]  where prefix is optional
+	// Markdown image/link syntax and the trailing ) is also optional (bare data URIs).
+	// Base64 alphabet: A-Za-z0-9+/=  (RFC 4648) — ) is NOT valid so we match
+	// the full base64 blob greedily, then optionally consume a closing paren.
+	const dataUriRe = /(?:(!?\[([^\]]*)\]\())?data:([\w/+-]+);base64,([A-Za-z0-9+/=]+)\)?/gi;
+	let imgCounter = 0;
+	let fileCounter = 0;
+	const cleanDescription = description.replace(dataUriRe, (_full, _prefix, alt, mimeType, data) => {
+		const isImage = mimeType.startsWith('image/');
+		const label = isImage ? '图片' : '文件';
+		const counter = isImage ? ++imgCounter : ++fileCounter;
+		const globalCounter = imgCounter + fileCounter;
+		extraAttachments.push({
+			id: `inline-data-${globalCounter}`,
+			type: isImage ? 'image' : 'file',
+			name: isImage ? `task-image-${counter}.${mimeType.split('/').pop() || 'png'}` : `task-file-${counter}`,
+			mimeType,
+			data,
+			size: data.length,
+		});
+		if (globalCounter <= 3) {
+			return `[${label}: ${counter}]`;
+		}
+		return '';
+	});
+	let result = cleanDescription;
+	const totalExtracted = imgCounter + fileCounter;
+	if (totalExtracted > 3) {
+		result = result.replace(/\[(图片|文件): \d+\]/g, '');
+		result = result.replace(/\n{3,}/g, '\n\n');
+		const parts: string[] = [];
+		if (imgCounter > 0) { parts.push(`${imgCounter} 张图片`); }
+		if (fileCounter > 0) { parts.push(`${fileCounter} 个文件`); }
+		result = `${result.trim()}\n\n（描述中包含 ${parts.join('、')}，已随附件发送）`;
+	}
+	return { cleanDescription: result, extraAttachments };
 }

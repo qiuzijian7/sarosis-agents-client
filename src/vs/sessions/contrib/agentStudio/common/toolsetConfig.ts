@@ -117,6 +117,13 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		deferrable: false,
 	},
 	{
+		id: 'knowledge',
+		label: 'Knowledge',
+		priority: ToolsetPriority.High,
+		prefixes: ['kb_'],
+		deferrable: false,
+	},
+	{
 		id: 'memory',
 		label: 'Memory',
 		priority: ToolsetPriority.Medium,

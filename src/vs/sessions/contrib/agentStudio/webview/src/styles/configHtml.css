@@ -1,0 +1,152 @@
+/*---------------------------------------------------------------------------------------------
+ *  ConfigHtml Panel + Config tab styles.
+ *  Replaces the legacy configmd.css (Markdown editor / parser UI removed).
+ *--------------------------------------------------------------------------------------------*/
+
+/* ─── Agent editor: Config tab ─────────────────────────────────────────── */
+.configmd-tab-body {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 16px;
+	height: 100%;
+	box-sizing: border-box;
+	overflow: auto;
+}
+
+.configmd-empty-state {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	padding: 48px 24px;
+	text-align: center;
+	color: var(--vscode-foreground, #ccc);
+}
+.configmd-empty-icon { font-size: 40px; }
+.configmd-empty-title { font-size: 16px; font-weight: 600; }
+.configmd-empty-desc { max-width: 420px; opacity: 0.8; line-height: 1.6; }
+.configmd-empty-btn {
+	padding: 8px 18px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background, #0078d4);
+	color: var(--vscode-button-foreground, #fff);
+	cursor: pointer;
+	font-size: 14px;
+}
+.configmd-empty-btn:hover { background: var(--vscode-button-hoverBackground, #1a8cff); }
+.configmd-empty-hint { font-size: 12px; opacity: 0.6; }
+.configmd-empty-hint code {
+	background: rgba(127,127,127,0.18);
+	padding: 1px 5px;
+	border-radius: 3px;
+}
+
+.configmd-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+.configmd-toolbar-left { display: flex; align-items: center; gap: 8px; }
+.configmd-toolbar-label {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground, #ddd);
+}
+
+.configmd-editor-body {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: 0;
+}
+.configmd-source { flex: 1 1 auto; min-height: 240px; }
+
+/* ─── ConfigHtml preview panel (iframe) ────────────────────────────────── */
+.confightml-panel {
+	width: 100%;
+	height: 100%;
+	min-height: 280px;
+	display: flex;
+	flex-direction: column;
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+.confightml-iframe {
+	flex: 1 1 auto;
+	width: 100%;
+	border: 0;
+	background: #fff;
+}
+.confightml-loading,
+.confightml-error {
+	padding: 16px;
+	color: var(--vscode-foreground, #ccc);
+}
+.confightml-error pre {
+	white-space: pre-wrap;
+	opacity: 0.8;
+}
+
+/* ─── ConfigHtml AI chat box ───────────────────────────────────────────── */
+.confightml-chat {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	border: 1px solid var(--vscode-input-border, rgba(127,127,127,0.4));
+	border-radius: 8px;
+	padding: 10px 12px;
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+.confightml-chat-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+.confightml-chat-title { font-weight: 600; font-size: 13px; }
+.confightml-chat-skill {
+	font-size: 11px;
+	padding: 1px 8px;
+	border-radius: 10px;
+	background: rgba(78,161,255,0.15);
+	color: #4ea1ff;
+}
+.confightml-chat-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	max-height: 180px;
+	overflow: auto;
+}
+.confightml-chat-turn {
+	display: flex;
+	gap: 8px;
+	font-size: 12.5px;
+	line-height: 1.5;
+}
+.confightml-chat-role { font-weight: 600; opacity: 0.7; flex: 0 0 auto; }
+.confightml-chat-turn.error .confightml-chat-text { color: #f48771; }
+.confightml-chat-turn.pending .confightml-chat-text { opacity: 0.6; }
+.confightml-chat-inputrow { display: flex; gap: 8px; align-items: flex-end; }
+.confightml-chat-input {
+	flex: 1 1 auto;
+	resize: vertical;
+	font: inherit;
+	font-size: 13px;
+	padding: 6px 8px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-input-border, rgba(127,127,127,0.4));
+	background: var(--vscode-input-background, transparent);
+	color: var(--vscode-input-foreground, inherit);
+}
+.confightml-chat-send {
+	padding: 6px 14px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background, #0078d4);
+	color: var(--vscode-button-foreground, #fff);
+	cursor: pointer;
+}
+.confightml-chat-send:disabled { opacity: 0.5; cursor: default; }

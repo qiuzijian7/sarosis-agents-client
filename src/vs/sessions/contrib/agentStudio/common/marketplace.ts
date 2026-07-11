@@ -96,6 +96,8 @@ export interface IInstallResult {
 	readonly version: string;
 	/** 安装到的本地目录 URI */
 	readonly targetDir: string;
+	/** 是否携带预建索引（.ftindex.json / .kbkernel.json），调用方可跳过 rebuild */
+	readonly hasPrebuiltIndex?: boolean;
 }
 
 /** 发布选项 */

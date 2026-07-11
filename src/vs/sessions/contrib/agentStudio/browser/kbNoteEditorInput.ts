@@ -10,8 +10,8 @@ import { EditorInputCapabilities } from '../../../../workbench/common/editor.js'
 /**
  * EditorInput 用于在中栏文件编辑器打开知识库笔记的 WYSIWYG 编辑器。
  *
- * 承载被点击文件的 URI 与标题；编辑器面板（KnowledgeBaseNoteEditorPane）
- * 会在 setInput 时读取该文件内容并用 KbNoteEditorPane（Protyle/Lute）渲染。
+ * 承载被点击文件的 URI 与标题；编辑器面板（KbBlocksEditorPane，AFFiNE/BlockSuite）
+ * 会在 setInput 时读取该文件内容并用 BlockSuite 富块编辑器渲染。
  *
  * 注意：本类为非单例、可编辑——同一文件每次点击都会复用同一 Tab
  * （matches 按 URI 判定），便于在中间栏直接编辑知识库笔记。
@@ -29,17 +29,24 @@ export class KbNoteEditorInput extends EditorInput {
 	}
 
 	override get capabilities(): EditorInputCapabilities {
-		// 非单例、可编辑（保存通过 KbNativeKernel/fileService 直接落盘）
+		// 非单例、可编辑（保存通过 KbBlocksEditorPane 回写 .md + .bsdoc 快照）
 		return EditorInputCapabilities.None;
 	}
 
 	private readonly _resource: URI;
 	private _title: string;
+	/** Optional `#heading` target to scroll to after the note opens (wikilink jump). */
+	private readonly _heading?: string;
 
-	constructor(resource: URI, title: string) {
+	constructor(resource: URI, title: string, heading?: string) {
 		super();
 		this._resource = resource;
 		this._title = title;
+		this._heading = heading;
+	}
+
+	get heading(): string | undefined {
+		return this._heading;
 	}
 
 	override get resource(): URI {

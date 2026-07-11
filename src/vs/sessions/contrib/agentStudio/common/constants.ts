@@ -631,7 +631,6 @@ export const DATA_FILE_SESSIONS = 'sessions.json';
 export const DATA_FILE_CHAT_HISTORY = 'chat-history.json';
 export const DATA_FILE_LAST_ACTIVE_WORKSPACE = 'last-active-workspace.json';
 export const DATA_FILE_LAST_ACTIVE_AGENT = 'last-active-agent.json';
-export const DATA_FILE_CUSTOM_AGENTS = 'custom-agents.json';
 export const DATA_FILE_AGENT_BINDINGS = 'agent-bindings.json';
 
 // Workspace-local data directory name (stored inside the workspace folder)

@@ -879,9 +879,9 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			deadCodeResult.style.color = 'var(--vscode-descriptionForeground)';
 			deadCodeBtn.disabled = true;
 			// Defer to next tick so UI updates before heavy computation
-			setTimeout(() => {
+			setTimeout(async () => {
 				try {
-					const report = this._graphService.getArchitectureAdvanced(['deadCode']);
+					const report = await this._graphService.getArchitectureAdvanced(['deadCode']);
 					clearNode(deadCodeResult);
 					if (report.deadCode) {
 						const dc = report.deadCode;

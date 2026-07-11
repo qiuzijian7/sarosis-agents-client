@@ -8,7 +8,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { htmlGenerate } from './configMdBridge';
+import { htmlGenerate } from './configHtmlBridge';
 
 interface ChatTurn {
 	role: 'user' | 'assistant';

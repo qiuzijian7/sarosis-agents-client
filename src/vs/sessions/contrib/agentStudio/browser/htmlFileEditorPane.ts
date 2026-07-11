@@ -220,7 +220,7 @@ export class HtmlFileEditorPane extends TextFileEditor {
 
 			try {
 				const agentId = input.agentId ?? input.resource.path.replace(/^\//, '');
-				const result = await this._configHtmlService.renderHtml(agentId);
+				const result = await this._configHtmlService.getHtml(agentId);
 				this._rawHtml = result.html;
 			} catch (err) {
 				this._logService.warn('[HtmlFileEditorPane] renderHtml failed:', err);

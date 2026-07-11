@@ -759,6 +759,26 @@ function adjustEsmUrl(code: string): string {
 	return fixedCode;
 }
 
+/**
+ * Run an async mapper over `items` with a bounded concurrency.
+ * Prevents EMFILE ("too many open files") when transpiling thousands of files
+ * in parallel on systems with low file-descriptor limits (default 256 on Windows).
+ */
+async function mapWithConcurrency<T>(
+	items: T[],
+	limit: number,
+	fn: (item: T) => Promise<void>,
+): Promise<void> {
+	let cursor = 0;
+	const workers = new Array(Math.min(limit, items.length || 1)).fill(0).map(async () => {
+		while (cursor < items.length) {
+			const index = cursor++;
+			await fn(items[index]);
+		}
+	});
+	await Promise.all(workers);
+}
+
 async function transpile(outDir: string, excludeTests: boolean): Promise<void> {
 	// Find all .ts files
 	const ignorePatterns = ['**/*.d.ts'];
@@ -773,12 +793,14 @@ async function transpile(outDir: string, excludeTests: boolean): Promise<void> {
 
 	console.log(`[transpile] Found ${files.length} files`);
 
-	// Transpile all files in parallel using esbuild.transform (fastest approach)
-	await Promise.all(files.map(file => {
+	// Transpile files with bounded concurrency to avoid EMFILE on systems with
+	// low file-descriptor limits (default 256 open files on Windows).
+	const CONCURRENCY = Number(process.env.TRANSPILE_CONCURRENCY) || 200;
+	await mapWithConcurrency(files, CONCURRENCY, async (file) => {
 		const srcPath = path.join(REPO_ROOT, SRC_DIR, file);
 		const destPath = path.join(REPO_ROOT, outDir, file.replace(/\.ts$/, '.js'));
 		return transpileFile(srcPath, destPath);
-	}));
+	});
 
 	// Transpile capability plugin extensions (dynamically imported at runtime)
 	await transpileCapabilityPlugins(outDir);
@@ -1432,9 +1454,17 @@ async function watch(): Promise<void> {
 				await Promise.all(filesToCopy.map(async (srcPath) => {
 					const relativePath = path.relative(path.join(REPO_ROOT, SRC_DIR), srcPath);
 					const destPath = path.join(REPO_ROOT, outDir, relativePath);
-					await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
-					await fs.promises.copyFile(srcPath, destPath);
-					console.log(`[watch] Copied ${relativePath}`);
+					try {
+						await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+						await fs.promises.copyFile(srcPath, destPath);
+						console.log(`[watch] Copied ${relativePath}`);
+					} catch (err: any) {
+						// ENOENT is a normal race when a build tool (e.g. esbuild for
+						// webview/kbblocks) atomically replaces output files under src/.
+						// Skip silently — the next change event will re-trigger the copy.
+						if (err?.code === 'ENOENT') { return; }
+						throw err;
+					}
 				}));
 			}
 

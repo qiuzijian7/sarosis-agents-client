@@ -20,7 +20,6 @@
 import { URI } from '../../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { Disposable } from '../../../../../../base/common/lifecycle.js';
-import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { KbSection } from './kbTypes.js';
 import { KbFullTextIndex, IKbSearchHit, IKbIndexRoot } from './kbIndex.js';
 import { KbLinkGraph, IKbGraphRoot, IOutgoingLink, IBacklink } from './kbGraph.js';
@@ -97,34 +96,31 @@ export class KbNativeKernel extends Disposable {
 	/**
 	 * 扫描 vault 目录构建索引 + 图谱 + 提及表。
 	 * @param roots - 库/笔记分区根 URI
-	 * @param persistUri - 持久化文件 URI（可选，提供则自动加载/保存）
+	 * @param persistUri - FTS 索引缓存文件 URI（可选；提供则启动时增量 reconcile，
+	 *                    只重读变更文件，并把 graph/mention 从内存文档派生，避免二次全量读盘）
 	 */
 	async build(
 		roots: { uri: URI; section: KbSection }[],
 		persistUri?: URI,
 	): Promise<void> {
-		// 尝试从磁盘加载持久化索引
-		if (persistUri) {
-			const loaded = await this._tryLoadPersist(persistUri, roots);
-			if (loaded) {
-				this._built = true;
-				return;
-			}
-		}
-
-		// 全量构建
+		// FTS index: cache load + incremental reconcile + cache save (internal).
 		const indexRoots: IKbIndexRoot[] = roots;
-		const graphRoots: IKbGraphRoot[] = roots;
-		await this._index.build(indexRoots);
-		await this._graph.build(graphRoots);
-		await this._buildMentionIndex(roots);
+		await this._index.build(indexRoots, persistUri);
+
+		// Graph + mentions: prefer in-memory docs from the FTS index so a cache
+		// hit avoids a second full disk walk. Fall back to disk only when the
+		// index is somehow empty (cold start with no readable files).
+		const docs = this._index.allDocs();
+		if (docs.length > 0) {
+			this._graph.buildFromDocs(docs);
+			this._buildMentionIndexFromDocs(docs);
+		} else {
+			const graphRoots: IKbGraphRoot[] = roots;
+			await this._graph.build(graphRoots);
+			await this._buildMentionIndex(roots);
+		}
 
 		this._built = true;
-
-		// 持久化到磁盘
-		if (persistUri) {
-			await this._savePersist(persistUri);
-		}
 	}
 
 	/** 标记索引失效（文件变更后调用）。 */
@@ -209,6 +205,15 @@ export class KbNativeKernel extends Disposable {
 		return this._graph.backlinks(docId);
 	}
 
+	/** 枚举 vault 内全部笔记（供 wikilink 解析索引）。 */
+	listNotes(): { uri: string; name: string }[] {
+		const out: { uri: string; name: string }[] = [];
+		for (const [_norm, meta] of this._docNames) {
+			out.push({ uri: meta.uri.toString(), name: meta.name.replace(/\.(md|markdown)$/i, '') });
+		}
+		return out;
+	}
+
 	// -----------------------------------------------------------------------
 	// 关系图谱（对齐 KbKernelClient.getGraph）
 	// -----------------------------------------------------------------------
@@ -274,14 +279,22 @@ export class KbNativeKernel extends Disposable {
 	 * - 排除通过 [[ ]] 链接的命中（那是反链，不是提及）
 	 */
 	private async _buildMentionIndex(roots: { uri: URI; section: KbSection }[]): Promise<void> {
-		this._mentionIndex.clear();
-		this._docNames.clear();
-
-		// 收集所有文档名
+		// Cold path: walk disk to collect docs, then build the mention table.
 		const allDocs: { uri: URI; name: string; text: string }[] = [];
 		for (const root of roots) {
 			await this._walkForMentions(root.uri, root.section, allDocs);
 		}
+		this._buildMentionIndexCore(allDocs);
+	}
+
+	/** Warm path: build the mention table from in-memory docs (no disk I/O). */
+	private _buildMentionIndexFromDocs(docs: { uri: URI; name: string; text: string }[]): void {
+		this._buildMentionIndexCore(docs);
+	}
+
+	private _buildMentionIndexCore(allDocs: { uri: URI; name: string; text: string }[]): void {
+		this._mentionIndex.clear();
+		this._docNames.clear();
 
 		// 建立文档名索引
 		for (const doc of allDocs) {
@@ -352,40 +365,9 @@ export class KbNativeKernel extends Disposable {
 	}
 
 	// -----------------------------------------------------------------------
-	// 持久化（通过 IFileService 序列化到 vault 目录）
-	// -----------------------------------------------------------------------
-
-	private async _tryLoadPersist(uri: URI, roots: { uri: URI; section: KbSection }[]): Promise<boolean> {
-		try {
-			const content = await this.fileService.readFile(uri);
-			const data = JSON.parse(content.value.toString());
-			if (!data || data.version !== 1) { return false; }
-
-			// 检查 mtime 是否过期（简化：直接全量重建）
-			// 完整实现可比较文件 mtime 与索引 mtime
-			return false; // 暂不加载，总是重建（后续优化）
-		} catch {
-			return false;
-		}
-	}
-
-	private async _savePersist(uri: URI): Promise<void> {
-		try {
-			const data = {
-				version: 1,
-				savedAt: Date.now(),
-				// 索引数据由 KbFullTextIndex 内部管理，此处仅记录元数据
-				// 完整持久化需序列化 postings table（后续优化）
-			};
-			await this.fileService.writeFile(uri, VSBuffer.wrap(new TextEncoder().encode(JSON.stringify(data))));
-		} catch {
-			// 持久化失败不影响功能
-		}
-	}
-
-	// -----------------------------------------------------------------------
 	// 辅助
 	// -----------------------------------------------------------------------
+
 
 	private _normalizeName(name: string): string {
 		return name.toLowerCase().trim();

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sarosis 知识库 · 图谱生成与 MD 导出使用说明</title>
+<style>
+:root{
+  --bg:#1e1e1e; --bg-sidebar:#252526; --bg-card:#2d2d2d; --bg-input:#1e1e1e;
+  --border:#3c3c3c; --text:#cccccc; --text-muted:#9d9d9d; --text-bright:#ffffff;
+  --primary:#007acc; --primary-hover:#1f8ad2; --success:#4ec9b0; --error:#f48771;
+  --warning:#dcdcaa; --info:#569cd6; --purple:#c586c0; --green:#6a9955;
+  --font:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+  --mono:'Consolas','Monaco',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.7;}
+.wrap{max-width:960px;margin:0 auto;padding:32px 28px 80px;}
+h1{font-size:26px;color:var(--text-bright);margin-bottom:6px;border-bottom:1px solid var(--border);padding-bottom:14px;}
+h2{font-size:20px;color:var(--primary-hover);margin:34px 0 12px;padding-left:10px;border-left:3px solid var(--primary);}
+h3{font-size:16px;color:var(--text-bright);margin:22px 0 8px;}
+p{margin:8px 0;color:var(--text);}
+.sub{color:var(--text-muted);font-size:13px;margin-bottom:20px;}
+ul,ol{margin:8px 0 8px 22px;}
+li{margin:5px 0;}
+code{font-family:var(--mono);background:#0e0e0e;color:var(--purple);padding:1px 6px;border-radius:4px;font-size:13px;}
+pre{background:#0e0e0e;border:1px solid var(--border);border-radius:8px;padding:14px 16px;overflow:auto;margin:10px 0;}
+pre code{background:none;color:var(--text);padding:0;white-space:pre;}
+.term{color:var(--success);}
+.note{background:rgba(86,156,214,.08);border:1px solid rgba(86,156,214,.35);border-radius:8px;padding:12px 16px;margin:12px 0;}
+.warn{background:rgba(220,220,170,.08);border:1px solid rgba(220,220,170,.35);}
+.err{background:rgba(244,135,113,.08);border:1px solid rgba(244,135,113,.35);}
+.tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:1px 7px;border-radius:4px;margin-right:6px;}
+.tag.kb{background:rgba(0,122,204,.18);color:#4ea1ff;border:1px solid rgba(0,122,204,.4);}
+.tag.ui{background:rgba(197,134,192,.18);color:#d9a6ff;border:1px solid rgba(197,134,192,.4);}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin:12px 0;}
+.table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px;}
+.table th,.table td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top;}
+.table th{background:#262626;color:var(--text-bright);}
+.table td code{font-size:12px;}
+.muted{color:var(--text-muted);}
+.flow{font-family:var(--mono);font-size:12.5px;color:var(--info);background:#0e0e0e;border:1px solid var(--border);border-radius:8px;padding:12px 14px;white-space:pre;overflow:auto;line-height:1.5;}
+a{color:var(--info);}
+hr{border:none;border-top:1px solid var(--border);margin:28px 0;}
+small{color:var(--text-muted);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Sarosis 知识库 · 图谱生成与 MD 导出使用说明</h1>
+<div class="sub">Hyper-Extract（TS 移植引擎）接入后的实操指南 · 适用于 <code>agentStudio</code> 内置 <code>kb_*</code> 工具与侧边栏「知识库」视图</div>
+
+<div class="note">本文档覆盖三件事：<b>① 如何生成图谱</b>　<b>② 如何把图谱导出成 Markdown（<code>.md</code>）文件</b>　<b>③ 检索与 RAG 问答的用法</b>。所有能力均已在 <code>src/vs/sessions/contrib/agentStudio/browser/knowledge/</code> 实现并通过单元验证（19/19 用例通过）。</div>
+
+<h2>一、接入现状一句话</h2>
+<p>本项目落地的是 Hyper-Extract 接入方案中的 <b>「方案 B + 方案 C 混合体」</b>：</p>
+<ul>
+  <li><b>方案 C（TS 移植核心算法）</b>：<code>browser/knowledge/engine/</code> 下是纯 TS 的 <code>BaseAutoType / AutoGraph / AutoList / OMem / InMemoryCosineIndex</code> 引擎，无 Python 运行时依赖。</li>
+  <li><b>方案 B（内置 kb_* 工具）</b>：<code>knowledgeTools.ts</code> 注册了 <code>kb_list_templates / kb_build / kb_add / kb_search / kb_ask / kb_export / kb_list / kb_delete</code>，agent 可直接调用完成「构建 + 检索 + 导出」闭环。</li>
+  <li>对应 Python 原版的 <code>he parse / he search / he ask / export_obsidian</code>：前三个对应 <code>kb_build</code> / <code>kb_search</code> / <code>kb_ask</code>，<code>export_obsidian</code> 对应本项目新增的 <code>kb_export</code>。</li>
+</ul>
+
+<div class="card">
+<b>前置条件</b>（缺一则工具会被自动隐藏）：
+<ul>
+  <li>Embedding 服务可用 —— <code>IAiEmbeddingVectorService.isEnabled()</code> 返回 <code>true</code>。图谱检索与 RAG 都依赖向量空间，必须启用。</li>
+  <li>LLM 可用 —— 通过本项目已有的 BYOK / provider 配置解析（<code>resolveChatModel</code>），用于结构化抽取与答案生成。</li>
+  <li>知识库落盘目录：默认 <code>&lt;userHome&gt;/.saros/knowledge-base/&lt;kbId&gt;/kb.json</code>（与侧边栏 Vault 共享根目录）。可在设置 <code>agentStudio.knowledge.storage.path</code> 中修改，修改后已有知识库会<b>自动迁移</b>到新目录。</li>
+</ul>
+</div>
+
+<h2>二、如何生成图谱</h2>
+
+<h3>方式 ①（推荐）Agent 工具流：<code>kb_build</code></h3>
+<p>让 agent 在对话里直接构建知识库。标准三步：</p>
+<div class="flow">kb_list_templates          # 1. 查看可用模板（完整目录见 2.1，共 41 个：8 通用 + 30 领域 + 3 默认）
+   → 返回: [{ id:"knowledge_graph", kind:"graph", ... }]
+
+kb_build                   # 2. 构建图谱（二选一提供内容）
+   text:       "Alice is an engineer at Acme who mentors Bob. ..."
+   # 或 file_path: "docs/intro.md"
+   template_id: "knowledge_graph"     # 默认即 knowledge_graph
+   title:      "团队知识图谱"            # 可选
+   → 返回: { id:"kb_xxxx", ... }     # 记下这个 id，后续检索/导出都用它
+
+kb_add                     # 3.（可选）增量追加文档，合并进同一图谱
+   id:   "kb_xxxx"
+   text: "Bob joined the platform team in 2024."</div>
+
+<p>引擎内部流程（与 Python 版一致）：</p>
+<div class="flow">kb_build
+  → KnowledgeManager.create(templateId)       建空 session
+  → manager.parseText(session, source)        摄入文本
+       → AutoGraph._extractData (two_stage)   先抽 nodes，再以 nodes 为上下文抽 edges
+       → _pruneDangling                    剪枝悬挂边（边两端必须存在节点）
+       → OMem.add (nodeMemory / edgeMemory)  按 key 去重 + 合并
+  → manager.buildIndex()                     embedder 向量化 → InMemoryCosineIndex
+  → manager.persist()                      落盘 .saros/kb/&lt;id&gt;/kb.json</div>
+
+<div class="note">模板说明：<code>kind:"graph"</code> 的模板走 <code>AutoGraph</code>（输出 nodes + edges，支持 Mermaid 可视化 + Obsidian 双链导出）；<code>kind:"list"</code> 的模板（<code>entity_list</code> / <code>faq</code> / 各 <code>model</code> / <code>set</code> / <code>hypergraph</code> 类）走 <code>AutoList</code>，导出为 Markdown 条目列表（不再是「not supported」）。具体映射见 2.1。</div>
+
+<h3>2.1 模板目录（共 41 个，移植自 Hyper-Extract 预设）</h3>
+<p>模板决定「抽什么 + 抽成什么结构」。<code>kb_build</code> 的 <code>template_id</code> 即下表 <code>id</code>。引擎只实现两类 AutoType，故上游 8 种类型映射为：<b>graph / temporal_graph / spatial_graph / spatio_temporal_graph → AutoGraph</b>；<b>list / model / set / hypergraph → AutoList</b>（hypergraph 的多元关系用 <code>participants</code> 数组字段表达）。</p>
+<table class="table">
+  <tr><th>领域</th><th>id（template_id）</th><th>kind</th><th>抽取内容</th></tr>
+  <tr><td rowspan="8">通用 general</td><td><code>knowledge_graph</code>（默认）</td><td>graph</td><td>通用实体+关系（两阶段）</td></tr>
+  <tr><td><code>graph</code> / <code>list</code> / <code>model</code> / <code>set</code></td><td>graph / list / list / list</td><td>通用图 / 列表 / 单对象 / 去重实体集</td></tr>
+  <tr><td><code>temporal_graph</code> / <code>spatial_graph</code> / <code>spatio_temporal_graph</code></td><td>graph</td><td>关系带 time / location / 二者</td></tr>
+  <tr><td><code>doc_structure</code></td><td>graph</td><td>章节层级 + 交叉引用</td></tr>
+  <tr><td><code>concept_graph</code></td><td>graph</td><td>概念层级与关系</td></tr>
+  <tr><td><code>biography_graph</code></td><td>graph</td><td>人物生平时序（带 time）</td></tr>
+  <tr><td><code>workflow_graph</code></td><td>list</td><td>工作流步骤 + 顺序 + 角色</td></tr>
+  <tr><td><code>faq</code> / <code>entity_list</code></td><td>list</td><td>问答对 / 扁平条目（默认列表类）</td></tr>
+  <tr><td rowspan="5">金融 finance</td><td><code>ownership_graph</code></td><td>graph</td><td>股权/控制结构</td></tr>
+  <tr><td><code>earnings_summary</code></td><td>list</td><td>财报关键指标</td></tr>
+  <tr><td><code>sentiment_model</code></td><td>list</td><td>市场情绪倾向</td></tr>
+  <tr><td><code>event_timeline</code></td><td>list</td><td>公司事件时间线</td></tr>
+  <tr><td><code>risk_factor_set</code></td><td>list</td><td>风险因素分类集</td></tr>
+  <tr><td rowspan="5">医疗 medicine</td><td><code>drug_interaction</code></td><td>graph</td><td>药物相互作用网络</td></tr>
+  <tr><td><code>anatomy_graph</code></td><td>graph</td><td>解剖层级</td></tr>
+  <tr><td><code>treatment_map</code></td><td>list</td><td>诊断→治疗→预后（超图）</td></tr>
+  <tr><td><code>hospital_timeline</code></td><td>list</td><td>病历入院时间线</td></tr>
+  <tr><td><code>discharge_instruction</code></td><td>list</td><td>出院小结结构化</td></tr>
+  <tr><td rowspan="5">中医 tcm</td><td><code>meridian_graph</code> / <code>herb_relation</code></td><td>graph</td><td>经络 / 中药配伍（七情）</td></tr>
+  <tr><td><code>herb_property</code></td><td>list</td><td>中药四气五味归经</td></tr>
+  <tr><td><code>formula_composition</code></td><td>list</td><td>方剂君臣佐使（超图）</td></tr>
+  <tr><td><code>syndrome_reasoning</code></td><td>list</td><td>证型-病机-治法（超图）</td></tr>
+  <tr><td rowspan="5">工业 industry</td><td><code>operation_flow</code></td><td>graph</td><td>操作步骤 + 结果</td></tr>
+  <tr><td><code>safety_control</code></td><td>graph</td><td>危险-风险-控制</td></tr>
+  <tr><td><code>failure_case</code></td><td>graph</td><td>故障现象-原因-方案</td></tr>
+  <tr><td><code>equipment_topology</code></td><td>graph</td><td>设备层级与连接</td></tr>
+  <tr><td><code>emergency_response</code></td><td>graph</td><td>应急场景-响应</td></tr>
+  <tr><td rowspan="5">法律 legal</td><td><code>contract_obligation</code></td><td>list</td><td>合同主体-义务（超图）</td></tr>
+  <tr><td><code>case_fact_timeline</code></td><td>list</td><td>案件事实时间线</td></tr>
+  <tr><td><code>case_citation</code></td><td>graph</td><td>案例引证关系</td></tr>
+  <tr><td><code>compliance_list</code></td><td>list</td><td>合规要求清单</td></tr>
+  <tr><td><code>defined_term_set</code></td><td>list</td><td>定义术语集</td></tr>
+</table>
+<div class="note">选模板建议：要实体关系网 / 可视化 → graph 类；要清单 / 摘要 / 病历 / 合同要素 → list 类；带时间的事件 → <code>temporal_graph</code> 或 <code>*_timeline</code>。hypergraph（多方参与，如治疗映射、合同义务）在本引擎中以 AutoList + <code>participants[]</code> 表达。</div>
+
+<h3>方式 ② 侧边栏「知识库」视图（用户手动）</h3>
+<p>对应面板 <code>KnowledgeBaseViewPane</code>（视图 id <code>agentStudio.knowledgeBase</code>）：</p>
+<ul>
+  <li><span class="tag ui">UI</span> 点击视图头「新建」→ <code>createVault('我的知识库','📚')</code> 创建知识库（Vault），自动建立 <code>library/</code> 与 <code>notes/</code> 两个分区。</li>
+  <li><span class="tag ui">UI</span> 往分区里放文档后，文件增删改会触发 <code>markSearchDirty()</code>，选中/搜索时调用 <code>rebuildSearchAssets()</code> → <code>_nativeKernel.build()</code> + <code>_index.build()</code> + <code>_graph.build()</code> 重建全文索引与双链图谱。</li>
+</ul>
+
+<div class="warn note">两套入口的落盘位置不同：① Agent 工具走 <code>.saros/kb/</code> + 引擎索引（语义检索/RAG）；② 侧边栏视图走 Vault 文件夹 + 原生内核索引（全文/双链）。二者目前<b>不互通</b>，按使用场景选择。</div>
+
+<h2>三、如何把图谱导出成 Markdown（<code>.md</code>）</h2>
+<p>这是 Hyper-Extract 原版 <code>export_obsidian</code> 在本项目的对应能力，由新增工具 <code>kb_export</code> 提供。</p>
+
+<h3>3.1 工具调用</h3>
+<div class="flow">kb_export
+   id:           "kb_xxxx"        # 必填，kb_build 返回的 id
+   output_path:  "kb/team.md"    # 可选：相对 workspace 或绝对路径，写盘为 .md
+   title:        "团队知识图谱"     # 可选：文档标题（默认用 KB 标题）
+   mermaid:     true             # 可选：是否包含 ```mermaid 图（默认 true）
+   wikilinks:   true             # 可选：节点名是否用 [[wikilink]]（默认 true）
+
+   # 省略 output_path 时，直接把 markdown 文本内联返回</div>
+
+<p>行为：</p>
+<ul>
+  <li>给定 <code>output_path</code>：经 <code>IFileService.writeFile</code> 写入（自动建父目录），返回 <code>{ success:true, path, bytes }</code>。</li>
+  <li>省略 <code>output_path</code>：返回 <code>{ success:true, markdown }</code>，由 agent 自行贴回对话或写入。</li>
+  <li><code>kind:"graph"</code> 模板：导出节点列表（<code>[[wikilink]]</code>）+ 关系列表 + <code>```mermaid</code> 图。关掉 <code>mermaid</code> 可只留纯文本条目。</li>
+  <li><code>kind:"list"</code> 模板（<code>entity_list</code> / <code>faq</code> / 各 model / set / hypergraph）：导出为 Markdown 条目列表（每条带字段，数组字段渲染为子列表）。不再返回「not supported」。</li>
+</ul>
+
+<h3>3.2 导出文件长什么样</h3>
+<p>导出的 <code>.md</code> 含三部分：<b>节点列表</b>（Obsidian <code>[[wikilink]]</code>）、<b>关系列表</b>、<b>Mermaid 图谱</b>。示例：</p>
+<pre><code># 团队知识图谱
+
+&gt; 由 Hyper-Extract (TS) 知识引擎自动导出 · 节点 3 · 关系 2
+
+## 节点 (Nodes)
+- [[Alice]] (`Person`): 工程师，在 Acme 任职
+- [[Bob]] (`Person`): 平台团队成员
+- [[Acme]] (`Org`): 雇主公司
+
+## 关系 (Edges)
+- [[Alice]] --`works_at`--&gt; [[Acme]]: Alice 受雇于 Acme
+- [[Alice]] --`mentors`--&gt; [[Bob]]: Alice 指导 Bob
+
+## 图谱 (Mermaid)
+```mermaid
+graph LR
+  n0["Alice"]:::Person
+  n1["Bob"]:::Person
+  n2["Acme"]:::Org
+  n0 --&gt;|works_at| n2
+  n0 --&gt;|mentors| n1
+```</code></pre>
+
+<div class="note">把该 <code>.md</code> 丢进 Obsidian / VS Code（装 Mermaid 预览插件）即可获得可点击跳转的图谱。节点名自动成为双向链接锚点。</div>
+
+<h3>3.3 直接在代码里导出（给二次开发）</h3>
+<pre><code>import { KnowledgeManager } from './engine/knowledgeManager.js';
+import { AutoGraph } from './engine/autoGraph.js';
+
+// 已加载的 graph session：
+const md = manager.exportMarkdown(session, { title: '团队知识图谱' });
+// 或直接拿 AutoGraph 实例：
+const md2 = graph.toMarkdown();
+const mmd = graph.toMermaid();   // 仅 mermaid 块字符串</code></pre>
+
+<h2>四、检索与 RAG 问答</h2>
+<p>构建完成后，检索是<b>只读、低成本</b>操作（仅 embedding + 余弦相似度），与构建（重 LLM 调用）解耦：</p>
+<table class="table">
+  <tr><th>工具</th><th>作用</th><th>返回</th></tr>
+  <tr><td><code>kb_search</code></td><td>语义检索，返回最相关的 nodes + edges</td><td><code>{ type:"graph", nodes, edges }</code></td></tr>
+  <tr><td><code>kb_ask</code></td><td>RAG 问答：检索 → 组织成 context → LLM 生成答案</td><td><code>{ answer, retrieved }</code></td></tr>
+  <tr><td><code>kb_list</code></td><td>列出本工作区所有已持久化的知识库</td><td><code>{ knowledgeBases:[...] }</code></td></tr>
+  <tr><td><code>kb_delete</code></td><td>删除指定知识库及其索引</td><td><code>{ deleted:id }</code></td></tr>
+</table>
+<p><code>kb_search</code> / <code>kb_ask</code> 调用链：<code>handler → KnowledgeManager.load(id) → AutoGraph.search/chat → OMem.search → Embedder.embedOne(query) → InMemoryCosineIndex.search(topK)</code>。检索前索引必须已 build（<code>kb_build</code> 已自动完成；从磁盘 <code>load</code> 时会恢复索引，无需重抽）。</p>
+
+<h2>五、文件布局与持久化</h2>
+<pre><code>&lt;userHome&gt;/                       # 默认根目录，跨工作区共享
+└─ .saros/
+   └─ kb/
+      └─ kb_xxxx/
+         └─ kb.json        # { data:{nodes,edges}, metadata:{id,templateId,...}, index:{nodeIndex,edgeIndex} }</code></pre>
+<p><code>kb.json</code> 同时保存数据、元数据与向量索引，<code>load</code> 后可无损恢复，无需重新跑 LLM 抽取。</p>
+
+<div class="card">
+<b>落盘根目录与迁移</b>
+<ul>
+  <li><b>默认路径</b>：<code>&lt;userHome&gt;/.saros/kb</code>（解析逻辑见 <code>resolveKbRoot()</code>）。</li>
+  <li><b>自定义</b>：设置项 <code>agentStudio.knowledge.storage.path</code>。留空 = 默认；支持 <code>~</code>（展开为用户主目录）、绝对路径；相对路径按用户主目录解析。</li>
+  <li><b>自动迁移</b>：当用户修改该设置时，<code>_maybeMigrateKbStorage()</code> 会把旧根目录下的全部 <code>&lt;id&gt;/kb.json</code> 移动到新根目录（已存在于新目录的不会被覆盖，迁移后旧文件删除）。</li>
+  <li><b>历史兼容</b>：早期版本把知识库存于 <code>&lt;workspace&gt;/.saros/kb</code>。首次激活时 <code>_migrateLegacyKbStorage()</code> 会把这些遗留数据一次性迁到新的用户级默认目录。</li>
+</ul>
+</div>
+
+<h2>六、常见问题</h2>
+<div class="card">
+<p><b>Q：<code>kb_build</code> 不在工具列表里？</b><br>
+A：Embedding 服务未启用，<code>embeddingService.isEnabled()</code> 为 <code>false</code> 时整套 <code>kb_*</code> 工具会被隐藏（<code>available</code> 守卫）。先在设置里开启 Embedding。</p>
+</div>
+<div class="card">
+<p><b>Q：导出提示 "toMarkdown is not supported"？</b><br>
+A：该报错已移除——<code>kind:"list"</code> 模板（<code>entity_list</code> / <code>faq</code> / 各 model / set / hypergraph）现在也能导出为 Markdown 条目列表。若你仍想要 Mermaid 关系图，请改用 <code>kind:"graph"</code> 模板（如 <code>knowledge_graph</code>）重建。</p>
+</div>
+<div class="card">
+<p><b>Q：Mermaid 图渲染不出来？</b><br>
+A：确认 <code>mermaid:true</code>（默认开），且你的 Markdown 预览器支持 Mermaid（Obsidian 原生支持；VS Code 需装 Mermaid 插件）。节点名含双引号会被自动转义。</p>
+</div>
+<div class="card">
+<p><b>Q：增量更新后检索结果没变？</b><br>
+A：<code>kb_add</code> 会写回 <code>kb.json</code> 并刷新索引；若手动改了文件，重新调一次 <code>kb_build</code> 或 <code>kb_add</code> 即可重建索引。</p>
+</div>
+
+<h2>七、UI Mockup 使用说明</h2>
+<p>侧边栏「知识库」视图与 UI 入口的可视化原型放在 <code>dev/</code> 下，<b>纯静态 HTML+CSS+JS，无需构建、无需依赖</b>，用浏览器直接打开即可（双击文件，或地址栏输入 <code>file://…/dev/knowledge-base-mockup.html</code>）。原型用于对齐交互与视觉稿，不代表最终运行时数据。</p>
+
+<div class="card">
+<b>1) <code>dev/knowledge-base-mockup.html</code> —— 知识库 View Mockup v3</b>
+<ul>
+  <li><b>风格</b>：对齐 SiYuan 思源笔记的「文件树 + 多笔记本（Vault）」机制：左侧是带 Vault 切换器、库/笔记两个分区的文件树，暗色圆角列表。</li>
+  <li><b>可交互点</b>：Vault 切换下拉（当前/其它笔记、配置文件夹为笔记）、库区导入菜单（Obsidian 库 / 文件 / 文件夹 / URL）、笔记区排序下拉（14 种排序）、根目录选择弹窗（Root picker modal）。</li>
+  <li><b>实现映射</b>：<code>browser/views/knowledgeBaseView.ts</code>（主视图）、<code>browser/views/knowledgeBase/kbTypes.ts</code>（类型 + 14 种排序 + 导入项）、<code>browser/views/knowledgeBase/media/kbView.css</code>（b3-list 样式）、<code>common/constants.ts</code>（<code>AGENT_STUDIO_KB_VIEW_ID</code>）、<code>browser/agentStudio.contribution.ts</code>（<code>_registerToolIcon</code> order:120）。</li>
+</ul>
+</div>
+
+<div class="card">
+<b>2) <code>dev/knowledge-base-ui-entry-mockup.html</code> —— UI 入口 Mockup v2（图谱=中间栏 EditorPane，方案 v3）</b>
+<ul>
+  <li><b>风格</b>：对齐 SiYuan 把图谱装进「中心 Tab」的做法（<code>openGraph → wnd.split("lr").addTab(...)</code>），用 <code>EditorInput + EditorPane + editorService.openEditor()</code> 等价实现。</li>
+  <li><b>可交互点</b>：视图头 <code>🕸️ 关系图谱</code> 按钮 → 在【中间栏文件编辑器】打开独立 <code>KbGraphEditorPane</code>（力导向图谱 + 浮动工具条 + 图例，双击节点定位左侧文件树）；点击左侧文件节点（或 hover <code>↗</code> 动作）→ 在中间栏以 <code>✏️ WYSIWYG</code> 打开 <code>KbNoteEditorPane</code>（三模编辑器，默认所见即所得）。左侧文件树始终保持。</li>
+  <li><b>实现映射</b>：<code>kbGraphView.ts</code>（Canvas 力导向图谱）、<code>kbNoteEditorPane.ts</code>（Protyle/Lute 三模编辑器）。</li>
+</ul>
+</div>
+
+<div class="note">两个 mockup 都采用「双轨数据模型」（对齐 SiYuan kernel）：<code>Vault（笔记本）= 磁盘文件夹</code>，库 / 笔记两个分区相互独立。在浏览器里点开各下拉与按钮即可体验完整交互；如需改动样式/布局，直接编辑对应 <code>.html</code> 的 <code>&lt;style&gt;</code> 与 DOM 即可实时预览。</div>
+
+<h2>八、操作日志格式说明</h2>
+<p>所有知识库操作（无论来自侧边栏视图，还是 Agent 引擎工具）都会以<b>一行一条 JSON</b> 的形式，追加写入操作日志文件 <code>.op-log.jsonl</code>。该日志用于审计与排障，<b>写入失败会被静默吞掉（best-effort），绝不影响主业务操作</b>。</p>
+
+<div class="card">
+<b>日志位置</b>
+<ul>
+  <li><b>默认</b>：<code>&lt;userHome&gt;/.saros/kb/.op-log.jsonl</code></li>
+  <li><b>自定义</b>：若设置项 <code>agentStudio.knowledge.storage.path</code> 非空，则写在 <code>&lt;该路径&gt;/.op-log.jsonl</code>（与第六节的根目录解析规则一致，支持 <code>~</code> / 绝对 / 相对路径）。</li>
+  <li>侧边栏 Vault 数据本身在 <code>.saros/knowledge-base</code>，但操作日志统一汇聚到上述 <code>.saros/kb</code> 根，<b>两路共用同一份日志</b>。</li>
+</ul>
+</div>
+
+<p><b>格式</b>：JSONL（<code>JSON Lines</code>），每行一条独立 JSON 对象，以 <code>\n</code> 结尾；多行之间互不嵌套。可直接用 <code>jq -c '.status=="failure"' .op-log.jsonl</code> 等工具流式分析。</p>
+
+<h3>8.1 字段 Schema</h3>
+<table class="table">
+  <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+  <tr><td><code>ts</code></td><td><code>string</code></td><td>ISO-8601 时间戳（UTC，形如 <code>2026-07-09T12:34:56.789Z</code>）。省略时由系统自动补填。</td></tr>
+  <tr><td><code>op</code></td><td><code>string</code></td><td>操作名，见 8.2。</td></tr>
+  <tr><td><code>channel</code></td><td><code>"vault" | "engine"</code></td><td>来源：<code>vault</code>=侧边栏「知识库」视图 / 笔记编辑器；<code>engine</code>=Agent 的 <code>kb_*</code> 工具。</td></tr>
+  <tr><td><code>status</code></td><td><code>"success" | "failure"</code></td><td>操作结果。</td></tr>
+  <tr><td><code>source?</code></td><td><code>string</code></td><td>源路径 / URL（导入、重命名等）。可选。</td></tr>
+  <tr><td><code>target?</code></td><td><code>string</code></td><td>目标路径 / 知识库 id。可选。</td></tr>
+  <tr><td><code>detail?</code></td><td><code>object</code></td><td>结构化补充信息（如 <code>{itemCount, template}</code>）。可选。</td></tr>
+  <tr><td><code>error?</code></td><td><code>string</code></td><td>失败时的错误信息（<code>status==="failure"</code> 时出现）。可选。</td></tr>
+</table>
+
+<h3>8.2 已记录的操作名（op）</h3>
+<p><span class="tag kb">engine</span>（Agent <code>kb_*</code> 工具）：</p>
+<div class="flow">kb_build      # 构建图谱（成功 / 失败）
+kb_ingest    # 增量摄入文档（成功 / 失败）
+kb_search    # 语义检索（成功 / 失败）
+kb_ask       # RAG 问答（成功 / 失败）
+kb_export    # 导出 Markdown（成功 / 失败，含 inline 内联返回）
+kb_list      # 列出知识库（成功 / 失败）
+kb_delete    # 删除知识库（成功 / 失败）</div>
+
+<p><span class="tag ui">vault</span>（侧边栏「知识库」视图 + 笔记编辑器）：</p>
+<div class="flow">vault.create        # 新建 Vault（笔记本）
+vault.delete        # 删除 Vault
+vault.rename        # 重命名 Vault
+vault.configFolder  # 把某分区配置为笔记目录
+vault.rootDir       # 修改 Vault 根目录
+kb.import.folder    # 导入文件夹（成功）
+kb.import.files     # 导入单个文件（成功）
+kb.import.obsidian  # 导入 Obsidian 库（成功）
+kb.import.url       # 通过 URL 导入（成功 / 失败）
+kb.import           # 通用导入失败（兜底）
+note.create         # 新建笔记
+note.update         # 保存 / 更新笔记（成功 / 失败）
+folder.create       # 新建文件夹
+node.delete         # 删除库 / 笔记节点（成功 / 失败）
+node.rename         # 重命名节点（成功 / 失败）</div>
+
+<h3>8.3 示例日志</h3>
+<pre><code>{"ts":"2026-07-09T12:00:01.000Z","op":"vault.create","channel":"vault","status":"success","target":"/home/u/.saros/knowledge-base/my.kb/vault","detail":{"name":"我的知识库","icon":"📚"}}
+{"ts":"2026-07-09T12:01:15.000Z","op":"kb.import.url","channel":"vault","status":"failure","source":"https://example.com/doc","detail":{"kind":"url"},"error":"network timeout"}
+{"ts":"2026-07-09T12:05:42.000Z","op":"kb_build","channel":"engine","status":"success","target":"kb_abc123","detail":{"title":"团队知识图谱","template":"knowledge_graph","kind":"graph","itemCount":12}}
+{"ts":"2026-07-09T12:06:03.000Z","op":"note.update","channel":"vault","status":"success","target":"/home/u/.saros/knowledge-base/my.kb/notes/ideas.md","detail":{"bytes":2048}}</code></pre>
+
+<div class="note">排障提示：若操作「看起来没记录」，先确认日志根是否正确——它跟随 <code>agentStudio.knowledge.storage.path</code> 解析，而非 Vault 数据目录；另外日志写盘失败被刻意吞掉，不会弹错，可用文件是否存在 / 是否有写入权限先排查。</div>
+
+<hr>
+<small>相关代码：<code>browser/knowledge/engine/autoGraph.ts</code>（<code>toMarkdown</code>/<code>toMermaid</code>）、<code>browser/knowledge/engine/knowledgeManager.ts</code>（<code>exportMarkdown</code>）、<code>browser/knowledge/knowledgeTools.ts</code>（<code>kb_*</code> 工具）、<code>browser/knowledge/kbOpLog.ts</code>（操作日志写入）、<code>browser/knowledge/knowledgeStorage.ts</code>（<code>resolveKbRoot</code> 根目录解析）。验证：引擎测试 <code>node .../engine/__tests__/run-engine-tests.mjs</code>（19/19 通过）；操作日志测试 <code>src/vs/sessions/contrib/agentStudio/test/common/kbOpLog.test.ts</code>（mocha suite 包含追加 / 多行 / ts 自动补填 / 可选字段 / 换行安全 / best-effort 静默 / 根目录解析 等用例）。</small>
+
+<hr>
+
+<h2>九、最近更新（2026-07-09）</h2>
+
+<div class="note">以下功能已落地，需<b>完全退出 Electron 后重新启动</b>才能加载。</div>
+
+<h3>9.1 AFFiNE/BlockSuite 编辑器（替代 SiYuan Lute）</h3>
+<p>点击知识库笔记不再显示原始 Markdown 源码，而是通过 <b>BlockSuite WYSIWYG 编辑器</b>（Page + Edgeless 双视图）呈现：</p>
+<ul>
+  <li><b>双视图</b>：📄 页面（富文本块编辑，支持标题/列表/代码/引用/数据库块）+ 🎨 画布（白板/自由排版）</li>
+  <li><b>保存机制</b>：编辑器通过 <code>Yjs</code> CRDT 增量快照（<code>.bsdoc</code> sidecar）保存完整富块保真度；同时导出轻量 Markdown 供外部编辑。轮询自动保存（1.5s）。</li>
+  <li><b>技术栈</b>：<code>@blocksuite/store@0.19.5</code> + <code>@blocksuite/blocks@0.19.5</code> + <code>@blocksuite/presets@0.19.5</code>。预打包 bundle 6.2MB（已裁剪 shiki 语法 33 种主流语言 + JS 正则引擎替代 wasm）。</li>
+</ul>
+
+<h3>9.2 .md 为源 + .bsdoc 缓存（Phase A）</h3>
+<p>笔记持久化模型从「.bsdoc 优先」改为<b><code>.md</code> 为唯一源</b>：</p>
+<ul>
+  <li><b>外部编辑生效</b>：用 VSCode / 其他编辑器直接修改 <code>.md</code> 文件后重新打开，BlockSuite 编辑器自动以新内容 seed（丢弃旧的 .bsdoc 缓存）。</li>
+  <li><b>.bsdoc 信封</b>：Yjs 快照现包装为 <code>{v:1, srcHash, snapshot}</code> JSON，<code>srcHash</code> 是保存时 <code>.md</code> 内容的 djb2 哈希。打开时比对当前 .md 哈希——一致才复用快照（富块保真），不一致则从 .md 重新 seed。</li>
+  <li><b>兼容旧版</b>：旧版裸 base64 .bsdoc 仍能读取（用一次后下次保存自动转信封格式）。</li>
+</ul>
+
+<h3>9.3 全文检索增量缓存（Phase B）</h3>
+<p>启动时不再全量重读所有笔记文件：</p>
+<ul>
+  <li><b>BM25 索引持久化</b>：在 Vault 根目录生成 <code>.ftindex.json</code>（FTS 缓存）+ <code>.kbkernel.json</code>（内核缓存）。</li>
+  <li><b>增量 reconcile</b>：启动时遍历文件用 <code>stat</code> 比对 mtime——未修改文件跳过重读（保留缓存条目），仅重新索引变更/新增文件。热启动近零磁盘读。</li>
+  <li><b>图谱/提及内存派生</b>：双链图谱（<code>KbLinkGraph</code>）与提及索引（<code>_buildMentionIndex</code>）从 FTS 索引的内存文档直接派生，不再二次磁盘遍历。</li>
+</ul>
+
+<h3>9.4 标签云视图（Phase C）</h3>
+<p>侧边栏 Vault 切换按钮旁新增 <b>🏷️/📂</b> 切换按钮：</p>
+<ul>
+  <li><b>标签云模式</b>：列出所有 <code>#标签#</code>（按引用数降序），点击即搜索含该标签的所有文档。</li>
+  <li><b>文件树模式</b>：保持原有的库/笔记两分区树视图。</li>
+  <li><b>标签解析</b>：沿用 SiYuan 兼容的 <code>#标签#</code> 双井号格式。</li>
+</ul>
+
+<h3>9.5 附件统一存储（Phase D）</h3>
+<p>每篇笔记对应一个 <code>&lt;note&gt;.attachments/</code> 目录：</p>
+<ul>
+  <li><b>目录结构</b>：<code>manifest.json</code>（[{id,filename,mimeType,size,added}]）+ 附件文件 <code>&lt;id&gt;.&lt;ext&gt;</code>。</li>
+  <li><b>解决 CSP 问题</b>：附件不直接通过 <code>file://</code> 协议加载（浏览器安全策略阻止），由宿主通过 webview URI 代理映射为 <code>vscode-resource://</code>。</li>
+  <li><b>可移植性</b>：复制笔记时同步复制 <code>.attachments/</code> 目录即可保持附件引用完整。</li>
+  <li><b>API</b>：<code>KbAttachmentStore.save/read/delete/list/deleteDir</code>，位于 <code>browser/knowledge/kbAttachmentStore.ts</code>。</li>
+</ul>
+
+<h3>9.6 存储根统一（Phase E）</h3>
+<p>Agent <code>kb_*</code> 工具与侧边栏 Vault 现在<b>共享同一默认存储根</b> <code>~/.saros/knowledge-base/</code>：</p>
+<ul>
+  <li><b>引擎存储</b>：<code>agentStudio.knowledge.storage.path</code> 默认值改为 <code>.saros/knowledge-base</code>（原 <code>.saros/kb</code>）。</li>
+  <li><b>自动迁移</b>：已有旧路径 <code>~/.saros/kb/</code> 内的知识库数据会在配置变更或首次激活时自动搬迁到新根。</li>
+  <li><b>独立配置</b>：两个路径仍可分别通过 <code>agentStudio.knowledge.storage.path</code> 和 <code>agentStudio.kb.rootDir</code> 独立覆盖。</li>
+</ul>
+
+<h3>9.7 编辑器包体优化</h3>
+<p>BlockSuite 编辑器 bundle（<code>media/kbblocks.js</code>）从 13.2MB 优化到 <b>6.2MB</b>（省 53%）：</p>
+<ul>
+  <li>shiki 语法裁剪：218 → 33 种主流语言（<code>gen-shiki-curated.mjs</code> 白名单管理）</li>
+  <li>oniguruma wasm（623KB）→ 纯 JS 正则引擎（<code>@shikijs/engine-javascript</code> + <code>createHighlighterCore</code> wrapper）</li>
+  <li>cpp/cpp-macro 语法（681KB）通过 <code>onLoad</code> stub 拦截（嵌入式语法相对路径）移除</li>
+  <li><code>@blocksuite/icons</code> 5 份嵌套副本去重 → 1 份（esbuild <code>onResolve</code> 插件）</li>
+</ul>
+
+</div>
+</body>
+</html>

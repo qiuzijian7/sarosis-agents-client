@@ -3024,6 +3024,112 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   Task Prompt Card — rendered inside user .chat-bubble when a kanban
+   task is executed.  Shows a collapsible summary card with task
+   metadata (title, source, priority, agent, attachments) above the
+   raw prompt text so users can quickly inspect task details.
+   ═══════════════════════════════════════════════════════════════════ */
+.task-prompt-card {
+	background: var(--vscode-sideBar-background);
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	margin-bottom: 8px;
+	position: relative;
+	max-width: 100%;
+}
+/* Accent bar on the left edge */
+.task-prompt-card::before {
+	content: '';
+	position: absolute; left: 0; top: 0; bottom: 0;
+	width: 3px;
+	background: linear-gradient(180deg, var(--vscode-focusBorder, #007acc), color-mix(in srgb, var(--vscode-focusBorder, #007acc) 40%, transparent));
+	border-radius: 3px 0 0 3px;
+}
+.task-prompt-card .tpc-header {
+	display: flex; align-items: center; gap: 6px;  /* center, not flex-start — tighter */
+	padding: 6px 8px 6px 10px;
+	cursor: pointer; user-select: none;
+	transition: background 0.12s;
+}
+.task-prompt-card .tpc-header:hover { background: color-mix(in srgb, var(--vscode-toolbar-hoverBackground, #2a2d2e) 60%, transparent); }
+.task-prompt-card .tpc-header-icon { font-size: 13px; line-height: 1; flex-shrink: 0; }
+.task-prompt-card .tpc-header-summary { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.task-prompt-card .tpc-title {
+	font-size: 11.5px; font-weight: 600; color: var(--vscode-foreground);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-prompt-card .tpc-tags { display: flex; gap: 3px; flex-wrap: wrap; }
+.task-prompt-card .tpc-tag {
+	font-size: 9.5px; padding: 0 5px; border-radius: 3px;
+	background: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 15%, transparent);
+	color: var(--vscode-focusBorder, #007acc);
+	font-weight: 500; white-space: nowrap; line-height: 16px;
+}
+.task-prompt-card .tpc-tag.tpc-tag-priority-high { background: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 15%, transparent); color: var(--vscode-charts-yellow, #cca700); }
+.task-prompt-card .tpc-toggle {
+	flex-shrink: 0; display: flex; align-items: center; gap: 3px;
+	padding: 1px 6px; border-radius: 4px; font-size: 9.5px;
+	color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-panel-border);
+	background: transparent; cursor: pointer; font-family: inherit;
+	position: relative; z-index: 1;   /* capture clicks independently from header */
+}
+.task-prompt-card .tpc-toggle:hover { background: var(--vscode-toolbar-hoverBackground); }
+.task-prompt-card .tpc-toggle-chevron { font-size: 7px; transition: transform 0.2s; }
+.task-prompt-card.tpc-expanded .tpc-toggle-chevron { transform: rotate(180deg); }
+
+/* Collapsible body */
+.task-prompt-card .tpc-body {
+	max-height: 0; overflow: hidden;
+	transition: max-height 0.25s ease, border-color 0.25s ease;
+	border-top: 1px solid transparent;
+}
+.task-prompt-card.tpc-expanded .tpc-body {
+	max-height: 300px;
+	border-top-color: var(--vscode-panel-border);
+}
+.task-prompt-card .tpc-body-inner { padding: 6px 10px 8px; }
+.task-prompt-card .tpc-desc {
+	font-size: 11px; color: var(--vscode-descriptionForeground);
+	line-height: 1.45; margin-bottom: 6px; word-break: break-word;
+	max-height: 100px; overflow-y: auto;
+}
+.task-prompt-card .tpc-grid {
+	display: grid; grid-template-columns: 1fr 1fr;
+	gap: 4px 14px; margin-bottom: 8px;
+}
+.task-prompt-card .tpc-row { font-size: 10.5px; display: flex; gap: 3px; }
+.task-prompt-card .tpc-row-lbl { color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+.task-prompt-card .tpc-row-val { color: var(--vscode-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-prompt-card .tpc-row-val.tpc-link { color: var(--vscode-textLink-foreground); }
+.task-prompt-card .tpc-attachments { display: flex; gap: 5px; flex-wrap: wrap; }
+
+/* Tool phase group — wraps tool cards under a labelled section header. */
+.tpc-phase-group {
+	margin: 8px 0 4px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 8px;
+	overflow: hidden;
+}
+.tpc-phase-header {
+	display: flex; align-items: center; gap: 7px;
+	padding: 6px 10px;
+	background: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 8%, transparent);
+	border-bottom: 1px solid var(--vscode-panel-border);
+	font-size: 11px; font-weight: 600;
+	color: var(--vscode-focusBorder, #007acc);
+}
+.tpc-phase-icon { font-size: 13px; line-height: 1; }
+.tpc-phase-label { flex: 1; }
+.tpc-phase-group .tool-header-wrapper {
+	margin: 0;
+	border-radius: 0;
+	border-bottom: 1px solid var(--vscode-panel-border);
+}
+.tpc-phase-group .tool-header-wrapper:last-child {
+	border-bottom: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    Tool Call Card (Enhanced — OpenClaw-inspired)
    Panel uses .tool-call-header / .tool-call-name / .tool-call-toggle / .tool-call-body
    Webview also exposes .tool-call-card-header etc.; both supported.
@@ -4670,6 +4776,18 @@
 .chat-send-circle.chat-queue-circle:hover {
 	background: var(--ec-accent-hover, #79c0ff) !important;
 	transform: scale(1.08);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Char Counter (纯信息展示，不限制输入)
+   ═══════════════════════════════════════════════════════════════════ */
+.chat-char-counter {
+	font-size: 11px;
+	color: var(--ec-text-muted, #8b949e);
+	margin-right: 6px;
+	white-space: nowrap;
+	flex-shrink: 0;
+	user-select: none;
 }
 
 @keyframes cancel-pulse {

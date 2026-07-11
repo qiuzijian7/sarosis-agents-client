@@ -6,6 +6,7 @@
 import { URI } from '../../../../base/common/uri.js';
 import { EditorInputCapabilities, GroupIdentifier } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { localize } from '../../../../nls.js';
 
 /**
  * Runtime state snapshot for a chat tab.
@@ -70,6 +71,18 @@ export class NativeChatEditorInput extends EditorInput {
 	static readonly EditorID = 'workbench.editor.nativeChat';
 
 	private static _instance: NativeChatEditorInput | undefined;
+
+	/**
+	 * Counter for temporarily allowing move operations (popOut/popIn flow).
+	 * Non-zero means canMove() passes. Incremented by beginForceMove().
+	 */
+	private static _forceAllowMove = 0;
+
+	/** Temporarily allow chat tabs to be moved (for popOut flow). Bracket with endForceMove(). */
+	static beginForceMove(): void { NativeChatEditorInput._forceAllowMove++; }
+
+	/** End a temporary move-allow bracket. Must be paired with beginForceMove(). */
+	static endForceMove(): void { NativeChatEditorInput._forceAllowMove = Math.max(0, NativeChatEditorInput._forceAllowMove - 1); }
 
 	/** Legacy singleton accessor — returns the default chat instance. */
 	static getInstance(): NativeChatEditorInput {
@@ -257,8 +270,18 @@ export class NativeChatEditorInput extends EditorInput {
 		return undefined;
 	}
 
+	/**
+	 * Chat tabs are locked to the right-side Agent Editor Part.
+	 * Drag-to-move is disabled; use "New Chat" to open additional chats.
+	 *
+	 * Temporarily bypassed via {@link beginForceMove} / {@link endForceMove}
+	 * for the popOut/popIn flow.
+	 */
 	override canMove(_sourceGroup: GroupIdentifier, _targetGroup: GroupIdentifier): true | string {
-		return true;
+		if (NativeChatEditorInput._forceAllowMove > 0) {
+			return true;
+		}
+		return localize('nativeChat.cannotMove', "Agent chat tabs must stay in the right-side panel. Use 'New Chat' to open additional chats.");
 	}
 
 	/**

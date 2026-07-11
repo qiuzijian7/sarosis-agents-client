@@ -1,0 +1,1159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Task Card Hover Actions Mockup</title>
+<style>
+:root {
+	--bg-primary: #1e1e1e;
+	--bg-secondary: #252526;
+	--bg-tertiary: #2d2d2d;
+	--bg-hover: #3a3d41;
+	--border: #3c3c3c;
+	--border-hover: #007acc;
+	--text-primary: #cccccc;
+	--text-secondary: #969696;
+	--text-muted: #6b6b6b;
+	--accent: #007acc;
+	--accent-hover: #1f8ad3;
+	--danger: #f44747;
+	--warning: #cca700;
+	--success: #4ec9b0;
+	--info: #4fc1ff;
+	--shadow-sm: 0 1px 2px rgba(0,0,0,0.15);
+	--shadow-md: 0 2px 8px rgba(0,0,0,0.25);
+	--shadow-lg: 0 8px 24px rgba(0,0,0,0.4);
+	--radius: 6px;
+	--radius-sm: 4px;
+	--radius-lg: 10px;
+	--transition: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+	background: var(--bg-primary);
+	color: var(--text-primary);
+	font-size: 13px;
+	line-height: 1.4;
+	padding: 24px;
+	min-height: 100vh;
+}
+
+h1 {
+	font-size: 16px;
+	font-weight: 600;
+	color: var(--text-primary);
+	margin-bottom: 6px;
+}
+
+.subtitle {
+	color: var(--text-muted);
+	font-size: 12px;
+	margin-bottom: 24px;
+}
+
+/* ============ Kanban Board Layout ============ */
+.board {
+	display: grid;
+	grid-template-columns: repeat(5, 1fr);
+	gap: 12px;
+	margin-bottom: 40px;
+}
+
+.column {
+	background: var(--bg-secondary);
+	border-radius: var(--radius);
+	border: 1px solid var(--border);
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	min-height: 400px;
+}
+
+.column-header {
+	padding: 8px 10px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-secondary);
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg-tertiary);
+	flex-shrink: 0;
+}
+
+.column-count {
+	background: var(--bg-primary);
+	border-radius: 10px;
+	padding: 0 6px;
+	font-size: 10px;
+	color: var(--text-muted);
+	min-width: 18px;
+	text-align: center;
+	line-height: 16px;
+}
+
+.column-body {
+	flex: 1;
+	overflow-y: auto;
+	padding: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	max-height: 600px;
+}
+
+.column-body::-webkit-scrollbar { width: 6px; }
+.column-body::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.3); border-radius: 3px; }
+
+/* ============ Task Card (Base) ============ */
+.task-card {
+	position: relative;
+	background: linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	flex-shrink: 0;
+	cursor: grab;
+	font-size: 12px;
+	display: flex;
+	flex-direction: column;
+	box-shadow: var(--shadow-sm);
+	transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+	overflow: hidden;
+}
+
+/* Priority accent bar */
+.task-card::before {
+	content: '';
+	position: absolute;
+	left: 0; top: 0; bottom: 0;
+	width: 3px;
+	transition: width var(--transition);
+}
+
+.task-card.prio-high::before   { background: var(--danger); }
+.task-card.prio-medium::before { background: var(--warning); }
+.task-card.prio-low::before    { background: var(--success); }
+
+/* ── Hover state: lift + glow + accent bar wider ── */
+.task-card:hover {
+	border-color: var(--border-hover);
+	box-shadow: var(--shadow-md);
+	transform: translateY(-2px);
+}
+.task-card:hover::before { width: 4px; }
+
+/* Hover focused card example */
+.task-card.focused {
+	border-color: var(--border-hover);
+	box-shadow: 0 0 0 1px var(--border-hover);
+}
+
+/* ── Card body ── */
+.card-body {
+	padding: 8px 10px 6px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.card-id {
+	font-size: 10px;
+	color: var(--text-muted);
+	opacity: 0.7;
+	font-family: 'JetBrains Mono', Consolas, monospace;
+	line-height: 1.2;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.card-title {
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--text-primary);
+	line-height: 1.35;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.card-desc {
+	font-size: 11px;
+	color: var(--text-secondary);
+	line-height: 1.4;
+	display: -webkit-box;
+	-webkit-line-clamp: 1;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.card-tags {
+	display: flex;
+	gap: 4px;
+	flex-wrap: wrap;
+	margin-top: 4px;
+}
+
+.tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 3px;
+	background: var(--bg-tertiary);
+	color: var(--text-secondary);
+	border: 1px solid transparent;
+}
+
+.tag.assignee {
+	background: rgba(0,122,204,0.15);
+	color: var(--accent);
+}
+
+.tag.assignee .avatar {
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: #007acc;
+	color: white;
+	font-size: 8px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-weight: 600;
+}
+
+.tag.priority-high   { background: rgba(244,71,71,0.12); color: var(--danger); }
+.tag.priority-medium { background: rgba(204,167,0,0.12); color: var(--warning); }
+.tag.priority-low    { background: rgba(78,201,176,0.12); color: var(--success); }
+
+/* ── Card footer ── */
+.card-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 4px 10px 6px 12px;
+	font-size: 10px;
+	color: var(--text-muted);
+}
+
+.status-dot {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.status-dot::before {
+	content: '';
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+}
+
+.status-dot.running::before { background: var(--accent); animation: pulse 1.5s infinite; }
+.status-dot.ready::before { background: var(--success); }
+.status-dot.blocked::before { background: var(--danger); }
+.status-dot.done::before { background: var(--text-muted); }
+.status-dot.todo::before { background: var(--text-muted); opacity: 0.5; }
+
+@keyframes pulse {
+	0%, 100% { opacity: 1; transform: scale(1); }
+	50% { opacity: 0.5; transform: scale(1.3); }
+}
+
+.meta-icons {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--text-muted);
+	font-size: 10px;
+}
+
+.meta-icons .meta-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Hover Action Toolbar — KEY DESIGN: 顶部放大的可交互按钮组
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Design A: 顶部右侧悬浮工具栏（紧凑图标按钮） ── */
+.task-card .hover-toolbar {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	display: flex;
+	gap: 1px;
+	background: var(--bg-secondary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 2px;
+	box-shadow: var(--shadow-md);
+	opacity: 0;
+	transform: translateY(-4px) scale(0.85);
+	transform-origin: top right;
+	pointer-events: none;
+	transition: opacity var(--transition), transform var(--transition);
+	z-index: 5;
+}
+
+.task-card:hover .hover-toolbar {
+	opacity: 1;
+	transform: translateY(0) scale(1);
+	pointer-events: auto;
+}
+
+.hover-toolbar .tool-btn {
+	width: 24px;
+	height: 24px;
+	border: none;
+	border-radius: 3px;
+	background: transparent;
+	color: var(--text-secondary);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 13px;
+	transition: background var(--transition), color var(--transition), transform var(--transition);
+	position: relative;
+}
+
+.hover-toolbar .tool-btn:hover {
+	background: var(--bg-hover);
+	color: var(--text-primary);
+	transform: scale(1.15);
+}
+
+.hover-toolbar .tool-btn.tool-danger:hover {
+	background: rgba(244,71,71,0.15);
+	color: var(--danger);
+}
+
+.hover-toolbar .tool-btn.tool-success:hover {
+	background: rgba(78,201,176,0.15);
+	color: var(--success);
+}
+
+.hover-toolbar .tool-btn.tool-accent:hover {
+	background: rgba(0,122,204,0.15);
+	color: var(--accent);
+}
+
+/* Tooltip */
+.hover-toolbar .tool-btn[data-tooltip]:hover::after {
+	content: attr(data-tooltip);
+	position: absolute;
+	top: calc(100% + 4px);
+	left: 50%;
+	transform: translateX(-50%);
+	background: var(--bg-primary);
+	color: var(--text-primary);
+	font-size: 10px;
+	padding: 3px 6px;
+	border-radius: 3px;
+	white-space: nowrap;
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-sm);
+	pointer-events: none;
+	z-index: 10;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Design B: 底部展开式操作栏（hover 后卡片底部出现完整操作行）
+   ═══════════════════════════════════════════════════════════════════ */
+.task-card.design-b .hover-footer {
+	max-height: 0;
+	overflow: hidden;
+	transition: max-height var(--transition), opacity var(--transition);
+	opacity: 0;
+	background: var(--bg-tertiary);
+	border-top: 1px solid transparent;
+}
+
+.task-card.design-b:hover .hover-footer {
+	max-height: 44px;
+	opacity: 1;
+	border-top-color: var(--border);
+}
+
+.hover-footer .footer-actions {
+	display: flex;
+	gap: 4px;
+	padding: 6px 8px;
+}
+
+.hover-footer .footer-btn {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 4px 8px;
+	border: 1px solid transparent;
+	border-radius: 3px;
+	background: transparent;
+	color: var(--text-secondary);
+	font-size: 10px;
+	cursor: pointer;
+	transition: all var(--transition);
+	font-family: inherit;
+}
+
+.hover-footer .footer-btn:hover {
+	background: var(--bg-hover);
+	color: var(--text-primary);
+	border-color: var(--border);
+	transform: translateY(-1px);
+}
+
+.hover-footer .footer-btn.btn-danger:hover { background: rgba(244,71,71,0.12); color: var(--danger); border-color: rgba(244,71,71,0.3); }
+.hover-footer .footer-btn.btn-accent:hover { background: rgba(0,122,204,0.12); color: var(--accent); border-color: rgba(0,122,204,0.3); }
+.hover-footer .footer-btn.btn-success:hover { background: rgba(78,201,176,0.12); color: var(--success); border-color: rgba(78,201,176,0.3); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Design C: 圆形浮动按钮（FAB 风格，右侧居中悬浮）
+   ═══════════════════════════════════════════════════════════════════ */
+.task-card.design-c .fab-group {
+	position: absolute;
+	right: -4px;
+	top: 50%;
+	transform: translateY(-50%) translateX(8px);
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity var(--transition), transform var(--transition);
+	z-index: 5;
+}
+
+.task-card.design-c:hover .fab-group {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translateY(-50%) translateX(0);
+}
+
+.fab-group .fab {
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+	border: 1px solid var(--border);
+	background: var(--bg-secondary);
+	color: var(--text-secondary);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 13px;
+	box-shadow: var(--shadow-md);
+	transition: all var(--transition);
+	position: relative;
+}
+
+.fab-group .fab:hover {
+	transform: scale(1.18);
+	border-color: var(--border-hover);
+	color: var(--text-primary);
+}
+
+.fab-group .fab.fab-danger:hover { background: var(--danger); color: white; border-color: var(--danger); }
+.fab-group .fab.fab-accent:hover { background: var(--accent); color: white; border-color: var(--accent); }
+.fab-group .fab.fab-success:hover { background: var(--success); color: white; border-color: var(--success); }
+
+.fab-group .fab[data-tooltip]:hover::after {
+	content: attr(data-tooltip);
+	position: absolute;
+	right: calc(100% + 6px);
+	top: 50%;
+	transform: translateY(-50%);
+	background: var(--bg-primary);
+	color: var(--text-primary);
+	font-size: 10px;
+	padding: 3px 6px;
+	border-radius: 3px;
+	white-space: nowrap;
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-sm);
+	pointer-events: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Design D: 右侧操作面板（卡片右侧滑出垂直按钮组，占用空间小）
+   ═══════════════════════════════════════════════════════════════════ */
+.task-card.design-d .side-panel {
+	position: absolute;
+	right: 0;
+	top: 0;
+	bottom: 0;
+	width: 0;
+	background: var(--bg-tertiary);
+	border-left: 1px solid transparent;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 2px;
+	padding: 0;
+	overflow: hidden;
+	transition: width var(--transition), padding var(--transition), border-color var(--transition);
+	z-index: 4;
+}
+
+.task-card.design-d:hover .side-panel {
+	width: 32px;
+	padding: 6px 2px;
+	border-left-color: var(--border);
+}
+
+.side-panel .side-btn {
+	width: 26px;
+	height: 26px;
+	border: none;
+	border-radius: 3px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 12px;
+	opacity: 0;
+	transform: translateX(8px);
+	transition: opacity var(--transition) 0.05s, transform var(--transition) 0.05s, background var(--transition), color var(--transition);
+	position: relative;
+}
+
+.task-card.design-d:hover .side-panel .side-btn {
+	opacity: 1;
+	transform: translateX(0);
+}
+
+/* Stagger entrance */
+.task-card.design-d:hover .side-panel .side-btn:nth-child(1) { transition-delay: 0.05s; }
+.task-card.design-d:hover .side-panel .side-btn:nth-child(2) { transition-delay: 0.08s; }
+.task-card.design-d:hover .side-panel .side-btn:nth-child(3) { transition-delay: 0.11s; }
+.task-card.design-d:hover .side-panel .side-btn:nth-child(4) { transition-delay: 0.14s; }
+.task-card.design-d:hover .side-panel .side-btn:nth-child(5) { transition-delay: 0.17s; }
+
+.side-panel .side-btn:hover {
+	background: var(--bg-hover);
+	color: var(--text-primary);
+	transform: scale(1.1);
+}
+
+.side-panel .side-btn.danger:hover { background: rgba(244,71,71,0.15); color: var(--danger); }
+.side-panel .side-btn.accent:hover { background: rgba(0,122,204,0.15); color: var(--accent); }
+.side-panel .side-btn.success:hover { background: rgba(78,201,176,0.15); color: var(--success); }
+
+.side-panel .side-btn[data-tooltip]:hover::after {
+	content: attr(data-tooltip);
+	position: absolute;
+	right: calc(100% + 4px);
+	top: 50%;
+	transform: translateY(-50%);
+	background: var(--bg-primary);
+	color: var(--text-primary);
+	font-size: 10px;
+	padding: 3px 6px;
+	border-radius: 3px;
+	white-space: nowrap;
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-sm);
+}
+
+/* ============ Section Labels ============ */
+.design-section {
+	margin-bottom: 32px;
+}
+
+.design-section h2 {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-primary);
+	margin-bottom: 4px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid var(--border);
+}
+
+.design-section .design-desc {
+	font-size: 11px;
+	color: var(--text-muted);
+	margin-bottom: 12px;
+	line-height: 1.5;
+}
+
+/* ============ Single card demo area ============ */
+.demo-row {
+	display: flex;
+	gap: 16px;
+	align-items: flex-start;
+	margin-bottom: 16px;
+	flex-wrap: wrap;
+}
+
+.demo-card-wrap {
+	width: 220px;
+}
+
+.demo-label {
+	font-size: 10px;
+	color: var(--text-muted);
+	margin-top: 6px;
+	text-align: center;
+	font-weight: 500;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Design E: 放大整体卡片 + 顶部工具栏 + 底部状态栏（推荐）
+   ═══════════════════════════════════════════════════════════════════ */
+.task-card.design-e {
+	transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition), z-index 0s;
+}
+
+.task-card.design-e:hover {
+	transform: translateY(-3px) scale(1.03);
+	z-index: 10;
+	box-shadow: var(--shadow-lg);
+	border-color: var(--border-hover);
+}
+
+.task-card.design-e .top-bar {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	height: 0;
+	overflow: hidden;
+	opacity: 0;
+	transition: height var(--transition), opacity var(--transition);
+	background: var(--bg-tertiary);
+	padding: 0 6px;
+}
+
+.task-card.design-e:hover .top-bar {
+	height: 30px;
+	opacity: 1;
+	border-bottom: 1px solid var(--border);
+}
+
+.top-bar .top-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	padding: 2px 8px;
+	border: none;
+	border-radius: 3px;
+	background: transparent;
+	color: var(--text-muted);
+	font-size: 10px;
+	cursor: pointer;
+	transition: all var(--transition);
+	font-family: inherit;
+}
+
+.top-bar .top-btn:hover {
+	background: var(--bg-hover);
+	color: var(--text-primary);
+}
+
+.top-bar .top-btn.t-danger:hover { color: var(--danger); background: rgba(244,71,71,0.12); }
+.top-bar .top-btn.t-accent:hover { color: var(--accent); background: rgba(0,122,204,0.12); }
+.top-bar .top-btn.t-success:hover { color: var(--success); background: rgba(78,201,176,0.12); }
+
+.top-bar .top-divider {
+	width: 1px;
+	height: 14px;
+	background: var(--border);
+	margin: 0 2px;
+}
+
+/* ============ Helper text ============ */
+.helper {
+	margin-top: 24px;
+	padding: 12px 16px;
+	background: var(--bg-secondary);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	border-left: 3px solid var(--info);
+}
+
+.helper h3 {
+	font-size: 12px;
+	color: var(--text-primary);
+	margin-bottom: 8px;
+}
+
+.helper ul {
+	list-style: none;
+	font-size: 11px;
+	color: var(--text-secondary);
+	line-height: 1.8;
+}
+
+.helper ul li::before {
+	content: '▸ ';
+	color: var(--info);
+}
+
+.helper code {
+	background: var(--bg-primary);
+	padding: 1px 4px;
+	border-radius: 3px;
+	font-size: 10px;
+	color: var(--info);
+}
+</style>
+</head>
+<body>
+
+<h1>任务卡片 Hover 交互按钮设计</h1>
+<p class="subtitle">鼠标悬停到任务卡片上时，放大显示可交互的操作按钮。提供 5 种设计方案对比。</p>
+
+<!-- ═══ Design A: 顶部右侧悬浮工具栏（紧凑图标按钮） ═══ -->
+<div class="design-section">
+	<h2>方案 A — 顶部右侧悬浮工具栏 <code style="color:var(--info);font-size:11px;">推荐</code></h2>
+	<p class="design-desc">
+		Hover 时卡片右上角弹出图标按钮组，<code>scale(0.85)→scale(1)</code> 放大动画。
+		按钮 hover 时 <code>scale(1.15)</code> 再次放大，带 tooltip 提示。
+		不改变卡片高度，仅悬浮覆盖在内容上方。
+	</p>
+	<div class="demo-row">
+		<div class="demo-card-wrap">
+			<div class="task-card prio-high">
+				<div class="hover-toolbar">
+					<button class="tool-btn tool-accent" data-tooltip="编辑">✏️</button>
+					<button class="tool-btn tool-success" data-tooltip="执行">▶️</button>
+					<button class="tool-btn" data-tooltip="跳转聊天">💬</button>
+					<button class="tool-btn" data-tooltip="归档">📦</button>
+					<button class="tool-btn tool-danger" data-tooltip="删除">🗑️</button>
+				</div>
+				<div class="card-body">
+					<div class="card-id">#task_1783748</div>
+					<div class="card-title">[VsSaros] 聊天框参数报错修复</div>
+					<div class="card-desc">用户反馈发送消息时参数格式错误导致白屏</div>
+					<div class="card-tags">
+						<span class="tag assignee"><span class="avatar">CO</span>Coder</span>
+						<span class="tag priority-high">🔴 高</span>
+					</div>
+				</div>
+				<div class="card-footer">
+					<span class="status-dot running">执行中</span>
+					<span class="meta-icons">
+						<span class="meta-item">🔗2</span>
+						<span class="meta-item">📎3</span>
+					</span>
+				</div>
+			</div>
+			<div class="demo-label">Hover me →</div>
+		</div>
+
+		<div class="demo-card-wrap">
+			<div class="task-card prio-medium">
+				<div class="hover-toolbar">
+					<button class="tool-btn tool-accent" data-tooltip="编辑">✏️</button>
+					<button class="tool-btn tool-success" data-tooltip="执行">▶️</button>
+					<button class="tool-btn" data-tooltip="跳转聊天">💬</button>
+					<button class="tool-btn" data-tooltip="归档">📦</button>
+					<button class="tool-btn tool-danger" data-tooltip="删除">🗑️</button>
+				</div>
+				<div class="card-body">
+					<div class="card-id">#task_1783752</div>
+					<div class="card-title">看板任务编辑 UI 优化</div>
+					<div class="card-desc">增加 Provider/Model 切换字段</div>
+					<div class="card-tags">
+						<span class="tag assignee"><span class="avatar">DA</span>Data Analyst</span>
+						<span class="tag priority-medium">🟡 中</span>
+					</div>
+				</div>
+				<div class="card-footer">
+					<span class="status-dot ready">就绪</span>
+					<span class="meta-icons">
+						<span class="meta-item">📎1</span>
+					</span>
+				</div>
+			</div>
+			<div class="demo-label">Hover me →</div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══ Design B: 底部展开式操作栏 ═══ -->
+<div class="design-section">
+	<h2>方案 B — 底部展开式操作栏</h2>
+	<p class="design-desc">
+		Hover 时卡片底部向下展开一行操作按钮，带文字标签。
+		<code>max-height: 0→44px</code> 滑出动画，不影响上层悬浮元素。
+		适合操作需要文字说明的场景。
+	</p>
+	<div class="demo-row">
+		<div class="demo-card-wrap">
+			<div class="task-card design-b prio-low">
+				<div class="card-body">
+					<div class="card-id">#task_1783761</div>
+					<div class="card-title">文档更新 — API 接口说明</div>
+					<div class="card-desc">补充新增的 Provider 接口文档</div>
+					<div class="card-tags">
+						<span class="tag assignee"><span class="avatar">TE</span>Tester</span>
+						<span class="tag priority-low">🟢 低</span>
+					</div>
+				</div>
+				<div class="card-footer">
+					<span class="status-dot todo">待执行</span>
+					<span class="meta-icons">
+						<span class="meta-item">📎2</span>
+					</span>
+				</div>
+				<div class="hover-footer">
+					<div class="footer-actions">
+						<button class="footer-btn btn-accent">✏️ 编辑</button>
+						<button class="footer-btn btn-success">▶️ 执行</button>
+						<button class="footer-btn">💬 跳转</button>
+						<button class="footer-btn btn-danger">🗑️ 删除</button>
+					</div>
+				</div>
+			</div>
+			<div class="demo-label">Hover me →</div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══ Design C: 圆形浮动按钮（FAB） ═══ -->
+<div class="design-section">
+	<h2>方案 C — 右侧圆形浮动按钮（FAB 风格）</h2>
+	<p class="design-desc">
+		Hover 时卡片右侧滑出一列圆形按钮，<code>translateX(8px)→0</code> 滑入。
+		按钮 hover 时 <code>scale(1.18)</code> + 背景色填充。
+		视觉突出，适合主要操作按钮较少（3-5个）的场景。
+	</p>
+	<div class="demo-row">
+		<div class="demo-card-wrap">
+			<div class="task-card design-c prio-high">
+				<div class="card-body">
+					<div class="card-id">#task_1783773</div>
+					<div class="card-title">紧急修复 — 登录超时</div>
+					<div class="card-desc">生产环境 TOF 登录偶发超时</div>
+					<div class="card-tags">
+						<span class="tag assignee"><span class="avatar">CO</span>Coder</span>
+						<span class="tag priority-high">🔴 高</span>
+					</div>
+				</div>
+				<div class="card-footer">
+					<span class="status-dot blocked">阻塞</span>
+					<span class="meta-icons">⚠️</span>
+				</div>
+				<div class="fab-group">
+					<button class="fab fab-accent" data-tooltip="编辑">✏️</button>
+					<button class="fab fab-success" data-tooltip="执行">▶️</button>
+					<button class="fab" data-tooltip="跳转聊天">💬</button>
+					<button class="fab fab-danger" data-tooltip="删除">🗑️</button>
+				</div>
+			</div>
+			<div class="demo-label">Hover me →</div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══ Design D: 右侧侧滑面板 ═══ -->
+<div class="design-section">
+	<h2>方案 D — 右侧侧滑面板（stagger 入场）</h2>
+	<p class="design-desc">
+		Hover 时卡片右侧展开一条窄面板（<code>width: 0→32px</code>），按钮依次错开入场。
+		<code>transition-delay</code> 让每个按钮延迟 30ms 出现，形成瀑布效果。
+		不遮挡内容，适合卡片本身较窄的看板布局。
+	</p>
+	<div class="demo-row">
+		<div class="demo-card-wrap">
+			<div class="task-card design-d prio-medium">
+				<div class="card-body">
+					<div class="card-id">#task_1783789</div>
+					<div class="card-title">性能优化 — 流式渲染</div>
+					<div class="card-desc">减少流式输出时的回流</div>
+					<div class="card-tags">
+						<span class="tag assignee"><span class="avatar">AR</span>Architect</span>
+						<span class="tag priority-medium">🟡 中</span>
+					</div>
+				</div>
+				<div class="card-footer">
+					<span class="status-dot running">执行中</span>
+					<span class="meta-icons">🔗1</span>
+				</div>
+				<div class="side-panel">
+					<button class="side-btn accent" data-tooltip="编辑">✏️</button>
+					<button class="side-btn success" data-tooltip="执行">▶️</button>
+					<button class="side-btn" data-tooltip="聊天">💬</button>
+					<button class="side-btn" data-tooltip="归档">📦</button>
+					<button class="side-btn danger" data-tooltip="删除">🗑️</button>
+				</div>
+			</div>
+			<div class="demo-label">Hover me →</div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══ Design E: 整体放大 + 顶部工具栏 ═══ -->
+<div class="design-section">
+	<h2>方案 E — 整体放大 + 顶部工具栏 <code style="color:var(--info);font-size:11px;">视觉冲击最强</code></h2>
+	<p class="design-desc">
+		Hover 时整个卡片 <code>scale(1.03)</code> 放大 + <code>translateY(-3px)</code> 上浮，
+		顶部展开工具栏（<code>height: 0→30px</code>），按钮带文字标签。
+		<code>z-index: 10</code> 确保覆盖在相邻卡片之上。
+	</p>
+	<div class="demo-row">
+		<div class="demo-card-wrap">
+			<div class="task-card design-e prio-high">
+				<div class="top-bar">
+					<button class="top-btn t-accent">✏️ 编辑</button>
+					<button class="top-btn t-success">▶️ 执行</button>
+					<span class="top-divider"></span>
+					<button class="top-btn">💬 聊天</button>
+					<button class="top-btn">📦 归档</button>
+					<button class="top-btn t-danger">🗑️ 删除</button>
+				</div>
+				<div class="card-body">
+					<div class="card-id">#task_1783801</div>
+					<div class="card-title">[紧急] 任务卡片正则不支持多行描述</div>
+					<div class="card-desc">任务描述含换行导致匹配失败</div>
+					<div class="card-tags">
+						<span class="tag assignee"><span class="avatar">CO</span>Coder</span>
+						<span class="tag priority-high">🔴 高</span>
+					</div>
+				</div>
+				<div class="card-footer">
+					<span class="status-dot ready">就绪</span>
+					<span class="meta-icons">📎2</span>
+				</div>
+			</div>
+			<div class="demo-label">Hover me →</div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══ 完整看板演示 ═══ -->
+<div class="design-section">
+	<h2>完整看板效果（方案 A）</h2>
+	<p class="design-desc">在完整看板布局下查看方案 A 的实际效果。Hover 任意卡片查看按钮放大动画。</p>
+
+	<div class="board">
+		<!-- Column 1: 待执行 -->
+		<div class="column">
+			<div class="column-header">📋 待执行 <span class="column-count">3</span></div>
+			<div class="column-body">
+				<div class="task-card prio-high">
+					<div class="hover-toolbar">
+						<button class="tool-btn tool-accent" data-tooltip="编辑">✏️</button>
+						<button class="tool-btn tool-success" data-tooltip="执行">▶️</button>
+						<button class="tool-btn" data-tooltip="跳转聊天">💬</button>
+						<button class="tool-btn" data-tooltip="归档">📦</button>
+						<button class="tool-btn tool-danger" data-tooltip="删除">🗑️</button>
+					</div>
+					<div class="card-body">
+						<div class="card-id">#task_1783812</div>
+						<div class="card-title">[VsSaros] 聊天框参数报错修复</div>
+						<div class="card-desc">参数格式错误导致白屏</div>
+						<div class="card-tags">
+							<span class="tag assignee"><span class="avatar">CO</span>Coder</span>
+							<span class="tag priority-high">🔴 高</span>
+						</div>
+					</div>
+					<div class="card-footer">
+						<span class="status-dot todo">待执行</span>
+						<span class="meta-icons">📎2</span>
+					</div>
+				</div>
+
+				<div class="task-card prio-medium">
+					<div class="hover-toolbar">
+						<button class="tool-btn tool-accent" data-tooltip="编辑">✏️</button>
+						<button class="tool-btn tool-success" data-tooltip="执行">▶️</button>
+						<button class="tool-btn" data-tooltip="跳转聊天">💬</button>
+						<button class="tool-btn" data-tooltip="归档">📦</button>
+						<button class="tool-btn tool-danger" data-tooltip="删除">🗑️</button>
+					</div>
+					<div class="card-body">
+						<div class="card-id">#task_1783815</div>
+						<div class="card-title">任务编辑 UI Provider/Model 切换</div>
+						<div class="card-tags">
+							<span class="tag assignee"><span class="avatar">DA</span>Data</span>
+							<span class="tag priority-medium">🟡 中</span>
+						</div>
+					</div>
+					<div class="card-footer">
+						<span class="status-dot todo">待执行</span>
+					</div>
+				</div>
+
+				<div class="task-card prio-low">
+					<div class="hover-toolbar">
+						<button class="tool-btn tool-accent" data-tooltip="编辑">✏️</button>
+						<button class="tool-btn tool-success" data-tooltip="执行">▶️</button>
+						<button class="tool-btn" data-tooltip="归档">📦</button>
+						<button class="tool-btn tool-danger" data-tooltip="删除">🗑️</button>
+					</div>
+					<div class="card-body">
+						<div class="card-id">#task_1783818</div>
+						<div class="card-title">文档更新</div>
+						<div class="card-tags">
+							<span class="tag assignee"><span class="avatar">TE</span>Tester</span>
+							<span class="tag priority-low">🟢 低</span>
+						</div>
+					</div>
+					<div class="card-footer">
+						<span class="status-dot todo">待执行</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Column 2: 执行中 -->
+		<div class="column">
+			<div class="column-header">⚡ 执行中 <span class="column-count">1</span></div>
+			<div class="column-body">
+				<div class="task-card prio-high focused">
+					<div class="hover-toolbar">
+						<button class="tool-btn tool-danger" data-tooltip="停止">⏹️</button>
+						<button class="tool-btn" data-tooltip="跳转聊天">💬</button>
+					</div>
+					<div class="card-body">
+						<div class="card-id">#task_1783799</div>
+						<div class="card-title">ExecutionProvider 注册修复</div>
+						<div class="card-desc">内置 ExecutionProvider 从未注册</div>
+						<div class="card-tags">
+							<span class="tag assignee"><span class="avatar">CO</span>Coder</span>
+							<span class="tag priority-high">🔴 高</span>
+						</div>
+					</div>
+					<div class="card-footer">
+						<span class="status-dot running">执行中</span>
+						<span class="meta-icons">⏱️ 42s</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Column 3: 已完成 -->
+		<div class="column">
+			<div class="column-header">✅ 已完成 <span class="column-count">2</span></div>
+			<div class="column-body">
+				<div class="task-card prio-medium">
+					<div class="hover-toolbar">
+						<button class="tool-btn" data-tooltip="查看">👁️</button>
+						<button class="tool-btn" data-tooltip="归档">📦</button>
+						<button class="tool-btn tool-danger" data-tooltip="删除">🗑️</button>
+					</div>
+					<div class="card-body">
+						<div class="card-id">#task_1783750</div>
+						<div class="card-title">CSS 闭合括号修复</div>
+						<div class="card-tags">
+							<span class="tag assignee"><span class="avatar">CO</span>Coder</span>
+							<span class="tag priority-medium">🟡 中</span>
+						</div>
+					</div>
+					<div class="card-footer">
+						<span class="status-dot done">已完成</span>
+					</div>
+				</div>
+
+				<div class="task-card prio-low">
+					<div class="hover-toolbar">
+						<button class="tool-btn" data-tooltip="查看">👁️</button>
+						<button class="tool-btn" data-tooltip="归档">📦</button>
+						<button class="tool-btn tool-danger" data-tooltip="删除">🗑️</button>
+					</div>
+					<div class="card-body">
+						<div class="card-id">#task_1783745</div>
+						<div class="card-title">Mockup HTML 设计</div>
+						<div class="card-tags">
+							<span class="tag assignee"><span class="avatar">AR</span>Arch</span>
+							<span class="tag priority-low">🟢 低</span>
+						</div>
+					</div>
+					<div class="card-footer">
+						<span class="status-dot done">已完成</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Column 4: 阻塞 -->
+		<div class="column">
+			<div class="column-header">🚫 阻塞 <span class="column-count">1</span></div>
+			<div class="column-body">
+				<div class="task-card prio-high">
+					<div class="hover-toolbar">
+						<button class="tool-btn tool-accent" data-tooltip="编辑">✏️</button>
+						<button class="tool-btn tool-success" data-tooltip="解除阻塞">🔓</button>
+						<button class="tool-btn tool-danger" data-tooltip="删除">🗑️</button>
+					</div>
+					<div class="card-body">
+						<div class="card-id">#task_1783770</div>
+						<div class="card-title">任务卡片正则不支持多行</div>
+						<div class="card-tags">
+							<span class="tag assignee"><span class="avatar">CO</span>Coder</span>
+							<span class="tag priority-high">🔴 高</span>
+							<span class="tag" style="background:rgba(244,71,71,0.12);color:#f44747;">🚫 阻塞</span>
+						</div>
+					</div>
+					<div class="card-footer">
+						<span class="status-dot blocked">阻塞</span>
+						<span class="meta-icons">⚠️</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Column 5: 归档 -->
+		<div class="column">
+			<div class="column-header">📦 归档 <span class="column-count">1</span></div>
+			<div class="column-body">
+				<div class="task-card prio-low">
+					<div class="hover-toolbar">
+						<button class="tool-btn tool-accent" data-tooltip="恢复">↩️</button>
+						<button class="tool-btn tool-danger" data-tooltip="永久删除">🗑️</button>
+					</div>
+					<div class="card-body">
+						<div class="card-id">#task_1783700</div>
+						<div class="card-title">旧版 webview 看板移除</div>
+						<div class="card-tags">
+							<span class="tag priority-low">🟢 低</span>
+						</div>
+					</div>
+					<div class="card-footer">
+						<span class="status-dot done">已归档</span>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<!-- ═══ Helper ═══ -->
+<div class="helper">
+	<h3>设计对比</h3>
+	<ul>
+		<li><strong>方案 A</strong> — 顶部右侧悬浮工具栏：不改变卡片尺寸，5 个图标按钮，hover 放大 <code>scale(1.15)</code>，带 tooltip。推荐首选。</li>
+		<li><strong>方案 B</strong> — 底部展开式：卡片高度变化，按钮带文字标签，操作语义更清晰。</li>
+		<li><strong>方案 C</strong> — 圆形 FAB：右侧悬浮圆形按钮，视觉突出，适合 3-4 个主要操作。</li>
+		<li><strong>方案 D</strong> — 右侧侧滑面板：窄面板 width 动画，按钮 stagger 错开入场。</li>
+		<li><strong>方案 E</strong> — 整体放大 + 顶部栏：卡片 <code>scale(1.03)</code> 放大，顶部展开文字按钮行，视觉冲击最强。</li>
+	</ul>
+	<h3 style="margin-top:12px;">交互细节</h3>
+	<ul>
+		<li>卡片 hover：<code>translateY(-2px)</code> 上浮 + <code>border-color</code> 变蓝 + 阴影加深</li>
+		<li>左侧优先级色条 hover：<code>width: 3px→4px</code> 加宽</li>
+		<li>按钮入场：<code>opacity 0→1</code> + <code>scale(0.85)→1</code>，<code>180ms</code> 缓动</li>
+		<li>按钮 hover：<code>scale(1.15)</code> 再次放大，背景色高亮</li>
+		<li>Danger 按钮 hover：红色背景 + 红色文字</li>
+		<li>Tooltip：按钮下方/左侧弹出，10px 字号，带边框和阴影</li>
+		<li>动画曲线：<code>cubic-bezier(0.4, 0, 0.2, 1)</code> Material Design 标准缓动</li>
+	</ul>
+</div>
+
+</body>
+</html>

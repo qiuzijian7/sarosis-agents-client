@@ -1,14 +1,44 @@
 /*---------------------------------------------------------------------------------------------
  *  Agent Studio — Builtin Agent Definitions
  *
- *  These agents are automatically seeded into agents.json on first launch.
- *  They replace the old BUILTIN_PRESETS + _deployPreset flow.
+ *  These agents are automatically seeded into ~/.saros/agents/{id}/agent.json
+ *  on first launch. They are the canonical builtin definitions; the preset
+ *  panel and chat read them from that directory (see agentStudioService).
  *--------------------------------------------------------------------------------------------*/
 
 import type { Agent } from '../../../common/agentStudioTypes.js';
 import { AgentStatus } from '../../../common/agentStudioTypes.js';
 
 const LOBSTER_AVATAR = 'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20100%20100%22%3E%3Ctext%20y%3D%2272%22%20x%3D%2250%22%20text-anchor%3D%22middle%22%20font-size%3D%2260%22%3E%F0%9F%A6%9E%3C%2Ftext%3E%3C%2Fsvg%3E';
+
+/**
+ * Shared discipline clause appended to every SPECIALIZED (non-main) built-in agent.
+ * Covers the gaps vs. leaked industry prompts: explicit stop/ask conditions,
+ * output-format expectations, and anti-hallucination reinforcement.
+ * (Confidentiality / safety / identity are injected globally via GLOBAL_SYSTEM_SUFFIX,
+ * so they are intentionally omitted here to avoid duplication.)
+ */
+const EXPERT_DISCIPLINE_CLAUSE = `
+
+## Working Discipline
+- **Stop & ask**: When requirements are ambiguous, a change risks broad breakage, or you lack the context/tools to proceed safely, stop and ask rather than guess or silently skip steps.
+- **Output format**: Lead with the outcome, then the reasoning. Use markdown and cite file paths with line references for code claims. Keep prose tight and avoid filler.
+- **Anti-hallucination**: Never invent file contents, API responses, test results, or data. Every factual claim must be backed by a real tool result. If you cannot verify something, say so explicitly.
+- **Verify before done**: Re-read affected files after editing and run the relevant build/lint/test command when feasible before declaring success.`;
+
+/**
+ * Few-shot examples appended to the Coder agent — demonstrates two high-value habits
+ * shared across coding agents in the leaked corpus: "read tests before changing code"
+ * and "give a change summary after editing".
+ */
+const CODER_FEWSHOT = `
+
+## Examples
+- Before changing code, read the relevant source and tests first:
+  User: "Refactor auth to use the requests library instead of urllib."
+  → Read tests/test_auth.py and requirements.txt to confirm a safety net exists and that 'requests' is already a dependency; then plan; then edit; then run the project's linter and tests.
+- After modifications, give a short change summary:
+  "Updated src/auth.py to use requests; added try/except around network calls; removed the urllib import. Ran \`ruff check src/auth.py && pytest\` — all passed."`;
 
 export function getBuiltinAgents(): Agent[] {
 	const now = new Date().toISOString();
@@ -386,7 +416,18 @@ Only report issues with high confidence (>= 80%). Flag low-confidence findings f
 			updatedAt: now,
 		},
 	];
-	for (const a of agents) { (a as Agent).version = '1.0.0'; }
+	for (const a of agents) {
+		(a as Agent).version = '1.0.0';
+		// Specialized agents get the shared discipline clause + few-shot examples.
+		// The main "Saros Claw" agent already carries its own Tool Use Discipline /
+		// Interaction section, so it is intentionally skipped here.
+		if (a.id !== 'saros-claw') {
+			a.systemPrompt = (a.systemPrompt || '') + EXPERT_DISCIPLINE_CLAUSE;
+		}
+		if (a.id === 'coder') {
+			a.systemPrompt = (a.systemPrompt || '') + CODER_FEWSHOT;
+		}
+	}
 	return agents;
 }
 

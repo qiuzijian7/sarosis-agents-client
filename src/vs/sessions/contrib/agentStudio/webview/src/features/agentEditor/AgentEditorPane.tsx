@@ -6,15 +6,13 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useAgentStore, type MemoryConfig, type MemoryEntry, type KnowledgeConfig, type KnowledgeSource } from '../../store/useAgentStore';
-import { useConfigMdStore } from '../../store/useConfigMdStore';
+import { useConfigHtmlStore } from '../../store/useConfigHtmlStore';
 import {
-	bindIframeChannel,
-	fetchState,
+	getHtml,
 	onHtmlRendered,
-	onSourceChanged,
-	writeSource,
-	postSyncToIframe,
-} from '../configmd/configMdBridge';
+	writeHtml,
+} from '../configmd/configHtmlBridge';
+import { ConfigHtmlPanel } from '../configmd/ConfigHtmlPanel';
 import { HtmlEditor } from '../configmd/HtmlEditor';
 import { ConfigHtmlChatBox } from '../configmd/ConfigHtmlChatBox';
 import { sendRequest } from '../../bridge/messageClient';
@@ -33,7 +31,7 @@ function nowMs(): number {
 }
 
 /* ── Tab definitions ─────────────────────────────────────────── */
-type TabId = 'prompt' | 'skills' | 'memory' | 'knowledge' | 'configmd' | 'mcp' | 'rules';
+type TabId = 'prompt' | 'skills' | 'memory' | 'knowledge' | 'confightml' | 'mcp' | 'rules';
 
 interface TabDef {
 	id: TabId;
@@ -48,7 +46,7 @@ const TABS: TabDef[] = [
 	{ id: 'knowledge', label: '知识库',       icon: '📚' },
 	{ id: 'mcp',       label: 'MCP 配置',    icon: '🔌' },
 	{ id: 'rules',     label: 'Rule 配置',    icon: '📏' },
-	{ id: 'configmd',  label: 'ConfigHtml',  icon: '📝' },
+	{ id: 'confightml',  label: 'ConfigHtml',  icon: '📝' },
 ];
 
 /* ── Props ─────────────────────────────────────────────────────── */
@@ -1222,11 +1220,10 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 	const [skillsLoading, setSkillsLoading] = useState(true);
 	const [skillsError, setSkillsError] = useState<string | null>(null);
 
-	// ── ConfigMD state (reuse configMdStore) ──────────────────────
-	const configMdState = useConfigMdStore((s) => s.byAgent[agentId]);
-	const setMdState = useConfigMdStore((s) => s.setState);
-	const updateMdLocal = useConfigMdStore((s) => s.updateMarkdownLocal);
-	const iframeRef = useRef<HTMLIFrameElement | null>(null);
+	// ── ConfigHtml state ───────────────────────────────────────────
+	const configHtmlState = useConfigHtmlStore((s) => s.byAgent[agentId]);
+	const setHtmlState = useConfigHtmlStore((s) => s.setState);
+	const setHtmlLocal = useConfigHtmlStore((s) => s.setHtmlLocal);
 	const debounceRef = useRef<number | null>(null);
 
 	// Sync agent changes — updates form when data loads
@@ -1294,13 +1291,13 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 		return () => { cancelled = true; };
 	}, []);
 
-	// ── ConfigMD: load on mount / agentId / configMd-enabled change ─
+	// ── ConfigHtml: load on mount / agentId / configHtml-enabled change ─
 	useEffect(() => {
-		if (!agent?.configMd) {
+		if (!agent?.configHtml) {
 			// Not configured yet — clear any stale loaded flag
 			console.log(
-				`${PERF_TAG} EFFECT:fetchState:skip | ${nowLabel()} | ` +
-				`agent.configMd not configured for agentId=${agentId}`
+				`${PERF_TAG} EFFECT:getHtml:skip | ${nowLabel()} | ` +
+				`agent.configHtml not configured for agentId=${agentId}`
 			);
 			return;
 		}
@@ -1308,82 +1305,58 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 		let done = false;
 		const t0 = Date.now();
 		console.log(
-			`${PERF_TAG} EFFECT:fetchState:start | ${nowLabel()} | ` +
-			`agentId=${agentId}, mdPath=${agent.configMd.mdPath}, timeout=8000ms`
+			`${PERF_TAG} EFFECT:getHtml:start | ${nowLabel()} | ` +
+			`agentId=${agentId}, htmlPath=${agent.configHtml.htmlPath}, timeout=8000ms`
 		);
-		// 8s safety timeout — if the host hangs we still surface a clear error
-		// instead of leaving the user with a frozen-looking blank panel.
-		// Note: we track `done` separately from `cancelled` so a successful
-		// fetchState that completes before 8s suppresses the timeout warning
-		// even when the effect is still mounted.
 		const timeoutPromise = new Promise<null>((resolve) => {
 			window.setTimeout(() => {
 				if (cancelled || done) { return; }
 				console.warn(
-					`${PERF_TAG} EFFECT:fetchState:timeout | ${nowLabel()} | ` +
-					`fetchState timed out after 8s for agentId=${agentId}`
+					`${PERF_TAG} EFFECT:getHtml:timeout | ${nowLabel()} | ` +
+					`getHtml timed out after 8s for agentId=${agentId}`
 				);
 				resolve(null);
 			}, 8000);
 		});
-		Promise.race([fetchState(agentId), timeoutPromise]).then((s) => {
+		Promise.race([getHtml(agentId), timeoutPromise]).then((s) => {
 			done = true;
 			if (cancelled) return;
 			const elapsed = Date.now() - t0;
 			console.log(
-				`${PERF_TAG} EFFECT:fetchState:done | ${nowLabel()} | ` +
-				`agentId=${agentId}, hasState=${!!s}, markdownLen=${s?.markdown?.length ?? 0}, ` +
-				`htmlLen=${s?.html?.length ?? 0}, version=${s?.version ?? 'N/A'}, took=${elapsed}ms`
+				`${PERF_TAG} EFFECT:getHtml:done | ${nowLabel()} | ` +
+				`agentId=${agentId}, hasState=${!!s}, htmlLen=${s?.html?.length ?? 0}, ` +
+				`version=${s?.version ?? 'N/A'}, took=${elapsed}ms`
 			);
 			if (s) {
-				setMdState(agentId, {
-					markdown: s.markdown,
+				setHtmlState(agentId, {
 					html: s.html,
-					stylesContent: s.stylesContent,
 					version: s.version,
 					loaded: true,
-					dirty: false,
 				});
 			}
 		}).catch((err) => {
 			done = true;
 			const elapsed = Date.now() - t0;
 			console.error(
-				`${PERF_TAG} EFFECT:fetchState:fail | ${nowLabel()} | ` +
-				`agentId=${agentId}, took=${elapsed}ms:`, err
+				`${PERF_TAG} EFFECT:getHtml:fail | ${nowLabel()} | ` +
+				`agentId=${agentId}, took=${elapsed}ms:`,
+				err
 			);
 		});
 		return () => { cancelled = true; };
-	}, [agentId, !!agent?.configMd, setMdState]);
+	}, [agentId, !!agent?.configHtml, setHtmlState]);
 
-	// ── ConfigMD: subscribe to host pushes ─────────────────────────
+	// ── ConfigHtml: subscribe to host pushes (model-generated HTML) ─
 	useEffect(() => {
-		const offSrc = onSourceChanged(agentId, (evt) => {
-			const cur = useConfigMdStore.getState().byAgent[agentId];
-			if (cur && evt.markdown === cur.markdown && evt.version === cur.version) return;
-			// Mark as loaded — receiving a source push proves the host has resolved state.
-			setMdState(agentId, { markdown: evt.markdown, version: evt.version, dirty: false, loaded: true });
-			postSyncToIframe(iframeRef.current, { markdown: evt.markdown, version: evt.version, origin: evt.origin });
-		});
 		const offHtml = onHtmlRendered(agentId, (evt) => {
-			// Mark as loaded — receiving HTML render means the panel is ready.
-			setMdState(agentId, {
+			setHtmlState(agentId, {
 				html: evt.html,
 				version: evt.version,
-				stylesContent: evt.stylesContent,
 				loaded: true,
 			});
 		});
-		return () => { offSrc(); offHtml(); };
-	}, [agentId, setMdState]);
-
-	// ── ConfigMD: iframe channel bind ─────────────────────────────
-	useEffect(() => {
-		const iframe = iframeRef.current;
-		if (!iframe) return;
-		const unbind = bindIframeChannel(iframe, agentId);
-		return () => unbind();
-	}, [agentId, configMdState?.loaded]);
+		return () => { offHtml(); };
+	}, [agentId, setHtmlState]);
 
 	// ── Handlers ───────────────────────────────────────────────────
 	const handleSavePrompt = useCallback(() => {
@@ -1419,53 +1392,48 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 
 
 
-	const handleConfigMdChange = useCallback((value: string) => {
-		updateMdLocal(agentId, value);
+	const handleHtmlChange = useCallback((value: string) => {
+		setHtmlLocal(agentId, value);
 		if (debounceRef.current) {
 			window.clearTimeout(debounceRef.current);
 		}
 		debounceRef.current = window.setTimeout(() => {
-			const cur = useConfigMdStore.getState().byAgent[agentId];
+			const cur = useConfigHtmlStore.getState().byAgent[agentId];
 			if (!cur) return;
-			// Only pass baseVersion when state is actually loaded — otherwise the
-			// host will reject with "Stale write" because its initial version is 1.
 			const opts: { origin: 'editor'; baseVersion?: number } = { origin: 'editor' };
 			if (cur.loaded && cur.version > 0) {
 				opts.baseVersion = cur.version;
 			}
-			writeSource(agentId, cur.markdown, opts)
+			writeHtml(agentId, cur.html, opts)
 				.then((r) => {
-					setMdState(agentId, { version: r.version, dirty: false, loaded: true });
+					setHtmlState(agentId, { version: r.version, loaded: true });
 				})
 				.catch((err) => {
-					console.error('[ConfigMD] writeSource failed:', err);
+					console.error('[ConfigHtml] writeHtml failed:', err);
 				});
 		}, 300);
-	}, [agentId, setMdState, updateMdLocal]);
+	}, [agentId, setHtmlState, setHtmlLocal]);
 
 	// ── ConfigHtml AI box → editor write-back ──────────────────────
-	// The AI chat box returns a complete HTML document; write it into the
-	// editor (local store) and immediately persist it to disk, reusing the
-	// same debounced write path semantics as manual edits (but flushing now).
 	const handleHtmlGenerated = useCallback((html: string) => {
-		updateMdLocal(agentId, html);
+		setHtmlLocal(agentId, html);
 		if (debounceRef.current) {
 			window.clearTimeout(debounceRef.current);
 			debounceRef.current = null;
 		}
-		const cur = useConfigMdStore.getState().byAgent[agentId];
+		const cur = useConfigHtmlStore.getState().byAgent[agentId];
 		const opts: { origin: 'editor'; baseVersion?: number } = { origin: 'editor' };
 		if (cur && cur.loaded && cur.version > 0) {
 			opts.baseVersion = cur.version;
 		}
-		writeSource(agentId, html, opts)
+		writeHtml(agentId, html, opts)
 			.then((r) => {
-				setMdState(agentId, { version: r.version, dirty: false, loaded: true });
+				setHtmlState(agentId, { version: r.version, loaded: true });
 			})
 			.catch((err) => {
 				console.error('[ConfigHtml] write generated HTML failed:', err);
 			});
-	}, [agentId, setMdState, updateMdLocal]);
+	}, [agentId, setHtmlState, setHtmlLocal]);
 	// Show the preview as soon as html exists, regardless of the explicit
 	// `loaded` flag — this avoids a chicken-and-egg state where the agent
 	// has just been enabled and html arrives via a renderHtml RPC before
@@ -1481,7 +1449,7 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 		console.log(
 			`${PERF_TAG} RENDER_DONE #${perfRef.current.renderCount} | ${nowLabel()} | ` +
 			`duration=${renderDuration.toFixed(1)}ms, activeTab=${activeTab}, ` +
-			`skillsLoading=${skillsLoading}, hasMdState=${!!configMdState?.loaded}`
+			`skillsLoading=${skillsLoading}, hasHtmlState=${!!configHtmlState?.loaded}`
 		);
 	}
 	perfRef.current.lastRenderMs = renderStartMs;
@@ -1667,40 +1635,31 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 					</div>
 				)}
 
-				{/* ── Tab: ConfigMD ───────────────────────────── */}
-				{activeTab === 'configmd' && (
-					<TabErrorBoundary label="ConfigMD">
+				{/* ── Tab: ConfigHtml ──────────────────────────── */}
+				{activeTab === 'confightml' && (
+					<TabErrorBoundary label="ConfigHtml">
 					<div className="editor-tab-body configmd-tab-body">
-						{!agent?.configMd ? (
+						{!agent?.configHtml ? (
 							<div className="configmd-empty-state">
 								<div className="configmd-empty-icon">📝</div>
 								<div className="configmd-empty-title">ConfigHtml 未启用</div>
 								<div className="configmd-empty-desc">
 									启用后，Agent 将拥有一个 HTML 配置文件，
-									可用 AI 直接生成页面，在 Canvas 中预览，
-									并支持浏览器内可视化编辑。
+									可用 AI 直接生成页面，并在下方实时预览，
+									支持浏览器内可视化编辑。
 								</div>
 								<button
 									type="button"
 									className="configmd-empty-btn"
 									onClick={() => {
 										void updateAgent(agentId, {
-											configMd: {
-												mdPath: 'config.html',
+											configHtml: {
+												htmlPath: 'config.html',
 												displayMode: 'side',
-												defaultView: 'split',
+												defaultView: 'preview',
 												editable: true,
 												sandboxLevel: 'standard',
 												autoShow: true,
-												syncDebounceMs: 300,
-												capabilities: [
-													'md.read',
-													'md.write',
-													'chat.send',
-													'chat.history',
-													'agent.status',
-													'notification',
-												],
 											},
 										}).catch((err) => {
 											console.error('[ConfigHtml] enable failed:', err);
@@ -1726,20 +1685,20 @@ export function AgentEditorPane({ agentId, onClose }: AgentEditorPaneProps): Rea
 						    the editor below. */}
 						<ConfigHtmlChatBox
 							agentId={agentId}
-							getCurrentHtml={() => useConfigMdStore.getState().byAgent[agentId]?.markdown ?? ''}
+							getCurrentHtml={() => useConfigHtmlStore.getState().byAgent[agentId]?.html ?? ''}
 							onHtmlGenerated={handleHtmlGenerated}
 						/>
 
-						{/* HTML source editor — full width, no split. Preview is
-						    delegated to the Canvas via the toolbar's preview button. */}
-						<div className="configmd-editor-body view-source">
+						{/* HTML source editor + live preview (split layout) */}
+						<div className="configmd-editor-body">
 							<div className="configmd-source">
 								<HtmlEditor
-									value={configMdState?.markdown ?? ''}
-									onChange={handleConfigMdChange}
+									value={configHtmlState?.html ?? ''}
+									onChange={handleHtmlChange}
 									placeholder="<!DOCTYPE html> ... 在上方用 AI 生成，或直接编辑 HTML"
 								/>
 							</div>
+							<ConfigHtmlPanel agentId={agentId} className="confightml-preview-embed" />
 						</div>
 						</>
 						)}

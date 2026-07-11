@@ -90,6 +90,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 	/** In-memory cache: compositeKey → messages */
 	private readonly _historyCache = new Map<string, ChatMessage[]>();
+	/** Short-lived cache: agentId → session index (avoids 4–5s file read on every task execution). */
+	private _sessionIndexCache: Map<string, { meta: AgentSessionMeta; ts: number }> | undefined;
 	private _historyLoaded = false;
 	private _globalDataUri: URI | undefined;
 
@@ -410,11 +412,21 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 直接丢弃，不依赖时间窗口。assistant/tool 不做此限制（同内容可能合法重复）。
 		if (message.role === 'user') {
 			const last = messages[messages.length - 1];
+			console.info(`[TaskPromptCard] appendMessage role=user id=${message.id} source=${message.source ?? 'user'} isDup=${last?.role === 'user' && (last.content ?? '') === (message.content ?? '')}`);
 			if (last && last.role === 'user' && (last.content ?? '') === (message.content ?? '')) {
-				this.logService.warn(
-					`[AgentChatService] appendMessage: dropping consecutive duplicate user message for ${key} - content="${(message.content || '').substring(0, 40)}"`,
+				// Task execution messages (source='task') are programmatic and must
+				// never be deduped — otherwise the task prompt card won't render.
+				if (message.source !== 'task') {
+					console.info(`[TaskPromptCard] appendMessage DROPPED as duplicate, content="${(message.content ?? '').slice(0, 40)}"`);
+					this.logService.warn(
+						`[AgentChatService] appendMessage: dropping consecutive duplicate user message for ${key} - content="${(message.content || '').substring(0, 40)}"`,
+					);
+					return;
+				}
+				console.info(`[TaskPromptCard] appendMessage ALLOWED (source=task bypass)`);
+				this.logService.info(
+					`[AgentChatService] appendMessage: allowing duplicate task-prompt message for ${key} (source=task)`,
 				);
-				return;
 			}
 		}
 		messages.push(message);
@@ -765,6 +777,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		options: IChatSendOptions,
 		onDelta: (delta: IChatStreamDelta) => void,
 	): Promise<ChatMessage> {
+		const t0 = performance.now();
+		console.info(`[PerfDiag] 🔵 sendMessage ENTER agentId=${agentId} msgLen=${message.length} source=${options.source ?? 'user'} prefix="${message.slice(0, 50).replace(/\n/g, '\\n')}" t=${t0.toFixed(0)}ms`);
 		this.logService.info(
 			`[CoderTrace] AgentChatService.sendMessage: agentId=${agentId}, messageLen=${message.length}, model=${options.model}, chatMode=${options.chatMode}, explicitSkillIds=${JSON.stringify(options.explicitSkillIds)}`,
 		);
@@ -836,7 +850,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				(now - new Date(m.timestamp).getTime()) < 5000
 			);
 
-			if (!alreadyPersisted) {
+			if (!alreadyPersisted || options.source === 'task') {
 				const userMessage: ChatMessage = {
 					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 					role: 'user',
@@ -844,11 +858,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					agentId,
 					agentSessionId: options.agentSessionId,
 					timestamp: new Date().toISOString(),
+					source: options.source,
+					taskCard: options.taskCard,
 				};
+				console.info(`[TaskPromptCard] sendMessage → appendMessage id=${userMessage.id} source=${options.source ?? 'user'} alreadyPersisted=${alreadyPersisted}`);
 				this.appendMessage(agentId, userMessage).catch(err =>
 					this.logService.error('[AgentChatService] Failed to persist user message:', err)
 				);
 			} else {
+				console.info(`[TaskPromptCard] sendMessage BLOCKED by alreadyPersisted (source=${options.source ?? 'user'}), msg="${message.slice(0, 50)}"`);
 				this.logService.info(`[AgentChatService] Skipping duplicate user message persist: "${message.substring(0, 40)}..."`);
 			}
 
@@ -880,16 +898,22 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 
 			this.logService.info(`[AgentChatService] Creating stream (agentId=${agentId}, priorMsgs=${priorMessages?.length ?? 0})`);
-			const t0_stream = Date.now();
+			const tStream = performance.now();
+			console.info(`[PerfDiag] 🔵 sendMessage → executeFromChatOptions elapsed=${(tStream - t0).toFixed(0)}ms`);
 			const stream = this.driverService.executeFromChatOptions(
 				agentId,
 				message,
 				options,
 				priorMessages,
 			);
-			this.logService.info(`[AgentChatService] Stream created in ${Date.now() - t0_stream}ms, starting iteration`);
+			this.logService.info(`[AgentChatService] Stream created in ${(performance.now() - tStream).toFixed(0)}ms, starting iteration`);
 			let _deltaCount = 0;
+			let _firstDeltaTs = 0;
 			for await (const delta of stream) {
+				if (_deltaCount === 0) {
+					_firstDeltaTs = performance.now();
+					console.info(`[PerfDiag] 🔵 sendMessage FIRST_DELTA elapsed=${(_firstDeltaTs - tStream).toFixed(0)}ms type=${delta.type}`);
+				}
 				_deltaCount++;
 				if (controller.signal.aborted) {
 					break;
@@ -1049,7 +1073,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 			}
 
-			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${Date.now() - t0_stream}ms`);
+			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${(performance.now() - tStream).toFixed(0)}ms`);
 
 			// 用户点击 Stop → cancelStream 调用 controller.abort() → for-await break。
 			// 此时 done/error delta 尚未被 stream 发射，UI 不会收到 setSending(false)。
@@ -1532,15 +1556,31 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		agentId: string,
 		name?: string,
 	): Promise<AgentSessionMeta> {
+		const t0 = performance.now();
+		// Short-lived cache: the session index rarely changes within a single
+		// execution setup window (~10s), but the file keeps growing with each
+		// new session. Reading it takes 4‑5s for agents with 500+ sessions.
+		const CACHE_TTL = 10_000;
+		const now = Date.now();
+		const cached = this._sessionIndexCache?.get(agentId);
+		if (cached && (now - cached.ts) < CACHE_TTL) {
+			return cached.meta;
+		}
 		const index = await this._readSessionIndex(agentId);
+		let meta: AgentSessionMeta;
 		if (index.length > 0) {
 			index.sort(
 				(a, b) =>
 					new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
 			);
-			return index[0];
+			meta = index[0];
+		} else {
+			meta = await this.createAgentSession(agentId, name || "新对话");
 		}
-		return this.createAgentSession(agentId, name || "新对话");
+		this._sessionIndexCache ??= new Map();
+		this._sessionIndexCache.set(agentId, { meta, ts: now });
+		console.info(`[PerfDiag] getOrCreateActiveSession elapsed=${(performance.now() - t0).toFixed(0)}ms agentId=${agentId}`);
+		return meta;
 	}
 
 	/**

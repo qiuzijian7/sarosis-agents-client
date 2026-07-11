@@ -1,0 +1,680 @@
+default:
+  graph:
+    en: |
+      You are an expert knowledge graph extraction assistant. Extract all entities (nodes) and their relationships (edges) from the following text. Focus on being comprehensive and capturing the complete knowledge structure.
+      
+      CRITICAL CONSTRAINT: Every edge must connect two nodes that are present in the extracted nodes list. Do not create edges between entities that are not explicitly identified as nodes.
+      
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位专业的知识图谱抽取助手。从下方文本中抽取所有实体（节点）及其关系（边）。力求全面，捕获完整的知识结构。
+      
+      关键约束：每条边必须连接已抽取节点列表中真实存在的两个节点。不要在与非显式标识为节点的实体之间创建边。
+      
+      ### Source Text:
+      {source_text}
+  node:
+    en: |
+      You are an expert information extraction assistant specialized in entity/node recognition. Extract ALL relevant entities, concepts, or nodes from the following text with high precision.
+      
+      Focus on:
+      - Being EXHAUSTIVE: capture all entity types mentioned
+      - Being PRECISE: extract exact entity names and descriptions
+      - Clarity: provide clear, concise descriptions for each entity
+      
+      Do not attempt to extract relationships at this stage, only identify entities.
+      
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位专注于实体/节点识别的专业信息抽取助手。以高精度从下方文本中抽取所有相关实体、概念或节点。
+      
+      重点：
+      - 全面：捕获所有提及的实体类型
+      - 精确：抽取准确的实体名称与描述
+      - 清晰：为每个实体提供清晰简洁的描述
+      
+      本阶段不要尝试抽取关系，仅识别实体。
+      
+      ### Source Text:
+      {source_text}
+  edge:
+    en: |
+      You are an expert relationship extraction assistant. Extract relationships (edges) between the provided entities.
+      
+      CRITICAL RULES:
+      1. ONLY extract edges connecting entities from the known entity list below
+      2. DO NOT invent or hallucinate new entities that are not listed
+      3. If an entity in the text is not in the known list, DO NOT create edges involving it
+      4. Focus on explicit relationships mentioned in the text
+      
+      # Provided Entities
+      {known_nodes}
+      
+      # Source Text:
+      {source_text}
+    zh: |
+      你是一位专业的关系抽取助手。在提供的实体之间抽取关系（边）。
+      
+      关键规则：
+      1. 仅抽取连接下列已知实体列表中实体的边
+      2. 不要编造或幻觉出未列出的新实体
+      3. 若文本中某实体不在已知列表中，不要创建涉及它的边
+      4. 聚焦文本中明确提及的关系
+      
+      # Provided Entities
+      {known_nodes}
+      
+      # Source Text:
+      {source_text}
+  list:
+    en: |
+      You are an expert information extraction assistant. Extract ALL relevant items from the following text as a structured list. Be exhaustive and precise; produce one record per distinct item.
+      
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位专业的信息抽取助手。从下方文本中以结构化列表形式抽取所有相关条目。力求全面且精确；每个不同条目输出一条记录。
+      
+      ### Source Text:
+      {source_text}
+template:
+  faq:
+    en: |
+      Extract all question/answer pairs from the following text. If the text is not already in a Q&A format, synthesize natural questions whose answers are grounded in the text.
+      
+      ### Source Text:
+      {source_text}
+    zh: |
+      Extract all question/answer pairs from the following text. If the text is not already Q&A, synthesize natural questions whose answers are grounded in the text.
+      
+      ### Source Text:
+      {source_text}
+  graph:
+    en: |
+      You are an expert in knowledge extraction and knowledge-graph construction. Identify the key entities in the text and build binary relationships among them.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位知识抽取与知识图谱构建专家。请从文本中识别关键实体，并构建这些实体之间的二元关系。
+      ### Source Text:
+      {source_text}
+  list:
+    en: |
+      You are a list-extraction expert. Extract all list items that meet the requirements from the text, without omission and with de-duplication.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位列表提取专家。请从文本中提取所有符合要求的列表项，不遗漏、去重。
+      ### Source Text:
+      {source_text}
+  model:
+    en: |
+      You are an information-extraction expert. Extract a single core structured object from the text, providing its name and a brief description.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位信息提取专家。请从文本中提取一个核心结构化对象，提供其名称和简要描述。
+      ### Source Text:
+      {source_text}
+  set:
+    en: |
+      You are an entity-recognition expert. Identify all entities with independent meaning from the text and aggregate them into a de-duplicated entity list.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位实体识别专家。请从文本中识别所有具有独立意义的实体，汇总为去重实体清单。
+      ### Source Text:
+      {source_text}
+  temporal_graph:
+    en: |
+      You are a temporal knowledge-graph construction expert. Extract key entities and their relationships; if the text provides time information, add a `time` attribute to the relationship.
+      Current reference date: {observation_time} (resolve relative expressions like "last year" or "last month" to absolute time)
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位时序知识图谱构建专家。请提取关键实体及其关系；若文本提供时间信息，为关系补充 time 属性。
+      当前参考日期: {observation_time}（请将"去年""上个月"等相对时间解析为绝对时间）
+      ### Source Text:
+      {source_text}
+  spatial_graph:
+    en: |
+      You are a spatial knowledge-graph construction expert. Extract key entities and their relationships; if the text provides location information, add a `location` attribute to the relationship.
+      Reference location: {observation_location} (resolve relative positions like "local" or "nearby" against the reference point)
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位空间知识图谱构建专家。请提取关键实体及其关系；若文本提供地点信息，为关系补充 location 属性。
+      参考位置: {observation_location}（请将"本地""附近"等相对位置结合参考点解析）
+      ### Source Text:
+      {source_text}
+  spatio_temporal_graph:
+    en: |
+      You are a spatio-temporal knowledge-graph construction expert. Extract key entities and their relationships; if the text provides time/location information, add `time` / `location` attributes to the relationship.
+      Current reference date: {observation_time} (resolve relative time to absolute time)
+      Reference location: {observation_location} (resolve relative positions against the reference point)
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位时空知识图谱构建专家。请提取关键实体及其关系；若文本提供时间/地点信息，为关系补充 time / location 属性。
+      当前参考日期: {observation_time}（请将相对时间解析为绝对时间）
+      参考位置: {observation_location}（请将相对位置结合参考点解析）
+      ### Source Text:
+      {source_text}
+  doc_structure:
+    en: |
+      You are a technical documentation analyst, skilled at extracting structured chapter hierarchies and cross-reference relationships from technical docs, papers, and reports.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位技术文档分析师，擅长从技术文档、论文和报告中提取结构化的章节层级和引用关系。
+      ### Source Text:
+      {source_text}
+  concept_graph:
+    en: |
+      You are a concept-extraction expert. Extract concept entities from the text and their hierarchical and associative relationships.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位概念抽取专家。请从文本中提取概念实体及其间的层级与关联关系。
+      ### Source Text:
+      {source_text}
+  biography_graph:
+    en: |
+      You are a biography-analysis expert. Extract the person and related entities, and add a `time` attribute to events/relationships.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位人物传记分析专家。请提取人物与相关实体，并为事件/关系补充 time 时间属性。
+      ### Source Text:
+      {source_text}
+  workflow_graph:
+    en: |
+      You are a process-analysis expert. Extract the steps of the workflow, their execution order, and the responsible roles from the text.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位流程分析专家。请从文本中提取工作流的步骤、执行顺序与负责角色。
+      ### Source Text:
+      {source_text}
+  ownership_graph:
+    en: |
+      You are a professional corporate analyst, responsible for accurately extracting equity-structure information from IPO prospectuses and annual reports.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位专业的企业分析师，负责从IPO招股说明书和年报中准确提取股权结构信息。
+      ### Source Text:
+      {source_text}
+  earnings_summary:
+    en: |
+      You are a financial-analysis expert. Extract the key highlights and critical financial metrics from earnings-call transcripts.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位财经分析专家。请从财报电话会议记录中提取核心要点与关键财务指标。
+      ### Source Text:
+      {source_text}
+  sentiment_model:
+    en: |
+      You are a market-sentiment-analysis expert. Assess the sentiment orientation of the topics/tickers mentioned in the text and provide the rationale.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位市场情绪分析专家。请评估文本中涉及的主题/标的的情绪倾向并给出依据。
+      ### Source Text:
+      {source_text}
+  event_timeline:
+    en: |
+      You are a financial-event analyst. Extract the company’s major events and their occurrence times from the text to build a timeline.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位财经事件分析师。请从文本中提取公司重大事件及其发生时间，构建时间线。
+      ### Source Text:
+      {source_text}
+  risk_factor_set:
+    en: |
+      You are a risk-analysis expert. Extract and categorize risk factors by type from the text (e.g., the risk section of a 10-K).
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位风险分析专家。请从文本（如 10-K 风险章节）中提取并按类别归类风险因素。
+      ### Source Text:
+      {source_text}
+  drug_interaction:
+    en: |
+      You are a pharmacologist. Extract drug entities and their interaction relationships from the text, and label the severity.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位药理学家。请从文本中提取药物实体及其相互作用关系，并标注严重程度。
+      ### Source Text:
+      {source_text}
+  anatomy_graph:
+    en: |
+      You are an anatomy expert. Extract anatomical-structure entities and their hierarchical / adjacency relationships.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位解剖学专家。请提取解剖结构实体及其层级/毗邻关系。
+      ### Source Text:
+      {source_text}
+  treatment_map:
+    en: |
+      You are a clinical-guideline-analysis expert. Extract the correspondence among diagnosis, treatment, and outcome.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位临床指南分析专家。请提取诊断、治疗手段与预后结果之间的对应关系。
+      ### Source Text:
+      {source_text}
+  hospital_timeline:
+    en: |
+      You are a medical-records-analysis expert. Extract chronologically arranged clinical events from discharge summaries / progress notes.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位病历分析专家。请从出院小结/病程记录中提取按时间排列的临床事件。
+      ### Source Text:
+      {source_text}
+  discharge_instruction:
+    en: |
+      You are a clinical-documentation expert. Extract the patient’s diagnosis summary and discharge instructions from the discharge summary.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位临床文书专家。请从出院小结中提取患者诊断摘要与出院医嘱。
+      ### Source Text:
+      {source_text}
+  meridian_graph:
+    en: |
+      You are an acupuncture-meridian expert. Extract acupoint and meridian entities and their attribution / circulation relationships.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位针灸经络专家。请提取穴位与经络实体及其归属/循行关系。
+      ### Source Text:
+      {source_text}
+  herb_relation:
+    en: |
+      You are a Chinese-medicine compatibility expert. Extract herb entities and their compatibility (七情) relationships.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位中药配伍专家。请提取中药实体及其配伍（七情）关系。
+      ### Source Text:
+      {source_text}
+  herb_property:
+    en: |
+      You are a Chinese-materia-medica expert. Extract herb names, efficacy, and attributes such as Four Qi, Five Flavors, and meridian tropism.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位中药学专家。请提取中药名称、功效与四气五味归经等属性。
+      ### Source Text:
+      {source_text}
+  formula_composition:
+    en: |
+      You are a Chinese-formula expert. Extract the composition of formulas, labeling the sovereign-minister-assistant-emissary (君臣佐使) and each herb’s role.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位方剂学专家。请提取方剂组成，标注君臣佐使与各药角色。
+      ### Source Text:
+      {source_text}
+  syndrome_reasoning:
+    en: |
+      You are a TCM syndrome-differentiation expert. Extract the correspondence among syndrome patterns, pathogenesis, symptoms, and treatment methods.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位中医辨证专家。请提取证型、病机、症状与治法之间的对应关系。
+      ### Source Text:
+      {source_text}
+  operation_flow:
+    en: |
+      You are an industrial-process expert. Extract the flow relationships among operation steps, inputs/outputs, and results.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位工业流程专家。请提取操作步骤、输入输出与结果之间的流转关系。
+      ### Source Text:
+      {source_text}
+  safety_control:
+    en: |
+      You are a safety-engineering expert. Extract the correspondence among hazards, risks, and control measures.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位安全工程专家。请提取危险源、风险与控制措施之间的对应关系。
+      ### Source Text:
+      {source_text}
+  failure_case:
+    en: |
+      You are a failure-analysis expert. Extract the relationships among failure phenomena, causes, and solutions.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位故障分析专家。请提取故障现象、原因与解决方案之间的关系。
+      ### Source Text:
+      {source_text}
+  equipment_topology:
+    en: |
+      You are an equipment-topology expert. Extract equipment entities and their hierarchical and connection relationships.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位设备拓扑专家。请提取设备实体及其层级与连接关系。
+      ### Source Text:
+      {source_text}
+  emergency_response:
+    en: |
+      You are an emergency-plan expert. Extract the relationships between emergency scenarios and corresponding response measures.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位应急预案专家。请提取应急场景与对应响应措施之间的关系。
+      ### Source Text:
+      {source_text}
+  contract_obligation:
+    en: |
+      You are a contract-analysis expert. Extract the relationships among the parties, obligations, and conditions in service/procurement contracts.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位合同分析专家。请提取服务/采购合同中的各方主体、义务与条件之间的关系。
+      ### Source Text:
+      {source_text}
+  case_fact_timeline:
+    en: |
+      You are a judgment-document-analysis expert. Extract case facts and arrange them chronologically.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位裁判文书分析专家。请提取案件事实并按时间排列。
+      ### Source Text:
+      {source_text}
+  case_citation:
+    en: |
+      You are a legal-retrieval expert. Extract case entities and their citation relationships.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位法律检索专家。请提取案例实体及其相互引证关系。
+      ### Source Text:
+      {source_text}
+  compliance_list:
+    en: |
+      You are a compliance-analysis expert. Extract structured compliance requirements from compliance manuals / audit reports.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位合规分析专家。请从合规手册/审计报告中提取结构化合规要求。
+      ### Source Text:
+      {source_text}
+  defined_term_set:
+    en: |
+      You are a legal-terminology expert. Extract explicitly defined terms and their definitions from the text.
+      ### Source Text:
+      {source_text}
+    zh: |
+      你是一位法律术语专家。请提取文本中明确定义的术语及其定义。
+      ### Source Text:
+      {source_text}
+method:
+  light_rag:
+    node:
+      en: |
+        You are an expert entity extraction assistant. Identify the KEY entities in the text. Keep extraction light: focus on the most salient entities (people, organizations, concepts, places). Return one record per entity.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位专业的实体抽取助手。识别文本中的关键实体。保持轻量抽取：聚焦于最显著的实体（人物、组织、概念、地点）。每个实体输出一条记录。
+        
+        # Source Text:
+        {source_text}
+    edge:
+      en: |
+        You are an expert relationship extraction assistant. Connect entities that interact in the text. Prefer a minimal relation label; if the nature of the link is unclear, you may omit it. ONLY link entities from the known entity list below.
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位专业的关系抽取助手。连接文本中发生交互的实体。优先使用最简关系标签；若关联性质不明确，可省略。仅连接下列已知实体列表中的实体。
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+  itext2kg:
+    node:
+      en: |
+        You are an expert knowledge-graph builder. Extract entities that will form strict (entity, relation, entity) triples. Be precise with canonical entity names.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位专业的知识图谱构建专家。抽取将构成严格（实体，关系，实体）三元组的实体。请精确使用规范实体名称。
+        
+        # Source Text:
+        {source_text}
+    edge:
+      en: |
+        You are an expert triple extraction assistant. For the provided entities, extract STRICT triples of the form (source, relation, target). Every edge MUST carry a non-empty `relation`. ONLY connect entities from the known entity list below.
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位专业的三元组抽取助手。针对提供的实体，抽取形如（主体，关系，客体）的严格三元组。每条边必须带有非空的 `relation`。仅连接下列已知实体列表中的实体。
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+  itext2kg_star:
+    node:
+      en: |
+        You are a meticulous knowledge-graph builder. Extract entities with rich, canonical attributes: a stable `name`, a fine-grained `type`, a concise `description`, and any notable `properties`. Avoid duplicate entities; merge aliases into one canonical node.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位严谨的知识图谱构建专家。抽取具有丰富规范属性的实体：稳定的 `name`、细粒度的 `type`、简洁的 `description`，以及显著的 `properties`。避免重复实体；将别名合并为单一规范节点。
+        
+        # Source Text:
+        {source_text}
+    edge:
+      en: |
+        You are a meticulous triple extraction assistant. Extract high-quality (source, relation, target) triples with a descriptive `relation` and a `description` of the relationship. Do not invent entities outside the known entity list below.
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位严谨的三元组抽取助手。抽取高质量（主体，关系，客体）三元组，附带描述性 `relation` 及关系 `description`。不要编造已知实体列表之外的实体。
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+  atom:
+    node:
+      en: |
+        You are an expert knowledge-graph builder. Extract entities that will form strict (entity, relation, entity) triples. Be precise with canonical entity names.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位专业的知识图谱构建专家。抽取将构成严格（实体，关系，实体）三元组的实体。请精确使用规范实体名称。
+        
+        # Source Text:
+        {source_text}
+    edge:
+      en: |
+        You are a temporal knowledge extraction assistant. For each relationship, record WHEN it happened (`time`, e.g. a date or phrase) and WHERE it is supported (`evidence`, a short quote or reference from the text). Every edge MUST carry `source`, `target`, `relation`, `time`, and `evidence`. ONLY connect entities from the known entity list below.
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位时序知识抽取助手。对每条关系，记录其发生时间（`time`，如日期或短语）及其依据（`evidence`，文本中的简短引文或出处）。每条边必须包含 `source`、`target`、`relation`、`time`、`evidence`。仅连接下列已知实体列表中的实体。
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+  kg_gen:
+    node:
+      en: |
+        You are a knowledge-graph builder focused on community structure. Extract entities and, where possible, note the community/cluster they belong to in the `type` field. Return one record per entity.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位聚焦于社区结构的知识图谱构建专家。抽取实体，并在可能时于 `type` 字段标注其所属社区/簇。每个实体输出一条记录。
+        
+        # Source Text:
+        {source_text}
+    edge:
+      en: |
+        You are a knowledge-graph builder focused on community structure. Connect entities that belong to the same or related communities; prefer edges that reveal cluster cohesion or cross-community bridges. ONLY connect entities from the known entity list below.
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位聚焦于社区结构的知识图谱构建专家。连接属于相同或相关社区的实体；优先保留能揭示簇内凝聚或跨社区桥接的边。仅连接下列已知实体列表中的实体。
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+  hyper_rag:
+    prompt:
+      en: |
+        You are an expert N-ary relation extractor. Extract HYPEREDGES — facts that connect MULTIPLE entities at once. Represent each as a `participants` array (≥2 entity names) plus a single `relation` label summarizing the group interaction.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位专业的 N 元关系抽取专家。抽取超边——同时连接多个实体的事实。每条超边表示为一个 `participants` 数组（≥2 个实体名）外加一个概括群体交互的 `relation` 标签。
+        
+        # Source Text:
+        {source_text}
+  graph_rag:
+    node:
+      en: |
+        You are a knowledge-graph builder for HIERARCHICAL (GraphRAG) extraction. Extract entities, and where possible note the COMMUNITY / cluster they belong to in the `type` field (e.g. "Person-TeamA", "Tech-ML"). Return one record per entity.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位用于分层（GraphRAG）抽取的图谱构建专家。抽取实体，并在可能时于 `type` 字段标注其所属社区/簇（例如 "Person-TeamA"、"Tech-ML"）。每个实体输出一条记录。
+        
+        # Source Text:
+        {source_text}
+    edge:
+      en: |
+        You are a relationship extractor for HIERARCHICAL (GraphRAG) extraction. Connect entities that belong to the same or related communities; prefer edges that reveal cluster cohesion or act as cross-community bridges. Every edge MUST carry a non-empty `relation`. ONLY connect entities from the known entity list below.
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位用于分层（GraphRAG）抽取的关系抽取助手。连接属于相同或相关社区的实体；优先保留能揭示簇内凝聚或充当跨社区桥接的边。每条边必须带有非空的 `relation`。仅连接下列已知实体列表中的实体。
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+    community:
+      en: |
+        You are a GraphRAG analyst. Given a COMMUNITY of related entities and their internal relationships, produce a short TITLE and a 1-3 sentence SUMMARY that captures the unifying theme (what binds these entities together) and any notable cross-community bridges. Be specific; avoid generic phrasing. Respond as:
+        Title: <short title>
+        Summary: <1-3 sentences>
+      zh: |
+        你是一位 GraphRAG 分析师。给定一个相关实体及其内部关系的社区，生成简短标题与 1-3 句话摘要，概括其统一主题（这些实体因何聚合）以及显著的跨社区桥接。请具体，避免泛泛而谈。按以下格式回复：
+        Title: <简短标题>
+        Summary: <1-3 句话>
+  cog_rag:
+    node:
+      en: |
+        You are a COGNITIVE knowledge-graph builder. Extract the HIGH-LEVEL concepts and actors (skip fine detail); group them into broad THEMES via the `type` field. Return one record per entity.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位认知型知识图谱构建专家。抽取高层级的概念与主体（略去细节）；通过 `type` 字段将其归为宽泛主题。每个实体输出一条记录。
+        
+        # Source Text:
+        {source_text}
+    edge:
+      en: |
+        You are a COGNITIVE relationship extractor. Link entities only when they share a clear, broad conceptual relationship; avoid trivial links. Every edge MUST carry a non-empty `relation`. ONLY connect entities from the known entity list below.
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位认知型关系抽取助手。仅当实体间存在清晰的宽泛概念关系时才连接；避免琐碎关联。每条边必须带有非空的 `relation`。仅连接下列已知实体列表中的实体。
+        
+        # Provided Entities
+        {known_nodes}
+        
+        # Source Text:
+        {source_text}
+    community:
+      en: |
+        You are a COGNITIVE (cognee-style) analyst. Given a COARSE community of concepts/actors, produce a high-level TITLE and a 1-2 sentence SUMMARY of the big-picture theme this group represents (the "gist"). Respond as:
+        Title: <short title>
+        Summary: <1-2 sentences>
+      zh: |
+        你是一位认知型（cognee 风格）分析师。给定一个由概念/主体组成的粗粒度社区，生成高层级标题与 1-2 句话摘要，概括该群体所代表的总体主题（"要义"）。按以下格式回复：
+        Title: <简短标题>
+        Summary: <1-2 句话>
+  hypergraph_rag:
+    prompt:
+      en: |
+        You are an expert N-ary relation extractor. Extract HYPEREDGES — facts that connect MULTIPLE entities at once. Represent each as a `participants` array (≥2 entity names) plus a single `relation` label summarizing the group interaction.
+        
+        # Source Text:
+        {source_text}
+      zh: |
+        你是一位专业的 N 元关系抽取专家。抽取超边——同时连接多个实体的事实。每条超边表示为一个 `participants` 数组（≥2 个实体名）外加一个概括群体交互的 `relation` 标签。
+        
+        # Source Text:
+        {source_text}
+    community:
+      en: |
+        You are a GraphRAG analyst. Given a COMMUNITY of related entities and their internal relationships, produce a short TITLE and a 1-3 sentence SUMMARY that captures the unifying theme (what binds these entities together) and any notable cross-community bridges. Be specific; avoid generic phrasing. Respond as:
+        Title: <short title>
+        Summary: <1-3 sentences>
+      zh: |
+        你是一位 GraphRAG 分析师。给定一个相关实体及其内部关系的社区，生成简短标题与 1-3 句话摘要，概括其统一主题（这些实体因何聚合）以及显著的跨社区桥接。请具体，避免泛泛而谈。按以下格式回复：
+        Title: <简短标题>
+        Summary: <1-3 句话>

@@ -12,7 +12,7 @@
  *  UI（对齐 SiYuan app/src/layout/dock/Files.ts + _list.scss b3-list 风格）：
  *   - 多 Vault 切换下拉
  *   - 库 / 笔记 两个可折叠分区，各自带工具按钮
- *   - 库：导入数据源（Obsidian / 文件 / 文件夹 / 飞书·小红书·B站·抖音·知乎 URL）
+ *   - 库：导入数据源（Obsidian / 文件 / 文件夹 / 统一 URL 入口：小红书·抖音·知乎·YouTube·B站…）
  *   - 笔记：新建文件 / 新建文件夹 / 排序（14 种，对齐 SiYuan sortMenu）/ 全部折叠展开
  *   - 树节点懒加载展开、内联重命名、右键菜单（新建/重命名/删除/打开）
  *   - 折叠状态持久化（对齐 SiYuan LOCAL_FILESPATHS）
@@ -42,30 +42,46 @@ import { IRequestService, asText } from '../../../../../platform/request/common/
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { VSBuffer, streamToBuffer } from '../../../../../base/common/buffer.js';
+import { IWebContentExtractorService, ISharedWebContentExtractorService } from '../../../../../platform/webContentExtractor/common/webContentExtractor.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import { safeSetInnerHtml } from '../../../../../base/browser/domSanitize.js';
-import { FileAccess } from '../../../../../base/common/network.js';
+
 import { localize } from '../../../../../nls.js';
 
 import {
 	IKbVault, IKbNode, KbSection, KB_SECTION_LABEL,
 	KbSortMode, KB_SORT_GROUPS, KB_IMPORT_ITEMS, KbImportKind, newVaultId,
 } from './knowledgeBase/kbTypes.js';
+import {
+	detectPlatform, parseMetaTags, guessMediaExt, isDownloadableMedia,
+	composeArticleMarkdown, composeVideoMarkdown,
+	findMarkdownImageUrls, rewriteMarkdownImageUrls, type IKbMetaTags,
+} from './knowledgeBase/kbUrlScraper.js';
 import { KbFullTextIndex, IKbSearchHit } from './knowledgeBase/kbIndex.js';
 import { KbLinkGraph } from './knowledgeBase/kbGraph.js';
-import { injectLuteScript } from './knowledgeBase/kbLute.js';
-import { KbKernelClient, IKernelSearchBlock, IKernelBacklink2Result } from './knowledgeBase/kbKernelApi.js';
 import { KbNativeKernel, INativeBacklinkResult } from './knowledgeBase/kbNativeKernel.js';
+import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
+import { resolveKbRoot, createFileStorageAdapter } from '../knowledge/knowledgeStorage.js';
+import { appendKbOpLog, type IKbOpLogEntry, type KbOpChannel, type KbOpStatus } from '../knowledge/kbOpLog.js';
+import { IAiEmbeddingVectorService } from '../../../../../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.js';
+import { KnowledgeManager } from '../knowledge/engine/knowledgeManager.js';
+import { resolveChatModel, createEmbedder } from '../knowledge/knowledgeAdapters.js';
 
 const KB_ROOT_SUBPATH = '.saros/knowledge-base';
 const STORAGE_VAULTS = 'agentStudio.kb.vaults';
 const STORAGE_ACTIVE = 'agentStudio.kb.active';
+const STORAGE_ROOT_DIR = 'agentStudio.kb.rootDir';
 const STORAGE_SORT_PREFIX = 'agentStudio.kb.sort.';
 const STORAGE_EXPANDED_PREFIX = 'agentStudio.kb.expanded.';
 const STORAGE_SECTION_PREFIX = 'agentStudio.kb.section.';
+
+/** HTML escape helper (used by RAG Ask KB response rendering). */
+function _escapeHtml(s: string): string {
+	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 type SectionFolderName = '库' | '笔记';
 
@@ -76,6 +92,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _vaultMenu!: HTMLElement;
 	private _scroll!: HTMLElement;
 	private _searchInput?: HTMLInputElement;
+
+	/** ⚙ 设置面板按钮与下拉容器 */
+	private _settingsBtn!: HTMLElement;
+	private _settingsDD!: HTMLElement;
 
 	private _vaults: IKbVault[] = [];
 	private _activeVault: IKbVault | undefined;
@@ -92,6 +112,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 搜索防竞态令牌：每次搜索自增，结果渲染前校验是否最新 */
 	private _searchToken = 0;
+	/** 侧边栏显示模式：文件树 | 标签云 | 最近编辑 */
+	private _viewMode: 'tree' | 'tags' | 'recent' = 'tree';
 
 	/** 全文倒排索引（替代遍历式搜索，对齐 FTS5 语义） */
 	private _index: KbFullTextIndex;
@@ -104,9 +126,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 反链面板容器 */
 	private _backlinksEl?: HTMLElement;
-
-	/** SiYuan Kernel 客户端（可选，kernel 运行时自动激活） */
-	private _kernelClient: KbKernelClient | undefined;
 
 	/** vssaros 内置内核（零外部依赖，始终可用） */
 	private _nativeKernel: KbNativeKernel | undefined;
@@ -131,12 +150,19 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@ILogService private readonly logService: ILogService,
 		@IRequestService private readonly requestService: IRequestService,
+		@IWebContentExtractorService private readonly _webContentExtractor: IWebContentExtractorService,
+		@ISharedWebContentExtractorService private readonly _sharedWebContentExtractor: ISharedWebContentExtractorService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
+		@IAiEmbeddingVectorService private readonly _embeddingService: IAiEmbeddingVectorService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._index = new KbFullTextIndex(this.fileService);
 		this._graph = new KbLinkGraph(this.fileService);
 		this._nativeKernel = new KbNativeKernel(this.fileService);
+		// Share this already-built kernel with the BlockSuite note editor so it
+		// can reuse the same backlink/mention index without re-scanning the vault.
+		this._kbKernelService.setKernel(this._nativeKernel);
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -144,16 +170,42 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	// ═══════════════════════════════════════════════════════════
 
 	private get rootUri(): URI {
+		const custom = this.storageService.get(STORAGE_ROOT_DIR, StorageScope.APPLICATION);
+		if (custom) { return URI.file(custom); }
 		return URI.joinPath((this.environmentService as INativeEnvironmentService).userHome, ...KB_ROOT_SUBPATH.split('/'));
 	}
 
 	private vaultUri(v: IKbVault): URI {
+		if (v.customPath) { return URI.file(v.customPath); }
 		return URI.joinPath(this.rootUri, v.id);
 	}
 
 	private sectionUri(v: IKbVault, section: KbSection): URI {
 		const folder: SectionFolderName = section === 'library' ? '库' : '笔记';
 		return URI.joinPath(this.vaultUri(v), folder);
+	}
+
+	// ═══════════════════════════════════════════════════════════
+	//  Operation log (`.saros/kb/.op-log.jsonl`)
+	// ═══════════════════════════════════════════════════════════
+
+	/** 操作日志统一落盘到知识库存储根（默认 `~/.saros/kb`），与 Agent 工具路径共用同一份 `.op-log.jsonl`。 */
+	private get _opLogRootDir(): string {
+		const cfg = this.configurationService.getValue<string>('agentStudio.knowledge.storage.path');
+		return resolveKbRoot(cfg, (this.environmentService as INativeEnvironmentService).userHome.fsPath);
+	}
+
+	private async _logOp(
+		op: string, status: KbOpStatus,
+		extra?: { source?: string; target?: string; detail?: Record<string, unknown>; error?: string; channel?: KbOpChannel },
+	): Promise<void> {
+		await appendKbOpLog(this.fileService, this._opLogRootDir, {
+			ts: new Date().toISOString(),
+			op, status,
+			channel: extra?.channel ?? 'vault',
+			source: extra?.source, target: extra?.target,
+			detail: extra?.detail, error: extra?.error,
+		} as IKbOpLogEntry);
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -218,10 +270,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		refreshBtn.onclick = () => this.refresh();
 		header.appendChild(refreshBtn);
 		const settingsBtn = $('span.kb-hbtn');
-		settingsBtn.textContent = '⚙'; settingsBtn.title = '打开知识库所在文件夹';
-		settingsBtn.onclick = () => this.openKbFolder();
+		settingsBtn.textContent = '⚙'; settingsBtn.title = '知识库设置（根目录等）';
+		settingsBtn.onclick = (e) => { e.stopPropagation(); this.toggleSettingsPanel(); };
+		this._settingsBtn = settingsBtn;
 		header.appendChild(settingsBtn);
 		this._body.appendChild(header);
+
+		// 设置面板（⚙ 下拉）：含根目录自定义；默认不挂入 DOM，打开时由 positionDropdown 定位
+		this._settingsDD = $('div.kb-dropdown.kb-settings');
 
 		// Vault switcher
 		this._vaultBar = $('div.kb-vault-bar');
@@ -241,15 +297,15 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		searchRow.appendChild(searchBox);
 		this._body.appendChild(searchRow);
 
+		// Ask KB — RAG 问答区（Phase 3）
+		this._renderAskKb();
+
 		// Scroll area
 		this._scroll = $('div.kb-scroll');
 		this._body.appendChild(this._scroll);
 
 		// Global click closes popups
 		document.addEventListener('click', this._onGlobalClick);
-
-		// 注入 SiYuan Lute 引擎并初始化（vendored lute.min.js）
-		this._initLute();
 
 		// initVaults 为异步链，失败会被吞掉导致整块空白；显式 catch 以暴露真实错误
 		void this.initVaults().catch((err) => {
@@ -322,14 +378,15 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			sort: this._vaults.length,
 			sortMode: 'createdASC',
 			closed: false,
-			path: URI.joinPath(this.rootUri, newVaultId()).fsPath,
+			path: '',
 		};
-		vault.path = URI.joinPath(this.rootUri, vault.id).fsPath;
+		vault.path = this.vaultUri(vault).fsPath;
 		this._vaults.push(vault);
 		this.saveVaults();
 		await this.ensureVaultFolders(vault);
 		await this.activateVault(vault);
 		this.notificationService.info(localize('kb.vaultCreated', '已创建知识库：{0}', name));
+		void this._logOp('vault.create', 'success', { target: vault.path, detail: { name, icon: vault.icon } });
 	}
 
 	private async removeVault(v: IKbVault): Promise<void> {
@@ -338,9 +395,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			primaryButton: localize('kb.delete', '删除'),
 		});
 		if (!confirm.confirmed) { return; }
+		const path = this.vaultUri(v).fsPath;
 		await this.fileService.del(this.vaultUri(v), { recursive: true });
 		this._vaults = this._vaults.filter(x => x.id !== v.id);
 		this.saveVaults();
+		void this._logOp('vault.delete', 'success', { target: path, detail: { name: v.name } });
 		this._activeVault = this._vaults.find(x => !x.closed);
 		if (this._activeVault) {
 			await this.activateVault(this._activeVault);
@@ -351,9 +410,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private async renameVault(v: IKbVault, newName: string): Promise<void> {
+		const oldName = v.name;
 		v.name = newName;
 		this.saveVaults();
 		this.renderVaultBar();
+		void this._logOp('vault.rename', 'success', { target: v.path, detail: { from: oldName, to: newName } });
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -366,9 +427,133 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._searchToken++; // 使进行中的搜索结果失效
 		this.renderVaultBar();
 		this._scroll.replaceChildren();
-		this._scroll.appendChild(this.renderSection('library'));
-		this._scroll.appendChild(this.renderSection('notes'));
+		if (this._viewMode === 'tags') {
+			this.renderTagView();
+		} else if (this._viewMode === 'recent') {
+			this.renderRecentView();
+		} else {
+			this._scroll.appendChild(this.renderSection('library'));
+			this._scroll.appendChild(this.renderSection('notes'));
+		}
 		this.renderBacklinksPanel();
+	}
+
+	// ═══════════════════════════════════════════════════════════
+	//  最近编辑视图
+	// ═══════════════════════════════════════════════════════════
+
+	private renderRecentView(): void {
+		const container = $('div.kb-recent');
+		const allDocs = this._index.allDocs();
+		if (allDocs.length === 0) {
+			const empty = $('div.kb-empty-inline');
+			empty.textContent = '暂无笔记（先在库或笔记分区中导入/创建笔记）';
+			container.appendChild(empty);
+			this._scroll.appendChild(container);
+			return;
+		}
+		// 按最后修改时间降序，取最近 50 篇
+		allDocs.sort((a, b) => b.mtime - a.mtime);
+		const recent = allDocs.slice(0, 50);
+		const limitEl = $('div.kb-recent-limit');
+		limitEl.textContent = `最近 ${recent.length} 篇笔记（共 ${allDocs.length} 篇）`;
+		container.appendChild(limitEl);
+		for (const doc of recent) {
+			const item = $('div.kb-recent-item');
+			const icon = $('span.kb-ficon');
+			icon.textContent = doc.name.endsWith('.md') ? '📝' : '📄';
+			const name = $('span.kb-recent-name');
+			name.textContent = doc.name;
+			const time = $('span.kb-recent-time');
+			time.textContent = this._formatRelativeTime(doc.mtime);
+			item.append(icon, name, time);
+			item.onclick = () => {
+				this._openNoteEditor({
+					uri: doc.uri, name: doc.name, path: doc.uri.fsPath,
+					isDirectory: false, section: doc.section,
+					size: doc.size, mtime: doc.mtime, ctime: 0, childCount: 0,
+				});
+			};
+			container.appendChild(item);
+		}
+		this._scroll.appendChild(container);
+	}
+
+	/** 相对时间格式化（今天/昨天/N天前/N周前/日期）。 */
+	private _formatRelativeTime(mtime: number): string {
+		if (!mtime) { return ''; }
+		const now = Date.now();
+		const diffMs = now - mtime;
+		const diffMin = Math.floor(diffMs / 60000);
+		if (diffMin < 1) { return '刚刚'; }
+		if (diffMin < 60) { return `${diffMin} 分钟前`; }
+		const diffHr = Math.floor(diffMin / 60);
+		if (diffHr < 24) { return `${diffHr} 小时前`; }
+		const diffDay = Math.floor(diffHr / 24);
+		if (diffDay === 1) { return '昨天'; }
+		if (diffDay < 7) { return `${diffDay} 天前`; }
+		if (diffDay < 30) { return `${Math.floor(diffDay / 7)} 周前`; }
+		const d = new Date(mtime);
+		return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+	}
+
+	// ═══════════════════════════════════════════════════════════
+	//  标签云视图
+	// ═══════════════════════════════════════════════════════════
+
+	private renderTagView(): void {
+		const tags = this._index.getAllTags();
+		const container = $('div.kb-tags');
+		if (tags.length === 0) {
+			const empty = $('div.kb-empty-inline');
+			empty.textContent = '暂无标签（在笔记中使用 #标签# 格式即可创建标签）';
+			container.appendChild(empty);
+			this._scroll.appendChild(container);
+			return;
+		}
+		// 按引用数降序，同名升序
+		tags.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+		for (const t of tags) {
+			const item = $('div.kb-tag-item');
+			const nameEl = $('span.kb-tag-name');
+			nameEl.textContent = `#${t.tag}`;
+			const countEl = $('span.kb-tag-count');
+			countEl.textContent = `${t.count}`;
+			item.append(nameEl, countEl);
+			item.onclick = () => { this._filterByTag(t.tag); };
+			container.appendChild(item);
+		}
+		this._scroll.appendChild(container);
+	}
+
+	/** 点标签 → 用标签索引精确搜索，展示命中文档列表。 */
+	private _filterByTag(tag: string): void {
+		this._viewMode = 'tree'; // 切回文件树模式展示结果
+		if (this._searchInput) {
+			this._searchInput.value = `#${tag}`;
+		}
+		// 隐藏分区树，展示标签搜索结果
+		this._scroll.querySelectorAll('.kb-section').forEach(s => (s as HTMLElement).style.display = 'none');
+		if (this._backlinksEl) { this._backlinksEl.style.display = 'none'; }
+		let resultsEl = this._scroll.querySelector('.kb-search-results') as HTMLElement | null;
+		if (!resultsEl) {
+			resultsEl = $('div.kb-search-results');
+			this._scroll.appendChild(resultsEl);
+		}
+		resultsEl.classList.add('show');
+		resultsEl.replaceChildren();
+		const hits = this._index.searchByTag(tag, 100);
+		const h = $('div.kb-search-head');
+		h.textContent = `标签 #${tag}（${hits.length} 个文档）`;
+		resultsEl.appendChild(h);
+		if (hits.length === 0) {
+			const empty = $('div.kb-empty-inline'); empty.textContent = '无文档使用此标签';
+			resultsEl.appendChild(empty);
+			return;
+		}
+		for (const hit of hits) {
+			resultsEl.appendChild(this.renderSearchHit(hit, tag));
+		}
 	}
 
 	/** 反链面板容器（始终存在，选中文件时填充；搜索态隐藏）。 */
@@ -397,6 +582,20 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		select.append(icon, name, caret);
 		select.onclick = (e) => { e.stopPropagation(); this.toggleVaultMenu(); };
 		this._vaultBar.appendChild(select);
+
+		// 视图切换按钮：文件树 → 标签云 → 最近编辑
+		const viewBtn = $('span.kb-abtn');
+		const viewLabels: Record<string, string> = { tree: '📂', tags: '🏷️', recent: '🕐' };
+		const viewTitles: Record<string, string> = { tree: '文件树视图', tags: '标签云视图', recent: '最近编辑' };
+		viewBtn.textContent = viewLabels[this._viewMode];
+		viewBtn.title = viewTitles[this._viewMode];
+		viewBtn.onclick = () => {
+			const seq: Array<'tree' | 'tags' | 'recent'> = ['tree', 'tags', 'recent'];
+			const i = seq.indexOf(this._viewMode);
+			this._viewMode = seq[(i + 1) % seq.length];
+			this.renderAll();
+		};
+		this._vaultBar.appendChild(viewBtn);
 
 		const newBtn = $('span.kb-abtn'); newBtn.textContent = '＋'; newBtn.title = '新建知识库';
 		newBtn.onclick = async () => {
@@ -479,7 +678,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const name = folder.path.split('/').filter(Boolean).pop() || '知识库';
 		const vault: IKbVault = {
 			id: newVaultId(), name, icon: '📁', sort: this._vaults.length,
-			sortMode: 'createdASC', closed: false, path: folder.fsPath,
+			sortMode: 'createdASC', closed: false, path: folder.fsPath, customPath: folder.fsPath,
 		};
 		this._vaults.push(vault);
 		this.saveVaults();
@@ -487,6 +686,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		await this.ensureVaultFolders(vault);
 		await this.activateVault(vault);
 		this.notificationService.info(localize('kb.folderConfigured', '已配置文件夹为知识库：{0}', name));
+		void this._logOp('vault.configFolder', 'success', { target: folder.fsPath, detail: { name } });
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -515,6 +715,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const importBtn = $('span.kb-sec-btn.primary'); importBtn.textContent = '📥'; importBtn.title = '导入数据源';
 			importBtn.onclick = (e) => { e.stopPropagation(); this.openImportDropdown(sectionEl, importBtn); };
 			toolbar.appendChild(importBtn);
+			// Phase 3: RAG 构建按钮
+			const ragBtn = $('span.kb-sec-btn'); ragBtn.textContent = '🧠'; ragBtn.title = '构建 RAG 知识库（提取实体+关系 → 向量索引 → 语义问答）';
+			ragBtn.onclick = (e) => { e.stopPropagation(); void this._buildRagKnowledgeBase(); };
+			toolbar.appendChild(ragBtn);
 		} else {
 			const newFile = $('span.kb-sec-btn'); newFile.textContent = '✏️'; newFile.title = '新建文件';
 			newFile.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
@@ -577,6 +781,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			} else {
 				for (const node of nodes) {
 					body.appendChild(this.renderNode(node, 0));
+				}
+			}
+			// 库分区：追加「已关联文件夹」条目（原位索引，可取消关联）
+			if (section === 'library' && this._activeVault?.linkedFolders?.length) {
+				for (const p of this._activeVault.linkedFolders) {
+					body.appendChild(this.renderLinkedFolder(p));
 				}
 			}
 			countEl.textContent = String(this.countNodes(section, nodes));
@@ -836,6 +1046,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const dir = this.targetDir(section, parent);
 		const uri = await this.uniqueName(dir, '未命名', '.md');
 		await this.fileService.writeFile(uri, VSBuffer.fromString('# ' + uri.path.split('/').pop() + '\n'));
+		void this._logOp('note.create', 'success', { target: uri.fsPath, detail: { section } });
 		await this.refreshSection(section);
 		// 立即进入重命名
 		const el = this.findNodeEl(section, uri.fsPath);
@@ -846,6 +1057,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const dir = this.targetDir(section, parent);
 		const uri = await this.uniqueName(dir, '未命名文件夹');
 		await this.fileService.createFolder(uri);
+		void this._logOp('folder.create', 'success', { target: uri.fsPath, detail: { section } });
 		await this.refreshSection(section);
 		const el = this.findNodeEl(section, uri.fsPath);
 		if (el) { this.selectNode(el); const node = this.nodeFromEl(el); if (node) { this.startRename(el, node); } }
@@ -857,7 +1069,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			primaryButton: localize('kb.delete', '删除'),
 		});
 		if (!confirm.confirmed) { return; }
-		await this.fileService.del(node.uri, { recursive: true });
+		try {
+			await this.fileService.del(node.uri, { recursive: true });
+			void this._logOp('node.delete', 'success', { target: node.uri.fsPath, detail: { section: node.section, isDirectory: node.isDirectory } });
+		} catch (err) {
+			void this._logOp('node.delete', 'failure', { target: node.uri.fsPath, detail: { section: node.section }, error: String(err) });
+		}
 		this._expandedFolders.delete(node.path);
 		await this.refreshSection(node.section);
 	}
@@ -878,9 +1095,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				const target = URI.joinPath(node.uri, '..', newName);
 				try {
 					await this.fileService.move(node.uri, target, false);
+					void this._logOp('node.rename', 'success', { source: node.uri.fsPath, target: target.fsPath, detail: { section: node.section } });
 					await this.refreshSection(node.section);
 				} catch (err) {
 					this.notificationService.warn(String(err));
+					void this._logOp('node.rename', 'failure', { source: node.uri.fsPath, target: target.fsPath, error: String(err) });
 					this.revertRename(el, node.name, actions);
 				}
 			} else {
@@ -929,6 +1148,108 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	// ═══════════════════════════════════════════════════════════
+	//  Settings panel (⚙) — 根目录自定义
+	// ═══════════════════════════════════════════════════════════
+
+	private toggleSettingsPanel(): void {
+		if (this._settingsDD.classList.contains('show')) {
+			this._settingsDD.classList.remove('show');
+			return;
+		}
+		// 关闭其它下拉（导入/排序/设置互斥）
+		this._body.querySelectorAll('.kb-dropdown.show').forEach(d => { if (d !== this._settingsDD) d.classList.remove('show'); });
+		this.renderSettingsPanel();
+		this.positionDropdown(this._settingsDD, this._settingsBtn);
+		this._settingsDD.classList.add('show');
+	}
+
+	private renderSettingsPanel(): void {
+		this._settingsDD.replaceChildren();
+
+		const title = $('div.kb-dd-title'); title.textContent = '知识库设置';
+		this._settingsDD.appendChild(title);
+
+		// 根目录配置行
+		const row = $('div.kb-set-row');
+		const label = $('span.kb-set-label'); label.textContent = '📁 根目录';
+		const path = $('span.kb-set-path'); path.id = 'kbRootPath'; path.textContent = this.rootUri.fsPath;
+		const browse = $('span.kb-set-btn.primary'); browse.id = 'kbRootBrowse'; browse.textContent = '📂'; browse.title = '浏览文件夹…';
+		const manual = $('span.kb-set-btn'); manual.id = 'kbRootManual'; manual.textContent = '✏️'; manual.title = '手动输入路径';
+		row.append(label, path, browse, manual);
+		this._settingsDD.appendChild(row);
+
+		const hint = $('div.kb-set-hint'); hint.textContent = '点击 📂 选择文件夹，或 ✏️ 手动输入路径（知识库根目录，默认 Vault 将随之迁移）';
+		this._settingsDD.appendChild(hint);
+
+		// 快捷入口：打开当前知识库文件夹
+		const openRow = $('div.kb-set-row');
+		const openBtn = $('div.kb-set-action'); openBtn.textContent = '📂 打开知识库文件夹';
+		openBtn.onclick = (e) => { e.stopPropagation(); this._settingsDD.classList.remove('show'); void this.openKbFolder(); };
+		openRow.appendChild(openBtn);
+		this._settingsDD.appendChild(openRow);
+
+		// 交互
+		const rootPath = path;
+		browse.onclick = (e) => { e.stopPropagation(); void this.pickRootDir(rootPath.textContent); };
+		manual.onclick = (e) => {
+			e.stopPropagation();
+			const input = document.createElement('input');
+			input.className = 'kb-set-input';
+			input.value = rootPath.textContent;
+			rootPath.replaceWith(input);
+			input.focus(); input.select();
+			let done = false;
+			const commit = (save: boolean) => {
+				if (done) { return; }
+				done = true;
+				const v = input.value.trim();
+				if (save && v) { void this.applyRootDir(v); }
+				else { this.renderSettingsPanel(); }
+			};
+			input.onkeydown = (ke) => {
+				if (ke.key === 'Enter') { ke.preventDefault(); commit(true); }
+				else if (ke.key === 'Escape') { ke.preventDefault(); commit(false); }
+			};
+			input.onblur = () => commit(true);
+		};
+	}
+
+	/** 调原生文件夹选择框，选取知识库根目录。 */
+	private async pickRootDir(current: string): Promise<void> {
+		const picked = await this.fileDialogService.showOpenDialog({
+			title: localize('kb.pickRoot', '选择知识库根目录'),
+			canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+			defaultUri: URI.file(current),
+		});
+		if (!picked || !picked.length) { return; }
+		await this.applyRootDir(picked[0].fsPath);
+	}
+
+	/** 应用新的知识库根目录：持久化 + 迁移默认 Vault 路径 + 重新激活。 */
+	private async applyRootDir(dir: string): Promise<void> {
+		const fsPath = URI.file(dir).fsPath;
+		this.storageService.store(STORAGE_ROOT_DIR, fsPath, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		void this._logOp('vault.rootDir', 'success', { target: fsPath });
+
+		// 默认 Vault（无 customPath）的路径跟随新根目录；外部配置的 Vault 不受影响
+		for (const v of this._vaults) {
+			if (!v.customPath) {
+				v.path = URI.joinPath(URI.file(fsPath), v.id).fsPath;
+			}
+		}
+		this.saveVaults();
+
+		if (this._activeVault) {
+			this._activeVault.path = this.vaultUri(this._activeVault).fsPath;
+			await this.activateVault(this._activeVault);
+		}
+		// 刷新设置面板内的路径展示
+		const rp = this._settingsDD.querySelector('#kbRootPath') as HTMLElement | null;
+		if (rp) { rp.textContent = this.rootUri.fsPath; }
+		this.notificationService.info(localize('kb.rootChanged', '知识库根目录已切换为：{0}', fsPath));
+	}
+
+	// ═══════════════════════════════════════════════════════════
 	//  Import
 	// ═══════════════════════════════════════════════════════════
 
@@ -938,7 +1259,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const dd = $('div.kb-dropdown');
 		dd.id = 'kbImportDD';
 		for (const item of KB_IMPORT_ITEMS) {
-			if (item.kind === 'feishu') {
+			if (item.kind === 'url') {
 				const div = $('div.kb-divider'); dd.appendChild(div);
 				const title = $('div.kb-dd-title'); title.textContent = '从 URL 导入'; dd.appendChild(title);
 			}
@@ -955,34 +1276,55 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		if (!this._activeVault) { return; }
 		const target = this.sectionUri(this._activeVault, 'library');
 
-		// URL 类：利用渲染进程的 fetch + DOMParser 直接抓取并按 Markdown 落盘（对齐 SiYuan 网页剪藏）。
-		// 受限站点（跨域 / 需登录）会清晰报错，引导用户改用「导入文件」。
-		const urlKinds: KbImportKind[] = ['feishu', 'xiaohongshu', 'bilibili', 'douyin', 'zhihu'];
-		if (urlKinds.includes(kind)) {
-		const r = await this.dialogService.input({
-			message: localize('kb.enterUrl', '粘贴「{0}」的内容链接', kind),
-			inputs: [{ value: '', placeholder: 'https://...' }],
-		});
-		const url = r.values?.[0]?.trim();
-		if (r.confirmed && url) {
-			await this.importFromUrl(kind, url, target);
-		}
+		// 统一 URL 导入入口：粘贴任意链接，由 KbUrlScraper 自动识别平台（小红书 / 抖音 / 知乎 / YouTube …），
+		// 再按图文 / 视频策略抓取并落盘。受限站点（跨域 / 需登录）会清晰报错。
+		if (kind === 'url') {
+			const r = await this.dialogService.input({
+				message: localize('kb.enterUrl', '粘贴要导入的链接（小红书 / 抖音 / 知乎 / B站 / YouTube / 微博 / 公众号 …）'),
+				inputs: [{ value: '', placeholder: 'https://...' }],
+			});
+			const url = r.values?.[0]?.trim();
+			if (r.confirmed && url) {
+				await this.importFromUrl(url, target);
+			}
 			return;
 		}
 
-		if (kind === 'folder') {
-			const picked = await this.fileDialogService.showOpenDialog({ title: '导入文件夹', canSelectFolders: true, canSelectFiles: false, canSelectMany: false });
-			if (picked?.length) { await this.copyRecursive(picked[0], URI.joinPath(target, this.baseName(picked[0]))); }
-		} else if (kind === 'files') {
-			const picked = await this.fileDialogService.showOpenDialog({ title: '导入文件', canSelectFiles: true, canSelectFolders: false, canSelectMany: true });
-			if (picked?.length) { for (const f of picked) { await this.copyRecursive(f, URI.joinPath(target, this.baseName(f))); } }
-		} else if (kind === 'obsidian') {
-			const picked = await this.fileDialogService.showOpenDialog({ title: '导入 Obsidian 库', canSelectFolders: true, canSelectFiles: false, canSelectMany: false });
-			if (picked?.length) {
-				// Obsidian：保留 .md 与 [[双链]]，作为普通 Markdown 复制（双链后续可映射为反链）
-				await this.copyRecursive(picked[0], URI.joinPath(target, this.baseName(picked[0])));
-				this.notificationService.info(localize('kb.obsidianImported', '已导入 Obsidian 库（Markdown + 双链保留），放入「库」待索引。'));
+		try {
+			if (kind === 'folder') {
+				const picked = await this.fileDialogService.showOpenDialog({ title: '导入文件夹', canSelectFolders: true, canSelectFiles: false, canSelectMany: false });
+				if (picked?.length) {
+					// 导入文件夹：先询问「关联（保持原位）/ 拷贝到知识库」
+					const mode = await this.askImportFolderMode(picked[0].fsPath);
+					if (mode === 'link') {
+						await this.linkFolder(picked[0]);
+					} else if (mode === 'copy') {
+						const dest = URI.joinPath(target, this.baseName(picked[0]));
+						await this.copyRecursive(picked[0], dest);
+						void this._logOp('kb.import.folder', 'success', { source: picked[0].fsPath, target: dest.fsPath });
+					}
+				}
+			} else if (kind === 'files') {
+				const picked = await this.fileDialogService.showOpenDialog({ title: '导入文件', canSelectFiles: true, canSelectFolders: false, canSelectMany: true });
+				if (picked?.length) {
+					for (const f of picked) {
+						const dest = URI.joinPath(target, this.baseName(f));
+						await this.copyRecursive(f, dest);
+						void this._logOp('kb.import.files', 'success', { source: f.fsPath, target: dest.fsPath });
+					}
+				}
+			} else if (kind === 'obsidian') {
+				const picked = await this.fileDialogService.showOpenDialog({ title: '导入 Obsidian 库', canSelectFolders: true, canSelectFiles: false, canSelectMany: false });
+				if (picked?.length) {
+					// Obsidian：保留 .md 与 [[双链]]，作为普通 Markdown 复制（双链后续可映射为反链）
+					const dest = URI.joinPath(target, this.baseName(picked[0]));
+					await this.copyRecursive(picked[0], dest);
+					this.notificationService.info(localize('kb.obsidianImported', '已导入 Obsidian 库（Markdown + 双链保留），放入「库」待索引。'));
+					void this._logOp('kb.import.obsidian', 'success', { source: picked[0].fsPath, target: dest.fsPath });
+				}
 			}
+		} catch (err) {
+			void this._logOp('kb.import', 'failure', { detail: { kind }, error: String(err) });
 		}
 		await this.refreshSection('library');
 	}
@@ -1018,59 +1360,277 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	//  URL import (web clip → Markdown)
 	// ═══════════════════════════════════════════════════════════
 
-	private async importFromUrl(kind: KbImportKind, url: string, target: URI): Promise<void> {
-		this.notificationService.info(localize('kb.urlFetching', '正在抓取 {0} …', url));
+	/**
+	 * 导入文件夹前询问用户意图：
+	 *  - 'link'：关联外部文件夹（保持文件原位，原地索引）
+	 *  - 'copy'：拷贝文件夹内容到 VsSaros 知识库根目录（库分区）
+	 *  - undefined：用户取消
+	 */
+	private async askImportFolderMode(srcPath: string): Promise<'link' | 'copy' | undefined> {
+		const base = this.baseName(URI.file(srcPath));
+		const r = await this.dialogService.prompt<'link' | 'copy'>({
+			message: localize('kb.importFolderMode.title', '导入文件夹「{0}」：关联还是拷贝？', base),
+			detail: localize(
+				'kb.importFolderMode.detail',
+				'「关联」保持文件在当前位置不动，仅登记为索引根（原位扫描，不占知识库空间）；「拷贝」会把文件夹内容复制到 VsSaros 知识库根目录的「库」分区。',
+			),
+			buttons: [
+				{ label: localize('kb.importFolderMode.link', '关联（保持文件原位）'), run: () => 'link' as const },
+				{ label: localize('kb.importFolderMode.copy', '拷贝到知识库'), run: () => 'copy' as const },
+			],
+			cancelButton: localize('kb.cancel', '取消'),
+		});
+		return r.result;
+	}
+
+	/** 关联外部文件夹：登记为索引根并原地索引（不复制任何文件）。 */
+	private async linkFolder(uri: URI): Promise<void> {
+		if (!this._activeVault) { return; }
+		const p = uri.fsPath;
+		if (!(await this.fileService.exists(uri))) {
+			this.notificationService.warn(localize('kb.linkMissing', '关联失败：文件夹不存在或无法访问：{0}', p));
+			return;
+		}
+		const list = this._activeVault.linkedFolders ?? [];
+		if (list.includes(p)) {
+			this.notificationService.info(localize('kb.linkDup', '该文件夹已关联：{0}', this.baseName(uri)));
+			return;
+		}
+		this._activeVault.linkedFolders = [...list, p];
+		this.saveVaults();
+		this.markSearchDirty();
+		await this.rebuildSearchAssets();
+		this.renderAll();
+		this.notificationService.info(localize('kb.linked', '已关联文件夹（文件保持原位，原地索引）：{0}', this.baseName(uri)));
+		void this._logOp('kb.link', 'success', { source: p });
+	}
+
+	/** 取消关联外部文件夹：移除登记并重建索引。 */
+	private async unlinkFolder(path: string): Promise<void> {
+		if (!this._activeVault) { return; }
+		const list = this._activeVault.linkedFolders ?? [];
+		if (!list.includes(path)) { return; }
+		this._activeVault.linkedFolders = list.filter(p => p !== path);
+		this.saveVaults();
+		this.markSearchDirty();
+		await this.rebuildSearchAssets();
+		this.renderAll();
+		this.notificationService.info(localize('kb.unlinked', '已取消关联：{0}', this.baseName(URI.file(path))));
+		void this._logOp('kb.unlink', 'success', { target: path });
+	}
+
+	/** 汇总当前 Vault 的全部索引根：库 / 笔记 分区 + 关联（链接）的外部文件夹。 */
+	private buildRoots(): IKbBuildRoot[] {
+		if (!this._activeVault) { return []; }
+		const roots: IKbBuildRoot[] = (['library', 'notes'] as KbSection[]).map(s => ({
+			uri: this.sectionUri(this._activeVault!, s),
+			section: s,
+		}));
+		for (const p of this._activeVault.linkedFolders ?? []) {
+			roots.push({ uri: URI.file(p), section: 'library' });
+		}
+		return roots;
+	}
+
+	/** 渲染一条「已关联文件夹」条目（库分区内），提供打开 / 取消关联操作。 */
+	private renderLinkedFolder(path: string): HTMLElement {
+		const el = $('div.kb-node.kb-linked');
+		el.dataset.path = path;
+		el.style.paddingLeft = '6px';
+		el.classList.add('dir');
+
+		const icon = $('span.kb-ficon'); icon.textContent = '🔗'; el.appendChild(icon);
+		const name = $('span.kb-name'); name.textContent = `${this.baseName(URI.file(path))}（关联）`; el.appendChild(name);
+
+		const actions = $('div.kb-actions');
+		const openBtn = $('span.kb-act'); openBtn.textContent = '📂'; openBtn.title = '在文件管理器打开';
+		openBtn.onclick = (e) => { e.stopPropagation(); void this.openerService.open(URI.file(path), { openExternal: true }); };
+		const unlinkBtn = $('span.kb-act'); unlinkBtn.textContent = '🔌'; unlinkBtn.title = '取消关联';
+		unlinkBtn.onclick = (e) => { e.stopPropagation(); void this.unlinkFolder(path); };
+		actions.append(openBtn, unlinkBtn);
+		el.appendChild(actions);
+
+		el.onclick = () => { void this.openerService.open(URI.file(path), { openExternal: true }); };
+		el.oncontextmenu = (e) => {
+			e.preventDefault(); e.stopPropagation();
+			this.showSimpleMenu([
+				{ label: '在文件管理器打开', run: () => { void this.openerService.open(URI.file(path), { openExternal: true }); } },
+				{ label: '取消关联', run: () => { void this.unlinkFolder(path); } },
+			]);
+		};
+		return el;
+	}
+
+	/**
+	 * 统一 URL 导入入口：粘贴任意链接，自动识别平台（小红书 / 抖音 / 知乎 / YouTube / B站 / 微博 / 公众号 …），
+	 * 再按图文（article / mixed）或视频（video）策略抓取并落盘到「库」分区。
+	 */
+	private async importFromUrl(url: string, target: URI): Promise<void> {
+		const platform = detectPlatform(url);
+		this.notificationService.info(localize('kb.urlFetching', '正在抓取「{0}」：{1}', platform.name, url));
 		try {
-			const md = await this.fetchUrlAsMarkdown(url);
-			const name = this.slugFromUrl(url, kind);
-			const fileUri = await this.uniqueName(target, name, '.md');
+			// 内容抽取：复用主进程 WebContentExtractor（真实 Chromium 渲染，天然支持 SPA / 反爬站点，
+			//   等价于 Obsidian Clipper 的「扩展 content script 拿实时 DOM」能力，比正则更干净且能抓抖音/小红书/YouTube）。
+			// 元信息：并行用 IRequestService 取 OG meta（封面 / 作者 / 视频直链），用于补充与媒体下载。
+			const uri = URI.parse(url);
+			const [extractRes, ogMeta] = await Promise.all([
+				this._webContentExtractor.extract([uri], { followRedirects: true, trustedDomains: ['*'] }),
+				this.fetchOgMeta(url),
+			]);
+			const ext = extractRes[0];
+			if (!ext || ext.status === 'redirect') {
+				throw new Error(ext?.status === 'redirect' ? `需跳转至 ${ext.toURI}` : '未能获取页面内容');
+			}
+			const body = ext.status === 'ok' ? ext.result : (ext.result ?? '');
+			const meta: IKbMetaTags = {
+				title: ext.title || ogMeta.title || undefined,
+				author: ogMeta.author,
+				siteName: ogMeta.siteName ?? platform.name,
+				description: ogMeta.description,
+				date: ogMeta.date,
+				cover: ogMeta.cover,
+				videoUrl: ogMeta.videoUrl,
+				durationSec: ogMeta.durationSec,
+				tags: ogMeta.tags,
+			};
+			const base = this.slugFromUrl(url);
+			const mediaDir = URI.joinPath(target, 'media');
+
+			if (platform.type === 'video') {
+				// 视频：先 best-effort 下载直链媒体，再落盘元数据 Markdown
+				let mediaLocalPath: string | undefined;
+				let downloaded = false;
+				if (meta.videoUrl && isDownloadableMedia(meta.videoUrl)) {
+					mediaLocalPath = await this.tryDownloadMedia(meta.videoUrl, mediaDir, base, true);
+					downloaded = !!mediaLocalPath;
+				}
+				const md = composeVideoMarkdown({ url, platformName: platform.name, meta, mediaLocalPath, downloaded });
+				const fileUri = await this.uniqueName(target, base, '.md');
+				await this.fileService.writeFile(fileUri, VSBuffer.fromString(md));
+				await this.refreshSection('library');
+				this.notificationService.info(localize(
+					downloaded ? 'kb.urlImportedVideo' : 'kb.urlImportedMeta',
+					downloaded ? '已抓取视频并导入：{0}' : '已记录视频元信息（未能直接下载文件）：{0}',
+					fileUri.path.split('/').pop(),
+				));
+				void this._logOp('kb.import.url', 'success', { source: url, target: fileUri.fsPath, detail: { platform: platform.id, type: 'video', downloaded } });
+				return;
+			}
+
+			// 图文 / mixed：本地化正文内图片（下载到 media/ 并改写本地路径），再组装 Markdown；
+			// mixed / article 额外抓封面图。
+			const localizedBody = await this.localizeBodyImages(body, mediaDir, base);
+			let coverLocalPath: string | undefined;
+			if (meta.cover) {
+				coverLocalPath = await this.tryDownloadImage(meta.cover, mediaDir, base + '_cover');
+			}
+			const extraNote = !localizedBody.trim()
+				? '\n> ⚠️ 未能抓取正文（页面可能需要登录或启用了强反爬）。已保留链接与元信息，可手动补齐。\n'
+				: '';
+			const md = composeArticleMarkdown({ url, platformName: platform.name, meta, body: localizedBody + extraNote, coverLocalPath });
+			const fileUri = await this.uniqueName(target, base, '.md');
 			await this.fileService.writeFile(fileUri, VSBuffer.fromString(md));
 			await this.refreshSection('library');
 			this.notificationService.info(localize('kb.urlImported', '已导入：{0}', fileUri.path.split('/').pop()));
+			void this._logOp('kb.import.url', 'success', { source: url, target: fileUri.fsPath, detail: { platform: platform.id, type: platform.type } });
 		} catch (err) {
 			this.logService.warn(`[KB] importFromUrl failed: ${err}`);
 			this.notificationService.warn(localize('kb.urlFetchFailed', '抓取失败（可能受跨域限制或需登录）：{0}', String(err)));
+			void this._logOp('kb.import.url', 'failure', { source: url, error: String(err) });
 		}
 	}
 
-	/** 经主进程网络层发起请求（IRequestService，绕过渲染进程 CORS），HTML 走轻量抽取，纯文本原样保存。 */
-	private async fetchUrlAsMarkdown(url: string): Promise<string> {
-		const context = await this.requestService.request({
-			type: 'GET',
-			url,
-			followRedirects: 5,
-			headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SarosisKB/1.0)' },
-			callSite: 'saros.knowledgeBase.urlImport',
-		}, CancellationToken.None);
-		const status = context.res.statusCode;
-		if (!status || status < 200 || status >= 300) { throw new Error(`HTTP ${status ?? 'unknown'}`); }
-		const raw = (await asText(context)) ?? '';
-		const ct = (context.res.headers['content-type'] as string | undefined) ?? '';
-		if (ct.includes('html')) { return this.htmlToMarkdown(raw, url); }
-		return raw;
+	/** 经主进程网络层（IRequestService，绕过渲染进程 CORS）取回页面 HTML 并解析 OG 元信息。失败返回空对象。 */
+	private async fetchOgMeta(url: string): Promise<IKbMetaTags> {
+		try {
+			const context = await this.requestService.request({
+				type: 'GET',
+				url,
+				followRedirects: 5,
+				headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SarosisKB/1.0)' },
+				callSite: 'saros.knowledgeBase.urlImport.og',
+			}, CancellationToken.None);
+			const status = context.res.statusCode;
+			if (!status || status < 200 || status >= 300) { return {}; }
+			return parseMetaTags((await asText(context)) ?? '');
+		} catch (err) {
+			this.logService.warn(`[KB] fetchOgMeta failed: ${err}`);
+			return {};
+		}
 	}
 
-	private htmlToMarkdown(html: string, url: string): string {
-		// 标题：正则提取（DOMParser.parseFromString 受本 fork Trusted Types 策略拦截，故走正则）
-		const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-		const title = (titleMatch ? titleMatch[1] : '').replace(/\s+/g, ' ').trim() || url;
-		// 正文：经白名单 dompurify policy 解析（safeSetInnerHtml），绕过 TrustedHTML 约束
-		const div = document.createElement('div');
-		safeSetInnerHtml(div, html);
-		div.querySelectorAll('script,style,noscript,svg,head,nav,footer,iframe').forEach(n => n.remove());
-		const text = div.textContent ?? '';
-		const clean = text.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
-		return `# ${title}\n\n> 来源：${url}\n\n${clean}\n`;
+	/** best-effort 下载媒体（视频，经 IRequestService 流式写入）到目录；失败返回 undefined。 */
+	private async tryDownloadMedia(url: string, dir: URI, base: string, isVideo = false): Promise<string | undefined> {
+		try {
+			await this.fileService.createFolder(dir);
+			const context = await this.requestService.request({
+				type: 'GET',
+				url,
+				followRedirects: 5,
+				headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SarosisKB/1.0)', 'Referer': url },
+				callSite: 'saros.knowledgeBase.urlImport.media',
+			}, CancellationToken.None);
+			const status = context.res.statusCode;
+			if (!status || status < 200 || status >= 300) { return undefined; }
+			const mime = (context.res.headers['content-type'] as string | undefined) ?? '';
+			if (isVideo && !isDownloadableMedia(url, mime)) { return undefined; }
+			const ext = guessMediaExt(url, mime);
+			const fileUri = await this.uniqueName(dir, base, '.' + ext);
+			const buf = await streamToBuffer(context.stream);
+			await this.fileService.writeFile(fileUri, buf);
+			return fileUri.fsPath;
+		} catch (err) {
+			this.logService.warn(`[KB] media download failed: ${err}`);
+			return undefined;
+		}
 	}
 
-	private slugFromUrl(url: string, kind: KbImportKind): string {
+	/** best-effort 下载单张图片（经 SharedWebContentExtractor，已校验 image/* MIME）到目录；失败返回 undefined。 */
+	private async tryDownloadImage(url: string, dir: URI, base: string): Promise<string | undefined> {
+		try {
+			const buf = await this._sharedWebContentExtractor.readImage(URI.parse(url), CancellationToken.None);
+			if (!buf) { return undefined; }
+			await this.fileService.createFolder(dir);
+			const ext = guessMediaExt(url);
+			const fileUri = await this.uniqueName(dir, base, '.' + ext);
+			await this.fileService.writeFile(fileUri, buf);
+			return fileUri.fsPath;
+		} catch (err) {
+			this.logService.warn(`[KB] image download failed: ${err}`);
+			return undefined;
+		}
+	}
+
+	/**
+	 * 把正文 Markdown 中的远程图片（![alt](url)）下载到 media/ 并改写为本地相对路径。
+	 * 复用 Markdown 内嵌的 URL（WebContentExtractor 已把 AX 树里的图片转成 ![]()）。
+	 */
+	private async localizeBodyImages(body: string, dir: URI, base: string): Promise<string> {
+		const imgUrls = findMarkdownImageUrls(body);
+		const replacements = new Map<string, string>();
+		const tasks: Promise<void>[] = [];
+		imgUrls.forEach((imgUrl, idx) => {
+			const localName = `${base}_img${idx}`;
+			tasks.push(
+				this.tryDownloadImage(imgUrl, dir, localName).then(local => {
+					if (local) { replacements.set(imgUrl, local); }
+				})
+			);
+		});
+		if (tasks.length) { await Promise.all(tasks); }
+		return rewriteMarkdownImageUrls(body, replacements);
+	}
+
+
+
+	private slugFromUrl(url: string): string {
 		try {
 			const u = new URL(url);
 			const last = u.pathname.split('/').filter(Boolean).pop() || u.hostname;
 			const clean = last.replace(/[\\/:*?"<>|#.]/g, '_').slice(0, 60);
-			return clean || kind;
+			return clean || 'import';
 		} catch {
-			return kind;
+			return 'import';
 		}
 	}
 
@@ -1219,16 +1779,72 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		return this._searchFilesKernel(q);
 	}
 
-	/** 重建全文索引与双链图谱（扫描当前 Vault 的库 + 笔记两分区）。 */
+	/**
+	 * 尝试从外部目录加载预建索引到当前 Vault。
+	 *
+	 * 场景：飞书知识库包携带 .ftindex.json / .kbkernel.json，安装后调用此方法
+	 * 将索引复制到 Vault 根目录并加载，**跳过全量文件扫描与索引重建**。
+	 *
+	 * @param sourceDir 预建索引所在目录（即 knowledgeInstaller.install 的 targetDir）
+	 * @returns true 表示索引有效并已加载，false 表示需要回退到 rebuildSearchAssets()
+	 */
+	async tryLoadPrebuiltIndex(sourceDir: URI): Promise<boolean> {
+		if (!this._activeVault) { return false; }
+		const vaultRoot = this.vaultUri(this._activeVault);
+		const sourceFts = URI.joinPath(sourceDir, '.ftindex.json');
+
+		if (!await this.fileService.exists(sourceFts)) {
+			return false;
+		}
+
+		try {
+			const raw = (await this.fileService.readFile(sourceFts)).value.toString();
+			const v = await KbFullTextIndex.validateIndex(raw, this.fileService);
+			if (v.valid === 0 || v.valid / v.total < 0.7) {
+				this.logService.warn(`[KB] prebuilt index too stale (${v.valid}/${v.total} valid, ${v.stale} stale, ${v.missing} missing)`);
+				return false;
+			}
+
+			// Copy index files to vault root (overwrite stale cache)
+			const destFts = URI.joinPath(vaultRoot, '.ftindex.json');
+			await this.fileService.copy(sourceFts, destFts, true);
+
+			const sourceKernel = URI.joinPath(sourceDir, '.kbkernel.json');
+			if (await this.fileService.exists(sourceKernel)) {
+				const destKernel = URI.joinPath(vaultRoot, '.kbkernel.json');
+				await this.fileService.copy(sourceKernel, destKernel, true);
+			}
+
+			// Load into running FTS + kernel (reconcile will handle any mismatches)
+			await this.rebuildSearchAssets();
+			this._searchDirty = false;
+
+			this.logService.info(`[KB] loaded prebuilt index from ${sourceDir.fsPath}: ${v.valid}/${v.total} docs valid`);
+			return true;
+		} catch (err) {
+			this.logService.warn('[KB] failed to load prebuilt index', err);
+			return false;
+		}
+	}
+
+	/** 重建全文索引与双链图谱（扫描当前 Vault 的库 + 笔记两分区 + 关联目录）。 */
 	private async rebuildSearchAssets(): Promise<void> {
 		if (!this._activeVault) { return; }
-		const roots = (['library', 'notes'] as KbSection[]).map(s => ({ uri: this.sectionUri(this._activeVault!, s), section: s }));
+		const vaultRoot = this.vaultUri(this._activeVault);
+		const roots = this.buildRoots();
 		try {
-			// 内置内核（主后端，含提及索引）
-			await this._nativeKernel?.build(roots);
+			// FTS 索引缓存：启动时增量 reconcile（只重读变更文件），热启动近零磁盘读。
+			const ftsCache = URI.joinPath(vaultRoot, '.ftindex.json');
+			const kernelCache = URI.joinPath(vaultRoot, '.kbkernel.json');
+			// 内置内核（主后端，含提及索引）— 缓存 + 内存派生 graph/mention
+			await this._nativeKernel?.build(roots, kernelCache);
+			// Record the build context so the shared service can lazily (re)build
+			// on behalf of the note editor if it opens a doc before this view.
+			this._kbKernelService.setBuildContext(roots, kernelCache);
 			// 兼容：同时构建旧索引/图谱（部分代码仍直接引用）
-			await this._index.build(roots);
-			await this._graph.build(roots);
+			await this._index.build(roots, ftsCache);
+			// 图谱从索引的内存文档派生，避免二次全量读盘
+			this._graph.buildFromDocs(this._index.allDocs());
 		} catch (err) {
 			this.logService.warn(`[KB] rebuildSearchAssets failed: ${err}`);
 		}
@@ -1290,8 +1906,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		el.replaceChildren();
 		const header = $('div.kb-bl-header');
-		const kernelBadge = this._ensureKernelClient()?.isAvailable ? ' 🔌' : ' 📦';
-		header.textContent = `🔗 双链${kernelBadge}`;
+		header.textContent = '🔗 双链 📦';
 		el.appendChild(header);
 
 		if (outgoing.length === 0 && back.length === 0 && mentions.length === 0) {
@@ -1351,32 +1966,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	// ═══════════════════════════════════════════════════════════
-	//  Tier 3 — Lute 块级渲染 + Kernel API 集成
+	//  内置内核（KbNativeKernel）— 检索 / 反链 / 图谱
 	// ═══════════════════════════════════════════════════════════
-
-	/** 注入 SiYuan Lute 引擎脚本（vendored 自 local SiYuan 源）。 */
-	private async _initLute(): Promise<void> {
-		try {
-			// 必须用 FileAccess.asBrowserUri 得到 Electron CSP 允许的 vscode-file:// 绝对路径；
-			// 不能用 './media/...' 相对路径（在 Workbench ViewPane 中相对 workbench 页面解析，脚本永远加载不到）。
-			const luteUrl = (window as unknown as Record<string, string | undefined>)['luteUrl']
-				?? FileAccess.asBrowserUri('vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/media/lute/lute.min.js').toString();
-			await injectLuteScript(luteUrl);
-		} catch (err) {
-			this.logService.warn(`[KB] initLute failed: ${err}`);
-		}
-	}
-
-	/** 懒初始化 SiYuan Kernel 客户端（尝试连接本地 kernel 6768 默认端口）。 */
-	private _ensureKernelClient(): KbKernelClient | undefined {
-		if (this._kernelClient) { return this._kernelClient; }
-		try {
-			this._kernelClient = new KbKernelClient('http://127.0.0.1:6806');
-			return this._kernelClient;
-		} catch {
-			return undefined;
-		}
-	}
 
 	/**
 	 * 点击文件 → 在中间栏文件编辑器打开 WYSIWYG 笔记编辑器。
@@ -1410,6 +2001,167 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		);
 	}
 
+	// ═══════════════════════════════════════════════════════════
+	//  RAG (Phase 3) — Ask KB + Build RAG Knowledge Base
+	// ═══════════════════════════════════════════════════════════
+
+	/** Ask KB 输入区 DOM 引用 */
+	private _askKbInput?: HTMLInputElement;
+	private _askKbResult?: HTMLElement;
+
+	/** 渲染 Ask KB 问答区（搜索栏与内容区之间） */
+	private _renderAskKb(): void {
+		const row = $('div.kb-ask-row');
+		row.style.cssText = 'display:flex;gap:4px;padding:4px 8px;margin:2px 0;';
+
+		const input = document.createElement('input');
+		input.placeholder = '🧠 向知识库提问（需先点击 🧠 构建 RAG）';
+		input.style.cssText = 'flex:1;border:1px solid var(--vscode-input-border,#3c3c3c);background:var(--vscode-input-background,#1e1e1e);color:var(--vscode-input-foreground,#ccc);padding:4px 8px;border-radius:4px;font-size:12px;';
+		input.onkeydown = (e) => {
+			if (e.key === 'Enter') { void this._doAskKb(input.value.trim()); }
+		};
+		this._askKbInput = input;
+
+		const askBtn = document.createElement('button');
+		askBtn.textContent = 'Ask';
+		askBtn.title = '向 RAG 知识库提问（基于已构建的向量索引）';
+		askBtn.style.cssText = 'border:none;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,white);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap;';
+		askBtn.onclick = () => { void this._doAskKb(input.value.trim()); };
+
+		row.appendChild(input);
+		row.appendChild(askBtn);
+		this._body.appendChild(row);
+
+		// 结果区
+		const result = $('div.kb-ask-result');
+		result.style.cssText = 'display:none;padding:4px 8px 8px;font-size:12px;line-height:1.5;color:var(--vscode-foreground,#ccc);max-height:200px;overflow-y:auto;border-bottom:1px solid var(--vscode-widget-border,#3c3c3c);';
+		this._askKbResult = result;
+		this._body.appendChild(result);
+	}
+
+	/** 执行 RAG 问答 */
+	private async _doAskKb(query: string): Promise<void> {
+		const resultEl = this._askKbResult;
+		const inputEl = this._askKbInput;
+		if (!query || !resultEl || !inputEl || !this._activeVault) { return; }
+
+		inputEl.disabled = true;
+		resultEl.style.display = 'block';
+		resultEl.innerHTML = '<span style="color:var(--vscode-descriptionForeground,#888)">⏳ 搜索中…</span>';
+
+		try {
+			const { mgr, session } = await this._getOrCreateRagSession();
+			if (!session) {
+				resultEl.innerHTML = '<span style="color:var(--vscode-errorForeground,#f48771)">❌ RAG 知识库尚未构建。点击工具栏 🧠 按钮先构建。</span>';
+				return;
+			}
+
+			const r = await mgr.chat(session, query, 5);
+			const itemsStr = (r.retrieved?.nodes?.length || r.retrieved?.items?.length)
+				? `<div style="margin-top:4px;font-size:10px;color:var(--vscode-descriptionForeground,#888)">📎 检索到 ${
+					(r.retrieved as any).nodes?.length ?? (r.retrieved as any).items?.length ?? 0
+				} 条相关知识</div>`
+				: '';
+
+			resultEl.innerHTML = `<div style="margin-bottom:4px;font-weight:bold;color:var(--vscode-textLink-foreground,#3794ff)">🤖 回答</div><div>${_escapeHtml(r.text)}${itemsStr}</div>`;
+		} catch (err) {
+			resultEl.innerHTML = `<span style="color:var(--vscode-errorForeground,#f48771)">❌ 问答失败：${_escapeHtml(String(err?.message ?? err))}</span>`;
+		} finally {
+			inputEl.disabled = false;
+			inputEl.value = '';
+		}
+	}
+
+	/** 构建 RAG 知识库：读取 vault 所有 .md → LightRAG 提取实体+关系 → 向量索引 */
+	private async _buildRagKnowledgeBase(): Promise<void> {
+		if (!this._activeVault) {
+			this.notificationService.warn('请先选择一个知识库');
+			return;
+		}
+		if (!this._embeddingService.isEnabled()) {
+			this.notificationService.warn('Embedding 服务未启用。请在设置中配置模型 Provider（OpenRouter / 自定义 API）。');
+			return;
+		}
+
+		const vault = this._activeVault;
+		this.notificationService.info(`🧠 开始构建「${vault.name}」RAG 知识库…`);
+
+		try {
+			// 确保 FTS 索引是最新的
+			if (this._searchDirty) { await this.rebuildSearchAssets(); }
+
+			const allDocs = this._index.allDocs();
+			if (allDocs.length === 0) {
+				this.notificationService.warn('知识库中没有 .md 文件，请先导入笔记。');
+				return;
+			}
+
+			// 创建 KnowledgeManager
+			const chatModel = resolveChatModel(this.configurationService);
+			const embedder = createEmbedder(this._embeddingService);
+			const userHome = (this.environmentService as INativeEnvironmentService).userHome.fsPath;
+			const root = resolveKbRoot(undefined, userHome);
+			const storage = createFileStorageAdapter(this.fileService, root);
+			const mgr = new KnowledgeManager({ llm: chatModel, embedder, storage, verbose: true });
+
+			// 创建 RAG session
+			const ragId = `kb-vault-${vault.id}`;
+			const session = mgr.create('knowledge_graph', {
+				id: ragId,
+				title: `RAG: ${vault.name}`,
+				method: 'light_rag',
+			});
+
+			// Feed 所有文档文本
+			let fed = 0;
+			for (const doc of allDocs) {
+				try {
+					const content = await this.fileService.readFile(doc.uri);
+					const text = content.value.toString().trim();
+					if (text) {
+						await mgr.parseText(session, text);
+						fed++;
+					}
+				} catch { /* skip unreadable */ }
+			}
+
+			if (fed === 0) {
+				this.notificationService.warn('没有可读的 .md 文件');
+				return;
+			}
+
+			await mgr.persist(session);
+
+			this.notificationService.info(`✅ RAG 知识库「${vault.name}」构建完成：${fed} 个文档已索引。现在可用 🧠 Ask 提问。`);
+			void this._logOp('kb.rag.build', 'success', { detail: { vault: vault.id, docs: fed, method: 'light_rag' } });
+		} catch (err) {
+			this.notificationService.error(`❌ RAG 构建失败：${String(err?.message ?? err)}`);
+			void this._logOp('kb.rag.build', 'failure', { detail: { vault: vault.id }, error: String(err) });
+		}
+	}
+
+	/** 获取或创建 RAG session（用于 Ask KB） */
+	private async _getOrCreateRagSession(): Promise<{ mgr: KnowledgeManager; session: ReturnType<KnowledgeManager['create']> | null }> {
+		if (!this._activeVault || !this._embeddingService.isEnabled()) {
+			return { mgr: undefined!, session: null };
+		}
+		try {
+			const chatModel = resolveChatModel(this.configurationService);
+			const embedder = createEmbedder(this._embeddingService);
+			const userHome = (this.environmentService as INativeEnvironmentService).userHome.fsPath;
+			const root = resolveKbRoot(undefined, userHome);
+			const storage = createFileStorageAdapter(this.fileService, root);
+			const mgr = new KnowledgeManager({ llm: chatModel, embedder, storage });
+
+			// 尝试加载已保存的 session
+			const ragId = `kb-vault-${this._activeVault.id}`;
+			const session = await mgr.load(ragId);
+			return { mgr, session };
+		} catch {
+			return { mgr: undefined!, session: null };
+		}
+	}
+
 	/**
 	 * 点击「🕸️ 关系图谱」→ 在中间栏文件编辑器打开独立的关系图谱 EditorPane。
 	 * 数据来自已构建的双链图谱（KbLinkGraph.getGraphData），节点单击可在中心
@@ -1425,10 +2177,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this.notificationService.info('知识库暂无可绘制的关系（先导入或创建带双链的笔记）');
 			return;
 		}
+		// 携带知识库分区根目录（含关联目录），供「关系图谱」EditorPane 内的「构建图谱」按钮重新扫描
+		const roots = this.buildRoots();
 		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 		this.editorService.openEditor(
-			new KbGraphEditorInput(nodes, links, '关系图谱'),
+			new KbGraphEditorInput(nodes, links, '关系图谱', roots),
 			{ pinned: true },
 			targetGroup,
 		);
@@ -1436,21 +2190,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	// -- Kernel-enhanced search / backlinks (Tier 3) --
 
-	/** 搜索文件：内置内核（始终可用）优先，外部 kernel 为可选增强。 */
+	/** 搜索文件：内置内核（BM25，始终可用）。 */
 	private async _searchFilesKernel(q: string): Promise<IKbSearchHit[]> {
-		// 1. 尝试外部 SiYuan kernel（FTS5，质量更高）
-		const kernel = this._ensureKernelClient();
-		if (kernel) {
-			try {
-				const healthy = await kernel.healthCheck();
-				if (healthy) {
-					const result = await kernel.fullTextSearchBlock(q);
-					return this._mapKernelSearchToHits(result.blocks ?? []);
-				}
-			} catch { /* fall through to native */ }
-		}
-
-		// 2. 回退到 vssaros 内置内核（BM25 + Lute 增强，始终可用）
 		return this._searchFilesLocal(q);
 	}
 
@@ -1460,26 +2201,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		return this._index.search(q);
 	}
 
-	/** 将 kernel 搜索结果映射为本地 IKbSearchHit 类型。 */
-	private _mapKernelSearchToHits(blocks: IKernelSearchBlock[]): IKbSearchHit[] {
-		return blocks.map(b => ({
-			uri: URI.file(b.path ?? b.hPath ?? ''),
-			name: b.path?.split('/').pop() ?? b.hPath?.split('/').pop() ?? '未知',
-			path: b.path ?? b.hPath ?? '',
-			section: 'notes' as KbSection,
-			size: 0,
-			mtime: 0,
-			ctime: 0,
-			childCount: 0,
-			isDirectory: false,
-			matchedBy: 'name' as const,
-			score: 0,
-			snippet: b.content?.slice(0, 200) ?? '',
-		}));
-	}
-
 	/**
-	 * 获取反链 + 提及：内置内核（始终可用，含提及）优先，外部 kernel 为可选增强。
+	 * 获取反链 + 提及：内置内核（始终可用，含提及）。
 	 * 返回结构扩展 mentions 字段（对齐 SiYuan 反链面板的「反链 / 提及」双列表）。
 	 */
 	private async _getBacklinksKernel(node: IKbNode): Promise<{
@@ -1487,33 +2210,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		back: { uri: URI; name: string; snippet: string; type?: 'ref' | 'mention' }[];
 		mentions: { uri: URI; name: string; snippet: string }[];
 	}> {
-		// 1. 尝试外部 SiYuan kernel
-		const kernel = this._ensureKernelClient();
-		if (kernel) {
-			try {
-				const healthy = await kernel.healthCheck();
-				if (healthy) {
-					const blockId = node.uri.toString();
-					const result: IKernelBacklink2Result = await kernel.getBacklink2(blockId);
-					return {
-						outgoing: [],
-						back: (result.backlinks ?? []).map(b => ({
-							uri: URI.file(b.path ?? b.hPath ?? ''),
-							name: b.hPath?.split('/').pop() ?? '未知',
-							snippet: b.content?.slice(0, 100) ?? '',
-							type: 'ref' as const,
-						})),
-						mentions: (result.backmentions ?? []).map(b => ({
-							uri: URI.file(b.path ?? b.hPath ?? ''),
-							name: b.hPath?.split('/').pop() ?? '未知',
-							snippet: b.content?.slice(0, 100) ?? '',
-						})),
-					};
-				}
-			} catch { /* fall through to native */ }
-		}
-
-		// 2. vssaros 内置内核（含提及，移植 backlink.go buildTreeBackmention）
+		// 1. vssaros 内置内核（含提及，移植 backlink.go buildTreeBackmention）
 		if (this._nativeKernel && this._nativeKernel.isBuilt) {
 			const docId = node.uri.toString();
 			const result: INativeBacklinkResult = await this._nativeKernel.getBacklink2(docId);
@@ -1533,7 +2230,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			};
 		}
 
-		// 3. 最终回退：旧版本地图谱（无提及）
+		// 2. 最终回退：旧版本地图谱（无提及）
 		return { ...this._getBacklinksLocal(node), mentions: [] };
 	}
 
@@ -1546,7 +2243,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	override dispose(): void {
-		this._kernelClient = undefined;
 		document.removeEventListener('click', this._onGlobalClick);
 		super.dispose();
 	}

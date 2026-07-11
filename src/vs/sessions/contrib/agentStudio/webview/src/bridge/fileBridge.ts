@@ -34,12 +34,11 @@ export async function openFile(path: string, options?: OpenFileOptions): Promise
 }
 
 /**
- * Open the agent's ConfigMD source file (`config.md` by default) in the
- * host's center editor area. Edits made there auto-sync back to the panel
- * via the file watcher.
+ * Open the agent's ConfigHtml source file (`config.html` by default) in the
+ * host's center editor area.
  */
-export async function openAgentConfigMd(agentId: string, options?: OpenFileOptions): Promise<void> {
-	await sendRequest('files.open', { agentId, kind: 'configMd', ...options });
+export async function openAgentConfigHtml(agentId: string, options?: OpenFileOptions): Promise<void> {
+	await sendRequest('files.open', { agentId, kind: 'configHtml', ...options });
 }
 
 /**
@@ -49,7 +48,7 @@ export async function openAgentConfigMd(agentId: string, options?: OpenFileOptio
  * `agentId` is optional — when provided, the host will use it directly to
  * route SDK postMessages back to ConfigHtmlService (avoiding fragile path-
  * reverse-engineering). Callers that already know the owning agent (e.g.
- * `previewAgentConfigMd`) should always pass it.
+ * `previewAgentConfigHtml`) should always pass it.
  *
  * `workspaceId` / `workspaceSessionId` / `agentSessionId` are also optional.
  * When supplied, the preview pane forwards them into the imgui SDK so
@@ -71,7 +70,7 @@ export async function openHtmlPreview(
 }
 
 /**
- * Render the agent's ConfigMD into a standalone HTML preview file
+ * Render the agent's ConfigHtml into a standalone HTML preview file
  * (`<agentDir>/.preview.html`), then open it as a rendered webview preview
  * in the host's center editor area. Returns the absolute path of the file.
  *
@@ -79,11 +78,11 @@ export async function openHtmlPreview(
  * imgui submits can be routed back to the same Fork session even after the
  * user changes selection in the chat panel.
  */
-export async function previewAgentConfigMd(
+export async function previewAgentConfigHtml(
 	agentId: string,
 	options?: OpenFileOptions,
 ): Promise<string> {
-	const r = await sendRequest('configmd.previewToFile', { agentId }) as { path: string };
+	const r = await sendRequest('confightml.previewToFile', { agentId }) as { path: string };
 	if (!r?.path) {
 		throw new Error('previewToFile did not return a path');
 	}
@@ -125,27 +124,13 @@ export async function previewAgentConfigMd(
 }
 
 /**
- * Open the agent's custom parser script (if configured).
- */
-export async function openAgentParser(agentId: string, options?: OpenFileOptions): Promise<void> {
-	await sendRequest('files.open', { agentId, kind: 'configMdParser', ...options });
-}
-
-/**
- * Open the agent's custom styles file (if configured).
- */
-export async function openAgentStyles(agentId: string, options?: OpenFileOptions): Promise<void> {
-	await sendRequest('files.open', { agentId, kind: 'configMdStyles', ...options });
-}
-
-/**
  * Open an in-memory text buffer as an *untitled* editor in the host's
  * center editor area. The buffer lives only in the editor model — nothing
  * is read from or written to disk — so it cannot overwrite an existing
  * agent file.
  *
- * Use case: showing reference / sample content (e.g. ConfigMD demo source)
- * the user wants to inspect or copy from without affecting their real agent.
+ * Use case: showing reference / sample content the user wants to inspect
+ * or copy from without affecting their real agent.
  */
 export async function openUntitledText(
 	contents: string,

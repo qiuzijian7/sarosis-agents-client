@@ -153,6 +153,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 	async listModels(): Promise<IModelInfo[]> {
 		const result: IModelInfo[] = [];
 		for (const { id, metadata } of this._collectVendorModels()) {
+			const bareId = this._bareModelId(id);
 			// `ILanguageModelChatMetadata` (VSCode standard type) carries no reasoning flag,
 			// and extensions registering via vscode.lm.registerLanguageModelChatProvider
 			// (e.g. codebuddy) drop the `supportsReasoning` field on the way through
@@ -162,10 +163,10 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			// any model recognised as reasoning-capable surfaces a plain switch — we set
 			// `supportsReasoning: true` and leave `reasoningType` unset so the webview's
 			// `reasoningUIType` falls through to the `'switch'` branch.
-			const supportsReasoning = this._inferSupportsReasoning(id, metadata);
-			const supportsImages = this._inferSupportsImages(id, metadata);
+			const supportsReasoning = this._inferSupportsReasoning(bareId, metadata);
+			const supportsImages = this._inferSupportsImages(bareId, metadata);
 			result.push({
-				id,                                       // qualified id, ready for sendChatRequest
+				id: bareId,                               // strip `vendor/` and `vendor-` prefixes; provider expects bare model id
 				name: this._friendlyModelName(id, metadata),
 				description: metadata.detail ?? metadata.tooltip,
 				contextWindow: metadata.maxInputTokens,
@@ -420,9 +421,12 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		// If the direct lookup fails, scan this vendor's models for a suffix match.
 		if (!meta) {
 			for (const entry of this._collectVendorModels()) {
-				const sep = entry.id.indexOf('::');
-				const tail = sep > -1 ? entry.id.slice(sep + 2) : entry.id;
-				if (tail === modelId) {
+				// Strip vendor/ prefix AND vendor- prefix from the cached id,
+				// then compare against the bare modelId.  The cached identifier
+				// may be "codebuddy/codebuddy-deepseek-v4-pro-ioa" while the
+				// persisted selection is "deepseek-v4-pro-ioa".
+				const candidate = this._bareModelId(entry.id);
+				if (candidate === modelId) {
 				this._logService.trace(
 					`[LMBridge] Resolved bare modelId "${modelId}" → qualified "${entry.id}"`,
 				);

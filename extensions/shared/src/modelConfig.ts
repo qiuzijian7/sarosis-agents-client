@@ -50,7 +50,7 @@ export function createModelInfo(
 ): vscode.LanguageModelChatInformation {
 	const displayName = generateDisplayName(modelName);
 	return {
-		id: `${vendorPrefix}-${modelName}`,
+		id: vendorPrefix ? `${vendorPrefix}-${modelName}` : modelName,
 		name: displayName,
 		family,
 		version: '1',

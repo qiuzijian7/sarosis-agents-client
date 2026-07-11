@@ -7,6 +7,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { EditorInputCapabilities } from '../../../../workbench/common/editor.js';
 import { IGraphNode, IGraphLink } from './views/knowledgeBase/kbGraphView.js';
+import { IKbGraphRoot } from './views/knowledgeBase/kbGraph.js';
 
 /**
  * EditorInput 用于在中栏文件编辑器打开知识库「关系图谱」。
@@ -33,12 +34,14 @@ export class KbGraphEditorInput extends EditorInput {
 
 	private readonly _nodes: IGraphNode[];
 	private readonly _links: IGraphLink[];
+	private readonly _roots?: IKbGraphRoot[];
 	private _title: string;
 
-	constructor(nodes: IGraphNode[], links: IGraphLink[], title = '关系图谱') {
+	constructor(nodes: IGraphNode[], links: IGraphLink[], title = '关系图谱', roots?: IKbGraphRoot[]) {
 		super();
 		this._nodes = nodes;
 		this._links = links;
+		this._roots = roots;
 		this._title = title;
 	}
 
@@ -48,6 +51,11 @@ export class KbGraphEditorInput extends EditorInput {
 
 	get links(): IGraphLink[] {
 		return this._links;
+	}
+
+	/** 知识库分区根目录（库 + 笔记）。供「构建图谱」按钮重新扫描时复用。 */
+	get roots(): IKbGraphRoot[] | undefined {
+		return this._roots;
 	}
 
 	override get resource(): URI {

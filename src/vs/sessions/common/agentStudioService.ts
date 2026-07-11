@@ -24,7 +24,7 @@ import type {
 	TaskAttachment,
 	OrchestrationPlan,
 	PlanTask,
-	ConfigMdCapability,
+	ConfigHtmlCapability,
 } from "./agentStudioTypes.js";
 import type { IWorktreeWorkspaceOptions } from "../contrib/worktree/common/worktreeTypes.js";
 
@@ -471,6 +471,12 @@ export interface IChatSendOptions {
 	 * 当设置时，agent 执行的工作目录应优先使用此路径（高于 AgentBinding.worktreePath）。
 	 */
 	readonly worktreePath?: string;
+	/** Mark this message as a programmatic task execution so it skips de-duplication
+	 *  in appendMessage (P2-7 fix).  Human-typed messages default to source='user'. */
+	readonly source?: 'user' | 'task';
+	/** Structured task card data — when set, the renderer builds the task prompt
+	 *  card from this data instead of regex-parsing the text content. */
+	readonly taskCard?: import('../common/agentStudioTypes.js').TaskCardData;
 }
 
 /**
@@ -485,6 +491,28 @@ export interface IChatAttachmentSend {
 	readonly data: string;
 	readonly size: number;
 	readonly isPasted?: boolean;
+}
+
+/**
+ * Task execution info — passed from the task board to the orchestration
+ * service when a task transitions to 'running'.  Contains the task metadata
+ * needed to construct the LLM prompt and select the provider/model.
+ */
+export interface ITaskExecutionInfo {
+	readonly title: string;
+	readonly description?: string;
+	readonly assigneeId?: string;
+	readonly assigneeName?: string;
+	readonly sourceId?: string;
+	readonly worktreePath?: string;
+	readonly workflowId?: string;
+	readonly variableValues?: Record<string, string>;
+	readonly attachments?: IChatAttachmentSend[];
+	/** LM provider override (e.g. 'codebuddy'). When set together with modelId,
+	 *  overrides the agent's default provider for this single execution. */
+	readonly providerId?: string;
+	/** Model ID override (e.g. 'deepseek-v4-pro-ioa'). */
+	readonly modelId?: string;
 }
 
 export interface IAgentChatService {
@@ -692,8 +720,23 @@ export interface IAgentTaskBoardService {
 	 * @param opts.sessionId Playwright session id (defaults to the Saros Claw agent).
 	 * @param opts.viewId Browser view id whose context provides the auth cookies.
 	 *   When omitted, a tracked TAPD page is located automatically if possible.
+	 * @param opts.filename Override the saved file name (e.g. the TAPD attachment
+	 *   name) instead of deriving it from the URL.
+	 * @param opts.subDir Optional sub-directory (e.g. the TAPD task id) created
+	 *   under the task-downloads root to namespace attachments per task.
+	 * @param opts.extractZip When true (or auto-detected for `.zip` downloads),
+	 *   the archive is extracted after download and `extractedFiles` lists its
+	 *   entries (relative to the download root, with image entries embedded as
+	 *   data URIs to bypass webview CSP).
 	 */
-	downloadUrlForAttachment(url: string, opts?: { sessionId?: string; viewId?: string }): Promise<{ name: string; mimeType: string; base64: string; tempPath: string } | undefined>;
+	downloadUrlForAttachment(url: string, opts?: { sessionId?: string; viewId?: string; filename?: string; subDir?: string; extractZip?: boolean }): Promise<{
+		name: string;
+		mimeType: string;
+		base64: string;
+		tempPath: string;
+		isZip?: boolean;
+		extractedFiles?: { name: string; relPath: string; isImage: boolean; dataUri?: string }[];
+	} | undefined>;
 }
 
 // --- Task Orchestration Service ---
@@ -823,7 +866,7 @@ export interface ITaskOrchestrationService {
 	executeTaskForBoard(
 		workspaceId: string,
 		taskBoardRecordId: string,
-		taskInfo?: { title: string; description?: string; assigneeId?: string; assigneeName?: string; sourceId?: string; worktreePath?: string; workflowId?: string; variableValues?: Record<string, string>; attachments?: IChatAttachmentSend[] },
+		taskInfo?: ITaskExecutionInfo,
 	): Promise<void>;
 
 	/**
@@ -896,69 +939,24 @@ export const IConfigHtmlService =
 	createDecorator<IConfigHtmlService>("configHtmlService");
 
 /**
- * A patch operation against the canonical MD file.
- * @see IConfigMdPatchOp in messageProtocol.ts
+ * A command parsed from model output, destined for the ConfigHtml view.
  */
-export interface IConfigMdPatchOp {
-	readonly op:
-	| "replace-anchor"
-	| "replace-bind"
-	| "append"
-	| "prepend"
-	| "replace-section"
-	| "replace-all";
-	readonly anchor?: string;
-	readonly heading?: string;
-	readonly content: string;
-}
-
-/**
- * A command parsed from model output, destined for the ConfigMD HTML view.
- * Model outputs commands inside ```configmd-command JSON code blocks.
- */
-export interface IConfigMdCommand {
+export interface IConfigHtmlCommand {
 	readonly name: string;
 	readonly params: Record<string, unknown>;
 	readonly id: string;
 }
 
 /**
- * A snapshot of the current ConfigMD state for an agent.
+ * Origin of an HTML content change — used to suppress echo loops.
  */
-export interface IConfigMdState {
-	/** Current MD content */
-	readonly markdown: string;
-	/** Current rendered HTML */
-	readonly html: string;
-	/** Monotonic version (incremented on each successful write) */
-	readonly version: number;
-	/** Optional injected CSS */
-	readonly stylesContent?: string;
-	/** Whether a custom parser script was used */
-	readonly parserSource?: "builtin" | "custom";
-}
-
-/**
- * Origin of an MD change — used to suppress echo loops.
- */
-export type ConfigMdChangeOrigin = "editor" | "html" | "model" | "external";
+export type ConfigHtmlChangeOrigin = "editor" | "html" | "model" | "external";
 
 export interface IConfigHtmlService {
 	readonly _serviceBrand: undefined;
 
 	/**
-	 * Fired when the MD source has changed (from any origin).
-	 * Subscribers should NOT trigger another write with the same content.
-	 */
-	readonly onDidChangeSource: Event<{
-		agentId: string;
-		markdown: string;
-		version: number;
-		origin: ConfigMdChangeOrigin;
-	}>;
-
-	/**
-	 * Fired when a new HTML render is available (after MD changes or explicit re-render).
+	 * Fired when a new HTML render is available.
 	 */
 	readonly onDidRenderHtml: Event<{
 		agentId: string;
@@ -972,7 +970,7 @@ export interface IConfigHtmlService {
 	 */
 	readonly onDidEmitCommand: Event<{
 		agentId: string;
-		command: IConfigMdCommand;
+		command: IConfigHtmlCommand;
 	}>;
 
 	/**
@@ -985,16 +983,7 @@ export interface IConfigHtmlService {
 	}>;
 
 	/**
-	 * Fired when an imgui button requests a chat send. The host's webview
-	 * controller listens to this event and routes the message through the
-	 * full `chat.send` pipeline (creating a user message, persisting it,
-	 * and streaming deltas back to the chat panel UI). Subscribers must
-	 * not double-send — only the controller that owns the chat webview
-	 * should react.
-	 *
-	 * `workspaceId` is carried so the controller can pick the Fork-mode
-	 * lazy-create path when it should — without it, a Fork-context submit
-	 * would silently be persisted to the wrong (Root) session.
+	 * Fired when an imgui button requests a chat send.
 	 */
 	readonly onDidRequestChatSend: Event<{
 		agentId: string;
@@ -1007,58 +996,27 @@ export interface IConfigHtmlService {
 	// --- Resource & State --------------------------------------------------
 
 	/**
-	 * Resolve and load the ConfigMD state for an agent (reads MD file, parser, styles).
-	 * Sets up the file watcher on first call.
+	 * Read the agent's `config.html` content.
 	 */
-	resolveState(agentId: string): Promise<IConfigMdState | null>;
+	getHtml(agentId: string): Promise<{ html: string; version: number }>;
 
 	/**
-	 * Read the raw MD source for an agent.
+	 * Write the agent's `config.html` content.
 	 */
-	readSource(
+	writeHtml(
 		agentId: string,
-	): Promise<{ markdown: string; version: number }>;
-
-	/**
-	 * Overwrite the MD source. Triggers re-render & onDidChangeSource.
-	 * Optimistic concurrency: if `baseVersion` is provided and stale, throws.
-	 */
-	writeSource(
-		agentId: string,
-		markdown: string,
-		options?: { origin?: ConfigMdChangeOrigin; baseVersion?: number },
+		html: string,
+		options?: { origin?: ConfigHtmlChangeOrigin; baseVersion?: number },
 	): Promise<{ version: number }>;
 
 	/**
-	 * Apply a sequence of patches to the MD source.
-	 */
-	applyPatch(
-		agentId: string,
-		patches: IConfigMdPatchOp[],
-		options?: { origin?: ConfigMdChangeOrigin; baseVersion?: number },
-	): Promise<{ version: number; markdown: string }>;
-
-	/**
-	 * Render (or re-render) the HTML for an agent's current MD content.
-	 * If `markdown` provided, render it without persisting.
-	 */
-	renderHtml(
-		agentId: string,
-		markdown?: string,
-	): Promise<{ html: string; version: number }>;
-
-	/**
-	 * Render the current MD into a complete standalone HTML document and write
-	 * it to `<agentDir>/.preview.html`. Returns the absolute filesystem path
-	 * so callers can open the file in the host editor.
+	 * Render the current HTML into a standalone document and write to
+	 * `<agentDir>/.preview.html`.
 	 */
 	previewToFile(agentId: string): Promise<{ path: string; version: number }>;
 
 	/**
-	 * ConfigHtml AI box: send a natural-language request to the model with the
-	 * `confightml` skill activated and a dedicated system prompt, then extract
-	 * the single ```html code block from the reply. Self-contained one-shot
-	 * generation (does NOT route into the main chat panel).
+	 * ConfigHtml AI box — model generates a full self-contained HTML document.
 	 */
 	htmlGenerate(
 		agentId: string,
@@ -1068,9 +1026,6 @@ export interface IConfigHtmlService {
 
 	// --- HTML Event Handling ---------------------------------------------
 
-	/**
-	 * Forward a custom HTML event to the agent's chat (and parse model commands).
-	 */
 	handleHtmlEvent(
 		agentId: string,
 		eventName: string,
@@ -1078,9 +1033,6 @@ export interface IConfigHtmlService {
 		agentSessionId?: string,
 	): Promise<void>;
 
-	/**
-	 * Send a chat message from the HTML view (capability: chat.send).
-	 */
 	handleChatSend(
 		agentId: string,
 		message: string,
@@ -1093,90 +1045,23 @@ export interface IConfigHtmlService {
 
 	// --- Push to HTML view ----------------------------------------------
 
-	sendCommandToHtml(agentId: string, command: IConfigMdCommand): void;
+	sendCommandToHtml(agentId: string, command: IConfigHtmlCommand): void;
 
 	// --- Active Agent Session Registry -----------------------------------
 
-	/**
-	 * Register the agent session a chat panel is currently showing for a
-	 * given agent. The HtmlPreviewEditorPane uses this when forwarding
-	 * `imgui.submit` so the message lands in the same Fork session the user
-	 * is looking at, instead of falling back to the default session.
-	 *
-	 * Pass `agentSessionId = undefined` to clear the registration when the
-	 * panel is closed or the user switches to "default" session.
-	 *
-	 * Multiple chat panels can exist (e.g. multiple Forks open) — the last
-	 * one to update wins. Webview panels race each other only if the user
-	 * is rapidly toggling, which is harmless: imgui submits will follow the
-	 * most recently focused panel.
-	 */
 	setActiveAgentSession(
 		agentId: string,
 		agentSessionId: string | undefined,
 	): void;
 
-	/**
-	 * Read the currently registered active agent session for an agent,
-	 * or `undefined` if no chat panel has registered one.
-	 */
 	getActiveAgentSession(agentId: string): string | undefined;
 
 	// --- Capability Check -----------------------------------------------
 
 	checkCapability(
 		agentId: string,
-		capability: ConfigMdCapability,
+		capability: ConfigHtmlCapability,
 	): Promise<void>;
-
-	// --- Custom Parser / Styles Management -------------------------------
-
-	/**
-	 * Upload a custom MD→HTML parser script. Persists to agentDir/ui/parser.js,
-	 * updates agent.yaml.configMd.parserPath, and triggers a re-render.
-	 */
-	uploadParser(
-		agentId: string,
-		content: string,
-		fileName?: string,
-	): Promise<{ parserPath: string }>;
-
-	/**
-	 * Upload a custom CSS file. Persists to agentDir/ui/styles.css,
-	 * updates agent.yaml.configMd.stylesPath, and triggers a re-render.
-	 */
-	uploadStyles(
-		agentId: string,
-		content: string,
-		fileName?: string,
-	): Promise<{ stylesPath: string }>;
-
-	/**
-	 * Remove the custom parser, fall back to built-in parser, and trigger re-render.
-	 */
-	removeParser(agentId: string): Promise<void>;
-
-	/**
-	 * Get current parser/styles info for the agent.
-	 */
-	getInfo(agentId: string): Promise<{
-		parserSource: "builtin" | "custom";
-		parserPath?: string;
-		stylesPath?: string;
-		hasStyles: boolean;
-	}>;
-
-	// --- Model Output Parsing -------------------------------------------
-
-	/**
-	 * Parse `configmd-patch` and `configmd-command` blocks from model output.
-	 * Returns extracted patches and commands, plus the cleaned text.
-	 */
-	parseModelOutput(content: string): {
-		patches: IConfigMdPatchOp[];
-		commands: IConfigMdCommand[];
-		cleanText: string;
-	};
 
 	/**
 	 * Dispose any per-agent watchers/state.

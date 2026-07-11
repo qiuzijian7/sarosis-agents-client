@@ -1139,7 +1139,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			if (!part?.activeGroup) { return; }
 			const input = NativeChatEditorInput.create();
 			const newGroup = part.addGroup(part.activeGroup, 3 /* GroupDirection.RIGHT */);
-			newGroup.openEditor(input, { pinned: true }).catch(() => { /* 创建失败静默忽略 */ });
+			newGroup.openEditor(input, { pinned: false }).catch(() => { /* 创建失败静默忽略 */ });
 		}, true /* useCapture: 先于 multiEditorTabsControl 内部监听器触发 */));
 	}
 
@@ -1574,6 +1574,8 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 
 			// 按 groupIndex 把每个 editor 放回它原来的 group。
 			// 优先复用已存在实例（保留 _runtimeState，pane 内容不丢失）。
+			NativeChatEditorInput.beginForceMove();
+			try {
 			for (const saved of savedEditors) {
 				const gi = Math.min(saved.groupIndex ?? 0, groups.length - 1);
 				const targetGroup = groups[gi];
@@ -1604,6 +1606,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					);
 					targetGroup.openEditor(input, { pinned: true, sticky: targetGroupCount === 1 });
 				}
+			}
+			} finally {
+				NativeChatEditorInput.endForceMove();
 			}
 
 			// 清理 VS Code 自动 move back 创建的多余空 group

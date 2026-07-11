@@ -55,13 +55,48 @@ export class KbLinkGraph {
 	constructor(private readonly fileService: IFileService) { }
 
 	async build(roots: IKbGraphRoot[]): Promise<void> {
+		this._reset();
+		for (const root of roots) {
+			await this.walk(root.uri, root.section);
+		}
+	}
+
+	/**
+	 * Build from in-memory docs (no disk I/O). Used when an FTS index cache has
+	 * already loaded every file's text — the graph can be derived without
+	 * re-reading anything.
+	 */
+	buildFromDocs(docs: { uri: URI; name: string; section: KbSection; mtime: number; text: string }[]): void {
+		this._reset();
+		for (const d of docs) {
+			const ext = d.name.split('.').pop()?.toLowerCase();
+			if (!ext || !MD_EXTS.has(ext)) { continue; }
+			this._indexDoc({ uri: d.uri, name: d.name, section: d.section, mtime: d.mtime }, d.text);
+		}
+	}
+
+	private _reset(): void {
 		this._docs = [];
 		this._nameToDoc.clear();
 		this._outgoing.clear();
 		this._byTarget.clear();
 		this._textCache.clear();
-		for (const root of roots) {
-			await this.walk(root.uri, root.section);
+	}
+
+	private _indexDoc(meta: ILinkDocMeta, text: string): void {
+		this._docs.push(meta);
+		this._nameToDoc.set(this.normalizeTarget(meta.name), meta);
+		this._textCache.set(meta.uri.toString(), text);
+		const targets: string[] = [];
+		let m: RegExpExecArray | null;
+		const re = new RegExp(WIKILINK_RE);
+		while ((m = re.exec(text))) { targets.push(m[1]); }
+		this._outgoing.set(meta.uri.toString(), targets);
+		for (const t of targets) {
+			const key = this.normalizeTarget(t);
+			let set = this._byTarget.get(key);
+			if (!set) { set = new Set(); this._byTarget.set(key, set); }
+			set.add(meta.uri.toString());
 		}
 	}
 
@@ -138,23 +173,9 @@ export class KbLinkGraph {
 				const ext = c.resource.path.split('.').pop()?.toLowerCase();
 				if (!ext || !MD_EXTS.has(ext)) { continue; }
 				const meta: ILinkDocMeta = { uri: c.resource, name: c.name, section, mtime: c.mtime ?? 0 };
-				this._docs.push(meta);
-				this._nameToDoc.set(this.normalizeTarget(c.name), meta);
 				try {
 					const content = await this.fileService.readFile(c.resource);
-					const text = content.value.toString();
-					this._textCache.set(c.resource.toString(), text);
-					const targets: string[] = [];
-					let m: RegExpExecArray | null;
-					const re = new RegExp(WIKILINK_RE);
-					while ((m = re.exec(text))) { targets.push(m[1]); }
-					this._outgoing.set(c.resource.toString(), targets);
-					for (const t of targets) {
-						const key = this.normalizeTarget(t);
-						let set = this._byTarget.get(key);
-						if (!set) { set = new Set(); this._byTarget.set(key, set); }
-						set.add(c.resource.toString());
-					}
+					this._indexDoc(meta, content.value.toString());
 				} catch {
 					// 忽略单个文件读取失败
 				}

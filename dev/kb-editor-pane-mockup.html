@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Sarosis — KB Markdown Editor Pane Mockup（KbBlocksEditorPane 布局）</title>
+<!--
+  聚焦知识库 .md 文件的 EditorPane 布局（对齐截图 + kbBlocksEditorPane.ts 实际实现）
+
+  映射：
+    browser/kbBlocksEditorPane.ts        KbBlocksEditorPane（host 端，挂载 webview）
+    webview/src/kbMarkdown/              react-markdown 管线 + KaTeX + wikilink
+    webview/src/kbMarkdown/pipeline.ts   rehypeRawSafe / gemoji / task checkbox
+
+  截图中的 UI 层次：
+    ① Tab 栏（多 tab：config.html / 未命名.md / canvas / .md）
+    ② 面包屑导航（vault > 库 > 子目录 > 文件名）
+    ③ 工具栏（"Markdown KB" 标签 + 预/源/大/翻/复 按钮网格）
+    ④ 内容区（react-markdown 渲染的 KB markdown）
+    ⑤ 浮动弹窗（"反馈/提及" 元数据提示）
+-->
+<style>
+:root{
+  --bg:#1e1e1e; --bg-activitybar:#333333; --bg-sidebar:#252526; --bg-card:#2d2d2d;
+  --bg-hover:#2a2d2e; --bg-input:#1e1e1e; --bg-listhover:#2a2d2e; --bg-selected:#094771;
+  --border:#3c3c3c; --border-light:#454545;
+  --text:#cccccc; --text-muted:#9d9d9d; --text-bright:#ffffff;
+  --primary:#007acc; --primary-hover:#1f8ad2;
+  --success:#4ec9b0; --error:#f48771; --warning:#dcdcaa; --info:#569cd6;
+  --green:#6a9955; --orange:#ce9178; --purple:#c586c0;
+  --font:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+  --mono:'Consolas','Monaco',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{height:100%;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;overflow:hidden;}
+
+.workbench{display:flex;height:100vh;}
+
+/* ── ActivityBar ── */
+.activitybar{width:48px;background:var(--bg-activitybar);display:flex;flex-direction:column;align-items:center;padding:6px 0;flex-shrink:0;gap:2px;border-right:1px solid #000;}
+.ab-item{width:48px;height:48px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);cursor:pointer;font-size:22px;transition:.12s;}
+.ab-item:hover{color:var(--text);}
+.ab-item.active{color:var(--text-bright);}
+.ab-item.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;background:var(--text-bright);}
+.ab-item .badge{position:absolute;top:6px;right:6px;background:var(--error);color:#fff;font-size:9px;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 4px;}
+.ab-spacer{flex:1;}
+
+/* ── Sidebar (知识库文件树) ── */
+.sidebar{width:300px;background:var(--bg-sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+.view-header{height:35px;display:flex;align-items:center;gap:4px;padding:0 10px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.view-header .title{font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600;opacity:.8;display:flex;align-items:center;gap:6px;}
+.hdr-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:14px;border:1px solid transparent;}
+.hdr-btn:hover{background:var(--bg-hover);color:var(--text);}
+
+.vault-bar{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.vault-select{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:5px 8px;cursor:pointer;color:var(--text);font-size:12px;}
+.vault-select .vname{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.vault-select .caret{color:var(--text-muted);font-size:10px;}
+.vault-icon{font-size:14px;color:var(--purple);}
+.ab-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:14px;border:1px solid transparent;}
+.ab-btn:hover{background:var(--bg-hover);color:var(--text);}
+
+.search-row{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.search-box{flex:1;display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 8px;}
+.search-box:focus-within{border-color:var(--primary);}
+.search-box input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:12px;}
+.search-box input::placeholder{color:var(--text-muted);}
+
+.tree-scroll{flex:1;overflow-y:auto;}
+.tree-scroll::-webkit-scrollbar{width:10px;}
+.tree-scroll::-webkit-scrollbar-thumb{background:#424242;border-radius:5px;border:2px solid var(--bg-sidebar);}
+
+.section{border-bottom:1px solid var(--border);}
+.section > summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600;color:var(--text);user-select:none;}
+.section > summary::-webkit-details-marker{display:none;}
+.section > summary::before{content:'▾';font-size:10px;color:var(--text-muted);transition:.15s;}
+.section:not([open]) > summary::before{content:'▸';}
+.section > summary .title{flex:1;display:flex;align-items:center;gap:6px;}
+.section > summary .count{font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:0 6px;color:var(--text-muted);}
+.section .sec-body{padding-bottom:4px;}
+.sec-toolbar{display:flex;align-items:center;gap:1px;margin-left:4px;}
+.sec-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;color:var(--text-muted);font-size:13px;border:1px solid transparent;}
+.sec-btn:hover{background:var(--bg-hover);color:var(--text);}
+.sec-notes > summary .cat{color:var(--purple);}
+
+.tree-node{display:flex;align-items:center;gap:4px;padding:2px 6px;cursor:pointer;font-size:13px;line-height:22px;border-radius:3px;white-space:nowrap;}
+.tree-node:hover{background:var(--bg-listhover);}
+.tree-node.selected{background:var(--bg-selected);}
+.tree-node .twist{width:14px;text-align:center;color:var(--text-muted);font-size:10px;flex-shrink:0;}
+.tree-node .ficon{width:16px;text-align:center;font-size:13px;flex-shrink:0;}
+.tree-node.dir .ficon{color:var(--warning);}
+.tree-node .fname{flex:1;overflow:hidden;text-overflow:ellipsis;}
+.tree-node .fmeta{font-size:10px;color:var(--text-muted);font-family:var(--mono);margin-left:6px;}
+.tree-node .status{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-left:4px;}
+.status.indexed{background:var(--green);}
+.status.modified{background:var(--warning);}
+
+/* ════════ CENTER EDITOR (KbBlocksEditorPane) ════════ */
+.editor{flex:1;display:flex;flex-direction:column;background:var(--bg);min-width:0;}
+
+/* ① Tab Bar */
+.editor-tabs{height:35px;background:var(--bg-sidebar);border-bottom:1px solid var(--border);display:flex;align-items:flex-end;flex-shrink:0;overflow-x:auto;}
+.editor-tabs::-webkit-scrollbar{height:3px;}
+.editor-tabs::-webkit-scrollbar-thumb{background:#555;border-radius:2px;}
+.editor-tab{padding:7px 14px;font-size:12px;color:var(--text-muted);border-right:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap;flex-shrink:0;}
+.editor-tab.active{background:var(--bg);color:var(--text);border-top:2px solid var(--primary);}
+.editor-tab .tb-icon{font-size:14px;width:16px;text-align:center;}
+.editor-tab .tb-close{color:var(--text-muted);font-size:11px;margin-left:2px;border-radius:3px;width:16px;height:16px;display:flex;align-items:center;justify-content:center;}
+.editor-tab .tb-close:hover{background:var(--bg-hover);color:var(--error);}
+.editor-tab.modified .tb-dot{width:8px;height:8px;border-radius:50%;background:var(--warning);flex-shrink:0;}
+
+/* ② Breadcrumb */
+.breadcrumb{height:26px;display:flex;align-items:center;gap:4px;padding:0 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-muted);flex-shrink:0;overflow:hidden;}
+.breadcrumb .crumb{cursor:pointer;display:flex;align-items:center;gap:2px;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;}
+.breadcrumb .crumb:hover{color:var(--text);}
+.breadcrumb .crumb.current{color:var(--text-bright);font-weight:600;max-width:220px;}
+.breadcrumb .sep{color:var(--text-muted);opacity:.5;flex-shrink:0;font-size:10px;}
+.breadcrumb .crumb-icon{font-size:13px;flex-shrink:0;}
+.breadcrumb .crumb-file-icon{color:var(--info);}
+
+/* ③ Toolbar */
+.kb-toolbar{height:auto;min-height:38px;display:flex;align-items:center;gap:6px;padding:4px 10px;border-bottom:1px solid var(--border);background:var(--bg-sidebar);flex-shrink:0;flex-wrap:wrap;}
+.kb-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:4px;background:rgba(0,122,204,.12);color:var(--primary);font-size:11px;font-weight:700;border:1px solid rgba(0,122,204,.35);letter-spacing:.3px;white-space:nowrap;flex-shrink:0;}
+.kb-badge .kb-icon{font-size:13px;}
+.kb-actions{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;margin-left:4px;}
+.kb-btn{width:34px;height:30px;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:11px;border:1px solid transparent;transition:.1s;gap:1px;}
+.kb-btn .kb-ic{font-size:15px;line-height:1;}
+.kb-btn .kb-lbl{font-size:9px;opacity:.75;line-height:1;}
+.kb-btn:hover{background:var(--bg-hover);color:var(--text);border-color:var(--border-light);}
+.kb-btn.active{background:rgba(0,122,204,.18);color:var(--primary);border-color:rgba(0,122,204,.35);}
+.kb-toolbar .spacer{flex:1;}
+
+/* ④ Content Area */
+.editor-body{flex:1;position:relative;overflow:hidden;display:flex;flex-direction:column;}
+/* Mode: Preview (default) */
+.kb-preview{flex:1;overflow-y:auto;padding:20px 28px 40px;}
+.kb-preview::-webkit-scrollbar{width:10px;}
+.kb-preview::-webkit-scrollbar-thumb{background:#424242;border-radius:5px;border:2px solid var(--bg);}
+/* Mode: Source */
+.kb-source{flex:1;overflow:hidden;display:none;flex-direction:column;}
+.kb-source.show{display:flex;}
+.kb-source textarea{flex:1;background:var(--bg);color:var(--text);border:none;outline:none;padding:20px 28px;font-family:var(--mono);font-size:13px;line-height:1.65;resize:none;tab-size:2;}
+/* Mode: Outline */
+.kb-outline{flex:1;overflow-y:auto;display:none;padding:16px 20px;}
+.kb-outline.show{display:block;}
+/* Mode: Split (preview | source side-by-side) */
+.kb-split{flex:1;display:none;overflow:hidden;}
+.kb-split.show{display:flex;}
+.kb-split .split-half{flex:1;overflow:auto;border-right:1px solid var(--border);}
+.kb-split .split-half:last-child{border-right:none;}
+
+/* ── Markdown render styles (react-markdown output) ── */
+.kb-md h1{font-size:22px;font-weight:700;color:var(--text-bright);margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border-light);}
+.kb-md h2{font-size:17px;font-weight:600;color:var(--text-bright);margin:20px 0 8px;padding-bottom:4px;border-bottom:1px solid rgba(60,60,60,.6);}
+.kb-md h3{font-size:14px;font-weight:600;color:var(--text);margin:16px 0 6px;}
+.kb-md p{margin:6px 0;line-height:1.72;color:var(--text);}
+.kb-md strong{color:var(--text-bright);font-weight:600;}
+.kb-md em{color:var(--warning);font-style:normal;}
+.kb-md ul,.kb-md ol{padding-left:22px;margin:6px 0;}
+.kb-md li{margin:3px 0;line-height:1.65;}
+.kb-md code{background:var(--bg-card);padding:2px 5px;border-radius:3px;font-family:var(--mono);font-size:12.2px;color:var(--orange);}
+.kb-md pre{background:var(--bg-card);border:1px solid var(--border-light);border-radius:6px;padding:12px 14px;margin:10px 0;overflow-x:auto;}
+.kb-md pre code{background:none;padding:0;color:var(--text);font-size:12px;line-height:1.55;}
+.kb-md blockquote{border-left:3px solid var(--primary);background:rgba(0,122,204,.06);padding:8px 14px;border-radius:0 5px 5px 0;margin:10px 0;color:var(--text);}
+.kb-md blockquote p{margin:3px 0;}
+.kb-md table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12.5px;}
+.kb-md th,.kb-md td{border:1px solid var(--border-light);padding:6px 10px;text-align:left;}
+.kb-md th{background:var(--bg-card);font-weight:600;color:var(--text-bright);}
+.kb-md hr{border:none;border-top:1px solid var(--border-light);margin:16px 0;}
+.kb-md a{color:var(--info);text-decoration:none;border-bottom:1px dotted var(--info);}
+.kb-md a:hover{background:rgba(86,156,214,.12);}
+/* wikilink */
+.kb-wl{color:var(--info);cursor:pointer;border-bottom:1px dashed var(--info);}
+.kb-wl:hover{background:rgba(86,156,214,.15);}
+/* task list */
+.kb-task-list{list-style:none;padding-left:0!important;margin:8px 0;}
+.kb-task-list li{display:flex;align-items:flex-start;gap:8px;margin:4px 0;line-height:1.6;}
+.kb-task-check{width:16px;height:16px;border:2px solid var(--text-muted);border-radius:3px;margin-top:3px;flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.12s;}
+.kb-task-check:hover{border-color:var(--primary);}
+.kb-task-check.checked{background:var(--primary);border-color:var(--primary);}
+.kb-task-check.checked::after{content:'✓';color:#fff;font-size:11px;font-weight:700;}
+/* callout */
+.callout{border-left:3px solid var(--primary);background:rgba(0,122,204,.08);padding:10px 14px;border-radius:0 6px 6px 0;margin:12px 0;font-size:12.5px;line-height:1.65;}
+.callout.info{border-color:var(--info);background:rgba(86,156,214,.06);}
+.callout.warn{border-color:var(--warning);background:rgba(220,220,170,.06);}
+.callout .co-title{font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:6px;}
+/* image */
+.kb-md img{max-width:100%;border-radius:4px;margin:8px 0;border:1px solid var(--border-light);}
+/* raw HTML allowlist elements */
+.kb-md .raw-div{background:var(--bg-card);border:1px solid var(--border-light);border-radius:6px;padding:12px;margin:10px 0;}
+/* footnote / backlink hint */
+.backlink-hint{margin-top:20px;padding-top:12px;border-top:1px solid var(--border-light);font-size:11px;color:var(--text-muted);}
+.backlink-hint .bl-title{font-weight:600;margin-bottom:6px;color:var(--text);}
+.bl-entry{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px;}
+.bl-entry .bl-doc{color:var(--info);cursor:pointer;border-bottom:1px dotted var(--info);}
+.bl-entry .bl-doc:hover{background:rgba(86,156,214,.12);}
+.bl-entry .bl-ctx{color:var(--text-muted);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* Auto-generated notice */
+.auto-notice{font-size:11.5px;color:var(--text-muted);margin:0 0 10px;padding:6px 10px;background:rgba(220,220,170,.07);border-radius:4px;border-left:2px solid var(--warning);}
+
+/* ════════ Floating popup (反馈/提及) ════════ */
+.float-popup{position:absolute;top:120px;right:20px;width:260px;background:var(--bg-card);border:1px solid var(--border-light);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.55);z-index:50;overflow:hidden;animation:fpIn .15s ease-out;}
+@keyframes fpIn{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:translateY(0);}}
+.fp-head{padding:10px 14px 6px;font-size:13px;font-weight:700;color:var(--text-bright);}
+.fp-sub{font-size:11px;color:var(--text-muted);padding:0 14px 10px;}
+.fp-body{padding:0 14px 12px;font-size:12px;color:var(--text);line-height:1.6;}
+.fp-tag{display:inline-block;padding:1px 7px;border-radius:10px;background:rgba(197,134,192,.15);color:var(--purple);font-size:11px;margin:2px 2px 0 0;cursor:pointer;}
+.fp-tag:hover{background:rgba(197,134,192,.28);}
+.fp-foot{padding:8px 14px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);display:flex;justify-content:space-between;align-items:center;}
+
+/* Outline items */
+.ol-item{padding:4px 0 4px 16px;font-size:12.5px;cursor:pointer;border-left:2px solid transparent;transition:.08s;color:var(--text);}
+.ol-item:hover{background:var(--bg-hover);color:var(--text-bright);}
+.ol-item.h1{font-weight:700;font-size:13.5px;padding-left:0;border-color:transparent;}
+.ol-item.h2{padding-left:16px;font-weight:600;color:var(--text);}
+.ol-item.h3{padding-left:32px;color:var(--text-muted);}
+</style>
+</head>
+<body>
+<div class="workbench">
+
+  <!-- ActivityBar -->
+  <div class="activitybar">
+    <div class="ab-item">🗂️</div>
+    <div class="ab-item">🔍</div>
+    <div class="ab-item">🤖</div>
+    <div class="ab-item active">📚<span class="badge">2</span></div>
+    <div class="ab-spacer"></div>
+    <div class="ab-item">👤</div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="view-header">
+      <span class="title"><span>📚</span> 知识库</span>
+      <span style="flex:1"></span>
+      <span class="hdr-btn" title="刷新">⟳</span>
+      <span class="hdr-btn" title="设置">⚙</span>
+    </div>
+
+    <div class="vault-bar">
+      <span class="vault-icon">📦</span>
+      <div class="vault-select"><span class="vname">ObsidianWorkspace</span><span class="caret">▼</span></div>
+      <span class="ab-btn" title="新建笔记空间">＋</span>
+      <span class="ab-btn" title="更多操作">⋯</span>
+    </div>
+
+    <div class="search-row">
+      <div class="search-box"><span>🔍</span><input placeholder="搜索知识库…"></div>
+    </div>
+
+    <div class="tree-scroll">
+      <details class="section sec-notes" open>
+        <summary>
+          <span class="title"><span class="cat">📦</span> 笔记</span>
+          <span class="count">8</span>
+          <div class="sec-toolbar"><span class="sec-btn" title="新建">✏️</span></div>
+        </summary>
+        <div class="sec-body">
+          <div class="tree-node dir selected">
+            <span class="twist">▾</span><span class="ficon">📁</span><span class="fname">ObsidianWorkspace</span>
+          </div>
+          <div class="tree-node" style="padding-left:24px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">插入日志.md</span>
+            <span class="fmeta">12KB · 5块</span><span class="status indexed"></span>
+          </div>
+          <div class="tree-node" style="padding-left:24px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">config.html</span>
+            <span class="fmeta">3KB · 1块</span><span class="status indexed"></span>
+          </div>
+          <div class="tree-node" style="padding-left:24px">
+            <span class="twist"></span><span class="ficon">📄</span><span class="fname">未命名.md</span>
+            <span class="fmeta">0.5KB</span><span class="status modified"></span>
+          </div>
+          <div class="tree-node dir" style="padding-left:24px">
+            <span class="twist">▸</span><span class="ficon">📁</span><span class="fname">2026-07-10</span>
+          </div>
+        </div>
+      </details>
+    </div>
+  </div><!-- /sidebar -->
+
+  <!-- ════════ CENTER: KbBlocksEditorPane ════════ -->
+  <div class="editor">
+
+    <!-- ① Tab Bar -->
+    <div class="editor-tabs">
+      <div class="editor-tab"><span class="tb-icon">⚙️</span> config.html <span class="tb-close">✕</span></div>
+      <div class="editor-tab modified"><span class="tb-dot"></span><span class="tb-icon">📝</span> 未命名.md <span class="tb-close">✕</span></div>
+      <div class="editor-tab"><span class="tb-icon">🎨</span> Obsidian-知识库总览.canvas <span class="tb-close">✕</span></div>
+      <div class="editor-tab active"><span class="tb-icon crumb-file-icon">📄</span> 插入日志.md <span class="tb-close">✕</span></div>
+    </div>
+
+    <!-- ② Breadcrumb Navigation -->
+    <div class="breadcrumb">
+      <span class="crumb"><span class="crumb-icon">🖥️</span> C:\Users\quzijian\saros\knowledge-base</span>
+      <span class="sep">›</span>
+      <span class="crumb"><span class="crumb-icon">📂</span> 20260709063858-abz1n1st</span>
+      <span class="sep">›</span>
+      <span class="crumb"><span class="crumb-icon">📦</span> 库</span>
+      <span class="sep">›</span>
+      <span class="crumb"><span class="crumb-icon">📂</span> ObsidianWorkspace</span>
+      <span class="sep">›</span>
+      <span class="crumb current"><span class="crumb-icon crumb-file-icon">📄</span> 插入日志.md</span>
+    </div>
+
+    <!-- ③ Toolbar -->
+    <div class="kb-toolbar" id="kbToolbar">
+      <span class="kb-badge"><span class="kb-icon">📋</span> Markdown KB</span>
+
+      <div class="kb-actions">
+        <button class="kb-btn active" data-mode="preview" onclick="switchMode('preview')" title="预览模式（react-markdown 渲染）">
+          <span class="kb-ic">👁️</span><span class="kb-lbl">预</span>
+        </button>
+        <button class="kb-btn" data-mode="source" onclick="switchMode('source')" title="源码模式（原始 Markdown 编辑）">
+          <span class="kb-ic">&lt;/&gt;</span><span class="kb-lbl">源</span>
+        </button>
+        <button class="kb-btn" data-mode="outline" onclick="switchMode('outline')" title="大纲视图">
+          <span class="kb-ic">☰</span><span class="kb-lbl">大</span>
+        </button>
+        <button class="kb-btn" data-mode="split" onclick="switchMode('split')" title="分屏模式（预览｜源码并排）">
+          <span class="kb-ic">⇄</span><span class="kb-lbl">翻</span>
+        </button>
+        <button class="kb-btn" id="btnCopy" title="复制 Markdown 到剪贴板">
+          <span class="kb-ic">📋</span><span class="kb-lbl">复</span>
+        </button>
+      </div>
+
+      <span class="spacer"></span>
+      <span style="font-size:11px;color:var(--text-muted);white-space:nowrap;">react-markdown v9 · rehypeRawSafe</span>
+    </div>
+
+    <!-- ④ Content Area -->
+    <div class="editor-body">
+
+      <!-- Preview mode (default) -->
+      <div class="kb-preview show" id="viewPreview">
+
+        <div class="auto-notice" id="autoNotice">
+          ⚡ 此文件自动维护，每次输入内容后自动更新
+        </div>
+
+        <div class="kb-md" id="mdRender">
+          <h1>插入日志</h1>
+
+          <p>本文档记录每日知识库变更与 Agent 操作日志。由系统自动生成。</p>
+
+          <div class="callout info">
+            <div class="co-title">ℹ️ 使用说明</div>
+            <p>此文档为 <strong>只读快照</strong>，修改后会在下次同步时被覆盖。如需手动编辑笔记，请在侧边栏双击对应文件打开独立编辑器。</p>
+          </div>
+
+          <h2>2026-07-10 变更记录</h2>
+
+          <ul class="kb-task-list">
+            <li><span class="kb-task-check checked" onclick="this.classList.toggle('checked')"></span><strong>KB Markdown 管线优化</strong> — 完成任务勾选回写、调用入口优化两项低风险改进</li>
+            <li><span class="kb-task-check checked" onclick="this.classList.toggle('checked')"></span><strong>原始 HTML 支持</strong> — 新增 <code>rehypeRawSafe</code> 零依赖插件，替代 <code>rehype-raw</code> + <code>rehype-sanitize</code></li>
+            <li><span class="kb-task-check" onclick="this.classList.toggle('checked')"></span><strong>图谱编辑器集成</strong> — 待对接 <code>KbGraphEditorPane</code></li>
+          </ul>
+
+          <h3>技术细节：rehypeRawSafe allowlist</h3>
+          <table>
+            <tr><th>类别</th><th>允许项</th><th>拦截项</th></tr>
+            <tr><td>标签</td><td>div/span/a/img/table/code/h1-h6...</td><td>script/style/iframe/object/embed/form</td></tr>
+            <tr><td>属性</td><td>class/id/title/lang/href/src/alt</td><td>on*事件/style/javascript: URL</td></tr>
+            <tr><td>URL</td><td>https:/http:</td><td>javascript:/data:/vbscript:/file:</td></tr>
+          </table>
+
+          <blockquote>
+            <p>安全策略：disallowed 元素<strong>完全丢弃</strong>（含后代文本），不做 unwrap。避免 <code>&lt;script&gt;</code> 内脚本文本泄漏到 DOM。</p>
+          </blockquote>
+
+          <h2>2026-07-09 记录</h2>
+          <ul>
+            <li>Gemoji 全量覆盖（缺口 5 闭环）</li>
+            <li>任务 checkbox 双向回写协议落地</li>
+            <li>Toolset 抽象 + 渐进式披露架构优化</li>
+          </ul>
+
+          <pre><code>// rehypeRawSafe 核心流程（pipeline.ts）
+function rehypeRawSafe() {
+  return (tree) => {
+    visit(tree, 'raw', (node) => {
+      if (typeof DOMParser === 'undefined') return; // Node 环境 no-op
+      const doc = new DOMParser().parseFromString(node.value, 'text/html');
+      node.type = 'element';
+      Object.assign(node, hastFromDom(doc.body, sanitizeChildren));
+    });
+  };
+}</code></pre>
+
+          <hr>
+
+          <p style="font-size:11.5px;color:var(--text-muted)">
+            引用示例：参见 <span class="kb-wl">02-架构设计</span> 与标签 <span class="kb-wl">#管线</span>。<br>
+            图片测试：<br>
+            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='80'%3E%3Crect fill='%232d2d2d' width='200' height='80' rx='6'/%3E%3Ctext x='100' y='44' fill='%23cccccc' font-size='14' text-anchor='middle' font-family='sans-serif'%3E🖼️ 占位图区域%3C/text%3E%3C/svg%3E" alt="placeholder">
+          </p>
+
+          <!-- Backlinks section -->
+          <div class="backlink-hint">
+            <div class="bl-title">🔗 反向链接（Backlinks）</div>
+            <div class="bl-entry"><span class="bl-doc">02-架构设计.md</span> <span class="bl-ctx">→ "参见 [[插入日志]] 中的 rehypeRawSafe 实现"</span></div>
+            <div class="bl-entry"><span class="bl-doc">toolset-config.md</span> <span class="bl-ctx">→ "工具集配置影响 KB 管线插件加载顺序"</span></div>
+          </div>
+        </div><!-- /kb-md -->
+
+      </div><!-- /kb-preview -->
+
+      <!-- Source mode -->
+      <div class="kb-source" id="viewSource">
+<textarea spellcheck="false"># 插入日志
+
+本文档记录每日知识库变更与 Agent 操作日志。由系统自动生成。
+
+> [!info] 使用说明
+> 此文档为 **只读快照**，修改后会在下次同步时被覆盖。
+
+## 2026-07-10 变更记录
+
+- [x] **KB Markdown 管线优化** — 任务勾选回写 + 调用入口优化
+- [x] **原始 HTML 支持** — 新增 `rehypeRawSafe` 零依赖插件
+- [ ] **图谱编辑器集成** — 待对接 `KbGraphEditorPane`
+
+### 技术细节：rehypeRawSafe allowlist
+
+| 类别 | 允许项 | 拦截项 |
+|------|--------|--------|
+| 标签 | div/span/a/img/table/code | script/style/iframe |
+| 属性 | class/id/href/src | on*/style/javascript: |
+| URL | https:/http: | javascript:/data:/file: |
+
+> 安全策略：disallowed 元素**完全丢弃**（含后代文本），避免 `<script>` 泄漏。
+
+## 2026-07-09 记录
+
+- Gemoji 全量覆盖
+- 任务 checkbox 双向回写
+- Toolset 抽象优化
+
+```js
+// rehypeRawSafe 核心流程
+function rehypeRawSafe() {
+  return (tree) => {
+    visit(tree, 'raw', (node) => {
+      if (typeof DOMParser === 'undefined') return;
+      const doc = new DOMParser().parseFromString(node.value, 'text/html');
+      node.type = 'element';
+      Object.assign(node, hastFromDom(doc.body, sanitizeChildren));
+    });
+  };
+}
+```
+
+---
+
+引用：[[02-架构设计]] #管线
+</textarea>
+      </div>
+
+      <!-- Outline mode -->
+      <div class="kb-outline" id="viewOutline">
+        <div class="ol-item h1" onclick="scrollToHeading('h-1')">📄 插入日志</div>
+        <div class="ol-item h2" onclick="scrollToHeading('h-2')">📅 2026-07-10 变更记录</div>
+        <div class="ol-item h3" onclick="scrollToHeading('h-3')">⚙️ 技术细节：rehypeRawSafe allowlist</div>
+        <div class="ol-item h2" onclick="scrollToHeading('h-4')">📅 2026-07-09 记录</div>
+        <div class="ol-item h2" onclick="scrollToHeading('h-5')">🔗 反向链接（Backlinks）</div>
+        <div style="margin-top:20px;padding:10px;background:var(--bg-card);border-radius:6px;font-size:11px;color:var(--text-muted)">
+          💡 点击标题可跳转到预览区对应位置；大纲从渲染后的 heading 自动提取。
+        </div>
+      </div>
+
+      <!-- Split mode -->
+      <div class="kb-split" id="viewSplit">
+        <div class="split-half">
+          <div class="kb-preview" style="padding:14px;">
+            <div class="kb-md" id="splitMdRender">
+              <h1>插入日志</h1>
+              <p>本文档记录每日知识库变更与 Agent 操作日志。</p>
+              <h2>2026-07-10 变更记录</h2>
+              <ul><li>KB Markdown 管线优化</li><li>原始 HTML 支持（rehypeRawSafe）</li></ul>
+              <pre><code>function rehypeRawSafe() { ... }</code></pre>
+            </div>
+          </div>
+        </div>
+        <div class="split-half">
+          <textarea spellcheck="false" style="flex:1;background:var(--bg);color:var(--text);border:none;outline:none;padding:14px;font-family:var(--mono);font-size:12px;resize:none;" readonly># 插入日志
+
+本文档记录每日知识库变更...
+
+## 2026-07-10
+
+- [x] 管线优化
+- [x] 原始HTML支持</textarea>
+        </div>
+      </div>
+
+      <!-- ════════ Floating Popup: 反馈/提及 ════════ -->
+      <div class="float-popup" id="floatPopup">
+        <div class="fp-head">反馈 / 提及</div>
+        <div class="fp-sub">(看元数据键 / 提及)</div>
+        <div class="fp-body">
+          <div style="margin-bottom:8px;font-size:11px;color:var(--text-muted)">当前文档关联：</div>
+          <span class="fp-tag">#知识库</span>
+          <span class="fp-tag">#markdown</span>
+          <span class="fp-tag">#管线</span>
+          <span class="fp-tag">#rehypeRawSafe</span>
+          <span class="fp-tag">#安全</span>
+          <span class="fp-tag">#自动化</span>
+          <div style="margin-top:10px;font-size:11px;color:var(--text-muted);">
+            📊 被引用：<strong style="color:var(--text)">2</strong> 篇 · 引用：<strong style="color:var(--text)">4</strong> 篇
+          </div>
+        </div>
+        <div class="fp-foot">
+          <span>最后更新: 刚刚</span>
+          <span style="cursor:pointer;color:var(--primary)">查看详情 →</span>
+        </div>
+      </div>
+
+    </div><!-- /editor-body -->
+  </div><!-- /editor -->
+
+</div><!-- /workbench -->
+
+<script>
+// ── Mode switching (预/源/大/翻/复) ──
+const modes = ['preview','source','outline','split'];
+let currentMode = 'preview';
+
+function switchMode(mode){
+  currentMode = mode;
+  // Toggle view visibility
+  document.getElementById('viewPreview').classList.toggle('show', mode==='preview');
+  document.getElementById('viewSource').classList.toggle('show', mode==='source');
+  document.getElementById('viewOutline').classList.toggle('show', mode==='outline');
+  document.getElementById('viewSplit').classList.toggle('show', mode==='split');
+  // Hide preview in split mode (it has its own inner preview)
+  if(mode!=='preview') document.getElementById('viewPreview').classList.remove('show');
+
+  // Update toolbar button states
+  document.querySelectorAll('.kb-btn[data-mode]').forEach(btn=>{
+    btn.classList.toggle('active', btn.dataset.mode===mode);
+  });
+}
+
+// Copy action
+document.getElementById('btnCopy').addEventListener('click', ()=>{
+  const md = document.querySelector('.kb-source textarea').value;
+  navigator.clipboard?.writeText(md).then(()=>{
+    const btn = document.getElementById('btnCopy');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="kb-ic">✓</span><span class="kb-lbl">已!</span>';
+    setTimeout(()=>btn.innerHTML=orig, 1200);
+  });
+});
+
+// Tree node click → switch to preview
+document.querySelectorAll('.tree-node').forEach(n=>n.addEventListener('click',()=>{
+  document.querySelectorAll('.tree-node').forEach(x=>x.classList.remove('selected'));
+  n.classList.add('selected');
+}));
+
+// Tab switching visual only
+document.querySelectorAll('.editor-tab').forEach(tab=>{
+  tab.addEventListener('click', e=>{
+    if(e.target.classList.contains('tb-close')) return;
+    document.querySelectorAll('.editor-tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+  });
+});
+
+// Close tab (visual)
+document.querySelectorAll('.tb-close').forEach(x=>{
+  x.addEventListener('click', e=>{
+    e.stopPropagation();
+    x.closest('.editor-tab').style.display='none';
+  });
+});
+
+// Float popup close on click outside
+const fp = document.getElementById('floatPopup');
+document.addEventListener('click', e=>{
+  if(!fp.contains(e.target)) fp.style.display='none';
+});
+// Show popup after 1s for demo
+setTimeout(()=>{ fp.style.display='block'; }, 800);
+
+// Task checkbox toggle (visual)
+document.querySelectorAll('.kb-task-check').forEach(cb=>{
+  cb.addEventListener('click', ()=> cb.classList.toggle('checked'));
+});
+
+// Outline scroll-to-heading (demo)
+function scrollToHeading(id){
+  switchMode('preview');
+  // In real impl would scroll to heading anchor
+  console.log('scroll to:', id);
+}
+
+// Wikilink click demo
+document.querySelectorAll('.kb-wl').forEach(wl=>{
+  wl.addEventListener('click', ()=> console.log('navigate to:', wl.textContent));
+});
+</script>
+</body>
+</html>

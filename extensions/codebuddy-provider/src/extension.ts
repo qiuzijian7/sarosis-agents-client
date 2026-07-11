@@ -649,7 +649,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		return modelConfigs.map(modelConfig =>
 			createModelInfo(
 				modelConfig.id,
-				VENDOR,
+				'', // 不添加 vendor 前缀 — 服务端模型 ID 已唯一（如 "deepseek-v4-pro-ioa"）
 				VENDOR,
 				`CodeBuddy - ${modelConfig.name}`,
 				{
@@ -875,11 +875,18 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		// 而非对所有模型写死同一组值。历史 bug：硬编码 temperature:1 / max_tokens:48000
 		// 对 glm-5.1-ioa 恰好吻合，但其它模型（如 maxOutputTokens=32000 的 DeepSeek）
 		// 会发出错误的上限。这里按 selectedModel 查缓存里的 config，缺失时回退默认。
-		const modelCfg = getServerModelConfig(selectedModel);
+		//
+		// ⚠️ 追加修正：服务端 /v3/config 对某些模型（如 deepseek-v4-pro-ioa）
+		// 返回的 maxOutputTokens（实测 50000）远超 API gateway 实际接受的硬上限，
+		// 导致 HTTP 400 "Invalid request parameters"。这里以本地 getModelTokenLimits
+		// 的安全值作为 cap——服务端值超过本地值时，取本地值。
+		const localMaxTokens = getModelTokenLimits(selectedModel).maxOutputTokens;
+		const rawServerMaxTokens = getServerModelConfig(selectedModel)?.maxOutputTokens;
+		const modelCfg = rawServerMaxTokens != null ? getServerModelConfig(selectedModel) : undefined;
 		const bodyTemperature = modelCfg?.temperature ?? 1;
-		const bodyMaxTokens = modelCfg?.maxOutputTokens
-			?? getModelTokenLimits(selectedModel).maxOutputTokens
-			?? 48_000;
+		const bodyMaxTokens = modelCfg?.maxOutputTokens != null
+			? Math.min(modelCfg.maxOutputTokens, localMaxTokens)
+			: localMaxTokens;
 
 		const bodyObj: Record<string, unknown> = {
 			model: selectedModel,
@@ -891,7 +898,8 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			temperature: bodyTemperature,
 			max_tokens: bodyMaxTokens,
 		};
-		console.log(`[CodeBuddy] body params from model(${selectedModel}): temperature=${bodyTemperature}, max_tokens=${bodyMaxTokens}${modelCfg ? '' : ' (model cfg MISS — using defaults)'}`);
+		const serverOrLocal = modelCfg?.maxOutputTokens ?? localMaxTokens;
+		console.log(`[CodeBuddy] body params from model(${selectedModel}): temperature=${bodyTemperature}, max_tokens=${bodyMaxTokens} (server=${rawServerMaxTokens ?? 'N/A'}, local=${localMaxTokens})${modelCfg ? '' : ' (model cfg MISS)'}${bodyMaxTokens !== (modelCfg?.maxOutputTokens ?? localMaxTokens) ? ` [CAPPED]` : ''}`);
 
 		// Reasoning/thinking parameters (P1) — align with CodeBuddy IDE CN body.
 		// The thinking toggle in the chat toolbar flows here as `reasoning`.

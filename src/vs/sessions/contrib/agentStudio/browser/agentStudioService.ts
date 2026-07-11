@@ -19,7 +19,7 @@ import { IAgentStudioService } from '../common/agentStudio.js';
 import type { Agent, AgentBinding, Workspace, Connection, AgentStudioSession, WorkspaceLayout } from '../../../common/agentStudioTypes.js';
 import { ConnectionType } from '../../../common/agentStudioTypes.js';
 import { migrateWorkspace } from '../../../common/agentStudioTypes.js';
-import { DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, DATA_FILE_LAST_ACTIVE_AGENT, DATA_FILE_CUSTOM_AGENTS, DATA_FILE_AGENT_BINDINGS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR } from '../common/constants.js';
+import { DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, DATA_FILE_LAST_ACTIVE_AGENT, DATA_FILE_AGENT_BINDINGS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR } from '../common/constants.js';
 import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecyclePayload } from '../common/workspaceLifecycle.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { IWorktreeWorkspaceOptions, WorktreeStatus, IWorktreeStateEvent, IWorktreeDetail } from '../../worktree/common/worktreeTypes.js';
@@ -27,6 +27,8 @@ import { getBuiltinAgents } from '../common/builtinAgents.js';
 
 export class AgentStudioService extends Disposable implements IAgentStudioService {
 	declare readonly _serviceBrand: undefined;
+
+	private _agentsCache: { data: Agent[]; ts: number } | undefined;
 
 	private readonly _onDidChangeWorkspace = this._register(new Emitter<string>());
 	readonly onDidChangeWorkspace: Event<string> = this._onDidChangeWorkspace.event;
@@ -70,6 +72,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	private _globalDataUri: URI | undefined;
 
+	/** 内置 agent 落地到 ~/.saros/agents/ 的 seed 任务（仅执行一次）。 */
+	private _seedBuiltinsPromise?: Promise<void>;
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
@@ -93,12 +98,10 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			void this._clearWorktreeBindings(removedPath);
 		}));
 
-		// Seed .agent.md files for builtin agents so they appear in the native
-		// chat mode picker with their preset icons. Fire-and-forget — errors
-		// are logged but don't block service initialization.
-		this.ensureBuiltinAgentMdFiles().catch(err =>
-			this.logService.warn('[AgentStudioService] Failed to seed builtin .agent.md files:', err),
-		);
+		// Seed builtin agents into ~/.saros/agents/{id}/ on first launch so they
+		// appear in the native chat mode picker and the preset panel. The promise
+		// is cached so concurrent getAgents() calls await the same seed.
+		this._ensureBuiltinsSeeded();
 	}
 
 	/**
@@ -376,82 +379,68 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	// ── Agent CRUD ──────────────────────────────────────────────────────────
 
+	/**
+	 * 读取所有 agent 定义。
+	 *
+	 * 唯一数据源：`~/.saros/agents/{agentId}/agent.json`。
+	 * 在首次读取前，确保内置 agent 已落地到该目录（初始安装 VsSaros 时，
+	 * 从内置预设创建各 agent 文件）。其余来源（custom-agents.json 等）已全部移除。
+	 */
 	async getAgents(): Promise<Agent[]> {
+		// Cache for 30s — agents rarely change during a session, and
+		// every task board interaction (drag, status change, etc.) calls
+		// ensureTaskAgent → getAgents() which does a full directory scan
+		// + N serial file reads.  Without caching this can cost 2‑16s
+		// per interaction when disk I/O is slow or agent count is high.
+		const CACHE_TTL_MS = 30_000;
+		const now = performance.now();
+		if (this._agentsCache && (now - this._agentsCache.ts) < CACHE_TTL_MS) {
+			this.logService.trace(`[AS-PERF][service] getAgents: cache HIT — ${this._agentsCache.data.length} agents (age=${(now - this._agentsCache.ts).toFixed(0)}ms)`);
+			return this._agentsCache.data;
+		}
 		const t0 = Date.now();
-		const builtins = this._getBuiltinAgents();
-		let customs: Agent[] = [];
+		// 确保内置 agent 已落地（幂等；已存在则不覆盖用户编辑）
+		await this._ensureBuiltinsSeeded();
+
+		const agentsDir = await this._getSarosAgentsDir();
+		const agents: Agent[] = [];
 		try {
-			customs = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
-		} catch { /* file doesn't exist yet */ }
+			const result = await this.fileService.resolve(agentsDir);
+			const dirs = (result.children ?? []).filter(c => c.isDirectory);
+			// Parallel read — much faster than serial await in for-loop
+			const reads = dirs.map(async child => {
+				const agentJsonUri = joinPath(child.resource, 'agent.json');
+				try {
+					const content = await this.fileService.readFile(agentJsonUri);
+					const agent = JSON.parse(content.value.toString()) as Agent;
+					if (agent && agent.id) { return agent; }
+				} catch { /* missing agent.json — skip */ }
+				return null;
+			});
+			const results = await Promise.all(reads);
+			for (const agent of results) {
+				if (agent) { agents.push(agent); }
+			}
+		} catch {
+			// ~/.saros/agents 目录尚不存在（极少发生，seeding 应已创建）
+		}
+
+		this._agentsCache = { data: agents, ts: performance.now() };
 		const t1 = Date.now();
+		this.logService.info(
+			`[AS-PERF][service] getAgents: TOTAL ${t1 - t0}ms, agents=${agents.length} (from ${agentsDir.toString()})`,
+		);
+		return agents;
+	}
 
-		// custom-agents.json may contain two kinds of rows:
-		//   1. Pure-custom agents (their own id).
-		//   2. Override rows for a builtin id — carrying DEFINITION overrides
-		//      (name / systemPrompt / skills / model …). We merge them ONTO the
-		//      builtin definition so getAgent() returns the customized definition
-		//      while keeping source:'builtin'.
-		// Per-workspace runtime state (worktree / agentDir / memoryConfig) is NOT
-		// here anymore — it lives on AgentBinding (agent-bindings.json).
-		const customById = new Map(customs.map(c => [c.id, c]));
-		const result: Agent[] = [];
-		for (const b of builtins) {
-			const override = customById.get(b.id);
-			if (override) {
-				result.push({ ...b, ...override, source: 'builtin' });
-				customById.delete(b.id);
-			} else {
-				result.push(b);
-			}
-		}
-		// remaining rows are genuine custom agents
-		for (const c of customById.values()) {
-			result.push(c);
-		}
-
-		// Backfill missing icons: agents stored in older data files (e.g.
-		// employees.json) may lack the `icon` field. Derive it from the
-		// matching builtin agent (by presetId / id / name) so the preset
-		// panel and chat dropdown show consistent emoji icons.
-		const builtinByKey = new Map<string, string>();
-		for (const b of builtins) {
-			if (b.icon) {
-				builtinByKey.set(b.id.toLowerCase(), b.icon);
-				builtinByKey.set(b.name.toLowerCase(), b.icon);
-			}
-		}
-		for (const agent of result) {
-			if (!agent.icon) {
-				const presetId = (agent as any).presetId as string | undefined;
-				const derived =
-					(presetId && builtinByKey.get(presetId.toLowerCase())) ||
-					builtinByKey.get(agent.id.toLowerCase()) ||
-					builtinByKey.get(agent.name.toLowerCase());
-				if (derived) {
-					agent.icon = derived;
-				}
-			}
-		}
-
-		const t2 = Date.now();
-		// DEBUG: Log first builtin agent to verify systemPrompt/skills are populated
-		if (builtins.length > 0) {
-			const first = builtins[0];
-			this.logService.info(
-				`[AgentStudio] getAgents DEBUG: first builtin agent ` +
-				`id="${first.id}" name="${first.name}" ` +
-				`hasSystemPrompt=${!!(first as any).systemPrompt} ` +
-				`systemPromptLen=${((first as any).systemPrompt as string)?.length || 0} ` +
-				`skillsLen=${first.skills?.length || 0} ` +
-				`toolsLen=${first.tools?.length || 0}`
+	/** 确保内置 agent 已落地到 ~/.saros/agents/（仅执行一次，缓存 promise）。 */
+	private _ensureBuiltinsSeeded(): Promise<void> {
+		if (!this._seedBuiltinsPromise) {
+			this._seedBuiltinsPromise = this.ensureBuiltinAgentMdFiles().catch(err =>
+				this.logService.warn('[AgentStudioService] Failed to seed builtin agent files:', err),
 			);
 		}
-		this.logService.info(
-			`[AS-PERF][service] getAgents: TOTAL ${t2 - t0}ms ` +
-			`(jsonRead=${t1 - t0}ms, merge=${t2 - t1}ms), ` +
-			`builtins=${builtins.length}, customs=${customs.length}, result=${result.length}`
-		);
-		return result;
+		return this._seedBuiltinsPromise;
 	}
 
 	async getAgent(id: string): Promise<Agent | undefined> {
@@ -484,7 +473,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			// Agent type is part of the global definition (planner vs worker).
 			agentType: data.agentType,
 			// config.md binding is part of the definition (same across workspaces).
-			configMd: data.configMd,
+			configHtml: data.configHtml,
 			sortOrder: data.sortOrder,
 			status: data.status,
 			version: data.version,
@@ -495,9 +484,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		// worktreeBranch / agentDir / memoryConfig) is intentionally NOT written
 		// here — it now lives on AgentBinding. If the caller supplied any of
 		// those, persist them as a binding for the target workspace instead.
-		const agents = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
-		agents.push(agent);
-		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, agents);
 
 		// Create the agent's directory: ~/.saros/agents/{agentId}/
 		// Write agent.json and .agent.md so the agent has a persistent home dir.
@@ -651,27 +637,13 @@ ${agent.systemPrompt || ''}
 				}
 			}
 
-			// Write agent.json if it doesn't exist
+			// Write agent.json if it doesn't exist（写入完整 agent 定义）
 			const agentJsonUri = joinPath(agentDir, 'agent.json');
 			try {
 				await this.fileService.resolve(agentJsonUri);
 			} catch {
-				const agentData = {
-					id: agent.id,
-					name: agent.name,
-					role: agent.role,
-					description: agent.description,
-					icon: agent.icon,
-					model: agent.model,
-					skills: agent.skills,
-					tools: agent.tools,
-					category: agent.category,
-					systemPrompt: agent.systemPrompt,
-					version: agent.version,
-					source: 'builtin',
-				};
 				try {
-					await this.fileService.writeFile(agentJsonUri, VSBuffer.fromString(JSON.stringify(agentData, null, 2)));
+					await this.fileService.writeFile(agentJsonUri, VSBuffer.fromString(JSON.stringify(agent, null, 2)));
 					this.logService.info(`[AgentStudio] Seeded agent.json for "${agent.name}" at ${agentJsonUri.toString()}`);
 				} catch (err) {
 					this.logService.warn(`[AgentStudio] Failed to seed agent.json for "${agent.name}": ${err}`);
@@ -711,8 +683,8 @@ ${agent.systemPrompt || ''}
 	}
 
 	async updateAgent(id: string, data: Partial<Agent>): Promise<void> {
-		// Split incoming patch: definition fields go to custom-agents.json,
-		// per-workspace runtime fields go to the agent binding.
+		// Split incoming patch: definition fields go to the agent.json file in
+		// ~/.saros/agents/{id}/, per-workspace runtime fields go to the binding.
 		const { workspaceId, worktreePath, worktreeBranch, agentDir, memoryConfig, ...defPatch } = data as Partial<Agent> & {
 			workspaceId?: string; worktreePath?: string; worktreeBranch?: string; agentDir?: string; memoryConfig?: AgentBinding['memoryConfig'];
 		};
@@ -732,35 +704,25 @@ ${agent.systemPrompt || ''}
 			return;
 		}
 
-		const agents = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
-		const idx = agents.findIndex(a => a.id === id);
-		if (idx === -1) {
-			// No custom row yet. If `id` is a builtin agent, create an override
-			// row carrying just the changed DEFINITION fields. getAgents()
-			// merges this back onto the builtin definition.
+		// 读取目录中的 agent.json，合并补丁后写回 ~/.saros/agents/{id}/agent.json
+		const agentDirUri = await this.getAgentDir(id);
+		const agentJsonUri = joinPath(agentDirUri, 'agent.json');
+		let existing: Agent;
+		try {
+			const buf = await this.fileService.readFile(agentJsonUri);
+			existing = JSON.parse(buf.value.toString()) as Agent;
+		} catch {
+			// agent.json 不存在：基于内置定义创建（用户编辑内置 agent 时也走此路径）
 			const builtin = this._getBuiltinAgents().find(a => a.id === id);
 			if (!builtin) { throw new Error(`Agent not found: ${id}`); }
-			const now = new Date().toISOString();
-			const overrideAgent = { ...builtin, ...defPatch, id, source: 'builtin' as const, updatedAt: now };
-			agents.push(overrideAgent);
-			await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, agents);
-			// Sync .agent.md and agent.json files
-			if (defPatch.name || defPatch.description || defPatch.icon || defPatch.model || defPatch.tools || defPatch.systemPrompt) {
-				await this._updateAgentMdFile(overrideAgent);
-				await this._updateAgentJsonFile(overrideAgent);
-			}
-			this._onDidChangeAgents.fire();
-			return;
+			existing = { ...builtin };
 		}
-		agents[idx] = { ...agents[idx], ...defPatch, updatedAt: new Date().toISOString() };
-		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, agents);
+		const updated: Agent = { ...existing, ...defPatch, id, updatedAt: new Date().toISOString() };
+		await this._updateAgentJsonFile(updated);
 
 		// Sync .agent.md file if definition fields changed
-		const updatedAgent = agents[idx];
 		if (defPatch.name || defPatch.description || defPatch.icon || defPatch.model || defPatch.tools || defPatch.systemPrompt) {
-			await this._updateAgentMdFile(updatedAgent);
-			// Also sync agent.json in ~/.saros/agents/{agentId}/
-			await this._updateAgentJsonFile(updatedAgent);
+			await this._updateAgentMdFile(updated);
 		}
 
 		this._onDidChangeAgents.fire();
@@ -813,18 +775,10 @@ ${agent.systemPrompt || ''}
 	}
 
 	async deleteAgent(id: string): Promise<void> {
-		// Find the agent before deleting to get its name for .agent.md cleanup
-		const agents = await this._readJsonFile<Agent>(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS);
-		const agent = agents.find(a => a.id === id);
-		const filtered = agents.filter(a => a.id !== id);
-		if (filtered.length === agents.length) { return; }
-		await this._writeJsonFile(this._getGlobalDataUri(), DATA_FILE_CUSTOM_AGENTS, filtered);
-
-		// Also delete the agent directory ~/.saros/agents/{agentId}/
-		if (agent) {
-			await this._deleteAgentDir(agent.id);
-		}
-
+		// 删除 agent 目录 ~/.saros/agents/{agentId}/（唯一数据源）。
+		// 注意：内置 agent 在下次启动时会被重新 seed（保证始终可用），
+		// 自定义 agent 删除后不会恢复。
+		await this._deleteAgentDir(id);
 		this._onDidChangeAgents.fire();
 	}
 

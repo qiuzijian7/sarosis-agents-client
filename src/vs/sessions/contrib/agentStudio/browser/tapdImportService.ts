@@ -325,7 +325,14 @@ export class TapdImportService {
 		sessionId: string,
 		viewId: string,
 		url: string,
-		opts?: { downloadAttachments?: boolean },
+		opts?: {
+			downloadAttachments?: boolean;
+			/** Optional download function — when provided, used instead of
+			 *  the internal native fetch().  This allows the caller to pass
+			 *  a Playwright-based downloader that carries auth cookies,
+			 *  eliminating the dual download path (P2-4 fix). */
+			downloadFn?: (url: string) => Promise<string | undefined>;
+		},
 	): Promise<TapdImportResult> {
 		const trimmed = (url || '').trim();
 		const parsed = TapdImportService.parseTapdUrl(trimmed);
@@ -337,6 +344,7 @@ export class TapdImportService {
 		}
 
 		const download = opts?.downloadAttachments !== false;
+		const externalDownloadFn = opts?.downloadFn;
 		try {
 			// Ensure Playwright can see this page.
 			await this._playwrightService.startTrackingPage(viewId);
@@ -346,13 +354,41 @@ export class TapdImportService {
 			//  - list page + dialog_preview_id → read the dialog popup
 			const sourceMode = TapdImportService._resolveSourceMode(trimmed);
 			this._logService.info(`[TapdImportService] Extracting TAPD page DOM via Playwright: session=${sessionId} view=${viewId} sourceMode=${sourceMode}`);
-			const pageData = await this._playwrightService.invokeFunctionRaw<TapdPageData>(
-				sessionId,
-				viewId,
-				TAPD_EXTRACT_SCRIPT,
-				sourceMode,
-			);
 
+			// Retry up to 3 times with backoff — board‑link views use
+			// `getOrCreateLazy` whose Playwright page pairing (FIFO via
+			// _viewIdToPage / _viewIdQueue) can lag behind the renderer
+			// lifecycle, and CDP Target attach/detach may transiently break
+			// the mapping.
+			let pageData: TapdPageData | undefined;
+			let lastError: unknown;
+			for (let attempt = 0; attempt < 3; attempt++) {
+				try {
+					const pd = await this._playwrightService.invokeFunctionRaw<TapdPageData>(
+						sessionId,
+						viewId,
+						TAPD_EXTRACT_SCRIPT,
+						sourceMode,
+					);
+					// Success — break out of retry loop
+					pageData = pd;
+					break;
+				} catch (err) {
+					lastError = err;
+					const errMsg = err instanceof Error ? err.message : String(err);
+					if (/not found/i.test(errMsg) && attempt < 2) {
+						this._logService.warn(`[TapdImportService] Playwright page not found (attempt ${attempt + 1}/3), retrying in ${500 + attempt * 500}ms: ${errMsg}`);
+						await new Promise(r => setTimeout(r, 500 + attempt * 500));
+						// Re‑register tracking in case the view was re‑created
+						await this._playwrightService.startTrackingPage(viewId).catch(() => {});
+						continue;
+					}
+					throw err;
+				}
+			}
+			if (!pageData) {
+				throw lastError ?? new Error('Page extraction failed after retries');
+			}
 		if (!pageData || typeof pageData !== 'object') {
 			return { title: '', sourceUrl: trimmed, error: '页面提取失败：未能从当前页面读取到 TAPD 数据。请确认页面已加载完毕。' };
 		}
@@ -383,7 +419,7 @@ export class TapdImportService {
 				const src = pageData.descImageUrls[i];
 				const name = `tapd-img-${i + 1}.${this._guessExt(src)}`;
 				if (download) {
-					const base64 = await this._downloadToBase64(src);
+					const base64 = await this._downloadToBase64(src, externalDownloadFn);
 					if (base64) {
 						attachments.push({ name, mimeType: this._mimeFromName(name), base64Content: base64, size: this._base64Size(base64), downloadUrl: src });
 						urlToName.set(src, name);
@@ -397,7 +433,7 @@ export class TapdImportService {
 			for (const att of pageData.attachments) {
 				const name = this._sanitizeName(att.name || `tapd-att-${attachments.length}`);
 				if (download && att.url) {
-					const base64 = await this._downloadToBase64(att.url);
+					const base64 = await this._downloadToBase64(att.url, externalDownloadFn);
 					if (base64) {
 						attachments.push({ name, mimeType: this._mimeFromName(name), base64Content: base64, size: this._base64Size(base64), downloadUrl: att.url });
 					}
@@ -421,11 +457,35 @@ export class TapdImportService {
 				/(low|lowest|低)/i.test(rawPriority) ? 'low' :
 				/(mid|medium|中)/i.test(rawPriority) ? 'medium' : (pageData.priority || undefined);
 
+			// Strip any remaining inline base64 data URIs from the description
+			// and convert them to proper attachments.  This prevents MB-sized
+			// base64 blobs from being stored in taskboard.json and causing regex
+			// performance issues on every render/execution cycle.
+			let cleanDesc = description;
+			if (cleanDesc && cleanDesc.indexOf('data:') !== -1) {
+				const dataUriRe = /(?:(!?\[([^\]]*)\]\())?data:([\w/+-]+);base64,([A-Za-z0-9+/=]+)\)?/gi;
+				let imgIdx = 0; let fileIdx = 0;
+				cleanDesc = cleanDesc.replace(dataUriRe, (_full, _prefix, _alt, mimeType, data) => {
+					const isImage = mimeType?.startsWith('image/');
+					const counter = isImage ? ++imgIdx : ++fileIdx;
+					const name = isImage
+						? `tapd-inline-img-${counter}.${mimeType.split('/').pop() || 'png'}`
+						: `tapd-inline-file-${counter}`;
+					attachments.push({
+						name,
+						mimeType,
+						base64Content: data,
+						size: data.length,
+					});
+					return isImage ? `[图片: ${counter}]` : `[文件: ${counter}]`;
+				});
+			}
+
 			return {
 				id: parsed.id,
 				type: parsed.type as TapdWorkitemType,
 				title: pageData.title || `TAPD ${parsed.type} ${parsed.id}`,
-				description,
+				description: cleanDesc,
 				priority: priorityLabel,
 				assigneeName: pageData.owner || undefined,
 				status: pageData.status || undefined,
@@ -516,8 +576,25 @@ export class TapdImportService {
 
 	// ── Download helpers ──────────────────────────────────────────
 
-	private async _downloadToBase64(url: string): Promise<string | undefined> {
+	private async _downloadToBase64(
+		url: string,
+		externalDownloadFn?: (url: string) => Promise<string | undefined>,
+	): Promise<string | undefined> {
 		try {
+			// When an external download function is provided (e.g. Playwright-based
+			// downloadUrlForAttachment that carries auth cookies), use it instead
+			// of native fetch.  This eliminates the dual download path where TAPD
+			// images were first fetched without auth (failing with 401), then
+			// re-downloaded by the caller with Playwright.
+			if (externalDownloadFn) {
+				const localPath = await externalDownloadFn(url);
+				if (!localPath) { return undefined; }
+				// externalDownloadFn returns a local file path — read and encode
+				const uri = URI.file(localPath);
+				const content = await this._fileService.readFile(uri);
+				return encodeBase64(content.value);
+			}
+			// Fallback: native fetch (no auth — only works for public CDN URLs)
 			const res = await fetch(url, { redirect: 'follow' });
 			if (!res.ok) { return undefined; }
 			const buf = await res.arrayBuffer();

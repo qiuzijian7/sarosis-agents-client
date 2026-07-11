@@ -13,6 +13,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IPlaywrightService } from '../../../../platform/browserView/common/playwrightService.js';
 import { VSBuffer, encodeBase64, decodeBase64 } from '../../../../base/common/buffer.js';
+import * as nodePath from '../../../../base/common/path.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IAgentTaskBoardService, ITaskOrchestrationService, IAgentStudioService } from '../common/agentStudio.js';
 import type { IChatAttachmentSend } from '../../../common/agentStudioService.js';
@@ -25,6 +26,129 @@ const DATA_FILE_TASKBOARD = 'taskboard.json';
 const DATA_FILE_BOARDS = 'boards.json';
 const DATA_FILE_BOARDLINKS = 'boardlinks.json';
 const ATTACHMENTS_DIR = 'attachments';
+
+/** Best-effort image MIME lookup from a file extension (for data-URI embedding). */
+function _mimeFromName(name: string): string {
+	const ext = name.split('.').pop()?.toLowerCase() || '';
+	switch (ext) {
+		case 'png': return 'image/png';
+		case 'jpg':
+		case 'jpeg': return 'image/jpeg';
+		case 'gif': return 'image/gif';
+		case 'svg': return 'image/svg+xml';
+		case 'webp': return 'image/webp';
+		case 'bmp': return 'image/bmp';
+		case 'ico': return 'image/x-icon';
+		default: return 'application/octet-stream';
+	}
+}
+
+function _isImageName(name: string): boolean {
+	return /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(name);
+}
+
+// ── Minimal pure-JS ZIP parser (renderer-safe, no fs/zlib required) ─────────
+
+function _readU16LE(d: Uint8Array, offset: number): number {
+	return d[offset] | (d[offset + 1] << 8);
+}
+function _readU32LE(d: Uint8Array, offset: number): number {
+	return d[offset] | (d[offset + 1] << 8) | (d[offset + 2] << 16) | (d[offset + 3] << 24);
+}
+
+/** End-of-Central-Directory record */
+interface _EOCD {
+	totalEntries: number;
+	cdOffset: number;
+	cdSize: number;
+}
+
+/** Central-directory entry parsed from the ZIP */
+interface _CDEntry {
+	fileName: string;
+	method: number;
+	compressedSize: number;
+	uncompressedSize: number;
+	localHeaderOffset: number;
+}
+
+// ZC: unused constant ZIP_EOCD_SIG removed (we use byte-level signature comparison)
+const EOCD_SIG_BYTES = [0x50, 0x4B, 0x05, 0x06];
+
+/** Search backward from end of buffer for the EOCD signature. */
+function _findEOCD(data: Uint8Array): _EOCD | undefined {
+	// EOCD is at most 65535 + 22 bytes from the end
+	const maxSearch = Math.min(data.length, 65535 + 22);
+	const startSearch = data.length - maxSearch;
+	for (let i = data.length - 22; i >= startSearch; i--) {
+		if (data[i] === EOCD_SIG_BYTES[0] &&
+			data[i + 1] === EOCD_SIG_BYTES[1] &&
+			data[i + 2] === EOCD_SIG_BYTES[2] &&
+			data[i + 3] === EOCD_SIG_BYTES[3]) {
+			const totalEntries = _readU16LE(data, i + 10);
+			const cdSize = _readU32LE(data, i + 12);
+			const cdOffset = _readU32LE(data, i + 16);
+			return { totalEntries, cdOffset, cdSize };
+		}
+	}
+	return undefined;
+}
+
+const ZIP_CD_SIG = 0x02014b50;
+const ZIP_LH_SIG = 0x04034b50;
+
+/** Parse central-directory entries from the ZIP buffer. */
+function _parseCentralDir(data: Uint8Array, eocd: _EOCD, zipPath: string): { entries: _CDEntry[]; baseName: string } {
+	const entries: _CDEntry[] = [];
+	let offset = eocd.cdOffset;
+	const end = eocd.cdOffset + eocd.cdSize;
+	// Derive baseName for relative-path prefix (without .zip extension)
+	const baseName = (zipPath.replace(/\\/g, '/').split('/').pop() || 'archive').replace(/\.zip$/i, '');
+
+	while (offset < end - 46) {
+		const sig = _readU32LE(data, offset);
+		if (sig !== ZIP_CD_SIG) { break; }
+		const method = _readU16LE(data, offset + 10);
+		const compressedSize = _readU32LE(data, offset + 20);
+		const uncompressedSize = _readU32LE(data, offset + 24);
+		const nameLen = _readU16LE(data, offset + 28);
+		const extraLen = _readU16LE(data, offset + 30);
+		const commentLen = _readU16LE(data, offset + 32);
+		const localHeaderOffset = _readU32LE(data, offset + 42);
+		const fileName = new TextDecoder().decode(data.slice(offset + 46, offset + 46 + nameLen));
+		entries.push({ fileName, method, compressedSize, uncompressedSize, localHeaderOffset });
+		offset += 46 + nameLen + extraLen + commentLen;
+	}
+	return { entries, baseName };
+}
+
+/**
+ * Read the raw file data for a ZIP entry.
+ * @returns uncompressed data, or `undefined` if the entry is deflated
+ * and no `inflateRaw` callback is available.
+ */
+async function _readLocalFile(data: Uint8Array, entry: _CDEntry, inflateRaw?: (d: Uint8Array) => Promise<Uint8Array>): Promise<Uint8Array | undefined> {
+	const sig = _readU32LE(data, entry.localHeaderOffset);
+	if (sig !== ZIP_LH_SIG) { return undefined; }
+
+	const nameLen = _readU16LE(data, entry.localHeaderOffset + 26);
+	const extraLen = _readU16LE(data, entry.localHeaderOffset + 28);
+	const dataStart = entry.localHeaderOffset + 30 + nameLen + extraLen;
+
+	if (entry.method === 0) {
+		// Stored (no compression)
+		return data.slice(dataStart, dataStart + entry.compressedSize);
+	}
+	if (entry.method === 8) {
+		// Deflated
+		if (!inflateRaw) { return undefined; }
+		try {
+			return await inflateRaw(data.slice(dataStart, dataStart + entry.compressedSize));
+		} catch { return undefined; }
+	}
+	// Unknown compression method
+	return undefined;
+}
 
 /**
  * When the persisted task count crosses this threshold, the JSON-file storage
@@ -59,6 +183,14 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	/** One-time guard so the high-task-count warning does not spam the log. */
 	private _warnedHighTaskCount = false;
 
+	// ── In-memory cache (方案 A，P2-10 fix) ──────────────────────────────
+	// Avoids the 600-1500ms disk I/O on every _withTasks call by caching
+	// tasks in memory and flushing to disk asynchronously.
+	private _tasksCache: TaskBoardRecord[] | undefined;
+	private _tasksLoaded = false;
+	private _flushTimer: any = undefined;
+	private _tasksDirty = false;
+
 	/** Lazy references to break cyclic dependency */
 	private _orchestrationService: ITaskOrchestrationService | undefined;
 	private _agentStudioService: IAgentStudioService | undefined;
@@ -72,6 +204,8 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		@IPlaywrightService private readonly playwrightService: IPlaywrightService,
 	) {
 		super();
+		// Flush dirty cache to disk on dispose (app shutdown)
+		this._register({ dispose: () => { this._forceFlushSync(); } });
 	}
 
 	/** Lazily resolve ITaskOrchestrationService to avoid constructor-time cyclic dependency */
@@ -110,13 +244,18 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	}
 
 	private async _readTasks(): Promise<TaskBoardRecord[]> {
+		if (this._tasksLoaded) {
+			return this._tasksCache ?? [];
+		}
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_TASKBOARD);
 			const content = await this.fileService.readFile(uri);
-			return JSON.parse(content.value.toString()) as TaskBoardRecord[];
+			this._tasksCache = JSON.parse(content.value.toString()) as TaskBoardRecord[];
 		} catch {
-			return [];
+			this._tasksCache = [];
 		}
+		this._tasksLoaded = true;
+		return this._tasksCache!;
 	}
 
 	/**
@@ -146,6 +285,41 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		}
 	}
 
+	/** Debounce flush: write in-memory cache to disk after 100ms of inactivity.
+	 *  Multiple rapid mutations batch into a single disk write. */
+	private _scheduleFlush(): void {
+		if (this._flushTimer) { clearTimeout(this._flushTimer); }
+		this._flushTimer = setTimeout(() => {
+			this._flushTimer = undefined;
+			if (this._tasksDirty && this._tasksCache) {
+				const snapshot = [...this._tasksCache];
+				this._tasksDirty = false;
+				this._writeTasks(snapshot).catch(err =>
+					this.logService.error('[TaskBoard] async flush failed:', err)
+				);
+			}
+		}, 100);
+	}
+
+	/** Synchronous flush for shutdown — must complete before the process exits.
+	 *  Cancels any pending timer and writes immediately. */
+	private _forceFlushSync(): void {
+		if (this._flushTimer) {
+			clearTimeout(this._flushTimer);
+			this._flushTimer = undefined;
+		}
+		// Fire-and-forget on shutdown: the process won't wait for async.
+		// In practice the dispose happens before the Node event loop drains,
+		// so the write will likely complete.
+		if (this._tasksDirty && this._tasksCache) {
+			this._tasksDirty = false;
+			// Use queue to avoid racing with a concurrent flush
+			this._taskWriteQueue.queue(async () => {
+				await this._writeTasks(this._tasksCache!);
+			}).catch(() => { /* best-effort on shutdown */ });
+		}
+	}
+
 	private async _readBoards(): Promise<TaskBoard[]> {
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_BOARDS);
@@ -171,9 +345,12 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	 */
 	private _withTasks<R>(mutate: (tasks: TaskBoardRecord[]) => Promise<R> | R): Promise<R> {
 		return this._taskWriteQueue.queue(async () => {
+			const t0 = performance.now();
 			const tasks = await this._readTasks();
 			const result = await mutate(tasks);
-			await this._writeTasks(tasks);
+			this._tasksDirty = true;
+			this._scheduleFlush();
+			console.info(`[TaskPerfDiag] _withTasks done elapsed=${(performance.now() - t0).toFixed(0)}ms`);
 			return result;
 		}) as Promise<R>;
 	}
@@ -188,8 +365,48 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		}) as Promise<R>;
 	}
 
+	/** Cached worktree lists keyed by workspaceId, to avoid redundant Git scans
+	 *  on every createTask call (P2-9 fix).  Populated lazily on first access;
+	 *  invalidated when workspace changes via the listener below. */
+	private readonly _worktreeCache = new Map<string, any[]>();
+
+	private async _cachedWorktrees(workspaceId: string): Promise<any[]> {
+		if (this._worktreeCache.has(workspaceId)) {
+			return this._worktreeCache.get(workspaceId)!;
+		}
+		const worktrees = await this.agentStudioService.getWorktrees(workspaceId);
+		this._worktreeCache.set(workspaceId, worktrees);
+		return worktrees;
+	}
+
 	private _generateId(): string {
 		return `task_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+	}
+
+	/**
+	 * Strip inline base64 data URIs from a task description.
+	 * Replaces `data:<mime>;base64,...` with `[图片: N]` / `[文件: N]`
+	 * placeholders so the description stays compact and doesn't bloat
+	 * taskboard.json or cause regex performance issues on render/exec.
+	 * Uses a fast `indexOf` pre-check to skip the regex entirely when
+	 * no data URIs are present (the common case).
+	 */
+	private _sanitizeDescription(desc: string | undefined): string | undefined {
+		if (!desc) { return desc; }
+		// Fast pre-check — avoid running the regex on descriptions that
+		// don't contain any data URIs (the 99% case).
+		if (desc.indexOf('data:') === -1) { return desc; }
+		const dataUriRe = /(?:(!?\[([^\]]*)\]\())?data:([\w/+-]+);base64,([A-Za-z0-9+/=]+)\)?/gi;
+		let img = 0; let file = 0;
+		const result = desc.replace(dataUriRe, (_full, _prefix, _alt, mimeType) => {
+			if (mimeType?.startsWith('image/')) {
+				img++;
+				return `[图片: ${img}]`;
+			}
+			file++;
+			return `[文件: ${file}]`;
+		});
+		return result;
 	}
 
 	private _generateBoardId(): string {
@@ -220,12 +437,12 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	}
 
 	async createTask(data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord> {
+		const t0 = performance.now();
 		const now = new Date().toISOString();
 
 		// Resolve defaults for workspace and main worktree when not explicitly
-		// provided. This lets every task-creation path (TAPD import, manual
-		// create, auto-plan, chat) automatically land in the current context
-		// without each caller having to pass workspaceId / worktreePath.
+		// provided. Uses cached worktree list (populated on first call) so the
+		// create-task path doesn't block on a Git scan every time.
 		let workspaceId = data.workspaceId;
 		let worktreePath = data.worktreePath;
 
@@ -234,9 +451,9 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		}
 		if (!worktreePath && workspaceId) {
 			try {
-				const worktrees = await this.agentStudioService.getWorktrees(workspaceId);
+				const worktrees = await this._cachedWorktrees(workspaceId);
 				if (worktrees.length > 0) {
-					worktreePath = worktrees[0].path; // main/primary worktree
+					worktreePath = worktrees[0].path;
 				}
 			} catch {
 				// getWorktrees may throw (e.g. no git repo); silently skip.
@@ -246,7 +463,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		const newTask: TaskBoardRecord = {
 			id: this._generateId(),
 			title: data.title || 'New Task',
-			description: data.description,
+			description: this._sanitizeDescription(data.description),
 			status: data.status || TaskBoardStatus.Todo,
 			source: data.source || TaskSource.Manual,
 			sourceId: data.sourceId,
@@ -265,12 +482,21 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		};
 		await this._withTasks(tasks => { tasks.push(newTask); });
 		this._onDidChangeTaskBoard.fire();
+		console.info(`[TaskPerfDiag] createTask DONE id=${newTask.id} elapsed=${(performance.now() - t0).toFixed(0)}ms`);
 		this.logService.trace(`[AgentStudio] TaskBoard: created task ${newTask.id} ws=${workspaceId} wt=${worktreePath || '-'}`);
 		return newTask;
 	}
 
 	async updateTask(id: string, data: Partial<TaskBoardRecord>): Promise<TaskBoardRecord> {
+		const t0 = performance.now();
 		const now = new Date().toISOString();
+
+		// Sanitize description if it's being updated — strip inline base64
+		// data URIs to prevent MB-sized blobs from being persisted to disk
+		// and causing regex performance issues on every render/execution.
+		const sanitizedData = data.description !== undefined
+			? { ...data, description: this._sanitizeDescription(data.description) }
+			: data;
 
 		// Phase 1 — persist the field changes atomically under the write queue.
 		const updated = await this._withTasks(tasks => {
@@ -280,7 +506,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			}
 			const next: TaskBoardRecord = {
 				...tasks[index],
-				...data,
+				...sanitizedData,
 				id,
 				updatedAt: now,
 			};
@@ -293,15 +519,23 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			tasks[index] = next;
 			return next;
 		});
-		this._onDidChangeTaskBoard.fire();
+		const tPhase1 = performance.now();
+		// For Running transitions, defer the fire to Phase 2 (after ensureTaskAgent
+		// completes and assigneeId/assigneeName are persisted).  Firing here would
+		// trigger a full _refresh() + DOM rebuild, immediately followed by a second
+		// rebuild in Phase 2 — causing drag-and-drop stutter and double flicker.
+		const isTransitioningToRunning = data.status === TaskBoardStatus.Running && updated.status !== TaskBoardStatus.Running;
+		if (!isTransitioningToRunning) {
+			this._onDidChangeTaskBoard.fire();
+		}
 		this.logService.trace(`[AgentStudio] TaskBoard: updated task ${id}`);
-
-		// Phase 2 — when a task transitions to Running, ensure an agent is
-		// assigned. This is deliberately OUTSIDE the write queue: ensureTaskAgent
+		console.info(`[ChatFlickerDiag] TaskBoard updateTask FIRE id=${id} status=${data.status ?? 'unchanged'} fireSkipped=${isTransitioningToRunning}`);
 		// may be slow (network / spawn) and must not block other task mutations.
 		// The agent assignment is persisted via a second small queued update.
 		if (data.status === TaskBoardStatus.Running && updated.workspaceId) {
+			const tStart = performance.now();
 			try {
+				console.info(`[TaskExecDiag] updateTask → ensureTaskAgent START id=${id}`);
 				const result = await this.orchestrationService.ensureTaskAgent(
 					updated.workspaceId,
 					id,
@@ -313,6 +547,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 						sourceId: updated.sourceId,
 					},
 				);
+				console.info(`[TaskExecDiag] ensureTaskAgent DONE id=${id} elapsed=${(performance.now() - tStart).toFixed(0)}ms result=${!!result}`);
 				if (result) {
 					updated.assigneeId = result.assigneeId;
 					updated.assigneeName = result.assigneeName;
@@ -326,17 +561,21 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 						}
 					});
 					this._onDidChangeTaskBoard.fire();
+					console.info(`[ChatFlickerDiag] TaskBoard ensureTaskAgent FIRE id=${id} assignee=${result.assigneeId}`);
 
 					// Resolve attachment content (files/images) and forward to the agent
 					// so the executing agent receives the same context the user attached
 					// to the task card (previously attachments were silently dropped).
+					const tAttach = performance.now();
 					const attachments = await this._resolveAttachmentPayloads(updated);
+					console.info(`[TaskExecDiag] _resolveAttachmentPayloads DONE id=${id} count=${attachments?.length ?? 0} elapsed=${(performance.now() - tAttach).toFixed(0)}ms`);
 
 					// Fire-and-forget: invoke the agent to actually execute the task
+					console.info(`[TaskExecDiag] executeTaskForBoard START id=${id} totalElapsed=${(performance.now() - tStart).toFixed(0)}ms`);
 					this.orchestrationService.executeTaskForBoard(
 						updated.workspaceId!,
 						id,
-						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId, worktreePath: updated.worktreePath, workflowId: updated.workflowId, variableValues: updated.variableValues, attachments },
+						{ title: updated.title, description: updated.description, assigneeId: result.assigneeId, assigneeName: result.assigneeName, sourceId: updated.sourceId, worktreePath: updated.worktreePath, workflowId: updated.workflowId, variableValues: updated.variableValues, attachments, providerId: updated.providerId, modelId: updated.modelId },
 					).catch(err => {
 						this.logService.warn(`[AgentStudio] TaskBoard: task execution failed for ${id}:`, err);
 					});
@@ -348,11 +587,15 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			}
 		}
 
+		console.info(`[TaskPerfDiag] updateTask DONE id=${id} status=${data.status ?? 'unchanged'} phase1=${(tPhase1 - t0).toFixed(0)}ms phase2=${(performance.now() - tPhase1).toFixed(0)}ms total=${(performance.now() - t0).toFixed(0)}ms`);
 		return updated;
 	}
 
 	async updateTaskStatus(id: string, status: TaskBoardStatus): Promise<TaskBoardRecord> {
-		return this.updateTask(id, { status });
+		const t0 = performance.now();
+		const result = await this.updateTask(id, { status });
+		console.info(`[TaskPerfDiag] updateTaskStatus id=${id} status=${status} elapsed=${(performance.now() - t0).toFixed(0)}ms`);
+		return result;
 	}
 
 	async deleteTask(id: string): Promise<void> {
@@ -756,7 +999,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 		return URI.joinPath(this._getDataUri(), 'tmp', 'task-downloads');
 	}
 
-	async downloadUrlForAttachment(url: string, opts?: { sessionId?: string; viewId?: string }): Promise<{ name: string; mimeType: string; base64: string; tempPath: string } | undefined> {
+	async downloadUrlForAttachment(url: string, opts?: { sessionId?: string; viewId?: string; filename?: string; subDir?: string; extractZip?: boolean }): Promise<{ name: string; mimeType: string; base64: string; tempPath: string; isZip?: boolean; extractedFiles?: { name: string; relPath: string; isImage: boolean; dataUri?: string }[] } | undefined> {
 		const sessionId = opts?.sessionId ?? SAROS_CLAW_AGENT_ID;
 		const viewId = await this._resolveDownloadViewId(sessionId, opts?.viewId);
 		if (!viewId) { return undefined; }
@@ -766,18 +1009,150 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 			this.logService.info(`[TaskBoard] downloadUrlForAttachment status=${dl.status} contentType="${dl.contentType}" base64Len=${dl.base64.length}`);
 			if (!dl.ok) { this.logService.warn(`[TaskBoard] downloadUrlForAttachment HTTP ${dl.status}: ${url}`); return undefined; }
 			if (dl.contentType.includes('text/html')) { this.logService.warn(`[TaskBoard] downloadUrlForAttachment got HTML (not a real file): ${url}`); return undefined; }
-			const mimeType = dl.contentType || 'application/octet-stream';
-			const name = this._filenameFromUrl(url, dl.contentDisposition);
+			// Prefer the caller-supplied filename (the real TAPD attachment name)
+			// over deriving one from the (often opaque) URL path.
+			const name = (opts?.filename && opts.filename.trim())
+				? opts.filename.trim().replace(/[\\/:*?"<>|]/g, '_').slice(0, 200)
+				: this._filenameFromUrl(url, dl.contentDisposition);
+			// Playwright may return generic "image" contentType without a
+			// subtype (e.g. "image" instead of "image/png").  Derive a
+			// proper MIME from the file extension so downstream code can
+			// correctly detect images (dl.mimeType.startsWith('image/')).
+			let mimeType = dl.contentType || 'application/octet-stream';
+			if (mimeType === 'image') {
+				mimeType = _mimeFromName(name);
+			}
 			const tmpDir = await this._getDownloadDir();
-			const uri = URI.joinPath(tmpDir, name);
+			const targetDir = opts?.subDir ? URI.joinPath(tmpDir, opts.subDir) : tmpDir;
+			const uri = URI.joinPath(targetDir, name);
 			const content = decodeBase64(dl.base64);
 			await this.fileService.createFile(uri, content, { overwrite: true });
 			this.logService.info(`[TaskBoard] downloadUrlForAttachment OK: ${url} → ${uri.fsPath} (${content.byteLength} bytes)`);
-			return { name, mimeType, base64: dl.base64, tempPath: uri.fsPath };
+
+			const isZip = /\.zip$/i.test(name) || mimeType === 'application/zip' || mimeType === 'application/x-zip-compressed';
+			let extractedFiles: { name: string; relPath: string; isImage: boolean; dataUri?: string }[] | undefined;
+			if (isZip && (opts?.extractZip ?? true)) {
+				try {
+					// Use a separate subdirectory for extraction to avoid naming
+					// collision when the zip file is saved with the same basename
+					// as the target extraction directory (e.g. "story" file + "story/" dir).
+					const extractSubDir = (opts?.subDir ?? '') + '/' + name + '_extracted';
+					extractedFiles = await this._extractZipAndCollect(uri.fsPath, targetDir.fsPath, extractSubDir);
+					this.logService.info(`[TaskBoard] extracted ${extractedFiles.length} file(s) from ${name}`);
+				} catch (zipErr) {
+					this.logService.warn('[TaskBoard] downloadUrlForAttachment zip extraction failed:', zipErr);
+				}
+			}
+
+			return { name, mimeType, base64: dl.base64, tempPath: uri.fsPath, isZip, extractedFiles };
 		} catch (err) {
 			this.logService.warn('[TaskBoard] downloadUrlForAttachment unexpected error:', err);
 			return undefined;
 		}
+	}
+
+	/** Extract a zip archive and collect its entries (relative to the download root).
+	 *  Image entries are read back and embedded as data URIs so the webview can
+	 *  render them without hitting the `file://` CSP restriction.
+	 *
+	 *  Uses a pure-JS ZIP parser that works in the Electron renderer process
+	 *  (no `fs`, no Node builtins).  Deflated entries are inflated via the
+	 *  `pako` library when available; stored entries are always handled. */
+	private async _extractZipAndCollect(zipPath: string, targetDir: string, subDir: string): Promise<{ name: string; relPath: string; isImage: boolean; dataUri?: string }[]> {
+		// 1. Read the zip file into a byte buffer
+		const zipContent = await this.fileService.readFile(URI.file(zipPath));
+		const data = zipContent.value.buffer as Uint8Array;
+
+		// 2. Browser-native decompression (DecompressionStream API available in
+		//    Electron/Chromium renderer). We resolve it once so every compressed
+		//    entry can reuse the helper without repeating feature-detection.
+		const canDeflate = typeof DecompressionStream !== 'undefined';
+		const inflateRaw = canDeflate
+			? async (d: Uint8Array): Promise<Uint8Array> => {
+				const ds = new DecompressionStream('deflate-raw') as TransformStream<Uint8Array, Uint8Array>;
+				const writer = ds.writable.getWriter();
+				writer.write(d);
+				writer.close();
+				const reader = ds.readable.getReader();
+				const chunks: Uint8Array[] = [];
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) { break; }
+					chunks.push(value);
+				}
+				// Concatenate all chunks
+				const totalLen = chunks.reduce((s, c) => s + c.byteLength, 0);
+				const out = new Uint8Array(totalLen);
+				let pos = 0;
+				for (const c of chunks) { out.set(c, pos); pos += c.byteLength; }
+				return out;
+			}
+			: undefined;
+		if (!canDeflate) {
+			this.logService.warn('[TaskBoard] _extractZipAndCollect: DecompressionStream not available, will skip compressed entries');
+		}
+
+		// 3. Find End of Central Directory record
+		const eocd = _findEOCD(data);
+		if (!eocd) { throw new Error('Invalid zip: EOCD not found'); }
+
+		// 4. Parse central directory entries
+		const { entries, baseName } = _parseCentralDir(data, eocd, zipPath);
+		if (!entries.length) { this.logService.warn('[TaskBoard] _extractZipAndCollect: no entries in zip, returning empty'); return []; }
+
+		// 5. Determine the parent directory prefix for relative paths
+		const subPrefix = subDir ? subDir + '/' : '';
+
+		// 6. Process each entry
+		const out: { name: string; relPath: string; isImage: boolean; dataUri?: string }[] = [];
+		for (const entry of entries) {
+			try {
+				// Skip directory entries (filename ends with /)
+				if (entry.fileName.endsWith('/') || entry.fileName.endsWith('\\')) { continue; }
+
+				// Extract file data
+				const rawData = await _readLocalFile(data, entry, inflateRaw);
+				if (!rawData) {
+					this.logService.warn(`[TaskBoard] _extractZipAndCollect: skipped ${entry.fileName} (compressed and no inflater available)`);
+					continue;
+				}
+
+				// Derive the simple filename (last segment of entry path)
+				const leafName = entry.fileName.replace(/\\/g, '/').split('/').pop() || entry.fileName;
+
+				// Write to disk under targetDir/<subDir leaf> or targetDir/<zipBaseName>
+				const extractBase = subDir
+					? subDir.replace(/\\/g, '/').split('/').pop()!
+					: nodePath.basename(zipPath).replace(/\.zip$/i, '');
+				const extractDir = nodePath.join(targetDir, extractBase);
+				const outPath = nodePath.join(extractDir, entry.fileName);
+
+				// Ensure parent directories exist
+				const parentDir = nodePath.dirname(outPath);
+				try {
+					const parentUri = URI.file(parentDir);
+					await this.fileService.createFolder(parentUri);
+				} catch { /* folder may already exist */ }
+
+				// Write extracted file
+				const outUri = URI.file(outPath);
+				const outBuf = VSBuffer.wrap(rawData);
+				await this.fileService.createFile(outUri, outBuf, { overwrite: true });
+
+				const isImage = _isImageName(leafName);
+				let dataUri: string | undefined;
+				if (isImage) {
+					try {
+						dataUri = `data:${_mimeFromName(leafName)};base64,${encodeBase64(outBuf)}`;
+					} catch { /* leave dataUri undefined */ }
+				}
+				const relPath = `.sarosworkspace/tmp/task-downloads/${subPrefix}${baseName}/${entry.fileName.replace(/\\/g, '/')}`;
+				out.push({ name: leafName, relPath, isImage, dataUri });
+			} catch (entryErr) {
+				this.logService.warn(`[TaskBoard] _extractZipAndCollect: failed to extract ${entry.fileName}:`, entryErr);
+			}
+		}
+		return out;
 	}
 
 	/**

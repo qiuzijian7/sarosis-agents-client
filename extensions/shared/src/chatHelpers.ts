@@ -89,17 +89,19 @@ export function extractMessageContent(
 
 /**
  * Extract the model name from a full model ID by stripping the vendor prefix.
+ * Handles multiple prefix layers (e.g. "codebuddy-codebuddy-deepseek-v4-pro-ioa" → "deepseek-v4-pro-ioa").
  * e.g. "codebuddy-claude-4.5" → "claude-4.5"
  *      "codebuddy/claude-4.5" → "claude-4.5"
+ *      "codebuddy-codebuddy-deepseek-v4-pro-ioa" → "deepseek-v4-pro-ioa"
  */
 export function extractModelName(modelId: string, vendorPrefix: string): string {
 	let cleaned = modelId;
-	// Handle "vendor/" prefix
-	if (cleaned.startsWith(`${vendorPrefix}/`)) {
+	// Strip ALL "vendor/" prefixes (server models may carry the prefix in their id)
+	while (cleaned.startsWith(`${vendorPrefix}/`)) {
 		cleaned = cleaned.slice(`${vendorPrefix}/`.length);
 	}
-	// Handle "vendor-" prefix
-	if (cleaned.startsWith(`${vendorPrefix}-`)) {
+	// Strip ALL "vendor-" prefixes (createModelInfo may double-prefix)
+	while (cleaned.startsWith(`${vendorPrefix}-`)) {
 		cleaned = cleaned.slice(`${vendorPrefix}-`.length);
 	}
 	return cleaned;

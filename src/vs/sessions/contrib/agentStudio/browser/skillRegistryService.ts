@@ -226,6 +226,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	resolveActivations(context: ISkillActivationContext): Promise<readonly ISkillInjection[]> {
 		const out: ISkillInjection[] = [];
 		const explicit = new Set((context.explicit ?? []).map(s => s.toLowerCase()));
+		const required = new Set((context.required ?? []).map(s => s.toLowerCase()));
 		const userMsg = context.userMessage.toLowerCase();
 
 		for (const skill of this._skills.values()) {
@@ -233,7 +234,10 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			if (skill.enabled === false) { continue; }
 
 			let take = false;
-			if (skill.activation === 'always') {
+			if (required.has(skill.id.toLowerCase())) {
+				// 强制加载：agent 配置中指定的技能，无论 activation 模式都必须注入
+				take = true;
+			} else if (skill.activation === 'always') {
 				take = true;
 			} else if (explicit.has(skill.id.toLowerCase())) {
 				take = true;
@@ -244,8 +248,13 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 			out.push({
 				skill,
-				// 与 hermes 一致：以独立 user message 注入，避免 system prompt 失效缓存。
-				placement: skill.activation === 'always' ? 'system' : 'user',
+				// * required（agent 配置强制加载）→ system placement，确保：
+				//   1. 经过 agentDriverService 的 500-char 内联/截断路径（长技能仅放摘要 + read_skill 指引）
+				//   2. Knot AG-UI 路径通过 background_knowledge 到达模型（user placement 会被丢弃）
+				//   3. BVOK/direct 路径通过 system message 到达模型
+				// * activation='always' → system placement（与 required 一致）
+				// * 其余（explicit/auto 命中）→ user placement（独立 user message，避免 system prompt 失效缓存）
+				placement: (required.has(skill.id.toLowerCase()) || skill.activation === 'always') ? 'system' : 'user',
 				content: this._renderInjection(skill),
 			});
 		}

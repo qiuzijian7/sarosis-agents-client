@@ -328,10 +328,10 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			const aspects = args['aspects'] as string[] | undefined;
 			const scopePath = args['path'] as string | undefined;
 			try {
-				// 获取完整分析报告
+				// 获取完整分析报告（async — allows abort signal to fire between packages, P2-6）
 				const fullReport = aspects && aspects.length > 0 && aspects[0] !== 'all'
-					? ctx.codebaseGraphService.getArchitectureAdvanced(aspects)
-					: ctx.codebaseGraphService.getArchitecture();
+					? await ctx.codebaseGraphService.getArchitectureAdvanced(aspects)
+					: await ctx.codebaseGraphService.getArchitecture();
 
 				// Apply path scope filtering — limit results to nodes under the given directory prefix
 				if (scopePath) {

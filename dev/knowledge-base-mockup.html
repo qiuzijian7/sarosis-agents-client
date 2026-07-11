@@ -44,7 +44,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .sidebar{width:340px;background:var(--bg-sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;position:relative;}
 
 /* View header */
-.view-header{height:35px;display:flex;align-items:center;gap:4px;padding:0 4px 0 10px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.view-header{height:35px;display:flex;align-items:center;gap:4px;padding:0 4px 0 10px;border-bottom:1px solid var(--border);flex-shrink:0;position:relative;}
 .view-header .title{font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:600;opacity:.8;display:flex;align-items:center;gap:6px;}
 .hdr-btn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:14px;border:1px solid transparent;}
 .hdr-btn:hover{background:var(--bg-hover);color:var(--text);}
@@ -69,6 +69,40 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 .vault-menu .opt .check{color:var(--primary);font-size:11px;width:14px;}
 .vault-menu .opt.add{color:var(--primary);}
 .vault-menu .divider{height:1px;background:var(--border);margin:4px 0;}
+
+/* ===== Root directory in settings ===== */
+.root-path-input{flex:1;background:var(--bg-input);border:1px solid var(--primary);border-radius:4px;padding:3px 6px;color:var(--text);font-family:var(--mono);font-size:11px;outline:none;min-width:0;}
+.kb-settings{min-width:300px;padding:6px 0;}
+.kb-settings .set-row{display:flex;align-items:center;gap:6px;padding:8px 12px;}
+.kb-settings .set-label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);font-weight:600;flex-shrink:0;}
+.kb-settings .set-path{flex:1;font-family:var(--mono);font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.kb-settings .set-hint{font-size:10px;color:var(--text-muted);padding:0 12px 8px;}
+.kb-settings .root-btn{width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:4px;cursor:pointer;color:var(--text-muted);font-size:13px;border:1px solid transparent;flex-shrink:0;}
+.kb-settings .root-btn:hover{background:var(--bg-hover);color:var(--text);}
+.kb-settings .root-btn.primary{color:var(--primary);}
+
+/* ===== Root picker modal ===== */
+.modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:none;align-items:center;justify-content:center;}
+.modal-mask.show{display:flex;}
+.root-picker{width:460px;max-width:92vw;background:var(--bg-card);border:1px solid var(--border-light);border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,.6);overflow:hidden;}
+.root-picker .rp-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;color:var(--text-bright);}
+.root-picker .rp-close{margin-left:auto;cursor:pointer;color:var(--text-muted);font-size:16px;}
+.root-picker .rp-close:hover{color:var(--text);}
+.root-picker .rp-tree{height:240px;overflow:auto;padding:6px 8px;font-size:12px;}
+.root-picker .rp-node{display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:3px;cursor:pointer;font-size:12px;white-space:nowrap;}
+.root-picker .rp-node:hover{background:var(--bg-listhover);}
+.root-picker .rp-node.selected{background:var(--bg-selected);}
+.root-picker .rp-node .twist{width:14px;text-align:center;color:var(--text-muted);font-size:10px;flex-shrink:0;}
+.root-picker .rp-node .ficon{color:var(--warning);}
+.root-picker .rp-path{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--border);}
+.root-picker .rp-path label{font-size:11px;color:var(--text-muted);flex-shrink:0;}
+.root-picker .rp-path input{flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:5px 8px;color:var(--text);font-family:var(--mono);font-size:11px;outline:none;min-width:0;}
+.root-picker .rp-path input:focus{border-color:var(--primary);}
+.root-picker .rp-foot{display:flex;justify-content:flex-end;gap:8px;padding:8px 14px;border-top:1px solid var(--border);}
+.rp-btn{padding:5px 14px;border-radius:4px;font-size:12px;cursor:pointer;border:1px solid var(--border);background:var(--bg-input);color:var(--text);}
+.rp-btn:hover{background:var(--bg-hover);}
+.rp-btn.primary{background:var(--primary);border-color:var(--primary);color:#fff;}
+.rp-btn.primary:hover{background:var(--primary-hover);}
 
 /* Search */
 .search-row{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid var(--border);flex-shrink:0;}
@@ -170,7 +204,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
       <span class="title"><span>📚</span> 知识库</span>
       <span style="flex:1"></span>
       <span class="hdr-btn" title="刷新">⟳</span>
-      <span class="hdr-btn" title="设置">⚙</span>
+      <span class="hdr-btn" id="kbSettingsBtn" title="设置">⚙</span>
+      <div class="dropdown kb-settings" id="kbSettingsDD" style="top:36px;right:6px;">
+        <div class="dd-title">知识库设置</div>
+        <div class="set-row">
+          <span class="set-label">📁 根目录</span>
+          <span class="set-path" id="rootPath">~/kb/ai-agent</span>
+          <span class="root-btn primary" id="rootEdit" title="浏览文件夹…">📂</span>
+          <span class="root-btn" id="rootManual" title="手动输入路径">✏️</span>
+        </div>
+        <div class="set-hint">点击 📂 选择文件夹，或 ✏️ 手动输入路径</div>
+      </div>
     </div>
 
     <!-- Vault switcher -->
@@ -189,7 +233,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
         <div class="opt"><span class="check"></span><span>📦</span><span>个人笔记</span><span class="path">D:/notes</span></div>
         <div class="opt"><span class="check"></span><span>📦</span><span>Obsidian-工作库</span><span class="path">D:/obsidian/work</span></div>
         <div class="divider"></div>
-        <div class="opt add"><span>＋</span><span>配置文件夹为笔记…</span></div>
+        <div class="opt add" id="cfgFolderOpt"><span>＋</span><span>配置文件夹为笔记…</span></div>
         <div class="opt add"><span>＋</span><span>连接飞书知识库…</span></div>
       </div>
     </div>
@@ -331,6 +375,30 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13
 
 </div>
 
+<!-- ════════ Root picker modal (选择知识库根目录) ════════ -->
+<div class="modal-mask" id="rootPickerMask">
+  <div class="root-picker">
+    <div class="rp-head"><span>📁 选择知识库根目录</span><span class="rp-close" id="rpClose" title="关闭">✕</span></div>
+    <div class="rp-tree" id="rpTree">
+      <div class="rp-node dir" data-path="~/kb"><span class="twist">▾</span><span class="ficon">📁</span><span>~/kb</span></div>
+      <div class="rp-node" style="padding-left:22px" data-path="~/kb/ai-agent"><span class="twist"></span><span class="ficon">📁</span><span>ai-agent</span></div>
+      <div class="rp-node" style="padding-left:22px" data-path="~/kb/personal"><span class="twist"></span><span class="ficon">📁</span><span>personal</span></div>
+      <div class="rp-node dir" data-path="D:/"><span class="twist">▾</span><span class="ficon">📁</span><span>D:/</span></div>
+      <div class="rp-node" style="padding-left:22px" data-path="D:/notes"><span class="twist"></span><span class="ficon">📁</span><span>notes</span></div>
+      <div class="rp-node" style="padding-left:22px" data-path="D:/obsidian/work"><span class="twist"></span><span class="ficon">📁</span><span>obsidian/work</span></div>
+      <div class="rp-node" style="padding-left:22px" data-path="D:/projects/sarosis"><span class="twist"></span><span class="ficon">📁</span><span>projects/sarosis</span></div>
+    </div>
+    <div class="rp-path">
+      <label>路径</label>
+      <input id="rpInput" value="~/kb/ai-agent" spellcheck="false">
+    </div>
+    <div class="rp-foot">
+      <button class="rp-btn" id="rpCancel">取消</button>
+      <button class="rp-btn primary" id="rpOk">确定</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Toggle dropdowns by [data-dd] attribute ──
 document.querySelectorAll('[data-dd]').forEach(btn=>{
@@ -371,6 +439,86 @@ const vaultSelect = document.getElementById('vaultSelect');
 const vaultMenu = document.getElementById('vaultMenu');
 vaultSelect.addEventListener('click', e=>{ e.stopPropagation(); vaultMenu.classList.toggle('show'); });
 document.addEventListener('click', ()=>vaultMenu.classList.remove('show'));
+
+// ── Root directory custom (根目录可自定义) ──
+const rootPath    = document.getElementById('rootPath');
+const rootEditBtn = document.getElementById('rootEdit');
+const rootManualBtn = document.getElementById('rootManual');
+const rootPickerMask = document.getElementById('rootPickerMask');
+const rpInput = document.getElementById('rpInput');
+const rpTree  = document.getElementById('rpTree');
+const rpOk    = document.getElementById('rpOk');
+const rpCancel= document.getElementById('rpCancel');
+const rpClose = document.getElementById('rpClose');
+const cfgFolderOpt = document.getElementById('cfgFolderOpt');
+
+function applyRootToVault(path){
+  // 把新根目录同步到当前激活的笔记空间路径展示
+  const active = vaultMenu.querySelector('.opt');
+  if(active){ const p = active.querySelector('.path'); if(p) p.textContent = path; }
+}
+function openRootPicker(initial){
+  rpInput.value = (initial || rootPath.textContent || '').trim();
+  rpTree.querySelectorAll('.rp-node').forEach(n=>n.classList.toggle('selected', n.dataset.path === rpInput.value));
+  rootPickerMask.classList.add('show');
+}
+function closeRootPicker(){ rootPickerMask.classList.remove('show'); }
+function commitRootPicker(){
+  const v = rpInput.value.trim();
+  if(v){ rootPath.textContent = v; applyRootToVault(v); }
+  closeRootPicker();
+}
+
+rpTree.querySelectorAll('.rp-node').forEach(n=>{
+  n.addEventListener('click', ()=>{
+    rpInput.value = n.dataset.path;
+    rpTree.querySelectorAll('.rp-node').forEach(x=>x.classList.remove('selected'));
+    n.classList.add('selected');
+  });
+});
+rpInput.addEventListener('input', ()=>{
+  rpTree.querySelectorAll('.rp-node').forEach(x=>x.classList.remove('selected'));
+});
+rpOk.addEventListener('click', commitRootPicker);
+rpCancel.addEventListener('click', closeRootPicker);
+rpClose.addEventListener('click', closeRootPicker);
+rootPickerMask.addEventListener('click', e=>{ if(e.target===rootPickerMask) closeRootPicker(); });
+
+rootEditBtn.addEventListener('click', ()=> openRootPicker(rootPath.textContent.trim()));
+if(cfgFolderOpt) cfgFolderOpt.addEventListener('click', ()=>{ vaultMenu.classList.remove('show'); openRootPicker(rootPath.textContent.trim()); });
+
+// ✏️ 手动输入路径（内联编辑）
+let manualInput = null;
+rootManualBtn.addEventListener('click', ()=>{
+  if(manualInput) return;
+  manualInput = document.createElement('input');
+  manualInput.className = 'root-path-input';
+  manualInput.value = rootPath.textContent.trim();
+  rootPath.replaceWith(manualInput);
+  manualInput.focus();
+  manualInput.select();
+  const cancel = ()=>{ manualInput.replaceWith(rootPath); manualInput = null; };
+  const commit = ()=>{
+    const v = manualInput.value.trim();
+    rootPath.textContent = v || '~/kb/ai-agent';
+    manualInput.replaceWith(rootPath);
+    manualInput = null;
+    applyRootToVault(rootPath.textContent);
+  };
+  manualInput.addEventListener('keydown', e=>{
+    if(e.key==='Enter') commit();
+    else if(e.key==='Escape') cancel();
+  });
+  manualInput.addEventListener('blur', commit);
+});
+
+// ── ⚙ 设置面板：根目录配置入口 ──
+const kbSettingsBtn = document.getElementById('kbSettingsBtn');
+const kbSettingsDD  = document.getElementById('kbSettingsDD');
+if(kbSettingsBtn){
+  kbSettingsBtn.addEventListener('click', e=>{ e.stopPropagation(); kbSettingsDD.classList.toggle('show'); });
+}
+if(kbSettingsDD){ kbSettingsDD.addEventListener('click', e=> e.stopPropagation()); }
 
 // ── Tree node selection ──
 document.querySelectorAll('.tree-node').forEach(n=>n.addEventListener('click', ()=>{

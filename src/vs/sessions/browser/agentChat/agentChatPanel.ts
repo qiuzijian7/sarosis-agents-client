@@ -206,6 +206,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _messagesContainer!: HTMLElement;
 	private _messagesWrapper!: HTMLElement;
 	private _textarea!: HTMLElement;  // contentEditable div（支持文本+内联附件芯片混排）
+	private _charCounterEl!: HTMLElement;  // 字符计数器
 	private _scrollToBottomBtn!: HTMLElement;
 	private _scrollBadge: HTMLElement | null = null;
 	// ── 自定义滚动条覆盖层 ──
@@ -276,6 +277,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	// 参考 Void 的 Event.accumulate() 事件累积机制。
 	// 关键更新（isStreaming/toolCalls/parts 变化）立即处理，不批处理。
 	private _streamingUpdateRaf: number | null = null;
+
+	// P0: scroll-to-bottom rAF 批量化——避免 updateMessage 中每个 delta
+	// 同步调用 _scrollToBottom 读取 scrollHeight 导致强制回流。
+	// 同帧多次 delta → 只在帧末滚一次。流式期间（_startStreamScroll
+	// rAF 循环已持续钉底）此调度不生效。
+	private _pendingScrollToBottom = false;
+	private _pendingScrollToBottomRaf: number | null = null;
 
 	// P2: 懒加载 observer——setMessages 时断开旧的，避免泄漏
 	private _lazyLoadObserver: IntersectionObserver | null = null;
@@ -588,9 +596,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	setAgent(agent: IAgentInfo | null): void {
 		// eslint-disable-next-line no-console
-		console.info('[AgentChatPanel] setAgent:', agent ? `id="${agent.id}", name="${agent.name}"` : 'null');
+		console.info('[AgentChatPanel] setAgent:', agent ? `id="${agent.id}", name="${agent.name}"` : 'null', `stack=${new Error().stack?.split('\n').slice(2,5).join(' ← ')}`);
 		this._agent = agent;
+		const t0 = performance.now();
 		this._render();
+		console.info(`[AgentChatPanel] setAgent: _render done in ${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
 	getAgent(): IAgentInfo | null {
@@ -607,6 +617,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		const t0 = performance.now();
 		this._messages = this._aggregateTurns(messages);
 		const tAgg = performance.now();
+		const diagStack = new Error().stack?.split('\n').slice(2,5).map(s => s.trim()).join(' ← ') || '?';
+		console.warn(`[ScrollDiag] setMessages count=${messages.length} _wasLoading=${this._wasLoading} isSending=${this._isSending} caller: ${diagStack}`);
 		this._renderMessages();
 		const tRender = performance.now();
 		// 加载历史消息 → 标记 wasLoading，确保 instant 滚动
@@ -849,13 +861,26 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			const m = this._messages[idx];
 			// 阶段E：流式期间由 content + toolCalls 即时派生有序 parts（单一真相），
 			// 除非调用方已显式提供 parts。textPosition 此处仅作本地排序信号，不再跨层传递。
+			// P2: 纯文本 delta 跳过 O(n) deriveUiMessageParts（只在 toolCalls/streaming 变化时重算）
 			if (updates.parts === undefined && m.role === 'assistant') {
-				if (m.toolCalls && m.toolCalls.length > 0) {
-					m.parts = deriveUiMessageParts(m.content ?? '', m.toolCalls);
-				} else if (m.content) {
-					m.parts = [{ kind: 'text', text: m.content }];
-				} else {
-					m.parts = undefined;
+				const hasToolCallChange = updates.toolCalls !== undefined;
+				const isStructural = hasToolCallChange || updates.isStreaming !== undefined;
+
+				if (isStructural || !m.parts || (m.parts.length === 0 && m.content)) {
+					// 全量派生
+					if (m.toolCalls && m.toolCalls.length > 0) {
+						m.parts = deriveUiMessageParts(m.content ?? '', m.toolCalls);
+					} else if (m.content) {
+						m.parts = [{ kind: 'text', text: m.content }];
+					} else {
+						m.parts = undefined;
+					}
+				} else if (updates.content !== undefined) {
+					// 纯文本增量：原地更新 text part，避免遍历 toolCalls 数组
+					const textPart = m.parts.find(p => p.kind === 'text');
+					if (textPart && typeof updates.content === 'string') {
+						textPart.text = updates.content;
+					}
 				}
 			}
 
@@ -874,7 +899,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				}
 				this._updateMessageDom(idx, m);
 				this._updateContextRing();
-				this._scrollToBottom(false);
+				// P0: 流式期间 _startStreamScroll rAF 循环持续钉底，
+				// 非流式期间走 rAF 批量滚动避免每个 delta 同步强制回流
+				if (!this._isSending) { this._scheduleScrollToBottom(); }
 				return;
 			}
 
@@ -891,20 +918,22 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 						this._updateMessageDom(rafIdx, this._messages[rafIdx]);
 					}
 					this._updateContextRing();
-					this._scrollToBottom(false);
+					// P0: 流式期间 _startStreamScroll rAF 循环已钉底，不额外滚动
 				});
 				return;
 			}
 
-			// 非流式非关键更新 → 立即处理
+			// 非流式非关键更新 → 立即处理 DOM，滚动走 rAF 批量化
 			this._updateMessageDom(idx, m);
 			this._updateContextRing();
-			this._scrollToBottom(false);
+			this._scheduleScrollToBottom();
 		}
 	}
 
 	setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): void {
 		const { triggerExecuteNext = true } = options;
+		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
+		console.warn(`[ScrollDiag] setSending(${sending}) wasSending=${this._isSending} caller: ${diagStack}`);
 		this._isSending = sending;
 		this._updateSendButton();
 		if (sending) {
@@ -1076,20 +1105,22 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	setWorktrees(items: ReadonlyArray<IWorktreeItem>): void {
 		this._worktrees = items.slice();
-		if (this._agent) { this._render(); }
+		// P0: 轻量刷新输入区替代 _render()——避免 board change reload 时
+		// setAgent → setMessages → setWorktrees → _render 链条中第 3 次全量消息重建
+		if (this._agent) { this._refreshInputArea(); }
 	}
 
 	setSelectedWorktree(path: string): void {
 		this._selectedWorktreePath = path || "";
-		// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
 		if (this._agent) { this._refreshInputArea(); }
 	}
 
 	/** 设置工作区列表（外部调用） */
 	setWorkspaces(items: ReadonlyArray<IWorkspaceItem>): void {
 		this._workspaces = items.slice();
-		// 重新渲染输入区以刷新 workspace 触发器标签
-		if (this._agent) { this._render(); }
+		// P0: 轻量刷新输入区替代 _render()——避免 board change reload 时
+		// 第 4 次全量消息重建（setWorkspaces → _render → _renderMessages）
+		if (this._agent) { this._refreshInputArea(); }
 	}
 
 	/** 设置当前选中工作区 */
@@ -1983,9 +2014,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	}
 
 	private _renderMessages(): void {
-		if (!this._messagesContainer) {
-			return;
-		}
+		if (!this._messagesContainer) { return; }
+		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
+		console.warn(`[ScrollDiag] _renderMessages count=${this._messages.length} _wasLoading=${this._wasLoading} caller: ${diagStack}`);
 		// Clean up all markdown disposables before clearing the DOM,
 		// to prevent renderMarkdown disposable leaks across setMessages calls.
 		this._cleanupMarkdownDisposables(this._messagesContainer);
@@ -2149,9 +2180,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 						if (this._tryIncrementalMarkdownRender(target.container, this._streamingMdLastContent)) {
 							return;
 						}
-						// 全量重建
-						target.container.textContent = '';
-						this._renderMarkdownContent(target.container, this._streamingMdLastContent);
+						// 全量重建 — 离屏渲染后原子替换，避免 textContent='' 导致的空白帧闪烁
+						{
+							const tempDiv = document.createElement('div');
+							this._renderMarkdownContent(tempDiv, this._streamingMdLastContent);
+							const children = Array.from(tempDiv.childNodes);
+							target.container.replaceChildren(...children);
+						}
 						this._streamingMdLastRendered = this._streamingMdLastContent;
 					}, AgentChatPanel.STREAMING_MD_INTERVAL);
 				}
@@ -2187,6 +2222,20 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (wasStreaming && !msg.isStreaming && !hasStructuralChange) {
 			this._transitionStreamingToComplete(existingEl, msg);
 			return;
+		}
+
+		// P1.5: 流式期间首个 tool_start → 增量追加工具卡，避免
+		// replaceChild 导致 scrollHeight 突变 → 滚动条跳动。
+		if (msg.isStreaming && hasToolCalls) {
+			const existingCards = existingEl.querySelectorAll('.tool-header-wrapper[data-tool-id]');
+			if (existingCards.length === 0) {
+			const container = existingEl.querySelector('.chat-bubble') as HTMLElement || existingEl;
+			for (const tc of msg.toolCalls || []) {
+				if (!tc.id) continue;
+				this._appendToolCard(container, tc, msg);
+			}
+				return;
+			}
 		}
 
 		// P2+: 非流式工具卡增量更新——如果已有工具卡且 ID 匹配（仅状态/结果变化），
@@ -2267,8 +2316,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 					if (this._tryIncrementalMarkdownRender(target.container, this._streamingMdLastContent)) {
 						return;
 					}
-					target.container.textContent = '';
-					this._renderMarkdownContent(target.container, this._streamingMdLastContent);
+					// 离屏渲染后原子替换，避免空白帧闪烁
+					{
+						const tempDiv = document.createElement('div');
+						this._renderMarkdownContent(tempDiv, this._streamingMdLastContent);
+						const children = Array.from(tempDiv.childNodes);
+						target.container.replaceChildren(...children);
+					}
 					this._streamingMdLastRendered = this._streamingMdLastContent;
 				}, AgentChatPanel.STREAMING_MD_INTERVAL);
 			}
@@ -2375,8 +2429,21 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// NOTE: Always use Markdown rendering for assistant messages (including streaming)
 		// to ensure code blocks, inline code, and other Markdown features render correctly.
 		if (isUser && msg.content) {
-			const contentEl = append(bubble, $(".message-content"));
-			this._renderUserContent(contentEl, msg.content);
+			// Task prompt card: render from structured data when available
+			// (avoids the fragile regex-parse anti-pattern).
+			const taskCardData = (msg as any).taskCard;
+			if (taskCardData) {
+				const card = this._buildTaskCardFromData(taskCardData);
+				if (card) { bubble.appendChild(card); }
+				// Show plain text content below the card
+				if (msg.content) {
+					const contentEl = append(bubble, $('.message-content'));
+					this._renderUserContent(contentEl, msg.content);
+				}
+			} else {
+				const contentEl = append(bubble, $('.message-content'));
+				this._renderUserContent(contentEl, msg.content);
+			}
 			// Hover action buttons: edit / copy / undo (Void-style, shown below-bubble on hover)
 			this._addMessageActionButtons(bubble, msg);
 		} else if (!isUser && msg.parts && msg.parts.length > 0) {
@@ -2394,34 +2461,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			}
 			this._renderMarkdownContent(contentEl, msg.content);
 			if (msg.toolCalls && msg.toolCalls.length > 0) {
-				const section = append(bubble, $(".tool-calls-section"));
-				// 2026-07-04: update_plan 是"替换语义"，只渲染最后一张卡片
-				// 避免累积多张卡片导致用户混淆
-				const filteredCalls: typeof msg.toolCalls = [];
-				let lastUpdatePlanIndex = -1;
-				for (let i = 0; i < msg.toolCalls.length; i++) {
-					if (msg.toolCalls[i].name === 'update_plan') {
-						lastUpdatePlanIndex = i;
-					}
-				}
-				for (let i = 0; i < msg.toolCalls.length; i++) {
-					const tc = msg.toolCalls[i];
-					if (tc.name === 'update_plan' && i !== lastUpdatePlanIndex) {
-						continue; // 跳过非最后的 update_plan
-					}
-					filteredCalls.push(tc);
-				}
-				for (const tc of filteredCalls) {
-					section.appendChild(this._maybeCreateClarifyCard(tc) ?? this._createToolCallCard(tc));
-				}
+				this._appendToolCallsWithPhaseGroups(bubble, msg.toolCalls, msg.streamPhase);
 			}
 		} else if (!isUser && msg.toolCalls && msg.toolCalls.length > 0) {
 			// 回退：工具调用存在但内容为空（流式输出早期阶段常见）
 			// 参考 void：工具调用作为独立的进度卡片渲染
-			const section = append(bubble, $(".tool-calls-section"));
-			for (const tc of msg.toolCalls) {
-				section.appendChild(this._maybeCreateClarifyCard(tc) ?? this._createToolCallCard(tc));
-			}
+			this._appendToolCallsWithPhaseGroups(bubble, msg.toolCalls, msg.streamPhase);
 		}
 
 		// Sub-agent cards (with grouping for parallel execution)
@@ -2886,6 +2931,124 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 
 		return card;
+	}
+
+	// --- Task Prompt Card (kanban task execution user message) ---
+
+	/**
+	 * Build a task prompt card directly from structured data (no regex parsing).
+	 * Called when a user message has `taskCard` metadata.
+	 */
+	private _buildTaskCardFromData(data: { title: string; description: string; source?: string; taskId?: string; dependencies?: readonly string[]; attachments?: readonly { name: string; mimeType: string }[] }): HTMLElement | null {
+		const card = $('.task-prompt-card');
+		// Header row
+		const header = append(card, $('.tpc-header'));
+		const left = append(header, $('.tpc-header-left'));
+		append(left, $('span.tpc-icon', undefined, '📋'));
+		append(left, $('span.tpc-title', undefined, data.title || '任务'));
+		append(header, $('.tpc-header-right'));
+		// Toggle button
+		const toggleBtn = append(header, $('.tpc-toggle'));
+		toggleBtn.textContent = '▾ 收起';
+		// Collapsible body
+		const body = append(card, $('.tpc-body'));
+		// Description (multi-line)
+		const descEl = append(body, $('.tpc-desc'));
+		descEl.textContent = data.description || '';
+		// Metadata row
+		const meta = append(body, $('.tpc-meta'));
+		if (data.source) {
+			append(meta, $('span.tpc-meta-item', undefined, `来源: ${data.source}`));
+		}
+		if (data.attachments && data.attachments.length > 0) {
+			append(meta, $('span.tpc-meta-item', undefined, `附件: ${data.attachments.map(a => a.name).join(', ')}`));
+		}
+
+		// Toggle logic
+		let collapsed = false;
+		toggleBtn.addEventListener('click', () => {
+			collapsed = !collapsed;
+			body.style.display = collapsed ? 'none' : '';
+			toggleBtn.textContent = collapsed ? '▸ 展开' : '▾ 收起';
+		});
+
+		return card;
+	}
+	/**
+	 * Incrementally append a tool call card (Void-style) to a parent element.
+	 * This is the shared implementation used by the P1.5 fast path in
+	 * _updateMessageDom (streaming—first tool_start) and anywhere else that
+	 * needs to add a single tool card without rebuilding the entire message DOM.
+	 */
+	/**
+	 * Phase name → display icon + label mapping used to render phase group
+	 * headers between tool call batches during task execution.
+	 */
+	private static readonly _PHASE_LABELS: Record<string, { icon: string; label: string }> = {
+		'understanding':    { icon: '🔍', label: '理解阶段 — Reading relevant code' },
+		'implementation':   { icon: '🔧', label: '实施阶段 — Making changes' },
+		'verification':     { icon: '✅', label: '验证阶段 — Testing' },
+		'llm_streaming':    { icon: '💬', label: 'LLM 推理' },
+		'tool_executing':   { icon: '🔧', label: '工具执行中' },
+	};
+
+	/**
+	 * Append tool call cards with phase group headers.  Tools that share the
+	 * same `streamPhase` are grouped together under a labelled section header.
+	 * If no phase info is available, tools are appended directly without groups.
+	 */
+	private _appendToolCallsWithPhaseGroups(
+		parent: HTMLElement,
+		toolCalls: readonly IToolCall[],
+		streamPhase?: string,
+	): void {
+		const section = append(parent, $('.tool-calls-section'));
+		const filteredCalls: IToolCall[] = [];
+		// update_plan dedup — keep only the last one
+		let lastUpdatePlanIdx = -1;
+		for (let i = 0; i < toolCalls.length; i++) {
+			if (toolCalls[i].name === 'update_plan') { lastUpdatePlanIdx = i; }
+		}
+		for (let i = 0; i < toolCalls.length; i++) {
+			if (toolCalls[i].name === 'update_plan' && i !== lastUpdatePlanIdx) { continue; }
+			filteredCalls.push(toolCalls[i]);
+		}
+
+		if (filteredCalls.length === 0) { return; }
+
+		// Single-phase case: all tools share the same streamPhase → render
+		// under one group header
+		if (streamPhase && streamPhase !== 'idle') {
+			const phaseInfo = AgentChatPanel._PHASE_LABELS[streamPhase];
+			if (phaseInfo) {
+				const group = append(section, $('.tpc-phase-group'));
+				const header = append(group, $('.tpc-phase-header'));
+				append(header, $('.tpc-phase-icon')).textContent = phaseInfo.icon;
+				append(header, $('.tpc-phase-label')).textContent = phaseInfo.label;
+				for (const tc of filteredCalls) {
+					const card = this._maybeCreateClarifyCard(tc) ?? this._createToolCallCard(tc);
+					group.appendChild(card);
+				}
+				return;
+			}
+		}
+
+		// Fallback — no phase grouping
+		for (const tc of filteredCalls) {
+			const card = this._maybeCreateClarifyCard(tc) ?? this._createToolCallCard(tc);
+			section.appendChild(card);
+		}
+	}
+
+	private _appendToolCard(container: HTMLElement, tc: IToolCall, msg: IAgentChatMessage): void {
+		const clarifyCard = this._maybeCreateClarifyCard(tc);
+		if (clarifyCard) {
+			container.appendChild(clarifyCard);
+			return;
+		}
+		const wrapper = this._createToolCallCard(tc);
+		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
+		container.appendChild(wrapper);
 	}
 
 	// --- Tool call card (Void ToolHeaderWrapper parity) ---
@@ -5721,8 +5884,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				} else {
 					this._closeMentionMenu();
 				}
+
+				// 更新字符计数器
+				this._updateCharCounter(val);
 			}),
 		);
+
 
 		// Hidden file input (for attach button + paste)
 		this._fileInput = append(this._container, $("input.chat-file-input")) as HTMLInputElement;
@@ -6068,9 +6235,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			}),
 		);
 
-		// Right wrap: context-usage ring + send circle
+		// Right wrap: context-usage ring + char counter + send circle
 		const rightWrap = append(toolbar, $(".provider-model-chip-wrap"));
 		this._renderContextUsageRing(rightWrap);
+
+		// 字符计数器（在发送按钮左侧）
+		this._charCounterEl = append(rightWrap, $('span.chat-char-counter'));
 
 		// Send / Cancel button
 		this._sendBtn = append(
@@ -6268,7 +6438,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (!this._sendBtn) {
 			return;
 		}
-		const hasInput = !!(this._getComposerText().trim() || this._attachments.length > 0);
+		const text = this._getComposerText();
+		const hasInput = !!(text.trim() || this._attachments.length > 0);
 
 		// 流式输出过程中有输入内容 → 显示为「排队发送」按钮，不是「取消」按钮
 		const isQueueing = this._isSending && hasInput;
@@ -6288,6 +6459,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		} else {
 			this._sendBtn.title = '发送 (Enter)';
 		}
+
+		// 更新字符计数器
+		this._updateCharCounter(text);
 
 		this._renderSendButtonSvg();
 	}
@@ -8411,6 +8585,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 */
 	private _startStreamScroll(): void {
 		if (this._streamScrollRaf !== null) { return; }
+		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
+		console.warn(`[ScrollDiag] _startStreamScroll START caller: ${diagStack}`);
 		const tick = () => {
 			this._streamScrollRaf = null;
 			// 流式结束 → 停止循环（唯一合法的停止条件）
@@ -8431,6 +8607,29 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (this._streamScrollRaf !== null) {
 			cancelAnimationFrame(this._streamScrollRaf);
 			this._streamScrollRaf = null;
+			const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
+			console.warn(`[ScrollDiag] _stopStreamScroll STOP caller: ${diagStack}`);
+		}
+	}
+
+	/**
+	 * P0: rAF 批量滚动调度——避免 updateMessage 中每个 delta 同步强制回流。
+	 * 同帧多次调用只滚一次。流式期间 _startStreamScroll rAF 循环已持续钉底，
+	 * 此调度不生效（避免重复）。
+	 */
+	private _scheduleScrollToBottom(): void {
+		// 流式期间 _startStreamScroll rAF 循环持续钉底，不需要额外调度
+		if (this._isSending) { return; }
+
+		this._pendingScrollToBottom = true;
+		if (this._pendingScrollToBottomRaf === null) {
+			this._pendingScrollToBottomRaf = requestAnimationFrame(() => {
+				this._pendingScrollToBottomRaf = null;
+				if (this._pendingScrollToBottom) {
+					this._pendingScrollToBottom = false;
+					this._scrollToBottom(false);
+				}
+			});
 		}
 	}
 
@@ -8563,6 +8762,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 */
 	private _scrollToBottom(force: boolean): void {
 		if (!this._messagesContainer) { return; }
+		// ── SCROLL DIAG: 记录每次滚动的调用栈 ──
+		const diagStack = new Error().stack?.split('\n').slice(2, 6).map(s => s.trim()).join(' ← ') || '?';
+		const prevTop = this._messagesContainer.scrollTop;
+		const prevHeight = this._messagesContainer.scrollHeight;
+		const wasAtBtm = (prevHeight - prevTop - this._messagesContainer.clientHeight) < 80;
 
 		const instant = force || this._wasLoading;
 
@@ -8605,6 +8809,15 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			this._messagesContainer.scrollTop = this._messagesContainer.scrollHeight;
 		} else {
 			this._messagesContainer.scrollTo({ top: this._messagesContainer.scrollHeight, behavior: 'smooth' });
+		}
+
+		// ── SCROLL DIAG: 记录滚动效果 ──
+		if (this._messagesContainer) {
+			const delta = this._messagesContainer.scrollTop - prevTop;
+			const hDelta = this._messagesContainer.scrollHeight - prevHeight;
+			if (Math.abs(delta) > 5 || hDelta !== 0) {
+				console.warn(`[ScrollDiag] _scrollToBottom force=${force} instant=${instant} prevScroll=${prevTop}→${this._messagesContainer.scrollTop} (Δ${delta}) scrollH=${prevHeight}→${this._messagesContainer.scrollHeight} (Δ${hDelta}) wasAtBtm=${wasAtBtm} isSending=${this._isSending} isAtBtm=${this._isAtBottom}\n  caller: ${diagStack}`);
+			}
 		}
 	}
 
@@ -8833,6 +9046,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		return out.replace(/\u00A0/g, ' ');
 	}
 
+	/** 更新字符计数器（纯信息展示，不限制输入） */
+	private _updateCharCounter(text: string): void {
+		if (!this._charCounterEl) { return; }
+		this._charCounterEl.textContent = `${text.length}`;
+	}
+
 	/** 设置输入框纯文本内容（清空后写入，并重算高度） */
 	private _setComposerText(text: string): void {
 		const root = this._textarea;
@@ -8846,6 +9065,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			? Math.min(Math.max(root.scrollHeight, this._resizeMaxH), maxAllowed)
 			: Math.min(root.scrollHeight, this._resizeMaxH);
 		root.style.height = newHeight + 'px';
+		// 更新字符计数器
+		this._updateCharCounter(text);
 	}
 
 	/** 返回光标在纯文本（排除芯片）中的偏移量，用于 / 与 @ 检测 */

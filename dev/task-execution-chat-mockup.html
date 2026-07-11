@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Task Execution Chat — Tool Cards Mockup</title>
+<style>
+:root {
+  /* VS Code Dark Theme Tokens */
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-tertiary: #2d2d30;
+  --bg-input: #3c3c3c;
+  --bg-hover: #2a2d2e;
+  --border: #3e3e42;
+  --border-active: #007acc;
+  --text-primary: #cccccc;
+  --text-secondary: #999999;
+  --text-muted: #6a6a6a;
+  --accent: #007acc;
+  --accent-hover: #1a8ad4;
+  --success: #4ec9b0;
+  --warning: #cca700;
+  --error: #f44747;
+  --info: #569cd6;
+  --tool-call: #4fc1ff;
+  --tool-result: #ce9178;
+  --streaming: #6a9955;
+  --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+  min-height: 100vh;
+}
+
+/* ============ Chat Panel Container ============ */
+.chat-panel {
+  width: 100%;
+  max-width: 800px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ============ Agent Header ============ */
+.agent-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+.agent-avatar {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #007acc, #4fc1ff);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 16px; color: #fff;
+}
+.agent-info { flex: 1; }
+.agent-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.agent-model { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.agent-status {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--success);
+}
+.agent-status .dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--success);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ============ Message: User (Task Prompt) ============ */
+.msg-user {
+  display: flex; gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+}
+.msg-user .avatar {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; flex-shrink: 0;
+}
+.msg-user .content { flex: 1; min-width: 0; }
+.msg-user .role { font-size: 11px; font-weight: 600; color: var(--accent); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* ============ Task Prompt Card (embedded in user message) ============ */
+.task-prompt-card {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  position: relative;
+  overflow: hidden;
+  max-width: 100%;
+  margin-bottom: 8px;
+}
+.task-prompt-card::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px; background: linear-gradient(180deg, var(--accent), #4fc1ff);
+  border-radius: 3px 0 0 3px;
+}
+
+/* --- Task Card Header Bar (always visible, click to toggle) --- */
+.task-prompt-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px 6px 10px;
+  cursor: pointer; user-select: none;
+  transition: background 0.15s;
+}
+.task-prompt-header:hover { background: rgba(255,255,255,0.03); }
+.task-prompt-icon {
+  font-size: 13px; flex-shrink: 0; line-height: 1;
+}
+.task-prompt-summary {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
+  gap: 1px;
+}
+.task-prompt-title {
+  font-size: 11.5px; font-weight: 600; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.task-prompt-meta {
+  display: flex; gap: 3px; flex-wrap: wrap;
+}
+.task-prompt-meta .tag {
+  font-size: 9.5px; padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: rgba(0,122,204,0.15);
+  color: var(--accent);
+  font-weight: 500;
+  display: flex; align-items: center; gap: 3px;
+}
+.task-prompt-toggle {
+  flex-shrink: 0; color: var(--text-muted);
+  font-size: 9.5px; transition: transform 0.2s;
+  display: flex; align-items: center; gap: 3px;
+  padding: 1px 6px; border-radius: var(--radius-sm);
+  background: transparent; border: 1px solid var(--border);
+  cursor: pointer; font-family: var(--font-sans);
+  position: relative; z-index: 1;
+}
+.task-prompt-toggle:hover { background: var(--bg-hover); }
+.task-prompt-toggle .chevron {
+  transition: transform 0.2s;
+  font-size: 8px;
+}
+.task-prompt-card.expanded .task-prompt-toggle .chevron {
+  transform: rotate(180deg);
+}
+.task-prompt-toggle-text { font-size: 10px; color: var(--text-muted); }
+
+/* --- Task Card Detail Body (collapsible) --- */
+.task-prompt-body {
+  max-height: 0; overflow: hidden;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+  border-top: 1px solid transparent;
+  transition: max-height 0.3s ease, padding 0.3s ease, border-color 0.3s ease;
+}
+.task-prompt-card.expanded .task-prompt-body {
+  max-height: 300px;
+  border-top-color: var(--border);
+}
+.task-prompt-body-inner {
+  padding: 6px 10px 8px;
+}
+.task-prompt-desc {
+  font-size: 11px; color: var(--text-secondary);
+  line-height: 1.45; margin-bottom: 6px;
+  max-height: 100px; overflow-y: auto;
+}
+.task-prompt-desc strong { color: var(--text-primary); }
+.task-prompt-detail-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 6px 16px; margin-bottom: 10px;
+}
+.task-prompt-detail-item {
+  font-size: 11px; display: flex; gap: 4px;
+}
+.task-prompt-detail-item .lbl { color: var(--text-muted); flex-shrink: 0; }
+.task-prompt-detail-item .val { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-prompt-detail-item .val.link { color: var(--accent); }
+.task-prompt-attachments {
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
+.attachment-pill {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 8px;
+  background: rgba(78,201,176,0.1);
+  border: 1px solid rgba(78,201,176,0.2);
+  border-radius: var(--radius-sm);
+  font-size: 10px; color: var(--success);
+}
+
+/* ============ Message: Assistant (Agent Response) ============ */
+.msg-assistant {
+  display: flex; gap: 10px;
+  padding: 14px 16px;
+  background: transparent;
+  border-radius: var(--radius-md);
+}
+
+/* ============ Tool Card (new design) ============ */
+.tool-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.tool-card:hover {
+  border-color: var(--border-active);
+  box-shadow: var(--shadow-md);
+}
+
+/* Tool Card Header */
+.tool-card-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid transparent;
+  transition: background 0.15s;
+}
+.tool-card-header:hover { background: var(--bg-hover); }
+.tool-card.expanded .tool-card-header {
+  border-bottom-color: var(--border);
+}
+
+.tool-card-icon {
+  width: 24px; height: 24px;
+  border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; flex-shrink: 0;
+}
+.tool-card-icon.tool-call   { background: rgba(79,193,255,0.12); color: #4fc1ff; }
+.tool-card-icon.file-read   { background: rgba(78,201,176,0.12); color: #4ec9b0; }
+.tool-card-icon.file-write  { background: rgba(78,201,176,0.12); color: #4ec9b0; }
+.tool-card-icon.code-exec   { background: rgba(206,145,120,0.12); color: #ce9178; }
+.tool-card-icon.search      { background: rgba(204,167,0,0.12); color: #cca700; }
+.tool-card-icon.error       { background: rgba(244,71,71,0.12); color: #f44747; }
+.tool-card-icon.success     { background: rgba(78,201,176,0.12); color: #4ec9b0; }
+.tool-card-icon.running     { background: rgba(86,156,214,0.12); color: #569cd6; }
+
+.tool-card-name {
+  flex: 1; font-size: 12px; font-weight: 600;
+  color: var(--text-primary); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-card-status {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 500; flex-shrink: 0;
+}
+.tool-card-status.running { color: var(--info); }
+.tool-card-status.done    { color: var(--success); }
+.tool-card-status.error   { color: var(--error); }
+
+.tool-card-spinner {
+  width: 12px; height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--info);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.tool-card-duration {
+  font-size: 10px; color: var(--text-muted); flex-shrink: 0;
+}
+
+/* Tool Card Expand Chevron */
+.tool-expand-icon {
+  transition: transform 0.2s;
+  color: var(--text-muted); font-size: 10px;
+}
+.tool-card.expanded .tool-expand-icon { transform: rotate(180deg); }
+
+/* Tool Card Body (collapsed by default) */
+.tool-card-body {
+  max-height: 0; overflow: hidden;
+  transition: max-height 0.25s ease-out, padding 0.25s;
+}
+.tool-card.expanded .tool-card-body {
+  max-height: 600px;
+}
+
+.tool-card-body-inner {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Tool Args / Result Code Block */
+.tool-block-label {
+  font-size: 10px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.tool-code {
+  background: #1a1a1a;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.tool-code::-webkit-scrollbar { width: 6px; }
+.tool-code::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.tool-code::-webkit-scrollbar-track { background: transparent; }
+
+/* Syntax highlighting in tool code */
+.tool-code .key { color: #9cdcfe; }
+.tool-code .val { color: #ce9178; }
+.tool-code .str { color: #ce9178; }
+.tool-code .num { color: #b5cea8; }
+.tool-code .bool { color: #569cd6; }
+.tool-code .comment { color: #6a9955; }
+.tool-code .path { color: #4ec9b0; }
+
+/* Diff / Patch view */
+.diff-add { color: #4ec9b0; }
+.diff-rem { color: #f44747; }
+.diff-hdr { color: #569cd6; }
+
+/* ============ Text Response ============ */
+.text-response {
+  font-size: 13px; line-height: 1.6; color: var(--text-primary);
+  padding: 4px 0;
+}
+.text-response p { margin-bottom: 10px; }
+.text-response code {
+  background: var(--bg-tertiary);
+  padding: 1px 5px; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--success);
+}
+.text-response pre {
+  background: #1a1a1a; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+  font-family: var(--font-mono); font-size: 11px;
+  overflow-x: auto; margin: 8px 0;
+}
+.text-response strong { color: #e8e8e8; }
+.text-response ul, .text-response ol { padding-left: 20px; margin-bottom: 10px; }
+.text-response li { margin-bottom: 4px; }
+
+/* ============ Streaming Cursor ============ */
+.streaming-cursor {
+  display: inline-block;
+  width: 2px; height: 14px;
+  background: var(--accent);
+  animation: blink 1s step-end infinite;
+  vertical-align: text-bottom; margin-left: 2px;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ============ Task Summary Footer ============ */
+.task-summary {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+}
+.task-summary-stat { display: flex; align-items: center; gap: 4px; }
+.task-summary-stat .stat-val { font-weight: 600; color: var(--text-primary); }
+.task-summary-stat .stat-lbl { color: var(--text-muted); }
+.task-summary-sep { width: 1px; height: 16px; background: var(--border); }
+
+/* ============ Section Labels ============ */
+.section-label {
+  font-size: 10px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 1px;
+  margin: 20px 0 8px;
+  display: flex; align-items: center; gap: 8px;
+}
+.section-label::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+/* ============ Tool Card Group (compact stack) ============ */
+.tool-group {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.tool-group-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  background: rgba(0,122,204,0.08);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px; color: var(--accent); font-weight: 600;
+}
+.tool-group-header .icon { font-size: 14px; }
+.tool-group .tool-card {
+  margin: 0; border: none; border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+.tool-group .tool-card:last-child { border-bottom: none; }
+</style>
+</head>
+<body>
+
+<div class="chat-panel">
+
+  <!-- ===== Agent Header ===== -->
+  <div class="agent-header">
+    <div class="agent-avatar">C</div>
+    <div class="agent-info">
+      <div class="agent-name">Coder</div>
+      <div class="agent-model">deepseek-v4-pro-ioa · 128K context</div>
+    </div>
+    <div class="agent-status"><span class="dot"></span> 执行中</div>
+  </div>
+
+  <!-- ===== User Message: Task Prompt ===== -->
+  <div class="msg-user">
+    <div class="avatar">👤</div>
+    <div class="content">
+      <div class="role">Task — 任务看板</div>
+      <div class="task-prompt-card expanded">
+        <!-- Header bar — always visible, click to toggle -->
+        <div class="task-prompt-header" onclick="this.closest('.task-prompt-card').classList.toggle('expanded')">
+          <span class="task-prompt-icon">📋</span>
+          <div class="task-prompt-summary">
+            <div class="task-prompt-title">请执行以下任务: 【VsSaros】【聊天框】参数报错</div>
+            <div class="task-prompt-meta">
+              <span class="tag">🔗 TAPD 任务</span>
+              <span class="tag">⚡ 高优先级</span>
+              <span class="tag">📁 sarosis-agents-client</span>
+              <span class="tag">🧑 Coder</span>
+            </div>
+          </div>
+          <div class="task-prompt-toggle" onclick="event.stopPropagation(); this.closest('.task-prompt-card').classList.toggle('expanded')">
+            <span class="task-prompt-toggle-text">收起</span>
+            <span class="chevron">▼</span>
+          </div>
+        </div>
+        <!-- Collapsible detail body -->
+        <div class="task-prompt-body">
+          <div class="task-prompt-body-inner">
+            <div class="task-prompt-desc">
+              <p>用户反馈：在聊天框中发送消息时，如果参数格式不正确，会出现未捕获的异常，导致聊天框白屏。需要添加参数校验逻辑并给出友好的错误提示。</p>
+            </div>
+            <div class="task-prompt-detail-grid">
+              <div class="task-prompt-detail-item"><span class="lbl">任务ID：</span><span class="val">task_1783739175060_cx0mqlc</span></div>
+              <div class="task-prompt-detail-item"><span class="lbl">状态：</span><span class="val" style="color:var(--info);">执行中</span></div>
+              <div class="task-prompt-detail-item"><span class="lbl">来源：</span><span class="val link">TAPD #1783739175060</span></div>
+              <div class="task-prompt-detail-item"><span class="lbl">优先级：</span><span class="val" style="color:var(--warning);">高</span></div>
+              <div class="task-prompt-detail-item"><span class="lbl">工作目录：</span><span class="val">sarosis-agents-client</span></div>
+              <div class="task-prompt-detail-item"><span class="lbl">执行 Agent：</span><span class="val">Coder (coder)</span></div>
+              <div class="task-prompt-detail-item"><span class="lbl">附件数量：</span><span class="val">1 张图片</span></div>
+              <div class="task-prompt-detail-item"><span class="lbl">描述长度：</span><span class="val">266KB</span></div>
+            </div>
+            <div class="task-prompt-attachments">
+              <span class="attachment-pill">🖼️ screenshot-error.png (138KB)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Assistant Message: Tool Cards + Text Response ===== -->
+  <div class="msg-assistant">
+    <div class="avatar" style="background: linear-gradient(135deg, #007acc, #4fc1ff); font-size: 13px;">🤖</div>
+    <div class="content" style="flex:1; min-width:0;">
+
+      <!-- Tool Group: Understanding Phase -->
+      <div class="tool-group">
+        <div class="tool-group-header">
+          <span class="icon">🔍</span> 理解阶段 — Reading relevant source files
+        </div>
+
+        <!-- Tool 1: file_read -->
+        <div class="tool-card expanded" style="animation: none;">
+          <div class="tool-card-header">
+            <div class="tool-card-icon file-read">📄</div>
+            <div class="tool-card-name">file_read: agentChatService.ts</div>
+            <div class="tool-card-status done">✓</div>
+            <div class="tool-card-duration">342ms</div>
+          </div>
+          <div class="tool-card-body" style="max-height: 600px;">
+            <div class="tool-card-body-inner">
+              <div class="tool-block-label">参数</div>
+              <div class="tool-code">{
+  <span class="key">"filePath"</span>: <span class="str">"src/vs/sessions/contrib/agentStudio/browser/agentChatService.ts"</span>,
+  <span class="key">"startLine"</span>: <span class="num">760</span>,
+  <span class="key">"endLine"</span>: <span class="num">900</span>
+}</div>
+              <div class="tool-block-label" style="margin-top: 10px;">结果 <span style="color:#4ec9b0;">(1.2KB read)</span></div>
+              <div class="tool-code"><span class="comment">// sendMessage method at line 770</span>
+<span class="diff-hdr">@@ 770,15 @@</span>
+  <span class="key">async</span> sendMessage(
+    agentId: <span class="key">string</span>,
+    message: <span class="key">string</span>,
+    options: IChatSendOptions,
+    onDelta: (delta: IChatStreamDelta) => <span class="key">void</span>,
+  ): Promise&lt;ChatMessage&gt; {
+    <span class="comment">// No input validation — crashes on malformed options</span>
+    <span class="diff-add">+   if (!agentId || !message) {</span>
+    <span class="diff-add">+     throw new Error('agentId and message are required');</span>
+    <span class="diff-add">+   }</span>
+    ...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tool 2: file_read -->
+        <div class="tool-card expanded" style="animation: none;">
+          <div class="tool-card-header">
+            <div class="tool-card-icon file-read">📄</div>
+            <div class="tool-card-name">file_read: nativeChatEditorPane.ts</div>
+            <div class="tool-card-status done">✓</div>
+            <div class="tool-card-duration">218ms</div>
+          </div>
+          <div class="tool-card-body" style="max-height: 600px;">
+            <div class="tool-card-body-inner">
+              <div class="tool-block-label">参数</div>
+              <div class="tool-code">{ <span class="key">"filePath"</span>: <span class="str">"...browser/nativeChatEditorPane.ts"</span>, <span class="key">"startLine"</span>: <span class="num">310</span>, <span class="key">"endLine"</span>: <span class="num">420</span> }</div>
+              <div class="tool-block-label" style="margin-top: 10px;">结果 <span style="color:#4ec9b0;">(0.9KB read)</span></div>
+              <div class="tool-code"><span class="diff-hdr">@@ 310,20 @@</span>
+  <span class="key">private async</span> _sendMessageInternal(message: <span class="key">string</span>): Promise&lt;<span class="key">void</span>&gt; {
+    <span class="key">const</span> options = this._buildSendOptions();
+    <span class="diff-add">+   // BUG: options.attachments may be malformed from task execution</span>
+    ...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tool Group: Implementation Phase -->
+      <div class="tool-group">
+        <div class="tool-group-header">
+          <span class="icon">🔧</span> 实施阶段 — Making fixes
+        </div>
+
+        <!-- Tool 3: code_execute — Running -->
+        <div class="tool-card expanded" style="animation: none;">
+          <div class="tool-card-header">
+            <div class="tool-card-icon running">🔄</div>
+            <div class="tool-card-name">code_execute: Parameter validation patch (Inline)</div>
+            <div class="tool-card-status running">
+              <span class="tool-card-spinner"></span> 运行中
+            </div>
+          </div>
+          <div class="tool-card-body" style="max-height: 600px;">
+            <div class="tool-card-body-inner">
+              <div class="tool-block-label">代码</div>
+              <div class="tool-code"><span class="comment">// Patch agentChatService.ts — add input validation</span>
+<span class="key">function</span> validateSendOptions(options: IChatSendOptions): <span class="key">void</span> {
+  <span class="key">if</span> (!options.workspaceId) <span class="key">throw new</span> Error(<span class="str">'workspaceId is required'</span>);
+  <span class="key">if</span> (options.attachments) {
+    <span class="key">for</span> (<span class="key">const</span> att <span class="key">of</span> options.attachments) {
+      <span class="key">if</span> (!att.id || !att.type) <span class="key">throw new</span> Error(<span class="str">'Invalid attachment'</span>);
+      <span class="key">if</span> (!att.data && !att.url) <span class="key">throw new</span> Error(<span class="str">'Attachment has no data'</span>);
+    }
+  }
+}</div>
+              <div class="tool-block-label" style="margin-top: 10px;">输出 <span style="color:#569cd6;">(streaming...)</span></div>
+              <div class="tool-code"><span style="color:#6a9955;">Applying patch to agentChatService.ts... 3/4 hunks applied ✓</span>
+<span class="diff-add">+ function validateSendOptions</span>
+<span class="diff-add">+   └── line 772: added validation call</span>
+<span style="color:#6a9955;">Compiling TypeScript... <span class="streaming-cursor"></span></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tool Group: Verification Phase -->
+      <div class="tool-group">
+        <div class="tool-group-header">
+          <span class="icon">✅</span> 验证阶段 — Building and testing
+        </div>
+
+        <!-- Tool 4: code_execute — Done -->
+        <div class="tool-card expanded" style="animation: none;">
+          <div class="tool-card-header">
+            <div class="tool-card-icon code-exec">🚀</div>
+            <div class="tool-card-name">code_execute: npm run transpile-client (Command Line)</div>
+            <div class="tool-card-status done">✓</div>
+            <div class="tool-card-duration">4.2s</div>
+          </div>
+          <div class="tool-card-body" style="max-height: 600px;">
+            <div class="tool-card-body-inner">
+              <div class="tool-block-label">输出 <span style="color:#4ec9b0;">(exit code 0)</span></div>
+              <div class="tool-code">> sarosis-agents-client@1.0 transpile-client
+> node build/next/index.ts transpile
+
+<span style="color:#6a9955;">[10:41:04] Starting compilation...
+[10:41:07] Finished compilation with 0 errors after 3408 ms</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tool 5: error (simulated) -->
+        <div class="tool-card expanded" style="animation: none;">
+          <div class="tool-card-header">
+            <div class="tool-card-icon error">❌</div>
+            <div class="tool-card-name">code_execute: npm test agentChatService (Command Line)</div>
+            <div class="tool-card-status error">✗</div>
+            <div class="tool-card-duration">1.8s</div>
+          </div>
+          <div class="tool-card-body" style="max-height: 600px;">
+            <div class="tool-card-body-inner">
+              <div class="tool-block-label">错误 <span style="color:#f44747;">(exit code 1)</span></div>
+              <div class="tool-code"><span style="color:#f44747;">FAIL  agentChatService.test.ts
+  ● sendMessage › should reject invalid attachments
+    Expected: Error("Invalid attachment")
+    Received: TypeError("Cannot read properties of undefined")
+
+      15 |   it('should reject invalid attachments', () => {
+    > 17 |     expect(() => validateSendOptions(opts)).toThrow(Error);
+         |                                             ^
+      18 |   });
+
+Test Suites: 1 failed, 0 passed</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Streaming Text Response -->
+      <div class="text-response">
+        <p>我已经完成了对 <code>agentChatService.ts</code> 的参数校验修复。以下是修改摘要：</p>
+        <p><strong>新增函数</strong> <code>validateSendOptions()</code>：
+        • 校验 <code>workspaceId</code> 是否存在
+        • 校验 <code>attachments</code> 数组中的每个元素必须有 <code>id</code>、<code>type</code> 和有效数据
+        • 在 <code>sendMessage()</code> 入口处立即调用，失败时抛出明确的错误信息而非静默崩溃<span class="streaming-cursor"></span></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Task Execution Summary ===== -->
+  <div class="task-summary">
+    <div class="task-summary-stat">
+      <span class="stat-val">4/5</span>
+      <span class="stat-lbl">工具调用完成</span>
+    </div>
+    <div class="task-summary-sep"></div>
+    <div class="task-summary-stat">
+      <span class="stat-val">6.8s</span>
+      <span class="stat-lbl">总耗时</span>
+    </div>
+    <div class="task-summary-sep"></div>
+    <div class="task-summary-stat">
+      <span class="stat-val">+12</span>
+      <span class="stat-lbl">行代码变更</span>
+    </div>
+    <div class="task-summary-sep"></div>
+    <div class="task-summary-stat" style="color: var(--warning);">
+      <span class="stat-val">1</span>
+      <span class="stat-lbl" style="color: var(--warning);">测试失败</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- Make tool cards and task card expandable -->
+<script>
+// Tool card toggle
+document.querySelectorAll('.tool-card-header').forEach(header => {
+  header.addEventListener('click', (e) => {
+    // Don't interfere with task-prompt-header clicks
+    const card = header.closest('.tool-card');
+    if (!card) return;
+    card.classList.toggle('expanded');
+    const body = card.querySelector('.tool-card-body');
+    if (card.classList.contains('expanded')) {
+      body.style.maxHeight = body.scrollHeight + 'px';
+    } else {
+      body.style.maxHeight = '0';
+    }
+  });
+});
+
+// Task prompt card toggle — update button text on expand/collapse
+document.querySelectorAll('.task-prompt-header').forEach(header => {
+  header.addEventListener('click', () => {
+    const card = header.closest('.task-prompt-card');
+    if (!card) return;
+    card.classList.toggle('expanded');
+    const toggleText = card.querySelector('.task-prompt-toggle-text');
+    if (toggleText) {
+      toggleText.textContent = card.classList.contains('expanded') ? '收起' : '详情';
+    }
+  });
+});
+</script>
+</body>
+</html>

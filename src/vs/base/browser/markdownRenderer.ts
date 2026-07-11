@@ -246,6 +246,11 @@ export interface IRenderedMarkdown extends IDisposable {
  * **Note** that for most cases you should be using {@link import('../../editor/browser/widget/markdownRenderer/browser/markdownRenderer.js').MarkdownRenderer MarkdownRenderer}
  * which comes with support for pretty code block rendering and which uses the default way of handling links.
  */
+
+// P1: 缓存 marked.Marked 实例，按 markedExtensions 引用作 key。
+// renderMarkdown 是高频路径（流式 markdown 200ms 节拍调用），每次 new marked.Marked
+// 都会 malloc + 初始化 plugin 链，复用实例可减少 GC 压力。
+const _markedInstanceCache = new Map<marked.MarkedExtension[] | string, marked.Marked>();
 export function renderMarkdown(
 	markdown: IMarkdownString,
 	options: MarkdownRenderOptions = {},
@@ -254,7 +259,13 @@ export function renderMarkdown(
 	const disposables = new DisposableStore();
 	let isDisposed = false;
 
-	const markedInstance = new marked.Marked(...(options.markedExtensions ?? []));
+	// P1: 缓存 marked.Marked 实例——每次 new 都会 malloc + 初始化 plugin 链。
+	// 按 markedExtensions 引用作 key，同一套扩展只创建一次。
+	const extKey = options.markedExtensions ?? '_default';
+	if (!_markedInstanceCache.has(extKey)) {
+		_markedInstanceCache.set(extKey, new marked.Marked(...(options.markedExtensions ?? [])));
+	}
+	const markedInstance = _markedInstanceCache.get(extKey)!;
 	const { renderer, codeBlocks, syncCodeBlocks } = createMarkdownRenderer(
 		markedInstance,
 		options,

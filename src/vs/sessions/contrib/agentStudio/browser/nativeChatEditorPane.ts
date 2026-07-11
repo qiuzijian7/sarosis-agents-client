@@ -93,6 +93,14 @@ export class NativeChatEditorPane extends EditorPane {
 	 */
 	private _isExternalSend = false;
 	/**
+	 * Flag to prevent _selectAndLoadAgent reload during the execution‑setup
+	 * window: onDidChangeTaskBoard fires BEFORE executeTaskForBoard starts
+	 * streaming, so _isSending is still false when the 1500ms reload timer
+	 * fires.  Setting this flag keeps the guard active until the first
+	 * streaming delta arrives (which sets _isSending=true).
+	 */
+	private _taskExecutingSessionId: string | null = null;
+	/**
 	 * 当前流式 assistant 消息的共享状态，供 _sendMessageInternal 回调和
 	 * onDidStreamDelta 监听器共同访问，确保本地发送和外部发送（看板）走同一套
 	 * 流式 UI 路径（文本/工具/记忆/usage 卡片）。
@@ -110,6 +118,17 @@ export class NativeChatEditorPane extends EditorPane {
 	 */
 	private _externalSendJustFinished = false;
 	private _currentMaxContextTokens: number | undefined;
+
+	// ── P0: Delta 输入缓冲层 ──
+	// 流式期间每个 SSE delta (text/thinking/tool_*/usage/memory/phase) 都需
+	// 触发 updateMessage() → DOM 更新 → _scrollToBottom()，高峰期每秒 50-100
+	// 次调用。缓冲合并 25ms 内的同类型 delta（text 只保留最后一个），降低
+	// updateMessage 调用频率到约 40fps。
+	private _deltaBuffer: Array<{ type: string; delta: any }> = [];
+	private _deltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+	private static readonly DELTA_FLUSH_INTERVAL_MS = 25;
+	/** 最后发射到 panel 的 text content——用于跳过与上一批重复的 text delta。 */
+	private _lastFlushedTextContent: string = '';
 	/**
 	 * Whether this pane's editor tab is currently the active (focused) tab
 	 * in its group. Tracked via {@link IEditorGroup.onDidActiveEditorChange}.
@@ -979,6 +998,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._chatPanel.setSending(false);
 				this._isSending = false;
 				this._isExternalSend = false;
+				this._taskExecutingSessionId = null;
 				// 标记外部发送刚完成 — onDidChangeTaskBoard 跳过后续 reload 避免闪烁。
 				// 流式 UI 已正确显示所有内容，全量 setMessages 会覆盖导致闪烁。
 				this._externalSendJustFinished = true;
@@ -989,6 +1009,7 @@ export class NativeChatEditorPane extends EditorPane {
 				if (!this._isSending) {
 					this._isSending = true;
 					this._isExternalSend = true;
+					this._taskExecutingSessionId = this._currentSessionId;
 					this._chatPanel.setSending(true);
 					this._initStreamingMessage();
 				}
@@ -1004,21 +1025,45 @@ export class NativeChatEditorPane extends EditorPane {
 		// 1. 流式进行中（_isSending=true）跳过 — 清空流式内容会导致严重闪烁
 		// 2. 防抖 timer — 多个 board change 事件只触发最后一次 reload
 		this._register(this._taskBoardService.onDidChangeTaskBoard(() => {
-			if (!this._currentAgentId || !this._chatPanel) { return; }
+			if (!this._currentAgentId || !this._chatPanel) {
+				console.info('[ChatFlickerDiag] onDidChangeTaskBoard SKIP: no agent or panel (agentId=%s)', this._currentAgentId || 'null');
+				return;
+			}
 			// 流式进行中不 reload — 会清空正在显示的 streaming text/tool cards
-			if (this._isSending) { return; }
+			if (this._isSending) {
+				console.info('[ChatFlickerDiag] onDidChangeTaskBoard SKIP: _isSending=true, agentId=%s', this._currentAgentId);
+				return;
+			}
+			// Task execution setup window: onDidChangeTaskBoard fires in
+			// Phase 2 (ensureTaskAgent→fire) BEFORE executeTaskForBoard
+			// starts streaming.  The 1500ms reload timer below can fire
+			// before _isSending is set by the first delta, causing a full
+			// _selectAndLoadAgent → setMessages → DOM rebuild → scroll jump.
+			if (this._taskExecutingSessionId === this._currentSessionId) {
+				console.info('[ChatFlickerDiag] onDidChangeTaskBoard SKIP: taskExecutingSession, agentId=%s sessionId=%s', this._currentAgentId, this._currentSessionId);
+				return;
+			}
 			// 外部发送刚完成 — 流式 UI 已正确显示所有内容，跳过 reload 避免闪烁。
 			// 用户下次主动操作（切换 agent / 手动发送）时清除标志。
 			if (this._externalSendJustFinished) {
+				console.info('[ChatFlickerDiag] onDidChangeTaskBoard SKIP: _externalSendJustFinished=true, agentId=%s', this._currentAgentId);
 				this._externalSendJustFinished = false;
 				return;
 			}
 			// 清除之前的 pending timer，只让最后一次 board change 触发 reload
-			if (this._taskBoardReloadTimer) { clearTimeout(this._taskBoardReloadTimer); }
+			if (this._taskBoardReloadTimer) {
+				console.info('[ChatFlickerDiag] onDidChangeTaskBoard RESET timer, agentId=%s', this._currentAgentId);
+				clearTimeout(this._taskBoardReloadTimer);
+			}
+			console.info('[ChatFlickerDiag] onDidChangeTaskBoard QUEUE reload (1500ms), agentId=%s', this._currentAgentId);
 			this._taskBoardReloadTimer = setTimeout(() => {
 				this._taskBoardReloadTimer = null;
 				if (this._currentAgentId && !this._isSending) {
-					void this._selectAndLoadAgent(this._currentAgentId);
+					console.info('[ChatFlickerDiag] onDidChangeTaskBoard EXEC reload (light), agentId=%s', this._currentAgentId);
+					// P0: 轻量重载——board change 只更新消息列表，不重建整个聊天 UI。
+					// _selectAndLoadAgent 会 setAgent + setMessages 双重重建（每步 ~600ms），
+					// 导致滚动条跳动和 UI 闪烁。这里只拉取最新历史并原地更新。
+					void this._reloadChatHistory(this._currentAgentId);
 				}
 			}, 1500);
 		}));
@@ -1100,6 +1145,66 @@ export class NativeChatEditorPane extends EditorPane {
 	// this._workflowTrace via start() in _initChatPanel().
 
 	/**
+	 * P0: 轻量级聊天历史重载——跳过 setAgent 全 UI 重建，仅更新消息列表。
+	 *
+	 * 与 _selectAndLoadAgent 的区别：
+	 * - 不调用 setAgent() → 不重建 header / input area / 面板 UI
+	 * - 保持滚动位置（不强制滚到底部，除非用户已在底部）
+	 *
+	 * 用于 onDidChangeTaskBoard 触发的被动 reload，避免滚动条莫名跳动。
+	 */
+	private async _reloadChatHistory(agentId: string): Promise<void> {
+		if (!this._chatPanel || !this._currentSessionId) { return; }
+		if (this._isSending) { return; }
+
+		const t0 = performance.now();
+		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
+		console.warn(`[ScrollDiag] _reloadChatHistory START agentId=${agentId} paneId=${this._paneId} caller: ${diagStack}`);
+		this._logService.debug(`[NativeChatEditorPane#${this._paneId}] _reloadChatHistory: agentId=${agentId}`);
+
+		try {
+			// 保存当前是否在底部（用于 setMessages 后判断是否恢复到底）
+			const messagesContainer = (this._chatPanel as any)['_messagesContainer'] as HTMLElement | null;
+			const wasAtBottom = messagesContainer
+				? (messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight) < 80
+				: false;
+
+			const history = await this._chatService.getHistory(agentId, this._currentSessionId);
+			const adapted = this._adaptHistoryMessages(history);
+			this._logService.debug(`[NativeChatEditorPane#${this._paneId}] _reloadChatHistory: ${adapted.length} msgs in ${(performance.now() - t0).toFixed(1)}ms`);
+
+			// setMessages 会设置 _wasLoading=true 导致强制滚底。
+			// 如果用户不在底部，调用后恢复原位。
+			if (!wasAtBottom && messagesContainer) {
+				const savedScrollTop = messagesContainer.scrollTop;
+				const savedScrollHeight = messagesContainer.scrollHeight;
+
+				this._chatPanel.setMessages(adapted);
+
+				// setMessages 内部双重 rAF 后滚底，我们需要在之后恢复位置
+				// 三重 rAF 确保在 setMessages 的滚底之后执行恢复
+				requestAnimationFrame(() => {
+					requestAnimationFrame(() => {
+						requestAnimationFrame(() => {
+							if (!messagesContainer.isConnected) { return; }
+							const newScrollHeight = messagesContainer.scrollHeight;
+							const heightDelta = newScrollHeight - savedScrollHeight;
+							messagesContainer.scrollTop = savedScrollTop + heightDelta;
+						});
+					});
+				});
+			} else {
+				// 用户已在底部 → 正常 setMessages（保持底部跟随）
+				this._chatPanel.setMessages(adapted);
+			}
+
+			this._restoreCompactedBaseline();
+		} catch (err) {
+			this._logService.info('[NativeChatEditorPane] _reloadChatHistory failed:', err);
+		}
+	}
+
+	/**
 	 * 加载/切换 agent 并刷新聊天历史。
 	 *
 	 * @param agentId 要加载的 agent ID
@@ -1114,6 +1219,8 @@ export class NativeChatEditorPane extends EditorPane {
 			this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: skipped (streaming in progress for ${agentId})`);
 			return;
 		}
+		const caller = new Error().stack?.split('\n').slice(2, 4).join(' ← ') || '?';
+		console.info(`[ChatFlickerDiag] _selectAndLoadAgent START agentId=${agentId} force=${options?.force ?? false} isSending=${this._isSending} caller=${caller}`);
 		// 手动/程序化 reload 时清除待处理的 board reload timer
 		if (this._taskBoardReloadTimer) { clearTimeout(this._taskBoardReloadTimer); this._taskBoardReloadTimer = null; }
 		const t0 = performance.now();
@@ -1138,6 +1245,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._currentAgentId = agentId;
 				this._currentAgentSkills = emp.skills ?? [];
 				this._logService.debug(`[NativeChatEditorPane#${this._paneId}] _selectAndLoadAgent: setting _currentAgentId to ${agentId}`);
+				console.info(`[ChatFlickerDiag] _selectAndLoadAgent → setAgent("${agentId}") gen=${gen}`);
 				this._chatPanel.setAgent({
 					id: emp.id,
 					name: emp.name,
@@ -1202,6 +1310,7 @@ export class NativeChatEditorPane extends EditorPane {
 							return;
 						}
 						this._logService.debug(`[NativeChatEditorPane][Init] setMessages START (after yield) t=${(performance.now() - t0).toFixed(1)}ms`);
+						console.info(`[ChatFlickerDiag] _selectAndLoadAgent → setMessages(${adapted.length}) gen=${gen}`);
 						this._chatPanel.setMessages(adapted);
 						this._logService.debug(`[NativeChatEditorPane][Init] setMessages done t=${(performance.now() - t0).toFixed(1)}ms`);
 						// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
@@ -1338,6 +1447,13 @@ export class NativeChatEditorPane extends EditorPane {
 	private _resetStreamingMessage(): void {
 		this._streamingAssistantId = null;
 		this._streamingAssistantMsg = null;
+		// P0: 清空 delta 缓冲区——新流式会话从零开始
+		if (this._deltaFlushTimer !== null) {
+			clearTimeout(this._deltaFlushTimer);
+			this._deltaFlushTimer = null;
+		}
+		this._deltaBuffer = [];
+		this._lastFlushedTextContent = '';
 	}
 
 	/**
@@ -1349,8 +1465,92 @@ export class NativeChatEditorPane extends EditorPane {
 	 * 1. 已通过 _initStreamingMessage() 初始化流式消息
 	 * 2. _isSending=true（按钮处于 stop 状态）
 	 */
+	/**
+	 * Delta 处理入口（带 P0 缓冲层）。
+	 *
+	 * text / thinking / tool_* / usage / memory / phase_change →
+	 *   缓冲 25ms 后批量分发（text 只保留最后一个）。
+	 * done / error →
+	 *   立即清空缓冲区 + 处理（保证 UI 快速响应错误/结束）。
+	 *
+	 * 调用须知：
+	 * 1. 已通过 _initStreamingMessage() 初始化流式消息
+	 * 2. _isSending=true（按钮处于 stop 状态）
+	 */
 	private _handleStreamDelta(delta: any): void {
 		if (!delta) { return; }
+
+		// done / error — 立即清空缓冲区后处理，保证 UI 即时响应
+		if (delta.type === 'done' || delta.type === 'error') {
+			this._flushDeltaBuffer();
+			this._processDelta(delta);
+			return;
+		}
+
+		// 缓冲区排入
+		this._deltaBuffer.push({ type: delta.type, delta });
+
+		// 已有排期 timer 就不重复设
+		if (!this._deltaFlushTimer) {
+			this._deltaFlushTimer = setTimeout(() => {
+				this._flushDeltaBuffer();
+			}, NativeChatEditorPane.DELTA_FLUSH_INTERVAL_MS);
+		}
+	}
+
+	/**
+	 * P0 缓冲层：合并同帧 / 相邻帧的 delta 并成批分发。
+	 *
+	 * 规则：
+	 * - text delta 链 → 只保留最后一个（包含完整累计内容，fullText 或 content 累加）
+	 * - 其它 delta → 保留全部，按原始顺序
+	 */
+	private _flushDeltaBuffer(): void {
+		if (this._deltaFlushTimer !== null) {
+			clearTimeout(this._deltaFlushTimer);
+			this._deltaFlushTimer = null;
+		}
+		const batch = this._deltaBuffer;
+		this._deltaBuffer = [];
+		if (batch.length === 0) { return; }
+
+		// 合并：连续 text delta 链压缩到最后一个
+		const merged: Array<{ type: string; delta: any }> = [];
+		for (let i = 0; i < batch.length; i++) {
+			const item = batch[i];
+			if (item.type !== 'text') {
+				merged.push(item);
+				continue;
+			}
+			// 跳过连续的 text delta，只取最后一个
+			let lastTextIdx = i;
+			for (let j = i + 1; j < batch.length; j++) {
+				if (batch[j].type === 'text') { lastTextIdx = j; }
+				else { break; }
+			}
+			const lastText = batch[lastTextIdx];
+			// 跳过与上一批完全相同的 text（fullText 缓存）
+			const textContent = lastText.delta.fullText !== undefined
+				? lastText.delta.fullText
+				: ((this._streamingAssistantMsg?.content ?? '') + (lastText.delta.content ?? ''));
+			if (textContent !== this._lastFlushedTextContent) {
+				merged.push(lastText);
+				this._lastFlushedTextContent = textContent;
+			}
+			i = lastTextIdx;
+		}
+
+		// 成批分发
+		for (const item of merged) {
+			this._processDelta(item.delta);
+		}
+	}
+
+	/**
+	 * 实际 delta 处理逻辑（已去缓冲）。
+	 * 从原 _handleStreamDelta 的 switch-case 体提取。
+	 */
+	private _processDelta(delta: any): void {
 		const assistantId = this._streamingAssistantId;
 		const assistantMsg = this._streamingAssistantMsg;
 
@@ -1503,6 +1703,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._chatPanel?.setSending(false);
 				this._isSending = false;
 				this._isExternalSend = false;
+				this._taskExecutingSessionId = null;
 				this._resetStreamingMessage();
 				break;
 			case 'usage':
@@ -2174,6 +2375,21 @@ export class NativeChatEditorPane extends EditorPane {
 	private async _restoreAgentDisplay(agentId: string, saved: IChatRuntimeState): Promise<void> {
 		const gen = ++this._loadGeneration;
 		try {
+			// P0: skip full rebuild when the same agent is already loaded.
+			// _handleChatJump triggers openEditor → setInput → _restoreAgentDisplay
+			// even when the target pane already displays the same agent. Without this
+			// guard, setAgent() clears + rebuilds the entire UI (messages=0), then
+			// setMessages() rebuilds again (messages=82). Combined with the parallel
+			// _selectAndLoadAgent from updateTask, this causes 4+ _renderMessages
+			// calls → severe scrollbar thrashing.
+			const currentAgent = this._chatPanel?.getAgent?.();
+			if (currentAgent && currentAgent.id === agentId && this._currentAgentId === agentId) {
+				// Agent already loaded — just restore stream phase and focus
+				if (saved.streamPhase) { this._applyStreamPhase(saved.streamPhase); }
+				this._chatPanel?.focusInput?.();
+				return;
+			}
+
 			const emp = await this._agentStudioService.getAgent(agentId);
 			if (gen !== this._loadGeneration) { return; }  // race guard
 			if (emp && this._chatPanel) {

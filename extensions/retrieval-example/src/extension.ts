@@ -4,7 +4,6 @@
 
 import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
 import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
 import { IRetrievalProvider, IRetrievalResult } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 
 export class RetrievalExampleProvider implements IRetrievalProvider {
@@ -27,16 +26,18 @@ export class RetrievalExampleProvider implements IRetrievalProvider {
 
 export class RetrievalExamplePlugin extends Disposable implements IAgentCapabilityPlugin {
 	private readonly _provider: RetrievalExampleProvider;
+	private _agentOS: IAgentOSPluginContext['agentOSService'] | undefined;
 
-	constructor(
-		@IAgentOSService private readonly _agentOS: IAgentOSService,
-	) {
+	constructor() {
 		super();
 		this._provider = new RetrievalExampleProvider();
 	}
 
 	async activate(context: IAgentOSPluginContext): Promise<void> {
 		console.log('[RetrievalExample] Activating...');
+		// NOTE: do NOT inject IAgentOSService via constructor DI — plugin is a
+		// separate module realm from the host bundle (see other example plugins).
+		this._agentOS = context.agentOSService;
 		this._agentOS.registerRetrievalProvider(this._provider, 50);
 	}
 
@@ -46,5 +47,7 @@ export class RetrievalExamplePlugin extends Disposable implements IAgentCapabili
 }
 
 export function activate(pluginContext: IAgentOSPluginContext): IAgentCapabilityPlugin {
-	return new RetrievalExamplePlugin(pluginContext.agentOS as any);
+	const plugin = new RetrievalExamplePlugin();
+	void plugin.activate(pluginContext);
+	return plugin;
 }

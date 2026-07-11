@@ -268,8 +268,8 @@ export interface AgentExportData {
 		readonly memoryMd?: string;
 		/** Skill directive files (SKILL.md format) */
 		readonly skillDirectives?: Record<string, string>;
-		/** ConfigHTML: MD 源文件内容（用于跨工作区导入导出） */
-		readonly configMd?: string;
+		/** ConfigHtml: HTML 源文件内容（用于跨工作区导入导出） */
+		readonly configHtml?: string;
 		/** ConfigHTML: 渲染后的 HTML 入口文件名（如 "index.html"） */
 		readonly htmlEntry?: string;
 		/** ConfigHTML: 渲染后的 HTML 内容 */
@@ -299,8 +299,8 @@ export interface AgentBootstrapTemplates {
 
 /**
  * Agent — a chat-ready agent definition.
- * Agents come from two sources: builtin (hardcoded preset definitions) and
- * custom (user-created, persisted in custom-agents.json).
+ * 所有 agent 定义的唯一数据源是 `~/.saros/agents/{agentId}/agent.json`
+ * （初始安装时从内置预设落地，用户创建的 agent 也写入该目录）。
  *
  * Agents are NOT instantiated from presets —
  * the preset IS the agent.  There is no separate "deploy" / "create instance"
@@ -377,13 +377,13 @@ export interface Agent {
 	// runs in multiple workspaces. See AgentBinding below.
 
 	/**
-	 * config.md driven HTML config view.
-	 * The MD file is the single source of truth for the agent's interactive
-	 * config panel; HTML interactions are translated into patches on it.
+	 * HTML-based config view.
+	 * The `config.html` file is the single source of truth for the agent's
+	 * interactive config panel in ConfigHtml.
 	 * NOTE: this is part of the agent DEFINITION (same in every workspace),
 	 * so it correctly belongs on the global Agent, not on AgentBinding.
 	 */
-	configMd?: AgentConfigMd;
+	configHtml?: AgentConfigHtml;
 
 	createdAt: string;
 	updatedAt: string;
@@ -450,15 +450,12 @@ export interface AgentMemoryConfig {
 }
 
 // allow-any-unicode-next-line
-// ─── ConfigMD (Markdown ↔ HTML bidirectional sync) ────────────────────────────
+// ─── ConfigHtml (HTML config view) ───────────────────────────────────────
 
 /**
- * Capability tokens that a ConfigMD-rendered HTML view can request.
- * Only capabilities listed in the agent's `configMd.capabilities` are allowed.
+ * Capability tokens that a ConfigHtml-rendered HTML view can request.
  */
-export type ConfigMdCapability =
-	| 'md.read'             // Read the MD file content
-	| 'md.write'            // Apply patches that mutate the MD file
+export type ConfigHtmlCapability =
 	| 'chat.send'           // Trigger sending a message to the model
 	| 'chat.history'        // Read chat history
 	| 'agent.status'        // Read agent status
@@ -467,32 +464,20 @@ export type ConfigMdCapability =
 	| 'clipboard';          // Access clipboard (read/write)
 
 /**
- * Agent's ConfigMD configuration.
- * The agent maintains a Markdown file (`mdPath`) which is parsed (by built-in or
- * custom parser) into HTML. The MD↔HTML sync is bidirectional and real-time.
+ * Agent's ConfigHtml configuration.
+ * The agent maintains a self-contained HTML file (`htmlPath`) which is rendered
+ * directly in the ConfigHtml preview panel.
  */
-export interface AgentConfigMd {
+export interface AgentConfigHtml {
 	/**
-	 * Path to the Markdown source file, relative to agentDir.
-	 * E.g. "config.md", "ui/dashboard.md".
-	 * Defaults to "config.md" if omitted.
+	 * ConfigHTML: HTML entry filename（relative to agentDir, e.g. "config.html"）.
 	 */
-	mdPath: string;
+	htmlPath?: string;
 
 	/**
-	 * Optional path to a custom MD→HTML parser script, relative to agentDir.
-	 * The script must export an object with a `parse(markdown, ctx)` function
-	 * (and optionally `applyHtmlPatch`, `directives`).
-	 * If omitted, the built-in parser (marked + DOMPurify + anchor handling) is used.
-	 * E.g. "ui/parser.js".
+	 * ConfigHTML: HTML 资源安装目录（absolute path, set by installer）.
 	 */
-	parserPath?: string;
-
-	/**
-	 * Optional path to a custom CSS file injected into the HTML preview, relative to agentDir.
-	 * E.g. "ui/styles.css".
-	 */
-	stylesPath?: string;
+	htmlInstallDir?: string;
 
 	/**
 	 * Panel display mode.
@@ -505,12 +490,11 @@ export interface AgentConfigMd {
 	/**
 	 * Default view when the panel opens.
 	 * - 'preview': Show only the HTML preview
-	 * - 'source': Show only the MD source editor
-	 * - 'split': Show MD editor and HTML preview side-by-side
+	 * - 'source': Show only the HTML source editor
 	 */
-	defaultView?: 'preview' | 'source' | 'split';
+	defaultView?: 'preview' | 'source';
 
-	/** Whether the user can edit MD source directly in the panel. Default: true. */
+	/** Whether the user can edit HTML source directly in the panel. Default: true. */
 	editable?: boolean;
 
 	/**
@@ -532,26 +516,14 @@ export interface AgentConfigMd {
 	 */
 	sandboxLevel?: 'strict' | 'standard' | 'permissive';
 
-	/** Whether to auto-show the ConfigMD panel when the agent is selected. Default: true. */
+	/** Whether to auto-show the ConfigHtml panel when the agent is selected. Default: true. */
 	autoShow?: boolean;
 
 	/**
-	 * Debounce delay (ms) for MD edits before triggering re-render and file write.
+	 * Debounce delay (ms) for HTML edits before persisting to disk.
 	 * Default: 300.
 	 */
 	syncDebounceMs?: number;
-
-	/**
-	 * Capability whitelist — only listed capabilities can be invoked by the HTML.
-	 * Requests for unlisted capabilities are rejected.
-	 */
-	capabilities?: ConfigMdCapability[];
-
-	/** ConfigHTML: HTML 入口文件名（相对 htmlInstallDir，如 "index.html"） */
-	htmlPath?: string;
-
-	/** ConfigHTML: HTML 资源安装目录（绝对路径，由 installer 设置） */
-	htmlInstallDir?: string;
 }
 
 /**
@@ -781,6 +753,9 @@ export interface SuggestedQuestion {
 export interface ChatMessage {
 	readonly id: string;
 	role: 'user' | 'assistant' | 'tool' | 'system';
+	/** Message origin: 'user' = human-typed, 'task' = programmatic task execution.
+	 *  Task messages skip de-duplication in appendMessage (P2-7 fix). */
+	source?: 'user' | 'task';
 	content: string;
 	/** Agent 实例 ID。 */
 	agentId?: string;
@@ -875,6 +850,22 @@ export interface ChatMessage {
 	 * Persisted so the webview can restore partially-filled forms after reload.
 	 */
 	collectVariables?: Record<string, any>;
+	/** Structured task metadata — when set, the chat renderer skips regex-based
+	 *  prompt parsing and builds the task card directly from this data. */
+	taskCard?: TaskCardData;
+}
+
+/** Structured task prompt card data — used by the chat renderer instead of
+ *  regex-parsing the text content.  Eliminates the "serialize→regex-parse"
+ *  anti-pattern. */
+export interface TaskCardData {
+	readonly title: string;
+	readonly description: string;
+	readonly source?: string;
+	readonly taskId?: string;
+	readonly dependencies?: readonly string[];
+	/** Attachment file names for display (e.g. "tapd-img-1.png"). */
+	readonly attachments?: readonly { name: string; mimeType: string }[];
 }
 
 export interface ToolCall {
@@ -1097,6 +1088,10 @@ export interface TaskBoardRecord {
 	workflowId?: string;
 	/** v11: user-provided values for workflow template variables ({{var}} patterns). */
 	variableValues?: Record<string, string>;
+	/** v12: LM provider to use for this task (e.g. 'codebuddy'). If unset, the agent's default provider is used. */
+	providerId?: string;
+	/** v12: Model ID to use for this task (e.g. 'deepseek-v4-pro-ioa'). If unset, the agent's default model is used. */
+	modelId?: string;
 }
 
 /**
@@ -1349,6 +1344,13 @@ export interface PlanTask {
 	createdAt: string;
 	startedAt?: string;
 	completedAt?: string;
+
+	/** LM provider override — when set with modelId, overrides the agent's
+	 *  default provider for this task's sendMessage call. */
+	providerId?: string;
+	/** Model ID override — when set with providerId, overrides the agent's
+	 *  default model for this task's sendMessage call. */
+	modelId?: string;
 
 	// allow-any-unicode-next-line
 	// ─── Human-in-the-Loop Fields ─────────────────────────────────────────────

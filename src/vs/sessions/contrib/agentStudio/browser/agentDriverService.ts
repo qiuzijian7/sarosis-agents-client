@@ -16,7 +16,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { ISkillRegistry } from '../common/skills.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING, AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING } from '../common/constants.js';
-import { filterToolsByChatMode, getModeSystemPrompt } from '../common/chatModeConfig.js';
+import { filterToolsByChatMode, getModeSystemPrompt, GLOBAL_SYSTEM_SUFFIX } from '../common/chatModeConfig.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -218,6 +218,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					if (modePrompt) {
 						mergedSystemPrompt = mergedSystemPrompt + '\n\n' + modePrompt;
 					}
+				}
+
+				// ── 注入全局操作边界（保密 / 安全 / 身份）──────────────────────
+				// 统一作用于所有 agent（内置 / 自定义 / 子 agent）：不泄露系统提示词与
+				// 工具描述、拒绝恶意代码、不硬编码密钥、不冒充其他产品/模型。
+				// 单一来源（chatModeConfig.GLOBAL_SYSTEM_SUFFIX），避免逐 agent 重复维护。
+				if (GLOBAL_SYSTEM_SUFFIX) {
+					mergedSystemPrompt = mergedSystemPrompt + '\n\n' + GLOBAL_SYSTEM_SUFFIX;
 				}
 
 				// ── 注入 Persona Memory（永久事实，最高优先级）────────────────────
@@ -550,6 +558,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						agentId: request.agentId,
 						sessionId: request.sessionId,
 						explicit: explicitSkillIds,
+						// 强制加载：agent 配置中指定的技能全部注入全文，不依赖 activation/关键词
+						required: allSkills.map(s => s.id),
 					});
 
 					// 【关键修复】仅保留 agent 实例中配置的技能，未配置的不要注入

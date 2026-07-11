@@ -31,7 +31,13 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
+import { join } from '../../../../../../base/common/path.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { Registry } from '../../../../../../platform/registry/common/platform.js';
+import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../../../platform/configuration/common/configurationRegistry.js';
+import { localize } from '../../../../../../nls.js';
+import { IAiEmbeddingVectorService } from '../../../../../../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
@@ -60,10 +66,29 @@ import { AdrManager } from '../../codebaseGraphAdr.js';
 import { registerCodebaseTools } from './codebaseTools.js';
 import { registerKanbanTools } from './kanbanTools.js';
 import { registerWorkflowTools } from './workflowTools.js';
+import { buildKnowledgeToolDescriptors, KnowledgeToolDeps } from '../../knowledge/knowledgeTools.js';
+import { resolveKbRoot, migrateKnowledgeStorage, listKbIds } from '../../knowledge/knowledgeStorage.js';
+import { createBuiltinEmbeddingProvider } from '../../knowledge/builtinEmbeddingProvider.js';
 import { IPlaywrightService } from '../../../../../../platform/browserView/common/playwrightService.js';
 import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
 import { ISessionsManagementService } from '../../../../../../sessions/services/sessions/common/sessionsManagement.js';
 import { IKanbanRecipeService } from './kanbanRecipeService.js';
+
+/** Config key controlling where knowledge bases are persisted. Empty = `<userHome>/.saros/kb`. */
+const AGENT_STUDIO_KB_STORAGE_PATH = 'agentStudio.knowledge.storage.path';
+
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'agentStudio.knowledge',
+	properties: {
+		[AGENT_STUDIO_KB_STORAGE_PATH]: {
+			type: 'string',
+			default: '',
+			markdownDescription: localize('agentStudio.knowledge.storage.path', "Root directory for persisted knowledge bases. Leave empty to use the default `<userHome>/.saros/kb`. Supports `~` (user home) and absolute paths; relative paths are resolved against the user home. Changing this migrates existing knowledge bases to the new location automatically."),
+			tags: ['agentStudio', 'knowledge'],
+		},
+	},
+});
+
 
 
 type ToolHandlerResult = IToolResultContent[] | { content: IToolResultContent[]; details?: Record<string, unknown> };
@@ -314,7 +339,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	@IPlaywrightService private readonly playwrightService: IPlaywrightService,
 	@IEditorService private readonly editorService: IEditorService,
 	@ISessionsManagementService private readonly sessionsManagement: ISessionsManagementService,
-	@IKanbanRecipeService private readonly recipeService: IKanbanRecipeService,
+		@IKanbanRecipeService private readonly recipeService: IKanbanRecipeService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
 	) {
 		super();
 		this._skillManagerTool = new SkillManagerTool(
@@ -324,6 +351,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			this.logService,
 		);
 		this._adrManager = new AdrManager(this.fileService);
+		// Phase 1: 注册内置 embedding provider（复用 BYOK API → /v1/embeddings）
+		// 使 kb_* 工具无需扩展即可工作
+		this._registerEmbeddingProvider();
 		this._registerCoreTools();
 		this._registerCompatibilityTools();
 		this._registerMemoryTools();
@@ -334,6 +364,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerKanbanTools();
 		this._registerWorkflowTools();
 		this._registerCodebaseTools();
+		this._registerKnowledgeTools(); // Plan-C Hyper-Extract knowledge engine (kb_* tools)
 		// _registerMcpBridgeTools() 已废弃 — MCP 工具统一走 tool_search/tool_describe/tool_call
 		// 保留方法定义以备审计/兼容老调用
 	}
@@ -630,6 +661,132 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			}
 		});
 	}
+
+	// ─── Knowledge tools (Plan-C Hyper-Extract engine) ─────────────────────
+
+	// ─── Phase 1: 内置 Embedding Provider（激活 RAG 引擎）──────────────────
+
+	/**
+	 * 注册内置 BYOK embedding provider，使 `isEnabled()` 返回 true
+	 * 并解除 `createEmbedder()` 的硬错误。该 provider 复用用户已配置的
+	 * OpenAI-compatible API（OpenRouter / 自定义）的 `/v1/embeddings` 端点。
+	 */
+	private _registerEmbeddingProvider(): void {
+		try {
+			const provider = createBuiltinEmbeddingProvider(this.configurationService, this.logService);
+			this._register(
+				this.embeddingService.registerAiEmbeddingVectorProvider('builtin-byok', provider)
+			);
+			this.logService.info('[BuiltinToolProvider] Built-in embedding provider registered (BYOK API).');
+		} catch (err) {
+			this.logService.warn(`[BuiltinToolProvider] Failed to register built-in embedding provider: ${err}`);
+		}
+	}
+
+	private _kbStorageRootCache: string | undefined;
+
+	private _registerKnowledgeTools(): void {
+		const deps: KnowledgeToolDeps = {
+			fileService: this.fileService,
+			configurationService: this.configurationService,
+			embeddingService: this.embeddingService,
+			resolveBaseDir: () => this._resolveWorkspaceDir(),
+			resolveStorageRoot: () => this._resolveKbStorageRoot(),
+		};
+		for (const d of buildKnowledgeToolDescriptors(deps)) {
+			this.register(d as unknown as IBuiltinToolRegistration);
+		}
+
+		// Best-effort one-time migration: the default storage root used to be
+		// <workspace>/.saros/kb; it now defaults to <userHome>/.saros/kb.
+		// Move any existing KBs from the legacy location on first activation.
+		this._migrateLegacyKbStorage();
+
+		// Auto-migrate when the user changes the storage root setting.
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(AGENT_STUDIO_KB_STORAGE_PATH)) {
+				this._maybeMigrateKbStorage();
+			}
+		}));
+	}
+
+	/** Workspace root — used to resolve relative source/output file paths in kb_* tools. */
+	private async _resolveWorkspaceDir(): Promise<string> {
+		try {
+			const wsId = this.studioService.getActiveWorkspaceId();
+			if (wsId) {
+				const ws = await this.studioService.getWorkspace(wsId);
+				if (ws?.path) { return ws.path; }
+			}
+		} catch {
+			// fall through to VS Code folders
+		}
+		const folders = this.workspaceService.getWorkspace().folders;
+		if (folders.length) { return folders[0].uri.fsPath; }
+		const home = (this.environmentService as any).userHome?.fsPath;
+		return home ?? (typeof process !== 'undefined' ? process.cwd() : '.');
+	}
+
+	/** KB storage root. Default `<userHome>/.saros/kb`; config overrides (supports ~ / absolute / relative-to-home). */
+	private async _resolveKbStorageRoot(): Promise<string> {
+		const cfg = this.configurationService.getValue<string>(AGENT_STUDIO_KB_STORAGE_PATH);
+		const userHome = (this.environmentService as any).userHome?.fsPath
+			?? (typeof process !== 'undefined' ? process.cwd() : '.');
+		const root = resolveKbRoot(cfg, userHome);
+		this._kbStorageRootCache = root;
+		return root;
+	}
+
+	/** Migrate KBs from the cached root to the (newly resolved) current root. */
+	private async _maybeMigrateKbStorage(): Promise<void> {
+		const oldRoot = this._kbStorageRootCache;
+		const newRoot = await this._resolveKbStorageRoot();
+		if (!oldRoot || oldRoot === newRoot) { return; }
+		try {
+			const n = await migrateKnowledgeStorage(this.fileService, oldRoot, newRoot);
+			if (n > 0) {
+				this.logService.info(`[Knowledge] migrated ${n} knowledge base(s) from ${oldRoot} → ${newRoot}`);
+			}
+		} catch (err) {
+			this.logService.error(`[Knowledge] KB migration failed: ${err}`);
+		}
+	}
+
+	/** One-time migration from the legacy `<workspace>/.saros/kb` location to the new default home root. */
+	private async _migrateLegacyKbStorage(): Promise<void> {
+		try {
+			const userHome = (this.environmentService as any).userHome?.fsPath
+				?? (typeof process !== 'undefined' ? process.cwd() : '.');
+			const newRoot = resolveKbRoot(undefined, userHome);
+			const legacyRoot = await this._legacyKbRoot();
+			if (!legacyRoot || legacyRoot === newRoot) { return; }
+			const legacyIds = await listKbIds(this.fileService, legacyRoot);
+			if (legacyIds.length === 0) { return; }
+			const n = await migrateKnowledgeStorage(this.fileService, legacyRoot, newRoot);
+			if (n > 0) {
+				this.logService.info(`[Knowledge] migrated ${n} legacy knowledge base(s) from ${legacyRoot} → ${newRoot}`);
+			}
+		} catch (err) {
+			this.logService.error(`[Knowledge] legacy KB migration failed: ${err}`);
+		}
+	}
+
+	/** The pre-change default KB root: `<workspace>/.saros/kb`. */
+	private async _legacyKbRoot(): Promise<string | undefined> {
+		try {
+			const wsId = this.studioService.getActiveWorkspaceId();
+			if (wsId) {
+				const ws = await this.studioService.getWorkspace(wsId);
+				if (ws?.path) { return join(ws.path, '.saros', 'kb'); }
+			}
+		} catch {
+			// fall through
+		}
+		const folders = this.workspaceService.getWorkspace().folders;
+		if (folders.length) { return join(folders[0].uri.fsPath, '.saros', 'kb'); }
+		return undefined;
+	}
+
 
 	// ─── 内置工具集 ─────────────────────────────────────────────────────
 

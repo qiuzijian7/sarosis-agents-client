@@ -1370,6 +1370,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 		while (iteration < MAX_TOOL_ITERATIONS) {
 			iteration++;
+			// Yield to the event loop every 5 iterations to prevent UI freeze
+			// during long-running agent loops (P2-6 fix).
+			if (iteration % 5 === 0) {
+				await new Promise<void>(r => setTimeout(r, 0));
+			}
 			this._logService.info(`[AgentOS] Direct mode iteration ${iteration}/${MAX_TOOL_ITERATIONS}`);
 
 			// ─── 上下文压缩（对齐 ExecutionProvider 7.1）──────────────────

@@ -16,6 +16,7 @@
 import { IterationBudget } from './iterationBudget.js';
 import type { IAgentTurnRequest, IChatStreamDelta, IChatMessage } from './providers.js';
 import { SubagentTokenCollector, type SubagentTokenUsage } from './subagentTokenCollector.js';
+import { GLOBAL_SYSTEM_SUFFIX } from './chatModeConfig.js';
 
 // ─── SubAgent Types (inspired by OpenCode's agent types) ──────────────────
 
@@ -862,7 +863,7 @@ export class UnifiedSubAgentDispatch {
 - Focus on understanding architecture, patterns, and key abstractions`,
 		};
 
-		return typePrompts[subAgent.type] || typePrompts[SubAgentType.General];
+		return (typePrompts[subAgent.type] || typePrompts[SubAgentType.General]) + GLOBAL_SYSTEM_SUFFIX;
 	}
 
 	/**

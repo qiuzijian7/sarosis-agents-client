@@ -74,6 +74,7 @@ import { IWorkspaceLifecycleService } from '../common/workspaceLifecycle.js';
 import { WorkspaceLifecycleService } from './workspaceLifecycleService.js';
 import { ISkillLifecycleService } from '../common/skillLifecycle.js';
 import { SkillLifecycleService } from './skillLifecycleService.js';
+import { IKbNativeKernelService, KbNativeKernelService } from './kbNativeKernelService.js';
 import {
 	AGENT_STUDIO_ENABLED_SETTING,
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
@@ -84,7 +85,6 @@ import {
 	AGENT_STUDIO_PLUGINS_VIEW_ID,
 	AGENT_STUDIO_WORKFLOW_VIEW_ID,
 	AGENT_STUDIO_DASHBOARD_VIEW_ID,
-	AGENT_STUDIO_WIKI_VIEW_ID,
 	AGENT_STUDIO_KB_VIEW_ID,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
@@ -184,9 +184,8 @@ import { EvolutionDetailEditorInput } from './evolutionDetailEditorInput.js';
 import { ChannelEditorPane } from './channelEditorPane.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 
-import { WikiViewPane } from './views/wikiView.js';
 import { KnowledgeBaseViewPane } from './views/knowledgeBaseView.js';
-import { KnowledgeBaseNoteEditorPane } from './kbNoteEditorPane.js';
+import { KbBlocksEditorPane } from './kbBlocksEditorPane.js';
 import { KbNoteEditorInput } from './kbNoteEditorInput.js';
 import { KnowledgeBaseGraphEditorPane } from './kbGraphEditorPane.js';
 import { KbGraphEditorInput } from './kbGraphEditorInput.js';
@@ -264,7 +263,6 @@ const tasksIcon = registerIcon('agent-studio-tasks', Codicon.tasklist, localize(
 const integrationIcon = registerIcon('agent-studio-integration', Codicon.extensions, localize('integrationIcon', "Integration"));
 const searchIcon = registerIcon('agent-studio-search', Codicon.search, localize('searchIcon', "Search"));
 const pluginsIcon = registerIcon('agent-studio-plugins', Codicon.package, localize('pluginsIcon', "Plugins"));
-const wikiIcon = registerIcon('agent-studio-wiki', Codicon.book, localize('wikiIcon', "Wiki"));
 const kbIcon = registerIcon('agent-studio-knowledge-base', Codicon.book, localize('kbIcon', "Knowledge Base"));
 const workflowIcon = registerIcon('agent-studio-workflow', Codicon.listTree, localize('workflowIcon', "Workflow"));
 
@@ -547,7 +545,7 @@ registerSingleton(IWorkflowStorageService, WorkflowStorageService, Instantiation
 registerSingleton(IWorkflowExecutionService, WorkflowExecutionService, InstantiationType.Delayed);
 registerSingleton(IEventBridgeService, EventBridgeService, InstantiationType.Delayed);
 registerSingleton(ITaskOrchestrationService, TaskOrchestrationService, InstantiationType.Delayed);
-// ConfigMD service: shared across all webview controllers (chat panels) and
+// ConfigHtml service: shared across all webview controllers (chat panels) and
 // the HtmlPreviewEditorPane. Keeping a single instance avoids duplicating
 // the per-agent state cache and lets the preview pane forward webview
 // imgui.submit messages back through the same dispatcher.
@@ -594,6 +592,9 @@ registerSingleton(ICodebaseGraphService, CodebaseGraphService, InstantiationType
 registerSingleton(ICodebaseGraphWatcher, CodebaseGraphWatcher, InstantiationType.Delayed);
 // Dashboard Service — aggregates stats from AgentOS, ContextManager, Memory, Graph
 registerSingleton(IAgentStudioDashboardService, AgentStudioDashboardService, InstantiationType.Delayed);
+// Shared KB native kernel — lets the BlockSuite note editor reuse the KB view's
+// already-built backlink/mention index instead of re-scanning the vault.
+registerSingleton(IKbNativeKernelService, KbNativeKernelService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened
@@ -845,7 +846,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 );
 
 // Register AgentSettingsEditorPane — renders agent settings (System Prompt,
-// Skills, Memory, Knowledge, ConfigMD, Tools, MCP, Rules) in the editor area.
+// Skills, Memory, Knowledge, ConfigHtml, Tools, MCP, Rules) in the editor area.
 // Opened by clicking an agent in the Agent sidebar view.
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(
@@ -956,13 +957,15 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
-// Register KnowledgeBaseNoteEditorPane — 点击知识库文件后在中间栏打开的
-// WYSIWYG 笔记编辑器（Protyle/Lute 渲染管线，无模式切换，默认所见即所得）。
+// Register KbBlocksEditorPane — 点击知识库文件后在中间栏打开的 WYSIWYG 笔记编辑器。
+// 用 AFFiNE / BlockSuite 替换旧的 SiYuan (Lute/Protyle) 渲染管线，详见
+// doc/affine-replace-siyuan-plan.md（Phase 1）。其 ID 与 KbNoteEditorInput.editorId
+// 一致，故知识库视图点击文件即打开此 BlockSuite 编辑器。
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(
-		KnowledgeBaseNoteEditorPane,
-		KnowledgeBaseNoteEditorPane.ID,
-		localize('kbNoteEditor', "知识库笔记"),
+		KbBlocksEditorPane,
+		KbBlocksEditorPane.ID,
+		localize('kbBlocksEditor', "知识库 Block 编辑器"),
 	),
 	[
 		new SyncDescriptor(KbNoteEditorInput)
@@ -1283,6 +1286,8 @@ registerAction2(class extends Action2 {
 				if (g) { auxGroups.push(g); }
 			}
 			// 将每个聊天 editor 从源 group 移到 aux window 中对应的 group
+			NativeChatEditorInput.beginForceMove();
+			try {
 			for (const editor of chatEditors) {
 				const gi = editorToGroupIndex.get(editor) ?? 0;
 				const targetAuxGroup = auxGroups[Math.min(gi, auxGroups.length - 1)];
@@ -1292,6 +1297,9 @@ registerAction2(class extends Action2 {
 						break;
 					}
 				}
+			}
+			} finally {
+				NativeChatEditorInput.endForceMove();
 			}
 
 			// Hide the Agent editor (right column) after popping out
@@ -1421,7 +1429,7 @@ registerAction2(class extends Action2 {
 		// 每个新聊天默认开在独立的 group 中——仅当用户手动拖拽时，
 		// 才允许同一 group 下存在多个聊天 tab。
 		const newGroup = agentPart.addGroup(agentPart.activeGroup, 3 /* GroupDirection.RIGHT */);
-		newGroup.openEditor(input, { pinned: true }).then(() => {
+		newGroup.openEditor(input, { pinned: false }).then(() => {
 			// Chat editor opened successfully in agent part
 		}).catch((err: any) => {
 			logService.error('[newChatInEditor] failed to open editor:', err);
@@ -1739,6 +1747,14 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 
 registerWorkbenchContribution2(BuiltinCapabilityContribution.ID, BuiltinCapabilityContribution, WorkbenchPhase.AfterRestored);
 
+// --- ExecutionProvider Registration (default non-stub) ------------------------
+// 注册内置的 ExecutionProvider（实现真实 LLM 调用的 agent loop）。
+// 没有这个 contribution 时，唯一注册进来的 ExecutionProvider 只有
+// extensions/execution-example 的 shell 实现（priority=50），它会
+// 抢占真正的执行路径，导致每个 task 在 19ms 内就 "完成"。
+import { ExecutionProviderContribution } from './providers/execution/executionProviderService.js';
+registerWorkbenchContribution2(ExecutionProviderContribution.ID, ExecutionProviderContribution, WorkbenchPhase.AfterRestored);
+
 // --- Agent Capability Plugin Activation ------------------------------------------
 // Discovers and activates IAgentCapabilityPlugin extensions from TWO sources:
 //
@@ -2019,13 +2035,18 @@ private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntr
 				return;
 			}
 
-			const context = this._createPluginContext('');
-			// Use the InstantiationService so that plugins which declare DI
-			// constructor parameters (e.g. `@IAgentOSService`) get their
-			// dependencies wired up. Plugins with a no-arg constructor (like
-			// KnotAguiPlugin) work exactly the same way through this path.
-			const plugin = this.instantiationService.createInstance(PluginClass as any);
-			await plugin.activate(context);
+		const context = this._createPluginContext('');
+		// Plugins are created via the InstantiationService so a no-arg
+		// constructor (like KnotAguiPlugin) works. IMPORTANT: third-party
+		// plugins must NOT declare co-constructor DI for host services such as
+		// `@IAgentOSService`. Because the plugin module is loaded from a separate
+		// module realm (its own copy of agentOS.js from OUT), the service
+		// identifier object differs from the one registered via registerSingleton
+		// in the host bundle, so createInstance() throws
+		// "UNKNOWN service agentOSService". Plugins must obtain the live service
+		// through `context.agentOSService` inside activate() instead.
+		const plugin = this.instantiationService.createInstance(PluginClass as any);
+		await plugin.activate(context);
 			this._activatedPlugins.set(entry.id, plugin);
 			this.logService.info(
 				'[AgentCapabilityPlugins] Built-in: ' + entry.name + ' (' + entry.id + '@' + entry.version + ') activated'
@@ -2393,17 +2414,8 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: PluginsViewPane,
 		});
 
-		// --- Remaining icons (after Plugins) ---
 
-		// Wiki (order: 110)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.wiki',
-			title: localize2('agentStudio.wiki.title', "Wiki"),
-			icon: wikiIcon,
-			viewId: AGENT_STUDIO_WIKI_VIEW_ID,
-			order: 110,
-			viewCtor: WikiViewPane,
-		});
+		// --- Remaining icons (after Plugins) ---
 
 		// Dashboard (order: 140) — Agent 运维监控面板
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {

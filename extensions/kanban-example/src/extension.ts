@@ -5,7 +5,6 @@
 import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
 import { Emitter } from '../../../src/vs/base/common/event.js';
 import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
 import { IKanbanProvider, IKanbanBoard, IKanbanCard, KanbanPriority } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 
 export class KanbanExampleProvider implements IKanbanProvider {
@@ -95,16 +94,22 @@ export class KanbanExampleProvider implements IKanbanProvider {
 
 export class KanbanExamplePlugin extends Disposable implements IAgentCapabilityPlugin {
 	private readonly _provider: KanbanExampleProvider;
+	private _agentOS: IAgentOSPluginContext['agentOSService'] | undefined;
 
-	constructor(
-		@IAgentOSService private readonly _agentOS: IAgentOSService,
-	) {
+	constructor() {
 		super();
 		this._provider = new KanbanExampleProvider();
 	}
 
 	async activate(context: IAgentOSPluginContext): Promise<void> {
 		console.log('[KanbanExample] Activating...');
+		// NOTE: do NOT inject IAgentOSService via constructor DI. This plugin is
+		// loaded as a separate module realm from the host bundle, so its
+		// `IAgentOSService` service-identifier object differs from the one the
+		// host registered via registerSingleton — causing createInstance() to
+		// fail with "UNKNOWN service agentOSService". The host passes the live
+		// service instance through IAgentOSPluginContext.agentOSService instead.
+		this._agentOS = context.agentOSService;
 		this._agentOS.registerKanbanProvider(this._provider, 50);
 	}
 
@@ -114,5 +119,7 @@ export class KanbanExamplePlugin extends Disposable implements IAgentCapabilityP
 }
 
 export function activate(pluginContext: IAgentOSPluginContext): IAgentCapabilityPlugin {
-	return new KanbanExamplePlugin(pluginContext.agentOS as any);
+	const plugin = new KanbanExamplePlugin();
+	void plugin.activate(pluginContext);
+	return plugin;
 }

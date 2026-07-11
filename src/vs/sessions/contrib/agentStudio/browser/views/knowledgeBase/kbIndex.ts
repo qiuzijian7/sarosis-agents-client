@@ -14,6 +14,7 @@
 
 import { URI } from '../../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { IKbNode, KbSection } from './kbTypes.js';
 
 const TEXT_EXTS = new Set([
@@ -70,18 +71,105 @@ export class KbFullTextIndex {
 
 	get isBuilt(): boolean { return this._built; }
 
-	async build(roots: IKbIndexRoot[]): Promise<void> {
-		this._docs.clear();
-		this._postings.clear();
-		this._tagIndex.clear();
-		this._allTags.clear();
-		const lengths: number[] = [];
-		for (const root of roots) {
-			await this.walk(root.uri, root.section, lengths);
+	/**
+	 * Build the index, reusing a persisted cache when available.
+	 *
+	 * With `cacheUri`: load the cache, then reconcile against the filesystem —
+	 * unchanged files (same mtime) are kept as-is (no re-read), only changed /
+	 * new files are re-indexed, deleted files are dropped. This turns startup
+	 * from "read every file" into "stat every file + read the few that changed".
+	 * Without `cacheUri`: full build. The cache is (re)written at the end.
+	 */
+	async build(roots: IKbIndexRoot[], cacheUri?: URI): Promise<void> {
+		let reconciled = false;
+		if (cacheUri) {
+			const loaded = await this.loadCache(cacheUri);
+			if (loaded) {
+				await this._reconcile(roots);
+				reconciled = true;
+			}
 		}
-		this._totalDocs = this._docs.size;
-		this._avgLen = lengths.length ? lengths.reduce((a, b) => a + b, 0) / lengths.length : 0;
+		if (!reconciled) {
+			this._docs.clear();
+			this._postings.clear();
+			this._tagIndex.clear();
+			this._allTags.clear();
+			for (const root of roots) {
+				await this.walk(root.uri, root.section);
+			}
+		}
+		this._recomputeStats();
 		this._built = true;
+		if (cacheUri) {
+			await this.saveCache(cacheUri);
+		}
+	}
+
+	/** Recompute `_totalDocs` / `_avgLen` from the current `_docs` map. */
+	private _recomputeStats(): void {
+		this._totalDocs = this._docs.size;
+		let sum = 0;
+		for (const d of this._docs.values()) { sum += d.length; }
+		this._avgLen = this._totalDocs ? sum / this._totalDocs : 0;
+	}
+
+	/**
+	 * Reconcile the in-memory index against the filesystem: keep unchanged docs,
+	 * re-index changed/new ones, drop deleted ones. Only changed files are read.
+	 */
+	private async _reconcile(roots: IKbIndexRoot[]): Promise<void> {
+		const seen = new Set<string>(); // docIds still present on disk
+		for (const root of roots) {
+			await this._reconcileWalk(root.uri, root.section, seen);
+		}
+		// Drop docs that no longer exist on disk.
+		for (const docId of [...this._docs.keys()]) {
+			if (!seen.has(docId)) {
+				this._removeDoc(docId);
+			}
+		}
+	}
+
+	private async _reconcileWalk(uri: URI, section: KbSection, seen: Set<string>): Promise<void> {
+		let stat;
+		try { stat = await this.fileService.resolve(uri); } catch { return; }
+		if (!stat.children) { return; }
+		for (const c of stat.children) {
+			if (c.isDirectory) {
+				await this._reconcileWalk(c.resource, section, seen);
+				continue;
+			}
+			const ext = c.resource.path.split('.').pop()?.toLowerCase();
+			if (!ext || !TEXT_EXTS.has(ext)) { continue; }
+			const docId = c.resource.toString();
+			seen.add(docId);
+			const cached = this._docs.get(docId);
+			const mtime = c.mtime ?? 0;
+			const size = c.size ?? 0;
+			if (cached && cached.mtime === mtime && cached.size === size) {
+				continue; // unchanged — keep cached entry, skip re-read
+			}
+			// changed or new — re-read & re-index
+			try {
+				if ((size ?? 0) > 2 * 1024 * 1024) {
+					this._removeDoc(docId);
+					continue;
+				}
+				const content = await this.fileService.readFile(c.resource);
+				this._addOrUpdateDoc({
+					uri: c.resource,
+					name: c.name,
+					path: c.resource.fsPath,
+					section,
+					mtime,
+					size,
+					tags: [],
+					text: content.value.toString(),
+				});
+			} catch {
+				// ignore single-file read failure
+			}
+		}
 	}
 
 	search(q: string, limit = 50): IKbSearchHit[] {
@@ -162,13 +250,13 @@ export class KbFullTextIndex {
 		return keys;
 	}
 
-	private async walk(uri: URI, section: KbSection, lengths: number[]): Promise<void> {
+	private async walk(uri: URI, section: KbSection): Promise<void> {
 		let stat;
 		try { stat = await this.fileService.resolve(uri); } catch { return; }
 		if (!stat.children) { return; }
 		for (const c of stat.children) {
 			if (c.isDirectory) {
-				await this.walk(c.resource, section, lengths);
+				await this.walk(c.resource, section);
 			} else {
 				const ext = c.resource.path.split('.').pop()?.toLowerCase();
 				if (!ext || !TEXT_EXTS.has(ext)) { continue; }
@@ -176,7 +264,7 @@ export class KbFullTextIndex {
 					const fstat = await this.fileService.resolve(c.resource);
 					if ((fstat.size ?? 0) > 2 * 1024 * 1024) { continue; } // 跳过 >2MB
 					const content = await this.fileService.readFile(c.resource);
-					this.addDoc({
+					this._addOrUpdateDoc({
 						uri: c.resource,
 						name: c.name,
 						path: c.resource.fsPath,
@@ -185,7 +273,7 @@ export class KbFullTextIndex {
 						size: c.size ?? 0,
 						tags: [],
 						text: content.value.toString(),
-					}, lengths);
+					});
 				} catch {
 					// 忽略单个文件读取失败
 				}
@@ -193,8 +281,45 @@ export class KbFullTextIndex {
 		}
 	}
 
-	private addDoc(doc: Omit<IIndexedDoc, 'length'>, lengths: number[]): void {
+	/** Remove a doc (and its postings / tag entries) from the index. */
+	private _removeDoc(docId: string): void {
+		const doc = this._docs.get(docId);
+		if (!doc) { return; }
+		// postings: remove this docId from every term it appeared in
+		for (const term of this._tokenizeOnce(doc)) {
+			const pm = this._postings.get(term);
+			if (pm) {
+				pm.delete(docId);
+				if (pm.size === 0) { this._postings.delete(term); }
+			}
+		}
+		// tags
+		for (const tag of doc.tags) {
+			const normalized = tag.toLowerCase().trim();
+			const set = this._tagIndex.get(normalized);
+			if (set) {
+				set.delete(docId);
+				if (set.size === 0) {
+					this._tagIndex.delete(normalized);
+					this._allTags.delete(normalized);
+				}
+			}
+		}
+		this._docs.delete(docId);
+	}
+
+	/** Tokens that would be generated for a cached doc (for selective posting removal). */
+	private *_tokenizeOnce(doc: IIndexedDoc): Iterable<string> {
+		const { cleanText } = this.extractTags(doc.text);
+		yield* this.tokenize(doc.name.toLowerCase() + ' ' + cleanText);
+	}
+
+	/** Add or replace a doc in the index (re-indexing its postings + tags). */
+	private _addOrUpdateDoc(doc: Omit<IIndexedDoc, 'length'>): void {
 		const docId = doc.uri.toString();
+		if (this._docs.has(docId)) {
+			this._removeDoc(docId);
+		}
 
 		// 提取并索引 #标签#（从文本中解析，然后从 token 流中去除避免重复索引）
 		const { tags, cleanText } = this.extractTags(doc.text);
@@ -202,7 +327,6 @@ export class KbFullTextIndex {
 		const length = toks.length;
 
 		this._docs.set(docId, { ...doc, length, tags });
-		lengths.push(length);
 
 		// 文本倒排索引
 		const tf = new Map<string, number>();
@@ -316,6 +440,198 @@ export class KbFullTextIndex {
 		}
 		result.sort((a, b) => b.count - a.count);
 		return result;
+	}
+
+	// -----------------------------------------------------------------------
+	// 持久化（缓存到 vault 目录，启动时增量 reconcile，避免全量重读）
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Expose all indexed docs (uri / name / section / mtime / size / text) so
+	 * the link graph + mention index can be derived from memory when the FTS
+	 * cache was loaded — avoiding a second full disk walk.
+	 */
+	allDocs(): { uri: URI; name: string; section: KbSection; mtime: number; size: number; text: string }[] {
+		return [...this._docs.values()].map(d => ({
+			uri: d.uri, name: d.name, section: d.section,
+			mtime: d.mtime, size: d.size, text: d.text,
+		}));
+	}
+
+	/**
+	 * Serialize the index to JSON. Stores per-doc metadata + text + tags (not the
+	 * postings table — that is cheaply re-derived by re-tokenizing on load, which
+	 * keeps the cache roughly the size of the vault text instead of ~2x).
+	 */
+	serialize(): string {
+		const docs = [...this._docs.values()].map(d => ({
+			uri: d.uri.toString(),
+			name: d.name,
+			path: d.path,
+			section: d.section,
+			mtime: d.mtime,
+			size: d.size,
+			length: d.length,
+			tags: d.tags,
+			text: d.text,
+		}));
+		return JSON.stringify({ v: 1, docs, avgLen: this._avgLen, totalDocs: this._totalDocs });
+	}
+
+	/** Restore the index from serialized JSON. Returns false on malformed input. */
+	deserialize(json: string): boolean {
+		try {
+			const data = JSON.parse(json);
+			if (!data || data.v !== 1 || !Array.isArray(data.docs)) { return false; }
+			this._docs.clear();
+			this._postings.clear();
+			this._tagIndex.clear();
+			this._allTags.clear();
+			for (const d of data.docs) {
+				const uri = URI.parse(d.uri);
+				const doc: IIndexedDoc = {
+					uri,
+					name: d.name,
+					path: d.path,
+					section: d.section as KbSection,
+					mtime: d.mtime ?? 0,
+					size: d.size ?? 0,
+					length: d.length ?? 0,
+					tags: Array.isArray(d.tags) ? d.tags : [],
+					text: typeof d.text === 'string' ? d.text : '',
+				};
+				const docId = uri.toString();
+				this._docs.set(docId, doc);
+				// rebuild postings by re-tokenizing (CPU-only, no file I/O)
+				const { cleanText } = this.extractTags(doc.text);
+				const toks = this.tokenize(doc.name.toLowerCase() + ' ' + cleanText);
+				const tf = new Map<string, number>();
+				for (const t of toks) { tf.set(t, (tf.get(t) ?? 0) + 1); }
+				for (const [term, f] of tf) {
+					let pm = this._postings.get(term);
+					if (!pm) { pm = new Map(); this._postings.set(term, pm); }
+					pm.set(docId, f);
+				}
+				for (const tag of doc.tags) {
+					const normalized = tag.toLowerCase().trim();
+					if (!normalized) { continue; }
+					this._allTags.add(normalized);
+					let set = this._tagIndex.get(normalized);
+					if (!set) { set = new Set(); this._tagIndex.set(normalized, set); }
+					set.add(docId);
+				}
+			}
+			this._avgLen = data.avgLen ?? 0;
+			this._totalDocs = data.totalDocs ?? this._docs.size;
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Remap all absolute paths in a serialized index from a source prefix to a
+	 * target prefix. Used when importing a pre-built index from another machine
+	 * (e.g. sharing a Feishu KB index across clients).
+	 *
+	 * @returns The remapped JSON string, or `null` if remapping failed (malformed
+	 *          input) or no paths needed changing.
+	 */
+	static remapPaths(serialized: string, fromPrefix: string, toPrefix: string): string | null {
+		try {
+			const data = JSON.parse(serialized);
+			if (!data || data.v !== 1 || !Array.isArray(data.docs)) { return null; }
+			let changed = false;
+			for (const d of data.docs) {
+				if (typeof d.path === 'string' && d.path.startsWith(fromPrefix)) {
+					d.path = toPrefix + d.path.slice(fromPrefix.length);
+					changed = true;
+				}
+				if (typeof d.uri === 'string' && d.uri.startsWith(fromPrefix)) {
+					d.uri = toPrefix + d.uri.slice(fromPrefix.length);
+					changed = true;
+				}
+				// Remap file references embedded in document text
+				// (e.g. `(/abs/path/media/img.png)` → `(/new/path/media/img.png)`)
+				if (typeof d.text === 'string' && d.text.includes(fromPrefix)) {
+					d.text = d.text.split(fromPrefix).join(toPrefix);
+					changed = true;
+				}
+			}
+			return changed ? JSON.stringify(data) : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Validate a serialized index against the current filesystem.
+	 * Checks which docs have matching files on disk (by `path`), which are stale
+	 * (file exists but mtime/size differ), and which are missing entirely.
+	 *
+	 * Used after importing a pre-built index to decide whether to load it directly
+	 * or trigger a full rebuild.
+	 */
+	static async validateIndex(
+		serialized: string,
+		fileService: IFileService,
+	): Promise<{ valid: number; stale: number; missing: number; total: number }> {
+		const result = { valid: 0, stale: 0, missing: 0, total: 0 };
+		try {
+			const data = JSON.parse(serialized);
+			if (!data || data.v !== 1 || !Array.isArray(data.docs)) { return result; }
+			result.total = data.docs.length;
+			for (const d of data.docs) {
+				if (typeof d.path !== 'string') { result.missing++; continue; }
+				try {
+					const stat = await fileService.resolve(URI.file(d.path));
+					if (!stat.isDirectory && stat.mtime === d.mtime && stat.size === d.size) {
+						result.valid++;
+					} else {
+						result.stale++;
+					}
+				} catch {
+					result.missing++;
+				}
+			}
+		} catch {
+			// ignore parse errors — caller treats all as stale
+		}
+		return result;
+	}
+
+	/** Load the index cache from disk. Returns false if missing / invalid. */
+	async loadCache(uri: URI): Promise<boolean> {
+		try {
+			const content = await this.fileService.readFile(uri);
+			return this.deserialize(content.value.toString());
+		} catch {
+			return false;
+		}
+	}
+
+	/** Persist the index cache to disk (best-effort). */
+	async saveCache(uri: URI): Promise<void> {
+		try {
+			await this.fileService.writeFile(uri, VSBuffer.fromString(this.serialize()));
+		} catch {
+			// best-effort: cache failure must not break search
+		}
+	}
+
+	/**
+	 * Incrementally update a single document in the index (used after a note is
+	 * saved). Avoids a full rebuild for a one-file change.
+	 */
+	updateDoc(uri: URI, name: string, section: KbSection, mtime: number, size: number, text: string): void {
+		this._addOrUpdateDoc({ uri, name, path: uri.fsPath, section, mtime, size, tags: [], text });
+		this._recomputeStats();
+	}
+
+	/** Remove a document from the index (used after a note is deleted). */
+	removeDoc(uri: URI): void {
+		this._removeDoc(uri.toString());
+		this._recomputeStats();
 	}
 
 	private snippet(doc: IIndexedDoc, matchedTerms: Set<string>, ql: string): string {

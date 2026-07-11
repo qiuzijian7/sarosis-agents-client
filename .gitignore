@@ -121,3 +121,6 @@ src/vs/**/*.js
 !src/vs/base/browser/dompurify/dompurify.js
 !src/vs/base/common/marked/marked.js
 !src/vs/base/common/semver/semver.js
+# Transpile outputs — .d.ts declaration files and .js.map source maps
+src/vs/**/*.d.ts
+src/vs/**/*.js.map

@@ -494,7 +494,7 @@ interface ChatState {
 	clearMessages: () => void;
 	/**
 	 * Append a user message that originated *outside* the chat input
-	 * (e.g. an imgui form submitted from a ConfigMD preview pane).
+	 * (e.g. an imgui form submitted from a ConfigHtml preview pane).
 	 *
 	 * The host-side controller has already persisted this message and
 	 * kicked off a `chat.stream.*` cycle; this method just mirrors the

@@ -79,8 +79,8 @@ export interface Agent {
 	// ── Knowledge ───────────────────────────────────
 	knowledgeConfig?: KnowledgeConfig;
 
-	// ── ConfigMD ────────────────────────────────────
-	configMd?: {
+	// ── ConfigHtml ────────────────────────────────────
+	configHtml?: {
 		mdPath: string;
 		parserPath?: string;
 		stylesPath?: string;

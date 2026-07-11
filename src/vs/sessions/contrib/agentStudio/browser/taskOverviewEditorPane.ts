@@ -16,6 +16,7 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { GroupsOrder, IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import {
 	IAgentTaskBoardService,
 	IAgentStudioService,
@@ -47,6 +48,12 @@ export class TaskOverviewEditorPane extends EditorPane {
 	private _renderer: TaskBoardNativeRenderer | undefined;
 	private _isInitialized = false;
 
+	// Drag suppression: when the user drags a card to a new column, the
+	// renderer already moves the DOM element optimistically.  Skipping the
+	// subsequent full _refresh() avoids a flash where the card disappears
+	// during DOM clear and reappears after rebuild.
+	private _suppressNextBoardRefresh = false;
+
 	// Filter state
 	private _boardFilterWsId = 'all';
 	private _employeeFilter = 'all';
@@ -61,6 +68,9 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 	// Cached employee info (loaded once)
 	private _allEmployees: EmployeeInfo[] = [];
+
+	// Cached provider/model list (invalidated when language models change)
+	private _providerListCache: { id: string; name: string; icon?: string; models: { id: string; name: string }[] }[] | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -78,6 +88,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 		@IAgentChatService private readonly _agentChatService: IAgentChatService,
 		@IBrowserViewWorkbenchService private readonly _browserViewWorkbenchService: IBrowserViewWorkbenchService,
 		@IOpenerService private readonly _openerService: IOpenerService,
+		@ILanguageModelsService private readonly _lmService: ILanguageModelsService,
 	) {
 		super(TaskOverviewEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -138,7 +149,37 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 		// Subscribe to renderer events
 		this._register(this._renderer.onStatusChange(({ taskId, status, source }) => {
-			this._taskBoardService.updateTaskStatus(taskId, status);
+			const t0 = performance.now();
+			console.info(`[PerfDiag] 🟠 PANE onStatusChange START taskId=${taskId} status=${status} t=${t0.toFixed(0)}ms`);
+			// Optimistic DOM move already applied in drop handler — skip the
+			// full _refresh() to avoid flash where card disappears & reappears.
+			this._suppressNextBoardRefresh = true;
+			// When transitioning to Running, open/focus the agent's chat in
+			// the Agent Studio area AFTER the status update completes
+			// (assignee is resolved in Phase 2, so we must await it).
+			const isRunning = status === TaskBoardStatus.Running;
+			// When a running task is dragged to another column (e.g. todo),
+			// cancel the active agent execution so the task actually stops.
+			if (status !== TaskBoardStatus.Running) {
+				void (async () => {
+					const task = await this._taskBoardService.getTask(taskId);
+					if (task?.assigneeId) {
+						this._agentChatService.cancelStream(task.assigneeId);
+						console.info(`[PerfDiag] 🟠 PANE onStatusChange cancelled agent stream for ${task.assigneeId} (task ${taskId} → ${status})`);
+					}
+				})();
+			}
+			void (async () => {
+				const updated = await this._taskBoardService.updateTaskStatus(taskId, status);
+				if (isRunning && updated?.assigneeId) {
+					void this._handleChatJump(
+						updated.assigneeId,
+						updated.assigneeName || updated.assigneeId,
+						updated.workspaceId,
+						updated.worktreePath,
+					);
+				}
+			})();
 		}));
 
 		this._register(this._renderer.onDelete(({ taskId, source }) => {
@@ -164,6 +205,8 @@ export class TaskOverviewEditorPane extends EditorPane {
 		}));
 
 		this._register(this._renderer.onTaskDetailRequest(({ task, employees, allTasks }) => {
+			const t0 = performance.now();
+			console.info(`[PerfDiag] 🟡 PANE onTaskDetailRequest START taskId=${task.id} t=${t0.toFixed(0)}ms`);
 			void this._handleTaskDetail(task, employees, allTasks);
 		}));
 
@@ -202,6 +245,13 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 		// Subscribe to service events for automatic refresh
 		this._register(this._taskBoardService.onDidChangeTaskBoard(() => {
+			// Drag-triggered status changes do optimistic DOM movement in the
+			// drop handler — skip the full _refresh() to avoid visual flash.
+			if (this._suppressNextBoardRefresh) {
+				this._suppressNextBoardRefresh = false;
+				console.info('[PerfDiag] 🟠 onDidChangeTaskBoard SKIP (drag suppression), data already synced');
+				return;
+			}
 			void this._refresh();
 		}));
 
@@ -399,6 +449,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 		}
 
 		const wsId = result.workspaceId || boardWsId;
+		const tCreate = performance.now();
 
 		const created = await this._taskBoardService.createTask({
 			title: result.title,
@@ -412,6 +463,8 @@ export class TaskOverviewEditorPane extends EditorPane {
 			workspaceId: wsId,
 			worktreePath: result.worktreePath,
 		} as any);
+
+		console.info(`[TaskPerfDiag] _handleCreateTask: createTask returned elapsed=${(performance.now() - tCreate).toFixed(0)}ms`);
 
 		// Upload attachments from rich description editor
 		if (result.attachments && result.attachments.length > 0) {
@@ -547,6 +600,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 						this._openerService.open(fileUri, { openExternal: true });
 					} catch { /* invalid path — ignore */ }
 				},
+				providers: this._buildProviderModelList(),
 			},
 		);
 
@@ -582,11 +636,52 @@ export class TaskOverviewEditorPane extends EditorPane {
 			if (result.workspaceId !== undefined) { patch.workspaceId = result.workspaceId; }
 			if (result.worktreePath !== undefined) { patch.worktreePath = result.worktreePath; }
 			if (result.url !== undefined) { patch.url = result.url; }
+			if (result.providerId !== undefined) { patch.providerId = result.providerId; }
+			if (result.modelId !== undefined) { patch.modelId = result.modelId; }
 			this._taskBoardService.updateTask(result.taskId, patch as any);
 			break;
 		}
 	}
 		// Refresh is automatic via onDidChangeTaskBoard event
+	}
+
+	/**
+	 * Build a flat {provider → [models]} list for the task editor's
+	 * provider/model selectors.  Uses ILanguageModelsService to query
+	 * registered vendors and their model metadata.
+	 */
+	private _buildProviderModelList(): { id: string; name: string; icon?: string; models: { id: string; name: string }[] }[] {
+		// Return cached list if available — provider/model registry rarely changes
+		// during a session, so we avoid re-traversing all vendors on every modal open.
+		if (this._providerListCache) { return this._providerListCache; }
+		const vendors = this._lmService.getVendors();
+		const result = vendors.map(v => {
+			const vendorId = v.vendor;
+			const modelIds = this._lmService.getLanguageModelIds().filter(mid =>
+				mid.startsWith(vendorId + '/')
+			);
+			const models: { id: string; name: string }[] = [];
+			for (const mid of modelIds) {
+				const meta = this._lmService.lookupLanguageModel(mid);
+				const bareId = mid.slice(vendorId.length + 1);
+				models.push({
+					id: bareId,
+					name: meta?.name ?? bareId,
+				});
+			}
+			return {
+				id: vendorId,
+				name: v.displayName ?? vendorId,
+				icon: (v as any).icon,
+				models,
+			};
+		});
+		this._providerListCache = result;
+		// Invalidate cache when language models change (provider added/removed)
+		this._register(this._lmService.onDidChangeLanguageModels(() => {
+			this._providerListCache = undefined;
+		}));
+		return result;
 	}
 
 	// ─── Chat Jump ──────────────────────────────────────────────────────
@@ -603,12 +698,31 @@ export class TaskOverviewEditorPane extends EditorPane {
 			}
 		}
 
-		// 1. Find existing chat tab for this agent
-		for (const group of this._editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
+		// Get the Agent Studio editor part (right column).  Opens into the
+		// Agent Studio area instead of the file editor area — the click on a
+		// task card's 💬 button should focus/start the agent conversation
+		// in the dedicated Agent Studio panel.
+		const agentPart = (this._editorGroupsService as unknown as { agentPart?: IEditorGroupsService }).agentPart;
+		const searchGroups = agentPart
+			? agentPart.getGroups(GroupsOrder.CREATION_TIME)
+			: this._editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+
+		// 1. Find existing chat tab for this agent (prefer agentPart)
+		for (const group of searchGroups) {
 			for (const editor of group.editors) {
-				if ((editor as any).typeId === 'workbench.editors.nativeChatInput' && (editor as any).agentId === agentId) {
+				const ed = editor as any;
+				if ((ed.typeId === 'workbench.editors.nativeChatInput' || ed.typeId === 'workbench.editor.nativeChat') && ed.agentId === agentId) {
 					// Found — focus the tab
 					await group.openEditor(editor, { pinned: true });
+					// Ensure the Agent Studio part is visible
+					// Force layout to show the agent part in case it was hidden
+					try {
+						const { Parts } = await import('../../../../workbench/services/layout/browser/layoutService.js');
+						const layoutService = (this as any)._layoutService;
+						if (layoutService) {
+							layoutService.setPartHidden(false, Parts.AGENT_EDITOR_PART);
+						}
+					} catch { /* best-effort */ }
 					for (const pane of this._editorService.visibleEditorPanes) {
 						if ((pane as any).input === editor) {
 							// Sync worktree to chat panel UI
@@ -624,13 +738,25 @@ export class TaskOverviewEditorPane extends EditorPane {
 			}
 		}
 
-		// 2. Not found — create a new chat tab for this agent.
-		// The new tab's setInput→_selectAndLoadAgent will load history + worktrees,
-		// and pick up the binding we synced above.
+		// 2. Not found — create a new chat tab in the Agent Studio area.
 		try {
 			const { NativeChatEditorInput } = await import('./nativeChatEditorInput.js');
 			const input = NativeChatEditorInput.create(undefined, agentId, undefined, agentName);
-			await this._editorService.openEditor(input, { pinned: true });
+
+			// Open in agent part if available; fall back to editorService.
+			if (agentPart?.activeGroup) {
+				// Ensure the Agent Studio part is visible
+				try {
+					const { Parts } = await import('../../../../workbench/services/layout/browser/layoutService.js');
+					const layoutService = (this as any)._layoutService;
+					if (layoutService) {
+						layoutService.setPartHidden(false, Parts.AGENT_EDITOR_PART);
+					}
+				} catch { /* best-effort */ }
+				await agentPart.activeGroup.openEditor(input, { pinned: true });
+			} else {
+				await this._editorService.openEditor(input, { pinned: true });
+			}
 		} catch (err) {
 			this._logService.error('[TaskOverviewEditorPane] Failed to open chat for agent:', err);
 		}

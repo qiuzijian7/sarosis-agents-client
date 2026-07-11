@@ -31,6 +31,19 @@ export interface IKbVault {
 	closed: boolean;
 	/** Vault 根目录的绝对磁盘路径（fsPath） */
 	path: string;
+	/**
+	 * 外部配置的自定义根目录（用户「配置文件夹为知识库」指定）。
+	 * 存在时 vaultUri 优先返回它，根目录设置改变不会影响它；缺省（默认 Vault）
+	 * 时 vaultUri 跟随全局知识库根目录（STORAGE_ROOT_DIR）。
+	 */
+	customPath?: string;
+	/**
+	 * 关联（链接）的外部文件夹绝对路径列表。
+	 * 与「导入文件夹（拷贝）」不同，关联模式**不移动 / 不复制文件**，
+	 * 仅把该目录登记为索引根，由内核原地扫描其中的 .md 进行索引 / 图谱 / 反链。
+	 * 持久化在 vaults 列表（saveVaults）。
+	 */
+	linkedFolders?: string[];
 }
 
 /**
@@ -108,21 +121,13 @@ export type KbImportKind =
 	| 'obsidian'
 	| 'files'
 	| 'folder'
-	| 'feishu'
-	| 'xiaohongshu'
-	| 'bilibili'
-	| 'douyin'
-	| 'zhihu';
+	| 'url';
 
 export const KB_IMPORT_ITEMS: { kind: KbImportKind; label: string; sub: string; icon: string }[] = [
 	{ kind: 'obsidian', label: '导入 Obsidian 库', sub: '.md + 双链', icon: '📕' },
 	{ kind: 'files', label: '导入文件', sub: 'PDF / DOC / MD / TXT …', icon: '📄' },
-	{ kind: 'folder', label: '导入文件夹', sub: '递归扫描', icon: '📁' },
-	{ kind: 'feishu', label: '飞书知识库', sub: 'feishu.cn/wiki/…', icon: '📘' },
-	{ kind: 'xiaohongshu', label: '小红书', sub: 'xiaohongshu.com/…', icon: '📕' },
-	{ kind: 'bilibili', label: 'B 站视频', sub: 'bilibili.com/video/…', icon: '▶️' },
-	{ kind: 'douyin', label: '抖音', sub: 'douyin.com/…', icon: '🎵' },
-	{ kind: 'zhihu', label: '知乎文章', sub: 'zhihu.com/question/…', icon: '💬' },
+	{ kind: 'folder', label: '导入文件夹', sub: '关联原位 / 拷贝', icon: '📁' },
+	{ kind: 'url', label: '导入链接 / URL', sub: '小红书/抖音/知乎/YouTube…', icon: '🔗' },
 ];
 
 export function newVaultId(): string {

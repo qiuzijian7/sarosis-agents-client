@@ -93,13 +93,13 @@ const LAYER_PATTERNS: Record<string, { layer: LayerAssignment['layer']; patterns
 	config: { layer: 'config', patterns: [/config/i, /setting/i, /env/i, /constant/i] },
 };
 
-export function analyzeArchitecture(store: CodebaseGraphStore, project: string): ArchitectureReport {
+export async function analyzeArchitecture(store: CodebaseGraphStore, project: string): Promise<ArchitectureReport> {
 	const allNodes = store.getAllNodes().filter(n => n.project === project);
 	const allEdges = store.getAllEdges().filter(e => e.project === project);
 
 	return {
 		languages: analyzeLanguages(allNodes),
-		packages: analyzePackages(allNodes, allEdges, project, store),
+		packages: await analyzePackages(allNodes, allEdges, project, store),
 		entryPoints: findEntryPoints(allNodes),
 		routes: allNodes.filter(n => n.label === 'route'),
 		hotspots: findHotspots(allNodes),
@@ -155,7 +155,7 @@ function getLanguageName(ext: string): string {
 
 // ─── Package Analysis ─────────────────────────────────────────────────────────
 
-function analyzePackages(nodes: GraphNode[], edges: GraphEdge[], project: string, store: CodebaseGraphStore): PackageSummary[] {
+async function analyzePackages(nodes: GraphNode[], edges: GraphEdge[], project: string, store: CodebaseGraphStore): Promise<PackageSummary[]> {
 	const pkgMap: Map<string, GraphNode[]> = new Map();
 
 	for (const node of nodes) {
@@ -167,6 +167,7 @@ function analyzePackages(nodes: GraphNode[], edges: GraphEdge[], project: string
 	}
 
 	const summaries: PackageSummary[] = [];
+	let i = 0;
 	for (const [name, pkgNodes] of pkgMap) {
 		const languages = new Set<string>();
 		let entryPoints = 0;
@@ -187,6 +188,10 @@ function analyzePackages(nodes: GraphNode[], edges: GraphEdge[], project: string
 			languages: Array.from(languages),
 			entryPoints,
 		});
+		// Yield to event loop every 100 packages so the abort timer can fire (P2-6)
+		if (++i % 100 === 0) {
+			await new Promise<void>(r => setTimeout(r, 0));
+		}
 	}
 
 	return summaries.sort((a, b) => b.nodeCount - a.nodeCount);

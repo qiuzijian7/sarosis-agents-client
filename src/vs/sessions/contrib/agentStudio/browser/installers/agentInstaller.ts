@@ -18,7 +18,7 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
-import { IConfigHtmlService } from '../../../../common/agentStudioService.js';
+
 import { Agent } from '../../../../common/agentStudioTypes.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
@@ -33,7 +33,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IPathService private readonly pathService: IPathService,
-		@IConfigHtmlService private readonly configHtmlService: IConfigHtmlService,
+
 	) {
 		super();
 	}
@@ -47,7 +47,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		const exportData = JSON.parse(raw) as {
 			agent: Partial<Agent>;
 			agentConfig?: Record<string, unknown>;
-			files?: { agentsMd?: string; soulMd?: string; identityMd?: string; toolsMd?: string; memoryMd?: string; configMd?: string; htmlEntry?: string; htmlContent?: string; htmlStyles?: string };
+			files?: { agentsMd?: string; soulMd?: string; identityMd?: string; toolsMd?: string; memoryMd?: string; configHtml?: string; htmlEntry?: string; htmlContent?: string; htmlStyles?: string };
 		};
 
 		// ── Resolve target agent dir: ~/.saros/agents/{agentId}/ ──
@@ -78,14 +78,14 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			htmlPath = 'config.html';
 		}
 
-		// ── Install config source (MD/HTML source file) ──
-		if (exportData.files?.configMd) {
-			const configFileName = exportData.agent.configMd?.mdPath || 'config.html';
+		// ── Install config source (HTML source file) ──
+		if (exportData.files?.configHtml) {
+			const configFileName = exportData.agent.configHtml?.htmlPath || 'config.html';
 			const configUri = URI.joinPath(agentDir, configFileName);
-			await this.fileService.writeFile(configUri, VSBuffer.fromString(exportData.files.configMd));
+			await this.fileService.writeFile(configUri, VSBuffer.fromString(exportData.files.configHtml));
 		}
 
-		// 复用 createAgent 落地：写 custom-agents.json + .agent.md（若有 agentsMd）
+		// 复用 createAgent 落地：写 ~/.saros/agents/{id}/agent.json + .agent.md（若有 agentsMd）
 		const createData: Partial<Agent> & { bootstrapTemplates?: { agentsMd?: string } } = {
 			...exportData.agent,
 			version: manifest.version,
@@ -145,36 +145,19 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		let htmlFilesManifest: PackageManifest['htmlFiles'] | undefined;
 
 		// Try reading config.html from the agent directory
-		const configFileName = agent.configMd?.mdPath || 'config.html';
+		const configFileName = agent.configHtml?.htmlPath || 'config.html';
 		const configUri = URI.joinPath(agentDir, configFileName);
 		if (await this.fileService.exists(configUri)) {
 			try {
 				configMdContent = (await this.fileService.readFile(configUri)).value.toString();
-				// If it's HTML, use directly; if MD, try rendering
+				// Treat as HTML directly (ConfigHtml mode)
 				const isHtml = configMdContent.toLowerCase().includes('<!doctype') || /<html[\s>]/i.test(configMdContent);
 				if (isHtml) {
 					htmlContent = configMdContent;
 					htmlEntry = 'index.html';
-				} else {
-					// Try configHtmlService for rendering
-					try {
-						const renderResult = await this.configHtmlService.renderHtml(localId);
-						htmlContent = renderResult.html;
-						htmlEntry = 'index.html';
-					} catch { /* best-effort */ }
 				}
 			} catch { /* read error, skip */ }
 		}
-
-		// Try configHtmlService for styles
-		try {
-			const state = await this.configHtmlService.resolveState(localId);
-			if (state) {
-				htmlStyles = state.stylesContent;
-				if (!configMdContent) { configMdContent = state.markdown; }
-				if (!htmlContent) { htmlContent = state.html; htmlEntry = 'index.html'; }
-			}
-		} catch { /* best-effort */ }
 
 		// 组装 AgentExportData
 		const exportData = {
@@ -184,13 +167,13 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 				id: agent.id, name: agent.name, role: agent.role, description: agent.description,
 				icon: agent.icon, model: agent.model, skills: agent.skills, tools: agent.tools,
 				category: agent.category, systemPrompt: agent.systemPrompt, temperature: agent.temperature,
-				configMd: agent.configMd,
+				configHtml: agent.configHtml,
 				source: 'custom',
 			},
 			agentConfig: {},
 			files: {
 				agentMd,
-				configMd: configMdContent,
+				configHtml: configMdContent,
 				htmlEntry,
 				htmlContent,
 				htmlStyles,

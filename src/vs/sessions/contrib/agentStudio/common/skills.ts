@@ -80,6 +80,8 @@ export interface ISkillActivationContext {
 	readonly sessionId?: string;
 	/** 用户已显式选中的 skill id 列表（来自 `/skill` 命令） */
 	readonly explicit?: readonly string[];
+	/** Agent 配置中指定的技能 ID 列表 —— 强制加载，不依赖 activation 模式或关键词匹配 */
+	readonly required?: readonly string[];
 }
 
 /**
@@ -113,6 +115,7 @@ export interface ISkillRegistry {
 
 	/**
 	 * 选出一次 turn 应该注入的 skill 集合：
+	 * - context.required 中列出的 skill（强制加载，最高优先级）
 	 * - 所有 `always` 类型
 	 * - 所有命中 `match` 关键词的 `auto` 类型
 	 * - context.explicit 中列出的 `manual` / `auto` 类型

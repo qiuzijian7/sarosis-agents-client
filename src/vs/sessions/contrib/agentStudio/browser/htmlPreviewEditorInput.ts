@@ -8,7 +8,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IUntypedEditorInput } from '../../../../workbench/common/editor.js';
 
 /**
- * EditorInput for rendering a self-contained HTML file (e.g. ConfigMD's
+ * EditorInput for rendering a self-contained HTML file (e.g. ConfigHtml's
  * `.preview.html`) inside the workbench editor area.
  *
  * Why a custom input?
@@ -21,7 +21,7 @@ import { IUntypedEditorInput } from '../../../../workbench/common/editor.js';
  *   iframe with no anchor-positioning involvement.
  *
  * Carrying context (agentId / workspaceId / agentSessionId):
- *   When the preview is opened from ConfigMD's "preview" button we know
+ *   When the preview is opened from ConfigHtml's "preview" button we know
  *   exactly which agent owns it AND which Fork session is active in the
  *   chat panel at that moment. We pass all three through the input so:
  *     - the pane can route SDK postMessages back to ConfigHtmlService

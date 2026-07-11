@@ -78,13 +78,20 @@ export class ChatPopoutService extends Disposable {
 			const auxPart = await this._editorGroupsService.createAuxiliaryEditorPart();
 			const auxGroup = auxPart.activeGroup;
 
-			// Move each editor from its original group to the aux window
-			for (const editor of chatEditors) {
-				const sourceGroupId = editorToGroupId.get(editor)!;
-				const sourceGroup = this._editorGroupsService.getGroup(sourceGroupId);
-				if (sourceGroup) {
-					sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], auxGroup);
+			// Temporarily allow move (canMove() is normally locked to prevent
+			// users from dragging chat tabs out of the Agent Editor Part).
+			NativeChatEditorInput.beginForceMove();
+			try {
+				// Move each editor from its original group to the aux window
+				for (const editor of chatEditors) {
+					const sourceGroupId = editorToGroupId.get(editor)!;
+					const sourceGroup = this._editorGroupsService.getGroup(sourceGroupId);
+					if (sourceGroup) {
+						sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], auxGroup);
+					}
 				}
+			} finally {
+				NativeChatEditorInput.endForceMove();
 			}
 
 			// Hide the Agent editor (right column)

@@ -8,21 +8,25 @@
 
 import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
 import { IAgentCapabilityPlugin, IAgentOSPluginContext, AgentCapability } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
 import { ToolExampleProvider } from './toolProvider.js';
 
 export class ToolExamplePlugin extends Disposable implements IAgentCapabilityPlugin {
 	private readonly _provider: ToolExampleProvider;
+	private _agentOS: IAgentOSPluginContext['agentOSService'] | undefined;
 
-	constructor(
-		@IAgentOSService private readonly _agentOS: IAgentOSService,
-	) {
+	constructor() {
 		super();
 		this._provider = this._register(new ToolExampleProvider());
 	}
 
 	async activate(context: IAgentOSPluginContext): Promise<void> {
 		console.log('[ToolExample] Activating tool-example provider...');
+		// NOTE: do NOT inject IAgentOSService via constructor DI — this plugin is
+		// loaded as a separate module realm from the host bundle, so its
+		// service-identifier object differs from the one registered via
+		// registerSingleton, causing "UNKNOWN service agentOSService".
+		// Obtain the live service through context.agentOSService instead.
+		this._agentOS = context.agentOSService;
 		this._agentOS.registerToolProvider(this._provider, 50);
 		console.log('[ToolExample] Registered tool-example provider (priority=50)');
 	}
@@ -33,7 +37,7 @@ export class ToolExamplePlugin extends Disposable implements IAgentCapabilityPlu
 }
 
 export function activate(pluginContext: IAgentOSPluginContext): IAgentCapabilityPlugin {
-	return new ToolExamplePlugin(
-		pluginContext.agentOS as any,
-	);
+	const plugin = new ToolExamplePlugin();
+	void plugin.activate(pluginContext);
+	return plugin;
 }

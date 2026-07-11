@@ -91,8 +91,20 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 			}, async (progress) => {
 				progress.report({ message: '正在读取 TAPD 单子详情…' });
 
-				// Extract TAPD workitem data directly from the browser page DOM via Playwright.
-				const result = await tapd.importFromBrowser(SAROS_CLAW_AGENT_ID, viewId, rawUrl, { downloadAttachments: false });
+			// Extract TAPD workitem data directly from the browser page DOM via Playwright.
+			// Pass a Playwright-based downloadFn so attachments are downloaded internally
+			// with auth cookies — eliminates the old dual download path (P2-4 fix).
+			const result = await tapd.importFromBrowser(SAROS_CLAW_AGENT_ID, viewId, rawUrl, {
+				downloadAttachments: true,
+				downloadFn: async (url: string) => {
+					const dl = await this.taskBoardService.downloadUrlForAttachment(url, {
+						sessionId: SAROS_CLAW_AGENT_ID,
+						viewId,
+						subDir: 'tapd-inline',
+					});
+					return dl?.tempPath;
+				},
+			});
 				this.logService.info(`[BrowserKanban] TAPD import result: id=${result.id ?? '?'} type=${result.type ?? '?'} title="${result.title}" attachments=${(result.attachments || []).length} error=${result.error ?? 'none'}`);
 				this.logService.info(`[BrowserKanban] attachment list: ${JSON.stringify((result.attachments || []).map(a => ({ name: a.name, hasUrl: !!a.downloadUrl, url: a.downloadUrl, mime: a.mimeType })))}`);
 				if (result.error) {
@@ -129,13 +141,28 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 						increment: Math.floor(100 / total),
 					});
 					this.logService.info(`[BrowserKanban] downloading att ${i + 1}/${total}: name=${att.name} url=${att.downloadUrl}`);
-					const dl = await this.taskBoardService.downloadUrlForAttachment(url, { sessionId: SAROS_CLAW_AGENT_ID, viewId });
+					// subDir namespaces attachments per TAPD task; filename uses the
+					// real TAPD attachment name (e.g. 20260706T103214.zip) instead of
+					// the opaque URL-derived name (e.g. "story").
+					const dl = await this.taskBoardService.downloadUrlForAttachment(url, {
+						sessionId: SAROS_CLAW_AGENT_ID,
+						viewId,
+						filename: att.name,
+						subDir: result.id,
+					});
 					this.logService.info(`[BrowserKanban] download result: ${att.name} → ${dl?.tempPath ?? 'FAILED (undefined)'}`);
 					if (dl) {
-						// Use relative path (.sarosworkspace/tmp/task-downloads/...) so the
+						// Use relative path (.sarosworkspace/tmp/task-downloads/<taskId>/...) so the
 						// task detail UI can resolve + render thumbnails / clickable links.
-						const relPath = `.sarosworkspace/tmp/task-downloads/${dl.name}`;
+						const relPath = `.sarosworkspace/tmp/task-downloads/${result.id}/${dl.name}`;
 						const isImage = dl.mimeType.startsWith('image/');
+						// For images, embed as data URI to bypass CSP blocking of
+						// file:// protocol in the renderer webview context.
+						// Non-image attachments still use the local file path (opened
+						// via shell/VS Code APIs that are not subject to img-src CSP).
+						const inlineSrc = isImage && dl.base64
+							? `data:${dl.mimeType};base64,${dl.base64}`
+							: relPath;
 
 						// TAPD description images keep their original CDN URL
 						// (e.g. https://file.tapd.cn/compress/...?src=...) because
@@ -154,9 +181,9 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 						const tryReplace = (needle: string) => {
 							if (needle && description.includes(needle)) {
 								const before = description.length;
-								description = description.split(needle).join(relPath);
+								description = description.split(needle).join(inlineSrc);
 								replacedInline = true;
-								this.logService.info(`[BrowserKanban] inline REPLACED with needle "${needle.length > 80 ? needle.slice(0, 80) + '…' : needle}" → ${relPath} (len ${before} → ${description.length})`);
+								this.logService.info(`[BrowserKanban] inline REPLACED with needle "${needle.length > 80 ? needle.slice(0, 80) + '…' : needle}" → ${isImage ? 'data:image/…;base64,…' : relPath} (len ${before} → ${description.length})`);
 							} else {
 								this.logService.info(`[BrowserKanban] inline miss for needle "${needle.length > 80 ? needle.slice(0, 80) + '…' : needle}"`);
 							}
@@ -189,7 +216,17 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 							if (lines.length === 0) {
 								lines.push('', '### 📎 附件（已下载到本地）', '');
 							}
-							lines.push(isImage ? `![${att.name}](${relPath})` : `[${att.name}](${relPath})`);
+							// Compressed files: list the auto-extracted entries
+							// (images embedded as data URIs, others as file links).
+							if (dl.isZip && dl.extractedFiles && dl.extractedFiles.length) {
+								for (const f of dl.extractedFiles) {
+									lines.push(f.isImage && f.dataUri
+										? `![${f.name}](${f.dataUri})`
+										: `[${f.name}](${f.relPath})`);
+								}
+							} else {
+								lines.push(isImage ? `![${att.name}](${inlineSrc})` : `[${att.name}](${relPath})`);
+							}
 						}
 
 						// Always attach the binary so it appears in the card's

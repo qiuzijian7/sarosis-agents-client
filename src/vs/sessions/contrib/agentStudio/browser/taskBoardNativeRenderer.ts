@@ -133,9 +133,46 @@ export interface WorktreeInfo {
 	repoName?: string;
 }
 
+/** Result of showTaskDetailModal — user action + edited fields. */
+export interface ITaskDetailModalResult {
+	action: 'close' | 'statusChange' | 'delete' | 'archive' | 'block' | 'unblock' | 'edit';
+	taskId: string;
+	status?: TaskBoardStatus;
+	title?: string;
+	description?: string;
+	assigneeId?: string;
+	assigneeName?: string;
+	priority?: 'low' | 'medium' | 'high';
+	dependencies?: string[];
+	workspaceId?: string;
+	worktreePath?: string;
+	url?: string;
+	providerId?: string;
+	modelId?: string;
+}
+
+/** Options for showTaskDetailModal. */
+export interface ITaskDetailModalOptions {
+	workspaces?: { id: string; name: string }[];
+	loadWorktrees?: (workspaceId: string) => Promise<WorktreeInfo[]>;
+	/** Download a URL to local disk and return the local file path (or undefined on failure). */
+	downloadUrl?: (url: string) => Promise<string | undefined>;
+	/** Workspace root path for resolving .sarosworkspace/ relative attachment paths. */
+	workspaceRoot?: string;
+	/** Open a local file (absolute path or .sarosworkspace/ relative) in the OS default app. */
+	openFile?: (path: string) => void;
+	/** Available LM providers with their models (for provider/model switching). */
+	providers?: { id: string; name: string; icon?: string; models: { id: string; name: string }[] }[];
+}
+
 // ─── Style Injection ────────────────────────────────────────────────────────
 
 let _stylesInjected = false;
+
+/** Pasted images in the task description editor — keyed by id, stored
+ *  separately from the textarea content to avoid base64 bloat in the
+ *  description field.  Collected on save and persisted as attachments. */
+let _inlinePastedImages: Map<string, { mimeType: string; data: string }> | undefined;
 
 function injectStyles(): void {
 	if (_stylesInjected) { return; }
@@ -364,12 +401,12 @@ function injectStyles(): void {
 /* === Columns === */
 .native-tb-columns {
 	flex: 1 1 0;
+	height: 100%;        /* force definite height from panel — required for child .native-tb-cards flex:1 to compute */
 	display: flex;
 	gap: 0;
 	overflow-x: auto;
 	overflow-y: hidden;
 	min-height: 0;
-	max-height: 100%;
 }
 .native-tb-column {
 	flex: 1 1 0;
@@ -380,8 +417,10 @@ function injectStyles(): void {
 	border-right: 1px solid var(--vscode-panel-border);
 	background: var(--vscode-sideBar-background);
 	min-height: 0;
-	max-height: 100%;
-	overflow: hidden;
+	/* overflow:hidden removed — it blocked align-items:stretch in the row-flex,
+	   which prevented column height from being definite → .native-tb-cards flex:1
+	   computed to 0 → overflow-y:auto never triggered.
+	   Cards overflow is handled by .native-tb-cards overflow-y:auto below. */
 }
 .native-tb-column:last-child {
 	border-right: none;
@@ -430,26 +469,36 @@ function injectStyles(): void {
 /* === Cards (v2) === */
 .native-tb-cards {
 	flex: 1;
-	overflow-y: auto;
+	overflow-y: scroll !important;  /* always-visible scrollbar — wins over VS Code global rules */
 	overflow-x: hidden;
 	padding: 4px 6px;
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
 	min-height: 0;
-	scrollbar-width: thin;
-	scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(128,128,128,0.45)) transparent;
+	scrollbar-width: auto !important;
+	scrollbar-color: auto !important;
 }
-.native-tb-cards::-webkit-scrollbar { width: 8px; }
-.native-tb-cards::-webkit-scrollbar-thumb {
-	background: var(--vscode-scrollbarSlider-background, rgba(128,128,128,0.45));
-	border-radius: 4px;
-}
-.native-tb-cards::-webkit-scrollbar-thumb:hover {
-	background: var(--vscode-scrollbarSlider-hoverBackground, rgba(128,128,128,0.65));
+/* Override VS Code's global scrollbar styles — they set the scrollbar to
+   transparent/hidden by default.  Force our track + thumb visible. */
+.native-tb-cards::-webkit-scrollbar {
+	width: 10px !important;
+	height: 10px !important;
 }
 .native-tb-cards::-webkit-scrollbar-track {
-	background: transparent;
+	background: rgba(128,128,128,0.12) !important;
+	border-radius: 5px !important;
+}
+.native-tb-cards::-webkit-scrollbar-thumb {
+	background: rgba(128,128,128,0.45) !important;
+	border-radius: 5px !important;
+	border: 2px solid transparent !important;
+	background-clip: padding-box !important;
+}
+.native-tb-cards::-webkit-scrollbar-thumb:hover {
+	background: rgba(180,180,180,0.65) !important;
+	background-clip: padding-box !important;
+	border: 2px solid transparent !important;
 }
 .native-tb-card {
 	position: relative;
@@ -457,6 +506,7 @@ function injectStyles(): void {
 	background: linear-gradient(180deg, var(--vscode-editor-background) 0%, var(--vscode-sideBar-background) 100%);
 	border: 1px solid var(--vscode-panel-border);
 	border-radius: 6px;
+	flex-shrink: 0;          /* preserve natural height instead of squashing to fit parent */
 	cursor: grab;
 	font-size: 12px;
 	line-height: 1.4;
@@ -655,38 +705,61 @@ function injectStyles(): void {
 	opacity: 1;
 }
 
-/* Hover actions (top-right) */
+/* Hover action bar — full-card overlay centered on content */
 .native-tb-card-actions {
 	position: absolute;
-	top: 4px;
-	right: 4px;
-	display: none;
-	gap: 2px;
-	background: var(--vscode-editor-background);
-	border: 1px solid var(--vscode-panel-border);
-	border-radius: 4px;
-	padding: 2px;
-	box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	padding: 8px;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.16s;
+	background: color-mix(in srgb, var(--vscode-editor-background) 88%, transparent);
+	z-index: 5;
+	border-radius: 6px;
 }
 .native-tb-card:hover .native-tb-card-actions {
-	display: flex;
+	opacity: 1;
+	pointer-events: auto;
 }
 .native-tb-card action-btn {
-	font-size: 13px;
-	padding: 3px 6px;
-	border: none;
-	border-radius: 3px;
-	cursor: pointer;
-	line-height: 1;
-	background: transparent;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	font-size: 12px;
+	padding: 8px 14px;
+	border: 1px solid var(--vscode-panel-border);
+	border-radius: 6px;
+	background: var(--vscode-editor-background);
 	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	transition: transform 0.12s, background 0.12s, color 0.12s, box-shadow 0.12s;
+	box-shadow: 0 1px 3px rgba(0,0,0,0.15);
 }
 .native-tb-card action-btn:hover {
+	transform: scale(1.08);
 	background: var(--vscode-toolbar-hoverBackground);
 	color: var(--vscode-foreground);
+	box-shadow: 0 3px 8px rgba(0,0,0,0.25);
 }
 .native-tb-card action-btn.action-danger:hover {
+	background: color-mix(in srgb, var(--vscode-errorForeground, #f44747) 20%, transparent);
 	color: var(--vscode-errorForeground, #f44747);
+	border-color: color-mix(in srgb, var(--vscode-errorForeground, #f44747) 50%, transparent);
+}
+.native-tb-card action-btn.action-accent:hover {
+	background: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 20%, transparent);
+	color: var(--vscode-focusBorder, #007acc);
+	border-color: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 50%, transparent);
+}
+.native-tb-card action-btn.action-success:hover {
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed, #4ec9b0) 20%, transparent);
+	color: var(--vscode-testing-iconPassed, #4ec9b0);
+	border-color: color-mix(in srgb, var(--vscode-testing-iconPassed, #4ec9b0) 50%, transparent);
 }
 
 /* === Empty column === */
@@ -1246,9 +1319,47 @@ function injectStyles(): void {
  *   absolute `file:///` URLs so the renderer can load local files.
  * - Remaining plain-text lines become <br>-separated text.
  */
+
+/** Strip inline `data:<mime>;base64,...` URIs from a task description.
+ *  Replaces each match with `[图片]` or `[文件]` so the user sees that
+ *  attachments exist without dealing with megabytes of unreadable base64. */
+function stripInlineDataUris(description: string): string {
+	// Fast pre-check — skip regex entirely when no data URIs present.
+	if (description.indexOf('data:') === -1) { return description; }
+	const dataUriRe = /(?:(!?\[([^\]]*)\]\())?data:([\w/+-]+);base64,([A-Za-z0-9+/=]+)\)?/gi;
+	let img = 0; let file = 0;
+	const result = description.replace(dataUriRe, (_full, _prefix, _alt, mimeType) => {
+		if (mimeType?.startsWith('image/')) {
+			img++;
+			return `[图片: ${img}]`;
+		}
+		file++;
+		return `[文件: ${file}]`;
+	});
+	// Add summary when many URIs were stripped
+	const total = img + file;
+	if (total > 3) {
+		return result.replace(/\n{3,}/g, '\n\n').trim() +
+			`\n\n（已从描述中分离 ${total} 个内嵌附件）`;
+	}
+	return result;
+}
+
+/**
+ * Render a task description into the given container.  Supports:
+ * - Attachment reference tokens  `@image:path` / `@file:path`
+ * - Markdown image syntax       `![alt](path)` → clickable <img> thumbnail
+ * - Markdown link syntax   `[text](path)` → clickable <a> file link
+ * - Relative paths starting with `.sarosworkspace/` are resolved to
+ *   absolute `file:///` URLs so the renderer can load local files.
+ * - Remaining plain-text lines become <br>-separated text.
+ */
 function renderDescriptionHtml(container: HTMLElement, descText: string): void {
 	DOM.clearNode(container);
 	if (!descText) { return; }
+
+	// Strip inline data:...;base64 URIs before regex matching.
+	descText = stripInlineDataUris(descText);
 
 	// Split into tokens: markdown images/links and raw text segments.
 	const imgRe = /!\[([^\]]*)\]\(([^)]+)\)/g;
@@ -1294,7 +1405,7 @@ function renderDescriptionHtml(container: HTMLElement, descText: string): void {
 				}
 				img.src = src;
 				img.title = `${token.alt} — 点击放大`;
-				img.addEventListener('click', () => showImageLightbox(token.content, token.alt));
+				img.addEventListener('click', (e) => { e.stopPropagation(); showImageLightbox(src, token.alt); });
 				container.appendChild(img);
 				break;
 			}
@@ -1313,7 +1424,7 @@ function renderDescriptionHtml(container: HTMLElement, descText: string): void {
 				}
 				img.src = src;
 				img.title = `${alt} — 点击放大`;
-				img.addEventListener('click', () => showImageLightbox(token.content, alt));
+				img.addEventListener('click', (e) => { e.stopPropagation(); showImageLightbox(src, alt); });
 				container.appendChild(img);
 			} else {
 				const a = document.createElement('a');
@@ -1363,28 +1474,73 @@ function openAttachmentFromPath(rawPath: string, openFile?: (path: string) => vo
 	}
 }
 
-/** Show a full-size image in an overlay lightbox. Closes on backdrop click / Escape key. */
+/** Show a full-size image in an overlay lightbox. Closes on backdrop click / Escape key.
+ *  Accepts an already-resolved src (data URI, http URL, or file:// path) — the
+ *  caller (renderImageThumb) passes the same resolved src used on the <img> element
+ *  so the lightbox always renders identically. */
 function showImageLightbox(src: string, alt?: string): void {
-	let resolved = resolveAttachmentSrc(src);
-	if (!resolved.startsWith('data:') && !resolved.startsWith('http') && !resolved.startsWith('file:')) {
-		resolved = 'file:///' + resolved.replace(/\\/g, '/');
-	}
-	const overlay = DOM.$('div.tb-lightbox-overlay', undefined,
-		DOM.$('img.tb-lightbox-img', { src: resolved, alt: alt || '' })
-	);
+	console.log('[TaskBoard] showImageLightbox called, src type=%s len=%d alt=%s', src.startsWith('data:') ? 'dataUri' : src.startsWith('file:') ? 'file' : src.startsWith('http') ? 'http' : 'other', src.length, alt || '');
+	// Build the overlay + image with INLINE styles so the lightbox is always
+	// visible regardless of whether the external stylesheet rule for
+	// `.tb-lightbox-overlay` happens to apply in this container's stacking
+	// context. (This renderer builds native DOM directly in the workbench
+	// process, so there is no webview CSP blocking inline styles here.)
+	const overlay = document.createElement('div');
+	overlay.className = 'tb-lightbox-overlay';
+	overlay.style.position = 'fixed';
+	overlay.style.top = '0';
+	overlay.style.left = '0';
+	overlay.style.right = '0';
+	overlay.style.bottom = '0';
+	overlay.style.width = '100vw';
+	overlay.style.height = '100vh';
+	overlay.style.background = 'rgba(0,0,0,0.75)';
+	overlay.style.zIndex = '2147483646';
+	overlay.style.display = 'flex';
+	overlay.style.alignItems = 'center';
+	overlay.style.justifyContent = 'center';
+	overlay.style.cursor = 'pointer';
+
+	const imgEl = document.createElement('img');
+	imgEl.className = 'tb-lightbox-img';
+	imgEl.src = src;
+	imgEl.alt = alt || '';
+	imgEl.style.maxWidth = '90vw';
+	imgEl.style.maxHeight = '90vh';
+	imgEl.style.objectFit = 'contain';
+	imgEl.style.borderRadius = '6px';
+	imgEl.style.boxShadow = '0 8px 40px rgba(0,0,0,0.5)';
+	overlay.appendChild(imgEl);
+
+	imgEl.addEventListener('load', () => console.log('[TaskBoard] lightbox image loaded OK: %dx%d', imgEl.naturalWidth, imgEl.naturalHeight));
+	imgEl.addEventListener('error', () => console.error('[TaskBoard] lightbox image load FAILED, src:', src.slice(0, 200)));
 	overlay.addEventListener('click', () => overlay.remove());
 	const escHandler = (e: KeyboardEvent) => {
 		if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); }
 	};
 	document.addEventListener('keydown', escHandler);
-	document.body.appendChild(overlay);
+	// Defer the append by one frame so the current click event fully finishes
+	// dispatching before the overlay exists — this guarantees the same click
+	// can never immediately trigger the overlay's own close handler.
+	requestAnimationFrame(() => {
+		document.body.appendChild(overlay);
+		const cs = getComputedStyle(overlay);
+		console.log('[TaskBoard] lightbox overlay appended → position=%s zIndex=%s display=%s rect=%s',
+			cs.position, cs.zIndex, cs.display, JSON.stringify(overlay.getBoundingClientRect()));
+	});
 }
 
 /** Check whether a file path/URL points to an image by its extension or data-URI MIME type. */
 function looksLikeImage(path: string): boolean {
+	if (!path) return false;
 	if (/^data:image\/(png|jpe?g|gif|svg|webp);base64,/i.test(path)) return true;
-	const ext = path.split(/[?#]/)[0].split('/').pop()?.split('.').pop() || '';
-	return /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(ext);
+	// Take the filename (strip query/hash and directory separators), then
+	// test whether it ENDS WITH a known image extension. Note: we must NOT
+	// drop the leading dot before matching, otherwise plain ".png" paths
+	// (e.g. ".sarosworkspace/tmp/task-downloads/x.png") would fail the
+	// /\.ext$/ check and wrongly degrade to a hyperlink.
+	const fname = path.split(/[?#]/)[0].split(/[\\/]/).pop() || '';
+	return /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(fname);
 }
 
 /** Render inline markdown (bold/italic/code) + attachment tokens into a parent element. */
@@ -1394,32 +1550,25 @@ function appendInlineMarkdown(parent: HTMLElement, text: string, openFile?: (pat
 	let last = 0;
 	let m: RegExpExecArray | null;
 	const appendPlain = (s: string) => { if (s) { appendInlineStyles(parent, s); } };
-	// Diagnostic: log description so we can confirm the URL/path that
-	// arrives at the renderer (helps distinguish "wrong src" from
-	// "broken image vs renderer" vs "old out/ loaded").
-	console.log('[appendInlineMarkdown] text=', JSON.stringify(text.slice(0, 500)));
 	const renderImageThumb = (rawPath: string, alt: string) => {
 		const img = document.createElement('img');
 		img.className = 'tb-att-img';
 		let src = resolveAttachmentSrc(rawPath);
 		if (!src.startsWith('data:') && !src.startsWith('http') && !src.startsWith('file:')) { src = 'file:///' + src.replace(/\\/g, '/'); }
 		img.src = src; img.alt = alt; img.title = `${alt} — 点击放大`;
-		img.addEventListener('click', () => showImageLightbox(rawPath, alt));
-		img.addEventListener('load', () => { console.log(`[appendInlineMarkdown] img LOADED: alt="${alt}" src=${src} natural=${img.naturalWidth}x${img.naturalHeight}`); });
-		img.addEventListener('error', () => { console.warn(`[appendInlineMarkdown] img FAILED: alt="${alt}" src=${src} rawPath=${rawPath}`); });
-		console.log(`[appendInlineMarkdown] renderImageThumb: alt="${alt}" rawPath=${rawPath} resolvedSrc=${src}`);
+		img.addEventListener('click', (e) => { e.stopPropagation(); console.log('[TaskBoard] thumb click (appendInlineMarkdown) → showImageLightbox src=%s...', src.slice(0, 80)); showImageLightbox(src, alt); });
+		// Diagnostic: log when thumb is created
+		console.log('[TaskBoard] renderImageThumb (append): rawPath=%s resolved=%s...', rawPath.slice(0, 60), src.slice(0, 80));
 		return img;
 	};
 	while ((m = tokRe.exec(text)) !== null) {
 		if (m.index > last) { appendPlain(text.substring(last, m.index)); }
 		const tok = m[0];
-		console.log(`[appendInlineMarkdown] token: ${tok}`);
 		if (tok.startsWith('@')) {
 			const mm = tok.match(/^@(image|file):([^\s(]+)\(([^)]*)\)$/);
 			if (mm && mm[3]) {
-				const type = mm[1]; const name = mm[2]; const path = mm[3];
-				console.log(`[appendInlineMarkdown] @${type}: name=${name} path=${path}`);
-				// @image: is always rendered as <img> thumbnail (the user
+			const type = mm[1]; const name = mm[2]; const path = mm[3];
+			// @image: is always rendered as <img> thumbnail (the user
 				// explicitly typed the @image: prefix — don't second-guess
 				// with an extension check; even if the path is a TAPD CDN
 				// URL without a .png suffix, treat it as an image).
@@ -1435,7 +1584,6 @@ function appendInlineMarkdown(parent: HTMLElement, text: string, openFile?: (pat
 		} else if (tok.startsWith('![')) {
 			const mm = tok.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
 			if (mm) {
-				console.log(`[appendInlineMarkdown] ![${mm[1]}](${mm[2]}) looksLikeImage=${looksLikeImage(mm[2])}`);
 				// Markdown ![alt](path) renders as <img> when path looks like an image; otherwise degrade to link.
 				if (looksLikeImage(mm[2])) {
 					parent.appendChild(renderImageThumb(mm[2], mm[1] || ''));
@@ -1450,7 +1598,6 @@ function appendInlineMarkdown(parent: HTMLElement, text: string, openFile?: (pat
 		} else {
 			const mm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
 			if (mm) {
-				console.log(`[appendInlineMarkdown] [${mm[1]}](${mm[2]}) looksLikeImage=${looksLikeImage(mm[2])}`);
 				// A markdown link whose target is an image file should be
 				// rendered as a thumbnail (not a hyperlink) — TAPD imports
 				// descriptions as `[name.png](url)` links, and after the
@@ -1656,6 +1803,7 @@ export class TaskBoardNativeRenderer {
 
 	/** Update the board with new data. Efficient incremental DOM update. */
 	render(data: TaskBoardRenderData): void {
+		const t0 = performance.now();
 		this._data = data;
 		this._titleById.clear();
 		for (const t of data.tasks) {
@@ -1665,15 +1813,67 @@ export class TaskBoardNativeRenderer {
 
 		// Full rebuild for simplicity (kanban is relatively lightweight).
 		// For production, could do diff-based updates.
+		const tClear = performance.now();
 		while (this._rootEl.firstChild) {
 			this._rootEl.removeChild(this._rootEl.firstChild);
 		}
 		this._renderHeader(this._rootEl, data);
+		const tColumns = performance.now();
 		if (!data.collapsed) {
 			this._renderSwarms(this._rootEl, data.swarms);
 			this._renderFilters(this._rootEl, data);
 			this._renderColumns(this._rootEl, data);
+			this._diagnoseLayout();
 		}
+		console.info(`[TaskPerfDiag] render total=${(performance.now() - t0).toFixed(0)}ms clear=${(tClear - t0).toFixed(0)}ms header=${(tColumns - tClear).toFixed(0)}ms columns=${(performance.now() - tColumns).toFixed(0)}ms tasks=${data.tasks.length}`);
+	}
+
+	/**
+	 * Diagnostic: print actual computed layout for the kanban height chain.
+	 * Helps identify why `.native-tb-cards` overflow-y:scroll does/doesn't show
+	 * a visible scrollbar. Logs once per render, deferred one frame so the DOM
+	 * has been laid out.
+	 */
+	private _diagnoseLayout(): void {
+		if (!this._rootEl) { return; }
+		requestAnimationFrame(() => {
+			try {
+				const panel = this._rootEl!;
+				const colsContainer = panel.querySelector('.native-tb-columns') as HTMLElement | null;
+				if (!colsContainer) { return; }
+				const columnEls = Array.from(panel.querySelectorAll('.native-tb-column')) as HTMLElement[];
+				console.log('[TaskBoard-Diag] === LAYOUT ===');
+				console.log('[TaskBoard-Diag] panel:        rect=%s offsetH=%d', JSON.stringify(panel.getBoundingClientRect()), panel.offsetHeight);
+				console.log('[TaskBoard-Diag] colsContainer:rect=%s offsetH=%d cs(h=%s minH=%s flex=%s overflowY=%s)',
+					JSON.stringify(colsContainer.getBoundingClientRect()), colsContainer.offsetHeight,
+					getComputedStyle(colsContainer).height, getComputedStyle(colsContainer).minHeight,
+					getComputedStyle(colsContainer).flex, getComputedStyle(colsContainer).overflowY);
+				for (let i = 0; i < columnEls.length; i++) {
+					const col = columnEls[i];
+					const cards = col.querySelector('.native-tb-cards') as HTMLElement | null;
+					const colCs = getComputedStyle(col);
+					const colRect = col.getBoundingClientRect();
+					console.log('[TaskBoard-Diag] col[%d] key=%s: rect=%s offsetH=%d cs(display=%s flexDir=%s minH=%s alignSelf=%s overflow=%s)',
+						i, (col.querySelector('.native-tb-column-header')?.textContent || '').trim().slice(0, 12),
+						JSON.stringify(colRect), col.offsetHeight,
+						colCs.display, colCs.flexDirection, colCs.minHeight, colCs.alignSelf, colCs.overflow);
+					if (cards) {
+						const cardCs = getComputedStyle(cards);
+						console.log('[TaskBoard-Diag]   cards: offsetH=%d clientH=%d scrollH=%d (overflow=%s) cs(overflowY=%s flex=%s minH=%s display=%s scrollbarWidth=%s)',
+							cards.offsetHeight, cards.clientHeight, cards.scrollHeight,
+							cards.scrollHeight > cards.clientHeight ? 'YES' : 'NO',
+							cardCs.overflowY, cardCs.flex, cardCs.minHeight, cardCs.display, cardCs.scrollbarWidth);
+						console.log('[TaskBoard-Diag]   cards childCount=%d firstCardH=%d sum~%d',
+							cards.children.length, (cards.children[0] as HTMLElement)?.offsetHeight || 0,
+							Array.from(cards.children).reduce((s, c) => s + (c as HTMLElement).offsetHeight, 0));
+					} else {
+						console.log('[TaskBoard-Diag]   cards: <not found in col[%d]>', i);
+					}
+				}
+			} catch (e) {
+				console.error('[TaskBoard-Diag] failed:', e);
+			}
+		});
 	}
 
 	updateSwarmBar(swarms: SwarmInfo[]): void {
@@ -2140,7 +2340,21 @@ export class TaskBoardNativeRenderer {
 					if (taskId && col.dropStatus) {
 						const task = data.tasks.find(t => t.id === taskId);
 						if (task && task.status !== col.dropStatus) {
+							// Optimistically move the card DOM element to the target
+							// column so the UI responds instantly (before the async
+							// service round‑trip + full _refresh()).  The subsequent
+							// refresh will re‑position everything correctly.
+							const cardEl = this._rootEl?.querySelector(`[data-task-id="${taskId}"]`) as HTMLElement | null;
+							const targetCards = colEl.querySelector('.native-tb-cards');
+							if (cardEl && targetCards) {
+								// Find or create the target column's cards container
+								targetCards.appendChild(cardEl);
+								// Remove empty-state placeholder if present
+								const empty = targetCards.querySelector('.native-tb-column-empty');
+								if (empty) { empty.remove(); }
+							}
 							this._onStatusChange.fire({ taskId, status: col.dropStatus, source: task.source });
+							console.info(`[PerfDiag] 🔴 DROP → fire statusChange taskId=${taskId} status=${col.dropStatus} t=${performance.now().toFixed(0)}ms`);
 						}
 					}
 				});
@@ -2224,27 +2438,59 @@ export class TaskBoardNativeRenderer {
 			card.classList.add('focused');
 		}
 
-		// Hover actions (top-right corner)
+		// Hover action bar — full-width bottom overlay with context-sensitive buttons
 		const actions = DOM.$('div.native-tb-card-actions');
-		const deleteBtn = document.createElement('action-btn');
-		deleteBtn.textContent = '🗑';
-		deleteBtn.title = '删除';
-		deleteBtn.classList.add('action-danger');
-		deleteBtn.addEventListener('click', (e) => {
-			e.stopPropagation();
-			this._onDelete.fire({ taskId: task.id, source: task.source });
-		});
-		actions.appendChild(deleteBtn);
-		if (task.status !== 'archived') {
-			const archiveBtn = document.createElement('action-btn');
-			archiveBtn.textContent = '📦';
-			archiveBtn.title = '归档';
-			archiveBtn.addEventListener('click', (e) => {
+		const addAction = (icon: string, label: string, cls: string, handler: () => void) => {
+			const btn = document.createElement('action-btn');
+			if (cls) { btn.classList.add(cls); }
+			btn.textContent = icon;
+			btn.title = label;
+			btn.addEventListener('click', (e) => {
 				e.stopPropagation();
+				const tBtn = performance.now();
+				handler();
+				console.info(`[TaskPerfDiag] actionBtn "${label}" id=${task.id} handler=${(performance.now() - tBtn).toFixed(0)}ms`);
+			});
+			actions.appendChild(btn);
+		};
+
+		// Chat jump — available for all tasks with an assignee
+		if (task.assigneeId) {
+			addAction('💬', '跳转聊天', 'action-accent', () => {
+				this._onChatJump.fire({
+					agentId: task.assigneeId!,
+					agentName: task.assigneeName || task.assigneeId!,
+					taskId: task.id,
+				});
+			});
+		}
+
+		// Execute — available for todo/ready tasks
+		if (task.status === 'todo' || task.status === 'ready') {
+			addAction('▶️', '执行', 'action-success', () => {
+				this._onStatusChange.fire({ taskId: task.id, status: TaskBoardStatus.Running, source: task.source });
+			});
+		}
+
+		// Unblock — available for blocked tasks
+		if (task.status === 'blocked') {
+			addAction('🔓', '解除阻塞', 'action-success', () => {
+				this._onStatusChange.fire({ taskId: task.id, status: TaskBoardStatus.Todo, source: task.source });
+			});
+		}
+
+		// Archive — available for non-archived tasks
+		if (task.status !== 'archived') {
+			addAction('📦', '归档', 'action-default', () => {
 				this._onArchive.fire({ taskId: task.id, source: task.source });
 			});
-			actions.appendChild(archiveBtn);
 		}
+
+		// Delete — always available
+		addAction('🗑', '删除', 'action-danger', () => {
+			this._onDelete.fire({ taskId: task.id, source: task.source });
+		});
+
 		card.appendChild(actions);
 
 		// === Body ===
@@ -2367,6 +2613,7 @@ export class TaskBoardNativeRenderer {
 			const target = e.target as HTMLElement;
 			if (target.closest('action-btn')) { return; }
 			this._onTaskDetailRequest.fire({ task, employees: data.employees, allTasks: data.tasks });
+			console.info(`[PerfDiag] 🟡 CARD_CLICK → fire taskDetailRequest taskId=${task.id} t=${performance.now().toFixed(0)}ms`);
 		});
 		card.style.cursor = 'pointer';
 
@@ -2394,71 +2641,223 @@ export class TaskBoardNativeRenderer {
 
 	// ─── Task Detail Modal ────────────────────────────────────────────
 
+	/** Form state shared between field builders and the save handler. */
+	private _taskFormState: {
+		titleInput?: HTMLInputElement;
+		assigneeSelect?: HTMLSelectElement;
+		prioSelect?: HTMLSelectElement;
+		statusSelect?: HTMLSelectElement;
+		workspaceSelect?: HTMLSelectElement;
+		worktreeSelect?: HTMLSelectElement;
+		descInput?: HTMLTextAreaElement;
+		depsContainer?: HTMLElement;
+		providerSelect?: HTMLSelectElement;
+		modelSelect?: HTMLSelectElement;
+	} = {};
+
+	/** Build the modal header (title + close button). */
+	private _buildTaskDetailHeader(task: TaskBoardRecord, onClose: () => void): HTMLElement {
+		const header = DOM.$('div.native-tb-detail-header');
+		const headerLeft = DOM.$('div.native-tb-detail-header-left');
+		headerLeft.appendChild(DOM.$('span.create-task-modal-title', undefined, '📋 编辑任务'));
+		const idBadge = DOM.$('span.native-tb-detail-id', undefined, `#${task.id.slice(0, 12)}`);
+		idBadge.style.marginTop = '2px';
+		headerLeft.appendChild(idBadge);
+		header.appendChild(headerLeft);
+		const closeBtn = DOM.$('button.native-tb-detail-close', undefined, '✕');
+		closeBtn.title = '关闭 (Esc)';
+		closeBtn.addEventListener('click', onClose);
+		header.appendChild(closeBtn);
+		return header;
+	}
+
+	/** Build the modal footer (delete / archive / block / cancel / save). */
+	private _buildTaskDetailFooter(
+		task: TaskBoardRecord,
+		employees: EmployeeInfo[],
+		allTasks: TaskBoardRecord[],
+		onAction: (result: ITaskDetailModalResult) => void,
+	): HTMLElement {
+		const footer = DOM.$('div.native-tb-detail-footer');
+		const footerLeft = DOM.$('div.native-tb-detail-footer-left');
+
+		const deleteBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-danger', undefined, '🗑 删除');
+		deleteBtn.title = '删除此任务';
+		deleteBtn.addEventListener('click', () => onAction({ action: 'delete', taskId: task.id }));
+		footerLeft.appendChild(deleteBtn);
+
+		const archiveBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-warning', undefined, '📦 归档');
+		archiveBtn.title = '归档任务';
+		archiveBtn.addEventListener('click', () => onAction({ action: 'archive', taskId: task.id }));
+		footerLeft.appendChild(archiveBtn);
+
+		if (task.status === 'blocked') {
+			const unblockBtn = DOM.$('button.edit-task-footer-btn', undefined, '✅ 取消阻塞');
+			unblockBtn.addEventListener('click', () => onAction({ action: 'unblock', taskId: task.id }));
+			footerLeft.appendChild(unblockBtn);
+		} else if (task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'archived') {
+			const blockBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-warning', undefined, '🚫 标记阻塞');
+			blockBtn.addEventListener('click', () => onAction({ action: 'block', taskId: task.id }));
+			footerLeft.appendChild(blockBtn);
+		}
+		footer.appendChild(footerLeft);
+
+		const footerRight = DOM.$('div.native-tb-detail-footer-right');
+		const cancelBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-cancel', undefined, '取消');
+		cancelBtn.addEventListener('click', () => onAction({ action: 'close', taskId: task.id }));
+		footerRight.appendChild(cancelBtn);
+
+		const editable = task.status === 'todo';
+		const saveBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-primary', undefined, '💾 保存');
+		saveBtn.title = editable ? '保存编辑内容' : '保存状态修改';
+		saveBtn.addEventListener('click', () => {
+			const fs = this._taskFormState;
+			const newStatus = fs.statusSelect?.value as TaskBoardStatus || task.status;
+			if (editable) {
+				const editedAssigneeId = fs.assigneeSelect?.value || undefined;
+				const emp = editedAssigneeId ? employees.find(e => e.id === editedAssigneeId) : undefined;
+				let depIds: string[] = task.dependencies || [];
+				if (fs.depsContainer) {
+					const chips = fs.depsContainer.querySelectorAll('.edit-task-dep-chip');
+					if (chips.length > 0) {
+						depIds = Array.from(chips).map(chip => {
+							const label = chip.querySelector('.edit-task-dep-chip-label')?.textContent;
+							const found = allTasks.find(t => t.title === label);
+							return found?.id || label || '';
+						}).filter(Boolean);
+					}
+				}
+				const rawVal = (fs.titleInput?.value || task.title).trim();
+				const lines = rawVal.split('\n');
+				const saveTitle = lines[0].trim() || task.title;
+				const saveUrl = lines.slice(1).map(s => s.trim()).filter(Boolean)[0] || undefined;
+				onAction({
+					action: 'edit',
+					status: newStatus,
+					taskId: task.id,
+					title: saveTitle,
+					description: fs.descInput?.value,
+					assigneeId: editedAssigneeId,
+					assigneeName: emp?.name || undefined,
+					priority: (fs.prioSelect?.value as 'low' | 'medium' | 'high') || task.priority,
+					dependencies: depIds,
+					workspaceId: fs.workspaceSelect?.value || undefined,
+					worktreePath: fs.worktreeSelect?.value || undefined,
+					url: saveUrl,
+					providerId: fs.providerSelect?.value || undefined,
+					modelId: fs.modelSelect?.value || undefined,
+				});
+			} else {
+				onAction({ action: 'statusChange', status: newStatus, taskId: task.id });
+			}
+		});
+		footerRight.appendChild(saveBtn);
+		footer.appendChild(footerRight);
+		return footer;
+	}
+
 	showTaskDetailModal(
 		parent: HTMLElement,
 		task: TaskBoardRecord,
 		employees: EmployeeInfo[],
 		allTasks: TaskBoardRecord[],
-		options?: {
-			workspaces?: { id: string; name: string }[];
-			loadWorktrees?: (workspaceId: string) => Promise<WorktreeInfo[]>;
-			/** Download a URL to local disk and return the local file path (or undefined on failure). */
-			downloadUrl?: (url: string) => Promise<string | undefined>;
-			/** Workspace root path for resolving .sarosworkspace/ relative attachment paths. */
-			workspaceRoot?: string;
-			/** Open a local file (absolute path or .sarosworkspace/ relative) in the OS default app. */
-			openFile?: (path: string) => void;
-		},
-	): Promise<{ action: 'close' | 'statusChange' | 'delete' | 'archive' | 'block' | 'unblock' | 'edit'; status?: TaskBoardStatus; taskId: string; title?: string; description?: string; assigneeId?: string; assigneeName?: string; priority?: 'low' | 'medium' | 'high'; dependencies?: string[]; workspaceId?: string; worktreePath?: string; url?: string }> {
+		options?: ITaskDetailModalOptions,
+	): Promise<ITaskDetailModalResult> {
+		const t0 = performance.now();
+		console.info(`[PerfDiag] 🟡 showTaskDetailModal START taskId=${task.id} descLen=${task.description?.length ?? 0}`);
 		return new Promise((resolve) => {
+			// Clear any leftover pasted-image data from a previous modal session
+			// to prevent cross-task contamination (P0 memory leak fix).
+			_inlinePastedImages?.clear();
+
 			// Expose workspace root for renderDescriptionHtml to resolve relative paths
 			if (options?.workspaceRoot) { (globalThis as any).__sarosWorkspaceRoot = options.workspaceRoot; }
 			const overlay = DOM.$('div.native-tb-detail-overlay');
 			const modal = DOM.$('div.native-tb-detail-modal');
 
-			// === Header (mirror of CreateTaskModal: fixed title + close) ===
-			const header = DOM.$('div.native-tb-detail-header');
-			const headerLeft = DOM.$('div.native-tb-detail-header-left');
-			headerLeft.appendChild(DOM.$('span.create-task-modal-title', undefined, '📋 编辑任务'));
-			const idBadge = DOM.$('span.native-tb-detail-id', undefined, `#${task.id.slice(0, 12)}`);
-			idBadge.style.marginTop = '2px';
-			headerLeft.appendChild(idBadge);
-			header.appendChild(headerLeft);
-
-			const closeBtn = DOM.$('button.native-tb-detail-close', undefined, '✕');
-			closeBtn.title = '关闭 (Esc)';
-			closeBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'close', taskId: task.id }); });
-			header.appendChild(closeBtn);
-			modal.appendChild(header);
+			// === Header ===
+			modal.appendChild(this._buildTaskDetailHeader(task, () => {
+				overlay.remove(); resolve({ action: 'close', taskId: task.id });
+			}));
 
 			// === Body — CreateTaskMirror form layout ===
 			const body = DOM.$('div.native-tb-detail-body');
 
 			const editable = task.status === 'todo';
-			let titleInput: HTMLInputElement | undefined;
-			let assigneeSelect: HTMLSelectElement | undefined;
-			let prioSelect: HTMLSelectElement | undefined;
-			let statusSelect: HTMLSelectElement | undefined;
-			let workspaceSelect: HTMLSelectElement | undefined;
-			let worktreeSelect: HTMLSelectElement | undefined;
-			let descInput: HTMLTextAreaElement | undefined;
-			let depsContainer: HTMLElement | undefined;
+			// Reset form state for this modal session
+			this._taskFormState = {};
 
 			// ── Field: 负责员工 ──────────────────────────────────────
 			{
 				const field = DOM.$('div.edit-task-field');
 				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '负责员工'));
-				assigneeSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
-				{
-					const opt = document.createElement('option'); opt.value = ''; opt.textContent = '未指派';
-					assigneeSelect.appendChild(opt);
+				const useDatalist = employees.length > 50;
+				let assigneeEl: HTMLInputElement | HTMLSelectElement;
+				let selectedAssigneeId = task.assigneeId || '';
+
+				if (useDatalist) {
+					// Large employee list: <input>+<datalist> avoids native <select>
+					// rendering lag (browser measures every option's text synchronously).
+					const listId = `edit-task-assignee-list-${task.id}`;
+					const input = DOM.$('input.edit-task-input') as HTMLInputElement;
+					input.setAttribute('list', listId);
+					input.placeholder = '搜索员工...';
+					const currentName = task.assigneeId ? (employees.find(e => e.id === task.assigneeId)?.name ?? '') : '';
+					if (currentName) { input.value = currentName; selectedAssigneeId = task.assigneeId!; }
+					assigneeEl = input;
+
+					const datalist = document.createElement('datalist');
+					datalist.id = listId;
+					for (const e of employees) {
+						const opt = document.createElement('option');
+						opt.value = e.id;
+						opt.textContent = e.name;
+						datalist.appendChild(opt);
+					}
+					// Replace displayed ID with employee name when user picks
+					input.addEventListener('input', () => {
+						const emp = employees.find(e => e.id === input.value);
+						if (emp) {
+							selectedAssigneeId = emp.id;
+							// Defer name replacement so the datalist commit doesn't re-read
+							setTimeout(() => { input.value = emp.name; }, 0);
+						}
+					});
+					// On blur, restore name from stored ID (handle partial typing)
+					input.addEventListener('blur', () => {
+						if (selectedAssigneeId) {
+							const emp = employees.find(e => e.id === selectedAssigneeId);
+							if (emp) { input.value = emp.name; }
+						} else {
+							input.value = '';
+						}
+					});
+					field.appendChild(input);
+					field.appendChild(datalist);
+				} else {
+					const sel = DOM.$('select.edit-task-select') as HTMLSelectElement;
+					{
+						const opt = document.createElement('option'); opt.value = ''; opt.textContent = '未指派';
+						sel.appendChild(opt);
+					}
+					for (const e of employees) {
+						const opt = document.createElement('option'); opt.value = e.id; opt.textContent = e.name;
+						if (e.id === task.assigneeId) { opt.selected = true; }
+						sel.appendChild(opt);
+					}
+					assigneeEl = sel;
 				}
-				for (const e of employees) {
-					const opt = document.createElement('option'); opt.value = e.id; opt.textContent = e.name;
-					if (e.id === task.assigneeId) { opt.selected = true; }
-					assigneeSelect.appendChild(opt);
+				field.appendChild(assigneeEl);
+				// Store as select-compatible ref with extended .value that returns ID
+				const proxy: any = assigneeEl;
+				if (useDatalist) {
+					Object.defineProperty(proxy, 'value', {
+						get: () => selectedAssigneeId,
+						set: (v: string) => { selectedAssigneeId = v; (assigneeEl as HTMLInputElement).value = v; },
+						configurable: true,
+					});
 				}
-				field.appendChild(assigneeSelect);
+				this._taskFormState.assigneeSelect = proxy as HTMLSelectElement;
 				body.appendChild(field);
 			}
 
@@ -2467,13 +2866,14 @@ export class TaskBoardNativeRenderer {
 				const field = DOM.$('div.edit-task-field');
 				field.appendChild(DOM.$('span.edit-task-field-label', undefined, editable ? '任务标题 / 会话名' : '任务标题'));
 				if (editable) {
-					titleInput = DOM.$('input.edit-task-input') as HTMLInputElement;
+					const titleInput = DOM.$('input.edit-task-input') as HTMLInputElement;
 					// Merge title + url into one input value (title on line 1, URL on line 2 if present)
 					const rawTitle = task.title || '';
 					const rawUrl = task.url || '';
 					titleInput.value = rawUrl ? `${rawTitle}\n${rawUrl}` : rawTitle;
 					titleInput.placeholder = '简要描述这个任务\n（可选：第二行填写参考链接如 TAPD 需求地址）';
 					field.appendChild(titleInput);
+					this._taskFormState.titleInput = titleInput;
 				} else {
 					// Read-only: show title + clickable link for URL
 					const wrapper = DOM.$('div');
@@ -2495,8 +2895,14 @@ export class TaskBoardNativeRenderer {
 				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '任务描述（支持粘贴图片、拖拽文件）'));
 
 				if (editable) {
-					descInput = DOM.$('textarea.edit-task-textarea') as HTMLTextAreaElement;
-					let descText = task.description || '';
+					const descInput = DOM.$('textarea.edit-task-textarea') as HTMLTextAreaElement;
+					this._taskFormState.descInput = descInput;
+					// Strip inline data:.../base64 URIs — they come from TAPD import
+					// and bloat the textarea with MBs of unreadable base64.  Replace
+					// with [图片]/[文件] placeholders so the user can still see that
+					// attachments exist.  Actual images are rendered separately via
+					// the attachment list (_renderAttachmentList).
+					let descText = stripInlineDataUris(task.description || '');
 
 					// Toolbar: 粘贴图片 / 选择文件
 					const toolbar = DOM.$('div.edit-task-desc-toolbar');
@@ -2510,7 +2916,19 @@ export class TaskBoardNativeRenderer {
 								if (imgType) {
 									const blob = await item.getType(imgType);
 									const reader = new FileReader();
-									reader.onload = () => { if (descInput && typeof reader.result === 'string') { descInput.value += `\n![image](data:${imgType};base64,${reader.result.split(',')[1]})`; } };
+									// Instead of embedding MBs of base64 into the textarea,
+									// store the image as a Blob URL for preview and insert a
+									// lightweight `@image:` reference token.  The actual
+									// base64 data is preserved separately in a side map so
+									// it can be saved as a task attachment on save.
+									reader.onload = () => {
+										if (descInput && typeof reader.result === 'string') {
+											const id = `paste-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+											const ext = (imgType.split('/').pop() || 'png').replace('jpeg', 'jpg');
+											(_inlinePastedImages ??= new Map()).set(id, { mimeType: imgType, data: reader.result.split(',')[1] });
+											descInput.value += `\n@image:${id}.${ext}`;
+										}
+									};
 									reader.readAsDataURL(blob);
 									break;
 								}
@@ -2555,9 +2973,8 @@ export class TaskBoardNativeRenderer {
 					};
 					const refreshAttachmentLinks = () => {
 						DOM.clearNode(attLinks);
-						const text = descInput?.value || '';
-						console.log('[refreshAttachmentLinks] text=', JSON.stringify(text.slice(0, 500)));
-						// Match @image:/@file: tokens AND markdown ![alt](path) / [text](path)
+					const text = descInput?.value || '';
+					// Match @image:/@file: tokens AND markdown ![alt](path) / [text](path)
 						const re = /(@(?:image|file):[^\s(]+\([^)]*\)|!\[[^\]]*\]\([^)]+\)|\[[^\]]+\]\([^)]+\))/g;
 						let m: RegExpExecArray | null;
 						let count = 0;
@@ -2569,10 +2986,8 @@ export class TaskBoardNativeRenderer {
 								src = 'file:///' + src.replace(/\\/g, '/');
 							}
 							img.src = src; img.alt = alt; img.title = `${alt} — 点击放大`;
-							img.addEventListener('click', () => showImageLightbox(rawPath, alt));
-							img.addEventListener('load', () => { console.log(`[refreshAttachmentLinks] img LOADED: alt="${alt}" src=${src} natural=${img.naturalWidth}x${img.naturalHeight}`); });
-							img.addEventListener('error', () => { console.warn(`[refreshAttachmentLinks] img FAILED: alt="${alt}" src=${src} rawPath=${rawPath}`); });
-							console.log(`[refreshAttachmentLinks] renderImageThumb: alt="${alt}" rawPath=${rawPath} resolvedSrc=${src}`);
+							img.addEventListener('click', (e) => { e.stopPropagation(); console.log('[TaskBoard] thumb click (taskDetail) → showImageLightbox src=%s...', src.slice(0, 80)); showImageLightbox(src, alt); });
+							console.log('[TaskBoard] renderImageThumb (taskDetail): rawPath=%s resolved=%s...', rawPath.slice(0, 60), src.slice(0, 80));
 							return img;
 						};
 						while ((m = re.exec(text)) !== null) {
@@ -2679,7 +3094,8 @@ export class TaskBoardNativeRenderer {
 				// Workspace selector
 				const wsField = DOM.$('div.edit-task-field');
 				wsField.appendChild(DOM.$('span.edit-task-field-label', undefined, '工作区'));
-				workspaceSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				const workspaceSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				this._taskFormState.workspaceSelect = workspaceSelect;
 				{
 					const opt = document.createElement('option'); opt.value = ''; opt.textContent = '— 不变更 —';
 					workspaceSelect.appendChild(opt);
@@ -2696,7 +3112,8 @@ export class TaskBoardNativeRenderer {
 				// Git Worktree selector
 				const wtField = DOM.$('div.edit-task-field');
 				wtField.appendChild(DOM.$('span.edit-task-field-label', undefined, 'Git 工作分支'));
-				worktreeSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				const worktreeSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				this._taskFormState.worktreeSelect = worktreeSelect;
 				{
 					const opt = document.createElement('option'); opt.value = ''; opt.textContent = '不指定（主仓库执行）';
 					worktreeSelect.appendChild(opt);
@@ -2736,13 +3153,82 @@ export class TaskBoardNativeRenderer {
 				}
 			}
 
+			// ── Field: Provider + Model (side by side) ─────────────────
+			const providers = options?.providers ?? [];
+			if (editable && providers.length > 0) {
+				const row = DOM.$('div.edit-task-field-row');
+
+				// Provider selector
+				const pvField = DOM.$('div.edit-task-field');
+				pvField.appendChild(DOM.$('span.edit-task-field-label', undefined, 'Provider'));
+				const providerSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				this._taskFormState.providerSelect = providerSelect;
+				{
+					const opt = document.createElement('option'); opt.value = ''; opt.textContent = '默认（Agent 设置）';
+					if (!task.providerId) { opt.selected = true; }
+					providerSelect.appendChild(opt);
+				}
+				for (const pv of providers) {
+					const opt = document.createElement('option'); opt.value = pv.id; opt.textContent = (pv.icon ? pv.icon + ' ' : '') + pv.name;
+					if (pv.id === task.providerId) { opt.selected = true; }
+					providerSelect.appendChild(opt);
+				}
+				pvField.appendChild(providerSelect);
+				row.appendChild(pvField);
+
+				// Model selector — populates from selected provider's models
+				const rebuildModelOptions = (providerId: string) => {
+					if (!modelSelect) { return; }
+					while (modelSelect.firstChild) { modelSelect.removeChild(modelSelect.firstChild); }
+					{
+						const opt = document.createElement('option'); opt.value = ''; opt.textContent = '默认（Provider 默认）';
+						if (!task.modelId) { opt.selected = true; }
+						modelSelect.appendChild(opt);
+					}
+					const pv = providers.find(p => p.id === providerId);
+					if (pv) {
+						for (const m of pv.models) {
+							const opt = document.createElement('option'); opt.value = m.id; opt.textContent = m.name;
+							if (m.id === task.modelId) { opt.selected = true; }
+							modelSelect.appendChild(opt);
+						}
+					}
+				};
+
+				const mdField = DOM.$('div.edit-task-field');
+				mdField.appendChild(DOM.$('span.edit-task-field-label', undefined, '模型'));
+				const modelSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				this._taskFormState.modelSelect = modelSelect;
+				rebuildModelOptions(providerSelect.value || task.providerId || '');
+				mdField.appendChild(modelSelect);
+
+				providerSelect.addEventListener('change', () => {
+					rebuildModelOptions(providerSelect!.value);
+				});
+
+				row.appendChild(mdField);
+				body.appendChild(row);
+			} else if (providers.length > 0) {
+				// Read-only display
+				const field = DOM.$('div.edit-task-field');
+				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '模型'));
+				const pvName = task.providerId ? (providers.find(p => p.id === task.providerId)?.name ?? task.providerId) : '默认';
+				const mdName = task.modelId
+					? (providers.find(p => p.id === task.providerId)?.models.find(m => m.id === task.modelId)?.name ?? task.modelId)
+					: '默认';
+				const chip = DOM.$('span.native-tb-priority-chip', undefined, `${pvName} / ${mdName}`);
+				field.appendChild(chip);
+				body.appendChild(field);
+			}
+
 			// ── Field: 优先级 ────────────────────────────────────────
 			{
 				const field = DOM.$('div.edit-task-field');
 				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '优先级'));
 				const prioLabels: Record<string, string> = { high: '🔴 高', medium: '🟡 中', low: '🟢 低' };
 				if (editable) {
-					prioSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+					const prioSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+					this._taskFormState.prioSelect = prioSelect;
 					for (const p of ['high', 'medium', 'low'] as const) {
 						const opt = document.createElement('option'); opt.value = p; opt.textContent = prioLabels[p];
 						if (p === (task.priority || 'medium')) { opt.selected = true; }
@@ -2760,7 +3246,8 @@ export class TaskBoardNativeRenderer {
 			{
 				const field = DOM.$('div.edit-task-field');
 				field.appendChild(DOM.$('span.edit-task-field-label', undefined, '状态'));
-				statusSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				const statusSelect = DOM.$('select.edit-task-select') as HTMLSelectElement;
+				this._taskFormState.statusSelect = statusSelect;
 				const statusLabels: [TaskBoardStatus, string][] = [
 					['triage' as TaskBoardStatus, '🗂 待规划'],
 					['todo' as TaskBoardStatus, '📋 待执行'],
@@ -2804,7 +3291,8 @@ export class TaskBoardNativeRenderer {
 					field.appendChild(depSelect);
 
 					// Selected dependency chips (like CreateTaskModal)
-					depsContainer = DOM.$('div.edit-task-dep-chips');
+					const depsContainer = DOM.$('div.edit-task-dep-chips');
+					this._taskFormState.depsContainer = depsContainer;
 					const depIds = task.dependencies || [];
 					const removeDep = (id: string) => {
 						const idx = depIds.indexOf(id);
@@ -2858,84 +3346,10 @@ export class TaskBoardNativeRenderer {
 
 			modal.appendChild(body);
 
-			// === Footer (screenshot-1 layout: 删除 | 归档 | 标记阻塞 … 取消 | 保存) ===
-			const footer = DOM.$('div.native-tb-detail-footer');
-			const footerLeft = DOM.$('div.native-tb-detail-footer-left');
-
-			const deleteBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-danger', undefined, '🗑 删除');
-			deleteBtn.title = '删除此任务';
-			deleteBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'delete', taskId: task.id }); });
-			footerLeft.appendChild(deleteBtn);
-
-			const archiveBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-warning', undefined, '📦 归档');
-			archiveBtn.title = '归档任务';
-			archiveBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'archive', taskId: task.id }); });
-			footerLeft.appendChild(archiveBtn);
-
-			if (task.status === 'blocked') {
-				const unblockBtn = DOM.$('button.edit-task-footer-btn', undefined, '✅ 取消阻塞');
-				unblockBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'unblock', taskId: task.id }); });
-				footerLeft.appendChild(unblockBtn);
-			} else if (task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'archived') {
-				const blockBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-warning', undefined, '🚫 标记阻塞');
-				blockBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'block', taskId: task.id }); });
-				footerLeft.appendChild(blockBtn);
-			}
-
-			footer.appendChild(footerLeft);
-
-			const footerRight = DOM.$('div.native-tb-detail-footer-right');
-			const cancelBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-cancel', undefined, '取消');
-			cancelBtn.addEventListener('click', () => { overlay.remove(); resolve({ action: 'close', taskId: task.id }); });
-			footerRight.appendChild(cancelBtn);
-
-			const saveBtn = DOM.$('button.edit-task-footer-btn edit-task-footer-btn-primary', undefined, '💾 保存');
-			saveBtn.title = editable ? '保存编辑内容' : '保存状态修改';
-			saveBtn.addEventListener('click', () => {
-				const newStatus = statusSelect?.value as TaskBoardStatus || task.status;
-				if (editable) {
-					const editedAssigneeId = assigneeSelect?.value || undefined;
-					const emp = editedAssigneeId ? employees.find(e => e.id === editedAssigneeId) : undefined;
-					// Collect dependency IDs from visible chips
-					let depIds: string[] = task.dependencies || [];
-					if (depsContainer) {
-						const chips = depsContainer.querySelectorAll('.edit-task-dep-chip');
-						if (chips.length > 0) {
-							depIds = Array.from(chips).map(chip => {
-								const label = chip.querySelector('.edit-task-dep-chip-label')?.textContent;
-								const found = allTasks.find(t => t.title === label);
-								return found?.id || label || '';
-							}).filter(Boolean);
-						}
-					} // end if(depsContainer)
-					// Parse title (line 1) and optional URL (line 2) from the combined input
-					const rawVal = (titleInput?.value || task.title).trim();
-					const lines = rawVal.split('\n');
-					const saveTitle = lines[0].trim() || task.title;
-					const saveUrl = lines.slice(1).map(s => s.trim()).filter(Boolean)[0] || undefined;
-					overlay.remove();
-					resolve({
-						action: 'edit',
-						status: newStatus,
-						taskId: task.id,
-						title: saveTitle,
-						description: descInput?.value,
-						assigneeId: editedAssigneeId,
-						assigneeName: emp?.name || undefined,
-						priority: (prioSelect?.value as 'low' | 'medium' | 'high') || task.priority,
-						dependencies: depIds,
-						workspaceId: workspaceSelect?.value || undefined,
-						worktreePath: worktreeSelect?.value || undefined,
-						url: saveUrl,
-					});
-				} else {
-					overlay.remove();
-					resolve({ action: 'statusChange', status: newStatus, taskId: task.id });
-				}
+			// === Footer ===
+			const footer = this._buildTaskDetailFooter(task, employees, allTasks, (result) => {
+				overlay.remove(); resolve(result);
 			});
-			footerRight.appendChild(saveBtn);
-
-			footer.appendChild(footerRight);
 			modal.appendChild(footer);
 
 			overlay.appendChild(modal);
@@ -2951,6 +3365,7 @@ export class TaskBoardNativeRenderer {
 			};
 			document.addEventListener('keydown', escHandler);
 
+			console.info(`[PerfDiag] 🟡 showTaskDetailModal APPEND elapsed=${(performance.now() - t0).toFixed(0)}ms`);
 			parent.appendChild(overlay);
 		});
 	}
@@ -2989,18 +3404,70 @@ export class TaskBoardNativeRenderer {
 			assigneeLabel.style.fontSize = '12px';
 			assigneeLabel.style.fontWeight = '500';
 			assigneeField.appendChild(assigneeLabel);
-			const assigneeSelect = DOM.$('select.native-tb-filter-select') as HTMLSelectElement;
-			{
-				const opt = document.createElement('option');
-				opt.value = '';
-				opt.textContent = '未指派（自动分配）';
-				assigneeSelect.appendChild(opt);
-			}
-			for (const emp of employees) {
-				const opt = document.createElement('option');
-				opt.value = emp.id;
-				opt.textContent = emp.name;
-				assigneeSelect.appendChild(opt);
+
+			const useAssignDatalist = employees.length > 50;
+			let assigneeSelect: HTMLInputElement | HTMLSelectElement;
+			let selectedAssigneeId = '';
+
+			if (useAssignDatalist) {
+				const listId = 'create-task-assignee-list';
+				const input = DOM.$('input.native-tb-filter-input') as HTMLInputElement;
+				input.setAttribute('list', listId);
+				input.placeholder = '搜索员工...';
+				assigneeSelect = input;
+
+				const datalist = document.createElement('datalist');
+				datalist.id = listId;
+				for (const emp of employees) {
+					const opt = document.createElement('option');
+					opt.value = emp.id;
+					opt.textContent = emp.name;
+					datalist.appendChild(opt);
+				}
+				input.addEventListener('input', () => {
+					const emp = employees.find(e => e.id === input.value);
+					if (emp) {
+						selectedAssigneeId = emp.id;
+						setTimeout(() => { input.value = emp.name; }, 0);
+						void refreshSessions(emp.id);
+					}
+				});
+				input.addEventListener('blur', () => {
+					if (selectedAssigneeId) {
+						const emp = employees.find(e => e.id === selectedAssigneeId);
+						if (emp) { input.value = emp.name; }
+					} else {
+						input.value = '';
+						sessionSection.style.display = 'none';
+					}
+				});
+				assigneeField.appendChild(input);
+				assigneeField.appendChild(datalist);
+			} else {
+				const sel = DOM.$('select.native-tb-filter-select') as HTMLSelectElement;
+				{
+					const opt = document.createElement('option');
+					opt.value = '';
+					opt.textContent = '未指派（自动分配）';
+					sel.appendChild(opt);
+				}
+				for (const emp of employees) {
+					const opt = document.createElement('option');
+					opt.value = emp.id;
+					opt.textContent = emp.name;
+					sel.appendChild(opt);
+				}
+				sel.addEventListener('change', () => {
+					const agentId = sel.value;
+					if (agentId) {
+						void refreshSessions(agentId);
+					} else {
+						sessionSection.style.display = 'none';
+						selectedSessionId = undefined;
+						selectedSessionName = undefined;
+					}
+				});
+				assigneeSelect = sel;
 			}
 			assigneeField.appendChild(assigneeSelect);
 			body.appendChild(assigneeField);
@@ -3097,17 +3564,6 @@ export class TaskBoardNativeRenderer {
 					sessionList.appendChild(DOM.$('div', undefined, '加载会话失败'));
 				}
 			};
-			assigneeSelect.addEventListener('change', () => {
-				const agentId = assigneeSelect.value;
-				if (agentId) {
-					void refreshSessions(agentId);
-				} else {
-					sessionSection.style.display = 'none';
-					selectedSessionId = undefined;
-					selectedSessionName = undefined;
-					titleInput.placeholder = '简要描述这个任务';
-				}
-			});
 			// Hide session section initially
 			sessionSection.style.display = 'none';
 
@@ -3498,7 +3954,8 @@ export class TaskBoardNativeRenderer {
 		createOnlyBtn.title = '创建任务但不自动执行';
 
 		const buildResult = (execute: boolean): CreateTaskResult => {
-			const emp = employees.find(e => e.id === assigneeSelect.value);
+			const assigneeId = useAssignDatalist ? (selectedAssigneeId || undefined) : (assigneeSelect.value || undefined);
+			const emp = assigneeId ? employees.find(e => e.id === assigneeId) : undefined;
 			const wtPath = wtSelect.value || undefined;
 			const wt = wtPath ? currentWtList.find(w => w.path === wtPath) : undefined;
 			const wsId = wsSelect.value || activeWorkspaceId;
@@ -3506,7 +3963,7 @@ export class TaskBoardNativeRenderer {
 			return {
 				title: titleInput.value.trim(),
 				description: descText,
-				assigneeId: assigneeSelect.value || undefined,
+				assigneeId,
 				assigneeName: emp?.name || undefined,
 				priority: prioritySelect.value as 'low' | 'medium' | 'high',
 				dependencies: selectedDeps.length > 0 ? selectedDeps : undefined,

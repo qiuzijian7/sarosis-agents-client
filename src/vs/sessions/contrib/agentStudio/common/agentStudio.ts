@@ -25,8 +25,6 @@ export type {
 	IChatSendOptions,
 	IAutoPlanResult,
 	OrchestrationTaskAction,
-	IConfigMdCommand,
-	IConfigMdPatchOp,
-	IConfigMdState,
-	ConfigMdChangeOrigin,
+	IConfigHtmlCommand,
+	ConfigHtmlChangeOrigin,
 } from '../../../common/agentStudioService.js';

@@ -142,11 +142,23 @@ export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, s
 		return MCP_TOOL_TIMEOUT_MS;
 	}
 
-	// 已知慢工具
+/** 已知慢工具 */
 	const slowTools = new Set([
 		'web_search', 'http_get', 'browser_navigate',
 		'shell_exec', 'terminal', 'execute_command',
 	]);
+
+	// Codebase analysis tools — these scan the entire project and can
+	// block the UI for tens of seconds on large codebases.  Shorter
+	// timeout forces them to fail fast (P2-6 fix).
+	const analysisTools = new Set([
+		'get_architecture', 'search_graph', 'query_graph',
+		'trace_path', 'detect_changes', 'index_repository',
+	]);
+	if (analysisTools.has(toolName)) {
+		return 30_000; // 30 seconds for codebase analysis
+	}
+
 	if (slowTools.has(toolName)) {
 		return MCP_TOOL_TIMEOUT_MS;
 	}

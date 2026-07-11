@@ -316,9 +316,9 @@ body.html-edit-mode [contenteditable="true"]:focus {
 
 /**
  * 编辑器 chrome HTML — Add element 按钮 + 菜单 + 浮动工具栏。
+ * 定义为模块级常量，host 端注入与 webview 运行时自建兜底都使用同一份，避免重复维护。
  */
-function getEditorChromeHtml(): string {
-	return `
+const EDITOR_CHROME_HTML = `
 <div id="html-edit-add-btn">+ Add element</div>
 <div id="html-edit-add-menu">
   <button type="button" data-add="text">Text</button>
@@ -402,24 +402,53 @@ function getEditorChromeHtml(): string {
   <button type="button" id="tb-redo" title="Redo (Ctrl+Y)">&#8618;</button>
 </div>
 `;
+
+function getEditorChromeHtml(): string {
+	return EDITOR_CHROME_HTML;
 }
 
 /**
  * 编辑器运行时 JS — contentEditable + 点击元素显示工具栏。
+ * 运行时自带 chrome（若 host 未注入则自建），并对所有 DOM 查询做 null 兜底，
+ * 避免任一元素缺失导致整个 IIFE 抛出而中断。
  */
 function getEditorJs(): string {
 	return `
 (function () {
   'use strict';
-  var toolbar = document.getElementById('html-edit-toolbar');
-  var addBtn = document.getElementById('html-edit-add-btn');
-  var addMenu = document.getElementById('html-edit-add-menu');
+
+  // chrome 兜底：若 host 未注入编辑器 chrome，则运行时自建，保证工具栏始终可用
+  var CHROME_HTML = \`${EDITOR_CHROME_HTML}\`;
+
+  var toolbar = null;
+  var addBtn = null;
+  var addMenu = null;
   var editMode = false;
   var savedHtml = '';
   var toolbarHideTimer = null;
   var savedRange = null;
+  var syncTimer = null;
 
-  console.log('[EditRuntime] page loaded, body.children.length=' + (document.body ? document.body.children.length : 'no body'));
+  function log(m) { try { console.log('[EditRuntime] ' + m); } catch (e) {} }
+
+  function ensureChrome() {
+    if (document.getElementById('html-edit-toolbar')) return;
+    try {
+      var holder = document.createElement('div');
+      holder.innerHTML = CHROME_HTML;
+      while (holder.firstChild) { document.body.appendChild(holder.firstChild); }
+      log('ensureChrome: built chrome dynamically');
+    } catch (e) { log('ensureChrome FAILED: ' + e); }
+  }
+
+  function init() {
+    if (!document.body) { log('init aborted: no body'); return; }
+    ensureChrome();
+    toolbar = document.getElementById('html-edit-toolbar');
+    addBtn = document.getElementById('html-edit-add-btn');
+    addMenu = document.getElementById('html-edit-add-menu');
+    if (!toolbar) { log('init: toolbar missing after ensureChrome, aborting'); return; }
+    log('init done, body.children.length=' + document.body.children.length);
 
   function saveSelection() {
     var sel = window.getSelection();
@@ -437,23 +466,25 @@ function getEditorJs(): string {
   }
 
   function enterEditMode() {
+    if (!document.body) return;
     console.log('[EditRuntime] enterEditMode called, editMode=' + editMode + ' body.children.length=' + document.body.children.length);
     editMode = true;
     savedHtml = document.body.innerHTML;
     document.body.classList.add('html-edit-mode');
     document.body.contentEditable = 'true';
     // 只对 body 设置 contentEditable，不用 designMode（避免 toolbar 也被设为 editable）
-    toolbar.classList.remove('visible');
+    if (toolbar) toolbar.classList.remove('visible');
     console.log('[EditRuntime] enterEditMode done, body.children.length=' + document.body.children.length + ' contentEditable=' + document.body.contentEditable);
   }
 
   function exitEditMode() {
     console.log('[EditRuntime] exitEditMode called');
     editMode = false;
+    if (!document.body) return;
     document.body.classList.remove('html-edit-mode');
     document.body.contentEditable = 'false';
-    toolbar.classList.remove('visible');
-    addMenu.classList.remove('open');
+    if (toolbar) toolbar.classList.remove('visible');
+    if (addMenu) addMenu.classList.remove('open');
   }
 
   /** 获取不含编辑器 chrome 的干净 HTML，不改变 contentEditable 状态 */
@@ -501,6 +532,7 @@ function getEditorJs(): string {
   }
 
   function showToolbar() {
+    if (!toolbar) return;
     console.log('[EditRuntime] showToolbar: editMode=' + editMode + ' body.children=' + document.body.children.length);
     clearTimeout(toolbarHideTimer);
     saveSelection();
@@ -536,6 +568,7 @@ function getEditorJs(): string {
   }
 
   function updateButtonStates() {
+    if (!toolbar) return;
     var cmds = ['bold', 'italic', 'underline', 'strikeThrough', 'justifyLeft', 'justifyCenter', 'justifyRight', 'insertUnorderedList', 'insertOrderedList'];
     cmds.forEach(function (cmd) {
       var btn = toolbar.querySelector('[data-cmd="' + cmd + '"]');
@@ -559,6 +592,7 @@ function getEditorJs(): string {
 
   // 关闭所有 popover / input-popover
   function closeAllPopovers() {
+    if (!toolbar) return;
     toolbar.querySelectorAll('.popover, .input-popover').forEach(function (p) { p.classList.remove('open'); });
   }
 
@@ -763,6 +797,14 @@ function getEditorJs(): string {
       saveContent();
     }
   });
+
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
 `;
 }

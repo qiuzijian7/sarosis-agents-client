@@ -4,7 +4,6 @@
 
 import { Disposable } from '../../../src/vs/base/common/lifecycle.js';
 import { IAgentCapabilityPlugin, IAgentOSPluginContext } from '../../../src/vs/sessions/contrib/agentStudio/common/adapters.js';
-import { IAgentOSService } from '../../../src/vs/sessions/contrib/agentStudio/common/agentOS.js';
 import { IPlanningProvider, IPlan, IPlanStep, ITask } from '../../../src/vs/sessions/contrib/agentStudio/common/providers.js';
 
 export class PlanningExampleProvider implements IPlanningProvider {
@@ -31,16 +30,18 @@ export class PlanningExampleProvider implements IPlanningProvider {
 
 export class PlanningExamplePlugin extends Disposable implements IAgentCapabilityPlugin {
 	private readonly _provider: PlanningExampleProvider;
+	private _agentOS: IAgentOSPluginContext['agentOSService'] | undefined;
 
-	constructor(
-		@IAgentOSService private readonly _agentOS: IAgentOSService,
-	) {
+	constructor() {
 		super();
 		this._provider = new PlanningExampleProvider();
 	}
 
 	async activate(context: IAgentOSPluginContext): Promise<void> {
 		console.log('[PlanningExample] Activating...');
+		// NOTE: do NOT inject IAgentOSService via constructor DI — plugin is a
+		// separate module realm from the host bundle (see other example plugins).
+		this._agentOS = context.agentOSService;
 		this._agentOS.registerPlanningProvider(this._provider, 50);
 	}
 
@@ -50,5 +51,7 @@ export class PlanningExamplePlugin extends Disposable implements IAgentCapabilit
 }
 
 export function activate(pluginContext: IAgentOSPluginContext): IAgentCapabilityPlugin {
-	return new PlanningExamplePlugin(pluginContext.agentOS as any);
+	const plugin = new PlanningExamplePlugin();
+	void plugin.activate(pluginContext);
+	return plugin;
 }
