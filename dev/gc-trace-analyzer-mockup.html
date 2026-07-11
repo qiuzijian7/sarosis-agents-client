@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GR-GC Trace Analyzer</title>
+<style>
+  :root{
+    --bg:#f5f5f5; --fg:#1a1a2e; --accent:#6c5ce7; --accent-gl:rgba(108,92,231,.12);
+    --card:#fff; --border:rgba(0,0,0,.06); --muted:#8c8ca1; --input-bg:#f8f8fc;
+    --green:#00b894; --green-bg:rgba(0,184,148,.08); --orange:#e17055; --orange-bg:rgba(225,112,85,.08);
+    --radius:12px; --radius-sm:8px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--fg);line-height:1.6;min-height:100vh;
+       background-image:radial-gradient(ellipse at 50% 0%,rgba(108,92,231,.06) 0%,transparent 60%)}
+  main{max-width:840px;margin:0 auto;padding:40px 24px}
+
+  /* Header */
+  .header{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+  .header-icon{width:48px;height:48px;border-radius:14px;
+    background:linear-gradient(135deg,#6c5ce7,#a29bfe);display:flex;align-items:center;
+    justify-content:center;color:#fff;font-size:24px;flex-shrink:0;box-shadow:0 4px 16px rgba(108,92,231,.25)}
+  .header h1{font-size:22px;font-weight:700}
+  .header p{font-size:13px;color:var(--muted);margin-top:2px}
+
+  /* Mode Tabs */
+  .mode-tabs{display:flex;gap:0;margin:24px 0 20px;background:var(--card);border-radius:var(--radius);
+    border:1px solid var(--border);overflow:hidden}
+  .mode-tab{flex:1;padding:16px 20px;text-align:center;cursor:pointer;font-size:14px;font-weight:600;
+    color:var(--muted);transition:all .2s;border-bottom:3px solid transparent;user-select:none}
+  .mode-tab:hover{color:var(--fg);background:rgba(108,92,231,.03)}
+  .mode-tab.active{color:var(--accent);border-bottom-color:var(--accent);background:var(--accent-gl)}
+  .mode-tab-icon{display:block;font-size:22px;margin-bottom:4px}
+  .mode-tab-badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;margin-top:2px;
+    font-weight:500}
+  .mode-tab-badge.local{background:#e8f5e9;color:#2e7d32}
+  .mode-tab-badge.network{background:#e3f2fd;color:#1565c0}
+
+  /* Cards */
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+    padding:24px;box-shadow:0 1px 2px rgba(0,0,0,.04);margin-bottom:20px}
+  .card-title{font-size:16px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+  .card-title .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .card-title .dot.local{background:var(--green)}
+  .card-title .dot.network{background:var(--accent)}
+
+  /* File Drop Zone */
+  .drop-zone{border:2px dashed #d0d0e0;border-radius:var(--radius);padding:36px 24px;text-align:center;
+    cursor:pointer;transition:all .2s;background:var(--input-bg)}
+  .drop-zone:hover,.drop-zone.drag-over{border-color:var(--accent);background:rgba(108,92,231,.04)}
+  .drop-zone-icon{font-size:40px;margin-bottom:8px}
+  .drop-zone p{color:var(--muted);font-size:14px}
+  .drop-zone .exts{font-size:12px;color:var(--muted);margin-top:4px}
+  .drop-zone .btn{display:inline-block;margin-top:14px;padding:10px 24px;
+    background:var(--green);color:#fff;border-radius:var(--radius-sm);font-size:14px;font-weight:600;
+    cursor:pointer;transition:background .2s}
+  .drop-zone .btn:hover{background:#00a381}
+  input[type=file]{display:none}
+
+  /* File Info row */
+  .file-row{display:flex;align-items:center;gap:12px;padding:12px 16px;
+    background:var(--green-bg);border-radius:var(--radius-sm);margin-top:14px}
+  .file-row .icon{font-size:26px;flex-shrink:0}
+  .file-row .info{flex:1;min-width:0}
+  .file-row .name{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .file-row .meta{font-size:11px;color:var(--muted);margin-top:2px}
+  .file-row .del{cursor:pointer;color:var(--muted);font-size:16px;padding:4px;
+    border-radius:6px;transition:all .15s}
+  .file-row .del:hover{color:#e17055;background:rgba(225,112,85,.08)}
+
+  /* Shared Drive Browser */
+  .drive-browser{border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+  .drive-header{display:flex;align-items:center;gap:8px;padding:12px 16px;
+    background:var(--input-bg);border-bottom:1px solid var(--border)}
+  .drive-root{font-size:13px;font-weight:600;color:var(--accent);display:flex;align-items:center;gap:6px}
+  .drive-refresh{cursor:pointer;color:var(--muted);font-size:14px;padding:4px;border-radius:6px;
+    transition:.15s;margin-left:auto}
+  .drive-refresh:hover{color:var(--accent);background:var(--accent-gl)}
+  .drive-list{max-height:280px;overflow-y:auto}
+  .drive-item{display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;
+    transition:all .12s;border-bottom:1px solid var(--border)}
+  .drive-item:last-child{border-bottom:none}
+  .drive-item:hover{background:var(--accent-gl)}
+  .drive-item.selected{background:rgba(108,92,231,.1);color:var(--accent);font-weight:600}
+  .drive-item .f-icon{font-size:18px;flex-shrink:0;width:24px;text-align:center}
+  .drive-item .f-name{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .drive-item .f-size{font-size:11px;color:var(--muted);flex-shrink:0}
+  .drive-empty{text-align:center;padding:32px;color:var(--muted);font-size:13px}
+
+  /* Actions */
+  .actions{display:flex;gap:12px;margin-top:20px;flex-wrap:wrap}
+  .btn-analyze{flex:1;min-width:180px;padding:14px 28px;background:linear-gradient(135deg,#6c5ce7,#a29bfe);
+    color:#fff;border:none;border-radius:var(--radius-sm);font-size:15px;font-weight:700;cursor:pointer;
+    transition:all .2s;box-shadow:0 4px 14px rgba(108,92,231,.3);display:flex;
+    align-items:center;justify-content:center;gap:8px}
+  .btn-analyze:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(108,92,231,.4)}
+  .btn-analyze:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+  .btn-analyze .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);
+    border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite;display:none}
+  .btn-analyze.loading .spinner{display:block}
+  .btn-analyze.loading .btn-text{opacity:.7}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  .btn-reset{padding:14px 24px;background:var(--card);color:var(--muted);border:1px solid var(--border);
+    border-radius:var(--radius-sm);font-size:14px;cursor:pointer;transition:all .15s}
+  .btn-reset:hover{color:var(--fg);border-color:#ccc}
+
+  /* Status */
+  .status{display:flex;align-items:center;gap:8px;padding:14px 18px;border-radius:var(--radius-sm);
+    margin-top:16px;font-size:14px}
+  .status.info{background:#e3f2fd;color:#1565c0}
+  .status.success{background:#e8f5e9;color:#2e7d32}
+  .status.error{background:#fbe9e7;color:#c62828}
+  .status.progress{background:#fff3e0;color:#e65100}
+
+  /* Flow Steps */
+  .flow{margin-top:16px;counter-reset:step}
+  .flow-step{display:flex;gap:12px;padding:12px 0;counter-increment:step;font-size:13px}
+  .flow-step+.flow-step{border-top:1px dashed var(--border)}
+  .flow-num{width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0}
+  .flow-num.done{background:var(--green)}
+  .flow-num.pending{background:#e0e0e0;color:var(--muted)}
+  .flow-content{flex:1;padding-top:2px}
+  .flow-label{font-weight:600}
+  .flow-detail{color:var(--muted);font-size:12px;margin-top:2px}
+
+  /* Toast */
+  .toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:1000;
+    padding:12px 24px;border-radius:var(--radius-sm);font-size:14px;font-weight:600;
+    box-shadow:0 8px 32px rgba(0,0,0,.15);animation:slideDown .3s ease;pointer-events:none}
+  .toast.ok{background:#e8f5e9;color:#2e7d32}
+  .toast.err{background:#fbe9e7;color:#c62828}
+  @keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-16px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+
+  /* Responsive */
+  @media(max-width:600px){
+    main{padding:24px 16px}
+    .mode-tabs{flex-direction:column}
+    .mode-tab{border-bottom:none;border-left:3px solid transparent}
+    .mode-tab.active{border-left-color:var(--accent)}
+    .actions{flex-direction:column}
+  }
+</style>
+</head>
+<body>
+<main>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-icon">&#9881;</div>
+    <div>
+      <h1>GR-GC Trace Analyzer</h1>
+      <p>GC 性能 Trace 分析工具 &mdash; 选择 trace 文件，自动生成 HTML 分析报告</p>
+    </div>
+  </div>
+
+  <!-- Mode Tabs -->
+  <div class="mode-tabs" id="modeTabs">
+    <div class="mode-tab active" data-mode="local" onclick="switchMode('local')">
+      <span class="mode-tab-icon">&#128194;</span>
+      本地 Trace 文件
+      <div class="mode-tab-badge local">本地 .utrace</div>
+    </div>
+    <div class="mode-tab" data-mode="network" onclick="switchMode('network')">
+      <span class="mode-tab-icon">&#128190;</span>
+      共享盘 Trace 目录
+      <div class="mode-tab-badge network">P:\1性能相关文件\Trace文件</div>
+    </div>
+  </div>
+
+  <!-- Local File Picker -->
+  <div class="card" id="panelLocal">
+    <div class="card-title"><span class="dot local"></span> 方式一：选择本地 utrace 文件</div>
+    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()"
+         ondragover="event.preventDefault();this.classList.add('drag-over')"
+         ondragleave="this.classList.remove('drag-over')"
+         ondrop="handleDrop(event)">
+      <div class="drop-zone-icon">&#128229;</div>
+      <p>拖放 .utrace 文件到此处，或点击选择</p>
+      <div class="exts">支持：.utrace</div>
+      <div class="btn">&#128269; 选择文件</div>
+    </div>
+    <input type="file" id="fileInput" accept=".utrace" onchange="handleLocalFile(event)" style="display:none">
+    <div id="localFileInfo" style="display:none"></div>
+  </div>
+
+  <!-- Shared Drive Browser -->
+  <div class="card" id="panelNetwork" style="display:none">
+    <div class="card-title"><span class="dot network"></span> 方式二：从共享盘选择 Trace 文件</div>
+    <div class="drive-browser">
+      <div class="drive-header">
+        <span class="drive-root">&#128451; P:\1性能相关文件\Trace文件</span>
+        <span class="drive-refresh" onclick="refreshDrive()" title="刷新目录">&#128260;</span>
+      </div>
+      <div class="drive-list" id="driveList">
+        <!-- 模拟共享盘文件列表 -->
+      </div>
+      <div class="drive-empty" id="driveEmpty" style="display:none">
+        目录为空或无法访问
+      </div>
+    </div>
+    <div id="networkFileInfo" style="display:none"></div>
+  </div>
+
+  <!-- Selected File Display (shared) -->
+  <template id="fileInfoTpl">
+    <div class="file-row">
+      <div class="icon">{{icon}}</div>
+      <div class="info">
+        <div class="name">{{name}}</div>
+        <div class="meta">{{meta}}</div>
+      </div>
+      <div class="del" onclick="clearSelection()" title="移除">&#10005;</div>
+    </div>
+  </template>
+
+  <!-- Flow Preview (Network mode only) -->
+  <div class="card" id="panelFlow" style="display:none">
+    <div class="card-title">&#128260; 分析流程预览（共享盘模式）</div>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-num pending" id="flowNum1">1</div>
+        <div class="flow-content">
+          <div class="flow-label">下载 trace 文件到本地</div>
+          <div class="flow-detail">从 P:\1性能相关文件\Trace文件\ 下载到本地工作目录</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num pending" id="flowNum2">2</div>
+        <div class="flow-content">
+          <div class="flow-label">GR-GC Agent 分析 trace 文件</div>
+          <div class="flow-detail">使用 GC 分析技能解析 utrace 数据，生成 GC 事件时间线、内存趋势、pause time 分布</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num pending" id="flowNum3">3</div>
+        <div class="flow-content">
+          <div class="flow-label">生成 HTML 分析报告</div>
+          <div class="flow-detail">输出自包含单文件 HTML，包含可交互图表和详细分析结论</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num pending" id="flowNum4">4</div>
+        <div class="flow-content">
+          <div class="flow-label">上传报告到共享盘</div>
+          <div class="flow-detail">报告保存到 P:\1性能相关文件\Trace文件\ 目录，与源文件同名</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="actions" id="actions" style="display:none">
+    <button class="btn-analyze" id="btnAnalyze" onclick="startAnalysis()">
+      <span class="spinner"></span>
+      <span class="btn-text">&#128269; 开始分析</span>
+    </button>
+    <button class="btn-reset" onclick="resetAll()">&#8635; 重置</button>
+  </div>
+  <div class="status info" id="statusHint" style="margin-top:0">
+    &#8505; 请选择一种方式导入 Trace 文件后开始分析
+  </div>
+
+  <!-- Status Message -->
+  <div id="statusArea"></div>
+</main>
+
+<script>
+// ── State ──
+let currentMode = 'local';
+let selectedFile = null; // { name, size, path?, source: 'local'|'network' }
+
+// ── Mock Drive Files (模拟共享盘文件列表) ──
+const mockDriveFiles = [
+  { name: 'session_20260710_143022.utrace', size: '156 MB', isDir: false },
+  { name: 'session_20260709_091500.utrace', size: '203 MB', isDir: false },
+  { name: 'session_20260708_221000.utrace', size: '98 MB',  isDir: false },
+  { name: 'session_20260707_180500.utrace', size: '312 MB', isDir: false },
+  { name: 'session_20260706_140000.utrace', size: '75 MB',  isDir: false },
+  { name: 'session_20260705_094500.utrace', size: '188 MB', isDir: false },
+  { name: 'Archive', size: '', isDir: true },
+];
+
+// ── Mode Switch ──
+function switchMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+  document.getElementById('panelLocal').style.display = mode === 'local' ? '' : 'none';
+  document.getElementById('panelNetwork').style.display = mode === 'network' ? '' : 'none';
+
+  if (mode === 'network') {
+    renderDriveFiles();
+    document.getElementById('panelFlow').style.display = selectedFile && selectedFile.source === 'network' ? '' : 'none';
+  } else {
+    document.getElementById('panelFlow').style.display = 'none';
+  }
+
+  if (selectedFile && selectedFile.source !== mode) {
+    clearSelection();
+  }
+}
+
+// ── Local File ──
+function handleLocalFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  selectedFile = { name: file.name, size: formatSize(file.size), source: 'local' };
+  showSelectedFile();
+  document.getElementById('dropZone').style.display = 'none';
+}
+
+function handleDrop(event) {
+  event.preventDefault();
+  event.target.classList.remove('drag-over');
+  const file = event.dataTransfer.files[0];
+  if (!file) return;
+  selectedFile = { name: file.name, size: formatSize(file.size), source: 'local' };
+  showSelectedFile();
+  document.getElementById('dropZone').style.display = 'none';
+}
+
+// ── Shared Drive ──
+function renderDriveFiles() {
+  const list = document.getElementById('driveList');
+  const empty = document.getElementById('driveEmpty');
+  list.innerHTML = mockDriveFiles.map((f, i) => {
+    const icon = f.isDir ? '&#128193;' : '&#128196;';
+    const cls = selectedFile && selectedFile.name === f.name && selectedFile.source === 'network' ? ' selected' : '';
+    return `<div class="drive-item${cls}" onclick="selectDriveFile(${i})">
+      <span class="f-icon">${icon}</span>
+      <span class="f-name">${f.name}</span>
+      <span class="f-size">${f.size}</span>
+    </div>`;
+  }).join('');
+  empty.style.display = mockDriveFiles.length ? 'none' : '';
+}
+
+function selectDriveFile(index) {
+  const f = mockDriveFiles[index];
+  if (f.isDir) return; // 忽略目录
+  selectedFile = { name: f.name, size: f.size, source: 'network' };
+  showSelectedFile();
+  document.getElementById('panelFlow').style.display = '';
+  renderDriveFiles();
+}
+
+function refreshDrive() {
+  selectedFile = null;
+  document.getElementById('networkFileInfo').innerHTML = '';
+  document.getElementById('networkFileInfo').style.display = 'none';
+  document.getElementById('panelFlow').style.display = 'none';
+  updateUI();
+  renderDriveFiles();
+  showToast('目录已刷新');
+}
+
+// ── Shared UI ──
+function showSelectedFile() {
+  if (!selectedFile) return;
+  const panel = selectedFile.source === 'local'
+    ? document.getElementById('localFileInfo')
+    : document.getElementById('networkFileInfo');
+  const icon = selectedFile.source === 'local' ? '&#128229;' : '&#128190;';
+  const meta = selectedFile.source === 'local'
+    ? selectedFile.size
+    : `共享盘 &middot; ${selectedFile.size}`;
+  panel.innerHTML = `<div class="file-row">
+    <div class="icon">${icon}</div>
+    <div class="info">
+      <div class="name">${escapeHtml(selectedFile.name)}</div>
+      <div class="meta">${meta}</div>
+    </div>
+    <div class="del" onclick="clearSelection()" title="移除">&#10005;</div>
+  </div>`;
+  panel.style.display = '';
+  updateUI();
+}
+
+function clearSelection() {
+  selectedFile = null;
+  document.getElementById('localFileInfo').innerHTML = '';
+  document.getElementById('localFileInfo').style.display = 'none';
+  document.getElementById('networkFileInfo').innerHTML = '';
+  document.getElementById('networkFileInfo').style.display = 'none';
+  document.getElementById('dropZone').style.display = '';
+  document.getElementById('panelFlow').style.display = 'none';
+  document.getElementById('statusArea').innerHTML = '';
+  if (currentMode === 'network') renderDriveFiles();
+  updateUI();
+}
+
+function updateUI() {
+  const has = !!selectedFile;
+  document.getElementById('actions').style.display = has ? '' : 'none';
+  document.getElementById('statusHint').style.display = has ? 'none' : '';
+}
+
+// ── Analysis ──
+async function startAnalysis() {
+  if (!selectedFile) return;
+
+  const btn = document.getElementById('btnAnalyze');
+  btn.classList.add('loading');
+  btn.querySelector('.btn-text').textContent = '分析中...';
+  btn.disabled = true;
+  document.getElementById('statusArea').innerHTML = '';
+
+  try {
+    if (selectedFile.source === 'local') {
+      await simulateLocalAnalysis();
+    } else {
+      await simulateNetworkAnalysis();
+    }
+  } catch (err) {
+    showStatus('error', `&#10060; 分析失败：${err.message}`);
+  } finally {
+    btn.classList.remove('loading');
+    btn.querySelector('.btn-text').textContent = '&#128269; 开始分析';
+    btn.disabled = false;
+  }
+}
+
+async function simulateLocalAnalysis() {
+  showStatus('progress', '&#9203; 正在分析本地 trace 文件...');
+  updateFlowSteps(-1, -1, -1, -1);
+  await delay(800);
+
+  showStatus('progress', '&#128300; GR-GC Agent 解析 GC 事件...');
+  await delay(1200);
+
+  showStatus('progress', '&#128200; 生成 HTML 分析报告...');
+  await delay(600);
+
+  const reportName = selectedFile.name.replace(/\.utrace$/i, '') + '_report.html';
+  showStatus('success',
+    `&#9989; 分析完成！报告已生成：<strong>${escapeHtml(reportName)}</strong><br>
+    <small style="color:var(--muted)">本地文件 → 直接分析 → 报告生成到本地工作目录</small>`);
+}
+
+async function simulateNetworkAnalysis() {
+  // Step 1
+  updateFlowSteps('progress', 'pending', 'pending', 'pending');
+  showStatus('progress', '&#128229; 步骤 1/4：从共享盘下载 trace 文件到本地...');
+  await delay(1000);
+  updateFlowSteps('done', 'progress', 'pending', 'pending');
+  document.getElementById('flowNum1').textContent = '\u2714';
+  document.getElementById('flowNum1').className = 'flow-num done';
+
+  // Step 2
+  showStatus('progress', '&#128300; 步骤 2/4：GR-GC Agent 解析 GC 事件...');
+  await delay(1400);
+  updateFlowSteps('done', 'done', 'progress', 'pending');
+  document.getElementById('flowNum2').textContent = '\u2714';
+  document.getElementById('flowNum2').className = 'flow-num done';
+
+  // Step 3
+  showStatus('progress', '&#128200; 步骤 3/4：生成 HTML 分析报告...');
+  await delay(700);
+  updateFlowSteps('done', 'done', 'done', 'progress');
+  document.getElementById('flowNum3').textContent = '\u2714';
+  document.getElementById('flowNum3').className = 'flow-num done';
+
+  // Step 4
+  const reportName = selectedFile.name.replace(/\.utrace$/i, '') + '_report.html';
+  showStatus('progress', `&#128228; 步骤 4/4：上传报告到共享盘 P:\\1性能相关文件\\Trace文件\\${escapeHtml(reportName)}...`);
+  await delay(900);
+  updateFlowSteps('done', 'done', 'done', 'done');
+  document.getElementById('flowNum4').textContent = '\u2714';
+  document.getElementById('flowNum4').className = 'flow-num done';
+
+  showStatus('success',
+    `&#9989; 分析完成！<br>
+    <small style="color:var(--muted)">
+      共享盘 trace → 下载到本地 → 分析 → 报告已上传回共享盘同目录<br>
+      报告路径：<code>P:\\1性能相关文件\\Trace文件\\${escapeHtml(reportName)}</code>
+    </small>`);
+}
+
+function updateFlowSteps(s1, s2, s3, s4) {
+  const map = { 'done': 'done', 'progress': 'pending', 'pending': 'pending' };
+  const texts = { 'done': '\u2714', 'progress': '', 'pending': '' };
+  [s1, s2, s3, s4].forEach((s, i) => {
+    if (s < 0) return;
+    const el = document.getElementById('flowNum' + (i + 1));
+    el.className = 'flow-num ' + (map[s] || s);
+    const t = texts[s] || el.textContent;
+    if (t) el.textContent = t;
+  });
+}
+
+function resetAll() {
+  clearSelection();
+  switchMode(currentMode);
+  document.getElementById('statusArea').innerHTML = '';
+}
+
+// ── Helpers ──
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(0) + ' MB';
+}
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+function delay(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+function showStatus(type, html) {
+  const icons = { info: '&#8505;', success: '&#9989;', error: '&#10060;', progress: '&#9203;' };
+  document.getElementById('statusArea').innerHTML = `<div class="status ${type}">${html}</div>`;
+}
+function showToast(msg, ok) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (ok !== false ? 'ok' : 'err');
+  el.innerHTML = msg;
+  document.body.appendChild(el);
+  setTimeout(() => { el.remove(); }, 2500);
+}
+
+// ── Init ──
+updateUI();
+</script>
+</body>
+</html>

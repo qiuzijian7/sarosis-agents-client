@@ -2431,7 +2431,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (isUser && msg.content) {
 			// Task prompt card: render from structured data when available
 			// (avoids the fragile regex-parse anti-pattern).
-			const taskCardData = (msg as any).taskCard;
+			const taskCardData = msg.taskCard;
 			if (taskCardData) {
 				const card = this._buildTaskCardFromData(taskCardData);
 				if (card) { bubble.appendChild(card); }

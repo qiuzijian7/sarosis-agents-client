@@ -54,6 +54,15 @@ export class TaskOverviewEditorPane extends EditorPane {
 	// during DOM clear and reappears after rebuild.
 	private _suppressNextBoardRefresh = false;
 
+	// rAF debounce: coalesce multiple onDidChangeTaskBoard fires into a single
+	// _refresh() + render() within one animation frame. Without this, a single
+	// updateTask can fire 2× (line 529 immediate + line 563 after ensureTaskAgent),
+	// each triggering a full async _refresh() — causing overlapping renders and
+	// redundant layout thrashing (P2-12 fix).
+	private _refreshRafId: number | null = null;
+	private _isRefreshing = false;
+	private _refreshQueued = false;
+
 	// Filter state
 	private _boardFilterWsId = 'all';
 	private _employeeFilter = 'all';
@@ -132,6 +141,10 @@ export class TaskOverviewEditorPane extends EditorPane {
 	}
 
 	override dispose(): void {
+		if (this._refreshRafId !== null) {
+			cancelAnimationFrame(this._refreshRafId);
+			this._refreshRafId = null;
+		}
 		this._renderer?.dispose();
 		this._renderer = undefined;
 		this._container = undefined;
@@ -229,6 +242,16 @@ export class TaskOverviewEditorPane extends EditorPane {
 			this._swarmService.cancelSwarm(swarmId);
 		}));
 
+		this._register(this._renderer.onTaskCancel(({ taskId, assigneeId }) => {
+			// Cancel the agent's active stream (stops LLM generation)
+			if (assigneeId) {
+				this._agentChatService.cancelStream(assigneeId);
+				console.info(`[PerfDiag] 🟠 onTaskCancel: cancelled stream for agent=${assigneeId} task=${taskId}`);
+			}
+			// Update task status to cancelled
+			void this._taskBoardService.updateTaskStatus(taskId, TaskBoardStatus.Cancelled);
+		}));
+
 		// Board hyperlink (看板超链接) events
 		this._register(this._renderer.onAddBoardLinkRequest(() => {
 			void this._handleAddBoardLink();
@@ -252,15 +275,15 @@ export class TaskOverviewEditorPane extends EditorPane {
 				console.info('[PerfDiag] 🟠 onDidChangeTaskBoard SKIP (drag suppression), data already synced');
 				return;
 			}
-			void this._refresh();
+			this._scheduleRefresh();
 		}));
 
 		this._register(this._taskBoardService.onDidChangeBoards(() => {
-			void this._refresh();
+			this._scheduleRefresh();
 		}));
 
 		this._register(this._taskBoardService.onDidChangeBoardLinks(() => {
-			void this._refresh();
+			this._scheduleRefresh();
 		}));
 
 		this._register(this._taskOrchestrationService.onDidFocusTask(async (taskTitle: string) => {
@@ -286,28 +309,77 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 	// ─── Data Loading ───────────────────────────────────────────────────
 
+	/**
+	 * Coalesce multiple board-change notifications into a single _refresh()
+	 * within one animation frame (~16ms).  onDidChangeTaskBoard can fire 2-3×
+	 * for a single user action (e.g. updateTask fires immediately, then again
+	 * after ensureTaskAgent ~1s later).  Without coalescing, each fire starts
+	 * an overlapping async _refresh() → render(), causing redundant DOM rebuilds
+	 * and layout thrashing (P2-12 fix).
+	 */
+	private _scheduleRefresh(): void {
+		if (this._refreshRafId !== null) {
+			// Already scheduled — this fire will be covered by the pending rAF.
+			return;
+		}
+		this._refreshRafId = requestAnimationFrame(() => {
+			this._refreshRafId = null;
+			this._doRefresh();
+		});
+	}
+
+	/**
+	 * Execute _refresh() with an in-flight guard.  If a refresh is already
+	 * running when another is requested, we queue one more and run it after
+	 * the current one finishes — this ensures the latest data is always
+	 * rendered without overlapping concurrent refreshes.
+	 */
+	private async _doRefresh(): Promise<void> {
+		if (this._isRefreshing) {
+			this._refreshQueued = true;
+			return;
+		}
+		this._isRefreshing = true;
+		try {
+			await this._refresh();
+		} finally {
+			this._isRefreshing = false;
+			if (this._refreshQueued) {
+				this._refreshQueued = false;
+				void this._doRefresh();
+			}
+		}
+	}
+
 	private async _refresh(): Promise<void> {
 		if (!this._renderer || !this._container) { return; }
 
 		try {
-			// Load agents (all, for assignee dropdown)
+			// Parallelize all data loading — previously 4 sequential awaits
+			// each involving disk I/O (getAgents does dir resolve + N file reads,
+			// getTasks reads taskboard.json, getWorkspaces reads workspaces.json,
+			// listBoardLinks reads boardLinks.json). Sequential = 2-4s total;
+			// parallel = max of any single call (~1s).
+			const wsId = this._boardFilterWsId === 'all' ? undefined : this._boardFilterWsId;
+
+			const agentsPromise = this._allEmployees.length === 0
+				? this._agentStudioService.getAgents()
+					.then(agents => agents.map(e => ({ id: e.id, name: e.name, icon: e.icon })))
+					.catch(() => [] as EmployeeInfo[])
+				: Promise.resolve(this._allEmployees);
+
+			const [agents, tasks, workspaces, boardLinks] = await Promise.all([
+				agentsPromise,
+				this._taskBoardService.getTasks(wsId),
+				this._agentStudioService.getWorkspaces(),
+				this._taskBoardService.listBoardLinks(),
+			]);
+
 			if (this._allEmployees.length === 0) {
-				try {
-					const agents = await this._agentStudioService.getAgents();
-					this._allEmployees = agents.map(e => ({ id: e.id, name: e.name, icon: e.icon }));
-				} catch {
-					this._allEmployees = [];
-				}
+				this._allEmployees = agents;
 			}
 
-			// Load tasks
-			const wsId = this._boardFilterWsId === 'all' ? undefined : this._boardFilterWsId;
-			const tasks = await this._taskBoardService.getTasks(wsId);
-
-			// Load workspaces
-			const workspaces = await this._agentStudioService.getWorkspaces();
-
-			// Load swarms
+			// Load swarms (in-memory, no disk I/O)
 			let swarms: SwarmInfo[] = [];
 			try {
 				const activeWsId = this._agentStudioService.getActiveWorkspaceId() || undefined;
@@ -345,7 +417,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 				draggingTaskId: null,
 				dragOverColumn: null,
 				focusedTaskId: this._focusedTaskId,
-				boardLinks: await this._taskBoardService.listBoardLinks(),
+				boardLinks,
 			};
 
 			this._renderer.render(renderData);

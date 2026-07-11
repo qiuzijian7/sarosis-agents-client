@@ -139,15 +139,37 @@ export function MarkdownSourceEditor({ content, onChange, workspaceFiles }: Mark
 							height: '100%',
 							fontSize: '13px',
 							lineHeight: '1.6',
+							backgroundColor: '#1e1e1e',
 						},
 						'.cm-scroller': {
 							overflow: 'auto',
 						},
 						'.cm-content': {
 							fontFamily: 'var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace)',
+							caretColor: '#fff',
 						},
+						// Line-number gutter: distinct slightly-lighter background so
+						// the numbers don't bleed into the editor content.
 						'.cm-gutters': {
 							fontFamily: 'var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace)',
+							backgroundColor: '#252526',
+							color: '#6e7681',
+							borderRight: '1px solid #2d2d2d',
+						},
+						'.cm-activeLineGutter': {
+							backgroundColor: '#2a2a2a',
+							color: '#cccccc',
+						},
+						'.cm-activeLine': {
+							backgroundColor: '#2a2a2a',
+						},
+						// Selection
+						'.cm-selectionBackground, ::selection': {
+							backgroundColor: '#264f78 !important',
+						},
+						// Cursor
+						'.cm-cursor, .cm-dropCursor': {
+							borderLeftColor: '#fff',
 						},
 					}),
 				],

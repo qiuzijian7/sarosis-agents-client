@@ -57,6 +57,9 @@ export interface TaskBoardEvents {
 	readonly onFilterChange: Event<TaskBoardFilter>;
 	readonly onBoardFilterChange: Event<string>;
 	readonly onSwarmCancel: Event<string>;
+	/** User clicked the cancel (⏹) button on a running task card — the
+	 *  consumer should cancel the agent's stream and set task status to cancelled. */
+	readonly onTaskCancel: Event<{ taskId: string; assigneeId?: string }>;
 	/** User clicked "🔗 添加看板超链接" — the consumer should open the add-link flow. */
 	readonly onAddBoardLinkRequest: Event<void>;
 	/** User clicked a board hyperlink chip/tab — the consumer should open the embedded window. */
@@ -401,8 +404,9 @@ function injectStyles(): void {
 /* === Columns === */
 .native-tb-columns {
 	flex: 1 1 0;
-	height: 100%;        /* force definite height from panel — required for child .native-tb-cards flex:1 to compute */
+	height: 100%;
 	display: flex;
+	contain: layout;
 	gap: 0;
 	overflow-x: auto;
 	overflow-y: hidden;
@@ -503,14 +507,14 @@ function injectStyles(): void {
 .native-tb-card {
 	position: relative;
 	overflow: hidden;
-	background: linear-gradient(180deg, var(--vscode-editor-background) 0%, var(--vscode-sideBar-background) 100%);
+	background: var(--vscode-editor-background);
 	border: 1px solid var(--vscode-panel-border);
 	border-radius: 6px;
-	flex-shrink: 0;          /* preserve natural height instead of squashing to fit parent */
+	flex-shrink: 0;
 	cursor: grab;
 	font-size: 12px;
 	line-height: 1.4;
-	transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+	transition: border-color 0.15s, box-shadow 0.15s;
 	display: flex;
 	flex-direction: column;
 	box-shadow: 0 1px 2px rgba(0,0,0,0.15);
@@ -520,7 +524,6 @@ function injectStyles(): void {
 	position: absolute;
 	left: 0; top: 0; bottom: 0;
 	width: 3px;
-	transition: width 0.15s;
 }
 .native-tb-card.prio-high::before   { background: #f44747; }
 .native-tb-card.prio-medium::before { background: #cca700; }
@@ -528,11 +531,9 @@ function injectStyles(): void {
 .native-tb-card:hover {
 	border-color: var(--vscode-focusBorder);
 	box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-	transform: translateY(-1px);
 }
 .native-tb-card.dragging {
 	opacity: 0.5;
-	transform: rotate(1deg);
 }
 .native-tb-card.focused {
 	border-color: var(--vscode-focusBorder);
@@ -658,6 +659,9 @@ function injectStyles(): void {
 	background: rgba(0,0,0,0.12);
 	font-size: 11px;
 }
+.native-tb-card-footer-left {
+	display: flex; align-items: center; gap: 6px;
+}
 .native-tb-card-status {
 	display: inline-flex;
 	align-items: center;
@@ -671,14 +675,10 @@ function injectStyles(): void {
 	flex-shrink: 0;
 }
 .native-tb-card-status-dot.blocked  { background: var(--vscode-errorForeground, #f44747); }
-.native-tb-card-status-dot.running  { background: #cca700; animation: ntb-pulse 1.5s infinite; }
+.native-tb-card-status-dot.running  { background: #cca700; opacity: 0.85; }
 .native-tb-card-status-dot.ready    { background: #4ec9b0; }
 .native-tb-card-status-dot.todo     { background: var(--vscode-focusBorder, #007acc); }
 .native-tb-card-status-dot.done     { background: #4ec9b0; }
-@keyframes ntb-pulse {
-	0%, 100% { opacity: 1; }
-	50%      { opacity: 0.3; }
-}
 .native-tb-card-meta-icons {
 	display: flex;
 	align-items: center;
@@ -705,61 +705,50 @@ function injectStyles(): void {
 	opacity: 1;
 }
 
-/* Hover action bar — full-card overlay centered on content */
+/* Hover action bar — bottom toolbar (Variant B) */
 .native-tb-card-actions {
 	position: absolute;
-	inset: 0;
+	left: 0; right: 0; bottom: 0;
 	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 6px;
-	padding: 8px;
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 0.16s;
-	background: color-mix(in srgb, var(--vscode-editor-background) 88%, transparent);
-	z-index: 5;
-	border-radius: 6px;
+	height: 0; overflow: hidden;
+	transition: height 0.18s;
+	background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+	border-top: 1px solid var(--vscode-panel-border);
+	z-index: 5; border-radius: 0 0 5px 5px;
 }
 .native-tb-card:hover .native-tb-card-actions {
-	opacity: 1;
-	pointer-events: auto;
+	height: 34px;
 }
 .native-tb-card action-btn {
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 4px;
-	font-size: 12px;
-	padding: 8px 14px;
-	border: 1px solid var(--vscode-panel-border);
-	border-radius: 6px;
-	background: var(--vscode-editor-background);
-	color: var(--vscode-descriptionForeground);
-	cursor: pointer;
-	transition: transform 0.12s, background 0.12s, color 0.12s, box-shadow 0.12s;
-	box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+	flex: 1;
+	display: flex; align-items: center; justify-content: center; gap: 3px;
+	font-size: 11px; padding: 0 4px;
+	border: none; background: transparent; color: var(--vscode-descriptionForeground);
+	cursor: pointer; transition: background 0.12s, color 0.12s;
+	border-right: 1px solid var(--vscode-panel-border);
 }
+.native-tb-card action-btn:last-child { border-right: none; }
 .native-tb-card action-btn:hover {
-	transform: scale(1.08);
-	background: var(--vscode-toolbar-hoverBackground);
-	color: var(--vscode-foreground);
-	box-shadow: 0 3px 8px rgba(0,0,0,0.25);
+	background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground);
 }
 .native-tb-card action-btn.action-danger:hover {
-	background: color-mix(in srgb, var(--vscode-errorForeground, #f44747) 20%, transparent);
+	background: color-mix(in srgb, var(--vscode-errorForeground, #f44747) 15%, transparent);
 	color: var(--vscode-errorForeground, #f44747);
-	border-color: color-mix(in srgb, var(--vscode-errorForeground, #f44747) 50%, transparent);
 }
 .native-tb-card action-btn.action-accent:hover {
-	background: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 20%, transparent);
+	background: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 15%, transparent);
 	color: var(--vscode-focusBorder, #007acc);
-	border-color: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 50%, transparent);
 }
 .native-tb-card action-btn.action-success:hover {
-	background: color-mix(in srgb, var(--vscode-testing-iconPassed, #4ec9b0) 20%, transparent);
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed, #4ec9b0) 15%, transparent);
 	color: var(--vscode-testing-iconPassed, #4ec9b0);
-	border-color: color-mix(in srgb, var(--vscode-testing-iconPassed, #4ec9b0) 50%, transparent);
+}
+
+/* Agent avatar — fixed color per agent (hash-based) */
+.native-tb-card .agent-avatar {
+	display: inline-flex; align-items: center; justify-content: center;
+	width: 18px; height: 18px; border-radius: 50%;
+	font-size: 10px; font-weight: 600; color: #fff; flex-shrink: 0;
 }
 
 /* === Empty column === */
@@ -1767,6 +1756,9 @@ export class TaskBoardNativeRenderer {
 	private readonly _onSwarmCancel = this._disposables.add(new Emitter<string>());
 	readonly onSwarmCancel = this._onSwarmCancel.event;
 
+	private readonly _onTaskCancel = this._disposables.add(new Emitter<{ taskId: string; assigneeId?: string }>());
+	readonly onTaskCancel = this._onTaskCancel.event;
+
 	private readonly _onAddBoardLinkRequest = this._disposables.add(new Emitter<void>());
 	readonly onAddBoardLinkRequest = this._onAddBoardLinkRequest.event;
 
@@ -1788,6 +1780,8 @@ export class TaskBoardNativeRenderer {
 	private _rootEl: HTMLElement | null = null;
 	private _data: TaskBoardRenderData | null = null;
 	private _titleById: Map<string, string> = new Map();
+	/** Employee lookup map — built once per render() call, replaces per-card find() */
+	private _employeeMap: Map<string, EmployeeInfo> = new Map();
 
 	constructor() {
 		injectStyles();
@@ -1804,6 +1798,7 @@ export class TaskBoardNativeRenderer {
 	/** Update the board with new data. Efficient incremental DOM update. */
 	render(data: TaskBoardRenderData): void {
 		const t0 = performance.now();
+		const prevData = this._data;
 		this._data = data;
 		this._titleById.clear();
 		for (const t of data.tasks) {
@@ -1811,70 +1806,85 @@ export class TaskBoardNativeRenderer {
 		}
 		if (!this._rootEl) { return; }
 
-		// Full rebuild for simplicity (kanban is relatively lightweight).
-		// For production, could do diff-based updates.
-		const tClear = performance.now();
-		while (this._rootEl.firstChild) {
-			this._rootEl.removeChild(this._rootEl.firstChild);
+		// Build employee lookup map once (O(E)) — replaces per-card
+		// data.employees.find() which was O(N×E) for N cards and E employees.
+		this._employeeMap.clear();
+		for (const emp of data.employees) {
+			this._employeeMap.set(emp.id, emp);
 		}
-		this._renderHeader(this._rootEl, data);
-		const tColumns = performance.now();
-		if (!data.collapsed) {
-			this._renderSwarms(this._rootEl, data.swarms);
-			this._renderFilters(this._rootEl, data);
-			this._renderColumns(this._rootEl, data);
-			this._diagnoseLayout();
+
+		// Build task-to-column index in a single pass (O(N)) — replaces
+		// _getTasksForColumn() which filtered ALL tasks for EACH of the 5
+		// columns = O(N×5) redundant scans.
+		const tasksByColumn: Map<string, TaskBoardRecord[]> = new Map();
+		for (const col of COLUMNS) {
+			tasksByColumn.set(col.key, []);
 		}
-		console.info(`[TaskPerfDiag] render total=${(performance.now() - t0).toFixed(0)}ms clear=${(tClear - t0).toFixed(0)}ms header=${(tColumns - tClear).toFixed(0)}ms columns=${(performance.now() - tColumns).toFixed(0)}ms tasks=${data.tasks.length}`);
+		for (const t of data.tasks) {
+			for (const col of COLUMNS) {
+				if (col.statuses.includes(t.status)) {
+					if (data.filter.employeeFilter === 'all' || t.assigneeId === data.filter.employeeFilter) {
+						tasksByColumn.get(col.key)!.push(t);
+					}
+					break;
+				}
+			}
+		}
+
+		// Incremental update: if the board shell (header/filters/swarms/links)
+		// hasn't structurally changed, only rebuild the columns container.
+		// This avoids destroying/recreating ~50 DOM nodes for the shell
+		// on every single task status change.
+		const shellChanged = !prevData
+			|| prevData.collapsed !== data.collapsed
+			|| prevData.filter.boardFilterWsId !== data.filter.boardFilterWsId
+			|| prevData.filter.employeeFilter !== data.filter.employeeFilter
+			|| prevData.filter.hiddenColumnKeys.size !== data.filter.hiddenColumnKeys.size
+			|| (prevData.swarms?.length ?? 0) !== (data.swarms?.length ?? 0)
+			|| (prevData.boardLinks?.length ?? 0) !== (data.boardLinks?.length ?? 0)
+			|| prevData.isLoading !== data.isLoading;
+
+		if (shellChanged) {
+			// Full rebuild — shell structure changed
+			const frag = document.createDocumentFragment();
+			this._renderHeader(frag, data);
+			const tColumns = performance.now();
+			if (!data.collapsed) {
+				this._renderSwarms(frag, data.swarms);
+				this._renderFilters(frag, data);
+				this._renderColumns(frag, data, tasksByColumn);
+			}
+			this._rootEl.replaceChildren(frag);
+			console.info(`[TaskPerfDiag] render(full) total=${(performance.now() - t0).toFixed(0)}ms columns=${(performance.now() - tColumns).toFixed(0)}ms tasks=${data.tasks.length}`);
+		} else {
+			// Incremental — only rebuild columns container
+			if (!data.collapsed) {
+				const existingCols = this._rootEl.querySelector('.native-tb-columns');
+				if (existingCols) {
+					const colsFrag = document.createDocumentFragment();
+					this._renderColumns(colsFrag, data, tasksByColumn);
+					existingCols.replaceWith(colsFrag);
+					console.info(`[TaskPerfDiag] render(incr) total=${(performance.now() - t0).toFixed(0)}ms tasks=${data.tasks.length}`);
+					return;
+				}
+			}
+			// Fallback: no existing columns — full rebuild
+			const frag = document.createDocumentFragment();
+			this._renderHeader(frag, data);
+			const tColumns = performance.now();
+			if (!data.collapsed) {
+				this._renderSwarms(frag, data.swarms);
+				this._renderFilters(frag, data);
+				this._renderColumns(frag, data, tasksByColumn);
+			}
+			this._rootEl.replaceChildren(frag);
+			console.info(`[TaskPerfDiag] render(fallback) total=${(performance.now() - t0).toFixed(0)}ms columns=${(performance.now() - tColumns).toFixed(0)}ms tasks=${data.tasks.length}`);
+		}
 	}
 
-	/**
-	 * Diagnostic: print actual computed layout for the kanban height chain.
-	 * Helps identify why `.native-tb-cards` overflow-y:scroll does/doesn't show
-	 * a visible scrollbar. Logs once per render, deferred one frame so the DOM
-	 * has been laid out.
-	 */
-	private _diagnoseLayout(): void {
-		if (!this._rootEl) { return; }
-		requestAnimationFrame(() => {
-			try {
-				const panel = this._rootEl!;
-				const colsContainer = panel.querySelector('.native-tb-columns') as HTMLElement | null;
-				if (!colsContainer) { return; }
-				const columnEls = Array.from(panel.querySelectorAll('.native-tb-column')) as HTMLElement[];
-				console.log('[TaskBoard-Diag] === LAYOUT ===');
-				console.log('[TaskBoard-Diag] panel:        rect=%s offsetH=%d', JSON.stringify(panel.getBoundingClientRect()), panel.offsetHeight);
-				console.log('[TaskBoard-Diag] colsContainer:rect=%s offsetH=%d cs(h=%s minH=%s flex=%s overflowY=%s)',
-					JSON.stringify(colsContainer.getBoundingClientRect()), colsContainer.offsetHeight,
-					getComputedStyle(colsContainer).height, getComputedStyle(colsContainer).minHeight,
-					getComputedStyle(colsContainer).flex, getComputedStyle(colsContainer).overflowY);
-				for (let i = 0; i < columnEls.length; i++) {
-					const col = columnEls[i];
-					const cards = col.querySelector('.native-tb-cards') as HTMLElement | null;
-					const colCs = getComputedStyle(col);
-					const colRect = col.getBoundingClientRect();
-					console.log('[TaskBoard-Diag] col[%d] key=%s: rect=%s offsetH=%d cs(display=%s flexDir=%s minH=%s alignSelf=%s overflow=%s)',
-						i, (col.querySelector('.native-tb-column-header')?.textContent || '').trim().slice(0, 12),
-						JSON.stringify(colRect), col.offsetHeight,
-						colCs.display, colCs.flexDirection, colCs.minHeight, colCs.alignSelf, colCs.overflow);
-					if (cards) {
-						const cardCs = getComputedStyle(cards);
-						console.log('[TaskBoard-Diag]   cards: offsetH=%d clientH=%d scrollH=%d (overflow=%s) cs(overflowY=%s flex=%s minH=%s display=%s scrollbarWidth=%s)',
-							cards.offsetHeight, cards.clientHeight, cards.scrollHeight,
-							cards.scrollHeight > cards.clientHeight ? 'YES' : 'NO',
-							cardCs.overflowY, cardCs.flex, cardCs.minHeight, cardCs.display, cardCs.scrollbarWidth);
-						console.log('[TaskBoard-Diag]   cards childCount=%d firstCardH=%d sum~%d',
-							cards.children.length, (cards.children[0] as HTMLElement)?.offsetHeight || 0,
-							Array.from(cards.children).reduce((s, c) => s + (c as HTMLElement).offsetHeight, 0));
-					} else {
-						console.log('[TaskBoard-Diag]   cards: <not found in col[%d]>', i);
-					}
-				}
-			} catch (e) {
-				console.error('[TaskBoard-Diag] failed:', e);
-			}
-		});
-	}
+	// _diagnoseLayout() removed — it called getComputedStyle() +
+	// getBoundingClientRect() on every column/card, forcing synchronous layout
+	// recalculation (~884ms Layout time in Chromium Trace, P2-12 fix).
 
 	updateSwarmBar(swarms: SwarmInfo[]): void {
 		if (!this._rootEl || !this._data || this._data.collapsed) { return; }
@@ -1895,7 +1905,7 @@ export class TaskBoardNativeRenderer {
 
 	// ─── Header ──────────────────────────────────────────────────────
 
-	private _renderHeader(root: HTMLElement, data: TaskBoardRenderData): void {
+	private _renderHeader(root: Node, data: TaskBoardRenderData): void {
 		const header = DOM.$('div.native-tb-header');
 
 		const left = DOM.$('div.native-tb-header-left');
@@ -1932,7 +1942,7 @@ export class TaskBoardNativeRenderer {
 		this._renderBoardLinkBar(root, data.boardLinks ?? []);
 	}
 
-	private _renderBoardLinkBar(root: HTMLElement, links: BoardLink[]): void {
+	private _renderBoardLinkBar(root: Node, links: BoardLink[]): void {
 		const bar = DOM.$('div.native-tb-links');
 		if (links.length === 0) {
 			const empty = DOM.$('span.native-tb-links-empty');
@@ -2178,7 +2188,7 @@ export class TaskBoardNativeRenderer {
 
 	// ─── Swarms ───────────────────────────────────────────────────────
 
-	private _renderSwarms(root: HTMLElement, swarms: SwarmInfo[]): void {
+	private _renderSwarms(root: Node, swarms: SwarmInfo[]): void {
 		if (swarms.length === 0) { return; }
 		root.appendChild(this._renderSwarmsEl(swarms));
 	}
@@ -2231,7 +2241,7 @@ export class TaskBoardNativeRenderer {
 
 	// ─── Filters ──────────────────────────────────────────────────────
 
-	private _renderFilters(root: HTMLElement, data: TaskBoardRenderData): void {
+	private _renderFilters(root: Node, data: TaskBoardRenderData): void {
 		const bar = DOM.$('div.native-tb-filters');
 
 		// Board filter
@@ -2303,7 +2313,7 @@ export class TaskBoardNativeRenderer {
 		const seen = new Map<string, string>();
 		for (const t of data.tasks) {
 			if (!t.assigneeId || seen.has(t.assigneeId)) { continue; }
-			const emp = data.employees.find(e => e.id === t.assigneeId);
+			const emp = this._employeeMap.get(t.assigneeId);
 			seen.set(t.assigneeId, emp?.name || t.assigneeName || t.assigneeId);
 		}
 		return Array.from(seen.entries()).map(([id, name]) => ({ id, name }));
@@ -2311,13 +2321,13 @@ export class TaskBoardNativeRenderer {
 
 	// ─── Columns ──────────────────────────────────────────────────────
 
-	private _renderColumns(root: HTMLElement, data: TaskBoardRenderData): void {
+	private _renderColumns(root: Node, data: TaskBoardRenderData, tasksByColumn: Map<string, TaskBoardRecord[]>): void {
 		const colsContainer = DOM.$('div.native-tb-columns');
 
 		const visibleColumns = COLUMNS.filter(c => !data.filter.hiddenColumnKeys.has(c.key));
 
 		for (const col of visibleColumns) {
-			const columnTasks = this._getTasksForColumn(data, col);
+			const columnTasks = tasksByColumn.get(col.key) ?? [];
 			const isDragOver = data.dragOverColumn === col.key;
 
 			const colEl = DOM.$(`div.native-tb-column${isDragOver ? '.drag-over' : ''}`);
@@ -2447,9 +2457,7 @@ export class TaskBoardNativeRenderer {
 			btn.title = label;
 			btn.addEventListener('click', (e) => {
 				e.stopPropagation();
-				const tBtn = performance.now();
 				handler();
-				console.info(`[TaskPerfDiag] actionBtn "${label}" id=${task.id} handler=${(performance.now() - tBtn).toFixed(0)}ms`);
 			});
 			actions.appendChild(btn);
 		};
@@ -2469,6 +2477,13 @@ export class TaskBoardNativeRenderer {
 		if (task.status === 'todo' || task.status === 'ready') {
 			addAction('▶️', '执行', 'action-success', () => {
 				this._onStatusChange.fire({ taskId: task.id, status: TaskBoardStatus.Running, source: task.source });
+			});
+		}
+
+		// Cancel — available for running tasks
+		if (task.status === 'running') {
+			addAction('⏹', '取消执行', 'action-danger', () => {
+				this._onTaskCancel.fire({ taskId: task.id, assigneeId: task.assigneeId });
 			});
 		}
 
@@ -2504,9 +2519,14 @@ export class TaskBoardNativeRenderer {
 		const title = DOM.$('div.native-tb-card-title', undefined, task.title);
 		body.appendChild(title);
 
-		// Description
+		// Description — truncate to 200 chars to avoid layout cost of
+		// measuring very long TAPD descriptions (can be thousands of chars).
+		// CSS -webkit-line-clamp:2 visually clamps to 2 lines anyway.
 		if (task.description && task.description !== task.title) {
-			const desc = DOM.$('div.native-tb-card-desc', undefined, task.description);
+			const descText = task.description.length > 200
+				? task.description.slice(0, 200) + '…'
+				: task.description;
+			const desc = DOM.$('div.native-tb-card-desc', undefined, descText);
 			body.appendChild(desc);
 		}
 
@@ -2521,7 +2541,7 @@ export class TaskBoardNativeRenderer {
 			const assigneeName = task.assigneeName || task.assigneeId || '';
 			const assigneeTag = DOM.$('span.native-tb-card-tag.assignee');
 			const avatar = DOM.$('span.native-tb-card-avatar');
-			const emp = data.employees.find(e => e.id === task.assigneeId);
+			const emp = this._employeeMap.get(task.assigneeId ?? '');
 			const icon = emp?.icon;
 			if (icon) {
 				if (icon.startsWith('data:')) {
@@ -2568,14 +2588,23 @@ export class TaskBoardNativeRenderer {
 		// === Footer ===
 		const footer = DOM.$('div.native-tb-card-footer');
 
-		// Status dot only (no text label)
-		const statusEl = DOM.$('span.native-tb-card-status');
+		// Left: status dot + agent avatar
+		const footerLeft = DOM.$('span.native-tb-card-footer-left');
 		const dotClass = task.status === 'running' ? 'running' : (task.status === 'blocked' ? 'blocked' : (task.status === 'done' ? 'done' : (task.status === 'ready' ? 'ready' : 'todo')));
 		const dot = DOM.$(`span.native-tb-card-status-dot.${dotClass}`);
-		statusEl.appendChild(dot);
-		footer.appendChild(statusEl);
+		footerLeft.appendChild(dot);
+		// Agent avatar — hash-based fixed color per agent
+		if (task.assigneeId) {
+			const agentName = task.assigneeName || task.assigneeId;
+			const avatar = DOM.$('span.agent-avatar');
+			avatar.textContent = agentName.charAt(0).toUpperCase();
+			avatar.style.background = this._avatarColor(agentName);
+			avatar.title = agentName;
+			footerLeft.appendChild(avatar);
+		}
+		footer.appendChild(footerLeft);
 
-		// Meta icons: dependencies count, attachments
+		// Meta icons: dependencies count, attachments, chat
 		const metaIcons = DOM.$('span.native-tb-card-meta-icons');
 		if (task.dependencies && task.dependencies.length > 0) {
 			const depsIcon = DOM.$('span', undefined, `🔗${task.dependencies.length}`);
@@ -2613,31 +2642,30 @@ export class TaskBoardNativeRenderer {
 			const target = e.target as HTMLElement;
 			if (target.closest('action-btn')) { return; }
 			this._onTaskDetailRequest.fire({ task, employees: data.employees, allTasks: data.tasks });
-			console.info(`[PerfDiag] 🟡 CARD_CLICK → fire taskDetailRequest taskId=${task.id} t=${performance.now().toFixed(0)}ms`);
 		});
 		card.style.cursor = 'pointer';
 
 		return card;
 	}
 
-	/** Deterministic color from string (for avatar background). */
+	/** Deterministic color from string (for avatar background). Cached by name. */
+	private _avatarColorCache: Map<string, string> = new Map();
 	private _avatarColor(name: string): string {
+		let cached = this._avatarColorCache.get(name);
+		if (cached) { return cached; }
 		const colors = ['#4fc1ff', '#4ec9b0', '#c586c0', '#ce9178', '#f44747', '#569cd6', '#dcdcaa', '#6a9955'];
 		let hash = 0;
 		for (let i = 0; i < name.length; i++) {
 			hash = ((hash << 5) - hash) + name.charCodeAt(i);
 			hash |= 0;
 		}
-		return colors[Math.abs(hash) % colors.length];
+		cached = colors[Math.abs(hash) % colors.length];
+		this._avatarColorCache.set(name, cached);
+		return cached;
 	}
 
-	private _getTasksForColumn(data: TaskBoardRenderData, col: ColumnDef): TaskBoardRecord[] {
-		return data.tasks.filter(t => {
-			if (!col.statuses.includes(t.status)) { return false; }
-			if (data.filter.employeeFilter !== 'all' && t.assigneeId !== data.filter.employeeFilter) { return false; }
-			return true;
-		});
-	}
+	// _getTasksForColumn removed — task-to-column mapping is now built in
+	// a single pass inside render() and passed to _renderColumns.
 
 	// ─── Task Detail Modal ────────────────────────────────────────────
 

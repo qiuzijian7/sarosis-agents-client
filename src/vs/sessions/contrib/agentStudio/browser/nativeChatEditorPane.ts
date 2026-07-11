@@ -43,9 +43,11 @@ import { IWorkflowExecutionService } from '../common/workflowExecutionService.js
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
+import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
+import { TaskBoardStatus } from '../../../common/agentStudioTypes.js';
 // OrchestrationPlan import removed — task orchestration entry point closed
 import * as DOM from '../../../../base/browser/dom.js';
 import { clearNode } from '../../../../base/browser/dom.js';
@@ -368,6 +370,25 @@ export class NativeChatEditorPane extends EditorPane {
 					const agentId = this._currentAgentId ?? 'claw';
 					const sessionId = this._currentSessionId ?? undefined;
 					this._chatService.cancelStream(agentId, sessionId);
+					// Sync: cancel any running task assigned to this agent so the
+					// task card reflects the cancellation immediately.
+					void (async () => {
+						try {
+							const tasks = await this._taskBoardService.getTasks();
+							const runningTask = tasks.find(t =>
+								t.status === 'running' && t.assigneeId === agentId
+							);
+							if (runningTask) {
+								await this._taskBoardService.updateTaskStatus(
+									runningTask.id,
+									TaskBoardStatus.Cancelled,
+								);
+								console.info(`[NativeChatEditorPane] onCancelExecution: synced task ${runningTask.id} → cancelled`);
+							}
+						} catch (err) {
+							this._logService.warn('[NativeChatEditorPane] onCancelExecution: failed to sync task board', err);
+						}
+					})();
 					// 立即恢复 UI 状态——cancelStream 中断 AbortController 后，
 					// for-await 循环仅在下个 delta 到达时才 break，done/error delta
 					// 不会被发射，setSending(false) 不会被调用。这里手动恢复按钮 + 输入框。
@@ -979,13 +1000,13 @@ export class NativeChatEditorPane extends EditorPane {
 		//   - text/thinking/tool_*/usage/phase_change → 通过 _handleStreamDelta 实时更新 UI
 		//   - done → finalize + _resetStreamingMessage() + 延迟 reload history
 		//   - error → finalize + setSending(false) + reset
-		this._register(this._chatService.onDidStreamDelta(({ agentId, delta }) => {
-			if (agentId !== this._currentAgentId) { return; }
-			if (!this._chatPanel) { return; }
-			if (!delta) { return; }
+	this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }) => {
+		if (agentId !== this._currentAgentId) { return; }
+		if (!this._chatPanel) { return; }
+		if (!delta) { return; }
 
-			// 面板自身发送时，回调已处理，跳过（避免 race condition 和双重处理）
-			if (this._isSending && !this._isExternalSend) { return; }
+		// 面板自身发送时，回调已处理，跳过（避免 race condition 和双重处理）
+		if (this._isSending && !this._isExternalSend) { return; }
 
 		if (delta.type === 'done') {
 			// 外部发送最终结束（整个 agent loop 完成）— finalize + 重置状态。
@@ -1004,19 +1025,31 @@ export class NativeChatEditorPane extends EditorPane {
 				this._externalSendJustFinished = true;
 			}
 			// 本地发送时 done 不做处理 — 由 _sendMessageInternal await 返回后统一收尾
-			} else {
-				// 首个非 done delta → 外部发送开始：初始化流式消息 + 标记外部发送
-				if (!this._isSending) {
-					this._isSending = true;
-					this._isExternalSend = true;
-					this._taskExecutingSessionId = this._currentSessionId;
-					this._chatPanel.setSending(true);
-					this._initStreamingMessage();
+		} else {
+			// 首个非 done delta → 外部发送开始：初始化流式消息 + 标记外部发送
+			if (!this._isSending) {
+				// If the delta belongs to a different session than what's
+				// currently loaded in the panel, switch to that session first.
+				// This happens when executeTaskForBoard creates a new session
+				// for the task execution (P2-14: per-task sessions).
+				if (sessionId && this._currentSessionId !== sessionId) {
+					console.info(`[NativeChatEditorPane] External delta for different session: current=${this._currentSessionId} delta=${sessionId}, switching...`);
+					this._currentSessionId = sessionId;
+					if (this.input instanceof NativeChatEditorInput) {
+						this.input.setAgentInfo(this.input.name, agentId, sessionId);
+					}
+					this._activateCheckpointSession(agentId, sessionId);
 				}
-				// 走与本地发送完全相同的 delta 处理路径（流式文本/工具/记忆/usage 全部生效）
-				this._handleStreamDelta(delta);
+				this._isSending = true;
+				this._isExternalSend = true;
+				this._taskExecutingSessionId = this._currentSessionId;
+				this._chatPanel.setSending(true);
+				this._initStreamingMessage();
 			}
-		}));
+			// 走与本地发送完全相同的 delta 处理路径（流式文本/工具/记忆/usage 全部生效）
+			this._handleStreamDelta(delta);
+		}
+	}));
 
 		// Reload chat history when the task board changes and the current agent
 		// was assigned to a task that just completed (e.g. kanban-created task finished).
@@ -2454,6 +2487,7 @@ export class NativeChatEditorPane extends EditorPane {
 	/**
 	 * P0-3: Apply code — 对已有文件打开 diff 编辑器（原始 vs 新内容），
 	 * 用户保存右侧编辑器 = 接受变更，关闭不保存 = 拒绝。
+	 * HTML 文件：直接写入 + 用 HtmlPreviewEditorInput 渲染预览，跳过 diff。
 	 * 无 filePath 时打开 untitled 编辑器。回退到直接写入。
 	 */
 	private async _handleApplyCode(code: string, _language: string, filePath?: string): Promise<void> {
@@ -2470,6 +2504,18 @@ export class NativeChatEditorPane extends EditorPane {
 					}
 					resource = URI.joinPath(folders[0].uri, filePath);
 				}
+
+				// HTML 文件：直接写入 + 用 HtmlPreviewEditorInput 渲染预览（用户要求）
+				if (this._isHtmlFile(filePath)) {
+					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
+					const groups = this._editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+					const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+					const fileName = filePath.split(/[\\/]/).pop() || filePath;
+					const previewInput = new HtmlPreviewEditorInput(resource, `预览：${fileName}`);
+					await this._editorService.openEditor(previewInput, { pinned: true }, targetGroup);
+					return;
+				}
+
 				// 读取原始内容
 				let originalContent: string;
 				try {
@@ -2515,6 +2561,11 @@ export class NativeChatEditorPane extends EditorPane {
 				} catch { /* ignore */ }
 			}
 		}
+	}
+
+	/** 判断是否为 HTML 文件（用于决定 Apply 后的打开方式：预览 vs 文本） */
+	private _isHtmlFile(filePath: string): boolean {
+		return /\.(html?|xhtml)$/i.test(filePath);
 	}
 
 	/**

@@ -68,6 +68,9 @@ export interface IAgentChatMessage {
 	workflowEvents?: ILiveWorkflowEvent[];
 	/** LiveWorkflowTraceView: collect variables requests */
 	collectVariables?: Record<string, ILiveCollectVariable>;
+	/** Structured task card data — when set, the renderer builds the task
+	 *  prompt card from this data instead of regex-parsing the text content. */
+	taskCard?: { title: string; description: string; source?: string; taskId?: string; dependencies?: readonly string[]; attachments?: readonly { name: string; mimeType: string }[] };
 }
 
 /** File/image attachment for chat messages */
@@ -336,6 +339,11 @@ export function adaptPersistedChatMessage(m: any): IAgentChatMessage | null {
 		workflowEvents,
 		collectVariables,
 		askUsers,
+		// Preserve taskCard structured data so the chat renderer can build
+		// the task prompt card from it after a history reload (P2-11 fix).
+		// Without this, the field is dropped during adaptation and the card
+		// only shows for live messages, not reloaded ones.
+		taskCard: m.taskCard,
 	};
 }
 

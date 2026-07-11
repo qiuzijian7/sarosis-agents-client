@@ -18,6 +18,7 @@ import { extractOutline, findHeadingId, type IOutlineItem } from './outline';
 import { collectDomOutline } from './domOutline';
 import { toggleTaskCheckbox } from './taskToggle';
 import { MarkdownSourceEditor } from './MarkdownSourceEditor';
+import { VersionHistoryPanel } from './VersionHistoryPanel';
 import { postMessage, initMessageClient } from '../bridge/messageClient';
 // Inlined at build time by the katex-css esbuild plugin (CSS + font data URIs).
 // @ts-ignore - virtual module provided by the bundler
@@ -61,6 +62,7 @@ export function KbMarkdownApp(): React.ReactElement {
 
 	const [mode, setMode] = useState<EditorMode>('preview');
 	const [showToc, setShowToc] = useState(false);
+	const [showHistory, setShowHistory] = useState(false);
 	const [flipped, setFlipped] = useState(false);
 	const [zoom, setZoom] = useState(0); // 0=100% 1=115% 2=130%
 	const ZOOM_LEVELS = [1, 1.15, 1.3];
@@ -99,6 +101,15 @@ export function KbMarkdownApp(): React.ReactElement {
 				if (!dirty) {
 					setEditContent(newContent);
 				}
+			}
+			// Version restored: host rolled back the file to a git commit.
+			// Sync both buffers and clear dirty flag (the restored content IS
+			// the new disk state — next save will commit it as a new version).
+			if (type === 'kbblocks.versionRestored' && typeof data === 'object' && data && 'markdown' in data) {
+				const restoredContent = String((data as { markdown?: string }).markdown ?? '');
+				setContent(restoredContent);
+				setEditContent(restoredContent);
+				setDirty(false);
 			}
 		});
 		// Deliberately exclude `dirty` from deps — the handler above reads the
@@ -279,7 +290,7 @@ export function KbMarkdownApp(): React.ReactElement {
 					className={`kb-tool-btn ${showToc ? 'kb-tool-btn--active' : ''}`}
 					title="大纲"
 					aria-label="大纲"
-					onClick={() => setShowToc((v) => !v)}
+					onClick={() => { setShowToc((v) => !v); setShowHistory(false); }}
 				>
 					{/* list icon */}
 					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
@@ -311,6 +322,15 @@ export function KbMarkdownApp(): React.ReactElement {
 					{/* copy icon */}
 					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
 				</button>
+				<button
+					className={`kb-tool-btn ${showHistory ? 'kb-tool-btn--active' : ''}`}
+					title="版本历史 (Git)"
+					aria-label="版本历史"
+					onClick={() => { setShowHistory((v) => !v); setShowToc(false); }}
+				>
+					{/* git-branch icon */}
+					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 01-9 9"/></svg>
+				</button>
 				{dirty && <span className="kb-dirty-indicator" title="有未保存的修改">●</span>}
 			</div>
 			<span className="kb-version">pipeline v0.3</span>
@@ -339,6 +359,8 @@ export function KbMarkdownApp(): React.ReactElement {
 				})()}
 			</div>
 		)}
+
+		<VersionHistoryPanel visible={showHistory} onClose={() => setShowHistory(false)} />
 
 		<div className="kb-pane">
 			<div className="kb-flip-front">

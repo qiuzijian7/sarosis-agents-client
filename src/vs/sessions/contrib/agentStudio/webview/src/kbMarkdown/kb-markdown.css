@@ -482,3 +482,187 @@ html, body {
 .kb-empty-icon { font-size: 48px; opacity: 0.4; }
 .kb-empty-title { font-size: 14px; color: #aaa; }
 .kb-empty-hint { font-size: 12px; color: #666; }
+
+/* ── Version History Panel (git button → 版本历史) ─────────────────── */
+
+.kb-version-panel {
+	position: absolute;
+	top: 44px;
+	right: 12px;
+	width: 300px;
+	max-height: 75%;
+	background: #1b1b1b;
+	border: 1px solid #333;
+	border-radius: 6px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+	z-index: 20;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+.kb-version-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-bottom: 1px solid #333;
+	background: #1f1f1f;
+	flex-shrink: 0;
+}
+.kb-version-header-title {
+	font: 600 12px system-ui;
+	color: #cfe6ff;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+.kb-version-count {
+	background: #252525;
+	border: 1px solid #333;
+	border-radius: 999px;
+	padding: 1px 8px;
+	font: 11px system-ui;
+	color: #888;
+}
+.kb-version-close {
+	margin-left: auto;
+	background: none;
+	border: none;
+	color: #888;
+	font-size: 18px;
+	cursor: pointer;
+	padding: 0 4px;
+	line-height: 1;
+}
+.kb-version-close:hover { color: #fff; }
+
+.kb-version-list {
+	flex: 1;
+	overflow-y: auto;
+	padding: 4px;
+}
+.kb-version-item {
+	margin-bottom: 2px;
+}
+.kb-version-item--open {
+	background: #1f1f1f;
+	border-radius: 6px;
+}
+.kb-version-row {
+	display: grid;
+	grid-template-columns: auto auto 1fr;
+	gap: 8px;
+	align-items: baseline;
+	padding: 6px 10px;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background 0.12s;
+}
+.kb-version-row:hover { background: #252525; }
+.kb-version-sha {
+	font: 11px ui-monospace, monospace;
+	color: #58a6ff;
+	font-weight: 500;
+}
+.kb-version-time {
+	font: 11px system-ui;
+	color: #6e7681;
+}
+.kb-version-msg {
+	font: 12px system-ui;
+	color: #ccc;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.kb-version-diff-wrap {
+	margin: 0 4px 8px;
+	border: 1px solid #333;
+	border-radius: 6px;
+	background: #181818;
+	overflow: hidden;
+}
+.kb-version-diff-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 6px 10px;
+	border-bottom: 1px solid #333;
+	background: #1f1f1f;
+}
+.kb-version-restore {
+	background: #1a2a1a;
+	border: 1px solid #2a5a2a;
+	color: #7ee787;
+	border-radius: 4px;
+	padding: 3px 10px;
+	font: 11px system-ui;
+	cursor: pointer;
+	transition: background 0.12s;
+}
+.kb-version-restore:hover { background: #1f3a1f; }
+.kb-version-restore:disabled { opacity: 0.5; cursor: not-allowed; }
+.kb-version-author { font: 10px system-ui; color: #6e7681; }
+
+.kb-version-diff-loading,
+.kb-version-diff-empty {
+	padding: 12px;
+	font: 11px system-ui;
+	color: #6e7681;
+	text-align: center;
+}
+.kb-version-diff {
+	margin: 0;
+	padding: 8px 10px;
+	font: 11px ui-monospace, monospace;
+	line-height: 1.5;
+	white-space: pre;
+	overflow-x: auto;
+	max-height: 320px;
+	overflow-y: auto;
+	color: #ccc;
+}
+.kb-version-hunk-hdr {
+	display: block;
+	color: #6e7681;
+	background: #252525;
+	padding: 0 4px;
+	border-radius: 3px;
+	margin: 2px 0;
+}
+.kb-version-diff-line { display: block; }
+.kb-version-diff-line--add { background: rgba(46, 160, 67, 0.18); color: #7ee787; }
+.kb-version-diff-line--remove { background: rgba(248, 81, 73, 0.18); color: #f85149; }
+.kb-version-diff-line--context { color: #6e7681; }
+
+.kb-version-empty {
+	padding: 24px 16px;
+	text-align: center;
+	color: #555;
+	font: 12px system-ui;
+}
+.kb-version-empty-icon {
+	font: 600 24px system-ui;
+	color: #444;
+	margin-bottom: 8px;
+}
+.kb-version-empty-hint {
+	font-size: 11px;
+	color: #444;
+	margin-top: 4px;
+}
+
+.kb-version-toast {
+	position: absolute;
+	bottom: 12px;
+	left: 50%;
+	transform: translateX(-50%);
+	background: #1a2a1a;
+	color: #7ee787;
+	border: 1px solid #2a5a2a;
+	padding: 6px 16px;
+	border-radius: 6px;
+	font: 12px system-ui;
+	z-index: 30;
+	animation: kb-fade-in 0.2s ease;
+}

@@ -251,6 +251,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	// ═══════════════════════════════════════════════════════════
 
 	protected override renderBody(container: HTMLElement): void {
+		const t0 = performance.now();
 		super.renderBody(container);
 		this._body = container;
 		this._body.classList.add('kb-view');
@@ -308,7 +309,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		document.addEventListener('click', this._onGlobalClick);
 
 		// initVaults 为异步链，失败会被吞掉导致整块空白；显式 catch 以暴露真实错误
-		void this.initVaults().catch((err) => {
+		this.logService.info(`[KB perf] renderBody skeleton: ${(performance.now() - t0).toFixed(1)}ms, starting initVaults...`);
+		void this.initVaults().then(() => {
+			this.logService.info(`[KB perf] renderBody total: ${(performance.now() - t0).toFixed(1)}ms`);
+		}).catch((err) => {
 			this.logService.error(`[KB] initVaults failed: ${err}`);
 			this.notificationService.error(localize('kb.initFailed', '知识库初始化失败：{0}', String(err?.message ?? err)));
 			if (this._scroll) {
@@ -347,18 +351,28 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		await this.activateVault(this._activeVault);
 	}
 
+	/** 已确认文件夹存在的 Vault ID 集合（避免重复 createFolder IPC 调用）。 */
+	private _vaultFoldersReady = new Set<string>();
+
 	private async ensureVaultFolders(v: IKbVault): Promise<void> {
-		// best-effort：建文件夹失败不应阻断渲染（listChildren 会在用到时按需再建）
+		if (this._vaultFoldersReady.has(v.id)) { return; }
 		try {
-			await this.fileService.createFolder(this.vaultUri(v));
-			await this.fileService.createFolder(this.sectionUri(v, 'library'));
-			await this.fileService.createFolder(this.sectionUri(v, 'notes'));
+			const root = this.vaultUri(v);
+			const lib = this.sectionUri(v, 'library');
+			const notes = this.sectionUri(v, 'notes');
+			// Only create folders that don't already exist — createFolder is a
+			// heavy IPC call even when the folder already exists on disk.
+			if (!await this.fileService.exists(root)) { await this.fileService.createFolder(root); }
+			if (!await this.fileService.exists(lib))  { await this.fileService.createFolder(lib); }
+			if (!await this.fileService.exists(notes)) { await this.fileService.createFolder(notes); }
+			this._vaultFoldersReady.add(v.id);
 		} catch (err) {
 			this.logService.warn(`[KB] ensureVaultFolders failed (will retry on demand): ${err}`);
 		}
 	}
 
 	private async activateVault(v: IKbVault): Promise<void> {
+		const t0 = performance.now();
 		this._activeVault = v;
 		this.storageService.store(STORAGE_ACTIVE, v.id, StorageScope.APPLICATION, StorageTarget.MACHINE);
 		this._searchDirty = true;
@@ -367,7 +381,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._libraryOpen = this.loadSectionOpen('library');
 		this._notesOpen = this.loadSectionOpen('notes');
 		await this.ensureVaultFolders(v);
+		const t1 = performance.now();
 		this.renderAll();
+		this.logService.info(`[KB perf] activateVault(${v.name}): ensureFolders=${(t1 - t0).toFixed(1)}ms, renderAll=${(performance.now() - t1).toFixed(1)}ms, total=${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
 	private async createVault(name: string, icon = '📚'): Promise<void> {
@@ -422,6 +438,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	// ═══════════════════════════════════════════════════════════
 
 	private renderAll(): void {
+		const t0 = performance.now();
 		// 重建前清除搜索态，避免结果元素被清空但搜索框仍残留文字
 		if (this._searchInput) { this._searchInput.value = ''; }
 		this._searchToken++; // 使进行中的搜索结果失效
@@ -436,6 +453,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this._scroll.appendChild(this.renderSection('notes'));
 		}
 		this.renderBacklinksPanel();
+		this.logService.info(`[KB perf] renderAll total: ${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -769,6 +787,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	private async loadSectionTree(section: KbSection, body: HTMLElement, countEl: HTMLElement): Promise<void> {
 		if (!this._activeVault) { return; }
+		const t0 = performance.now();
 		body.replaceChildren();
 		const loading = $('div.kb-loading'); loading.textContent = '加载中…'; body.appendChild(loading);
 		try {
@@ -797,8 +816,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 					if (el) { void this.expandFolder(el as HTMLElement, node); }
 				}
 			}
+			this.logService.info(`[KB perf] loadSectionTree(${section}): ${(performance.now() - t0).toFixed(1)}ms, ${nodes.length} nodes`);
 		} catch (err) {
-			this.logService.warn(`[KB] loadSectionTree failed: ${err}`);
+			this.logService.warn(`[KB] loadSectionTree(${section}) failed after ${(performance.now() - t0).toFixed(1)}ms: ${err}`);
 			body.replaceChildren();
 			const empty = $('div.kb-empty-inline'); empty.textContent = '加载失败'; body.appendChild(empty);
 		}
@@ -810,6 +830,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private async listChildren(uri: URI, section: KbSection): Promise<IKbNode[]> {
+		const t0 = performance.now();
 		let stat;
 		try {
 			stat = await this.fileService.resolve(uri);
@@ -817,9 +838,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			await this.fileService.createFolder(uri);
 			stat = await this.fileService.resolve(uri);
 		}
+		const resolveMs = performance.now() - t0;
 		if (!stat.children) { return []; }
 		const nodes: IKbNode[] = stat.children.map(c => this.toKbNode(c, section));
-		return this.sortNodes(nodes);
+		const sorted = this.sortNodes(nodes);
+		if (nodes.length > 20 || resolveMs > 200) {
+			this.logService.info(`[KB perf] listChildren(${uri.fsPath.slice(-30)}): ${(performance.now() - t0).toFixed(1)}ms (resolve=${resolveMs.toFixed(1)}ms, sort=${(performance.now() - t0 - resolveMs).toFixed(1)}ms, ${nodes.length} items)`);
+		}
+		return sorted;
 	}
 
 	private toKbNode(stat: IFileStat, section: KbSection): IKbNode {
@@ -1830,25 +1856,35 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	/** 重建全文索引与双链图谱（扫描当前 Vault 的库 + 笔记两分区 + 关联目录）。 */
 	private async rebuildSearchAssets(): Promise<void> {
 		if (!this._activeVault) { return; }
+		const t0 = performance.now();
 		const vaultRoot = this.vaultUri(this._activeVault);
 		const roots = this.buildRoots();
 		try {
-			// FTS 索引缓存：启动时增量 reconcile（只重读变更文件），热启动近零磁盘读。
-			const ftsCache = URI.joinPath(vaultRoot, '.ftindex.json');
 			const kernelCache = URI.joinPath(vaultRoot, '.kbkernel.json');
-			// 内置内核（主后端，含提及索引）— 缓存 + 内存派生 graph/mention
+			const t1 = performance.now();
+			// 内置内核一次性完成 FTS + 图谱 + 提及索引构建
 			await this._nativeKernel?.build(roots, kernelCache);
-			// Record the build context so the shared service can lazily (re)build
-			// on behalf of the note editor if it opens a doc before this view.
+			this.logService.info(`[KB perf] _nativeKernel.build: ${(performance.now() - t1).toFixed(1)}ms`);
 			this._kbKernelService.setBuildContext(roots, kernelCache);
-			// 兼容：同时构建旧索引/图谱（部分代码仍直接引用）
-			await this._index.build(roots, ftsCache);
-			// 图谱从索引的内存文档派生，避免二次全量读盘
-			this._graph.buildFromDocs(this._index.allDocs());
+			const t2 = performance.now();
+			// 同步旧索引/图谱引用（从内核内存借数据，零额外 I/O）
+			this._syncFromKernel();
+			this.logService.info(`[KB perf] _syncFromKernel: ${(performance.now() - t2).toFixed(1)}ms`);
 		} catch (err) {
 			this.logService.warn(`[KB] rebuildSearchAssets failed: ${err}`);
 		}
 		this._searchDirty = false;
+		this.logService.info(`[KB perf] rebuildSearchAssets total: ${(performance.now() - t0).toFixed(1)}ms`);
+	}
+
+	/** 从 KbNativeKernel 同步 FTS 文档和图谱到旧引用变量（零 I/O）。 */
+	private _syncFromKernel(): void {
+		const docs = this._nativeKernel?.allDocs() ?? [];
+		if (docs.length === 0) return;
+		for (const d of docs) {
+			this._index.updateDoc(d.uri, d.name, d.section as KbSection, d.mtime, d.size, d.text);
+		}
+		this._graph.buildFromDocs(docs as { uri: URI; name: string; section: KbSection; mtime: number; text: string }[]);
 	}
 
 	/** 标记索引 / 图谱失效，下次搜索或选中时重建。 */

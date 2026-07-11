@@ -29,6 +29,7 @@ import {
 	extractModelName,
 	estimateTokenCount,
 	separateSystemMessage,
+	pruneMessagesForContext,
 	getExtensionVersion,
 	fetchWithRetry,
 } from '@saros/shared';
@@ -819,9 +820,9 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			// 2) assistant 消息：text + tool_calls 合并
 			if (isAssistant) {
 				// 即使 toolCalls.length>0，OpenAI 也允许 content 同时存在（前缀文本）。
-				// content 必须有值；若文本为空且有 tool_calls，content 设为空字符串而
-				// 不是 null（部分网关对 null 容忍度差）。
-				const text = textParts.join('');
+				// content 必须有值；若文本为空且有 tool_calls，content 设为空格（对齐 Continue：
+				// 部分 OpenAI-compatible 网关拒绝空字符串 content，但接受单空格）。
+				const text = textParts.join('') || ' ';
 				const assistantMsg: Record<string, unknown> = {
 					role: 'assistant',
 					content: text,
@@ -888,11 +889,25 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			? Math.min(modelCfg.maxOutputTokens, localMaxTokens)
 			: localMaxTokens;
 
+		// ── 消息裁剪（对齐 Continue compileChatMessages）──────────────────────
+		// 当对话历史 + system prompt + tools 超过模型 context window 时，
+		// 从最旧的消息开始裁剪，确保请求不会因超长而触发 HTTP 400。
+		// system message + tools + 最后一条消息（用户当前输入）不可裁剪。
+		const maxInputTokens = getModelTokenLimits(selectedModel).maxInputTokens;
+		const pruneResult = pruneMessagesForContext(apiMessages, {
+			modelName: selectedModel,
+			maxInputTokens,
+			maxOutputTokens: bodyMaxTokens,
+			systemText,
+			tools: openaiTools as Array<Record<string, unknown>> | undefined,
+		});
+		const finalApiMessages = pruneResult.messages;
+
 		const bodyObj: Record<string, unknown> = {
 			model: selectedModel,
 			messages: [
 				...(systemText ? [{ role: 'system', content: systemText }] : []),
-				...apiMessages,
+				...finalApiMessages,
 			],
 			stream: true,
 			temperature: bodyTemperature,
@@ -1081,14 +1096,45 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		const chatTimeoutMs = Math.max(configTimeoutMs, 120_000);
 		console.log(`[CodeBuddy] Chat request timeout: ${chatTimeoutMs}ms (config=${configTimeoutMs}ms, min=120000ms)`);
 
-		const response = await fetchWithRetry(url, {
-			method: 'POST',
-			headers,
-			// Node's fetch accepts Buffer/Uint8Array bodies; the DOM RequestInit type
-			// does not list Buffer, hence the cast.
-			body: body as unknown as BodyInit,
-			signal: controller.signal,
-		}, chatTimeoutMs);
+		// ── 400 重试：previous_response_id 可能因 system prompt 变化而失效 ──
+		// 对齐 Continue（不发 previous_response_id）：当 Knot API 返回 400 且
+		// 请求中携带了 previous_response_id 时，清除缓存并重试一次（不带该字段）。
+		const hasPrevResponseId = 'previous_response_id' in bodyObj;
+
+		const doFetch = async (): Promise<Response> => {
+			return fetchWithRetry(url, {
+				method: 'POST',
+				headers,
+				body: body as unknown as BodyInit,
+				signal: controller.signal,
+			}, chatTimeoutMs);
+		};
+
+		let response: Response;
+		try {
+			response = await doFetch();
+		} catch (err) {
+			// 400 + previous_response_id → 清除 stale ID，移除该字段后重试一次
+			if (hasPrevResponseId && err instanceof Error && /HTTP 400|code.*11133/i.test(err.message)) {
+				console.warn(`[CodeBuddy] HTTP 400 with previous_response_id — clearing stale cache and retrying without it`);
+				if (sessionId) {
+					this._lastResponseIdBySession.delete(sessionId);
+				}
+				delete bodyObj.previous_response_id;
+				const retryBodyJson = JSON.stringify(bodyObj);
+				body = retryBodyJson;
+				bodyGzipped = false;
+				try {
+					body = zlib.gzipSync(Buffer.from(retryBodyJson, 'utf8'));
+					bodyGzipped = true;
+				} catch {
+					body = retryBodyJson;
+				}
+				response = await doFetch();
+			} else {
+				throw err;
+			}
+		}
 
 		// ── HTTP 响应 Debug（受 codebuddy.debugHttp 开关控制）──────────────────
 		// SSE 流式响应无法直接重放，这里记录：

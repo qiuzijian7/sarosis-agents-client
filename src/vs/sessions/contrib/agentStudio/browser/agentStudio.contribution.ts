@@ -75,6 +75,7 @@ import { WorkspaceLifecycleService } from './workspaceLifecycleService.js';
 import { ISkillLifecycleService } from '../common/skillLifecycle.js';
 import { SkillLifecycleService } from './skillLifecycleService.js';
 import { IKbNativeKernelService, KbNativeKernelService } from './kbNativeKernelService.js';
+import { KbVersionService, IKbVersionService } from './kbVersionService.js';
 import {
 	AGENT_STUDIO_ENABLED_SETTING,
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
@@ -595,6 +596,7 @@ registerSingleton(IAgentStudioDashboardService, AgentStudioDashboardService, Ins
 // Shared KB native kernel — lets the BlockSuite note editor reuse the KB view's
 // already-built backlink/mention index instead of re-scanning the vault.
 registerSingleton(IKbNativeKernelService, KbNativeKernelService, InstantiationType.Delayed);
+registerSingleton(IKbVersionService, KbVersionService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened

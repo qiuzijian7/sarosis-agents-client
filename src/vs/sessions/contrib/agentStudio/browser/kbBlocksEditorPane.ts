@@ -43,6 +43,8 @@ import { serializeBacklinks } from './kbBlocksCodec.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IKbNativeKernelService } from './kbNativeKernelService.js';
+import { KbVersionService, IKbVersionService } from './kbVersionService.js';
+import type { KbCommitMeta, KbDiffResult } from './kbVersionTypes.js';
 
 interface KbHostMessage {
 	direction: 'toHost';
@@ -83,6 +85,7 @@ export class KbBlocksEditorPane extends EditorPane {
 		@IEditorService private readonly _editorService: IEditorService,
 		@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
 		@IOpenerService private readonly _openerService: IOpenerService,
+		@IKbVersionService private readonly _versionService: KbVersionService,
 	) {
 		super(KbBlocksEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -249,6 +252,8 @@ export class KbBlocksEditorPane extends EditorPane {
 						type: 'kbblocks.fileChanged',
 						data: { markdown: payload.markdown },
 					});
+					// AutoGit: snapshot the file after every save (SoloMD v2.2 pattern).
+					void this._autoCommit();
 				}
 			}
 			// A task checkbox flip only changes `[ ]`↔`[x]`; it never alters
@@ -284,6 +289,21 @@ export class KbBlocksEditorPane extends EditorPane {
 			const payload = msg.payload as { uri?: string; heading?: string } | undefined;
 			if (typeof payload?.uri === 'string') {
 				this._openDocByUri(payload.uri, payload.heading);
+			}
+		} else if (msg.type === 'kbblocks.getVersionHistory') {
+			const payload = msg.payload as { requestId?: string } | undefined;
+			if (typeof payload?.requestId === 'string') {
+				void this._handleGetVersionHistory(payload.requestId);
+			}
+		} else if (msg.type === 'kbblocks.getVersionDiff') {
+			const payload = msg.payload as { requestId?: string; sha?: string } | undefined;
+			if (typeof payload?.requestId === 'string' && typeof payload?.sha === 'string') {
+				void this._handleGetVersionDiff(payload.requestId, payload.sha);
+			}
+		} else if (msg.type === 'kbblocks.restoreVersion') {
+			const payload = msg.payload as { sha?: string } | undefined;
+			if (typeof payload?.sha === 'string') {
+				void this._handleRestoreVersion(payload.sha);
 			}
 		}
 	}
@@ -368,6 +388,123 @@ export class KbBlocksEditorPane extends EditorPane {
 			this._logService.info('[KbBlocksEditorPane] KB note markdown copied to clipboard');
 		} catch (err) {
 			this._logService.warn('[KbBlocksEditorPane] failed to copy KB note markdown', err);
+		}
+	}
+
+	/** AutoGit: commit the current file after a save (SoloMD v2.2 pattern). */
+	private async _autoCommit(): Promise<void> {
+		if (!this._currentResource || !this._versionService.isAvailable()) {
+			return;
+		}
+		try {
+			const vaultRoot = this._versionService.resolveVaultRoot(this._currentResource);
+			if (!vaultRoot) return;
+			const sha = await this._versionService.autoCommit(vaultRoot, this._currentResource);
+			if (sha && this._webview) {
+				this._webview.postMessage({
+					direction: 'toWebview',
+					type: 'kbblocks.versionCommitted',
+					data: { sha, shortSha: sha.substring(0, 7) },
+				});
+			}
+		} catch (err) {
+			this._logService.warn('[KbBlocksEditorPane] autoCommit failed', err);
+		}
+	}
+
+	/** Handle webview request for version history. */
+	private async _handleGetVersionHistory(requestId: string): Promise<void> {
+		if (!this._currentResource || !this._versionService.isAvailable()) {
+			this._webview?.postMessage({
+				direction: 'toWebview',
+				type: 'kbblocks.versionHistory',
+				data: { requestId, commits: [] },
+			});
+			return;
+		}
+		try {
+			const vaultRoot = this._versionService.resolveVaultRoot(this._currentResource);
+			if (!vaultRoot) {
+				this._webview?.postMessage({
+					direction: 'toWebview',
+					type: 'kbblocks.versionHistory',
+					data: { requestId, commits: [] },
+				});
+				return;
+			}
+			const commits: KbCommitMeta[] = await this._versionService.fileHistory(vaultRoot, this._currentResource);
+			this._webview?.postMessage({
+				direction: 'toWebview',
+				type: 'kbblocks.versionHistory',
+				data: { requestId, commits },
+			});
+		} catch (err) {
+			this._logService.warn('[KbBlocksEditorPane] getVersionHistory failed', err);
+			this._webview?.postMessage({
+				direction: 'toWebview',
+				type: 'kbblocks.versionHistory',
+				data: { requestId, commits: [] },
+			});
+		}
+	}
+
+	/** Handle webview request for a specific commit's diff. */
+	private async _handleGetVersionDiff(requestId: string, sha: string): Promise<void> {
+		if (!this._currentResource || !this._versionService.isAvailable()) {
+			this._webview?.postMessage({
+				direction: 'toWebview',
+				type: 'kbblocks.versionDiff',
+				data: { requestId, diff: null },
+			});
+			return;
+		}
+		try {
+			const vaultRoot = this._versionService.resolveVaultRoot(this._currentResource);
+			if (!vaultRoot) {
+				this._webview?.postMessage({
+					direction: 'toWebview',
+					type: 'kbblocks.versionDiff',
+					data: { requestId, diff: null },
+				});
+				return;
+			}
+			const diff: KbDiffResult | null = await this._versionService.fileDiff(vaultRoot, this._currentResource, sha);
+			this._webview?.postMessage({
+				direction: 'toWebview',
+				type: 'kbblocks.versionDiff',
+				data: { requestId, diff },
+			});
+		} catch (err) {
+			this._logService.warn('[KbBlocksEditorPane] getVersionDiff failed', err);
+			this._webview?.postMessage({
+				direction: 'toWebview',
+				type: 'kbblocks.versionDiff',
+				data: { requestId, diff: null },
+			});
+		}
+	}
+
+	/** Handle webview request to restore a file to a specific commit version. */
+	private async _handleRestoreVersion(sha: string): Promise<void> {
+		if (!this._currentResource || !this._versionService.isAvailable()) {
+			return;
+		}
+		try {
+			const vaultRoot = this._versionService.resolveVaultRoot(this._currentResource);
+			if (!vaultRoot) return;
+			const restoredContent = await this._versionService.rollbackFile(vaultRoot, this._currentResource, sha);
+			// Update our in-memory copy so subsequent saves don't overwrite the rollback.
+			this._currentMarkdown = restoredContent;
+			this._kbKernelService.invalidate();
+			// Notify webview with the restored content so the editor buffer syncs.
+			this._webview?.postMessage({
+				direction: 'toWebview',
+				type: 'kbblocks.versionRestored',
+				data: { sha, markdown: restoredContent },
+			});
+			this._logService.info('[KbBlocksEditorPane] restored to', sha.substring(0, 7));
+		} catch (err) {
+			this._logService.warn('[KbBlocksEditorPane] restoreVersion failed', err);
 		}
 	}
 

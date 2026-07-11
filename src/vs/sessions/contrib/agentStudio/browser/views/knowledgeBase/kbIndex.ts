@@ -261,8 +261,10 @@ export class KbFullTextIndex {
 				const ext = c.resource.path.split('.').pop()?.toLowerCase();
 				if (!ext || !TEXT_EXTS.has(ext)) { continue; }
 				try {
-					const fstat = await this.fileService.resolve(c.resource);
-					if ((fstat.size ?? 0) > 2 * 1024 * 1024) { continue; } // 跳过 >2MB
+					// Use child.size directly (already in stat.children); the extra
+					// resolve() was redundant — it re-stats the same file.
+					const size = c.size ?? 0;
+					if (size > 2 * 1024 * 1024) { continue; } // skip >2MB
 					const content = await this.fileService.readFile(c.resource);
 					this._addOrUpdateDoc({
 						uri: c.resource,
@@ -270,7 +272,7 @@ export class KbFullTextIndex {
 						path: c.resource.fsPath,
 						section,
 						mtime: c.mtime ?? 0,
-						size: c.size ?? 0,
+						size,
 						tags: [],
 						text: content.value.toString(),
 					});

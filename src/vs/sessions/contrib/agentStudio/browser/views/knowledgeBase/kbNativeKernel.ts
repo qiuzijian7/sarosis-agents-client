@@ -128,6 +128,11 @@ export class KbNativeKernel extends Disposable {
 		this._built = false;
 	}
 
+	/** Expose indexed docs from the FTS index (zero-copy from memory). */
+	allDocs(): { uri: URI; name: string; section: string; mtime: number; size: number; text: string }[] {
+		return this._index.allDocs();
+	}
+
 	// -----------------------------------------------------------------------
 	// 搜索（对齐 KbKernelClient.fullTextSearchBlock）
 	// -----------------------------------------------------------------------
@@ -296,29 +301,38 @@ export class KbNativeKernel extends Disposable {
 		this._mentionIndex.clear();
 		this._docNames.clear();
 
-		// 建立文档名索引
-		for (const doc of allDocs) {
-			const normName = this._normalizeName(doc.name.replace(/\.(md|markdown)$/i, ''));
-			this._docNames.set(normName, { uri: doc.uri, name: doc.name });
-		}
-
-		// 对每个文档名，在所有文档正文中搜索提及
+		// Phase 1: build doc-name index (O(N))
+		const nameList: { norm: string; raw: string }[] = [];
 		for (const doc of allDocs) {
 			const baseName = doc.name.replace(/\.(md|markdown)$/i, '');
+			if (baseName.length < 2) { continue; }
 			const normName = this._normalizeName(baseName);
-			if (baseName.length < 2) { continue; } // 跳过过短的名字
+			this._docNames.set(normName, { uri: doc.uri, name: doc.name });
+			nameList.push({ norm: normName, raw: baseName });
+		}
 
-			// 在所有文档正文中搜索 baseName
-			for (const otherDoc of allDocs) {
-				if (otherDoc.uri.toString() === doc.uri.toString()) { continue; }
-				// 检查正文是否包含 baseName（非 [[ ]] 形式）
-				if (this._containsMention(otherDoc.text, baseName)) {
-					let set = this._mentionIndex.get(normName);
-					if (!set) { set = new Set(); this._mentionIndex.set(normName, set); }
+		// Phase 2: for each doc, strip wikilinks/code once, then check all
+		// candidate names via String.includes().  O(N × K) where K = nameList
+		// length, vs the old O(N²) with regex per pair.
+		for (const otherDoc of allDocs) {
+			const stripped = this._stripForMention(otherDoc.text);
+			if (stripped.length < 2) { continue; }
+			for (const { norm, raw } of nameList) {
+				if (stripped.includes(raw) || stripped.includes(norm)) {
+					let set = this._mentionIndex.get(norm);
+					if (!set) { set = new Set(); this._mentionIndex.set(norm, set); }
 					set.add(otherDoc.uri.toString());
 				}
 			}
 		}
+	}
+
+	/** Strip wikilinks and fenced/inline code from text (one-shot, reusable). */
+	private _stripForMention(text: string): string {
+		return text
+			.replace(/\[\[[^\]]+\]\]/g, '')
+			.replace(/```[\s\S]*?```/g, '')
+			.replace(/`[^`]+`/g, '');
 	}
 
 	private async _walkForMentions(uri: URI, section: KbSection, results: { uri: URI; name: string; text: string }[]): Promise<void> {
@@ -341,20 +355,6 @@ export class KbNativeKernel extends Disposable {
 				} catch { /* skip */ }
 			}
 		}
-	}
-
-	/**
-	 * 检查正文中是否包含某名称的"提及"（非 [[ ]] 链接形式）。
-	 *
-	 * 对齐 SiYuan buildTreeBackmention 的核心逻辑：
-	 * - 移除所有 [[...]] 链接后，检查剩余文本是否包含目标名
-	 */
-	private _containsMention(text: string, name: string): boolean {
-		// 移除 [[...]] 链接（避免与反链重复）
-		const stripped = text.replace(/\[\[[^\]]+\]\]/g, '');
-		// 移除代码块和行内代码（避免代码中的误匹配）
-		const noCode = stripped.replace(/```[\s\S]*?```/g, '').replace(/`[^`]+`/g, '');
-		return noCode.includes(name);
 	}
 
 	/** 提取提及上下文片段。 */

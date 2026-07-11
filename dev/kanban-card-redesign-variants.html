@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务卡片设计方案对比</title>
+<style>
+:root {
+  --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d30;
+  --fg:#ccc; --fg2:#969696; --fg3:#6e6e6e;
+  --border:#3e3e42; --accent:#007acc; --danger:#f44747;
+  --success:#4ec9b0; --warning:#cca700;
+  --hover:#2a2d2e; --shadow:0 1px 3px rgba(0,0,0,.3);
+  --radius:8px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--fg);padding:20px;display:flex;gap:16px;}
+.sidebar{position:sticky;top:20px;width:200px;background:var(--bg2);border-radius:var(--radius);padding:12px;height:fit-content;flex-shrink:0;}
+.sidebar h2{font-size:14px;margin-bottom:10px;color:var(--fg2)}
+.variant-btn{display:block;width:100%;text-align:left;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--fg);cursor:pointer;font-size:12px;margin-bottom:6px;transition:all .15s;}
+.variant-btn:hover{background:var(--hover);border-color:var(--accent)}
+.variant-btn.active{background:#1a3a5c;border-color:var(--accent);color:#4fc1ff}
+.main{flex:1;min-width:0}
+.variant-panel{display:none}
+.variant-panel.active{display:block}
+.panel-header{margin-bottom:10px;font-size:13px;color:var(--fg2);padding:8px 12px;background:var(--bg2);border-radius:var(--radius);line-height:1.6}
+.panel-header strong{color:var(--fg);font-size:15px}
+.row{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}
+.card-col{min-width:0;flex:1;max-width:260px;background:var(--bg2);border-radius:var(--radius);padding:8px;}
+.col-title{font-size:12px;font-weight:600;color:var(--fg2);padding:4px 6px 8px;border-bottom:1px solid var(--border);margin-bottom:8px;}
+.card{border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;position:relative;cursor:pointer;transition:all .15s;border-left:3px solid;overflow:hidden;}
+.card:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.4)}
+.card-id{font-size:10px;color:var(--fg3);font-family:monospace;margin-bottom:2px}
+.card-title{font-size:13px;font-weight:500;margin-bottom:3px;line-height:1.4}
+.card-desc{font-size:11px;color:var(--fg2);margin-bottom:6px;line-height:1.5}
+.card-footer{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--fg2)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px}
+.dot-todo{background:var(--fg3)}.dot-running{background:var(--accent);animation:pulse 1.5s infinite}.dot-done{background:var(--success)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.avatar{width:18px;height:18px;border-radius:50%;font-size:10px;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;font-weight:600}
+.prio-high{background:var(--bg3);border-color:var(--danger);border-left-color:var(--danger)}
+.prio-medium{background:var(--bg3);border-color:var(--warning);border-left-color:var(--warning)}
+.prio-low{background:var(--bg3);border-color:var(--fg3);border-left-color:var(--fg3)}
+.status-running{border-left-color:var(--accent)}
+.status-done{opacity:.7}
+
+/* ── Variant A: Overlay (full-card cover) ── */
+.va-actions{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:6px;padding:8px;opacity:0;pointer-events:none;transition:opacity .16s;background:rgba(30,30,30,.92);border-radius:var(--radius);z-index:5}
+.card:hover .va-actions{opacity:1;pointer-events:auto}
+.va-actions .abtn{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;padding:7px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg3);color:var(--fg2);cursor:pointer;transition:all .12s}
+.va-actions .abtn:hover{transform:scale(1.06);background:var(--hover);color:var(--fg)}
+.va-actions .abtn.btnd:hover{background:rgba(244,71,71,.15);color:var(--danger);border-color:var(--danger)}
+.va-actions .abtn.btna:hover{background:rgba(0,122,204,.15);color:#4fc1ff;border-color:#4fc1ff}
+.va-actions .abtn.btns:hover{background:rgba(78,201,176,.15);color:var(--success);border-color:var(--success)}
+
+/* ── Variant B: Bottom Toolbar ── */
+.vb-actions{position:absolute;left:0;right:0;bottom:0;display:flex;height:0;overflow:hidden;transition:height .18s;background:var(--bg3);border-top:1px solid var(--border);gap:0}
+.card:hover .vb-actions{height:36px}
+.vb-actions .abtn{flex:1;display:flex;align-items:center;justify-content:center;gap:3px;font-size:10px;border:none;background:transparent;color:var(--fg2);cursor:pointer;transition:all .12s;border-right:1px solid var(--border)}
+.vb-actions .abtn:last-child{border-right:none}
+.vb-actions .abtn:hover{background:var(--hover);color:var(--fg)}
+.vb-actions .abtn.btnd:hover{background:rgba(244,71,71,.15);color:var(--danger)}
+.vb-actions .abtn.btna:hover{background:rgba(0,122,204,.15);color:#4fc1ff}
+.vb-actions .abtn.btns:hover{background:rgba(78,201,176,.15);color:var(--success)}
+
+/* ── Variant C: Icon Row (top-right) ── */
+.vc-actions{position:absolute;top:4px;right:4px;display:flex;gap:2px;opacity:0;pointer-events:none;transition:opacity .15s}
+.card:hover .vc-actions{opacity:1;pointer-events:auto}
+.vc-actions .abtn{width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-size:12px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--fg2);cursor:pointer;transition:all .12s}
+.vc-actions .abtn:hover{transform:scale(1.12);background:var(--hover);color:var(--fg)}
+.vc-actions .abtn.btnd:hover{color:var(--danger);border-color:var(--danger)}
+.vc-actions .abtn.btna:hover{color:#4fc1ff;border-color:#4fc1ff}
+.vc-actions .abtn.btns:hover{color:var(--success);border-color:var(--success)}
+
+/* ── Variant D: Slide Panel (right side) ── */
+.vd-wrap{display:flex;overflow:hidden}
+.vd-content{flex:1;min-width:0}
+.vd-panel{width:0;overflow:hidden;transition:width .18s;display:flex;flex-direction:column;border-left:1px solid transparent}
+.card:hover .vd-panel{width:34px;border-color:var(--border)}
+.vd-panel .abtn{height:34px;display:flex;align-items:center;justify-content:center;font-size:14px;border:none;background:transparent;color:var(--fg2);cursor:pointer;transition:all .12s;border-bottom:1px solid var(--border)}
+.vd-panel .abtn:last-child{border-bottom:none}
+.vd-panel .abtn:hover{background:var(--hover);color:var(--fg)}
+.vd-panel .abtn.btnd:hover{color:var(--danger);background:rgba(244,71,71,.1)}
+.vd-panel .abtn.btna:hover{color:#4fc1ff}
+.vd-panel .abtn.btns:hover{color:var(--success)}
+
+/* ── Variant E: Card Expansion ── */
+.ve-actions{max-height:0;overflow:hidden;transition:max-height .2s,padding .2s,margin .2s;display:flex;gap:4px;flex-wrap:wrap}
+.card:hover .ve-actions{max-height:80px;padding-top:8px;margin-top:4px;border-top:1px solid var(--border)}
+.ve-actions .abtn{flex:1;min-width:60px;text-align:center;padding:6px 8px;font-size:10px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg2);cursor:pointer;transition:all .12s}
+.ve-actions .abtn:hover{background:var(--hover);color:var(--fg)}
+.ve-actions .abtn.btnd:hover{background:rgba(244,71,71,.15);color:var(--danger)}
+.ve-actions .abtn.btna:hover{background:rgba(0,122,204,.15);color:#4fc1ff}
+.ve-actions .abtn.btns:hover{background:rgba(78,201,176,.15);color:var(--success)}
+
+/* Compare meter */
+.label{font-size:10px;color:var(--fg2);margin-top:2px;padding:2px 6px;background:var(--bg);border-radius:3px}
+.meter{display:flex;gap:3px;align-items:center;font-size:10px}
+.meter-bar{height:4px;border-radius:2px}
+.meter-bar.good{background:var(--success)}
+.meter-bar.warn{background:var(--warning)}
+.meter-bar.bad{background:var(--danger)}
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <h2>设计方案</h2>
+  <button class="variant-btn active" onclick="switchVariant('va')">A · 全遮罩覆盖<br><span style="font-size:10px;color:var(--fg3)">hover 时卡片变为半透明 + 按钮居中</span></button>
+  <button class="variant-btn" onclick="switchVariant('vb')">B · 底部工具栏<br><span style="font-size:10px;color:var(--fg3)">hover 时底部滑出操作栏，等高排列</span></button>
+  <button class="variant-btn" onclick="switchVariant('vc')">C · 右上角图标<br><span style="font-size:10px;color:var(--fg3)">hover 时右上角出现小图标按钮</span></button>
+  <button class="variant-btn" onclick="switchVariant('vd')">D · 右侧滑出面板<br><span style="font-size:10px;color:var(--fg3)">hover 时右侧推出竖排图标面板</span></button>
+  <button class="variant-btn" onclick="switchVariant('ve')">E · 卡片向下展开<br><span style="font-size:10px;color:var(--fg3)">hover 时内容区向下扩展出操作行</span></button>
+</div>
+
+<div class="main">
+  <!-- Shared card data macro via JS -->
+  <div id="panel-va" class="variant-panel active">
+    <div class="panel-header">
+      <strong>方案 A：全遮罩覆盖</strong><br>
+      hover 时卡片内容被半透明遮罩覆盖，操作按钮居中显示。最直观的交互方式，与当前 mockup 一致。
+      <div style="margin-top:4px;display:flex;gap:8px;">
+        <span class="label">✅ 视觉冲击强</span><span class="label">✅ 按钮大易点击</span><span class="label">⚠️ 遮住了内容</span><span class="label">⚠️ 卡片不改变高度</span>
+      </div>
+    </div>
+    <div class="row" id="cards-va"></div>
+  </div>
+  <div id="panel-vb" class="variant-panel">
+    <div class="panel-header">
+      <strong>方案 B：底部工具栏</strong><br>
+      hover 时卡片底部滑出等高操作栏，每个按钮 flex:1 均分宽度。不遮挡内容。
+      <div style="margin-top:4px;display:flex;gap:8px;">
+        <span class="label">✅ 不遮挡内容</span><span class="label">✅ 工具栏感知强</span><span class="label">⚠️ 卡片高度变化</span><span class="label">⚠️ 列布局抖动</span>
+      </div>
+    </div>
+    <div class="row" id="cards-vb"></div>
+  </div>
+  <div id="panel-vc" class="variant-panel">
+    <div class="panel-header">
+      <strong>方案 C：右上角图标行</strong><br>
+      hover 时卡片右上角出现一行小图标按钮。最紧凑的方案，不改变卡片尺寸。
+      <div style="margin-top:4px;display:flex;gap:8px;">
+        <span class="label">✅ 最紧凑</span><span class="label">✅ 不改变布局</span><span class="label">⚠️ 按钮很小</span><span class="label">⚠️ 无文字标签</span>
+      </div>
+    </div>
+    <div class="row" id="cards-vc"></div>
+  </div>
+  <div id="panel-vd" class="variant-panel">
+    <div class="panel-header">
+      <strong>方案 D：右侧滑出面板</strong><br>
+      hover 时卡片右侧滑出竖排图标面板，卡片宽度增加。适合窄栏场景。
+      <div style="margin-top:4px;display:flex;gap:8px;">
+        <span class="label">✅ 视觉独特</span><span class="label">✅ 不遮挡内容</span><span class="label">⚠️ 卡片宽度变化</span><span class="label">⚠️ 按钮无文字</span>
+      </div>
+    </div>
+    <div class="row" id="cards-vd"></div>
+  </div>
+  <div id="panel-ve" class="variant-panel">
+    <div class="panel-header">
+      <strong>方案 E：卡片向下展开</strong><br>
+      hover 时卡片内容区向下扩展，在 footer 和描述之间插入操作行。最自然的渐进式展开。
+      <div style="margin-top:4px;display:flex;gap:8px;">
+        <span class="label">✅ 渐进式展现</span><span class="label">✅ 不遮挡内容</span><span class="label">⚠️ 高度变化大</span><span class="label">⚠️ 需描述区空间</span>
+      </div>
+    </div>
+    <div class="row" id="cards-ve"></div>
+  </div>
+</div>
+
+<script>
+// Card template data
+const cards = [
+  {id:'task_8a3f',title:'【VsSaros】聊天框参数报错修复',desc:'[图片:1] 仅做参考。包含TAPD导入的附件和日志，需要分析错误原因...',prio:'prio-high',status:'todo',statusLabel:'就绪',dot:'dot-todo',assignee:'李'},
+  {id:'task_c72d',title:'代码质量审查优化',desc:'',prio:'prio-medium',status:'todo',statusLabel:'就绪',dot:'dot-todo',assignee:'王'},
+  {id:'task_f34b',title:'Agent Studio 布局持久化',desc:'实现窗口重新加载后保持Agent Chat聊天框布局，包含存储和恢复方法',prio:'prio-high',status:'running',statusLabel:'执行中...',dot:'dot-running',assignee:'张'},
+  {id:'task_b29c',title:'修复 CSS 大括号配对检查',desc:'',prio:'prio-medium',status:'done',statusLabel:'已完成',dot:'dot-done',assignee:'张'},
+  {id:'task_j01k',title:'等待后端API上线',desc:'依赖:/api/v2/agents 接口未部署',prio:'prio-high',status:'blocked',statusLabel:'阻塞',dot:'dot-todo',assignee:'张'},
+];
+
+const colNames = ['📋 待执行', '⚡ 执行中', '✅ 已完成', '🚫 阻塞'];
+
+// Group cards by simulated status columns
+const cols = [
+  [cards[0],cards[1]],  // todo
+  [cards[2]],            // running
+  [cards[3]],            // done
+  [cards[4]],            // blocked
+];
+
+// Variant-specific actions
+function makeActions(v, status) {
+  var btns = '';
+  if (status === 'todo') {
+    btns += `<button class="abtn btna">💬 聊天</button><button class="abtn btns">▶️ 执行</button><button class="abtn">📦 归档</button><button class="abtn btnd">🗑 删除</button>`;
+  } else if (status === 'running') {
+    btns += `<button class="abtn btna">💬 聊天</button><button class="abtn btnd">⏹ 停止</button>`;
+  } else if (status === 'done') {
+    btns += `<button class="abtn btna">👁 查看</button><button class="abtn">📦 归档</button><button class="abtn btnd">🗑 删除</button>`;
+  } else if (status === 'blocked') {
+    btns += `<button class="abtn btns">🔓 解除阻塞</button><button class="abtn btnd">🗑 删除</button>`;
+  }
+  return btns;
+}
+
+function renderVariant(containerId, v) {
+  var html = '';
+  for (var ci = 0; ci < cols.length; ci++) {
+    html += `<div class="card-col"><div class="col-title">${colNames[ci]} ${cols[ci].length}</div>`;
+    for (var c of cols[ci]) {
+      var descHtml = c.desc ? `<div class="card-desc">${c.desc}</div>` : '';
+      var actionsHtml = '';
+      // Variant-specific actions wrapper
+      if (v === 'va') {
+        actionsHtml = `<div class="va-actions">${makeActions('va',c.status)}</div>`;
+      } else if (v === 'vb') {
+        actionsHtml = `<div class="vb-actions">${makeActions('vb',c.status)}</div>`;
+      } else if (v === 'vc') {
+        actionsHtml = `<div class="vc-actions">${makeActions('vc',c.status)}</div>`;
+      } else if (v === 'vd') {
+        actionsHtml = `<div class="vd-panel">${makeActions('vd',c.status)}</div>`;
+      } else if (v === 've') {
+        actionsHtml = `<div class="ve-actions">${makeActions('ve',c.status)}</div>`;
+      }
+      // For variant D, wrap content in vd-content
+      var inner = v === 'vd'
+        ? `<div class="vd-content"><div class="card-id">#${c.id}</div><div class="card-title">${c.title}</div>${descHtml}<div class="card-footer"><span><span class="dot ${c.dot}"></span>${c.statusLabel}</span><span><span class="avatar">${c.assignee}</span></span></div></div>`
+        : `<div class="card-id">#${c.id}</div><div class="card-title">${c.title}</div>${descHtml}<div class="card-footer"><span><span class="dot ${c.dot}"></span>${c.statusLabel}</span><span><span class="avatar">${c.assignee}</span></span></div>`;
+
+      var cardHtml = `<div class="card ${c.prio} ${c.status==='running'?'status-running':''} ${c.status==='done'?'status-done':''}">`;
+      if (v === 'vd') cardHtml += '<div class="vd-wrap">';
+      cardHtml += inner + actionsHtml;
+      if (v === 'vd') cardHtml += '</div>';
+      cardHtml += '</div>';
+      html += cardHtml;
+    }
+    html += '</div>';
+  }
+  document.getElementById(containerId).innerHTML = html;
+}
+
+// Build all variants
+renderVariant('cards-va', 'va');
+renderVariant('cards-vb', 'vb');
+renderVariant('cards-vc', 'vc');
+renderVariant('cards-vd', 'vd');
+renderVariant('cards-ve', 've');
+
+function switchVariant(v) {
+  document.querySelectorAll('.variant-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.variant-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + v).classList.add('active');
+  event.target.closest('button').classList.add('active');
+}
+</script>
+
+</body>
+</html>

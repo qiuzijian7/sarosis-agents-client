@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KB Version History — Mockup</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #1e1e1e;
+  color: #ccc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+.app { display: flex; gap: 0; max-width: 1100px; width: 100%; height: 85vh; border: 1px solid #333; border-radius: 8px; overflow: hidden; }
+
+/* ── Editor pane (left) ──────────────────────────── */
+.editor-pane {
+  flex: 1;
+  display: flex; flex-direction: column;
+  background: #1e1e1e;
+  min-width: 0;
+}
+.toolbar {
+  display: flex; align-items: center; gap: 2px;
+  padding: 6px 10px;
+  background: #252526;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+.toolbar button {
+  width: 28px; height: 28px; padding: 0;
+  border-radius: 5px; border: 1px solid transparent;
+  background: transparent; color: #bbb;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: background .12s, color .12s;
+}
+.toolbar button:hover { background: #2a2a2a; color: #fff; }
+.toolbar button.active { background: #1f3a52; color: #cfe6ff; border-color: #3a5a7a; }
+.toolbar button svg { width: 16px; height: 16px; display: block; }
+.toolbar .spacer { flex: 1; }
+.toolbar .badge {
+  font-size: 10px; color: #3fb950; background: #122a14;
+  border: 1px solid #1a3a1c; border-radius: 10px;
+  padding: 2px 8px; margin-left: 8px;
+}
+.content {
+  flex: 1; overflow: auto; padding: 20px 28px 60px;
+  line-height: 1.7; font-size: 14px;
+}
+.content h1 { font-size: 1.6em; border-bottom: 1px solid #333; padding-bottom: .3em; margin-bottom: .6em; }
+.content h2 { font-size: 1.25em; margin: 1.2em 0 .4em; }
+.content p { margin: .6em 0; }
+.content ul { padding-left: 1.4em; }
+.content code { background: #2a2a2a; padding: .15em .4em; border-radius: 4px; font-size: .88em; }
+.content pre { background: #1a1a1a; border: 1px solid #2c2c2c; border-radius: 6px; padding: 12px; overflow-x: auto; margin: .9em 0; }
+
+/* ── History Panel (right, aligned with SoloMD's HistoryPanel.vue) ── */
+.history-panel {
+  width: 340px;
+  background: #181818;
+  border-left: 1px solid #333;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.history-header {
+  padding: 12px 14px;
+  border-bottom: 1px solid #333;
+  font: 600 13px system-ui;
+  color: #cfe6ff;
+  display: flex; align-items: center; gap: 8px;
+  flex-shrink: 0;
+}
+.history-header .icon { font-size: 16px; }
+.history-header .count { margin-left: auto; font-size: 11px; color: #6e7681; font-weight: 400; }
+.history-list {
+  flex: 1; overflow: auto;
+}
+.commit-item {
+  padding: 10px 14px;
+  border-bottom: 1px solid #222;
+  cursor: pointer;
+  transition: background .1s;
+}
+.commit-item:hover { background: #1f1f1f; }
+.commit-item.active { background: #1a2a3a; }
+.commit-top {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 4px;
+}
+.commit-sha {
+  font: 12px ui-monospace, monospace;
+  color: #58a6ff;
+  background: #0d2b45;
+  padding: 1px 6px; border-radius: 3px;
+}
+.commit-time {
+  font-size: 11px; color: #6e7681;
+}
+.commit-msg {
+  font-size: 12px; color: #bbb;
+  margin-bottom: 6px;
+}
+.commit-actions {
+  display: flex; gap: 6px;
+}
+.commit-actions button {
+  font-size: 11px; padding: 2px 8px;
+  border: 1px solid #444; border-radius: 4px;
+  background: #2a2a2a; color: #ccc; cursor: pointer;
+  transition: all .12s;
+}
+.commit-actions button:hover { background: #3a3a3a; }
+.commit-actions button.restore-btn { background: #1a3a2a; border-color: #2a5a3a; color: #7ee787; }
+.commit-actions button.restore-btn:hover { background: #1f4a2f; }
+
+/* ── Diff block ──────────────────────────────────── */
+.diff-block {
+  margin-top: 6px;
+  border-top: 1px solid #2a2a2a;
+  padding-top: 6px;
+  max-height: 260px; overflow: auto;
+  font: 12px ui-monospace, monospace;
+  line-height: 1.5;
+}
+.diff-hunk-header {
+  color: #6e7681; margin: 4px 0 2px;
+}
+.diff-add { color: #7ee787; background: #0d2a14; }
+.diff-del { color: #f85149; background: #2a0d12; }
+.diff-meta { color: #6e7681; }
+
+/* ── Toast ────────────────────────────────────────── */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: #1a3a2a; color: #7ee787; border: 1px solid #2a5a3a;
+  padding: 8px 18px; border-radius: 8px; font-size: 13px;
+  z-index: 100; animation: toast-in .2s ease;
+  display: none;
+}
+.toast.show { display: block; }
+@keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(8px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
+/* ── Empty state ──────────────────────────────────── */
+.empty-state {
+  padding: 40px 20px; text-align: center; color: #555; font-size: 13px;
+}
+.empty-state .icon { font-size: 36px; margin-bottom: 8px; opacity: .4; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Editor Pane -->
+  <div class="editor-pane">
+    <div class="toolbar">
+      <!-- preview -->
+      <button class="active" title="预览">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      </button>
+      <button title="源码">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      </button>
+      <button title="分屏">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
+      </button>
+      <button title="大纲">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      </button>
+      <button title="放大">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+      </button>
+      <button title="反链">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+      </button>
+      <button title="复制">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+      </button>
+      <span class="spacer"></span>
+      <span class="badge">📋 AutoGit</span>
+    </div>
+    <div class="content">
+      <h1>版本管理设计方案</h1>
+      <p>每次 <kbd>Ctrl+S</kbd> 自动生成一个 <strong>Git commit</strong>，用户无需手动操作。</p>
+
+      <h2>实现原理</h2>
+      <ul>
+        <li><strong>存储</strong>：Vault 目录下 <code>.git/</code> 仓库</li>
+        <li><strong>引擎</strong>：<code>isomorphic-git</code>（纯 JS，无 native 依赖）</li>
+        <li><strong>触发</strong>：2s auto-save 完成后 → <code>git.add()</code> + <code>git.commit()</code></li>
+        <li><strong>消息</strong>：<code>auto: 2026-07-11 19:24:05</code></li>
+      </ul>
+
+      <h2>API 设计</h2>
+      <pre><code>class KbVersionService {
+  init(vaultRoot: URI): Promise&lt;void&gt;
+  autoCommit(vaultRoot, docPath): Promise&lt;{sha, msg}&gt;
+  fileHistory(vaultRoot, docPath): Promise&lt;CommitMeta[]&gt;
+  fileDiff(vaultRoot, docPath, sha): Promise&lt;UnifiedDiff&gt;
+  restoreFile(vaultRoot, docPath, sha): Promise&lt;void&gt;
+  cleanup(vaultRoot, retentionDays): Promise&lt;number&gt;
+}</code></pre>
+
+      <h2>右侧面板</h2>
+      <p>点击右侧时间线 → 展开 diff → 点击 <strong style="color:#7ee787">Restore</strong> 恢复到任意版本。</p>
+    </div>
+  </div>
+
+  <!-- History Panel (SoloMD-style) -->
+  <div class="history-panel">
+    <div class="history-header">
+      <span class="icon">&#x1F570;</span> 版本历史
+      <span class="count">8 commits</span>
+    </div>
+    <div class="history-list" id="historyList">
+      <!-- Populated by JS -->
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast">Snapshot saved: abc1234</div>
+
+<script>
+const commits = [
+  { sha: 'a3f2b1c', time: '19:25:32', msg: 'auto: 2026-07-11 19:25:30', diff: [] },
+  { sha: 'e5d4a8f', time: '19:23:11', msg: 'auto: 2026-07-11 19:23:08', diff: [
+    { type: 'hunk', text: '@@ -12,6 +12,10 @@' },
+    { type: 'meta', text: ' 实现原理' },
+    { type: 'add', text: '+共有三级目录结构，支持多工作区' },
+    { type: 'del', text: '-共有两级目录结构' },
+    { type: 'meta', text: '' },
+    { type: 'add', text: '+对于嵌套vault可以有多种实现方案' },
+    { type: 'meta', text: ' 触发器' },
+  ]},
+  { sha: 'c7b9d2e', time: '19:20:05', msg: 'auto: 2026-07-11 19:20:02', diff: [] },
+  { sha: '1f8a3b5', time: '19:15:44', msg: '手动快照: 完成设计方案初稿', diff: [
+    { type: 'hunk', text: '@@ -1,0 +1,45 @@' },
+    { type: 'add', text: '+# 版本管理设计方案' },
+    { type: 'add', text: '+每次 Ctrl+S 自动生成 Git commit' },
+    { type: 'add', text: '+右侧面板展示完整时间线' },
+  ]},
+  { sha: '9e2c4d7', time: '19:10:18', msg: 'auto: 2026-07-11 19:10:15', diff: [] },
+  { sha: '4d8f6a1', time: '19:05:22', msg: 'auto: 2026-07-11 19:05:18', diff: [
+    { type: 'hunk', text: '@@ -5,3 +5,7 @@' },
+    { type: 'del', text: '-旧的条目' },
+    { type: 'add', text: '+新的条目经过分析后重新填写' },
+  ]},
+  { sha: '7b3e9c0', time: '19:00:08', msg: 'auto: 2026-07-11 19:00:05', diff: [] },
+  { sha: '2fa5d8b', time: '18:55:30', msg: 'init: vault created', diff: [] },
+];
+
+let activeSha = null;
+const list = document.getElementById('historyList');
+
+function render() {
+  list.innerHTML = '';
+  commits.forEach((c, i) => {
+    const div = document.createElement('div');
+    div.className = 'commit-item' + (activeSha === c.sha ? ' active' : '');
+    div.innerHTML = `
+      <div class="commit-top">
+        <span class="commit-sha">${c.sha}</span>
+        <span class="commit-time">${c.time}</span>
+      </div>
+      <div class="commit-msg">${c.msg}</div>
+      <div class="commit-actions">
+        <button onclick="toggleDiff('${c.sha}')">${activeSha === c.sha ? 'Hide Diff' : 'Show Diff'}</button>
+        <button class="restore-btn" onclick="restore('${c.sha}')">Restore</button>
+      </div>
+    `;
+    div.onclick = (e) => {
+      if (e.target.tagName === 'BUTTON') return;
+      toggleDiff(c.sha);
+    };
+
+    if (activeSha === c.sha && c.diff.length > 0) {
+      const db = document.createElement('div');
+      db.className = 'diff-block';
+      db.innerHTML = c.diff.map(d => {
+        if (d.type === 'hunk') return `<div class="diff-hunk-header">${d.text}</div>`;
+        if (d.type === 'add') return `<div class="diff-add">${d.text}</div>`;
+        if (d.type === 'del') return `<div class="diff-del">${d.text}</div>`;
+        return `<div class="diff-meta">${d.text}</div>`;
+      }).join('');
+      div.appendChild(db);
+    }
+
+    list.appendChild(div);
+  });
+}
+
+function toggleDiff(sha) {
+  activeSha = activeSha === sha ? null : sha;
+  render();
+}
+
+function restore(sha) {
+  const c = commits.find(cc => cc.sha === sha);
+  showToast(`Restoring to ${sha}: ${c?.msg}`);
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// Simulate auto-commit every 8 seconds (demo of SoloMD's per-save auto-commit)
+let demoIdx = 0;
+setInterval(() => {
+  const now = new Date();
+  const ts = now.toTimeString().slice(0, 8);
+  const sha = Math.random().toString(16).slice(2, 9);
+  commits.unshift({ sha, time: ts, msg: `auto: ${now.toISOString().slice(0, 19).replace('T', ' ')}`, diff: [] });
+  document.querySelector('.history-header .count').textContent = `${commits.length} commits`;
+  render();
+  showToast(`Snapshot saved: ${sha}`);
+}, 8000);
+
+render();
+</script>
+</body>
+</html>

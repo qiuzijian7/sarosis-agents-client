@@ -2168,17 +2168,19 @@ Goal: ${goal}`;
 			console.info(`[PerfDiag] 🟢 _readPlans elapsed=${(performance.now() - tPlan).toFixed(0)}ms`);
 		}
 
-		// Resolve the agent's current session
+		// Create a new session for this task execution — named after the task.
+		// This ensures each task execution has its own conversation history,
+		// making it easy to review what happened in each task independently.
 		let agentSessionId: string | undefined;
 		const tSession = performance.now();
 		try {
-			const session = await (this.agentChatService as any).getOrCreateActiveSession(
+			const session = await this.agentChatService.createAgentSession(
 				assigneeId,
-				`任务: ${taskTitle}`,
+				taskTitle,
 			);
 			agentSessionId = session?.id as string | undefined;
 		} catch { /* fall back to undefined */ }
-		console.info(`[PerfDiag] 🟢 getOrCreateSession elapsed=${(performance.now() - tSession).toFixed(0)}ms`);
+		console.info(`[PerfDiag] 🟢 createAgentSession elapsed=${(performance.now() - tSession).toFixed(0)}ms`);
 
 		const sessionIdForEvent = agentSessionId || '';
 
@@ -2369,6 +2371,7 @@ Goal: ${goal}`;
 		} catch (err) {
 			this.logService.error(`[Orchestration] executeTaskForBoard: task ${taskBoardRecordId} execution error:`, err);
 			const errorMsg = err instanceof Error ? err.message : String(err);
+			const isAborted = err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted') || err.message.includes('cancel'));
 
 			// v40: Fire subagent_end + execution_end with error status
 			if (this._streamEventCallback && agentSessionId) {
@@ -2380,7 +2383,7 @@ Goal: ${goal}`;
 					nodeId: taskBoardRecordId,
 					nodeName: taskTitle,
 					nodeType: 'agent',
-					status: 'error',
+					status: isAborted ? 'cancelled' : 'error',
 					error: errorMsg,
 				});
 				this._streamEventCallback('workflow.executionTrace', {
@@ -2389,7 +2392,7 @@ Goal: ${goal}`;
 					workflowAgentId: assigneeId,
 					kind: 'execution_end',
 					nodeId: '__workflow__',
-					status: 'failed',
+					status: isAborted ? 'cancelled' : 'failed',
 				});
 			}
 
@@ -2401,8 +2404,10 @@ Goal: ${goal}`;
 				});
 			}
 
-			// Update task board status to Done even on error so the card doesn't stay in "running"
-			await this.taskBoardService.updateTaskStatus(taskBoardRecordId, TaskBoardStatus.Done).catch(updateErr => {
+			// Update task board status: Cancelled if user aborted, Done for other errors.
+			// Without this, a cancelled task would stay "running" or get marked "done".
+			const finalStatus = isAborted ? TaskBoardStatus.Cancelled : TaskBoardStatus.Done;
+			await this.taskBoardService.updateTaskStatus(taskBoardRecordId, finalStatus).catch(updateErr => {
 				this.logService.warn(`[Orchestration] executeTaskForBoard: failed to update task board status on error for ${taskBoardRecordId}:`, updateErr);
 			});
 
