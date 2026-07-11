@@ -310,8 +310,17 @@ export class TextModel {
 /**
  * Parses a localize key or value expression.
  * sourceExpression can be "foo", 'foo', `foo` or { key: 'foo', comment: [...] }
+ * Falls back to returning the raw string if the expression cannot be evaluated
+ * (e.g. when the AST-derived source references runtime variables).
  */
 export function parseLocalizeKeyOrValue(sourceExpression: string): string | { key: string; comment?: string[] } {
-	// eslint-disable-next-line no-eval
-	return eval(`(${sourceExpression})`);
+	try {
+		// eslint-disable-next-line no-eval
+		return eval(`(${sourceExpression})`);
+	} catch {
+		// Expression references runtime identifiers (e.g. enum values, variables).
+		// Return the raw source text as the key — the nls plugin will treat it
+		// as a literal key and generate the appropriate placeholder.
+		return sourceExpression;
+	}
 }
