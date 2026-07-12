@@ -15,6 +15,7 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { IAgentStudioService } from '../common/agentStudio.js';
 import { ChannelEditorInput } from './channelEditorInput.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { CHANNEL_DEFINITIONS, IChannelDefinition, IChannelConfigField, ChannelKey } from '../common/constants.js';
@@ -34,6 +35,7 @@ export class ChannelEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 	) {
 		super(ChannelEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -243,11 +245,41 @@ export class ChannelEditorPane extends EditorPane {
 				textarea.value = String(currentValue || '');
 				textarea.placeholder = field.placeholder || '';
 				textarea.rows = 3;
-				textarea.onchange = () => { this.configurationService.updateValue(field.key, textarea.value); };
-				controlWrap.appendChild(textarea);
-				break;
-			}
+			textarea.onchange = () => { this.configurationService.updateValue(field.key, textarea.value); };
+			controlWrap.appendChild(textarea);
+			break;
 		}
+		case 'agent': {
+			const select = document.createElement('select');
+			select.id = `channel-field-${field.key}`;
+			select.className = 'channel-select';
+			select.disabled = true;
+
+			const placeholder = document.createElement('option');
+			placeholder.value = '';
+			placeholder.textContent = '（跟随引擎默认）';
+			select.appendChild(placeholder);
+
+			select.onchange = () => { this.configurationService.updateValue(field.key, select.value); };
+
+			Promise.resolve(this.agentStudioService.getAgents()).then(agents => {
+				const current = String(currentValue || '');
+				for (const a of agents) {
+					const opt = document.createElement('option');
+					opt.value = a.id;
+					opt.textContent = `${a.name}${a.model ? ` (${a.model})` : ''}`;
+					if (a.id === current) { opt.selected = true; }
+					select.appendChild(opt);
+				}
+				select.disabled = false;
+			}).catch(() => {
+				select.disabled = false;
+			});
+
+			controlWrap.appendChild(select);
+			break;
+		}
+	}
 
 		row.appendChild(controlWrap);
 		return row;

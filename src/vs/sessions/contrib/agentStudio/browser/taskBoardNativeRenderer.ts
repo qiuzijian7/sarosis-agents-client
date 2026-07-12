@@ -105,6 +105,9 @@ export interface TaskBoardRenderData {
 	focusedTaskId: string | null;
 	/** Pinned board hyperlinks shown as chips/tabs under the header. */
 	boardLinks?: BoardLink[];
+	/** Map of taskId → compact schedule label (e.g. "每天 02:00"). Renders an
+	 *  ⏰ badge on the corresponding card (Plan D). Only active rules included. */
+	scheduleByTaskId?: Map<string, string>;
 }
 
 /** Result from showCreateTaskModal. */
@@ -1777,6 +1780,10 @@ export class TaskBoardNativeRenderer {
 	private readonly _onChatJump = this._disposables.add(new Emitter<{ agentId: string; agentName: string; taskId: string; workspaceId?: string; worktreePath?: string }>());
 	readonly onChatJump = this._onChatJump.event;
 
+	/** User clicked "⏰ 定时" on a card — the consumer should open the schedule config modal for this task. */
+	private readonly _onScheduleRequest = this._disposables.add(new Emitter<{ taskId: string }>());
+	readonly onScheduleRequest = this._onScheduleRequest.event;
+
 	private _rootEl: HTMLElement | null = null;
 	private _data: TaskBoardRenderData | null = null;
 	private _titleById: Map<string, string> = new Map();
@@ -2494,6 +2501,13 @@ export class TaskBoardNativeRenderer {
 			});
 		}
 
+		// Schedule — configure a timed schedule for this task (Plan D)
+		if (task.status !== 'archived') {
+			addAction('⏰', '定时', 'action-default', () => {
+				this._onScheduleRequest.fire({ taskId: task.id });
+			});
+		}
+
 		// Archive — available for non-archived tasks
 		if (task.status !== 'archived') {
 			addAction('📦', '归档', 'action-default', () => {
@@ -2518,6 +2532,24 @@ export class TaskBoardNativeRenderer {
 		// Title
 		const title = DOM.$('div.native-tb-card-title', undefined, task.title);
 		body.appendChild(title);
+
+		// Schedule badge (Plan D) — shown when this task has an active schedule rule.
+		const scheduleLabel = data.scheduleByTaskId?.get(task.id);
+		if (scheduleLabel) {
+			const badge = DOM.$('span.native-tb-card-schedule-badge', undefined, '⏰ ' + scheduleLabel);
+			badge.style.display = 'inline-flex';
+			badge.style.alignItems = 'center';
+			badge.style.gap = '3px';
+			badge.style.fontSize = '10px';
+			badge.style.padding = '2px 6px';
+			badge.style.borderRadius = '6px';
+			badge.style.background = 'rgba(245,158,11,0.12)';
+			badge.style.color = '#fbbf24';
+			badge.style.marginTop = '3px';
+			badge.style.width = 'fit-content';
+			badge.style.whiteSpace = 'nowrap';
+			body.appendChild(badge);
+		}
 
 		// Description — truncate to 200 chars to avoid layout cost of
 		// measuring very long TAPD descriptions (can be thousands of chars).

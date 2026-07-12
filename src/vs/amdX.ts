@@ -41,6 +41,21 @@ class AMDModuleImporter {
 	private _state = AMDModuleImporterState.Uninitialized;
 	private _amdPolicy: Pick<TrustedTypePolicy, 'name' | 'createScriptURL'> | undefined;
 
+	/**
+	 * A `require` shim for browser/worker contexts where no real module loader exists.
+	 * Node.js built-ins (e.g. `fs`, `crypto`, `http` referenced by bundled deps such as
+	 * `@tensorflow/tfjs`) resolve to `undefined` so conditional Node-only code paths are
+	 * skipped, while the browser implementation (e.g. tfjs CPU/WebGL backend) is used instead.
+	 */
+	private readonly _requireShim = (id: string): any => {
+		switch (id) {
+			case 'exports': return {};
+			case 'module': return { exports: {} };
+			case 'require': return this._requireShim;
+			default: return undefined;
+		}
+	};
+
 	constructor() { }
 
 	private _initialize(): void {
@@ -72,6 +87,14 @@ class AMDModuleImporter {
 		};
 
 		globalThis.define.amd = true;
+
+		// Worker/browser contexts have no real `require`. Some bundled AMD modules
+		// (e.g. @vscode/vscode-languagedetection -> @tensorflow/tfjs) reference a bare
+		// global `require` for Node-only optional deps. Provide a shim so those resolve
+		// to `undefined` instead of throwing `ReferenceError: require is not defined`.
+		if ((this._isWebWorker || this._isRenderer) && typeof globalThis.require === 'undefined') {
+			globalThis.require = this._requireShim;
+		}
 
 		if (this._isRenderer) {
 			this._amdPolicy = globalThis._VSCODE_WEB_PACKAGE_TTP ?? window.trustedTypes?.createPolicy('amdLoader', {
@@ -121,14 +144,27 @@ class AMDModuleImporter {
 			for (const mod of defineCall.dependencies) {
 				if (mod === 'exports') {
 					dependencyObjs.push(exports);
+				} else if (mod === 'require') {
+					dependencyObjs.push(this._requireShim);
+				} else if (mod === 'module') {
+					dependencyObjs.push({ exports });
 				} else {
 					dependencyModules.push(mod);
 				}
 			}
 		}
 
+		// In browser/worker contexts we cannot resolve arbitrary module dependencies
+		// (and bundled deps reference Node built-ins via `require`). Hand them to the
+		// require shim which returns `undefined`, so the module simply skips them.
 		if (dependencyModules.length > 0) {
-			throw new Error(`Cannot resolve dependencies for script ${scriptSrc}. The dependencies are: ${dependencyModules.join(', ')}`);
+			if (this._isWebWorker || this._isRenderer) {
+				for (const mod of dependencyModules) {
+					dependencyObjs.push(this._requireShim(mod));
+				}
+			} else {
+				throw new Error(`Cannot resolve dependencies for script ${scriptSrc}. The dependencies are: ${dependencyModules.join(', ')}`);
+			}
 		}
 		if (typeof defineCall.callback === 'function') {
 			return defineCall.callback(...dependencyObjs) ?? exports;

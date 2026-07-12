@@ -2290,6 +2290,11 @@ export class AgentStudioWebviewController extends Disposable {
 	/**
 	 * Apply code content to a file (Void-inspired Apply Code Blocks).
 	 * Writes the code content to the specified file path, replacing existing content.
+	 *
+	 * HTML files (.html/.htm/.xhtml) get special treatment: after writing,
+	 * they are opened via `HtmlPreviewEditorInput` which routes to
+	 * `HtmlFileEditorPane` — showing the 编辑/HTML/预览 toggle and
+	 * rendering the preview by default.
 	 */
 	private async _handleApplyCode(
 		payload: IFileApplyCodePayload,
@@ -2304,18 +2309,42 @@ export class AgentStudioWebviewController extends Disposable {
 		);
 
 		const resource = URI.file(filePath);
+		const isHtml = /\.(html?|xhtml)$/i.test(filePath);
+
+		// Always write the content to disk first.
+		const buffer = VSBuffer.fromString(content);
+		await this.fileService.writeFile(resource, buffer);
+
+		// HTML files: open via HtmlPreviewEditorInput → HtmlFileEditorPane
+		// (with the 3-mode toggle: 编辑 / HTML / 预览).
+		if (isHtml) {
+			this.logService.info('[AgentStudioWebviewController] files.applyCode: HTML detected — opening via HtmlPreviewEditorInput');
+			const fileName = filePath.split(/[\\/]/).pop() || filePath;
+			// Open in the center column (main text editor), NOT in a side/split
+			// group, so the HTML editor pane appears in the middle editor area.
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
+			const targetGroup = groups[0];
+			const previewInput = new HtmlPreviewEditorInput(resource, `预览：${fileName}`);
+			try {
+				const pane = await this.editorService.openEditor(previewInput, { pinned: true }, targetGroup);
+				this.logService.info(`[AgentStudioWebviewController] files.applyCode: opened, pane.getId()=${pane?.getId() ?? 'undefined'}`);
+			} catch (err) {
+				this.logService.error('[AgentStudioWebviewController] files.applyCode: openEditor failed for HTML', err);
+			}
+			return;
+		}
+
+		// Non-HTML files: apply edit to model if already open, otherwise
+		// the write above is sufficient (user sees the updated file on next open).
 		const model = this.modelService.getModel(resource);
 		if (model) {
-			// File is already open in editor — apply edit via model
+			// File is already open in editor — apply edit via model so the change
+			// appears immediately without needing to re-open.
 			const editOperation = {
 				range: model.getFullModelRange(),
 				text: content,
 			};
 			model.applyEdits([editOperation]);
-		} else {
-			// File not open — write directly via file service
-			const buffer = VSBuffer.fromString(content);
-			await this.fileService.writeFile(resource, buffer);
 		}
 	}
 

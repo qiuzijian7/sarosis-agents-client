@@ -9,6 +9,9 @@ import { ITextFileService } from '../../../../workbench/services/textfile/common
 import { IEditorOpenContext, IFileEditorInputOptions } from '../../../../workbench/common/editor.js';
 import { FileEditorInput } from '../../../../workbench/contrib/files/browser/editors/fileEditorInput.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IModelService } from '../../../../editor/common/services/model.js';
+import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import { ITextModel } from '../../../../editor/common/model.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -93,11 +96,24 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	private _rawHtml: string | undefined;
 	private _mode: 'edit' | 'source' | 'preview' = 'preview';
 	private _isHtml: boolean = false;
+	/** True when the active input is a virtual HtmlPreviewEditorInput (chat "Apply" / ConfigHtml preview). */
+	private _isPreviewInput: boolean = false;
+	/** Standalone read-only model backing "HTML" (source) mode for preview inputs (no file model). */
+	private _previewInputSourceModel: ITextModel | undefined;
+	/** File service (stored because we read HTML directly from disk for chat "Apply" previews). */
+	private _fileService: IFileService;
 
 	/** Trailing breadcrumbs content container (the 3-button toggle). */
 	private _trailingBreadcrumbsContent: HTMLElement | undefined;
 	/** Toggle buttons inside the trailing-breadcrumbs container. */
 	private _toggleButtons: { el: HTMLElement; mode: 'edit' | 'source' | 'preview' }[] = [];
+	/**
+	 * Fallback inline toggle bar — rendered directly inside the editor pane's
+	 * parent when the group's trailing-breadcrumbs container is unavailable
+	 * (e.g. showTabs=′single′, breadcrumbs disabled).  Positioned absolutely
+	 * at the top-right so it never overlaps file content.
+	 */
+	private _inlineToggleBar: HTMLElement | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -122,6 +138,8 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		@IWebviewService private readonly _webviewService: IWebviewService,
 		@ILogService private readonly _logService: ILogService,
 		@IConfigHtmlService private readonly _configHtmlService: IConfigHtmlService,
+		@IModelService private readonly _modelService: IModelService,
+		@ILanguageService private readonly _languageService: ILanguageService,
 	) {
 		super(
 			group,
@@ -144,6 +162,10 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			hostService,
 			filesConfigurationService,
 		);
+		this._fileService = fileService;
+		// Log instantiation AFTER super() so we can confirm the pane was
+		// actually created.
+		this._logService.info(`[HtmlFileEditorPane] constructor: instantiated, paneId=${this.getId()}, groupId=${group.id}`);
 	}
 
 	/**
@@ -199,19 +221,30 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		mark('code/willCreateTextFileEditorControl');
 		super.createEditorControl(this._editorContainer, initialOptions);
 		mark('code/didCreateTextFileEditorControl');
+		this._logService.info(`[HtmlFileEditorPane] createEditorControl: editorContainer created=${!!this._editorContainer}, parent=${!!this._editorContainer?.parentElement}`);
 	}
 
 	override async setInput(input: FileEditorInput | HtmlPreviewEditorInput, options: IFileEditorInputOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
-		// Handle HtmlPreviewEditorInput (saros-html-preview:// scheme).
-		// These inputs use a virtual `saros-html-preview` URI which has no
-		// filesystem provider — we CANNOT wrap it in a `FileEditorInput` and
-		// forward to `super.setInput`.  Instead just render the HTML in a
-		// full-bleed preview webview without the 3-mode toggle.  Users who
-		// want source editing can open the backing `config.html` disk file
-		// directly from the file explorer.
+		this._logService.info(`[HtmlFileEditorPane] setInput called: input.constructor.name=${input.constructor.name}, typeId=${(input as any).typeId ?? 'n/a'}, resource=${input.resource?.toString() ?? 'undefined'}`);
+
+		// Handle HtmlPreviewEditorInput (chat "Apply" / ConfigHtml preview).
+		// These inputs use a virtual `saros-html-preview` URI (no filesystem
+		// provider) so we CANNOT wrap them in a `FileEditorInput` and forward
+		// to `super.setInput`.  Instead we render the HTML in a full-bleed
+		// preview webview and, like standard `.html` files, show the
+		// 编辑 / HTML / 预览 toggle so users can switch between the visual
+		// editor, the HTML source and the rendered preview.
 		if (input instanceof HtmlPreviewEditorInput) {
+			this._logService.info('[HtmlFileEditorPane] setInput: matched HtmlPreviewEditorInput — entering preview-input path');
 			this._isHtml = true;
-			this._cleanupTrailingBreadcrumbsContent();
+			this._isPreviewInput = true;
+
+			// Show the 编辑 / HTML / 预览 toggle for the preview input too,
+			// so users can switch between the visual editor, the HTML source
+			// and the rendered preview. (For standard `.html` files this is
+			// set up after super.setInput; the preview-input path bypasses
+			// super.setInput, so we set it up here.)
+			this._setupTrailingBreadcrumbsContent();
 
 			// Start webview process creation immediately — this fires the
 			// IPC and spawns the out-of-process iframe.  In parallel we
@@ -219,9 +252,22 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			this._setMode('preview', /* force */ true);
 
 			try {
-				const agentId = input.agentId ?? input.resource.path.replace(/^\//, '');
-				const result = await this._configHtmlService.getHtml(agentId);
-				this._rawHtml = result.html;
+				if (input.agentId) {
+					// ConfigHtml preview: the HTML is owned by ConfigHtmlService
+					// and keyed by agentId.
+					const result = await this._configHtmlService.getHtml(input.agentId);
+					this._rawHtml = result.html;
+				} else if (input.htmlContent !== undefined) {
+					// Chat "Apply" preview of an unsaved HTML block: the HTML
+					// is carried in-memory on the input — render it directly
+					// without ever touching the filesystem (the resource is a
+					// virtual `saros-html-preview` URI with no file behind it).
+					this._rawHtml = input.htmlContent;
+				} else {
+					// Fallback: read the (real) file the Apply wrote to disk.
+					const content = await this._fileService.readFile(input.resource);
+					this._rawHtml = content.value.toString();
+				}
 			} catch (err) {
 				this._logService.warn('[HtmlFileEditorPane] renderHtml failed:', err);
 				this._rawHtml = `Failed to render: ${err}`;
@@ -239,6 +285,8 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		// Detect HTML files — only show the 3-mode toggle for these.
 		const resource = input.resource;
 		this._isHtml = resource.path.toLowerCase().endsWith('.html') || resource.path.toLowerCase().endsWith('.htm');
+		// This is the standard file path, not a virtual preview input.
+		this._isPreviewInput = false;
 
 		if (this._isHtml) {
 			// Capture the raw HTML for the preview / edit webviews. We read
@@ -258,6 +306,13 @@ export class HtmlFileEditorPane extends TextFileEditor {
 
 		// Reset to preview mode for each new input.
 		this._setMode('preview', /* force */ true);
+
+		this._logService.info(
+			`[HtmlFileEditorPane] setInput DONE: _isHtml=${this._isHtml}, _isPreviewInput=${this._isPreviewInput}, ` +
+			`_mode=${this._mode}, toggleButtons=${this._toggleButtons.length}, ` +
+			`trailingSet=${!!this._trailingBreadcrumbsContent}, inlineBar=${!!this._inlineToggleBar}, ` +
+			`webviewMounted=${!!this._webview}, rawHtmlLen=${this._rawHtml?.length ?? 0}`,
+		);
 	}
 
 	/** Current view mode — exposed for any external mode switch. */
@@ -289,6 +344,24 @@ export class HtmlFileEditorPane extends TextFileEditor {
 
 		const control = this.getControl();
 		const useVisualEditor = mode === 'edit' && this._isHtml;
+
+		// For a virtual preview input the code editor has no text model yet
+		// (we bypassed super.setInput).  Lazily attach a standalone read-only
+		// model populated from the resolved HTML so the "HTML" (source) mode
+		// has content to display.  Standard `.html` files already have a model
+		// via super.setInput, so this is skipped for them.
+		if (mode === 'source' && control && !control.getModel() && this._isPreviewInput) {
+			if (!this._previewInputSourceModel) {
+				const languageSelection = this._languageService.createById('html');
+				this._previewInputSourceModel = this._modelService.createModel(
+					this._rawHtml ?? '',
+					languageSelection,
+					undefined,
+					true,
+				);
+			}
+			control.setModel(this._previewInputSourceModel ?? null);
+		}
 
 		// Toggle containers — visual editor webview vs CodeEditorWidget
 		if (this._editorContainer) {
@@ -495,13 +568,51 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	 * `setTrailingBreadcrumbsContent`, so it appears next to the file path
 	 * breadcrumb below the editor tab — identical look to
 	 * {@link HtmlPreviewEditorPane}.
+	 *
+	 * If the trailing-breadcrumbs container is not available (e.g. the group
+	 * uses `showTabs: 'single'` which skips breadcrumb container creation, or
+	 * breadcrumbs are disabled), falls back to rendering an inline toggle bar
+	 * inside the editor pane's DOM.
 	 */
 	private _setupTrailingBreadcrumbsContent(): void {
-		// Clear any existing trailing content (e.g. from a previous input).
+		// Clear any existing toggle (breadcrumbs or inline fallback).
 		this._cleanupTrailingBreadcrumbsContent();
 
-		this._trailingBreadcrumbsContent = this._createTrailingBreadcrumbsContent();
-		this.group.setTrailingBreadcrumbsContent(this._trailingBreadcrumbsContent);
+		const container = this._createTrailingBreadcrumbsContent();
+
+		// Attempt 1: use the group's trailing-breadcrumbs slot (the ideal
+		// location — sits next to the file path breadcrumb).
+		try {
+			this.group.setTrailingBreadcrumbsContent(container);
+		} catch (err) {
+			this._logService.warn('[HtmlFileEditorPane] setTrailingBreadcrumbsContent threw:', err);
+		}
+
+		// IMPORTANT: `setTrailingBreadcrumbsContent` can *silently* do nothing:
+		//   - when the group has no breadcrumbs-trailing container (e.g.
+		//     `showTabs === 'single'`, see editorTitleControl.ts
+		//     `createBreadcrumbsControl` which returns `undefined` and never
+		//     creates `breadcrumbsTrailingContainer`); in that case the call
+		//     returns without appending anything → `container.parentElement`
+		//     stays `null`.
+		//   - or it DOES append the element, but the whole breadcrumbs row is
+		//     hidden because breadcrumbs are disabled → the element is
+		//     connected but `display:none` (invisible to the user).
+		// In BOTH cases we must fall back to an inline overlay instead of
+		// assuming the embed succeeded.
+		const embedded =
+			container.parentElement !== null &&
+			container.isConnected &&
+			getComputedStyle(container).display !== 'none';
+
+		if (embedded) {
+			this._trailingBreadcrumbsContent = container;
+			this._logService.info('[HtmlFileEditorPane] toggle: installed into trailing breadcrumbs successfully');
+			return;
+		}
+
+		this._logService.info('[HtmlFileEditorPane] trailing breadcrumbs unavailable/invisible — using inline fallback');
+		this._installInlineToggleBar(container);
 	}
 
 	/**
@@ -511,10 +622,56 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	 */
 	private _cleanupTrailingBreadcrumbsContent(): void {
 		if (this._trailingBreadcrumbsContent) {
-			this.group.setTrailingBreadcrumbsContent(undefined);
+			try {
+				this.group.setTrailingBreadcrumbsContent(undefined);
+			} catch { /* ignore */ }
 			this._trailingBreadcrumbsContent = undefined;
 		}
+		// Also remove inline fallback if present.
+		if (this._inlineToggleBar) {
+			this._inlineToggleBar.remove();
+			this._inlineToggleBar = undefined;
+		}
 		this._toggleButtons = [];
+	}
+
+	/**
+	 * Render the toggle bar as an absolutely-positioned overlay inside the
+	 * editor pane's DOM (used when trailing breadcrumbs are unavailable).
+	 */
+	private _installInlineToggleBar(container: HTMLElement): void {
+		container.className = 'html-file-mode-toggle html-file-mode-toggle-inline';
+		container.style.position = 'absolute';
+		container.style.top = '4px';
+		container.style.right = '8px';
+		container.style.zIndex = '5';
+		container.style.background = 'var(--vscode-editor-background, #1e1e1e)';
+		container.style.border = '1px solid var(--vscode-widget-border, rgba(255,255,255,0.12))';
+		container.style.borderRadius = '4px';
+		container.style.padding = '2px';
+		container.style.boxShadow = '0 2px 6px rgba(0,0,0,0.25)';
+
+		// Append to the pane's root container (set by create(parent) — always
+		// available by the time setInput runs, unlike `_editorContainer` which
+		// is only created in createEditorControl and may not exist yet when
+		// setInput is invoked).  This is the reliable fallback mount point
+		// when the trailing-breadcrumbs slot is unavailable.
+		const parent = this.getContainer();
+		if (parent) {
+			// The overlay is absolutely positioned; make sure its containing
+			// block is this pane instance, otherwise it would resolve against
+			// a more distant positioned ancestor and render in the wrong place.
+			if (getComputedStyle(parent).position === 'static') {
+				parent.style.position = 'relative';
+			}
+			parent.appendChild(container);
+			this._logService.info('[HtmlFileEditorPane] toggle: inline fallback mounted into pane root container');
+			this._inlineToggleBar = container;
+		} else {
+			this._logService.warn('[HtmlFileEditorPane] _installInlineToggleBar: no parent to attach');
+			// Still keep references so _updateToggleButtonStyles works.
+			this._inlineToggleBar = container;
+		}
 	}
 
 	/**
@@ -613,6 +770,11 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			this._editWebview.dispose();
 			this._editWebview = undefined;
 		}
+		// Dispose the standalone source-model used by preview inputs.
+		if (this._previewInputSourceModel) {
+			this._previewInputSourceModel.dispose();
+			this._previewInputSourceModel = undefined;
+		}
 		if (this._editWebviewContainer) {
 			DOM.clearNode(this._editWebviewContainer);
 		}
@@ -623,6 +785,7 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		this._rawHtml = undefined;
 		this._mode = 'preview';
 		this._isHtml = false;
+		this._isPreviewInput = false;
 		super.clearInput();
 	}
 
@@ -634,6 +797,10 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		if (this._editWebview) {
 			this._editWebview.dispose();
 			this._editWebview = undefined;
+		}
+		if (this._previewInputSourceModel) {
+			this._previewInputSourceModel.dispose();
+			this._previewInputSourceModel = undefined;
 		}
 		super.dispose();
 	}

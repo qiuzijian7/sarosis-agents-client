@@ -187,24 +187,26 @@
 .as-section {
 	margin-bottom: 6px;
 	border: 1px solid var(--vscode-panel-border);
+	border-left: 3px solid var(--vscode-focusBorder, #3794ff);
 	border-radius: 8px;
 	background: var(--vscode-editor-background);
 	overflow: hidden;
-	transition: border-color 0.15s;
+	transition: border-color 0.18s, box-shadow 0.18s;
 }
 
 .as-section:hover {
 	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .as-section-header {
 	display: flex;
 	align-items: center;
-	gap: 10px;
-	padding: 12px 16px;
+	gap: 12px;
+	padding: 14px 18px;
 	cursor: pointer;
 	user-select: none;
-	transition: background 0.12s;
+	transition: background 0.15s;
 }
 
 .as-section-header:hover {
@@ -212,17 +214,26 @@
 }
 
 .as-section-chevron {
-	font-size: 11px;
+	font-size: 10px;
 	color: var(--vscode-descriptionForeground);
 	flex-shrink: 0;
-	transition: transform 0.15s;
-	width: 14px;
+	transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+	width: 16px;
 	text-align: center;
+	line-height: 1;
 }
 
 .as-section-icon {
-	font-size: 16px;
+	font-size: 18px;
 	flex-shrink: 0;
+	width: 32px;
+	height: 32px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 8px;
+	background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+	line-height: 1;
 }
 
 .as-section-header-info {
@@ -231,17 +242,24 @@
 }
 
 .as-section-label {
-	font-size: 13px;
+	font-size: 14px;
 	font-weight: 600;
 	color: var(--vscode-editor-foreground);
 	display: block;
+	letter-spacing: -0.2px;
+	line-height: 1.3;
 }
 
 .as-section-desc {
-	font-size: 11px;
+	font-size: 12px;
 	color: var(--vscode-descriptionForeground);
-	margin-top: 2px;
+	margin-top: 3px;
 	display: block;
+	line-height: 1.4;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 100%;
 }
 
 /* Collapsed state */
@@ -255,14 +273,14 @@
 }
 
 .as-section:not(.as-section-collapsed) .as-section-chevron {
-	transform: rotate(0deg);
+	transform: rotate(90deg);
 }
 
 /* ─── Section Body ─────────────────────────────────────────────────── */
 
 .as-section-body {
-	padding: 4px 16px 14px;
-	border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+	padding: 6px 18px 16px;
+	border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
 }
 
 /* ─── Field Row ───────────────────────────────────────────────────── */
@@ -271,9 +289,17 @@
 	display: flex;
 	align-items: flex-start;
 	justify-content: space-between;
-	gap: 16px;
-	padding: 10px 0;
+	gap: 20px;
+	padding: 12px 0;
 	border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.12));
+	transition: background 0.12s;
+}
+
+.as-field-row:hover {
+	background: rgba(128, 128, 128, 0.03);
+	margin: 0 -18px;
+	padding: 12px 18px;
+	border-radius: 6px;
 }
 
 .as-field-row:last-child {
@@ -605,9 +631,26 @@
 		width: 160px;
 	}
 
+	.as-section-header {
+		padding: 12px 14px;
+		gap: 10px;
+	}
+
+	.as-section-icon {
+		width: 28px;
+		height: 28px;
+		font-size: 16px;
+		border-radius: 6px;
+	}
+
 	.as-field-row {
 		flex-direction: column;
 		gap: 8px;
+	}
+
+	.as-field-row:hover {
+		margin: 0 -14px;
+		padding: 12px 14px;
 	}
 
 	.as-field-control {

@@ -26,7 +26,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 /**
  * KnowledgeBaseGraphEditorPane — 在中栏文件编辑器打开知识库「关系图谱」。
  *
- * 挂载 KbGraphView（Canvas 力导向图），节点单击 → 在中间栏打开对应笔记的
+ * 挂载 KbGraphView（Canvas 力导向图），节点双击 → 在中间栏打开对应笔记的
  * WYSIWYG 编辑器（KbNoteEditorInput）。完全对齐 SiYuan 的图谱中心 Tab 行为。
  *
  * 浮动工具条含「构建图谱」按钮：重新扫描知识库分区（库 + 笔记）的 [[双链]]，
@@ -89,7 +89,7 @@ export class KnowledgeBaseGraphEditorPane extends EditorPane {
 		const graphView = this.instantiationService.createInstance(KbGraphView);
 		graphView.render(host);
 		graphView.onNodeClick(e => {
-			// 单击文档节点 → 在中间栏打开对应笔记的 WYSIWYG 编辑器
+			// 双击文档节点 → 在中间栏打开对应笔记的 WYSIWYG 编辑器
 			if (e.node && e.node.type === 'doc') {
 				const uri = URI.parse(e.node.id);
 				const name = e.node.label;

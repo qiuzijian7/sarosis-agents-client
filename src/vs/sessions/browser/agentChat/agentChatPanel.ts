@@ -5621,10 +5621,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				applyBtn.className = 'code-block-apply-btn';
 				applyBtn.title = 'Diff 预览并应用代码到文件';
 				applyBtn.textContent = 'Apply';
-				applyBtn.addEventListener('click', (e) => {
-					e.stopPropagation();
-					this._onApplyCode?.(code, lang);
-				});
+			applyBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				console.log(`[AgentChatPanel] Apply button clicked — lang="${lang}", codeLen=${code.length}, hasOnApplyCode=${!!this._onApplyCode}`);
+				this._onApplyCode?.(code, lang);
+			});
 				actions.appendChild(applyBtn);
 
 				// P1-1: 终端运行按钮（仅 shell 语言代码块显示）

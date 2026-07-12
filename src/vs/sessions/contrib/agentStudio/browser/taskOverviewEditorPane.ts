@@ -27,6 +27,9 @@ import { IKanbanDiagnosticsService } from '../common/kanbanDiagnosticsService.js
 import { ISwarmService } from '../common/swarmService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { TaskBoardNativeRenderer, type TaskBoardRenderData, type TaskBoardFilter, type EmployeeInfo, type SwarmInfo } from './taskBoardNativeRenderer.js';
+import { ScheduleViewRenderer, injectScheduleStyles, type ScheduleDraft, type ScheduleEditPrefill } from './scheduleViewRenderer.js';
+import { IAgentSchedulerService, ScheduleState, OverlapPolicy } from '../common/agentScheduler.js';
+import type { IScheduleInfo, IScheduleTriggerEvent, IScheduleInput, ICronScheduleConfig, IIntervalConfig, IOneShotConfig } from '../common/agentScheduler.js';
 import { TaskDetailEditorInput } from './taskDetailEditorInput.js';
 import { TaskBoardStatus, TaskSource, type TaskBoardRecord } from '../../../common/agentStudioTypes.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
@@ -47,6 +50,19 @@ export class TaskOverviewEditorPane extends EditorPane {
 	private _container: HTMLElement | undefined;
 	private _renderer: TaskBoardNativeRenderer | undefined;
 	private _isInitialized = false;
+
+	// Plan D: Tab double-view (task board ⇄ schedule management)
+	private _tabBar: HTMLElement | undefined;
+	private _boardContainer: HTMLElement | undefined;
+	private _scheduleContainer: HTMLElement | undefined;
+	private _scheduleRenderer: ScheduleViewRenderer | undefined;
+	private _boardTabBadge: HTMLElement | undefined;
+	private _scheduleTabBadge: HTMLElement | undefined;
+	private _boardTabBtn: HTMLElement | undefined;
+	private _scheduleTabBtn: HTMLElement | undefined;
+	private _activeView: 'board' | 'schedule' = 'board';
+	// Timer that refreshes schedule countdowns while the schedule view is visible.
+	private _scheduleTicker: any = null;
 
 	// Drag suppression: when the user drags a card to a new column, the
 	// renderer already moves the DOM element optimistically.  Skipping the
@@ -98,17 +114,81 @@ export class TaskOverviewEditorPane extends EditorPane {
 		@IBrowserViewWorkbenchService private readonly _browserViewWorkbenchService: IBrowserViewWorkbenchService,
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@ILanguageModelsService private readonly _lmService: ILanguageModelsService,
+		@IAgentSchedulerService private readonly _schedulerService: IAgentSchedulerService,
 	) {
 		super(TaskOverviewEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected createEditor(parent: HTMLElement): void {
+		injectScheduleStyles();
+
 		this._container = DOM.$('div.task-overview-editor');
 		this._container.style.width = '100%';
 		this._container.style.height = '100%';
 		this._container.style.position = 'relative';
 		this._container.style.overflow = 'hidden';
+		this._container.style.display = 'flex';
+		this._container.style.flexDirection = 'column';
 		parent.appendChild(this._container);
+
+		// ── Tab bar (Plan D) ──
+		this._tabBar = DOM.$('div.sched-tab-bar');
+		this._boardTabBtn = DOM.$('button.sched-view-tab.active');
+		this._boardTabBtn.appendChild(DOM.$('span.sched-tab-icon', undefined, '📋'));
+		this._boardTabBtn.appendChild(DOM.$('span', undefined, '任务看板'));
+		this._boardTabBadge = DOM.$('span.sched-tab-badge', undefined, '0');
+		this._boardTabBtn.appendChild(this._boardTabBadge);
+		this._boardTabBtn.onclick = () => this._switchView('board');
+		this._tabBar.appendChild(this._boardTabBtn);
+
+		this._scheduleTabBtn = DOM.$('button.sched-view-tab');
+		this._scheduleTabBtn.appendChild(DOM.$('span.sched-tab-icon', undefined, '⏰'));
+		this._scheduleTabBtn.appendChild(DOM.$('span', undefined, '定时任务'));
+		this._scheduleTabBadge = DOM.$('span.sched-tab-badge', undefined, '0');
+		this._scheduleTabBtn.appendChild(this._scheduleTabBadge);
+		this._scheduleTabBtn.onclick = () => this._switchView('schedule');
+		this._tabBar.appendChild(this._scheduleTabBtn);
+
+		this._tabBar.appendChild(DOM.$('span.sched-tab-spacer'));
+		this._container.appendChild(this._tabBar);
+
+		// ── View containers ──
+		this._boardContainer = DOM.$('div.task-overview-board');
+		this._boardContainer.style.flex = '1 1 0';
+		this._boardContainer.style.minHeight = '0';
+		this._boardContainer.style.position = 'relative';
+		this._boardContainer.style.overflow = 'hidden';
+		this._container.appendChild(this._boardContainer);
+
+		this._scheduleContainer = DOM.$('div.task-overview-schedule');
+		this._scheduleContainer.style.flex = '1 1 0';
+		this._scheduleContainer.style.minHeight = '0';
+		this._scheduleContainer.style.position = 'relative';
+		this._scheduleContainer.style.overflow = 'hidden';
+		this._scheduleContainer.style.display = 'none';
+		this._container.appendChild(this._scheduleContainer);
+	}
+
+	private _switchView(view: 'board' | 'schedule'): void {
+		if (this._activeView === view) { return; }
+		this._activeView = view;
+		if (this._boardContainer) { this._boardContainer.style.display = view === 'board' ? '' : 'none'; }
+		if (this._scheduleContainer) { this._scheduleContainer.style.display = view === 'schedule' ? '' : 'none'; }
+		this._boardTabBtn?.classList.toggle('active', view === 'board');
+		this._scheduleTabBtn?.classList.toggle('active', view === 'schedule');
+
+		if (view === 'schedule') {
+			void this._refreshSchedule();
+			// Tick countdowns every 30s while visible.
+			if (!this._scheduleTicker) {
+				this._scheduleTicker = setInterval(() => {
+					if (this._activeView === 'schedule') { void this._refreshSchedule(); }
+				}, 30000);
+			}
+		} else if (this._scheduleTicker) {
+			clearInterval(this._scheduleTicker);
+			this._scheduleTicker = null;
+		}
 	}
 
 	override async setInput(
@@ -145,8 +225,16 @@ export class TaskOverviewEditorPane extends EditorPane {
 			cancelAnimationFrame(this._refreshRafId);
 			this._refreshRafId = null;
 		}
+		if (this._scheduleTicker) {
+			clearInterval(this._scheduleTicker);
+			this._scheduleTicker = null;
+		}
 		this._renderer?.dispose();
 		this._renderer = undefined;
+		this._scheduleRenderer?.dispose();
+		this._scheduleRenderer = undefined;
+		this._boardContainer = undefined;
+		this._scheduleContainer = undefined;
 		this._container = undefined;
 		super.dispose();
 	}
@@ -154,11 +242,16 @@ export class TaskOverviewEditorPane extends EditorPane {
 	// ─── Initialization ─────────────────────────────────────────────────
 
 	private _initialize(_input: EditorInput): void {
-		if (!this._container) { return; }
+		if (!this._container || !this._boardContainer || !this._scheduleContainer) { return; }
 
 		// Create renderer
 		this._renderer = new TaskBoardNativeRenderer();
-		this._renderer.create(this._container);
+		this._renderer.create(this._boardContainer);
+
+		// Create schedule view renderer (Plan D)
+		this._scheduleRenderer = new ScheduleViewRenderer();
+		this._scheduleRenderer.create(this._scheduleContainer);
+		this._wireScheduleEvents();
 
 		// Subscribe to renderer events
 		this._register(this._renderer.onStatusChange(({ taskId, status, source }) => {
@@ -236,6 +329,11 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 		this._register(this._renderer.onChatJump(({ agentId, agentName, workspaceId, worktreePath }) => {
 			void this._handleChatJump(agentId, agentName, workspaceId, worktreePath);
+		}));
+
+		// Card "⏰ 定时" button → open schedule config for that task (Plan D).
+		this._register(this._renderer.onScheduleRequest(({ taskId }) => {
+			void this._handleScheduleForTask(taskId);
 		}));
 
 		this._register(this._renderer.onSwarmCancel((swarmId) => {
@@ -400,13 +498,23 @@ export class TaskOverviewEditorPane extends EditorPane {
 				// Swarms not loaded yet
 			}
 
-			const filter: TaskBoardFilter = {
-				boardFilterWsId: this._boardFilterWsId,
-				employeeFilter: this._employeeFilter,
-				hiddenColumnKeys: this._hiddenColumnKeys,
-			};
+		const filter: TaskBoardFilter = {
+			boardFilterWsId: this._boardFilterWsId,
+			employeeFilter: this._employeeFilter,
+			hiddenColumnKeys: this._hiddenColumnKeys,
+		};
 
-			const renderData: TaskBoardRenderData = {
+		// Build the taskId → compact schedule-label map for card badges (Plan D).
+		const scheduleByTaskId = new Map<string, string>();
+		try {
+			for (const rule of this._schedulerService.listAllSchedules(this._currentWorkspaceId())) {
+				if (rule.state !== ScheduleState.Active) { continue; }
+				const tid = this._scheduleTaskId(rule);
+				if (tid) { scheduleByTaskId.set(tid, this._compactScheduleLabel(rule)); }
+			}
+		} catch { /* non-fatal */ }
+
+		const renderData: TaskBoardRenderData = {
 				tasks,
 				employees: this._allEmployees,
 				workspaces: workspaces.map(w => ({ id: w.id, name: w.name })),
@@ -416,11 +524,19 @@ export class TaskOverviewEditorPane extends EditorPane {
 				collapsed: false,
 				draggingTaskId: null,
 				dragOverColumn: null,
-				focusedTaskId: this._focusedTaskId,
-				boardLinks,
-			};
+			focusedTaskId: this._focusedTaskId,
+			boardLinks,
+			scheduleByTaskId,
+		};
 
 			this._renderer.render(renderData);
+
+			// Update the task-board tab badge (non-archived task count).
+			if (this._boardTabBadge) {
+				const visibleCount = tasks.filter(t => t.status !== ('archived' as TaskBoardStatus)).length;
+				this._boardTabBadge.textContent = String(visibleCount);
+			}
+			this._updateScheduleBadge();
 
 			// Clear focus after render
 			this._focusedTaskId = null;
@@ -884,6 +1000,245 @@ export class TaskOverviewEditorPane extends EditorPane {
 		this._renderer.showEditBoardLinkModal(this._container, { linkId, name, url }, async (newName, newUrl) => {
 			await this._taskBoardService.updateBoardLink(linkId, newName, newUrl);
 		});
+	}
+
+	// ─── Schedule (定时任务) — Plan D ────────────────────────────────────
+
+	/** Wire schedule-renderer UI events and the scheduler-service events. */
+	private _wireScheduleEvents(): void {
+		if (!this._scheduleRenderer) { return; }
+
+		// Renderer → CRUD
+		this._register(this._scheduleRenderer.onCreateRequest(() => {
+			void this._handleCreateSchedule();
+		}));
+		this._register(this._scheduleRenderer.onEditRequest(({ ruleId }) => {
+			void this._handleEditSchedule(ruleId);
+		}));
+		this._register(this._scheduleRenderer.onDeleteRequest(({ ruleId }) => {
+			this._schedulerService.removeSchedule(ruleId);
+		}));
+		this._register(this._scheduleRenderer.onToggleRequest(({ ruleId }) => {
+			const rule = this._schedulerService.listAllSchedules(this._currentWorkspaceId()).find(r => r.id === ruleId);
+			if (!rule) { return; }
+			if (rule.state === ScheduleState.Active) {
+				this._schedulerService.pauseSchedule(ruleId);
+			} else if (rule.state === ScheduleState.Paused) {
+				this._schedulerService.resumeSchedule(ruleId);
+			}
+		}));
+
+		// Scheduler service → refresh view + tab badge
+		this._register(this._schedulerService.onDidScheduleChange(() => {
+			this._updateScheduleBadge();
+			if (this._activeView === 'schedule') {
+				// Schedule view is visible → re-render its table (incl. countdowns).
+				void this._refreshSchedule();
+			} else {
+				// Board view is visible → re-render so task-card ⏰ badges stay
+				// in sync with create/delete/pause of schedules.
+				void this._refresh();
+			}
+		}));
+
+		// Scheduler fired → drive task execution (move task to running).
+		this._register(this._schedulerService.onDidTrigger((event) => {
+			void this._handleScheduleFired(event);
+		}));
+	}
+
+	/** When a schedule fires, start the associated task (set to running). */
+	private async _handleScheduleFired(event: IScheduleTriggerEvent): Promise<void> {
+		try {
+			const taskId = event.input.context?.taskId as string | undefined;
+			if (!taskId) {
+				this._logService.info(`[TaskOverviewEditorPane] schedule ${event.scheduleName} fired but no taskId in context`);
+				return;
+			}
+			const task = await this._taskBoardService.getTask(taskId);
+			if (!task) {
+				this._logService.warn(`[TaskOverviewEditorPane] schedule fired but task ${taskId} not found`);
+				return;
+			}
+			// Only (re)start when it's not already running/blocked.
+			if (task.status === ('running' as TaskBoardStatus) || task.status === ('blocked' as TaskBoardStatus)) {
+				this._logService.info(`[TaskOverviewEditorPane] schedule fired but task ${taskId} already ${task.status}; skipping`);
+				return;
+			}
+			this._logService.info(`[TaskOverviewEditorPane] schedule ${event.scheduleName} fired → starting task ${taskId}`);
+			await this._taskBoardService.updateTaskStatus(taskId, 'running' as TaskBoardStatus);
+		} catch (err) {
+			this._logService.error('[TaskOverviewEditorPane] Failed to handle fired schedule:', err);
+		}
+	}
+
+	/** Refresh the schedule table from the scheduler service + task list. */
+	private async _refreshSchedule(): Promise<void> {
+		if (!this._scheduleRenderer) { return; }
+		try {
+			const rules = this._schedulerService.listAllSchedules(this._currentWorkspaceId())
+				.slice()
+				.sort((a, b) => (a.nextFireAt ?? Infinity) - (b.nextFireAt ?? Infinity));
+			const tasks = await this._getAllTasksAsync();
+			this._scheduleRenderer.render(rules, tasks);
+		} catch (err) {
+			this._logService.error('[TaskOverviewEditorPane] Failed to refresh schedule view:', err);
+		}
+	}
+
+	/** A compact human label for a rule, used on task-card schedule badges. */
+	private _compactScheduleLabel(rule: IScheduleInfo): string {
+		switch (rule.type) {
+			case 'cron': {
+				const expr = (rule.config as ICronScheduleConfig).cronExpression;
+				return expr || 'Cron';
+			}
+			case 'interval': {
+				const ms = (rule.config as IIntervalConfig).intervalMs || 0;
+				if (ms >= 86400000) { return `每 ${Math.round(ms / 86400000)} 天`; }
+				if (ms >= 3600000) { return `每 ${Math.round(ms / 3600000)} 小时`; }
+				if (ms >= 60000) { return `每 ${Math.round(ms / 60000)} 分钟`; }
+				return `每 ${Math.round(ms / 1000)} 秒`;
+			}
+			case 'one-shot': {
+				const at = (rule.config as IOneShotConfig).triggerAt;
+				return at ? new Date(at).toLocaleString() : '一次性';
+			}
+			case 'file-watch': return '文件监听';
+			case 'event': return '事件触发';
+			default: return '定时';
+		}
+	}
+
+	/** Update the "定时任务" tab badge with the active-rule count. */
+	private _updateScheduleBadge(): void {
+		if (!this._scheduleTabBadge) { return; }
+		try {
+			const active = this._schedulerService.listAllSchedules(this._currentWorkspaceId()).filter(r => r.state === ScheduleState.Active).length;
+			this._scheduleTabBadge.textContent = String(active);
+		} catch { /* non-fatal */ }
+	}
+
+	private async _handleCreateSchedule(): Promise<void> {
+		if (!this._scheduleRenderer || !this._container) { return; }
+		const tasks = await this._getAllTasksAsync();
+		this._scheduleRenderer.showScheduleModal(this._container, tasks, async (draft) => {
+			await this._applyScheduleDraft(draft, tasks);
+		});
+	}
+
+	private async _handleEditSchedule(ruleId: string): Promise<void> {
+		if (!this._scheduleRenderer || !this._container) { return; }
+		const rule = this._schedulerService.listAllSchedules(this._currentWorkspaceId()).find(r => r.id === ruleId);
+		if (!rule) { return; }
+		const tasks = await this._getAllTasksAsync();
+		const prefill = this._toPrefill(rule);
+		this._scheduleRenderer.showScheduleModal(this._container, tasks, async (draft) => {
+			await this._applyScheduleDraft(draft, tasks);
+		}, prefill);
+	}
+
+	/** Open the schedule modal from a task card — edits an existing rule for
+	 *  the task if one exists, otherwise creates a new one pre-bound to it. */
+	private async _handleScheduleForTask(taskId: string): Promise<void> {
+		if (!this._scheduleRenderer || !this._container) { return; }
+		const tasks = await this._getAllTasksAsync();
+		const existing = this._schedulerService.listAllSchedules(this._currentWorkspaceId())
+			.find(r => this._scheduleTaskId(r) === taskId);
+		if (existing) {
+			const prefill = this._toPrefill(existing);
+			this._scheduleRenderer.showScheduleModal(this._container, tasks, async (draft) => {
+				await this._applyScheduleDraft(draft, tasks);
+			}, prefill);
+		} else {
+			// Pre-bind the modal to this task by passing only that task in the list.
+			const target = tasks.find(t => t.id === taskId);
+			const list = target ? [target, ...tasks.filter(t => t.id !== taskId)] : tasks;
+			this._scheduleRenderer.showScheduleModal(this._container, list, async (draft) => {
+				await this._applyScheduleDraft(draft, tasks);
+			}, undefined, taskId);
+		}
+	}
+
+	/** Read the task id stored inside a schedule's input-template context. */
+	private _scheduleTaskId(rule: IScheduleInfo): string | undefined {
+		const tpl = (rule.config as { inputTemplate?: IScheduleInput }).inputTemplate;
+		return tpl?.context?.taskId as string | undefined;
+	}
+
+	/** Build a ScheduleEditPrefill from an existing schedule record. */
+	private _toPrefill(rule: IScheduleInfo): ScheduleEditPrefill {
+		const taskId = this._scheduleTaskId(rule) ?? '';
+		const maxRetries = (rule.config as { executionPolicy?: { maxRetries?: number } }).executionPolicy?.maxRetries ?? 0;
+		if (rule.type === 'cron') {
+			return { id: rule.id, taskId, type: 'cron', cronExpression: (rule.config as ICronScheduleConfig).cronExpression, maxRetries };
+		}
+		if (rule.type === 'interval') {
+			return { id: rule.id, taskId, type: 'interval', intervalMs: (rule.config as IIntervalConfig).intervalMs, maxRetries };
+		}
+		if (rule.type === 'one-shot') {
+			return { id: rule.id, taskId, type: 'one-shot', triggerAt: (rule.config as IOneShotConfig).triggerAt, maxRetries };
+		}
+		// file-watch / event are not editable through the modal — default to cron.
+		this._logService.warn(`[TaskOverviewEditorPane] editing ${rule.type} schedule via modal is unsupported; converting to cron`);
+		return { id: rule.id, taskId, type: 'cron', cronExpression: '0 9 * * 1-5', maxRetries };
+	}
+
+	/** Apply a schedule draft: validate the task has an assignee, then (re-)register. */
+	private async _applyScheduleDraft(draft: ScheduleDraft, tasks: TaskBoardRecord[]): Promise<void> {
+		const task = tasks.find(t => t.id === draft.taskId);
+		if (!task || !task.assigneeId) {
+			this._logService.warn(`[TaskOverviewEditorPane] cannot schedule: task ${draft.taskId} has no assigned agent`);
+			return;
+		}
+		// Editing: remove the old schedule, then (re-)register from the draft.
+		if (draft.existingId) {
+			this._schedulerService.removeSchedule(draft.existingId);
+		}
+		const inputTemplate: IScheduleInput = {
+			messageTemplate: this._buildScheduleMessage(task),
+			context: { taskId: task.id, workspaceId: task.workspaceId },
+		};
+		const executionPolicy = draft.maxRetries > 0
+			? { overlap: OverlapPolicy.Skip, maxRetries: draft.maxRetries }
+			: undefined;
+		if (draft.type === 'cron') {
+			this._schedulerService.registerCron({
+				name: task.title,
+				instanceId: task.assigneeId,
+				cronExpression: draft.cronExpression || '0 9 * * 1-5',
+				inputTemplate,
+				enabled: true,
+				executionPolicy,
+			});
+		} else if (draft.type === 'interval') {
+			this._schedulerService.registerInterval({
+				name: task.title,
+				instanceId: task.assigneeId,
+				intervalMs: draft.intervalMs || 3600000,
+				inputTemplate,
+				enabled: true,
+				executionPolicy,
+			});
+		} else {
+			this._schedulerService.registerOneShot({
+				name: task.title,
+				instanceId: task.assigneeId,
+				triggerAt: draft.triggerAt || (Date.now() + 3600000),
+				inputTemplate,
+			});
+		}
+	}
+
+	/** Build the message the agent receives when a scheduled task fires. */
+	private _buildScheduleMessage(task: TaskBoardRecord): string {
+		const desc = task.description ? `\n任务描述：${task.description}` : '';
+		return `请开始执行以下定时任务：\n任务标题：${task.title}${desc}\n请在绑定的工作区中完成该任务，完成后更新任务状态。`;
+	}
+
+	/** Active workspace id for scheduler scoping (listAllSchedules currently returns all). */
+	private _currentWorkspaceId(): string {
+		return this._agentStudioService.getActiveWorkspaceId() || '';
 	}
 
 	// ─── Diagnostics ────────────────────────────────────────────────────

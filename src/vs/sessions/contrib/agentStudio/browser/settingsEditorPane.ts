@@ -15,6 +15,7 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { IAgentStudioService } from '../common/agentStudio.js';
 import { SettingsEditorInput } from './settingsEditorInput.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { IWorkbenchThemeService, IWorkbenchColorTheme } from '../../../../workbench/services/themes/common/workbenchThemeService.js';
@@ -46,6 +47,9 @@ import {
 	AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING,
 	AGENT_STUDIO_CLI_AUTO_CONNECT_SETTING,
 	AGENT_STUDIO_CLI_SAVE_HISTORY_SETTING,
+	CHANNEL_DEFINITIONS,
+	IChannelDefinition,
+	IChannelConfigField,
 } from '../common/constants.js';
 
 const { $ } = DOM;
@@ -56,7 +60,7 @@ interface SettingField {
 	key: string;
 	label: string;
 	description: string;
-	type: 'boolean' | 'string' | 'number' | 'select' | 'password' | 'json' | 'textarea' | 'vscode-theme';
+	type: 'boolean' | 'string' | 'number' | 'select' | 'password' | 'json' | 'textarea' | 'vscode-theme' | 'agent';
 	default: any;
 	options?: { value: string; label: string }[];
 	placeholder?: string;
@@ -178,6 +182,32 @@ const DATA_SECTION: SettingSection = {
 	],
 };
 
+// ─── Channel Sections (mapped from constants.CHANNEL_DEFINITIONS) ──────
+// 复用既有 _renderCollapsibleSections / _renderFieldRow，配置自动持久化到
+// IConfigurationService（键形如 sessions.channel.<ch>.<field>）。
+
+function toSettingField(f: IChannelConfigField): SettingField {
+	return {
+		key: f.key,
+		label: f.label,
+		description: f.description,
+		type: f.type,
+		default: f.default,
+		options: f.options,
+		placeholder: f.placeholder,
+		rows: f.type === 'textarea' ? 4 : undefined,
+	};
+}
+
+const CHANNEL_SECTIONS: SettingSection[] = CHANNEL_DEFINITIONS.map((def: IChannelDefinition) => ({
+	id: `channel-${def.key}`,
+	label: `${def.icon} ${def.label}`,
+	icon: def.icon,
+	description: def.description,
+	defaultCollapsed: true,
+	fields: def.configFields.map(toSettingField),
+}));
+
 // ─── TOC Entries (VSCode-native style) ──────────────────────────────────────────
 
 interface TocEntry {
@@ -193,6 +223,7 @@ const TOC_ENTRIES: TocEntry[] = [
 	{ id: 'preferences', label: '通用设置', icon: '⚙️', sections: PREFERENCES_SECTIONS },
 	{ id: 'auxiliary', label: '辅助模型', icon: '🧠', sections: AUX_SECTIONS },
 	{ id: 'cli', label: 'CLI 设置', icon: '💻', sections: [CLI_SECTION, DATA_SECTION] },
+	{ id: 'channel', label: 'Channel 配置', icon: '📡', sections: CHANNEL_SECTIONS },
 	{
 		id: 'provider',
 		label: 'Provider',
@@ -228,8 +259,9 @@ export class SettingsEditorPane extends EditorPane {
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
-		@IConfigurationService readonly configurationService: IConfigurationService,
-		@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
+	@IConfigurationService readonly configurationService: IConfigurationService,
+	@IAgentStudioService readonly agentStudioService: IAgentStudioService,
+	@IWorkbenchThemeService private readonly workbenchThemeService: IWorkbenchThemeService,
 	) {
 		super(SettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -469,6 +501,43 @@ export class SettingsEditorPane extends EditorPane {
 
 		const controlWrap = $('div.as-field-control');
 		const currentValue = this._getConfigValue(field);
+
+		// ─── Agent selector (dynamic options from IAgentStudioService) ──
+		if (field.type === 'agent') {
+			const select = document.createElement('select');
+			select.id = `as-field-${field.key}`;
+			select.className = 'as-select';
+			select.disabled = true;
+
+			// Placeholder ("follow engine default")
+			const placeholder = document.createElement('option');
+			placeholder.value = '';
+			placeholder.textContent = '（跟随引擎默认）';
+			select.appendChild(placeholder);
+
+			select.onchange = () => {
+				this.configurationService.updateValue(field.key, select.value);
+			};
+
+			// Async populate from agent list
+			Promise.resolve(this.agentStudioService.getAgents()).then(agents => {
+				const current = String(currentValue || '');
+				for (const a of agents) {
+					const opt = document.createElement('option');
+					opt.value = a.id;
+					opt.textContent = `${a.name}${a.model ? ` (${a.model})` : ''}`;
+					if (a.id === current) { opt.selected = true; }
+					select.appendChild(opt);
+				}
+				select.disabled = false;
+			}).catch(() => {
+				select.disabled = false;
+			});
+
+			controlWrap.appendChild(select);
+			row.appendChild(controlWrap);
+			return row;
+		}
 
 		switch (field.type) {
 			case 'boolean': {
@@ -810,6 +879,7 @@ export class SettingsEditorPane extends EditorPane {
 			...AUX_SECTIONS,
 			CLI_SECTION,
 			DATA_SECTION,
+			...CHANNEL_SECTIONS,
 		];
 
 		const filtered: SettingSection[] = [];
@@ -834,7 +904,7 @@ export class SettingsEditorPane extends EditorPane {
 	// ─── Reset ──────────────────────────────────────────────────────
 
 	private _resetAll(): void {
-		const allSections = [...PREFERENCES_SECTIONS, ...AUX_SECTIONS, CLI_SECTION, DATA_SECTION];
+		const allSections = [...PREFERENCES_SECTIONS, ...AUX_SECTIONS, CLI_SECTION, DATA_SECTION, ...CHANNEL_SECTIONS];
 		for (const section of allSections) {
 			for (const field of section.fields) {
 				this.configurationService.updateValue(field.key, field.default);

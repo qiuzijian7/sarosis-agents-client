@@ -1,0 +1,1456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务看板 - 定时功能 Mockup</title>
+<style>
+/* ===== Reset & Base ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	font-size: 12px;
+	background: #1e1e1e;
+	color: #cccccc;
+	display: flex;
+	justify-content: center;
+	padding: 20px;
+}
+
+/* ===== Layout Container ===== */
+.app-container {
+	width: 1280px;
+	height: 900px;
+	display: flex;
+	flex-direction: column;
+	background: #1e1e1e;
+	border: 1px solid #333;
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+/* ===== Header ===== */
+.native-tb-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 8px 12px;
+	border-bottom: 1px solid #333;
+	flex-shrink: 0;
+	background: #252526;
+}
+.native-tb-header-left {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.native-tb-title {
+	font-weight: 600;
+	font-size: 13px;
+	color: #e0e0e0;
+}
+.native-tb-count {
+	background: #4d4d4d;
+	color: #ccc;
+	border-radius: 10px;
+	padding: 1px 7px;
+	font-size: 11px;
+}
+.native-tb-header-right {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+/* ===== Buttons ===== */
+.native-tb-btn {
+	font-size: 11px;
+	padding: 4px 10px;
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	background: #3a3a3a;
+	color: #ccc;
+	white-space: nowrap;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	transition: background 0.15s;
+}
+.native-tb-btn:hover { background: #4a4a4a; }
+.native-tb-btn-primary {
+	background: #a855f7;
+	color: #fff;
+}
+.native-tb-btn-primary:hover { background: #9333ea; }
+.native-tb-btn-accent {
+	background: #0e639c;
+	color: #fff;
+}
+.native-tb-btn-accent:hover { background: #1177bb; }
+.native-tb-btn-schedule {
+	background: linear-gradient(135deg, #f59e0b, #d97706);
+	color: #fff;
+	font-weight: 500;
+	position: relative;
+	overflow: hidden;
+}
+.native-tb-btn-schedule:hover {
+	background: linear-gradient(135deg, #fbbf24, #f59e0b);
+}
+.native-tb-btn-schedule::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+	animation: schedule-shimmer 2s ease-in-out infinite;
+}
+@keyframes schedule-shimmer {
+	0% { transform: translateX(-100%); }
+	100% { transform: translateX(100%); }
+}
+.native-tb-btn-schedule.has-active {
+	animation: schedule-pulse 2s ease-in-out infinite;
+}
+@keyframes schedule-pulse {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+	50% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0); }
+}
+
+/* ===== Schedule Status Bar ===== */
+.native-tb-schedule-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	border-bottom: 1px solid #333;
+	flex-shrink: 0;
+	background: #1a1a1a;
+	overflow-x: auto;
+	min-height: 34px;
+}
+.native-tb-schedule-bar-label {
+	font-size: 11px;
+	color: #888;
+	white-space: nowrap;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+.native-tb-schedule-bar-label .icon { font-size: 13px; }
+.native-tb-schedule-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px;
+	border-radius: 12px;
+	font-size: 11px;
+	white-space: nowrap;
+	cursor: pointer;
+	transition: all 0.15s;
+	flex-shrink: 0;
+}
+.native-tb-schedule-chip.enabled {
+	background: rgba(245, 158, 11, 0.15);
+	border: 1px solid rgba(245, 158, 11, 0.3);
+	color: #fbbf24;
+}
+.native-tb-schedule-chip.enabled:hover {
+	background: rgba(245, 158, 11, 0.25);
+	border-color: #f59e0b;
+}
+.native-tb-schedule-chip.disabled {
+	background: rgba(128, 128, 128, 0.1);
+	border: 1px solid rgba(128, 128, 128, 0.2);
+	color: #888;
+	text-decoration: line-through;
+	opacity: 0.6;
+}
+.native-tb-schedule-chip-time {
+	font-family: 'Cascadia Code', 'Fira Code', monospace;
+	font-size: 10px;
+	opacity: 0.85;
+}
+.native-tb-schedule-chip-countdown {
+	font-size: 10px;
+	color: #fbbf24;
+	font-weight: 500;
+}
+
+/* ===== Columns ===== */
+.native-tb-columns {
+	flex: 1 1 0;
+	display: flex;
+	gap: 0;
+	overflow-x: auto;
+	overflow-y: hidden;
+	min-height: 0;
+}
+.native-tb-column {
+	flex: 1 1 0;
+	min-width: 220px;
+	max-width: 320px;
+	display: flex;
+	flex-direction: column;
+	border-right: 1px solid #333;
+	background: #252526;
+	min-height: 0;
+}
+.native-tb-column:last-child { border-right: none; }
+.native-tb-column-header {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 6px 8px;
+	border-bottom: 1px solid #333;
+	flex-shrink: 0;
+	font-weight: 600;
+	font-size: 11px;
+	background: #2a2a2c;
+}
+.native-tb-column-icon { font-size: 12px; }
+.native-tb-column-label { flex: 1; }
+.native-tb-column-count {
+	font-size: 11px;
+	padding: 1px 5px;
+	border-radius: 8px;
+	font-weight: 400;
+	opacity: 0.8;
+	background: #3a3a3a;
+}
+.native-tb-column-add-btn {
+	border: none;
+	background: transparent;
+	color: #888;
+	cursor: pointer;
+	font-size: 14px;
+	line-height: 1;
+	padding: 0 4px;
+	border-radius: 3px;
+}
+.native-tb-column-add-btn:hover { background: #4a4a4a; color: #ddd; }
+
+.native-tb-cards {
+	flex: 1;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 4px 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: 0;
+}
+
+/* ===== Cards ===== */
+.native-tb-card {
+	position: relative;
+	overflow: hidden;
+	background: #2d2d2d;
+	border: 1px solid #3a3a3a;
+	border-radius: 6px;
+	flex-shrink: 0;
+	cursor: pointer;
+	font-size: 12px;
+	line-height: 1.4;
+	transition: border-color 0.15s, box-shadow 0.15s;
+	display: flex;
+	flex-direction: column;
+	box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+.native-tb-card::before {
+	content: "";
+	position: absolute;
+	left: 0; top: 0; bottom: 0;
+	width: 3px;
+}
+.native-tb-card.prio-high::before   { background: #f44747; }
+.native-tb-card.prio-medium::before { background: #cca700; }
+.native-tb-card.prio-low::before    { background: #4ec9b0; }
+.native-tb-card:hover {
+	border-color: #a855f7;
+	box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}
+
+/* Card body */
+.native-tb-card-body {
+	padding: 8px 10px 6px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.native-tb-card-id {
+	font-size: 10px;
+	color: #888;
+	opacity: 0.6;
+	font-family: 'Cascadia Code', 'Fira Code', monospace;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.native-tb-card-title {
+	font-size: 12.5px;
+	font-weight: 500;
+	color: #e0e0e0;
+	line-height: 1.35;
+	word-break: break-word;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+.native-tb-card-desc {
+	font-size: 11px;
+	color: #999;
+	opacity: 0.85;
+	line-height: 1.4;
+	word-break: break-word;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+/* Schedule indicator on card */
+.native-tb-card-schedule {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 6px;
+	padding: 5px 8px;
+	background: rgba(245, 158, 11, 0.08);
+	border-radius: 4px;
+	border: 1px dashed rgba(245, 158, 11, 0.2);
+	font-size: 10px;
+}
+.native-tb-card-schedule-icon {
+	font-size: 13px;
+	flex-shrink: 0;
+}
+.native-tb-card-schedule-info {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+}
+.native-tb-card-schedule-label {
+	color: #fbbf24;
+	font-weight: 500;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.native-tb-card-schedule-next {
+	color: #999;
+	font-family: 'Cascadia Code', 'Fira Code', monospace;
+	font-size: 9.5px;
+}
+.native-tb-card-schedule-status {
+	margin-left: auto;
+	flex-shrink: 0;
+}
+.native-tb-card-schedule-status .dot {
+	width: 6px; height: 6px;
+	border-radius: 50%;
+	display: inline-block;
+}
+.native-tb-card-schedule-status .dot.active { background: #4ec9b0; animation: dot-blink 2s ease-in-out infinite; }
+.native-tb-card-schedule-status .dot.paused { background: #cca700; }
+.native-tb-card-schedule-status .dot.disabled { background: #888; }
+@keyframes dot-blink {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.3; }
+}
+
+/* Tags row */
+.native-tb-card-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: 1px;
+}
+.native-tb-card-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 10px;
+	padding: 2px 6px;
+	border-radius: 8px;
+	background: #3a3a3a;
+	color: #ccc;
+	white-space: nowrap;
+	max-width: 140px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.native-tb-card-tag.assignee {
+	background: #3a3a3a;
+	color: #e0e0e0;
+}
+.native-tb-card-avatar {
+	width: 14px; height: 14px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 8px;
+	font-weight: 700;
+	color: #fff;
+}
+.native-tb-card-priority {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	font-size: 10px;
+	padding: 2px 6px;
+	border-radius: 8px;
+	font-weight: 500;
+	white-space: nowrap;
+}
+.native-tb-card-priority.prio-high   { background: rgba(244,71,71,0.15); color: #f44747; }
+.native-tb-card-priority.prio-medium { background: rgba(204,167,0,0.15); color: #cca700; }
+.native-tb-card-priority.prio-low    { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+
+/* Footer bar */
+.native-tb-card-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 5px 10px 6px 12px;
+	border-top: 1px solid #3a3a3a;
+	background: rgba(0,0,0,0.12);
+	font-size: 11px;
+}
+.native-tb-card-footer-left {
+	display: flex; align-items: center; gap: 6px;
+}
+.native-tb-card-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	color: #888;
+}
+.native-tb-card-status-dot {
+	width: 6px; height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.native-tb-card-status-dot.ready  { background: #4ec9b0; }
+.native-tb-card-status-dot.todo   { background: #007acc; }
+.native-tb-card-status-dot.running { background: #cca700; }
+.native-tb-card-meta-icons {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: #888;
+}
+.native-tb-card-meta-icons .schedule-icon {
+	color: #f59e0b;
+	font-size: 12px;
+}
+
+/* Hover action bar */
+.native-tb-card-actions {
+	position: absolute;
+	left: 0; right: 0; bottom: 0;
+	display: flex;
+	height: 0; overflow: hidden;
+	transition: height 0.18s;
+	background: #2d2d2d;
+	border-top: 1px solid #3a3a3a;
+	z-index: 5;
+	border-radius: 0 0 5px 5px;
+}
+.native-tb-card:hover .native-tb-card-actions {
+	height: 34px;
+}
+.native-tb-card action-btn {
+	flex: 1;
+	display: flex; align-items: center; justify-content: center; gap: 3px;
+	font-size: 11px; padding: 0 4px;
+	border: none; background: transparent; color: #888;
+	cursor: pointer; transition: background 0.12s, color 0.12s;
+	border-right: 1px solid #3a3a3a;
+}
+.native-tb-card action-btn:last-child { border-right: none; }
+.native-tb-card action-btn:hover { background: #4a4a4a; color: #ddd; }
+.native-tb-card action-btn.action-accent:hover { background: rgba(168,85,247,0.2); color: #a855f7; }
+.native-tb-card action-btn.action-danger:hover { background: rgba(244,71,71,0.2); color: #f44747; }
+
+/* ===== Modal Overlay ===== */
+.modal-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(0,0,0,0.5);
+	z-index: 1000;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.modal {
+	background: #2d2d2d;
+	border: 1px solid #454545;
+	border-radius: 8px;
+	width: 560px;
+	max-height: 85vh;
+	overflow-y: auto;
+	box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.modal-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 16px;
+	border-bottom: 1px solid #3a3a3a;
+}
+.modal-header h2 {
+	font-size: 14px;
+	font-weight: 600;
+	color: #e0e0e0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.modal-header h2 .icon { font-size: 18px; }
+.modal-close {
+	background: none; border: none;
+	color: #888; font-size: 18px;
+	cursor: pointer; padding: 4px 8px;
+	border-radius: 4px;
+}
+.modal-close:hover { background: #3a3a3a; color: #ddd; }
+.modal-body { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.modal-footer {
+	padding: 12px 16px;
+	border-top: 1px solid #3a3a3a;
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+/* ===== Form Controls ===== */
+.form-group {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.form-label {
+	font-size: 11px;
+	font-weight: 500;
+	color: #aaa;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.form-label .required { color: #f44747; }
+.form-input, .form-select, .form-textarea {
+	padding: 8px 10px;
+	font-size: 12px;
+	background: #3c3c3c;
+	color: #ddd;
+	border: 1px solid #4a4a4a;
+	border-radius: 5px;
+	outline: none;
+	font-family: inherit;
+	transition: border-color 0.15s;
+}
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+	border-color: #a855f7;
+}
+.form-select { cursor: pointer; }
+.form-textarea { resize: vertical; min-height: 60px; }
+
+/* Toggle switch */
+.toggle-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px;
+	background: #333;
+	border-radius: 6px;
+}
+.toggle-label {
+	font-size: 12px;
+	font-weight: 500;
+	color: #ccc;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.toggle-label .icon { font-size: 16px; }
+.toggle-switch {
+	position: relative;
+	width: 40px; height: 22px;
+	flex-shrink: 0;
+}
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+	position: absolute;
+	cursor: pointer;
+	inset: 0;
+	background: #555;
+	border-radius: 22px;
+	transition: 0.2s;
+}
+.toggle-slider::before {
+	content: "";
+	position: absolute;
+	height: 16px; width: 16px;
+	left: 3px; bottom: 3px;
+	background: #fff;
+	border-radius: 50%;
+	transition: 0.2s;
+}
+.toggle-switch input:checked + .toggle-slider {
+	background: #f59e0b;
+}
+.toggle-switch input:checked + .toggle-slider::before {
+	transform: translateX(18px);
+}
+
+/* Schedule type tabs */
+.schedule-type-tabs {
+	display: flex;
+	gap: 2px;
+	background: #333;
+	border-radius: 6px;
+	padding: 3px;
+}
+.schedule-type-tab {
+	flex: 1;
+	padding: 7px 4px;
+	font-size: 11px;
+	text-align: center;
+	border: none;
+	background: transparent;
+	color: #999;
+	cursor: pointer;
+	border-radius: 4px;
+	transition: all 0.15s;
+	white-space: nowrap;
+}
+.schedule-type-tab:hover { color: #ddd; }
+.schedule-type-tab.active {
+	background: #a855f7;
+	color: #fff;
+	font-weight: 500;
+}
+
+/* Cron quick presets */
+.cron-presets {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.cron-preset {
+	padding: 4px 10px;
+	font-size: 10.5px;
+	border: 1px solid #4a4a4a;
+	border-radius: 12px;
+	background: transparent;
+	color: #aaa;
+	cursor: pointer;
+	transition: all 0.15s;
+	white-space: nowrap;
+}
+.cron-preset:hover {
+	border-color: #a855f7;
+	color: #ddd;
+	background: rgba(168,85,247,0.1);
+}
+.cron-preset.selected {
+	border-color: #a855f7;
+	background: rgba(168,85,247,0.2);
+	color: #c4b5fd;
+}
+
+/* Next fire preview */
+.next-fire-preview {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	background: rgba(245, 158, 11, 0.08);
+	border: 1px solid rgba(245, 158, 11, 0.2);
+	border-radius: 6px;
+}
+.next-fire-preview .icon { font-size: 20px; }
+.next-fire-preview .next-label {
+	font-size: 11px;
+	color: #888;
+}
+.next-fire-preview .next-time {
+	font-size: 14px;
+	font-weight: 600;
+	color: #fbbf24;
+	font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+.next-fire-preview .next-countdown {
+	font-size: 11px;
+	color: #999;
+	margin-left: auto;
+}
+
+/* ===== Task Schedule Modal specific ===== */
+.schedule-summary {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 8px;
+}
+.schedule-summary-item {
+	padding: 10px;
+	background: #333;
+	border-radius: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.schedule-summary-label {
+	font-size: 10px;
+	color: #888;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+.schedule-summary-value {
+	font-size: 13px;
+	font-weight: 500;
+	color: #e0e0e0;
+}
+
+/* ===== Tooltip style hint ===== */
+.field-hint {
+	font-size: 10px;
+	color: #666;
+	line-height: 1.3;
+}
+.field-hint code {
+	background: #3a3a3a;
+	padding: 1px 4px;
+	border-radius: 2px;
+	font-family: 'Cascadia Code', monospace;
+	font-size: 10px;
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #777; }
+
+/* ===== Section divider ===== */
+.section-title {
+	font-size: 11px;
+	font-weight: 600;
+	color: #a855f7;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid #3a3a3a;
+	margin-top: 4px;
+}
+
+/* Schedule list in modal */
+.schedule-list-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	background: #333;
+	border-radius: 6px;
+	border: 1px solid transparent;
+	transition: border-color 0.15s;
+}
+.schedule-list-item:hover { border-color: #a855f7; }
+.schedule-list-item-info {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+.schedule-list-item-name {
+	font-size: 12px;
+	font-weight: 500;
+	color: #e0e0e0;
+}
+.schedule-list-item-detail {
+	font-size: 10px;
+	color: #888;
+	font-family: 'Cascadia Code', monospace;
+}
+.schedule-list-item-status {
+	font-size: 10px;
+	padding: 2px 8px;
+	border-radius: 8px;
+	font-weight: 500;
+}
+.schedule-list-item-status.active { background: rgba(78,201,176,0.2); color: #4ec9b0; }
+.schedule-list-item-status.paused { background: rgba(204,167,0,0.2); color: #cca700; }
+</style>
+</head>
+<body>
+
+<div class="app-container">
+	<!-- ===== HEADER ===== -->
+	<div class="native-tb-header">
+		<div class="native-tb-header-left">
+			<span class="native-tb-title">📋 任务看板</span>
+			<span class="native-tb-count">18</span>
+		</div>
+		<div class="native-tb-header-right">
+			<button class="native-tb-btn">🔗 添加看板超链接</button>
+			<button class="native-tb-btn">🩺 巡检</button>
+			<!-- ★ 新增：定时任务入口按钮 ★ -->
+			<button class="native-tb-btn native-tb-btn-schedule has-active" onclick="openSchedulerPanel()" title="管理定时任务">
+				⏰ 定时任务
+				<span style="background:rgba(255,255,255,0.25);padding:1px 5px;border-radius:8px;font-size:10px;">4</span>
+			</button>
+		</div>
+	</div>
+
+	<!-- ===== ★ 新增：定时任务状态栏 ★ ===== -->
+	<div class="native-tb-schedule-bar">
+		<span class="native-tb-schedule-bar-label">
+			<span class="icon">⏰</span> 即将执行:
+		</span>
+		<div class="native-tb-schedule-chip enabled" title="点击管理定时规则" onclick="openSchedulerPanel()">
+			<span>🔄</span>
+			<span>数据库备份</span>
+			<span class="native-tb-schedule-chip-time">每天 02:00</span>
+			<span class="native-tb-schedule-chip-countdown">(6h 32m 后)</span>
+		</div>
+		<div class="native-tb-schedule-chip enabled" onclick="openSchedulerPanel()">
+			<span>📊</span>
+			<span>周报生成</span>
+			<span class="native-tb-schedule-chip-time">每周五 17:00</span>
+			<span class="native-tb-schedule-chip-countdown">(2d 9h 后)</span>
+		</div>
+		<div class="native-tb-schedule-chip enabled" onclick="openSchedulerPanel()">
+			<span>🔍</span>
+			<span>代码审查提醒</span>
+			<span class="native-tb-schedule-chip-time">每4小时</span>
+			<span class="native-tb-schedule-chip-countdown">(1h 15m 后)</span>
+		</div>
+		<div class="native-tb-schedule-chip disabled" onclick="openSchedulerPanel()">
+			<span>📝</span>
+			<span>日志清理</span>
+			<span class="native-tb-schedule-chip-time">每月1日 03:00</span>
+			<span>已暂停</span>
+		</div>
+	</div>
+
+	<!-- ===== KANBAN COLUMNS ===== -->
+	<div class="native-tb-columns">
+		<!-- Column: 待执行 -->
+		<div class="native-tb-column">
+			<div class="native-tb-column-header">
+				<span class="native-tb-column-icon">📥</span>
+				<span class="native-tb-column-label">待执行</span>
+				<span class="native-tb-column-count">5</span>
+				<button class="native-tb-column-add-btn" title="新建任务">＋</button>
+			</div>
+			<div class="native-tb-cards">
+				<!-- Card 1: 带定时 -->
+				<div class="native-tb-card prio-high">
+					<div class="native-tb-card-body">
+						<div class="native-tb-card-id">#task_a1b2c3</div>
+						<div class="native-tb-card-title">🔧 数据库自动备份任务</div>
+						<div class="native-tb-card-desc">每日凌晨2点自动备份生产数据库到远程存储</div>
+						<!-- ★ 定时指示器 ★ -->
+						<div class="native-tb-card-schedule">
+							<span class="native-tb-card-schedule-icon">⏰</span>
+							<div class="native-tb-card-schedule-info">
+								<span class="native-tb-card-schedule-label">Cron: 每天 02:00</span>
+								<span class="native-tb-card-schedule-next">下次: 2026-07-12 02:00 (6h 32m)</span>
+							</div>
+							<div class="native-tb-card-schedule-status">
+								<span class="dot active" title="定时已启用"></span>
+							</div>
+						</div>
+						<div class="native-tb-card-tags">
+							<span class="native-tb-card-tag assignee">
+								<span class="native-tb-card-avatar" style="background:#a855f7;">DB</span>
+								DB Agent
+							</span>
+							<span class="native-tb-card-priority prio-high">🔴 高</span>
+						</div>
+					</div>
+					<div class="native-tb-card-footer">
+						<div class="native-tb-card-footer-left">
+							<span class="native-tb-card-status">
+								<span class="native-tb-card-status-dot todo"></span> 待执行
+							</span>
+						</div>
+						<div class="native-tb-card-meta-icons">
+							<span class="schedule-icon" title="已配置定时任务">⏰</span>
+							<span title="附件">📎 2</span>
+						</div>
+					</div>
+					<div class="native-tb-card-actions">
+						<action-btn class="action-accent" onclick="openScheduleConfig('task_a1b2c3')">⏰ 定时</action-btn>
+						<action-btn>▶️ 执行</action-btn>
+						<action-btn>📦 归档</action-btn>
+						<action-btn class="action-danger">🗑 删除</action-btn>
+					</div>
+				</div>
+
+				<!-- Card 2: 普通任务（无定时） -->
+				<div class="native-tb-card prio-medium">
+					<div class="native-tb-card-body">
+						<div class="native-tb-card-id">#task_d4e5f6</div>
+						<div class="native-tb-card-title">📝 更新 API 文档</div>
+						<div class="native-tb-card-desc">完善用户管理模块的 API 接口文档</div>
+						<div class="native-tb-card-tags">
+							<span class="native-tb-card-tag assignee">
+								<span class="native-tb-card-avatar" style="background:#4ec9b0;">AM</span>
+								Alice
+							</span>
+							<span class="native-tb-card-priority prio-medium">🟡 中</span>
+						</div>
+					</div>
+					<div class="native-tb-card-footer">
+						<div class="native-tb-card-footer-left">
+							<span class="native-tb-card-status">
+								<span class="native-tb-card-status-dot todo"></span> 待执行
+							</span>
+						</div>
+					</div>
+					<div class="native-tb-card-actions">
+						<action-btn class="action-accent" onclick="openScheduleConfig('task_d4e5f6')">⏰ 定时</action-btn>
+						<action-btn>▶️ 执行</action-btn>
+						<action-btn>📦 归档</action-btn>
+						<action-btn class="action-danger">🗑 删除</action-btn>
+					</div>
+				</div>
+
+				<!-- Card 3: 带定时（暂停） -->
+				<div class="native-tb-card prio-low">
+					<div class="native-tb-card-body">
+						<div class="native-tb-card-id">#task_g7h8i9</div>
+						<div class="native-tb-card-title">📊 生成项目周报</div>
+						<div class="native-tb-card-desc">每周五17:00自动汇总本周工作进展</div>
+						<div class="native-tb-card-schedule">
+							<span class="native-tb-card-schedule-icon">⏸️</span>
+							<div class="native-tb-card-schedule-info">
+								<span class="native-tb-card-schedule-label" style="color:#888;">Cron: 每周五 17:00 (已暂停)</span>
+								<span class="native-tb-card-schedule-next">定时已暂停</span>
+							</div>
+							<div class="native-tb-card-schedule-status">
+								<span class="dot paused" title="定时已暂停"></span>
+							</div>
+						</div>
+						<div class="native-tb-card-tags">
+							<span class="native-tb-card-tag assignee">
+								<span class="native-tb-card-avatar" style="background:#f59e0b;">RP</span>
+								Report Agent
+							</span>
+							<span class="native-tb-card-priority prio-low">🟢 低</span>
+						</div>
+					</div>
+					<div class="native-tb-card-footer">
+						<div class="native-tb-card-footer-left">
+							<span class="native-tb-card-status">
+								<span class="native-tb-card-status-dot todo"></span> 待执行
+							</span>
+						</div>
+						<div class="native-tb-card-meta-icons">
+							<span class="schedule-icon" title="定时已暂停" style="opacity:0.5;">⏸️</span>
+						</div>
+					</div>
+					<div class="native-tb-card-actions">
+						<action-btn class="action-accent" onclick="openScheduleConfig('task_g7h8i9')">⏰ 定时</action-btn>
+						<action-btn>▶️ 执行</action-btn>
+						<action-btn>📦 归档</action-btn>
+						<action-btn class="action-danger">🗑 删除</action-btn>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Column: 执行中 -->
+		<div class="native-tb-column">
+			<div class="native-tb-column-header">
+				<span class="native-tb-column-icon">⚡</span>
+				<span class="native-tb-column-label">执行中</span>
+				<span class="native-tb-column-count">3</span>
+			</div>
+			<div class="native-tb-cards">
+				<div class="native-tb-card prio-high">
+					<div class="native-tb-card-body">
+						<div class="native-tb-card-id">#task_j1k2l3</div>
+						<div class="native-tb-card-title">🔍 代码安全扫描</div>
+						<div class="native-tb-card-desc">每小时自动执行代码安全漏洞扫描</div>
+						<div class="native-tb-card-schedule" style="background:rgba(204,167,0,0.1); border-color:rgba(204,167,0,0.3);">
+							<span class="native-tb-card-schedule-icon">🔄</span>
+							<div class="native-tb-card-schedule-info">
+								<span class="native-tb-card-schedule-label" style="color:#fbbf24;">Interval: 每1小时</span>
+								<span class="native-tb-card-schedule-next">下次: 2026-07-11 16:00 (45m)</span>
+							</div>
+							<div class="native-tb-card-schedule-status">
+								<span class="dot active" title="定时已启用"></span>
+							</div>
+						</div>
+						<div class="native-tb-card-tags">
+							<span class="native-tb-card-priority prio-high">🔴 高</span>
+						</div>
+					</div>
+					<div class="native-tb-card-footer">
+						<div class="native-tb-card-footer-left">
+							<span class="native-tb-card-status">
+								<span class="native-tb-card-status-dot running"></span> 执行中
+							</span>
+						</div>
+						<div class="native-tb-card-meta-icons">
+							<span class="schedule-icon">⏰</span>
+						</div>
+					</div>
+					<div class="native-tb-card-actions">
+						<action-btn class="action-accent" onclick="openScheduleConfig('task_j1k2l3')">⏰ 定时</action-btn>
+						<action-btn>⏹ 取消</action-btn>
+						<action-btn class="action-danger">🗑 删除</action-btn>
+					</div>
+				</div>
+
+				<div class="native-tb-card prio-medium">
+					<div class="native-tb-card-body">
+						<div class="native-tb-card-id">#task_m3n4o5</div>
+						<div class="native-tb-card-title">🧪 运行集成测试套件</div>
+						<div class="native-tb-card-desc">PR合并后自动触发集成测试</div>
+						<div class="native-tb-card-tags">
+							<span class="native-tb-card-tag assignee">
+								<span class="native-tb-card-avatar" style="background:#007acc;">CI</span>
+								CI Agent
+							</span>
+							<span class="native-tb-card-priority prio-medium">🟡 中</span>
+						</div>
+					</div>
+					<div class="native-tb-card-footer">
+						<div class="native-tb-card-footer-left">
+							<span class="native-tb-card-status">
+								<span class="native-tb-card-status-dot running"></span> 执行中
+							</span>
+						</div>
+					</div>
+					<div class="native-tb-card-actions">
+						<action-btn class="action-accent" onclick="openScheduleConfig('task_m3n4o5')">⏰ 定时</action-btn>
+						<action-btn>⏹ 取消</action-btn>
+						<action-btn class="action-danger">🗑 删除</action-btn>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Column: 执行结束 -->
+		<div class="native-tb-column">
+			<div class="native-tb-column-header">
+				<span class="native-tb-column-icon">✅</span>
+				<span class="native-tb-column-label">执行结束</span>
+				<span class="native-tb-column-count">6</span>
+			</div>
+			<div class="native-tb-cards">
+				<div class="native-tb-card prio-low" style="opacity:0.65;">
+					<div class="native-tb-card-body">
+						<div class="native-tb-card-id">#task_p6q7r8</div>
+						<div class="native-tb-card-title" style="text-decoration:line-through;">🔄 每日数据同步</div>
+						<div class="native-tb-card-desc" style="text-decoration:line-through;">定时同步用户数据到数仓</div>
+						<div class="native-tb-card-schedule" style="opacity:0.5;">
+							<span class="native-tb-card-schedule-icon">✅</span>
+							<div class="native-tb-card-schedule-info">
+								<span class="native-tb-card-schedule-label" style="color:#888;">已完成 · 下次: 明天 06:00</span>
+								<span class="native-tb-card-schedule-next" style="color:#666;">上次执行: 2026-07-11 06:00</span>
+							</div>
+						</div>
+						<div class="native-tb-card-tags">
+							<span class="native-tb-card-priority prio-low">🟢 低</span>
+						</div>
+					</div>
+					<div class="native-tb-card-footer">
+						<div class="native-tb-card-footer-left">
+							<span class="native-tb-card-status">
+								<span class="native-tb-card-status-dot done"></span> 已完成
+							</span>
+						</div>
+						<div class="native-tb-card-meta-icons">
+							<span class="schedule-icon">⏰</span>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Columns 4 & 5: Placeholder -->
+		<div class="native-tb-column">
+			<div class="native-tb-column-header">
+				<span class="native-tb-column-icon">❌</span>
+				<span class="native-tb-column-label">取消执行</span>
+				<span class="native-tb-column-count">2</span>
+			</div>
+			<div class="native-tb-cards"></div>
+		</div>
+		<div class="native-tb-column">
+			<div class="native-tb-column-header">
+				<span class="native-tb-column-icon">📦</span>
+				<span class="native-tb-column-label">归档</span>
+				<span class="native-tb-column-count">2</span>
+			</div>
+			<div class="native-tb-cards"></div>
+		</div>
+	</div>
+</div>
+
+<!-- ===== MODAL: 定时任务管理面板 ===== -->
+<div class="modal-overlay" id="schedulerPanel" style="display:none;">
+	<div class="modal" style="width: 640px;">
+		<div class="modal-header">
+			<h2><span class="icon">⏰</span> 定时任务管理</h2>
+			<button class="modal-close" onclick="closeSchedulerPanel()">✕</button>
+		</div>
+		<div class="modal-body">
+			<!-- 总览 -->
+			<div class="schedule-summary">
+				<div class="schedule-summary-item">
+					<span class="schedule-summary-label">活跃定时任务</span>
+					<span class="schedule-summary-value" style="color:#4ec9b0;">3</span>
+				</div>
+				<div class="schedule-summary-item">
+					<span class="schedule-summary-label">已暂停</span>
+					<span class="schedule-summary-value" style="color:#cca700;">1</span>
+				</div>
+				<div class="schedule-summary-item">
+					<span class="schedule-summary-label">今日已执行</span>
+					<span class="schedule-summary-value">5 次</span>
+				</div>
+				<div class="schedule-summary-item">
+					<span class="schedule-summary-label">下次执行</span>
+					<span class="schedule-summary-value" style="color:#fbbf24;font-size:11px;">16:00 (45m后)</span>
+				</div>
+			</div>
+
+			<div class="section-title">📋 定时任务列表</div>
+
+			<!-- 定时列表项 -->
+			<div class="schedule-list-item">
+				<span style="font-size:18px;">🔄</span>
+				<div class="schedule-list-item-info">
+					<span class="schedule-list-item-name">数据库自动备份</span>
+					<span class="schedule-list-item-detail">Cron: 0 2 * * * (每天 02:00) · DB Agent</span>
+				</div>
+				<span class="schedule-list-item-status active">运行中</span>
+				<button class="native-tb-btn" style="font-size:10px;padding:3px 8px;" onclick="editSchedule('task_a1b2c3')">✏️ 编辑</button>
+				<button class="native-tb-btn" style="font-size:10px;padding:3px 8px;">⏯️ 暂停</button>
+			</div>
+
+			<div class="schedule-list-item">
+				<span style="font-size:18px;">📊</span>
+				<div class="schedule-list-item-info">
+					<span class="schedule-list-item-name">项目周报生成</span>
+					<span class="schedule-list-item-detail">Cron: 0 17 * * 5 (每周五 17:00) · Report Agent</span>
+				</div>
+				<span class="schedule-list-item-status active">运行中</span>
+				<button class="native-tb-btn" style="font-size:10px;padding:3px 8px;" onclick="editSchedule('task_g7h8i9')">✏️ 编辑</button>
+				<button class="native-tb-btn" style="font-size:10px;padding:3px 8px;">⏯️ 暂停</button>
+			</div>
+
+			<div class="schedule-list-item">
+				<span style="font-size:18px;">🔍</span>
+				<div class="schedule-list-item-info">
+					<span class="schedule-list-item-name">代码安全扫描</span>
+					<span class="schedule-list-item-detail">Interval: 每1小时 · Scanner Agent</span>
+				</div>
+				<span class="schedule-list-item-status active">运行中</span>
+				<button class="native-tb-btn" style="font-size:10px;padding:3px 8px;">✏️ 编辑</button>
+				<button class="native-tb-btn" style="font-size:10px;padding:3px 8px;">⏯️ 暂停</button>
+			</div>
+
+			<div class="schedule-list-item" style="opacity:0.6;">
+				<span style="font-size:18px;">📝</span>
+				<div class="schedule-list-item-info">
+					<span class="schedule-list-item-name">日志归档清理</span>
+					<span class="schedule-list-item-detail">Cron: 0 3 1 * * (每月1日 03:00) · Cleanup Agent</span>
+				</div>
+				<span class="schedule-list-item-status paused">已暂停</span>
+				<button class="native-tb-btn" style="font-size:10px;padding:3px 8px;">✏️ 编辑</button>
+				<button class="native-tb-btn" style="font-size:10px;padding:3px 8px;">▶️ 启用</button>
+			</div>
+
+			<div style="text-align:center;padding:16px;color:#888;">
+				将鼠标悬停在任务卡片上，点击 "⏰ 定时" 按钮即可为任务添加定时规则
+			</div>
+		</div>
+		<div class="modal-footer">
+			<button class="native-tb-btn" onclick="closeSchedulerPanel()">关闭</button>
+		</div>
+	</div>
+</div>
+
+<!-- ===== MODAL: 单个任务的定时配置 ===== -->
+<div class="modal-overlay" id="scheduleConfigModal" style="display:none;">
+	<div class="modal">
+		<div class="modal-header">
+			<h2><span class="icon">⏰</span> 配置定时规则 — <span id="scheduleTaskName" style="color:#a855f7;">#task_xxx</span></h2>
+			<button class="modal-close" onclick="closeScheduleConfig()">✕</button>
+		</div>
+		<div class="modal-body">
+			<!-- 启用开关 -->
+			<div class="toggle-row">
+				<span class="toggle-label">
+					<span class="icon">🔔</span> 启用定时执行
+				</span>
+				<label class="toggle-switch">
+					<input type="checkbox" id="scheduleEnabled" checked onchange="toggleScheduleFields()">
+					<span class="toggle-slider"></span>
+				</label>
+			</div>
+
+			<!-- 调度类型选择 -->
+			<div class="form-group" id="scheduleFields">
+				<label class="form-label">调度类型</label>
+				<div class="schedule-type-tabs" id="scheduleTypeTabs">
+					<button class="schedule-type-tab active" data-type="cron" onclick="selectScheduleType('cron', this)">📅 Cron 表达式</button>
+					<button class="schedule-type-tab" data-type="interval" onclick="selectScheduleType('interval', this)">🔄 固定间隔</button>
+					<button class="schedule-type-tab" data-type="oneshot" onclick="selectScheduleType('oneshot', this)">🎯 一次性</button>
+					<button class="schedule-type-tab" data-type="filewatch" onclick="selectScheduleType('filewatch', this)">📁 文件监听</button>
+					<button class="schedule-type-tab" data-type="event" onclick="selectScheduleType('event', this)">📡 事件触发</button>
+				</div>
+			</div>
+
+			<!-- Cron 表达式输入区 -->
+			<div class="form-group" id="cronFields">
+				<label class="form-label">Cron 表达式</label>
+				<input type="text" class="form-input" id="cronExpression"
+					value="0 2 * * *" placeholder="例如: 0 9 * * 1-5"
+					style="font-family:'Cascadia Code', monospace; font-size:14px; letter-spacing:2px;">
+				<span class="field-hint">
+					格式: <code>分 时 日 月 周</code> · 支持 <code>*</code> <code>,</code> <code>-</code> <code>/</code>
+				</span>
+
+				<!-- 快捷预设 -->
+				<div style="margin-top:4px;">
+					<span class="field-hint" style="display:block;margin-bottom:4px;">快捷预设:</span>
+					<div class="cron-presets">
+						<button class="cron-preset selected" onclick="setCronPreset('0 2 * * *', this)" title="每天凌晨2点">每天 02:00</button>
+						<button class="cron-preset" onclick="setCronPreset('0 9 * * 1-5', this)" title="工作日早上9点">工作日 09:00</button>
+						<button class="cron-preset" onclick="setCronPreset('0 */4 * * *', this)" title="每4小时">每4小时</button>
+						<button class="cron-preset" onclick="setCronPreset('0 17 * * 5', this)" title="每周五下午5点">每周五 17:00</button>
+						<button class="cron-preset" onclick="setCronPreset('0 0 1 * *', this)" title="每月1号零点">每月1日 00:00</button>
+						<button class="cron-preset" onclick="setCronPreset('*/30 * * * *', this)" title="每30分钟">每30分钟</button>
+					</div>
+				</div>
+			</div>
+
+			<!-- Interval 输入区（默认隐藏） -->
+			<div class="form-group" id="intervalFields" style="display:none;">
+				<label class="form-label">执行间隔</label>
+				<div style="display:flex;gap:8px;align-items:center;">
+					<input type="number" class="form-input" value="4" min="1" style="width:80px;">
+					<select class="form-select" style="width:120px;">
+						<option value="minutes">分钟</option>
+						<option value="hours" selected>小时</option>
+						<option value="days">天</option>
+					</select>
+				</div>
+			</div>
+
+			<!-- One-shot 输入区（默认隐藏） -->
+			<div class="form-group" id="oneshotFields" style="display:none;">
+				<label class="form-label">执行时间</label>
+				<input type="datetime-local" class="form-input" value="2026-07-12T09:00">
+			</div>
+
+			<!-- File Watch 输入区（默认隐藏） -->
+			<div class="form-group" id="filewatchFields" style="display:none;">
+				<label class="form-label">监听路径</label>
+				<input type="text" class="form-input" placeholder="/path/to/watch" style="font-family:'Cascadia Code', monospace;">
+				<div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+					<label class="form-label" style="margin:0;">监听事件:</label>
+					<select class="form-select" style="flex:1;">
+						<option value="change">文件变更 (change)</option>
+						<option value="add">文件新增 (add)</option>
+						<option value="unlink">文件删除 (unlink)</option>
+						<option value="all">全部事件</option>
+					</select>
+				</div>
+			</div>
+
+			<!-- Event 触发输入区（默认隐藏） -->
+			<div class="form-group" id="eventFields" style="display:none;">
+				<label class="form-label">触发事件</label>
+				<select class="form-select">
+					<option value="task_completed">任务完成时</option>
+					<option value="task_failed">任务失败时</option>
+					<option value="pr_merged">PR 合并时</option>
+					<option value="deploy_completed">部署完成时</option>
+					<option value="webhook">Webhook 回调</option>
+				</select>
+				<div class="form-group" style="margin-top:8px;" id="webhookUrlField">
+					<label class="form-label">Webhook URL</label>
+					<input type="text" class="form-input" placeholder="https://..." style="font-family:'Cascadia Code', monospace;">
+				</div>
+			</div>
+
+			<!-- 下次执行预览 -->
+			<div class="next-fire-preview">
+				<span class="icon">⏱️</span>
+				<div>
+					<div class="next-label">下次执行时间</div>
+					<div class="next-time">2026-07-12 02:00:00</div>
+				</div>
+				<div class="next-countdown">⏳ 6小时32分钟后</div>
+			</div>
+
+			<!-- 高级选项 -->
+			<div class="section-title">⚙️ 高级选项</div>
+			<div class="form-group">
+				<label class="form-label">任务超时时间（分钟）</label>
+				<input type="number" class="form-input" value="30" min="1" max="1440" style="width:120px;">
+				<span class="field-hint">任务执行超过此时间将自动取消，0 表示不限制</span>
+			</div>
+			<div class="form-group">
+				<label class="form-label">失败重试次数</label>
+				<div style="display:flex;gap:8px;align-items:center;">
+					<input type="number" class="form-input" value="3" min="0" max="10" style="width:80px;">
+					<span class="field-hint">失败后自动重试，0 表示不重试</span>
+				</div>
+			</div>
+			<div class="form-group">
+				<label class="form-label">重试间隔（秒）</label>
+				<input type="number" class="form-input" value="60" min="5" style="width:100px;">
+			</div>
+			<div class="toggle-row">
+				<span class="toggle-label">
+					<span class="icon">📧</span> 执行完成后通知
+				</span>
+				<label class="toggle-switch">
+					<input type="checkbox" checked>
+					<span class="toggle-slider"></span>
+				</label>
+			</div>
+
+			<!-- 执行历史摘要 -->
+			<div class="section-title">📜 最近执行记录</div>
+			<div style="display:flex;flex-direction:column;gap:4px;">
+				<div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:4px 8px;background:#333;border-radius:4px;">
+					<span style="color:#4ec9b0;">✅</span>
+					<span style="font-family:'Cascadia Code',monospace;color:#888;">2026-07-11 02:00</span>
+					<span style="flex:1;">执行成功</span>
+					<span style="color:#888;">耗时 2m 34s</span>
+				</div>
+				<div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:4px 8px;background:#333;border-radius:4px;">
+					<span style="color:#4ec9b0;">✅</span>
+					<span style="font-family:'Cascadia Code',monospace;color:#888;">2026-07-10 02:00</span>
+					<span style="flex:1;">执行成功</span>
+					<span style="color:#888;">耗时 1m 58s</span>
+				</div>
+				<div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:4px 8px;background:#333;border-radius:4px;">
+					<span style="color:#f44747;">❌</span>
+					<span style="font-family:'Cascadia Code',monospace;color:#888;">2026-07-09 02:00</span>
+					<span style="flex:1;">执行失败: 数据库连接超时</span>
+					<span style="color:#888;">重试3次后放弃</span>
+				</div>
+			</div>
+		</div>
+		<div class="modal-footer">
+			<button class="native-tb-btn" style="color:#f44747;" onclick="removeSchedule()">🗑 移除定时</button>
+			<div style="flex:1;"></div>
+			<button class="native-tb-btn" onclick="closeScheduleConfig()">取消</button>
+			<button class="native-tb-btn native-tb-btn-primary" onclick="saveSchedule()">💾 保存定时规则</button>
+		</div>
+	</div>
+</div>
+
+<script>
+// ===== Modal Controls =====
+function openSchedulerPanel() {
+	document.getElementById('schedulerPanel').style.display = 'flex';
+}
+
+function closeSchedulerPanel() {
+	document.getElementById('schedulerPanel').style.display = 'none';
+}
+
+// ===== Schedule Config Modal =====
+function openScheduleConfig(taskId) {
+	document.getElementById('scheduleConfigModal').style.display = 'flex';
+	document.getElementById('scheduleTaskName').textContent = '#' + taskId;
+}
+
+function closeScheduleConfig() {
+	document.getElementById('scheduleConfigModal').style.display = 'none';
+}
+
+function saveSchedule() {
+	alert('定时规则已保存！（Mockup）');
+	closeScheduleConfig();
+}
+
+function removeSchedule() {
+	if (confirm('确定要移除该任务的定时规则吗？')) {
+		closeScheduleConfig();
+	}
+}
+
+// ===== Schedule Type Tabs =====
+function selectScheduleType(type, btn) {
+	// Update active tab
+	document.querySelectorAll('#scheduleTypeTabs .schedule-type-tab').forEach(t => t.classList.remove('active'));
+	btn.classList.add('active');
+
+	// Show/hide fields
+	const fieldMap = {
+		cron: 'cronFields',
+		interval: 'intervalFields',
+		oneshot: 'oneshotFields',
+		filewatch: 'filewatchFields',
+		event: 'eventFields'
+	};
+	Object.values(fieldMap).forEach(id => {
+		document.getElementById(id).style.display = 'none';
+	});
+	const targetId = fieldMap[type];
+	if (targetId) {
+		document.getElementById(targetId).style.display = 'flex';
+	}
+}
+
+// ===== Cron Presets =====
+function setCronPreset(expression, btn) {
+	document.getElementById('cronExpression').value = expression;
+	document.querySelectorAll('.cron-preset').forEach(p => p.classList.remove('selected'));
+	btn.classList.add('selected');
+}
+
+// ===== Toggle Schedule Fields =====
+function toggleScheduleFields() {
+	const enabled = document.getElementById('scheduleEnabled').checked;
+	const fields = document.getElementById('scheduleFields');
+	const sections = fields.querySelectorAll('.form-group, .section-title, .next-fire-preview');
+
+	// Simple opacity toggle for visual feedback
+	fields.style.opacity = enabled ? '1' : '0.4';
+	fields.style.pointerEvents = enabled ? 'auto' : 'none';
+
+	// Also toggle all subsections
+	document.querySelectorAll('#scheduleConfigModal .section-title, #scheduleConfigModal .next-fire-preview, #scheduleConfigModal .form-group').forEach(el => {
+		if (el.closest('.toggle-row')) return; // Don't affect the toggle itself
+		el.style.opacity = enabled ? '1' : '0.4';
+		el.style.pointerEvents = enabled ? 'auto' : 'none';
+	});
+}
+
+// Close modals on overlay click
+document.addEventListener('click', function(e) {
+	if (e.target.classList.contains('modal-overlay')) {
+		e.target.style.display = 'none';
+	}
+});
+
+// Close on Escape
+document.addEventListener('keydown', function(e) {
+	if (e.key === 'Escape') {
+		document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none');
+	}
+});
+</script>
+
+</body>
+</html>

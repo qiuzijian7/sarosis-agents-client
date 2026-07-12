@@ -23,6 +23,10 @@ import { Disposable } from '../../../../../../base/common/lifecycle.js';
 import { KbSection } from './kbTypes.js';
 import { KbFullTextIndex, IKbSearchHit, IKbIndexRoot } from './kbIndex.js';
 import { KbLinkGraph, IKbGraphRoot, IOutgoingLink, IBacklink } from './kbGraph.js';
+import {
+	KbVectorIndex, IKbVectorSearchHit, IKbVectorStatus, IKbVectorBuildOptions, KB_RAG_INDEX_FILE,
+} from './kbVectorIndex.js';
+import { IEmbeddingService } from '../../../common/embeddingProvider.js';
 
 // ---------------------------------------------------------------------------
 // 类型（对齐 kbKernelApi.ts 的接口，便于无缝替换）
@@ -68,6 +72,7 @@ export class KbNativeKernel extends Disposable {
 
 	private readonly _index: KbFullTextIndex;
 	private readonly _graph: KbLinkGraph;
+	private readonly _vector: KbVectorIndex;
 	private _built = false;
 
 	/** 提及索引：归一化名称 → 文档 URI 集合 */
@@ -76,10 +81,14 @@ export class KbNativeKernel extends Disposable {
 	/** 文档名索引：归一化名称 → 文档元数据 */
 	private _docNames = new Map<string, { uri: URI; name: string }>();
 
-	constructor(private readonly fileService: IFileService) {
+	constructor(
+		private readonly fileService: IFileService,
+		embeddingService?: IEmbeddingService,
+	) {
 		super();
 		this._index = new KbFullTextIndex(fileService);
 		this._graph = new KbLinkGraph(fileService);
+		this._vector = new KbVectorIndex(fileService, embeddingService);
 	}
 
 	get isBuilt(): boolean { return this._built; }
@@ -132,6 +141,58 @@ export class KbNativeKernel extends Disposable {
 	allDocs(): { uri: URI; name: string; section: string; mtime: number; size: number; text: string }[] {
 		return this._index.allDocs();
 	}
+
+	// -----------------------------------------------------------------------
+	// 向量索引（RAG 语义检索）
+	// -----------------------------------------------------------------------
+
+	/** 对给定根目录构建向量索引（per-folder RAG）。需要激活的 Embedding provider。 */
+	async buildVectorIndex(roots: { uri: URI; section: KbSection }[], opts?: IKbVectorBuildOptions): Promise<void> {
+		await this._vector.build(roots, opts);
+	}
+
+	/** 向量语义检索。返回 cosine 相似度降序的块。 */
+	async searchVector(query: string, topK = 8): Promise<IKbVectorSearchHit[]> {
+		return this._vector.search(query, topK);
+	}
+
+	/** 从 JSON 字符串导入预构建的向量库（.kbrag.json 内容）。 */
+	async importVectorIndex(json: string): Promise<boolean> {
+		return this._vector.deserialize(json);
+	}
+
+	/** 从磁盘文件导入预构建的向量库（.kbrag.json）。 */
+	async importVectorFromFile(uri: URI): Promise<boolean> {
+		return this._vector.importFromFile(uri);
+	}
+
+	/** 导出向量库为 .kbrag.json 内容字符串。 */
+	exportVectorIndex(): string {
+		return this._vector.serialize();
+	}
+
+	/** 导出向量库到磁盘文件（.kbrag.json）。 */
+	async exportVectorToFile(uri: URI): Promise<void> {
+		await this._vector.exportToFile(uri);
+	}
+
+	/** 当前向量索引状态（built / tag / dimensions / chunkCount）。 */
+	getVectorStatus(): IKbVectorStatus {
+		return this._vector.getStatus();
+	}
+
+	/** 暴露全部向量块（UI 预览 / 调试）。 */
+	vectorChunks(): ReturnType<KbVectorIndex['allChunks']> {
+		return this._vector.allChunks();
+	}
+
+	/** Phase 3：provider/model 切换后只重算 tag 不匹配的块，返回重算数量。 */
+	async rebuildVectorStale(token?: IKbVectorBuildOptions['token']): Promise<number> {
+		return this._vector.rebuildStale(token);
+	}
+
+	/** 持久化文件名常量（.kbrag.json），供调用方定位/落盘。 */
+	get ragIndexFileName(): string { return KB_RAG_INDEX_FILE; }
 
 	// -----------------------------------------------------------------------
 	// 搜索（对齐 KbKernelClient.fullTextSearchBlock）

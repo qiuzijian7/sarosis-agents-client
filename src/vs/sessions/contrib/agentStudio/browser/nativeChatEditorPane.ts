@@ -2491,6 +2491,7 @@ export class NativeChatEditorPane extends EditorPane {
 	 * 无 filePath 时打开 untitled 编辑器。回退到直接写入。
 	 */
 	private async _handleApplyCode(code: string, _language: string, filePath?: string): Promise<void> {
+		this._logService.info(`[NativeChatEditorPane] _handleApplyCode called — lang="${_language}", filePath=${filePath ?? 'undefined'}, codeLen=${code.length}`);
 		try {
 			if (filePath) {
 				let resource: URI;
@@ -2507,12 +2508,21 @@ export class NativeChatEditorPane extends EditorPane {
 
 				// HTML 文件：直接写入 + 用 HtmlPreviewEditorInput 渲染预览（用户要求）
 				if (this._isHtmlFile(filePath)) {
+					this._logService.info(`[NativeChatEditorPane] _handleApplyCode: HTML file detected — writing + opening via HtmlPreviewEditorInput`, filePath);
 					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
-					const groups = this._editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
-					const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+					// 在中间栏（主文本编辑器）打开，而非侧分屏
+					const groups = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
+					const targetGroup = groups[0];
 					const fileName = filePath.split(/[\\/]/).pop() || filePath;
 					const previewInput = new HtmlPreviewEditorInput(resource, `预览：${fileName}`);
-					await this._editorService.openEditor(previewInput, { pinned: true }, targetGroup);
+					this._logService.info(`[NativeChatEditorPane] _handleApplyCode: created HtmlPreviewEditorInput(typeId=${HtmlPreviewEditorInput.ID}, resource=${resource.toString()})`);
+					try {
+						const pane = await this._editorService.openEditor(previewInput, { pinned: true }, targetGroup);
+						this._logService.info(`[NativeChatEditorPane] _handleApplyCode: openEditor returned, pane.getId()=${pane?.getId() ?? 'undefined'}, pane.constructor.name=${pane?.constructor.name ?? 'undefined'}`);
+					} catch (err) {
+						this._logService.error(`[NativeChatEditorPane] _handleApplyCode: openEditor threw`, err);
+						throw err;
+					}
 					return;
 				}
 
@@ -2544,6 +2554,19 @@ export class NativeChatEditorPane extends EditorPane {
 					options: { pinned: true },
 				} as any);
 			} else {
+				// 无 filePath：聊天代码块 Apply（仅 code + lang）。
+				if (this._isHtmlLang(_language)) {
+					// HTML 代码块 → 用虚拟 URI + 内存 HTML 内容打开
+					// HtmlPreviewEditorInput（带 编辑/HTML/预览 toggle），
+					// 全程不落盘；pane 直接吃 input.htmlContent 渲染。
+					const virtualUri = URI.from({ scheme: 'saros-html-preview', path: `/chat-apply/${Date.now()}.html` });
+					const previewInput = new HtmlPreviewEditorInput(virtualUri, '预览：Apply HTML', undefined, undefined, undefined, undefined, code);
+					const groups = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
+					const targetGroup = groups[0];
+					this._logService.info(`[NativeChatEditorPane] _handleApplyCode: HTML block Apply (no file) — opening in-memory HtmlPreviewEditorInput`);
+					await this._editorService.openEditor(previewInput, { pinned: true }, targetGroup);
+					return;
+				}
 				await this._editorService.openEditor({
 					resource: undefined,
 					contents: code,
@@ -2566,6 +2589,11 @@ export class NativeChatEditorPane extends EditorPane {
 	/** 判断是否为 HTML 文件（用于决定 Apply 后的打开方式：预览 vs 文本） */
 	private _isHtmlFile(filePath: string): boolean {
 		return /\.(html?|xhtml)$/i.test(filePath);
+	}
+
+	/** 按语言判定是否为 HTML（无 filePath 的聊天代码块 Apply 用） */
+	private _isHtmlLang(language: string): boolean {
+		return /^(html?|x?html)$/i.test((language || '').trim());
 	}
 
 	/**

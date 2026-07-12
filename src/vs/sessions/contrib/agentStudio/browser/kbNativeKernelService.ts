@@ -20,6 +20,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { dirname } from '../../../../base/common/resources.js';
 import { KbNativeKernel, INativeBacklinkResult } from './views/knowledgeBase/kbNativeKernel.js';
 import { KbSection } from './views/knowledgeBase/kbTypes.js';
+import { IEmbeddingService } from '../common/embeddingProvider.js';
+import { IKbVectorSearchHit, IKbVectorStatus, IKbVectorBuildOptions } from './views/knowledgeBase/kbVectorIndex.js';
 
 export interface IKbBuildRoot {
 	uri: URI;
@@ -52,6 +54,24 @@ export interface IKbNativeKernelService {
 
 	/** Enumerate all notes in the vault (for the webview wikilink resolver). */
 	getWorkspaceFiles(): Promise<{ uri: string; name: string }[]>;
+
+	/** Build the vector (RAG) index for the given roots (per-folder RAG construction). */
+	buildVectorIndex(roots: IKbBuildRoot[], opts?: IKbVectorBuildOptions): Promise<void>;
+
+	/** Semantic vector search over the built index. */
+	searchVector(query: string, topK?: number): Promise<IKbVectorSearchHit[]>;
+
+	/** Import a pre-built RAG library from a .kbrag.json file on disk. */
+	importVectorFromFile(uri: URI): Promise<boolean>;
+
+	/** Export the built vector index to a .kbrag.json file. */
+	exportVectorToFile(uri: URI): Promise<void>;
+
+	/** Current vector index status (built / tag / dimensions / chunkCount). */
+	getVectorStatus(): IKbVectorStatus;
+
+	/** Re-embed only chunks whose provider tag mismatches the active provider (provider switch). */
+	rebuildVectorStale(): Promise<number>;
 }
 
 export class KbNativeKernelService extends Disposable implements IKbNativeKernelService {
@@ -64,6 +84,7 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 
 	constructor(
 		@IFileService private readonly _fileService: IFileService,
+		@IEmbeddingService private readonly _embeddingService: IEmbeddingService,
 	) {
 		super();
 	}
@@ -77,9 +98,17 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 		this._persistUri = persistUri;
 	}
 
+	/** Ensure a kernel instance exists (lazily create one if the KB view never registered). */
+	private _ensureKernel(): KbNativeKernel {
+		if (!this._kernel) {
+			this._kernel = new KbNativeKernel(this._fileService, this._embeddingService);
+		}
+		return this._kernel;
+	}
+
 	async ensureBuilt(): Promise<void> {
 		if (!this._kernel) {
-			this._kernel = new KbNativeKernel(this._fileService);
+			this._kernel = new KbNativeKernel(this._fileService, this._embeddingService);
 		}
 		if (this._kernel.isBuilt) {
 			return;
@@ -174,5 +203,38 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 		// incremental reconcile that picks up the just-written `.md`. Any in-flight
 		// build is left to finish; the subsequent build() reconciles fresh data.
 		this._kernel?.invalidate();
+	}
+
+	// -----------------------------------------------------------------------
+	// 向量索引（RAG 语义检索）— 共享同一内核实例
+	// -----------------------------------------------------------------------
+
+	async buildVectorIndex(roots: IKbBuildRoot[], opts?: IKbVectorBuildOptions): Promise<void> {
+		const kernel = this._ensureKernel();
+		await kernel.buildVectorIndex(roots, opts);
+	}
+
+	async searchVector(query: string, topK = 8): Promise<IKbVectorSearchHit[]> {
+		const kernel = this._ensureKernel();
+		return kernel.searchVector(query, topK);
+	}
+
+	async importVectorFromFile(uri: URI): Promise<boolean> {
+		const kernel = this._ensureKernel();
+		return kernel.importVectorFromFile(uri);
+	}
+
+	async exportVectorToFile(uri: URI): Promise<void> {
+		const kernel = this._ensureKernel();
+		await kernel.exportVectorToFile(uri);
+	}
+
+	getVectorStatus(): IKbVectorStatus {
+		return this._ensureKernel().getVectorStatus();
+	}
+
+	async rebuildVectorStale(): Promise<number> {
+		const kernel = this._ensureKernel();
+		return kernel.rebuildVectorStale();
 	}
 }

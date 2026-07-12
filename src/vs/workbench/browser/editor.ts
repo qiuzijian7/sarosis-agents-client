@@ -101,6 +101,12 @@ export class EditorPaneRegistry implements IEditorPaneRegistry {
 	getEditorPane(editor: EditorInput): EditorPaneDescriptor | undefined {
 		const descriptors = this.findEditorPaneDescriptors(editor);
 
+		// Diagnostic logging to trace HTML preview routing.
+		if (editor.typeId === 'workbench.editor.agentStudio.htmlPreview') {
+			console.log(`[EditorPaneRegistry] getEditorPane: HtmlPreviewEditorInput routed to descriptors=` +
+				`${descriptors.map(d => d.typeId).join(',') || 'NONE'}`);
+		}
+
 		if (descriptors.length === 0) {
 			return undefined;
 		}

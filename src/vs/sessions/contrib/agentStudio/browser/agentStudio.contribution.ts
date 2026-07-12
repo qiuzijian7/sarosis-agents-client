@@ -33,6 +33,9 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 // Side-effect import: the module self-registers a workbench contribution.
 import './codebaseMemoryMcpBootstrap.js';
 
+// Platform Bridge Layer (cc-connect 复刻) — registers IBridgeService + auto-starts.
+import './bridge/bridge.contribution.js';
+
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer } from '../../../../workbench/common/editor.js';
 import { IEditorPaneRegistry, EditorPaneDescriptor } from '../../../../workbench/browser/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
@@ -76,6 +79,7 @@ import { ISkillLifecycleService } from '../common/skillLifecycle.js';
 import { SkillLifecycleService } from './skillLifecycleService.js';
 import { IKbNativeKernelService, KbNativeKernelService } from './kbNativeKernelService.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
+import { IEmbeddingService, EmbeddingService } from './embedding/embeddingService.js';
 import {
 	AGENT_STUDIO_ENABLED_SETTING,
 	AGENT_STUDIO_WORKSPACE_VIEW_ID,
@@ -111,6 +115,15 @@ import {
 	AGENT_STUDIO_PROVIDER_MAIN_BASE_URL,
 	AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY,
 	AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL,
+	AGENT_STUDIO_EMBEDDING_PROVIDER,
+	AGENT_STUDIO_EMBEDDING_MODEL,
+	AGENT_STUDIO_EMBEDDING_DIMENSIONS,
+	AGENT_STUDIO_EMBEDDING_API_KEY,
+	AGENT_STUDIO_EMBEDDING_BASE_URL,
+	AGENT_STUDIO_EMBEDDING_KNOT_API_KEY,
+	AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL,
+	AGENT_STUDIO_EMBEDDING_LOCAL_ENABLED,
+	AGENT_STUDIO_EMBEDDING_LOCAL_MODEL,
 	AGENT_STUDIO_AUX_VISION_PROVIDER,
 	AGENT_STUDIO_AUX_VISION_MODEL,
 	AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER,
@@ -132,6 +145,7 @@ import {
 	TOF_SITE_BASE_URL_SETTING,
 	TOF_GATEWAY_BASE_URL_SETTING,
 	TOF_LOGIN_TIMEOUT_SETTING,
+	CHANNEL_DEFINITIONS,
 } from '../common/constants.js';
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
@@ -269,9 +283,34 @@ const workflowIcon = registerIcon('agent-studio-workflow', Codicon.listTree, loc
 
 // --- Configuration ---------------------------------------------------------------
 //qiuzijian debug
+/** 由 CHANNEL_DEFINITIONS 动态生成配置注册表（避免手写约 200 项）。 */
+function channelConfigProperties(): Record<string, any> {
+	const props: Record<string, any> = {};
+	for (const def of CHANNEL_DEFINITIONS) {
+		for (const f of def.configFields) {
+			// JSON Schema 仅接受基础类型：password/textarea/agent 归为 string
+			const schemaType =
+				f.type === 'password' || f.type === 'textarea' || f.type === 'agent' ? 'string' : f.type;
+			const prop: any = { type: schemaType, default: f.default };
+			if (f.description) {
+				prop.description = localize('agentStudio.channel.' + f.key, f.description);
+			}
+			if (f.type === 'select' && f.options) {
+				prop.enum = f.options.map(o => o.value);
+			}
+			if (f.placeholder) {
+				prop.placeholder = f.placeholder;
+			}
+			props[f.key] = prop;
+		}
+	}
+	return props;
+}
+
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'sessions',
 	properties: {
+		...channelConfigProperties(),
 		[AGENT_STUDIO_ENABLED_SETTING]: {
 			type: 'boolean',
 			default: true,
@@ -410,6 +449,44 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL]: {
 			type: 'string', default: '',
 			description: localize('agentStudio.provider.custom.baseUrl', "Custom Provider API base URL."),
+		},
+		// --- Embedding (RAG vectorization) ---
+		[AGENT_STUDIO_EMBEDDING_PROVIDER]: {
+			type: 'string', default: 'openai',
+			enum: ['openai', 'openrouter', 'nous', 'gemini', 'anthropic', 'main', 'custom', 'knot', 'local'],
+			description: localize('agentStudio.embedding.provider', "Embedding provider for RAG vectorization. Reuses the selected provider's API key when an OpenAI-compatible provider is chosen; 'local' uses an offline transformers.js model (enable embedding.local.enabled)."),
+		},
+		[AGENT_STUDIO_EMBEDDING_MODEL]: {
+			type: 'string', default: 'text-embedding-3-small',
+			description: localize('agentStudio.embedding.model', "Embedding model name (e.g. text-embedding-3-small). Provider-specific."),
+		},
+		[AGENT_STUDIO_EMBEDDING_DIMENSIONS]: {
+			type: 'number', default: 512,
+			description: localize('agentStudio.embedding.dimensions', "Vector dimension. OpenAI text-embedding-3-* supports reducing to 512; local models are fixed (e.g. 384)."),
+		},
+		[AGENT_STUDIO_EMBEDDING_API_KEY]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.embedding.apiKey', "Optional dedicated OpenAI embedding API key (overrides the selected provider's key)."),
+		},
+		[AGENT_STUDIO_EMBEDDING_BASE_URL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.embedding.baseUrl', "Optional dedicated embedding API base URL (overrides the selected provider's base URL)."),
+		},
+		[AGENT_STUDIO_EMBEDDING_KNOT_API_KEY]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.embedding.knot.apiKey', "Knot internal embedding API key."),
+		},
+		[AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL]: {
+			type: 'string', default: '',
+			description: localize('agentStudio.embedding.knot.baseUrl', "Knot internal embedding API base URL."),
+		},
+		[AGENT_STUDIO_EMBEDDING_LOCAL_ENABLED]: {
+			type: 'boolean', default: false,
+			description: localize('agentStudio.embedding.local.enabled', "Enable offline local embedding (transformers.js) as a fallback when the API provider fails or for fully offline RAG."),
+		},
+		[AGENT_STUDIO_EMBEDDING_LOCAL_MODEL]: {
+			type: 'string', default: 'Xenova/all-MiniLM-L6-v2',
+			description: localize('agentStudio.embedding.local.model', "Local embedding model id for transformers.js (e.g. Xenova/all-MiniLM-L6-v2 or a multilingual variant)."),
 		},
 		// --- Auxiliary Models ---
 		[AGENT_STUDIO_AUX_VISION_PROVIDER]: {
@@ -597,6 +674,7 @@ registerSingleton(IAgentStudioDashboardService, AgentStudioDashboardService, Ins
 // already-built backlink/mention index instead of re-scanning the vault.
 registerSingleton(IKbNativeKernelService, KbNativeKernelService, InstantiationType.Delayed);
 registerSingleton(IKbVersionService, KbVersionService, InstantiationType.Delayed);
+registerSingleton(IEmbeddingService, EmbeddingService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
 // Register AgentStudioEditorPane so that AgentStudioEditorInput can be opened

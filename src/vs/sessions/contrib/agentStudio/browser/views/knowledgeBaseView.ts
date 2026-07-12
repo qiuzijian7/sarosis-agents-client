@@ -62,13 +62,12 @@ import { KbFullTextIndex, IKbSearchHit } from './knowledgeBase/kbIndex.js';
 import { KbLinkGraph } from './knowledgeBase/kbGraph.js';
 import { KbNativeKernel, INativeBacklinkResult } from './knowledgeBase/kbNativeKernel.js';
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
+import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
-import { resolveKbRoot, createFileStorageAdapter } from '../knowledge/knowledgeStorage.js';
 import { appendKbOpLog, type IKbOpLogEntry, type KbOpChannel, type KbOpStatus } from '../knowledge/kbOpLog.js';
-import { IAiEmbeddingVectorService } from '../../../../../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.js';
-import { KnowledgeManager } from '../knowledge/engine/knowledgeManager.js';
-import { resolveChatModel, createEmbedder } from '../knowledge/knowledgeAdapters.js';
+import { resolveKbRoot } from '../knowledge/knowledgeStorage.js';
+import { IKbVectorSearchHit, KB_RAG_INDEX_FILE } from './knowledgeBase/kbVectorIndex.js';
 
 const KB_ROOT_SUBPATH = '.saros/knowledge-base';
 const STORAGE_VAULTS = 'agentStudio.kb.vaults';
@@ -154,12 +153,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@ISharedWebContentExtractorService private readonly _sharedWebContentExtractor: ISharedWebContentExtractorService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
-		@IAiEmbeddingVectorService private readonly _embeddingService: IAiEmbeddingVectorService,
+		@IEmbeddingService private readonly _ragEmbeddingService: IEmbeddingService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._index = new KbFullTextIndex(this.fileService);
 		this._graph = new KbLinkGraph(this.fileService);
-		this._nativeKernel = new KbNativeKernel(this.fileService);
+		this._nativeKernel = new KbNativeKernel(this.fileService, this._ragEmbeddingService);
 		// Share this already-built kernel with the BlockSuite note editor so it
 		// can reuse the same backlink/mention index without re-scanning the vault.
 		this._kbKernelService.setKernel(this._nativeKernel);
@@ -733,10 +732,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const importBtn = $('span.kb-sec-btn.primary'); importBtn.textContent = '📥'; importBtn.title = '导入数据源';
 			importBtn.onclick = (e) => { e.stopPropagation(); this.openImportDropdown(sectionEl, importBtn); };
 			toolbar.appendChild(importBtn);
-			// Phase 3: RAG 构建按钮
-			const ragBtn = $('span.kb-sec-btn'); ragBtn.textContent = '🧠'; ragBtn.title = '构建 RAG 知识库（提取实体+关系 → 向量索引 → 语义问答）';
-			ragBtn.onclick = (e) => { e.stopPropagation(); void this._buildRagKnowledgeBase(); };
-			toolbar.appendChild(ragBtn);
+		// RAG 向量索引（构建 / 导入 .kbrag.json / 导出 .kbrag.json）
+		const ragBtn = $('span.kb-sec-btn'); ragBtn.textContent = '🧠'; ragBtn.title = 'RAG 向量索引：构建 / 导入 / 导出 .kbrag.json（语义搜索）';
+		ragBtn.onclick = (e) => { e.stopPropagation(); this.openRagDropdown(sectionEl, ragBtn); };
+		toolbar.appendChild(ragBtn);
 		} else {
 			const newFile = $('span.kb-sec-btn'); newFile.textContent = '✏️'; newFile.title = '新建文件';
 			newFile.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
@@ -1794,9 +1793,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		if (matches.length === 0) {
 			const empty = $('div.kb-empty-inline'); empty.textContent = '无匹配内容';
 			resultsEl.appendChild(empty);
-			return;
+		} else {
+			for (const m of matches) { resultsEl.appendChild(this.renderSearchHit(m, q)); }
 		}
-		for (const m of matches) { resultsEl.appendChild(this.renderSearchHit(m, q)); }
+		// 语义检索融合：向量索引已构建时追加「语义相关」区块
+		void this._appendVectorHits(q, resultsEl, token);
 	}
 
 	/** 全文检索（Tier 3：kernel 优先，回退本地索引）。 */
@@ -2051,7 +2052,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		row.style.cssText = 'display:flex;gap:4px;padding:4px 8px;margin:2px 0;';
 
 		const input = document.createElement('input');
-		input.placeholder = '🧠 向知识库提问（需先点击 🧠 构建 RAG）';
+		input.placeholder = '🧠 向知识库提问（语义检索，需先构建向量索引）';
 		input.style.cssText = 'flex:1;border:1px solid var(--vscode-input-border,#3c3c3c);background:var(--vscode-input-background,#1e1e1e);color:var(--vscode-input-foreground,#ccc);padding:4px 8px;border-radius:4px;font-size:12px;';
 		input.onkeydown = (e) => {
 			if (e.key === 'Enter') { void this._doAskKb(input.value.trim()); }
@@ -2075,7 +2076,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._body.appendChild(result);
 	}
 
-	/** 执行 RAG 问答 */
+	/** 执行 RAG 问答（语义检索式：向量索引取 top 块直接作为答案预览）。 */
 	private async _doAskKb(query: string): Promise<void> {
 		const resultEl = this._askKbResult;
 		const inputEl = this._askKbInput;
@@ -2083,119 +2084,177 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		inputEl.disabled = true;
 		resultEl.style.display = 'block';
-		resultEl.innerHTML = '<span style="color:var(--vscode-descriptionForeground,#888)">⏳ 搜索中…</span>';
+		resultEl.innerHTML = '<span style="color:var(--vscode-descriptionForeground,#888)">⏳ 语义检索中…</span>';
 
 		try {
-			const { mgr, session } = await this._getOrCreateRagSession();
-			if (!session) {
-				resultEl.innerHTML = '<span style="color:var(--vscode-errorForeground,#f48771)">❌ RAG 知识库尚未构建。点击工具栏 🧠 按钮先构建。</span>';
+			const status = this._kbKernelService.getVectorStatus();
+			if (!status.built || status.chunkCount === 0) {
+				resultEl.innerHTML = '<span style="color:var(--vscode-errorForeground,#f48771)">❌ 向量索引尚未构建或为空。请在库分区点击 🧠 → 构建向量索引（或导入 .kbrag.json）。</span>';
 				return;
 			}
 
-			const r = await mgr.chat(session, query, 5);
-			const itemsStr = (r.retrieved?.nodes?.length || r.retrieved?.items?.length)
-				? `<div style="margin-top:4px;font-size:10px;color:var(--vscode-descriptionForeground,#888)">📎 检索到 ${
-					(r.retrieved as any).nodes?.length ?? (r.retrieved as any).items?.length ?? 0
-				} 条相关知识</div>`
-				: '';
+			const hits = await this._kbKernelService.searchVector(query, 6);
+			if (!hits.length) {
+				resultEl.innerHTML = '<span style="color:var(--vscode-descriptionForeground,#888)">未找到相关知识片段。</span>';
+				return;
+			}
 
-			resultEl.innerHTML = `<div style="margin-bottom:4px;font-weight:bold;color:var(--vscode-textLink-foreground,#3794ff)">🤖 回答</div><div>${_escapeHtml(r.text)}${itemsStr}</div>`;
+			const vaultRoot = this.vaultUri(this._activeVault).fsPath;
+			const parts = hits.map((h, i) => {
+				const p = h.docId.replace(vaultRoot, '').replace(/\\/g, '/');
+				const txt = h.text.length > 240 ? h.text.slice(0, 240) + '…' : h.text;
+				return `<div style="margin:6px 0;padding:6px 8px;border-left:2px solid var(--vscode-textLink-foreground,#3794ff);background:var(--vscode-editor-background,#1e1e1e)">
+					<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--vscode-descriptionForeground,#888)">
+						<span>#${i + 1} · ${_escapeHtml(h.docName)}</span><span>${(h.score * 100).toFixed(0)}%</span>
+					</div>
+					<div style="margin-top:2px">${_escapeHtml(txt)}</div>
+					<div style="font-size:10px;color:var(--vscode-descriptionForeground,#888);margin-top:2px">📄 ${_escapeHtml(p)}</div>
+				</div>`;
+			});
+			resultEl.innerHTML = `<div style="font-weight:bold;margin-bottom:4px;color:var(--vscode-textLink-foreground,#3794ff)">🧠 语义检索到 ${hits.length} 条相关知识</div>${parts.join('')}`;
+			void this._logOp('kb.ask', 'success', { detail: { query, hits: hits.length } });
 		} catch (err) {
-			resultEl.innerHTML = `<span style="color:var(--vscode-errorForeground,#f48771)">❌ 问答失败：${_escapeHtml(String(err?.message ?? err))}</span>`;
+			resultEl.innerHTML = `<span style="color:var(--vscode-errorForeground,#f48771)">❌ 检索失败：${_escapeHtml(String(err?.message ?? err))}</span>`;
 		} finally {
 			inputEl.disabled = false;
 			inputEl.value = '';
 		}
 	}
 
-	/** 构建 RAG 知识库：读取 vault 所有 .md → LightRAG 提取实体+关系 → 向量索引 */
-	private async _buildRagKnowledgeBase(): Promise<void> {
+	/** 打开 RAG 向量索引下拉（构建 / 导入 .kbrag.json / 导出 .kbrag.json）。 */
+	private openRagDropdown(anchorSection: HTMLElement, anchorBtn: HTMLElement): void {
+		this._body.querySelectorAll('.kb-dropdown.show').forEach(d => d.classList.remove('show'));
+		const dd = $('div.kb-dropdown');
+		dd.id = 'kbRagDD';
+		const items: { icon: string; label: string; sub: string; run: () => void }[] = [
+			{ icon: '🧠', label: '构建向量索引', sub: '针对当前知识库切块→向量化（语义搜索）', run: () => void this._buildVectorIndex() },
+			{ icon: '📥', label: '导入 .kbrag.json', sub: '载入预构建的向量库文件', run: () => void this._importKbrag() },
+			{ icon: '📤', label: '导出 .kbrag.json', sub: '保存当前向量库供分享/备份', run: () => void this._exportKbrag() },
+		];
+		for (const it of items) {
+			const opt = $('div.kb-opt');
+			safeSetInnerHtml(opt, `<span class="kb-ic">${it.icon}</span><span class="kb-txt">${it.label}</span><span class="kb-sub">${it.sub}</span>`);
+			opt.onclick = (e) => { e.stopPropagation(); dd.classList.remove('show'); void it.run(); };
+			dd.appendChild(opt);
+		}
+		this.positionDropdown(dd, anchorBtn);
+		dd.classList.add('show');
+	}
+
+	/** 构建向量索引（per-folder RAG）：切块 → 向量化，存于共享内核。 */
+	private async _buildVectorIndex(): Promise<void> {
 		if (!this._activeVault) {
 			this.notificationService.warn('请先选择一个知识库');
 			return;
 		}
-		if (!this._embeddingService.isEnabled()) {
+		if (!this._ragEmbeddingService.getActiveTag()) {
 			this.notificationService.warn('Embedding 服务未启用。请在设置中配置模型 Provider（OpenRouter / 自定义 API）。');
 			return;
 		}
-
 		const vault = this._activeVault;
-		this.notificationService.info(`🧠 开始构建「${vault.name}」RAG 知识库…`);
-
+		this.notificationService.info(`🧠 开始构建「${vault.name}」向量索引（切块 → 向量化）…`);
 		try {
-			// 确保 FTS 索引是最新的
 			if (this._searchDirty) { await this.rebuildSearchAssets(); }
-
-			const allDocs = this._index.allDocs();
-			if (allDocs.length === 0) {
-				this.notificationService.warn('知识库中没有 .md 文件，请先导入笔记。');
+			const roots = this.buildRoots();
+			if (roots.length === 0) {
+				this.notificationService.warn('没有可索引的目录。');
 				return;
 			}
-
-			// 创建 KnowledgeManager
-			const chatModel = resolveChatModel(this.configurationService);
-			const embedder = createEmbedder(this._embeddingService);
-			const userHome = (this.environmentService as INativeEnvironmentService).userHome.fsPath;
-			const root = resolveKbRoot(undefined, userHome);
-			const storage = createFileStorageAdapter(this.fileService, root);
-			const mgr = new KnowledgeManager({ llm: chatModel, embedder, storage, verbose: true });
-
-			// 创建 RAG session
-			const ragId = `kb-vault-${vault.id}`;
-			const session = mgr.create('knowledge_graph', {
-				id: ragId,
-				title: `RAG: ${vault.name}`,
-				method: 'light_rag',
-			});
-
-			// Feed 所有文档文本
-			let fed = 0;
-			for (const doc of allDocs) {
-				try {
-					const content = await this.fileService.readFile(doc.uri);
-					const text = content.value.toString().trim();
-					if (text) {
-						await mgr.parseText(session, text);
-						fed++;
-					}
-				} catch { /* skip unreadable */ }
-			}
-
-			if (fed === 0) {
-				this.notificationService.warn('没有可读的 .md 文件');
-				return;
-			}
-
-			await mgr.persist(session);
-
-			this.notificationService.info(`✅ RAG 知识库「${vault.name}」构建完成：${fed} 个文档已索引。现在可用 🧠 Ask 提问。`);
-			void this._logOp('kb.rag.build', 'success', { detail: { vault: vault.id, docs: fed, method: 'light_rag' } });
+			await this._kbKernelService.buildVectorIndex(roots);
+			const st = this._kbKernelService.getVectorStatus();
+			this.notificationService.info(`✅ 向量索引构建完成：${st.chunkCount} 个块（维度 ${st.dimensions}）。现在搜索与 Ask 可用语义检索。`);
+			void this._logOp('kb.vector.build', 'success', { detail: { vault: vault.id, chunks: st.chunkCount } });
 		} catch (err) {
-			this.notificationService.error(`❌ RAG 构建失败：${String(err?.message ?? err)}`);
-			void this._logOp('kb.rag.build', 'failure', { detail: { vault: vault.id }, error: String(err) });
+			this.notificationService.error(`❌ 向量索引构建失败：${String(err?.message ?? err)}`);
+			void this._logOp('kb.vector.build', 'failure', { detail: { vault: vault.id }, error: String(err) });
 		}
 	}
 
-	/** 获取或创建 RAG session（用于 Ask KB） */
-	private async _getOrCreateRagSession(): Promise<{ mgr: KnowledgeManager; session: ReturnType<KnowledgeManager['create']> | null }> {
-		if (!this._activeVault || !this._embeddingService.isEnabled()) {
-			return { mgr: undefined!, session: null };
-		}
+	/** 从磁盘导入预构建的 .kbrag.json 向量库。 */
+	private async _importKbrag(): Promise<void> {
+		if (!this._activeVault) { return; }
+		const picked = await this.fileDialogService.showOpenDialog({
+			title: '导入 .kbrag.json 向量库',
+			canSelectFiles: true, canSelectFolders: false, canSelectMany: false,
+			filters: [{ name: 'KB RAG Index', extensions: ['kbrag.json', 'json'] }],
+		});
+		if (!picked || !picked.length) { return; }
 		try {
-			const chatModel = resolveChatModel(this.configurationService);
-			const embedder = createEmbedder(this._embeddingService);
-			const userHome = (this.environmentService as INativeEnvironmentService).userHome.fsPath;
-			const root = resolveKbRoot(undefined, userHome);
-			const storage = createFileStorageAdapter(this.fileService, root);
-			const mgr = new KnowledgeManager({ llm: chatModel, embedder, storage });
-
-			// 尝试加载已保存的 session
-			const ragId = `kb-vault-${this._activeVault.id}`;
-			const session = await mgr.load(ragId);
-			return { mgr, session };
-		} catch {
-			return { mgr: undefined!, session: null };
+			const ok = await this._kbKernelService.importVectorFromFile(picked[0]);
+			if (ok) {
+				const st = this._kbKernelService.getVectorStatus();
+				this.notificationService.info(`✅ 已导入向量库：${st.chunkCount} 个块（维度 ${st.dimensions}）。${st.tag ? 'tag: ' + st.tag : ''}`);
+				void this._logOp('kb.vector.import', 'success', { source: picked[0].fsPath, detail: { chunks: st.chunkCount } });
+			} else {
+				this.notificationService.warn('导入失败：文件无效，或缺少激活的 Embedding provider 无法重新向量化。');
+				void this._logOp('kb.vector.import', 'failure', { source: picked[0].fsPath });
+			}
+		} catch (err) {
+			this.notificationService.error(`❌ 导入失败：${String(err?.message ?? err)}`);
 		}
+	}
+
+	/** 导出当前向量库为 .kbrag.json。 */
+	private async _exportKbrag(): Promise<void> {
+		if (!this._activeVault) { return; }
+		const st = this._kbKernelService.getVectorStatus();
+		if (!st.built || st.chunkCount === 0) {
+			this.notificationService.warn('向量索引为空，请先构建或导入。');
+			return;
+		}
+		const defaultUri = URI.joinPath(this.vaultUri(this._activeVault), KB_RAG_INDEX_FILE);
+		const saveUri = await this.fileDialogService.showSaveDialog({
+			title: '导出 .kbrag.json 向量库',
+			defaultUri,
+			filters: [{ name: 'KB RAG Index', extensions: ['kbrag.json', 'json'] }],
+		});
+		if (!saveUri) { return; }
+		try {
+			await this._kbKernelService.exportVectorToFile(saveUri);
+			this.notificationService.info(`✅ 已导出向量库到：${saveUri.fsPath}`);
+			void this._logOp('kb.vector.export', 'success', { target: saveUri.fsPath });
+		} catch (err) {
+			this.notificationService.error(`❌ 导出失败：${String(err?.message ?? err)}`);
+		}
+	}
+
+	/** 搜索结果融合：向量索引已构建时，追加「语义相关」区块到全文结果下方。 */
+	private async _appendVectorHits(q: string, resultsEl: HTMLElement, token: number): Promise<void> {
+		try {
+			const status = this._kbKernelService.getVectorStatus();
+			if (!status.built || status.chunkCount === 0) { return; }
+			const hits = await this._kbKernelService.searchVector(q, 5);
+			if (token !== this._searchToken) { return; } // 已被新搜索取代
+			if (!hits.length) { return; }
+			const sep = $('div.kb-search-head'); sep.textContent = `🧠 语义相关 ${hits.length} 条（向量索引）`;
+			resultsEl.appendChild(sep);
+			for (const h of hits) {
+				resultsEl.appendChild(this._renderVectorHit(h));
+			}
+		} catch {
+			// 语义检索失败不影响全文结果展示
+		}
+	}
+
+	/** 渲染单条向量语义命中。 */
+	private _renderVectorHit(hit: IKbVectorSearchHit): HTMLElement {
+		const el = $('div.kb-search-hit');
+		el.style.borderLeft = '2px solid var(--vscode-textLink-foreground,#3794ff)';
+		const icon = $('span.kb-ficon'); icon.textContent = '🧠'; el.appendChild(icon);
+		const name = $('span.kb-name'); name.textContent = hit.docName; el.appendChild(name);
+		const badge = $('span.kb-hit-badge'); badge.textContent = `${(hit.score * 100).toFixed(0)}%`; el.appendChild(badge);
+		const path = $('span.kb-hit-path');
+		const vaultRoot = this._activeVault ? this.vaultUri(this._activeVault).fsPath : '';
+		path.textContent = hit.docId.replace(vaultRoot, '').replace(/\\/g, '/');
+		el.appendChild(path);
+		if (hit.text) {
+			const snip = $('div.kb-hit-snippet');
+			snip.textContent = hit.text.length > 160 ? hit.text.slice(0, 160) + '…' : hit.text;
+			el.appendChild(snip);
+		}
+		el.onclick = () => this.openUri(URI.parse(hit.docId));
+		el.oncontextmenu = (e) => { e.preventDefault(); this.openUri(URI.parse(hit.docId)); };
+		return el;
 	}
 
 	/**

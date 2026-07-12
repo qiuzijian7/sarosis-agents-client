@@ -65,6 +65,18 @@ export const AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL = 'sessions.agentStudio.provi
 export const AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY = 'sessions.agentStudio.provider.ollama.apiKey';
 export const AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL = 'sessions.agentStudio.provider.ollama.baseUrl';
 
+// Configuration keys — Embedding (RAG vectorization provider layer)
+// 方案A 主路径：复用现有 provider 密钥配置做 embedding；方案C 兜底：本地 transformers.js
+export const AGENT_STUDIO_EMBEDDING_PROVIDER = 'sessions.agentStudio.embedding.provider';
+export const AGENT_STUDIO_EMBEDDING_MODEL = 'sessions.agentStudio.embedding.model';
+export const AGENT_STUDIO_EMBEDDING_DIMENSIONS = 'sessions.agentStudio.embedding.dimensions';
+export const AGENT_STUDIO_EMBEDDING_API_KEY = 'sessions.agentStudio.embedding.apiKey';
+export const AGENT_STUDIO_EMBEDDING_BASE_URL = 'sessions.agentStudio.embedding.baseUrl';
+export const AGENT_STUDIO_EMBEDDING_KNOT_API_KEY = 'sessions.agentStudio.embedding.knot.apiKey';
+export const AGENT_STUDIO_EMBEDDING_KNOT_BASE_URL = 'sessions.agentStudio.embedding.knot.baseUrl';
+export const AGENT_STUDIO_EMBEDDING_LOCAL_ENABLED = 'sessions.agentStudio.embedding.local.enabled';
+export const AGENT_STUDIO_EMBEDDING_LOCAL_MODEL = 'sessions.agentStudio.embedding.local.model';
+
 // Configuration keys — CLI
 export const AGENT_STUDIO_CLI_PATH_SETTING = 'sessions.agentStudio.cli.cliPath';
 export const AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING = 'sessions.agentStudio.cli.defaultWorkdir';
@@ -179,7 +191,7 @@ export interface IChannelConfigField {
 	readonly key: string;
 	readonly label: string;
 	readonly description: string;
-	readonly type: 'string' | 'password' | 'boolean' | 'number' | 'select' | 'textarea';
+	readonly type: 'string' | 'password' | 'boolean' | 'number' | 'select' | 'textarea' | 'agent';
 	readonly default: any;
 	readonly placeholder?: string;
 	readonly options?: { value: string; label: string }[];
@@ -194,6 +206,7 @@ function commonFields(ch: string): IChannelConfigField[] {
 		{ key: `sessions.channel.${ch}.groupPolicy`, label: 'Group Policy', description: '群聊消息策略', type: 'select', default: 'disabled', options: GROUP_POLICY_OPTIONS },
 		{ key: `sessions.channel.${ch}.groupAllowFrom`, label: 'Group Allow From', description: '允许的群聊 ID 列表（每行一个）', type: 'textarea', default: '' },
 		{ key: `sessions.channel.${ch}.defaultAccount`, label: 'Default Account', description: '多帐号时的默认帐号名称', type: 'string', default: '' },
+		{ key: `sessions.channel.${ch}.defaultAgent`, label: '默认 Agent', description: '该渠道新建会话时默认使用的 Agent（留空跟随引擎默认）', type: 'agent', default: '' },
 	];
 }
 

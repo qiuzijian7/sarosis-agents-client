@@ -12,7 +12,8 @@
  *          + Halo 标签 + 半透明白底圆角 + 底部放置
  *   - 边：三态色 + 发光光纤效果 + 边标签（关系类型）白底
  *   - 力导向布局：Eades 算法 + 碰撞半径 40 + 防重叠
- *   - 交互：点击选中节点/边、点击空白清除、双击高亮相邻节点、
+ *   - 交互：单击仅选中节点/边（视觉反馈，不触发响应）、点击空白清除、
+ *           双击节点才触发响应（fire onNodeClick，由宿主打开编辑器）+ 高亮相邻节点、
  *           拖拽 + 滚轮缩放 + 平移
  *
  *  数据格式：
@@ -854,12 +855,11 @@ export class KbGraphView extends Disposable {
 		const node = this._findNodeAt(mx, my);
 
 		if (node) {
-			// 选中节点
+			// 单击仅选中节点（视觉反馈），不触发响应；响应改由双击触发
 			this._selectedNode = node;
 			this._selectedEdge = null;
 			this._highlightedNodes.clear();
 			this._highlightedEdges.clear();
-			this._onNodeClick.fire({ node: node.data });
 			this._requestDraw();
 			return;
 		}
@@ -920,6 +920,8 @@ export class KbGraphView extends Disposable {
 		this._selectedNode = null;
 		this._selectedEdge = null;
 		this._info(`双击高亮节点=${node.data.label}，相邻节点=${highlighted.size}，关联边=${highlightedEdges.size}`);
+		// 双击才触发节点响应（由宿主打开编辑器）
+		this._onNodeClick.fire({ node: node.data });
 		this._requestDraw();
 	};
 

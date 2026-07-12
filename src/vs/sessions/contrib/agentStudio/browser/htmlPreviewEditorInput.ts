@@ -53,6 +53,11 @@ export class HtmlPreviewEditorInput extends EditorInput {
 	private readonly _workspaceId: string | undefined;
 	private readonly _workspaceSessionId: string | undefined;
 	private readonly _agentSessionId: string | undefined;
+	// In-memory HTML content (chat "Apply" of an unsaved HTML block). When
+	// present the pane renders directly from this string instead of reading
+	// the (virtual / non-existent) resource from disk — i.e. we never write
+	// to the filesystem for these one-off previews.
+	private readonly _htmlContent: string | undefined;
 
 	constructor(
 		resource: URI,
@@ -61,6 +66,7 @@ export class HtmlPreviewEditorInput extends EditorInput {
 		workspaceId?: string,
 		workspaceSessionId?: string,
 		agentSessionId?: string,
+		htmlContent?: string,
 	) {
 		super();
 		this._resource = resource;
@@ -69,6 +75,7 @@ export class HtmlPreviewEditorInput extends EditorInput {
 		this._workspaceId = workspaceId;
 		this._workspaceSessionId = workspaceSessionId;
 		this._agentSessionId = agentSessionId;
+		this._htmlContent = htmlContent;
 	}
 
 	override get resource(): URI {
@@ -106,6 +113,11 @@ export class HtmlPreviewEditorInput extends EditorInput {
 
 	get agentSessionId(): string | undefined {
 		return this._agentSessionId;
+	}
+
+	/** In-memory HTML content for unsaved (chat "Apply") previews. */
+	get htmlContent(): string | undefined {
+		return this._htmlContent;
 	}
 
 	override toUntyped(): IUntypedEditorInput {

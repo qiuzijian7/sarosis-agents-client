@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>方案C：右侧可折叠定时面板</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	font-size: 12px; background: #1e1e1e; color: #ccc;
+	display: flex; justify-content: center; padding: 20px;
+}
+
+.app-container {
+	width: 1280px; height: 900px;
+	display: flex; background: #1e1e1e;
+	border: 1px solid #333; border-radius: 8px; overflow: hidden;
+}
+
+/* ===== Left: Main Board ===== */
+.board-area {
+	flex: 1; display: flex; flex-direction: column; min-width: 0;
+}
+
+/* Header */
+.native-tb-header {
+	display: flex; align-items: center; justify-content: space-between;
+	padding: 8px 12px; border-bottom: 1px solid #333;
+	flex-shrink: 0; background: #252526;
+}
+.native-tb-header-left { display: flex; align-items: center; gap: 8px; }
+.native-tb-title { font-weight: 600; font-size: 13px; color: #e0e0e0; }
+.native-tb-count { background: #4d4d4d; color: #ccc; border-radius: 10px; padding: 1px 7px; font-size: 11px; }
+.native-tb-header-right { display: flex; align-items: center; gap: 6px; }
+
+.native-tb-btn {
+	font-size: 11px; padding: 4px 10px; border: none; border-radius: 4px;
+	cursor: pointer; background: #3a3a3a; color: #ccc; white-space: nowrap;
+	display: inline-flex; align-items: center; gap: 5px; transition: background 0.15s;
+}
+.native-tb-btn:hover { background: #4a4a4a; }
+.native-tb-btn-accent { background: #0e639c; color: #fff; }
+.native-tb-btn-accent:hover { background: #1177bb; }
+
+/* Toggle schedule panel button */
+.native-tb-btn-schedule {
+	background: linear-gradient(135deg, #f59e0b, #d97706);
+	color: #fff; font-weight: 500; position: relative; overflow: hidden;
+}
+.native-tb-btn-schedule:hover {
+	background: linear-gradient(135deg, #fbbf24, #f59e0b);
+}
+.native-tb-btn-schedule.has-active {
+	animation: schedule-pulse 2s ease-in-out infinite;
+}
+@keyframes schedule-pulse {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(245,158,11,0.4); }
+	50% { box-shadow: 0 0 0 4px rgba(245,158,11,0); }
+}
+
+/* Columns */
+.native-tb-columns {
+	flex: 1 1 0; display: flex; gap: 0;
+	overflow-x: auto; overflow-y: hidden; min-height: 0;
+}
+.native-tb-column {
+	flex: 1 1 0; min-width: 200px; max-width: 300px;
+	display: flex; flex-direction: column;
+	border-right: 1px solid #333; background: #252526; min-height: 0;
+}
+.native-tb-column:last-child { border-right: none; }
+.native-tb-column-header {
+	display: flex; align-items: center; gap: 4px;
+	padding: 6px 8px; border-bottom: 1px solid #333;
+	flex-shrink: 0; font-weight: 600; font-size: 11px; background: #2a2a2c;
+}
+.native-tb-column-label { flex: 1; }
+.native-tb-column-count { font-size: 11px; padding: 1px 5px; border-radius: 8px; background: #3a3a3a; }
+
+.native-tb-cards {
+	flex: 1; overflow-y: auto; overflow-x: hidden;
+	padding: 4px 6px; display: flex; flex-direction: column; gap: 8px; min-height: 0;
+}
+
+/* Cards */
+.native-tb-card {
+	position: relative; overflow: hidden;
+	background: #2d2d2d; border: 1px solid #3a3a3a;
+	border-radius: 6px; flex-shrink: 0; cursor: pointer;
+	font-size: 12px; line-height: 1.4;
+	transition: border-color 0.15s, box-shadow 0.15s;
+	display: flex; flex-direction: column;
+	box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+.native-tb-card::before {
+	content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+}
+.native-tb-card.prio-high::before { background: #f44747; }
+.native-tb-card.prio-medium::before { background: #cca700; }
+.native-tb-card.prio-low::before { background: #4ec9b0; }
+.native-tb-card:hover { border-color: #a855f7; box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
+
+.native-tb-card-body { padding: 8px 10px 6px 12px; display: flex; flex-direction: column; gap: 3px; }
+.native-tb-card-id {
+	font-size: 10px; color: #888; opacity: 0.6;
+	font-family: 'Cascadia Code', monospace;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.native-tb-card-title { font-size: 12.5px; font-weight: 500; color: #e0e0e0; }
+
+/* Schedule mini indicator on card */
+.native-tb-card-schedule-dot {
+	position: absolute; top: 8px; right: 8px;
+	width: 8px; height: 8px; border-radius: 50%;
+	background: #f59e0b; z-index: 2;
+	animation: dot-pulse 2s ease-in-out infinite;
+}
+@keyframes dot-pulse {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(245,158,11,0.6); }
+	50% { box-shadow: 0 0 0 4px rgba(245,158,11,0); }
+}
+
+.native-tb-card-footer {
+	display: flex; align-items: center; justify-content: space-between;
+	padding: 5px 10px 6px 12px; border-top: 1px solid #3a3a3a;
+	background: rgba(0,0,0,0.12); font-size: 11px;
+}
+
+/* Hover actions */
+.native-tb-card-actions {
+	position: absolute; left: 0; right: 0; bottom: 0;
+	display: flex; height: 0; overflow: hidden;
+	transition: height 0.18s; background: #2d2d2d;
+	border-top: 1px solid #3a3a3a; z-index: 5;
+	border-radius: 0 0 5px 5px;
+}
+.native-tb-card:hover .native-tb-card-actions { height: 34px; }
+.native-tb-card action-btn {
+	flex: 1; display: flex; align-items: center; justify-content: center; gap: 3px;
+	font-size: 11px; padding: 0 4px;
+	border: none; background: transparent; color: #888;
+	cursor: pointer; transition: background 0.12s, color 0.12s;
+	border-right: 1px solid #3a3a3a;
+}
+.native-tb-card action-btn:last-child { border-right: none; }
+.native-tb-card action-btn:hover { background: #4a4a4a; color: #ddd; }
+
+/* ===== Right: Schedule Panel (Collapsible Drawer) ===== */
+.schedule-panel {
+	flex: 0 0 0; width: 0; overflow: hidden;
+	background: #1f1a0e; border-left: 2px solid rgba(245,158,11,0.3);
+	display: flex; flex-direction: column;
+	transition: flex 0.25s ease, width 0.25s ease, padding 0.25s ease;
+}
+.schedule-panel.open {
+	flex: 0 0 360px; width: 360px;
+}
+.schedule-panel-inner {
+	width: 360px; height: 100%;
+	display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* Panel header */
+.schedule-panel-header {
+	display: flex; align-items: center; justify-content: space-between;
+	padding: 10px 14px; border-bottom: 1px solid rgba(245,158,11,0.15);
+	flex-shrink: 0;
+}
+.schedule-panel-title {
+	font-size: 13px; font-weight: 700; color: #fbbf24;
+	display: flex; align-items: center; gap: 8px;
+}
+.schedule-panel-title .icon { font-size: 16px; }
+.schedule-panel-close {
+	background: none; border: none; color: #888; font-size: 16px;
+	cursor: pointer; padding: 4px 8px; border-radius: 4px;
+}
+.schedule-panel-close:hover { background: #3a3a3a; color: #ddd; }
+
+/* Panel tabs */
+.schedule-panel-tabs {
+	display: flex; border-bottom: 1px solid rgba(245,158,11,0.15);
+	flex-shrink: 0;
+}
+.schedule-panel-tab {
+	flex: 1; padding: 8px 4px; font-size: 11px; text-align: center;
+	border: none; background: transparent; color: #888;
+	cursor: pointer; transition: all 0.15s;
+	border-bottom: 2px solid transparent;
+}
+.schedule-panel-tab:hover { color: #ddd; }
+.schedule-panel-tab.active {
+	color: #fbbf24; border-bottom-color: #f59e0b; font-weight: 600;
+}
+
+/* Panel body */
+.schedule-panel-body {
+	flex: 1; overflow-y: auto; padding: 12px;
+	display: flex; flex-direction: column;
+}
+
+/* ===== Timeline View ===== */
+.timeline-track {
+	position: relative; padding-left: 24px;
+	display: flex; flex-direction: column; gap: 0;
+}
+.timeline-track::before {
+	content: ""; position: absolute;
+	left: 8px; top: 0; bottom: 0; width: 2px;
+	background: rgba(245,158,11,0.2);
+}
+.timeline-item {
+	position: relative; padding: 12px 0 12px 16px;
+	display: flex; flex-direction: column; gap: 4px;
+}
+.timeline-item::before {
+	content: ""; position: absolute;
+	left: -20px; top: 17px; width: 10px; height: 10px;
+	border-radius: 50%; border: 2px solid #f59e0b;
+	background: #1f1a0e;
+}
+.timeline-item.active::before {
+	background: #4ec9b0; border-color: #4ec9b0;
+	box-shadow: 0 0 0 3px rgba(78,201,176,0.2);
+	animation: timeline-pulse 2s ease-in-out infinite;
+}
+@keyframes timeline-pulse {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(78,201,176,0.3); }
+	50% { box-shadow: 0 0 0 6px rgba(78,201,176,0); }
+}
+.timeline-item.paused::before { background: #cca700; border-color: #cca700; }
+.timeline-item-header {
+	display: flex; align-items: center; gap: 8px;
+}
+.timeline-item-icon {
+	font-size: 14px; flex-shrink: 0;
+}
+.timeline-item-name {
+	font-size: 12px; font-weight: 600; color: #e0e0e0;
+}
+.timeline-item-time {
+	font-family: 'Cascadia Code', monospace;
+	font-size: 10px; color: #fbbf24;
+	display: flex; align-items: center; gap: 4px;
+}
+.timeline-item-task {
+	font-size: 10px; color: #888;
+	font-family: 'Cascadia Code', monospace;
+}
+.timeline-item-countdown {
+	font-size: 10px; color: #999;
+	display: flex; align-items: center; gap: 4px;
+}
+.timeline-item-hover-actions {
+	display: none; gap: 6px; margin-top: 4px;
+}
+.timeline-item:hover .timeline-item-hover-actions { display: flex; }
+.timeline-mini-btn {
+	font-size: 10px; padding: 3px 8px; border: 1px solid #4a4a4a;
+	border-radius: 4px; background: transparent; color: #888;
+	cursor: pointer; transition: all 0.15s;
+}
+.timeline-mini-btn:hover { border-color: #a855f7; color: #ddd; }
+
+/* ===== Now marker ===== */
+.timeline-now {
+	display: flex; align-items: center; gap: 8px;
+	padding: 8px 0 8px 16px; position: relative;
+	color: #f59e0b; font-size: 10px; font-weight: 600;
+}
+.timeline-now::before {
+	content: ""; position: absolute;
+	left: -22px; top: 50%; transform: translateY(-50%);
+	width: 14px; height: 14px; border-radius: 50%;
+	background: #f59e0b; border: 2px solid #1f1a0e;
+	box-shadow: 0 0 0 2px rgba(245,158,11,0.4);
+}
+.timeline-now-line {
+	flex: 1; height: 1px;
+	background: linear-gradient(90deg, #f59e0b, transparent);
+}
+
+/* ===== List View (hidden by default) ===== */
+.schedule-list { display: flex; flex-direction: column; gap: 8px; }
+.schedule-list-item {
+	display: flex; align-items: flex-start; gap: 10px;
+	padding: 10px; background: rgba(255,255,255,0.03);
+	border: 1px solid rgba(255,255,255,0.06); border-radius: 8px;
+	cursor: pointer; transition: all 0.15s;
+}
+.schedule-list-item:hover {
+	background: rgba(245,158,11,0.06);
+	border-color: rgba(245,158,11,0.2);
+}
+.schedule-list-item.checked { opacity: 0.5; text-decoration: line-through; }
+.schedule-list-check {
+	width: 16px; height: 16px; border-radius: 3px;
+	border: 2px solid #555; flex-shrink: 0; margin-top: 1px;
+	cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.schedule-list-check:hover { border-color: #f59e0b; }
+.schedule-list-check.checked {
+	background: #4ec9b0; border-color: #4ec9b0;
+}
+.schedule-list-check.checked::after {
+	content: "✓"; color: #fff; font-size: 10px; font-weight: 700;
+}
+.schedule-list-info { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.schedule-list-name { font-size: 12px; font-weight: 500; color: #e0e0e0; }
+.schedule-list-detail {
+	font-size: 10px; color: #888;
+	font-family: 'Cascadia Code', monospace;
+}
+.schedule-list-badge {
+	font-size: 9px; padding: 2px 6px; border-radius: 6px;
+	background: rgba(245,158,11,0.15); color: #fbbf24; flex-shrink: 0;
+}
+
+/* ===== Add schedule FAB ===== */
+.schedule-panel-fab {
+	position: sticky; bottom: 12px;
+	display: flex; justify-content: center;
+}
+.schedule-panel-fab button {
+	padding: 8px 20px; border: none; border-radius: 20px;
+	background: linear-gradient(135deg, #f59e0b, #d97706);
+	color: #111; font-size: 12px; font-weight: 600;
+	cursor: pointer; display: flex; align-items: center; gap: 6px;
+	box-shadow: 0 2px 12px rgba(245,158,11,0.3);
+	transition: all 0.2s;
+}
+.schedule-panel-fab button:hover {
+	transform: translateY(-1px);
+	box-shadow: 0 4px 20px rgba(245,158,11,0.4);
+}
+
+/* ===== Modal ===== */
+.modal-overlay {
+	position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+	z-index: 1000; display: flex; align-items: center; justify-content: center;
+}
+.modal {
+	background: #2d2d2d; border: 1px solid #454545; border-radius: 8px;
+	width: 500px; max-height: 85vh; overflow-y: auto;
+	box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.modal-header {
+	display: flex; align-items: center; justify-content: space-between;
+	padding: 14px 16px; border-bottom: 1px solid #3a3a3a;
+}
+.modal-header h2 { font-size: 14px; font-weight: 600; color: #e0e0e0; display: flex; align-items: center; gap: 8px; }
+.modal-close { background: none; border: none; color: #888; font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
+.modal-close:hover { background: #3a3a3a; color: #ddd; }
+.modal-body { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.modal-footer { padding: 12px 16px; border-top: 1px solid #3a3a3a; display: flex; justify-content: flex-end; gap: 8px; }
+
+.form-group { display: flex; flex-direction: column; gap: 6px; }
+.form-label { font-size: 11px; font-weight: 500; color: #aaa; }
+.form-input, .form-select {
+	padding: 8px 10px; font-size: 12px; background: #3c3c3c;
+	color: #ddd; border: 1px solid #4a4a4a; border-radius: 5px;
+	outline: none; font-family: inherit; transition: border-color 0.15s;
+}
+.form-input:focus, .form-select:focus { border-color: #a855f7; }
+
+.schedule-type-tabs {
+	display: flex; gap: 2px; background: #333; border-radius: 6px; padding: 3px;
+}
+.schedule-type-tab {
+	flex: 1; padding: 7px 4px; font-size: 10.5px; text-align: center;
+	border: none; background: transparent; color: #999;
+	cursor: pointer; border-radius: 4px; transition: all 0.15s; white-space: nowrap;
+}
+.schedule-type-tab:hover { color: #ddd; }
+.schedule-type-tab.active { background: #a855f7; color: #fff; font-weight: 500; }
+
+.next-fire-preview {
+	display: flex; align-items: center; gap: 10px;
+	padding: 10px 12px;
+	background: rgba(245,158,11,0.08);
+	border: 1px solid rgba(245,158,11,0.2); border-radius: 6px;
+}
+.next-fire-preview .next-time {
+	font-size: 14px; font-weight: 600; color: #fbbf24;
+	font-family: 'Cascadia Code', monospace;
+}
+.section-title {
+	font-size: 11px; font-weight: 600; color: #a855f7;
+	text-transform: uppercase; letter-spacing: 0.5px;
+	padding-bottom: 6px; border-bottom: 1px solid #3a3a3a;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #777; }
+</style>
+</head>
+<body>
+
+<div class="app-container">
+	<!-- ===== LEFT: Main Board ===== -->
+	<div class="board-area">
+		<div class="native-tb-header">
+			<div class="native-tb-header-left">
+				<span class="native-tb-title">📋 任务看板</span>
+				<span class="native-tb-count">18</span>
+			</div>
+			<div class="native-tb-header-right">
+				<button class="native-tb-btn">🔗 看板超链接</button>
+				<!-- ★ Toggle Button ★ -->
+				<button class="native-tb-btn native-tb-btn-schedule has-active"
+					onclick="toggleSchedulePanel()" id="toggleScheduleBtn">
+					⏰ 定时任务
+					<span id="toggleBadge" style="background:rgba(255,255,255,0.25);padding:1px 5px;border-radius:8px;font-size:10px;">4</span>
+				</button>
+			</div>
+		</div>
+
+		<!-- 5 Columns -->
+		<div class="native-tb-columns">
+			<div class="native-tb-column">
+				<div class="native-tb-column-header">
+					<span>📥</span>
+					<span class="native-tb-column-label">待执行</span>
+					<span class="native-tb-column-count">5</span>
+				</div>
+				<div class="native-tb-cards">
+					<!-- Card with schedule dot -->
+					<div class="native-tb-card prio-high">
+						<div class="native-tb-card-schedule-dot" title="已配置定时任务：每天 02:00"></div>
+						<div class="native-tb-card-body">
+							<div class="native-tb-card-id">#task_a1b2c3</div>
+							<div class="native-tb-card-title">🔧 数据库自动备份</div>
+						</div>
+						<div class="native-tb-card-footer">
+							<span style="color:#888;">DB Agent</span>
+							<span style="color:#f59e0b;font-size:10px;">⏰ 每天02:00</span>
+						</div>
+						<div class="native-tb-card-actions">
+							<action-btn>▶️ 执行</action-btn>
+							<action-btn>📦 归档</action-btn>
+							<action-btn style="color:#f59e0b;">⏰ 定时</action-btn>
+						</div>
+					</div>
+
+					<div class="native-tb-card prio-medium">
+						<div class="native-tb-card-body">
+							<div class="native-tb-card-id">#task_d4e5f6</div>
+							<div class="native-tb-card-title">📝 更新 API 文档</div>
+						</div>
+						<div class="native-tb-card-footer">
+							<span style="color:#888;">Alice</span>
+						</div>
+						<div class="native-tb-card-actions">
+							<action-btn>▶️ 执行</action-btn>
+							<action-btn style="color:#f59e0b;">⏰ 定时</action-btn>
+						</div>
+					</div>
+
+					<div class="native-tb-card prio-high">
+						<div class="native-tb-card-schedule-dot" title="已配置定时：每1小时"></div>
+						<div class="native-tb-card-body">
+							<div class="native-tb-card-id">#task_j1k2l3</div>
+							<div class="native-tb-card-title">🔍 代码安全扫描</div>
+						</div>
+						<div class="native-tb-card-footer">
+							<span style="color:#888;">Scanner</span>
+							<span style="color:#f59e0b;font-size:10px;">⏰ 每1小时</span>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="native-tb-column">
+				<div class="native-tb-column-header">
+					<span>⚡</span>
+					<span class="native-tb-column-label">执行中</span>
+					<span class="native-tb-column-count">3</span>
+				</div>
+				<div class="native-tb-cards">
+					<div class="native-tb-card prio-medium">
+						<div class="native-tb-card-body">
+							<div class="native-tb-card-id">#task_m3n4o5</div>
+							<div class="native-tb-card-title">🧪 运行集成测试套件</div>
+						</div>
+						<div class="native-tb-card-footer">
+							<span style="color:#cca700;">● 执行中</span>
+						</div>
+					</div>
+				</div>
+			</div>
+			<div class="native-tb-column">
+				<div class="native-tb-column-header">
+					<span>✅</span><span class="native-tb-column-label">执行结束</span><span class="native-tb-column-count">6</span>
+				</div>
+				<div class="native-tb-cards"></div>
+			</div>
+			<div class="native-tb-column">
+				<div class="native-tb-column-header">
+					<span>❌</span><span class="native-tb-column-label">取消执行</span><span class="native-tb-column-count">2</span>
+				</div>
+				<div class="native-tb-cards"></div>
+			</div>
+			<div class="native-tb-column">
+				<div class="native-tb-column-header">
+					<span>📦</span><span class="native-tb-column-label">归档</span><span class="native-tb-column-count">2</span>
+				</div>
+				<div class="native-tb-cards"></div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ===== RIGHT: Schedule Panel ===== -->
+	<div class="schedule-panel" id="schedulePanel">
+		<div class="schedule-panel-inner">
+			<div class="schedule-panel-header">
+				<span class="schedule-panel-title">
+					<span class="icon">⏰</span> 定时任务
+				</span>
+				<button class="schedule-panel-close" onclick="toggleSchedulePanel()" title="收起面板">◀</button>
+			</div>
+
+			<!-- Panel tabs -->
+			<div class="schedule-panel-tabs">
+				<button class="schedule-panel-tab active" onclick="switchPanelTab('timeline', this)">📅 时间线</button>
+				<button class="schedule-panel-tab" onclick="switchPanelTab('list', this)">📋 列表</button>
+				<button class="schedule-panel-tab" onclick="switchPanelTab('history', this)">📜 历史</button>
+			</div>
+
+			<div class="schedule-panel-body">
+				<!-- Timeline View -->
+				<div id="timelineView" class="timeline-track">
+					<!-- Now marker -->
+					<div class="timeline-now">
+						<span>现在 — 15:16</span>
+						<span class="timeline-now-line"></span>
+					</div>
+
+					<div class="timeline-item active">
+						<div class="timeline-item-header">
+							<span class="timeline-item-icon">🔄</span>
+							<span class="timeline-item-name">代码安全扫描</span>
+						</div>
+						<div class="timeline-item-time">⏱ 16:00</div>
+						<div class="timeline-item-task">📋 #task_j1k2l3</div>
+						<div class="timeline-item-countdown">⏳ 44分钟后</div>
+						<div class="timeline-item-hover-actions">
+							<button class="timeline-mini-btn">✏️ 编辑</button>
+							<button class="timeline-mini-btn">⏯️ 暂停</button>
+							<button class="timeline-mini-btn">▶️ 立即执行</button>
+						</div>
+					</div>
+
+					<div class="timeline-item active">
+						<div class="timeline-item-header">
+							<span class="timeline-item-icon">📅</span>
+							<span class="timeline-item-name">数据库自动备份</span>
+						</div>
+						<div class="timeline-item-time">⏱ 明天 02:00</div>
+						<div class="timeline-item-task">📋 #task_a1b2c3 · Cron: 0 2 * * *</div>
+						<div class="timeline-item-countdown">⏳ 10小时44分钟后</div>
+						<div class="timeline-item-hover-actions">
+							<button class="timeline-mini-btn">✏️ 编辑</button>
+							<button class="timeline-mini-btn">⏯️ 暂停</button>
+						</div>
+					</div>
+
+					<div class="timeline-item active">
+						<div class="timeline-item-header">
+							<span class="timeline-item-icon">📊</span>
+							<span class="timeline-item-name">项目周报生成</span>
+						</div>
+						<div class="timeline-item-time">⏱ 周五 17:00</div>
+						<div class="timeline-item-task">📋 #task_g7h8i9 · Cron: 0 17 * * 5</div>
+						<div class="timeline-item-countdown">⏳ 5天后</div>
+						<div class="timeline-item-hover-actions">
+							<button class="timeline-mini-btn">✏️ 编辑</button>
+							<button class="timeline-mini-btn">⏯️ 暂停</button>
+						</div>
+					</div>
+
+					<div class="timeline-item paused">
+						<div class="timeline-item-header">
+							<span class="timeline-item-icon">📝</span>
+							<span class="timeline-item-name">日志归档清理</span>
+						</div>
+						<div class="timeline-item-time" style="color:#888;">已暂停</div>
+						<div class="timeline-item-task">📋 #task_x9y8z7 · Cron: 0 3 1 * *</div>
+						<div class="timeline-item-hover-actions">
+							<button class="timeline-mini-btn">▶️ 启用</button>
+							<button class="timeline-mini-btn">✏️ 编辑</button>
+						</div>
+					</div>
+
+					<div class="timeline-item active">
+						<div class="timeline-item-header">
+							<span class="timeline-item-icon">🎯</span>
+							<span class="timeline-item-name">季度报告生成</span>
+						</div>
+						<div class="timeline-item-time">⏱ 7月15日 09:00</div>
+						<div class="timeline-item-task">📋 #task_q1s2e3 · 一次性</div>
+						<div class="timeline-item-countdown">⏳ 4天后</div>
+					</div>
+				</div>
+
+				<!-- List View (hidden) -->
+				<div id="listView" class="schedule-list" style="display:none;">
+					<div class="schedule-list-item">
+						<div class="schedule-list-check" title="已完成"></div>
+						<div class="schedule-list-info">
+							<span class="schedule-list-name">🔄 代码安全扫描 #task_j1k2l3</span>
+							<span class="schedule-list-detail">每1小时 · 下次: 16:00</span>
+						</div>
+						<span class="schedule-list-badge">活跃</span>
+					</div>
+					<div class="schedule-list-item">
+						<div class="schedule-list-check" title="已完成"></div>
+						<div class="schedule-list-info">
+							<span class="schedule-list-name">📅 数据库自动备份 #task_a1b2c3</span>
+							<span class="schedule-list-detail">Cron: 0 2 * * * · 下次: 明天 02:00</span>
+						</div>
+						<span class="schedule-list-badge">活跃</span>
+					</div>
+					<div class="schedule-list-item">
+						<div class="schedule-list-check" title="已完成"></div>
+						<div class="schedule-list-info">
+							<span class="schedule-list-name">📊 项目周报生成 #task_g7h8i9</span>
+							<span class="schedule-list-detail">Cron: 0 17 * * 5 · 下次: 周五 17:00</span>
+						</div>
+						<span class="schedule-list-badge">活跃</span>
+					</div>
+					<div class="schedule-list-item" style="opacity:0.55;">
+						<div class="schedule-list-check" style="opacity:0.5;"></div>
+						<div class="schedule-list-info">
+							<span class="schedule-list-name">📝 日志归档清理 #task_x9y8z7</span>
+							<span class="schedule-list-detail">Cron: 0 3 1 * * · 已暂停</span>
+						</div>
+						<span class="schedule-list-badge" style="background:rgba(204,167,0,0.15);color:#cca700;">暂停</span>
+					</div>
+				</div>
+
+				<!-- History View (hidden) -->
+				<div id="historyView" style="display:none;">
+					<div style="color:#888;font-size:11px;text-align:center;padding:20px;">
+						最近执行记录将显示在这里
+					</div>
+				</div>
+
+				<!-- FAB Add -->
+				<div class="schedule-panel-fab">
+					<button onclick="openNewScheduleModal()">＋ 新建定时任务</button>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<!-- ===== MODAL: New Schedule ===== -->
+<div class="modal-overlay" id="newScheduleModal" style="display:none;">
+	<div class="modal">
+		<div class="modal-header">
+			<h2><span>⏰</span> 新建定时任务</h2>
+			<button class="modal-close" onclick="document.getElementById('newScheduleModal').style.display='none'">✕</button>
+		</div>
+		<div class="modal-body">
+			<div class="form-group">
+				<label class="form-label">关联任务</label>
+				<select class="form-select">
+					<option>🔧 数据库自动备份 (#task_a1b2c3)</option>
+					<option>🔍 代码安全扫描 (#task_j1k2l3)</option>
+					<option>📝 更新 API 文档 (#task_d4e5f6)</option>
+				</select>
+			</div>
+			<div class="schedule-type-tabs">
+				<button class="schedule-type-tab active">📅 Cron</button>
+				<button class="schedule-type-tab">🔄 间隔</button>
+				<button class="schedule-type-tab">🎯 一次性</button>
+				<button class="schedule-type-tab">📁 文件监听</button>
+			</div>
+			<div class="form-group">
+				<label class="form-label">Cron 表达式</label>
+				<input type="text" class="form-input" value="0 9 * * 1-5"
+					style="font-family:'Cascadia Code',monospace;font-size:14px;letter-spacing:2px;">
+			</div>
+			<div class="next-fire-preview">
+				<span style="font-size:18px;">⏱️</span>
+				<span class="next-time">2026-07-14 09:00 (周一)</span>
+			</div>
+		</div>
+		<div class="modal-footer">
+			<button class="native-tb-btn" onclick="document.getElementById('newScheduleModal').style.display='none'">取消</button>
+			<button class="native-tb-btn" style="background:#a855f7;color:#fff;">💾 创建</button>
+		</div>
+	</div>
+</div>
+
+<script>
+// Panel toggle
+let panelOpen = true; // Start open for demo
+document.addEventListener('DOMContentLoaded', function() {
+	// Initialize panel open
+	toggleSchedulePanel();
+});
+
+function toggleSchedulePanel() {
+	const panel = document.getElementById('schedulePanel');
+	const btn = document.getElementById('toggleScheduleBtn');
+	panelOpen = !panelOpen;
+
+	if (panelOpen) {
+		panel.classList.add('open');
+		btn.classList.add('has-active');
+	} else {
+		panel.classList.remove('open');
+		btn.classList.remove('has-active');
+	}
+}
+
+// Panel tab switching
+function switchPanelTab(tabId, btn) {
+	document.querySelectorAll('.schedule-panel-tab').forEach(t => t.classList.remove('active'));
+	btn.classList.add('active');
+
+	document.getElementById('timelineView').style.display = tabId === 'timeline' ? '' : 'none';
+	document.getElementById('listView').style.display = tabId === 'list' ? '' : 'none';
+	document.getElementById('historyView').style.display = tabId === 'history' ? '' : 'none';
+}
+
+function openNewScheduleModal() {
+	document.getElementById('newScheduleModal').style.display = 'flex';
+}
+
+document.addEventListener('click', function(e) {
+	if (e.target.classList.contains('modal-overlay')) {
+		e.target.style.display = 'none';
+	}
+});
+document.addEventListener('keydown', function(e) {
+	if (e.key === 'Escape') {
+		document.querySelectorAll('.modal-overlay').forEach(m => m.style.display = 'none');
+	}
+});
+</script>
+
+</body>
+</html>
