@@ -201,15 +201,27 @@ function fromLocalNormal(extensionPath: string): Stream {
 					} catch {
 						return false;
 					}
-				})
-				.map(filePath => new File({
+				});
+
+			// Push files one-by-one instead of using es.readArray (which enqueues
+			// all streams at once and can exhaust file descriptors on large
+			// extensions with deep node_modules).
+			let i = 0;
+			function pushNext() {
+				if (i >= files.length) {
+					result.end();
+					return;
+				}
+				const filePath = files[i++];
+				result.write(new File({
 					path: filePath,
 					stat: fs.statSync(filePath),
 					base: extensionPath,
 					contents: fs.createReadStream(filePath)
 				}));
-
-			es.readArray(files).pipe(result);
+				setImmediate(pushNext);
+			}
+			pushNext();
 		})
 		.catch(err => result.emit('error', err));
 
