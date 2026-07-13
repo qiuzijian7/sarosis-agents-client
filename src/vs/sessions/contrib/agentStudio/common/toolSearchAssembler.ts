@@ -270,10 +270,10 @@ export function bridgeToolSchemas(
 						type: 'string',
 						description: 'Exact tool name to invoke.',
 					},
-					arguments: {
-						type: 'object',
-						description: 'Arguments for the tool, matching its schema.',
-					},
+				arguments: {
+					type: 'string',
+					description: 'Arguments for the tool as a JSON string (e.g. \'{"path":"."}\'), matching its schema.',
+				},
 				},
 				required: ['name', 'arguments'],
 			},

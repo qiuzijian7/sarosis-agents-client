@@ -296,6 +296,20 @@ export class SessionSummarizer {
 	}
 
 	/**
+	 * 获取最近 N 条会话摘要（跨 session，按 createdAt 降序）
+	 * 对齐 agentmemory context.ts 中注入最近 10 个 session summary 的行为。
+	 */
+	getRecent(limit: number = 10): SessionSummary[] {
+		const all: SessionSummary[] = [];
+		for (const list of this._summaries.values()) {
+			all.push(...list);
+		}
+		return all
+			.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+			.slice(0, limit);
+	}
+
+	/**
 	 * 清除所有
 	 */
 	clear(): void {

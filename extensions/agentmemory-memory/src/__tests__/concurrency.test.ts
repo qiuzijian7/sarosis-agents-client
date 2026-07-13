@@ -244,8 +244,3 @@ describe('MeshCoordinator', () => {
 });
 
 }
-
-// Run if executed directly
-if (require.main === module) {
-	runConcurrencyTests().then(() => printSummary());
-}

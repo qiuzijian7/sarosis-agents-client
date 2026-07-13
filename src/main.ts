@@ -541,6 +541,17 @@ function configureCrashReporter(): void {
 function getJSFlags(cliArgs: NativeParsedArgs, argvConfig: IArgvConfig): string | null {
 	const jsFlags: string[] = [];
 
+	// ── Sarosis: force V8 heap limit to 8GB for all processes ──────────
+	// The extension host runs 18+ extensions on a 100K-file workspace,
+	// consuming 3.8GB+ baseline heap. The default ~4GB V8 limit triggers
+	// OOM crashes. This must be set BEFORE app.ready so that Electron's
+	// utilityProcess.fork() (extension host) inherits the higher limit.
+	// Only add if the user hasn't already set a higher value.
+	const existingFlags = [cliArgs['js-flags'], argvConfig['js-flags']].filter(Boolean).join(' ');
+	if (!existingFlags.includes('--max-old-space-size')) {
+		jsFlags.push('--max-old-space-size=8192');
+	}
+
 	// Add any existing JS flags we already got from the command line
 	if (cliArgs['js-flags']) {
 		jsFlags.push(cliArgs['js-flags']);

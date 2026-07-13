@@ -1936,6 +1936,12 @@ export class CodeApplication extends Disposable {
 				...process.env,
 				AGENTMEMORY_PORT: process.env['AGENTMEMORY_PORT'] ?? '3111',
 				AGENTMEMORY_DATA_DIR: process.env['AGENTMEMORY_DATA_DIR'] ?? join(homedir(), '.saros', '.agentmemory'),
+			// Plan C: point the gateway at the sibling agentmemory-memory extension
+			// so it can import the compiled BM25 index module (single source of truth).
+			// host.mjs 位于 <extRoot>/agentmemory-gateway/host/host.mjs，兄弟扩展在
+			// <extRoot>/agentmemory-memory/out/，需从 host.mjs 向上 3 级到 extensions/
+			// 再加 agentmemory-memory（dev 与打包后目录结构一致，相对路径通用）。
+			AGENTMEMORY_EXT_ROOT: hostPath ? join(hostPath, '..', '..', '..', 'agentmemory-memory') : undefined,
 			};
 
 			// 用 Electron 内置 Node 跑子进程

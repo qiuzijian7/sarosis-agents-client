@@ -376,6 +376,22 @@ export interface IModelUsage {
 
 // ─── Memory Provider Interface ────────────────────────────────────────────────
 
+/**
+ * 固定槽位名（顺序即展示顺序）。对齐 extensions/agentmemory-memory/src/amSlots.ts 的
+ * DEFAULT_SLOTS。记忆槽位是「固定 8 槽位模型」——无论网关是否返回数据，编辑器都应
+ * 展示这 8 个固定槽位（内容为空则显示「(空)」），避免误导性的「暂无固定槽位」空态。
+ */
+export const FIXED_SLOT_NAMES: readonly string[] = [
+	'persona',
+	'user_preferences',
+	'tool_guidelines',
+	'project_context',
+	'guidance',
+	'pending_items',
+	'session_patterns',
+	'self_notes',
+];
+
 export interface IMemoryProvider {
 	readonly id: string;
 	readonly name: string;
@@ -435,8 +451,10 @@ export interface IMemoryProvider {
 	 */
 	triggerHook?(type: string, ctx: Record<string, unknown>): Promise<void>;
 
-	/** Get hook system statistics (for memory detail panel) */
-	getHookStats?(): { totalHooks: number; hooksByType: Record<string, number>; callCounts: Record<string, number> };
+	/** Get hook system statistics (for memory detail panel).
+	 *  Renderer 代理(Opt1)返回 Promise（数据在网关进程），V2 网关实现返回同步对象。
+	 *  调用方（memoryDetailEditorPane）统一 `await`。 */
+	getHookStats?(): { totalHooks: number; hooksByType: Record<string, number>; callCounts: Record<string, number> } | Promise<{ totalHooks: number; hooksByType: Record<string, number>; callCounts: Record<string, number> }>;
 
 	// ─── Extended Memory APIs (for memory detail panel) ────────────────────
 
@@ -451,6 +469,13 @@ export interface IMemoryProvider {
 
 	/** Get all pinned slots */
 	getSlots?(agentId: string): Array<{ name: string; content: string }>;
+
+	/**
+	 * 固定槽位名（顺序即展示顺序）。对齐 extensions/agentmemory-memory/src/amSlots.ts 的
+	 * DEFAULT_SLOTS。记忆槽位是「固定 8 槽位模型」——无论网关是否返回数据，
+	 * 编辑器都应展示这 8 个固定槽位（内容为空则显示「(空)」），故以此为渲染底表。
+	 */
+	FIXED_SLOT_NAMES?: readonly string[];
 
 	/** Set a pinned slot's content */
 	setSlot?(agentId: string, label: string, content: string): void;
@@ -504,26 +529,31 @@ export interface IMemoryProvider {
 
 	// ─── Skill Extract APIs (for memory detail panel) ─────────────────────
 
-	/** Get skill statistics */
-	getSkillStats?(): { totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number };
+	/** Get skill statistics.
+	 *  Renderer 代理(Opt1)返回 Promise（数据在网关进程），V2 网关实现亦返回 Promise。
+	 *  首参 agentId 对齐 host.mjs 的 /provider 路由约定（首参即 agentId）。 */
+	getSkillStats?(agentId?: string): { totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number } | Promise<{ totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number }>;
 
-	/** List all extracted skills */
-	listSkills?(filter?: { tags?: string[]; minConfidence?: number }): Array<Record<string, unknown>>;
+	/** List all extracted skills. agentId 为首参；filter 可选。 */
+	listSkills?(agentId?: string, filter?: { tags?: string[]; minConfidence?: number }): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
 
 	/** Write a skill's SKILL.md file to ~/.saros/skills/<slug>/SKILL.md */
-	writeSkillFile?(skillId: string): Promise<{ ok: boolean; path?: string; error?: string }>;
+	writeSkillFile?(agentId: string, skillId: string): Promise<{ ok: boolean; path?: string; error?: string }>;
 
 	/** Delete a skill's SKILL.md file */
-	deleteSkillFile?(skillId: string): Promise<{ ok: boolean; deleted?: boolean; error?: string }>;
+	deleteSkillFile?(agentId: string, skillId: string): Promise<{ ok: boolean; deleted?: boolean; error?: string }>;
 
 	/** Write SKILL.md for all pending skills */
-	writeAllSkillFiles?(): Promise<{ written: number; failed: number; errors: string[] }>;
+	writeAllSkillFiles?(agentId: string): Promise<{ written: number; failed: number; errors: string[] }>;
+
+	/** Add a manual skill (pane _addSkill) */
+	addSkill?(agentId: string, data: { title: string; trigger: string; steps: string[]; expectedOutcome?: string; tags?: string[] }): Promise<Record<string, unknown> | null>;
 
 	/** Update a skill (edit mode) */
-	updateSkill?(id: string, updates: Record<string, unknown>): Record<string, unknown> | null;
+	updateSkill?(agentId: string, id: string, updates: Record<string, unknown>): Record<string, unknown> | null;
 
 	/** Delete a skill */
-	deleteSkill?(id: string): boolean;
+	deleteSkill?(agentId: string, id: string): boolean;
 
 	// ─── Cross-Agent APIs (for memory detail panel) ────────────────────────
 

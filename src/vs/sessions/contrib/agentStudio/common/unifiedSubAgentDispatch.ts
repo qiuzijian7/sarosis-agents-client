@@ -887,7 +887,9 @@ export class UnifiedSubAgentDispatch {
 		tokenCollector: SubagentTokenCollector,
 		emitEvent?: (partial: Omit<SubAgentEvent, 'subAgentId' | 'subAgentType' | 'task' | 'parentId' | 'timestamp'> & { type: SubAgentEventType }) => void,
 	): Promise<_ExecResult> {
-		let output = '';
+		// 用分块数组累积，末尾一次性 join，避免流式 `+=` 产生 ConsString 绳索串
+		// （output 最终进入 subAgent.result.output 长期留存，是最危险的泄漏点之一）
+		let outputChunks: string[] = [];
 		let apiCallCount = 0;
 		let budgetExhausted = false;
 		let tokensUsed: { input: number; output: number } | undefined;
@@ -901,7 +903,7 @@ export class UnifiedSubAgentDispatch {
 		// reliable source of tool arguments is the `tool_args` content stream.
 		// We concatenate every chunk (handles both single-shot and streamed
 		// argument deltas) and JSON.parse it at `tool_end`.
-		let currentToolArgsRaw = '';
+		let currentToolArgsRawChunks: string[] = [];
 		// Size and (on error) text of the most recent tool_result, used to fill
 		// SubAgentToolTraceEntry.resultSizeBytes / error at the following tool_end.
 		let currentToolResultSize = 0;
@@ -911,7 +913,7 @@ export class UnifiedSubAgentDispatch {
 		for await (const delta of stream) {
 			// ── Text accumulation ──
 			if (delta.type === 'text' && delta.content) {
-				output += delta.content;
+				outputChunks.push(delta.content);
 			}
 
 			// ── Thinking (inspired by Hermes TASK_THINKING) ──
@@ -930,7 +932,7 @@ export class UnifiedSubAgentDispatch {
 				currentToolName = delta.toolName || 'unknown';
 				currentToolArgsSize = 0;
 				currentToolArgs = undefined;
-				currentToolArgsRaw = '';
+				currentToolArgsRawChunks = [];
 				currentToolResultSize = 0;
 				currentToolResultText = undefined;
 				// Some providers populate metadata with parsed args up-front; if
@@ -958,7 +960,7 @@ export class UnifiedSubAgentDispatch {
 				// Accumulate the raw argument JSON so it can be parsed at tool_end.
 				// This is the primary source of args for file-change detection,
 				// since tool_start.metadata is empty on the main execution path.
-				currentToolArgsRaw += delta.content;
+				currentToolArgsRawChunks.push(delta.content);
 			}
 
 			// ── Tool result (captured for trace size / error text) ──
@@ -971,6 +973,8 @@ export class UnifiedSubAgentDispatch {
 			if (delta.type === 'tool_end') {
 				apiCallCount++;
 				const toolStatus: 'ok' | 'error' = delta.success === false ? 'error' : 'ok';
+				// 在此将分块累积的 raw args 拼成最终字符串（仅末尾 join 一次，不产生绳索串）
+				const currentToolArgsRaw = currentToolArgsRawChunks.join('');
 
 				// Resolve tool arguments: prefer the accumulated `tool_args` JSON
 				// stream (authoritative on the main path); fall back to metadata
@@ -1018,7 +1022,7 @@ export class UnifiedSubAgentDispatch {
 
 				budget.consume(1);
 				if (!budget.hasRemaining()) {
-					output += '\n\n[Budget exhausted — sub-agent stopped]';
+					outputChunks.push('\n\n[Budget exhausted — sub-agent stopped]');
 					budgetExhausted = true;
 					break;
 				}
@@ -1053,7 +1057,7 @@ export class UnifiedSubAgentDispatch {
 
 			// ── Check for interrupt signal ──
 			if (this._interruptedSubAgents.has(request.agentId)) {
-				output += '\n\n[Interrupted by user or parent agent]';
+				outputChunks.push('\n\n[Interrupted by user or parent agent]');
 				if (emitEvent) {
 					emitEvent({
 						type: SubAgentEventType.Interrupted,
@@ -1064,7 +1068,7 @@ export class UnifiedSubAgentDispatch {
 			}
 		}
 
-		return { output, apiCallCount, budgetExhausted, tokensUsed, toolTrace, filesModified };
+		return { output: outputChunks.join(''), apiCallCount, budgetExhausted, tokensUsed, toolTrace, filesModified };
 	}
 
 	/** Safely deliver a lifecycle event to the sink, swallowing any sink errors. */

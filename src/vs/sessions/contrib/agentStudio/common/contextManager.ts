@@ -69,7 +69,11 @@ export interface IContextLogger {
 // ─── Default Configuration ──────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: IContextManagerConfig = {
-	compressionThreshold: 0.40, // 40% threshold — 避免 25% 过低导致频繁压缩（压缩后几条消息又超阈值）
+	// Lowered from 0.40→0.30 to trigger compression earlier (~60000 tokens / ~55 messages
+	// vs ~80000 tokens / ~77 messages) and avoid OOM on the extension host (V8 heap
+	// reaching 3.8GB with 77 messages + system prompt + tools + 18 extensions).
+	// With MAXIMUM_COMPRESSION_WINDOW=200000, threshold now = 200000 × 0.30 = 60000.
+	compressionThreshold: 0.30,
 	maxRecentMessages: 20, // Keep 20 recent messages
 	minMessagesToCompress: 10, // Minimum 10 messages to compress
 	maxSnapshotHistory: 10, // Keep 10 snapshots
@@ -1858,6 +1862,18 @@ ${conversationText}
 		// ── 2. 预剪枝（LLM 前廉价处理）+ 结构化摘要 ──────────────────
 		const prunedMiddle = this._prePruneMessages(middle);
 		const existingSummary = this._extractExistingSummary(systemMessages);
+		// ── OOM diagnostic: log heap usage before compression summary call ──
+		if (typeof process === 'object' && process?.memoryUsage) {
+			const mem = process.memoryUsage();
+			const heapMB = (mem.heapUsed / 1024 / 1024).toFixed(1);
+			const rssMB = (mem.rss / 1024 / 1024).toFixed(1);
+			this._log('warn',
+				`[ContextManager][Compression] HEAP snapshot — ` +
+				`heapUsed=${heapMB}MB rss=${rssMB}MB ` +
+				`messages=${messages.length} middle=${middle.length} ` +
+				`threshold=${thresholdTokens.toFixed(0)} effectiveTokens=${effectiveTokens}`
+			);
+		}
 		const summary = await this._generateStructuredSummary(prunedMiddle, existingSummary);
 
 		// ── 3. 重组：保护头(system) + 摘要 + 保护头(对话) + 保护尾 ──────

@@ -200,6 +200,52 @@ const TOOL_TERMINAL_TOOLS = new Set(['terminal', 'run_command', 'run_persistent_
 const TOOL_LIST_TOOLS = new Set(['file_list', 'search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep']);
 const TOOL_CODEBASE_TOOLS = new Set(['search_graph', 'search_code', 'get_architecture', 'trace_path', 'query_graph', 'index_repository', 'get_code_snippet', 'get_graph_schema', 'detect_changes', 'list_projects', 'delete_project', 'index_status', 'ingest_traces', 'manage_adr']);
 
+/**
+ * 嵌套 markdown 代码块围栏冲突预处理（移植自 Continue `patchNestedMarkdown`）。
+ *
+ * 当模型返回 ```markdown 代码块，其内容又含 ``` 围栏时，VS Code renderMarkdown
+ * 的围栏解析会在内层 ``` 处提前关闭外层块 → 后续内容泄漏为正文，表现为代码块
+ * 错位/混乱。本函数把外层 ```markdown``` 的开/闭围栏转成 ~~~，避免与内层 ``` 冲突。
+ *
+ * 仅对 ```md / ```markdown / ```gfm / ```github-markdown 开头的代码块生效，
+ * 普通 ```html / ```css / ```js 等不受影响（early return）。Sub-ms。
+ */
+function _patchNestedMarkdown(source: string): string {
+	if (!source.match(/```(\w*|.*)(md|markdown|gfm|github-markdown)/)) {
+		return source;
+	}
+	let nestCount = 0;
+	const lines = source.split('\n');
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (nestCount > 0) {
+			// 在 markdown 块内
+			if (line.startsWith('```')) {
+				// 内层 ``` 围栏——只有当它是外层的闭合围栏时才转 ~~~。
+				// 启发式：如果剩余行中 ``` 的数量为偶数，说明这个 ``` 是内层的；
+				// 为奇数则它是外层闭合。简单做法：遇到裸 ```（无语言标识）就视为
+				// 可能的闭合，转 ~~~ 并退出嵌套。
+				const header = line.replaceAll('`', '').trim();
+				if (!header) {
+					nestCount = 0;
+					lines[i] = '~~~';
+				} else {
+					nestCount++;
+				}
+			}
+		} else {
+			if (line.startsWith('```')) {
+				const header = line.replaceAll('`', '').trim().toLowerCase();
+				if (header === 'md' || header === 'markdown' || header === 'gfm' || header === 'github-markdown') {
+					nestCount = 1;
+					lines[i] = lines[i].replaceAll('`', '~');
+				}
+			}
+		}
+	}
+	return lines.join('\n');
+}
+
 export class AgentChatPanel extends Disposable implements IChatPanel {
 	// -- DOM refs --
 	private readonly _container: HTMLElement;
@@ -270,7 +316,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _streamingMdTarget: { container: HTMLElement } | null = null;
 	// P0: 上次完整渲染为 markdown 的内容——用于判断是否可以增量更新
 	private _streamingMdLastRendered: string = '';
-	private static readonly STREAMING_MD_INTERVAL = 200; // ms
+	private static readonly STREAMING_MD_INTERVAL = 100; // ms（对齐 Continue 无节流思路，降至 100ms 更流畅；命令式 renderMarkdown 仍需节流防 jank）
 
 	// ── updateMessage rAF 批处理 ──
 	// 流式期间多个 delta 可能在同一帧内到达，rAF 批处理合并为每帧一次 DOM 更新。
@@ -2180,13 +2226,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 						if (this._tryIncrementalMarkdownRender(target.container, this._streamingMdLastContent)) {
 							return;
 						}
-						// 全量重建 — 离屏渲染后原子替换，避免 textContent='' 导致的空白帧闪烁
-						{
-							const tempDiv = document.createElement('div');
-							this._renderMarkdownContent(tempDiv, this._streamingMdLastContent);
-							const children = Array.from(tempDiv.childNodes);
-							target.container.replaceChildren(...children);
-						}
+					// 全量重建 — 离屏渲染后原子替换，避免 textContent='' 导致的空白帧闪烁
+					{
+						const tempDiv = document.createElement('div');
+						this._renderMarkdownContent(tempDiv, this._streamingMdLastContent, true);
+						const children = Array.from(tempDiv.childNodes);
+						target.container.replaceChildren(...children);
+					}
 						this._streamingMdLastRendered = this._streamingMdLastContent;
 					}, AgentChatPanel.STREAMING_MD_INTERVAL);
 				}
@@ -2214,13 +2260,25 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// Clean up any markdown disposables associated with the old element
 		// before replacing it, to prevent renderMarkdown() disposable leaks.
 
-		// P1: 流式结束转换——isStreaming 从 true 变为 false 时，
-		// 只需移除光标 + 渲染 markdown + 追加 footer，避免全量重建。
-		// 条件：之前在流式（有 streaming-container 或 streaming-cursor），
-		// 现在不流式，且无结构性变化（工具卡/确认/子代理等）。
+		// P1: 流式结束转换——isStreaming 从 true 变为 false 时。
+		// 条件：之前在流式（有 streaming-container 或 streaming-cursor），现在不流式。
 		const wasStreaming = existingEl.querySelector('.streaming-container, .streaming-cursor') !== null;
-		if (wasStreaming && !msg.isStreaming && !hasStructuralChange) {
-			this._transitionStreamingToComplete(existingEl, msg);
+		if (wasStreaming && !msg.isStreaming) {
+			if (!hasStructuralChange) {
+				// 无结构性变化：轻量转换——移除光标 + 渲染 markdown + 追加 footer。
+				this._transitionStreamingToComplete(existingEl, msg);
+			} else {
+				// 结构性消息（含工具卡/确认/子代理/工作流）流式结束：
+				// 旧逻辑落到下方「只更新工具卡状态 + footer」的分支，不会重渲染正文，
+				// 导致流式期间以 raw text / 半渲染残留的正文（如大段 HTML mockup）在
+				// 结束后依旧错乱。这里以最终完整 parts/content 做一次干净全量重建
+				// （与历史恢复路径完全一致），彻底消除流式增量渲染累积的错位。
+				// 重建仅在流式结束时发生一次，开销可接受。
+				this._streamingMdLastRendered = '';
+				this._streamingMdLastContent = '';
+				this._streamingMdTarget = null;
+				this._rebuildMessageElement(existingEl, msg);
+			}
 			return;
 		}
 
@@ -2303,7 +2361,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// 节流 markdown 渲染：delta 到达时仅更新缓存内容，不立即操作 DOM。
 			// 首次渲染之前（_streamingMdLastRendered 为空）用 textContent 显示纯文本。
 			if (!this._streamingMdLastRendered) {
-				streamingContainer.textContent = msg.content;
+				// 首次渲染：立即做完整 markdown 渲染（不等 200ms 计时器）。
+				// 旧实现先用 textContent 撑 200ms，期间用户看到 raw text（表格 `|` 语法、
+				// CSS/HTML 裸露），表现为「流式错乱」。首屏直接 renderMarkdown 保证从
+				// 第一个 delta 起就是格式化好的 markdown。后续 delta 仍走节流。
+				this._renderMarkdownContent(streamingContainer, msg.content, true);
+				this._streamingMdLastRendered = msg.content;
 			}
 			this._streamingMdTarget = { container: streamingContainer };
 			this._streamingMdLastContent = msg.content;
@@ -2316,12 +2379,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 					if (this._tryIncrementalMarkdownRender(target.container, this._streamingMdLastContent)) {
 						return;
 					}
-					// 离屏渲染后原子替换，避免空白帧闪烁
-					{
-						const tempDiv = document.createElement('div');
-						this._renderMarkdownContent(tempDiv, this._streamingMdLastContent);
-						const children = Array.from(tempDiv.childNodes);
-						target.container.replaceChildren(...children);
+				// 离屏渲染后原子替换，避免空白帧闪烁
+				{
+					const tempDiv = document.createElement('div');
+					this._renderMarkdownContent(tempDiv, this._streamingMdLastContent, true);
+					const children = Array.from(tempDiv.childNodes);
+					target.container.replaceChildren(...children);
 					}
 					this._streamingMdLastRendered = this._streamingMdLastContent;
 				}, AgentChatPanel.STREAMING_MD_INTERVAL);
@@ -2459,7 +2522,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			if (msg.isStreaming) {
 				contentEl.classList.add('streaming-container');
 			}
-			this._renderMarkdownContent(contentEl, msg.content);
+			this._renderMarkdownContent(contentEl, msg.content, true);
 			if (msg.toolCalls && msg.toolCalls.length > 0) {
 				this._appendToolCallsWithPhaseGroups(bubble, msg.toolCalls, msg.streamPhase);
 			}
@@ -2745,7 +2808,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// 清理旧的 markdown disposable
 			this._cleanupMarkdownDisposables(streamingContainer);
 			streamingContainer.textContent = '';
-			this._renderMarkdownContent(streamingContainer, msg.content);
+			this._renderMarkdownContent(streamingContainer, msg.content, true);
 			this._streamingMdLastRendered = msg.content;
 		}
 
@@ -5373,9 +5436,13 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 	}
 
-	private _renderMarkdownContent(parent: HTMLElement, content: string): void {
-		const md: IMarkdownString = { value: content, isTrusted: true };
-		const options = this._getMarkdownOptions();
+	private _renderMarkdownContent(parent: HTMLElement, content: string, isStreaming: boolean = false): void {
+		// 预处理：嵌套 markdown 代码块围栏冲突（移植自 Continue patchNestedMarkdown）。
+		// 模型返回 ```markdown 代码块内含 ``` 时，VS Code renderMarkdown 的围栏解析
+		// 会错位 → 内层代码块泄漏为正文。把外层 ```markdown``` 的围栏转成 ~~~ 避免冲突。
+		const processed = _patchNestedMarkdown(content);
+		const md: IMarkdownString = { value: processed, isTrusted: true };
+		const options = this._getMarkdownOptions(isStreaming);
 
 		// Dispose previous markdown disposable for this parent to avoid leakage
 		const existingDisposable = this._markdownDisposables.get(parent);
@@ -5521,6 +5588,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		const appended = newContent.slice(oldContent.length);
 		if (!appended) { return true; } // 无变化
 
+		// 大内容强制全量重建：增量渲染会在表格/代码块/嵌套列表边界产生碎片 DOM，
+		// 导致复杂 markdown（如模型返回的设计方案文档含表格+代码+CSS）显示混乱。
+		// 小内容（<4KB）保留增量以降低流式渲染开销。全量重建已按 200ms 节流，性能可接受。
+		if (newContent.length > 4096) { return false; }
+
 		// 安全检查：旧内容不能结束在代码块中间（``` 标记数为奇数）
 		const fenceCount = (oldContent.match(/```/g) || []).length;
 		if (fenceCount % 2 !== 0) { return false; }
@@ -5552,11 +5624,32 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 * 提取 markdown 渲染选项（codeBlockRenderer 等），供 _renderMarkdownContent
 	 * 和 _tryIncrementalMarkdownRender 共享。P0 重构。
 	 */
-	private _getMarkdownOptions(): MarkdownRenderOptions {
+	private _getMarkdownOptions(isStreaming: boolean = false): MarkdownRenderOptions {
 		const LARGE_CODE_THRESHOLD = 30; // lines before auto-collapse
 
 		return {
-			codeBlockRenderer: (languageAlias: string, code: string) => {
+			// 流式时自动补全未闭合的 ``` 围栏 / 表格 / 列表（对齐 Void/VS Code 原生 chat
+			// 的 fillIncompleteTokens 机制）。这是防止流式错乱的根因修复——之前流式
+			// 过程中未闭合的代码块会以 raw text 形式泄漏到正文，表现为 CSS/HTML 裸露。
+			fillInIncompleteTokens: isStreaming,
+			// 显式开启 GFM：表格 / 任务列表 / 删除线 / 自动链接。marked 实例的默认值
+			// 在某些版本下 gfm=false，导致 | col1 | col2 | 表格语法以 raw text 渲染。
+			markedOptions: { gfm: true, breaks: false },
+			// ⚠️ 关键修复（流式代码块显示为裸露 HTML/CSS 文本，输出结束后才正常，2026-07-13）：
+			//   必须用 codeBlockRendererSync（同步）而非 codeBlockRenderer（异步 Promise）。
+			//   原因：异步 codeBlockRenderer 下，renderMarkdown 会先同步插入占位符
+			//   `<div class="code" data-code="N">${escape(code)}</div>`（内容是转义后的原始
+			//   代码文本），再在 `Promise.all(codeBlocks).then()`（微任务）里用
+			//   `outElement.querySelectorAll('div[data-code]')` 替换为真正的代码块。
+			//   但流式全量重建走「离屏 tempDiv 渲染 → replaceChildren 把子节点移动到真实
+			//   容器」的模式（见 _streamingMdTimer 回调），replaceChildren 同步把节点搬出
+			//   tempDiv 后，微任务里的 querySelectorAll 在**已清空的 tempDiv** 上找不到占位符
+			//   → 永不替换 → 占位符里转义的裸露 HTML/CSS 文本一直留在可见容器（即错乱）。
+			//   流式结束时 _rebuildMessageElement 直接渲染进真实容器，故「结束后正常」。
+			//   改用同步渲染后，renderMarkdown 在返回前就完成占位符替换（markdownRenderer.ts
+			//   L343-351），移动子节点时代码块已就位，彻底消除该竞态。本渲染器体内无真正
+			//   异步操作，转同步零副作用。
+			codeBlockRendererSync: (languageAlias: string, code: string) => {
 				const lang = languageAlias || '';
 				const lines = code.split('\n');
 				const isLarge = lines.length > LARGE_CODE_THRESHOLD;
@@ -5675,7 +5768,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				pre.appendChild(codeEl);
 				wrapper.appendChild(pre);
 
-				return Promise.resolve(wrapper);
+				return wrapper;
 			},
 		};
 	}
@@ -5746,7 +5839,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				if (isStreaming && k === lastTextIdx) {
 					segEl.classList.add('streaming-container');
 				}
-				this._renderMarkdownContent(segEl, part.text);
+				this._renderMarkdownContent(segEl, part.text, isStreaming);
 			} else {
 				// 跳过非最后的 update_plan 卡片（替换语义）
 				const toolPart = (part as any).tool;
@@ -8006,9 +8099,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				status: 'pending',
 			});
 
-			// 清空输入框
+			// 清空输入框（保持当前高度不变，避免排队时输入框塌缩）
+			const savedHeight = this._textarea.style.height;
 			this._setComposerText('');
-			this._textarea.style.height = "auto";
+			this._textarea.style.height = savedHeight || 'auto';
 			this._skillChips = [];
 			this._renderSkillChips();
 			this._attachments = [];

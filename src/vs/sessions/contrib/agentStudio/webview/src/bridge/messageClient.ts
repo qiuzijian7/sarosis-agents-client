@@ -89,6 +89,8 @@ export type RequestType =
 	| 'confightml.notify'
 	| 'confightml.previewToFile'
 	| 'confightml.htmlGenerate'
+	| 'confightml.chatSendStream'
+	| 'confightml.chatCancelStream'
 	| 'files.open'
 	| 'files.openHtmlPreview'
 	| 'files.openUntitledText'

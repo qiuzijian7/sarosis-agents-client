@@ -4,10 +4,14 @@
 	"recommendations": [
 		"dbaeumer.vscode-eslint",
 		"editorconfig.editorconfig",
+		"ms-vscode.extension-test-runner",
+		"typescriptteam.native-preview"
+	],
+	"unwantedRecommendations": [
+		// 这些扩展消耗大量内存，与 Sarosis Agent Studio 功能重叠或非开发必需
 		"github.vscode-pull-request-github",
 		"ms-vscode.vscode-github-issue-notebooks",
-		"ms-vscode.extension-test-runner",
-		"typescriptteam.native-preview",
-		"ms-vscode.ts-customized-language-service"
+		"GitHub.copilot",
+		"GitHub.copilot-chat"
 	]
 }

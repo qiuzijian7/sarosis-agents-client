@@ -115,6 +115,17 @@
 	"typescript.suggest.autoImports": false,
 	"typescript.validate.enable": false,
 	"javascript.validate.enable": false,
+	// ── Sarosis: TS server memory cap to prevent extension host OOM ──
+	"typescript.tsserver.maxTsServerMemory": 2048,
+	"typescript.tsserver.experimental.enableProjectDiagnostics": false,
+	// tsserver 是独立进程（不占 ext host 堆）；关闭自动类型获取 + 收窄 watch
+	// 进一步降低其内存/CPU，避免与 ext host 争抢系统资源。
+	"typescript.disableAutomaticTypeAcquisition": true,
+	"typescript.tsserver.watchOptions": {
+		"watchFile": "useFsEventsOnParentDirectory",
+		"watchDirectory": "useFsEvents",
+		"fallbackPolling": "dynamicPriority"
+	},
 	// --- Languages ---
 	"json.schemas": [
 		{
@@ -226,5 +237,22 @@
 	},
 	// --- Extensions ---
 	"extensions.autoUpdate": false,
-	"extensions.autoCheckUpdates": false
+	"extensions.autoCheckUpdates": false,
+	// ── Sarosis: disable memory-heavy extensions for this workspace ──
+	// 内置 GitHub Copilot Chat 扩展（extensions/copilot/, dist/extension.js 31MB）
+	// 是 ext host 4GB cage 的最大静态占用来源。已同时通过删除
+	// activationEvents 里的 "onStartupFinished" 让它默认不启动激活；
+	// 这里再声明 untrusted 场景下 disable，形成双重保险。
+	"extensions.supportUntrustedWorkspaces": {
+		"GitHub.copilot-chat": { "enabled": false },
+		"github.vscode-pull-request-github": { "enabled": false },
+		"ms-vscode.vscode-github-issue-notebooks": { "enabled": false }
+	},
+	"githubPullRequests.experimental.createView": false,
+	"githubPullRequests.codingAgent.enabled": false,
+	// ── agentmemory 索引更严格上限（重启生效）──
+	// 已在 extensions/agentmemory-memory/src/bm25Index.ts / vectorIndex.ts
+	// 把默认 _maxDocs 从 5000 降到 1000。如需进一步压缩，用 shell 环境变量：
+	//   set AGENTMEMORY_BM25_MAX_DOCS=500
+	//   set AGENTMEMORY_VECTOR_MAX_DOCS=500
 }

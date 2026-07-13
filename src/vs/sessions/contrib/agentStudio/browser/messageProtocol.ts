@@ -104,6 +104,8 @@ export type RequestType =
 	| 'confightml.notify'           // show notification
 	| 'confightml.previewToFile'    // render & write a standalone .preview.html file
 	| 'confightml.htmlGenerate'    // ConfigHtml: ask the confightml skill to generate full HTML
+	| 'confightml.chatSendStream'  // send message with streaming delta callbacks
+	| 'confightml.chatCancelStream'// cancel an active stream session
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
@@ -167,6 +169,8 @@ export type EventType =
 	| 'confightml.htmlRendered'     // new HTML rendered (push to preview)
 	| 'confightml.command'          // model-issued command for HTML view
 	| 'confightml.error'           // sync/render error
+	| 'confightml.chatStreamDelta'  // stream delta from agent response
+	| 'confightml.chatStreamDone'   // stream complete (success or error)
 	| 'chat.toolApprovalRequest'
 	| 'chat.injectPrompt'        // host requests webview to inject a prompt into the chat (e.g. workflow run)
 	| 'workflow.loaded'          // host sends workflow data to webview editor
@@ -537,6 +541,41 @@ export interface IConfigHtmlCommandPayload {
 		readonly params: Record<string, unknown>;
 		readonly id: string;
 	};
+}
+
+// ─── ConfigHtml Stream Payloads ────────────────────────────────────────────
+
+export interface IConfigHtmlChatSendStreamPayload {
+	readonly requestId: string;
+	readonly agentId: string;
+	readonly message: string;
+	readonly agentSessionId?: string;
+}
+
+export interface IConfigHtmlChatCancelStreamPayload {
+	readonly requestId: string;
+	readonly agentId: string;
+}
+
+export interface IConfigHtmlChatStreamDeltaPayload {
+	readonly requestId: string;
+	readonly agentId: string;
+	readonly delta: {
+		readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_end' | 'done';
+		readonly content?: string;
+		readonly fullText?: string;
+		readonly toolName?: string;
+		readonly toolArgs?: string;
+		readonly toolResult?: string;
+	};
+}
+
+export interface IConfigHtmlChatStreamDonePayload {
+	readonly requestId: string;
+	readonly agentId: string;
+	readonly ok: boolean;
+	readonly fullText?: string;
+	readonly error?: string;
 }
 
 // ─── Files Payloads ────────────────────────────────────────────────────────

@@ -27,12 +27,15 @@ export class DiskCacheAdapter<T = unknown> {
 	private _memory = new Map<string, CacheEntry<T>>();
 	private _dirty = new Set<string>(); // 待 flush 的 key
 	private _flushTimer: ReturnType<typeof setInterval> | undefined;
+	private _cleanupTimer: ReturnType<typeof setInterval> | undefined;
 	private readonly _flushIntervalMs = 30 * 1000; // 30s flush 一次
+	private readonly _cleanupIntervalMs = 2 * 60 * 1000; // 2 分钟清理一次过期条目
 
 	constructor(
 		private readonly _kv: KVStoreLike,
 		private readonly _scope: string,
 		private readonly _defaultTtlMs: number = 5 * 60 * 1000,
+		private readonly _maxSize: number = 200,  // OOM 防护：内存条目上限
 	) {
 		// 启动定期 flush
 		this._flushTimer = setInterval(() => {
@@ -40,6 +43,13 @@ export class DiskCacheAdapter<T = unknown> {
 		}, this._flushIntervalMs);
 		if (this._flushTimer && typeof (this._flushTimer as any).unref === 'function') {
 			(this._flushTimer as any).unref();
+		}
+		// 启动定期 TTL 清理（主动回收过期条目，避免惰性 get 时的堆积）
+		this._cleanupTimer = setInterval(() => {
+			this._evictExpired();
+		}, this._cleanupIntervalMs);
+		if (this._cleanupTimer && typeof (this._cleanupTimer as any).unref === 'function') {
+			(this._cleanupTimer as any).unref();
 		}
 	}
 
@@ -72,7 +82,7 @@ export class DiskCacheAdapter<T = unknown> {
 		return undefined;
 	}
 
-	/** 设置缓存 — 写内存 + 标记 dirty */
+	/** 设置缓存 — 写内存 + 标记 dirty，超过 maxSize 时 LRU 淘汰最旧条目 */
 	async set(key: string, value: T, ttlMs?: number): Promise<void> {
 		const entry: CacheEntry<T> = {
 			value,
@@ -81,6 +91,17 @@ export class DiskCacheAdapter<T = unknown> {
 		};
 		this._memory.set(key, entry);
 		this._dirty.add(key);
+
+		// OOM 防护：超过 maxSize 时 LRU 淘汰（按 ts 排序，删除最旧的 N 条）
+		if (this._memory.size > this._maxSize) {
+			const entries = Array.from(this._memory.entries())
+				.sort((a, b) => a[1].ts - b[1].ts);
+			const toEvict = entries.slice(0, this._memory.size - this._maxSize);
+			for (const [k] of toEvict) {
+				this._memory.delete(k);
+				this._dirty.delete(k);
+			}
+		}
 	}
 
 	/** 删除缓存 */
@@ -116,19 +137,25 @@ export class DiskCacheAdapter<T = unknown> {
 		}
 	}
 
-	/** 从 SQLite 恢复所有缓存到内存 */
+	/** 从 SQLite 恢复缓存到内存（限制恢复数量，防止一次性撑爆堆） */
 	async restore(): Promise<void> {
 		try {
 			const items = await this._kv.list(this._scope);
-			for (const item of items) {
-				try {
-					const entry = JSON.parse(item.value) as CacheEntry<T>;
-					if (Date.now() - entry.ts < entry.ttlMs) {
-						this._memory.set(item.key, entry);
-					} else {
-						await this._kv.delete(this._scope, item.key);
-					}
-				} catch { /* skip corrupt entries */ }
+			// 按时间戳排序取最近 maxSize 条恢复，其余仅保留在磁盘
+			const sorted = items
+				.map(item => {
+					try { return { ...item, entry: JSON.parse(item.value) as CacheEntry<T> }; }
+					catch { return null; }
+				})
+				.filter((x): x is NonNullable<typeof x> => x !== null)
+				.sort((a, b) => b.entry.ts - a.entry.ts);
+			const toRestore = sorted.slice(0, this._maxSize);
+			for (const item of toRestore) {
+				if (Date.now() - item.entry.ts < item.entry.ttlMs) {
+					this._memory.set(item.key, item.entry);
+				} else {
+					await this._kv.delete(this._scope, item.key);
+				}
 			}
 		} catch { /* ignore */ }
 	}
@@ -141,11 +168,26 @@ export class DiskCacheAdapter<T = unknown> {
 		};
 	}
 
+	/** 主动清理过期条目（由定时器调用，防止惰性 get 时堆积） */
+	private _evictExpired(): void {
+		const now = Date.now();
+		for (const [key, entry] of this._memory) {
+			if (now - entry.ts >= entry.ttlMs) {
+				this._memory.delete(key);
+				this._dirty.delete(key);
+			}
+		}
+	}
+
 	/** 销毁 — flush + 停止 timer */
 	async dispose(): Promise<void> {
 		if (this._flushTimer) {
 			clearInterval(this._flushTimer);
 			this._flushTimer = undefined;
+		}
+		if (this._cleanupTimer) {
+			clearInterval(this._cleanupTimer);
+			this._cleanupTimer = undefined;
 		}
 		await this.flush();
 	}

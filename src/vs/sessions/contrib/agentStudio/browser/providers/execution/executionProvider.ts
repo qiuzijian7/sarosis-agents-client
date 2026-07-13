@@ -314,8 +314,9 @@ export class ExecutionProvider implements IExecutionProvider {
 
 				// 收集模型响应并 yield 给调用者
 				// 注意：IChatMessage 的属性是只读的，所以需要收集数据后创建新对象
-				let assistantContent = '';
-				let assistantToolCalls: IToolCallInfo[] = [];
+			// 用分块数组累积，末尾一次性 join，避免流式 `+=` 产生 ConsString 绳索串（O(n) 且进历史后不会持续膨胀）
+			let assistantContentChunks: string[] = [];
+			let assistantToolCalls: IToolCallInfo[] = [];
 
 				for await (const delta of modelStream) {
 					// 将模型 delta 转换为 stream delta 并 yield
@@ -325,9 +326,9 @@ export class ExecutionProvider implements IExecutionProvider {
 					}
 
 					// 收集完整的助手消息
-					if (delta.type === 'text' && delta.content) {
-						assistantContent += delta.content;
-					} else if (delta.type === 'tool_call' && delta.toolCall) {
+				if (delta.type === 'text' && delta.content) {
+					assistantContentChunks.push(delta.content);
+				} else if (delta.type === 'tool_call' && delta.toolCall) {
 						assistantToolCalls.push(delta.toolCall);
 					} else if (delta.type === 'usage' && delta.usage) {
 						// P1: 截获真实 prompt token，供下一轮 compressContext 优先判定。
@@ -350,15 +351,15 @@ export class ExecutionProvider implements IExecutionProvider {
 					}
 				}
 
-				// 创建助手消息并添加到历史
-				if (assistantContent || assistantToolCalls.length > 0) {
-					const assistantMessage: IChatMessage = {
-						role: 'assistant',
-						content: assistantContent,
-						toolCalls: assistantToolCalls.length > 0 ? assistantToolCalls : undefined,
-					};
-					messages.push(assistantMessage);
-				}
+			// 创建助手消息并添加到历史
+			if (assistantContentChunks.length > 0 || assistantToolCalls.length > 0) {
+				const assistantMessage: IChatMessage = {
+					role: 'assistant',
+					content: assistantContentChunks.join(''),
+					toolCalls: assistantToolCalls.length > 0 ? assistantToolCalls : undefined,
+				};
+				messages.push(assistantMessage);
+			}
 
 				// 7.4 检查是否需要执行工具调用
 				if (assistantToolCalls.length === 0) {
@@ -433,7 +434,7 @@ export class ExecutionProvider implements IExecutionProvider {
 						await memoryProvider.writeMemory(request.agentId, {
 							id: `msg-${Date.now()}`,
 							type: 'working',
-							content: assistantContent || 'Tool execution completed',
+							content: assistantContentChunks.join('') || 'Tool execution completed',
 							metadata: {
 								// ── memory 合并 schema 预留（参见 doc/Memory-Strategy.md §2.7）──
 								owner: 'default',

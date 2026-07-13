@@ -123,13 +123,13 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		definition: {
 			name: 'list_projects',
 			description: 'List all indexed projects in the codebase graph.',
-			inputSchema: { type: 'object', properties: {} },
-			category: 'codebase',
-			source: 'saros.builtin-tools',
-		},
-		handler: async () => {
-			const projects = ctx.codebaseGraphService.listProjects();
-			return json({ projects, count: projects.length });
+		inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+		category: 'codebase',
+		source: 'saros.builtin-tools',
+	},
+	handler: async () => {
+		const projects = ctx.codebaseGraphService.listProjects();
+		return json({ projects, count: projects.length });
 		},
 	});
 
@@ -429,14 +429,14 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		definition: {
 			name: 'get_graph_schema',
 			description: 'Get the schema of the codebase graph: node labels, edge types, and counts.',
-			inputSchema: { type: 'object', properties: {} },
-			category: 'codebase',
-			source: 'saros.builtin-tools',
-		},
-		handler: async () => {
-			if (!ensureGraph()) { return text('get_graph_schema: no graph loaded. Run index_repository first.'); }
-			return json(ctx.codebaseGraphService.getGraphSchema());
-		},
+		inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+		category: 'codebase',
+		source: 'saros.builtin-tools',
+	},
+	handler: async () => {
+		if (!ensureGraph()) { return text('get_graph_schema: no graph loaded. Run index_repository first.'); }
+		return json(ctx.codebaseGraphService.getGraphSchema());
+	},
 	});
 
 	// ── trace_path ──────────────────────────────────────────────────

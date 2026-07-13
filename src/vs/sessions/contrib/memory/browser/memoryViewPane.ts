@@ -1,10 +1,10 @@
 /*---------------------------------------------------------------------------------------------
- *  Memory Side View — 基于 agentmemory 4-Tier Consolidation Model
+ *  Memory Side View — 基于 agentmemory 9 类原生类型
  *
  *  数据源: AgentMemoryProvider（进程内，通过 IAgentDriverService.getActiveMemoryProvider()）
  *  不再依赖 TDB-AM HTTP gateway。
  *
- *  4-Tier 模型:
+ *  分类: 9 类原生类型
  *    Working   → 原始观察 (working)
  *    Episodic  → 会话摘要 (episodic)
  *    Semantic  → 事实模式 (scene)
@@ -30,20 +30,25 @@ import type { IMemoryProvider, IMemoryEntry } from '../../agentStudio/common/pro
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type TierId = 'working' | 'episodic' | 'semantic' | 'procedural';
+type CategoryId = 'working' | 'pattern' | 'fact' | 'preference' | 'architecture' | 'bug' | 'workflow' | 'semantic' | 'procedural';
 
-interface TierSpec {
-	readonly id: TierId;
+interface CategorySpec {
+	readonly id: CategoryId;
 	readonly label: string;
-	readonly desc: string;
 	readonly color: string;
 }
 
-const TIERS: readonly TierSpec[] = [
-	{ id: 'working', label: 'Working', desc: 'Raw observations — file reads/writes, commands, decisions', color: '#569cd6' },
-	{ id: 'episodic', label: 'Episodic', desc: 'Session summaries — patterns, preferences, bugs, facts', color: '#4ec9b0' },
-	{ id: 'semantic', label: 'Semantic', desc: 'Cross-session knowledge — scene-level abstractions', color: '#b799ff' },
-	{ id: 'procedural', label: 'Procedural', desc: 'Long-term skills — workflows, decision patterns, persona', color: '#f0a04b' },
+/** 9 类原生类型，与 memoryDetailEditorPane 的 LayerFilter 对齐 */
+const CATEGORIES: readonly CategorySpec[] = [
+	{ id: 'working', label: 'Working', color: '#569cd6' },
+	{ id: 'pattern', label: 'Pattern', color: '#4ec9b0' },
+	{ id: 'fact', label: 'Fact', color: '#d4a017' },
+	{ id: 'preference', label: 'Preference', color: '#dcdcaa' },
+	{ id: 'architecture', label: 'Architecture', color: '#b799ff' },
+	{ id: 'bug', label: 'Bug', color: '#f48771' },
+	{ id: 'workflow', label: 'Workflow', color: '#f0a04b' },
+	{ id: 'semantic', label: 'Semantic', color: '#b799ff' },
+	{ id: 'procedural', label: 'Procedural', color: '#ce9178' },
 ];
 
 interface ActivityItem {
@@ -52,8 +57,8 @@ interface ActivityItem {
 	time: number;
 }
 
-function matchesTier(mem: IMemoryEntry, tier: TierId): boolean {
-	return mem.type === tier;
+function matchesCategory(mem: IMemoryEntry, cat: CategoryId): boolean {
+	return mem.type === cat;
 }
 
 function formatTime(ts: number): string {
@@ -77,8 +82,8 @@ export class MemoryViewPane extends ViewPane {
 	private _container: HTMLElement | undefined;
 	private _statsEl: HTMLElement | undefined;
 	private _activityEl: HTMLElement | undefined;
-	private _layerBodies = new Map<TierId, HTMLElement>();
-	private _expandedTiers = new Set<TierId>();
+	private _layerBodies = new Map<string, HTMLElement>();
+	private _expandedCategory: CategoryId | null = null;
 	private _allMemories: IMemoryEntry[] = [];
 	private _searchQuery = '';
 	private _activeAgentId: string | undefined;
@@ -192,21 +197,22 @@ export class MemoryViewPane extends ViewPane {
 			.mv-status { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--vscode-descriptionForeground, #8a8a8a); }
 			.mv-status .dot { width: 6px; height: 6px; border-radius: 50%; background: #5dcaa5; box-shadow: 0 0 4px #5dcaa5; }
 			.mv-status.off .dot { background: #f48771; box-shadow: none; }
-			/* Stats */
-			.mv-stats { display: flex; gap: 3px; margin-bottom: 6px; }
-			.mv-tier-stat { flex: 1; background: var(--vscode-editorWidget-background, #2d2d2d); border: 1px solid #2d2d2d; border-radius: 4px; padding: 4px 3px; text-align: center; position: relative; overflow: hidden; cursor: pointer; transition: all 0.15s; }
-			.mv-tier-stat:hover { background: #333; }
-			.mv-tier-stat::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 2px; }
-			.mv-tier-stat.working::before { background: #569cd6; }
-			.mv-tier-stat.episodic::before { background: #4ec9b0; }
-			.mv-tier-stat.semantic::before { background: #b799ff; }
-			.mv-tier-stat.procedural::before { background: #f0a04b; }
-			.mv-tier-stat .t-label { font-size: 8px; color: var(--vscode-descriptionForeground, #6a6a6a); text-transform: uppercase; letter-spacing: 0.3px; }
-			.mv-tier-stat .t-value { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
-			.mv-tier-stat.working .t-value { color: #569cd6; }
-			.mv-tier-stat.episodic .t-value { color: #4ec9b0; }
-			.mv-tier-stat.semantic .t-value { color: #b799ff; }
-			.mv-tier-stat.procedural .t-value { color: #f0a04b; }
+			/* Category chips — 匹配 memoryDetailEditorPane 的芯片风格 */
+			.mv-stats { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 6px; }
+			.mv-cat-chip { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px 2px 6px; border-radius: 10px; cursor: pointer; transition: all 0.15s; border: 1px solid transparent; font-size: 10px; user-select: none; }
+			.mv-cat-chip:hover { background: #333; }
+			.mv-cat-chip.active { border-bottom: 2px solid #569cd6; background: rgba(86,156,214,0.1); }
+			.mv-cat-chip .cat-label { font-weight: 500; color: var(--vscode-foreground, #ccc); }
+			.mv-cat-chip .cat-count { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 12px; text-align: right; }
+			.mv-cat-chip[data-cat="working"] { border-left: 2px solid #569cd6; } .mv-cat-chip[data-cat="working"] .cat-count { color: #569cd6; }
+			.mv-cat-chip[data-cat="pattern"] { border-left: 2px solid #4ec9b0; } .mv-cat-chip[data-cat="pattern"] .cat-count { color: #4ec9b0; }
+			.mv-cat-chip[data-cat="fact"] { border-left: 2px solid #d4a017; } .mv-cat-chip[data-cat="fact"] .cat-count { color: #d4a017; }
+			.mv-cat-chip[data-cat="preference"] { border-left: 2px solid #dcdcaa; } .mv-cat-chip[data-cat="preference"] .cat-count { color: #dcdcaa; }
+			.mv-cat-chip[data-cat="architecture"] { border-left: 2px solid #b799ff; } .mv-cat-chip[data-cat="architecture"] .cat-count { color: #b799ff; }
+			.mv-cat-chip[data-cat="bug"] { border-left: 2px solid #f48771; } .mv-cat-chip[data-cat="bug"] .cat-count { color: #f48771; }
+			.mv-cat-chip[data-cat="workflow"] { border-left: 2px solid #f0a04b; } .mv-cat-chip[data-cat="workflow"] .cat-count { color: #f0a04b; }
+			.mv-cat-chip[data-cat="semantic"] { border-left: 2px solid #b799ff; } .mv-cat-chip[data-cat="semantic"] .cat-count { color: #b799ff; }
+			.mv-cat-chip[data-cat="procedural"] { border-left: 2px solid #ce9178; } .mv-cat-chip[data-cat="procedural"] .cat-count { color: #ce9178; }
 			/* Search + Actions */
 			.mv-search { width: 100%; background: var(--vscode-input-background, #3c3c3c); border: 1px solid var(--vscode-input-border, #3c3c3c); border-radius: 3px; padding: 4px 8px; color: var(--vscode-input-foreground, #ccc); font-size: 11px; outline: none; margin-bottom: 4px; }
 			.mv-search:focus { border-color: #569cd6; }
@@ -221,46 +227,30 @@ export class MemoryViewPane extends ViewPane {
 			.mv-activity-item { display: flex; align-items: center; gap: 4px; padding: 1px 0; font-size: 10px; color: #8a8a8a; }
 			.mv-activity-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 			.mv-activity-time { font-size: 9px; color: #6a6a6a; flex-shrink: 0; }
-			/* Layers */
+			/* Layers / Memory list */
 			.mv-layers { flex: 1; overflow-y: auto; padding: 2px 0; }
 			.mv-layers::-webkit-scrollbar { width: 5px; }
 			.mv-layers::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.3); border-radius: 3px; }
-			.mv-layer { margin-bottom: 1px; }
-			.mv-layer-header { display: flex; align-items: center; gap: 5px; padding: 5px 10px; cursor: pointer; transition: background 0.15s; }
-			.mv-layer-header:hover { background: #333; }
-			.mv-layer-badge { font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 6px; flex-shrink: 0; min-width: 22px; text-align: center; }
-			.mv-layer-badge.working { background: rgba(86,156,214,0.15); color: #569cd6; }
-			.mv-layer-badge.episodic { background: rgba(78,201,176,0.15); color: #4ec9b0; }
-			.mv-layer-badge.semantic { background: rgba(183,153,255,0.15); color: #b799ff; }
-			.mv-layer-badge.procedural { background: rgba(240,160,75,0.15); color: #f0a04b; }
-			.mv-layer-label { flex: 1; font-size: 11px; color: var(--vscode-foreground, #ccc); font-weight: 500; }
-			.mv-layer-count { font-size: 10px; color: #6a6a6a; font-variant-numeric: tabular-nums; }
-			.mv-layer-caret { font-size: 9px; color: #6a6a6a; transition: transform 0.2s; flex-shrink: 0; }
-			.mv-layer.expanded .mv-layer-caret { transform: rotate(90deg); }
-			.mv-layer-body { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }
-			.mv-layer.expanded .mv-layer-body { max-height: 400px; overflow-y: auto; }
 			/* Memory card */
 			.mv-mem { padding: 4px 10px 4px 24px; border-bottom: 1px solid #2d2d2d; cursor: pointer; transition: background 0.15s; }
 			.mv-mem:hover { background: #333; }
 			.mv-mem-top { display: flex; align-items: center; gap: 3px; margin-bottom: 1px; }
 			.mv-mem-type { font-size: 8px; padding: 1px 4px; border-radius: 5px; flex-shrink: 0; font-weight: 600; }
 			.mv-mem-type.working { background: rgba(86,156,214,0.12); color: #569cd6; }
-			.mv-mem-type.episodic { background: rgba(78,201,176,0.12); color: #4ec9b0; }
-			.mv-mem-type.scene { background: rgba(183,153,255,0.12); color: #b799ff; }
-			.mv-mem-type.persona { background: rgba(240,160,75,0.12); color: #f0a04b; }
 			.mv-mem-type.pattern, .mv-mem-type.fact, .mv-mem-type.instruction { background: rgba(78,201,176,0.12); color: #4ec9b0; }
 			.mv-mem-type.preference { background: rgba(220,220,170,0.12); color: #dcdcaa; }
 			.mv-mem-type.architecture { background: rgba(183,153,255,0.12); color: #b799ff; }
 			.mv-mem-type.bug { background: rgba(244,135,113,0.12); color: #f48771; }
 			.mv-mem-type.workflow { background: rgba(240,160,75,0.12); color: #f0a04b; }
+			.mv-mem-type.semantic { background: rgba(183,153,255,0.12); color: #b799ff; }
+			.mv-mem-type.procedural { background: rgba(206,145,120,0.12); color: #ce9178; }
 			.mv-mem-time { font-size: 9px; color: #6a6a6a; margin-left: auto; flex-shrink: 0; }
 			.mv-mem-content { font-size: 10px; color: #8a8a8a; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 			.mv-mem.writing { border-left: 2px solid #569cd6; padding-left: 22px; }
 			.mv-mem.saved { border-left: 2px solid #5dcaa5; padding-left: 22px; }
 			.mv-mem.failed { border-left: 2px solid #f48771; padding-left: 22px; }
-			/* Empty */
+			/* Empty / Loading */
 			.mv-empty { padding: 16px 10px; text-align: center; color: #6a6a6a; font-size: 11px; }
-			/* Loading */
 			.mv-loading { padding: 20px; text-align: center; color: #6a6a6a; font-size: 11px; }
 		`;
 		this._container.appendChild(style);
@@ -279,15 +269,16 @@ export class MemoryViewPane extends ViewPane {
 		append(status, $('span.dot'));
 		append(status, $('span')).textContent = 'Active';
 
-		// Stats row
+		// Category chips row — 匹配图2的芯片布局
 		const stats = append(header, $('.mv-stats'));
 		this._statsEl = stats;
-		for (const tier of TIERS) {
-			const card = append(stats, $(`.mv-tier-stat.${tier.id}`));
-			card.title = tier.desc;
-			append(card, $('.t-label')).textContent = tier.label;
-			append(card, $('.t-value')).textContent = '0';
-			card.addEventListener('click', () => this._toggleTier(tier.id));
+		for (const cat of CATEGORIES) {
+			const chip = append(stats, $('.mv-cat-chip'));
+			chip.dataset.cat = cat.id;
+			chip.title = `${cat.label} — click to filter`;
+			append(chip, $('span.cat-label')).textContent = cat.label;
+			append(chip, $('span.cat-count')).textContent = '0';
+			chip.addEventListener('click', () => this._toggleCategory(cat.id));
 		}
 
 		// Search
@@ -297,7 +288,7 @@ export class MemoryViewPane extends ViewPane {
 		search.placeholder = '🔍 搜索记忆...';
 		search.addEventListener('input', () => {
 			this._searchQuery = search.value.toLowerCase().trim();
-			this._renderAllLayers();
+			this._renderLayerList();
 		});
 		header.appendChild(search);
 
@@ -353,68 +344,46 @@ export class MemoryViewPane extends ViewPane {
 	private _renderLayers(): void {
 		if (!this._container) return;
 		const layersEl = append(this._container, $('.mv-layers'));
-		// Render in reverse order (Procedural first, Working last) — most important on top
-		for (let i = TIERS.length - 1; i >= 0; i--) {
-			const tier = TIERS[i];
-			const layer = append(layersEl, $('.mv-layer'));
-			const header = append(layer, $('.mv-layer-header'));
-			append(header, $(`.mv-layer-badge.${tier.id}`)).textContent = tier.label.slice(0, 4).toUpperCase();
-			append(header, $('.mv-layer-label')).textContent = tier.desc.split('—')[0].trim();
-			append(header, $('.mv-layer-count')).textContent = '0';
-			append(header, $('.mv-layer-caret')).textContent = '▶';
-			header.addEventListener('click', () => this._toggleTier(tier.id));
-			const body = append(layer, $('.mv-layer-body'));
-			this._layerBodies.set(tier.id, body);
-		}
+		this._layerBodies.set('all', layersEl);
 	}
 
-	private _toggleTier(tier: TierId): void {
-		const layersEl = this._container?.querySelector('.mv-layers');
-		if (!layersEl) return;
-		const layerEls = layersEl.querySelectorAll('.mv-layer');
-		const tierIndex = TIERS.length - 1 - TIERS.findIndex(t => t.id === tier);
-		const layerEl = layerEls[tierIndex];
-		if (!layerEl) return;
-		if (this._expandedTiers.has(tier)) {
-			this._expandedTiers.delete(tier);
-			layerEl.classList.remove('expanded');
+	private _toggleCategory(cat: CategoryId): void {
+		// Toggle: click same again → deselect (show all)
+		if (this._expandedCategory === cat) {
+			this._expandedCategory = null;
 		} else {
-			// Collapse others (only one expanded at a time)
-			for (const t of TIERS) {
-				if (t.id !== tier && this._expandedTiers.has(t.id)) {
-					this._expandedTiers.delete(t.id);
-					const idx = TIERS.length - 1 - TIERS.indexOf(t);
-					layerEls[idx]?.classList.remove('expanded');
-				}
+			this._expandedCategory = cat;
+		}
+		// Update chip active states
+		const chips = this._statsEl?.querySelectorAll('.mv-cat-chip');
+		if (chips) {
+			for (const chip of chips) {
+				chip.classList.toggle('active', this._expandedCategory === (chip as HTMLElement).dataset.cat);
 			}
-			this._expandedTiers.add(tier);
-			layerEl.classList.add('expanded');
-			this._renderLayer(tier);
 		}
+		this._renderLayerList();
 	}
 
-	private _renderAllLayers(): void {
-		for (const tier of this._expandedTiers) {
-			this._renderLayer(tier);
-		}
-	}
-
-	private _renderLayer(tier: TierId): void {
-		const body = this._layerBodies.get(tier);
+	private _renderLayerList(): void {
+		const body = this._layerBodies.get('all');
 		if (!body) return;
 		clearNode(body);
 
-		let items = this._allMemories.filter(m => matchesTier(m, tier));
+		let items = this._allMemories;
+		// Filter by selected category
+		if (this._expandedCategory) {
+			items = items.filter(m => matchesCategory(m, this._expandedCategory!));
+		}
+		// Filter by search
 		if (this._searchQuery) {
 			items = items.filter(m => m.content.toLowerCase().includes(this._searchQuery));
 		}
 		// Sort by timestamp desc
 		items.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
-		// Limit to 50 for performance
 		items = items.slice(0, 50);
 
 		if (items.length === 0) {
-			append(body, $('.mv-empty', undefined, '暂无记忆'));
+			append(body, $('.mv-empty', undefined, this._expandedCategory ? '该分类暂无记忆' : '暂无记忆'));
 			return;
 		}
 
@@ -423,9 +392,9 @@ export class MemoryViewPane extends ViewPane {
 			const top = append(card, $('.mv-mem-top'));
 			const memType = (mem.metadata?.['memoryType'] as string) ?? mem.type;
 			const typeLabel = TYPE_LABELS[memType] ?? memType ?? mem.type;
-			append(top, $(`.mv-mem-type.${memType}`)).textContent = typeLabel;
+			const typeEl = append(top, $(`.mv-mem-type.${memType}`) ?? $('span.mv-mem-type'));
+			typeEl.textContent = typeLabel;
 			append(top, $('.mv-mem-time')).textContent = mem.timestamp ? formatTime(mem.timestamp) : '';
-
 			const content = append(card, $('.mv-mem-content'));
 			content.textContent = mem.content.slice(0, 200);
 		}
@@ -445,11 +414,9 @@ export class MemoryViewPane extends ViewPane {
 		}
 		const agentId = this._activeAgentId ?? 'default';
 
-		// Show loading in expanded layers
-		for (const tier of this._expandedTiers) {
-			const body = this._layerBodies.get(tier);
-			if (body) { clearNode(body); append(body, $('.mv-loading', undefined, '加载中...')); }
-		}
+		// Show loading
+		const body = this._layerBodies.get('all');
+		if (body) { clearNode(body); append(body, $('.mv-loading', undefined, '加载中...')); }
 
 		(async () => {
 			try {
@@ -462,7 +429,7 @@ export class MemoryViewPane extends ViewPane {
 					timestamp: e.timestamp,
 				}));
 				this._updateStats();
-				this._renderAllLayers();
+				this._renderLayerList();
 			} catch (err) {
 				this._logService.warn('[MemoryView] Failed to load memory:', err);
 				this._renderEmpty(`加载失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -472,24 +439,13 @@ export class MemoryViewPane extends ViewPane {
 
 	private _updateStats(): void {
 		if (!this._statsEl) return;
-		const cards = this._statsEl.querySelectorAll('.mv-tier-stat');
-		for (let i = 0; i < TIERS.length; i++) {
-			const tier = TIERS[i];
-			const count = this._allMemories.filter(m => matchesTier(m, tier.id)).length;
-			const valEl = cards[i]?.querySelector('.t-value');
-			if (valEl) valEl.textContent = String(count);
-		}
-		// Update layer counts
-		const layersEl = this._container?.querySelector('.mv-layers');
-		if (layersEl) {
-			const layerEls = layersEl.querySelectorAll('.mv-layer');
-			for (let i = 0; i < TIERS.length; i++) {
-				const tier = TIERS[i];
-				const count = this._allMemories.filter(m => matchesTier(m, tier.id)).length;
-				const idx = TIERS.length - 1 - i; // reverse order
-				const countEl = layerEls[idx]?.querySelector('.mv-layer-count');
-				if (countEl) countEl.textContent = String(count);
-			}
+		const chips = this._statsEl.querySelectorAll('.mv-cat-chip');
+		for (let i = 0; i < CATEGORIES.length; i++) {
+			const cat = CATEGORIES[i];
+			const count = this._allMemories.filter(m => matchesCategory(m, cat.id)).length;
+			const chip = chips[i] as HTMLElement | undefined;
+			const countEl = chip?.querySelector('.cat-count');
+			if (countEl) countEl.textContent = String(count);
 		}
 	}
 

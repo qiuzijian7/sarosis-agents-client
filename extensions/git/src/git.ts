@@ -246,8 +246,10 @@ async function exec(child: cp.ChildProcess, cancellationToken?: CancellationToke
 	]) as Promise<[number, Buffer, string]>;
 
 	if (cancellationToken) {
+		let cancelled = false;
 		const cancellationPromise = new Promise<[number, Buffer, string]>((_, e) => {
 			onceEvent(cancellationToken.onCancellationRequested)(() => {
+				cancelled = true;
 				try {
 					child.kill();
 				} catch (err) {
@@ -258,7 +260,20 @@ async function exec(child: cp.ChildProcess, cancellationToken?: CancellationToke
 			});
 		});
 
-		result = Promise.race([result, cancellationPromise]);
+		// When the cancellation race wins, the underlying `Promise.all` (exit /
+		// stdout / stderr) may still reject (e.g. child killed mid-flight). Without
+		// a handler it becomes an unhandledRejection that pollutes the event loop.
+		// Only swallow the rejection when cancellation actually fired; otherwise
+		// rethrow so real spawn/exit errors still propagate to the caller.
+		result = Promise.race([
+			result.catch((err) => {
+				if (cancelled) {
+					return undefined as unknown as [number, Buffer, string];
+				}
+				throw err;
+			}),
+			cancellationPromise,
+		]);
 	}
 
 	try {

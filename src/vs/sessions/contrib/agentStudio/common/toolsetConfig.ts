@@ -64,6 +64,7 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 			'skills_list', 'skill_view', 'skill_manage', 'skill_create',
 			'session_search', 'execute_code', 'delegate_task',
 			'read_skill', 'list_skills',
+			'clarify', // 2026-07-13: 用户交互核心工具（LLM 向用户提问并等待选择），归入 core 避免被 utility 路径过滤掉
 		],
 		deferrable: false,
 	},

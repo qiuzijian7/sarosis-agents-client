@@ -17,6 +17,7 @@ import {
 import type {
 	IConfigHtmlCommand,
 	ConfigHtmlChangeOrigin,
+	ChatStreamDelta,
 } from '../common/agentStudio.js';
 import type { ConfigHtmlCapability, ChatMessage, AgentConfigHtml } from '../../../common/agentStudioTypes.js';
 // constants import no longer needed (WORKSPACE_DATA_DIR/AGENTS_DIR) — using getAgentDir()
@@ -60,6 +61,10 @@ interface AgentRuntimeView {
 const CONFIGHTML_SYSTEM_PROMPT = [
 	'你是 ConfigHtml 面板的页面生成助手。用户描述需求，你产出一个**完整、自包含、零依赖、可在浏览器内编辑**的单文件 HTML 文档。',
 	'',
+	'文件名与路径约束（强制）：',
+	'- 文件名固定为 config.html，不可改名。',
+	'- 文件路径为 ~/.saros/agents/{agentId}/config.html。',
+	'',
 	'输出方式（重要）：',
 	'- 你被提供了一个名为 `emit_html` 的工具（function）。你**必须调用该工具**，把完整 HTML 文档作为 `html` 参数传入。',
 	'- 不要把 HTML 写在普通回复文本里；不要做任何解释。直接调用 `emit_html`。',
@@ -72,7 +77,18 @@ const CONFIGHTML_SYSTEM_PROMPT = [
 	'4. 可编辑契约：可编辑文本节点加 `data-edit-slot data-slot-type="text|image|metric|table-cell"`；需要自由拖拽的对象加 `data-slide-object data-oid="唯一id"`；根 <html> 加 `data-template-edit-mode="slots"`。',
 	'5. 结构清晰、语义化标签、合理留白，确保宿主可定位每个可编辑元素。',
 	'',
-	'若用户提供了“当前 config.html 内容”，请在其基础上做增量修改，并输出修改后的完整文档。',
+	'数据持久化：config.json：',
+	'- 若页面需要保存用户设置/表单值/开关状态等动态数据，不要嵌入 HTML 注释锚点，改用同目录下的 config.json 文件。',
+	'- 编辑模式下输入的值会自动持久化到 HTML 属性（input→value, checkbox→checked, select→selected），保存时随 HTML 一起写入磁盘。',
+	'',
+	'AgentConfigHtml 协议 API（页面中可用的全部方法）：',
+	'- connect() → Promise：建立连接（可选，其他方法会自动连接）。',
+	'- chatSend(msg, {showInChat?}) → Promise<void>：单向发送消息给 Agent（Agent 回复在聊天面板里，不回流到页面）。',
+	'- chatSendStream(msg, {onDelta, onDone}) → {cancel()}：流式发送+接收回复。onDelta({type, content, fullText, toolName, toolResult}) 每 token/工具事件触发；onDone(ok, fullText, error) 流结束时触发。返回的 {cancel()} 可中断。',
+	'- sendEvent(name, payload?) → Promise<void>：发送自定义事件。notify(msg, level?) → Promise<void>：显示通知。',
+	'- on(\'command\', fn) / on(\'message\', fn)：监听宿主推送。',
+	'',
+	'若用户提供了"当前 config.html 内容"，请在其基础上做增量修改，并输出修改后的完整文档。',
 ].join('\n');
 
 /**
@@ -517,7 +533,14 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	private readonly _onDidRequestChatSend = this._register(new Emitter<{ agentId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }>());
 	readonly onDidRequestChatSend: Event<{ agentId: string; message: string; agentSessionId?: string; workspaceId?: string; workspaceSessionId?: string }> = this._onDidRequestChatSend.event;
 
+	private readonly _onStreamDelta = this._register(new Emitter<{ requestId: string; agentId: string; delta: ChatStreamDelta }>());
+	readonly onStreamDelta: Event<{ requestId: string; agentId: string; delta: ChatStreamDelta }> = this._onStreamDelta.event;
+
+	private readonly _onStreamDone = this._register(new Emitter<{ requestId: string; agentId: string; ok: boolean; fullText?: string; error?: string }>());
+	readonly onStreamDone: Event<{ requestId: string; agentId: string; ok: boolean; fullText?: string; error?: string }> = this._onStreamDone.event;
+
 	private readonly _agents = new Map<string, IAgentHtmlState>();
+	private readonly _streamSessions = new Map<string, { agentId: string; cancel: () => void }>();
 	private readonly _rateLimits = new Map<string, { count: number; resetAt: number }>();
 
 	/**
@@ -580,6 +603,79 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		// Fire render event so webview previews update
 		this._onDidRenderHtml.fire({ agentId, html: state.html, version: state.version });
 		return { version: state.version };
+	}
+
+	// ─── Streaming chat (Observable pattern) ────────────────────────────────
+
+	async handleChatSendStream(
+		requestId: string,
+		agentId: string,
+		message: string,
+		onDelta: (delta: ChatStreamDelta) => void,
+		onDone: (ok: boolean, fullText?: string, error?: string) => void,
+		options?: { agentSessionId?: string },
+	): Promise<void> {
+		let fullText = '';
+		let cancelled = false;
+
+		const cancel = () => { cancelled = true; this.agentChatService.cancelStream(agentId, options?.agentSessionId); };
+		this._streamSessions.set(requestId, { agentId, cancel });
+
+		try {
+			await this.agentChatService.sendMessage(
+				agentId,
+				message,
+				{
+					agentSessionId: options?.agentSessionId,
+					explicitSkillIds: [], // no extra skills needed for config.html chat
+				},
+				(rawDelta: any) => {
+					if (cancelled) { return; }
+					const d = rawDelta as { type: string; content?: string; fullText?: string; toolName?: string; toolArgs?: string; toolResult?: string; error?: string };
+					switch (d.type) {
+						case 'text':
+						case 'thinking':
+							fullText = d.fullText ?? (fullText + (d.content ?? ''));
+							onDelta({ type: d.type as 'text' | 'thinking', content: d.content, fullText });
+							break;
+						case 'tool_start':
+							onDelta({ type: 'tool_start', toolName: d.toolName });
+							break;
+						case 'tool_end':
+						case 'tool_result':
+							onDelta({ type: 'tool_end', toolName: d.toolName, toolResult: d.content });
+							break;
+						case 'done':
+							// Will be handled by onDone after sendMessage resolves
+							break;
+						default:
+							// forward unknown types as text if they have content
+							if (d.content) {
+								onDelta({ type: 'text', content: d.content, fullText });
+							}
+					}
+				},
+			);
+			if (!cancelled) {
+				onDelta({ type: 'done' });
+				onDone(true, fullText);
+			} else {
+				onDone(false, fullText, 'Cancelled');
+			}
+		} catch (err) {
+			const errorMsg = err instanceof Error ? err.message : String(err);
+			onDone(false, fullText, errorMsg);
+		} finally {
+			this._streamSessions.delete(requestId);
+		}
+	}
+
+	cancelStream(requestId: string, _agentId: string): void {
+		const session = this._streamSessions.get(requestId);
+		if (session) {
+			session.cancel();
+			this._streamSessions.delete(requestId);
+		}
 	}
 
 	// ─── Active Agent Session Registry ─────────────────────────────────────

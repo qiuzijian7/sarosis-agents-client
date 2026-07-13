@@ -2,7 +2,9 @@
 
 ## 概述
 
-本文档基于对 LangGraph（`G:\CustomWorkspaces\AIProjects\langgraph`）和 Sarosis（`src/vs/sessions/contrib/agentStudio/`）核心源码的逐行分析，从 6 个维度进行深度对比，给出可落地的优化建议和风险评估。
+本文档基于对 LangGraph（`G:\CustomWorkspaces\AIProjects\langgraph`）和 Sarosis（`src/vs/sessions/contrib/agentStudio/`）核心源码的逐行分析，从 7 个维度进行深度对比，给出可落地的优化建议和风险评估。
+
+> **v2 更新（2026-07-12）**：新增第「六」节「兼容多聊天窗口同时存在」，基于对 `nativeChatEditorPane.ts` / `agentChatService.ts` / `agentOSService.ts` / `workbench.ts` 的逐行源码调研。这是 Sarosis 相对 LangGraph 的**独有 UI 架构维度**（LangGraph 是无 UI 的执行引擎），也是暴露「执行引擎单例串行化」问题的关键切入点。
 
 ---
 
@@ -650,9 +652,195 @@ interface IAgentState {
 
 ---
 
-## 六、其他核心功能
+## 六、兼容多聊天窗口同时存在
 
-### 6.1 上下文压缩
+> 本维度是 Sarosis 特有的：LangGraph 是无 UI 的执行引擎，"多窗口"对它不存在。但 Sarosis 作为 IDE 内的 Agent Studio，需要支持多个聊天窗口（多 tab / 多 EditorGroup / pop-out 独立窗口）同时存在。这直接考验底层执行引擎能否支持多个 agent loop 真正并发。
+
+### 6.1 Sarosis 的多窗口架构（三层）
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ Layer 1: UI — EditorInput / EditorPane（真多实例）              │
+│   NativeChatEditorInput (每窗口一实例)                          │
+│     - chatId 唯一，URI = native-chat:///{chatId}                │
+│     - 携带 _agentId / _sessionId / _name / _cliMode（可序列化）  │
+│     - _runtimeState（messages/streamPhase/isSending）挂在 input  │
+│   NativeChatEditorPane (每 EditorGroup 一实例，同组内 tab 复用)  │
+│     - setInput() 切 tab 时保存旧 input 状态、恢复新 input 状态   │
+│     - 每 pane 有独立 _streamingAssistantMsg / _deltaBuffer       │
+├────────────────────────────────────────────────────────────────┤
+│ Layer 2: 会话服务 — 单例 + Map 分桶（隔离 ✅）                    │
+│   AgentChatService (单例)                                       │
+│     - _historyCache: Map<agentId::sessionId, ChatMessage[]>     │
+│     - _activeStreams: Map<agentId::sessionId, AbortController>   │
+│     - _activeOnDeltas: Map<agentId::sessionId, onDelta>         │
+│   AgentDriverService (单例)                                     │
+│     - _activeTurns: Map<sessionId::agentId, turnId>（防跨叉取消）│
+├────────────────────────────────────────────────────────────────┤
+│ Layer 3: 执行引擎 — 单例 + 单字段（串行化 ❌）                    │
+│   AgentOSService (单例)                                         │
+│     - _loopAbortController: AbortController（单字段，非 Map！）  │
+│     - _executionTracker: 全局工具执行池 + cancelAll()           │
+│     - _approvalService: 每次 turn reset（跨窗口互斥）           │
+│     - model override: 全局 swap（并发污染）                     │
+│     - _totalInputTokens: 全局累加（跨窗口混合）                 │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 关键机制详解
+
+**多 tab / 多 group 布局**：
+- 每个聊天窗口 = 一个 `NativeChatEditorInput`（`chatId` 唯一，`matches()` 只比 chatId → 允许并存）
+- 同一 EditorGroup 内多个 tab **复用一个 Pane 实例**，`setInput()` 时保存/恢复 input 携带的 `_runtimeState`
+- 不同 EditorGroup → **各自独立的 Pane 实例**（真正并列显示）
+- 布局持久化：`AGENT_CHAT_LAYOUT_KEY = 'sarosis.agentChatLayout.v1'`，reload/pop-out 后重建 group 布局
+- Agent 区与文件区是**物理隔离的两个 EditorPart**（聊天不能拖到文件区）
+
+**流式输出的窗口路由（两条路径）**：
+
+| 路径 | 触发 | 路由机制 | 隔离性 |
+|------|------|---------|--------|
+| A. 本地发送 | 用户在窗口内输入 | `sendMessage(..., delta => this._handleStreamDelta(delta))` 闭包回调直达发起 pane | ✅ 完全隔离 |
+| B. 外部广播 | 看板任务等 | `onDidStreamDelta` 事件 `{agentId, sessionId, delta}` | ⚠️ **仅按 agentId 过滤，缺 sessionId** |
+
+**取消隔离（三层，逐层收窄）**：
+
+| 层 | 字段 | 隔离粒度 |
+|---|---|---|
+| ChatService | `_activeStreams: Map` | `agentId::sessionId` ✅ |
+| DriverService | `_activeTurns: Map` | `sessionId::agentId` ✅（注释：prevent cross-fork cancellation）|
+| **OSService** | `_loopAbortController` | **单字段 ❌** |
+
+### 6.3 核心问题：执行引擎单例串行化
+
+`agentOSService.executeAgentTurn` 是 `async *` generator（理论上可多实例并发迭代），**但持有的关键状态是实例级单字段，不是 per-turn 分桶**：
+
+```typescript
+// agentOSService.ts:116 — 单字段，每次 executeAgentTurn 覆盖
+private _loopAbortController: AbortController | undefined;
+
+// line 1309 — window-B 发起时覆盖 window-A 的 controller
+this._loopAbortController = new AbortController();
+
+// line 571-577 — cancelAgentLoop() 无参数，只能取消"最后一个"
+cancelAgentLoop(): void {
+    if (this._loopAbortController) {
+        this._loopAbortController.abort();     // 只能取消最后覆盖的那个
+        this._executionTracker.cancelAll();    // ⚠️ 跨窗口取消所有工具
+    }
+}
+```
+
+**并发冲突清单**（两个窗口同时跑 loop 时）：
+
+| 字段 | 问题 | 后果 |
+|------|------|------|
+| `_loopAbortController` | 单字段被覆盖 | window-A 的工具读到 window-B 的 signal |
+| `_executionTracker` | 全局池 + `cancelAll()` | 一个窗口取消，另一窗口的工具也被杀 |
+| `_approvalService.reset()` | 每次 turn 开头重置 | B 启动清掉 A 的审批记忆 |
+| model override | 全局 swap | 并发时模型选择互相污染 |
+| `_totalInputTokens` | 全局累加 | Dashboard 统计跨窗口混合 |
+| `_injectedSessions: Set` | 按 session 隔离 | ✅ 唯一正确隔离的字段 |
+
+### 6.4 与 LangGraph 多 thread 并行对比
+
+| 能力 | LangGraph | Sarosis |
+|------|-----------|---------|
+| 并行执行单元 | thread（checkpointer 隔离，天然并发） | agent loop（单例 OS，单 AbortController） |
+| 状态隔离 | 每 thread 独立 state graph | Chat/Driver 层 Map 隔离 ✅ / OS 层单例共享 ❌ |
+| 取消粒度 | 按 thread/run 独立 | Chat/Driver 层 per-session ✅ / OS 层全局 ❌ |
+| 流路由 | 按 run_id 独立 | 本地闭包隔离 ✅ / 外部广播缺 sessionId ⚠️ |
+| 并发工具执行 | 每 thread 独立 | 全局池 + cancelAll 无差别 ❌ |
+
+**结论**：Sarosis 多窗口是「**UI 与会话状态多实例，但执行引擎（AgentOS）单例串行化**」。两窗口 UI 层完全隔离，可同时**显示**流式内容；但底层 agent loop 共享单例 OS 状态，**并非为真正并发多 loop 设计**。当前实际可用性：多窗口**交替使用**没问题（切 tab、后台查看历史），但**两窗口同时跑 loop** 会互相干扰。
+
+### 6.5 差异与风险
+
+| 维度 | LangGraph | Sarosis | 风险等级 |
+|------|-----------|---------|---------|
+| UI 多窗口 | N/A（无 UI） | ✅ 多 tab/group/pop-out | 🟢 低 |
+| 会话状态隔离 | thread | Map 分桶 ✅ | 🟢 低 |
+| 执行引擎并发 | ✅ 天然 | ❌ 单例串行化 | 🔴 高 |
+| 外部广播路由 | 按 run_id | ⚠️ 缺 sessionId 维度 | 🟡 中 |
+| 跨窗口工具取消 | 独立 | ❌ cancelAll 无差别 | 🔴 高 |
+
+### 6.6 优化建议
+
+**P0 — AgentOSService 执行状态 per-turn 分桶**（高风险，高收益）
+
+这是支持多窗口真并发的**根因修复**，也是第一节「Session 并行」的底层前提：
+
+```typescript
+// 当前：实例级单字段
+private _loopAbortController: AbortController | undefined;
+private _totalInputTokens = 0;
+
+// 改进：按 turnKey (sessionId::agentId) 分桶
+interface ITurnExecutionState {
+    abortController: AbortController;
+    approvalState: ApprovalState;      // per-turn 审批记忆
+    modelSelection: IModelSelection;   // per-turn 模型选择（不再全局 swap）
+    tokenUsage: { input: number; output: number };
+}
+private _activeTurnStates = new Map<string, ITurnExecutionState>();
+
+// cancelAgentLoop 改为带参数
+cancelAgentLoop(agentId?: string, sessionId?: string): void {
+    if (agentId && sessionId) {
+        const key = `${sessionId}::${agentId}`;
+        this._activeTurnStates.get(key)?.abortController.abort();
+        // 只取消该 turn 的工具（需 _executionTracker 也按 turnKey 分组）
+        this._executionTracker.cancelByOwner(key);
+    } else {
+        // 兼容旧行为：全部取消
+        for (const s of this._activeTurnStates.values()) s.abortController.abort();
+    }
+}
+```
+
+**配套改动**：
+1. `_executionTracker`（`toolExecutionGuard.ts`）：`_activeExecutions` 增加 `ownerKey` 字段，`cancelAll()` → `cancelByOwner(key)`
+2. `_approvalService`：审批状态按 turnKey 分桶，不再每次 turn 全局 reset
+3. model override：从全局 swap 改为 per-turn 传参（`context.modelSelection`）
+4. token 统计：per-turn 累加后合并到全局 Dashboard
+
+**风险评估**：🔴 高风险 — `agentOSService.ts` 是核心执行引擎（5000+ 行），`_loopAbortController` 在工具执行闭包中被多处引用（第 2969/3289/3578 行等）。改为 Map 分桶需确保所有闭包捕获正确的 turnKey，回归测试覆盖单窗口场景。建议分步：先加 Map 但保留单字段兼容，逐步迁移引用点。
+
+**P1 — 外部广播路由补 sessionId 维度**（中风险，中收益）
+
+```typescript
+// nativeChatEditorPane.ts:1003-1009 — 当前只过滤 agentId
+this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }) => {
+    if (agentId !== this._currentAgentId) { return; }
+    // ⚠️ 缺少 sessionId 检查 → 同 agent 不同 session 的窗口会串台
+    if (this._isSending && !this._isExternalSend) { return; }
+    this._handleStreamDelta(delta);
+}));
+
+// 改进：补上 sessionId 过滤
+this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }) => {
+    if (agentId !== this._currentAgentId) { return; }
+    if (sessionId && sessionId !== this._currentSessionId) { return; }  // 新增
+    if (this._isSending && !this._isExternalSend) { return; }
+    this._handleStreamDelta(delta);
+}));
+```
+
+同时修复 `_getOnDeltaForAgent`（`agentChatService.ts:1811`）的 memory 事件路由——当前按 agentId 前缀选"最近创建的流"，同 agent 多 session 时有歧义，应改为精确 `agentId::sessionId` 匹配。
+
+**风险评估**：🟡 中风险 — 需确认所有外部广播（看板任务、定时任务）都正确携带 sessionId。若某些路径 sessionId 为空，需保留 fallback（不过滤）避免丢消息。
+
+**P2 — 后台窗口执行进度指示**（低风险，中收益）
+
+配合 P0 的 Session 并行后，后台 tab 的 agent loop 继续执行时，在 tab 标题显示进度指示（如 spinner / 迭代数），类似 VS Code 多终端的运行状态。
+
+**风险评估**：🟢 低风险 — 纯 UI 增量，依赖 P0 完成。
+
+---
+
+## 七、其他核心功能
+
+### 7.1 上下文压缩
 
 | 维度 | LangGraph | Sarosis |
 |------|-----------|---------|
@@ -666,7 +854,7 @@ interface IAgentState {
 
 **建议**：引入 tiktoken 或类似精确计数器（P2，低风险）。
 
-### 6.2 工具调用循环检测
+### 7.2 工具调用循环检测
 
 | 维度 | LangGraph | Sarosis |
 |------|-----------|---------|
@@ -675,7 +863,7 @@ interface IAgentState {
 
 **Sarosis 优势**：Tool Call Loop Detection 是 Sarosis 独有的，LangGraph 需要用户自行实现。
 
-### 6.3 续跑兜底（Auto-continuation）
+### 7.3 续跑兜底（Auto-continuation）
 
 | 维度 | LangGraph | Sarosis |
 |------|-----------|---------|
@@ -684,7 +872,7 @@ interface IAgentState {
 
 **Sarosis 优势**：续跑兜底和反思机制是 Sarosis 独有的工程实践。
 
-### 6.4 多 Agent 协作模式
+### 7.4 多 Agent 协作模式
 
 | 维度 | LangGraph | Sarosis |
 |------|-----------|---------|
@@ -697,25 +885,47 @@ interface IAgentState {
 
 ---
 
-## 七、优化优先级总览
+## 八、优化优先级总览
 
-| 优先级 | 优化项 | 风险 | 收益 | 建议时间 |
-|--------|--------|------|------|---------|
-| **P0** | 工具级超时机制 | 🔴 高 | 高 | 1-2 天 |
-| **P0** | Session 并行执行 | 🔴 高 | 高 | 3-5 天 |
-| **P0** | Checkpoint 恢复 | 🔴 高 | 高 | 2-3 天 |
-| **P1** | 工具重试策略 | 🟡 中 | 中 | 1 天 |
-| **P1** | Error Handler 机制 | 🟡 中 | 高 | 2 天 |
-| **P1** | 动态并行分发 | 🟡 中 | 高 | 2-3 天 |
-| **P1** | 消息版本追踪 | 🟡 中 | 中 | 1 天 |
-| **P2** | SubAgent 结果 Reducer | 🟢 低 | 中 | 1 天 |
-| **P2** | Human-in-the-loop | 🟢 低 | 中 | 2 天 |
-| **P2** | 精确 Token 计数 | 🟢 低 | 低 | 0.5 天 |
-| **P2** | Supervisor 多 Agent 模式 | 🟡 中 | 中 | 2 天 |
+| 优先级 | 优化项 | 风险 | 收益 | 建议时间 | 依赖 |
+|--------|--------|------|------|---------|------|
+| **P0** | **AgentOSService 执行状态 per-turn 分桶** | 🔴 高 | 高 | 3-5 天 | 无（多窗口/Session 并行的根因修复） |
+| **P0** | 工具级超时机制 | 🔴 高 | 高 | 1-2 天 | 无 |
+| **P0** | Session 并行执行 | 🔴 高 | 高 | 3-5 天 | 依赖「per-turn 分桶」 |
+| **P0** | Checkpoint 恢复 | 🔴 高 | 高 | 2-3 天 | 无 |
+| **P1** | 外部广播路由补 sessionId | 🟡 中 | 中 | 0.5 天 | 无 |
+| **P1** | 工具重试策略 | 🟡 中 | 中 | 1 天 | 依赖工具超时 |
+| **P1** | Error Handler 机制 | 🟡 中 | 高 | 2 天 | 无 |
+| **P1** | 动态并行分发 | 🟡 中 | 高 | 2-3 天 | 无 |
+| **P1** | 消息版本追踪 | 🟡 中 | 中 | 1 天 | 无 |
+| **P2** | SubAgent 结果 Reducer | 🟢 低 | 中 | 1 天 | 无 |
+| **P2** | Human-in-the-loop | 🟢 低 | 中 | 2 天 | 依赖 Checkpoint |
+| **P2** | 后台窗口执行进度指示 | 🟢 低 | 中 | 1 天 | 依赖 Session 并行 |
+| **P2** | 精确 Token 计数 | 🟢 低 | 低 | 0.5 天 | 无 |
+| **P2** | Supervisor 多 Agent 模式 | 🟡 中 | 中 | 2 天 | 无 |
+
+### 推荐实施顺序（依赖链）
+
+```
+第一阶段（根因修复，解锁多窗口/多 Session 并发）:
+  ① AgentOSService per-turn 分桶  ─┬─→  ③ Session 并行执行  ─→  后台窗口进度指示
+  ② 外部广播路由补 sessionId      ─┘
+  
+第二阶段（容错健壮性，可并行推进）:
+  ④ 工具超时  ─→  工具重试
+  ⑤ Error Handler
+  ⑥ Checkpoint 恢复  ─→  Human-in-the-loop
+
+第三阶段（能力增强，独立推进）:
+  ⑦ 动态并行分发 + SubAgent Reducer
+  ⑧ 消息版本追踪 / 精确 Token 计数 / Supervisor 模式
+```
+
+**关键洞察**：多窗口/多 Session 并行的**根因**都在 `agentOSService` 的执行状态单例化。「per-turn 分桶」（第六节 P0）是解锁「Session 并行」（第一节 P0）的前提，应作为**第一优先**。
 
 ---
 
-## 八、Sarosis 独特优势（不应丢失）
+## 九、Sarosis 独特优势（不应丢失）
 
 在向 LangGraph 学习的同时，以下 Sarosis 独有特性是 LangGraph 没有的，应保持：
 

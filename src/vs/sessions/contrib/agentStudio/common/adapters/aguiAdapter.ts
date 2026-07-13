@@ -19,8 +19,11 @@ import { ChatMessage, AssistantMessage } from '../chatTypes.js';
  */
 export class AGUIChatMessageBuilder {
 	private readonly _messages: ChatMessage[] = [];
-	private _currentText = '';
-	private _currentThinking = '';
+	// P0-leak-fix: accumulate streamed text in chunk arrays, join once when
+	// materializing the message. Per-delta `_currentText += text` built V8
+	// ConsString ropes that were retained in the rendered chat history.
+	private _textChunks: string[] = [];
+	private _thinkingChunks: string[] = [];
 	private _currentAssistantIdx: number | null = null;
 
 	constructor() {}
@@ -32,7 +35,7 @@ export class AGUIChatMessageBuilder {
 		if (part.type === 'text') {
 			const text = part.value !== undefined ? part.value : part.text;
 			if (text) {
-				this._currentText += text;
+				this._textChunks.push(text);
 				this._ensureAssistant();
 			}
 			return;
@@ -42,7 +45,7 @@ export class AGUIChatMessageBuilder {
 		if (part.type === 'thinking' || (typeof part.value === 'string' && part.value.startsWith('[THINKING]'))) {
 			const text = part.value !== undefined ? part.value.replace(/^\[THINKING\]/, '') : part.text || '';
 			if (text) {
-				this._currentThinking += text;
+				this._thinkingChunks.push(text);
 				this._ensureAssistant();
 			}
 			return;
@@ -82,13 +85,15 @@ export class AGUIChatMessageBuilder {
 	}
 
 	private _ensureAssistant(): void {
+		const _text = this._textChunks.join('');
+		const _think = this._thinkingChunks.join('');
 		if (this._currentAssistantIdx === null) {
 			// Create new assistant message
 			const msg: AssistantMessage = {
 				role: 'assistant',
-				content: this._currentText,
+				content: _text,
 				reasoning: '',
-				thinking: this._currentThinking ? [{ type: 'thinking', thinking: this._currentThinking, signature: undefined }] : [],
+				thinking: _think ? [{ type: 'thinking', thinking: _think, signature: undefined }] : [],
 				timestamp: Date.now(),
 			};
 			this._messages.push(msg);
@@ -100,8 +105,8 @@ export class AGUIChatMessageBuilder {
 				// Create new object and replace (readonly properties can't be mutated)
 				const updated: AssistantMessage = {
 					...existing as AssistantMessage,
-					content: this._currentText,
-					thinking: this._currentThinking ? [{ type: 'thinking', thinking: this._currentThinking, signature: undefined }] : [],
+					content: _text,
+					thinking: _think ? [{ type: 'thinking', thinking: _think, signature: undefined }] : [],
 				};
 				this._messages[this._currentAssistantIdx] = updated;
 			}
@@ -110,8 +115,8 @@ export class AGUIChatMessageBuilder {
 
 	reset(): void {
 		this._messages.length = 0;
-		this._currentText = '';
-		this._currentThinking = '';
+		this._textChunks.length = 0;
+		this._thinkingChunks.length = 0;
 		this._currentAssistantIdx = null;
 	}
 }

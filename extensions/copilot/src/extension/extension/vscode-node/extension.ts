@@ -22,8 +22,10 @@ import '../../intents/node/allIntents';
 
 function configureDevPackages() {
 	try {
-		const sourceMapSupport = require('source-map-support');
-		sourceMapSupport.install();
+		// [SAROSIS-HEAP] source-map-support.install() 会创建无上限的 sourceMapCache（含 Mapping[]），
+		// 是 ext host 内存泄漏根因之一（3.47M Mapping / 119MB）。注释以禁用源码映射缓存。
+		// const sourceMapSupport = require('source-map-support');
+		// sourceMapSupport.install();
 		const dotenv = require('dotenv');
 		dotenv.config({ path: [resolve(__dirname, '../.env')] });
 	} catch (err) {

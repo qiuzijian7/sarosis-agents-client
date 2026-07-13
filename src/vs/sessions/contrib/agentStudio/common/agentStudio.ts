@@ -22,6 +22,7 @@ export {
 // Type-only exports (interfaces)
 export type {
 	IChatStreamDelta,
+	ChatStreamDelta,
 	IChatSendOptions,
 	IAutoPlanResult,
 	OrchestrationTaskAction,

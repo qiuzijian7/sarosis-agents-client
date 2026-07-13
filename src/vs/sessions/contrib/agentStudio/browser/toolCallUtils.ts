@@ -475,6 +475,84 @@ export function coerceToolArgs(
 }
 
 /**
+ * Enhanced argument coercion with diagnostics — wraps coerceToolArgs.
+ *
+ * Extends the existing coercion with:
+ *   - Before/after diff detection (what was coerced and why)
+ *   - Missing required field detection
+ *   - Unknown extra argument detection
+ *   - Structured warnings suitable for logging
+ *
+ * Follows the same pattern as Continue's coerceArgsToSchema but integrated
+ * into the existing Hermes-Agent tool execution pipeline.
+ *
+ * @returns Coerced args + human-readable warning strings
+ */
+export interface CoerceArgsResult {
+	args: Record<string, unknown>;
+	warnings: string[];
+}
+
+export function coerceArgsToSchema(
+	args: Record<string, unknown>,
+	schema: Record<string, unknown> | undefined,
+): CoerceArgsResult {
+	const warnings: string[] = [];
+
+	if (!schema) {
+		return { args, warnings };
+	}
+
+	// Snapshot before coercion
+	const beforeKeys = Object.keys(args);
+	const beforeSnap: Record<string, { type: string; json: string }> = {};
+	for (const k of beforeKeys) {
+		beforeSnap[k] = { type: typeof args[k], json: JSON.stringify(args[k]) };
+	}
+
+	// Apply existing coercion
+	const coerced = coerceToolArgs(args, schema);
+
+	// Detect what changed
+	for (const k of beforeKeys) {
+		const before = beforeSnap[k];
+		if (!before) { continue; }
+		const after = coerced[k];
+		const afterType = typeof after;
+		const afterJson = JSON.stringify(after);
+
+		if (afterType !== before.type || afterJson !== before.json) {
+			warnings.push(
+				`coerced argument "${k}": ${before.type} → ${afterType}` +
+				(before.json.length <= 80 ? ` (${before.json} → ${afterJson})` : '')
+			);
+		}
+	}
+
+	// Check for missing required fields
+	const required = (schema as Record<string, unknown>).required as string[] | undefined;
+	if (required && Array.isArray(required)) {
+		for (const req of required) {
+			if (!(req in (coerced as Record<string, unknown>))) {
+				warnings.push(`missing required argument: "${req}" — tool may fail`);
+			}
+		}
+	}
+
+	// Check for extra args not in schema (LLM sometimes adds spurious fields)
+	const props = (schema as Record<string, unknown>).properties as Record<string, unknown> | undefined;
+	if (props && typeof props === 'object') {
+		for (const k of Object.keys(coerced)) {
+			if (!(k in props) && !k.startsWith('_')) {
+				warnings.push(`unknown argument: "${k}" — not in schema, may be ignored`);
+			}
+		}
+	}
+
+	return { args: coerced, warnings };
+}
+
+/**
  * Try to repair malformed JSON arguments from model output.
  *
  * Handles common issues:

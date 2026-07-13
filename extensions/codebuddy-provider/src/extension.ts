@@ -547,6 +547,214 @@ async function persistModelsToConfig(
 		console.warn(`${LOG} ⚠ Failed to persist models into codebuddy.models config — ${msg}`);
 	}
 }
+
+/**
+ * Result of sanitizing a tool's JSON Schema for the IOA gateway.
+ */
+interface SchemaSanitizeResult {
+	/** The sanitized schema (safe to send). */
+	schema: unknown;
+	/** Human-readable descriptions of what was fixed (empty = no changes). */
+	issues: string[];
+}
+
+/**
+ * Sanitize a tool's JSON Schema parameters for the CodeBuddy IOA gateway (DeepSeek).
+ *
+ * The IOA gateway strictly validates JSON Schema and rejects:
+ *   1. `additionalProperties` at any nesting level — must be stripped
+ *   2. `properties: {}` (empty) — must be replaced with a minimal valid property
+ *   3. `type: "object"` without `properties` or `additionalProperties` — must inject a placeholder
+ *
+ * Design (Void-inspired "construct-time safety"): a single bounded, iterative-DFS
+ * pass that **clones + normalizes in one go** and is HARD-CAPPED on both depth and
+ * node count. This guarantees the emitted schema can never:
+ *   - trip the gateway's "exceeded max depth" HTTP 400 (depth capped at IOA_MAX_SCHEMA_DEPTH)
+ *   - OOM the extension host on a pathological / self-recursive schema
+ *     (the `http_get.headers` / `workflow_apply` 8.7MB / 200k-node / depth-100001
+ *      monster that previously crashed sanitize and 400'd the gateway)
+ * Cycles and over-limit subtrees are replaced with a safe placeholder rather than
+ * being sent through or aborting the request.
+ *
+ * Returns both the sanitized schema and a list of issues that were fixed,
+ * so callers can log warnings about problematic tool schemas.
+ */
+
+// Hard caps — the output is GUARANTEED to stay within these bounds.
+// 32 is well below the gateway's "exceeded max depth" rejection threshold and
+// covers any realistic tool parameter shape (typical depth < 10).
+const IOA_MAX_SCHEMA_DEPTH = 32;
+const IOA_MAX_SCHEMA_NODES = 200_000;
+
+/**
+ * Read-only bounded DFS scan: returns true if the schema contains any IOA-
+ * incompatible pattern OR exceeds the depth/node caps (in which case it must be
+ * truncated). Used as a fast-path guard so already-valid schemas skip the clone.
+ * Itself depth- and node-capped with a WeakSet cycle-breaker, so it can never
+ * spin forever or OOM on a pathological input.
+ */
+function needsIoaSanitize(node: unknown): boolean {
+	const visited = new WeakSet<object>();
+	const stack: Array<{ node: unknown; depth: number }> = [{ node, depth: 0 }];
+	let nodes = 0;
+	while (stack.length > 0) {
+		const { node: cur, depth } = stack.pop()!;
+		if (cur === null || typeof cur !== 'object') continue;
+		if (visited.has(cur)) continue;
+		visited.add(cur);
+		if (++nodes > IOA_MAX_SCHEMA_NODES) return true; // too large → must sanitize/truncate
+		if (depth > IOA_MAX_SCHEMA_DEPTH) return true;   // too deep → must truncate
+		if (Array.isArray(cur)) {
+			for (let i = cur.length - 1; i >= 0; i--) stack.push({ node: cur[i], depth: depth + 1 });
+			continue;
+		}
+		const obj = cur as Record<string, unknown>;
+		// Pattern 1: additionalProperties at any level
+		if ('additionalProperties' in obj) return true;
+		// Pattern 2: empty properties {}
+		const props = obj.properties;
+		if (props && typeof props === 'object' && !Array.isArray(props) && Object.keys(props).length === 0) {
+			return true;
+		}
+		// Pattern 3: type:"object" without properties/additionalProperties
+		if (obj.type === 'object' && !('properties' in obj) && !('additionalProperties' in obj)) {
+			return true;
+		}
+		for (const key of Object.keys(obj)) {
+			const v = obj[key];
+			if (v !== null && typeof v === 'object') stack.push({ node: v, depth: depth + 1 });
+		}
+	}
+	return false;
+}
+
+function sanitizeSchemaForIoaGateway(schema: unknown, toolName?: string): SchemaSanitizeResult {
+	// Fast path: most tool schemas are already IOA-compatible and within caps.
+	// Skip the clone entirely (zero-copy) — avoids the heap-allocation spike that
+	// previously contributed to OOM on an already-strained extension host.
+	if (!needsIoaSanitize(schema)) {
+		return { schema, issues: [] };
+	}
+
+	const tag = toolName ? ` for tool "${toolName}"` : '';
+	const issues: string[] = [];
+	const visited = new WeakSet<object>();
+	let nodes = 0;
+
+	// Safe placeholder emitted when a subtree is too deep / too large / cyclic.
+	const placeholder = (reason: string, depth: number): Record<string, unknown> => {
+		issues.push(`${reason} at depth ${depth} — replaced with safe placeholder`);
+		return {
+			type: 'object',
+			description: 'Omitted for IOA gateway compatibility',
+			properties: {
+				_omitted: { type: 'string', description: 'Original schema omitted to satisfy gateway limits' },
+			},
+		};
+	};
+
+	// Single bounded pass: clone + normalize. Produces a NEW object graph (the
+	// original `schema` is never mutated), so the same tool definition can be
+	// reused across turns without accumulating injected placeholders.
+	const normalize = (node: unknown, depth: number): unknown => {
+		if (node === null || typeof node !== 'object') return node;
+
+		// Hard depth cap — never emit anything deeper than the gateway allows.
+		if (depth > IOA_MAX_SCHEMA_DEPTH) {
+			return placeholder(`schema depth exceeded ${IOA_MAX_SCHEMA_DEPTH}`, depth);
+		}
+		// Cycle breaker on the ORIGINAL node (returned placeholder avoids re-entrancy).
+		if (visited.has(node)) {
+			return placeholder('circular schema reference', depth);
+		}
+		visited.add(node);
+		if (++nodes > IOA_MAX_SCHEMA_NODES) {
+			return placeholder(`schema exceeded ${IOA_MAX_SCHEMA_NODES} nodes`, depth);
+		}
+
+		if (Array.isArray(node)) {
+			return node.map((item) => normalize(item, depth + 1));
+		}
+
+		const obj = node as Record<string, unknown>;
+		const out: Record<string, unknown> = {};
+
+		// Pattern 1: strip additionalProperties everywhere (do not copy it into `out`).
+		if ('additionalProperties' in obj) {
+			issues.push(`additionalProperties stripped at depth ${depth}`);
+		}
+
+		// Pattern 2 / 3: compute the (possibly fixed) properties without mutating
+		// the original object — we only write the corrected value into `out`.
+		let outProperties = obj.properties;
+		const propsObj = obj.properties;
+		const propsEmpty = propsObj && typeof propsObj === 'object' && !Array.isArray(propsObj) && Object.keys(propsObj as object).length === 0;
+		if (propsEmpty) {
+			outProperties = { _no_params: { type: 'boolean', description: 'No parameters needed' } };
+			issues.push(`empty properties {} replaced with _no_params at depth ${depth}`);
+		}
+		if (obj.type === 'object' && !('properties' in obj) && !('additionalProperties' in obj)) {
+			// Self-safe placeholder: carries non-empty properties + a string child, so it
+			// never re-triggers Pattern 3 (the previous http_get.headers / workflow_apply
+			// self-recursion OOM root cause).
+			outProperties = {
+				_freeform: {
+					type: 'object',
+					description: 'Arbitrary key-value pairs (freeform object)',
+					properties: { _value: { type: 'string', description: 'A value (stringified)' } },
+				},
+			};
+			issues.push(`object without properties — injected _freeform placeholder at depth ${depth}`);
+		}
+
+		for (const key of Object.keys(obj)) {
+			if (key === 'additionalProperties') continue; // stripped (Pattern 1)
+			if (key === 'properties' && outProperties !== obj.properties) {
+				out[key] = normalize(outProperties, depth + 1); // write the fixed properties
+				continue;
+			}
+			const v = obj[key];
+			out[key] = (v !== null && typeof v === 'object') ? normalize(v, depth + 1) : v;
+		}
+		return out;
+	};
+
+	const result = normalize(schema, 0);
+
+	if (issues.length > 0) {
+		console.warn(`[CodeBuddy][sanitize] sanitized ${issues.length} IOA-incompatible pattern(s)${tag}: ${issues.join('; ')}`);
+	}
+
+	return { schema: result, issues };
+}
+
+/**
+ * 计算一个值序列化后的最大 JSON 嵌套深度（object/array 层数）。
+ * 用于定位网关 "exceeded max depth" 400 的罪魁——哪个 tool schema 或 message
+ * 嵌套过深。带环检测（WeakSet）+ 上限保护，O(n)。
+ */
+function maxJsonDepth(root: unknown): number {
+	const visited = new WeakSet<object>();
+	const stack: Array<{ node: unknown; depth: number }> = [{ node: root, depth: 1 }];
+	let max = 0;
+	while (stack.length > 0) {
+		const { node, depth } = stack.pop()!;
+		if (typeof node !== 'object' || node === null) continue;
+		if (visited.has(node)) continue;
+		visited.add(node);
+		if (depth > max) { max = depth; }
+		if (max > 100_000) { break; } // 安全阀
+		if (Array.isArray(node)) {
+			for (const child of node) { stack.push({ node: child, depth: depth + 1 }); }
+		} else {
+			for (const key of Object.keys(node)) {
+				stack.push({ node: (node as Record<string, unknown>)[key], depth: depth + 1 });
+			}
+		}
+	}
+	return max;
+}
+
 class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
@@ -975,8 +1183,35 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 
 		// Include tools if available
 		if (openaiTools) {
-			bodyObj.tools = openaiTools;
-			console.log(`[CodeBuddy] Including ${openaiTools.length} tools in request`);
+			// ── DeepSeek IOA 网关 schema sanitize ──────────────────────────
+			// 网关对 JSON Schema 做严格校验，拒绝以下模式：
+			//   1. 嵌套 object 中的 additionalProperties（update_plan / http_get）
+			//   2. 空 properties: {}（execute_code / get_graph_schema / list_projects /
+			//      workflow_get_schema / workflow_list）
+			// 递归剥离 additionalProperties，将空 properties 替换为最小合法 schema
+			// 以避免 HTTP 400 "invalid parameter value" 无具体字段名。
+			const sanitizeResults = openaiTools.map(tool => ({
+				toolName: tool.function.name,
+				result: sanitizeSchemaForIoaGateway(tool.function.parameters, tool.function.name),
+			}));
+			const sanitizedTools = openaiTools.map((tool, i) => ({
+				...tool,
+				function: {
+					...tool.function,
+					parameters: sanitizeResults[i].result.schema,
+				},
+			}));
+			// ── 对检测到非法模式的工具输出警告 ───────────────────────────
+			for (const { toolName, result } of sanitizeResults) {
+				if (result.issues.length > 0) {
+					console.warn(
+						`[CodeBuddy] ⚠ Tool "${toolName}" has IOA-incompatible schema patterns — auto-fixed:\n` +
+						result.issues.map(issue => `  - ${issue}`).join('\n')
+					);
+				}
+			}
+			bodyObj.tools = sanitizedTools;
+			console.log(`[CodeBuddy] Including ${sanitizedTools.length} tools in request (sanitized for IOA gateway)`);
 			// tool_choice：仅在有 tools 时生效。'required' 表示本轮必须发起至少一个
 			// 工具调用（治本对抗 hy3-preview-agent-ioa 等模型\"宣告完成却不调工具\"
 			// 的幻觉）；'auto'（默认）让模型自行判断；'none' 禁止本轮调用工具。
@@ -1114,23 +1349,92 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		try {
 			response = await doFetch();
 		} catch (err) {
-			// 400 + previous_response_id → 清除 stale ID，移除该字段后重试一次
-			if (hasPrevResponseId && err instanceof Error && /HTTP 400|code.*11133/i.test(err.message)) {
-				console.warn(`[CodeBuddy] HTTP 400 with previous_response_id — clearing stale cache and retrying without it`);
-				if (sessionId) {
-					this._lastResponseIdBySession.delete(sessionId);
+			// ── 400 诊断 ────────────────────────────────────────────────────
+			// 网关只回 `param:""`，无法定位是哪个字段非法（DeepSeek 对 tools
+			// schema / reasoning 参数很挑剔）。这里把请求体摘要 + 工具形态 +
+			// 原始 body 前若干字符附到错误上，沿 handleUnexpectedError 落到主
+			// 日志（vscode-app-<pid>.log），便于精确定位 invalid parameter。
+			if (err instanceof Error && /HTTP 400|code.*11133/i.test(err.message)) {
+				const toolsArr = (bodyObj.tools as Array<{ function?: { name?: string; parameters?: unknown } }> | undefined) ?? [];
+				const bodyLen = bodyJson.length;
+				const bodyLenKB = (bodyLen / 1024).toFixed(1);
+				const msgCount = Array.isArray(bodyObj.messages) ? bodyObj.messages.length : 0;
+				// ── 拆成多个独立 console.error，避免长字符串被日志系统截断 ──
+				console.error(
+					`[CodeBuddy][DIAG-400] model=${selectedModel} ` +
+					`reasoning=${bodyObj.reasoning_effort ?? 'none'}/${bodyObj.reasoning_summary ?? 'none'} ` +
+					`tool_choice=${bodyObj.tool_choice ?? 'n/a'} ` +
+					`tools=${toolsArr.length} messages=${msgCount} ` +
+					`max_tokens=${bodyObj.max_tokens} temperature=${bodyObj.temperature} bodySize=${bodyLen}chars/${bodyLenKB}KB`
+				);
+				// 每个 tool 的形态摘要（一行，较短不会被截断）
+				const toolShapes = toolsArr.map(t => {
+					const fn = t.function;
+					const p = fn?.parameters as Record<string, unknown> | undefined;
+					const pType = p && typeof p === 'object' ? (p.type ?? '(missing)') : typeof p;
+					return `${fn?.name ?? '(no-name)'}[params.type=${pType}]`;
+				}).join(', ');
+				console.error(`[CodeBuddy][DIAG-400] toolShapes: ${toolShapes}`);
+				// HEAD: 请求体前部（system prompt + 前几条消息）
+				console.error(`[CodeBuddy][DIAG-400] body HEAD (first 3000 chars):\n${bodyJson.slice(0, 3000)}`);
+				// 关键：tools 数组逐条 dump（每个 tool 独立 console.error，避免长字符串被截断）
+				for (let i = 0; i < toolsArr.length; i++) {
+					const t = toolsArr[i];
+					const fn = t.function;
+					const pStr = JSON.stringify(fn?.parameters ?? {});
+					console.error(`[CodeBuddy][DIAG-400] tool[${i}] ${fn?.name ?? '(no-name)'} params(${pStr.length}): ${pStr.slice(0, 500)}`);
 				}
-				delete bodyObj.previous_response_id;
-				const retryBodyJson = JSON.stringify(bodyObj);
-				body = retryBodyJson;
-				bodyGzipped = false;
-				try {
-					body = zlib.gzipSync(Buffer.from(retryBodyJson, 'utf8'));
-					bodyGzipped = true;
-				} catch {
+			// TAIL: 请求体尾部 2000 字符
+			console.error(`[CodeBuddy][DIAG-400] body TAIL (last 2000 chars):\n${bodyJson.slice(Math.max(0, bodyLen - 2000))}`);
+			// ── 深度扫描：定位 "exceeded max depth" 的罪魁（tool schema 或 message）──
+			{
+				let toolMaxDepth = 0, toolMaxIdx = -1, toolMaxName = '';
+				toolsArr.forEach((t, i) => {
+					const d = maxJsonDepth(t.function?.parameters);
+					if (d > toolMaxDepth) { toolMaxDepth = d; toolMaxIdx = i; toolMaxName = t.function?.name ?? ''; }
+				});
+				console.error(`[CodeBuddy][DIAG-400] tool max depth: ${toolMaxDepth} (tool[${toolMaxIdx}] "${toolMaxName}")`);
+				// 列出深度 > 32 的所有 tool（疑似病态）
+				const deepTools = toolsArr.map((t, i) => ({ i, name: t.function?.name ?? '', d: maxJsonDepth(t.function?.parameters) })).filter(x => x.d > 32);
+				if (deepTools.length > 0) {
+					console.error(`[CodeBuddy][DIAG-400] deep tools (>32): ${deepTools.map(x => `${x.name}[${x.i}]=${x.d}`).join(', ')}`);
+				}
+				let msgMaxDepth = 0, msgMaxIdx = -1, msgMaxRole = '';
+				const msgs = Array.isArray(bodyObj.messages) ? bodyObj.messages as unknown[] : [];
+				msgs.forEach((m, i) => {
+					const d = maxJsonDepth(m);
+					if (d > msgMaxDepth) { msgMaxDepth = d; msgMaxIdx = i; msgMaxRole = (m as { role?: string })?.role ?? ''; }
+				});
+				console.error(`[CodeBuddy][DIAG-400] message max depth: ${msgMaxDepth} (msg[${msgMaxIdx}] role=${msgMaxRole})`);
+				const deepMsgs = msgs.map((m, i) => ({ i, d: maxJsonDepth(m), role: (m as { role?: string })?.role ?? '' })).filter(x => x.d > 32);
+				if (deepMsgs.length > 0) {
+					console.error(`[CodeBuddy][DIAG-400] deep messages (>32): ${deepMsgs.map(x => `msg[${x.i}](role=${x.role})=${x.d}`).join(', ')}`);
+				}
+			}
+				const diag =
+					`[CodeBuddy][DIAG-400] model=${selectedModel} bodySize=${bodyLen}chars/${bodyLenKB}KB tools=${toolsArr.length} messages=${msgCount} — full diagnostics above`;
+				const wrapped = new Error(`${err.message}\n${diag}`);
+				wrapped.stack = err.stack;
+				// 400 + previous_response_id → 清除 stale ID，移除该字段后重试一次
+				if (hasPrevResponseId) {
+					console.warn(`[CodeBuddy] HTTP 400 with previous_response_id — clearing stale cache and retrying without it`);
+					if (sessionId) {
+						this._lastResponseIdBySession.delete(sessionId);
+					}
+					delete bodyObj.previous_response_id;
+					const retryBodyJson = JSON.stringify(bodyObj);
 					body = retryBodyJson;
+					bodyGzipped = false;
+					try {
+						body = zlib.gzipSync(Buffer.from(retryBodyJson, 'utf8'));
+						bodyGzipped = true;
+					} catch {
+						body = retryBodyJson;
+					}
+					response = await doFetch();
+				} else {
+					throw wrapped;
 				}
-				response = await doFetch();
 			} else {
 				throw err;
 			}

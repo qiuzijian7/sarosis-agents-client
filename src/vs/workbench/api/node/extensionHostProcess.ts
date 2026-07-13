@@ -396,6 +396,20 @@ function connectToRenderer(protocol: IMessagePassingProtocol): Promise<IRenderer
 
 async function startExtensionHostProcess(): Promise<void> {
 
+	// ── Sarosis diagnostic: report the ACTUAL V8 heap limit this process got.
+	// Goes to stdout → relayed to the renderer window log via
+	// localProcessExtensionHost.ts (console.log 'Extension Host'). If the
+	// --max-old-space-size=8192 flag took effect, heap_size_limit will be
+	// ~8500MB; if not, it stays ~4300MB (default). execArgv shows what flags
+	// this process was actually forked with.
+	try {
+		const v8 = require('v8');
+		const heapLimitMB = Math.round(v8.getHeapStatistics().heap_size_limit / 1024 / 1024);
+		console.log(`[SAROSIS-HEAP] extHost heap_size_limit=${heapLimitMB}MB execArgv=${JSON.stringify(process.execArgv)}`);
+	} catch (err) {
+		console.log(`[SAROSIS-HEAP] failed to read heap stats: ${err}`);
+	}
+
 	// Print a console message when rejection isn't handled within N seconds. For details:
 	// see https://nodejs.org/api/process.html#process_event_unhandledrejection
 	// and https://nodejs.org/api/process.html#process_event_rejectionhandled

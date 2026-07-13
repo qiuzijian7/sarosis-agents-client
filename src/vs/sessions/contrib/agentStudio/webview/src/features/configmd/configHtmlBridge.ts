@@ -32,10 +32,27 @@ export interface ConfigHtmlCommandEvent {
 	command: ConfigHtmlCommand;
 }
 
+// ─── Stream types ─────────────────────────────────────────────────────────────
+
+export interface ChatStreamDelta {
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_end' | 'done';
+	readonly content?: string;
+	readonly fullText?: string;
+	readonly toolName?: string;
+	readonly toolArgs?: string;
+	readonly toolResult?: string;
+}
+
+export interface ChatStreamCallbacks {
+	onDelta?: (delta: ChatStreamDelta) => void;
+	onDone?: (ok: boolean, fullText?: string, error?: string) => void;
+}
+
 type Listener<T> = (data: T) => void;
 
 const htmlListeners = new Map<string, Set<Listener<ConfigHtmlHtmlRenderedEvent>>>();
 const commandListeners = new Map<string, Set<Listener<ConfigHtmlCommand>>>();
+const streamCallbacks = new Map<string, ChatStreamCallbacks>();
 
 function add<T>(map: Map<string, Set<Listener<T>>>, agentId: string, fn: Listener<T>): () => void {
 	let set = map.get(agentId);
@@ -71,6 +88,19 @@ export function dispatchConfigHtmlEvent(agentId: string, type: string, data: unk
 		case 'confightml.command': {
 			const evt = data as ConfigHtmlCommandEvent;
 			commandListeners.get(agentId)?.forEach(fn => fn(evt.command));
+			break;
+		}
+		case 'confightml.chatStreamDelta': {
+			const evt = data as { requestId: string; delta: ChatStreamDelta };
+			const cb = streamCallbacks.get(evt.requestId);
+			cb?.onDelta?.(evt.delta);
+			break;
+		}
+		case 'confightml.chatStreamDone': {
+			const evt = data as { requestId: string; ok: boolean; fullText?: string; error?: string };
+			const cb = streamCallbacks.get(evt.requestId);
+			cb?.onDone?.(evt.ok, evt.fullText, evt.error);
+			streamCallbacks.delete(evt.requestId);
 			break;
 		}
 		default:
@@ -150,13 +180,44 @@ export async function chatSend(
 	return sendRequest('confightml.chatSend', { agentId, message, ...options }, 0);
 }
 
+// ─── Streaming chat ────────────────────────────────────────────────────────
+
+function _makeRequestId(): string {
+	return 'stream_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+export function chatSendStream(
+	agentId: string,
+	message: string,
+	callbacks: ChatStreamCallbacks,
+	agentSessionId?: string,
+): () => void {
+	const requestId = _makeRequestId();
+	streamCallbacks.set(requestId, callbacks);
+
+	// Fire-and-forget: deltas return via dispatchConfigHtmlEvent
+	sendRequest('confightml.chatSendStream', { requestId, agentId, message, agentSessionId }, 0)
+		.catch((err) => {
+			callbacks.onDone?.(false, undefined, err instanceof Error ? err.message : String(err));
+			streamCallbacks.delete(requestId);
+		});
+
+	return () => {
+		// Cancel function
+		streamCallbacks.delete(requestId);
+		sendRequest('confightml.chatCancelStream', { requestId, agentId }, 0).catch(() => {});
+	};
+}
+
 // ─── iframe ↔ panel postMessage relay ────────────────────────────────────────
 
 export type IframeRequest =
 	| { type: 'sdk.ready'; requestId?: string }
 	| { type: 'sdk.event'; requestId?: string; eventName: string; payload?: unknown }
 	| { type: 'sdk.chatSend'; requestId?: string; message: string; context?: string; showInChat?: boolean }
-	| { type: 'sdk.notify'; requestId?: string; message: string; level?: 'info' | 'success' | 'warning' | 'error' };
+	| { type: 'sdk.notify'; requestId?: string; message: string; level?: 'info' | 'success' | 'warning' | 'error' }
+	| { type: 'sdk.chatSendStream'; requestId?: string; message: string; callbacksKey?: string }
+	| { type: 'sdk.chatCancel'; requestId?: string; streamKey: string };
 
 export interface IframeReply {
 	requestId?: string;
@@ -209,6 +270,24 @@ export function bindIframeChannel(
 						message: msg.message,
 						level: msg.level,
 					});
+					reply(true);
+					break;
+				case 'sdk.chatSendStream': {
+					const cancel = chatSendStream(agentId, msg.message, {
+						onDelta: (delta) => {
+							iframe.contentWindow?.postMessage({ type: 'host.streamDelta', requestId: msg.requestId, delta }, '*');
+						},
+						onDone: (ok, fullText, error) => {
+							iframe.contentWindow?.postMessage({ type: 'host.streamDone', requestId: msg.requestId, ok, fullText, error }, '*');
+						},
+					});
+					// Return the cancel function key so the iframe can cancel later
+					reply(true, {});
+					break;
+				}
+				case 'sdk.chatCancel':
+					// Cancellation is handled by the bridge internally via the returned close function
+					// The iframe SDK stores the cancel handle locally
 					reply(true);
 					break;
 				default:

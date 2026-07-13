@@ -148,6 +148,10 @@ export class KnowledgeGraph {
 				const node = this._nodes.get(nodeId)!;
 				if (!node.sourceMemoryIds.includes(memoryId)) {
 					node.sourceMemoryIds.push(memoryId);
+					// OOM 防护：sourceMemoryIds 上限 20 条
+					if (node.sourceMemoryIds.length > 20) {
+						node.sourceMemoryIds = node.sourceMemoryIds.slice(-20);
+					}
 					node.updatedAt = now;
 				}
 			}
@@ -176,6 +180,10 @@ export class KnowledgeGraph {
 					edge.weight++;
 					if (!edge.sourceMemoryIds.includes(memoryId)) {
 						edge.sourceMemoryIds.push(memoryId);
+						// OOM 防护：sourceMemoryIds 上限 20 条
+						if (edge.sourceMemoryIds.length > 20) {
+							edge.sourceMemoryIds = edge.sourceMemoryIds.slice(-20);
+						}
 					}
 				}
 			}

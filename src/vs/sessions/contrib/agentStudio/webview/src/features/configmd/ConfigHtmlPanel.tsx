@@ -28,9 +28,10 @@ interface ConfigHtmlPanelProps {
  */
 const SDK_INLINE = `
 (function(g){
-	var listeners={message:[],command:[],connected:[]};
+	var listeners={message:[],command:[],connected:[],streamDelta:[],streamDone:[]};
 	var pending=new Map();
 	var connected=false;
+	var streamCancel=null;
 	function id(){return 'sdk_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);}
 	function send(t,e){
 		var rid=id();
@@ -50,12 +51,24 @@ const SDK_INLINE = `
 		}
 		if(m.type==='host.command')listeners.command.forEach(function(fn){try{fn(m.command);}catch(_){}});
 		else if(m.type==='host.message')listeners.message.forEach(function(fn){try{fn(m);}catch(_){}});
+		else if(m.type==='host.streamDelta')listeners.streamDelta.forEach(function(fn){try{fn(m.delta);}catch(_){}});
+		else if(m.type==='host.streamDone')listeners.streamDone.forEach(function(fn){try{fn(m.ok,m.fullText,m.error);}catch(_){}});
 	});
 	var api={
 		on:function(ev,fn){listeners[ev]=listeners[ev]||[];listeners[ev].push(fn);return api;},
 		sendEvent:function(n,p){return send('sdk.event',{eventName:n,payload:p});},
 		chatSend:function(msg,o){o=o||{};return send('sdk.chatSend',{message:msg,context:o.context,showInChat:o.showInChat!==false});},
-		notify:function(m,l){return send('sdk.notify',{message:m,level:l||'info'});}
+		notify:function(m,l){return send('sdk.notify',{message:m,level:l||'info'});},
+		chatSendStream:function(msg,cb){
+			if(streamCancel)streamCancel();
+			var rid=id();
+			var done=false;
+			listeners.streamDelta=[function(d){if(!done&&cb.onDelta)cb.onDelta(d);}];
+			listeners.streamDone=[function(ok,fullText,error){if(done)return;done=true;if(cb.onDone)cb.onDone(ok,fullText,error);if(streamCancel)streamCancel=null;}];
+			send('sdk.chatSendStream',{message:msg,requestId:rid}).catch(function(err){if(!done){if(cb.onDone)cb.onDone(false,undefined,err instanceof Error?err.message:String(err));done=true;}});
+			streamCancel=function(){done=true;send('sdk.chatCancel',{streamKey:rid}).catch(function(){});};
+			return {cancel:function(){if(streamCancel){streamCancel();streamCancel=null;}}};
+		}
 	};
 	g.AgentConfigHtml={
 		connect:function(){return send('sdk.ready',{}).then(function(d){connected=true;listeners.connected.forEach(function(fn){try{fn(d);}catch(_){}});return api;});},
@@ -63,7 +76,8 @@ const SDK_INLINE = `
 		on:function(ev,fn){return api.on(ev,fn);},
 		sendEvent:function(n,p){return api.sendEvent(n,p);},
 		chatSend:function(msg,o){return api.chatSend(msg,o);},
-		notify:function(m,l){return api.notify(m,l);}
+		notify:function(m,l){return api.notify(m,l);},
+		chatSendStream:function(msg,cb){return api.chatSendStream(msg,cb);}
 	};
 	g.AgentConfigHtml.create=function(){return api;};
 })(window);

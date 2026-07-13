@@ -430,3 +430,81 @@ export function createNotificationHook(): { type: HookType; handler: HookHandler
 		},
 	};
 }
+
+/**
+ * 创建默认的 pre_compact 钩子
+ * 压缩上下文前：捕捉当前工作记忆快照
+ */
+export function createPreCompactHook(): { type: HookType; handler: HookHandler; priority: number } {
+	return {
+		type: 'pre_compact',
+		priority: 50,
+		handler: (ctx: HookContext): HookResult => {
+			const summary = ctx['workingSummary'] as string ?? ctx['summary'] as string ?? '';
+			return {
+				action: 'observe',
+				observeEntry: {
+					content: `[Pre-Compact] ${summary || 'context compaction triggered'}`.slice(0, 1000),
+					type: 'working',
+					metadata: {
+						event: 'pre_compact',
+						project: ctx.project,
+					},
+				},
+			};
+		},
+	};
+}
+
+/**
+ * 创建默认的 stop 钩子
+ * 对话停止：触发 L1 提取 + 持久化
+ */
+export function createStopHook(): { type: HookType; handler: HookHandler; priority: number } {
+	return {
+		type: 'stop',
+		priority: 50,
+		handler: (ctx: HookContext): HookResult => {
+			return {
+				action: 'observe',
+				observeEntry: {
+					content: `[Stop] conversation turn ended for ${ctx.sessionId}`,
+					type: 'working',
+					metadata: {
+						event: 'stop',
+						sessionId: ctx.sessionId,
+						project: ctx.project,
+					},
+				},
+				persist: true,
+			};
+		},
+	};
+}
+
+/**
+ * 创建默认的 session_end 钩子
+ * 会话结束：生成会话摘要 + 触发固化
+ */
+export function createSessionEndHook(): { type: HookType; handler: HookHandler; priority: number } {
+	return {
+		type: 'session_end',
+		priority: 50,
+		handler: (ctx: HookContext): HookResult => {
+			const summary = ctx['summary'] as string ?? ctx['sessionSummary'] as string ?? '';
+			return {
+				action: 'observe',
+				observeEntry: {
+					content: `[Session End] ${summary || 'session terminated'}`.slice(0, 1000),
+					type: 'episodic',
+					metadata: {
+						event: 'session_end',
+						sessionId: ctx.sessionId,
+						project: ctx.project,
+					},
+				},
+				persist: true,
+			};
+		},
+	};
+}

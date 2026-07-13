@@ -34,7 +34,8 @@ async function getPipeline(): Promise<any> {
 	if (_pipelinePromise) return _pipelinePromise;
 	_pipelinePromise = (async () => {
 		try {
-			const mod = await import('@xenova/transformers');
+			const xfSpec = ['@xenova', 'transformers'].join('/');
+			const mod = await import(/* @vite-ignore */ xfSpec);
 			const { pipeline, env } = mod;
 			// 允许从远程加载模型 (首次使用)
 			env.allowRemoteModels = true;
@@ -95,11 +96,33 @@ export class VectorIndex {
 	private vectors = new Map<string, Float32Array>();
 	private _available = true;
 	private _dimension = 0;
+	/**
+	 * P2 内存边界：向量索引最多保留的条数。每条 384 维 Float32Array ≈ 1.5KB，
+	 * 无上限时全量常驻会撞 ext host 4GB cage。超过后 FIFO 淘汰最早的向量。
+	 * 可通过环境变量 AGENTMEMORY_VECTOR_MAX_DOCS 覆盖。
+	 *
+	 * 默认 1000（1000 × 1.5KB ≈ 1.5MB，是 ext host 里安全的常驻上限）。
+	 */
+	private readonly _maxDocs: number = (() => {
+		const raw = (globalThis as any)?.process?.env?.['AGENTMEMORY_VECTOR_MAX_DOCS'];
+		const n = raw ? parseInt(raw, 10) : NaN;
+		return Number.isFinite(n) && n > 0 ? n : 1000;
+	})();
 
 	add(id: string, embedding: Float32Array): void {
+		// 重新插入以更新 FIFO 顺序
+		if (this.vectors.has(id)) { this.vectors.delete(id); }
 		this.vectors.set(id, embedding);
 		if (this._dimension === 0 && embedding.length > 0) {
 			this._dimension = embedding.length;
+		}
+		// P2: 超出上限时 FIFO 淘汰
+		if (this._maxDocs > 0) {
+			while (this.vectors.size > this._maxDocs) {
+				const oldest = this.vectors.keys().next().value as string | undefined;
+				if (oldest === undefined) { break; }
+				this.vectors.delete(oldest);
+			}
 		}
 	}
 

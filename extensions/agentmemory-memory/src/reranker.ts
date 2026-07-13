@@ -29,7 +29,8 @@ async function loadPipeline(): Promise<any> {
 
 	pipelineLoading = (async () => {
 		try {
-			const xenova: any = await import('@xenova/transformers');
+			const xfSpec = ['@xenova', 'transformers'].join('/');
+			const xenova: any = await import(/* @vite-ignore */ xfSpec);
 			rerankerPipeline = await xenova.pipeline(
 				'text-classification',
 				'Xenova/ms-marco-MiniLM-L-6-v2',

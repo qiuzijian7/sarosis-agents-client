@@ -22,7 +22,8 @@ async function loadClip(): Promise<any> {
 
 	clipLoading = (async () => {
 		try {
-			const xenova: any = await import('@xenova/transformers');
+			const xfSpec = ['@xenova', 'transformers'].join('/');
+			const xenova: any = await import(/* @vite-ignore */ xfSpec);
 			clipPipeline = await xenova.pipeline('image-feature-extraction', CLIP_MODEL, { quantized: true });
 			return clipPipeline;
 		} catch {
@@ -48,7 +49,8 @@ async function loadClipText(): Promise<any> {
 
 	clipTextLoading = (async () => {
 		try {
-			const xenova: any = await import('@xenova/transformers');
+			const xfSpec = ['@xenova', 'transformers'].join('/');
+			const xenova: any = await import(/* @vite-ignore */ xfSpec);
 			clipTextPipeline = await xenova.pipeline('feature-extraction', CLIP_MODEL, { quantized: true });
 			return clipTextPipeline;
 		} catch {

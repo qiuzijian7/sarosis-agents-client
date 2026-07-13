@@ -892,43 +892,15 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 		});
 
-		// ── clarify（用户交互：LLM 需要用户澄清意图）──
-		this.register({
-			definition: {
-				name: 'clarify',
-				description: 'Ask the user to clarify their intent when the LLM is uncertain or needs to choose between options. ' +
-					'The question is displayed to the user as an interactive card with selectable options. ' +
-					'The options parameter should be a JSON array of strings. ' +
-					'Use this when: (1) requirements are ambiguous, (2) multiple valid approaches exist, ' +
-					'or (3) the user needs to choose between workflow/configuration options. ' +
-					'Example: clarify({question: "Which approach?", options: ["Approach A", "Approach B"]})',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						question: { type: 'string', description: 'The question to ask the user.' },
-						options: { type: 'string', description: 'JSON array of option strings, e.g. ["Option A", "Option B"].' },
-					},
-					required: ['question', 'options'],
-				},
-				category: 'utility',
-				source: this.id,
-			},
-			handler: async args => {
-				const question = args['question'] as string | undefined;
-				const optionsRaw = args['options'] as string | undefined;
-				if (!question || !optionsRaw) {
-					throw new Error('clarify: "question" and "options" are required');
-				}
-				let options: string[] = [];
-				try {
-					options = JSON.parse(optionsRaw);
-				} catch {
-					throw new Error('clarify: "options" must be a valid JSON array of strings');
-				}
-				const preview = options.map((o, i) => `${i + 1}. ${o}`).join('\n');
-				return text(`Waiting for user to choose from:\n${preview}\n\n(The user will see an interactive card and their selection will be sent as a new message.)`);
-			},
-		});
+		// ── clarify 第二次注册已删除（2026-07-13）──
+		// 原代码在 _registerCoreTools 内对同名工具 'clarify' 调用了两次 this.register()，
+		// 第二次的 handler 返回纯文本 "Waiting for user to choose from:\n1. ..."（无 UI
+		// 卡片协议），由于底层 Map.set 行为，第二次覆盖了第一次的
+		// `{__clarify__:true, question, options}` 结构化返回。UI 端
+		// nativeChatEditorPane.onClarifySubmit 检测不到 __clarify__ 标志，不渲染交互
+		// 卡片，直接把工具 result 文本 dump 到聊天正文（截图所示）。保留第一次注册
+		// 即可恢复正确的交互卡片渲染（category='clarify'、options 为 string[]、返回
+		// `__clarify__` JSON）。同时清掉伴随的 `overwriting existing tool: clarify` 警告。
 
 		// ── filesystem ─────────────────────────────────────────────────
 		this.register({
@@ -1109,7 +1081,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					type: 'object',
 					properties: {
 						url: { type: 'string' },
-						headers: { type: 'object', additionalProperties: { type: 'string' } },
+						// HTTP headers are an arbitrary string→string map; the IOA gateway
+						// rejects bare `type:"object"` (no properties) and `additionalProperties`,
+						// so we model headers as a JSON object *string* (IOA-safe + self-describing).
+						headers: {
+							type: 'string',
+							description: 'Optional HTTP headers as a JSON object string, e.g. {"Authorization":"Bearer token","X-Custom":"v"}. Defaults to {}.',
+						},
 					},
 					required: ['url'],
 				},
@@ -1122,7 +1100,16 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				if (!/^https?:\/\//i.test(url)) {
 					throw new Error('url must start with http:// or https://');
 				}
-				const headers = (args['headers'] as Record<string, string> | undefined) ?? {};
+				// headers may arrive as a JSON object string (per the schema) or, for
+				// backward-compat, an already-parsed object.
+				let headers: Record<string, string> = {};
+				const rawHeaders = args['headers'];
+				if (typeof rawHeaders === 'string') {
+					try { headers = JSON.parse(rawHeaders) as Record<string, string>; }
+					catch { headers = {}; }
+				} else if (rawHeaders && typeof rawHeaders === 'object') {
+					headers = rawHeaders as Record<string, string>;
+				}
 				const ctx = await this.requestService.request({ type: 'GET', url, headers, callSite: 'saros.builtinTool.http_get' }, CancellationToken.None);
 				const body = (await asText(ctx)) ?? '';
 				if (body.length > 1024 * 1024) {
@@ -1295,9 +1282,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 									description: 'pending | in_progress | completed.',
 								},
 							},
-							required: ['step', 'status'],
-							additionalProperties: true,
-						},
+					required: ['step', 'status'],
+				},
 					},
 					explanation: {
 						type: 'string',
@@ -1387,7 +1373,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			['execute_code', 'Execute a Python script in a sandbox.', 'Code execution sandbox is not available. Use the terminal tool to run scripts.'],
 		] as const) {
 			this.register({
-				definition: { name, description: desc, inputSchema: { type: 'object', properties: {} }, category: 'utility', source: this.id },
+				definition: { name, description: desc, inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } }, category: 'utility', source: this.id },
 				handler: async () => text(msg),
 			});
 		}

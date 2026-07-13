@@ -1958,8 +1958,8 @@ private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntr
 		id: 'agentmemory',
 			name: 'AgentMemory',
 			version: '1.0.0',
-			module: '../../../../extensions/agentmemory-memory/out/extension.js',
-			appResource: 'vs/../../extensions/agentmemory-memory/out/extension.js',
+			module: '../../../../extensions/agentmemory-memory/src/extension.js',
+			appResource: 'vs/../../extensions/agentmemory-memory/dist/extension.js',
 			capabilities: [
 				{ capability: 'memory', provider: 'agentmemory', priority: 90 },
 			],

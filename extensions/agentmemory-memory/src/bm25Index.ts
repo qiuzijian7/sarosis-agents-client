@@ -24,6 +24,20 @@ export class BM25Index {
 	private _sortedTerms: string[] | null = null;
 	private readonly k1 = 1.2;
 	private readonly b = 0.75;
+	/**
+	 * P2 内存边界：BM25 索引最多保留的文档数。超过后按插入顺序（FIFO，
+	 * Map 保序）淘汰最早的文档，防止 ext host 堆无界增长撞 4GB cage。
+	 * 0 = 不限制。可通过环境变量 AGENTMEMORY_BM25_MAX_DOCS 覆盖。
+	 *
+	 * 默认 1000（每条平均 ~2KB tokens × Map<string,Set<string>> 引用开销 ~5KB
+	 * → 1000 条约 5MB heap，是安全上限。之前 5000 在多扩展并存的 ext host
+	 * 4GB cage 里仍偏高，降到 1000 更稳）。
+	 */
+	private readonly _maxDocs: number = (() => {
+		const raw = (globalThis as any)?.process?.env?.['AGENTMEMORY_BM25_MAX_DOCS'];
+		const n = raw ? parseInt(raw, 10) : NaN;
+		return Number.isFinite(n) && n > 0 ? n : 1000;
+	})();
 
 	private stem(word: string): string {
 		return stemPorter(word);
@@ -72,6 +86,18 @@ export class BM25Index {
 			this.invertedIndex.get(term)!.add(id);
 		}
 		this._sortedTerms = null; // 写时失效
+		// P2: 超出上限时 FIFO 淘汰最早的文档（Map 迭代按插入序）
+		this._evictIfNeeded();
+	}
+
+	/** P2: 超出 _maxDocs 时淘汰最早插入的文档。 */
+	private _evictIfNeeded(): void {
+		if (this._maxDocs <= 0) { return; }
+		while (this.entries.size > this._maxDocs) {
+			const oldest = this.entries.keys().next().value as string | undefined;
+			if (oldest === undefined) { break; }
+			this.remove(oldest);
+		}
 	}
 
 	remove(id: string): void {
@@ -166,6 +192,59 @@ export class BM25Index {
 			.map(([id, score]) => ({ id, score }))
 			.sort((a, b) => b.score - a.score)
 			.slice(0, limit);
+	}
+
+	// ─── P17: 序列化 / 反序列化（索引持久化）────────────────────
+
+	/** 序列化为 JSON string — 对齐 agentmemory SearchIndex.serialize() 格式 */
+	serialize(): string {
+		const payload: any = {
+			v: 2,
+			entries: Array.from(this.entries.entries()),
+			inverted: Array.from(this.invertedIndex.entries()).map(([k, v]) => [k, Array.from(v)]),
+			docTerms: Array.from(this.docTermCounts.entries()).map(([k, v]) => [k, Array.from(v.entries())]),
+			totalDocLength: this.totalDocLength,
+		};
+		return JSON.stringify(payload);
+	}
+
+	/** 反序列化 — 对齐 agentmemory SearchIndex.deserialize()，带容错 */
+	deserialize(json: string): boolean {
+		try {
+			const data = JSON.parse(json);
+			if (!data || data.v !== 2) return false;
+			this.clear();
+			for (const [id, entry] of data.entries || []) {
+				this.entries.set(id, { id: entry.id || id, termCount: entry.termCount ?? 0 });
+			}
+			for (const [term, ids] of data.inverted || []) {
+				this.invertedIndex.set(term, new Set(ids || []));
+			}
+			for (const [id, pairs] of data.docTerms || []) {
+				this.docTermCounts.set(id, new Map(pairs || []));
+			}
+			this.totalDocLength = data.totalDocLength ?? 0;
+			this._sortedTerms = null;
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** 深拷贝另一个 BM25Index 的数据到当前实例（对齐 agentmemory restoreFrom） */
+	restoreFrom(other: BM25Index): void {
+		this.clear();
+		for (const [id, entry] of other.entries) {
+			this.entries.set(id, { ...entry });
+		}
+		for (const [term, ids] of other.invertedIndex) {
+			this.invertedIndex.set(term, new Set(ids));
+		}
+		for (const [id, freq] of other.docTermCounts) {
+			this.docTermCounts.set(id, new Map(freq));
+		}
+		this.totalDocLength = other.totalDocLength;
+		this._sortedTerms = null;
 	}
 
 	get size(): number { return this.entries.size; }

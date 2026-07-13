@@ -173,13 +173,33 @@ export class MemifyPipeline {
 		for (const e of graph.entities) {
 			const key = `${e.type}::${e.name.toLowerCase()}`;
 			if (!seen.has(key)) {
-				seen.set(key, e);
+				seen.set(key, { ...e, properties: { ...e.properties } });
+			} else {
+				// 合并后续重复实体的 properties 到已保留的实体
+				const existing = seen.get(key)!;
+				Object.assign(existing.properties, e.properties);
 			}
 		}
+		// 保留所有被引用的实体 ID（第一个出现的 ID）
 		const entityIds = new Set(Array.from(seen.values()).map(e => e.id));
+		// 对于被合并的实体，需要将引用更新到保留的实体
+		const idMap = new Map<string, string>();
+		for (const e of graph.entities) {
+			const key = `${e.type}::${e.name.toLowerCase()}`;
+			const kept = seen.get(key)!;
+			if (e.id !== kept.id) {
+				idMap.set(e.id, kept.id);
+			}
+		}
 		return {
 			entities: Array.from(seen.values()),
-			relations: graph.relations.filter(r => entityIds.has(r.source) && entityIds.has(r.target)),
+			relations: graph.relations
+				.map(r => ({
+					...r,
+					source: idMap.get(r.source) ?? r.source,
+					target: idMap.get(r.target) ?? r.target,
+				}))
+				.filter(r => entityIds.has(r.source) && entityIds.has(r.target)),
 		};
 	}
 

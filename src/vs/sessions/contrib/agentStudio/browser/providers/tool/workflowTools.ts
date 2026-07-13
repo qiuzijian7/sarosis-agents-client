@@ -40,16 +40,12 @@ export function registerWorkflowTools(ctx: WorkflowToolContext): void {
 		definition: {
 			name: 'workflow_list',
 			description: 'List all workflows in the current workspace. Returns workflow IDs, names, and descriptions.',
-			inputSchema: {
-				type: 'object',
-				properties: {},
-				required: [],
-			},
-			category: 'workflow',
-			source: 'saros.builtin-tools',
-		},
-		handler: async (_args: Record<string, unknown>, _signal?: AbortSignal, _agentId?: string) => {
-			const wsId = resolveWorkspaceId();
+		inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+		category: 'workflow',
+		source: 'saros.builtin-tools',
+	},
+	handler: async (_args: Record<string, unknown>, _signal?: AbortSignal, _agentId?: string) => {
+		const wsId = resolveWorkspaceId();
 			if (!wsId) {
 				return [{ type: 'text', text: 'No active workspace. Please select a workspace first.' }];
 			}
@@ -126,16 +122,12 @@ export function registerWorkflowTools(ctx: WorkflowToolContext): void {
 			description: 'Get the schema of all available workflow node types, INCLUDING the list of ' +
 				'available agents you can reference. Use this to understand what node types are available, ' +
 				'their required data fields, valid agentId values, and positioning guidelines before creating or modifying a workflow.',
-			inputSchema: {
-				type: 'object',
-				properties: {},
-				required: [],
-			},
-			category: 'workflow',
-			source: 'saros.builtin-tools',
-		},
-		handler: async () => {
-			// Dynamically fetch available agents so the AI knows valid agentId values
+		inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
+		category: 'workflow',
+		source: 'saros.builtin-tools',
+	},
+	handler: async () => {
+		// Dynamically fetch available agents so the AI knows valid agentId values
 			let availableAgents: Array<{ id: string; name: string; role: string; model: string }> = [];
 			try {
 				const agents = await ctx.studioService.getAgents();
@@ -209,10 +201,27 @@ export function registerWorkflowTools(ctx: WorkflowToolContext): void {
 									properties: { x: { type: 'number' }, y: { type: 'number' } },
 									required: ['x', 'y'],
 								},
-								data: {
-									type: 'object',
-									description: 'Content fields: label (required), plus type-specific fields (agentId, agentConfig, prompt, etc.)',
+							data: {
+								type: 'object',
+								description: 'Content fields: label (required), plus type-specific fields (agentId, agentConfig, prompt, etc.)',
+								// The IOA gateway rejects bare `type:"object"` (no properties) and
+								// `additionalProperties`, so enumerate the common fields. The model
+								// may still pass other type-specific fields at runtime (the gateway
+								// validates the schema shape, not the call arguments).
+								properties: {
+									label: { type: 'string', description: 'Node display label (required)' },
+									agentId: { type: 'string', description: 'Referenced agent id (from workflow_get_schema)' },
+									prompt: { type: 'string', description: 'Prompt template for this node' },
+									agentConfig: {
+										type: 'object',
+										description: 'Agent configuration (model, system prompt, etc.)',
+										properties: {
+											modelId: { type: 'string', description: 'Model id, e.g. claude-sonnet-4-20250514' },
+											prompt: { type: 'string', description: 'Agent system prompt' },
+										},
+									},
 								},
+							},
 							},
 							required: ['id', 'type', 'position'],
 						},

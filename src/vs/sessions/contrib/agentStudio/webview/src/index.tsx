@@ -347,7 +347,9 @@ initMessageClient((type, data) => {
 		}
 		case 'confightml.htmlRendered':
 		case 'confightml.command':
-		case 'confightml.error': {
+		case 'confightml.error':
+		case 'confightml.chatStreamDelta':
+		case 'confightml.chatStreamDone': {
 			const detail = data as { agentId: string };
 			if (detail?.agentId) {
 				dispatchConfigHtmlEvent(detail.agentId, type, data);

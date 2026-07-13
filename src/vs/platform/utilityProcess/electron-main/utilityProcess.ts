@@ -247,10 +247,6 @@ export class UtilityProcess extends Disposable {
 		const args = this.configuration.args ?? [];
 		const execArgv = [...(this.configuration.execArgv ?? [])];
 		const allowLoadingUnsignedLibraries = this.configuration.allowLoadingUnsignedLibraries;
-		const jsFlags = app.commandLine.getSwitchValue('js-flags');
-		if (jsFlags) {
-			execArgv.push(`--js-flags=${jsFlags}`);
-		}
 		const respondToAuthRequestsFromMainProcess = this.configuration.respondToAuthRequestsFromMainProcess;
 		const stdio = 'pipe';
 		const env = this.createEnv(configuration);

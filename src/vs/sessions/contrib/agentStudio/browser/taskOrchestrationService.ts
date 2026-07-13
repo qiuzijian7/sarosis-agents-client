@@ -2684,16 +2684,17 @@ Only return the JSON array, no other text.`;
 
 	/** Collect all text deltas from an AsyncIterable<IChatStreamDelta> into a string. */
 	private async _collectStreamText(stream: AsyncIterable<IChatStreamDelta>): Promise<string> {
-		let output = '';
+		// 用分块数组累积，末尾一次性 join，避免流式 `+=` 产生 ConsString 绳索串
+		const outputChunks: string[] = [];
 		for await (const delta of stream) {
 			if (delta.type === 'text' && delta.content) {
-				output += delta.content;
+				outputChunks.push(delta.content);
 			}
 			if (delta.type === 'done' || delta.type === 'error') {
 				break;
 			}
 		}
-		return output;
+		return outputChunks.join('');
 	}
 
 	/**

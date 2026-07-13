@@ -291,7 +291,13 @@ export class SessionMemoryProvider implements IMemoryProvider, IDisposable {
 		const tmpFile = URI.joinPath(target, '..', `.tmp_${Date.now()}_${Math.random().toString(36).slice(2)}`);
 		try {
 			await this.fileService.writeFile(tmpFile, content);
-			await this.fileService.move(tmpFile, target, true);
+			// 先删除可能存在的目标文件（不存在时 Ignore，这是新 agent 首次写入的正常情况）。
+			// 注意：不能用 move(..., overwrite=true)。当目标尚不存在时，fileService.move 会先
+			// 调用 del(target)，而 disk provider 的 stat 缓存可能让 exists() 返回陈旧的 true，
+			// 导致 del 抛 FILE_NOT_FOUND（"Unable to delete nonexistent file"）使整个写入失败。
+			// 这里显式删除并吞掉 FileNotFound，再用 overwrite=false 移动即可避免该问题。
+			await this.fileService.del(target).catch(() => { /* 目标尚不存在，属正常情况 */ });
+			await this.fileService.move(tmpFile, target, false);
 		} catch (err) {
 			try { await this.fileService.del(tmpFile); } catch { /* ignore cleanup failure */ }
 			throw err;

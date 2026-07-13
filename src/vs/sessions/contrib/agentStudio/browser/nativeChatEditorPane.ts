@@ -1547,7 +1547,17 @@ export class NativeChatEditorPane extends EditorPane {
 		this._deltaBuffer = [];
 		if (batch.length === 0) { return; }
 
-		// 合并：连续 text delta 链压缩到最后一个
+		// 合并：连续 text delta 链压缩为一条，减少同帧 DOM 更新次数。
+		// ⚠️ 关键修复（流式内容错乱/乱码，2026-07-13）：
+		//   本地 native pane 经 sendMessage(onDelta) 收到的 text delta 是**增量**片段
+		//   （delta.content = 本次新增文本，且**不带** delta.fullText）。旧逻辑「只保留
+		//   连续链的最后一个」是按「每个 text delta 都携带全量快照 fullText」设计的，
+		//   在增量模式下会**丢弃链中间所有片段**——幸存的相邻片段直接拼接成乱码
+		//   （如 "16px" +（丢失）+ "chrome-bg" → "16pxrome-bg"；"flex" +（丢失）+
+		//   "top bar" → "flextopbar"），正是日志中「成长中的本文已经文字化け」的根因。
+		//   修复：增量模式下把整条链的 content **按序拼接**成一条合并 delta（内容零丢失，
+		//   仍只触发一次 _processDelta）；仅当 delta 携带 fullText（全量快照，如 webview
+		//   经 controller 注入）时才安全地只取最后一个。
 		const merged: Array<{ type: string; delta: any }> = [];
 		for (let i = 0; i < batch.length; i++) {
 			const item = batch[i];
@@ -1555,19 +1565,39 @@ export class NativeChatEditorPane extends EditorPane {
 				merged.push(item);
 				continue;
 			}
-			// 跳过连续的 text delta，只取最后一个
+			// 找到连续 text delta 链 [i, lastTextIdx]
 			let lastTextIdx = i;
 			for (let j = i + 1; j < batch.length; j++) {
 				if (batch[j].type === 'text') { lastTextIdx = j; }
 				else { break; }
 			}
 			const lastText = batch[lastTextIdx];
-			// 跳过与上一批完全相同的 text（fullText 缓存）
-			const textContent = lastText.delta.fullText !== undefined
-				? lastText.delta.fullText
-				: ((this._streamingAssistantMsg?.content ?? '') + (lastText.delta.content ?? ''));
+			const hasFullText = lastText.delta.fullText !== undefined;
+			let mergedDelta = lastText.delta;
+			let textContent: string;
+			if (hasFullText) {
+				// 全量快照模式：最后一个 delta 已含完整内容，直接取用。
+				textContent = lastText.delta.fullText;
+			} else {
+				// 增量模式：拼接链上所有片段，避免丢失中间内容造成乱码。
+				let combined = '';
+				for (let k = i; k <= lastTextIdx; k++) {
+					if (batch[k].type === 'text') {
+						combined += (batch[k].delta.content ?? '');
+					}
+				}
+				if (lastTextIdx > i) {
+					// 用合并后的 content 生成新 delta（保留其余字段），仅触发一次 _processDelta。
+					mergedDelta = { ...lastText.delta, content: combined };
+					this._logService.trace(
+						`[NativeChatEditorPane] flush: merged ${lastTextIdx - i + 1} incremental text deltas → combinedLen=${combined.length}`,
+					);
+				}
+				textContent = (this._streamingAssistantMsg?.content ?? '') + combined;
+			}
+			// 跳过与上一批完全相同的 text（去重）
 			if (textContent !== this._lastFlushedTextContent) {
-				merged.push(lastText);
+				merged.push({ type: 'text', delta: mergedDelta });
 				this._lastFlushedTextContent = textContent;
 			}
 			i = lastTextIdx;
@@ -1709,7 +1739,10 @@ export class NativeChatEditorPane extends EditorPane {
 					}
 					const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
 					this._applyStreamPhase('idle');
+					// 显式发送最终 content，确保全量重建时读到的不是流式过程中最后一次
+					// delta 的残留（可能因增量渲染产生碎片 DOM）。
 					this._chatPanel?.updateMessage(assistantId, {
+						content: assistantMsg.content,
 						toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
 						isStreaming: false,
 						isThinking: false,

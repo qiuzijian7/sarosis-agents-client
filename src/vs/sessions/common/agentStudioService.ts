@@ -935,6 +935,18 @@ export interface ITaskOrchestrationService {
 
 // --- ConfigHtml Service ---
 
+/**
+ * Simplified stream delta used by ConfigHtml streaming chat (Observable pattern).
+ */
+export interface ChatStreamDelta {
+	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_end' | 'done';
+	readonly content?: string;
+	readonly fullText?: string;
+	readonly toolName?: string;
+	readonly toolArgs?: string;
+	readonly toolResult?: string;
+}
+
 export const IConfigHtmlService =
 	createDecorator<IConfigHtmlService>("configHtmlService");
 
@@ -1066,6 +1078,36 @@ export interface IConfigHtmlService {
 	/**
 	 * Dispose any per-agent watchers/state.
 	 */
+
+	// --- Streaming chat (Observable pattern) -------------------------------
+
+	handleChatSendStream(
+		requestId: string,
+		agentId: string,
+		message: string,
+		onDelta: (delta: ChatStreamDelta) => void,
+		onDone: (ok: boolean, fullText?: string, error?: string) => void,
+		options?: { agentSessionId?: string },
+	): Promise<void>;
+
+	cancelStream(requestId: string, agentId: string): void;
+
+	// --- Event for stream deltas (host → webview relay) -------------------
+
+	readonly onStreamDelta: Event<{
+		requestId: string;
+		agentId: string;
+		delta: ChatStreamDelta;
+	}>;
+
+	readonly onStreamDone: Event<{
+		requestId: string;
+		agentId: string;
+		ok: boolean;
+		fullText?: string;
+		error?: string;
+	}>;
+
 	disposeAgent(agentId: string): void;
 }
 

@@ -77,6 +77,8 @@ import type {
 	IConfigHtmlHtmlGeneratePayload,
 	IConfigHtmlWriteHtmlPayload,
 	IConfigHtmlGetHtmlPayload,
+	IConfigHtmlChatSendStreamPayload,
+	IConfigHtmlChatCancelStreamPayload,
 	IFileOpenPayload,
 	IFileOpenUntitledTextPayload,
 	IFileApplyCodePayload,
@@ -1346,6 +1348,23 @@ export class AgentStudioWebviewController extends Disposable {
 					currentHtml: hp.currentHtml,
 					model: hp.model,
 				});
+			}
+			case "confightml.chatSendStream": {
+				const sp = p as unknown as IConfigHtmlChatSendStreamPayload;
+				// Fire-and-forget: deltas flow back via onStreamDelta/onStreamDone events
+				const agentId = sp.agentId;
+				this._configHtmlService.handleChatSendStream(
+					sp.requestId, agentId, sp.message,
+					(delta) => this._sendEvent("confightml.chatStreamDelta", { requestId: sp.requestId, agentId, delta }),
+					(ok, fullText, error) => this._sendEvent("confightml.chatStreamDone", { requestId: sp.requestId, agentId, ok, fullText, error }),
+					{ agentSessionId: sp.agentSessionId },
+				);
+				return undefined;
+			}
+			case "confightml.chatCancelStream": {
+				const cp = p as unknown as IConfigHtmlChatCancelStreamPayload;
+				this._configHtmlService.cancelStream(cp.requestId, cp.agentId);
+				return undefined;
 			}
 			// ─── Files ────────────────────────────────────────────
 			case "files.open": {

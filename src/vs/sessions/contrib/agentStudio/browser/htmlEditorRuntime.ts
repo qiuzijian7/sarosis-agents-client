@@ -311,6 +311,23 @@ body.html-edit-mode [contenteditable="true"]:focus {
   outline: 2px solid rgba(34, 211, 238, 0.5);
   outline-offset: 2px;
 }
+
+/* 保存按钮 — 蓝色高亮，明显区别于其他工具按钮 */
+#html-edit-toolbar .tb-save-btn {
+  width: auto;
+  padding: 0 10px;
+  gap: 6px;
+  background: rgba(34, 211, 238, 0.18);
+  color: #22d3ee;
+  font-weight: 600;
+  font-size: 12px;
+}
+#html-edit-toolbar .tb-save-btn:hover {
+  background: rgba(34, 211, 238, 0.32);
+}
+#html-edit-toolbar .tb-save-btn:active {
+  background: rgba(34, 211, 238, 0.45);
+}
 `;
 }
 
@@ -400,6 +417,11 @@ const EDITOR_CHROME_HTML = `
   <span class="tb-separator"></span>
   <button type="button" id="tb-undo" title="Undo (Ctrl+Z)">&#8617;</button>
   <button type="button" id="tb-redo" title="Redo (Ctrl+Y)">&#8618;</button>
+  <span class="tb-separator"></span>
+  <button type="button" id="tb-save" class="tb-save-btn" title="Save (Ctrl+S)">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+    <span>保存</span>
+  </button>
 </div>
 `;
 
@@ -428,6 +450,8 @@ function getEditorJs(): string {
   var toolbarHideTimer = null;
   var savedRange = null;
   var syncTimer = null;
+  var formObserver = null;
+  var boundFormElements = [];
 
   function log(m) { try { console.log('[EditRuntime] ' + m); } catch (e) {} }
 
@@ -465,6 +489,83 @@ function getEditorJs(): string {
     }
   }
 
+  function bindFormInputs() {
+    if (formObserver) return; // already bound
+    boundFormElements = [];
+
+    // 为单个表单控件绑定 input/change 事件，实时同步值到 attribute
+    function bindOne(el) {
+      if (el.dataset.noPersist || boundFormElements.indexOf(el) >= 0) return;
+      boundFormElements.push(el);
+
+      var handler = function () {
+        if (!editMode) return;
+        var tag = el.tagName ? el.tagName.toLowerCase() : '';
+        if (tag === 'input') {
+          var type = (el.type || 'text').toLowerCase();
+          if (type === 'checkbox' || type === 'radio') {
+            if (el.checked) el.setAttribute('checked', '');
+            else el.removeAttribute('checked');
+          } else {
+            el.setAttribute('value', el.value);
+          }
+        } else if (tag === 'textarea') {
+          el.textContent = el.value;
+        } else if (tag === 'select') {
+          var opts = el.querySelectorAll('option');
+          for (var i = 0; i < opts.length; i++) {
+            if (opts[i].selected) opts[i].setAttribute('selected', '');
+            else opts[i].removeAttribute('selected');
+          }
+        }
+      };
+
+      el.addEventListener('input', handler);
+      el.addEventListener('change', handler);
+      // 存储 handler 引用以便后续清理
+      el._formHandler = handler;
+    }
+
+    // 绑定已有表单控件
+    var inputs = document.body.querySelectorAll('input, textarea, select');
+    for (var i = 0; i < inputs.length; i++) { bindOne(inputs[i]); }
+
+    // MutationObserver 捕获动态添加的表单控件
+    formObserver = new MutationObserver(function (mutations) {
+      for (var mi = 0; mi < mutations.length; mi++) {
+        var added = mutations[mi].addedNodes;
+        for (var ni = 0; ni < added.length; ni++) {
+          var node = added[ni];
+          if (node.nodeType !== 1) continue;
+          if (node.matches && node.matches('input, textarea, select')) {
+            bindOne(node);
+          }
+          // 递归查找子节点中的表单控件
+          if (node.querySelectorAll) {
+            var children = node.querySelectorAll('input, textarea, select');
+            for (var ci = 0; ci < children.length; ci++) { bindOne(children[ci]); }
+          }
+        }
+      }
+    });
+    formObserver.observe(document.body, { childList: true, subtree: true });
+    log('bindFormInputs: ' + boundFormElements.length + ' form controls bound');
+  }
+
+  function unbindFormInputs() {
+    for (var i = 0; i < boundFormElements.length; i++) {
+      var el = boundFormElements[i];
+      if (el._formHandler) {
+        el.removeEventListener('input', el._formHandler);
+        el.removeEventListener('change', el._formHandler);
+        delete el._formHandler;
+      }
+    }
+    boundFormElements = [];
+    if (formObserver) { formObserver.disconnect(); formObserver = null; }
+    log('unbindFormInputs: done');
+  }
+
   function enterEditMode() {
     if (!document.body) return;
     console.log('[EditRuntime] enterEditMode called, editMode=' + editMode + ' body.children.length=' + document.body.children.length);
@@ -474,12 +575,16 @@ function getEditorJs(): string {
     document.body.contentEditable = 'true';
     // 只对 body 设置 contentEditable，不用 designMode（避免 toolbar 也被设为 editable）
     if (toolbar) toolbar.classList.remove('visible');
+    // 绑定表单控件：编辑模式下输入/选择实时更新 attribute
+    bindFormInputs();
     console.log('[EditRuntime] enterEditMode done, body.children.length=' + document.body.children.length + ' contentEditable=' + document.body.contentEditable);
   }
 
   function exitEditMode() {
     console.log('[EditRuntime] exitEditMode called');
     editMode = false;
+    // 解绑表单控件监听
+    unbindFormInputs();
     if (!document.body) return;
     document.body.classList.remove('html-edit-mode');
     document.body.contentEditable = 'false';
@@ -665,6 +770,12 @@ function getEditorJs(): string {
 
   var redoBtn = document.getElementById('tb-redo');
   if (redoBtn) redoBtn.addEventListener('click', function () { exec('redo'); });
+
+  var saveBtn = document.getElementById('tb-save');
+  if (saveBtn) saveBtn.addEventListener('click', function (e) {
+    e.preventDefault();
+    saveContent();
+  });
 
   // Add element 按钮
   if (addBtn) {

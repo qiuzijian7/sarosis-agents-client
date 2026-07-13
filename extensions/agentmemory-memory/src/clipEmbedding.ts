@@ -91,7 +91,9 @@ export class ClipEmbeddingProvider implements EmbeddingProvider {
 	private async _getTransformers(): Promise<TransformersModule> {
 		if (this._transformers) return this._transformers;
 		try {
-			this._transformers = (await import('@xenova/transformers')) as unknown as TransformersModule;
+			// esbuild 静态分析规避：用变量拼接的 spec，避免打包 onnxruntime .node 二进制
+			const xfSpec = ['@xenova', 'transformers'].join('/');
+			this._transformers = (await import(/* @vite-ignore */ xfSpec)) as unknown as TransformersModule;
 		} catch {
 			throw new Error('Install @xenova/transformers for CLIP image embeddings: npm install @xenova/transformers');
 		}

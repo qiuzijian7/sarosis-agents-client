@@ -3,7 +3,7 @@
  *
  *  Capability : memory
  *  Provider ID: agentmemory
- *  Priority   : 90 (above tdb-am-memory=80, SessionMemoryProvider=50)
+ *  Priority   : 1000 (above SessionMemoryProvider=50)
  *
  *  Bridges saros IMemoryProvider → agentmemory REST API (port 3111).
  *  agentmemory server is started by the main process (startAgentMemoryGateway)
@@ -14,7 +14,7 @@
  *    registerMemoryProvider(provider, priority).
  *--------------------------------------------------------------------------------------------*/
 
-import { AgentMemoryProvider } from './memoryProvider.js';
+import { AgentMemoryProviderProxy } from './agentMemoryProviderProxy.js';
 
 interface AgentOSLike {
 	registerMemoryProvider(provider: unknown, priority?: number): { dispose(): void };
@@ -41,7 +41,8 @@ function resolveAgentOS(context: PluginContext): AgentOSLike | undefined {
 }
 
 export class AgentMemoryPlugin {
-	private _provider: AgentMemoryProvider | undefined;
+	// Opt1: renderer 侧只承载薄代理；真实 Provider 引擎在网关主进程运行。
+	private _provider: AgentMemoryProviderProxy | undefined;
 	private _registration: RegisteredHandle | undefined;
 
 	async activate(context: PluginContext): Promise<void> {
@@ -59,9 +60,9 @@ export class AgentMemoryPlugin {
 		}
 
 		try {
-			this._provider = new AgentMemoryProvider();
-			this._registration = agentOS.registerMemoryProvider(this._provider, 90);
-			console.log('[AgentMemory] registered (priority=90)');
+			this._provider = new AgentMemoryProviderProxy();
+			this._registration = agentOS.registerMemoryProvider(this._provider, 1000);
+			console.log('[AgentMemory] registered (priority=1000)');
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			console.error(`[AgentMemory] registerMemoryProvider error: ${msg}`);

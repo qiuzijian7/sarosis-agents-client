@@ -90,6 +90,100 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 	/** In-memory cache: compositeKey → messages */
 	private readonly _historyCache = new Map<string, ChatMessage[]>();
+	/** P0-LRU: last access timestamp (Date.now()) per cache key. */
+	private readonly _historyCacheAccess = new Map<string, number>();
+	/**
+	 * P0-LRU: maximum number of session-level (key contains "::") buckets kept in
+	 * memory. noSession buckets (pure agentId, system messages only) are unlimited.
+	 * When exceeded during `appendMessage` (new bucket created), evict the
+	 * least recently accessed non-open bucket.
+	 *
+	 * Rationale: each bucket can hold hundreds of ChatMessages with full
+	 * ToolResult payloads (multi-GB total).  This cap keeps the renderer
+	 * heap comfortably below the 4 GB V8 pointer-compression cage.
+	 */
+	private static readonly MAX_CACHED_SESSION_BUCKETS = 15;
+	/**
+	 * P1: maximum characters of a single tool call result kept inline in
+	 * memory / the session JSON file.  Results exceeding this limit are
+	 * externalised to a per-session sidecar directory on bucket eviction
+	 * and resolved back on lazy-load.
+	 *
+	 * 8 KiB ≈ 2 000 tokens — enough for a diff, a search result page, or
+	 * a moderate file read.  Typical `read_file` of a 500-line source file
+	 * is ~15–25 KiB; this cap cuts it to one-third in memory.
+	 */
+	private static readonly MAX_INLINE_TOOL_RESULT = 8192;
+	/**
+	 * P1 sentinel prefix for externalised tool results.
+	 *
+	 * Format: `\x1ESAROSIS_TOOL_REF:tc_abc123:25000\x1E{truncated preview}`
+	 *
+	 * The ASCII Record Separator (0x1E, \\036) is deliberately chosen: it
+	 * never appears in valid UTF-8 user-facing text, tool output, or JSON.
+	 * The marker is still a plain `string`, so all existing `typeof result ===
+	 * 'string'` guards (e.g. _toDriverMessages line ~770) continue to work.
+	 */
+	private static readonly TOOL_REF_MARKER = '\x1ESAROSIS_TOOL_REF:';
+	/**
+	 * P2: minimum message count before session history compaction kicks in
+	 * during LRU eviction.  Sessions shorter than this are kept as-is.
+	 * Aligns with ContextManager.minMessagesToCompress default.
+	 */
+	private static readonly COMPACT_MIN_MESSAGES = 20;
+	/**
+	 * P2: number of messages at the start of a conversation to keep verbatim
+	 * (protected head — task origin).  Aligns with ContextManager.PROTECT_FIRST_N.
+	 */
+	private static readonly COMPACT_PROTECT_HEAD = 3;
+	/**
+	 * P2: maximum number of messages at the end of a conversation to keep
+	 * verbatim (protected tail — recent context).  Aligns with
+	 * ContextManager.TAIL_MAX_MESSAGES.
+	 */
+	private static readonly COMPACT_PROTECT_TAIL = 15;
+	/**
+	 * P2: maximum characters of a single tool call result kept in the
+	 * middle (summarisable) segment after compaction.  Aligns with
+	 * ContextManager.TOOL_RESULT_TRUNCATE_CHARS.
+	 */
+	private static readonly COMPACT_RESULT_TRUNCATE = 280;
+	/**
+	 * P4: IPC-time three-segment tool-result truncation applied inside
+	 * `_toDriverMessages`.  Every prior message the renderer ships to ext
+	 * host is squeezed through this shape:
+	 *
+	 *   [head COMPACT_PROTECT_HEAD verbatim]
+	 *   [middle: tc.result / tool.content sliced to IPC_TRUNCATE]
+	 *   [tail COMPACT_PROTECT_TAIL verbatim]
+	 *
+	 * Rationale: ext host V8 has an independent 4 GB cage.  When a session
+	 * has 100+ turns of large ToolResult payloads, the assembled
+	 * `IChatMessage[]` array becomes multi-hundred-MB and OOMs ext host
+	 * on the ModelProvider serialization path.  Truncating middle-segment
+	 * tool payloads (kept verbatim for head+tail) preserves recent context
+	 * while cutting the peak IPC/serialization pressure by an order of
+	 * magnitude.  Aligns with agentmemory 的 "原文即弃" 中间段策略。
+	 */
+	private static readonly IPC_TRUNCATE_RESULT_CHARS = 2048;
+	/** P4: minimum prior message count before IPC truncation kicks in. */
+	private static readonly IPC_TRUNCATE_MIN_MESSAGES = 20;
+	/**
+	 * P3 retention scoring weights for eviction candidate ranking.
+	 * Replaces pure LRU with a weighted score (recency + activity),
+	 * directly inspired by agentmemory retention.ts.
+	 *
+	 * Lower score = more evictable.  Score ∈ [0, 1].
+	 *
+	 *   score = recencyScore · RECENCY_WEIGHT + activityScore · ACTIVITY_WEIGHT
+	 *
+	 * recencyScore  = 1 / (1 + daysSinceAccess · RECENCY_DECAY)
+	 * activityScore = log₂(msgCount + 1) / ACTIVITY_LOG_CAP
+	 */
+	private static readonly EVICT_RECENCY_WEIGHT = 0.6;
+	private static readonly EVICT_ACTIVITY_WEIGHT = 0.4;
+	private static readonly EVICT_RECENCY_DECAY = 0.5;
+	private static readonly EVICT_ACTIVITY_LOG_CAP = 10;
 	/** Short-lived cache: agentId → session index (avoids 4–5s file read on every task execution). */
 	private _sessionIndexCache: Map<string, { meta: AgentSessionMeta; ts: number }> | undefined;
 	private _historyLoaded = false;
@@ -192,7 +286,427 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		return sessionId ? `${agentId}::${sessionId}` : agentId;
 	}
 
+	// ─── P1: Tool result externalisation ────────────────────────────────────
+
+	/**
+	 * Resolve the sidecar directory for a session.
+	 * agents/{slug}/sessions/{sessionId}.sidecar/
+	 */
+	private async _sidecarDirUri(agentId: string, sessionId: string): Promise<URI> {
+		const { sessionsDirUri } = await this._resolveAgentPaths(agentId);
+		return URI.joinPath(sessionsDirUri, `${sessionId}.sidecar`);
+	}
+
+	/**
+	 * P1: Externalise oversize tool results in a message array and write the
+	 * excess to the session sidecar directory.  Called during LRU eviction so
+	 * the session file on disk is compact and future lazy-loads are fast.
+	 *
+	 * Returns the number of externalised results.
+	 */
+	private async _externalizeToolResults(
+		agentId: string,
+		sessionId: string,
+		messages: ChatMessage[],
+	): Promise<number> {
+		let count = 0;
+		const sidecarDir = await this._sidecarDirUri(agentId, sessionId);
+		if (!(await this.fileService.exists(sidecarDir))) {
+			await this.fileService.createFolder(sidecarDir);
+		}
+		for (const msg of messages) {
+			if (!msg.toolCalls) { continue; }
+			for (const tc of msg.toolCalls) {
+				const result = tc.result;
+				if (!result || result.length <= AgentChatService.MAX_INLINE_TOOL_RESULT) { continue; }
+				// Write full result to sidecar
+				const sidecarFile = URI.joinPath(sidecarDir, `tool_${tc.id}.json`);
+				const preview = result.slice(0, 400);
+				const marker = `${AgentChatService.TOOL_REF_MARKER}${tc.id}:${result.length}\x1E${preview}`;
+				await this.fileService.writeFile(
+					sidecarFile,
+					VSBuffer.fromString(result),
+				);
+				// Replace inline result with marker
+				(tc as any).result = marker;
+				count++;
+			}
+		}
+		if (count > 0) {
+			this.logService.info(
+				`[AgentChatService][P1] Externalised ${count} tool result(s) for ${sessionId} (cap=${AgentChatService.MAX_INLINE_TOOL_RESULT})`,
+			);
+		}
+		return count;
+	}
+
+	/**
+	 * P1: Resolve externalised tool result references back to full content.
+	 * Reads sidecar files and replaces markers inline.  Called on lazy-load
+	 * so the in-memory bucket always holds complete data.
+	 *
+	 * Returns the number of resolved refs.
+	 */
+	private async _resolveToolResultRefs(
+		agentId: string,
+		sessionId: string,
+		messages: ChatMessage[],
+	): Promise<number> {
+		let count = 0;
+		const sidecarDir = await this._sidecarDirUri(agentId, sessionId);
+		const sidecarExists = await this.fileService.exists(sidecarDir);
+		for (const msg of messages) {
+			if (!msg.toolCalls) { continue; }
+			for (const tc of msg.toolCalls) {
+				const result = tc.result;
+				if (!result || !result.startsWith(AgentChatService.TOOL_REF_MARKER)) { continue; }
+				if (!sidecarExists) { continue; }
+				// Parse: \x1ESAROSIS_TOOL_REF:toolCallId:len\x1Epreview
+				const payload = result.slice(AgentChatService.TOOL_REF_MARKER.length);
+				const endIdx = payload.indexOf('\x1E');
+				if (endIdx < 0) { continue; }
+				const header = payload.slice(0, endIdx);
+				const colonIdx = header.lastIndexOf(':');
+				if (colonIdx < 0) { continue; }
+				const toolCallId = header.slice(0, colonIdx);
+				const sidecarFile = URI.joinPath(sidecarDir, `tool_${toolCallId}.json`);
+				try {
+					if (!(await this.fileService.exists(sidecarFile))) { continue; }
+					const content = await this.fileService.readFile(sidecarFile);
+					(tc as any).result = content.value.toString();
+					count++;
+				} catch {
+					// Sidecar read failed — leave marker as-is (UI will show preview)
+				}
+			}
+		}
+		if (count > 0) {
+			this.logService.info(
+				`[AgentChatService][P1] Resolved ${count} tool result ref(s) for ${sessionId}`,
+			);
+		}
+		return count;
+	}
+
+	/**
+	 * P1: Delete sidecar directory for a session (called on session deletion).
+	 */
+	private async _deleteSidecarDir(agentId: string, sessionId: string): Promise<void> {
+		try {
+			const sidecarDir = await this._sidecarDirUri(agentId, sessionId);
+			if (await this.fileService.exists(sidecarDir)) {
+				await this.fileService.del(sidecarDir, { recursive: true });
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+
+	/**
+	 * P2: Compact a session's message history before eviction.
+	 *
+	 * Three-segment compaction (aligns with ContextManager.compressContext):
+	 *   1. System messages — kept verbatim
+	 *   2. Protected head (first COMPACT_PROTECT_HEAD non-system messages) — kept verbatim
+	 *   3. Protected tail (last  COMPACT_PROTECT_TAIL  non-system messages) — kept verbatim
+	 *   4. Middle segment — each toolCall.result truncated to COMPACT_RESULT_TRUNCATE chars
+	 *
+	 * This is a purely local / deterministic operation — no LLM call.
+	 * It mirrors what `compressContext` already does to the transient LLM window,
+	 * but persists the result so the next lazy-load is fast and compact.
+	 *
+	 * Short sessions (< COMPACT_MIN_MESSAGES) are left untouched.
+	 *
+	 * Returns the number of truncated tool results.
+	 */
+	private _compactMessagesForEviction(
+		messages: ChatMessage[],
+	): number {
+		if (messages.length < AgentChatService.COMPACT_MIN_MESSAGES) {
+			return 0;
+		}
+		// Split into system and conversation messages
+		const systemMsgs: ChatMessage[] = [];
+		const convMsgs: ChatMessage[] = [];
+		for (const m of messages) {
+			if (m.role === 'system') { systemMsgs.push(m); }
+			else { convMsgs.push(m); }
+		}
+		if (convMsgs.length <= AgentChatService.COMPACT_PROTECT_HEAD + AgentChatService.COMPACT_PROTECT_TAIL) {
+			return 0; // head+tail already cover everything — nothing to compact
+		}
+
+		const head = convMsgs.slice(0, AgentChatService.COMPACT_PROTECT_HEAD);
+		const tail = convMsgs.slice(-AgentChatService.COMPACT_PROTECT_TAIL);
+		const headEnd = AgentChatService.COMPACT_PROTECT_HEAD;
+		const tailStart = convMsgs.length - AgentChatService.COMPACT_PROTECT_TAIL;
+		const middle = convMsgs.slice(headEnd, Math.max(headEnd, tailStart));
+
+		let truncated = 0;
+		for (const m of middle) {
+			if (!m.toolCalls) { continue; }
+			for (const tc of m.toolCalls) {
+				const result = tc.result;
+				if (!result || result.length <= AgentChatService.COMPACT_RESULT_TRUNCATE) { continue; }
+				(tc as any).result = result.slice(0, AgentChatService.COMPACT_RESULT_TRUNCATE);
+				truncated++;
+			}
+		}
+
+		// Rebuild in order: system → head → middle → tail
+		messages.length = 0;
+		messages.push(...systemMsgs, ...head, ...middle, ...tail);
+
+		return truncated;
+	}
+
 	// ─── Global history (fallback) ───────────────────────────────────────────
+
+	/** P0-LRU: mark a bucket as recently accessed. */
+	private _touchBucket(key: string): void {
+		this._historyCacheAccess.set(key, Date.now());
+	}
+
+	/** P0-LRU: check whether a bucket is "open" (streaming or has active onDelta). */
+	private _isBucketOpen(key: string): boolean {
+		// key format: agentId::sessionId  or  agentId
+		return this._activeStreams.has(key) || this._activeOnDeltas.has(key);
+	}
+
+	/**
+	 * P3 retention score for eviction candidate ranking.
+	 *
+	 * Lower score = more evictable.  Combines recency (access time) and
+	 * activity (message count) into a single score ∈ [0, 1].
+	 *
+	 * recencyScore  = 1 / (1 + daysSinceAccess · DECAY)
+	 * activityScore = log₂(msgCount + 1) / LOG_CAP
+	 * score         = recencyScore · RECENCY_W + activityScore · ACTIVITY_W
+	 *
+	 * This means: a frequently-accessed 500-msg session can outrank a
+	 * recently-accessed 2-msg session, preventing thrashing where a
+	 * trivial interaction evicts a heavyweight conversation.
+	 * Directly inspired by agentmemory retention.ts `computeRetention()`.
+	 */
+	private _scoreBucketForEviction(accessTime: number, msgCount: number): number {
+		const daysSince = (Date.now() - accessTime) / (1000 * 60 * 60 * 24);
+		const recencyScore = 1 / (1 + Math.max(0, daysSince) * AgentChatService.EVICT_RECENCY_DECAY);
+		const activityScore = Math.log2(Math.max(1, msgCount + 1)) / AgentChatService.EVICT_ACTIVITY_LOG_CAP;
+		return recencyScore * AgentChatService.EVICT_RECENCY_WEIGHT
+			+ activityScore * AgentChatService.EVICT_ACTIVITY_WEIGHT;
+	}
+
+	/** P0-LRU: evict the single least-recently-used non-open session bucket. */
+	private async _evictLruBucket(): Promise<void> {
+		// Collect candidate keys: only session buckets (contain "::") that are
+		// NOT open.  noSession buckets and open buckets are never evicted.
+		const candidates: { key: string; access: number; msgCount: number; score: number }[] = [];
+		for (const [key, access] of this._historyCacheAccess) {
+			if (!key.includes('::')) { continue; }       // protect noSession system buckets
+			if (this._isBucketOpen(key)) { continue; }    // protect streaming/active buckets
+			const msgCnt = this._historyCache.get(key)?.length ?? 0;
+			const score = this._scoreBucketForEviction(access, msgCnt);
+			candidates.push({ key, access, msgCount: msgCnt, score });
+		}
+		if (candidates.length === 0) {
+			this.logService.warn(
+				`[AgentChatService][LRU] evict: no candidates (all ${this._countSessionBuckets()} buckets open/streaming)`,
+			);
+			return;
+		}
+		// P3: sort by retention score ascending (lowest score = most evictable)
+		candidates.sort((a, b) => a.score - b.score);
+		const victim = candidates[0];
+		const messages = this._historyCache.get(victim.key);
+		// P1: externalise oversize tool results to sidecar before eviction,
+		// then rewrite the session file so disk is compact too.
+		const sepIdx = victim.key.indexOf('::');
+		const agentId = victim.key.slice(0, sepIdx);
+		const sessionId = victim.key.slice(sepIdx + 2);
+		if (messages && messages.length > 0) {
+			let dirty = false;
+			try {
+				const externalised = await this._externalizeToolResults(agentId, sessionId, messages);
+				dirty = dirty || externalised > 0;
+			} catch (err) {
+				this.logService.warn(
+					`[AgentChatService][LRU] P1 externalise failed for ${victim}: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+			// P2: compact middle-segment tool results to 280 chars (local, no LLM)
+			const truncated = this._compactMessagesForEviction(messages);
+			if (truncated > 0) {
+				dirty = true;
+				this.logService.info(
+					`[AgentChatService][P2] Compacted ${truncated} middle-segment tool result(s) for ${victim} (head=${AgentChatService.COMPACT_PROTECT_HEAD} tail=${AgentChatService.COMPACT_PROTECT_TAIL})`,
+				);
+			}
+			if (dirty) {
+				await this._persistToSessionFile(agentId, sessionId, messages).catch((err) =>
+					this.logService.warn(
+						`[AgentChatService][LRU] persist after P1+P2 failed for ${victim}: ${err instanceof Error ? err.message : err}`,
+					),
+				);
+			}
+		}
+		this._historyCache.delete(victim.key);
+		this._historyCacheAccess.delete(victim.key);
+		this.logService.info(
+			`[AgentChatService][LRU] evicted bucket ${victim.key} (score=${victim.score.toFixed(3)} ${victim.msgCount} msgs, last access ${Math.round((Date.now() - victim.access) / 1000)}s ago, ${candidates.length} candidates)`,
+		);
+	}
+
+	/** P0-LRU: count session buckets (keys with "::") currently in cache. */
+	private _countSessionBuckets(): number {
+		let count = 0;
+		for (const key of this._historyCache.keys()) {
+			if (key.includes('::')) { count++; }
+		}
+		return count;
+	}
+
+	/** P0-LRU: evict LRU buckets until we are at or under the session bucket cap. */
+	private async _evictIfNeeded(): Promise<void> {
+		while (this._countSessionBuckets() > AgentChatService.MAX_CACHED_SESSION_BUCKETS) {
+			await this._evictLruBucket();
+		}
+	}
+
+	// ─── OOM 诊断：每条消息的堆增长 + 历史留存归因 ──────────────────────────
+	// 2026-07-13：用户反馈「每发一条消息内存持续增长直至崩溃」。疑点：活跃会话桶
+	// _historyCache[key] 无界累积（LRU 只淘汰整条会话桶，不裁剪活跃会话内的消息），
+	// 且 ToolMessage.result（文件全文/搜索输出）原样留存。字节估算用字段长度求和，
+	// 绝不 JSON.stringify 整桶（避免 OOM 时翻倍分配）。只扫活跃桶，避免 O(n²)。
+	private static _estimateMessageBytes(m: ChatMessage): number {
+		try {
+			let n = 0;
+			const a = m as any;
+			if (typeof a.content === 'string') { n += a.content.length; }
+			if (typeof a.displayContent === 'string') { n += a.displayContent.length; }
+			if (typeof a.reasoning === 'string') { n += a.reasoning.length; }
+			if (Array.isArray(a.thinking)) {
+				for (const b of a.thinking) {
+					n += typeof b?.thinking === 'string' ? b.thinking.length : 0;
+					n += typeof b?.data === 'string' ? b.data.length : 0;
+				}
+			}
+			// parts（落盘有序段：文本段 + 工具段，重载渲染的真相源）
+			if (Array.isArray(a.parts)) {
+				for (const p of a.parts) {
+					n += typeof p?.text === 'string' ? p.text.length : 0;
+					n += typeof p?.content === 'string' ? p.content.length : 0;
+				}
+			}
+			// assistant.toolCalls[].result —— 工具结果（文件全文/搜索输出）的真正留存点
+			if (Array.isArray(a.toolCalls)) {
+				for (const tc of a.toolCalls) {
+					n += typeof tc?.arguments === 'string' ? tc.arguments.length : 0;
+					if (tc?.params && typeof tc.params === 'object') { try { n += JSON.stringify(tc.params).length; } catch { /* ignore */ } }
+					const r = tc?.result;
+					if (r) {
+						if (typeof r === 'string') {
+							n += r.length;
+						} else if (Array.isArray(r.content)) {
+							for (const rc of r.content) {
+								n += typeof rc?.text === 'string' ? rc.text.length : 0;
+								n += typeof rc?.data === 'string' ? rc.data.length : 0;
+								if (Array.isArray(rc?.items)) {
+									for (const it of rc.items) {
+										n += typeof it?.content === 'string' ? it.content.length : 0;
+										n += typeof it?.path === 'string' ? it.path.length : 0;
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			// 顶层 result（ToolMessage 形态）
+			const res = a.result;
+			if (res) {
+				if (typeof res === 'string') {
+					n += res.length;
+				} else if (Array.isArray(res.content)) {
+					for (const rc of res.content) {
+						n += typeof rc?.text === 'string' ? rc.text.length : 0;
+						n += typeof rc?.data === 'string' ? rc.data.length : 0;
+					}
+				}
+			}
+			if (a.params && typeof a.params === 'object') { try { n += JSON.stringify(a.params).length; } catch { /* ignore */ } }
+			if (a.rawParams && typeof a.rawParams === 'object') { try { n += JSON.stringify(a.rawParams).length; } catch { /* ignore */ } }
+			// checkpoint fileSnapshots（防御性——正常不落本缓存）
+			const fs = a.fileSnapshots;
+			if (fs && typeof fs === 'object') {
+				for (const k in fs) {
+					const snap = fs[k];
+					n += typeof snap?.content === 'string' ? snap.content.length : 0;
+				}
+			}
+			return n;
+		} catch { return 0; }
+	}
+
+	/**
+	 * 在 sendMessage 入口 / appendMessage 落库后 / 流式结束 三点打点。
+	 * 对比 send-start 与 send-done 的 heapUsed 即得每条消息净堆增长；
+	 * 对比 active bytes 增长即得历史留存归因。
+	 */
+	private _logMemSnapshot(tag: string, ctx?: { agentId?: string; sessionId?: string; role?: string; msgBytes?: number }): void {
+		try {
+			// renderer（Electron/Chromium）下 process.memoryUsage 不可用，回退 performance.memory
+			let mem: { heapUsed: number; heapTotal: number; rss: number; external: number } | null = null;
+			try {
+				if (typeof process === 'object' && process && typeof (process as any).memoryUsage === 'function') {
+					const p = (process as any).memoryUsage();
+					mem = { heapUsed: p.heapUsed, heapTotal: p.heapTotal, rss: p.rss, external: p.external };
+				}
+			} catch { /* ignore */ }
+			let pmem: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } | null = null;
+			if (!mem) {
+				try {
+					const pm = (performance as any).memory;
+					if (pm && typeof pm.usedJSHeapSize === 'number') {
+						pmem = { usedJSHeapSize: pm.usedJSHeapSize, totalJSHeapSize: pm.totalJSHeapSize, jsHeapSizeLimit: pm.jsHeapSizeLimit };
+					}
+				} catch { /* ignore */ }
+			}
+			const mb = (v: number) => (v / 1048576).toFixed(1);
+			const heapUsed = mem ? mb(mem.heapUsed) : (pmem ? mb(pmem.usedJSHeapSize) : '?');
+			const heapTotal = mem ? mb(mem.heapTotal) : (pmem ? mb(pmem.totalJSHeapSize) : '?');
+			const rss = mem ? mb(mem.rss) : '?';
+			const ext = mem ? mb(mem.external) : '?';
+			const limitTag = pmem ? ` limit=${mb(pmem.jsHeapSizeLimit)}MB` : '';
+
+			let totalMsgs = 0;
+			for (const msgs of this._historyCache.values()) { totalMsgs += msgs.length; }
+
+			let activeMsgs = 0;
+			let activeBytes = 0;
+			const activeKey = ctx?.agentId
+				? (ctx.sessionId ? `${ctx.agentId}::${ctx.sessionId}` : ctx.agentId)
+				: '';
+			if (activeKey) {
+				const msgs = this._historyCache.get(activeKey);
+				if (msgs) {
+					for (const m of msgs) {
+						activeMsgs++;
+						activeBytes += AgentChatService._estimateMessageBytes(m);
+					}
+				}
+			}
+
+			const appendInfo = ctx?.role
+				? ` | append role=${ctx.role} +${ctx.msgBytes ?? 0}B (${((ctx.msgBytes ?? 0) / 1024).toFixed(1)}KiB)`
+				: '';
+
+			this.logService.info(
+				`[MemSnap][${tag}] heap=${heapUsed}/${heapTotal}MB rss=${rss}MB ext=${ext}MB${limitTag} | ` +
+				`cache buckets=${this._historyCache.size} sessBuckets=${this._countSessionBuckets()} totalMsgs=${totalMsgs} | ` +
+				`active[${activeKey}] msgs=${activeMsgs} bytes=${mb(activeBytes)}MB${appendInfo}`,
+			);
+		} catch { /* 诊断绝不能打断主流程 */ }
+	}
 
 	private async _ensureHistoryLoaded(): Promise<void> {
 		if (this._historyLoaded) {
@@ -202,6 +716,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		try {
 			const uri = this._getHistoryFileUri();
 			if (!(await this.fileService.exists(uri))) {
+				this.logService.info(
+					`[AgentChatService] No global history file — session buckets will be loaded lazily from per-session files.`,
+				);
 				return;
 			}
 			const content = await this.fileService.readFile(uri);
@@ -209,11 +726,23 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				string,
 				ChatMessage[]
 			>;
+			// P0: only load noSession buckets (keys without "::") at startup.
+			// Session-level buckets are loaded lazily via getHistory →
+			// _loadFromSessionFile fallback.  This avoids loading multi-GB of
+			// ToolResult payloads into the renderer heap on every window launch.
+			let loadedCount = 0;
+			let skippedCount = 0;
 			for (const [key, messages] of Object.entries(data)) {
-				this._historyCache.set(key, messages);
+				if (!key.includes('::')) {
+					this._historyCache.set(key, messages);
+					this._touchBucket(key);
+					loadedCount++;
+				} else {
+					skippedCount++;
+				}
 			}
 			this.logService.info(
-				`[AgentChatService] Loaded global history: ${this._historyCache.size} keys`,
+				`[AgentChatService] Loaded ${loadedCount} noSession buckets, skipped ${skippedCount} session buckets (lazy-load via per-session files)`,
 			);
 
 			// 🔒 启动期净化（2026-06-05）：noSession 桶（key 不含 `::`，即 `agentId`
@@ -313,7 +842,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				return [];
 			}
 			const content = await this.fileService.readFile(fileUri);
-			return JSON.parse(content.value.toString()) as ChatMessage[];
+			const messages = JSON.parse(content.value.toString()) as ChatMessage[];
+			// P1: resolve externalised tool result refs (from prior LRU eviction)
+			const resolved = await this._resolveToolResultRefs(agentId, sessionId, messages);
+			if (resolved > 0) {
+				// Write back resolved messages so next load is fast (no sidecar I/O)
+				await this._persistToSessionFile(agentId, sessionId, messages).catch(() => {});
+			}
+			return messages;
 		} catch {
 			return [];
 		}
@@ -403,6 +939,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		if (!messages) {
 			messages = [];
 			this._historyCache.set(key, messages);
+			this._touchBucket(key);
+			// P0-LRU: new bucket created — evict LRU non-open bucket if over cap
+			await this._evictIfNeeded();
+		} else {
+			this._touchBucket(key);
 		}
 		// 🔒 写入侧去重（2026-06-05）：阻止连续重复的 user 消息落盘。
 		// 历史双写 race（webview controller `_handleChatSend` 先 append 一次，随后
@@ -430,6 +971,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			}
 		}
 		messages.push(message);
+		// OOM 诊断：记录本条消息留存字节 + 落库后活跃桶总量
+		this._logMemSnapshot('append', {
+			agentId,
+			sessionId: message.agentSessionId,
+			role: message.role,
+			msgBytes: AgentChatService._estimateMessageBytes(message),
+		});
 
 		// Dual-write: global fallback + per-agent session file
 		this._persistGlobalHistory().catch((err) =>
@@ -463,6 +1011,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		const key = this._cacheKey(agentId, sessionId);
 		const messages = this._historyCache.get(key);
 		if (!messages) { return; }
+		this._touchBucket(key);
 		const idx = messages.findIndex(m => m.id === messageId);
 		if (idx < 0) { return; }
 		// In-place update (mutate the cached object so panel.updateMessage also sees it)
@@ -485,7 +1034,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			messages = await this._loadFromSessionFile(agentId, sessionId);
 			if (messages.length > 0) {
 				this._historyCache.set(key, messages);
+				this._touchBucket(key);
+				// P0-LRU: evict after lazy-loading a new bucket into cache
+				await this._evictIfNeeded();
 			}
+		} else {
+			this._touchBucket(key);
 		}
 
 		// When a sessionId is specified, also include messages stored with
@@ -539,6 +1093,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		await this._ensureHistoryLoaded();
 		const key = this._cacheKey(agentId, sessionId);
 		this._historyCache.delete(key);
+		this._historyCacheAccess.delete(key);
 		await this._persistGlobalHistory();
 		if (sessionId) {
 			try {
@@ -566,6 +1121,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		await this._ensureHistoryLoaded();
 		const key = this._cacheKey(agentId, sessionId);
 		this._historyCache.set(key, [...messages]);
+		this._touchBucket(key);
 		await this._persistGlobalHistory();
 		if (sessionId) {
 			try {
@@ -667,7 +1223,49 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 		const out: IChatMessage[] = [];
 		let droppedContaminated = 0;
-		for (const m of deduped) {
+		// ─── P4: 计算三段式边界（head/middle/tail），中间段的 tc.result / tool
+		// content 会被截断到 IPC_TRUNCATE_RESULT_CHARS，避免 renderer→ext-host
+		// 的 IPC 序列化压垮 ext host 4GB heap。head/tail 完整保留。 ─────
+		let head = 0;
+		let tail = deduped.length;
+		let truncateActive = false;
+		if (deduped.length >= AgentChatService.IPC_TRUNCATE_MIN_MESSAGES) {
+			// 找到前 COMPACT_PROTECT_HEAD 条非 system 消息的边界
+			let nonSysSeen = 0;
+			for (let i = 0; i < deduped.length; i++) {
+				if (deduped[i].role !== 'system') {
+					nonSysSeen++;
+					if (nonSysSeen >= AgentChatService.COMPACT_PROTECT_HEAD) {
+						head = i + 1;
+						break;
+					}
+				}
+			}
+			// 找到最后 COMPACT_PROTECT_TAIL 条非 system 消息的起点
+			nonSysSeen = 0;
+			for (let i = deduped.length - 1; i >= 0; i--) {
+				if (deduped[i].role !== 'system') {
+					nonSysSeen++;
+					if (nonSysSeen >= AgentChatService.COMPACT_PROTECT_TAIL) {
+						tail = i;
+						break;
+					}
+				}
+			}
+			truncateActive = head < tail;
+		}
+		let ipcTruncatedResults = 0;
+		let ipcTruncatedBytes = 0;
+		const truncateResult = (s: string): string => {
+			if (s.length <= AgentChatService.IPC_TRUNCATE_RESULT_CHARS) { return s; }
+			ipcTruncatedResults++;
+			ipcTruncatedBytes += s.length - AgentChatService.IPC_TRUNCATE_RESULT_CHARS;
+			return s.slice(0, AgentChatService.IPC_TRUNCATE_RESULT_CHARS) + '\n...[truncated for IPC]';
+		};
+
+		for (let mi = 0; mi < deduped.length; mi++) {
+			const m = deduped[mi];
+			const inMiddle = truncateActive && mi >= head && mi < tail;
 			if (m.role === 'user') {
 				out.push({ role: 'user', content: m.content ?? '' });
 			} else if (m.role === 'assistant') {
@@ -704,9 +1302,10 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				out.push(assistantMsg);
 				// 为每个已完成工具调用补一条配对的 tool 响应消息
 				for (const tc of completed) {
+					const raw = tc.result ?? '';
 					out.push({
 						role: 'tool',
-						content: tc.result ?? '',
+						content: inMiddle ? truncateResult(raw) : raw,
 						toolCallId: tc.id,
 					});
 				}
@@ -714,8 +1313,20 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				out.push({ role: 'system', content: m.content ?? '' });
 			} else if (m.role === 'tool') {
 				// 防御性：host 端通常不产生独立 tool 消息
-				out.push({ role: 'tool', content: m.content ?? '', toolCallId: '' });
+				const raw = m.content ?? '';
+				out.push({
+					role: 'tool',
+					content: inMiddle ? truncateResult(raw) : raw,
+					toolCallId: '',
+				});
 			}
+		}
+		if (ipcTruncatedResults > 0) {
+			this.logService.info(
+				`[AgentChatService][P4-IPC] Truncated ${ipcTruncatedResults} middle-segment tool result(s) `
+				+ `(-${(ipcTruncatedBytes / 1024).toFixed(1)}KB, head=${AgentChatService.COMPACT_PROTECT_HEAD} `
+				+ `tail=${AgentChatService.COMPACT_PROTECT_TAIL} cap=${AgentChatService.IPC_TRUNCATE_RESULT_CHARS})`,
+			);
 		}
 		if (droppedContaminated > 0) {
 			this.logService.info(
@@ -736,6 +1347,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 		if (!messages || messages.length === 0) {
 			messages = await this._loadFromSessionFile(agentId, sessionId);
+			if (messages.length > 0) {
+				this._historyCache.set(key, messages);
+				this._touchBucket(key);
+			}
+		} else {
+			this._touchBucket(key);
 		}
 		if (!messages || messages.length === 0) {
 			this.logService.info(`[AgentChatService] deleteMessagesAfter: no messages found for ${key}`);
@@ -782,6 +1399,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		this.logService.info(
 			`[CoderTrace] AgentChatService.sendMessage: agentId=${agentId}, messageLen=${message.length}, model=${options.model}, chatMode=${options.chatMode}, explicitSkillIds=${JSON.stringify(options.explicitSkillIds)}`,
 		);
+		// OOM 诊断：发送前基线快照（heap + 活跃桶留存）
+		this._logMemSnapshot('send-start', { agentId, sessionId: options.agentSessionId });
 
 		const streamKey = options.agentSessionId
 			? `${agentId}::${options.agentSessionId}`
@@ -802,6 +1421,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 		let fullContent = "";
 		let fullThinking = "";
+		// P0-leak-fix: streamed text is accumulated in chunk arrays and joined ONCE
+		// at finalization. The previous `fullContent += delta.content` built a V8
+		// ConsString rope (one node per delta) that was retained in _historyCache,
+		// causing unbounded heap growth after every send.
+		const _fullContentChunks: string[] = [];
+		const _fullThinkingChunks: string[] = [];
+		const _toolArgChunks = new Map<string, string[]>();
 		let toolCalls: ChatMessage["toolCalls"];
 		// 阶段E：textPosition 仅作**落盘时切分 parts 的本地排序信号**，不再跨层依赖。
 		// driver/agentOS 不下发 textPosition，由本侧在 tool_start 时按"当前 turn 内已累积
@@ -842,6 +1468,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// in the last 5 seconds (e.g. by the webview controller or another caller).
 			const key = this._cacheKey(agentId, options.agentSessionId);
 			const existingMessages = this._historyCache.get(key) || [];
+			if (existingMessages.length > 0) { this._touchBucket(key); }
 			const now = Date.now();
 			const alreadyPersisted = existingMessages.some(m =>
 				m.role === 'user' &&
@@ -918,18 +1545,19 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				if (controller.signal.aborted) {
 					break;
 				}
-				if (delta.type === "text" && delta.content) {
-					fullContent += delta.content;
-				}
-				if (delta.type === "thinking" && delta.content) {
-					fullThinking += delta.content;
-				}
+			if (delta.type === "text" && delta.content) {
+				_fullContentChunks.push(delta.content);
+			}
+			if (delta.type === "thinking" && delta.content) {
+				_fullThinkingChunks.push(delta.content);
+			}
 				// content_replace: upstream extracted tool calls from text and wants
 				// to replace the accumulated fullContent with the cleaned version.
-				if (delta.type === "content_replace") {
-					fullContent = delta.content ?? "";
-					currentTurnTextLen = (delta.content ?? "").length;
-				}
+			if (delta.type === "content_replace") {
+				_fullContentChunks.length = 0;
+				if (delta.content) { _fullContentChunks.push(delta.content); }
+				currentTurnTextLen = (delta.content ?? "").length;
+			}
 				// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────────
 				// 参考 Hermes `agent/conversation_loop.py:4300-4310` 的 while-pop 模式：
 				// upstream 检测到 fake-completion / unfinished-intent，准备注入 nudge
@@ -939,18 +1567,20 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				//
 				// 收到该信号后立即清空 fullContent / fullThinking，让最终持久化的
 				// chatMessage.content 仅包含**信号之后真正成功的那段输出**。
-				if ((delta as any).type === 'discard_prior_text') {
-					const reason = (delta as any).metadata?.reason ?? 'unknown';
-					this.logService.info(
-						`[AgentChatService] 🧹 Received discard_prior_text (reason=${reason}) — clearing fullContent (was len=${fullContent.length}) + fullThinking (was len=${fullThinking.length}) to prevent conversation rot`,
-					);
-					fullContent = "";
-					fullThinking = "";
-					currentTurnTextLen = 0;
-					// 通知 webview 同步重置（content_replace 已发，仅作冗余兜底）
-					onDelta(delta as any);
-					continue;
-				}
+			if ((delta as any).type === 'discard_prior_text') {
+				const reason = (delta as any).metadata?.reason ?? 'unknown';
+				const _discardedLen = _fullContentChunks.reduce((a, s) => a + s.length, 0)
+					+ _fullThinkingChunks.reduce((a, s) => a + s.length, 0);
+				this.logService.info(
+					`[AgentChatService] 🧹 Received discard_prior_text (reason=${reason}) — clearing fullContent (was len=${_discardedLen}) + fullThinking to prevent conversation rot`,
+				);
+				_fullContentChunks.length = 0;
+				_fullThinkingChunks.length = 0;
+				currentTurnTextLen = 0;
+				// 通知 webview 同步重置（content_replace 已发，仅作冗余兜底）
+				onDelta(delta as any);
+				continue;
+			}
 			// ─── Hermes-style 回合边界事件 ──────────────────────────────
 			// agentOS 在每个 iteration 确定 assistant 消息后发来 `assistant_turn`，
 			// content 为本轮权威文本（已 sanitize+trim），metadata.toolCallIds 为本轮
@@ -988,33 +1618,36 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (!toolCalls) {
 						toolCalls = [];
 					}
-					toolCalls.push({
-						id: delta.toolCallId,
-						name: delta.toolName,
-						arguments: "",
-						result: undefined,
-						displayName: delta.displayName,
-						renderType: delta.renderType,
-						defaultShow: delta.defaultShow,
-						serverExecuted: (delta as any).serverExecuted,
-						// 记录卡片插入位置：优先用上游下发的 textPosition，否则用当前 turn 内
-						// 已累积的文本长度。持久化后重载即可按位置交织渲染，而非全部排到末尾。
-						textPosition: typeof (delta as any).textPosition === 'number'
-							? (delta as any).textPosition
-							: currentTurnTextLen,
-					});
+				toolCalls.push({
+					id: delta.toolCallId,
+					name: delta.toolName,
+					arguments: "",
+					result: undefined,
+					displayName: delta.displayName,
+					renderType: delta.renderType,
+					defaultShow: delta.defaultShow,
+					serverExecuted: (delta as any).serverExecuted,
+					// 记录卡片插入位置：优先用上游下发的 textPosition，否则用当前 turn 内
+					// 已累积的文本长度。持久化后重载即可按位置交织渲染，而非全部排到末尾。
+					textPosition: typeof (delta as any).textPosition === 'number'
+						? (delta as any).textPosition
+						: currentTurnTextLen,
+				});
+				_toolArgChunks.set(delta.toolCallId, []);
+			}
+			if (
+				delta.type === "tool_args" &&
+				delta.toolCallId &&
+				delta.content &&
+				toolCalls
+			) {
+				const tc = toolCalls.find((t) => t.id === delta.toolCallId);
+				if (tc) {
+					let chunks = _toolArgChunks.get(tc.id);
+					if (!chunks) { chunks = []; _toolArgChunks.set(tc.id, chunks); }
+					chunks.push(delta.content);
 				}
-				if (
-					delta.type === "tool_args" &&
-					delta.toolCallId &&
-					delta.content &&
-					toolCalls
-				) {
-					const tc = toolCalls.find((t) => t.id === delta.toolCallId);
-					if (tc) {
-						tc.arguments += delta.content;
-					}
-				}
+			}
 				if (delta.type === "tool_result" && delta.toolCallId && toolCalls) {
 					const tc = toolCalls.find((t) => t.id === delta.toolCallId);
 					if (tc) {
@@ -1104,13 +1737,20 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// tool call still lacking a status must have finished. Mark it 'done'
 			// so the persisted card restores in a completed state rather than the
 			// loading title after a window refresh.
-			if (toolCalls) {
-				for (const tc of toolCalls) {
-					if (!tc.status) {
-						tc.status = 'done';
-					}
+		if (toolCalls) {
+			for (const tc of toolCalls) {
+				const chunks = _toolArgChunks.get(tc.id);
+				if (chunks && chunks.length > 0) {
+					tc.arguments = chunks.join('');
+				}
+				if (!tc.status) {
+					tc.status = 'done';
 				}
 			}
+		}
+		// Flatten accumulated streamed text exactly once (O(n), no ConsString ropes).
+		fullContent = _fullContentChunks.join('');
+		fullThinking = _fullThinkingChunks.join('');
 
 			// 共享的 token usage 对象（多条 turn 时仅挂在最后一条上）
 			const sharedTokenUsage = usageSeen
@@ -1245,6 +1885,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		});
 			throw error;
 		} finally {
+			// OOM 诊断：流式结束后快照（对比 send-start heapUsed 即得本轮净增长）
+			this._logMemSnapshot('send-done', { agentId, sessionId: options.agentSessionId });
 			this._activeStreams.delete(streamKey);
 			// 并发修复：移除本次流的回调与计时戳。writeMemory 完成事件若晚到，
 			// 桥接会按 agentId 路由到该 agent 仍活跃的最近一次流；若已无活跃流则安全 no-op。
@@ -1531,6 +2173,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		} catch {
 			/* ignore */
 		}
+		// P1: clean up sidecar directory
+		await this._deleteSidecarDir(agentId, sessionId);
 
 		const index = await this._readSessionIndex(agentId);
 		const filtered = index.filter((s) => s.id !== sessionId);
@@ -1539,6 +2183,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// Remove from memory cache
 		const key = this._cacheKey(agentId, sessionId);
 		this._historyCache.delete(key);
+		this._historyCacheAccess.delete(key);
 		await this._persistGlobalHistory();
 
 		this.logService.info(

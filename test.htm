@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-template-edit-mode="slots">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title data-edit-slot data-slot-type="text">GR-GC 分析向导</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --fg:#1f2937; --muted:#6b7280; --card:#fff; --border:rgba(0,0,0,.10);
+    --accent:#2563eb; --accent-soft:#eff4ff; --green:#16a34a; --green-soft:#eafaf0;
+    --amber:#d97706; --amber-soft:#fef6e7; --danger:#dc2626; --danger-soft:#fdeaea;
+    --chip:#f1f5f9; --shadow:0 1px 3px rgba(0,0,0,.06),0 4px 16px rgba(0,0,0,.04);
+    --deck-chrome-bg:rgba(255,255,255,.92); --deck-chrome-border:rgba(0,0,0,.12);
+    --deck-chrome-text:#1f2937; --deck-chrome-muted:#6b7280; --deck-chrome-accent:#2563eb;
+    --deck-chrome-shadow:0 6px 24px rgba(0,0,0,.18); --deck-chrome-surface:#f9fafb;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg);line-height:1.6;min-height:100vh}
+  .topbar{height:52px;display:flex;align-items:center;gap:12px;padding:0 18px;background:var(--card);border-bottom:1px solid var(--border)}
+  .topbar .logo{font-size:18px} .topbar h1{font-size:15px;font-weight:600;margin:0}
+  .topbar .sub{font-size:12px;color:var(--muted)} .topbar .spacer{flex:1}
+  .btn{border:1px solid var(--border);background:var(--card);color:var(--fg);padding:7px 13px;border-radius:7px;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:6px;transition:.15s}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff} .btn-primary:hover{background:#1d4ed8;color:#fff}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  main{max-width:920px;margin:0 auto;padding:28px 20px 60px}
+  .steps{display:flex;align-items:center;justify-content:center;gap:0;margin-bottom:28px}
+  .step{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+  .step .dot{width:34px;height:34px;border-radius:50%;background:var(--chip);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600}
+  .step.active .dot{background:var(--accent);border-color:var(--accent);color:#fff}
+  .step.done .dot{background:var(--green);border-color:var(--green);color:#fff}
+  .step.active{color:var(--accent);font-weight:600}
+  .step-line{width:60px;height:2px;background:var(--border);margin:0 4px;margin-bottom:22px}
+  .step-line.done{background:var(--green)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px;box-shadow:var(--shadow)}
+  .card h2{font-size:17px;margin:0 0 4px}
+  .card .meta{font-size:12px;color:var(--muted);margin-bottom:18px}
+  .section-title{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin:0 0 8px}
+  .field{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+  .field label{font-size:13px;font-weight:500}
+  .hint{font-size:12px;color:var(--muted)}
+  .input{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:7px;padding:10px 12px;font-size:13px;font-family:monospace}
+  .input:focus{outline:1px solid var(--accent)}
+  .mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px}
+  .mode{border:2px solid var(--border);border-radius:10px;padding:16px;cursor:pointer;transition:.15s;background:var(--bg)}
+  .mode:hover{border-color:var(--accent)}
+  .mode.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .mode .mt{font-size:14px;font-weight:600;margin-bottom:4px}
+  .mode .md{font-size:12px;color:var(--muted)}
+  .drop{border:2px dashed var(--border);border-radius:10px;padding:26px;text-align:center;color:var(--muted);font-size:13px;cursor:pointer;transition:.15s;background:var(--bg)}
+  .drop:hover,.drop.drag{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+  .filechip{display:flex;align-items:center;gap:8px;background:var(--chip);border:1px solid var(--border);border-radius:7px;padding:9px 11px;font-size:13px;margin-top:10px}
+  .filechip .nm{flex:1;font-family:monospace;overflow:hidden;text-overflow:ellipsis;

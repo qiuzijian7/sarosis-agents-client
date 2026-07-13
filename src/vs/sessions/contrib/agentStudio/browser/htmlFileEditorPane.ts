@@ -479,29 +479,29 @@ export class HtmlFileEditorPane extends TextFileEditor {
 
 		this._register(this._editWebview);
 
-		// Handle save / export / sync messages from the editor runtime.
-		// `htmlEditor.syncContent` is emitted on every content change inside
-		// the visual editor so we can keep the underlying text model in sync
-		// (the user can switch to source mode and see live HTML).
-		this._register(this._editWebview.onMessage(async (e) => {
-			const msg = e.message as { type?: string; html?: string } | undefined;
-			if (!msg || !msg.type) {
-				return;
+	// Handle save / export / sync messages from the editor runtime.
+	// `htmlEditor.syncContent` updates the in-memory model so switching
+	// to source mode reflects live edits, but does NOT persist to disk.
+	// Only explicit save (Ctrl+S / save button) triggers disk write.
+	this._register(this._editWebview.onMessage(async (e) => {
+		const msg = e.message as { type?: string; html?: string } | undefined;
+		if (!msg || !msg.type) {
+			return;
+		}
+		this._logService.info(`[HtmlFileEditorPane] editWebview.onMessage: type=${msg.type} htmlLen=${typeof msg.html === 'string' ? msg.html.length : 'n/a'}`);
+		if (msg.type === 'htmlEditor.syncContent') {
+			if (typeof msg.html === 'string') {
+				this._rawHtml = msg.html;
 			}
-			this._logService.info(`[HtmlFileEditorPane] editWebview.onMessage: type=${msg.type} htmlLen=${typeof msg.html === 'string' ? msg.html.length : 'n/a'}`);
-			if (msg.type === 'htmlEditor.syncContent') {
-				if (typeof msg.html === 'string') {
-					this._rawHtml = msg.html;
-				}
-				return;
+			return;
+		}
+		if (msg.type === 'htmlEditor.saveContent' || msg.type === 'htmlEditor.exportContent') {
+			if (typeof msg.html === 'string') {
+				this._logService.info('[HtmlFileEditorPane] calling _applyEditedHtml from saveContent');
+				this._applyEditedHtml(msg.html);
 			}
-			if (msg.type === 'htmlEditor.saveContent' || msg.type === 'htmlEditor.exportContent') {
-				if (typeof msg.html === 'string') {
-					this._logService.info('[HtmlFileEditorPane] calling _applyEditedHtml from saveContent');
-					this._applyEditedHtml(msg.html);
-				}
-			}
-		}));
+		}
+	}));
 
 		this._editWebview.mountTo(this._editWebviewContainer, mainWindow);
 		this._editWebview.setHtml(wrapHtmlWithEditorRuntime(this._rawHtml ?? ''));

@@ -43,7 +43,7 @@ import { DashboardFileStorage } from './dashboardFileStorage.js';
 import {
 	repairToolName,
 	repairToolArguments,
-	coerceToolArgs,
+	coerceArgsToSchema,
 	sanitizeToolError,
 	deduplicateToolCalls,
 	limitToolResultSize,
@@ -141,6 +141,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	// contextWindow: 模型上下文窗口 → 模型切换时自动失效
 	private static readonly TOOL_DEFS_CACHE_MAX = 8;
 	private _cachedToolDefs = new Map<string, IToolDefinition[]>();
+
+	/** P1: 上一轮 LLM 回传的真实 prompt token，按键 agentId 持久化跨 turn 传递。
+	 *  compressContext 优先用它做触发判定（取代低估的 char/4 粗估），
+	 *  首次调用=0 时自动退回粗估。捕获点在 L1773 usage delta。 */
+	private _lastRealPromptTokensByAgent = new Map<string, number>();
 
 	/**
 	 * 注册表版本号 — 当 MCP/builtin 工具集变化时递增，触发缓存失效。
@@ -1128,18 +1133,55 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				//              并保证跨 Agent / 跨 session 的 Episodic 共享在两种策略下都生效。
 				// 未指定时按 'full' 处理，与默认值一致。
 				const strategy: 'summary' | 'full' = request.memoryStrategy === 'summary' ? 'summary' : 'full';
-				const maxEntries = typeof request.memoryMaxEntries === 'number' && request.memoryMaxEntries > 0
-					? request.memoryMaxEntries
-					: undefined;
+				// ── System default: prevent OOM when agent doesn't configure maxEntries ──
+				// Previous sessions crashed with ~3.9GB V8 heap due to unlimited memory
+				// entries accumulating across sessions. A hard cap of 50 per type (long +
+				// short) keeps total injected entries ≤ 100, fitting comfortably in a
+				// typical 4GB extension host heap alongside conversation + tool schemas.
+				const SYSTEM_DEFAULT_MAX_MEMORY_ENTRIES = 50;
+				const maxEntriesSource = (typeof request.memoryMaxEntries === 'number' && request.memoryMaxEntries > 0)
+					? ('agent-config' as const)
+					: ('system-default' as const);
+				const maxEntries = maxEntriesSource === 'agent-config'
+					? request.memoryMaxEntries!
+					: SYSTEM_DEFAULT_MAX_MEMORY_ENTRIES;
+				this._logService.info(
+					`[AgentOS][MemoryCap] maxEntries=${maxEntries} (source=${maxEntriesSource}, ` +
+					`raw=${request.memoryMaxEntries ?? 'undefined'})`
+				);
 				const cap = <T,>(arr: T[] | undefined): T[] => {
 					if (!arr || arr.length === 0) { return []; }
-					if (maxEntries === undefined) { return arr; }
 					// 取最近 N 条（按 timestamp 升序时取尾部；这里直接 slice 末尾以保留既有顺序语义）
 					return arr.length > maxEntries ? arr.slice(-maxEntries) : arr;
 				};
 				// Episodic 在 summary 与 full 两种策略下都注入；Working 仅在 full 下注入。
+				const rawLongTermCount = (memoryContext.longTermMemories ?? []).length;
+				const rawShortTermCount = (memoryContext.shortTermMemories ?? []).length;
 				const filteredLongTerm = cap(memoryContext.longTermMemories);
 				const filteredShortTerm = strategy === 'full' ? cap(memoryContext.shortTermMemories) : [];
+
+				// ── Diagnostic: log each entry source + content size ────────
+				if (rawLongTermCount > 0 || rawShortTermCount > 0) {
+					const ltStats = memoryContext.longTermMemories?.slice(0, 5).map(m =>
+						`[${m.type ?? '?'}] id=${(m.id ?? '').slice(0, 16)} chars=${(m.content ?? '').length}`
+					).join(', ') ?? '';
+					const stStats = memoryContext.shortTermMemories?.slice(0, 5).map(m =>
+						`[${m.type ?? '?'}] id=${(m.id ?? '').slice(0, 16)} chars=${(m.content ?? '').length}`
+					).join(', ') ?? '';
+					this._logService.info(
+						`[AgentOS][MemoryLoad] agent=${request.agentId} ` +
+						`longTerm=${rawLongTermCount}→${filteredLongTerm.length} ` +
+						`shortTerm=${rawShortTermCount}→${filteredShortTerm.length} ` +
+						`maxEntries=${maxEntries}(${maxEntriesSource}) ` +
+						`strategy=${strategy}`
+					);
+					if (ltStats) {
+						this._logService.info(`[AgentOS][MemoryLoad] longTerm samples: ${ltStats}`);
+					}
+					if (stStats) {
+						this._logService.info(`[AgentOS][MemoryLoad] shortTerm samples: ${stStats}`);
+					}
+				}
 
 				const blocks: string[] = [];
 
@@ -1202,7 +1244,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						`~${usedTokens} tokens, blocks=${blocks.length}, ` +
 						`Episodic/Semantic=${filteredLongTerm.length}, ` +
 						`Working=${filteredShortTerm.length}, ` +
-						`hasSystemPrompt=${!!memoryContext.systemPrompt}) for agent ${request.agentId}`
+						`hasSystemPrompt=${!!memoryContext.systemPrompt}, ` +
+						`maxEntries=${maxEntries}(${maxEntriesSource})) for agent ${request.agentId}`
 					);
 
 					// 通知 UI 系统消息栏：记忆已注入
@@ -1348,7 +1391,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const compressionWindow = await this._resolveContextWindow(modelProvider, selection.modelId);
 		// P1: 上一轮 LLM 响应回传的真实 prompt token（provider usage，含 cache）。
 		// compressContext 优先用它判定，取代低估的 char/4 粗估。首轮=0 自动退回粗估。
-		let lastRealPromptTokens = 0;
+		// 现在从实例字段读取，上一轮捕获的值会跨 turn 持久化，不再每轮归零。
+		let lastRealPromptTokens = this._lastRealPromptTokensByAgent.get(request.agentId) ?? 0;
 		// ─── 续跑兜底计数 ────────────────────────────────────────────────
 		// 某些模型（如 hy3-preview-ioa）在多轮 agent loop 中会把"接下来我要做 X"
 		// 当作最终回复输出，而不实际发出工具调用，导致任务半途而废。检测到这种
@@ -1686,6 +1730,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 收集模型响应
 			let assistantContent = '';
 			let thinkingContent = '';
+			// P0-leak-fix: accumulate streamed text in chunk arrays and join ONCE
+			// after the stream. Per-delta `assistantContent += delta.content` built a
+			// V8 ConsString rope (one node per delta) that ballooned heap usage.
+			const _assistantChunks: string[] = [];
+			const _thinkingChunks: string[] = [];
 			const assistantToolCalls: IToolCallInfo[] = [];
 			// Streaming tool call assembly using OpenClaw-inspired assembler
 			// Provides: incremental argument buffering, size limits, partial JSON parsing
@@ -1723,11 +1772,13 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 				// ─── P1: 截获真实 prompt token，供下一轮 compressContext 优先判定 ──
 				// 完整 prompt = inputTokens + 缓存读 + 缓存写（缓存 token 同样占窗口）。
+				// 捕获后同步写入实例字段，跨 turn 持久化；下一轮 L1390 直接读取。
 				if (delta.type === 'usage' && delta.usage) {
 					const u = delta.usage;
 					const realPrompt = (u.inputTokens ?? 0) + (u.cachedTokens ?? 0) + (u.cacheWriteTokens ?? 0);
 					if (realPrompt > 0) {
 						lastRealPromptTokens = realPrompt;
+						this._lastRealPromptTokensByAgent.set(request.agentId, realPrompt);
 						this._logService.info(
 							`[AgentOS][Compression] captured real prompt usage: inputTokens=${u.inputTokens ?? 0} ` +
 							`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${lastRealPromptTokens}`
@@ -1766,9 +1817,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 				// 收集完整的助手消息数据
 					if (delta.type === 'text' && delta.content) {
-						assistantContent += delta.content;
+						_assistantChunks.push(delta.content);
 					} else if (delta.type === 'thinking' && delta.content) {
-						thinkingContent += delta.content;
+						_thinkingChunks.push(delta.content);
 					} else if (delta.type === 'tool_call' && delta.toolCall) {
 						const tc = delta.toolCall;
 						if (tc.name) {
@@ -1867,6 +1918,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		}
 
 		// ─── 检查是否需要执行工具（含文本解析兜底）──────────────────
+			// Flatten accumulated streamed text exactly once (O(n), no ConsString ropes).
+			assistantContent = _assistantChunks.join('');
+			thinkingContent = _thinkingChunks.join('');
 			let effectiveToolCalls = assistantToolCalls;
 			if (effectiveToolCalls.length === 0 && assistantContent) {
 				// 尝试从纯文本中解析工具调用（兼容不严格遵循 OpenAI 格式的模型）
@@ -3210,7 +3264,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// ─── Step 3: Argument coercion ─────────────────────────
 			const toolSchema = schemaMap.get(targetToolName);
 			if (toolSchema) {
-				args = coerceToolArgs(args, toolSchema);
+				const coerced = coerceArgsToSchema(args, toolSchema);
+				args = coerced.args;
+				for (const w of coerced.warnings) {
+					this._logService.warn(`[AgentOS][Coerce] "${targetToolName}" — ${w}`);
+				}
 			}
 
 			// ─── Step 3.5: Approval check (P0 - 审批机制) ─────────
@@ -3457,7 +3515,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// Argument coercion
 			const toolSchema = schemaMap.get(targetToolName);
 			if (toolSchema) {
-				args = coerceToolArgs(args, toolSchema);
+				const coerced = coerceArgsToSchema(args, toolSchema);
+				args = coerced.args;
+				for (const w of coerced.warnings) {
+					this._logService.warn(`[AgentOS][Coerce] "${targetToolName}" — ${w}`);
+				}
 			}
 
 			executionEntries.push({

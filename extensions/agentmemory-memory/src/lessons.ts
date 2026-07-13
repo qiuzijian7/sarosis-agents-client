@@ -18,6 +18,7 @@ export interface Lesson {
 	source: 'manual' | 'consolidation' | 'error_pattern';
 	sourceIds: string[];
 	tags: string[];
+	project?: string;
 	createdAt: string;
 	updatedAt: string;
 	lastReinforcedAt?: string;

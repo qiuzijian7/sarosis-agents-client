@@ -21,6 +21,9 @@ import { ICodebaseMemoryMcpService, IIndexConfig } from './codebaseMemoryMcpServ
 import { ICodebaseGraphService } from './codebaseGraphService.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
+import { FIXED_SLOT_NAMES } from '../common/providers.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { MarkdownString } from '../../../../base/common/htmlContent.js';
 
 interface IMemoryEntry {
 	id: string;
@@ -30,11 +33,35 @@ interface IMemoryEntry {
 	timestamp?: number;
 }
 
-type LayerFilter = 'all' | 'working' | 'episodic' | 'semantic' | 'procedural';
+/** 
+ * agentmemory 原生类型筛选器 — 直接使用 Memory.type 值，不再做 4-Tier 映射。
+ * 所有 agentmemory 细分类型（pattern/preference/bug/fact/architecture/workflow）均为一级筛选标签。
+ */
+type LayerFilter = 'all' | 'working' | 'episodic' | 'semantic' | 'procedural'
+	| 'pattern' | 'preference' | 'architecture' | 'bug' | 'workflow' | 'fact';
 type ScopeFilter = 'all' | 'workspace' | 'session' | 'agent';
+
+/** 分类 → 头部统计色板 class（与 _addStat 的原配色保持一致） */
+const CATEGORY_HOVER_CLS: Record<string, string> = {
+	working: 'l0', pattern: 'l1', fact: 'l1', preference: 'l1', architecture: 'l2',
+	bug: 'l1', workflow: 'l3', semantic: 'l2', procedural: 'l3',
+};
+
+/** 分类 → hover 提示（触发逻辑 / 写入时机） */
+const CATEGORY_TRIGGER_TIPS: Record<string, string> = {
+	working: '**Working · 原始观察**\n\n- 触发：每次会话中产生的瞬时上下文、临时笔记、未固化的原始输入\n- 写入：Agent 在对话/工具执行过程中自动落盘的原始观察\n- 特点：高频、低结构化，是其他类型的来源',
+	pattern: '**Pattern · 模式**\n\n- 触发：从多条 Working/Episodic 中归纳出的可复用规律\n- 写入：压缩/固化阶段检测到重复行为模式时自动提炼\n- 特点：抽象层高于 Fact，描述"什么情况下该怎么做"',
+	fact: '**Fact · 事实**\n\n- 触发：被明确陈述或反复验证为真的客观信息（配置、接口、约束）\n- 写入：用户确认、文档提取或稳定出现 ≥N 次的事实\n- 特点：原子化、可被 Semantic 聚合',
+	preference: '**Preference · 偏好**\n\n- 触发：用户表达的主观倾向（语言、风格、工具选择、约定）\n- 写入：用户在对话中明确要求或否定某做法\n- 特点：指导 Agent 的默认行为，优先级高',
+	architecture: '**Architecture · 架构**\n\n- 触发：关于代码结构、模块边界、依赖关系的高层描述\n- 写入：代码库扫描（Codebase Memory）或设计讨论沉淀\n- 特点：跨会话稳定，服务于 Semantic 检索',
+	bug: '**Bug · 缺陷**\n\n- 触发：出现的错误、异常、回归以及与它们的修复方案\n- 写入：报错被定位并修复后记录根因与对策\n- 特点：避免重复踩坑，含 trigger → fix 映射',
+	workflow: '**Workflow · 工作流**\n\n- 触发：多步骤的重复操作流程（发布、构建、回归）\n- 写入：顺序动作被成功执行后固化为流程模板\n- 特点：可被 Agent 直接调用执行',
+	semantic: '**Semantic · 语义**\n\n- 触发：跨领域的概念关系、知识图谱节点与推理结论\n- 写入：Fact/Architecture 经语义聚合后生成\n- 特点：支撑 RAG 检索与跨 agent 共享',
+	procedural: '**Procedural · 程序化**\n\n- 触发：可复用的程序化技能（Skill），由 feat.extractSkill 提炼\n- 写入：从历史会话提取并落盘为 SKILL.md（~/.saros/skills）\n- 特点：最高可执行性，直接驱动工具调用',
+};
 type ViewName = 'memories' | 'slots' | 'lessons' | 'consolidation' | 'audit' | 'hooks' | 'commits' | 'report' | 'skills' | 'codebase';
 
-/** Check if a memory belongs to a specific 4-Tier */
+/** Check if a memory belongs to a specific type（直接精确匹配 agentmemory 原生类型） */
 function matchesTier(mem: IMemoryEntry, tier: LayerFilter): boolean {
 	if (tier === 'all') return true;
 	return mem.type === tier;
@@ -66,6 +93,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		@ICodebaseGraphService private readonly _codebaseGraphService: ICodebaseGraphService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IHoverService private readonly _hoverService: IHoverService,
 	) {
 		super(MemoryDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 		// 获取当前工作区 ID 用于过滤
@@ -140,7 +168,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 			.md-header { padding: 16px 20px 8px; flex-shrink: 0; }
 			.md-header h1 { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--vscode-foreground); }
 			.md-stats { display: flex; gap: 10px; flex-wrap: wrap; }
-			.md-stat { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); border-radius: 6px; padding: 6px 14px; }
+			.md-stat { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); border-radius: 6px; padding: 6px 14px; cursor: help; }
 			.md-stat .label { font-size: 10px; color: var(--vscode-descriptionForeground); }
 			.md-stat .value { font-size: 16px; font-weight: 600; color: var(--vscode-foreground); }
 			.md-stat.l0 .value { color: #569cd6; } .md-stat.l1 .value { color: #4ec9b0; }
@@ -336,7 +364,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		}
 	}
 
-	private _renderFull(): void {
+	private async _renderFull(): Promise<void> {
 		if (!this._container) { return; }
 		this._clearExceptStyle();
 
@@ -344,15 +372,17 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._renderViewNav();
 
 		// Route to the appropriate view renderer
+		// 注意：slots/lessons 视图现已改为 async（await 网关代理），
+		// 必须 await 后再 return，避免漂浮 Promise。
 		switch (this._currentView) {
-			case 'slots': this._renderSlotsView(); return;
-			case 'lessons': this._renderLessonsView(); return;
-			case 'consolidation': this._renderConsolidationView(); return;
+			case 'slots': await this._renderSlotsView(); return;
+			case 'lessons': await this._renderLessonsView(); return;
+			case 'consolidation': await this._renderConsolidationView(); return;
 			case 'audit': this._renderAuditView(); return;
-			case 'hooks': this._renderHooksView(); return;
+			case 'hooks': await this._renderHooksView(); return;
 			case 'commits': this._renderCommitsView(); return;
 			case 'report': this._renderReportView(); return;
-			case 'skills': this._renderSkillsView(); return;
+			case 'skills': await this._renderSkillsView(); return;
 			case 'codebase': this._renderCodebaseView(); return;
 		}
 
@@ -402,15 +432,32 @@ export class MemoryDetailEditorPane extends EditorPane {
 		headerRow.appendChild(agentSelect);
 		const stats = append(header, $('.md-stats'));
 		this._addStat(stats, '总数', this._allMemories.length, '');
-		this._addStat(stats, 'Working', this._countByTier('working'), 'l0');
-		this._addStat(stats, 'Episodic', this._countByTier('episodic'), 'l1');
-		this._addStat(stats, 'Semantic', this._countByTier('semantic'), 'l2');
-		this._addStat(stats, 'Procedural', this._countByTier('procedural'), 'l3');
+		const catStats: Array<[string, LayerFilter]> = [
+			['Working', 'working'],
+			['Pattern', 'pattern'],
+			['Fact', 'fact'],
+			['Preference', 'preference'],
+			['Architecture', 'architecture'],
+			['Bug', 'bug'],
+			['Workflow', 'workflow'],
+			['Semantic', 'semantic'],
+			['Procedural', 'procedural'],
+		];
+		for (const [label, type] of catStats) {
+			const el = this._addStat(stats, label, this._countByTier(type), CATEGORY_HOVER_CLS[type]);
+			if (CATEGORY_TRIGGER_TIPS[type]) {
+				this._register(this._hoverService.setupDelayedHover(el, () => ({
+					content: new MarkdownString(CATEGORY_TRIGGER_TIPS[type]),
+				})));
+			}
+		}
 
 		// Extended stats from AgentMemoryProvider (if available)
+		// getExtendedStats 是 async（网关代理返回 Promise），必须 await，
+		// 否则拿到 Promise 被当成空对象 → 头部的扩展统计不显示。
 		if (memProvider?.getExtendedStats) {
 			try {
-				const extStats = memProvider.getExtendedStats(this._agentId);
+				const extStats = await memProvider.getExtendedStats(this._agentId);
 				if (extStats && typeof extStats === 'object') {
 					const extStatsDiv = append(header, $('.md-stats'));
 					extStatsDiv.style.marginTop = '6px';
@@ -440,11 +487,16 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addToolbarBtn(toolbar, '📄 导出MD', '', () => this._exportMemory('markdown'));
 		this._addToolbarBtn(toolbar, '🔍 搜索历史', '', () => this._showSearchHistory(memProvider!));
 
-		// Layer tabs — agentmemory 4-Tier Consolidation Model
+		// Layer tabs — agentmemory 原生类型筛选
 		const layerTabs = append(this._container, $('.md-layer-tabs'));
 		this._addLayerTab(layerTabs, 'all', '全部');
 		this._addLayerTab(layerTabs, 'working', 'Working');
-		this._addLayerTab(layerTabs, 'episodic', 'Episodic');
+		this._addLayerTab(layerTabs, 'pattern', 'Pattern');
+		this._addLayerTab(layerTabs, 'fact', 'Fact');
+		this._addLayerTab(layerTabs, 'preference', 'Preference');
+		this._addLayerTab(layerTabs, 'architecture', 'Architecture');
+		this._addLayerTab(layerTabs, 'bug', 'Bug');
+		this._addLayerTab(layerTabs, 'workflow', 'Workflow');
 		this._addLayerTab(layerTabs, 'semantic', 'Semantic');
 		this._addLayerTab(layerTabs, 'procedural', 'Procedural');
 		// Filter bar
@@ -464,7 +516,10 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 	// ─── Slots View ──────────────────────────────────────────────────────
 
-	private _renderSlotsView(): void {
+	// 注意：agentmemory 的真实 IMemoryProvider 现运行于网关子进程，
+	// renderer 侧为 HTTP 代理，所有数据读取方法均为 async（返回 Promise）。
+	// 下方各视图必须 await，否则会把 Promise 当成空数组/空对象 → 显示为空。
+	private async _renderSlotsView(): Promise<void> {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
@@ -474,27 +529,32 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
 		this._addToolbarBtn(toolbar, '➕ 新增槽位', '', () => this._addSlot(memProvider));
 
-		if (!memProvider?.getSlots) {
-			this._renderEmpty('当前记忆服务不支持槽位 API');
-			return;
-		}
-
+		// 固定 8 槽位模型：无论记忆提供者是否实现 getSlots、或网关是否返回数据，
+		// 都展示这 8 个固定槽位；网关返回的内容优先覆盖，缺则显示「(空)」。
+		// 这样即使 ActiveMemoryProvider 是 SessionMemoryProvider（无 getSlots）或网关未返回，
+		// 也不会误报「暂无固定槽位 / 暂无槽位数据」。
 		try {
-			const slots = memProvider.getSlots(this._agentId);
-			if (!slots || slots.length === 0) {
+			const slots = memProvider?.getSlots ? await memProvider.getSlots(this._agentId) : [];
+			const map = new Map<string, string>();
+			for (const s of (slots ?? [])) { map.set(String(s.name ?? ''), String(s.content ?? '')); }
+			const names = [
+				...FIXED_SLOT_NAMES.filter((n) => !!n),
+				...(slots ?? []).map((s) => String(s.name ?? '')).filter((n) => !!n && !FIXED_SLOT_NAMES.includes(n)),
+			];
+			if (names.length === 0) {
 				this._renderEmpty('暂无固定槽位。点击"新增槽位"创建。');
 				return;
 			}
 			const list = append(this._container, $('.md-list'));
-			for (const slot of slots) {
+			for (const name of names) {
+				const content = map.get(name) ?? '';
 				const card = append(list, $('.md-card'));
 				const headerEl = append(card, $('.md-card-header'));
-				append(headerEl, $('.md-badge.l2')).textContent = String(slot.name ?? 'unnamed');
-				const content = String(slot.content ?? '');
+				append(headerEl, $('.md-badge.l2')).textContent = name;
 				append(headerEl, $('.md-card-title')).textContent = content.slice(0, 80) || '(空)';
-				this._addToolbarBtn(headerEl, '✏️', '', () => this._editSlot(memProvider, slot.name, content));
-				this._addToolbarBtn(headerEl, '🗑️', 'danger', () => {
-					try { memProvider.setSlot?.(this._agentId, slot.name, ''); this._renderFull(); } catch { /* best effort */ }
+				this._addToolbarBtn(headerEl, '✏️', '', () => this._editSlot(memProvider, name, content));
+				this._addToolbarBtn(headerEl, '🗑️', 'danger', async () => {
+					try { await memProvider?.setSlot?.(this._agentId, name, ''); this._renderFull(); } catch { /* best effort */ }
 				});
 				// Expanded content
 				const contentBox = append(card, $('.md-content-box'));
@@ -506,29 +566,29 @@ export class MemoryDetailEditorPane extends EditorPane {
 		} catch { this._renderEmpty('加载槽位失败'); }
 	}
 
-	private _addSlot(memProvider: any): void {
+	private async _addSlot(memProvider: any): Promise<void> {
 		const name = prompt('槽位名称 (如: persona, guidance):');
 		if (!name) { return; }
 		const content = prompt('槽位内容:');
 		if (content === null) { return; }
 		try {
-			memProvider.setSlot?.(this._agentId, name, content);
+			await memProvider.setSlot?.(this._agentId, name, content);
 			this._renderFull();
 		} catch { /* best effort */ }
 	}
 
-	private _editSlot(memProvider: any, name: string, currentContent: string): void {
+	private async _editSlot(memProvider: any, name: string, currentContent: string): Promise<void> {
 		const content = prompt(`编辑槽位 "${name}":`, currentContent);
 		if (content === null) { return; }
 		try {
-			memProvider.setSlot?.(this._agentId, name, content);
+			await memProvider.setSlot?.(this._agentId, name, content);
 			this._renderFull();
 		} catch { /* best effort */ }
 	}
 
 	// ─── Lessons View ────────────────────────────────────────────────────
 
-	private _renderLessonsView(): void {
+	private async _renderLessonsView(): Promise<void> {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
@@ -539,12 +599,12 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addToolbarBtn(toolbar, '➕ 新增教训', '', () => this._addLesson(memProvider));
 
 		if (!memProvider?.getLessons) {
-			this._renderEmpty('当前记忆服务不支持教训 API');
+			this._renderEmpty('暂无教训数据');
 			return;
 		}
 
 		try {
-			const lessons = memProvider.getLessons(this._agentId);
+			const lessons = await memProvider.getLessons(this._agentId);
 			if (!lessons || lessons.length === 0) {
 				this._renderEmpty('暂无教训记录。');
 				return;
@@ -558,8 +618,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 				if (lesson.tags?.length) {
 					append(headerEl, $('.md-card-time')).textContent = lesson.tags.join(', ');
 				}
-				this._addToolbarBtn(headerEl, '🗑️', 'danger', () => {
-					try { memProvider.deleteLesson?.(this._agentId, lesson.id); this._renderFull(); } catch { /* best effort */ }
+				this._addToolbarBtn(headerEl, '🗑️', 'danger', async () => {
+					try { await memProvider.deleteLesson?.(this._agentId, lesson.id); this._renderFull(); } catch { /* best effort */ }
 				});
 				// Expanded content
 				const contentBox = append(card, $('.md-content-box'));
@@ -573,37 +633,38 @@ export class MemoryDetailEditorPane extends EditorPane {
 		} catch { this._renderEmpty('加载教训失败'); }
 	}
 
-	private _addLesson(memProvider: any): void {
+	private async _addLesson(memProvider: any): Promise<void> {
 		const content = prompt('教训内容:');
 		if (!content) { return; }
 		const context = prompt('上下文 (可选):') || undefined;
 		const tagsStr = prompt('标签 (逗号分隔, 可选):') || '';
 		const tags = tagsStr ? tagsStr.split(',').map((t: string) => t.trim()).filter(Boolean) : undefined;
 		try {
-			memProvider.addLesson?.(this._agentId, content, context, tags);
+			await memProvider.addLesson?.(this._agentId, content, context, tags);
 			this._renderFull();
 		} catch { /* best effort */ }
 	}
 
 	// ─── Consolidation View ─────────────────────────────────────────────
 
-	private _renderConsolidationView(): void {
+	private async _renderConsolidationView(): Promise<void> {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
-		append(header, $('h1')).textContent = `🔄 4-Tier 固化 (${this._agentId})`;
+		append(header, $('h1')).textContent = `🔄 记忆固化 (${this._agentId})`;
 
 		const toolbar = append(this._container, $('.md-toolbar'));
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
 
 		if (!memProvider?.getEpisodicMemories) {
-			this._renderEmpty('当前记忆服务不支持固化 API');
+			this._renderEmpty('暂无固化数据');
 			return;
 		}
 
 		// Consolidation context summary
 		try {
-			const ctxText = memProvider.getConsolidationContext?.(this._agentId);
+			const ctxResult: unknown = memProvider.getConsolidationContext?.(this._agentId);
+			const ctxText = (ctxResult instanceof Promise ? await ctxResult : ctxResult) ?? '';
 			if (ctxText) {
 				const ctxBox = append(this._container, $('.md-card'));
 				ctxBox.style.margin = '8px 20px';
@@ -622,7 +683,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 		];
 		for (const tier of tiers) {
 			try {
-				const items = (memProvider as any)[tier.fn]?.(this._agentId) as Array<Record<string, unknown>> | undefined;
+				const result = (memProvider as any)[tier.fn]?.(this._agentId);
+				const items = (result instanceof Promise ? await result : result) as Array<Record<string, unknown>> | undefined;
 				if (!items || items.length === 0) { continue; }
 				const sectionHeader = append(list, $('.md-card-header'));
 				sectionHeader.style.borderBottom = '2px solid var(--vscode-widget-border)';
@@ -713,7 +775,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 	// ─── Hooks View ─────────────────────────────────────────────────────
 
-	private _renderHooksView(): void {
+	private async _renderHooksView(): Promise<void> {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
@@ -723,12 +785,13 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
 
 		if (!memProvider?.getHookStats) {
-			this._renderEmpty('当前记忆服务不支持 Hook API');
+			this._renderEmpty('暂无 Hook 数据');
 			return;
 		}
 
 		try {
-			const stats = memProvider.getHookStats();
+			// Opt1：真实 HookSystem 在网关进程，getHookStats 经代理返回 Promise。
+			const stats = await memProvider.getHookStats();
 			// Summary stats
 			const summaryDiv = append(this._container, $('.md-stats'));
 			summaryDiv.style.padding = '8px 20px';
@@ -769,7 +832,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
 
 		if (!memProvider?.getRecentCommits) {
-			this._renderEmpty('当前记忆服务不支持 Git 提交 API');
+			this._renderEmpty('暂无 Git 提交数据');
 			return;
 		}
 
@@ -854,7 +917,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		}
 
 		if (!memProvider?.generateReport) {
-			this._renderEmpty('当前记忆服务不支持报告 API');
+			this._renderEmpty('暂无报告数据');
 			return;
 		}
 
@@ -877,8 +940,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 				content.textContent = '报告为空';
 				return;
 			}
-			content.innerHTML = '';
-			const r = report as Record<string, unknown>;
+		content.replaceChildren();
+		const r = report as Record<string, unknown>;
 
 			// Overall health badge
 			const health = String(r['overallHealth'] ?? 'unknown');
@@ -946,64 +1009,66 @@ export class MemoryDetailEditorPane extends EditorPane {
 				}
 			}
 	} catch (err) {
-		content.innerHTML = '';
+		content.replaceChildren();
 		append(content, $('.md-empty')).textContent = `报告生成失败: ${err instanceof Error ? err.message : String(err)}`;
 	}
 }
 
 // ─── Skills View ──────────────────────────────────────────────────────
 
-private _renderSkillsView(): void {
-	if (!this._container) { return; }
-	const memProvider = this._agentOSService.getActiveMemoryProvider();
-	const header = append(this._container, $('.md-header'));
-	append(header, $('h1')).textContent = `⚡ 技能 (${this._agentId})`;
-	const subtitle = append(header, $('div'));
-	subtitle.style.fontSize = '11px';
-	subtitle.style.color = 'var(--vscode-descriptionForeground)';
-	subtitle.style.marginBottom = '8px';
-	subtitle.textContent = '从会话历史自动提取的可复用程序化技能 · 沉淀为标准 SKILL.md 格式 · 写入 ~/.saros/skills/';
+	private async _renderSkillsView(): Promise<void> {
+		if (!this._container) { return; }
+		const memProvider = this._agentOSService.getActiveMemoryProvider();
+		const header = append(this._container, $('.md-header'));
+		append(header, $('h1')).textContent = `⚡ 技能 (${this._agentId})`;
+		const subtitle = append(header, $('div'));
+		subtitle.style.fontSize = '11px';
+		subtitle.style.color = 'var(--vscode-descriptionForeground)';
+		subtitle.style.marginBottom = '8px';
+		subtitle.textContent = '从会话历史自动提取的可复用程序化技能 · 沉淀为标准 SKILL.md 格式 · 写入 ~/.saros/skills/';
 
-	// Stats
-	const stats = memProvider?.getSkillStats?.();
-	if (stats) {
-		const statsEl = append(header, $('.md-stats'));
-		this._addStat(statsEl, '总技能', stats.totalSkills, 'l3');
-		this._addStat(statsEl, '平均置信度', stats.avgConfidence, 'confidence');
-		this._addStat(statsEl, '总使用次数', stats.totalUsage, 'usage');
-		this._addStat(statsEl, '已生成 SKILL.md', `${stats.writtenCount}/${stats.totalSkills}`, 'file');
-	}
+		// Stats — Opt1：真实引擎在网关进程，方法为 async（agentId 为首参）。
+		const stats = memProvider?.getSkillStats
+			? await memProvider.getSkillStats(this._agentId)
+			: undefined;
+		if (stats) {
+			const statsEl = append(header, $('.md-stats'));
+			this._addStat(statsEl, '总技能', stats.totalSkills, 'l3');
+			this._addStat(statsEl, '平均置信度', stats.avgConfidence, 'confidence');
+			this._addStat(statsEl, '总使用次数', stats.totalUsage, 'usage');
+			this._addStat(statsEl, '已生成 SKILL.md', `${stats.writtenCount}/${stats.totalSkills}`, 'file');
+		}
 
-	// Info banner
-	const banner = append(this._container, $('.md-card'));
-	banner.style.margin = '0 20px 8px';
-	banner.style.padding = '8px 12px';
-	banner.style.background = 'rgba(86,156,214,0.08)';
-	banner.style.border = '1px solid rgba(86,156,214,0.2)';
-	banner.style.borderRadius = '6px';
-	banner.style.fontSize = '11px';
-	banner.style.color = '#569cd6';
-	banner.textContent = '💡 技能提取后会自动生成 SKILL.md 文件到 ~/.saros/skills/<技能名>/SKILL.md，可在 Agent Studio 技能商城和 Claude Code 中直接使用';
+		// Info banner
+		const banner = append(this._container, $('.md-card'));
+		banner.style.margin = '0 20px 8px';
+		banner.style.padding = '8px 12px';
+		banner.style.background = 'rgba(86,156,214,0.08)';
+		banner.style.border = '1px solid rgba(86,156,214,0.2)';
+		banner.style.borderRadius = '6px';
+		banner.style.fontSize = '11px';
+		banner.style.color = '#569cd6';
+		banner.textContent = '💡 技能提取后会自动生成 SKILL.md 文件到 ~/.saros/skills/<技能名>/SKILL.md，可在 Agent Studio 技能商城和 Claude Code 中直接使用';
 
-	// Toolbar
-	const toolbar = append(this._container, $('.md-toolbar'));
-	this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
-	this._addToolbarBtn(toolbar, '➕ 手动新增', '', () => this._addSkill(memProvider));
-	this._addToolbarBtn(toolbar, '📁 生成全部 SKILL.md', '', async () => {
-		if (!memProvider?.writeAllSkillFiles) return;
-		const result = await memProvider.writeAllSkillFiles();
-		alert(`写入完成: ${result.written} 成功, ${result.failed} 失败${result.errors.length ? '\n' + result.errors.join('\n') : ''}`);
-		this._renderFull();
-	});
-	this._addToolbarBtn(toolbar, '⬇ 导出 JSON', '', () => this._exportSkillsJson(memProvider));
+		// Toolbar
+		const toolbar = append(this._container, $('.md-toolbar'));
+		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
+		this._addToolbarBtn(toolbar, '➕ 手动新增', '', () => this._addSkill(memProvider));
+		this._addToolbarBtn(toolbar, '📁 生成全部 SKILL.md', '', async () => {
+			if (!memProvider?.writeAllSkillFiles) return;
+			const result = await memProvider.writeAllSkillFiles(this._agentId);
+			alert(`写入完成: ${result.written} 成功, ${result.failed} 失败${result.errors.length ? '\n' + result.errors.join('\n') : ''}`);
+			this._renderFull();
+		});
+		this._addToolbarBtn(toolbar, '⬇ 导出 JSON', '', () => this._exportSkillsJson(memProvider));
 
-	if (!memProvider?.listSkills) {
-		this._renderEmpty('当前记忆服务不支持技能 API');
-		return;
-	}
+		if (!memProvider?.listSkills) {
+			this._renderEmpty('暂无技能数据');
+			return;
+		}
 
-	try {
-		const skills = memProvider.listSkills();
+		try {
+			const skills = await memProvider.listSkills(this._agentId);
 		if (!skills || skills.length === 0) {
 			this._renderEmpty('暂无技能记录。技能会在会话完成并执行固化后自动提取。');
 			return;
@@ -1024,7 +1089,7 @@ private _renderSkillsView(): void {
 
 		const list = append(this._container, $('.md-list'));
 		const renderList = (filter: 'all' | 'written' | 'pending', query: string) => {
-			list.innerHTML = '';
+			list.replaceChildren();
 			let filtered = skills;
 			if (filter === 'written') filtered = filtered.filter((s: any) => s.skillMdWritten);
 			if (filter === 'pending') filtered = filtered.filter((s: any) => !s.skillMdWritten);
@@ -1133,9 +1198,22 @@ private _renderSkillCard(list: HTMLElement, skill: any, memProvider: any): void 
 	fmEl.style.color = 'var(--vscode-descriptionForeground)';
 	fmEl.style.lineHeight = '1.6';
 	fmEl.style.borderBottom = '1px solid rgba(128,128,128,0.06)';
-	fmEl.innerHTML = `<span style="color:#569cd6">name</span>: <span style="color:#ce9178">${skill.slug || '—'}</span><br>` +
-		`<span style="color:#569cd6">description</span>: <span style="color:#ce9178">${skill.trigger}。${skill.expectedOutcome}</span><br>` +
-		`<span style="color:#569cd6">version</span>: <span style="color:#ce9178">1.0.0</span>`;
+	// Frontmatter (CSP-safe: build with DOM nodes, no innerHTML)
+	const fmLine = (label: string, value: string): HTMLElement => {
+		const line = $('div');
+		const l = append(line, $('span'));
+		l.style.color = '#569cd6';
+		l.textContent = label;
+		const v = append(line, $('span'));
+		v.style.color = '#ce9178';
+		v.textContent = value;
+		return line;
+	};
+	fmEl.appendChild(fmLine('name', skill.slug || '—'));
+	const fmLine2 = append(fmEl, $('div'));
+	const l2 = append(fmLine2, $('span')); l2.style.color = '#569cd6'; l2.textContent = 'description';
+	const v2 = append(fmLine2, $('span')); v2.style.color = '#ce9178'; v2.textContent = `${skill.trigger}。${skill.expectedOutcome}`;
+	fmEl.appendChild(fmLine('version', '1.0.0'));
 
 	// Body
 	const body = append(content, $('div'));
@@ -1202,24 +1280,24 @@ private _renderSkillCard(list: HTMLElement, skill: any, memProvider: any): void 
 	// Action buttons
 	const actions = append(meta, $('div'));
 	actions.style.marginLeft = 'auto'; actions.style.display = 'flex'; actions.style.gap = '4px';
-	this._addToolbarBtn(actions, '📁 写入 SKILL.md', '', async () => {
-		if (!memProvider?.writeSkillFile) return;
-		const result = await memProvider.writeSkillFile(skill.id);
-		alert(result.ok ? `SKILL.md 已写入: ${result.path}` : `写入失败: ${result.error}`);
-		this._renderFull();
-	});
-	this._addToolbarBtn(actions, '✏ 编辑', '', () => this._editSkill(memProvider, skill));
-	this._addToolbarBtn(actions, '🗑 删除', 'danger', async () => {
-		if (!confirm(`确定删除技能 "${skill.title}"？`)) return;
-		if (skill.skillMdWritten && memProvider?.deleteSkillFile) {
-			await memProvider.deleteSkillFile(skill.id);
-		}
-		memProvider?.deleteSkill?.(skill.id);
-		this._renderFull();
-	});
+		this._addToolbarBtn(actions, '📁 写入 SKILL.md', '', async () => {
+			if (!memProvider?.writeSkillFile) return;
+			const result = await memProvider.writeSkillFile(this._agentId, skill.id);
+			alert(result.ok ? `SKILL.md 已写入: ${result.path}` : `写入失败: ${result.error}`);
+			this._renderFull();
+		});
+		this._addToolbarBtn(actions, '✏ 编辑', '', () => this._editSkill(memProvider, skill));
+		this._addToolbarBtn(actions, '🗑 删除', 'danger', async () => {
+			if (!confirm(`确定删除技能 "${skill.title}"？`)) return;
+			if (skill.skillMdWritten && memProvider?.deleteSkillFile) {
+				await memProvider.deleteSkillFile(this._agentId, skill.id);
+			}
+			memProvider?.deleteSkill?.(this._agentId, skill.id);
+			this._renderFull();
+		});
 }
 
-private _addSkill(memProvider: any): void {
+private async _addSkill(memProvider: any): Promise<void> {
 	const title = prompt('技能标题:');
 	if (!title) return;
 	const trigger = prompt('触发条件:') || '';
@@ -1228,19 +1306,17 @@ private _addSkill(memProvider: any): void {
 	const outcome = prompt('预期结果 (可选):') || 'Task completed successfully';
 	const tagsStr = prompt('标签 (逗号分隔, 可选):') || '';
 	const tags = tagsStr ? tagsStr.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
-	void trigger; void tags; // 用于 extractSkill 输入构建
 	try {
-		const skill = memProvider?.extractSkill?.({
-			sessionId: `manual_${Date.now()}`,
-			summary: { title, narrative: outcome, keyDecisions: [], filesModified: [], toolsUsed: [] },
-			observations: steps.map((s: string, i: number) => ({ content: s, type: 'procedural', importance: 5, timestamp: Date.now() + i })),
+		if (!memProvider?.addSkill) { alert('当前记忆提供者不支持手动新增技能'); return; }
+		const skill = await memProvider.addSkill(this._agentId, {
+			title, trigger, steps, expectedOutcome: outcome, tags,
 		});
-		if (!skill) { alert('技能提取失败: 观察太少或无法识别触发条件'); return; }
+		if (!skill) { alert('技能新增失败'); return; }
 		this._renderFull();
 	} catch (err) { alert(`新增失败: ${err instanceof Error ? err.message : String(err)}`); }
 }
 
-private _editSkill(memProvider: any, skill: any): void {
+private async _editSkill(memProvider: any, skill: any): Promise<void> {
 	const title = prompt('技能标题:', skill.title);
 	if (!title) return;
 	const trigger = prompt('触发条件:', skill.trigger);
@@ -1250,14 +1326,14 @@ private _editSkill(memProvider: any, skill: any): void {
 	const tagsStr = prompt('标签 (逗号分隔):', skill.tags.join(','));
 	const tags = tagsStr ? tagsStr.split(',').map((t: string) => t.trim()).filter(Boolean) : [];
 	try {
-		memProvider?.updateSkill?.(skill.id, { title, trigger, steps, expectedOutcome: outcome, tags });
+		await memProvider?.updateSkill?.(this._agentId, skill.id, { title, trigger, steps, expectedOutcome: outcome, tags });
 		this._renderFull();
 	} catch (err) { alert(`编辑失败: ${err instanceof Error ? err.message : String(err)}`); }
 }
 
-private _exportSkillsJson(memProvider: any): void {
+private async _exportSkillsJson(memProvider: any): Promise<void> {
 	if (!memProvider?.listSkills) return;
-	const skills = memProvider.listSkills();
+	const skills = await memProvider.listSkills(this._agentId);
 	const json = JSON.stringify(skills, null, 2);
 	const blob = new Blob([json], { type: 'application/json' });
 	const url = URL.createObjectURL(blob);
@@ -1267,10 +1343,11 @@ private _exportSkillsJson(memProvider: any): void {
 	URL.revokeObjectURL(url);
 }
 
-	private _addStat(parent: HTMLElement, label: string, value: string | number, cls: string): void {
+	private _addStat(parent: HTMLElement, label: string, value: string | number, cls: string): HTMLElement {
 		const card = append(parent, $(`.md-stat.${cls}`));
 		append(card, $('.label')).textContent = label;
 		append(card, $('.value')).textContent = String(value);
+		return card;
 	}
 
 	private _addLayerTab(parent: HTMLElement, layer: LayerFilter, label: string): void {
@@ -1337,8 +1414,8 @@ private _exportSkillsJson(memProvider: any): void {
 		}
 		const typeLabels: Record<string, string> = {
 			working: 'Working', episodic: 'Episodic', semantic: 'Semantic', procedural: 'Procedural',
-			pattern: 'pattern', preference: 'preference', architecture: 'architecture',
-			bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
+			pattern: 'Pattern', preference: 'Preference', architecture: 'Architecture',
+			bug: 'Bug', workflow: 'Workflow', fact: 'Fact', instruction: 'Instruction',
 		};
 		const typeClasses: Record<string, string> = {
 			working: 'l0', episodic: 'l1', semantic: 'l2', procedural: 'l3',
