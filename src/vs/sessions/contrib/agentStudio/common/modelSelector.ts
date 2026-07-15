@@ -28,6 +28,18 @@ export interface IModelSelectorService {
 	getSelection(): IModelSelection | undefined;
 	setSelection(selection: IModelSelection): void;
 
+	/**
+	 * 获取指定 agent 专属的模型选择（若该 agent 曾选过 provider/model）。
+	 * 未配置时回退到全局当前选择 `getSelection()`。
+	 * 用于让「知识库专家」等 agent 拥有独立的 provider/model 配置。
+	 */
+	getSelectionForAgent(agentId: string): IModelSelection | undefined;
+
+	/**
+	 * 为指定 agent 保存其专属的模型选择。
+	 */
+	setSelectionForAgent(agentId: string, selection: IModelSelection): void;
+
 	// ─── 可用模型列表（汇聚所有已注册 Model Provider）────────────────
 
 	readonly onDidChangeAvailableModels: Event<void>;

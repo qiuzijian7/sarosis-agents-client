@@ -294,13 +294,15 @@ export class ExecutionProvider implements IExecutionProvider {
 					this._logService.info(`[ExecutionProvider] Chat mode=${chatMode}: ${tools?.length ?? 0}/${allTools.length} tools allowed`);
 				}
 
-				const modelOptions: IModelOptions = {
-					temperature: request.options?.temperature ?? 0.7,
-					maxTokens: request.options?.maxTokens ?? this._maxTokens,
-					systemPrompt: request.systemPrompt,
-					tools,
-					stop: request.options?.stop,
-				};
+			const modelOptions: IModelOptions = {
+				temperature: request.options?.temperature ?? 0.7,
+				maxTokens: request.options?.maxTokens ?? this._maxTokens,
+				systemPrompt: request.systemPrompt,
+				tools,
+				stop: request.options?.stop,
+				// Fork 前缀缓存：透传父级 ForkContext 给请求构造端，对齐时注入 cache 断点。
+				forkContext: request.forkContext,
+			};
 
 				// 7.3 调用模型（传递 context 包含 agentId）
 				this._logService.debug(`[ExecutionProvider] Calling model ${modelId} with ${messages.length} messages`);
@@ -379,9 +381,12 @@ export class ExecutionProvider implements IExecutionProvider {
 
 				// 7.6 将工具结果添加到消息历史
 				for (const toolResult of toolResults) {
+					// P2 源头截断（对齐 MiMo truncate.ts MAX_BYTES=50K）：超大工具输出在写入历史前
+					// 即做首尾保留 + 标注，避免污染上下文与压缩输入。仅影响极端大输出，正常结果不变。
+					const rawContent = JSON.stringify(toolResult.content);
 					const toolResultMessage: IChatMessage = {
 						role: 'tool',
-						content: JSON.stringify(toolResult.content),
+						content: ContextManager.truncateSourceToolOutput(rawContent),
 						toolCallId: toolResult.toolCallId,
 					};
 					messages.push(toolResultMessage);

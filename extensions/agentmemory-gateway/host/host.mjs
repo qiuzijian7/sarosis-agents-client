@@ -798,6 +798,39 @@ async function main() {
 		emit('ready', `KV store ready on port ${port}`, { port, dataDir, engine: backendKind });
 	});
 
+	// ── 定期维护清扫（Opt1：弥补 ConsolidationPipeline 无自动触发的缺口）──
+	// 每 N 分钟对所有 agent 执行一次全量清扫 + 技能提取 + 自动晶化。
+	// 保证即使 renderer 不手动触发，gateway 侧也会周期运行。
+	const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+	let _sweeping = false; // 防重叠
+	const runScheduledSweep = async () => {
+		if (_sweeping || !providerInstance) return;
+		_sweeping = true;
+		try {
+			const scopes = allMemoryScopes();
+			if (scopes.length === 0) return;
+			emit('log', `${TAG} scheduled sweep starting for ${scopes.length} agent(s)`);
+			for (const scope of scopes) {
+				const agentId = scope.slice('mem:memories:'.length);
+				if (!agentId) continue;
+				try {
+					const r = await providerInstance.runMaintenanceSweep(agentId);
+					if (r.skillExtracted) {
+						emit('log', `${TAG} sweep: skill extracted for ${agentId} → ${r.skillExtracted.title}`);
+					}
+				} catch (err) {
+					emit('warn', `${TAG} sweep failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			}
+		} finally {
+			_sweeping = false;
+		}
+	};
+	// 首次延迟 30s 再启动周期清扫（给 provider 加载和索引重建留足时间），
+	// 之后每 SWEEP_INTERVAL_MS 执行一次。
+	setTimeout(() => { runScheduledSweep(); setInterval(runScheduledSweep, SWEEP_INTERVAL_MS); }, 30_000);
+	emit('log', `${TAG} sweep scheduler registered (interval=${SWEEP_INTERVAL_MS}ms, initial delay=30s)`);
+
 	// Graceful shutdown
 	const shutdown = (sig) => {
 		emit('log', `${TAG} received ${sig}, shutting down... (pending writes: ${pendingWrites})`);

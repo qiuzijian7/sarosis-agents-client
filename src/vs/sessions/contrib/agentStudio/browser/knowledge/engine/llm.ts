@@ -37,6 +37,8 @@ export interface ExtractRequest {
 	prompt: string;
 	schema: JsonSchema;
 	temperature?: number;
+	/** Optional external cancellation signal (merged with the timeout signal). */
+	abortSignal?: AbortSignal;
 }
 
 /** Callback for streaming tokens. Return `true` to abort early. */
@@ -206,6 +208,7 @@ export class OpenAICompatibleJsonModel implements IChatModel {
 
 	async extract<T = Record<string, unknown>>(req: ExtractRequest): Promise<T> {
 		const { messages, toolName, tool } = buildJsonSchemaBody(req, this.opt);
+		const signal = requestSignal(this.opt.timeoutMs, req.abortSignal);
 
 		// Strategy 1: native json_schema response_format (OpenAI / many compatibles).
 		try {
@@ -215,7 +218,7 @@ export class OpenAICompatibleJsonModel implements IChatModel {
 				stream: false,
 				messages,
 				response_format: { type: 'json_schema', json_schema: { name: 'extract', strict: false, schema: req.schema } },
-			}, abortAfter(this.opt.timeoutMs));
+			}, signal);
 			const content = data?.choices?.[0]?.message?.content;
 			if (typeof content === 'string' && content.trim()) {
 				return JSON.parse(stripCodeFence(content)) as T;
@@ -234,7 +237,7 @@ export class OpenAICompatibleJsonModel implements IChatModel {
 				messages,
 				tools: [tool],
 				tool_choice: { type: 'function', function: { name: toolName } },
-			}, abortAfter(this.opt.timeoutMs));
+			}, signal);
 			const msg = data?.choices?.[0]?.message;
 			const tc = msg?.tool_calls?.[0];
 			if (tc?.function?.arguments) {
@@ -257,7 +260,7 @@ export class OpenAICompatibleJsonModel implements IChatModel {
 				{ role: 'system', content: SYSTEM_JSON },
 				{ role: 'user', content: instructed },
 			],
-		}, abortAfter(this.opt.timeoutMs));
+		}, signal);
 		const content = data?.choices?.[0]?.message?.content ?? '';
 		return JSON.parse(stripCodeFence(content)) as T;
 	}
@@ -266,6 +269,27 @@ export class OpenAICompatibleJsonModel implements IChatModel {
 function abortAfter(timeoutMs?: number): AbortSignal {
 	const controller = new AbortController();
 	setTimeout(() => controller.abort(), timeoutMs ?? 120_000);
+	return controller.signal;
+}
+
+/**
+ * 合并「超时信号」与「调用方外部中止信号」：任一触发都会中止 fetch。
+ * 无外部信号时退化为纯超时信号（行为与 abortAfter 一致）。
+ */
+function requestSignal(timeoutMs: number | undefined, external?: AbortSignal): AbortSignal {
+	if (!external) { return abortAfter(timeoutMs); }
+	const controller = new AbortController();
+	const onExternal = () => controller.abort((external as AbortSignal & { reason?: unknown }).reason);
+	if (external.aborted) {
+		controller.abort((external as AbortSignal & { reason?: unknown }).reason);
+		return controller.signal;
+	}
+	external.addEventListener('abort', onExternal, { once: true });
+	const timer = setTimeout(() => controller.abort(), timeoutMs ?? 120_000);
+	controller.signal.addEventListener('abort', () => {
+		clearTimeout(timer);
+		external.removeEventListener('abort', onExternal);
+	}, { once: true });
 	return controller.signal;
 }
 

@@ -142,6 +142,29 @@ const RAW = {
 				'你是一位信息提取专家。请从文本中提取一个核心结构化对象，提供其名称和简要描述。\n' +
 				'### Source Text:\n{source_text}',
 		},
+		notes_summary: {
+			en:
+				'You are a knowledge-note author. From the text, produce ONE structured note that captures the ' +
+				'essence of the document for later retrieval and review:\n' +
+				'- title: a short, stable note title\n' +
+				'- summary: a 2-5 sentence abstract of the WHOLE document (no "This document…" preamble)\n' +
+				'- tags: 3-8 keyword tags (lowercase, no spaces) for retrieval\n' +
+				'- category: ONE of code_example / api_doc / architecture / bug_fix / config / tutorial / ' +
+				'performance / security / devops / database / general\n' +
+				'- key_points: up to 8 concise bullet takeaways\n' +
+				'Be faithful to the source; do not invent facts.\n' +
+				'### Source Text:\n{source_text}',
+			zh:
+				'你是一位知识笔记作者。请从文本中产出一条结构化笔记，凝练全文要点，便于后续检索与回顾：\n' +
+				'- title：简短、稳定的笔记标题\n' +
+				'- summary：对全文的 2-5 句话摘要（不要以"本文……"开头）\n' +
+				'- tags：3-8 个关键词标签（小写、无空格），用于检索\n' +
+				'- category：以下之一 code_example / api_doc / architecture / bug_fix / config / tutorial / ' +
+				'performance / security / devops / database / general\n' +
+				'- key_points：最多 8 条简洁要点\n' +
+				'忠于原文，不要编造事实。\n' +
+				'### Source Text:\n{source_text}',
+		},
 		set: {
 			en:
 				'You are an entity-recognition expert. Identify all entities with independent meaning from the text ' +

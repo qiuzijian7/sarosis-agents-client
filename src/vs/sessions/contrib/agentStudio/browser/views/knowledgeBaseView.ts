@@ -63,6 +63,7 @@ import { KbLinkGraph } from './knowledgeBase/kbGraph.js';
 import { KbNativeKernel, INativeBacklinkResult } from './knowledgeBase/kbNativeKernel.js';
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
+import { resolveAuxEmbeddingProviderId } from '../knowledge/embeddingConfigResolver.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
 import { appendKbOpLog, type IKbOpLogEntry, type KbOpChannel, type KbOpStatus } from '../knowledge/kbOpLog.js';
@@ -152,13 +153,18 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IWebContentExtractorService private readonly _webContentExtractor: IWebContentExtractorService,
 		@ISharedWebContentExtractorService private readonly _sharedWebContentExtractor: ISharedWebContentExtractorService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
-		@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
-		@IEmbeddingService private readonly _ragEmbeddingService: IEmbeddingService,
+	@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
+	@IEmbeddingService private readonly _ragEmbeddingService: IEmbeddingService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._index = new KbFullTextIndex(this.fileService);
 		this._graph = new KbLinkGraph(this.fileService);
-		this._nativeKernel = new KbNativeKernel(this.fileService, this._ragEmbeddingService);
+		this._nativeKernel = new KbNativeKernel(
+			this.fileService,
+			this._ragEmbeddingService,
+			// RAG 向量化使用「辅助模型 → Embedding」配置解析出的 provider（不再依赖 KB agent）。
+			resolveAuxEmbeddingProviderId(this.configurationService),
+		);
 		// Share this already-built kernel with the BlockSuite note editor so it
 		// can reuse the same backlink/mention index without re-scanning the vault.
 		this._kbKernelService.setKernel(this._nativeKernel);
@@ -180,6 +186,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private sectionUri(v: IKbVault, section: KbSection): URI {
+		if (section === 'notes' && v.notesPath) {
+			// 笔记分区可单独配置根目录（指向外部文件夹）
+			return URI.file(v.notesPath);
+		}
 		const folder: SectionFolderName = section === 'library' ? '库' : '笔记';
 		return URI.joinPath(this.vaultUri(v), folder);
 	}
@@ -729,15 +739,18 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// Toolbar
 		const toolbar = $('div.kb-section-toolbar');
 		if (section === 'library') {
+			const newFile = $('span.kb-sec-btn'); newFile.textContent = '📄'; newFile.title = '新建文件';
+			newFile.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
+			const newFolder = $('span.kb-sec-btn'); newFolder.textContent = '📁'; newFolder.title = '新建文件夹';
+			newFolder.onclick = (e) => { e.stopPropagation(); void this.newFolder(section); };
 			const importBtn = $('span.kb-sec-btn.primary'); importBtn.textContent = '📥'; importBtn.title = '导入数据源';
 			importBtn.onclick = (e) => { e.stopPropagation(); this.openImportDropdown(sectionEl, importBtn); };
-			toolbar.appendChild(importBtn);
 		// RAG 向量索引（构建 / 导入 .kbrag.json / 导出 .kbrag.json）
 		const ragBtn = $('span.kb-sec-btn'); ragBtn.textContent = '🧠'; ragBtn.title = 'RAG 向量索引：构建 / 导入 / 导出 .kbrag.json（语义搜索）';
 		ragBtn.onclick = (e) => { e.stopPropagation(); this.openRagDropdown(sectionEl, ragBtn); };
-		toolbar.appendChild(ragBtn);
+		toolbar.append(newFile, newFolder, importBtn, ragBtn);
 		} else {
-			const newFile = $('span.kb-sec-btn'); newFile.textContent = '✏️'; newFile.title = '新建文件';
+			const newFile = $('span.kb-sec-btn'); newFile.textContent = '📄'; newFile.title = '新建文件';
 			newFile.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
 			const newFolder = $('span.kb-sec-btn'); newFolder.textContent = '📁'; newFolder.title = '新建文件夹';
 			newFolder.onclick = (e) => { e.stopPropagation(); void this.newFolder(section); };
@@ -808,11 +821,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				}
 			}
 			countEl.textContent = String(this.countNodes(section, nodes));
-			// 恢复已展开文件夹（一级）
+			// 恢复已展开文件夹（一级，await 确保子节点恢复到 DOM 后再返回）
 			for (const node of nodes) {
 				if (node.isDirectory && this._expandedFolders.has(node.path)) {
 					const el = body.querySelector(`.kb-node[data-path="${this.cssEscape(node.path)}"]`);
-					if (el) { void this.expandFolder(el as HTMLElement, node); }
+					if (el) { await this.expandFolder(el as HTMLElement, node); }
 				}
 			}
 			this.logService.info(`[KB perf] loadSectionTree(${section}): ${(performance.now() - t0).toFixed(1)}ms, ${nodes.length} nodes`);
@@ -924,7 +937,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		// Actions (hover)
 		const actions = $('div.kb-actions');
-		const newBtn = $('span.kb-act'); newBtn.textContent = '✏️'; newBtn.title = '新建文件';
+		const newBtn = $('span.kb-act'); newBtn.textContent = '📄'; newBtn.title = '新建文件';
 		newBtn.onclick = (e) => { e.stopPropagation(); void this.newFile(node.section, node); };
 		const newFolder = $('span.kb-act'); newFolder.textContent = '📁'; newFolder.title = '新建文件夹';
 		newFolder.onclick = (e) => { e.stopPropagation(); void this.newFolder(node.section, node); };
@@ -1071,9 +1084,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const dir = this.targetDir(section, parent);
 		const uri = await this.uniqueName(dir, '未命名', '.md');
 		await this.fileService.writeFile(uri, VSBuffer.fromString('# ' + uri.path.split('/').pop() + '\n'));
-		void this._logOp('note.create', 'success', { target: uri.fsPath, detail: { section } });
+		void this._logOp('file.create', 'success', { target: uri.fsPath, detail: { section } });
 		await this.refreshSection(section);
-		// 立即进入重命名
+		// 确保父目录已展开（子节点在 DOM 中），再选中并进入重命名
+		if (parent) { await this.ensureParentExpanded(parent); }
 		const el = this.findNodeEl(section, uri.fsPath);
 		if (el) { this.selectNode(el); const node = this.nodeFromEl(el); if (node) { this.startRename(el, node); } }
 	}
@@ -1084,8 +1098,18 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		await this.fileService.createFolder(uri);
 		void this._logOp('folder.create', 'success', { target: uri.fsPath, detail: { section } });
 		await this.refreshSection(section);
+		if (parent) { await this.ensureParentExpanded(parent); }
 		const el = this.findNodeEl(section, uri.fsPath);
 		if (el) { this.selectNode(el); const node = this.nodeFromEl(el); if (node) { this.startRename(el, node); } }
+	}
+
+	/** 确保指定文件夹的父节点已展开（子节点已在 DOM 中），用于新建文件/文件夹后定位子元素。 */
+	private async ensureParentExpanded(parent: IKbNode): Promise<void> {
+		const parentEl = this.findNodeEl(parent.section, parent.path);
+		if (!parentEl) { return; }
+		// 已展开则无需再加载（expandFolder 遇到已展开会跳过 loading 检查直接折叠，所以这里做判断）
+		if (this._expandedFolders.has(parent.path)) { return; }
+		await this.expandFolder(parentEl, parent);
 	}
 
 	private async deleteNode(node: IKbNode): Promise<void> {
@@ -1199,12 +1223,51 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const label = $('span.kb-set-label'); label.textContent = '📁 根目录';
 		const path = $('span.kb-set-path'); path.id = 'kbRootPath'; path.textContent = this.rootUri.fsPath;
 		const browse = $('span.kb-set-btn.primary'); browse.id = 'kbRootBrowse'; browse.textContent = '📂'; browse.title = '浏览文件夹…';
-		const manual = $('span.kb-set-btn'); manual.id = 'kbRootManual'; manual.textContent = '✏️'; manual.title = '手动输入路径';
+		const manual = $('span.kb-set-btn'); manual.id = 'kbRootManual'; manual.textContent = '📄'; manual.title = '手动输入路径';
 		row.append(label, path, browse, manual);
 		this._settingsDD.appendChild(row);
 
-		const hint = $('div.kb-set-hint'); hint.textContent = '点击 📂 选择文件夹，或 ✏️ 手动输入路径（知识库根目录，默认 Vault 将随之迁移）';
+		const hint = $('div.kb-set-hint'); hint.textContent = '点击 📂 选择文件夹，或 📄 手动输入路径（知识库根目录，默认 Vault 将随之迁移）';
 		this._settingsDD.appendChild(hint);
+
+		// 笔记根目录配置行（仅当前激活 Vault；留空回退到 Vault 内默认「笔记」）
+		if (this._activeVault) {
+			const notesRow = $('div.kb-set-row');
+			const notesLabel = $('span.kb-set-label'); notesLabel.textContent = '📝 笔记根目录';
+			const notesPath = $('span.kb-set-path'); notesPath.id = 'kbNotesPath';
+			notesPath.textContent = this.sectionUri(this._activeVault, 'notes').fsPath;
+			notesPath.title = this._activeVault.notesPath ?? '未自定义（使用默认「笔记」子文件夹）';
+			const notesBrowse = $('span.kb-set-btn.primary'); notesBrowse.id = 'kbNotesBrowse'; notesBrowse.textContent = '📂'; notesBrowse.title = '浏览笔记根目录…';
+			const notesManual = $('span.kb-set-btn'); notesManual.id = 'kbNotesManual'; notesManual.textContent = '📄'; notesManual.title = '手动输入 / 清空笔记根目录';
+			notesRow.append(notesLabel, notesPath, notesBrowse, notesManual);
+			this._settingsDD.appendChild(notesRow);
+
+			const notesHint = $('div.kb-set-hint'); notesHint.textContent = '将「笔记」分区指向自定义文件夹（留空则使用 Vault 内默认的「笔记」）';
+			this._settingsDD.appendChild(notesHint);
+
+			notesBrowse.onclick = (e) => { e.stopPropagation(); void this.pickNotesPath(notesPath.textContent); };
+			notesManual.onclick = (e) => {
+				e.stopPropagation();
+				const input = document.createElement('input');
+				input.className = 'kb-set-input';
+				input.value = notesPath.textContent;
+				input.placeholder = '留空回退到默认「笔记」';
+				notesPath.replaceWith(input);
+				input.focus(); input.select();
+				let done = false;
+				const commitNotes = (save: boolean) => {
+					if (done) { return; }
+					done = true;
+					if (save) { void this.applyNotesPath(input.value.trim()); }
+					else { this.renderSettingsPanel(); }
+				};
+				input.onkeydown = (ke) => {
+					if (ke.key === 'Enter') { ke.preventDefault(); commitNotes(true); }
+					else if (ke.key === 'Escape') { ke.preventDefault(); commitNotes(false); }
+				};
+				input.onblur = () => commitNotes(true);
+			};
+		}
 
 		// 快捷入口：打开当前知识库文件夹
 		const openRow = $('div.kb-set-row');
@@ -1272,6 +1335,44 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const rp = this._settingsDD.querySelector('#kbRootPath') as HTMLElement | null;
 		if (rp) { rp.textContent = this.rootUri.fsPath; }
 		this.notificationService.info(localize('kb.rootChanged', '知识库根目录已切换为：{0}', fsPath));
+	}
+
+	/** 调原生文件夹选择框，选取「笔记」分区根目录。 */
+	private async pickNotesPath(current: string): Promise<void> {
+		const picked = await this.fileDialogService.showOpenDialog({
+			title: localize('kb.pickNotes', '选择「笔记」根目录'),
+			canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+			defaultUri: URI.file(current),
+		});
+		if (!picked || !picked.length) { return; }
+		await this.applyNotesPath(picked[0].fsPath);
+	}
+
+	/** 应用「笔记」分区根目录：持久化 + 刷新笔记分区（及索引/图谱）。 */
+	private async applyNotesPath(dir: string): Promise<void> {
+		if (!this._activeVault) { return; }
+		const v = this._activeVault;
+		const fsPath = dir ? URI.file(dir).fsPath : '';
+		// 若指向 Vault 内默认「笔记」子文件夹，则视为未自定义（回退默认）
+		const defaultNotes = URI.joinPath(this.vaultUri(v), '笔记').fsPath;
+		v.notesPath = fsPath && fsPath !== defaultNotes ? fsPath : undefined;
+		this.saveVaults();
+		void this._logOp('vault.notesPath', 'success', { target: v.notesPath ?? '(default)' });
+
+		// 重建 Vault（确保自定义目录存在 + 刷新笔记树 / 索引上下文）
+		await this.activateVault(v);
+
+		// 刷新设置面板内的笔记路径展示
+		const np = this._settingsDD.querySelector('#kbNotesPath') as HTMLElement | null;
+		if (np) {
+			np.textContent = this.sectionUri(v, 'notes').fsPath;
+			np.title = v.notesPath ?? '未自定义（使用默认「笔记」子文件夹）';
+		}
+		this.notificationService.info(
+			v.notesPath
+				? localize('kb.notesChanged', '「笔记」根目录已切换为：{0}', v.notesPath)
+				: localize('kb.notesReset', '「笔记」根目录已回退为默认「笔记」子文件夹'),
+		);
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -2093,7 +2194,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				return;
 			}
 
-			const hits = await this._kbKernelService.searchVector(query, 6);
+			const hits = await this._kbKernelService.searchVector(query, 6, resolveAuxEmbeddingProviderId(this.configurationService));
 			if (!hits.length) {
 				resultEl.innerHTML = '<span style="color:var(--vscode-descriptionForeground,#888)">未找到相关知识片段。</span>';
 				return;
@@ -2223,7 +2324,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		try {
 			const status = this._kbKernelService.getVectorStatus();
 			if (!status.built || status.chunkCount === 0) { return; }
-			const hits = await this._kbKernelService.searchVector(q, 5);
+			const hits = await this._kbKernelService.searchVector(q, 5, resolveAuxEmbeddingProviderId(this.configurationService));
 			if (token !== this._searchToken) { return; } // 已被新搜索取代
 			if (!hits.length) { return; }
 			const sep = $('div.kb-search-head'); sep.textContent = `🧠 语义相关 ${hits.length} 条（向量索引）`;

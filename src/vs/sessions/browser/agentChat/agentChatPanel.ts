@@ -451,6 +451,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private readonly _onOpenSession?: (sessionId: string) => void;
 	private readonly _onRenameSession?: (sessionId: string, newName: string) => void;
 	private readonly _onDeleteSession?: (sessionId: string) => void;
+	private readonly _onForkSession?: (sessionId: string) => void;
 	private readonly _onOpenSettings?: () => void;
 	private readonly _onChangeMode?: (mode: ChatMode) => void;
 	private readonly _onSelectProvider?: (providerId: string) => void;
@@ -496,6 +497,9 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private readonly _onUpdateTask?: (planId: string, taskId: string, updates: Record<string, unknown>) => void;
 	private readonly _onDecomposeTask?: (planId: string, taskId: string) => void;
 	private readonly _onClosePlanDialog?: (planId: string) => void;
+	private readonly _onFavoriteMessage?: (messageContent: string) => void;
+	/** P2: 导入知识库按钮回调（与 onFavoriteMessage 走同一份 importMessageToKnowledgeBase 管线，仅入口不同） */
+	private readonly _onImportToKnowledgeBase?: (messageContent: string) => void;
 
 	constructor(opts: {
 		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => void;
@@ -513,6 +517,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		onOpenSession?: (sessionId: string) => void;
 		onRenameSession?: (sessionId: string, newName: string) => void;
 		onDeleteSession?: (sessionId: string) => void;
+		onForkSession?: (sessionId: string) => void;
 		onOpenSettings?: () => void;
 		onChangeMode?: (mode: ChatMode) => void;
 		onSelectProvider?: (providerId: string) => void;
@@ -558,6 +563,10 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		onUpdatePlan?: (planId: string, updates: Record<string, unknown>) => void;
 		onUpdateTask?: (planId: string, taskId: string, updates: Record<string, unknown>) => void;
 		onClosePlanDialog?: (planId: string) => void;
+		/** 收藏消息到知识库 */
+		onFavoriteMessage?: (messageContent: string) => void;
+		/** P2: 导入知识库（footer 复制按钮右侧，与 onFavoriteMessage 走同一份管线） */
+		onImportToKnowledgeBase?: (messageContent: string) => void;
 	}) {
 		super();
 		this._onSendMessage = opts.onSendMessage;
@@ -573,6 +582,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._onOpenSession = opts.onOpenSession;
 		this._onRenameSession = opts.onRenameSession;
 		this._onDeleteSession = opts.onDeleteSession;
+		this._onForkSession = opts.onForkSession;
 		this._onOpenSettings = opts.onOpenSettings;
 		this._onChangeMode = opts.onChangeMode;
 		this._onSelectProvider = opts.onSelectProvider;
@@ -613,6 +623,8 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._onUpdateTask = opts.onUpdateTask;
 		this._onDecomposeTask = opts.onDecomposeTask;
 		this._onClosePlanDialog = opts.onClosePlanDialog;
+		this._onFavoriteMessage = opts.onFavoriteMessage;
+		this._onImportToKnowledgeBase = opts.onImportToKnowledgeBase;
 
 		// TabbedPanelManager — 替代 systemMsgBar + queueBar，DOM 在 _renderInputArea 中创建
 		const self = this;
@@ -664,7 +676,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._messages = this._aggregateTurns(messages);
 		const tAgg = performance.now();
 		const diagStack = new Error().stack?.split('\n').slice(2,5).map(s => s.trim()).join(' ← ') || '?';
-		console.warn(`[ScrollDiag] setMessages count=${messages.length} _wasLoading=${this._wasLoading} isSending=${this._isSending} caller: ${diagStack}`);
+		console.debug(`[ScrollDiag] setMessages count=${messages.length} _wasLoading=${this._wasLoading} isSending=${this._isSending} caller: ${diagStack}`);
 		this._renderMessages();
 		const tRender = performance.now();
 		// 加载历史消息 → 标记 wasLoading，确保 instant 滚动
@@ -979,9 +991,17 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): void {
 		const { triggerExecuteNext = true } = options;
 		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-		console.warn(`[ScrollDiag] setSending(${sending}) wasSending=${this._isSending} caller: ${diagStack}`);
+		console.debug(`[ScrollDiag] setSending(${sending}) wasSending=${this._isSending} caller: ${diagStack}`);
 		this._isSending = sending;
 		this._updateSendButton();
+		// 流式期间显式确保 contentEditable 可编辑：频繁 DOM 更新可能重置 textarea 状态，
+		// 导致用户无法选中或输入文字（contentEditable 属性丢失或被重置为 inherit）。
+		if (sending && this._textarea) {
+			this._textarea.setAttribute('contenteditable', 'true');
+			if (!this._textarea.hasAttribute('tabindex')) {
+				this._textarea.setAttribute('tabindex', '0');
+			}
+		}
 		if (sending) {
 			// 追踪加载状态：新消息或切换 Agent 时，下一帧滚动用 instant
 			this._wasLoading = true;
@@ -2062,7 +2082,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _renderMessages(): void {
 		if (!this._messagesContainer) { return; }
 		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-		console.warn(`[ScrollDiag] _renderMessages count=${this._messages.length} _wasLoading=${this._wasLoading} caller: ${diagStack}`);
+		console.debug(`[ScrollDiag] _renderMessages count=${this._messages.length} _wasLoading=${this._wasLoading} caller: ${diagStack}`);
 		// Clean up all markdown disposables before clearing the DOM,
 		// to prevent renderMarkdown disposable leaks across setMessages calls.
 		this._cleanupMarkdownDisposables(this._messagesContainer);
@@ -2491,6 +2511,19 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// simple rendering for user messages.
 		// NOTE: Always use Markdown rendering for assistant messages (including streaming)
 		// to ensure code blocks, inline code, and other Markdown features render correctly.
+
+		// 附件（图片/文件）—— 与输入框 chip 样式一致，气泡内只读展示（无删除按钮，图片可点击放大）
+		if (isUser && msg.attachments && msg.attachments.length > 0) {
+			const attWrap = append(bubble, $('.message-attachments'));
+			attWrap.style.display = 'flex';
+			attWrap.style.flexWrap = 'wrap';
+			attWrap.style.gap = '4px';
+			attWrap.style.marginBottom = msg.content ? '6px' : '0';
+			for (const att of msg.attachments) {
+				attWrap.appendChild(this._createReadOnlyAttachmentChip(att));
+			}
+		}
+
 		if (isUser && msg.content) {
 			// Task prompt card: render from structured data when available
 			// (avoids the fragile regex-parse anti-pattern).
@@ -2530,6 +2563,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// 回退：工具调用存在但内容为空（流式输出早期阶段常见）
 			// 参考 void：工具调用作为独立的进度卡片渲染
 			this._appendToolCallsWithPhaseGroups(bubble, msg.toolCalls, msg.streamPhase);
+		}
+
+		// Assistant hover actions: 收藏按钮（仅 assistant 消息，内联在 parts/content 后、footer 前）
+		if (!isUser && msg.content && this._onFavoriteMessage) {
+			this._addMessageActionButtons(bubble, msg);
 		}
 
 		// Sub-agent cards (with grouping for parallel execution)
@@ -2664,6 +2702,39 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				}, 1500);
 			}
 		}));
+
+		// ── 导入知识库按钮（位于复制按钮右侧；走 importMessageToKnowledgeBase 管线，与顶部收藏按钮同源）──
+		if (this._onImportToKnowledgeBase) {
+			const importBtn = append(footer, $("button.chat-msg-action-btn.chat-msg-import-kb-btn")) as HTMLButtonElement;
+			importBtn.title = "导入知识库";
+			const importSvg = this._svgImportKbIcon();
+			importBtn.appendChild(importSvg);
+			let inFlight = false;
+			this._register(addDisposableListener(importBtn, EventType.CLICK, async (e: Event) => {
+				e.stopPropagation();
+				if (inFlight) { return; } // 防重入：一次导入未完成时屏蔽重复点击
+				inFlight = true;
+				importBtn.disabled = true;
+				try {
+					// 复制内容快照：避免流式/外部修改导致 callback 看到不一致文本
+					const snapshot = msg.content ?? '';
+					await this._onImportToKnowledgeBase!(snapshot);
+					// 视觉反馈：图标换成对号 + 绿色（1.5s 后还原）
+					importBtn.removeChild(importSvg);
+					const checkSvg = this._svgCheckSmall();
+					importBtn.appendChild(checkSvg);
+					importBtn.classList.add("chat-msg-import-kb-saved");
+					setTimeout(() => {
+						importBtn.classList.remove("chat-msg-import-kb-saved");
+						try { importBtn.removeChild(checkSvg); } catch { /* already removed */ }
+						importBtn.appendChild(importSvg);
+					}, 1500);
+				} finally {
+					importBtn.disabled = false;
+					inFlight = false;
+				}
+			}));
+		}
 
 		// ── 分隔线 ──
 		append(footer, $(".chat-bubble-footer-sep"));
@@ -3116,6 +3187,395 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 	// --- Tool call card (Void ToolHeaderWrapper parity) ---
 
+	// ─── 写文件专用卡片（diff 风格：文件名 + +/– 行数 + 查看文件）────────
+
+	/** 写文件/编辑文件专用卡片：语言标签 + 文件名 + diff 行数 + 查看文件 + 折叠按钮。 */
+	private _createWriteFileToolCard(tc: IToolCall, key: string): HTMLElement {
+		const isRunning = tc.status === 'running';
+		const isError = tc.status === 'error';
+
+		// 提取文件路径（fallback 链：tc.filePath → args.filePath → args.path）
+		const filePath = this._extractFilePath(tc);
+
+		// ── 状态驱动外壳 ──
+		let statusClass = 'tool-card-success';
+		if (isError) { statusClass = 'tool-card-error'; }
+		else if (isRunning) { statusClass = 'tool-card-running'; }
+		const wrapper = $(`.tool-header-wrapper.${statusClass}.write-file-tool-card`);
+		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
+
+		// ── Body（默认折叠）—— 必须先创建 body，折叠按钮 handler 才能引用 ──
+		const body = append(wrapper, $('.tool-header-children'));
+
+		// ── Header（diff 风格）──
+		const headerEl = append(wrapper, $('.tool-header.write-file-header'));
+		const row = append(headerEl, $('.tool-header-row'));
+
+		// 左侧：chevron + 标题（语言标签 + 文件名 + 修改标记 + diff 行数）
+		const left = append(row, $('.tool-header-left'));
+		const titleContainer = append(left, $('.tool-header-title-container.tool-header-title-clickable'));
+		const chevron = this._svgChevron(titleContainer, 'tool-header-chevron', 14);
+
+		// 文件名 + 修改标记
+		if (filePath) {
+			// 语言标签（基于文件扩展名）
+			const lang = this._getLanguageTag(filePath);
+			if (lang) {
+				const langEl = append(titleContainer, $('span.write-file-lang'));
+				langEl.textContent = lang;
+			}
+
+			const fileName = filePath.split(/[\\/]/).pop() || filePath;
+			const fileNameEl = append(titleContainer, $('span.write-file-name'));
+			fileNameEl.textContent = fileName;
+
+			const modEl = append(titleContainer, $('span.write-file-modified'));
+			modEl.textContent = isRunning ? '(运行中)' : key === 'patch' ? '(修改)' : '(新建)';
+		}
+
+		// diff 行数统计（绿色 +N / 红色 -N）
+		const diffStats = this._computeDiffStats(tc);
+		if (diffStats.added > 0 || diffStats.removed > 0) {
+			const diffEl = append(titleContainer, $('span.write-file-diff-stats'));
+			if (diffStats.added > 0) {
+				const addEl = append(diffEl, $('span.write-file-diff-add'));
+				addEl.textContent = `+${diffStats.added}`;
+			}
+			if (diffStats.removed > 0) {
+				const remEl = append(diffEl, $('span.write-file-diff-rem'));
+				remEl.textContent = `-${diffStats.removed}`;
+			}
+		}
+
+		// 点击标题区域（chevron + 文件名 + diff 统计）展开/折叠，不拦截内部按钮点击
+		this._register(addDisposableListener(titleContainer, EventType.CLICK, (e) => {
+			if ((e.target as HTMLElement)?.closest?.('button')) { return; }
+			e.stopPropagation();
+			const isExpanded = body.classList.toggle('tool-header-children-expanded');
+			if (isExpanded) {
+				this._toolCallExpandState.set(tc.id, true);
+				chevron.classList.add('tool-header-chevron-expanded');
+			} else {
+				this._toolCallExpandState.set(tc.id, false);
+				chevron.classList.remove('tool-header-chevron-expanded');
+			}
+		}));
+
+		// 右侧：状态图标 + 「查看文件」按钮
+		const right = append(row, $('.tool-header-right'));
+		// 查看文件按钮（始终显示）
+		if (this._onOpenFile && filePath && !isRunning) {
+			const viewLink = append(right, $('button.tool-view-file-link'));
+			viewLink.textContent = '查看文件';
+			viewLink.title = `在编辑器中打开 ${filePath}`;
+			this._register(addDisposableListener(viewLink, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onOpenFile?.(filePath);
+			}));
+		}
+		// 展开/折叠 toggle 按钮（chevron-down SVG，旋转 180° 表示展开态）
+		const collapseBtn = append(right, $('button.tool-collapse-btn')) as HTMLButtonElement;
+		collapseBtn.title = '展开/折叠';
+		this._svgChevronDown(collapseBtn, 'tool-collapse-icon');
+		this._register(addDisposableListener(collapseBtn, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			const isExpanded = body.classList.toggle('tool-header-children-expanded');
+			if (isExpanded) {
+				this._toolCallExpandState.set(tc.id, true);
+				chevron.classList.add('tool-header-chevron-expanded');
+				collapseBtn.classList.add('tool-collapse-expanded');
+			} else {
+				this._toolCallExpandState.set(tc.id, false);
+				chevron.classList.remove('tool-header-chevron-expanded');
+				collapseBtn.classList.remove('tool-collapse-expanded');
+			}
+		}));
+
+		const inner = append(body, $('.tool-children-wrapper'));
+		const innerBox = append(inner, $('.tool-children-wrapper-inner'));
+		innerBox.classList.add('write-file-body');
+
+		// 默认折叠（用户可点击展开查看 diff）
+		const expanded = this._toolCallExpandState.get(tc.id) ?? false;
+		if (expanded) {
+			body.classList.add('tool-header-children-expanded');
+			chevron.classList.add('tool-header-chevron-expanded');
+			collapseBtn.classList.add('tool-collapse-expanded');
+		}
+
+		// ── Body 内容：直接 diff 代码块（无 section 包装）──
+		if (isRunning && !tc.result) {
+			const placeholder = append(innerBox, $('.write-file-placeholder'));
+			placeholder.textContent = '正在写入文件...';
+		} else if (tc.result) {
+			const diffBlock = append(innerBox, $('.write-file-diff-block'));
+			if (diffStats.lines && diffStats.lines.length > 0) {
+				for (const line of diffStats.lines) {
+					const lineEl = append(diffBlock, $(`div.write-file-diff-line.write-file-diff-${line.type}`));
+					append(lineEl, $('span.write-file-diff-marker')).textContent = line.type === 'add' ? '+' : line.type === 'rem' ? '-' : ' ';
+					append(lineEl, $('span.write-file-diff-content')).textContent = line.text;
+				}
+			} else {
+				// 退化为纯文本预览
+				const pre = append(diffBlock, $('.write-file-diff-content'));
+				pre.textContent = tc.result;
+			}
+		}
+
+		// ── 错误详情（无 result 时）──
+		if (isError && tc.error && !tc.result) {
+			const bottom = append(wrapper, $('.tool-bottom-children'));
+			const bh = append(bottom, $('.tool-bottom-children-header'));
+			const bchevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
+			append(bh, $('span.tool-bottom-children-title')).textContent = '错误详情';
+			const bbody = append(bottom, $('.tool-bottom-children-body'));
+			append(bbody, $('.tool-bottom-children-content')).textContent = tc.error;
+			this._register(addDisposableListener(bh, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				const open = bbody.classList.toggle('tool-bottom-children-body-open');
+				bchevron.classList.toggle('tool-bottom-children-chevron-open', open);
+			}));
+		}
+
+		// 取消通知
+		if (tc.status === 'canceled') {
+			this._appendCanceledNotice(wrapper);
+		}
+
+		return wrapper;
+	}
+
+	/** 从 IToolCall 中提取文件路径：fallback 链 tc.filePath → args.filePath → args.path */
+	private _extractFilePath(tc: IToolCall): string {
+		if (tc.filePath) { return tc.filePath; }
+		try {
+			if (tc.args) {
+				const args = JSON.parse(tc.args);
+				for (const key of ['filePath', 'path', 'file', 'filepath']) {
+					if (typeof args[key] === 'string' && args[key].length > 0) {
+						return args[key];
+					}
+				}
+			}
+		} catch { /* ignore */ }
+		return '';
+	}
+
+	/** 根据文件扩展名返回语言标签（短文本） */
+	private _getLanguageTag(filePath: string): string {
+		const ext = filePath.split('.').pop()?.toLowerCase() || '';
+		const map: Record<string, string> = {
+			ts: 'TS', tsx: 'TSX', js: 'JS', jsx: 'JSX',
+			py: 'PY', java: 'JAVA', kt: 'KT', swift: 'SWIFT',
+			go: 'GO', rs: 'RS', cpp: 'C++', c: 'C', h: 'H',
+			html: 'HTML', css: 'CSS', scss: 'SCSS', less: 'LESS',
+			json: 'JSON', yaml: 'YAML', yml: 'YAML', xml: 'XML',
+			md: 'MD', sql: 'SQL', sh: 'SH', bash: 'SH', zsh: 'SH',
+			vue: 'VUE', svelte: 'SVELTE', dart: 'DART',
+		};
+		return map[ext] || ext.toUpperCase().slice(0, 4);
+	}
+
+	/** 折叠图标（chevron-down，与外部 chevron 方向一致） */
+	private _svgChevronDown(parent: HTMLElement, className: string): void {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		poly.setAttribute('points', '6 9 12 15 18 9');
+		svg.appendChild(poly);
+		parent.appendChild(svg);
+	}
+
+	/** 计算 diff 行数：优先从 args 中解析 search/replace 或 content，否则从 result 简单计算。 */
+	private _computeDiffStats(tc: IToolCall): { added: number; removed: number; lines: Array<{ type: 'add' | 'rem' | 'ctx'; text: string }> } {
+		try {
+			if (!tc.args) { return { added: 0, removed: 0, lines: [] }; }
+			const args = JSON.parse(tc.args);
+			// patch 模式：search + replace
+			if (typeof args['search'] === 'string' && typeof args['replace'] === 'string') {
+				const searchLines = args['search'].split('\n');
+				const replaceLines = args['replace'].split('\n');
+				return {
+					added: replaceLines.length,
+					removed: searchLines.length,
+					lines: [
+						...searchLines.map(text => ({ type: 'rem' as const, text })),
+						...replaceLines.map(text => ({ type: 'add' as const, text })),
+					],
+				};
+			}
+			// write 模式：content —— 新增文件，全是 +N
+			if (typeof args['content'] === 'string') {
+				const lines = args['content'].split('\n');
+				return { added: lines.length, removed: 0, lines: lines.map(text => ({ type: 'add' as const, text })) };
+			}
+		} catch { /* ignore */ }
+		return { added: 0, removed: 0, lines: [] };
+	}
+
+	// ─── 终端/控制台工具卡片（控制台 logo + 命令 + Run in Terminal + 折叠）──
+
+	/** 控制台工具卡片：单行命令（带终端 logo）+ 复制 + 独立终端 + ×折叠。 */
+	private _createTerminalToolCard(tc: IToolCall, key: string): HTMLElement {
+		const isRunning = tc.status === 'running';
+		const isError = tc.status === 'error';
+		const isSuccess = tc.status === 'success' || (!isRunning && !isError && tc.status !== 'approval_required' && tc.status !== 'rejected' && tc.status !== 'canceled');
+
+		// 提取命令字符串
+		let commandText = '';
+		try {
+			if (tc.args) {
+				const args = JSON.parse(tc.args);
+				commandText = typeof args['command'] === 'string' ? args['command']
+					: typeof args['cmd'] === 'string' ? args['cmd']
+					: typeof args['code'] === 'string' ? args['code'] : '';
+			}
+		} catch { /* ignore */ }
+
+		// ── 状态驱动外壳 ──
+		let statusClass = 'tool-card-success';
+		if (isError) { statusClass = 'tool-card-error'; }
+		else if (isRunning) { statusClass = 'tool-card-running'; }
+		else if (tc.status === 'skipped' || tc.status === 'canceled') { statusClass = 'tool-card-rejected'; }
+		const wrapper = $(`.tool-header-wrapper.${statusClass}.terminal-tool-card`);
+		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
+
+		// ── Header（单行命令 + 按钮）──
+		const headerEl = append(wrapper, $('.tool-header.terminal-header'));
+		const row = append(headerEl, $('.tool-header-row'));
+
+		// 左侧：终端 logo + 命令
+		const left = append(row, $('.tool-header-left.terminal-left'));
+		const titleContainer = append(left, $('.tool-header-title-container.tool-header-title-clickable'));
+		const chevron = this._svgChevron(titleContainer, 'tool-header-chevron', 14);
+
+		// 终端 logo（`>_` prompt 风格 SVG）
+		this._svgTerminalLogo(titleContainer, 'terminal-logo');
+		// 命令文本（去掉前缀"$ "，使用等宽字体）
+		const cmdEl = append(titleContainer, $('span.terminal-cmd-text'));
+		cmdEl.textContent = commandText || (isRunning ? '执行中…' : '(空命令)');
+
+		// 点击标题区域（chevron + logo + 命令文本）展开/折叠，但不拦截内部按钮点击
+		this._register(addDisposableListener(titleContainer, EventType.CLICK, (e) => {
+			if ((e.target as HTMLElement)?.closest?.('button')) { return; }
+			e.stopPropagation();
+			const isExpanded = body.classList.toggle('tool-header-children-expanded');
+			if (isExpanded) {
+				this._toolCallExpandState.set(tc.id, true);
+				chevron.classList.add('tool-header-chevron-expanded');
+			} else {
+				this._toolCallExpandState.set(tc.id, false);
+				chevron.classList.remove('tool-header-chevron-expanded');
+			}
+		}));
+
+		// 右侧：状态图标 + 复制 + Run in Terminal
+		const right = append(row, $('.tool-header-right'));
+		if (isRunning) {
+			this._svgSpinner(right, 'tool-header-spinner-icon');
+		} else if (isError) {
+			this._svgAlert(right, 'tool-header-error-icon');
+		} else if (isSuccess) {
+			this._svgCheck(right, 'tool-header-success-icon');
+		}
+		if (typeof tc.duration === 'number' && tc.duration >= 0 && !isRunning) {
+			append(right, $('span.tool-header-desc2')).textContent = this._formatDuration(tc.duration);
+		}
+		// 复制按钮
+		if (commandText) {
+			const copyBtn = append(right, $('button.terminal-copy-btn'));
+			copyBtn.title = '复制命令';
+			const copySvg = this._svgCopyIcon();
+			copyBtn.appendChild(copySvg);
+			this._register(addDisposableListener(copyBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				void this._copyToClipboard(commandText);
+				copyBtn.classList.add('terminal-copy-done');
+				setTimeout(() => copyBtn.classList.remove('terminal-copy-done'), 1200);
+			}));
+		}
+		// 独立终端按钮（绿色框图标）
+		if (this._onRunInTerminal && commandText && !isRunning) {
+			const termBtn = append(right, $('button.terminal-open-btn'));
+			termBtn.title = '在独立终端窗口中运行';
+			this._svgTerminalOpenIcon(termBtn, 'terminal-open-icon');
+			this._register(addDisposableListener(termBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onRunInTerminal?.(commandText);
+			}));
+		}
+		// ── Body（默认折叠）—— 提前创建以便 header 点击事件引用 ──
+		const body = append(wrapper, $('.tool-header-children'));
+		const inner = append(body, $('.tool-children-wrapper'));
+		const innerBox = append(inner, $('.tool-children-wrapper-inner'));
+		innerBox.classList.add('terminal-body');
+
+		const expanded = this._toolCallExpandState.get(tc.id) ?? false;
+		if (expanded) {
+			body.classList.add('tool-header-children-expanded');
+			chevron.classList.add('tool-header-chevron-expanded');
+		}
+
+		// ── Body 内容：直接放命令结果（无 section 标签）──
+		if (isRunning && !tc.result) {
+			const running = append(innerBox, $('.terminal-running-row'));
+			// 左侧占位文本 + 右侧「继续下一步」按钮
+			const placeholder = append(running, $('span.terminal-placeholder'));
+			placeholder.textContent = '运行中，详情可在终端查看';
+			// 继续下一步按钮：点击后标记跳过 + 取消执行（用户可继续后续步骤）
+			if (this._onCancelExecution) {
+				const continueBtn = append(running, $('button.terminal-continue-btn')) as HTMLButtonElement;
+				continueBtn.textContent = '继续下一步';
+				continueBtn.title = '不等待命令完成，标记为已跳过并继续后续步骤';
+				this._register(addDisposableListener(continueBtn, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					continueBtn.disabled = true;
+					continueBtn.textContent = '已跳过';
+					// 取消当前执行（agent 端 abort → onCancelExecution → bubble 显示「用户已取消」）
+					this._onCancelExecution?.();
+				}));
+			}
+		} else if (tc.result) {
+			const output = append(innerBox, $('.terminal-output-block'));
+			if (isError) { output.classList.add('terminal-output-error'); }
+			const pre = append(output, $('.terminal-output-content'));
+			pre.textContent = tc.result;
+			// exit code 徽标
+			if (typeof tc.exitCode === 'number') {
+				const ec = append(output, $(
+					`.tool-exit-code.${tc.exitCode === 0 ? 'tool-exit-code-zero' : 'tool-exit-code-nonzero'}`
+				));
+				ec.textContent = `exit code ${tc.exitCode}`;
+			}
+		}
+
+		// 错误详情
+		if (isError && tc.error && !tc.result) {
+			const bottom = append(wrapper, $('.tool-bottom-children'));
+			const bh = append(bottom, $('.tool-bottom-children-header'));
+			const bchevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
+			append(bh, $('span.tool-bottom-children-title')).textContent = '错误详情';
+			const bbody = append(bottom, $('.tool-bottom-children-body'));
+			append(bbody, $('.tool-bottom-children-content')).textContent = tc.error;
+			this._register(addDisposableListener(bh, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				const open = bbody.classList.toggle('tool-bottom-children-body-open');
+				bchevron.classList.toggle('tool-bottom-children-chevron-open', open);
+			}));
+		}
+
+		// ── 取消通知（canceled 状态）──
+		if (tc.status === 'canceled') {
+			this._appendCanceledNotice(wrapper);
+		}
+
+		return wrapper;
+	}
+
 	private _createToolCallCard(tc: IToolCall): HTMLElement {
 		const key = (tc.name || '').toLowerCase();
 
@@ -3124,12 +3584,23 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			return this._createPlanCard(tc);
 		}
 
+		// ── 写文件/编辑文件：diff 风格专用卡片（默认折叠）──
+		if (key === 'file_write' || key === 'patch' || key === 'file_edit' || key === 'create_file') {
+			return this._createWriteFileToolCard(tc, key);
+		}
+
+		// ── 终端命令：专用终端卡片（复刻 Void 风格：命令预览 + 输出代码块 + exit code）──
+		if (TOOL_TERMINAL_TOOLS.has(key)) {
+			return this._createTerminalToolCard(tc, key);
+		}
+
 		const isRunning = tc.status === 'running';
 		const isError = tc.status === 'error';
 		const isSuccess = tc.status === 'success' || (!isRunning && !isError && tc.status !== 'approval_required' && tc.status !== 'rejected' && tc.status !== 'canceled');
 		const isApproval = tc.status === 'approval_required';
 		const isRejected = tc.status === 'rejected';
 		const isCanceled = tc.status === 'canceled';
+		const isSkipped = tc.status === 'skipped';
 
 		// 状态驱动外壳类（与 void-tool-card.css 对齐）
 		let statusClass = 'tool-card-success';
@@ -3137,6 +3608,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		else if (isRunning) { statusClass = 'tool-card-running'; }
 		else if (isApproval) { statusClass = 'tool-card-approval'; }
 		else if (isRejected || isCanceled) { statusClass = 'tool-card-rejected'; }
+		else if (isSkipped) { statusClass = 'tool-card-rejected'; }
 		const wrapper = $(`.tool-header-wrapper.${statusClass}`);
 		// P2+: data-tool-id 用于增量更新——状态变化时按 ID 查找并更新单张卡片
 		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
@@ -3259,6 +3731,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		const body = append(wrapper, $('.tool-header-children'));
 		const inner = append(body, $('.tool-children-wrapper'));
 		const innerBox = append(inner, $('.tool-children-wrapper-inner'));
+		innerBox.classList.add('tool-section-body'); // 新：Content/Result 双区容器
 
 		// 展开态：跨流式重建保留用户选择，否则回退 defaultShow。
 		const expanded = this._toolCallExpandState.get(tc.id) ?? (tc.defaultShow === true);
@@ -3267,63 +3740,111 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			chevron.classList.add('tool-header-chevron-expanded');
 		}
 
-		// 参数
-		if (tc.args) {
-			try {
-				const parsed = JSON.stringify(JSON.parse(tc.args), null, 2);
-				if (parsed !== '{}') {
-					const code = append(innerBox, $('.tool-code-children'));
+		// ── Content Section：请求参数（可折叠）──
+		const hasArgs = tc.args && (() => {
+			try { return JSON.stringify(JSON.parse(tc.args), null, 2) !== '{}'; }
+			catch { return false; }
+		})();
+
+		if (hasArgs) {
+			this._appendToolSection(innerBox, {
+				label: '请求参数',
+				icon: 'content',
+				collapsed: false,
+				buildContent: (container) => {
+					const parsed = JSON.stringify(JSON.parse(tc.args!), null, 2);
+					const code = append(container, $('.tool-code-children'));
 					const sel = append(code, $('.tool-code-children-selectable'));
 					append(sel, $('pre')).textContent = parsed;
-				}
-			} catch { /* not JSON, skip */ }
+				},
+			});
 		}
 
-	// 结果（按工具类型分流：终端 / 列表 / 通用代码块 / 增强卡片）
-	if (tc.result) {
-		const resultText = tc.result;
-		// 尝试增强渲染——kanban/workflow/memory 等结构化结果用专用卡片
-		const enhanced = this._maybeCreateEnhancedResult(key, tc.result);
-		if (enhanced) {
-			innerBox.appendChild(enhanced);
-		} else if (TOOL_TERMINAL_TOOLS.has(key)) {
-				const term = append(innerBox, $('.tool-children-terminal'));
-				const codeBox = append(term, $('.tool-terminal-code'));
-				append(codeBox, $('pre')).textContent = resultText;
-				if (typeof tc.exitCode === 'number') {
-					const ec = append(term, $(`.tool-exit-code.${tc.exitCode === 0 ? 'tool-exit-code-zero' : 'tool-exit-code-nonzero'}`));
-					ec.textContent = `exit code ${tc.exitCode}`;
-				}
-			} else if (TOOL_LIST_TOOLS.has(key)) {
-				const items = this._parseToolListItems(resultText);
-				if (items && items.length > 0) {
-					for (const it of items) {
-						const itemEl = append(innerBox, $(`.tool-listable-item${it.path ? '.tool-listable-item-clickable' : ''}`));
-						const dot = append(itemEl, $('.tool-listable-item-dot'));
-						const dotSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-						dotSvg.setAttribute('viewBox', '0 0 100 40');
-						const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-						rect.setAttribute('x', '0'); rect.setAttribute('y', '15'); rect.setAttribute('width', '100'); rect.setAttribute('height', '10');
-						dotSvg.appendChild(rect);
-						dot.appendChild(dotSvg);
-						append(itemEl, $('div')).textContent = it.name;
-						if (it.path) {
-							const p = it.path;
-							itemEl.addEventListener('click', (e) => { e.stopPropagation(); this._onOpenFile?.(p); });
-						}
-					}
-				} else {
-					const code = append(innerBox, $('.tool-code-children'));
-					append(append(code, $('.tool-code-children-selectable')), $('pre')).textContent = resultText;
-				}
-			} else {
-				const code = append(innerBox, $('.tool-code-children'));
-				append(append(code, $('.tool-code-children-selectable')), $('pre')).textContent = resultText;
+		// ── Divider（双区都有内容时才显示）──
+		if (hasArgs && tc.result) {
+			append(innerBox, $('.tool-section-divider'));
+		}
+
+		// ── Result Section：执行结果（可折叠）──
+		if (tc.result || isRunning) {
+			// 状态徽标
+			let statusBadge = '';
+			let statusBadgeClass = '';
+			if (isRunning) { statusBadge = '执行中'; statusBadgeClass = 'tool-section-badge-running'; }
+			else if (isError) { statusBadge = '失败'; statusBadgeClass = 'tool-section-badge-error'; }
+			else if (isSuccess) { statusBadge = '成功'; statusBadgeClass = 'tool-section-badge-success'; }
+
+			// 元信息
+			let metaText = '';
+			if (typeof tc.duration === 'number' && tc.duration >= 0) {
+				metaText = this._formatDuration(tc.duration);
 			}
+			if (typeof tc.exitCode === 'number') {
+				metaText = metaText ? `${metaText} · exit ${tc.exitCode}` : `exit ${tc.exitCode}`;
+			}
+
+			this._appendToolSection(innerBox, {
+				label: '执行结果',
+				icon: 'result',
+				collapsed: false,
+				badge: statusBadge,
+				badgeClass: statusBadgeClass,
+				meta: metaText,
+				buildContent: (container) => {
+					if (isRunning && !tc.result) {
+						const placeholder = append(container, $('.tool-section-placeholder'));
+						placeholder.textContent = '等待结果返回...';
+						return;
+					}
+					const resultText = tc.result!;
+					// 增强渲染
+					const enhanced = this._maybeCreateEnhancedResult(key, resultText);
+					if (enhanced) {
+						container.appendChild(enhanced);
+					} else if (TOOL_TERMINAL_TOOLS.has(key)) {
+						const term = append(container, $('.tool-children-terminal'));
+						const codeBox = append(term, $('.tool-terminal-code'));
+						append(codeBox, $('pre')).textContent = resultText;
+						if (typeof tc.exitCode === 'number') {
+							const ec = append(term, $(`.tool-exit-code.${tc.exitCode === 0 ? 'tool-exit-code-zero' : 'tool-exit-code-nonzero'}`));
+							ec.textContent = `exit code ${tc.exitCode}`;
+						}
+					} else if (TOOL_LIST_TOOLS.has(key)) {
+						const items = this._parseToolListItems(resultText);
+						if (items && items.length > 0) {
+							for (const it of items) {
+								const itemEl = append(container, $(`.tool-listable-item${it.path ? '.tool-listable-item-clickable' : ''}`));
+								const dot = append(itemEl, $('.tool-listable-item-dot'));
+								const dotSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+								dotSvg.setAttribute('viewBox', '0 0 100 40');
+								const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+								rect.setAttribute('x', '0'); rect.setAttribute('y', '15'); rect.setAttribute('width', '100'); rect.setAttribute('height', '10');
+								dotSvg.appendChild(rect);
+								dot.appendChild(dotSvg);
+								append(itemEl, $('div')).textContent = it.name;
+								if (it.path) {
+									const p = it.path;
+									itemEl.addEventListener('click', (e) => { e.stopPropagation(); this._onOpenFile?.(p); });
+								}
+							}
+						} else {
+							const code = append(container, $('.tool-code-children'));
+							append(append(code, $('.tool-code-children-selectable')), $('pre')).textContent = resultText;
+						}
+					} else {
+						const code = append(container, $('.tool-code-children'));
+						const sel = append(code, $('.tool-code-children-selectable'));
+						if (isError) { code.classList.add('tool-result-error'); }
+						append(sel, $('pre')).textContent = resultText;
+					}
+				},
+			});
 		}
 
 		// 错误（底部可折叠区，void BottomChildren）
-		if (isError && tc.error) {
+		// 仅在 Result 区没有内容时才显示底部「错误详情」折叠区——避免错误信息与 Result 区域内容重复。
+		// 已有 result 时，错误信息已在 Result 区（带红色错误样式）展示，无需再渲染底部折叠。
+		if (isError && tc.error && !tc.result) {
 			const bottom = append(wrapper, $('.tool-bottom-children'));
 			const bh = append(bottom, $('.tool-bottom-children-header'));
 			const bchevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
@@ -3358,6 +3879,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private static _svgCopyTpl: SVGElement | null = null;
 	private static _svgCheckTpl: SVGElement | null = null;
 	private static _svgUndoTpl: SVGElement | null = null;
+	private static _svgImportKbTpl: SVGElement | null = null;
 
 	private _svgChevron(parent: HTMLElement, className: string, size: number): SVGElement {
 		if (!AgentChatPanel._svgChevronTpl) {
@@ -3467,6 +3989,108 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}
 
 		return wrapper;
+	}
+
+	// ─── Content/Result 双区 Section 辅助方法 ───────────────────────
+
+	/** 通用工具卡分区：可折叠 header（图标+标签+状态徽标+元信息） + 内容体。 */
+	private _appendToolSection(
+		parent: HTMLElement,
+		opts: {
+			label: string;
+			icon: 'content' | 'result';
+			collapsed: boolean;
+			badge?: string;
+			badgeClass?: string;
+			meta?: string;
+			buildContent: (container: HTMLElement) => void;
+		},
+	): void {
+		const wrapper = append(parent, $('.tool-section'));
+
+		// Header row
+		const header = append(wrapper, $('.tool-section-header'));
+		const chevron = this._svgChevron(header, 'tool-section-chevron', 12);
+		if (!opts.collapsed) { chevron.classList.add('tool-section-chevron-open'); }
+
+		// Icon
+		if (opts.icon === 'content') { this._svgSectionContent(header, 'tool-section-icon'); }
+		else { this._svgSectionResult(header, 'tool-section-icon'); }
+
+		// Label
+		const label = append(header, $('span.tool-section-label'));
+		label.textContent = opts.label;
+
+		// Status badge
+		if (opts.badge && opts.badgeClass) {
+			const badge = append(header, $('span.tool-section-badge'));
+			badge.textContent = opts.badge;
+			badge.classList.add(opts.badgeClass);
+		}
+
+		// Meta (right-aligned)
+		if (opts.meta) {
+			const meta = append(header, $('span.tool-section-meta'));
+			meta.textContent = opts.meta;
+		}
+
+		// Content
+		const content = append(wrapper, $('.tool-section-content'));
+		if (opts.collapsed) { content.classList.add('tool-section-content-collapsed'); }
+		opts.buildContent(content);
+
+		// Toggle collapse
+		this._register(addDisposableListener(header, EventType.CLICK, (e) => {
+			e.stopPropagation();
+			const isCollapsed = content.classList.toggle('tool-section-content-collapsed');
+			if (isCollapsed) {
+				chevron.classList.remove('tool-section-chevron-open');
+			} else {
+				chevron.classList.add('tool-section-chevron-open');
+			}
+		}));
+	}
+
+	/** Content 区图标（文件/参数）*/
+	private _svgSectionContent(parent: HTMLElement, className: string): void {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', '12'); svg.setAttribute('height', '12');
+		svg.setAttribute('viewBox', '0 0 24 24');
+		svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor');
+		svg.setAttribute('stroke-width', '2');
+		const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		path.setAttribute('d', 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z');
+		svg.appendChild(path);
+		const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		poly.setAttribute('points', '14 2 14 8 20 8');
+		svg.appendChild(poly);
+		parent.appendChild(svg);
+	}
+
+	/** Result 区图标（输出/结果）*/
+	private _svgSectionResult(parent: HTMLElement, className: string): void {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', '12'); svg.setAttribute('height', '12');
+		svg.setAttribute('viewBox', '0 0 24 24');
+		svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor');
+		svg.setAttribute('stroke-width', '2');
+		const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		path.setAttribute('d', 'M9 12l2 2 4-4');
+		svg.appendChild(path);
+		const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+		rect.setAttribute('x', '3'); rect.setAttribute('y', '3');
+		rect.setAttribute('width', '18'); rect.setAttribute('height', '18');
+		rect.setAttribute('rx', '2');
+		svg.appendChild(rect);
+		parent.appendChild(svg);
+	}
+
+	/** 已取消状态的通知条 */
+	private _appendCanceledNotice(wrapper: HTMLElement): void {
+		const notice = append(wrapper, $('.tool-rejected-notice'));
+		notice.textContent = '命令已取消';
 	}
 
 	private _parsePlanArgs(args: Record<string, unknown> | undefined): {
@@ -4946,6 +5570,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 */
 	private _addMessageActionButtons(container: HTMLElement, msg: IAgentChatMessage): void {
 		const actions = append(container, $(".chat-msg-actions"));
+		const isAssistant = msg.role === 'assistant';
 
 		if (this._onEditMessage) {
 			const editBtn = append(actions, $("button.chat-msg-action-btn.chat-msg-edit-btn"));
@@ -4992,6 +5617,25 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 					}
 				} catch { /* ignore */ }
 				this._openUndoConfirmDialog();
+			}));
+		}
+
+		// 4. 收藏按钮 — 收藏到知识库并自动归类
+		if (isAssistant && this._onFavoriteMessage && msg.content) {
+			const favBtn = append(actions, $("button.chat-msg-action-btn.chat-msg-fav-btn"));
+			favBtn.title = "收藏到知识库";
+			favBtn.appendChild(this._svgFavoriteIcon());
+			this._register(addDisposableListener(favBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onFavoriteMessage?.(msg.content);
+				// 视觉反馈：星形变实心 + 短暂高亮
+				const svg = favBtn.querySelector('svg');
+				if (svg) { svg.setAttribute('fill', 'currentColor'); svg.style.color = 'var(--void-warn, #d4a72c)'; }
+				favBtn.classList.add('chat-msg-fav-saved');
+				setTimeout(() => {
+					favBtn.classList.remove('chat-msg-fav-saved');
+					if (svg) { svg.removeAttribute('fill'); svg.style.color = ''; }
+				}, 1500);
 			}));
 		}
 	}
@@ -5366,6 +6010,103 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			AgentChatPanel._svgUndoTpl = svg;
 		}
 		return AgentChatPanel._svgUndoTpl.cloneNode(true) as SVGElement;
+	}
+
+	/** 收藏按钮图标（星形）*/
+	private _svgFavoriteIcon(): SVGElement {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+		polygon.setAttribute('points', '12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2');
+		svg.appendChild(polygon);
+		return svg;
+	}
+
+	/** 终端/控制台 logo（`>_` 提示符风格） */
+	private _svgTerminalLogo(parent: HTMLElement, className: string): SVGElement {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', '16'); svg.setAttribute('height', '16');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		// 终端屏幕外框
+		const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+		rect.setAttribute('x', '2'); rect.setAttribute('y', '4');
+		rect.setAttribute('width', '20'); rect.setAttribute('height', '16');
+		rect.setAttribute('rx', '2');
+		svg.appendChild(rect);
+		// `>` 提示符
+		const poly1 = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+		poly1.setAttribute('points', '6 9 10 12 6 15');
+		svg.appendChild(poly1);
+		// 下划线（光标）
+		const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		line.setAttribute('x1', '12'); line.setAttribute('y1', '15');
+		line.setAttribute('x2', '17'); line.setAttribute('y2', '15');
+		svg.appendChild(line);
+		parent.appendChild(svg);
+		return svg;
+	}
+
+	/** 独立终端打开按钮图标（绿色方框 + 箭头，Run in Terminal 风格） */
+	private _svgTerminalOpenIcon(parent: HTMLElement, className: string): void {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('class', className);
+		svg.setAttribute('width', '16'); svg.setAttribute('height', '16');
+		svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+		// 终端方框
+		const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+		rect.setAttribute('x', '2'); rect.setAttribute('y', '4');
+		rect.setAttribute('width', '20'); rect.setAttribute('height', '16');
+		rect.setAttribute('rx', '2');
+		svg.appendChild(rect);
+		// 顶部装饰线
+		const top = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		top.setAttribute('d', 'M2 8h20');
+		svg.appendChild(top);
+		// 播放箭头
+		const play = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+		play.setAttribute('points', '9.5 12 14 14 9.5 16');
+		play.setAttribute('fill', 'currentColor');
+		play.setAttribute('stroke', 'none');
+		svg.appendChild(play);
+		parent.appendChild(svg);
+	}
+
+	/**
+	 * 导入知识库按钮图标（书本 + 加号，Lucide book-plus 风格）。
+	 * 与现有按钮图标风格一致（24×24、stroke-width=2、round 端点）。
+	 */
+	private _svgImportKbIcon(): SVGElement {
+		if (!AgentChatPanel._svgImportKbTpl) {
+			const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			svg.setAttribute('width', '14'); svg.setAttribute('height', '14');
+			svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+			svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+			svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+			// 书脊（左侧）：闭合矩形 + 顶部折痕
+			const path1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			path1.setAttribute('d', 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20');
+			svg.appendChild(path1);
+			const path2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			path2.setAttribute('d', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z');
+			svg.appendChild(path2);
+			// 中央 + 号（添加到知识库）
+			const lineV = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+			lineV.setAttribute('x1', '12'); lineV.setAttribute('y1', '8'); lineV.setAttribute('x2', '12'); lineV.setAttribute('y2', '14');
+			svg.appendChild(lineV);
+			const lineH = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+			lineH.setAttribute('x1', '9'); lineH.setAttribute('y1', '11'); lineH.setAttribute('x2', '15'); lineH.setAttribute('y2', '11');
+			svg.appendChild(lineH);
+			AgentChatPanel._svgImportKbTpl = svg;
+		}
+		return AgentChatPanel._svgImportKbTpl.cloneNode(true) as SVGElement;
 	}
 
 	/**
@@ -5906,12 +6647,24 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			$("div.chat-composer-textarea"),
 		) as HTMLElement;
 		this._textarea.setAttribute('contenteditable', 'true');
+		this._textarea.setAttribute('tabindex', '0');
 		this._textarea.setAttribute('data-placeholder', `Message ${emp.name}...`);
 		this._textarea.setAttribute('role', 'textbox');
 		this._textarea.setAttribute('aria-multiline', 'true');
 		this._textarea.setAttribute('aria-label', `Message ${emp.name}...`);
 		// 流式输出过程中不再禁用输入框——用户可继续输入新消息排队
 		// this._textarea.disabled = this._isSending;  ← 已移除
+
+		// 防御修复：流式期间 DOM 更新可能破坏 contentEditable 状态。
+		// 每次用户点击/mousedown 显式确保 contentEditable=true + tabIndex=0。
+		this._register(addDisposableListener(this._textarea, EventType.MOUSE_DOWN, () => {
+			if (this._textarea.getAttribute('contenteditable') !== 'true') {
+				this._textarea.setAttribute('contenteditable', 'true');
+			}
+			if (!this._textarea.hasAttribute('tabindex')) {
+				this._textarea.setAttribute('tabindex', '0');
+			}
+		}));
 
 		// 恢复保存的输入框高度
 		try {
@@ -6046,12 +6799,32 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		}));
 		} // end else (drag overlay 已存在则跳过)
 
-		// Paste image/file
+		// Paste handling — 文本走「格式化粘贴」（去除样式），图片/文件保持 chip 显示
 		this._register(addDisposableListener(this._textarea, EventType.PASTE, (e) => {
 			const clipboardData = (e as ClipboardEvent).clipboardData;
-			if (!clipboardData?.files.length) { return; }
-			const imageFiles = Array.from(clipboardData.files).filter(f => f.type.startsWith("image/"));
-			if (imageFiles.length > 0) { e.preventDefault(); this._addFiles(imageFiles, true); }
+			if (!clipboardData) { return; }
+
+			// 有图片/文件 → 保持本地图片/文件 chip 显示（原逻辑），不做格式化、不受影响
+			if (clipboardData.files?.length) {
+				const imageFiles = Array.from(clipboardData.files).filter(f => f.type.startsWith("image/"));
+				if (imageFiles.length > 0) {
+					e.preventDefault();
+					this._addFiles(imageFiles, true);
+				}
+				return;
+			}
+
+			// 纯文本 / 富文本 → 格式化粘贴：剥离样式，只插入纯文本（不展示样式）。
+			// 图片/文件 chip 由上面分支处理，本分支不会影响其显示。
+			e.preventDefault();
+			let plain = clipboardData.getData('text/plain');
+			if (!plain) {
+				const html = clipboardData.getData('text/html');
+				if (html) { plain = html.replace(/<[^>]+>/g, ''); }
+			}
+			if (plain) {
+				this._insertTextAtCaret(plain);
+			}
 		}));
 
 		// Attachment preview area — 已移至内联芯片模式（附件直接嵌入 contentEditable 文本流中）
@@ -6154,6 +6927,46 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 							this._removeSkillChip(lastChip.id);
 							return;
 						}
+					}
+
+					// ── 编辑快捷键（contentEditable 内优先于 VS Code 宿主 keybinding）──
+					// Ctrl+A：全选（选区覆盖整个 contentEditable 文本）
+					if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+						e.preventDefault();
+						e.stopPropagation();
+						const sel = window.getSelection();
+						const textarea = this._textarea;
+						if (sel && textarea) {
+							const range = document.createRange();
+							range.selectNodeContents(textarea);
+							sel.removeAllRanges();
+							sel.addRange(range);
+						}
+						return;
+					}
+					// Ctrl+Z：撤销
+					if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+						e.preventDefault();
+						e.stopPropagation();
+						document.execCommand('undo');
+						return;
+					}
+					// Ctrl+Y / Ctrl+Shift+Z：重做
+					if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+						e.preventDefault();
+						e.stopPropagation();
+						document.execCommand('redo');
+						return;
+					}
+					// Ctrl+C / Ctrl+X：复制 / 剪切（contentEditable 内让浏览器默认行为生效，但要阻止 VS Code 捕获）
+					if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'x' || e.key === 'v')) {
+						// Ctrl+V 已有独立 PASTE 监听器处理格式化粘贴 / 图片 chip，此处不拦截
+						// Ctrl+C / Ctrl+X 只用 stopPropagation 阻止 VS Code 宿主捕获，让浏览器默认行为生效
+						if (e.key === 'c' || e.key === 'x') {
+							e.stopPropagation(); // 阻止 VS Code 宿主 keybinding 拦截
+						}
+						// 不调 preventDefault，保留浏览器默认行为
+						return;
 					}
 
 					if (e.key === "Enter" && !e.shiftKey) {
@@ -8057,6 +8870,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			{
 				onRenameSession: this._onRenameSession,
 				onDeleteSession: this._onDeleteSession,
+				onForkSession: this._onForkSession,
 				onOpenSession: this._onOpenSession,
 				onNewSession: this._onNewSession,
 				onClose: () => { this._activeHeaderPanel = null; this._render(); },
@@ -8681,7 +9495,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	private _startStreamScroll(): void {
 		if (this._streamScrollRaf !== null) { return; }
 		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-		console.warn(`[ScrollDiag] _startStreamScroll START caller: ${diagStack}`);
+		console.debug(`[ScrollDiag] _startStreamScroll START caller: ${diagStack}`);
 		const tick = () => {
 			this._streamScrollRaf = null;
 			// 流式结束 → 停止循环（唯一合法的停止条件）
@@ -8703,7 +9517,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			cancelAnimationFrame(this._streamScrollRaf);
 			this._streamScrollRaf = null;
 			const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-			console.warn(`[ScrollDiag] _stopStreamScroll STOP caller: ${diagStack}`);
+			console.debug(`[ScrollDiag] _stopStreamScroll STOP caller: ${diagStack}`);
 		}
 	}
 
@@ -8911,7 +9725,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			const delta = this._messagesContainer.scrollTop - prevTop;
 			const hDelta = this._messagesContainer.scrollHeight - prevHeight;
 			if (Math.abs(delta) > 5 || hDelta !== 0) {
-				console.warn(`[ScrollDiag] _scrollToBottom force=${force} instant=${instant} prevScroll=${prevTop}→${this._messagesContainer.scrollTop} (Δ${delta}) scrollH=${prevHeight}→${this._messagesContainer.scrollHeight} (Δ${hDelta}) wasAtBtm=${wasAtBtm} isSending=${this._isSending} isAtBtm=${this._isAtBottom}\n  caller: ${diagStack}`);
+				console.debug(`[ScrollDiag] _scrollToBottom force=${force} instant=${instant} prevScroll=${prevTop}→${this._messagesContainer.scrollTop} (Δ${delta}) scrollH=${prevHeight}→${this._messagesContainer.scrollHeight} (Δ${hDelta}) wasAtBtm=${wasAtBtm} isSending=${this._isSending} isAtBtm=${this._isAtBottom}\n  caller: ${diagStack}`);
 			}
 		}
 	}
@@ -9091,6 +9905,39 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 			// hover 时显示图片缩略图预览
 			this._register(addDisposableListener(chip, EventType.MOUSE_ENTER, () => {
 				if ((chip.querySelector('.inline-attachment-chip-remove') as HTMLElement)?.matches(':hover')) { return; }
+				this._showImageTooltip(att, chip);
+			}));
+			this._register(addDisposableListener(chip, EventType.MOUSE_LEAVE, () => this._hideImageTooltip()));
+		}
+		return chip;
+	}
+
+	/**
+	 * 气泡内只读附件 chip：样式与输入框 `inline-attachment-chip` 完全一致
+	 * （图标 + 文件名，圆角胶囊），但不可删除（消息已发送）。
+	 * 图片点击放大（lightbox + hover 缩略图预览），与输入框 chip 行为对齐。
+	 */
+	private _createReadOnlyAttachmentChip(att: IChatAttachment): HTMLElement {
+		const chip = document.createElement('span');
+		chip.className = 'inline-attachment-chip message-attachment-chip';
+		chip.dataset.attId = att.id;
+		chip.setAttribute('contenteditable', 'false');
+
+		const icon = document.createElement('span');
+		icon.className = 'inline-attachment-chip-icon';
+		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : '\u{1F4C4}';
+		chip.appendChild(icon);
+
+		const label = document.createElement('span');
+		label.className = 'inline-attachment-chip-label';
+		label.textContent = att.name;
+		chip.appendChild(label);
+
+		if (att.type === 'image' && att.data) {
+			this._register(addDisposableListener(chip, EventType.CLICK, () => {
+				this._showLightbox(`data:${att.mimeType};base64,${att.data}`);
+			}));
+			this._register(addDisposableListener(chip, EventType.MOUSE_ENTER, () => {
 				this._showImageTooltip(att, chip);
 			}));
 			this._register(addDisposableListener(chip, EventType.MOUSE_LEAVE, () => this._hideImageTooltip()));

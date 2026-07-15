@@ -420,6 +420,22 @@ export interface AgentBinding {
 	memoryConfig?: AgentMemoryConfig;
 	createdAt: string;
 	updatedAt: string;
+	/**
+	 * 临时 worktree 覆盖标记：仅由 AgentDriver 在 task 执行期临时改写
+	 * binding.worktreePath 时设置。用于进程崩溃/重启后的启动自愈——
+	 * 若此标记残留，说明上次 task 未完成、worktreePath 卡在临时值，
+	 * 启动时恢复为 originalWorktreePath。
+	 * 普通用户/系统手动设置的 worktreePath 不带此标记，启动扫描绝不触碰，
+	 * 因此绝不会误清合法绑定。
+	 */
+	tempWorktreeOverride?: {
+		/** 覆盖前的原始 worktreePath（undefined 表示原本未绑定）。 */
+		originalWorktreePath?: string;
+		/** 占用该临时值的 owner 标识（driver turnId），仅用于诊断。 */
+		owner: string;
+		/** 覆盖发生时间戳（ms），用于诊断/过期判断。 */
+		timestamp: number;
+	};
 }
 
 /**
@@ -587,6 +603,12 @@ export interface Workspace {
 	 * are boolean (true = excluded).
 	 */
 	filesExclude?: Record<string, boolean>;
+	/**
+	 * 用户通过「允许此工作区」显式追加的安全沙箱允许根目录。
+	 * 这些根会被 builtinToolProvider 的路径校验纳入允许集（持久化），
+	 * 区别于常规工作区目录（relatedFolders）与 ~/.saros 内部目录。
+	 */
+	sandboxRoots?: string[];
 }
 
 /**
@@ -610,6 +632,12 @@ export function migrateWorkspace(raw: any): Workspace {
 				addedAt: typeof f.addedAt === 'string' ? f.addedAt : new Date().toISOString(),
 				isGitRepo: typeof f.isGitRepo === 'boolean' ? f.isGitRepo : undefined,
 			}));
+	}
+	if (!Array.isArray(raw.sandboxRoots)) {
+		raw.sandboxRoots = [];
+	} else {
+		raw.sandboxRoots = raw.sandboxRoots
+			.filter((p: any) => typeof p === 'string' && p.length > 0);
 	}
 	if (!Array.isArray(raw.agents)) {
 		raw.agents = [];

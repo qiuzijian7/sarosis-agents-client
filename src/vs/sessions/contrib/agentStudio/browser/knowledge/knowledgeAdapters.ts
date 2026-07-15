@@ -17,6 +17,7 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { BUILTIN_BYOK_PROVIDERS } from '../builtInBYOKModelProvider.js';
 import { IChatModel, OpenAICompatibleJsonModel } from './engine/llm.js';
 import { IEmbedder } from './engine/embedder.js';
+import { resolveEmbeddingConfigForProvider, embedTextsViaProvider } from './builtinEmbeddingProvider.js';
 
 /** Per-provider sensible default model ids (override via tool `model` arg). */
 const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
@@ -64,6 +65,9 @@ export function resolveChatModel(config: IConfigurationService, opts: ResolveCha
 		model,
 		timeoutMs: 180_000,
 		verboseFallback: true,
+		// P2 修复：Electron renderer sandbox 中 globalThis.fetch 直接调用会触发
+		// "Illegal invocation"。Arrow wrapper 保留 this 绑定。
+		fetchImpl: (input, init) => globalThis.fetch(input, init),
 	});
 }
 
@@ -97,3 +101,42 @@ export function createEmbedder(svc: IAiEmbeddingVectorService): IEmbedder {
 }
 
 export type { ILogService };
+
+/**
+ * 知识库专属 embedder：使用指定 BYOK provider 的 baseUrl/apiKey（即知识库 agent
+ * 当前配置的 provider），模型取传入的 embedding 模型（复用 embedding 设置）。
+ *
+ * 这与 `createEmbedder`（走全局 IAiEmbeddingVectorService）不同：KB 操作的 embedding
+ * 必须跟着知识库 agent 的 provider 走，而非遍历所有 provider 取首个可用。
+ */
+export function createKbEmbedder(
+	config: IConfigurationService,
+	logService: ILogService,
+	opts: { providerId: string; model: string; dimensions: number },
+): IEmbedder {
+	const log = (msg: string) => logService.trace(`[KbEmbedder] ${msg}`);
+
+	const resolved = resolveEmbeddingConfigForProvider(config, opts.providerId);
+	if (!resolved) {
+		throw new Error(
+			`KbEmbedder: provider "${opts.providerId}" is not configured. ` +
+			'Configure its API key/base URL in Settings → Agent Studio → Model Providers.'
+		);
+	}
+
+	const baseUrl = resolved.baseUrl;
+	const apiKey = resolved.apiKey;
+	const model = opts.model?.trim() || resolved.model;
+	const dimensions = opts.dimensions || resolved.dimensions;
+
+	return {
+		dimensions,
+		async embed(texts: string[]): Promise<number[][]> {
+			return embedTextsViaProvider(baseUrl, apiKey, model, texts, CancellationToken.None, log);
+		},
+		async embedOne(text: string): Promise<number[]> {
+			const v = await embedTextsViaProvider(baseUrl, apiKey, model, [text], CancellationToken.None, log);
+			return v[0];
+		},
+	};
+}

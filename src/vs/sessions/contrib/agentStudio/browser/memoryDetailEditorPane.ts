@@ -719,7 +719,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 	// ─── Audit View ─────────────────────────────────────────────────────
 
-	private _renderAuditView(): void {
+	private async _renderAuditView(): Promise<void> {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
@@ -733,9 +733,10 @@ export class MemoryDetailEditorPane extends EditorPane {
 			return;
 		}
 
-		// Audit summary
+		// Audit summary（Opt1 异步转发到网关）
 		try {
-			const summary = memProvider.getAuditSummary?.();
+			let summary = memProvider.getAuditSummary?.();
+			if (summary instanceof Promise) { summary = await summary; }
 			if (summary && Object.keys(summary).length > 0) {
 				const summaryDiv = append(this._container, $('.md-stats'));
 				summaryDiv.style.padding = '8px 20px';
@@ -746,7 +747,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 		} catch { /* best effort */ }
 
 		try {
-			const log = memProvider.getAuditLog({ limit: 200 });
+			let log = memProvider.getAuditLog({ limit: 200 });
+			if (log instanceof Promise) { log = await log; }
 			if (!log || log.length === 0) {
 				this._renderEmpty('暂无审计日志');
 				return;
@@ -822,7 +824,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 	// ─── Commits View (Git integration) ─────────────────────────────────
 
-	private _renderCommitsView(): void {
+	private async _renderCommitsView(): Promise<void> {
 		if (!this._container) { return; }
 		const memProvider = this._agentOSService.getActiveMemoryProvider();
 		const header = append(this._container, $('.md-header'));
@@ -836,9 +838,10 @@ export class MemoryDetailEditorPane extends EditorPane {
 			return;
 		}
 
-		// Commit stats summary
+		// Commit stats summary（Opt1 异步转发到网关）
 		try {
-			const stats = memProvider.getCommitStats?.();
+			let stats = memProvider.getCommitStats?.();
+			if (stats instanceof Promise) { stats = await stats; }
 			if (stats && typeof stats === 'object') {
 				const statsDiv = append(this._container, $('.md-stats'));
 				statsDiv.style.padding = '8px 20px';
@@ -851,7 +854,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 		} catch { /* best effort */ }
 
 		try {
-			const commits = memProvider.getRecentCommits(50);
+			let commits = memProvider.getRecentCommits(50);
+			if (commits instanceof Promise) { commits = await commits; }
 			if (!commits || commits.length === 0) {
 				this._renderEmpty('暂无 Git 提交记录。提交代码后将自动捕获。');
 				return;

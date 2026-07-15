@@ -15,12 +15,76 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import { AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING, AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING } from '../common/constants.js';
+import type { AgentBinding } from '../../../common/agentStudioTypes.js';
+import { AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING, AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING, AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING } from '../common/constants.js';
 import { filterToolsByChatMode, getModeSystemPrompt, GLOBAL_SYSTEM_SUFFIX } from '../common/chatModeConfig.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { restoreRunState } from '../common/agentRunState.js';
+import type { AgentRunState, AgentRunStateSnapshot } from '../common/agentRunState.js';
+
+// ─── 顶层 Turn 并发限流信号量 ─────────────────────────────────────
+// 多 session / 多 agent / 多窗口同时发送消息时，防止 N 个完整 agent loop
+// 无限制并行 → API 限流/配额耗尽 + V8 4GB 堆透支。FIFO 排队，超额 turn 等待。
+// acquire 支持 AbortSignal：排队中的 turn 被取消时从队列移除并 reject，
+// 调用方据此短路，不占用并发名额、不执行（修复「排队中 turn 无法取消」缺陷）。
+
+class TurnConcurrencySemaphore {
+	private _available: number;
+	private readonly _waiters: Array<{
+		resolve: () => void;
+		reject: (err: Error) => void;
+		signal?: AbortSignal;
+		onAbort: () => void;
+	}> = [];
+
+	constructor(limit: number) {
+		this._available = Math.max(1, limit);
+	}
+
+	/**
+	 * 获取一个并发名额。
+	 * @param signal 可选 AbortSignal：在排队等待期间被 abort 时，从等待队列移除并 reject，
+	 *               调用方据此直接短路（不执行、不占名额）。用于修复「排队中的 turn 无法取消」缺陷。
+	 */
+	async acquire(signal?: AbortSignal): Promise<void> {
+		// 已在取消途中：直接拒绝，不进入队列、不占用名额
+		if (signal?.aborted) {
+			throw new Error('TurnConcurrencySemaphore.acquire() was cancelled before it could start');
+		}
+		if (this._available > 0) {
+			this._available--;
+			return;
+		}
+		await new Promise<void>((resolve, reject) => {
+			let entry!: { resolve: () => void; reject: (err: Error) => void; signal?: AbortSignal; onAbort: () => void };
+			const onAbort = () => {
+				const idx = this._waiters.indexOf(entry);
+				if (idx !== -1) {
+					this._waiters.splice(idx, 1);
+					reject(new Error('TurnConcurrencySemaphore.acquire() was cancelled while queued'));
+				}
+			};
+			entry = { resolve, reject, signal, onAbort };
+			signal?.addEventListener('abort', onAbort, { once: true });
+			this._waiters.push(entry);
+		});
+	}
+
+	release(): void {
+		const next = this._waiters.shift();
+		if (next) {
+			// 正常出队：移除 abort 监听，避免 AbortSignal 上的监听器泄漏
+			next.signal?.removeEventListener('abort', next.onAbort);
+			next.resolve();
+		} else {
+			this._available++;
+		}
+	}
+}
 
 // ─── Agent Driver Service Implementation ────────────────────────
 
@@ -35,6 +99,88 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	private readonly _activeTurns = new Map<string, AbortController>();
 	private readonly _logService: ILogService;
 
+	/** 顶层 turn 并发上限默认值（可被配置 agentStudio.driver.turnConcurrencyLimit 覆盖）。 */
+	private static readonly DEFAULT_TOP_LEVEL_TURN_CONCURRENCY_LIMIT = 4;
+	private static readonly MAX_TOP_LEVEL_TURN_CONCURRENCY_LIMIT = 32;
+	private readonly _turnSemaphore: TurnConcurrencySemaphore;
+	/** 记录哪些 turnId 已拿到信号量，用于 cancelTurn 精准 release 避免配额泄漏。 */
+	private readonly _turnHoldsSemaphore = new Set<string>();
+
+	/**
+	 * Per-(workspace,agent) 互斥锁：防止同 workspace 下同 agent 的并发 turn
+	 * 相互覆盖 AgentBinding.worktreePath → 工具执行时 cwd 解析错误 / 恢复错误。
+	 * key = `${workspaceId}::${agentId}`，互斥量 = 1。
+	 */
+	private readonly _bindingWriteLocks = new Map<string, TurnConcurrencySemaphore>();
+
+	private _getBindingLock(workspaceId: string, agentId: string): TurnConcurrencySemaphore {
+		const key = `${workspaceId}::${agentId}`;
+		let lock = this._bindingWriteLocks.get(key);
+		if (!lock) {
+			lock = new TurnConcurrencySemaphore(1); // 互斥：同时只允许一个 turn 改
+			this._bindingWriteLocks.set(key, lock);
+		}
+		return lock;
+	}
+
+	/** 释放所有 per-(workspace,agent) 互斥锁表，避免长期多 workspace 切换累积。 */
+	public override dispose(): void {
+		this._bindingWriteLocks.clear();
+		super.dispose();
+	}
+
+	/**
+	 * 启动自愈：扫描所有 workspace 的 binding，恢复残留的临时 worktree 覆盖。
+	 *
+	 * 进程崩溃/退出（task 执行中途断电、OOM、强制关闭）时，finally 中的 worktreePath
+	 * 恢复可能未执行，binding.worktreePath 卡在 task 的临时值，而内存中的
+	 * originalBindingWorktreePath 已随进程丢失 → 无法恢复。
+	 *
+	 * 修复：task 临时覆盖时已把 originalWorktreePath 持久化进 binding.tempWorktreeOverride。
+	 * 本方法在 driver 构造后（尚无任何 turn 运行）扫描所有带标记的 binding，
+	 * 将其 worktreePath 恢复为 originalWorktreePath 并清除标记。重启后所有临时覆盖的
+	 * owner（turnId）必然已失效（旧进程已死），故统一恢复。
+	 *
+	 * 仅动带 tempWorktreeOverride 标记的 binding；普通用户手动设置的 worktreePath 不带
+	 * 标记，绝不被触碰，彻底避免误清合法绑定。
+	 */
+	private async _recoverOrphanedTempOverrides(): Promise<void> {
+		try {
+			const workspaces = await this._agentStudioService.getWorkspaces();
+			let recovered = 0;
+			for (const ws of workspaces) {
+				let bindings: AgentBinding[] = [];
+				try {
+					bindings = await this._agentStudioService.getAgentBindings(ws.id);
+				} catch {
+					continue;
+				}
+				for (const b of bindings) {
+					if (!b.tempWorktreeOverride) {
+						continue;
+					}
+					const override = b.tempWorktreeOverride;
+					this._logService.info(
+						`[AgentDriver] Recovering orphaned temp worktree override for ${ws.id}/${b.agentId}: ` +
+						`temp="${b.worktreePath ?? '(none)'}" -> original="${override.originalWorktreePath ?? '(none)'}" ` +
+						`(owner=${override.owner}, ts=${override.timestamp})`
+					);
+					await this._agentStudioService.upsertAgentBinding(ws.id, b.agentId, {
+						worktreePath: override.originalWorktreePath,
+						tempWorktreeOverride: undefined,
+					});
+					recovered++;
+				}
+			}
+			if (recovered > 0) {
+				this._logService.info(`[AgentDriver] Recovered ${recovered} orphaned temp worktree override(s) on startup`);
+			}
+		} catch (err) {
+			this._logService.warn('[AgentDriver] Failed to recover orphaned temp worktree overrides:', err);
+		}
+	}
+
+
 	constructor(
 		@IAgentOSService private readonly _agentOS: IAgentOSService,
 		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
@@ -44,9 +190,78 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly _fileService: IFileService,
 		@IMcpService private readonly _mcpService: IMcpService,
+		@IStorageService private readonly _storageService: IStorageService,
 	) {
 		super();
 		this._logService = logService;
+		// 按配置初始化顶层 turn 并发信号量（默认 4，可在设置中调整）
+		this._turnSemaphore = new TurnConcurrencySemaphore(this._readTurnConcurrencyLimit());
+
+		// 启动自愈：恢复进程崩溃/重启残留的临时 worktree 覆盖。
+		// 仅处理带 tempWorktreeOverride 标记的 binding；普通用户手动设置的
+		// worktreePath 不带标记，绝不被触碰，因此不会误清合法绑定。
+		this._recoverOrphanedTempOverrides().catch(err => {
+			this._logService.warn('[AgentDriver] startup temp-worktree recovery error:', err);
+		});
+	}
+
+	/** 从配置读取顶层 turn 并发上限，夹在 [1, 32] 区间，非法/缺省回退默认值。 */
+	private _readTurnConcurrencyLimit(): number {
+		const configured = this._configurationService.getValue<number>(AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING);
+		const n = typeof configured === 'number' && Number.isFinite(configured)
+			? Math.floor(configured)
+			: AgentDriverService.DEFAULT_TOP_LEVEL_TURN_CONCURRENCY_LIMIT;
+		return Math.min(AgentDriverService.MAX_TOP_LEVEL_TURN_CONCURRENCY_LIMIT, Math.max(1, n));
+	}
+
+	// ─── 多 agent 图 checkpoint/resume 持久化（supervisor/goto Step D driver 接线）──
+	//
+	// executeAgentGraph（agentOSService）本身存储无关：它在节点边界通过
+	// request.checkpointSink 落盘、从 request.resumeFrom 续跑。driver 是唯一
+	// 知道 sessionId ↔ 存储映射的层，故在此把 sink/resume 接到 IStorageService。
+	//
+	// 零行为变更保证：单 agent 请求不带 agentGraph → executeAgentTurn 不进图分支
+	// → checkpointSink 永不被调用；resumeFrom 在单 agent 路径被忽略。仅当未来
+	// caller 给 executeTurn 传入 ≥2 节点的 agentGraph 时，本接线自动生效，
+	// 无需再改 driver。
+
+	private static readonly _GRAPH_CHECKPOINT_KEY_PREFIX = 'agentStudio.graphCheckpoint.';
+
+	private _graphCheckpointKey(sessionId: string): string {
+		return `${AgentDriverService._GRAPH_CHECKPOINT_KEY_PREFIX}${sessionId}`;
+	}
+
+	/**
+	 * 从 workspace storage 恢复上一次图运行落盘的快照（容错），返回裸 AgentRunState
+	 * 供 request.resumeFrom 使用。无 checkpoint / 解析失败 → undefined（从 entry 起跑）。
+	 */
+	private _loadGraphCheckpoint(sessionId: string): AgentRunState | undefined {
+		try {
+			const raw = this._storageService.get(this._graphCheckpointKey(sessionId), StorageScope.WORKSPACE);
+			if (!raw) {
+				return undefined;
+			}
+			// restoreRunState 同时接受「快照 {version,state}」与「裸 state」两种形态，
+			// 损坏 / 高版本回退初始态，永不抛出。
+			return restoreRunState(JSON.parse(raw));
+		} catch (err) {
+			this._logService.warn(`[AgentDriver] failed to load graph checkpoint for session ${sessionId}: ${err}`);
+			return undefined;
+		}
+	}
+
+	/** 在图节点边界把快照落盘到 workspace storage（sink 抛错仅记日志，不阻断图执行）。 */
+	private _saveGraphCheckpoint(sessionId: string, snapshot: AgentRunStateSnapshot): void {
+		try {
+			this._storageService.store(
+				this._graphCheckpointKey(sessionId),
+				JSON.stringify(snapshot),
+				StorageScope.WORKSPACE,
+				StorageTarget.MACHINE,
+			);
+		} catch (err) {
+			this._logService.warn(`[AgentDriver] failed to save graph checkpoint for session ${sessionId}: ${err}`);
+		}
 	}
 
 	// ─── 统一执行入口 ─────────────────────────────────────
@@ -58,8 +273,24 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		// 如果已有同 ID 的轮次在运行，先取消
 		this.cancelTurn(turnId);
 
+		// ── 顶层 turn 并发限流 ─────────────────────────
+		// 多窗口/多 session 同时发消息 → FIFO 排队，避免无限制并行
+		// 打爆 LLM API 限流/配额 + V8 4GB 堆。
+		// 提前登记 AbortController：使外部 cancelTurn 在排队等待期也能中止本 turn
+		// （缺陷修复：原先 acquire 不接受 signal，排队中的 turn 无法被取消）。
 		const controller = new AbortController();
 		this._activeTurns.set(turnId, controller);
+
+		// acquire 传入 signal：排队等待期间被取消 → 抛错，此处捕获后直接结束
+		// generator，不占用并发名额、不进入编排逻辑。
+		try {
+			await this._turnSemaphore.acquire(controller.signal);
+		} catch (err) {
+			this._activeTurns.delete(turnId);
+			this._logService.info(`[AgentDriver] Turn ${turnId} cancelled while queued (${err instanceof Error ? err.message : String(err)}), not executing`);
+			return;
+		}
+		this._turnHoldsSemaphore.add(turnId);
 
 		// 提升到 try 外，使 finally 块可访问（用于 Step 5 写回记忆）
 		let memoryProvider = this._agentOS.getActiveMemoryProvider();
@@ -72,6 +303,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 		// 临时 worktreePath 覆盖的原始值（per-task），finally 块中恢复用。
 		let originalBindingWorktreePath: string | undefined;
+		// 本次 task 是否真的临时覆盖了 binding.worktreePath（仅当覆盖值与当前值不同时）。
+		// 用于 finally 决定是否恢复，避免把用户原本就等于 request.worktreePath 的绑定误清。
+		let didTemporarilyOverride = false;
 
 		// Step 1 计算出的召回作用域选项 —— 同时被 Step 1 (loadContext) 和
 		// Step 6 (enrichedRequest 下传给 AgentOS) 使用，避免重复解析 agent 配置。
@@ -194,9 +428,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					this._logService.info(`[AgentDriver] Explicit skills added for this turn: ${newExplicitIds.join(', ')}`);
 				}
 
+					// allSkills = 所有已注册且启用的技能（展示在 <available_skills> 中）
+				// agent 配置的 skills 仅决定哪些需要强制加载全文（required），不做为过滤条件
 				const allSkills = [...this._skillRegistry.getSkills()]
-					.filter(s => s.enabled !== false)
-					.filter(s => agentSkillIds.has(s.id));  // 只保留 agent 配置的技能
+					.filter(s => s.enabled !== false);
 
 				let mergedSystemPrompt = request.systemPrompt || '';
 
@@ -293,22 +528,42 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				// 需要临时注入到 binding，使 builtinToolProvider 的工具 cwd 解析
 				// 也跟随任务的工作区，而非绑定的全局配置。
 				// 执行结束后在 finally 中恢复。
-				if (request.worktreePath) {
-					try {
-						const workspaceId = await this._resolveWorkspaceId(request.sessionId);
-						if (workspaceId) {
+			if (request.worktreePath) {
+				try {
+					const workspaceId = await this._resolveWorkspaceId(request.sessionId);
+					if (workspaceId) {
+						// ── 加锁：防止同 workspace 同 agent 的并发 turn 互相覆盖 ──
+						// 读 binding.worktreePath + 对比 + upsert 三步需原子化，
+						// 否则 Turn A 读到 null → Turn B 读到 null → A 写 pathA →
+						// B 写 pathB（覆盖）→ A 恢复 null → B 恢复 null（丢失 pathA 的中间态）。
+						const bLock = this._getBindingLock(workspaceId, request.agentId);
+						await bLock.acquire();
+						try {
 							const binding = await this._resolveBinding(request.agentId, request.sessionId);
 							originalBindingWorktreePath = binding?.worktreePath;
 							if (binding && originalBindingWorktreePath !== request.worktreePath) {
-								await this._agentStudioService.upsertAgentBinding(
-									workspaceId,
-									request.agentId,
-									{ worktreePath: request.worktreePath },
-								);
+						didTemporarilyOverride = true;
+						await this._agentStudioService.upsertAgentBinding(
+							workspaceId,
+							request.agentId,
+							{
+								worktreePath: request.worktreePath,
+								// 记录临时覆盖标记：进程崩溃/重启后，启动自愈可据此恢复原始 worktreePath。
+								// 仅 task 执行期由本处写入；普通用户设置 worktreePath 不写此标记。
+								tempWorktreeOverride: {
+									originalWorktreePath: originalBindingWorktreePath,
+									owner: turnId,
+									timestamp: Date.now(),
+								},
+							},
+						);
 								this._logService.info(`[AgentDriver] Temporarily set binding.worktreePath="${request.worktreePath}" for task execution`);
 							} else {
 								originalBindingWorktreePath = undefined; // 无需恢复
 							}
+						} finally {
+							bLock.release();
+						}
 						}
 					} catch (err) {
 						this._logService.warn('[AgentDriver] Failed to temporarily set binding worktreePath:', err);
@@ -558,12 +813,13 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						agentId: request.agentId,
 						sessionId: request.sessionId,
 						explicit: explicitSkillIds,
-						// 强制加载：agent 配置中指定的技能全部注入全文，不依赖 activation/关键词
-						required: allSkills.map(s => s.id),
+						// 强制加载全文：仅 agent 配置中指定的技能（不依赖 activation 关键词匹配）
+						required: [...agentSkillIds],
 					});
 
-					// 【关键修复】仅保留 agent 实例中配置的技能，未配置的不要注入
-					const filteredInjections = injections.filter(inj => agentSkillIds.has(inj.skill.id));
+					// 不按 agentSkillIds 过滤 —— 所有技能均可通过 activation 关键词匹配
+					// 或 <available_skills> 目录被 LLM 发现。agentSkillIds 仅决定 required（强制加载）。
+					const filteredInjections = injections;
 
 					if (filteredInjections.length > 0) {
 						// 分离 system 和 user 注入
@@ -739,8 +995,22 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 		// Step 4: 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
 		// 同时累积 assistant 文本，便于 Step 5 写回完整一轮的 assistant 记忆。
-		this._logService.info(`[AgentDriver] Step 4: delegating to AgentOS (enrichedMsgs=${enrichedRequest.messages.length})`);
-		const osStream = this._agentOS.executeAgentTurn(enrichedRequest);
+		//
+		// 多 agent 图 checkpoint/resume 接线（Step D）：当有 sessionId 时，把
+		// checkpointSink / resumeFrom 接到 workspace storage。仅在 request 携带
+		// ≥2 节点 agentGraph（图模式）时真正生效；单 agent 请求下 sink 不被调、
+		// resumeFrom 被忽略 → 零行为变更。caller 已显式提供者优先，不覆盖。
+		let graphRequest = enrichedRequest;
+		if (enrichedRequest.sessionId) {
+			const sid = enrichedRequest.sessionId;
+			graphRequest = {
+				...enrichedRequest,
+				resumeFrom: enrichedRequest.resumeFrom ?? this._loadGraphCheckpoint(sid),
+				checkpointSink: enrichedRequest.checkpointSink ?? ((snapshot: AgentRunStateSnapshot) => this._saveGraphCheckpoint(sid, snapshot)),
+			};
+		}
+		this._logService.info(`[AgentDriver] Step 4: delegating to AgentOS (enrichedMsgs=${graphRequest.messages.length})`);
+		const osStream = this._agentOS.executeAgentTurn(graphRequest);
 
 			// ── 流式记忆标签剥离缓冲区 ──────────────────────────────────────────
 			// Knot 可能在回复末尾输出记忆标签，需要在流式阶段就剥离，避免用户看到。
@@ -988,6 +1258,13 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			};
 		} finally {
 			this._activeTurns.delete(turnId);
+
+			// ── 顶层 turn 并发限流释放 ────────────────────
+			// 确保异常/取消路径也归还配额，防止 permanently 占用名额。
+			if (this._turnHoldsSemaphore.delete(turnId)) {
+				this._turnSemaphore.release();
+			}
+
 			this._logService.info(`[AgentDriver] finally block START (turnId=${turnId})`);
 
 			// ── 恢复 AgentBinding.worktreePath ─────────────────────────
@@ -1007,18 +1284,38 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							timeoutPromise,
 						]);
 						if (workspaceId) {
-							await Promise.race([
-								this._agentStudioService.upsertAgentBinding(
-									workspaceId,
-									request.agentId,
-									{ worktreePath: originalBindingWorktreePath || undefined },
-								),
-								timeoutPromise,
-							]);
-							this._logService.info(
-								`[AgentDriver] Restored binding.worktreePath="${originalBindingWorktreePath || '(none)'}" ` +
-								`after task execution (${Date.now() - restoreStart}ms)`
-							);
+							// ── 加锁：恢复写入同样需与并发 turn 互斥 ──
+							const bLock = this._getBindingLock(workspaceId, request.agentId);
+							await Promise.race([bLock.acquire(), timeoutPromise]);
+							try {
+								// 防御：仅当 binding 当前仍停留在本次临时覆盖值(= task 的 worktreePath)
+								// 时才恢复，避免覆盖并发 turn / 用户在此期间改写的合法 worktreePath。
+								const currentBinding = await Promise.race([
+									this._agentStudioService.getAgentBinding(workspaceId, request.agentId),
+									timeoutPromise,
+								]);
+								if (didTemporarilyOverride && currentBinding?.worktreePath === request.worktreePath) {
+									await Promise.race([
+										this._agentStudioService.upsertAgentBinding(
+											workspaceId,
+											request.agentId,
+											{ worktreePath: originalBindingWorktreePath || undefined, tempWorktreeOverride: undefined },
+										),
+										timeoutPromise,
+									]);
+									this._logService.info(
+										`[AgentDriver] Restored binding.worktreePath="${originalBindingWorktreePath || '(none)'}" ` +
+										`after task execution (${Date.now() - restoreStart}ms)`
+									);
+								} else {
+									this._logService.info(
+										`[AgentDriver] Skipped worktree restore for ${request.agentId}: ` +
+										`binding changed concurrently (current="${currentBinding?.worktreePath ?? '(none)'}", expectedTemp="${request.worktreePath}")`
+									);
+								}
+							} finally {
+								bLock.release();
+							}
 						}
 					} catch (err) {
 						this._logService.warn(
@@ -1128,6 +1425,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			controller.abort();
 			this._activeTurns.delete(turnId);
 		}
+
+		// ── 顶层 turn 并发限流：取消已排队的 turn 时归还配额 ──
+		// 场景：turn 尚在 semaphore 队列中等待 → cancelTurn 提前终止
+		// → 归还 acquire() 占用的名额，防止被取消 turn 永久排挤后续 turn。
+		if (this._turnHoldsSemaphore.delete(turnId)) {
+			this._turnSemaphore.release();
+		}
+
 		// NOTE: Do NOT call chatService.cancelStream() here.
 		// AgentChatService.sendMessage() already cancels old streams on entry (line 46).
 		// Calling cancelStream() here would abort the *new* controller that sendMessage()
@@ -1408,6 +1713,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			systemPrompt: options.systemPrompt,
 			explicitSkillIds: options.explicitSkillIds,
 			worktreePath: options.worktreePath,
+			// Fork 前缀缓存：透传父级 ForkContext，使 (system+tools) 与父级冻结前缀对齐
+			// → 请求构造端注入 cache 断点、命中 provider prompt cache（零行为变更）。
+			forkContext: options.forkContext,
 			// v39: forward per-request model override from workflow node config.
 			// When both providerId and model are set, override the global selection.
 			modelOverride: (options.providerId && options.model)

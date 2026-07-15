@@ -26,9 +26,14 @@ import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { KbSection } from './kbTypes.js';
 import { IEmbeddingService } from '../../../common/embeddingProvider.js';
+import { embedWithPooling } from '../../knowledge/tokenEmbedder.js';
+import { serializeVectorIndexBinary, deserializeVectorIndexBinary } from './binaryVectorStore.js';
 
 /** 持久化向量索引文件名（「导入 RAG 构建后的库文件」的载体）。 */
 export const KB_RAG_INDEX_FILE = '.kbrag.json';
+
+/** 紧凑二进制向量库文件名（Float32 密集布局，体积约为 JSON 的 1/8）。 */
+export const KB_RAG_INDEX_BINARY_FILE = '.kvindex';
 
 const VECTOR_INDEX_VERSION = 1;
 const MAX_CHUNK_CHARS = 1000;
@@ -101,6 +106,8 @@ export class KbVectorIndex {
 	constructor(
 		private readonly _fileService: IFileService,
 		private readonly _embedding: IEmbeddingService | undefined,
+		/** 强制使用的 embedding provider id（如 KB agent 的 provider）。覆盖 EmbeddingService 主路径选择。 */
+		private readonly _embeddingProviderId?: string,
 	) { }
 
 	get isBuilt(): boolean { return this._built; }
@@ -135,7 +142,7 @@ export class KbVectorIndex {
 		if (!this._embedding) {
 			throw new Error('向量索引需要激活的 Embedding provider（配置 sessions.agentStudio.embedding.provider）。');
 		}
-		const activeTag = this._embedding.getActiveTag();
+		const activeTag = this._embedding.getTagForProvider(this._embeddingProviderId);
 		if (!activeTag) {
 			throw new Error('当前没有可用的 Embedding provider（API key 未配置且本地兜底未启用）。');
 		}
@@ -174,27 +181,32 @@ export class KbVectorIndex {
 			}
 		}
 
-		// 3. 批量向量化（分批调用 embed，避免单次请求过大）。
+		// 3. 批量向量化：token 级切块 + 均值池化（对齐 Hyper-Extract CompatibleEmbeddings），
+		//    保证「每个语义块 = 1 个向量」；超长块内部会被切分再聚合，避免超 token 上限报错。
+		let builtDimensions: number | undefined;
 		if (newChunks.length > 0) {
 			const texts = newChunks.map(c => c.text);
-			for (let i = 0; i < texts.length; i += EMBED_BATCH) {
-				const batch = texts.slice(i, i + EMBED_BATCH);
-				const result = await this._embedding.embed(batch, { token: opts?.token });
-				const tag = result.tag;
-				for (let j = 0; j < batch.length; j++) {
-					const idx = i + j;
-					const meta = newChunks[idx];
-					this._chunks.push({
-						id: `${meta.docId}#${meta.start}`,
-						docId: meta.docId,
-						docName: meta.name,
-						section: meta.section,
-						text: meta.text,
-						vector: result.vectors[j],
-						tag,
-						start: meta.start,
-					});
-				}
+			let builtTag: string | undefined;
+			const embedFn = async (batch: string[]): Promise<number[][]> => {
+				const result = await this._embedding!.embed(batch, { token: opts?.token, providerId: this._embeddingProviderId });
+				builtTag = result.tag;
+				builtDimensions = result.dimensions;
+				return result.vectors;
+			};
+			const vectors = await embedWithPooling(embedFn, texts, { maxBatchSize: EMBED_BATCH });
+			const tag = builtTag ?? activeTag;
+			for (let idx = 0; idx < newChunks.length; idx++) {
+				const meta = newChunks[idx];
+				this._chunks.push({
+					id: `${meta.docId}#${meta.start}`,
+					docId: meta.docId,
+					docName: meta.name,
+					section: meta.section,
+					text: meta.text,
+					vector: vectors[idx],
+					tag,
+					start: meta.start,
+				});
 			}
 		}
 
@@ -204,7 +216,7 @@ export class KbVectorIndex {
 		}
 
 		this._tag = activeTag;
-		this._dimensions = this._embedding.getActiveDimensions();
+		this._dimensions = builtDimensions ?? this._embedding.getActiveDimensions();
 		this._built = true;
 	}
 
@@ -213,14 +225,14 @@ export class KbVectorIndex {
 		if (!this._embedding) {
 			throw new Error('向量索引需要激活的 Embedding provider。');
 		}
-		const activeTag = this._embedding.getActiveTag();
+		const activeTag = this._embedding.getTagForProvider(this._embeddingProviderId);
 		if (!activeTag) {
 			throw new Error('当前没有可用的 Embedding provider。');
 		}
 		const stale = this._chunks.filter(c => c.tag !== activeTag);
+		let builtDimensions: number | undefined;
 		if (stale.length === 0) {
 			this._tag = activeTag;
-			this._dimensions = this._embedding.getActiveDimensions();
 			return 0;
 		}
 
@@ -241,26 +253,37 @@ export class KbVectorIndex {
 		const staleIds = new Set(stale.map(c => c.id));
 		this._chunks = this._chunks.filter(c => !staleIds.has(c.id));
 
-		for (let i = 0; i < reembed.length; i += EMBED_BATCH) {
-			const batch = reembed.slice(i, i + EMBED_BATCH);
-			const result = await this._embedding.embed(batch.map(c => c.text), { token });
-			for (let j = 0; j < batch.length; j++) {
-				const c = batch[j];
+		// 用保存的 text 重新向量化（token 级切块 + 均值池化，与 build 同路径）。
+		if (reembed.length > 0) {
+			const texts = reembed.map(c => c.text);
+			let rebuiltTag: string | undefined;
+			const embedFn = async (batch: string[]): Promise<number[][]> => {
+				const result = await this._embedding!.embed(batch, { token, providerId: this._embeddingProviderId });
+				rebuiltTag = result.tag;
+				builtDimensions = result.dimensions;
+				return result.vectors;
+			};
+			const vectors = await embedWithPooling(embedFn, texts, { maxBatchSize: EMBED_BATCH });
+			const tag = rebuiltTag ?? activeTag;
+			for (let idx = 0; idx < reembed.length; idx++) {
+				const c = reembed[idx];
 				this._chunks.push({
 					id: c.id,
 					docId: c.docId,
 					docName: c.docName,
 					section: c.section,
 					text: c.text,
-					vector: result.vectors[j],
-					tag: result.tag,
+					vector: vectors[idx],
+					tag,
 					start: c.start,
 				});
 			}
+			this._tag = tag;
+		} else {
+			this._tag = activeTag;
 		}
 
-		this._tag = activeTag;
-		this._dimensions = this._embedding.getActiveDimensions();
+		if (builtDimensions !== undefined) { this._dimensions = builtDimensions; }
 		return stale.length;
 	}
 
@@ -269,16 +292,17 @@ export class KbVectorIndex {
 	// -----------------------------------------------------------------------
 
 	/** 向量语义检索。无向量或未构建时抛错。 */
-	async search(query: string, topK = 8): Promise<IKbVectorSearchHit[]> {
+	async search(query: string, topK = 8, providerId?: string): Promise<IKbVectorSearchHit[]> {
 		if (!this._embedding) {
 			throw new Error('向量索引需要激活的 Embedding provider。');
 		}
 		if (!this._built || this._chunks.length === 0) {
 			return [];
 		}
+		const effectiveProviderId = providerId ?? this._embeddingProviderId;
 		const q = query.trim();
 		if (!q) { return []; }
-		const qv = (await this._embedding.embed([q])).vectors[0];
+		const qv = (await this._embedding.embed([q], { providerId: effectiveProviderId })).vectors[0];
 		if (!qv || qv.length === 0) { return []; }
 
 		const hits: IKbVectorSearchHit[] = [];
@@ -302,9 +326,9 @@ export class KbVectorIndex {
 	// 持久化 / 导入导出（.kbrag.json）
 	// -----------------------------------------------------------------------
 
-	/** 序列化为 .kbrag.json 内容。 */
-	serialize(): string {
-		const data: IKbVectorIndexData = {
+	/** 构造可序列化数据结构（JSON / 二进制共用）。 */
+	private _toData(): IKbVectorIndexData {
+		return {
 			v: VECTOR_INDEX_VERSION,
 			tag: this._tag ?? '',
 			dimensions: this._dimensions ?? 0,
@@ -312,7 +336,16 @@ export class KbVectorIndex {
 			roots: this._roots.map(r => ({ uri: r.uri.toString(), section: r.section })),
 			chunks: this._chunks,
 		};
-		return JSON.stringify(data);
+	}
+
+	/** 序列化为 .kbrag.json 内容。 */
+	serialize(): string {
+		return JSON.stringify(this._toData());
+	}
+
+	/** 序列化为紧凑二进制（.kvindex，Float32 密集布局，体积约为 JSON 的 1/8）。 */
+	serializeBinary(): Uint8Array {
+		return serializeVectorIndexBinary(this._toData());
 	}
 
 	/**
@@ -324,38 +357,54 @@ export class KbVectorIndex {
 	async deserialize(json: string): Promise<boolean> {
 		try {
 			const data = JSON.parse(json) as IKbVectorIndexData;
-			if (!data || data.v !== VECTOR_INDEX_VERSION || !Array.isArray(data.chunks)) {
-				return false;
-			}
-			this._chunks = data.chunks.map(c => ({
-				id: c.id,
-				docId: c.docId,
-				docName: c.docName,
-				section: c.section,
-				text: c.text,
-				vector: Array.isArray(c.vector) ? c.vector : [],
-				tag: c.tag,
-				start: c.start ?? 0,
-			}));
-			this._roots = (data.roots ?? []).map(r => ({ uri: URI.parse(r.uri), section: r.section }));
-			this._dimensions = data.dimensions || this._chunks[0]?.vector.length || undefined;
-
-			const activeTag = this._embedding?.getActiveTag();
-			if (activeTag && data.tag && data.tag === activeTag) {
-				// 直接复用
-				this._tag = data.tag;
-			} else if (this._embedding && activeTag) {
-				// 重新向量化
-				await this.rebuildStale();
-			} else {
-				// 无激活 provider：仅载入（下次有 provider 时需 rebuildStale）
-				this._tag = data.tag || undefined;
-			}
-			this._built = true;
-			return true;
+			return await this._populateFromData(data);
 		} catch {
 			return false;
 		}
+	}
+
+	/** 从紧凑二进制（.kvindex）反序列化。非法返回 false。 */
+	async deserializeBinary(buf: Uint8Array): Promise<boolean> {
+		try {
+			const data = deserializeVectorIndexBinary(buf);
+			if (!data) { return false; }
+			return await this._populateFromData(data);
+		} catch {
+			return false;
+		}
+	}
+
+	/** 把已解析的索引数据装载进本实例（JSON / 二进制共用），含 tag 比对与按需重向量化。 */
+	private async _populateFromData(data: IKbVectorIndexData | null): Promise<boolean> {
+		if (!data || data.v !== VECTOR_INDEX_VERSION || !Array.isArray(data.chunks)) {
+			return false;
+		}
+		this._chunks = data.chunks.map(c => ({
+			id: c.id,
+			docId: c.docId,
+			docName: c.docName,
+			section: c.section,
+			text: c.text,
+			vector: Array.isArray(c.vector) ? c.vector : [],
+			tag: c.tag,
+			start: c.start ?? 0,
+		}));
+		this._roots = (data.roots ?? []).map(r => ({ uri: URI.parse(r.uri), section: r.section }));
+		this._dimensions = data.dimensions || this._chunks[0]?.vector.length || undefined;
+
+		const activeTag = this._embedding?.getActiveTag();
+		if (activeTag && data.tag && data.tag === activeTag) {
+			// 直接复用
+			this._tag = data.tag;
+		} else if (this._embedding && activeTag) {
+			// 重新向量化
+			await this.rebuildStale();
+		} else {
+			// 无激活 provider：仅载入（下次有 provider 时需 rebuildStale）
+			this._tag = data.tag || undefined;
+		}
+		this._built = true;
+		return true;
 	}
 
 	/** 导出到磁盘（.kbrag.json）。 */
@@ -363,11 +412,26 @@ export class KbVectorIndex {
 		await this._fileService.writeFile(uri, VSBuffer_fromString(this.serialize()));
 	}
 
+	/** 导出到磁盘（.kvindex 紧凑二进制）。 */
+	async exportToBinaryFile(uri: URI): Promise<void> {
+		await this._fileService.writeFile(uri, VSBuffer.wrap(this.serializeBinary()));
+	}
+
 	/** 从磁盘导入（.kbrag.json）。返回是否成功。 */
 	async importFromFile(uri: URI): Promise<boolean> {
 		try {
 			const content = await this._fileService.readFile(uri);
 			return await this.deserialize(content.value.toString());
+		} catch {
+			return false;
+		}
+	}
+
+	/** 从磁盘导入（.kvindex 紧凑二进制）。返回是否成功。 */
+	async importFromBinaryFile(uri: URI): Promise<boolean> {
+		try {
+			const content = await this._fileService.readFile(uri);
+			return await this.deserializeBinary(new Uint8Array(content.value.buffer));
 		} catch {
 			return false;
 		}

@@ -96,6 +96,7 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	private _rawHtml: string | undefined;
 	private _mode: 'edit' | 'source' | 'preview' = 'preview';
 	private _isHtml: boolean = false;
+	private _previewAgentId: string | undefined;
 	/** True when the active input is a virtual HtmlPreviewEditorInput (chat "Apply" / ConfigHtml preview). */
 	private _isPreviewInput: boolean = false;
 	/** Standalone read-only model backing "HTML" (source) mode for preview inputs (no file model). */
@@ -410,6 +411,12 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			? URI.file(resource.fsPath.replace(/[\\/][^\\/]+$/, ''))
 			: undefined;
 
+		// 从文件路径提取 agentId: ~/.saros/agents/{agentId}/config.html
+		const path = resource?.fsPath ?? '';
+		const agentMatch = path.match(/[\\/]agents[\\/]([^\\/]+)[\\/]/i);
+		this._previewAgentId = agentMatch?.[1];
+		this._logService.info(`[HtmlFileEditorPane] _ensurePreviewWebview: agentId=${this._previewAgentId || '<none>'} path=${path}`);
+
 		this._webview = this._webviewService.createWebviewElement({
 			title: 'HTML Preview',
 			options: {
@@ -424,6 +431,31 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			extension: undefined,
 		});
 
+		this._register(this._webview.onMessage(async (e) => {
+			const msg = e.message as { type?: string; message?: string; eventName?: string; requestId?: string; agentId?: string; level?: string; [key: string]: unknown } | undefined;
+			if (!msg || !msg.type) return;
+			const agentId = String(msg.agentId || this._previewAgentId || '');
+			this._logService.info(`[HtmlFileEditorPane] preview onMessage: type=${msg.type} agentId=${agentId} msgLen=${typeof msg.message==='string'?msg.message.length:'n/a'}`);
+			try {
+				switch (msg.type) {
+					case 'confightml.chatSend':
+						if (!agentId) throw new Error('agentId 未识别（检查文件是否在 ~/.saros/agents/{id}/config.html 路径下）');
+						await this._configHtmlService.handleChatSend(agentId, String(msg.message || ''));
+						break;
+					case 'confightml.event':
+						await this._configHtmlService.handleHtmlEvent(agentId, String(msg.eventName || ''), msg.payload);
+						break;
+					case 'confightml.notify':
+						this._logService.info(`[HtmlFileEditorPane] preview notify: ${msg.message} [${msg.level}]`);
+						break;
+				}
+				this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				this._logService.error(`[HtmlFileEditorPane] preview handler error: type=${msg.type} agentId=${agentId} err=${errMsg}`);
+				this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: false, error: errMsg } as unknown as Record<string, unknown>);
+			}
+		}));
 		this._register(this._webview);
 		this._webview.mountTo(this._previewContainer, mainWindow);
 		this._webview.setHtml(this._wrapHtmlForWebview(this._rawHtml ?? ''));
@@ -508,9 +540,9 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	}
 
 	/**
-	 * Write the edited HTML back into the text model so the file is updated
-	 * on disk when the user saves. Also updates `_rawHtml` so switching to
-	 * preview mode reflects the latest edits.
+	 * Write the edited HTML back into the text model and persist to disk
+	 * immediately, so input field values typed in visual editor are saved
+	 * when the user clicks the toolbar save button (or presses Ctrl+S).
 	 */
 	private _applyEditedHtml(html: string): void {
 		this._logService.info(`[HtmlFileEditorPane] _applyEditedHtml: htmlLen=${html.length} _webviewExists=${!!this._webview}`);
@@ -518,11 +550,17 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		const control = this.getControl();
 		const model = control?.getModel();
 		if (model) {
-			// Use pushEditOperations to make the change undoable in the code editor
-			model.applyEdits([{
+			model.pushEditOperations([], [{
 				range: model.getFullModelRange(),
 				text: html,
-			}]);
+			}], () => []);
+			// Persist immediately — the visual editor's save button / Ctrl+S
+			// should write to disk, not just update the buffer.
+			// ITextModel.save() is not in the public TS interface but exists at runtime
+			// on ITextFileModel (the backing implementation for file editors).
+			if (typeof (model as any).save === 'function') {
+				(model as any).save().catch((err: unknown) => this._logService.error('[HtmlFileEditorPane] model.save() failed:', err));
+			}
 		}
 		// Refresh the preview webview (if mounted) so the latest HTML
 		// shows up the next time the user switches to preview mode.
@@ -533,25 +571,61 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	}
 
 	private _wrapHtmlForWebview(html: string): string {
-		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource: vscode-webview:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource: vscode-webview:; img-src 'self' data: https: vscode-resource: vscode-webview-resource: vscode-webview:; font-src data: https: vscode-resource: vscode-webview-resource: vscode-webview:; connect-src https: vscode-resource: vscode-webview-resource: vscode-webview:; frame-src https: vscode-webview:;">`;
+		// ~/.saros 目录下的文件不受沙箱限制，vscode-file: 允许通过
+		// file:// 协议访问本地资源（如 config.html 内嵌的 img / iframe / fetch）。
+		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; img-src 'self' data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; font-src data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; connect-src https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; frame-src https: vscode-webview: vscode-file:;">`;
 		const baseStyle = `<style>html,body{margin:0;padding:0;}body{background:#ffffff;color:#1e1e1e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;}@media (prefers-color-scheme: dark){body{background:#1e1e1e;color:#d4d4d4;}}</style>`;
+		// 预览模式强制隐藏编辑器 runtime chrome——无论源 HTML 是否嵌入了
+		// toolbar / add-btn / add-menu（如编辑模式保存后的残留），也移除
+		// html-edit-mode 类避免影响页面交互。
+		const cleanup = `<style>#html-edit-toolbar,#html-edit-add-btn,#html-edit-add-menu{display:none!important}body.html-edit-mode{cursor:auto!important}</style><script>(function(){document.body.classList.remove('html-edit-mode')})();</script>`;
+		// 注入最小 AgentConfigHtml SDK：config.html 即使在预览 webview 中
+		// 也能正常调用 chatSend / sendEvent / notify。chatSendStream 暂不
+		// 支持（预览 webview 没有 delta event relay pipeline）。
+		// SDK 用纯字符串拼接，避免 TS 模板字面量在多行 minified JS 场景下出问题。
+		const sdk = // prettier-ignore
+			'<script>console.log("[AgentConfigHtml SDK] tag-1")</script>' +
+			'<script>console.log("[AgentConfigHtml SDK] tag-2");' +
+			'!function(g){var p=new Map,l={};var v=acquireVsCodeApi();' +
+			'function log(m){try{console.log("[AgentConfigHtml SDK]",m)}catch(e){}}' +
+			'function id(){return"sdk_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8)}' +
+			'function s(t,d){var r=id();log("send "+t+" rid="+r);return new Promise(function(res,rej){p.set(r,{resolve:res,reject:rej});' +
+			'v.postMessage(Object.assign({type:t,requestId:r},d||{}));' +
+			'setTimeout(function(){if(p.has(r)){p.delete(r);rej(new Error("timeout "+t))}},30000)})}' +
+			'window.addEventListener("message",function(e){var m=e.data;' +
+			'if(!m||typeof m!=="object")return;' +
+			'if(m.type==="sdk.reply"&&m.requestId&&p.has(m.requestId)){var h=p.get(m.requestId);p.delete(m.requestId);' +
+			'log("reply rid="+m.requestId+" ok="+m.ok+" err="+(m.error||""));' +
+			'if(m.ok)h.resolve(m.data);else h.reject(new Error(m.error||"err"))}' +
+			'});var a={on:function(ev,fn){l[ev]=l[ev]||[];l[ev].push(fn);return a},' +
+			'sendEvent:function(n,d){return s("confightml.event",{eventName:n,payload:d})},' +
+			'chatSend:function(msg,o){return s("confightml.chatSend",Object.assign({message:msg},o||{}))},' +
+			'notify:function(msg,lv){return s("confightml.notify",{message:msg,level:lv||"info"})}};' +
+			'g.AgentConfigHtml={connect:function(){log("connect ok");return Promise.resolve(a)},isConnected:function(){return true},' +
+			'on:function(ev,fn){return a.on(ev,fn)},sendEvent:function(n,d){return a.sendEvent(n,d)},' +
+			'chatSend:function(msg,o){return a.chatSend(msg,o)},notify:function(m,l){return a.notify(m,l)}}}(window);</script>';
+
+		const sdkWrapper = `<script>console.log('[HtmlFileEditorPane] preview SDK injected, type tag present')</script>` + sdk;
 
 		const lower = html.toLowerCase();
 		const headIdx = lower.indexOf('<head>');
+
 		if (headIdx >= 0) {
 			const insertPos = headIdx + '<head>'.length;
-			return html.slice(0, insertPos) + csp + baseStyle + html.slice(insertPos);
+			// SDK 必须在 <head> 之后立即注入，确保用户脚本执行前
+			// window.AgentConfigHtml 已定义。
+			return html.slice(0, insertPos) + csp + baseStyle + cleanup + sdkWrapper + html.slice(insertPos);
 		}
 
 		const htmlIdx = lower.indexOf('<html');
 		if (htmlIdx >= 0) {
 			const closeBracket = html.indexOf('>', htmlIdx);
 			if (closeBracket >= 0) {
-				return html.slice(0, closeBracket + 1) + `<head>${csp}${baseStyle}</head>` + html.slice(closeBracket + 1);
+				return html.slice(0, closeBracket + 1) + `<head>${csp}${baseStyle}${cleanup}${sdkWrapper}</head>` + html.slice(closeBracket + 1);
 			}
 		}
 
-		return `<!doctype html><html><head>${csp}${baseStyle}</head><body>${html}</body></html>`;
+		return `<!doctype html><html><head>${csp}${baseStyle}${cleanup}${sdkWrapper}</head><body>${html}</body></html>`;
 	}
 
 	override layout(dimension: Dimension): void {

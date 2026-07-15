@@ -11,6 +11,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IBridgeService } from './bridge/bridgeService.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
@@ -27,7 +29,7 @@ import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 
 const { $: $$ } = DOM;
 
-type TabId = 'prompt' | 'skills' | 'mcp' | 'rules';
+type TabId = 'prompt' | 'skills' | 'mcp' | 'rules' | 'binding';
 
 interface TabDef {
 	id: TabId;
@@ -40,6 +42,7 @@ const TABS: TabDef[] = [
 	{ id: 'skills', label: '技能配置', icon: '🛠' },
 	{ id: 'mcp', label: 'MCP 配置', icon: '🔌' },
 	{ id: 'rules', label: 'Rule 配置', icon: '📏' },
+	{ id: 'binding', label: '飞书绑定', icon: '🔗' },
 ];
 
 /**
@@ -81,6 +84,11 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _promptSaveBtn: HTMLButtonElement | undefined;
 	private _promptDirty = false;
 
+	// ── Feishu Binding tab ──
+	private _bindingListContainer: HTMLElement | undefined;
+	private _bindingInput: HTMLInputElement | undefined;
+	private _bindingDefaultToggle: HTMLInputElement | undefined;
+
 	// ── Skills tab ──
 	private _skillsInstalledContainer: HTMLElement | undefined;
 	private _skillsAvailableContainer: HTMLElement | undefined;
@@ -98,6 +106,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IEditorService private readonly editorService: IEditorService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IBridgeService private readonly bridgeService: IBridgeService,
 	) {
 		super(AgentSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -171,6 +181,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._buildSkillsTab();
 		this._buildPlaceholderTab('mcp');
 		this._buildPlaceholderTab('rules');
+		this._buildBindingTab();
 
 		this._showTab(this._activeTab);
 	}
@@ -374,6 +385,149 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._tabContentContainer?.appendChild(section);
 	}
 
+	// ── Feishu Binding Tab ──
+
+	private _buildBindingTab(): void {
+		const section = $$('div.agent-settings-tab-pane');
+		section.dataset.tabPane = 'binding';
+
+		const desc = $$('div.tab-pane-desc');
+		desc.textContent = '配置此 Agent 与飞书的绑定关系：可设为飞书渠道的默认处理 Agent，或按群聊会话（chat_id）精确绑定。绑定的飞书会话消息将自动路由给本 Agent。';
+		section.appendChild(desc);
+
+		// Section 1: 飞书渠道默认 Agent
+		const sec1 = $$('div.binding-section');
+		const sec1Title = $$('div.binding-section-title');
+		sec1Title.textContent = '飞书渠道默认 Agent';
+		sec1.appendChild(sec1Title);
+
+		const defRow = $$('div.binding-default-row');
+		this._bindingDefaultToggle = document.createElement('input');
+		this._bindingDefaultToggle.type = 'checkbox';
+		this._bindingDefaultToggle.id = 'feishu-default-toggle';
+		this._bindingDefaultToggle.onchange = () => this._toggleFeishuDefault();
+		const defLabel = $$('label.binding-default-label');
+		defLabel.textContent = '将此 Agent 设为飞书渠道的默认处理 Agent（无精确群绑定时生效）';
+		defLabel.setAttribute('for', 'feishu-default-toggle');
+		defRow.appendChild(this._bindingDefaultToggle);
+		defRow.appendChild(defLabel);
+		sec1.appendChild(defRow);
+		section.appendChild(sec1);
+
+		// Section 2: 群聊绑定（按会话 chat_id）
+		const sec2 = $$('div.binding-section');
+		const sec2Title = $$('div.binding-section-title');
+		sec2Title.textContent = '群聊绑定（按会话）';
+		sec2.appendChild(sec2Title);
+
+		const hint = $$('div.binding-hint');
+		hint.textContent = '在飞书群中发送 /bind list 可查看本群 chat_id。绑定的群聊消息将自动路由给本 Agent。';
+		sec2.appendChild(hint);
+
+		const addRow = $$('div.binding-add-row');
+		this._bindingInput = document.createElement('input');
+		this._bindingInput.type = 'text';
+		this._bindingInput.className = 'binding-input';
+		this._bindingInput.placeholder = '输入飞书群聊会话 ID（chat_id）';
+		this._bindingInput.onkeydown = (e) => {
+			if (e.key === 'Enter') { e.preventDefault(); void this._addFeishuBinding(); }
+		};
+		addRow.appendChild(this._bindingInput);
+		const addBtn = $$('button.agent-settings-btn primary') as HTMLButtonElement;
+		addBtn.textContent = '➕ 绑定';
+		addBtn.onclick = () => void this._addFeishuBinding();
+		addRow.appendChild(addBtn);
+		sec2.appendChild(addRow);
+
+		this._bindingListContainer = $$('div.binding-list');
+		sec2.appendChild(this._bindingListContainer);
+		section.appendChild(sec2);
+
+		this._tabContentContainer?.appendChild(section);
+	}
+
+	private _renderBindingTab(): void {
+		if (!this._agentId) { return; }
+
+		// 飞书渠道默认 Agent 开关
+		if (this._bindingDefaultToggle) {
+			const cur = this.configurationService.getValue<string>('sessions.channel.feishu.defaultAgent');
+			this._bindingDefaultToggle.checked = (cur === this._agentId);
+		}
+
+		// 群聊绑定列表
+		if (!this._bindingListContainer) { return; }
+		this._bindingListContainer.replaceChildren();
+		let bindings: Array<{ conversationId: string; agentId: string }> = [];
+		try {
+			bindings = this.bridgeService.getEngine().listConversationBindings('feishu');
+		} catch {
+			// 桥接引擎未就绪：忽略
+		}
+		const mine = bindings.filter(b => b.agentId === this._agentId);
+		if (mine.length === 0) {
+			const empty = $$('div.skills-empty');
+			empty.textContent = '暂无绑定的飞书群聊';
+			this._bindingListContainer.appendChild(empty);
+			return;
+		}
+		for (const b of mine) {
+			const item = $$('div.skill-item installed');
+			const info = $$('div.skill-item-info');
+			const nameEl = $$('span.skill-item-name');
+			nameEl.textContent = b.conversationId;
+			info.appendChild(nameEl);
+			item.appendChild(info);
+			const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
+			removeBtn.title = '解除绑定';
+			removeBtn.textContent = '✕';
+			removeBtn.onclick = () => this._removeFeishuBinding(b.conversationId);
+			item.appendChild(removeBtn);
+			this._bindingListContainer.appendChild(item);
+		}
+	}
+
+	private async _addFeishuBinding(): Promise<void> {
+		if (!this._agentId || !this._bindingInput) { return; }
+		const chatId = this._bindingInput.value.trim();
+		if (!chatId) {
+			this.notificationService.warn('请输入飞书群聊会话 ID（chat_id）');
+			return;
+		}
+		try {
+			this.bridgeService.getEngine().setConversationAgent('feishu', chatId, this._agentId);
+			this._bindingInput.value = '';
+			this.notificationService.info(`已绑定飞书群聊 ${chatId} 到本 Agent`);
+			this._renderBindingTab();
+		} catch (err) {
+			this.notificationService.error(`绑定失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private _removeFeishuBinding(chatId: string): void {
+		if (!this._agentId) { return; }
+		try {
+			this.bridgeService.getEngine().clearConversationAgent('feishu', chatId);
+			this.notificationService.info(`已解除飞书群聊 ${chatId} 的绑定`);
+			this._renderBindingTab();
+		} catch (err) {
+			this.notificationService.error(`解除失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private _toggleFeishuDefault(): void {
+		if (!this._agentId || !this._bindingDefaultToggle) { return; }
+		const key = 'sessions.channel.feishu.defaultAgent';
+		const cur = this.configurationService.getValue<string>(key);
+		if (this._bindingDefaultToggle.checked) {
+			this.configurationService.updateValue(key, this._agentId);
+			this.notificationService.info('已设为飞书渠道默认 Agent');
+		} else if (cur === this._agentId) {
+			this.configurationService.updateValue(key, '');
+			this.notificationService.info('已取消飞书渠道默认 Agent');
+		}
+	}
+
 	// ── Placeholder Tab ──
 
 	private _buildPlaceholderTab(tabId: TabId): void {
@@ -393,6 +547,10 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	private _showTab(tabId: TabId): void {
 		if (!this._tabContentContainer) { return; }
+		// 进入绑定页签时刷新，反映外部（/bind 命令）变更
+		if (tabId === 'binding') {
+			this._renderBindingTab();
+		}
 		// Update tab buttons
 		const tabs = this._container?.querySelectorAll('.agent-settings-tab');
 		tabs?.forEach(t => {
@@ -442,6 +600,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 			// Update skills
 			this._agentSkills = this._agent.skills || [];
 			this._renderSkills();
+
+			// Update bindings tab
+			this._renderBindingTab();
 		} catch (err) {
 			this.notificationService.error(`加载 Agent 数据失败: ${err instanceof Error ? err.message : String(err)}`);
 		}

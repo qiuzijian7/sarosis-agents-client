@@ -160,6 +160,7 @@ export class FeishuPlatform implements IBridgePlatform {
 			userId,
 			userName: userId,
 			chatName: msg.chat_id,
+			conversationId: msg.chat_id,
 			content: text,
 			replyCtx,
 		});

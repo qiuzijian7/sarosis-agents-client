@@ -32,6 +32,13 @@ export interface IKbVault {
 	/** Vault 根目录的绝对磁盘路径（fsPath） */
 	path: string;
 	/**
+	 * 「笔记」分区的自定义根目录（绝对 fsPath）。
+	 * 设置后 sectionUri('notes') 优先返回它，笔记树 / 图谱 / 向量索引均以该目录为准；
+	 * 缺省（undefined）时回退到 Vault 内默认的「笔记」子文件夹。
+	 * 仅影响 notes 分区，不影响 library 分区。
+	 */
+	notesPath?: string;
+	/**
 	 * 外部配置的自定义根目录（用户「配置文件夹为知识库」指定）。
 	 * 存在时 vaultUri 优先返回它，根目录设置改变不会影响它；缺省（默认 Vault）
 	 * 时 vaultUri 跟随全局知识库根目录（STORAGE_ROOT_DIR）。

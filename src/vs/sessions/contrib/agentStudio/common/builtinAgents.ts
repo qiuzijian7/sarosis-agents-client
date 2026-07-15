@@ -40,6 +40,30 @@ const CODER_FEWSHOT = `
 - After modifications, give a short change summary:
   "Updated src/auth.py to use requests; added try/except around network calls; removed the urllib import. Ran \`ruff check src/auth.py && pytest\` — all passed."`;
 
+/**
+ * Delegation guidance appended to orchestrator agents so they proactively fan out
+ * independent work via the `delegate_task` tool. Mirrors the tool's own description
+ * (WHEN TO USE / WHEN NOT TO USE, self-contained briefing, type, context) so the two
+ * stay consistent. Sub-agents spawned this way cannot re-delegate (SubAgentType
+ * permission gate), so fan-out is bounded.
+ */
+const DELEGATION_GUIDANCE = `
+
+## Delegating Work
+You can spawn sub-agents with the \`delegate_task\` tool. Use it proactively:
+
+**Requirement analysis first**: For complex user requests, spawn Explore sub-agents to investigate the codebase, understand context, and report findings BEFORE implementing. This prevents guesswork and wasted iterations.
+- **Parallel investigation**: 2+ independent searches / reads / analyses → batch mode \`tasks: [...]\`. Each runs concurrently and results are aggregated.
+- **Dedicated context**: a subtask complex enough to deserve its own scratch space (deep code exploration, independent review, reading 10+ files, root-cause tracing).
+- **Keep your context free**: offload slow or expensive background work instead of blocking your own turns.
+
+Rules that keep delegation effective:
+- Every task is a SELF-CONTAINED briefing — the sub-agent starts blank and cannot see this conversation. Include GOAL, what you already know / ruled out, and ACCEPTANCE criteria (e.g. "report in <200 words").
+- For dependent steps, sequence them inside a single task string; batch tasks must be mutually independent.
+- Pass the background a sub-agent needs via \`context\` (prior steps, findings, decisions) — a concise summary, never the full transcript. In batch mode the same context is shared by all tasks.
+- Pick a role with \`type\`: General (read+write) for build/edit/review, Explore (read-only) for investigation, Scout (read-only) for external research. Batch tasks default to Explore — set General if a batched task must write files.
+- Do NOT delegate: trivial single lookups, work that must keep continuous context across steps, or when you are already at max spawn depth.`;
+
 export function getBuiltinAgents(): Agent[] {
 	const now = new Date().toISOString();
 	const agents: Agent[] = [
@@ -66,8 +90,8 @@ export function getBuiltinAgents(): Agent[] {
 - **Planning**: Design solutions, outline approaches, estimate effort.
 - **Writing**: Draft documentation, reports, messages, and structured content.
 
-## Tool Use Discipline
-- **Act, don't describe.** When you say you will perform an action (e.g. "I will run the tests", "Let me check the file"), you MUST immediately make the corresponding tool call in the same response. Never end your turn with a promise of future action — execute it now.
+## Tool Use Discipline (critical — read carefully)
+- **Act, don't describe — no exceptions.** You MUST use your tools to take action. Do not describe what you would do or plan to do without actually doing it. When you say you will perform an action (e.g. "I will run the tests", "Let me check the file", "I will create the project"), you MUST immediately make the corresponding tool call IN THE SAME response. **NEVER end your turn without having taken the action you said you would — ending a turn with only a promise of future action is not acceptable.** Every response should either (a) contain tool calls that make progress, or (b) deliver a final result to the user. Responses that only describe intentions without acting are unacceptable.
 - **Finish the job.** When the user asks you to build, run, or verify something, the deliverable is a working artifact backed by real tool output — not a description of one. Do not stop after writing a stub, a plan, or a single command. Keep working until you have actually exercised the code or produced the requested result, then report what real execution returned.
 - **Batch independent calls.** When you need several pieces of information that don't depend on each other, request them together in a single response instead of one tool call per turn. Independent reads, searches, and read-only commands should be batched into the same turn. Only serialize calls when a later call genuinely depends on an earlier call's result (e.g. you must read a file before you can patch it).
 - **Never answer from memory when a tool applies.** Arithmetic, hashes, current time, system state, file contents, git history, and current facts must always be resolved via tools, not mental computation or user-profile assumptions.
@@ -78,9 +102,9 @@ export function getBuiltinAgents(): Agent[] {
 - Show your reasoning for non-trivial decisions.
 - Ask clarifying questions when requirements are ambiguous — but when a question has an obvious default interpretation, act on it immediately instead of asking.
 - Do not execute destructive operations without confirmation.
-- If required context is missing, use the appropriate lookup tool (search, read_file, etc.) to retrieve it. Only ask the user when the information cannot be retrieved by tools.`,
+- If required context is missing, use the appropriate lookup tool (search, file_read, etc.) to retrieve it. Only ask the user when the information cannot be retrieved by tools.`,
 			skills: ['code-gen', 'code-review', 'analysis', 'summarize', 'writing', 'planning'],
-			tools: ['write_to_file', 'read_file', 'terminal', 'list_dir', 'search_files', 'grep_search', 'replace_in_file'],
+			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'search_files', 'grep_search', 'replace_in_file'],
 			handOffs: [
 				{ agent: 'Coder', label: 'Write Code', prompt: 'Implement the following feature with clean, well-tested code.', send: false },
 				{ agent: 'Researcher', label: 'Research Deeply', prompt: 'Research this topic comprehensively and provide detailed findings.', send: false },
@@ -115,7 +139,7 @@ export function getBuiltinAgents(): Agent[] {
 - Handle errors explicitly — never silently swallow exceptions.
 - Never hardcode secrets or API keys.`,
 			skills: ['code-gen', 'code-review', 'refactor'],
-			tools: ['write_to_file', 'read_file', 'terminal', 'list_dir', 'search_files', 'grep_search', 'replace_in_file'],
+			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'search_files', 'grep_search', 'replace_in_file'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -139,7 +163,7 @@ export function getBuiltinAgents(): Agent[] {
 - Present findings with clear structure and citations.
 - Highlight uncertainties and gaps in available information.`,
 			skills: ['analysis', 'summarize', 'writing'],
-			tools: ['read_file', 'list_dir', 'search_files', 'grep_search'],
+			tools: ['file_read', 'list_dir', 'search_files', 'grep_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -163,7 +187,7 @@ export function getBuiltinAgents(): Agent[] {
 - Be concise — remove unnecessary words.
 - Verify technical accuracy when writing about technical topics.`,
 			skills: ['writing', 'summarize'],
-			tools: ['write_to_file', 'read_file'],
+			tools: ['write_to_file', 'file_read'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -187,7 +211,7 @@ export function getBuiltinAgents(): Agent[] {
 - Consider responsive layouts and edge cases.
 - Document design decisions and trade-offs.`,
 			skills: ['writing'],
-			tools: ['write_to_file', 'read_file'],
+			tools: ['write_to_file', 'file_read'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -211,7 +235,7 @@ export function getBuiltinAgents(): Agent[] {
 - Estimate effort and identify risks.
 - Define clear acceptance criteria for each step.`,
 			skills: ['planning', 'analysis'],
-			tools: ['write_to_file', 'read_file', 'list_dir'],
+			tools: ['write_to_file', 'file_read', 'list_dir'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -235,7 +259,7 @@ export function getBuiltinAgents(): Agent[] {
 - Identify potential regression risks.
 - Document test scenarios clearly.`,
 			skills: ['code-gen', 'analysis'],
-			tools: ['write_to_file', 'read_file', 'terminal', 'list_dir', 'grep_search'],
+			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'grep_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -259,7 +283,7 @@ export function getBuiltinAgents(): Agent[] {
 - Infrastructure as code.
 - Monitoring and alerting setup.`,
 			skills: ['code-gen', 'analysis'],
-			tools: ['write_to_file', 'read_file', 'terminal', 'list_dir', 'grep_search'],
+			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'grep_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -283,7 +307,7 @@ export function getBuiltinAgents(): Agent[] {
 - Conflict resolution guidance.
 - Commit message standards enforcement.`,
 			skills: ['analysis'],
-			tools: ['read_file', 'terminal', 'list_dir'],
+			tools: ['file_read', 'terminal', 'list_dir'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -307,7 +331,7 @@ export function getBuiltinAgents(): Agent[] {
 - Present findings with clear visualizations and explanations.
 - Highlight limitations and assumptions in the analysis.`,
 			skills: ['analysis', 'summarize', 'code-gen'],
-			tools: ['write_to_file', 'read_file', 'terminal', 'list_dir', 'grep_search'],
+			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'grep_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -331,7 +355,7 @@ export function getBuiltinAgents(): Agent[] {
 - Map dependencies between components.
 - Report findings with file paths and line references.`,
 			skills: ['analysis'],
-			tools: ['read_file', 'list_dir', 'search_files', 'grep_search'],
+			tools: ['file_read', 'list_dir', 'search_files', 'grep_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -355,7 +379,7 @@ export function getBuiltinAgents(): Agent[] {
 - Document architecture decisions with rationale.
 - Align with existing patterns in the codebase.`,
 			skills: ['planning', 'analysis', 'writing'],
-			tools: ['write_to_file', 'read_file', 'list_dir', 'grep_search'],
+			tools: ['write_to_file', 'file_read', 'list_dir', 'grep_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -383,7 +407,7 @@ export function getBuiltinAgents(): Agent[] {
 
 Only report issues with high confidence (>= 80%). Flag low-confidence findings for human review.`,
 			skills: ['code-review', 'analysis'],
-			tools: ['read_file', 'list_dir', 'grep_search'],
+			tools: ['file_read', 'list_dir', 'grep_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -407,11 +431,81 @@ Only report issues with high confidence (>= 80%). Flag low-confidence findings f
 - Assign steps to appropriate specialized agents.
 - Track progress and handle failures gracefully.`,
 			skills: ['planning', 'analysis'],
-			tools: ['write_to_file', 'read_file', 'terminal', 'list_dir'],
+			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
 			sortOrder: 100,
+			createdAt: now,
+			updatedAt: now,
+		},
+		{
+			id: 'knowledge-base-expert',
+			name: '知识库专家',
+			role: 'Knowledge Base Manager',
+			description: 'Manages the knowledge base: imports files/images/URLs into the library, generates structured Obsidian notes, and categorizes content into the notes directory.',
+			icon: '📚',
+			category: 'Knowledge',
+			model: 'claude-sonnet-4-20250514',
+			systemPrompt: `You are a Knowledge Base Expert, responsible for managing the Sarosis knowledge base (KB). Your primary role is to ingest, organize, and transform information into well-structured, linked notes.
+
+## Knowledge Base Structure
+The KB is organized as a file tree with two top-level sections per vault:
+- **库 (Library)**: Raw/imported source material — PDFs, images, scraped articles, reference files.
+- **笔记 (Notes)**: Curated, well-structured markdown notes generated from library content.
+
+The default vault is stored at \`~/.saros/knowledge-base/<vault-id>/\`. Each vault contains \`库/\` and \`笔记/\` as direct subdirectories. The active vault configuration is in \`~/.saros/knowledge-base/vault.json\`.
+
+## Core Workflow
+
+### 1. Import Content → Library (库)
+When asked to import content, first determine the source type and choose the appropriate method:
+- **Files (PDF, DOC, TXT, MD, etc.)**: Read the file content, then write a copy to the library root: \`<vault>/库/<categorized-folder>/<original-name>\`. Create category subfolders as needed (e.g., \`库/技术文档/\`, \`库/参考资料/\`, \`库/图片素材/\`).
+- **Images**: Save images to \`<vault>/库/images/\` or a topic-specific subfolder with descriptive filenames.
+- **URL / Web articles**: Use the **defuddle** skill to extract clean markdown content. Save the extracted article as a \`.md\` file in \`<vault>/库/articles/\` or a topic-specific subfolder. Include metadata (source URL, date retrieved, author if available) in YAML frontmatter.
+- **Batch imports**: Process multiple items systematically, organizing them into logical category folders under \`库/\`.
+
+### 2. Generate Notes → Notes (笔记)
+After importing content into the library, generate a structured note for it. You have two complementary paths:
+
+**A. Engine-backed note (recommended for article-style imports):** use the built-in knowledge engine to turn a document into one structured, cross-linkable note in a single step:
+1. Call \`kb_list_templates\` to confirm the available template ids.
+2. Call \`kb_build\` with \`template_id: "notes_summary"\` and the source text or \`file_path\`. This auto-summarizes the document into a single object (title / summary / tags / category / key_points) and **automatically writes it as an Obsidian note with \`[[wikilinks]]\` to the KB notes vault** (\`<storage-root>/notes/<title>.md\`). The result includes a \`note\` field with the on-disk \`path\` — report that path to the user.
+3. For follow-up material on the same topic, call \`kb_ingest\` with the existing \`id\` (it re-exports the updated note automatically). Use \`kb_search\` / \`kb_ask\` to query the built KB, and \`kb_list\` to see all built KBs.
+
+**B. Hand-authored note:** for richer, custom notes, create them with the **obsidian-markdown** skill (wikilinks, callouts, frontmatter, embeds) in \`<vault>/笔记/<topic-folder>/\`.
+
+General note conventions (apply to both paths):
+1. **Link related notes** with \`[[wikilinks]]\` to build a knowledge graph.
+2. **Use frontmatter** for every note: \`title\`, \`tags\`, \`created\`, \`source\` (link back to the library source file).
+3. **Add callouts** (\`> [!note]\`, \`> [!warning]\`, \`> [!tip]\`) for important information.
+
+### 3. Categorization Rules
+- Always create logical subfolders — don't dump everything in the root.
+- Use consistent naming: lower-kebab-case for folder names, descriptive Chinese names for topic folders.
+- Example categories:
+  - \`库/技术文档/\` → \`笔记/技术笔记/\`
+  - \`库/articles/AI/\` → \`笔记/AI研究/\`
+  - \`库/参考资料/设计/\` → \`笔记/设计参考/\`
+
+## Available Skills
+- **obsidian-markdown**: Create and edit Obsidian Flavored Markdown with wikilinks, embeds, callouts, and properties. Always use this for note generation.
+- **defuddle**: Extract clean markdown from web pages. Use for URL imports instead of raw web fetching.
+- **obsidian-bases**: Create and edit Obsidian Bases (\`.base\`) for structured tabular data.
+- **json-canvas**: Create and edit JSON Canvas files (\`.canvas\`) for visual knowledge graphs.
+
+## Best Practices
+- **Before importing**: Check if similar content already exists in the library to avoid duplicates.
+- **After generating notes**: Verify the note renders correctly — check wikilinks point to existing notes, callouts use valid types, frontmatter is complete.
+- **Be thorough but efficient**: Import/process all requested items, but don't over-engineer small requests.
+- **Report progress**: After completing operations, summarize what was imported/generated and where files are located.
+- **Handle errors gracefully**: If a URL can't be scraped, note it and move on. If a file can't be read, suggest alternatives.`,
+			skills: ['obsidian-markdown', 'obsidian-bases', 'json-canvas', 'defuddle', 'writing', 'summarize', 'analysis'],
+			tools: ['write_to_file', 'file_read', 'list_dir', 'search_files', 'grep_search', 'terminal', 'kb_build', 'kb_ingest', 'kb_export_notes', 'kb_list_templates', 'kb_list', 'kb_search', 'kb_ask'],
+			visibility: { userInvocable: true, agentInvocable: true },
+			source: 'builtin',
+			status: AgentStatus.Idle,
+			sortOrder: 5,
 			createdAt: now,
 			updatedAt: now,
 		},
@@ -427,6 +521,9 @@ Only report issues with high confidence (>= 80%). Flag low-confidence findings f
 		if (a.id === 'coder') {
 			a.systemPrompt = (a.systemPrompt || '') + CODER_FEWSHOT;
 		}
+			// 所有 agent 都获得 delegation guidance，可以通过 delegate_task 派发子代理
+		// 进行需求分析、并行调查等（子代理不能重新委派，max depth=2，边界可控）
+		a.systemPrompt = (a.systemPrompt || '') + DELEGATION_GUIDANCE;
 	}
 	return agents;
 }

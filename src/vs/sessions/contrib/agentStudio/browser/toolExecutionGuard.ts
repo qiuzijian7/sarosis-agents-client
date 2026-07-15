@@ -21,6 +21,10 @@ import type {
 	IToolApprovalRequest, IToolApprovalHandler,
 } from '../common/providers.js';
 import { ToolSecurityLevel, ToolApprovalDecision } from '../common/providers.js';
+import {
+	runWithRetry,
+	type RetryPolicy,
+} from '../common/resilience.js';
 
 // ─── Constants ──────────────────────────────────────────────────────
 
@@ -131,6 +135,81 @@ function _makeTimeoutResult(toolCall: IToolCall, reason: string, executionTimeMs
 			retryable: true,
 		},
 	};
+}
+
+// ─── Retryable error + retry-with-timeout ───────────────────────────
+
+/**
+ * 标记「本次工具执行失败但可重试」的错误。
+ * executeWithRetryAndTimeout 在非成功且 metadata.retryable 时抛出它，
+ * 让 runWithRetry 据此退避重试（避免对不可重试错误白费重试）。
+ */
+class ToolRetryableError extends Error {
+	readonly isRetryableToolError = true;
+	constructor(public readonly result?: IToolResult) {
+		super(result?.error || 'tool execution failed (retryable)');
+		this.name = 'ToolRetryableError';
+	}
+}
+
+/** 工具执行的默认重试策略：3 次、指数退避、仅重试标记 retryable 的失败 */
+export const DEFAULT_TOOL_RETRY_POLICY: RetryPolicy = {
+	initialInterval: 1000,
+	backoffFactor: 2.0,
+	maxInterval: 30_000,
+	maxAttempts: 3,
+	jitter: true,
+	retryOn: (err: unknown) => (err as ToolRetryableError)?.isRetryableToolError === true,
+};
+
+export interface RetryableToolOptions {
+	timeoutMs?: number;
+	retryPolicy?: RetryPolicy;
+	/** 父级取消信号（整个 agent loop 取消时透传） */
+	parentSignal?: AbortSignal;
+	/** 本次执行自身的取消信号（优先级高于 parentSignal） */
+	signal?: AbortSignal;
+	/** 每次重试回调（日志 / 上报） */
+	onRetry?: (info: { attempt: number; error: string; delayMs: number }) => void;
+}
+
+/**
+ * 带「超时 + 指数退避重试」的工具执行。
+ *
+ * - 内层仍用 executeWithTimeout 提供单次超时保护（每次重试都是独立计时）。
+ * - 当某次执行返回 success=false 且 metadata.retryable=true（超时 / 可重试异常）
+ *   时，按 retryPolicy 退避后重试；其他情况立即上抛结果（不再重试）。
+ * - 受 AbortSignal 控制：取消时立即终止，不再重试。
+ *
+ * 这是 P0 容错增强：对齐 LangGraph RetryPolicy，解决限流 / 瞬时故障下的
+ * 「一次失败即放弃」问题。
+ */
+export async function executeWithRetryAndTimeout(
+	provider: IToolProvider,
+	agentId: string,
+	toolCall: IToolCall,
+	options: RetryableToolOptions = {},
+): Promise<IToolResult> {
+	const timeoutMs = options.timeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
+	const policy = options.retryPolicy ?? DEFAULT_TOOL_RETRY_POLICY;
+	const signal = options.signal ?? options.parentSignal;
+
+	return runWithRetry(
+		async () => {
+			const result = await executeWithTimeout(provider, agentId, toolCall, timeoutMs, options.parentSignal);
+			if (!result.success && result.metadata?.retryable) {
+				throw new ToolRetryableError(result);
+			}
+			return result;
+		},
+		policy,
+		{
+			signal,
+			onRetry: options.onRetry
+				? ({ attempt, error, delayMs }) => options.onRetry!({ attempt, error: error instanceof Error ? error.message : String(error), delayMs })
+				: undefined,
+		},
+	);
 }
 
 /**

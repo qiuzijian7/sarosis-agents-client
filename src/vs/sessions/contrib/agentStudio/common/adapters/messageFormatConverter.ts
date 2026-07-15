@@ -33,6 +33,7 @@ import {
 	AnthropicLLMChatMessage, AnthropicContentBlock, AnthropicUserContentBlock,
 	GeminiLLMChatMessage, GeminiPart,
 } from '../llmMessageTypes.js';
+import { evaluateForkPrefixCache, type IForkContext } from '../forkContext.js';
 
 // ─── OpenAI 格式转换 ──────────────────────────────────────────────────────
 
@@ -40,6 +41,18 @@ export interface OpenAIConvertOptions {
 	readonly isAnthropic?: boolean;
 	readonly tools?: IToolDefinition[];
 	readonly capabilityConfig?: IModelCapabilityConfig;
+	/**
+	 * Agent 的冻结 system prompt（= 冻结前缀的 system 部分）。
+	 * 仅用于 Fork 前缀缓存对齐判定（与父级 ForkContext 比对 fingerprint），
+	 * 不参与消息组装（system message 已在 messages 中）。
+	 */
+	readonly systemPrompt?: string;
+	/**
+	 * 父级 ForkContext（请求构造端接 ForkContext 的完整形态）。
+	 * 当本请求 (systemPrompt, tools) 与父级冻结前缀对齐时，在 system 前缀边界注入
+	 * `cache_control` 断点 → 命中 provider prompt cache。省略 → 不注入 fork 断点。
+	 */
+	readonly forkContext?: IForkContext;
 }
 
 export class MessageFormatConverter {
@@ -63,9 +76,25 @@ export class MessageFormatConverter {
 		const result: OpenAILLMChatMessage[] = [];
 		const config = options?.capabilityConfig;
 
+		// Fork 前缀缓存：cache_control 为 Anthropic 专有协议字段，仅 Anthropic 兼容
+		// provider 下发（OpenAI 原生靠前缀自动缓存，无需标记）。forkContext 在 OpenAI 下的
+		// 作用是保证 system+tools 前缀逐字节一致（冻结），由 sub-agent 复用/toolsets 继承
+		// 实现；对齐判定在 agentOSService 层完成并打日志。
+		// 仅 Anthropic 兼容 provider 下发 cache_control 标记（OpenAI 原生不识别该字段）。
+		const cachePrefix = options?.isAnthropic === true;
+
 		// 确定系统消息的角色
 		// 如果 capabilityConfig 声明了 developer-role（如 OpenAI o-series），使用 'developer'
 		const systemRole = config?.supportsSystemMessage === 'developer-role' ? 'developer' : 'system';
+
+		// 冻结前缀对应的 system message 索引：优先精确匹配 options.systemPrompt（即 agent
+		// 冻结 system），找不到时退回「最后一个 system message」（与旧行为一致）。
+		const frozenSystemIdx = options?.systemPrompt
+			? messages.findIndex((m) => m.role === 'system' && m.content === options.systemPrompt)
+			: -1;
+		const targetSystemIdx = frozenSystemIdx >= 0
+			? frozenSystemIdx
+			: messages.reduce((last, msg, idx) => (msg.role === 'system' ? idx : last), -1);
 
 		for (let i = 0; i < messages.length; i++) {
 			const m = messages[i];
@@ -73,15 +102,11 @@ export class MessageFormatConverter {
 			if (m.role === 'system') {
 				const base: Record<string, unknown> = { role: systemRole, content: m.content };
 
-				// KV Cache: Anthropic Prompt Caching — 在最后一个 system message 注入 cache_control
-				if (options?.isAnthropic) {
-					const lastSystemIdx = messages.reduce(
-						(last, msg, idx) => (msg.role === 'system' ? idx : last),
-						-1,
-					);
-					if (i === lastSystemIdx) {
-						base.cache_control = { type: 'ephemeral' };
-					}
+				// KV Cache: 在冻结前缀对应的 system message 注入 cache_control（Anthropic
+				// 兼容）。provider 据此把稳定前缀写入 prompt cache，父/子 fork 请求共享同一
+				// 缓存条目。forkContext 对齐时该前缀与父级完全一致 → cache 命中而非重计费。
+				if (cachePrefix && i === targetSystemIdx) {
+					base.cache_control = { type: 'ephemeral' };
 				}
 
 				result.push(base as OpenAILLMChatMessage);
@@ -155,19 +180,46 @@ export class MessageFormatConverter {
 
 	/**
 	 * 构建 OpenAI 格式的工具定义列表（用于 API 请求的 tools 字段）。
+	 *
+	 * @param forkContext 父级 ForkContext（可选）。当 isAnthropic 为真时，在最后一个
+	 *   工具定义上注入 cache_control 断点，使冻结的 tools 前缀也进入 prompt cache
+	 *   （system + tools 共同构成父/子 fork 共享的缓存前缀）。
+	 * @param isAnthropic 是否 Anthropic 兼容 provider（cache_control 为 Anthropic 专有字段）。
+	 * @param systemPrompt agent 冻结 system（仅用于对齐判定，不参与组装）。
 	 */
-	static toOpenAIToolDefinitions(tools: IToolDefinition[]): Array<{
+	static toOpenAIToolDefinitions(
+		tools: IToolDefinition[],
+		forkContext?: IForkContext,
+		isAnthropic?: boolean,
+		systemPrompt?: string,
+	): Array<{
 		type: 'function';
 		function: { name: string; description: string; parameters: Record<string, unknown> };
+		cache_control?: { type: 'ephemeral' };
 	}> {
-		return tools.map(t => ({
-			type: 'function' as const,
-			function: {
-				name: t.name,
-				description: t.description,
-				parameters: t.inputSchema,
-			},
-		}));
+		// 仅 Anthropic 兼容 provider 给 tools 打 cache 断点（OpenAI 原生不识别该字段）。
+		// forkContext 存在时认为本请求 fork 感知，值得把 tools 前缀一并冻结进 cache。
+		const cacheTools = isAnthropic === true &&
+			!!forkContext &&
+			evaluateForkPrefixCache(forkContext, systemPrompt ?? '', tools).aligned;
+		return tools.map((t, idx) => {
+			const def: {
+				type: 'function';
+				function: { name: string; description: string; parameters: Record<string, unknown> };
+				cache_control?: { type: 'ephemeral' };
+			} = {
+				type: 'function' as const,
+				function: {
+					name: t.name,
+					description: t.description,
+					parameters: t.inputSchema,
+				},
+			};
+			if (cacheTools && idx === tools.length - 1) {
+				def.cache_control = { type: 'ephemeral' };
+			}
+			return def;
+		});
 	}
 
 	// ─── Anthropic 格式 ──────────────────────────────────────────────
@@ -280,17 +332,42 @@ export class MessageFormatConverter {
 
 	/**
 	 * 构建 Anthropic 格式的工具定义列表。
+	 *
+	 * @param forkContext 父级 ForkContext（可选）。当 isAnthropic 为真时，在最后一个
+	 *   工具定义上注入 cache_control 断点，使冻结的 tools 前缀进入 prompt cache。
+	 * @param isAnthropic 是否 Anthropic 兼容 provider。
+	 * @param systemPrompt agent 冻结 system（仅用于对齐判定）。
 	 */
-	static toAnthropicToolDefinitions(tools: IToolDefinition[]): Array<{
+	static toAnthropicToolDefinitions(
+		tools: IToolDefinition[],
+		forkContext?: IForkContext,
+		isAnthropic?: boolean,
+		systemPrompt?: string,
+	): Array<{
 		name: string;
 		description: string;
 		input_schema: Record<string, unknown>;
+		cache_control?: { type: 'ephemeral' };
 	}> {
-		return tools.map(t => ({
-			name: t.name,
-			description: t.description,
-			input_schema: t.inputSchema,
-		}));
+		const cacheTools = isAnthropic === true &&
+			!!forkContext &&
+			evaluateForkPrefixCache(forkContext, systemPrompt ?? '', tools).aligned;
+		return tools.map((t, idx) => {
+			const def: {
+				name: string;
+				description: string;
+				input_schema: Record<string, unknown>;
+				cache_control?: { type: 'ephemeral' };
+			} = {
+				name: t.name,
+				description: t.description,
+				input_schema: t.inputSchema,
+			};
+			if (cacheTools && idx === tools.length - 1) {
+				def.cache_control = { type: 'ephemeral' };
+			}
+			return def;
+		});
 	}
 
 	// ─── Gemini 格式 ──────────────────────────────────────────────
@@ -444,6 +521,8 @@ export class MessageFormatConverter {
 			isAnthropic: false,
 			tools: options.tools,
 			capabilityConfig,
+			systemPrompt: options.systemPrompt,
+			forkContext: options.forkContext,
 		});
 		return { messages: openaiMsgs };
 	}
@@ -454,11 +533,14 @@ export class MessageFormatConverter {
 	static convertToolDefinitions(
 		tools: IToolDefinition[],
 		capabilityConfig?: IModelCapabilityConfig,
+		forkContext?: IForkContext,
+		isAnthropic?: boolean,
+		systemPrompt?: string,
 	): unknown {
 		const toolFormat = capabilityConfig?.specialToolFormat;
 
 		if (toolFormat === 'anthropic-style') {
-			return this.toAnthropicToolDefinitions(tools);
+			return this.toAnthropicToolDefinitions(tools, forkContext, isAnthropic, systemPrompt);
 		}
 
 		// Gemini 工具定义（functionDeclarations）和 OpenAI 格式不同，
@@ -466,6 +548,6 @@ export class MessageFormatConverter {
 		// TODO: 当添加 GeminiModelProvider 原生支持时，实现 toGeminiToolDefinitions()
 
 		// 默认：OpenAI 格式
-		return this.toOpenAIToolDefinitions(tools);
+		return this.toOpenAIToolDefinitions(tools, forkContext, isAnthropic, systemPrompt);
 	}
 }

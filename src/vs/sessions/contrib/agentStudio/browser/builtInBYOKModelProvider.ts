@@ -377,6 +377,9 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		// 抓包对齐：捕获响应流 chunk 的 id（每个 chunk 的 id 相同），
 		// 它 = 下一次请求的 previous_response_id，随 done 回传给 agentOS。
 		let capturedResponseId: string | undefined;
+		// 捕获本轮结束原因（OpenAI finish_reason / Anthropic stop_reason 经网关映射），
+		// 随 done delta 上抛给 agentOS 做"未完成轮"结构判定（对齐 OpenClaw）。
+		let capturedFinishReason: string | undefined;
 
 		try {
 			while (true) {
@@ -432,6 +435,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 						if (!content) {
 							const finishReason = parsed.choices?.[0]?.finish_reason;
 							if (finishReason) {
+								capturedFinishReason = finishReason;
 								this._logService.info(`[BYOK:${this.id}] _streamChat: finish_reason=${finishReason}`);
 							}
 							continue;
@@ -478,7 +482,13 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			// 抓包对齐：流结束后写入响应日志
 			this._debugWriteResponse(sseChunks, body.model as string);
 			this._logService.info(`[BYOK:${this.id}] _streamChat: finally block, yielding done (yields=${yieldCount}, responseId=${capturedResponseId ?? '(none)'})`);
-			yield capturedResponseId ? { type: 'done', responseId: capturedResponseId } : { type: 'done' };
+			const doneDeltaBase: IModelDelta = capturedResponseId
+				? { type: 'done', responseId: capturedResponseId }
+				: { type: 'done' };
+			const doneDelta: IModelDelta = capturedFinishReason
+				? { ...doneDeltaBase, finishReason: capturedFinishReason }
+				: doneDeltaBase;
+			yield doneDelta;
 		}
 	}
 
@@ -499,6 +509,10 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 				isAnthropic: this._definition.isAnthropic,
 				tools: options.tools,
 				capabilityConfig: undefined, // BYOK provider 统一使用 OpenAI 兼容格式
+				// Fork 前缀缓存（请求构造端接 ForkContext）：透传 agent 冻结 system + 父级
+				// ForkContext，使构造端能在冻结前缀边界注入 cache_control 断点（Anthropic 兼容）。
+				systemPrompt: options.systemPrompt,
+				forkContext: options.forkContext,
 			}),
 			stream: true,
 		};
@@ -514,7 +528,14 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			body.max_tokens = options.maxTokens;
 		}
 		if (options.tools && options.tools.length > 0) {
-			body.tools = MessageFormatConverter.toOpenAIToolDefinitions(options.tools);
+			// Fork 前缀缓存：Anthropic 兼容时把最后一个工具定义也打上 cache 断点，
+			// 使 system + tools 共同构成父/子 fork 共享的冻结缓存前缀。
+			body.tools = MessageFormatConverter.toOpenAIToolDefinitions(
+				options.tools,
+				options.forkContext,
+				this._definition.isAnthropic,
+				options.systemPrompt,
+			);
 			// 透传上层（agent loop 续跑兜底）指定的 tool_choice；默认 'auto'。
 			// 'required' 用于强制模型在续跑这一轮必须调用工具，治"宣告意图却不动手"。
 			body.tool_choice = options.toolChoice ?? 'auto';

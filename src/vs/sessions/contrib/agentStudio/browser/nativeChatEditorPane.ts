@@ -20,6 +20,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
@@ -78,6 +79,14 @@ export class NativeChatEditorPane extends EditorPane {
 	/** 多实例调试：每个 pane 的唯一标识（递增计数器），用于日志区分。 */
 	private readonly _paneId: number = NativeChatEditorPane._nextPaneId++;
 	get paneId(): number { return this._paneId; }
+
+	/**
+	 * 共享外部发送会话状态：防止多个 pane 同时接管同一个外部 session 的流式渲染。
+	 * Key = sessionId（无前缀，与 delta 事件 sessionId 对齐），不含 agentId。
+	 * 首 pane claim → add；done/error → delete。后续 pane 检查已存在 → 跳过。
+	 */
+	private static readonly _sharedExternalSendSessions = new Set<string>();
+
 	private _isInitialized = false;
 	private _defaultAgentSelected = false;
 	private _currentAgentId: string | null = null;
@@ -172,6 +181,7 @@ export class NativeChatEditorPane extends EditorPane {
 		@IModelService private readonly _modelService: IModelService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ILogService private readonly _logService: ILogService,
+		@INotificationService private readonly _notificationService: INotificationService,
 		@IMcpService private readonly _mcpService: IMcpService,
 		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 	) {
@@ -312,14 +322,17 @@ export class NativeChatEditorPane extends EditorPane {
 					// 发送 [image: name] / [binary file, N bytes] 占位文本，丢失实际数据）。
 					const fullText = text;
 
-					// Optimistically add user message
-					const userMsg: IAgentChatMessage = {
-						id: `msg_${Date.now()}_user`,
-						role: 'user',
-						content: fullText,
-						timestamp: Date.now(),
-					};
-					this._chatPanel?.addMessage(userMsg);
+				// Optimistically add user message
+				const userMsg: IAgentChatMessage = {
+					id: `msg_${Date.now()}_user`,
+					role: 'user',
+					content: fullText,
+					timestamp: Date.now(),
+					// 带上附件，使气泡 UI 能展示图片/文件 chip（与输入框 chip 样式一致）。
+					// 真实内容仍经 sendMessage 的 options.attachments 透传给 LLM（见下方 sendMessage 调用）。
+					attachments: attachments && attachments.length > 0 ? attachments : undefined,
+				};
+				this._chatPanel?.addMessage(userMsg);
 
 				// Set sending state BEFORE await — switches send button to stop icon immediately
 				this._chatPanel?.setSending(true);
@@ -398,6 +411,11 @@ export class NativeChatEditorPane extends EditorPane {
 					// 不触发队列 dispatch，避免与 line 644 双重触发。
 				this._chatPanel?.setSending(false, { triggerExecuteNext: false });
 				this._isSending = false;
+				// 解除共享 Claim：手动停止时 onDidStreamDelta('done') 不会触发，
+				// 必须在此清理，防止该 session 权限被永久泄漏。
+				if (this._isExternalSend && this._taskExecutingSessionId) {
+					NativeChatEditorPane._sharedExternalSendSessions.delete(this._taskExecutingSessionId);
+				}
 				this._isExternalSend = false;
 			} catch (err) {
 				this._logService.error('[NativeChatEditorPane] cancelExecution failed:', err);
@@ -653,6 +671,32 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.error('[NativeChatEditorPane] onDeleteSession failed:', err);
 				}
 			},
+			onForkSession: async (sessionId: string) => {
+				if (!this._currentAgentId) {
+					this._logService.info('[NativeChatEditorPane] onForkSession: no agent selected');
+					return;
+				}
+				const agentId = this._currentAgentId;
+				try {
+					const meta = await this._chatService.forkAgentSession(agentId, sessionId);
+					this._logService.debug(`[NativeChatEditorPane] onForkSession: forked ${sessionId} → ${meta.id} ("${meta.name}")`);
+					// 切换到新分叉出的独立会话（丢弃外部 provider 线程，可安全发散）
+					this._currentSessionId = meta.id;
+					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
+						this.input.setAgentInfo(this.input.name, agentId, meta.id);
+					}
+					try {
+						const history = await this._chatService.getHistory(agentId, meta.id);
+						this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+					} catch {
+						this._chatPanel?.setMessages([]);
+					}
+					this._activateCheckpointSession(agentId, meta.id);
+					await this._refreshSessionList();
+				} catch (err) {
+					this._logService.error('[NativeChatEditorPane] onForkSession failed:', err);
+				}
+			},
 			// Orchestration plan callbacks
 			onApprovePlan: async (planId: string) => {
 				try {
@@ -746,10 +790,24 @@ export class NativeChatEditorPane extends EditorPane {
 					}))
 				);
 			},
-			/** 切换工作区 → 仅更新面板本地状态，不影响全局活跃工作区（侧边栏等） */
+			/** 切换工作区 → 绑定沙箱到该工作区目录，仅允许在该目录内读写 */
 			onSelectWorkspace: async (workspaceId: string, _workspaceName: string) => {
 				this._currentWorkspaceId = workspaceId;
-				// NOTE: 不调用 setActiveWorkspace() —— 保持聊天面板的工作区独立于侧边栏
+				// 将沙箱绑定到选中工作区的目录（与 worktree 绑定机制一致，
+				// 通过 AgentBinding.worktreePath 限制文件操作范围）
+				if (this._currentAgentId) {
+					try {
+						const ws = await this._agentStudioService.getWorkspace(workspaceId);
+						if (ws?.path) {
+							await this._agentStudioService.upsertAgentBinding(workspaceId, this._currentAgentId, {
+								worktreePath: ws.path,
+							});
+							this._logService.info(`[NativeChatEditorPane] onSelectWorkspace: sandbox bound to ${ws.path}`);
+						}
+					} catch (err) {
+						this._logService.error('[NativeChatEditorPane] onSelectWorkspace: failed to bind sandbox:', err);
+					}
+				}
 				// 清空旧 worktree 并重新加载新 workspace 的 worktree 列表
 				this._chatPanel?.setWorktrees([]);
 				this._chatPanel?.setSelectedWorktree('');
@@ -896,6 +954,14 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.error('[NativeChatEditorPane] onOpenLink: failed to open URL preview:', err);
 				});
 			},
+			/** 收藏 LLM 消息到知识库，自动归类 */
+			onFavoriteMessage: (messageContent: string) => {
+				void this._handleFavoriteMessage(messageContent);
+			},
+			/** P2: footer 复制按钮右侧的「导入知识库」按钮 —— 走与 onFavoriteMessage 同一份管线 */
+			onImportToKnowledgeBase: (messageContent: string) => {
+				void this._handleFavoriteMessage(messageContent);
+			},
 		}));
 
 		this._container.appendChild(this._chatPanel.element);
@@ -1013,6 +1079,10 @@ export class NativeChatEditorPane extends EditorPane {
 			// 注意：此 done 来自 agentChatService for-await 退出后的广播，
 			// 不是 turn 级别的 done（turn done 不广播给外部监听器）。
 			if (this._isExternalSend) {
+				// 解除共享 Claim：释放本 pane 对该 session 外部流的独占权。
+				const claimKey = sessionId || `__nosession_${agentId}`;
+				NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
+
 				this._handleStreamDelta(delta); // finalize assistant msg（不 reset）
 				this._resetStreamingMessage(); // 清理流式状态
 				this._applyStreamPhase('idle');
@@ -1025,9 +1095,31 @@ export class NativeChatEditorPane extends EditorPane {
 				this._externalSendJustFinished = true;
 			}
 			// 本地发送时 done 不做处理 — 由 _sendMessageInternal await 返回后统一收尾
+		} else if (delta.type === 'error') {
+			// 外部发送出错 — 解除共享 Claim，防止该 session 的权限被永久占住。
+			// _handleStreamDelta 内部会设置 _isExternalSend=false（见 line ~1822），
+			// 但共享集合需在此处清理（有 sessionId/agentId 上下文）。
+			if (this._isExternalSend) {
+				const claimKey = sessionId || `__nosession_${agentId}`;
+				NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
+			}
+			this._handleStreamDelta(delta);
 		} else {
 			// 首个非 done delta → 外部发送开始：初始化流式消息 + 标记外部发送
 			if (!this._isSending) {
+				// 修复多窗口并行场景下的 Pane 劫持问题：
+				// 当两个 pane 打开同一 agent 时，看板任务执行会广播 delta 到所有 pane，
+				// 导致 idle 的 pane 被意外切换到任务 session。用共享静态集合做跨 pane 协调：
+				// 如果已有另一个 pane（包括本 pane）claim 了该 session 的外部流，则跳过。
+				// 与 _activeTurns 取消键（agentId::sessionId）不同，此处 session 是 delta
+				// 事件的 sessionId，不含 agentId 前缀，直接匹配。
+				const externalClaimKey = sessionId || `__nosession_${agentId}`;
+				if (NativeChatEditorPane._sharedExternalSendSessions.has(externalClaimKey)) {
+					// 另一个 pane 已经接管了这个外部 session 的流式渲染，跳过。
+					return;
+				}
+				NativeChatEditorPane._sharedExternalSendSessions.add(externalClaimKey);
+
 				// If the delta belongs to a different session than what's
 				// currently loaded in the panel, switch to that session first.
 				// This happens when executeTaskForBoard creates a new session
@@ -1192,7 +1284,7 @@ export class NativeChatEditorPane extends EditorPane {
 
 		const t0 = performance.now();
 		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-		console.warn(`[ScrollDiag] _reloadChatHistory START agentId=${agentId} paneId=${this._paneId} caller: ${diagStack}`);
+		console.debug(`[ScrollDiag] _reloadChatHistory START agentId=${agentId} paneId=${this._paneId} caller: ${diagStack}`);
 		this._logService.debug(`[NativeChatEditorPane#${this._paneId}] _reloadChatHistory: agentId=${agentId}`);
 
 		try {
@@ -1268,10 +1360,13 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: gen=${gen} superseded by gen=${this._loadGeneration}, discarding`);
 					return;
 				}
-				// 切换 agent 时重置外部发送状态 — 旧 agent 的 onDidStreamDelta('done')
-				// 不会再被此 pane 处理（agentId 不匹配），避免 _isSending 卡住。
-				if (this._currentAgentId && this._currentAgentId !== agentId && this._isExternalSend) {
-					this._isSending = false;
+			// 切换 agent 时重置外部发送状态 — 旧 agent 的 onDidStreamDelta('done')
+			// 不会再被此 pane 处理（agentId 不匹配），避免 _isSending 卡住。
+			// 同时解除共享 Claim，防止该 session 权限被永久泄漏。
+			if (this._currentAgentId && this._currentAgentId !== agentId && this._isExternalSend) {
+				const claimKey = this._taskExecutingSessionId || `__nosession_${this._currentAgentId}`;
+				NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
+				this._isSending = false;
 					this._isExternalSend = false;
 					this._chatPanel.setSending(false);
 				}
@@ -1696,7 +1791,13 @@ export class NativeChatEditorPane extends EditorPane {
 				if (!assistantMsg || !assistantId) { return; }
 				const endCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
 				if (endCall) {
-					endCall.status = 'success';
+					// 根据服务端返回的 success 字段决定状态——失败时显示红色警告工具卡而非绿色成功卡。
+					const isError = (delta.success === false);
+					endCall.status = isError ? 'error' : 'success';
+					// 失败时把已写入的 result 同步到 .error，使工具卡底部「错误详情」区域可渲染。
+					if (isError && endCall.result && !endCall.error) {
+						endCall.error = endCall.result;
+					}
 					this._applyStreamPhase('llm_streaming');
 					this._chatPanel?.updateMessage(assistantId, {
 						toolCalls: assistantMsg.toolCalls!.slice(),
@@ -1712,6 +1813,7 @@ export class NativeChatEditorPane extends EditorPane {
 				const resultCall = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === delta.toolCallId);
 				if (resultCall) {
 					resultCall.result = delta.content;
+					// 仅在尚未被 tool_end 设为 error 时才默认 success（tool_end 后到的情况）。
 					if (resultCall.status === 'running') { resultCall.status = 'success'; }
 					this._chatPanel?.updateMessage(assistantId, {
 						toolCalls: assistantMsg.toolCalls!.slice(),
@@ -1730,23 +1832,57 @@ export class NativeChatEditorPane extends EditorPane {
 					});
 				}
 				break;
+			case 'confirmation':
+				// 安全沙箱受限→渲染确认卡片（暂停等待用户决策）。
+				if (assistantMsg && assistantId && delta.confirmationData) {
+					assistantMsg.confirmation = delta.confirmationData as any;
+					this._chatPanel?.updateMessage(assistantId, {
+						confirmation: delta.confirmationData,
+						isStreaming: true,
+					});
+				}
+				break;
+			case 'confirmation_resolved':
+				// 用户已决策 → 更新卡片状态（approved / cancelled）。
+				if (assistantMsg && assistantId && assistantMsg.confirmation && delta.confirmationId === assistantMsg.confirmation.id) {
+					assistantMsg.confirmation = {
+						...assistantMsg.confirmation,
+						status: delta.confirmationStatus as 'approved' | 'rejected' | 'cancelled',
+					};
+					this._chatPanel?.updateMessage(assistantId, {
+						confirmation: assistantMsg.confirmation,
+					});
+				}
+				break;
 			case 'done': {
 				if (assistantMsg && assistantId) {
 					if (assistantMsg.toolCalls) {
 						for (const tc of assistantMsg.toolCalls) {
+							// done 收尾：仅把仍为 running 的工具标记为 success（已被 tool_end 设为 error 的保留不变）。
 							if (tc.status === 'running') { tc.status = 'success'; }
 						}
 					}
 					const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
-					this._applyStreamPhase('idle');
+					const isCanceled = (delta as any).canceled === true;
+					// 用户主动取消：在 bubble 末尾追加「用户已取消」提示（保留已生成内容）
+					// 若是空内容（仅"正在思考..."），则直接显示取消提示作为 content
+					const currentContent = assistantMsg.content || '';
+					const hasRealContent = currentContent.trim().length > 0
+						&& !/^[\s\S]*?(正在思考|Thinking\.\.\.)$/m.test(currentContent.trim());
+					const finalContent = isCanceled
+						? (hasRealContent
+							? currentContent + '\n\n⚠️ 用户已取消'
+							: '⚠️ 用户已取消')
+						: currentContent;
+					this._applyStreamPhase(isCanceled ? 'canceled' : 'idle');
 					// 显式发送最终 content，确保全量重建时读到的不是流式过程中最后一次
 					// delta 的残留（可能因增量渲染产生碎片 DOM）。
 					this._chatPanel?.updateMessage(assistantId, {
-						content: assistantMsg.content,
+						content: finalContent,
 						toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
 						isStreaming: false,
 						isThinking: false,
-						streamPhase: 'idle',
+						streamPhase: isCanceled ? 'canceled' : 'idle',
 						metadata: { ...(assistantMsg.metadata || {}), durationMs },
 					});
 				}
@@ -1757,7 +1893,34 @@ export class NativeChatEditorPane extends EditorPane {
 				break;
 			}
 			case 'error':
-				if (assistantId) {
+				if (assistantId && assistantMsg) {
+					this._applyStreamPhase('error');
+					// LLM provider 错误（如 HTTP 400/429/超时等）→ 渲染为合成错误工具卡，
+					// 而非追加到 message.content 渲染为文本气泡（避免「错误文本 + 耗时」两个独立气泡）。
+					const errorText = typeof delta.content === 'string' ? delta.content : '执行失败';
+					const errorId = `__llm_error_${delta.toolCallId ?? Date.now()}`;
+					const syntheticToolCall = {
+						id: errorId,
+						name: 'llm_error',
+						displayName: '模型调用错误',
+						status: 'error' as const,
+						error: errorText,
+						result: errorText,
+						defaultShow: true,
+					};
+					// 合并到现有 toolCalls，去重同名同 ID 的合成卡（防止 done/error 多 delta 重复添加）
+					const existing = (assistantMsg.toolCalls ?? []).filter(
+						(tc: any) => !(tc?.id === errorId || (tc?.name === 'llm_error' && tc?.error === errorText))
+					);
+					assistantMsg.toolCalls = [...existing, syntheticToolCall];
+					this._chatPanel?.updateMessage(assistantId, {
+						toolCalls: assistantMsg.toolCalls.slice(),
+						isStreaming: false,
+						isThinking: false,
+						streamPhase: 'error',
+					});
+				} else if (assistantId) {
+					// 无 assistantMsg 上下文时回退到原行为
 					this._applyStreamPhase('error');
 					this._chatPanel?.updateMessage(assistantId, {
 						isStreaming: false,
@@ -1927,6 +2090,10 @@ export class NativeChatEditorPane extends EditorPane {
 				break;
 			case 'error':
 				status = 'error';
+				break;
+			case 'canceled':
+				// 用户主动取消：视为普通 idle（清除未读提示，因为没有新结果待查看）
+				status = this._isTabActive ? 'idle' : 'pending';
 				break;
 			case 'idle':
 				// Execution finished: white "pending" dot if the user hasn't
@@ -2461,6 +2628,20 @@ export class NativeChatEditorPane extends EditorPane {
 			if (emp && this._chatPanel) {
 				this._currentAgentId = agentId;
 				this._currentAgentSkills = emp.skills ?? [];
+				// 若已选中工作区，将新 agent 的沙箱绑定到同一工作区目录
+				if (this._currentWorkspaceId) {
+					try {
+						const ws = await this._agentStudioService.getWorkspace(this._currentWorkspaceId);
+						if (ws?.path) {
+							await this._agentStudioService.upsertAgentBinding(this._currentWorkspaceId, agentId, {
+								worktreePath: ws.path,
+							});
+							this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: sandbox bound to ${ws.path} for new agent ${agentId}`);
+						}
+					} catch (err) {
+						this._logService.error('[NativeChatEditorPane] _selectAndLoadAgent: failed to bind sandbox:', err);
+					}
+				}
 				this._chatPanel.setAgent({
 					id: emp.id,
 					name: emp.name,
@@ -2855,6 +3036,101 @@ export class NativeChatEditorPane extends EditorPane {
 			// Command may not be registered in all configurations — that's OK,
 			// the confirmation card is still dismissed in the UI.
 		}
+	}
+
+	/**
+	 * 收藏 LLM 消息到知识库 —— 接入 KB 引擎路径。
+	 *
+	 * 优先走 `importMessageToKnowledgeBase`（kb_build / kb_ingest + notes_summary
+	 * 模板）：内容自动导入知识库并触发总结流程，生成或完善（同一主题重复收藏时）
+	 * 一份结构化笔记（<kbRoot>/notes/<title>.md）。
+	 *
+	 * 当引擎不可用（如未配置 Embedding Provider）时，降级为旧逻辑：把内容按
+	 * LLM 分类写入 .saros/knowledge-base/favorites/<category>/ 下的 markdown。
+	 */
+	private async _handleFavoriteMessage(content: string): Promise<void> {
+		try {
+			const result = await this._agentStudioService.importMessageToKnowledgeBase(content);
+			if (result.success && result.notePath) {
+				const verb = result.action === 'ingest' ? '已完善知识库笔记' : '已收藏到知识库';
+				this._logService.info(`[NativeChatEditorPane] ${verb} [action=${result.action}, id=${result.id}]: ${result.notePath}`);
+				this._notificationService.notify({
+					severity: Severity.Info,
+					message: `${verb}：${result.note ?? result.title ?? ''}`,
+					source: 'agent-chat-favorite',
+				});
+				return;
+			}
+			// 引擎路径失败（如 Embedding 未配置）→ 降级到 favorites 文件夹
+			this._logService.warn(`[NativeChatEditorPane] KB 引擎导入失败，降级到 favorites：${result.error}`);
+			await this._writeLegacyFavorite(content);
+			this._notificationService.notify({
+				severity: Severity.Warning,
+				message: `知识库引擎不可用，已按旧方式收藏（${result.error ?? 'unknown error'}）`,
+				source: 'agent-chat-favorite',
+			});
+		} catch (err) {
+			this._logService.error('[NativeChatEditorPane] 收藏失败:', err);
+			// 兜底降级，保证按钮始终可用
+			try { await this._writeLegacyFavorite(content); } catch { /* ignore */ }
+		}
+	}
+
+	/**
+	 * 旧版收藏逻辑：LLM 智能分类后把消息内容写入
+	 * .saros/knowledge-base/favorites/<category>/<title>.md。
+	 * 引擎路径不可用时的降级方案。
+	 */
+	private async _writeLegacyFavorite(content: string): Promise<void> {
+		// 1. 自动提取标题（第一行有效文本，最多 80 字符）
+		const firstLine = content.split('\n').find(l => l.trim().length > 0)?.trim() || '收藏';
+		const title = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+
+		// 2. LLM 驱动的智能分类（复刻 Hyper-Extract 的 guideline.target + structured output）
+		//    失败时自动降级到关键词启发式分类（classifyContent 内置 fallback）。
+		const classifyResult = await this._agentStudioService.classifyContent(content);
+
+		// 3. 构建知识库条目路径
+		const userHome = await this._agentStudioService.resolveUserHome();
+		const kbDir = URI.file(`${userHome}/.saros/knowledge-base/favorites/${classifyResult.category}`);
+		const fileName = title.replace(/[<>:"/\\|?*\n\r]/g, '_').slice(0, 100);
+		const fileUri = URI.joinPath(kbDir, `${fileName}.md`);
+
+		// 去重：如已存在则追加时间戳后缀
+		let finalUri = fileUri;
+		try {
+			await this._fileService.stat(finalUri);
+			const ts = Date.now().toString(36);
+			const ext = `.${ts}.md`;
+			const base = fileName.length > 90 ? fileName.slice(0, 90) : fileName;
+			finalUri = URI.joinPath(kbDir, `${base}${ext}`);
+		} catch { /* 文件不存在，使用原始路径 */ }
+
+		// 4. 构建 Markdown 文档（带 front matter 元数据 + 分类信息）
+		const now = new Date().toISOString();
+		const markdown = [
+			'---',
+			`title: "${title}"`,
+			`category: "${classifyResult.label}"`,
+			`category_id: "${classifyResult.category}"`,
+			`confidence: ${classifyResult.confidence}`,
+			`classifier: "${classifyResult.source}"`,
+			`reasoning: "${classifyResult.reasoning}"`,
+			`source: "agent-chat-favorite"`,
+			`created_at: "${now}"`,
+			'---',
+			'',
+			content,
+		].join('\n');
+
+		// 5. 写入文件
+		await this._fileService.createFile(
+			finalUri,
+			VSBuffer.fromString(markdown),
+			{ overwrite: false },
+		);
+
+		this._logService.info(`[NativeChatEditorPane] 已收藏到知识库(legacy) [${classifyResult.label}, conf=${classifyResult.confidence}, src=${classifyResult.source}]: ${finalUri.toString()}`);
 	}
 
 	override dispose(): void {

@@ -42,6 +42,9 @@ import {
 	AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL,
 	AGENT_STUDIO_AUX_CURATOR_PROVIDER,
 	AGENT_STUDIO_AUX_CURATOR_MODEL,
+	AGENT_STUDIO_AUX_EMBEDDING_PROVIDER,
+	AGENT_STUDIO_AUX_EMBEDDING_MODEL,
+	AGENT_STUDIO_AUX_EMBEDDING_DIMENSIONS,
 	AGENT_STUDIO_DATA_PATH_SETTING,
 	AGENT_STUDIO_CLI_PATH_SETTING,
 	AGENT_STUDIO_CLI_DEFAULT_WORKDIR_SETTING,
@@ -143,6 +146,21 @@ function makeAuxBlock(key: string, providerKey: string, modelKey: string, label:
 	};
 }
 
+/** Embedding（向量）辅助模型配置块：provider（select）+ model（string）+ dimensions（number）。
+ * 与其它辅助模型同构，但额外提供维度输入，且默认值对齐 text-embedding-3-small / 512d。 */
+const EMBEDDING_AUX_SECTION: SettingSection = {
+	id: 'aux-embedding',
+	label: 'Embedding（向量）',
+	icon: '🧬',
+	description: '用于知识库向量化与 RAG 索引构建（不再依赖知识库专家 Agent）',
+	defaultCollapsed: true,
+	fields: [
+		{ key: AGENT_STUDIO_AUX_EMBEDDING_PROVIDER, label: 'Provider', description: 'Auto 表示跟随全局 Embedding Provider 设置', type: 'select', default: 'auto', options: AUX_PROVIDER_OPTIONS },
+		{ key: AGENT_STUDIO_AUX_EMBEDDING_MODEL, label: 'Model', description: '向量化模型（留空使用默认）', type: 'string', default: 'text-embedding-3-small', placeholder: 'text-embedding-3-small' },
+		{ key: AGENT_STUDIO_AUX_EMBEDDING_DIMENSIONS, label: 'Dimensions', description: '向量维度（默认 512）', type: 'number', default: 512, min: 1, max: 8192 },
+	],
+};
+
 const AUX_SECTIONS: SettingSection[] = [
 	makeAuxBlock('vision', AGENT_STUDIO_AUX_VISION_PROVIDER, AGENT_STUDIO_AUX_VISION_MODEL, 'Vision（图像分析）', '用于分析上传的图片'),
 	makeAuxBlock('webExtract', AGENT_STUDIO_AUX_WEB_EXTRACT_PROVIDER, AGENT_STUDIO_AUX_WEB_EXTRACT_MODEL, 'Web Extract（网页摘要）', '用于在研究中摘要网页'),
@@ -150,6 +168,7 @@ const AUX_SECTIONS: SettingSection[] = [
 	makeAuxBlock('compression', AGENT_STUDIO_AUX_COMPRESSION_PROVIDER, AGENT_STUDIO_AUX_COMPRESSION_MODEL, 'Compression（上下文压缩）', '用于压缩长上下文窗口'),
 	makeAuxBlock('goalJudge', AGENT_STUDIO_AUX_GOAL_JUDGE_PROVIDER, AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL, 'Goal Judge（目标评估）', '用于评估目标完成'),
 	makeAuxBlock('curator', AGENT_STUDIO_AUX_CURATOR_PROVIDER, AGENT_STUDIO_AUX_CURATOR_MODEL, 'Curator（代码审查）', '用于审查代码变更'),
+	EMBEDDING_AUX_SECTION,
 ];
 
 // ─── Provider Sections ───────────────────────────────────────────────

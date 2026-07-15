@@ -384,7 +384,29 @@ initMessageClient((type, data) => {
 				if (payload.perfHtmlTs) {
 					(window as any).__AS_PERF_HTML_TS__ = payload.perfHtmlTs;
 				}
-				console.log(`[AgentStudio] pool.activate → panelType=${payload.panelType}`);
+
+				// 修复多窗口 pool 复用场景下的 Zustand 单例跨面板状态泄漏：
+				// warm webview 被 workbench Flow/Taskboard 面板复用时，上一个
+				// panel session 的 workflow trace 状态（liveWorkflowExecutions/
+				// liveWorkflowEvents 等）仍残留在 store 中 → 显示旧工作流数据。
+				// pool.activate 是面板接管的第一条数据消息，在此处清空所有
+				// workflow trace 以确保新面板从干净状态启动。
+				const chatState = useChatStore.getState();
+				// 清空旧 session 的工作流执行记录与事件时间线
+				const oldSessions = Object.keys(chatState.liveWorkflowExecutions);
+				for (const sid of oldSessions) {
+					chatState.clearWorkflowEvents(sid);
+				}
+				// 重置 askUser / collectVariable 等交互状态
+				useChatStore.setState({
+					liveWorkflowExecutions: {},
+					liveAskUsers: {},
+					liveCollectVariables: {},
+					liveWorkflowEvents: {},
+				});
+
+				console.log(`[AgentStudio] pool.activate → panelType=${payload.panelType}` +
+					(oldSessions.length > 0 ? ` (cleared ${oldSessions.length} stale workflow sessions)` : ''));
 				window.dispatchEvent(new CustomEvent('agentStudio:pool-activate', { detail: payload }));
 			}
 			break;

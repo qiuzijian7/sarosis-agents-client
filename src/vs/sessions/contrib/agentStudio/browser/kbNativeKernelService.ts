@@ -59,7 +59,7 @@ export interface IKbNativeKernelService {
 	buildVectorIndex(roots: IKbBuildRoot[], opts?: IKbVectorBuildOptions): Promise<void>;
 
 	/** Semantic vector search over the built index. */
-	searchVector(query: string, topK?: number): Promise<IKbVectorSearchHit[]>;
+	searchVector(query: string, topK?: number, providerId?: string): Promise<IKbVectorSearchHit[]>;
 
 	/** Import a pre-built RAG library from a .kbrag.json file on disk. */
 	importVectorFromFile(uri: URI): Promise<boolean>;
@@ -214,9 +214,9 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 		await kernel.buildVectorIndex(roots, opts);
 	}
 
-	async searchVector(query: string, topK = 8): Promise<IKbVectorSearchHit[]> {
+	async searchVector(query: string, topK = 8, providerId?: string): Promise<IKbVectorSearchHit[]> {
 		const kernel = this._ensureKernel();
-		return kernel.searchVector(query, topK);
+		return kernel.searchVector(query, topK, providerId);
 	}
 
 	async importVectorFromFile(uri: URI): Promise<boolean> {

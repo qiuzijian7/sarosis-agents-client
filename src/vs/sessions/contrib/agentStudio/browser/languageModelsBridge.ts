@@ -65,6 +65,14 @@ import {
 export const SAROSIS_USAGE_MIME = 'application/vnd.saros.usage+json';
 
 /**
+ * MIME for tunneling `finish_reason` from the provider extension through the
+ * ExtHost progress layer to the renderer bridge. Same pattern as SAROSIS_USAGE_MIME.
+ *
+ * ⚠️ 同步约定：与 `extensions/codebuddy-provider/src/extension.ts` 中的 MIME 逐字一致。
+ */
+export const SAROSIS_FINISH_REASON_MIME = 'application/vnd.saros.finish-reason+json';
+
+/**
  * One IModelProvider instance per LM vendor.
  *
  * - id:    `lm:<vendor>` so it's distinguishable from BYOK / built-in providers
@@ -517,6 +525,7 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 		this._logService.trace(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
 
 		let capturedResponseId: string | undefined;
+		let capturedFinishReason: string | undefined;
 		let _firstPartReceived = false;
 		for await (const part of response.stream) {
 			if (!_firstPartReceived) {
@@ -532,6 +541,21 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					if (typeof pid === 'string' && pid) {
 						capturedResponseId = pid;
 					}
+					// ── 捕获 finish_reason（经 DataPart 透传，同 usage 模式）──
+					// provider 扩展在 SSE choice.finish_reason 到达时，通过
+					// LanguageModelDataPart.json({finish_reason}, SAROSIS_FINISH_REASON_MIME)
+					// 透传。这里截获并存储，在 stream 结束时随 done delta 一起发出，
+					// 使 agentOSService 的 classifyIncompleteTurn 能检测 length 截断。
+					const _frDataPart = p as { mimeType?: string; data?: { toString(): string } };
+					if (_frDataPart.mimeType === SAROSIS_FINISH_REASON_MIME && _frDataPart.data) {
+						try {
+							const _frRaw = JSON.parse(_frDataPart.data.toString());
+							if (typeof _frRaw.finish_reason === 'string') {
+								capturedFinishReason = _frRaw.finish_reason;
+							}
+						} catch { /* 解码失败 — 忽略 */ }
+						continue; // 不传给 _toModelDelta（它不认识此 MIME）
+					}
 					const delta = this._toModelDelta(p);
 					if (delta) {
 						yield delta;
@@ -539,8 +563,13 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				}
 			}
 
-			// 把捕获到的响应 id 随 done 回传给 agentOS，用于下一轮 previous_response_id。
-			yield capturedResponseId ? { type: 'done', responseId: capturedResponseId } : { type: 'done' };
+		// 把捕获到的响应 id + finish_reason 随 done 回传给 agentOS。
+		const doneDelta: IModelDelta = {
+			type: 'done',
+			...(capturedResponseId ? { responseId: capturedResponseId } : {}),
+			...(capturedFinishReason ? { finishReason: capturedFinishReason } : {}),
+		};
+		yield doneDelta;
 		} catch (err) {
 			this._logService.error(`[LMBridge] chat() failed for vendor=${this.vendor} model=${modelId}`, err);
 			yield { type: 'error', error: err instanceof Error ? err.message : String(err) };

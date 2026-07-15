@@ -302,6 +302,14 @@ function upvoteAnimationSettingToEnum(
 	}
 }
 
+interface ISubagentGroupState {
+	firstPart: ChatSubagentContentPart;
+	wrapper: HTMLElement | null;
+	header: HTMLElement | null;
+	total: number;
+	done: number;
+}
+
 export class ChatListItemRenderer
 	extends Disposable
 	implements ITreeRenderer<ChatTreeItem, FuzzyScore, IChatListItemTemplate> {
@@ -1690,6 +1698,8 @@ export class ChatListItemRenderer
 		index: number,
 		templateData: IChatListItemTemplate,
 	) {
+		// Full re-render invalidates any prior parallel-sub-agent group containers.
+		this._subagentGroupByTemplate.delete(templateData);
 		templateData.rowContainer.classList.toggle(
 			"chat-response-loading",
 			isResponseVM(element) && !element.isComplete,
@@ -2292,11 +2302,13 @@ export class ChatListItemRenderer
 					inlineSlashCommandRendered = true;
 				}
 
-				if (newPart.domNode && !newPart.domNode.parentElement) {
+				if (newPart instanceof ChatSubagentContentPart) {
+					this.appendSubagentPartToContainer(newPart, templateData, element);
+				} else if (newPart.domNode && !newPart.domNode.parentElement) {
 					templateData.value.appendChild(newPart.domNode);
 				}
-				parts.push(newPart);
-				codeBlockStartIndex += newPart.codeblocks?.length ?? 0;
+			parts.push(newPart);
+			codeBlockStartIndex += (newPart as IChatContentPart).codeblocks?.length ?? 0;
 			}
 		});
 
@@ -2701,6 +2713,8 @@ export class ChatListItemRenderer
 						} else {
 							alreadyRenderedPart.domNode.remove();
 						}
+					} else if (newPart instanceof ChatSubagentContentPart) {
+						this.appendSubagentPartToContainer(newPart, templateData, element);
 					} else if (newPart.domNode && !newPart.domNode.parentElement) {
 						// Only append if not already attached somewhere else (e.g. inside a thinking wrapper)
 						templateData.value.appendChild(newPart.domNode);
@@ -3176,6 +3190,93 @@ export class ChatListItemRenderer
 				part.markAsInactive();
 			}
 		}
+	}
+
+	// ── Parallel sub-agent grouping ─────────────────────────────────────
+	private readonly _subagentGroupByTemplate = new WeakMap<IChatListItemTemplate, Map<string, ISubagentGroupState>>();
+
+	/**
+	 * Appends a sub-agent content part to the DOM. Sub-agents that share a groupId
+	 * (parallel batch from one parent request) are clustered into a single container
+	 * with an aggregate header ("Running 3 sub-agents · 2/3 done"). The first card of
+	 * a group renders normally; once a second sibling arrives, both are promoted into
+	 * the grouped container. A lone sub-agent (no sibling) stays a normal card.
+	 */
+	private appendSubagentPartToContainer(
+		part: ChatSubagentContentPart,
+		templateData: IChatListItemTemplate,
+		element: IChatRequestViewModel | IChatResponseViewModel,
+	): void {
+		const groupId = part.groupId;
+		const value = templateData.value;
+		if (!groupId) {
+			if (part.domNode && !part.domNode.parentElement) {
+				value.appendChild(part.domNode);
+			}
+			return;
+		}
+
+		let groups = this._subagentGroupByTemplate.get(templateData);
+		if (!groups) {
+			groups = new Map();
+			this._subagentGroupByTemplate.set(templateData, groups);
+		}
+		const key = `${element.id}:${groupId}`;
+		let group = groups.get(key);
+
+		if (!group) {
+			// First card of the group: render normally, remember it for later promotion.
+			if (part.domNode && !part.domNode.parentElement) {
+				value.appendChild(part.domNode);
+			}
+			group = { firstPart: part, wrapper: null, header: null, total: 0, done: 0 };
+			groups.set(key, group);
+			templateData.elementDisposables.add(part.onDidComplete(() => {
+				if (group!.wrapper) {
+					group!.done++;
+					this.updateSubagentGroupHeader(group!);
+				}
+			}));
+			return;
+		}
+
+		// Second or later card: promote to a real group container if needed.
+		if (!group.wrapper) {
+			const wrapper = $('.chat-subagent-group');
+			const header = $('div.chat-subagent-group-header');
+			wrapper.appendChild(header);
+			const firstDom = group.firstPart.domNode;
+			if (firstDom) {
+				wrapper.appendChild(firstDom);
+			}
+			group.wrapper = wrapper;
+			group.header = header;
+			group.total = 1;
+			group.done = group.firstPart.getIsActive() ? 0 : 1;
+			if (!wrapper.parentElement) {
+				value.appendChild(wrapper);
+			}
+		}
+
+		group.total++;
+		if (part.domNode) {
+			group.wrapper.appendChild(part.domNode);
+		}
+		templateData.elementDisposables.add(part.onDidComplete(() => {
+			group!.done++;
+			this.updateSubagentGroupHeader(group!);
+		}));
+		this.updateSubagentGroupHeader(group);
+	}
+
+	private updateSubagentGroupHeader(group: ISubagentGroupState): void {
+		if (!group.wrapper || !group.header) {
+			return;
+		}
+		const label = group.done >= group.total
+			? localize('chat.subagent.group.done', 'Completed {0}/{1} sub-agents', group.done, group.total)
+			: localize('chat.subagent.group.running', 'Running {0} sub-agents · {1}/{2} done', group.total, group.done, group.total);
+		group.header.textContent = label;
 	}
 
 	private handleSubagentToolGrouping(
@@ -5109,6 +5210,24 @@ export class ChatListItemRenderer
 					return subagentPart;
 				}
 			}
+
+			// Route the subagent's reasoning/commentary markdown into its card as a live
+			// thinking row, interleaved with the tool calls in its timeline.
+			if (markdown.subAgentInvocationId) {
+				const subagentPart = this.getSubagentPart(
+					templateData.renderedParts,
+					markdown.subAgentInvocationId,
+				);
+				if (subagentPart && markdownPart?.domNode) {
+					subagentPart.appendReasoningItem(
+						() => ({ domNode: markdownPart.domNode, disposable: markdownPart }),
+						markdown,
+						markdownPart,
+					);
+					return subagentPart;
+				}
+			}
+
 
 			// create thinking part if it doesn't exist yet
 			const lastThinking = this.getLastThinkingPart(templateData.renderedParts);

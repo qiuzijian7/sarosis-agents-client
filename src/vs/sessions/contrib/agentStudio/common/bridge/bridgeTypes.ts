@@ -26,6 +26,8 @@ export interface InboundMessage {
 	readonly userId: string;
 	readonly userName: string;
 	readonly chatName?: string;
+	/** 会话 id（群聊为 chat_id，私聊为对端 id）。用于「会话→Agent」绑定路由。 */
+	readonly conversationId?: string;
 	readonly content: string;
 	readonly images?: InboundAttachment[];
 	readonly files?: InboundAttachment[];
@@ -128,6 +130,8 @@ export interface BridgeSessionState {
 	readonly platform: string;
 	agentId: string;
 	agentSessionId: string;
+	/** 绑定的会话 id（群聊 chat_id），用于按会话路由 Agent。 */
+	conversationId?: string;
 	chatMode?: string;
 	modelOverride?: string;
 	replyCtx?: unknown;
@@ -146,6 +150,14 @@ export interface IBridgeEngineOps {
 	switchSession(sessionKey: string, agentSessionId: string): void;
 	listSessions(agentId: string): Promise<Array<{ id: string; name: string; messageCount: number }>>;
 	setAgent(sessionKey: string, agentId: string): void;
+	/** 绑定某平台的会话 id 到指定 Agent（持久化、跨重启）。 */
+	setConversationAgent(platform: string, conversationId: string, agentId: string): void;
+	/** 读取某平台某会话 id 绑定的 Agent（未绑定返回 undefined）。 */
+	getConversationAgent(platform: string, conversationId: string): string | undefined;
+	/** 解除某平台某会话 id 的 Agent 绑定。 */
+	clearConversationAgent(platform: string, conversationId: string): void;
+	/** 列出某平台所有会话→Agent 绑定。 */
+	listConversationBindings(platform: string): Array<{ conversationId: string; agentId: string }>;
 	setModelOverride(sessionKey: string, model: string): void;
 	setChatMode(sessionKey: string, mode: string): void;
 	cancel(sessionKey: string): void;
@@ -179,6 +191,8 @@ export interface BridgeCommandContext {
 	readonly session: BridgeSessionState;
 	readonly args: string[];
 	readonly raw: string;
+	/** 当前会话 id（群聊 chat_id）；私聊/无则为 undefined。 */
+	readonly conversationId?: string;
 	reply(text: string): void;
 	replyCard(card: BridgeCard): void;
 }

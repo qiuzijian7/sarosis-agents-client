@@ -20,6 +20,7 @@ import { IAgentDriverService } from "../common/agentDriver.js";
 import type { ChatMessage } from "../common/types.js";
 import { deriveMessageParts } from "../common/types.js";
 import type { IChatMessage } from "../common/providers.js";
+import { type IForkContext } from "../common/forkContext.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
 import { IEnvironmentService } from "../../../../platform/environment/common/environment.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
@@ -46,6 +47,19 @@ export interface AgentSessionMeta {
 	messageCount: number;
 	/** External provider session ID (e.g. Knot AG-UI threadId). Captured from stream metadata. */
 	providerSessionId?: string;
+	/**
+	 * Fork prefix-cache fingerprint (MiMo-inspired). Set when this session was forked
+	 * from a parent whose frozen system+tools prefix is reused so the LLM provider's
+	 * prompt cache hits instead of re-billing the stable prefix every turn.
+	 */
+	forkContextFingerprint?: string;
+	/**
+	 * Fork 前缀缓存上下文（MiMo ForkContext）— 请求构造端接 ForkContext 的完整形态。
+	 * 携带父级冻结的 system+tools 前缀。fork 会话由 forkAgentSession 持久化父级
+	 * ForkContext；后续 sendMessage 经 session.forkContext 透传到 IAgentTurnRequest，
+	 * 使子会话请求与父级前缀对齐 → 命中 provider prompt cache。非 fork 会话为 undefined。
+	 */
+	forkContext?: IForkContext;
 }
 
 // ─── Service ────────────────────────────────────────────────────────────────
@@ -1527,10 +1541,25 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			this.logService.info(`[AgentChatService] Creating stream (agentId=${agentId}, priorMsgs=${priorMessages?.length ?? 0})`);
 			const tStream = performance.now();
 			console.info(`[PerfDiag] 🔵 sendMessage → executeFromChatOptions elapsed=${(tStream - t0).toFixed(0)}ms`);
+
+			// Fork 前缀缓存：把本会话携带的父级 ForkContext 透传到 driver/agentOS 请求构造端，
+			// 使其 (system+tools) 与父级冻结前缀对齐 → 命中 provider prompt cache（零行为变更：
+			// 非 fork 会话 session.forkContext 为 undefined，options.forkContext 仍为 undefined）。
+			let sessionForkContext: IForkContext | undefined;
+			if (options.agentSessionId) {
+				try {
+					const idx = await this._readSessionIndex(agentId);
+					sessionForkContext = idx.find((s) => s.id === options.agentSessionId)?.forkContext;
+				} catch {
+					// 读取会话索引失败不阻塞主流程
+				}
+			}
+			this.logService.info(`[AgentChatService] Fork prefix-cache: session=${options.agentSessionId ?? '(none)'} hasParentFork=${!!sessionForkContext}`);
+
 			const stream = this.driverService.executeFromChatOptions(
 				agentId,
 				message,
-				options,
+				{ ...options, forkContext: sessionForkContext },
 				priorMessages,
 			);
 			this.logService.info(`[AgentChatService] Stream created in ${(performance.now() - tStream).toFixed(0)}ms, starting iteration`);
@@ -1711,9 +1740,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// 用户点击 Stop → cancelStream 调用 controller.abort() → for-await break。
 			// 此时 done/error delta 尚未被 stream 发射，UI 不会收到 setSending(false)。
 			// 这里补发 done delta，让 nativeChatEditorPane 的 done handler 清理消息状态。
+			// 如果是用户主动取消，带上 canceled:true 标记，让 UI 显示「用户已取消」并停止流式动画。
 			if (controller.signal.aborted) {
-				this.logService.info(`[AgentChatService] Stream aborted by user, emitting done delta for UI cleanup`);
-				onDelta({ type: 'done' } as any);
+				this.logService.info(`[AgentChatService] Stream aborted by user, emitting done delta with canceled flag for UI cleanup`);
+				const cancelDelta = { type: 'done', canceled: true } as any;
+				onDelta(cancelDelta);
 			}
 
 			// 广播 done delta 给外部监听器（看板 onDidStreamDelta）。
@@ -1722,7 +1753,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			this._onDidStreamDeltaEmitter.fire({
 				agentId,
 				sessionId: options.agentSessionId || '',
-				delta: { type: 'done' } as any,
+				delta: { type: 'done', canceled: controller.signal.aborted } as any,
 			});
 
 			// 诊断日志：for-await 循环已退出，即将进入 finalization。
@@ -2190,6 +2221,95 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			`[AgentChatService] Deleted session ${sessionId} for ${agentId}`,
 		);
 		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
+	}
+
+	/**
+	 * Fork (deep-copy) an existing session into a brand-new independent session.
+	 *
+	 * Strategy — **file-level copy**:
+	 *   1. Copy the session's messages JSON verbatim (preserves TOOL_REF markers,
+	 *      no resolve/re-externalise round-trip).
+	 *   2. Copy the `.sidecar` directory (externalised oversize tool results);
+	 *      sidecar files are named `tool_{tcId}.json` (no sessionId embedded),
+	 *      so a directory copy yields a fully self-contained fork.
+	 *   3. Register a fresh AgentSessionMeta in the index.
+	 *
+	 * The fork intentionally **drops providerSessionId** so the copy starts a
+	 * fresh external provider thread and can diverge from the source safely.
+	 * This is the "试探性会话" primitive (aligns with LangGraph `copy_thread`).
+	 */
+	async forkAgentSession(
+		agentId: string,
+		sessionId: string,
+		newName?: string,
+		parentForkContext?: IForkContext,
+	): Promise<AgentSessionMeta> {
+		const index = await this._readSessionIndex(agentId);
+		const src = index.find((s) => s.id === sessionId);
+		if (!src) {
+			throw new Error(`Session ${sessionId} not found`);
+		}
+
+		const paths = await this._resolveAgentPaths(agentId);
+		if (!(await this.fileService.exists(paths.sessionsDirUri))) {
+			await this.fileService.createFolder(paths.sessionsDirUri);
+		}
+
+		const newId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
+		const now = new Date().toISOString();
+
+		// 1) Copy the messages file. If the source only lives in the in-memory
+		//    cache (never flushed), persist that snapshot into the new file.
+		const srcFile = this._sessionFileUri(paths.sessionsDirUri, sessionId);
+		const dstFile = this._sessionFileUri(paths.sessionsDirUri, newId);
+		if (await this.fileService.exists(srcFile)) {
+			await this.fileService.copy(srcFile, dstFile, true);
+		} else {
+			const cached = this._historyCache.get(this._cacheKey(agentId, sessionId)) ?? [];
+			await this.fileService.writeFile(
+				dstFile,
+				VSBuffer.fromString(JSON.stringify(cached, null, 2)),
+			);
+		}
+
+		// 2) Copy the sidecar directory (externalised oversize tool results).
+		try {
+			const srcSidecar = await this._sidecarDirUri(agentId, sessionId);
+			if (await this.fileService.exists(srcSidecar)) {
+				const dstSidecar = await this._sidecarDirUri(agentId, newId);
+				await this.fileService.copy(srcSidecar, dstSidecar, true);
+			}
+		} catch (err) {
+			this.logService.warn(
+				`[AgentChatService] forkAgentSession: sidecar copy failed for ${sessionId}: ${err instanceof Error ? err.message : err}`,
+			);
+		}
+
+		// 3) Register the fork in the session index (fresh id, no provider thread).
+		// 持久化父级完整 ForkContext（system+tools 前缀），供子会话后续 sendMessage
+		// 经 session.forkContext 透传 → 请求构造端对齐父级前缀、命中 prompt cache。
+		const meta: AgentSessionMeta = {
+			id: newId,
+			name: newName || `${src.name} (副本)`,
+			createdAt: now,
+			updatedAt: now,
+			messageCount: src.messageCount,
+			forkContextFingerprint: parentForkContext?.toolsFingerprint,
+			forkContext: parentForkContext,
+		};
+		index.push(meta);
+		await this._writeSessionIndex(agentId, index);
+
+		// 4) Drop any stale cache bucket so the next getHistory lazy-loads fresh.
+		const newKey = this._cacheKey(agentId, newId);
+		this._historyCache.delete(newKey);
+		this._historyCacheAccess.delete(newKey);
+
+		this.logService.info(
+			`[AgentChatService] forkAgentSession: ${sessionId} → ${newId} (agentId=${agentId}, msgs=${src.messageCount})`,
+		);
+		this._onDidChangeAgentSessionsEmitter.fire({ agentId });
+		return meta;
 	}
 
 	/**

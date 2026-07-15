@@ -113,6 +113,12 @@ export interface IEmbeddingService {
 	/** 当前会使用的 provider tag（主路径已配置则返回主路径，否则若本地启用则返回 local tag）。 */
 	getActiveTag(): string | undefined;
 
+	/**
+	 * 返回指定 provider（按需即时构建）的 tag；不传或传空则用当前激活 provider。
+	 * 用于让 RAG 向量索引按 KB agent 的 provider 计算 tag（而非主路径 provider）。
+	 */
+	getTagForProvider(providerId?: string): string | undefined;
+
 	/** 当前激活 provider 的向量维度（用于预分配向量存储）。 */
 	getActiveDimensions(): number | undefined;
 

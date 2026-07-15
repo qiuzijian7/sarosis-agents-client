@@ -61,6 +61,8 @@ export class EmbeddingService extends Disposable implements IEmbeddingService {
 
 	private _primary: IEmbeddingProvider;
 	private readonly _local: LocalEmbeddingProvider;
+	/** 按需为指定 BYOK provider 即时构建的 embedding provider 缓存（RAG 用 KB agent 的 provider 时）。 */
+	private readonly _byokProviders = new Map<string, IEmbeddingProvider>();
 	private _lastError: string | undefined;
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
@@ -154,6 +156,17 @@ export class EmbeddingService extends Disposable implements IEmbeddingService {
 		return undefined;
 	}
 
+	getTagForProvider(providerId?: string): string | undefined {
+		if (!providerId) {
+			return this.getActiveTag();
+		}
+		const p = this._resolveById(providerId);
+		if (p && p.isConfigured()) {
+			return p.tag;
+		}
+		return undefined;
+	}
+
 	getActiveDimensions(): number | undefined {
 		if (this._primary.isConfigured()) {
 			return this._primary.dimensions;
@@ -194,7 +207,35 @@ export class EmbeddingService extends Disposable implements IEmbeddingService {
 	private _resolveById(id: string): IEmbeddingProvider | undefined {
 		if (id === this._local.id) { return this._local; }
 		if (id === this._primary.id) { return this._primary; }
+		// 按需为指定 BYOK provider 即时构建（RAG 使用 KB agent 的 provider 时）。
+		if (BYOK_KEY_MAP[id]) {
+			let p = this._byokProviders.get(id);
+			if (!p) {
+				p = this._buildByokProvider(id);
+				this._byokProviders.set(id, p);
+			}
+			return p;
+		}
 		return undefined;
+	}
+
+	/** 为指定 BYOK provider 即时构建一个 OpenAI 兼容的 embedding provider（模型/维度取 embedding 设置）。 */
+	private _buildByokProvider(id: string): IEmbeddingProvider {
+		const model = (this._configurationService.getValue<string>(AGENT_STUDIO_EMBEDDING_MODEL) || '').trim()
+			|| 'text-embedding-3-small';
+		const dimensions = this._configurationService.getValue<number>(AGENT_STUDIO_EMBEDDING_DIMENSIONS) || 512;
+		const byok = BYOK_KEY_MAP[id];
+		const def: IEmbeddingProviderDefinition = {
+			id,
+			name: id,
+			kind: 'openai',
+			model,
+			dimensions,
+			fallbackApiKeyConfigKey: byok.apiKey,
+			fallbackBaseUrlConfigKey: byok.baseUrl,
+			defaultBaseUrl: byok.defaultBaseUrl,
+		};
+		return new OpenAIEmbeddingProvider(def, this._configurationService, this._logService);
 	}
 
 	private _buildPrimary(): IEmbeddingProvider {

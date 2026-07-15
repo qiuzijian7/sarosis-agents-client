@@ -22,6 +22,9 @@ import * as rem from './amRemaining.js';
 import * as fin from './amFinal.js';
 import * as compress from './amCompress.js';
 import { HookSystem } from './hooks.js';
+import { AuditLog } from './auditLog.js';
+import { PostCommitCapture } from './postCommitCapture.js';
+import { ReportGenerator } from './reportGenerator.js';
 import {
 	createSessionStartHook,
 	createUserPromptSubmitHook,
@@ -98,6 +101,12 @@ export class AgentMemoryProviderV2 {
 	// 默认内置钩子在本实例构造时注册，getHookStats 据此向 editor pane 报告「活跃」状态。
 	private _hookSystem = new HookSystem();
 
+	// 审计/提交/报告 — 三者之前只有类定义但从未实例化，UI 视图始终空数据。
+	// 修复：在构造时实例化，各方法委托到真实实例。
+	private _auditLog = new AuditLog();
+	private _postCommitCapture = new PostCommitCapture();
+	private _reportGenerator: ReportGenerator;  // 构造末尾 init（需 this 自身作为 ReportDataSource）
+
 	// 事件系统（内存态，对齐 V1 _eventBus / _hooks）
 	private _handlers = new Map<string, Set<(...args: any[]) => void>>();
 
@@ -127,6 +136,9 @@ export class AgentMemoryProviderV2 {
 		}
 		// 注册内置默认钩子，使 editor pane 的 Hook 视图显示「活跃」而非「未注册」。
 		this._registerDefaultHooks();
+
+		// 报告生成器 — this 即 ReportDataSource（provider 自身实现了 getStats / getCommitStats / getHookStats 等）
+		this._reportGenerator = new ReportGenerator(this as any);
 	}
 
 	/** 注册内置默认生命周期钩子（进程内，仅内存态，供 getHookStats 报告）。 */
@@ -170,6 +182,7 @@ export class AgentMemoryProviderV2 {
 				memoryType,
 				contentLength: entry.content?.length ?? 0,
 			});
+			this._auditLog.record('write', agentId, [entry.id ?? ''], { type: entry.type, memoryType });
 			// Plan C: 索引更新由网关在收到 KV PUT 时自动增量完成，renderer 不再持有索引。
 		}
 	}
@@ -242,8 +255,26 @@ export class AgentMemoryProviderV2 {
 	}
 
 	/** 事件：Git 提交 — 对齐 V1 onGitCommit */
-	onGitCommit(commit: { sha: string; message?: string; filesChanged: string[] }): void {
-		console.log(`[AgentMemoryV2] Git commit captured: ${commit.sha.slice(0, 8)}`);
+	onGitCommit(commit: { sha: string; message?: string; filesChanged: string[]; author?: string; authorEmail?: string; timestamp?: number; branch?: string; insertions?: number; deletions?: number }): void {
+		const entry = this._postCommitCapture.capture({
+			sha: commit.sha,
+			message: commit.message ?? '',
+			author: commit.author ?? 'unknown',
+			authorEmail: commit.authorEmail ?? '',
+			filesChanged: commit.filesChanged ?? [],
+			insertions: commit.insertions ?? 0,
+			deletions: commit.deletions ?? 0,
+			timestamp: commit.timestamp ?? Date.now(),
+			branch: commit.branch,
+		});
+		// 同步写入审计并异步持久化记忆
+		const commitAgentId = commit.author ?? 'default';
+		this._auditLog.record('write', commitAgentId, [entry.id ?? ''], {
+			sha: commit.sha,
+			memoryType: 'git_commit',
+		});
+		// fire-and-forget KV 持久化（不阻塞调用链）
+		fn.writeMemory(this._kv, commitAgentId, entry).catch(() => {});
 	}
 
 	/** Pre-compact 注入回调 — 注入 SessionSummary 上下文以帮助 LLM 压缩 */ 
@@ -691,7 +722,9 @@ export class AgentMemoryProviderV2 {
 
 	/** 审计摘要 — memoryDetailEditorPane L676 */
 	getAuditSummary(): Record<string, number> {
-		return { totalAuditEntries: 0 };
+		const raw = this._auditLog.getSummary();
+		// 兼容 renderer 期望的 { totalAuditEntries } 格式
+		return { totalAuditEntries: this._auditLog.count, ...raw };
 	}
 
 	/** Hook 统计 — memoryDetailEditorPane L718（读取真实 HookSystem 状态） */
@@ -705,23 +738,41 @@ export class AgentMemoryProviderV2 {
 
 	/** 最近提交 — memoryDetailEditorPane L771 */
 	getRecentCommits(limit?: number): Array<Record<string, unknown>> {
-		return [];
+		return this._postCommitCapture.getRecent(limit ?? 50).map(c => ({
+			sha: c.metadata.sha ?? '',
+			message: c.content?.slice(0, 120) ?? '',
+			author: c.metadata.author ?? '',
+			filesChanged: c.metadata.filesChanged ?? [],
+			insertions: c.metadata.insertions ?? 0,
+			deletions: c.metadata.deletions ?? 0,
+			timestamp: c.timestamp ?? 0,
+			branch: c.metadata.branch ?? '',
+		})) as Array<Record<string, unknown>>;
 	}
 
 	/** 提交统计 — memoryDetailEditorPane L778 */
 	getCommitStats(): Record<string, unknown> {
-		return { totalCommits: 0 };
+		return this._postCommitCapture.getStats() as unknown as Record<string, unknown>;
 	}
 
 	/** 生成报告 — memoryDetailEditorPane L856 */
 	async generateReport(type: string, agentId: string): Promise<Record<string, unknown>> {
-		const stats = await this.getStats(agentId);
-		return { type, agentId, timestamp: new Date().toISOString(), ...stats };
+		try {
+			const report = await this._reportGenerator.generate(type as any, agentId);
+			return report as unknown as Record<string, unknown>;
+		} catch {
+			// 回退：至少返回基础统计
+			const stats = await this.getStats(agentId);
+			return { type, agentId, timestamp: new Date().toISOString(), ...stats };
+		}
 	}
 
 	/** 审计日志（兼容 IMemoryProvider 签名：filter? 参数） */
 	getAuditLog(filter?: { limit?: number; agentId?: string }): Array<Record<string, unknown>> {
-		return [];
+		return this._auditLog.query({
+			limit: filter?.limit ?? 200,
+			agentId: filter?.agentId,
+		}) as unknown as Array<Record<string, unknown>>;
 	}
 
 	// ─── 技能方法（memoryDetailEditorPane skills 视图）────────────────
@@ -956,5 +1007,64 @@ export class AgentMemoryProviderV2 {
 	async sweep(agentId: string): Promise<void> {
 		await this._ensureServer();
 		await pipe.runFullSweep(this._kv, agentId, agentId, this._tokenBudget);
+	}
+
+	/**
+	 * 定期维护清扫 — 供 gateway host.mjs 定时器调用，也可由 renderer proxy 手动触发。
+	 *
+	 * 执行顺序：
+	 *   1. runFullSweep（auto-forget / retention evict / consolidation / lesson decay / auto-page）
+	 *   2. feat.extractSkill — 从 workflow/pattern 记忆提炼可复用技能 → KV.procedural
+	 *   3. autoCrystallize — 晶化值得固化的操作序列
+	 *
+	 * 提取到技能时通过 this._emit('skill_extracted', ...) 通知订阅者。
+	 * 返回摘要对象供调用方（如 proxy）使用。
+	 */
+	async runMaintenanceSweep(agentId: string, sessionId?: string): Promise<Record<string, unknown>> {
+		await this._ensureServer();
+		const result: Record<string, unknown> = {};
+
+		// 1. 全量清扫
+		try {
+			result.sweep = await pipe.runFullSweep(this._kv, agentId, agentId, this._tokenBudget);
+		} catch (err: any) {
+			result.sweepError = err?.message ?? String(err);
+		}
+
+		// 2. 技能提取（从当前记忆中的 workflow/pattern 提炼）
+		try {
+			const sid = sessionId ?? `sweep-${Date.now()}`;
+			const skill = await feat.extractSkill(this._kv, agentId, sid);
+			if (skill) {
+				result.skillExtracted = {
+					skillId: skill.id,
+					title: skill.title,
+					trigger: skill.trigger,
+					confidence: skill.confidence,
+					steps: skill.steps.length,
+				};
+				this._emit('skill_extracted', {
+					agentId,
+					data: {
+						skillId: skill.id,
+						title: skill.title,
+						trigger: skill.trigger,
+						confidence: skill.confidence,
+						steps: skill.steps.length,
+					},
+				});
+			}
+		} catch (err: any) {
+			result.skillError = err?.message ?? String(err);
+		}
+
+		// 3. 自动晶化
+		try {
+			result.crystallize = await fin.autoCrystallize(this._kv, agentId);
+		} catch (err: any) {
+			result.crystallizeError = err?.message ?? String(err);
+		}
+
+		return result;
 	}
 }

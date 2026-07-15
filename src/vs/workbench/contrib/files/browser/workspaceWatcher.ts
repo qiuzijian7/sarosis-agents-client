@@ -132,6 +132,12 @@ export class WorkspaceWatcher extends Disposable {
 
 	private watchWorkspace(workspace: IWorkspaceFolder): void {
 
+		// Release any existing watcher for this URI first. Otherwise a folder that is
+		// (re-)watched before being unwatched (e.g. onDidChangeWorkspaceFolders re-adding a
+		// folder that refresh() already re-watched) would overwrite the previous DisposableStore
+		// in `watchedWorkspaces` without disposing it, leaking the underlying file watchers.
+		this.unwatchWorkspace(workspace);
+
 		// Compute the watcher exclude rules from configuration
 		const excludes: string[] = [];
 		const config = this.configurationService.getValue<IFilesConfiguration>({ resource: workspace.uri });

@@ -35,6 +35,11 @@ class FakeEmbeddingService implements IEmbeddingService {
 		return { vectors, tag: this._tag, providerId: this._tag.split('/')[0], model: this._tag.split('/')[1] ?? '', dimensions: this._dim };
 	}
 	getActiveTag(): string { return this._tag; }
+	getTagForProvider(providerId?: string): string | undefined {
+		if (!providerId) { return this._tag; }
+		const prefix = providerId + '/';
+		return this._tag.startsWith(prefix) ? this._tag : undefined;
+	}
 	getActiveDimensions(): number { return this._dim; }
 	listProviders(): any[] { return []; }
 	getStatus(): any { return { activeProviderId: this._tag.split('/')[0], tag: this._tag, lastError: undefined }; }
@@ -223,6 +228,38 @@ describe('kbVectorIndex', () => {
 			const ok = await dst.importFromFile(uri);
 			assert.strictEqual(ok, true);
 			assert.strictEqual(dst.chunkCount, src.chunkCount);
+		});
+	});
+
+	describe('binary (.kvindex)', () => {
+		it('serializeBinary → deserializeBinary 无损保留块与向量', async () => {
+			const fs = createMockFileService();
+			fs.addFile('/vault/notes/a.md', 'a.md', '# 主题A\n关于算法入门的讨论。', 1000, 40);
+			const emb = new FakeEmbeddingService('openai/text-embedding-3-small@512', 512);
+
+			const src = new KbVectorIndex(fs, emb);
+			await src.build([{ uri: URI.parse('/vault/notes'), section: 'notes' }]);
+			const bin = src.serializeBinary();
+			assert.ok(bin instanceof Uint8Array);
+
+			const dst = new KbVectorIndex(fs, emb);
+			const ok = await dst.deserializeBinary(bin);
+			assert.strictEqual(ok, true);
+			assert.strictEqual(dst.chunkCount, src.chunkCount);
+			assert.strictEqual(dst.getStatus().tag, 'openai/text-embedding-3-small@512');
+			const a = src.allChunks();
+			const b = dst.allChunks();
+			for (let i = 0; i < a.length; i++) {
+				assert.deepStrictEqual(b[i].vector, a[i].vector);
+				assert.strictEqual(b[i].text, a[i].text);
+			}
+		});
+
+		it('deserializeBinary 非法数据返回 false', async () => {
+			const fs = createMockFileService();
+			const emb = new FakeEmbeddingService('openai/text-embedding-3-small@512', 512);
+			const dst = new KbVectorIndex(fs, emb);
+			assert.strictEqual(await dst.deserializeBinary(new Uint8Array([1, 2, 3])), false);
 		});
 	});
 

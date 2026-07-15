@@ -21,9 +21,10 @@ import {
 	parseSSEStream,
 	parseModelsConfig,
 	createModelInfo,
-	getModelTokenLimits,
-	CODEBUDDY_DEFAULT_MODELS,
-	CODEBUDDY_DEFAULT_MODEL_CONFIGS,
+	getDefaultTokenLimits,
+	clampOutputTokens,
+	DEFAULT_CONTEXT_WINDOW,
+	OUTPUT_TOKEN_MAX,
 	IModelConfig,
 	extractMessageContent,
 	extractModelName,
@@ -122,12 +123,12 @@ function mapRawModelToConfig(model: any): IModelConfig {
 		id,
 		name: model.name || id,
 		vendor: model.vendor || '',
-		maxOutputTokens: model.maxOutputTokens || getModelTokenLimits(id).maxOutputTokens,
-		maxInputTokens: model.maxInputTokens || 128000,
+		maxOutputTokens: model.maxOutputTokens || OUTPUT_TOKEN_MAX,
+		maxInputTokens: model.maxInputTokens || DEFAULT_CONTEXT_WINDOW,
 		supportsToolCall: model.supportsToolCall !== undefined ? model.supportsToolCall : true,
 		supportsImages: model.supportsImages !== undefined ? model.supportsImages : false,
 		disabledMultimodal: model.disabledMultimodal !== undefined ? model.disabledMultimodal : false,
-		maxAllowedSize: model.maxAllowedSize || model.maxInputTokens || 128000,
+		maxAllowedSize: model.maxAllowedSize || model.maxInputTokens || DEFAULT_CONTEXT_WINDOW,
 		temperature: model.temperature !== undefined ? model.temperature : 1,
 		supportsReasoning: model.supportsReasoning !== undefined ? model.supportsReasoning : false,
 		reasoning: model.reasoning || undefined,
@@ -494,24 +495,24 @@ async function loadModelsFromConfig(config: vscode.WorkspaceConfiguration): Prom
 
 	if (Array.isArray(rawModelsConfig)) {
 		// New format: array of IModelConfig
-		modelConfigs = rawModelsConfig.length > 0 ? rawModelsConfig : CODEBUDDY_DEFAULT_MODEL_CONFIGS;
+		modelConfigs = rawModelsConfig.length > 0 ? rawModelsConfig : [];
 	} else if (typeof rawModelsConfig === 'string' && rawModelsConfig.trim()) {
 		// Old format: comma-separated string - migrate to new format
 		const modelNames = rawModelsConfig.split(',').map(m => m.trim()).filter(m => m.length > 0);
+		const defaults = getDefaultTokenLimits();
 		modelConfigs = modelNames.map(name => {
-			const tokenLimits = getModelTokenLimits(name);
 			return {
 				id: name,
 				name: name,
-				maxInputTokens: tokenLimits.maxInputTokens,
-				maxAllowedSize: tokenLimits.maxAllowedSize || tokenLimits.maxInputTokens
+				maxInputTokens: defaults.maxInputTokens,
+				maxAllowedSize: defaults.maxAllowedSize || defaults.maxInputTokens
 			};
 		});
 		// Auto-migrate: save in new format
 		await config.update('models', modelConfigs, vscode.ConfigurationTarget.Global);
 	} else {
-		// No config or empty - use defaults
-		modelConfigs = CODEBUDDY_DEFAULT_MODEL_CONFIGS;
+		// No config or empty - no hardcoded fallback; models come from /v3/config API
+		modelConfigs = [];
 	}
 
 	return modelConfigs;
@@ -728,33 +729,6 @@ function sanitizeSchemaForIoaGateway(schema: unknown, toolName?: string): Schema
 	return { schema: result, issues };
 }
 
-/**
- * 计算一个值序列化后的最大 JSON 嵌套深度（object/array 层数）。
- * 用于定位网关 "exceeded max depth" 400 的罪魁——哪个 tool schema 或 message
- * 嵌套过深。带环检测（WeakSet）+ 上限保护，O(n)。
- */
-function maxJsonDepth(root: unknown): number {
-	const visited = new WeakSet<object>();
-	const stack: Array<{ node: unknown; depth: number }> = [{ node: root, depth: 1 }];
-	let max = 0;
-	while (stack.length > 0) {
-		const { node, depth } = stack.pop()!;
-		if (typeof node !== 'object' || node === null) continue;
-		if (visited.has(node)) continue;
-		visited.add(node);
-		if (depth > max) { max = depth; }
-		if (max > 100_000) { break; } // 安全阀
-		if (Array.isArray(node)) {
-			for (const child of node) { stack.push({ node: child, depth: depth + 1 }); }
-		} else {
-			for (const key of Object.keys(node)) {
-				stack.push({ node: (node as Record<string, unknown>)[key], depth: depth + 1 });
-			}
-		}
-	}
-	return max;
-}
-
 class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 	private readonly _onDidChange = new vscode.EventEmitter<void>();
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
@@ -863,7 +837,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 				`CodeBuddy - ${modelConfig.name}`,
 				{
 					maxInputTokens: modelConfig.maxInputTokens,
-					maxOutputTokens: modelConfig.maxOutputTokens || getModelTokenLimits(modelConfig.id).maxOutputTokens,
+					maxOutputTokens: modelConfig.maxOutputTokens || OUTPUT_TOKEN_MAX,
 					maxAllowedSize: modelConfig.maxAllowedSize
 				},
 				{
@@ -1078,30 +1052,22 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			}))
 			: undefined;
 
-		// ── 模型级参数（temperature / max_tokens）从 model 信息读取 ──────────
+		// ── 模型级参数（temperature / max_tokens）从 /v3/config 实时元数据读取 ──
 		// 抓包对齐：CodeBuddy IDE 的 body 里 temperature / max_tokens 来自该模型的
-		// catalog 元数据（model.json / /v3/config 的 `temperature` / `maxOutputTokens`），
-		// 而非对所有模型写死同一组值。历史 bug：硬编码 temperature:1 / max_tokens:48000
-		// 对 glm-5.1-ioa 恰好吻合，但其它模型（如 maxOutputTokens=32000 的 DeepSeek）
-		// 会发出错误的上限。这里按 selectedModel 查缓存里的 config，缺失时回退默认。
-		//
-		// ⚠️ 追加修正：服务端 /v3/config 对某些模型（如 deepseek-v4-pro-ioa）
-		// 返回的 maxOutputTokens（实测 50000）远超 API gateway 实际接受的硬上限，
-		// 导致 HTTP 400 "Invalid request parameters"。这里以本地 getModelTokenLimits
-		// 的安全值作为 cap——服务端值超过本地值时，取本地值。
-		const localMaxTokens = getModelTokenLimits(selectedModel).maxOutputTokens;
+		// catalog 元数据（/v3/config 的 `temperature` / `maxOutputTokens`）。
+		// 对齐 MiMo-Code maxOutputTokens(): min(server.limit.output, OUTPUT_TOKEN_MAX)。
+		// 服务端值缺失或为 0 时回退到 OUTPUT_TOKEN_MAX（32K）。
+		// 不再用本地硬编码的 per-model 限制覆盖服务端值——服务端是权威数据源。
 		const rawServerMaxTokens = getServerModelConfig(selectedModel)?.maxOutputTokens;
 		const modelCfg = rawServerMaxTokens != null ? getServerModelConfig(selectedModel) : undefined;
 		const bodyTemperature = modelCfg?.temperature ?? 1;
-		const bodyMaxTokens = modelCfg?.maxOutputTokens != null
-			? Math.min(modelCfg.maxOutputTokens, localMaxTokens)
-			: localMaxTokens;
+		const bodyMaxTokens = clampOutputTokens(rawServerMaxTokens);
 
 		// ── 消息裁剪（对齐 Continue compileChatMessages）──────────────────────
 		// 当对话历史 + system prompt + tools 超过模型 context window 时，
 		// 从最旧的消息开始裁剪，确保请求不会因超长而触发 HTTP 400。
 		// system message + tools + 最后一条消息（用户当前输入）不可裁剪。
-		const maxInputTokens = getModelTokenLimits(selectedModel).maxInputTokens;
+		const maxInputTokens = getServerModelConfig(selectedModel)?.maxInputTokens ?? DEFAULT_CONTEXT_WINDOW;
 		const pruneResult = pruneMessagesForContext(apiMessages, {
 			modelName: selectedModel,
 			maxInputTokens,
@@ -1119,10 +1085,10 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			],
 			stream: true,
 			temperature: bodyTemperature,
-			max_tokens: bodyMaxTokens,
-		};
-		const serverOrLocal = modelCfg?.maxOutputTokens ?? localMaxTokens;
-		console.log(`[CodeBuddy] body params from model(${selectedModel}): temperature=${bodyTemperature}, max_tokens=${bodyMaxTokens} (server=${rawServerMaxTokens ?? 'N/A'}, local=${localMaxTokens})${modelCfg ? '' : ' (model cfg MISS)'}${bodyMaxTokens !== (modelCfg?.maxOutputTokens ?? localMaxTokens) ? ` [CAPPED]` : ''}`);
+		max_tokens: bodyMaxTokens,
+	};
+	const serverOrCap = modelCfg?.maxOutputTokens ?? OUTPUT_TOKEN_MAX;
+	console.log(`[CodeBuddy] body params from model(${selectedModel}): temperature=${bodyTemperature}, max_tokens=${bodyMaxTokens} (server=${rawServerMaxTokens ?? 'N/A'}, cap=${OUTPUT_TOKEN_MAX})${modelCfg ? '' : ' (model cfg MISS)'}${bodyMaxTokens !== serverOrCap ? ` [CAPPED]` : ''}`);
 
 		// Reasoning/thinking parameters (P1) — align with CodeBuddy IDE CN body.
 		// The thinking toggle in the chat toolbar flows here as `reasoning`.
@@ -1349,72 +1315,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		try {
 			response = await doFetch();
 		} catch (err) {
-			// ── 400 诊断 ────────────────────────────────────────────────────
-			// 网关只回 `param:""`，无法定位是哪个字段非法（DeepSeek 对 tools
-			// schema / reasoning 参数很挑剔）。这里把请求体摘要 + 工具形态 +
-			// 原始 body 前若干字符附到错误上，沿 handleUnexpectedError 落到主
-			// 日志（vscode-app-<pid>.log），便于精确定位 invalid parameter。
 			if (err instanceof Error && /HTTP 400|code.*11133/i.test(err.message)) {
-				const toolsArr = (bodyObj.tools as Array<{ function?: { name?: string; parameters?: unknown } }> | undefined) ?? [];
-				const bodyLen = bodyJson.length;
-				const bodyLenKB = (bodyLen / 1024).toFixed(1);
-				const msgCount = Array.isArray(bodyObj.messages) ? bodyObj.messages.length : 0;
-				// ── 拆成多个独立 console.error，避免长字符串被日志系统截断 ──
-				console.error(
-					`[CodeBuddy][DIAG-400] model=${selectedModel} ` +
-					`reasoning=${bodyObj.reasoning_effort ?? 'none'}/${bodyObj.reasoning_summary ?? 'none'} ` +
-					`tool_choice=${bodyObj.tool_choice ?? 'n/a'} ` +
-					`tools=${toolsArr.length} messages=${msgCount} ` +
-					`max_tokens=${bodyObj.max_tokens} temperature=${bodyObj.temperature} bodySize=${bodyLen}chars/${bodyLenKB}KB`
-				);
-				// 每个 tool 的形态摘要（一行，较短不会被截断）
-				const toolShapes = toolsArr.map(t => {
-					const fn = t.function;
-					const p = fn?.parameters as Record<string, unknown> | undefined;
-					const pType = p && typeof p === 'object' ? (p.type ?? '(missing)') : typeof p;
-					return `${fn?.name ?? '(no-name)'}[params.type=${pType}]`;
-				}).join(', ');
-				console.error(`[CodeBuddy][DIAG-400] toolShapes: ${toolShapes}`);
-				// HEAD: 请求体前部（system prompt + 前几条消息）
-				console.error(`[CodeBuddy][DIAG-400] body HEAD (first 3000 chars):\n${bodyJson.slice(0, 3000)}`);
-				// 关键：tools 数组逐条 dump（每个 tool 独立 console.error，避免长字符串被截断）
-				for (let i = 0; i < toolsArr.length; i++) {
-					const t = toolsArr[i];
-					const fn = t.function;
-					const pStr = JSON.stringify(fn?.parameters ?? {});
-					console.error(`[CodeBuddy][DIAG-400] tool[${i}] ${fn?.name ?? '(no-name)'} params(${pStr.length}): ${pStr.slice(0, 500)}`);
-				}
-			// TAIL: 请求体尾部 2000 字符
-			console.error(`[CodeBuddy][DIAG-400] body TAIL (last 2000 chars):\n${bodyJson.slice(Math.max(0, bodyLen - 2000))}`);
-			// ── 深度扫描：定位 "exceeded max depth" 的罪魁（tool schema 或 message）──
-			{
-				let toolMaxDepth = 0, toolMaxIdx = -1, toolMaxName = '';
-				toolsArr.forEach((t, i) => {
-					const d = maxJsonDepth(t.function?.parameters);
-					if (d > toolMaxDepth) { toolMaxDepth = d; toolMaxIdx = i; toolMaxName = t.function?.name ?? ''; }
-				});
-				console.error(`[CodeBuddy][DIAG-400] tool max depth: ${toolMaxDepth} (tool[${toolMaxIdx}] "${toolMaxName}")`);
-				// 列出深度 > 32 的所有 tool（疑似病态）
-				const deepTools = toolsArr.map((t, i) => ({ i, name: t.function?.name ?? '', d: maxJsonDepth(t.function?.parameters) })).filter(x => x.d > 32);
-				if (deepTools.length > 0) {
-					console.error(`[CodeBuddy][DIAG-400] deep tools (>32): ${deepTools.map(x => `${x.name}[${x.i}]=${x.d}`).join(', ')}`);
-				}
-				let msgMaxDepth = 0, msgMaxIdx = -1, msgMaxRole = '';
-				const msgs = Array.isArray(bodyObj.messages) ? bodyObj.messages as unknown[] : [];
-				msgs.forEach((m, i) => {
-					const d = maxJsonDepth(m);
-					if (d > msgMaxDepth) { msgMaxDepth = d; msgMaxIdx = i; msgMaxRole = (m as { role?: string })?.role ?? ''; }
-				});
-				console.error(`[CodeBuddy][DIAG-400] message max depth: ${msgMaxDepth} (msg[${msgMaxIdx}] role=${msgMaxRole})`);
-				const deepMsgs = msgs.map((m, i) => ({ i, d: maxJsonDepth(m), role: (m as { role?: string })?.role ?? '' })).filter(x => x.d > 32);
-				if (deepMsgs.length > 0) {
-					console.error(`[CodeBuddy][DIAG-400] deep messages (>32): ${deepMsgs.map(x => `msg[${x.i}](role=${x.role})=${x.d}`).join(', ')}`);
-				}
-			}
-				const diag =
-					`[CodeBuddy][DIAG-400] model=${selectedModel} bodySize=${bodyLen}chars/${bodyLenKB}KB tools=${toolsArr.length} messages=${msgCount} — full diagnostics above`;
-				const wrapped = new Error(`${err.message}\n${diag}`);
-				wrapped.stack = err.stack;
 				// 400 + previous_response_id → 清除 stale ID，移除该字段后重试一次
 				if (hasPrevResponseId) {
 					console.warn(`[CodeBuddy] HTTP 400 with previous_response_id — clearing stale cache and retrying without it`);
@@ -1433,7 +1334,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 					}
 					response = await doFetch();
 				} else {
-					throw wrapped;
+					throw err;
 				}
 			} else {
 				throw err;
@@ -1468,6 +1369,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		// OpenAI tool_calls are streamed incrementally: first chunk has name + id,
 		// subsequent chunks append arguments fragments.
 		const toolCallAccumulators = new Map<number, { id: string; name: string; arguments: string }>();
+		let _reasoningSeen = false; // 诊断：标记是否收到过 reasoning_content
 
 		await parseSSEStream(response, progress, cancellationToken, (event) => {
 			// ── SSE 事件采样（受 debugHttp + FORCE_FILE_LOGGING 开关控制）──────────
@@ -1513,6 +1415,14 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			// ⚠️ This MIME must stay byte-for-byte identical to `SAROSIS_USAGE_MIME` in
 			// src/vs/sessions/contrib/agentStudio/browser/languageModelsBridge.ts.
 			if (event.usage && typeof event.usage === 'object') {
+				// ── 诊断：无条件记录 usage（尤其 completion_tokens — 判断模型是否生成了未捕获 token）
+				const _u = event.usage as Record<string, unknown>;
+				console.log(
+					`[CodeBuddy] [SSE-Diag] usage | prompt_tokens=${_u.prompt_tokens ?? 'n/a'} ` +
+					`completion_tokens=${_u.completion_tokens ?? 'n/a'} ` +
+					`total_tokens=${_u.total_tokens ?? 'n/a'} ` +
+					`cached=${(_u.prompt_tokens_details as any)?.cached_tokens ?? 'n/a'}`
+				);
 				progress.report(
 					vscode.LanguageModelDataPart.json(event.usage, 'application/vnd.saros.usage+json'),
 				);
@@ -1520,9 +1430,26 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 				// choices guard which will no-op when choices is empty.
 			}
 
-			// OpenAI: choices[0].delta.content
-			if (event.choices && event.choices[0]) {
-				const choice = event.choices[0];
+		// OpenAI: choices[0].delta.content
+		if (event.choices && event.choices[0]) {
+			const choice = event.choices[0];
+
+				// ── 诊断：记录 finish_reason（定位"模型为什么停"）
+				if (choice.finish_reason) {
+					console.log(
+						`[CodeBuddy] [SSE-Diag] finish_reason=${choice.finish_reason} ` +
+						`(toolCallAccs=${toolCallAccumulators.size})`
+					);
+					// ── 透传 finish_reason 到 renderer（经 DataPart，同 usage 模式）──
+					// renderer 的 languageModelsBridge 识别此 MIME 后将 finish_reason
+					// 注入 done delta，使 classifyIncompleteTurn 能检测 length 截断并触发重试。
+					progress.report(
+						vscode.LanguageModelDataPart.json(
+							{ finish_reason: choice.finish_reason },
+							'application/vnd.saros.finish-reason+json',
+						),
+					);
+				}
 
 				// Handle reasoning/thinking content (OpenAI-compatible `reasoning_content`).
 				// Reasoning tokens stream *before* the final text answer. We surface them as a
@@ -1533,6 +1460,11 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 				// only return a single text/tool-call result per event, and the stable
 				// `LanguageModelResponsePart` union does not include ThinkingPart — hence the cast.
 				if (choice.delta && choice.delta.reasoning_content) {
+					// ── 诊断：首次收到 reasoning_content 时记录（确认模型是否返回了 thinking）
+					if (!_reasoningSeen) {
+						_reasoningSeen = true;
+						console.log(`[CodeBuddy] [SSE-Diag] first reasoning_content chunk received (len=${choice.delta.reasoning_content.length})`);
+					}
 					progress.report(
 						new vscode.LanguageModelThinkingPart(choice.delta.reasoning_content) as unknown as vscode.LanguageModelResponsePart,
 					);
@@ -1567,7 +1499,14 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 					// are done (finish_reason='tool_calls' signals completion, but we can also
 					// emit eagerly when the next text chunk arrives). For streaming UX we emit
 					// on finish_reason or when a new tool_call index appears.
-					if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop') {
+					//
+					// ⚠️ 2026-07-15: 增加 `length` — 模型可能在生成 tool_call 参数时被
+					// max_tokens 截断（finish_reason='length'）。此时 toolCallAccumulators
+					// 里有一个半成品 tool_call（参数 JSON 不完整）。如果不发射，renderer
+					// 只看到 34B 文本前缀，完全不知道模型尝试过调用工具 → agent loop
+					// 直接结束。发射后参数 JSON parse 失败会走 catch → raw_arguments，
+					// 至少让 renderer 知道模型尝试了工具调用，可触发 length 重试。
+					if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop' || choice.finish_reason === 'length') {
 						// Emit all accumulated tool calls
 						for (const [, acc] of toolCallAccumulators) {
 							if (acc.id && acc.name) {

@@ -31,6 +31,9 @@ export const AGENT_STUDIO_CHECK_UPDATES_SETTING = 'sessions.agentStudio.preferen
 export const AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING = 'sessions.agentStudio.skills.maxSkillsInPrompt';
 export const AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING = 'sessions.agentStudio.skills.maxSkillsPromptChars';
 
+// Configuration keys — Driver concurrency
+export const AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING = 'sessions.agentStudio.driver.turnConcurrencyLimit';
+
 // Configuration keys — Chat UI Mode (React WebView vs Native DOM)
 /** @deprecated NativeChatEditorPane 现在是唯一聊天渲染器，此设置不再生效。保留仅为向后兼容。 */
 export const AGENT_STUDIO_USE_NATIVE_CHAT_SETTING = 'sessions.agentStudio.chat.useNativeChat';
@@ -48,6 +51,12 @@ export const AGENT_STUDIO_AUX_GOAL_JUDGE_PROVIDER = 'sessions.agentStudio.aux.go
 export const AGENT_STUDIO_AUX_GOAL_JUDGE_MODEL = 'sessions.agentStudio.aux.goalJudge.model';
 export const AGENT_STUDIO_AUX_CURATOR_PROVIDER = 'sessions.agentStudio.aux.curator.provider';
 export const AGENT_STUDIO_AUX_CURATOR_MODEL = 'sessions.agentStudio.aux.curator.model';
+// Embedding（向量）辅助模型：知识库向量化 / RAG 索引构建的 provider / model / 维度。
+// 这些键是知识库 & RAG embedding 的唯一来源，解除了对 knowledge-base-expert agent 的依赖。
+// provider='auto' 时回退到全局 embedding.provider；默认 model=text-embedding-3-small，dimensions=512。
+export const AGENT_STUDIO_AUX_EMBEDDING_PROVIDER = 'sessions.agentStudio.aux.embedding.provider';
+export const AGENT_STUDIO_AUX_EMBEDDING_MODEL = 'sessions.agentStudio.aux.embedding.model';
+export const AGENT_STUDIO_AUX_EMBEDDING_DIMENSIONS = 'sessions.agentStudio.aux.embedding.dimensions';
 
 // Configuration keys — Provider (API connections)
 export const AGENT_STUDIO_PROVIDER_OPENROUTER_API_KEY = 'sessions.agentStudio.provider.openrouter.apiKey';

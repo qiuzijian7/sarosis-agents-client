@@ -11,6 +11,7 @@ import type { IAgentSessionMeta } from '../agentChatTypes.js';
 export interface HistoryCallbacks {
 	onRenameSession?: (sessionId: string, newName: string) => void;
 	onDeleteSession?: (sessionId: string) => void;
+	onForkSession?: (sessionId: string) => void;
 	onOpenSession?: (sessionId: string) => void;
 	onNewSession?: () => void;
 	onClose: () => void;
@@ -61,6 +62,26 @@ export function renderHistoryOverlay(
 			time.textContent = formatRelativeTime(s.updatedAt);
 
 			const actions = append(item, $(".chat-history-item-actions"));
+			// Fork (copy → independent session 试探性会话, 对齐 LangGraph copy_thread)
+			const forkBtn = append(actions, $("button.chat-history-item-btn"));
+			forkBtn.title = '复制会话（分叉为独立会话）';
+			const forkSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+			forkSvg.setAttribute('width', '14'); forkSvg.setAttribute('height', '14');
+			forkSvg.setAttribute('viewBox', '0 0 24 24');
+			forkSvg.setAttribute('fill', 'none'); forkSvg.setAttribute('stroke', 'currentColor');
+			forkSvg.setAttribute('stroke-width', '2'); forkSvg.setAttribute('stroke-linecap', 'round');
+			forkSvg.setAttribute('stroke-linejoin', 'round');
+			const fp1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			fp1.setAttribute('d', 'M9 9V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-4');
+			const fp2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			fp2.setAttribute('d', 'M5 9h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z');
+			forkSvg.append(fp1, fp2);
+			forkBtn.appendChild(forkSvg);
+			registerFn(addDisposableListener(forkBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				cbs.onForkSession?.(s.id);
+			}));
+
 			// Rename
 			const renameBtn = append(actions, $("button.chat-history-item-btn"));
 			renameBtn.title = '重命名';

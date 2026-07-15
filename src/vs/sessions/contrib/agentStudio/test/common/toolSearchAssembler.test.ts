@@ -341,6 +341,36 @@ suite('ToolSearchAssembler — assembleToolDefs', () => {
 		assert.strictEqual(result.deferredDefs[1].name, 'browser_navigate');
 	});
 
+	test('hard cap: visible (core) tools exceeding maxVisible are forced into bridge', () => {
+		// 复现 incident：单轮下发 53 个核心工具 → 请求体过大 → 网关在生成大响应时 stall。
+		// 期望：visible 被截断到 maxVisible(30)，溢出核心工具强制折叠进 tool_search 桥接。
+		const tools: Array<IToolDefinition & { enabled: boolean }> = [];
+		for (let i = 0; i < 40; i++) {
+			tools.push(makeCoreTool(`core_tool_${i}`, `Core tool number ${i}`));
+		}
+		const result = assembleToolDefs(tools, { maxVisible: 30 });
+		// 30 visible + 3 bridge
+		assert.strictEqual(result.toolDefs.length, 30 + 3, `expected 33 toolDefs, got ${result.toolDefs.length}`);
+		assert.strictEqual(result.activated, true, 'bridge must be activated when cap is exceeded');
+		assert.strictEqual(result.deferredCount, 10, `expected 10 forced-deferred, got ${result.deferredCount}`);
+		// 溢出的核心工具仍在 catalog 中可达
+		const names = result.deferredDefs.map(t => t.name);
+		assert.ok(names.includes('core_tool_39'), 'overflow core tool should be discoverable via bridge');
+		// 桥接工具自身不应进入 deferredDefs（避免重复）
+		assert.ok(!names.includes('tool_search'), 'bridge tools must not be in deferredDefs');
+	});
+
+	test('hard cap disabled when maxVisible is large enough', () => {
+		const tools: Array<IToolDefinition & { enabled: boolean }> = [];
+		for (let i = 0; i < 40; i++) {
+			tools.push(makeCoreTool(`core_tool_${i}`, `Core tool number ${i}`));
+		}
+		// maxVisible 足够大 → 不折叠
+		const result = assembleToolDefs(tools, { maxVisible: 100 });
+		assert.strictEqual(result.activated, false);
+		assert.strictEqual(result.toolDefs.length, 40);
+	});
+
 	test('idempotent — existing bridge tools are stripped', () => {
 		const tools = [
 			makeCoreTool('file_read', 'Read'),

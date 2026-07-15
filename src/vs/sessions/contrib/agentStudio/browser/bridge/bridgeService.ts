@@ -24,6 +24,7 @@ import { LoopbackPlatform } from "./loopbackPlatform.js";
 import { BridgeScheduler } from "./bridgeScheduler.js";
 import { createFileTaskStore } from "./bridgeSchedulerStore.js";
 import { createFileUsageStore } from "./bridgeUsageStore.js";
+import { createFileBindingStore } from "./bridgeBindings.js";
 import { BridgeServer } from "./bridgeServer.js";
 
 export const IBridgeService = createDecorator<IBridgeService>("bridgeService");
@@ -100,6 +101,8 @@ export class BridgeService extends Disposable implements IBridgeService {
 				usageStore: createFileUsageStore(this._resolveBridgeWorkDir(), this._log),
 				// 读取各渠道「默认 Agent」静态绑定
 				configurationService: this._configurationService,
+				// 会话→Agent 绑定持久化（<workDir>/bindings.json）
+				bindingsStore: createFileBindingStore(this._resolveBridgeWorkDir(), this._log),
 			});
 		}
 		return this._engine;

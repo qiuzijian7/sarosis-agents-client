@@ -29,7 +29,7 @@
  * @returns 包装后的完整 HTML 文档字符串
  */
 export function wrapHtmlWithEditorRuntime(rawHtml: string): string {
-	const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource: vscode-webview:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource: vscode-webview:; img-src 'self' data: https: vscode-resource: vscode-webview-resource: vscode-webview:; font-src data: https: vscode-resource: vscode-webview-resource: vscode-webview:; connect-src https: vscode-resource: vscode-webview-resource: vscode-webview:; frame-src https: vscode-webview:;">`;
+	const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; img-src 'self' data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; font-src data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; connect-src https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; frame-src https: vscode-webview: vscode-file:;">`;
 
 	const editorCss = getEditorCss();
 	const editorHtml = getEditorChromeHtml();
@@ -452,6 +452,8 @@ function getEditorJs(): string {
   var syncTimer = null;
   var formObserver = null;
   var boundFormElements = [];
+  var vscodeApi = null;
+  try { vscodeApi = acquireVsCodeApi(); } catch (e) { log('acquireVsCodeApi failed: ' + e); }
 
   function log(m) { try { console.log('[EditRuntime] ' + m); } catch (e) {} }
 
@@ -616,9 +618,8 @@ function getEditorJs(): string {
     document.body.contentEditable = 'false';
     var html = getCleanHtml();
     document.body.contentEditable = 'true';
-    if (window.acquireVsCodeApi) {
-      var vscode = window.acquireVsCodeApi();
-      vscode.postMessage({ type: 'htmlEditor.saveContent', html: html });
+    if (vscodeApi) {
+      vscodeApi.postMessage({ type: 'htmlEditor.saveContent', html: html });
     }
   }
 
@@ -628,8 +629,8 @@ function getEditorJs(): string {
     if (!editMode) { console.log('[EditRuntime] syncContent skipped (editMode=false)'); return; }
     console.log('[EditRuntime] syncContent: sending htmlEditor.syncContent, body.children.length=' + document.body.children.length);
     var html = getCleanHtml();
-    if (window.acquireVsCodeApi) {
-      window.acquireVsCodeApi().postMessage({
+    if (vscodeApi) {
+      vscodeApi.postMessage({
         type: 'htmlEditor.syncContent',
         html: html
       });

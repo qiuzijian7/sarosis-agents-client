@@ -218,6 +218,8 @@ export interface IChatMarkdownContent {
 	kind: "markdownContent";
 	content: IMarkdownString;
 	inlineReferences?: Record<string, IChatContentInlineReference>;
+	/** When set, this markdown is the sub-agent's reasoning/commentary and should be grouped into its content part as a thinking row. */
+	subAgentInvocationId?: string;
 }
 
 export interface IChatTreeData {
@@ -1108,6 +1110,14 @@ export interface IChatSubagentToolInvocationData {
 	prompt?: string;
 	result?: string;
 	modelName?: string;
+	/**
+	 * Groups parallel sub-agents into a single visual cluster. Sub-agents spawned
+	 * from the same parent request (same `chatRequestId`) share a groupId so the
+	 * renderer can render them inside one grouped container with an aggregate header.
+	 * When only a single sub-agent carries a groupId, the renderer hides the group
+	 * chrome and renders it as a normal card.
+	 */
+	groupId?: string;
 }
 
 /**

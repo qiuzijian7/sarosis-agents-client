@@ -100,40 +100,37 @@ export interface IAgentToolIsolator {
  */
 export const SAROSIS_TOOL_NAMES = {
 	// Search
-	GREP_SEARCH: 'grep_search',
+	GREP_SEARCH: 'search_files',
 	SEARCH_FILES: 'search_files',
 	// Filesystem
-	LIST_DIR: 'list_dir',
-	READ_FILE: 'read_file',
-	REPLACE_IN_FILE: 'replace_in_file',
-	EDIT_FILE: 'edit_file',
-	WRITE_TO_FILE: 'write_to_file',
+	LIST_DIR: 'file_list',
+	READ_FILE: 'file_read',
+	REPLACE_IN_FILE: 'patch',
+	EDIT_FILE: 'patch',
+	WRITE_TO_FILE: 'file_write',
 	// Terminal
 	TERMINAL: 'terminal',
-	// MCP
-	USE_MCP_TOOL: 'use_mcp_tool',
-	FETCH_MCP_TOOLS: 'fetch_mcp_tools',
-	GREP_MCP_TOOLS: 'grep_mcp_tools',
 	// Skills
-	USE_SKILL: 'use_skill',
+	USE_SKILL: 'read_skill',
 	// Vision
-	READ_IMAGE: 'read_image',
-	CAPTURE_SCREEN: 'capture_screen',
+	READ_IMAGE: 'vision_analyze',
+	CAPTURE_SCREEN: 'browser_vision',
 	// Web
-	WEB_PREVIEW: 'web_preview',
+	WEB_PREVIEW: 'browser_navigate',
 	// Environment
-	GET_ENV_INFO: 'get_env_info',
+	GET_ENV_INFO: 'get_current_time',
 	// Media generation
-	GENERATE_PICTURE: 'generate_picture',
+	GENERATE_PICTURE: 'image_generate',
 	// History context
-	READ_HISTORY_CONTEXT: 'read_history_context',
-	GREP_HISTORY_CONTEXT: 'grep_history_context',
+	READ_HISTORY_CONTEXT: 'session_search',
+	GREP_HISTORY_CONTEXT: 'session_search',
 	// Scheduler
-	CRON: 'cron',
+	CRON: 'cronjob',
 	// Notification
-	NOTIFY: 'notify',
+	NOTIFY: 'send_message',
 	// Download
-	DISPLAY_DOWNLOAD_LINKS: 'display_download_links',
+	DISPLAY_DOWNLOAD_LINKS: 'file_list',
+	// MCP — no direct MCP tool; use tool_search/tool_describe/tool_call bridge
 } as const;
 
 // ─── Legacy Alias → Current Sarosis Tool Name Mapping ──────────────────
@@ -144,18 +141,18 @@ export const SAROSIS_TOOL_NAMES = {
  *
  * Expansion rules:
  *   ── VS Code legacy aliases ──
- *   vscode    → write_to_file, list_dir, search_files, read_file (full code access)
- *   read      → read_file, list_dir, search_files, grep_search (read-only access)
+ *   vscode    → file_write, file_list, search_files, file_read (full code access)
+ *   read      → file_read, file_list, search_files (read-only access)
  *   execute   → terminal (command execution)
- *   listFiles → list_dir
+ *   listFiles → file_list
  *   search    → search_files
- *   webFetch  → web_preview
+ *   webFetch  → browser_navigate
  *
- *   ── Old Sarosis internal names (renamed) ──
- *   file_read   → read_file
- *   file_write  → write_to_file
- *   file_list   → list_dir
- *   read_skill  → use_skill
+ *   ── Sarosis actual tool names（对齐 builtinToolProvider 注册名）──
+ *   read_file → file_read
+ *   write_to_file → file_write
+ *   list_dir → file_list
+ *   read_skill → read_skill
  *   list_skills → use_skill (merged)
  *   echo        → (no equivalent — dropped)
  *   get_current_time → (no equivalent — dropped)
@@ -195,22 +192,18 @@ export const TOOL_ALIAS_MAP: Readonly<Record<string, string[]>> = {
  * Tool metadata for display in the UI.
  * Uses current Sarosis internal tool names.
  */
+// Note: multiple SAROSIS_TOOL_NAMES aliases resolve to the same actual tool name
+// (e.g. GREP_SEARCH/SEARCH_FILES → 'search_files'). Keep only one entry per actual name.
 export const TOOL_METADATA: Record<string, { label: string; description: string; category: string }> = {
 	// Search
-	[SAROSIS_TOOL_NAMES.GREP_SEARCH]: { label: 'Grep Search', description: '正则/精确文本搜索 (ripgrep)', category: 'search' },
-	[SAROSIS_TOOL_NAMES.SEARCH_FILES]: { label: 'Search Files', description: '模糊搜索文件/目录路径', category: 'search' },
+	[SAROSIS_TOOL_NAMES.SEARCH_FILES]: { label: 'Search Files', description: '文件搜索 (文件名/文本)', category: 'search' },
 	// Filesystem
 	[SAROSIS_TOOL_NAMES.LIST_DIR]: { label: 'List Dir', description: '列出目录内容', category: 'filesystem' },
 	[SAROSIS_TOOL_NAMES.READ_FILE]: { label: 'Read File', description: '读取本地文件内容', category: 'filesystem' },
-	[SAROSIS_TOOL_NAMES.REPLACE_IN_FILE]: { label: 'Replace In File', description: '替换文件中的文本', category: 'filesystem' },
-	[SAROSIS_TOOL_NAMES.EDIT_FILE]: { label: 'Edit File', description: '编辑/创建文件', category: 'filesystem' },
+	[SAROSIS_TOOL_NAMES.REPLACE_IN_FILE]: { label: 'Replace/Edit File', description: '文本替换/文件编辑', category: 'filesystem' },
 	[SAROSIS_TOOL_NAMES.WRITE_TO_FILE]: { label: 'Write To File', description: '写入/创建文件', category: 'filesystem' },
 	// Terminal
 	[SAROSIS_TOOL_NAMES.TERMINAL]: { label: 'Terminal', description: '执行命令行命令', category: 'terminal' },
-	// MCP
-	[SAROSIS_TOOL_NAMES.USE_MCP_TOOL]: { label: 'Use MCP Tool', description: '调用 MCP Server 提供的工具', category: 'mcp' },
-	[SAROSIS_TOOL_NAMES.FETCH_MCP_TOOLS]: { label: 'Fetch MCP Tools', description: '获取 MCP Server 工具的详细描述', category: 'mcp' },
-	[SAROSIS_TOOL_NAMES.GREP_MCP_TOOLS]: { label: 'Grep MCP Tools', description: '按关键词搜索 MCP 工具', category: 'mcp' },
 	// Skills
 	[SAROSIS_TOOL_NAMES.USE_SKILL]: { label: 'Use Skill', description: '加载并使用 Skill', category: 'skills' },
 	// Vision
@@ -219,18 +212,15 @@ export const TOOL_METADATA: Record<string, { label: string; description: string;
 	// Web
 	[SAROSIS_TOOL_NAMES.WEB_PREVIEW]: { label: 'Web Preview', description: '预览前端 Web 页面', category: 'web' },
 	// Environment
-	[SAROSIS_TOOL_NAMES.GET_ENV_INFO]: { label: 'Get Env Info', description: '获取环境变量信息', category: 'env' },
+	[SAROSIS_TOOL_NAMES.GET_ENV_INFO]: { label: 'Get Env Info', description: '获取当前时间/环境信息', category: 'env' },
 	// Media generation
 	[SAROSIS_TOOL_NAMES.GENERATE_PICTURE]: { label: 'Generate Picture', description: 'AI 图像生成 (文生图/图生图)', category: 'media' },
 	// History context
-	[SAROSIS_TOOL_NAMES.READ_HISTORY_CONTEXT]: { label: 'Read History Context', description: '读取历史对话上下文', category: 'history' },
-	[SAROSIS_TOOL_NAMES.GREP_HISTORY_CONTEXT]: { label: 'Grep History Context', description: '按关键词搜索历史上下文', category: 'history' },
+	[SAROSIS_TOOL_NAMES.READ_HISTORY_CONTEXT]: { label: 'History Context', description: '搜索/读取历史对话上下文', category: 'history' },
 	// Scheduler
 	[SAROSIS_TOOL_NAMES.CRON]: { label: 'Cron', description: '创建/管理定时任务', category: 'scheduler' },
 	// Notification
 	[SAROSIS_TOOL_NAMES.NOTIFY]: { label: 'Notify', description: '发送通知消息', category: 'notify' },
-	// Download
-	[SAROSIS_TOOL_NAMES.DISPLAY_DOWNLOAD_LINKS]: { label: 'Display Download Links', description: '生成文件下载链接', category: 'download' },
 };
 
 /**
@@ -261,8 +251,6 @@ export const READ_ONLY_TOOL_NAMES: readonly string[] = [
 	SAROSIS_TOOL_NAMES.GET_ENV_INFO,
 	SAROSIS_TOOL_NAMES.READ_HISTORY_CONTEXT,
 	SAROSIS_TOOL_NAMES.GREP_HISTORY_CONTEXT,
-	SAROSIS_TOOL_NAMES.FETCH_MCP_TOOLS,
-	SAROSIS_TOOL_NAMES.GREP_MCP_TOOLS,
 	SAROSIS_TOOL_NAMES.USE_SKILL,
 	SAROSIS_TOOL_NAMES.WEB_PREVIEW,
 	SAROSIS_TOOL_NAMES.CAPTURE_SCREEN,

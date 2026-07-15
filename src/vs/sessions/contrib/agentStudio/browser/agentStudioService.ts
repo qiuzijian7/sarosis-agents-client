@@ -16,10 +16,21 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
+import { classifyByKeywords, classifyContentViaLLM } from './knowledge/classifier.js';
+import { resolveChatModel, createKbEmbedder } from './knowledge/knowledgeAdapters.js';
+import { IAiEmbeddingVectorService } from '../../../../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.js';
+import { resolveAuxEmbeddingConfig, resolveAuxEmbeddingProviderId } from './knowledge/embeddingConfigResolver.js';
+import { resolveKbRoot } from './knowledge/knowledgeStorage.js';
+import {
+	type KnowledgeToolDeps,
+	importMessageToKnowledgeBase,
+	type ImportToKbOptions,
+	type ImportToKbResult,
+} from './knowledge/knowledgeTools.js';
 import type { Agent, AgentBinding, Workspace, Connection, AgentStudioSession, WorkspaceLayout } from '../../../common/agentStudioTypes.js';
 import { ConnectionType } from '../../../common/agentStudioTypes.js';
 import { migrateWorkspace } from '../../../common/agentStudioTypes.js';
-import { DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, DATA_FILE_LAST_ACTIVE_AGENT, DATA_FILE_AGENT_BINDINGS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR } from '../common/constants.js';
+import { DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, DATA_FILE_LAST_ACTIVE_AGENT, DATA_FILE_AGENT_BINDINGS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENT_STUDIO_AUX_CURATOR_PROVIDER, AGENT_STUDIO_AUX_CURATOR_MODEL } from '../common/constants.js';
 import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecyclePayload } from '../common/workspaceLifecycle.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { IWorktreeWorkspaceOptions, WorktreeStatus, IWorktreeStateEvent, IWorktreeDetail } from '../../worktree/common/worktreeTypes.js';
@@ -84,6 +95,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		@IWorkspaceLifecycleService private readonly workspaceLifecycleService: IWorkspaceLifecycleService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@IPathService private readonly pathService: IPathService,
+		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
 	) {
 		super();
 
@@ -540,6 +552,8 @@ ${agent.systemPrompt || ''}
 				this.logService.warn(`[AgentStudio] createAgent: failed to persist binding for ${id} in ${runtime.workspaceId}: ${err instanceof Error ? err.message : String(err)}`);
 			}
 		}
+		// 清除缓存，确保下次 getAgents() 返回包含新 agent 的数据
+		this._agentsCache = undefined;
 		this._onDidChangeAgents.fire();
 		return agent;
 	}
@@ -551,6 +565,92 @@ ${agent.systemPrompt || ''}
 	private async _getSarosAgentsDir(): Promise<URI> {
 		const userHome = await this.pathService.userHome();
 		return joinPath(userHome, '.saros', 'agents');
+	}
+
+	/** Resolve the OS user home directory path (e.g. /home/user). */
+	async resolveUserHome(): Promise<string> {
+		const home = await this.pathService.userHome();
+		return home.fsPath;
+	}
+
+	/** KB storage root (~/.saros/knowledge-base by default, config-overridable). */
+	private async _resolveKbStorageRoot(): Promise<string> {
+		const cfg = this.configurationService.getValue<string>('agentStudio.knowledge.storage.path');
+		const userHome = (await this.pathService.userHome()).fsPath;
+		return resolveKbRoot(cfg, userHome);
+	}
+
+	/** Workspace root — used to resolve relative source file paths in kb_* tools. */
+	private async _resolveWorkspaceDir(): Promise<string> {
+		const wsId = this.getActiveWorkspaceId();
+		if (wsId) {
+			const ws = await this.getWorkspace(wsId);
+			if (ws?.path) { return ws.path; }
+		}
+		return (await this.pathService.userHome()).fsPath;
+	}
+
+	/**
+	 * Import an LLM chat message into the knowledge base engine. Routes to
+	 * `kb_build` (new note) or `kb_ingest` (improve existing note) via
+	 * `importMessageToKnowledgeBase` in `knowledgeTools.ts`.
+	 */
+	async importMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult> {
+		const deps: KnowledgeToolDeps = {
+			fileService: this.fileService,
+			configurationService: this.configurationService,
+			embeddingService: this.embeddingService,
+		resolveBaseDir: () => this._resolveWorkspaceDir(),
+		resolveStorageRoot: () => this._resolveKbStorageRoot(),
+		// 知识库操作的 chat 模型一律取自「辅助模型 → Curator」配置，解除对 KB agent 的依赖。
+		resolveKbModel: () => this._resolveKbChatModel(),
+		// Embedding 一律使用「辅助模型 → Embedding」配置（provider/model/dimensions），
+		// 不再跟随 KB agent；provider 留空时由 resolver 回退到全局 embedding provider。
+		createKbEmbedder: (_providerId: string) => {
+			// P2 修复：优先取用户显式配置的 aux embedding provider，
+			// 未配置时回退到知识库操作所使用的 chat model 的 provider（_providerId），
+			// 因为 chat model 是可用的（否则 KB 导入本身无法调用 LLM）。
+			const resolvedId = resolveAuxEmbeddingProviderId(this.configurationService)
+				?? (_providerId || 'openrouter');
+			return createKbEmbedder(
+				this.configurationService,
+				this.logService,
+				{
+					providerId: resolvedId,
+					model: resolveAuxEmbeddingConfig(this.configurationService).modelId,
+					dimensions: resolveAuxEmbeddingConfig(this.configurationService).dimensions,
+				},
+			);
+		},
+	};
+		return importMessageToKnowledgeBase(deps, content, opts);
+	}
+
+	/**
+	 * LLM 驱动的智能内容分类（复刻 Hyper-Extract 的 guideline.target + structured output 模式）。
+	 * 失败时自动降级到关键词启发式分类，保证零中断。
+	 */
+	async classifyContent(content: string): Promise<{ category: string; label: string; confidence: number; reasoning: string; source: 'llm' | 'keyword' }> {
+		try {
+			const kb = this._resolveKbChatModel();
+			const chatModel = resolveChatModel(this.configurationService, { providerId: kb.providerId, modelId: kb.modelId });
+			return await classifyContentViaLLM(chatModel, content);
+		} catch {
+			return classifyByKeywords(content);
+		}
+	}
+
+	/**
+	 * 解析知识库操作（收藏 / 分类 / 导入）使用的 chat 模型，解除对 knowledge-base-expert
+	 * agent 的依赖：优先取「辅助模型 → Curator」配置，未配置时回退到默认 openrouter 模型。
+	 */
+	private _resolveKbChatModel(): { providerId: string; modelId: string } {
+		const provider = (this.configurationService.getValue<string>(AGENT_STUDIO_AUX_CURATOR_PROVIDER) || 'auto').trim();
+		const model = (this.configurationService.getValue<string>(AGENT_STUDIO_AUX_CURATOR_MODEL) || '').trim();
+		if (provider && provider !== 'auto' && model) {
+			return { providerId: provider, modelId: model };
+		}
+		return { providerId: 'openrouter', modelId: 'openai/gpt-4o-mini' };
 	}
 
 	/**
@@ -700,7 +800,7 @@ ${agent.systemPrompt || ''}
 
 		// If only runtime fields were provided, we're done.
 		if (Object.keys(defPatch).length === 0) {
-			if (hasRuntimePatch) { this._onDidChangeAgents.fire(); }
+			if (hasRuntimePatch) { this._agentsCache = undefined; this._onDidChangeAgents.fire(); }
 			return;
 		}
 
@@ -718,6 +818,13 @@ ${agent.systemPrompt || ''}
 			existing = { ...builtin };
 		}
 		const updated: Agent = { ...existing, ...defPatch, id, updatedAt: new Date().toISOString() };
+
+		// 当启用 configHtml 时，自动将 confightml skill 加入 agent skills 列表
+		if (updated.configHtml && !(updated.skills ?? []).includes('confightml')) {
+			updated.skills = [...(updated.skills ?? existing.skills ?? []), 'confightml'];
+			this.logService.info(`[AgentStudio] Auto-added "confightml" skill for agent "${id}" (configHtml enabled)`);
+		}
+
 		await this._updateAgentJsonFile(updated);
 
 		// Sync .agent.md file if definition fields changed
@@ -725,6 +832,7 @@ ${agent.systemPrompt || ''}
 			await this._updateAgentMdFile(updated);
 		}
 
+		this._agentsCache = undefined;
 		this._onDidChangeAgents.fire();
 	}
 
@@ -745,21 +853,28 @@ ${agent.systemPrompt || ''}
 		const bindings = await this._readBindings(dirUri);
 		const now = new Date().toISOString();
 		const idx = bindings.findIndex(b => b.agentId === agentId);
+		// 显式设置 worktreePath（含置 undefined）且未携带 tempWorktreeOverride → 视为用户/系统的
+		// 主动意图，清除可能残留的临时覆盖标记，避免僵尸标记误导启动自愈。
+		// AgentDriver 的临时覆盖/恢复因同时传 tempWorktreeOverride，不受影响。
+		const clearsTempOverride = 'worktreePath' in patch && !('tempWorktreeOverride' in patch);
+		const { agentId: _a, workspaceId: _w, createdAt: _c, ...rest } = patch;
 		let result: AgentBinding;
 		if (idx === -1) {
 			result = {
 				agentId, workspaceId,
-				worktreePath: patch.worktreePath,
-				worktreeBranch: patch.worktreeBranch,
-				agentDir: patch.agentDir,
-				memoryConfig: patch.memoryConfig,
+				...rest,
+				...(clearsTempOverride ? { tempWorktreeOverride: undefined } : {}),
 				createdAt: now, updatedAt: now,
 			};
 			bindings.push(result);
 		} else {
 			// Merge patch, but never let agentId/workspaceId/createdAt be overwritten.
-			const { agentId: _a, workspaceId: _w, createdAt: _c, ...rest } = patch;
-			result = { ...bindings[idx], ...rest, agentId, workspaceId, updatedAt: now };
+			result = {
+				...bindings[idx],
+				...rest,
+				...(clearsTempOverride ? { tempWorktreeOverride: undefined } : {}),
+				agentId, workspaceId, updatedAt: now,
+			};
 			bindings[idx] = result;
 		}
 		await this._writeJsonFile(dirUri, DATA_FILE_AGENT_BINDINGS, bindings);
@@ -779,6 +894,7 @@ ${agent.systemPrompt || ''}
 		// 注意：内置 agent 在下次启动时会被重新 seed（保证始终可用），
 		// 自定义 agent 删除后不会恢复。
 		await this._deleteAgentDir(id);
+		this._agentsCache = undefined;
 		this._onDidChangeAgents.fire();
 	}
 
@@ -969,7 +1085,7 @@ icon: "${agent.icon || '🤖'}"
 		// view (which already groups across repos via getAllRepositoryRoots).
 		const repoRoots = await this._resolveAllWorktreeRepoRoots(workspace);
 		if (repoRoots.length === 0) {
-			this.logService.warn(`[AgentStudio] getWorktrees(${workspaceId}): no git repo root resolved (relatedFolders/path all non-git)`);
+			this.logService.info(`[AgentStudio] getWorktrees(${workspaceId}): no git repo root resolved (relatedFolders/path all non-git) — worktree feature unavailable for this workspace`);
 			return [];
 		}
 

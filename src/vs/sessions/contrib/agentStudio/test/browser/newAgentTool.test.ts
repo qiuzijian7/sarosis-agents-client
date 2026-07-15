@@ -121,22 +121,22 @@ suite('new_agent Tool', () => {
 	// handleNewAgentTool 核心测试
 	// ═══════════════════════════════════════════════════════════════════════════
 
-	// ── T1: 基本创建 — 仅必填字段（验证 slug 化） ──────────────────────────
-	test('T1: creates agent with slugified name and clean id', async () => {
+	// ── T1: 基本创建 — 仅必填字段（验证 name 保留原始输入，id 为 slug） ──
+	test('T1: creates agent with original name and slug id', async () => {
 		const mock = new MockAgentStudioService();
 		const result = await handleNewAgentTool(VALID_RAW_INPUT, mock);
 
 		const parsed = parseResult(result);
 		assert.strictEqual(parsed.success, true);
 		assert.strictEqual(parsed.id, EXPECTED_SLUG_NAME, 'id should equal slug name');
-		assert.strictEqual(parsed.name, EXPECTED_SLUG_NAME, 'name should be slugified');
+		assert.strictEqual(parsed.name, 'Code Reviewer', 'name should be original human-readable name');
 		assert.strictEqual(parsed.role, 'Reviewer');
 		assert.strictEqual(parsed.agentType, 'worker');
 
 		assert.strictEqual(mock.createAgentCalls.length, 1);
 		const call = mock.createAgentCalls[0];
 		assert.strictEqual(call.id, EXPECTED_SLUG_NAME, 'id passed to createAgent should be slug');
-		assert.strictEqual(call.name, EXPECTED_SLUG_NAME);
+		assert.strictEqual(call.name, 'Code Reviewer', 'name should be original');
 		assert.strictEqual(call.role, 'Reviewer');
 		assert.strictEqual(call.source, 'custom');
 	});
@@ -156,8 +156,8 @@ suite('new_agent Tool', () => {
 		assert.strictEqual(mock.createAgentCalls[0].id, 'security-auditor');
 	});
 
-	// ── T1.6: 纯特殊字符 name → slug 为空 → 错误 ──────────────────────────
-	test('T1.6: fails when name slugifies to empty string', async () => {
+	// ── T1.6: 纯特殊字符 name → slug 为随机回退 id（而非失败） ──────────
+	test('T1.6: generates fallback id when name slugifies to empty string', async () => {
 		const mock = new MockAgentStudioService();
 		const result = await handleNewAgentTool(
 			{ name: '!@#$%', role: 'Tester', description: 'Test' },
@@ -165,10 +165,10 @@ suite('new_agent Tool', () => {
 		);
 
 		const parsed = parseResult(result);
-		assert.strictEqual(parsed.success, false);
-		assert.ok(parsed.error.toLowerCase().includes('slug'), 'error should mention slug');
-		assert.ok(parsed.error.toLowerCase().includes('empty'), 'error should mention empty');
-		assert.strictEqual(mock.createAgentCalls.length, 0);
+		assert.strictEqual(parsed.success, true, 'should succeed with fallback id');
+		assert.ok(parsed.id.startsWith('agent-'), `id should have fallback prefix: ${parsed.id}`);
+		assert.strictEqual(parsed.name, '!@#$%', 'name should keep original input');
+		assert.strictEqual(mock.createAgentCalls[0].name, '!@#$%');
 	});
 
 	// ── T2: 缺少 name ────────────────────────────────────────────────────────
@@ -368,7 +368,7 @@ suite('new_agent Tool', () => {
 	});
 
 	// ── T17: 多词 name slug 化验证 ─────────────────────────────────────────
-	test('T17: slugifies multi-word name with underscores', async () => {
+	test('T17: slugifies id but keeps original name', async () => {
 		const mock = new MockAgentStudioService();
 		const result = await handleNewAgentTool(
 			{ name: 'Senior Backend_Developer', role: 'Developer', description: 'Backend dev' },
@@ -376,8 +376,9 @@ suite('new_agent Tool', () => {
 		);
 
 		const parsed = parseResult(result);
-		assert.strictEqual(parsed.name, 'senior-backend-developer');
-		assert.strictEqual(parsed.id, 'senior-backend-developer');
-		assert.strictEqual(mock.createAgentCalls[0].name, 'senior-backend-developer');
+		assert.strictEqual(parsed.name, 'Senior Backend_Developer', 'name should be original');
+		assert.strictEqual(parsed.id, 'senior-backend-developer', 'id should be slugified');
+		assert.strictEqual(mock.createAgentCalls[0].name, 'Senior Backend_Developer', 'name should be original');
+		assert.strictEqual(mock.createAgentCalls[0].id, 'senior-backend-developer', 'id should be slugified');
 	});
 });

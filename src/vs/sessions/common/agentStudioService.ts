@@ -27,6 +27,7 @@ import type {
 	ConfigHtmlCapability,
 } from "./agentStudioTypes.js";
 import type { IWorktreeWorkspaceOptions } from "../contrib/worktree/common/worktreeTypes.js";
+import type { ImportToKbOptions, ImportToKbResult } from "../contrib/agentStudio/browser/knowledge/knowledgeTools.js";
 
 // --- Agent Studio Service ---
 
@@ -62,6 +63,21 @@ export interface IAgentStudioService {
 	getAgent(id: string): Promise<Agent | undefined>;
 	/** Resolve the per-agent directory: ~/.saros/agents/{agentId}/ */
 	getAgentDir(agentId: string): Promise<URI>;
+	/** Resolve the OS user home directory path (e.g. /home/user). */
+	resolveUserHome(): Promise<string>;
+	/**
+	 * Import an LLM chat message into the knowledge base engine
+	 * (`kb_build` / `kb_ingest` with the `notes_summary` template). The engine
+	 * auto-summarizes the message and writes a structured Obsidian note. Re-importing
+	 * the same topic merges into the existing note (improved, not duplicated).
+	 * Returns the result (success / id / note path / action).
+	 */
+	importMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult>;
+	/**
+	 * LLM 驱动的智能内容分类（复刻 Hyper-Extract 模式）。
+	 * 返回最匹配的类别 + 置信度，失败时自动降级到关键词启发式分类。
+	 */
+	classifyContent(content: string): Promise<{ category: string; label: string; confidence: number; reasoning: string; source: 'llm' | 'keyword' }>;
 	createAgent(data: Partial<Agent>): Promise<Agent>;
 	updateAgent(id: string, data: Partial<Agent>): Promise<void>;
 	deleteAgent(id: string): Promise<void>;
@@ -477,6 +493,12 @@ export interface IChatSendOptions {
 	/** Structured task card data — when set, the renderer builds the task prompt
 	 *  card from this data instead of regex-parsing the text content. */
 	readonly taskCard?: import('../common/agentStudioTypes.js').TaskCardData;
+	/**
+	 * Fork 前缀缓存上下文（MiMo ForkContext）。fork 会话经 session.forkContext 透传，
+	 * 使本请求 (system+tools) 与父级冻结前缀对齐 → 请求构造端注入 cache 断点、命中
+	 * provider prompt cache。非 fork 会话省略 → undefined（零行为变更）。
+	 */
+	readonly forkContext?: import('../contrib/agentStudio/common/forkContext.js').IForkContext;
 }
 
 /**
@@ -573,6 +595,18 @@ export interface IAgentChatService {
 	 * Delete an agent session and its message history.
 	 */
 	deleteAgentSession(agentId: string, sessionId: string): Promise<void>;
+
+	/**
+	 * Fork (deep-copy) an existing agent session into a brand-new session.
+	 *
+	 * Copies the full message history and any externalised tool-result sidecar
+	 * files at the file level (fast, preserves refs) and registers a fresh
+	 * session in the index. The fork gets a new id and deliberately drops the
+	 * external provider thread binding (providerSessionId), so it can diverge
+	 * without affecting the source session — the "试探性会话 / fork" primitive
+	 * (aligns with LangGraph copy_thread).
+	 */
+	forkAgentSession(agentId: string, sessionId: string, newName?: string, parentForkContext?: import('../contrib/agentStudio/common/forkContext.js').IForkContext): Promise<{ id: string; name: string; createdAt: string; updatedAt: string; messageCount: number }>;
 
 	/**
 	 * Get the most recently active session for an agent.

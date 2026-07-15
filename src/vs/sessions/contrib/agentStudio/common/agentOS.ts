@@ -21,6 +21,7 @@ import {
 	IToolDefinition,
 	IToolApprovalHandler,
 } from "./providers.js";
+import type { IForkContext } from "./forkContext.js";
 
 // ─── Agent OS Service ───────────────────────────────────────────────────────
 
@@ -105,6 +106,13 @@ export interface IAgentOSService {
 	getActiveRetrievalProvider(): IRetrievalProvider | undefined;
 	getActiveKanbanProvider(): IKanbanProvider | undefined;
 
+	/**
+	 * 返回某会话最近一次迭代计算出的冻结前缀（ForkContext）。fork 会话时用于抓取父级
+	 * 冻结 system+tools，使子会话请求与父级前缀对齐 → 命中 provider prompt cache。
+	 * 会话从未运行过则返回 undefined。
+	 */
+	getForkContext(sessionId: string): IForkContext | undefined;
+
 	// ─── Slot Registry（传递给 ExecutionProvider）──────────────────
 
 	/**
@@ -120,12 +128,22 @@ export interface IAgentOSService {
 	 */
 	executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta>;
 
+	/**
+	 * 执行多 agent 图（supervisor / AgentCommand(goto) 设计 Step C）。
+	 * 当 `request.agentGraph` 含 ≥2 节点时由 `executeAgentTurn` 自动委派；也可由
+	 * 图运行时直接调用。复用既有单 agent loop 作为节点执行器，按 `AgentCommand(goto)`
+	 * 动态路由。单 agent 模式（无 agentGraph）回退到单 agent 路径，零行为变更。
+	 */
+	executeAgentGraph(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta>;
+
 	// ─── Agent Loop 控制 ───────────────────────────────────────
 
 	/**
-	 * 取消当前活跃的 Agent Loop（中断所有工具执行）
+	 * 取消 Agent Loop（中断工具执行）。
+	 * - 传 agentId + sessionId：按 turnKey 精确取消该窗口/会话，不影响其他并发窗口。
+	 * - 不传参数：取消所有活跃 turn（向后兼容）。
 	 */
-	cancelAgentLoop(): void;
+	cancelAgentLoop(agentId?: string, sessionId?: string): void;
 
 	/**
 	 * Episodic 自动提取：对话轮次达阈值时，后台调用 LLM 从最近对话中提取

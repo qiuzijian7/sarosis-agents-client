@@ -14,6 +14,7 @@ import {
 	chunkMarkdown,
 	cosineSimilarity,
 	KB_RAG_INDEX_FILE,
+	KB_RAG_INDEX_BINARY_FILE,
 	type IKbVectorChunk,
 } from '../../browser/views/knowledgeBase/kbVectorIndex.js';
 import type { KbSection } from '../../browser/views/knowledgeBase/kbTypes.js';
@@ -65,12 +66,12 @@ suite('AgentStudio - KbVectorIndex 引擎', () => {
 		getStatus() { return { activeProviderId: this.providerId, tag: this.tag, lastError: undefined }; }
 	}
 
-	// ── 内存 FileService mock ───────────────────────────────────────────────────
-	interface INode { isDir: boolean; content?: string; mtime: number; size: number; children?: string[]; }
+	// ── 内存 FileService mock（二进制安全：以 VSBuffer 原样存储）─────────────────
+	interface INode { isDir: boolean; bytes?: VSBuffer; mtime: number; size: number; children?: string[]; }
 	class MockFileService {
 		private _nodes = new Map<string, INode>();
 		addFile(uri: URI, content: string): void {
-			this._nodes.set(uri.toString(), { isDir: false, content, mtime: Date.now(), size: content.length });
+			this._nodes.set(uri.toString(), { isDir: false, bytes: VSBuffer.fromString(content), mtime: Date.now(), size: content.length });
 		}
 		addDir(uri: URI, children: URI[]): void {
 			this._nodes.set(uri.toString(), { isDir: true, mtime: Date.now(), size: 0, children: children.map(c => c.toString()) });
@@ -95,11 +96,11 @@ suite('AgentStudio - KbVectorIndex 引擎', () => {
 		}
 		async readFile(uri: URI) {
 			const n = this._nodes.get(uri.toString());
-			if (!n || n.isDir) { throw new Error('ENOENT file ' + uri.toString()); }
-			return { value: VSBuffer.fromString(n.content) };
+			if (!n || n.isDir || !n.bytes) { throw new Error('ENOENT file ' + uri.toString()); }
+			return { value: n.bytes };
 		}
 		async writeFile(uri: URI, content: VSBuffer): Promise<void> {
-			this._nodes.set(uri.toString(), { isDir: false, content: content.toString(), mtime: Date.now(), size: content.byteLength });
+			this._nodes.set(uri.toString(), { isDir: false, bytes: content, mtime: Date.now(), size: content.byteLength });
 		}
 		async exists(uri: URI): Promise<boolean> { return this._nodes.has(uri.toString()); }
 	}
@@ -338,5 +339,52 @@ suite('AgentStudio - KbVectorIndex 引擎', () => {
 		const embed = new MockEmbeddingService();
 		const idx = new KbVectorIndex(new MockFileService() as any, embed);
 		assert.strictEqual(await idx.importFromFile(URI.parse('file:///nope/missing.json')), false);
+	});
+
+	// ── 二进制序列化往返（.kvindex，Float32 密集布局）────────────────────────────
+	test('serializeBinary → deserializeBinary 无损保留块与向量', async () => {
+		const embed = new MockEmbeddingService();
+		const { fs, root } = makeVault(embed);
+		const idx = new KbVectorIndex(fs as any, embed);
+		await idx.build([{ uri: root, section }]);
+
+		const bin = idx.serializeBinary();
+		assert.ok(bin instanceof Uint8Array);
+		const idx2 = new KbVectorIndex(new MockFileService() as any, embed);
+		const ok = await idx2.deserializeBinary(bin);
+		assert.strictEqual(ok, true);
+		assert.strictEqual(idx2.isBuilt, true);
+		assert.strictEqual(idx2.chunkCount, idx.chunkCount);
+		assert.strictEqual(idx2.tag, 'mock/mock-embed@64');
+		// 向量应被原样保留（二进制无损）
+		const a = idx.allChunks();
+		const b = idx2.allChunks();
+		for (let i = 0; i < a.length; i++) {
+			assert.deepStrictEqual(b[i].vector, a[i].vector, `chunk ${i} 向量应一致`);
+			assert.strictEqual(b[i].text, a[i].text);
+		}
+	});
+
+	test('exportToBinaryFile → importFromBinaryFile 磁盘往返', async () => {
+		const embed = new MockEmbeddingService();
+		const { fs, root } = makeVault(embed);
+		const idx = new KbVectorIndex(fs as any, embed);
+		await idx.build([{ uri: root, section }]);
+
+		const outUri = URI.parse('file:///out/' + KB_RAG_INDEX_BINARY_FILE);
+		await idx.exportToBinaryFile(outUri);
+
+		const idx2 = new KbVectorIndex(fs as any, embed);
+		const ok = await idx2.importFromBinaryFile(outUri);
+		assert.strictEqual(ok, true);
+		assert.strictEqual(idx2.isBuilt, true);
+		assert.strictEqual(idx2.chunkCount, idx.chunkCount);
+		assert.strictEqual(idx2.tag, 'mock/mock-embed@64');
+	});
+
+	test('deserializeBinary 非法数据返回 false', async () => {
+		const embed = new MockEmbeddingService();
+		const idx = new KbVectorIndex(new MockFileService() as any, embed);
+		assert.strictEqual(await idx.deserializeBinary(new Uint8Array([1, 2, 3])), false);
 	});
 });

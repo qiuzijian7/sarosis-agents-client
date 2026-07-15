@@ -74,6 +74,8 @@ export interface IChatPanelCallbacks {
 	onUpdatePlan?: (planId: string, updates: Record<string, unknown>) => void;
 	onUpdateTask?: (planId: string, taskId: string, updates: Record<string, unknown>) => void;
 	onClosePlanDialog?: (planId: string) => void;
+	/** 收藏消息到知识库 */
+	onFavoriteMessage?: (messageContent: string) => void;
 }
 
 /**

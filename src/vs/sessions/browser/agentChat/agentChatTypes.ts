@@ -143,8 +143,8 @@ export interface IToolCall {
 	name: string;
 	args?: string;
 	result?: string;
-	/** Status: running | success | error | approval_required | rejected | pending | canceled */
-	status?: 'running' | 'success' | 'error' | 'approval_required' | 'rejected' | 'pending' | 'canceled';
+	/** Status: running | success | error | approval_required | rejected | pending | canceled | skipped */
+	status?: 'running' | 'success' | 'error' | 'approval_required' | 'rejected' | 'pending' | 'canceled' | 'skipped';
 	displayName?: string;
 	renderType?: string;
 	defaultShow?: boolean;
@@ -409,7 +409,7 @@ export interface IModelInfo {
  *    idle → llm_streaming → compressing → llm_streaming → ... → idle
  *    * → error → idle
  */
-export type StreamPhase = 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error';
+export type StreamPhase = 'idle' | 'llm_streaming' | 'tool_executing' | 'awaiting_approval' | 'compressing' | 'error' | 'canceled';
 
 /** Chat mode — mirrors webview ChatMode */
 export type ChatMode = 'craft' | 'ask' | 'plan';

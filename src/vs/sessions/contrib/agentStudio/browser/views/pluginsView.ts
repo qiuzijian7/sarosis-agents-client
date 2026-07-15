@@ -305,20 +305,20 @@ export class PluginsViewPane extends ViewPane {
 
 	override setVisible(visible: boolean): void {
 		super.setVisible(visible);
-		console.warn('[PluginsViewPane] setVisible called:', visible, 'isExpanded:', this.isExpanded(), 'element in DOM:', !!this.element?.parentElement, 'bodyRendered:', !!(this as any)._bodyRendered);
+		console.debug('[PluginsViewPane] setVisible called:', visible, 'isExpanded:', this.isExpanded(), 'element in DOM:', !!this.element?.parentElement, 'bodyRendered:', !!(this as any)._bodyRendered);
 		// Ensure the view is expanded when it becomes visible.
 		// In single-view containers with mergeViewWithContainerWhenSingleView,
 		// the view should always be expanded, but the container may not
 		// auto-expand it if areExtensionsReady is false at creation time.
 		if (visible && !this.isExpanded()) {
-			console.warn('[PluginsViewPane] forcing expansion from setVisible');
+			console.debug('[PluginsViewPane] forcing expansion from setVisible');
 			this.setExpanded(true);
 		}
 	}
 
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
-		console.warn('[PluginsViewPane] renderBody called, container:', container.tagName, container.className, 'parentElement:', container.parentElement?.tagName, container.parentElement?.className);
+		console.debug('[PluginsViewPane] renderBody called, container:', container.tagName, container.className, 'parentElement:', container.parentElement?.tagName, container.parentElement?.className);
 
 		// Remove .welcome class — it hides all non-.welcome-view children via
 		// `.pane-body.welcome > :not(.welcome-view) { display: none }` in views.css
@@ -378,21 +378,21 @@ export class PluginsViewPane extends ViewPane {
 			}
 
 			// Diagnostic: walk entire DOM ancestor chain logging width
-			console.warn('[PluginsViewPane] rAF DOM ancestor-width walk:');
+			console.debug('[PluginsViewPane] rAF DOM ancestor-width walk:');
 			let node: HTMLElement | null = container;
 			let depth = 0;
 			while (node && depth < 15) {
 				const cs = getComputedStyle(node);
-				console.warn(`[PluginsViewPane]   depth=${depth} tag=${node.tagName} class="${node.className}" id="${node.id}" offsetW=${node.offsetWidth} offsetH=${node.offsetHeight} display=${cs.display} width=${cs.width} position=${cs.position} overflow=${cs.overflow}`);
+				console.debug(`[PluginsViewPane]   depth=${depth} tag=${node.tagName} class="${node.className}" id="${node.id}" offsetW=${node.offsetWidth} offsetH=${node.offsetHeight} display=${cs.display} width=${cs.width} position=${cs.position} overflow=${cs.overflow}`);
 				node = node.parentElement;
 				depth++;
 			}
 			// Also log children of body
-			console.warn('[PluginsViewPane]   body.isConnected:', container.isConnected, 'body.children.length:', container.children.length);
+			console.debug('[PluginsViewPane]   body.isConnected:', container.isConnected, 'body.children.length:', container.children.length);
 			for (let i = 0; i < container.children.length; i++) {
 				const child = container.children[i] as HTMLElement;
 				const ccs = getComputedStyle(child);
-				console.warn(`[PluginsViewPane]   child[${i}]:`, child.tagName, child.className, 'display:', ccs.display, 'width:', ccs.width, 'height:', ccs.height, 'offsetW:', child.offsetWidth, 'offsetH:', child.offsetHeight);
+				console.debug(`[PluginsViewPane]   child[${i}]:`, child.tagName, child.className, 'display:', ccs.display, 'width:', ccs.width, 'height:', ccs.height, 'offsetW:', child.offsetWidth, 'offsetH:', child.offsetHeight);
 			}
 		});
 	}

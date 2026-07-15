@@ -246,6 +246,73 @@ export function createBuiltinCommands(): IBridgeCommand[] {
 				ctx.reply("用量统计：\n" + body);
 			},
 		},
+		{
+			name: "bind",
+			description: "将会话(群聊)绑定到指定 Agent，或按会话 id 绑定",
+			usage: "[<会话id>] <agentId> | list | clear [<会话id>]",
+			run: async (ctx: BridgeCommandContext) => {
+				const platform = ctx.session.platform;
+				const curConv = ctx.conversationId;
+				const listBindings = (): string => {
+					const items = ctx.engine.listConversationBindings(platform);
+					if (items.length === 0) {
+						return "当前暂无会话→Agent 绑定。";
+					}
+					return (
+						"会话→Agent 绑定：\n" +
+						items.map(i => `• ${i.conversationId} → ${i.agentId}`).join("\n")
+					);
+				};
+				const args = ctx.args;
+				if (args.length === 0) {
+					const agents = await ctx.engine.listAgents();
+					ctx.reply(
+						"用法：\n" +
+							"• /bind <agentId> — 绑定当前会话到该 Agent\n" +
+							"• /bind <会话id> <agentId> — 绑定指定会话到该 Agent\n" +
+							"• /bind list — 查看所有绑定\n" +
+							"• /bind clear [会话id] — 解除绑定\n\n" +
+							"可用 Agent：\n" +
+							agents.map(a => `• ${a.id} — ${a.name}`).join("\n"),
+					);
+					return;
+				}
+				if (args[0] === "list") {
+					ctx.reply(listBindings());
+					return;
+				}
+				if (args[0] === "clear") {
+					const conv = args[1] ?? curConv;
+					if (!conv) {
+						ctx.reply("请指定要解除绑定的会话 id，或先在该会话中执行 /bind clear");
+						return;
+					}
+					ctx.engine.clearConversationAgent(platform, conv);
+					ctx.reply(`已解除会话绑定：${conv}`);
+					return;
+				}
+				let conv: string | undefined;
+				let agentId: string;
+				if (args.length >= 2) {
+					conv = args[0];
+					agentId = args[1];
+				} else {
+					conv = curConv;
+					agentId = args[0];
+				}
+				if (!conv) {
+					ctx.reply("当前会话无会话 id（无法绑定），请使用 /bind <会话id> <agentId>");
+					return;
+				}
+				const agents = await ctx.engine.listAgents();
+				if (!agents.some(a => a.id === agentId)) {
+					ctx.reply(`未找到 Agent：${agentId}\n可用：${agents.map(a => a.id).join(", ")}`);
+					return;
+				}
+				ctx.engine.setConversationAgent(platform, conv, agentId);
+				ctx.reply(`✅ 已将会话 ${conv} 绑定到 Agent：${agentId}`);
+			},
+		},
 	];
 }
 

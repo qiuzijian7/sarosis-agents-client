@@ -341,6 +341,30 @@ export const TEMPLATES: readonly KnowledgeTemplate[] = [
 		getPrompt('template.set'),
 	}),
 
+	// ── Document-level summary note (Hyper-Extract earnings_summary / model analogue) ──
+	listTemplate({
+		id: 'notes_summary',
+		label: 'Notes Summary',
+		description: 'HE general/notes_summary — turn any article into a single structured knowledge note (title + summary + tags + category + key points). Best for building a retrieval-friendly notes vault.',
+		itemSchema: objSchema(
+			{
+				title: str('Note title / document name, using the most stable designation'),
+				summary: str('One-paragraph abstract of the whole document (2-5 sentences, no preamble like "This document…")'),
+				tags: arr('3-8 keyword tags for retrieval and categorization'),
+				category: str('Single category id best matching the document: code_example / api_doc / architecture / bug_fix / config / tutorial / performance / security / devops / database / general'),
+				key_points: arr('Up to 8 bullet-style key takeaways (concise, each <=30 chars)'),
+			},
+			['title', 'summary'],
+			'A structured knowledge note',
+		),
+		key: (it: KnowledgeItem) => lc(it['title']),
+		fieldsForIndex: ['title', 'summary', 'tags', 'category', 'key_points'],
+		// Long docs are chunked; fuse all chunk notes into ONE via LLM.
+		strategy: MergeStrategy.LLM,
+		prompt:
+		getPrompt('template.notes_summary'),
+	}),
+
 	graphTemplate({
 		id: 'temporal_graph',
 		label: 'Temporal Graph',
@@ -927,7 +951,7 @@ export function getTemplate(id: string): KnowledgeTemplate | undefined {
 const TEMPLATE_DOMAIN: Record<string, string> = {
 	// general
 	knowledge_graph: 'general', entity_list: 'general', faq: 'general',
-	graph: 'general', list: 'general', model: 'general', set: 'general',
+	graph: 'general', list: 'general', model: 'general', set: 'general', notes_summary: 'general',
 	temporal_graph: 'general', spatial_graph: 'general', spatio_temporal_graph: 'general',
 	doc_structure: 'general', concept_graph: 'general', biography_graph: 'general', workflow_graph: 'general',
 	// finance

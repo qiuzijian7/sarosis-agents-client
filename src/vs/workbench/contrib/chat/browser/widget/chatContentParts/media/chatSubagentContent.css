@@ -91,3 +91,72 @@
 		}
 	}
 }
+
+/* Parallel sub-agent group container — clusters cards spawned in one batch */
+.interactive-session .interactive-response .value .chat-subagent-group {
+	margin: 8px 0;
+	padding: 8px 8px 2px;
+	border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+	border-radius: 8px;
+	background: rgba(128, 128, 128, 0.04);
+
+	.chat-subagent-group-header {
+		font-size: var(--vscode-chat-font-size-body-s);
+		color: var(--vscode-descriptionForeground);
+		padding: 2px 4px 8px;
+		margin-bottom: 4px;
+		border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.2));
+	}
+
+	/* Each sub-agent card keeps its own box, stacked inside the group */
+	.chat-subagent-part {
+		margin: 0 0 6px;
+	}
+
+	.chat-subagent-part:last-child {
+		margin-bottom: 0;
+	}
+}
+
+/* Sub-agent reasoning/commentary timeline row — interleaved with tool calls */
+.interactive-session .interactive-response .value .chat-subagent-reasoning {
+	align-items: flex-start;
+
+	.chat-subagent-reasoning-content {
+		flex: 1 1 auto;
+		min-width: 0;
+		color: var(--vscode-descriptionForeground);
+		font-style: italic;
+		font-size: var(--vscode-chat-font-size-body-s);
+		line-height: 1.4;
+
+		p:first-child {
+			margin-top: 0;
+		}
+
+		p:last-child {
+			margin-bottom: 0;
+		}
+	}
+}
+
+/* Model badge — small pill next to the card title showing which LLM the sub-agent runs on */
+.interactive-session .interactive-response .value .chat-subagent-model-badge {
+	display: inline-flex;
+	align-items: center;
+	margin-left: 6px;
+	padding: 0 5px;
+	height: 16px;
+	border-radius: 4px;
+	background: var(--vscode-badge-background, rgba(128, 128, 128, 0.2));
+	color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground));
+	font-size: 10px;
+	font-weight: 500;
+	font-style: normal;
+	line-height: 1;
+	vertical-align: middle;
+	white-space: nowrap;
+	max-width: 140px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}

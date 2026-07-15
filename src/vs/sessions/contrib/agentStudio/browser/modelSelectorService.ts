@@ -39,6 +39,8 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 	private readonly _configurationService: IConfigurationService;
 	private _currentSelection: IModelSelection | undefined;
 	private _selectedAgentId: string | undefined;
+	/** 按 agent 存储的专属模型选择（如「知识库专家」的独立 provider/model）。 */
+	private _selectionsByAgent = new Map<string, IModelSelection>();
 	private _cachedModelItems: IModelSelectorItem[] = [];
 	private _modelCacheValid = false;
 	// Track auth status listeners per provider id to avoid duplicates
@@ -76,6 +78,7 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 
 		// 从存储中恢复选择
 		this._loadSelection();
+		this._loadSelectionsByAgent();
 	}
 
 	/**
@@ -181,10 +184,31 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			}
 		}
 
+		// 若该选择绑定了某个 agent，同步记录为它的专属选择
+		if (s.agentId) {
+			this._selectionsByAgent.set(s.agentId, s);
+			this._persistSelectionsByAgent();
+		}
+
 		this._saveSelection();
 		this._onDidChangeSelection.fire(s);
 		this._agentOSService.setActiveModelSelection(s);
 		this._logService.debug(`[ModelSelector] Selection changed: ${s.providerId}/${s.modelId}${s.agentId ? ` [agent: ${s.agentId}]` : ''}`);
+	}
+
+	// ─── 按 agent 的专属模型选择 ───────────────────────────────
+
+	getSelectionForAgent(agentId: string): IModelSelection | undefined {
+		return this._selectionsByAgent.get(agentId) ?? this.getSelection();
+	}
+
+	setSelectionForAgent(agentId: string, selection: IModelSelection): void {
+		const sel: IModelSelection = { ...selection, agentId };
+		this._selectionsByAgent.set(agentId, sel);
+		this._persistSelectionsByAgent();
+		this._agentOSService.setActiveModelSelection(sel);
+		this._onDidChangeSelection.fire(sel);
+		this._logService.debug(`[ModelSelector] Selection for agent ${agentId}: ${sel.providerId}/${sel.modelId}`);
 	}
 
 	// ─── Agent 选择（仅支持 Agent 的 Provider）────────────────────
@@ -411,6 +435,27 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 			}
 		} catch (error) {
 			this._logService.error('[ModelSelector] Failed to save selection', error);
+		}
+	}
+
+	private _persistSelectionsByAgent(): void {
+		try {
+			const obj = Object.fromEntries(this._selectionsByAgent);
+			this._storageService.store('agent-studio.model-selections', JSON.stringify(obj), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		} catch (error) {
+			this._logService.error('[ModelSelector] Failed to persist per-agent selections', error);
+		}
+	}
+
+	private _loadSelectionsByAgent(): void {
+		try {
+			const raw = this._storageService.get('agent-studio.model-selections', StorageScope.APPLICATION);
+			if (raw) {
+				const obj = JSON.parse(raw) as Record<string, IModelSelection>;
+				this._selectionsByAgent = new Map(Object.entries(obj));
+			}
+		} catch (error) {
+			this._logService.error('[ModelSelector] Failed to load per-agent selections', error);
 		}
 	}
 

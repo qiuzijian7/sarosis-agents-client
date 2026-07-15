@@ -34,6 +34,7 @@ import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { join } from '../../../../../../base/common/path.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { IStorageService, StorageScope } from '../../../../../../platform/storage/common/storage.js';
 import { Registry } from '../../../../../../platform/registry/common/platform.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../../../platform/configuration/common/configurationRegistry.js';
 import { localize } from '../../../../../../nls.js';
@@ -42,7 +43,8 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IRequestService, asText } from '../../../../../../platform/request/common/request.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
-import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel, IAgentTurnRequest, IChatStreamDelta } from '../../../common/providers.js';
+import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel, IAgentTurnRequest, IChatStreamDelta, type IModelSelection } from '../../../common/providers.js';
+import { TRANSFER_TO_AGENT_TOOL } from '../../../common/agentGraph.js';
 import { getToolsetForTool } from '../../../common/toolsetConfig.js';
 import { BUNDLED_TOOL_DEFINITIONS } from '../../../common/bundled-tools/bundledTools.js';
 import { ISkillRegistry } from '../../../common/skills.js';
@@ -156,14 +158,22 @@ export { workflowAppliedEmitter } from './workflowShared.js';
  * 导出为独立函数以便单元测试。
  */
 export function slugifyAgentName(name: string): string {
-	return name
+	let slug = name
 		.toLowerCase()
 		.trim()
-		.replace(/[^a-z0-9\s_-]/g, '')   // 移除特殊字符
+		// 先将非 ASCII 空格类字符（全角空格、中文逗号等）替换为半角
+		.replace(/[\u3000\u2000-\u200F\u2028-\u202F\u205F\u00A0]/g, ' ')
+		.replace(/[^a-z0-9\s_-]/g, '')   // 移除特殊字符（含中文）
 		.replace(/[\s_]+/g, '-')          // 空格/下划线 → 连字符
 		.replace(/-+/g, '-')              // 去重连字符
 		.replace(/^-|-$/g, '')            // 去首尾连字符
 		.slice(0, 40);                    // 限制长度
+
+	// 纯中文/Unicode 名称导致 slug 为空时，使用时间戳生成可用的 id
+	if (!slug) {
+		slug = `agent-${Date.now().toString(36)}`;
+	}
+	return slug;
 }
 
 /**
@@ -205,19 +215,14 @@ export async function handleNewAgentTool(
 
 	// 2. Slug 化名称并对齐 _generateId 的 slug 逻辑（但去掉随机后缀）
 	const slugName = slugifyAgentName(rawName!);
-	if (!slugName) {
-		return [{ type: 'text', text: JSON.stringify({
-			success: false,
-			error: `Invalid agent name "${rawName}": slug results in empty string after normalization. Use at least one alphanumeric character.`,
-		}) }];
-	}
+	const displayName = rawName!.trim();
 
-	// 3. 构建 Partial<Agent> — 提供 id 以绕过 _generateId 的随机后缀
+	// 3. 构建 Partial<Agent> — displayName 保留用户原始输入，id 使用 slug
 	const trimmedRole = role!.trim();
 	const trimmedDesc = description!.trim();
 	const agentData: Partial<Agent> = {
 		id: slugName,
-		name: slugName,
+		name: displayName,
 		role: trimmedRole,
 		description: trimmedDesc,
 		source: 'custom',
@@ -281,6 +286,26 @@ interface IToolDescriptor {
  */
 export interface IBuiltinToolRegistration extends IToolDescriptor { }
 
+/**
+ * 安全沙箱违规错误 — 路径不在允许的工作区目录内时抛出。
+ * 携带结构化信息（请求路径 / 允许根 / 建议路径），供 agentOSService
+ * 检测并向用户弹出确认卡片（而非仅回显一段错误文本）。
+ */
+export class SandboxViolationError extends Error {
+	readonly isSandboxViolation = true;
+	constructor(
+		readonly requestedPath: string,
+		readonly resolvedPath: string,
+		readonly allowedRoots: string[],
+		readonly suggestedPath: string | undefined,
+		readonly isWorktree: boolean,
+		message: string,
+	) {
+		super(message);
+		this.name = 'SandboxViolationError';
+	}
+}
+
 export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 	readonly id: string = 'saros.builtin-tools';
@@ -315,6 +340,27 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		return this._parentWorktreePath;
 	}
 
+	// ─── 沙箱临时放行（对齐 agentOSService 的「允许本次」确认）────────
+	// 仅本次工具调用生效：agentOSService 在重试前 addSandboxBypassRoot，
+	// 重试后 removeSandboxBypassRoot，避免泄露到后续 turn。
+	private readonly _sandboxBypassRoots = new Set<string>();
+
+	/** 临时放行某个精确路径（仅本次工具调用生效）。 */
+	addSandboxBypassRoot(path: string): void {
+		this._sandboxBypassRoots.add(path.replace(/[\\/]+$/, ''));
+	}
+
+	/** 移除临时放行的精确路径（见 addSandboxBypassRoot）。 */
+	removeSandboxBypassRoot(path: string): void {
+		this._sandboxBypassRoots.delete(path.replace(/[\\/]+$/, ''));
+	}
+
+	/** 清空所有临时放行的路径（turn 结束时调用）。 */
+	clearSandboxBypassRoots(): void {
+		this._sandboxBypassRoots.clear();
+	}
+
+
 	/** ADR Manager 实例 —— 提供 manage_adr 能力 */
 	private _adrManager!: AdrManager;
 
@@ -341,6 +387,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	@ISessionsManagementService private readonly sessionsManagement: ISessionsManagementService,
 		@IKanbanRecipeService private readonly recipeService: IKanbanRecipeService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IStorageService private readonly storageService: IStorageService,
 		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
 	) {
 		super();
@@ -365,6 +412,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerWorkflowTools();
 		this._registerCodebaseTools();
 		this._registerKnowledgeTools(); // Plan-C Hyper-Extract knowledge engine (kb_* tools)
+		this._registerHandoffTools(); // supervisor 交接工具 transfer_to_agent（Step B）
 		// _registerMcpBridgeTools() 已废弃 — MCP 工具统一走 tool_search/tool_describe/tool_call
 		// 保留方法定义以备审计/兼容老调用
 	}
@@ -383,9 +431,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * @param agentId 当前 agent 的 ID，用于查找 Sarosis workspace 路径
 	 * @param requestedPath 请求的文件/目录路径（支持相对路径，如 "."、"./src"）
 	 * @returns 解析后的绝对路径
-	 * @throws Error 如果路径不在任何允许的工作区内
+	 * @throws SandboxViolationError 如果路径不在任何允许的工作区内
 	 */
-	private async _resolveAndCheckWorkspacePath(agentId: string | undefined, requestedPath: string): Promise<string> {
+	private async _resolveAndCheckWorkspacePath(agentId: string | undefined, requestedPath: string, checkSandbox: boolean = true): Promise<string> {
 		// 收集所有允许的根路径
 		const allowedRoots: string[] = [];
 
@@ -448,6 +496,74 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			}
 		}
 
+		// 3. ~/.saros — Agent 自身数据目录，脱离沙箱限制（2026-07-13）
+		//   技能（skills/）、记忆（memory/）、Agent 定义（agents/）、会话（sessions/）、
+		//   知识库（kb/）等 LLM 工具需要读写的内部数据都在此目录下。worktree 沙箱和
+		//   常规工作区沙箱都不应限制 Agent 访问自己的配置/数据文件。
+		{
+			const userHome = (this.environmentService as any).userHome?.fsPath as string | undefined;
+			if (userHome) {
+				allowedRoots.push(join(userHome, '.saros'));
+			}
+		}
+
+		// 3.5 知识库根目录 — 脱离沙箱限制（2026-07-14）
+		//   无论 KB 存储配置指向何处（默认 ~/.saros/knowledge-base 或用户自定义路径），
+		//   Agent 读写知识库、笔记等文件时不应受工作区沙箱拦截。
+		{
+			const userHome = (this.environmentService as any).userHome?.fsPath as string | undefined;
+			if (userHome) {
+				// a) KB 存储根（来自配置 agentStudio.knowledge.storage.path）
+				const kbStoragePath = this.configurationService.getValue<string>(AGENT_STUDIO_KB_STORAGE_PATH);
+				const kbRoot = resolveKbRoot(kbStoragePath, userHome);
+				allowedRoots.push(kbRoot.replace(/[\\/]+$/, ''));
+
+				// b) KB 视图根（来自持久化存储 agentStudio.kb.rootDir，可能指向自定义路径）
+				const kbViewRoot = this.storageService.get('agentStudio.kb.rootDir', StorageScope.APPLICATION);
+				if (kbViewRoot && typeof kbViewRoot === 'string' && kbViewRoot.length > 0) {
+					allowedRoots.push(kbViewRoot.replace(/[\\/]+$/, ''));
+				}
+			}
+
+			// c) 笔记根目录 — 每个 Vault 可自定义 notesPath（来自持久化存储 agentStudio.kb.vaults）
+			try {
+				const vaultsJson = this.storageService.get('agentStudio.kb.vaults', StorageScope.APPLICATION);
+				if (vaultsJson) {
+					const vaults: Array<{ notesPath?: string; customPath?: string }> = JSON.parse(vaultsJson);
+					for (const v of vaults) {
+						if (typeof v.notesPath === 'string' && v.notesPath.length > 0) {
+							allowedRoots.push(v.notesPath.replace(/[\\/]+$/, ''));
+						}
+						// 自定义 Vault 根目录（vault.customPath）也纳入允许范围
+						if (typeof v.customPath === 'string' && v.customPath.length > 0) {
+							allowedRoots.push(v.customPath.replace(/[\\/]+$/, ''));
+						}
+					}
+				}
+			} catch (err) {
+				this.logService.warn(`[BuiltinTools] Failed to resolve KB notes paths:`, err);
+			}
+		}
+
+		// 4. 用户显式允许的沙箱根（「允许此工作区」持久化到 Workspace.sandboxRoots）
+		if (activeWsId) {
+			try {
+				const ws = await this.studioService.getWorkspace(activeWsId);
+				for (const r of ws?.sandboxRoots ?? []) {
+					if (typeof r === 'string' && r.length > 0) {
+						allowedRoots.push(r.replace(/[\\/]+$/, ''));
+					}
+				}
+			} catch (err) {
+				this.logService.warn(`[BuiltinTools] Failed to resolve sandboxRoots for workspace ${activeWsId}:`, err);
+			}
+		}
+
+		// 5. 本次工具调用临时放行的精确路径（「允许本次」）
+		for (const r of this._sandboxBypassRoots) {
+			allowedRoots.push(r);
+		}
+
 		// 边界校验：用 URI + isEqualOrParent（见 workspacePathResolver.ts），
 		// 替代旧的手动 `canonicalize`（一刀切 toLowerCase + startsWith）。
 		// 后者在大小写敏感文件系统（Linux）上会把 `/Foo/x` 误判为落在 `/foo`
@@ -455,22 +571,37 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// 盘符与正/反斜杠归一化。
 		const { resolvedPath, isAllowed, normalizedRoots } = resolveWorkspacePath(requestedPath, allowedRoots);
 
-		if (!isAllowed) {
+		// 计算建议路径：把请求文件名重定向到第一个非 ~/.saros 的允许根下。
+		const requestedBase = (requestedPath.split(/[\\/]/).pop() || 'file')
+			.replace(/[<>:"/\\|?*]/g, '_');
+		const candidateRoots = allowedRoots.filter(r =>
+			!r.replace(/\\/g, '/').toLowerCase().includes('/.saros'));
+		const suggestedPath = candidateRoots.length > 0
+			? join(candidateRoots[0], requestedBase)
+			: undefined;
+
+		// 仅写/删操作触发沙箱判定，读操作直接返回已解析路径
+		if (checkSandbox && !isAllowed) {
 			const allowedList = normalizedRoots.length > 0
 				? normalizedRoots.map(r => `  - ${r}`).join('\n')
 				: '  (无 — 请确认已正确配置工作区)';
-			if (worktreeRoot) {
-				throw new Error(
-					`安全沙箱限制：该 Agent 实例已绑定 worktree，仅允许在 worktree 目录内操作。\n` +
+			const baseMessage = worktreeRoot
+				? `安全沙箱限制：该 Agent 实例已绑定 worktree，仅允许在 worktree 目录内操作。\n` +
 					`路径 "${requestedPath}" (解析后: "${resolvedPath}") 超出了 worktree 边界。\n` +
 					`当前 worktree 工作区：\n${allowedList}\n` +
 					`请在该 worktree 目录内操作。如需访问其它目录，请解除该 Agent 的 worktree 绑定。`
-				);
-			}
-			throw new Error(
-				`安全沙箱限制：路径 "${requestedPath}" (解析后: "${resolvedPath}") 不在允许的工作区目录内。\n` +
-				`当前允许的工作区目录：\n${allowedList}\n` +
-				`请在上述目录内操作，或在 Sarosis 工作区设置中配置正确的路径。`
+				: `安全沙箱限制：路径 "${requestedPath}" (解析后: "${resolvedPath}") 不在允许的工作区目录内。\n` +
+					`当前允许的工作区目录：\n${allowedList}\n` +
+					`请在上述目录内操作，或在 Sarosis 工作区设置中配置正确的路径。`;
+			// 抛出结构化错误，供 agentOSService 检测并弹出确认卡片
+			// （而非仅回显一段错误文本导致 agent loop 无效重试）。
+			throw new SandboxViolationError(
+				requestedPath,
+				resolvedPath,
+				[...normalizedRoots],
+				suggestedPath,
+				!!worktreeRoot,
+				baseMessage,
 			);
 		}
 
@@ -634,6 +765,28 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.logService.warn(`[BuiltinTools] executeTool: "${toolCall.name}" FAILED (${Date.now() - startTime}ms): ${msg}`);
+			// 安全沙箱违规：附带结构化信息，供 agentOSService 检测并弹出确认卡片。
+			// 注意：沙箱违规不可重试（避免 agent loop 无效重试 3 次浪费一轮）。
+			if ((err as SandboxViolationError)?.isSandboxViolation) {
+				const sv = err as SandboxViolationError;
+				return {
+					toolCallId: toolCall.id,
+					success: false,
+					content: [{ type: 'text', text: msg }],
+					error: msg,
+					metadata: {
+						executionTimeMs: Date.now() - startTime,
+						retryable: false,
+						sandboxViolation: {
+							requestedPath: sv.requestedPath,
+							resolvedPath: sv.resolvedPath,
+							allowedRoots: sv.allowedRoots,
+							suggestedPath: sv.suggestedPath,
+							isWorktree: sv.isWorktree,
+						},
+					},
+				};
+			}
 			return {
 				toolCallId: toolCall.id,
 				success: false,
@@ -923,8 +1076,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('path is required');
 				}
 
-				// 路径遍历保护：检查请求的路径是否在工作区目录内，并将相对路径解析为绝对路径
-				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath);
+				// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
+				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath, false);
 
 				const normalizedUri = URI.file(resolvedPath);
 				const buf = await this.fileService.readFile(normalizedUri);
@@ -991,8 +1144,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('path is required');
 				}
 
-				// 路径遍历保护：检查请求的路径是否在工作区目录内，并将相对路径解析为绝对路径
-				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath);
+				// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
+				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath, false);
 
 				const normalizedUri = URI.file(resolvedPath);
 				const stat = await this.fileService.resolve(normalizedUri);
@@ -1027,8 +1180,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					throw new Error('path is required');
 				}
 
-				// 路径遍历保护：检查请求的路径是否在工作区目录内，并将相对路径解析为绝对路径
-				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath);
+				// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
+				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath, false);
 
 				const normalizedUri = URI.file(resolvedPath);
 				const query = String(args['query'] ?? '');
@@ -2353,70 +2506,146 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// delegate_task — LLM 自主委派任务给子代理
 		this.register({
 			definition: {
-				name: 'delegate_task',
-				displaySummary: 'Delegate to sub-agent(s) for parallel execution.',
-				description: 'Delegate task(s) to a sub-agent. **PREFER BATCH MODE** (tasks: [...]) when you have 2+ independent investigations — ' +
-					'this runs them in parallel and aggregates results. ' +
-					'Use single mode (task: "...") only for one-off delegations. ' +
-					'Each sub-agent runs independently in its own context.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						task: { type: 'string', description: 'Single task description to delegate' },
-						tasks: { type: 'array', items: { type: 'string' }, description: 'Multiple task descriptions to delegate in parallel' },
-						model: { type: 'string', description: 'Optional model to use for the sub-agent' },
-						toolsets: { type: 'array', items: { type: 'string' }, description: 'Optional tool sets to enable for the sub-agent' },
+			name: 'delegate_task',
+			displaySummary: 'Delegate to sub-agent(s) for parallel execution.',
+			description:
+				'Delegate a task (or multiple independent tasks) to a sub-agent that runs in an isolated context and returns its result. ' +
+				'\n\n' +
+				'**PREFER BATCH MODE** (tasks: [...]) when you have 2+ INDEPENDENT investigations — they run in parallel and results are aggregated. ' +
+				'Use single mode (task: "...") for one focused job that benefits from its own context. ' +
+				'\n\n' +
+				'**WHEN TO USE**\n' +
+				'- 2+ independent investigations / analyses / file searches → BATCH (tasks: [...])\n' +
+				'- A single job is complex enough to benefit from a dedicated context (deep code exploration, independent review, reading 10+ files, root-cause tracing)\n' +
+				'- Slow or expensive work that would otherwise block your own context\n' +
+				'\n\n' +
+				'**WHEN NOT TO USE**\n' +
+				'- Trivial single-file lookup, or the answer is already in your context\n' +
+				'- Simple enough to finish in one turn with your own tools\n' +
+				'- You must keep continuous context across sequential steps (do it yourself)\n' +
+				'- You are already at maximum spawn depth\n' +
+				'\n\n' +
+				'**CRITICAL: each sub-agent starts BLANK** — it cannot see this conversation. Write the task as a self-contained briefing ' +
+				'(GOAL + what you already know/ruled out + ACCEPTANCE CRITERIA + output limits). ' +
+				'Batch tasks must be mutually independent; sequence dependent steps inside a single task string.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					task: { type: 'string', description: 'Single task description to delegate. Write it as a self-contained briefing — the sub-agent cannot see this conversation.' },
+					tasks: { type: 'array', items: { type: 'string' }, description: 'Multiple INDEPENDENT task descriptions to delegate in parallel. Each must be self-contained; dependent steps go inside one task string.' },
+					type: {
+						type: 'string',
+						enum: ['General', 'Explore', 'Scout'],
+						description: 'Sub-agent role. General (default, can read+write+execute) for build/edit/review work; ' +
+							'Explore (read-only) for investigation/search; Scout (read-only) for external library/docs research. ' +
+							'Batch tasks default to Explore — set General if a batched task needs to write files.',
 					},
-					required: [],
+				context: {
+					type: 'string',
+					description: 'Optional background context to inject into the sub-agent (e.g. a summary of prior steps, ' +
+						'relevant findings, or decisions already made). The sub-agent cannot see this conversation, so pass ' +
+						'any facts it needs here. In batch mode this context is shared across all tasks.',
 				},
+				toolsets: {
+					type: 'array',
+					items: { type: 'string' },
+					description: 'Optional toolset scope for the sub-agent (e.g. ["core"] for read-only work). ' +
+						'When set, the sub-agent may ONLY use tools from the listed toolsets — a way to constrain ' +
+						'what the delegated work is allowed to do. Defaults to no restriction.',
+				},
+				model: {
+					type: 'string',
+					description: 'Optional model for the sub-agent. Accepts "providerId/modelId" (e.g. ' +
+						'"knot-agui/gpt-4o-mini") or just "modelId" (reuses the session\'s current provider). ' +
+						'When set, the sub-agent runs with this model instead of the session default.',
+				},
+				},
+				required: [],
+			},
 				category: 'delegation',
 				source: this.id,
 			},
-			handler: async (args, _signal, agentId) => {
-				const task = args['task'] as string | undefined;
-				const tasks = args['tasks'] as string[] | undefined;
+		handler: async (args, _signal, agentId) => {
+			const task = args['task'] as string | undefined;
+			const tasks = args['tasks'] as string[] | undefined;
+			const typeArg = args['type'] as string | undefined;
+			const contextArg = args['context'] as string | undefined;
+			const toolsetsArg = args['toolsets'] as string[] | undefined;
+			const modelArg = args['model'] as string | undefined;
 
-				if (!task && (!tasks || tasks.length === 0)) {
-					throw new Error('delegate_task: either "task" or "tasks" must be provided');
+			// Resolve the requested sub-agent role. LLM passes a string; map it to
+			// the SubAgentType enum (defaults to General for single tasks).
+			const resolveType = (v?: string): SubAgentType => {
+				switch (v) {
+					case 'Explore': return SubAgentType.Explore;
+					case 'Scout': return SubAgentType.Scout;
+					case 'General':
+					default: return SubAgentType.General;
 				}
+			};
+			const subAgentType = resolveType(typeArg);
 
-				// v17: inherit the parent agent's worktree so the subagent tree
-				// operates in the same working directory.
-				const inheritedWorktree = this.getParentWorktreePath();
+			// Resolve the optional model override. Accept "providerId/modelId"
+			// or a bare "modelId" (reuses the session's current provider).
+			const resolveModelArg = (v?: string): IModelSelection | undefined => {
+				if (!v) { return undefined; }
+				const slash = v.indexOf('/');
+				if (slash > 0) {
+					return { providerId: v.slice(0, slash), modelId: v.slice(slash + 1) };
+				}
+				const active = this.agentOS.getActiveModelSelection?.();
+				return { providerId: active?.providerId ?? 'knot-agui', modelId: v };
+			};
+			const modelSelection = resolveModelArg(modelArg);
 
-				// Build executeFn that delegates to AgentOS
-				const executeFn = (request: IAgentTurnRequest, _budget: IterationBudget): AsyncIterable<IChatStreamDelta> => {
-					return this.agentOS.executeAgentTurn(request);
-				};
+			if (!task && (!tasks || tasks.length === 0)) {
+				throw new Error('delegate_task: either "task" or "tasks" must be provided');
+			}
 
-				try {
-					if (task) {
-						// Single task mode — use dispatch()
-						const result = await (this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch).dispatch(
-							agentId ?? 'unknown',
-							task,
-							executeFn,
-							{ type: SubAgentType.General, worktreePath: inheritedWorktree },
-						);
-						if (result.success) {
-							return [{ type: 'text', text: result.output ?? '(no output)' }];
-						} else {
-							return [{ type: 'text', text: `Sub-agent failed: ${result.error ?? 'unknown error'}` }];
-						}
+			// v17: inherit the parent agent's worktree so the subagent tree
+			// operates in the same working directory.
+			const inheritedWorktree = this.getParentWorktreePath();
+
+			// Build executeFn that delegates to AgentOS
+			const executeFn = (request: IAgentTurnRequest, _budget: IterationBudget): AsyncIterable<IChatStreamDelta> => {
+				return this.agentOS.executeAgentTurn(request);
+			};
+
+			try {
+				if (task) {
+					// Single task mode — use dispatch()
+					const result = await (this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch).dispatch(
+						agentId ?? 'unknown',
+						task,
+						executeFn,
+						{ type: subAgentType, worktreePath: inheritedWorktree, context: contextArg, toolsets: toolsetsArg, model: modelSelection },
+					);
+					if (result.success) {
+						return [{ type: 'text', text: result.output ?? '(no output)' }];
 					} else {
-						// Batch tasks mode — use dispatchParallelExplore()
-						// v17: per-task worktree inherited from the parent agent.
-						const perTaskOptions = inheritedWorktree
-							? tasks!.map(() => ({ worktreePath: inheritedWorktree }))
-							: undefined;
-						const results = await (this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch).dispatchParallelExplore(
-							agentId ?? 'unknown',
-							tasks!,
-							executeFn,
-							undefined, // context
-							perTaskOptions as Array<{ priority?: 'low' | 'medium' | 'high'; maxIterations?: number; timeout?: number }> | undefined,
-							undefined, // eventSink
-						);
+						return [{ type: 'text', text: `Sub-agent failed: ${result.error ?? 'unknown error'}` }];
+					}
+				} else {
+					// Batch tasks mode — use dispatchParallelExplore()
+					// v17: per-task worktree inherited from the parent agent.
+					// Honor an explicit type (e.g. General for parallel writes);
+					// otherwise each batched task defaults to Explore (read-only).
+					const perTaskOptions = (inheritedWorktree || typeArg || toolsetsArg || modelArg)
+						? tasks!.map(() => ({
+							type: subAgentType,
+							...(inheritedWorktree ? { worktreePath: inheritedWorktree } : {}),
+							...(toolsetsArg ? { toolsets: toolsetsArg } : {}),
+							...(modelSelection ? { model: modelSelection } : {}),
+						}))
+						: undefined;
+					const results = await (this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch).dispatchParallelExplore(
+						agentId ?? 'unknown',
+						tasks!,
+						executeFn,
+						contextArg, // shared context injected into every batched sub-agent
+					perTaskOptions,
+					undefined, // eventSink
+					);
 						const lines = results.map((r: SubAgentResult, i: number) => [
 							`Task ${i + 1}: ${r.success ? 'SUCCESS' : 'FAILED'}`,
 							r.success ? `  Output: ${r.output ?? '(empty)'}` : `  Error: ${r.error ?? 'unknown'}`,
@@ -2431,24 +2660,45 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			descriptionBuilder: (agentId: string) => {
 				try {
 					const dispatch = this.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch;
-					const config = dispatch.getConfig();
-					return `Delegate a task (or multiple tasks) to a sub-agent. ` +
-						`The sub-agent runs independently and returns its result. ` +
-						`Use this when the task can be decomposed into independent parallel subtasks, ` +
-						`or when the task requires a separate context window. ` +
-						`Supports both single task (task) and batch tasks (tasks). ` +
-						`You can run up to ${config.maxConcurrent} sub-agents in parallel ` +
-						`(max ${config.maxSpawnDepth} levels deep). ` +
-						`\n\n` +
-						`## When to use:\n` +
-						`- The task can be decomposed into 2+ independent subtasks\n` +
-						`- You need to run multiple independent investigations simultaneously\n` +
-						`- The subtask is complex enough to benefit from a dedicated context\n` +
-						`\n\n` +
-						`## When NOT to use:\n` +
-						`- The task is simple and can be completed in one turn\n` +
-						`- You need to maintain ongoing context/memory across steps\n` +
-						`- You are already at maximum spawn depth\n`;
+				const config = dispatch.getConfig();
+				return `Delegate a task (or multiple tasks) to a sub-agent. ` +
+					`The sub-agent runs independently and returns its result. ` +
+					`Use this when the task can be decomposed into independent parallel subtasks, ` +
+					`or when the task requires a separate context window. ` +
+					`Supports both single task (task) and batch tasks (tasks). ` +
+					`You can run up to ${config.maxConcurrent} sub-agents in parallel ` +
+					`(max ${config.maxSpawnDepth} levels deep). ` +
+					`\n\n` +
+					`## CRITICAL — the sub-agent starts BLANK:\n` +
+					`It cannot see this conversation. Write every task as a self-contained briefing:\n` +
+					`- GOAL: what to accomplish and why\n` +
+					`- CONTEXT: what you already know / have ruled out\n` +
+					`- ACCEPTANCE: how to know it is done, plus output limits (e.g. "report in <200 words")\n` +
+					`Batch tasks must be mutually independent; sequence dependent steps inside one task string.\n` +
+					`\n\n` +
+					`## Choose a role with \`type\`:\n` +
+					`- General (default): read+write+execute — build, edit, review\n` +
+					`- Explore (read-only): investigation / code search — also the batch-mode default\n` +
+					`- Scout (read-only): external library / docs research\n` +
+				`Set type: General for batch tasks that must write files.\n` +
+				`\n\n` +
+				`## Pass context with \`context\`:\n` +
+				`- The sub-agent is BLANK, so anything it needs from this conversation must be passed here (prior steps, findings, decisions).\n` +
+				`- Keep it a concise summary — do not paste the whole transcript. In batch mode the same context is shared by all tasks.\n` +
+				`\n\n` +
+				`## Scope the sub-agent (optional):\n` +
+				`- \`toolsets\`: restrict which toolsets the sub-agent may use, e.g. ["core"] for read-only investigation. Omit for no restriction.\n` +
+				`- \`model\`: run the sub-agent on a specific model, e.g. "knot-agui/gpt-4o-mini" or just "gpt-4o-mini" (reuses the session provider). Use a cheaper model for trivial fan-out to save cost.\n` +
+				`\n\n` +
+				`## When to use:\n` +
+					`- The task can be decomposed into 2+ independent subtasks\n` +
+					`- You need to run multiple independent investigations simultaneously\n` +
+					`- The subtask is complex enough to benefit from a dedicated context\n` +
+					`\n\n` +
+					`## When NOT to use:\n` +
+					`- The task is simple and can be completed in one turn\n` +
+					`- You need to maintain ongoing context/memory across steps\n` +
+					`- You are already at maximum spawn depth\n`;
 				} catch {
 					return 'Delegate a task (or multiple tasks) to a sub-agent. ' +
 						'The sub-agent runs independently and returns its result. ' +
@@ -2697,6 +2947,48 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			try { await this.fileService.del(tmpFile); } catch {}
 			throw err;
 		}
+	}
+
+	// ── handoff: supervisor 交接工具（Step B, 设计 §3.3）─────────────
+	// 该工具由 agentOSService 的 loop 在工具分发阶段拦截（不真正执行），
+	// 生成 AgentCommand 路由到下一节点。仅多节点图模式（`request.agentGraph`
+	// 节点 ≥ 2）才暴露给模型（由 _getEnabledTools 过滤），单 agent 模式不可见。
+	// handler 是安全兜底：理论上不会被真正执行；若误达此处（拦截缺失 / 单 agent
+	// 误调），返回明确错误提示而非崩溃。
+	private _registerHandoffTools(): void {
+		this.register({
+			definition: {
+				name: TRANSFER_TO_AGENT_TOOL,
+				description: [
+					'Transfer control to another agent node in the current multi-agent graph.',
+					'Call this only when the current task phase is finished and another agent should take over.',
+					'`node_id` MUST be one of the known graph node ids; `summary` is a short handoff note',
+					'for the next agent. Not available in single-agent mode.',
+				].join(' '),
+				inputSchema: {
+					type: 'object',
+					properties: {
+						node_id: { type: 'string', description: 'Target graph node id to hand off to (must be a known node)' },
+						summary: { type: 'string', description: 'Brief summary of work done / context for the next agent' },
+					},
+					required: ['node_id', 'summary'],
+				},
+				category: 'handoff',
+				source: this.id,
+				securityLevel: ToolSecurityLevel.Safe,
+				toolset: 'utility',
+			},
+			handler: async args => {
+				const nodeId = String(args['node_id'] ?? '');
+				return [{
+					type: 'text',
+					text: JSON.stringify({
+						success: false,
+						error: `transfer_to_agent("${nodeId}") was not intercepted by the runtime. This tool is only valid inside a multi-agent graph run.`,
+					}),
+				}];
+			},
+		});
 	}
 }
 

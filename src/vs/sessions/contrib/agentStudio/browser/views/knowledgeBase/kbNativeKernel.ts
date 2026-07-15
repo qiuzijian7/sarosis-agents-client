@@ -84,11 +84,13 @@ export class KbNativeKernel extends Disposable {
 	constructor(
 		private readonly fileService: IFileService,
 		embeddingService?: IEmbeddingService,
+		/** 强制使用的 embedding provider id（KB agent 的 provider）。 */
+		embeddingProviderId?: string,
 	) {
 		super();
 		this._index = new KbFullTextIndex(fileService);
 		this._graph = new KbLinkGraph(fileService);
-		this._vector = new KbVectorIndex(fileService, embeddingService);
+		this._vector = new KbVectorIndex(fileService, embeddingService, embeddingProviderId);
 	}
 
 	get isBuilt(): boolean { return this._built; }
@@ -152,8 +154,8 @@ export class KbNativeKernel extends Disposable {
 	}
 
 	/** 向量语义检索。返回 cosine 相似度降序的块。 */
-	async searchVector(query: string, topK = 8): Promise<IKbVectorSearchHit[]> {
-		return this._vector.search(query, topK);
+	async searchVector(query: string, topK = 8, providerId?: string): Promise<IKbVectorSearchHit[]> {
+		return this._vector.search(query, topK, providerId);
 	}
 
 	/** 从 JSON 字符串导入预构建的向量库（.kbrag.json 内容）。 */

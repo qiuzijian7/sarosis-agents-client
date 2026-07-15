@@ -624,3 +624,71 @@
 	border-color: rgba(244 135 113 0.2);
 	color: var(--vscode-errorForeground, #f48771);
 }
+
+/* ── Feishu Binding Tab ── */
+.binding-section {
+	margin-top: 18px;
+}
+
+.binding-section:first-of-type {
+	margin-top: 4px;
+}
+
+.binding-section-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	padding: 4px 0;
+	border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+	margin-bottom: 10px;
+}
+
+.binding-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.8;
+	margin: -4px 0 10px;
+	line-height: 1.5;
+}
+
+.binding-default-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--vscode-foreground, #d4d4d4);
+}
+
+.binding-default-label {
+	cursor: pointer;
+}
+
+.binding-add-row {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.binding-input {
+	flex: 1;
+	min-width: 0;
+	padding: 6px 10px;
+	background: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, #d4d4d4);
+	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	border-radius: 4px;
+	font-size: 12px;
+	outline: none;
+}
+
+.binding-input:focus {
+	border-color: var(--vscode-focusBorder, #0e639c);
+}
+
+.binding-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}

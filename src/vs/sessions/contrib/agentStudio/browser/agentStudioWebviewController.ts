@@ -1057,7 +1057,11 @@ export class AgentStudioWebviewController extends Disposable {
 				// Also cancel the OS-level agent loop (active tool executions, etc.)
 				// This mirrors VS Code Copilot Chat's pattern of cancelling both the
 				// stream and any active tool invocations.
-				this.agentOSService.cancelAgentLoop();
+				// 按 (agentId, sessionId) 精确取消，避免误杀其他并发聊天窗口的 loop。
+				this.agentOSService.cancelAgentLoop(
+					p.agentId as string | undefined,
+					p.agentSessionId as string | undefined,
+				);
 				return undefined;
 			case "chat.activeSessionChanged":
 				return this._handleChatActiveSessionChanged(p);
@@ -1201,6 +1205,18 @@ export class AgentStudioWebviewController extends Disposable {
 					(p.agentId) as string,
 					p.sessionId as string,
 				);
+			case "agentSession.fork": {
+				// 会话分叉：深拷贝一份独立会话（试探性会话），不影响原会话。
+				// Fork 前缀缓存：抓取父级最近一次迭代计算出的冻结前缀（system+tools），
+				// 持久化到子会话 meta，使子会话请求与父级前缀对齐 → 命中 provider prompt cache。
+				const parentForkContext = this.agentOSService.getForkContext(p.sessionId as string);
+				return (this.agentChatService as any).forkAgentSession(
+					(p.agentId) as string,
+					p.sessionId as string,
+					p.name as string | undefined,
+					parentForkContext,
+				);
+			}
 			case "agentSession.getActive":
 				return (this.agentChatService as any).getOrCreateActiveSession(
 					(p.agentId) as string,
@@ -3146,15 +3162,21 @@ export class AgentStudioWebviewController extends Disposable {
 	}
 
 	/**
-	 * @deprecated Legacy per-agent provider/model selection restore.
-	 * The new agent system handles this via AgentInstanceService.
-	 * Falls back to the global ModelSelectorService selection.
+	 * 返回指定 agent 专属的 provider/model 选择（若该 agent 曾配置过）。
+	 * 未配置时回退到全局 ModelSelectorService 选择。
 	 */
 	private async _handleProvidersGetSelectionForAgent(
 		agentId: string,
 	): Promise<IProviderSelectPayload | null> {
-		// Per-agent provider selection is deprecated — always fall back to global selection
-		return this._handleProvidersGetSelection();
+		const sel = this.modelSelectorService.getSelectionForAgent(agentId);
+		if (!sel) {
+			return null;
+		}
+		return {
+			providerId: sel.providerId,
+			modelId: sel.modelId,
+			agentId: sel.agentId,
+		};
 	}
 
 	private _handleProvidersOpenSettings(payload: { providerId?: string }): void {

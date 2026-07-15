@@ -46,6 +46,7 @@ import { IAgentStudioService, IAgentChatService, IAgentDelegationService, IAgent
 import { IAgentOSService } from '../common/agentOS.js';
 import { IAgentDriverService } from '../common/agentDriver.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
+import { IAgentModelResolver, AgentModelResolver } from '../common/agentModelResolver.js';
 import { IWorkspaceRegistry } from '../common/agentWorkspace.js';
 import { IAgentInstanceService, IAgentGalleryService } from '../common/agentInstance.js';
 import { IAgentStudioLogService, AgentStudioLogService } from './agentStudioLogService.js';
@@ -145,6 +146,7 @@ import {
 	TOF_SITE_BASE_URL_SETTING,
 	TOF_GATEWAY_BASE_URL_SETTING,
 	TOF_LOGIN_TIMEOUT_SETTING,
+	AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING,
 	CHANNEL_DEFINITIONS,
 } from '../common/constants.js';
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
@@ -583,6 +585,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'number', default: 180,
 			description: localize('agentStudio.tof.loginTimeout', "TOF 浏览器登录超时时间（秒）。"),
 		},
+		// --- Driver concurrency ---
+		[AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING]: {
+			type: 'number',
+			default: 4,
+			minimum: 1,
+			maximum: 32,
+			description: localize('agentStudio.driver.turnConcurrencyLimit', "顶层可同时运行的 agent turn 并发上限。调高 = 更多并行 session/agent，但 API 配额与内存(V8 4GB 堆)压力更大；免费 API 档位在更低并发即被限流，可调低。默认 4。"),
+		},
 	},
 });
 
@@ -610,6 +620,7 @@ registerSingleton(IAgentChatService, AgentChatService, InstantiationType.Delayed
 registerSingleton(IAgentOSService, AgentOSService, InstantiationType.Delayed);
 registerSingleton(IAgentDriverService, AgentDriverService, InstantiationType.Delayed);
 registerSingleton(IModelSelectorService, ModelSelectorService, InstantiationType.Delayed);
+registerSingleton(IAgentModelResolver, AgentModelResolver, InstantiationType.Delayed);
 registerSingleton(IAgentDelegationService, AgentDelegationService, InstantiationType.Delayed);
 registerSingleton(IAgentTaskBoardService, AgentTaskBoardService, InstantiationType.Delayed);
 registerSingleton(IWorkspaceRegistry, WorkspaceRegistryService as any, InstantiationType.Delayed);

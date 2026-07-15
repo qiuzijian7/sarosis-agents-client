@@ -56,7 +56,9 @@ export class AgentMemoryProviderProxy {
 	// ─── 核心异步方法（显式，保证事件与返回正确）────────────────────
 
 	async loadContext(agentId: string, sessionId: string, query?: string, options?: any): Promise<any> {
-		return this._call('loadContext', agentId, sessionId, query, options);
+		// 网关不可达时返回安全空上下文（避免下游 null.longTermMemories 崩溃）
+		return (await this._call('loadContext', agentId, sessionId, query, options))
+			?? { longTermMemories: [], shortTermMemories: [], injectedContext: '' };
 	}
 
 	async writeMemory(agentId: string, entry: any): Promise<void> {
@@ -185,6 +187,29 @@ export class AgentMemoryProviderProxy {
 		await this._call('triggerHook', type, ctx);
 	}
 
+	/**
+	 * 定期维护清扫（调用网关 runMaintenanceSweep：全量清扫→技能提取→自动晶化）。
+	 * 若网关提取到技能（result.skillExtracted），在本地 emit 'skill_extracted'
+	 * 供 agentChatService._ensureMemoryEventBridge 显示技能沉淀卡片。
+	 */
+	async runMaintenanceSweep(agentId: string): Promise<Record<string, unknown>> {
+		const result = (await this._call('runMaintenanceSweep', agentId)) ?? {};
+		if (result && (result as any)['skillExtracted']) {
+			const s = (result as any)['skillExtracted'];
+			this._emit('skill_extracted', {
+				agentId,
+				data: {
+					skillId: s.skillId ?? '',
+					title: s.title ?? '未知技能',
+					trigger: s.trigger ?? '',
+					confidence: s.confidence ?? 0,
+					steps: s.steps ?? 0,
+				},
+			});
+		}
+		return result;
+	}
+
 	// ─── 同步桩（保持 IMemoryProvider 同步签名，本地返回空默认）────
 
 	getTimeline(agentId: string): unknown[] { return []; }
@@ -219,9 +244,19 @@ export class AgentMemoryProviderProxy {
 		// Opt1：真实 HookSystem 在网关进程，必须异步转发（editor pane 会 await）。
 		return this._call('getHookStats').then((r: any) => r ?? { totalHooks: 0, hooksByType: {}, callCounts: {} });
 	}
-	getCommitStats(): Record<string, unknown> { return { totalCommits: 0 }; }
-	getRecentCommits(): Array<Record<string, unknown>> { return []; }
-	getAuditLog(): Array<Record<string, unknown>> { return []; }
+	// Opt1：commit/audit 真实实例在网关进程，异步转发（renderer 已改为 await）。
+	async getCommitStats(): Promise<Record<string, unknown>> {
+		return (await this._call('getCommitStats')) ?? { totalCommits: 0 };
+	}
+	async getRecentCommits(limit?: number): Promise<Array<Record<string, unknown>>> {
+		return (await this._call('getRecentCommits', limit)) ?? [];
+	}
+	async getAuditLog(filter?: { limit?: number; agentId?: string }): Promise<Array<Record<string, unknown>>> {
+		return (await this._call('getAuditLog', filter)) ?? [];
+	}
+	async onGitCommit(commit: { sha: string; message: string; author: string; filesChanged: string[]; insertions: number; deletions: number; timestamp: number; branch?: string }): Promise<void> {
+		await this._call('onGitCommit', commit);
+	}
 	traceProvenance(agentId: string, memoryId: string): Record<string, unknown> | null { return null; }
 	// setSlot/getSlot：IMemoryProvider 签名为同步（V1 兼容），但真实
 	// 引擎在网关进程，必须异步转发。调用方（editor pane）用 `?.` 且忽略
@@ -236,7 +271,6 @@ export class AgentMemoryProviderProxy {
 		return { injectedContext: '', totalTokens: 0 };
 	}
 	onTaskCompleted(agentId: string, sessionId: string, taskSubject: string, taskId?: string): void { /* noop (hosted) */ }
-	onGitCommit(commit: { sha: string; message: string; author: string; filesChanged: string[]; insertions: number; deletions: number; timestamp: number; branch?: string }): unknown { return undefined; }
 	onSubagentStart(parentAgentId: string, task: string): unknown { return undefined; }
 	onSubagentStop(agentId: string, status: 'completed' | 'failed' | 'cancelled', result?: string, error?: string): boolean { return true; }
 
@@ -245,6 +279,15 @@ export class AgentMemoryProviderProxy {
 	}
 	onMemoryWriteFailed(handler: (agentId: string, data: { noticeId?: string; error: string; memoryType?: string }) => void): () => void {
 		return this._on('memory_write_failed', handler);
+	}
+
+	// ─── 通用事件订阅（本地，对齐 V1 的 EventBus.on）────────────
+	// Opt1 下网关不向 renderer 推送事件（无 SSE 通道），故这里只做
+	// 本地注册，与 onMemoryWritten/onMemoryWriteFailed 一致；调用方
+	// 通过返回的 unsub 注销。切勿让 Proxy 兜底把它转发成 HTTP，否则
+	// 会 404 到 /provider/onEvent。
+	onEvent(event: string, handler: (...args: any[]) => void): () => void {
+		return this._on(event, handler);
 	}
 
 	// ─── 兜底：未显式声明的方法一律转发网关（多为 async 高级特性）────

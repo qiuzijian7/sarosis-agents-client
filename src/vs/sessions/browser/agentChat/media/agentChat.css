@@ -1195,6 +1195,17 @@
 	opacity: 1;
 }
 
+/* 收藏按钮 hover 可见（assistant 气泡） */
+.chat-bubble.assistant:hover .chat-msg-actions {
+	opacity: 1;
+}
+
+/* 收藏保存后动画 */
+.chat-msg-fav-saved svg {
+	transform: scale(1.2);
+	transition: transform 0.15s ease;
+}
+
 .chat-msg-action-btn {
 	width: 28px;
 	height: 24px;
@@ -1219,6 +1230,12 @@
 }
 .chat-msg-copy-copied {
 	color: var(--vscode-debugIcon-startForeground, #4ec9b0) !important;
+}
+
+/* P2: footer 导入知识库按钮 —— 成功反馈态（绿色对号） */
+.chat-msg-import-kb-saved {
+	color: var(--vscode-debugIcon-startForeground, #4ec9b0) !important;
+	background: rgba(78, 201, 176, 0.12) !important;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3696,6 +3713,182 @@
 	padding: 2px 8px;
 	white-space: pre-wrap;
 	word-break: break-word;
+}
+
+/* ── Content / Result 双区 Section ────────────────────────────────── */
+
+.tool-section-body {
+	padding: 0;
+}
+
+.tool-section {
+	width: 100%;
+	max-width: 100%;
+	box-sizing: border-box;
+}
+
+/* Section header: icon + label + badge + meta */
+.tool-section-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	margin: 2px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+	user-select: none;
+	transition: background 0.12s ease;
+}
+.tool-section-header:hover {
+	background: rgba(255,255,255,0.04);
+}
+
+.tool-section-chevron {
+	flex-shrink: 0;
+	color: var(--void-fg-4);
+	transition: transform 0.15s ease;
+}
+.tool-section-chevron-open {
+	transform: rotate(90deg);
+}
+
+.tool-section-icon {
+	flex-shrink: 0;
+	color: var(--void-fg-4);
+	opacity: 0.7;
+}
+
+.tool-section-label {
+	font-size: 11.5px;
+	font-weight: 500;
+	color: var(--void-fg-4);
+	white-space: nowrap;
+}
+
+/* Status badge */
+.tool-section-badge {
+	font-size: 10px;
+	font-weight: 500;
+	padding: 1px 6px;
+	border-radius: 3px;
+	flex-shrink: 0;
+	line-height: 1.4;
+}
+.tool-section-badge-success {
+	background: rgba(78,201,176,0.12);
+	color: var(--void-add);
+}
+.tool-section-badge-error {
+	background: rgba(244,71,113,0.12);
+	color: var(--void-warning);
+}
+.tool-section-badge-running {
+	background: rgba(86,156,214,0.12);
+	color: var(--void-care);
+}
+
+/* Meta info (right-aligned) */
+.tool-section-meta {
+	font-size: 10.5px;
+	color: var(--void-fg-3);
+	margin-left: auto;
+	flex-shrink: 0;
+	white-space: nowrap;
+}
+
+/* Section content */
+.tool-section-content {
+	padding: 2px 8px 4px 26px;
+	max-height: 280px;
+	overflow-y: auto;
+	user-select: text;
+	cursor: auto;
+}
+.tool-section-content-collapsed {
+	display: none;
+}
+
+/* Content/Result code blocks within section — section 统一管理滚动，子元素不独立 overflow */
+.tool-section-content .tool-code-children {
+	margin-bottom: 0;
+	overflow: visible;
+}
+.tool-section-content .tool-children-terminal {
+	margin-bottom: 2px;
+	overflow: visible;
+}
+
+/* Error result styling */
+.tool-result-error pre {
+	color: var(--void-warning);
+}
+.tool-result-error {
+	border-left: 2px solid var(--void-warning);
+}
+
+/* Placeholder for running state */
+.tool-section-placeholder {
+	font-size: 11.5px;
+	font-style: italic;
+	color: var(--void-fg-3);
+	opacity: 0.7;
+	padding: 4px 0;
+}
+
+/* Divider between sections */
+.tool-section-divider {
+	height: 1px;
+	background: var(--void-border-2);
+	margin: 4px 12px;
+	opacity: 0.5;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Terminal Tool Card（复刻 Void CommandTool 风格）
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 终端命令预览文字（header desc1）*/
+.terminal-cmd-preview {
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 11.5px;
+	color: var(--void-fg-3);
+	font-style: italic;
+	opacity: 0.85;
+}
+
+/* 终端输出代码块 —— 等宽深色终端风格 */
+.terminal-output-block {
+	background: var(--void-bg-2, #1a1a2e);
+	border-radius: 4px;
+	padding: 6px 10px;
+	max-height: 260px;
+	overflow-y: auto;
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 11.5px;
+	line-height: 1.45;
+	white-space: pre-wrap;
+	word-break: break-word;
+	user-select: text;
+	cursor: auto;
+	border: 1px solid var(--void-border-2);
+}
+.terminal-output-content {
+	margin: 0;
+	color: var(--void-fg-3);
+}
+
+/* 错误输出：红色边框 + 红色文字 */
+.terminal-output-error {
+	border-color: var(--void-warning);
+}
+.terminal-output-error .terminal-output-content {
+	color: var(--void-warning);
+	opacity: 0.9;
+}
+
+/* 终端卡片整体的细微调整 */
+.terminal-tool-card .tool-header-title {
+	font-weight: 500;
 }
 
 .tool-exit-code {
@@ -8635,3 +8828,284 @@
 
 
 
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Write File Tool Card（diff 风格：文件名 + +/- 行数 + 查看文件）
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* 写文件卡片 header 特殊化 */
+.write-file-header { padding: 6px 8px; }
+
+/* 文件名：等宽字体 + 主题色 */
+.write-file-name {
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-textLink-foreground, #60a5fa);
+	margin-left: 4px;
+}
+
+/* 已修改标记 */
+.write-file-modified {
+	font-size: 11px;
+	color: var(--void-fg-3, #8b8b9a);
+	font-style: italic;
+	margin-left: 4px;
+}
+
+/* diff 行数统计 */
+.write-file-diff-stats { display: inline-flex; gap: 4px; margin-left: 6px; font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace); font-size: 11px; }
+.write-file-diff-add { color: #4ec9b0; font-weight: 500; }
+.write-file-diff-rem { color: #f44771; font-weight: 500; }
+
+/* 查看文件链接（按钮样式）*/
+.tool-view-file-link {
+	font-size: 11px;
+	padding: 2px 8px;
+	border: 1px solid var(--void-border-2, #3a3a52);
+	border-radius: 3px;
+	background: transparent;
+	color: var(--vscode-textLink-foreground, #60a5fa);
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 0.15s, background 0.15s;
+	margin-right: 4px;
+}
+.write-file-header:hover .tool-view-file-link { opacity: 1; }
+.tool-view-file-link:hover { background: var(--void-bg-hover, rgba(255,255,255,0.06)); }
+
+/* diff 内容代码块（按行渲染：+/-/空 marker） */
+.write-file-diff-block {
+	background: var(--vscode-editor-background, #1a1a2e);
+	border-radius: 4px;
+	padding: 4px 0;
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 11.5px;
+	line-height: 1.5;
+	max-height: 320px;
+	overflow-y: auto;
+	user-select: text;
+	cursor: auto;
+	border: 1px solid var(--void-border-2, #3a3a52);
+}
+.write-file-diff-line { display: flex; padding: 0 10px; white-space: pre-wrap; word-break: break-word; }
+.write-file-diff-line.write-file-diff-add { background: rgba(78,201,176,0.10); }
+.write-file-diff-line.write-file-diff-add .write-file-diff-content { color: #4ec9b0; }
+.write-file-diff-line.write-file-diff-rem { background: rgba(244,71,113,0.10); }
+.write-file-diff-line.write-file-diff-rem .write-file-diff-content { color: #f44771; }
+.write-file-diff-marker { display: inline-block; width: 16px; flex-shrink: 0; user-select: none; opacity: 0.6; }
+.write-file-diff-content { flex: 1; }
+
+
+/* 编辑/写文件工具卡 header refactor：语言标签、×折叠按钮、简化 body */
+.write-file-header { padding: 4px 8px; gap: 6px; }
+
+/* 语言标签（TS/JS/PY/...）*/
+.write-file-lang {
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--vscode-textLink-foreground, #60a5fa);
+	background: rgba(96,165,250,0.10);
+	padding: 1px 5px;
+	border-radius: 3px;
+	letter-spacing: 0.3px;
+}
+
+/* ×折叠按钮 */
+.tool-collapse-btn {
+	background: transparent;
+	border: none;
+	color: var(--void-fg-3, #707088);
+	font-size: 16px;
+	line-height: 1;
+	width: 22px;
+	height: 22px;
+	border-radius: 3px;
+	cursor: pointer;
+	padding: 0;
+	opacity: 0.6;
+	transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.tool-collapse-btn:hover { opacity: 1; background: rgba(255,255,255,0.08); color: var(--void-fg-2, #a0a0b0); }
+
+/* 写文件 body：去掉 section 标签，直接放 diff 块 */
+.write-file-body { padding: 0; }
+
+/* 写文件 placeholder（运行中）*/
+.write-file-placeholder {
+	font-size: 11.5px;
+	font-style: italic;
+	color: var(--void-fg-3, #8b8b9a);
+	opacity: 0.7;
+	padding: 8px 10px;
+}
+
+/* 写文件 diff 块：在 body 内的紧凑样式 */
+.write-file-body .write-file-diff-block {
+	margin: 0;
+	border-radius: 0;
+	border: none;
+	border-top: 1px solid var(--void-border-2, #3a3a52);
+	max-height: 400px;
+}
+
+
+/* 终端/控制台工具卡 refactor：单行 header + 直接输出 + 复制/Run in Terminal/× 按钮 */
+
+.terminal-header { padding: 4px 8px; gap: 6px; }
+
+/* 终端 logo：等宽字体 + 主题色 */
+.terminal-logo {
+	color: var(--vscode-textLink-foreground, #60a5fa);
+	flex-shrink: 0;
+	margin-right: 2px;
+}
+
+/* 命令文本（单行）*/
+.terminal-cmd-text {
+	font-family: var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace);
+	font-size: 12px;
+	color: var(--void-fg-2, #d4d4d8);
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 复制按钮 */
+.terminal-copy-btn {
+	background: transparent;
+	border: 1px solid var(--void-border-2, #3a3a52);
+	border-radius: 3px;
+	color: var(--void-fg-3, #8b8b9a);
+	padding: 2px 4px;
+	cursor: pointer;
+	opacity: 0.7;
+	transition: opacity 0.15s, background 0.15s, color 0.15s;
+	display: inline-flex;
+	align-items: center;
+}
+.terminal-copy-btn:hover { opacity: 1; background: rgba(255,255,255,0.06); color: var(--void-fg-2, #d4d4d8); }
+.terminal-copy-btn.terminal-copy-done { color: #4ec9b0; border-color: #4ec9b0; }
+
+/* 独立终端打开按钮（绿色）*/
+.terminal-open-btn {
+	background: transparent;
+	border: 1px solid #4ec9b0;
+	border-radius: 3px;
+	color: #4ec9b0;
+	padding: 2px 4px;
+	cursor: pointer;
+	opacity: 0.9;
+	transition: opacity 0.15s, background 0.15s;
+	display: inline-flex;
+	align-items: center;
+	margin: 0 2px;
+}
+.terminal-open-btn:hover { opacity: 1; background: rgba(78,201,176,0.10); }
+
+/* 终端 body：直接放输出（无 section 包装）*/
+.terminal-body { padding: 0; }
+
+.terminal-placeholder {
+	font-size: 11.5px;
+	font-style: italic;
+	color: var(--void-fg-3, #8b8b9a);
+	opacity: 0.7;
+	padding: 8px 10px;
+}
+
+/* 终端输出块（直接 child of body）*/
+.terminal-body .terminal-output-block {
+	margin: 0;
+	border-radius: 0;
+	border: none;
+	border-top: 1px solid var(--void-border-2, #3a3a52);
+	max-height: 400px;
+}
+
+
+/* 终端运行中：占位 + 「继续下一步」按钮同行 */
+.terminal-running-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 8px 10px;
+	border-top: 1px solid var(--void-border-2, #3a3a52);
+	background: var(--void-bg-3, rgba(255,255,255,0.02));
+}
+
+/* 占位文本（运行中） */
+.terminal-running-row .terminal-placeholder {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-style: normal;
+	color: var(--void-fg-3, #8b8b9a);
+	opacity: 1;
+	padding: 0;
+}
+
+/* 继续下一步按钮 */
+.terminal-continue-btn {
+	background: var(--vscode-button-secondaryBackground, #3a3d41);
+	color: var(--vscode-button-secondaryForeground, #d4d4d8);
+	border: 1px solid var(--vscode-button-border, #555);
+	border-radius: 3px;
+	font-size: 11.5px;
+	padding: 3px 10px;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background 0.15s, border-color 0.15s;
+}
+.terminal-continue-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, #45494e);
+	border-color: var(--vscode-focusBorder, #007fd4);
+}
+.terminal-continue-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+
+/* 折叠按钮使用 chevron-down SVG（替代 ×）*/
+.tool-collapse-btn {
+	background: transparent;
+	border: none;
+	color: var(--void-fg-3, #707088);
+	width: 22px;
+	height: 22px;
+	border-radius: 3px;
+	cursor: pointer;
+	padding: 0;
+	opacity: 0.6;
+	transition: opacity 0.15s, background 0.15s, color 0.15s;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.tool-collapse-btn:hover { opacity: 1; background: rgba(255,255,255,0.08); color: var(--void-fg-2, #a0a0b0); }
+.tool-collapse-icon { display: block; }
+
+
+/* 写文件卡片：视觉顺序调整（title 在上，content 在下）*/
+.write-file-tool-card { display: flex; flex-direction: column; }
+.write-file-tool-card > .tool-header { order: 1; }
+.write-file-tool-card > .tool-header-children { order: 2; }
+
+/* 写文件卡片：隐藏 title 前端 chevron（标题文本即可点击） */
+.write-file-header .tool-header-chevron { display: none; }
+
+/* 写文件卡片：右侧 toggle 按钮 - 始终显示 */
+.write-file-tool-card .tool-collapse-btn {
+	opacity: 0.85;
+}
+.write-file-tool-card .tool-collapse-icon { transition: transform 0.15s; }
+.write-file-tool-card .tool-collapse-btn.tool-collapse-expanded .tool-collapse-icon { transform: rotate(180deg); }
+
+.write-file-tool-card .tool-header-chevron { display: none !important; }

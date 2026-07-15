@@ -5,6 +5,9 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
+import type { AgentGraph } from './agentGraph.js';
+import type { AgentRunState, AgentRunStateSnapshot } from './agentRunState.js';
+import type { IForkContext } from './forkContext.js';
 
 // ─── Model Auth Status ───────────────────────────────────────────────────────────
 
@@ -326,6 +329,13 @@ export interface IModelOptions {
 	readonly conversationId?: string;
 	readonly requestId?: string;
 	readonly previousResponseId?: string;
+	/**
+	 * 透传给请求构造端（MessageFormatConverter）的父级 ForkContext。
+	 * 当本请求的 (systemPrompt, tools) 与父级冻结前缀对齐时，构造端在该前缀边界
+	 * 注入 `cache_control` 断点以命中 provider 的 prompt cache（MiMo ForkContext）。
+	 * 省略 → undefined（零行为变更）。
+	 */
+	readonly forkContext?: IForkContext;
 }
 
 /**
@@ -347,6 +357,15 @@ export interface IModelDelta {
 	readonly error?: string;
 	/** Token 使用量（type === 'usage' 时携带） */
 	readonly usage?: IModelUsage;
+	/**
+	 * 模型本轮结束原因（OpenAI `finish_reason` / Anthropic `stop_reason` 等）。
+	 * 仅 type === 'done' 时携带。用于 agent loop 判定"未完成轮"（对齐 OpenClaw
+	 * incomplete-turn 结构判定，而非文本意图识别）：
+	 *   - 'length' / 'max_tokens' → 输出被 token 上限截断，视为未完成、触发安全续跑
+	 *   - 'tool_calls' / 'tool_use' → 模型本要调工具（已有工具调用路径处理，一般不在此分支）
+	 *   - 'stop' / 'end_turn' / 'content_filter' → 正常结束
+	 */
+	readonly finishReason?: string;
 	/**
 	 * 本次响应流的 id（来自 SSE chunk 的 `id` 字段）。
 	 * 抓包证据：响应流每个 chunk 的 id 相同，且 = 下一次请求体的 previous_response_id。
@@ -685,6 +704,64 @@ export interface IToolApprovalHandler {
 	requestApproval(request: IToolApprovalRequest): Promise<ToolApprovalDecision>;
 }
 
+// ─── Tool Sandbox Confirmation (安全沙箱受限→询问用户) ───────────────────────────
+
+/**
+ * 工具因安全沙箱限制而执行失败时的结构化违规信息。
+ * 由 builtinToolProvider 在路径校验失败时附带到 IToolResult.metadata，
+ * 供 agentOSService 检测并向用户弹出确认卡片（对齐 void 的 confirmed.promise 模式）。
+ */
+export interface ISandboxViolationInfo {
+	/** 工具请求的原始路径（未解析） */
+	readonly requestedPath: string;
+	/** 解析后的绝对路径 */
+	readonly resolvedPath: string;
+	/** 当前允许的工作区根目录列表 */
+	readonly allowedRoots: string[];
+	/** 建议的替代路径（落在某个允许根内）；无可行建议时为 undefined */
+	readonly suggestedPath: string | undefined;
+	/** 是否处于 worktree 独占沙箱模式 */
+	readonly isWorktree: boolean;
+}
+
+/**
+ * 用户对沙箱受限工具调用的决策。
+ */
+export const enum SandboxConfirmationDecision {
+	/** 仅本次临时放行该精确路径（不持久化） */
+	AllowOnce = 'allow_once',
+	/** 把该路径所在目录加入当前工作区沙箱允许根（持久化） */
+	AllowWorkspace = 'allow_workspace',
+	/** 改用建议路径（落在允许根内）重试 */
+	UseSuggested = 'use_suggested',
+	/** 取消操作，工具以失败结束 */
+	Cancel = 'cancel',
+}
+
+/**
+ * 沙箱确认请求 — 发送给 UI 层，等待用户决策。
+ */
+export interface ISandboxConfirmationRequest {
+	readonly toolCallId: string;
+	readonly toolName: string;
+	readonly requestedPath: string;
+	readonly resolvedPath: string;
+	readonly allowedRoots: string[];
+	readonly suggestedPath: string | undefined;
+	readonly isWorktree: boolean;
+}
+
+/**
+ * 沙箱确认回调接口 — AgentOS 注册到 UI 层（原生 chat 由 AgentOSService 自身接管）。
+ */
+export interface ISandboxConfirmationHandler {
+	/**
+	 * 请求用户对沙箱受限工具调用做出决策。
+	 * @returns 用户的决策
+	 */
+	requestDecision(request: ISandboxConfirmationRequest): Promise<SandboxConfirmationDecision>;
+}
+
 // ─── Tool Provider Interface ──────────────────────────────────────────────────
 
 export interface IToolProvider {
@@ -715,6 +792,23 @@ export interface IToolProvider {
 	 * @returns 是否已启用
 	 */
 	isToolEnabled(_agentId: string, toolName: string): Promise<boolean>;
+
+	/**
+	 * 临时放行某个精确路径（仅本次工具调用生效，不持久化）。
+	 * 用于沙箱确认「允许本次」：agentOSService 在重试前调用，重试后调用
+	 * removeSandboxBypassRoot 移除，避免泄露到后续 turn。
+	 */
+	addSandboxBypassRoot?(path: string): void;
+
+	/**
+	 * 移除临时放行的精确路径（见 addSandboxBypassRoot）。
+	 */
+	removeSandboxBypassRoot?(path: string): void;
+
+	/**
+	 * 清空所有临时放行的路径。
+	 */
+	clearSandboxBypassRoots?(): void;
 
 	/**
 	 * 获取所有工具的启用状态 Map
@@ -786,6 +880,8 @@ export interface IToolResultMetadata {
 	readonly retryable?: boolean;
 	/** 是否因超时而终止 */
 	readonly timedOut?: boolean;
+	/** 安全沙箱违规信息（路径不在允许的工作区目录内） */
+	readonly sandboxViolation?: ISandboxViolationInfo;
 }
 
 export interface IToolResultContent {
@@ -861,6 +957,13 @@ export interface IAgentTurnRequest {
 	/** Memory 注入条数上限（来自 Agent 的 memoryConfig.maxEntries），未指定时不限制。 */
 	readonly memoryMaxEntries?: number;
 	/**
+	 * 多 agent 图运行时（supervisor / AgentCommand(goto) 设计，Step B/C）。
+	 * 由 runAgentGraph（Step C）在节点执行请求中注入；单 agent 模式省略 → undefined。
+	 * 透传进 loop 用于：① 仅在图模式暴露 transfer_to_agent 交接工具
+	 * ② 校验节点发出的 handoff 指令目标合法性。
+	 */
+	readonly agentGraph?: AgentGraph;
+	/**
 	 * Memory 召回作用域（2026-06 新增，来自 Agent 的 memoryConfig.scope）：
 	 *   - 'agent'     → 仅本 Agent 自己写入的 Episodic 记忆（默认，严格隔离）
 	 *   - 'global'    → 全库 Episodic（跨 agent 共享）
@@ -879,6 +982,38 @@ export interface IAgentTurnRequest {
 	 * provider/model configuration (agentConfig.providerId / modelId).
 	 */
 	readonly modelOverride?: IModelSelection;
+	/**
+	 * Per-request toolset scope override (v17, delegation). When set, it narrows
+	 * the enabled tools to ONLY the listed toolsets (plus bridge tools). Used by
+	 * `delegate_task` so a parent can constrain which toolsets a sub-agent may use
+	 * (e.g. an Explore sub-agent scoped to ['core'] for read-only work). Takes
+	 * precedence over the agent's own enabledToolsets/disabledToolsets. Undefined
+	 * → no narrowing (current behavior preserved).
+	 */
+	readonly toolsetsOverride?: string[];
+	/**
+	 * checkpoint/resume（supervisor/goto Step D）：多 agent 图续跑请求时，携带上一次
+	 * 图运行落盘的 AgentRunState，executeAgentGraph 从中恢复 graph.currentNodeId 续跑，
+	 * 而非从 entry 重跑。单 agent / 首次运行省略 → undefined（零行为变更）。
+	 */
+	readonly resumeFrom?: AgentRunState;
+	/**
+	 * checkpoint 落盘回调（Step D，调用方注入，可选）。
+	 * executeAgentGraph 在节点边界（ENTER_NODE / 路由后 SET_CURRENT_NODE）调用以持久化
+	 * 快照；agentOSService 保持存储无关，落盘介质（IStorageService / 文件 / 内存）由调用方决定。
+	 * 省略时不落盘（零行为变更）。
+	 */
+	readonly checkpointSink?: (snapshot: AgentRunStateSnapshot) => void | Promise<void>;
+	/**
+	 * Fork 前缀缓存上下文（MiMo ForkContext）— 请求构造端接 ForkContext 的完整形态。
+	 * 携带父级冻结的 system+tools 前缀指纹。当本请求的 (systemPrompt, tools) 与父级
+	 * 冻结前缀对齐（fingerprint 一致）时，请求构造端会在该前缀边界注入 `cache_control`
+	 * 断点，使 provider 命中父级的 prompt cache 而非重新计费稳定的大前缀。
+	 * 子 agent 由 unifiedSubAgentDispatch 注入父级 ForkContext；fork 会话由
+	 * forkAgentSession 持久化的父级 ForkContext 经 sendMessage 透传。单 agent / 非
+	 * fork 会话省略 → undefined（零行为变更）。
+	 */
+	readonly forkContext?: IForkContext;
 }
 
 // ─── Stream Phase (Void-inspired: IsRunningType 5-state model) ──────────
@@ -945,7 +1080,8 @@ export interface IChatStreamDelta {
 	| 'memory_episodic_extracted' | 'memory_semantic_extracted' | 'memory_procedural_extracted'
 	| 'memory_injected'
 	| 'skill_extracted'
-	| 'codebase_operation';
+	| 'codebase_operation'
+	| 'confirmation_resolved';
 	readonly content?: string;
 	readonly toolCallId?: string;
 	readonly toolName?: string;
@@ -1065,6 +1201,10 @@ export interface IChatStreamDelta {
 		/** Recommended chat mode after plan approval */
 		readonly nextMode?: 'craft' | 'ask';
 	};
+	/** 用户决策后的确认卡片 id（confirmation_resolved delta 携带） */
+	readonly confirmationId?: string;
+	/** 用户决策后的确认卡片状态（confirmation_resolved delta 携带） */
+	readonly confirmationStatus?: 'approved' | 'rejected' | 'cancelled';
 	/** Todos data (for todos delta type) */
 	readonly todosData?: Array<{
 		readonly id: string;

@@ -66,6 +66,32 @@ export interface IContextLogger {
 	debug(msg: string): void;
 }
 
+// ─── 检索式上下文重构（对齐 agentmemory mem::context）─────────────────────
+// 开启后，压缩时用记忆检索结果替代同步 LLM 摘要，避免每轮压缩阻塞首 token
+// （原 _generateStructuredSummary 在高负载下可达 37s）。
+// 通过环境变量启用：AGENT_OS_RETRIEVAL_COMPACTION=1（需重启 agent host 进程）。
+// 默认开启：对话外置到记忆 + 每轮预算检索替代同步 LLM 摘要（消除 37s 卡顿）。
+// 设 AGENT_OS_RETRIEVAL_COMPACTION=0 可关闭，回退原 LLM 摘要路径。
+export const RETRIEVAL_COMPACTION_ENABLED =
+	((typeof process !== 'undefined' && process.env?.['AGENT_OS_RETRIEVAL_COMPACTION']) ?? '1') !== '0';
+/** 检索上下文占上下文窗口的预算比例（供 getCompactContext/recall 的 token 上限参考）。 */
+export const RETRIEVAL_BUDGET_RATIO = 0.15;
+
+/** 检索式上下文请求：由 agentOSService 提供，从记忆系统取回相关上下文替代 LLM 摘要。 */
+export interface IRetrieveContextRequest {
+	agentId: string;
+	sessionId: string;
+	middle: ReadonlyArray<ChatMessage>;
+	contextWindow: number;
+	budget: number;
+}
+export interface IRetrieveContextResult {
+	context: string;
+	tokens: number;
+	source: 'compact_context' | 'recall';
+}
+export type RetrieveContextFn = (req: IRetrieveContextRequest) => Promise<IRetrieveContextResult | null>;
+
 // ─── Default Configuration ──────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: IContextManagerConfig = {
@@ -982,8 +1008,14 @@ export class ContextManager implements IContextManager {
 		messages: ReadonlyArray<ChatMessage>,
 		existingSummary: string
 	): Promise<string> {
+		const t0 = Date.now();
 		try {
 			const prompt = this._buildStructuredSummaryPrompt(messages, existingSummary);
+			this._log('info',
+				`[ContextManager][Compression][Diag] summary LLM START | ` +
+				`messages=${messages.length} promptChars=${prompt.length} ` +
+				`model=${this._config.summaryModelId || this._modelId}`
+			);
 			const stream = this._modelProvider.chat(
 				this._config.summaryModelId || this._modelId,
 				[{ role: 'user', content: prompt } as IChatMessage],
@@ -992,14 +1024,27 @@ export class ContextManager implements IContextManager {
 			);
 
 			let summary = '';
+			let firstDeltaAt: number | undefined;
 			for await (const delta of stream) {
 				if (delta.type === 'text' && delta.content) {
+					if (firstDeltaAt === undefined) {
+						firstDeltaAt = Date.now();
+						this._log('info',
+							`[ContextManager][Compression][Diag] summary LLM first-delta=${firstDeltaAt - t0}ms ` +
+							`(ttfb since START)`
+						);
+					}
 					summary += delta.content;
 				}
 				if (delta.type === 'done') {
 					break;
 				}
 			}
+			this._log('info',
+				`[ContextManager][Compression][Diag] summary LLM DONE | ` +
+				`duration=${Date.now() - t0}ms firstDelta=${firstDeltaAt !== undefined ? firstDeltaAt - t0 : 'n/a'}ms ` +
+				`summaryChars=${summary.length}`
+			);
 
 		const trimmed = summary.trim();
 		if (trimmed) {
@@ -1624,8 +1669,6 @@ ${conversationText}
 	/** 预压缩注入消息前缀：标识由 PreCompactInjector 注入的 system 消息。
 	 *  迭代压缩时用于识别并剥离上一轮注入的保留上下文，避免每次压缩在头部累积重复块。 */
 	private static readonly INJECTED_CONTEXT_PREFIX = '## Preserved Context (from memory)';
-	/** 单条 tool 结果在预剪枝时保留的最大字符数。 */
-	private static readonly TOOL_RESULT_TRUNCATE_CHARS = 280;
 	/** P2 anti-thrashing：连续低效压缩达到此次数后停止压缩（对齐 Hermes 的 >=2）。 */
 	private static readonly MAX_INEFFECTIVE_COMPRESSIONS = 2;
 	/** P2 anti-thrashing：一次压缩 token 节省比例低于此值视为"低效"。 */
@@ -1645,6 +1688,49 @@ ${conversationText}
 	/** 嵌入摘要消息中的压缩元数据标记前缀，格式：<!-- saros-compaction: msgCount=X estTokens=Y ts=Z --> */
 	private static readonly COMPRESSION_META_PATTERN = /<!-- saros-compaction: msgCount=(\d+) estTokens=(\d+) ts=(\d+) -->/;
 
+	// ─── MiMo-Code 对齐：工具输出处理 / 受保护工具 / 压力分级 / 源头截断 ──────
+	/**
+	 * 单条 tool 结果在预剪枝时保留的「头部」字符数。与 TOOL_OUTPUT_TAIL_CHARS 组成
+	 * head+tail 双端保留（对齐 MiMo truncate.ts）。答案/错误常位于尾部，单点截断会丢
+	 * 关键信息——故改为保留首尾两端，仅压缩中间。
+	 */
+	private static readonly TOOL_OUTPUT_HEAD_CHARS = 800;
+	/** 单条 tool 结果在预剪枝时保留的「尾部」字符数（答案/错误常在尾部，必须保留）。 */
+	private static readonly TOOL_OUTPUT_TAIL_CHARS = 800;
+	/** assistant.toolCalls[].arguments 超过此字符数时截断（工具入参也是 token 大户）。 */
+	private static readonly TOOL_ARG_TRUNCATE_CHARS = 2000;
+	/**
+	 * 受保护工具白名单：这些工具的输出永不被截断（对齐 MiMo PRUNE_PROTECTED_TOOLS=['skill']）。
+	 * 通过同一 middle 段内 assistant.toolCalls[].name 匹配；命中后整条 tool 结果原样保留，
+	 * 避免压缩把 skill/memory 等关键工具结果切断导致信息丢失或误删。
+	 */
+	private static readonly PRUNE_PROTECTED_TOOLS: ReadonlySet<string> = new Set([
+		'skill', 'memory', 'memory_remember', 'memory_recall', 'recall',
+		'retrieve_context', 'agentmemory', 'knowledge', 'knowledge_search',
+	]);
+	/**
+	 * 廉价逐轮剪枝：仅对最近 N 条之外的旧消息做 tool 输出 head+tail 截断
+	 * （不调 LLM、不丢消息，安全约束 token 增长）。对齐 MiMo prune.ts 的"活体边缘之外剪枝"。
+	 */
+	static readonly CHEAP_PRUNE_RECENT_KEEP = 8;
+	/**
+	 * 压力分级阈值（effectiveTokens / window 占比）。<0.5→0，<0.7→1，<0.85→2，否则 3。
+	 * 对齐 MiMo-Code overflow.ts 的 pressureLevel。压力越高，压缩手段越"贵"（LLM 摘要）。
+	 */
+	private static readonly PRESSURE_THRESHOLDS = [0.5, 0.7, 0.85];
+	/**
+	 * 源头截断：单条 tool 结果写入历史时的最大字符数（对齐 MiMo MAX_BYTES=50K）。
+	 * 超过部分做首尾保留 + 标注，避免超大输出进入上下文污染压缩输入。
+	 * 仅影响极端大输出，正常工具结果不受影响。
+	 */
+	private static readonly SOURCE_TOOL_OUTPUT_MAX_CHARS = 50000;
+	/**
+	 * P5（bash / token-efficient 清洗）默认关闭，由环境变量 AGENT_OS_TOOL_OUTPUT_CLEAN=1 开启。
+	 * 开启后仅做安全无损的通用清理（去 ANSI / 脱敏密钥 / 折叠超长行），不动落盘原文。
+	 */
+	private static readonly TOOL_OUTPUT_CLEAN_ENABLED =
+		((typeof process !== 'undefined' && process.env?.['AGENT_OS_TOOL_OUTPUT_CLEAN']) ?? '0') === '1';
+
 	/**
 	 * Compress context to reduce token usage (Hermes 三段式).
 	 *
@@ -1662,7 +1748,8 @@ ${conversationText}
 		config?: Partial<IContextCompressionConfig>,
 		contextWindow?: number,
 		realPromptTokens?: number,
-		preCompactInject?: PreCompactInjectFn
+		preCompactInject?: PreCompactInjectFn,
+		retrieveContext?: RetrieveContextFn
 	): Promise<IContextCompressionResult> {
 		const compressionConfig: IContextCompressionConfig = {
 			compressionThreshold: this._config.compressionThreshold,
@@ -1829,22 +1916,27 @@ ${conversationText}
 		const systemMessages = messages.filter(m => m.role === 'system');
 		const conversation = messages.filter(m => m.role !== 'system');
 
-		// 保护头：前 N 条对话（任务起点）
-		const headCount = Math.min(ContextManager.PROTECT_FIRST_N, conversation.length);
-		const head = conversation.slice(0, headCount);
+		// P0 根因修复：保护头（任务起点）。若头以带 toolCalls 的 assistant 收尾，把其后续
+		// tool 结果一并拉入头，杜绝"assistant 有 tool_calls 但对应 tool 结果落在被压缩中间段"
+		// 的悬空链（曾导致 HTTP 400 code 11133）。拉入后这些 tool 结果从中间段排除。
+		const initialHeadCount = Math.min(ContextManager.PROTECT_FIRST_N, conversation.length);
+		let head = conversation.slice(0, initialHeadCount);
+		head = this._alignHeadBoundary(head, conversation);
 
-		// 保护尾：从尾部按 token 预算回溯
+		// 保护尾：从尾部按 token 预算回溯；P0 边界对齐避免尾首出现悬空 tool 结果。
 		const tailBudget = effectiveWindow * ContextManager.TAIL_BUDGET_RATIO;
-		const tail = this._selectTailByBudget(
-			conversation.slice(headCount),
-			tailBudget,
-			ContextManager.TAIL_MIN_MESSAGES,
-			ContextManager.TAIL_MAX_MESSAGES
+		const remaining = conversation.slice(head.length);
+		const tail = this._alignTailBoundary(
+			this._selectTailByBudget(
+				remaining,
+				tailBudget,
+				ContextManager.TAIL_MIN_MESSAGES,
+				ContextManager.TAIL_MAX_MESSAGES
+			)
 		);
 
 		// 中间段 = 既不在头也不在尾的旧消息
-		const tailStartIndex = conversation.length - tail.length;
-		const middle = conversation.slice(headCount, Math.max(headCount, tailStartIndex));
+		const middle = remaining.slice(0, Math.max(0, remaining.length - tail.length));
 
 		if (middle.length === 0) {
 			// 没有可压缩的中间段（头尾已覆盖全部）→ 不压缩
@@ -1859,8 +1951,10 @@ ${conversationText}
 			return noop('nothing_to_compress');
 		}
 
-		// ── 2. 预剪枝（LLM 前廉价处理）+ 结构化摘要 ──────────────────
+		// ── 2. 预剪枝（LLM 前廉价处理）+ 摘要 / 检索式上下文 ────────
+		const tPrePrune = Date.now();
 		const prunedMiddle = this._prePruneMessages(middle);
+		const prePruneMs = Date.now() - tPrePrune;
 		const existingSummary = this._extractExistingSummary(systemMessages);
 		// ── OOM diagnostic: log heap usage before compression summary call ──
 		if (typeof process === 'object' && process?.memoryUsage) {
@@ -1874,7 +1968,45 @@ ${conversationText}
 				`threshold=${thresholdTokens.toFixed(0)} effectiveTokens=${effectiveTokens}`
 			);
 		}
-		const summary = await this._generateStructuredSummary(prunedMiddle, existingSummary);
+
+		// 检索式上下文重构（对齐 agentmemory mem::context）：
+		// 开关开启且提供了 retrieveContext 时，优先用记忆检索结果替代同步 LLM 摘要，
+		// 避免每轮压缩阻塞首 token（原 _generateStructuredSummary 可达 37s）。
+		let summary = '';
+		let summaryMs = 0;
+		let usedRetrieval = false;
+		if (RETRIEVAL_COMPACTION_ENABLED && retrieveContext) {
+			const agentId = (messages as any[])[0]?.metadata?.['agentId'] ?? 'default';
+			const sessionId = (messages as any[])[0]?.metadata?.['sessionId'] ?? '';
+			const retrievalBudget = Math.floor(effectiveWindow * RETRIEVAL_BUDGET_RATIO);
+			const tR = Date.now();
+			try {
+				const retrieved = await retrieveContext({
+					agentId, sessionId, middle,
+					contextWindow: effectiveWindow, budget: retrievalBudget,
+				});
+				if (retrieved && retrieved.context && retrieved.context.trim().length > 0) {
+					summary = retrieved.context;
+					summaryMs = Date.now() - tR;
+					usedRetrieval = true;
+					this._log('info',
+						`[ContextManager][Compression] RETRIEVAL mode: ` +
+						`source=${retrieved.source} tokens=${retrieved.tokens} ` +
+						`(replaced synchronous LLM summary, avoided ~summary latency)`
+					);
+				}
+			} catch (reErr) {
+				this._log('warn',
+					`[ContextManager][Compression] retrieveContext failed, falling back to LLM summary: ` +
+					`${reErr instanceof Error ? reErr.message : String(reErr)}`
+				);
+			}
+		}
+		if (!usedRetrieval) {
+			const tSummary = Date.now();
+			summary = await this._generateStructuredSummary(prunedMiddle, existingSummary);
+			summaryMs = Date.now() - tSummary;
+		}
 
 		// ── 3. 重组：保护头(system) + 摘要 + 保护头(对话) + 保护尾 ──────
 		// 先构造不含元数据的摘要消息，待 sanitized + token 计算完成后回填元数据。
@@ -1883,11 +2015,17 @@ ${conversationText}
 			content: `${ContextManager.SUMMARY_PREFIX}\n\n${summary}`,
 		} as ChatMessage;
 
+		// P1: 保护头/尾中的 tool 结果也做 head+tail 截断（受保护工具白名单仍原样保留），
+		// 约束最近大输出的 token 占用（对齐 MiMo prune.ts 的"活体边缘外剪枝"——旧输出剪，
+		// 最近输出保留首尾）。仅影响内容，不改变消息条数。
+		const prunedHead = this._prePruneMessages(head);
+		const prunedTail = this._prePruneMessages(tail);
+
 		const compressedMessages: ChatMessage[] = [
 			...systemMessages.filter(m => !this._isSummaryMessage(m) && !this._isInjectedContextMessage(m)),
 			summaryMessage,
-			...head,
-			...tail,
+			...prunedHead,
+			...prunedTail,
 		];
 
 		// ── 保证 agent.systemPrompt 不被截断 ──
@@ -1951,7 +2089,9 @@ ${conversationText}
 		// 固定前缀不受注入影响，KV cache 只在注入位置起失效。
 		let finalMessages = sanitized;
 		let injectedTokens = 0;
+		let injectMs: number | undefined;
 		if (preCompactInject && estimatedTokens > estimatedTokensAfter) {
+			const tInject = Date.now();
 			try {
 				const tokensSaved = estimatedTokens - estimatedTokensAfter;
 				const msgForInject = (messages as any[]).map(m => ({
@@ -1966,6 +2106,11 @@ ${conversationText}
 					tokensSaved,
 					contextWindow: effectiveWindow,
 				});
+				injectMs = Date.now() - tInject;
+				this._log('info',
+					`[ContextManager][Compression][Diag] preCompactInject callback took ${injectMs}ms ` +
+					`(injectedTokens=${injectResult?.totalTokens ?? 'n/a'})`
+				);
 				if (injectResult?.injectedContext) {
 					// P4: Separate fixed system messages (stable prefix) from dynamic messages.
 					// Inject the memory context AFTER fixed system, preserving cache prefix.
@@ -1998,6 +2143,14 @@ ${conversationText}
 			}
 		}
 
+		this._log('info',
+			`[ContextManager][Compression][Diag] sub-phase timing | ` +
+			`prePruneMs=${prePruneMs} summaryMs=${summaryMs} ` +
+			`retrievalMode=${usedRetrieval} ` +
+			`injectMs=${injectMs ?? 'n/a'} middle=${middle.length} ` +
+			`(total compressContext duration logged by caller as AFTER.duration)`
+		);
+
 		return {
 			originalMessageCount: messages.length,
 			compressedMessageCount: finalMessages.length,
@@ -2016,7 +2169,129 @@ ${conversationText}
 				contextWindow: effectiveWindow,
 				thresholdTokens,
 				iterativeSummary: !!existingSummary,
+				retrievalMode: usedRetrieval,
 				preCompactInjectedTokens: injectedTokens,
+			},
+		};
+	}
+
+	// ─── P4: Checkpoint 无损重建 ─────────────────────────────────────────────
+
+	/** 检查点重建时保留的尾部对话条数（极端压缩，比常规 tail 15 条激进得多）。 */
+	private static readonly CHECKPOINT_TAIL_MESSAGES = 5;
+
+	/**
+	 * P4 检查点重建（对齐 MiMo checkpoint.ts 的丢弃重建机制）：
+	 * 当压力达到极端（≥85% 窗口）时，**不调用 LLM**，直接丢弃所有旧中间消息，
+	 * 仅保留固定的系统提示 + 已有压缩摘要（作为"检查点"）+ 最近 N 条对话尾段。
+	 * 这比常规 compressContext（保护头 3 + 预算尾 15）激进得多，token 节省远超
+	 * 常规压缩，是 context overflow 前的最后一道防线。
+	 *
+	 * @param messages 完整消息序列（应已包含先前压缩生成的结构化摘要 system 消息）
+	 * @param contextWindow 模型上下文窗口大小
+	 * @returns 压缩结果（summary 为空——不再生成新摘要，复用既有检查点）
+	 */
+	async compressCheckpoint(
+		messages: ReadonlyArray<ChatMessage>,
+		contextWindow?: number,
+	): Promise<IContextCompressionResult> {
+		const effectiveWindowRaw = Math.max(
+			contextWindow ?? ContextManager.MINIMUM_CONTEXT_WINDOW,
+			ContextManager.MINIMUM_CONTEXT_WINDOW
+		);
+		const effectiveWindow = Math.min(effectiveWindowRaw, ContextManager.MAXIMUM_COMPRESSION_WINDOW);
+		const estimatedTokens = this._estimateTokens(messages as any);
+
+		const noop = (reason: string): IContextCompressionResult => ({
+			originalMessageCount: messages.length,
+			compressedMessageCount: messages.length,
+			summary: '',
+			compressedMessages: [...messages],
+			metadata: {
+				compressionRatio: 1.0,
+				skipped: reason,
+				estimatedTokensBefore: estimatedTokens,
+				estimatedTokensAfter: estimatedTokens,
+				contextWindow: effectiveWindow,
+				compressionMode: 'checkpoint',
+			},
+		});
+
+		// 没有既有摘要（检查点）则无法重建，退回常规压缩
+		const existingSummary = this._extractExistingSummary(
+			messages.filter(m => m.role === 'system')
+		);
+		if (!existingSummary || existingSummary.trim().length < 20) {
+			return noop('no_checkpoint_available');
+		}
+
+		// 拆分系统消息 / 对话消息
+		const systemMessages = messages.filter(m => m.role === 'system');
+		const conversation = messages.filter(m => m.role !== 'system');
+
+		// 保留固定的系统消息（非摘要、非注入上下文）
+		const fixedSystem = systemMessages.filter(m =>
+			!this._isSummaryMessage(m) && !this._isInjectedContextMessage(m)
+		);
+
+		// 从 conversation 尾部取最近 CHECKPOINT_TAIL_MESSAGES 条作为尾段，
+		// 同时强制保留最后一条 user 消息（若尾段内没有则追加）
+		const tailCount = Math.min(ContextManager.CHECKPOINT_TAIL_MESSAGES, conversation.length);
+		const tail = conversation.slice(conversation.length - tailCount);
+		const hasUser = tail.some(m => m.role === 'user');
+		if (!hasUser) {
+			for (let i = conversation.length - 1; i >= 0; i--) {
+				if (conversation[i].role === 'user') {
+					if (!tail.includes(conversation[i])) {
+						tail.unshift(conversation[i]);
+					}
+					break;
+				}
+			}
+		}
+
+		// 重建压缩结果：固定系统 + 检查点摘要 + 极短尾段
+		// 注意：_isSummaryMessage 检测 SUMMARY_PREFIX 前缀，
+		// summaryMessage 也要带前缀以保持一致性（供后续 iterate 检测）
+		const summaryMessage = {
+			role: 'system',
+			content: `${ContextManager.SUMMARY_PREFIX}\n\n${existingSummary}`,
+		} as ChatMessage;
+
+		const rebuilt: ChatMessage[] = [
+			...fixedSystem,
+			summaryMessage,
+			...tail,
+		];
+
+		const sanitized = this._sanitizeToolPairs(rebuilt);
+		const estimatedTokensAfter = this._estimateTokens(sanitized as any);
+
+		this._log('info',
+			`[ContextManager][Checkpoint] REBUILD: ` +
+			`from=${messages.length}→to=${sanitized.length} messages, ` +
+			`estimatedTokens=${estimatedTokens}→${estimatedTokensAfter} ` +
+			`(saved ${estimatedTokens - estimatedTokensAfter}, ` +
+			`no LLM call, checkpoint summary reused)`
+		);
+
+		return {
+			originalMessageCount: messages.length,
+			compressedMessageCount: sanitized.length,
+			summary: existingSummary,  // 复用既有检查点，不生成新摘要
+			compressedMessages: sanitized,
+			metadata: {
+				compressionRatio: sanitized.length / messages.length,
+				estimatedTokensBefore: estimatedTokens,
+				estimatedTokensAfter,
+				tokensSaved: estimatedTokens - estimatedTokensAfter,
+				savingRatio: estimatedTokens > 0 ? (estimatedTokens - estimatedTokensAfter) / estimatedTokens : 0,
+				contextWindow: effectiveWindow,
+				thresholdTokens: effectiveWindow * this._config.compressionThreshold,
+				tailCount: tail.length,
+				compressionMode: 'checkpoint',
+				iterativeSummary: true,
+				noLlmCall: true,
 			},
 		};
 	}
@@ -2064,22 +2339,183 @@ ${conversationText}
 	}
 
 	/**
-	 * LLM 前预剪枝：旧 tool 结果单行截断、去除超长 tool 参数，
-	 * 降低送入摘要模型的 token，同时保持语义可读。不修改原消息对象。
+	 * P0 根因修复：对齐保护头的结束边界。若头最后一条是带 toolCalls 的 assistant，
+	 * 则把紧接其后的连续 tool 结果一并拉入头（从 conversation 中移除、归并到头），
+	 * 使其 tool 链完整——否则 assistant 有 tool_calls 却没有对应 tool 结果，触发 HTTP 400。
+	 * 若头以孤立 tool 结果收尾（极端情况），丢弃它（其 owning assistant 不在头内）。
+	 */
+	private _alignHeadBoundary(head: ChatMessage[], conversation: ReadonlyArray<ChatMessage>): ChatMessage[] {
+		if (head.length === 0) { return head; }
+		const last = head[head.length - 1];
+		const tcs = (last as { toolCalls?: Array<{ id?: string }> }).toolCalls;
+		const hasToolCalls = Array.isArray(tcs) && tcs.length > 0;
+		if (!hasToolCalls) {
+			if (last.role === 'tool') {
+				return head.slice(0, head.length - 1);
+			}
+			return head;
+		}
+		// 把 assistant 之后的连续 tool 结果并入头（它们在 conversation 中紧邻其后的连续位置）
+		const result: ChatMessage[] = [...head];
+		let idx = head.length;
+		while (idx < conversation.length && conversation[idx].role === 'tool') {
+			result.push(conversation[idx]);
+			idx++;
+		}
+		return result;
+	}
+
+	/**
+	 * P0 根因修复：对齐保护尾的起始边界。尾是 conversation 的后缀，assistant.toolCalls
+	 * 必然与其后续 tool 结果同在尾内，故只需处理"尾首悬空 tool 结果"这一种情况——
+	 * 即尾首是 role==='tool' 而其 owning assistant 已被排除在尾之外。从尾首向前丢弃
+	 * 这类孤立 tool 结果直到首条非 tool 消息。
+	 */
+	private _alignTailBoundary(tail: ChatMessage[]): ChatMessage[] {
+		let start = 0;
+		while (start < tail.length && tail[start].role === 'tool') {
+			start++;
+		}
+		return start > 0 ? tail.slice(start) : tail;
+	}
+
+	/**
+	 * LLM 前预剪枝：旧 tool 结果采用 head+tail 双端保留（对齐 MiMo truncate.ts，
+	 * 答案/错误常在尾部，单点截断会丢关键信息）；超长 tool 入参截断；受保护工具
+	 * 白名单（skill/memory/...）原样保留；可选 bash token-efficient 清洗（默认关）。
+	 * 不修改原消息对象。
 	 */
 	private _prePruneMessages(messages: ReadonlyArray<ChatMessage>): ChatMessage[] {
+		// 1) 从同一 middle 段内的 assistant.toolCalls 建立 toolCallId→name 映射，
+		//    用于识别受保护工具（其输出不被截断）。
+		const toolNameById = new Map<string, string>();
+		for (const m of messages) {
+			const tcs = (m as { toolCalls?: Array<{ id?: string; name?: string }> }).toolCalls;
+			if (Array.isArray(tcs)) {
+				for (const tc of tcs) {
+					if (tc?.id && tc?.name) { toolNameById.set(tc.id, tc.name); }
+				}
+			}
+		}
+
+		const headChars = ContextManager.TOOL_OUTPUT_HEAD_CHARS;
+		const tailChars = ContextManager.TOOL_OUTPUT_TAIL_CHARS;
+
 		return messages.map(m => {
 			if (m.role === 'tool') {
 				const original = m.content || '';
-				if (original.length > ContextManager.TOOL_RESULT_TRUNCATE_CHARS) {
-					const truncated = original.slice(0, ContextManager.TOOL_RESULT_TRUNCATE_CHARS);
-					return {
-						...m,
-						content: `${truncated}… [工具结果已截断，原长度 ${original.length} 字符]`,
-					} as ChatMessage;
+				// 受保护工具：原样保留（skill/memory/... 等关键结果不可截断）
+				const callId = (m as { toolCallId?: string }).toolCallId;
+				const toolName = callId ? toolNameById.get(callId) : undefined;
+				if (toolName && ContextManager.PRUNE_PROTECTED_TOOLS.has(toolName)) {
+					return m;
+				}
+				let content = ContextManager.TOOL_OUTPUT_CLEAN_ENABLED
+					? ContextManager._cleanToolOutput(original)
+					: original;
+				// head+tail 双端保留：仅当超过 head+tail 总预算才截断（答案为尾部须保留）。
+				// 截断说明放在内容最前面，确保后续 prompt 构建（仅取每条前 500 字符）也能看到标记。
+				const budget = headChars + tailChars;
+				if (content.length > budget) {
+					const headPart = content.slice(0, headChars);
+					const tailPart = content.slice(content.length - tailChars);
+					const note = `…[工具结果已截断，原长度 ${original.length} 字符，保留首${headChars}/尾${tailChars}]…`;
+					content = `${note}\n${headPart}\n${tailPart}`;
+				}
+				return content === original ? m : { ...m, content } as ChatMessage;
+			}
+			if (m.role === 'assistant') {
+				// 截断超长 tool 入参（工具参数也是 token 大户）
+				const tcs = (m as { toolCalls?: Array<{ id?: string; name?: string; arguments?: string }> }).toolCalls;
+				if (Array.isArray(tcs) && tcs.length > 0) {
+					let changed = false;
+					const newTcs = tcs.map(tc => {
+						if (typeof tc.arguments === 'string' && tc.arguments.length > ContextManager.TOOL_ARG_TRUNCATE_CHARS) {
+							changed = true;
+							return {
+								...tc,
+								arguments: tc.arguments.slice(0, ContextManager.TOOL_ARG_TRUNCATE_CHARS) +
+									`…[工具入参已截断，原长度 ${tc.arguments.length} 字符]`,
+							};
+						}
+						return tc;
+					});
+					if (changed) {
+						return { ...(m as object), toolCalls: newTcs } as ChatMessage;
+					}
 				}
 			}
 			return m;
+		});
+	}
+
+	/**
+	 * P5（bash / token-efficient 清洗，默认关闭）。仅做安全无损的通用清理：
+	 * 去 ANSI 转义、脱敏常见密钥/私钥、折叠超长行。不影响落盘原文，只作用于送摘要的副本。
+	 */
+	private static _cleanToolOutput(content: string): string {
+		let s = content;
+		// 去除 ANSI 转义序列
+		s = s.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
+		// 脱敏常见密钥
+		s = s.replace(/(AKIA[0-9A-Z]{16})/g, '***REDACTED-AKID***');
+		s = s.replace(/(sk-[A-Za-z0-9_-]{20,})/g, '***REDACTED-KEY***');
+		s = s.replace(/(Bearer\s+[A-Za-z0-9._-]{20,})/g, 'Bearer ***REDACTED***');
+		s = s.replace(/(-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)/g, '***REDACTED-PRIVATE-KEY***');
+		// 折叠超长行（>2000 字符）
+		s = s.split('\n').map(line =>
+			line.length > 2000 ? line.slice(0, 2000) + `…[行已折叠，原 ${line.length} 字符]` : line
+		).join('\n');
+		return s;
+	}
+
+	/** P2 源头截断：tool 结果写入历史前的硬上限（对齐 MiMo MAX_BYTES=50K）。
+	 *  超过则首尾保留 + 标注，避免超大输出进入上下文污染压缩输入。返回可能截断后的内容。 */
+	static truncateSourceToolOutput(content: string): string {
+		const max = ContextManager.SOURCE_TOOL_OUTPUT_MAX_CHARS;
+		if (content.length <= max) { return content; }
+		const head = Math.floor(max * 0.7);
+		const tail = content.length - Math.floor(max * 0.3);
+		return `${content.slice(0, head)}\n…[源输出已截断，原长度 ${content.length} 字符]…\n${content.slice(tail)}`;
+	}
+
+	/** P3 压力分级（对齐 MiMo overflow.ts）：返回 0-3 档。 */
+	static getPressureLevel(effectiveTokens: number, window: number): number {
+		const ratio = window > 0 ? effectiveTokens / window : 0;
+		const [t1, t2, t3] = ContextManager.PRESSURE_THRESHOLDS;
+		if (ratio < t1) { return 0; }
+		if (ratio < t2) { return 1; }
+		if (ratio < t3) { return 2; }
+		return 3;
+	}
+
+	/**
+	 * P3 廉价逐轮剪枝：仅对最近 keepRecent 条之外的旧消息做 tool 输出 head+tail 截断，
+	 * 不调用 LLM、不删除消息，安全降低 token 增长（对齐 MiMo prune.ts 的"活体边缘外剪枝"）。
+	 * 返回新数组，原消息不变；受保护工具仍原样保留。
+	 */
+	static pruneOldToolOutputs<T extends ChatMessage>(messages: ReadonlyArray<T>, keepRecent: number = ContextManager.CHEAP_PRUNE_RECENT_KEEP): T[] {
+		if (messages.length <= keepRecent) { return [...messages]; }
+		const cutoff = messages.length - keepRecent;
+		const toolNameById = new Map<string, string>();
+		for (const m of messages) {
+			const tcs = (m as { toolCalls?: Array<{ id?: string; name?: string }> }).toolCalls;
+			if (Array.isArray(tcs)) {
+				for (const tc of tcs) { if (tc?.id && tc?.name) { toolNameById.set(tc.id, tc.name); } }
+			}
+		}
+		const headChars = ContextManager.TOOL_OUTPUT_HEAD_CHARS;
+		const tailChars = ContextManager.TOOL_OUTPUT_TAIL_CHARS;
+		const budget = headChars + tailChars;
+		return messages.map((m, i) => {
+			if (i >= cutoff || m.role !== 'tool') { return m; }
+			const callId = (m as { toolCallId?: string }).toolCallId;
+			const toolName = callId ? toolNameById.get(callId) : undefined;
+			if (toolName && ContextManager.PRUNE_PROTECTED_TOOLS.has(toolName)) { return m; }
+			const original = (m as { content?: string }).content || '';
+			if (original.length <= budget) { return m; }
+			const content = `${original.slice(0, headChars)}\n…[工具结果已截断，原长度 ${original.length} 字符]…\n${original.slice(original.length - tailChars)}`;
+			return { ...(m as object), content } as T;
 		});
 	}
 
@@ -2133,22 +2569,70 @@ ${conversationText}
 	 * 或 assistant.toolCalls 找不到后续 tool 结果，均做温和清理避免协议报错。
 	 */
 	private _sanitizeToolPairs(messages: ChatMessage[]): ChatMessage[] {
-		const toolCallIds = new Set<string>();
+		return ContextManager.sanitizeToolPairs(messages);
+	}
+
+	/**
+	 * 双向修复 tool_call / tool_result 配对（纯函数，供压缩与发送前守卫复用）：
+	 *   1. 剥离 assistant 上**没有对应 tool 结果**的悬空 tool_calls
+	 *      （压缩保护头/尾切割、或历史回灌时常见）。若 assistant 剥离后既无
+	 *      文本也无有效 tool_calls，则整条丢弃。
+	 *   2. 丢弃引用不到任何存活 assistant.toolCalls 的孤立 tool 消息。
+	 *
+	 * OpenAI / IOA 网关强制「assistant.tool_calls 必须被对应 tool 结果应答」，
+	 * 二者任一失配都会触发 HTTP 400 (code 11133 invalid_parameter_value)，
+	 * 直接打断整轮对话。此处在发送前把序列修成协议合法形态。
+	 */
+	static sanitizeToolPairs<T extends { role: string }>(messages: T[]): T[] {
+		// 1) 收集「已被某条 tool 消息应答」的 tool_call id
+		const respondedIds = new Set<string>();
 		for (const m of messages) {
-			if (m.role === 'assistant' && Array.isArray(m.toolCalls)) {
-				for (const tc of m.toolCalls) {
-					const id = (tc as { id?: string }).id;
-					if (id) {
-						toolCallIds.add(id);
-					}
+			if (m.role === 'tool') {
+				const refId = (m as unknown as { toolCallId?: string }).toolCallId;
+				if (refId) {
+					respondedIds.add(refId);
 				}
 			}
 		}
-		// 丢弃引用不到 assistant.toolCalls 的孤立 tool 消息
-		return messages.filter(m => {
+
+		// 2) 第一遍：剥离 assistant 上无应答的 tool_calls，记录存活的 id
+		const keptToolCallIds = new Set<string>();
+		const interim: T[] = [];
+		for (const m of messages) {
+			const tcs = m.role === 'assistant'
+				? (m as unknown as { toolCalls?: Array<{ id?: string }> }).toolCalls
+				: undefined;
+			if (Array.isArray(tcs) && tcs.length > 0) {
+				const keptTcs = tcs.filter(tc => !!tc.id && respondedIds.has(tc.id));
+				if (keptTcs.length === tcs.length) {
+					// 全部有配对 → 原样保留
+					for (const tc of keptTcs) { if (tc.id) { keptToolCallIds.add(tc.id); } }
+					interim.push(m);
+				} else if (keptTcs.length > 0) {
+					// 部分有配对 → 只保留有配对的 tool_calls
+					for (const tc of keptTcs) { if (tc.id) { keptToolCallIds.add(tc.id); } }
+					interim.push({ ...(m as unknown as Record<string, unknown>), toolCalls: keptTcs } as unknown as T);
+				} else {
+					// 无任何配对 → 剥离全部 tool_calls
+					const content = (m as unknown as { content?: string }).content;
+					const hasText = typeof content === 'string' && content.trim().length > 0;
+					if (hasText) {
+						const clone = { ...(m as unknown as Record<string, unknown>) };
+						delete (clone as { toolCalls?: unknown }).toolCalls;
+						interim.push(clone as unknown as T);
+					}
+					// 既无文本又无有效 tool_calls → 整条丢弃
+				}
+			} else {
+				interim.push(m);
+			}
+		}
+
+		// 3) 第二遍：丢弃 tool_call id 已不再存活的孤立 tool 消息
+		return interim.filter(m => {
 			if (m.role === 'tool') {
 				const refId = (m as unknown as { toolCallId?: string }).toolCallId;
-				if (refId && !toolCallIds.has(refId)) {
+				if (refId && !keptToolCallIds.has(refId)) {
 					return false;
 				}
 			}

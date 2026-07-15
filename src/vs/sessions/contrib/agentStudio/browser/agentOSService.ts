@@ -5,6 +5,7 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
+import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { IAgentOSService, IAgentOSDashboardStats, IDashboardMetricsSnapshot, IDailyBucket } from '../common/agentOS.js';
 import {
 	IModelProvider, IModelSelection, ModelAuthStatus,
@@ -13,8 +14,51 @@ import {
 	IAgentTurnRequest, IChatStreamDelta, ISlotRegistry,
 	IToolDefinition, IToolCallInfo, IToolResult, IModelOptions,
 	IToolApprovalHandler,
+	SandboxConfirmationDecision, ISandboxViolationInfo,
 } from '../common/providers.js';
+import type { IConfirmationData } from '../../../browser/agentChat/agentChatTypes.js';
 import { SlotRegistry } from './slotRegistry.js';
+import {
+	computeBackoffDelay,
+	sleepWithAbort,
+	withStreamTimeout,
+	DEFAULT_RETRY_POLICY,
+	type RetryPolicy,
+	type TimeoutPolicy,
+} from '../common/resilience.js';
+import {
+	appendMessages,
+	insertMessages,
+	compactMessages,
+	createInitialRunState,
+	reduceRunState,
+	detectToolCallLoop,
+	classifyIncompleteTurn,
+	resolveIncompleteTurnRetryInstruction,
+	incompleteTurnDiscardReason,
+	incompleteTurnRetryLimit,
+	isTransientStreamError,
+	TRANSIENT_ERROR_MAX_RETRIES,
+	TRANSIENT_ERROR_BASE_DELAY_MS,
+	TRANSIENT_ERROR_BACKOFF_FACTOR,
+	TRANSIENT_ERROR_MAX_DELAY_MS,
+	snapshotRunState,
+	prepareResumeRunState,
+	type AgentRunMessage,
+	type AgentRunState,
+	type AgentRunStateSnapshot,
+} from '../common/agentRunState.js';
+import {
+	AgentGraph,
+	AgentCommand,
+	END_NODE,
+	TRANSFER_TO_AGENT_TOOL,
+	buildHandoffCommand,
+	applyCommandToState,
+	computeNextNode,
+} from '../common/agentGraph.js';
+import { applyHardPermission, planModeHardPermission, type IHardPermissionPolicy } from '../common/toolPermission.js';
+import { buildForkContext, prefixCacheAligned, type IForkContext } from '../common/forkContext.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
@@ -23,11 +67,12 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import {
 	ToolsetPriority, getToolsetForTool,
-	getToolsetPriority, isToolsetDeferrable, isBridgeTool,
+	getToolsetPriority, isBridgeTool,
 	TOOL_SEARCH_BRIDGE_TOOLS,
 } from '../common/toolsetConfig.js';
 import {
 	assembleToolDefs, IAssemblyResult, DEFAULT_TOOL_SEARCH_CONFIG,
+	IToolSearchConfig,
 } from '../common/toolSearchAssembler.js';
 import {
 	dispatchBridgeTool, buildDispatcherContext, IDispatcherContext,
@@ -65,7 +110,7 @@ import {
 	isEntirelyToolCallContent,
 } from '../common/assistantVisibleText.js';
 import {
-	executeWithTimeout,
+	executeWithRetryAndTimeout,
 	getTimeoutForTool,
 	ToolApprovalService,
 	ToolExecutionTracker,
@@ -90,7 +135,7 @@ import {
 } from '../common/subagentTokenCollector.js';
 
 import { AGUIChatMessageBuilder } from '../common/adapters/aguiAdapter.js';
-import { ContextManager } from '../common/contextManager.js';
+import { ContextManager, RETRIEVAL_COMPACTION_ENABLED, RETRIEVAL_BUDGET_RATIO } from '../common/contextManager.js';
 import type { ChatMessage } from '../common/types.js';
 
 // MCP 工具不直发 schema（会导致 API 400），仅通过 tool_search 桥接发现。
@@ -112,8 +157,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private readonly _approvalService = new ToolApprovalService();
 	private readonly _executionTracker = new ToolExecutionTracker();
 
-	/** Agent Loop 级别的 AbortController — 用于取消整个循环 */
+	// ─── 沙箱确认（安全沙箱受限→暂停等待用户决策）──────────────
+	// 存放进行中的沙箱确认：confirmationId → resolve 回调。
+	private readonly _pendingSandboxConfirmations = new Map<string, (decision: SandboxConfirmationDecision) => void>();
+
+	/**
+	 * Agent Loop 级别的 AbortController — 用于取消整个循环。
+	 * @deprecated 保留作单窗口兼容与"最近 turn"兜底；多窗口并发请用 _activeTurnControllers。
+	 */
 	private _loopAbortController: AbortController | undefined;
+
+	/**
+	 * Per-turn AbortController 表 —— 支持多聊天窗口/多 Session 并发执行时的取消隔离。
+	 * key = `${agentId}::${sessionId}`（见 _turnKey）。
+	 * executeAgentTurn 进入时按 turnKey 建一个 controller，finally 时删除；
+	 * cancelAgentLoop(agentId, sessionId) 按 turnKey 精确取消，不影响其他窗口。
+	 */
+	private readonly _activeTurnControllers = new Map<string, AbortController>();
 
 	// ─── Delegation Ledger + Durable Context（借鉴 deer-flow）───────────
 	/** Tracks all sub-agent delegations with live status updates. */
@@ -132,6 +192,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private _lastAssembly: IAssemblyResult | undefined;
 	/** 最近一次 Dispatcher 上下文（含 catalog + scopedNames） */
 	private _lastDispatcherCtx: IDispatcherContext | undefined;
+	/** 最近一次全量已启用工具名集合（不受 MAX_VISIBLE_TOOLS 截断影响），供白名单过滤用 */
+	private _lastAllEnabledToolNames: Set<string> = new Set();
 
 	// ─── Tool Defs LRU 缓存（对齐 Hermes-Agent `model_tools._TOOL_DEFS_CACHE_MAX = 8`）──
 	// 2026-07-03 改造：Map-based LRU + 多维缓存键
@@ -141,6 +203,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	// contextWindow: 模型上下文窗口 → 模型切换时自动失效
 	private static readonly TOOL_DEFS_CACHE_MAX = 8;
 	private _cachedToolDefs = new Map<string, IToolDefinition[]>();
+
+	/**
+	 * Fork 前缀缓存（MiMo ForkContext）：每个会话最近一次迭代计算出的「冻结前缀」
+	 * (system + tools 指纹)。fork 会话 / 子 agent 在构造请求时据此对齐父级前缀 → 命中
+	 * provider prompt cache。`getForkContext(sessionId)` 供 forkAgentSession 抓取父级
+	 * 冻结前缀用。键为 sessionId；未分叉会话也有值（自身前缀），但不影响缓存语义。
+	 */
+	private readonly _lastForkContextBySession = new Map<string, IForkContext>();
 
 	/** P1: 上一轮 LLM 回传的真实 prompt token，按键 agentId 持久化跨 turn 传递。
 	 *  compressContext 优先用它做触发判定（取代低估的 char/4 粗估），
@@ -173,8 +243,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 */
 	private _focusModeCache: { workspaceKey: string; result: IFocusModeResult } | undefined;
 
-	/** 用于构建统一 ChatMessage 格式的流适配器（AG-UI → ChatMessage） */
-	private _chatMessageStream: AGUIChatMessageBuilder | undefined;
+	// 注：AGUIChatMessageBuilder 原本是实例字段 _chatMessageStream，但它是 turn 级状态
+	// （每个 executeAgentTurn 重建），多 session/多 agent 并发执行时会被并发 turn 互相覆盖
+	// → 跨 turn 流式消息错乱。改为 _executeWithFallbackDirectly 内的局部变量 chatMessageStream
+	// （见 turn 内定义 + 流循环内使用），彻底消除此竞态。语义不变。
 
 	// ─── 抓包对齐的会话 id 状态（按 sessionId 隔离）────────────────────────
 	// 抓包证据（CodeBuddy IDE /v2/chat/completions）：
@@ -216,7 +288,30 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private _proceduralPending = false;
 	/** 压缩冷却期：上次压缩时间戳。跨用户消息持久化，避免频繁压缩。 */
 	private _lastCompressionTime: number = 0;
+	/** 检索式压缩：已外置到记忆的 middle 消息内容哈希集合（按 sessionId），
+	 *  避免每次压缩重复写入同一批对话导致记忆无限膨胀。 */
+	private _storedMiddleHashes = new Map<string, Set<string>>();
 	private static readonly COMPRESSION_COOLDOWN_MS = 60_000;
+
+	// ─── Tool-Use Enforcement（对齐 Hermes TOOL_USE_ENFORCEMENT_GUIDANCE）──────────
+	// 对 DeepSeek / GPT / Gemini 等需要显式引导的模型族，自动在 system prompt 末尾
+	// 注入工具使用强制指令。模型名包含列表中子串即触发。ID 匹配幂等（检测 TOOL_USE_ENFORCEMENT 标记）。
+	private static readonly TOOL_USE_ENFORCEMENT_MODELS = ['deepseek', 'gpt-', 'gemini', 'gemma', 'grok', 'glm', 'qwen'];
+	private static readonly TOOL_USE_ENFORCEMENT_GUIDANCE = [
+		'<!-- TOOL_USE_ENFORCEMENT -->',
+		'# Tool-use enforcement',
+		'You MUST use your tools to take action — do not describe what you would do',
+		'or plan to do without actually doing it. When you say you will perform an',
+		'action (e.g. "I will run the tests", "Let me check the file", "I will create',
+		'the project"), you MUST immediately make the corresponding tool call in the same',
+		'response. Never end your turn with a promise of future action — execute it now.',
+		'Keep working until the task is actually complete. Do not stop with a summary of',
+		'what you plan to do next time. If you have tools available that can accomplish',
+		'the task, use them instead of telling the user what you would do.',
+		'Every response should either (a) contain tool calls that make progress, or',
+		'(b) deliver a final result to the user. Responses that only describe intentions',
+		'without acting are not acceptable.',
+	].join('\n');
 	/** MCP 工具初始等待标志：仅在首次 executeAgentTurn 时等待 MCP 服务器连接。
 	 *  避免对没有 MCP 服务器的用户在每条消息上都延迟。 */
 	private _mcpToolsInitialWaitDone = false;
@@ -285,6 +380,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const ws = this._workspaceContextService.getWorkspace();
 		this._currentWorkspaceId = ws.folders.length > 0 ? ws.folders[0].name : '';
 
+		// 注册沙箱确认命令：原生 chat 卡片按钮点击 → 派发此命令 → resolve pending promise，
+		// 解除 agent loop 的暂停（对齐 void 的 confirmed.promise 模式）。
+		this._register(CommandsRegistry.registerCommand(
+			'agentStudio.confirmationAction',
+			(_accessor, confirmationId: string, decision: string) => {
+				const resolve = this._pendingSandboxConfirmations.get(confirmationId);
+				if (!resolve) {
+					this._logService.warn(`[AgentOS] No pending sandbox confirmation for id=${confirmationId}`);
+					return;
+				}
+				this._pendingSandboxConfirmations.delete(confirmationId);
+				const mapped = this._mapConfirmationButtonToDecision(decision);
+				this._logService.info(`[AgentOS] Sandbox confirmation ${confirmationId} → ${mapped}`);
+				resolve(mapped);
+			},
+		));
+
 		// Bridge the OS-level ModelProvider list and active selection
 		// into the SlotRegistry so that ExecutionProviders can access them
 		// via slots.getActiveModelProvider() / slots.getActiveModelSelection()
@@ -320,6 +432,177 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	setToolApprovalHandler(handler: IToolApprovalHandler): void {
 		this._approvalService.setApprovalHandler(handler);
 		this._logService.info('[AgentOS] Tool approval handler registered');
+	}
+
+	// ─── 沙箱确认（安全沙箱受限→暂停等待用户决策）──────────────
+
+	private _mapConfirmationButtonToDecision(buttonId: string): SandboxConfirmationDecision {
+		switch (buttonId) {
+			case 'allow_once': return SandboxConfirmationDecision.AllowOnce;
+			case 'allow_workspace': return SandboxConfirmationDecision.AllowWorkspace;
+			case 'use_suggested': return SandboxConfirmationDecision.UseSuggested;
+			case 'cancel':
+			case 'reject':
+			case 'deny':
+				return SandboxConfirmationDecision.Cancel;
+			default:
+				this._logService.warn(`[AgentOS] Unknown sandbox confirmation button "${buttonId}" → Cancel`);
+				return SandboxConfirmationDecision.Cancel;
+		}
+	}
+
+	private _mapDecisionToCardStatus(decision: SandboxConfirmationDecision): 'approved' | 'rejected' | 'cancelled' {
+		return decision === SandboxConfirmationDecision.Cancel ? 'cancelled' : 'approved';
+	}
+
+	/** 工具结果是否因安全沙箱限制而失败 */
+	private _isSandboxViolation(result: { metadata?: { sandboxViolation?: ISandboxViolationInfo } }): boolean {
+		return !!result.metadata?.sandboxViolation;
+	}
+
+	/**
+	 * 生成沙箱确认卡片数据（标题 / 说明 / 允许目录 / 建议路径 / 四个按钮）。
+	 */
+	private _buildSandboxConfirmationCard(toolName: string, v: ISandboxViolationInfo): IConfirmationData {
+		const allowedList = v.allowedRoots.length > 0
+			? v.allowedRoots.map(r => `  • ${r}`).join('\n')
+			: '  （无 — 请确认已正确配置工作区）';
+		const lines: string[] = [
+			`工具 "${toolName}" 请求访问的路径不在允许的工作区目录内：`,
+			`  ${v.requestedPath}`,
+			'',
+			'当前允许的工作区目录：',
+			allowedList,
+		];
+		if (v.suggestedPath) {
+			lines.push('', `建议路径（落在允许根内）：${v.suggestedPath}`);
+		}
+		const buttons: Array<{ id: string; label: string; primary?: boolean; danger?: boolean }> = [
+			{ id: 'allow_once', label: '允许本次', primary: true },
+			{ id: 'allow_workspace', label: '允许此工作区' },
+		];
+		if (v.suggestedPath) {
+			buttons.push({ id: 'use_suggested', label: '改用建议路径' });
+		}
+		buttons.push({ id: 'cancel', label: '取消', danger: true });
+		return {
+			id: '', // 由调用方填充
+			title: '安全沙箱限制',
+			message: lines.join('\n'),
+			detail: v.resolvedPath !== v.requestedPath ? `解析后: ${v.resolvedPath}` : undefined,
+			buttons,
+			status: 'pending',
+			securityLevel: 'dangerous',
+		};
+	}
+
+	/**
+	 * 等待用户对沙箱受限工具调用的决策。
+	 * 调用方（生成器）需先 yield 一个 `confirmation` delta 渲染卡片，
+	 * 本方法仅负责挂起循环并在命令 resolve 时返回决策。
+	 */
+	private _awaitSandboxConfirmation(confirmationId: string): Promise<SandboxConfirmationDecision> {
+		return new Promise<SandboxConfirmationDecision>((resolve) => {
+			this._pendingSandboxConfirmations.set(confirmationId, resolve);
+		});
+	}
+
+	/** 把路径参数值从 requestedPath 改写为 suggestedPath（精确匹配才替换） */
+	private _rewritePathArgs(args: unknown, requestedPath: string, suggestedPath: string): unknown {
+		if (typeof args === 'string') {
+			try {
+				const parsed = JSON.parse(args) as Record<string, unknown>;
+				this._rewritePathInObject(parsed, requestedPath, suggestedPath);
+				return JSON.stringify(parsed);
+			} catch {
+				return args;
+			}
+		}
+		if (args && typeof args === 'object') {
+			const cloned = JSON.parse(JSON.stringify(args)) as Record<string, unknown>;
+			this._rewritePathInObject(cloned, requestedPath, suggestedPath);
+			return cloned;
+		}
+		return args;
+	}
+
+	private _rewritePathInObject(obj: Record<string, unknown>, requestedPath: string, suggestedPath: string): void {
+		for (const key of Object.keys(obj)) {
+			const val = obj[key];
+			if (typeof val === 'string' && val === requestedPath) {
+				obj[key] = suggestedPath;
+			} else if (val && typeof val === 'object') {
+				this._rewritePathInObject(val as Record<string, unknown>, requestedPath, suggestedPath);
+			}
+		}
+	}
+
+	/** 持久化「允许此工作区」：把目录追加到当前 Workspace.sandboxRoots */
+	private async _persistSandboxRoot(dir: string): Promise<void> {
+		const studioService = (this as any)._studioService;
+		const wsId = this._currentWorkspaceId;
+		if (!studioService || !wsId) { return; }
+		try {
+			const ws = await studioService.getWorkspace(wsId);
+			const existing: string[] = Array.isArray(ws?.sandboxRoots) ? ws.sandboxRoots : [];
+			if (existing.includes(dir)) { return; }
+			await studioService.updateWorkspace(wsId, { sandboxRoots: [...existing, dir] });
+			this._logService.info(`[AgentOS] Persisted sandbox root: ${dir} (workspace=${wsId})`);
+		} catch (err) {
+			this._logService.warn(`[AgentOS] Failed to persist sandbox root ${dir}:`, err);
+		}
+	}
+
+	/**
+	 * 按用户决策重执行被沙箱拦截的工具调用。
+	 * - allow_once: 临时放行精确路径后重执行（finally 移除放行）
+	 * - allow_workspace: 持久化目录到 Workspace.sandboxRoots 后重执行
+	 * - use_suggested: 把路径参数改写为建议路径后重执行
+	 * - cancel: 直接返回失败（操作已取消）
+	 */
+	private async _reExecuteAfterSandbox(
+		tc: IToolCallInfo,
+		agentId: string,
+		worktreePath: string | undefined,
+		signal: AbortSignal | undefined,
+		decision: SandboxConfirmationDecision,
+		v: ISandboxViolationInfo,
+	): Promise<{ toolCallId: string; content: any; success: boolean }> {
+		if (decision === SandboxConfirmationDecision.Cancel) {
+			return {
+				toolCallId: tc.id,
+				content: [{ type: 'text', text: '操作已取消：用户拒绝了沙箱受限路径。请改用允许的工作区目录，或选择「允许此工作区」/「改用建议路径」。' }],
+				success: false,
+			};
+		}
+
+		let reCall = tc;
+		if (decision === SandboxConfirmationDecision.UseSuggested && v.suggestedPath) {
+			reCall = { ...tc, arguments: this._rewritePathArgs(tc.arguments, v.requestedPath, v.suggestedPath) as string };
+		}
+
+		const builtin = this._slotRegistry.getToolProviders()
+			.find(p => p.id === 'saros.builtin-tools') as (IToolProvider & {
+				addSandboxBypassRoot?: (p: string) => void;
+				removeSandboxBypassRoot?: (p: string) => void;
+			}) | undefined;
+
+		if (decision === SandboxConfirmationDecision.AllowOnce) {
+			builtin?.addSandboxBypassRoot?.(v.requestedPath);
+		} else if (decision === SandboxConfirmationDecision.AllowWorkspace) {
+			const dir = v.requestedPath.replace(/[\\/][^\\/]*$/, '');
+			await this._persistSandboxRoot(dir);
+		}
+
+		try {
+			const results = await this._executeToolCalls([reCall], agentId, worktreePath, signal);
+			const r = results[0];
+			return { toolCallId: r.toolCallId, content: r.content, success: r.success };
+		} finally {
+			if (decision === SandboxConfirmationDecision.AllowOnce) {
+				builtin?.removeSandboxBypassRoot?.(v.requestedPath);
+			}
+		}
 	}
 
 	getDashboardStats(): IAgentOSDashboardStats {
@@ -573,12 +856,42 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * 取消当前 Agent Loop（如果正在执行）。
 	 * 所有活跃的工具执行将被 abort。
 	 */
-	cancelAgentLoop(): void {
-		if (this._loopAbortController) {
-			this._logService.info('[AgentOS] Cancelling agent loop');
-			this._loopAbortController.abort();
-			this._executionTracker.cancelAll();
+	/**
+	 * 计算 turn 的隔离 key。与 chat 层 streamKey 对齐（agentId 在前）。
+	 */
+	private _turnKey(agentId: string | undefined, sessionId: string | undefined): string {
+		return `${agentId ?? ''}::${sessionId ?? ''}`;
+	}
+
+	/**
+	 * 取消 Agent Loop。
+	 * - 传入 agentId + sessionId：按 turnKey 精确取消该窗口/会话的循环，不影响其他并发窗口。
+	 * - 不传参数（向后兼容）：取消所有活跃 turn。
+	 * 所有活跃的工具执行将随对应 AbortController abort 而被取消。
+	 */
+	cancelAgentLoop(agentId?: string, sessionId?: string): void {
+		if (agentId !== undefined || sessionId !== undefined) {
+			const key = this._turnKey(agentId, sessionId);
+			const ctrl = this._activeTurnControllers.get(key);
+			if (ctrl) {
+				this._logService.info(`[AgentOS] Cancelling agent loop (turnKey=${key})`);
+				ctrl.abort();
+				this._activeTurnControllers.delete(key);
+			} else {
+				this._logService.info(`[AgentOS] cancelAgentLoop: no active turn for key=${key}`);
+			}
+			return;
 		}
+		// 无参：取消所有活跃 turn（向后兼容旧调用）
+		this._logService.info(`[AgentOS] Cancelling ALL agent loops (${this._activeTurnControllers.size} active)`);
+		for (const ctrl of this._activeTurnControllers.values()) {
+			ctrl.abort();
+		}
+		this._activeTurnControllers.clear();
+		if (this._loopAbortController) {
+			this._loopAbortController.abort();
+		}
+		this._executionTracker.cancelAll();
 	}
 
 	/**
@@ -910,6 +1223,30 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	// ─── Fallback 配置 ─────────────────────────────────────────
 	private readonly _fallbackModels: string[] = ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
 	private readonly _maxFallbackAttempts: number = 3;
+	/** 模型 fallback 间的退避策略（指数退避 + 抖动），缓解限流风暴 */
+	private readonly _modelRetryPolicy: RetryPolicy = {
+		...DEFAULT_RETRY_POLICY,
+		initialInterval: 800,
+		maxInterval: 30_000,
+		maxAttempts: 5,
+		jitter: true,
+	};
+	/**
+	 * 模型流式响应的双超时策略（对齐 LangGraph TimeoutPolicy）：
+	 *  - idleTimeout（180s）：流「中途」超过该时长无任何 delta 即判定为「静默挂起」，
+	 *    抛 TimeoutError 触发模型 fallback。runTimeout 不启用，避免误杀合法长输出。
+	 *    注：必须 ≥ HTTP 请求超时（120s），否则 resilience 会在 HTTP 层之前误杀一个
+	 *    仍存活（只是慢）的流。真正死连接由 HTTP 层在 120s 以 AbortError 兜底。
+	 *  - firstTokenTimeout（45s）：流「首 token 之前」的慢启动宽限。实测 CodeBuddy
+	 *    网关冷启动首 delta 延迟可达 51s 且返回空响应（仅 usage + done）；
+	 *    45s 超时可在冷启动场景提前 abort → 触发 fallback 或 retry，避免浪费 51s
+	 *    等待一个空响应。MAX_VISIBLE_TOOLS=30 已收敛 payload，正常请求首 token
+	 *    远低于 45s。
+	 */
+	private readonly _modelStreamTimeoutPolicy: TimeoutPolicy = {
+		idleTimeout: 180_000,
+		firstTokenTimeout: 45_000,
+	};
 
 	// ─── 统一执行入口 ───────────────────────────────────────────
 
@@ -928,6 +1265,18 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	async *executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
 		this._logService.info(`[AgentOS] executeAgentTurn: agentId=${request.agentId}, messages=${request.messages.length}`);
 
+		// ─── 图运行时路由（supervisor / AgentCommand(goto) 设计 Step C）──
+		// 当请求携带≥2 节点的 agentGraph → 交给 runAgentGraph 解释器按节点执行。
+		// 单 agent 模式（request.agentGraph 缺省）完全不进入此分支 → 零行为变更。
+		if (request.agentGraph && Object.keys(request.agentGraph.nodes).length >= 2) {
+			this._logService.info(
+				`[AgentOS] executeAgentTurn: routing to runAgentGraph ` +
+				`(${Object.keys(request.agentGraph.nodes).length} nodes, entry=${request.agentGraph.entryNodeId})`,
+			);
+			yield* this.executeAgentGraph(request);
+			return;
+		}
+
 		// v39: per-request model override — workflow nodes can specify their own
 		// provider/model. We temporarily swap the global selection and restore
 		// it in the finally block, so all downstream code (tool listing,
@@ -941,6 +1290,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			);
 		}
 
+		// ─── Per-turn 取消隔离（多窗口/多 Session 并发）──────────────────
+		// 为本次 turn 建立独立 AbortController，存入 _activeTurnControllers。
+		// cancelAgentLoop(agentId, sessionId) 按 turnKey 精确取消，互不干扰。
+		// this._loopAbortController 仍指向"最近 turn"作为单窗口兼容/兜底。
+		const turnKey = this._turnKey(request.agentId, request.sessionId);
+		const turnController = new AbortController();
+		this._activeTurnControllers.set(turnKey, turnController);
+		this._loopAbortController = turnController;
+
 		try {
 			// ─── Path 1: 用户明确选择了 Model → 直通模式 ───────────────
 			// 当用户在聊天框中显式选择了 Provider/Model 时，应直接使用该 Provider
@@ -951,7 +1309,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					`[AgentOS] Active model selection detected (${this._activeSelection.providerId}/${this._activeSelection.modelId}), `
 					+ `using direct model call instead of ExecutionProvider`,
 				);
-				yield* this._executeWithFallbackDirectly(request);
+				// 包一层 model fallback：此前此路径直接调 _executeWithFallbackDirectly，
+				// 模型流 idle 超时（TimeoutError）会裸抛到 UI，_fallbackModels 形同虚设。
+				yield* this._executeWithFallback(
+					() => this._executeWithFallbackDirectly(request),
+					request,
+				);
 				return;
 			}
 
@@ -976,8 +1339,18 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			// ─── Path 3: 退化模式：直接调用 Model Provider（带 Fallback）──
-			yield* this._executeWithFallbackDirectly(request);
+			yield* this._executeWithFallback(
+				() => this._executeWithFallbackDirectly(request),
+				request,
+			);
 		} finally {
+			// Per-turn 取消隔离清理：移除本次 turn 的 controller。
+			// 若 this._loopAbortController 恰为本 turn（无并发覆盖）则一并清空。
+			this._activeTurnControllers.delete(turnKey);
+			if (this._loopAbortController === turnController) {
+				this._loopAbortController = undefined;
+			}
+
 			// v39: restore the original selection after the turn completes.
 			if (request.modelOverride?.providerId && request.modelOverride?.modelId) {
 				this._activeSelection = savedSelection;
@@ -1014,6 +1387,161 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	}
 
 	/**
+	 * 图解释器（supervisor / AgentCommand(goto) 设计 Step C）。
+	 *
+	 * 复用既有单 agent loop（`_executeWithFallbackDirectly`）作为"节点执行器"，
+	 * 按节点顺序执行，节点经 `transfer_to_agent`（Step B 拦截）或 supervisor 文本
+	 * 返回 `AgentCommand({ goto })` 驱动动态路由。图状态（`currentNodeId` /
+	 * `nodeThreads` / `sharedMemory` / `handoffSummary` / `nodeStatus`）统一经
+	 * `reduceRunState` 维护，使整图在 Step 5 后可由 snapshot/resume 续跑。
+	 *
+	 * 单 agent 模式（`request.agentGraph` 缺省或节点数 <2）回退到单 agent 路径
+	 * （零行为变更）。本方法被 `executeAgentTurn` 在检测到图时自动委派；也可由
+	 * 图运行时直接调用。内部直接调用 `_executeWithFallbackDirectly`（非
+	 * `executeAgentTurn`），避免重复路由 / 递归。
+	 */
+	async *executeAgentGraph(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
+		const graph = request.agentGraph;
+		if (!graph || Object.keys(graph.nodes).length < 2) {
+			// 单 agent 模式 / 非法图：回退单 agent 路径（agentGraph 清掉，避免再次路由）
+			yield* this._executeWithFallbackDirectly({ ...request, agentGraph: undefined });
+			return;
+		}
+
+		const end = graph.endNodeId ?? END_NODE;
+		// 图级 runState + 续跑起点（Step D）：若 request.resumeFrom 携带上次落盘的
+		// AgentRunState，则从其 graph.currentNodeId 续跑；否则从 entry 节点开始。
+		// 单 agent 为 undefined（此处显式注入，使 ENTER_NODE/EXIT_NODE 等 action 生效）。
+		const resume = prepareResumeRunState(graph, request.resumeFrom);
+		let runState: AgentRunState = resume.runState;
+		let current: string = resume.startNodeId;
+
+		// 防图内环路导致无限运行（最大节点跳转次数，含容错上限）。
+		let steps = 0;
+		const MAX_GRAPH_STEPS = 64;
+
+		while (current !== end) {
+			if (++steps > MAX_GRAPH_STEPS) {
+				this._logService.error(`[AgentOS] runAgentGraph: exceeded MAX_GRAPH_STEPS (${MAX_GRAPH_STEPS}) — stopping to avoid cycle`);
+				yield { type: 'error', content: '[System: graph step limit exceeded — possible cycle]' };
+				break;
+			}
+
+			const node = graph.nodes[current];
+			if (!node) {
+				this._logService.error(`[AgentOS] runAgentGraph: unknown node "${current}" — stopping graph`);
+				yield { type: 'error', content: `[System: unknown graph node "${current}"]` };
+				break;
+			}
+
+			// ─── 进入节点 ──────────────────────────────────────────────
+			runState = reduceRunState(runState, { type: 'ENTER_NODE', nodeId: current });
+			this._logService.info(`[AgentOS] runAgentGraph: ▶ entering node "${current}" (${node.kind}, agent=${node.agentId})`);
+			yield { type: 'text', content: `\n[System: ▶ node "${current}" (${node.kind})]\n` };
+			// checkpoint（Step D）：节点边界落盘；sink 缺省时不落盘（零行为变更）。
+			await this._emitCheckpoint(request, runState);
+
+			// ─── 构造节点请求 ──────────────────────────────────────────
+			// agentId = node.agentId；agentGraph = graph（transfer_to_agent 可见 + 拦截）；
+			// systemAppend 注入；上一节点 handoff summary 作为首条 user 消息（inheritHandoff）。
+			const inheritHandoff = node.inheritHandoff !== false;
+			const handoffSummary = runState.graph?.handoffSummary;
+			const existingThread = runState.graph?.nodeThreads[current];
+			let nodeMessages: IAgentTurnRequest['messages'];
+			if (existingThread && existingThread.length > 0) {
+				// Step D(resume) 才会填充真实线程；v1 仅入口/手交接种子（见 EXIT_NODE 注记）。
+				nodeMessages = existingThread as unknown as IAgentTurnRequest['messages'];
+			} else if (current === graph.entryNodeId) {
+				nodeMessages = request.messages;
+			} else if (inheritHandoff && handoffSummary) {
+				nodeMessages = [{ role: 'user', content: handoffSummary }];
+			} else {
+				nodeMessages = [];
+			}
+			const nodeSystemPrompt = [request.systemPrompt, node.systemAppend].filter(Boolean).join('\n\n');
+
+			// 节点子请求不含 checkpointSink / resumeFrom：落盘只在图顶层（本方法）发生，
+			// resumeFrom 也只用于图起点一次；其余字段从 request 继承。
+			const { checkpointSink: _sink, resumeFrom: _resume, ...nodeRequestBase } = request;
+			const nodeRequest: IAgentTurnRequest = {
+				...nodeRequestBase,
+				agentId: node.agentId,
+				agentGraph: graph,
+				messages: nodeMessages,
+				systemPrompt: nodeSystemPrompt || undefined,
+				// 不把图外层 modelOverride 误传到子节点（节点用自身 agent 配置）
+				modelOverride: undefined,
+			};
+
+			// 每节点独立 turn 控制器（对齐 executeAgentTurn 的取消隔离）。
+			const turnKey = this._turnKey(node.agentId, request.sessionId);
+			const turnController = new AbortController();
+			this._activeTurnControllers.set(turnKey, turnController);
+			this._loopAbortController = turnController;
+
+			// ─── 执行节点 = 既有单 agent loop ─────────────────────────
+			let command: AgentCommand | undefined;
+			try {
+				command = yield* this._executeWithFallbackDirectly(nodeRequest);
+			} catch (err) {
+				runState = reduceRunState(runState, { type: 'SET_NODE_STATUS', nodeId: current, status: 'error' });
+				this._logService.error(`[AgentOS] runAgentGraph: node "${current}" failed`, err);
+				yield { type: 'error', content: `[System: node "${current}" failed: ${(err as Error)?.message ?? String(err)}]` };
+				break;
+			} finally {
+				this._activeTurnControllers.delete(turnKey);
+				if (this._loopAbortController === turnController) {
+					this._loopAbortController = undefined;
+				}
+			}
+
+			// ─── 退出节点：落地线程 + 写回共享黑板 / handoff ───────────
+			// 注：v1 将"输入线程"落地到 nodeThreads（Step D 接入 Step 5 snapshot 后，
+			// 改为捕获节点真实回复线程，使 resume 可从节点中间续跑）。图级共享状态
+			// （sharedMemory / handoffSummary / nodeStatus / currentNodeId）已正确持久。
+			runState = reduceRunState(runState, { type: 'EXIT_NODE', nodeId: current, messages: nodeMessages as unknown as AgentRunMessage[] });
+			if (command?.update) {
+				runState = reduceRunState(runState, { type: 'WRITE_SHARED_MEMORY', patch: command.update });
+			}
+			if (command?.summary !== undefined) {
+				runState = reduceRunState(runState, { type: 'SET_HANDOFF', summary: command.summary });
+			}
+
+			// ─── 路由到下一节点 ────────────────────────────────────────
+			const next = computeNextNode(graph, node, command);
+			this._logService.info(
+				`[AgentOS] runAgentGraph: node "${current}" → next "${next}" ` +
+				`(goto=${JSON.stringify(command?.goto ?? null)}, summary=${(command?.summary ?? '').slice(0, 60)})`,
+			);
+			// 更新续跑点（Step D）：即便崩溃，下次 resume 也从 next 节点继续，而非重跑本节点。
+			runState = reduceRunState(runState, { type: 'SET_CURRENT_NODE', nodeId: next });
+			await this._emitCheckpoint(request, runState);
+			current = next;
+		}
+
+		yield { type: 'done' };
+	}
+
+	/**
+	 * checkpoint 落盘（supervisor/goto Step D，存储无关）。
+	 * 仅当 request.checkpointSink 注入时持久化当前 runState 快照；缺省为 no-op（零行为变更）。
+	 * sink 抛错不影响图运行（仅记日志），保证 checkpoint 失败不阻断主流程。
+	 */
+	private async _emitCheckpoint(request: IAgentTurnRequest, runState: AgentRunState): Promise<void> {
+		if (!request.checkpointSink) { return; }
+		try {
+			const snapshot: AgentRunStateSnapshot = snapshotRunState(runState);
+			await request.checkpointSink(snapshot);
+		} catch (err) {
+			this._logService.error('[AgentOS] runAgentGraph checkpoint sink failed', err);
+		}
+	}
+
+
+
+
+
+	/**
 	 * 带 Fallback 的直接模型调用（含工具执行循环）
 	 *
 	 * 实现完整的 Agent Loop：
@@ -1023,12 +1551,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 *   4. 执行工具调用，将结果反馈给模型
 	 *   5. 循环直到模型不再调用工具或达到最大迭代次数
 	 */
-	private async *_executeWithFallbackDirectly(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
+	private async *_executeWithFallbackDirectly(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta, AgentCommand | undefined> {
 		const modelProvider = this._getActiveModelProvider();
 		if (!modelProvider) {
 			this._logService.warn('[AgentOS] No ModelProvider available');
 			yield* this._fallbackToDirectChat(request);
-			return;
+			return undefined;
 		}
 
 		const selection = this.getActiveModelSelection();
@@ -1037,14 +1565,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		if (!selection || !selection.modelId) {
 			this._logService.error('[AgentOS] No active model selection or modelId is empty');
 			yield { type: 'error', content: 'No model selected. Please select a model from the toolbar.' };
-			return;
+			return undefined;
 		}
 
 		// ─── 1. 收集启用的工具（含 MCP 工具等待）─────────────────────
 		// MCP 服务器连接和工具枚举是异步的：McpToolProvider 的 autorun 在
 		// server.tools observable 变化后才填充 _routes。如果用户在 workbench
 		// 启动后立即发消息，MCP 工具可能尚未就绪。这里在首次执行时做一次短轮询等待。
-		let enabledTools = await this._getEnabledTools(request.agentId);
+		let enabledTools = await this._getEnabledTools(request.agentId, request.agentGraph, request.toolsetsOverride, this._resolveHardPermission(request));
 		this._logService.info(`[AgentOS] Direct mode: initial ${enabledTools.length} enabled tools for agent ${request.agentId}`);
 		// 仅首次执行时，如果初始没有 MCP 工具，等待最多 3 秒让 MCP 服务器完成连接
 		const mcpToolCount0 = enabledTools.filter(t => t.category?.startsWith('mcp:')).length;
@@ -1059,13 +1587,26 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		this._logService.info(`[AgentOS] Direct mode tools: ${enabledTools.length} total (${mcpToolNames.length} MCP: [${mcpToolNames.join(', ')}], ${builtinToolNames.length} builtin: [${builtinToolNames.slice(0, 10).join(', ')}${builtinToolNames.length > 10 ? '...' : ''}])`);
 
 		// ─── 2. 初始化消息历史 ─────────────────────────────────────
+		// 对齐 Hermes TOOL_USE_ENFORCEMENT_GUIDANCE + MiMo beast.txt：
+		// 对 DeepSeek 等需要显式引导的模型族，自动在 system prompt 末尾注入
+		// 工具使用强制指令——"说了要做就必须在同一轮发出 tool_call，否则不要停"。
+		let effectiveSystemPrompt = request.systemPrompt;
+		if (effectiveSystemPrompt) {
+			const modelId = (selection?.modelId ?? '').toLowerCase();
+			const needsEnforcement = AgentOSService.TOOL_USE_ENFORCEMENT_MODELS.some(m => modelId.includes(m));
+			if (needsEnforcement && !effectiveSystemPrompt.includes('TOOL_USE_ENFORCEMENT')) {
+				effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${AgentOSService.TOOL_USE_ENFORCEMENT_GUIDANCE}`;
+				this._logService.info(`[AgentOS] Appended tool-use enforcement guidance for model ${selection.modelId}`);
+			}
+		}
+
 		let messages: any[];
-		if (request.systemPrompt) {
+		if (effectiveSystemPrompt) {
 			messages = [
-				{ role: 'system', content: request.systemPrompt },
+				{ role: 'system', content: effectiveSystemPrompt },
 				...request.messages,
 			];
-			this._logService.info(`[AgentOS] Prepended systemPrompt (${request.systemPrompt.length} chars) as system message`);
+			this._logService.info(`[AgentOS] Prepended systemPrompt (${effectiveSystemPrompt.length} chars) as system message`);
 		} else {
 			messages = request.messages as any[];
 		}
@@ -1118,7 +1659,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				request.sessionId || '',
 				recallQuery,
 				recallOptions,
-			);
+			) ?? { longTermMemories: [], shortTermMemories: [], injectedContext: '' };
 
 				// P7: 注入幂等去重 — 同一 session 只注入一次 agentmemory-context
 				// 后续轮次 memoryProvider 的 _sessionContextCache 会命中（返回相同 context），
@@ -1234,7 +1775,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 							break;
 						}
 					}
-					messages.splice(insertIdx, 0, {
+					messages = insertMessages(messages, insertIdx, {
 						role: 'system',
 						content: result,
 					});
@@ -1302,7 +1843,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					break;
 				}
 			}
-			messages.splice(insertIdx, 0, durableCtxMsg);
+			messages = insertMessages(messages, insertIdx, durableCtxMsg);
 			this._logService.info(
 				`[AgentOS] Injected durable context (${durableCtxMsg.content.length} chars, ` +
 				`ledger entries: ${this._delegationLedger.getAllEntries().length})`
@@ -1310,31 +1851,52 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		}
 
 		// ─── 3. Agent Loop（带工具执行） ─────────────────────────
-		// 初始化循环级 AbortController — 用于超时和取消
-		this._loopAbortController = new AbortController();
+		// 复用 executeAgentTurn 建立的 per-turn AbortController（多窗口取消隔离）。
+		// 兜底：若不存在（理论上 executeAgentTurn 一定已建）则就地新建并登记。
+		const turnKey = this._turnKey(request.agentId, request.sessionId);
+		let turnController = this._activeTurnControllers.get(turnKey);
+		if (!turnController) {
+			turnController = new AbortController();
+			this._activeTurnControllers.set(turnKey, turnController);
+		}
+		this._loopAbortController = turnController;
+		// 本 turn 的取消信号 —— 沿调用链传给工具执行方法，避免并发窗口读到被覆盖的 this 字段。
+		const turnAbortSignal = turnController.signal;
 		this._approvalService.reset(); // 新会话重置审批记忆
 		const MAX_TOOL_ITERATIONS = 50;
 		let iteration = 0;
-		let invalidToolNameCount = 0;
 
-		// ─── Tool Call Loop Detection（借鉴 OpenClaw `detectToolCallLoop`）──────────
-		// 检测同一工具+相同参数的重复调用，防止 LLM 陷入死循环。
-		// OpenClaw 风格参数化配置：5 种检测器阈值可调。
-		const TOOL_LOOP_WINDOW = 10;       // 检查窗口（OpenClaw: 30）
-		const TOOL_LOOP_THRESHOLD = 3;      // generic_repeat 阈值（OpenClaw warn: 10, critical: 20）
-		const _toolCallHistory: Array<{ name: string; argsHash: string }> = [];
+		// ─── 未完成轮安全续跑计数器（对齐 OpenClaw attempt-scoped 重试）──────
+		// 声明为 loop 局部：单次 turn 内跨 iteration 累计，达到上限即放弃续跑。
+		// 不进 runState（与 iteration 同为 graph runtime 局部量），但受次数上限保护，
+		// 不会形成无限循环。
+		let reasoningOnlyRetryAttempts = 0;
+		let emptyResponseRetryAttempts = 0;
+		let lengthTruncatedRetryAttempts = 0;
+		// 维度 3：瞬态错误（SSE 超时/网络/429/5xx）重试计数器，单次 turn 内累计
+		let transientErrorRetries = 0;
+			// 本轮 provider 结束原因（finish_reason / stop_reason），每轮迭代重置。
+		let lastFinishReason: string | undefined;
 
-		function detectToolCallLoop(name: string, args: Record<string, unknown>): { loop: boolean; count: number } {
-			const argsHash = JSON.stringify(args ?? {}).slice(0, 200);
-			const signature = `${name}:${argsHash}`;
-			let count = 0;
-			for (const h of _toolCallHistory) {
-				if (`${h.name}:${h.argsHash}` === signature) { count++; }
-			}
-			_toolCallHistory.push({ name, argsHash });
-			if (_toolCallHistory.length > TOOL_LOOP_WINDOW) { _toolCallHistory.shift(); }
-			return { loop: count >= TOOL_LOOP_THRESHOLD, count: count + 1 };
-		}
+		// ─── 工具失败连续计数（对齐 Hermes-Agent `_tool_failure_recovery_hint` 的增强版）──
+		// 追踪同一工具的连续失败次数。达到阈值时注入 <system-reminder> 引导 LLM
+		// 仔细阅读错误消息并换策略，避免盲目重试消耗迭代（详见日志：skill_create 名称缺失×3）。
+		// 按工具名分组；任意工具成功后或调用 change 时全局清零。
+		const _toolConsecutiveFailures = new Map<string, number>();
+		const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
+
+		// ─── AgentRunState（reducer 化 Step 3）────────────────────────────────
+		// 跨 iteration 的业务状态（非法工具名计数 / 续跑计数 / 反思计数 / 文件修改标记 /
+		// 强制 tool_choice 标志 / 工具调用历史 等）统一收口进不可变 reducer，
+		// 取代原先散落的 `let` 控制变量。messages 仍由 loop 局部 `let messages` 管理
+		// （Step 2 已收口写入），将在 Step 5 并入此 state 做 snapshot。
+		// iteration 作为 while 循环步进计数器保留为 loop 局部（对齐 LangGraph：
+		// step 计数属 graph runtime，不进 state schema）。
+		// 真实 prompt token 按 agentId::sessionId 双键隔离，避免同 agent 多 session
+		// 并行时压缩触发估算互相污染。
+		let runState: AgentRunState = createInitialRunState({
+			lastRealPromptTokens: this._lastRealPromptTokensByAgent.get(this._turnKey(request.agentId, request.sessionId)) ?? 0,
+		});
 
 		// ─── 工具失败恢复提示（借鉴 Hermes-Agent `_tool_failure_recovery_hint`）──
 		// Hermes-Agent: 工具失败后注入针对性恢复建议，引导 LLM 换方案而非盲目重试。
@@ -1364,8 +1926,6 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		// ─── Plan-Execute-Reflect 反思阶段跟踪 ───────────────────
 		// 当 LLM 完成工具调用并给出最终回复后，注入反思提示让它检查是否有遗漏。
 		// 参考 OpenSearch ML Commons 的 PLAN_EXECUTE_AND_REFLECT 模式。
-		let hasModifiedFiles = false;   // 是否执行过文件修改类工具（写入/编辑/删除）
-		let reflectCount = 0;           // 反思阶段计数（最多 1 次）
 		const MAX_REFLECT_ITERATIONS = 1;
 		// 文件修改类工具名集合 — 仅在这些工具被使用后才触发反思
 		const FILE_MODIFICATION_TOOLS = new Set([
@@ -1389,31 +1949,60 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		this._setCurrentModel(modelProvider, selection.modelId);
 		// 解析模型真实上下文窗口（token），用于计算压缩阈值
 		const compressionWindow = await this._resolveContextWindow(modelProvider, selection.modelId);
+
+		// ─── 检索式上下文：每轮 turn 开始前独立注入（对齐 agentmemory mem::context）──
+		// 把记忆检索从「仅压缩时」提前到每轮 llm_streaming 前：turn 开始时即检索相关
+		// 对话上下文并作为独立 system 消息注入，使 LLM 每轮都能拿到历史记忆；同时把
+		// 当前消息增量外置到记忆（含本 turn 新到的 user 消息），保证首轮压缩也有数据、
+		// 彻底去除首次 37s。仅在 RETRIEVAL_COMPACTION_ENABLED 开启时执行。
+		if (RETRIEVAL_COMPACTION_ENABLED) {
+			const rp = this.getActiveMemoryProvider();
+			if (rp && (rp as any).recallFormatted) {
+				try {
+					// 1) 增量外置：先把当前 messages（含本 turn 新到的 user 消息 + 历史）
+					//    写进记忆（await 保证落盘），保证本 turn 内触发压缩时 recallFormatted
+					//    已有数据可取，彻底去除首次 37s。
+					await this._storeTurnObservations(rp, request.agentId ?? 'default', request.sessionId ?? '', messages);
+					// 2) 检索相关上下文并注入为独立 system 消息（前缀与 contextManager
+					//    INJECTED_CONTEXT_PREFIX 一致，压缩时会被剥离，避免与摘要重复）。
+					const r = await this._retrieveContextOnly(
+						rp, request.agentId ?? 'default', request.sessionId ?? '', messages,
+						Math.floor(compressionWindow * RETRIEVAL_BUDGET_RATIO),
+					);
+					if (r && r.context.trim()) {
+						messages = this._injectRetrievalSystemMessage(messages, r.context, r.source);
+						this._logService.info(
+							`[AgentOS][Retrieval] injected retrieved context at turn start ` +
+							`(source=${r.source}, ~${Math.ceil(r.context.length / 3)} tokens) for agent ${request.agentId}`
+						);
+						yield {
+							type: 'memory_injected',
+							content: `已检索注入历史上下文 (~${Math.ceil(r.context.length / 3)} tokens)`,
+							metadata: { source: r.source, retrieval: true },
+						} as any;
+					}
+				} catch (reErr) {
+					this._logService.warn(
+						`[AgentOS][Retrieval] turn-start retrieval failed: ` +
+						`${reErr instanceof Error ? reErr.message : String(reErr)}`
+					);
+				}
+			}
+		}
+
 		// P1: 上一轮 LLM 响应回传的真实 prompt token（provider usage，含 cache）。
 		// compressContext 优先用它判定，取代低估的 char/4 粗估。首轮=0 自动退回粗估。
-		// 现在从实例字段读取，上一轮捕获的值会跨 turn 持久化，不再每轮归零。
-		let lastRealPromptTokens = this._lastRealPromptTokensByAgent.get(request.agentId) ?? 0;
-		// ─── 续跑兜底计数 ────────────────────────────────────────────────
-		// 某些模型（如 hy3-preview-ioa）在多轮 agent loop 中会把"接下来我要做 X"
-		// 当作最终回复输出，而不实际发出工具调用，导致任务半途而废。检测到这种
-		// "未完成意图"时注入一条续跑提示并重试，用计数器限制连续次数避免死循环。
-		let continuationNudgeCount = 0;
-		// 续跑兜底上限收紧为 2：超过 2 次仍只输出纯文本的模型，几乎可断定
-		// 它不会再真正调工具，继续 nudge 只是把同样的"宣告意图"文字反复喂回
-		// LLM 形成空转（token 一路累积、对话却毫无进展）。宁可提前收尾，也
-		// 不要无意义烧 token。
-		const MAX_CONTINUATION_NUDGES = 2;
-		// 当上一轮触发了续跑兜底时置位 —— 下一轮 modelOptions 注入
-		// toolChoice='required'，强制模型这一轮必须真正发出工具调用，
-		// 而不是再次用"好的，让我查看…"来回应续跑提示形成空转。
-		let forceToolChoiceNextIteration = false;
-		// 记录"上一轮是否已强制 tool_choice=required"。若强制后这一轮仍然
-		// 没有任何工具调用，说明该模型根本不遵守 required（如 hy3-preview-ioa），
-		// 再 nudge 也是徒劳 —— 直接结束，不再发起新的空转请求。
-		let lastIterationForcedToolChoice = false;
+		// 上一轮真实 prompt token 由 runState.lastRealPromptTokens 承载（初始值取自实例字段，
+		// 跨 turn 持久化，不再每轮归零）。
 
 		while (iteration < MAX_TOOL_ITERATIONS) {
 			iteration++;
+			// 每轮迭代重置上一轮的 finishReason（仅当前轮有效）
+			lastFinishReason = undefined;
+			// 每轮进入 LLM 推理前显式置 phase=llm_streaming（对齐 UI 广播，
+			// phase 进 runState 供 Step 5 checkpoint 读取）。压缩块内会切到
+			// 'compressing' 再切回 'llm_streaming'，runState.phase 跟随。
+			runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'llm_streaming' });
 			// Yield to the event loop every 5 iterations to prevent UI freeze
 			// during long-running agent loops (P2-6 fix).
 			if (iteration % 5 === 0) {
@@ -1428,13 +2017,21 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 3. yield context_compacted 回传压缩后 token 基线
 			// 4. yield phase_change='llm_streaming' 切回流式态
 			{
-				const compressionStartTime = Date.now();
-				const originalMessageCount = messages.length;
+			// P3: 廉价逐轮剪枝（无 LLM、不丢消息）—— 仅对最近 CHEAP_PRUNE_RECENT_KEEP 条之外的
+			// 旧 tool 输出做 head+tail 截断，约束 token 增长；受保护工具(skill/memory/...)原样保留。
+			// 对齐 MiMo prune.ts 的"活体边缘之外剪枝"，避免大输出持续累积撑爆窗口。
+			messages = ContextManager.pruneOldToolOutputs(
+				messages as unknown as ReadonlyArray<ChatMessage>,
+				ContextManager.CHEAP_PRUNE_RECENT_KEEP
+			) as unknown as typeof messages;
+
+			const compressionStartTime = Date.now();
+			const originalMessageCount = messages.length;
 				const originalEstimatedTokens = this._estimateMessagesTokens(messages);
 				this._logService.info(
-					`[AgentOS][Compression] BEFORE: messages=${originalMessageCount}, ` +
-					`estimatedTokens=${originalEstimatedTokens}, compressionWindow=${compressionWindow}, ` +
-					`lastRealPromptTokens=${lastRealPromptTokens}`
+				`[AgentOS][Compression] BEFORE: messages=${originalMessageCount}, ` +
+				`estimatedTokens=${originalEstimatedTokens}, compressionWindow=${compressionWindow}, ` +
+				`lastRealPromptTokens=${runState.lastRealPromptTokens}`
 				);
 
 				// 跨消息冷却期检查（ContextManager 每次新建，冷却期需在 AgentOSService 层持久化）
@@ -1465,16 +2062,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 									Math.floor(ctx.contextWindow * 0.05),
 									2000,
 								);
-								return memProviderForInject.onPreCompact!(ctx.agentId, ctx.sessionId, ctx.messages, injectBudget);
-							}
-							: undefined;
-						compressionResult = await contextManager.compressContext(
-							messages as unknown as ReadonlyArray<ChatMessage>,
-							undefined,
-							compressionWindow,
-							lastRealPromptTokens,
-							preCompactInject as any
-						);
+					return memProviderForInject.onPreCompact!(ctx.agentId, ctx.sessionId, ctx.messages, injectBudget);
+						}
+						: undefined;
+					// 检索式上下文回调（对齐 agentmemory mem::context）：从记忆系统
+					// 取回相关上下文替代同步 LLM 摘要。仅在 AgentMemory 可用时提供，
+					// 否则 compressContext 回退到原有 LLM 摘要路径（零行为变更）。
+					const memProviderForRetrieve = memProviderForInject;
+					const retrieveContext = (memProviderForRetrieve && (memProviderForRetrieve as any).recallFormatted)
+						? (r: any) => this._retrieveCompactionContext(memProviderForRetrieve as any, r)
+						: undefined;
+					compressionResult = await contextManager.compressContext(
+						messages as unknown as ReadonlyArray<ChatMessage>,
+						undefined,
+						compressionWindow,
+						runState.lastRealPromptTokens,
+						preCompactInject as any,
+						retrieveContext as any
+					);
 					} catch (compressionError) {
 						this._logService.error(
 							`[AgentOS][Compression] EXCEPTION during compressContext: ` +
@@ -1525,8 +2130,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				this._scheduleSave();
 			}
 				if (didCompress) {
-					this._lastCompressionTime = Date.now();
-					yield { type: 'phase_change', phase: 'compressing' };
+				this._lastCompressionTime = Date.now();
+				// 显式置 phase 后再广播，确保 loop 内部 phase 与 UI 同源（设计 §3.4）
+				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'compressing' });
+				yield { type: 'phase_change', phase: runState.phase };
 					// 捕获压缩前后文本（用于详情编辑器对比显示）
 					// 消息级别截断：只在消息边界截断，避免在消息块中间切断导致公共后缀匹配失败
 					const fmtBlock = (m: any) => `[${m.role ?? 'unknown'}] ${(typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')).slice(0, 300)}`;
@@ -1582,7 +2189,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						return parts.join('\n\n');
 					};
 					const beforeText = fmtListBefore(messages);
-					messages = [...compressionResult.compressedMessages] as any[];
+					// 收口到 compactMessages reducer（不可变换底），保留单点便于后续加 size guard / token 计费
+					messages = compactMessages(messages, compressionResult.compressedMessages as unknown as AgentRunMessage[]) as any[];
 
 					// Calculate compression metrics (needed by P4 injection budget and P0 summary write)
 					const compressedEstimatedTokens = this._estimateMessagesTokens(messages);
@@ -1633,6 +2241,38 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						}
 					}
 
+				// ── P4: Checkpoint 无损重建（极端压力兜底）────────────────────
+				// 当压力 ≥85% 窗口时，检查点重建比常规压缩更激进：
+				// 不调 LLM，复用既有摘要作为"检查点"，丢弃全部旧消息，只保留极短尾段。
+				// 对齐 MiMo checkpoint.ts 的丢弃重建——这是 context overflow 前的最后一道防线。
+				{
+					const postCompressTokens = this._estimateMessagesTokens(messages);
+					const postPressure = ContextManager.getPressureLevel(postCompressTokens, compressionWindow);
+					if (postPressure >= 3 && postCompressTokens > compressionWindow * 0.85) {
+						this._logService.warn(
+							`[AgentOS][Checkpoint] EXTREME pressure (${(postCompressTokens / compressionWindow * 100).toFixed(0)}%), ` +
+							`trying checkpoint rebuild (no LLM, aggressive cut)`
+						);
+						const checkpointResult = await contextManager.compressCheckpoint(
+							messages as unknown as ReadonlyArray<ChatMessage>,
+							compressionWindow,
+						);
+						const ckMeta = checkpointResult.metadata ?? {};
+						if (checkpointResult.compressedMessageCount < checkpointResult.originalMessageCount) {
+							messages = compactMessages(messages, checkpointResult.compressedMessages as unknown as AgentRunMessage[]) as any[];
+							this._logService.warn(
+								`[AgentOS][Checkpoint] REBUILT: ` +
+								`from ${checkpointResult.originalMessageCount}→${checkpointResult.compressedMessageCount} messages, ` +
+								`saved ${ckMeta.tokensSaved ?? 'n/a'} tokens, no LLM`
+							);
+						} else {
+							this._logService.warn(
+								`[AgentOS][Checkpoint] SKIPPED: ${ckMeta.skipped ?? 'no_saving'}`
+							);
+						}
+					}
+				}
+
 				const afterText = fmtListSequential(messages);
 				const finalEstimatedTokens = this._estimateMessagesTokens(messages);
 				yield {
@@ -1646,7 +2286,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						compressionAfterText: afterText,
 						compressionSummary: compressionResult.summary || '',
 					} as IChatStreamDelta;
-					yield { type: 'phase_change', phase: 'llm_streaming' };
+					// 压缩恢复后显式置 phase 再广播，与 SET_PHASE('compressing') 同源
+					runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'llm_streaming' });
+					yield { type: 'phase_change', phase: runState.phase };
 				}
 			}
 
@@ -1655,7 +2297,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 每轮迭代重新收集确保新可用的 MCP 工具被纳入 LLM 请求。
 			// 首轮使用循环前已收集（含等待）的 enabledTools；后续轮次刷新。
 			if (iteration > 1) {
-				const refreshed = await this._getEnabledTools(request.agentId);
+				const refreshed = await this._getEnabledTools(request.agentId, request.agentGraph, request.toolsetsOverride, this._resolveHardPermission(request));
 				if (refreshed.length !== enabledTools.length) {
 					const newMcp = refreshed.filter(t => t.category?.startsWith('mcp:')).map(t => t.name);
 					this._logService.info(`[AgentOS] Iteration ${iteration}: tools refreshed ${enabledTools.length} → ${refreshed.length} (MCP: [${newMcp.join(', ')}])`);
@@ -1663,26 +2305,34 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				enabledTools = refreshed;
 			}
 
-			// 构建模型选项（注入工具）
-			const modelOptions: IModelOptions = {
-				temperature: request.options?.temperature ?? 0.7,
-				maxTokens: request.options?.maxTokens ?? 4096,
-				systemPrompt: request.systemPrompt,
-				tools: enabledTools.length > 0 ? enabledTools : undefined,
-				stop: request.options?.stop,
-				// 续跑兜底：若上一轮检测到"未完成意图却没调工具"，本轮强制
-				// tool_choice='required'，逼模型真正动手。仅在有可用工具时生效。
-				toolChoice: (forceToolChoiceNextIteration && enabledTools.length > 0) ? 'required' : 'auto',
-				// 思考/推理配置：由聊天输入框 thinking UI 控件透传至此，
-				// 各 model provider 据此映射到原生 API 参数（thinking/thinkingConfig/reasoning_effort）。
-				reasoning: request.options?.reasoning,
-			};
-			if (forceToolChoiceNextIteration) {
-				this._logService.info(`[AgentOS] Iteration ${iteration}: forcing tool_choice=required (continuation nudge follow-up)`);
-			}
-			// 消费标志位（仅作用于紧接的这一轮）
-			lastIterationForcedToolChoice = forceToolChoiceNextIteration && enabledTools.length > 0;
-			forceToolChoiceNextIteration = false;
+		// ── Fork 前缀缓存（请求构造端接 ForkContext）─────────────────────────
+		// 计算本请求自身的冻结前缀（system + tools），并与父级 ForkContext 比对对齐。
+		// 对齐时请求构造端（MessageFormatConverter + BYOK provider）会在该前缀边界
+		// 注入 cache_control 断点 → 命中父级已写入的 prompt cache（而非重计费稳定大前缀）。
+		const currentFork = buildForkContext(request.systemPrompt ?? '', enabledTools);
+		if (request.sessionId) {
+			this._lastForkContextBySession.set(request.sessionId, currentFork);
+		}
+		const forkAligned = prefixCacheAligned(request.forkContext, request.systemPrompt ?? '', enabledTools);
+		this._logService.info(
+			`[AgentOS] Fork prefix-cache: aligned=${forkAligned} ` +
+			`parentFp=${request.forkContext?.toolsFingerprint ?? '(none)'} ` +
+			`childFp=${currentFork.toolsFingerprint} session=${request.sessionId ?? '(none)'}`,
+		);
+
+		// 构建模型选项（注入工具 + ForkContext）
+		const modelOptions: IModelOptions = {
+			temperature: request.options?.temperature ?? 0.7,
+			maxTokens: request.options?.maxTokens ?? 4096,
+			systemPrompt: request.systemPrompt,
+			tools: enabledTools.length > 0 ? enabledTools : undefined,
+			stop: request.options?.stop,
+			// 思考/推理配置：由聊天输入框 thinking UI 控件透传至此，
+			// 各 model provider 据此映射到原生 API 参数（thinking/thinkingConfig/reasoning_effort）。
+			reasoning: request.options?.reasoning,
+			// Fork 前缀缓存：透传父级 ForkContext 给请求构造端判对齐 + 打 cache 断点。
+			forkContext: request.forkContext,
+		};
 
 			// 调用模型
 			// 注意：抓包对齐的三个独立 id（不可混用）：
@@ -1727,9 +2377,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				this._logService.warn(`[AgentOS] ⚠ NO TOOLS at all in API request!`);
 			}
 
-			// 收集模型响应
-			let assistantContent = '';
-			let thinkingContent = '';
+		// 收集模型响应
+		let assistantContent = '';
+		let thinkingContent = '';
+		// 诊断：保留最后一个 usage delta 供 try-catch 外的 Model response 日志输出
+		let _lastUsageDelta: any = null;
 			// P0-leak-fix: accumulate streamed text in chunk arrays and join ONCE
 			// after the stream. Per-delta `assistantContent += delta.content` built a
 			// V8 ConsString rope (one node per delta) that ballooned heap usage.
@@ -1749,19 +2401,167 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			//   4. Any execution exception that bypasses results.push()
 			// We track started IDs and emit a synthetic tool_end with success=false
 			// for any ID that did not get a real tool_end before the iteration ends.
-			this._chatMessageStream = new AGUIChatMessageBuilder();
+			const chatMessageStream = new AGUIChatMessageBuilder();
 			const startedToolIds = new Set<string>();
 			const endedToolIds = new Set<string>();
 
 			try {
 				this._logService.info(`[AgentOS] modelProvider.chat: creating stream...`);
+				// ─── 发送前 tool 配对守卫（治本对抗 IOA 网关 HTTP 400 code 11133）─────
+				// 压缩(head/tail 切割)、冷却期跳过压缩、或历史回灌都可能留下
+				// 「assistant 发起 tool_call 但缺对应 tool 结果」的悬空调用。
+				// OpenAI/IOA 网关强制 tool_call 必须被对应 tool 结果应答，失配即
+				// 整轮 400。这里在真正发请求前把序列修成协议合法形态（纯函数，
+				// 无失配时保持等价，不改变正常流程）。
+				const _beforePairGuard = messages.length;
+				messages = ContextManager.sanitizeToolPairs(messages);
+				if (messages.length !== _beforePairGuard) {
+					this._logService.warn(`[AgentOS] Tool-pair guard: dropped ${_beforePairGuard - messages.length} orphan/dangling tool message(s) before send (${_beforePairGuard} → ${messages.length})`);
+				}
 				const t0_modelCall = Date.now();
-				const stream = modelProvider.chat(selection.modelId, messages, modelOptions, context);
+				// ─── 诊断：pre-call 快照（帮助定位"突然中断"）────────────
+				// 记录发出请求时的完整上下文状态：消息数、估算 token、真实 token、
+				// 压力等级（≥3 即 ≥85% 窗口，会触发 P4 checkpoint 重建）、
+				// 上次压缩距今时间、上次响应 id。事后可对照"中断时刻"的这些值。
+				{
+					const _est = this._estimateMessagesTokens(messages);
+					const _real = runState.lastRealPromptTokens ?? 0;
+					const _pressure = ContextManager.getPressureLevel(_real || _est, compressionWindow);
+					const _sinceCompress = this._lastCompressionTime > 0
+						? Math.round((Date.now() - this._lastCompressionTime) / 1000)
+						: -1;
+					this._logService.info(
+						`[AgentOS][Diag] PRE-CHAT snapshot | ` +
+						`iter=${iteration} model=${selection.modelId} convId=${conversationId} reqId=${requestId} | ` +
+						`msgs=${messages.length} enabledTools=${enabledTools.length} | ` +
+						`estTokens=${_est} realPromptTokens=${_real} compressionWindow=${compressionWindow} | ` +
+						`pressure=${_pressure}/3 (${compressionWindow > 0 ? Math.round((_real || _est) / compressionWindow * 100) : 0}%) | ` +
+						`lastCompressionAt=${_sinceCompress >= 0 ? _sinceCompress + 's ago' : 'never'} | ` +
+						`prevRespId=${previousResponseId ?? '(none)'} | ` +
+						`abortSignal=${this._loopAbortController?.signal?.aborted ? 'ABORTED' : 'active'}`
+					);
+				}
+				const rawStream = modelProvider.chat(selection.modelId, messages, modelOptions, context);
+			// 流式 idle 超时：模型静默挂起（无 delta 心跳超过阈值）时抛 TimeoutError，
+			// 由下方 catch 重新抛出并触发 _executeWithFallback 的备用模型切换（对齐 LangGraph TimeoutPolicy）。
+			const stream = withStreamTimeout(rawStream, this._modelStreamTimeoutPolicy, {
+				signal: this._loopAbortController?.signal,
+				log: (lvl, msg) => {
+					if (lvl === 'error') { this._logService.error(msg); }
+					else if (lvl === 'warn') { this._logService.warn(msg); }
+					else { this._logService.info(msg); }
+				},
+			});
 				let _firstDeltaReceived = false;
+				// ─── 诊断：per-delta 类型追踪 + heartbeat ─────────────────────
+				// 区分 text/reasoning/tool_call/usage/done 等 delta 类型并分别计数，
+				// 追踪"上一次文本 delta 距今多久"（流式 idle 监测），
+				// 定期 heartbeat 帮助事后还原"中断时刻"的流进度。
+				let _totalDeltas = 0;
+				let _textDeltas = 0;
+				let _textBytes = 0;
+				let _reasoningDeltas = 0;
+				let _reasoningBytes = 0;
+				let _toolCallDeltas = 0;
+				let _usageDeltas = 0;
+				let _otherDeltas = 0;
+				let _lastTextDeltaAt = 0;
+				let _lastReasoningDeltaAt = 0;
+				let _lastDeltaType = '';
+				let _lastHeartbeatAt = Date.now();
+				const _heartbeatMs = 5000;
+				// ── 诊断：per-delta 时间线（定位"46s 空窗"类问题）─────────────────
+				// 记录每个 delta 的时间戳 + 类型 + 内容预览，用于事后还原流的节奏。
+				// 完整记录（不截断数量），仅在 stream-end 时输出，避免逐 delta 打日志。
+				const _deltaTimeline: string[] = [];
+				let _prevDeltaAt = 0;
 				for await (const delta of stream) {
+					_totalDeltas++;
+					_lastDeltaType = String(delta.type ?? 'unknown');
+					const _deltaAt = Date.now();
+					// ── GAP 检测：>10s 的 delta 间空窗（定位"模型在等什么"）──
+					if (_prevDeltaAt > 0 && _deltaAt - _prevDeltaAt > 10_000) {
+						this._logService.warn(
+							`[AgentOS][Diag] DELTA GAP | ${_deltaAt - _prevDeltaAt}ms between delta #${_totalDeltas - 1} → #${_totalDeltas} | ` +
+							`elapsed=${Math.round((_deltaAt - t0_modelCall) / 1000)}s`
+						);
+					}
+					_prevDeltaAt = _deltaAt;
 					if (!_firstDeltaReceived) {
 						_firstDeltaReceived = true;
-						this._logService.info(`[AgentOS] modelProvider.chat: first delta received in ${Date.now() - t0_modelCall}ms`);
+						this._logService.info(
+							`[AgentOS] modelProvider.chat: first delta received in ${Date.now() - t0_modelCall}ms ` +
+							`(type=${_lastDeltaType})`
+						);
+					}
+					// ── 诊断：per-delta 时间线条目 ──
+					{
+						const _elapsed = _deltaAt - t0_modelCall;
+						let _preview = '';
+						if (delta.type === 'text' && delta.content) {
+							_preview = `"${String(delta.content).slice(0, 80)}"`;
+						} else if (delta.type === 'thinking' && (delta as any).content) {
+							_preview = `"${String((delta as any).content).slice(0, 80)}"`;
+						} else if (delta.type === 'tool_call' && delta.toolCall) {
+							_preview = `name=${delta.toolCall.name ?? '(cont)'}`;
+						} else if (delta.type === 'usage' && delta.usage) {
+							const u = delta.usage;
+							_preview = `in=${u.inputTokens ?? 0} out=${u.outputTokens ?? 0} cached=${u.cachedTokens ?? 0}`;
+							_lastUsageDelta = u; // 保留供 POST-CHAT 输出
+							// ── 关键诊断：usage delta 到达时立即记录（尤其 outputTokens）──
+							// outputTokens 高 → 模型生成了大量 token 但未被捕获为 text/reasoning
+							// outputTokens 低 → 模型确实只生成了极少内容
+							this._logService.info(
+								`[AgentOS][Diag] USAGE delta | inputTokens=${u.inputTokens ?? 0} outputTokens=${u.outputTokens ?? 0} ` +
+								`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} | ` +
+								`textSoFar=${_textDeltas}(${_textBytes}B) reasoningSoFar=${_reasoningDeltas}(${_reasoningBytes}B) | ` +
+								`elapsed=${Math.round(_elapsed / 1000)}s`
+							);
+						} else if (delta.type === 'done') {
+							_preview = `finishReason=${delta.finishReason ?? '(none)'}`;
+							// ── 关键诊断：done delta 到达时立即记录 finishReason ──
+							this._logService.info(
+								`[AgentOS][Diag] DONE delta | finishReason=${delta.finishReason ?? '(none)'} | ` +
+								`elapsed=${Math.round(_elapsed / 1000)}s | ` +
+								`text=${_textDeltas}(${_textBytes}B) reasoning=${_reasoningDeltas}(${_reasoningBytes}B) toolCall=${_toolCallDeltas}`
+							);
+						}
+						_deltaTimeline.push(`#${_totalDeltas} t=${_elapsed}ms type=${_lastDeltaType} ${_preview}`);
+					}
+					// 按 delta 类型分类计数 + 时间戳
+					// IChatStreamDelta.type 联合：'text' | 'thinking' | 'tool_call' | 'usage' | 'error' | 'done'
+					if (delta.type === 'text' && delta.content) {
+						_textDeltas++;
+						_textBytes += (delta.content as string).length;
+						_lastTextDeltaAt = Date.now();
+					} else if (delta.type === 'thinking' && (delta as any).content) {
+						_reasoningDeltas++;
+						_reasoningBytes += String((delta as any).content).length;
+						_lastReasoningDeltaAt = Date.now();
+					} else if (delta.type === 'tool_call') {
+						_toolCallDeltas++;
+					} else if (delta.type === 'usage') {
+						_usageDeltas++;
+					} else {
+						_otherDeltas++;
+					}
+					// Heartbeat：每 5s 输出一次（除非刚刚有文本/推理 delta，否则会重复出现）
+					const _now = Date.now();
+					if (_now - _lastHeartbeatAt >= _heartbeatMs) {
+						const _sinceText = _lastTextDeltaAt > 0 ? Math.round((_now - _lastTextDeltaAt) / 1000) : -1;
+						const _sinceReasoning = _lastReasoningDeltaAt > 0 ? Math.round((_now - _lastReasoningDeltaAt) / 1000) : -1;
+						this._logService.info(
+							`[AgentOS][Diag] MID-STREAM heartbeat | ` +
+							`elapsed=${Math.round((_now - t0_modelCall) / 1000)}s | ` +
+							`totalDeltas=${_totalDeltas} text=${_textDeltas}(${_textBytes}B) ` +
+							`reasoning=${_reasoningDeltas}(${_reasoningBytes}B) ` +
+							`toolCall=${_toolCallDeltas} usage=${_usageDeltas} other=${_otherDeltas} | ` +
+							`lastDeltaType=${_lastDeltaType} | ` +
+							`sinceText=${_sinceText >= 0 ? _sinceText + 's' : 'none'} ` +
+							`sinceReasoning=${_sinceReasoning >= 0 ? _sinceReasoning + 's' : 'none'} | ` +
+							`abortSignal=${this._loopAbortController?.signal?.aborted ? 'ABORTED' : 'active'}`
+						);
+						_lastHeartbeatAt = _now;
 					}
 					// ─── 捕获响应流 id（抓包对齐）──────────────────────────────
 					// 抓包证据：响应流每个 chunk 的 id 相同，且 = 下一次请求的
@@ -1777,11 +2577,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					const u = delta.usage;
 					const realPrompt = (u.inputTokens ?? 0) + (u.cachedTokens ?? 0) + (u.cacheWriteTokens ?? 0);
 					if (realPrompt > 0) {
-						lastRealPromptTokens = realPrompt;
-						this._lastRealPromptTokensByAgent.set(request.agentId, realPrompt);
+						runState = reduceRunState(runState, { type: 'SET_LAST_PROMPT_TOKENS', value: realPrompt });
+						this._lastRealPromptTokensByAgent.set(this._turnKey(request.agentId, request.sessionId), realPrompt);
 						this._logService.info(
 							`[AgentOS][Compression] captured real prompt usage: inputTokens=${u.inputTokens ?? 0} ` +
-							`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${lastRealPromptTokens}`
+							`cached=${u.cachedTokens ?? 0} cacheWrite=${u.cacheWriteTokens ?? 0} → lastRealPromptTokens=${runState.lastRealPromptTokens}`
 						);
 					}
 					// ─── Dashboard 统计：累积 Token 用量 ──
@@ -1816,10 +2616,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					}
 				}
 				// 收集完整的助手消息数据
-					if (delta.type === 'text' && delta.content) {
-						_assistantChunks.push(delta.content);
-					} else if (delta.type === 'thinking' && delta.content) {
-						_thinkingChunks.push(delta.content);
+				// ─── 捕获 provider 本轮结束原因（finish_reason / stop_reason）──
+				// 供后续"未完成轮"结构判定（对齐 OpenClaw，无文本意图识别）。
+				if (delta.type === 'done' && delta.finishReason) {
+					lastFinishReason = delta.finishReason;
+				}
+				if (delta.type === 'text' && delta.content) {
+					_assistantChunks.push(delta.content);
+				} else if (delta.type === 'thinking' && delta.content) {
+					_thinkingChunks.push(delta.content);
 					} else if (delta.type === 'tool_call' && delta.toolCall) {
 						const tc = delta.toolCall;
 						if (tc.name) {
@@ -1845,8 +2650,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 					// 将 delta 适配并 yield 给调用者
 					// 同时更新统一 ChatMessage 格式（AG-UI → ChatMessage）
-					if (this._chatMessageStream) {
-						this._chatMessageStream.handlePart(delta as any);
+					if (chatMessageStream) {
+						chatMessageStream.handlePart(delta as any);
 					}
 					const adapted = this._adaptModelDelta(delta);
 					if (adapted) {
@@ -1881,9 +2686,70 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						}
 					}
 				}
-				this._logService.info(`[AgentOS] modelProvider.chat: stream ended after ${Date.now() - t0_modelCall}ms (firstDelta=${_firstDeltaReceived ? 'yes' : 'no'})`);
-			} catch (error) {
-				this._logService.error(`[AgentOS] Model call failed on iteration ${iteration}:`, error);
+				this._logService.info(
+					`[AgentOS] modelProvider.chat: stream ended after ${Date.now() - t0_modelCall}ms (firstDelta=${_firstDeltaReceived ? 'yes' : 'no'})`
+				);
+				// ─── 诊断：stream-end 详细快照 ────────────────────────────
+				// 记录流结束时所有 delta 的分类统计 + "最后文本 delta 距今多久"，
+				// 配合 POST-CHAT 后的"为什么空响应"分析，定位流是被谁中断的。
+				{
+					const _now = Date.now();
+					const _sinceText = _lastTextDeltaAt > 0 ? Math.round((_now - _lastTextDeltaAt) / 1000) : -1;
+					const _sinceReasoning = _lastReasoningDeltaAt > 0 ? Math.round((_now - _lastReasoningDeltaAt) / 1000) : -1;
+					const _outTokens = _lastUsageDelta?.outputTokens ?? 'n/a';
+					this._logService.info(
+						`[AgentOS][Diag] POST-CHAT stream-end | ` +
+						`elapsed=${Math.round((_now - t0_modelCall) / 1000)}s | ` +
+						`totalDeltas=${_totalDeltas} ` +
+						`text=${_textDeltas}(${_textBytes}B) ` +
+						`reasoning=${_reasoningDeltas}(${_reasoningBytes}B) ` +
+						`toolCall=${_toolCallDeltas} usage=${_usageDeltas} other=${_otherDeltas} | ` +
+						`lastDeltaType=${_lastDeltaType || '(none)'} ` +
+						`finishReason=${lastFinishReason ?? '(none)'} ` +
+						`outputTokens=${_outTokens} | ` +
+						`sinceText=${_sinceText >= 0 ? _sinceText + 's' : 'none'} ` +
+						`sinceReasoning=${_sinceReasoning >= 0 ? _sinceReasoning + 's' : 'none'} | ` +
+						`assistantContentLen=${assistantContent.length} toolCallsSoFar=${assistantToolCalls.length} | ` +
+						`abortSignal=${this._loopAbortController?.signal?.aborted ? 'ABORTED' : 'active'}`
+					);
+					// ── 诊断：per-delta 时间线（定位空窗/异常节奏）──
+					// 输出全部 delta 的时间戳+类型+预览，最多 50 条避免日志爆炸
+					if (_deltaTimeline.length > 0) {
+						const _tl = _deltaTimeline.length > 50
+							? [..._deltaTimeline.slice(0, 25), `... (${_deltaTimeline.length - 50} more) ...`, ..._deltaTimeline.slice(-25)]
+							: _deltaTimeline;
+						this._logService.info(
+							`[AgentOS][Diag] DELTA TIMELINE (${_deltaTimeline.length} deltas):\n${_tl.join('\n')}`
+						);
+					}
+				}
+		} catch (error) {
+			// 模型调用失败：显式置 phase=error（进 runState，供异常路径 checkpoint 读取）
+			runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'error' });
+			// ── 维度 3：瞬态错误重试（对齐 MiMo persistentRetrySchedule）────────
+			// SSE 超时 / 网络中断 / HTTP 429/5xx 等瞬态错误用指数退避重试，
+			// 避免 1 次瞬时抖动就中止整轮对话。TimeoutError 仍向上抛（触发 fallback 模型切换）。
+			const isTimeout = error instanceof DOMException && error.name === 'TimeoutError';
+			if (!isTimeout && isTransientStreamError(error) && transientErrorRetries < TRANSIENT_ERROR_MAX_RETRIES) {
+				transientErrorRetries++;
+				const delay = Math.min(
+					TRANSIENT_ERROR_BASE_DELAY_MS * Math.pow(TRANSIENT_ERROR_BACKOFF_FACTOR, transientErrorRetries - 1),
+					TRANSIENT_ERROR_MAX_DELAY_MS
+				);
+				this._logService.warn(
+					`[AgentOS] Transient stream error on iteration ${iteration}, ` +
+					`retrying in ${delay}ms (attempt ${transientErrorRetries}/${TRANSIENT_ERROR_MAX_RETRIES}): ` +
+					`${error instanceof Error ? error.message : String(error)}`
+				);
+				await new Promise(r => setTimeout(r, delay));
+				continue;  // 回到 while loop 重试
+			}
+			this._logService.error(`[AgentOS] Model call failed on iteration ${iteration}:`, error);
+				// 流式 idle 超时（模型静默挂起）：作为硬失败向上抛出，
+				// 经由 runAgentLoop → _executeWithFallback 切换到备用模型（对齐 LangGraph TimeoutPolicy）。
+				if (isTimeout) {
+					throw error;
+				}
 				// 如果是第一次迭代失败，尝试 fallback
 				if (iteration === 1) {
 					yield { type: 'error', content: `Model call failed: ${error instanceof Error ? error.message : String(error)}` };
@@ -1902,14 +2768,39 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				break;
 			}
 
-			// Finalize the last pending tool call from streaming assembly
-			if (toolCallAssembler.isActive) {
-				assistantToolCalls.push(toolCallAssembler.finalize());
-			}
+		// Finalize the last pending tool call from streaming assembly
+		if (toolCallAssembler.isActive) {
+			assistantToolCalls.push(toolCallAssembler.finalize());
+		}
 
-		this._logService.info(`[AgentOS] Model response: textLen=${assistantContent.length}, toolCalls=${assistantToolCalls.length}`);
-		if (assistantContent.length === 0 && assistantToolCalls.length === 0) {
-			this._logService.warn(`[AgentOS] Model returned empty response — no text and no tool calls. The model may not support tool calling or the prompt was too large.`);
+		// ─── Flatten accumulated streamed text exactly once (O(n), no ConsString ropes).
+		// MUST happen before any diagnostic log / empty-response check that reads
+		// assistantContent — otherwise the join hasn't run yet and textLen is always 0
+		// even when hundreds of text deltas were received (diagnostic false-positive).
+		assistantContent = _assistantChunks.join('');
+		thinkingContent = _thinkingChunks.join('');
+
+	this._logService.info(
+		`[AgentOS] Model response: textLen=${assistantContent.length}, toolCalls=${assistantToolCalls.length}` +
+		`, finishReason=${lastFinishReason ?? 'n/a'}, outputTokens=${_lastUsageDelta?.outputTokens ?? 'n/a'}`
+	);
+	if (assistantContent.length === 0 && assistantToolCalls.length === 0) {
+			// 诊断：空响应时刻的完整上下文快照（关键定位信息）
+			const _est = this._estimateMessagesTokens(messages);
+			const _real = runState.lastRealPromptTokens ?? 0;
+			const _pressure = ContextManager.getPressureLevel(_real || _est, compressionWindow);
+			const _sinceCompress = this._lastCompressionTime > 0
+				? Math.round((Date.now() - this._lastCompressionTime) / 1000)
+				: -1;
+			this._logService.warn(
+				`[AgentOS] Model returned empty response — no text and no tool calls. ` +
+				`Snapshot: iter=${iteration} msgs=${messages.length} estTokens=${_est} ` +
+				`realPromptTokens=${_real} compressionWindow=${compressionWindow} ` +
+				`pressure=${_pressure}/3 (${compressionWindow > 0 ? Math.round((_real || _est) / compressionWindow * 100) : 0}%) ` +
+				`lastCompressionAt=${_sinceCompress >= 0 ? _sinceCompress + 's ago' : 'never'} ` +
+				`maxTokens=${(modelOptions as any)?.maxTokens ?? 'n/a'} ` +
+				`abortSignal=${this._loopAbortController?.signal?.aborted ? 'ABORTED' : 'active'}`
+			);
 		}
 
 		// ─── 诊断日志：记录原生 tool calls 的名称 ──────────────────────
@@ -1917,11 +2808,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			this._logService.info(`[AgentOS] Native tool calls from API: ${assistantToolCalls.map(tc => tc.name).join(', ')}`);
 		}
 
-		// ─── 检查是否需要执行工具（含文本解析兜底）──────────────────
-			// Flatten accumulated streamed text exactly once (O(n), no ConsString ropes).
-			assistantContent = _assistantChunks.join('');
-			thinkingContent = _thinkingChunks.join('');
-			let effectiveToolCalls = assistantToolCalls;
+	// ─── 检查是否需要执行工具（含文本解析兜底）──────────────────
+		let effectiveToolCalls = assistantToolCalls;
 			if (effectiveToolCalls.length === 0 && assistantContent) {
 				// 尝试从纯文本中解析工具调用（兼容不严格遵循 OpenAI 格式的模型）
 				// 传入 enabledTools 以支持从纯参数 JSON 推断工具名
@@ -1962,12 +2850,14 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 
 			// ─── 白名单过滤原生工具调用 ──────────────────────────────────────
-			// 模型有时会幻觉出不存在的工具名（如 ForceGC）。在执行前过滤掉
-			// 不在 enabledTools 中的工具调用，避免无效执行和 repairToolName 误匹配。
-			if (effectiveToolCalls.length > 0 && enabledTools.length > 0) {
-				const toolNameSet = new Set(enabledTools.map(t => t.name));
+			// 模型可能在 agent 定义 / system prompt 中知晓某个工具（如 new_agent），
+			// 但它被 tool_search 桥接归入 deferred 池、未直接下发到 API tools 参数中。
+			// 此时模型直接调用该工具属于合法行为，不应被当作幻觉调用过滤掉。
+			// 因此白名单检查须基于全量已启用工具（不受 MAX_VISIBLE_TOOLS 截断影响），
+			// 而非仅可见工具子集（enabledTools）。
+			if (effectiveToolCalls.length > 0 && this._lastAllEnabledToolNames.size > 0) {
 				const validCalls = effectiveToolCalls.filter(tc => {
-					if (toolNameSet.has(tc.name)) { return true; }
+					if (this._lastAllEnabledToolNames.has(tc.name)) { return true; }
 					// 2026-07-03: 统一单套桥接 — 接受所有桥接工具调用（tool_search/tool_describe/tool_call）
 					if (isBridgeTool(tc.name)) { return true; }
 					if (PHANTOM_TOOL_NAMES.has(tc.name)) { return true; }
@@ -1976,14 +2866,29 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				});
 				if (validCalls.length < effectiveToolCalls.length) {
 					this._logService.info(`[AgentOS] Whitelist filtered native tool calls: ${effectiveToolCalls.length} → ${validCalls.length}`);
+					// 为被过滤的幻觉调用补 tool_result + tool_end，防止卡片永远转圈
+					for (const tc of effectiveToolCalls) {
+						if (validCalls.includes(tc)) { continue; }
+						yield { type: 'tool_result', content: `工具 "${tc.name}" 不在可用列表中（可能为幻觉调用）`, toolCallId: tc.id };
+						yield { type: 'tool_end', toolCallId: tc.id, success: false };
+						endedToolIds.add(tc.id);
+					}
 					effectiveToolCalls = validCalls;
 				}
 			}
 
 			// Deduplicate tool calls
+			const beforeDedup = effectiveToolCalls;
 			effectiveToolCalls = deduplicateToolCalls(effectiveToolCalls);
-			if (effectiveToolCalls.length < assistantToolCalls.length) {
-				this._logService.info(`[AgentOS] Deduplicated: ${assistantToolCalls.length} → ${effectiveToolCalls.length}`);
+			if (effectiveToolCalls.length < beforeDedup.length) {
+				this._logService.info(`[AgentOS] Deduplicated: ${beforeDedup.length} → ${effectiveToolCalls.length}`);
+				// 为被去重的工具补 tool_result + tool_end
+				for (const tc of beforeDedup) {
+					if (effectiveToolCalls.includes(tc)) { continue; }
+					yield { type: 'tool_result', content: `工具 "${tc.name}" 已去重（与其它调用重复）`, toolCallId: tc.id };
+					yield { type: 'tool_end', toolCallId: tc.id, success: false };
+					endedToolIds.add(tc.id);
+				}
 			}
 
 			// ─── Filter out phantom tool calls (render_type="None", default_show=false) ─────
@@ -2008,10 +2913,47 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 				return !isPhantom;
 			});
-			if (realToolCalls.length < effectiveToolCalls.length) {
-				this._logService.info(`[AgentOS] Filtered phantom tool calls: ${effectiveToolCalls.length} → ${realToolCalls.length}`);
-				effectiveToolCalls = realToolCalls;
+		if (realToolCalls.length < effectiveToolCalls.length) {
+			this._logService.info(`[AgentOS] Filtered phantom tool calls: ${effectiveToolCalls.length} → ${realToolCalls.length}`);
+			// 为被过滤的 phantom 工具补 tool_result + tool_end
+			for (const tc of effectiveToolCalls) {
+				if (realToolCalls.includes(tc)) { continue; }
+				yield { type: 'tool_result', content: `工具 "${tc.name}" 为 UI 指示器，已跳过`, toolCallId: tc.id };
+				yield { type: 'tool_end', toolCallId: tc.id, success: true };
+				endedToolIds.add(tc.id);
 			}
+			effectiveToolCalls = realToolCalls;
+		}
+
+		// ─── Supervisor handoff: 拦截 transfer_to_agent（来源 A, 设计 §3.3）────
+		// 多 agent 图模式下节点借 builtin 交接工具发出路由指令；此处拦截、不真正
+		// 执行，生成 AgentCommand 让 runAgentGraph（Step C）路由到下一节点。
+		// 单 agent 模式该工具已被 _getEnabledTools 过滤（不会到达此处）→ 零行为变更。
+		const handoffCall = effectiveToolCalls.find(tc => tc.name === TRANSFER_TO_AGENT_TOOL);
+		if (handoffCall) {
+			let parsed: Record<string, unknown> = {};
+			try {
+				parsed = typeof handoffCall.arguments === 'string'
+					? JSON.parse(handoffCall.arguments)
+					: (handoffCall.arguments as Record<string, unknown>) ?? {};
+			} catch { parsed = {}; }
+			const command = buildHandoffCommand(parsed, request.agentGraph);
+			// 标记结束，避免 UI 孤儿 tool_start 转圈
+			if (startedToolIds.has(handoffCall.id)) {
+				yield { type: 'tool_end', toolCallId: handoffCall.id, success: !!command };
+				endedToolIds.add(handoffCall.id);
+			}
+			if (command) {
+				runState = applyCommandToState(runState, command);
+				this._logService.info(`[AgentOS] Handoff → goto=${JSON.stringify(command.goto)}, summary=${(command.summary ?? '').slice(0, 80)}`);
+				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'idle' });
+				yield { type: 'done' };
+				return command;
+			}
+			// 无法生成 command（graph 缺失或 node_id 非法）：移除该 call，继续正常流程
+			this._logService.warn(`[AgentOS] transfer_to_agent present but no valid command (graph=${request.agentGraph ? 'present' : 'absent'}) — dropping handoff call`);
+			effectiveToolCalls = effectiveToolCalls.filter(tc => tc.name !== TRANSFER_TO_AGENT_TOOL);
+		}
 
 			// 将助手消息添加到消息历史
 			// 注意用 trim() 判定：被 sanitize 清洗后可能残留纯空白（'   ' / '\n'），
@@ -2034,7 +2976,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				if (effectiveToolCalls.length > 0) {
 					assistantMessage.toolCalls = effectiveToolCalls;
 				}
-				messages.push(assistantMessage);
+				messages = appendMessages(messages, assistantMessage);
 
 				// ─── Hermes-style 消息边界事件（治本根因修复）─────────────────
 				// 把"本 iteration 的 assistant 边界"显式告知下游持久化层，让 chatService
@@ -2051,71 +2993,92 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				};
 			}
 
-			if (effectiveToolCalls.length === 0) {
-				// ─── 强制工具选择无效 → 立即收尾，杜绝空转 ─────────────────────
-				// 上一轮已注入 tool_choice='required' 强制模型必须调工具，但这一轮
-				// 它依旧没有发出任何工具调用（如 hy3-preview-ioa 不遵守 required）。
-				// 再 nudge 也只会把同样的纯文本反复喂回 LLM 形成空转，直接结束。
-				if (lastIterationForcedToolChoice) {
+		if (effectiveToolCalls.length === 0) {
+			// ─── 未完成轮安全续跑（对齐 OpenClaw stopReason 结构判定，无文本意图识别）──
+			// 仅当本轮"无可见文本 + 无工具调用"才可能是未完成轮：
+			//   - 'reasoning-only'：只有思考块、无可见答案（模型想做但没落地）
+			//   - 'empty'：全空（既无文本也无思考、无工具调用）
+			//   - 'length'：被 token 上限截断（finishReason=length）
+			// 命中则在次数上限内注入续跑指令 + discard_prior_text（防历史污染），然后续跑；
+			// 超限则丢弃空/幻觉文本后正常结束。有可见文本（正常终轮）不触发。
+			const hasVisibleText = trimmedAssistantContent.length > 0;
+			const hasThinking = !!thinkingContent && thinkingContent.trim().length > 0;
+			const incompleteKind = classifyIncompleteTurn({
+				finishReason: lastFinishReason,
+				hasVisibleText,
+				hasThinking,
+				hasToolCalls: false,
+			});
+			const used =
+				incompleteKind === 'reasoning-only' ? reasoningOnlyRetryAttempts
+				: incompleteKind === 'length' ? lengthTruncatedRetryAttempts
+				: emptyResponseRetryAttempts;
+			// 维度 2+4：按 attempt 获取升级阶梯指令（L1 soft remind / L2 final chance）
+			const retryInstruction = resolveIncompleteTurnRetryInstruction(incompleteKind, used + 1);
+			if (retryInstruction && incompleteKind !== 'complete') {
+				const limit = incompleteTurnRetryLimit(incompleteKind);
+				if (used < limit) {
+					if (incompleteKind === 'reasoning-only') { reasoningOnlyRetryAttempts++; }
+					else if (incompleteKind === 'length') { lengthTruncatedRetryAttempts++; }
+					else { emptyResponseRetryAttempts++; }
 					this._logService.warn(
-						`[AgentOS] Model ignored tool_choice=required and still produced no tool call — ending to avoid empty-message spin loop`
+						`[AgentOS] Incomplete turn detected (kind=${incompleteKind}, finishReason=${lastFinishReason ?? 'n/a'}, attempt=${used + 1}/${limit}) — safe retry`,
 					);
-					yield { type: 'done' };
-					break;
+					// 丢弃本轮空/幻觉文本，避免污染历史（对齐 discard_prior_text 基础设施）
+					yield { type: 'discard_prior_text', metadata: { reason: incompleteTurnDiscardReason(incompleteKind) } };
+					// 注入续跑指令作为下一轮 user 边界，让模型产出可见答案 / 真正动手
+					messages = appendMessages(messages, { role: 'user', content: retryInstruction });
+					continue;
 				}
+				this._logService.warn(
+					`[AgentOS] Incomplete turn retries exhausted (kind=${incompleteKind}, finishReason=${lastFinishReason ?? 'n/a'}) — ending conversation`,
+				);
+			// 超限：丢弃空/幻觉文本后正常结束，避免把污染内容喂回模型
+			yield { type: 'discard_prior_text', metadata: { reason: incompleteTurnDiscardReason(incompleteKind) } };
+		}
 
-				// ─── 续跑兜底：检测"未完成意图"────────────────────────────────
-				// 模型返回纯文本但文末明显在声明"接下来要做某事"（却没真正发出工具
-				// 调用）时，注入一条续跑提示让它真正去调工具，而不是直接结束。
-				// 仅在：① 本轮无工具调用 ② 有非空白文本 ③ 文末匹配未完成意图
-				// ④ 未超过最大续跑次数 时触发。
-				if (
-					trimmedAssistantContent &&
-					continuationNudgeCount < MAX_CONTINUATION_NUDGES &&
-					this._looksLikeUnfinishedIntent(trimmedAssistantContent)
-				) {
-					continuationNudgeCount++;
-					this._logService.info(
-						`[AgentOS] Detected unfinished intent without tool call — injecting continuation nudge (${continuationNudgeCount}/${MAX_CONTINUATION_NUDGES})`
-					);
-					// 置位：下一轮 modelOptions 注入 tool_choice='required'，从 API
-					// 层面强制模型这一轮必须发出工具调用，而不是再用"好的，让我查看…"
-					// 回应续跑提示形成空转。这是治本手段——单纯的自然语言劝说对
-					// "不爱调工具"的模型几乎无效。
-					forceToolChoiceNextIteration = true;
-					// 把这条"宣告意图"的助手消息已 push 进 messages（上方），
-					// 再补一条 user 提示，要求它真正调用工具继续。
-					messages.push({
-						role: 'user',
-						content:
-							'你刚才只是用文字描述了接下来打算做什么，但并没有真正发起工具调用，任务没有任何实际进展。' +
-							'现在请立即发起对应的工具调用（如查看文件/目录、执行命令、搜索代码等）来真正推进任务，' +
-							'不要再用"让我查看…""接下来我将…"这类描述性文字代替实际动作。' +
-							'若你确实判断任务已全部完成，再直接给出最终总结。',
-					});
-					// Reconcile orphaned tool_starts before next iteration
-					for (const orphanId of startedToolIds) {
-						if (!endedToolIds.has(orphanId)) {
-							const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Tool was not executed (continuation nudge)' })));
-							yield { type: 'tool_result', content: orphanResultStr, toolCallId: orphanId };
-							yield { type: 'tool_end', toolCallId: orphanId, success: false };
-							endedToolIds.add(orphanId);
-						}
-					}
-					continue; // 进入下一轮迭代
-				}
+		// ─── Text-without-tools in retry context（结构化信号，非文本意图识别）──
+		// 场景：上一轮空响应触发 retry（emptyResponseRetryAttempts > 0），retry 后模型
+		// 产出了可见文本但仍无 tool_call。对编码 Agent，这通常是"描述了计划但没动手"。
+		// 结构信号：hasVisibleText && !hasToolCalls && emptyResponseRetryAttempts > 0
+		// ——不分析文本内容，仅凭"retry 上下文 + 有文无工具"判定。
+		// 复用 emptyResponseRetryAttempts 计数器，受 incompleteTurnRetryLimit('empty') 上限保护。
+		// 不 discard_prior_text：保留模型计划文本作上下文，让模型在下一轮看到自己的计划并执行。
+		if (
+			incompleteKind === 'complete' &&
+			hasVisibleText &&
+			emptyResponseRetryAttempts > 0 &&
+			emptyResponseRetryAttempts < incompleteTurnRetryLimit('empty')
+		) {
+			emptyResponseRetryAttempts++;
+			const toolActionReminder = [
+				'<system-reminder>',
+				'You produced text in the previous step but did not call any tools.',
+				'If you were describing a plan or approach, STOP DESCRIBING and TAKE ACTION NOW.',
+				'Call the appropriate tool(s) to execute what you just described.',
+				'Do not output another plan, description, or summary without taking action.',
+				'If the task genuinely requires no tool calls and is complete,',
+				'explicitly state "Task complete, no further action needed."',
+				'</system-reminder>',
+			].join('\n');
+			this._logService.warn(
+				`[AgentOS] Text-without-tools in retry context (emptyRetryAtt=${emptyResponseRetryAttempts}/${incompleteTurnRetryLimit('empty')}, textLen=${trimmedAssistantContent.length}) — injecting tool-action reminder`,
+			);
+			messages = appendMessages(messages, { role: 'user', content: toolActionReminder });
+			continue;
+		}
 
-				// 没有工具调用 — 检查是否需要反思阶段
+			// 没有工具调用 — 检查是否需要反思阶段
 				// ─── Plan-Execute-Reflect 模式 ──────────────────────────
 				// 当 LLM 执行过工具并给出最终回复后，注入反思提示让它自查是否有遗漏。
 				// 参考 OpenSearch ML Commons 的 PLAN_EXECUTE_AND_REFLECT Agent 类型。
-				if (hasModifiedFiles && reflectCount < MAX_REFLECT_ITERATIONS && trimmedAssistantContent) {
-					reflectCount++;
-					this._logService.info(`[AgentOS] Entering reflect phase (${reflectCount}/${MAX_REFLECT_ITERATIONS})`);
+				if (runState.hasModifiedFiles && runState.reflectCount < MAX_REFLECT_ITERATIONS && trimmedAssistantContent) {
+					runState = reduceRunState(runState, { type: 'REFLECT' });
+					this._logService.info(`[AgentOS] Entering reflect phase (${runState.reflectCount}/${MAX_REFLECT_ITERATIONS})`);
 					// Reconcile orphaned tool_starts before reflect
 					for (const orphanId of startedToolIds) {
 						if (!endedToolIds.has(orphanId)) {
-							const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Tool was not executed (reflect phase)' })));
+							const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ note: '工具在反思阶段已跳过' })));
 							yield { type: 'tool_result', content: orphanResultStr, toolCallId: orphanId };
 							yield { type: 'tool_end', toolCallId: orphanId, success: false };
 							endedToolIds.add(orphanId);
@@ -2123,7 +3086,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					}
 					// 注入反思提示，让 LLM 检查工作是否有遗漏
 					yield { type: 'text', content: '\n\n---\n**[Reflection Phase]** Reviewing completed work...' };
-					messages.push({
+					messages = appendMessages(messages, {
 						role: 'user',
 						content:
 							'Before finalizing, please review your completed work:\n' +
@@ -2138,20 +3101,22 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 
 				// 反思已完成或无需反思 — 真正结束
-				this._logService.info('[AgentOS] No tool calls, ending conversation' + (reflectCount > 0 ? ` (after ${reflectCount} reflect phase(s))` : ''));
+				this._logService.info('[AgentOS] No tool calls, ending conversation' + (runState.reflectCount > 0 ? ` (after ${runState.reflectCount} reflect phase(s))` : ''));
 				// Reconcile orphaned tool_starts before ending (e.g., phantom tools
 				// that were filtered out had a tool_start but no execution path).
 				for (const orphanId of startedToolIds) {
 					if (!endedToolIds.has(orphanId)) {
 						this._logService.warn(`[AgentOS] Orphaned tool_start at end-of-conversation: ${orphanId} — emitting synthetic tool_result + tool_end`);
-						const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Tool was not executed (conversation ended before execution)' })));
+						const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ note: '工具未执行（对话已结束）' })));
 						yield { type: 'tool_result', content: orphanResultStr, toolCallId: orphanId };
-						yield { type: 'tool_end', toolCallId: orphanId, success: false };
-						endedToolIds.add(orphanId);
-					}
+					yield { type: 'tool_end', toolCallId: orphanId, success: false };
+					endedToolIds.add(orphanId);
 				}
-				yield { type: 'done' };
-				break;
+			}
+			// 真正结束前显式置 phase=idle（对齐 UI 结束态，phase 进 runState 供 checkpoint 读取）
+			runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'idle' });
+			yield { type: 'done' };
+			break;
 			}
 
 			// ─── 分离 serverExecuted 工具（服务端已执行，跳过本地执行）──────────
@@ -2161,7 +3126,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// 标记是否使用了文件修改类工具（用于反思阶段判断）
 			if (effectiveToolCalls.length > 0) {
 				for (const tc of effectiveToolCalls) {
-					if (FILE_MODIFICATION_TOOLS.has(tc.name)) { hasModifiedFiles = true; break; }
+					if (FILE_MODIFICATION_TOOLS.has(tc.name)) { runState = reduceRunState(runState, { type: 'MARK_FILE_MODIFIED' }); break; }
 				}
 			}
 			//
@@ -2216,7 +3181,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					// 但如果所有工具都是 serverExecuted 且即将 break，则无需添加
 					// （因为不会再有下一轮迭代）。
 					if (localExecutedCalls.length > 0) {
-						messages.push({
+						messages = appendMessages(messages, {
 							role: 'tool',
 							content: serverResultStr,
 							toolCallId: tc.id,
@@ -2260,6 +3225,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// flushes to the UI at its real completion time. We collect into
 			// `toolResults` for the message history while streaming.
 			const canParallel = shouldParallelizeToolBatch(localExecutedCalls);
+			// 防止沙箱确认重提示死循环：同一 toolCallId 在一个迭代内只提示一次，
+			// 重执行后若仍被拦截（如持久化失败）则不再提示，直接保留失败。
+			const handledSandboxIds = new Set<string>();
 			const toolResults: Array<{ toolCallId: string; content: any; success: boolean }> = [];
 			// If all tool calls were server-executed, skip the local execution block entirely.
 		if (localExecutedCalls.length > 0) {
@@ -2269,7 +3237,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				const rawArgs = typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments ?? {});
 				let args: Record<string, unknown>;
 				try { args = JSON.parse(rawArgs) as Record<string, unknown>; } catch { args = {}; }
-				const { loop, count } = detectToolCallLoop(tc.name, args);
+				const argsHash = JSON.stringify(args ?? {}).slice(0, 200);
+				const { loop, count } = detectToolCallLoop(runState.toolCallHistory, tc.name, args);
+				// 无论是否 loop，都记录到历史（对齐原内联函数无条件 push）
+				runState = reduceRunState(runState, { type: 'RECORD_TOOL_CALL', name: tc.name, argsHash });
 				if (loop) {
 					this._logService.warn(`[AgentOS] Tool call loop detected: "${tc.name}" called ${count} times with same args — blocking`);
 					return false;  // 阻止执行
@@ -2286,14 +3257,15 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						success: false,
 					});
 					yield { type: 'tool_start', content: '', toolCallId: tc.id, toolName: tc.name };
-					yield { type: 'tool_result', content: `Error: Loop detected for "${tc.name}"`, toolCallId: tc.id };
+					yield { type: 'tool_result', content: `工具 "${tc.name}" 因重复调用已被跳过（疑似循环）`, toolCallId: tc.id };
 					yield { type: 'tool_end', toolCallId: tc.id, success: false };
+					endedToolIds.add(tc.id);
 				}
 				if (filteredCalls.length === 0) {
 					// 全部被阻止 → 跳过执行，直接进入下一轮
 					this._logService.warn(`[AgentOS] All ${localExecutedCalls.length} tool calls blocked by loop detection`);
 					for (const tr of toolResults) {
-						messages.push({ role: 'tool', content: (tr.content[0] as any)?.text ?? '', toolCallId: tr.toolCallId });
+						messages = appendMessages(messages, { role: 'tool', content: (tr.content[0] as any)?.text ?? '', toolCallId: tr.toolCallId });
 					}
 					continue;
 				}
@@ -2301,25 +3273,50 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 			// ── Hook: pre_tool_use ────────────────────────────────────────
 			if (memoryProvider?.triggerHook) {
-				for (const tc of localExecutedCalls) {
-					memoryProvider.triggerHook('pre_tool_use', {
-						agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
-						toolName: tc.name, toolCallId: tc.id,
-					}).catch(() => {});
-				}
+			for (const tc of localExecutedCalls) {
+				memoryProvider.triggerHook('pre_tool_use', {
+					agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
+					toolName: tc.name, toolCallId: tc.id,
+				}).catch(() => {});
 			}
-			try {
-					if (canParallel) {
+		}
+		// 进入工具执行前显式置 phase=tool_executing（对齐 UI 广播，phase 进 runState 供 checkpoint 读取）
+		runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'tool_executing' });
+		try {
+			if (canParallel) {
 						// Streaming parallel: yield as each tool finishes, in completion order.
-						for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId, request.worktreePath)) {
+						for await (const toolResult of this._executeToolCallsParallelStreaming(localExecutedCalls, request.agentId, request.worktreePath, turnAbortSignal)) {
 							toolResults.push(toolResult);
 							// R1: per-tool-call observe (对齐 agentmemory PostToolUse Hook → mem::observe)
 							this._observeToolResult(request.agentId, toolResult);
+							// ── 连续失败追踪 ─────────────────────────────────
+							const _tc = localExecutedCalls.find(c => c.id === toolResult.toolCallId);
+							const _tname = _tc?.name ?? 'unknown';
+							if (!toolResult.success) {
+								_toolConsecutiveFailures.set(_tname, (_toolConsecutiveFailures.get(_tname) ?? 0) + 1);
+								// 达到阈值时注入 system-reminder，引导 LLM 读错误信息并换策略
+								if ((_toolConsecutiveFailures.get(_tname) ?? 0) >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+									this._logService.warn(
+										`[AgentOS][Diag] Tool "${_tname}" failed ${MAX_CONSECUTIVE_TOOL_FAILURES}+ times consecutively — injecting system-reminder`,
+									);
+									const reminder = [
+										'<system-reminder>',
+										`The tool "${_tname}" has failed ${MAX_CONSECUTIVE_TOOL_FAILURES} times in a row.`,
+										'READ THE ERROR MESSAGE CAREFULLY and fix the specific issue instead of retrying with similar arguments.',
+										'If you are unsure about the correct parameters, use a different tool or ask the user for clarification.',
+										'Do NOT retry with the same pattern — each failure costs a turn.',
+										'</system-reminder>',
+									].join('\n');
+									messages = appendMessages(messages, { role: 'user', content: reminder });
+								}
+							} else {
+								_toolConsecutiveFailures.clear(); // 成功重置
+							}
 							const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
 							const resultStr = !toolResult.success
 								? appendRecoveryHint(rawStr, toolResult.toolCallId)
 								: rawStr;
-							messages.push({
+							messages = appendMessages(messages, {
 								role: 'tool',
 								content: resultStr,
 								toolCallId: toolResult.toolCallId,
@@ -2339,31 +3336,80 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					} else {
 						// Serial path: keep old behavior (each tool naturally finishes
 						// sequentially so head-of-line blocking is not an issue here).
-						const serial = await this._executeToolCalls(localExecutedCalls, request.agentId, request.worktreePath);
+						const serial = await this._executeToolCalls(localExecutedCalls, request.agentId, request.worktreePath, turnAbortSignal);
 						for (const toolResult of serial) {
-							toolResults.push(toolResult);
+							// ─── 沙箱确认（完整暂停等待）──────────────────────────
+							// 工具因安全沙箱限制失败时，暂停 agent loop，向原生 chat
+							// 弹出确认卡片，等待用户决策（允许本次 / 允许此工作区 /
+							// 改用建议路径 / 取消），再按决策重执行或保留失败。
+							const sr = toolResult as unknown as { toolCallId: string; content: any; success: boolean; metadata?: { sandboxViolation?: ISandboxViolationInfo } };
+							let finalResult = toolResult;
+							if (!sr.success && this._isSandboxViolation(sr) && !handledSandboxIds.has(sr.toolCallId)) {
+								handledSandboxIds.add(sr.toolCallId);
+								const v = sr.metadata!.sandboxViolation!;
+								const tc = localExecutedCalls.find(c => c.id === toolResult.toolCallId);
+								const toolName = tc?.name ?? toolResult.toolCallId;
+								const confirmationId = `sandbox-${toolResult.toolCallId}-${Date.now().toString(36)}`;
+								const cf = this._buildSandboxConfirmationCard(toolName, v);
+								cf.id = confirmationId;
+								// 渲染确认卡片（原生 pane 的 _processDelta 处理 confirmation delta）
+								yield { type: 'confirmation', confirmationData: cf };
+								const decision = await this._awaitSandboxConfirmation(confirmationId);
+								yield {
+									type: 'confirmation_resolved',
+									confirmationId,
+									confirmationStatus: this._mapDecisionToCardStatus(decision),
+								};
+								if (tc) {
+									finalResult = await this._reExecuteAfterSandbox(
+										tc, request.agentId, request.worktreePath, turnAbortSignal, decision, v,
+									);
+								}
+							}
+							toolResults.push(finalResult);
 							// R1: per-tool-call observe
-							this._observeToolResult(request.agentId, toolResult);
-							const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(toolResult.content)));
-							const resultStr = !toolResult.success
-								? appendRecoveryHint(rawStr, toolResult.toolCallId)
+							this._observeToolResult(request.agentId, finalResult);
+							// ── 连续失败追踪 ─────────────────────────────────
+							const _stc = localExecutedCalls.find(c => c.id === finalResult.toolCallId);
+							const _stname = _stc?.name ?? 'unknown';
+							if (!finalResult.success) {
+								_toolConsecutiveFailures.set(_stname, (_toolConsecutiveFailures.get(_stname) ?? 0) + 1);
+								if ((_toolConsecutiveFailures.get(_stname) ?? 0) >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+									this._logService.warn(
+										`[AgentOS][Diag] Tool "${_stname}" failed ${MAX_CONSECUTIVE_TOOL_FAILURES}+ times consecutively — injecting system-reminder`,
+									);
+									const reminder = [
+										'<system-reminder>',
+										`The tool "${_stname}" has failed ${MAX_CONSECUTIVE_TOOL_FAILURES} times in a row.`,
+										'READ THE ERROR MESSAGE CAREFULLY and fix the specific issue instead of retrying with similar arguments.',
+										'If unsure about the correct parameters, use a different tool or ask the user.',
+										'</system-reminder>',
+									].join('\n');
+									messages = appendMessages(messages, { role: 'user', content: reminder });
+								}
+							} else {
+								_toolConsecutiveFailures.clear();
+							}
+							const rawStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(finalResult.content)));
+							const resultStr = !finalResult.success
+								? appendRecoveryHint(rawStr, finalResult.toolCallId)
 								: rawStr;
-							messages.push({
+							messages = appendMessages(messages, {
 								role: 'tool',
 								content: resultStr,
-								toolCallId: toolResult.toolCallId,
+								toolCallId: finalResult.toolCallId,
 							});
 							yield {
 								type: 'tool_result',
 								content: resultStr,
-								toolCallId: toolResult.toolCallId,
+								toolCallId: finalResult.toolCallId,
 							};
 							yield {
 								type: 'tool_end',
-								toolCallId: toolResult.toolCallId,
-								success: toolResult.success,
+								toolCallId: finalResult.toolCallId,
+								success: finalResult.success,
 							};
-							endedToolIds.add(toolResult.toolCallId);
+							endedToolIds.add(finalResult.toolCallId);
 						}
 					}
 				} catch (execErr) {
@@ -2379,7 +3425,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						};
 						toolResults.push(errResult);
 						const resultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult(errResult.content)));
-						messages.push({
+						messages = appendMessages(messages, {
 							role: 'tool',
 							content: resultStr,
 							toolCallId: tc.id,
@@ -2434,7 +3480,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			for (const orphanId of startedToolIds) {
 				if (!endedToolIds.has(orphanId)) {
 					this._logService.warn(`[AgentOS] Orphaned tool_start without tool_end: ${orphanId} — emitting synthetic tool_result + tool_end (success=false)`);
-					const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ error: 'Tool was not executed (may have been filtered, deduplicated, or no provider found)' })));
+					const orphanResultStr = sanitizeToolResultText(limitToolResultSize(safeStringifyToolResult({ note: '工具未执行（可能已被过滤、去重或无匹配的 provider）' })));
 					yield {
 						type: 'tool_result',
 						content: orphanResultStr,
@@ -2458,9 +3504,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					return content.includes('does not exist') || content.includes('not available');
 				});
 				if (allNotFound) {
-					invalidToolNameCount++;
-					if (invalidToolNameCount >= MAX_INVALID_TOOL_RETRIES) {
-						this._logService.warn(`[AgentOS] Too many invalid tool name attempts (${invalidToolNameCount}), ending loop`);
+					runState = reduceRunState(runState, { type: 'INVALID_TOOL_NAME' });
+					if (runState.invalidToolNameCount >= MAX_INVALID_TOOL_RETRIES) {
+						this._logService.warn(`[AgentOS] Too many invalid tool name attempts (${runState.invalidToolNameCount}), ending loop`);
 						yield { type: 'done' };
 						break;
 					}
@@ -2568,10 +3614,22 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 		} // end while
 
+		// ─── 每轮 turn 结束：把本轮新增对话增量外置到记忆（延续检索式上下文，
+		// 而非只在压缩时才外置），供后续 turn 检索取回，逐步累积历史上下文。──
+		if (RETRIEVAL_COMPACTION_ENABLED) {
+			const rpEnd = this.getActiveMemoryProvider();
+			if (rpEnd && (rpEnd as any).recallFormatted) {
+				await this._storeTurnObservations(rpEnd, request.agentId ?? 'default', request.sessionId ?? '', messages);
+			}
+		}
+
 		if (iteration >= MAX_TOOL_ITERATIONS) {
 			this._logService.warn(`[AgentOS] Reached max tool iterations (${MAX_TOOL_ITERATIONS})`);
 			yield { type: 'done' };
 		}
+		// 显式 return undefined：generator TReturn = AgentCommand | undefined，
+		// 覆盖函数末尾自然结束路径（对齐 TS7030 要求所有路径返回值）。
+		return undefined;
 	}
 
 	/**
@@ -2582,7 +3640,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 *   2. Dispatch 层 (toolSearchDispatcher.ts): catalog + BM25 + scope 门控
 	 *   3. Executor 层 (本文件): unwrap tool_call 为真实工具名，走完整 guardrail/approval 链
 	 */
-	private async _getEnabledTools(agentId: string): Promise<IToolDefinition[]> {
+	private async _getEnabledTools(agentId: string, agentGraph?: AgentGraph, toolsetsOverride?: string[], hardPermission?: IHardPermissionPolicy): Promise<IToolDefinition[]> {
 		// 类型别名：工具定义 + 运行时 toolset 推断 + enabled 状态
 		type TTool = IToolDefinition & { enabled: boolean; toolset: string };
 
@@ -2594,6 +3652,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 		const allWithState = await this.listAllToolsWithState(agentId);
 		const enabled = allWithState.filter(t => t.enabled) as TTool[];
+		// 缓存全量已启用工具名（不受 MAX_VISIBLE_TOOLS 截断影响，供白名单过滤用）
+		this._lastAllEnabledToolNames = new Set(enabled.map(t => t.name));
 
 		// 多维缓存键（对齐 Hermes `model_tools.get_tool_definitions` 的 cache_key）
 		// 维度：agentId | registryGeneration | configFingerprint | contextWindow | 工具状态快照
@@ -2610,8 +3670,10 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		if (cached) {
 			this._cachedToolDefs.delete(cacheKey); // 移到末尾（LRU 语义）
 			this._cachedToolDefs.set(cacheKey, cached);
-			this._logService.info(`[AgentOS] _getEnabledTools: cache hit — ${cached.length} tools (gen=${this._registryGeneration}, ctxWin=${contextWindow ?? '?'})`);
-			return cached;
+		this._logService.info(`[AgentOS] _getEnabledTools: cache hit — ${cached.length} tools (gen=${this._registryGeneration}, ctxWin=${contextWindow ?? '?'})`);
+		// hardPermission:INVARIANT layer applied AFTER cache (so the unfiltered list
+		// stays cached and chatMode toggles re-evaluate correctly).
+		return applyHardPermission(cached, hardPermission);
 		}
 
 		// 缓存未命中：清理可能存在的旧版本（不同 ctxWindow 会有多个旧 key）
@@ -2623,20 +3685,39 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 		}
 
-		// Step 1: 分离 MCP 工具，标记为 'mcp' toolset（Medium 优先级，可延迟）
+		// Step 1: 分离 MCP 工具，按服务器创建动态 toolset（对齐 Hermes-Agent `mcp-{server}` 模式）
 		const mcpOriginal = enabled.filter(t => t.category?.startsWith('mcp:'));
 		const builtin = enabled.filter(t => !t.category?.startsWith('mcp:'));
+
+		// 提取 MCP 服务器名并创建 per-server toolset
+		// category 格式: "mcp:server_name" → toolset: "mcp-server_name"
+		const mcpToolsetByServer = new Map<string, string[]>(); // server → tool names
+		for (const t of mcpOriginal) {
+			const server = (t.category as string).replace(/^mcp:/, '');
+			if (!mcpToolsetByServer.has(server)) {
+				mcpToolsetByServer.set(server, []);
+			}
+			mcpToolsetByServer.get(server)!.push(t.name);
+		}
+		if (mcpToolsetByServer.size > 0) {
+			const servers = [...mcpToolsetByServer.entries()].map(([s, tools]) => `${s}(${tools.length})`).join(', ');
+			this._logService.info(`[AgentOS] _getEnabledTools: MCP servers detected — ${servers}`);
+		}
 
 		// Step 2: 推断 toolset（toolsetConfig 的 auto-infer）
 		const tagged: TTool[] = builtin.map(t => ({
 			...t,
 			toolset: (t.toolset ?? getToolsetForTool(t.name)) as string,
 		}));
-		// MCP 工具统一标记为 'mcp' toolset，参与装配管线（对齐 Hermes）
-		const mcpTagged: TTool[] = mcpOriginal.map(t => ({
-			...t,
-			toolset: 'mcp',  // Medium priority, deferrable
-		}));
+		// MCP 工具按服务器分配独立 toolset：`mcp-{server}`（对齐 Hermes-Agent `mcp-{server}`）
+		// 每个 toolset 有 Medium 优先级且可延迟，单独可控
+		const mcpTagged: TTool[] = mcpOriginal.map(t => {
+			const server = (t.category as string).replace(/^mcp:/, '');
+			return {
+				...t,
+				toolset: `mcp-${server}`,  // 动态 toolset，Medium priority, deferrable
+			};
+		});
 
 		// Step 3: Agent.tools[] + enabledToolsets + disabledToolsets 配置过滤
 		const agentTools = this._getAgentToolsConfig(agentId);
@@ -2650,11 +3731,18 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		if (!agentToolsets?.length) {
 			const focusResult = await this._detectFocusModeIfNeeded();
 			if (focusResult.mode === 'focus' && focusResult.recommendedToolsets.length > 0) {
-				const focusSet = new Set(focusResult.recommendedToolsets);
-				const beforeFocus = scoped.length;
-				scoped = scoped.filter(t =>
-					focusSet.has(t.toolset) || isBridgeTool(t.name)
-				);
+			const focusSet = new Set(focusResult.recommendedToolsets);
+			// 后向兼容：focus 模式推荐了 'mcp'（旧的统一 toolset），
+			// 也需匹配新的动态 `mcp-{server}` toolset(s)
+			const hasMcpLegacy = focusSet.has('mcp');
+			const beforeFocus = scoped.length;
+			scoped = scoped.filter(t =>
+				focusSet.has(t.toolset) || isBridgeTool(t.name)
+				// Core protection: Always-priority tools survive focus narrowing
+				|| getToolsetPriority(t.toolset) === ToolsetPriority.Always
+				// 动态 MCP toolset: 当 focus 模式包含旧式 'mcp' 时，允许所有 mcp-{server}
+				|| (hasMcpLegacy && t.toolset.startsWith('mcp-'))
+			);
 				this._logService.info(`[AgentOS] _getEnabledTools: focus mode auto-applied [${focusResult.recommendedToolsets.join(', ')}] (${focusResult.reason}) -> ${scoped.length}/${beforeFocus} tools`);
 			}
 		}
@@ -2671,6 +3759,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const toolSet = new Set(agentTools);
 			scoped = allTagged.filter(t =>
 				toolSet.has(t.name) || isBridgeTool(t.name)
+				// Core protection: an explicit `tools` allowlist narrows OPTIONAL
+				// tools, but must not strip Always-priority core tools (e.g.
+				// delegate_task). The `tools` field is an allowlist of extras, not a
+				// way to disable core capabilities.
+				|| getToolsetPriority(t.toolset) === ToolsetPriority.Always
 			);
 			this._logService.info(`[AgentOS] _getEnabledTools: agent ${agentId} tools config -> ${scoped.length}/${allTagged.length}`);
 		}
@@ -2706,53 +3799,50 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 		}
 
+		// Step 3d: per-request toolset scope override (v17, delegation).
+		// When the caller (delegate_task) asks for a narrowed toolset scope, keep
+		// only tools whose toolset is in the override set (plus bridge tools, which
+		// are the discovery mechanism). This lets a parent constrain what a
+		// sub-agent may do. Undefined → no narrowing (current behavior preserved).
+		if (toolsetsOverride?.length) {
+			const overrideSet = new Set(toolsetsOverride);
+			const beforeOverride = scoped.length;
+			scoped = scoped.filter(t =>
+				overrideSet.has(t.toolset) || isBridgeTool(t.name)
+			);
+			this._logService.info(`[AgentOS] _getEnabledTools: toolsetsOverride [${toolsetsOverride.join(', ')}] -> ${scoped.length}/${beforeOverride} tools`);
+		}
+
 		// MCP 工具名集合（用于 passthrough 模式下移除直发 MCP 工具，统一通过 tool_search 发现）
 		const mcpToolNameSet = new Set(mcpOriginal.map(t => t.name));
 
-		// Step 4: 按优先级填充 30 个名额
-		// 2026-07-03: MCP 工具归入 'mcp' toolset (Medium 优先级)，但不进 direct 列表
-		// 全部走 tool_search 路径（对齐 Hermes-Agent 单套桥接）
-		const MAX = 30;
-		const byPriority = (p: ToolsetPriority) => scoped.filter(t => getToolsetPriority(t.toolset) === p);
-		const direct = [...byPriority(ToolsetPriority.Always), ...byPriority(ToolsetPriority.High)];
-		const rem = MAX - direct.length;
-		if (rem > 0) {
-			const med = byPriority(ToolsetPriority.Medium).filter(t => !mcpToolNameSet.has(t.name));
-			const low = byPriority(ToolsetPriority.Low);
-			direct.push(...med.slice(0, rem));
-			const afterMed = rem - med.length;
-			if (afterMed > 0) { direct.push(...low.slice(0, afterMed)); }
-		}
-
-		// Step 5: Assembly 层
-		// 直接给 assembleToolDefs 的工具集：direct + 全部 MCP 工具 + 非 MCP 的 deferrable
-		// MCP 工具是 isToolsetDeferrable=true，会被 classifyTools 归入 deferrable
-		// 当 Tool Search 激活时统一用 tool_search/tool_describe/tool_call 替换
-		const included = new Set(direct.map(t => t.name));
-		const nonMcpDeferred = scoped.filter(t =>
-			!included.has(t.name) && isToolsetDeferrable(t.toolset) && !mcpToolNameSet.has(t.name)
-		);
-		const allDeferred = [...nonMcpDeferred, ...mcpTagged];
-		const assembly = assembleToolDefs([...direct, ...allDeferred], {
-			contextLength: contextWindow,  // 实时查表的 context length（对齐 Hermes）
-			config: DEFAULT_TOOL_SEARCH_CONFIG,
+		// Step 4: Assembly 层（对齐 Hermes-Agent model_tools.py:534-562）
+		// 将所有工具（非 MCP + MCP）传给 assembleToolDefs。
+		// classifyTools → isDeferrableTool() 自动正确分离：
+		//   - visible: 核心工具（isCoreTool / isCoreToolset / Always 优先级）
+		//   - deferrable: MCP + 非核心可 defer 工具
+		// 移除了原有的优先级填槽（MAX=30 硬上限）——
+		//   核心工具永远直接发送，不做数量截断。
+		//   Token 预算阈值（10% 上下文窗口）仍限制 deferrable schema 总大小。
+		const nonMcpScoped = scoped.filter(t => !mcpToolNameSet.has(t.name));
+		const tsConfig = this._getToolSearchConfig();
+		const assembly = assembleToolDefs([...nonMcpScoped, ...mcpTagged], {
+			contextLength: contextWindow,
+			config: tsConfig,
 		});
-		// assembleToolDefs 在未激活时返回全部工具（passthrough），无需额外处理
 		let finalTools = assembly.toolDefs;
 
-		// Step 5b: passthrough 模式下精选 MCP 工具直发（借鉴 OpenClaw directory 模式）
-		// 不发送全部 66 个 MCP schema（太大），但直发 3-6 个关键 codebase 工具的精简版 schema
-		// （仅 name + description，不含完整 inputSchema），让 LLM 知道这些工具存在。
-		// 其余 MCP 工具仍然通过 tool_search 发现。
+		// Step 5b: passthrough 时 MCP 工具直发
+		// 移除硬上限后（P0），核心工具数量不受限，MCP schema 大小由 token 预算阈值控制。
+		// passthrough 时不再移除 MCP 工具 —— 直接发送给 LLM，
+		// 避免 codebase 等关键工具因 tool_search 发现消耗额外迭代。
 		if (!assembly.activated && mcpOriginal.length > 0) {
-			// 不直发 MCP schema（会导致 API 400），仅保留桥接工具
-			finalTools = finalTools.filter(td => !mcpToolNameSet.has(td.name));
-			this._logService.info(`[AgentOS] _getEnabledTools: passthrough — removed ${mcpOriginal.length} MCP direct tools (API safe), discoverable via tool_search`);
+			this._logService.info(`[AgentOS] _getEnabledTools: passthrough — ${mcpOriginal.length} MCP tools sent directly to LLM (no hard cap, token budget safe)`);
 		}
 
 		// 缓存 Assembly + Dispatcher（Executor 层使用）
 		this._lastAssembly = assembly;
-		this._lastDispatcherCtx = buildDispatcherContext(assembly, DEFAULT_TOOL_SEARCH_CONFIG);
+		this._lastDispatcherCtx = buildDispatcherContext(assembly, tsConfig);
 
 		// Step 6: 桥接工具排前面
 		const BRIDGE_NAMES: Set<string> = new Set([
@@ -2770,12 +3860,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 		// 日志
 		if (mcpOriginal.length) {
-			this._logService.info(`[AgentOS] _getEnabledTools: ${mcpOriginal.length} MCP tools — ${assembly.activated ? 'folded into unified bridge' : 'deferred behind tool_search'}`);
+			this._logService.info(`[AgentOS] _getEnabledTools: ${mcpOriginal.length} MCP tools — ${assembly.activated ? 'folded into unified bridge' : 'sent directly (passthrough, token budget safe)'}`);
 		}
 		if (assembly.activated) {
 			this._logService.info(`[AgentOS] _getEnabledTools: Tool Search activated — ${assembly.deferredCount} deferred (~${assembly.deferredTokens} tokens, thresh ~${assembly.thresholdTokens})`);
 		}
 		this._logService.info(`[AgentOS] _getEnabledTools: ${finalTools.length}/${enabled.length}/${allWithState.length} tools (assembly-driven) for ${agentId}`);
+
+		// ─── Supervisor handoff 工具可见性（Step B, 设计 §3.3）──────────────
+		// transfer_to_agent 仅在多 agent 图模式（≥2 节点）暴露；单 agent 模式 /
+		// 非图运行：从工具列表移除，模型看不到 → 永不触发 → 零行为变更。
+		if (!agentGraph || Object.keys(agentGraph.nodes).length < 2) {
+			const before = finalTools.length;
+			finalTools = finalTools.filter(t => t.name !== TRANSFER_TO_AGENT_TOOL);
+			if (before !== finalTools.length) {
+				this._logService.info(`[AgentOS] _getEnabledTools: handoff tool filtered out (not a multi-agent graph) -> ${finalTools.length}/${before} tools`);
+			}
+		}
 
 		const result = finalTools.map(({ enabled: _, toolset: __, ...toolDef }) => toolDef);
 		// 排序：codebase 分析工具 + 桥接工具排在前面（对齐 OpenClaw toolOrder）
@@ -2793,8 +3894,32 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		});
 		// 更新 LRU 缓存
 		this._cachedToolDefs.set(cacheKey, result);
+		// hardPermission:INVARIANT layer applied AFTER cache (so chatMode toggles
+		// re-evaluate correctly; the cached `result` is the unfiltered list).
 		this._logService.info(`[AgentOS] _getEnabledTools: cache miss — computed ${result.length} tools (gen=${this._registryGeneration}, ctxWin=${contextWindow ?? '?'})`);
-		return result;
+		return applyHardPermission(result, hardPermission);
+	}
+
+	/**
+	 * Resolve the hard-permission policy for a turn. hardPermission is an INVARIANT
+	 * layer applied AFTER all toolset/allowlist filtering in `_getEnabledTools` — tools
+	 * it denies can never be re-enabled by config or approval (MiMo hardPermission).
+	 * Currently: plan mode locks every write/execute tool.
+	 */
+	private _resolveHardPermission(request: IAgentTurnRequest): IHardPermissionPolicy | undefined {
+		if (request.chatMode === 'plan') {
+			return planModeHardPermission();
+		}
+		return undefined;
+	}
+
+	/**
+	 * 返回某会话最近一次迭代计算出的冻结前缀（ForkContext），用于 fork 会话时抓取父级
+	 * 冻结 system+tools，使子会话请求与父级前缀对齐 → 命中 provider prompt cache。
+	 * 会话从未运行过则返回 undefined。
+	 */
+	getForkContext(sessionId: string): IForkContext | undefined {
+		return this._lastForkContextBySession.get(sessionId);
 	}
 
 	// _filterToolsForLLM 已被三层分离架构替代（Assembly 层 → assembleToolDefs）
@@ -2923,6 +4048,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		args: Record<string, unknown>,
 		agentId: string | undefined,
 		toolCallId: string,
+		abortSignal?: AbortSignal,
 	): Promise<IToolResult> {
 		// 确保 dispatcher context 可用（_getEnabledTools 已构建，这是防御）
 		if (!this._lastDispatcherCtx || !this._lastAssembly) {
@@ -2947,11 +4073,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		const underlyingArgs = dispatchResult.underlyingArgs ?? {};
 		this._logService.info(`[AgentOS] Bridge tool_call unwrapped → executing "${underlyingName}" (args=${JSON.stringify(underlyingArgs).slice(0, 200)})`);
 
-		// 一次收集所有工具（用于 approval lookup + provider 匹配）
+		// 一次收集所有工具 + 记录每个工具所属的 provider
 		const providers = this._slotRegistry.getToolProviders();
 		const allTools: IToolDefinition[] = [];
+		// provider 来源追踪：key = toolName, value = provider
+		const providerByTool = new Map<string, typeof providers[number]>();
 		for (const p of providers) {
-			try { allTools.push(...await p.listTools(agentId ?? '')); } catch { /* ignore */ }
+			try {
+				const ptools = await p.listTools(agentId ?? '');
+				allTools.push(...ptools);
+				for (const t of ptools) { providerByTool.set(t.name, p); }
+			} catch { /* ignore */ }
 		}
 		const targetTool = allTools.find(t => t.name === underlyingName);
 		if (!targetTool) {
@@ -2972,18 +4104,31 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			};
 		}
 
-		// 执行真实工具（超时保护）
+		// 执行真实工具 — 优先使用已记录的 provider（避免二次 listTools 数据竞争）
+		const knownProvider = providerByTool.get(underlyingName);
 		const timeoutMs = getTimeoutForTool(underlyingName, targetTool, targetTool.source);
+		if (knownProvider) {
+			try {
+				return await executeWithRetryAndTimeout(
+					knownProvider, agentId ?? '',
+					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs },
+					{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+				);
+			} catch (err) {
+				this._logService.warn(`[AgentOS] Bridge tool_call: "${underlyingName}" via ${knownProvider.id}: ${sanitizeToolError(err)}`);
+			}
+		}
+		// 回退：遍历所有 provider 查找
 		for (const p of providers) {
+			if (p === knownProvider) { continue; } // 已经试过
 			try {
 				const ptools = await p.listTools(agentId ?? '');
 				if (ptools.some(t => t.name === underlyingName)) {
-					return await executeWithTimeout(
-						p, agentId ?? '',
-						{ id: toolCallId, name: underlyingName, arguments: underlyingArgs },
-						timeoutMs,
-						this._loopAbortController?.signal,
-					);
+				return await executeWithRetryAndTimeout(
+					p, agentId ?? '',
+					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs },
+					{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+				);
 				}
 			} catch (err) {
 				this._logService.warn(`[AgentOS] Bridge tool_call: "${underlyingName}" via ${p.id}: ${sanitizeToolError(err)}`);
@@ -3048,7 +4193,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 *  - **[P0] Approval flow** (securityLevel-based user confirmation)
 	 *  - **[P1] Execution metadata** (timing, truncation, timeout info)
 	 */
-	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
+	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
 		const results: Array<{ toolCallId: string; content: any; success: boolean }> = [];
 
 		// ─── Dashboard 统计：工具调用计数 ──
@@ -3172,7 +4317,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					bridgeArgs = repairToolArguments(toolCall.arguments || '') ?? {};
 				}
 				const bridgeResult = await this._executeBridgeTool(
-					toolCall.name, bridgeArgs, agentId, toolCall.id,
+					toolCall.name, bridgeArgs, agentId, toolCall.id, abortSignal,
 				);
 				const limitedStr0 = safeStringifyToolResult(bridgeResult.content);
 				let finalContent0: unknown = bridgeResult.content;
@@ -3292,17 +4437,55 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const toolProviders = this._slotRegistry.getToolProviders();
 			const timeoutMs = getTimeoutForTool(targetToolName, toolDef, toolDef?.source);
 
+			// 单次收集 provider→tool 映射，避免每次 listTools() 返回不同结果导致竞态
+			const _execProviderByTool = new Map<string, typeof toolProviders[number]>();
+			for (const p of toolProviders) {
+				try {
+					const ptools = await p.listTools(agentId);
+					for (const t of ptools) { _execProviderByTool.set(t.name, p); }
+				} catch { /* ignore */ }
+			}
+
+			// 优先使用已记录的 provider
+			const _execKnown = _execProviderByTool.get(targetToolName);
+			if (_execKnown) {
+				try {
+					const result = await executeWithRetryAndTimeout(
+						_execKnown, agentId,
+						{ id: toolCall.id, name: targetToolName, arguments: args },
+						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+					);
+					this._executionTracker.complete(toolCall.id);
+					const limitedStr = safeStringifyToolResult(result.content);
+					let finalContent: unknown = result.content;
+					try { finalContent = JSON.parse(limitedStr); } catch { finalContent = { __truncated__: true, content: limitedStr }; }
+					results.push({ toolCallId: toolCall.id, content: finalContent, success: result.success });
+					executed = true;
+					if (result.metadata?.timedOut) {
+						this._logService.warn(`[AgentOS] Tool ${targetToolName} timed out after ${timeoutMs}ms`);
+					} else if (result.success) {
+						this._logService.info(`[AgentOS] Tool ${targetToolName} executed successfully via ${_execKnown.id} (${result.metadata?.executionTimeMs ?? '?'}ms)`);
+					} else {
+						this._logService.warn(`[AgentOS] Tool ${targetToolName} returned error via ${_execKnown.id}: ${result.error ?? 'unknown error'}`);
+					}
+				} catch (error) {
+					this._logService.warn(`[AgentOS] Tool ${targetToolName} execution failed via ${_execKnown.id}: ${sanitizeToolError(error)}`);
+				}
+			}
+
+			// 回退：遍历其余 provider
+			if (!executed) {
 			for (const provider of toolProviders) {
+				if (provider === _execKnown) { continue; }
 				try {
 					const tools = await provider.listTools(agentId);
 					if (tools.some(t => t.name === targetToolName)) {
 						// 使用带超时保护的执行
-						const result: IToolResult = await executeWithTimeout(
+						const result: IToolResult = await executeWithRetryAndTimeout(
 							provider,
 							agentId,
 							{ id: toolCall.id, name: targetToolName, arguments: args },
-							timeoutMs,
-							this._loopAbortController?.signal,
+							{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 						);
 
 						// Track execution
@@ -3349,6 +4532,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					continue;
 				}
 			}
+			}
 
 			if (!executed) {
 				this._logService.warn(`[AgentOS] No provider could execute tool: ${targetToolName}`);
@@ -3383,7 +4567,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 * Skipped entries (validation failures) are yielded synchronously up
 	 * front so the UI can mark them done immediately.
 	 */
-	private async * _executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
+	private async * _executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
 		// v17: same as the serial path — push the worktree down to tool providers
 		// (e.g. BuiltinToolProvider) so sub-agents inherit it.
 		if (worktreePath) {
@@ -3550,7 +4734,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			if (isBridgeTool(targetToolName)) {
 				this._logService.info(`[AgentOS] [parallel] Bridge tool "${targetToolName}" executing`);
 				const bridgeResult = await this._executeBridgeTool(
-					targetToolName, args, agentId, toolCall.id,
+					targetToolName, args, agentId, toolCall.id, abortSignal,
 				);
 				const limitedStrB = safeStringifyToolResult(bridgeResult.content);
 				let finalContentB: unknown = bridgeResult.content;
@@ -3586,12 +4770,11 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					const tools = await provider.listTools(agentId);
 					if (tools.some(t => t.name === targetToolName)) {
 						// 使用带超时保护的执行
-						const result: IToolResult = await executeWithTimeout(
+						const result: IToolResult = await executeWithRetryAndTimeout(
 							provider,
 							agentId,
 							{ id: toolCall.id, name: targetToolName, arguments: args },
-							timeoutMs,
-							this._loopAbortController?.signal,
+							{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 						);
 						// safeStringifyToolResult: guards against pathological payloads
 						// (e.g. tool returning a 50MB blob) which would otherwise blow up
@@ -3682,47 +4865,6 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				}
 			}
 		}
-	}
-
-	/**
-	 * 判断模型的纯文本输出是否表达了"未完成的意图"——即声明"接下来要做某事"
-	 * 却没有真正发出工具调用。用于 agent loop 的续跑兜底（continuation nudge）。
-	 *
-	 * 触发的典型文案（hy3-preview-ioa 等模型常见）：
-	 *   "让我继续深入分析…我需要查看 src 目录"
-	 *   "接下来我将查看 package.json"
-	 *   "Let me check the configuration files next"
-	 *
-	 * 判定逻辑：取文本末尾一段（意图通常在结尾），匹配"未来/打算/需要做某事"的措辞。
-	 * 保守起见，仅当文本较短（看起来不像最终总结）且命中关键词时返回 true。
-	 */
-	private _looksLikeUnfinishedIntent(text: string): boolean {
-		if (!text) { return false; }
-		const trimmed = text.trim();
-		if (trimmed.length < 4) { return false; }
-		// 取末尾一段（意图通常在结尾）作为"意图区"判定，而非用整体长度一刀切。
-		// 历史 BUG：之前 `if (length > 600) return false`，导致"分析项目"这类
-		// 模型每轮输出一大段描述性文字（>600 字符）时，意图检测被直接跳过 →
-		// 续跑兜底永不触发 → loop 在第一段"让我查看…"后就 yield done 提前收尾。
-		// 改为：仅当文本极长（>2000，几乎可确定是真正最终总结）时才豁免，其余
-		// 一律只看末尾意图区是否在"宣告下一步动作"。
-		if (trimmed.length > 2000) { return false; }
-		// 取末尾 240 字符作为"意图区"
-		const tail = trimmed.slice(-240);
-		// 中文"未来动作"措辞
-		const zhPatterns = [
-			/(让我|我将|我会|我要|我需要|接下来|下一步|继续|首先|然后|现在我).{0,40}(查看|读取|检查|分析|了解|看一下|看看|搜索|查找|获取|运行|执行|打开|列出|探索|深入)/,
-			/(查看|读取|检查|分析|搜索|查找|获取|列出|探索)(一下|下)?(项目|目录|文件|结构|代码|配置|架构|源码|内容)/,
-		];
-		// 英文"未来动作"措辞
-		const enPatterns = [
-			/\b(let me|i'?ll|i will|i'?m going to|i need to|next,? i|now i'?ll|let'?s)\b.{0,40}\b(check|read|look|view|examine|analyze|explore|search|find|inspect|open|list|review)\b/i,
-			/\b(check|read|look at|examine|analyze|explore|inspect|review)\b.{0,30}\b(the |this )?(project|directory|folder|file|files|structure|code|config|configuration|architecture|source)\b/i,
-		];
-		for (const re of [...zhPatterns, ...enPatterns]) {
-			if (re.test(tail)) { return true; }
-		}
-		return false;
 	}
 
 	/**
@@ -4565,6 +5707,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	): AsyncIterable<IChatStreamDelta> {
 		let lastError: Error | undefined;
 		let attempt = 0;
+		const triedModels: string[] = [];
 
 		// 尝试主执行
 		try {
@@ -4581,25 +5724,42 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		if (!modelProvider) {
 			yield {
 				type: 'error',
-				content: `All execution attempts failed. Last error: ${lastError?.message || 'Unknown error'}`,
+				content: this._formatUserFacingError(lastError, triedModels),
 			};
 			return;
 		}
 
 		const primaryModelId = this.getActiveModelSelection().modelId;
-		const fallbackModels = this._fallbackModels.filter(m => m !== primaryModelId);
+		// provider-aware 候选：优先保留 provider 真实支持的硬编码 fallback，
+		// 再补上 provider 的其它可用模型；listModels 失败回退硬编码列表。
+		const fallbackModels = await this._resolveFallbackCandidates(primaryModelId);
 
 		for (const fallbackModel of fallbackModels) {
+			triedModels.push(fallbackModel);
 			if (attempt >= this._maxFallbackAttempts) {
 				this._logService.warn(`[AgentOS] Max fallback attempts (${this._maxFallbackAttempts}) reached`);
 				break;
 			}
 
+			// 退避：指数退避 + 抖动，缓解限流（429）风暴，对齐 LangGraph RetryPolicy。
+			// 绑定当前 turn 的 AbortController，取消时可立即跳出等待。
 			try {
-				this._logService.info(`[AgentOS] Trying fallback model: ${fallbackModel}`);
+				await sleepWithAbort(
+					computeBackoffDelay(attempt, this._modelRetryPolicy),
+					this._loopAbortController?.signal,
+				);
+			} catch {
+				// 退避期间被取消 —— 直接放弃后续 fallback
+				break;
+			}
+
+			try {
+				const reason = (lastError instanceof DOMException && lastError.name === 'TimeoutError')
+					? '模型响应超时' : '上一模型调用失败';
+				this._logService.info(`[AgentOS] Trying fallback model: ${fallbackModel} (reason: ${reason})`);
 				yield {
 					type: 'text',
-					content: `\n[System: Switching to fallback model: ${fallbackModel}]\n`,
+					content: `\n[System: 正在切换到备用模型 ${fallbackModel}（${reason}）…]\n`,
 				};
 
 				// 将 systemPrompt 注入到 messages 最前面作为 system message
@@ -4618,11 +5778,20 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				if (request.agentId) {
 					context.agentId = request.agentId;
 				}
-				const stream = await modelProvider.chat(fallbackModel, messages, options, context);
+			const rawStream = await modelProvider.chat(fallbackModel, messages, options, context);
+			// 备用模型流同样套 idle 超时：避免挂起的备用模型拖垮整轮（失败将由外层 catch 继续下一个 fallback）。
+			const stream = withStreamTimeout(rawStream, this._modelStreamTimeoutPolicy, {
+				signal: this._loopAbortController?.signal,
+				log: (lvl, msg) => {
+					if (lvl === 'error') { this._logService.error(msg); }
+					else if (lvl === 'warn') { this._logService.warn(msg); }
+					else { this._logService.info(msg); }
+				},
+			});
 
-				for await (const delta of stream) {
-					yield this._adaptModelDelta(delta);
-				}
+			for await (const delta of stream) {
+				yield this._adaptModelDelta(delta);
+			}
 
 				// 成功，返回
 				this._logService.info(`[AgentOS] Fallback model ${fallbackModel} succeeded`);
@@ -4639,8 +5808,73 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		this._logService.error('[AgentOS] All fallback attempts failed');
 		yield {
 			type: 'error',
-			content: `All models failed. Last error: ${lastError?.message || 'Unknown error'}`,
+			content: this._formatUserFacingError(lastError, triedModels),
 		};
+	}
+
+	/**
+	 * 计算对当前激活 Provider 真实可用的备用模型列表（provider-aware fallback）。
+	 *
+	 * 此前 `_fallbackModels` 硬编码 OpenAI 模型 ID（gpt-4o 等），直接传给当前
+	 * provider（可能是 IOA 网关 / Claude / Knot）。若该 provider 不识别这些 ID，
+	 * fallback 会立刻失败或同样挂起，形同虚设。改为：
+	 *  1. 优先保留 provider 真实支持的硬编码 fallback；
+	 *  2. 再补上 provider 的其它可用模型（排除主模型），按偏好排序；
+	 *  3. listModels 失败/超时则回退硬编码列表，保证非 provider-aware 场景不变。
+	 */
+	private async _resolveFallbackCandidates(primaryModelId: string): Promise<string[]> {
+		const hardcoded = this._fallbackModels.filter(m => m !== primaryModelId);
+		const provider = this._getActiveModelProvider();
+		if (!provider) {
+			return hardcoded;
+		}
+		try {
+			const models = await provider.listModels();
+			const availableIds = models.map(m => m.id);
+			const availableSet = new Set(availableIds);
+			const supportedHardcoded = hardcoded.filter(m => availableSet.has(m));
+			const others = availableIds.filter(id => id !== primaryModelId && !hardcoded.includes(id));
+			// 偏好排序：含 4o/turbo/sonnet/pro/latest/gpt/claude 的靠前
+			const PREFER = ['4o', 'turbo', 'sonnet', 'pro', 'latest', 'gpt', 'claude'];
+			const scoreOf = (id: string): number => {
+				const lower = id.toLowerCase();
+				let best = PREFER.length;
+				PREFER.forEach((kw, i) => { if (lower.includes(kw)) { best = Math.min(best, i); } });
+				return best;
+			};
+			others.sort((a, b) => scoreOf(a) - scoreOf(b));
+			const merged = [...supportedHardcoded, ...others];
+			return merged.length > 0 ? [...new Set(merged)] : hardcoded;
+		} catch (error) {
+			this._logService.warn('[AgentOS] listModels failed during fallback resolution, using hardcoded list', error);
+			return hardcoded;
+		}
+	}
+
+	/**
+	 * 把底层错误翻译成面向用户的清晰中文提示（替代裸 TimeoutError / 英文堆栈）。
+	 * 重点处理模型流 idle 超时（TCP 连接存活但不再吐数据）这类用户可理解的场景。
+	 */
+	private _formatUserFacingError(error: Error | undefined, triedModels: string[]): string {
+		const isTimeout = error instanceof DOMException && error.name === 'TimeoutError';
+		if (isTimeout) {
+			const idleSec = Math.round((this._modelStreamTimeoutPolicy.idleTimeout ?? 180_000) / 1000);
+			const tried = triedModels.length > 0 ? triedModels.join('、') : '无';
+			return [
+				'⚠️ 模型响应超时',
+				'',
+				`主模型在约 ${idleSec} 秒内未返回任何内容。系统已自动尝试切换备用模型（${tried}），但仍未成功。`,
+				'',
+				'可能原因：',
+				'· 网络或网关连接不稳定（连接存活但不再吐出数据）',
+				'· 当前请求体过大，网关在生成大响应时卡住',
+				'',
+				'建议：稍后重试，或在设置中切换到更稳定的模型 / Provider。',
+			].join('\n');
+		}
+		const msg = error?.message || '未知错误';
+		const tried = triedModels.length > 0 ? `（已尝试备用模型：${triedModels.join('、')}）` : '';
+		return `所有模型均调用失败${tried}。最后错误：${msg}`;
 	}
 
 	private _getActiveModelProvider(): IModelProvider | undefined {
@@ -4721,31 +5955,31 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		recentUserText: string,
 		recentAssistantText: string
 	): void {
-		// 当 agentmemory 是活跃 MemoryProvider 时，跳过本地 Episodic/Semantic/Procedural 提取管线。
-		// agentmemory 有自己的 4-tier consolidation pipeline（Working→Episodic→Semantic→Procedural），
-		// 本地管线与之并行会导致双重提取（重复记忆 + LLM token 浪费）。
-		// 通过环境变量 AGENTMEMORY_DISABLE_LOCAL_Episodic=true 控制（默认启用本地管线以保持向后兼容）。
-		const activeProvider = this._slotRegistry.getActiveMemoryProvider();
-		// Safe access: process.env is not available in browser/renderer process.
-		// Default: skip local Episodic when agentmemory is the active provider.
-		// Set AGENTMEMORY_DISABLE_LOCAL_Episodic=false (in Node/main process) to override.
-		const disableLocalEpisodic = typeof process !== 'undefined' ? process.env?.['AGENTMEMORY_DISABLE_LOCAL_Episodic'] : undefined;
-		if (activeProvider?.id === 'agentmemory' && disableLocalEpisodic !== 'false') {
-			this._logService.info(`[AgentOS][Episodic] Skipped — agentmemory has its own consolidation pipeline (provider=${activeProvider.id})`);
-			return;
-		}
+		// Episodic/Semantic/Procedural 提取始终执行（无论使用哪个 MemoryProvider）。
+		//
+		// 此前此处有一段对 agentmemory 的自动跳过逻辑，理由是"agentmemory 有自己的管线"，
+		// 但实际 Opt1 下 gateway 进程从未触发 ConsolidationPipeline（host.mjs 无 sweep 定时器），
+		// 导致固化完全瘫痪（详见 2026-07-14 审查报告）。现已移除跳过，恢复本地 Episodic 提取，
+		// 结果通过 provider.writeMemory()（agentmemory 时走 proxy→gateway HTTP）正常持久化。
+		//
+		// 若需关闭自动提取（减少 LLM token 消耗），可在网关环境变量设
+		// AGENTMEMORY_DISABLE_LOCAL_Episodic=true（仅 Node/main process 可见）。
 
-		const count = (this._l1ConversationCountByAgent.get(agentId) ?? 0) + 1;
-		this._l1ConversationCountByAgent.set(agentId, count);
+		// 按 agentId::sessionId 双键隔离轮次计数：避免同 agent 的多个 session 并行时
+		// 互相推进对方的 Episodic 触发阈值（跨会话记忆污染——多 session 并行评审要点）。
+		// sessionId 为 undefined 时退化为 noSession 桶，与旧行为一致。
+		const l1Key = this._turnKey(agentId, sessionId);
+		const count = (this._l1ConversationCountByAgent.get(l1Key) ?? 0) + 1;
+		this._l1ConversationCountByAgent.set(l1Key, count);
 
 		if (count < AgentOSService.EPISODIC_EXTRACTION_THRESHOLD) {
-			this._logService.info(`[AgentOS][Episodic] Conversation count for ${agentId}: ${count}/${AgentOSService.EPISODIC_EXTRACTION_THRESHOLD} — not yet triggering extraction`);
+			this._logService.info(`[AgentOS][Episodic] Conversation count for ${l1Key}: ${count}/${AgentOSService.EPISODIC_EXTRACTION_THRESHOLD} — not yet triggering extraction`);
 			return;
 		}
 
 		// 达到阈值，清零并触发提取
-		this._l1ConversationCountByAgent.set(agentId, 0);
-		this._logService.info(`[AgentOS][Episodic] Threshold reached (${count}≥${AgentOSService.EPISODIC_EXTRACTION_THRESHOLD}), triggering Episodic extraction for agent ${agentId}`);
+		this._l1ConversationCountByAgent.set(l1Key, 0);
+		this._logService.info(`[AgentOS][Episodic] Threshold reached (${l1Key}, ${count}≥${AgentOSService.EPISODIC_EXTRACTION_THRESHOLD}), triggering Episodic extraction for agent ${agentId}`);
 
 		// fire-and-forget：不阻塞 AgentDriver 的 finally 块
 		void this._performEpisodicExtraction(agentId, sessionId, recentUserText, recentAssistantText);
@@ -5204,7 +6438,8 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				// 只在工具集相关配置变化时触发
 				if (e.affectsConfiguration?.('agentStudio.tools') ||
 					e.affectsConfiguration?.('agentStudio.toolset') ||
-					e.affectsConfiguration?.('agentStudio.disabledToolsets')) {
+					e.affectsConfiguration?.('agentStudio.disabledToolsets') ||
+					e.affectsConfiguration?.('agentStudio.toolSearch')) {
 					this._bumpToolDefsCache();
 				}
 			}));
@@ -5238,6 +6473,30 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	public _setCurrentModel(provider: IModelProvider | undefined, modelId: string | undefined): void {
 		this._currentModelProvider = provider;
 		this._currentModelId = modelId;
+	}
+
+	/**
+	 * 从 VS Code 设置中读取 Tool Search 配置（对齐 Hermes-Agent config.yaml）。
+	 * 配置键：`agentStudio.toolSearch.enabled` / `agentStudio.toolSearch.thresholdPct`。
+	 * 缺失配置时回退到 DEFAULT_TOOL_SEARCH_CONFIG。
+	 */
+	private _getToolSearchConfig(): IToolSearchConfig {
+		try {
+			const configService = (this as any)._configService;
+			if (!configService) { return DEFAULT_TOOL_SEARCH_CONFIG; }
+			const enabled = configService.getValue('agentStudio.toolSearch.enabled');
+			const thresholdPct = configService.getValue('agentStudio.toolSearch.thresholdPct');
+			if (enabled !== undefined || thresholdPct !== undefined) {
+				const rawEnabled = typeof enabled === 'string' ? enabled : '';
+				return {
+					enabled: (['off', 'on', 'auto'] as string[]).includes(rawEnabled) ? (rawEnabled as 'off' | 'on' | 'auto') : DEFAULT_TOOL_SEARCH_CONFIG.enabled,
+					thresholdPct: (typeof thresholdPct === 'number' && thresholdPct >= 0 && thresholdPct <= 100) ? thresholdPct : DEFAULT_TOOL_SEARCH_CONFIG.thresholdPct,
+					searchDefaultLimit: DEFAULT_TOOL_SEARCH_CONFIG.searchDefaultLimit,
+					maxSearchLimit: DEFAULT_TOOL_SEARCH_CONFIG.maxSearchLimit,
+				};
+			}
+		} catch { /* 配置读取失败 — 回退默认 */ }
+		return DEFAULT_TOOL_SEARCH_CONFIG;
 	}
 
 	/**
@@ -5301,6 +6560,131 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			}
 		}
 		return Math.ceil(totalChars / 4) + imageTokens;
+	}
+
+	// ─── 检索式上下文：记忆检索 + 对话外置（对齐 agentmemory mem::context）──
+	// 用于替代 compressContext 中的同步 LLM 摘要（原路径在高负载下可达 37s），
+	// 消除压缩对首 token 的阻塞。默认开启（RETRIEVAL_COMPACTION_ENABLED）。
+
+	// 检索式上下文注入前缀：必须与 contextManager.INJECTED_CONTEXT_PREFIX 完全一致，
+	// 压缩时 contextManager 才会剥离该注入消息（避免与摘要重复累积）。
+	private static readonly RETRIEVED_CTX_PREFIX = '## Preserved Context (from memory)';
+
+	/**
+	 * 仅检索：从记忆系统取回相关上下文，替代同步 LLM 摘要。
+	 * 优先 getCompactContext（Zero-LLM 合成的 SessionSummary），否则回退
+	 * recallFormatted（按当前任务 query 检索 episodic/semantic 记忆）。
+	 */
+	private async _retrieveContextOnly(
+		provider: any,
+		agentId: string,
+		sessionId: string,
+		middle: ReadonlyArray<any>,
+		budget: number,
+	): Promise<{ context: string; tokens: number; source: string } | null> {
+		try {
+			// 构造检索 query：取 middle 中最近一条 user 消息
+			let query = 'current task context';
+			for (let i = middle.length - 1; i >= 0; i--) {
+				const m = middle[i];
+				if (m && m.role === 'user') {
+					const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+					if (c.trim()) { query = c.slice(0, 300); break; }
+				}
+			}
+
+			// 优先 getCompactContext（SessionSummary），其次 recallFormatted
+			let context = '';
+			let source = 'recall';
+			const compactCtx = await provider.getCompactContext?.(agentId, 5);
+			if (Array.isArray(compactCtx) && compactCtx.length > 0) {
+				context = compactCtx.map((s: any) =>
+					`## ${s.title ?? 'Session'}\n${s.narrative ?? ''}\n` +
+					`Decisions: ${(s.keyDecisions || []).join('; ')}\n` +
+					`Files: ${(s.filesModified || []).join(', ')}`
+				).join('\n\n');
+				source = 'compact_context';
+			}
+			if (!context) {
+				const recalled: unknown = await provider.recallFormatted(agentId, query, undefined, 10);
+				if (typeof recalled === 'string' && recalled && !recalled.startsWith('memory_recall: no results')) {
+					context = recalled;
+					source = 'recall';
+				}
+			}
+			if (!context) { return null; }
+			const tokens = Math.ceil(context.length / 3);
+			return { context, tokens, source };
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * 压缩期检索式上下文（对齐 agentmemory mem::context）：先增量外置 middle 到记忆，
+	 * 再检索相关上下文替代同步 LLM 摘要。供 compressContext 的 retrieveContext 回调使用。
+	 */
+	private async _retrieveCompactionContext(
+		provider: any,
+		req: { agentId: string; sessionId: string; middle: ReadonlyArray<any>; contextWindow: number; budget: number },
+	): Promise<{ context: string; tokens: number; source: string } | null> {
+		// 压缩时仍把 middle 外置（best-effort），保持记忆与对话同步
+		this._storeTurnObservations(provider, req.agentId, req.sessionId, req.middle).catch(() => {});
+		return this._retrieveContextOnly(provider, req.agentId, req.sessionId, req.middle, req.budget);
+	}
+
+	/**
+	 * 将对话增量外置为 episodic 记忆，供后续检索取回（对齐 agentmemory 把 observation
+	 * 外置到 KV）。按内容哈希去重，避免重复写入与记忆膨胀；跳过 system 消息，
+	 * 只外置 user/assistant/tool 的真实对话内容。
+	 */
+	private async _storeTurnObservations(
+		provider: any,
+		agentId: string,
+		sessionId: string,
+		messages: ReadonlyArray<any>,
+	): Promise<void> {
+		const seen = this._storedMiddleHashes.get(sessionId) ?? new Set<string>();
+		this._storedMiddleHashes.set(sessionId, seen);
+		for (const m of messages) {
+			if (!m || m.role === 'system') { continue; }
+			const content = typeof m?.content === 'string' ? m.content : JSON.stringify(m?.content ?? '');
+			const text = content.trim();
+			if (text.length < 8) { continue; }
+			// 简单内容哈希去重
+			let hash = 0;
+			for (let i = 0; i < text.length; i++) { hash = (hash * 31 + text.charCodeAt(i)) | 0; }
+			const key = String(hash);
+			if (seen.has(key)) { continue; }
+			seen.add(key);
+			await provider.writeMemory(agentId, {
+				id: `obs-${sessionId}-${key}`,
+				type: 'episodic',
+				content: `[${m.role ?? 'unknown'}] ${text.slice(0, 1500)}`,
+				metadata: { role: m.role, sessionId, source: 'turn_observation' },
+				timestamp: Date.now(),
+			}).catch(() => {});
+		}
+	}
+
+	/**
+	 * 把检索到的上下文作为独立 system 消息注入（放在固定 system 之后、user 之前）。
+	 * 使用 RETRIEVED_CTX_PREFIX，使压缩时 contextManager 会剥离它、由摘要接管，
+	 * 避免与压缩摘要重复累积。已注入则跳过（去重）。
+	 */
+	private _injectRetrievalSystemMessage(messages: any[], context: string, _source: string): any[] {
+		const already = messages.some(
+			m => m?.role === 'system'
+				&& typeof m.content === 'string'
+				&& m.content.startsWith(AgentOSService.RETRIEVED_CTX_PREFIX),
+		);
+		if (already) { return messages; }
+		const wrapped = `${AgentOSService.RETRIEVED_CTX_PREFIX}\n${context}`;
+		let insertIdx = 0;
+		for (let i = 0; i < messages.length; i++) {
+			if (messages[i]?.role === 'system') { insertIdx = i + 1; } else { break; }
+		}
+		return insertMessages(messages, insertIdx, { role: 'system', content: wrapped });
 	}
 
 }

@@ -258,11 +258,27 @@ export class RunSubagentTool extends Disposable implements IToolImpl {
 						}
 						// Attach subAgentInvocationId to codeblockUri parts so they can be routed to the subagent content part
 						if (part.kind === 'codeblockUri') {
+							// Flush any accumulated reasoning as a live thinking row before the edit tool
+							if (markdownParts.length) {
+								const reasoning = markdownParts.join('').trim();
+								markdownParts.length = 0;
+								if (reasoning) {
+									model.acceptResponseProgress(request, { kind: 'markdownContent', content: new MarkdownString(reasoning), subAgentInvocationId });
+								}
+							}
 							model.acceptResponseProgress(request, { ...part, subAgentInvocationId });
 						} else {
 							model.acceptResponseProgress(request, part);
 						}
 					} else if (part.kind === 'hook') {
+						// Flush any accumulated reasoning as a live thinking row before the hook
+						if (markdownParts.length) {
+							const reasoning = markdownParts.join('').trim();
+							markdownParts.length = 0;
+							if (reasoning) {
+								model.acceptResponseProgress(request, { kind: 'markdownContent', content: new MarkdownString(reasoning), subAgentInvocationId });
+							}
+						}
 						model.acceptResponseProgress(request, { ...part, subAgentInvocationId });
 					} else if (part.kind === 'markdownContent') {
 						if (inEdit) {
@@ -270,7 +286,7 @@ export class RunSubagentTool extends Disposable implements IToolImpl {
 							inEdit = false;
 						}
 
-						// Collect markdown content for the tool result
+						// Collect markdown content for the tool result (trailing text after the last tool)
 						markdownParts.push(part.content.value);
 					}
 				}
@@ -545,6 +561,12 @@ export class RunSubagentTool extends Disposable implements IToolImpl {
 		const resolved = this.resolveSubagentModel(subagent, context.modelId, args.model);
 		this._resolvedModels.set(context.toolCallId, resolved);
 
+		// Group parallel sub-agents: multiple run_subagent calls in the same parent
+		// request (same chatRequestId) are a single parallel batch and share a groupId.
+		// The renderer only shows group chrome when ≥2 cards share a groupId, so a
+		// lone sub-agent renders as a normal card.
+		const groupId = context.chatRequestId ? `parallel-${context.chatRequestId}` : undefined;
+
 		return {
 			invocationMessage: args.description,
 			toolSpecificData: {
@@ -553,6 +575,7 @@ export class RunSubagentTool extends Disposable implements IToolImpl {
 				agentName: isGeneralPurpose ? GeneralPurposeAgentName : (subagent?.name ?? args.agentName),
 				prompt: args.prompt,
 				modelName: resolved.resolvedModelName,
+				groupId,
 			},
 		};
 	}

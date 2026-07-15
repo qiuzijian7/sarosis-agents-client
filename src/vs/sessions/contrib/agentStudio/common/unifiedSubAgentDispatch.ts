@@ -14,9 +14,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { IterationBudget } from './iterationBudget.js';
-import type { IAgentTurnRequest, IChatStreamDelta, IChatMessage } from './providers.js';
+import type { IAgentTurnRequest, IChatStreamDelta, IChatMessage, IModelSelection } from './providers.js';
 import { SubagentTokenCollector, type SubagentTokenUsage } from './subagentTokenCollector.js';
 import { GLOBAL_SYSTEM_SUFFIX } from './chatModeConfig.js';
+import { gateResult, extractAcceptanceCriteria, type ISubAgentStructuredResult, type ICompletionGateContext } from './completionGate.js';
+import { StallWatchdog } from './stallWatchdog.js';
+import { defaultPostStopDecision, type ISubAgentPostStopHook } from './subAgentHooks.js';
+import { type IForkContext } from './forkContext.js';
 
 // ─── SubAgent Types (inspired by OpenCode's agent types) ──────────────────
 
@@ -107,7 +111,32 @@ export interface SubAgentOptions {
 	 * to this path (matches `IAgentTurnRequest.worktreePath` semantics).
 	 */
 	readonly worktreePath?: string;
-}
+	/**
+	 * v17: per-subagent toolset scope override. When set, the sub-agent's enabled
+	 * tools are narrowed to ONLY the listed toolsets (plus bridge tools). Lets a
+	 * parent constrain what a delegated sub-agent may do — e.g. an Explore
+	 * sub-agent scoped to ['core'] for read-only investigation. Undefined → no
+	 * narrowing (current behavior preserved).
+	 */
+	readonly toolsets?: string[];
+	/**
+	 * v17: per-subagent model override. When set, the sub-agent runs with this
+	 * model selection instead of the session default (matches
+	 * `IAgentTurnRequest.modelOverride` semantics).
+	 */
+		readonly model?: IModelSelection;
+		/**
+		 * postStop self-verification hook (MiMo preStop/postStop ReAct). After the main
+		 * execution + Completion Gate, if the result is not a clean success-with-acceptance,
+		 * a verification prompt is appended and one more bounded turn runs.
+		 */
+		readonly postStop?: ISubAgentPostStopHook;
+		/**
+		 * Fork prefix-cache context (MiMo ForkContext). When set, the sub-agent reuses the
+		 * parent's frozen system prompt verbatim so the LLM provider's prompt cache hits.
+		 */
+		readonly forkContext?: IForkContext;
+	}
 
 export interface SubAgentInstance {
 	readonly id: string;
@@ -146,7 +175,9 @@ export interface SubAgentResult {
 	readonly toolTrace?: ReadonlyArray<SubAgentToolTraceEntry>;
 	/** Files modified by this sub-agent (for file change coordination) */
 	readonly filesModified?: readonly string[];
-}
+	/** Structured Completion-Gate verdict (MiMo TaskGate) — reliable contract for the parent. */
+	readonly structured?: ISubAgentStructuredResult;
+	}
 
 /** A single tool call trace entry, inspired by Hermes tool_trace. */
 export interface SubAgentToolTraceEntry {
@@ -169,7 +200,9 @@ interface _ExecResult {
 	readonly toolTrace: SubAgentToolTraceEntry[];
 	/** Files that were modified (written/created) by this sub-agent */
 	readonly filesModified: string[];
-}
+	/** Whether the sub-agent stalled (no progress for idleTimeoutMs) and was aborted. */
+	readonly stalled?: boolean;
+	}
 
 // ─── SubAgent Event System (inspired by Hermes DelegateEvent) ───────────
 
@@ -296,12 +329,20 @@ export class UnifiedSubAgentDispatch {
 	private readonly _parentBudget: IterationBudget;
 	private readonly _maxConcurrent: number;
 	private readonly _maxSpawnDepth: number;
+	/** Idle stall threshold (ms) for the stall watchdog (MiMo T40). */
+	private _stallTimeoutMs: number;
 	/**
 	 * Set of sub-agent IDs that have been interrupted.
 	 * Checked in _executeWithBudget loop to break out of streaming.
 	 * Inspired by Hermes-Agent's interrupt signal propagation.
 	 */
 	private readonly _interruptedSubAgents = new Set<string>();
+	/**
+	 * Set of sub-agent IDs that have stalled (no progress for idleTimeoutMs).
+	 * Checked in _executeWithBudget loop to break out of streaming.
+	 * Inspired by MiMo-Code's stall watchdog (T40).
+	 */
+	private readonly _stalledSubAgents = new Set<string>();
 
 	// ─── Global registry (inspired by Hermes _active_subagents) ───────
 	/**
@@ -361,10 +402,11 @@ export class UnifiedSubAgentDispatch {
 		return results;
 	}
 
-	constructor(parentBudget?: IterationBudget, maxConcurrent: number = 3, maxSpawnDepth: number = 2) {
+	constructor(parentBudget?: IterationBudget, maxConcurrent: number = 3, maxSpawnDepth: number = 2, stallTimeoutMs: number = 120_000) {
 		this._parentBudget = parentBudget || new IterationBudget(90);
 		this._maxConcurrent = maxConcurrent;
 		this._maxSpawnDepth = maxSpawnDepth;
+		this._stallTimeoutMs = stallTimeoutMs;
 	}
 
 	/** 获取当前配置（供 delegate_task 动态描述使用） */
@@ -470,6 +512,9 @@ export class UnifiedSubAgentDispatch {
 			groupId,
 		});
 
+		// Declared in outer scope so the catch block can dispose it on timeout/error.
+		let watchdog: StallWatchdog | undefined;
+
 		try {
 			// Build the request with context injection
 			const messages = this._buildMessages(subAgent);
@@ -482,19 +527,23 @@ export class UnifiedSubAgentDispatch {
 				// tools (file_read, file_write, terminal_cmd, etc.) all run
 				// inside the same worktree the parent was operating in.
 				worktreePath: subAgent.options.worktreePath,
-			};
+			// v17: delegate_task may constrain the sub-agent's toolset scope
+			// (e.g. an Explore sub-agent limited to ['core']) and/or pin a
+			// specific model. Both flow through to agentOSService.
+			toolsetsOverride: subAgent.options.toolsets,
+			modelOverride: subAgent.options.model,
+			// Fork 前缀缓存：子 agent 携带父级冻结 ForkContext，使其 (system+tools)
+			// 前缀与父级对齐 → 请求构造端在该前缀边界打 cache 断点，命中父级 prompt cache。
+			forkContext: subAgent.options.forkContext,
+		};
 
-			// Execute with timeout
+			// Execute with timeout (hard cap) + idle stall watchdog (MiMo T40)
 			const timeoutPromise = new Promise<never>((_, reject) => {
 				setTimeout(() => reject(new Error(`SubAgent timeout after ${subAgent.timeout}ms`)), subAgent.timeout);
 			});
 
-			const executionPromise = this._executeWithBudget(
-				executeFn,
-				request,
-				subAgent.budget,
-				subAgent.tokenCollector,
-				(event) => this._emit(eventSink, {
+			const emitWrapped = (event: Omit<SubAgentEvent, 'subAgentId' | 'subAgentType' | 'task' | 'parentId' | 'timestamp'> & { type: SubAgentEventType }) =>
+				this._emit(eventSink, {
 					...event,
 					subAgentId: subAgent.id,
 					subAgentType: subAgent.type,
@@ -502,14 +551,50 @@ export class UnifiedSubAgentDispatch {
 					parentId: subAgent.parentAgentId,
 					timestamp: Date.now(),
 					groupId,
-				}),
-			);
-			const execResult = await Promise.race([executionPromise, timeoutPromise]);
+				});
 
-			// Determine exit reason
-			const exitReason: SubAgentExitReason = execResult.budgetExhausted
-				? 'max_iterations'
-				: 'completed';
+			watchdog = new StallWatchdog({
+				idleTimeoutMs: this._stallTimeoutMs,
+				onStall: () => { this._stalledSubAgents.add(subAgent.id); },
+			});
+
+			// ── Main execution ──
+			let execResult = await Promise.race([
+				this._executeWithBudget(executeFn, request, subAgent.budget, subAgent.tokenCollector, emitWrapped, watchdog),
+				timeoutPromise,
+			]);
+
+			// ── Completion Gate (MiMo TaskGate) ──
+			let structured = gateResult(execResult.output, this._buildGateContext(subAgent, execResult));
+
+			// ── postStop self-verification round (MiMo preStop/postStop ReAct) ──
+			const postStop = subAgent.options.postStop;
+			const maxRounds = postStop?.maxRounds ?? 1;
+			let postStopRound = 0;
+			while (postStop && postStopRound < maxRounds) {
+				const decision = defaultPostStopDecision({ structured }, postStopRound, maxRounds);
+				if (decision.kind === 'return') { break; }
+				const verifyReq: IAgentTurnRequest = {
+					...request,
+					messages: [...request.messages, { role: 'user', content: decision.followUpMessage }],
+				};
+				execResult = await Promise.race([
+					this._executeWithBudget(executeFn, verifyReq, subAgent.budget, subAgent.tokenCollector, emitWrapped, watchdog),
+					timeoutPromise,
+				]);
+				structured = gateResult(execResult.output, this._buildGateContext(subAgent, execResult));
+				postStopRound++;
+			}
+
+			// Stall bookkeeping (cleared before building the result)
+			const stalled = this._stalledSubAgents.has(subAgent.id);
+			this._stalledSubAgents.delete(subAgent.id);
+			watchdog.dispose();
+
+			// Determine exit reason (idle stall → timeout)
+			const exitReason: SubAgentExitReason = stalled
+				? 'timeout'
+				: (execResult.budgetExhausted ? 'max_iterations' : 'completed');
 
 			subAgent.result = {
 				success: true,
@@ -522,6 +607,7 @@ export class UnifiedSubAgentDispatch {
 				exitReason,
 				toolTrace: execResult.toolTrace,
 				filesModified: execResult.filesModified.length > 0 ? execResult.filesModified : undefined,
+				structured,
 			};
 			subAgent.status = 'done';
 
@@ -536,6 +622,12 @@ export class UnifiedSubAgentDispatch {
 						`\n\n[NOTE: subagent modified files — re-read before editing: ${fileList}]`,
 				};
 			}
+			// Append the Completion Gate verdict so the parent agent gets a reliable contract.
+			subAgent.result = {
+				...subAgent.result,
+				output: (subAgent.result.output ?? '') +
+					`\n\n[COMPLETION GATE] status=${structured.status} acceptanceMet=${structured.acceptanceMet} — ${structured.reason}`,
+			};
 
 			this._emit(eventSink, {
 				type: SubAgentEventType.Completed,
@@ -555,6 +647,7 @@ export class UnifiedSubAgentDispatch {
 			return subAgent.result;
 
 		} catch (error) {
+			watchdog?.dispose();
 			const errMsg = error instanceof Error ? error.message : String(error);
 			const isTimeout = errMsg.includes('timeout');
 			const exitReason: SubAgentExitReason = isTimeout ? 'timeout' : 'error';
@@ -584,6 +677,21 @@ export class UnifiedSubAgentDispatch {
 
 			return subAgent.result;
 		}
+	}
+
+	/**
+	 * Build the Completion-Gate context from a sub-agent's task + execution result.
+	 * Ground truth: files actually modified, whether it errored/truncated, and the
+	 * acceptance criteria the parent spelled out in the task briefing (ACCEPTANCE clause).
+	 */
+	private _buildGateContext(subAgent: SubAgentInstance, exec: _ExecResult): ICompletionGateContext {
+		const acceptance = extractAcceptanceCriteria(subAgent.task);
+		return {
+			filesTouched: exec.filesModified,
+			errored: false,
+			truncated: exec.budgetExhausted || !!exec.stalled,
+			acceptanceCriteria: acceptance.length > 0 ? acceptance : undefined,
+		};
 	}
 
 	/**
@@ -659,18 +767,23 @@ export class UnifiedSubAgentDispatch {
 		tasks: string[],
 		executeFn: (request: IAgentTurnRequest, budget: IterationBudget) => AsyncIterable<IChatStreamDelta>,
 		context?: string,
-		perTaskOptions?: Array<Pick<SubAgentOptions, 'priority' | 'maxIterations' | 'timeout' | 'worktreePath'>>,
+		perTaskOptions?: Array<Pick<SubAgentOptions, 'priority' | 'maxIterations' | 'timeout' | 'worktreePath' | 'type' | 'toolsets' | 'model'>>,
 		eventSink?: SubAgentEventSink,
 	): Promise<SubAgentResult[]> {
 		const subAgentIds = tasks.map((task, idx) =>
 			this.createSubAgent(parentAgentId, task, {
-				type: SubAgentType.Explore,
+				// Default to Explore (read-only investigate) for parallel fan-out,
+				// but honor an explicit per-task type (e.g. General for parallel writes).
+				type: perTaskOptions?.[idx]?.type ?? SubAgentType.Explore,
 				context,
 				priority: perTaskOptions?.[idx]?.priority ?? 'high',
 				maxIterations: perTaskOptions?.[idx]?.maxIterations,
 				timeout: perTaskOptions?.[idx]?.timeout,
 				// v17: propagate worktree to each parallel explore subagent.
 				worktreePath: perTaskOptions?.[idx]?.worktreePath,
+				// v17: propagate per-task toolset scope + model override.
+				toolsets: perTaskOptions?.[idx]?.toolsets,
+				model: perTaskOptions?.[idx]?.model,
 			})
 		);
 
@@ -827,6 +940,11 @@ export class UnifiedSubAgentDispatch {
 	 * Inspired by OpenCode's per-agent prompt files.
 	 */
 	private _buildSystemPrompt(subAgent: SubAgentInstance): string {
+		// Fork prefix-cache alignment (MiMo): reuse the parent's frozen system
+		// prompt verbatim so the LLM provider's prompt cache hits.
+		if (subAgent.options.forkContext) {
+			return subAgent.options.forkContext.systemPrompt;
+		}
 		const typePrompts: Record<SubAgentType, string> = {
 			[SubAgentType.Explore]: `You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
 - Use Glob for broad file pattern matching
@@ -852,7 +970,16 @@ export class UnifiedSubAgentDispatch {
 ## When NOT to use delegate_task:
 - The task is simple and can be completed in one turn
 - You need to maintain ongoing context/memory across steps
-- You are already at maximum spawn depth (check parent agent constraints)`,
+- You are already at maximum spawn depth (check parent agent constraints)
+
+## Writing a good delegated task (CRITICAL):
+- The sub-agent you spawn starts BLANK — it has no access to your conversation.
+- Write each task as a self-contained briefing:
+  GOAL (what to accomplish + why), CONTEXT (what you already know / ruled out),
+  ACCEPTANCE (how to know it is done + output limits, e.g. "report in <200 words").
+- Batch tasks (tasks: [...]) must be mutually independent; sequence dependent steps inside one task string.
+- Pick a role with \`type\`: General (read+write), Explore (read-only investigate), Scout (read-only research).
+  Batch tasks default to Explore — set General if the batched task must write files.`,
 
 			[SubAgentType.Scout]: `You are a research agent for external libraries, dependency source, and documentation.
 - Use repo_clone first when the task involves a GitHub repository
@@ -886,12 +1013,14 @@ export class UnifiedSubAgentDispatch {
 		budget: IterationBudget,
 		tokenCollector: SubagentTokenCollector,
 		emitEvent?: (partial: Omit<SubAgentEvent, 'subAgentId' | 'subAgentType' | 'task' | 'parentId' | 'timestamp'> & { type: SubAgentEventType }) => void,
+		watchdog?: StallWatchdog,
 	): Promise<_ExecResult> {
 		// 用分块数组累积，末尾一次性 join，避免流式 `+=` 产生 ConsString 绳索串
 		// （output 最终进入 subAgent.result.output 长期留存，是最危险的泄漏点之一）
 		let outputChunks: string[] = [];
 		let apiCallCount = 0;
 		let budgetExhausted = false;
+		let stalled = false;
 		let tokensUsed: { input: number; output: number } | undefined;
 		const toolTrace: SubAgentToolTraceEntry[] = [];
 		const filesModified: string[] = [];
@@ -1066,9 +1195,17 @@ export class UnifiedSubAgentDispatch {
 				}
 				break;
 			}
+
+			// ── Stall watchdog tick + stall break (MiMo T40) ──
+			watchdog?.tick();
+			if (this._stalledSubAgents.has(request.agentId)) {
+				outputChunks.push('\n\n[Stalled — no progress for too long, aborted]');
+				stalled = true;
+				break;
+			}
 		}
 
-		return { output: outputChunks.join(''), apiCallCount, budgetExhausted, tokensUsed, toolTrace, filesModified };
+		return { output: outputChunks.join(''), apiCallCount, budgetExhausted, tokensUsed, toolTrace, filesModified, stalled };
 	}
 
 	/** Safely deliver a lifecycle event to the sink, swallowing any sink errors. */

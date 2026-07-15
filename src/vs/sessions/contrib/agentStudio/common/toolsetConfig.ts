@@ -195,18 +195,34 @@ export function getToolsetForTool(toolName: string): string {
 
 /**
  * 获取 toolset 的优先级。
+ * 动态 toolsets 以 `mcp-` 开头自动识别为 Medium 优先级。
  */
 export function getToolsetPriority(toolsetId: string): ToolsetPriority {
 	const ts = TOOLSET_DEFINITIONS.find(t => t.id === toolsetId);
-	return ts?.priority ?? ToolsetPriority.Low;
+	if (ts) { return ts.priority; }
+	// 动态 toolset：mcp-{server} → Medium（对齐 Hermes-Agent mcp-{server} 模式）
+	if (toolsetId.startsWith('mcp-')) { return ToolsetPriority.Medium; }
+	return ToolsetPriority.Low;
 }
 
 /**
  * 判断 toolset 是否可折叠为桥接工具。
+ * 动态 toolsets 以 `mcp-` 开头自动识别为 deferrable。
  */
 export function isToolsetDeferrable(toolsetId: string): boolean {
 	const ts = TOOLSET_DEFINITIONS.find(t => t.id === toolsetId);
-	return ts?.deferrable ?? true;
+	if (ts) { return ts.deferrable; }
+	// 动态 toolset：mcp-{server} → deferrable
+	if (toolsetId.startsWith('mcp-')) { return true; }
+	return true;
+}
+
+/**
+ * 判断 toolset 是否为动态 toolset（非静态定义，运行时自动创建）。
+ * 当前仅 `mcp-{server}` 为动态 toolset。
+ */
+export function isDynamicToolset(toolsetId: string): boolean {
+	return toolsetId.startsWith('mcp-');
 }
 
 // ─── 默认启用的 toolset ─────────────────────────────────────────────────
@@ -247,7 +263,7 @@ export function isBridgeTool(toolName: string): boolean {
 export const CORE_TOOLS: ReadonlySet<string> = new Set([
 	// 文件操作 — 任何 Agent 的基础
 	'file_read', 'file_write', 'file_edit', 'file_delete',
-	'read_file', 'write_file', 'patch', 'search_files',
+	'file_read', 'write_file', 'patch', 'search_files',
 	'read_dir', 'list_files',
 	// 终端 / 进程 — 关键调试能力
 	'terminal', 'process', 'read_terminal', 'close_terminal',

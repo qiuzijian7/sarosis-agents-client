@@ -811,13 +811,13 @@ export class SplitView<TLayoutContext = undefined, TView extends IView<TLayoutCo
 		}
 
 		const viewItem = this.viewItems[index];
-		console.log(`[SplitView] setViewVisible: index=${index}, visible=${visible}, currentSize=${viewItem.size}, cachedSize=${viewItem.cachedVisibleSize}, splitSize=${this.size}, contentSize=${this.contentSize}`);
+		console.debug(`[SplitView] setViewVisible: index=${index}, visible=${visible}, currentSize=${viewItem.size}, cachedSize=${viewItem.cachedVisibleSize}, splitSize=${this.size}, contentSize=${this.contentSize}`);
 		viewItem.setVisible(visible);
 
 		this.distributeEmptySpace(index);
 		this.layoutViews();
 		this.saveProportions();
-		console.log(`[SplitView] setViewVisible done: index=${index}, newSize=${viewItem.size}, allSizes=${this.viewItems.map(v => v.size)}`);
+		console.debug(`[SplitView] setViewVisible done: index=${index}, newSize=${viewItem.size}, allSizes=${this.viewItems.map(v => v.size)}`);
 	}
 
 	/**
@@ -1049,11 +1049,11 @@ export class SplitView<TLayoutContext = undefined, TView extends IView<TLayoutCo
 			size = Math.round(size);
 			const beforeClamp = size;
 			size = clamp(size, item.minimumSize, Math.min(item.maximumSize, this.size));
-			console.log(`[SplitView] resizeView: index=${index}, requestedSize=${beforeClamp}, clampedSize=${size}, minSize=${item.minimumSize}, maxSize=${item.maximumSize}, splitSize=${this.size}, contentSize=${this.contentSize}`);
+			console.debug(`[SplitView] resizeView: index=${index}, requestedSize=${beforeClamp}, clampedSize=${size}, minSize=${item.minimumSize}, maxSize=${item.maximumSize}, splitSize=${this.size}, contentSize=${this.contentSize}`);
 
 			item.size = size;
 			this.relayout(lowPriorityIndexes, highPriorityIndexes);
-			console.log(`[SplitView] resizeView done: index=${index}, newSize=${item.size}, allSizes=${this.viewItems.map(v => v.size)}`);
+			console.debug(`[SplitView] resizeView done: index=${index}, newSize=${item.size}, allSizes=${this.viewItems.map(v => v.size)}`);
 		} finally {
 			this.state = State.Idle;
 		}

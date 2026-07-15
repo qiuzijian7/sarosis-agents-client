@@ -21,8 +21,12 @@ import type { IAiEmbeddingVectorService } from '../../../../../workbench/service
 import { KnowledgeManager } from './engine/knowledgeManager.js';
 import { listMethods } from './engine/methodRegistry.js';
 import { resolveChatModel, createEmbedder } from './knowledgeAdapters.js';
+import type { IEmbedder } from './engine/embedder.js';
 import { createFileStorageAdapter } from './knowledgeStorage.js';
 import { appendKbOpLog, type IKbOpLogEntry, type KbOpStatus } from './kbOpLog.js';
+
+export { classifyByKeywords, classifyContentViaLLM } from './classifier.js';
+export type { ClassifyResult } from './classifier.js';
 
 export interface KnowledgeToolDeps {
 	readonly fileService: IFileService;
@@ -32,6 +36,25 @@ export interface KnowledgeToolDeps {
 	readonly resolveBaseDir: () => Promise<string>;
 	/** Resolve the KB storage root (`<userHome>/.saros/kb` by default, config-overridable). */
 	readonly resolveStorageRoot: () => Promise<string>;
+	/**
+	 * Resolve the knowledge-base agent's currently configured provider + model.
+	 * When provided, `kb_*` tools use the KB agent's own provider/model (instead of
+	 * the hardcoded openrouter default). Tool-level `provider`/`model` args still win.
+	 */
+	readonly resolveKbModel?: () => Promise<{ providerId: string; modelId: string }> | { providerId: string; modelId: string };
+	/**
+	 * Build an embedder for the KB agent's provider (provider follows the KB agent,
+	 * embedding model is supplied by the caller). When provided, KB embedding uses
+	 * the KB agent's provider rather than the global embedding service.
+	 */
+	readonly createKbEmbedder?: (providerId: string) => IEmbedder | Promise<IEmbedder>;
+	/**
+	 * Optional override for constructing the `KnowledgeManager` used by `kb_build` /
+	 * `kb_ingest`. Test seam: inject a deterministic manager (mock LLM + embedder +
+	 * in-memory storage) instead of the real resolver. When omitted, the real
+	 * `resolveChatModel` + `createEmbedder` path is used (production).
+	 */
+	readonly createManager?: (opts: { model?: string; provider?: string }) => Promise<KnowledgeManager>;
 }
 
 interface IKbToolDescriptor {
@@ -45,14 +68,217 @@ function txt(s: string): IToolResultContent[] {
 	return [{ type: 'text', text: s }];
 }
 
+/** A note-export target's dependency surface (decoupled from the `buildKnowledgeToolDescriptors` closure so it is unit-testable). */
+export interface ExportToNotesDeps {
+	readonly fileService: IFileService;
+	readonly resolveStorageRoot: () => Promise<string>;
+	readonly logKbTool?: (op: string, status: KbOpStatus, extra?: { source?: string; target?: string; detail?: Record<string, unknown>; error?: string }) => void | Promise<void>;
+}
+
+/**
+ * Decide whether `kb_build` / `kb_ingest` should auto-export a note after parsing.
+ * Default-on for the `notes_summary` template (import → cross-linkable note in one
+ * call); otherwise requires an explicit `export_notes: true`. Pure + unit-tested.
+ */
+export function shouldAutoExportNotes(args: Record<string, unknown>, templateId: string): boolean {
+	return args['export_notes'] === true
+		|| (args['export_notes'] === undefined && templateId === 'notes_summary');
+}
+
+/**
+ * Export a built KB as an Obsidian-style note ([[wikilinks]]) into
+ * `<storage-root>/notes/<name>.md` (Hyper-Extract `export_to_obsidian` analogue).
+ * Shared by `kb_export_notes` and the auto-export path of `kb_build`/`kb_ingest`.
+ * Returns the on-disk note metadata, or undefined if export failed. Pure-ish
+ * (only `deps.fileService` / `resolveStorageRoot` are touched) so it is unit-testable.
+ */
+export async function exportToNotes(
+	deps: ExportToNotesDeps,
+	manager: KnowledgeManager,
+	session: { id: string; title?: string },
+	args: Record<string, unknown>,
+): Promise<{ path: string; bytes: number; note: string } | undefined> {
+	try {
+		const md = manager.exportMarkdown(session as any, {
+			title: (session.title as string) || session.id,
+			mermaid: args['mermaid'] !== false,
+			wikilinks: args['wikilinks'] !== false,
+		});
+		const root = await deps.resolveStorageRoot();
+		const rawName = (args['note_name'] as string) || (session.title as string) || session.id;
+		const safeName = (rawName.replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_').slice(0, 120)) || session.id;
+		const notesDir = URI.file(join(root, 'notes'));
+		const noteUri = URI.joinPath(notesDir, `${safeName}.md`);
+		await deps.fileService.createFolder(notesDir);
+		await deps.fileService.writeFile(noteUri, VSBuffer.fromString(md));
+		void deps.logKbTool?.('kb_export_notes', 'success', { target: noteUri.fsPath, detail: { id: session.id, bytes: md.length } });
+		return { path: noteUri.fsPath, bytes: md.length, note: safeName };
+	} catch (err) {
+		void deps.logKbTool?.('kb_export_notes', 'failure', { target: session.id, error: err instanceof Error ? err.message : String(err) });
+		return undefined;
+	}
+}
+
+/** Extract the `text` payload from a `kb_*` tool result (the handlers return `[{ type: 'text', text }]`). */
+function firstText(out: IToolResultContent[] | { content: IToolResultContent[]; details?: Record<string, unknown> }): string {
+	const arr = Array.isArray(out) ? out : out.content;
+	const t = arr.find(c => c.type === 'text');
+	return t && 'text' in t ? (t as { text: string }).text : '';
+}
+
+export interface ImportToKbOptions {
+	/** Pre-derived title (defaults to the first non-empty line of the content). */
+	title?: string;
+	/** Force a fresh `kb_build` even if a matching favorite already exists. */
+	forceBuild?: boolean;
+}
+
+export interface ImportToKbResult {
+	success: boolean;
+	/** Whether the import created a new KB (build) or merged into an existing one (ingest). */
+	action?: 'build' | 'ingest';
+	/** Knowledge base id (for follow-up `kb_ingest` / `kb_search` / `kb_ask`). */
+	id?: string;
+	/** Note file base name (without .md). */
+	note?: string;
+	/** Absolute on-disk note path (<storage-root>/notes/<note>.md). */
+	notePath?: string;
+	title?: string;
+	template?: string;
+	itemCount?: number;
+	error?: string;
+}
+
+/** Sidecar index mapping a normalized title key → kb id, persisted at `<root>/.fav-index.json`. */
+const FAV_INDEX_FILE = '.fav-index.json';
+
+function deriveTitle(content: string): string {
+	const firstLine = content.split('\n').find(l => l.trim().length > 0)?.trim() || '收藏';
+	return firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
+}
+
+function titleKeyOf(title: string): string {
+	return title.trim().toLowerCase().replace(/\s+/g, '_').replace(/[<>:"/\\|?*\n\r]/g, '').slice(0, 100);
+}
+
+/**
+ * Wire the chat "收藏到知识库" button to the KB engine.
+ *
+ * - First import of a topic → `kb_build(template_id='notes_summary')` auto-summarizes
+ *   the message and writes a structured Obsidian note.
+ * - Re-import of the same topic (matched by a normalized title key, persisted in
+ *   `<root>/.fav-index.json`) → `kb_ingest(same id)` merges the new content into the
+ *   existing KB and **re-exports the SAME note** (improved, not duplicated).
+ *
+ * This is the user-facing analogue of the `knowledge-base-expert` agent flow; the
+ * manager is built from the same `KnowledgeToolDeps` (injectable for tests).
+ */
+export async function importMessageToKnowledgeBase(
+	deps: KnowledgeToolDeps,
+	content: string,
+	opts: ImportToKbOptions = {},
+): Promise<ImportToKbResult> {
+	try {
+		if (!content || !content.trim()) {
+			return { success: false, error: 'Empty content' };
+		}
+		const title = opts.title ?? deriveTitle(content);
+		const key = titleKeyOf(title);
+
+		const root = await deps.resolveStorageRoot();
+		const favIndexUri = URI.file(join(root, FAV_INDEX_FILE));
+		let favIndex: Record<string, { id: string; title: string }> = {};
+		try {
+			const raw = await deps.fileService.readFile(favIndexUri);
+			favIndex = JSON.parse(raw.value.toString()) as Record<string, { id: string; title: string }>;
+		} catch {
+			// no index yet — fresh import
+		}
+
+		const descriptors = buildKnowledgeToolDescriptors(deps);
+		const buildDesc = descriptors.find(d => d.definition.name === 'kb_build')!;
+		const ingestDesc = descriptors.find(d => d.definition.name === 'kb_ingest')!;
+
+		// ── Improve existing note (kb_ingest) ──────────────────────────────────
+		const existing = !opts.forceBuild ? favIndex[key] : undefined;
+		if (existing?.id) {
+			const out = await ingestDesc.handler({
+				id: existing.id,
+				text: content,
+				// keep the same note name so the improved note lands at the same path
+				note_name: key,
+			});
+			const r = JSON.parse(firstText(out));
+			if (r.success) {
+				return {
+					success: true,
+					action: 'ingest',
+					id: r.id,
+					note: r.note?.note,
+					notePath: r.note?.path,
+					title,
+					template: 'notes_summary',
+					itemCount: r.itemCount,
+				};
+			}
+			// KB missing/corrupt → fall through to a fresh build.
+		}
+
+		// ── Generate a new note (kb_build) ─────────────────────────────────────
+		const out = await buildDesc.handler({
+			template_id: 'notes_summary',
+			title,
+			text: content,
+			note_name: key,
+		});
+		const r = JSON.parse(firstText(out));
+		if (!r.success) {
+			return { success: false, error: r.error };
+		}
+		favIndex[key] = { id: r.id, title };
+		try {
+			await deps.fileService.writeFile(favIndexUri, VSBuffer.fromString(JSON.stringify(favIndex, null, 2)));
+		} catch {
+			// best-effort; the note is still created even if the index write fails
+		}
+		return {
+			success: true,
+			action: 'build',
+			id: r.id,
+			note: r.note?.note,
+			notePath: r.note?.path,
+			title,
+			template: r.template,
+			itemCount: r.itemCount,
+		};
+	} catch (err) {
+		return { success: false, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
 export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolDescriptor[] {
 
 	async function buildManager(opts: { model?: string; provider?: string }): Promise<KnowledgeManager> {
+		// Test seam: allow injecting a deterministic manager (mock LLM/embedder).
+		if (deps.createManager) { return deps.createManager(opts); }
+
+		// 知识库 agent 当前配置的 provider/model（工具级 provider/model 覆盖优先）。
+		const kb = (typeof deps.resolveKbModel === 'function')
+			? await deps.resolveKbModel()
+			: undefined;
+		const providerId = opts.provider || kb?.providerId;
+		const modelId = opts.model || kb?.modelId;
+
 		const chatModel = resolveChatModel(deps.configurationService, {
-			providerId: opts.provider,
-			modelId: opts.model,
+			providerId,
+			modelId,
 		});
-		const embedder = createEmbedder(deps.embeddingService);
+
+		// Embedding：优先用 KB agent 的 provider 专属 embedder；否则回退全局服务。
+		const embedder = (deps.createKbEmbedder && (opts.provider || kb?.providerId))
+			? await deps.createKbEmbedder(opts.provider || kb!.providerId!)
+			: createEmbedder(deps.embeddingService);
+
 		const storageRoot = await deps.resolveStorageRoot();
 		const storage = createFileStorageAdapter(deps.fileService, storageRoot);
 		return new KnowledgeManager({ llm: chatModel, embedder, storage, verbose: true });
@@ -143,7 +369,7 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 		{
 			definition: {
 				name: 'kb_build',
-				description: 'Build a knowledge base from a document. Extracts entities/relationships (or a list) via LLM, embeds them, and persists the index. Returns the kb id for later kb_search / kb_ask. Provide either `text` or `file_path`.',
+				description: 'Build a knowledge base from a document. Extracts entities/relationships (or a list) via LLM, embeds them, and persists the index. Returns the kb id for later kb_search / kb_ask. Provide either `text` or `file_path`. With `template_id="notes_summary"` (or `export_notes: true`) it also auto-writes a structured Obsidian note to the KB notes vault (<storage-root>/notes), so a single call turns a document into a cross-linkable note.',
 				inputSchema: {
 					type: 'object',
 					properties: {
@@ -154,6 +380,10 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 						file_path: { type: 'string', description: 'Path to a text/markdown file to parse (relative to the workspace root)' },
 						model: { type: 'string', description: 'Optional model id overriding the default LLM' },
 						provider: { type: 'string', description: 'Optional BYOK provider id (default: openrouter)' },
+						export_notes: { type: 'boolean', description: 'Auto-export a structured Obsidian note (with [[wikilinks]]) into the KB notes vault after building. Default: true when template_id=notes_summary, otherwise false.' },
+						note_name: { type: 'string', description: 'Optional note file name (without .md) when export_notes is true. Defaults to a sanitized KB title.' },
+						mermaid: { type: 'boolean', description: 'Include the ```mermaid graph block when export_notes is true (graph templates only). Default: true.' },
+						wikilinks: { type: 'boolean', description: 'Use Obsidian [[wikilinks]] for node names when export_notes is true. Default: true.' },
 					},
 				},
 				category: 'knowledge',
@@ -165,6 +395,8 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 			const method = (args['method'] as string) || undefined;
 			const title = (args['title'] as string) || (method ?? templateId);
 			const filePath = (args['file_path'] as string)?.trim();
+		// 导入即自动总结落笔记目录：notes_summary 模板默认导出，其他模板需显式开启
+		const exportNotes = shouldAutoExportNotes(args, templateId);
 			try {
 				const source = await readSource(args);
 					if (!source.trim()) {
@@ -186,6 +418,10 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 						itemCount: session.meta.itemCount,
 					};
 					if (method) { result['method'] = method; }
+					if (exportNotes) {
+						const note = await exportToNotes({ fileService: deps.fileService, resolveStorageRoot: deps.resolveStorageRoot, logKbTool }, manager, session, args);
+						if (note) { result['note'] = note; }
+					}
 					return txt(JSON.stringify(result, null, 2));
 				} catch (err) {
 					void logKbTool('kb_build', 'failure', { detail: { title, template: templateId, method }, error: err instanceof Error ? err.message : String(err) });
@@ -207,6 +443,10 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 						file_path: { type: 'string', description: 'Path to a text/markdown file to parse (relative to the workspace root)' },
 						model: { type: 'string', description: 'Optional model id overriding the default LLM' },
 						provider: { type: 'string', description: 'Optional BYOK provider id (default: openrouter)' },
+						export_notes: { type: 'boolean', description: 'Re-export the updated KB as an Obsidian note into the notes vault after ingesting. Default: true when the KB template is notes_summary, otherwise false.' },
+						note_name: { type: 'string', description: 'Optional note file name (without .md) when export_notes is true. Defaults to a sanitized KB title.' },
+						mermaid: { type: 'boolean', description: 'Include the ```mermaid graph block when export_notes is true (graph templates only). Default: true.' },
+						wikilinks: { type: 'boolean', description: 'Use Obsidian [[wikilinks]] for node names when export_notes is true. Default: true.' },
 					},
 					required: ['id'],
 				},
@@ -224,10 +464,19 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 					}
 					const manager = await buildManager({ model: args['model'] as string, provider: args['provider'] as string });
 					const session = await manager.load(id);
+					const templateId = session.templateId;
+					const exportNotes = shouldAutoExportNotes(args, templateId);
 					await manager.parseText(session, source);
 					await manager.persist(session);
 					void logKbTool('kb_ingest', 'success', { target: session.id, detail: { itemCount: session.meta.itemCount } });
-					return txt(JSON.stringify({ success: true, id: session.id, itemCount: session.meta.itemCount }, null, 2));
+					const result: Record<string, unknown> = {
+						success: true, id: session.id, itemCount: session.meta.itemCount,
+					};
+					if (exportNotes) {
+						const note = await exportToNotes({ fileService: deps.fileService, resolveStorageRoot: deps.resolveStorageRoot, logKbTool }, manager, session, args);
+						if (note) { result['note'] = note; }
+					}
+					return txt(JSON.stringify(result, null, 2));
 				} catch (err) {
 					void logKbTool('kb_ingest', 'failure', { target: id, error: err instanceof Error ? err.message : String(err) });
 					return txt(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
@@ -361,6 +610,40 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 				return txt(JSON.stringify({ success: true, markdown: md }, null, 2));
 			} catch (err) {
 				void logKbTool('kb_export', 'failure', { target: id, error: err instanceof Error ? err.message : String(err) });
+				return txt(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
+			}
+		},
+	},
+
+	// ── kb_export_notes ───────────────────────────
+	{
+		definition: {
+			name: 'kb_export_notes',
+			description: 'Export a built knowledge base as an Obsidian-style Markdown note (with [[wikilinks]]) into the KB notes vault (<storage-root>/notes). Mirrors Hyper-Extract `export_to_obsidian`: each KB becomes a cross-linkable note. Returns the note path so downstream tools can reference it via [[wikilinks]]. Provide an optional `note_name` to override the auto-derived file name.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					id: { type: 'string', description: 'Knowledge base id returned by kb_build' },
+					note_name: { type: 'string', description: 'Optional note file name (without .md). Defaults to a sanitized KB title.' },
+					mermaid: { type: 'boolean', description: 'Include the ```mermaid graph block (graph templates only). Default: true.' },
+					wikilinks: { type: 'boolean', description: 'Use Obsidian [[wikilinks]] for node names. Default: true.' },
+				},
+				required: ['id'],
+			},
+			category: 'knowledge',
+			source: 'saros.knowledge',
+		},
+		handler: async (args) => {
+			const id = args['id'] as string;
+			try {
+				if (!id) { return txt(JSON.stringify({ success: false, error: '`id` is required' })); }
+				const manager = await buildManager({});
+				const session = await manager.load(id);
+				const note = await exportToNotes({ fileService: deps.fileService, resolveStorageRoot: deps.resolveStorageRoot, logKbTool }, manager, session, args);
+				if (!note) { return txt(JSON.stringify({ success: false, error: 'Failed to export note' })); }
+				return txt(JSON.stringify({ success: true, ...note }, null, 2));
+			} catch (err) {
+				void logKbTool('kb_export_notes', 'failure', { target: id, error: err instanceof Error ? err.message : String(err) });
 				return txt(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
 			}
 		},

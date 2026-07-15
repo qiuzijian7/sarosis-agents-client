@@ -10,6 +10,7 @@ import { MarkdownString } from '../../../../../../base/common/htmlContent.js';
 import { Lazy } from '../../../../../../base/common/lazy.js';
 import { IRenderedMarkdown } from '../../../../../../base/browser/markdownRenderer.js';
 import { DisposableStore, IDisposable, MutableDisposable } from '../../../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { autorun } from '../../../../../../base/common/observable.js';
 import { rcut } from '../../../../../../base/common/strings.js';
 import { localize } from '../../../../../../nls.js';
@@ -75,7 +76,16 @@ interface ILazyHookItem {
 	hookPart: IChatHookPart;
 }
 
-type ILazyItem = ILazyToolItem | ILazyMarkdownItem | ILazyHookItem;
+/**
+ * Represents a lazy reasoning/commentary item (the sub-agent's thinking text) that
+ * will be rendered when expanded.
+ */
+interface ILazyReasoningItem {
+	kind: 'reasoning';
+	lazy: Lazy<{ domNode: HTMLElement; disposable?: IDisposable }>;
+}
+
+type ILazyItem = ILazyToolItem | ILazyMarkdownItem | ILazyHookItem | ILazyReasoningItem;
 
 /**
  * This is generally copied from ChatThinkingContentPart. We are still experimenting with both UIs so I'm not
@@ -106,7 +116,17 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	// Model name used by this subagent for hover tooltip
 	private modelName: string | undefined;
 	private _isDefaultDescription: boolean;
+
+	/** Shared group id clustering parallel sub-agents (from parent tool invocation). */
+	private readonly _groupId?: string;
+	/** Fired when this sub-agent completes — used by the renderer to update the group header. */
+	private readonly _onDidComplete = this._register(new Emitter<void>());
+	public readonly onDidComplete: Event<void> = this._onDidComplete.event;
 	private readonly _hoverDisposable = this._register(new MutableDisposable());
+
+	// Reasoning/commentary timeline: the currently open thinking row that streaming
+	// chunks are merged into. Closed when a tool/hook/result is appended.
+	private _openReasoningWrapper: HTMLElement | undefined;
 
 	// Confirmation auto-expand tracking
 	private toolsWaitingForConfirmation: number = 0;
@@ -132,6 +152,9 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	private titleShimmerSpan: HTMLElement | undefined;
 	private titleDetailContainer: HTMLElement | undefined;
 	private readonly _titleDetailRendered = this._register(new MutableDisposable<IRenderedMarkdown>());
+
+	// Model badge shown next to the title text
+	private _modelBadgeElement: HTMLElement | undefined;
 
 	/**
 	 * Check if a tool invocation is the parent subagent tool (the tool that spawns a subagent).
@@ -199,6 +222,7 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	) {
 		// Extract description, agentName, and prompt from toolInvocation
 		const { description, isDefaultDescription, agentName, prompt, modelName } = ChatSubagentContentPart.extractSubagentInfo(toolInvocation);
+		const groupId = toolInvocation.toolSpecificData?.kind === 'subagent' ? toolInvocation.toolSpecificData.groupId : undefined;
 
 		// Build title: "AgentName: description" or "Subagent: description"
 		const rawPrefix = agentName || localize('chat.subagent.prefix', 'Subagent');
@@ -211,6 +235,7 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 		this.agentName = agentName;
 		this.prompt = prompt;
 		this.modelName = modelName;
+		this._groupId = groupId;
 		this.isInitiallyComplete = this.element.isComplete;
 
 		const node = this.domNode;
@@ -440,6 +465,10 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 		this._shouldUseCarouselForTool = shouldUseCarouselForTool;
 	}
 
+	public get groupId(): string | undefined {
+		return this._groupId;
+	}
+
 	public getAgentLabel(): string {
 		if (this.agentName) {
 			return this.agentName;
@@ -452,6 +481,8 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 
 	public markAsInactive(): void {
 		this.isActive = false;
+		// Close any trailing reasoning row so the timeline ends cleanly.
+		this._openReasoningWrapper = undefined;
 		this.domNode.classList.remove('chat-thinking-active');
 		if (this._collapseButton) {
 			this._collapseButton.icon = Codicon.check;
@@ -466,6 +497,8 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 		this.finalizeTitle();
 		// Collapse when done
 		this.setExpanded(false);
+		// Notify the renderer so the parent group header can advance its completion count.
+		this._onDidComplete.fire();
 	}
 
 	public finalizeTitle(): void {
@@ -504,6 +537,7 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 
 			this._collapseButton.element.ariaLabel = shimmerText;
 			this._collapseButton.element.ariaExpanded = String(this.isExpanded());
+			this._ensureModelBadge(labelElement);
 			return;
 		}
 
@@ -540,6 +574,8 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 		const fullLabel = `${shimmerText}${toolCallText}`;
 		this._collapseButton.element.ariaLabel = fullLabel;
 		this._collapseButton.element.ariaExpanded = String(this.isExpanded());
+
+		this._ensureModelBadge(labelElement);
 	}
 
 	private updateHover(): void {
@@ -550,6 +586,27 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 		this._hoverDisposable.value = this.hoverService.setupDelayedHover(this._collapseButton.element, {
 			content: localize('chat.subagent.modelTooltip', 'Model: {0}', this.modelName),
 		});
+	}
+
+	private _ensureModelBadge(labelElement: HTMLElement): void {
+		if (!this.modelName) {
+			if (this._modelBadgeElement) {
+				this._modelBadgeElement.remove();
+				this._modelBadgeElement = undefined;
+			}
+			return;
+		}
+
+		if (!this._modelBadgeElement) {
+			this._modelBadgeElement = $('span.chat-subagent-model-badge');
+		}
+
+		this._modelBadgeElement.textContent = this.modelName;
+
+		// (Re-)append so it always stays at the end of the label.
+		if (this._modelBadgeElement.parentElement !== labelElement) {
+			labelElement.appendChild(this._modelBadgeElement);
+		}
 	}
 
 	/**
@@ -800,6 +857,9 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 			return;
 		}
 
+		// Close any open reasoning row so the final result is the last item.
+		this._openReasoningWrapper = undefined;
+
 		// Split into first line and rest
 		const lines = resultText.split('\n');
 		const rawFirstLine = lines[0] || '';
@@ -953,6 +1013,8 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	 * Appends a hook item's DOM node to the wrapper.
 	 */
 	private appendHookItemToDOM(domNode: HTMLElement, hookPart: IChatHookPart): void {
+		// Close any open reasoning row so the next thinking segment starts a new row.
+		this._openReasoningWrapper = undefined;
 		const itemWrapper = $('.chat-thinking-tool-wrapper');
 		const icon = hookPart.stopReason ? Codicon.error : Codicon.warning;
 		const iconElement = createThinkingIcon(icon);
@@ -970,6 +1032,89 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 		if (this.wrapper) {
 			if (this.resultContainer) {
 				this.wrapper.insertBefore(itemWrapper, this.resultContainer);
+			} else {
+				this.wrapper.appendChild(itemWrapper);
+			}
+		}
+		this.lastItemWrapper = itemWrapper;
+		this.layoutScheduler.schedule();
+	}
+
+	/**
+	 * Appends a reasoning/commentary item (the sub-agent's thinking text) to the
+	 * subagent content part. Streaming chunks of the same reasoning segment are merged
+	 * into one open row; the row is closed when a tool/hook/result is appended so the
+	 * timeline reads "thinking → tool → thinking → tool".
+	 */
+	public appendReasoningItem(
+		factory: () => { domNode: HTMLElement; disposable?: IDisposable },
+		_markdown: IChatMarkdownContent,
+		eagerDisposable?: IDisposable,
+	): void {
+		// Register any caller-owned disposable up-front so it is always cleaned up
+		// with this subagent part, even if the lazy item is never materialized.
+		if (eagerDisposable) {
+			this._register(eagerDisposable);
+		}
+
+		// If expanded or has been expanded once, render immediately
+		if (this.isExpanded() || this.hasExpandedOnce) {
+			const result = factory();
+			this.appendReasoningItemToDOM(result.domNode);
+			if (result.disposable && result.disposable !== eagerDisposable) {
+				this._register(result.disposable);
+			}
+		} else {
+			// Defer rendering until expanded
+			const item: ILazyReasoningItem = {
+				kind: 'reasoning',
+				lazy: new Lazy(factory),
+			};
+			this.lazyItems.push(item);
+		}
+	}
+
+	/**
+	 * Appends a reasoning item's DOM node to the wrapper, merging into the open row.
+	 */
+	private appendReasoningItemToDOM(domNode: HTMLElement): void {
+		if (!domNode.hasChildNodes() || domNode.textContent?.trim() === '') {
+			return;
+		}
+
+		// Merge consecutive streaming chunks into the currently-open reasoning row.
+		if (this._openReasoningWrapper) {
+			const contentContainer = this._openReasoningWrapper.querySelector('.chat-subagent-reasoning-content');
+			if (contentContainer) {
+				contentContainer.appendChild(domNode);
+				this.lastItemWrapper = this._openReasoningWrapper;
+				this.layoutScheduler.schedule();
+				return;
+			}
+		}
+
+		// Wrap with a reasoning icon and a content container for later merging
+		const itemWrapper = $('.chat-thinking-tool-wrapper.chat-subagent-reasoning');
+		const iconElement = createThinkingIcon(Codicon.lightbulb);
+		itemWrapper.appendChild(iconElement);
+		const contentContainer = $('.chat-subagent-reasoning-content');
+		contentContainer.appendChild(domNode);
+		itemWrapper.appendChild(contentContainer);
+		this._openReasoningWrapper = itemWrapper;
+
+		// Show the container when first content item is added
+		if (!this.hasToolItems) {
+			this.hasToolItems = true;
+			if (this.wrapper) {
+				this.wrapper.style.display = '';
+			}
+		}
+
+		// Insert before result/placeholder/spinner like tool items so the timeline stays ordered
+		if (this.wrapper) {
+			const anchor = this._confirmationPlaceholder ?? this.workingSpinnerElement ?? this.resultContainer;
+			if (anchor) {
+				this.wrapper.insertBefore(itemWrapper, anchor);
 			} else {
 				this.wrapper.appendChild(itemWrapper);
 			}
@@ -1035,6 +1180,8 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 	 * Appends a tool part's DOM node to the wrapper with appropriate icon wrapper.
 	 */
 	private appendToolPartToDOM(part: ChatToolInvocationPart, toolInvocation: IChatToolInvocation | IChatToolInvocationSerialized): void {
+		// Close any open reasoning row so the next thinking segment starts a new row.
+		this._openReasoningWrapper = undefined;
 		const content = part.domNode;
 		if (!content.hasChildNodes() || content.textContent?.trim() === '') {
 			return;
@@ -1115,6 +1262,12 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 			if (result.disposable) {
 				this._register(result.disposable);
 			}
+		} else if (item.kind === 'reasoning') {
+			const result = item.lazy.value;
+			this.appendReasoningItemToDOM(result.domNode);
+			if (result.disposable) {
+				this._register(result.disposable);
+			}
 		}
 	}
 
@@ -1166,6 +1319,11 @@ export class ChatSubagentContentPart extends ChatCollapsibleContentPart implemen
 
 	hasSameContent(other: IChatRendererContent, _followingContent: IChatRendererContent[], _element: ChatTreeItem): boolean {
 		if (other.kind === 'markdownContent') {
+			// Re-render when this is our own reasoning markdown so streaming chunks
+			// are appended live into the thinking timeline instead of being deduped.
+			if (other.subAgentInvocationId && this.subAgentInvocationId === other.subAgentInvocationId) {
+				return false;
+			}
 			return true;
 		}
 

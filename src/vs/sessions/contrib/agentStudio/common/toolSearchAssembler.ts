@@ -304,6 +304,11 @@ export interface IAssemblyResult {
 /**
  * Assembly 入口 — 参考 Hermes `assemble_tool_defs`。
  *
+ * 对齐 Hermes-Agent model_tools.py:534-562：
+ *   核心工具（isDeferrableTool=false）永远不会被折叠——无论数量多少。
+ *   仅 MCP 工具和非核心可 defer 工具在超过 token 预算阈值时才通过 tool_search
+ *   桥接延迟。不再对核心工具数量设置硬上限（移除 MAX_VISIBLE_TOOLS）。
+ *
  * 当 Tool Search 未激活（off / 无 deferrable / 低于阈值）时 passthrough。
  * 激活时用 3 个桥接 schema 替换 deferrable 工具。
  *
@@ -314,18 +319,35 @@ export function assembleToolDefs(
 	options?: {
 		contextLength?: number;
 		config?: IToolSearchConfig;
+		/**
+		 * 保留为可选参数（向后兼容），但默认不再强制限制核心工具数量。
+		 * 对齐 Hermes-Agent：核心工具永远直接发送，不做上限截断。
+		 */
+		maxVisible?: number;
 	},
 ): IAssemblyResult {
 	const config = options?.config ?? DEFAULT_TOOL_SEARCH_CONFIG;
 	const contextLength = options?.contextLength;
 
 	// 防御：过滤掉已存在的桥接工具（二次 assembly）
-	// 2026-07-03: 统一为单套桥接（对齐 Hermes-Agent）
-	// MCP 工具不再有专属的 mcp_tool_search/mcp_tool_call，而是通过 'mcp' toolset
-	// 纳入 deferrable 池，LLM 通过统一的 tool_search/tool_describe/tool_call 路径发现。
 	const incoming = toolDefs.filter(td => !isBridgeTool(td.name));
 
 	const { visible, deferrable } = classifyTools(incoming);
+
+	// ─── 对齐 Hermes-Agent：核心工具永不 defer ────────────────────────────
+	// classifyTools 已通过 isDeferrableTool() 正确分离：
+	//   - visible = 核心工具 + 桥接工具（isCoreTool / isCoreToolset / Always 优先级）
+	//   - deferrable = MCP + 非核心可 defer 工具
+	//
+	// 移除了原有的 maxVisible 硬上限和 forcedDeferred 强制溢出机制。
+	// 原因（来自日志分析）：
+	//   1. 硬上限会导致 delegate_task 等关键工具被挤出 → agent loop 直接结束
+	//   2. 强制溢出工具需桥接发现 → 每次 +2-3 次交互迭代
+	//   3. 实测日志：50 次交互迭代中的大量桥接短路（12 次 tool_call/tool_search/tool_describe 短路）
+	//
+	// 风险缓解：sanitizeSchemaForIoaGateway 仍然生效；
+	//   Token 预算阈值（10% 上下文窗口）仍限制 deferrable 池的 schema 总大小。
+	const finalVisible = visible;
 
 	if (deferrable.length === 0) {
 		return {
@@ -339,21 +361,19 @@ export function assembleToolDefs(
 	}
 
 	const deferrableTokens = estimateTokensFromSchemas(deferrable);
+	// 激活条件：当 deferrable token 数达到上下文窗口的阈值百分比时激活
 	const shouldActivateResult = shouldActivate(config, deferrableTokens, contextLength);
 	const thresholdTokens = Math.floor((contextLength ?? 0) * (config.thresholdPct / 100.0));
 
 	if (!shouldActivateResult) {
 		// 未激活：passthrough + 桥接工具
-		// 2026-07-03: passthrough 模式也必须包含桥接工具。
 		// incoming 包含所有工具（visible + deferrable 含 MCP），
 		// _getEnabledTools Step 5b 会根据 mcpToolNameSet 移除 MCP 直发工具。
 		// 桥接工具则保留给 LLM 通过 tool_search 发现 MCP/非核心工具。
-		// 设计：桥接工具始终发送（token 开销仅 ~300 chars），
-		// 确保 LLM 总有通路访问 codebase 等 MCP 工具。
 		const bridge = bridgeToolSchemas(deferrable, config);
 		return {
 			toolDefs: [...incoming, ...bridge],
-			activated: false,  // false → Step 5b 移除 MCP 直发工具，bridge 工具保留
+			activated: false,
 			deferredCount: deferrable.length,
 			deferredTokens: deferrableTokens,
 			thresholdTokens,
@@ -363,7 +383,7 @@ export function assembleToolDefs(
 
 	// 激活：用桥接 schema 替换 deferrable
 	const bridge = bridgeToolSchemas(deferrable, config);
-	const result = [...visible, ...bridge];
+	const result = [...finalVisible, ...bridge];
 
 	return {
 		toolDefs: result,

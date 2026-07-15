@@ -66,6 +66,7 @@ export type RequestType =
 	| 'agentSession.rename'
 	| 'agentSession.delete'
 	| 'agentSession.getActive'
+	| 'agentSession.fork'
 	| 'orchestration.plan'
 	| 'orchestration.approve'
 	| 'orchestration.reject'
