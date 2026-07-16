@@ -481,7 +481,7 @@ function doPackageLocalExtensionsStream(forWeb: boolean, disableMangle: boolean,
 			.filter(({ manifestPath }) => (forWeb ? isWebExtension(require(manifestPath)) : true))
 	);
 	const localExtensionsStream = minifyExtensionResources(
-		es.merge(
+		es.concat(
 			...localExtensionsDescriptions.map(extension => {
 				return fromLocal(extension.path, forWeb, disableMangle)
 					.pipe(rename(p => p.dirname = `extensions/${extension.name}/${p.dirname}`));
@@ -523,7 +523,7 @@ export function packageNonMinifiedLocalExtensionsStream(forWeb: boolean, disable
 			.filter(({ name }) => builtInExtensions.every(b => b.name !== name))
 	);
 
-	return es.merge(
+	return es.concat(
 		...localExtensionsDescriptions.map(extension => {
 			return fromLocal(extension.path, forWeb, disableMangle)
 				.pipe(rename(p => p.dirname = `extensions/${extension.name}/${p.dirname}`));
