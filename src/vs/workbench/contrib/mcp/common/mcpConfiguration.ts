@@ -31,7 +31,7 @@ export const enum DiscoverySource {
 	CursorWorkspace = 'cursor-workspace',
 }
 
-// VsSarosis: 仅启用 ClaudeDesktop 和 Windsurf 发现源，不扫描 Cursor 配置
+// VsSaros: 仅启用 ClaudeDesktop 和 Windsurf 发现源，不扫描 Cursor 配置
 export const allDiscoverySources = Object.keys({
 	[DiscoverySource.ClaudeDesktop]: true,
 	[DiscoverySource.Windsurf]: true,

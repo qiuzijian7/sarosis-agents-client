@@ -79,6 +79,7 @@ import type {
 	IConfigHtmlGetHtmlPayload,
 	IConfigHtmlChatSendStreamPayload,
 	IConfigHtmlChatCancelStreamPayload,
+	IConfigHtmlRunTerminalPayload,
 	IFileOpenPayload,
 	IFileOpenUntitledTextPayload,
 	IFileApplyCodePayload,
@@ -1381,6 +1382,13 @@ export class AgentStudioWebviewController extends Disposable {
 				const cp = p as unknown as IConfigHtmlChatCancelStreamPayload;
 				this._configHtmlService.cancelStream(cp.requestId, cp.agentId);
 				return undefined;
+			}
+			case "confightml.runTerminal": {
+				const rp = p as unknown as IConfigHtmlRunTerminalPayload;
+				return this._configHtmlService.handleRunTerminal(
+					rp.agentId, rp.command, rp.args,
+					{ cwd: rp.cwd, env: rp.env },
+				);
 			}
 			// ─── Files ────────────────────────────────────────────
 			case "files.open": {

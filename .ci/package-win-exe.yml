@@ -1,7 +1,7 @@
 version: v3.0
 
 # ============================================================
-# VsSarosis Windows EXE 打包流水线 (蓝盾 Pipeline-as-Code v3.0)
+# VsSaros Windows EXE 打包流水线 (蓝盾 Pipeline-as-Code v3.0)
 # ------------------------------------------------------------
 # 触发：origin 仓库 (git.woa.com/zijianqiu/sarosis-agents-client)
 #       任意分支有新提交 (push) 立即触发打包。
@@ -12,7 +12,7 @@ version: v3.0
 # 产物：.build/win32-x64/ 下的 system / user setup exe 安装包。
 # ============================================================
 
-name: "VsSarosis-Win-EXE-Package"
+name: "VsSaros-Win-EXE-Package"
 
 label:
   - "打包"

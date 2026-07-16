@@ -58,7 +58,6 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		priority: ToolsetPriority.Always,
 		prefixes: ['file_', 'search_files', 'terminal', 'memory_'],
 		exactNames: [
-			'echo', 'get_current_time', 'math_eval', 'http_get',
 			'update_plan', 'memory', 'patch', 'process',
 			'web_search', 'web_extract',
 			'skills_list', 'skill_view', 'skill_manage', 'skill_create',
@@ -271,7 +270,7 @@ export const CORE_TOOLS: ReadonlySet<string> = new Set([
 	'memory', 'memory_search', 'memory_write', 'memory_list',
 	'update_plan',
 	// 搜索 / 提取
-	'web_search', 'web_extract', 'http_get',
+	'web_search', 'web_extract',
 	// Session 搜索
 	'session_search',
 	// 技能调用 — 任何 Agent 都需要
@@ -286,8 +285,6 @@ export const CORE_TOOLS: ReadonlySet<string> = new Set([
 	TOOL_SEARCH_BRIDGE_TOOLS.search,
 	TOOL_SEARCH_BRIDGE_TOOLS.describe,
 	TOOL_SEARCH_BRIDGE_TOOLS.call,
-	// 通用实用工具
-	'echo', 'get_current_time', 'math_eval',
 ]);
 
 /** 核心工具的 toolset 集合（用于批量检查） */

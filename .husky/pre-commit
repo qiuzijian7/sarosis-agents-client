@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# VsSarosis pre-commit hook
+# VsSaros pre-commit hook
 # 每次提交前自动更新版本号文件（package.json + product.json）
 # 版本号格式: {major}.{a}.{b}，a=floor(commitCount/65536), b=commitCount%65536
 # 一次调用 git rev-list --count HEAD，保证两个文件版本号一致

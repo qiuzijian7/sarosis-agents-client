@@ -1089,6 +1089,21 @@ export interface IConfigHtmlService {
 		},
 	): Promise<ChatMessage>;
 
+	// --- Terminal Execution ----------------------------------------------
+
+	/**
+	 * Run a command in the integrated terminal and return immediately.
+	 * The terminal shows real-time stdout/stderr output.
+	 * This is used by ConfigHtml to execute Python/Node/etc scripts
+	 * with progress displayed in the VS Saros integrated terminal.
+	 */
+	handleRunTerminal(
+		agentId: string,
+		command: string,
+		args: string[],
+		options?: { cwd?: string; env?: Record<string, string> },
+	): Promise<void>;
+
 	// --- Push to HTML view ----------------------------------------------
 
 	sendCommandToHtml(agentId: string, command: IConfigHtmlCommand): void;

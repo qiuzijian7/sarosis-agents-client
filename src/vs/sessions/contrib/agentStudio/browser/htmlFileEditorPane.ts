@@ -448,6 +448,14 @@ export class HtmlFileEditorPane extends TextFileEditor {
 					case 'confightml.notify':
 						this._logService.info(`[HtmlFileEditorPane] preview notify: ${msg.message} [${msg.level}]`);
 						break;
+					case 'confightml.runTerminal': {
+						if (!agentId) throw new Error('agentId 未识别');
+						const cmd = String(msg.command || '');
+						const args = Array.isArray(msg.args) ? msg.args.map(String) : [];
+						const rtOptions = msg as unknown as { cwd?: string; env?: Record<string, string> };
+						await this._configHtmlService.handleRunTerminal(agentId, cmd, args, { cwd: rtOptions.cwd, env: rtOptions.env });
+						break;
+					}
 				}
 				this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
 			} catch (err) {
@@ -573,12 +581,12 @@ export class HtmlFileEditorPane extends TextFileEditor {
 	private _wrapHtmlForWebview(html: string): string {
 		// ~/.saros 目录下的文件不受沙箱限制，vscode-file: 允许通过
 		// file:// 协议访问本地资源（如 config.html 内嵌的 img / iframe / fetch）。
-		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; img-src 'self' data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; font-src data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; connect-src https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; frame-src https: vscode-webview: vscode-file:;">`;
+		const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; script-src 'unsafe-inline' 'unsafe-eval' https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; img-src 'self' data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; font-src data: https: vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; connect-src https: http://127.0.0.1:* http://localhost:* vscode-resource: vscode-webview-resource: vscode-webview: vscode-file:; frame-src https: vscode-webview: vscode-file:;">`;
 		const baseStyle = `<style>html,body{margin:0;padding:0;}body{background:#ffffff;color:#1e1e1e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;}@media (prefers-color-scheme: dark){body{background:#1e1e1e;color:#d4d4d4;}}</style>`;
 		// 预览模式强制隐藏编辑器 runtime chrome——无论源 HTML 是否嵌入了
 		// toolbar / add-btn / add-menu（如编辑模式保存后的残留），也移除
 		// html-edit-mode 类避免影响页面交互。
-		const cleanup = `<style>#html-edit-toolbar,#html-edit-add-btn,#html-edit-add-menu{display:none!important}body.html-edit-mode{cursor:auto!important}</style><script>(function(){document.body.classList.remove('html-edit-mode')})();</script>`;
+		const cleanup = `<style>#html-edit-toolbar,#html-edit-add-btn,#html-edit-add-menu{display:none!important}body.html-edit-mode{cursor:auto!important}</style><script>(function(){document.body&&document.body.classList.remove('html-edit-mode')})();</script>`;
 		// 注入最小 AgentConfigHtml SDK：config.html 即使在预览 webview 中
 		// 也能正常调用 chatSend / sendEvent / notify。chatSendStream 暂不
 		// 支持（预览 webview 没有 delta event relay pipeline）。
@@ -600,10 +608,12 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			'});var a={on:function(ev,fn){l[ev]=l[ev]||[];l[ev].push(fn);return a},' +
 			'sendEvent:function(n,d){return s("confightml.event",{eventName:n,payload:d})},' +
 			'chatSend:function(msg,o){return s("confightml.chatSend",Object.assign({message:msg},o||{}))},' +
-			'notify:function(msg,lv){return s("confightml.notify",{message:msg,level:lv||"info"})}};' +
+			'notify:function(msg,lv){return s("confightml.notify",{message:msg,level:lv||"info"})},' +
+			'runTerminal:function(cmd,args,o){return s("confightml.runTerminal",Object.assign({command:cmd,args:args||[]},o||{}))}};' +
 			'g.AgentConfigHtml={connect:function(){log("connect ok");return Promise.resolve(a)},isConnected:function(){return true},' +
 			'on:function(ev,fn){return a.on(ev,fn)},sendEvent:function(n,d){return a.sendEvent(n,d)},' +
-			'chatSend:function(msg,o){return a.chatSend(msg,o)},notify:function(m,l){return a.notify(m,l)}}}(window);</script>';
+			'chatSend:function(msg,o){return a.chatSend(msg,o)},notify:function(m,l){return a.notify(m,l)},' +
+			'runTerminal:function(cmd,args,o){return a.runTerminal(cmd,args,o)}}}(window);</script>';
 
 		const sdkWrapper = `<script>console.log('[HtmlFileEditorPane] preview SDK injected, type tag present')</script>` + sdk;
 

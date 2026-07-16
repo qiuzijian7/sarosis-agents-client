@@ -1,7 +1,7 @@
-# OpenSearch ML Commons vs VsSarosis 对比分析
+# OpenSearch ML Commons vs VsSaros 对比分析
 
 > 日期：2026-06-27
-> 对比对象：OpenSearch ML Commons Agent Framework vs VsSarosis（CodeBuddy CN）
+> 对比对象：OpenSearch ML Commons Agent Framework vs VsSaros（CodeBuddy CN）
 
 ## 一、OpenSearch ML Commons 概述
 
@@ -64,9 +64,9 @@ OpenSearch ML Commons 是 OpenSearch 搜索引擎的机器学习插件，提供�
 
 ---
 
-## 二、VsSarosis 概述
+## 二、VsSaros 概述
 
-VsSarosis 是基于 VS Code fork 的 AI 编程助手，Agent 系统集成在 IDE 渲染进程中。
+VsSaros 是基于 VS Code fork 的 AI 编程助手，Agent 系统集成在 IDE 渲染进程中。
 
 ### 2.1 Agent 执行模式（3 种）
 
@@ -123,34 +123,34 @@ VsSarosis 是基于 VS Code fork 的 AI 编程助手，Agent 系统集成在 IDE
 
 ### 3.1 架构对比
 
-| 维度 | OpenSearch ML Commons | VsSarosis | 评价 |
+| 维度 | OpenSearch ML Commons | VsSaros | 评价 |
 |------|----------------------|-----------|------|
 | **定位** | 搜索引擎 AI Agent 框架 | IDE AI 编程助手 | 不同场景 |
 | **部署方式** | 服务端集群（REST API） | 客户端 IDE（渲染进程） | 各有优势 |
 | **Agent 类型** | 4 种（对话/对话V2/计划-执行-反思/UI优化） | 3 种（Direct/Provider/退化） | OpenSearch 更丰富 |
-| **工具数量** | 17 个内置 | ~19 个实际可用 + 69 个 stub | VsSarosis 更多 |
+| **工具数量** | 17 个内置 | ~19 个实际可用 + 69 个 stub | VsSaros 更多 |
 | **工具类型** | 搜索/监控/ML 为主 | 文件/终端/编码 为主 | 不同领域 |
-| **MCP 集成** | McpSseTool + McpStreamableHttpTool | McpToolProvider + 桥接工具 | VsSarosis 有桥接优化 |
+| **MCP 集成** | McpSseTool + McpStreamableHttpTool | McpToolProvider + 桥接工具 | VsSaros 有桥接优化 |
 | **记忆系统** | 对话记忆 + Agentic Memory（语义搜索） | L0/L1/L2 + Codebase Memory | 各有特色 |
 | **可扩展性** | SPI 接口 + REST API 注册 | IToolProvider 接口 + DI | OpenSearch 更开放 |
 
 ### 3.2 OpenSearch 的优势
 
-1. **Plan-Execute-Reflect 模式**：复杂任务的三阶段处理（规划→执行→反思），VsSarosis 仅有 Plan 模式（ExecutionProvider 中），无反思阶段
+1. **Plan-Execute-Reflect 模式**：复杂任务的三阶段处理（规划→执行→反思），VsSaros 仅有 Plan 模式（ExecutionProvider 中），无反思阶段
 
-2. **Agentic Memory 语义搜索**：长期记忆使用向量语义搜索检索，VsSarosis 仅子串匹配 + TF-IDF 占位
+2. **Agentic Memory 语义搜索**：长期记忆使用向量语义搜索检索，VsSaros 仅子串匹配 + TF-IDF 占位
 
-3. **RAGTool 原生集成**：检索增强生成（神经搜索 + LLM 总结）内置为工具，VsSarosis 需要通过 MCP 或外部服务实现
+3. **RAGTool 原生集成**：检索增强生成（神经搜索 + LLM 总结）内置为工具，VsSaros 需要通过 MCP 或外部服务实现
 
-4. **服务端集群部署**：支持水平扩展、高可用、多用户并发，VsSarosis 是单机客户端
+4. **服务端集群部署**：支持水平扩展、高可用、多用户并发，VsSaros 是单机客户端
 
 5. **REST API 驱动**：Agent/Tool 的注册、执行、管理全通过 REST API，便于集成到任意系统
 
-6. **监控/告警工具**：内置异常检测、告警搜索、可视化查找等运维工具，VsSarosis 无此类工具
+6. **监控/告警工具**：内置异常检测、告警搜索、可视化查找等运维工具，VsSaros 无此类工具
 
-7. **MCP 双向支持**：既是 MCP Client（调用外部工具）又是 MCP Server（暴露自身工具），VsSarosis 仅是 MCP Client
+7. **MCP 双向支持**：既是 MCP Client（调用外部工具）又是 MCP Server（暴露自身工具），VsSaros 仅是 MCP Client
 
-### 3.3 VsSarosis 的优势
+### 3.3 VsSaros 的优势
 
 1. **IDE 原生集成**：直接操作文件系统、终端、编辑器，无需 REST API 中转，延迟更低
 
@@ -178,12 +178,12 @@ VsSarosis 是基于 VS Code fork 的 AI 编程助手，Agent 系统集成在 IDE
 |------|------|---------|
 | **Plan-Execute-Reflect 模式** | 复杂任务的质量提升 | 中（在 ExecutionProvider 中增加反思阶段） |
 | **Agentic Memory 语义搜索** | 记忆检索准确率提升 | 高（需要引入向量搜索引擎） |
-| **MCP Server 双向支持** | 暴露 VsSarosis 工具给外部系统 | 中（实现 MCP Server 协议） |
+| **MCP Server 双向支持** | 暴露 VsSaros 工具给外部系统 | 中（实现 MCP Server 协议） |
 | **RAGTool** | 代码库文档检索增强 | 低（已有 Codebase Memory，可包装为 RAG 工具） |
 | **Agent REST API** | 允许外部系统触发 Agent 执行 | 中（暴露 HTTP 端点） |
 | **工具 SPI 注册** | 运行时动态注册工具 | 低（IToolProvider 已支持，可扩展为运行时注册） |
 
-### 3.5 VsSarosis 已有的优势（无需借鉴 OpenSearch）
+### 3.5 VsSaros 已有的优势（无需借鉴 OpenSearch）
 
 | 功能 | 状态 |
 |------|------|
@@ -198,15 +198,15 @@ VsSarosis 是基于 VS Code fork 的 AI 编程助手，Agent 系统集成在 IDE
 
 ## 四、总结
 
-OpenSearch ML Commons 和 VsSarosis 是**不同场景**的 AI Agent 框架：
+OpenSearch ML Commons 和 VsSaros 是**不同场景**的 AI Agent 框架：
 
 - **OpenSearch**：服务端搜索引擎 AI 框架，强项是搜索/RAG/监控/集群部署，适合数据分析和运维场景
-- **VsSarosis**：客户端 IDE AI 编程助手，强项是文件操作/代码理解/技能系统/工具桥接，适合编程场景
+- **VsSaros**：客户端 IDE AI 编程助手，强项是文件操作/代码理解/技能系统/工具桥接，适合编程场景
 
-两者互补而非竞争。如果 VsSarosis 需要增强数据分析或运维能力，可以引入 OpenSearch 作为 MCP 服务器。如果 OpenSearch 需要代码理解能力，可以引入 Codebase Memory MCP。
+两者互补而非竞争。如果 VsSaros 需要增强数据分析或运维能力，可以引入 OpenSearch 作为 MCP 服务器。如果 OpenSearch 需要代码理解能力，可以引入 Codebase Memory MCP。
 
 ### 最值得借鉴的 3 个功能
 
 1. **Plan-Execute-Reflect 模式** — 在复杂编程任务中增加反思阶段，提高代码质量
 2. **Agentic Memory 语义搜索** — 用向量搜索替代子串匹配，提高记忆检索准确率
-3. **MCP Server 双向支持** — 暴露 VsSarosis 的工具（file_read, terminal 等）给外部系统
+3. **MCP Server 双向支持** — 暴露 VsSaros 的工具（file_read, terminal 等）给外部系统

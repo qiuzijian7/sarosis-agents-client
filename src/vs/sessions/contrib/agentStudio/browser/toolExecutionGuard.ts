@@ -222,10 +222,10 @@ export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, s
 	}
 
 /** 已知慢工具 */
-	const slowTools = new Set([
-		'web_search', 'http_get', 'browser_navigate',
-		'shell_exec', 'terminal', 'execute_command',
-	]);
+		const slowTools = new Set([
+			'web_search', 'browser_navigate',
+			'shell_exec', 'terminal', 'execute_command',
+		]);
 
 	// Codebase analysis tools — these scan the entire project and can
 	// block the UI for tens of seconds on large codebases.  Shorter

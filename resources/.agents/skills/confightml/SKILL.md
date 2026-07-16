@@ -51,6 +51,7 @@ You are running the **confightml** skill.
 | `connect()` | `() → Promise<AgentConfigHtml>` | 建立与宿主的通信连接 | 页面初始化 |
 | `chatSend(msg, opts?)` | `(string, {context?, showInChat?}) → Promise<void>` | 单向发送消息给 Agent | 触发 Agent 执行任务 |
 | `chatSendStream(msg, cb)` | `(string, StreamCallbacks) → {cancel()}` | **流式发送 + 接收实时回复**（可取消） | 对话面板、AI 问答 |
+| `runTerminal(cmd, args?, opts?)` | `(string, string[]?, {cwd?, env?}?) → Promise<void>` | **在集成终端中执行命令**（实时输出） | 运行 Python/Node 脚本、pip 安装 |
 | `sendEvent(name, payload?)` | `(string, any?) → Promise<void>` | 发送自定义事件给 Agent | 按钮点击、状态上报 |
 | `notify(msg, level?)` | `(string, 'info'\|'success'\|'warning'\|'error'?) → Promise<void>` | 在 Agent Studio UI 显示通知 | 操作成功/失败提示 |
 | `on(event, fn)` | `('command'\|'message', fn) → void` | 监听宿主推送事件 | 接收 Agent 指令 |
@@ -181,6 +182,76 @@ window.AgentConfigHtml.on('command', function(cmd) {
 
 ---
 
+### 5. 终端执行 runTerminal(cmd, args?, opts?) ⭐ 运行脚本
+
+在 **VS Saros 集成终端**中执行命令，实时显示 `stdout`/`stderr` 输出。终端窗口会自动聚焦，用户可见完整的执行进度。
+
+适用于运行 Python 脚本、Node 脚本、pip/npm 安装等任意 CLI 命令。
+
+```js
+// 运行 Python 脚本（输出显示在集成终端中）
+await window.AgentConfigHtml.runTerminal('python', ['script.py']);
+
+// 指定工作目录
+await window.AgentConfigHtml.runTerminal('python', ['train.py'], { cwd: '/path/to/project' });
+
+// 设置环境变量
+await window.AgentConfigHtml.runTerminal('python', ['server.py'], { env: { DEBUG: '1' } });
+
+// 运行 Node 脚本
+await window.AgentConfigHtml.runTerminal('node', ['build.js']);
+
+// 安装依赖
+await window.AgentConfigHtml.runTerminal('pip', ['install', '-r', 'requirements.txt']);
+await window.AgentConfigHtml.runTerminal('npm', ['install']);
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `cmd` | string | ✅ | 要执行的命令（如 `python`、`node`、`pip`、`npm`） |
+| `args` | string[] | ❌ | 命令行参数，默认 `[]` |
+| `options.cwd` | string | ❌ | 工作目录，默认使用 Agent 工作目录 |
+| `options.env` | Record<string, string> | ❌ | 额外的环境变量 |
+
+**完整示例——Python 脚本执行面板：**
+
+```html
+<div class="card">
+  <h3>🐍 Python 脚本执行</h3>
+  <label>脚本路径 <input id="script-path" type="text" value="script.py" /></label>
+  <label style="margin-top:8px">参数 <input id="script-args" type="text" placeholder="--epochs 100 --batch 32" /></label>
+  <div style="margin-top:12px;display:flex;gap:8px">
+    <button id="btn-run">▶ 运行</button>
+    <button id="btn-install" class="secondary">📦 安装依赖</button>
+    <span id="run-status" style="font-size:13px;color:var(--deck-chrome-muted)"></span>
+  </div>
+</div>
+<script>
+document.getElementById('btn-run').onclick = async function(){
+  var status = document.getElementById('run-status');
+  status.textContent = '执行中…';
+  try {
+    var path = document.getElementById('script-path').value.trim();
+    var args = document.getElementById('script-args').value.trim().split(/\s+/).filter(Boolean);
+    await window.AgentConfigHtml.runTerminal('python', [path].concat(args));
+    status.textContent = '✓ 已启动，请查看终端窗口';
+  } catch(e){
+    status.textContent = '✗ 失败: ' + e.message;
+  }
+};
+document.getElementById('btn-install').onclick = async function(){
+  await window.AgentConfigHtml.runTerminal('pip', ['install', '-r', 'requirements.txt']);
+};
+</script>
+```
+
+**注意事项：**
+- 命令在**新终端实例**中执行，不会影响已有终端
+- 执行完成后终端保持打开，方便查看完整日志和输出
+- 需要系统中已安装对应命令（如 `python` 在系统 PATH 中可访问）
+- `runTerminal` 返回 Promise，在终端创建并开始执行后即 resolve（不等命令执行结束）
+
+---
 ## 输出格式（强制）
 
 - **只输出一个 ```html 代码块**，里面是一份从 `<!DOCTYPE html>` 到 `</html>` 的完整文档。
@@ -240,7 +311,7 @@ window.AgentConfigHtml.on('command', function(cmd) {
 1. 理解用户意图（面板 / 对话 / 看板 / 落地页…）。
 2. 选视觉风格，定义 `:root` 颜色 + `--deck-chrome-*`。
 3. 写语义化结构，标注 `data-edit-slot`；表单控件设置合理的 `value` / `placeholder` 默认值。
-4. 如需动态交互，按需加入 `<script>`——仅限协议 API 调用（`chatSend` / `chatSendStream` / `sendEvent` / `notify`），不写编辑器逻辑。
+4. 如需动态交互，按需加入 `<script>`——仅限协议 API 调用（`chatSend` / `chatSendStream` / `runTerminal` / `sendEvent` / `notify`），不写编辑器逻辑。
 5. 自检：零外链、`data-oid` 唯一、API 调用在 try/catch 中。
 6. 输出**单个** ```html 代码块。
 
@@ -344,4 +415,4 @@ window.AgentConfigHtml.on('command', function(cmd) {
 </html>
 ```
 
-记住：**只输出完整的单文件 HTML，标注好可编辑 slot，表单控件设好默认 value，不写编辑器运行时。**
+记住：**只输出完整的单文件 HTML，标注好可编辑 slot，表单控件设好默认 value。动态交互仅限 AgentConfigHtml 协议 API（`chatSend` / `chatSendStream` / `runTerminal` / `sendEvent` / `notify`），不写编辑器运行时。**

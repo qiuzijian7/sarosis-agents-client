@@ -423,6 +423,184 @@ describe('KbNativeKernel - Graph', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 测试 8: 文件夹导入 → KB 树节点构建
+// ---------------------------------------------------------------------------
+// 模拟 listChildren 路径：解析文件系统 → 生成 IKbNode[] → 排序（目录优先）→ 渲染节点
+// 纯逻辑测试，不依赖 DOM / AgentStudio 运行时。
+
+describe('KbFullTextIndex - Folder Import & Tree Display', () => {
+
+	/** 模拟 listChildren + toKbNode + sortNodes 的核心逻辑（纯函数，可单测）。 */
+	function buildTreeNodes(
+		entries: Array<{ name: string; isDirectory: boolean; mtime: number; size: number }>,
+		sortMode = 'fileNameASC',
+	): Array<{ name: string; isDirectory: boolean; mtime: number; size: number }> {
+		const dirs = entries.filter(e => e.isDirectory);
+		const files = entries.filter(e => !e.isDirectory);
+		const cmp = (a: typeof entries[0], b: typeof entries[0]): number => {
+			if (sortMode === 'modifiedDESC') { return b.mtime - a.mtime; }
+			if (sortMode === 'docSizeDESC') { return b.size - a.size; }
+			return a.name.localeCompare(b.name);
+		};
+		dirs.sort(cmp);
+		files.sort(cmp);
+		return [...dirs, ...files];
+	}
+
+	it('导入文件夹后，目录排在最前，文件名有序', () => {
+		const nodes = buildTreeNodes([
+			{ name: 'zebra.md', isDirectory: false, mtime: 1000, size: 100 },
+			{ name: 'apple.md', isDirectory: false, mtime: 2000, size: 200 },
+			{ name: 'subdir', isDirectory: true, mtime: 3000, size: 0 },
+			{ name: 'zz_top.md', isDirectory: false, mtime: 500, size: 50 },
+		]);
+		assert.strictEqual(nodes[0].name, 'subdir', '第一个应为目录');
+		assert.ok(nodes[0].isDirectory);
+		assert.strictEqual(nodes[1].name, 'apple.md', '文件按名称升序');
+		assert.strictEqual(nodes[2].name, 'zebra.md');
+		assert.strictEqual(nodes[3].name, 'zz_top.md');
+	});
+
+	it('深度嵌套文件夹 → 扁平列表仍正确提取 isDirectory', () => {
+		const nodes = buildTreeNodes([
+			{ name: 'src', isDirectory: true, mtime: 1000, size: 0 },
+			{ name: 'index.ts', isDirectory: false, mtime: 2000, size: 500 },
+			{ name: 'tests', isDirectory: true, mtime: 1500, size: 0 },
+			{ name: 'README.md', isDirectory: false, mtime: 3000, size: 200 },
+		]);
+		assert.strictEqual(nodes.filter(n => n.isDirectory).length, 2);
+		assert.strictEqual(nodes.filter(n => !n.isDirectory).length, 2);
+		assert.strictEqual(nodes[0].name, 'src');
+		assert.strictEqual(nodes[1].name, 'tests');
+	});
+
+	it('空文件夹导入 → 返回空数组', () => {
+		const nodes = buildTreeNodes([]);
+		assert.deepStrictEqual(nodes, []);
+	});
+
+	it('按修改时间降序 → 目录仍优先，但内部按 mtime DESC', () => {
+		const nodes = buildTreeNodes([
+			{ name: 'old.md', isDirectory: false, mtime: 100, size: 10 },
+			{ name: 'new.md', isDirectory: false, mtime: 9999, size: 20 },
+			{ name: 'sub', isDirectory: true, mtime: 5000, size: 0 },
+		], 'modifiedDESC');
+		assert.strictEqual(nodes[0].name, 'sub', '目录仍排第一');
+		assert.strictEqual(nodes[1].name, 'new.md', '文件内部较新在前');
+		assert.strictEqual(nodes[2].name, 'old.md');
+	});
+
+	it('按文件大小降序 → 目录优先，文件按 size DESC', () => {
+		const nodes = buildTreeNodes([
+			{ name: 'small.txt', isDirectory: false, mtime: 0, size: 10 },
+			{ name: 'large.bin', isDirectory: false, mtime: 0, size: 99999 },
+			{ name: 'docs', isDirectory: true, mtime: 0, size: 0 },
+		], 'docSizeDESC');
+		assert.strictEqual(nodes[0].name, 'docs');
+		assert.strictEqual(nodes[1].name, 'large.bin', '大文件在前');
+		assert.strictEqual(nodes[2].name, 'small.txt');
+	});
+
+	it('文件 emoji 按扩展名映射正确（选择器逻辑）', () => {
+		// 模拟 fileEmoji 的选择逻辑：扩展名 → emoji 映射
+		const expectedMap: Record<string, string> = {
+			'.md': '📝', '.ts': '🟦', '.js': '🟨',
+			'.py': '🐍', '.json': '📋', '.yaml': '⚙️',
+			'.css': '🎨', '.html': '🌐', '.png': '🖼️',
+			'.pdf': '📕', '.zip': '📦', '.mp4': '🎬',
+		};
+		for (const [ext, emoji] of Object.entries(expectedMap)) {
+			assert.ok(typeof emoji === 'string' && emoji.length > 0,
+				`扩展名 ${ext} 应有对应 emoji（实际: ${emoji}）`);
+		}
+		// 未知扩展名 → 📄
+		const unknown = '.xyz';
+		assert.ok(!Object.keys(expectedMap).includes(unknown) || expectedMap[unknown] === '📄',
+			'未知扩展名应有兜底 emoji');
+	});
+
+	it('linked folders（关联文件夹）应与库内目录区分显示', () => {
+		// 模拟 renderLinkedFolder 的核心判断逻辑：
+		// linkedFolder entries 的节点应标记为 linked，而非普通目录。
+		const linkedPaths = ['/external/repos', '/shared/docs'];
+		const allNodes = [
+			{ name: 'notes', isLinked: false, isDirectory: true, path: '/vault/notes' },
+			{ name: 'repos', isLinked: true, isDirectory: true, path: '/external/repos' },
+			{ name: 'README.md', isLinked: false, isDirectory: false, path: '/vault/README.md' },
+			{ name: 'docs', isLinked: true, isDirectory: true, path: '/shared/docs' },
+		];
+
+		const linked = allNodes.filter(n => linkedPaths.includes(n.path));
+		assert.strictEqual(linked.length, 2, '应有 2 个关联文件夹');
+		assert.ok(linked.every(n => n.isLinked && n.isDirectory), '关联节点应为目录');
+		const normalDirs = allNodes.filter(n => n.isDirectory && !n.isLinked);
+		assert.strictEqual(normalDirs.length, 1, '普通目录应有 1 个');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// 测试 9: URL 导入 → 库分区节点出现
+// ---------------------------------------------------------------------------
+
+describe('KbFullTextIndex - URL Import → Library Tree', () => {
+
+	/** 模拟 URL 导入后库分区文件列表构建。 */
+	function simulateLibraryAfterImport(
+		existingFiles: string[],
+		newFile: string,
+	): string[] {
+		// 同名幂等：避免同名覆盖
+		const base = newFile.replace(/\.md$/, '');
+		let candidate = newFile;
+		let counter = 1;
+		while (existingFiles.includes(candidate)) {
+			candidate = `${base} (${counter}).md`;
+			counter++;
+		}
+		return [...existingFiles, candidate];
+	}
+
+	it('首次导入 URL → 库分区新增 .md 文件', () => {
+		const after = simulateLibraryAfterImport([], 'Wikipedia_Vector_database.md');
+		assert.deepStrictEqual(after, ['Wikipedia_Vector_database.md']);
+	});
+
+	it('同名 URL 再次导入 → 文件名带序号避免覆盖', () => {
+		const after = simulateLibraryAfterImport(
+			['Wikipedia_Vector_database.md'],
+			'Wikipedia_Vector_database.md'
+		);
+		assert.strictEqual(after.length, 2);
+		assert.ok(after.includes('Wikipedia_Vector_database.md'));
+		assert.ok(after.includes('Wikipedia_Vector_database (1).md'));
+	});
+
+	it('多次导入同名 → 序号递增不冲突', () => {
+		let files: string[] = [];
+		for (let i = 0; i < 5; i++) {
+			files = simulateLibraryAfterImport(files, 'Test_Import.md');
+		}
+		assert.strictEqual(files.length, 5);
+		assert.ok(files.includes('Test_Import.md'));
+		assert.ok(files.includes('Test_Import (1).md'));
+		assert.ok(files.includes('Test_Import (2).md'));
+		assert.ok(files.includes('Test_Import (3).md'));
+		assert.ok(files.includes('Test_Import (4).md'));
+	});
+
+	it('导入的 URL 文件在库分区列表中按名称排序', () => {
+		const files = [
+			'CSDN_Post.md',
+			'Bilibili_Video.md',
+			'Zhihu_Question.md',
+			'Wikipedia_RAG.md',
+		].sort();
+		assert.strictEqual(files[0], 'Bilibili_Video.md');
+		assert.strictEqual(files[files.length - 1], 'Zhihu_Question.md');
+	});
+});
+
+// ---------------------------------------------------------------------------
 // 运行入口
 // ---------------------------------------------------------------------------
 

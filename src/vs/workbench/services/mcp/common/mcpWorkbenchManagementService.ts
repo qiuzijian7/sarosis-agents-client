@@ -118,7 +118,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 	private readonly workspaceMcpManagementService: IMcpManagementService;
 	private readonly remoteMcpManagementService: IMcpManagementService | undefined;
 
-	// VsSarosis: 用户级 MCP 配置统一读取 ~/.saros/mcp.json，
+	// VsSaros: 用户级 MCP 配置统一读取 ~/.saros/mcp.json，
 	// 不再读取 VsSaros 用户配置目录下的 User/mcp.json。
 	private readonly sarosMcpResource: URI;
 
@@ -137,7 +137,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 	) {
 		super(allowedMcpServersService, logService);
 
-		// VsSarosis: 用户级 MCP 配置统一从 ~/.saros/mcp.json 读取，
+		// VsSaros: 用户级 MCP 配置统一从 ~/.saros/mcp.json 读取，
 		// 不再读取 VsSaros 用户配置目录下的 User/mcp.json。
 		this.sarosMcpResource = URI.joinPath((this.environmentService as IWorkbenchEnvironmentService & { userHome: URI }).userHome, '.saros', 'mcp.json');
 

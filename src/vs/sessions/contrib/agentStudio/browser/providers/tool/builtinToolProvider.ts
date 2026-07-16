@@ -17,10 +17,10 @@
  *   - 文件操作走 IFileService，而非 Node.js fs；所以在 web 端也能跑 file_read/file_write。
  *
  * 工具集合：
- *   utility   : echo, get_current_time, math_eval
- *   filesystem: file_read, file_write, file_list, search_files
- *   shell     : shell_exec (仅 desktop)
- *   web       : http_get, web_search (web_search 需要外部 provider，未配置则降级)
+ *   utility   : clarify
+ *   filesystem: file_read, file_write, search_files, patch
+ *   shell     : terminal (仅 desktop)
+ *   web       : web_search, web_extract (需外部 provider，未配置则降级提示)
  *
  *   另外，从 Hermes-Agent 迁移了 69 个 bundled tool 定义（schema-only）。
  *   这些工具只有 schema，handler 为存根，返回"未实现"提示。
@@ -367,7 +367,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		@IRequestService private readonly requestService: IRequestService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 		@ITerminalService private readonly terminalService: ITerminalService,
@@ -389,6 +388,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
+		@IRequestService private readonly requestService: IRequestService,
 	) {
 		super();
 		this._skillManagerTool = new SkillManagerTool(
@@ -402,6 +402,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// 使 kb_* 工具无需扩展即可工作
 		this._registerEmbeddingProvider();
 		this._registerCoreTools();
+		this._registerWebTools();
 		this._registerCompatibilityTools();
 		this._registerMemoryTools();
 		this._registerUnifiedMemoryTools(); // G12: recall/improve/forget
@@ -989,62 +990,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 		});
 
-		// ── utility ─────────────────────────────────────────────────────
-		this.register({
-			definition: {
-				name: 'echo',
-				description: 'Echo back the input text. Mostly used to verify tool plumbing.',
-				inputSchema: {
-					type: 'object',
-					properties: { text: { type: 'string', description: 'Text to echo' } },
-					required: ['text'],
-				},
-				category: 'utility',
-				source: this.id,
-			},
-			handler: async args => text(String(args['text'] ?? '')),
-		});
-
-		this.register({
-			definition: {
-				name: 'get_current_time',
-				description: 'Return the current date/time. Optionally formatted in UTC.',
-				inputSchema: {
-					type: 'object',
-					properties: { utc: { type: 'boolean', description: 'Use UTC formatting' } },
-				},
-				category: 'utility',
-				source: this.id,
-			},
-			handler: async args => {
-				const now = new Date();
-				return text(args['utc'] ? now.toISOString() : now.toLocaleString());
-			},
-		});
-
-		this.register({
-			definition: {
-				name: 'math_eval',
-				description: 'Evaluate a simple arithmetic expression. Only +,-,*,/,(),. and digits are allowed.',
-				inputSchema: {
-					type: 'object',
-					properties: { expr: { type: 'string', description: 'Arithmetic expression' } },
-					required: ['expr'],
-				},
-				category: 'utility',
-				source: this.id,
-			},
-			handler: async args => {
-				const expr = String(args['expr'] ?? '');
-				if (!/^[\d+\-*/().\s]+$/.test(expr)) {
-					throw new Error('expression contains forbidden characters');
-				}
-				// eslint-disable-next-line no-new-func
-				const fn = new Function(`"use strict"; return (${expr});`);
-				return text(String(fn()));
-			},
-		});
-
 		// ── clarify 第二次注册已删除（2026-07-13）──
 		// 原代码在 _registerCoreTools 内对同名工具 'clarify' 调用了两次 this.register()，
 		// 第二次的 handler 返回纯文本 "Waiting for user to choose from:\n1. ..."（无 UI
@@ -1059,32 +1004,115 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this.register({
 			definition: {
 				name: 'file_read',
-				description: 'Read a UTF-8 text file. Returns the full file content (max 256 KiB).',
+				description: 'Read a UTF-8 text file with line numbers and pagination. Output format: LINE_NUM|CONTENT (e.g. 34|foo). Use offset/limit for large files. Binary files are rejected by extension.',
 				inputSchema: {
 					type: 'object',
 					properties: {
 						path: { type: 'string', description: 'Absolute path or workspace-relative path' },
+						offset: { type: 'integer', description: 'Line number to start reading from (1-indexed, default: 1)', default: 1, minimum: 1 },
+						limit: { type: 'integer', description: 'Maximum number of lines to read (default: 500, max: 2000)', default: 500, maximum: 2000 },
 					},
 					required: ['path'],
 				},
 				category: 'filesystem',
 				source: this.id,
 			},
-			handler: async (args, _signal, agentId) => {
-				const requestedPath = String(args['path'] || '');
+			handler: async (args, signal, agentId) => {
+				// 参数别名归一化：模型常幻觉用 filePath/file_path/file/uri
+				const requestedPath = this._resolvePathArg(args);
 				if (!requestedPath) {
 					throw new Error('path is required');
 				}
 
+				const offset = Math.max(1, Number(args['offset'] ?? 1));
+				const limit = Math.min(Math.max(Number(args['limit'] ?? 500), 1), BuiltinToolProvider.READ_MAX_LIMIT);
+
 				// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
 				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath, false);
 
-				const normalizedUri = URI.file(resolvedPath);
-				const buf = await this.fileService.readFile(normalizedUri);
-				if (buf.value.byteLength > 256 * 1024) {
-					throw new Error(`file too large (${buf.value.byteLength} bytes), use a streaming tool`);
+				// 二进制守护：按扩展名拦截（对齐 Hermes has_binary_extension）
+				if (this._isBinaryPath(resolvedPath)) {
+					throw new Error(`Cannot read binary file '${requestedPath}'. Use a different tool for binary files.`);
 				}
-				return text(buf.value.toString());
+
+				// 连续重复读取检测（对齐 Hermes repeated-read guard）
+				const agentKey = agentId ?? '';
+				const readKey = `${resolvedPath}:${offset}:${limit}`;
+				const repeatResult = this._checkReadRepeat(agentKey, readKey);
+				if (repeatResult.blocked) {
+					throw new Error(`BLOCKED: You have read this exact file region ${repeatResult.count} times consecutively. Review the content already returned. If the file has been modified, use a different offset or a different tool.`);
+				}
+
+				// 读取文件（带 FileNotFound → 相似文件建议）
+				let page: string[];
+				let hasMore: boolean;
+				let totalLines: number;
+				let fileSize: number;
+				let mtime: number;
+
+				try {
+					const result = await this._readFileLines(resolvedPath, offset, limit, signal);
+					page = result.page;
+					hasMore = result.hasMore;
+					totalLines = result.totalLines;
+					fileSize = result.fileSize;
+					mtime = result.mtime;
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					if (msg.includes('FILE_NOT_FOUND') || msg.includes('ENOENT') || msg.includes('not found') || msg.includes('not exist')) {
+						const suggestions = await this._suggestSimilarFiles(resolvedPath);
+						if (suggestions.length > 0) {
+							throw new Error(`File not found: ${requestedPath}\nDid you mean one of these?\n${suggestions.map(s => `  - ${s}`).join('\n')}`);
+						}
+					}
+					throw err;
+				}
+
+				// 去重 stub（对齐 Hermes mtime-based dedup）
+				const dedupResult = this._checkReadDedup(agentKey, readKey, mtime);
+				if (dedupResult.blocked) {
+					throw new Error(`BLOCKED: This file region has not changed since your last ${dedupResult.stubCount} reads. The content is unchanged — review what you already have.`);
+				}
+				if (dedupResult.unchanged) {
+					const status = dedupResult.stubCount >= 1
+						? `unchanged (previously read ${dedupResult.stubCount} time(s), content identical)`
+						: 'unchanged';
+					return text(`(file ${status})`);
+				}
+
+				// 空结果
+				if (page.length === 0) {
+					return text(`(empty or beyond end of file: offset=${offset})`);
+				}
+
+				// 行号格式：紧凑 `LINE_NUM|CONTENT`（对齐 Hermes，无填充省 token）
+				const out = page.map((line, i) => `${offset + i}|${line}`).join('\n');
+				const lastLine = offset + page.length - 1;
+
+				const tailParts: string[] = [];
+
+				// 分页提示（对齐 Hermes hint）
+				if (hasMore) {
+					tailParts.push(`[Hint: 已显示第 ${offset}-${lastLine}/${totalLines} 行。使用 offset=${lastLine + 1} 读取后续内容。]`);
+				} else {
+					tailParts.push(`[已显示第 ${offset}-${lastLine} 行，文件结束 (${totalLines} 行总计)]`);
+				}
+
+				// 大文件提示（对齐 Hermes _large_file_hint）
+				if (fileSize > BuiltinToolProvider.LARGE_FILE_HINT_BYTES && limit > BuiltinToolProvider.LARGE_FILE_HINT_MIN_LIMIT) {
+					tailParts.push(`[Hint: 这是一个大文件 (${(fileSize / 1024).toFixed(0)}KB)。考虑用更小的 limit 值分段读以加快速度。]`);
+				}
+
+				// 重复读取警告（对齐 Hermes _REPEATED_READ_WARNING）
+				if (repeatResult.warning) {
+					tailParts.push(`[Warning: 你已连续 ${repeatResult.count} 次读取完全相同的文件区域。]`);
+				}
+
+				const tail = tailParts.length > 0 ? '\n\n' + tailParts.join('\n') : '';
+
+				// 密钥脱敏（对齐 Hermes redact_sensitive_text file_read=True）
+				const sanitized = this._redactSecrets(out + tail);
+				return text(sanitized);
 			},
 		});
 
@@ -1105,7 +1133,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				securityLevel: ToolSecurityLevel.Dangerous,
 			},
 			handler: async (args, _signal, agentId) => {
-				const requestedPath = String(args['path'] || '');
+				const requestedPath = this._resolvePathArg(args);
 				if (!requestedPath) {
 					throw new Error('path is required');
 				}
@@ -1128,68 +1156,66 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 		this.register({
 			definition: {
-				name: 'file_list',
-				description: 'List entries in a directory. Returns an array of { name, type, size }.',
-				inputSchema: {
-					type: 'object',
-					properties: { path: { type: 'string' } },
-					required: ['path'],
-				},
-				category: 'filesystem',
-				source: this.id,
-			},
-			handler: async (args, _signal, agentId) => {
-				const requestedPath = String(args['path'] || '');
-				if (!requestedPath) {
-					throw new Error('path is required');
-				}
-
-				// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
-				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath, false);
-
-				const normalizedUri = URI.file(resolvedPath);
-				const stat = await this.fileService.resolve(normalizedUri);
-				const rows = (stat.children ?? []).map(c => ({
-					name: c.name,
-					type: c.isDirectory ? 'dir' : 'file',
-					size: typeof c.size === 'number' ? c.size : 0,
-				}));
-				return [{ type: 'text', text: JSON.stringify(rows, null, 2) }];
-			},
-		});
-
-		this.register({
-			definition: {
 				name: 'search_files',
-				description: 'Recursively grep a directory for a literal substring. Returns matching path:line snippets.',
+				description: 'Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target=\'content\'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target=\'files\'): Find files by glob pattern (e.g., \'*.py\', \'*config*\'). Also use this instead of ls — results sorted by modification time.',
 				inputSchema: {
 					type: 'object',
 					properties: {
-						path: { type: 'string' },
-						query: { type: 'string' },
-						maxResults: { type: 'number', description: 'Default 50' },
+						pattern: { type: 'string', description: 'Regex pattern for content search, or glob pattern (e.g., \'*.py\') for file search' },
+						target: { type: 'string', enum: ['content', 'files'], description: '\'content\' searches inside file contents, \'files\' searches for files by name', default: 'content' },
+						path: { type: 'string', description: 'Directory or file to search in (default: current working directory)', default: '.' },
+						file_glob: { type: 'string', description: 'Filter files by pattern in grep mode (e.g., \'*.py\' to only search Python files)' },
+						limit: { type: 'integer', description: 'Maximum number of results to return (default: 50)', default: 50 },
+						offset: { type: 'integer', description: 'Skip first N results for pagination (default: 0)', default: 0 },
+						output_mode: { type: 'string', enum: ['content', 'files_only', 'count'], description: 'Output format for grep mode: \'content\' shows matching lines with line numbers, \'files_only\' lists file paths, \'count\' shows match counts per file', default: 'content' },
+						context: { type: 'integer', description: 'Number of context lines before and after each match (grep mode only)', default: 0 },
 					},
-					required: ['path', 'query'],
+					required: ['pattern'],
 				},
 				category: 'filesystem',
 				source: this.id,
 			},
 			handler: async (args, _signal, agentId) => {
-				const requestedPath = String(args['path'] || '');
-				if (!requestedPath) {
-					throw new Error('path is required');
+				// 兼容旧参数名：query → pattern
+				const pattern = String(args['pattern'] || args['query'] || '');
+				if (!pattern) { throw new Error('pattern is required'); }
+
+				const target = String(args['target'] || 'content');
+				const searchPath = String(args['path'] || '.');
+				const fileGlob = args['file_glob'] ? String(args['file_glob']) : undefined;
+				const limit = Math.min(Math.max(Number(args['limit'] ?? 50), 1), 200);
+				const offset = Math.max(Number(args['offset'] ?? 0), 0);
+				const outputMode = String(args['output_mode'] || 'content');
+				const contextLines = Math.min(Math.max(Number(args['context'] ?? 0), 0), 10);
+
+				// ── 重复搜索熔断（对齐 Hermes-Agent）─────────────────────
+				// 连续完全相同的搜索（含分页参数，故合法翻页不会误伤）累计：
+				// 连续 ≥3 次追加告警，连续 ≥4 次直接 BLOCKED，防止上下文无限膨胀（关联 11133）。
+				const repeat = this._recordSearchRepeat(agentId, pattern, target, searchPath, fileGlob, limit, offset);
+				if (repeat.blocked) {
+					return [{ type: 'text', text: repeat.blocked }];
 				}
 
 				// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
-				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, requestedPath, false);
+				const resolvedPath = await this._resolveAndCheckWorkspacePath(agentId, searchPath, false);
 
-				const normalizedUri = URI.file(resolvedPath);
-				const query = String(args['query'] ?? '');
-				const limit = Math.min(Math.max(Number(args['maxResults'] ?? 50), 1), 500);
-				if (!query) { throw new Error('query is required'); }
-				const hits: string[] = [];
-				await this._walkAndGrep(normalizedUri, query, hits, limit, _signal);
-				return [{ type: 'text', text: hits.join('\n') || '(no matches)' }];
+				let result: string;
+				if (target === 'files') {
+					// 文件搜索裸名自动包 '*'（对齐 Hermes：config → *config），使其匹配任意深度
+					const glob = this._normalizeFileSearchGlob(pattern);
+					result = await this._searchFilesByGlob(resolvedPath, glob, limit, offset, _signal);
+				} else {
+					result = await this._searchContent(
+						resolvedPath, pattern, fileGlob, limit, offset, outputMode, contextLines, _signal,
+					);
+				}
+
+				// 结果大小上限 + 单条截断（已在各后端落实），此处再兜底一次，防止上下文爆炸
+				result = this._enforceSearchSize(result);
+				if (repeat.warning) {
+					result += '\n\n' + repeat.warning;
+				}
+				return [{ type: 'text', text: result }];
 			},
 		});
 
@@ -1225,22 +1251,120 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 		});
 
-		// ── web ────────────────────────────────────────────────────────
+
+	}
+
+	// ─── Web 工具（真实实现，替代原兼容性 stub）────────────────────
+	// 2026-07-16: 对齐 Hermes，由兼容性 stub 升级为：
+	//   - web_search: DuckDuckGo Instant Answer API（免费、零配置）
+	//   - web_extract: HTTP GET + 简单 HTML → 文本提取
+
+	private _registerWebTools(): void {
+		const mkText = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
+
 		this.register({
 			definition: {
-				name: 'http_get',
-				description: 'HTTP GET request. Returns response body as text (max 1 MiB).',
+				name: 'web_search',
+				description: 'Search the web using DuckDuckGo. Returns instant answers when available, plus search result titles, URLs, and snippets.',
 				inputSchema: {
 					type: 'object',
 					properties: {
-						url: { type: 'string' },
-						// HTTP headers are an arbitrary string→string map; the IOA gateway
-						// rejects bare `type:"object"` (no properties) and `additionalProperties`,
-						// so we model headers as a JSON object *string* (IOA-safe + self-describing).
-						headers: {
-							type: 'string',
-							description: 'Optional HTTP headers as a JSON object string, e.g. {"Authorization":"Bearer token","X-Custom":"v"}. Defaults to {}.',
-						},
+						query: { type: 'string', description: 'Search query' },
+						max_results: { type: 'number', description: 'Maximum results (default: 5, max: 10)' },
+					},
+					required: ['query'],
+				},
+				category: 'web',
+				source: this.id,
+				securityLevel: ToolSecurityLevel.Safe,
+			},
+			handler: async (args, signal) => {
+				const query = String(args['query'] ?? '').trim();
+				if (!query) { throw new Error('query is required'); }
+				const maxResults = Math.min(Math.max(Number(args['max_results'] ?? 5), 1), 10);
+
+				const apiUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+				try {
+					const ctx = await this.requestService.request(
+						{ url: apiUrl, type: 'GET', callSite: 'saros.builtinTool.web_search' },
+						CancellationToken.None,
+					);
+					const body = await asText(ctx) ?? '';
+					const raw = body.slice(0, 512 * 1024); // 512KB cap
+					const data = JSON.parse(raw) as Record<string, unknown>;
+
+					const lines: string[] = [];
+					lines.push(`## Web Search Results for: "${query}"`);
+					lines.push('');
+
+					// 1) Instant answer
+					const abstractText = typeof data.AbstractText === 'string' ? data.AbstractText.trim() : '';
+					const abstractSource = typeof data.AbstractSource === 'string' ? data.AbstractSource : '';
+					const abstractURL = typeof data.AbstractURL === 'string' ? data.AbstractURL : '';
+					if (abstractText) {
+						lines.push(`**Instant Answer**${abstractSource ? ` (source: ${abstractSource})` : ''}:`);
+						lines.push(abstractText);
+						if (abstractURL) {
+							lines.push(`More info: ${abstractURL}`);
+						}
+						lines.push('');
+						lines.push('---');
+						lines.push('');
+					}
+
+					// 2) Results list
+					const results = Array.isArray(data.Results) ? data.Results as Array<Record<string, unknown>> : [];
+					const relatedTopics = Array.isArray(data.RelatedTopics) ? data.RelatedTopics as Array<Record<string, unknown>> : [];
+
+					if (results.length > 0) {
+						lines.push('**Search Results:**');
+						lines.push('');
+						const count = Math.min(results.length, maxResults);
+						for (let i = 0; i < count; i++) {
+							const r = results[i];
+							const title = typeof r.Text === 'string' ? r.Text : '';
+							const url = typeof r.FirstURL === 'string' ? r.FirstURL : '';
+							lines.push(`${i + 1}. **${title || 'Untitled'}**`);
+							if (url) { lines.push(`   ${url}`); }
+							lines.push('');
+						}
+					} else if (relatedTopics.length > 0) {
+						// 3) Related topics（无 results 时作为回退）
+						lines.push('**Related Topics:**');
+						lines.push('');
+						const count = Math.min(relatedTopics.length, maxResults);
+						for (let i = 0; i < count; i++) {
+							const t = relatedTopics[i];
+							const title = typeof t.Text === 'string' ? t.Text : '';
+							const url = typeof t.FirstURL === 'string' ? t.FirstURL : '';
+							if (title && url) {
+								lines.push(`${i + 1}. ${title}`);
+								lines.push(`   ${url}`);
+								lines.push('');
+							}
+						}
+					}
+
+					if (lines.length <= 3) {
+						return mkText(`No search results found for "${query}". Try a different query or use web_extract if you have a specific URL.`);
+					}
+
+					return mkText(lines.join('\n'));
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return mkText(`Web search failed: ${msg}`);
+				}
+			},
+		});
+
+		this.register({
+			definition: {
+				name: 'web_extract',
+				description: 'Extract readable text content from a web page. Returns title, meta description (if any), and main body text. Use after web_search to read a result page in detail.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						url: { type: 'string', description: 'URL of the web page to extract content from' },
 					},
 					required: ['url'],
 				},
@@ -1248,29 +1372,85 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				source: this.id,
 				securityLevel: ToolSecurityLevel.Cautious,
 			},
-			handler: async args => {
-				const url = String(args['url'] ?? '');
+			handler: async (args, signal) => {
+				const url = String(args['url'] ?? '').trim();
+				if (!url) { throw new Error('url is required'); }
 				if (!/^https?:\/\//i.test(url)) {
 					throw new Error('url must start with http:// or https://');
 				}
-				// headers may arrive as a JSON object string (per the schema) or, for
-				// backward-compat, an already-parsed object.
-				let headers: Record<string, string> = {};
-				const rawHeaders = args['headers'];
-				if (typeof rawHeaders === 'string') {
-					try { headers = JSON.parse(rawHeaders) as Record<string, string>; }
-					catch { headers = {}; }
-				} else if (rawHeaders && typeof rawHeaders === 'object') {
-					headers = rawHeaders as Record<string, string>;
+
+				try {
+					const ctx = await this.requestService.request(
+						{
+							url,
+							type: 'GET',
+							timeout: 30_000,
+							callSite: 'saros.builtinTool.web_extract',
+						},
+						CancellationToken.None,
+					);
+
+					const raw = await asText(ctx) ?? '';
+					if (!raw) { return mkText(`No content returned from ${url}`); }
+
+					const MAX_BODY = 512 * 1024; // 512KB
+					const body = raw.slice(0, MAX_BODY);
+
+					// ── 提取 title ──────────────────────────────────
+					let title = '';
+					const titleMatch = body.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+					if (titleMatch) {
+						title = titleMatch[1].replace(/<[^>]+>/g, '').trim();
+					}
+
+					// ── 提取 meta description ───────────────────────
+					let description = '';
+					const metaMatch =
+						body.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i) ??
+						body.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["']/i);
+					if (metaMatch) {
+						description = metaMatch[1].trim();
+					}
+
+					// ── 提取正文 ──────────────────────────────────
+					let text = body
+						.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+						.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+						.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, ' ')
+						.replace(/<[^>]+>/g, ' ')  // strip all tags
+						// 常见 HTML 实体
+						.replace(/&nbsp;/gi, ' ')
+						.replace(/&quot;/gi, '"')
+						.replace(/&amp;/gi, '&')
+						.replace(/&lt;/gi, '<')
+						.replace(/&gt;/gi, '>')
+						.replace(/&#x27;/gi, "'")
+						.replace(/&#(\d+);/g, (_m, d: string) => String.fromCharCode(Number(d)))
+						// 空白规范化
+						.replace(/\s+/g, ' ')
+						.trim();
+
+					const MAX_TEXT = 65536; // 64KB
+					const truncated = text.length > MAX_TEXT;
+					if (truncated) {
+						text = text.slice(0, MAX_TEXT) + `\n... (${text.length - MAX_TEXT} chars omitted)`;
+					}
+
+					const parts: string[] = [];
+					if (title) { parts.push(`**Title**: ${title}`); }
+					if (description) { parts.push(`**Description**: ${description}`); }
+					parts.push('');
+					parts.push(text);
+
+					return mkText(parts.join('\n'));
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return mkText(`Web extract failed: ${msg}`);
 				}
-				const ctx = await this.requestService.request({ type: 'GET', url, headers, callSite: 'saros.builtinTool.http_get' }, CancellationToken.None);
-				const body = (await asText(ctx)) ?? '';
-				if (body.length > 1024 * 1024) {
-					throw new Error('response body exceeded 1 MiB');
-				}
-				return text(`HTTP ${ctx.res.statusCode}\n\n${body.slice(0, 1024 * 1024)}`);
 			},
 		});
+
+		this.logService.info('[BuiltinTools] _registerWebTools: web_search + web_extract registered (DuckDuckGo API)');
 	}
 
 	// ─── Memory 召回工具 ─────────────────────────────────────────────
@@ -1354,7 +1534,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 修复策略：
 	 * 1. 命名不匹配 → 注册别名 handler（schema 用 Hermes 名，handler 委托给真实实现）
 	 * 2. 缺失核心工具 → 实现基础 handler（todo 用 in-memory，patch 用文件读写）
-	 * 3. 平台不适用 → 返回友好提示（web_search 建议 http_get，process 建议 terminal）
+	 * 3. 平台不适用 → 返回友好提示（web_search/web_extract 建议配置 MCP server，process 建议 terminal）
 	 */
 	private _registerCompatibilityTools(): void {
 		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
@@ -1516,12 +1696,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			},
 		});
 
-		// ── web_search / web_extract / process / session_search / execute_code ──
-		// 平台不适用 — 返回友好提示
+		// ── process / session_search / execute_code ─────────────────
+		// 平台不适用 — 返回友好提示（web_search/web_extract 已有真实 handler，不在此注册 stub）
 		for (const [name, desc, msg] of [
-			['web_search', 'Search the web for information.', 'Web search is not natively available. Use http_get for specific URLs or configure an MCP search server.'],
-			['web_extract', 'Extract content from a web page.', 'Use http_get to fetch web page content. web_extract is not natively available.'],
-			['process', 'Manage background processes.', 'Process management is not available. Use terminal with background=true.'],
+			['process', 'Manage background processes.', 'Process management is not natively available. Use the terminal tool to launch commands. For long-running processes, use the timeout parameter to control execution duration.'],
 			['session_search', 'Search past conversation sessions.', 'Session search is not yet available. Past conversations are stored in ~/.saros/sessions/.'],
 			['execute_code', 'Execute a Python script in a sandbox.', 'Code execution sandbox is not available. Use the terminal tool to run scripts.'],
 		] as const) {
@@ -2289,6 +2467,48 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 执行终端命令并收集输出。
 	 * 创建一个临时终端实例，发送命令，收集输出，然后销毁终端。
 	 */
+	/**
+	 * 密钥脱敏 — 对齐 Hermes/Claude Code。终端输出（以及日志中的命令）可能意外回显
+	 * 密钥（API key、token、密码、私钥块等），回传给 LLM 或写入日志会造成泄露。
+	 * 这里在返回给 LLM 前对输出做一次性的正则脱敏。
+	 *
+	 * 设计取舍：
+	 * - 仅脱敏"输出"与"日志中的命令"，不改动命令本身的执行（agent 自己知道发了什么）。
+	 * - 赋值类（password=... / Authorization: ...）保留键名、值替换为 <REDACTED>，便于调试。
+	 * - 裸密钥（AKIA... / ghp_... / JWT）整段替换为 <REDACTED>。
+	 */
+	private static readonly _REDACT_PATTERNS_WHOLE: ReadonlyArray<readonly [RegExp, string]> = [
+		// PEM 私钥块
+		[/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '<REDACTED PRIVATE KEY>'],
+		// JWT
+		[/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '<REDACTED JWT>'],
+		// AWS Access Key
+		[/\bAKIA[0-9A-Z]{16}\b/g, '<REDACTED AWS KEY>'],
+		// GitHub tokens
+		[/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '<REDACTED>'],
+		[/\bgithub_pat_[A-Za-z0-9_]{22,}\b/g, '<REDACTED>'],
+		// GitLab
+		[/\bglpat-[A-Za-z0-9_-]{20}\b/g, '<REDACTED>'],
+		// Slack
+		[/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '<REDACTED>'],
+		// OpenAI / Anthropic
+		[/\bsk-[A-Za-z0-9]{20,}\b/g, '<REDACTED>'],
+		[/\bsk-ant-[A-Za-z0-9_-]{20,}\b/g, '<REDACTED>'],
+	];
+
+	private static readonly _REDACT_PATTERN_ASSIGN = /((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|authorization|auth)\b)(\s*[:=]\s*)(['"]?)[^\s'"]+/gi;
+
+	private _redactSecrets(text: string): string {
+		if (!text) { return text; }
+		let out = text;
+		for (const [re, mask] of BuiltinToolProvider._REDACT_PATTERNS_WHOLE) {
+			out = out.replace(re, mask);
+		}
+		out = out.replace(BuiltinToolProvider._REDACT_PATTERN_ASSIGN,
+			(_m, key: string, sep: string, q: string) => `${key}${sep}${q}<REDACTED>${q}`);
+		return out;
+	}
+
 	private async _executeTerminalCommand(
 		command: string,
 		cwd: string | undefined,
@@ -2385,7 +2605,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			// we can't tell from the log whether the agent sent `dir`,
 			// `tail -f`, or an interactive command).
 			this.logService.info(
-				`[BuiltinTools] terminal: command="${command.slice(0, 200)}" cwd=${effectiveCwd ?? '(none)'} ` +
+				`[BuiltinTools] terminal: command="${this._redactSecrets(command).slice(0, 200)}" cwd=${effectiveCwd ?? '(none)'} ` +
 				`timeout=${timeoutSec}s hardCap=${hardCapMs}ms`,
 			);
 
@@ -2446,12 +2666,18 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				}
 			} catch { /* ignore */ }
 
-			// 截断过长输出
+			// 密钥脱敏 — 防止命令回显的密钥泄露到 LLM 上下文（对齐 Hermes/Claude Code）
+			const sanitizedOutput = this._redactSecrets(fullOutput);
+
+			// 截断过长输出 — head-tail 策略（对齐 Hermes）：保留首尾、省略中间，
+			// 避免 head-only 截断丢弃尾部关键信息（错误堆栈、失败摘要、退出码上下文）。
 			const maxLen = 65536;
-			const truncated = fullOutput.length > maxLen;
+			const truncated = sanitizedOutput.length > maxLen;
 			const finalOutput = truncated
-				? fullOutput.slice(0, maxLen) + `\n... (output truncated, ${fullOutput.length - maxLen} chars omitted)`
-				: fullOutput;
+				? sanitizedOutput.slice(0, maxLen / 2)
+					+ `\n... (${sanitizedOutput.length - maxLen} chars omitted from the middle) ...\n`
+					+ sanitizedOutput.slice(sanitizedOutput.length - maxLen / 2)
+				: sanitizedOutput;
 
 			return [{ type: 'text', text: finalOutput || '(no output)' }];
 		} catch (err) {
@@ -2803,6 +3029,485 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	}
 
 
+	// ── filesystem read 辅助（对齐 Hermes read_file）─────────────────
+
+	private static readonly READ_MAX_LIMIT = 2000;
+	private static readonly READ_LINE_MAX_CHARS = 2000;
+	/** 大文件提示阈值（对齐 Hermes _LARGE_FILE_HINT_BYTES = 512KB）*/
+	private static readonly LARGE_FILE_HINT_BYTES = 512 * 1024;
+	/** 大文件提示仅在 limit > 此值时触发（对齐 Hermes） */
+	private static readonly LARGE_FILE_HINT_MIN_LIMIT = 200;
+	/** 连续重复读取警告阈值（对齐 Hermes 3/4） */
+	private static readonly READ_REPEAT_WARN = 3;
+	private static readonly READ_REPEAT_BLOCK = 4;
+	/** 去重 stub 硬阻止阈值（对齐 Hermes：同一 key + 未变化 mtime 连续返回 stub >=2 次） */
+	private static readonly READ_DEDUP_BLOCK = 2;
+
+	/** 参数别名归一化：filePath/file_path/file/uri → path（对齐 _extractFilePathsFromToolCall 的 FILE_KEYS）。 */
+	private _resolvePathArg(args: Record<string, unknown>): string {
+		return String(args['path'] || args['filePath'] || args['file_path'] || args['file'] || args['uri'] || '');
+	}
+
+	/** 二进制文件扩展名守护（对齐 Hermes has_binary_extension + _walkAndGrep BINARY_EXT_RE）。 */
+	private _isBinaryPath(p: string): boolean {
+		return /\.(?:exe|dll|so|dylib|node|pak|asar|wasm|bin|obj|lib|a|o|class|jar|pyc|pyo|whl|zip|tar|gz|tgz|bz2|7z|rar|xz|zst|png|jpe?g|gif|bmp|ico|webp|tif|tiff|svg|psd|mp3|wav|ogg|flac|mp4|mov|avi|mkv|webm|pdf|docx?|xlsx?|pptx?|sqlite|db|map|woff2?|ttf|eot|otf)$/i.test(p);
+	}
+
+	/**
+	 * 按行读取 [offset, offset+limit) 行，对齐 Hermes sed -n 语义。
+	 *
+	 * 使用 IFileService（平台抽象）替代 Node.js `fs` 模块：
+	 * `fs` 在 Electron renderer 进程中不可用（`createReadStream` 报 undefined），
+	 * 导致 file_read 工具完全无法工作。IFileService 是 VS Code 的标准文件访问抽象，
+	 * 在渲染进程和主进程均可正常使用。
+	 *
+	 * 设计取舍：整体读入内存 split('\n')，相比原始流式 `readline` 对极大文件（>100MB）
+	 * 内存开销更高，但 agent 实际工作中读超大文件场景极少（有 offset/limit 分页），
+	 * 且 IFileService 不支持行级流式读取。与 Hermes `sed -n` 的子进程方式等价：
+	 * Hermes 也是通过 shell 子进程全量读取 stdin 再按行过滤。
+	 */
+	private async _readFileLines(resolvedPath: string, offset: number, limit: number, signal?: AbortSignal): Promise<{ page: string[]; hasMore: boolean; totalLines: number; fileSize: number; mtime: number }> {
+		const normalizedUri = URI.file(resolvedPath);
+		const content = await this.fileService.readFile(normalizedUri);
+		const text = typeof content.value === 'string' ? content.value : content.value.toString();
+		const rawLines = text.split(/\r?\n/);
+		const fileSize = (content as any).size ?? text.length;
+		const mtime = (content as any).mtime ?? 0;
+
+		const startIndex = offset - 1;
+		const endIndex = startIndex + limit;
+
+		// BOM 处理（对齐 Hermes _strip_bom，仅 offset==1 时去除）
+		if (startIndex === 0 && rawLines.length > 0 && rawLines[0].startsWith('\uFEFF')) {
+			rawLines[0] = rawLines[0].slice(1);
+		}
+
+		const page: string[] = [];
+		for (let i = startIndex; i < Math.min(endIndex, rawLines.length); i++) {
+			const line = rawLines[i];
+			page.push(line.length > BuiltinToolProvider.READ_LINE_MAX_CHARS ? line.slice(0, BuiltinToolProvider.READ_LINE_MAX_CHARS) : line);
+		}
+
+		const hasMore = rawLines.length > endIndex;
+		const totalLines = rawLines.length;
+
+		// signal abort 支持 — 读文件本身是同步 IFileService 调用完成后才到这里，
+		// 但保留检查以支持取消后的快速返回
+		if (signal?.aborted) {
+			throw new Error('aborted');
+		}
+
+		return { page, hasMore, totalLines, fileSize, mtime };
+	}
+
+	// ─── 文件读取守卫（对齐 Hermes dedup + repeat + similar-files）─────────
+
+	/**
+	 * mtime-based 去重 stub（对齐 Hermes _dedup_read_file）。
+	 * 如果同一 (agent, path, offset, limit) 的文件 mtime 未变化 → 返回 unchanged stub。
+	 * 连续返回 stub >= READ_DEDUP_BLOCK 次 → 硬阻止（避免无限循环）。
+	 */
+	private _checkReadDedup(agentKey: string, readKey: string, mtime: number): { unchanged: boolean; blocked: boolean; stubCount: number } {
+		const fullKey = `${agentKey}:${readKey}`;
+		const prev = this._readDedupMap.get(fullKey);
+
+		if (!prev) {
+			this._readDedupMap.set(fullKey, { mtime, stubCount: 0 });
+			return { unchanged: false, blocked: false, stubCount: 0 };
+		}
+
+		if (prev.mtime === mtime) {
+			prev.stubCount++;
+			if (prev.stubCount >= BuiltinToolProvider.READ_DEDUP_BLOCK) {
+				return { unchanged: true, blocked: true, stubCount: prev.stubCount };
+			}
+			return { unchanged: true, blocked: false, stubCount: prev.stubCount };
+		}
+
+		// mtime 变化 → 重置（文件确实被修改了）
+		this._readDedupMap.set(fullKey, { mtime, stubCount: 0 });
+		return { unchanged: false, blocked: false, stubCount: 0 };
+	}
+
+	/**
+	 * 连续重复读取检测（对齐 Hermes _REPEATED_READ_WARNING_COUNT / _REPEATED_READ_BLOCK_COUNT）。
+	 * 连续 >= READ_REPEAT_WARN 次 → warning，>= READ_REPEAT_BLOCK → 硬阻止。
+	 * 注意：dedup stub（unchanged）不计入此计数（由 _checkReadDedup 独立处理）。
+	 */
+	private _checkReadRepeat(agentKey: string, readKey: string): { count: number; warning: boolean; blocked: boolean } {
+		const fullKey = `${agentKey}:${readKey}`;
+		const prev = this._readRepeatMap.get(fullKey);
+
+		if (!prev || prev.key !== readKey) {
+			this._readRepeatMap.set(fullKey, { key: readKey, count: 1 });
+			return { count: 1, warning: false, blocked: false };
+		}
+
+		prev.count++;
+		if (prev.count >= BuiltinToolProvider.READ_REPEAT_BLOCK) {
+			return { count: prev.count, warning: true, blocked: true };
+		}
+		if (prev.count >= BuiltinToolProvider.READ_REPEAT_WARN) {
+			return { count: prev.count, warning: true, blocked: false };
+		}
+		return { count: prev.count, warning: false, blocked: false };
+	}
+
+	/**
+	 * 文件不存在时建议相似文件名（对齐 Hermes _suggest_similar_files）。
+	 * 列出同级目录下的文件，用 Levenshtein 距离排序，返回距离 <= max(len/2, 3) 的前 5 个。
+	 */
+	private async _suggestSimilarFiles(resolvedPath: string): Promise<string[]> {
+		const uri = URI.file(resolvedPath);
+		const dirUri = URI.joinPath(uri, '..');
+		const fileName = uri.path.split('/').pop() ?? '';
+
+		try {
+			const stat = await this.fileService.resolve(dirUri);
+			if (!stat.children || stat.children.length === 0) { return []; }
+
+			const candidates = stat.children
+				.filter(c => !c.isDirectory)
+				.map(c => c.name);
+			if (candidates.length === 0) { return []; }
+
+			const lowerName = fileName.toLowerCase();
+			const scored = candidates.map(name => ({
+				name,
+				dist: BuiltinToolProvider._levenshtein(lowerName, name.toLowerCase()),
+			}));
+
+			const threshold = Math.max(fileName.length / 2, 3);
+			return scored
+				.filter(s => s.dist <= threshold)
+				.sort((a, b) => a.dist - b.dist)
+				.slice(0, 5)
+				.map(s => s.name);
+		} catch {
+			return [];
+		}
+	}
+
+	/** 计算两个字符串的 Levenshtein 编辑距离（Wagner-Fischer 算法）。 */
+	private static _levenshtein(a: string, b: string): number {
+		const m = a.length, n = b.length;
+		// 优化：一维滚动数组（O(min(m,n)) 空间）
+		if (m < n) { return BuiltinToolProvider._levenshtein(b, a); }
+		let prev = Array.from({ length: n + 1 }, (_, j) => j);
+		let curr = new Array<number>(n + 1);
+		for (let i = 1; i <= m; i++) {
+			curr[0] = i;
+			for (let j = 1; j <= n; j++) {
+				curr[j] = a[i - 1] === b[j - 1]
+					? prev[j - 1]
+					: 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
+			}
+			[prev, curr] = [curr, prev];
+		}
+		return prev[n];
+	}
+
+	// ── search_files 后端（对齐 Hermes-Agent search_tool）─────────────
+
+	// 重复搜索熔断：连续相同搜索计数阈值（对齐 Hermes-Agent）
+	private static readonly SEARCH_REPEAT_WARN = 3;
+	private static readonly SEARCH_REPEAT_BLOCK = 4;
+	// 结果大小上限（对齐 Hermes max_result_size_chars）与单条匹配截断长度
+	private static readonly SEARCH_MAX_RESULT_CHARS = 100_000;
+	private static readonly SEARCH_LINE_MAX_CHARS = 500;
+	// 每个 agent 的重复搜索状态：{ 上次搜索签名, 连续次数 }
+	private _searchRepeatMap = new Map<string, { key: string | null; count: number }>();
+
+	// 文件读取去重 Map：key = `${agentId}:${path}:${offset}:${limit}` → { mtime, stubCount }
+	// 对齐 Hermes _dedup_read_file 机制
+	private _readDedupMap = new Map<string, { mtime: number; stubCount: number }>();
+
+	// 文件读取重复检测 Map：key = `${agentId}:${path}:${offset}:${limit}` → count
+	// 对齐 Hermes _REPEATED_READ_WARNING_COUNT / _REPEATED_READ_BLOCK_COUNT
+	private _readRepeatMap = new Map<string, { key: string; count: number }>();
+
+	/**
+	 * 跟踪连续相同搜索，对齐 Hermes-Agent 的 repeated-search guard。
+	 * 签名包含分页参数（limit/offset），因此合法翻页不会触发熔断。
+	 * 连续 ≥3 次返回 warning，连续 ≥4 次返回 blocked（直接拦截，不执行 rg）。
+	 */
+	private _recordSearchRepeat(
+		agentId: string | undefined, pattern: string, target: string, searchPath: string,
+		fileGlob: string | undefined, limit: number, offset: number,
+	): { count: number; warning?: string; blocked?: string } {
+		const bucket = agentId ?? '';
+		const key = JSON.stringify([pattern, target, searchPath, fileGlob ?? null, limit, offset]);
+		const prev = this._searchRepeatMap.get(bucket) ?? { key: null, count: 0 };
+		const count = prev.key === key ? prev.count + 1 : 1;
+		this._searchRepeatMap.set(bucket, { key, count });
+
+		if (count >= BuiltinToolProvider.SEARCH_REPEAT_BLOCK) {
+			return {
+				count,
+				blocked:
+					`BLOCKED: 你已连续 ${count} 次发起完全相同的搜索（pattern=${pattern}, target=${target}），结果没有任何变化。` +
+					`你已掌握这些信息，请停止重复搜索，转而推进任务（可调整 pattern/路径，或用 offset 翻页查看被截断的结果）。`,
+			};
+		}
+		if (count >= BuiltinToolProvider.SEARCH_REPEAT_WARN) {
+			return {
+				count,
+				warning:
+					`警告：你已连续 ${count} 次发起相同的搜索，结果未变化。请使用已获取的信息，避免重复搜索。`,
+			};
+		}
+		return { count };
+	}
+
+	/** 文件搜索裸名 glob 包裹（对齐 Hermes：不含 '/' 且不以 '*' 开头的 pattern 包成 '*pattern'）。 */
+	private _normalizeFileSearchGlob(pattern: string): string {
+		if (!pattern.includes('/') && !pattern.startsWith('*')) {
+			return `*${pattern}`;
+		}
+		return pattern;
+	}
+
+	/** 结果大小上限兜底（对齐 Hermes max_result_size_chars），超长截断并提示。 */
+	private _enforceSearchSize(text: string): string {
+		const MAX = BuiltinToolProvider.SEARCH_MAX_RESULT_CHARS;
+		if (text.length <= MAX) { return text; }
+		return text.slice(0, MAX) +
+			`\n\n[Hint: 结果已超过 ${MAX} 字符上限被截断。请缩小 pattern/file_glob 范围，或使用 offset/limit 分页。`;
+	}
+
+	/**
+	 * 搜索结果尾部信息（对齐 Hermes total_count + truncated hint）。
+	 * 始终给出总数让模型可智能判断是否需翻页；被 limit 截断时额外给出 next offset。
+	 */
+	private _appendSearchFooter(
+		out: string, total: number, shown: number, offset: number, limit: number, unit: 'match' | 'file',
+	): string {
+		if (total === 0) { return out; }
+		const label = unit === 'file' ? '个文件' : '条匹配';
+		if (offset + limit < total) {
+			return `${out}\n\n[共 ${total} ${label}，已显示 ${shown}/${total}。使用 offset=${offset + limit} 查看剩余，或用更精确的 pattern/file_glob 缩小范围。]`;
+		}
+		return `${out}\n\n[共 ${total} ${label}]`;
+	}
+
+	/**
+	 * 文件搜索：glob 模式匹配文件名，按修改时间排序。
+	 * 优先使用 ripgrep (`rg --files -g <pattern>`)，不可用时回退 Node.js walk。
+	 */
+	private async _searchFilesByGlob(
+		resolvedPath: string, pattern: string, limit: number, offset: number, signal?: AbortSignal,
+	): Promise<string> {
+		try {
+			return await this._rgFileSearch(resolvedPath, pattern, limit, offset);
+		} catch {
+			this.logService.warn('[BuiltinTools] rg not available for file search, falling back to Node.js walk');
+			return this._nodeFileSearch(resolvedPath, pattern, limit, offset, signal);
+		}
+	}
+
+	/**
+	 * 内容搜索：rg 优先，回退 Node.js walk。
+	 */
+	private async _searchContent(
+		resolvedPath: string, pattern: string, fileGlob: string | undefined,
+		limit: number, offset: number, outputMode: string, contextLines: number,
+		signal?: AbortSignal,
+	): Promise<string> {
+		try {
+			return await this._rgContentSearch(resolvedPath, pattern, fileGlob, limit, offset, outputMode, contextLines);
+		} catch {
+			this.logService.warn('[BuiltinTools] rg not available for content search, falling back to Node.js walk');
+			const normalizedUri = URI.file(resolvedPath);
+			const hits: string[] = [];
+			const cap = Math.min(limit + offset, 500);
+			await this._walkAndGrep(normalizedUri, pattern, hits, cap, signal);
+			const total = hits.length;
+			const paged = hits.slice(offset, offset + limit);
+			const out = paged.join('\n') || '(no matches)';
+			return this._appendSearchFooter(out, total, paged.length, offset, limit, 'match');
+		}
+	}
+
+	/**
+	 * ripgrep 内容搜索：调用 `rg --json -C <context> --max-count <limit> ...`
+	 * 解析 JSON 行输出，按 output_mode 格式化。
+	 */
+	private _rgContentSearch(
+		resolvedPath: string, pattern: string, fileGlob: string | undefined,
+		limit: number, offset: number, outputMode: string, contextLines: number,
+	): Promise<string> {
+		return new Promise((resolve, reject) => {
+			const { execFile } = require('child_process') as typeof import('child_process');
+			const args: string[] = ['--json', '--no-heading', '--max-count', String(limit + offset)];
+
+			if (contextLines > 0) {
+				args.push('-C', String(contextLines));
+			}
+			if (fileGlob) {
+				args.push('-g', fileGlob);
+			}
+			args.push('--', pattern, resolvedPath);
+
+			execFile('rg', args, {
+				maxBuffer: 10 * 1024 * 1024,
+				timeout: 30_000,
+				windowsHide: true,
+			}, (err: Error | null, stdout: string, _stderr: string) => {
+				if (err && (err as any).code !== 0 && !stdout) {
+					reject(err);
+					return;
+				}
+				try {
+					const lines = stdout.split('\n').filter(l => l.trim());
+					resolve(this._formatRgOutput(lines, outputMode, limit, offset));
+				} catch (e) {
+					reject(e);
+				}
+			});
+			// 比 Node.js 遍历快得多，30s 绰绰有余
+		});
+	}
+
+	/**
+	 * 解析 ripgrep --json 输出并按 output_mode 格式化。
+	 */
+	private _formatRgOutput(
+		lines: string[], outputMode: string, limit: number, offset: number,
+	): string {
+		type RgEntry = { type: string; data: { path: { text: string }; lines: { text: string }; line_number: number }; };
+
+		// content 模式同时收集 match 与 context 行（对齐 Hermes：context>0 时保留上下文）；
+		// isContext 用于输出时区分分隔符（match 用 ':'，context 用 '-'，与 rg 文本约定一致）。
+		const matches: { file: string; line: number; text: string; isContext: boolean }[] = [];
+		const fileCounts = new Map<string, number>();
+		const fileSet = new Set<string>();
+
+		for (const raw of lines) {
+			try {
+				const entry = JSON.parse(raw) as RgEntry;
+				if ((entry.type === 'match' || entry.type === 'context') && entry.data) {
+					const d = entry.data as any;
+					const file = d.path?.text ?? '';
+					const lineNum = d.line_number ?? 0;
+					// 单条截断，避免巨行撑大上下文（关联 11133）
+					const text = (d.lines?.text ?? '').trim().slice(0, BuiltinToolProvider.SEARCH_LINE_MAX_CHARS);
+					const isContext = entry.type === 'context';
+					matches.push({ file, line: lineNum, text, isContext });
+					// files_only / count 只统计真实匹配，不含 context 行
+					if (!isContext) {
+						fileSet.add(file);
+						fileCounts.set(file, (fileCounts.get(file) ?? 0) + 1);
+					}
+				}
+			} catch { /* skip malformed lines */ }
+		}
+
+		if (outputMode === 'files_only') {
+			const total = fileSet.size;
+			const files = [...fileSet].slice(offset, offset + limit);
+			const out = files.join('\n') || '(no matching files)';
+			return this._appendSearchFooter(out, total, files.length, offset, limit, 'file');
+		}
+
+		if (outputMode === 'count') {
+			const total = fileCounts.size;
+			const entries = [...fileCounts.entries()].slice(offset, offset + limit);
+			const out = entries.map(([f, c]) => `${f}: ${c} match(es)`).join('\n') || '(no matches)';
+			return this._appendSearchFooter(out, total, entries.length, offset, limit, 'file');
+		}
+
+		// content mode（含 context 行；total 含 context，与 Hermes 一致）
+		const total = matches.length;
+		const paged = matches.slice(offset, offset + limit);
+		if (paged.length === 0) { return '(no matches)'; }
+		const out = paged.map(m =>
+			`${m.file}${m.isContext ? '-' : ':'}${m.line}${m.isContext ? '- ' : ': '}${m.text}`,
+		).join('\n');
+		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'match');
+	}
+
+	/**
+	 * rg 文件搜索：`rg --files -g <pattern> <path>`，按修改时间排序。
+	 */
+	private _rgFileSearch(resolvedPath: string, pattern: string, limit: number, offset: number): Promise<string> {
+		return new Promise((resolve, reject) => {
+			const { execFile } = require('child_process') as typeof import('child_process');
+			execFile('rg', ['--files', '-g', pattern, resolvedPath], {
+				maxBuffer: 5 * 1024 * 1024,
+				timeout: 15_000,
+				windowsHide: true,
+			}, (err: Error | null, stdout: string) => {
+				if (err && !stdout) { reject(err); return; }
+				const all = stdout.split('\n').filter(l => l.trim());
+				// 尝试按修改时间排序
+				try {
+					const { statSync } = require('fs') as typeof import('fs');
+					all.sort((a, b) => {
+						try { return (statSync(b).mtimeMs ?? 0) - (statSync(a).mtimeMs ?? 0); } catch { return 0; }
+					});
+				} catch { /* keep original */ }
+				const total = all.length;
+				const paged = all.slice(offset, offset + limit);
+				const out = paged.join('\n') || '(no matching files)';
+				resolve(this._appendSearchFooter(out, total, paged.length, offset, limit, 'file'));
+			});
+		});
+	}
+
+	/**
+	 * Node.js 文件搜索（rg 不可用时的回退）：walk 目录树并 glob 匹配文件名。
+	 */
+	private async _nodeFileSearch(
+		resolvedPath: string, pattern: string, limit: number, offset: number, signal?: AbortSignal,
+	): Promise<string> {
+		const { statSync } = require('fs') as typeof import('fs');
+		const results: { path: string; mtime: number }[] = [];
+		const MAX_VISIT = 5_000;
+		let visited = 0;
+		const NOISE = new Set([
+			'node_modules', '.git', 'out', 'dist', 'build', '.next', '.cache',
+			'coverage', '__pycache__', 'target', '.gradle', 'bin', 'obj',
+		]);
+
+		// 简易 glob → regex
+		const globToRegex = (g: string): RegExp => {
+			let r = g.replace(/\./g, '\\.').replace(/\*\*/g, '<<<RECURSIVE>>>')
+				.replace(/\*/g, '[^/\\\\]*').replace(/\?/g, '[^/\\\\]')
+				.replace(/<<<RECURSIVE>>>/g, '.*');
+			return new RegExp(`^${r}$`, 'i');
+		};
+		const regex = globToRegex(pattern);
+
+		const walk = async (dir: string): Promise<void> => {
+			if (visited >= MAX_VISIT) { return; }
+			if (signal?.aborted) { return; }
+			const entries = await this.fileService.resolve(URI.file(dir));
+			if (!entries.children) { return; }
+			for (const c of entries.children) {
+				if (visited >= MAX_VISIT || signal?.aborted) { return; }
+				const fullPath = `${dir}/${c.name}`.replace(/\\/g, '/');
+				if (c.isDirectory) {
+					if (NOISE.has(c.name) || c.name.startsWith('.')) { continue; }
+					await walk(fullPath);
+				} else {
+					visited++;
+					if (regex.test(fullPath)) {
+						try {
+							results.push({ path: fullPath, mtime: statSync(fullPath).mtimeMs ?? 0 });
+						} catch { results.push({ path: fullPath, mtime: 0 }); }
+					}
+				}
+			}
+		};
+
+		await walk(resolvedPath.replace(/\\/g, '/'));
+		results.sort((a, b) => b.mtime - a.mtime);
+		const total = results.length;
+		const paged = results.slice(offset, offset + limit);
+		const out = paged.map(r => r.path).join('\n') || '(no matching files)';
+		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'file');
+	}
+
 	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal): Promise<void> {
 		// Hard global cap on files we will read+grep regardless of `limit`.
 		// This protects against pathological recursion (huge build trees, symlink
@@ -2874,7 +3579,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					for (let i = 0; i < lines.length; i++) {
 						if (signal?.aborted) { return; }
 						if (lines[i].includes(query)) {
-							out.push(`${child.resource.fsPath}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
+							out.push(`${child.resource.fsPath}:${i + 1}: ${lines[i].trim().slice(0, BuiltinToolProvider.SEARCH_LINE_MAX_CHARS)}`);
 							if (out.length >= limit) { return; }
 						}
 					}

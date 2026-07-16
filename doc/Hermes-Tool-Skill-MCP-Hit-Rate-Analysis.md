@@ -1,7 +1,7 @@
 # Hermes-Agent 工具命中率优化机制分析
 
 > 分析对象：`G:\CustomWorkspaces\AIProjects\Hermes-Agent`
-> 对比项目：VsSarosis（CodeBuddy CN）
+> 对比项目：VsSaros（CodeBuddy CN）
 > 日期：2026-06-27
 
 ## 核心策略：渐进式披露（Progressive Disclosure）
@@ -92,7 +92,7 @@ LLM 看到匹配的技能后，通过 `skill_view(name)` 主动加载完整内�
 
 ## 对比总结
 
-| 维度 | Hermes-Agent | 本项目（VsSarosis） | 差距 |
+| 维度 | Hermes-Agent | 本项目（VsSaros） | 差距 |
 |------|-------------|---------------------|------|
 | 工具发送策略 | 工具集分组 + Tool Search 桥接 | 全量发送（102个） | ❌ 导致 API 超时 |
 | MCP 工具管理 | BM25 搜索 + 按需加载 schema | 全量定义发送 | ❌ schema 过大 |

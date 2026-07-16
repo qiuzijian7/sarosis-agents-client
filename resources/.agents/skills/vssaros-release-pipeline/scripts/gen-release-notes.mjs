@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * VsSarosis Release Notes 生成器
+ * VsSaros Release Notes 生成器
  * ----------------------------------------------------
  * 用法：
  *   node gen-release-notes.mjs --version 1.2.3 [--since v1.2.2] [--out RELEASE_NOTES.md]
@@ -139,7 +139,7 @@ const today = new Date().toISOString().slice(0, 10);
 
 // ---------- 7) 拼装 markdown ----------
 let md = '';
-md += `# VsSarosis v${version}\n\n`;
+md += `# VsSaros v${version}\n\n`;
 md += `发布日期：${today}\n`;
 md += `提交范围：\`${since}..HEAD\`（共 ${commits.length} 次提交）\n\n`;
 

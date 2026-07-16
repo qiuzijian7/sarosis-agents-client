@@ -19,11 +19,7 @@ import {
 import type { IConfirmationData } from '../../../browser/agentChat/agentChatTypes.js';
 import { SlotRegistry } from './slotRegistry.js';
 import {
-	computeBackoffDelay,
-	sleepWithAbort,
 	withStreamTimeout,
-	DEFAULT_RETRY_POLICY,
-	type RetryPolicy,
 	type TimeoutPolicy,
 } from '../common/resilience.js';
 import {
@@ -1220,17 +1216,17 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		}));
 	}
 
-	// ─── Fallback 配置 ─────────────────────────────────────────
-	private readonly _fallbackModels: string[] = ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
-	private readonly _maxFallbackAttempts: number = 3;
-	/** 模型 fallback 间的退避策略（指数退避 + 抖动），缓解限流风暴 */
-	private readonly _modelRetryPolicy: RetryPolicy = {
-		...DEFAULT_RETRY_POLICY,
-		initialInterval: 800,
-		maxInterval: 30_000,
-		maxAttempts: 5,
-		jitter: true,
-	};
+	// ─── Fallback 配置（已关闭：容错机制禁用，保留供日后恢复参考）─────
+	// private readonly _fallbackModels: string[] = ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
+	// private readonly _maxFallbackAttempts: number = 3;
+	// /** 模型 fallback 间的退避策略（指数退避 + 抖动），缓解限流风暴 */
+	// private readonly _modelRetryPolicy: RetryPolicy = {
+	// 	...DEFAULT_RETRY_POLICY,
+	// 	initialInterval: 800,
+	// 	maxInterval: 30_000,
+	// 	maxAttempts: 5,
+	// 	jitter: true,
+	// };
 	/**
 	 * 模型流式响应的双超时策略（对齐 LangGraph TimeoutPolicy）：
 	 *  - idleTimeout（180s）：流「中途」超过该时长无任何 delta 即判定为「静默挂起」，
@@ -3844,6 +3840,22 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		this._lastAssembly = assembly;
 		this._lastDispatcherCtx = buildDispatcherContext(assembly, tsConfig);
 
+		// ── 直发诊断日志：本轮直接下发给模型的工具 + 检测到的 MCP 服务器 ──
+		{
+			const directToolNames = finalTools.filter(t => !isBridgeTool(t.name)).map(t => t.name);
+			const mcpServers = [...mcpToolsetByServer.keys()];
+			const parts: string[] = [];
+			parts.push(`[AgentOS] Direct-sent tools (${directToolNames.length}/${enabled.length}): ${directToolNames.join(', ')}`);
+			if (mcpServers.length > 0) {
+				parts.push(`| MCP servers (${mcpServers.length}): ${mcpServers.join(', ')} (mcpTools=${mcpOriginal.length})`);
+			}
+			if (assembly.deferredCount > 0) {
+				parts.push(`| deferred via tool_search: ${assembly.deferredCount}`);
+			}
+			this._logService.info(parts.join(' '));
+		}
+
+
 		// Step 6: 桥接工具排前面
 		const BRIDGE_NAMES: Set<string> = new Set([
 			TOOL_SEARCH_BRIDGE_TOOLS.search, TOOL_SEARCH_BRIDGE_TOOLS.describe, TOOL_SEARCH_BRIDGE_TOOLS.call,
@@ -4469,7 +4481,19 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						this._logService.warn(`[AgentOS] Tool ${targetToolName} returned error via ${_execKnown.id}: ${result.error ?? 'unknown error'}`);
 					}
 				} catch (error) {
-					this._logService.warn(`[AgentOS] Tool ${targetToolName} execution failed via ${_execKnown.id}: ${sanitizeToolError(error)}`);
+					const sanitized = sanitizeToolError(error);
+					this._logService.warn(`[AgentOS] Tool ${targetToolName} execution failed via ${_execKnown.id}: ${sanitized}`);
+					// handler 抛异常 = 工具确实被找到了并尝试执行了，只是参数或逻辑有问题。
+					// 应标记为 executed=true 并返回真实错误给 LLM，避免掉入 fallback 循环
+					// 最终报 "No provider available" 掩盖了真正的参数错误。
+					executed = true;
+					results.push({
+						toolCallId: toolCall.id,
+						content: typeof error === 'object' && error !== null && 'message' in (error as any)
+							? (error as any).message
+							: sanitized,
+						success: false,
+					});
 				}
 			}
 
@@ -4766,43 +4790,65 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			const timeoutMs = getTimeoutForTool(targetToolName, toolDef, toolDef?.source);
 
 			for (const provider of toolProviders) {
+				// 先单独 try listTools：provider 不可用时应 continue 尝试下一个，
+				// 不能与 execute 的异常混在同一 catch（否则 handler 抛错会被当成
+				// "provider 不可用" 而继续 fallback，最终报 "No provider available"
+				// 掩盖真正的执行错误——对齐串行路径 4483-4497 的修复）。
+				let tools: IToolDefinition[];
 				try {
-					const tools = await provider.listTools(agentId);
-					if (tools.some(t => t.name === targetToolName)) {
-						// 使用带超时保护的执行
-						const result: IToolResult = await executeWithRetryAndTimeout(
-							provider,
-							agentId,
-							{ id: toolCall.id, name: targetToolName, arguments: args },
-							{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
-						);
-						// safeStringifyToolResult: guards against pathological payloads
-						// (e.g. tool returning a 50MB blob) which would otherwise blow up
-						// JSON.stringify and OOM the renderer. See toolCallUtils.ts.
-						const limitedStr = safeStringifyToolResult(result.content);
-						let finalContent: unknown = result.content;
-						try {
-							finalContent = JSON.parse(limitedStr);
-						} catch {
-							finalContent = { __truncated__: true, content: limitedStr };
-						}
+					tools = await provider.listTools(agentId);
+				} catch {
+					continue;
+				}
+				if (!tools.some(t => t.name === targetToolName)) {
+					continue; // 此 provider 不提供该工具
+				}
 
-						if (result.success) {
-							this._logService.info(`[AgentOS] [parallel] Tool ${targetToolName} executed via ${provider.id} (${result.metadata?.executionTimeMs ?? '?'}ms)`);
-						} else {
-							this._logService.warn(`[AgentOS] [parallel] Tool ${targetToolName} returned error via ${provider.id}: ${result.error ?? 'unknown'}`);
-						}
-						return {
-							originalIndex: entry.originalIndex,
-							toolCallId: toolCall.id,
-							content: finalContent,
-							success: result.success,
-						};
+				// 已确认此 provider 提供该工具 → 执行。
+				try {
+					// 使用带超时保护的执行
+					const result: IToolResult = await executeWithRetryAndTimeout(
+						provider,
+						agentId,
+						{ id: toolCall.id, name: targetToolName, arguments: args },
+						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
+					);
+					// safeStringifyToolResult: guards against pathological payloads
+					// (e.g. tool returning a 50MB blob) which would otherwise blow up
+					// JSON.stringify and OOM the renderer. See toolCallUtils.ts.
+					const limitedStr = safeStringifyToolResult(result.content);
+					let finalContent: unknown = result.content;
+					try {
+						finalContent = JSON.parse(limitedStr);
+					} catch {
+						finalContent = { __truncated__: true, content: limitedStr };
 					}
+
+					if (result.success) {
+						this._logService.info(`[AgentOS] [parallel] Tool ${targetToolName} executed via ${provider.id} (${result.metadata?.executionTimeMs ?? '?'}ms)`);
+					} else {
+						this._logService.warn(`[AgentOS] [parallel] Tool ${targetToolName} returned error via ${provider.id}: ${result.error ?? 'unknown'}`);
+					}
+					return {
+						originalIndex: entry.originalIndex,
+						toolCallId: toolCall.id,
+						content: finalContent,
+						success: result.success,
+					};
 				} catch (error) {
+					// handler 抛异常 = 工具已被找到并尝试执行，只是参数或逻辑出错
+					// （如 file_read 目标文件不存在）。必须返回真实错误给 LLM，
+					// 而非 continue 掉进 "No provider available" 误导循环。
 					const sanitizedError = sanitizeToolError(error);
 					this._logService.warn(`[AgentOS] [parallel] Tool ${targetToolName} execution failed via ${provider.id}: ${sanitizedError}`);
-					continue;
+					return {
+						originalIndex: entry.originalIndex,
+						toolCallId: toolCall.id,
+						content: typeof error === 'object' && error !== null && 'message' in (error as any)
+							? (error as any).message
+							: sanitizedError,
+						success: false,
+					};
 				}
 			}
 
@@ -5719,6 +5765,18 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			attempt++;
 		}
 
+		// ── 容错机制已关闭：不尝试备用模型，直接上报错误 ──
+		this._logService.warn(`[AgentOS] Model fallback is disabled — primary execution failed, no fallback will be attempted`);
+		yield {
+			type: 'error',
+			content: this._formatUserFacingError(lastError, triedModels),
+		};
+		return;
+	}
+
+	// 原 _executeWithFallback 的备用模型块（已停用，保留做参考）
+	/*
+
 		// Fallback: 尝试备用模型
 		const modelProvider = this._getActiveModelProvider();
 		if (!modelProvider) {
@@ -5811,6 +5869,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			content: this._formatUserFacingError(lastError, triedModels),
 		};
 	}
+	*/
 
 	/**
 	 * 计算对当前激活 Provider 真实可用的备用模型列表（provider-aware fallback）。
@@ -5822,6 +5881,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 *  2. 再补上 provider 的其它可用模型（排除主模型），按偏好排序；
 	 *  3. listModels 失败/超时则回退硬编码列表，保证非 provider-aware 场景不变。
 	 */
+	/* 容错机制已关闭，保留供日后恢复参考
 	private async _resolveFallbackCandidates(primaryModelId: string): Promise<string[]> {
 		const hardcoded = this._fallbackModels.filter(m => m !== primaryModelId);
 		const provider = this._getActiveModelProvider();
@@ -5850,6 +5910,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			return hardcoded;
 		}
 	}
+	*/
 
 	/**
 	 * 把底层错误翻译成面向用户的清晰中文提示（替代裸 TimeoutError / 英文堆栈）。

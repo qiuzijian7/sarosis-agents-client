@@ -40,7 +40,7 @@ import { CodeBuddyAuth } from './auth';
 // 调试构建时改为 true，可绕过 runtime config 强制开启文件日志。
 // 生产构建保持 false。
 //qiuzijian debug
-const FORCE_FILE_LOGGING = false;
+const FORCE_FILE_LOGGING = true;
 const FORCE_FILE_LOGGING_PATH = ''; // 空=用 globalStorageUri/http-debug-{date}.log
 
 /** Decode JWT payload (without verification) to extract claims */
@@ -911,7 +911,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		const serverUrl = config.get<string>('endpoint') || 'https://copilot.tencent.com';
 		//qiuzijian debug
 		const debugHttp = config.get<boolean>('debugHttp') ?? false;
-		const debugHttpLogFile = config.get<boolean>('debugHttpLogFile') ?? false;
+		const debugHttpLogFile = config.get<boolean>('debugHttpLogFile') ?? true;
 		const url = `${serverUrl}/v2/chat/completions`;
 
 		// Convert messages to OpenAI format
@@ -1063,6 +1063,15 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		const bodyTemperature = modelCfg?.temperature ?? 1;
 		const bodyMaxTokens = clampOutputTokens(rawServerMaxTokens);
 
+		// ── 模型标识 ────────────────────────────────────────────────────────
+		// Body 的 `model` 字段保持裸 id（如 "hy3-ioa"），对齐官方 CodeBuddy
+		// 客户端（见 doc/codebuddyoauth.md：body model="glm-5.1-ioa"，无 vendor
+		// 前缀）。但网关按 per-model vendor（/v3/config 的 vendor 字段 j/e/f）
+		// 做后端路由，路由信息通过 **X-Model-ID 请求头**携带（vendor/model），
+		// 缺省时裸 id 会触发 HTTP 400 "invalid_parameter_value"（param 为空）。
+		const perModelVendor = modelCfg?.vendor;
+		const apiModel = perModelVendor ? `${perModelVendor}/${selectedModel}` : selectedModel;
+
 		// ── 消息裁剪（对齐 Continue compileChatMessages）──────────────────────
 		// 当对话历史 + system prompt + tools 超过模型 context window 时，
 		// 从最旧的消息开始裁剪，确保请求不会因超长而触发 HTTP 400。
@@ -1085,10 +1094,10 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			],
 			stream: true,
 			temperature: bodyTemperature,
-		max_tokens: bodyMaxTokens,
-	};
-	const serverOrCap = modelCfg?.maxOutputTokens ?? OUTPUT_TOKEN_MAX;
-	console.log(`[CodeBuddy] body params from model(${selectedModel}): temperature=${bodyTemperature}, max_tokens=${bodyMaxTokens} (server=${rawServerMaxTokens ?? 'N/A'}, cap=${OUTPUT_TOKEN_MAX})${modelCfg ? '' : ' (model cfg MISS)'}${bodyMaxTokens !== serverOrCap ? ` [CAPPED]` : ''}`);
+			max_tokens: bodyMaxTokens,
+		};
+		const serverOrCap = modelCfg?.maxOutputTokens ?? OUTPUT_TOKEN_MAX;
+		console.log(`[CodeBuddy] body params from model(${selectedModel}) vendor=${perModelVendor ?? '(none)'} xModelId=${apiModel}: temperature=${bodyTemperature}, max_tokens=${bodyMaxTokens} (server=${rawServerMaxTokens ?? 'N/A'}, cap=${OUTPUT_TOKEN_MAX})${modelCfg ? '' : ' (model cfg MISS)'}${bodyMaxTokens !== serverOrCap ? ` [CAPPED]` : ''}`);
 
 		// Reasoning/thinking parameters (P1) — align with CodeBuddy IDE CN body.
 		// The thinking toggle in the chat toolbar flows here as `reasoning`.
@@ -1235,7 +1244,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			'X-Conversation-Request-Id': crypto.randomUUID(),
 			'X-Conversation-Message-Id': crypto.randomUUID(),
 			'X-Request-Id': requestId,
-			'X-Model-ID': selectedModel,
+			'X-Model-ID': apiModel,
 			'X-Agent-Intent': 'craft',
 			'X-Requested-With': 'XMLHttpRequest',
 			'X-IDE-Type': 'CodeBuddyIDE',
@@ -1430,9 +1439,9 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 				// choices guard which will no-op when choices is empty.
 			}
 
-		// OpenAI: choices[0].delta.content
-		if (event.choices && event.choices[0]) {
-			const choice = event.choices[0];
+			// OpenAI: choices[0].delta.content
+			if (event.choices && event.choices[0]) {
+				const choice = event.choices[0];
 
 				// ── 诊断：记录 finish_reason（定位"模型为什么停"）
 				if (choice.finish_reason) {

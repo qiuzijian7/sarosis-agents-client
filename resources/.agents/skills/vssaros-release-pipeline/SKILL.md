@@ -1,20 +1,20 @@
 ---
 name: vssaros-release-pipeline
-description: VsSarosis（VS Code fork）一键发版——编译+bundle+打包用户级安装包 → 上传 DevCloud → 在工蜂 vssaros_issue 创建 Release → 打 git tag。更新代理自动从 Release 解析下载链接+SHA256，已安装用户下次启动自动更新。
-description_zh: VsSarosis 一键打包发版
-description_en: VsSarosis end-to-end release
+description: VsSaros（VS Code fork）一键发版——编译+bundle+打包用户级安装包 → 上传 DevCloud → 在工蜂 vssaros_issue 创建 Release → 打 git tag。更新代理自动从 Release 解析下载链接+SHA256，已安装用户下次启动自动更新。
+description_zh: VsSaros 一键打包发版
+description_en: VsSaros end-to-end release
 disable: false
 agent_created: true
 ---
 
 # vssaros-release-pipeline
 
-VsSarosis（`saros-agents-client`，路径：`G:\CustomWorkspaces\AIProjects\saros-agents-client`）端到端发版流程。
+VsSaros（`saros-agents-client`，路径：`G:\CustomWorkspaces\AIProjects\saros-agents-client`）端到端发版流程。
 
 ## When to use（触发场景）
 
 - "打包发版" / "发布新版本" / "出一个 release" / "打 tag 并发布"
-- "VsSarosis 发版" / "上传 release" / "release pipeline"
+- "VsSaros 发版" / "上传 release" / "release pipeline"
 - "生成版本说明 / changelog / release notes"
 
 ## 前置知识
@@ -56,7 +56,7 @@ cp -r out-vscode/* G:/CustomWorkspaces/AIProjects/VSCode-win32-x64/resources/app
 
 ```bash
 # 关闭残留进程
-powershell -Command "Get-Process -Name VsSarosis -ErrorAction SilentlyContinue | Stop-Process -Force"
+powershell -Command "Get-Process -Name VsSaros -ErrorAction SilentlyContinue | Stop-Process -Force"
 
 # 打包用户级安装包
 npx gulp vscode-win32-x64-user-setup
@@ -102,7 +102,7 @@ curl -sS -X POST \
 ### Stage 3：打 Git Tag
 
 ```bash
-git tag -a v0.1.X -m "VsSarosis v0.1.X"
+git tag -a v0.1.X -m "VsSaros v0.1.X"
 git push origin v0.1.X     # 工蜂 saros-agents-client
 git push backup v0.1.X     # GitHub
 ```
@@ -128,7 +128,7 @@ curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
 curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
   --header "Content-Type: application/json" \
   -X POST "https://git.woa.com/api/v3/projects/1790708/repository/tags" \
-  -d '{"tag_name":"v0.1.X","ref":"main","message":"VsSarosis v0.1.X"}'
+  -d '{"tag_name":"v0.1.X","ref":"main","message":"VsSaros v0.1.X"}'
 ```
 
 **步骤 4.3**：创建 Release
@@ -141,8 +141,8 @@ curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
   -X POST "https://git.woa.com/api/v3/projects/1790708/releases" \
   -d '{
     "tag": "v0.1.X",
-    "name": "VsSarosis v0.1.X",
-    "description": "## VsSarosis v0.1.X\n\n### 修复内容\n- xxx\n\n### 下载\n\n| 平台 | 类型 | 下载 |\n|------|------|------|\n| Windows x64 | 用户级安装（无需管理员） | [VsSarosUserSetup.exe](http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe) |\n\n### 校验\n```\nSHA256: <64位hash>\n大小: 96 MB\n```\n\n### 提交信息\n- 基于 saros-agents-client commit: `<short-sha>`"
+    "name": "VsSaros v0.1.X",
+    "description": "## VsSaros v0.1.X\n\n### 修复内容\n- xxx\n\n### 下载\n\n| 平台 | 类型 | 下载 |\n|------|------|------|\n| Windows x64 | 用户级安装（无需管理员） | [VsSarosUserSetup.exe](http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe) |\n\n### 校验\n```\nSHA256: <64位hash>\n大小: 96 MB\n```\n\n### 提交信息\n- 基于 saros-agents-client commit: `<short-sha>`"
   }'
 ```
 

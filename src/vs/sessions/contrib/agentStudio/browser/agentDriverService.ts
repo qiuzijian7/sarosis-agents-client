@@ -773,7 +773,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 								'If your model supports function calling, use the native function_call format.',
 								'If your model does NOT support function calling, output a JSON object in this exact format: {"name": "<tool_name>", "arguments": {<args>}}.',
 								'DO NOT use XML tags like <tool_call> or <function_call> — they will NOT be recognized.',
-								'Example (correct): {"name": "file_list", "arguments": {"path": "."}}',
+								'Example (correct): {"name": "file_read", "arguments": {"path": "src/main.ts"}}',
 								'Example (wrong, do NOT use): <tool_call>file_list</tool_call>',
 								'Never output tool calls as plain text explanations or code blocks without the proper format.',
 								'',
@@ -828,22 +828,41 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 						// 将 system 类型的 skill 注入追加到 systemPrompt
 						// 借鉴 OpenClaw：短 skill（<500 chars）直接注入，长 skill 只放摘要
-						const ALWAYS_SKILL_INLINE_THRESHOLD = 500;
-						if (systemInjections.length > 0) {
-							const activeParts: string[] = [];
-							for (const inj of systemInjections) {
-								if (inj.skill.prompt.length <= ALWAYS_SKILL_INLINE_THRESHOLD) {
-									// 短 skill：直接内联注入全文
-									activeParts.push(inj.content);
-								} else {
-									// 长 skill：只放摘要，引导模型使用 read_skill
-									activeParts.push([
-										`### Skill: ${inj.skill.name}`,
-										inj.skill.description ? `_${inj.skill.description}_` : '',
-										`(Full instructions: use \`read_skill\` tool with skill_id="${inj.skill.id}")`,
-									].filter(Boolean).join('\n'));
+						// 例外：agent 配置中显式指定的技能（agentSkillIds）直接注入全文，不受阈值限制
+					const ALWAYS_SKILL_INLINE_THRESHOLD = 500;
+					if (systemInjections.length > 0) {
+						const activeParts: string[] = [];
+						const forcedInlineNames: string[] = [];
+						const inlinedSkillNames: string[] = [];
+						const deferredSkillNames: string[] = [];
+						for (const inj of systemInjections) {
+							const isAgentConfigured = agentSkillIds.has(inj.skill.id);
+							if (inj.skill.prompt.length <= ALWAYS_SKILL_INLINE_THRESHOLD || isAgentConfigured) {
+								// 短 skill 或 agent 配置的技能：直接内联注入全文
+								activeParts.push(inj.content);
+								inlinedSkillNames.push(inj.skill.id);
+								if (isAgentConfigured && inj.skill.prompt.length > ALWAYS_SKILL_INLINE_THRESHOLD) {
+									forcedInlineNames.push(inj.skill.id);
 								}
+							} else {
+								// 长 skill（非 agent 配置）：只放摘要，引导模型使用 read_skill
+								activeParts.push([
+									`### Skill: ${inj.skill.name}`,
+									inj.skill.description ? `_${inj.skill.description}_` : '',
+									`(Full instructions: use \`read_skill\` tool with skill_id="${inj.skill.id}")`,
+								].filter(Boolean).join('\n'));
+								deferredSkillNames.push(inj.skill.id);
 							}
+						}
+						if (inlinedSkillNames.length > 0) {
+							this._logService.info(`[AgentDriver] Directly-injected (inlined) skills: ${inlinedSkillNames.join(', ')} (${inlinedSkillNames.length})`);
+						}
+						if (deferredSkillNames.length > 0) {
+							this._logService.info(`[AgentDriver] Deferred (summary-only) skills: ${deferredSkillNames.join(', ')} (${deferredSkillNames.length}) — use read_skill to fetch full text`);
+						}
+						if (forcedInlineNames.length > 0) {
+							this._logService.info(`[AgentDriver] Agent-configured skills inlined (bypass 500-char threshold): ${forcedInlineNames.join(', ')} (${forcedInlineNames.length} skills)`);
+						}
 							const activeSection = [
 								'',
 								'## Active Skills (this turn)',
@@ -868,7 +887,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							];
 						}
 
-						this._logService.info(`[AgentDriver] Injected ${filteredInjections.length} skills (system: ${systemInjections.length}, user: ${userInjections.length})`);
+						const allInjectedSkillIds = filteredInjections.map(i => i.skill.id);
+						this._logService.info(`[AgentDriver] Injected ${filteredInjections.length} skills (system: ${systemInjections.length}, user: ${userInjections.length}): ${allInjectedSkillIds.join(', ')}`);
 					}
 				}
 

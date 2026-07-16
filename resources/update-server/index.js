@@ -1,5 +1,5 @@
 /**
- * VsSarosis 更新代理服务
+ * VsSaros 更新代理服务
  *
  * 接收 VS Code 客户端的更新请求，查询工蜂最新 Release，
  * 返回 VS Code 更新 JSON 格式。
@@ -98,8 +98,8 @@ function buildUpdateResponse(release, requestCommit) {
     const desc = release.description || '';
     const sha256hash = extractSha256FromDescription(desc);
 
-    // 从 Release name 提取版本号，如 "VsSarosis v0.1.1" → "0.1.1"
-    const productVersion = (release.title || release.tag || '').replace(/^VsSarosis\s*v?/i, '') || release.tag || '0.1.0';
+    // 从 Release name 提取版本号，如 "VsSaros v0.1.1" → "0.1.1"
+    const productVersion = (release.title || release.tag || '').replace(/^VsSaros\s*v?/i, '') || release.tag || '0.1.0';
 
     const response = {
         version: release.tag || requestCommit,
@@ -186,7 +186,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-    log(`VsSarosis 更新服务启动成功`);
+    log(`VsSaros 更新服务启动成功`);
     log(`监听: http://0.0.0.0:${PORT}`);
     log(`质量: ${QUALITY}`);
     log(`工蜂项目: ${PROJECT_ID}`);

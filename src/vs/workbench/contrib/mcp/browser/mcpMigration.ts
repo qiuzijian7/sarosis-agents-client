@@ -38,7 +38,7 @@ export class McpConfigMigrationContribution extends Disposable implements IWorkb
 	}
 
 	private async migrateMcpConfig(): Promise<void> {
-		// VsSarosis: 不扫描 settings.json 中的 MCP 配置，统一使用 ~/.saros/mcp.json
+		// VsSaros: 不扫描 settings.json 中的 MCP 配置，统一使用 ~/.saros/mcp.json
 		// 保留一次性迁移逻辑（将旧 settings.json 中的 MCP 配置迁移到独立文件），但不持续监视
 		try {
 			const userMcpConfig = await this.parseMcpConfig(this.userDataProfileService.currentProfile.settingsResource);
@@ -49,7 +49,7 @@ export class McpConfigMigrationContribution extends Disposable implements IWorkb
 		} catch (error) {
 			this.logService.error(`MCP migration: Failed to migrate user MCP config`, error);
 		}
-		// VsSarosis: 不持续监视 settings.json 中的 MCP 配置变更
+		// VsSaros: 不持续监视 settings.json 中的 MCP 配置变更
 	}
 
 	private async parseMcpConfig(settingsFile: URI): Promise<IMcpConfiguration | undefined> {

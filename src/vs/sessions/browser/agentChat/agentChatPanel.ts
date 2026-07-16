@@ -127,9 +127,7 @@ const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
 	skills_list: { done: '列出技能', running: '正在列出技能' },
 	skill_manage: { done: '管理技能', running: '正在管理技能' },
 	delegate_task: { done: '委派任务', running: '正在委派任务' },
-	get_current_time: { done: '获取时间', running: '正在获取时间' },
-	math_eval: { done: '计算', running: '正在计算' },
-	echo: { done: 'Echo', running: 'Echo' },
+
 	clarify: { done: '等待用户选择', running: '正在等待用户选择' },
 	memory_remember: { done: '保存记忆', running: '正在保存记忆' },
 	memory_search: { done: '搜索记忆', running: '正在搜索记忆' },
@@ -197,7 +195,7 @@ const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string }> = {
 	manage_adr: { done: '管理 ADR', running: '正在管理 ADR' },
 };
 const TOOL_TERMINAL_TOOLS = new Set(['terminal', 'run_command', 'run_persistent_command', 'run_terminal_cmd', 'process', 'execute_code']);
-const TOOL_LIST_TOOLS = new Set(['file_list', 'search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep']);
+const TOOL_LIST_TOOLS = new Set(['search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep']);
 const TOOL_CODEBASE_TOOLS = new Set(['search_graph', 'search_code', 'get_architecture', 'trace_path', 'query_graph', 'index_repository', 'get_code_snippet', 'get_graph_schema', 'detect_changes', 'list_projects', 'delete_project', 'index_status', 'ingest_traces', 'manage_adr']);
 
 /**
@@ -2680,6 +2678,18 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 	 * 从 _createMessageElement 中提取，供 _transitionStreamingToComplete 复用。
 	 */
 	private _createFooter(msg: IAgentChatMessage): HTMLElement {
+		// 空消息（无内容也无非错误工具调用）不渲染 footer，避免显示「空 bubble + 复制按钮 + 耗时」视觉噪音
+		// —— 错误是首个 delta 时，_initStreamingMessage 创建的占位消息应保持完全空白。
+		const realContent = (msg.content ?? '').trim()
+			&& !/^(正在思考|Thinking\.\.\.)$/.test((msg.content ?? '').trim());
+		const hasRealToolCalls = (msg.toolCalls ?? []).some(
+			(tc: any) => tc?.name !== 'llm_error',
+		);
+		if (!realContent && !hasRealToolCalls) {
+			// 返回占位 footer（空元素），调用方 append 后不会显示任何内容
+			return $('.chat-bubble-footer');
+		}
+
 		const footer = $(".chat-bubble-footer");
 
 		// ── 复制按钮（样式同用户消息的复制按钮）──

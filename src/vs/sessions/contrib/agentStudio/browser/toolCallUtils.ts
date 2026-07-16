@@ -1042,8 +1042,7 @@ const NEVER_PARALLEL_TOOLS = new Set([
  */
 const PARALLEL_SAFE_TOOLS = new Set([
 	// 基础只读
-	"file_read", "file_list", "search_files", "search_content",
-	"echo", "get_current_time", "math_eval", "http_get",
+	"file_read", "search_files", "search_content",
 	// 技能
 	"skills_list", "skill_view", "read_skill", "list_skills",
 	// 搜索
@@ -1064,7 +1063,7 @@ const PARALLEL_SAFE_TOOLS = new Set([
  * 参考 Hermes `_PATH_SCOPED_TOOLS`。
  */
 const PATH_SCOPED_TOOLS = new Set([
-	"file_read", "file_write", "file_list", "patch",
+	"file_read", "file_write", "patch",
 ]);
 
 /**

@@ -74,6 +74,16 @@ export const DEFAULT_TOOL_SEARCH_CONFIG: IToolSearchConfig = {
 	maxSearchLimit: 20,
 };
 
+/**
+ * 可见工具的软上限。Always 优先级（core/mcp-bridge/tool-search）工具永不计入限制，
+ * 仅对 High/Medium/Low 工具生效。防止直发过多 schema 导致 HTTP 400 "input length too long"。
+ * 与 Hermes-Agent 的区别：Hermes 无限制但 MCP 工具远少于本项目（本项目有 30+ MCP 工具）。
+ */
+export const MAX_VISIBLE_TOOLS = 60;
+
+/** 关键交互工具：溢出时优先保留（不可被折叠丢失） */
+const KEY_INTERACTION_TOOLS = new Set(['delegate_task', 'clarify']);
+
 // ─── 分类 ──────────────────────────────────────────────────────────────────
 
 /**
@@ -334,24 +344,57 @@ export function assembleToolDefs(
 
 	const { visible, deferrable } = classifyTools(incoming);
 
-	// ─── 对齐 Hermes-Agent：核心工具永不 defer ────────────────────────────
-	// classifyTools 已通过 isDeferrableTool() 正确分离：
-	//   - visible = 核心工具 + 桥接工具（isCoreTool / isCoreToolset / Always 优先级）
-	//   - deferrable = MCP + 非核心可 defer 工具
-	//
-	// 移除了原有的 maxVisible 硬上限和 forcedDeferred 强制溢出机制。
-	// 原因（来自日志分析）：
-	//   1. 硬上限会导致 delegate_task 等关键工具被挤出 → agent loop 直接结束
-	//   2. 强制溢出工具需桥接发现 → 每次 +2-3 次交互迭代
-	//   3. 实测日志：50 次交互迭代中的大量桥接短路（12 次 tool_call/tool_search/tool_describe 短路）
-	//
-	// 风险缓解：sanitizeSchemaForIoaGateway 仍然生效；
-	//   Token 预算阈值（10% 上下文窗口）仍限制 deferrable 池的 schema 总大小。
-	const finalVisible = visible;
+	// ─── 智能上限：两层保护防止 HTTP 400 "input length too long" ──────────
+	// L1：非 Always 工具软上限 MAX_VISIBLE_TOOLS（Always 工具不计数）
+	// L2：visible 总数硬上限 MAX_TOTAL_VISIBLE（Always 工具也会被溢出，保底）
+	// delegate_task / clarify 在同优先级内优先保留。
+	let finalVisible = visible;
+	let forcedDeferred: Array<IToolDefinition & { enabled: boolean }> = [];
 
-	if (deferrable.length === 0) {
+	// 分离 Always 和非 Always
+	const alwaysTools = visible.filter(t => getToolsetPriority((t as any).toolset ?? getToolsetForTool(t.name)) === ToolsetPriority.Always);
+	const nonAlwaysTools = visible.filter(t => getToolsetPriority((t as any).toolset ?? getToolsetForTool(t.name)) !== ToolsetPriority.Always);
+
+	// L1: 非 Always 软上限
+	{
+		const sorted = [...nonAlwaysTools].sort((a, b) => {
+			const pa = getToolsetPriority((a as any).toolset ?? getToolsetForTool(a.name));
+			const pb = getToolsetPriority((b as any).toolset ?? getToolsetForTool(b.name));
+			if (pa !== pb) { return pa - pb; }
+			const ka = KEY_INTERACTION_TOOLS.has(a.name) ? 0 : 1;
+			const kb = KEY_INTERACTION_TOOLS.has(b.name) ? 0 : 1;
+			return ka - kb;
+		});
+		if (sorted.length > MAX_VISIBLE_TOOLS) {
+			finalVisible = [...alwaysTools, ...sorted.slice(0, MAX_VISIBLE_TOOLS)];
+			forcedDeferred = [...forcedDeferred, ...sorted.slice(MAX_VISIBLE_TOOLS)];
+		} else {
+			finalVisible = [...alwaysTools, ...sorted];
+		}
+	}
+
+	// L2: visible 总数硬上限（Always 工具过多时的保底）
+	// 对齐 Hermes-Agent 思路：核心工具过多时按优先级折叠最低优先级的工具。
+	const MAX_TOTAL_VISIBLE = MAX_VISIBLE_TOOLS + 20; // 80
+	if (finalVisible.length > MAX_TOTAL_VISIBLE) {
+		// 按优先级排序（Always 最前），保留前 MAX_TOTAL_VISIBLE 个
+		const sorted = [...finalVisible].sort((a, b) => {
+			const pa = getToolsetPriority((a as any).toolset ?? getToolsetForTool(a.name));
+			const pb = getToolsetPriority((b as any).toolset ?? getToolsetForTool(b.name));
+			if (pa !== pb) { return pa - pb; }
+			const ka = KEY_INTERACTION_TOOLS.has(a.name) ? 0 : 1;
+			const kb = KEY_INTERACTION_TOOLS.has(b.name) ? 0 : 1;
+			return ka - kb;
+		});
+		finalVisible = sorted.slice(0, MAX_TOTAL_VISIBLE);
+		forcedDeferred = [...forcedDeferred, ...sorted.slice(MAX_TOTAL_VISIBLE)];
+	}
+
+	const allDeferrable = [...deferrable, ...forcedDeferred];
+
+	if (allDeferrable.length === 0) {
 		return {
-			toolDefs: incoming,
+			toolDefs: finalVisible,
 			activated: false,
 			deferredCount: 0,
 			deferredTokens: 0,
@@ -360,38 +403,35 @@ export function assembleToolDefs(
 		};
 	}
 
-	const deferrableTokens = estimateTokensFromSchemas(deferrable);
-	// 激活条件：当 deferrable token 数达到上下文窗口的阈值百分比时激活
-	const shouldActivateResult = shouldActivate(config, deferrableTokens, contextLength);
+	const deferrableTokens = estimateTokensFromSchemas(allDeferrable);
+	// 激活条件：deferrable + forcedDeferred 的 token 数达到上下文窗口阈值时激活
+	const shouldActivateResult = shouldActivate(config, deferrableTokens, contextLength) || forcedDeferred.length > 0;
 	const thresholdTokens = Math.floor((contextLength ?? 0) * (config.thresholdPct / 100.0));
 
 	if (!shouldActivateResult) {
 		// 未激活：passthrough + 桥接工具
-		// incoming 包含所有工具（visible + deferrable 含 MCP），
-		// _getEnabledTools Step 5b 会根据 mcpToolNameSet 移除 MCP 直发工具。
-		// 桥接工具则保留给 LLM 通过 tool_search 发现 MCP/非核心工具。
-		const bridge = bridgeToolSchemas(deferrable, config);
+		const bridge = bridgeToolSchemas(allDeferrable, config);
 		return {
-			toolDefs: [...incoming, ...bridge],
+			toolDefs: [...finalVisible, ...bridge],
 			activated: false,
-			deferredCount: deferrable.length,
+			deferredCount: allDeferrable.length,
 			deferredTokens: deferrableTokens,
 			thresholdTokens,
-			deferredDefs: deferrable,
+			deferredDefs: allDeferrable,
 		};
 	}
 
-	// 激活：用桥接 schema 替换 deferrable
-	const bridge = bridgeToolSchemas(deferrable, config);
+	// 激活：用桥接 schema 替换 deferrable（含溢出的非 Always 工具）
+	const bridge = bridgeToolSchemas(allDeferrable, config);
 	const result = [...finalVisible, ...bridge];
 
 	return {
 		toolDefs: result,
 		activated: true,
-		deferredCount: deferrable.length,
+		deferredCount: allDeferrable.length,
 		deferredTokens: deferrableTokens,
 		thresholdTokens,
-		deferredDefs: deferrable,
+		deferredDefs: allDeferrable,
 	};
 }
 

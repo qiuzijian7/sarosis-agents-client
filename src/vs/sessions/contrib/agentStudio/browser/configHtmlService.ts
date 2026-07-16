@@ -20,6 +20,7 @@ import type {
 	ChatStreamDelta,
 } from '../common/agentStudio.js';
 import type { ConfigHtmlCapability, ChatMessage, AgentConfigHtml } from '../../../common/agentStudioTypes.js';
+import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 // constants import no longer needed (WORKSPACE_DATA_DIR/AGENTS_DIR) — using getAgentDir()
 import { postProcessImguiBlocks, IMGUI_SDK_SCRIPT, IMGUI_SDK_STYLES } from './imguiBlockProcessor.js';
 import { IAgentOSService } from '../common/agentOS.js';
@@ -562,6 +563,7 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
+		@ITerminalService private readonly _terminalService: ITerminalService,
 	) {
 		super();
 	}
@@ -721,6 +723,69 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		entry.count++;
 		if (entry.count > RATE_LIMIT_PER_MINUTE) {
 			throw new Error(`ConfigMD rate limit exceeded for agent '${agentId}'`);
+		}
+	}
+
+	// ─── Terminal Execution ─────────────────────────────────────────────────
+
+	/**
+	 * Run a command in the integrated terminal and return immediately.
+	 * Creates a new terminal instance and shows real-time output.
+	 *
+	 * Used by ConfigHtml to execute `python script.py`, `node script.js`, etc.
+	 * with progress displayed in the VS Saros integrated terminal panel.
+	 */
+	async handleRunTerminal(
+		agentId: string,
+		command: string,
+		args: string[],
+		options?: { cwd?: string; env?: Record<string, string> },
+	): Promise<void> {
+		const view = await this._resolveAgentView(agentId);
+		if (!view) {
+			this.logService.error(`[ConfigHtml] handleRunTerminal: Agent '${agentId}' not found`);
+			return;
+		}
+
+		const cwdRaw = options?.cwd || view.agentDir || undefined;
+		const env = options?.env || {};
+
+		// Validate cwd — if the configured directory doesn't exist, omit it
+		// so the terminal can fall back to its default (workspace root / home).
+		let cwd: string | undefined = cwdRaw;
+		if (cwd) {
+			try {
+				const cwdStat = await this.fileService.resolve(URI.file(cwd));
+				if (!cwdStat.isDirectory) {
+					this.logService.warn(`[ConfigHtml] handleRunTerminal: cwd '${cwd}' is not a directory, falling back to default`);
+					cwd = undefined;
+				}
+			} catch {
+				this.logService.warn(`[ConfigHtml] handleRunTerminal: cwd '${cwd}' does not exist, falling back to default`);
+				cwd = undefined;
+			}
+		}
+
+		const name = `ConfigHtml: ${command} ${args.join(' ')}`;
+		this.logService.info(`[ConfigHtml] handleRunTerminal: ${name} (cwd=${cwd || '<default>'})`);
+
+		try {
+			const terminal = await this._terminalService.createTerminal({
+				config: {
+					name,
+					executable: command,
+					args: args,
+					cwd: cwd,
+					env: env,
+					waitOnExit: true,  // 脚本结束后保持终端打开，方便查看输出
+				},
+			});
+
+			// Reveal the terminal so the user sees the output
+			this._terminalService.setActiveInstance(terminal);
+			await this._terminalService.revealTerminal(terminal);
+		} catch (err) {
+			this.logService.error(`[ConfigHtml] handleRunTerminal error: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
@@ -1081,21 +1146,19 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			return;
 		}
 
-		const wrapped = `[ConfigMD HTML Event: ${eventName}]\n${JSON.stringify(payload, null, 2)}`;
-		try {
-			const view = await this._resolveAgentView(agentId);
-			const chatMessage = await this.agentChatService.sendMessage(
-				agentId,
-				wrapped,
-				{ agentSessionId, workspaceId: view?.workspaceId },
-				() => undefined,
-			);
-			if (chatMessage?.content) {
-				await this._consumeModelOutput(agentId, chatMessage.content);
-			}
-		} catch (err) {
-			this.logService.error(`[ConfigMD] handleHtmlEvent failed for ${agentId}:`, err);
-		}
+		// 非 imgui.submit 的 HTML 事件仅作为通知处理（已通过
+		// `_onDidReceiveHtmlEvent` 广播给订阅者），**不得**自动触发聊天
+		// 或启动 agent loop。否则 preview 在加载/渲染时自动发出的事件
+		// （例如 `readStats`、各类 telemetry/生命周期事件）会在用户未
+		// 点击发送的情况下启动 agent loop。
+		//
+		// 真正需要向 agent 发送消息的路径只有两条，二者都经由
+		// `onDidRequestChatSend` 进入统一的 `_handleChatSend` 流程：
+		//   - `confightml.chatSend`（用户在预览里显式点击发送）
+		//   - `imgui.submit` 且 action 为 send_to_chat / run_skill
+		this.logService.info(
+			`[ConfigMD] handleHtmlEvent: received non-chat event '${eventName}' (notification only — NOT forwarded to chat, no agent loop started)`,
+		);
 	}
 
 	/**

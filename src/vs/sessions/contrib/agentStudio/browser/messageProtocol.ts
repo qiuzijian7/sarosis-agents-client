@@ -107,6 +107,7 @@ export type RequestType =
 	| 'confightml.htmlGenerate'    // ConfigHtml: ask the confightml skill to generate full HTML
 	| 'confightml.chatSendStream'  // send message with streaming delta callbacks
 	| 'confightml.chatCancelStream'// cancel an active stream session
+	| 'confightml.runTerminal'     // run a command (python/node/...) in integrated terminal
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
@@ -556,6 +557,14 @@ export interface IConfigHtmlChatSendStreamPayload {
 export interface IConfigHtmlChatCancelStreamPayload {
 	readonly requestId: string;
 	readonly agentId: string;
+}
+
+export interface IConfigHtmlRunTerminalPayload {
+	readonly agentId: string;
+	readonly command: string;
+	readonly args: string[];
+	readonly cwd?: string;
+	readonly env?: Record<string, string>;
 }
 
 export interface IConfigHtmlChatStreamDeltaPayload {

@@ -198,49 +198,10 @@ export class ToolProvider extends Disposable implements IToolProvider {
 	}
 
 	// ─── 内置工具 ─────────────────────────────────────
+	// 对齐 Hermes 核心工具集：echo / get_current_time 已移除（统一由 BuiltinToolProvider 注册核心工具）。
 
 	private _registerBuiltinTools(): void {
-		// Echo 工具 — 用于测试
-		this.registerTool(
-			{
-				name: 'echo',
-				description: 'Echo back the input text. Useful for testing tool execution.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						text: { type: 'string', description: 'Text to echo back' },
-					},
-					required: ['text'],
-				},
-				category: 'utility',
-			},
-			async (args) => {
-				const text = String(args.text || '');
-				return [{ type: 'text' as const, text }];
-			},
-		);
-
-		// 当前时间工具
-		this.registerTool(
-			{
-				name: 'get_current_time',
-				description: 'Get the current date and time.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						timezone: { type: 'string', description: 'Timezone (e.g. UTC, Asia/Shanghai)' },
-					},
-				},
-				category: 'utility',
-			},
-			async (args) => {
-				const tz = String(args.timezone || 'local');
-				const now = new Date();
-				const text = tz === 'UTC'
-					? now.toUTCString()
-					: now.toLocaleString();
-				return [{ type: 'text' as const, text: `Current time (${tz}): ${text}` }];
-			},
-		);
+		// 对齐 Hermes：内置核心工具（file_read/file_write/search_files/terminal 等）
+		// 由 BuiltinToolProvider 注册，本 Provider 不再注册 echo / get_current_time。
 	}
 }

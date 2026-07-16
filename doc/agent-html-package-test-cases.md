@@ -6,7 +6,7 @@
 
 ## 测试环境
 
-- 客户端: VsSarosis (sarosis-agents-client)
+- 客户端: VsSaros (sarosis-agents-client)
 - 服务端: saros-marketplace (http://21.6.92.5:3040)
 - 测试 Agent: `coder` (有 configMd 配置)
 

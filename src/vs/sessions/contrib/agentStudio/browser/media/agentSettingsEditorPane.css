@@ -692,3 +692,30 @@
 	flex-direction: column;
 	gap: 4px;
 }
+
+/* ── Channel group (e.g. 飞书) ── */
+.channel-group {
+	margin-top: 14px;
+	padding: 12px;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 6px;
+	background: var(--vscode-editor-background, transparent);
+}
+
+.channel-group-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.channel-group-icon {
+	font-size: 14px;
+	line-height: 1;
+}
+
+.channel-group-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground, #d4d4d4);
+}

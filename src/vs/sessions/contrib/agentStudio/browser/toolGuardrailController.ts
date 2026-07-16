@@ -28,13 +28,8 @@
 // http_get / read_skill / list_skills / kanban_show / kanban_list / recall。
 export const IDEMPOTENT_TOOL_NAMES: ReadonlySet<string> = new Set([
 	// 项目内置（builtinToolProvider.ts）
-	'echo',
-	'get_current_time',
-	'math_eval',
 	'file_read',
-	'file_list',
 	'search_files',
-	'http_get',
 	'recall',
 	'read_skill',
 	'list_skills',

@@ -42,7 +42,7 @@ const TABS: TabDef[] = [
 	{ id: 'skills', label: '技能配置', icon: '🛠' },
 	{ id: 'mcp', label: 'MCP 配置', icon: '🔌' },
 	{ id: 'rules', label: 'Rule 配置', icon: '📏' },
-	{ id: 'binding', label: '飞书绑定', icon: '🔗' },
+	{ id: 'binding', label: 'Channel 绑定', icon: '🔗' },
 ];
 
 /**
@@ -385,15 +385,26 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._tabContentContainer?.appendChild(section);
 	}
 
-	// ── Feishu Binding Tab ──
+	// ── Channel Binding Tab ──
 
 	private _buildBindingTab(): void {
 		const section = $$('div.agent-settings-tab-pane');
 		section.dataset.tabPane = 'binding';
 
 		const desc = $$('div.tab-pane-desc');
-		desc.textContent = '配置此 Agent 与飞书的绑定关系：可设为飞书渠道的默认处理 Agent，或按群聊会话（chat_id）精确绑定。绑定的飞书会话消息将自动路由给本 Agent。';
+		desc.textContent = '配置此 Agent 与各消息渠道（Channel）的绑定关系。当前已支持「飞书」渠道：可设为渠道默认处理 Agent，或按会话（chat_id）精确绑定。绑定的渠道会话消息将自动路由给本 Agent。';
 		section.appendChild(desc);
+
+		// ── 渠道分组：飞书（Feishu） ──
+		const group = $$('div.channel-group');
+		const groupHeader = $$('div.channel-group-header');
+		const groupIcon = $$('span.channel-group-icon');
+		groupIcon.textContent = '🔵';
+		const groupTitle = $$('span.channel-group-title');
+		groupTitle.textContent = '飞书 (Feishu)';
+		groupHeader.appendChild(groupIcon);
+		groupHeader.appendChild(groupTitle);
+		group.appendChild(groupHeader);
 
 		// Section 1: 飞书渠道默认 Agent
 		const sec1 = $$('div.binding-section');
@@ -412,7 +423,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		defRow.appendChild(this._bindingDefaultToggle);
 		defRow.appendChild(defLabel);
 		sec1.appendChild(defRow);
-		section.appendChild(sec1);
+		group.appendChild(sec1);
 
 		// Section 2: 群聊绑定（按会话 chat_id）
 		const sec2 = $$('div.binding-section');
@@ -441,8 +452,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 		this._bindingListContainer = $$('div.binding-list');
 		sec2.appendChild(this._bindingListContainer);
-		section.appendChild(sec2);
+		group.appendChild(sec2);
 
+		section.appendChild(group);
 		this._tabContentContainer?.appendChild(section);
 	}
 

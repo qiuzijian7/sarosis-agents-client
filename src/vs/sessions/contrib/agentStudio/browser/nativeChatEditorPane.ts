@@ -1885,6 +1885,21 @@ export class NativeChatEditorPane extends EditorPane {
 						streamPhase: isCanceled ? 'canceled' : 'idle',
 						metadata: { ...(assistantMsg.metadata || {}), durationMs },
 					});
+					// 持久化 durationMs + tokenUsage（积分）到历史，使重新加载后 footer 仍能展示耗时和积分
+					if (this._currentAgentId && this._currentSessionId) {
+						void this._chatService.updateMessage(
+							this._currentAgentId,
+							this._currentSessionId,
+							assistantId,
+							{
+								content: finalContent,
+								metadata: { ...(assistantMsg.metadata || {}), durationMs },
+								tokenUsage: assistantMsg.tokenUsage,
+							},
+						).catch(err => {
+							this._logService.warn('[NativeChatEditorPane] Failed to persist done message:', err);
+						});
+					}
 				}
 				// ⚠️ 不在此处调用 _resetStreamingMessage() — agent loop 中每次 LLM turn
 				// 结束都会 yield done，如果重置流式状态，下一轮 LLM delta 到达时
