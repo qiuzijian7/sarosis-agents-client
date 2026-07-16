@@ -6699,7 +6699,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 				// 浏览器自动调整 scrollTop 导致滚动条跳动。保存后恢复即可避免。
 				const savedScrollTop = this._messagesContainer?.scrollTop ?? 0;
 				t.style.height = "auto";
-				const maxAllowed = 800;
+				const maxAllowed = 320;
 				const newHeight = this._userHasAdjustedHeight
 					? Math.min(Math.max(t.scrollHeight, this._resizeMaxH), maxAllowed)
 					: Math.min(t.scrollHeight, this._resizeMaxH);
@@ -7749,7 +7749,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		this._textarea.removeAttribute('data-slash-command');
 		// Auto-resize and reposition cursor to end
 		this._textarea.style.height = 'auto';
-		const maxAllowed = 800;
+		const maxAllowed = 320;
 		const newHeight = this._userHasAdjustedHeight
 			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
 			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
@@ -8943,7 +8943,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// Clear composer content and skill chips
 		this._setComposerText('');
 		this._textarea.style.height = "auto";
-		const maxAllowed = 800;
+		const maxAllowed = 320;
 		const newHeight = this._userHasAdjustedHeight
 			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
 			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
@@ -10012,7 +10012,7 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		if (text) { root.textContent = text; }
 		// 重新计算高度，避免多行时被截断
 		root.style.height = 'auto';
-		const maxAllowed = 800;
+		const maxAllowed = 320;
 		const newHeight = this._userHasAdjustedHeight
 			? Math.min(Math.max(root.scrollHeight, this._resizeMaxH), maxAllowed)
 			: Math.min(root.scrollHeight, this._resizeMaxH);
@@ -10252,3 +10252,4 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		super.dispose();
 	}
 }
+

@@ -3439,13 +3439,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			}, (err: Error | null, stdout: string) => {
 				if (err && !stdout) { reject(err); return; }
 				const all = stdout.split('\n').filter(l => l.trim());
-				// 尝试按修改时间排序
-				try {
-					const { statSync } = require('fs') as typeof import('fs');
-					all.sort((a, b) => {
-						try { return (statSync(b).mtimeMs ?? 0) - (statSync(a).mtimeMs ?? 0); } catch { return 0; }
-					});
-				} catch { /* keep original */ }
+				// mtime 排序已移除：renderer 进程无 fs.statSync（同 file_read bug），
+				// rg 默认按文件系统顺序输出（lexicographic），对搜索场景可接受。
 				const total = all.length;
 				const paged = all.slice(offset, offset + limit);
 				const out = paged.join('\n') || '(no matching files)';
@@ -3460,7 +3455,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	private async _nodeFileSearch(
 		resolvedPath: string, pattern: string, limit: number, offset: number, signal?: AbortSignal,
 	): Promise<string> {
-		const { statSync } = require('fs') as typeof import('fs');
+		// mtime 由 IFileService.resolve() 的 children[].mtime 提供（无需 fs.statSync，
+		// fs 模块在 renderer 进程中不可用，同 file_read bug）。
 		const results: { path: string; mtime: number }[] = [];
 		const MAX_VISIT = 5_000;
 		let visited = 0;
@@ -3493,7 +3489,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					visited++;
 					if (regex.test(fullPath)) {
 						try {
-							results.push({ path: fullPath, mtime: statSync(fullPath).mtimeMs ?? 0 });
+							results.push({ path: fullPath, mtime: c.mtime ?? 0 });
 						} catch { results.push({ path: fullPath, mtime: 0 }); }
 					}
 				}
