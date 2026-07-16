@@ -203,9 +203,8 @@ function fromLocalNormal(extensionPath: string): Stream {
 					}
 				});
 
-			// Push files one-by-one instead of using es.readArray (which enqueues
-			// all streams at once and can exhaust file descriptors on large
-			// extensions with deep node_modules).
+			// Push files one-by-one with backpressure to avoid EMFILE
+			// when packaging large extensions with many files.
 			let i = 0;
 			function pushNext() {
 				if (i >= files.length) {
@@ -213,13 +212,19 @@ function fromLocalNormal(extensionPath: string): Stream {
 					return;
 				}
 				const filePath = files[i++];
-				result.write(new File({
+				const file = new File({
 					path: filePath,
 					stat: fs.statSync(filePath),
 					base: extensionPath,
 					contents: fs.createReadStream(filePath)
-				}));
-				setImmediate(pushNext);
+				});
+				// Respect stream backpressure: if the writable can't accept
+				// more data, wait for 'drain' before pushing the next file.
+				if (!result.write(file)) {
+					result.once('drain', () => setImmediate(pushNext));
+				} else {
+					setImmediate(pushNext);
+				}
 			}
 			pushNext();
 		})
