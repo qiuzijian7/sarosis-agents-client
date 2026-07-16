@@ -192,6 +192,7 @@ function fromLocalNormal(extensionPath: string): Stream {
 	vsce.listFiles({ cwd: extensionPath, packageManager: vsce.PackageManager.Npm })
 		.then(fileNames => {
 			const files = fileNames
+				.filter(fileName => !fileName.startsWith('node_modules') && !fileName.includes('/node_modules/'))
 				.map(fileName => path.join(extensionPath, fileName))
 				.filter(filePath => {
 					// Filter out directories — vsce may list them, but fs.createReadStream
