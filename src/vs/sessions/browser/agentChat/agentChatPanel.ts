@@ -2492,17 +2492,12 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 
 		// Thinking card (assistant only) — only show when there's actual thinking
 		// content. When isThinking is true but no thinking text yet, we show a
-		// dedicated "正在思考..." indicator below instead.
+		// "正在思考..." indicator at the BOTTOM of the bubble instead.
 		if (!isUser && msg.thinking) {
 			bubble.appendChild(this._createThinkingCard(msg));
 		}
 
-		// "正在思考..." indicator — shown when waiting for LLM response (before
-		// first delta, or during loop wait after a tool call completes).
-		// Shows at the bottom of the bubble when content/tool calls already exist.
-		if (!isUser && msg.isStreaming && msg.isThinking && !msg.thinking) {
-			bubble.appendChild(this._createThinkingIndicator());
-		}
+		// "正在思考..." indicator 延后到 content + toolCalls 之后 append（见下方）
 
 		// Content + Tool calls — interleaved rendering for assistant messages
 		// (Void-inspired: tool cards inserted at text positions inside markdown),
@@ -2647,6 +2642,11 @@ export class AgentChatPanel extends Disposable implements IChatPanel {
 		// Stream error — structured error card with retry button
 		if (!isUser && msg.metadata?.['streamError']) {
 			bubble.appendChild(this._createStreamErrorCard(msg));
+		}
+
+		// "正在思考..." indicator — 位于 bubble 底部（content + toolCalls 之后、streaming-cursor 之前）
+		if (!isUser && msg.isStreaming && msg.isThinking && !msg.thinking) {
+			bubble.appendChild(this._createThinkingIndicator());
 		}
 
 		// Streaming cursor — 策略：

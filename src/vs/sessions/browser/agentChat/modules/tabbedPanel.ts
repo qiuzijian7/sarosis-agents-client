@@ -73,7 +73,7 @@ export class TabbedPanelManager extends Disposable {
 
 		this._taskTab = append(this._header, $('.tbp-tab.active'));
 		this._taskTab.dataset.tab = 'tasks';
-		this._taskTab.textContent = '任务列表';
+		this._taskTab.textContent = '任务队列';
 		this._register(addDisposableListener(this._taskTab, EventType.CLICK, () => this._switchTab('tasks')));
 
 		this._sysTab = append(this._header, $('.tbp-tab'));
@@ -231,8 +231,8 @@ export class TabbedPanelManager extends Disposable {
 		// Update active count in active tab label
 		const executingIdx = this._items.findIndex(it => it.status === 'executing');
 		const taskLabel = executingIdx >= 0
-			? `任务列表 ${executingIdx + 1}/${taskCount}`
-			: `任务列表${taskCount > 0 ? ` (${taskCount})` : ''}`;
+			? `任务队列 ${executingIdx + 1}/${taskCount}`
+			: `任务队列${taskCount > 0 ? ` (${taskCount})` : ''}`;
 		taskTab.textContent = taskLabel;
 
 		const sysLabel = sysCount > 0 ? `消息列表 (${sysCount})` : '消息列表';

@@ -1210,8 +1210,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					);
 				}
 
-				// 结果大小上限 + 单条截断（已在各后端落实），此处再兜底一次，防止上下文爆炸
+				// 结果后处理：大小截断 → 脱敏 → densify（对齐 Hermes redact_sensitive_text + densify）
 				result = this._enforceSearchSize(result);
+				result = this._redactSecrets(result);
+				if (!(target === 'files' || outputMode === 'files_only' || outputMode === 'count')) {
+					// content 模式 >=5 条匹配时自动切换到路径分组紧凑格式
+					result = this._densifySearchOutput(result);
+				}
 				if (repeat.warning) {
 					result += '\n\n' + repeat.warning;
 				}
@@ -3053,6 +3058,35 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		return /\.(?:exe|dll|so|dylib|node|pak|asar|wasm|bin|obj|lib|a|o|class|jar|pyc|pyo|whl|zip|tar|gz|tgz|bz2|7z|rar|xz|zst|png|jpe?g|gif|bmp|ico|webp|tif|tiff|svg|psd|mp3|wav|ogg|flac|mp4|mov|avi|mkv|webm|pdf|docx?|xlsx?|pptx?|sqlite|db|map|woff2?|ttf|eot|otf)$/i.test(p);
 	}
 
+	/** 缓存的 ripgrep 二进制路径（懒加载，一次解析全局复用） */
+	private static _cachedRgPath: string | null = null;
+
+	/**
+	 * 解析 ripgrep 可执行文件路径。
+	 * 优先使用 VS Code 捆绑的 @vscode/ripgrep（与 claudeAgent/copilotAgent 一致），
+	 * 不可用时回退到 PATH 中的 `rg`。缓存结果避免重复解析。
+	 * 首次解析时记录来源到日志，便于排查 rg 不可用问题。
+	 */
+	private static _resolveRgPath(logger?: ILogService): string {
+		if (BuiltinToolProvider._cachedRgPath !== null) {
+			return BuiltinToolProvider._cachedRgPath;
+		}
+		try {
+			const ripgrep = require('@vscode/ripgrep') as { rgPath: string };
+			if (ripgrep && typeof ripgrep.rgPath === 'string') {
+				const rgPath = ripgrep.rgPath.replace(/\bnode_modules\.asar\b/, 'node_modules.asar.unpacked');
+				logger?.info(`[BuiltinTools] rg resolved via @vscode/ripgrep: ${rgPath}`);
+				BuiltinToolProvider._cachedRgPath = rgPath;
+				return rgPath;
+			}
+		} catch {
+			logger?.warn('[BuiltinTools] @vscode/ripgrep not available in renderer — falling back to PATH lookup for `rg`');
+		}
+		logger?.warn('[BuiltinTools] rg not found via bundled package or PATH — search will fall back to Node.js walk');
+		BuiltinToolProvider._cachedRgPath = 'rg';
+		return 'rg';
+	}
+
 	/**
 	 * 按行读取 [offset, offset+limit) 行，对齐 Hermes sed -n 语义。
 	 *
@@ -3299,8 +3333,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	): Promise<string> {
 		try {
 			return await this._rgFileSearch(resolvedPath, pattern, limit, offset);
-		} catch {
-			this.logService.warn('[BuiltinTools] rg not available for file search, falling back to Node.js walk');
+		} catch (e) {
+			const reason = e instanceof Error ? e.message : String(e);
+			this.logService.warn(`[BuiltinTools] rg not available for file search (${reason}), falling back to Node.js walk`);
 			return this._nodeFileSearch(resolvedPath, pattern, limit, offset, signal);
 		}
 	}
@@ -3315,9 +3350,26 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	): Promise<string> {
 		try {
 			return await this._rgContentSearch(resolvedPath, pattern, fileGlob, limit, offset, outputMode, contextLines);
-		} catch {
-			this.logService.warn('[BuiltinTools] rg not available for content search, falling back to Node.js walk');
+		} catch (e) {
+			const reason = e instanceof Error ? e.message : String(e);
+			this.logService.warn(`[BuiltinTools] rg not available for content search (${reason}), falling back to Node.js walk`);
 			const normalizedUri = URI.file(resolvedPath);
+
+			// 判断目标是文件还是目录：_walkAndGrep 只能 walk 目录树，
+			// 单文件路径会被 asDirectory 检查跳过（返回 0 hits）。
+			let stat: { isDirectory: boolean } | null = null;
+			try { stat = await this.fileService.resolve(normalizedUri); } catch { /* keep null */ }
+
+			if (!stat) {
+				return '(no such file or directory)';
+			}
+
+			if (!stat.isDirectory) {
+				// 单文件 → 直接 grep（对齐 rg "rg pattern file" 行为）
+				return await this._grepSingleFile(normalizedUri, pattern, limit, offset, signal);
+			}
+
+			// 目录 → 递归 walk
 			const hits: string[] = [];
 			const cap = Math.min(limit + offset, 500);
 			await this._walkAndGrep(normalizedUri, pattern, hits, cap, signal);
@@ -3338,7 +3390,10 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	): Promise<string> {
 		return new Promise((resolve, reject) => {
 			const { execFile } = require('child_process') as typeof import('child_process');
-			const args: string[] = ['--json', '--no-heading', '--max-count', String(limit + offset)];
+			const args: string[] = ['--json', '--no-heading'];
+			// 注意：不传 --max-count。rg 的 --max-count 是每文件限制而非全局限制，
+			// 大目录下会导致输出膨胀（100 文件 × N 匹配 = 远超预期）。
+			// JS 侧通过 slice(offset, offset+limit) 做全局分页，对齐 Hermes `head -n`。
 
 			if (contextLines > 0) {
 				args.push('-C', String(contextLines));
@@ -3348,18 +3403,29 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			}
 			args.push('--', pattern, resolvedPath);
 
-			execFile('rg', args, {
+			const rgPath = BuiltinToolProvider._resolveRgPath(this.logService);
+			execFile(rgPath, args, {
 				maxBuffer: 10 * 1024 * 1024,
 				timeout: 30_000,
 				windowsHide: true,
-			}, (err: Error | null, stdout: string, _stderr: string) => {
-				if (err && (err as any).code !== 0 && !stdout) {
+			}, (err: Error | null, stdout: string, stderr: string) => {
+				if (err && !stdout) {
+					const reason = (err as any).code === 'ENOENT' ? `rg binary not found: ${rgPath}` : err.message;
+					this.logService.warn(`[BuiltinTools] rg content search failed: ${reason}${stderr ? ` | rg: ${stderr.trim()}` : ''}`);
 					reject(err);
 					return;
 				}
 				try {
 					const lines = stdout.split('\n').filter(l => l.trim());
-					resolve(this._formatRgOutput(lines, outputMode, limit, offset));
+					let result = this._formatRgOutput(lines, outputMode, limit, offset);
+					// 注入 stderr diagnostic（如 rg 权限警告），对齐 Hermes _split_tool_diagnostics
+					if (stderr && stderr.trim()) {
+						const diag = stderr.trim().split('\n').filter(l => l.trim()).slice(0, 3).join('; ');
+						if (diag) {
+							result = `${result}\n\n[rg diagnostic: ${diag}]`;
+						}
+					}
+					resolve(result);
 				} catch (e) {
 					reject(e);
 				}
@@ -3427,17 +3493,67 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	}
 
 	/**
+	 * densify：路径分组紧凑格式（对齐 Hermes `to_dict(densify=True)`）。
+	 * 当匹配数 >= 5 时，将 `file:line: content` 扁平列表转换为：
+	 *   path/to/file1.py
+	 *     10: def foo():
+	 *     25: return bar
+	 *   path/to/file2.py
+	 *     3: import os
+	 * 减少每条路径重复导致的 token 浪费。
+	 *
+	 * 输入格式: `file:line: content` 或 `file-line- content`（context 行）
+	 */
+	private _densifySearchOutput(out: string): string {
+		const lines = out.split('\n');
+		// 匹配 "file:line: content" 或 "file-line- content"
+		const RE = /^(.+?)[:-](\d+)[:-]\s(.*)$/;
+		const matches = lines.map(l => l.match(RE)).filter(Boolean) as RegExpMatchArray[];
+
+		if (matches.length < 5) { return out; }
+
+		// 按文件路径分组
+		const groups = new Map<string, { sep: string; line: string; text: string }[]>();
+		for (const m of matches) {
+			const file = m[1];
+			if (!groups.has(file)) { groups.set(file, []); }
+			groups.get(file)!.push({ sep: m[0].includes('-') ? '-' : ':', line: m[2], text: m[3] });
+		}
+
+		const result: string[] = [];
+		for (const [file, items] of groups) {
+			result.push(file);
+			for (const item of items) {
+				result.push(`  ${item.line}${item.sep} ${item.text}`);
+			}
+			result.push(''); // 文件间空行
+		}
+
+		// 追加 footer（不参与分组）
+		const footerStart = out.lastIndexOf('[共 ');
+		if (footerStart > 0) {
+			result.push(out.slice(footerStart));
+		}
+
+		return result.join('\n');
+	}
+
+	/**
 	 * rg 文件搜索：`rg --files -g <pattern> <path>`，按修改时间排序。
 	 */
 	private _rgFileSearch(resolvedPath: string, pattern: string, limit: number, offset: number): Promise<string> {
 		return new Promise((resolve, reject) => {
 			const { execFile } = require('child_process') as typeof import('child_process');
-			execFile('rg', ['--files', '-g', pattern, resolvedPath], {
+			const rgPath = BuiltinToolProvider._resolveRgPath(this.logService);
+			execFile(rgPath, ['--files', '-g', pattern, resolvedPath], {
 				maxBuffer: 5 * 1024 * 1024,
 				timeout: 15_000,
 				windowsHide: true,
-			}, (err: Error | null, stdout: string) => {
-				if (err && !stdout) { reject(err); return; }
+			}, (err: Error | null, stdout: string, stderr: string) => {
+				if (err && !stdout) {
+					this.logService.warn(`[BuiltinTools] rg file search failed: ${err.message}${stderr ? ` | rg: ${stderr.trim()}` : ''}`);
+					reject(err); return;
+				}
 				const all = stdout.split('\n').filter(l => l.trim());
 				// mtime 排序已移除：renderer 进程无 fs.statSync（同 file_read bug），
 				// rg 默认按文件系统顺序输出（lexicographic），对搜索场景可接受。
@@ -3504,6 +3620,41 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'file');
 	}
 
+	/**
+	 * 单文件内容搜索（对齐 rg "rg pattern file" 行为）。
+	 * 读取文件内容按行匹配，返回 `filePath:lineNum: lineContent` 格式。
+	 * 用于 `_searchContent` 在 rg 不可用且目标为单文件时的回退。
+	 */
+	private async _grepSingleFile(fileUri: URI, pattern: string, limit: number, offset: number, signal?: AbortSignal): Promise<string> {
+		// 预编译正则（对齐 _walkAndGrep），无效正则回退字面匹配
+		let regex: RegExp | null = null;
+		try { regex = new RegExp(pattern, 'gi'); } catch {}
+		const matchFn = regex
+			? (line: string) => regex!.test(line)
+			: (line: string) => line.includes(pattern);
+
+		let content: { value: { toString(): string } };
+		try { content = await this.fileService.readFile(fileUri); } catch {
+			return '(cannot read file)';
+		}
+		const text = typeof content.value === 'string' ? content.value : content.value.toString();
+		const safeText = text.length > 256 * 1024 ? text.substring(0, 256 * 1024) : text;
+		const lines = safeText.split('\n');
+
+		const hits: string[] = [];
+		for (let i = 0; i < lines.length && hits.length < limit + offset; i++) {
+			if (signal?.aborted) { break; }
+			if (matchFn(lines[i])) {
+				hits.push(`${fileUri.fsPath}:${i + 1}: ${lines[i].trim().slice(0, BuiltinToolProvider.SEARCH_LINE_MAX_CHARS)}`);
+			}
+		}
+
+		const total = hits.length;
+		const paged = hits.slice(offset, offset + limit);
+		const out = paged.join('\n') || '(no matches)';
+		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'match');
+	}
+
 	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal): Promise<void> {
 		// Hard global cap on files we will read+grep regardless of `limit`.
 		// This protects against pathological recursion (huge build trees, symlink
@@ -3523,6 +3674,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// on a 500KB binary creates a large garbage string + thousands of split parts,
 		// which is a major contributor to OOM under parallel execution.
 		const BINARY_EXT_RE = /\.(?:exe|dll|so|dylib|node|pak|asar|wasm|bin|obj|lib|a|o|class|jar|pyc|pyo|whl|zip|tar|gz|tgz|bz2|7z|rar|xz|zst|png|jpe?g|gif|bmp|ico|webp|tif|tiff|svg|psd|mp3|wav|ogg|flac|mp4|mov|avi|mkv|webm|pdf|docx?|xlsx?|pptx?|sqlite|db|map|woff2?|ttf|eot|otf)$/i;
+
+		// 预编译正则（对齐 Hermes rg regex 语义），无效正则回退为字面子串匹配
+		let regex: RegExp | null = null;
+		try { regex = new RegExp(query, 'gi'); } catch { /* keep regex=null → use includes */ }
+		const matchFn = regex
+			? (line: string) => regex!.test(line)
+			: (line: string) => line.includes(query);
 
 		const walk = async (current: URI): Promise<void> => {
 			if (signal?.aborted) { return; }
@@ -3574,7 +3732,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 					const lines = safeText.split('\n');
 					for (let i = 0; i < lines.length; i++) {
 						if (signal?.aborted) { return; }
-						if (lines[i].includes(query)) {
+						if (matchFn(lines[i])) {
 							out.push(`${child.resource.fsPath}:${i + 1}: ${lines[i].trim().slice(0, BuiltinToolProvider.SEARCH_LINE_MAX_CHARS)}`);
 							if (out.length >= limit) { return; }
 						}

@@ -40,7 +40,7 @@ export function wrapHtmlWithEditorRuntime(rawHtml: string): string {
 	const headIdx = lower.indexOf('<head>');
 
 	// 构建编辑器 chrome + 运行时注入块
-	const injection = `${csp}\n    <style>\n${editorCss}\n    </style>`;
+	const injection = `${csp}\n    <style data-editor-runtime>\n${editorCss}\n    </style>`;
 
 	let result: string;
 
@@ -52,9 +52,9 @@ export function wrapHtmlWithEditorRuntime(rawHtml: string): string {
 		// 在 </body> 前注入 chrome HTML + JS
 		const bodyCloseIdx = withCss.toLowerCase().lastIndexOf('</body>');
 		if (bodyCloseIdx >= 0) {
-			result = withCss.slice(0, bodyCloseIdx) + editorHtml + '\n<script>\n' + editorJs + '\n</script>\n' + withCss.slice(bodyCloseIdx);
+			result = withCss.slice(0, bodyCloseIdx) + editorHtml + '\n<script data-editor-runtime>\n' + editorJs + '\n</script>\n' + withCss.slice(bodyCloseIdx);
 		} else {
-			result = withCss + editorHtml + '\n<script>\n' + editorJs + '\n</script>\n';
+			result = withCss + editorHtml + '\n<script data-editor-runtime>\n' + editorJs + '\n</script>\n';
 		}
 	} else {
 		// 没有 <head>，包装为完整文档
@@ -67,16 +67,16 @@ export function wrapHtmlWithEditorRuntime(rawHtml: string): string {
 					+ rawHtml.slice(closeBracket + 1);
 				const bodyCloseIdx = result.toLowerCase().lastIndexOf('</body>');
 				if (bodyCloseIdx >= 0) {
-					result = result.slice(0, bodyCloseIdx) + editorHtml + '\n<script>\n' + editorJs + '\n</script>\n' + result.slice(bodyCloseIdx);
+					result = result.slice(0, bodyCloseIdx) + editorHtml + '\n<script data-editor-runtime>\n' + editorJs + '\n</script>\n' + result.slice(bodyCloseIdx);
 				} else {
-					result += editorHtml + '\n<script>\n' + editorJs + '\n</script>\n';
+					result += editorHtml + '\n<script data-editor-runtime>\n' + editorJs + '\n</script>\n';
 				}
 			} else {
-				result = `<!doctype html><html><head>${injection}</head><body>${rawHtml}${editorHtml}<script>${editorJs}</script></body></html>`;
+				result = `<!doctype html><html><head>${injection}</head><body>${rawHtml}${editorHtml}<script data-editor-runtime>${editorJs}</script></body></html>`;
 			}
 		} else {
 			// Fragment: wrap into a full document
-			result = `<!doctype html><html><head>${injection}</head><body>${rawHtml}${editorHtml}<script>${editorJs}</script></body></html>`;
+			result = `<!doctype html><html><head>${injection}</head><body>${rawHtml}${editorHtml}<script data-editor-runtime>${editorJs}</script></body></html>`;
 		}
 	}
 
@@ -594,7 +594,7 @@ function getEditorJs(): string {
     if (addMenu) addMenu.classList.remove('open');
   }
 
-  /** 获取不含编辑器 chrome 的干净 HTML，不改变 contentEditable 状态 */
+  /** 获取不含编辑器 chrome 以及编辑状态代码的干净 HTML */
   function getCleanHtml() {
     var beforeCount = document.body.children.length;
     var t = document.getElementById('html-edit-toolbar');
@@ -605,7 +605,25 @@ function getEditorJs(): string {
     if (a) a.remove();
     if (m) m.remove();
     console.log('[EditRuntime] getCleanHtml: removed chrome (t=' + tExists + ' a=' + aExists + ' m=' + mExists + '), body.children before=' + beforeCount + ' afterRemove=' + document.body.children.length);
+    // 递归剥离所有 contenteditable 属性和 html-edit-mode 类（可能残留在任意子元素上）
+    var allEditable = Array.prototype.slice.call(document.querySelectorAll('[contenteditable],[contentEditable]'));
+    var savedEditables = allEditable.map(function(el){ return el.getAttribute('contenteditable'); });
+    allEditable.forEach(function(el){ el.removeAttribute('contenteditable'); el.removeAttribute('contentEditable'); });
+    var hadClassEdit = document.body.classList.contains('html-edit-mode');
+    if (hadClassEdit) document.body.classList.remove('html-edit-mode');
+    // 剥离 data-template-edit-mode 属性，防止预览模式下编辑器运行时自动进入编辑
+    var hadTemplateEdit = document.documentElement.getAttribute('data-template-edit-mode');
+    if (hadTemplateEdit) document.documentElement.removeAttribute('data-template-edit-mode');
+    // 剥离编辑器运行时 CSS/JS（标记为 data-editor-runtime），预览模式下不需要这些代码
+    var editorRuntimeEls = Array.prototype.slice.call(document.querySelectorAll('[data-editor-runtime]'));
+    var editorRuntimeParents = editorRuntimeEls.map(function(el){ return el.parentNode; });
+    editorRuntimeEls.forEach(function(el){ el.remove(); });
+    console.log('[EditRuntime] getCleanHtml: removed ' + editorRuntimeEls.length + ' editor-runtime element(s)');
     var html = document.documentElement.outerHTML;
+    // 恢复编辑状态（仅 chrome DOM，编辑器 CSS/JS 由 host 重新注入）
+    allEditable.forEach(function(el, i){ if (savedEditables[i] != null) el.setAttribute('contenteditable', savedEditables[i]); });
+    if (hadClassEdit) document.body.classList.add('html-edit-mode');
+    if (hadTemplateEdit) document.documentElement.setAttribute('data-template-edit-mode', hadTemplateEdit);
     if (a) document.body.appendChild(a);
     if (m) document.body.appendChild(m);
     if (t) document.body.appendChild(t);
@@ -893,8 +911,12 @@ function getEditorJs(): string {
     syncTimer = setTimeout(syncContent, 500);
   });
 
-  // Enter edit mode automatically
-  enterEditMode();
+  // Enter edit mode ONLY when host signals edit context (has data-template-edit-mode attribute).
+  // DO NOT auto-enter — the editor runtime may load in preview mode when the saved HTML
+  // was written from edit mode (the runtime JS/CSS gets persisted to disk).
+  if (document.documentElement.getAttribute('data-template-edit-mode') === 'slots') {
+    enterEditMode();
+  }
 
   // Listen for host messages
   window.addEventListener('message', function (event) {

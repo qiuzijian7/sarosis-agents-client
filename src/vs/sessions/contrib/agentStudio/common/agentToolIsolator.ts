@@ -179,6 +179,14 @@ export const TOOL_ALIAS_MAP: Readonly<Record<string, string[]>> = {
 	read_skill: [SAROSIS_TOOL_NAMES.USE_SKILL],
 	list_skills: [SAROSIS_TOOL_NAMES.USE_SKILL],
 
+	// Common LLM hallucination names (snake_case variants — models
+	// trained on agent patterns often use read_file / write_to_file
+	// instead of the registered file_read / file_write)
+	read_file: [SAROSIS_TOOL_NAMES.READ_FILE],
+	write_to_file: [SAROSIS_TOOL_NAMES.WRITE_TO_FILE],
+	replace_in_file: [SAROSIS_TOOL_NAMES.REPLACE_IN_FILE],
+	list_dir: [SAROSIS_TOOL_NAMES.LIST_DIR],
+
 	// Old names with no current equivalent — silently dropped
 	echo: [],
 	get_current_time: [],
