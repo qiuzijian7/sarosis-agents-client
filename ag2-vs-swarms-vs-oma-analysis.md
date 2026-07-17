@@ -1,6 +1,6 @@
 # AG2 vs Swarms vs Open-Multi-Agent 深度对比分析
 
-> 基于源码级分析的三项目多 Agent 协同架构对比  
+> 基于源码级分析的三项目多 Agent 协同架构对比
 > 分析时间：2026年6月
 
 ---
@@ -149,7 +149,7 @@ flow = "researcher -> writer, editor"
 **runTeam（旗舰特性）：**
 
 ```
-用户目标 → isSimpleGoal? 
+用户目标 → isSimpleGoal?
   ├─ 是 → 选最优 agent 单跑（短路）
   └─ 否 → Coordinator agent 分解为 JSON 任务规格
            → 装入 TaskQueue
@@ -358,7 +358,7 @@ proposer → judge → (revise if dissent)
 | **生产就绪** | 8/10 | 7/10 | 7/10 |
 | **综合** | **7/10** | **6.3/10** | **8/10** |
 
-### 7.3 对 sarosis-agents-client 的参考价值
+### 7.3 对 vssaros-agents-client 的参考价值
 
 结合你们的项目（VSCode 二开、Agent Studio、Workflow Execution Service）：
 

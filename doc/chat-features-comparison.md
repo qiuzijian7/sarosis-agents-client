@@ -2,7 +2,7 @@
 
 > 分析日期：2026-06-27
 > Void 项目：`G:\CustomWorkspaces\AIProjects\void`（VS Code fork，含 React 聊天）
-> Sarosis 项目：`G:\CustomWorkspaces\AIProjects\sarosis-agents-client`
+> Sarosis 项目：`G:\CustomWorkspaces\AIProjects\vssaros-agents-client`
 
 ---
 

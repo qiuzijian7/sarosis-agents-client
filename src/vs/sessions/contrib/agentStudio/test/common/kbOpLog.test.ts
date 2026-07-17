@@ -193,7 +193,7 @@ suite('kbOpLog - appendKbOpLog', () => {
 suite('kbOpLog - storage root resolution', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const home = '/home/sarosis';
+	const home = '/home/vssaros';
 
 	test('empty config → <userHome>/.saros/kb', () => {
 		assert.strictEqual(normPath(resolveKbRoot('', home)), normPath(join(home, '.saros', 'kb')));

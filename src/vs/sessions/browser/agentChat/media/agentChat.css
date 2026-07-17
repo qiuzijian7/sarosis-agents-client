@@ -6942,6 +6942,119 @@
 .chat-settings-skill-row .skill-name { font-size: 12px; color: var(--as-fg-primary, var(--vscode-foreground, #ccc)); }
 .chat-settings-skill-row .skill-desc { font-size: 11px; color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888)); }
 
+/* ── Channel 绑定 tab（飞书）── */
+.chat-settings-note {
+	padding: 20px 14px;
+	text-align: center;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	font-size: 12px;
+}
+
+.chat-channel-group {
+	margin: 10px 12px 4px;
+	padding: 12px;
+	border: 1px solid var(--vscode-panel-border, #3c3c3c);
+	border-radius: 6px;
+	background: var(--as-bg-primary, transparent);
+}
+
+.chat-channel-group-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+
+.chat-channel-group-icon {
+	font-size: 14px;
+	line-height: 1;
+}
+
+.chat-channel-group-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--as-fg-primary, var(--vscode-foreground, #d4d4d4));
+}
+
+.chat-binding-section { margin-bottom: 14px; }
+.chat-binding-section:last-child { margin-bottom: 0; }
+
+.chat-binding-section-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	margin-bottom: 8px;
+}
+
+.chat-binding-default-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.chat-binding-default-label {
+	font-size: 12px;
+	color: var(--as-fg-primary, var(--vscode-foreground, #ccc));
+	cursor: pointer;
+}
+
+.chat-binding-default-row input[type="checkbox"] {
+	width: 14px;
+	height: 14px;
+	accent-color: var(--as-accent, #3b82f6);
+	cursor: pointer;
+}
+
+.chat-binding-hint {
+	font-size: 11px;
+	color: var(--as-fg-secondary, var(--vscode-descriptionForeground, #888));
+	margin-bottom: 8px;
+	line-height: 1.5;
+}
+
+.chat-binding-add-row {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 10px;
+}
+
+.chat-binding-input {
+	flex: 1;
+	min-width: 0;
+	padding: 5px 10px;
+	background: var(--vscode-input-background, #3c3c3c);
+	border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.25));
+	border-radius: 4px;
+	color: var(--vscode-input-foreground, #ccc);
+	font-size: 12px;
+	box-sizing: border-box;
+}
+
+.chat-binding-input:focus {
+	border-color: var(--vscode-focusBorder, #0e639c);
+	outline: none;
+}
+
+.chat-settings-add-btn {
+	padding: 5px 12px;
+	font-size: 12px;
+	border: none;
+	border-radius: 4px;
+	background: var(--as-accent, #3b82f6);
+	color: #fff;
+	cursor: pointer;
+	font-family: inherit;
+	white-space: nowrap;
+}
+
+.chat-settings-add-btn:hover { background: #2563eb; }
+
+.chat-binding-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
 /* ── Skills 双栏拖拽面板（与 AgentSettingsEditorPane 对齐）── */
 .chat-settings-overlay .skills-dnd-panel {
 	display: flex;
@@ -9111,3 +9224,48 @@
 .write-file-tool-card .tool-collapse-btn.tool-collapse-expanded .tool-collapse-icon { transform: rotate(180deg); }
 
 .write-file-tool-card .tool-header-chevron { display: none !important; }
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   Mermaid Diagram（内联渲染 mermaid 代码块为 SVG）
+   ═══════════════════════════════════════════════════════════════════ */
+
+.mermaid-diagram {
+	background: #fff;
+	border-radius: 6px;
+	padding: 12px;
+	margin: 8px 0;
+	overflow-x: auto;
+	text-align: center;
+	border: 1px solid var(--void-border-2, #e0e0e0);
+	transition: background 0.3s ease;
+}
+.mermaid-diagram img {
+	max-width: 100%;
+	height: auto;
+	display: block;
+	margin: 0 auto;
+}
+.mermaid-diagram.mermaid-loaded {
+	background: #fff;
+}
+.mermaid-diagram.mermaid-fallback {
+	background: var(--void-bg-2, #1e1e2e);
+	color: var(--void-fg-3, #8b8b9a);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11.5px;
+	white-space: pre-wrap;
+	text-align: left;
+	padding: 8px 12px;
+}
+.clarify-tool-card .clarify-icon { color: var(--vscode-textLink-foreground, #60a5fa); flex-shrink: 0; margin-right: 2px; }
+.clarify-body { padding: 0; }
+.clarify-card { padding: 10px 12px; background: var(--void-bg-2, rgba(255,255,255,0.02)); border-top: 1px solid var(--void-border-2, #3a3a52); }
+.clarify-question { font-size: 12.5px; color: var(--void-fg-2, #d4d4d8); line-height: 1.5; margin-bottom: 8px; }
+.clarify-options { display: flex; flex-direction: column; gap: 4px; }
+.clarify-option { text-align: left; padding: 6px 10px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #d4d4d8); border: 1px solid var(--vscode-button-border, #555); border-radius: 4px; font-size: 12px; cursor: pointer; transition: all 0.15s ease; font-family: inherit; }
+.clarify-option:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); border-color: var(--vscode-focusBorder, #007fd4); }
+.clarify-option.clarify-option-selected { background: rgba(78,201,176,0.18); border-color: #4ec9b0; color: #4ec9b0; font-weight: 500; }
+.clarify-option.clarify-option-disabled { opacity: 0.5; cursor: default; }
+.clarify-option.clarify-option-disabled:not(.clarify-option-selected) { background: transparent; }
+.clarify-hint { font-size: 11.5px; color: var(--void-fg-3, #8b8b9a); font-style: italic; opacity: 0.7; }

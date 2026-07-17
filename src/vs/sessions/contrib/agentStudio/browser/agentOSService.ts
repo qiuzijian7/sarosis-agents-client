@@ -1261,6 +1261,12 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	async *executeAgentTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
 		this._logService.info(`[AgentOS] executeAgentTurn: agentId=${request.agentId}, messages=${request.messages.length}`);
 
+		// ─── Per-turn 状态重置：告知所有 Tool Provider 清空累积状态 ───
+		// 如 coreTools 的 _readDedupMap / _readRepeatMap，防止跨 turn 误报 BLOCKED。
+		for (const provider of this._slotRegistry.getToolProviders()) {
+			provider.resetPerTurn?.();
+		}
+
 		// ─── 图运行时路由（supervisor / AgentCommand(goto) 设计 Step C）──
 		// 当请求携带≥2 节点的 agentGraph → 交给 runAgentGraph 解释器按节点执行。
 		// 单 agent 模式（request.agentGraph 缺省）完全不进入此分支 → 零行为变更。
@@ -4061,6 +4067,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 		agentId: string | undefined,
 		toolCallId: string,
 		abortSignal?: AbortSignal,
+		worktreePath?: string,
 	): Promise<IToolResult> {
 		// 确保 dispatcher context 可用（_getEnabledTools 已构建，这是防御）
 		if (!this._lastDispatcherCtx || !this._lastAssembly) {
@@ -4107,7 +4114,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 
 		// Approval（真实工具的安全级别）
 		if (!await this._approvalService.checkAndApprove(
-			{ id: toolCallId, name: underlyingName, arguments: underlyingArgs }, targetTool,
+			{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath }, targetTool,
 		)) {
 			this._logService.info(`[AgentOS] Bridge tool_call: "${underlyingName}" denied`);
 			return {
@@ -4123,7 +4130,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			try {
 				return await executeWithRetryAndTimeout(
 					knownProvider, agentId ?? '',
-					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs },
+					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath },
 					{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 				);
 			} catch (err) {
@@ -4138,7 +4145,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				if (ptools.some(t => t.name === underlyingName)) {
 				return await executeWithRetryAndTimeout(
 					p, agentId ?? '',
-					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs },
+					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath },
 					{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 				);
 				}
@@ -4328,9 +4335,9 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				} else {
 					bridgeArgs = repairToolArguments(toolCall.arguments || '') ?? {};
 				}
-				const bridgeResult = await this._executeBridgeTool(
-					toolCall.name, bridgeArgs, agentId, toolCall.id, abortSignal,
-				);
+			const bridgeResult = await this._executeBridgeTool(
+				toolCall.name, bridgeArgs, agentId, toolCall.id, abortSignal, worktreePath,
+			);
 				const limitedStr0 = safeStringifyToolResult(bridgeResult.content);
 				let finalContent0: unknown = bridgeResult.content;
 				try { finalContent0 = JSON.parse(limitedStr0); } catch { finalContent0 = { __truncated__: true, content: limitedStr0 }; }
@@ -4426,12 +4433,23 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				for (const w of coerced.warnings) {
 					this._logService.warn(`[AgentOS][Coerce] "${targetToolName}" — ${w}`);
 				}
+				// 必填参数缺失 → 直接拒绝，不进入 handler（避免无效重试）。
+				if (coerced.missingRequired && coerced.missingRequired.length > 0) {
+					const missList = coerced.missingRequired.join(', ');
+					this._logService.info(`[AgentOS] Tool "${targetToolName}" rejected early: missing required args [${missList}]`);
+					results.push({
+						toolCallId: toolCall.id,
+						content: { error: `Missing required arguments for "${targetToolName}": ${missList}. Provide these arguments to retry.` },
+						success: false,
+					});
+					continue;
+				}
 			}
 
 			// ─── Step 3.5: Approval check (P0 - 审批机制) ─────────
 			const toolDef = toolDefMap.get(targetToolName);
 			const approved = await this._approvalService.checkAndApprove(
-				{ id: toolCall.id, name: targetToolName, arguments: args },
+				{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
 				toolDef,
 			);
 			if (!approved) {
@@ -4464,7 +4482,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				try {
 					const result = await executeWithRetryAndTimeout(
 						_execKnown, agentId,
-						{ id: toolCall.id, name: targetToolName, arguments: args },
+						{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
 						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 					);
 					this._executionTracker.complete(toolCall.id);
@@ -4508,7 +4526,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 						const result: IToolResult = await executeWithRetryAndTimeout(
 							provider,
 							agentId,
-							{ id: toolCall.id, name: targetToolName, arguments: args },
+							{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
 							{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 						);
 
@@ -4728,6 +4746,24 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 				for (const w of coerced.warnings) {
 					this._logService.warn(`[AgentOS][Coerce] "${targetToolName}" — ${w}`);
 				}
+				// 必填参数缺失 → 直接拒绝，不进入 handler（避免无效重试）。
+				if (coerced.missingRequired && coerced.missingRequired.length > 0) {
+					const missList = coerced.missingRequired.join(', ');
+					this._logService.info(`[AgentOS] Tool "${targetToolName}" rejected early: missing required args [${missList}]`);
+					executionEntries.push({
+						originalIndex: i,
+						toolCall,
+						targetToolName,
+						args: {},
+						skip: true,
+						skipResult: {
+							toolCallId: toolCall.id,
+							content: { error: `Missing required arguments for "${targetToolName}": ${missList}. Provide these arguments to retry.` },
+							success: false,
+						},
+					});
+					continue;
+				}
 			}
 
 			executionEntries.push({
@@ -4758,7 +4794,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			if (isBridgeTool(targetToolName)) {
 				this._logService.info(`[AgentOS] [parallel] Bridge tool "${targetToolName}" executing`);
 				const bridgeResult = await this._executeBridgeTool(
-					targetToolName, args, agentId, toolCall.id, abortSignal,
+					targetToolName, args, agentId, toolCall.id, abortSignal, worktreePath,
 				);
 				const limitedStrB = safeStringifyToolResult(bridgeResult.content);
 				let finalContentB: unknown = bridgeResult.content;
@@ -4774,7 +4810,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 			// Approval check
 			const toolDef = toolDefMap.get(targetToolName);
 			const approved = await this._approvalService.checkAndApprove(
-				{ id: toolCall.id, name: targetToolName, arguments: args },
+				{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
 				toolDef,
 			);
 			if (!approved) {
@@ -4810,7 +4846,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 					const result: IToolResult = await executeWithRetryAndTimeout(
 						provider,
 						agentId,
-						{ id: toolCall.id, name: targetToolName, arguments: args },
+						{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
 						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 					);
 					// safeStringifyToolResult: guards against pathological payloads

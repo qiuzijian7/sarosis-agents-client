@@ -83,6 +83,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 	private _fileTreeEl: HTMLElement | undefined;
 	private _marketplacePkg: IMarketplacePackage | undefined;
 	private _isMarketplacePreview = false;
+	private _actionsContainer: HTMLElement | undefined;
 	private readonly _renderDisposables = this._register(new DisposableStore());
 
 	constructor(
@@ -320,6 +321,34 @@ export class ResourceManagerEditorPane extends EditorPane {
 		body.style.padding = '20px 24px';
 		body.appendChild(this._renderTabContent(item, this._currentTabIdx));
 		this._detailEl.appendChild(body);
+
+		// Async ownership check: lock UI if marketplace skill not owned by current user
+		if (item.kind === 'skill' && !this._isMarketplacePreview) {
+			this._checkOwnerLock(item.id).catch(() => { /* ignore */ });
+		}
+	}
+
+	private async _checkOwnerLock(skillId: string): Promise<void> {
+		try {
+			const pkg = await this.marketplaceService.getPackage(skillId);
+			const currentUser = this.marketplaceService.getCurrentUser();
+			if (pkg.author?.id && currentUser?.id && pkg.author.id !== currentUser.id) {
+				// Not the owner — lock the UI
+				if (this._actionsContainer) {
+					clearNode(this._actionsContainer);
+					const lockBadge = $('span');
+					lockBadge.textContent = '\u{1F512} 只读';
+					lockBadge.style.fontSize = '11px';
+					lockBadge.style.padding = '3px 8px';
+					lockBadge.style.borderRadius = '3px';
+					lockBadge.style.background = 'rgba(255,255,255,0.06)';
+					lockBadge.style.color = 'var(--vscode-descriptionForeground)';
+					this._actionsContainer.appendChild(lockBadge);
+				}
+			}
+		} catch {
+			// Package not on marketplace — no ownership to check
+		}
 	}
 
 	private _getTabsForItem(item: IResourceItem): string[] {
@@ -385,11 +414,12 @@ export class ResourceManagerEditorPane extends EditorPane {
 		}
 		row1.appendChild(title);
 
-		// Toggle / Edit / Delete
+		// Toggle / Edit / Delete / Upload / Upgrade
 		const actions = $('div');
 		actions.style.display = 'flex';
 		actions.style.gap = '8px';
 		actions.style.alignItems = 'center';
+		this._actionsContainer = actions;
 
 		if (this._isMarketplacePreview && this._marketplacePkg) {
 			// Marketplace preview: show Install button
@@ -564,6 +594,12 @@ export class ResourceManagerEditorPane extends EditorPane {
 
 		this.marketplaceService.getPackage(storeId).then(detail => {
 			placeholder.remove();
+
+			// 检查所有权：仅包的所有者可上传更新
+			const currentUser = this.marketplaceService.getCurrentUser();
+			if (detail.author?.id && currentUser?.id && detail.author.id !== currentUser.id) {
+				return; // 非所有者，隐藏上传/升级按钮
+			}
 
 			const marketVersion = detail.latestVersion ?? '0';
 			const hasUpgrade = this._compareVersions(marketVersion, localVersion) > 0;

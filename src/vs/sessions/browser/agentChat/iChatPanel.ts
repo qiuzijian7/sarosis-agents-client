@@ -76,6 +76,18 @@ export interface IChatPanelCallbacks {
 	onClosePlanDialog?: (planId: string) => void;
 	/** 收藏消息到知识库 */
 	onFavoriteMessage?: (messageContent: string) => void;
+
+	// ── Channel 绑定（飞书）相关回调（对齐 AgentSettingsEditorPane）──
+	/** 列出某平台所有 会话→Agent 绑定；Channel 绑定 tab 依赖它，缺失则不显示该 tab。 */
+	onListFeishuBindings?: () => ReadonlyArray<{ conversationId: string; agentId: string }>;
+	/** 绑定飞书会话到当前 Agent（chat_id 已 trim，空值由实现方校验）。 */
+	onAddFeishuBinding?: (chatId: string) => void;
+	/** 解除飞书会话绑定。 */
+	onRemoveFeishuBinding?: (chatId: string) => void;
+	/** 读取当前飞书渠道默认 Agent（未设置返回 undefined）。 */
+	onGetFeishuDefaultAgent?: () => string | undefined;
+	/** 设置/取消飞书渠道默认 Agent（传 undefined 表示取消）。 */
+	onSetFeishuDefaultAgent?: (agentId: string | undefined) => void;
 }
 
 /**

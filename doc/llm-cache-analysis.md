@@ -1,6 +1,6 @@
 # agentmemory 源码缓存命中率优化特性分析及对比优化方案
 
-> 对比项目：`G:\CustomWorkspaces\AIProjects\agentmemory` vs `sarosis-agents-client`
+> 对比项目：`G:\CustomWorkspaces\AIProjects\agentmemory` vs `vssaros-agents-client`
 > 分析时间：2026-07-04
 
 ---
@@ -114,22 +114,22 @@ const tokenCache = new Map<string, Set<string>>();  // memory → 分词缓存
 
 ---
 
-## 二、agentmemory vs sarosis-agents-client 对比
+## 二、agentmemory vs vssaros-agents-client 对比
 
 ### 2.1 功能对比矩阵
 
-| 特性 | agentmemory | sarosis-agents-client | 差距 |
+| 特性 | agentmemory | vssaros-agents-client | 差距 |
 |------|------------|----------------------|------|
 | BM25 前缀缓存 | ✅ sortedTerms + lowerBound | ❌ 无前缀缓存 | 🔴 缺失 |
 | 上下文注入缓存 | ✅ startContextCache（用后即删） | ❌ 每次 loadContext 全量查询 | 🔴 缺失 |
 | 请求内查询缓存 | ✅ sessionCache + memoryProjectCache | ❌ 搜索时重复 KV 查询 | 🟡 中等 |
 | Context 组装稳定性 | ✅ 固定块顺序 + recency 排序 | ⚠️ 多个源拼接但无显式排序 | 🟡 中等 |
 | Cache token 监控 | ✅ cache_read/write 记录 | ✅ prompt_tokens_details 消费过 | ✅ 都有 |
-| Anthropic cache_control | ❌ 未使用 | ✅ messageFormatConverter 注入 | 🟢 sarosis 更好 |
-| 冻结快照模式 | ❌ 未显式实现 | ✅ 代码注释 + 会话内不刷新 | 🟢 sarosis 更好 |
-| 上下文压缩 | ❌ 无（仅 summerize） | ✅ Hermes 三段式 + anti-thrashing | 🟢 sarosis 更好 |
+| Anthropic cache_control | ❌ 未使用 | ✅ messageFormatConverter 注入 | 🟢 vssaros 更好 |
+| 冻结快照模式 | ❌ 未显式实现 | ✅ 代码注释 + 会话内不刷新 | 🟢 vssaros 更好 |
+| 上下文压缩 | ❌ 无（仅 summerize） | ✅ Hermes 三段式 + anti-thrashing | 🟢 vssaros 更好 |
 | Pre-compact 注入 | ✅ session.compacting hook | ✅ PreCompactInjector 4-Tier | ✅ 都有 |
-| 压缩元数据嵌入 | ❌ | ✅ saros-compaction comment | 🟢 sarosis 更好 |
+| 压缩元数据嵌入 | ❌ | ✅ saros-compaction comment | 🟢 vssaros 更好 |
 
 ### 2.2 Context 组装对比
 
@@ -140,7 +140,7 @@ const tokenCache = new Map<string, Set<string>>();  // memory → 分词缓存
 ```
 特点：**稳定的块组装顺序 + recency 统一排序**
 
-**sarosis** (`memoryProvider.ts:loadContext` + `agentOSService.ts`):
+**vssaros** (`memoryProvider.ts:loadContext` + `agentOSService.ts`):
 ```
 [_slots.buildSystemPrompt()] + [_workingMemory.buildContext()] + [_buildSystemPrompt(long,short)] + [consolidation.buildContext()]
 → 多个源直接拼接，无统一排序 → 包装进 <agentmemory-context>
@@ -154,7 +154,7 @@ const tokenCache = new Map<string, Set<string>>();  // memory → 分词缓存
 - 搜索结果按 BM25 分数排序，支持 prefix 匹配和 synonym 扩展
 - 返回 `{obsId, sessionId, score}` 结构
 
-**sarosis** (`bm25Index.ts`):
+**vssaros** (`bm25Index.ts`):
 - 无前缀缓存，每次搜索遍历所有 terms
 - 返回 `{id, score}`，无 sessionId 关联
 - 无 synonym 扩展
@@ -194,25 +194,25 @@ interface ContextBlock {
 // 在 memoryProvider 中：
 function assembleContext(agentId: string, budget: number): { text: string; blocks: ContextBlock[] } {
     const blocks: ContextBlock[] = [];
-    
+
     // 1. 固定槽位（最高优先级，永不变化）
     blocks.push(...collectSlotBlocks(agentId, 'pinned'));
-    
+
     // 2. Core memory（working memory 的 pinned 条目）
     blocks.push(...collectCoreMemoryBlocks(agentId));
-    
+
     // 3. 高频 Lessons（按 confidence × project_score 排序，top 10）
     blocks.push(...collectLessonBlocks(agentId, project));
-    
+
     // 4. Episodic/Semantic/Procedural（按 strength 排序）
     blocks.push(...collectConsolidationBlocks(agentId));
-    
+
     // 统一按 (priority ASC, recency DESC, strength DESC) 排序
     blocks.sort((a, b) => a.priority - b.priority || b.recency - a.recency);
-    
+
     // 按 budget 贪心截断
     const selected = selectByBudget(blocks, budget);
-    
+
     return {
         text: `<agentmemory-context>\n${selected.map(b => b.content).join('\n\n')}\n</agentmemory-context>`,
         blocks: selected,
@@ -227,7 +227,7 @@ function assembleContext(agentId: string, budget: number): { text: string; block
 
 ### 3.2 P1 — BM25 前缀缓存（搜索性能优化）
 
-**现状**：sarosis 的 `bm25Index.ts` 每次 `search()` 都遍历所有倒排索引词条：
+**现状**：vssaros 的 `bm25Index.ts` 每次 `search()` 都遍历所有倒排索引词条：
 ```typescript
 // bm25Index.ts 当前实现
 for (const [term, postingList] of this._index) {
@@ -315,12 +315,12 @@ async loadContext(agentId: string, sessionId: string, query?: string, options?: 
     // 计算当前记忆状态的指纹
     const memoryFingerprint = this._computeMemoryFingerprint(agentId);
     const cacheKey = `${agentId}::${this._tokenBudget}::${options?.scope ?? 'agent'}`;
-    
+
     const cached = this._contextCache.get(cacheKey);
     if (cached && cached.hash === memoryFingerprint) {
         return cached.result;  // 缓存命中，跳过重建
     }
-    
+
     // 正常重建
     const result = await this._buildContext(agentId, sessionId, query, options);
     this._contextCache.set(cacheKey, { result, hash: memoryFingerprint, ts: Date.now() });
@@ -370,7 +370,7 @@ if (usage?.cache_read_input_tokens > 0 || usage?.cache_creation_input_tokens > 0
 
 ## 四、对比总结
 
-| 维度 | agentmemory | sarosis-agents-client | 优化方向 |
+| 维度 | agentmemory | vssaros-agents-client | 优化方向 |
 |------|------------|----------------------|----------|
 | Context 组装 | ✅ ContextBlock + 固定顺序 + 统一截断 | ❌ 多源直接拼接，无统一抽象 | P0 |
 | BM25 前缀缓存 | ✅ sortedTerms + lowerBound | ❌ 全量遍历 | P1 |
@@ -378,8 +378,8 @@ if (usage?.cache_read_input_tokens > 0 || usage?.cache_creation_input_tokens > 0
 | Context 结果缓存 | ✅ startContextCache（一次性） | ❌ 每请求重建 | P3 |
 | 注入位置 | ✅ session.compacting hook 自然位置 | ❌ finalMessages 最前端破坏缓存 | P4 |
 | 缓存监控 | ✅ cache_read/write 持久化 | ✅ 消费但不持久化 | P5 |
-| Anthropic cache_control | ❌ | ✅ messageFormatConverter 注入 | sarosis 领先 |
-| 冻结快照 | ❌ | ✅ 会话内不刷新 | sarosis 领先 |
-| 抗抖动压缩 | ❌ | ✅ anti-thrashing + 窗口重载保护 | sarosis 领先 |
+| Anthropic cache_control | ❌ | ✅ messageFormatConverter 注入 | vssaros 领先 |
+| 冻结快照 | ❌ | ✅ 会话内不刷新 | vssaros 领先 |
+| 抗抖动压缩 | ❌ | ✅ anti-thrashing + 窗口重载保护 | vssaros 领先 |
 
-**核心理念差异**：agentmemory 在 context **组装层面**做了稳定化设计（ContextBlock 抽象 + 固定排序 + 统一截断），而 sarosis 在 **API 层面**做了更多 LLM 缓存优化（cache_control 注入 + 冻结快照 + 压缩元数据）。两者互补——sarosis 应该吸收 agentmemory 的组装层优化，同时保持自己的 API 层优势。
+**核心理念差异**：agentmemory 在 context **组装层面**做了稳定化设计（ContextBlock 抽象 + 固定排序 + 统一截断），而 vssaros 在 **API 层面**做了更多 LLM 缓存优化（cache_control 注入 + 冻结快照 + 压缩元数据）。两者互补——vssaros 应该吸收 agentmemory 的组装层优化，同时保持自己的 API 层优势。

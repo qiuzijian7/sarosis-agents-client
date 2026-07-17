@@ -405,9 +405,9 @@ async function startExtensionHostProcess(): Promise<void> {
 	try {
 		const v8 = require('v8');
 		const heapLimitMB = Math.round(v8.getHeapStatistics().heap_size_limit / 1024 / 1024);
-		console.log(`[SAROSIS-HEAP] extHost heap_size_limit=${heapLimitMB}MB execArgv=${JSON.stringify(process.execArgv)}`);
+		console.log(`[VSSAROS-HEAP] extHost heap_size_limit=${heapLimitMB}MB execArgv=${JSON.stringify(process.execArgv)}`);
 	} catch (err) {
-		console.log(`[SAROSIS-HEAP] failed to read heap stats: ${err}`);
+		console.log(`[VSSAROS-HEAP] failed to read heap stats: ${err}`);
 	}
 
 	// Print a console message when rejection isn't handled within N seconds. For details:

@@ -12,7 +12,7 @@
  *  - Support config layering: built-in defaults → YAML custom → runtime
  *    SubAgentOptions override
  *
- *  YAML Format (`.sarosis/subagents.yaml`):
+ *  YAML Format (`.vssaros/subagents.yaml`):
  *  ```yaml
  *  # Global defaults for all sub-agents
  *  defaults:
@@ -208,7 +208,7 @@ export function toSubAgentOptions(config: ResolvedSubagentConfig): SubAgentOptio
  */
 export function generateDefaultYamlTemplate(): string {
 	return `# ─── Sub-Agent Configuration ──────────────────────────────────────────────
-# Place this file at: .sarosis/subagents.yaml
+# Place this file at: .vssaros/subagents.yaml
 #
 # Define custom sub-agents with specific tool sets, system prompts,
 # and execution constraints. The lead agent will use these definitions

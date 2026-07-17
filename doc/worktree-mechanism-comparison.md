@@ -1,6 +1,6 @@
 # Worktree 工作机制对比分析
 
-> 上游 VS Code (`G:\CustomWorkspaces\AIProjects\vscode`) vs 本项目 (`sarosis-agents-client`)
+> 上游 VS Code (`G:\CustomWorkspaces\AIProjects\vscode`) vs 本项目 (`vssaros-agents-client`)
 
 ---
 

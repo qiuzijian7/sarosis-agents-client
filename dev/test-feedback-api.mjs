@@ -14,7 +14,7 @@
  */
 
 const GONGFENG_BASE = 'https://git.woa.com';
-const PROJECT_PATH = 'zijianqiu%2Fsarosis-agents-client';
+const PROJECT_PATH = 'zijianqiu%2Fvssaros-agents-client';
 const TOKEN = process.argv[2];
 
 if (!TOKEN) {

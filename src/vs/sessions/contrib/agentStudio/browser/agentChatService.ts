@@ -131,14 +131,14 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	/**
 	 * P1 sentinel prefix for externalised tool results.
 	 *
-	 * Format: `\x1ESAROSIS_TOOL_REF:tc_abc123:25000\x1E{truncated preview}`
+	 * Format: `\x1EVSSAROS_TOOL_REF:tc_abc123:25000\x1E{truncated preview}`
 	 *
 	 * The ASCII Record Separator (0x1E, \\036) is deliberately chosen: it
 	 * never appears in valid UTF-8 user-facing text, tool output, or JSON.
 	 * The marker is still a plain `string`, so all existing `typeof result ===
 	 * 'string'` guards (e.g. _toDriverMessages line ~770) continue to work.
 	 */
-	private static readonly TOOL_REF_MARKER = '\x1ESAROSIS_TOOL_REF:';
+	private static readonly TOOL_REF_MARKER = '\x1EVSSAROS_TOOL_REF:';
 	/**
 	 * P2: minimum message count before session history compaction kicks in
 	 * during LRU eviction.  Sessions shorter than this are kept as-is.
@@ -375,7 +375,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				const result = tc.result;
 				if (!result || !result.startsWith(AgentChatService.TOOL_REF_MARKER)) { continue; }
 				if (!sidecarExists) { continue; }
-				// Parse: \x1ESAROSIS_TOOL_REF:toolCallId:len\x1Epreview
+				// Parse: \x1EVSSAROS_TOOL_REF:toolCallId:len\x1Epreview
 				const payload = result.slice(AgentChatService.TOOL_REF_MARKER.length);
 				const endIdx = payload.indexOf('\x1E');
 				if (endIdx < 0) { continue; }
@@ -861,7 +861,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			const resolved = await this._resolveToolResultRefs(agentId, sessionId, messages);
 			if (resolved > 0) {
 				// Write back resolved messages so next load is fast (no sidecar I/O)
-				await this._persistToSessionFile(agentId, sessionId, messages).catch(() => {});
+				await this._persistToSessionFile(agentId, sessionId, messages).catch(() => { });
 			}
 			return messages;
 		} catch {
@@ -1305,12 +1305,12 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					content: sanitizedContent,
 					...(completed.length > 0
 						? {
-								toolCalls: completed.map(tc => ({
-									id: tc.id,
-									name: tc.name,
-									arguments: tc.arguments ?? '{}',
-								})),
-							}
+							toolCalls: completed.map(tc => ({
+								id: tc.id,
+								name: tc.name,
+								arguments: tc.arguments ?? '{}',
+							})),
+						}
 						: {}),
 				};
 				out.push(assistantMsg);
@@ -1574,19 +1574,19 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				if (controller.signal.aborted) {
 					break;
 				}
-			if (delta.type === "text" && delta.content) {
-				_fullContentChunks.push(delta.content);
-			}
-			if (delta.type === "thinking" && delta.content) {
-				_fullThinkingChunks.push(delta.content);
-			}
+				if (delta.type === "text" && delta.content) {
+					_fullContentChunks.push(delta.content);
+				}
+				if (delta.type === "thinking" && delta.content) {
+					_fullThinkingChunks.push(delta.content);
+				}
 				// content_replace: upstream extracted tool calls from text and wants
 				// to replace the accumulated fullContent with the cleaned version.
-			if (delta.type === "content_replace") {
-				_fullContentChunks.length = 0;
-				if (delta.content) { _fullContentChunks.push(delta.content); }
-				currentTurnTextLen = (delta.content ?? "").length;
-			}
+				if (delta.type === "content_replace") {
+					_fullContentChunks.length = 0;
+					if (delta.content) { _fullContentChunks.push(delta.content); }
+					currentTurnTextLen = (delta.content ?? "").length;
+				}
 				// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────────
 				// 参考 Hermes `agent/conversation_loop.py:4300-4310` 的 while-pop 模式：
 				// upstream 检测到 fake-completion / unfinished-intent，准备注入 nudge
@@ -1596,87 +1596,87 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				//
 				// 收到该信号后立即清空 fullContent / fullThinking，让最终持久化的
 				// chatMessage.content 仅包含**信号之后真正成功的那段输出**。
-			if ((delta as any).type === 'discard_prior_text') {
-				const reason = (delta as any).metadata?.reason ?? 'unknown';
-				const _discardedLen = _fullContentChunks.reduce((a, s) => a + s.length, 0)
-					+ _fullThinkingChunks.reduce((a, s) => a + s.length, 0);
-				this.logService.info(
-					`[AgentChatService] 🧹 Received discard_prior_text (reason=${reason}) — clearing fullContent (was len=${_discardedLen}) + fullThinking to prevent conversation rot`,
-				);
-				_fullContentChunks.length = 0;
-				_fullThinkingChunks.length = 0;
-				currentTurnTextLen = 0;
-				// 通知 webview 同步重置（content_replace 已发，仅作冗余兜底）
-				onDelta(delta as any);
-				continue;
-			}
-			// ─── Hermes-style 回合边界事件 ──────────────────────────────
-			// agentOS 在每个 iteration 确定 assistant 消息后发来 `assistant_turn`，
-			// content 为本轮权威文本（已 sanitize+trim），metadata.toolCallIds 为本轮
-			// 工具调用 id。收到后把这一轮快照成一个 turn。
-			//
-			// 同时作为 `content_replace` 转发给 webview，确保 webview 的 textBuffer
-			// 与宿主的 sanitized 内容同步。若不转发，多轮 agent loop 时 webview 的 buffer
-			// 会累积所有轮次的原始文本，导致最终 chat.stream.complete 时 buffer 与 host
-			// message 内容完全不同（CONTENT MISMATCH），引发渲染异常和 UI 卡死。
-			//
-			// 注意：此时 toolCalls 里这些 id 的 result 可能尚未回填
-			// （tool_result 在 assistant_turn 之后才 yield），因此只记录 id，
-			// 最终持久化时再按 id 从全局 toolCalls 取回填好 result 的副本。
-			if ((delta as any).type === 'assistant_turn') {
-				const md = (delta as any).metadata ?? {};
-				const ids = Array.isArray(md.toolCallIds) ? md.toolCallIds as string[] : [];
-				const turnContent: string = (delta as any).content ?? "";
-				turns.push({
-					content: turnContent,
-					toolCallIds: ids,
-				});
-				// 本轮结算：下一轮工具卡片的 textPosition 从 0 重新计起，
-				// 与 _aggregateTurns 合并各 turn 时按 turn.content 长度累加 offset 对齐。
-				currentTurnTextLen = 0;
-				// 同步 webview 的 text buffer 为本轮 sanitized 文本
-				if (turnContent) {
-					onDelta({
-						type: 'content_replace' as any,
-						content: turnContent,
-					});
+				if ((delta as any).type === 'discard_prior_text') {
+					const reason = (delta as any).metadata?.reason ?? 'unknown';
+					const _discardedLen = _fullContentChunks.reduce((a, s) => a + s.length, 0)
+						+ _fullThinkingChunks.reduce((a, s) => a + s.length, 0);
+					this.logService.info(
+						`[AgentChatService] 🧹 Received discard_prior_text (reason=${reason}) — clearing fullContent (was len=${_discardedLen}) + fullThinking to prevent conversation rot`,
+					);
+					_fullContentChunks.length = 0;
+					_fullThinkingChunks.length = 0;
+					currentTurnTextLen = 0;
+					// 通知 webview 同步重置（content_replace 已发，仅作冗余兜底）
+					onDelta(delta as any);
+					continue;
 				}
-				continue;
-			}
+				// ─── Hermes-style 回合边界事件 ──────────────────────────────
+				// agentOS 在每个 iteration 确定 assistant 消息后发来 `assistant_turn`，
+				// content 为本轮权威文本（已 sanitize+trim），metadata.toolCallIds 为本轮
+				// 工具调用 id。收到后把这一轮快照成一个 turn。
+				//
+				// 同时作为 `content_replace` 转发给 webview，确保 webview 的 textBuffer
+				// 与宿主的 sanitized 内容同步。若不转发，多轮 agent loop 时 webview 的 buffer
+				// 会累积所有轮次的原始文本，导致最终 chat.stream.complete 时 buffer 与 host
+				// message 内容完全不同（CONTENT MISMATCH），引发渲染异常和 UI 卡死。
+				//
+				// 注意：此时 toolCalls 里这些 id 的 result 可能尚未回填
+				// （tool_result 在 assistant_turn 之后才 yield），因此只记录 id，
+				// 最终持久化时再按 id 从全局 toolCalls 取回填好 result 的副本。
+				if ((delta as any).type === 'assistant_turn') {
+					const md = (delta as any).metadata ?? {};
+					const ids = Array.isArray(md.toolCallIds) ? md.toolCallIds as string[] : [];
+					const turnContent: string = (delta as any).content ?? "";
+					turns.push({
+						content: turnContent,
+						toolCallIds: ids,
+					});
+					// 本轮结算：下一轮工具卡片的 textPosition 从 0 重新计起，
+					// 与 _aggregateTurns 合并各 turn 时按 turn.content 长度累加 offset 对齐。
+					currentTurnTextLen = 0;
+					// 同步 webview 的 text buffer 为本轮 sanitized 文本
+					if (turnContent) {
+						onDelta({
+							type: 'content_replace' as any,
+							content: turnContent,
+						});
+					}
+					continue;
+				}
 				if (delta.type === "tool_start" && delta.toolCallId && delta.toolName) {
 					if (!toolCalls) {
 						toolCalls = [];
 					}
-				toolCalls.push({
-					id: delta.toolCallId,
-					name: delta.toolName,
-					arguments: "",
-					result: undefined,
-					displayName: delta.displayName,
-					renderType: delta.renderType,
-					defaultShow: delta.defaultShow,
-					serverExecuted: (delta as any).serverExecuted,
-					// 记录卡片插入位置：优先用上游下发的 textPosition，否则用当前 turn 内
-					// 已累积的文本长度。持久化后重载即可按位置交织渲染，而非全部排到末尾。
-					textPosition: typeof (delta as any).textPosition === 'number'
-						? (delta as any).textPosition
-						: currentTurnTextLen,
-				});
-				_toolArgChunks.set(delta.toolCallId, []);
-			}
-			if (
-				delta.type === "tool_args" &&
-				delta.toolCallId &&
-				delta.content &&
-				toolCalls
-			) {
-				const tc = toolCalls.find((t) => t.id === delta.toolCallId);
-				if (tc) {
-					let chunks = _toolArgChunks.get(tc.id);
-					if (!chunks) { chunks = []; _toolArgChunks.set(tc.id, chunks); }
-					chunks.push(delta.content);
+					toolCalls.push({
+						id: delta.toolCallId,
+						name: delta.toolName,
+						arguments: "",
+						result: undefined,
+						displayName: delta.displayName,
+						renderType: delta.renderType,
+						defaultShow: delta.defaultShow,
+						serverExecuted: (delta as any).serverExecuted,
+						// 记录卡片插入位置：优先用上游下发的 textPosition，否则用当前 turn 内
+						// 已累积的文本长度。持久化后重载即可按位置交织渲染，而非全部排到末尾。
+						textPosition: typeof (delta as any).textPosition === 'number'
+							? (delta as any).textPosition
+							: currentTurnTextLen,
+					});
+					_toolArgChunks.set(delta.toolCallId, []);
 				}
-			}
+				if (
+					delta.type === "tool_args" &&
+					delta.toolCallId &&
+					delta.content &&
+					toolCalls
+				) {
+					const tc = toolCalls.find((t) => t.id === delta.toolCallId);
+					if (tc) {
+						let chunks = _toolArgChunks.get(tc.id);
+						if (!chunks) { chunks = []; _toolArgChunks.set(tc.id, chunks); }
+						chunks.push(delta.content);
+					}
+				}
 				if (delta.type === "tool_result" && delta.toolCallId && toolCalls) {
 					const tc = toolCalls.find((t) => t.id === delta.toolCallId);
 					if (tc) {
@@ -1721,18 +1721,18 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (typeof delta.usage.credit === 'number') { usageCredit += delta.usage.credit; }
 				}
 				onDelta(delta as any);
-			// Broadcast delta for external panels (kanban, task overview) to stay in sync.
-			// ⚠️ 不广播 'done'/'error' delta — agent loop 中每次 LLM turn 结束都会 yield done，
-			// 如果广播给外部监听器，会过早 finalize + setSending(false) + _resetStreamingMessage()，
-			// 导致下一轮 LLM delta 到达时创建新的 assistant 消息卡片（冒泡消息 UI bug）。
-			// 最终 done 在 for-await 循环退出后统一广播（见下方）。
-			if (delta.type !== 'done' && delta.type !== 'error') {
-				this._onDidStreamDeltaEmitter.fire({
-					agentId,
-					sessionId: options.agentSessionId || '',
-					delta: delta as any,
-				});
-			}
+				// Broadcast delta for external panels (kanban, task overview) to stay in sync.
+				// ⚠️ 不广播 'done'/'error' delta — agent loop 中每次 LLM turn 结束都会 yield done，
+				// 如果广播给外部监听器，会过早 finalize + setSending(false) + _resetStreamingMessage()，
+				// 导致下一轮 LLM delta 到达时创建新的 assistant 消息卡片（冒泡消息 UI bug）。
+				// 最终 done 在 for-await 循环退出后统一广播（见下方）。
+				if (delta.type !== 'done' && delta.type !== 'error') {
+					this._onDidStreamDeltaEmitter.fire({
+						agentId,
+						sessionId: options.agentSessionId || '',
+						delta: delta as any,
+					});
+				}
 			}
 
 			this.logService.info(`[AgentChatService] Stream iteration done: ${_deltaCount} deltas in ${(performance.now() - tStream).toFixed(0)}ms`);
@@ -1768,20 +1768,20 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			// tool call still lacking a status must have finished. Mark it 'done'
 			// so the persisted card restores in a completed state rather than the
 			// loading title after a window refresh.
-		if (toolCalls) {
-			for (const tc of toolCalls) {
-				const chunks = _toolArgChunks.get(tc.id);
-				if (chunks && chunks.length > 0) {
-					tc.arguments = chunks.join('');
-				}
-				if (!tc.status) {
-					tc.status = 'done';
+			if (toolCalls) {
+				for (const tc of toolCalls) {
+					const chunks = _toolArgChunks.get(tc.id);
+					if (chunks && chunks.length > 0) {
+						tc.arguments = chunks.join('');
+					}
+					if (!tc.status) {
+						tc.status = 'done';
+					}
 				}
 			}
-		}
-		// Flatten accumulated streamed text exactly once (O(n), no ConsString ropes).
-		fullContent = _fullContentChunks.join('');
-		fullThinking = _fullThinkingChunks.join('');
+			// Flatten accumulated streamed text exactly once (O(n), no ConsString ropes).
+			fullContent = _fullContentChunks.join('');
+			fullThinking = _fullThinkingChunks.join('');
 
 			// 共享的 token usage 对象（多条 turn 时仅挂在最后一条上）
 			const sharedTokenUsage = usageSeen
@@ -1909,11 +1909,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				error,
 			);
 			onDelta({ type: "error", content: String(error) });
-		this._onDidStreamDeltaEmitter.fire({
-			agentId,
-			sessionId: options.agentSessionId || '',
-			delta: { type: 'error' as any, content: String(error) },
-		});
+			this._onDidStreamDeltaEmitter.fire({
+				agentId,
+				sessionId: options.agentSessionId || '',
+				delta: { type: 'error' as any, content: String(error) },
+			});
 			throw error;
 		} finally {
 			// OOM 诊断：流式结束后快照（对比 send-start heapUsed 即得本轮净增长）
@@ -2042,7 +2042,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					metadata: { noticeId: data.noticeId, error: data.error },
 				} as any);
 			}
-		}) ?? (() => {});
+		}) ?? (() => { });
 
 		// 技能提取事件桥接：sweep 中自动提取技能后通知 UI
 		const providerAny = provider as any;

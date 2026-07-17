@@ -2,7 +2,7 @@
 
 ## 1. 背景
 
-参考 Hermes-Agent 的 goal 实现方案，我们需要在 sarosis-agents-client 项目中实现一个内置的 goal 工作流功能。
+参考 Hermes-Agent 的 goal 实现方案，我们需要在 vssaros-agents-client 项目中实现一个内置的 goal 工作流功能。
 
 **Hermes-Agent Goal 核心机制回顾：**
 - 用户设置一个目标（goal）
@@ -162,7 +162,7 @@ resources/
 import { FileAccess } from '../../../../platform/workspace/electron-main/fileAccess.js';
 
 class GoalWorkflowService {
-  private static readonly BUILTIN_GOAL_WORKFLOW_PATH = 
+  private static readonly BUILTIN_GOAL_WORKFLOW_PATH =
     'vs/../../resources/.agents/builtin-workflows/goal-workflow.json';
 
   async loadBuiltinGoalWorkflow(): Promise<IStoredWorkflow> {
@@ -201,7 +201,7 @@ class GoalWorkflowService {
 ### 4.1 工作流节点图
 
 ```
-[Start] 
+[Start]
    |
    v
 [Prompt: "执行目标: {goal}"]
@@ -366,6 +366,6 @@ class GoalWorkflowService {
 
 ---
 
-**文档版本：** v1.0  
-**创建时间：** 2026-06-15  
+**文档版本：** v1.0
+**创建时间：** 2026-06-15
 **作者：** AI Assistant (基于 Hermes-Agent goal 分析)

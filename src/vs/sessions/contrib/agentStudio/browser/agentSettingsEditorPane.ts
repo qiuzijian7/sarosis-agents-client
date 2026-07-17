@@ -75,6 +75,11 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _uploadBtn: HTMLButtonElement | undefined;
 	private _isUploaded = false;
 
+	// ── Read-only state ──
+	/** 非 owner / 内置 agent → 锁定为只读，禁止编辑与上传 */
+	private _readOnly = false;
+	private _bindingAddBtn: HTMLButtonElement | undefined;
+
 	// ── Rename state ──
 	private _renameInput: HTMLInputElement | undefined;
 	private _renameError: HTMLElement | undefined;
@@ -448,6 +453,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		addBtn.textContent = '➕ 绑定';
 		addBtn.onclick = () => void this._addFeishuBinding();
 		addRow.appendChild(addBtn);
+		this._bindingAddBtn = addBtn;
 		sec2.appendChild(addRow);
 
 		this._bindingListContainer = $$('div.binding-list');
@@ -493,6 +499,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 			const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
 			removeBtn.title = '解除绑定';
 			removeBtn.textContent = '✕';
+			removeBtn.disabled = this._readOnly;
 			removeBtn.onclick = () => this._removeFeishuBinding(b.conversationId);
 			item.appendChild(removeBtn);
 			this._bindingListContainer.appendChild(item);
@@ -500,6 +507,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	}
 
 	private async _addFeishuBinding(): Promise<void> {
+		if (this._readOnly) { return; }
 		if (!this._agentId || !this._bindingInput) { return; }
 		const chatId = this._bindingInput.value.trim();
 		if (!chatId) {
@@ -517,6 +525,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	}
 
 	private _removeFeishuBinding(chatId: string): void {
+		if (this._readOnly) { return; }
 		if (!this._agentId) { return; }
 		try {
 			this.bridgeService.getEngine().clearConversationAgent('feishu', chatId);
@@ -528,6 +537,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	}
 
 	private _toggleFeishuDefault(): void {
+		if (this._readOnly) { return; }
 		if (!this._agentId || !this._bindingDefaultToggle) { return; }
 		const key = 'sessions.channel.feishu.defaultAgent';
 		const cur = this.configurationService.getValue<string>(key);
@@ -537,6 +547,45 @@ export class AgentSettingsEditorPane extends EditorPane {
 		} else if (cur === this._agentId) {
 			this.configurationService.updateValue(key, '');
 			this.notificationService.info('已取消飞书渠道默认 Agent');
+		}
+	}
+
+	// ── Read-only lock ──
+
+	/**
+	 * 非 owner / 内置 agent 时锁定为只读：禁用所有编辑控件并显示提示横幅。
+	 * 在 _loadAgentData 末尾（数据加载、各 tab 渲染之后）调用。
+	 */
+	private _applyReadOnlyState(): void {
+		if (!this._readOnly) { return; }
+
+		// 禁用固定编辑控件
+		if (this._promptTextarea) { this._promptTextarea.disabled = true; }
+		if (this._promptSaveBtn) { this._promptSaveBtn.style.display = 'none'; }
+		if (this._bindingInput) { this._bindingInput.disabled = true; }
+		if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = true; }
+		if (this._bindingAddBtn) { this._bindingAddBtn.disabled = true; }
+		if (this._renameInput) { this._renameInput.disabled = true; }
+
+		// 禁用重命名触发（标题双击 + 铅笔按钮）
+		if (this._nameEl) {
+			this._nameEl.classList.remove('editable');
+			this._nameEl.ondblclick = null;
+			this._nameEl.title = '仅创建者(owner)可编辑';
+		}
+		const renameBtn = this._container?.querySelector('.agent-settings-rename-btn') as HTMLButtonElement | null;
+		if (renameBtn) {
+			renameBtn.disabled = true;
+			renameBtn.title = '仅创建者(owner)可编辑';
+		}
+
+		// 只读提示横幅
+		const main = this._container?.querySelector('.agent-settings-main') as HTMLElement | null;
+		if (main && !main.querySelector('.agent-settings-readonly-banner')) {
+			const banner = $$('div.agent-settings-readonly-banner');
+			banner.textContent = '🔒 只读模式：仅创建者(owner)可编辑此 Agent';
+			banner.style.cssText = 'margin:8px 12px;padding:8px 12px;border-radius:6px;background:var(--vscode-badge-background,#3a3d41);color:var(--vscode-badge-foreground,#fff);font-size:12px;';
+			main.insertBefore(banner, main.firstChild);
 		}
 	}
 
@@ -582,11 +631,14 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private async _loadAgentData(): Promise<void> {
 		if (!this._agentId) { return; }
 		try {
-			this._agent = await this.agentStudioService.getAgent(this._agentId);
-			if (!this._agent) {
+			const agent = await this.agentStudioService.getAgent(this._agentId);
+			if (!agent) {
 				this.notificationService.warn(`Agent not found: ${this._agentId}`);
 				return;
 			}
+			this._agent = agent;
+			// 非 owner / 内置 agent → 只读锁定（禁止编辑与上传）
+			this._readOnly = !this.agentStudioService.canUploadAgent(agent);
 
 			// Show main, hide loading
 			const loading = this._container?.querySelector('.agent-settings-loading');
@@ -615,6 +667,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 			// Update bindings tab
 			this._renderBindingTab();
+
+			// 应用只读锁（非 owner / 内置 agent 禁用编辑控件）
+			this._applyReadOnlyState();
 		} catch (err) {
 			this.notificationService.error(`加载 Agent 数据失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -697,10 +752,11 @@ export class AgentSettingsEditorPane extends EditorPane {
 					info.appendChild(catEl);
 				}
 				item.appendChild(info);
-				const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
-				removeBtn.title = '移除';
-				removeBtn.textContent = '✕';
-				removeBtn.onclick = () => this._removeSkill(skillId);
+			const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
+			removeBtn.title = '移除';
+			removeBtn.textContent = '✕';
+			removeBtn.disabled = this._readOnly;
+			removeBtn.onclick = () => this._removeSkill(skillId);
 				item.appendChild(removeBtn);
 				this._skillsInstalledContainer.appendChild(item);
 			}
@@ -724,10 +780,11 @@ export class AgentSettingsEditorPane extends EditorPane {
 				catEl.textContent = skill.category;
 				info.appendChild(catEl);
 				item.appendChild(info);
-				const addBtn = $$('button.skill-add-btn') as HTMLButtonElement;
-				addBtn.title = '添加';
-				addBtn.textContent = '+';
-				addBtn.onclick = () => this._addSkill(skill.id);
+			const addBtn = $$('button.skill-add-btn') as HTMLButtonElement;
+			addBtn.title = '添加';
+			addBtn.textContent = '+';
+			addBtn.disabled = this._readOnly;
+			addBtn.onclick = () => this._addSkill(skill.id);
 				item.appendChild(addBtn);
 				this._skillsAvailableContainer.appendChild(item);
 			}
@@ -741,6 +798,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	// ── Rename ──
 
 	private _startRename(): void {
+		if (this._readOnly) { return; }
 		if (!this._agent || !this._nameEl || !this._renameInput) { return; }
 		this._renameInput.value = this._agent.name;
 		this._nameEl.style.display = 'none';
@@ -804,6 +862,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	// ── System Prompt ──
 
 	private async _savePrompt(): Promise<void> {
+		if (this._readOnly) { return; }
 		if (!this._agentId || !this._promptTextarea || !this._promptSaveBtn) { return; }
 		try {
 			this._promptSaveBtn.disabled = true;
@@ -829,6 +888,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	// ── Skills ──
 
 	private async _addSkill(skillId: string): Promise<void> {
+		if (this._readOnly) { return; }
 		if (!this._agentId) { return; }
 		const newSkills = [...this._agentSkills, skillId];
 		try {
@@ -843,6 +903,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	}
 
 	private async _removeSkill(skillId: string): Promise<void> {
+		if (this._readOnly) { return; }
 		if (!this._agentId) { return; }
 		const newSkills = this._agentSkills.filter(s => s !== skillId);
 		try {
@@ -859,6 +920,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 	// ── ConfigHtml ──
 
 	private async _openConfigHtmlPreview(): Promise<void> {
+		if (this._readOnly) { return; }
 		if (!this._agentId) { return; }
 		try {
 			const agentDir = await this.agentStudioService.getAgentDir(this._agentId);
@@ -873,9 +935,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	private async _checkUploadStatus(): Promise<void> {
 		if (!this._agentId || !this._agent) { return; }
-		// Builtin agents cannot be uploaded; custom agents check marketplace
-		if (this._agent.source === 'builtin') {
-			this._isUploaded = true; // hide upload button
+		// Builtin agents cannot be uploaded; custom agents check marketplace + owner permission
+		if (this._agent.source === 'builtin' || !this.agentStudioService.canUploadAgent(this._agent)) {
+			this._isUploaded = true; // hide upload button (builtin or non-owner)
 		} else {
 			try {
 				await this.marketplaceService.getPackage(this._agentId);
@@ -895,6 +957,11 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	private async _handleUpload(): Promise<void> {
 		if (!this._agent || !this._agentId) { return; }
+		// Permission guard: only the owner (or an unclaimed agent) may upload.
+		if (!this.agentStudioService.canUploadAgent(this._agent)) {
+			this.notificationService.warn(`仅创建者(owner)可上传该 Agent「${this._agent.name}」`);
+			return;
+		}
 		const name = this._agent.name;
 
 		const result = await this.dialogService.input({
@@ -931,6 +998,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 			this.notificationService.info(`"${name}" v${version} 已上传到商城`);
 			this._isUploaded = true;
 			this._updateUploadBtn();
+			// Claim ownership so non-owners cannot re-upload later.
+			await this.agentStudioService.claimAgentOwnership(this._agentId);
 		} catch (err) {
 			this.notificationService.error(
 				`上传 "${name}" 失败: ${err instanceof Error ? err.message : String(err)}`

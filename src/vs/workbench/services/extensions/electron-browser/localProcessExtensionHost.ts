@@ -268,7 +268,7 @@ export class NativeLocalProcessExtensionHost extends Disposable implements IExte
 			opts.execArgv = ['--inspect-port=0'];
 		}
 
-		// [SAROSIS-HEAP] On V8 fatal errors (e.g. OOM abort) emit a diagnostic
+		// [VSSAROS-HEAP] On V8 fatal errors (e.g. OOM abort) emit a diagnostic
 		// report so we get the JS stack + heap stats after a crash, instead of
 		// only "Extension Host terminated unexpectedly".
 		opts.execArgv.push('--report-on-fatalerror');

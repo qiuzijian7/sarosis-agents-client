@@ -597,12 +597,22 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		html: string,
 		options?: { origin?: ConfigHtmlChangeOrigin; baseVersion?: number },
 	): Promise<{ version: number }> {
-		// TODO: implement writing config.html to agent dir
 		const state = await this._ensureState(agentId);
 		if (!state) { throw new Error(`Agent '${agentId}' not found`); }
+		// 写盘
+		const origin = options?.origin || 'html';
+		state.pendingWriteOrigin = origin;
+		state.selfWriteEpoch++;
+		try {
+			await this.fileService.writeFile(state.mdUri, VSBuffer.fromString(html));
+		} catch (err) {
+			this.logService.error(`[ConfigHtml] Failed to write ${state.mdUri.fsPath}:`, err);
+			throw err;
+		}
+		// 更新内存状态
+		state.markdown = html;
 		state.html = html;
 		state.version++;
-		// Fire render event so webview previews update
 		this._onDidRenderHtml.fire({ agentId, html: state.html, version: state.version });
 		return { version: state.version };
 	}

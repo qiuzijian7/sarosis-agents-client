@@ -25,7 +25,7 @@ import { Disposable } from '../../../../../../base/common/lifecycle.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { IObservable, autorun } from '../../../../../../base/common/observable.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
-import { IMcpService, IMcpServer, IMcpTool, McpConnectionState } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
+import { IMcpService, IMcpServer, IMcpTool, McpConnectionState, IMcpToolCallContext } from '../../../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { IToolProvider, IToolDefinition, IToolCall, IToolResult, IToolResultContent, ToolSecurityLevel } from '../../../common/providers.js';
 
 // 不再需要 SEPARATOR — 使用 VS Code MCP 系统的 tool.id 作为路由名
@@ -170,7 +170,16 @@ export class McpToolProvider extends Disposable implements IToolProvider {
 		}
 		const startTime = Date.now();
 		try {
-			const res = await routed.tool.call(call.arguments ?? {}, undefined, CancellationToken.None);
+			// D2: 透传 worktreePath 到 MCP 调用上下文，使 server 能感知当前任务工作根
+			// （看板 / 并发任务 worktree 隔离）。call 不携带 worktreePath 时（非看板场景）
+			// context 保持 undefined，行为不变。
+			// IMcpToolCallContext 通过结构化类型扩展承载 worktreePath，由 server 决定是否
+			// 据此切换工作根；协议层真正的 per-call cwd 隔离（roots 动态更新 / 独立实例）
+			// 为中期目标，此处仅完成契约透传。
+			const mcpCallContext: IMcpToolCallContext | undefined = call.worktreePath
+				? ({ chatSessionResource: undefined, worktreePath: call.worktreePath } as unknown as IMcpToolCallContext)
+				: undefined;
+			const res = await routed.tool.call(call.arguments ?? {}, mcpCallContext, CancellationToken.None);
 			const elapsed = Date.now() - startTime;
 			if (res.isError) {
 				const errText = this._extractErrorText(res.content);

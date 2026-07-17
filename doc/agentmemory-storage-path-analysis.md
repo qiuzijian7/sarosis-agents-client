@@ -1,6 +1,6 @@
 # 记忆存储路径对比分析
 
-> 对比项目：`sarosis-agents-client`（本项目）vs `agentmemory`（原版）
+> 对比项目：`vssaros-agents-client`（本项目）vs `agentmemory`（原版）
 
 ---
 

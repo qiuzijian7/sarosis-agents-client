@@ -21,7 +21,7 @@ import {
 // ─── 测试辅助工具 ──────────────────────────────────────────────────────────
 
 class MockFileProbe implements IFileProbe {
-	constructor(private folders: Map<string, string[]>) {}
+	constructor(private folders: Map<string, string[]>) { }
 
 	async exists(path: string): Promise<boolean> {
 		// 简化实现
@@ -132,11 +132,11 @@ suite('FocusMode — detectFocusModeWithProbe', () => {
 		assert.ok(result.detectedSignals.length >= 3, 'should detect multiple signals');
 	});
 
-	test('Sarosis workspace detected (sarosis.config.json)', async () => {
+	test('Sarosis workspace detected (vssaros.config.json)', async () => {
 		const probe = new MockFileProbe(new Map([
-			['/workspace/sarosis-app', ['sarosis.config.json', 'agents/']],
+			['/workspace/vssaros-app', ['vssaros.config.json', 'agents/']],
 		]));
-		const result = await detectFocusModeWithProbe(['/workspace/sarosis-app'], probe);
+		const result = await detectFocusModeWithProbe(['/workspace/vssaros-app'], probe);
 		assert.strictEqual(result.mode, 'focus');
 		assert.ok(result.detectedSignals.some(s => s.includes('Sarosis')));
 		// Sarosis 推荐包含 kanban

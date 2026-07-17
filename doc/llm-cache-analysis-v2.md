@@ -1,7 +1,7 @@
 # agentmemory 缓存命中率深度对比分析（第二轮）
 
 > 分析时间：2026-07-04
-> 对比项目：`G:\CustomWorkspaces\AIProjects\agentmemory` vs `sarosis-agents-client`
+> 对比项目：`G:\CustomWorkspaces\AIProjects\agentmemory` vs `vssaros-agents-client`
 > 前置：已实施 P0-P5 优化，此轮为细节级深度对比
 
 ---
@@ -10,7 +10,7 @@
 
 ### agentmemory 缓存层（共 9 个）
 
-| # | 缓存名 | 文件 | 类型 | TTL | 失效策略 | sarosis 对等 |
+| # | 缓存名 | 文件 | 类型 | TTL | 失效策略 | vssaros 对等 |
 |---|--------|------|------|-----|----------|--------------|
 | 1 | `startContextCache` | plugin L72 | session 级 context | 无 | consume-on-read + session.deleted | ✅ `_sessionContextCache` (已实现) |
 | 2 | `contextInjectedSessions` | plugin L66 | Set<sessionId> 注入去重 | 无 | session.deleted | ❌ 缺失 |
@@ -22,7 +22,7 @@
 | 8 | `obsCache` | file-index L61 | 单次调用局部缓存 | 函数生命周期 | 局部变量 | ⚠️ 部分 (`_hybridSearch.entryMap`) |
 | 9 | `_contextCache` | (本项目新增) | 跨请求 context 结果 | 60s | 写时 + 版本号 | ✅ 本项目独有 |
 
-### sarosis 独有缓存（agentmemory 没有）
+### vssaros 独有缓存（agentmemory 没有）
 
 | # | 缓存名 | 文件 | 说明 |
 |---|--------|------|------|
@@ -69,7 +69,7 @@ startContextCache.delete(sid);
 3. **session.created 即时预取**：不等 chat.system.transform 才请求
 4. **快照不变性**：缓存的是 session 创建时刻的 context 快照
 
-#### sarosis 实现
+#### vssaros 实现
 
 ```typescript
 // memoryProvider.ts L531
@@ -90,15 +90,15 @@ if (!isNewSession && this._sessionContextCache.has(agentId) && (!query || query.
 
 #### 差异分析
 
-| 维度 | agentmemory | sarosis | 差距 |
+| 维度 | agentmemory | vssaros | 差距 |
 |------|-------------|---------|------|
-| 缓存键 | `sessionId` | `agentId` | sarosis 用 agentId 可能跨多个 sessionId 复用 |
-| consume-on-read | ✅ 读取后删除 | ❌ 不删除，持续复用 | sarosis 更激进（持续命中） |
-| 有 query 时不缓存 | N/A (总是无 query) | ✅ 有 query 时跳过 | sarosis 更智能 |
-| 写操作失效 | N/A (server 端处理) | ✅ `_invalidateContextCache` | sarosis 更完整 |
-| 预取时机 | session.created 立即预取 | loadContext 首次调用时 | sarosis 懒加载 |
+| 缓存键 | `sessionId` | `agentId` | vssaros 用 agentId 可能跨多个 sessionId 复用 |
+| consume-on-read | ✅ 读取后删除 | ❌ 不删除，持续复用 | vssaros 更激进（持续命中） |
+| 有 query 时不缓存 | N/A (总是无 query) | ✅ 有 query 时跳过 | vssaros 更智能 |
+| 写操作失效 | N/A (server 端处理) | ✅ `_invalidateContextCache` | vssaros 更完整 |
+| 预取时机 | session.created 立即预取 | loadContext 首次调用时 | vssaros 懒加载 |
 
-**优化建议 P6**：sarosis 的 `_sessionContextCache` 用 agentId 做 key，但一个 agent 可能有多轮会话（不同 sessionId）。当前实现中 `_endSession` 会清除缓存，但 `loadContext` 被调用时 `sessionId` 参数未被用于 key。建议：用 `${agentId}::${sessionId}` 做 key，确保跨 session 不串数据。
+**优化建议 P6**：vssaros 的 `_sessionContextCache` 用 agentId 做 key，但一个 agent 可能有多轮会话（不同 sessionId）。当前实现中 `_endSession` 会清除缓存，但 `loadContext` 被调用时 `sessionId` 参数未被用于 key。建议：用 `${agentId}::${sessionId}` 做 key，确保跨 session 不串数据。
 
 ### 2.2 contextInjectedSessions — 注入幂等去重
 
@@ -120,7 +120,7 @@ contextInjectedSessions.delete(sid);
 
 **设计意图**：防止同一 session 被多次注入 `AGENTMEMORY_INSTRUCTIONS` 和 context。
 
-#### sarosis 现状
+#### vssaros 现状
 
 ```typescript
 // agentOSService.ts L920-1055
@@ -129,7 +129,7 @@ contextInjectedSessions.delete(sid);
 // 然而：注入逻辑本身没有幂等去重
 ```
 
-**差异**：sarosis 的 agentOSService 每轮都执行注入逻辑（即使 context 内容相同）。虽然 context 内容相同（因为缓存命中），但注入操作本身的开销（XML 标签组装、消息数组操作）每轮都执行。
+**差异**：vssaros 的 agentOSService 每轮都执行注入逻辑（即使 context 内容相同）。虽然 context 内容相同（因为缓存命中），但注入操作本身的开销（XML 标签组装、消息数组操作）每轮都执行。
 
 **优化建议 P7**：在 agentOSService 中添加 `injectedSessions: Set<string>`，同一 session 只注入一次。
 
@@ -154,9 +154,9 @@ for (const f of files) stash.delete(f);  // 消费后删除
 
 **设计意图**：工具执行时收集涉及的文件路径，在下一轮 system.transform 时批量 enrich（避免每个工具调用都触发 enrich）。
 
-#### sarosis 现状
+#### vssaros 现状
 
-sarosis 没有等价机制。工具执行后不暂存文件路径，也没有批量 enrich 管道。
+vssaros 没有等价机制。工具执行后不暂存文件路径，也没有批量 enrich 管道。
 
 **差距**：这是 agentmemory 独有的"文件级上下文增强"机制，对代码理解类任务有帮助。
 
@@ -186,11 +186,11 @@ if (!toolCallSet.has(toolCallId)) {
 
 **设计意图**：防止重复 observe 同一 subtask/tool call（如流式重试、compaction 后重放）。
 
-#### sarosis 现状
+#### vssaros 现状
 
-sarosis 的 `writeMemory` 有 `DedupManager`（内容哈希去重），但没有按 `toolCallId` 去重的机制。
+vssaros 的 `writeMemory` 有 `DedupManager`（内容哈希去重），但没有按 `toolCallId` 去重的机制。
 
-**差异**：sarosis 用内容哈希去重（更宽松），agentmemory 用 ID 去重（更精确）。
+**差异**：vssaros 用内容哈希去重（更宽松），agentmemory 用 ID 去重（更精确）。
 
 **优化建议 P9**：在 `memoryProvider.writeMemory` 中增加 `toolCallId` 维度去重（metadata 中带 `toolCallId` 时检查）。
 
@@ -198,7 +198,7 @@ sarosis 的 `writeMemory` 有 `DedupManager`（内容哈希去重），但没有
 
 #### 完全对齐
 
-| 维度 | agentmemory | sarosis |
+| 维度 | agentmemory | vssaros |
 |------|-------------|---------|
 | `sortedTerms` 类型 | `string[] \| null` | `string[] \| null` |
 | 写时失效 | `add()` L47, `remove()` L74, `clear()` L171, `restoreFrom()` L191 | `add()`, `remove()`, `clear()` |
@@ -207,9 +207,9 @@ sarosis 的 `writeMemory` 有 `DedupManager`（内容哈希去重），但没有
 | 前缀匹配权重 | `* 0.5` (L136) | `* 0.5` |
 | 同义词扩展权重 | `0.7` (L98) | 无权重（直接加 IDF） |
 
-**差异**：agentmemory 的同义词有权重（0.7），sarosis 的同义词无权重（直接加 IDF）。
+**差异**：agentmemory 的同义词有权重（0.7），vssaros 的同义词无权重（直接加 IDF）。
 
-**优化建议 P10**：sarosis BM25 的同义词扩展应加权重（精确匹配 > 同义词 > 前缀匹配）。
+**优化建议 P10**：vssaros BM25 的同义词扩展应加权重（精确匹配 > 同义词 > 前缀匹配）。
 
 ### 2.6 context.ts — ContextBlock 组装
 
@@ -236,7 +236,7 @@ void recordAccessBatch(kv, accessedIds);
 2. **读取时写回 accessCount**（write-through on read）
 3. **批量记录访问**（`recordAccessBatch`）
 
-#### sarosis 实现
+#### vssaros 实现
 
 ```typescript
 // contextBuilder.ts selectWithBudgetAndPriority
@@ -256,7 +256,7 @@ if (block.priority === 0) {
 
 #### 差异分析
 
-| 维度 | agentmemory | sarosis |
+| 维度 | agentmemory | vssaros |
 |------|-------------|---------|
 | 排序策略 | 仅 recency | priority + recency |
 | 固定块保护 | ❌ 无 | ✅ priority=0 不受 budget 限制 |
@@ -264,7 +264,7 @@ if (block.priority === 0) {
 | 批量记录访问 | ✅ `recordAccessBatch` | ⚠️ `_slidingWindow.access()` 逐个记录 |
 | block 类型 | memory/summary/observation | slot/lesson/episodic/semantic/procedural/working |
 
-**优化建议 P11**：sarosis 的 ContextBlock 选择应增加"读取时写回 accessCount"机制（对齐 agentmemory 的 write-through on read），提升热点记忆的评分。
+**优化建议 P11**：vssaros 的 ContextBlock 选择应增加"读取时写回 accessCount"机制（对齐 agentmemory 的 write-through on read），提升热点记忆的评分。
 
 ### 2.7 working-memory.ts — Core + Archival 分层
 
@@ -291,16 +291,16 @@ Promise.allSettled(accessUpdates.map(({ id, entry }) => kv.set(CORE_SCOPE, id, e
 // L194-253: auto-page — core 超预算时降级到 archival
 ```
 
-#### sarosis 现状
+#### vssaros 现状
 
-sarosis 没有明确的 "core memory" vs "archival memory" 分层。所有记忆在 `_longTerm` / `_shortTerm` 中，`loadContext` 按 strength 排序选择。
+vssaros 没有明确的 "core memory" vs "archival memory" 分层。所有记忆在 `_longTerm` / `_shortTerm` 中，`loadContext` 按 strength 排序选择。
 
 **差异**：
 1. agentmemory 有 core（高优先级、pinned）+ archival（低优先级）分层
 2. agentmemory 的 core memory 有 auto-page 机制（超预算自动降级）
 3. agentmemory 读取时写回 accessCount（write-through）
 
-**优化建议 P12**：sarosis 的 `IMemoryEntry` 已有 `importance` 和 `strength`，但缺少 `pinned` 字段和 auto-page 降级机制。
+**优化建议 P12**：vssaros 的 `IMemoryEntry` 已有 `importance` 和 `strength`，但缺少 `pinned` 字段和 auto-page 降级机制。
 
 ### 2.8 scoreEntry 评分函数
 
@@ -317,13 +317,13 @@ function scoreEntry(entry: CoreMemoryEntry, now: number): number {
 }
 ```
 
-#### sarosis
+#### vssaros
 
-sarosis 的 `loadContext` 按 `strength` 排序，`strength` 由 `MemoryDecay` 管理（时间衰减 + 访问增强），但没有明确的三因子加权公式。
+vssaros 的 `loadContext` 按 `strength` 排序，`strength` 由 `MemoryDecay` 管理（时间衰减 + 访问增强），但没有明确的三因子加权公式。
 
-**差异**：agentmemory 的评分是三因子加权（importance 0.5 + recency 0.3 + access 0.2），sarosis 是单一 strength 值。
+**差异**：agentmemory 的评分是三因子加权（importance 0.5 + recency 0.3 + access 0.2），vssaros 是单一 strength 值。
 
-**优化建议 P13**：sarosis 的 strength 计算可借鉴三因子加权公式，使评分更均衡。
+**优化建议 P13**：vssaros 的 strength 计算可借鉴三因子加权公式，使评分更均衡。
 
 ---
 
@@ -406,7 +406,7 @@ if (!this._injectedSessions.has(sessionId)) {
 
 ## 四、对比总结
 
-| 维度 | agentmemory | sarosis | 优化方向 |
+| 维度 | agentmemory | vssaros | 优化方向 |
 |------|-------------|---------|----------|
 | startContextCache | consume-on-read | 持续复用 | P6 key 改进 |
 | 注入幂等去重 | ✅ Set<sid> | ❌ | P7 |
@@ -416,9 +416,9 @@ if (!this._injectedSessions.has(sessionId)) {
 | 读取写回 accessCount | ✅ write-through | ❌ | P11 |
 | Core/Archival 分层 | ✅ + auto-page | ❌ | P12 |
 | 三因子评分 | ✅ 0.5/0.3/0.2 | ⚠️ 单一 strength | P13 |
-| 跨请求 context 缓存 | ❌ | ✅ fingerprint + TTL | sarosis 领先 |
-| LRU 搜索缓存 | ❌ | ✅ 100 条 5 分钟 | sarosis 领先 |
-| Anthropic cache_control | ❌ | ✅ | sarosis 领先 |
-| 冻结快照 | ❌ | ✅ 会话内不刷新 | sarosis 领先 |
-| anti-thrashing | ❌ | ✅ | sarosis 领先 |
-| ContextBlock priority | ❌ 仅 recency | ✅ priority + recency | sarosis 领先 |
+| 跨请求 context 缓存 | ❌ | ✅ fingerprint + TTL | vssaros 领先 |
+| LRU 搜索缓存 | ❌ | ✅ 100 条 5 分钟 | vssaros 领先 |
+| Anthropic cache_control | ❌ | ✅ | vssaros 领先 |
+| 冻结快照 | ❌ | ✅ 会话内不刷新 | vssaros 领先 |
+| anti-thrashing | ❌ | ✅ | vssaros 领先 |
+| ContextBlock priority | ❌ 仅 recency | ✅ priority + recency | vssaros 领先 |

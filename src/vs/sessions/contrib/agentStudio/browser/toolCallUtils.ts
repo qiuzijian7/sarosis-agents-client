@@ -491,6 +491,8 @@ export function coerceToolArgs(
 export interface CoerceArgsResult {
 	args: Record<string, unknown>;
 	warnings: string[];
+	/** Required schema fields that are absent from args — caller should reject the call early. */
+	missingRequired?: string[];
 }
 
 export function coerceArgsToSchema(
@@ -531,10 +533,12 @@ export function coerceArgsToSchema(
 
 	// Check for missing required fields
 	const required = (schema as Record<string, unknown>).required as string[] | undefined;
+	const missingRequired: string[] = [];
 	if (required && Array.isArray(required)) {
 		for (const req of required) {
 			if (!(req in (coerced as Record<string, unknown>))) {
 				warnings.push(`missing required argument: "${req}" — tool may fail`);
+				missingRequired.push(req);
 			}
 		}
 	}
@@ -549,7 +553,7 @@ export function coerceArgsToSchema(
 		}
 	}
 
-	return { args: coerced, warnings };
+	return { args: coerced, warnings, ...(missingRequired.length > 0 ? { missingRequired } : {}) };
 }
 
 /**

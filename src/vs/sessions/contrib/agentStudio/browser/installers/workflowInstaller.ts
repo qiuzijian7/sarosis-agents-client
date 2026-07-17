@@ -173,7 +173,7 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 	}
 
 	getInstalledVersion(storeId: string): string | undefined {
-		// 从 ~/.sarosis/installed-packages.json 读取（由 MarketplaceService 维护）
+		// 从 ~/.vssaros/installed-packages.json 读取（由 MarketplaceService 维护）
 		// 这里简单返回 undefined，由 MarketplaceService 统一检查
 		return undefined;
 	}

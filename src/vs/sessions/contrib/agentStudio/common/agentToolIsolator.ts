@@ -98,7 +98,7 @@ export interface IAgentToolIsolator {
  *   notify    : notify
  *   download  : display_download_links
  */
-export const SAROSIS_TOOL_NAMES = {
+export const VSSAROS_TOOL_NAMES = {
 	// Search
 	GREP_SEARCH: 'search_files',
 	SEARCH_FILES: 'search_files',
@@ -163,29 +163,29 @@ export const SAROSIS_TOOL_NAMES = {
  */
 export const TOOL_ALIAS_MAP: Readonly<Record<string, string[]>> = {
 	// VS Code legacy aliases
-	vscode: [SAROSIS_TOOL_NAMES.WRITE_TO_FILE, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.SEARCH_FILES, SAROSIS_TOOL_NAMES.READ_FILE],
-	read: [SAROSIS_TOOL_NAMES.READ_FILE, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.SEARCH_FILES, SAROSIS_TOOL_NAMES.GREP_SEARCH],
-	execute: [SAROSIS_TOOL_NAMES.TERMINAL],
+	vscode: [VSSAROS_TOOL_NAMES.WRITE_TO_FILE, VSSAROS_TOOL_NAMES.LIST_DIR, VSSAROS_TOOL_NAMES.SEARCH_FILES, VSSAROS_TOOL_NAMES.READ_FILE],
+	read: [VSSAROS_TOOL_NAMES.READ_FILE, VSSAROS_TOOL_NAMES.LIST_DIR, VSSAROS_TOOL_NAMES.SEARCH_FILES, VSSAROS_TOOL_NAMES.GREP_SEARCH],
+	execute: [VSSAROS_TOOL_NAMES.TERMINAL],
 	agent: [],  // reserved for future delegation tools
-	listFiles: [SAROSIS_TOOL_NAMES.LIST_DIR],
-	search: [SAROSIS_TOOL_NAMES.SEARCH_FILES],
-	webFetch: [SAROSIS_TOOL_NAMES.WEB_PREVIEW],
+	listFiles: [VSSAROS_TOOL_NAMES.LIST_DIR],
+	search: [VSSAROS_TOOL_NAMES.SEARCH_FILES],
+	webFetch: [VSSAROS_TOOL_NAMES.WEB_PREVIEW],
 	notebook: [],  // reserved
 
 	// Old Sarosis internal names (renamed)
-	file_read: [SAROSIS_TOOL_NAMES.READ_FILE],
-	file_write: [SAROSIS_TOOL_NAMES.WRITE_TO_FILE],
-	file_list: [SAROSIS_TOOL_NAMES.LIST_DIR],
-	read_skill: [SAROSIS_TOOL_NAMES.USE_SKILL],
-	list_skills: [SAROSIS_TOOL_NAMES.USE_SKILL],
+	file_read: [VSSAROS_TOOL_NAMES.READ_FILE],
+	file_write: [VSSAROS_TOOL_NAMES.WRITE_TO_FILE],
+	file_list: [VSSAROS_TOOL_NAMES.LIST_DIR],
+	read_skill: [VSSAROS_TOOL_NAMES.USE_SKILL],
+	list_skills: [VSSAROS_TOOL_NAMES.USE_SKILL],
 
 	// Common LLM hallucination names (snake_case variants — models
 	// trained on agent patterns often use read_file / write_to_file
 	// instead of the registered file_read / file_write)
-	read_file: [SAROSIS_TOOL_NAMES.READ_FILE],
-	write_to_file: [SAROSIS_TOOL_NAMES.WRITE_TO_FILE],
-	replace_in_file: [SAROSIS_TOOL_NAMES.REPLACE_IN_FILE],
-	list_dir: [SAROSIS_TOOL_NAMES.LIST_DIR],
+	read_file: [VSSAROS_TOOL_NAMES.READ_FILE],
+	write_to_file: [VSSAROS_TOOL_NAMES.WRITE_TO_FILE],
+	replace_in_file: [VSSAROS_TOOL_NAMES.REPLACE_IN_FILE],
+	list_dir: [VSSAROS_TOOL_NAMES.LIST_DIR],
 
 	// Old names with no current equivalent — silently dropped
 	echo: [],
@@ -200,35 +200,35 @@ export const TOOL_ALIAS_MAP: Readonly<Record<string, string[]>> = {
  * Tool metadata for display in the UI.
  * Uses current Sarosis internal tool names.
  */
-// Note: multiple SAROSIS_TOOL_NAMES aliases resolve to the same actual tool name
+// Note: multiple VSSAROS_TOOL_NAMES aliases resolve to the same actual tool name
 // (e.g. GREP_SEARCH/SEARCH_FILES → 'search_files'). Keep only one entry per actual name.
 export const TOOL_METADATA: Record<string, { label: string; description: string; category: string }> = {
 	// Search
-	[SAROSIS_TOOL_NAMES.SEARCH_FILES]: { label: 'Search Files', description: '文件搜索 (文件名/文本)', category: 'search' },
+	[VSSAROS_TOOL_NAMES.SEARCH_FILES]: { label: 'Search Files', description: '文件搜索 (文件名/文本)', category: 'search' },
 	// Filesystem
-	[SAROSIS_TOOL_NAMES.LIST_DIR]: { label: 'List Dir', description: '列出目录内容', category: 'filesystem' },
-	[SAROSIS_TOOL_NAMES.READ_FILE]: { label: 'Read File', description: '读取本地文件内容', category: 'filesystem' },
-	[SAROSIS_TOOL_NAMES.REPLACE_IN_FILE]: { label: 'Replace/Edit File', description: '文本替换/文件编辑', category: 'filesystem' },
-	[SAROSIS_TOOL_NAMES.WRITE_TO_FILE]: { label: 'Write To File', description: '写入/创建文件', category: 'filesystem' },
+	[VSSAROS_TOOL_NAMES.LIST_DIR]: { label: 'List Dir', description: '列出目录内容', category: 'filesystem' },
+	[VSSAROS_TOOL_NAMES.READ_FILE]: { label: 'Read File', description: '读取本地文件内容', category: 'filesystem' },
+	[VSSAROS_TOOL_NAMES.REPLACE_IN_FILE]: { label: 'Replace/Edit File', description: '文本替换/文件编辑', category: 'filesystem' },
+	[VSSAROS_TOOL_NAMES.WRITE_TO_FILE]: { label: 'Write To File', description: '写入/创建文件', category: 'filesystem' },
 	// Terminal
-	[SAROSIS_TOOL_NAMES.TERMINAL]: { label: 'Terminal', description: '执行命令行命令', category: 'terminal' },
+	[VSSAROS_TOOL_NAMES.TERMINAL]: { label: 'Terminal', description: '执行命令行命令', category: 'terminal' },
 	// Skills
-	[SAROSIS_TOOL_NAMES.USE_SKILL]: { label: 'Use Skill', description: '加载并使用 Skill', category: 'skills' },
+	[VSSAROS_TOOL_NAMES.USE_SKILL]: { label: 'Use Skill', description: '加载并使用 Skill', category: 'skills' },
 	// Vision
-	[SAROSIS_TOOL_NAMES.READ_IMAGE]: { label: 'Read Image', description: '读取/分析图片', category: 'vision' },
-	[SAROSIS_TOOL_NAMES.CAPTURE_SCREEN]: { label: 'Capture Screen', description: '截取屏幕', category: 'vision' },
+	[VSSAROS_TOOL_NAMES.READ_IMAGE]: { label: 'Read Image', description: '读取/分析图片', category: 'vision' },
+	[VSSAROS_TOOL_NAMES.CAPTURE_SCREEN]: { label: 'Capture Screen', description: '截取屏幕', category: 'vision' },
 	// Web
-	[SAROSIS_TOOL_NAMES.WEB_PREVIEW]: { label: 'Web Preview', description: '预览前端 Web 页面', category: 'web' },
+	[VSSAROS_TOOL_NAMES.WEB_PREVIEW]: { label: 'Web Preview', description: '预览前端 Web 页面', category: 'web' },
 	// Environment
-	[SAROSIS_TOOL_NAMES.GET_ENV_INFO]: { label: 'Get Env Info', description: '获取当前时间/环境信息', category: 'env' },
+	[VSSAROS_TOOL_NAMES.GET_ENV_INFO]: { label: 'Get Env Info', description: '获取当前时间/环境信息', category: 'env' },
 	// Media generation
-	[SAROSIS_TOOL_NAMES.GENERATE_PICTURE]: { label: 'Generate Picture', description: 'AI 图像生成 (文生图/图生图)', category: 'media' },
+	[VSSAROS_TOOL_NAMES.GENERATE_PICTURE]: { label: 'Generate Picture', description: 'AI 图像生成 (文生图/图生图)', category: 'media' },
 	// History context
-	[SAROSIS_TOOL_NAMES.READ_HISTORY_CONTEXT]: { label: 'History Context', description: '搜索/读取历史对话上下文', category: 'history' },
+	[VSSAROS_TOOL_NAMES.READ_HISTORY_CONTEXT]: { label: 'History Context', description: '搜索/读取历史对话上下文', category: 'history' },
 	// Scheduler
-	[SAROSIS_TOOL_NAMES.CRON]: { label: 'Cron', description: '创建/管理定时任务', category: 'scheduler' },
+	[VSSAROS_TOOL_NAMES.CRON]: { label: 'Cron', description: '创建/管理定时任务', category: 'scheduler' },
 	// Notification
-	[SAROSIS_TOOL_NAMES.NOTIFY]: { label: 'Notify', description: '发送通知消息', category: 'notify' },
+	[VSSAROS_TOOL_NAMES.NOTIFY]: { label: 'Notify', description: '发送通知消息', category: 'notify' },
 };
 
 /**
@@ -237,13 +237,13 @@ export const TOOL_METADATA: Record<string, { label: string; description: string;
  * Used when creating agents from presets that don't explicitly declare tools.
  */
 export const DEFAULT_TOOL_SETS: Record<string, string[]> = {
-	code: [SAROSIS_TOOL_NAMES.WRITE_TO_FILE, SAROSIS_TOOL_NAMES.READ_FILE, SAROSIS_TOOL_NAMES.TERMINAL, SAROSIS_TOOL_NAMES.SEARCH_FILES, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.GREP_SEARCH, SAROSIS_TOOL_NAMES.REPLACE_IN_FILE],
-	research: [SAROSIS_TOOL_NAMES.READ_FILE, SAROSIS_TOOL_NAMES.SEARCH_FILES, SAROSIS_TOOL_NAMES.GREP_SEARCH, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.WEB_PREVIEW],
-	writing: [SAROSIS_TOOL_NAMES.READ_FILE, SAROSIS_TOOL_NAMES.WRITE_TO_FILE, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.REPLACE_IN_FILE],
-	management: [SAROSIS_TOOL_NAMES.READ_FILE, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.NOTIFY],
-	devops: [SAROSIS_TOOL_NAMES.WRITE_TO_FILE, SAROSIS_TOOL_NAMES.READ_FILE, SAROSIS_TOOL_NAMES.TERMINAL, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.CRON],
-	analytics: [SAROSIS_TOOL_NAMES.READ_FILE, SAROSIS_TOOL_NAMES.TERMINAL, SAROSIS_TOOL_NAMES.LIST_DIR, SAROSIS_TOOL_NAMES.GREP_SEARCH],
-	creative: [SAROSIS_TOOL_NAMES.GENERATE_PICTURE, SAROSIS_TOOL_NAMES.READ_IMAGE, SAROSIS_TOOL_NAMES.WRITE_TO_FILE, SAROSIS_TOOL_NAMES.READ_FILE],
+	code: [VSSAROS_TOOL_NAMES.WRITE_TO_FILE, VSSAROS_TOOL_NAMES.READ_FILE, VSSAROS_TOOL_NAMES.TERMINAL, VSSAROS_TOOL_NAMES.SEARCH_FILES, VSSAROS_TOOL_NAMES.LIST_DIR, VSSAROS_TOOL_NAMES.GREP_SEARCH, VSSAROS_TOOL_NAMES.REPLACE_IN_FILE],
+	research: [VSSAROS_TOOL_NAMES.READ_FILE, VSSAROS_TOOL_NAMES.SEARCH_FILES, VSSAROS_TOOL_NAMES.GREP_SEARCH, VSSAROS_TOOL_NAMES.LIST_DIR, VSSAROS_TOOL_NAMES.WEB_PREVIEW],
+	writing: [VSSAROS_TOOL_NAMES.READ_FILE, VSSAROS_TOOL_NAMES.WRITE_TO_FILE, VSSAROS_TOOL_NAMES.LIST_DIR, VSSAROS_TOOL_NAMES.REPLACE_IN_FILE],
+	management: [VSSAROS_TOOL_NAMES.READ_FILE, VSSAROS_TOOL_NAMES.LIST_DIR, VSSAROS_TOOL_NAMES.NOTIFY],
+	devops: [VSSAROS_TOOL_NAMES.WRITE_TO_FILE, VSSAROS_TOOL_NAMES.READ_FILE, VSSAROS_TOOL_NAMES.TERMINAL, VSSAROS_TOOL_NAMES.LIST_DIR, VSSAROS_TOOL_NAMES.CRON],
+	analytics: [VSSAROS_TOOL_NAMES.READ_FILE, VSSAROS_TOOL_NAMES.TERMINAL, VSSAROS_TOOL_NAMES.LIST_DIR, VSSAROS_TOOL_NAMES.GREP_SEARCH],
+	creative: [VSSAROS_TOOL_NAMES.GENERATE_PICTURE, VSSAROS_TOOL_NAMES.READ_IMAGE, VSSAROS_TOOL_NAMES.WRITE_TO_FILE, VSSAROS_TOOL_NAMES.READ_FILE],
 };
 
 /**
@@ -251,15 +251,15 @@ export const DEFAULT_TOOL_SETS: Record<string, string[]> = {
  * Includes all tools that do NOT modify files, execute code, or make external changes.
  */
 export const READ_ONLY_TOOL_NAMES: readonly string[] = [
-	SAROSIS_TOOL_NAMES.GREP_SEARCH,
-	SAROSIS_TOOL_NAMES.SEARCH_FILES,
-	SAROSIS_TOOL_NAMES.READ_FILE,
-	SAROSIS_TOOL_NAMES.READ_IMAGE,
-	SAROSIS_TOOL_NAMES.READ_HISTORY_CONTEXT,
-	SAROSIS_TOOL_NAMES.GREP_HISTORY_CONTEXT,
-	SAROSIS_TOOL_NAMES.USE_SKILL,
-	SAROSIS_TOOL_NAMES.WEB_PREVIEW,
-	SAROSIS_TOOL_NAMES.CAPTURE_SCREEN,
+	VSSAROS_TOOL_NAMES.GREP_SEARCH,
+	VSSAROS_TOOL_NAMES.SEARCH_FILES,
+	VSSAROS_TOOL_NAMES.READ_FILE,
+	VSSAROS_TOOL_NAMES.READ_IMAGE,
+	VSSAROS_TOOL_NAMES.READ_HISTORY_CONTEXT,
+	VSSAROS_TOOL_NAMES.GREP_HISTORY_CONTEXT,
+	VSSAROS_TOOL_NAMES.USE_SKILL,
+	VSSAROS_TOOL_NAMES.WEB_PREVIEW,
+	VSSAROS_TOOL_NAMES.CAPTURE_SCREEN,
 ];
 
 export class AgentToolIsolator implements IAgentToolIsolator {
@@ -370,7 +370,7 @@ export class AgentToolIsolator implements IAgentToolIsolator {
 	}
 
 	getKnownToolNames(): readonly string[] {
-		return Object.values(SAROSIS_TOOL_NAMES);
+		return Object.values(VSSAROS_TOOL_NAMES);
 	}
 
 	getToolMetadata(): ReadonlyArray<{ name: string; label: string; description: string; category: string }> {

@@ -16,7 +16,7 @@
 
 1. **基于 Agent 管理**：记忆完全基于 `agentId` 管理，不依赖工作区
 2. **跨工作区共享**：同一个 Agent 在不同工作区中共享同一份记忆
-3. **统一命名规范**：所有相关命名统一为 `saros`（替换旧 `sarosis`）
+3. **统一命名规范**：所有相关命名统一为 `saros`（替换旧 `vssaros`）
 4. **全局存储根目录**：使用 `IEnvironmentService.userRoamingDataHome` 作为根目录
 
 ### 1.2 存储架构
@@ -49,13 +49,13 @@
 export interface IMemoryProvider {
   id: string;
   name: string;
-  
+
   // 加载记忆上下文
   loadContext(agentId: string, sessionId: string): Promise<IMemoryContext>;
-  
+
   // 写入记忆条目
   writeMemory(agentId: string, entry: IMemoryEntry): Promise<void>;
-  
+
   // 搜索记忆
   searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]>;
 }
@@ -106,14 +106,14 @@ export interface AgentMemoryConfig {
   maxEntries: number;
   strategy: 'summary' | 'full' | 'sliding_window';
   windowSize?: number;
-  
+
   /**
    * 召回作用域：
    *   - 'agent'   → 仅当前 Agent 的 L1 记忆（最严格隔离）
    *   - 'global'  → 整个记忆库（跨 Agent 共享）
    */
   scope?: 'agent' | 'global';
-  
+
   entries: Array<{
     id: string;
     key: string;
@@ -227,7 +227,7 @@ def _read_file(path: Path) -> List[str]:
     if not path.exists():
         return []
     raw = path.read_text(encoding="utf-8")
-    
+
     # 使用 ENTRY_DELIMITER (§) 分割条目
     entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
     return [e for e in entries if e]
@@ -269,7 +269,7 @@ class MemoryStore:
 def format_for_system_prompt(self, target: str) -> Optional[str]:
     """
     Return the frozen snapshot for system prompt injection.
-    
+
     This returns the state captured at load_from_disk() time, NOT the live
     state. Mid-session writes do not affect this. This keeps
     the KV cache prefix stable across turns.

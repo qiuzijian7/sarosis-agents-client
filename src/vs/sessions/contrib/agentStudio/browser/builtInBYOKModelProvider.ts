@@ -103,10 +103,10 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 	private _lastHealthStatus: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
 
 	constructor(
-		private readonly _definition: IBYOKProviderDefinition,
-		private readonly _configurationService: IConfigurationService,
-		private readonly _logService: ILogService,
-		private readonly _environmentService: IEnvironmentService,
+		protected readonly _definition: IBYOKProviderDefinition,
+		protected readonly _configurationService: IConfigurationService,
+		protected readonly _logService: ILogService,
+		protected readonly _environmentService: IEnvironmentService,
 	) {
 		super();
 
@@ -164,11 +164,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 	// ─── Internal ─────────────────────────────────────────────
 
-	private _getApiKey(): string {
+	protected _getApiKey(): string {
 		return (this._configurationService.getValue<string>(this._definition.apiKeyConfigKey) || '').trim();
 	}
 
-	private _getBaseUrl(): string {
+	protected _getBaseUrl(): string {
 		const configured = (this._configurationService.getValue<string>(this._definition.baseUrlConfigKey) || '').trim();
 		return configured || this._definition.defaultBaseUrl;
 	}
@@ -497,7 +497,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 	/**
 	 * Build the request body for the chat completions API.
 	 */
-	private _buildRequestBody(
+	protected _buildRequestBody(
 		modelId: string,
 		messages: IChatMessage[],
 		options: IModelOptions,

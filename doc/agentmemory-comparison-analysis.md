@@ -1,6 +1,6 @@
 # AgentMemory 记忆数据加载功能对比分析
 
-> 对比项目：`G:\CustomWorkspaces\AIProjects\agentmemory`（原版）vs `sarosis-agents-client`（本项目）
+> 对比项目：`G:\CustomWorkspaces\AIProjects\agentmemory`（原版）vs `vssaros-agents-client`（本项目）
 
 ---
 
@@ -29,7 +29,7 @@
 └──────────────────────────────────────────────────────┘
 ```
 
-### 本项目 sarosis-agents-client
+### 本项目 vssaros-agents-client
 
 ```
 ┌─ Renderer (Electron Browser) ────────────────────────┐
@@ -55,7 +55,7 @@
 
 ## 二、关键差异对比
 
-| 维度 | 原版 agentmemory | 本项目 sarosis | 差距 |
+| 维度 | 原版 agentmemory | 本项目 vssaros | 差距 |
 |------|------------------|----------------|------|
 | **底层存储** | iii-engine StateKV (SQLite/内存) | host.mjs HTTP 文件服务器 | 本项目依赖 HTTP fetch，有 CORS/网络问题 |
 | **索引持久化** | 分片(Shard)机制 ~2MB/块 | 整体序列化为单个 JSON | 大索引可能超 HTTP 限制 |
@@ -102,7 +102,7 @@ private async _writeShardedIndex(agentId: string, baseFile: string, serialized: 
         shards.push({ index: shards.length, data: serialized.slice(i, i + AgentMemoryProvider.INDEX_SHARD_SIZE) });
     }
     const manifest = { v: 1, shardCount: shards.length, chars: serialized.length };
-    
+
     // 写入 manifest
     await writeFile(agentId, `${baseFile}.manifest`, JSON.stringify(manifest));
     // 写入各分片

@@ -518,9 +518,10 @@ export class PresetAgentViewPane extends ViewPane {
 			};
 			actions.appendChild(deleteBtn);
 
-			// Upload button — only for locally created agents (not marketplace-installed)
-			const isCustom = preset.source === 'custom';
-			if (isCustom && !isInstalled) {
+		// Upload button — only for locally created agents (not marketplace-installed)
+		// AND only if the current user is the owner (or the agent is unclaimed).
+		const isCustom = preset.source === 'custom';
+		if (isCustom && !isInstalled && this.agentStudioService.canUploadAgent(preset)) {
 				const uploadBtn = $('button.preset-btn.upload') as HTMLButtonElement;
 				uploadBtn.textContent = '📤';
 				uploadBtn.title = `上传 "${preset.name}" 到商城`;
@@ -803,6 +804,12 @@ export class PresetAgentViewPane extends ViewPane {
 	// ── Publish (Upload) ─────────────────────────────────────────────────────
 
 	private async _publishPreset(preset: Agent): Promise<void> {
+		// Permission guard: only the owner (or an unclaimed agent) may upload.
+		if (!this.agentStudioService.canUploadAgent(preset)) {
+			this.notificationService.warn(`仅创建者(owner)可上传该 Agent「${preset.name}」`);
+			return;
+		}
+
 		const name = preset.name;
 
 		// Ask for version before publishing
@@ -840,6 +847,8 @@ export class PresetAgentViewPane extends ViewPane {
 			this._installedVersions.set(slug, version);
 			this._renderPresets();
 			this.notificationService.info(`"${name}" v${version} 已上传到商城`);
+			// Claim ownership so non-owners cannot re-upload later.
+			await this.agentStudioService.claimAgentOwnership(preset.id);
 		} catch (err) {
 			this.notificationService.error(
 				`上传 "${name}" 失败: ${err instanceof Error ? err.message : String(err)}`

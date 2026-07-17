@@ -154,10 +154,10 @@ async dispatchParallelExplore(parentAgentId, tasks, executeFn, ...) {
     const subAgentIds = tasks.map((task, idx) =>
         this.createSubAgent(parentAgentId, task, { type: SubAgentType.Explore, ... })
     );
-    
+
     // 2. 批量并行执行（maxConcurrent 控制并发度）
     const resultMap = await this.executeMultipleSubAgents(subAgentIds, executeFn, ...);
-    
+
     // 3. 结果直接返回（无自动合并）
     return subAgentIds.map(id => resultMap.get(id)!).filter(Boolean);
 }
@@ -214,7 +214,7 @@ interface SubAgentResultReducer<T> {
 const Reducers = {
     // 消息追加（对齐 LangGraph add_messages）
     appendMessages: (results) => results.flatMap(r => r.messages),
-    
+
     // 去重合并（按 id 或 content hash）
     dedupMerge: (results) => {
         const seen = new Set<string>();
@@ -225,7 +225,7 @@ const Reducers = {
             return true;
         });
     },
-    
+
     // 最佳结果选择（按 score 排序）
     bestResult: (results) => results.sort((a, b) => b.score - a.score)[0],
 };
@@ -327,7 +327,7 @@ async _executeToolWithTimeout(
     const timeout = options.timeoutMs ?? 30000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
-    
+
     try {
         return await this._executeToolCall(toolCall, controller.signal);
     } catch (err) {
@@ -413,10 +413,10 @@ def commit(self, task, fut):
     except Exception as exc:
         if isinstance(exc, GraphBubbleUp):
             return  # 不处理，由 _panic_or_proceed 处理
-        
+
         # 保存 ERROR 写入到 checkpointer
         self.writer(task, ..., ("__error__", exc))
-        
+
         # 如果节点有 error_handler → 调度处理器任务
         if task.node.error_handler_node:
             self.schedule_error_handler(task, exc)
@@ -517,10 +517,10 @@ const TOOL_ERROR_HANDLERS: Record<string, IToolErrorHandler> = {
 interface IAgentInterrupt {
     /** 请求中断（暂停 agent loop） */
     requestInterrupt(reason: string): void;
-    
+
     /** 恢复执行（从中断点继续） */
     resume(resumeValue?: unknown): Promise<void>;
-    
+
     /** 检查是否被中断 */
     isInterrupted(): boolean;
 }
@@ -693,7 +693,7 @@ interface IAgentState {
 - 每个聊天窗口 = 一个 `NativeChatEditorInput`（`chatId` 唯一，`matches()` 只比 chatId → 允许并存）
 - 同一 EditorGroup 内多个 tab **复用一个 Pane 实例**，`setInput()` 时保存/恢复 input 携带的 `_runtimeState`
 - 不同 EditorGroup → **各自独立的 Pane 实例**（真正并列显示）
-- 布局持久化：`AGENT_CHAT_LAYOUT_KEY = 'sarosis.agentChatLayout.v1'`，reload/pop-out 后重建 group 布局
+- 布局持久化：`AGENT_CHAT_LAYOUT_KEY = 'vssaros.agentChatLayout.v1'`，reload/pop-out 后重建 group 布局
 - Agent 区与文件区是**物理隔离的两个 EditorPart**（聊天不能拖到文件区）
 
 **流式输出的窗口路由（两条路径）**：
@@ -910,7 +910,7 @@ this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }
 第一阶段（根因修复，解锁多窗口/多 Session 并发）:
   ① AgentOSService per-turn 分桶  ─┬─→  ③ Session 并行执行  ─→  后台窗口进度指示
   ② 外部广播路由补 sessionId      ─┘
-  
+
 第二阶段（容错健壮性，可并行推进）:
   ④ 工具超时  ─→  工具重试
   ⑤ Error Handler

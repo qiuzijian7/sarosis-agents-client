@@ -15,7 +15,7 @@ export class WorktreeCheckpointService implements IWorktreeCheckpointService {
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
-	) {}
+	) { }
 
 	async createBaselineCheckpoint(sessionId: string, worktreePath: string): Promise<string | undefined> {
 		try {
@@ -25,8 +25,8 @@ export class WorktreeCheckpointService implements IWorktreeCheckpointService {
 			const { stdout: headCommit } = await execAsync('git rev-parse HEAD', { cwd: worktreePath });
 			const commitHash = headCommit.trim();
 
-			// Create checkpoint ref: refs/sarosis/checkpoints/{sessionId}/baseline
-			const refName = `refs/sarosis/checkpoints/${sessionId}/baseline`;
+			// Create checkpoint ref: refs/vssaros/checkpoints/{sessionId}/baseline
+			const refName = `refs/vssaros/checkpoints/${sessionId}/baseline`;
 			await execAsync(`git update-ref ${refName} ${commitHash}`, { cwd: worktreePath });
 
 			this.logService.info(`[WorktreeCheckpoint] Baseline checkpoint created: ${refName} -> ${commitHash}`);
@@ -45,8 +45,8 @@ export class WorktreeCheckpointService implements IWorktreeCheckpointService {
 			const { stdout: headCommit } = await execAsync('git rev-parse HEAD', { cwd: worktreePath });
 			const commitHash = headCommit.trim();
 
-			// Create checkpoint ref: refs/sarosis/checkpoints/{sessionId}/request-{requestId}
-			const refName = `refs/sarosis/checkpoints/${sessionId}/request-${requestId}`;
+			// Create checkpoint ref: refs/vssaros/checkpoints/{sessionId}/request-{requestId}
+			const refName = `refs/vssaros/checkpoints/${sessionId}/request-${requestId}`;
 			await execAsync(`git update-ref ${refName} ${commitHash}`, { cwd: worktreePath });
 
 			this.logService.info(`[WorktreeCheckpoint] Post-turn checkpoint created: ${refName} -> ${commitHash}`);
@@ -62,7 +62,7 @@ export class WorktreeCheckpointService implements IWorktreeCheckpointService {
 			this.logService.info(`[WorktreeCheckpoint] Getting checkpoints for session ${sessionId}`);
 
 			// List all checkpoint refs for this session
-			const refPattern = `refs/sarosis/checkpoints/${sessionId}/*`;
+			const refPattern = `refs/vssaros/checkpoints/${sessionId}/*`;
 			const { stdout } = await execAsync(`git for-each-ref --format='%(refname) %(objectname) %(creatordate:unix)' ${refPattern}`, { cwd: worktreePath });
 
 			if (!stdout.trim()) {
@@ -74,7 +74,7 @@ export class WorktreeCheckpointService implements IWorktreeCheckpointService {
 				const match = line.match(/^(\S+)\s+(\S+)\s+(\S+)$/);
 				if (match) {
 					const [, ref, commitHash, timestampStr] = match;
-					const name = ref.replace(`refs/sarosis/checkpoints/${sessionId}/`, '');
+					const name = ref.replace(`refs/vssaros/checkpoints/${sessionId}/`, '');
 					const isBaseline = name === 'baseline';
 
 					checkpoints.push({
@@ -122,7 +122,7 @@ export class WorktreeCheckpointService implements IWorktreeCheckpointService {
 			this.logService.info(`[WorktreeCheckpoint] Deleting all checkpoints for session ${sessionId}`);
 
 			// Get all checkpoint refs for this session
-			const refPattern = `refs/sarosis/checkpoints/${sessionId}/*`;
+			const refPattern = `refs/vssaros/checkpoints/${sessionId}/*`;
 			const { stdout } = await execAsync(`git for-each-ref --format='%(refname)' ${refPattern}`, { cwd: worktreePath }).catch(() => ({ stdout: '' }));
 
 			if (!stdout.trim()) {

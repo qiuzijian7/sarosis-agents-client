@@ -456,6 +456,24 @@ export class HtmlFileEditorPane extends TextFileEditor {
 						await this._configHtmlService.handleRunTerminal(agentId, cmd, args, { cwd: rtOptions.cwd, env: rtOptions.env });
 						break;
 					}
+					case 'confightml.writeHtml': {
+						if (!agentId) throw new Error('agentId 未识别');
+						let newHtml = String(msg.html || '');
+						// 剥离 _wrapHtmlForWebview 注入的内容
+						newHtml = newHtml
+							.replace(/<script>[\s\S]*?(?:AgentConfigHtml SDK|preview-cleanup|preview-probe)[\s\S]*?<\/script>/g, '')
+							.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/g, '')
+							.replace(/<style>(?:body,body\s*\*\{pointer-events|#html-edit-toolbar,#html-edit-add-btn)[\s\S]*?<\/style>/g, '');
+						this._logService.info(`[HtmlFileEditorPane] preview writeHtml: agentId=${agentId} rawLen=${String(msg.html || '').length} cleanLen=${newHtml.length}`);
+						// 先 reply SDK（确保 await writeHtml() promise resolve → toast 显示）
+						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
+						// 写盘
+						await this._configHtmlService.writeHtml(agentId, newHtml, { origin: 'html' });
+						this._rawHtml = newHtml;
+						// 不立即 setHtml 刷新——outerHTML 含运行时状态，重载可能引入 JS 错误。
+						// 文件已落盘，用户切换模式或重开时自然加载最新内容。
+						return; // 跳过底部的统一 reply
+					}
 				}
 				this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
 			} catch (err) {
@@ -610,11 +628,13 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			'sendEvent:function(n,d){return s("confightml.event",{eventName:n,payload:d})},' +
 			'chatSend:function(msg,o){return s("confightml.chatSend",Object.assign({message:msg},o||{}))},' +
 			'notify:function(msg,lv){return s("confightml.notify",{message:msg,level:lv||"info"})},' +
-			'runTerminal:function(cmd,args,o){return s("confightml.runTerminal",Object.assign({command:cmd,args:args||[]},o||{}))}};' +
+			'runTerminal:function(cmd,args,o){return s("confightml.runTerminal",Object.assign({command:cmd,args:args||[]},o||{}))},' +
+			'writeHtml:function(h){return s("confightml.writeHtml",{html:h})}};' +
 			'g.AgentConfigHtml={connect:function(){log("connect ok");return Promise.resolve(a)},isConnected:function(){return true},' +
 			'on:function(ev,fn){return a.on(ev,fn)},sendEvent:function(n,d){return a.sendEvent(n,d)},' +
 			'chatSend:function(msg,o){return a.chatSend(msg,o)},notify:function(m,l){return a.notify(m,l)},' +
-			'runTerminal:function(cmd,args,o){return a.runTerminal(cmd,args,o)}}}(window);</script>';
+			'runTerminal:function(cmd,args,o){return a.runTerminal(cmd,args,o)},' +
+			'writeHtml:function(h){return a.writeHtml(h)}}}(window);</script>';
 
 		const sdkWrapper = `<script>console.log('[HtmlFileEditorPane] preview SDK injected, type tag present')</script>` + sdk;
 

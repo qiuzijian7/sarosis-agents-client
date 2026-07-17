@@ -823,6 +823,13 @@ export interface IToolProvider {
 	 * @param state 工具名称 -> 是否启用的 Map
 	 */
 	setToolsEnabledState(_agentId: string, state: Record<string, boolean>): Promise<void>;
+
+	/**
+	 * Per-turn 状态重置。在每个 agent turn 开始时调用，
+	 * 清空跨 turn 不应保留的累积状态（如读取去重/重复计数等）。
+	 * 可选：不实现则不清空。
+	 */
+	resetPerTurn?(): void;
 }
 
 export interface IToolDefinition {
@@ -851,6 +858,19 @@ export interface IToolCall {
 	readonly id: string;
 	readonly name: string;
 	readonly arguments: Record<string, unknown>;
+	/**
+	 * 当前工具调用所属的 worktree 路径（看板 / 任务级隔离透传）。
+	 *
+	 * 来源：AgentOS.executeTurn(request.worktreePath) → _executeToolCalls →
+	 * 桥接工具（tool_call）→ executeWithRetryAndTimeout → provider.executeTool。
+	 *
+	 * 用途：
+	 *  - Builtin 工具当前通过 `setParentWorktreePath` 机制读取（delegate_task 子 agent 继承）。
+	 *  - MCP 桥接工具（McpToolProvider）在 D2 后从 IToolCall.worktreePath 注入
+	 *    IMcpTool.call 的 context，使 server 能感知当前工作根（见 worktreeIsolation.mcp.test.ts）。
+	 * 可选：未指定时工具按 provider 默认工作区执行。
+	 */
+	readonly worktreePath?: string;
 }
 
 export interface IToolResult {

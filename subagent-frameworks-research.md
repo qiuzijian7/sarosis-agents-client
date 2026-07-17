@@ -1,6 +1,6 @@
 # 支持 SubAgent 调用的开源 Agent 项目调研
 
-> 调研时间：2026年7月  
+> 调研时间：2026年7月
 > 核心关注：哪些开源项目支持 subagent（子代理）调用，以及它们的调用机制差异
 
 ---
@@ -35,7 +35,7 @@ LangGraph 的 subagent 通过 **Subgraph**（子图）实现：每个子 agent �
 - **interrupt 支持**：子图内的工具调用可触发 `interrupt()`，支持人机交互
 - **Supervisor 模式**：主 agent 是 LLM 驱动的路由器，动态决定下一步交给哪个 worker
 
-**GitHub：** https://github.com/langchain-ai/langgraph  
+**GitHub：** https://github.com/langchain-ai/langgraph
 **Stars：** ~18k
 
 **优点：**
@@ -99,7 +99,7 @@ Google 2025 年开源的多 agent 框架，提供**两种 subagent 调用方式*
 - 默认允许 sibling agent 间互相 transfer
 - Session State 在所有 agent 间共享
 
-**GitHub：** https://github.com/google/adk-python  
+**GitHub：** https://github.com/google/adk-python
 **Stars：** ~20k
 
 **优点：**
@@ -126,7 +126,7 @@ OpenAI 2025年3月发布的生产级框架，核心原语就是 **handoff**。
 - 内置 tracing dashboard
 - 有 TypeScript 移植版（openai-agents-js）
 
-**GitHub：** https://github.com/openai/openai-agents-python  
+**GitHub：** https://github.com/openai/openai-agents-python
 **Stars：** ~27k
 
 **优点：**
@@ -155,7 +155,7 @@ AG2 的 subagent 通过 **NestedChatTarget** 和 **Handoff 体系**实现。
 - Agent 可将子任务作为嵌套对话处理，结果返回主流程
 - 分布式运行时（beta）支持跨进程 subagent
 
-**GitHub：** https://github.com/ag2ai/ag2  
+**GitHub：** https://github.com/ag2ai/ag2
 **Stars：** ~55k
 
 **优点：**
@@ -181,7 +181,7 @@ CrewAI 通过 **hierarchical process** 实现 subagent 调用。
 - 支持 `delegate` 工具：Agent 可主动将子任务委派给其他 Agent
 - Agent 间通过 `SharedContext` 共享状态
 
-**GitHub：** https://github.com/crewAIInc/crewAI  
+**GitHub：** https://github.com/crewAIInc/crewAI
 **Stars：** ~36k
 
 **优点：**
@@ -207,7 +207,7 @@ Pydantic AI 的 subagent 通过**把 Agent 包装成工具**实现。
 - 类型安全（Pydantic 验证每个边界）
 - Provider 无关（~20 个 provider）
 
-**GitHub：** https://github.com/pydantic/pydantic-ai  
+**GitHub：** https://github.com/pydantic/pydantic-ai
 **Stars：** ~18k
 
 **优点：**
@@ -478,7 +478,7 @@ Claude Code 和 Codex CLI 都支持通过配置文件定义 subagent，由主 ag
 | **需要 Deep Research** | Cognitive Kernel-Pro | 专为深度研究设计 |
 | **需要嵌套 subagent** | subagents-pydantic-ai / AG2 | 支持深层嵌套委托 |
 
-### 对 sarosis-agents-client 的参考价值
+### 对 vssaros-agents-client 的参考价值
 
 结合你们现有的 Workflow + SubAgent 架构：
 

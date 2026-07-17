@@ -370,7 +370,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 * editors) across window reloads. Workspace-scoped because the layout is
 	 * tied to the current workspace.
 	 */
-	private static readonly AGENT_CHAT_LAYOUT_KEY = 'sarosis.agentChatLayout.v1';
+	private static readonly AGENT_CHAT_LAYOUT_KEY = 'vssaros.agentChatLayout.v1';
 
 	/** Storage service reference for layout persistence operations. */
 	private _storageService: IStorageService | undefined;
@@ -643,7 +643,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		}));
 		this._register(lifecycleService.onWillShutdown(() => this.storeLayoutPreferences(storageService)));
 
-	// [Sarosis] Persist the Agent Chat editor layout (groups, chatIds,
+		// [Sarosis] Persist the Agent Chat editor layout (groups, chatIds,
 		// agent/session ids) so it survives window reloads. Saved on shutdown
 		// and also on storage flush so crashes do not lose the layout.
 		this._register(storageService.onWillSaveState(e => {
@@ -1356,12 +1356,12 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 					wasPoppedOut = false;
 				} else {
 					// ── 弹出聊天窗口 ──
-				// 先保存 agent editor 当前宽度（用于恢复）
-				if (!this.isRightColumnCollapsed) {
-					try {
-						this.preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
-					} catch { /* grid may not be fully layouted */ }
-				}
+					// 先保存 agent editor 当前宽度（用于恢复）
+					if (!this.isRightColumnCollapsed) {
+						try {
+							this.preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+						} catch { /* grid may not be fully layouted */ }
+					}
 
 					// ① 在右侧栏仍可见时，先定位 pane 和它对应的 webview 覆盖层。
 					const agentPartContainer = document.getElementById(Parts.AGENT_EDITOR_PART);
@@ -1378,9 +1378,9 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 						}) as HTMLElement | undefined) || null;
 					}
 
-				// ② 隐藏右侧栏（与收缩按钮效果一致）
-				this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
-				this.isRightColumnCollapsed = true;
+					// ② 隐藏右侧栏（与收缩按钮效果一致）
+					this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
+					this.isRightColumnCollapsed = true;
 
 					// 隐藏 titlebar 上的弹出按钮和伸缩按钮
 					setToggleContainerVisible(false);
@@ -1576,37 +1576,37 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			// 优先复用已存在实例（保留 _runtimeState，pane 内容不丢失）。
 			NativeChatEditorInput.beginForceMove();
 			try {
-			for (const saved of savedEditors) {
-				const gi = Math.min(saved.groupIndex ?? 0, groups.length - 1);
-				const targetGroup = groups[gi];
-				const existing = existingByChatId.get(saved.chatId);
-				if (existing) {
-					// 复用原实例：找到它当前所在的 group，moveEditors 到 targetGroup
-					let sourceGroup: IEditorGroup | undefined;
-					for (const g of agentPart.groups) {
-						if (g.editors.includes(existing)) {
-							sourceGroup = g;
-							break;
+				for (const saved of savedEditors) {
+					const gi = Math.min(saved.groupIndex ?? 0, groups.length - 1);
+					const targetGroup = groups[gi];
+					const existing = existingByChatId.get(saved.chatId);
+					if (existing) {
+						// 复用原实例：找到它当前所在的 group，moveEditors 到 targetGroup
+						let sourceGroup: IEditorGroup | undefined;
+						for (const g of agentPart.groups) {
+							if (g.editors.includes(existing)) {
+								sourceGroup = g;
+								break;
+							}
 						}
+						if (sourceGroup && sourceGroup !== targetGroup) {
+							sourceGroup.moveEditors([{ editor: existing, options: { preserveFocus: false } as any }], targetGroup);
+						} else if (!sourceGroup) {
+							// 已存在实例但找不到所在 group — 直接 openEditor
+							targetGroup.openEditor(existing, { pinned: true });
+						}
+						// 如果 sourceGroup === targetGroup，无需操作
+					} else {
+						// Fallback：原实例已丢失 — create 新实例（内容会丢失）
+						const input = NativeChatEditorInput.create(
+							saved.chatId,
+							saved.agentId,
+							saved.sessionId,
+							saved.name,
+						);
+						targetGroup.openEditor(input, { pinned: true, sticky: targetGroupCount === 1 });
 					}
-					if (sourceGroup && sourceGroup !== targetGroup) {
-						sourceGroup.moveEditors([{ editor: existing, options: { preserveFocus: false } as any }], targetGroup);
-					} else if (!sourceGroup) {
-						// 已存在实例但找不到所在 group — 直接 openEditor
-						targetGroup.openEditor(existing, { pinned: true });
-					}
-					// 如果 sourceGroup === targetGroup，无需操作
-				} else {
-					// Fallback：原实例已丢失 — create 新实例（内容会丢失）
-					const input = NativeChatEditorInput.create(
-						saved.chatId,
-						saved.agentId,
-						saved.sessionId,
-						saved.name,
-					);
-					targetGroup.openEditor(input, { pinned: true, sticky: targetGroupCount === 1 });
 				}
-			}
 			} finally {
 				NativeChatEditorInput.endForceMove();
 			}
@@ -2307,11 +2307,11 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 				return true;
 			case Parts.EDITOR_PART:
 				return true; // Editor is always visible in this layout
-		case Parts.AGENT_EDITOR_PART:
-			return true; // Agent editor (right column) is always visible
-		case Parts.PANEL_PART:
-			return this.isPanelVisible;
-		case Parts.AUXILIARYBAR_PART:
+			case Parts.AGENT_EDITOR_PART:
+				return true; // Agent editor (right column) is always visible
+			case Parts.PANEL_PART:
+				return this.isPanelVisible;
+			case Parts.AUXILIARYBAR_PART:
 			case Parts.PANEL_PART:
 			case Parts.CHATBAR_PART:
 			case Parts.ACTIVITYBAR_PART:
@@ -2330,79 +2330,79 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			case Parts.EDITOR_PART:
 				// Editor cannot be hidden in this layout
 				break;
-		case Parts.AGENT_EDITOR_PART:
-			// Toggle Agent editor (right column) visibility
-			if (hidden) {
-				if (!this.isRightColumnCollapsed) {
-					try {
-						this.preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
-					} catch { /* grid not ready */ }
-					this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
-					this.isRightColumnCollapsed = true;
-				}
-			} else {
-				if (this.isRightColumnCollapsed) {
-					this.workbenchGrid.setViewVisible(this.agentEditorPartView, true);
-					this.workbenchGrid.resizeView(this.agentEditorPartView, { width: this.preToggleWidth > 0 ? this.preToggleWidth : 500, height: 1000 });
-					this.isRightColumnCollapsed = false;
-				}
-			}
-			break;
-			// Panel toggle: show/hide the panel (Output/Debug/Terminal) below the editor
-		case Parts.PANEL_PART:
-			if (hidden === !this.isPanelVisible) {
-				break; // Already in the desired state
-			}
-			try {
-				this.workbenchGrid.setViewVisible(this.panelPartView, !hidden);
-				this.isPanelVisible = !hidden;
-				this.updateLayoutClasses();
-				if (!hidden) {
-					// Panel was created with size=0 when initially hidden. Restore proper height.
-					const contentHeight = this._mainContainerDimension.height - DEFAULT_CUSTOM_TITLEBAR_HEIGHT;
-					const targetPanelHeight = Math.round(contentHeight * 0.35);
-					this.workbenchGrid.resizeView(this.panelPartView, { width: this.workbenchGrid.getViewSize(this.panelPartView).width, height: targetPanelHeight });
-
-					// When showing, ensure a pane composite is open
-					const allComposites = this.paneCompositeService.getPaneComposites(ViewContainerLocation.Panel);
-					const activePanel = this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Panel);
-					if (!activePanel) {
-						const lastActive = this.paneCompositeService.getLastActivePaneCompositeId(ViewContainerLocation.Panel);
-						// Try last active, then default view container, then first available composite
-						let compositeToOpen: string | undefined = lastActive;
-						if (!compositeToOpen) {
-							const defaultContainer = this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Panel);
-							compositeToOpen = defaultContainer?.id;
-						}
-						if (!compositeToOpen) {
-							compositeToOpen = allComposites.length > 0 ? allComposites[0].id : undefined;
-						}
-						if (compositeToOpen) {
-							await this.paneCompositeService.openPaneComposite(compositeToOpen, ViewContainerLocation.Panel, true);
-							// Re-resize after composite is open to ensure proper panel height
-							try {
-								const currentWidth = this.workbenchGrid.getViewSize(this.panelPartView).width;
-								
-								this.workbenchGrid.resizeView(this.panelPartView, { width: currentWidth, height: targetPanelHeight });
-							} catch (e) {
-								this.logService.error('[Workbench] Panel re-resize failed:', e);
-							}
-
-							// Schedule another resize on the next frame
-							requestAnimationFrame(() => {
-								try {
-									const w = this.workbenchGrid.getViewSize(this.panelPartView).width;
-									const h = this.workbenchGrid.getViewSize(this.panelPartView).height;
-									if (h < 100) {
-										this.workbenchGrid.resizeView(this.panelPartView, { width: w, height: targetPanelHeight });
-									}
-								} catch { /* ignore */ }
-							});
-						}
+			case Parts.AGENT_EDITOR_PART:
+				// Toggle Agent editor (right column) visibility
+				if (hidden) {
+					if (!this.isRightColumnCollapsed) {
+						try {
+							this.preToggleWidth = this.workbenchGrid.getViewSize(this.agentEditorPartView).width;
+						} catch { /* grid not ready */ }
+						this.workbenchGrid.setViewVisible(this.agentEditorPartView, false);
+						this.isRightColumnCollapsed = true;
+					}
+				} else {
+					if (this.isRightColumnCollapsed) {
+						this.workbenchGrid.setViewVisible(this.agentEditorPartView, true);
+						this.workbenchGrid.resizeView(this.agentEditorPartView, { width: this.preToggleWidth > 0 ? this.preToggleWidth : 500, height: 1000 });
+						this.isRightColumnCollapsed = false;
 					}
 				}
-			} catch { /* Grid not ready */ }
-			break;
+				break;
+			// Panel toggle: show/hide the panel (Output/Debug/Terminal) below the editor
+			case Parts.PANEL_PART:
+				if (hidden === !this.isPanelVisible) {
+					break; // Already in the desired state
+				}
+				try {
+					this.workbenchGrid.setViewVisible(this.panelPartView, !hidden);
+					this.isPanelVisible = !hidden;
+					this.updateLayoutClasses();
+					if (!hidden) {
+						// Panel was created with size=0 when initially hidden. Restore proper height.
+						const contentHeight = this._mainContainerDimension.height - DEFAULT_CUSTOM_TITLEBAR_HEIGHT;
+						const targetPanelHeight = Math.round(contentHeight * 0.35);
+						this.workbenchGrid.resizeView(this.panelPartView, { width: this.workbenchGrid.getViewSize(this.panelPartView).width, height: targetPanelHeight });
+
+						// When showing, ensure a pane composite is open
+						const allComposites = this.paneCompositeService.getPaneComposites(ViewContainerLocation.Panel);
+						const activePanel = this.paneCompositeService.getActivePaneComposite(ViewContainerLocation.Panel);
+						if (!activePanel) {
+							const lastActive = this.paneCompositeService.getLastActivePaneCompositeId(ViewContainerLocation.Panel);
+							// Try last active, then default view container, then first available composite
+							let compositeToOpen: string | undefined = lastActive;
+							if (!compositeToOpen) {
+								const defaultContainer = this.viewDescriptorService.getDefaultViewContainer(ViewContainerLocation.Panel);
+								compositeToOpen = defaultContainer?.id;
+							}
+							if (!compositeToOpen) {
+								compositeToOpen = allComposites.length > 0 ? allComposites[0].id : undefined;
+							}
+							if (compositeToOpen) {
+								await this.paneCompositeService.openPaneComposite(compositeToOpen, ViewContainerLocation.Panel, true);
+								// Re-resize after composite is open to ensure proper panel height
+								try {
+									const currentWidth = this.workbenchGrid.getViewSize(this.panelPartView).width;
+
+									this.workbenchGrid.resizeView(this.panelPartView, { width: currentWidth, height: targetPanelHeight });
+								} catch (e) {
+									this.logService.error('[Workbench] Panel re-resize failed:', e);
+								}
+
+								// Schedule another resize on the next frame
+								requestAnimationFrame(() => {
+									try {
+										const w = this.workbenchGrid.getViewSize(this.panelPartView).width;
+										const h = this.workbenchGrid.getViewSize(this.panelPartView).height;
+										if (h < 100) {
+											this.workbenchGrid.resizeView(this.panelPartView, { width: w, height: targetPanelHeight });
+										}
+									} catch { /* ignore */ }
+								});
+							}
+						}
+					}
+				} catch { /* Grid not ready */ }
+				break;
 		}
 	}
 

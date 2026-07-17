@@ -1,8 +1,8 @@
 ﻿# Hivemind 团队协作功能设计方案
 
-> **文档版本**: v1.1  
-> **生成时间**: 2026-06-16  
-> **目标项目**: sarosis-agents-client（基于 VS Code 的 Agent Studio 平台）  
+> **文档版本**: v1.1
+> **生成时间**: 2026-06-16
+> **目标项目**: vssaros-agents-client（基于 VS Code 的 Agent Studio 平台）
 > **参考项目**: hivemind（@deeplake/hivemind v0.7.94）
 
 ---
@@ -209,8 +209,8 @@ interface GraphSnapshot {
 }
 ```
 
-**节点类型**：function, class, method, interface, type_alias, enum, const, variable, module  
-**边类型**：imports, calls, extends, implements, method_of  
+**节点类型**：function, class, method, interface, type_alias, enum, const, variable, module
+**边类型**：imports, calls, extends, implements, method_of
 **语言支持**：TypeScript, JavaScript, Python, Go, Rust, Java, Ruby, C, C++
 
 ### 4.2 图谱构建流程
@@ -1013,13 +1013,13 @@ registerSingleton(IRuleEngineService, RuleEngineService, InstantiationType.Delay
 
 | 工具名 | 功能 |
 |--------|------|
-| `sarosis_delegate_task` | 委派任务给其他 Agent |
-| `sarosis_query_agents` | 查询可用 Agent 及其能力 |
-| `sarosis_share_skill` | 共享技能到团队/组织 |
-| `sarosis_search_knowledge` | 搜索跨层级知识 |
-| `sarosis_analyze_impact` | 变更影响分析 |
-| `sarosis_publish_rule` | 发布组织规则 |
-| `sarosis_subscribe_events` | 订阅协作事件 |
+| `vssaros_delegate_task` | 委派任务给其他 Agent |
+| `vssaros_query_agents` | 查询可用 Agent 及其能力 |
+| `vssaros_share_skill` | 共享技能到团队/组织 |
+| `vssaros_search_knowledge` | 搜索跨层级知识 |
+| `vssaros_analyze_impact` | 变更影响分析 |
+| `vssaros_publish_rule` | 发布组织规则 |
+| `vssaros_subscribe_events` | 订阅协作事件 |
 
 ---
 
@@ -1185,7 +1185,7 @@ interface ModuleRegistryEntry {
     dependencies?: string[];          // 依赖的其他模块 ID
     createdAt: string;                // 创建时间 (ISO 8601)
     updatedAt: string;                // 更新时间 (ISO 8601)
-    
+
     // 服务器特有字段
     serverUrl?: string;               // 服务器托管地址
     downloadUrl?: string;             // 下载地址
@@ -1194,7 +1194,7 @@ interface ModuleRegistryEntry {
     changelog?: string;               // 更新日志 (markdown)
     readmeUrl?: string;               // README 地址
     screenshotUrls?: string[];        // 截图 URL 列表
-    
+
     // 版本信息
     versions: ModuleVersionInfo[];     // 所有可用版本
 }
@@ -1238,7 +1238,7 @@ interface LocalModuleState {
 
 ```typescript
 /// 升级操作状态
-type UpgradeStatus = 
+type UpgradeStatus =
     | 'pending'                       // 等待中
     | 'downloading'                   // 下载中
     | 'installing'                    // 安装中
@@ -1477,19 +1477,19 @@ import semver from 'semver';
  * @returns 'major' | 'minor' | 'patch' | 'none'
  */
 function compareVersions(
-    localVersion: string | null, 
+    localVersion: string | null,
     serverVersion: string
 ): { needsUpdate: boolean; severity: 'major' | 'minor' | 'patch' | 'none' } {
     if (!localVersion) {
         // 本地未安装，视为需要安装
         return { needsUpdate: true, severity: 'major' };
     }
-    
+
     if (semver.gt(serverVersion, localVersion)) {
         // 服务器版本更高
         const diff = semver.diff(localVersion, serverVersion);
         let severity: 'major' | 'minor' | 'patch' | 'none';
-        
+
         switch (diff) {
             case 'major':
                 severity = 'major';
@@ -1503,10 +1503,10 @@ function compareVersions(
             default:
                 severity = 'none';
         }
-        
+
         return { needsUpdate: true, severity };
     }
-    
+
     return { needsUpdate: false, severity: 'none' };
 }
 ```
@@ -1519,16 +1519,16 @@ flowchart TD
     B -->|本地未安装| C[全新安装]
     B -->|服务器版本 <= 本地| D[拒绝升级<br/>已是最新]
     B -->|服务器版本 > 本地| E{升级级别检查}
-    
+
     E -->|Major 升级| F[显示破坏性变更警告<br/>需用户确认]
     E -->|Minor 升级| G[显示功能变更说明<br/>可选确认]
     E -->|Patch 升级| H[静默升级或轻量确认]
-    
+
     F -->|用户确认| G
     F -->|用户拒绝| I[取消升级]
     G --> J[执行升级]
     H --> J
-    
+
     J --> K[下载模块文件]
     K --> L[校验 SHA256]
     L -->|校验通过| M[安装到本地]
@@ -1537,10 +1537,10 @@ flowchart TD
     O --> P[记录升级历史]
     P --> Q[推送 WebSocket 通知]
     Q --> R[升级完成]
-    
+
     N --> P
     I --> P
-    
+
     style F fill:#ff6b6b,color:#fff
     style G fill:#ffa94d,color:#fff
     style H fill:#69db7c,color:#fff
@@ -1572,27 +1572,27 @@ async function installSkillUpgrade(
 ): Promise<void> {
     // 1. 下载 SKILL.md 文件
     const skillContent = await downloadFile(serverEntry.downloadUrl!);
-    
+
     // 2. 校验 SHA256
     const hash = computeSha256(skillContent);
     if (hash !== serverEntry.sha256) {
         throw new Error(`SHA256 mismatch: expected ${serverEntry.sha256}, got ${hash}`);
     }
-    
+
     // 3. 确定安装路径
-    const installDir = localState?.installPath 
+    const installDir = localState?.installPath
         ?? getDefaultSkillInstallPath(serverEntry);
-    
+
     // 4. 备份旧版本（用于回滚）
     let backupPath: string | undefined;
     if (localState) {
         backupPath = `${installDir}.backup.${Date.now()}`;
         await backupFile(installDir, backupPath);
     }
-    
+
     // 5. 写入新文件
     await writeSkillFile(installDir, skillContent);
-    
+
     // 6. 更新本地状态
     await updateLocalModuleState({
         id: moduleId,
@@ -1603,7 +1603,7 @@ async function installSkillUpgrade(
         lastUpgradeAt: new Date().toISOString(),
         lastUpgradeFrom: localState?.installedVersion ?? 'none',
     });
-    
+
     // 7. 更新升级历史
     historyEntry.status = 'completed';
     historyEntry.completedAt = new Date().toISOString();
@@ -1636,19 +1636,19 @@ async function installMcpUpgrade(
         publisher: serverEntry.author,
         publisherDisplayName: serverEntry.author,
     };
-    
+
     // 2. 调用 McpManagementService 安装
     const mcpManagementService = getMcpManagementService();
     const installedServer = await mcpManagementService.installFromGallery(
         galleryServer,
-        { 
-            packageType: serverEntry.dependencies?.includes('npm') 
-                ? RegistryType.NODE 
+        {
+            packageType: serverEntry.dependencies?.includes('npm')
+                ? RegistryType.NODE
                 : RegistryType.PYTHON,
             mcpResource: getUserMcpResource(),
         }
     );
-    
+
     // 3. 更新本地状态
     await updateLocalModuleState({
         id: moduleId,
@@ -1658,7 +1658,7 @@ async function installMcpUpgrade(
         lastUpgradeAt: new Date().toISOString(),
         lastUpgradeFrom: localState?.installedVersion ?? 'none',
     });
-    
+
     // 4. 更新升级历史
     historyEntry.status = 'completed';
     historyEntry.completedAt = new Date().toISOString();
@@ -1676,7 +1676,7 @@ async function rollbackUpgrade(
     if (!historyEntry.rollbackAvailable) {
         throw new Error('Rollback not available for this upgrade');
     }
-    
+
     // 1. 创建回滚记录
     const rollbackEntry: UpgradeHistoryEntry = {
         id: uuidv4(),
@@ -1691,7 +1691,7 @@ async function rollbackUpgrade(
         rollbackAvailable: false,
     };
     await saveUpgradeHistory(rollbackEntry);
-    
+
     try {
         // 2. 根据模块类型执行回滚
         switch (historyEntry.moduleType) {
@@ -1716,12 +1716,12 @@ async function rollbackUpgrade(
                 await restoreWorkflowBackup(historyEntry);
                 break;
         }
-        
+
         // 3. 更新回滚记录状态
         rollbackEntry.status = 'completed';
         rollbackEntry.completedAt = new Date().toISOString();
         await saveUpgradeHistory(rollbackEntry);
-        
+
         // 4. 更新本地模块状态
         await updateLocalModuleState({
             id: historyEntry.moduleId,
@@ -1916,7 +1916,7 @@ Web 服务器的模块信息需要与本地 Agent Studio 的注册表同步：
 /// 从 Agent Studio 同步本地模块状态
 async function syncLocalModuleStates(): Promise<LocalModuleState[]> {
     const states: LocalModuleState[] = [];
-    
+
     // 1. 同步技能 (Skill) 状态
     const skillRegistry = getAgentStudioService().getSkillRegistry();
     const allSkills = skillRegistry.getAll();
@@ -1932,7 +1932,7 @@ async function syncLocalModuleStates(): Promise<LocalModuleState[]> {
             autoUpdate: false,
         });
     }
-    
+
     // 2. 同步 Agent 状态
     const agents = getAgentStudioService().getEmployees();
     for (const agent of agents) {
@@ -1946,7 +1946,7 @@ async function syncLocalModuleStates(): Promise<LocalModuleState[]> {
             autoUpdate: false,
         });
     }
-    
+
     // 3. 同步 MCP Server 状态
     const mcpManagement = getMcpManagementService();
     const installedMcpServers = await mcpManagement.getInstalled();
@@ -1961,7 +1961,7 @@ async function syncLocalModuleStates(): Promise<LocalModuleState[]> {
             autoUpdate: false,
         });
     }
-    
+
     return states;
 }
 ```
@@ -1972,12 +1972,12 @@ async function syncLocalModuleStates(): Promise<LocalModuleState[]> {
 
 | 工具名 | 功能 | 输入参数 |
 |--------|------|---------|
-| `sarosis_list_modules` | 列出可用模块 | `{ type?: string, status?: string, search?: string }` |
-| `sarosis_get_module` | 获取模块详情 | `{ moduleId: string }` |
-| `sarosis_check_updates` | 检查可用更新 | `{ moduleId?: string }` |
-| `sarosis_upgrade_module` | 升级模块 | `{ moduleId: string, targetVersion?: string, confirmBreaking?: boolean }` |
-| `sarosis_rollback_upgrade` | 回滚升级 | `{ upgradeId: string }` |
-| `sarosis_upgrade_history` | 查询升级历史 | `{ moduleId?: string, limit?: number }` |
+| `vssaros_list_modules` | 列出可用模块 | `{ type?: string, status?: string, search?: string }` |
+| `vssaros_get_module` | 获取模块详情 | `{ moduleId: string }` |
+| `vssaros_check_updates` | 检查可用更新 | `{ moduleId?: string }` |
+| `vssaros_upgrade_module` | 升级模块 | `{ moduleId: string, targetVersion?: string, confirmBreaking?: boolean }` |
+| `vssaros_rollback_upgrade` | 回滚升级 | `{ upgradeId: string }` |
+| `vssaros_upgrade_history` | 查询升级历史 | `{ moduleId?: string, limit?: number }` |
 
 ---
 
@@ -2070,7 +2070,7 @@ interface WebHubConfig {
         authorizationUrl: string;
         tokenUrl: string;
     };
-    /// 数据库路径 (默认: ~/.sarosis/module_hub.db)
+    /// 数据库路径 (默认: ~/.vssaros/module_hub.db)
     dbPath: string;
     /// 是否自动同步 Hivemind (默认: true)
     autoSyncHivemind: boolean;
@@ -2083,10 +2083,10 @@ interface WebHubConfig {
 
 ```json
 {
-    "sarosis.moduleHub.enabled": true,
-    "sarosis.moduleHub.httpPort": 8765,
-    "sarosis.moduleHub.authType": "apikey",
-    "sarosis.moduleHub.apiKey": "your-api-key-here"
+    "vssaros.moduleHub.enabled": true,
+    "vssaros.moduleHub.httpPort": 8765,
+    "vssaros.moduleHub.authType": "apikey",
+    "vssaros.moduleHub.apiKey": "your-api-key-here"
 }
 ```
 
@@ -2098,14 +2098,14 @@ class ModuleHubServer extends Disposable {
     private webServer?: FastifyInstance;
     private wsServer?: Server;
     private syncTimer?: NodeJS.Timer;
-    
+
     async start(config: WebHubConfig): Promise<void> {
         // 1. 初始化数据库
         await this.initDatabase(config.dbPath);
-        
+
         // 2. 同步本地模块状态
         await this.syncLocalModules();
-        
+
         // 3. 同步 Hivemind 远程数据
         if (config.autoSyncHivemind) {
             await this.syncHivemindModules();
@@ -2114,30 +2114,30 @@ class ModuleHubServer extends Disposable {
                 config.syncIntervalMinutes * 60 * 1000
             );
         }
-        
+
         // 4. 启动 HTTP 服务器
         this.webServer = fastify({ logger: true });
         this.registerRoutes(this.webServer);
         this.registerAuth(this.webServer, config);
         await this.webServer.listen({ port: config.httpPort, host: '0.0.0.0' });
-        
+
         // 5. 启动 WebSocket 服务器
         this.wsServer = createWebSocketServer(config.wsPort);
-        
+
         // 6. 注册为 MCP Server (供外部 Agent 使用)
         await this.registerAsMcpServer();
     }
-    
+
     async stop(): Promise<void> {
         // 1. 停止同步定时器
         if (this.syncTimer) clearInterval(this.syncTimer);
-        
+
         // 2. 关闭 WebSocket 服务器
         this.wsServer?.close();
-        
+
         // 3. 关闭 HTTP 服务器
         await this.webServer?.close();
-        
+
         // 4. 关闭数据库连接
         await this.closeDatabase();
     }
@@ -2203,27 +2203,27 @@ class ModuleHubServer extends Disposable {
 gantt
     title 服务器 Web Hub 实施甘特图
     dateFormat YYYY-MM-DD
-    
+
     section Phase 1
     Web 服务器搭建        :p1a, 2026-07-01, 7d
     数据库设计与实现      :p1b, after p1a, 7d
     基础 API (模块列表)   :p1c, after p1b, 7d
-    
+
     section Phase 2
     版本对比逻辑          :p2a, after p1c, 7d
     升级下载与安装        :p2b, after p2a, 7d
     回滚机制              :p2c, after p2b, 5d
-    
+
     section Phase 3
     语义搜索              :p3a, after p2c, 7d
     批量升级              :p3b, after p2c, 5d
     WebSocket 实时通知    :p3c, after p3a, 5d
-    
+
     section Phase 4
     认证授权              :p4a, after p3c, 7d
     MCP 工具暴露          :p4b, after p4a, 5d
     性能优化              :p4c, after p4b, 5d
-    
+
     section Phase 5
     集成测试              :p5a, after p4c, 5d
     文档编写              :p5b, after p5a, 3d

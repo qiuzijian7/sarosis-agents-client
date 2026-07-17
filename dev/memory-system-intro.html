@@ -410,7 +410,7 @@ RETENTION_FLOOR = 0.01       <span class="text-gray-500">// 保留评分阈值</
     <div class="text-center mb-14">
       <span class="text-sm font-semibold text-primary-600 uppercase tracking-wider">Comparison</span>
       <h2 class="text-3xl md:text-4xl font-extrabold mt-2 mb-4">与 agentmemory 功能对比</h2>
-      <p class="text-gray-500 max-w-2xl mx-auto">sarosis 经过 P0-P13 优化 + Q1-Q6 对齐，核心记忆能力已全面对标 agentmemory v0.9.27。</p>
+      <p class="text-gray-500 max-w-2xl mx-auto">vssaros 经过 P0-P13 优化 + Q1-Q6 对齐，核心记忆能力已全面对标 agentmemory v0.9.27。</p>
     </div>
 
     <div class="overflow-x-auto rounded-2xl border border-gray-200 bg-white shadow-sm">
@@ -419,19 +419,19 @@ RETENTION_FLOOR = 0.01       <span class="text-gray-500">// 保留评分阈值</
           <tr class="bg-gray-50 border-b border-gray-200">
             <th class="text-left px-6 py-4 font-semibold text-gray-600">功能维度</th>
             <th class="text-center px-6 py-4 font-semibold text-gray-600">agentmemory</th>
-            <th class="text-center px-6 py-4 font-semibold text-gray-600">sarosis</th>
+            <th class="text-center px-6 py-4 font-semibold text-gray-600">vssaros</th>
             <th class="text-center px-6 py-4 font-semibold text-gray-600">领先方</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-100">
           <tr><td class="px-6 py-3 font-medium">4-Tier 记忆模型</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
           <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">BM25 + 向量混合搜索</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
-          <tr><td class="px-6 py-3 font-medium">LRU 搜索缓存</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
-          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">跨请求 Context 缓存</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
-          <tr><td class="px-6 py-3 font-medium">Anthropic cache_control</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
-          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">冻结快照注入</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
-          <tr><td class="px-6 py-3 font-medium">anti-thrashing 压缩</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
-          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">ContextBlock priority 分层</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+          <tr><td class="px-6 py-3 font-medium">LRU 搜索缓存</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">vssaros</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">跨请求 Context 缓存</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">vssaros</td></tr>
+          <tr><td class="px-6 py-3 font-medium">Anthropic cache_control</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">vssaros</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">冻结快照注入</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">vssaros</td></tr>
+          <tr><td class="px-6 py-3 font-medium">anti-thrashing 压缩</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">vssaros</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">ContextBlock priority 分层</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">vssaros</td></tr>
           <tr><td class="px-6 py-3 font-medium">Core/Archival + auto-page</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
           <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">三因子保留评分</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
           <tr><td class="px-6 py-3 font-medium">Skills 提取 + SKILL.md</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
@@ -439,7 +439,7 @@ RETENTION_FLOOR = 0.01       <span class="text-gray-500">// 保留评分阈值</
           <tr><td class="px-6 py-3 font-medium">文件路径暂存 enrich</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
           <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">注入幂等去重</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
           <tr><td class="px-6 py-3 font-medium">toolCallId 维度去重</td><td class="text-center">✅</td><td class="text-center">✅</td><td class="text-center text-gray-400">持平</td></tr>
-          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">代码图谱 (22-pass)</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">sarosis</td></tr>
+          <tr class="bg-gray-50"><td class="px-6 py-3 font-medium">代码图谱 (22-pass)</td><td class="text-center">❌</td><td class="text-center">✅</td><td class="text-center text-primary-600 font-medium">vssaros</td></tr>
         </tbody>
       </table>
     </div>

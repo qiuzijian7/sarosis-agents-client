@@ -1,7 +1,7 @@
-# Hyper-Extract 深度分析与接入 sarosis-agents-client 方案
+# Hyper-Extract 深度分析与接入 vssaros-agents-client 方案
 
 > 分析对象：`G:\CustomWorkspaces\AIProjects\Hyper-Extract`（Python，LLM 驱动的知识抽取/检索框架，v0.3.0，Apache-2.0）
-> 目标项目：`sarosis-agents-client`（TypeScript VS Code fork，内置 agentStudio / MCP / Embedding / 图谱）
+> 目标项目：`vssaros-agents-client`（TypeScript VS Code fork，内置 agentStudio / MCP / Embedding / 图谱）
 > 结论先行：**推荐「方案 A（MCP 桥接）」作为零侵入 MVP，再视需要演进到「方案 B（内置 kb_* 工具 + 本地 Python 服务）」**。两者都复用本项目已有的 MCP 与工具注册设施，无需自建适配层。
 
 ---
@@ -70,7 +70,7 @@ Hyper-Extract 采用**三层架构**，把"非结构化文本 → 强类型结�
 
 ---
 
-## 三、本项目（sarosis-agents-client）现状对应
+## 三、本项目（vssaros-agents-client）现状对应
 
 | Hyper-Extract 能力 | 本项目已有对应 | 缺口 / 接入点 |
 |---|---|---|

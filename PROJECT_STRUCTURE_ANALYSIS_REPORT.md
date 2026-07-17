@@ -1,8 +1,8 @@
 # VsSaros 项目目录结构分析报告
 
-**生成时间**: 2025-01-09  
-**分析工具**: AI 自动化分析 + 手动验证  
-**项目根目录**: `g:\CustomWorkspaces\AIProjects\sarosis-agents-client`
+**生成时间**: 2025-01-09
+**分析工具**: AI 自动化分析 + 手动验证
+**项目根目录**: `g:\CustomWorkspaces\AIProjects\vssaros-agents-client`
 
 ---
 
@@ -26,7 +26,7 @@
 ## 📁 完整目录结构树
 
 ```
-sarosis-agents-client/
+vssaros-agents-client/
 ├── 📂 .agent/                        # Agent 配置目录
 ├── 📂 .agents/                       # Agents 配置
 ├── 📂 .build/                        # 构建缓存
@@ -460,13 +460,13 @@ playwright-report/      # Playwright 报告
    out-build/
    out-vscode/
    dist/
-   
+
    # 日志文件
    *.log
    *.txt
    !README.md
    !SECURITY.md
-   
+
    # 临时文件
    tmp/
    test-output/

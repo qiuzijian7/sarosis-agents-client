@@ -11,7 +11,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
  * Worktree Checkpoint Service - supports rollback to a previous state.
  * Compatible with VS Code's ChatSessionWorktreeCheckpointService.
  *
- * Checkpoints are implemented using git refs (under refs/sarosis/checkpoints/).
+ * Checkpoints are implemented using git refs (under refs/vssaros/checkpoints/).
  * Each checkpoint is a lightweight git reference pointing to a commit.
  */
 export class WorktreeCheckpointService extends Disposable implements IWorktreeCheckpointService {
@@ -31,8 +31,8 @@ export class WorktreeCheckpointService extends Disposable implements IWorktreeCh
 			const headCommit = await this.execGit(worktreePath, ['rev-parse', 'HEAD']);
 			const commitHash = headCommit.trim();
 
-			// Create checkpoint ref: refs/sarosis/checkpoints/{sessionId}/baseline
-			const refName = `refs/sarosis/checkpoints/${sessionId}/baseline`;
+			// Create checkpoint ref: refs/vssaros/checkpoints/{sessionId}/baseline
+			const refName = `refs/vssaros/checkpoints/${sessionId}/baseline`;
 			await this.execGit(worktreePath, ['update-ref', refName, commitHash]);
 
 			this.logService.info(`[WorktreeCheckpoint] Baseline checkpoint created: ${refName} -> ${commitHash}`);
@@ -51,8 +51,8 @@ export class WorktreeCheckpointService extends Disposable implements IWorktreeCh
 			const headCommit = await this.execGit(worktreePath, ['rev-parse', 'HEAD']);
 			const commitHash = headCommit.trim();
 
-			// Create checkpoint ref: refs/sarosis/checkpoints/{sessionId}/request-{requestId}
-			const refName = `refs/sarosis/checkpoints/${sessionId}/request-${requestId}`;
+			// Create checkpoint ref: refs/vssaros/checkpoints/{sessionId}/request-{requestId}
+			const refName = `refs/vssaros/checkpoints/${sessionId}/request-${requestId}`;
 			await this.execGit(worktreePath, ['update-ref', refName, commitHash]);
 
 			this.logService.info(`[WorktreeCheckpoint] Post-turn checkpoint created: ${refName} -> ${commitHash}`);
@@ -68,7 +68,7 @@ export class WorktreeCheckpointService extends Disposable implements IWorktreeCh
 			this.logService.info(`[WorktreeCheckpoint] Getting checkpoints for session ${sessionId}`);
 
 			// List all checkpoint refs for this session
-			const refPattern = `refs/sarosis/checkpoints/${sessionId}/*`;
+			const refPattern = `refs/vssaros/checkpoints/${sessionId}/*`;
 			const stdout = await this.execGit(worktreePath, ['for-each-ref', '--format=%(refname) %(objectname) %(creatordate:unix)', refPattern]).catch(() => '');
 
 			if (!stdout.trim()) {
@@ -80,7 +80,7 @@ export class WorktreeCheckpointService extends Disposable implements IWorktreeCh
 				const match = line.match(/^(\S+)\s+(\S+)\s+(\S+)$/);
 				if (match) {
 					const [, ref, commitHash, timestampStr] = match;
-					const name = ref.replace(`refs/sarosis/checkpoints/${sessionId}/`, '');
+					const name = ref.replace(`refs/vssaros/checkpoints/${sessionId}/`, '');
 					const isBaseline = name === 'baseline';
 
 					checkpoints.push({
@@ -124,7 +124,7 @@ export class WorktreeCheckpointService extends Disposable implements IWorktreeCh
 			this.logService.info(`[WorktreeCheckpoint] Deleting all checkpoints for session ${sessionId}`);
 
 			// Get all checkpoint refs for this session
-			const refPattern = `refs/sarosis/checkpoints/${sessionId}/*`;
+			const refPattern = `refs/vssaros/checkpoints/${sessionId}/*`;
 			const stdout = await this.execGit(worktreePath, ['for-each-ref', '--format=%(refname)', refPattern]).catch(() => '');
 
 			if (!stdout.trim()) {

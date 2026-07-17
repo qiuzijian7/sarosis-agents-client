@@ -22,7 +22,7 @@
 - 每次 `kv.get()` / `kv.set()` 都是一次网络往返
 - 批量操作（如 `auto-forget` 遍历所有 memories）产生 N 次 RPC
 
-**本项目 (sarosis-agents-client) 对比**: 我们的 `AgentMemoryProvider` 是纯进程内实现，无 RPC 开销，但也没有 agentmemory 的多客户端共享能力。
+**本项目 (vssaros-agents-client) 对比**: 我们的 `AgentMemoryProvider` 是纯进程内实现，无 RPC 开销，但也没有 agentmemory 的多客户端共享能力。
 
 ### ❌ 状态同步复杂：多窗口/多标签页状态同步困难
 
@@ -175,7 +175,7 @@ Viewer (浏览器) ────→ HTTP ──→ │   Worker    │
 
 ## 总结：agentmemory 源码 vs 本项目实现
 
-| 问题 | agentmemory 源码 | 本项目 (sarosis-agents-client) |
+| 问题 | agentmemory 源码 | 本项目 (vssaros-agents-client) |
 |------|-----------------|-------------------------------|
 | **UI 耦合** | ✅ 完全解耦 | ✅ 完全解耦 |
 | **状态同步** | ✅ Server-Worker 架构 | ❌ 纯内存（需 MemorySync） |

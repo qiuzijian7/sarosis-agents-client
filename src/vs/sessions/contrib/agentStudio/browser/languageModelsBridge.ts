@@ -62,15 +62,15 @@ import {
  * ⚠️ 同步约定：此字符串与 `extensions/codebuddy-provider/src/extension.ts` 中
  * 上报 usage 时使用的 MIME 必须**逐字一致**（跨 npm 包无法共享常量，双方各自硬编码）。
  */
-export const SAROSIS_USAGE_MIME = 'application/vnd.saros.usage+json';
+export const VSSAROS_USAGE_MIME = 'application/vnd.saros.usage+json';
 
 /**
  * MIME for tunneling `finish_reason` from the provider extension through the
- * ExtHost progress layer to the renderer bridge. Same pattern as SAROSIS_USAGE_MIME.
+ * ExtHost progress layer to the renderer bridge. Same pattern as VSSAROS_USAGE_MIME.
  *
  * ⚠️ 同步约定：与 `extensions/codebuddy-provider/src/extension.ts` 中的 MIME 逐字一致。
  */
-export const SAROSIS_FINISH_REASON_MIME = 'application/vnd.saros.finish-reason+json';
+export const VSSAROS_FINISH_REASON_MIME = 'application/vnd.saros.finish-reason+json';
 
 /**
  * One IModelProvider instance per LM vendor.
@@ -435,9 +435,9 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				// persisted selection is "deepseek-v4-pro-ioa".
 				const candidate = this._bareModelId(entry.id);
 				if (candidate === modelId) {
-				this._logService.trace(
-					`[LMBridge] Resolved bare modelId "${modelId}" → qualified "${entry.id}"`,
-				);
+					this._logService.trace(
+						`[LMBridge] Resolved bare modelId "${modelId}" → qualified "${entry.id}"`,
+					);
 					modelId = entry.id;
 					meta = entry.metadata;
 					break;
@@ -465,13 +465,13 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			requestInitiator: 'sessions.agentStudio',
 			modelOptions: {},
 		};
-		
+
 		// 传递 tools 定义给扩展（通过 modelOptions）
 		if (options.tools && options.tools.length > 0) {
 			requestOptions.modelOptions.tools = options.tools;
 			this._logService.trace(`[LMBridge] Passing ${options.tools.length} tools to extension via modelOptions.tools`);
 		}
-		
+
 		// 传递其他 modelOptions（如 temperature, maxTokens）
 		if (options.temperature !== undefined) {
 			requestOptions.modelOptions.temperature = options.temperature;
@@ -512,26 +512,26 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			this._logService.trace(`[LMBridge] Passing ids to extension: convId=${conversationId ?? '(none)'} reqId=${context?.requestId ?? '(none)'} prevRespId=${context?.previousResponseId ?? '(none)'}`);
 		}
 
-	try {
-		this._logService.trace(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})`);
-		const t0_sendRequest = Date.now();
-		const response = await this._lmService.sendChatRequest(
-			modelId,
-			meta.extension,                   // initiating extension = the provider extension itself
-			lmMessages,
-			requestOptions,
-			cts.token,
-		);
-		this._logService.trace(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
+		try {
+			this._logService.trace(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})`);
+			const t0_sendRequest = Date.now();
+			const response = await this._lmService.sendChatRequest(
+				modelId,
+				meta.extension,                   // initiating extension = the provider extension itself
+				lmMessages,
+				requestOptions,
+				cts.token,
+			);
+			this._logService.trace(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
 
-		let capturedResponseId: string | undefined;
-		let capturedFinishReason: string | undefined;
-		let _firstPartReceived = false;
-		for await (const part of response.stream) {
-			if (!_firstPartReceived) {
-				_firstPartReceived = true;
-				this._logService.info(`[LMBridge] sendChatRequest: first stream part received in ${Date.now() - t0_sendRequest}ms`);
-			}
+			let capturedResponseId: string | undefined;
+			let capturedFinishReason: string | undefined;
+			let _firstPartReceived = false;
+			for await (const part of response.stream) {
+				if (!_firstPartReceived) {
+					_firstPartReceived = true;
+					this._logService.info(`[LMBridge] sendChatRequest: first stream part received in ${Date.now() - t0_sendRequest}ms`);
+				}
 				const parts = Array.isArray(part) ? part : [part];
 				for (const p of parts) {
 					// 尝试从 part 上捕获响应流 id（部分扩展会在 part 上挂 id/responseId）。
@@ -543,11 +543,11 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 					}
 					// ── 捕获 finish_reason（经 DataPart 透传，同 usage 模式）──
 					// provider 扩展在 SSE choice.finish_reason 到达时，通过
-					// LanguageModelDataPart.json({finish_reason}, SAROSIS_FINISH_REASON_MIME)
+					// LanguageModelDataPart.json({finish_reason}, VSSAROS_FINISH_REASON_MIME)
 					// 透传。这里截获并存储，在 stream 结束时随 done delta 一起发出，
 					// 使 agentOSService 的 classifyIncompleteTurn 能检测 length 截断。
 					const _frDataPart = p as { mimeType?: string; data?: { toString(): string } };
-					if (_frDataPart.mimeType === SAROSIS_FINISH_REASON_MIME && _frDataPart.data) {
+					if (_frDataPart.mimeType === VSSAROS_FINISH_REASON_MIME && _frDataPart.data) {
 						try {
 							const _frRaw = JSON.parse(_frDataPart.data.toString());
 							if (typeof _frRaw.finish_reason === 'string') {
@@ -563,13 +563,13 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				}
 			}
 
-		// 把捕获到的响应 id + finish_reason 随 done 回传给 agentOS。
-		const doneDelta: IModelDelta = {
-			type: 'done',
-			...(capturedResponseId ? { responseId: capturedResponseId } : {}),
-			...(capturedFinishReason ? { finishReason: capturedFinishReason } : {}),
-		};
-		yield doneDelta;
+			// 把捕获到的响应 id + finish_reason 随 done 回传给 agentOS。
+			const doneDelta: IModelDelta = {
+				type: 'done',
+				...(capturedResponseId ? { responseId: capturedResponseId } : {}),
+				...(capturedFinishReason ? { finishReason: capturedFinishReason } : {}),
+			};
+			yield doneDelta;
 		} catch (err) {
 			this._logService.error(`[LMBridge] chat() failed for vendor=${this.vendor} model=${modelId}`, err);
 			yield { type: 'error', error: err instanceof Error ? err.message : String(err) };
@@ -820,11 +820,11 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				// ── CodeBuddy 末块 usage 透传 ──────────────────────────────────────
 				// CodeBuddy provider 扩展无法 emit `step` part（extHost 仅转换
 				// Text/ToolCall/Data/Thinking），因此它把 OpenAI 末块的 `usage` 对象
-				// 经 `LanguageModelDataPart.json(usage, SAROSIS_USAGE_MIME)` 透传过来。
+				// 经 `LanguageModelDataPart.json(usage, VSSAROS_USAGE_MIME)` 透传过来。
 				// 这里识别约定 MIME、解码 JSON、转成 IModelDelta usage，使 Token/计费
 				// 指标贯通到 agentChatService 累积与 webview footer。
 				const dataPart = part as { mimeType?: string; data?: { toString(): string } };
-				if (dataPart.mimeType !== SAROSIS_USAGE_MIME || !dataPart.data) {
+				if (dataPart.mimeType !== VSSAROS_USAGE_MIME || !dataPart.data) {
 					return undefined; // 非 usage data part — 忽略
 				}
 				try {

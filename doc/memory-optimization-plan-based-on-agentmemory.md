@@ -4,7 +4,7 @@
 > - 创建时间：2026-06-25
 > - 版本：v1.0
 > - 参考项目：[rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) v0.9.27（Apache-2.0）
-> - 适用范围：sarosis-agents-client 记忆子系统（`SessionMemoryProvider` / `VectorMemory` / L0/L1 管道）
+> - 适用范围：vssaros-agents-client 记忆子系统（`SessionMemoryProvider` / `VectorMemory` / L0/L1 管道）
 > - 关联文档：`Memory-Strategy.md`、`memory-framework-refactoring-and-hermes-comparison.md`、`openhuman-vs-saros-knowledge-memory-system-comparison.md`
 
 ---

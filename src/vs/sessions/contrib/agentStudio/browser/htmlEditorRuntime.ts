@@ -418,7 +418,7 @@ const EDITOR_CHROME_HTML = `
   <button type="button" id="tb-undo" title="Undo (Ctrl+Z)">&#8617;</button>
   <button type="button" id="tb-redo" title="Redo (Ctrl+Y)">&#8618;</button>
   <span class="tb-separator"></span>
-  <button type="button" id="tb-save" class="tb-save-btn" title="Save (Ctrl+S)">
+  <button type="button" id="tb-save" class="tb-save-btn" title="Save">
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
     <span>保存</span>
   </button>
@@ -898,7 +898,6 @@ function getEditorJs(): string {
 
   document.addEventListener('keydown', function (e) {
     if (!editMode) return;
-    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveContent(); return; }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) exec('redo'); else exec('undo'); return; }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); exec('redo'); return; }
   });

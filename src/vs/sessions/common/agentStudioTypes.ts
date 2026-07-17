@@ -385,6 +385,14 @@ export interface Agent {
 	 */
 	configHtml?: AgentConfigHtml;
 
+	/**
+	 * 创建者用户 ID（上传/发布权限控制用）。
+	 * 值为 TOF 登录用户的 `user_id`（格式 `taihu:staffid:<StaffId>`），
+	 * 由 agentStudioService.createAgent 在已登录时自动写入。
+	 * 空字符串表示未认领（存量 agent / 未登录时创建），允许认领式上传。
+	 */
+	owner?: string;
+
 	createdAt: string;
 	updatedAt: string;
 }

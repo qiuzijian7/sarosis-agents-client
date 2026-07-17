@@ -55,7 +55,7 @@ export interface IFeedbackService {
 
 const GONGFENG_BASE = 'https://git.woa.com';
 const GONGFENG_API = `${GONGFENG_BASE}/api/v4`;
-const GONGFENG_PROJECT_PATH = 'zijianqiu%2Fsarosis-agents-client';
+const GONGFENG_PROJECT_PATH = 'zijianqiu%2Fvssaros-agents-client';
 const TOKEN_STORAGE_KEY = 'feedback.gongfengToken';
 
 export class FeedbackService extends Disposable implements IFeedbackService {
@@ -392,7 +392,7 @@ export class FeedbackService extends Disposable implements IFeedbackService {
 					params: {
 						name: 'create_issue',
 						arguments: {
-							project_id: 'zijianqiu/sarosis-agents-client',
+							project_id: 'zijianqiu/vssaros-agents-client',
 							title,
 							description: fullDescription,
 							labels,
@@ -493,7 +493,7 @@ export class FeedbackService extends Disposable implements IFeedbackService {
 		} catch { /* clipboard may not be available in all contexts */ }
 
 		// Open blank new-issue page — user pastes from clipboard.
-		const url = `${GONGFENG_BASE}/zijianqiu/sarosis-agents-client/issues/new`;
+		const url = `${GONGFENG_BASE}/zijianqiu/vssaros-agents-client/issues/new`;
 		this.logService.info('[Feedback] Opening Gongfeng new issue in browser (OA SSO, no OAuth config)');
 		window.open(url, '_blank');
 		return { success: true, openedInBrowser: true };

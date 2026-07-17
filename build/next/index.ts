@@ -247,7 +247,10 @@ const commonResourcePatterns = [
 	'vs/workbench/browser/media/code-icon.svg',
 	'vs/workbench/browser/parts/editor/media/letterpress*.svg',
 	'vs/sessions/contrib/chat/browser/media/*.svg',
-	'vs/sessions/contrib/welcome/browser/media/themePreviews/*.svg'
+	'vs/sessions/contrib/welcome/browser/media/themePreviews/*.svg',
+
+	// Mermaid renderer (bundled lib for offline EXE use)
+	'vs/sessions/browser/agentChat/media/mermaid.min.js',
 ];
 
 // Resources for desktop target

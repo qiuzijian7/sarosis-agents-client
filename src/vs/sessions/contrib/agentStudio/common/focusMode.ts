@@ -49,33 +49,33 @@ const CODE_PROJECT_MARKERS: ReadonlyArray<{
 	/** 显示名 */
 	label: string;
 }> = [
-	// Node.js / Web
-	{ filename: 'package.json', toolsets: ['core', 'tool-search', 'mcp', 'memory', 'utility'], label: 'Node.js' },
-	{ filename: 'tsconfig.json', toolsets: ['core', 'tool-search', 'mcp', 'memory', 'utility'], label: 'TypeScript' },
-	{ filename: 'pnpm-workspace.yaml', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'pnpm workspace' },
-	// .NET
-	{ filename: '*.csproj', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: '.NET' },
-	{ filename: '*.sln', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: '.NET solution' },
-	// Java
-	{ filename: 'pom.xml', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Maven' },
-	{ filename: 'build.gradle', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Gradle' },
-	// Rust
-	{ filename: 'Cargo.toml', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Rust' },
-	// Go
-	{ filename: 'go.mod', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Go' },
-	// Python
-	{ filename: 'pyproject.toml', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Python' },
-	{ filename: 'requirements.txt', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Python' },
-	// C/C++ / Unreal Engine
-	{ filename: 'CMakeLists.txt', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'CMake' },
-	{ filename: 'Makefile', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Make' },
-	{ filename: '*.uproject', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Unreal Engine' },
-	{ filename: '*.uplugin', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Unreal Engine plugin' },
-	// VCS
-	{ filename: '.git', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Git' },
-	// Sarosis
-	{ filename: 'sarosis.config.json', toolsets: ['core', 'tool-search', 'mcp', 'memory', 'kanban'], label: 'Sarosis' },
-];
+		// Node.js / Web
+		{ filename: 'package.json', toolsets: ['core', 'tool-search', 'mcp', 'memory', 'utility'], label: 'Node.js' },
+		{ filename: 'tsconfig.json', toolsets: ['core', 'tool-search', 'mcp', 'memory', 'utility'], label: 'TypeScript' },
+		{ filename: 'pnpm-workspace.yaml', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'pnpm workspace' },
+		// .NET
+		{ filename: '*.csproj', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: '.NET' },
+		{ filename: '*.sln', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: '.NET solution' },
+		// Java
+		{ filename: 'pom.xml', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Maven' },
+		{ filename: 'build.gradle', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Gradle' },
+		// Rust
+		{ filename: 'Cargo.toml', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Rust' },
+		// Go
+		{ filename: 'go.mod', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Go' },
+		// Python
+		{ filename: 'pyproject.toml', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Python' },
+		{ filename: 'requirements.txt', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Python' },
+		// C/C++ / Unreal Engine
+		{ filename: 'CMakeLists.txt', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'CMake' },
+		{ filename: 'Makefile', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Make' },
+		{ filename: '*.uproject', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Unreal Engine' },
+		{ filename: '*.uplugin', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Unreal Engine plugin' },
+		// VCS
+		{ filename: '.git', toolsets: ['core', 'tool-search', 'mcp', 'memory'], label: 'Git' },
+		// Sarosis
+		{ filename: 'vssaros.config.json', toolsets: ['core', 'tool-search', 'mcp', 'memory', 'kanban'], label: 'Sarosis' },
+	];
 
 /** 推荐的 focus 模式工具集（编码姿态，Hermes `TOOLSETS['coding']` 对齐） */
 const CODING_FOCUS_TOOLSETS: readonly string[] = [

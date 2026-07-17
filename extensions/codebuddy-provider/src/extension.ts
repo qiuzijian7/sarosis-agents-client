@@ -1421,7 +1421,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			// (languageModelsBridge `_toModelDelta` → `case 'data'`) recognizes this MIME,
 			// decodes it, and turns it into a `{ type: 'usage' }` delta for Token/billing UI.
 			//
-			// ⚠️ This MIME must stay byte-for-byte identical to `SAROSIS_USAGE_MIME` in
+			// ⚠️ This MIME must stay byte-for-byte identical to `VSSAROS_USAGE_MIME` in
 			// src/vs/sessions/contrib/agentStudio/browser/languageModelsBridge.ts.
 			if (event.usage && typeof event.usage === 'object') {
 				// ── 诊断：无条件记录 usage（尤其 completion_tokens — 判断模型是否生成了未捕获 token）

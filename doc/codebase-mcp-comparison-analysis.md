@@ -1,8 +1,8 @@
 # codebase-memory-mcp (C) vs Sarosis 内置 Codebase 工具 — 深度重新对比分析
 
-> 分析日期：2026-07-04  
-> C 源码位置：`G:\CustomWorkspaces\AIProjects\codebase-memory-mcp`  
-> Sarosis 内置实现位置：`g:\CustomWorkspaces\AIProjects\sarosis-agents-client\src\vs\sessions\contrib\agentStudio\browser`
+> 分析日期：2026-07-04
+> C 源码位置：`G:\CustomWorkspaces\AIProjects\codebase-memory-mcp`
+> Sarosis 内置实现位置：`g:\CustomWorkspaces\AIProjects\vssaros-agents-client\src\vs\sessions\contrib\agentStudio\browser`
 
 ---
 
@@ -10,20 +10,20 @@
 
 本次重新分析在上一轮已实现 BM25、结构 boosting、search_code 三模式、trace_path mode 等基础上，发现了 **3 个影响可用性的关键缺陷**：
 
-1. **`search_code` 实际无法返回结果**（P0）  
-   - `CodebaseGraphService.searchCode()` 传入的 `fileContentProvider` 直接返回 `undefined`（`codebaseGraphService.ts:1724-1726`）。  
-   - 即使提供 content provider，索引管道创建 file 节点时未设置 `label` 字段（`codebaseGraphPipeline.ts:133-140`），而 `CodebaseGraphStore.findNodesByLabel('file')` 按 `node.label` 索引（`codebaseGraphStore.ts:329-332`），因此找不到任何文件节点。  
+1. **`search_code` 实际无法返回结果**（P0）
+   - `CodebaseGraphService.searchCode()` 传入的 `fileContentProvider` 直接返回 `undefined`（`codebaseGraphService.ts:1724-1726`）。
+   - 即使提供 content provider，索引管道创建 file 节点时未设置 `label` 字段（`codebaseGraphPipeline.ts:133-140`），而 `CodebaseGraphStore.findNodesByLabel('file')` 按 `node.label` 索引（`codebaseGraphStore.ts:329-332`），因此找不到任何文件节点。
    - 工具层 handler 在 `raw` 为空后直接返回 "no matches found"，从未进入富化逻辑。
 
-2. **`manage_adr` 完全为 stub**（P0）  
-   - `builtinToolProvider.ts:4006-4039` 仅返回 JSON hint，让 LLM 用 `file_list/file_read/file_write` 自行操作。  
+2. **`manage_adr` 完全为 stub**（P0）
+   - `builtinToolProvider.ts:4006-4039` 仅返回 JSON hint，让 LLM 用 `file_list/file_read/file_write` 自行操作。
    - 但 `codebaseGraphAdr.ts` 已经完整实现了 `AdrManager`（list/get/create/update/delete/validate/解析），却**没有任何地方实例化或调用**它。
 
-3. **多个工具存在 "schema 声明 vs 实现" 脱节**（P1）  
-   - `query_graph.max_rows`：schema 声明了，handler 未传给 Cypher 引擎。  
-   - `detect_changes.since`：schema 声明了，底层未使用；文件哈希回退未真正比较哈希。  
-   - `index_repository.mode`：声明 fast/moderate/full，但底层未按 mode 调整解析策略。  
-   - `get_architecture.path`：声明了，但仅作为元数据返回，未做范围过滤。  
+3. **多个工具存在 "schema 声明 vs 实现" 脱节**（P1）
+   - `query_graph.max_rows`：schema 声明了，handler 未传给 Cypher 引擎。
+   - `detect_changes.since`：schema 声明了，底层未使用；文件哈希回退未真正比较哈希。
+   - `index_repository.mode`：声明 fast/moderate/full，但底层未按 mode 调整解析策略。
+   - `get_architecture.path`：声明了，但仅作为元数据返回，未做范围过滤。
 
 其余差距与上一轮基本一致：语义向量搜索、Cypher 高级语法（UNION/WITH/变长路径）、运行时 trace 摄入精确匹配、跨服务追踪数据、架构 hotspots 等仍为长期差距。
 

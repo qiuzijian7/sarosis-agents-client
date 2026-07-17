@@ -218,8 +218,8 @@ export class MdFileEditorPane extends TextFileEditor {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 ${DEFAULT_MARKDOWN_STYLES}
-/* sarosis-frontmatter — preserved YAML metadata block */
-.sarosis-frontmatter {
+/* vssaros-frontmatter — preserved YAML metadata block */
+.vssaros-frontmatter {
 	margin: 12px 0 20px;
 	padding: 12px 16px;
 	background: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.1));
@@ -244,7 +244,7 @@ ${frontmatterHtml}${renderedBody}
 	/**
 	 * Split the markdown into a rendered frontmatter block (if present) and
 	 * the remaining body. The frontmatter block `---\n...\n---` is extracted
-	 * and rendered as `<pre class="sarosis-frontmatter">` so it's visible
+	 * and rendered as `<pre class="vssaros-frontmatter">` so it's visible
 	 * but visually distinct from standard code blocks. Returns `{ body,
 	 * frontmatterHtml }` where `frontmatterHtml` is empty string when no
 	 * frontmatter is detected.
@@ -263,7 +263,7 @@ ${frontmatterHtml}${renderedBody}
 			.replace(/>/g, '&gt;');
 		return {
 			body,
-			frontmatterHtml: `<pre class="sarosis-frontmatter">${escaped}</pre>\n`,
+			frontmatterHtml: `<pre class="vssaros-frontmatter">${escaped}</pre>\n`,
 		};
 	}
 

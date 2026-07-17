@@ -6,7 +6,7 @@
 
 ## 一、架构差异（根本性）
 
-| 维度 | agentmemory（上游） | 本项目（sarosis-agents-client） | 说明 |
+| 维度 | agentmemory（上游） | 本项目（vssaros-agents-client） | 说明 |
 |------|---------------------|-------------------------------|------|
 | **运行形态** | 独立服务器进程（iii-engine Worker） | IDE 扩展进程内（in-process） | 本项目无需启动外部服务 |
 | **引擎依赖** | iii-sdk（WebSocket → iii-engine :49134） | 无外部引擎，全部算法在进程内执行 | 本项目自包含 |

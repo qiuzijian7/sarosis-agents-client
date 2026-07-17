@@ -18,7 +18,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 // NOTE: Container ID must differ from view ID — sharing the same ID breaks
 // getViewContainerByViewId() because the registry can't distinguish them.
 
-const OUTPUT_PANEL_CONTAINER_ID = 'sarosis.panel.output';
+const OUTPUT_PANEL_CONTAINER_ID = 'vssaros.panel.output';
 const OUTPUT_VIEW_CONTAINER = Registry.as<IViewContainersRegistry>(ViewContainerExtensions.ViewContainersRegistry).registerViewContainer({
 	id: OUTPUT_PANEL_CONTAINER_ID,
 	title: nls.localize2('output', "Output"),

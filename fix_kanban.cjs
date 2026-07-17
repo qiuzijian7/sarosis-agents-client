@@ -1,5 +1,5 @@
 const fs = require('fs');
-const path = 'g:/CustomWorkspaces/AIProjects/sarosis-agents-client/src/vs/sessions/contrib/agentStudio/browser/providers/tool/kanbanTools.ts';
+const path = 'g:/CustomWorkspaces/AIProjects/vssaros-agents-client/src/vs/sessions/contrib/agentStudio/browser/providers/tool/kanbanTools.ts';
 let content = fs.readFileSync(path, 'utf8');
 
 // Replace this._resolveKanbanTaskId(taskId, agentId) → _resolveKanbanTaskId(ctx, taskId, agentId)

@@ -2,7 +2,7 @@
 
 > 调研日期：2026-06-26
 > 调研范围：`G:\CustomWorkspaces\AIProjects` 下全部项目
-> 目标：找出支持 Dashboard 的项目，对比功能，分析哪些适合 sarosis-agents-client（VS Code fork + AgentStudio）
+> 目标：找出支持 Dashboard 的项目，对比功能，分析哪些适合 vssaros-agents-client（VS Code fork + AgentStudio）
 
 ---
 
@@ -170,7 +170,7 @@ ECC 包含 **4 套互补的 Dashboard**，覆盖桌面 GUI、Web、CLI、TUI 四
 
 ---
 
-## 四、适合 sarosis-agents-client 的功能分析
+## 四、适合 vssaros-agents-client 的功能分析
 
 ### 本项目现状
 - VS Code fork，AgentStudio 已有：AgentOS 执行路径、上下文压缩（ContextManager）、记忆系统（L0/L1）、代码库图谱（codebaseGraphViewerEditorPane）、商城集成

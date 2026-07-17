@@ -27,7 +27,13 @@ import type {
 	ConfigHtmlCapability,
 } from "./agentStudioTypes.js";
 import type { IWorktreeWorkspaceOptions } from "../contrib/worktree/common/worktreeTypes.js";
-import type { ImportToKbOptions, ImportToKbResult } from "../contrib/agentStudio/browser/knowledge/knowledgeTools.js";
+import type {
+	ImportToKbOptions,
+	ImportToKbResult,
+	FolderRagResult,
+	FolderRagSearchResult,
+	BuildFolderOptions,
+} from "../contrib/agentStudio/browser/knowledge/knowledgeTools.js";
 
 // --- Agent Studio Service ---
 
@@ -78,9 +84,31 @@ export interface IAgentStudioService {
 	 * 返回最匹配的类别 + 置信度，失败时自动降级到关键词启发式分类。
 	 */
 	classifyContent(content: string): Promise<{ category: string; label: string; confidence: number; reasoning: string; source: 'llm' | 'keyword' }>;
+
+	// ── Folder → per-repo RAG (Option A) ──────────────────────────────────────
+	/**
+	 * Import a linked/copied folder as per-repo RAG: one git repository → one
+	 * KnowledgeSession. Also registers the resulting `repoRoot → sessionId` map in
+	 * the global folder-RAG index so `kb_search_repo` can fan out across it.
+	 */
+	importFolderToRag(folderPath: string, opts?: BuildFolderOptions): Promise<FolderRagResult>;
+	/** Remove a folder (and its sub-tree) from the global folder-RAG index (on unlink). */
+	unlinkFolderRag(folderPath: string): Promise<void>;
+	/** Cross-repository semantic search over every imported folder's RAG sessions. */
+	searchFolderRag(query: string, topK?: number): Promise<FolderRagSearchResult>;
+
 	createAgent(data: Partial<Agent>): Promise<Agent>;
 	updateAgent(id: string, data: Partial<Agent>): Promise<void>;
 	deleteAgent(id: string): Promise<void>;
+	/**
+	 * 判定当前登录用户是否可上传（发布到商城）该 agent。
+	 * - 内置 agent（source==='builtin'）不可上传（系统资产）。
+	 * - owner 为空：允许认领式上传（兼容存量 / 未登录创建的 agent）。
+	 * - owner 非空：仅 owner 本人可上传，避免多人维护时互相覆盖。
+	 */
+	canUploadAgent(agent: Agent): boolean;
+	/** 上传成功后认领 owner：把 agent.owner 设为当前用户（用于存量 agent 首次上传）。 */
+	claimAgentOwnership(agentId: string): Promise<void>;
 	getLastSelectedAgentId(): Promise<string | null>;
 	setLastSelectedAgentId(id: string | null): Promise<void>;
 

@@ -136,7 +136,7 @@ function writeDefaultGitignore(vaultRootPath: string, fsModule: any): void {
 		'.ftindex.json',
 		'.kbkernel.json',
 		'# Attachments (managed separately)',
-	'*.attachments/',
+		'*.attachments/',
 	].join('\n') + '\n';
 	try {
 		fsModule.writeFileSync(gi, body, 'utf8');
@@ -153,7 +153,7 @@ export class KbVersionService {
 
 	constructor(
 		@IAgentStudioLogService private readonly _log: ILogService,
-	) {}
+	) { }
 
 	/** Check if isomorphic-git is available (desktop Electron renderer only). */
 	isAvailable(): boolean {
@@ -234,7 +234,7 @@ export class KbVersionService {
 			await git.commit({
 				fs: fsModule, dir,
 				message: 'init: Sarosis KB vault',
-				author: { name: 'Sarosis', email: 'sarosis@local' },
+				author: { name: 'Sarosis', email: 'vssaros@local' },
 			});
 		} catch {
 			// Empty repo — no files to commit yet, that's OK.
@@ -298,7 +298,7 @@ export class KbVersionService {
 			const sha = await git.commit({
 				fs: fsModule, dir,
 				message: defaultAutoMessage(),
-				author: { name: 'Sarosis', email: 'sarosis@local' },
+				author: { name: 'Sarosis', email: 'vssaros@local' },
 			});
 			this._log.info('[KbVersionService] autoCommit', sha.substring(0, 7));
 			return sha;

@@ -17,7 +17,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
-import { handleNewAgentTool, slugifyAgentName } from '../../browser/providers/tool/builtinToolProvider.js';
+import { handleNewAgentTool, slugifyAgentName } from '../../browser/providers/tool/delegationTools.js';
 import type { IAgentStudioService } from '../../../../common/agentStudioService.js';
 import type { Agent } from '../../../../common/agentStudioTypes.js';
 import { AgentType } from '../../../../common/agentStudioTypes.js';

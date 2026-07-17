@@ -3,7 +3,7 @@ version: v3.0
 # ============================================================
 # VsSaros Windows EXE 打包流水线 (蓝盾 Pipeline-as-Code v3.0)
 # ------------------------------------------------------------
-# 触发：origin 仓库 (git.woa.com/zijianqiu/sarosis-agents-client)
+# 触发：origin 仓库 (git.woa.com/zijianqiu/vssaros-agents-client)
 #       任意分支有新提交 (push) 立即触发打包。
 # 排队：需在蓝盾流水线 UI → "流水线设置" → "并发控制" 中配置
 #       "同一时间只允许运行 1 个构建，其余排队等待"。
@@ -266,7 +266,7 @@ stages:
               # triggers "Bad control character" JSON parse errors. The repo copy is already
               # correct (dep=saros-shared, UTF-8). Just reinstall to refresh the symlink.
               Push-Location extensions\codebuddy-provider
-              Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\@sarosis
+              Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\@vssaros
               Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\saros-shared
               npm install --ignore-scripts
               Pop-Location

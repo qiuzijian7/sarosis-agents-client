@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>agentmemory vs sarosis — 9 模块激活时机对比与优化</title>
+<title>agentmemory vs vssaros — 9 模块激活时机对比与优化</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>tailwind.config={theme:{extend:{colors:{primary:{50:'#EEF2FF',500:'#6366F1',600:'#4F46E5'}}}}}</script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -25,8 +25,8 @@ code,pre{font-family:'JetBrains Mono',monospace; font-size:0.8rem;}
 
 <header class="gradient-hero py-12 px-6 text-white text-center">
   <h1 class="text-3xl md:text-4xl font-extrabold mb-3">activation timing comparison</h1>
-  <p class="text-white/80">agentmemory vs sarosis-agents-client · 9 modules · 6 optimization recommendations</p>
-  <p class="text-xs text-white/40 font-mono mt-2">Source: G:\CustomWorkspaces\AIProjects\agentmemory / sarosis-agents-client</p>
+  <p class="text-white/80">agentmemory vs vssaros-agents-client · 9 modules · 6 optimization recommendations</p>
+  <p class="text-xs text-white/40 font-mono mt-2">Source: G:\CustomWorkspaces\AIProjects\agentmemory / vssaros-agents-client</p>
 </header>
 
 <div class="max-w-6xl mx-auto px-4 py-10 space-y-8">
@@ -47,7 +47,7 @@ code,pre{font-family:'JetBrains Mono',monospace; font-size:0.8rem;}
         </ul>
       </div>
       <div class="bg-amber-50 rounded-xl p-5">
-        <h3 class="font-bold text-amber-700 mb-2">sarosis 激活模型</h3>
+        <h3 class="font-bold text-amber-700 mb-2">vssaros 激活模型</h3>
         <ul class="space-y-2 text-gray-700">
           <li><strong>2 条路径</strong>: AgentDriver finally 块 + memoryProvider 定时器</li>
           <li><strong>级联链</strong>: loadContext → session_start → writeMemory → hooks → sweep</li>
@@ -70,7 +70,7 @@ code,pre{font-family:'JetBrains Mono',monospace; font-size:0.8rem;}
           <th class="px-4 py-3 font-semibold text-sm w-8">#</th>
           <th class="px-4 py-3 font-semibold text-sm w-20">模块</th>
           <th class="px-4 py-3 font-semibold text-sm cell-am">agentmemory 激活时机</th>
-          <th class="px-4 py-3 font-semibold text-sm cell-sar">sarosis 激活时机</th>
+          <th class="px-4 py-3 font-semibold text-sm cell-sar">vssaros 激活时机</th>
           <th class="px-4 py-3 font-semibold text-sm w-20">差距</th>
         </tr>
       </thead>
@@ -208,7 +208,7 @@ code,pre{font-family:'JetBrains Mono',monospace; font-size:0.8rem;}
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         <div>
-          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 PostToolUse 时都调用 <code class="text-xs bg-red-50 px-1 rounded">mem::observe</code> 创建 CompressedObservation；sarosis 仅在 turn 边界写入一次 assistant + tool summary。</p>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 PostToolUse 时都调用 <code class="text-xs bg-red-50 px-1 rounded">mem::observe</code> 创建 CompressedObservation；vssaros 仅在 turn 边界写入一次 assistant + tool summary。</p>
         </div>
         <div>
           <p class="text-gray-600"><strong>方案: </strong>在 <code class="text-xs bg-red-50 px-1 rounded">agentOSService._executeToolCalls</code> 每个 tool result 推送后，fire-and-forget 调用 <code class="text-xs bg-red-50 px-1 rounded">writeMemory</code> 写入工具结果观察（内存内，不持久化到 KV 以减少开销）。</p>
@@ -228,7 +228,7 @@ void memProvider.writeMemory(agentId, {
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         <div>
-          <p class="text-gray-600"><strong>差异: </strong>agentmemory 暴露 <code class="text-xs bg-red-50 px-1 rounded">memory_slot_set</code> 工具给 LLM，可在对话中编辑槽位。sarosis 的 <code class="text-xs bg-red-50 px-1 rounded">memory_remember</code> 工具不支持 slot_id 参数。</p>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 暴露 <code class="text-xs bg-red-50 px-1 rounded">memory_slot_set</code> 工具给 LLM，可在对话中编辑槽位。vssaros 的 <code class="text-xs bg-red-50 px-1 rounded">memory_remember</code> 工具不支持 slot_id 参数。</p>
         </div>
         <div>
           <p class="text-gray-600"><strong>方案: </strong>在 <code class="text-xs bg-red-50 px-1 rounded">builtinToolProvider.ts</code> 的 memory_remember handler 中添加 <code class="text-xs bg-red-50 px-1 rounded">slot_id</code> 参数。当 LLM 传入 slot_id 时，调用 <code class="text-xs bg-red-50 px-1 rounded">slots.set(agentId, slot_id, content)</code> 而非 writeMemory。</p>
@@ -243,7 +243,7 @@ void memProvider.writeMemory(agentId, {
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         <div>
-          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 session 结束（summarize 后）触发 reflect → 立即提取教训。sarosis 的 lesson extract 仅在 6h sweep 定时器之后调用，新经验延迟最多 6 小时才能被纳入上下文。</p>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 session 结束（summarize 后）触发 reflect → 立即提取教训。vssaros 的 lesson extract 仅在 6h sweep 定时器之后调用，新经验延迟最多 6 小时才能被纳入上下文。</p>
         </div>
         <div>
           <p class="text-gray-600"><strong>方案: </strong>(A) 在 <code class="text-xs bg-red-50 px-1 rounded">_endSession</code> 后立即触发 <code class="text-xs bg-red-50 px-1 rounded">le.extract()</code>；(B) 在 ConsolidationPipeline.consolidateEpisodic 后触发；(C) 保持 sweep 中的 extract 作为兜底。</p>
@@ -258,7 +258,7 @@ void memProvider.writeMemory(agentId, {
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         <div>
-          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 session 结束时通过 SessionEnd Hook → consolidate-pipeline，2h 定时器兜底。sarosis 有两条路径：agentOSService 每 3 轮 + sweep 每 6h。虽然 ConsolidationPipeline 有 1h throttle 防重复，但架构上不够清晰。</p>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 在每次 session 结束时通过 SessionEnd Hook → consolidate-pipeline，2h 定时器兜底。vssaros 有两条路径：agentOSService 每 3 轮 + sweep 每 6h。虽然 ConsolidationPipeline 有 1h throttle 防重复，但架构上不够清晰。</p>
         </div>
         <div>
           <p class="text-gray-600"><strong>方案: </strong>移除 sweep 中的 consolidateEpisodic 调用，改为在 <code class="text-xs bg-amber-50 px-1 rounded">agentOSService.executeAgentTurn() finally</code> 块中（session_end 之后）触发 consolidation。这样与 agentmemory 的 Stop Hook → consolidate 对齐。</p>
@@ -293,7 +293,7 @@ const structuredPrompt = this._slots.buildSystemPrompt(agentId)
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         <div>
-          <p class="text-gray-600"><strong>差异: </strong>agentmemory 有 5 个独立定时器（auto-forget 1h, lesson-decay 24h, insight-decay 24h, consolidation 2h, recent-searches 1h），sarosis 只有 1 个 6h sweep timer 集中处理所有定期任务。</p>
+          <p class="text-gray-600"><strong>差异: </strong>agentmemory 有 5 个独立定时器（auto-forget 1h, lesson-decay 24h, insight-decay 24h, consolidation 2h, recent-searches 1h），vssaros 只有 1 个 6h sweep timer 集中处理所有定期任务。</p>
         </div>
         <div>
           <p class="text-gray-600"><strong>方案: </strong>将 sweep 拆分为独立定时器：<br>(1) retention sweep (6h) — 衰减 + 清理<br>(2) lesson decay (24h) — 教训衰减<br>(3) consolidation sweep (2h) — 固化兜底（如果 R4 实施则不需要）</p>
@@ -324,7 +324,7 @@ const structuredPrompt = this._slots.buildSystemPrompt(agentId)
 │ 1h: auto-forget │ 24h: lesson-decay, insight-decay │ 2h: consolidation│
 └─────────────────────────────────────────────────────────────────────┘</pre>
 
-    <h3 class="font-semibold text-sm text-gray-500 uppercase tracking-wider mt-8 mb-4">sarosis (现行)</h3>
+    <h3 class="font-semibold text-sm text-gray-500 uppercase tracking-wider mt-8 mb-4">vssaros (现行)</h3>
     <pre class="text-xs text-gray-700 leading-relaxed bg-amber-50 rounded-xl p-4 border border-amber-200">
 ┌─────────────────────────────────────────────────────────────────────┐
 │ AgentDriver executeTurn()                                           │
@@ -341,7 +341,7 @@ const structuredPrompt = this._slots.buildSystemPrompt(agentId)
 │ _sweepAgent: decay + consolidate + lesson extract + skill persist   │
 └─────────────────────────────────────────────────────────────────────┘</pre>
 
-    <h3 class="font-semibold text-sm text-gray-500 uppercase tracking-wider mt-8 mb-4">sarosis (优化后: R1-R6)</h3>
+    <h3 class="font-semibold text-sm text-gray-500 uppercase tracking-wider mt-8 mb-4">vssaros (优化后: R1-R6)</h3>
     <pre class="text-xs text-gray-700 leading-relaxed bg-green-50 rounded-xl p-4 border border-green-200">
 ┌─────────────────────────────────────────────────────────────────────┐
 │ AgentDriver executeTurn()                                           │
@@ -383,7 +383,7 @@ const structuredPrompt = this._slots.buildSystemPrompt(agentId)
 </div>
 
 <footer class="border-t border-gray-200 bg-white py-8 px-6 text-center mt-8">
-  <p class="text-sm text-gray-400">Activation Timing Comparison · agentmemory v0.9.27 vs sarosis</p>
+  <p class="text-sm text-gray-400">Activation Timing Comparison · agentmemory v0.9.27 vs vssaros</p>
   <p class="text-xs text-gray-300 mt-1">6 optimizations · 3 high · 2 medium · 1 low</p>
 </footer>
 

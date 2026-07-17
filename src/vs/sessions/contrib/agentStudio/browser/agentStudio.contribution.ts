@@ -152,6 +152,9 @@ import {
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
 import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS } from './builtInBYOKModelProvider.js';
+import { MainProcessModelProvider } from './mainProcessModelProvider.js';
+import { VSSAROS_LLM_CHANNEL } from '../common/llmBridge.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { AgentStudioActiveContext } from '../../../common/contextkeys.js';
 import { AgentStudioEditorPane } from './agentStudioEditorPane.js';
 import { AgentStudioEditorInput, setConfigService } from './agentStudioEditorInput.js';
@@ -1379,16 +1382,16 @@ registerAction2(class extends Action2 {
 			// 将每个聊天 editor 从源 group 移到 aux window 中对应的 group
 			NativeChatEditorInput.beginForceMove();
 			try {
-			for (const editor of chatEditors) {
-				const gi = editorToGroupIndex.get(editor) ?? 0;
-				const targetAuxGroup = auxGroups[Math.min(gi, auxGroups.length - 1)];
-				for (const srcGroup of editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
-					if (srcGroup.editors.includes(editor)) {
-						srcGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], targetAuxGroup);
-						break;
+				for (const editor of chatEditors) {
+					const gi = editorToGroupIndex.get(editor) ?? 0;
+					const targetAuxGroup = auxGroups[Math.min(gi, auxGroups.length - 1)];
+					for (const srcGroup of editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */)) {
+						if (srcGroup.editors.includes(editor)) {
+							srcGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], targetAuxGroup);
+							break;
+						}
 					}
 				}
-			}
 			} finally {
 				NativeChatEditorInput.endForceMove();
 			}
@@ -1412,71 +1415,71 @@ registerAction2(class extends Action2 {
 				return { chatId: (ed as any).panelType || 'chat', agentId: undefined, sessionId: undefined, name: 'Agent Chat', groupIndex: gi };
 			});
 
-		// When the auxiliary window is closed, re-show the Agent editor,
-		// restore titlebar toggle buttons, then proactively move the ORIGINAL
-		// EditorInput instances back into agentPart (preserving _runtimeState),
-		// before dispatching reopen-chat for layout fine-tuning.
-		//
-		// **修复**: 旧实现只派发事件不主动 move，依赖 VS Code 自动 move back。
-		// 但 NativeChatEditorInput 是瞬态的（无 serializer），VS Code 可能直接丢弃，
-		// 导致 pop in handler 走 NativeChatEditorInput.create() 创建全新实例，
-		// 新实例 _runtimeState = undefined → pane 内容空白。
-		// 新实现主动 moveEditors 原实例回 agentPart 对应 group，保留聊天状态。
-		auxPart.onWillDispose(() => {
-			layoutService.setPartHidden(false, Parts.AGENT_EDITOR_PART);
+			// When the auxiliary window is closed, re-show the Agent editor,
+			// restore titlebar toggle buttons, then proactively move the ORIGINAL
+			// EditorInput instances back into agentPart (preserving _runtimeState),
+			// before dispatching reopen-chat for layout fine-tuning.
+			//
+			// **修复**: 旧实现只派发事件不主动 move，依赖 VS Code 自动 move back。
+			// 但 NativeChatEditorInput 是瞬态的（无 serializer），VS Code 可能直接丢弃，
+			// 导致 pop in handler 走 NativeChatEditorInput.create() 创建全新实例，
+			// 新实例 _runtimeState = undefined → pane 内容空白。
+			// 新实现主动 moveEditors 原实例回 agentPart 对应 group，保留聊天状态。
+			auxPart.onWillDispose(() => {
+				layoutService.setPartHidden(false, Parts.AGENT_EDITOR_PART);
 
-			const tc = mainWindow.document.getElementById('agent-studio-titlebar-toggle-container');
-			if (tc) {
-				tc.style.display = '';
-			}
+				const tc = mainWindow.document.getElementById('agent-studio-titlebar-toggle-container');
+				if (tc) {
+					tc.style.display = '';
+				}
 
-			// ① 在 agentPart 上按 groupIndex 创建目标 groups
-			const agentPart = getAgentPart(editorGroupsService);
-			const baseGroup = agentPart?.activeGroup ?? editorGroupsService.activeGroup;
-			const targetGroups: IEditorGroup[] = [baseGroup];
-			for (let i = 1; i < groupCount; i++) {
-				const g = editorGroupsService.addGroup(targetGroups[targetGroups.length - 1], 3 /* GroupDirection.RIGHT */);
-				if (g) { targetGroups.push(g); }
-			}
+				// ① 在 agentPart 上按 groupIndex 创建目标 groups
+				const agentPart = getAgentPart(editorGroupsService);
+				const baseGroup = agentPart?.activeGroup ?? editorGroupsService.activeGroup;
+				const targetGroups: IEditorGroup[] = [baseGroup];
+				for (let i = 1; i < groupCount; i++) {
+					const g = editorGroupsService.addGroup(targetGroups[targetGroups.length - 1], 3 /* GroupDirection.RIGHT */);
+					if (g) { targetGroups.push(g); }
+				}
 
-			// ② 主动把原 EditorInput 实例从 aux groups（或任何其他 part）移回
-			//    agentPart 对应的 targetGroups[groupIndex]。
-			//    原实例携带 _runtimeState（messages / 流式状态），是内容保留的关键。
-			for (const editor of chatEditors) {
-				const gi = editorToGroupIndex.get(editor) ?? 0;
-				const target = targetGroups[Math.min(gi, targetGroups.length - 1)];
-				// 找到 editor 当前所在的 group（aux window 或已被 VS Code 自动 move back）
-				let sourceGroup: IEditorGroup | undefined;
-				for (const part of editorGroupsService.parts) {
-					for (const g of part.groups) {
-						if (g.editors.includes(editor)) {
-							sourceGroup = g;
-							break;
+				// ② 主动把原 EditorInput 实例从 aux groups（或任何其他 part）移回
+				//    agentPart 对应的 targetGroups[groupIndex]。
+				//    原实例携带 _runtimeState（messages / 流式状态），是内容保留的关键。
+				for (const editor of chatEditors) {
+					const gi = editorToGroupIndex.get(editor) ?? 0;
+					const target = targetGroups[Math.min(gi, targetGroups.length - 1)];
+					// 找到 editor 当前所在的 group（aux window 或已被 VS Code 自动 move back）
+					let sourceGroup: IEditorGroup | undefined;
+					for (const part of editorGroupsService.parts) {
+						for (const g of part.groups) {
+							if (g.editors.includes(editor)) {
+								sourceGroup = g;
+								break;
+							}
+						}
+						if (sourceGroup) { break; }
+					}
+					if (sourceGroup && sourceGroup !== target) {
+						sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], target);
+					} else if (!sourceGroup) {
+						// aux 已销毁 editor 实例 — fallback 用快照 create 新实例（内容会丢失）
+						const snap = movedEditors.find(s => s.chatId === (editor as any).chatId);
+						if (snap) {
+							const input = NativeChatEditorInput.create(
+								snap.chatId, snap.agentId, snap.sessionId, snap.name,
+							);
+							target.openEditor(input, { pinned: true });
 						}
 					}
-					if (sourceGroup) { break; }
 				}
-				if (sourceGroup && sourceGroup !== target) {
-					sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], target);
-				} else if (!sourceGroup) {
-					// aux 已销毁 editor 实例 — fallback 用快照 create 新实例（内容会丢失）
-					const snap = movedEditors.find(s => s.chatId === (editor as any).chatId);
-					if (snap) {
-						const input = NativeChatEditorInput.create(
-							snap.chatId, snap.agentId, snap.sessionId, snap.name,
-						);
-						target.openEditor(input, { pinned: true });
-					}
-				}
-			}
 
-			// ③ 派发 reopen-chat 事件让 workbench 做布局微调（清理多余 group 等）
-			requestAnimationFrame(() => {
-				mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:reopen-chat', {
-					detail: { isNativeChat, editors: movedEditors, groupCount }
-				}));
+				// ③ 派发 reopen-chat 事件让 workbench 做布局微调（清理多余 group 等）
+				requestAnimationFrame(() => {
+					mainWindow.document.dispatchEvent(new CustomEvent('agent-studio:reopen-chat', {
+						detail: { isNativeChat, editors: movedEditors, groupCount }
+					}));
+				});
 			});
-		});
 		} catch {
 			// Last-resort fallback: dispatch the legacy in-window overlay event
 			// (kept for backward compatibility with the older floating-overlay impl).
@@ -1690,6 +1693,7 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@ILogService private readonly logService: ILogService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 	) {
 		super();
 
@@ -1697,10 +1701,16 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 			return;
 		}
 
+		// 阶段 1：若主进程 LLM channel 可用，则把网络调用委派到 electron-main，
+		// 否则回退到 renderer 直连的原 BuiltInBYOKModelProvider（web/remote 等）。
+		const useMainProcess = !!this.mainProcessService?.getChannel(VSSAROS_LLM_CHANNEL);
+
 		for (const def of BUILTIN_BYOK_PROVIDERS) {
-			const provider = this._register(new BuiltInBYOKModelProvider(def, this.configurationService, this.logService, this.environmentService));
+			const provider = useMainProcess
+				? new MainProcessModelProvider(def, this.configurationService, this.logService, this.environmentService, this.mainProcessService)
+				: new BuiltInBYOKModelProvider(def, this.configurationService, this.logService, this.environmentService);
 			this._register(this.agentOSService.registerModelProvider(provider));
-			this.logService.info(`[BYOK] Registered built-in provider: ${def.id}`);
+			this.logService.info(`[BYOK] Registered built-in provider: ${def.id}${useMainProcess ? ' (main-process)' : ''}`);
 		}
 	}
 }
@@ -1955,18 +1965,18 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	//      (languageModelChatProviders contribution → LanguageModelsToAgentOSBridge)
 	//   4. Their agentCapabilities contribution was removed from package.json to
 	//      prevent the extension-point path from attempting a futile renderer-side load.
-private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntry[] = [
-	{
-		// agentmemory：替代 AgentMemory 的新记忆框架。
-		// 通过 POST /observe 记录观察，POST /remember 保存长期记忆，
-		// POST /smart-search 做 BM25+Vector+Graph 混合搜索。
-		//
-		// priority 90 > agentmemory-memory(80) > SessionMemoryProvider(50)，
-		// 因此 saros 会优先调用本 provider 的 writeMemory。
-		//
-		// agentmemory server 由主进程 startAgentMemoryGateway() 启动，
-		// 监听 127.0.0.1:3111 (III_REST_PORT)。
-		id: 'agentmemory',
+	private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntry[] = [
+		{
+			// agentmemory：替代 AgentMemory 的新记忆框架。
+			// 通过 POST /observe 记录观察，POST /remember 保存长期记忆，
+			// POST /smart-search 做 BM25+Vector+Graph 混合搜索。
+			//
+			// priority 90 > agentmemory-memory(80) > SessionMemoryProvider(50)，
+			// 因此 saros 会优先调用本 provider 的 writeMemory。
+			//
+			// agentmemory server 由主进程 startAgentMemoryGateway() 启动，
+			// 监听 127.0.0.1:3111 (III_REST_PORT)。
+			id: 'agentmemory',
 			name: 'AgentMemory',
 			version: '1.0.0',
 			module: '../../../../extensions/agentmemory-memory/src/extension.js',
@@ -2126,18 +2136,18 @@ private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntr
 				return;
 			}
 
-		const context = this._createPluginContext('');
-		// Plugins are created via the InstantiationService so a no-arg
-		// constructor (like KnotAguiPlugin) works. IMPORTANT: third-party
-		// plugins must NOT declare co-constructor DI for host services such as
-		// `@IAgentOSService`. Because the plugin module is loaded from a separate
-		// module realm (its own copy of agentOS.js from OUT), the service
-		// identifier object differs from the one registered via registerSingleton
-		// in the host bundle, so createInstance() throws
-		// "UNKNOWN service agentOSService". Plugins must obtain the live service
-		// through `context.agentOSService` inside activate() instead.
-		const plugin = this.instantiationService.createInstance(PluginClass as any);
-		await plugin.activate(context);
+			const context = this._createPluginContext('');
+			// Plugins are created via the InstantiationService so a no-arg
+			// constructor (like KnotAguiPlugin) works. IMPORTANT: third-party
+			// plugins must NOT declare co-constructor DI for host services such as
+			// `@IAgentOSService`. Because the plugin module is loaded from a separate
+			// module realm (its own copy of agentOS.js from OUT), the service
+			// identifier object differs from the one registered via registerSingleton
+			// in the host bundle, so createInstance() throws
+			// "UNKNOWN service agentOSService". Plugins must obtain the live service
+			// through `context.agentOSService` inside activate() instead.
+			const plugin = this.instantiationService.createInstance(PluginClass as any);
+			await plugin.activate(context);
 			this._activatedPlugins.set(entry.id, plugin);
 			this.logService.info(
 				'[AgentCapabilityPlugins] Built-in: ' + entry.name + ' (' + entry.id + '@' + entry.version + ') activated'

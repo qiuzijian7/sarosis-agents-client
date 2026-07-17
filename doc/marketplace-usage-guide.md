@@ -281,7 +281,7 @@ storeId: pdf-skill
 | mcp | `fetch-mcp` | v0.4.0 |
 | agent | `deep-researcher` | v1.1.0 |
 | agent | `code-architect` | v1.0.0 |
-| knowledge | `sarosis-handbook` | v2026.06 |
+| knowledge | `vssaros-handbook` | v2026.06 |
 | knowledge | `vscode-dev-guide` | v1.0.0 |
 
 **快速验证**（命令行）：

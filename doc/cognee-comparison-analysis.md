@@ -1,13 +1,13 @@
-# cognee vs sarosis-agents-client 全功能对比分析
+# cognee vs vssaros-agents-client 全功能对比分析
 
 > 分析时间：2026-07-06
-> cognee v1.2.2 (Python/FastAPI) vs sarosis v2.2.25903 (TypeScript/VS Code)
+> cognee v1.2.2 (Python/FastAPI) vs vssaros v2.2.25903 (TypeScript/VS Code)
 
 ---
 
 ## 一、架构差异总览
 
-| 维度 | cognee | sarosis |
+| 维度 | cognee | vssaros |
 |------|--------|---------|
 | 语言/运行时 | Python 3.10+, FastAPI | TypeScript, VS Code 扩展 |
 | 图数据库 | Neo4j (GraphDBInterface) | 内置 CodebaseGraph (22-pass) |
@@ -26,7 +26,7 @@
 
 ### 2.1 数据摄入
 
-| 功能 | cognee | sarosis | 差距 |
+| 功能 | cognee | vssaros | 差距 |
 |------|--------|---------|------|
 | 文档加载 | ✅ PDF/DOCX/TXT/MD/CSV/JSON/图片（多格式加载器） | ❌ 仅文本/代码 | **G1** |
 | 文本分块 | ✅ 多级分块引擎 (fixed/semantic/markdown/code) | ❌ 简单截断 | **G2** |
@@ -36,7 +36,7 @@
 
 ### 2.2 图谱构建 (Cognify)
 
-| 功能 | cognee | sarosis | 差距 |
+| 功能 | cognee | vssaros | 差距 |
 |------|--------|---------|------|
 | 实体提取 | ✅ LLM 驱动 (Entity/Triplet 三元组) | ⚠️ CodebaseGraph (代码层) | 各有侧重 |
 | 关系推理 | ✅ 多类型关系 (is_a/has_a/calls/...) + 时序图谱 | ✅ Codebase 调用图 (CALLS/IMPORTS/...) | 对齐 |
@@ -48,7 +48,7 @@
 
 ### 2.3 搜索与检索
 
-| 功能 | cognee | sarosis | 差距 |
+| 功能 | cognee | vssaros | 差距 |
 |------|--------|---------|------|
 | 图谱搜索 | ✅ Cypher/关系遍历 | ✅ CodebaseGraph search | 对齐 |
 | 向量搜索 | ✅ LanceDB + 多种嵌入模型 | ✅ embedSync + RRF | 对齐 |
@@ -56,34 +56,34 @@
 | Reranker | ✅ Cross-encoder re-ranking | ❌ RRF 仅权重融合 | **G9** |
 | Completion | ✅ GraphRAG AnswerGen (LLM 生成) | ❌ | **G10** |
 | Agentic Retriever | ✅ AgenticRetriever (工具调用检索) | ❌ | G11 |
-| 搜索结果缓存 | ❌ | ✅ _searchCache LRU | sarosis 领先 |
+| 搜索结果缓存 | ❌ | ✅ _searchCache LRU | vssaros 领先 |
 
 ### 2.4 记忆模型
 
-| 功能 | cognee | sarosis | 差距 |
+| 功能 | cognee | vssaros | 差距 |
 |------|--------|---------|------|
-| 4-Tier 模型 | ❌ 基于 Graph 的扁平模型 | ✅ Working→Episodic→Semantic→Procedural | sarosis 领先 |
+| 4-Tier 模型 | ❌ 基于 Graph 的扁平模型 | ✅ Working→Episodic→Semantic→Procedural | vssaros 领先 |
 | Unified Memory API | ✅ remember/recall/improve/forget | ⚠️ writeMemory/searchMemory (部分) | **G12** |
 | Session 蒸馏 | ✅ SessionDistillationEngine (LLM 摘要) | ✅ ConsolidationPipeline | 对齐 |
-| 记忆去重 | ⚠️ 基于 ID 去重 | ✅ BloomFilter + SHA-256 + toolCallId | sarosis 领先 |
-| 经验衰减 | ❌ | ✅ Lesson decay + reinforce | sarosis 领先 |
-| Skills 提取 | ❌ | ✅ SkillExtractor + SKILL.md | sarosis 领先 |
+| 记忆去重 | ⚠️ 基于 ID 去重 | ✅ BloomFilter + SHA-256 + toolCallId | vssaros 领先 |
+| 经验衰减 | ❌ | ✅ Lesson decay + reinforce | vssaros 领先 |
+| Skills 提取 | ❌ | ✅ SkillExtractor + SKILL.md | vssaros 领先 |
 | 跨会话固化 | ✅ Cognify pipeline (每次 cognify) | ✅ ConsolidationPipeline (session_end) | 对齐 |
 
 ### 2.5 缓存与性能优化
 
-| 功能 | cognee | sarosis | 差距 |
+| 功能 | cognee | vssaros | 差距 |
 |------|--------|---------|------|
 | 磁盘缓存 | ✅ DiskCache (持久化) | ❌ 仅内存级 | **G13** |
 | Redis 缓存 | ✅ 支持 | ❌ | G14 |
-| BM25 惰性缓存 | ❌ | ✅ sortedTerms + lowerBound | sarosis 领先 |
-| Context 结果缓存 | ❌ | ✅ P3 fingerprint + TTL | sarosis 领先 |
-| Anthropic cache_control | ❌ | ✅ | sarosis 领先 |
-| Anti-thrashing | ❌ | ✅ 压缩抗抖动 | sarosis 领先 |
+| BM25 惰性缓存 | ❌ | ✅ sortedTerms + lowerBound | vssaros 领先 |
+| Context 结果缓存 | ❌ | ✅ P3 fingerprint + TTL | vssaros 领先 |
+| Anthropic cache_control | ❌ | ✅ | vssaros 领先 |
+| Anti-thrashing | ❌ | ✅ 压缩抗抖动 | vssaros 领先 |
 
 ### 2.6 工具与生态
 
-| 功能 | cognee | sarosis | 差距 |
+| 功能 | cognee | vssaros | 差距 |
 |------|--------|---------|------|
 | MCP 服务器 | ✅ cognee-mcp (独立) | ✅ 内置 MCP bridge | 对齐 |
 | CLI 工具 | ✅ 丰富 CLI | ⚠️ host.mjs 简单启动 | G15 |
@@ -98,7 +98,7 @@
 
 ### G1 — 多格式文档加载器 (高优先级)
 
-**差异**: cognee 支持 PDF/DOCX/TXT/MD/CSV/JSON/图片加载，sarosis 仅支持文本。
+**差异**: cognee 支持 PDF/DOCX/TXT/MD/CSV/JSON/图片加载，vssaros 仅支持文本。
 
 **方案**: 在 `memoryProvider` 或 `agentOSService` 中添加 `loadDocument(filePath, format)` 方法，使用 node.js 的 `pdf-parse`、`mammoth`（docx）、`csv-parse` 等库按格式分块后写入 memory。
 
@@ -115,7 +115,7 @@ async loadDocument(filePath: string): Promise<void> {
 
 ### G2 — 多级文本分块引擎 (高优先级)
 
-**差异**: cognee 有 fixed/semantic/markdown/code 多种分块策略，sarosis 仅简单截断。
+**差异**: cognee 有 fixed/semantic/markdown/code 多种分块策略，vssaros 仅简单截断。
 
 **方案**: 在 `memoryProvider` 中添加 `ChunkStrategy` 枚举和分块器。
 
@@ -126,13 +126,13 @@ function chunk(text: string, strategy: ChunkStrategy, chunkSize: number): string
 
 ### G4 — 本体引导解析 (中优先级)
 
-**差异**: cognee 支持自定义 Ontology 解析实体类型和关系，sarosis 无此机制。
+**差异**: cognee 支持自定义 Ontology 解析实体类型和关系，vssaros 无此机制。
 
 **方案**: 为 `ConsolidationPipeline` 添加 `ontology?: OntologyConfig` 参数，LLM prompt 中注入本体定义指导提取。
 
 ### G5 — Memify 图谱丰富化 (中优先级)
 
-**差异**: cognee 的 Memify 管道有多 pass 增强（去重、合并、精化、推理），sarosis 的 ConsolidationPipeline 只有 3 tier。
+**差异**: cognee 的 Memify 管道有多 pass 增强（去重、合并、精化、推理），vssaros 的 ConsolidationPipeline 只有 3 tier。
 
 **方案**: 扩展 ConsolidationPipeline 添加 `dedup_pass`、`merge_pass`、`refine_pass`、`infer_pass` 增强阶段。
 
@@ -158,7 +158,7 @@ function chunk(text: string, strategy: ChunkStrategy, chunkSize: number): string
 
 ### G13 — 磁盘级缓存 (中优先级)
 
-**差异**: cognee 的 DiskCache 持久化缓存结果，sarosis 所有缓存都在内存中。
+**差异**: cognee 的 DiskCache 持久化缓存结果，vssaros 所有缓存都在内存中。
 
 **方案**: 在 `_contextCache` 和 `_searchCache` 外包装 `DiskCacheAdapter`，将缓存内容定期 flush 到 SQLite。
 
@@ -172,7 +172,7 @@ function chunk(text: string, strategy: ChunkStrategy, chunkSize: number): string
 
 ## 四、对比总结
 
-| 领域 | cognee 领先 | sarosis 领先 |
+| 领域 | cognee 领先 | vssaros 领先 |
 |------|-------------|-------------|
 | 数据摄入 | ✅ 多格式加载 + 分块引擎 | - |
 | 图谱 | ✅ 本体引导 + Memify + 可视化 | ✅ Codebase 22-pass |

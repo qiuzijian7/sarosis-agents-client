@@ -11,7 +11,7 @@ export const IWorktreeCheckpointService = createDecorator<IWorktreeCheckpointSer
  * Worktree Checkpoint Service - supports rollback to a previous state.
  * Compatible with VS Code's ChatSessionWorktreeCheckpointService.
  *
- * Checkpoints are implemented using git refs (under refs/sarosis/checkpoints/).
+ * Checkpoints are implemented using git refs (under refs/vssaros/checkpoints/).
  * Each checkpoint is a lightweight git reference pointing to a commit.
  */
 export interface IWorktreeCheckpointService {
@@ -23,7 +23,7 @@ export interface IWorktreeCheckpointService {
 	 *
 	 * @param sessionId The agent session ID
 	 * @param worktreePath The worktree path
-	 * @returns The checkpoint ref name (e.g., "refs/sarosis/checkpoints/{sessionId}/baseline")
+	 * @returns The checkpoint ref name (e.g., "refs/vssaros/checkpoints/{sessionId}/baseline")
 	 */
 	createBaselineCheckpoint(sessionId: string, worktreePath: string): Promise<string | undefined>;
 
@@ -48,7 +48,7 @@ export interface IWorktreeCheckpointService {
 	 * Uses `git reset --hard` to restore the checkpoint state.
 	 *
 	 * @param worktreePath The worktree path
-	 * @param checkpointRef The checkpoint ref (e.g., "refs/sarosis/checkpoints/{sessionId}/baseline")
+	 * @param checkpointRef The checkpoint ref (e.g., "refs/vssaros/checkpoints/{sessionId}/baseline")
 	 * @returns Whether the rollback was successful
 	 */
 	rollbackToCheckpoint(worktreePath: string, checkpointRef: string): Promise<boolean>;

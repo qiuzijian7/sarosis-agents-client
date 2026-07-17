@@ -52,6 +52,7 @@ You are running the **confightml** skill.
 | `chatSend(msg, opts?)` | `(string, {context?, showInChat?}) → Promise<void>` | 单向发送消息给 Agent | 触发 Agent 执行任务 |
 | `chatSendStream(msg, cb)` | `(string, StreamCallbacks) → {cancel()}` | **流式发送 + 接收实时回复**（可取消） | 对话面板、AI 问答 |
 | `runTerminal(cmd, args?, opts?)` | `(string, string[]?, {cwd?, env?}?) → Promise<void>` | **在集成终端中执行命令**（实时输出） | 运行 Python/Node 脚本、pip 安装 |
+| `writeHtml(html)` | `(string) → Promise<void>` | **将 HTML 内容写入 config.html 并落盘** | 保存表单配置、持久化页面修改 |
 | `sendEvent(name, payload?)` | `(string, any?) → Promise<void>` | 发送自定义事件给 Agent | 按钮点击、状态上报 |
 | `notify(msg, level?)` | `(string, 'info'\|'success'\|'warning'\|'error'?) → Promise<void>` | 在 Agent Studio UI 显示通知 | 操作成功/失败提示 |
 | `on(event, fn)` | `('command'\|'message', fn) → void` | 监听宿主推送事件 | 接收 Agent 指令 |
@@ -252,6 +253,84 @@ document.getElementById('btn-install').onclick = async function(){
 - `runTerminal` 返回 Promise，在终端创建并开始执行后即 resolve（不等命令执行结束）
 
 ---
+
+### 6. 文件保存 writeHtml(html) ⭐ 持久化
+
+将完整的 HTML 内容写入 `config.html` 文件并落盘。适用于：表单配置保存、运行时修改页面结构后持久化、动态生成内容写入文件。
+
+```js
+// 保存当前页面 HTML（含 input 修改后的 value 属性）到磁盘
+var fullHtml = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+await window.AgentConfigHtml.writeHtml(fullHtml);
+console.log('已写入磁盘');
+```
+
+**典型场景——表单配置保存：**
+
+```html
+<button id="btn-save">💾 保存配置</button>
+<script>
+document.getElementById('btn-save').onclick = async function() {
+  // 1. 将 input 当前值写入 HTML value 属性
+  document.querySelectorAll('input[type="text"]').forEach(function(input) {
+    input.setAttribute('value', input.value);
+  });
+  document.querySelectorAll('input[type="checkbox"]').forEach(function(cb) {
+    if (cb.checked) cb.setAttribute('checked', '');
+    else cb.removeAttribute('checked');
+  });
+
+  // 2. 获取完整 HTML 并落盘
+  var html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+  try {
+    await window.AgentConfigHtml.writeHtml(html);
+    alert('✅ 配置已保存到文件');
+  } catch(e) {
+    alert('❌ 保存失败: ' + e.message);
+  }
+};
+</script>
+```
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `html` | string | ✅ | 完整的 HTML 文档内容（从 `<!DOCTYPE html>` 开始） |
+
+**注意事项：**
+- 传入的是**完整 HTML 文档**，宿主会自动剥离注入的 SDK/CSP 代码后写盘
+- 保存后**不会自动刷新预览**（避免运行时状态冲突），用户切换模式或重开文件时加载最新内容
+- `setAttribute('value', ...)` 是关键——仅修改 `.value` 属性不会反映到 `outerHTML` 中，必须同步 `value` HTML 属性
+- `checkbox` 需要 `setAttribute('checked', '')` / `removeAttribute('checked')` 同步
+- `select` 需要 `option.setAttribute('selected', '')` 同步选中项
+
+**input/checkbox/select 属性同步辅助函数：**
+
+```js
+function syncFormAttrsToHtml() {
+  // text input
+  document.querySelectorAll('input[type="text"], input[type="password"], textarea').forEach(function(el) {
+    el.setAttribute('value', el.value);
+    if (el.tagName === 'TEXTAREA') el.textContent = el.value;
+  });
+  // checkbox
+  document.querySelectorAll('input[type="checkbox"]').forEach(function(el) {
+    if (el.checked) el.setAttribute('checked', ''); else el.removeAttribute('checked');
+  });
+  // select
+  document.querySelectorAll('select').forEach(function(sel) {
+    sel.querySelectorAll('option').forEach(function(opt) {
+      if (opt.selected) opt.setAttribute('selected', ''); else opt.removeAttribute('selected');
+    });
+  });
+}
+
+// 保存时调用：
+syncFormAttrsToHtml();
+var html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+await window.AgentConfigHtml.writeHtml(html);
+```
+
+---
 ## 输出格式（强制）
 
 - **只输出一个 ```html 代码块**，里面是一份从 `<!DOCTYPE html>` 到 `</html>` 的完整文档。
@@ -311,7 +390,7 @@ document.getElementById('btn-install').onclick = async function(){
 1. 理解用户意图（面板 / 对话 / 看板 / 落地页…）。
 2. 选视觉风格，定义 `:root` 颜色 + `--deck-chrome-*`。
 3. 写语义化结构，标注 `data-edit-slot`；表单控件设置合理的 `value` / `placeholder` 默认值。
-4. 如需动态交互，按需加入 `<script>`——仅限协议 API 调用（`chatSend` / `chatSendStream` / `runTerminal` / `sendEvent` / `notify`），不写编辑器逻辑。
+4. 如需动态交互，按需加入 `<script>`——仅限协议 API 调用（`chatSend` / `chatSendStream` / `runTerminal` / `writeHtml` / `sendEvent` / `notify`），不写编辑器逻辑。
 5. 自检：零外链、`data-oid` 唯一、API 调用在 try/catch 中。
 6. 输出**单个** ```html 代码块。
 
@@ -415,4 +494,4 @@ document.getElementById('btn-install').onclick = async function(){
 </html>
 ```
 
-记住：**只输出完整的单文件 HTML，标注好可编辑 slot，表单控件设好默认 value。动态交互仅限 AgentConfigHtml 协议 API（`chatSend` / `chatSendStream` / `runTerminal` / `sendEvent` / `notify`），不写编辑器运行时。**
+记住：**只输出完整的单文件 HTML，标注好可编辑 slot，表单控件设好默认 value。动态交互仅限 AgentConfigHtml 协议 API（`chatSend` / `chatSendStream` / `runTerminal` / `writeHtml` / `sendEvent` / `notify`），不写编辑器运行时。如需保存表单配置，使用 `writeHtml` + `setAttribute('value', ...)` 模式。**

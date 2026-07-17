@@ -142,6 +142,8 @@ import { NativeMcpDiscoveryHelperService } from '../../platform/mcp/node/nativeM
 import { IMcpGatewayService, McpGatewayChannelName } from '../../platform/mcp/common/mcpGateway.js';
 import { McpGatewayService } from '../../platform/mcp/node/mcpGatewayService.js';
 import { McpGatewayChannel } from '../../platform/mcp/node/mcpGatewayChannel.js';
+import { LlmMainChannel } from '../../sessions/contrib/agentStudio/electron-main/llmMainChannel.js';
+import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
 import { AgentNetworkFilterService, IAgentNetworkFilterService } from '../../platform/networkFilter/common/networkFilterService.js';
@@ -1415,6 +1417,11 @@ export class CodeApplication extends Disposable {
 		const mcpGatewayChannel = this._register(new McpGatewayChannel(mainProcessElectronServer, accessor.get(IMcpGatewayService), accessor.get(ILoggerMainService)));
 		mainProcessElectronServer.registerChannel(McpGatewayChannelName, mcpGatewayChannel);
 
+		// AgentStudio LLM：把 chat 流式网络调用委派到主进程（对齐 Void void-channel-llmMessage）
+		const llmChannel = new LlmMainChannel(accessor.get(ILoggerService));
+		mainProcessElectronServer.registerChannel(VSSAROS_LLM_CHANNEL, llmChannel);
+
+
 		// Logger
 		const loggerChannel = new LoggerChannel(accessor.get(ILoggerMainService),);
 		mainProcessElectronServer.registerChannel('logger', loggerChannel);
@@ -1936,12 +1943,12 @@ export class CodeApplication extends Disposable {
 				...process.env,
 				AGENTMEMORY_PORT: process.env['AGENTMEMORY_PORT'] ?? '3111',
 				AGENTMEMORY_DATA_DIR: process.env['AGENTMEMORY_DATA_DIR'] ?? join(homedir(), '.saros', '.agentmemory'),
-			// Plan C: point the gateway at the sibling agentmemory-memory extension
-			// so it can import the compiled BM25 index module (single source of truth).
-			// host.mjs 位于 <extRoot>/agentmemory-gateway/host/host.mjs，兄弟扩展在
-			// <extRoot>/agentmemory-memory/out/，需从 host.mjs 向上 3 级到 extensions/
-			// 再加 agentmemory-memory（dev 与打包后目录结构一致，相对路径通用）。
-			AGENTMEMORY_EXT_ROOT: hostPath ? join(hostPath, '..', '..', '..', 'agentmemory-memory') : undefined,
+				// Plan C: point the gateway at the sibling agentmemory-memory extension
+				// so it can import the compiled BM25 index module (single source of truth).
+				// host.mjs 位于 <extRoot>/agentmemory-gateway/host/host.mjs，兄弟扩展在
+				// <extRoot>/agentmemory-memory/out/，需从 host.mjs 向上 3 级到 extensions/
+				// 再加 agentmemory-memory（dev 与打包后目录结构一致，相对路径通用）。
+				AGENTMEMORY_EXT_ROOT: hostPath ? join(hostPath, '..', '..', '..', 'agentmemory-memory') : undefined,
 			};
 
 			// 用 Electron 内置 Node 跑子进程

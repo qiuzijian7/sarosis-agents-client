@@ -1,7 +1,7 @@
 # vsSarosis 商城使用说明（Mockup 演示版）
 
 > **本文档为模拟演示版本**，描述用户在 vsSarosis 客户端中如何通过商城安装、下载、更新 skill/agent/mcp/知识库的完整操作流程。
-> 
+>
 > **前置条件**：
 > - 商城服务端已部署（http://21.6.92.5:3040）
 > - 客户端已配置商城地址（`设置 > Sarosis > Marketplace Url`）
@@ -299,7 +299,7 @@
 │                                                         │
 │  Sarosis 使用手册 已成功下载！                          │
 │                                                         │
-│  文件位置: ~/.saros/knowledge-base/sarosis-handbook/   │
+│  文件位置: ~/.saros/knowledge-base/vssaros-handbook/   │
 │                                                         │
 │  如需在 RAG 检索中使用此知识库，请在 Agent 配置中       │
 │  添加知识库引用。                                       │
@@ -788,6 +788,6 @@ const updates = await marketplace.checkUpgrades([
 
 ---
 
-*文档版本: 1.0*  
-*最后更新: 2026-06-24*  
+*文档版本: 1.0*
+*最后更新: 2026-06-24*
 *作者: vsSarosis Development Team*

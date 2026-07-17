@@ -1733,6 +1733,17 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			this.notificationService.info('Please log in to the marketplace first (Settings > Sarosis > Marketplace).');
 			return;
 		}
+		// 检查所有权：如果包已在商城存在，验证当前用户是否为所有者
+		try {
+			const pkg = await this.marketplaceService.getPackage(id);
+			const currentUser = this.marketplaceService.getCurrentUser();
+			if (pkg.author?.id && currentUser?.id && pkg.author.id !== currentUser.id) {
+				this.notificationService.error(`上传失败: 您不是 "${id}" 的所有者，无权上传更新`);
+				return;
+			}
+		} catch {
+			// 包不存在 → 首次上传，允许
+		}
 		try {
 			this.notificationService.info(`Uploading ${id} to marketplace...`);
 			const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from vsSarosis at ${new Date().toISOString()}` });

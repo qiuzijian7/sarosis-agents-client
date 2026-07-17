@@ -23,6 +23,10 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ISkillRegistry } from '../common/skills.js';
+import { IAgentOSService } from '../common/agentOS.js';
+import { extractSkillComponents, buildSkillMdFromComponents, isValidSkillSlug } from '../common/extractSkill.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IBridgeService } from './bridge/bridgeService.js';
 import { SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 
 import { NativeChatEditorInput, type IChatRuntimeState, type ChatTabStatus } from './nativeChatEditorInput.js';
@@ -184,6 +188,9 @@ export class NativeChatEditorPane extends EditorPane {
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IMcpService private readonly _mcpService: IMcpService,
 		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
+		@IAgentOSService private readonly _agentOSService: IAgentOSService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IBridgeService private readonly _bridgeService: IBridgeService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -961,6 +968,51 @@ export class NativeChatEditorPane extends EditorPane {
 			/** P2: footer 复制按钮右侧的「导入知识库」按钮 —— 走与 onFavoriteMessage 同一份管线 */
 			onImportToKnowledgeBase: (messageContent: string) => {
 				void this._handleFavoriteMessage(messageContent);
+			},
+			/** P2: footer 导入知识库按钮右侧的「沉淀技能」按钮 —— 提取消息为 SKILL.md */
+			onExtractSkill: (messageContent: string) => {
+				void this._handleExtractSkill(messageContent);
+			},
+			// ── Channel 绑定（飞书）—— 对齐 AgentSettingsEditorPane ──
+			onListFeishuBindings: () => {
+				try {
+					return this._bridgeService.getEngine().listConversationBindings('feishu');
+				} catch {
+					// 桥接引擎未就绪：返回空
+					return [];
+				}
+			},
+			onAddFeishuBinding: (chatId: string) => {
+				if (!this._currentAgentId) { return; }
+				try {
+					this._bridgeService.getEngine().setConversationAgent('feishu', chatId, this._currentAgentId);
+					this._notificationService.notify({ severity: Severity.Info, message: `已绑定飞书群聊 ${chatId} 到本 Agent` });
+				} catch (err) {
+					this._notificationService.notify({ severity: Severity.Error, message: `绑定失败: ${err instanceof Error ? err.message : String(err)}` });
+				}
+			},
+			onRemoveFeishuBinding: (chatId: string) => {
+				if (!this._currentAgentId) { return; }
+				try {
+					this._bridgeService.getEngine().clearConversationAgent('feishu', chatId);
+					this._notificationService.notify({ severity: Severity.Info, message: `已解除飞书群聊 ${chatId} 的绑定` });
+				} catch (err) {
+					this._notificationService.notify({ severity: Severity.Error, message: `解除失败: ${err instanceof Error ? err.message : String(err)}` });
+				}
+			},
+			onGetFeishuDefaultAgent: () => {
+				return this._configurationService.getValue<string>('sessions.channel.feishu.defaultAgent');
+			},
+			onSetFeishuDefaultAgent: (agentId: string | undefined) => {
+				const key = 'sessions.channel.feishu.defaultAgent';
+				const cur = this._configurationService.getValue<string>(key);
+				if (agentId) {
+					this._configurationService.updateValue(key, agentId);
+					this._notificationService.notify({ severity: Severity.Info, message: '已设为飞书渠道默认 Agent' });
+				} else if (cur) {
+					this._configurationService.updateValue(key, '');
+					this._notificationService.notify({ severity: Severity.Info, message: '已取消飞书渠道默认 Agent' });
+				}
 			},
 		}));
 
@@ -3146,6 +3198,100 @@ export class NativeChatEditorPane extends EditorPane {
 		);
 
 		this._logService.info(`[NativeChatEditorPane] 已收藏到知识库(legacy) [${classifyResult.label}, conf=${classifyResult.confidence}, src=${classifyResult.source}]: ${finalUri.toString()}`);
+	}
+
+	/**
+	 * 沉淀技能 —— 从 LLM 回复消息中提取可复用的技能，写入 SKILL.md。
+	 *
+	 * 流程：
+	 *   1. 从消息内容提取 name / description / prompt
+	 *   2. 构建 SKILL.md（YAML frontmatter + markdown body）
+	 *   3. 原子写入 ~/.saros/skills/<name>/SKILL.md
+	 *   4. 触发 SkillRegistry.reload()
+	 *   5. 通知用户结果
+	 *
+	 * 同名技能：
+	 *   - 如果 SKILL.md 已存在 → 追加 timestamp 后缀创建新版本
+	 *   - 如果 skill 已在 registry 中但文件名不冲突 → 更新现有内容
+	 */
+	private async _handleExtractSkill(content: string): Promise<void> {
+		try {
+			// 1. 从消息提取技能组分
+			const components = extractSkillComponents(content);
+			if (!isValidSkillSlug(components.name)) {
+				this._notificationService.notify({
+					severity: Severity.Error,
+					message: `无法提取有效的技能名称："${components.name}"`,
+					source: 'agent-chat-extract-skill',
+				});
+				return;
+			}
+
+			// 2. 构建 SKILL.md
+			const skillMd = buildSkillMdFromComponents(components);
+
+			// 3. 确定目标路径
+			const userHome = await this._agentStudioService.resolveUserHome();
+			const skillsRoot = URI.file(`${userHome}/.saros/skills`);
+			let skillMdUri = URI.file(`${userHome}/.saros/skills/${components.name}/SKILL.md`);
+
+			// 4. 检查是否已存在同名技能
+			let isNew = true;
+			try {
+				await this._fileService.stat(skillMdUri);
+				isNew = false;
+				// 已存在 → 追加时间戳后缀
+				const ts = Date.now().toString(36);
+				const versionedName = `${components.name}-${ts}`;
+				skillMdUri = URI.file(`${userHome}/.saros/skills/${versionedName}/SKILL.md`);
+			} catch {
+				// 文件不存在 → 首次创建
+			}
+
+			// 5. 原子写入：先写临时文件再 move
+			const tmpUri = URI.joinPath(skillsRoot, `.skill_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp`);
+			try {
+				await this._fileService.writeFile(tmpUri, VSBuffer.fromString(skillMd));
+				await this._fileService.move(tmpUri, skillMdUri, true);
+			} catch (writeErr) {
+				try { await this._fileService.del(tmpUri); } catch { /* ignore */ }
+				throw writeErr;
+			}
+
+			// 6. 触发 SkillRegistry reload 让新技能立即可用
+			try {
+				await this._skillRegistry.reload();
+			} catch (reloadErr) {
+				this._logService.warn(`[NativeChatEditorPane] skill reload after extract failed (file saved): ${reloadErr instanceof Error ? reloadErr.message : String(reloadErr)}`);
+			}
+
+			// 7. 同步到记忆引擎 —— 让 MemoryDetailEditorPane 技能 Tab 下次渲染时可见
+			try {
+				const memProvider = this._agentOSService.getActiveMemoryProvider();
+				if (memProvider?.writeSkillFile && this._currentAgentId) {
+					await memProvider.writeSkillFile(this._currentAgentId, components.name);
+				}
+			} catch (syncErr) {
+				this._logService.warn(`[NativeChatEditorPane] skill sync to memory engine failed (file saved): ${syncErr instanceof Error ? syncErr.message : String(syncErr)}`);
+			}
+
+			// 7. 通知用户
+			const verb = isNew ? '已创建' : '已更新';
+			this._logService.info(`[NativeChatEditorPane] ${verb}技能 [name=${components.name}]: ${skillMdUri.fsPath}`);
+			this._notificationService.notify({
+				severity: Severity.Info,
+				message: `${verb}技能：${components.name}`,
+				source: 'agent-chat-extract-skill',
+			});
+
+		} catch (err) {
+			this._logService.error('[NativeChatEditorPane] 沉淀技能失败:', err);
+			this._notificationService.notify({
+				severity: Severity.Error,
+				message: `沉淀技能失败：${err instanceof Error ? err.message : String(err)}`,
+				source: 'agent-chat-extract-skill',
+			});
+		}
 	}
 
 	override dispose(): void {

@@ -1,7 +1,7 @@
 # Worktree 自动任务派发优化方案
 
-> 状态：设计文档（仅方案 + 测试用例，未实施）  
-> 目标：将上游 VS Code 的 `WorktreeCreatedTaskDispatcher` 机制移植到 `sarosis-agents-client`，实现"创建 worktree 即自动 install+watch/编译"的闭环。  
+> 状态：设计文档（仅方案 + 测试用例，未实施）
+> 目标：将上游 VS Code 的 `WorktreeCreatedTaskDispatcher` 机制移植到 `vssaros-agents-client`，实现"创建 worktree 即自动 install+watch/编译"的闭环。
 > 范围：`src/vs/sessions/contrib/chat/browser` 下的会话任务系统。
 
 ---
@@ -162,9 +162,9 @@ export interface ISessionsTasksService {
     getSessionTasksOnce(session: ISession): Promise<readonly ISessionTaskWithTarget[]>;
     getAllTasks(session: ISession): Promise<readonly ISessionTaskWithTarget[]>;
     getNonSessionTasks(session: ISession): Promise<readonly INonSessionTaskEntry[]>;
-    
+
     runTask(task: ITaskEntry, session: ISession): Promise<IDisposable | undefined>;
-    
+
     // ... 保持原有 pin/browser/CRUD 方法不变
 }
 ```
@@ -545,12 +545,12 @@ test('dispatches worktreeCreated tasks when workTreeUri becomes available', asyn
     };
 
     const dispatcher = new WorktreeCreatedTaskDispatcher(sessionsManagement, tasksService, configService, logService);
-    
+
     // 模拟 session 启动事件
     onDidStartSessionEmitter.fire(session);
-    
+
     await waitForMicrotasks();
-    
+
     expect(tasksService.getSessionTasksOnce.calledOnceWith(session)).toBe(true);
     expect(tasksService.runTask.calledOnce).toBe(true);
     expect(tasksService.runTask.firstCall.args[0].label).toBe('Install & Watch');
@@ -559,42 +559,42 @@ test('dispatches worktreeCreated tasks when workTreeUri becomes available', asyn
 
 #### 测试用例 2：不派发非 worktreeCreated 任务
 
-输入：两个任务，一个 `runOn: 'worktreeCreated'`，一个 `runOn: 'default'`。  
+输入：两个任务，一个 `runOn: 'worktreeCreated'`，一个 `runOn: 'default'`。
 预期：只调用一次 `runTask`，且是 `worktreeCreated` 那个。
 
 #### 测试用例 3：session 归档时 dispose 句柄
 
-输入：派发了一个返回 IDisposable 的任务，随后 session.isArchived 变为 true。  
+输入：派发了一个返回 IDisposable 的任务，随后 session.isArchived 变为 true。
 预期：`dispose` 被调用一次。
 
 #### 测试用例 4：session 移除时清理资源
 
-输入：session 已派发任务，随后 `onDidChangeSessions` 报告该 session 被移除。  
+输入：session 已派发任务，随后 `onDidChangeSessions` 报告该 session 被移除。
 预期：与该 session 关联的 DisposableStore 被 dispose。
 
 #### 测试用例 5：不追溯已存在 session
 
-输入：dispatcher 创建前已存在的 session，随后被加入 management service。  
+输入：dispatcher 创建前已存在的 session，随后被加入 management service。
 预期：不触发派发（因为 `onDidStartSession` 只对新 session 触发）。
 
 #### 测试用例 6：capabilities.runsWorktreeCreatedTasks 为 true 时跳过
 
-输入：session.capabilities.runsWorktreeCreatedTasks = true。  
+输入：session.capabilities.runsWorktreeCreatedTasks = true。
 预期：不读取任务、不调用 runTask。
 
 #### 测试用例 7：配置关闭时 agent host session 跳过
 
-输入：session.providerId 为 agent host provider，配置 `chat.agentHost.runWorktreeCreatedTasks` = false。  
+输入：session.providerId 为 agent host provider，配置 `chat.agentHost.runWorktreeCreatedTasks` = false。
 预期：不派发。
 
 #### 测试用例 8：workTreeUri 未就绪时不派发
 
-输入：session.loading = true。  
+输入：session.loading = true。
 预期：不派发；loading 变为 false 且 workTreeUri 出现后才派发。
 
 #### 测试用例 9：已归档 session 派发时立即 dispose
 
-输入：派发时 `session.isArchived.get()` 已经为 true。  
+输入：派发时 `session.isArchived.get()` 已经为 true。
 预期：即使 runTask 返回句柄，也立即调用 dispose，不加入 taskHandles。
 
 ### 7.5 E2E / 手动测试清单

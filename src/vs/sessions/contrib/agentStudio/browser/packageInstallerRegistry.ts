@@ -30,7 +30,7 @@ export class PackageInstallerRegistry extends Disposable implements IPackageInst
 		super();
 		// 注册五类资源的 installer
 		// skill/agent/mcp/knowledge: 完整（registry reload + 版本溯源）
-		// workflow: 导入到工作区 .sarosisworkspace/workflows/
+		// workflow: 导入到工作区 .vssarosworkspace/workflows/
 		this.register(instantiationService.createInstance(SkillInstaller));
 		this.register(instantiationService.createInstance(AgentInstaller));
 		this.register(instantiationService.createInstance(McpInstaller));
