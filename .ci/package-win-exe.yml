@@ -159,15 +159,46 @@ stages:
               if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ tree-sitter rebuild failed"; exit 1 }
               Pop-Location
 
-              # ===== 7. ripgrep fallback (copy from build/) =====
+              # ===== 7. ripgrep download =====
+              # Priority: npmmirror CDN → GitHub postinstall → build/ copy → skip
               $mainRg = "node_modules\@vscode\ripgrep\bin\rg.exe"
               $buildRg = "build\node_modules\@vscode\ripgrep\bin\rg.exe"
+              if (-not (Test-Path $mainRg)) {
+                # Try npmmirror CDN first (no GitHub dependency)
+                $rgVersion = "13.0.0-10"  # @vscode/ripgrep semver
+                $rgUrl = "https://registry.npmmirror.com/-/binary/ripgrep/v$rgVersion/x86_64-pc-windows-msvc/rg.exe"
+                Write-Host "[RG] Trying npmmirror CDN: $rgUrl"
+                try {
+                  $rgDir = Split-Path $mainRg
+                  New-Item -Force -ItemType Directory $rgDir | Out-Null
+                  Invoke-WebRequest -Uri $rgUrl -OutFile $mainRg -TimeoutSec 30 -UseBasicParsing
+                  if ((Get-Item $mainRg).Length -gt 100000) {
+                    Write-Host "[RG] Downloaded from npmmirror CDN ($([math]::Round((Get-Item $mainRg).Length/1MB, 2)) MB)"
+                  } else {
+                    Remove-Item $mainRg -Force -EA SilentlyContinue
+                    throw "Downloaded file too small (likely error page)"
+                  }
+                } catch {
+                  Write-Host "[RG] npmmirror CDN failed: $_"
+                  if (Test-Path $mainRg) { Remove-Item $mainRg -Force -EA SilentlyContinue }
+                }
+              }
+              if (-not (Test-Path $mainRg)) {
+                Write-Host "[RG] Trying GitHub postinstall..."
+                try {
+                  node node_modules/@vscode/ripgrep/lib/postinstall.js
+                  if (-not (Test-Path $mainRg)) { throw "postinstall completed but rg.exe not found" }
+                  Write-Host "[RG] Downloaded via GitHub postinstall"
+                } catch {
+                  Write-Host "[RG] GitHub postinstall failed: $_"
+                }
+              }
               if (-not (Test-Path $mainRg) -and (Test-Path $buildRg)) {
-                New-Item -Force -ItemType Directory (Split-Path $mainRg) | Out-Null
                 Copy-Item $buildRg $mainRg -Force
-                Write-Host "[FIX] ripgrep copied from build/"
-              } elseif (-not (Test-Path $mainRg)) {
-                Write-Host "[WARN] ripgrep not available (GitHub API rate limit). Build will continue without it - search falls back to built-in engine."
+                Write-Host "[RG] Copied from build/"
+              }
+              if (-not (Test-Path $mainRg)) {
+                Write-Host "[WARN] rg.exe not available. Search falls back to built-in engine."
               }
 
               # ===== 8. Install extension dependencies =====
