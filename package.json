@@ -1,6 +1,6 @@
 {
   "name": "vssaros",
-  "version": "2.2.25932",
+  "version": "2.2.25934",
   "distro": "adf5d4ef5d36b1829d04e2a6f5255c5344cb0316",
   "author": {
     "name": "Microsoft Corporation"
@@ -247,6 +247,7 @@
     "istanbul-reports": "^3.1.5",
     "lazy.js": "^0.4.2",
     "merge-options": "^1.0.1",
+    "mermaid": "^11.16.0",
     "mime": "^1.4.1",
     "minimatch": "^3.1.5",
     "mocha": "^10.8.2",

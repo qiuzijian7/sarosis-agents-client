@@ -23,6 +23,9 @@ import { listMethods } from './engine/methodRegistry.js';
 import { resolveChatModel, createEmbedder } from './knowledgeAdapters.js';
 import type { IEmbedder } from './engine/embedder.js';
 import { createFileStorageAdapter } from './knowledgeStorage.js';
+import { buildFolderRag, stableRepoSessionId, searchAcrossRepos, aggregateItems, classifyRepoStrategy, type BuildFolderOptions } from './engine/folderRagBuild.js';
+export type { BuildFolderOptions } from './engine/folderRagBuild.js';
+import { FsGitRepoProbe } from '../../common/fsGitRepoProbe.js';
 import { appendKbOpLog, type IKbOpLogEntry, type KbOpStatus } from './kbOpLog.js';
 
 export { classifyByKeywords, classifyContentViaLLM } from './classifier.js';
@@ -55,6 +58,12 @@ export interface KnowledgeToolDeps {
 	 * `resolveChatModel` + `createEmbedder` path is used (production).
 	 */
 	readonly createManager?: (opts: { model?: string; provider?: string }) => Promise<KnowledgeManager>;
+	/**
+	 * Read the global folder-RAG index (`repoRoot → sessionId`) aggregated across all
+	 * imported folders. Used by `kb_search_repo` to fan-out a query over every imported
+	 * repository session. Optional (tests that don't exercise folder RAG can omit it).
+	 */
+	readonly readFolderRagIndex?: () => Promise<Record<string, string>>;
 }
 
 interface IKbToolDescriptor {
@@ -256,32 +265,139 @@ export async function importMessageToKnowledgeBase(
 	}
 }
 
+/**
+ * Build a `KnowledgeManager` for KB operations. Extracted from the old
+ * `buildManager` closure so it can be reused by both the `kb_*` tool descriptors
+ * and the folder→RAG import path (`importFolderToRag`).
+ */
+export async function buildKbManager(
+	deps: KnowledgeToolDeps,
+	opts: { model?: string; provider?: string },
+): Promise<KnowledgeManager> {
+	// Test seam: allow injecting a deterministic manager (mock LLM/embedder).
+	if (deps.createManager) { return deps.createManager(opts); }
+
+	// 知识库 agent 当前配置的 provider/model（工具级 provider/model 覆盖优先）。
+	const kb = (typeof deps.resolveKbModel === 'function')
+		? await deps.resolveKbModel()
+		: undefined;
+	const providerId = opts.provider || kb?.providerId;
+	const modelId = opts.model || kb?.modelId;
+
+	const chatModel = resolveChatModel(deps.configurationService, {
+		providerId,
+		modelId,
+	});
+
+	// Embedding：优先用 KB agent 的 provider 专属 embedder；否则回退全局服务。
+	const embedder = (deps.createKbEmbedder && (opts.provider || kb?.providerId))
+		? await deps.createKbEmbedder(opts.provider || kb!.providerId!)
+		: createEmbedder(deps.embeddingService);
+
+	const storageRoot = await deps.resolveStorageRoot();
+	const storage = createFileStorageAdapter(deps.fileService, storageRoot);
+	return new KnowledgeManager({ llm: chatModel, embedder, storage, verbose: true });
+}
+
+/** Serializable result of `importFolderToRag` (Maps flattened for storage / IPC). */
+export interface FolderRagResult {
+	/** repoRoot (absolute fsPath) → sessionId — one session per git repository. */
+	sessions: Record<string, string>;
+	/** sessionId of the optional unversioned session, or null. */
+	unversionedSessionId: string | null;
+	/** repoRoot → error message (fault isolation: one repo failing doesn't abort the rest). */
+	errors: Record<string, string>;
+}
+
+/**
+ * Production entry point for "import a folder as per-repo RAG" (Option A):
+ * one git repository → one KnowledgeSession. Builds a real `KnowledgeManager`
+ * (LLM + embedder + file storage) and a real `IGitRepoProbe` over `IFileService`,
+ * then delegates the pure pipeline to `buildFolderRag`.
+ *
+ * Sessions are persisted to disk via the storage adapter (same root as `kb_build`),
+ * so they can be re-queried later via `kb_search` / `kb_ask` or re-ingested after a
+ * `git pull` using the stable `stableRepoSessionId` mapping.
+ */
+export async function importFolderToRag(
+	deps: KnowledgeToolDeps,
+	folderPath: string,
+	opts: BuildFolderOptions = {},
+): Promise<FolderRagResult> {
+	const manager = await buildKbManager(deps, {});
+	const probe = new FsGitRepoProbe(deps.fileService);
+	const res = await buildFolderRag(folderPath, { manager, probe }, {
+		idForRepo: stableRepoSessionId,
+		// Per-repo strategy differentiation: code-heavy repos → `light_rag`,
+		// docs-heavy repos → `notes_summary` (an explicit templateId/method on
+		// `opts` still overrides this). Callers may pass their own selector.
+		chooseStrategy: classifyRepoStrategy,
+		...opts,
+	});
+	const sessions: Record<string, string> = {};
+	for (const [k, v] of res.sessions) { sessions[k] = v; }
+	const errors: Record<string, string> = {};
+	for (const [k, v] of res.errors) { errors[k] = v instanceof Error ? v.message : String(v); }
+	return { sessions, unversionedSessionId: res.unversionedSessionId, errors };
+}
+
+/** Serializable result of `searchFolderRag` (cross-repo fan-out aggregation). */
+export interface FolderRagSearchResult {
+	query: string;
+	/** Number of repository sessions included in the fan-out. */
+	repoCount: number;
+	/** Aggregated, de-duplicated, score-ranked items (each carries `_repoRoot`). */
+	results: Array<Record<string, unknown>>;
+	/** Per-repo load/search failures (fault isolation). */
+	errors: Array<Record<string, unknown>>;
+}
+
+/**
+ * Cross-repo semantic search over every imported folder's RAG sessions (Option A).
+ *
+ * Reads the global `repoRoot → sessionId` index (provided by the host via
+ * `deps.readFolderRagIndex`), loads each session into a real `KnowledgeManager`,
+ * fans the query out via `searchAcrossRepos`, and flattens/ranks the hits with
+ * `aggregateItems`. One repo failing to load/search is isolated into `errors`
+ * and does not abort the rest.
+ */
+export async function searchFolderRag(
+	deps: KnowledgeToolDeps,
+	query: string,
+	topK = 5,
+): Promise<FolderRagSearchResult> {
+	const index = (typeof deps.readFolderRagIndex === 'function')
+		? await deps.readFolderRagIndex()
+		: {};
+	const map = new Map<string, string>(Object.entries(index));
+	if (map.size === 0) {
+		return { query, repoCount: 0, results: [], errors: [] };
+	}
+	const manager = await buildKbManager(deps, {});
+	const loadErrors: Array<{ repoRoot: string; error: string }> = [];
+	for (const [repoRoot, sid] of map) {
+		try {
+			await manager.load(sid);
+		} catch (e) {
+			loadErrors.push({ repoRoot, error: e instanceof Error ? e.message : String(e) });
+		}
+	}
+	const across = await searchAcrossRepos(manager, map, query, topK);
+	const results = aggregateItems(across, topK);
+	const errors = [
+		...loadErrors,
+		...across.errors.map(e => ({
+			repoRoot: e.repoRoot,
+			error: e.error instanceof Error ? e.error.message : String(e.error),
+		})),
+	];
+	return { query, repoCount: map.size, results, errors };
+}
+
 export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolDescriptor[] {
 
 	async function buildManager(opts: { model?: string; provider?: string }): Promise<KnowledgeManager> {
-		// Test seam: allow injecting a deterministic manager (mock LLM/embedder).
-		if (deps.createManager) { return deps.createManager(opts); }
-
-		// 知识库 agent 当前配置的 provider/model（工具级 provider/model 覆盖优先）。
-		const kb = (typeof deps.resolveKbModel === 'function')
-			? await deps.resolveKbModel()
-			: undefined;
-		const providerId = opts.provider || kb?.providerId;
-		const modelId = opts.model || kb?.modelId;
-
-		const chatModel = resolveChatModel(deps.configurationService, {
-			providerId,
-			modelId,
-		});
-
-		// Embedding：优先用 KB agent 的 provider 专属 embedder；否则回退全局服务。
-		const embedder = (deps.createKbEmbedder && (opts.provider || kb?.providerId))
-			? await deps.createKbEmbedder(opts.provider || kb!.providerId!)
-			: createEmbedder(deps.embeddingService);
-
-		const storageRoot = await deps.resolveStorageRoot();
-		const storage = createFileStorageAdapter(deps.fileService, storageRoot);
-		return new KnowledgeManager({ llm: chatModel, embedder, storage, verbose: true });
+		return buildKbManager(deps, opts);
 	}
 
 	function resolveFileUri(baseDir: string, filePath?: unknown): URI | undefined {
@@ -562,6 +678,41 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 				} catch (err) {
 					void logKbTool('kb_ask', 'failure', { target: id, detail: { query }, error: err instanceof Error ? err.message : String(err) });
 					return txt(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
+				}
+			},
+		},
+
+		// ── kb_search_repo (cross-repo folder RAG search) ─
+		{
+			definition: {
+				name: 'kb_search_repo',
+				description: 'Cross-repository semantic search over ALL folders imported as per-repo RAG (one session per git repo). Fans the query out across every imported repository and returns de-duplicated, score-ranked items (each tagged with its source `_repoRoot`). Use this to find code/docs across the whole workspace linked/copied folders at once — unlike `kb_search` which targets a single knowledge base by id.',
+				inputSchema: {
+					type: 'object',
+					properties: {
+						query: { type: 'string', description: 'Search query' },
+						top_k: { type: 'number', description: 'Number of results per repo (default: 5, capped at 50)' },
+					},
+					required: ['query'],
+				},
+				category: 'knowledge',
+				source: 'saros.knowledge',
+			},
+			available,
+			handler: async (args) => {
+				const query = args['query'] as string;
+				if (!query || !query.trim()) {
+					return txt(JSON.stringify({ success: false, error: '`query` is required' }));
+				}
+				const topK = typeof args['top_k'] === 'number' ? Math.min(Math.max(1, args['top_k'] as number), 50) : 5;
+				try {
+					const res = await searchFolderRag(deps, query, topK);
+					void logKbTool('kb_search_repo', 'success', { detail: { query, repoCount: res.repoCount, hits: res.results.length } });
+					return txt(JSON.stringify({ success: true, ...res }, null, 2));
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					void logKbTool('kb_search_repo', 'failure', { detail: { query }, error: msg });
+					return txt(JSON.stringify({ success: false, error: msg }));
 				}
 			},
 		},

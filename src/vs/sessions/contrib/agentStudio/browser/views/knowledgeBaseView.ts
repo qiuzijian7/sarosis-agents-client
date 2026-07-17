@@ -40,6 +40,7 @@ import { EditorsOrder } from '../../../../../workbench/common/editor.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../../platform/request/common/request.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
+import { IAgentStudioService } from '../../common/agentStudio.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer, streamToBuffer } from '../../../../../base/common/buffer.js';
@@ -155,6 +156,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
 	@IEmbeddingService private readonly _ragEmbeddingService: IEmbeddingService,
+	@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._index = new KbFullTextIndex(this.fileService);
@@ -1425,9 +1427,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 					if (mode === 'link') {
 						await this.linkFolder(picked[0]);
 					} else if (mode === 'copy') {
-						const dest = URI.joinPath(target, this.baseName(picked[0]));
-						await this.copyRecursive(picked[0], dest);
-						void this._logOp('kb.import.folder', 'success', { source: picked[0].fsPath, target: dest.fsPath });
+					const dest = URI.joinPath(target, this.baseName(picked[0]));
+					await this.copyRecursive(picked[0], dest);
+					void this._logOp('kb.import.folder', 'success', { source: picked[0].fsPath, target: dest.fsPath });
+					// 拷贝完成后构建语义索引（目标目录已就绪）。
+					void this._importFolderRagAsync(dest.fsPath, this._activeVault);
 					}
 				}
 			} else if (kind === 'files') {
@@ -1529,6 +1533,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this.renderAll();
 		this.notificationService.info(localize('kb.linked', '已关联文件夹（文件保持原位，原地索引）：{0}', this.baseName(uri)));
 		void this._logOp('kb.link', 'success', { source: p });
+		// 后台构建「每 git 仓库 = 一个 RAG session」语义索引（与全文索引解耦，故障隔离）。
+		void this._importFolderRagAsync(p, this._activeVault);
 	}
 
 	/** 取消关联外部文件夹：移除登记并重建索引。 */
@@ -1537,12 +1543,57 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const list = this._activeVault.linkedFolders ?? [];
 		if (!list.includes(path)) { return; }
 		this._activeVault.linkedFolders = list.filter(p => p !== path);
+		// 清理该文件夹下所有仓库的 RAG session 映射（不删磁盘 session，仅移除登记）。
+		if (this._activeVault.ragSessions) {
+			const kept: Record<string, string> = {};
+			for (const [repoRoot, sid] of Object.entries(this._activeVault.ragSessions)) {
+				if (repoRoot !== path && !repoRoot.startsWith(path + '/') && !repoRoot.startsWith(path + '\\')) {
+					kept[repoRoot] = sid;
+				}
+			}
+			this._activeVault.ragSessions = Object.keys(kept).length ? kept : undefined;
+		}
+		this._activeVault.ragUnversionedSessionId = undefined;
+		// 同步清理全局文件夹 RAG 索引（repoRoot→sessionId 映射），避免 kb_search_repo 检索到已取消关联的仓库。
+		try { await this.agentStudioService.unlinkFolderRag(path); } catch (e) { this.logService.warn('[KB] failed to unlink folder RAG index', e); }
 		this.saveVaults();
 		this.markSearchDirty();
 		await this.rebuildSearchAssets();
 		this.renderAll();
 		this.notificationService.info(localize('kb.unlinked', '已取消关联：{0}', this.baseName(URI.file(path))));
 		void this._logOp('kb.unlink', 'success', { target: path });
+	}
+
+	/**
+	 * 后台为导入的文件夹构建「每 git 仓库 = 一个 RAG session」语义索引（方案 A）。
+	 * 与全文索引（rebuildSearchAssets）解耦：即使语义构建失败 / 部分失败，全文索引仍可用。
+	 * 完成后把 repoRoot→sessionId 映射写回 vault 元数据，供后续跨库检索 / git pull 增量重摄入。
+	 */
+	private async _importFolderRagAsync(folderPath: string, vault: IKbVault): Promise<void> {
+		if (!vault) { return; }
+		try {
+			const result = await this.agentStudioService.importFolderToRag(folderPath, { includeUnversioned: false });
+			const errEntries = result.errors ?? {};
+			if (Object.keys(errEntries).length) {
+				this.logService.warn(`[KB] folder RAG partial failure for ${folderPath}:`, errEntries);
+			}
+			vault.ragSessions = { ...(vault.ragSessions ?? {}), ...result.sessions };
+			vault.ragUnversionedSessionId = result.unversionedSessionId ?? vault.ragUnversionedSessionId ?? null;
+			this.saveVaults();
+			const n = Object.keys(result.sessions).length;
+			const errN = Object.keys(errEntries).length;
+			if (errN) {
+				this.notificationService.info(localize('kb.folderRag.partial', '已为「{0}」构建 {1} 个仓库语义索引（{2} 个失败，全文索引仍可用）', this.baseName(URI.file(folderPath)), n, errN));
+			} else {
+				this.notificationService.info(localize('kb.folderRag.done', '已为「{0}」构建 {1} 个仓库语义索引（可跨库检索）', this.baseName(URI.file(folderPath)), n));
+			}
+			void this._logOp('kb.import.folderRag', 'success', { source: folderPath, detail: { sessions: result.sessions, errors: errEntries } });
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.logService.warn(`[KB] folder RAG import failed for ${folderPath}:`, err);
+			this.notificationService.warn(localize('kb.folderRag.failed', '文件夹语义索引构建失败（全文索引仍可用）：{0}', msg));
+			void this._logOp('kb.import.folderRag', 'failure', { source: folderPath, error: msg });
+		}
 	}
 
 	/** 汇总当前 Vault 的全部索引根：库 / 笔记 分区 + 关联（链接）的外部文件夹。 */
