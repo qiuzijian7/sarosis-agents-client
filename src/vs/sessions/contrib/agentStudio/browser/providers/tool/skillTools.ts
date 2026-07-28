@@ -4,25 +4,72 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Skill Tools — read_skill / skill_view / list_skills / skills_list / skill_create / skill_manage。
+ * Skill Tools — read_skill / list_skills / skill_manage / skill_search。
  *
  * 从 builtinToolProvider.ts 的 _registerSkillTools 抽出，降低主文件体积。
  * 借鉴 OpenClaw / Hermes 的按需加载模式：模型在 systemPrompt 看到轻量目录后，
  * 通过这些工具按需读取完整技能内容（progressive disclosure）。
+ * Phase 2: skill_search 用 BM25 算法匹配用户查询与 skill description，
+ * 替代简单的关键词字符串匹配，提升 skill 发现精度。
  */
 
-import { ToolSecurityLevel } from '../../../common/providers.js';
+// ── BM25 Skill Search ─────────────────────────────────────────────
+
+interface SkillSearchEntry {
+	id: string;
+	name: string;
+	description: string;
+	/** 预计算的分词结果（name + description） */
+	tokens: Set<string>;
+}
+
+/** 简单 BM25 评分（k1=1.2, b=0.75） */
+function bm25Score(queryTokens: Set<string>, doc: SkillSearchEntry, avgDocLen: number, totalDocs: number): number {
+	const k1 = 1.2;
+	const b = 0.75;
+	const docLen = doc.tokens.size;
+	let score = 0;
+	for (const term of queryTokens) {
+		// IDF: log((N - n + 0.5) / (n + 0.5) + 1)
+		const n = doc.tokens.has(term) ? 1 : 0;
+		if (n === 0) continue;
+		const idf = Math.log((totalDocs - n + 0.5) / (n + 0.5) + 1);
+		// TF: (f * (k1 + 1)) / (f + k1 * (1 - b + b * docLen / avgDocLen))
+		const tf = 1; // 每个 term 在 doc 中出现一次
+		const tfNorm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * docLen / avgDocLen));
+		score += idf * tfNorm;
+	}
+	return score;
+}
+
+function tokenize(text: string): Set<string> {
+	return new Set(
+		text.toLowerCase()
+			.replace(/[^a-z0-9_\u4e00-\u9fff]/g, ' ')
+			.split(/\s+/)
+			.filter(w => w.length >= 2)
+	);
+}
+
 import type { IToolResultContent } from '../../../common/providers.js';
-import { SKILL_CREATE_TOOL_SCHEMA, SKILL_CREATE_TOOL_DESCRIPTION, SkillManagerTool } from '../../skillManagerTool.js';
+import type { URI } from '../../../../../../base/common/uri.js';
+import { SkillManagerTool } from '../../skillManagerTool.js';
 import type { ISkillRegistry } from '../../../common/skills.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 
 export interface SkillToolContext {
 	register(registration: IBuiltinToolRegistration): void;
 	skillRegistry: ISkillRegistry;
 	skillManagerTool: SkillManagerTool;
 	logService: ILogService;
+	environmentService: IEnvironmentService;
+	/** 技能读取钩子（read_skill 调用后触发，用于使用追踪） */
+	onSkillRead?: (skillId: string, skillResource?: URI) => void;
+	/** 技能修改钩子（skill_manage create/edit/patch 成功后触发） */
+	onSkillMutated?: (skillName: string, skillDir?: URI) => void;
 }
 
 export function registerSkillTools(ctx: SkillToolContext): void {
@@ -30,104 +77,168 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 		const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
 		const MAX_SKILL_BYTES = 256_000; // 单个 skill 内容上限 256KB
 
-		ctx.register({
-			definition: {
-				name: 'read_skill',
-				description: 'Read the full instructions of an installed skill by its id. Use this when you need detailed instructions from a skill listed in <available_skills>.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						skill_id: {
-							type: 'string',
-							description: 'The skill id (from <available_skills> in system prompt)',
-						},
+	ctx.register({
+		definition: {
+			name: 'read_skill',
+			description: 'Read the full instructions of an installed skill by its id. Use this when you need detailed instructions from a skill. Pass optional "path" to read a support file (references/, scripts/, assets/, templates/) listed in the skill\'s supportFiles.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					skill_id: {
+						type: 'string',
+						description: 'The skill id (from <available_skills> in this tool\'s description)',
 					},
-					required: ['skill_id'],
+					path: {
+						type: 'string',
+						description: 'Optional relative path of a support file inside the skill (e.g., "references/api.md", "scripts/run.py"). When provided, returns that file\'s content instead of SKILL.md.',
+					},
 				},
-				category: 'skills',
-				source: source,
+				required: ['skill_id'],
 			},
-			handler: async args => {
-				const skillId = String(args['skill_id'] ?? '').trim();
-				if (!skillId) {
-					throw new Error('skill_id is required');
-				}
+			category: 'skills',
+			source: source,
+		},
+		handler: async args => {
+			const skillId = String(args['skill_id'] ?? '').trim();
+			if (!skillId) {
+				throw new Error('skill_id is required');
+			}
+			const supportPath = String(args['path'] ?? '').trim();
 
-				const skill = ctx.skillRegistry.getSkill(skillId);
-				if (!skill) {
-					// 尝试模糊匹配（按 name）
-					const allSkills = ctx.skillRegistry.getSkills();
-					const byName = allSkills.find(s => s.name.toLowerCase() === skillId.toLowerCase());
-					if (byName) {
-						// 对齐 Hermes 格式：JSON {success, name, description, content, ...}
-						return text(JSON.stringify({
-							success: true,
-							name: byName.name,
-							id: byName.id,
-							description: byName.description ?? '',
-							category: byName.category ?? '',
-							activation: byName.activation,
-							content: (byName.prompt ?? '').slice(0, MAX_SKILL_BYTES),
-							match: byName.match ?? [],
-							recommendedTools: byName.recommendedTools ?? [],
-						}, null, 2));
-					}
+			let skill = ctx.skillRegistry.getSkill(skillId);
+			if (!skill) {
+				// 尝试模糊匹配（按 name）
+				const allSkills = ctx.skillRegistry.getSkills();
+				skill = allSkills.find(s => s.name.toLowerCase() === skillId.toLowerCase());
+			}
+			if (!skill) {
+				return text(JSON.stringify({
+					success: false,
+					error: `Skill not found: "${skillId}". Use list_skills to see available skill ids.`,
+				}));
+			}
+
+			// 使用追踪
+			ctx.onSkillRead?.(skill.id, skill.resource);
+
+			// 读取支持目录文件（references/scripts/assets/templates）— 渐进披露
+			if (supportPath) {
+				try {
+					const fileContent = await ctx.skillRegistry.readSkillSupportFile(skill.id, supportPath);
+					return text(JSON.stringify({
+						success: true,
+						name: skill.name,
+						id: skill.id,
+						path: supportPath,
+						content: fileContent.slice(0, MAX_SKILL_BYTES),
+					}, null, 2));
+				} catch (e) {
 					return text(JSON.stringify({
 						success: false,
-						error: `Skill not found: "${skillId}". Use list_skills to see available skill ids.`,
+						error: `Failed to read support file "${supportPath}" in skill "${skill.id}": ${e instanceof Error ? e.message : String(e)}`,
+						supportFiles: skill.supportFiles ?? [],
 					}));
 				}
+			}
 
-				// 对齐 Hermes 格式
-				return text(JSON.stringify({
-					success: true,
-					name: skill.name,
-					id: skill.id,
-					description: skill.description ?? '',
-					category: skill.category ?? '',
-					activation: skill.activation,
-					content: (skill.prompt ?? '').slice(0, MAX_SKILL_BYTES),
-					match: skill.match ?? [],
-					recommendedTools: skill.recommendedTools ?? [],
-				}, null, 2));
-			},
-		});
+		// 对齐 Hermes 格式
+		return text(JSON.stringify({
+			success: true,
+			name: skill.name,
+			id: skill.id,
+			description: skill.description ?? '',
+			category: skill.category ?? '',
+			activation: skill.activation,
+			content: (skill.prompt ?? '').slice(0, MAX_SKILL_BYTES),
+			match: skill.match ?? [],
+			recommendedTools: skill.recommendedTools ?? [],
+			source: skill.source ?? '',
+			isWorkflow: skill.source === 'workflow',
+			workflowId: skill.workflowId ?? undefined,
+			executable: skill.executor?.kind === 'workflow' ? true : undefined,
+			supportFiles: skill.supportFiles ?? [],
+			allowedTools: skill.allowedTools ?? undefined,
+			model: skill.model ?? undefined,
+		}, null, 2));
+		},
+	});
 
-		// ── skill_view 别名（Hermes 命名）──────────────────────────
-		ctx.register({
-			definition: {
-				name: 'skill_view',
-				description: 'View the content of a skill or a specific file within a skill directory. (Alias for read_skill)',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						name: { type: 'string', description: 'Skill name or ID to view' },
+	// ── skill_search: BM25 算法匹配用户查询与 skill description ──
+	ctx.register({
+		definition: {
+			name: 'skill_search',
+			description: 'Search for the best matching skill using BM25 algorithm. Use this FIRST when a task might benefit from a specialized workflow. Returns matching skills ranked by relevance. Then use read_skill to load the full instructions of the best match.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					query: {
+						type: 'string',
+						description: 'The search query describing the task (e.g., "analyze GC mechanism", "review code for bugs", "generate documentation")',
 					},
-					required: ['name'],
+					limit: {
+						type: 'number',
+						description: 'Maximum number of results to return (default: 3)',
+					},
 				},
-				category: 'skills',
-				source: source,
+				required: ['query'],
 			},
-			handler: async (args) => {
-				const name = String(args['name'] ?? '').trim();
-				if (!name) { return text(JSON.stringify({ success: false, error: 'name is required' })); }
-				const skills = ctx.skillRegistry?.getSkills() ?? [];
-				const skill = skills.find(s => s.id === name || s.name.toLowerCase() === name.toLowerCase());
-				if (!skill) {
-					return text(JSON.stringify({
-						success: false,
-						error: `Skill "${name}" not found. Use skills_list to see available skills.`,
-					}));
-				}
+			category: 'skills',
+			source: source,
+		},
+		handler: async args => {
+			const query = String(args['query'] ?? '').trim();
+			if (!query) {
+				return text(JSON.stringify({ success: false, error: 'query is required' }));
+			}
+			const limit = typeof args['limit'] === 'number' ? Math.max(1, Math.min(10, args['limit'])) : 3;
+
+			const allSkills = ctx.skillRegistry.getSkills().filter(s => s.enabled !== false);
+			if (allSkills.length === 0) {
+				return text(JSON.stringify({ success: true, matches: [], message: 'No skills installed' }));
+			}
+
+			// Build search index
+			const entries: SkillSearchEntry[] = allSkills.map(s => ({
+				id: s.id,
+				name: s.name,
+				description: s.description ?? '',
+				tokens: tokenize(`${s.name} ${s.description ?? ''} ${s.id}`),
+			}));
+
+			const queryTokens = tokenize(query);
+			const totalDocs = entries.length;
+			const avgDocLen = entries.reduce((sum, e) => sum + e.tokens.size, 0) / totalDocs;
+
+			// Score all skills
+			const scored = entries
+				.map(e => ({ ...e, score: bm25Score(queryTokens, e, avgDocLen, totalDocs) }))
+				.filter(e => e.score > 0)
+				.sort((a, b) => b.score - a.score)
+				.slice(0, limit);
+
+			if (scored.length === 0) {
 				return text(JSON.stringify({
 					success: true,
-					name: skill.name,
-					id: skill.id,
-					description: skill.description ?? '',
-					content: (skill.prompt ?? '').slice(0, MAX_SKILL_BYTES),
-				}, null, 2));
-			},
-		});
+					matches: [],
+					message: `No skills match "${query}". Try different keywords or use list_skills to browse all skills.`,
+				}));
+			}
+
+			return text(JSON.stringify({
+				success: true,
+				query,
+				matches: scored.map(s => ({
+					skill_id: s.id,
+					name: s.name,
+					description: s.description,
+					score: Math.round(s.score * 100) / 100,
+				})),
+				message: scored.length === 1
+					? `Best match: "${scored[0].name}". Use read_skill with skill_id="${scored[0].id}" to load full instructions.`
+					: `Top ${scored.length} matches. Use read_skill with the best matching skill_id.`,
+			}, null, 2));
+		},
+	});
 
 		ctx.register({
 			definition: {
@@ -168,14 +279,19 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 
 				// 对齐 Hermes skills_list 返回格式：JSON {skills, categories, count, hint}
 				// 参考 Hermes tools/skills_tool.py::skills_list()
-				const skillItems = skills.map(s => ({
-					name: s.name,
-					id: s.id,
-					description: s.description || '',
-					category: s.category ?? '',
-					activation: s.activation,
-					source: s.source ?? '',
-				}));
+		const skillItems = skills.map(s => ({
+			name: s.name,
+			id: s.id,
+			description: s.description || '',
+			category: s.category ?? '',
+			activation: s.activation,
+			source: s.source ?? '',
+			isWorkflow: s.source === 'workflow',
+			workflowId: s.workflowId ?? undefined,
+			executable: s.executor?.kind === 'workflow' ? true : undefined,
+			supportFileCount: s.supportFiles?.length || undefined,
+			allowedTools: s.allowedTools ?? undefined,
+		}));
 				const categories = [...new Set(skills.map(s => s.category).filter(Boolean) as string[])].sort();
 				const result: Record<string, any> = {
 					success: true,
@@ -185,126 +301,40 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 				};
 				if (skillItems.length === 0) {
 					// 对齐 Hermes：空结果时给出存储路径和创建指引，避免 LLM 用 file_list 查错目录
-					result.message = 'No skills found. Skills directory is ~/.saros/skills/. Use skill_create to create new skills.';
-					result.hint = 'Use skill_create(name="<slug>", content="<SKILL.md>") to create a new skill.';
+					result.message = 'No skills found. Skills directory is ~/.vssaros/saros/skills/. Use skill_manage with action="create" to create new skills.';
+					result.hint = 'Use skill_manage(action="create", name="<slug>", content="<SKILL.md>") to create a new skill.';
 				} else {
-					result.hint = 'Use read_skill or skill_view to see full content';
-					result.storagePath = '~/.saros/skills/';
+					result.hint = 'Use read_skill to see full content';
+					result.storagePath = '~/.vssaros/saros/skills/';
 				}
 				return text(JSON.stringify(result, null, 2));
 			},
 		});
 
-		// ── skills_list 别名（Hermes 命名）──────────────────────────
-		// Hermes 用 skills_list，Sarosis 用 list_skills。注册别名对齐。
-		// 参考 Hermes tools/skills_tool.py::skills_list()
-		ctx.register({
-			definition: {
-				name: 'skills_list',
-				description: 'List all available skills (progressive disclosure tier 1 - minimal metadata). Returns only name + description to minimize token usage. (Alias for list_skills)',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						category: { type: 'string', description: 'Optional category filter (e.g., "mlops")' },
-					},
-				},
-				category: 'skills',
-				source: source,
-			},
-			handler: async (args) => {
-				const category = String(args['category'] ?? '').toLowerCase().trim();
-				let skills = [...ctx.skillRegistry.getSkills()].filter(s => s.enabled !== false);
-				if (category) {
-					skills = skills.filter(s => (s.category ?? '').toLowerCase() === category);
-				}
-				// 对齐 Hermes 格式：始终返回 message/hint 告知技能存储位置
-				// Hermes 在空目录时提示路径，避免 LLM 用 file_list 去猜测目录位置
-				const skillItems = skills.map(s => ({
-					name: s.name,
-					id: s.id,
-					description: s.description || '',
-					category: s.category ?? '',
-				}));
-				const categories = [...new Set(skills.map(s => s.category).filter(Boolean) as string[])].sort();
-				const base = {
-					success: true,
-					skills: skillItems,
-					categories,
-					count: skillItems.length,
-				};
-				if (skillItems.length === 0) {
-					return text(JSON.stringify({
-						...base,
-						message: 'No skills found. Skills directory is ~/.saros/skills/. Use skill_create to create new skills.',
-						hint: 'Use skill_create(name="<slug>", content="<SKILL.md>") to create a new skill.',
-					}, null, 2));
-				}
-				return text(JSON.stringify({
-					...base,
-					hint: 'Use skill_view(name) to see full content',
-					storagePath: '~/.saros/skills/',
-				}, null, 2));
-			},
-		});
 
-		// ── skill_create: 创建新技能 ──────────────────────────────────
-		// 参考 Hermes-Agent 的 skill_manage(action="create")。
-		// 让 Agent 把成功的经验固化为可复用技能，写入 ~/.saros/skills/<name>/SKILL.md
-		ctx.register({
-			definition: {
-				name: 'skill_create',
-				description: SKILL_CREATE_TOOL_DESCRIPTION,
-				inputSchema: SKILL_CREATE_TOOL_SCHEMA as Record<string, unknown>,
-				category: 'skills',
-				source: source,
-				securityLevel: ToolSecurityLevel.Dangerous,
-			},
-			handler: async (args: Record<string, unknown>): Promise<IToolResultContent[]> => {
-				const name = String(args['name'] ?? '').trim();
-				const content = String(args['content'] ?? '');
-				const category = args['category'] ? String(args['category']).trim() || undefined : undefined;
-
-				if (!name) {
-					return text('Error: name is required.');
-				}
-				if (!content) {
-					return text('Error: content is required. Provide the full SKILL.md text (frontmatter + body).');
-				}
-
-				const result = await ctx.skillManagerTool.createSkill({ name, content, category });
-				if (result.success) {
-					return text([
-						result.message,
-						'',
-						'The skill is now available for activation via /skill or list_skills.',
-						'Use read_skill to verify its content.',
-					].join('\n'));
-				}
-				return text(`Error: ${result.error ?? result.message}`);
-			},
-		});
-
-		ctx.logService.info('[BuiltinTools] _registerSkillTools: read_skill, list_skills, and skill_create registered');
+		ctx.logService.info('[BuiltinTools] _registerSkillTools: read_skill, list_skills registered (skill creation via skill_manage action=create)');
 
 		// ── skill_manage: 对齐 Hermes skill_manager_tool.py ──────────────────
 		// Hermes 支持 6 种 action：create / edit / patch / delete / write_file / remove_file
-		// Sarosis 当前支持 create/edit（委托 skill_create），patch/delete 返回友好提示
+		// Sarosis 完整支持 create（新建）/ edit（全量覆盖）/ patch（精确替换）/ delete。
+		// 相比旧版改进：edit→updateSkill（不再拒绝已存在技能），patch→patchSkill（带唯一性+有效性校验+备份）
 		ctx.register({
 			definition: {
 				name: 'skill_manage',
 				description: [
 					'Manage skills (create, edit, patch, delete). Skills are your procedural memory — reusable approaches for recurring task types.',
-					'Actions: create (full SKILL.md + optional category), patch (old_string/new_string for fixes), edit (full rewrite), delete.',
-					'Create when: complex task succeeded (5+ calls), errors overcome, user-corrected approach worked.',
-					'Update when: instructions stale/wrong, missing steps found during use.',
+					'create: Write a new SKILL.md. Fails if the skill already exists.',
+					'edit: Replace the entire SKILL.md of an existing skill with new content. Use this to update stale/wrong instructions.',
+					'patch: Replace a specific text snippet in an existing SKILL.md. Safer than edit for small fixes. old_string must be unique unless replace_all=true.',
+					'delete: Remove a skill entirely.',
 				].join(' '),
 				inputSchema: {
 					type: 'object',
 					properties: {
-						action: { type: 'string', enum: ['create', 'patch', 'edit', 'delete'], description: 'The action to perform.' },
+						action: { type: 'string', enum: ['create', 'patch', 'edit', 'delete'], description: 'create=new skill, edit=full rewrite of existing skill, patch=targeted text replacement, delete=remove.' },
 						name: { type: 'string', description: 'Skill name (lowercase, hyphens/underscores, max 64 chars).' },
 						content: { type: 'string', description: 'Full SKILL.md content (YAML frontmatter + markdown body). Required for create and edit.' },
-						old_string: { type: 'string', description: 'Text to find in the file (required for patch). Must be unique unless replace_all=true.' },
+						old_string: { type: 'string', description: 'Text to find in the file (required for patch). Must be unique unless replace_all=true. Match whitespace and newlines exactly.' },
 						new_string: { type: 'string', description: 'Replacement text (required for patch). Can be empty to delete matched text.' },
 						replace_all: { type: 'boolean', description: 'For patch: replace all occurrences (default: false).' },
 						category: { type: 'string', description: 'Optional category for organizing the skill (e.g., devops, data-science).' },
@@ -322,11 +352,28 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 
 				if (!name) { return text('Error: name is required'); }
 
-				if (action === 'create' || action === 'edit') {
-					if (!content) { return text('Error: content is required for create/edit. Provide the full SKILL.md text (frontmatter + body).'); }
+				if (action === 'create') {
+					if (!content) { return text('Error: content is required for create. Provide the full SKILL.md text (frontmatter + body).'); }
 					const result = await ctx.skillManagerTool.createSkill({ name, content, category });
 					if (result.success) {
 						return text(`${result.message}\n\nThe skill is now available. Use read_skill to verify.`);
+					}
+					// 如果是"已存在"错误，提示使用 edit 或 patch
+					if (result.error?.includes('already exists')) {
+						return text(
+							`Error: ${result.error}\n\n`
+							+ `Tip: Use skill_manage(action="edit", content="<full SKILL.md>") to rewrite the existing skill, `
+							+ `or skill_manage(action="patch", old_string="...", new_string="...") for targeted fixes.`
+						);
+					}
+					return text(`Error: ${result.error ?? result.message}`);
+				}
+
+				if (action === 'edit') {
+					if (!content) { return text('Error: content is required for edit. Provide the full updated SKILL.md text (frontmatter + body).'); }
+					const result = await ctx.skillManagerTool.updateSkill({ name, content, category });
+					if (result.success) {
+						return text(`${result.message}\n\nThe updated skill is now available. Use read_skill to verify.`);
 					}
 					return text(`Error: ${result.error ?? result.message}`);
 				}
@@ -335,38 +382,20 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 					const oldString = String(args['old_string'] ?? '');
 					const newString = String(args['new_string'] ?? '');
 					const replaceAll = Boolean(args['replace_all']);
-					if (!oldString) { return text('Error: old_string is required for patch'); }
-					// 读取技能文件 → 替换 → 写回
-					try {
-						const skills = ctx.skillRegistry?.getSkills() ?? [];
-						const skill = skills.find(s => s.id === name || s.name.toLowerCase() === name.toLowerCase());
-						if (!skill) { return text(`Error: Skill "${name}" not found. Use list_skills to see available skills.`); }
-						// 使用 patch 工具的逻辑：读取 → 替换 → 写回
-						const path = require('path');
-						const os = require('os');
-						const fs = await import('fs/promises');
-						const skillPath = path.join(os.homedir(), '.saros', 'skills', name, 'SKILL.md');
-						let fileContent = await fs.readFile(skillPath, 'utf-8');
-						if (replaceAll) {
-							fileContent = fileContent.split(oldString).join(newString);
-						} else {
-							const idx = fileContent.indexOf(oldString);
-							if (idx === -1) { return text(`old_string not found in ${name}/SKILL.md`); }
-							fileContent = fileContent.slice(0, idx) + newString + fileContent.slice(idx + oldString.length);
-						}
-						await fs.writeFile(skillPath, fileContent, 'utf-8');
-						return text(`Patched skill "${name}" successfully.`);
-					} catch (e) {
-						return text(`Error patching skill "${name}": ${e instanceof Error ? e.message : String(e)}`);
+					if (!oldString) { return text('Error: old_string is required for patch. Provide the exact text to replace (matching whitespace and newlines exactly).'); }
+
+					const result = await ctx.skillManagerTool.patchSkill(name, oldString, newString, replaceAll);
+					if (result.success) {
+						return text(`${result.message}\n\nUse read_skill to verify the patch was applied correctly.`);
 					}
+					return text(`Error: ${result.error ?? result.message}`);
 				}
 
 				if (action === 'delete') {
 					try {
-						const path = require('path');
-						const os = require('os');
 						const fs = await import('fs/promises');
-						const skillPath = path.join(os.homedir(), '.saros', 'skills', name);
+						const sarosRoot = userDataRootFromRoamingHome(ctx.environmentService.userRoamingDataHome);
+						const skillPath = resolveSarosPath(sarosRoot, SarosPath.skills, name).fsPath;
 						await fs.rm(skillPath, { recursive: true, force: true });
 						return text(`Skill "${name}" deleted successfully.`);
 					} catch (e) {

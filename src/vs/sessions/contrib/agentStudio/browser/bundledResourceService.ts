@@ -7,11 +7,11 @@
  * BundledResourceService — 从 JSON 文件加载内置 MCP 预设和工具定义。
  *
  * 资源位置（按优先级）：
- *   1. 用户覆盖：~/.saros/mcp-presets/*.json
+ *   1. 用户覆盖：~/.vssaros/saros/mcp-presets/*.json
  *   2. 内置资源：扩展安装目录/resources/.agents/mcp-presets/*.json
  *   3. Hardcoded fallback：bundledMcpPresets.ts 中的 BUNDLED_MCP_PRESETS
  *
- * 工具定义同理，从 ~/.saros/tools/*.json 和
+ * 工具定义同理，从 ~/.vssaros/saros/tools/*.json 和
  * 扩展安装目录/resources/.agents/tools/*.json 加载。
  */
 
@@ -23,6 +23,7 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { IMcpServerPreset, BUNDLED_MCP_PRESETS, setMcpPresets } from '../common/bundled-tools/bundledMcpPresets.js';
 import { BUNDLED_TOOL_DEFINITIONS } from '../common/bundled-tools/bundledTools.js';
 import { IToolDefinition } from '../common/providers.js';
+import { resolveSarosPath, userDataRootFromPath } from '../common/sarosPaths.js';
 
 export interface IBundledResourceService {
 	readonly _serviceBrand: undefined;
@@ -83,12 +84,11 @@ export class BundledResourceService extends Disposable implements IBundledResour
 	}
 
 	/**
-	 * 从 ~/.saros/{subdir}/*.json 加载 JSON 文件。
+	 * 从 ~/.vssaros/saros/{subdir}/*.json 加载 JSON 文件。
 	 */
 	private async _loadJsonFromUserDir(subdir: string): Promise<unknown[]> {
 		try {
-			const userHome = this._envService.userHome;
-			const dir = URI.joinPath(userHome, '.saros', subdir);
+			const dir = resolveSarosPath(this._getSarosRoot(), subdir);
 
 			let children: { resource: URI; name: string; isDirectory?: boolean }[];
 			try {
@@ -117,5 +117,9 @@ export class BundledResourceService extends Disposable implements IBundledResour
 			this._logService.error('[BundledResource] Error loading from user dir', err);
 			return [];
 		}
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromPath(this._envService.userDataPath);
 	}
 }

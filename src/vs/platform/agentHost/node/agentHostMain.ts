@@ -55,6 +55,12 @@ import { AgentPluginManager } from './agentPluginManager.js';
 import { AgentHostGitService, IAgentHostGitService } from './agentHostGitService.js';
 import { registerPendingEditContentProvider } from './copilot/pendingEditContentStore.js';
 import { join } from '../../../base/common/path.js';
+import { IAgentService } from '../common/agentService.js';
+import { IContextCompressionService } from '../common/contextCompression.js';
+import { registerAgentHostEnhancementServices } from './agentHostServices.js';
+import { IConfigurationService } from '../../configuration/common/configuration.js';
+import { ConfigurationService } from '../../configuration/common/configurationService.js';
+import { NullPolicyService } from '../../policy/common/policy.js';
 
 // Entry point for the agent host utility process.
 // Sets up IPC, logging, and registers agent providers (Copilot).
@@ -99,6 +105,8 @@ function startAgentHost(): void {
 
 	// Create the real service implementation that lives in this process
 	let agentService: AgentService;
+	// Session-context enhancement 框架的压缩服务（激活后供 ProtocolServerHandler 注入）
+	let compressionService: IContextCompressionService | undefined;
 	try {
 		// Build the DI container early so the git service can be created via
 		// `createInstance` (it needs IFileService + INativeEnvironmentService).
@@ -134,6 +142,17 @@ function startAgentHost(): void {
 		if (process.env[AgentHostClaudeSdkPathEnvVar]) {
 			agentService.registerProvider(instantiationService.createInstance(ClaudeAgent));
 		}
+
+		// ── Session-Context-Enhancement 框架激活 ────────────────────────
+		diServices.set(IAgentService, agentService);
+		const configurationService = disposables.add(new ConfigurationService(
+			joinPath(environmentService.appSettingsHome, 'settings.json'),
+			fileService,
+			new NullPolicyService(),
+			logService,
+		));
+		diServices.set(IConfigurationService, configurationService);
+		compressionService = registerAgentHostEnhancementServices(diServices, instantiationService, logService, configurationService).compressionService;
 	} catch (err) {
 		logService.error('Failed to create AgentService', err);
 		throw err;
@@ -192,19 +211,20 @@ function startAgentHost(): void {
 				logService,
 			));
 
-			const protocolHandler = disposables.add(new ProtocolServerHandler(
-				agentService,
-				agentService.stateManager,
-				wsServer,
-				{ defaultDirectory: URI.file(os.homedir()).toString() },
-				clientFileSystemProvider,
-				logService,
-			));
-			disposables.add(protocolHandler.onDidChangeConnectionCount(count => connectionCountEmitter.fire(count)));
+		const protocolHandler = disposables.add(new ProtocolServerHandler(
+			agentService,
+			agentService.stateManager,
+			wsServer,
+			{ defaultDirectory: URI.file(os.homedir()).toString() },
+			clientFileSystemProvider,
+			logService,
+			compressionService,
+		));
+		disposables.add(protocolHandler.onDidChangeConnectionCount(count => connectionCountEmitter.fire(count)));
 
-			logService.info(`[AgentHost] Dynamic WebSocket server listening on ${socketPath}`);
-			dynamicSocketInfo = { socketPath };
-			return dynamicSocketInfo;
+		logService.info(`[AgentHost] Dynamic WebSocket server listening on ${socketPath}`);
+		dynamicSocketInfo = { socketPath };
+		return dynamicSocketInfo;
 		},
 		async getInspectInfo(tryEnable: boolean): Promise<IAgentHostInspectInfo | undefined> {
 			let url = inspector.url();
@@ -257,7 +277,7 @@ function startAgentHost(): void {
 	server.registerChannel(AgentHostIpcChannels.ConnectionTracker, connectionTrackerChannel);
 
 	// Start WebSocket server for external clients if configured (env-var flow for CLI/server)
-	startWebSocketServer(agentService, clientFileSystemProvider, logService, disposables, count => connectionCountEmitter.fire(count)).catch(err => {
+	startWebSocketServer(agentService, clientFileSystemProvider, logService, disposables, count => connectionCountEmitter.fire(count), compressionService).catch(err => {
 		logService.error('Failed to start WebSocket server', err);
 	});
 
@@ -274,7 +294,7 @@ function startAgentHost(): void {
  * This reuses the same {@link AgentService} and {@link AgentHostStateManager}
  * that the IPC channel uses, so both IPC and WebSocket clients share state.
  */
-async function startWebSocketServer(agentService: AgentService, clientFileSystemProvider: AgentHostClientFileSystemProvider, logService: ILogService, disposables: DisposableStore, onConnectionCountChanged: (count: number) => void): Promise<void> {
+async function startWebSocketServer(agentService: AgentService, clientFileSystemProvider: AgentHostClientFileSystemProvider, logService: ILogService, disposables: DisposableStore, onConnectionCountChanged: (count: number) => void, compressionService?: IContextCompressionService): Promise<void> {
 	const port = process.env['VSCODE_AGENT_HOST_PORT'];
 	const socketPath = process.env['VSCODE_AGENT_HOST_SOCKET_PATH'];
 
@@ -310,6 +330,7 @@ async function startWebSocketServer(agentService: AgentService, clientFileSystem
 		{ defaultDirectory: URI.file(os.homedir()).toString() },
 		clientFileSystemProvider,
 		logService,
+		compressionService,
 	));
 	disposables.add(protocolHandler.onDidChangeConnectionCount(onConnectionCountChanged));
 

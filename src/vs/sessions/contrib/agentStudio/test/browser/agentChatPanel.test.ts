@@ -228,7 +228,7 @@ suite('AgentChatPanel — Types & Data Structures', () => {
 				makeToolCall({ id: '3', name: 'terminal', renderType: 'RunTerminal' }),
 			];
 			assert.strictEqual(calls.length, 3);
-			assert.strictEqual(calls[0].status, 'completed');
+			assert.strictEqual(calls[0].status, 'success');
 			assert.strictEqual(calls[1].status, 'running');
 			assert.strictEqual(calls[2].renderType, 'RunTerminal');
 		});
@@ -451,11 +451,9 @@ suite('AgentChatPanel — Types & Data Structures', () => {
 				id: 'saros-claw',
 				name: 'Saros Claw',
 				role: 'AI Assistant',
-				status: 'idle' as AgentStatus,
-				agentType: 'general',
-			};
-			assert.strictEqual(info.id, 'saros-claw');
-			assert.strictEqual(info.agentType, 'general');
+			status: 'idle' as AgentStatus,
+		};
+		assert.strictEqual(info.id, 'saros-claw');
 		});
 
 		test('planner agent', () => {
@@ -463,12 +461,10 @@ suite('AgentChatPanel — Types & Data Structures', () => {
 				id: 'planner',
 				name: 'Planner',
 				role: 'Project Manager',
-				status: 'idle' as AgentStatus,
-				isPM: true,
-				agentType: 'planner',
-			};
-			assert.strictEqual(info.isPM, true);
-			assert.strictEqual(info.agentType, 'planner');
+			status: 'idle' as AgentStatus,
+			isPM: true,
+		};
+		assert.strictEqual(info.isPM, true);
 		});
 	});
 
@@ -554,7 +550,7 @@ suite('AgentChatPanel — Types & Data Structures', () => {
 				name: 'Windows Project',
 				path: 'C:\\Users\\dev\\projects\\my-app',
 			};
-			assert.ok(ws.path.includes('\\\\'));
+			assert.ok(ws.path.includes('\\'));
 			assert.strictEqual(ws.name, 'Windows Project');
 		});
 

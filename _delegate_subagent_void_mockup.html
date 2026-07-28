@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delegate × Subagent · Void 风格重设计 Mockup</title>
+<style>
+/* ════════════════════════════════════════════════════════════════
+   Void 风格设计令牌
+   近黑底 · 紫罗兰玻璃拟态 · 柔和光晕 · 圆角 14px
+   ════════════════════════════════════════════════════════════════ */
+:root{
+  --void-bg:#08080a;
+  --panel:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012));
+  --panel-solid:rgba(20,20,26,.72);
+  --border:rgba(255,255,255,.07);
+  --border-strong:rgba(255,255,255,.12);
+  --text:#f4f4f5;
+  --dim:#a1a1aa;
+  --faint:#71717a;
+  /* Void 标志色：紫罗兰 */
+  --violet:#a78bfa;
+  --violet-2:#c084fc;
+  --glow:rgba(167,139,250,.28);
+  --success:#34d399;
+  --warn:#fbbf24;
+  --error:#fb7185;
+  --radius:14px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  background:
+    radial-gradient(1200px 600px at 80% -10%,rgba(167,139,250,.10),transparent 60%),
+    radial-gradient(900px 500px at 0% 100%,rgba(192,132,252,.06),transparent 55%),
+    var(--void-bg);
+  color:var(--text);
+  min-height:100vh;
+  padding:36px 18px;
+  display:flex;flex-direction:column;align-items:center;gap:22px;
+}
+.chat{max-width:720px;width:100%;display:flex;flex-direction:column;gap:14px;}
+
+.note{
+  max-width:720px;width:100%;font-size:12.5px;line-height:1.6;
+  color:var(--dim);border:1px dashed var(--border-strong);
+  border-radius:10px;padding:12px 16px;background:var(--panel);
+  backdrop-filter:blur(8px);
+}
+.note b{color:var(--text);}
+.note .k{color:var(--violet);font-weight:600;}
+
+/* ════════════════════════════════════════════════════════════════
+   ① delegate_task 卡片（伞 / 任务头）—— 仅承载高层信息
+      状态相关 UI 已全部下移到 subagent 独立卡片
+   ════════════════════════════════════════════════════════════════ */
+.dlg{
+  position:relative;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--panel);backdrop-filter:blur(14px);
+  box-shadow:0 12px 34px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.05);
+  overflow:hidden;
+}
+.dlg::before{ /* 顶部紫罗兰光带 */
+  content:'';position:absolute;inset:0 0 auto 0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--violet),var(--violet-2),transparent);
+  opacity:.6;
+}
+.dlg-header{display:flex;align-items:center;gap:12px;padding:13px 16px;cursor:pointer;user-select:none;}
+.dlg-header:hover{background:rgba(167,139,250,.05);}
+.dlg-icon{
+  width:34px;height:34px;border-radius:10px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:16px;
+  background:linear-gradient(135deg,rgba(167,139,250,.9),rgba(192,132,252,.8));
+  color:#fff;box-shadow:0 4px 14px var(--glow);
+}
+.dlg-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;}
+.dlg-title{font-size:13.5px;font-weight:650;letter-spacing:.2px;}
+.dlg-sub{font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dlg-right{display:flex;align-items:center;gap:10px;flex-shrink:0;}
+/* 静态计数（非状态）—— 仅表达"派发了多少个子代理" */
+.dlg-count{
+  font-size:11px;font-weight:600;color:var(--violet);
+  background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.22);
+  padding:3px 10px;border-radius:99px;font-variant-numeric:tabular-nums;
+}
+.dlg-chevron{color:var(--faint);font-size:11px;transition:transform .2s;}
+.dlg.expanded .dlg-chevron{transform:rotate(90deg);}
+.dlg-summary{display:none;padding:0 16px 14px;font-size:12px;line-height:1.6;color:var(--dim);}
+.dlg.expanded .dlg-summary{display:block;}
+.dlg.expanded .dlg-summary .task-desc{
+  border-left:2px solid rgba(167,139,250,.4);padding:6px 12px;
+  background:rgba(167,139,250,.05);border-radius:0 8px 8px 0;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   ② 委派分组：delegate 卡片下方悬挂 subagent 独立卡片
+      左侧细轨相连，表达"归属"但卡片彼此独立
+   ════════════════════════════════════════════════════════════════ */
+.group{position:relative;margin-top:2px;padding-left:20px;}
+.group::before{ /* 连接 delegate 与 subagent 的细轨 */
+  content:'';position:absolute;left:11px;top:-6px;bottom:22px;width:2px;
+  background:linear-gradient(180deg,rgba(167,139,250,.5),rgba(167,139,250,.12));
+  border-radius:2px;
+}
+.group-head{
+  display:flex;align-items:center;gap:7px;font-size:11px;color:var(--faint);
+  padding:4px 0 8px 2px;font-weight:600;letter-spacing:.4px;
+}
+.group-head .dot{width:6px;height:6px;border-radius:50%;background:var(--violet);box-shadow:0 0 8px var(--glow);}
+.group-cards{display:flex;flex-direction:column;gap:12px;}
+
+/* ════════════════════════════════════════════════════════════════
+   ③ subagent 独立卡片 —— 状态相关 UI 的承载者
+      进度条 / 时长 / 步骤 / 状态 pill / live 进度 均在此
+   ════════════════════════════════════════════════════════════════ */
+.sa{
+  position:relative;border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--panel);backdrop-filter:blur(14px);
+  box-shadow:0 10px 28px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.04);
+  overflow:hidden;transition:border-color .2s,box-shadow .2s;
+}
+.sa:hover{border-color:var(--border-strong);}
+.sa.running{border-color:rgba(251,191,36,.4);box-shadow:0 10px 28px rgba(0,0,0,.4),0 0 0 1px rgba(251,191,36,.12),0 0 22px rgba(251,191,36,.08);}
+.sa.error{border-color:rgba(251,113,133,.4);}
+.sa.done{border-color:rgba(52,211,153,.3);}
+/* 左侧状态色条 */
+.sa::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:transparent;transition:background .2s;
+}
+.sa.done::before{background:linear-gradient(180deg,var(--success),rgba(52,211,153,.4));}
+.sa.running::before{background:linear-gradient(180deg,var(--warn),rgba(251,191,36,.4));}
+.sa.error::before{background:linear-gradient(180deg,var(--error),rgba(251,113,133,.4));}
+
+.sa-header{display:flex;align-items:center;gap:11px;padding:12px 15px 12px 18px;cursor:pointer;user-select:none;}
+.sa-header:hover{background:rgba(255,255,255,.03);}
+.sa-badge{
+  width:30px;height:30px;border-radius:9px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:750;color:#fff;
+  background:linear-gradient(135deg,rgba(167,139,250,.85),rgba(192,132,252,.7));
+  box-shadow:0 3px 10px var(--glow);
+}
+.sa.done .sa-badge{background:linear-gradient(135deg,rgba(52,211,153,.85),rgba(16,185,129,.65));box-shadow:0 3px 10px rgba(52,211,153,.2);}
+.sa.error .sa-badge{background:linear-gradient(135deg,rgba(251,113,133,.85),rgba(244,63,94,.65));box-shadow:0 3px 10px rgba(251,113,133,.2);}
+.sa-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.sa-role{font-size:10.5px;color:var(--faint);font-weight:600;text-transform:uppercase;letter-spacing:.6px;}
+.sa-task{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sa-status{
+  font-size:11px;font-weight:650;padding:3px 11px;border-radius:99px;flex-shrink:0;
+  letter-spacing:.3px;
+}
+.sa-status.done{color:var(--success);background:rgba(52,211,153,.13);border:1px solid rgba(52,211,153,.25);}
+.sa-status.running{color:var(--warn);background:rgba(251,191,36,.13);border:1px solid rgba(251,191,36,.28);display:inline-flex;align-items:center;gap:6px;}
+.sa-status.error{color:var(--error);background:rgba(251,113,133,.13);border:1px solid rgba(251,113,133,.25);}
+.sa-chevron{color:var(--faint);font-size:11px;transition:transform .2s;flex-shrink:0;}
+.sa.expanded .sa-chevron{transform:rotate(90deg);}
+/* running 状态 pill 呼吸点 */
+.sa-status.running .pulse{width:6px;height:6px;border-radius:50%;background:var(--warn);animation:pulse 1.1s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+/* ── 进度条（subagent 各自一条，状态着色 + 柔光）── */
+.sa-progress{height:4px;margin:0 15px 0 18px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden;}
+.sa-progress .fill{height:100%;border-radius:99px;transition:width .4s ease;
+  background:linear-gradient(90deg,var(--success),#6ee7b7);box-shadow:0 0 10px rgba(52,211,153,.4);}
+.sa.running .sa-progress .fill{background:linear-gradient(90deg,var(--warn),#fcd34d);box-shadow:0 0 10px rgba(251,191,36,.4);}
+.sa.error .sa-progress .fill{background:linear-gradient(90deg,var(--error),#fda4af);box-shadow:0 0 10px rgba(251,113,133,.35);}
+
+/* ── live 进度行（running 常驻，无需展开）── */
+.sa-live{display:none;align-items:center;gap:9px;padding:9px 15px 4px 18px;font-size:11.5px;color:var(--warn);}
+.sa.running .sa-live{display:flex;}
+.spinner{width:11px;height:11px;border-radius:50%;flex-shrink:0;
+  border:2px solid rgba(251,191,36,.25);border-top-color:var(--warn);animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.sa-live-text{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dim);}
+.sa-live .step-counter{color:var(--warn);font-weight:650;font-variant-numeric:tabular-nums;flex-shrink:0;}
+
+/* ── 信息 chip 行（时长 / 步骤 / 工具）── */
+.sa-chips{display:none;gap:8px;padding:10px 15px 12px 18px;flex-wrap:wrap;}
+.sa.expanded .sa-chips{display:flex;}
+.chip{
+  font-size:10.5px;padding:3px 9px;border-radius:8px;font-weight:600;
+  font-variant-numeric:tabular-nums;color:var(--dim);
+  background:rgba(255,255,255,.045);border:1px solid var(--border);
+}
+.chip.time{color:var(--violet);border-color:rgba(167,139,250,.22);background:rgba(167,139,250,.08);}
+.chip.steps{color:var(--text);}
+.chip.ok{color:var(--success);border-color:rgba(52,211,153,.22);background:rgba(52,211,153,.07);}
+
+/* ── Body ── */
+.sa-body{display:none;}
+.sa.expanded .sa-body{display:block;}
+.sa-body-inner{padding:2px 15px 14px 18px;}
+
+/* 执行过程：时间线 */
+.trace{margin-top:8px;}
+.trace-title{font-size:10.5px;color:var(--faint);font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:6px 0 4px;}
+.trace-list{position:relative;padding-left:15px;}
+.trace-list::before{content:'';position:absolute;left:4px;top:7px;bottom:7px;width:1px;background:var(--border-strong);}
+.tstep{position:relative;display:flex;align-items:baseline;gap:9px;padding:3px 0;font-size:11.5px;line-height:1.45;}
+.tstep::before{content:'';position:absolute;left:-14px;top:8px;width:7px;height:7px;border-radius:50%;background:var(--faint);border:1.5px solid var(--panel-solid);}
+.tstep.ok::before{background:var(--success);}
+.tstep.running::before{background:var(--warn);animation:pulse 1.1s ease-in-out infinite;}
+.tstep.fail::before{background:var(--error);}
+.tstep-name{color:var(--text);font-weight:600;flex-shrink:0;}
+.tstep-detail{color:var(--faint);font-family:ui-monospace,Consolas,monospace;font-size:11px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.tstep-dur{color:var(--faint);font-size:10.5px;flex-shrink:0;font-variant-numeric:tabular-nums;}
+
+/* 结论 */
+.conclusion{margin-top:12px;}
+.conclusion-title{font-size:10.5px;color:var(--faint);font-weight:700;letter-spacing:.6px;text-transform:uppercase;padding:6px 0 5px;}
+.conclusion-box{
+  border-left:2px solid var(--success);background:rgba(52,211,153,.06);
+  border-radius:0 8px 8px 0;padding:9px 13px;font-size:12px;line-height:1.6;color:#d4d4d8;
+}
+.conclusion-box.clamped{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.conclusion-toggle{font-size:11px;color:var(--violet);cursor:pointer;user-select:none;display:inline-block;margin-top:5px;}
+.conclusion-toggle:hover{text-decoration:underline;}
+
+/* error 输出 */
+.sa-output{margin-top:10px;padding:9px 13px;background:rgba(251,113,133,.06);border:1px solid rgba(251,113,133,.18);border-radius:8px;font-size:12px;line-height:1.55;color:#fecdd3;}
+
+/* footer（步骤统计） */
+.sa-footer{display:flex;align-items:center;gap:14px;padding:8px 15px 10px 18px;border-top:1px solid var(--border);font-size:11px;color:var(--faint);}
+.sa-footer .fdot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:5px;vertical-align:middle;}
+.sa-footer .fdot.ok{background:var(--success);}
+.sa-footer .fdot.run{background:var(--warn);}
+.sa-footer .fdot.err{background:var(--error);}
+.demo-bar{display:flex;gap:8px;max-width:720px;width:100%;}
+.demo-bar button{background:rgba(255,255,255,.05);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:11.5px;padding:7px 13px;cursor:pointer;transition:background .15s,border-color .15s;}
+.demo-bar button:hover{background:rgba(167,139,250,.12);border-color:rgba(167,139,250,.3);}
+</style>
+</head>
+<body>
+
+<div class="note">
+  <b>重构：状态相关 UI 下移到 subagent 独立卡片（Void 风格）</b><br>
+  • <span class="k">delegate_task 卡片</span>：简化为「任务伞」——仅展示图标 + 标题 + 高层目标 + 静态「并行 ×N」计数；<b>移除了聚合 chip（N/M 完成）、分段进度条、逐子代理时长</b> 等状态 UI。<br>
+  • <span class="k">subagent 独立卡片</span>（位于 delegate 卡片<b>下方</b>，左侧细轨相连但彼此独立）：承接全部状态 UI —— ① 每条专属<b>进度条</b>（按自身 done/total 着色）；② <b>live 进度行</b>（运行中常驻：步骤 N/M + 当前动作）；③ <b>时长 / 步骤 / 状态 chip</b>；④ 状态 pill + 左侧状态色条。<br>
+  • 配色采用 Void 风格：近黑底 + 紫罗兰玻璃拟态 + 柔和光晕，圆角 14px。
+</div>
+
+<div class="demo-bar">
+  <button onclick="document.getElementById('dlg').classList.toggle('expanded')">切换委派头展开</button>
+  <button onclick="document.querySelectorAll('.sa').forEach(e=>e.classList.add('expanded'))">展开全部子代理</button>
+  <button onclick="document.querySelectorAll('.sa').forEach(e=>e.classList.remove('expanded'))">折叠全部子代理</button>
+</div>
+
+<div class="chat">
+
+  <!-- ════════════════ delegate_task 卡片（伞 / 任务头）══════════════ -->
+  <div class="dlg expanded" id="dlg">
+    <div class="dlg-header" onclick="document.getElementById('dlg').classList.toggle('expanded')">
+      <div class="dlg-icon">⚡</div>
+      <div class="dlg-meta">
+        <span class="dlg-title">并行探索 · code-explorer × 3</span>
+        <span class="dlg-sub">GC 增量可达性：源码行号 + 配置覆盖 + 平台差异</span>
+      </div>
+      <div class="dlg-right">
+        <span class="dlg-count">并行 ×3</span>
+        <span class="dlg-chevron">▶</span>
+      </div>
+    </div>
+    <div class="dlg-summary">
+      <div class="task-desc">目标：审计 UE5 GC 增量可达性实现，覆盖核心源码（Purge/Cluster 机制）、S1Game 自定义 GC 代码、以及各平台 ini 的 gc.* 配置覆盖差异。</div>
+    </div>
+  </div>
+
+  <!-- ════════════════ subagent 独立卡片组（位于 delegate 下方）══════════════ -->
+  <div class="group">
+    <div class="group-head"><span class="dot"></span>子代理执行（独立卡片）</div>
+    <div class="group-cards">
+
+      <!-- ── 子代理 1：done（状态 UI 全部在卡片内）── -->
+      <div class="sa done expanded">
+        <div class="sa-header" onclick="this.parentElement.classList.toggle('expanded')">
+          <div class="sa-badge">E</div>
+          <div class="sa-meta">
+            <span class="sa-role">explore</span>
+            <span class="sa-task">深入分析 UE5 GC 核心机制源码：Purge 阶段函数链</span>
+          </div>
+          <span class="sa-status done">完成</span>
+          <span class="sa-chevron">▶</span>
+        </div>
+        <div class="sa-progress"><div class="fill" style="width:100%"></div></div>
+        <div class="sa-chips">
+          <span class="chip steps">9 步</span>
+          <span class="chip time">38s</span>
+          <span class="chip ok">✓ 9/9 完成</span>
+        </div>
+        <div class="sa-body">
+          <div class="sa-body-inner">
+            <div class="trace">
+              <div class="trace-title">执行过程 · 9 步</div>
+              <div class="trace-list">
+                <div class="tstep ok"><span class="tstep-name">搜索文件</span><span class="tstep-detail">GarbageCollection.cpp</span><span class="tstep-dur">2.1s</span></div>
+                <div class="tstep ok"><span class="tstep-name">读取文件</span><span class="tstep-detail">IncrementalPurgeGarbage()</span><span class="tstep-dur">1.8s</span></div>
+                <div class="tstep ok"><span class="tstep-name">搜索图</span><span class="tstep-detail">Cluster 引用图</span><span class="tstep-dur">1.6s</span></div>
+                <div class="tstep ok"><span class="tstep-name">读取文件</span><span class="tstep-detail">UObjectClusters.cpp</span><span class="tstep-dur">1.9s</span></div>
+              </div>
+            </div>
+            <div class="conclusion">
+              <div class="conclusion-title">结论</div>
+              <div class="conclusion-box clamped" id="c1">
+                Purge 由 IncrementalPurgeGarbage()（GarbageCollection.cpp:5190）驱动：每次增量步进后按 gc.PurgeBatchSize 分批解散 Cluster；条件分支在 L5231（bTimeLimitReached 时提前退出，保证帧预算）。核心证据：L5190 入口、L5231 帧预算退出、L5248 实际解散。
+                <span class="conclusion-toggle" onclick="toggleConclusion('c1',this)">展开全文 ▾</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="sa-footer">
+          <span><span class="fdot ok"></span>9 完成</span>
+          <span>🕐 38s</span>
+          <span style="margin-left:auto">📊 search_files ×5 · file_read ×3 · search_graph ×1</span>
+        </div>
+      </div>
+
+      <!-- ── 子代理 2：running（live 进度行 + 进度条 + 状态 pill）── -->
+      <div class="sa running expanded">
+        <div class="sa-header" onclick="this.parentElement.classList.toggle('expanded')">
+          <div class="sa-badge">E</div>
+          <div class="sa-meta">
+            <span class="sa-role">explore</span>
+            <span class="sa-task">审计 S1Game 项目 GC 平台配置覆盖：各平台 .ini 的 gc.* 条目</span>
+          </div>
+          <span class="sa-status running"><span class="pulse"></span>执行中</span>
+          <span class="sa-chevron">▶</span>
+        </div>
+        <div class="sa-progress"><div class="fill" style="width:64%"></div></div>
+        <div class="sa-live">
+          <span class="spinner"></span>
+          <span class="step-counter">步骤 9/14</span>
+          <span class="sa-live-text">搜索内容 gc.AssetClusteringEnabled …</span>
+        </div>
+        <div class="sa-chips">
+          <span class="chip steps">14 步</span>
+          <span class="chip time">43s</span>
+          <span class="chip ok">✓ 8 完成</span>
+        </div>
+        <div class="sa-body">
+          <div class="sa-body-inner">
+            <div class="trace">
+              <div class="trace-title">执行过程 · 14 步</div>
+              <div class="trace-list">
+                <div class="tstep ok"><span class="tstep-name">搜索内容</span><span class="tstep-detail">WindowsEngine.ini:10 gc.AllowIncrementalReachability=1</span><span class="tstep-dur">2.1s</span></div>
+                <div class="tstep ok"><span class="tstep-name">搜索内容</span><span class="tstep-detail">AndroidEngine.ini:6 GarbageCollectionSettings</span><span class="tstep-dur">1.8s</span></div>
+                <div class="tstep ok"><span class="tstep-name">搜索内容</span><span class="tstep-detail">IOSEngine.ini:11 同段覆盖</span><span class="tstep-dur">1.6s</span></div>
+                <div class="tstep ok"><span class="tstep-name">搜索内容</span><span class="tstep-detail">PS5Engine.ini:9 gc.LowMemory.MemoryThresholdMB=256</span><span class="tstep-dur">1.9s</span></div>
+                <div class="tstep running"><span class="tstep-name">搜索内容</span><span class="tstep-detail">gc.AssetClusteringEnabled …</span><span class="tstep-dur"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="sa-footer">
+          <span><span class="fdot ok"></span>8 完成</span>
+          <span><span class="fdot run"></span>1 运行</span>
+          <span style="margin-left:auto">🕐 43s</span>
+        </div>
+      </div>
+
+      <!-- ── 子代理 3：error（状态色条转红 + 错误输出）── -->
+      <div class="sa error expanded">
+        <div class="sa-header" onclick="this.parentElement.classList.toggle('expanded')">
+          <div class="sa-badge">G</div>
+          <div class="sa-meta">
+            <span class="sa-role">general</span>
+            <span class="sa-task">重构 DataManager 缓存层并接入 GC 白名单</span>
+          </div>
+          <span class="sa-status error">失败</span>
+          <span class="sa-chevron">▶</span>
+        </div>
+        <div class="sa-progress"><div class="fill" style="width:40%"></div></div>
+        <div class="sa-chips">
+          <span class="chip steps">5 步</span>
+          <span class="chip time">18s</span>
+          <span class="chip ok">✓ 2 完成</span>
+        </div>
+        <div class="sa-body">
+          <div class="sa-body-inner">
+            <div class="trace">
+              <div class="trace-title">执行过程 · 5 步</div>
+              <div class="trace-list">
+                <div class="tstep ok"><span class="tstep-name">搜索文件</span><span class="tstep-detail">DataManager.*</span><span class="tstep-dur">1.2s</span></div>
+                <div class="tstep ok"><span class="tstep-name">读取文件</span><span class="tstep-detail">DataManager.h</span><span class="tstep-dur">1.5s</span></div>
+                <div class="tstep fail"><span class="tstep-name">写入文件</span><span class="tstep-detail">DataManager.cpp — 权限被拒绝</span><span class="tstep-dur">3.0s</span></div>
+              </div>
+            </div>
+            <div class="sa-output"><strong>错误：</strong>写入 DataManager.cpp 失败 — EACCES: permission denied（文件被其他进程锁定）。已完成 2/5 步，部分成果已 salvage。</div>
+          </div>
+        </div>
+        <div class="sa-footer">
+          <span><span class="fdot ok"></span>2 完成</span>
+          <span><span class="fdot err"></span>1 失败</span>
+          <span style="margin-left:auto">🕐 18s</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+function toggleConclusion(id,btn){
+  const box=document.getElementById(id);
+  box.classList.toggle('clamped');
+  btn.textContent=box.classList.contains('clamped')?'展开全文 ▾':'收起 ▴';
+}
+</script>
+
+</body>
+</html>

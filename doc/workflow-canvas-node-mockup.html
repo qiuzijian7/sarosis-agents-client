@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Canvas 节点 · 工作流内嵌绘图 Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --panel: #252526; --panel2: #2d2d30; --border: #3c3c3c;
+    --fg: #cccccc; --fg-dim: #858585; --fg-faint: #5a5a5a;
+    --accent: #007fd4; --green: #22c55e; --canvas-c: #e879f9;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: var(--bg);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--fg); font-size: 13px; }
+  button { font-family: inherit; }
+
+  #topbar { position: fixed; inset: 0 0 auto 0; z-index: 50; height: 44px;
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  .wf-name { font-weight: 600; }
+  .tag { font-size: 10px; letter-spacing: 1px; padding: 3px 10px; border-radius: 10px;
+    border: 1px solid var(--canvas-c); color: #f0abfc; }
+  #topbar .spacer { flex: 1; }
+  .tb { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; font-size: 12px;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; cursor: pointer; }
+  .tb:hover { background: #37373b; }
+  .tb.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ── 工作流画布 ── */
+  #viewport { position: fixed; inset: 44px 300px 0 0; cursor: grab; overflow: hidden; }
+  #world { position: absolute; left: 0; top: 0; width: 2000px; height: 900px; transform-origin: 0 0;
+    background-image: radial-gradient(circle, rgba(255,255,255,.06) 1px, transparent 1.2px);
+    background-size: 24px 24px; }
+  #edges { position: absolute; left: 0; top: 0; width: 2000px; height: 900px; pointer-events: none; overflow: visible; }
+  .edge-path { fill: none; stroke: #4b5563; stroke-width: 1.8; }
+  .edge-path.hot { stroke: var(--green); stroke-width: 2.2; }
+  .e-label { position: absolute; transform: translate(-50%,-50%); font-size: 10px; padding: 2px 8px;
+    border-radius: 8px; background: #1e1e1e; border: 1px solid var(--border); color: var(--fg-dim); pointer-events: none; }
+  .e-label.hot { color: #7ee2a8; border-color: rgba(34,197,94,.4); }
+
+  .node { position: absolute; border-radius: 8px; border: 2px solid var(--nc, #888);
+    background: var(--bg); cursor: pointer; user-select: none;
+    box-shadow: 0 6px 18px -8px rgba(0,0,0,.7); }
+  .n-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px 5px; }
+  .n-icon { font-size: 13px; }
+  .n-type { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--nc, #888); }
+  .n-label { padding: 0 10px; font-size: 12.5px; font-weight: 600; }
+  .n-detail { padding: 2px 10px 7px; font-size: 10.5px; color: var(--fg-dim); line-height: 1.5; }
+  .port { position: absolute; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--nc, #888); border: 2px solid var(--bg); }
+  .port-label { position: absolute; font-size: 9.5px; color: var(--fg-dim); background: var(--bg);
+    padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border); pointer-events: none; white-space: nowrap; }
+
+  /* Canvas 节点特有：缩略图 */
+  .n-thumb { margin: 4px 10px 8px; border-radius: 4px; overflow: hidden; position: relative;
+    border: 1px dashed rgba(232,121,249,.4); background:
+      repeating-conic-gradient(rgba(255,255,255,.05) 0% 25%, transparent 0% 50%) 0 0 / 12px 12px; }
+  .n-thumb img, .n-thumb canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .n-thumb .hint { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 4px; color: #f0abfc;
+    font-size: 10px; background: rgba(30,30,30,.25); opacity: 0; transition: opacity .2s; }
+  .node[data-type="canvas"]:hover .hint { opacity: 1; }
+  .n-thumb .empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; color: rgba(232,121,249,.55); font-size: 10px; gap: 4px; }
+  .dbl-badge { position: absolute; top: 6px; right: 6px; font-size: 9px; padding: 2px 6px;
+    border-radius: 3px; background: rgba(232,121,249,.2); color: #f0abfc; z-index: 2; }
+
+  /* ── 右侧信息面板 ── */
+  #side { position: fixed; right: 0; top: 44px; bottom: 0; width: 300px; z-index: 40;
+    background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; padding: 12px; }
+  .sec-t { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--fg-dim);
+    text-transform: uppercase; margin: 6px 0 8px; }
+  .kv { display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; margin-bottom: 5px;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; font-size: 11.5px; }
+  .kv b { color: var(--fg); font-weight: 600; }
+  .kv span { color: var(--fg-dim); text-align: right; }
+  .note { font-size: 11px; color: var(--fg-dim); line-height: 1.7; padding: 8px;
+    border-left: 2px solid var(--canvas-c); background: rgba(232,121,249,.05); margin-top: 8px; }
+  .src { font-size: 10px; font-family: Consolas, monospace; color: #9cdcfe; background: rgba(0,0,0,.35);
+    border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-top: 6px; line-height: 1.6; }
+
+  /* ── 绘图编辑覆盖层 ── */
+  #paintOverlay { position: fixed; inset: 0; z-index: 80; display: none;
+    background: rgba(0,0,0,.72); backdrop-filter: blur(3px); }
+  #paintOverlay.show { display: flex; align-items: center; justify-content: center; }
+  #paintDialog { width: min(1060px, 94vw); height: min(700px, 92vh); display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--canvas-c); border-radius: 12px; overflow: hidden;
+    box-shadow: 0 0 0 3px rgba(232,121,249,.15), 0 30px 80px -20px rgba(0,0,0,.9); }
+  #paintHead { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    background: rgba(232,121,249,.06); border-bottom: 1px solid var(--border); }
+  #paintHead .t { font-size: 13px; font-weight: 600; color: #f0abfc; }
+  #paintHead .sub { font-size: 11px; color: var(--fg-dim); }
+  #paintBody { flex: 1; display: flex; min-height: 0; }
+  /* 工具条 */
+  #toolbar { width: 200px; border-right: 1px solid var(--border); padding: 12px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 12px; background: var(--panel); }
+  .tool-group .gt { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--fg-faint);
+    text-transform: uppercase; margin-bottom: 6px; }
+  .tool-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tool-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+    min-width: 38px; height: 32px; padding: 0 8px; font-size: 13px;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+  .tool-btn:hover { border-color: var(--fg-dim); }
+  .tool-btn.on { border-color: var(--canvas-c); background: rgba(232,121,249,.12); color: #f0abfc; }
+  .swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
+  .swatch.on { border-color: #fff; box-shadow: 0 0 0 2px var(--canvas-c); }
+  input[type="range"] { width: 100%; accent-color: var(--canvas-c); }
+  .size-preview { display: flex; align-items: center; justify-content: center; height: 40px;
+    background: var(--panel2); border-radius: 6px; }
+  .size-dot { border-radius: 50%; background: #f0abfc; }
+  .op-btn { width: 100%; padding: 7px; font-size: 12px; background: var(--panel2); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+  .op-btn:hover { border-color: var(--fg-dim); }
+  .op-btn:disabled { opacity: .4; cursor: default; }
+  /* 画纸区 */
+  #stageWrap { flex: 1; position: relative; overflow: hidden;
+    background: repeating-conic-gradient(#262626 0% 25%, #1e1e1e 0% 50%) 0 0 / 20px 20px; }
+  #stage { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    box-shadow: 0 12px 40px rgba(0,0,0,.6); border-radius: 4px; overflow: hidden;
+    outline: 1.5px solid rgba(232,121,249,.45); }
+  #stage canvas { display: block; cursor: none; }
+  #cursorRing { position: absolute; border: 1.5px solid #f0abfc; border-radius: 50%;
+    pointer-events: none; display: none; transform: translate(-50%,-50%); z-index: 5; }
+  #paintFoot { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+    border-top: 1px solid var(--border); }
+  #paintFoot .stat { font-size: 11px; color: var(--fg-dim); }
+  #paintFoot .spacer { flex: 1; }
+  .tb.save { background: var(--canvas-c); border-color: var(--canvas-c); color: #1e1e1e; font-weight: 600; }
+
+  #toast { position: fixed; top: 58px; left: 50%; transform: translateX(-50%); z-index: 95;
+    background: var(--panel2); border: 1px solid var(--canvas-c); color: var(--fg);
+    font-size: 12px; padding: 8px 18px; border-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .25s; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="wf-name">image-pipeline-workflow</span>
+  <span class="tag">新增 Canvas 节点 · infinite-canvas 借鉴</span>
+  <div class="spacer"></div>
+  <button class="tb" id="btnOpenPaint">🎨 打开绘图编辑器</button>
+  <button class="tb" id="btnReset">⟲ 重置</button>
+</div>
+
+<div id="viewport">
+  <div id="world">
+    <svg id="edges"></svg>
+  </div>
+</div>
+
+<div id="side">
+  <div class="sec-t">Canvas 节点 · 数据契约</div>
+  <div class="kv"><b>type</b><span>"canvas"</span></div>
+  <div class="kv"><b>输入端口</b><span>reference?（上游参考图）</span></div>
+  <div class="kv"><b>输出端口</b><span>image · mask · strokes</span></div>
+  <div class="kv"><b>存储</b><span>strokes 入 workflow.json<br>位图经 storageKey 分离存储</span></div>
+  <div class="kv"><b>双击</b><span>打开绘图编辑器</span></div>
+  <div class="note">
+    借鉴 <b>infinite-canvas</b>：Canvas 2D 笔画模型（笔画数组可序列化，非纯像素），
+    橡皮擦 destination-out 合成，撤销/重做基于笔画栈；
+    借鉴 <b>Rivet</b>：节点输出即数据流，image 端口可被下游 Agent（视觉分析）/ Tool（图生图）消费。
+  </div>
+  <div class="sec-t" style="margin-top:14px">节点数据（workflow.json 片段）</div>
+  <div class="src" id="srcPreview">{
+  "id": "n-canvas",
+  "type": "canvas",
+  "position": { "x": 340, "y": 160 },
+  "data": {
+    "label": "手绘分镜",
+    "width": 960, "height": 540,
+    "strokes": [],          // 笔画数组（可序列化）
+    "imageKey": "img:…",    // 合成位图 → 分离存储
+    "background": null
+  }
+}</div>
+  <div class="note" style="border-color:var(--green);background:rgba(34,197,94,.05)">
+    操作提示：<b>双击画布中的 Canvas 节点</b>（或点顶栏按钮）打开绘图编辑器，
+    绘制后「保存到节点」→ 缩略图与输出端口实时更新，下游连线变绿表示数据就绪。
+  </div>
+</div>
+
+<!-- 绘图编辑覆盖层 -->
+<div id="paintOverlay">
+  <div id="paintDialog">
+    <div id="paintHead">
+      <span class="t">🎨 Canvas 节点编辑器</span>
+      <span class="sub">n-canvas · 手绘分镜 · 960×540 · 笔画模型（infinite-canvas 风格）</span>
+    </div>
+    <div id="paintBody">
+      <div id="toolbar">
+        <div class="tool-group">
+          <div class="gt">工具</div>
+          <div class="tool-row">
+            <button class="tool-btn on" id="toolBrush" title="画笔 (B)">🖌</button>
+            <button class="tool-btn" id="toolEraser" title="橡皮 (E)">⌫</button>
+          </div>
+        </div>
+        <div class="tool-group">
+          <div class="gt">颜色</div>
+          <div class="tool-row" id="swatches"></div>
+        </div>
+        <div class="tool-group">
+          <div class="gt">笔刷大小 <span id="sizeVal">12</span>px</div>
+          <input type="range" id="sizeRange" min="2" max="80" value="12">
+          <div class="size-preview"><div class="size-dot" id="sizeDot"></div></div>
+        </div>
+        <div class="tool-group">
+          <div class="gt">历史</div>
+          <div class="tool-row">
+            <button class="tool-btn" id="btnUndo" title="撤销 (Ctrl+Z)">↩</button>
+            <button class="tool-btn" id="btnRedo" title="重做 (Ctrl+Y)">↪</button>
+          </div>
+        </div>
+        <div class="tool-group">
+          <div class="gt">操作</div>
+          <button class="op-btn" id="btnClear">🗑 清空画布</button>
+        </div>
+      </div>
+      <div id="stageWrap">
+        <div id="stage">
+          <canvas id="paper" width="960" height="540"></canvas>
+        </div>
+        <div id="cursorRing"></div>
+      </div>
+    </div>
+    <div id="paintFoot">
+      <span class="stat" id="strokeStat">笔画: 0 · 撤销栈: 0</span>
+      <div class="spacer"></div>
+      <button class="tb" id="btnCancelPaint">取消</button>
+      <button class="tb save" id="btnSavePaint">✓ 保存到节点</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ═══════ 工作流画布（静态演示布局） ═══════ */
+const NW = 190, NH = 96;
+const nodes = [
+  { id:'n-start',  icon:'▶', type:'开始',   c:'#22c55e', x:60,  y:220, w:130, h:62, label:'开始', detail:'/wf image-pipeline' },
+  { id:'n-canvas', icon:'🎨', type:'Canvas', c:'#e879f9', x:300, y:120, w:230, h:0, label:'手绘分镜', canvas:true,
+    detail:'双击绘制 · 输出 image/mask' },
+  { id:'n-agent',  icon:'🤖', type:'Agent',  c:'#3b82f6', x:660, y:220, w:210, h:96, label:'视觉分析', detail:'kimi-k2 · 输入: {{canvas.image}}' },
+  { id:'n-tool',   icon:'🔧', type:'Tool',   c:'#fb923c', x:660, y:420, w:210, h:96, label:'图生图放大', detail:'tool: image.upscale<br>输入: {{canvas.image}}' },
+  { id:'n-end',    icon:'■', type:'结束',   c:'#f97316', x:960, y:300, w:150, h:62, label:'输出结果', detail:'→ 会话' },
+];
+const edges = [
+  { from:'n-start',  to:'n-canvas' },
+  { from:'n-canvas', to:'n-agent', label:'image', hot:true },
+  { from:'n-canvas', to:'n-tool',  label:'image', hot:true },
+  { from:'n-agent',  to:'n-end' },
+  { from:'n-tool',   to:'n-end' },
+];
+const byId = id => nodes.find(n => n.id === id);
+const world = document.getElementById('world');
+const edgesSvg = document.getElementById('edges');
+let savedThumb = null; // dataUrl
+
+function renderGraph() {
+  world.querySelectorAll('.node,.e-label,.port-label').forEach(el => el.remove());
+  edgesSvg.innerHTML = '';
+  for (const e of edges) {
+    const a = byId(e.from), b = byId(e.to);
+    const x1 = a.x + a.w, y1 = a.y + (a.h || NH) / 2, x2 = b.x, y2 = b.y + (b.h || NH) / 2;
+    const dx = Math.max(50, (x2 - x1) / 2);
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`);
+    p.setAttribute('class', 'edge-path' + (e.hot && savedThumb ? ' hot' : ''));
+    edgesSvg.appendChild(p);
+    if (e.label) {
+      const lb = document.createElement('div');
+      lb.className = 'e-label' + (e.hot && savedThumb ? ' hot' : '');
+      lb.textContent = e.label + (e.hot && savedThumb ? ' · ready' : '');
+      lb.style.left = (x1+x2)/2 + 'px'; lb.style.top = (y1+y2)/2 + 'px';
+      world.appendChild(lb);
+    }
+  }
+  for (const n of nodes) {
+    const h = n.canvas ? 210 : n.h;
+    n.h = n.canvas ? 210 : n.h;
+    const el = document.createElement('div');
+    el.className = 'node'; el.dataset.type = n.canvas ? 'canvas' : '';
+    el.style.cssText = `left:${n.x}px;top:${n.y}px;width:${n.w}px;--nc:${n.c}`;
+    let inner =
+      `<div class="n-head"><span class="n-icon">${n.icon}</span><span class="n-type">${n.type}</span></div>` +
+      `<div class="n-label">${n.label}</div>` +
+      `<div class="n-detail">${n.detail}</div>`;
+    if (n.canvas) {
+      inner += `<div class="n-thumb" style="height:110px">` +
+        (savedThumb
+          ? `<img src="${savedThumb}"><div class="hint">🖌 双击继续编辑</div>`
+          : `<div class="empty"><span style="font-size:22px">🖌</span>空白画布<br>双击开始绘制</div>`) +
+        `<span class="dbl-badge">双击编辑</span></div>`;
+    }
+    el.innerHTML = inner;
+    const mk = (cls, x, y, c) => {
+      const p = document.createElement('div');
+      p.className = 'port'; p.style.cssText = `left:${x}px;top:${y}px;background:${c || n.c}`;
+      el.appendChild(p);
+    };
+    if (n.id !== 'n-start') mk('in', -6, h/2 - 5);
+    if (n.canvas) {
+      // 动态输出端口：image / mask / strokes（P2 端口动态推导）
+      ['image','mask','strokes'].forEach((pl, i) => {
+        const y = (i+1)/4 * h;
+        mk('', n.w - 4, y - 5, ['#22c55e','#3b82f6','#858585'][i]);
+        const lb = document.createElement('div');
+        lb.className = 'port-label'; lb.textContent = pl;
+        lb.style.left = (n.w + 8) + 'px'; lb.style.top = (y - 8) + 'px';
+        el.appendChild(lb);
+      });
+    } else if (n.id !== 'n-end') {
+      mk('', n.w - 4, h/2 - 5);
+    }
+    if (n.canvas) el.addEventListener('dblclick', ev => { ev.stopPropagation(); openPaint(); });
+    world.appendChild(el);
+  }
+}
+
+/* 视口 pan/zoom（简化） */
+const viewport = document.getElementById('viewport');
+const cam = { x: 60, y: 60, k: 0.9 };
+function applyCam() { world.style.transform = `translate3d(${cam.x}px,${cam.y}px,0) scale(${cam.k})`; }
+function fitView() {
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + n.w + 80); maxY = Math.max(maxY, n.y + (n.h || NH));
+  }
+  const pad = 50, vw = viewport.clientWidth, vh = viewport.clientHeight;
+  const k = Math.min(0.95, Math.min(vw / (maxX - minX + pad * 2), vh / (maxY - minY + pad * 2)));
+  cam.k = k;
+  cam.x = (vw - (maxX - minX) * k) / 2 - minX * k;
+  cam.y = (vh - (maxY - minY) * k) / 2 - minY * k;
+  applyCam();
+}
+viewport.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = Math.exp(-e.deltaY * 0.0012), k2 = Math.min(2, Math.max(0.3, cam.k * f));
+  const wx = (e.clientX - cam.x) / cam.k, wy = (e.clientY - cam.y - 44) / cam.k;
+  cam.k = k2; cam.x = e.clientX - wx * k2; cam.y = e.clientY - 44 - wy * k2;
+  applyCam();
+}, { passive: false });
+let pan = null;
+viewport.addEventListener('pointerdown', e => {
+  if (e.target.closest('.node')) return;
+  pan = { px: e.clientX, py: e.clientY, cx: cam.x, cy: cam.y };
+  viewport.classList.add('panning'); viewport.setPointerCapture(e.pointerId);
+});
+viewport.addEventListener('pointermove', e => {
+  if (!pan) return;
+  cam.x = pan.cx + e.clientX - pan.px; cam.y = pan.cy + e.clientY - pan.py; applyCam();
+});
+viewport.addEventListener('pointerup', () => { pan = null; });
+
+/* ═══════ 绘图编辑器（infinite-canvas 风格笔画模型） ═══════
+ * 笔画数组可序列化：{ tool, color, size, points: [{x,y}...] }
+ * 渲染：brush=source-over 圆头线段；eraser=destination-out
+ * undo/redo：笔画栈双栈
+ */
+const paper = document.getElementById('paper');
+const ctx = paper.getContext('2d');
+const COLORS = ['#1e1e1e','#ffffff','#ef4444','#f59e0b','#22c55e','#3b82f6','#a855f7','#e879f9'];
+let strokes = [];      // 已提交笔画
+let redoStack = [];    // 重做栈
+let current = null;    // 绘制中的笔画
+let tool = 'brush', color = '#e879f9', brushSize = 12;
+let savedSnapshot = null; // 打开时的快照（取消用）
+
+const swBox = document.getElementById('swatches');
+COLORS.forEach((c, i) => {
+  const s = document.createElement('div');
+  s.className = 'swatch' + (c === color ? ' on' : '');
+  s.style.background = c;
+  if (c === '#ffffff') s.style.border = '2px solid #555';
+  s.onclick = () => { color = c; tool = 'brush'; syncToolUI(); };
+  swBox.appendChild(s);
+});
+function syncToolUI() {
+  document.getElementById('toolBrush').classList.toggle('on', tool === 'brush');
+  document.getElementById('toolEraser').classList.toggle('on', tool === 'eraser');
+  document.querySelectorAll('.swatch').forEach((s, i) => s.classList.toggle('on', tool === 'brush' && COLORS[i] === color));
+  document.getElementById('sizeVal').textContent = brushSize;
+  const d = document.getElementById('sizeDot');
+  d.style.width = d.style.height = Math.min(34, brushSize) + 'px';
+  d.style.background = tool === 'eraser' ? '#858585' : color;
+  document.getElementById('strokeStat').textContent = `笔画: ${strokes.length} · 撤销栈: ${strokes.length}`;
+  document.getElementById('btnUndo').disabled = strokes.length === 0;
+  document.getElementById('btnRedo').disabled = redoStack.length === 0;
+}
+document.getElementById('toolBrush').onclick = () => { tool = 'brush'; syncToolUI(); };
+document.getElementById('toolEraser').onclick = () => { tool = 'eraser'; syncToolUI(); };
+document.getElementById('sizeRange').oninput = e => { brushSize = +e.target.value; syncToolUI(); };
+
+function drawStroke(s, targetCtx) {
+  const c = targetCtx || ctx;
+  c.save();
+  c.lineCap = c.lineJoin = 'round';
+  c.lineWidth = s.size;
+  c.strokeStyle = s.color;
+  c.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+  if (s.points.length === 1) {
+    c.beginPath();
+    c.arc(s.points[0].x, s.points[0].y, s.size / 2, 0, Math.PI * 2);
+    c.fillStyle = s.color; c.fill();
+  } else {
+    c.beginPath();
+    c.moveTo(s.points[0].x, s.points[0].y);
+    for (let i = 1; i < s.points.length; i++) c.lineTo(s.points[i].x, s.points[i].y);
+    c.stroke();
+  }
+  c.restore();
+}
+function repaintAll() {
+  ctx.clearRect(0, 0, paper.width, paper.height);
+  for (const s of strokes) drawStroke(s);
+  if (current) drawStroke(current);
+}
+function paperPos(e) {
+  const r = paper.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (paper.width / r.width), y: (e.clientY - r.top) * (paper.height / r.height) };
+}
+paper.addEventListener('pointerdown', e => {
+  paper.setPointerCapture(e.pointerId);
+  current = { tool, color, size: brushSize, points: [paperPos(e)] };
+  redoStack = [];
+  repaintAll();
+});
+paper.addEventListener('pointermove', e => {
+  const ring = document.getElementById('cursorRing');
+  const r = paper.getBoundingClientRect();
+  const scale = r.width / paper.width;
+  ring.style.display = 'block';
+  ring.style.width = ring.style.height = Math.max(4, brushSize * scale) + 'px';
+  ring.style.left = (e.clientX - document.getElementById('stageWrap').getBoundingClientRect().left) + 'px';
+  ring.style.top = (e.clientY - document.getElementById('stageWrap').getBoundingClientRect().top) + 'px';
+  if (!current) return;
+  current.points.push(paperPos(e));
+  repaintAll();
+});
+paper.addEventListener('pointerup', () => {
+  if (!current) return;
+  strokes.push(current); current = null;
+  repaintAll(); syncToolUI();
+});
+document.getElementById('stageWrap').addEventListener('pointerleave', () => {
+  document.getElementById('cursorRing').style.display = 'none';
+});
+document.getElementById('btnUndo').onclick = () => {
+  if (!strokes.length) return;
+  redoStack.push(strokes.pop()); repaintAll(); syncToolUI();
+};
+document.getElementById('btnRedo').onclick = () => {
+  if (!redoStack.length) return;
+  strokes.push(redoStack.pop()); repaintAll(); syncToolUI();
+};
+document.getElementById('btnClear').onclick = () => {
+  if (strokes.length) { redoStack = []; strokes = []; repaintAll(); syncToolUI(); }
+};
+addEventListener('keydown', e => {
+  if (!document.getElementById('paintOverlay').classList.contains('show')) return;
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); document.getElementById('btnUndo').click(); }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); document.getElementById('btnRedo').click(); }
+  if (e.key === 'b') { tool = 'brush'; syncToolUI(); }
+  if (e.key === 'e') { tool = 'eraser'; syncToolUI(); }
+  if (e.key === 'Escape') closePaint(false);
+});
+
+function openPaint() {
+  savedSnapshot = JSON.stringify(strokes);
+  document.getElementById('paintOverlay').classList.add('show');
+  repaintAll(); syncToolUI();
+}
+function closePaint(save) {
+  document.getElementById('paintOverlay').classList.remove('show');
+  if (!save) strokes = JSON.parse(savedSnapshot || '[]');
+  repaintAll();
+}
+document.getElementById('btnCancelPaint').onclick = () => closePaint(false);
+document.getElementById('btnOpenPaint').onclick = openPaint;
+document.getElementById('btnSavePaint').onclick = () => {
+  savedThumb = strokes.length ? paper.toDataURL('image/png') : null;
+  closePaint(true);
+  renderGraph();
+  // 同步右侧契约预览
+  document.getElementById('srcPreview').textContent = JSON.stringify({
+    id: 'n-canvas', type: 'canvas', position: { x: 300, y: 120 },
+    data: {
+      label: '手绘分镜', width: 960, height: 540,
+      strokes: `… ${strokes.length} 条笔画（可序列化）`,
+      imageKey: savedThumb ? 'img:9f2c…（位图分离存储）' : null,
+      background: null,
+    },
+  }, null, 2);
+  toast(savedThumb ? `已保存到节点 · ${strokes.length} 条笔画 · image 输出就绪` : '画布为空，已清除节点图像');
+};
+document.getElementById('btnReset').onclick = () => {
+  strokes = []; redoStack = []; savedThumb = null;
+  renderGraph(); repaintAll(); syncToolUI();
+  toast('已重置');
+};
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+renderGraph();
+fitView();
+syncToolUI();
+</script>
+</body>
+</html>

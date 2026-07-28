@@ -152,30 +152,27 @@ export class MemoryService extends Disposable implements IMemoryService {
 		readonly expiresAt?: string;
 		readonly source?: 'auto' | 'user' | 'tool';
 	}): Promise<string> {
-		// Use the first provider that supports write operations (typically builtin)
-		const provider = this._providers[0];
-		if (!provider) {
+		// Persist directly via the session store (the builtin provider's storage backend).
+		// The legacy `memory_write` tool has been removed, so write straight to storage.
+		if (!this.sessionStore) {
 			throw new Error('No memory provider registered');
 		}
 
-		// Create memory via the builtin provider's tool
-		const result = await provider.handleToolCall('memory_write', {
-			content: entry.content,
-			category: entry.category ?? 'general',
+		const id = this.sessionStore.insertMemory({
+		content: entry.content,
+		category: (entry.category as IMemoryEntry['category']) ?? 'general',
 			importance: entry.importance ?? 0.5,
+			sessionId: this._currentSessionId,
+			expiresAt: entry.expiresAt,
+			source: 'tool',
 		});
 
-		const parsed = JSON.parse(result);
-		if (parsed.success && parsed.id) {
-			this._onDidChangeMemories.fire({
-				type: 'added',
-				memoryId: parsed.id,
-				category: entry.category ?? 'general',
-			});
-			return parsed.id;
-		}
-
-		throw new Error(`Failed to write memory: ${result}`);
+		this._onDidChangeMemories.fire({
+			type: 'added',
+			memoryId: id,
+			category: entry.category ?? 'general',
+		});
+		return id;
 	}
 
 	async readMemories(filter?: {

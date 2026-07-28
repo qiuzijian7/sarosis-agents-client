@@ -19,6 +19,7 @@ export const MessageDirection = {
 // Request types (WebView → Host)
 export type RequestType =
 	| 'agents.list'
+	| 'agents.presets'
 	| 'agents.get'
 	| 'agents.create'
 	| 'agents.update'
@@ -108,6 +109,10 @@ export type RequestType =
 	| 'confightml.chatSendStream'  // send message with streaming delta callbacks
 	| 'confightml.chatCancelStream'// cancel an active stream session
 	| 'confightml.runTerminal'     // run a command (python/node/...) in integrated terminal
+	| 'confightml.kvGet'          // read a key-value pair from agent data store
+	| 'confightml.kvSet'          // write a key-value pair to agent data store
+	| 'confightml.kvDelete'       // delete a key from agent data store
+	| 'confightml.kvList'         // list keys with optional prefix
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
@@ -418,7 +423,7 @@ export interface IWorkspaceSessionStatusPayload {
 export interface IOrchestrationPlanPayload {
 	readonly goal: string;
 	readonly workspaceId: string;
-	/** The planner agent creating this plan (must have agentType='planner') */
+	/** The agent creating this plan (any agent can orchestrate). */
 	readonly plannerId: string;
 }
 
@@ -565,6 +570,27 @@ export interface IConfigHtmlRunTerminalPayload {
 	readonly args: string[];
 	readonly cwd?: string;
 	readonly env?: Record<string, string>;
+}
+
+export interface IConfigHtmlKvGetPayload {
+	readonly agentId: string;
+	readonly key: string;
+}
+
+export interface IConfigHtmlKvSetPayload {
+	readonly agentId: string;
+	readonly key: string;
+	readonly value: unknown;
+}
+
+export interface IConfigHtmlKvDeletePayload {
+	readonly agentId: string;
+	readonly key: string;
+}
+
+export interface IConfigHtmlKvListPayload {
+	readonly agentId: string;
+	readonly prefix?: string;
 }
 
 export interface IConfigHtmlChatStreamDeltaPayload {

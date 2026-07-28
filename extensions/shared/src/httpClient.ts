@@ -66,7 +66,15 @@ export async function fetchWithRetry(
 		} catch (err) {
 			if (err instanceof HttpError) { throw err; }
 			if (attempt < retries && !(err instanceof DOMException && err.name === 'AbortError')) {
-				console.warn(`[HTTP] Network error on attempt ${attempt + 1}, retrying...`, err);
+				// Node's fetch wraps the real failure (e.g. ECONNREFUSED on a dead
+				// proxy, ENOTFOUND, certificate error) in err.cause — surface it so the
+				// log shows the underlying network/proxy problem instead of a useless
+				// "fetch failed".
+				const cause = (err as { cause?: { code?: string; message?: string; address?: string; port?: number } })?.cause;
+				const causeStr = cause
+					? ` (cause: ${cause.code ?? ''} ${cause.message ?? ''}${cause.address ? ` at ${cause.address}:${cause.port}` : ''})`
+					: '';
+				console.warn(`[HTTP] Network error on attempt ${attempt + 1}, retrying...${causeStr}`, err);
 				await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
 				continue;
 			}

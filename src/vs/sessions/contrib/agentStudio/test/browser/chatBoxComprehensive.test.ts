@@ -76,7 +76,6 @@ function makeAgent(overrides: Partial<IAgentInfo> = {}): IAgentInfo {
 		id: 'test-agent',
 		name: 'Test Agent',
 		status: AgentStatus.Idle,
-		agentType: 'general',
 		...overrides,
 	};
 }
@@ -257,16 +256,11 @@ suite('ChatBox Comprehensive - Unit Tests', () => {
 	});
 
 	suite('Agent Info', () => {
-		test('basic agent', () => {
-			const agent = makeAgent();
-			assert.strictEqual(agent.id, 'test-agent');
-		});
-
-		test('planner agent', () => {
-			const agent = makeAgent({ agentType: 'planner' });
-			assert.strictEqual(agent.agentType, 'planner');
-		});
+	test('basic agent', () => {
+		const agent = makeAgent();
+		assert.strictEqual(agent.id, 'test-agent');
 	});
+});
 
 	suite('Chat Mode', () => {
 		test('craft mode', () => {
@@ -411,19 +405,11 @@ suite('ChatBox Comprehensive - Functional Tests', () => {
 	});
 
 	suite('Agent Management', () => {
-		test('create agent', () => {
-			const agent = makeAgent({ name: 'My Agent' });
-			assert.strictEqual(agent.name, 'My Agent');
-		});
-
-		test('agent with different types', () => {
-			const types = ['general', 'planner', 'explore', 'scout'];
-			types.forEach(t => {
-				const agent = makeAgent({ agentType: t as any });
-				assert.strictEqual(agent.agentType, t);
-			});
-		});
+	test('create agent', () => {
+		const agent = makeAgent({ name: 'My Agent' });
+		assert.strictEqual(agent.name, 'My Agent');
 	});
+});
 
 	suite('Session Management', () => {
 		test('create session info', () => {

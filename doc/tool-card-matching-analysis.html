@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tool Card Matching Logic Analysis</title>
+<style>
+:root{--bg:#0d1117;--fg:#c9d1d9;--blue:#58a6ff;--green:#3fb950;--purple:#d2a8ff;--orange:#f0883e;--red:#f85149;--border:#30363d;--card:#161b22;--code:#1c2128;--dim:#8b949e}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6;max-width:1200px;margin:0 auto;padding:1.5rem}
+h1{font-size:1.5rem;border-bottom:2px solid var(--blue);padding-bottom:.5rem;margin-bottom:1rem}
+h2{font-size:1.1rem;color:var(--blue);margin:1.5rem 0 .6rem;padding-left:.5rem;border-left:3px solid var(--blue)}
+h3{font-size:.95rem;color:var(--blue);margin:1rem 0 .5rem}
+code{background:var(--code);padding:1px 6px;border-radius:4px;font-size:.85em;color:var(--purple)}
+.code-block{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:.5rem 0;overflow-x:auto;font-family:monospace;font-size:.78rem;line-height:1.6}
+.code-block .kw{color:var(--purple)} .code-block .fn{color:var(--blue)} .code-block .str{color:var(--green)} .code-block .cm{color:var(--dim);font-style:italic} .code-block .err{color:var(--red)} .code-block .hl{background:rgba(240,136,62,.15)}
+.issue{border:1px solid var(--border);border-radius:10px;margin:1rem 0;overflow:hidden}
+.issue.sev-high{border-left:4px solid var(--red)}
+.issue.sev-mid{border-left:4px solid var(--orange)}
+.issue-header{padding:.7rem 1rem;display:flex;align-items:center;gap:.6rem;border-bottom:1px solid var(--border);background:rgba(88,166,255,.03)}
+.issue-num{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.75rem;background:var(--red);color:#000}
+.issue.sev-mid .issue-num{background:var(--orange)}
+.issue-body{padding:1rem}
+table{width:100%;border-collapse:collapse;margin:.8rem 0;font-size:.82rem}
+th{background:var(--code);color:var(--blue);padding:.4rem .7rem;text-align:left;font-size:.75rem;text-transform:uppercase;border-bottom:1px solid var(--border)}
+td{padding:.4rem .7rem;border-bottom:1px solid var(--border);vertical-align:top}
+tr:hover{background:rgba(88,166,255,.03)}
+.recs{background:rgba(63,185,80,.04);border:1px solid rgba(63,185,80,.2);border-radius:8px;padding:.8rem 1rem;margin-top:.8rem}
+.recs h4{color:var(--green);margin-bottom:.4rem}
+.recs li{margin-left:1.2rem;font-size:.85rem;line-height:1.6}
+.flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:.5rem 0}
+.flow-node{background:var(--code);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:.78rem}
+.flow-node.n-danger{border-color:var(--red)}
+.flow-node.n-ok{border-color:var(--green)}
+.flow-node.n-miss{border-color:var(--orange)}
+.flow-arrow{color:var(--dim);margin:0 4px}
+</style>
+</head>
+<body>
+
+<h1>Tool Card Matching Logic Analysis &amp; Optimization Plan</h1>
+<p style="color:var(--dim)">Log: <code>vscode-app-1784632848623.log</code> | Session: gr-gc + subagent</p>
+
+<!-- ======== Current Dispatch Chain ======== -->
+<h2>1. Current Dispatch (agentChatPanel.toolCards.ts:641-661)</h2>
+
+<div class="flow">
+  <div class="flow-node n-ok">_createToolCallCard(tc)</div><span class="flow-arrow">&#8594;</span>
+  <div class="flow-node n-ok">update_plan?</div><span class="flow-arrow" style="color:var(--green)">yes</span><span class="flow-arrow">&#8594;</span><div class="flow-node n-ok">_createPlanCard ✓</div>
+</div>
+<div class="flow" style="padding-top:2px;">
+  <span style="width:100px;display:inline-block"></span><span class="flow-arrow" style="color:var(--red)">no</span><span class="flow-arrow">&#8594;</span>
+  <div class="flow-node n-ok">file_write/patch/file_edit/create_file?</div><span class="flow-arrow" style="color:var(--green)">yes</span><span class="flow-arrow">&#8594;</span><div class="flow-node n-ok">_createWriteFileToolCard ✓</div>
+</div>
+<div class="flow" style="padding-top:2px;">
+  <span style="width:100px;display:inline-block"></span><span class="flow-arrow" style="color:var(--red)">no</span><span class="flow-arrow">&#8594;</span>
+  <div class="flow-node n-ok">TOOL_TERMINAL_TOOLS</div><span class="flow-arrow" style="color:var(--green)">yes</span><span class="flow-arrow">&#8594;</span><div class="flow-node n-ok">_createTerminalToolCard ✓</div>
+</div>
+<div class="flow" style="padding-top:2px;">
+  <span style="width:100px;display:inline-block"></span><span class="flow-arrow" style="color:var(--red)">no</span><span class="flow-arrow">&#8594;</span>
+  <div class="flow-node n-ok">READ_FILE_KEYS</div><span class="flow-arrow" style="color:var(--green)">yes</span><span class="flow-arrow">&#8594;</span><div class="flow-node n-ok">_createReadFileCard ✓</div>
+</div>
+<div class="flow" style="padding-top:2px;">
+  <span style="width:100px;display:inline-block"></span><span class="flow-arrow" style="color:var(--red)">no</span><span class="flow-arrow">&#8594;</span>
+  <div class="flow-node n-danger">Generic _createToolCallCard &#10007;</div>
+</div>
+
+<h2>2. 5 Issues Diagnosis</h2>
+
+<!-- Issue 1 -->
+<div class="issue sev-high">
+<div class="issue-header"><div class="issue-num">1</div>SubAgent 卡片位置错误 + 内容不刷新</div>
+<div class="issue-body">
+<h3>根因: TrustedHTML 安全策略</h3>
+<div class="code-block">
+<span class="cm">// agentChatPanel.toolCards.js:784 — TrustedHTML 阻止 DOM 注入</span>
+<span class="err">This document requires 'TrustedHTML' assignment. The action has been blocked.</span>
+buildContent @ agentChatPanel.toolCards.<span class="hl">js:784</span>
+_appendToolSection @ agentChatPanel.toolCards.<span class="hl">js:973</span>
+_createToolCallCard @ agentChatPanel.toolCards.<span class="hl">js:728</span>
+<span class="cm">// → setMessages total=0 — 全部 39 条历史消息加载失败</span>
+</div>
+<p>SubAgentCard 通过 <code>_createToolCallCard</code> &#8594; <code>_appendToolSection</code> &#8594; <code>buildContent</code> 渲染，其中使用了 <code>innerHTML</code> 等效赋值，被 Trusted Types 策略拦截。影响所有工具卡片（不仅 subagent）。</p>
+<table>
+<tr><th>位置</th><th>操作</th><th>问题</th></tr>
+<tr><td>toolCards.js:784</td><td><code>container.innerHTML = ...</code> 或等效</td><td>TrustedHTML block</td></tr>
+<tr><td>base.ts:444</td><td><code>setMessages()</code></td><td>渲染 0 条消息</td></tr>
+<tr><td>L1092-1586</td><td><code>SubAgentCard.updateMessage</code></td><td>每个 delta 触发 re-derive (38次)</td></tr>
+</table>
+</div>
+</div>
+
+<!-- Issue 2 -->
+<div class="issue sev-mid">
+<div class="issue-header"><div class="issue-num">2</div>任务分析 (plan_explore) 无专用卡片</div>
+<div class="issue-body">
+<h3>根因: plan_explore 未进入 dispatch 链</h3>
+<p>日志行 1150: <code>tool_start: name=plan_explore, defaultShow=undefined, displayName=undefined, renderType=undefined</code></p>
+<p>当前 dispatch 只匹配 <code>update_plan</code> &#8594; <code>_createPlanCard</code>。但 <code>plan_explore</code> / <code>plan_enter</code> / <code>plan_exit</code> 没有 dedicated case，直接掉到 generic 分支。</p>
+<table>
+<tr><th>工具</th><th>有 TOOL_BUILTIN_TITLES?</th><th>有 dispatch?</th></tr>
+<tr><td><code>update_plan</code></td><td style="color:var(--green)">✓</td><td style="color:var(--green)">✓ _createPlanCard</td></tr>
+<tr><td><code>plan_explore</code></td><td style="color:var(--red)">&#10007; 缺失</td><td style="color:var(--red)">&#10007; 掉到 generic</td></tr>
+<tr><td><code>plan_enter</code></td><td style="color:var(--red)">&#10007; 缺失</td><td style="color:var(--red)">&#10007; 掉到 generic</td></tr>
+<tr><td><code>plan_exit</code></td><td style="color:var(--red)">&#10007; 缺失</td><td style="color:var(--red)">&#10007; 掉到 generic</td></tr>
+<tr><td><code>delegate_task</code></td><td style="color:var(--green)">✓</td><td style="color:var(--red)">&#10007; 掉到 generic</td></tr>
+</table>
+</div>
+</div>
+
+<!-- Issue 3 -->
+<div class="issue sev-mid">
+<div class="issue-header"><div class="issue-num">3</div>search_code 无搜索专用卡片</div>
+<div class="issue-body">
+<h3>根因: TOOL_LIST_TOOLS / TOOL_CODEBASE_TOOLS 被定义但 dispatch 未使用</h3>
+<div class="code-block">
+<span class="cm">// agentChatPanel.base.ts:134 — 定义了但 dispatch 未消费</span>
+<span class="kw">export const</span> <span class="fn">TOOL_LIST_TOOLS</span> = <span class="kw">new</span> <span class="fn">Set</span>([
+  <span class="str">'search_files'</span>, <span class="str">'search_code'</span>, <span class="str">'search_graph'</span>,
+  <span class="str">'query_graph'</span>, <span class="str">'trace_path'</span>, <span class="str">'get_architecture'</span>, ...
+]);
+
+<span class="cm">// agentChatPanel.base.ts:141 — 同样定义了但未用于卡分派</span>
+<span class="kw">export const</span> <span class="fn">TOOL_CODEBASE_TOOLS</span> = <span class="kw">new</span> <span class="fn">Set</span>([...]);
+
+<span class="cm">// toolCards.ts:641 — dispatch 链未引用任一集合</span>
+<span class="fn">_createToolCallCard</span>(tc) {
+  <span class="kw">if</span> (key === <span class="str">'update_plan'</span>) → ...  <span class="cm">// ✓</span>
+  <span class="kw">if</span> (write tools) → ...           <span class="cm">// ✓</span>
+  <span class="kw">if</span> (TOOL_TERMINAL_TOOLS) → ...   <span class="cm">// ✓</span>
+  <span class="kw">if</span> (READ_FILE_KEYS) → ...        <span class="cm">// ✓</span>
+  <span class="cm">// TOOL_LIST_TOOLS? TOOL_CODEBASE_TOOLS? — NEVER CHECKED &#10007;</span>
+  → generic card
+}
+</div>
+<p><code>search_code</code>, <code>search_graph</code>, <code>query_graph</code> 等搜索工具全部走 generic card，没有列表化/结构化搜索结果展示。</p>
+</div>
+</div>
+
+<!-- Issue 4 -->
+<div class="issue sev-mid">
+<div class="issue-header"><div class="issue-num">4</div>执行计划 (plan_explore) 无专用卡片</div>
+<div class="issue-body">
+<p>同 Issue 2 — plan_explore/plan_enter/plan_exit 全部掉到 generic dispatch。应设计 PlanExploreCard，显示：探索范围、并行子Agent数量、产出摘要。</p>
+</div>
+</div>
+
+<!-- Issue 5 -->
+<div class="issue sev-high">
+<div class="issue-header"><div class="issue-num">5</div>read_file 卡片不跳转行号</div>
+<div class="issue-body">
+<h3>根因: <code>_createReadFileCard</code> 未解析行号参数</h3>
+<div class="code-block">
+<span class="cm">// _createReadFileCard 只读 filePath，未读 args 中的行号</span>
+<span class="kw">const</span> fp = <span class="kw">this</span>._extractFilePath(tc);
+<span class="cm">// 点击回调:</span>
+wrapper.addEventListener(<span class="str">'click'</span>, () => <span class="kw">this</span>._onOpenFile?.(fp));
+<span class="cm">// &#10007; _onOpenFile 只接受 filePath 字符串，不支持行号</span>
+</div>
+<p>LLM 调用 <code>read_file(path, offset, limit)</code> 时传入了行号参数，但卡片渲染只取了 filePath，offset/limit 被丢弃。点击跳转时只打开文件，不跳转行号。</p>
+<p><b>连带问题</b>: TrustedHTML 错误（Issue 1）导致 <code>_createReadFileCard</code> 的 DOM 也未渲染到页面上。</p>
+</div>
+</div>
+
+<!-- ======== Optimization Plan ======== -->
+<h2>3. 优化方案</h2>
+
+<h3>P0: 修复 TrustedHTML (根因，阻塞所有卡片渲染)</h3>
+<table>
+<tr><th>文件</th><th>位置</th><th>改动</th></tr>
+<tr>
+  <td><code>agentChatPanel.toolCards.ts</code></td>
+  <td><code>_appendToolSection</code> &#8594; <code>buildContent</code><br>及所有 <code>innerHTML</code> / <code>insertAdjacentHTML</code> 处</td>
+  <td>全局替换为 TrustedTypePolicy:<br>
+  <code>const policy = trustedTypes.createPolicy('agentChatToolCard', { createHTML: (s) => s });</code><br>
+  <code>container.innerHTML = policy.createHTML(safeContent);</code><br>
+  或改用 <code>document.createTextNode</code> + <code>createElement</code> 组合</td>
+</tr>
+</table>
+
+<h3>P1: 重构 dispatch 链 — 4 级匹配（工具族 > 专用名 > 模式 > generic）</h3>
+
+<div class="code-block">
+<span class="cm">// === 新 dispatch 逻辑 ===</span>
+<span class="fn">_createToolCallCard</span>(tc: IToolCall): HTMLElement {
+  <span class="kw">const</span> key = (tc.name || <span class="str">''</span>).toLowerCase();
+
+  <span class="cm">// Level 0: 审批/安全 优先</span>
+  <span class="kw">if</span> (tc.status === <span class="str">'approval_required'</span>) → ... special handling
+
+  <span class="cm">// Level 1: 按 TOOLSET 工具族批量匹配（最高效）</span>
+  <span class="kw">if</span> (TOOL_PLAN_TOOLS.has(key))        → <span class="fn">_createPlanToolCard</span>(tc, key)
+  <span class="kw">if</span> (TOOL_DELEGATE_TOOLS.has(key))    → <span class="fn">_createDelegateTaskCard</span>(tc, key)
+  <span class="kw">if</span> (TOOL_WRITE_TOOLS.has(key))       → <span class="fn">_createWriteFileToolCard</span>(tc, key)
+  <span class="kw">if</span> (TOOL_TERMINAL_TOOLS.has(key))    → <span class="fn">_createTerminalToolCard</span>(tc, key)
+  <span class="kw">if</span> (TOOL_READ_TOOLS.has(key))        → <span class="fn">_createReadFileCard</span>(tc, key)
+  <span class="kw">if</span> (TOOL_SEARCH_TOOLS.has(key))      → <span class="fn">_createSearchResultCard</span>(tc, key)
+  <span class="kw">if</span> (TOOL_CODEBASE_TOOLS.has(key))    → <span class="fn">_createCodebaseToolCard</span>(tc, key)
+
+  <span class="cm">// Level 2: 专用工具名（单个工具覆盖族规则）</span>
+  <span class="kw">if</span> (key === <span class="str">'update_plan'</span>)          → <span class="fn">_createPlanCard</span>(tc)
+  <span class="kw">if</span> (key === <span class="str">'clarify'</span>)              → handled by _maybeCreateClarifyCard (caller)
+
+  <span class="cm">// Level 3: generic fallback</span>
+  → <span class="fn">_createGenericToolCard</span>(tc)
+}
+</div>
+
+<h3>P1: 新增工具族 Set 定义 (agentChatPanel.base.ts)</h3>
+<div class="code-block">
+<span class="cm">// 计划编排族</span>
+<span class="kw">export const</span> <span class="fn">TOOL_PLAN_TOOLS</span> = <span class="kw">new</span> <span class="fn">Set</span>([
+  <span class="str">'plan_explore'</span>, <span class="str">'plan_enter'</span>, <span class="str">'plan_exit'</span>, <span class="str">'update_plan'</span>,
+]);
+
+<span class="cm">// 委派族</span>
+<span class="kw">export const</span> <span class="fn">TOOL_DELEGATE_TOOLS</span> = <span class="kw">new</span> <span class="fn">Set</span>([
+  <span class="str">'delegate_task'</span>, <span class="str">'transfer_to_agent'</span>, <span class="str">'new_agent'</span>,
+]);
+
+<span class="cm">// 搜索结果族（列表化展示）</span>
+<span class="kw">export const</span> <span class="fn">TOOL_SEARCH_TOOLS</span> = <span class="kw">new</span> <span class="fn">Set</span>([
+  <span class="str">'search_code'</span>, <span class="str">'search_files'</span>, <span class="str">'search_graph'</span>,
+  <span class="str">'query_graph'</span>, <span class="str">'trace_path'</span>, <span class="str">'web_search'</span>,
+]);
+
+<span class="cm">// ── 更新现有 Set（新增搜索工具到 LIST/CODEBASE）──</span>
+<span class="kw">export const</span> <span class="fn">TOOL_LIST_TOOLS</span> = <span class="kw">new</span> <span class="fn">Set</span>([...existing, <span class="str">'search_code'</span>]);
+<span class="kw">export const</span> <span class="fn">TOOL_CODEBASE_TOOLS</span> = <span class="kw">new</span> <span class="fn">Set</span>([...existing, <span class="str">'search_code'</span>]);
+</div>
+
+<h3>P1: 新专用卡片方法</h3>
+<table>
+<tr><th>方法</th><th>匹配工具</th><th>卡片内容</th></tr>
+<tr>
+  <td><code>_createPlanToolCard(tc, key)</code></td>
+  <td>plan_explore, plan_enter, plan_exit</td>
+  <td>计划执行阶段 badge (exploring/working) + 子Agent 列表 + 产出摘要</td>
+</tr>
+<tr>
+  <td><code>_createDelegateTaskCard(tc, key)</code></td>
+  <td>delegate_task, transfer_to_agent</td>
+  <td>子Agent 名称+角色 + 任务摘要 + 执行统计(duration, toolCalls, exitReason) + 产出预览</td>
+</tr>
+<tr>
+  <td><code>_createSearchResultCard(tc, key)</code></td>
+  <td>search_code, search_graph, search_files, web_search</td>
+  <td>搜索结果列表化（文件名 + 匹配行预览）+ 匹配数 badge + 展开/折叠</td>
+</tr>
+<tr>
+  <td><code>_createCodebaseToolCard(tc, key)</code></td>
+  <td>query_graph, trace_path, get_architecture</td>
+  <td>结构化结果展示（图节点/边表格 + trace 调用链树形）</td>
+</tr>
+</table>
+
+<h3>P1: read_file 行号跳转修复</h3>
+<div class="code-block">
+<span class="cm">// _createReadFileCard 中解析行号</span>
+<span class="kw">let</span> line: <span class="kw">number</span> | <span class="kw">undefined</span>;
+<span class="kw">try</span> {
+  <span class="kw">const</span> args = tc.args ? <span class="fn">JSON.parse</span>(tc.args) : {};
+  line = args.<span class="hl">offset</span> ?? args.<span class="hl">line</span> ?? args.<span class="hl">startLine</span>;
+} <span class="kw">catch</span> {}
+
+<span class="cm">// 点击回调传递行号</span>
+wrapper.addEventListener(<span class="str">'click'</span>, () => {
+  <span class="kw">this</span>._onOpenFile?.(fp, <span class="hl">line</span>);  <span class="cm">// 签名改为 (path, line?)</span>
+});
+</div>
+<table>
+<tr><th>文件</th><th>改动</th></tr>
+<tr><td><code>agentChatPanel.base.ts</code></td><td><code>_onOpenFile</code> 签名: <code>(filePath: string, line?: number)</code> &#8594; 调用 <code>editorService.openEditor({selection: {startLineNumber: line, ...}})</code></td></tr>
+</table>
+
+<h3>P2: SubAgentCard 增量更新去抖动</h3>
+<div class="code-block">
+<span class="cm">// agentChatPanel.base.ts SubAgentCard updateMessage</span>
+<span class="kw">private</span> _subAgentUpdateTimer: <span class="kw">any</span>;
+<span class="cm">// 改成 debounce(50ms)，38 个 delta 只触发 1 次 re-derive</span>
+</div>
+
+</body>
+</html>

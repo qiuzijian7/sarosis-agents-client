@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Session Bug Analysis - vscode-app-1784627576289</title>
+<style>
+:root{--bg:#0d1117;--fg:#c9d1d9;--blue:#58a6ff;--green:#3fb950;--purple:#d2a8ff;--orange:#f0883e;--red:#f85149;--border:#30363d;--card:#161b22;--code:#1c2128;--dim:#8b949e;--yellow:#e3b341}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6;max-width:1200px;margin:0 auto;padding:1.5rem}
+h1{font-size:1.6rem;color:#fff;margin-bottom:.5rem;padding-bottom:.5rem;border-bottom:2px solid var(--blue)}
+h2{font-size:1.15rem;color:var(--blue);margin:1.8rem 0 .8rem;padding-left:.5rem;border-left:3px solid var(--blue)}
+h3{font-size:1rem;color:var(--blue);margin:1.2rem 0 .5rem}
+.issue{background:var(--card);border:1px solid var(--border);border-radius:12px;margin-bottom:1.5rem;overflow:hidden}
+.issue.sev-high{border-left:4px solid var(--red)}
+.issue.sev-mid{border-left:4px solid var(--orange)}
+.issue.sev-low{border-left:4px solid var(--dim)}
+.issue-header{padding:.8rem 1.2rem;display:flex;align-items:center;gap:.8rem;border-bottom:1px solid var(--border)}
+.issue-num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.8rem;background:var(--red);color:#000;flex-shrink:0}
+.issue.sev-mid .issue-num{background:var(--orange)}
+.issue.sev-low .issue-num{background:var(--dim)}
+.issue-title{font-size:1.05rem;color:#fff}
+.sev-tag{display:inline-block;padding:2px 10px;border-radius:10px;font-size:.7rem;font-weight:700;margin-left:.5rem}
+.sev-high .sev-tag{background:rgba(248,81,73,.15);color:var(--red)}
+.sev-mid .sev-tag{background:rgba(240,136,62,.15);color:var(--orange)}
+.sev-low .sev-tag{background:rgba(139,148,158,.15);color:var(--dim)}
+.issue-body{padding:1rem 1.2rem}
+code{background:var(--code);padding:1px 6px;border-radius:4px;font-size:.85em;color:var(--purple)}
+.code-block{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:.5rem 0;overflow-x:auto;font-family:monospace;font-size:.78rem;line-height:1.6}
+.code-block .kw{color:var(--purple)}
+.code-block .fn{color:var(--blue)}
+.code-block .str{color:var(--green)}
+.code-block .cm{color:var(--dim);font-style:italic}
+.code-block .num{color:var(--orange)}
+.code-block .err{color:var(--red)}
+table{width:100%;border-collapse:collapse;margin:.8rem 0}
+th{background:var(--code);color:var(--blue);padding:.5rem .8rem;text-align:left;font-size:.78rem;text-transform:uppercase;border-bottom:1px solid var(--border)}
+td{padding:.5rem .8rem;border-bottom:1px solid var(--border);font-size:.82rem}
+tr:hover{background:rgba(88,166,255,.03)}
+.recs{margin-top:1rem;padding:.8rem 1rem;background:rgba(63,185,80,.04);border:1px solid rgba(63,185,80,.2);border-radius:8px}
+.recs h4{color:var(--green);margin-bottom:.5rem}
+.recs li{margin-left:1.2rem;margin-bottom:.3rem;font-size:.85rem}
+.hl{background:rgba(240,136,62,.15);padding:.1em .4em;border-radius:3px}
+.log-ref{font-family:monospace;font-size:.72rem;color:var(--dim)}
+.flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:.5rem 0}
+.flow-node{background:var(--code);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:.78rem;white-space:nowrap}
+.flow-node.n-good{border-color:var(--green)}
+.flow-node.n-bad{border-color:var(--red)}
+.flow-arrow{color:var(--dim);margin:0 4px}
+
+/* Card design */
+.card-design{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:.5rem 0}
+.card-design .card-title{font-weight:600;color:var(--blue);margin-bottom:4px}
+.card-design .card-row{display:flex;gap:12px;font-size:.78rem;margin:4px 0}
+.card-design .card-row .card-label{color:var(--dim);width:60px;flex-shrink:0}
+.card-design .card-row .card-val{color:var(--fg)}
+
+/* Summary box */
+.summary{background:var(--card);border:2px solid var(--border);border-radius:10px;padding:1rem 1.2rem;margin-bottom:2rem}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.8rem}
+.summary-card{text-align:center;padding:.8rem}
+.summary-card .sc-num{font-size:2rem;font-weight:700;color:var(--blue)}
+.summary-card .sc-label{font-size:.75rem;color:var(--dim);margin-top:4px}
+.summary-card .sc-sub{font-size:.7rem;color:var(--orange)}
+</style>
+</head>
+<body>
+
+<h1>Agent Session Bug Analysis Report</h1>
+<p style="color:var(--dim)">Log: <code>vscode-app-1784627576289.log</code> &nbsp;|&nbsp; Agent: <code>gr-gc</code> &nbsp;|&nbsp; Model: <code>codebuddy/auto</code> &nbsp;|&nbsp; Workspace: UE5 + S1Game (14344 files)</p>
+
+<!-- ======== 问题总览 ======== -->
+<div class="summary">
+<div class="summary-grid">
+<div class="summary-card"><div class="sc-num">5</div><div class="sc-label">Bugs Found</div></div>
+<div class="summary-card"><div class="sc-num">2</div><div class="sc-label">High Severity</div><div class="sc-sub">search_code ×2</div></div>
+<div class="summary-card"><div class="sc-num">1030</div><div class="sc-label">Matches Lost</div><div class="sc-sub">502+528 filtered</div></div>
+<div class="summary-card"><div class="sc-num">14</div><div class="sc-label">Empty Terminal</div><div class="sc-sub">(no output) loops</div></div>
+<div class="summary-card"><div class="sc-num">74.8s</div><div class="sc-label">Max Search Time</div><div class="sc-sub">Single search_code call</div></div>
+</div>
+</div>
+
+<!-- ======== Issue 1: search_code path_filter ======== -->
+<div class="issue sev-high">
+<div class="issue-header">
+<div class="issue-num">1</div>
+<div class="issue-title">search_code path_filter 错误过滤 <span class="sev-tag">HIGH</span> <span class="log-ref">L1382, L1495</span></div>
+</div>
+<div class="issue-body">
+
+<h3>问题表现</h3>
+<p>LLM 传入格式错误的 <code>path_filter</code> 参数，底层 grep 找到 <span class="hl">1030 个匹配</span>（502+528），但因 path_filter 格式错误被<span class="hl">全部丢弃</span>，LLM 收到空结果。</p>
+
+<table>
+<tr><th>行号</th><th>path_filter 值</th><th>底层匹配数</th><th>耗时</th><th>问题</th></tr>
+<tr>
+  <td>1382</td>
+  <td><code>"GarbageCollection/.cpp"</code></td>
+  <td style="color:var(--red)">502</td>
+  <td>13.6s</td>
+  <td><code>/</code> 被当正则字面量，<code>.cpp</code> 前缺通配符，全过滤</td>
+</tr>
+<tr>
+  <td>1495</td>
+  <td><code>"GarbageCollection.cpp"</code></td>
+  <td style="color:var(--red)">528</td>
+  <td>2.6s</td>
+  <td>精确文件名匹配，但实际文件路径为 <code>.../Private/UObject/GarbageCollection.cpp</code>，只匹配根目录</td>
+</tr>
+</table>
+
+<h3>根因分析</h3>
+<div class="code-block">
+<span class="cm">// codebaseTools.ts L859-865: path_filter 是原始正则匹配，不做 glob/前缀魔法</span>
+.filter((e: any) => {
+    <span class="kw">if</span> (!pathFilter) { <span class="kw">return</span> <span class="num">true</span>; }
+    <span class="kw">try</span> {
+        <span class="kw">return</span> <span class="kw">new</span> <span class="fn">RegExp</span>(pathFilter).<span class="fn">test</span>(e.filePath);
+    } <span class="kw">catch</span> { <span class="kw">return</span> <span class="num">true</span>; <span class="cm">// invalid regex → pass all</span> }
+})
+</div>
+
+<p><code>path_filter</code> 被作为原生 <code>RegExp</code> 测试文件路径。对于 <code>"GarbageCollection/.cpp"</code>：
+- <code>/</code> 是正则字面斜杠（需 <code>\/</code> 转义），导致不匹配任何文件
+- <code>.cpp</code> 匹配单个字符+<code>cpp</code>，不具备 glob 语义</p>
+
+<h3>同类工具排查</h3>
+
+<table>
+<tr><th>工具</th><th>有类似过滤参数</th><th>风险</th></tr>
+<tr>
+  <td><code>search_code</code></td>
+  <td><code>path_filter</code>, <code>filePattern</code></td>
+  <td style="color:var(--red)">&#10007; HIGH &mdash; 直接 RegExp 匹配，LLM 传 glob 语法必失败</td>
+</tr>
+<tr>
+  <td><code>search_files</code></td>
+  <td><code>pattern</code></td>
+  <td style="color:var(--orange)">&#9888; MEDIUM &mdash; 无 path_filter，仅文件名 glob，相对安全</td>
+</tr>
+<tr>
+  <td><code>search_graph</code></td>
+  <td><code>namePattern</code>, <code>filePattern</code>, <code>label</code></td>
+  <td style="color:var(--dim)">&#10003; LOW &mdash; namePattern 支持 glob，有容错处理</td>
+</tr>
+<tr>
+  <td><code>list_dir</code></td>
+  <td><code>ignore_globs</code></td>
+  <td style="color:var(--dim)">&#10003; LOW &mdash; 仅 glob，无正则风险</td>
+</tr>
+<tr>
+  <td><code>terminal</code></td>
+  <td>无内置过滤</td>
+  <td style="color:var(--dim)">&#10003; NONE &mdash; 命令由 LLM 自行构造</td>
+</tr>
+</table>
+
+<p><b>结论</b>：<code>search_code</code> 的 <code>path_filter</code> 是唯一受影响的参数。LLM 天然倾向用 glob 语法构造 path 过滤器，但实现期定义为 "正则"，两者语义不兼容。</p>
+
+<div class="recs">
+<h4>修复建议</h4>
+<ol>
+  <li><b>P0 — 将 path_filter 从 RegExp 改为 glob</b>：修改 <code>codebaseTools.ts L859-865</code>，将 <code>new RegExp(pathFilter)</code> 替换为 <code>picomatch</code> / <code>minimatch</code> 等 glob 匹配器，自动处理 <code>**</code>、<code>*</code>、<code>?</code> 等通配符。这样 <code>"GarbageCollection*.cpp"</code> 可直接匹配</li>
+  <li><b>P1 — 失败时返回诊断建议</b>：当 path_filter 过滤掉所有结果时，除了返回 <code>"X match(es) filtered out"</code> 外，再附带 <code>"Hint: path_filter is RegExp, not glob. Try --filePattern for glob filtering."</code></li>
+  <li><b>P2 — 自动检测路径模式类型</b>：检测 path_filter 中是否含 <code>**</code>、<code>*</code> 等 glob 通配符，如检测到则发出 WARN 日志并自动转译为正则，避免静默失败</li>
+</ol>
+</div>
+
+</div>
+</div>
+
+<!-- ======== Issue 2: Knowledge Graph returning empty ======== -->
+<div class="issue sev-mid">
+<div class="issue-header">
+<div class="issue-num">2</div>
+<div class="issue-title">知识图谱工具 search_graph 能正常工作但高级工具从未被使用 <span class="sev-tag">MEDIUM</span> <span class="log-ref">L1609-1620</span></div>
+</div>
+<div class="issue-body">
+
+<h3>问题表现</h3>
+<p><code>search_graph</code> 在本次会话中被调用了 2 次，均成功返回结果（total=22/23, returned=10）。但 <code>query_graph</code>、<code>trace_path</code>、<code>get_architecture</code>、<code>get_code_snippet</code>、<code>get_graph_schema</code> <span class="hl">从未被 LLM 调用过</span>，尽管它们每轮都注册在 49 个 builtin tools 中。</p>
+
+<table>
+<tr><th>工具</th><th>调用次数</th><th>结果</th></tr>
+<tr><td><code>search_graph</code></td><td style="color:var(--green)">2</td><td>ProcessAsync: total=22 returned=10 / SpinUntilAllStopped: total=23 returned=10</td></tr>
+<tr><td><code>query_graph</code></td><td style="color:var(--red)">0</td><td>从未调用 &mdash; LLM 选择了 search_code / search_files 替代</td></tr>
+<tr><td><code>trace_path</code></td><td style="color:var(--red)">0</td><td>从未调用</td></tr>
+<tr><td><code>get_architecture</code></td><td style="color:var(--red)">0</td><td>从未调用</td></tr>
+<tr><td><code>get_code_snippet</code></td><td style="color:var(--red)">0</td><td>从未调用</td></tr>
+<tr><td><code>get_graph_schema</code></td><td style="color:var(--red)">0</td><td>从未调用</td></tr>
+</table>
+
+<h3>根因分析</h3>
+<p>LLM 没有选择这些工具的可能原因：</p>
+<ul style="margin-left:1.5rem;font-size:.85rem;line-height:1.8;">
+  <li><b>Tool description 不够突出</b>：知识图谱工具的 description 未体现对 <code>search_code</code> 的优势（如结构化调用链追踪），LLM 倾向于选择更熟悉的 grep 模式</li>
+  <li><b>Tool Search bridge 中未优先展示</b>：这些工具在 49 个工具池中可能被 <code>search_code</code> 更显眼的描述覆盖</li>
+  <li><b>codebuddy/auto 模型对知识图谱工具理解不足</b>：模型缺乏 codebase graph 操作的先验知识</li>
+</ul>
+
+<h3>search_graph 返回结果完整性</h3>
+<div class="code-block">
+<span class="cm">// L1613: total=22, returned=10, hasMore=true</span>
+<span class="cm">// 日志中只显示了表头和第一行开头，完整结果被截断</span>
+<span class="num">1</span>|<span class="fn">function</span>|f:/GR_qiuzijian
+<span class="cm">// ... 其余 9 行未完整记录</span>
+</div>
+
+<div class="recs">
+<h4>修复建议</h4>
+<ol>
+  <li><b>search_graph tool description 强化</b>：在 description 中强调 "Returns structured call-graph results (callers, callees, file locations). Faster than search_code for function-to-function analysis."</li>
+  <li><b>搜索工具描述交叉引用</b>：在 <code>search_code</code> tool description 中提示 "For function call relationships, prefer search_graph"</li>
+  <li><b>日志增强</b>：search_graph 返回结果时记录摘要（function count, file count）而非截断输出</li>
+</ol>
+</div>
+
+</div>
+</div>
+
+<!-- ======== Issue 3: delegate_task card ======== -->
+<div class="issue sev-mid">
+<div class="issue-header">
+<div class="issue-num">3</div>
+<div class="issue-title">委派任务 (delegate_task) 缺少专用工具卡片 <span class="sev-tag">MEDIUM</span> <span class="log-ref">L1716-1924</span></div>
+</div>
+<div class="issue-body">
+
+<h3>问题表现</h3>
+<p><code>delegate_task</code> 被调用 2 次（行 1716、行 1920），执行成功（7777ms）但：</p>
+<ul style="margin-left:1.5rem;font-size:.85rem;line-height:1.8;">
+  <li>父 agent 收不到子 agent 的实际产出内容 &mdash; 评论 "子代理返回了 completion gate 但没有实际内容"（行 2025）</li>
+  <li>工具卡片注册在 <code>TOOL_BUILTIN_TITLES</code> 中仅定义为 <code>{ done: '委派任务', running: '正在委派任务' }</code></li>
+  <li>渲染时回退到默认 <code>_createToolCallCard()</code> &mdash; 无子 agent 信息、无进度、无产出预览</li>
+</ul>
+
+<h3>当前 delegate_task 卡片情况</h3>
+<div class="code-block">
+<span class="cm">// agentChatPanel.base.ts L63</span>
+<span class="id">delegate_task</span>: { done: <span class="str">'委派任务'</span>, running: <span class="str">'正在委派任务'</span> },
+
+<span class="cm">// agentChatPanel.toolCards.ts: 无 delegate_task 专用渲染</span>
+<span class="cm">// → 回退到 _createToolCallCard() 通用卡片</span>
+<span class="cm">// → 只有: spinner + 工具名 + 展开/折叠</span>
+<span class="cm">// → 缺失: 子Agent名称/角色、任务描述、进度、产出预览</span>
+</div>
+
+<div class="recs">
+<h4>委托任务专用卡片设计</h4>
+
+<div class="card-design">
+  <div class="card-title">Delegate Task Card Layout</div>
+  <div class="card-row"><span class="card-label">Header</span><span class="card-val"><b>图标:</b> delegate_task icon | <b>标题:</b> 委派任务: {role} | <b>子Agent:</b> {subAgentName}</span></div>
+  <div class="card-row"><span class="card-label">Body</span><span class="card-val">
+    <b>任务描述:</b> {task 摘要, 最多80字}<br>
+    <b>上下文:</b> {context 摘要}<br>
+    <b>隔离级别:</b> {isolation} (subagent/peer)
+  </span></div>
+  <div class="card-row"><span class="card-label">Status</span><span class="card-val">
+    running: 进度 spinner + "子Agent工作中... (已运行 {duration})"<br>
+    success: &#10003; green + output 摘要 + "查看详情" 展开按钮<br>
+    error: &#10007; red + error message
+  </span></div>
+  <div class="card-row"><span class="card-label">Footer</span><span class="card-val">
+    <b>执行统计:</b> exitReason={completed|budget|error} | duration={ms} | toolCalls={N}
+  </span></div>
+</div>
+
+<h4>实现要点</h4>
+<ol>
+  <li>在 <code>agentChatPanel.toolCards.ts</code> 中添加 <code>_createDelegateTaskCard(tc, key)</code> 方法</li>
+  <li>在 <code>_buildToolCardByKey</code> switch 中为 <code>'delegate_task'</code> 调用该方法</li>
+  <li>利用 <code>tc.args</code> 中的 <code>role</code>（修复 unknown argument 问题）、<code>task</code>、<code>context</code> 渲染内容</li>
+  <li>利用 <code>IToolCall.result</code> 中的 <code>exitReason</code>、<code>duration</code>、<code>toolCalls</code> 渲染统计</li>
+</ol>
+
+</div>
+
+</div>
+</div>
+
+<!-- ======== Issue 4: fetch failed ======== -->
+<div class="issue sev-high">
+<div class="issue-header">
+<div class="issue-num">4</div>
+<div class="issue-title">模型调用错误: fetch failed (连接超时) <span class="sev-tag">HIGH</span> <span class="log-ref">L897, L2386-2492</span></div>
+</div>
+<div class="issue-body">
+
+<h3>问题表现</h3>
+<p>向 <code>copilot.tencent.com:443</code> 发起请求时，3 次连接失败：</p>
+
+<table>
+<tr><th>行号</th><th>迭代</th><th>上下文压力</th><th>错误</th><th>结果</th></tr>
+<tr>
+  <td>897</td>
+  <td>1</td>
+  <td>低</td>
+  <td><code>AbortError: This operation was aborted</code></td>
+  <td>可能是用户取消或初始连接建立失败</td>
+</tr>
+<tr>
+  <td>2403</td>
+  <td>11</td>
+  <td style="color:var(--red);font-weight:700">136% (realPromptTokens=184411, window=136000)</td>
+  <td><code>ConnectTimeoutError: Connect Timeout Error (copilot.tencent.com:443, timeout: 10000ms)</code></td>
+  <td>系统正确触发 Incomplete turn retry (attempt=1/2)</td>
+</tr>
+<tr>
+  <td>2487-2492</td>
+  <td>12 (retry)</td>
+  <td>136%</td>
+  <td><code>TypeError: fetch failed</code></td>
+  <td>第二次重试仍失败，但最终第19秒时收到文本delta（可能第三次隐式重试成功）</td>
+</tr>
+</table>
+
+<h3>根因分析</h3>
+<ul style="margin-left:1.5rem;font-size:.85rem;line-height:1.8;">
+  <li><b>直接原因</b>：TCP/TLS 连接到 <code>copilot.tencent.com:443</code> 超时（10秒 timeout）</li>
+  <li><b>触发条件</b>：上下文压力 <span class="hl">136%</span> 时发生 &mdash; realPromptTokens=184,411，远超模型 window=136,000</li>
+  <li><b>级联效应</b>：超大请求体可能被网关限流/丢弃/TLS 握手超时，或因请求太大导致网络传输中断</li>
+  <li><b>重试机制</b>：系统有 <code>Incomplete turn detected → safe retry (attempt 1/2)</code> 和 <code>Network error on attempt 1, retrying...</code> 两套重试，但用相同的超大请求体重试，大概率仍失败</li>
+</ul>
+
+<div class="recs">
+<h4>修复建议</h4>
+<ol>
+  <li><b>P0 — 上下文压缩先于重试</b>：当 ContextManager 检测到 tokens &gt; window 时，<b>先压缩再重试</b>，而非用相同大 prompt 重试。当前压缩冷却（60s）可能阻止了及时压缩</li>
+  <li><b>P1 — 模型故障切换</b>：3 次 fetch failed 应触发 <code>_executeWithFallback()</code> 切换到备用模型（如 deepseek-v4-pro-ioa），而非耗尽重试</li>
+  <li><b>P2 — HTTP 连接超时自愈</b>：ConnectTimeoutError 是网络层面的瞬时故障，应指数退避（当前固定 10s timeout → 建议 10s → 20s → 40s）</li>
+  <li><b>P3 — 请求体大小监控</b>：在 <code>modelProvider.chat()</code> 前记录 requestBodySize，超过特定阈值（如 500KB）时发出 WARN</li>
+</ol>
+</div>
+
+</div>
+</div>
+
+<!-- ======== Issue 5: Empty terminal commands ======== -->
+<div class="issue sev-mid">
+<div class="issue-header">
+<div class="issue-num">5</div>
+<div class="issue-title">大量终端空结果 (no output) <span class="sev-tag">MEDIUM</span> <span class="log-ref">L2581-3595</span></div>
+</div>
+<div class="issue-body">
+
+<h3>问题表现</h3>
+<p>Agent 在 iteration 13-21 期间发出 <span class="hl">14 次 terminal 命令</span>，全部返回 <code>(no output)</code>。Agent 陷入空结果循环中无法脱离。</p>
+
+<table>
+<tr><th>行号</th><th>命令</th><th>耗时</th><th>问题</th></tr>
+<tr><td>2581</td><td><code>grep -n "ProcessAsync\|SpinUntilAllStopped..." "F:/.../LevelStreamingGCHelper."</code></td><td>13.8s</td><td>Windows 上 grep 不可用或路径末尾缺通配符</td></tr>
+<tr><td>2589</td><td><code>grep -n "PrepareStreamedOutLevelForGC..." "F:/.../LevelStreamingGCHelper."</code></td><td>10.9s</td><td>同上的 grep 问题</td></tr>
+<tr><td>2691</td><td><code>powershell -Command "Select-String -Path '...GarbageCollection.cpp' -Pattern 'ProcessAsync|SpinUntilAllStopped'"</code></td><td>3.9s</td><td>符号在目标文件中不存在（但 LLM 应该知悉这点）</td></tr>
+<tr><td>2699</td><td>powershell Select-String (类似)</td><td>9.5s</td><td>继续重复搜索相同符号</td></tr>
+</table>
+
+<p><b>核心问题</b>：Agent 使用 terminal 搜索 UE5 符号 <code>ProcessAsync</code>、<code>SpinUntilAllStopped</code>、<code>PrepareStreamedOutLevelForGC</code>。当这些符号在任何文件中都不存在时，LLM 不应继续用 terminal 搜索 &mdash; 应该改用 <code>search_code</code>（利用 graph 索引）或接受事实。</p>
+
+<h3>根因分析</h3>
+<ul style="margin-left:1.5rem;font-size:.85rem;line-height:1.8;">
+  <li><b>Windows grep 不可用</b>：前 2 条命令用 <code>grep</code>，但 Windows 默认没有。Agent 在发现无输出后切换到了 <code>powershell Select-String</code>（行 2690），但搜索的符号仍不存在</li>
+  <li><b>连续失败未注入提醒</b>：terminal 返回 <code>(no output)</code> 时，LLM 将其解读为 "可能 grep 没安装"，而非 "符号不存在"。缺少系统注入的 <code>consecutive failure reminder</code></li>
+  <li><b>迭代预算耗散</b>：14 次空 terminal 消耗了 14 次迭代中的约 70% 时间（每次 2-14 秒），上下文从 136% 增长到 142%，但无实质进展</li>
+</ul>
+
+<div class="recs">
+<h4>修复建议</h4>
+<ol>
+  <li><b>terminal 连续空输出检测</b>：当 terminal 连续 3 次返回 <code>(no output)</code> 时，注入 <code>system-reminder: "Terminal returned (no output) 3 times in a row. Possible causes: command tool missing, symbol not found, or incorrect path. Use search_code for codebase search instead."</code></li>
+  <li><b>Windows grep 自检</b>：当 LLM 的 tool description 提示 <code>grep</code> 的同时，提示 Windows 上可用 <code>findstr</code> 或 <code>powershell Select-String</code>。或者 terminal 工具在 Windows 上自动检测并提示</li>
+  <li><b>terminal 超时优化</b>：当前 <code>timeout=30s hardCap=60000ms</code>，对于搜索不存在的符号浪费大量时间。建议对于 grep/powershell 搜索命令使用更短的 timeout（10s）</li>
+</ol>
+</div>
+
+</div>
+</div>
+
+<!-- ======== Summary Table ======== -->
+<h2>问题汇总与优先级</h2>
+<table>
+<tr><th>#</th><th>问题</th><th>严重度</th><th>影响</th><th>修复文件</th><th>优先级</th></tr>
+<tr>
+  <td>1</td>
+  <td>search_code path_filter RegExp vs glob 不兼容</td>
+  <td style="color:var(--red)">HIGH</td>
+  <td>1030 个匹配丢失，LLM 基于空结果做错误决策</td>
+  <td><code>codebaseTools.ts L859-865</code></td>
+  <td>P0</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>fetch failed: 连接超时 + 超大请求重试</td>
+  <td style="color:var(--red)">HIGH</td>
+  <td>3次连接失败，上下文压力 136% 导致请求过大</td>
+  <td><code>agentChatService.ts</code> + <code>agentOSService.ts</code></td>
+  <td>P0</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td>14 次 terminal 空输出循环</td>
+  <td style="color:var(--orange)">MEDIUM</td>
+  <td>70% 迭代时间浪费在无效 terminal 调用上</td>
+  <td><code>agentTurnExecutor.ts</code> (连续失败检测)</td>
+  <td>P1</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>delegate_task 缺专用卡片</td>
+  <td style="color:var(--orange)">MEDIUM</td>
+  <td>任务委派结果不可见，父 agent 误判空返回</td>
+  <td><code>agentChatPanel.toolCards.ts</code></td>
+  <td>P1</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td>知识图谱高级工具从未被使用</td>
+  <td style="color:var(--dim)">LOW</td>
+  <td>query_graph/trace_path 未被 LLM 选择</td>
+  <td><code>codebaseTools.ts</code> (tool description)</td>
+  <td>P2</td>
+</tr>
+</table>
+
+</body>
+</html>

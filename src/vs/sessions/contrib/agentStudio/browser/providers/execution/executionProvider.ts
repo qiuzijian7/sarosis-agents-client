@@ -5,11 +5,15 @@
 
 import type { IExecutionProvider, IAgentTurnRequest, IChatStreamDelta, ISlotRegistry, IToolResult, IToolDefinition } from '../../../common/providers.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
+import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { IEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IterationBudget } from '../../../common/iterationBudget.js';
 import { ContextManager } from '../../../common/contextManager.js';
 import { ToolArgumentRepairer } from '../../../common/toolRepair.js';
 import { ParallelToolExecutor } from '../../../common/parallelToolExecutor.js';
-import { filterToolsByChatMode } from '../../../common/chatModeConfig.js';
+import { FileContextStorageService } from '../../contextStorageService.js';
+import { userDataRootFromRoamingHome } from '../../../common/sarosPaths.js';
+
 import type { IChatMessage, IModelOptions, IToolCallInfo, IModelDelta } from '../../../common/providers.js';
 import type { ChatMessage } from '../../../common/types.js';
 
@@ -30,10 +34,30 @@ export class ExecutionProvider implements IExecutionProvider {
 	private readonly _contextWindow: number = 128000; // 默认上下文窗口
 	private readonly _maxTokens: number = 4096;
 
+	/** 懒创建的上下文存储（快照/摘要持久化到 context-storage/） */
+	private _contextStorage?: FileContextStorageService;
+
 	constructor(
 		@ILogService logService: ILogService,
+		@IFileService private readonly fileService?: IFileService,
+		@IEnvironmentService private readonly environmentService?: IEnvironmentService,
 	) {
 		this._logService = logService;
+	}
+
+	/** 懒创建 IContextStorage；缺少文件服务依赖时返回 undefined（内存模式） */
+	private _getContextStorage(): FileContextStorageService | undefined {
+		if (!this.fileService || !this.environmentService) {
+			return undefined;
+		}
+		if (!this._contextStorage) {
+			this._contextStorage = new FileContextStorageService(
+				this.fileService,
+				this._logService,
+				userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome),
+			);
+		}
+		return this._contextStorage;
 	}
 
 	async *runAgentLoop(
@@ -81,12 +105,15 @@ export class ExecutionProvider implements IExecutionProvider {
 				const recallScope: 'agent' | 'global' = request.memoryScope ?? 'agent';
 				const recallOptions = { scope: recallScope };
 
-				const memoryContext = await memoryProvider.loadContext(
-					request.agentId,
-					request.sessionId || '',
-					recallQuery,
-					recallOptions,
-				);
+			const memoryContext = await memoryProvider.loadContext(
+				request.agentId,
+				request.sessionId || '',
+				recallQuery,
+				// includeEntries: 本循环的注入仍消费长/短期记忆数组（见下方
+				// Long-term/Short-term 块），显式开启——注入主路径
+				// （agentMemoryInjection）已默认关闭以省全表扫描。
+				{ ...recallOptions, includeEntries: true },
+			);
 
 				// ─── 按 memoryConfig.strategy 过滤 memoryContext ────────────
 				// 与 agentOSService 中的注入策略保持一致，详见该处注释。
@@ -163,6 +190,11 @@ export class ExecutionProvider implements IExecutionProvider {
 			error: (msg: string, error?: unknown) => this._logService.error(msg, error),
 			debug: (msg: string) => this._logService.debug(msg),
 		});
+		// 接入文件系统持久化（IContextStorage）：快照/摘要落盘到 context-storage/ 目录
+		const contextStorage = this._getContextStorage();
+		if (contextStorage) {
+			contextManager.setStorage(contextStorage);
+		}
 		let modelId = this._getModelId(slots);
 		// 真实上下文窗口：优先读模型 maxInputTokens / contextWindow，取不到回退 _contextWindow（128000）。
 		const compressionWindow = await this._resolveContextWindow(modelProvider, modelId);
@@ -281,18 +313,16 @@ export class ExecutionProvider implements IExecutionProvider {
 				}
 
 				// 7.2 构建模型选项
-				let tools: IToolDefinition[] | undefined;
-				if (toolProvider) {
-					const allTools = await toolProvider.listTools(request.agentId);
-					const chatMode = request.chatMode || 'craft';
+			let tools: IToolDefinition[] | undefined;
+			if (toolProvider) {
+				const allTools = await toolProvider.listTools(request.agentId);
 
-					// Filter tools by chat mode (unified in chatModeConfig)
-					tools = filterToolsByChatMode(allTools, chatMode);
-					if (tools.length === 0) {
-						tools = undefined;
-					}
-					this._logService.info(`[ExecutionProvider] Chat mode=${chatMode}: ${tools?.length ?? 0}/${allTools.length} tools allowed`);
+				tools = allTools;
+				if (tools.length === 0) {
+					tools = undefined;
 				}
+				this._logService.info(`[ExecutionProvider] ${tools?.length ?? 0}/${allTools.length} tools loaded`);
+			}
 
 			const modelOptions: IModelOptions = {
 				temperature: request.options?.temperature ?? 0.7,
@@ -392,70 +422,29 @@ export class ExecutionProvider implements IExecutionProvider {
 					messages.push(toolResultMessage);
 				}
 
-				// 7.6a Plan-mode: if exit_plan_mode was called, emit a confirmation delta
-				// and stop the loop so the user can review and approve the plan.
-				if (request.chatMode === 'plan') {
-					const exitPlanCall = assistantToolCalls.find(tc => tc.name === 'exit_plan_mode');
-					if (exitPlanCall) {
-						this._logService.info('[ExecutionProvider] PLAN mode: exit_plan_mode called, emitting confirmation');
-						try {
-							const args = typeof exitPlanCall.arguments === 'string'
-								? JSON.parse(exitPlanCall.arguments)
-								: exitPlanCall.arguments;
-							yield {
-								type: 'confirmation',
-								confirmationData: {
-									id: `plan-approval-${Date.now()}`,
-									type: 'plan-approval' as const,
-									title: 'Plan Approval',
-									planSummary: args?.plan_summary || '',
-									tasks: (args?.tasks || []).map((t: any) => ({
-										title: t.title || '',
-										description: t.description || '',
-										files: t.files || [],
-										complexity: t.complexity,
-										suggestedRole: t.suggestedRole,
-										dependencies: t.dependencies,
-									})),
-									nextMode: args?.next_mode || 'craft',
-								},
-							} as IChatStreamDelta;
-						} catch {
-							// If parsing fails, just continue normally
-						}
-						yield { type: 'done' };
-						break;
-					}
-				}
 
-			// 7.7 更新记忆（如果有 Memory Provider）
-			// Fire-and-forget: writeMemory may trigger an HTTP POST /capture to the
-			// agentmemory-gateway. If the gateway is slow or unresponsive, awaiting it
-			// would block this async generator, freezing the entire chat stream.
-			// Same pattern as agentDriverService.ts Step 5.
-			if (memoryProvider) {
-				void (async () => {
-					try {
-						await memoryProvider.writeMemory(request.agentId, {
-							id: `msg-${Date.now()}`,
-							type: 'working',
-							content: assistantContentChunks.join('') || 'Tool execution completed',
-							metadata: {
-								// ── memory 合并 schema 预留（参见 doc/Memory-Strategy.md §2.7）──
-								owner: 'default',
-								userId: 'default',
-								agentId: request.agentId,
-								role: 'assistant',
-								toolCalls: assistantToolCalls?.length || 0,
-								toolResults: toolResults.length,
-							},
-							timestamp: Date.now(),
-						});
-					} catch (error) {
-						this._logService.error('[ExecutionProvider] Failed to write memory:', error);
-					}
-				})();
+		// 7.7 更新记忆（如果有 Memory Provider）
+		// W1（2026-07-26 §16 日志实证修复）：与 agentTurnExecutor 同款改道——
+		// 每迭代 writeMemory(type=working) 直写长期层改为 observe 会话暂存层
+		// （mem:obs，便宜 KV set + 滑动窗口 + 阈值压缩），不再洪泛 core memory。
+		if (memoryProvider) {
+			const iterContent = assistantContentChunks.join('');
+			if (iterContent.length >= 8 || toolResults.length > 0) {
+				void memoryProvider.observe?.(request.agentId, {
+					sessionId: request.sessionId || '',
+					hookType: 'turn_observation',
+					timestamp: new Date().toISOString(),
+					data: {
+						content: (iterContent || 'Tool execution completed').slice(0, 2000),
+						role: 'assistant',
+						toolCalls: assistantToolCalls?.length || 0,
+						toolResults: toolResults.length,
+					},
+				}).catch((error: unknown) => {
+					this._logService.error('[ExecutionProvider] Failed to observe iteration:', error);
+				});
 			}
+		}
 
 				// 7.8 消耗迭代预算
 				budget.consume(1);

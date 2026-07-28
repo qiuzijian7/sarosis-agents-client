@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -72,6 +72,8 @@ import { IWorkflowStorageService } from '../common/workflowStorage.js';
 import { WorkflowStorageService } from './workflowStorageService.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 import { WorkflowExecutionService } from './workflowExecutionService.js';
+import { IWorkflowVersionService } from '../common/workflowVersionTypes.js';
+import { WorkflowVersionService } from './workflowVersionService.js';
 import { IEventBridgeService, EventBridgeService } from '../common/eventBridge.js';
 import { TaskOrchestrationService } from './taskOrchestrationService.js';
 import { IWorkspaceLifecycleService } from '../common/workspaceLifecycle.js';
@@ -80,6 +82,9 @@ import { ISkillLifecycleService } from '../common/skillLifecycle.js';
 import { SkillLifecycleService } from './skillLifecycleService.js';
 import { IKbNativeKernelService, KbNativeKernelService } from './kbNativeKernelService.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
+import { SkillVersionService, ISkillVersionService } from './skillVersionService.js';
+import { AgentVersionService } from './agentVersionService.js';
+import { IAgentVersionService } from '../common/agentVersionTypes.js';
 import { IEmbeddingService, EmbeddingService } from './embedding/embeddingService.js';
 import {
 	AGENT_STUDIO_ENABLED_SETTING,
@@ -147,11 +152,14 @@ import {
 	TOF_GATEWAY_BASE_URL_SETTING,
 	TOF_LOGIN_TIMEOUT_SETTING,
 	AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING,
+	AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING,
+	AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING,
 	CHANNEL_DEFINITIONS,
 } from '../common/constants.js';
 import { AgentTaskBoardService } from './agentTaskBoardService.js';
 import { AgentStudioProvider } from './agentStudioProvider.js';
-import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS } from './builtInBYOKModelProvider.js';
+import { BuiltInBYOKModelProvider, BUILTIN_BYOK_PROVIDERS, customProviderDataToDefinition } from './builtInBYOKModelProvider.js';
+import type { CustomProviderData } from './views/providerView.js';
 import { MainProcessModelProvider } from './mainProcessModelProvider.js';
 import { VSSAROS_LLM_CHANNEL } from '../common/llmBridge.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -223,7 +231,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { WorkspaceFolderCountContext } from '../../../../workbench/common/contextkeys.js';
 import { IsPhoneLayoutContext } from '../../../common/contextkeys.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { ICommandService, CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { TaskOverviewEditorPane } from './taskOverviewEditorPane.js';
@@ -244,6 +252,8 @@ import { CodebaseMemoryDetailEditorPane } from './codebaseMemoryDetailEditorPane
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { CodebaseGraphViewerEditorPane } from './codebaseGraphViewerEditorPane.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
+import { CodebaseIndexEditorPane } from './codebaseIndexEditorPane.js';
+import { CodebaseIndexEditorInput } from './codebaseIndexEditorInput.js';
 import { ICodebaseMemoryMcpService, CodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
 import { ICodebaseGraphService, CodebaseGraphService } from './codebaseGraphService.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher } from './codebaseGraphWatcher.js';
@@ -596,6 +606,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			maximum: 32,
 			description: localize('agentStudio.driver.turnConcurrencyLimit', "顶层可同时运行的 agent turn 并发上限。调高 = 更多并行 session/agent，但 API 配额与内存(V8 4GB 堆)压力更大；免费 API 档位在更低并发即被限流，可调低。默认 4。"),
 		},
+		// --- Skills: workflow bridge ---
+		[AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING]: {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.skills.includeWorkflows', "将已存储的工作流作为「可执行型 skill」暴露给 agent（双向打通 A 向）。开启后可用 /skill <workflowId> 触发执行工作流；关闭则不再暴露。默认开启。"),
+		},
 	},
 });
 
@@ -607,8 +623,9 @@ class BuiltinAgentMdSyncContribution implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.builtinAgentMdSync';
 
 	constructor(@IAgentStudioService _agentStudioService: IAgentStudioService) {
-		// Injecting IAgentStudioService triggers its constructor, which calls
-		// ensureBuiltinAgentMdFiles() to create .agent.md files in ~/.saros/agents/.
+		// Injecting IAgentStudioService triggers its constructor, which first
+		// migrates legacy ~/.saros/ data into ~/.vssaros/ and then seeds the
+		// builtin agents' .agent.md files under ~/.vssaros/agents/.
 	}
 }
 
@@ -635,6 +652,7 @@ registerSingleton(IHealthMonitorService, HealthMonitorService, InstantiationType
 registerSingleton(ICrewTeamService, CrewTeamService, InstantiationType.Delayed);
 registerSingleton(IWorkflowStorageService, WorkflowStorageService, InstantiationType.Delayed);
 registerSingleton(IWorkflowExecutionService, WorkflowExecutionService, InstantiationType.Delayed);
+registerSingleton(IWorkflowVersionService, WorkflowVersionService, InstantiationType.Delayed);
 registerSingleton(IEventBridgeService, EventBridgeService, InstantiationType.Delayed);
 registerSingleton(ITaskOrchestrationService, TaskOrchestrationService, InstantiationType.Delayed);
 // ConfigHtml service: shared across all webview controllers (chat panels) and
@@ -688,6 +706,8 @@ registerSingleton(IAgentStudioDashboardService, AgentStudioDashboardService, Ins
 // already-built backlink/mention index instead of re-scanning the vault.
 registerSingleton(IKbNativeKernelService, KbNativeKernelService, InstantiationType.Delayed);
 registerSingleton(IKbVersionService, KbVersionService, InstantiationType.Delayed);
+registerSingleton(ISkillVersionService, SkillVersionService, InstantiationType.Delayed);
+registerSingleton(IAgentVersionService, AgentVersionService, InstantiationType.Delayed);
 registerSingleton(IEmbeddingService, EmbeddingService, InstantiationType.Delayed);
 
 // --- EditorPane Registration -----------------------------------------------------
@@ -910,6 +930,19 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(CodebaseGraphViewerEditorInput)
+	]
+);
+
+// Register CodebaseIndexEditorPane — standalone codebase indexing controls
+// (originally the Memory "代码图谱" tab content, now extracted as independent pane).
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		CodebaseIndexEditorPane,
+		CodebaseIndexEditorPane.ID,
+		localize('codebaseIndexEditor', "Codebase Index"),
+	),
+	[
+		new SyncDescriptor(CodebaseIndexEditorInput)
 	]
 );
 
@@ -1523,7 +1556,7 @@ registerAction2(class extends Action2 {
 		// 每个新聊天默认开在独立的 group 中——仅当用户手动拖拽时，
 		// 才允许同一 group 下存在多个聊天 tab。
 		const newGroup = agentPart.addGroup(agentPart.activeGroup, 3 /* GroupDirection.RIGHT */);
-		newGroup.openEditor(input, { pinned: false }).then(() => {
+		newGroup.openEditor(input, { pinned: true }).then(() => {
 			// Chat editor opened successfully in agent part
 		}).catch((err: any) => {
 			logService.error('[newChatInEditor] failed to open editor:', err);
@@ -1712,6 +1745,65 @@ class BYOKProviderContribution extends Disposable implements IWorkbenchContribut
 			this._register(this.agentOSService.registerModelProvider(provider));
 			this.logService.info(`[BYOK] Registered built-in provider: ${def.id}${useMainProcess ? ' (main-process)' : ''}`);
 		}
+
+		// 阶段 2（Path B）：把 UI 添加的自定义 provider（持久化在
+		// AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING）也注册进聊天模型系统，
+		// 使其在模型选择器中可见、可真正发请求。监听设置变化做增量增删。
+		this._registerCustomProviders(useMainProcess);
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING)) {
+				this._reconcileCustomProviders(useMainProcess);
+			}
+		}));
+	}
+
+	/** 已注册的自定义 provider 及其解绑句柄，用于增量增删。 */
+	private readonly _customProviderDisposables = new Map<string, IDisposable>();
+
+	private _registerCustomProviders(useMainProcess: boolean): void {
+		const customProviders = this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || [];
+		for (const cp of customProviders) {
+			this._registerOneCustomProvider(cp, useMainProcess);
+		}
+	}
+
+	private _reconcileCustomProviders(useMainProcess: boolean): void {
+		const customProviders = this.configurationService.getValue<CustomProviderData[]>(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING) || [];
+		const desiredIds = new Set(customProviders.map(cp => cp.id));
+
+		// 移除已不存在的自定义 provider
+		for (const [id, disposable] of this._customProviderDisposables) {
+			if (!desiredIds.has(id)) {
+				disposable.dispose();
+				this._customProviderDisposables.delete(id);
+				this.logService.info(`[BYOK] Unregistered custom provider: ${id}`);
+			}
+		}
+
+		// 注册新增/变化的自定义 provider（简单策略：先解绑再重绑，保证最新配置生效）
+		for (const cp of customProviders) {
+			const existing = this._customProviderDisposables.get(cp.id);
+			if (existing) {
+				existing.dispose();
+				this._customProviderDisposables.delete(cp.id);
+			}
+			this._registerOneCustomProvider(cp, useMainProcess);
+		}
+	}
+
+	private _registerOneCustomProvider(cp: CustomProviderData, useMainProcess: boolean): void {
+		// provider id 冲突保护：跳过与内置 provider 重名的自定义项
+		if (BUILTIN_BYOK_PROVIDERS.some(def => def.id === cp.id)) {
+			this.logService.warn(`[BYOK] Custom provider id "${cp.id}" conflicts with a built-in provider; skipped`);
+			return;
+		}
+		const def = customProviderDataToDefinition(cp);
+		const provider = useMainProcess
+			? new MainProcessModelProvider(def, this.configurationService, this.logService, this.environmentService, this.mainProcessService)
+			: new BuiltInBYOKModelProvider(def, this.configurationService, this.logService, this.environmentService);
+		const disposable = this.agentOSService.registerModelProvider(provider);
+		this._customProviderDisposables.set(cp.id, disposable);
+		this.logService.info(`[BYOK] Registered custom provider: ${cp.id} (${cp.apiType || 'openai'})${useMainProcess ? ' (main-process)' : ''}`);
 	}
 }
 
@@ -1744,9 +1836,8 @@ import { IKanbanRecipeService, KanbanRecipeService } from './providers/tool/kanb
 import { IKanbanScrapeService, KanbanScrapeService } from './providers/tool/kanbanScrapeService.js';
 import { SwarmService } from './providers/swarm/swarmService.js';
 import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
-import { SessionMemoryProvider } from './providers/memory/sessionMemoryProvider.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { CheckpointService } from './checkpointService.js';
@@ -1755,6 +1846,7 @@ import { IMarketplaceService, MARKETPLACE_URL_SETTING, MARKETPLACE_AUTO_CHECK_SE
 import { MarketplaceService } from './marketplaceService.js';
 import { IPackageInstallerRegistry } from '../common/packageInstaller.js';
 import { PackageInstallerRegistry } from './packageInstallerRegistry.js';
+import { IMermaidInlineRenderer, MermaidInlineRenderer } from './mermaidInlineRenderer.js';
 
 registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
 registerSingleton(ISkillInstallService, SkillInstallService, InstantiationType.Delayed);
@@ -1766,6 +1858,15 @@ registerSingleton(IAgentStudioWebviewPool, AgentStudioWebviewPool, Instantiation
 registerSingleton(IMarketplaceService, MarketplaceService, InstantiationType.Delayed);
 // PackageInstallerRegistry: 按 kind 分发安装/打包逻辑（skill 已实现，其他后续补充）
 registerSingleton(IPackageInstallerRegistry, PackageInstallerRegistry, InstantiationType.Delayed);
+// MermaidInlineRenderer: renderer 进程内的隐藏 webview，把 Mermaid 源码渲染为 SVG
+// 字符串（供 agent 工具卡片内联展示，无需扩展进程往返）
+registerSingleton(IMermaidInlineRenderer, MermaidInlineRenderer, InstantiationType.Delayed);
+CommandsRegistry.registerCommand(
+	'_agentStudio.renderMermaidSvg',
+	(accessor, markup: string, theme?: 'dark' | 'default') => {
+		return accessor.get(IMermaidInlineRenderer).renderToSvg(markup, theme);
+	},
+);
 
 class BuiltinCapabilityContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.builtinCapabilities';
@@ -1775,8 +1876,6 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IFileService private readonly fileService: IFileService,
-		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		@IMcpService private readonly mcpService: IMcpService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
 		// Touch ISkillRegistry so the singleton is created and starts its filesystem
@@ -1793,7 +1892,8 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 
 		this._registerBuiltinTools();
 		this._registerMcpTools();
-		this._registerSessionMemory();
+		// SessionMemoryProvider 已废弃：记忆统一由 AgentMemoryProviderV2 提供
+		// （extensions/agentmemory-memory，经网关宿主 + renderer 代理注册，priority=1000）。
 		this._registerKanbanProvider();
 	}
 
@@ -1818,17 +1918,6 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 			this.logService.info('[BuiltinCapability] McpToolProvider registered');
 		} catch (err) {
 			this.logService.error('[BuiltinCapability] McpToolProvider registration failed', err);
-		}
-	}
-
-	private _registerSessionMemory(): void {
-		try {
-			const provider = new SessionMemoryProvider(this.fileService, this.environmentService, this.logService);
-			this._register(provider);
-			this._register(this.agentOSService.registerMemoryProvider(provider, 50));
-			this.logService.info('[BuiltinCapability] SessionMemoryProvider registered');
-		} catch (err) {
-			this.logService.error('[BuiltinCapability] SessionMemoryProvider registration failed', err);
 		}
 	}
 
@@ -1971,8 +2060,8 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 			// 通过 POST /observe 记录观察，POST /remember 保存长期记忆，
 			// POST /smart-search 做 BM25+Vector+Graph 混合搜索。
 			//
-			// priority 90 > agentmemory-memory(80) > SessionMemoryProvider(50)，
-			// 因此 saros 会优先调用本 provider 的 writeMemory。
+			// 记忆统一入口：SessionMemoryProvider 已废弃，本 provider 是唯一
+			// 记忆来源（扩展 activate 时以 priority=1000 注册）。
 			//
 			// agentmemory server 由主进程 startAgentMemoryGateway() 启动，
 			// 监听 127.0.0.1:3111 (III_REST_PORT)。
@@ -2465,77 +2554,84 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 
 		// Note: SourceControl (order: 30) — registered in sourceControl.contribution.ts
 
-		// 3. Tasks (order: 40)
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.tasks',
-			title: localize2('agentStudio.tasks.title', "Tasks"),
-			icon: tasksIcon,
-			viewId: AGENT_STUDIO_TASKS_VIEW_ID,
-			order: 40,
-			viewCtor: TasksViewPane,
-		});
+		// Note: SourceControl (order: 30) — registered in sourceControl.contribution.ts
+		// ── Separator after order 30 (workspace/search/sourcecontrol) ──
+		// Session History (order: 50) — registered in sessionHistory.contribution.ts
 
-		// 4. Agents (order: 50)
+		// 3. Agents (order: 60)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.presetAgent',
 			title: localize2('agentStudio.presetAgent.title', "Agents"),
 			icon: presetAgentIcon,
 			viewId: AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
-			order: 50,
+			order: 60,
 			viewCtor: PresetAgentViewPane,
 		});
 
-		// 5. Workflow (order: 60)
+		// 4. Tasks (order: 70)
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.tasks',
+			title: localize2('agentStudio.tasks.title', "Tasks"),
+			icon: tasksIcon,
+			viewId: AGENT_STUDIO_TASKS_VIEW_ID,
+			order: 70,
+			viewCtor: TasksViewPane,
+		});
+
+		// 5. Workflow (order: 80)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.workflow',
 			title: localize2('agentStudio.workflow.title', "Workflow"),
 			icon: workflowIcon,
 			viewId: AGENT_STUDIO_WORKFLOW_VIEW_ID,
-			order: 60,
+			order: 80,
 			viewCtor: WorkflowViewPane,
 		});
 
-		// 6. Integration (Skills + Tools + MCP, order: 70)
+		// 6. Integration (Skills + Tools + MCP, order: 90)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.integration',
 			title: localize2('agentStudio.integration.title', "Integration"),
 			icon: integrationIcon,
 			viewId: AGENT_STUDIO_INTEGRATION_VIEW_ID,
-			order: 70,
+			order: 90,
 			viewCtor: IntegrationViewPane,
 		});
 
-		// 7. Plugins (order: 80)
+		// Note: Memory (order: 100) — registered in memory.contribution.ts
+		// Note: Knowledge Base (order: 110) — registered below
+
+		// 7. Plugins (order: 120)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.plugins',
 			title: localize2('agentStudio.plugins.title', "Plugins"),
 			icon: pluginsIcon,
 			viewId: AGENT_STUDIO_PLUGINS_VIEW_ID,
-			order: 80,
+			order: 120,
 			viewCtor: PluginsViewPane,
 		});
 
 
 		// --- Remaining icons (after Plugins) ---
 
-		// Dashboard (order: 140) — Agent 运维监控面板
-		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.dashboard',
-			title: localize2('agentStudio.dashboard.title', "Dashboard"),
-			icon: Codicon.dashboard,
-			viewId: AGENT_STUDIO_DASHBOARD_VIEW_ID,
-			order: 140,
-			viewCtor: AgentStudioDashboardViewPane,
-		});
-
-		// Knowledge Base (order: 120) — 仿 SiYuan 的多 Vault 文件树
+		// Knowledge Base (order: 110)
 		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
 			id: 'agentStudio.knowledgeBase',
 			title: localize2('agentStudio.knowledgeBase.title', "知识库"),
 			icon: kbIcon,
 			viewId: AGENT_STUDIO_KB_VIEW_ID,
-			order: 120,
+			order: 110,
 			viewCtor: KnowledgeBaseViewPane,
+		});
+
+		// Dashboard (order: 150) — Agent 运维监控面板
+		this._registerToolIcon(viewContainerRegistry, viewsRegistry, {
+			id: 'agentStudio.dashboard',
+			title: localize2('agentStudio.dashboard.title', "Dashboard"),
+			icon: Codicon.dashboard,
+			viewId: AGENT_STUDIO_DASHBOARD_VIEW_ID,
+			order: 150,
+			viewCtor: AgentStudioDashboardViewPane,
 		});
 
 		// --- Bottom-aligned icons moved to SidebarFooter (see account.contribution.ts) --- //

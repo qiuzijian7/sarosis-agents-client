@@ -6,6 +6,8 @@
 import { ExecutionProvider } from './executionProvider.js';
 import { IAgentOSService } from '../../../common/agentOS.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
+import { IFileService } from '../../../../../../platform/files/common/files.js';
+import { IEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { Disposable } from '../../../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution } from '../../../../../../workbench/common/contributions.js';
 
@@ -24,14 +26,16 @@ export class ExecutionProviderContribution extends Disposable implements IWorkbe
 	constructor(
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@ILogService private readonly logService: ILogService,
+		@IFileService private readonly fileService: IFileService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	) {
 		super();
 		this._registerExecutionProviders();
 	}
 
 	private _registerExecutionProviders(): void {
-		// 注册默认 Execution Provider
-		const executionProvider = new ExecutionProvider(this.logService);
+		// 注册默认 Execution Provider（附带文件/环境服务，用于 ContextManager 持久化接线）
+		const executionProvider = new ExecutionProvider(this.logService, this.fileService, this.environmentService);
 		this._register(this.agentOSService.registerExecutionProvider(executionProvider));
 		this.logService.info('[ExecutionProviderContribution] Registered ExecutionProvider');
 	}

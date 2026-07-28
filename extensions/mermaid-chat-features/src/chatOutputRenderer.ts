@@ -76,6 +76,10 @@ class MermaidChatOutputRenderer implements vscode.ChatOutputRenderer {
 				<link rel="stylesheet" type="text/css" href="${codiconsUri}">
 
 				<style>
+					html, body {
+						height: 100%;
+						margin: 0;
+					}
 					body {
 						padding: 0;
 					}
@@ -84,6 +88,33 @@ class MermaidChatOutputRenderer implements vscode.ChatOutputRenderer {
 					}
 					.mermaid.rendered {
 						visibility: visible;
+					}
+					.zoom-controls {
+						position: absolute;
+						top: 8px;
+						left: 8px;
+						display: flex;
+						gap: 2px;
+						z-index: 100;
+						background: var(--vscode-editorWidget-background);
+						border: 1px solid var(--vscode-editorWidget-border);
+						border-radius: 6px;
+						padding: 3px;
+					}
+					.zoom-controls button {
+						display: flex;
+						align-items: center;
+						justify-content: center;
+						width: 26px;
+						height: 26px;
+						background: transparent;
+						color: var(--vscode-icon-foreground);
+						border: none;
+						border-radius: 4px;
+						cursor: pointer;
+					}
+					.zoom-controls button:hover {
+						background: var(--vscode-toolbar-hoverBackground);
 					}
 					.open-in-editor-btn {
 						position: absolute;
@@ -114,6 +145,11 @@ class MermaidChatOutputRenderer implements vscode.ChatOutputRenderer {
 			</head>
 
 			<body data-vscode-context='${JSON.stringify({ preventDefaultContextMenuItems: true, mermaidWebviewId: webviewId })}' data-vscode-mermaid-webview-id="${webviewId}">
+				<div class="zoom-controls">
+					<button class="zoom-out-btn" title="${vscode.l10n.t('Zoom Out')}"><i class="codicon codicon-zoom-out"></i></button>
+					<button class="zoom-in-btn" title="${vscode.l10n.t('Zoom In')}"><i class="codicon codicon-zoom-in"></i></button>
+					<button class="zoom-reset-btn" title="${vscode.l10n.t('Reset Zoom')}"><i class="codicon codicon-screen-normal"></i></button>
+				</div>
 				<button class="open-in-editor-btn" title="${vscode.l10n.t('Open in Editor')}"><i class="codicon codicon-open-preview"></i></button>
 				<pre class="mermaid">
 					${escapeHtmlText(mermaidSource)}

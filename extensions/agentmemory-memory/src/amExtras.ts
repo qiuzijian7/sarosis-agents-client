@@ -130,12 +130,14 @@ export async function governanceDelete(kv: StateKV, agentId: string, memoryIds: 
 }
 
 export async function governanceBulkDelete(kv: StateKV, agentId: string, filters: {
-	type?: string; maxStrength?: number; minAgeDays?: number; pattern?: string;
-}): Promise<{ deleted: number; scanned: number }> {
+	type?: string; maxStrength?: number; minAgeDays?: number; pattern?: string; dryRun?: boolean;
+}): Promise<{ deleted: number; matched: number; scanned: number; dryRun: boolean }> {
 	const memories = await kv.list<Memory>(KV.memories(agentId));
 	const active = memories.filter(m => m.isLatest !== false);
 	const now = Date.now();
+	const dryRun = filters.dryRun === true;
 	let deleted = 0;
+	let matched = 0;
 
 	for (const m of active) {
 		let match = true;
@@ -148,14 +150,17 @@ export async function governanceBulkDelete(kv: StateKV, agentId: string, filters
 		if (filters.pattern && !m.content.toLowerCase().includes(filters.pattern.toLowerCase())) match = false;
 
 		if (match) {
-			m.isLatest = false;
-			m.updatedAt = new Date().toISOString();
-			await kv.set(KV.memories(agentId), m.id, m);
-			deleted++;
+			matched++;
+			if (!dryRun) {
+				m.isLatest = false;
+				m.updatedAt = new Date().toISOString();
+				await kv.set(KV.memories(agentId), m.id, m);
+				deleted++;
+			}
 		}
 	}
 
-	return { deleted, scanned: active.length };
+	return { deleted, matched, scanned: active.length, dryRun };
 }
 
 // ─── 5. Diagnostics（对齐 agentmemory mem::diagnose）────────────────────
@@ -186,4 +191,30 @@ export async function diagnose(kv: StateKV, agentId: string): Promise<Record<str
 			staleSuperseded: superseded.length,
 		},
 	};
+}
+
+// ─── 6. Heal（复刻 agentmemory mem::heal：diagnose 的自动修复侧）────────────
+
+/**
+ * 修复畸形记忆记录：补齐缺失的 isLatest/strength/concepts/createdAt 字段。
+ * 保守策略——只补字段不删数据（删除走 governanceBulkDelete 的显式路径）。
+ */
+export async function heal(kv: StateKV, agentId: string): Promise<{ issues: string[]; fixed: number; scanned: number }> {
+	const issues: string[] = [];
+	let fixed = 0;
+	const memories = await kv.list<Memory>(KV.memories(agentId));
+	for (const m of memories) {
+		let touched = false;
+		if (typeof m.isLatest !== 'boolean') { m.isLatest = true; touched = true; }
+		if (typeof m.strength !== 'number' || !Number.isFinite(m.strength)) { m.strength = 5; touched = true; }
+		if (!Array.isArray(m.concepts)) { m.concepts = []; touched = true; }
+		if (!m.createdAt) { m.createdAt = new Date().toISOString(); touched = true; }
+		if (touched) {
+			m.updatedAt = new Date().toISOString();
+			await kv.set(KV.memories(agentId), m.id, m);
+			fixed++;
+		}
+	}
+	if (fixed > 0) { issues.push(`repaired ${fixed} malformed memories (missing isLatest/strength/concepts/createdAt)`); }
+	return { issues, fixed, scanned: memories.length };
 }

@@ -12,14 +12,14 @@
  *   1. 异步扫描内置技能目录 `.agents/skills/`（产品自带，文件形式）
  *      - 技能以 `SKILL.md` 文件形式存储在扩展目录下 `.agents/skills/<skill-name>/SKILL.md`
  *      - 参考 Hermes-Agent 的 `skills/` 项目目录模式
- *   2. `_scanFolder(userHome)`   —— 用户全局技能库 `~/.saros/skills/`
+ *   2. `_scanFolder(userHome)`   —— 用户全局技能库 `~/.vssaros/saros/skills/`
  *   3. `registerSkill(...)`     —— 运行时由扩展通过 IAgentOSService 注入
  *
  * 后注册的同名 skill 覆盖前者（运行时注入 > 用户 > 内置），
  * 这与 hermes 的 `optional-skills` < `skills` < `~/.hermes/skills` 优先级一致。
  *
  * 架构说明：
- *   - 技能统一存储于用户全局技能库（`~/.saros/skills/`）和内置技能目录（`.agents/skills/`）
+ *   - 技能统一存储于用户全局技能库（`~/.vssaros/saros/skills/`）和内置技能目录（`.agents/skills/`）
  *   - 内置技能从 `.agents/skills/` 目录文件加载（参考 Hermes-Agent 模式）
  *   - 好处：技能以文件形式管理，便于版本控制和升级
  *
@@ -41,18 +41,21 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentStudioLogService } from './agentStudioLogService.js';
 import { stringHash } from '../../../../base/common/hash.js';
 import {
 	ISkillRegistry, ISkillDefinition, ISkillActivationContext, ISkillInjection,
-	SkillActivation,
+	ISkillExecutor, SkillActivation,
 } from '../common/skills.js';
 import { ISkillLifecycleService, ISkillBatchLifecyclePayload } from '../common/skillLifecycle.js';
 import * as path from '../../../../base/common/path.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+import { IWorkflowStorageService, IStoredWorkflow } from '../common/workflowStorage.js';
+import { AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING } from '../common/constants.js';
 
 /**
  * 计算 skill 内容指纹：基于 prompt 正文生成 8 位十六进制哈希。
@@ -74,6 +77,21 @@ interface IRawFrontmatter {
 	recommendedTools?: unknown;
 	storeId?: unknown;
 	version?: unknown;
+	/** Hermes-Agent 兼容：适用平台 */
+	platforms?: unknown;
+	/** Hermes-Agent 兼容：分类标签 */
+	tags?: unknown;
+	/** Hermes-Agent 兼容：关联技能 ID 列表 */
+	related_skills?: unknown;
+	/** 技能作者 */
+	author?: unknown;
+	/** 技能许可证 */
+	license?: unknown;
+	/** Agent Skills 规范：工具面白名单 */
+	allowed_tools?: unknown;
+	'allowed-tools'?: unknown;
+	/** Agent Skills 规范扩展：偏好模型 */
+	model?: unknown;
 }
 
 /**
@@ -179,14 +197,22 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IAgentStudioLogService private readonly logService: ILogService,
 		@ISkillLifecycleService private readonly skillLifecycleService: ISkillLifecycleService,
+		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorkspaceContextService workspaceService: IWorkspaceContextService,
-		@IPathService private readonly pathService: IPathService,
-	) {
+		) {
 		super();
 		this.logService.info('[SkillRegistry] constructor called');
 		// 参考 Hermes-Agent 模式：技能从 skills/ 目录文件异步加载，不再同步硬编码
 		// 立即填充已移除 — UI 将在异步扫描完成后可显示
 		this.logService.info(`[SkillRegistry] no sync skills - will load async`);
+		// workflow → skill 双向打通（A 向）：工作流变更时重扫 workflow 来源 skill。
+		// 注意：这会触发一次全量 reload（含磁盘 skill 重扫），工作流数量通常有限，
+		// 可接受；后续如需优化可改为增量更新。
+		this._register(this.workflowStorageService.onDidChangeWorkflows(() => {
+			this.reload().catch(err => this.logService.warn('[SkillRegistry] reload after workflow change failed', err));
+		}));
+
 		// 异步扫描磁盘 skill —— 失败不影响内置 skill 可用性。
 		this._readyPromise = this.reload().catch(err => this.logService.warn('[SkillRegistry] initial reload failed', err));
 	}
@@ -203,6 +229,26 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 	getSkill(id: string): ISkillDefinition | undefined {
 		return this._skills.get(id);
+	}
+
+	/**
+	 * 读取技能支持目录（references/templates/assets/scripts）中的文件内容。
+	 * 路径安全：必须位于支持目录内，拒绝 `..` 遍历与绝对路径。
+	 */
+	async readSkillSupportFile(skillId: string, relativePath: string): Promise<string> {
+		const skill = this._skills.get(skillId);
+		if (!skill || !skill.resource) {
+			throw new Error(`Skill not found: "${skillId}"`);
+		}
+		const normalized = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+		const segments = normalized.split('/').filter(s => s.length > 0);
+		const topDir = segments[0];
+		if (!topDir || !SkillRegistry.SKILL_SUPPORT_DIRS.has(topDir) || segments.includes('..')) {
+			throw new Error(`Invalid support file path "${relativePath}": must be inside one of [${[...SkillRegistry.SKILL_SUPPORT_DIRS].join(', ')}]`);
+		}
+		const fileUri = URI.joinPath(skill.resource, ...segments);
+		const content = await this.fileService.readFile(fileUri);
+		return content.value.toString();
 	}
 
 	registerSkill(skill: ISkillDefinition): IDisposable {
@@ -256,6 +302,8 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				// * 其余（explicit/auto 命中）→ user placement（独立 user message，避免 system prompt 失效缓存）
 				placement: (required.has(skill.id.toLowerCase()) || skill.activation === 'always') ? 'system' : 'user',
 				content: this._renderInjection(skill),
+				// 可执行型 skill（workflow 来源）携带 executor，供 ExecutionProvider 触发执行而非注入文本
+				executor: skill.executor,
 			});
 		}
 
@@ -368,16 +416,19 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			this.logService.error('[SkillRegistry] builtin skills scan failed', err);
 		}
 
-		// 用户全局技能库（统一使用 ~/.saros/ 路径，不扫描工作区）
+		// 用户全局技能库（统一使用 ~/.vssaros/saros/ 路径，不扫描工作区）
 		try {
-			const userHome = await this.pathService.userHome();
-			const userDir = URI.joinPath(userHome, '.saros', 'skills');
+			const userDataRoot = userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
+			const userDir = resolveSarosPath(userDataRoot, SarosPath.skills);
 			this.logService.info(`[SkillRegistry] scanning user skills: ${userDir.toString()}`);
 			await this._scanFolder(userDir, 'user');
 			this.logService.info(`[SkillRegistry] after user scan: ${this._skills.size} skills`);
 		} catch (err) {
 			this.logService.info('[SkillRegistry] user skills scan failed or dir not found', err);
 		}
+
+		// workflow → skill 双向打通（A 向）：把工作流注册为可执行 skill
+		await this._loadWorkflowSkills();
 
 		// 运行时注入的 skill 永远胜出
 		for (const [id, skill] of this._runtimeSkills) {
@@ -401,7 +452,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	 * This triggers external consumers (like knot-cli sync) to do a full
 	 * reconciliation of their skill mirror directories.
 	 *
-	 * Note: Skills are now stored only in user global directory (~/.saros/skills/),
+	 * Note: Skills are now stored only in user global directory (~/.vssaros/saros/skills/),
 	 * so we fire event with user skill IDs only.
 	 */
 	private _fireBatchSyncedEvent(): void {
@@ -447,7 +498,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	 * 这些目录包含渐进披露数据（references/templates/assets/scripts），不是独立技能。
 	 */
 	private static readonly SKILL_SUPPORT_DIRS = new Set([
-		'references', 'templates', 'assets', 'scripts',
+		'references', 'templates', 'assets', 'scripts', 'tests',
 	]);
 
 	/**
@@ -515,6 +566,11 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				if (!skill.category && source === 'builtin') {
 					skill = { ...skill, category: 'utility' };
 				}
+				// 索引支持目录文件（references/templates/assets/scripts），供模型按需读取（渐进披露）
+				const supportFiles = await this._listSupportFiles(dir);
+				if (supportFiles.length > 0) {
+					skill = { ...skill, supportFiles };
+				}
 				if (this._skills.has(skill.id)) {
 					const existing = this._skills.get(skill.id)!;
 					this.logService.info(`[SkillRegistry] Skill "${skill.id}" overwritten: ${existing.source} → ${skill.source} (from ${dir.fsPath})`);
@@ -561,12 +617,49 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()} (recursive)`);
 	}
 
+	/**
+	 * 列出技能目录下支持文件夹（references/templates/assets/scripts）中的文件，
+	 * 返回相对技能根目录的路径列表（如 "references/api.md"、"scripts/tools/run.py"）。
+	 * 对齐 Agent Skills 规范的渐进披露：支持目录内容在扫描时索引、按需读取。
+	 */
+	private async _listSupportFiles(skillDir: URI): Promise<string[]> {
+		const files: string[] = [];
+		const collect = async (dir: URI, prefix: string, depth: number): Promise<void> => {
+			if (depth > 3) { return; } // 防御性深度限制
+			let stat: IFileStat;
+			try {
+				stat = await this.fileService.resolve(dir);
+			} catch {
+				return; // 支持目录不存在 — 正常情况
+			}
+			if (!stat.isDirectory || !stat.children) { return; }
+			for (const child of stat.children) {
+				const rel = `${prefix}/${child.name}`;
+				if (child.isDirectory) {
+					await collect(child.resource, rel, depth + 1);
+				} else {
+					files.push(rel);
+				}
+			}
+		};
+		for (const dirName of SkillRegistry.SKILL_SUPPORT_DIRS) {
+			await collect(URI.joinPath(skillDir, dirName), dirName, 0);
+		}
+		return files.sort();
+	}
+
 	private _parseSkillFile(folder: URI, text: string, source: 'user' | 'builtin'): ISkillDefinition | undefined {
 		const { meta, body } = parseFrontmatter(text);
-		const name = typeof meta.name === 'string' ? meta.name : undefined;
+		let name = typeof meta.name === 'string' && meta.name.trim().length > 0 ? meta.name.trim() : undefined;
 		if (!name) {
-			this.logService.warn(`[SkillRegistry] SKILL.md missing 'name': ${folder.toString()}`);
-			return undefined;
+			// SKILL.md 缺少 name 时回退到文件夹名：避免技能被静默丢弃，也消除告警噪声。
+			const fallbackName = path.basename(folder.fsPath).trim();
+			if (!fallbackName) {
+				this.logService.warn(`[SkillRegistry] SKILL.md missing 'name' and folder name unusable: ${folder.toString()}`);
+				return undefined;
+			}
+			this.logService.debug(`[SkillRegistry] SKILL.md missing 'name', falling back to folder name "${fallbackName}": ${folder.toString()}`);
+			name = fallbackName;
 		}
 		const description = typeof meta.description === 'string' ? meta.description : '';
 		const id = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-_]/g, '').replace(/-+/g, '-');
@@ -589,6 +682,13 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			enabled: true, // 默认启用
 			version: typeof meta.version === 'string' ? meta.version : (source === 'builtin' ? '1.0.0' : undefined),
 			storeId: typeof meta.storeId === 'string' ? meta.storeId : undefined,
+			platforms: asStringArray(meta.platforms),
+			tags: asStringArray(meta.tags),
+			relatedSkills: asStringArray(meta.related_skills),
+			author: typeof meta.author === 'string' ? meta.author : undefined,
+			license: typeof meta.license === 'string' ? meta.license : undefined,
+			allowedTools: asStringArray(meta.allowed_tools) ?? asStringArray(meta['allowed-tools']),
+			model: typeof meta.model === 'string' ? meta.model : undefined,
 		};
 	}
 
@@ -600,6 +700,78 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			skill.description ? `_${skill.description}_` : '',
 			'',
 			skill.prompt,
+			// allowed-tools（Agent Skills 规范）：prompt 级工具面约束
+			skill.allowedTools && skill.allowedTools.length > 0
+				? `\n**Tool restriction**: while following this skill, only use these tools: ${skill.allowedTools.join(', ')}. Do not use any other tools.`
+				: '',
 		].filter(Boolean).join('\n');
+	}
+
+	// ─── workflow → skill 双向打通（A 向）──────────────────────────────
+
+	/**
+	 * 把已存储的工作流注册为「可执行型 skill」。
+	 *
+	 * 设计要点：
+	 * - id 直接复用 workflow.id，保证 `/skill <wf-id>` 与 workflow 一一对应。
+	 * - activation 默认 'manual'：避免 auto/always 误触发重型多 agent 工作流。
+	 * - executor 指向 workflow，ExecutionProvider 在触发时据其运行工作流而非注入文本。
+	 * - contentHash 基于节点图 JSON 计算（workflow 无 SKILL.md 正文）。
+	 *
+	 * 注意：本方法是「注册视图」，仅把 workflow 暴露到 skill 列表，
+	 * 不移动/复制任何文件；真正的执行逻辑在 P1（ExecutionProvider 改造）接入。
+	 */
+	private async _loadWorkflowSkills(): Promise<void> {
+		try {
+			// P4: 开关控制是否把工作流暴露为 skill（缓解暴露面过大风险）。
+			// 默认开启；在 settings.json 设 sessions.agentStudio.skills.includeWorkflows=false 可关闭。
+			const includeWorkflows = this.configurationService.getValue<boolean>(AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING);
+			if (includeWorkflows === false) {
+				this.logService.info('[SkillRegistry] workflow→skill bridge disabled by setting (agentStudio.skills.includeWorkflows=false), skipping');
+				return;
+			}
+			const workflows = await this.workflowStorageService.listWorkflows();
+			this.logService.info(`[SkillRegistry] loading ${workflows.length} workflow(s) as skills`);
+			for (const wf of workflows) {
+				const id = wf.id;
+				const description = wf.description || wf.name;
+				const prompt = wf.useGuide?.trim()
+					|| wf.description?.trim()
+					|| `This is a workflow skill. Executing it runs the workflow "${wf.name}".`;
+				const skill: ISkillDefinition = {
+					id,
+					name: wf.name,
+					description,
+					activation: 'manual',
+					prompt,
+					source: 'workflow',
+					workflowId: wf.id,
+					executor: { kind: 'workflow', workflowId: wf.id } as ISkillExecutor,
+					contentHash: this._computeWorkflowContentHash(wf),
+					enabled: true,
+					version: wf.version,
+					category: wf.category || 'workflow',
+				};
+				this._skills.set(id, skill);
+			}
+		} catch (err) {
+			this.logService.info('[SkillRegistry] workflow skills load failed', err);
+		}
+	}
+
+	/**
+	 * 基于工作流节点图生成内容指纹，用于跨重载去重/变更检测。
+	 * workflow 无 SKILL.md 正文，故以 id/name/description/节点图作为指纹源。
+	 */
+	private _computeWorkflowContentHash(wf: IStoredWorkflow): string {
+		const fingerprint = JSON.stringify({
+			id: wf.id,
+			name: wf.name,
+			description: wf.description,
+			nodes: wf.nodes ?? [],
+			connections: wf.connections ?? [],
+		});
+		const h = stringHash(fingerprint, 0);
+		return (h >>> 0).toString(16).padStart(8, '0');
 	}
 }

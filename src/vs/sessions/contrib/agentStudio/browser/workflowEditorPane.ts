@@ -18,6 +18,7 @@ import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { AgentStudioWebviewController } from './agentStudioWebviewController.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
 import { WorkflowToolbar } from './workflowToolbar.js';
+import { WorkflowVersionPanel } from './workflowVersionPanel.js';
 import { IMarketplaceService } from '../common/marketplace.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -39,6 +40,7 @@ export class WorkflowEditorPane extends EditorPane {
 	private _webviewController: AgentStudioWebviewController | undefined;
 	private _currentWorkflowId: string | undefined;
 	private _toolbar: WorkflowToolbar | undefined;
+	private _versionPanel: WorkflowVersionPanel | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -149,12 +151,33 @@ export class WorkflowEditorPane extends EditorPane {
 				this.editorService.closeEditor({ editor: this.input, groupId: this.group.id });
 			}
 		});
+		// 版本历史面板切换
+		this._toolbar.onDidRequestVersionHistory(() => {
+			this._versionPanel?.toggle();
+		});
 
-		// 工具栏下方的 webview 容器
+		// ── 横向分割布局：webview（左）+ 版本面板（右）──
+		const splitContainer = DOM.$('div.workflow-split');
+		splitContainer.style.display = 'flex';
+		splitContainer.style.flex = '1';
+		splitContainer.style.overflow = 'hidden';
+		this._container.appendChild(splitContainer);
+
+		// 工具栏下方的 webview 容器（左侧主区域）
 		const webviewContainer = DOM.$('div.workflow-webview-container');
 		webviewContainer.style.flex = '1';
 		webviewContainer.style.overflow = 'hidden';
-		this._container.appendChild(webviewContainer);
+		splitContainer.appendChild(webviewContainer);
+
+		// 版本历史侧边面板（右侧）
+		this._disposeVersionPanel();
+		const panel = this.instantiationService.createInstance(
+			WorkflowVersionPanel,
+			workflowId,
+		);
+		this._versionPanel = panel;
+		this._register(panel);
+		splitContainer.appendChild(panel.element);
 
 		this._webviewController = this.instantiationService.createInstance(
 			AgentStudioWebviewController,
@@ -194,12 +217,20 @@ export class WorkflowEditorPane extends EditorPane {
 			this._toolbar.dispose();
 			this._toolbar = undefined;
 		}
+		this._disposeVersionPanel();
 		if (this._webviewController) {
 			this._webviewController.dispose();
 			this._webviewController = undefined;
 		}
 		if (this._container) {
 			DOM.clearNode(this._container);
+		}
+	}
+
+	private _disposeVersionPanel(): void {
+		if (this._versionPanel) {
+			this._versionPanel.dispose();
+			this._versionPanel = undefined;
 		}
 	}
 

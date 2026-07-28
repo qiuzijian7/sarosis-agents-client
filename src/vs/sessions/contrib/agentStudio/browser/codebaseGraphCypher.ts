@@ -8,15 +8,18 @@
  *
  * 对标 codebase-memory-mcp 的 cypher.c (152KB C)，实现 TypeScript 版本。
  *
- * 支持的语法：
+ * 支持的语法（均经单测验证）：
  *   MATCH (n) RETURN n LIMIT 10
  *   MATCH (n:Function) RETURN n.name, n.file_path
- *   MATCH (a)-[r:CALLS]->(b) RETURN a.name, b.name
- *   MATCH (a)-[r]->(b) WHERE type(r) = 'CALLS' RETURN a, b
+ *   MATCH (a)-[r:CALLS]->(b) RETURN a.name, b.name         正向边
+ *   MATCH (a)<-[r:CALLS]-(b) RETURN a.name, b.name         反向边
  *   MATCH (n) WHERE n.label = 'Function' AND n.name =~ '.*Handler.*' RETURN n
- *   MATCH (a)-[:CALLS]->(b)-[:CALLS]->(c) RETURN a.name, c.name
+ *   MATCH (n) WHERE n.name STARTS WITH 'get' RETURN n       双词运算符
+ *   MATCH (n) WHERE n.name ENDS WITH 'Handler' RETURN n     双词运算符
  *   MATCH (n:Function) RETURN n.name ORDER BY n.name DESC LIMIT 10
  *   MATCH (n) RETURN n.label, count(n) AS cnt ORDER BY cnt DESC
+ *   MATCH (n:Function) RETURN CASE WHEN n.cognitive > 10 THEN 'high' ELSE 'low' END AS risk
+ * 不支持：多跳链 (a)-[:X]->(b)-[:Y]->(c)
  */
 
 import { CodebaseGraphStore, GraphNode } from './codebaseGraphStore.js';
@@ -26,7 +29,7 @@ import { CodebaseGraphStore, GraphNode } from './codebaseGraphStore.js';
 enum TokenType {
 	Keyword, Identifier, String, Number, Symbol,
 	LCParen, RCParen, LBracket, RBracket, LBrace, RBrace,
-	Arrow, Dash, EOF,
+	Arrow, ArrowRev, Dash, EOF,
 }
 
 interface Token {
@@ -89,9 +92,12 @@ function lex(source: string): Token[] {
 			let word = '';
 			while (pos < len && /[a-zA-Z0-9_]/.test(source[pos])) { word += source[pos++]; }
 			const upper = word.toUpperCase();
+			const isKeyword = KEYWORDS.has(upper);
 			tokens.push({
-				type: KEYWORDS.has(upper) ? TokenType.Keyword : TokenType.Identifier,
-				value: upper === word.toUpperCase() ? upper : word,
+				// 关键字统一大写以便 match()/expect() 大小写不敏感；标识符保留原始大小写，
+				// 否则 f.cognitive / f.name 等字段无法匹配图中 camelCase 的属性键。
+				type: isKeyword ? TokenType.Keyword : TokenType.Identifier,
+				value: isKeyword ? upper : word,
 				pos,
 			});
 			continue;
@@ -106,6 +112,20 @@ function lex(source: string): Token[] {
 		if (ch === '}') { tokens.push({ type: TokenType.RBrace, value: '}', pos }); pos++; continue; }
 		if (ch === '-' && source[pos + 1] === '>') { tokens.push({ type: TokenType.Arrow, value: '->', pos }); pos += 2; continue; }
 		if (ch === '-') { tokens.push({ type: TokenType.Dash, value: '-', pos }); pos++; continue; }
+
+		// 多字符比较运算符（须先于通用符号回退，否则 <= / >= / != / <> / =~ 会被拆成两个 token）
+		if ((ch === '<' || ch === '>' || ch === '=' || ch === '!') && source[pos + 1] === '=') {
+			tokens.push({ type: TokenType.Symbol, value: ch + '=', pos }); pos += 2; continue;
+		}
+		if (ch === '=' && source[pos + 1] === '~') {
+			tokens.push({ type: TokenType.Symbol, value: '=~', pos }); pos += 2; continue;
+		}
+			if (ch === '<' && source[pos + 1] === '>') {
+				tokens.push({ type: TokenType.Symbol, value: '<>', pos }); pos += 2; continue;
+			}
+			if (ch === '<' && source[pos + 1] === '-') {
+				tokens.push({ type: TokenType.ArrowRev, value: '<-', pos }); pos += 2; continue;
+			}
 
 		// Other symbols (=, <, >, !, ., etc.)
 		tokens.push({ type: TokenType.Symbol, value: ch, pos });
@@ -125,6 +145,7 @@ interface MatchPattern {
 	relType?: string;           // relationship type filter (e.g., "CALLS")
 	nextNodeVar?: string;       // next node variable (for multi-hop)
 	nextNodeLabel?: string;     // next node label
+	direction?: 'forward' | 'reverse'; // 关系方向：forward -[r]-> ；reverse <-[r]-
 	nextPattern?: MatchPattern; // chained pattern
 }
 
@@ -136,11 +157,29 @@ interface WhereClause {
 	next?: WhereClause;
 }
 
+interface CaseValue {
+	kind: 'field' | 'literal';
+	variable?: string;          // for field kind (e.g., "n")
+	field?: string;             // for field kind (e.g., "name" for n.name)
+	value?: any;                // for literal kind
+}
+
+interface CaseWhen {
+	condition: WhereClause;     // single (possibly chained via AND/OR) comparison
+	value: CaseValue;           // THEN result
+}
+
+interface CaseExpr {
+	whens: CaseWhen[];
+	elseValue?: CaseValue;      // ELSE result
+}
+
 interface ReturnItem {
 	variable: string;           // e.g., "n"
 	field?: string;             // e.g., "name" (for n.name)
 	alias?: string;             // AS alias
 	aggregate?: string;         // COUNT, SUM, etc.
+	caseExpr?: CaseExpr;        // CASE WHEN ... THEN ... [ELSE ...] END
 }
 
 interface CypherAST {
@@ -207,7 +246,7 @@ class Parser {
 		const returnItems: ReturnItem[] = [];
 		do {
 			returnItems.push(this._parseReturnItem());
-		} while (this.match(TokenType.Symbol, ','));
+		} while (this.match(TokenType.Symbol, ',') && (this.next(), true));
 
 		// ORDER BY (optional)
 		let orderBy: { field: string; desc: boolean }[] | undefined;
@@ -217,11 +256,24 @@ class Parser {
 			orderBy = [];
 			do {
 				const fieldTok = this.next();
+				let field = fieldTok.value;
+				// 消费可选 .field 后缀（ORDER BY f.name → field='f.name'）
+				if (this.match(TokenType.Symbol, '.')) {
+					this.next();
+					field += '.' + this.next().value;
+				}
 				let desc = false;
 				if (this.match(TokenType.Keyword, 'DESC')) { this.next(); desc = true; }
 				else if (this.match(TokenType.Keyword, 'ASC')) { this.next(); desc = false; }
-				orderBy.push({ field: fieldTok.value, desc });
+				orderBy.push({ field, desc });
 			} while (this.match(TokenType.Symbol, ','));
+		}
+
+		// SKIP (optional) — 必须在 LIMIT 前解析，否则 "SKIP n LIMIT m" 只能吃到 SKIP
+		let skip: number | undefined;
+		if (this.match(TokenType.Keyword, 'SKIP')) {
+			this.next();
+			skip = parseInt(this.next().value);
 		}
 
 		// LIMIT (optional)
@@ -229,13 +281,6 @@ class Parser {
 		if (this.match(TokenType.Keyword, 'LIMIT')) {
 			this.next();
 			limit = parseInt(this.next().value);
-		}
-
-		// SKIP (optional)
-		let skip: number | undefined;
-		if (this.match(TokenType.Keyword, 'SKIP')) {
-			this.next();
-			skip = parseInt(this.next().value);
 		}
 
 		return { patterns, where, returnItems, orderBy, limit, skip, optional };
@@ -254,9 +299,18 @@ class Parser {
 
 		const pattern: MatchPattern = { nodeVar, nodeLabel };
 
-		// Optional relationship: -[r:TYPE]->(m:Label)
+		// Optional relationship: -[r:TYPE]->(m)  |  <-[r:TYPE]-(m)  |  -[r:TYPE]-(m)
+		let relStarted = false;
 		if (this.match(TokenType.Dash)) {
-			this.next(); // skip '-'
+			this.next(); // skip leading '-'
+			relStarted = true;
+			pattern.direction = 'forward';
+		} else if (this.match(TokenType.ArrowRev)) {
+			this.next(); // skip leading '<-'
+			relStarted = true;
+			pattern.direction = 'reverse';
+		}
+		if (relStarted) {
 			// Optional [r:TYPE]
 			if (this.match(TokenType.LBracket)) {
 				this.next();
@@ -268,13 +322,12 @@ class Parser {
 				}
 				this.expect(TokenType.RBracket);
 			}
-			// -> (arrow)
+			// trailing connector (forward '->' or '-' / reverse trailing '-')
 			if (this.match(TokenType.Arrow)) {
 				this.next();
 			} else if (this.match(TokenType.Dash)) {
 				this.next();
 			}
-
 			// (nextNode)
 			this.expect(TokenType.LCParen);
 			const nextVar = this.next().value;
@@ -301,7 +354,12 @@ class Parser {
 			field += '.' + this.next().value;
 		}
 
-		const op = this.next().value; // =, !=, =~, >, <, etc.
+		let op = this.next().value; // =, !=, =~, >, <, CONTAINS, STARTS, ENDS, etc.
+		// Merge two-token operators: STARTS WITH → STARTS_WITH, ENDS WITH → ENDS_WITH
+		if ((op === 'STARTS' || op === 'ENDS') && this.match(TokenType.Keyword, 'WITH')) {
+			op = op + '_WITH';
+			this.next(); // consume WITH
+		}
 		let value: any;
 		const valTok = this.next();
 		if (valTok.type === TokenType.String) { value = valTok.value; }
@@ -321,6 +379,16 @@ class Parser {
 
 	private _parseReturnItem(): ReturnItem {
 		const item: ReturnItem = { variable: '' };
+
+		// CASE WHEN ... THEN ... [WHEN ... THEN ...]* [ELSE ...] END
+		if (this.match(TokenType.Keyword, 'CASE')) {
+			item.caseExpr = this._parseCaseExpr();
+			if (this.match(TokenType.Keyword, 'AS')) {
+				this.next();
+				item.alias = this.next().value;
+			}
+			return item;
+		}
 
 		// Check for aggregate function: COUNT(n), SUM(n.x), etc.
 		if (this.match(TokenType.Keyword, 'COUNT') || this.match(TokenType.Keyword, 'SUM') ||
@@ -346,6 +414,43 @@ class Parser {
 
 		return item;
 	}
+
+	private _parseCaseExpr(): CaseExpr {
+		this.expect(TokenType.Keyword, 'CASE');
+		const whens: CaseWhen[] = [];
+		let elseValue: CaseValue | undefined;
+
+		while (this.match(TokenType.Keyword, 'WHEN')) {
+			this.next(); // consume WHEN
+			const condition = this._parseWhere(); // single (or AND/OR-chained) comparison
+			this.expect(TokenType.Keyword, 'THEN'); // 已消费 THEN，下方直接解析 THEN 的值
+			const value = this._parseCaseValue();
+			whens.push({ condition, value });
+		}
+
+		if (this.match(TokenType.Keyword, 'ELSE')) {
+			this.next(); // consume ELSE
+			elseValue = this._parseCaseValue();
+		}
+
+		this.expect(TokenType.Keyword, 'END');
+		return { whens, elseValue };
+	}
+
+	private _parseCaseValue(): CaseValue {
+		const tok = this.peek();
+		if (tok.type === TokenType.String) { this.next(); return { kind: 'literal', value: tok.value }; }
+		if (tok.type === TokenType.Number) { this.next(); return { kind: 'literal', value: parseFloat(tok.value) }; }
+		// field reference: var or var.field
+		const varTok = this.next();
+		let variable = varTok.value;
+		let field: string | undefined;
+		if (this.match(TokenType.Symbol, '.')) {
+			this.next();
+			field = this.next().value;
+		}
+		return { kind: 'field', variable, field };
+	}
 }
 
 // ─── Executor ──────────────────────────────────────────────────────────────────
@@ -368,7 +473,8 @@ export class CypherEngine {
 
 		// Build columns from return items
 		const columns = ast.returnItems.map(item =>
-			item.alias || (item.aggregate ? `${item.aggregate}(${item.variable})` :
+			item.alias || (item.caseExpr ? 'case' :
+				item.aggregate ? `${item.aggregate}(${item.variable})` :
 				item.field ? `${item.variable}.${item.field}` : item.variable)
 		);
 
@@ -389,8 +495,18 @@ export class CypherEngine {
 		if (ast.orderBy) {
 			rows.sort((a, b) => {
 			for (const { field, desc } of ast.orderBy!) {
-				const av = a.get(field) ?? 0;
-				const bv = b.get(field) ?? 0;
+				const resolve = (row: Map<string, any>, f: string): any => {
+					const v = row.get(f);
+					if (v !== undefined && v !== null) { return v; }
+					if (f.includes('.')) {
+						const [vr, fn] = f.split('.');
+						const node = row.get(vr);
+						if (node) { return node[fn] ?? node.properties?.[fn]; }
+					}
+					return 0;
+				};
+				const av = resolve(a, field);
+				const bv = resolve(b, field);
 					let cmp = 0;
 					if (typeof av === 'string' && typeof bv === 'string') {
 						cmp = av.localeCompare(bv);
@@ -415,6 +531,12 @@ export class CypherEngine {
 		// Project return items
 		const resultRows = rows.map(row =>
 			ast.returnItems.map(item => {
+				if (item.caseExpr) {
+					for (const w of item.caseExpr.whens) {
+						if (this._evalWhere(w.condition, row)) { return this._evalCaseValue(w.value, row); }
+					}
+					return item.caseExpr.elseValue ? this._evalCaseValue(item.caseExpr.elseValue, row) : null;
+				}
 				const key = item.alias || (item.aggregate ? `${item.aggregate}(${item.variable})` :
 					item.field ? `${item.variable}.${item.field}` : item.variable);
 				return row.get(key) ?? (item.field && row.get(item.variable) ? row.get(item.variable)[item.field] : row.get(item.variable));
@@ -441,17 +563,22 @@ export class CypherEngine {
 				row.set(pattern.nodeVar, node);
 
 				if (pattern.nextNodeVar) {
-					// Traverse edges
-					const edges = this._store.getEdgesBySource(node.id);
+					// Traverse edges — reverse 跟随入边，forward/未声明跟随出边
+					const reverse = pattern.direction === 'reverse';
+					const edges = reverse
+						? this._store.getEdgesByTarget(node.id)
+						: this._store.getEdgesBySource(node.id);
 					for (const edge of edges) {
 						if (pattern.relType && edge.type !== pattern.relType.toUpperCase()) { continue; }
-						const target = this._store.getNode(edge.targetId);
-						if (!target) { continue; }
-						if (pattern.nextNodeLabel && target.label !== pattern.nextNodeLabel) { continue; }
+						const other = reverse
+							? this._store.getNode(edge.sourceId)
+							: this._store.getNode(edge.targetId);
+						if (!other) { continue; }
+						if (pattern.nextNodeLabel && other.label !== pattern.nextNodeLabel) { continue; }
 
 						const rowCopy = new Map(row);
 						if (pattern.relVar) { rowCopy.set(pattern.relVar, edge); }
-						rowCopy.set(pattern.nextNodeVar, target);
+						rowCopy.set(pattern.nextNodeVar, other);
 						results.push(rowCopy);
 					}
 				} else {
@@ -467,7 +594,16 @@ export class CypherEngine {
 		const [varName, fieldName] = where.field.split('.');
 		const node = row.get(varName);
 		if (!node) { return false; }
-		const actual = fieldName ? node[fieldName] : node;
+		// 顶层字段优先；缺失时回退到 node.properties（热路径指标 cyclomatic/cognitive/loop_depth 等挂在此）
+		let actual: any = fieldName ? node[fieldName] : node;
+		if ((actual === undefined || actual === null) && fieldName && node.properties) {
+			if (fieldName.includes('.')) {
+				// 支持 properties.cyclomatic 形式的嵌套访问
+				actual = fieldName.split('.').reduce((acc: any, k) => (acc == null ? acc : acc[k]), node.properties);
+			} else {
+				actual = node.properties[fieldName];
+			}
+		}
 
 		let result: boolean;
 		switch (where.op) {
@@ -490,6 +626,24 @@ export class CypherEngine {
 		}
 
 		return result;
+	}
+
+	private _evalCaseValue(v: CaseValue, row: Map<string, any>): any {
+		if (v.kind === 'literal') { return v.value; }
+		const node = row.get(v.variable!);
+		if (!node) { return null; }
+		if (v.field) {
+			let actual: any = node[v.field];
+			if ((actual === undefined || actual === null) && node.properties) {
+				if (v.field.includes('.')) {
+					actual = v.field.split('.').reduce((acc: any, k) => (acc == null ? acc : acc[k]), node.properties);
+				} else {
+					actual = node.properties[v.field];
+				}
+			}
+			return actual;
+		}
+		return node;
 	}
 
 	private _aggregate(rows: Map<string, any>[], returnItems: ReturnItem[]): Map<string, any>[] {

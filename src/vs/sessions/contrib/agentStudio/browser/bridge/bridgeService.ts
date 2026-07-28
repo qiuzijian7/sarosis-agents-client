@@ -9,7 +9,9 @@ import { createDecorator } from "../../../../../platform/instantiation/common/in
 import { Event } from "../../../../../base/common/event.js";
 import { Disposable, IDisposable } from "../../../../../base/common/lifecycle.js";
 import { ILogService } from "../../../../../platform/log/common/log.js";
+import { IEnvironmentService } from "../../../../../platform/environment/common/environment.js";
 import { IConfigurationService } from "../../../../../platform/configuration/common/configuration.js";
+import { resolveSarosPath, userDataRootFromRoamingHome } from "../../common/sarosPaths.js";
 import {
 	IAgentChatService,
 	IAgentStudioService,
@@ -76,6 +78,7 @@ export class BridgeService extends Disposable implements IBridgeService {
 		@IAgentStudioService studio: IAgentStudioService,
 		@ILogService log: ILogService,
 		@IConfigurationService configurationService: IConfigurationService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	) {
 		super();
 		this._chat = chat;
@@ -109,7 +112,7 @@ export class BridgeService extends Disposable implements IBridgeService {
 	}
 
 	/**
-	 * 解析附件落盘工作目录。优先进程 cwd，回退到用户主目录下的 .saros/bridge。
+	 * 解析附件落盘工作目录。优先进程 cwd，回退到 VS Code 用户数据目录下的 bridge/。
 	 * 渲染进程无 Node require 时返回 undefined（附件不落盘，仅内存引用）。
 	 */
 	private _resolveBridgeWorkDir(): string | undefined {
@@ -121,13 +124,15 @@ export class BridgeService extends Disposable implements IBridgeService {
 			return undefined;
 		}
 		try {
-			const path = req("path");
-			const os = req("os");
+			const nodePath = req("path") as typeof import('path');
 			const cwd = (globalThis as any).process?.cwd?.();
 			if (cwd) {
-				return path.join(cwd, ".saros", "bridge");
+				return nodePath.join(cwd, ".saros", "bridge");
 			}
-			return path.join(os.homedir(), ".saros", "bridge");
+			return resolveSarosPath(
+				userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome),
+				'bridge'
+			).fsPath;
 		} catch {
 			return undefined;
 		}

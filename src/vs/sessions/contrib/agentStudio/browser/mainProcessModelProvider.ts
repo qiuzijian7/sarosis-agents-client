@@ -52,6 +52,10 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 		if (this.getAuthStatus() !== ModelAuthStatus.Authenticated) {
 			return [];
 		}
+		// 有静态模型且无模型发现端点 → 直接返回，无需 IPC 往返
+		if (this._definition.staticModels && !this._definition.modelsEndpointPath) {
+			return [...this._definition.staticModels];
+		}
 		try {
 			const models = await this._channel.call<IModelInfo[]>('discoverModels', {
 				baseUrl: this._getBaseUrl(),
@@ -93,7 +97,16 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 		}
 
 		const requestId = generateUuid();
-		const req: ISarosisLlmChatRequest = { requestId, url, apiKey, body, extraHeaders: idHeaders };
+		const req: ISarosisLlmChatRequest = {
+			requestId,
+			url,
+			apiKey,
+			body,
+			extraHeaders: idHeaders,
+			responseFormat: this._definition.responseFormat,
+			apiKeyHeader: this._definition.apiKeyHeader,
+			anthropicVersion: this._definition.anthropicVersion,
+		};
 
 		this._logService.info(`[BYOK:${this.id}] MainProcessModelProvider: forwarding chat to electron-main (url=${url}, model=${modelId})`);
 

@@ -38,11 +38,13 @@ import { IMarketplaceService, PackageKind } from '../../common/marketplace.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { ISkillVersionService, SkillVersionService } from '../skillVersionService.js';
 import { IAuthenticationQueryService } from '../../../../../workbench/services/authentication/common/authenticationQuery.js';
 import { IAuthenticationService } from '../../../../../workbench/services/authentication/common/authentication.js';
 import { IAgentStudioLogService } from '../agentStudioLogService.js';
-import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -187,7 +189,7 @@ export class IntegrationViewPane extends ViewPane {
 			}
 		}
 		// Fallback: return display name (or serverId) as marketId — detail pane will
-		// read from ~/.saros/mcp/{marketId}/config.json
+		// read from ~/.vssaros/saros/mcp/{marketId}/config.json
 		return displayName || serverId;
 	}
 
@@ -202,6 +204,7 @@ export class IntegrationViewPane extends ViewPane {
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
@@ -214,7 +217,7 @@ export class IntegrationViewPane extends ViewPane {
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IFileService private readonly fileService: IFileService,
-		@IPathService private readonly pathService: IPathService,
+		@ISkillVersionService private readonly skillVersionService: SkillVersionService,
 		@IAgentStudioLogService private readonly logService: ILogService,
 		@IAuthenticationQueryService private readonly authenticationQueryService: IAuthenticationQueryService,
 		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
@@ -318,9 +321,20 @@ export class IntegrationViewPane extends ViewPane {
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
+		// The body element (.integration-view) relies on CSS `height:100%`, which
+		// does NOT resolve to a definite height inside this pane layout. The view
+		// therefore collapses to 0px and `.integration-content` (overflow:hidden)
+		// is clipped, leaving the view blank. Pin an explicit pixel height and
+		// flex:none so the inner flexbox (tab bar + content) lays out correctly.
+		// Mirrors the fix already used in PresetAgentViewPane.layoutBody.
+		if (this.element) {
+			this.element.style.height = `${height}px`;
+			this.element.style.flex = 'none';
+		}
+		// .integration-content is flex:1 inside the now-definitely-sized body;
+		// clear the fragile fixed pixel height so flex fills the remaining space.
 		if (this.contentContainer) {
-			// Height minus tab bar (~36px)
-			this.contentContainer.style.height = `${Math.max(0, height - 36)}px`;
+			this.contentContainer.style.height = '';
 		}
 	}
 
@@ -994,7 +1008,7 @@ export class IntegrationViewPane extends ViewPane {
 
 	private async _reloadMcp(): Promise<void> {
 		try {
-			// 0. Build whitelist from ~/.saros/mcp.json — only show servers configured there
+			// 0. Build whitelist from ~/.vssaros/saros/mcp.json — only show servers configured there
 			const sarosConfig = await this._readSarosMcpConfig();
 			const sarosServerNames = new Set<string>();
 			if (sarosConfig?.servers) {
@@ -1033,7 +1047,7 @@ export class IntegrationViewPane extends ViewPane {
 				if (IntegrationViewPane._isNonMcpServer(serverId) || serverId === 'unknown') { continue; }
 				const descMatch = tool.description?.match(/\[via MCP server "([^"]+)"/);
 				const serverName = descMatch ? descMatch[1] : serverId;
-				// Only show servers configured in ~/.saros/mcp.json
+				// Only show servers configured in ~/.vssaros/saros/mcp.json
 				if (!sarosServerNames.has(serverName.toLowerCase()) && !sarosServerNames.has(serverId.toLowerCase())) { continue; }
 
 				if (!serverMap.has(serverId)) {
@@ -1059,7 +1073,7 @@ export class IntegrationViewPane extends ViewPane {
 					this.logService.info(`[MCP-Debug] mcpService server: defId=${defId} label=${label} inWhitelist=${sarosServerNames.has(label.toLowerCase())}`);
 					// Skip non-MCP server IDs (e.g. model providers)
 					if (IntegrationViewPane._isNonMcpServer(defId)) { continue; }
-					// Only show servers configured in ~/.saros/mcp.json
+					// Only show servers configured in ~/.vssaros/saros/mcp.json
 					if (!sarosServerNames.has(label.toLowerCase())) { continue; }
 						const normName = sanitize(label);
 						const normDefId = sanitize(defId);
@@ -1117,7 +1131,7 @@ export class IntegrationViewPane extends ViewPane {
 			for (const s of installed) {
 				const normId = sanitize(s.name);
 				if (IntegrationViewPane._isNonMcpServer(normId)) { continue; }
-				// Only show servers configured in ~/.saros/mcp.json
+				// Only show servers configured in ~/.vssaros/saros/mcp.json
 				if (!sarosServerNames.has(s.name.toLowerCase())) { continue; }
 					// Cross-check: if serverMap already has an entry under a different
 					// (definition-derived) key but with the same install name, skip.
@@ -1253,16 +1267,15 @@ export class IntegrationViewPane extends ViewPane {
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	//  ~/.saros/mcp.json CONFIG MANAGEMENT (for preset toggle-on-install)
+	//  ~/.vssaros/saros/mcp.json CONFIG MANAGEMENT (for preset toggle-on-install)
 	// ══════════════════════════════════════════════════════════════════════════
 
-	/** Get ~/.saros/mcp.json URI. */
+	/** Get ~/.vssaros/saros/mcp.json URI. */
 	private async _getSarosMcpConfigUri(): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', 'mcp.json');
+		return resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 	}
 
-	/** Read and parse ~/.saros/mcp.json. Returns undefined on error. */
+	/** Read and parse ~/.vssaros/saros/mcp.json. Returns undefined on error. */
 	private async _readSarosMcpConfig(): Promise<{ servers: Record<string, any> } | undefined> {
 		try {
 			const configUri = await this._getSarosMcpConfigUri();
@@ -1271,12 +1284,12 @@ export class IntegrationViewPane extends ViewPane {
 			const content = await this.fileService.readFile(configUri);
 			return JSON.parse(content.value.toString());
 		} catch (e) {
-			this.logService.warn('[IntegrationView] Failed to read ~/.saros/mcp.json:', e);
+			this.logService.warn('[IntegrationView] Failed to read ~/.vssaros/saros/mcp.json:', e);
 			return undefined;
 		}
 	}
 
-	/** Write full config object to ~/.saros/mcp.json. */
+	/** Write full config object to ~/.vssaros/saros/mcp.json. */
 	private async _writeSarosMcpConfig(data: { servers: Record<string, any> }): Promise<void> {
 		const configUri = await this._getSarosMcpConfigUri();
 		const dirUri = URI.joinPath(configUri, '..');
@@ -1284,14 +1297,14 @@ export class IntegrationViewPane extends ViewPane {
 		await this.fileService.writeFile(configUri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
 	}
 
-	/** Ensure a server name exists in ~/.saros/mcp.json whitelist (add if missing). */
+	/** Ensure a server name exists in ~/.vssaros/saros/mcp.json whitelist (add if missing). */
 	private async _ensureServerInSarosConfig(name: string): Promise<void> {
 		const data = await this._readSarosMcpConfig() ?? { servers: {} };
 		if (data.servers && (name in data.servers)) { return; } // already present
 		data.servers = data.servers ?? Object.create(null);
 		data.servers[name] = {};
 		await this._writeSarosMcpConfig(data);
-		this.logService.info(`[IntegrationView] Ensured "${name}" in ~/.saros/mcp.json.`);
+		this.logService.info(`[IntegrationView] Ensured "${name}" in ~/.vssaros/saros/mcp.json.`);
 	}
 
 	/**
@@ -1574,7 +1587,7 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 						// ── Toggle ON ──
 						toggle.disabled = true;
 						this._setMcpServerEnabled(group.server.id, true);
-						// Ensure the server is in ~/.saros/mcp.json whitelist
+						// Ensure the server is in ~/.vssaros/saros/mcp.json whitelist
 						// (may have been removed by a previous toggle-OFF before we stopped doing that)
 						await this._ensureServerInSarosConfig(group.server.name);
 						this._startingMcpIds.add(group.server.id);
@@ -1748,6 +1761,9 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			this.notificationService.info(`Uploading ${id} to marketplace...`);
 			const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from vsSarosis at ${new Date().toISOString()}` });
 			this.notificationService.info(`\u2705 Published ${id} v${result.version} to marketplace.`);
+			// Auto-commit + tag for version history
+			this.skillVersionService.autoCommit(id, `publish: v${result.version} to marketplace`).catch(() => {});
+			this.skillVersionService.tag(id, `v${result.version}`).catch(() => {});
 			// Refresh skill list to update button states
 			if (tab === 'skill') { this._refreshSkills(); }
 		} catch (err) {
@@ -1906,5 +1922,9 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			case 'skill': this._refreshSkills(); break;
 			case 'mcp': void this._reloadMcp(); break;
 		}
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

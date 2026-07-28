@@ -24,10 +24,11 @@
 					'self'
 					vscode-webview:
 				;
-				script-src
-					'self'
-					'unsafe-eval'
-					blob:
+			script-src
+				'self'
+				'unsafe-eval'
+				'wasm-unsafe-eval'
+				blob:
 				;
 				style-src
 					'self'
@@ -66,6 +67,7 @@
 					notebookChatEditController
 					richScreenReaderContent
 					chatDebugTokenizer
+					agentStudioWorker
 				;
 		"/>
 

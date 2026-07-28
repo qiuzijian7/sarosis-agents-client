@@ -12,6 +12,7 @@ import { IWorkspaceContextService } from '../../../../../../platform/workspace/c
 import { IAgentStudioService } from '../../../../../common/agentStudioService.js';
 import { resolveWorkspacePath } from '../../../common/workspacePathResolver.js';
 import { resolveKbRoot } from '../../knowledge/knowledgeStorage.js';
+import { LEGACY_SAROS_DIR } from '../../../common/sarosPaths.js';
 
 /**
  * 安全沙箱违规错误。executeTool / agentOSService 会检测 isSandboxViolation
@@ -96,9 +97,35 @@ export async function resolveAndCheckWorkspacePathImpl(
 	}
 
 	if (worktreeRoot) {
-		// 独占模式：仅允许 worktree 目录
+		// 独占模式：worktree 是主沙箱，但仍放行 VS Code 工作区文件夹和关联
+		// 文件夹——多文件夹工作区（如 UE5EA 引擎 + S1Game 项目）中，agent 需要
+		// 读取引擎源码等非 worktree 目录进行代码分析。worktree 绑定限制的是
+		// 写入目标，不应阻断对工作区其他合法文件夹的访问。
 		allowedRoots.push(worktreeRoot);
 		logService.info(`[BuiltinTools] Agent ${agentId} is worktree-sandboxed to: ${worktreeRoot}`);
+
+		// 同时放行 VS Code 工作区文件夹
+		const vscodeFolders = workspaceService.getWorkspace().folders;
+		for (const folder of vscodeFolders) {
+			allowedRoots.push(folder.uri.fsPath.replace(/[\\/]+$/, ''));
+		}
+
+		// 同时放行 Sarosis 工作区路径 + 关联文件夹
+		if (activeWsId) {
+			try {
+				const workspace = await studioService.getWorkspace(activeWsId);
+				if (workspace?.path) {
+					allowedRoots.push(workspace.path.replace(/[\\/]+$/, ''));
+				}
+				for (const rf of workspace?.relatedFolders ?? []) {
+					if (rf?.path) {
+						allowedRoots.push(rf.path.replace(/[\\/]+$/, ''));
+					}
+				}
+			} catch (err) {
+				logService.warn(`[BuiltinTools] Failed to resolve workspace folders for worktree-sandboxed agent ${agentId}:`, err);
+			}
+		}
 	} else {
 		// ─── 常规模式：未绑定 worktree，沿用多根工作区 ───────────────
 		// 1. VS Code 工作区文件夹
@@ -127,52 +154,49 @@ export async function resolveAndCheckWorkspacePathImpl(
 		}
 	}
 
-	// 3. ~/.saros — Agent 自身数据目录，脱离沙箱限制（2026-07-13）
+	// 3. ~/.vssaros/ — Agent 自身数据目录，脱离沙箱限制（2026-07-13）
 	//   技能（skills/）、记忆（memory/）、Agent 定义（agents/）、会话（sessions/）、
 	//   知识库（kb/）等 LLM 工具需要读写的内部数据都在此目录下。worktree 沙箱和
 	//   常规工作区沙箱都不应限制 Agent 访问自己的配置/数据文件。
 	{
-		const userHome = (environmentService as any).userHome?.fsPath as string | undefined;
-		if (userHome) {
-			allowedRoots.push(join(userHome, '.saros'));
+		const userDataPath = (environmentService as INativeEnvironmentService).userDataPath;
+		if (userDataPath) {
+			allowedRoots.push(userDataPath);
 		}
 	}
 
 	// 3.5 知识库根目录 — 脱离沙箱限制（2026-07-14）
-	//   无论 KB 存储配置指向何处（默认 ~/.saros/knowledge-base 或用户自定义路径），
+	//   无论 KB 存储配置指向何处（默认 ~/.vssaros/knowledge-base 或用户自定义路径），
 	//   Agent 读写知识库、笔记等文件时不应受工作区沙箱拦截。
 	{
-		const userHome = (environmentService as any).userHome?.fsPath as string | undefined;
-		if (userHome) {
+		const userDataPath = (environmentService as INativeEnvironmentService).userDataPath;
+		if (userDataPath) {
 			// a) KB 存储根（来自配置 agentStudio.knowledge.storage.path）
 			const kbStoragePath = configurationService.getValue<string>(kbStoragePathKey);
-			const kbRoot = resolveKbRoot(kbStoragePath, userHome);
+			const kbRoot = resolveKbRoot(kbStoragePath, userDataPath);
 			allowedRoots.push(kbRoot.replace(/[\\/]+$/, ''));
 
-			// b) KB 视图根（来自持久化存储 agentStudio.kb.rootDir，可能指向自定义路径）
-			const kbViewRoot = storageService.get('agentStudio.kb.rootDir', StorageScope.APPLICATION);
+			// b) KB 视图根（来自持久化存储 agentStudio.kb.kbDir，可能指向自定义路径）
+			const kbViewRoot = storageService.get('agentStudio.kb.kbDir', StorageScope.APPLICATION);
 			if (kbViewRoot && typeof kbViewRoot === 'string' && kbViewRoot.length > 0) {
 				allowedRoots.push(kbViewRoot.replace(/[\\/]+$/, ''));
 			}
 		}
 
-		// c) 笔记根目录 — 每个 Vault 可自定义 notesPath（来自持久化存储 agentStudio.kb.vaults）
+		// c) 各 Vault 的自定义根目录（vault.customPath / vault.id 笔记目录）也纳入允许范围
 		try {
 			const vaultsJson = storageService.get('agentStudio.kb.vaults', StorageScope.APPLICATION);
 			if (vaultsJson) {
-				const vaults: Array<{ notesPath?: string; customPath?: string }> = JSON.parse(vaultsJson);
+				const vaults: Array<{ customPath?: string; id?: string }> = JSON.parse(vaultsJson);
 				for (const v of vaults) {
-					if (typeof v.notesPath === 'string' && v.notesPath.length > 0) {
-						allowedRoots.push(v.notesPath.replace(/[\\/]+$/, ''));
-					}
-					// 自定义 Vault 根目录（vault.customPath）也纳入允许范围
+					// 自定义 Vault 根目录（vault.customPath）
 					if (typeof v.customPath === 'string' && v.customPath.length > 0) {
 						allowedRoots.push(v.customPath.replace(/[\\/]+$/, ''));
 					}
 				}
 			}
 		} catch (err) {
-			logService.warn(`[BuiltinTools] Failed to resolve KB notes paths:`, err);
+			logService.warn(`[BuiltinTools] Failed to resolve KB vault paths:`, err);
 		}
 	}
 
@@ -202,11 +226,14 @@ export async function resolveAndCheckWorkspacePathImpl(
 	// 盘符与正/反斜杠归一化。
 	const { resolvedPath, isAllowed, normalizedRoots } = resolveWorkspacePath(requestedPath, allowedRoots);
 
-	// 计算建议路径：把请求文件名重定向到第一个非 ~/.saros 的允许根下。
+	// 计算建议路径：把请求文件名重定向到第一个非 saros 数据目录的允许根下。
 	const requestedBase = (requestedPath.split(/[\\/]/).pop() || 'file')
 		.replace(/[<>:"/\\|?*]/g, '_');
-	const candidateRoots = allowedRoots.filter(r =>
-		!r.replace(/\\/g, '/').toLowerCase().includes('/.saros'));
+	const candidateRoots = allowedRoots.filter(r => {
+		const normalized = r.replace(/\\/g, '/').toLowerCase();
+		// Exclude legacy ~/.saros and the app data root (~/.vssaros) as suggestion targets
+		return !normalized.includes(`/${LEGACY_SAROS_DIR}`) && !normalized.endsWith('/.vssaros') && !normalized.endsWith('/.vssaros-dev');
+	});
 	const suggestedPath = candidateRoots.length > 0
 		? join(candidateRoots[0], requestedBase)
 		: undefined;
@@ -217,10 +244,10 @@ export async function resolveAndCheckWorkspacePathImpl(
 			? normalizedRoots.map(r => `  - ${r}`).join('\n')
 			: '  (无 — 请确认已正确配置工作区)';
 		const baseMessage = worktreeRoot
-			? `安全沙箱限制：该 Agent 实例已绑定 worktree，仅允许在 worktree 目录内操作。\n` +
-				`路径 "${requestedPath}" (解析后: "${resolvedPath}") 超出了 worktree 边界。\n` +
-				`当前 worktree 工作区：\n${allowedList}\n` +
-				`请在该 worktree 目录内操作。如需访问其它目录，请解除该 Agent 的 worktree 绑定。`
+			? `安全沙箱限制：该 Agent 实例已绑定 worktree。\n` +
+				`路径 "${requestedPath}" (解析后: "${resolvedPath}") 超出了允许范围。\n` +
+				`当前允许的目录（worktree + 工作区文件夹）：\n${allowedList}\n` +
+				`请在上述目录内操作。如需访问其它目录，请解除该 Agent 的 worktree 绑定或将其添加为工作区文件夹。`
 			: `安全沙箱限制：路径 "${requestedPath}" (解析后: "${resolvedPath}") 不在允许的工作区目录内。\n` +
 				`当前允许的工作区目录：\n${allowedList}\n` +
 				`请在上述目录内操作，或在 Sarosis 工作区设置中配置正确的路径。`;

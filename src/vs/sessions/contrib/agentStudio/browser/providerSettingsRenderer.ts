@@ -49,6 +49,20 @@ function getAllProviders(configurationService: IConfigurationService): ProviderD
 	return [...PROVIDER_DEFINITIONS, ...customDefs];
 }
 
+// ─── Helper: patch a single custom provider entry ─────────────
+
+function patchCustomProvider(
+	configurationService: IConfigurationService,
+	id: string,
+	patch: Partial<CustomProviderData>,
+): void {
+	const customProviders = getCustomProviders(configurationService);
+	const idx = customProviders.findIndex(cp => cp.id === id);
+	if (idx === -1) { return; }
+	customProviders[idx] = { ...customProviders[idx], ...patch };
+	configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);
+}
+
 // ─── Renderer State (held per render call) ─────────────────────────
 
 interface RendererState {
@@ -164,9 +178,18 @@ export function renderProviderSettings(
 	updateStatusMessage(state);
 	container.appendChild(state.statusMessageEl);
 
-	// Return dispose function (no-op for now, but could clean up listeners)
+	// 监听 customProviders 设置变化：任何入口（设置页表单 / 侧边栏 / 命令面板）添加或修改 provider，
+	// 都会触发配置变更事件，自动重渲染当前列表，避免「添加后不显示」问题。
+	const configListener = configurationService.onDidChangeConfiguration(e => {
+		if (e.affectsConfiguration(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING)) {
+			renderProviderList(state, configurationService);
+			refreshDefaultProviderSelect(state, configurationService);
+		}
+	});
+
+	// Return dispose function
 	return () => {
-		// Nothing to dispose in this simple implementation
+		configListener.dispose();
 	};
 }
 
@@ -221,6 +244,16 @@ function renderProviderList(
 		const descEl = $('div.provider-card-desc');
 		descEl.textContent = provider.description;
 		infoEl.appendChild(descEl);
+		// 自定义 provider 显示 API 类型徽章
+		if (!provider.isBuiltin) {
+			const customEntry = getCustomProviders(configurationService).find(cp => cp.id === provider.id);
+			if (customEntry) {
+				const typeBadge = $('span.provider-card-type-badge');
+				typeBadge.textContent = customEntry.apiType === 'anthropic' ? 'Anthropic 网关' : 'OpenAI 兼容';
+				typeBadge.classList.add(customEntry.apiType === 'anthropic' ? 'anthropic' : 'openai');
+				infoEl.appendChild(typeBadge);
+			}
+		}
 		cardHeader.appendChild(infoEl);
 
 		// Chevron indicator
@@ -288,6 +321,136 @@ function renderProviderList(
 		baseUrlInput.onblur = saveBaseUrl;
 		baseUrlRow.appendChild(baseUrlInput);
 		cardBody.appendChild(baseUrlRow);
+
+		// ── 自定义 Provider 内联类型配置（Path B 增强：可直接编辑，无需删除重建） ──
+		if (!provider.isBuiltin) {
+			const cpEntry = getCustomProviders(configurationService).find(cp => cp.id === provider.id);
+			if (cpEntry) {
+				const currentApiType = cpEntry.apiType || 'openai';
+
+				const advLabel = $('div.provider-advanced-label');
+				advLabel.textContent = '高级配置';
+				cardBody.appendChild(advLabel);
+
+				// API 类型
+				const typeRow = $('div.provider-field');
+				const typeLabel = $('label.provider-field-label');
+				typeLabel.textContent = 'API 类型';
+				typeRow.appendChild(typeLabel);
+				const typeSelect = document.createElement('select');
+				typeSelect.className = 'provider-field-input';
+				const oOpenai = document.createElement('option');
+				oOpenai.value = 'openai'; oOpenai.textContent = 'OpenAI 兼容（/chat/completions）';
+				const oAnthro = document.createElement('option');
+				oAnthro.value = 'anthropic'; oAnthro.textContent = 'Anthropic 网关（/v1/messages 原生）';
+				typeSelect.appendChild(oOpenai); typeSelect.appendChild(oAnthro);
+				typeSelect.value = currentApiType;
+				typeSelect.onchange = () => {
+					patchCustomProvider(configurationService, provider.id, { apiType: typeSelect.value as 'openai' | 'anthropic' });
+					state.expandedProviderId = provider.id;
+					renderProviderList(state, configurationService);
+				};
+				typeRow.appendChild(typeSelect);
+				cardBody.appendChild(typeRow);
+
+				if (currentApiType === 'anthropic') {
+					// 模型列表
+					const modelsRow = $('div.provider-field');
+					const modelsLabel = $('label.provider-field-label');
+					modelsLabel.textContent = '模型列表（每行一个 id）';
+					modelsRow.appendChild(modelsLabel);
+					const modelsTa = document.createElement('textarea');
+					modelsTa.className = 'provider-field-input';
+					modelsTa.rows = 3;
+					modelsTa.placeholder = 'claude-sonnet-4-20250514\nclaude-3-7-sonnet-20250219';
+					modelsTa.value = (cpEntry.models || []).join('\n');
+					const saveModels = () => {
+						const models = modelsTa.value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+						patchCustomProvider(configurationService, provider.id, { models });
+					};
+					modelsTa.onchange = saveModels;
+					modelsTa.onblur = saveModels;
+					modelsRow.appendChild(modelsTa);
+					cardBody.appendChild(modelsRow);
+
+					// 认证头
+					const headerRow = $('div.provider-field');
+					const headerLabel = $('label.provider-field-label');
+					headerLabel.textContent = '认证头';
+					headerRow.appendChild(headerLabel);
+					const headerSel = document.createElement('select');
+					headerSel.className = 'provider-field-input';
+					const hXkey = document.createElement('option');
+					hXkey.value = 'x-api-key'; hXkey.textContent = 'x-api-key + anthropic-version（原生）';
+					const hBearer = document.createElement('option');
+					hBearer.value = 'bearer'; hBearer.textContent = 'Authorization: Bearer';
+					headerSel.appendChild(hXkey); headerSel.appendChild(hBearer);
+					headerSel.value = cpEntry.apiKeyHeader || 'x-api-key';
+					headerSel.onchange = () => {
+						patchCustomProvider(configurationService, provider.id, { apiKeyHeader: headerSel.value as 'bearer' | 'x-api-key' });
+						state.expandedProviderId = provider.id;
+						renderProviderList(state, configurationService);
+					};
+					headerRow.appendChild(headerSel);
+					cardBody.appendChild(headerRow);
+
+					// anthropic-version
+					const verRow = $('div.provider-field');
+					const verLabel = $('label.provider-field-label');
+					verLabel.textContent = 'anthropic-version';
+					verRow.appendChild(verLabel);
+					const verInput = document.createElement('input');
+					verInput.type = 'text';
+					verInput.className = 'provider-field-input';
+					verInput.value = cpEntry.anthropicVersion || '2023-06-01';
+					const saveVer = () => {
+						patchCustomProvider(configurationService, provider.id, { anthropicVersion: verInput.value.trim() || '2023-06-01' });
+					};
+					verInput.onchange = saveVer;
+					verInput.onblur = saveVer;
+					verRow.appendChild(verInput);
+					cardBody.appendChild(verRow);
+				} else {
+					// Chat 端点路径
+					const chatRow = $('div.provider-field');
+					const chatLabel = $('label.provider-field-label');
+					chatLabel.textContent = 'Chat 端点路径';
+					chatRow.appendChild(chatLabel);
+					const chatInput = document.createElement('input');
+					chatInput.type = 'text';
+					chatInput.className = 'provider-field-input';
+					chatInput.placeholder = 'chat/completions';
+					chatInput.value = cpEntry.chatEndpointPath || '';
+					const saveChat = () => {
+						const v = chatInput.value.trim();
+						patchCustomProvider(configurationService, provider.id, v ? { chatEndpointPath: v } : { chatEndpointPath: undefined });
+					};
+					chatInput.onchange = saveChat;
+					chatInput.onblur = saveChat;
+					chatRow.appendChild(chatInput);
+					cardBody.appendChild(chatRow);
+
+					// 模型发现端点
+					const mRow = $('div.provider-field');
+					const mLabel = $('label.provider-field-label');
+					mLabel.textContent = '模型发现端点（可选）';
+					mRow.appendChild(mLabel);
+					const mInput = document.createElement('input');
+					mInput.type = 'text';
+					mInput.className = 'provider-field-input';
+					mInput.placeholder = '留空使用 /models';
+					mInput.value = cpEntry.modelsEndpointPath || '';
+					const saveM = () => {
+						const v = mInput.value.trim();
+						patchCustomProvider(configurationService, provider.id, v ? { modelsEndpointPath: v } : { modelsEndpointPath: undefined });
+					};
+					mInput.onchange = saveM;
+					mInput.onblur = saveM;
+					mRow.appendChild(mInput);
+					cardBody.appendChild(mRow);
+				}
+			}
+		}
 
 		// Actions
 		const actionsRow = $('div.provider-card-actions');
@@ -361,9 +524,9 @@ function showAddProviderForm(
 	formCard.appendChild(formTitle);
 
 	const fields: { id: string; label: string; placeholder: string; required?: boolean }[] = [
-		{ id: 'add-provider-id', label: 'Provider ID', placeholder: '如：my-provider', required: true },
-		{ id: 'add-provider-name', label: '显示名称', placeholder: '如：My Provider', required: true },
-		{ id: 'add-provider-baseurl', label: 'Base URL', placeholder: 'https://api.example.com/v1' },
+		{ id: 'add-provider-id', label: 'Provider ID', placeholder: '如：grnexus', required: true },
+		{ id: 'add-provider-name', label: '显示名称', placeholder: '如：grNexus', required: true },
+		{ id: 'add-provider-baseurl', label: 'Base URL', placeholder: 'https://grnexus.woa.com', required: true },
 		{ id: 'add-provider-desc', label: '描述', placeholder: '可选描述' },
 	];
 
@@ -384,6 +547,128 @@ function showAddProviderForm(
 		row.appendChild(input);
 		formCard.appendChild(row);
 	}
+
+	// API Key / Token
+	{
+		const row = $('div.provider-field');
+		const label = $('label.provider-field-label');
+		label.textContent = 'API Key / Token';
+		row.appendChild(label);
+		const input = document.createElement('input');
+		input.type = 'password';
+		input.id = 'add-provider-apikey';
+		input.className = 'provider-field-input';
+		input.placeholder = '粘贴 API Key（可选，也可创建后在卡片中填写）';
+		row.appendChild(input);
+		formCard.appendChild(row);
+	}
+
+	// ── API 类型选择 ──
+	const typeRow = $('div.provider-field');
+	const typeLabel = $('label.provider-field-label');
+	typeLabel.textContent = 'API 类型';
+	typeRow.appendChild(typeLabel);
+	const typeSelect = document.createElement('select');
+	typeSelect.id = 'add-provider-apitype';
+	typeSelect.className = 'provider-field-input';
+	const openaiOpt = document.createElement('option');
+	openaiOpt.value = 'openai';
+	openaiOpt.textContent = 'OpenAI 兼容（/chat/completions）';
+	const anthropicOpt = document.createElement('option');
+	anthropicOpt.value = 'anthropic';
+	anthropicOpt.textContent = 'Anthropic 网关（/v1/messages 原生）';
+	typeSelect.appendChild(openaiOpt);
+	typeSelect.appendChild(anthropicOpt);
+	typeRow.appendChild(typeSelect);
+	formCard.appendChild(typeRow);
+
+	// ── Anthropic 专属字段 ──
+	const anthroFields = $('div.provider-add-anthro');
+	anthroFields.style.display = 'none';
+	{
+		const row = $('div.provider-field');
+		const label = $('label.provider-field-label');
+		label.textContent = '模型列表（每行一个 id）';
+		row.appendChild(label);
+		const ta = document.createElement('textarea');
+		ta.id = 'add-provider-models';
+		ta.className = 'provider-field-input';
+		ta.placeholder = 'claude-sonnet-4-20250514\nclaude-3-7-sonnet-20250219';
+		ta.rows = 3;
+		row.appendChild(ta);
+		anthroFields.appendChild(row);
+	}
+	{
+		const row = $('div.provider-field');
+		const label = $('label.provider-field-label');
+		label.textContent = '认证头';
+		row.appendChild(label);
+		const sel = document.createElement('select');
+		sel.id = 'add-provider-apikeyheader';
+		sel.className = 'provider-field-input';
+		const xkey = document.createElement('option');
+		xkey.value = 'x-api-key';
+		xkey.textContent = 'x-api-key + anthropic-version（原生）';
+		const bearer = document.createElement('option');
+		bearer.value = 'bearer';
+		bearer.textContent = 'Authorization: Bearer';
+		sel.appendChild(xkey);
+		sel.appendChild(bearer);
+		row.appendChild(sel);
+		anthroFields.appendChild(row);
+	}
+	{
+		const row = $('div.provider-field');
+		const label = $('label.provider-field-label');
+		label.textContent = 'anthropic-version';
+		row.appendChild(label);
+		const input = document.createElement('input');
+		input.type = 'text';
+		input.id = 'add-provider-anthropicversion';
+		input.className = 'provider-field-input';
+		input.value = '2023-06-01';
+		row.appendChild(input);
+		anthroFields.appendChild(row);
+	}
+	formCard.appendChild(anthroFields);
+
+	// ── OpenAI 专属字段 ──
+	const openaiFields = $('div.provider-add-openai');
+	{
+		const row = $('div.provider-field');
+		const label = $('label.provider-field-label');
+		label.textContent = 'Chat 端点路径';
+		row.appendChild(label);
+		const input = document.createElement('input');
+		input.type = 'text';
+		input.id = 'add-provider-chatpath';
+		input.className = 'provider-field-input';
+		input.placeholder = 'chat/completions';
+		row.appendChild(input);
+		openaiFields.appendChild(row);
+	}
+	{
+		const row = $('div.provider-field');
+		const label = $('label.provider-field-label');
+		label.textContent = '模型发现端点（可选）';
+		row.appendChild(label);
+		const input = document.createElement('input');
+		input.type = 'text';
+		input.id = 'add-provider-modelspath';
+		input.className = 'provider-field-input';
+		input.placeholder = '留空使用 /models';
+		row.appendChild(input);
+		openaiFields.appendChild(row);
+	}
+	formCard.appendChild(openaiFields);
+
+	const toggleType = () => {
+		const isAnthro = typeSelect.value === 'anthropic';
+		anthroFields.style.display = isAnthro ? '' : 'none';
+		openaiFields.style.display = isAnthro ? 'none' : '';
+	};
+	typeSelect.onchange = toggleType;
+	toggleType();
 
 	const actionsRow = $('div.provider-card-actions');
 
@@ -411,14 +696,34 @@ function showAddProviderForm(
 			return;
 		}
 
+		const apiType = typeSelect.value as 'openai' | 'anthropic';
 		const customProviders = getCustomProviders(configurationService);
-		customProviders.push({
+		const entry: CustomProviderData = {
 			id,
 			name,
 			apiKey: '',
 			baseUrl: baseUrlInput.value.trim(),
 			description: descInput.value.trim(),
-		});
+			apiType,
+		};
+
+		// 保存 API Key 到独立设置项
+		const apiKeyInput = document.getElementById('add-provider-apikey') as HTMLInputElement;
+		if (apiKeyInput?.value.trim()) {
+			configurationService.updateValue(`sessions.agentStudio.provider.${id}.apiKey`, apiKeyInput.value.trim());
+		}
+		if (apiType === 'anthropic') {
+			const modelsTa = document.getElementById('add-provider-models') as HTMLTextAreaElement;
+			entry.models = modelsTa.value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+			entry.apiKeyHeader = (document.getElementById('add-provider-apikeyheader') as HTMLSelectElement).value as 'bearer' | 'x-api-key';
+			entry.anthropicVersion = (document.getElementById('add-provider-anthropicversion') as HTMLInputElement).value.trim() || '2023-06-01';
+		} else {
+			const chatPath = (document.getElementById('add-provider-chatpath') as HTMLInputElement).value.trim();
+			const modelsPath = (document.getElementById('add-provider-modelspath') as HTMLInputElement).value.trim();
+			if (chatPath) { entry.chatEndpointPath = chatPath; }
+			if (modelsPath) { entry.modelsEndpointPath = modelsPath; }
+		}
+		customProviders.push(entry);
 		configurationService.updateValue(AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING, customProviders);
 
 		state.statusMessage = `✅ Provider "${name}" 已添加`;
@@ -509,6 +814,17 @@ async function testConnection(
 
 	state.statusMessage = `🔄 正在测试 ${provider.name} 连接...`;
 	updateStatusMessage(state);
+
+	// Anthropic 原生网关无 /models 端点，跳过 HTTP 测试
+	if (!provider.isBuiltin) {
+		const cp = getCustomProviders(configurationService).find(c => c.id === provider.id);
+		if (cp?.apiType === 'anthropic') {
+			state.statusMessage = `✅ ${provider.name}：Anthropic 网关（静态模型列表，无需 /models 发现）`;
+			updateStatusMessage(state);
+			setTimeout(() => { state.statusMessage = ''; updateStatusMessage(state); }, 5000);
+			return Promise.resolve();
+		}
+	}
 
 	try {
 		const isOllama = provider.id === 'ollama';

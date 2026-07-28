@@ -6,7 +6,7 @@
 /**
  * WorkflowInstaller —— workflow 资源的安装器实现。
  *
- * install: 解压目录的 workflow.json → 导入到 ~/.saros/workflows/{id}/workflow.json
+ * install: 解压目录的 workflow.json → 导入到 ~/.vssaros/saros/workflows/{id}/workflow.json
  *          （通过 IWorkflowStorageService.createWorkflow）
  * preparePack: 读工作区 workflow → 构造 manifest + 打包目录
  * getInstalledVersion: 从 installed-packages.json 读取（回退）
@@ -20,10 +20,11 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IWorkflowStorageService, IStoredWorkflow } from '../../common/workflowStorage.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
-import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { IAgentStudioService } from '../../../../common/agentStudioService.js';
 import type { Agent } from '../../../../common/agentStudioTypes.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 
 const WORKFLOW_FILE = 'workflow.json';
 
@@ -32,11 +33,11 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 	readonly kind: PackageKind = 'workflow';
 
 	constructor(
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
-		@IPathService private readonly pathService: IPathService,
-		@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
+			@IWorkspaceContextService private readonly workspaceService: IWorkspaceContextService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 	) {
 		super();
@@ -122,7 +123,7 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 			this.logService.warn(`[WorkflowInstaller] Agent 创建失败: ${agentErr instanceof Error ? agentErr.message : String(agentErr)}`);
 		}
 
-		// 6. 同时保存到 ~/.saros/workflows/{id}/ 作为备份（供升级检查溯源）
+		// 6. 同时保存到 ~/.vssaros/saros/workflows/{id}/ 作为备份（供升级检查溯源）
 		const backupDir = await this._resolveBackupDir(manifest.id);
 		await this.fileService.createFolder(backupDir);
 		const backupFile = URI.joinPath(backupDir, WORKFLOW_FILE);
@@ -148,8 +149,7 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 		}
 
 		// 构造打包目录（临时）
-		const userHome = await this.pathService.userHome();
-		const packDir = URI.joinPath(userHome, '.saros', 'tmp', `workflow-pack-${Date.now()}`);
+		const packDir = resolveSarosPath(this._getSarosRoot(), SarosPath.tmp, `workflow-pack-${Date.now()}`);
 		await this.fileService.createFolder(packDir);
 
 		// 写入 workflow.json
@@ -256,7 +256,10 @@ export class WorkflowInstaller extends Disposable implements IPackageInstaller {
 	}
 
 	private async _resolveBackupDir(id: string): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', 'workflows', id);
+		return resolveSarosPath(this._getSarosRoot(), SarosPath.workflows, id);
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

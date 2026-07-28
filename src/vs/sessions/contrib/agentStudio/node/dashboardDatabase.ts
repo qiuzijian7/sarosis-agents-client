@@ -59,9 +59,6 @@ export interface IDashboardCumulativeStats {
 	compressionIneffectiveCount: number;
 	compressionBeforeTokens: number;
 	compressionAfterTokens: number;
-	l1ExtractionCount: number;
-	l2ExtractionCount: number;
-	l3ExtractionCount: number;
 	activeModelId: string;
 	/** tool_name → call_count */
 	toolCallCounts: Record<string, number>;

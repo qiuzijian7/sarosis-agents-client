@@ -15,7 +15,6 @@ import type {
 	IAgentInfo,
 	IProviderInfo,
 	IModelInfo,
-	ChatMode,
 	StreamPhase,
 	IWorktreeItem,
 	IWorkspaceItem,
@@ -73,7 +72,7 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 	private _isSending = false;
 	private _streamPhase: StreamPhase = 'idle';
 	private _currentModel = '';
-	private _chatMode: ChatMode = 'craft';
+	private _chatOnly: boolean = false;
 	private _contextUsage: IContextUsage | null = null;
 	private _streamTextBuffer = '';
 	private _streamThinkingBuffer = '';
@@ -105,9 +104,12 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 	// @ts-ignore
 	private _onOpenCodebaseDetail: (() => void) | null = null;
 
+	private readonly _onComposerTextChange?: (text: string) => void;
+
 	constructor(opts: IChatPanelCallbacks) {
 		super();
 		this._onSendMessage = opts.onSendMessage;
+		this._onComposerTextChange = opts.onComposerTextChange;
 		this._disposables = new DisposableStore();
 		this._register(this._disposables);
 		this._theme = createAnsiThemeFromCssVars();
@@ -331,7 +333,11 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 				this._handleSend();
 			}
 		}));
-		this._disposables.add(addDisposableListener(this._textarea, EventType.INPUT, () => this._autoResizeTextarea()));
+		this._disposables.add(addDisposableListener(this._textarea, EventType.INPUT, () => {
+			this._autoResizeTextarea();
+			// 草稿持久化钩子（per-session，pane 侧 debounce 落 localStorage）
+			this._onComposerTextChange?.(this.getComposerText());
+		}));
 	}
 
 	private _autoResizeTextarea(): void {
@@ -468,7 +474,7 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 			const durationMs = (msg.metadata as any)?.durationMs as number | undefined;
 			const interrupted = msg.streamPhase === 'error';
 			parts.push('   ' + renderAssistantFooter(
-				this._chatMode,
+				this._chatOnly ? '只读' : '正常',
 				this._currentModel || 'unknown',
 				t,
 				durationMs,
@@ -632,8 +638,9 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 	// IChatPanel — Session / worktree / mode
 	// ═══════════════════════════════════════════════════════════════════
 
-	setChatMode(mode: ChatMode): void {
-		this._chatMode = mode;
+	// ChatOnly toggle — replaces legacy setChatMode(mode: ChatMode)
+	setChatOnly(chatOnly: boolean): void {
+		this._chatOnly = chatOnly;
 	}
 
 	setSessionInfo(_info: ISessionInfo | null): void { /* no-op */ }
@@ -659,6 +666,9 @@ export class XtermCliPanel extends Disposable implements IChatPanel {
 	focusInput(): void {
 		this._textarea?.focus();
 	}
+
+	getComposerText(): string { return this._textarea?.value ?? ''; }
+	setComposerText(text: string): void { if (this._textarea) { this._textarea.value = text; } }
 
 	layout(width: number, height: number): void {
 		// 委托给 _recomputeLayout —— 内部使用 rAF 等待 DOM 布局完成

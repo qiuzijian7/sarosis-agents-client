@@ -80,6 +80,10 @@ import type {
 	IConfigHtmlChatSendStreamPayload,
 	IConfigHtmlChatCancelStreamPayload,
 	IConfigHtmlRunTerminalPayload,
+	IConfigHtmlKvGetPayload,
+	IConfigHtmlKvSetPayload,
+	IConfigHtmlKvDeletePayload,
+	IConfigHtmlKvListPayload,
 	IFileOpenPayload,
 	IFileOpenUntitledTextPayload,
 	IFileApplyCodePayload,
@@ -263,6 +267,32 @@ export class AgentStudioWebviewController extends Disposable {
 		};
 		this.agentOSService.setToolApprovalHandler(approvalHandler);
 		this.logService.info('[AgentStudioWebviewController] Tool approval handler registered');
+
+		// Subscribe to ConfigHtml model write confirmations — show a tool card
+		// in the chat UI with 同意 / 放弃 / 始终同意 buttons when the LLM tries
+		// to modify config.html.
+		this._register(
+			this._configHtmlService.onDidRequestModelWriteConfirm(({ requestId, agentId, contentLen, preview }) => {
+				const toolCallId = requestId; // reuse requestId as toolCallId
+				this._pendingToolApprovals.set(toolCallId, {
+					resolve: (decision: ToolApprovalDecision) => {
+						// Map ToolApprovalDecision → 'approve' | 'deny' | 'always'
+						const mapped: 'approve' | 'deny' | 'always' =
+							decision === ToolApprovalDecision.AllowAlways ? 'always' :
+							decision === ToolApprovalDecision.AllowOnce ? 'approve' : 'deny';
+						this._configHtmlService.resolveModelWriteConfirm(requestId, mapped);
+					},
+				});
+				this._sendEvent('chat.toolApprovalRequest', {
+					toolCallId,
+					toolName: 'config.html 写入',
+					arguments: { agentId, contentLen, preview: preview.slice(0, 200) },
+					securityLevel: 'safe',
+					reason: `LLM 请求修改 agent "${agentId}" 的 config.html（${contentLen} 字符）`,
+				} as IChatToolApprovalRequestPayload);
+				this.logService.info(`[AgentStudioWebviewController] model write confirm card shown: agentId=${agentId} requestId=${requestId}`);
+			}),
+		);
 
 		// Checkpoint: forward newly created checkpoints to the webview so it can
 		// render an inline checkpoint card without an extra round-trip.
@@ -880,6 +910,8 @@ export class AgentStudioWebviewController extends Disposable {
 			// ─── Agents ────────────────────────────────────────────
 			case "agents.list":
 				return this.agentStudioService.getAgents();
+			case "agents.presets":
+				return this.agentStudioService.getAgentPresets();
 			case "agents.get":
 				return this.agentStudioService.getAgent(p.id as string);
 			case "agents.create":
@@ -1230,6 +1262,7 @@ export class AgentStudioWebviewController extends Disposable {
 					p.goal as string,
 					p.workspaceId as string,
 					p.plannerId as string,
+					p.sessionId as string | undefined,
 				);
 				// Auto-open Task Overview in the left editor area
 				try {
@@ -1389,6 +1422,22 @@ export class AgentStudioWebviewController extends Disposable {
 					rp.agentId, rp.command, rp.args,
 					{ cwd: rp.cwd, env: rp.env },
 				);
+			}
+			case "confightml.kvGet": {
+				const kp = p as unknown as IConfigHtmlKvGetPayload;
+				return this._configHtmlService.kvGet(kp.agentId, kp.key);
+			}
+			case "confightml.kvSet": {
+				const kp = p as unknown as IConfigHtmlKvSetPayload;
+				return this._configHtmlService.kvSet(kp.agentId, kp.key, kp.value);
+			}
+			case "confightml.kvDelete": {
+				const kp = p as unknown as IConfigHtmlKvDeletePayload;
+				return this._configHtmlService.kvDelete(kp.agentId, kp.key);
+			}
+			case "confightml.kvList": {
+				const kp = p as unknown as IConfigHtmlKvListPayload;
+				return this._configHtmlService.kvList(kp.agentId, kp.prefix);
 			}
 			// ─── Files ────────────────────────────────────────────
 			case "files.open": {
@@ -1861,6 +1910,7 @@ export class AgentStudioWebviewController extends Disposable {
 					agentId,
 					agentSessionId,
 					explicitSkillIds: payload.explicitSkillIds as string[] | undefined,
+					workflowTrigger: payload.workflowTrigger as { workflowId: string; input?: string } | undefined,
 					reasoning: payload.reasoning as { enabled: boolean; budget?: number; effort?: 'low' | 'medium' | 'high' } | undefined,
 					chatMode: payload.chatMode as 'craft' | 'ask' | 'plan' | 'workflow' | undefined,
 					attachments: payload.attachments as import('../../../common/agentStudioService.js').IChatAttachmentSend[] | undefined,
@@ -3248,8 +3298,9 @@ export class AgentStudioWebviewController extends Disposable {
 			const provider = this.agentOSService.getActiveMemoryProvider();
 			if (!provider) { return { items: [], total: 0 }; }
 			const results = await provider.searchMemory(payload.agentId || 'default', '');
+			// L1 = 长时 Episodic 层（KV.memories，原生类型 pattern/.../fact）；working/semantic/procedural 为独立层，排除
 			const items: IMemoryL1Item[] = (results || [])
-				.filter(e => e.type === 'episodic')
+				.filter(e => e.type !== 'working' && e.type !== 'semantic' && e.type !== 'procedural')
 				.slice(0, payload.limit ?? 200)
 				.map(e => ({
 					recordId: e.id,

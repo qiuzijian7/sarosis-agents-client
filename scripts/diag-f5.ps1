@@ -18,7 +18,7 @@ foreach ($p in 9222,5875,8420,8520) {
 }
 
 Write-Host "=== 2. Remove stale single-instance markers ===" -ForegroundColor Cyan
-$U = Join-Path $env:USERPROFILE ".vscode-oss-agents-dev"
+$U = Join-Path $env:USERPROFILE ".vssaros-agents-dev"
 foreach ($f in "DevToolsActivePort","SingletonLock","SingletonCookie","SingletonSocket","code.lock") {
   $fp = Join-Path $U $f
   if (Test-Path $fp) { Remove-Item $fp -Force -ErrorAction SilentlyContinue; Write-Host "  removed $f" }

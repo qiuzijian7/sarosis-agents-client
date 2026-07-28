@@ -298,6 +298,9 @@ export class SwarmService extends Disposable implements ISwarmService {
 				spec.body,
 				executeFn,
 				{
+					// P2b: swarm worker 是对等协作 agent —— 显式标 peer 档：
+					// 独立生命周期，不因父 turn 取消而误杀，仅由 cancelSwarm 取消。
+					isolationLevel: 'peer',
 					type: SubAgentType.General,
 					context,
 					priority: spec.priority ?? 'medium',
@@ -344,7 +347,8 @@ export class SwarmService extends Disposable implements ISwarmService {
 				`swarm-${swarmId}`,
 				prompt,
 				executeFn,
-				{ type: SubAgentType.General, context: profile },
+				// P2b: verifier/synthesizer 也是对等协作 agent，显式标 peer 档。
+				{ type: SubAgentType.General, isolationLevel: 'peer', context: profile },
 			);
 			if (result.success) {
 				state.status = 'done';

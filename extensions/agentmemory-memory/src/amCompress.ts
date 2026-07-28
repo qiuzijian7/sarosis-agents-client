@@ -130,21 +130,24 @@ export async function compressSession(
 		// 构建 synthetic 压缩
 		const compressed = buildSyntheticCompression(uncompressed);
 
-		// 写入 SessionSummary
+		// 与既有摘要合并（累积语义）：阈值触发/turn 末触发会多次压缩同一会话，
+		// 直接覆盖会丢失早期批次的叙事——合并保留全部内容（各有界）。
+		const summaryScope = KV.summaries(agentId);
+		const existing = await kv.get<SessionSummary>(summaryScope, sessionId);
 		const summary: SessionSummary = {
 			sessionId,
-			project: project || 'default',
+			project: project || existing?.project || 'default',
 			createdAt: now,
 			title: compressed.title,
-			narrative: compressed.narrative,
-			keyDecisions: compressed.decisions,
-			filesModified: compressed.files,
-			concepts: compressed.concepts,
-			observationCount: uncompressed.length,
+			narrative: [existing?.narrative, compressed.narrative].filter(Boolean).join('\n').slice(0, 2000),
+			keyDecisions: [...new Set([...(existing?.keyDecisions ?? []), ...compressed.decisions])].slice(-10),
+			filesModified: [...new Set([...(existing?.filesModified ?? []), ...compressed.files])].slice(-20),
+			concepts: [...new Set([...(existing?.concepts ?? []), ...compressed.concepts])].slice(-20),
+			observationCount: (existing?.observationCount ?? 0) + uncompressed.length,
 			agentId,
 		};
 
-		await kv.set(KV.summaries(agentId), sessionId, summary);
+		await kv.set(summaryScope, sessionId, summary);
 		return summary;
 	} catch {
 		return null;
@@ -169,7 +172,7 @@ export async function maybeCompressSession(
 	}
 }
 
-async function countUncompressed(kv: StateKV, agentId: string, sessionId: string): Promise<number> {
+export async function countUncompressed(kv: StateKV, agentId: string, sessionId: string): Promise<number> {
 	try {
 		const obs = await kv.list<Observation>(KV.observations(agentId, sessionId));
 		return obs.filter(o => !o.compressed).length;

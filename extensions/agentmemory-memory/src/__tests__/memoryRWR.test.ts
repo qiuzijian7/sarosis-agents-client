@@ -133,16 +133,22 @@ export async function runMemoryRWRTests(): Promise<void> {
 	});
 
 	// ── READ：buildContext / getStatsFn ───────────────────────────────
-	await test('R1: buildContext（无 query）聚合 core+memory 块，含 XML 包装', async (kv) => {
+	// 2026-07-25 mem::context 对齐：注入文本只含策展块（lessons/summaries/…），
+	// core/原始 memory 不进注入文本（召回走工具），仅在返回值数组中。
+	await test('R1: buildContext（无 query）策展块注入 + core/memory 仅进返回值', async (kv) => {
 		await fn.coreAdd(kv as any, AGENT_ID, 'Important core rule', 9, true);
 		await fn.remember(kv as any, AGENT_ID, 'memory A about react patterns', 'pattern');
 		await fn.remember(kv as any, AGENT_ID, 'memory B about typescript generics', 'pattern');
+		await fn.lessonSave(kv as any, AGENT_ID, 'always lint before push', 'workflow', 0.9);
 		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-R1', 'proj', 5000);
 		assert(ctx.systemPrompt.includes('<agentmemory-context'), 'XML wrapper present');
-		assert(ctx.systemPrompt.includes('Important core rule'), 'core injected');
-		assert(ctx.systemPrompt.includes('memory A about react'), 'memory A injected');
+		assert(ctx.systemPrompt.includes('always lint before push'), 'lesson injected');
+		assert(!ctx.systemPrompt.includes('Important core rule'), 'core NOT injected (tool-driven recall)');
+		assert(!ctx.systemPrompt.includes('memory A about react'), 'raw memory NOT injected');
 		assert(ctx.longTermMemories.length >= 1, 'longTermMemories populated');
 		assert(ctx.shortTermMemories.length >= 1, 'shortTermMemories populated');
+		assert((ctx.contextBlocks ?? 0) >= 1, 'contextBlocks metadata present');
+		assert((ctx.contextTokens ?? 0) > 0, 'contextTokens metadata present');
 	});
 
 	await test('R2: getStatsFn 返回各 scope 计数', async (kv) => {
@@ -155,14 +161,16 @@ export async function runMemoryRWRTests(): Promise<void> {
 		eq(s.lessonsCount, 1, 'lessonsCount');
 	});
 
-	await test('R3: loadContextFn（带 query）→ 走 searchMemories，systemPrompt 含 Search Results', async (kv) => {
+	await test('R3: loadContextFn（带 query）→ 策展块内含 Relevant Memories 附加块', async (kv) => {
 		const r = await fn.remember(kv as any, AGENT_ID, 'React server components pattern', 'pattern');
 		const bm25 = new BM25Index();
 		bm25.add(r.id!, 'React server components pattern');
 		fn.setIndexGetters(() => bm25, () => null as any);
 		const ctx = await fn.loadContextFn(kv as any, AGENT_ID, 'sess-R3', 'react', 5000);
-		assert(ctx.systemPrompt.includes('Search Results'), 'search results block injected');
+		// 2026-07-25 P0：query 召回是 ≤30% 预算的附加块，不再替代整个策展
+		assert(ctx.systemPrompt.includes('Relevant Memories'), 'relevant memories block injected');
 		assert(ctx.systemPrompt.includes('React server components'), 'matched memory in prompt');
+		assert(!ctx.systemPrompt.includes('Search Results'), 'old full-dump branch removed');
 	});
 
 	// ── RETRIEVE：searchMemories（BM25 命中 / 空查询回退 / KV 安全网）──

@@ -50,8 +50,10 @@ export interface ICodebaseMemoryMcpService {
 	readonly isIndexing: boolean;
 	/** Cancel an in-progress indexing operation. */
 	cancelIndex(): void;
-	/** Get saved index configuration (mode + exclude dirs). */
+	/** Get saved index configuration (mode + exclude dirs). Falls back to .code-workspace config. */
 	getIndexConfig(): IIndexConfig;
+	/** Await .code-workspace config loading. Call before getIndexConfig() in async UI contexts. */
+	ensureConfigReady(): Promise<void>;
 	/** Save index configuration to workspace storage. */
 	setIndexConfig(config: IIndexConfig): void;
 	/** Write .cbmignore file with exclude patterns before indexing. */
@@ -138,6 +140,10 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 	private static readonly STORAGE_KEY_INDEX_CONFIG = 'codebaseMemory.indexConfig';
 	private static readonly DEFAULT_EXCLUDE_DIRS = ['node_modules', '.git', 'build', 'out', 'dist', '.vscode-test', 'extensions', 'test', 'tests', 'resources', 'dev', 'docs', 'doc', 'scripts', '.worktrees', 'deploy-package', 'cli', 'Intermediate', 'Saved', 'Binaries', 'Build'];
 
+	// Fallback config loaded from .code-workspace files on initialization
+	private _workspaceFileConfig: Partial<IIndexConfig> | null = null;
+	private _workspaceConfigReady: Promise<void>;
+
 	constructor(
 		@IAgentStudioLogService private readonly logService: ILogService,
 		@ICodebaseGraphService private readonly graphService: ICodebaseGraphService,
@@ -161,6 +167,121 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 			this._isIndexing = false;
 			this._onDidIndexComplete.fire(mapped);
 		}));
+
+		// 监听工作区变更：CodebaseMemoryMcpService 在应用启动时即被实例化，
+		// 此时还没有工作区；需要在用户打开工作区后重新加载 .code-workspace 配置
+		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
+			this.logService.info('[CodebaseMemory] workspace folders changed, reloading .code-workspace config');
+			this._workspaceFileConfig = null; // 清空旧配置
+			this._workspaceConfigReady = this._initWorkspaceFileConfig();
+		}));
+
+		// 异步加载 .code-workspace 中的 codebase-memory 配置作为初始回退配置
+		this._workspaceConfigReady = this._initWorkspaceFileConfig();
+	}
+
+	/** 确保 .code-workspace 配置已加载完成。在 UI 面板中读取配置前调用。 */
+	async ensureConfigReady(): Promise<void> {
+		await this._workspaceConfigReady;
+		// 如果首次加载时没有工作区（启动时），则补一次加载
+		if (this._workspaceFileConfig === null) {
+			const folders = this.workspaceContextService.getWorkspace().folders;
+			if (folders.length > 0) {
+				this.logService.info('[CodebaseMemory] ensureConfigReady: workspace now available, retrying config load');
+				this._workspaceConfigReady = this._initWorkspaceFileConfig();
+				await this._workspaceConfigReady;
+			}
+		}
+	}
+
+	/**
+/**
+	 * 异步加载工作区 .code-workspace 文件中的 codebase-memory 配置。
+	 * 仅在 workspace storage 中没有已保存配置时作为回退使用。
+	 */
+	private async _initWorkspaceFileConfig(): Promise<void> {
+		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: starting');
+		const folders = this.workspaceContextService.getWorkspace().folders;
+		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: folders.length=' + folders.length);
+		if (folders.length === 0) {
+			this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: no workspace folders, abort');
+			return;
+		}
+
+		const rootUri = folders[0].uri;
+		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: rootUri=' + rootUri.fsPath);
+		const rootStat = await this.fileService.resolve(rootUri);
+		if (!rootStat.children) {
+			this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: rootStat has no children, abort');
+			return;
+		}
+
+		const childNames = rootStat.children.map(function(c) { return c.name; }).join(', ');
+		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: root has ' + rootStat.children.length + ' children: ' + childNames);
+
+		const wsFiles = rootStat.children.filter(function(c) {
+			return !c.isDirectory && c.name.toLowerCase().endsWith('.code-workspace');
+		});
+		const wsNames = wsFiles.map(function(f) { return f.name; }).join(', ');
+		this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: found ' + wsFiles.length + ' .code-workspace file(s) in root: ' + wsNames);
+
+		if (wsFiles.length === 0) {
+			this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: no .code-workspace in root, scanning subdirs');
+			for (const c of rootStat.children) {
+				if (!c.isDirectory) { continue; }
+				if (c.name === 'node_modules' || c.name === '.git' || c.name === '.codebase-memory') { continue; }
+				try {
+					const subStat = await this.fileService.resolve(c.resource);
+					const subWsFiles = (subStat.children || []).filter(function(sub) {
+						return !sub.isDirectory && sub.name.toLowerCase().endsWith('.code-workspace');
+					});
+					if (subWsFiles.length > 0) {
+						const subNames = subWsFiles.map(function(f) { return f.name; }).join(', ');
+						this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: found ' + subWsFiles.length + ' .code-workspace file(s) in subdir ' + c.name + ': ' + subNames);
+						wsFiles.push.apply(wsFiles, subWsFiles);
+					}
+				} catch (e) { /* skip unreadable subdirs */ }
+			}
+			if (wsFiles.length === 0) {
+				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: no .code-workspace files found anywhere');
+				return;
+			}
+		}
+
+		for (const wsFile of wsFiles) {
+			try {
+				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: reading ' + wsFile.resource.fsPath);
+				const content = await this.fileService.readFile(wsFile.resource);
+				const text = content.value.toString();
+				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: file size=' + text.length + ' bytes');
+				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: file preview: ' + text.substring(0, 300));
+				const parsed = JSON.parse(text);
+
+				const topLevelKeys = Object.keys(parsed);
+				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: top-level keys in ' + wsFile.name + ': ' + topLevelKeys.join(', '));
+
+				// codebase-memory 配置可能位于顶层，也可能嵌套在 settings 下
+				// （VS Code .code-workspace 惯例把自定义配置放在 settings 中）。
+				// 为兼容旧文件，同时支持两种位置。
+				const cbmConfig = (parsed && parsed['codebase-memory'])
+					|| (parsed && parsed.settings && parsed.settings['codebase-memory']);
+				if (cbmConfig && typeof cbmConfig === 'object') {
+					this._workspaceFileConfig = {
+						mode: cbmConfig.mode || 'fast',
+						excludeDirs: Array.isArray(cbmConfig.excludeDirs) ? cbmConfig.excludeDirs : undefined,
+						keepDirs: Array.isArray(cbmConfig.keepDirs) ? cbmConfig.keepDirs : undefined,
+					};
+					const excl = (this._workspaceFileConfig.excludeDirs || []).join(', ');
+					const keep = (this._workspaceFileConfig.keepDirs || []).join(', ');
+					this.logService.info('[CodebaseMemory] Loaded codebase-memory config from ' + wsFile.name + ': mode=' + this._workspaceFileConfig.mode + ', excludeDirs=[' + excl + '], keepDirs=[' + keep + ']');
+					return;
+				} else {
+					this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: ' + wsFile.name + ' has no codebase-memory key (checked top-level and settings.codebase-memory)');
+				}
+			} catch (err) {
+				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: error reading ' + wsFile.name + ': ' + (err && err.message ? err.message : err));
+			}
+		}
 	}
 
 	// ─── Index Repository (delegates to ICodebaseGraphService) ────────────────
@@ -201,6 +322,7 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 		this._isIndexing = true;
 		this._indexCts = new CancellationTokenSource();
 
+		this.logService.info(LOG_TAG, `[TRACE] codebaseMemoryMcpService.indexRepository → indexWorkspace: ${wsPath}`);
 		this.logService.info(LOG_TAG, `Starting indexWorkspace for "${wsPath}"...`);
 		this._onDidIndexProgress.fire(`▶ 开始索引代码库: ${wsPath}`);
 
@@ -293,6 +415,26 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 				};
 			} catch { /* fallthrough to default */ }
 		}
+
+		// Fallback: use config from .code-workspace file if no stored config exists
+		if (this._workspaceFileConfig) {
+			const wsCfg = this._workspaceFileConfig;
+			const wsExcludes = Array.isArray(wsCfg.excludeDirs) ? wsCfg.excludeDirs : [];
+			const defaults = CodebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS;
+			const merged = [...wsExcludes];
+			for (const d of defaults) {
+				if (!merged.some(m => m.toLowerCase() === d.toLowerCase())) {
+					merged.push(d);
+				}
+			}
+			return {
+				mode: wsCfg.mode || 'fast',
+				excludeDirs: merged,
+				keepDirs: Array.isArray(wsCfg.keepDirs) ? wsCfg.keepDirs : undefined,
+				subPath: typeof wsCfg.subPath === 'string' ? wsCfg.subPath : undefined,
+			};
+		}
+
 		return { mode: 'fast', excludeDirs: CodebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS.slice() };
 	}
 

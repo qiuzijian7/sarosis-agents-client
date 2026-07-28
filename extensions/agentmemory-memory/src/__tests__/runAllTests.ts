@@ -11,7 +11,9 @@ import { runConcurrencyTests } from './concurrency.test.js';
 import { runVectorDimensionTests } from './vectorIndexDim.test.js';
 import { runAmV2Tests } from './amV2.test.js';
 import { runAmV2IntegrationTests } from './amV2Integration.test.js';
-import { printSummary } from './testRunner.js';
+import { runSentinelTests } from './sentinel.test.js';
+import { runAmReplicationTests } from './amReplication.test.js';
+import { printSummary, drainAsync } from './testRunner.js';
 
 async function main(): Promise<void> {
 	console.log('🧪 AgentMemory Unit Tests\n');
@@ -31,10 +33,21 @@ async function main(): Promise<void> {
 	console.log('\n📦 V2 Architecture Tests\n');
 	await runAmV2Tests();
 
+	// ─── Sentinel lifecycle tests ───
+	console.log('\n📦 Sentinel Lifecycle Tests\n');
+	await runSentinelTests();
+
+	// ─── amReplication tests ───
+	console.log('\n📦 amReplication (原版机制复刻) Tests\n');
+	await runAmReplicationTests();
+
 	// ─── V2 Integration Tests (lifecycle call timing) ───
 	console.log('\n📦 V2 Integration Tests\n');
 	await runAmV2IntegrationTests();
 
+	// 先等待所有 async it 落定（vectorIndex/bm25 等含异步用例，
+	// 不等待会以 unhandledRejection 随机爆进程且结果不计入统计）。
+	await drainAsync();
 	printSummary();
 }
 

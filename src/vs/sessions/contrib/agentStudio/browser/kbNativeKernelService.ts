@@ -53,7 +53,7 @@ export interface IKbNativeKernelService {
 	getBacklinks(docId: string): Promise<INativeBacklinkResult>;
 
 	/** Enumerate all notes in the vault (for the webview wikilink resolver). */
-	getWorkspaceFiles(): Promise<{ uri: string; name: string }[]>;
+	getWorkspaceFiles(docId?: string): Promise<{ uri: string; name: string }[]>;
 
 	/** Build the vector (RAG) index for the given roots (per-folder RAG construction). */
 	buildVectorIndex(roots: IKbBuildRoot[], opts?: IKbVectorBuildOptions): Promise<void>;
@@ -138,10 +138,12 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 		return this._kernel.getBacklink2(docId);
 	}
 
-	async getWorkspaceFiles(): Promise<{ uri: string; name: string }[]> {
+	async getWorkspaceFiles(docId?: string): Promise<{ uri: string; name: string }[]> {
 		if (this._roots.length === 0) {
-			// No build context recorded yet — try to infer from any open note.
-			// getBacklinks infers lazily; mirror that by ensuring a built kernel.
+			// No build context recorded yet — infer vault root from the open note
+			// (mirrors getBacklinks' lazy inference so wikilinks resolve even
+			// before the KB view has ever run rebuildSearchAssets).
+			if (docId) { await this._inferBuildContext(docId); }
 			await this.ensureBuilt();
 		} else {
 			await this.ensureBuilt();

@@ -15,7 +15,6 @@ import { $, clearNode, Dimension } from '../../../../base/browser/dom.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -28,6 +27,8 @@ import { IWorkbenchMcpManagementService } from '../../../../workbench/services/m
 import { IEventBridgeService } from '../common/eventBridge.js';
 import { IInstallableMcpServer } from '../../../../platform/mcp/common/mcpManagement.js';
 import { IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -64,12 +65,12 @@ export class McpServerEditorPane extends EditorPane {
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IEditorService private readonly editorService: IEditorService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IFileService private readonly fileService: IFileService,
-		@IPathService private readonly pathService: IPathService,
-		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+			@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
 		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
 	) {
@@ -185,10 +186,10 @@ export class McpServerEditorPane extends EditorPane {
 		this._refreshBtn.onclick = () => { void this._loadPackages(); };
 		toolbar.appendChild(this._refreshBtn);
 
-		// + Add Server button → open ~/.saros/mcp.json file
+		// + Add Server button → open ~/.vssaros/saros/mcp.json file
 		const addBtn = $('button.mcp-editor-add-btn') as HTMLButtonElement;
 		addBtn.textContent = '+ Add Server';
-		addBtn.title = '打开 ~/.saros/mcp.json 文件，手动编辑 MCP 服务器配置';
+		addBtn.title = '打开 ~/.vssaros/saros/mcp.json 文件，手动编辑 MCP 服务器配置';
 		addBtn.style.padding = '6px 14px';
 		addBtn.style.fontSize = '13px';
 		addBtn.style.fontWeight = '500';
@@ -590,11 +591,10 @@ export class McpServerEditorPane extends EditorPane {
 		}
 	}
 
-	/** Sync a single MCP server config from ~/.saros/mcp/{slug}/config.json to VS Code MCP config */
+	/** Sync a single MCP server config from ~/.vssaros/saros/mcp/{slug}/config.json to VS Code MCP config */
 	private async _syncMcpToVsCode(slug: string): Promise<void> {
 		try {
-			const userHome = await this.pathService.userHome();
-			const configUri = URI.joinPath(userHome, '.saros', 'mcp', slug, 'config.json');
+			const configUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, slug, 'config.json');
 			if (!await this.fileService.exists(configUri)) {
 				console.warn('[McpServerEditor] config.json not found for slug:', slug);
 				return;
@@ -680,12 +680,11 @@ export class McpServerEditorPane extends EditorPane {
 		if (!confirmed.confirmed) { return; }
 
 		try {
-			// 1. Remove entry from ~/.saros/mcp.json
+			// 1. Remove entry from ~/.vssaros/saros/mcp.json
 			await this._removeMcpJsonEntry(pkg.slug);
 
-			// 2. Delete ~/.saros/mcp/{slug}/ directory
-			const userHome = await this.pathService.userHome();
-			const mcpDirUri = URI.joinPath(userHome, '.saros', 'mcp', pkg.slug);
+			// 2. Delete ~/.vssaros/saros/mcp/{slug}/ directory
+			const mcpDirUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, pkg.slug);
 			if (await this.fileService.exists(mcpDirUri)) {
 				await this.fileService.del(mcpDirUri, { recursive: true });
 			}
@@ -715,7 +714,7 @@ export class McpServerEditorPane extends EditorPane {
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	//  + ADD SERVER → OPEN ~/.saros/mcp.json FILE
+	//  + ADD SERVER → OPEN ~/.vssaros/saros/mcp.json FILE
 	// ══════════════════════════════════════════════════════════════════════════
 
 	private async _openMcpJsonFile(): Promise<void> {
@@ -735,19 +734,17 @@ export class McpServerEditorPane extends EditorPane {
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	//  FILE HELPERS (~/.saros/mcp.json + installed-packages.json)
+	//  FILE HELPERS (~/.vssaros/saros/mcp.json + installed-packages.json)
 	// ══════════════════════════════════════════════════════════════════════════
 
-	/** Get ~/.saros/mcp.json URI */
+	/** Get ~/.vssaros/saros/mcp.json URI */
 	private async _getMcpJsonUri(): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', 'mcp.json');
+		return resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 	}
 
-	/** Get ~/.saros/installed-packages.json URI */
+	/** Get ~/.vssaros/saros/installed-packages.json URI */
 	private async _getInstalledPackagesUri(): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', 'installed-packages.json');
+		return resolveSarosPath(this._getSarosRoot(), SarosPath.installedPackages);
 	}
 
 	/** Read installed MCP entries (slug → version) from installed-packages.json */
@@ -783,7 +780,7 @@ export class McpServerEditorPane extends EditorPane {
 		}
 	}
 
-	/** Remove a single server entry from ~/.saros/mcp.json */
+	/** Remove a single server entry from ~/.vssaros/saros/mcp.json */
 	private async _removeMcpJsonEntry(name: string): Promise<void> {
 		try {
 			const uri = await this._getMcpJsonUri();
@@ -806,5 +803,9 @@ export class McpServerEditorPane extends EditorPane {
 		if (n >= 10000) { return `${(n / 10000).toFixed(1).replace(/\.0$/, '')}w`; }
 		if (n >= 1000) { return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`; }
 		return String(n);
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

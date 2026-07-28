@@ -7,7 +7,8 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { AgentOSService } from '../agentOSService.js';
+import { AgentOSService } from '../../browser/agentOSService.js';
+import { RETRIEVED_CTX_PREFIX } from '../../browser/agentContextRetrieval.js';
 import { ContextManager } from '../../common/contextManager.js';
 
 suite('AgentOS Retrieval Context (per-turn injection & observation)', () => {
@@ -18,11 +19,15 @@ suite('AgentOS Retrieval Context (per-turn injection & observation)', () => {
 	// 构造器内 _initDashboardStorage / _registerToolSetChangeListeners 均为异步或按需注册，
 	// 对 stub 缺失的接口做了容错，不会在构造期抛错。
 	function createAgentOSService(): any {
+		// 与 AgentOSService 当前构造签名保持一致：
+		// (logService, environmentService, workspaceContextService, pathService, fileService, instantiationService)
 		const logService = new NullLogService();
+		const envStub: any = { userRoamingDataHome: URI.file('/tmp'), appRoot: '/tmp' };
 		const wsStub: any = { getWorkspace: () => ({ folders: [] as any[] }) };
 		const pathStub: any = { userHome: async () => URI.file('/tmp') };
 		const fileStub: any = {};
-		return new (AgentOSService as any)(logService, wsStub, pathStub, fileStub) as any;
+		const instStub: any = { invokeFunction: (fn: any) => fn(() => undefined) };
+		return new (AgentOSService as any)(logService, envStub, wsStub, pathStub, fileStub, instStub) as any;
 	}
 
 	// 记录写入记忆的条目，供断言
@@ -35,6 +40,16 @@ suite('AgentOS Retrieval Context (per-turn injection & observation)', () => {
 
 		async writeMemory(agentId: string, entry: any): Promise<void> {
 			this.written.push(entry);
+		}
+		// 2026-07-25 P0：storeTurnObservations 改道 observe（mem:obs），
+		// 映射为既有断言形状（type/content/metadata.role+source）
+		async observe(_agentId: string, payload: any): Promise<void> {
+			const data = payload?.data ?? {};
+			this.written.push({
+				type: 'episodic',
+				content: data.content ?? '',
+				metadata: { role: data.role, sessionId: payload.sessionId, source: payload.hookType },
+			});
 		}
 		async getCompactContext(_agentId: string, _n: number): Promise<any[]> {
 			return this.compactContext;
@@ -50,7 +65,7 @@ suite('AgentOS Retrieval Context (per-turn injection & observation)', () => {
 	test('RETRIEVED_CTX_PREFIX equals contextManager.INJECTED_CONTEXT_PREFIX', () => {
 		// 若两者不一致，压缩时 contextManager 不会剥离每轮注入的 system 消息，
 		// 会在头部不断累积重复上下文块。这是防止重复累积的关键回归守卫。
-		const injectedPrefix = (AgentOSService as any).RETRIEVED_CTX_PREFIX;
+		const injectedPrefix = RETRIEVED_CTX_PREFIX;
 		const stripPrefix = (ContextManager as any).INJECTED_CONTEXT_PREFIX;
 		assert.strictEqual(typeof injectedPrefix, 'string');
 		assert.strictEqual(injectedPrefix, stripPrefix);
@@ -84,7 +99,7 @@ suite('AgentOS Retrieval Context (per-turn injection & observation)', () => {
 			assert.strictEqual(out.length, 3);
 			assert.strictEqual(out[0].content, 'base'); // 原 system 不动
 			assert.strictEqual(out[1].role, 'system');
-			assert.ok(out[1].content.startsWith((AgentOSService as any).RETRIEVED_CTX_PREFIX));
+			assert.ok(out[1].content.startsWith(RETRIEVED_CTX_PREFIX));
 			assert.ok(out[1].content.includes('retrieved context here'));
 			assert.strictEqual(out[2].role, 'user'); // user 位置后移
 		} finally {
@@ -116,7 +131,7 @@ suite('AgentOS Retrieval Context (per-turn injection & observation)', () => {
 			const out = svc._injectRetrievalSystemMessage(msgs, 'ctx', 'recall');
 			assert.strictEqual(out.length, 4);
 			assert.strictEqual(out[2].role, 'system');
-			assert.ok(out[2].content.startsWith((AgentOSService as any).RETRIEVED_CTX_PREFIX));
+			assert.ok(out[2].content.startsWith(RETRIEVED_CTX_PREFIX));
 			assert.strictEqual(out[3].role, 'user');
 		} finally {
 			svc.dispose();

@@ -19,6 +19,8 @@ import {
 	DEFAULT_COMPRESSION_CONFIG,
 } from '../common/contextCompression.js';
 import { ICopilotApiService } from './shared/copilotApiService.js';
+import { IAgentService } from '../common/agentService.js';
+import { ResponsePartKind, type MarkdownResponsePart, type SessionState, type ToolCallResponsePart, type Turn } from '../common/state/protocol/state.js';
 import type { Anthropic } from '@anthropic-ai/sdk';
 
 // ── Summary Generation Prompt ───────────────────────────────────────────────
@@ -78,15 +80,29 @@ export class ContextCompressionService extends Disposable implements IContextCom
 	private readonly _lastSummary = new Map<string, IStructuredSummary>();
 	private readonly _config: ICompressionConfig;
 
+	/** 当前 GitHub token（由认证分发层经 {@link setAuthToken} 推送） */
+	private _githubToken: string | undefined;
+
 	constructor(
 		@IEnhancedSessionStore private readonly sessionStore: IEnhancedSessionStore,
 		@IConfigurationService private readonly configService: IConfigurationService,
 		@ILogService private readonly logService: ILogService,
 		@ICopilotApiService private readonly copilotApiService: ICopilotApiService,
+		// 可选：框架未集成时（agentHostServices 手动装配）为 undefined，
+		// _getSessionMessages 降级返回空列表并告警。
+		private readonly agentService?: IAgentService,
 	) {
 		super();
 		this._config = this._loadConfig();
 		this._registerListeners();
+	}
+
+	/**
+	 * Push the current GitHub token（认证成功后由 protocolServerHandler 推送）。
+	 * 本服务不主动拉取 token —— token 所有权保留在 agent 实现侧。
+	 */
+	setAuthToken(token: string | undefined): void {
+		this._githubToken = token;
 	}
 
 	// ── Public API ─────────────────────────────────────────────────────
@@ -526,17 +542,92 @@ export class ContextCompressionService extends Disposable implements IContextCom
 	}
 
 	private async _getSessionMessages(sessionId: string): Promise<ITurnMessage[]> {
-		// TODO: Implement getting messages from SessionStore or SessionDatabase
-		// This is a placeholder - needs actual implementation
-		this.logService.warn('[ContextCompression] _getSessionMessages not yet implemented');
-		return [];
+		// 经 IAgentService 拉取：sessionId 是 session URI 的末段（provider:/<id>），
+		// 先经 listSessions 反查完整 URI，再取 turns 并映射为压缩管线的消息形态。
+		if (!this.agentService) {
+			this.logService.warn('[ContextCompression] No IAgentService available — cannot load session messages');
+			return [];
+		}
+		try {
+			const sessions = await this.agentService.listSessions();
+			const match = sessions.find(s => {
+				const str = s.session.toString();
+				return str === sessionId || str.endsWith(`/${sessionId}`);
+			});
+			if (!match) {
+				this.logService.warn(`[ContextCompression] Session not found for id ${sessionId} (${sessions.length} sessions listed)`);
+				return [];
+			}
+			// 经 subscribe 快照读取 SessionState.turns（IAgentService 不直接暴露 turns 拉取）。
+			// 读完立即 unsubscribe，避免持有订阅导致 session state 无法回收。
+			const clientId = 'context-compression';
+			const snapshot = await this.agentService.subscribe(match.session, clientId);
+			try {
+				const state = snapshot.state as SessionState;
+				const turns = Array.isArray(state?.turns) ? state.turns : [];
+				return this._turnsToMessages(turns);
+			} finally {
+				this.agentService.unsubscribe(match.session, clientId);
+			}
+		} catch (err) {
+			this.logService.error('[ContextCompression] Failed to load session messages', err);
+			return [];
+		}
+	}
+
+	/** Turn[]（协议层）→ ITurnMessage[]（压缩管线）：user 文本 + assistant markdown 拼接 + 工具调用 */
+	private _turnsToMessages(turns: readonly Turn[]): ITurnMessage[] {
+		const messages: ITurnMessage[] = [];
+		for (const turn of turns) {
+			if (turn.userMessage?.text) {
+				messages.push({ role: 'user', content: turn.userMessage.text });
+			}
+			let assistantText = '';
+			for (const part of turn.responseParts ?? []) {
+				if (part.kind === ResponsePartKind.Markdown) {
+					assistantText += (part as MarkdownResponsePart).content;
+				} else if (part.kind === ResponsePartKind.ToolCall) {
+					const toolCall = (part as ToolCallResponsePart).toolCall;
+					messages.push({
+						role: 'tool',
+						content: this._stringifyToolResult(toolCall),
+						toolCallId: toolCall?.toolCallId,
+						toolName: toolCall?.toolName,
+					});
+				}
+			}
+			if (assistantText) {
+				messages.push({ role: 'assistant', content: assistantText });
+			}
+		}
+		return messages;
+	}
+
+	/** 工具结果转纯文本（截断 4000 字符，防超长输出撑爆摘要 prompt） */
+	private _stringifyToolResult(toolCall: ToolCallResponsePart['toolCall'] | undefined): string {
+		if (!toolCall) { return ''; }
+		try {
+			const anyTc = toolCall as unknown as Record<string, unknown>;
+			const label = (anyTc['displayName'] ?? anyTc['toolName'] ?? 'tool') as string;
+			const content = (anyTc['result'] as Record<string, unknown> | undefined)?.['content'] ?? anyTc['content'];
+			let text = '';
+			if (Array.isArray(content)) {
+				text = content.map(c => (typeof c === 'string' ? c : ((c as Record<string, unknown>)?.['text'] as string) ?? JSON.stringify(c))).join('\n');
+			} else if (content !== undefined) {
+				text = typeof content === 'string' ? content : JSON.stringify(content);
+			}
+			return (text ? `${label}: ${text}` : label).slice(0, 4000);
+		} catch {
+			return '';
+		}
 	}
 
 	private async _getGitHubToken(): Promise<string | undefined> {
-		// TODO: Implement getting GitHub token from auth service
-		// This is a placeholder - needs actual implementation
-		this.logService.warn('[ContextCompression] _getGitHubToken not yet implemented');
-		return undefined;
+		// token 由认证分发层经 setAuthToken 推送（agent 实现侧是唯一持有者）
+		if (!this._githubToken) {
+			this.logService.warn('[ContextCompression] No GitHub token pushed yet — LLM summary will fall back');
+		}
+		return this._githubToken;
 	}
 
 	private _fallbackSummary(

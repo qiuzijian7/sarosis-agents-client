@@ -101,15 +101,14 @@ const TOOL_ICONS: Record<string, string> = {
 	// Task / subagent
 	delegate_task: '\u2502', task: '\u2502', subagent: '\u2502',
 	// Skill
-	skill_manage: '\u2192', read_skill: '\u2192', skill_view: '\u2192',
-	list_skills: '\u2192', skills_list: '\u2192',
+	skill_manage: '\u2192', read_skill: '\u2192',
+	list_skills: '\u2192',
 	// Todo
 	todo: '\u2699', todowrite: '\u2699',
 	// Clarify / question
 	clarify: '\u2192', question: '\u2192',
 	// Memory
-	memory_remember: '\u2699', memory_search: '\u2699', memory_delete: '\u2699',
-	memory_list: '\u2699', recall: '\u2699', memory: '\u2699',
+	memory_remember: '\u2699', memory_list: '\u2699', recall: '\u2699',
 	// Kanban
 	kanban_create: '\u2699', kanban_complete: '\u2699', kanban_block: '\u2699',
 	kanban_unblock: '\u2699', kanban_show: '\u2699', kanban_list: '\u2699',

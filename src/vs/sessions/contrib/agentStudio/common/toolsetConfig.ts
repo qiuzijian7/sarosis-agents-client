@@ -58,12 +58,22 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		priority: ToolsetPriority.Always,
 		prefixes: ['file_', 'search_files', 'terminal', 'memory_'],
 		exactNames: [
-			'update_plan', 'memory', 'patch', 'process',
-			'web_search', 'web_extract',
-			'skills_list', 'skill_view', 'skill_manage', 'skill_create',
-			'session_search', 'execute_code', 'delegate_task',
-			'read_skill', 'list_skills',
+			'update_plan', 'plan_explore', 'plan_enter', 'plan_exit', 'plan_register',
+			'switch_paradigm',
+			'patch', 'process',
+		'web_search', 'web_extract',
+		'skill_manage',
+		'session_search', 'execute_code', 'delegate_task',
+		'read_skill', 'list_skills',
+			// Mermaid 图示 — core Always 优先级确保 LLM 可调用
+			'rendermermaiddiagram',
 			'clarify', // 2026-07-13: 用户交互核心工具（LLM 向用户提问并等待选择），归入 core 避免被 utility 路径过滤掉
+			// ── codebase graph tools: Always priority — 代码检索优先走结构化索引 ──
+			'search_graph', 'query_graph', 'trace_path',
+			'get_architecture', 'get_graph_schema', 'get_code_snippet',
+			'index_repository', 'index_status', 'list_projects',
+			'delete_project', 'detect_changes', 'ingest_traces',
+			'manage_adr',
 		],
 		deferrable: false,
 	},
@@ -96,15 +106,12 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		deferrable: false,
 	},
 	{
-		id: 'codebase',
-		label: 'Codebase',
+		id: 'codebase-grep',
+		label: 'Codebase Grep',
 		priority: ToolsetPriority.High,
 		prefixes: [],
 		exactNames: [
-			'search_graph', 'query_graph', 'get_architecture', 'get_code_snippet',
-			'get_graph_schema', 'index_repository', 'index_status', 'list_projects',
-			'delete_project', 'detect_changes', 'trace_path', 'ingest_traces',
-			'manage_adr', 'search_code',
+			'search_code',
 		],
 		deferrable: false,
 	},
@@ -267,15 +274,17 @@ export const CORE_TOOLS: ReadonlySet<string> = new Set([
 	// 终端 / 进程 — 关键调试能力
 	'terminal', 'process', 'read_terminal', 'close_terminal',
 	// 记忆 / 任务规划
-	'memory', 'memory_search', 'memory_write', 'memory_list',
+	'memory_list',
 	'update_plan',
 	// 搜索 / 提取
 	'web_search', 'web_extract',
 	// Session 搜索
 	'session_search',
 	// 技能调用 — 任何 Agent 都需要
-	'skills_list', 'skill_view', 'skill_manage', 'skill_create',
+	'skill_manage',
 	'read_skill', 'list_skills',
+	// Mermaid 图示 — 图表渲染
+	'rendermermaiddiagram',
 	// 浏览器（用于 LLM 看到浏览器工具但实际被沙箱限制时仍可调用基础导航）
 	'browser_navigate', 'browser_snapshot', 'browser_click',
 	'browser_type', 'browser_scroll', 'browser_back',

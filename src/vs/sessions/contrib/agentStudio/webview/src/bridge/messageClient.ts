@@ -124,6 +124,7 @@ export type RequestType =
 	| 'workflow.open'
 	| 'workflow.submitVariables'
 	| 'agents.list'
+	| 'agents.presets'
 	| 'agents.create'
 	| 'agents.update'
 	| 'agents.delete'

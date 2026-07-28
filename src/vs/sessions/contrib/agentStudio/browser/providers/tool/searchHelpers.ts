@@ -15,18 +15,79 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { ISearchService, QueryType, type ITextQuery, type IFileQuery, type ISearchComplete } from '../../../../../../workbench/services/search/common/search.js';
-import { CancellationToken } from '../../../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
+import { isCancellationError } from '../../../../../../base/common/errors.js';
+import { advanceSearchCodeEmptyStreak, searchCodeEmptyStreakThresholdFor } from './pathFilterNormalize.js';
 
 export class SearchHelpers {
 	// 重复搜索熔断：连续相同搜索计数阈值（对齐 Hermes-Agent）
 	private static readonly SEARCH_REPEAT_WARN = 3;
 	private static readonly SEARCH_REPEAT_BLOCK = 4;
+	// search_code 连续空结果引导阈值：连击达其倍数即提示转 search_graph
+	//（日志 1785231958842：模型对同一目标反复换符号猜测，exact-repeat 熔断拦不住——
+	// 每次 query 都不同，故按「连续 0 命中」连击而非「相同参数」计数）。
+	// 阈值按 agentId 类型由 searchCodeEmptyStreakThresholdFor 决定（子代理更敏感）。
 	// 结果大小上限（对齐 Hermes max_result_size_chars）与单条匹配截断长度
 	private static readonly SEARCH_MAX_RESULT_CHARS = 100_000;
 	private static readonly SEARCH_LINE_MAX_CHARS = 500;
 
+	/**
+	 * 搜索工具默认排除目录（`search_files` / `search_code` 两路统一）。
+	 *
+	 * 覆盖三类噪声：
+	 *  - 通用构建/依赖产物：node_modules / .git / build / dist / out / .next 等
+	 *  - UE (Unreal Engine) 项目产物：Intermediate / Saved / Binaries / Build / DerivedDataCache
+	 *    事故 1785143114444：code-explorer 子代理 search_files 9220ms outlier 全部由 UE 构建产物贡献
+	 *  - 缓存/临时：.cache / .parcel-cache / .turbo 等
+	 *
+	 * 与 codebaseMemoryMcpService.DEFAULT_EXCLUDE_DIRS 语义对齐（后者服务于图谱索引，
+	 * 本处服务于运行时 grep，用途独立但排除项应尽量重合，避免图谱不含 / grep 却搜到的
+	 * 一致性错位）。ripgrep 侧通过 IExpression 生效；Node-walk fallback 通过
+	 * NOISE_DIR_NAMES 名字集合达成等价效果。
+	 */
+	private static readonly DEFAULT_EXCLUDE_GLOBS: readonly string[] = [
+		// 通用构建/依赖
+		'**/node_modules/**', '**/.git/**', '**/out/**', '**/dist/**',
+		'**/build/**', '**/.next/**', '**/.cache/**', '**/coverage/**',
+		'**/__pycache__/**', '**/target/**', '**/.gradle/**', '**/bin/**', '**/obj/**',
+		'**/.pnpm-store/**', '**/.yarn/**', '**/.parcel-cache/**', '**/.turbo/**',
+		'**/.nuxt/**', '**/.svelte-kit/**', '**/.angular/**',
+		'**/venv/**', '**/.venv/**',
+		// UE (Unreal) 构建产物：事故 1785143114444
+		'**/Intermediate/**', '**/Saved/**', '**/Binaries/**', '**/DerivedDataCache/**',
+		// out-build/out-test/out-vscode（Sarosis 自身仓库）
+		'**/out-build/**', '**/out-test/**', '**/out-vscode/**',
+	];
+
+	/** IExpression 形态，惰性构造一次复用。 */
+	private static _defaultExcludeExprCache: Readonly<Record<string, boolean>> | undefined;
+	private static _defaultExcludeExpr(): Readonly<Record<string, boolean>> {
+		if (!SearchHelpers._defaultExcludeExprCache) {
+			const expr: Record<string, boolean> = {};
+			for (const g of SearchHelpers.DEFAULT_EXCLUDE_GLOBS) { expr[g] = true; }
+			SearchHelpers._defaultExcludeExprCache = expr;
+		}
+		return SearchHelpers._defaultExcludeExprCache;
+	}
+
+	/** Node-walk fallback 的目录名黑名单（等价 DEFAULT_EXCLUDE_GLOBS 里的目录名部分）。 */
+	private static readonly NOISE_DIR_NAMES: ReadonlySet<string> = new Set([
+		// 通用
+		'node_modules', '.git', 'out', 'dist', 'build', '.build',
+		'.next', '.cache', '.vscode-test', 'coverage', '__pycache__',
+		'target', '.gradle', '.idea', 'bin', 'obj', '.pnpm-store',
+		'.yarn', '.parcel-cache', '.turbo', '.nuxt', '.svelte-kit',
+		'.angular', 'venv', '.venv', 'env', '.env',
+		// UE (Unreal) 构建产物
+		'Intermediate', 'Saved', 'Binaries', 'DerivedDataCache',
+		// Sarosis 自身仓库
+		'out-build', 'out-test', 'out-vscode',
+	]);
+
 	// 每个 agent 的重复搜索状态：{ 上次搜索签名, 连续次数 }
 	private _searchRepeatMap = new Map<string, { key: string | null; count: number }>();
+	/** search_code 连续空结果（0 matches）连击计数，按 agentId 分桶。 */
+	private _searchCodeEmptyStreakMap = new Map<string, number>();
 
 	/**
 	 * ripgrep 可用性门控。VS Code 内置 `searchService` 内部 spawn ripgrep，
@@ -75,6 +136,27 @@ export class SearchHelpers {
 		return { count };
 	}
 
+	/**
+	 * search_code 连续空结果（0 matches）连击跟踪。
+	 * 与 recordSearchRepeat 互补：后者按「相同参数」计数（模型换 query 就绕过），
+	 * 本方法按「连续 0 命中」计数——专门拦「同一目标反复换符号猜测」的空转
+	 * （日志 1785231958842：子代理 434s 烧光预算正因 search_code 反复空命中）。
+	 *
+	 * @param isEmpty 本次 search_code 是否 0 命中（命中/非空时重置为 0）
+	 * @returns streak 当前连击数；shouldGuide 当连击达阈值倍数时为 true（周期性提醒不刷屏）
+	 */
+	recordSearchCodeEmptyStreak(
+		agentId: string | undefined, isEmpty: boolean,
+	): { streak: number; shouldGuide: boolean } {
+		const bucket = agentId ?? '';
+		const result = advanceSearchCodeEmptyStreak(
+			this._searchCodeEmptyStreakMap.get(bucket) ?? 0, isEmpty,
+			searchCodeEmptyStreakThresholdFor(agentId),
+		);
+		this._searchCodeEmptyStreakMap.set(bucket, result.streak);
+		return result;
+	}
+
 	/** 文件搜索裸名 glob 包裹（对齐 Hermes：不含 '/' 且不以 '*' 开头的 pattern 包成 '*pattern'）。 */
 	normalizeFileSearchGlob(pattern: string): string {
 		if (!pattern.includes('/') && !pattern.startsWith('*')) {
@@ -118,7 +200,14 @@ export class SearchHelpers {
 		}
 		try {
 			const folderUri = URI.file(resolvedPath);
-			const query: IFileQuery = { type: QueryType.File, filePattern: pattern, folderQueries: [{ folder: folderUri }], sortByScore: true };
+			const query: IFileQuery = {
+				type: QueryType.File,
+				filePattern: pattern,
+				folderQueries: [{ folder: folderUri }],
+				sortByScore: true,
+				// 默认排除 node_modules / .git / build / UE Intermediate & Saved 等噪声目录
+				excludePattern: { ...SearchHelpers._defaultExcludeExpr() },
+			};
 			const result: ISearchComplete = await this.searchService.fileSearch(query, CancellationToken.None);
 			return this._formatSearchComplete(result, 'files_only', limit, offset);
 		} catch (e) {
@@ -157,13 +246,50 @@ export class SearchHelpers {
 				contentPattern: { pattern, isRegExp: true, isCaseSensitive: false, isWordMatch: false },
 				folderQueries: [{ folder: folderUri }],
 				includePattern: fileGlob ? { [fileGlob]: true } : undefined,
+				// 默认排除 node_modules / .git / build / UE Intermediate & Saved 等噪声目录
+				// （事故 1785143114444：9220ms outlier 由 UE Intermediate/Build 贡献）
+				excludePattern: { ...SearchHelpers._defaultExcludeExpr() },
 				surroundingContext: contextLines,
 				maxResults: 5000,
 			};
-			const result: ISearchComplete = await this.searchService.textSearch(query, CancellationToken.None);
+			// 2026-07-26（日志 1785078531442）：signal 接线到 textSearch——fallback
+			// 全量扫描 UE5EA 级目录 30s+ 无中断手段；外部超时 AbortController 可取消。
+			const cts = new CancellationTokenSource();
+			const onAbort = () => cts.cancel();
+			if (signal) {
+				if (signal.aborted) { cts.cancel(); } else { signal.addEventListener('abort', onAbort, { once: true }); }
+			}
+			let result: ISearchComplete;
+			try {
+				result = await this.searchService.textSearch(query, cts.token);
+			} finally {
+				if (signal) { signal.removeEventListener('abort', onAbort); }
+				cts.dispose();
+			}
 			return this._formatSearchComplete(result, outputMode, limit, offset);
 		} catch (e) {
+			// 取消（外部超时/中止）必须向上传播——不能落入 walk fallback（更慢）
+			if (isCancellationError(e)) { throw e; }
 			const reason = e instanceof Error ? e.message : String(e);
+			// 若错误是 regex 语法问题（如 LLM 传了非法正则），回退为纯文本搜索
+			if (/regex|quantifier|invalid.*pattern|unterminated|bad.*escape/i.test(reason)) {
+				try {
+					const plainQuery: ITextQuery = {
+						type: QueryType.Text,
+						contentPattern: { pattern, isRegExp: false, isCaseSensitive: false, isWordMatch: false },
+						folderQueries: [{ folder: URI.file(resolvedPath) }],
+						includePattern: fileGlob ? { [fileGlob]: true } : undefined,
+						excludePattern: { ...SearchHelpers._defaultExcludeExpr() },
+						surroundingContext: contextLines,
+						maxResults: 5000,
+					};
+					const plainResult = await this.searchService.textSearch(plainQuery, CancellationToken.None);
+					this.logService.info(`[BuiltinTools] searchContent: regex failed ("${reason}"), fell back to plain-text search`);
+					return this._formatSearchComplete(plainResult, outputMode, limit, offset);
+				} catch (e2) {
+					// plain-text 仍然失败 → 最终回退 Node.js walk
+				}
+			}
 			this._noteRgBroken(reason);
 			return this._searchContentWalkFallback(resolvedPath, pattern, fileGlob, limit, offset, outputMode, signal);
 		}
@@ -289,10 +415,7 @@ export class SearchHelpers {
 		const results: { path: string; mtime: number }[] = [];
 		const MAX_VISIT = 5_000;
 		let visited = 0;
-		const NOISE = new Set([
-			'node_modules', '.git', 'out', 'dist', 'build', '.next', '.cache',
-			'coverage', '__pycache__', 'target', '.gradle', 'bin', 'obj',
-		]);
+		const NOISE = SearchHelpers.NOISE_DIR_NAMES;
 
 		// 简易 glob → regex
 		const globToRegex = (g: string): RegExp => {
@@ -407,13 +530,7 @@ export class SearchHelpers {
 		const MAX_FILES_VISITED = 5_000;
 		const filesVisited = { count: 0 };
 		const seenDirs = new Set<string>();
-		const NOISE_DIRS = new Set<string>([
-			'node_modules', '.git', 'out', 'dist', 'build', '.build',
-			'.next', '.cache', '.vscode-test', 'coverage', '__pycache__',
-			'target', '.gradle', '.idea', 'bin', 'obj', '.pnpm-store',
-			'.yarn', '.parcel-cache', '.turbo', '.nuxt', '.svelte-kit',
-			'.angular', 'venv', '.venv', 'env', '.env',
-		]);
+		const NOISE_DIRS = SearchHelpers.NOISE_DIR_NAMES;
 		// Extension blacklist — we never grep into binary-shaped files. The toString()
 		// on a 500KB binary creates a large garbage string + thousands of split parts,
 		// which is a major contributor to OOM under parallel execution.
@@ -487,4 +604,39 @@ export class SearchHelpers {
 
 		await walk(dir);
 	}
+}
+
+// ── 密钥脱敏（对齐 Hermes redact_sensitive_text；原 coreTools 模块级，提取为共享导出）──
+// search_files / file_read / file_write / terminal 等工具输出统一脱敏，避免重复定义。
+const _REDACT_PATTERNS_WHOLE: ReadonlyArray<readonly [RegExp, string]> = [
+	// PEM 私钥块
+	[/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '<REDACTED PRIVATE KEY>'],
+	// JWT
+	[/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '<REDACTED JWT>'],
+	// AWS Access Key
+	[/\bAKIA[0-9A-Z]{16}\b/g, '<REDACTED AWS KEY>'],
+	// GitHub tokens
+	[/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '<REDACTED>'],
+	[/\bgithub_pat_[A-Za-z0-9_]{22,}\b/g, '<REDACTED>'],
+	// GitLab
+	[/\bglpat-[A-Za-z0-9_-]{20}\b/g, '<REDACTED>'],
+	// Slack
+	[/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '<REDACTED>'],
+	// OpenAI / Anthropic
+	[/\bsk-[A-Za-z0-9]{20,}\b/g, '<REDACTED>'],
+	[/\bsk-ant-[A-Za-z0-9_-]{20,}\b/g, '<REDACTED>'],
+];
+
+const _REDACT_PATTERN_ASSIGN = /((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|authorization|auth)\b)(\s*[:=]\s*)(['"]?)[^\s'"]+/gi;
+
+/** 脱敏密钥（对齐 Hermes redact_sensitive_text）。search_files / file_read / file_write / terminal 等工具输出复用。 */
+export function redactSecrets(input: string): string {
+	if (!input) { return input; }
+	let out = input;
+	for (const [re, mask] of _REDACT_PATTERNS_WHOLE) {
+		out = out.replace(re, mask);
+	}
+	out = out.replace(_REDACT_PATTERN_ASSIGN,
+		(_m, key: string, sep: string, q: string) => `${key}${sep}${q}<REDACTED>${q}`);
+	return out;
 }

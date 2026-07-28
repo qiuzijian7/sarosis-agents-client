@@ -9,7 +9,6 @@ import { useWorkspaceStore } from './useWorkspaceStore';
 
 export type AgentCategory = 'General' | 'Development' | 'Research' | 'Creative' | 'Management' | 'DevOps' | 'Analytics';
 export type AgentStatus = 'idle' | 'working' | 'thinking' | 'error' | 'offline';
-export type AgentType = 'planner' | 'worker';
 
 export interface Agent {
 	id: string;
@@ -50,7 +49,6 @@ export interface Agent {
 	parallelStrategy?: 'voting' | 'coverage';
 
 	// ── Organization ────────────────────────────────
-	agentType?: AgentType;
 	teamId?: string;
 	workspaceId?: string;
 	position?: { x: number; y: number };
@@ -171,8 +169,6 @@ interface AgentState {
 
 	// Computed
 	filteredAgents: () => Agent[];
-	getPlanners: () => Agent[];
-	isSelectedPlanner: () => boolean;
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -267,24 +263,5 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 			a?.name?.toLowerCase().includes(q) ||
 			a?.role?.toLowerCase().includes(q)
 		);
-	},
-
-	getPlanners: () => {
-		return get().agents.filter(a =>
-			a.agentType === 'planner'
-			|| a.presetId === 'planner'
-			|| a.role?.toLowerCase().includes('planner')
-			|| a.name?.toLowerCase() === 'planner'
-		);
-	},
-
-	isSelectedPlanner: () => {
-		const { agents, selectedAgentId } = get();
-		if (!selectedAgentId) { return false; }
-		const agent = agents.find(a => a.id === selectedAgentId);
-		return agent?.agentType === 'planner'
-			|| agent?.presetId === 'planner'
-			|| agent?.role?.toLowerCase().includes('planner')
-			|| agent?.name?.toLowerCase() === 'planner';
 	},
 }));

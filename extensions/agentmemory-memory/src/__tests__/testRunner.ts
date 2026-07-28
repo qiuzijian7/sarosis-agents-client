@@ -20,22 +20,39 @@ export function describe(name: string, fn: () => void): void {
 	_suiteName = '';
 }
 
+const _pending: Promise<void>[] = [];
+
 export function it(name: string, fn: () => void | Promise<void>): void {
 	const fullName = _suiteName ? `${_suiteName} > ${name}` : name;
 	const start = Date.now();
+	let result: void | Promise<void>;
 	try {
-		const result = fn();
-		if (result instanceof Promise) {
-			// async test — will be handled by runAll
-			_results.push({ name: fullName, passed: true, durationMs: Date.now() - start });
-			console.log(`  ✓ ${name}`);
-		} else {
-			_results.push({ name: fullName, passed: true, durationMs: Date.now() - start });
-			console.log(`  ✓ ${name}`);
-		}
+		result = fn();
 	} catch (err) {
 		_results.push({ name: fullName, passed: false, error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - start });
 		console.log(`  ✗ ${name}: ${err instanceof Error ? err.message : String(err)}`);
+		return;
+	}
+	if (result instanceof Promise) {
+		// async test：不再乐观标记 passed——登记 promise，落定后记录真实结果，
+		// 由 drainAsync() 统一等待（否则 rejection 会以 unhandledRejection 随机爆进程）。
+		_pending.push(result.then(() => {
+			_results.push({ name: fullName, passed: true, durationMs: Date.now() - start });
+			console.log(`  ✓ ${name}`);
+		}).catch((err) => {
+			_results.push({ name: fullName, passed: false, error: err instanceof Error ? err.message : String(err), durationMs: Date.now() - start });
+			console.log(`  ✗ ${name}: ${err instanceof Error ? err.message : String(err)}`);
+		}));
+		return;
+	}
+	_results.push({ name: fullName, passed: true, durationMs: Date.now() - start });
+	console.log(`  ✓ ${name}`);
+}
+
+/** 等待所有 async it 落定。runAllTests 须在 printSummary() 之前调用，否则异步结果不计入且进程可能被浮动 rejection 打断。 */
+export async function drainAsync(): Promise<void> {
+	while (_pending.length > 0) {
+		await Promise.all(_pending.splice(0));
 	}
 }
 

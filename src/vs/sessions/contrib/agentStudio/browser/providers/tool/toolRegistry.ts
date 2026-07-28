@@ -50,7 +50,8 @@ export class ToolRegistry {
 	register(descriptor: IBuiltinToolRegistration): IDisposable {
 		const name = descriptor.definition.name;
 		if (this._tools.has(name)) {
-			this.logService.warn(`[BuiltinTools] overwriting existing tool: ${name}`);
+			// codebaseTools 等后注册的同类工具覆盖核心工具属正常行为（如 ripgrep 版 search_files），降级避免告警噪声。
+			this.logService.debug(`[BuiltinTools] overwriting existing tool: ${name}`);
 		}
 		this._tools.set(name, descriptor);
 		this._onDidChangeTools.fire();

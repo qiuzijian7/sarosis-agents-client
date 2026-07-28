@@ -43,6 +43,11 @@ export const KV = {
 	skillStore: (agentId: string) => `mem:skills:${agentId}`,
 	circuitStates: (agentId: string) => `mem:circuits:${agentId}`,
 	dedupStore: (agentId: string) => `mem:dedup:${agentId}`,
+	// ─── 团队共享（全局 scope，不带 agentId —— 对齐原版 mem:team:<teamId>:*）───
+	// D1 修复（doc §13）：此前误用 per-agent summaries scope，导致①其他 agent
+	// 永远看不到共享条目②TeamSharedItem 混入摘要被 buildContext 当摘要注入。
+	teamShared: (teamId: string) => `mem:team:${teamId}:shared`,
+	teamProfile: (teamId: string) => `mem:team:${teamId}:profile`,
 } as const;
 
 /** 生成 ID — 对齐 agentmemory generateId */

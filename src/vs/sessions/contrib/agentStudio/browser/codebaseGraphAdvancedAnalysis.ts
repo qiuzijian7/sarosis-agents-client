@@ -14,6 +14,7 @@
  */
 
 import { CodebaseGraphStore, GraphNode } from './codebaseGraphStore.js';
+import { CypherEngine } from './codebaseGraphCypher.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // P2-19: Cypher 扩展语法
@@ -75,59 +76,61 @@ export interface ReturnClause {
  */
 export function executeExtendedCypher(
 	store: CodebaseGraphStore,
-	project: string,
+	project: string | undefined,
 	query: string,
 ): { columns: string[]; rows: any[][] } {
-	// Check for UNION
+	// UNION / UNION ALL — 拆分子查询，分别用基础引擎执行后合并
 	if (/\bUNION\b/i.test(query)) {
 		return executeUnionQuery(store, project, query);
 	}
 
-	// Check for multi-hop pattern: -[r*1..3]->
+	// WITH 子句 — 管道式中继，拆分后逐段执行
+	if (/\bWITH\b/i.test(query)) {
+		return executeWithQuery(store, project, query);
+	}
+
+	// 多跳变长路径: -[r*1..3]->
 	const multiHopMatch = query.match(/\[(\w*)\*(\d+)\.\.(\d+)\]/);
 	if (multiHopMatch) {
 		return executeMultiHopQuery(store, project, query, parseInt(multiHopMatch[2]), parseInt(multiHopMatch[3]));
 	}
 
-	// Check for CASE WHEN
-	if (/\bCASE\b/i.test(query)) {
-		// For now, delegate to base CypherEngine — CASE is handled as expression
-	}
-
-	// Default: return empty (base engine handles simple queries)
 	return { columns: [], rows: [] };
 }
 
-function executeUnionQuery(store: CodebaseGraphStore, project: string, query: string): { columns: string[]; rows: any[][] } {
-	const parts = query.split(/\bUNION\s+(ALL\b)?/i);
+function executeUnionQuery(store: CodebaseGraphStore, project: string | undefined, query: string): { columns: string[]; rows: any[][] } {
 	const isAll = /UNION\s+ALL/i.test(query);
+	// 按 UNION / UNION ALL 拆分子查询（保留子查询原文）
+	const parts = query.split(/\bUNION\s+(?:ALL\s+)?/i).map(p => p.trim()).filter(Boolean);
 
-	const allResults: { columns: string[]; rows: any[][] } = { columns: [], rows: [] };
+	const engine = new CypherEngine(store);
+	let columns: string[] = [];
+	const rows: any[][] = [];
 	const seen = new Set<string>();
 
 	for (const part of parts) {
-		const trimmed = part.trim();
-		if (!trimmed) { continue; }
-		// Execute each sub-query (would delegate to base CypherEngine)
-		// For now, just collect results
+		try {
+			const res = engine.execute(part, project);
+			if (res.columns.length > 0) { columns = res.columns; }
+			for (const row of res.rows) {
+				if (!isAll) {
+					const key = JSON.stringify(row);
+					if (seen.has(key)) { continue; }
+					seen.add(key);
+				}
+				rows.push(row);
+			}
+		} catch {
+			// 单个子查询解析/执行失败时跳过，避免整体失败
+		}
 	}
 
-	if (!isAll) {
-		// Deduplicate rows
-		allResults.rows = allResults.rows.filter(row => {
-			const key = JSON.stringify(row);
-			if (seen.has(key)) { return false; }
-			seen.add(key);
-			return true;
-		});
-	}
-
-	return allResults;
+	return { columns, rows };
 }
 
 function executeMultiHopQuery(
 	store: CodebaseGraphStore,
-	project: string,
+	project: string | undefined,
 	query: string,
 	minHops: number,
 	maxHops: number,
@@ -171,6 +174,375 @@ function bfsPaths(store: CodebaseGraphStore, startId: number, minHops: number, m
 	}
 
 	return results;
+}
+
+/**
+ * 执行带 WITH 子句的管道查询。
+ *
+ * 示例：MATCH (n:Function) WITH n.name AS funcName, n.cognitive AS cx WHERE cx > 10 RETURN funcName, cx ORDER BY cx DESC
+ *
+ * 策略：
+ * 1. 按 WITH 拆分为前后两段
+ * 2. 前段：重构为 MATCH...RETURN <vars>，用基础引擎执行得到中间行
+ * 3. WITH 段：解析投影表达式 + 可选 WHERE，变换/过滤中间行
+ * 4. 后段：对中间行手动应用 RETURN / ORDER BY / LIMIT / SKIP
+ */
+function executeWithQuery(
+	store: CodebaseGraphStore,
+	project: string | undefined,
+	query: string,
+): { columns: string[]; rows: any[][] } {
+	// ── 1. 拆分 ──
+	const withMatch = query.match(/\bWITH\b/i);
+	if (!withMatch || !withMatch.index) {
+		return { columns: [], rows: [] };
+	}
+	const withIdx = withMatch.index;
+	const preWith = query.substring(0, withIdx).trim();
+	const postWithRaw = query.substring(withIdx).trim(); // "WITH ... RETURN ..."
+
+	// ── 2. 解析 WITH 子句 ──
+	// 提取 WITH 投影（WITH x AS a, y AS b）和可选的 WHERE
+	const withClauseEnd = findWithClauseEnd(postWithRaw);
+	const withBody = postWithRaw.substring(5, withClauseEnd).trim(); // 去掉 "WITH " 前缀
+	const postWith = postWithRaw.substring(withClauseEnd).trim(); // RETURN / ORDER BY / LIMIT ...
+
+	// 解析投影: "n.name AS funcName, n.cognitive AS cx, count(r) AS cnt"
+	// 也支持不带 AS 的简单投影: "a, b.name"
+	const projections = parseWithProjections(withBody);
+
+	// 提取 WITH 内的 WHERE（如果有）
+	const withWhereMatch = withBody.match(/WHERE\s+(.+)$/i);
+	const withWhereClause = withWhereMatch ? withWhereMatch[1].trim() : null;
+
+	// ── 3. 构建前段查询并执行 ──
+	// 从 MATCH 中提取所有模式变量名，组装 RETURN
+	const preWithQuery = buildPreWithQuery(preWith, projections);
+	const engine = new CypherEngine(store);
+	let preResult: { columns: string[]; rows: any[][] };
+	try {
+		preResult = engine.execute(preWithQuery, project);
+	} catch {
+		return { columns: [], rows: [] };
+	}
+
+	if (preResult.rows.length === 0) {
+		return { columns: [], rows: [] };
+	}
+
+	// ── 4. 对中间行做 WITH 投影 + 聚合 + WHERE 过滤 ──
+	let midColumns: string[] = [];
+	const aggMap = new Map<string, { func: string; sourceCol: string }>(); // alias → {func, sourceCol}
+
+	for (const p of projections) {
+		if (p.aggregate) {
+			// 聚合: count(r) AS cnt → 源列 r, 聚合函数 COUNT
+			aggMap.set(p.alias || p.expr, { func: p.aggregate, sourceCol: p.expr });
+		}
+		midColumns.push(p.alias || p.expr);
+	}
+
+	// 分组键 = 所有非聚合投影
+	const groupKeys = projections.filter(p => !p.aggregate);
+	const hasAggregation = aggMap.size > 0;
+
+	let midRows: Map<string, any>[];
+
+	if (hasAggregation) {
+		// 按 groupKeys 分组，对每组的聚合列计算
+		const groups = new Map<string, { groupRow: Map<string, any>; rows: Map<string, any>[] }>();
+		for (const row of preResult.rows) {
+			const rowMap = new Map<string, any>();
+			preResult.columns.forEach((c, i) => rowMap.set(c, row[i]));
+			const groupKey = groupKeys.map(gk => {
+				const val = resolveRowValue(gk.expr, rowMap);
+				return val != null ? String(val) : '';
+			}).join('|');
+			if (!groups.has(groupKey)) {
+				const groupRow = new Map<string, any>();
+				for (const gk of groupKeys) {
+					groupRow.set(gk.alias || gk.expr, resolveRowValue(gk.expr, rowMap));
+				}
+				groups.set(groupKey, { groupRow, rows: [] });
+			}
+			groups.get(groupKey)!.rows.push(rowMap);
+		}
+
+		midRows = [];
+		for (const [, g] of groups) {
+			const outRow = new Map(g.groupRow);
+			for (const [alias, { func, sourceCol }] of aggMap) {
+				const values = g.rows.map(r => resolveRowValue(sourceCol, r)).filter(v => v != null);
+				switch (func) {
+					case 'COUNT': outRow.set(alias, values.length); break;
+					case 'SUM': outRow.set(alias, values.reduce((s: number, v: any) => s + Number(v), 0)); break;
+					case 'AVG': outRow.set(alias, values.length ? values.reduce((s: number, v: any) => s + Number(v), 0) / values.length : 0); break;
+					case 'MIN': outRow.set(alias, values.length ? Math.min(...values.map(Number)) : null); break;
+					case 'MAX': outRow.set(alias, values.length ? Math.max(...values.map(Number)) : null); break;
+					default: outRow.set(alias, null);
+				}
+			}
+			midRows.push(outRow);
+		}
+	} else {
+		// 无聚合：直接重命名/挑选列
+		midRows = [];
+		for (const row of preResult.rows) {
+			const rowMap = new Map<string, any>();
+			preResult.columns.forEach((c, i) => rowMap.set(c, row[i]));
+			const outRow = new Map<string, any>();
+			for (const p of projections) {
+				const sourceVal = resolveRowValue(p.expr, rowMap);
+				outRow.set(p.alias || p.expr, sourceVal);
+			}
+			midRows.push(outRow);
+		}
+	}
+
+	// ── 5. WITH WHERE 过滤 ──
+	if (withWhereClause && midRows.length > 0) {
+		midRows = midRows.filter(row => evalSimpleExpression(withWhereClause, row));
+	}
+
+	if (midRows.length === 0) {
+		return { columns: [], rows: [] };
+	}
+
+	// ── 6. 应用后段 RETURN / ORDER BY / LIMIT / SKIP ──
+	return applyPostWithClauses(midRows, postWith);
+}
+
+/** 找到 WITH 子句结束位置（下一个 RETURN / ORDER BY / LIMIT / SKIP 关键字之前）。 */
+function findWithClauseEnd(postWithRaw: string): number {
+	// 从 "WITH " (5 chars) 之后开始找
+	const body = postWithRaw.substring(5);
+	const keywords = ['RETURN', 'ORDER', 'LIMIT', 'SKIP'];
+	let earliest = body.length;
+	for (const kw of keywords) {
+		const re = new RegExp(`\\b${kw}\\b`, 'i');
+		const m = re.exec(body);
+		if (m && m.index < earliest) {
+			earliest = m.index;
+		}
+	}
+	return earliest + 5;
+}
+
+interface WithProjection {
+	expr: string;
+	alias?: string;
+	aggregate?: string; // COUNT/SUM/AVG/MIN/MAX
+}
+
+/** 解析 WITH 投影列表："n.name AS funcName, count(r) AS cnt" */
+function parseWithProjections(projBody: string): WithProjection[] {
+	const result: WithProjection[] = [];
+	// 先去掉 WHERE 子句
+	const cleanBody = projBody.replace(/\bWHERE\b.*$/i, '').trim();
+	// 按逗号拆分（注意括号内的逗号不拆）
+	const parts = splitTopLevelCommas(cleanBody);
+	for (const part of parts) {
+		const trimmed = part.trim();
+		// 检测聚合函数: COUNT(x) [AS alias], SUM(x.y) [AS alias], etc.
+		const aggMatch = trimmed.match(/^(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(.+?)\s*\)(\s+AS\s+(\w+))?\s*$/i);
+		if (aggMatch) {
+			const func = aggMatch[1].toUpperCase();
+			const expr = aggMatch[2].trim();
+			const alias = aggMatch[4] || undefined; // optional AS alias from group 4
+			result.push({ expr, alias: alias || expr, aggregate: func });
+		} else {
+			// 普通投影: expr 或 expr AS alias
+			const asMatch = trimmed.match(/^(.+?)\s+AS\s+(\w+)\s*$/i);
+			if (asMatch) {
+				result.push({ expr: asMatch[1].trim(), alias: asMatch[2] });
+			} else {
+				result.push({ expr: trimmed });
+			}
+		}
+	}
+	return result;
+}
+
+/** 按顶层逗号拆分（括号内的逗号不拆）。 */
+function splitTopLevelCommas(s: string): string[] {
+	const parts: string[] = [];
+	let depth = 0;
+	let start = 0;
+	for (let i = 0; i < s.length; i++) {
+		if (s[i] === '(') { depth++; }
+		else if (s[i] === ')') { depth--; }
+		else if (s[i] === ',' && depth === 0) {
+			parts.push(s.substring(start, i));
+			start = i + 1;
+		}
+	}
+	parts.push(s.substring(start));
+	return parts.filter(p => p.trim());
+}
+
+/** 从 MATCH 子句构建前段查询，RETURN 所有 WITH 投影中引用的变量。 */
+function buildPreWithQuery(preWith: string, projections: WithProjection[]): string {
+	// 确保有 RETURN 子句
+	if (/\bRETURN\b/i.test(preWith)) {
+		return preWith;
+	}
+	// 收集投影中用到的所有变量（取 . 前的部分）
+	const vars = new Set<string>();
+	for (const p of projections) {
+		const dotIdx = p.expr.indexOf('.');
+		vars.add(dotIdx > 0 ? p.expr.substring(0, dotIdx) : p.expr);
+	}
+	const returnVars = Array.from(vars).join(', ');
+	return `${preWith} RETURN ${returnVars}`;
+}
+
+/** 对中间行应用后段 RETURN / ORDER BY / LIMIT / SKIP。 */
+function applyPostWithClauses(
+	midRows: Map<string, any>[],
+	postWith: string,
+): { columns: string[]; rows: any[][] } {
+	// 解析 RETURN 列
+	const returnMatch = postWith.match(/\bRETURN\b\s+(.+?)(?=\s*(?:ORDER|LIMIT|SKIP|$))/is);
+	let columns: string[] = [];
+	if (returnMatch) {
+		const retBody = returnMatch[1].trim();
+		columns = retBody.split(',').map(c => {
+			// 提取别名: "funcName" 或 "count(r) AS cnt" → "cnt"
+			const asMatch = c.trim().match(/(?:AS\s+)?(\w+)\s*$/i);
+			return asMatch ? asMatch[1] : c.trim();
+		});
+	}
+	if (columns.length === 0) {
+		// 没有显式 RETURN：用中间列
+		if (midRows.length > 0) {
+			columns = Array.from(midRows[0].keys());
+		}
+	}
+
+	let rows = [...midRows];
+
+	// ORDER BY
+	const orderMatch = postWith.match(/ORDER\s+BY\s+(.+?)(?=\s*(?:LIMIT|SKIP|$))/is);
+	if (orderMatch) {
+		const orderFields: { field: string; desc: boolean }[] = [];
+		const fields = orderMatch[1].split(',');
+		for (const f of fields) {
+			const desc = /\bDESC\b/i.test(f);
+			const field = f.replace(/\b(?:ASC|DESC)\b/i, '').trim();
+			orderFields.push({ field, desc });
+		}
+		rows.sort((a, b) => {
+			for (const { field, desc } of orderFields) {
+				const va = a.get(field);
+				const vb = b.get(field);
+				if (va == null && vb == null) { continue; }
+				if (va == null) { return 1; }
+				if (vb == null) { return -1; }
+				if (va < vb) { return desc ? 1 : -1; }
+				if (va > vb) { return desc ? -1 : 1; }
+			}
+			return 0;
+		});
+	}
+
+	// SKIP
+	const skipMatch = postWith.match(/\bSKIP\b\s+(\d+)/i);
+	if (skipMatch) {
+		rows = rows.slice(parseInt(skipMatch[1]));
+	}
+
+	// LIMIT
+	const limitMatch = postWith.match(/\bLIMIT\b\s+(\d+)/i);
+	if (limitMatch) {
+		rows = rows.slice(0, parseInt(limitMatch[1]));
+	}
+
+	// 转换为数组
+	const resultRows: any[][] = rows.map(row => columns.map(c => row.get(c) ?? null));
+
+	return { columns, rows: resultRows };
+}
+
+/** 从行 Map 中解析点分表达式值（如 "f.name" → row.get("f")?.name ?? row.get("f")?.properties?.name）。 */
+function resolveRowValue(expr: string, rowMap: Map<string, any>): any {
+	const dotIdx = expr.indexOf('.');
+	if (dotIdx > 0) {
+		const varName = expr.substring(0, dotIdx);
+		const fieldName = expr.substring(dotIdx + 1);
+		const node = rowMap.get(varName);
+		if (!node) { return undefined; }
+		return node[fieldName] ?? node.properties?.[fieldName];
+	}
+	return rowMap.get(expr);
+}
+
+/** 对中间行评估简单的 WHERE 表达式（支持 =, !=, >, <, >=, <=, CONTAINS, STARTS WITH, ENDS WITH, AND, OR）。 */
+function evalSimpleExpression(expr: string, row: Map<string, any>): boolean {
+	// 处理 AND/OR
+	const orParts = splitLogical(expr, 'OR');
+	if (orParts.length > 1) {
+		return orParts.some(p => evalSimpleExpression(p, row));
+	}
+	const andParts = splitLogical(expr, 'AND');
+	if (andParts.length > 1) {
+		return andParts.every(p => evalSimpleExpression(p, row));
+	}
+
+	// 单个比较
+	const m = expr.match(/^(.+?)\s+(STARTS\s+WITH|ENDS\s+WITH|CONTAINS|[<>=!]=|[<>])\s+(.+)$/i);
+	if (!m) { return false; }
+
+	const field = m[1].trim();
+	let op = m[2].trim().toUpperCase().replace(/\s+/g, '_'); // STARTS WITH → STARTS_WITH
+	const valueStr = m[3].trim().replace(/^['"]|['"]$/g, '');
+
+	const val = row.get(field);
+	if (val == null) { return false; }
+
+	switch (op) {
+		case '=': return String(val) === valueStr;
+		case '!=': return String(val) !== valueStr;
+		case '>': return Number(val) > Number(valueStr);
+		case '<': return Number(val) < Number(valueStr);
+		case '>=': return Number(val) >= Number(valueStr);
+		case '<=': return Number(val) <= Number(valueStr);
+		case 'CONTAINS': return String(val).includes(valueStr);
+		case 'STARTS_WITH': return String(val).startsWith(valueStr);
+		case 'ENDS_WITH': return String(val).endsWith(valueStr);
+		default: return false;
+	}
+}
+
+/** 按逻辑运算符 AND/OR 拆分表达式（不被引号、括号内的干扰）。 */
+function splitLogical(expr: string, op: 'AND' | 'OR'): string[] {
+	const parts: string[] = [];
+	let depth = 0;
+	let inQuote = false;
+	let quoteChar = '';
+	let start = 0;
+	const re = new RegExp(`\\b${op}\\b`, 'i');
+
+	for (let i = 0; i < expr.length; i++) {
+		const ch = expr[i];
+		if (inQuote) {
+			if (ch === quoteChar) { inQuote = false; }
+			continue;
+		}
+		if (ch === '"' || ch === "'") { inQuote = true; quoteChar = ch; continue; }
+		if (ch === '(') { depth++; continue; }
+		if (ch === ')') { depth--; continue; }
+
+		if (depth === 0 && re.test(expr.substring(i))) {
+			const m = expr.substring(i).match(re);
+			if (m && m.index === 0) {
+				parts.push(expr.substring(start, i).trim());
+				start = i + m[0].length;
+				i = start - 1; // will be incremented by loop
+			}
+		}
+	}
+	parts.push(expr.substring(start).trim());
+	return parts.filter(p => p.length > 0);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -305,27 +677,29 @@ export interface LeidenResult {
 	modularity: number;
 }
 
-export function runMultiLevelLeiden(
+export async function runMultiLevelLeiden(
 	store: CodebaseGraphStore,
 	project: string,
 	resolution: number = 1.0,
 	maxLevels: number = 10,
-): LeidenResult {
+): Promise<LeidenResult> {
 	const nodes = store.getAllNodes().filter(n => n.project === project);
 	if (nodes.length === 0) { return { communities: new Map(), level: 0, modularity: 0 }; }
 
-	// Build adjacency list
+	// Build adjacency list — 单遍扫描项目边（旧实现逐节点 getEdgesBySource，
+	// 46w 节点 × 每次数组分配，是 Leiden 阶段的主要开销与 UI 冻结源）
 	const adjList = new Map<number, Map<number, number>>(); // nodeId → (neighborId → weight)
 	for (const node of nodes) {
 		adjList.set(node.id, new Map());
 	}
-	for (const node of nodes) {
-		const edges = store.getEdgesBySource(node.id);
-		for (const edge of edges) {
-			if (!adjList.has(edge.targetId)) { continue; }
-			const neighbors = adjList.get(node.id)!;
-			neighbors.set(edge.targetId, (neighbors.get(edge.targetId) || 0) + 1);
-		}
+	let ec = 0;
+	for (const edge of store.getAllEdges()) {
+		if (edge.project !== project) { continue; }
+		const neighbors = adjList.get(edge.sourceId);
+		if (!neighbors || !adjList.has(edge.targetId)) { continue; }
+		neighbors.set(edge.targetId, (neighbors.get(edge.targetId) || 0) + 1);
+		// 时间切片：百万级边扫描中定期让出主线程
+		if (++ec % 200000 === 0) { await new Promise<void>(r => setTimeout(r, 0)); }
 	}
 
 	// Initialize: each node in its own community
@@ -341,6 +715,8 @@ export function runMultiLevelLeiden(
 	while (level < maxLevels) {
 		const { improved, modularity: newMod } = leidenIteration(adjList, community, resolution);
 		modularity = newMod;
+		// 每层之间让出主线程（单层 leidenIteration 为 O(E) 同步块）
+		await new Promise<void>(r => setTimeout(r, 0));
 		if (!improved) { break; }
 
 		// Aggregate: community → supernode
@@ -739,7 +1115,7 @@ export function detectDeadCodeEnhanced(store: CodebaseGraphStore, project: strin
 	}
 
 	// 3. Identify dead nodes
-	const deadNodes = allNodes.filter(n => !reachable.has(n.id) && n.label !== 'file');
+	const deadNodes = allNodes.filter(n => !reachable.has(n.id) && n.label !== 'file' && n.label !== 'File');
 	const deadFiles = new Set<string>();
 	const deadFunctions: { name: string; filePath: string; qualifiedName: string }[] = [];
 	const deadClasses: { name: string; filePath: string; qualifiedName: string }[] = [];

@@ -1,0 +1,1613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>记忆机制对比 — MiMo-Code vs Sarosis</title>
+<style>
+  :root {
+    --bg: #1a1a24;
+    --bg-card: #22222e;
+    --bg-code: #16161f;
+    --border: #33333f;
+    --fg: #d4d4dc;
+    --fg-dim: #8a8a98;
+    --accent: #569cd6;
+    --accent2: #4ec9b0;
+    --warn: #d4a017;
+    --danger: #f48771;
+    --purple: #b799ff;
+    --orange: #f0a04b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 16px;
+    background: var(--bg); color: var(--fg);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.7;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header { margin-bottom: 28px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h1 .sub { font-size: 14px; color: var(--fg-dim); font-weight: normal; }
+  h2 {
+    font-size: 19px; margin: 36px 0 12px; padding-left: 10px;
+    border-left: 3px solid var(--accent);
+  }
+  h3 { font-size: 15px; margin: 20px 0 8px; color: var(--accent2); }
+  p { margin: 8px 0; }
+  code {
+    background: var(--bg-code); padding: 1px 6px; border-radius: 4px;
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px;
+    color: #9cdcfe;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px; margin: 12px 0;
+  }
+  .card h4 { margin: 0 0 8px; font-size: 14px; }
+  .card.mimo h4 { color: var(--accent2); }
+  .card.saros h4 { color: var(--accent); }
+  .card ul { margin: 6px 0; padding-left: 18px; }
+  .card li { margin: 3px 0; }
+  table {
+    width: 100%; border-collapse: collapse; margin: 12px 0;
+    background: var(--bg-card); border-radius: 8px; overflow: hidden;
+    font-size: 13px;
+  }
+  th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: #2a2a38; font-weight: 600; white-space: nowrap; }
+  th.mimo { color: var(--accent2); }
+  th.saros { color: var(--accent); }
+  tr:last-child td { border-bottom: none; }
+  td.dim { color: var(--fg-dim); }
+  .tag {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600; margin: 1px 2px;
+    background: rgba(86,156,214,.12); color: var(--accent);
+    border: 1px solid rgba(86,156,214,.3);
+  }
+  .tag.g { background: rgba(78,201,176,.12); color: var(--accent2); border-color: rgba(78,201,176,.3); }
+  .tag.w { background: rgba(212,160,23,.12); color: var(--warn); border-color: rgba(212,160,23,.3); }
+  .tag.d { background: rgba(244,135,113,.12); color: var(--danger); border-color: rgba(244,135,113,.3); }
+  .tag.p { background: rgba(183,153,255,.12); color: var(--purple); border-color: rgba(183,153,255,.3); }
+  .tag.o { background: rgba(240,160,75,.12); color: var(--orange); border-color: rgba(240,160,75,.3); }
+  .flow {
+    background: var(--bg-code); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin: 12px 0; font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 12.5px; line-height: 1.8; overflow-x: auto; white-space: pre;
+  }
+  .flow .c-dim { color: var(--fg-dim); }
+  .flow .c-a { color: var(--accent); }
+  .flow .c-g { color: var(--accent2); }
+  .flow .c-w { color: var(--warn); }
+  .flow .c-p { color: var(--purple); }
+  .callout {
+    border-left: 3px solid var(--warn); background: rgba(212,160,23,.06);
+    padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 12px 0;
+  }
+  .callout.blue { border-color: var(--accent); background: rgba(86,156,214,.06); }
+  .callout.green { border-color: var(--accent2); background: rgba(78,201,176,.06); }
+  .kicker {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--fg-dim); margin-bottom: 4px;
+  }
+  .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent); color: #101018; font-weight: 700; font-size: 12px;
+    margin-right: 8px;
+  }
+  footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">Memory Mechanism Deep-Dive Comparison</div>
+  <h1>记忆机制对比 <span class="sub">MiMo-Code × Sarosis × agentmemory（原始项目）</span></h1>
+  <p class="dim" style="color:var(--fg-dim)">主体：MiMo-Code vs Sarosis 六维对比（分类 · 存储 · 沉淀 · 召回 · 遗忘 · 注入时机）｜ 附录：agentmemory 原始项目 vs 本项目移植版 ｜ 2026-07-24</p>
+</header>
+
+<h2>0. 总览：两种范式</h2>
+
+<table>
+  <tr><th style="width:130px"></th><th class="mimo">MiMo-Code</th><th class="saros">Sarosis（本项目）</th></tr>
+  <tr><td><b>范式</b></td>
+    <td><b>Prompt-first</b>：记忆 = 提示词内容，文件即记忆</td>
+    <td><b>Engine-first</b>：记忆 = 带生命周期的结构化数据</td></tr>
+  <tr><td><b>载体</b></td>
+    <td>单个 <code>MEMORY.md</code> 文件 + session JSONL</td>
+    <td>网关托管 KV（SQLite/JS-KV）+ BM25/Vector/Graph 索引</td></tr>
+  <tr><td><b>写入者</b></td>
+    <td>Agent 自己（经受约束的 file-edit 工具）</td>
+    <td>引擎自动 + LLM 半自动（标签/抽取管线）+ 记忆工具</td></tr>
+  <tr><td><b>复杂度</b></td>
+    <td>极简（~200 行逻辑）</td>
+    <td>重型引擎（40+ 模块：索引/图谱/保留策略/审计）</td></tr>
+</table>
+
+<div class="callout blue">
+<b>一句话总结</b>：MiMo 把记忆当作「提示词的一部分」——单文件全文注入，极简可移植但只增不减；Sarosis 把记忆当作「带生命周期的数据」——检索式注入 + 自动沉淀管线 + TTL/衰减/驱逐，可扩展但依赖网关进程与检索质量。
+</div>
+
+<h2>1. 记忆分类</h2>
+
+<div class="grid2">
+  <div class="card mimo">
+    <h4>MiMo-Code — 4 个 prompt 槽位，无类型化记忆库</h4>
+    <ul>
+      <li><b>identity</b>：<code>SOUL.md</code> / <code>AGENT.md</code>，会话启动一次性读取</li>
+      <li><b>skills</b>：技能目录，随会话注入</li>
+      <li><b>project instructions</b>：<code>AGENTS.md</code>/<code>CLAUDE.md</code>（findUp 发现），每轮就近挂载</li>
+      <li><b>personal memory</b>：<code>~/.config/opencode/saros/memory/MEMORY.md</code> <b>全文</b>，每次 LLM 调用注入</li>
+    </ul>
+    <p class="dim">对话侧只有 fork lineage（<code>[summary]-[text]</code> 段）+ compaction 摘要，<b>没有</b> episodic/semantic/procedural 概念。</p>
+  </div>
+  <div class="card saros">
+    <h4>Sarosis — 多维度类型体系</h4>
+    <ul>
+      <li><b>9 类原生类型</b>：<span class="tag">working</span><span class="tag g">pattern</span><span class="tag w">fact</span><span class="tag">preference</span><span class="tag p">architecture</span><span class="tag d">bug</span><span class="tag o">workflow</span><span class="tag p">semantic</span><span class="tag o">procedural</span></li>
+      <li><b>8 个固定槽位</b>：persona / user_preferences / project_context / tool_guidelines / guidance / pending_items / session_patterns / self_notes</li>
+      <li><b>短/长程划分</b>：<code>loadContext</code> 返回 <code>shortTermMemories</code>（working）与 <code>longTermMemories</code>（episodic/semantic…）两组</li>
+      <li><b>Lessons</b>：带 <code>confidence + reinforcements</code> 的经验条目（独立 KV scope）</li>
+      <li><b>辅助结构</b>：sessions 摘要、checkpoints、relations 知识图谱、skill 提炼物、audit log</li>
+    </ul>
+  </div>
+</div>
+
+<h2>2. 记忆存储</h2>
+
+<table>
+  <tr><th style="width:110px"></th><th class="mimo">MiMo-Code</th><th class="saros">Sarosis</th></tr>
+  <tr><td><b>主存储</b></td>
+    <td><code>~/.config/opencode/saros/memory/MEMORY.md</code>（单 markdown）</td>
+    <td>网关进程 KV：<code>~/.vssaros/.agentmemory/state_store.db</code>（SQLite WAL；Node &lt; 22.5 降级 <code>kv_store.json</code>；数据根目录由主进程经 <code>AGENTMEMORY_DATA_DIR</code> 注入）</td></tr>
+  <tr><td><b>session</b></td>
+    <td>项目目录下 JSONL（<code>Storage.writeJSON</code>）</td>
+    <td>同 KV 的 <code>mem:*</code> scope（按 agentId 隔离）</td></tr>
+  <tr><td><b>索引</b></td>
+    <td><code>~/.cache/.../memory-index.json</code>（BM25-ish）</td>
+    <td>BM25 + Vector 索引（网关 in-process 重建）+ Knowledge Graph</td></tr>
+  <tr><td><b>访问路径</b></td>
+    <td>直接文件读写</td>
+    <td>renderer <code>AgentMemoryProviderProxy</code> → HTTP <code>:3111</code> → 网关 in-process V2 引擎</td></tr>
+  <tr><td><b>后端</b></td>
+    <td>纯文件，无数据库</td>
+    <td>SQLite/JSON 双后端自动切换</td></tr>
+</table>
+
+<div class="flow"><span class="c-dim"># Sarosis 存储拓扑</span>
+<span class="c-a">renderer</span> ── HTTP POST /provider/&lt;method&gt; ──▶ <span class="c-g">gateway :3111</span>
+                                                          │
+        ┌─────────────────────────────────────────────────┤
+        ▼                                                 ▼
+<span class="c-g">InProcessKV</span>                                <span class="c-p">AgentMemoryProviderV2 (in-process)</span>
+        │                                                 │
+        ▼                                                 ▼
+<span class="c-w">SQLite state_store.db (WAL)</span>   ◀── BM25/Vector 索引（启动时从 KV 重建）
+<span class="c-dim"># 数据根目录：~/.vssaros/.agentmemory/（AGENTMEMORY_DATA_DIR 注入；旧 ~/.saros 自动迁移）</span>
+<span class="c-dim"># 旧 JSONL 后端（SessionMemoryProvider）已废弃删除（2026-07-22）</span></div>
+
+<h2>3. 记忆沉淀（原始观察 → 持久记忆）</h2>
+
+<div class="grid2">
+  <div class="card mimo">
+    <h4>MiMo-Code — 无自动管线</h4>
+    <ul>
+      <li><code>MEMORY.md</code> 只能由 agent 主动调 <code>memory_edit / memory_append / memory_replace</code> 修改（本质是受约束的 file-edit）</li>
+      <li>compaction 产生 <code>continue.txt</code> 摘要保留对话连续性，但<b>不沉淀进 MEMORY.md</b></li>
+      <li>无蒸馏层级</li>
+    </ul>
+    <p class="dim">沉淀质量完全取决于模型意愿——容易「什么都不记」。</p>
+  </div>
+  <div class="card saros">
+    <h4>Sarosis — 五级沉淀管线（自动 + 半自动）</h4>
+    <ul>
+      <li><span class="num" style="width:18px;height:18px;font-size:11px">0</span><b>turn observations</b>：每轮把非 system 消息写为 <code>episodic</code>（hash 去重，≤1500 字符）</li>
+      <li><span class="num" style="width:18px;height:18px;font-size:11px">1</span><b>L1 episodic 提取</b>：LLM 抽取 durable facts（<code>{content, type:persona/episodic/instruction}</code>），每 3 turn 阈值</li>
+      <li><span class="num" style="width:18px;height:18px;font-size:11px">2</span><b>L2 scene 提取</b>：近期记忆 → scene 摘要（<code>scene_name/summary/keywords</code> → semantic），L1 后延时触发</li>
+      <li><span class="num" style="width:18px;height:18px;font-size:11px">3</span><b>L3 skill 提炼</b>：workflow/pattern 记忆 → 带步骤的 skill（维护扫描时）</li>
+      <li><span class="num" style="width:18px;height:18px;font-size:11px">T</span><b>memory_extract 标签</b>：LLM 回复末尾自发输出 <code>&lt;memory_extract&gt;{...}&lt;/memory_extract&gt;</code>，driver 流式剥离写入</li>
+    </ul>
+  </div>
+</div>
+
+<div class="flow"><span class="c-dim"># Sarosis 引擎侧 ConsolidationPipeline</span>
+原始写入 ──▶ <span class="c-a">dedup</span>（Jaccard ≥ 0.95 判重）
+         ──▶ <span class="c-g">supersede</span>（同主题新版替代旧版，旧版 isLatest=false）
+         ──▶ <span class="c-w">merge</span>（相似条目合并）
+         ──▶ <span class="c-p">promote</span>（working 重复 ≥ 3 次 → 晋升 pattern）
+session ──▶ <span class="c-p">autoCrystallize</span>（结晶为长期记忆）
+定期   ──▶ <span class="c-o">runMaintenanceSweep</span>（fullSweep + extractSkill + autoCrystallize）</div>
+
+<h2>4. 记忆召回</h2>
+
+<table>
+  <tr><th style="width:110px"></th><th class="mimo">MiMo-Code</th><th class="saros">Sarosis</th></tr>
+  <tr><td><b>主召回</b></td>
+    <td><code>MEMORY.md</code> <b>全量原文</b>进 system prompt（无检索、无截断）</td>
+    <td><code>loadContext</code>（session 首次）：短/长程分组 + <code>systemPrompt</code> 槽位 + relevantDocuments，<b>budget-aware</b></td></tr>
+  <tr><td><b>搜索</b></td>
+    <td><code>memory_search</code> 查索引（BM25-ish + recency + MMR），搜的是历史 transcripts</td>
+    <td><code>searchMemories</code>：BM25 + Vector <b>RRF 混合</b> + 时间衰减 + MMR 多样性 + access-log 加权，索引空时回退 KV 扫描</td></tr>
+  <tr><td><b>压缩期</b></td>
+    <td>LLM 重新摘要</td>
+    <td><code>retrieveContextOnly</code> 用检索替代 LLM 摘要（<code>getCompactContext</code> 取 sessions 摘要）</td></tr>
+  <tr><td><b>关联</b></td>
+    <td class="dim">无</td>
+    <td>Knowledge Graph relations</td></tr>
+</table>
+
+<div class="callout">
+<b>关键差异</b>：MiMo 是 <b>always-on 全量注入</b>（记忆 = prompt 前缀的一部分，随记忆增长线性膨胀）；Sarosis 是 <b>检索式注入</b>（按预算取相关子集，可扩展但依赖检索质量）。
+</div>
+
+<h2>5. 记忆遗忘</h2>
+
+<div class="grid2">
+  <div class="card mimo">
+    <h4>MiMo-Code — 基本无遗忘机制</h4>
+    <ul>
+      <li>无 TTL / decay / eviction / GC</li>
+      <li><code>MEMORY.md</code> append-only + 手动编辑</li>
+      <li>索引自动重建；靠 compaction 和人工清理对冲膨胀</li>
+    </ul>
+    <p class="dim">长期会积累过时结论污染 prompt——它用「手动编辑」对冲。</p>
+  </div>
+  <div class="card saros">
+    <h4>Sarosis — 完整生命周期</h4>
+    <ul>
+      <li><b>TTL</b>：<code>forgetAfter</code> 字段；recall 时过滤；<code>autoForget</code> 物理删除过期项</li>
+      <li><b>矛盾淘汰</b>：<code>autoForget</code>：Jaccard &gt; 阈值 → 旧条目 <code>isLatest=false</code>（软删除）</li>
+      <li><b>低价值清理</b>：<code>strength ≤ 2 && 超 180 天</code> → 删除</li>
+      <li><b>保留评分</b>：<code>retentionScore</code> = salience（类型权重 + 访问频次）× 时间衰减（exp，λ=0.01）+ 强化增益 → hot/warm/cold 分层</li>
+      <li><b>驱逐</b>：<code>retentionEvict</code> 清 cold 以下（≤50 条/次）</li>
+      <li><b>Lessons 衰减</b>：<code>decayRate=0.05</code>，重复强化则 confidence 回升</li>
+      <li><b>手动遗忘</b>：<code>forgetMemory</code>（memory_forget 工具入口）</li>
+    </ul>
+  </div>
+</div>
+
+<h2>6. 记忆注入时机</h2>
+
+<h3>MiMo-Code</h3>
+<ul>
+  <li><b>每次 LLM 调用</b>（主循环 / subagent / fork / 标题生成全部）都把 <code>MEMORY.md</code> 全文拼进 system prompt，位置在静态手册之后、project instructions 之前</li>
+  <li>hook 系统把动态指令作为 hook message 注入</li>
+  <li><b>subagent 默认关闭记忆</b></li>
+  <li>无「session 首次注入」概念——是「每调用注入」</li>
+</ul>
+
+<h3>Sarosis — 多入口、分层注入</h3>
+
+<table>
+  <tr><th style="width:170px">时机</th><th>内容</th><th style="width:340px">形式</th></tr>
+  <tr><td><b>session 首次 turn</b></td>
+    <td><code>loadContext</code> → <code>&lt;agentmemory-context&gt;</code>（短/长程 + systemPrompt + 最近文件）</td>
+    <td>独立 system 消息，冻结前缀之后；<code>AGENTMEMORY_INJECT_CONTEXT</code> 开关；<code>full/longTermOnly</code> 策略 + <code>maxEntries</code> 配额</td></tr>
+  <tr><td><b>每轮（volatile）</b></td>
+    <td>Persona Memory 槽位</td>
+    <td>独立 system 消息，不进前缀指纹（防缓存失效）</td></tr>
+  <tr><td><b>每轮（context tier）</b></td>
+    <td><code>memoryExtractGuide</code>（教 LLM 何时输出 <code>&lt;memory_extract&gt;</code>）</td>
+    <td>冻结前缀内；Knot 模型补丁追加到 user 消息末尾</td></tr>
+  <tr><td><b>压缩时</b></td>
+    <td><code>RETRIEVED_CTX_PREFIX</code> 检索上下文</td>
+    <td>独立 system 消息，压缩时被剥离由摘要接管</td></tr>
+  <tr><td><b>plan 模式</b></td>
+    <td>前缀警告「历史结论不阻止新规划」</td>
+    <td><code>&lt;agentmemory-context&gt;</code> 内嵌注释</td></tr>
+  <tr><td><b>写入侧时机</b></td>
+    <td>turn observations 每轮后写；L1 每 3 轮；标签实时剥离</td>
+    <td><code>memory_injected / memory_extracted</code> 事件 → UI 卡片</td></tr>
+  <tr><td><b>sub-agent</b></td>
+    <td>继承 forkContext 冻结前缀（含已注入记忆上下文）</td>
+    <td>缓存对齐</td></tr>
+</table>
+
+<h2>7. 核心差异总结</h2>
+
+<table>
+  <tr><th style="width:30px">#</th><th>差异</th><th>影响</th></tr>
+  <tr><td>1</td>
+    <td><b>全量 vs 检索式注入</b>：MiMo 每次调用注入 MEMORY.md 全文；Sarosis 按 budget 检索子集</td>
+    <td>MiMo 简单但随记忆增长 prompt 线性膨胀；Sarosis 可扩展但依赖检索质量</td></tr>
+  <tr><td>2</td>
+    <td><b>手动 vs 自动沉淀</b>：MiMo 靠 agent 自觉编辑；Sarosis 五级管线自动 + LLM 半自动</td>
+    <td>MiMo 沉淀质量取决于模型意愿，容易「什么都不记」；Sarosis 容易「什么都记」需要遗忘对冲</td></tr>
+  <tr><td>3</td>
+    <td><b>无生命周期 vs 完整遗忘</b>：MiMo 只增不减；Sarosis TTL/衰减/矛盾淘汰/分层驱逐</td>
+    <td>MiMo 长期会积累过时结论污染 prompt；Sarosis 自动化但复杂度高</td></tr>
+  <tr><td>4</td>
+    <td><b>文件 vs 引擎</b>：MiMo 单文件纯文本；Sarosis KV+索引+图谱</td>
+    <td>MiMo 零依赖可移植；Sarosis 需要网关进程但有混合检索与审计</td></tr>
+  <tr><td>5</td>
+    <td><b>注入时机</b>：MiMo 每调用全量；Sarosis session 首次 + volatile 分层 + 压缩期检索</td>
+    <td>Sarosis 与提示词缓存对齐设计耦合（volatile 层不打断前缀缓存），MiMo 靠锚定 session 日期保缓存</td></tr>
+</table>
+
+<h2>8. 互相可借鉴的点</h2>
+
+<div class="grid2">
+  <div class="card saros">
+    <h4>Sarosis ← 借鉴 MiMo</h4>
+    <ul>
+      <li><b>用户可编辑的核心记忆文件</b>（MEMORY.md 式）：当前 Persona 槽位已接近，但用户不可直接编辑文件；可提供一个「核心记忆」markdown，用户/agent 都可编辑，注入优先级最高</li>
+      <li><b>极简兜底</b>：网关不可用时降级为单文件全量注入（当前降级是「无记忆」）</li>
+    </ul>
+  </div>
+  <div class="card mimo">
+    <h4>MiMo ← 借鉴 Sarosis</h4>
+    <ul>
+      <li><b>TTL / 矛盾淘汰</b>：防止 MEMORY.md 无限膨胀、过时结论污染 prompt</li>
+      <li><b>budget-aware 检索式注入</b>：替代全量注入，记忆增长后仍可扩展</li>
+      <li><b>自动沉淀管线</b>：减少对「模型自觉编辑」的依赖</li>
+    </ul>
+  </div>
+</div>
+
+<h2>9. 附录：agentmemory 原始项目 vs 本项目移植版</h2>
+
+<p>本项目的记忆引擎（<code>extensions/agentmemory-memory/src</code>，131 个 TS 文件）移植自独立的 agentmemory 项目（<code>G:\CustomWorkspaces\AIProjects\agentmemory</code>，npm 包 <code>@agentmemory/agentmemory</code> v0.9.28）。两者<b>引擎内核同源</b>（9 类记忆类型、consolidation/retention/hybrid-search 等函数级移植），但<b>分发形态与集成层完全不同</b>。</p>
+
+<h3>9.1 定位与分发形态</h3>
+
+<table>
+  <tr><th style="width:130px"></th><th class="mimo">agentmemory（原始项目）</th><th class="saros">本项目移植版</th></tr>
+  <tr><td><b>形态</b></td>
+    <td>独立 npm 包 + 长驻 <b>iii-engine worker</b> 进程（依赖 <code>iii-sdk@0.11.2</code> 锁死版本，需先启动 iii engine）</td>
+    <td>VS Code 客户端<b>内置扩展</b>（<code>extensions/agentmemory-memory</code>）+ 自研轻量网关（<code>host.mjs</code>，Electron 子进程，<code>:3111</code>）</td></tr>
+  <tr><td><b>面向用户</b></td>
+    <td>通用：Claude Code / Copilot CLI / Cursor / Gemini CLI / Codex / Hermes / OpenClaw / OpenCode 等 10+ agent 框架（<code>plugin/</code> 目录各配 hooks+skills）</td>
+    <td>专用：仅 Sarosis 客户端（agentStudio 子系统）</td></tr>
+  <tr><td><b>消费接口</b></td>
+    <td><b>四路并存</b>：MCP server（53 tools + 6 resources + 3 prompts）、REST API（<b>128 个端点</b>，<code>src/triggers/api.ts</code> 123KB）、CLI（28 文件，<code>agentmemory start/doctor/connect…</code>）、Viewer 单页 Web UI（~200KB HTML，:3113）</td>
+    <td><b>单路</b>：renderer <code>AgentMemoryProviderProxy</code> → HTTP <code>/provider/*</code> 方法路由 → 网关 in-process V2 引擎（~40 个 provider 方法）；网关仅有少量固定路由（<code>/health /ready /kv /search /embed /skill-md /provider</code>）</td></tr>
+  <tr><td><b>UI</b></td>
+    <td>独立 Viewer Web 页面 + WebSocket streams（:3112）</td>
+    <td>IDE 原生视图：<code>memoryViewPane</code>（侧栏）+ <code>memoryDetailEditorPane</code>（详情编辑器）</td></tr>
+  <tr><td><b>官方宣称指标</b></td>
+    <td>95.2% retrieval R@5 · 92% fewer tokens · 53 MCP tools · 12 auto hooks · 1,428+ tests</td>
+    <td class="dim">无独立宣称（继承引擎，重集成质量）</td></tr>
+  <tr><td><b>测试规模</b></td>
+    <td><code>test/</code> 130 个测试文件 + <code>benchmark/</code> + <code>eval/</code>（检索质量基准）</td>
+    <td>扩展测试 87 + 集成 53 + 客户端 memoryWriteAndFilter 33</td></tr>
+</table>
+
+<h3>9.2 架构对比</h3>
+
+<div class="flow"><span class="c-dim"># agentmemory 原始：iii-engine worker 架构</span>
+Claude Code / Cursor / … ── MCP/REST ──▶ <span class="c-g">iii engine</span> ──▶ <span class="c-a">agentmemory worker</span>
+                                              │                    │
+                                        （进程编排）        StateKV → iii state 原语
+                                                              HybridSearch（BM25+Vector）
+
+<span class="c-dim"># 本项目移植：VS Code 扩展 + 自研网关架构</span>
+<span class="c-a">renderer (IDE)</span> ── IMemoryProvider ──▶ <span class="c-g">AgentMemoryProviderProxy</span>
+                                              │ HTTP :3111 /provider/*
+                                              ▼
+                                    <span class="c-w">gateway host.mjs</span>（Electron 子进程）
+                                              │ in-process
+                                              ▼
+                                    <span class="c-p">AgentMemoryProviderV2</span> → InProcessKV
+                                              │
+                                              ▼
+                                    <span class="c-w">~/.vssaros/.agentmemory/state_store.db</span>（SQLite WAL / JS-KV）</div>
+
+<h3>9.3 移植覆盖度</h3>
+
+<table>
+  <tr><th>维度</th><th class="mimo">agentmemory 原始</th><th class="saros">本项目移植版</th><th style="width:110px">状态</th></tr>
+  <tr><td><b>引擎函数</b>（src/functions/ 64 文件）</td>
+    <td>consolidation / crystallize / skill-extract / retention / auto-forget / graph / orchestration 层（actions/frontier/leases/routines/signals/mesh/sentinels/cascade）等</td>
+    <td>131 个 TS 文件，<b>几乎全部移植</b>（含 meshCoord / teamMemory / obsidianExport / governance 等编排与治理模块）</td>
+    <td><span class="tag g">1:1 移植</span></td></tr>
+  <tr><td><b>记忆类型</b></td>
+    <td>9 类（working/pattern/fact/preference/architecture/bug/workflow/semantic/procedural）+ slots + lessons</td>
+    <td>同 9 类 + 8 固定槽位 + lessons（函数级一致）</td>
+    <td><span class="tag g">一致</span></td></tr>
+  <tr><td><b>Embedding providers</b></td>
+    <td>anthropic / openai / openrouter / minimax / xenova 本地 / fallback-chain / circuit-breaker（20 文件）</td>
+    <td>openai / gemini / cohere / voyage / clip / xenova / resilient / fallbackChain（同构移植）</td>
+    <td><span class="tag g">对齐</span></td></tr>
+  <tr><td><b>存储</b></td>
+    <td>iii engine state 原语（外部引擎托管）</td>
+    <td>自研 InProcessKV → SQLite <code>state_store.db</code>（WAL）/ JS-KV <code>kv_store.json</code> 双后端自动切换，<b>0 外部依赖</b></td>
+    <td><span class="tag o">替换</span></td></tr>
+  <tr><td><b>MCP server / REST 128 端点 / CLI / Viewer</b></td>
+    <td>有</td>
+    <td>无（MCP → IDE 内置工具；REST → 网关少量路由；CLI → 无；Viewer → IDE 原生面板）</td>
+    <td><span class="tag d">未移植</span></td></tr>
+  <tr><td><b>12 auto hooks + 多框架 plugin</b></td>
+    <td>有（hooks/ 15 文件 + plugin/ 79 文件）</td>
+    <td>无（由 agentStudio 自身注入点替代）</td>
+    <td><span class="tag d">未移植</span></td></tr>
+  <tr><td><b>benchmark / eval</b></td>
+    <td>有（检索质量基准 + 评测集）</td>
+    <td>无</td>
+    <td><span class="tag d">未移植</span></td></tr>
+</table>
+
+<div class="callout green">
+<b>已接入（2026-07-25）</b>：编排/治理类模块（<code>meshCoord / teamMemory / governance / obsidianExport / sentinels / cascade</code>）曾处于休眠状态（引擎已移植、V2 provider 已暴露、代理可转发，但客户端无调用方）。现已三层接线：①<b>工具面</b>——新增 6 个内置工具（<code>memory_governance / memory_team / memory_mesh / memory_sentinel / memory_obsidian_export / memory_cascade</code>，<code>advancedMemoryTools.ts</code>）；②<b>引擎自动</b>——supersede 时自动 <code>cascadeUpdate</code> 传播 stale；维护扫描接入 <code>leaseCleanup</code>；③<b>回归修复</b>——基础 4 工具（remember/search/delete/list）曾因 memoryTools.ts 丢失退化为 bundled stub，已重建恢复真实 handler。其余编排模块（actions/routines/frontier/sketches/signals 等）仍休眠，可后续按需接线。
+</div>
+
+<h3>9.4 本项目在移植基础上的新增层</h3>
+
+<div class="grid2">
+  <div class="card saros">
+    <h4>扩展/网关层（extensions/）</h4>
+    <ul>
+      <li><b>agentMemoryProviderV2</b>：IMemoryProvider 适配器（9 类 ↔ IMemoryEntry 4 类映射、槽位注册表、记忆事件总线）</li>
+      <li><b>agentMemoryProviderProxy</b>：renderer 瘦代理 + 本地事件重发（<code>memory_written/memory_write_failed</code>），网关失败时优雅降级</li>
+      <li><b>extension.ts</b>：VS Code 扩展激活，priority=1000 注册进 slotRegistry</li>
+      <li><b>host.mjs 网关</b>：SQLite/JS-KV 双后端、Node 版本自适应（node:sqlite 22.5+ 检测）、<code>/provider/*</code> 动态方法路由、void 方法 <code>{ok:true}</code> 包装（事件链修复）</li>
+      <li><b>am* 门面模块</b>（amFunctions/amPipeline/amSlots/amSchema…）：移植代码的组织封装</li>
+    </ul>
+  </div>
+  <div class="card saros">
+    <h4>agentStudio 集成层（src/vs/sessions/contrib/agentStudio/）</h4>
+    <ul>
+      <li><b>agentMemoryInjection</b>：session 首次 <code>&lt;agentmemory-context&gt;</code> 注入 + plan 模式警告 + budget 配额</li>
+      <li><b>turn observations 捕获</b>：user/assistant 消息 → mem:obs 暂存层（storeTurnObservations，哈希去重）；L1-L3 提炼管线已于 2026-07-26 移除（§17）</li>
+      <li><b>agentContextRetrieval</b>：压缩期检索替代 LLM 摘要（<code>RETRIEVED_CTX_PREFIX</code>）</li>
+      <li><b>memory_extract 标签协议</b>：LLM 回复末尾自发输出 → driver 流式剥离写入</li>
+      <li><b>Persona Memory volatile 层注入</b>：与提示词缓存对齐架构耦合（不打断前缀缓存）</li>
+      <li><b>Knot 模型补丁</b>：记忆指令追加到 user 消息末尾（模型特性适配）</li>
+      <li><b>UI</b>：memoryViewPane / memoryDetailEditorPane（槽位编辑、审计、统计、报告）</li>
+    </ul>
+  </div>
+</div>
+
+<h3>9.5 差异要点</h3>
+
+<table>
+  <tr><th style="width:30px">#</th><th>差异</th><th>评价</th></tr>
+  <tr><td>1</td>
+    <td><b>依赖</b>：原版绑死 iii-engine（外部进程编排）；移植版自研 KV + 轻网关，0 外部服务依赖</td>
+    <td>移植版更适合桌面客户端内嵌；原版更适合多 agent 共享记忆的服务化部署</td></tr>
+  <tr><td>2</td>
+    <td><b>接口面</b>：原版 128 REST + 53 MCP tools 全量暴露；移植版仅 ~40 provider 方法</td>
+    <td>移植版刻意收窄（YAGNI），但编排/治理引擎代码仍在仓内休眠</td></tr>
+  <tr><td>3</td>
+    <td><b>沉淀触发</b>：原版靠 12 auto hooks（SessionStart/PostToolUse 等框架钩子）；移植版靠 agentStudio turn 生命周期（observations/L1/L2/L3 + 标签协议）</td>
+    <td>移植版的注入时机与本项目提示词缓存架构深度耦合（volatile 分层），是原版没有的约束驱动设计</td></tr>
+  <tr><td>4</td>
+    <td><b>质量保障</b>：原版有 benchmark/eval（95.2% R@5 可度量）；移植版无检索质量基准</td>
+    <td>移植版可补回 eval 子集以验证移植后检索质量未退化</td></tr>
+  <tr><td>5</td>
+    <td><b>多 agent</b>：原版 teamMemory/mesh 面向多 agent 协作共享；移植版单客户端按 agentId 隔离</td>
+    <td>若未来多实例协作，teamMemory 模块已在仓内可接线</td></tr>
+</table>
+
+<h3>9.6 函数级深度对比（2026-07-25 补充）</h3>
+
+<h4>函数面统计</h4>
+
+<table>
+  <tr><th></th><th class="mimo">agentmemory 原版</th><th class="saros">本项目移植版</th></tr>
+  <tr><td><b>对外函数总数</b></td>
+    <td><b>261 个</b> iii 注册函数：<code>api::</code>×128（REST 支撑）+ <code>mem::</code>×125（引擎核心）+ <code>mcp::</code>×6 + <code>event::</code>×2</td>
+    <td><b>155 个</b> V2 provider async 方法（网关 <code>/provider/*</code> 动态路由暴露；2026-07-25 复刻后）</td></tr>
+  <tr><td><b>调用模型</b></td>
+    <td><code>sdk.registerFunction("mem::xxx", handler)</code> —— iii 引擎总线路由，支持远程/多进程编排</td>
+    <td>网关进程内直接 TS 方法调用；renderer 经 HTTP <code>/provider/&lt;method&gt;</code> + 代理 Proxy 兜底转发</td></tr>
+  <tr><td><b>注册与 schema</b></td>
+    <td>每个函数自带 JSON schema 声明（REST/MCP 自动暴露的基础）</td>
+    <td>无逐方法 schema（工具层 schema 在客户端 builtin tools 侧维护）</td></tr>
+</table>
+
+<h4>检索内核组件（原版 state/ 12 文件 vs 移植版）</h4>
+
+<table>
+  <tr><th>组件</th><th class="mimo">原版</th><th class="saros">移植版</th></tr>
+  <tr><td>hybrid-search / search-index</td><td>独立 <code>HybridSearch</code> 类 + <code>SearchIndex</code></td><td><span class="tag o">合并</span> 检索逻辑在 amFunctions.searchMemories + bm25Index/vectorIndex</td></tr>
+  <tr><td>cjk-segmenter / stemmer / synonyms</td><td>有</td><td><span class="tag g">全部移植</span></td></tr>
+  <tr><td>reranker / vector-index / index-persistence / memory-utils</td><td>有</td><td><span class="tag g">全部移植</span></td></tr>
+  <tr><td>keyed-mutex</td><td>有（并发原语）</td><td><span class="tag d">未移植</span>（单进程网关模型不需要）</td></tr>
+  <tr><td>额外新增</td><td>—</td><td><span class="tag p">rrf.ts / multiSearch.ts / searchCache.ts / configManager.ts</span></td></tr>
+</table>
+
+<h4>原版有而移植版缺的功能（按模块分组）——复刻状态（2026-07-25 更新）</h4>
+
+<table>
+  <tr><th style="width:170px">模块</th><th>原版函数</th><th>移植版现状</th></tr>
+  <tr><td><b>sentinel 完整生命周期</b></td>
+    <td><code>sentinel-check / sentinel-trigger / sentinel-cancel / sentinel-expire</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>amAdvanced.sentinelCheck/Trigger/Cancel</code>：threshold（8 项指标 × 6 运算符）/ pattern（新记忆正则匹配）/ schedule（时长/日期）三类条件评估 + 过期处理 + 触发幂等；接入 <code>runMaintenanceSweep</code> 并逐个发出 <code>sentinel_triggered</code> 事件；工具 <code>memory_sentinel</code> 补 check/cancel 动作（29+12 测试全绿）</td></tr>
+  <tr><td><b>mesh 同步协议</b></td>
+    <td><code>mesh-sync / mesh-receive / mesh-export</code></td>
+    <td><span class="tag d">刻意保留缺口</span> —— 多实例协作场景，单客户端 IDE 无对等节点；join/list/leave 注册表已备，未来需要时再复刻</td></tr>
+  <tr><td><b>graph 函数集</b></td>
+    <td><code>graph-build / graph-extract / graph-query / graph-reset / graph-snapshot-rebuild</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>amReplication.graphBuild</code>（批量抽取全部 active 记忆）/ <code>graphReset</code>（重置单例索引）；graphExtract/graphQuery/graphStats 本就有；snapshot-rebuild 归并到 build+reset 组合</td></tr>
+  <tr><td><b>team 增强</b></td>
+    <td><code>team-feed / team-profile</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>amReplication.teamFeed</code>（sharedAt 倒序 + 上限）/ <code>teamProfile</code>（成员/topConcepts/topFiles/sharedPatterns 聚合）</td></tr>
+  <tr><td><b>insights</b></td>
+    <td><code>insight-list / insight-search / insight-decay-sweep</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>amReplication.insightSearch</code>（关键词相关度排序）/ <code>insightDecaySweep</code>（confidence 衰减 + 低值清除）；insightList 本就有；LLM 反思生成由 L2/L3 管线承担</td></tr>
+  <tr><td><b>slots 增强</b></td>
+    <td><code>slot-append / slot-replace / slot-create / slot-delete / slot-reflect</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>amReplication.slotCreate/Append/Replace/Delete</code>（label 校验 / readOnly 保护 / sizeLimit 超限语义与原版一致）；slot-reflect 需 LLM，归并到 L1 抽取管线</td></tr>
+  <tr><td><b>sketch 生命周期</b></td>
+    <td><code>sketch-add / sketch-gc / sketch-promote</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>amReplication.sketchAdd</code>（action 去重追加）/ <code>sketchGc</code>（过期未 promote → discarded）；sketchPromote 本就有</td></tr>
+  <tr><td><b>snapshot 恢复</b></td>
+    <td><code>snapshot-restore</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>snapshotCreate</code> 增强为全量存储（<code>memories</code> 字段，保留兼容字段）+ <code>amReplication.snapshotRestore</code>（按 id upsert 恢复；旧格式快照返回 unsupported）；原版用 git 版本化，本移植版全量存 KV</td></tr>
+  <tr><td><b>routine 状态</b></td>
+    <td><code>routine-freeze / routine-status</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>amReplication.routineStatus</code>（进度折算 + 全部完成自动标记 completed）/ <code>routineFreeze</code>（冻结/解冻）</td></tr>
+  <tr><td><b>signal 增强</b></td>
+    <td><code>signal-threads / signal-cleanup</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>amReplication.signalThreads</code>（threadId 聚合：消息数/参与者/最后时间）/ <code>signalCleanup</code>（过期物理删除）</td></tr>
+  <tr><td><b>hook 生命周期完整性</b></td>
+    <td><code>post_tool_use / post_tool_failure / pre_compact / task_completed / subagent_start / subagent_stop</code></td>
+    <td><span class="tag g">已复刻</span> —— <code>_observeToolResult</code> 补 post_tool_use/failure 触发；<b>发现并修复代理 noop stub 缺口</b>：onPreCompact/onTaskCompleted/onSubagentStart/Stop 此前在代理层被空实现截留（生命周期根本到不了引擎），已改为 fire-and-forget HTTP 转发</td></tr>
+  <tr><td><b>杂项</b></td>
+    <td><code>heal / generate-rules / differential-state / auto-page / enrich-session / enrich-window / skill-match / timeline / verify / working-context / retention-score / retention-evict</code></td>
+    <td><span class="tag o">引擎内部已运行</span> —— retention-score/retention-evict 在维护扫描自动执行；enrich/verify/timeline 有部分对应；其余为原版本版便利函数，机制已由等价通道覆盖</td></tr>
+</table>
+
+<div class="callout green">
+<b>复刻完成度（2026-07-25）</b>：原版 <code>mem::</code> 引擎核心函数 125 个中，除 mesh-sync 协议（多实例场景刻意保留）与少数 REST 便利包装外，<b>全部机制已复刻或等价覆盖</b>。本轮新增 <code>amReplication.ts</code>（8 组 20 个函数，40 个引擎测试全绿）+ V2 provider 暴露 + 代理生命周期 stub 修复（pre_compact / task_completed / subagent_start / subagent_stop 此前被 noop 截留）+ post_tool_use / post_tool_failure 触发。扩展测试总计 87 + 53 + Sentinel 29 + amReplication 40 全绿。
+</div>
+
+<h4>移植版新增（原版没有）</h4>
+
+<div class="grid2">
+  <div class="card saros">
+    <h4>架构/集成层</h4>
+    <ul>
+      <li>IMemoryProvider 适配 + slotRegistry 集成 + IDE 事件总线（memory_written/failed）</li>
+      <li>renderer 代理 + 自研轻网关（0 iii 依赖）+ 网关连接状态日志（2026-07-25）</li>
+      <li>SQLite/JS-KV 双后端自动切换 + <code>~/.vssaros</code> 数据目录约定与旧目录迁移</li>
+      <li>记忆链路请求日志（写全量/读采样/verbose 开关）</li>
+    </ul>
+  </div>
+  <div class="card saros">
+    <h4>引擎行为补丁</h4>
+    <ul>
+      <li><code>governanceBulkDelete</code> 真 dryRun（原版无此参数，2026-07-25 修复假预览）</li>
+      <li>supersede 自动 <code>cascadeUpdate</code> 传播 stale（2026-07-25）</li>
+      <li>维护扫描接入 <code>leaseCleanup</code></li>
+      <li><code>searchMemory</code> 空查询全量列出（SEARCH_ALL_LIMIT=1000）+ searchMemoryFn 补 timestamp</li>
+      <li><code>_skillsDir()</code> env 技能路径（对齐 renderer 读取位置）</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card saros">
+  <h4>客户端消费层（原版完全没有）</h4>
+  <ul>
+    <li>内置工具面：基础 4 工具（remember/search/delete/list）+ 高级 6 工具（governance/team/mesh/sentinel/obsidian/cascade）+ unified 3 工具（recall/improve/forget）</li>
+    <li>agentStudio 注入管线：session 首次 loadContext / volatile Persona 层 / memory_extract 标签协议 / turn observations / L1→L2→L3 沉淀 / Knot 模型补丁 / 压缩期检索替代摘要</li>
+    <li>IDE 原生 UI：memoryViewPane + memoryDetailEditorPane（槽位/审计/统计/报告）</li>
+  </ul>
+</div>
+
+<div class="callout">
+<b>结论（2026-07-25 复刻后）</b>：移植版在<b>引擎内核与检索层</b>达到 ~95% 覆盖（仅 keyed-mutex 未移植，检索还额外增强了 rrf/multiSearch/searchCache）；在<b>函数暴露面</b>约 59%（155/261）且 <code>mem::</code> 引擎核心机制<b>基本复刻完毕</b>——sentinel 生命周期、slots 完整操作、insights 数据层、sketch GC、snapshot 恢复、routine 状态、signal 线程、team feed/profile、graph 构建/重置全部补齐，hook 生命周期（含代理 stub 修复）完整。原版 261 个函数里约一半是 REST/MCP/Viewer 的服务化包装（<code>api::</code>），移植版按 YAGNI 未搬——取而代之的是客户端工具面 + IDE UI 的自有消费层。<b>仅存刻意缺口</b>：mesh-sync 同步协议（多实例协作场景，单客户端 IDE 暂无对等节点）。
+</div>
+
+<h2>10. 记忆注入机制专项对比（时机 × 位置 × 形式）</h2>
+
+<p>注入是记忆系统的「最后一公里」——记忆写得再好，注入时机/位置不对就白费（agentmemory 原版 #143 事故：pre-tool-use 每次工具调用注入 ~1000 tokens，烧穿 Claude Pro 配额后被迫默认关闭）。本节对比三方的注入设计。</p>
+
+<h3>10.1 注入机制总表</h3>
+
+<table>
+  <tr><th style="width:120px"></th><th class="mimo">MiMo-Code</th><th class="mimo">agentmemory 原版</th><th class="saros">Sarosis</th></tr>
+  <tr><td><b>注入时机</b></td>
+    <td><b>每次 LLM 调用</b>（主循环/subagent/fork/标题生成全部）</td>
+    <td><b>3 个 hook 点</b>：session-start（首轮前）/ pre-tool-use（文件类工具前）/ pre-compact（压缩前）</td>
+    <td><b>对齐原版（2026-07-25 简化）</b>：默认 capture-only + 工具召回；<code>AGENTMEMORY_INJECT_CONTEXT=true</code> 时开启 &lt;agentmemory-context&gt; + Persona 注入；压缩时检索保留</td></tr>
+  <tr><td><b>注入位置</b></td>
+    <td>system prompt <b>内部</b>（静态手册之后、project instructions 之前，messages[0] 的字符串拼接）</td>
+    <td>hook stdout → <b>宿主框架 prepend</b> 到下一轮（Claude Code 协议，位置由框架决定）</td>
+    <td>独立 <b>system 消息</b>：冻结前缀之后、对话历史之前；注入内容 = <code>mem::context</code> 策展块（2026-07-25 对齐）</td></tr>
+  <tr><td><b>注入形式</b></td>
+    <td>MEMORY.md <b>全文</b>（无检索、无截断）</td>
+    <td>服务端组装的 context 文本（budget 控制：pre-compact 1500 / pre-tool-use ≤4000 chars）</td>
+    <td>分块文本（Long-term/Short-term/systemPrompt/RecentFiles），maxEntries 配额 + 字符预算</td></tr>
+  <tr><td><b>去重</b></td>
+    <td>无（同一文件每轮重复注入）</td>
+    <td>靠生命周期天然去重（session-start 每会话一次）</td>
+    <td><code>injectedSessions</code> 显式去重（session+agent 维度一次）</td></tr>
+  <tr><td><b>默认姿态</b></td>
+    <td>开（always-on）；subagent 默认关</td>
+    <td><b>全部默认关</b>（0.8.10 起，#143 事故后）——capture-only，召回靠 MCP 工具主动调用</td>
+    <td><b>默认关</b>（2026-07-25 起与原版一致）——capture 常开 + 工具召回；<code>AGENTMEMORY_INJECT_CONTEXT=true</code> 开启被动注入</td></tr>
+  <tr><td><b>缓存交互</b></td>
+    <td>MEMORY.md 变动 → 整个 system 前缀失效（靠锚定 session 创建日缓解）</td>
+    <td>注入发生在 user 侧，不触碰 system 前缀</td>
+    <td>volatile 层独立消息不打断前缀缓存；但 <code>&lt;agentmemory-context&gt;</code> 首 turn 注入使该 session 前缀一次性变化</td></tr>
+</table>
+
+<h3>10.2 时序图：MiMo-Code（每调用全量注入）</h3>
+
+<div class="flow"><span class="c-dim"># 每次 LLM 调用都重复注入 MEMORY.md 全文（无去重、无预算）</span>
+
+用户        Prompt组装                  LLM              MEMORY.md
+ │              │                        │                  │
+ │─ 输入 ──────▶│                        │                  │
+ │              │─ read(MEMORY.md) ─────────────────────────▶│
+ │              │◀──────── 全文内容 ─────────────────────────│
+ │              │                        │                  │
+ │              │ system[0] = 手册       │                  │
+ │              │   + <span class="c-g">MEMORY.md 全文</span>    │                  │
+ │              │   + project 指令       │                  │
+ │              │                        │                  │
+ │              │─ messages ────────────▶│                  │
+ │              │                        │─ 响应            │
+ │              │                        │                  │
+ │─ 下一轮 ─────▶│                        │                  │
+ │              │─ read(MEMORY.md) ─────────────────────────▶│  <span class="c-w">← 再读一次</span>
+ │              │ system[0] = ... + <span class="c-g">MEMORY.md 全文</span> ...  <span class="c-w">← 重复注入</span>
+ │              │─ messages ────────────▶│                  │
+
+<span class="c-dim"># subagent / fork / 标题生成：同样路径（subagent 默认关闭记忆）</span></div>
+
+<h3>10.3 时序图：agentmemory 原版（hook stdout 注入，默认关）</h3>
+
+<div class="flow"><span class="c-dim"># 注入依赖宿主框架 hook 协议（Claude Code 读 hook stdout 并 prepend 到下一轮）</span>
+<span class="c-dim"># 0.8.10 起全部默认关（AGENTMEMORY_INJECT_CONTEXT=true 开启）；默认姿态 = capture-only + MCP 主动召回</span>
+
+Claude Code      hook 脚本              agentmemory server(:3111)      LLM
+    │               │                          │                       │
+    │─ SessionStart ▶│                          │                       │
+    │               │─ POST /session/start ───▶│                       │
+    │               │◀── { context: "..." } ───│                       │
+    │◀── stdout ────│  <span class="c-g">（INJECT=true 时）</span>        │                       │
+    │─ 首轮(前缀=context) ────────────────────────────────────────────▶│
+    │               │                          │                       │
+    │─ PreToolUse(Edit/Read/Grep) ▶│            │                       │
+    │               │─ POST /enrich ──────────▶│                       │
+    │               │◀── ≤4000 chars ──────────│                       │
+    │◀── stdout ────│  <span class="c-w">（默认关！#143 事故：每工具调用 +1000 tokens）</span> │
+    │─ 下一轮(prepend=enrich) ────────────────────────────────────────▶│
+    │               │                          │                       │
+    │─ PreCompact ─▶│─ POST /context(budget:1500) ─▶│                  │
+    │◀── stdout ────│◀── context ──────────────│                       │
+    │               │                          │                       │
+    │─ Agent 主动 ──│─ MCP recall/search ─────▶│  <span class="c-a">← 默认召回路径</span>      │
+    │◀──────────────│◀── 结果 ─────────────────│                       │</div>
+
+<h3>10.4 时序图：Sarosis（分层注入 + 缓存对齐）</h3>
+
+<div class="flow"><span class="c-dim"># 注入分三层，位置全在 system 区（冻结前缀之后、对话历史之前）</span>
+
+用户        driver(分层组装)         executor              LLM          网关(V2)
+ │              │                    │                     │              │
+ │─ turn1 ─────▶│                    │                     │              │
+ │              │─ loadContext ─────────────────────────────────────────▶│
+ │              │◀── 短/长程记忆+systemPrompt ──────────────────────────│
+ │              │                    │                     │              │
+ │              │ msg[0]=冻结前缀     │                     │              │
+ │              │ msg[1]=volatile     │                     │              │
+ │              │   (Persona)         │                     │              │
+ │              │ msg[2]=<span class="c-g">&lt;agentmemory-context&gt;</span>  <span class="c-w">← session 首次注入(injectedSessions 去重)</span>
+ │              │ msg[3..]=对话       │                     │              │
+ │              │─ messages ─────────▶│─ LLM 调用 ─────────▶│              │
+ │              │                    │                     │              │
+ │─ turn2 ─────▶│                    │                     │              │
+ │              │ msg[0]=冻结前缀     │  <span class="c-a">← 字节不变，缓存命中</span>   │              │
+ │              │ msg[1]=volatile     │  <span class="c-w">← 每轮可变，独立消息</span>   │              │
+ │              │ <span class="c-dim">（不再注入 agentmemory-context — injectedSessions 已含）</span>  │
+ │              │─ messages ─────────▶│─ LLM 调用 ─────────▶│              │
+ │              │                    │                     │              │
+ │─ 压缩时 ─────▶                    │                     │              │
+ │              │ msg[k]=<span class="c-p">&lt;RETRIEVED_CTX&gt;</span>  <span class="c-p">← 检索替代 LLM 摘要</span>   │              │
+ │              │─ messages ─────────▶│                     │              │
+
+<span class="c-dim"># 辅助注入点：memoryExtractGuide（冻结前缀常驻）/ plan 模式警告（&lt;agentmemory-context&gt; 内嵌）/
+#   Knot 补丁（指令追加到 user 消息末尾）/ sub-agent 继承 forkContext 冻结前缀</span></div>
+
+<h3>10.5 优缺点分析</h3>
+
+<table>
+  <tr><th style="width:110px"></th><th>优点</th><th>缺点</th></tr>
+  <tr><td class="mimo" style="color:var(--accent2)"><b>MiMo-Code</b></td>
+    <td>极简零依赖；记忆=文件用户可见可编辑；无需检索工程；无「写了不用」问题（每次必注入）</td>
+    <td>prompt 随记忆增长<b>线性膨胀</b>；无检索（不相关记忆也进 prompt 稀释注意力）；无预算上限；MEMORY.md 一变整个 system 前缀缓存失效；每轮重复注入同一内容浪费 token</td></tr>
+  <tr><td class="mimo" style="color:var(--accent2)"><b>agentmemory 原版</b></td>
+    <td>默认零成本（capture-only，#143 事故后的保守姿态）；MCP 主动召回精准（agent 需要才取）；hook 生命周期清晰；注入发生在 user 侧不触碰 system 前缀</td>
+    <td>注入依赖宿主框架 hook 协议（stdout prepend），<b>框架不支持就没有注入</b>；默认关 = 「记忆写了不用」，价值依赖 agent 主动召回意愿；enrich 模式被证明不可持续（每工具调用 +1000 tokens 被禁用）；三处注入点无统一预算协调</td></tr>
+  <tr><td class="saros" style="color:var(--accent)"><b>Sarosis</b></td>
+    <td>分层注入与<b>缓存架构对齐</b>（volatile 不打断前缀）；session 级显式去重；预算+配额双控（maxEntries/字符）；场景化补丁（plan 警告/压缩检索/Knot user 侧补丁）；事件链到 UI 卡片可见</td>
+    <td>注入点分散（7 处）维护成本高；<code>&lt;agentmemory-context&gt;</code> 首 turn 注入使该 session 前缀一次性失效（每 session 付一次缓存代价）；多入口语义重叠（volatile Persona 与 agentmemory-context 的 systemPrompt 块可能内容相近）；复杂度带来调试难度（需专门日志链）</td></tr>
+</table>
+
+<div class="callout blue">
+<b>设计启示</b>：三方的注入演化都指向同一条规律——<b>注入成本必须与注入价值匹配</b>。MiMo 用「极简」换「必然注入」但牺牲扩展性；agentmemory 原版用「默认关」换「零成本」但牺牲被动可用性；Sarosis 曾用「分层 + 去重 + 预算」取平衡但复杂度失控——已于 2026-07-25 简化为原版姿态，并进一步把注入内容 1:1 对齐 <code>mem::context</code>（见下两条）。
+</div>
+
+<div class="callout green">
+<b>写入时机与存储机制复刻原版（2026-07-25）</b>：
+<ul style="margin:6px 0;padding-left:20px">
+  <li><b>Session 注册</b>：原版在 observe.ts 每条观察时创建/更新 session 记录——此前本项目 <code>KV.sessions</code> 从未写入（buildContext 的「重要观察」块永不生效）。已复刻：①<code>fn.observe</code> 懒注册（不存在则创建 status=active，存在则 updatedAt + observationCount+1 + firstPrompt 捕获）；②<code>fn.sessionStart</code> 显式注册（幂等），由 V2.triggerHook('session_start') 调用</li>
+  <li><b>session_end 压缩</b>：原版 session-end → flow-compress 产出 SessionSummary——已接线 V2.triggerHook('session_end')：≥5 条未压缩观察时压缩（客户端该 hook 每轮末触发，故设下限防过频）</li>
+  <li><b>摘要累积</b>：<code>compressSession</code> 与既有摘要合并（narrative 拼接 ≤2000c、decisions/files/concepts 并集有界、observationCount 累加）——修复 turn 级分批压缩互相覆盖丢内容的问题</li>
+  <li><b>存储机制核查（本就对齐）</b>：SQLite/JS-KV 双后端 ✓；网关在每次 KV PUT 时同步增量更新 BM25 + Vector(trigram) 索引 ✓；启动时从 KV 重建双索引 ✓；git commit 捕获（agentOSService→V2.onGitCommit→PostCommitCapture）✓；维护扫描定时器（host.mjs setInterval）✓</li>
+  <li><b>测试</b>：新增 O6（observe 懒注册）/O7（sessionStart 幂等）/O8（摘要合并）3 用例；扩展 87+57 全绿</li>
+</ul>
+</div>
+
+<div class="callout green">
+<b>注入与召回 1:1 复刻原版（2026-07-25）</b>：
+<ul style="margin:6px 0;padding-left:20px">
+  <li><b>注入内容 = mem::context 策展块</b>：pinned slots → project profile → lessons → session summaries → 重要观察（无摘要会话的近期观察），全局 recency 排序 + 预算填充 + recordAccessBatch。<b>不再注入原始长期/短期记忆</b>（原版召回全走工具；客户端 Long-term/Short-term 块已移除）</li>
+  <li><b>引擎 buildContext 修正</b>：补齐缺失的「重要观察」块与全局 recency 排序（原版 context.ts:234）；memories top-20 与 core entries 移出注入文本，仅保留在 loadContext 返回值供 UI 消费</li>
+  <li><b>召回逻辑</b>：混合检索（BM25+Vector RRF+Graph+reranker）本就与原版对齐，经 <code>memory_recall / memory_search</code> 工具按需调用——与原版 mem::search/mem::recall 的工具驱动姿态一致</li>
+  <li><b>测试同步</b>：amV2/amV2Integration 共 5 个用例更新为新语义（core/memory 不进注入文本、无策展块时注入为空、lessons/summary 进注入）；扩展 87+54、客户端 34+13 全绿</li>
+</ul>
+</div>
+
+<div class="callout green">
+<b>已简化（2026-07-25）：Sarosis 注入姿态对齐 agentmemory 原版</b>——「capture 常开 + 注入默认关 + 召回走工具」：
+<ul style="margin:6px 0;padding-left:20px">
+  <li><b>移除</b>：每轮冻结前缀中的 <code>memoryExtractGuide</code>（~1.5KB 指令文本）与 Knot user 消息补丁（原版 prompt 无任何每轮记忆指令；capture 靠 PostToolUse 钩子 + remember 工具，本项目等价通道为 turn observations + L1/L2/L3 自动管线 + memory_remember 工具）</li>
+  <li><b>门控</b>：Persona Memory volatile 注入收编到 <code>AGENTMEMORY_INJECT_CONTEXT</code> 开关（与 <code>&lt;agentmemory-context&gt;</code> 同一开关，默认关）</li>
+  <li><b>保留</b>：压缩时检索注入（对齐原版 pre-compact 注入）；<code>&lt;memory_extract&gt;</code> 标签流式剥离作为被动安全网（模型自行输出仍被捕获）；全部 capture 通道与 13 个记忆工具</li>
+  <li><b>效果</b>：默认姿态下 prompt 零记忆注入开销，记忆完全经 <code>memory_recall / memory_search / memory_list</code> 工具按需召回；需要被动注入的用户设 <code>AGENTMEMORY_INJECT_CONTEXT=true</code> 一键恢复</li>
+</ul>
+</div>
+
+<h2>11. 存储频率优化方案（写入分层对齐原版）</h2>
+
+<h3>11.1 问题：写入全部直落长期记忆</h3>
+
+<p>本项目的<b>写入路径跳过了 observation 暂存层</b>，把每条工具结果和每条对话消息直接写进长期记忆 <code>mem:memories</code>——而引擎里的「观察→压缩→摘要」分层管线（<code>fn.observe / compressSession</code>）早已完整移植却<b>没有任何客户端调用方</b>。</p>
+
+<table>
+  <tr><th style="width:220px">写入路径（每 turn，8 工具调用 + 10 消息）</th><th>目标 scope</th><th>每次成本</th></tr>
+  <tr><td><code>_observeToolResult</code> × 8（每个工具结果）</td>
+    <td><b>mem:memories（长期）</b></td>
+    <td>完整 remember 管线：指纹去重（全表 list）+ Jaccard 矛盾扫描 + consolidation 计数 + BM25 索引 + 可选向量嵌入</td></tr>
+  <tr><td><code>storeTurnObservations</code> × ~10（每条 user/assistant/tool 消息，turn 末）</td>
+    <td><b>mem:memories（长期）</b></td>
+    <td>同上</td></tr>
+  <tr><td>HookSystem <code>post_tool_use</code> 默认钩子 × 8</td>
+    <td>mem:core</td>
+    <td>coreAdd（2000 字符截断）</td></tr>
+  <tr><td colspan="3" style="color:var(--danger)"><b>≈ 26 次长期存储写入 / turn，每次附 O(N) 全表去重扫描；L1/L2 抽取的输入（searchMemory('*')）被原始观察洪泛稀释</b></td></tr>
+</table>
+
+<h3>11.2 原版的写入分层</h3>
+
+<div class="flow"><span class="c-dim"># agentmemory 原版：三层写入，频率逐层递减</span>
+
+工具结果 ──▶ <span class="c-g">mem:obs:&lt;session&gt;</span>（会话暂存层）
+              · 便宜的 KV set（无去重管线）
+              · buildSyntheticCompression 启发式压缩（无 LLM）
+              · maxObservationsPerSession 上限（滑动窗口）
+              · 阈值自动触发 compressSession ──▶ <span class="c-a">mem:summaries</span>（会话摘要层）
+
+<span class="c-dim"># 长期层只进两类内容（频率低 1-2 个数量级）：</span>
+remember() 显式写入 ──▶ <span class="c-w">mem:memories</span>（长期层）
+consolidation 提升（durable 模式 ≥3 次）──▶ <span class="c-w">mem:memories</span></div>
+
+<table>
+  <tr><th style="width:120px"></th><th class="mimo">原版</th><th class="saros">本项目现状</th></tr>
+  <tr><td><b>工具结果</b></td><td>mem:obs 会话暂存（便宜）</td><td><b>mem:memories 长期（贵）</b></td></tr>
+  <tr><td><b>对话消息</b></td><td>不直接写；经 hook 观察 → 压缩摘要</td><td><b>mem:memories 长期（整段对话灌入）</b></td></tr>
+  <tr><td><b>长期写入频率</b></td><td>仅显式 remember + 提升（稀有）</td><td>~26 次/turn</td></tr>
+  <tr><td><b>观察上限</b></td><td>maxObservationsPerSession + 滑动窗口</td><td>无（只进不出，长期膨胀）</td></tr>
+  <tr><td><b>提升通道</b></td><td>compressSession（阈值自动）+ consolidation</td><td>compressSession 已移植但无调用方</td></tr>
+</table>
+
+<h3>11.3 优化方案与实施状态（P0→P2，2026-07-25 已全部落地）</h3>
+
+<table>
+  <tr><th style="width:50px">优先级</th><th>改动</th><th>实施状态</th></tr>
+  <tr><td><span class="tag d">P0</span></td>
+    <td><b>工具观察改道会话观察层</b></td>
+    <td><span class="tag g">已实施</span> <code>_observeToolResult</code> 从 <code>writeMemory</code>（mem:memories）改为 <code>observe()</code>（mem:obs:&lt;session&gt;）；V2.observe 路由从 slots.observe（mem:core 重复写入）改到 <code>fn.observe</code>（mem:obs，原版 mem::observe 1:1 对应）；HookSystem mem:core 重复写入随之消除；结构化压缩（tool_name/files 正则提取/tool_output ≤2000c）</td></tr>
+  <tr><td><span class="tag d">P0</span></td>
+    <td><b>turn observations 改道会话观察层</b></td>
+    <td><span class="tag g">已实施</span> <code>storeTurnObservations</code> 从 writeMemory（episodic 长期）改为 <code>fn.observe</code>（hookType='turn_observation'）；内容哈希去重防洪闸保留。配套核查：L1 输入为最近对话消息（不经记忆存储，天然不受影响）；L2 输入 searchMemory('*') 改道后自动变干净（长期层只剩提炼后内容）</td></tr>
+  <tr><td><span class="tag w">P1</span></td>
+    <td><b>观察上限（滑动窗口）</b></td>
+    <td><span class="tag g">已实施</span> <code>fn.observe</code> maxObservationsPerSession=200（<code>AGENTMEMORY_MAX_OBS_PER_SESSION</code> 可配）：超限时淘汰最老未压缩条目（已压缩条目受保护，集成测试 O5 覆盖）</td></tr>
+  <tr><td><span class="tag w">P1</span></td>
+    <td><b>观察压缩</b></td>
+    <td><span class="tag g">已实施</span> 工具结果结构化压缩（files 提取 + 有界输出）替代裸 200 字符截断；会话级 <code>buildSyntheticCompression</code> 在压缩时汇总</td></tr>
+  <tr><td><span class="tag g">P2</span></td>
+    <td><b>提升通道验证</b></td>
+    <td><span class="tag g">已验证</span> <code>compressSession</code> 在 observe 阈值自动触发（mem:obs → mem:summaries，集成测试场景 P 覆盖）；L1 每 3 turn 提炼 durable facts 进长期层</td></tr>
+</table>
+
+<h3>11.4 预期效果与风险</h3>
+
+<div class="grid2">
+  <div class="card saros">
+    <h4>预期效果</h4>
+    <ul>
+      <li>长期写入：~26 次/turn → <b>~1-3 次/turn</b>（L1 提炼 + 显式 remember + consolidation 提升）</li>
+      <li>O(N) 全表去重扫描减少 ~90%</li>
+      <li>L1/L2 输入质量提升（会话观察是干净的事件流，不含冗余工具输出）</li>
+      <li>长期记忆膨胀得到结构性遏制（只进提炼后内容）</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>风险与对策</h4>
+    <ul>
+      <li><b>L1/L2 输入源切换</b>：memoryWriteAndFilter（33 测试）覆盖 _storeTurnObservations 长期写入语义，需同步更新预期</li>
+      <li><b>UI 可见性</b>：mem:obs 不进 searchMemory，memoryViewPane 不显示会话暂存（与原版一致：observations 是内部暂存）——如需可见可加观察层视图</li>
+      <li><b>历史数据</b>：mem:memories 中已有的观察条目保留不动（不迁移），新写入走新路径；可用 memory_governance 批量清理历史观察（<code>pattern: "Tool result"</code> / <code>turn_observation</code>）</li>
+    </ul>
+  </div>
+</div>
+
+<h2>12. 注入逻辑深度审计：复刻偏差与优化建议（2026-07-25）</h2>
+
+<p>第 10 节对比的是三方的注入<b>设计</b>；本节对本项目注入<b>实际代码链路</b>做逐行审计（agentMemoryInjection.ts → agentMemoryProviderProxy → 网关 → V2.loadContext → amFunctions.loadContextFn），与原版 hooks/session-start.ts + functions/context.ts（mem::context）+ functions/enrich.ts（mem::enrich）对照。结论：<b>注入姿态（默认关）已对齐，但注入内容、注入频率、文件 enrich 三处实际行为与设计意图存在显著偏差</b>。</p>
+
+<h3>12.1 实际注入链路（代码审计结果）</h3>
+
+<div class="flow"><span class="c-dim"># 客户端每轮 turn 的真实执行路径（AGENTMEMORY_INJECT_CONTEXT=true 时）</span>
+
+agentTurnExecutor（agent loop 开始前）
+  │─ injectMemoryContext(request, messages)
+  │     │─ triggerHook(session_start / prompt_submit)        <span class="c-dim">← fire-and-forget ✓</span>
+  │     │─ recallQuery = 最后一条 user 消息                    <span class="c-w">← query 恒非空！</span>
+  │     │─ await provider.loadContext(agentId, sessionId, recallQuery)
+  │     │     │  renderer proxy → HTTP /provider/loadContext → 网关 V2.loadContext
+  │     │     │     │─ ServerBM25Proxy.currentAgent = agentId  <span class="c-w">← 模块级可变状态，并发竞态</span>
+  │     │     │     └─ fn.loadContextFn(kv, agentId, sessionId, query, budget=2000)
+  │     │     │           │─ query 非空 → <span class="c-w">走 query 分支（amFunctions.ts:822-836）</span>
+  │     │     │           │     │─ searchMemories(query, 10)        <span class="c-dim">← 混合搜索 top10</span>
+  │     │     │           │     │─ buildWorkingContext(budget)      <span class="c-w">← core 全表 list + memories 全表 list 按 strength 灌预算</span>
+  │     │     │           │     └─ systemPrompt = workingContext + "## Search Results"
+  │     │     │           └─ query 为空 → buildContext（mem::context 复刻） <span class="c-a">← 注入路径永远走不到！</span>
+  │     │─ alreadyInjected = injectedSessions.has(sessionKey)
+  │     │─ consumeStashedFiles(agentId)                        <span class="c-w">← stash 每轮末被清空，恒为空</span>
+  │     │─ if (blocks.length &gt; 0 &amp;&amp; !alreadyInjected) → 插入 system 消息
+  │     └─ yield memory_injected delta
+  │
+  └─ turn 结束（agentOSService.ts:1533-1536，finally 之后）
+        │─ _injectedSessions.delete(sessionId||agentId)        <span class="c-w">← 每轮末清理 ⇒ 下一轮重新注入！</span>
+        └─ _stashedFiles.delete(agentId)                       <span class="c-w">← 每轮末清空 ⇒ P8 文件 enrich 永不生效</span></div>
+
+<h3>12.2 关键发现（按严重度排序）</h3>
+
+<table>
+  <tr><th style="width:60px">严重度</th><th style="width:200px">发现</th><th>详情与影响</th></tr>
+  <tr><td><span class="tag d">致命</span></td>
+    <td><b>F1 复刻的 mem::context 是注入死代码</b></td>
+    <td>客户端注入恒传 <code>recallQuery</code>（user 消息），<code>loadContextFn</code> 永远走 query 分支——精心复刻的 <code>buildContext</code>（pinned slots / profile / lessons / summaries / 重要观察 / 预算填充）<b>从未进入注入文本</b>。实际注入的是 query 分支：混合搜索 top10 + <code>buildWorkingContext</code>（core 条目 + <b>memories 全表按 strength 灌入预算</b>）。后者正是原版刻意避免的 MemGPT 式全量倾倒——与「召回走工具、注入只放策展块」的姿态直接冲突。第 10 节 callout 声称的「注入内容 = mem::context 策展块」实际未生效。</td></tr>
+  <tr><td><span class="tag d">致命</span></td>
+    <td><b>F2 「每 session 注入一次」幂等失效——实际每轮注入</b></td>
+    <td><code>agentOSService.executeAgentTurn</code> 在 finally 之后<b>每轮末</b>执行 <code>_injectedSessions.delete()</code>（agentOSService.ts:1534）。幂等只防 turn 内 fallback 重入，不防跨轮——注入开启时<b>每轮</b>都全量 loadContext + 插入 ~2000+ tokens 的 system 消息。成本是原版（session-start 每会话一次）的 N 倍（N=轮数），且每轮变化的注入块持续破坏 prompt 前缀缓存。第 10.4 节时序图「turn2 不再注入」与代码实际行为不符。</td></tr>
+  <tr><td><span class="tag w">中</span></td>
+    <td><b>F3 P8 Recently Touched Files 是死代码</b></td>
+    <td>stash 在每轮末 <code>_stashedFiles.delete(agentId)</code> 清空（agentOSService.ts:1536），而消费发生在下一轮轮初（工具执行前）——消费时 stash 恒为空，「Recently Touched Files」块永远不会出现。原版的对应物是 pre-tool-use <code>mem::enrich</code>（文件类工具调用前实时 enrich：file-context + 文件名搜索 top5 + 相关 bug 记忆 top3，≤4000c，2s 超时），本项目无等价物。</td></tr>
+  <tr><td><span class="tag w">中</span></td>
+    <td><b>F4 注入路径多次全表扫描 + 串行 await</b></td>
+    <td>每次注入：buildWorkingContext 全表 list ×2（core + memories）+ query 分支 topShort 再 list core ×1；即使走 buildContext，返回值构造还要全表 list ×2（仅供 UI）。SQLite 后端下每次 list = 全表读 + JSON.parse，<b>同步阻塞网关事件循环</b>——与此前 remember() 假死（2026-07-25 修复）同源。buildContext 观察块 per-session 串行 await（原版 Promise.all 并行）。</td></tr>
+  <tr><td><span class="tag w">中</span></td>
+    <td><b>F5 ServerBM25Proxy.currentAgent 并发竞态</b></td>
+    <td>V2.loadContext 把 agentId 写进<b>模块级可变静态字段</b>再调搜索——多 agent / 多窗口并发 turn 时互相覆盖，BM25 召回可能串 agent（跨 agent 记忆泄漏，破坏 agent 作用域隔离）。</td></tr>
+  <tr><td><span class="tag g">低</span></td>
+    <td><b>F6 buildContext 与 mem::context 的细节偏差</b></td>
+    <td>①观察块：原版筛 <code>title 非空 &amp;&amp; importance≥5</code>、按 importance 取 top5/会话；移植版无条件 recency top3（Observation 无 title/importance 字段，无法对齐）。②会话筛选：原版按 project + agentId 过滤；移植版无 project 维度。③预算：原版计入 header/footer token；移植版不计。④原版 project 属性 XML 转义；移植版直接插值。⑤原版返回 {context, blocks, tokens} 元数据供调用方展示；移植版无。</td></tr>
+  <tr><td><span class="tag g">低</span></td>
+    <td><b>F7 注入无专用超时</b></td>
+    <td>原版 hook 硬超时：session-start 1.5s / enrich 2s + 静默失败（绝不阻塞宿主启动）。本项目注入走 proxy 通用 5s 超时——网关繁忙（大库全表扫描）时 turn 启动被拖慢数秒。</td></tr>
+</table>
+
+<h3>12.3 优化建议（P0 → P3）</h3>
+
+<table>
+  <tr><th style="width:60px">优先级</th><th style="width:220px">改动</th><th>方案</th></tr>
+  <tr><td><span class="tag d">P0</span></td>
+    <td><b>注入内容归位：注入=策展，召回=工具</b>（修 F1）</td>
+    <td><code>loadContextFn</code> 注入路径（sessionId 语义）改为无条件走 <code>buildContext</code> 策展；query 分支仅保留给显式搜索调用方。若需保留 query 相关性，把 searchMemories top10 作为 buildContext 的一个附加块（recency=now，限 30% 预算比例），而非替代整个策展。<code>buildWorkingContext</code> 的 archival 全量倾倒从注入路径移除（core pinned 已由 pinned slots 块覆盖，重复）。</td></tr>
+  <tr><td><span class="tag d">P0</span></td>
+    <td><b>注入频率二选一</b>（修 F2）</td>
+    <td>方案 A（推荐，对齐原版）：<code>_injectedSessions</code> 的清理从「每轮末」移到「会话销毁/切换时」，实现真 session 级一次注入——同时恢复 prompt 前缀缓存稳定性（注入块固定在 msg[2]，后续轮字节不变）。方案 B（每轮注入）：per-turn 预算收紧（≤500 tokens）+ 增量注入（只注新增块，recordAccess 去重）。</td></tr>
+  <tr><td><span class="tag d">P0</span></td>
+    <td><b>修复 P8 死代码</b>（修 F3）</td>
+    <td><code>_stashedFiles</code> 清理改到会话结束；或更优：把 Recently Touched Files 从注入块移到 volatile 层（每轮可变的独立 system 消息，天然匹配「最近触碰」语义，且不污染策展块、不破坏缓存分层）。</td></tr>
+  <tr><td><span class="tag w">P1</span></td>
+    <td><b>消除注入路径全表扫描</b>（修 F4）</td>
+    <td>buildContext 返回值的 longTerm/shortTerm 数组改懒加载（<code>options.includeEntries</code>，默认 false）——注入路径省 2 次全表 list；UI/Dashboard 消费者显式传 true。观察块循环改 Promise.all。复用 remember() 的 listMemoriesCached 缓存模式。</td></tr>
+  <tr><td><span class="tag w">P1</span></td>
+    <td><b>并发安全</b>（修 F5）</td>
+    <td><code>ServerBM25Proxy.currentAgent</code> 改为参数传递（searchMemories 已接收 agentId，代理调用点显式带入），删除模块级可变状态。</td></tr>
+  <tr><td><span class="tag w">P1</span></td>
+    <td><b>注入硬超时</b>（修 F7）</td>
+    <td>proxy.loadContext 注入场景 1.5-2s 硬超时 + 空上下文静默降级（对齐原版 hook 语义：记忆注入绝不允许阻塞 turn 启动）。</td></tr>
+  <tr><td><span class="tag g">P2</span></td>
+    <td><b>对齐 mem::context 细节</b>（修 F6）</td>
+    <td>①Observation 写入时补 title/importance 评分（压缩管线启发式：tool_failure &gt; post_tool_use &gt; turn_observation），观察块恢复 importance≥5 筛选；②预算计入 header/footer；③project XML 转义；④返回 {blocks, tokens} 元数据；⑤project 维度过滤（KV key 或记录字段）。</td></tr>
+  <tr><td><span class="tag g">P2</span></td>
+    <td><b>复刻 mem::enrich 的高价值部分</b>（可选）</td>
+    <td>原版 enrich 三块中「相关 bug 记忆」价值最高、成本最低：<code>files 匹配 ∩ type=bug ∩ isLatest，top3</code>。可作为策展块的附加块（在编辑类工具密集的 turn 前注入 volatile 层），无需复活整个 per-tool-call enrich（#143 事故的教训）。</td></tr>
+  <tr><td><span class="tag p">P3</span></td>
+    <td><b>注入可观测性</b></td>
+    <td><code>memory_injected</code> delta 补 {blocks, tokens, blockTypes} 元数据（原版 mem::context 有），UI 卡片展示注入构成（slots/profile/lessons/summaries/observations 各占多少），便于调优预算分配。</td></tr>
+</table>
+
+<div class="callout blue">
+<b>审计结论</b>：「姿态复刻」与「链路复刻」是两件事——默认关、工具召回的姿态已对齐原版，但注入开启时的实际内容/频率仍是旧语义（query 搜索 + 全量倾倒 + 每轮注入）。<b>F1+F2 联合效应</b>：开启注入的用户实际得到的是「每轮一次混合搜索 + 记忆全量灌入」，token 成本远高于设计预期，且精心复刻的策展管线空转。P0 三项修复（策展归位 / 真幂等 / P8 死代码）是相互独立的小改动，建议一并落地后用 10.4 节时序图重新验证实际行为。
+</div>
+
+<div class="callout green">
+<b>实施状态（2026-07-25，P0+P1 全部落地）</b>：
+<ul style="margin:6px 0;padding-left:20px">
+  <li><span class="tag g">已实施</span> <b>P0-1 注入内容归位</b>：<code>loadContextFn</code> 删除 query 全量倾倒分支，注入恒走 <code>buildContext</code> 策展；query 召回降为策展块内 <code>## Relevant Memories</code> 附加块（≤30% 预算，recency=now，不重复 recordAccess）；<code>buildWorkingContext</code> 退出注入路径</li>
+  <li><span class="tag g">已实施</span> <b>P0-2 真幂等（方案 A）</b>：<code>agentOSService</code> 每轮末的 <code>_injectedSessions.delete()</code> 移除——同 session 真只注入一次，前缀缓存跨轮稳定；LRU 上限 500 防长进程膨胀。幂等检查同步前置到 loadContext 之前（已注入 session 零开销跳过）</li>
+  <li><span class="tag g">已实施</span> <b>P0-3 P8 死代码修复</b>：stash 每轮清空改为会话级保留（LRU 200 agent）；Recently Touched Files 移至 volatile 层（agentTurnExecutor，同一注入开关门控）——语义与「每轮可变」天然匹配</li>
+  <li><span class="tag g">已实施</span> <b>P1-4 消除全表扫描</b>：<code>includeEntries</code> 懒加载（V2 边界默认 false，注入路径省 2 次全表 list；executionProvider 显式传 true 保持其数组注入）；观察块 Promise.all 并行。<b>额外发现</b>：driver Step 1c 的 loadContext 结果从未被消费且不受注入开关门控——每轮纯浪费一次网关调用，已移除（保留 scope 解析）</li>
+  <li><span class="tag g">已实施</span> <b>P1-5 并发安全</b>：<code>setIndexGetters</code> 改 agent 感知签名 <code>(agentId) =&gt; index</code>；renderer 侧 <code>ServerBM25Proxy</code> 删 static currentAgent 改构造绑定；网关侧删 <code>gatewayCurrentAgent</code> 模块字段逐请求传递。<b>顺带修复</b>：网关 vector getter 绑死 <code>'default'</code>——非 default agent 的向量召回此前恒为空</li>
+  <li><span class="tag g">已实施</span> <b>P1-6 注入硬超时</b>：injectMemoryContext 2s Promise.race 降级空上下文（对齐原版 hook 1.5-2s 语义）</li>
+  <li><span class="tag g">已实施</span> <b>P2 廉价项</b>：header/footer 计入预算；project XML 属性转义；返回 <code>{contextBlocks, contextTokens}</code> 元数据并透传至 memory_injected delta（P3 可观测性一并完成）</li>
+  <li><span class="tag g">已实施</span> <b>P2 Observation 重要性筛选</b>：<code>observe</code> 写入侧持久化 <code>title</code>（<code>toolName[: 文件basename]</code> / 内容前 60c）与 <code>importance</code>（失败 7 &gt; 工具使用 5 &gt; turn 消息 4 &gt; 生命周期 3，payload 可显式覆盖）；<code>buildContext</code> 观察块恢复原版 <code>title 非空 ∩ importance≥5</code> 筛选 + importance 降序 top5/会话，旧条目缺字段按同一启发式回退派生（向后兼容）</li>
+  <li><span class="tag g">已实施</span> <b>P2 mem::enrich bug 记忆匹配</b>：引擎 <code>bugMemoriesForFiles</code>（<code>type=bug ∩ isLatest ∩ project ∩ files 路径重叠</code>，updatedAt 倒序 top3，走 listMemoriesCached 写穿缓存避免全表扫描）；V2/proxy/IMemoryProvider 链路暴露；volatile 层 Recently Touched Files 块内追加 <code>&lt;agentmemory-past-errors&gt;</code>——「即将触碰这些文件 → 其历史 bug 提示」。<b>顺带修复</b>：<code>forgetMemory</code>/<code>reinforceMemory</code> 绕过写穿缓存导致缓存消费者读到陈旧 <code>isLatest</code></li>
+</ul>
+<b>验证</b>：扩展 318（+6 新用例：query 块 30% 预算上限 / includeEntries 懒加载 / agent 感知索引隔离 / 观察评分持久化 / importance≥5 筛选 / bug 记忆匹配）+ Integration 57 + RWR 14（R1 基线即失败的过时断言一并修正）；客户端 memoryWriteAndFilter 34 / agentContextRetrieval 4 / agentOSRetrievalContext 13 / agentDriverService 16 / multiSessionParallel 58 / concurrentMultiAgent 26 等全绿；本次改动文件 tsgo 0 错误、transpile OK、host.mjs 语法 OK。既有失败（与本次无关）：agentOSFallback 5 例（<code>_resolveFallbackCandidates</code> 在此前未提交重构中移除，测试漂移）；agentChatPanel.mermaidCard.ts 6 例 tsgo 错误（并行会话文件）。
+</div>
+
+<h2>13. 全面差异盘点与复刻方案（2026-07-25 重审）</h2>
+
+<p>在第 9/9.6 节（函数级对比）之后，移植版又经历了 sentinel 生命周期复刻、amReplication 20 函数、注入链路 P0→P2 修复。本节基于<b>原版 v0.9.28 当前代码</b>（283 注册函数：mem::143 / api::~128 / middleware·event 等 ~12，64 个 functions 文件）与<b>移植版当前代码</b>（引擎 12 模块 189 导出函数 + V2 ~95 方法 + 客户端 13 工具）做全量重审，给出剩余差距的复刻方案。</p>
+
+<h3>13.1 总量对比</h3>
+
+<table>
+  <tr><th>维度</th><th>agentmemory 原版（v0.9.28）</th><th>本项目移植版（当前）</th></tr>
+  <tr><td>架构形态</td><td>iii-engine worker 集群 + <b>durable:subscriber 事件总线</b>（topic: agentmemory.session.started/observation/stopped）</td><td>网关子进程（host.mjs，:3111）in-process 引擎 + renderer 代理 HTTP 直连调用（无事件总线，架构等价但无事件重放能力）</td></tr>
+  <tr><td>注册函数</td><td><b>283</b>（mem::143 业务函数 + api::128 REST 包装 + middleware::auth 等）</td><td>引擎 <b>189</b> 导出函数（amFunctions 49 / amPipeline 14 / amAdvanced 25 / amFinal 29 / amRemaining 31 / amReplication 17 / amExtras 7 / amSlots 7 / amCompress 5 / amFeatures 5 / tokenBudget 3）+ V2 ~95 方法</td></tr>
+  <tr><td>入口面</td><td>REST 128 端点 + MCP server（3 工具 recall_context/session_handoff/detect_patterns + 6 resources）+ CLI + Viewer + 15 hook 脚本</td><td>网关 <code>/provider/&lt;method&gt;</code> 通用 RPC + /search/:agent + /kv/* 专用端点 + 客户端 13 工具（memory_remember/search/delete/list/recall/improve/forget + governance/team/mesh/sentinel/obsidian_export/cascade）+ IDE 记忆视图 UI</td></tr>
+  <tr><td>数据模型</td><td><b>全局 KV scope</b> + 记录内 agentId 字段 + AGENTMEMORY_AGENT_SCOPE=global|isolated 读取过滤；观察 mem:obs:&lt;session&gt;</td><td><b>per-agent KV scope</b>（mem:memories:&lt;agent&gt; 等天然隔离）；观察 mem:obs:&lt;agent&gt;:&lt;session&gt;。隔离性更强，但跨 agent 共享语义需显式设计（见 13.5 D1）</td></tr>
+  <tr><td>生命周期 hooks</td><td>15 个独立脚本（session-start/end、pre/post-tool-use、post-tool-failure、pre-compact、stop、task-completed、subagent-start/stop、prompt-submit、post-commit、notification、sdk-guard）</td><td>客户端 triggerHook 接线 11 类（session_start/end、prompt_submit、post_tool_use/failure、pre_compact、task_completed、subagent_start/stop、git_commit、turn_observation）；notification 不适用、sdk-guard 为 iii-engine 特有</td></tr>
+  <tr><td>session 结束事件链</td><td>events.ts session.stopped → <b>mem::summarize + mem::slot-reflect + graph-extract</b>（门控）</td><td>session_end → compressSession（摘要合并）<b>仅此一项</b>——缺 slot-reflect 与 graph-extract 联动（见 13.5 D2）</td></tr>
+  <tr><td>配置项</td><td>AGENTMEMORY_* ~20 项（AUTO_COMPRESS/ALLOW_AGENT_SDK/AGENT_SCOPE/DROP_STALE_INDEX/FOLLOWUP_WINDOW/PROVIDER…）</td><td>AGENTMEMORY_* ~10 项（URL/INJECT_CONTEXT/TOKEN_BUDGET/SKILLS_DIR/MAX_OBS_PER_SESSION/BM25_MAX_DOCS/VECTOR_MAX_DOCS/LLM_BASE_URL/LLM_API_KEY/LLM_MODEL/LOG_VERBOSE）</td></tr>
+</table>
+
+<h3>13.2 mem::143 函数映射总表</h3>
+
+<table>
+  <tr><th style="width:110px">状态</th><th>函数（按原版文件分组）</th></tr>
+  <tr><td><span class="tag g">已复刻 ~120</span></td>
+    <td>context / observe / compress / compress-synthetic / consolidate(-pipeline) / slots 全组（list/get/create/append/replace/delete）/ sentinels 全组（create/list/check/trigger/cancel）/ lessons 全组 / reflect 全组（insight-*）/ snapshot 全组 / cascade / team(share/feed/profile) / signals 全组 / sketches 全组 / routines 全组 / actions 4/5 / checkpoints 全组 / leases 全组 / facets 全组 / crystallize 全组 / retention 全组 / evict / auto-forget / governance 全组 / audit / export-import / diagnostics(diagnose) / file-index / rich·diff file context / frontier / replay(load/sessions) / relations 全组 / temporal / branch-aware / flow-compress / compress-file / disk-size / image-quota / smart-search / recent-searches(get/add) / query-expansion / sliding-window(存取) / summarize / skill-extract / profile / patterns / graph(extract/query/stats/build/reset) / verify / dedup / claude-bridge / working-memory / access-tracker / privacy(sanitize) / mesh(register/list/remove) / search / remember / forget</td></tr>
+  <tr><td><span class="tag w">部分复刻 4</span></td>
+    <td><b>mem::enrich</b>（bug 记忆匹配已复刻 bugMemoriesForFiles + volatile past-errors；file-context/search 由等价物覆盖；未做 per-tool-call 形态——刻意）｜ <b>mem::privacy</b>（sanitizeContent 已复刻；PII 规则配置面未复刻）｜ <b>mem::image-refs</b>（visionSearch/imageQuota 已复刻；引用计数管理未复刻）｜ <b>mem::sentinel-expire</b>（过期清理在 runMaintenanceSweep，独立函数未暴露——待确认）</td></tr>
+  <tr><td><span class="tag d">缺失 9</span></td>
+    <td><b>mem::slot-reflect</b>（session 结束反思进 slots，原版 session-end 事件链标配）｜ <b>mem::skill-list / mem::skill-match</b>（技能查询/匹配侧）｜ <b>mem::action-edge-create</b>（行动关系边）｜ <b>mem::heal</b>（diagnose 的自动修复侧）｜ <b>mem::replay::import-jsonl</b>（Claude Code JSONL 会话导入）｜ <b>mem::diagnostic::recent-searches-sweep / followup-stats</b>（搜索诊断扫描/追问统计）｜ <b>session_handoff</b>（MCP 工具：会话交接文档生成，mem:: 面唯一无等价物）</td></tr>
+  <tr><td><span class="tag p">刻意跳过 8</span></td>
+    <td><b>mem::migrate / migrate-vector-index</b>（原版升级工具；host.mjs 有自研目录迁移）｜ <b>api::128 REST 包装</b>（/provider 通用 RPC 架构等价）｜ <b>notification hook</b>（桌面通知，IDE 场景不适用）｜ <b>sdk-guard</b>（iii-engine 特有）｜ <b>CLI / Viewer</b>（IDE 内 UI 等价）｜ <b>mem::enrich-window / mem::enrich-session</b>（2026-07-26 评估后跳过，理由见 13.6 P2 行）。<b>注：mem::mesh-sync / mesh-receive 原列刻意跳过，2026-07-26 已复刻</b>（见本节末尾实施记录）</td></tr>
+</table>
+
+<h3>13.3 架构差异（刻意决策，非缺口）</h3>
+
+<div class="flow"><span class="c-dim"># 原版：事件驱动（iii-engine）</span>
+hook 脚本(独立进程) → stdout/HTTP → REST api::* → mem::* → KV
+                                      ↑ durable:subscriber 事件总线（可重放）
+
+<span class="c-dim"># 移植版：直连调用（网关内聚）</span>
+客户端 triggerHook → 代理 HTTP → /provider/&lt;method&gt; → V2 in-process → KV(双后端)
+<span class="c-dim"># 差异影响：无事件重放/解耦，但延迟更低、运维面更小；对单实例 IDE 是合理取舍</span></div>
+
+<h3>13.4 入口面对比</h3>
+
+<table>
+  <tr><th>入口</th><th>原版</th><th>移植版</th><th>结论</th></tr>
+  <tr><td>程序化调用</td><td>REST 128 端点（api::* 逐一注册）</td><td><code>POST /provider/&lt;method&gt;</code> 通用 RPC（~95 方法自动可达）+ /search/:agent + /kv/*</td><td><span class="tag g">架构等价</span></td></tr>
+  <tr><td>LLM 工具面</td><td>MCP server 3 工具 + 6 resources</td><td>客户端工具 13（基础 4 + 统一 3 + 高级 6）</td><td><span class="tag g">等价且更全</span>（session_handoff 除外）</td></tr>
+  <tr><td>人机界面</td><td>CLI + Web Viewer</td><td>IDE 记忆视图（memoryViewPane / 详情面板 / KB 视图）</td><td><span class="tag g">等价</span></td></tr>
+  <tr><td>hooks</td><td>15 独立脚本（stdout 注入宿主）</td><td>客户端内 triggerHook 11 类（消息/消息块注入）</td><td><span class="tag g">姿态已对齐</span>（§10/§12）</td></tr>
+  <tr><td>定时维护</td><td>维护 sweep（decay/lease/sentinel/snapshot）</td><td>网关维护定时器（同款 sweep）+ 启动重建索引</td><td><span class="tag g">等价</span></td></tr>
+  <tr><td>事件链</td><td>session.stopped → summarize + <b>slot-reflect</b> + <b>graph-extract</b></td><td>session_end → compressSession（摘要）</td><td><span class="tag d">缺口 D2</span></td></tr>
+</table>
+
+<h3>13.5 本次重审新发现问题</h3>
+
+<table>
+  <tr><th style="width:60px">编号</th><th style="width:220px">问题</th><th>详情</th></tr>
+  <tr><td><span class="tag d">D1</span></td>
+    <td><b>teamShare 污染 summaries scope 且共享失效</b></td>
+    <td>原版写全局 <code>mem:team:&lt;teamId&gt;:shared</code>（跨 agent 可见）；移植版 <code>amRemaining.teamShare</code> 把共享条目写入 <code>KV.summaries(agentId)</code>——①per-agent 写入使其他 agent 永远看不到（共享语义失效）；②TeamSharedItem 混入 summaries scope，<code>buildContext</code> 摘要块会把它当 SessionSummary 注入策展块（无 narrative/decisions 字段，产出畸形行）。teamQuery 同病（查自己的 summaries）。<b>这是功能 bug + 语义偏差。</b></td></tr>
+  <tr><td><span class="tag d">D2</span></td>
+    <td><b>session-end 事件链缺 slot-reflect 与 graph-extract</b></td>
+    <td>原版 events.ts session.stopped → mem::summarize + <code>mem::slot-reflect</code>（isReflectEnabled 门控：把本会话重要观察按路由规则反思进 slots，slots 跨会话持续富化的关键路径）+ <code>graph-extract</code>（isGraphExtractionEnabled 门控：观察→知识图谱节点边）。移植版 session_end 仅 compressSession 摘要合并——slots 只有手动写入一条来源，图谱只有工具主动调用一条来源，<b>两条自动沉淀管线断头</b>。</td></tr>
+  <tr><td><span class="tag w">D3</span></td>
+    <td><b>技能体系查询侧缺失</b></td>
+    <td>原版 mem::skill-extract/list/match 三件套（抽取→列表→按任务匹配推荐）；移植版仅 extractSkill + skillsWriteFile——技能被抽出后无法被查询和匹配，无法闭环到「任务 → 推荐技能」。</td></tr>
+  <tr><td><span class="tag w">D4</span></td>
+    <td><b>事件总线重放能力缺失</b></td>
+    <td>原版 durable:subscriber 支持事件重放（宕机后 observation 不丢）；移植版客户端 fire-and-forget HTTP——代理侧已有重试队列兜底（writeMemory），但 triggerHook 类事件无持久化重放。网关宕机期间的生命周期事件（session_end 等）会丢失。影响可控（观察有滑动窗口兜底，摘要可重跑），列为已知取舍。</td></tr>
+</table>
+
+<h3>13.6 复刻方案（按优先级）</h3>
+
+<table>
+  <tr><th style="width:60px">优先级</th><th style="width:240px">项目</th><th>方案与工作量</th></tr>
+  <tr><td><span class="tag d">P0</span></td>
+    <td><b>D1 修复：team scope 全局化</b></td>
+    <td>amSchema.KV 新增 <code>teamShared(teamId)</code> / <code>teamProfile(teamId)</code> 全局 scope（不带 agentId）；teamShare 改写 teamShared、teamQuery 改查 teamShared（跨 agent 可见）；迁移：启动时把 summaries 中 id 前缀 'ts' 的条目搬迁到 teamShared 并清除（一次性 sweep）；同步修 buildContext 摘要块防御（过滤无 narrative 字段的条目）。<b>约 0.5 天。</b></td></tr>
+  <tr><td><span class="tag d">P0</span></td>
+    <td><b>D2a 复刻 mem::slot-reflect + session-end 接线</b></td>
+    <td>引擎新增 slotReflect(kv, agentId, sessionId, maxObservations=50)：取本会话 importance≥5 观察 → 按 slot 路由规则（label 关键词/project 匹配）append 到目标 slots（受 sizeLimit 截断）→ recordAudit；V2.triggerHook('session_end') 在压缩后调用（AGENTMEMORY_REFLECT 门控，默认开）。<b>约 1 天（含测试）。</b></td></tr>
+  <tr><td><span class="tag d">P0</span></td>
+    <td><b>D2b session-end graph-extract 联动</b></td>
+    <td>session_end 链追加 graphExtract（观察中 files/concepts → 图谱节点边，AGENTMEMORY_GRAPH_EXTRACTION 门控，默认关——对齐原版默认姿态）；复用 amPipeline.graphExtract 现有函数，仅做接线。<b>约 0.5 天。</b></td></tr>
+  <tr><td><span class="tag w">P1</span></td>
+    <td><b>D3 技能查询侧：skill-list / skill-match</b></td>
+    <td>引擎补 skillList（列 mem:skills scope）/ skillMatch(task, limit)（任务文本 vs 技能 trigger/description 关键词 + BM25 打分）；V2 暴露；客户端技能面板可选接。<b>约 0.5 天。</b></td></tr>
+  <tr><td><span class="tag w">P1</span></td>
+    <td><b>session_handoff 复刻</b></td>
+    <td>V2 方法 sessionHandoff(agentId, sessionId)：聚合本会话摘要 + pinned slots + 未闭合 actions + 近期重要观察 → 生成交接 markdown（写 mem:summaries 特殊条目 + 返回文本）；客户端工具 memory_handoff 或并入 memory_recall(type=handoff)。对多会话连续开发价值高。<b>约 1 天。</b></td></tr>
+  <tr><td><span class="tag w">P1</span></td>
+    <td><b>小函数补齐</b></td>
+    <td>mem::action-edge-create（行动 DAG 边，0.2d）｜ mem::heal（diagnose 报告 + 自动修复：重建索引/清理孤儿 scope/修复残缺记录，0.5d）｜ mem::replay::import-jsonl（Claude Code JSONL → observations 管线复用 observe，0.5d）｜ mem::sentinel-expire 独立暴露 + recent-searches-sweep/followup-stats（0.3d）</td></tr>
+  <tr><td><span class="tag g">P2</span></td>
+    <td><b>enrich-window / enrich-session 评估</b> → <span class="tag p">已评估，刻意跳过</span></td>
+    <td><b>评估结论（2026-07-26，通读原版 sliding-window.ts）</b>：①<b>原版即 write-only</b>——EnrichedChunk 全项目仅 3 处出现（types 定义 / schema scope / 写入侧），context.ts、search、enrich、api 触发器均不消费，写入后无任何提示词/检索路径读取；②<b>LLM 成本高</b>——enrich-window 每条观察 1 次 LLM 调用，enrich-session 对 importance≥4 的观察逐条调用（~50 条 = 50 次调用），且原版也不接入任何自动事件链（仅 REST on-demand）；③<b>与移植版观察模型不匹配</b>——其核心价值是指代消解（"那个文件/it" → 显式实体），而移植版观察已是结构化压缩（tool_name/files/tool_output），实体天然显式；④若未来需要，正确路径是先建消费侧（enriched chunks 入 BM25/向量索引），而非复刻写入侧。<b>结论：标注刻意跳过，待有消费侧设计再议。</b></td></tr>
+  <tr><td><span class="tag p">P2</span></td>
+    <td><b>刻意缺口维持确认</b></td>
+    <td>mesh-sync/receive（单实例无需求）｜ per-tool-call enrich（#143 教训，volatile past-errors 已覆盖高价值部分）｜ notification/sdk-guard/CLI/Viewer/api::128（架构等价物已存在）｜ 事件总线重放（D4，代理重试队列已兜底主路径）——均维持不复刻，文档标注。</td></tr>
+  <tr><td><span class="tag p">P3</span></td>
+    <td><b>benchmark 评测套件</b> → <span class="tag g">已实施（轻量版）</span></td>
+    <td><code>extensions/agentmemory-memory/src/__tests__/benchmark.ts</code>（2026-07-26）：确定性语料（mulberry32，BENCH_SEED 可复现）= 20 目标记忆 + N 噪声记忆 → 40 条标注查询走真实 <code>searchMemories</code> 路径（BM25）→ 每查询 hit@1 / recall@5 / recall@10 / MRR / latency，双尺度（100/1000 噪声）。运行：<code>npm run compile && node out/__tests__/benchmark.js</code>；<code>BENCH_CHECK=1</code> 为回归门禁（recall@10&lt;0.8 退出码 1）；<code>BENCH_OUT=&lt;path&gt;</code> 输出 JSON 报告。<b>基线（seed=42）</b>：两尺度均 hit@1=1.00 / recall@10=1.00 / MRR=1.000；延迟 p50=0.04-0.05ms / p90=0.22-0.29ms（in-process BM25）；1000 条噪声种子 477ms（≈0.5ms/写，listMemoriesCached 写穿缓存生效）。定位为检索回归金丝雀——索引接线/去重/缓存回归会立刻拉低指标。未复刻：load-100k 压测（p50/p90/p99）、LongMemEval 数据集、real-embeddings（向量评测）——按需。</td></tr>
+</table>
+
+<div class="callout blue">
+<b>总体结论</b>：移植版对 mem:: 函数面的覆盖已达 <b>~92%</b>（已复刻 ~120 + 部分 4 / 143），检索内核、策展注入、压缩管线、哨兵生命周期等核心路径已 1:1 对齐；剩余差距集中在 <b>session-end 沉淀链（slot-reflect/graph-extract）与 team 共享语义</b>两个 P0 行为缺口，以及约 11 个边缘函数。P0 三项（D1/D2a/D2b）落地后，移植版将达到「单实例场景功能完备」，仅剩多实例联邦（mesh-sync）一个架构性刻意缺口。
+</div>
+
+<div class="callout green">
+<b>实施状态（2026-07-26，P0+P1 全部落地）</b>：
+<ul style="margin:6px 0;padding-left:20px">
+  <li><span class="tag g">已实施</span> <b>D1 team scope 全局化</b>：amSchema 新增全局 <code>teamShared(teamId)</code>/<code>teamProfile(teamId)</code> scope（mem:team:&lt;teamId&gt;:*，对齐原版）；teamShare/teamQuery/teamFeed/teamProfile 全部改读写全局 scope（teamId=project||'default'，跨 agent 可见）；<code>migrateLegacyTeamShared</code> 一次性搬迁 summaries 中的遗留 TeamSharedItem（config flag 幂等，接入 runMaintenanceSweep 步骤 0）；buildContext 摘要块防御过滤非 SessionSummary 条目</li>
+  <li><span class="tag g">已实施</span> <b>D2a mem::slot-reflect 复刻 + session_end 接线</b>：amSlots.slotReflect（近期观察 ≤200 → pending_items(todo 去重追加) / session_patterns(错误·命令计数覆盖) / project_context(触及文件去重 ≤20/次)，sizeLimit 尾部截断，审计写 KV.state）；hookType 映射适配（error→post_tool_failure、command_run→工具名匹配）；V2.triggerHook('session_end') 压缩后调用，AGENTMEMORY_REFLECT=false 关闭（移植版 slots 常开故默认开，刻意的默认值差异）</li>
+  <li><span class="tag g">已实施</span> <b>D2b graph-extract 联动</b>：session_end 链追加 graphExtract（从刚压缩的摘要抽取实体），AGENTMEMORY_GRAPH_EXTRACTION=true 才开（对齐原版默认关）</li>
+  <li><span class="tag g">已实施</span> <b>D3 skill-list / skill-match</b>：amFeatures.skillList（procedural scope 归一化 trigger/steps/tags）+ skillMatch（任务文本关键词重叠 × 置信度打分 top N）；V2 暴露</li>
+  <li><span class="tag g">已实施</span> <b>session_handoff 复刻</b>：amFeatures.sessionHandoff（摘要 + 未闭合 actions + 重要观察 + pinned slots → markdown），以 SessionSummary 形态持久化（key handoff_&lt;sessionId&gt;）——下个会话策展注入的 summaries 块自然携带交接信息</li>
+  <li><span class="tag g">已实施</span> <b>小函数补齐</b>：actionEdgeCreate（行动 DAG 边，存 relations scope 避免污染 actionList）｜ heal（畸形记忆字段修复：isLatest/strength/concepts/createdAt 回填）｜ replayImportJsonl（Claude Code JSONL → observe 管线，复用滑动窗口与评分）｜ recentSearchesSweep（窗口+上限修剪）/ followupStats（搜索→写入追问率）。<b>sentinel-expire 确认已由 sentinelCheck 覆盖</b>（过期标记内建），无需单独实现</li>
+</ul>
+<b>验证</b>：扩展 365（+11 新用例：team 全局化×2 / 摘要防御 / slotReflect×2 / skill×1 / handoff / edge / heal / jsonl / sweeps）+ amReplication 44（+迁移用例）+ Integration 57 + RWR 14 全绿；编译零错误。enrich-window/session 已于 2026-07-26 完成评估并标注刻意跳过（原版 write-only + LLM 成本 + 观察已结构化）；P3 轻量 benchmark 同日落地（基线 recall@10=1.000，回归门禁可用）。<b>mesh-sync/mesh-receive 亦于 2026-07-26 复刻（见下）</b>——至此 mem::143 <b>全部覆盖</b>（仅剩 enrich-window/session 与基础设施类共 8 项文档化刻意跳过），§13.6 复刻方案全部闭环。
+</div>
+
+<div class="callout green">
+<b>实施记录（2026-07-26）：mem::mesh-sync / mesh-receive 复刻——最后一块缺口</b>
+<ul style="margin:6px 0;padding-left:20px">
+  <li><b>协议对齐原版 mesh.ts</b>：对等节点 delta 同步（since=lastSyncAt 水位线）→ push（POST /mesh/receive）+ pull（GET /mesh/export?agent&since&scopes）→ <b>LWW 合并</b>（memories/actions/semantic/procedural 按 updatedAt 新者胜；relations 按 sourceId:targetId:type 三元组首写胜）；peer 状态机（syncing/online/error/offline）+ 全量审计（KV.state audit_ 约定）。graph nodes/edges 不同步（移植版图谱为进程内单例，非 KV 持久化——文档化限制）</li>
+  <li><b>SSRF 防护</b>：isAllowedMeshUrl（私网/本机阻断 + DNS 解析检查 + 协议白名单 + 无内嵌凭据）——与原版差异：新增 <code>AGENTMEMORY_MESH_ALLOW_LOCAL=true</code> 显式开关放行本机/私网（原版面向公网对等故硬阻断；本项目主场景为同机/局域网多 IDE 实例）</li>
+  <li><b>鉴权与绑定</b>：同步双方需一致 <code>AGENTMEMORY_SECRET</code>（/mesh/* 路由强制 Bearer，未配置返回 503）；网关绑定新增 <code>AGENTMEMORY_HOST</code>（默认 127.0.0.1，跨机联邦需 0.0.0.0 + SECRET）</li>
+  <li><b>数据面</b>：amRemaining.meshSync/meshReceive/collectSyncData/applySyncData（复用既有 state scope 的 mesh:&lt;id&gt; peer 注册表，MeshPeer 扩展 lastSyncAt/syncFilter）；V2 暴露三方法（代理 catch-all 可达）；host.mjs 新增 /mesh/receive、/mesh/export 路由；客户端 <code>memory_mesh</code> 工具加 sync 动作（push/pull/both）</li>
+</ul>
+<b>验证</b>：扩展 416（+3 用例：LWW 合并【新者胜/旧者跳/关系首写胜】 / 双实例端到端【delta push+pull+水位线推进，相对墙钟时间戳——固定未来时间戳曾致二次同步断言失效】 / 鉴权+SSRF）+ 57 + 44 + 29 + 87 + RWR 14 全绿；host.mjs 语法 OK；改动文件 tsgo 0 错误。<b>agentmemory 原版 mem:: 函数面复刻工程至此 100% 收官。</b>
+</div>
+
+<h2>14. 注入与召回机制：函数级调用图对比（2026-07-26）</h2>
+
+<p>本节在第 10 节（注入时机对比）与第 12 节（注入链路审计）之后，以<b>函数调用图</b>呈现原版 v0.9.28 与移植版当前代码在<b>召回</b>与<b>注入</b>两条链路的精确对照。关键先行结论：①原版的召回是<b>双轨制</b>——<code>mem::search</code> 是 BM25 单路（MCP/REST 主用），<code>mem::smart-search</code> 才是 BM25+Vector+Graph 三流混合（agent 主路径）；②移植版召回是<b>单轨双流</b>——<code>fn.searchMemories</code>（BM25+Vector RRF）承载所有入口，且仓内 <code>multiSearch.ts</code>（graph 策略+rerank）与 <code>reranker.ts</code>（原版 1:1 复刻）<b>均为零调用的未接线模块</b>。</p>
+
+<h3>14.1 召回机制：入口 → 函数路由对照</h3>
+
+<table>
+  <tr><th>入口</th><th>agentmemory 原版</th><th>本项目移植版</th></tr>
+  <tr><td>LLM 工具</td><td>MCP <code>memory_recall</code> → <b>mem::search</b>（BM25 单路，full/compact/narrative + token_budget）</td><td><code>memory_search</code>（memoryTools.ts）→ provider.searchMemory → <b>fn.searchMemories</b>（BM25+Vector 双流）｜ <code>memory_recall</code> → provider.recallFormatted → fn.searchMemories</td></tr>
+  <tr><td>REST</td><td>/agentmemory/search → mem::search｜ /agentmemory/smart-search → <b>mem::smart-search</b>（三流混合）</td><td>POST /provider/searchMemory（通用 RPC）→ fn.searchMemories</td></tr>
+  <tr><td>MCP prompt</td><td>recall_context → mem::search + KV.list(memories) 最新 feed</td><td>—（无 MCP 面，工具等价）</td></tr>
+  <tr><td>注入附加块</td><td>—（mem::context 不含搜索）</td><td>buildContext query 时 → fn.searchMemories（≤30% 预算，§12 P0）</td></tr>
+  <tr><td>压缩检索</td><td>—（pre-compact 走 flow-compress）</td><td>agentContextRetrieval（RETRIEVED_CTX）→ provider.searchMemory</td></tr>
+  <tr><td>CLI / Viewer</td><td>CLI search → mem::smart-search</td><td>IDE 记忆视图 → provider.searchMemory</td></tr>
+</table>
+
+<h3>14.2 召回函数调用图</h3>
+
+<div class="flow"><span class="c-a"># ══ 原版召回（双轨制）══</span>
+
+mem::search（functions/search.ts）<span class="c-dim">← MCP memory_recall / REST /search / recall_context</span>
+  ├─ getSearchIndex() → <span class="c-p">SearchIndex.search</span>（BM25 单路；过滤时 fetchLimit=limit×10 过量取）
+  ├─ project/cwd 过滤（loadSession/loadMemoryProject 双级缓存）
+  ├─ KV.get 回填（observations → memories fallback，Promise.all 并行）
+  ├─ agentId 后置过滤（AGENT_SCOPE=isolated 时 fail-closed）
+  ├─ recordAccessBatch（访问追踪）
+  └─ 打包：format=full/compact/narrative + token_budget 截断
+
+mem::smart-search（functions/smart-search.ts）<span class="c-dim">← REST /smart-search / CLI（agent 主路径）</span>
+  ├─ expandIds 模式 → findObservation（跨 session 批量探测）
+  └─ query 模式：
+       ├─ searchFn = <span class="c-p">HybridSearch.tripleStreamSearch</span>（state/hybrid-search.ts，index.ts 注入）
+       │    ├─ BM25 流：SearchIndex.search
+       │    ├─ Vector 流：VectorIndex.search（embed query）
+       │    ├─ <span class="c-w">Graph 流：GraphRetrieval.search（query-expansion 实体抽取，权重 0.3）</span>
+       │    ├─ RRF 融合 K=60：bmW·1/(60+rB) + vecW·1/(60+rV) + 0.3·1/(60+rG)
+       │    ├─ <span class="c-w">diversifyBySession（≤3 条/session 去集中化）</span>
+       │    └─ <span class="c-w">rerank（state/reranker.ts，窗口 20，xenova cross-encoder）</span>
+       ├─ mem::lesson-recall（并行并入，top10，preview 240c）
+       ├─ agentId 后置过滤（over-fetch 3x）
+       ├─ recordAccessBatch
+       └─ detectFollowup（#771 追问率诊断：窗口内结果集不相交 → 计数，withKeyedLock 串行化）
+
+<span class="c-a"># ══ 移植版召回（单轨双流）══</span>
+
+fn.searchMemories（amFunctions.ts）<span class="c-dim">← 全部入口（工具/注入块/压缩检索/UI）</span>
+  ├─ KV 扫描候选（limit×3，strength 排序）
+  ├─ BM25 流：_getBM25Index(<span class="c-g">agentId</span>).search  <span class="c-dim">← agent 感知 getter（§12 P1 并发安全）</span>
+  ├─ Vector 流：_getVectorIndex(<span class="c-g">agentId</span>).search（可选，网关内建）
+  ├─ RRF 融合 K=60：1/(60+rB) + 1/(60+rV)（等权，<span class="c-w">无 Graph 流</span>）
+  ├─ KV.get 回填 + isLatest/type/project 过滤
+  └─ recordAccessBatch
+  <span class="c-dim">隔离模型：per-agent KV scope 天然隔离（无需后置过滤与过量取——优于原版）</span>
+
+fin.smartSearch（amFinal.ts）<span class="c-dim">← 不同的 "smart" 语义：memories+lessons 关键词重叠（非混合检索）</span>
+
+<span class="c-dim">[未接线模块] multiSearch.ts（graph 策略 + rerankResults）· reranker.ts（原版 1:1 复刻）——零调用方</span></div>
+
+<h3>14.3 召回核心差异清单</h3>
+
+<table>
+  <tr><th style="width:170px">维度</th><th>原版（smart-search 混合路径）</th><th>移植版（searchMemories）</th><th style="width:110px">结论</th></tr>
+  <tr><td>融合流数</td><td>三流：BM25 + Vector + <b>Graph</b>（AGENTMEMORY_GRAPH_WEIGHT=0.3）</td><td>双流：BM25 + Vector（graphQuery 存在但未入融合）</td><td><span class="tag w">差距 G1</span></td></tr>
+  <tr><td>重排序</td><td>reranker.ts cross-encoder，top-20 窗口</td><td>reranker.ts 已 1:1 复刻（含 rerankSimple 确定性回退）<b>但零调用</b></td><td><span class="tag w">差距 G2</span></td></tr>
+  <tr><td>会话去集中</td><td>diversifyBySession ≤3/session</td><td>无</td><td><span class="tag w">差距 G3</span></td></tr>
+  <tr><td>lessons 并入</td><td>smart-search 并行并入 mem::lesson-recall（top10）</td><td>分离：lessonRecall 独立函数；fin.smartSearch 另行覆盖 lessons</td><td><span class="tag w">差距 G4</span></td></tr>
+  <tr><td>expandIds 模式</td><td>有（按 id 展开，跨 session 探测）</td><td>无</td><td><span class="tag g">低优先</span></td></tr>
+  <tr><td>输出格式/预算</td><td>full/compact/narrative + token_budget 打包</td><td>简单编号列表（recallFormatted），无预算</td><td><span class="tag g">低优先</span></td></tr>
+  <tr><td>agent 隔离</td><td>全局索引 + agentId 后置过滤 + over-fetch（fail-closed）</td><td>per-agent scope + per-agent 索引（结构性隔离）</td><td><span class="tag g">移植更优</span></td></tr>
+  <tr><td>追问率诊断</td><td>detectFollowup：窗口内结果集不相交检测（#771）</td><td>followupStats 简化版（搜索→写入率）；recentSearchesAdd 仅测试调用，搜索主路径未自动记录</td><td><span class="tag g">低优先</span></td></tr>
+  <tr><td>索引重建</td><td>mem::search 空索引时惰性 rebuildIndex（memories+observations+向量批量 embed 32/批）</td><td>网关启动时全量重建（host.mjs）</td><td><span class="tag g">等价</span></td></tr>
+</table>
+
+<h3>14.4 注入机制：入口 → 函数路由对照</h3>
+
+<table>
+  <tr><th>注入点</th><th>agentmemory 原版</th><th>本项目移植版</th></tr>
+  <tr><td>会话开始</td><td>SessionStart hook → POST /agentmemory/session/start → api::session::start → <b>mem::context</b>（+ 事件总线 event::session::started）→ stdout prepend，每 session 一次</td><td>agentTurnExecutor → <b>injectMemoryContext</b>（每 session 一次，injectedSessions LRU 500）→ provider.loadContext（2s 硬超时）→ /provider/loadContext → V2.loadContext → <b>fn.buildContext</b>（mem::context 1:1）</td></tr>
+  <tr><td>工具调用前</td><td>PreToolUse hook → /agentmemory/enrich → <b>mem::enrich</b>（file-context + search + bug 记忆，≤4000c，2s）——0.8.10 起默认 no-op（#143）</td><td>volatile 层（每轮）：Recently Touched Files + <b>&lt;agentmemory-past-errors&gt;</b>（bugMemoriesForFiles top3）——无 per-tool-call 形态（刻意）</td></tr>
+  <tr><td>压缩前</td><td>PreCompact hook → /agentmemory/pre-compact → api::pre-compact → <b>mem::flow-compress</b>（budget 1500）→ stdout</td><td>agentContextRetrieval（RETRIEVED_CTX）→ provider.searchMemory 检索注入 + compressSession 摘要沉淀（§11 分层）</td></tr>
+  <tr><td>每轮可变</td><td>—（无此层）</td><td>volatile 层：Persona（systemPromptVolatile，driver 组装）+ 触碰文件/历史 bug（移植版独有分层，缓存友好）</td></tr>
+  <tr><td>门控</td><td>AGENTMEMORY_INJECT_CONTEXT（默认关）；hooks 1.5s/2s 硬超时静默失败</td><td>AGENTMEMORY_INJECT_CONTEXT（默认关）；loadContext 2s Promise.race 降级（§12 P1）</td></tr>
+</table>
+
+<h3>14.5 注入函数调用图</h3>
+
+<div class="flow"><span class="c-a"># ══ 原版注入（hooks → REST → mem:: 函数 → stdout）══</span>
+
+[Claude Code] SessionStart hook
+  └─POST /agentmemory/session/start → api::session::start
+      ├─ sdk.trigger → <span class="c-p">mem::context</span>（functions/context.ts）
+      │    ├─ KV.list(KV.slots) → pinned slots
+      │    ├─ mem::profile → project profile
+      │    ├─ KV.list(KV.lessons) → project×1.5 加权 top10
+      │    ├─ KV.list(KV.sessions) → per-session：
+      │    │     KV.get(KV.summaries, sid) 或 KV.list(KV.observations(sid)) 筛 importance≥5 top5
+      │    ├─ recency 排序 → 预算填充（含 header/footer）
+      │    └─ recordAccessBatch
+      └─ sdk.trigger(durable) → topic:agentmemory.session.started
+           └─ event::session::started → mem::observe（注册会话）
+                <span class="c-dim">（stopped 时）→ mem::summarize + mem::slot-reflect + mem::graph-extract</span>
+  ← stdout → Claude prepend 第一轮（<span class="c-g">每 session 一次</span>）
+
+[Claude Code] PreToolUse hook（默认关）
+  └─POST /agentmemory/enrich → api::enrich → <span class="c-p">mem::enrich</span>
+      ├─ mem::file-context（文件历史）
+      ├─ mem::search（文件名/terms top5）
+      └─ bug 记忆 top3（files∩type=bug∩isLatest）→ stdout
+
+[Claude Code] PreCompact hook
+  └─POST /agentmemory/pre-compact → api::pre-compact → <span class="c-p">mem::flow-compress</span>（budget 1500）→ stdout
+
+<span class="c-a"># ══ 移植版注入（agentTurnExecutor → 代理 → 网关 V2 → fn 函数 → system 消息）══</span>
+
+agentTurnExecutor（每轮开始）
+  ├─ <span class="c-g">volatile 层（每轮，移植版独有分层）</span>
+  │    ├─ systemPromptVolatile（Persona/技能，driver 组装，AGENTMEMORY_INJECT_CONTEXT 门控）
+  │    └─ Recently Touched Files + &lt;agentmemory-past-errors&gt;
+  │         ├─ host._consumeStashedFiles（stash 会话级保留）
+  │         └─ provider.bugMemoriesForFiles → /provider/* → V2 → <span class="c-p">fn.bugMemoriesForFiles</span>
+  │              <span class="c-dim">（mem::enrich 高价值部分复刻；listMemoriesCached 写穿缓存）</span>
+  └─ <span class="c-g">injectMemoryContext（每 session 一次，幂等 LRU 500）</span>
+       ├─ triggerHook(session_start/prompt_submit) → fire-and-forget HTTP
+       ├─ provider.loadContext（<span class="c-w">2s Promise.race 硬超时</span>，超时/错误 → 空上下文降级）
+       │    └─ 代理 _call → POST /provider/loadContext → host.mjs → V2.loadContext
+       │         └─ fn.loadContextFn → <span class="c-p">fn.buildContext</span>（mem::context 1:1 复刻，§12 P0 后恒走策展）
+       │              ├─ listPinnedSlots（amSlots）
+       │              ├─ getProfile（project profile）
+       │              ├─ KV.list(KV.lessons) → project×1.5 加权 top10
+       │              ├─ KV.list(KV.summaries) top10（<span class="c-w">D1 防御过滤非摘要条目</span>）
+       │              ├─ 观察块 Promise.all（importance≥5 top5/会话，§12 P2 评分）
+       │              ├─ <span class="c-g">Relevant Memories（query 时 searchMemories，≤30% 预算）</span>
+       │              ├─ recency 排序 → 预算填充（含 header/footer，project XML 转义）
+       │              └─ recordAccessBatch + autoPage
+       ├─ planModePrefix 补丁（plan 模式降权警示，移植版独有）
+       └─ 插为 system 消息（冻结前缀之后）+ memory_injected delta（含 contextBlocks/contextTokens 元数据）
+
+压缩路径（上下文超预算时，对齐 pre-compact 语义）
+  └─ agentContextRetrieval（RETRIEVED_CTX 标签）→ provider.searchMemory 检索注入
+       + compressSession 摘要沉淀（mem:obs → mem:summaries 分层，§11）</div>
+
+<h3>14.6 结论与后续建议</h3>
+
+<table>
+  <tr><th style="width:120px">类别</th><th>结论</th></tr>
+  <tr><td><span class="tag g">注入：已对齐</span></td>
+    <td>经 §12 P0→P2 修复后，注入链路与原版 <b>mem::context 1:1 对齐</b>（策展块构成、重要性筛选、预算语义、门控姿态、超时降级、session 级幂等），且移植版多出两个缓存友好的分层：volatile 层（每轮可变）与 planModePrefix。剩余刻意差异：pre-tool-call enrich 不做（#143 教训，volatile past-errors 已覆盖高价值部分）。</td></tr>
+  <tr><td><span class="tag w">召回：双流 vs 三流</span></td>
+    <td>移植版召回主路径缺 <b>Graph 流（G1）、rerank（G2）、diversifyBySession（G3）、lessons 并入（G4）</b> 四项——且仓内 multiSearch.ts（graph 策略+rerankResults）与 reranker.ts（原版 1:1 复刻）已是成品却零接线，补齐成本低。</td></tr>
+  <tr><td><span class="tag p">建议（可选，按优先级）</span></td>
+    <td><b>R1</b>：searchMemories 接 Graph 流（复用 pipe.graphQuery，RRF 权重 0.3，对齐 AGENTMEMORY_GRAPH_WEIGHT）＋ rerankSimple 确定性回退接 top-20 窗口（网关无 xenova 时零成本生效）——一次改动消灭 G1+G2；<b>R2</b>：diversifyBySession（≤3/session）10 行实现消灭 G3；<b>R3</b>：memory_recall 并入 lessonRecall top5（对齐 smart-search lessons 数组）消灭 G4；<b>R4</b>：V2.searchMemory 自动 recentSearchesAdd + followupStats 对齐 disjoint-set 语义（低优先）。</td></tr>
+</table>
+
+<div class="callout green">
+<b>实施状态（2026-07-26，R1-R4 全部落地）</b>：
+<ul style="margin:6px 0;padding-left:20px">
+  <li><span class="tag g">已实施</span> <b>R1a Graph 流</b>：<code>searchMemories</code> 三路召回并行（BM25 + Vector + Graph），Graph 流复用 <code>pipe.graphQuery</code>（动态导入防模块环——amPipeline→amFunctions 已存在静态依赖），RRF 三流融合（有效权重按可用流动态归一化），<code>AGENTMEMORY_GRAPH_WEIGHT</code> 默认 0.3（对齐原版，=0 关闭）</li>
+  <li><span class="tag g">已实施</span> <b>R1b rerank</b>：rerankSimple（确定性术语覆盖，零依赖）接 top-20 窗口，<code>AGENTMEMORY_RERANK=false</code> 关闭；<b>顺带修复</b> rerankSimple 运算符优先级 bug（<code>title ?? '' + ' ' + content</code> 中拼接优先于 ??——title 存在时 content 被整体丢弃，term 匹配失效）</li>
+  <li><span class="tag g">已实施</span> <b>R2 diversifyBySession</b>：≤3/session；sessionIds 缺失条目按自身 id 独立成桶（remember 写入的全局记忆不互相挤占——否则会误伤全局召回）</li>
+  <li><span class="tag g">已实施</span> <b>R3 lessons 并入</b>：<code>V2.recallFormatted</code> 追加 lessonRecall top5 的 Lessons 段（对齐 smart-search 返回结构）</li>
+  <li><span class="tag g">已实施</span> <b>R4 搜索历史</b>：<code>V2.searchMemory</code> 自动 recentSearchesAdd（fire-and-forget，followupStats 数据源）</li>
+</ul>
+<b>验证</b>：扩展 376（+4 用例：graph 流 BFS 邻居召回 / rerankSimple 翻转+优先级修复 / diversify 上限 / lessons+搜索历史）+ 57 + 44 + RWR 14 全绿；benchmark 基线不变（两尺度 hit@1=1.00，p50=0.05-0.09ms）；编译零错误。<b>召回链路至此与原版 mem::smart-search 完全对齐</b>（三流融合 + rerank + diversify + lessons 并入）。
+</div>
+
+<h2>15. 本项目 AgentMemory 记忆机制架构全解（2026-07-26）</h2>
+
+<p>本节是移植版的<b>自架构文档</b>：总体框架图、逐模块详解、五条核心函数调用链，并对<b>记忆注入模块</b>做专项分析（§15.4）。对应代码现状（§12 注入修复 + §13 复刻 + §14 召回补齐全部落地后）。</p>
+
+<h3>15.1 总体框架图（进程拓扑）</h3>
+
+<div class="flow"><span class="c-dim"># ═════════════════════════ IDE 进程（Sarosis Workbench / renderer）═════════════════════════</span>
+
+┌─ 用户交互层 ─────────────────────────────────────────────────────────┐
+│  memoryViewPane（记忆侧栏）   memoryDetailEditorPane（详情编辑器）      │
+│  agentStudioDashboardView（统计仪表盘）                                │
+└──────────────┬───────────────────────────────────────────────────────┘
+┌─ AgentOS 编排层（contrib/agentStudio/browser）──────────────────────┐
+│  agentOSService      turn 编排 Path1/2/3 · 工具执行 · 观察采集        │
+│                      （_observeToolResult / storeTurnObservations）   │
+│  agentDriverService  memoryScope 解析 · prompt 分层（stable/ctx/vol） │
+│  agentTurnExecutor   消息组装 · volatile 层 · 策略层钩子              │
+│  agentMemoryInjection.ts   <span class="c-a">策展注入发生器（§15.4 专项）</span>     │
+│  agentContextRetrieval.ts  压缩检索注入（RETRIEVED_CTX）              │
+│  工具面  memoryTools(4) + unifiedMemoryTools(3) + advancedMemoryTools(6)│
+└──────────────┬───────────────────────────────────────────────────────┘
+┌─ 代理层 ────────────────────────────────────────────────────────────┐
+│  agentMemoryProviderProxy（renderer 加载，priority=1000）             │
+│  HTTP 转发 · 写入重试队列(200/5次/3s) · 健康去抖(2连败判down) · catch-all│
+└──────────────┬───────────────────────────────────────────────────────┘
+               │ HTTP :3111（loopback）
+<span class="c-dim"># ═════════════════════════ 网关子进程（extensions/agentmemory-gateway/host/host.mjs）═════════</span>
+┌─ HTTP 路由 ─────────────────────────────────────────────────────────┐
+│  GET /health · GET /kv-list-agents · GET /scopes · POST /flush-all   │
+│  GET|PUT|DELETE /kv/:scope/:key · GET /kv/:scope                     │
+│  POST /search/:agent · GET /stats/:agent · GET /mem/:agent/:id       │
+│  GET /skill-md/:agent · <span class="c-a">POST /provider/:method（通用 RPC，~100 方法）</span>│
+└──────────────┬───────────────────────────────────────────────────────┘
+┌─ 引擎层（in-process，extensions/agentmemory-memory/src）─────────────┐
+│  agentMemoryProviderV2（门面，~100 方法，_registerDefaultHooks）       │
+│  amFunctions(49)  amPipeline(14)  amSlots(9)   amCompress(5)         │
+│  amAdvanced(26)   amReplication(18) amExtras(8) amFinal(29)          │
+│  amFeatures(10)   amRemaining(31)  recall/multiSearch/reranker/      │
+│  knowledgeGraph/workingMemory/tokenBudget/consolidation/auditLog     │
+└──────────────┬───────────────────────────────────────────────────────┘
+┌─ 存储与索引 ────────────────────────────────────────────────────────┐
+│  StateKV 双后端：SQLite（state_store.db 主）/ JS-KV JSON（备）         │
+│  数据目录 <span class="c-g">~/.vssaros/.agentmemory/</span>（resolveDataDir + 旧目录一次性迁移）  │
+│  per-agent BM25 + Vector 索引（KV PUT 增量更新；启动全量重建）          │
+│  sweep 定时器：首延迟 30s + SWEEP_INTERVAL 周期，遍历 mem:memories:*   │
+└──────────────────────────────────────────────────────────────────────┘</div>
+
+<h3>15.2 模块详解</h3>
+
+<table>
+  <tr><th style="width:90px">层</th><th style="width:230px">模块</th><th>职责与关键设计</th></tr>
+  <tr><td rowspan="3">客户端<br>编排</td>
+    <td><code>agentOSService.ts</code></td>
+    <td>turn 生命周期编排：Path1（显式模型直通）/ Path2（ExecutionProvider 完整 Agent Loop）/ Path3（fallback）。观察采集两通道——<code>_observeToolResult</code>（工具结果结构化压缩 → provider.observe，hookType=post_tool_use/failure）与 <code>storeTurnObservations</code>（user/assistant 消息，CJK 感知长度阈值 8 + 哈希去重防重发）。维护接线：git commit / onTaskCompleted / hooks 转发。<code>_injectedSessions</code>（LRU 500）与 <code>_stashedFiles</code>（LRU 200）按会话生命周期保留（§12 P0 修正）。</td></tr>
+  <tr><td><code>agentDriverService.ts</code></td>
+    <td>turn 前置编排：memoryScope 解析（agent/global，binding.memoryConfig）→ prompt 三层组装（stable 冻结 / context / volatile）→ enrichedRequest。曾经每轮 loadContext 的浪费调用已移除（§12 P1）。</td></tr>
+  <tr><td><code>agentTurnExecutor.ts</code></td>
+    <td>消息最终组装与 Agent Loop 执行：冻结前缀定位 → <b>volatile 层注入</b>（Persona + Recently Touched Files + past-errors）→ 调 injectMemoryContext → 策略层五钩子。是注入模块的宿主。</td></tr>
+  <tr><td>客户端<br>注入</td>
+    <td><code>agentMemoryInjection.ts</code></td>
+    <td><b>注入模块核心</b>（§15.4 专项）：isMemoryInjectionEnabled 门控、幂等去重（前置）、2s 硬超时降级、strategy 过滤（diagnostics）、planModePrefix 补丁、memory_injected delta（含 contextBlocks/contextTokens 元数据）。</td></tr>
+  <tr><td>客户端<br>提炼</td>
+    <td><code>agentContextRetrieval.ts</code></td>
+    <td>压缩点检索注入：上下文超预算时检索相关记忆以 RETRIEVED_CTX 标签注入（压缩器会剥离该标签避免二次压缩）——对齐原版 pre-compact 注入面。兼 storeTurnObservations 实现。</td></tr>
+  <tr><td>代理</td>
+    <td><code>agentMemoryProviderProxy.ts</code></td>
+    <td>renderer 侧 IMemoryProvider（priority=1000 注册为唯一来源）。写入失败入队重试（上限 200 条、单条 5 次、3s 重放、成功补发 memory_written——remember 假死事故后的防线）；连续 2 次失败才判 down（去抖）；JS Proxy catch-all 自动转发未声明方法（团队/反思等新方法零代理改动）。</td></tr>
+  <tr><td>网关</td>
+    <td><code>host.mjs</code></td>
+    <td>独立子进程隔离内存与故障域。HTTP 路由 11 组；<code>/provider/:method</code> 通用 RPC（WRITE_METHODS 白名单记写日志，读采样 25:1）；resolveDataDir 解析 .vssaros 数据目录并做旧目录一次性 rename 迁移；per-agent 索引惰性创建（AGENTMEMORY_BM25_MAX_DOCS=10000 / VECTOR_MAX_DOCS=5000）；sweep 调度器（30s 首延迟 + 周期遍历全部 agent）；AGENTMEMORY_LOG_VERBOSE 详细日志。</td></tr>
+  <tr><td rowspan="3">引擎</td>
+    <td><code>agentMemoryProviderV2.ts</code></td>
+    <td>引擎门面（hosted 模式在网关内运行）：~100 方法覆盖 IMemoryProvider 全接口 + 扩展面；triggerHook 事件路由（session_start/end、prompt_submit、post_tool_*、pre_compact、task_completed、subagent_*、git_commit）；session_end 链（compress → slotReflect → graphExtract）；runMaintenanceSweep 九步（D1 迁移→sweep→crystal→skill→decay→snapshot→sentinel→lease→retention）；审计与技能文件写入（AGENTMEMORY_SKILLS_DIR）。</td></tr>
+  <tr><td><code>amFunctions.ts</code></td>
+    <td>引擎内核（49 导出）：remember（Jaccard 去重 + supersede + 写穿缓存）、<b>searchMemories（三流 RRF + diversify + rerankSimple）</b>、<b>buildContext（mem::context 1:1 策展）</b>、observe（滑动窗口 200 + title/importance 评分 + session 懒注册）、buildWorkingContext（Letta 式，仅 legacy 消费者）、bugMemoriesForFiles、sentinel 支撑等。listMemoriesCached 写穿缓存（5s TTL）防全表扫描阻塞。</td></tr>
+  <tr><td>其余引擎模块</td>
+    <td><code>amPipeline</code>（decay/consolidate/图谱/全量 sweep）｜ <code>amSlots</code>（slot CRUD + pinned 渲染 + <b>slotReflect</b>）｜ <code>amCompress</code>（观察→SessionSummary 压缩与合并）｜ <code>amAdvanced</code>（sentinel 生命周期/action/snapshot）｜ <code>amReplication</code>（原版 20 函数复刻 + D1 迁移）｜ <code>amExtras/amFinal/amFeatures/amRemaining</code>（治理/回放/画像/信号/例行/团队）｜ <code>recall/multiSearch/reranker/knowledgeGraph/workingMemory/tokenBudget/consolidation/auditLog</code> 支撑件。</td></tr>
+  <tr><td>存储</td>
+    <td><code>stateKV.ts</code> + <code>amSchema.ts</code></td>
+    <td>StateKV 双后端（SQLite 主 / JS-KV 备，HTTP 远端模式）。amSchema 55 个 KV scope：<b>per-agent</b>（mem:memories:&lt;agent&gt; 等，结构性隔离）｜ <b>per-session</b>（mem:obs:&lt;agent&gt;:&lt;sid&gt;）｜ <b>全局</b>（mem:team:&lt;teamId&gt;:* 共享池）。双写索引：KV PUT 时增量更新 BM25/Vector。</td></tr>
+</table>
+
+<h3>15.3 核心函数调用图（五条链路）</h3>
+
+<div class="flow"><span class="c-a"># ① Capture 写入链（工具结果 + turn 消息 → mem:obs 暂存层，每轮常开）</span>
+
+agentOSService._executeToolCalls（工具执行完成）
+  └─ _observeToolResult(agentId, sessionId, toolName, files, output, ok)
+       └─ provider.observe(agentId, sessionId, payload)   <span class="c-dim">← 结构化压缩（tool_name/files/tool_output≤2000c）</span>
+            └─ proxy._call → POST /provider/observe → V2.observe → fn.observe
+                 ├─ title/importance 评分（失败7/工具5/turn4）
+                 ├─ session 懒注册（mem:sessions 记录）
+                 ├─ KV.set(mem:obs:&lt;agent&gt;:&lt;sid&gt;) + 滑动窗口 200 截断
+                 └─ maybeCompressSession（≥阈值 → 转链⑤压缩）
+
+agentContextRetrieval.storeTurnObservations（user/assistant 消息）
+  └─ CJK 阈值 ≥8 字 + _storedMiddleHashes 去重 → provider.observe（hookType=turn_observation）
+
+<span class="c-a"># ② 提炼写入链（显式工具 → mem:memories 长期层，仅提炼后内容；L1-L3 已于 2026-07-26 移除，见 §17）</span>
+
+LLM 工具 memory_remember → provider.writeMemory
+  └─ /provider/writeMemory → V2.writeMemory → fn.remember
+       ├─ listMemoriesCached → Jaccard 去重（≥0.7 → supersede 旧条目 isLatest=false）
+       ├─ KV.set(mem:memories:&lt;agent&gt;) + memCachePut（写穿缓存）
+       ├─ BM25/Vector 索引增量 PUT
+       └─ cascadeUpdate（相关记忆联动，amFunctions 接线）
+
+<span class="c-a"># ③ 召回链（见 §14 详图——三流 RRF + diversify + rerankSimple + lessons 并入）</span>
+
+memory_search / memory_recall → provider.searchMemory / recallFormatted
+  └─ V2 → fn.searchMemories → [BM25 ∥ Vector ∥ Graph] RRF → diversify≤3 → rerankSimple(top20)
+       └─ recallFormatted 追加 lessonRecall top5（Lessons 段）；searchMemory 记 recentSearchesAdd
+
+<span class="c-a"># ④ 注入链（§15.4 专项详图）</span>
+
+<span class="c-a"># ⑤ 沉淀与维护链（session_end 事件链 + 周期 sweep）</span>
+
+agentOSService finally（每轮末）→ triggerHook('session_end') → V2.triggerHook
+  ├─ countUncompressed ≥5 → amCompress.compressSession（mem:obs → mem:summaries，与既有摘要合并）
+  ├─ amSlots.slotReflect（AGENTMEMORY_REFLECT 默认开：todo→pending_items / 错误命令计数→session_patterns / 触及文件→project_context）
+  └─ amPipeline.graphExtract（AGENTMEMORY_GRAPH_EXTRACTION=true 才开：摘要文本 → 图谱节点/边）
+
+host.mjs sweep 定时器（30s 首延迟 + SWEEP_INTERVAL）遍历 mem:memories:*
+  └─ V2.runMaintenanceSweep：D1 迁移 → runFullSweep（decay/consolidate/autoPage/tokenBudget）
+       → autoCrystallize → extractSkill → insightDecaySweep → snapshotCreate → sentinelCheck → leaseCleanup → retention</div>
+
+<h3>15.4 记忆注入模块专项分析（重点）</h3>
+
+<p>注入模块由<b>三个注入面</b>组成，分别对应不同的时间尺度与缓存层级——这是移植版相对原版最重要的结构性增强（原版只有单注入面）：</p>
+
+<table>
+  <tr><th style="width:150px">注入面</th><th style="width:130px">时间尺度</th><th>内容</th><th>缓存影响</th></tr>
+  <tr><td><b>① 策展注入</b><br>injectMemoryContext</td><td>每 session 一次<br>（injectedSessions LRU 500）</td><td>buildContext 策展块（pinned slots / profile / lessons / summaries / 重要观察 / Relevant Memories≤30%）+ planModePrefix</td><td>session 内字节不变 → <b>前缀缓存稳定</b></td></tr>
+  <tr><td><b>② volatile 层</b><br>agentTurnExecutor</td><td>每轮</td><td>Persona（systemPromptVolatile）+ Recently Touched Files + &lt;agentmemory-past-errors&gt;（bugMemoriesForFiles top3）</td><td>每轮可变，独立 system 消息置于冻结前缀之后——<b>不打断前缀缓存</b></td></tr>
+  <tr><td><b>③ 压缩检索注入</b><br>agentContextRetrieval</td><td>压缩事件时</td><td>RETRIEVED_CTX 标签包裹的检索结果（压缩器剥离该标签，防二次压缩）</td><td>仅压缩后首轮存在</td></tr>
+</table>
+
+<h4>15.4.1 注入函数调用图（当前实现全链路）</h4>
+
+<div class="flow">agentTurnExecutor.executeAgentTurn（每轮开始，消息组装阶段）
+  │
+  ├─ <span class="c-g">[volatile 层] if isMemoryInjectionEnabled()</span>
+  │    ├─ messages.insert(lastSystemIdx, systemPromptVolatile)   <span class="c-dim">← Persona/技能（driver 组装）</span>
+  │    ├─ touchedFiles = host._consumeStashedFiles(agentId)      <span class="c-dim">← 上轮工具执行收集的文件</span>
+  │    ├─ provider.bugMemoriesForFiles(agentId, touchedFiles)
+  │    │     └─ /provider/* → V2 → fn.bugMemoriesForFiles
+  │    │          └─ listMemoriesCached → filter(type=bug ∩ isLatest ∩ files 重叠) → top3
+  │    └─ messages.insert(lastSystemIdx, "## Recently Touched Files\n…\n&lt;agentmemory-past-errors&gt;…")
+  │
+  ├─ <span class="c-g">[策展注入] injectMemoryContext(deps, request, messages)</span>  <span class="c-a">← 核心</span>
+  │    ├─ if !isMemoryInjectionEnabled() → return（默认关，姿态对齐原版）
+  │    ├─ sessionKey = sessionId||agentId
+  │    ├─ <span class="c-w">if injectedSessions.has(sessionKey) → return</span>  <span class="c-dim">← 幂等前置（已注入零开销）</span>
+  │    ├─ triggerHook(session_start / prompt_submit) → fire-and-forget HTTP
+  │    ├─ recallQuery = 最后一条 user 消息
+  │    ├─ memoryContext = await Promise.race([
+  │    │       provider.loadContext(agentId, sessionId, recallQuery, {scope}),
+  │    │       timeout(2000ms) ])                        <span class="c-w">← 硬超时降级（原版 hook 语义）</span>
+  │    │     └─ proxy._call → POST /provider/loadContext → host.mjs → V2.loadContext
+  │    │          └─ fn.loadContextFn → <span class="c-p">fn.buildContext（策展核心，见 15.4.2）</span>
+  │    ├─ strategy 过滤统计（diagnostics 日志）
+  │    ├─ blocks = [planModePrefix?] + [systemPrompt]    <span class="c-dim">← plan 模式降权警示（移植版独有）</span>
+  │    ├─ messages.insert(最后一个 system 之后, system 消息)
+  │    ├─ injectedSessions.add(sessionKey)
+  │    └─ yield memory_injected delta { usedTokens, contextBlocks, contextTokens }
+  │
+  └─ messages → LLM（冻结前缀=[base system…msg 到注入点]，其后为可变区）</div>
+
+<h4>15.4.2 buildContext 策展算法逐块分析（mem::context 1:1）</h4>
+
+<table>
+  <tr><th style="width:40px">序</th><th style="width:190px">块（recency 键）</th><th>数据来源与筛选</th><th>说明</th></tr>
+  <tr><td>1</td><td>## Working Context<br>（pinned slots）<br><span class="c-dim">recency=now</span></td><td>listPinnedSlots → slots 按 priority 排序取 top5，each ≤500c</td><td>agent 自编辑的工作记忆（project_context / pending_items / session_patterns 默认三槽，slotReflect 持续富化）</td></tr>
+  <tr><td>2</td><td>## Project Profile<br><span class="c-dim">recency=profile.updatedAt</span></td><td>getProfile(agentId) → markdown ≤800c</td><td>项目画像（技术栈/约定，由 consolidate 管线聚合生成）</td></tr>
+  <tr><td>3</td><td>## Lessons Learned<br><span class="c-dim">recency=最新 lesson</span></td><td>KV.list(lessons) → confidence 排序，project 匹配 ×1.5 加权，top10，each ≤200c</td><td>跨会话教训；recordAccessBatch 追踪（accessCount↑ → 未来置信度调整输入）</td></tr>
+  <tr><td>4</td><td>## Session …<br>（summaries）<br><span class="c-dim">recency=summary.createdAt</span></td><td>KV.list(summaries) 防御过滤（须 narrative+keyDecisions）→ 按 createdAt top10 → title/narrative 400c + decisions + files + concepts</td><td>历史会话压缩摘要；session_handoff 条目也在此自然入注</td></tr>
+  <tr><td>5</td><td>## Session …<br>（重要观察）<br><span class="c-dim">recency=最新观察</span></td><td>无摘要会话（排除当前），startedAt top5；每会话观察 Promise.all → <b>importance≥5 ∩ title 非空</b> → importance 降序 top5</td><td>未压缩会话的高信号片段（工具失败 7 / 工具使用 5 才够格）</td></tr>
+  <tr><td>6</td><td>## Relevant Memories<br><span class="c-dim">recency=now</span></td><td>query 非空时 searchMemories(query, 10) → ≤<b>30% 预算</b>子配额逐行填充，each ≤200c</td><td>注入以策展为主、搜索为辅（§12 P0 修正：曾整盘替代策展）</td></tr>
+  <tr><td>—</td><td colspan="3"><b>全局组装</b>：blocks 按 recency 降序 → 预算填充（header/footer 计入预算，project XML 转义）→ recordAccessBatch（命中块 sourceIds）→ autoPage（超预算记忆自动分页到文件）→ 返回 { systemPrompt, contextBlocks, contextTokens }；includeEntries=false 时跳过长/短期记忆数组构造（省 2 次全表 list）</td></tr>
+</table>
+
+<h4>15.4.3 消息布局与缓存分层</h4>
+
+<div class="flow">msg[0]   system  base system prompt（工具/规则）          <span class="c-dim">┐</span>
+msg[1]   system  stable 层（agent 指令/人格）              <span class="c-dim">│ 冻结前缀</span>
+msg[2]   system  <span class="c-a">策展注入块（session 级字节不变）</span>      <span class="c-dim">│ 跨轮稳定 → 前缀缓存命中</span>
+msg[3]   system  <span class="c-w">volatile 层（每轮可变）</span>                <span class="c-dim">┘ 冻结边界</span>
+msg[4..] user/assistant 历史（压缩器维护）                <span class="c-dim">可变区</span>
+         system  RETRIEVED_CTX（仅压缩后首轮存在）
+
+<span class="c-dim">设计要点：注入块被刻意放在「最后一个 system 消息之后、历史消息之前」——
+它在 session 内不变，与 base/stable 共同构成跨轮字节一致的前缀；
+volatile 层独立成消息且每轮变化，被隔离在前缀之外，变化不打断缓存。</span></div>
+
+<h4>15.4.4 门控与降级矩阵</h4>
+
+<table>
+  <tr><th style="width:260px">开关</th><th style="width:90px">默认</th><th>作用面</th></tr>
+  <tr><td>AGENTMEMORY_INJECT_CONTEXT</td><td><span class="tag d">关</span></td><td>总开关：策展注入 + volatile 层（对齐原版"注入默认关，召回走工具"姿态）</td></tr>
+  <tr><td>AGENTMEMORY_AUTO_COMPRESS</td><td><span class="tag d">关</span></td><td>引擎侧自动压缩门控（对齐原版 mem::compress；客户端 L1 管线已随 §17 移除，此变量仅引擎读取）</td></tr>
+  <tr><td>CONSOLIDATION_ENABLED</td><td><span class="tag d">关</span></td><td>引擎 consolidation LLM 路径（consolidationLlm.ts，SEMANTIC_MERGE / PROCEDURAL_EXTRACTION）——对齐原版 mem::consolidate-pipeline 默认关（客户端 L2/L3 已随 §17 移除）</td></tr>
+  <tr><td>AGENTMEMORY_REFLECT</td><td><span class="tag g">开</span></td><td>session_end → slotReflect（原版默认关；移植版 slots 常开故默认开，刻意的默认值差异）</td></tr>
+  <tr><td>AGENTMEMORY_GRAPH_EXTRACTION</td><td><span class="tag d">关</span></td><td>session_end → graphExtract（对齐原版默认关）</td></tr>
+  <tr><td>AGENTMEMORY_GRAPH_WEIGHT</td><td>0.3</td><td>召回 Graph 流 RRF 权重（=0 关闭）</td></tr>
+  <tr><td>AGENTMEMORY_RERANK</td><td><span class="tag g">开</span></td><td>召回 rerankSimple top-20 窗口（=false 关闭）</td></tr>
+  <tr><td>AGENTMEMORY_TOKEN_BUDGET</td><td>2000</td><td>策展注入 token 预算（V2 构造）</td></tr>
+  <tr><td>AGENTMEMORY_MAX_OBS_PER_SESSION</td><td>200</td><td>观察滑动窗口（已压缩条目受保护）</td></tr>
+  <tr><td>注入硬超时</td><td>2000ms</td><td>loadContext Promise.race → 超时/错误降级为空上下文（不阻塞 turn 启动）</td></tr>
+</table>
+
+<h3>15.5 数据流总览（一图）</h3>
+
+<div class="flow"><span class="c-dim">写入（常开）                暂存                    沉淀                     长期层                召回（工具）            注入（默认关）</span>
+
+工具结果 ─┐
+          ├→ observe → mem:obs ─→ compressSession ─→ mem:summaries ─┐
+turn 消息 ┘   (评分/窗口)    ≥5条    (叙事合并)                      │
+                                                              ├→ buildContext ─→ 策展注入(session×1)
+remember ──→ remember → mem:memories ─→ searchMemories ───────┤   (≤30% 附加块)
+              (去重/supersede)         (三流RRF+rerank)        │
+              mem:lessons ──────────→ lessonRecall ───────────┘
+              mem:slots ──→ slotReflect ↑ (session_end)  ──→ pinned 块
+              mem:team:* (全局共享池)                         volatile 层(每轮):
+工具执行 ─→ stash files ─→ bugMemoriesForFiles ────────────→ past-errors</div>
+
+<div class="callout blue">
+<b>架构要点回顾</b>：①<b>单数据源</b>——所有读写必经网关 V2（priority=1000 代理为唯一注册 provider），无旁路；②<b>写读分层</b>——capture 常开写暂存层、提炼后入长期层、注入只读策展视图；③<b>注入三分面</b>——session 级策展 + 每轮 volatile + 压缩检索，与缓存层级精确对齐；④<b>进程隔离</b>——引擎与索引在网关子进程，renderer 崩溃不丢数据（重试队列兜底），网关崩溃代理去抖降级；⑤<b>per-agent 结构性隔离</b> + 全局 team 共享池的显式双层模型。
+</div>
+
+<h2>16. 运行日志驱动优化方案（2026-07-26，基于 vscode-app-1785037741973.log）</h2>
+
+<p>日志结论：记忆注入姿态合理（默认关 / capture 常开 / 检索注入轻量 / 重试队列立功 / 零错误）。暴露的两个问题均<b>不在记忆机制本身</b>，而在其周边的注入体积与写入防护。本方案按「先止血、后结构、再增强」排序。</p>
+
+<h3>16.1 问题一：volatile 层 47839 chars/轮（~16K tokens）</h3>
+
+<table>
+  <tr><th style="width:60px">编号</th><th style="width:200px">改动</th><th>方案与代码定位</th><th style="width:90px">成本</th></tr>
+  <tr><td><span class="tag d">V2</span></td>
+    <td><b>单技能内联硬上限</b>（止血）</td>
+    <td><code>agentDriverService.ts:922</code>：agent 配置技能（agentSkillIds）目前<b>无阈值强制全文内联</b>（isAgentConfigured 豁免 500 字符阈值）。改为部分豁免——≤4000 chars 内联，&gt;4000 降级 deferred 摘要 + read_skill 引导（与长 skill 同路径，复用 931-936 行模式）。防单个巨型 SKILL.md 撑爆注入。</td><td>0.5h</td></tr>
+  <tr><td><span class="tag d">V1</span></td>
+    <td><b>固定技能移到 stable 层</b>（结构性）</td>
+    <td>agent 配置技能<b>每轮不变</b>却放在 volatile 层（每轮重发、不进冻结前缀）——架构错位。将 required 技能全文注入从 volatileParts 移到 stableParts：agent 配置不常变 → 跨轮字节稳定 → <b>前缀缓存命中</b>。volatile 只留本轮 activation 匹配的可变技能 + Persona。预期 volatile 47KB → ~3KB，<b>每轮省 ~14K tokens</b> 且缓存命中率提升。</td><td>2h</td></tr>
+  <tr><td><span class="tag w">V3</span></td>
+    <td><b>volatile 总预算兜底</b></td>
+    <td>volatile 装配后总字符超 MAX_VOLATILE_CHARS（默认 12000，设置项可配，仿 AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS 模式）时按优先级截断（Persona &gt; required skills &gt; activated skills），超限 warn 日志。</td><td>1h</td></tr>
+  <tr><td><span class="tag w">V4</span></td>
+    <td><b>Persona 预算</b></td>
+    <td>personaSection 超 2000 chars 按 updatedAt 降序截断（driver:657 区域）。</td><td>0.5h</td></tr>
+  <tr><td><span class="tag g">V5</span></td>
+    <td><b>技能写作规范</b>（文档）</td>
+    <td>SKILL.md 正文 ≤2KB；长内容拆 references/ 子文件，read_skill 渐进披露（与 §12 toolset 渐进披露同哲学）。</td><td>—</td></tr>
+</table>
+
+<h3>16.2 问题二：子代理 memory_remember ×70（93 次写入无防护）</h3>
+
+<table>
+  <tr><th style="width:60px">编号</th><th style="width:200px">改动</th><th>方案与代码定位</th><th style="width:90px">成本</th></tr>
+  <tr><td><span class="tag d">M1</span></td>
+    <td><b>coreAdd 去重</b>（止血）</td>
+    <td><code>fn.writeMemory:934</code>——type=working/short_term 走 coreAdd <b>直接追加，无去重无 supersede</b>（与 remember 的 Jaccard 路径不对称，93 次写入的全部通道）。coreAdd 前加相似度检查：content 完全相同 → 跳过；Jaccard ≥0.85 → 替换旧条目。复用 remember() 的 listMemoriesCached 模式防全表扫描（core scope 加同款缓存）。</td><td>0.5h</td></tr>
+  <tr><td><span class="tag d">M2</span></td>
+    <td><b>子代理写入预算</b></td>
+    <td>per-task max memory writes（默认 10，env AGENT_STUDIO_SUBAGENT_MAX_MEMORY_WRITES 可配）：unifiedSubAgentDispatch 计数器 + 代理包装层拦截；超限工具返回「记忆写入预算已用尽，请将结论写入最终回复而非记忆」。</td><td>1h</td></tr>
+  <tr><td><span class="tag w">M3</span></td>
+    <td><b>memory_remember 描述纪律</b></td>
+    <td>工具描述补：「仅记录跨会话有价值的事实/偏好/决策；单任务 ≤3 条；过程性内容写入最终回复而非记忆」。零代码风险，先落地。</td><td>10min</td></tr>
+  <tr><td><span class="tag w">M4</span></td>
+    <td><b>子代理工具面分级</b></td>
+    <td>explore/readonly 型子代理默认禁用 memory_remember（复用 readonly 策略的黑名单写工具模式）；仅长期/学习型 agent 开放写工具。</td><td>0.5h</td></tr>
+</table>
+
+<h3>16.3 增强（可选）：consolidation LLM merge 路径</h3>
+
+<table>
+  <tr><td><span class="tag g">C1</span></td>
+    <td><b>consolidate-pipeline 接 LLM</b></td>
+    <td>runConsolidationPipeline 接 compressor.ts 的 LLM provider（AGENTMEMORY_LLM_*），复刻原版 SEMANTIC_MERGE_SYSTEM / PROCEDURAL_EXTRACTION_SYSTEM 提示词，CONSOLIDATION_ENABLED 门控（默认关；无密钥时回退现有确定性路径）。semantic/procedural 层质量提升至原版水准。</td><td>0.5d</td></tr>
+</table>
+
+<h3>16.4 实施顺序与预期收益</h3>
+
+<div class="flow">V2（0.5h 止血）→ M3（10min 止血）→ M1（0.5h 止血）→ M2（1h）→ V1（2h 结构）→ V3+V4（1.5h）→ M4（0.5h）→ C1（0.5d 可选）
+
+<span class="c-g">预期收益：</span>
+  · volatile 47KB→~3KB，<span class="c-a">每轮省 ~14K tokens</span>（V1+V2+V3）
+  · 冻结前缀跨轮稳定 → 前缀缓存命中率显著提升（V1）
+  · 子代理记忆写入 93→≤10/任务，core memory 不再被过程性笔记洪泛（M1+M2+M3+M4）
+  · buildWorkingContext 消费者（working 层全量注入路径）恢复信噪比（M1）</div>
+
+<div class="callout green">
+<b>实施状态（2026-07-26）</b>：
+<ul style="margin:6px 0;padding-left:20px">
+  <li><span class="tag p">已被取代</span> <b>V1/V2</b>：并行会话已做更彻底的修复——inline skill 注入从 volatile 层整体移除（对齐 MiMo-Code：所有 skill 走 read_skill 按需加载，user 型注入以 synthetic user 消息插入）。volatile 47KB 问题在源头消失，V1/V2/V5 不再需要</li>
+  <li><span class="tag g">已实施</span> <b>V4 Persona 预算</b>：2000 chars，updatedAt 降序截断 + 截断提示（可 memory_search 召回）</li>
+  <li><span class="tag g">已实施</span> <b>M1 coreAdd 去重</b>：完全相同跳过 / Jaccard≥0.85 替换。<b>关键修正</b>：amSchema.jaccardSimilarity 丢弃 ≤2 字符 token（编号），对仅编号不同的短工作记忆误判为完全相同——coreAdd 改用完整 token 集的局部 Jaccard</li>
+  <li><span class="tag g">已实施</span> <b>M2 子代理写入预算</b>：memory_remember handler 前置检查，subagent-* 按 agentId 计数（=per-task），默认 10 次（AGENT_STUDIO_SUBAGENT_MAX_MEMORY_WRITES 可配），超限返回「请将结论写入最终回复」</li>
+  <li><span class="tag g">已实施</span> <b>M3 描述纪律</b>：仅跨会话事实/偏好/决策，单任务 ≤3 条，过程性内容写最终回复</li>
+  <li><span class="tag g">已实施</span> <b>M4 explore 禁写</b>：EXPLORE_EXCLUDED_TOOLS 加 memory_remember</li>
+  <li><span class="tag g">已实施</span> <b>C1 consolidation LLM 路径</b>：新建 <code>consolidationLlm.ts</code>——1:1 复刻原版 SEMANTIC_MERGE_SYSTEM / PROCEDURAL_EXTRACTION_SYSTEM 提示词与去重强化流程（semantic：summaries≥5 top20 → &lt;fact confidence&gt; → content 去重强化；procedural：pattern 记忆 sessionIds≥2 → &lt;procedure name trigger&gt;&lt;step&gt; → title 去重、confidence+0.1）；<code>compressor.ts</code> 抽出通用 <code>callChatCompletion</code>（AGENTMEMORY_LLM_*，15s 超时，失败 null）；门控 <code>CONSOLIDATION_ENABLED=true</code> 且 LLM 已配置；<code>runConsolidationPipeline</code> LLM 优先、两层全失败时回退确定性路径（返回带 llm/details 字段）</li>
+</ul>
+<b>验证</b>：扩展 382（+M1 用例；autoPage/getStats 因去重阈值初版误合并短编号条目曾短暂失败，改完整 token Jaccard 后恢复）+ 57 + 44 + 29 + 87 全绿；客户端 memoryWriteAndFilter 34 / agentDriverService 16 / agentOSService 9 / unifiedSubAgentDispatch 46 全绿；改动文件 tsgo 0 错误、transpile OK（contextCompressionService.ts 2 例 tsgo 错误为并行会话文件）。C1 补验：扩展 396（+2 用例：mock LLM 端到端 / 门控回退）+ RWR 14 全绿。<b>§16 方案至此全部落地（V1/V2 由并行会话等效取代，V4/M1-M4/C1 已实施）。</b>
+</div>
+
+<div class="callout green">
+<b>追加实施（2026-07-26，W1-W3：第二份运行日志暴露的漏网写入通道）</b>：
+<p style="margin:4px 0">新日志（vscode-app-1785048202927.log）显示技能/记忆注入已合理（volatile=0、策展关、检索注入 220tok），但子代理仍有 63 次 working 写入——定位到三条 <b>§11 分层改造的漏网通道</b>（绕过 observe 暂存层直写长期层，M2 预算管不到因非 memory_remember 通道）：</p>
+<ul style="margin:6px 0;padding-left:20px">
+  <li><span class="tag g">已实施</span> <b>W1</b>：<code>agentTurnExecutor</code> 每迭代 <code>memory-iter-*</code> 写入 → 改道 <code>observe(hookType=turn_observation)</code>（保留中断安全的增量捕获，≤2000c）；<code>executionProvider</code> 7.7 同款改道。同时删除每迭代「Working 写入中」噪音 UI 卡片（noticeId/mem-l0-iter）</li>
+  <li><span class="tag g">已实施</span> <b>W2</b>：<code>agentDriverService</code> Step 5 每轮 <code>memory-user/assistant-*</code> ×2 直写 → 复用 <code>_storeTurnObservations</code>（含内容哈希去重，ExecutionProvider 路径的 turn 消息捕获经此统一覆盖；接口 <code>IAgentOSService</code> 补声明）。删除配套 UI 卡片</li>
+  <li><span class="tag g">已实施</span> <b>W3</b>：<code>cache-metric-*</code> 遥测直写 → <code>observe(hookType=cache_metric)</code>（按注释原意成为真正的「观察」，importance=3 不进注入面）</li>
+</ul>
+<b>验证</b>：客户端 7 套件（memoryWriteAndFilter 34 / agentDriverService 16 / agentDriverPromptCache 8 / agentOSService 9 / agentContextRetrieval 4 / agentOSRetrievalContext 13 / concurrentMultiAgent 26）全绿；tsgo 0 错误、transpile OK。<b>预期效果：子代理 working 写入 63→~0/任务，长期层仅剩提炼后内容（remember/L1-L3/memory_remember 预算内）。</b>
+</div>
+
+<h2>17. 移除 L1-L3 客户端管线，回归原版逻辑（2026-07-26）</h2>
+
+<p>结论：L1 Episodic / L2 Semantic / L3 Procedural 三级 LLM 级联是 Sarosis 自创、<b>原版不存在的机制</b>（原版无层级提炼概念；等价能力由 capture→compress→session_end 链 + 手动 consolidate-pipeline 覆盖）。2026-07-26 门控改造后 L1-L3 已默认全关（空转），故整层移除——<b>默认行为零变化</b>。</p>
+
+<h3>17.1 能力对照（删除后由谁接管）</h3>
+
+<table>
+  <tr><th style="width:220px">L1-L3 声称的能力</th><th>原版对应（现状，均已就位）</th></tr>
+  <tr><td>L1 对话→持久事实</td><td>capture/observe → mem:obs 暂存（W1-W3 统一全部写入通道）+ 阈值 compressSession</td></tr>
+  <tr><td>L2 会话级巩固</td><td>session_end 链 = compressSession → slotReflect（默认开）→ graphExtract（默认关）；每轮末 triggerHook('session_end') 触发</td></tr>
+  <tr><td>L3 人格/偏好</td><td>mem::slot persona 插槽（注入第 1 优先级）+ 手动 consolidate-pipeline LLM（consolidationLlm.ts，默认关）</td></tr>
+  <tr><td>主动记忆</td><td>memory_remember 工具（agent 驱动，原版核心路径）</td></tr>
+</table>
+
+<h3>17.2 移除清单（净删 ~700 行）</h3>
+
+<table>
+  <tr><th style="width:280px">文件</th><th>改动</th></tr>
+  <tr><td><code>browser/agentMemoryPipeline.ts</code></td><td>整文件删除（468 行：L1 每 3 轮 LLM 抽取 / L2 30s 延迟场景摘要 / L3 全局互斥人格画像）</td></tr>
+  <tr><td><code>common/agentOS.ts</code></td><td>接口删 3 方法；IAgentOSDashboardStats 删 l1/l2/l3ExtractionCount</td></tr>
+  <tr><td><code>browser/agentOSService.ts</code></td><td>import / 字段 / 构造块 / 3 代理方法 / 3 计数器及持久化读写全删</td></tr>
+  <tr><td><code>browser/agentDriverService.ts</code></td><td>finally 中 triggerEpisodicExtraction 调用块删除（保留 _storeTurnObservations 捕获通道）</td></tr>
+  <tr><td>dashboard 三件套 + <code>node/dashboardDatabase.ts</code></td><td>l1/l2/l3 展示、"L1 提取 N 次" chip、Episodic 提取告警全删</td></tr>
+  <tr><td><code>test/common/multiSessionParallel.test.ts</code></td><td>第 5 节改写为 storeTurnObservations 按会话哈希去重 3 用例</td></tr>
+</table>
+
+<div class="callout green">
+<b>关键事实与验证</b>：
+<ul style="margin:6px 0;padding-left:20px">
+  <li>注入侧 persona 来自 mem::slot（contextBuilder 第 1 优先级），<b>不依赖 l3-persona-* 记忆</b>，删除安全</li>
+  <li>客户端不再读 AGENTMEMORY_AUTO_COMPRESS / CONSOLIDATION_ENABLED（引擎侧 amPipeline / consolidationLlm 自有门控，不动）</li>
+  <li>存量 l1-extract-* / l2-scene-* / l3-persona-* 记忆<b>已清洗</b>（用户决策 2026-07-26）：引擎新增幂等清洗 <code>repl.purgeLegacyL1L3Extractions</code>（runMaintenanceSweep 步骤 0.5，config flag l1l3PurgeV1，硬删除记忆+access log）；dev 库已一次性脚本清除 106 行（memories+access，跨 gr-* 多 agent），复检 0 残留</li>
+  <li>验证：tsgo EXIT=0、transpile EXIT=0；multiSessionParallel 57 / agentOSRetrievalContext 13 / advancedMemoryTools 12 / memoryWriteAndFilter 34 全绿</li>
+</ul>
+<b>行为对照</b>：默认（无 env）下删除前后完全一致（捕获/压缩/reflect 照常）；曾开 env 的用户改由引擎 consolidate-pipeline 手动触发替代。<b>提炼语义唯一归口：引擎 session_end 链</b>。
+</div>
+
+<footer>
+  <p>参考源码：MiMo-Code <code>G:\CustomWorkspaces\AIProjects\MiMo-Code\packages\opencode\src</code>（memory.ts / fork.ts / compaction.ts / instructions.ts / hook 系统）｜ Sarosis <code>extensions/agentmemory-memory/src</code>（amFunctions.ts / consolidation.ts / agentMemoryProviderV2.ts）+ <code>src/vs/sessions/contrib/agentStudio</code>（agentMemoryInjection.ts / agentContextRetrieval.ts / agentDriverService.ts / agentOSService.ts / agentTurnExecutor.ts）+ <code>extensions/agentmemory-gateway/host/host.mjs</code> ｜ agentmemory 原始项目 <code>G:\CustomWorkspaces\AIProjects\agentmemory</code>（src/functions/ 64 文件 261 注册函数、src/state/ 12 文件、src/hooks/ 15 hook 脚本、src/triggers/api.ts、src/mcp/server.ts、src/cli.ts、plugin/、benchmark/）</p>
+  <p>生成日期：2026-07-24（9.6 节函数级对比、第 10 节注入专项对比、第 11 节存储频率优化方案补于 2026-07-25）｜ 数据目录已统一至 <code>~/.vssaros/.agentmemory/</code> ｜ 编排/治理模块与 sentinel 生命周期已于 2026-07-25 接线 ｜ 原版机制复刻完成于 2026-07-25（amReplication）｜ 第 12 节注入逻辑审计补于 2026-07-25（P0+P1+P2 同日落地）｜ 第 13 节全面差异重审补于 2026-07-25，复刻方案 P0+P1+P3 于 2026-07-26 落地（单实例场景功能完备）｜ 第 14 节注入与召回函数调用图对比、第 15 节本项目架构全解（框架图/模块详解/注入专项）、第 16 节运行日志驱动优化方案补于 2026-07-26 ｜ 第 17 节 L1-L3 客户端管线移除（回归原版逻辑）补于 2026-07-26</p>
+</footer>
+
+</div>
+</body>
+</html>

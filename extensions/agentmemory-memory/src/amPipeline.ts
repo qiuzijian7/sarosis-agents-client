@@ -93,6 +93,11 @@ export function graphStats(): { nodes: number; edges: number } {
 	return { nodes: getGraph().nodeCount, edges: getGraph().edgeCount };
 }
 
+/** 重置图谱单例（对齐 agentmemory mem::graph-reset：清空索引以便重建） */
+export function resetGraph(): void {
+	_graph = null;
+}
+
 // ─── 4. Consolidation Pipeline ──────────────────────────────────────────
 
 interface EpisodicMemory {
@@ -162,7 +167,29 @@ export async function extractProcedural(kv: StateKV, agentId: string): Promise<P
 
 export async function runConsolidationPipeline(kv: StateKV, agentId: string, sessionId: string): Promise<{
 	episodic: number; semantic: number; procedural: number;
+	llm?: boolean; details?: Record<string, unknown>;
 }> {
+	// C1（2026-07-26 §16）：LLM 路径优先——CONSOLIDATION_ENABLED=true 且
+	// LLM 已配置时走 consolidationLlm（1:1 复刻原版 mem::consolidate-pipeline
+	// 的 SEMANTIC_MERGE / PROCEDURAL_EXTRACTION 提示词流程）；
+	// 未启用或 LLM 失败时回退下方确定性路径。
+	const { isConsolidationLlmEnabled, consolidateSemanticWithLlm, consolidateProceduralWithLlm } =
+		await import('./consolidationLlm.js'); // 动态导入：LLM 路径非常用，避免冷启动加载
+	if (isConsolidationLlmEnabled()) {
+		const [sem, proc] = await Promise.all([
+			consolidateSemanticWithLlm(kv, agentId).catch((e): Record<string, unknown> => ({ error: String(e) })),
+			consolidateProceduralWithLlm(kv, agentId).catch((e): Record<string, unknown> => ({ error: String(e) })),
+		]);
+		const semFacts = (sem as { newFacts?: number }).newFacts ?? 0;
+		const procNew = (proc as { newProcedures?: number }).newProcedures ?? 0;
+		// 两层都失败（如 LLM 网关不通）→ 回退确定性路径而非空跑
+		const semFailed = 'error' in sem;
+		const procFailed = 'error' in proc;
+		if (!(semFailed && procFailed)) {
+			return { episodic: 0, semantic: semFacts, procedural: procNew, llm: true, details: { semantic: sem, procedural: proc } };
+		}
+	}
+
 	const memories = await kv.list<Memory>(KV.memories(agentId));
 	const active = memories.filter(m => m.isLatest !== false);
 	const epi = await extractEpisodic(kv, agentId, sessionId, active);

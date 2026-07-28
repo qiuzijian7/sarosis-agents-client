@@ -1,0 +1,7 @@
+id: general-assistant
+name: General Assistant
+description: 通用对话助手，适用于大多数场景
+category: general
+tags:
+  - chat
+  - general

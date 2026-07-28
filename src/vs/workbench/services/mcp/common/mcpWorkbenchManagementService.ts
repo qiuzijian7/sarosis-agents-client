@@ -12,6 +12,7 @@ import { IMcpResourceScannerService, McpResourceTarget } from '../../../../platf
 import { isWorkspaceFolder, IWorkspaceContextService, IWorkspaceFolder, IWorkspaceFoldersChangeEvent } from '../../../../platform/workspace/common/workspace.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { IWorkbenchEnvironmentService } from '../../environment/common/environmentService.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../../../sessions/contrib/agentStudio/common/sarosPaths.js';
 import { MCP_CONFIGURATION_KEY, WORKSPACE_STANDALONE_CONFIGURATIONS } from '../../configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentService } from '../../remote/common/remoteAgentService.js';
@@ -118,7 +119,7 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 	private readonly workspaceMcpManagementService: IMcpManagementService;
 	private readonly remoteMcpManagementService: IMcpManagementService | undefined;
 
-	// VsSaros: 用户级 MCP 配置统一读取 ~/.saros/mcp.json，
+	// VsSaros: 用户级 MCP 配置统一从 ~/.vssaros/saros/mcp.json 读取，
 	// 不再读取 VsSaros 用户配置目录下的 User/mcp.json。
 	private readonly sarosMcpResource: URI;
 
@@ -137,9 +138,12 @@ export class WorkbenchMcpManagementService extends AbstractMcpManagementService 
 	) {
 		super(allowedMcpServersService, logService);
 
-		// VsSaros: 用户级 MCP 配置统一从 ~/.saros/mcp.json 读取，
+		// VsSaros: 用户级 MCP 配置统一从 ~/.vssaros/saros/mcp.json 读取，
 		// 不再读取 VsSaros 用户配置目录下的 User/mcp.json。
-		this.sarosMcpResource = URI.joinPath((this.environmentService as IWorkbenchEnvironmentService & { userHome: URI }).userHome, '.saros', 'mcp.json');
+		this.sarosMcpResource = resolveSarosPath(
+			userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome),
+			SarosPath.mcpConfig
+		);
 
 		this.workspaceMcpManagementService = this._register(instantiationService.createInstance(WorkspaceMcpManagementService));
 		const remoteAgentConnection = remoteAgentService.getConnection();

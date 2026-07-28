@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>搜索工具卡片 UI 测试 — 基于 LLM 流式输出数据</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #1e1e1e;
+  color: #cccccc;
+  padding: 24px;
+  line-height: 1.5;
+}
+h1 { color: #e0e0e0; font-size: 22px; margin-bottom: 8px; }
+h2 { color: #b0b0b0; font-size: 16px; margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 1px solid #333; }
+h3 { color: #909090; font-size: 13px; margin: 24px 0 12px; }
+.subtitle { color: #666; font-size: 12px; margin-bottom: 24px; }
+.log-src { color: #555; font-size: 11px; margin-bottom: 12px; font-family: monospace; }
+
+/* ── 通用卡片 ── */
+.card {
+  background: #252526;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+.card-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  background: #2d2d30;
+  border-bottom: 1px solid #3c3c3c;
+}
+.header-icon { font-size: 14px; }
+.header-title {
+  flex: 1;
+  font-size: 13px;
+  color: #d4d4d4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.header-badge {
+  min-width: 18px; height: 18px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  color: #8b949e;
+  font-size: 11px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.header-chevron { color: #858585; font-size: 11px; }
+.card-body { padding: 12px 14px; }
+
+/* ── TOON 富卡片 ── */
+.toon-strip {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0 10px;
+}
+.toon-stat {
+  padding: 2px 8px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 4px;
+  font-size: 11px;
+  color: #8b949e;
+}
+.toon-stat-more { background: rgba(86,156,214,0.15); color: #569cd6; }
+.toon-stat-sem { background: rgba(198,134,192,0.15); color: #c586c0; }
+.toon-stat-warn { background: rgba(220,220,170,0.15); color: #dcdcaa; }
+
+.toon-table { margin: 0; }
+.toon-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.toon-row:hover { background: rgba(255,255,255,0.04); }
+.toon-row-head {
+  color: #858585; font-size: 11px;
+  border-bottom: 1px solid rgba(128,128,128,0.12);
+  border-radius: 0;
+  margin-bottom: 4px;
+  cursor: default;
+}
+.toon-row-head:hover { background: none; }
+.toon-row-sem { background: rgba(198,134,192,0.06); }
+
+.toon-col-rank { min-width: 24px; text-align: right; color: #6e7681; font-family: monospace; }
+.toon-col-name { flex: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #d4d4d4; }
+.toon-col-type { min-width: 60px; color: #8b949e; }
+.toon-col-file { flex: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; font-family: monospace; font-size: 11px; }
+.toon-col-score { min-width: 40px; text-align: right; color: #b5cea8; font-family: monospace; }
+.toon-col-edge { min-width: 50px; color: #8b949e; font-size: 10px; }
+.toon-loc { color: #569cd6; font-size: 11px; }
+
+.toon-sec-title {
+  font-size: 12px; font-weight: 600;
+  color: #b0b0b0;
+  margin: 14px 0 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(128,128,128,0.12);
+}
+
+/* trace_path hop 链 */
+.toon-trace-chain { margin: 0; }
+.toon-trace-hop {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.toon-trace-hop:hover { background: rgba(255,255,255,0.04); }
+.toon-trace-num { min-width: 22px; color: #6e7681; font-weight: 600; font-family: monospace; }
+.toon-trace-arrow { color: #569cd6; }
+.toon-trace-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
+
+.toon-risk {
+  padding: 1px 6px; border-radius: 3px; font-size: 10px;
+  font-weight: 500; white-space: nowrap;
+}
+.toon-risk.risk-low { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+.toon-risk.risk-med { background: rgba(220,220,170,0.15); color: #dcdcaa; }
+.toon-risk.risk-high { background: rgba(244,135,113,0.15); color: #f48771; }
+.toon-risk.risk-crit { background: rgba(255,0,0,0.2); color: #ff6b6b; }
+
+.toon-page-hint {
+  margin-top: 10px;
+  padding: 6px 10px;
+  background: rgba(86,156,214,0.1);
+  border-left: 3px solid #569cd6;
+  border-radius: 0 4px 4px 0;
+  font-size: 11px;
+  color: #569cd6;
+}
+
+/* ── 通用代码块 ── */
+.code-block {
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  overflow-x: auto;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.code-block .ln { color: #6e7681; padding-right: 12px; user-select: none; text-align: right; min-width: 30px; display: inline-block; }
+.code-block .match { background: rgba(220,220,170,0.2); padding: 0 2px; border-radius: 2px; }
+
+/* ── 文件行 ── */
+.file-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.file-row:hover { background: rgba(255,255,255,0.04); }
+.file-icon { font-size: 11px; }
+.file-name { font-size: 12px; color: #d4d4d4; }
+.file-path { font-size: 11px; color: #6e7681; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.file-line { font-size: 11px; color: #569cd6; }
+
+/* ── 统计网格 ── */
+.arch-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 10px 0; }
+.arch-stat { text-align: center; padding: 10px; background: rgba(255,255,255,0.04); border-radius: 6px; }
+.arch-value { font-size: 18px; font-weight: 600; color: #d4d4d4; display: block; }
+.arch-label { font-size: 10px; color: #8b949e; display: block; margin-top: 2px; }
+
+.comm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.comm-card { padding: 8px; background: rgba(255,255,255,0.04); border-radius: 6px; border-left: 3px solid #569cd6; }
+.comm-name { font-size: 12px; font-weight: 500; color: #d4d4d4; }
+.comm-stats { font-size: 11px; color: #8b949e; margin-top: 2px; }
+.comm-top { font-size: 10px; color: #6e7681; margin-top: 4px; }
+
+.empty-state { padding: 20px; text-align: center; color: #6e7681; font-size: 12px; }
+.empty-state .icon { font-size: 24px; display: block; margin-bottom: 8px; opacity: 0.5; }
+
+/* ── 测试标记 ── */
+.test-case {
+  margin: 4px 0 12px;
+  padding: 6px 10px;
+  background: rgba(78,201,176,0.08);
+  border-left: 3px solid #4ec9b0;
+  border-radius: 0 4px 4px 0;
+  font-size: 11px;
+  color: #4ec9b0;
+}
+.test-case.warn { background: rgba(220,220,170,0.08); border-left-color: #dcdcaa; color: #dcdcaa; }
+.test-case.err { background: rgba(244,135,113,0.08); border-left-color: #f48771; color: #f48771; }
+.test-case .tag { font-weight: 600; margin-right: 6px; }
+</style>
+</head>
+<body>
+
+<h1>搜索工具卡片 UI 测试</h1>
+<p class="subtitle">基于 LLM 流式输出缓存数据（vscode-app-1784907347669.log）</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>1. search_graph TOON 富卡片 <span class="log-src">log L3043-3048</span></h2>
+
+<div class="test-case"><span class="tag">✓ PASS</span> search_graph 带 34 条结果、hasMore=false</div>
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🔍</span>
+    <span class="header-title">图谱搜索 · WorkStealingQueue GC WorkerContext PerformReachabilityAnalysisPass</span>
+    <span class="header-badge">34</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="toon-strip">
+      <span class="toon-stat">34 / 34 显示</span>
+    </div>
+    <div class="toon-table">
+      <div class="toon-row toon-row-head">
+        <span class="toon-col toon-col-rank">#</span>
+        <span class="toon-col toon-col-name">Symbol</span>
+        <span class="toon-col toon-col-type">Type</span>
+        <span class="toon-col toon-col-file">File</span>
+        <span class="toon-col toon-col-score">Score</span>
+      </div>
+      <div class="toon-row">
+        <span class="toon-col toon-col-rank">1</span>
+        <span class="toon-col toon-col-name"><a href="#">WorkStealingQueue</a><span class="toon-loc">:78</span></span>
+        <span class="toon-col toon-col-type">class</span>
+        <span class="toon-col toon-col-file">WorkStealingQueue.h</span>
+        <span class="toon-col toon-col-score">0.95</span>
+      </div>
+      <div class="toon-row">
+        <span class="toon-col toon-col-rank">2</span>
+        <span class="toon-col toon-col-name"><a href="#">PerformReachabilityAnalysisPass</a><span class="toon-loc">:234</span></span>
+        <span class="toon-col toon-col-type">function</span>
+        <span class="toon-col toon-col-file">GarbageCollection.cpp</span>
+        <span class="toon-col toon-col-score">0.90</span>
+      </div>
+      <div class="toon-row">
+        <span class="toon-col toon-col-rank">3</span>
+        <span class="toon-col toon-col-name"><a href="#">SpinUntilAllStopped</a><span class="toon-loc">:456</span></span>
+        <span class="toon-col toon-col-type">function</span>
+        <span class="toon-col toon-col-file">GarbageCollection.cpp</span>
+        <span class="toon-col toon-col-score">0.85</span>
+      </div>
+      <div class="toon-row">
+        <span class="toon-col toon-col-rank">4</span>
+        <span class="toon-col toon-col-name"><a href="#">WorkerContext</a><span class="toon-loc">:112</span></span>
+        <span class="toon-col toon-col-type">class</span>
+        <span class="toon-col toon-col-file">WorkerContext.h</span>
+        <span class="toon-col toon-col-score">0.80</span>
+      </div>
+      <div class="toon-row">
+        <span class="toon-col toon-col-rank">5</span>
+        <span class="toon-col toon-col-name"><a href="#">ProcessAsync</a><span class="toon-loc">:123</span></span>
+        <span class="toon-col toon-col-type">function</span>
+        <span class="toon-col toon-col-file">GarbageCollection.cpp</span>
+        <span class="toon-col toon-col-score">0.75</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="test-case warn"><span class="tag">⚠ EDGE</span> search_graph 空结果（total=0）</div>
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🔍</span>
+    <span class="header-title">图谱搜索 · PerformReachabilityAnalysisPass ProcessAsync</span>
+    <span class="header-badge">0</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="empty-state">
+      <span class="icon">🔍</span>
+      没有找到匹配结果<br>
+      <span style="font-size: 11px; margin-top: 8px; display: block; color: #555;">
+      图谱共 92,940 个节点。Try a wider name pattern, a different label filter, or check index_status
+      </span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>2. trace_path TOON 富卡片</h2>
+
+<div class="test-case"><span class="tag">✓ PASS</span> trace_path 带风险等级标签</div>
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🔗</span>
+    <span class="header-title">追踪路径 · ProcessAsync → MarkAsReachable</span>
+    <span class="header-badge">5</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="toon-strip">
+      <span class="toon-stat">5 hops</span>
+      <span class="toon-stat">depth: 3</span>
+    </div>
+    <div class="toon-trace-chain">
+      <div class="toon-trace-hop">
+        <span class="toon-trace-num">H0</span>
+        <span class="toon-trace-name"><a href="#">GC::ProcessAsync</a><span class="toon-loc">:123</span></span>
+        <span class="toon-col toon-col-type">Method</span>
+        <span class="toon-col toon-col-file">GarbageCollection.cpp</span>
+        <span class="toon-risk risk-low">Low</span>
+      </div>
+      <div class="toon-trace-hop">
+        <span class="toon-trace-num">H1</span>
+        <span class="toon-trace-arrow">→</span>
+        <span class="toon-trace-name"><a href="#">GC::ConditionalCollectGarbage</a><span class="toon-loc">:234</span></span>
+        <span class="toon-col toon-col-type">Method</span>
+        <span class="toon-col toon-col-file">GarbageCollection.cpp</span>
+        <span class="toon-risk risk-low">Low</span>
+      </div>
+      <div class="toon-trace-hop">
+        <span class="toon-trace-num">H2</span>
+        <span class="toon-trace-arrow">→</span>
+        <span class="toon-trace-name"><a href="#">FGarbageCollector::CollectGarbageIncremental</a><span class="toon-loc">:456</span></span>
+        <span class="toon-col toon-col-type">Method</span>
+        <span class="toon-col toon-col-file">GarbageCollection.cpp</span>
+        <span class="toon-risk risk-med">Med</span>
+      </div>
+      <div class="toon-trace-hop">
+        <span class="toon-trace-num">H3</span>
+        <span class="toon-trace-arrow">→</span>
+        <span class="toon-trace-name"><a href="#">FReferenceFinder::PerformReachabilityAnalysis</a><span class="toon-loc">:789</span></span>
+        <span class="toon-col toon-col-type">Method</span>
+        <span class="toon-col toon-col-file">GarbageCollection.cpp</span>
+        <span class="toon-risk risk-high">High</span>
+      </div>
+      <div class="toon-trace-hop">
+        <span class="toon-trace-num">H4</span>
+        <span class="toon-trace-arrow">→</span>
+        <span class="toon-trace-name"><a href="#">UObjectBaseUtility::MarkAsReachable</a><span class="toon-loc">:456</span></span>
+        <span class="toon-col toon-col-type">Method</span>
+        <span class="toon-col toon-col-file">ObjectBaseUtility.cpp</span>
+        <span class="toon-risk risk-low">Low</span>
+      </div>
+    </div>
+    <div class="toon-page-hint">🔗 GC::ProcessAsync → UObjectBaseUtility::MarkAsReachable (5 hops, depth 3)</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>3. search_code JSON 卡片 <span class="log-src">log L3801-3808</span></h2>
+
+<div class="test-case"><span class="tag">✓ PASS</span> search_code 带 file/line/text 的 JSON 结果</div>
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">📄</span>
+    <span class="header-title">代码搜索 · StealFullBlock</span>
+    <span class="header-badge">8</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="toon-strip">
+      <span class="toon-stat">8 results</span>
+    </div>
+    <div class="file-row">
+      <span class="file-icon">📄</span>
+      <span class="file-name"><a href="#">StealFullBlock</a></span>
+      <span class="file-path">f:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/CoreUObject/Private/GarbageCollection/GarbageCollection.cpp</span>
+      <span class="file-line">:456</span>
+    </div>
+    <div class="code-block">
+<span class="ln">456</span>  <span class="match">FWorkBlockifier</span>* <span class="match">StealFullBlock</span>(<span class="keyword">int</span> BlockIndex)
+</div>
+    <div class="file-row">
+      <span class="file-icon">📄</span>
+      <span class="file-name"><a href="#">StealFullBlock</a></span>
+      <span class="file-path">f:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/CoreUObject/Public/GarbageCollection/WorkBlockifier.h</span>
+      <span class="file-line">:78</span>
+    </div>
+    <div class="code-block">
+<span class="ln">78</span>  <span class="keyword">class</span> <span class="match">StealFullBlock</span> : <span class="keyword">public</span> FWorkBlockifier {
+</div>
+  </div>
+</div>
+
+<div class="test-case warn"><span class="tag">⚠ EDGE</span> search_code 无匹配（grep: no matches found）</div>
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">📄</span>
+    <span class="header-title">代码搜索 · NonExistentSymbol</span>
+    <span class="header-badge">0</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="empty-state">
+      <span class="icon">🔍</span>
+      grep: no matches found
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>4. get_architecture JSON 卡片</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🏗️</span>
+    <span class="header-title">架构概览 · S1Game</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="arch-grid">
+      <div class="arch-stat"><span class="arch-value">94,040</span><span class="arch-label">Total Nodes</span></div>
+      <div class="arch-stat"><span class="arch-value">127,583</span><span class="arch-label">Total Edges</span></div>
+      <div class="arch-stat"><span class="arch-value">3</span><span class="arch-label">Languages</span></div>
+      <div class="arch-stat"><span class="arch-value">12</span><span class="arch-label">Packages</span></div>
+    </div>
+    <div class="toon-sec-title">🏘️ Communities (6)</div>
+    <div class="comm-grid">
+      <div class="comm-card">
+        <div class="comm-name">GarbageCollection</div>
+        <div class="comm-stats">847 nodes · cohesion 78%</div>
+        <div class="comm-top">Top: ProcessAsync, ConditionalCollectGarbage</div>
+      </div>
+      <div class="comm-card">
+        <div class="comm-name">Renderer</div>
+        <div class="comm-stats">1,234 nodes · cohesion 65%</div>
+        <div class="comm-top">Top: RenderLoop, DrawScene</div>
+      </div>
+      <div class="comm-card">
+        <div class="comm-name">Physics</div>
+        <div class="comm-stats">623 nodes · cohesion 71%</div>
+        <div class="comm-top">Top: SimulatePhysics, BroadPhase</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>5. get_code_snippet 文本卡片</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">✂️</span>
+    <span class="header-title">代码片段 · GC::ProcessAsync</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="toon-strip">
+      <span class="toon-stat">GarbageCollection.cpp:118-145</span>
+    </div>
+    <div class="code-block">
+<span class="ln">118</span>  <span class="keyword">void</span> GC::<span class="match">ProcessAsync</span>(<span class="keyword">const</span> EGCOptions Options)
+<span class="ln">119</span>  {
+<span class="ln">120</span>      <span class="keyword">if</span> (!bEnabled)
+<span class="ln">121</span>          <span class="keyword">return</span>;
+<span class="ln">122</span>      <span class="keyword">const</span> FGCRequest Request{Options};
+<span class="ln">123</span>      RequestQueue.Enqueue(Request);
+<span class="ln">124</span>      ...
+<span class="ln">145</span>  }
+</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>6. index_repository JSON 卡片</h2>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">📊</span>
+    <span class="header-title">索引仓库 · S1Game</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="toon-strip">
+      <span class="toon-stat toon-stat-more">✓ success</span>
+    </div>
+    <div class="arch-grid">
+      <div class="arch-stat"><span class="arch-value">12,847</span><span class="arch-label">Files Scanned</span></div>
+      <div class="arch-stat"><span class="arch-value">94,040</span><span class="arch-label">Nodes</span></div>
+      <div class="arch-stat"><span class="arch-value">127,583</span><span class="arch-label">Edges</span></div>
+      <div class="arch-stat"><span class="arch-value">186ms</span><span class="arch-label">Duration</span></div>
+    </div>
+    <div class="toon-page-hint">⏭️ Skipped: 3,412 paths (Binaries, Intermediate, ThirdParty)</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>📋 测试结果汇总</h2>
+<table style="width:100%; border-collapse: collapse; font-size: 12px; margin-top: 12px;">
+<thead>
+<tr style="border-bottom: 2px solid #3c3c3c;">
+  <th style="padding: 8px; text-align: left; color: #b0b0b0;">工具</th>
+  <th style="padding: 8px; text-align: left; color: #b0b0b0;">格式</th>
+  <th style="padding: 8px; text-align: left; color: #b0b0b0;">卡片类型</th>
+  <th style="padding: 8px; text-align: center; color: #b0b0b0;">状态</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><a href="#" style="color: #569cd6;">search_graph</a></td>
+  <td style="padding: 8px;">TOON</td>
+  <td style="padding: 8px;">富表格（rank/name/type/file/score + semantic + 分页提示）</td>
+  <td style="padding: 8px; text-align: center; color: #4ec9b0;">✓ PASS</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><a href="#" style="color: #569cd6;">search_graph</a> (empty)</td>
+  <td style="padding: 8px;">TOON</td>
+  <td style="padding: 8px;">空结果提示 + hint</td>
+  <td style="padding: 8px; text-align: center; color: #dcdcaa;">⚠ EDGE</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><a href="#" style="color: #569cd6;">trace_path</a></td>
+  <td style="padding: 8px;">TOON</td>
+  <td style="padding: 8px;">Hop 链（H0→H1→H2 箭头 + depth/edgeType/risk 标签）</td>
+  <td style="padding: 8px; text-align: center; color: #4ec9b0;">✓ PASS</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><a href="#" style="color: #569cd6;">search_code</a></td>
+  <td style="padding: 8px;">JSON</td>
+  <td style="padding: 8px;">代码块（file:line + context + match 高亮）</td>
+  <td style="padding: 8px; text-align: center; color: #4ec9b0;">✓ PASS</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><a href="#" style="color: #569cd6;">search_code</a> (empty)</td>
+  <td style="padding: 8px;">TEXT</td>
+  <td style="padding: 8px;">空结果提示</td>
+  <td style="padding: 8px; text-align: center; color: #dcdcaa;">⚠ EDGE</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><a href="#" style="color: #569cd6;">get_architecture</a></td>
+  <td style="padding: 8px;">JSON</td>
+  <td style="padding: 8px;">统计网格 + 社区卡片</td>
+  <td style="padding: 8px; text-align: center; color: #4ec9b0;">✓ PASS</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><a href="#" style="color: #569cd6;">get_code_snippet</a></td>
+  <td style="padding: 8px;">TEXT</td>
+  <td style="padding: 8px;">代码块（行号 + 语法高亮）</td>
+  <td style="padding: 8px; text-align: center; color: #4ec9b0;">✓ PASS</td>
+</tr>
+<tr>
+  <td style="padding: 8px;"><a href="#" style="color: #569cd6;">index_repository</a></td>
+  <td style="padding: 8px;">JSON</td>
+  <td style="padding: 8px;">统计网格 + 跳过路径提示</td>
+  <td style="padding: 8px; text-align: center; color: #4ec9b0;">✓ PASS</td>
+</tr>
+</tbody>
+</table>
+
+</body>
+</html>

@@ -31,7 +31,7 @@
  *      tools:
  *        - file_read
  *        - search_files
- *        - grep
+ *        - search_code
  *      disallowed_tools:
  *        - file_write
  *        - terminal_cmd
@@ -48,7 +48,7 @@
  *      tools:
  *        - terminal_cmd
  *        - file_read
- *        - grep
+ *        - search_code
  *      max_turns: 40
  *
  *  # Per-agent overrides (by agent name in the workspace)
@@ -232,7 +232,7 @@ custom_agents:
   #   tools:
   #     - file_read
   #     - search_files
-  #     - grep
+  #     - search_code
   #     - web_search
   #     - manage_todo
   #   disallowed_tools:

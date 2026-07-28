@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Tool Card Redesign Mockup v2</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #1c2128;
+    --border: #30363d;
+    --border-soft: rgba(48, 54, 61, 0.5);
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #6e7681;
+    --accent: #58a6ff;
+    --accent-soft: rgba(88, 166, 255, 0.12);
+    --success: #3fb950;
+    --warn: #d29922;
+    --danger: #f85149;
+    --code-font: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+    --ui-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: var(--ui-font);
+    padding: 32px 24px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+  h2 { font-size: 14px; font-weight: 500; color: var(--text-secondary); margin: 28px 0 10px; }
+  .subtitle { color: var(--text-secondary); font-size: 13px; margin-bottom: 24px; }
+
+  /* ────── Layout ────── */
+  .demo-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 960px) { .demo-grid { grid-template-columns: 1fr; } }
+  .section { margin-bottom: 28px; }
+
+  .label {
+    display: inline-block;
+    background: var(--accent-soft);
+    color: var(--accent);
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    margin-bottom: 8px;
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+     READ FILE — 仅折叠态，点击打开编辑器跳转行号
+     ═══════════════════════════════════════════════════════════ */
+  .read-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    font-size: 13px;
+  }
+  .read-card:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--accent);
+  }
+
+  .read-card-icon {
+    width: 16px; height: 16px;
+    color: var(--accent);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .read-card-body {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .read-card-label {
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    flex-shrink: 0;
+  }
+  .read-card-file {
+    font-family: var(--code-font);
+    font-size: 12.5px;
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+  .read-card-range {
+    font-family: var(--code-font);
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    padding: 1px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .read-card-meta {
+    font-family: var(--code-font);
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .read-card-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity 0.15s;
+    margin-left: 4px;
+  }
+  .read-card:hover .read-card-hint { opacity: 1; }
+
+  /* success / error variants */
+  .read-card.read-error { border-color: var(--danger); opacity: 0.7; }
+  .read-card.read-error .read-card-icon { color: var(--danger); }
+  .read-card.read-error .read-card-file { color: var(--text-muted); text-decoration: line-through; }
+
+  /* ═══════════════════════════════════════════════════════════
+     SEARCH / BROWSE CARDS — 所有搜索类工具统一卡片
+     ═══════════════════════════════════════════════════════════ */
+  .tool-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 13px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .tool-card + .tool-card { margin-top: 20px; }
+
+  .tc-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-soft);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .tc-header:hover { background: #21262d; }
+
+  .tc-icon {
+    width: 16px; height: 16px;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tc-icon.search { color: var(--accent); }
+  .tc-icon.list  { color: var(--success); }
+
+  .tc-title {
+    flex: 1;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .tc-title .verb { color: var(--text-secondary); flex-shrink: 0; }
+  .tc-title .target {
+    font-family: var(--code-font);
+    font-size: 12.5px;
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .tc-meta {
+    font-family: var(--code-font);
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tc-meta .badge {
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    padding: 0 6px;
+    border-radius: 4px;
+  }
+
+  .tc-chevron {
+    transition: transform 0.2s;
+    color: var(--text-muted);
+    display: flex; align-items: center;
+  }
+  .tool-card.collapsed .tc-chevron { transform: rotate(-90deg); }
+  .tool-card.collapsed .tc-body { display: none; }
+
+  .tc-body {
+    background: var(--bg);
+  }
+
+  /* ── search bar ── */
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .search-bar-icon { color: var(--text-muted); flex-shrink: 0; }
+  .search-query {
+    flex: 1;
+    font-family: var(--code-font);
+    font-size: 12px;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .search-query .term { color: var(--accent); }
+  .search-query .op { color: var(--text-muted); margin: 0 3px; }
+
+  .search-options {
+    display: flex;
+    gap: 12px;
+    padding: 5px 12px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .search-options span strong { color: var(--text-secondary); font-weight: 500; }
+
+  /* ── result list ── */
+  .result-list { max-height: 280px; overflow-y: auto; }
+  .result-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 12px;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.35);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .result-item:last-child { border-bottom: none; }
+  .result-item:hover { background: var(--bg-tertiary); }
+
+  .result-line {
+    font-family: var(--code-font);
+    font-size: 11px;
+    color: var(--text-muted);
+    width: 52px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+  .result-content {
+    flex: 1;
+    font-family: var(--code-font);
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .result-content .match { color: var(--warn); font-weight: 500; }
+  .result-content .ctx { color: var(--text-muted); }
+
+  .result-file {
+    font-family: var(--code-font);
+    font-size: 10.5px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .result-footer {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 12px;
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-soft);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* ── empty ── */
+  .empty-state {
+    padding: 28px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12.5px;
+  }
+  .empty-state .icon { font-size: 22px; margin-bottom: 4px; }
+
+  /* ── error ── */
+  .error-block {
+    padding: 10px 12px;
+    color: var(--danger);
+    font-size: 12px;
+    font-family: var(--code-font);
+  }
+
+  /* ── running ── */
+  @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+  .running-pulse { animation: pulse 1.4s ease-in-out infinite; color: var(--warn); }
+
+  .tool-card.running .tc-icon { color: var(--warn); }
+  .tool-card.error    .tc-icon { color: var(--danger); }
+  .tool-card.error    .tc-header { border-left: 2px solid var(--danger); }
+
+  /* ── compact list variant (no search options) ── */
+  .compact-list .result-item {
+    padding: 4px 12px;
+    font-size: 12px;
+  }
+  .compact-list .result-item .result-file {
+    max-width: 280px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Tool Card Redesign v2</h1>
+<p class="subtitle">
+  改动：① 移除"深度思考"文字 ② read_file 仅折叠态+点击跳转编辑器 ③ 所有搜索类工具统一卡片
+</p>
+
+<!-- ══════════════════════════════════════════════════ -->
+<h2>① read_file —— 折叠态 · 点击跳转</h2>
+<div class="section">
+  <div class="label" style="margin-bottom:12px;">文件读取 （全部仅折叠态）</div>
+
+  <div class="read-card" title="点击在编辑器中打开并跳转到 L2038">
+    <span class="read-card-icon">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-11zM3.5 2a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-9zM4 4h8v1H4V4zm0 2.5h8v1H4v-1zm0 2.5h6v1H4V9z"/></svg>
+    </span>
+    <span class="read-card-body">
+      <span class="read-card-label">读取</span>
+      <span class="read-card-file">nativeChatEditorPane.ts</span>
+      <span class="read-card-range">L2038-2047</span>
+      <span class="read-card-meta">287 chars</span>
+    </span>
+    <span class="read-card-hint">↗ 打开</span>
+  </div>
+
+  <div class="read-card" style="margin-top:6px;" title="点击在编辑器中打开">
+    <span class="read-card-icon">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-11zM3.5 2a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-9zM4 4h8v1H4V4zm0 2.5h8v1H4v-1zm0 2.5h6v1H4V9z"/></svg>
+    </span>
+    <span class="read-card-body">
+      <span class="read-card-label">读取</span>
+      <span class="read-card-file">types/base.ts</span>
+      <span class="read-card-meta">1,204 chars</span>
+    </span>
+    <span class="read-card-hint">↗ 打开</span>
+  </div>
+
+  <div class="read-card read-error" style="margin-top:6px;" title="文件不存在">
+    <span class="read-card-icon">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zM7.25 4.5h1.5v5h-1.5v-5zm0 6.5h1.5v1.5h-1.5V11z"/></svg>
+    </span>
+    <span class="read-card-body">
+      <span class="read-card-label">读取</span>
+      <span class="read-card-file">missing-file.ts</span>
+      <span class="read-card-meta" style="color:var(--danger);">ENOENT</span>
+    </span>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<h2>② search_files —— 搜索匹配行</h2>
+<div class="demo-grid">
+  <div>
+    <div class="label">成功 · 8 hits</div>
+    <div class="tool-card">
+      <div class="tc-header">
+        <span class="tc-icon search">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04z"/></svg>
+        </span>
+        <span class="tc-title">
+          <span class="verb">搜索</span>
+          <span class="target">src/</span>
+        </span>
+        <span class="tc-meta">
+          <span class="badge">8 hits</span>
+          <span>41ms</span>
+        </span>
+        <span class="tc-chevron">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4z"/></svg>
+        </span>
+      </div>
+      <div class="tc-body">
+        <div class="search-bar">
+          <span class="search-bar-icon">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04z"/></svg>
+          </span>
+          <span class="search-query">
+            <span class="term">setAgent</span><span class="op">|</span><span class="term">_handleAgentChange</span><span class="op">|</span><span class="term">_onAgentChange</span><span class="op">|</span><span class="term">agentChanged</span><span class="op">|</span><span class="term">switchAgent</span>
+          </span>
+        </div>
+        <div class="search-options">
+          <span><strong>regex</strong> ON</span>
+          <span><strong>glob</strong> *.ts</span>
+          <span><strong>case</strong> sensitive</span>
+        </div>
+        <div class="result-list">
+          <div class="result-item"><span class="result-line">L590</span><span class="result-content"><span class="ctx">...</span><span class="match">setAgent</span><span class="ctx">(agentId, { force: true });</span></span><span class="result-file">nativeChatEditorPane.ts:590</span></div>
+          <div class="result-item"><span class="result-line">L623</span><span class="result-content"><span class="ctx">await </span><span class="match">_selectAndLoadAgent</span><span class="ctx">(agentId, { force: true });</span></span><span class="result-file">nativeChatEditorPane.ts:623</span></div>
+          <div class="result-item"><span class="result-line">L664</span><span class="result-content"><span class="ctx">await </span><span class="match">_selectAndLoadAgent</span><span class="ctx">(agentId, { force: true });</span></span><span class="result-file">nativeChatEditorPane.ts:664</span></div>
+          <div class="result-item"><span class="result-line">L699</span><span class="result-content"><span class="ctx">await </span><span class="match">_selectAndLoadAgent</span><span class="ctx">(agentId, { force: true });</span></span><span class="result-file">nativeChatEditorPane.ts:699</span></div>
+          <div class="result-item"><span class="result-line">L1119</span><span class="result-content"><span class="ctx">await </span><span class="match">_selectAndLoadAgent</span><span class="ctx">(agentId, { force: true });</span></span><span class="result-file">nativeChatEditorPane.ts:1119</span></div>
+          <div class="result-item"><span class="result-line">L1200</span><span class="result-content"><span class="ctx">await </span><span class="match">_selectAndLoadAgent</span><span class="ctx">(agentId, { force: true });</span></span><span class="result-file">nativeChatEditorPane.ts:1200</span></div>
+          <div class="result-item"><span class="result-line">L1279</span><span class="result-content"><span class="ctx">await </span><span class="match">_selectAndLoadAgent</span><span class="ctx">(agentId, { force: true });</span></span><span class="result-file">nativeChatEditorPane.ts:1279</span></div>
+          <div class="result-item"><span class="result-line">L1343</span><span class="result-content"><span class="ctx">await </span><span class="match">_selectAndLoadAgent</span><span class="ctx">(agentId, { force: true });</span></span><span class="result-file">nativeChatEditorPane.ts:1343</span></div>
+        </div>
+        <div class="result-footer">
+          <span>8 / 8 命中</span>
+          <span><code style="background:var(--bg-secondary); padding:1px 5px; border-radius:3px;">setAgent|_handleAgentChange|_onAgentChange|agentChanged|switchAgent</code></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="label">空结果</div>
+    <div class="tool-card">
+      <div class="tc-header">
+        <span class="tc-icon search">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04z"/></svg>
+        </span>
+        <span class="tc-title">
+          <span class="verb">搜索</span>
+          <span class="target">src/</span>
+        </span>
+        <span class="tc-meta">
+          <span class="badge">0 hits</span>
+          <span>12ms</span>
+        </span>
+        <span class="tc-chevron">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4z"/></svg>
+        </span>
+      </div>
+      <div class="tc-body">
+        <div class="search-bar">
+          <span class="search-bar-icon">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04z"/></svg>
+          </span>
+          <span class="search-query">
+            <span class="term">nonexistent_symbol_xyz</span>
+          </span>
+        </div>
+        <div class="search-options">
+          <span><strong>regex</strong> ON</span>
+          <span><strong>glob</strong> *.ts</span>
+        </div>
+        <div class="empty-state">
+          <div class="icon">∅</div>
+          没有找到匹配项
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- search_files error -->
+<div class="label" style="margin-top:16px;">错误</div>
+<div class="tool-card error">
+  <div class="tc-header">
+    <span class="tc-icon search">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zM7.25 4.5h1.5v5h-1.5v-5zm0 6.5h1.5v1.5h-1.5V11z"/></svg>
+    </span>
+    <span class="tc-title">
+      <span class="verb">搜索</span>
+      <span class="target">/root/protected/</span>
+    </span>
+    <span class="tc-meta" style="color:var(--danger);">EACCES</span>
+  </div>
+  <div class="tc-body">
+    <div class="search-bar">
+      <span class="search-bar-icon">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04z"/></svg>
+      </span>
+      <span class="search-query"><span class="term">config</span></span>
+    </div>
+    <div class="error-block">Error: EACCES: permission denied, scandir '/root/protected/'</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<h2>③ list_files / glob_files —— 文件浏览卡片</h2>
+<div class="demo-grid">
+  <div>
+    <div class="label">list_files</div>
+    <div class="tool-card">
+      <div class="tc-header">
+        <span class="tc-icon list">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 1.5A.5.5 0 0 1 1 1h4.5a.5.5 0 0 1 .354.146l2 2A.5.5 0 0 0 8.21 3.5H15a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5H1a.5.5 0 0 1-.5-.5v-12zm1 1v10h13V4.5H8.21a1.5 1.5 0 0 1-1.063-.44l-1.793-1.793A.5.5 0 0 0 5 2.5H1.5zM1 3h2.586l1.207 1.207A1.5 1.5 0 0 0 5.855 4.5H15V14H1V3z"/></svg>
+        </span>
+        <span class="tc-title">
+          <span class="verb">浏览</span>
+          <span class="target">src/vs/sessions/</span>
+        </span>
+        <span class="tc-meta">
+          <span class="badge">12 items</span>
+        </span>
+        <span class="tc-chevron">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4z"/></svg>
+        </span>
+      </div>
+      <div class="tc-body compact-list">
+        <div class="result-list">
+          <div class="result-item"><span class="result-content">📁 <span style="color:var(--accent);">browser/</span></span><span class="result-file" style="flex:1;"></span></div>
+          <div class="result-item"><span class="result-content">📁 <span style="color:var(--accent);">common/</span></span></div>
+          <div class="result-item"><span class="result-content">📁 <span style="color:var(--accent);">contrib/</span></span></div>
+          <div class="result-item"><span class="result-content">📄 <span>agentStudioService.ts</span></span><span class="result-file">12.4 KB</span></div>
+          <div class="result-item"><span class="result-content">📄 <span>agentStudioTypes.ts</span></span><span class="result-file">8.2 KB</span></div>
+          <div class="result-item"><span class="result-content">📄 <span>providers.ts</span></span><span class="result-file">24.1 KB</span></div>
+          <div class="result-item"><span class="result-content">📄 <span>skills.ts</span></span><span class="result-file">3.7 KB</span></div>
+          <div class="result-item"><span class="result-content">📄 <span>agentOS.js</span></span><span class="result-file">1.8 KB</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="label">glob_files · 含过滤</div>
+    <div class="tool-card">
+      <div class="tc-header">
+        <span class="tc-icon list">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 1.5A.5.5 0 0 1 1 1h4.5a.5.5 0 0 1 .354.146l2 2A.5.5 0 0 0 8.21 3.5H15a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5H1a.5.5 0 0 1-.5-.5v-12zm1 1v10h13V4.5H8.21a1.5 1.5 0 0 1-1.063-.44l-1.793-1.793A.5.5 0 0 0 5 2.5H1.5zM1 3h2.586l1.207 1.207A1.5 1.5 0 0 0 5.855 4.5H15V14H1V3z"/></svg>
+        </span>
+        <span class="tc-title">
+          <span class="verb">浏览</span>
+          <span class="target">src/**/*.css</span>
+        </span>
+        <span class="tc-meta">
+          <span class="badge">4 items</span>
+        </span>
+      </div>
+      <div class="tc-body compact-list">
+        <div class="result-list">
+          <div class="result-item"><span class="result-content">📄 agentChat.css</span><span class="result-file">src/vs/sessions/browser/agentChat/media/</span></div>
+          <div class="result-item"><span class="result-content">📄 agentSettings.css</span><span class="result-file">src/vs/sessions/contrib/agentStudio/media/</span></div>
+          <div class="result-item"><span class="result-content">📄 chatBar.css</span><span class="result-file">src/vs/workbench/contrib/chat/browser/</span></div>
+          <div class="result-item"><span class="result-content">📄 browserView.css</span><span class="result-file">src/vs/platform/browserView/common/</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- list_files 空目录 -->
+<div class="label" style="margin-top:16px;">空目录</div>
+<div class="tool-card">
+  <div class="tc-header">
+    <span class="tc-icon list">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 1.5A.5.5 0 0 1 1 1h4.5a.5.5 0 0 1 .354.146l2 2A.5.5 0 0 0 8.21 3.5H15a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-.5.5H1a.5.5 0 0 1-.5-.5v-12zm1 1v10h13V4.5H8.21a1.5 1.5 0 0 1-1.063-.44l-1.793-1.793A.5.5 0 0 0 5 2.5H1.5zM1 3h2.586l1.207 1.207A1.5 1.5 0 0 0 5.855 4.5H15V14H1V3z"/></svg>
+    </span>
+    <span class="tc-title">
+      <span class="verb">浏览</span>
+      <span class="target">empty-dir/</span>
+    </span>
+    <span class="tc-meta">
+      <span class="badge">0 items</span>
+    </span>
+    <span class="tc-chevron">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 6l4 4 4-4z"/></svg>
+    </span>
+  </div>
+  <div class="tc-body">
+    <div class="empty-state">
+      <div class="icon">📂</div>
+      目录为空
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<h2>④ Detail — 交互与状态总览</h2>
+<div class="section" style="margin-top:28px;">
+  <ul style="font-size:13px; color:var(--text-secondary); padding-left:24px; line-height:1.9;">
+    <li><b style="color:var(--text-primary);">read_file</b>：仅一行折叠卡 · 点击 → 打开编辑器跳转到指定行 · 文件名蓝色 · L2038-2047 徽章 · 失败时红色删除线</li>
+    <li><b style="color:var(--text-primary);">search_files</b>：Search bar（查询字符串 + term 高亮） → 参数行（regex/glob/case） → 结果行（行号 + 匹配片段 + 文件名） → 统计 footer</li>
+    <li><b style="color:var(--text-primary);">list_files / glob_files</b>：统一为浏览（📁 文件夹 / 📄 文件） · 文件大小 → 全局用同一个 .tool-card</li>
+    <li><b style="color:var(--text-primary);">三态颜色</b>：成功=默认 · 运行中=黄图标+脉冲 · 错误=红左边框+红图标</li>
+    <li><b style="color:var(--text-primary);">折叠/展开</b>：全部搜索工具默认展开，可手动折叠仅保留 header 行</li>
+    <li><b style="color:var(--text-primary);">无"深度思考"文字</b>：✕ 移除，状态由颜色/进度条自己表达</li>
+    <li><b style="color:var(--text-primary);">结果项可点击</b>：单击行 → 打开文件跳转到对应行</li>
+  </ul>
+</div>
+
+</body>
+</html>

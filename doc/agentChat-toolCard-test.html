@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AgentChat 工具卡片测试 — 模拟 LLM 数据流</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --fg: #c9d1d9;
+  --blue: #58a6ff;
+  --green: #3fb950;
+  --purple: #d2a8ff;
+  --orange: #f0883e;
+  --red: #f85149;
+  --border: #30363d;
+  --card: #161b22;
+  --code: #1c2128;
+  --dim: #8b949e;
+  --yellow: #e3b341;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6;max-width:1100px;margin:0 auto;padding:1.5rem}
+header{background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);padding:1.5rem;border-radius:12px;margin-bottom:1.5rem}
+header h1{font-size:1.4rem;color:#fff}
+header p{color:var(--dim);margin-top:.4rem;font-size:.85rem}
+.container{display:flex;flex-direction:column;gap:1.5rem}
+.test-section{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.test-header{padding:.8rem 1.2rem;border-bottom:1px solid var(--border);background:rgba(88,166,255,.04);display:flex;justify-content:space-between;align-items:center}
+.test-header h2{font-size:1rem;color:var(--blue)}
+.test-header .test-tag{font-size:.7rem;padding:2px 8px;border-radius:8px;background:rgba(63,185,80,.15);color:var(--green)}
+.test-header .test-tag.fallback{background:rgba(248,81,73,.15);color:var(--red)}
+.test-header .test-tag.warn{background:rgba(240,136,62,.15);color:var(--orange)}
+.test-body{padding:1.2rem}
+
+/* Chat bubble */
+.chat-bubble{background:#1e1e1e;border-radius:12px;padding:14px 18px;margin:0;border:1px solid #333}
+.bubble-content{font-size:.85rem;line-height:1.7}
+.bubble-content p{margin-bottom:.4rem}
+
+/* Tool card common */
+.tool-card{background:var(--code);border:1px solid var(--border);border-radius:8px;margin:6px 0;overflow:hidden}
+.tool-card-error{border-color:var(--red)}
+.tool-header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(88,166,255,.04);cursor:pointer}
+.tool-icon{font-size:1rem}
+.tool-title{font-weight:600;color:#fff;font-size:.85rem;flex:1}
+.tool-title.shimmer{color:var(--blue);animation:shimmer 1.5s infinite}
+@keyframes shimmer{0%,100%{opacity:1}50%{opacity:.5}}
+.tool-duration{font-size:.72rem;color:var(--dim);font-family:monospace}
+.tool-card-body{padding:10px 14px;font-size:.82rem;border-top:1px solid var(--border)}
+.tool-card-body > div{margin:4px 0}
+
+/* Generic tool card (fallback) */
+.tool-header-chevron{color:var(--dim);margin-right:6px;font-size:.7rem}
+.tool-header-title{color:#fff;font-weight:600}
+.tool-header-loading-title{color:var(--blue)}
+.tool-result-section{margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)}
+.tool-result-status{display:inline-block;padding:2px 8px;border-radius:8px;font-size:.7rem;background:rgba(63,185,80,.15);color:var(--green);margin-left:8px}
+
+/* Search card */
+.tool-card-search .search-query-row{color:var(--blue);font-weight:500}
+.tool-card-search .search-filter-row{color:var(--orange);font-size:.78rem}
+.tool-card-search .search-match-count{color:var(--green);margin:6px 0 4px;font-weight:500}
+.search-result-list{list-style:none;padding:0;margin:4px 0}
+.search-result-item{padding:5px 10px;background:rgba(88,166,255,.04);border-radius:4px;margin:3px 0;display:flex;gap:10px;align-items:center;font-size:.78rem}
+.search-result-path{color:var(--orange);font-family:monospace;flex-shrink:0}
+.search-result-name{color:var(--fg)}
+.search-more{color:var(--dim);font-size:.78rem;margin-top:4px}
+
+/* Plan card */
+.tool-card-plan .plan-goal{color:var(--blue);font-weight:500}
+.tool-card-plan .plan-areas{color:var(--orange);font-size:.82rem}
+.plan-area-list{margin-left:14px;font-size:.78rem;color:var(--dim)}
+.plan-area-list li{margin:2px 0}
+.tool-card-plan .plan-result-summary{color:var(--fg);font-size:.78rem;background:rgba(0,0,0,.2);padding:6px 10px;border-radius:4px;margin-top:4px}
+.tool-card-plan .plan-progress{color:var(--dim);font-style:italic}
+.tool-card-plan .plan-mode-info{color:var(--green)}
+
+/* Delegate card */
+.tool-card-delegate .delegate-agent-name{color:var(--purple);font-weight:500}
+.tool-card-delegate .delegate-task-desc{color:var(--blue)}
+.tool-card-delegate .delegate-context{color:var(--dim);font-size:.78rem}
+.tool-card-delegate .delegate-stats{color:var(--orange);font-size:.75rem;margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)}
+.tool-card-delegate .delegate-output{background:rgba(0,0,0,.2);padding:6px 10px;border-radius:4px;margin-top:4px;font-size:.78rem;white-space:pre-wrap;max-height:120px;overflow:auto}
+.tool-card-delegate .delegate-progress{color:var(--dim);font-style:italic}
+
+/* Read file card */
+.tool-card-readfile .chat-read-card-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(63,185,80,.04);border-bottom:1px solid var(--border);cursor:pointer}
+.chat-read-card-icon{color:var(--blue);width:14px;height:14px;flex-shrink:0}
+.chat-read-card-path{color:var(--blue);font-family:monospace;font-size:.82rem;flex:1;word-break:break-all}
+.chat-read-card-meta{color:var(--dim);font-size:.72rem;margin-left:8px}
+
+/* List card (fallback for search_files / search_code / search_graph) */
+.chat-search-bar{display:flex;align-items:center;gap:6px;padding:6px 10px;background:rgba(0,0,0,.2);border-radius:6px;margin:6px 0}
+.chat-search-bar-icon{color:var(--blue);width:13px;height:13px;flex-shrink:0}
+.chat-search-query{color:var(--blue);font-size:.82rem;font-family:monospace;flex:1}
+.chat-search-results{list-style:none;padding:0;margin:6px 0}
+.chat-search-result-row{padding:4px 8px;border-radius:4px;margin:2px 0;font-size:.78rem;background:rgba(88,166,255,.04);cursor:pointer}
+.chat-search-result-row:hover{background:rgba(88,166,255,.1)}
+.chat-search-result-line{color:var(--orange);font-family:monospace;margin-right:8px}
+.chat-search-result-content{color:var(--fg)}
+
+/* Diag panel */
+.diag-panel{background:#0a0a0a;border:1px solid var(--border);border-radius:6px;padding:10px;margin-top:10px;font-family:monospace;font-size:.74rem;max-height:200px;overflow-y:auto}
+.diag-panel .diag-line{padding:2px 0;color:var(--dim)}
+.diag-panel .diag-line.hit{color:var(--green)}
+.diag-panel .diag-line.fallback{color:var(--red)}
+
+/* Comparison panel */
+.comparison{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem}
+.comparison > div{background:var(--code);border:1px solid var(--border);border-radius:6px;padding:10px}
+.comparison h3{font-size:.78rem;color:var(--blue);margin-bottom:6px;text-transform:uppercase}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AgentChat 工具卡片测试 — 模拟 LLM 数据流</h1>
+  <p>独立 HTML 测试页面，模拟聊天框对各种工具调用的渲染。基于 <code>agentChatPanel.toolCards.ts</code> 中 <code>_createToolCallCard</code> dispatch 链逻辑。</p>
+</header>
+
+<div class="container">
+
+<!-- Test 1: search_files -->
+<div class="test-section">
+  <div class="test-header">
+    <h2>Test 1: <code>search_files</code> 文件搜索</h2>
+    <span class="test-tag">TOOL_LIST_TOOLS 命中</span>
+  </div>
+  <div class="test-body">
+    <div class="chat-bubble">
+      <div class="bubble-content">
+        <p>查找 UE5 GC 相关的 Level.cpp 文件...</p>
+        <div class="tool-card">
+          <div class="tool-header">
+            <span class="tool-header-chevron">▼</span>
+            <span class="tool-header-title">文件搜索</span>
+            <span class="tool-duration">13.6s</span>
+          </div>
+          <div class="tool-card-body">
+            <div class="chat-search-bar">
+              <svg class="chat-search-bar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04z"/></svg>
+              <span class="chat-search-query">Level.cpp</span>
+            </div>
+            <ul class="chat-search-results">
+              <li class="chat-search-result-row">
+                <span class="chat-search-result-line">L1</span>
+                <span class="chat-search-result-content">F:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/Engine/Private/Level.cpp</span>
+              </li>
+            </ul>
+            <div style="color:var(--dim);font-size:.72rem;margin-top:4px">匹配 1 处</div>
+            <div class="chat-search-result-row" style="font-family:monospace;font-size:.72rem">
+              f:\GR_qiuzijian_main\UE5EA\Engine\Source\Runtime\Engine\Private\Level.cpp:613: void ULevel::CleanupReferences() { [共 1 条匹配]
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="diag-panel">
+      <div class="diag-line">[ToolCard][Dispatch] key="search_files" → TOOL_LIST_TOOLS branch</div>
+      <div class="diag-line hit">→ Generic tool card with search bar + result list</div>
+    </div>
+
+    <div class="comparison">
+      <div>
+        <h3>当前行为（用户报告）</h3>
+        <p style="font-size:.78rem;color:var(--dim)">基本样式：单行 "文件搜索" 标题 + 简单文件列表。缺少：搜索栏图标、匹配数 badge、可点击文件路径、结果摘要。</p>
+      </div>
+      <div>
+        <h3>目标样式（专用搜索卡片）</h3>
+        <p style="font-size:.78rem;color:var(--green)">专用 TOOL_LIST_TOOLS 渲染：搜索栏（图标 + 查询词） + 结果列表（行号 + 路径） + 匹配数 + 可点击跳转。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 2: plan_explore (task analysis) -->
+<div class="test-section">
+  <div class="test-header">
+    <h2>Test 2: <code>plan_explore</code> 任务分析</h2>
+    <span class="test-tag warn">TOOL_PLAN_TOOLS 命中（_createPlanWorkflowCard）</span>
+  </div>
+  <div class="test-body">
+    <div class="chat-bubble">
+      <div class="bubble-content">
+        <p>让我先分析 GC 卡顿原因，再决定探索策略...</p>
+        <div class="tool-card tool-card-plan">
+          <div class="tool-header">
+            <span class="tool-icon">🔍</span>
+            <span class="tool-title">任务分析</span>
+            <span class="tool-duration">10.0s</span>
+          </div>
+          <div class="tool-card-body">
+            <div class="plan-goal">🎯 目标: 分析 GC 卡顿原因（持续 15.67ms），定位 CollectGarbageIncremental 主线程占用</div>
+            <div class="plan-areas">探索方向 (1):
+              <ul class="plan-area-list">
+                <li>• broad codebase exploration</li>
+              </ul>
+            </div>
+            <div class="plan-result-summary">**判定**: 是<br>**判断理由**: The user provides a detailed GC performance profile and asks to analyze the cause of stutter.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="diag-panel">
+      <div class="diag-line">[ToolCard][Dispatch] key="plan_explore" → TOOL_PLAN_TOOLS 命中</div>
+      <div class="diag-line hit">→ _createPlanWorkflowCard (status=success)</div>
+    </div>
+
+    <div class="comparison">
+      <div>
+        <h3>当前行为（用户报告）</h3>
+        <p style="font-size:.78rem;color:var(--dim)">通用 tool card 渲染：title "调用了 任务分析"（无 builtin title 命中）+ 输出内容作为 markdown 文本。</p>
+      </div>
+      <div>
+        <h3>目标样式（专用计划卡片）</h3>
+        <p style="font-size:.78rem;color:var(--green)">专用 _createPlanWorkflowCard：🔍 图标 + "任务分析" 标题 + 🎯 目标 + 📂 探索方向列表 + 📊 结果摘要。**注意：当前 TOOL_BUILTIN_TITLES 中 plan_explore 已设置，标题应直接显示 "任务分析完成" 而非 "调用了 任务分析"。**</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 3: search_code -->
+<div class="test-section">
+  <div class="test-header">
+    <h2>Test 3: <code>search_code</code> 代码搜索</h2>
+    <span class="test-tag warn">TOOL_SEARCH_TOOLS 命中（_createSearchToolCard）</span>
+  </div>
+  <div class="test-body">
+    <div class="chat-bubble">
+      <div class="bubble-content">
+        <p>在代码中搜索 GC 关键函数...</p>
+        <div class="tool-card tool-card-search">
+          <div class="tool-header">
+            <svg class="chat-search-bar-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 1.06-1.06l3.04 3.04a.75.75 0 1 1-1.06 1.06l-3.04-3.04z"/></svg>
+            <span class="tool-title">代码搜索</span>
+            <span class="tool-duration">2.6s</span>
+          </div>
+          <div class="tool-card-body">
+            <div class="search-query-row">🔍 ProcessAsync|SpinUntilAllStopped</div>
+            <div class="search-filter-row">📂 GarbageCollection.cpp</div>
+            <div class="search-match-count">匹配 528 处</div>
+            <ul class="search-result-list">
+              <li class="search-result-item">
+                <span class="search-result-path">F:/S1Game/UE5/Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp:4325</span>
+              </li>
+              <li class="search-result-item">
+                <span class="search-result-path">F:/S1Game/UE5/Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp:4328</span>
+              </li>
+            </ul>
+            <div class="search-more">... 还有 526 条结果</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="diag-panel">
+      <div class="diag-line">[ToolCard][Dispatch] key="search_code" → TOOL_SEARCH_TOOLS 命中</div>
+      <div class="diag-line hit">→ _createSearchToolCard (status=success)</div>
+    </div>
+
+    <div class="comparison">
+      <div>
+        <h3>当前行为（用户报告）</h3>
+        <p style="font-size:.78rem;color:var(--dim)">专用搜索卡片**未被调用**——回退到 TOOL_LIST_TOOLS 的通用渲染（无 path_filter 处理）。</p>
+      </div>
+      <div>
+        <h3>目标样式（专用搜索卡片）</h3>
+        <p style="font-size:.78rem;color:var(--green)">专用 _createSearchToolCard：搜索图标 + "代码搜索" 标题 + 查询词 + path_filter + 匹配数 + 结果列表（前 10 条 + "还有 N 条"）。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 4: update_plan (执行计划) -->
+<div class="test-section">
+  <div class="test-header">
+    <h2>Test 4: <code>update_plan</code> 执行计划</h2>
+    <span class="test-tag">update_plan 命中 → _createPlanCard (existing)</span>
+  </div>
+  <div class="test-body">
+    <div class="chat-bubble">
+      <div class="bubble-content">
+        <p>生成执行计划...</p>
+        <div class="tool-card">
+          <div class="tool-header">
+            <span class="tool-header-chevron">▼</span>
+            <span class="tool-header-title">更新计划</span>
+            <span class="tool-duration">0.3s</span>
+          </div>
+          <div class="tool-card-body">
+            <div style="color:var(--blue);font-weight:500">📋 执行计划 (4 个任务):</div>
+            <ol style="margin-left:20px;margin-top:6px;font-size:.82rem">
+              <li><b>分析 GC 时间线</b> — 核心路径耗时分解，定位主要耗时阶段</li>
+              <li><b>深度分析</b> — PrepareStreamedOutLevelForGC 9次调用耗时分析</li>
+              <li><b>深度分析</b> — ProcessObjectArray 2.5ms 根本原因</li>
+              <li><b>输出优化方案</b> — 1.延迟 GC 操作 2.优化关卡加载流程 3.检查 OnObjectDestroy</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="diag-panel">
+      <div class="diag-line">[ToolCard][Dispatch] key="update_plan" → _createPlanCard (existing, before TOOL_PLAN_TOOLS check)</div>
+      <div class="diag-line hit">→ update_plan 专用卡片：任务列表（替换语义，多卡片只保留最后一张）</div>
+    </div>
+
+    <div class="comparison">
+      <div>
+        <h3>当前行为（用户报告）</h3>
+        <p style="font-size:.78rem;color:var(--dim)">现有 _createPlanCard 已处理，但样式未达预期：任务列表应更清晰、状态更突出。</p>
+      </div>
+      <div>
+        <h3>目标样式</h3>
+        <p style="font-size:.78rem;color:var(--green)">_createPlanCard 已存在并工作。需进一步增强：当前任务高亮、依赖关系展示、进度条。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 5: delegate_task (subagent) -->
+<div class="test-section">
+  <div class="test-header">
+    <h2>Test 5: <code>delegate_task</code> 委派任务（subagent）</h2>
+    <span class="test-tag warn">TOOL_DELEGATE_TOOLS 命中（_createDelegateTaskCard）</span>
+  </div>
+  <div class="test-body">
+    <div class="chat-bubble">
+      <div class="bubble-content">
+        <p>委派 explore agent 并行探索...</p>
+        <div class="tool-card tool-card-delegate">
+          <div class="tool-header">
+            <span class="tool-icon">🤖✅</span>
+            <span class="tool-title">委派完成</span>
+            <span class="tool-duration">7.7s</span>
+          </div>
+          <div class="tool-card-body">
+            <div class="delegate-agent-name">👤 子Agent: code-explorer</div>
+            <div class="delegate-task-desc">📋 任务: 探索 GC 时间线与 ProcessAsync 关键路径</div>
+            <div class="delegate-context">📝 上下文: 15.67ms GC stall, ProcessAsync 独占 9.9ms</div>
+            <div class="delegate-stats">退出: completed | 7.7s | 3 次工具调用</div>
+            <div class="delegate-output">[COMPLETION GATE] status=success acceptanceMet=true - completed cleanly with no error or truncation
+# Broad codebase exploration
+I'll systematically analyze the GC (Garbage Collection) stutter shown in the profiling data. Let me start by exploring the codebase structure and then dive deep into each hot path identified in the call stack.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="diag-panel">
+      <div class="diag-line">[ToolCard][Dispatch] key="delegate_task" → TOOL_DELEGATE_TOOLS 命中</div>
+      <div class="diag-line hit">→ _createDelegateTaskCard (status=success)</div>
+      <div class="diag-line">[SubAgentCard] 已被 messages.ts:683 隐藏（因为 msg.toolCalls 含 delegate_task）</div>
+      <div class="diag-line hit">→ 子Agent 信息已内联在工具卡片中显示，消息底部不再渲染独立 .subagent-cards-section</div>
+    </div>
+
+    <div class="comparison">
+      <div>
+        <h3>当前行为（用户报告）</h3>
+        <p style="font-size:.78rem;color:var(--dim)">子Agent 卡片**始终在 llm 冒泡消息底部**显示，与工具调用卡片分离，造成重复显示。</p>
+      </div>
+      <div>
+        <h3>目标样式（修复后）</h3>
+        <p style="font-size:.78rem;color:var(--green)">_createDelegateTaskCard **内联显示**子Agent 进度、产出、统计。消息底部不再渲染独立的 .subagent-cards-section（已在 messages.ts 修复）。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Test 6: file_read with line jump -->
+<div class="test-section">
+  <div class="test-header">
+    <h2>Test 6: <code>file_read</code> 读取文件（支持行号跳转）</h2>
+    <span class="test-tag">READ_FILE_KEYS 命中</span>
+  </div>
+  <div class="test-body">
+    <div class="chat-bubble">
+      <div class="bubble-content">
+        <p>读取 GC 核心源码...</p>
+        <div class="tool-card tool-card-readfile">
+          <div class="chat-read-card-header">
+            <svg class="chat-read-card-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2.5A1.5 1.5 0 0 1 3.5 1h9A1.5 1.5 0 0 1 14 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-11zM3.5 2a.5.5 0 0 0-.5.5v11a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5v-11a.5.5 0 0 0-.5-.5h-9zM4 4h8v1H4V4zm0 2.5h8v1H4v-1zm0 2.5h6v1H4V9z"/></svg>
+            <span class="chat-read-card-path">F:/S1Game/UE5/Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp</span>
+            <span class="chat-read-card-meta">L4325 · 441 chars</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="diag-panel">
+      <div class="diag-line">[ToolCard][Dispatch] key="file_read" → READ_FILE_KEYS 命中</div>
+      <div class="diag-line hit">→ _createReadFileCard (status=success)</div>
+      <div class="diag-line">[Click handler] _onOpenFile(path, 4325) → _openFileInEditor(path, 4325)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Dispatch chain summary -->
+<div class="test-section">
+  <div class="test-header">
+    <h2>Dispatch 链决策树（agentChatPanel.toolCards.ts:946-988）</h2>
+    <span class="test-tag">所有路径</span>
+  </div>
+  <div class="test-body">
+    <div style="font-family:monospace;font-size:.78rem;background:var(--code);padding:12px;border-radius:6px;line-height:1.8">
+      <div>key="update_plan"                    → <span style="color:var(--blue)">_createPlanCard (existing)</span></div>
+      <div>key ∈ {file_write,patch,file_edit,create_file} → <span style="color:var(--blue)">_createWriteFileToolCard</span></div>
+      <div>key ∈ TOOL_TERMINAL_TOOLS             → <span style="color:var(--blue)">_createTerminalToolCard</span></div>
+      <div>key ∈ READ_FILE_KEYS                 → <span style="color:var(--blue)">_createReadFileCard (支持行号跳转)</span></div>
+      <div>key ∈ TOOL_PLAN_TOOLS                → <span style="color:var(--green)">_createPlanWorkflowCard ✓ NEW</span></div>
+      <div>key ∈ TOOL_DELEGATE_TOOLS            → <span style="color:var(--green)">_createDelegateTaskCard ✓ NEW</span></div>
+      <div>key ∈ TOOL_SEARCH_TOOLS              → <span style="color:var(--green)">_createSearchToolCard ✓ NEW</span></div>
+      <div>key ∈ TOOL_LIST_TOOLS (其他)         → <span style="color:var(--blue)">generic card + list 渲染</span></div>
+      <div>其他                                  → <span style="color:var(--dim)">generic card</span></div>
+    </div>
+    <div class="diag-panel" style="margin-top:1rem">
+      <div class="diag-line">TOOL_PLAN_TOOLS = {plan_explore, plan_enter, plan_exit, update_plan}</div>
+      <div class="diag-line">TOOL_DELEGATE_TOOLS = {delegate_task, transfer_to_agent, new_agent}</div>
+      <div class="diag-line">TOOL_SEARCH_TOOLS = {search_code, search_graph, query_graph, trace_path, get_architecture, search_files, web_search, web_extract}</div>
+      <div class="diag-line">TOOL_LIST_TOOLS = {search_files, ls_dir, list_files, get_dir_tree, search_pathnames_only, search_for_files, search_content, search_in_file, grep, search_graph, query_graph, trace_path, get_architecture, get_graph_schema, get_code_snippet, index_repository, search_code, delegate_task, plan_explore, web_search, web_extract}</div>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

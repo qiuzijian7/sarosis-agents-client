@@ -37,7 +37,12 @@ import { ClaudeAgent } from './claude/claudeAgent.js';
 import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAgentSdkService.js';
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { AgentService } from './agentService.js';
-import { AgentHostClaudeSdkPathEnvVar } from '../common/agentService.js';
+import { AgentHostClaudeSdkPathEnvVar, IAgentService } from '../common/agentService.js';
+import { IContextCompressionService } from '../common/contextCompression.js';
+import { registerAgentHostEnhancementServices } from './agentHostServices.js';
+import { IConfigurationService } from '../../configuration/common/configuration.js';
+import { ConfigurationService } from '../../configuration/common/configurationService.js';
+import { NullPolicyService } from '../../policy/common/policy.js';
 import { IAgentConfigurationService } from './agentConfigurationService.js';
 import { IAgentHostTerminalManager } from './agentHostTerminalManager.js';
 import { WebSocketProtocolServer } from './webSocketTransport.js';
@@ -195,6 +200,10 @@ async function main(): Promise<void> {
 	// Create the agent service (owns AgentHostStateManager + AgentSideEffects internally)
 	const agentService = new AgentService(logService, fileService, sessionDataService, productService, gitService, rootConfigResource);
 	disposables.add(agentService);
+	diServices.set(IAgentService, agentService);
+
+	// Session-context enhancement 框架（压缩流水线 + 记忆服务）；--quiet（测试模式）下不激活
+	let compressionService: IContextCompressionService | undefined;
 
 	// Register agents
 	if (!options.quiet) {
@@ -224,6 +233,19 @@ async function main(): Promise<void> {
 			agentService.registerProvider(claudeAgent);
 			log('ClaudeAgent registered');
 		}
+
+		// ── Session-Context-Enhancement 框架激活 ────────────────────────
+		// 真实 ConfigurationService（settings.json 提供 sessionContext.compression.* 配置）
+		const configurationService = disposables.add(new ConfigurationService(
+			joinPath(environmentService.appSettingsHome, 'settings.json'),
+			fileService,
+			new NullPolicyService(),
+			logService,
+		));
+		diServices.set(IConfigurationService, configurationService);
+		const enhancement = registerAgentHostEnhancementServices(diServices, instantiationService, logService, configurationService);
+		compressionService = enhancement.compressionService;
+		log('Session-context enhancement activated (compression + memory)');
 	}
 
 	if (options.enableMockAgent) {
@@ -257,6 +279,7 @@ async function main(): Promise<void> {
 		{ defaultDirectory: URI.file(os.homedir()).toString() },
 		clientFileSystemProvider,
 		logService,
+		compressionService,
 	));
 
 	// Report ready

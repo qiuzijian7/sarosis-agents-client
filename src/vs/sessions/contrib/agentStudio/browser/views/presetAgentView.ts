@@ -56,7 +56,7 @@ export class PresetAgentViewPane extends ViewPane {
 
 	private listContainer!: HTMLElement;
 	private searchInput!: HTMLInputElement;
-	/** 唯一数据源：来自 AgentStudioService.getAgents()（读取 ~/.saros/agents/{id}/agent.json）。 */
+	/** 唯一数据源：来自 AgentStudioService.getAgents()（读取 ~/.vssaros/agents/{id}/.agent.md）。 */
 	private agents: Agent[] = [];
 	private activeCategory: PresetCategory | 'All' = 'All';
 	private isDeploying = false;
@@ -98,7 +98,7 @@ export class PresetAgentViewPane extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._listenActiveWorkspace();
-		// 从服务读取 agent（唯一数据源：~/.saros/agents/{id}/agent.json）
+		// 从服务读取 agent（唯一数据源：~/.vssaros/agents/{id}/.agent.md）
 		this._loadAgents();
 		// Listen for agent changes (create/update/delete) and refresh the list
 		this._register(this.agentStudioService.onDidChangeAgents(() => {
@@ -163,7 +163,7 @@ export class PresetAgentViewPane extends ViewPane {
 
 	/**
 	 * 从 AgentStudioService 读取所有 agent（唯一数据源：
-	 * ~/.saros/agents/{id}/agent.json），刷新卡片列表与计数。
+	 * ~/.vssaros/agents/{id}/.agent.md），刷新卡片列表与计数。
 	 */
 	private async _loadAgents(): Promise<void> {
 		try {
@@ -360,7 +360,7 @@ export class PresetAgentViewPane extends ViewPane {
 				p.name.toLowerCase().includes(query) ||
 				p.role.toLowerCase().includes(query) ||
 				p.description.toLowerCase().includes(query) ||
-				p.skills.some(s => s.toLowerCase().includes(query))
+				(p.skills ?? []).some(s => s.toLowerCase().includes(query))
 			);
 		}
 
@@ -469,16 +469,16 @@ export class PresetAgentViewPane extends ViewPane {
 		body.appendChild(roleEl);
 
 		// Skill chips (always visible, compact)
-		if (preset.skills.length > 0) {
+		if ((preset.skills?.length ?? 0) > 0) {
 			const skillsEl = $('div.preset-skills');
-			for (const skill of preset.skills.slice(0, 3)) {
+			for (const skill of preset.skills!.slice(0, 3)) {
 				const chip = $('span.skill-chip');
 				chip.textContent = skill;
 				skillsEl.appendChild(chip);
 			}
-			if (preset.skills.length > 3) {
+			if ((preset.skills?.length ?? 0) > 3) {
 				const more = $('span.skill-chip');
-				more.textContent = `+${preset.skills.length - 3}`;
+				more.textContent = `+${(preset.skills?.length ?? 0) - 3}`;
 				more.classList.add('more');
 				skillsEl.appendChild(more);
 			}

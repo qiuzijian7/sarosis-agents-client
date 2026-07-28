@@ -134,7 +134,7 @@ export class KbBlocksEditorPane extends EditorPane {
 		// fall back to an empty index — the note still renders, wikilinks just
 		// appear broken until the index becomes available.
 		try {
-			this._workspaceFiles = await this._kbKernelService.getWorkspaceFiles();
+			this._workspaceFiles = await this._kbKernelService.getWorkspaceFiles(resource.toString());
 		} catch (err) {
 			this._logService.warn('[KbBlocksEditorPane] failed to build workspace file index', err);
 			this._workspaceFiles = [];

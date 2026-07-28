@@ -22,14 +22,16 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
+import { IAgentOSService } from '../common/agentOS.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { IMarketplaceService, PackageKind } from '../common/marketplace.js';
+import { IAgentVersionService, type AgentCommitMeta } from '../common/agentVersionTypes.js';
 import type { Agent } from '../../../common/agentStudioTypes.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 
 const { $: $$ } = DOM;
 
-type TabId = 'prompt' | 'skills' | 'mcp' | 'rules' | 'binding';
+type TabId = 'prompt' | 'skills' | 'tools' | 'mcp' | 'rules' | 'binding' | 'versions' | 'runtime';
 
 interface TabDef {
 	id: TabId;
@@ -40,6 +42,9 @@ interface TabDef {
 const TABS: TabDef[] = [
 	{ id: 'prompt', label: 'System Prompt', icon: '💬' },
 	{ id: 'skills', label: '技能配置', icon: '🛠' },
+	{ id: 'tools', label: 'Tool 配置', icon: '🔧' },
+	{ id: 'versions', label: '版本管理', icon: '🕐' },
+	{ id: 'runtime', label: '运行时配置', icon: '⚙️' },
 	{ id: 'mcp', label: 'MCP 配置', icon: '🔌' },
 	{ id: 'rules', label: 'Rule 配置', icon: '📏' },
 	{ id: 'binding', label: 'Channel 绑定', icon: '🔗' },
@@ -93,12 +98,27 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _bindingListContainer: HTMLElement | undefined;
 	private _bindingInput: HTMLInputElement | undefined;
 	private _bindingDefaultToggle: HTMLInputElement | undefined;
+	// Runtime config (paradigm + budget)
+	private _paradigmSelect: HTMLSelectElement | undefined;
+	private _budgetInput: HTMLInputElement | undefined;
 
 	// ── Skills tab ──
 	private _skillsInstalledContainer: HTMLElement | undefined;
 	private _skillsAvailableContainer: HTMLElement | undefined;
-	private _allSkills: Array<{ id: string; name: string; category: string; activation: string; description?: string }> = [];
+	private _allSkills: Array<{ id: string; name: string; category: string; activation: string; description?: string; source?: string }> = [];
 	private _agentSkills: string[] = [];
+
+	// ── Tools tab ──
+	private _toolsInstalledContainer: HTMLElement | undefined;
+	private _toolsAvailableContainer: HTMLElement | undefined;
+	private _toolsFilterInput: HTMLInputElement | undefined;
+	private _allTools: Array<{ name: string; description: string; category?: string }> = [];
+	private _agentTools: string[] = [];
+
+	// ── Versions tab ──
+	private _versionsListContainer: HTMLElement | undefined;
+	private _versionsLoading = false;
+	private _versionCommits: AgentCommitMeta[] = [];
 
 	constructor(
 		group: IEditorGroup,
@@ -113,6 +133,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@IEditorService private readonly editorService: IEditorService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IBridgeService private readonly bridgeService: IBridgeService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
+		@IAgentVersionService private readonly agentVersionService: IAgentVersionService,
 	) {
 		super(AgentSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -148,6 +170,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 		// Load skills
 		await this._loadSkills();
+		// Load tools
+		this._loadTools().catch(() => {});
 
 		// Listen for agent changes (external updates)
 		this._register(this.agentStudioService.onDidChangeAgents(async () => {
@@ -184,6 +208,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 		// Build all tab contents
 		this._buildPromptTab();
 		this._buildSkillsTab();
+		this._buildToolsTab();
+		this._buildVersionsTab();
+		this._buildRuntimeTab();
 		this._buildPlaceholderTab('mcp');
 		this._buildPlaceholderTab('rules');
 		this._buildBindingTab();
@@ -390,6 +417,46 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._tabContentContainer?.appendChild(section);
 	}
 
+	// ── Tools Tab ──
+
+	private _buildToolsTab(): void {
+		const section = $$('div.agent-settings-tab-pane');
+		section.dataset.tabPane = 'tools';
+
+		const desc = $$('div.tab-pane-desc');
+		desc.textContent = '为 Agent 配置工具。点击右侧可用工具添加，点击左侧已配置工具移除。';
+		section.appendChild(desc);
+
+		const panel = $$('div.skills-dnd-panel');
+
+		// Left: installed tools
+		const leftCol = $$('div.skills-column');
+		const leftHeader = $$('div.skills-column-header');
+		leftHeader.textContent = '已配置工具';
+		leftCol.appendChild(leftHeader);
+		this._toolsInstalledContainer = $$('div.skills-list');
+		leftCol.appendChild(this._toolsInstalledContainer);
+		panel.appendChild(leftCol);
+
+		// Right: available tools
+		const rightCol = $$('div.skills-column');
+		const rightHeader = $$('div.skills-column-header');
+		rightHeader.textContent = '可用工具';
+		rightCol.appendChild(rightHeader);
+		this._toolsFilterInput = document.createElement('input');
+		this._toolsFilterInput.className = 'skills-filter-input';
+		this._toolsFilterInput.type = 'text';
+		this._toolsFilterInput.placeholder = '搜索工具...';
+		this._toolsFilterInput.oninput = () => this._renderTools();
+		rightCol.appendChild(this._toolsFilterInput);
+		this._toolsAvailableContainer = $$('div.skills-list');
+		rightCol.appendChild(this._toolsAvailableContainer);
+		panel.appendChild(rightCol);
+
+		section.appendChild(panel);
+		this._tabContentContainer?.appendChild(section);
+	}
+
 	// ── Channel Binding Tab ──
 
 	private _buildBindingTab(): void {
@@ -566,6 +633,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 		if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = true; }
 		if (this._bindingAddBtn) { this._bindingAddBtn.disabled = true; }
 		if (this._renameInput) { this._renameInput.disabled = true; }
+		if (this._paradigmSelect) { this._paradigmSelect.disabled = true; }
+		if (this._budgetInput) { this._budgetInput.disabled = true; }
 
 		// 禁用重命名触发（标题双击 + 铅笔按钮）
 		if (this._nameEl) {
@@ -586,6 +655,341 @@ export class AgentSettingsEditorPane extends EditorPane {
 			banner.textContent = '🔒 只读模式：仅创建者(owner)可编辑此 Agent';
 			banner.style.cssText = 'margin:8px 12px;padding:8px 12px;border-radius:6px;background:var(--vscode-badge-background,#3a3d41);color:var(--vscode-badge-foreground,#fff);font-size:12px;';
 			main.insertBefore(banner, main.firstChild);
+		}
+	}
+
+	// ── Versions Tab（版本管理）──────────────────────────────────────
+
+	private _buildVersionsTab(): void {
+		const section = $$('div.agent-settings-tab-pane');
+		section.dataset.tabPane = 'versions';
+
+		const desc = $$('div.tab-pane-desc');
+		desc.textContent = '版本历史记录。每次修改 Agent 系统提示词后会自动生成版本快照，可查看差异或回滚到历史版本。';
+		section.appendChild(desc);
+
+		// 工具栏：刷新按钮
+		const toolbar = $$('div.versions-toolbar');
+		toolbar.style.display = 'flex';
+		toolbar.style.alignItems = 'center';
+		toolbar.style.gap = '8px';
+		toolbar.style.marginBottom = '12px';
+
+		const refreshBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		refreshBtn.textContent = '🔄 刷新';
+		refreshBtn.onclick = () => this._loadVersionHistory();
+		toolbar.appendChild(refreshBtn);
+
+		const hint = $$('span');
+		hint.textContent = '点击版本行展开 diff 详情';
+		hint.style.fontSize = '11px';
+		hint.style.color = 'var(--vscode-descriptionForeground)';
+		toolbar.appendChild(hint);
+		section.appendChild(toolbar);
+
+		// 列表容器
+		this._versionsListContainer = $$('div.versions-list');
+		this._versionsListContainer.style.maxHeight = 'calc(100vh - 320px)';
+		this._versionsListContainer.style.overflowY = 'auto';
+		this._versionsListContainer.textContent = '点击上方刷新按钮加载版本历史';
+		this._versionsListContainer.style.padding = '16px';
+		this._versionsListContainer.style.textAlign = 'center';
+		this._versionsListContainer.style.color = 'var(--vscode-descriptionForeground)';
+		section.appendChild(this._versionsListContainer);
+
+		this._tabContentContainer?.appendChild(section);
+	}
+
+	private async _loadVersionHistory(): Promise<void> {
+		if (!this._agentId || this._versionsLoading) { return; }
+		this._versionsLoading = true;
+
+		if (this._versionsListContainer) {
+			this._versionsListContainer.textContent = '';
+			const loading = $$('div');
+			loading.textContent = '⏳ 加载版本历史...';
+			loading.style.padding = '16px';
+			loading.style.textAlign = 'center';
+			loading.style.color = 'var(--vscode-descriptionForeground)';
+			this._versionsListContainer.appendChild(loading);
+		}
+
+		try {
+			this._versionCommits = await this.agentVersionService.history(this._agentId, 50);
+			this._renderVersionList();
+		} catch (err) {
+			if (this._versionsListContainer) {
+				this._versionsListContainer.textContent = '';
+				const errEl = $$('div');
+				errEl.textContent = `加载失败: ${err instanceof Error ? err.message : String(err)}`;
+				errEl.style.color = 'var(--vscode-errorForeground)';
+				errEl.style.padding = '16px';
+				errEl.style.textAlign = 'center';
+				this._versionsListContainer.appendChild(errEl);
+			}
+		} finally {
+			this._versionsLoading = false;
+		}
+	}
+
+	private _renderVersionList(): void {
+		if (!this._versionsListContainer) { return; }
+		this._versionsListContainer.textContent = '';
+
+		if (this._versionCommits.length === 0) {
+			const empty = $$('div');
+			empty.textContent = '暂无版本历史（可能是尚未初始化 Git 仓库）';
+			empty.style.padding = '16px';
+			empty.style.textAlign = 'center';
+			empty.style.color = 'var(--vscode-descriptionForeground)';
+			this._versionsListContainer.appendChild(empty);
+			return;
+		}
+
+		const countEl = $$('div');
+		countEl.textContent = `共 ${this._versionCommits.length} 条记录`;
+		countEl.style.color = 'var(--vscode-descriptionForeground)';
+		countEl.style.fontSize = '11px';
+		countEl.style.marginBottom = '8px';
+		countEl.style.padding = '0 4px';
+		this._versionsListContainer.appendChild(countEl);
+
+		for (const c of this._versionCommits) {
+			this._versionsListContainer.appendChild(this._renderVersionCommitRow(c));
+		}
+	}
+
+	private _renderVersionCommitRow(c: AgentCommitMeta): HTMLElement {
+		const row = $$('div.version-commit-row');
+		row.style.padding = '10px 12px';
+		row.style.marginBottom = '6px';
+		row.style.border = '1px solid var(--vscode-panel-border, #3c3c3c)';
+		row.style.borderRadius = '6px';
+		row.style.cursor = 'pointer';
+		row.style.transition = 'background 0.15s';
+
+		row.onmouseenter = () => { row.style.background = 'var(--vscode-list-hoverBackground, #2a2d2e)'; };
+		row.onmouseleave = () => { row.style.background = ''; };
+
+		// ── 头部：SHA + 时间 ──
+		const head = $$('div');
+		head.style.display = 'flex';
+		head.style.justifyContent = 'space-between';
+		head.style.alignItems = 'center';
+		head.style.marginBottom = '4px';
+
+		const shaBadge = $$('code');
+		shaBadge.textContent = c.shortSha;
+		shaBadge.style.fontSize = '11px';
+		shaBadge.style.fontFamily = 'monospace';
+		shaBadge.style.background = 'var(--vscode-badge-background, #4d4d4d)';
+		shaBadge.style.color = 'var(--vscode-badge-foreground, #fff)';
+		shaBadge.style.padding = '1px 6px';
+		shaBadge.style.borderRadius = '3px';
+		head.appendChild(shaBadge);
+
+		const timeEl = $$('span');
+		timeEl.textContent = this._formatVersionTime(c.time);
+		timeEl.style.fontSize = '10px';
+		timeEl.style.color = 'var(--vscode-descriptionForeground)';
+		head.appendChild(timeEl);
+		row.appendChild(head);
+
+		// ── 消息 ──
+		const msg = $$('div');
+		msg.textContent = c.message;
+		msg.style.fontSize = '12px';
+		msg.style.color = 'var(--vscode-foreground)';
+		msg.style.marginBottom = '6px';
+		row.appendChild(msg);
+
+		// ── 折叠区：diff + 操作 ──
+		const detail = $$('div.version-commit-detail');
+		detail.style.display = 'none';
+		detail.style.marginTop = '8px';
+		row.appendChild(detail);
+
+		// Diff 文本
+		const diffPre = $$('pre');
+		diffPre.style.fontSize = '11px';
+		diffPre.style.fontFamily = 'monospace';
+		diffPre.style.padding = '8px';
+		diffPre.style.background = 'var(--vscode-editor-background, #1e1e1e)';
+		diffPre.style.borderRadius = '4px';
+		diffPre.style.maxHeight = '300px';
+		diffPre.style.overflowY = 'auto';
+		diffPre.style.whiteSpace = 'pre-wrap';
+		diffPre.style.wordBreak = 'break-all';
+		diffPre.style.margin = '0 0 8px 0';
+		detail.appendChild(diffPre);
+
+		// 操作按钮
+		const actions = $$('div');
+		actions.style.display = 'flex';
+		actions.style.gap = '8px';
+		detail.appendChild(actions);
+
+		const rollbackBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		rollbackBtn.textContent = '回滚到此版本';
+		rollbackBtn.style.background = 'var(--vscode-inputValidation-warningBackground, #352a05)';
+		rollbackBtn.style.border = '1px solid var(--vscode-inputValidation-warningBorder, #b89500)';
+		rollbackBtn.style.color = 'var(--vscode-inputValidation-warningForeground, #ccc)';
+		rollbackBtn.style.padding = '4px 12px';
+		rollbackBtn.style.fontSize = '11px';
+		if (this._readOnly) {
+			rollbackBtn.disabled = true;
+			rollbackBtn.title = '只读模式下不可回滚';
+			rollbackBtn.style.opacity = '0.5';
+		}
+		rollbackBtn.onclick = (e) => {
+			e.stopPropagation();
+			if (!this._readOnly) { void this._handleVersionRollback(c.sha); }
+		};
+		actions.appendChild(rollbackBtn);
+		detail.appendChild(actions);
+
+		// ── 点击展开/收起 diff ──
+		let loaded = false;
+		const self = this;
+		row.onclick = async () => {
+			if (detail.style.display === 'block') {
+				detail.style.display = 'none';
+				return;
+			}
+			if (loaded) {
+				detail.style.display = 'block';
+				return;
+			}
+			detail.style.display = 'block';
+			diffPre.textContent = '加载 diff...';
+			try {
+				const result = await self.agentVersionService.diff(self._agentId!, c.sha);
+				diffPre.textContent = result?.unified || '无差异数据';
+				self._colorizeVersionDiff(diffPre);
+			} catch (err) {
+				diffPre.textContent = `加载失败: ${err instanceof Error ? err.message : String(err)}`;
+			}
+			loaded = true;
+		};
+
+		return row;
+	}
+
+	private async _handleVersionRollback(sha: string): Promise<void> {
+		if (!this._agentId) { return; }
+		try {
+			await this.agentVersionService.rollback(this._agentId, sha);
+			this.notificationService.info(`Agent 已回滚到版本 ${sha.slice(0, 7)}，请刷新 prompt 页签查看内容`);
+			await this._loadVersionHistory();
+		} catch (err) {
+			this.notificationService.error(`回滚失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private _formatVersionTime(iso: string): string {
+		try {
+			const d = new Date(iso);
+			return d.toLocaleString('zh-CN', {
+				month: '2-digit', day: '2-digit',
+				hour: '2-digit', minute: '2-digit',
+			});
+		} catch { return iso.slice(0, 16); }
+	}
+
+	private _colorizeVersionDiff(pre: HTMLElement): void {
+		const text = pre.textContent || '';
+		const lines = text.split('\n');
+		pre.textContent = '';
+		for (const line of lines) {
+			const span = $$('span');
+			if (line.startsWith('+') && !line.startsWith('+++')) {
+				span.style.color = 'var(--vscode-testing-iconPassed, #73c991)';
+			} else if (line.startsWith('-') && !line.startsWith('---')) {
+				span.style.color = 'var(--vscode-testing-iconFailed, #f14c4c)';
+			} else if (line.startsWith('@@')) {
+				span.style.color = 'var(--vscode-textLink-foreground, #3794ff)';
+			}
+			span.textContent = line + '\n';
+			pre.appendChild(span);
+		}
+	}
+
+	// ── Runtime Config Tab (paradigm + budget) ──
+
+	private _buildRuntimeTab(): void {
+		const section = $$('div.agent-settings-tab-pane');
+		section.dataset.tabPane = 'runtime';
+
+		// ── Paradigm selector ──
+		const paradigmGroup = $$('div.agent-settings-form-group');
+		const paradigmLabel = $$('label.agent-settings-label');
+		paradigmLabel.textContent = 'AgentLoop 循环范式';
+		paradigmGroup.appendChild(paradigmLabel);
+
+		const paradigmDesc = $$('div.agent-settings-desc');
+		paradigmDesc.textContent = '决定 Agent 的执行模型：ReAct 循环 + 预算门控（默认）、计划-探索、图模式等';
+		paradigmGroup.appendChild(paradigmDesc);
+
+		this._paradigmSelect = document.createElement('select');
+		this._paradigmSelect.className = 'agent-settings-select';
+		const paradigms = [
+			{ value: '', label: '默认（按 ChatMode 自动选择）' },
+			{ value: 'budgeted-react', label: 'Budgeted ReAct — 预算门控 + 委托编排（Hermes 范式）' },
+			{ value: 'plan-explore', label: 'Plan-Explore — 三阶段：分析 → 并行探索 → DAG 执行' },
+			{ value: 'react', label: 'Pure ReAct — 纯 ReAct 循环（无预算限制）' },
+			{ value: 'graph', label: 'Graph — 声明式图 / BSP 超步（LangGraph 模式）' },
+			{ value: 'delegation', label: 'Delegation — Supervisor + 子 Agent 委托树' },
+			{ value: 'readonly', label: 'Readonly — 只读收集模式' },
+		];
+		for (const p of paradigms) {
+			const opt = document.createElement('option');
+			opt.value = p.value;
+			opt.textContent = p.label;
+			this._paradigmSelect.appendChild(opt);
+		}
+		this._paradigmSelect.onchange = () => {
+			void this._saveRuntimeConfig();
+		};
+		paradigmGroup.appendChild(this._paradigmSelect);
+		section.appendChild(paradigmGroup);
+
+		// ── Budget input ──
+		const budgetGroup = $$('div.agent-settings-form-group');
+		const budgetLabel = $$('label.agent-settings-label');
+		budgetLabel.textContent = '每 Turn 最大迭代次数（Budget）';
+		budgetGroup.appendChild(budgetLabel);
+
+		const budgetDesc = $$('div.agent-settings-desc');
+		budgetDesc.textContent = '仅在 Budgeted ReAct 范式下生效。范围 10-200，默认 90。预算耗尽后如未完成将终止回合';
+		budgetGroup.appendChild(budgetDesc);
+
+		this._budgetInput = document.createElement('input');
+		this._budgetInput.type = 'number';
+		this._budgetInput.className = 'agent-settings-number-input';
+		this._budgetInput.min = '10';
+		this._budgetInput.max = '200';
+		this._budgetInput.placeholder = '90';
+		this._budgetInput.onchange = () => {
+			void this._saveRuntimeConfig();
+		};
+		budgetGroup.appendChild(this._budgetInput);
+		section.appendChild(budgetGroup);
+
+		this._tabContentContainer?.appendChild(section);
+	}
+
+	private async _saveRuntimeConfig(): Promise<void> {
+		if (!this._agentId || this._readOnly) { return; }
+		try {
+			const paradigm = this._paradigmSelect?.value || undefined;
+			const budgetVal = this._budgetInput?.value.trim();
+			const budgetMaxTotal = budgetVal ? parseInt(budgetVal, 10) : undefined;
+			await this.agentStudioService.updateAgent(this._agentId, {
+				paradigm: paradigm || undefined,
+				budgetMaxTotal: (budgetMaxTotal && !isNaN(budgetMaxTotal)) ? budgetMaxTotal : undefined,
+			} as Partial<Agent>);
+		} catch (err) {
+			// silent — 下次加载时会重置
 		}
 	}
 
@@ -611,6 +1015,10 @@ export class AgentSettingsEditorPane extends EditorPane {
 		// 进入绑定页签时刷新，反映外部（/bind 命令）变更
 		if (tabId === 'binding') {
 			this._renderBindingTab();
+		}
+		// 进入版本管理页签时自动加载历史
+		if (tabId === 'versions') {
+			this._loadVersionHistory();
 		}
 		// Update tab buttons
 		const tabs = this._container?.querySelectorAll('.agent-settings-tab');
@@ -665,6 +1073,12 @@ export class AgentSettingsEditorPane extends EditorPane {
 			this._agentSkills = this._agent.skills || [];
 			this._renderSkills();
 
+			// Update runtime config (paradigm + budget)
+			if (this._paradigmSelect && this._budgetInput) {
+				this._paradigmSelect.value = this._agent.paradigm || '';
+				this._budgetInput.value = this._agent.budgetMaxTotal !== undefined ? String(this._agent.budgetMaxTotal) : '';
+			}
+
 			// Update bindings tab
 			this._renderBindingTab();
 
@@ -675,7 +1089,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		}
 	}
 
-	private async _loadSkills(): Promise<void> {
+		private async _loadSkills(): Promise<void> {
 		try {
 			await this.skillRegistry.whenReady();
 			const skills = this.skillRegistry.getSkills();
@@ -685,6 +1099,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 				category: s.category || 'uncategorized',
 				activation: s.activation,
 				description: s.description || undefined,
+				// 双向打通：记录来源，渲染时区分「工作流型 skill」
+				source: s.source,
 			}));
 			this._renderSkills();
 		} catch (err) {
@@ -745,14 +1161,20 @@ export class AgentSettingsEditorPane extends EditorPane {
 				const info = $$('div.skill-item-info');
 				const nameEl = $$('span.skill-item-name');
 				nameEl.textContent = skill?.name || skillId;
-				info.appendChild(nameEl);
-				if (skill?.category) {
-					const catEl = $$('span.skill-item-cat');
-					catEl.textContent = skill.category;
-					info.appendChild(catEl);
-				}
-				item.appendChild(info);
-			const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
+			info.appendChild(nameEl);
+			if (skill?.source === 'workflow') {
+				const wfBadge = $$('span.skill-item-cat');
+				wfBadge.textContent = '工作流';
+				wfBadge.title = '该技能由工作流注册，触发即执行工作流（双向打通）';
+				info.appendChild(wfBadge);
+			}
+			if (skill?.category) {
+				const catEl = $$('span.skill-item-cat');
+				catEl.textContent = skill.category;
+				info.appendChild(catEl);
+			}
+			item.appendChild(info);
+		const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
 			removeBtn.title = '移除';
 			removeBtn.textContent = '✕';
 			removeBtn.disabled = this._readOnly;
@@ -775,12 +1197,18 @@ export class AgentSettingsEditorPane extends EditorPane {
 				const info = $$('div.skill-item-info');
 				const nameEl = $$('span.skill-item-name');
 				nameEl.textContent = skill.name;
-				info.appendChild(nameEl);
-				const catEl = $$('span.skill-item-cat');
-				catEl.textContent = skill.category;
-				info.appendChild(catEl);
-				item.appendChild(info);
-			const addBtn = $$('button.skill-add-btn') as HTMLButtonElement;
+			info.appendChild(nameEl);
+			if (skill.source === 'workflow') {
+				const wfBadge = $$('span.skill-item-cat');
+				wfBadge.textContent = '工作流';
+				wfBadge.title = '该技能由工作流注册，触发即执行工作流（双向打通）';
+				info.appendChild(wfBadge);
+			}
+			const catEl = $$('span.skill-item-cat');
+			catEl.textContent = skill.category;
+			info.appendChild(catEl);
+			item.appendChild(info);
+		const addBtn = $$('button.skill-add-btn') as HTMLButtonElement;
 			addBtn.title = '添加';
 			addBtn.textContent = '+';
 			addBtn.disabled = this._readOnly;
@@ -914,6 +1342,120 @@ export class AgentSettingsEditorPane extends EditorPane {
 			this._renderHeader();
 		} catch (err) {
 			this.notificationService.error(`移除技能失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ── Tools ──
+
+	private async _addTool(toolName: string): Promise<void> {
+		if (this._readOnly) { return; }
+		if (!this._agentId) { return; }
+		const newTools = [...new Set([...(this._agentTools ?? []), toolName])];
+		try {
+			await this.agentStudioService.updateAgent(this._agentId, { tools: newTools } as Partial<Agent>);
+			this._agentTools = newTools;
+			if (this._agent) { this._agent.tools = newTools; }
+			this._renderTools();
+			if (this._agent) { this._agent.tools = newTools; }
+		} catch (err) {
+			this.notificationService.error(`添加工具失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private async _removeTool(toolName: string): Promise<void> {
+		if (this._readOnly) { return; }
+		if (!this._agentId) { return; }
+		const newTools = (this._agentTools ?? []).filter(t => t !== toolName);
+		try {
+			await this.agentStudioService.updateAgent(this._agentId, { tools: newTools } as Partial<Agent>);
+			this._agentTools = newTools;
+			if (this._agent) { this._agent.tools = newTools; }
+			this._renderTools();
+		} catch (err) {
+			this.notificationService.error(`移除工具失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private _renderTools(): void {
+		if (!this._toolsInstalledContainer || !this._toolsAvailableContainer) { return; }
+		const filter = this._toolsFilterInput?.value?.toLowerCase().trim() ?? '';
+
+		// Installed tools
+		this._toolsInstalledContainer.replaceChildren();
+		const installed = this._allTools.filter(t => this._agentTools.includes(t.name));
+		if (installed.length === 0) {
+			const empty = $$('div.skills-empty');
+			empty.textContent = '暂无已配置工具';
+			this._toolsInstalledContainer.appendChild(empty);
+		} else {
+			for (const t of installed) {
+				const item = $$('div.skill-item installed');
+				const info = $$('div.skill-item-info');
+				const nameEl = $$('span.skill-item-name');
+				nameEl.textContent = t.name;
+				info.appendChild(nameEl);
+				if (t.description) {
+					const descEl = $$('span.skill-item-cat');
+					descEl.textContent = t.description.slice(0, 60);
+					info.appendChild(descEl);
+				}
+				item.appendChild(info);
+				const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
+				removeBtn.title = '移除';
+				removeBtn.textContent = '✕';
+				removeBtn.disabled = this._readOnly;
+				removeBtn.onclick = () => this._removeTool(t.name);
+				item.appendChild(removeBtn);
+				this._toolsInstalledContainer!.appendChild(item);
+			}
+		}
+
+		// Available tools
+		this._toolsAvailableContainer.replaceChildren();
+		const available = this._allTools
+			.filter(t => !this._agentTools.includes(t.name))
+			.filter(t => !filter || t.name.toLowerCase().includes(filter) || t.description?.toLowerCase().includes(filter));
+		if (available.length === 0) {
+			const empty = $$('div.skills-empty');
+			empty.textContent = filter ? '无匹配工具' : '无可用工具';
+			this._toolsAvailableContainer.appendChild(empty);
+		} else {
+			for (const t of available) {
+				const item = $$('div.skill-item available');
+				const info = $$('div.skill-item-info');
+				const nameEl = $$('span.skill-item-name');
+				nameEl.textContent = t.name;
+				info.appendChild(nameEl);
+				if (t.description) {
+					const descEl = $$('span.skill-item-cat');
+					descEl.textContent = t.description.slice(0, 60);
+					info.appendChild(descEl);
+				}
+				item.appendChild(info);
+				const addBtn = $$('button.skill-add-btn') as HTMLButtonElement;
+				addBtn.title = '添加';
+				addBtn.textContent = '+';
+				addBtn.disabled = this._readOnly;
+				addBtn.onclick = () => this._addTool(t.name);
+				item.appendChild(addBtn);
+				this._toolsAvailableContainer!.appendChild(item);
+			}
+		}
+	}
+
+	private async _loadTools(): Promise<void> {
+		try {
+			const toolsWithState = await this.agentOSService.listAllToolsWithState(this._agentId ?? '');
+			const enabled = toolsWithState.filter(t => t.enabled && !t.category?.startsWith('mcp:'));
+			this._allTools = enabled.map(t => ({
+				name: t.name,
+				description: (t as any).displaySummary || t.description || '',
+				category: t.category,
+			}));
+			this._agentTools = this._agent?.tools ?? [];
+			this._renderTools();
+		} catch (err) {
+			console.warn('[AgentSettingsEditorPane] Failed to load tools:', err);
 		}
 	}
 

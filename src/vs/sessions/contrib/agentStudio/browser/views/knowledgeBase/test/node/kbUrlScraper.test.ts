@@ -14,6 +14,7 @@ import {
 	composeVideoMarkdown,
 	findMarkdownImageUrls,
 	rewriteMarkdownImageUrls,
+	toSecureScheme,
 	type IKbMetaTags,
 } from '../../kbUrlScraper.js';
 
@@ -207,6 +208,42 @@ suite('KB URL Scraper (pure functions)', () => {
 		const md = '![a](https://x.com/1.jpg)';
 		const out = rewriteMarkdownImageUrls(md, new Map());
 		assert.strictEqual(out, md);
+	});
+});
+
+// ---- toSecureScheme：渲染进程 connect-src CSP 兼容（http→https 升级）----
+suite('toSecureScheme（CSP 兼容升级）', () => {
+
+	// 回归：抓取小红书短链 http://xhslink.com/... 被 CSP 拦截，需升级为 https
+	test('小红书短链 http://xhslink.com → 升级 https（回归 #抓取失败）', () => {
+		const inUrl = 'http://xhslink.com/o/1a9hCaCW7m4';
+		assert.strictEqual(toSecureScheme(inUrl), 'https://xhslink.com/o/1a9hCaCW7m4');
+	});
+
+	test('小写 http:// 升级为 https://', () => {
+		assert.strictEqual(toSecureScheme('http://example.com/a'), 'https://example.com/a');
+	});
+
+	test('大写 HTTP:// 也升级', () => {
+		assert.strictEqual(toSecureScheme('HTTP://Example.com/a'), 'https://Example.com/a');
+	});
+
+	test('带 query / hash 的 http 链接升级后保留', () => {
+		assert.strictEqual(
+			toSecureScheme('http://x.com/p?x=1#h'),
+			'https://x.com/p?x=1#h',
+		);
+	});
+
+	test('已是 https 的链接原样返回', () => {
+		assert.strictEqual(
+			toSecureScheme('https://www.xiaohongshu.com/explore/abc'),
+			'https://www.xiaohongshu.com/explore/abc',
+		);
+	});
+
+	test('非 http(s) 协议（ws:// 等）原样返回', () => {
+		assert.strictEqual(toSecureScheme('ws://localhost:8080/x'), 'ws://localhost:8080/x');
 	});
 });
 

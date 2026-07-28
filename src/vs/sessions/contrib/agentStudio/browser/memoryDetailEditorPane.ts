@@ -14,14 +14,12 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IAgentOSService } from '../common/agentOS.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
-import { ICodebaseMemoryMcpService, IIndexConfig } from './codebaseMemoryMcpService.js';
+import { ICodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
 import { ICodebaseGraphService } from './codebaseGraphService.js';
-import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
-import { FIXED_SLOT_NAMES } from '../common/providers.js';
+import { FIXED_SLOT_NAMES, IMemoryProvider } from '../common/providers.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 
@@ -39,17 +37,22 @@ interface IMemoryEntry {
  */
 type LayerFilter = 'all' | 'working' | 'episodic' | 'semantic' | 'procedural'
 	| 'pattern' | 'preference' | 'architecture' | 'bug' | 'workflow' | 'fact';
-type ScopeFilter = 'all' | 'workspace' | 'session' | 'agent';
+
+/** Episodic 层的原生类型集合（agentmemory 原版：KV.memories 内 Memory.type 的合法值） */
+const EPISODIC_TYPES: ReadonlySet<string> = new Set(['pattern', 'preference', 'architecture', 'bug', 'workflow', 'fact']);
+function isEpisodicType(type: string): boolean { return EPISODIC_TYPES.has(type); }
+
 
 /** 分类 → 头部统计色板 class（与 _addStat 的原配色保持一致） */
 const CATEGORY_HOVER_CLS: Record<string, string> = {
-	working: 'l0', pattern: 'l1', fact: 'l1', preference: 'l1', architecture: 'l2',
+	working: 'l0', episodic: 'l1', pattern: 'l1', fact: 'l1', preference: 'l1', architecture: 'l2',
 	bug: 'l1', workflow: 'l3', semantic: 'l2', procedural: 'l3',
 };
 
 /** 分类 → hover 提示（触发逻辑 / 写入时机） */
 const CATEGORY_TRIGGER_TIPS: Record<string, string> = {
 	working: '**Working · 原始观察**\n\n- 触发：每次会话中产生的瞬时上下文、临时笔记、未固化的原始输入\n- 写入：Agent 在对话/工具执行过程中自动落盘的原始观察\n- 特点：高频、低结构化，是其他类型的来源',
+	episodic: '**Episodic · 长时记忆层**\n\n- 含义：KV.memories 中的所有长时记忆（原生类型 pattern/fact/preference/architecture/bug/workflow）\n- 写入：memory_remember / 固化管线沉淀\n- 本行计数 = 全部原生类型之和',
 	pattern: '**Pattern · 模式**\n\n- 触发：从多条 Working/Episodic 中归纳出的可复用规律\n- 写入：压缩/固化阶段检测到重复行为模式时自动提炼\n- 特点：抽象层高于 Fact，描述"什么情况下该怎么做"',
 	fact: '**Fact · 事实**\n\n- 触发：被明确陈述或反复验证为真的客观信息（配置、接口、约束）\n- 写入：用户确认、文档提取或稳定出现 ≥N 次的事实\n- 特点：原子化、可被 Semantic 聚合',
 	preference: '**Preference · 偏好**\n\n- 触发：用户表达的主观倾向（语言、风格、工具选择、约定）\n- 写入：用户在对话中明确要求或否定某做法\n- 特点：指导 Agent 的默认行为，优先级高',
@@ -57,13 +60,15 @@ const CATEGORY_TRIGGER_TIPS: Record<string, string> = {
 	bug: '**Bug · 缺陷**\n\n- 触发：出现的错误、异常、回归以及与它们的修复方案\n- 写入：报错被定位并修复后记录根因与对策\n- 特点：避免重复踩坑，含 trigger → fix 映射',
 	workflow: '**Workflow · 工作流**\n\n- 触发：多步骤的重复操作流程（发布、构建、回归）\n- 写入：顺序动作被成功执行后固化为流程模板\n- 特点：可被 Agent 直接调用执行',
 	semantic: '**Semantic · 语义**\n\n- 触发：跨领域的概念关系、知识图谱节点与推理结论\n- 写入：Fact/Architecture 经语义聚合后生成\n- 特点：支撑 RAG 检索与跨 agent 共享',
-	procedural: '**Procedural · 程序化**\n\n- 触发：可复用的程序化技能（Skill），由 feat.extractSkill 提炼\n- 写入：从历史会话提取并落盘为 SKILL.md（~/.saros/skills）\n- 特点：最高可执行性，直接驱动工具调用',
+	procedural: '**Procedural · 程序化**\n\n- 触发：可复用的程序化技能（Skill），由 feat.extractSkill 提炼\n- 写入：从历史会话提取并落盘为 SKILL.md（~/.vssaros/skills）\n- 特点：最高可执行性，直接驱动工具调用',
 };
-type ViewName = 'memories' | 'slots' | 'lessons' | 'consolidation' | 'audit' | 'hooks' | 'commits' | 'report' | 'skills' | 'codebase';
+type ViewName = 'memories' | 'sessions' | 'slots' | 'lessons' | 'consolidation' | 'audit' | 'hooks' | 'commits' | 'report' | 'skills';
 
-/** Check if a memory belongs to a specific type（直接精确匹配 agentmemory 原生类型） */
+/** Check if a memory belongs to a specific filter。
+ *  'episodic' 视为「层」（匹配全部原生类型）；working/semantic/procedural 为层类型精确匹配；其余为原生类型精确匹配。 */
 function matchesTier(mem: IMemoryEntry, tier: LayerFilter): boolean {
 	if (tier === 'all') return true;
+	if (tier === 'episodic') return isEpisodicType(mem.type);
 	return mem.type === tier;
 }
 
@@ -75,11 +80,9 @@ export class MemoryDetailEditorPane extends EditorPane {
 	private _agentId: string = 'default';
 	private _allMemories: IMemoryEntry[] = [];
 	private _layerFilter: LayerFilter = 'all';
-	private _scopeFilter: ScopeFilter = 'all';
 	private _searchQuery: string = '';
 	private _targetContentPreview: string | null = null;
 	private _agentFilter: string = '__all__'; // '__all__' = 所有 agent，其他值 = 指定 agentId
-	private _currentWorkspaceId: string = ''; // 当前工作区 ID（用于工作区过滤）
 	private _currentView: ViewName = 'memories';
 
 	constructor(
@@ -88,7 +91,6 @@ export class MemoryDetailEditorPane extends EditorPane {
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
-		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
 		@ICodebaseGraphService private readonly _codebaseGraphService: ICodebaseGraphService,
 		@IEditorService private readonly _editorService: IEditorService,
@@ -96,9 +98,6 @@ export class MemoryDetailEditorPane extends EditorPane {
 		@IHoverService private readonly _hoverService: IHoverService,
 	) {
 		super(MemoryDetailEditorPane.ID, group, telemetryService, themeService, storageService);
-		// 获取当前工作区 ID 用于过滤
-		const workspace = this._workspaceContextService.getWorkspace();
-		this._currentWorkspaceId = workspace.folders.length > 0 ? workspace.folders[0].name : '';
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
@@ -178,8 +177,11 @@ export class MemoryDetailEditorPane extends EditorPane {
 			.md-layer-tab { padding: 8px 16px; cursor: pointer; font-size: 12px; color: var(--vscode-descriptionForeground); border-bottom: 2px solid transparent; transition: all 0.15s; display: flex; align-items: center; gap: 4px; }
 			.md-layer-tab:hover { color: var(--vscode-foreground); }
 			.md-layer-tab.active { color: var(--vscode-foreground); border-bottom-color: var(--vscode-focusBorder, #3794ff); }
-			.md-layer-tab .count { background: var(--vscode-badge-background, rgba(128,128,128,0.2)); font-size: 10px; padding: 1px 6px; border-radius: 8px; color: var(--vscode-badge-foreground, #888); }
-			/* Filter bar */
+		.md-layer-tab .count { background: var(--vscode-badge-background, rgba(128,128,128,0.2)); font-size: 10px; padding: 1px 6px; border-radius: 8px; color: var(--vscode-badge-foreground, #888); }
+		/* Episodic 原生类型细分（第二行，视觉次级） */
+		.md-layer-tabs.md-type-tabs { background: var(--vscode-sideBar-background, rgba(128,128,128,0.04)); }
+		.md-layer-tabs.md-type-tabs .md-layer-tab { padding: 5px 14px; font-size: 11px; opacity: 0.85; }
+		/* Filter bar */
 			.md-filter-bar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; border-bottom: 1px solid var(--vscode-widget-border); flex-shrink: 0; }
 			.md-filter-label { font-size: 11px; color: var(--vscode-descriptionForeground); }
 			.md-filter-chip { padding: 3px 10px; border-radius: 12px; font-size: 11px; cursor: pointer; border: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); color: var(--vscode-descriptionForeground); transition: all 0.15s; }
@@ -205,6 +207,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 			.md-card-strength.low { background: rgba(244,63,94,0.12); color: #f43f5e; }
 			.md-card-title { font-size: 12px; color: var(--vscode-foreground); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 			.md-card-time { font-size: 10px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+			.md-card-action { font-size: 11px; cursor: pointer; opacity: 0.55; flex-shrink: 0; padding: 0 3px; border-radius: 3px; }
+			.md-card-action:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,0.31)); }
 			.md-expand { color: var(--vscode-descriptionForeground); font-size: 10px; flex-shrink: 0; transition: transform 0.2s; }
 			.md-card.expanded .md-expand { transform: rotate(90deg); }
 			.md-content-box { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }
@@ -284,19 +288,31 @@ export class MemoryDetailEditorPane extends EditorPane {
 	}
 
 	private async _doLoadMemory(): Promise<void> {
+		// 立即渲染框架（header/tabs/toolbar/search），不阻塞等数据
+		// — 消除打开面板时的"加载记忆数据..."白屏卡顿
 		this._renderLoading();
 		try {
 			const memProvider = this._agentOSService.getActiveMemoryProvider();
 			console.log(`[MemoryDetailEditorPane] _doLoadMemory: agentId=${this._agentId}, memProvider=${memProvider ? memProvider.id : 'null'}`);
 			if (!memProvider) {
 				if (this._allMemories.length > 0) {
-					// 服务不可用但已有缓存数据，直接使用缓存
 					this._renderFull();
 				} else {
 					this._renderEmpty('未找到记忆服务');
 				}
 				return;
 			}
+
+			// 框架先行渲染（空数据），再异步拉取
+			if (this._allMemories.length > 0) {
+				// 已有缓存 → 先渲染旧数据，再异步刷新
+				this._renderFull();
+			} else {
+				// 无缓存 → 渲染空框架
+				this._allMemories = [];
+				this._renderFull();
+			}
+
 			console.log(`[MemoryDetailEditorPane] calling searchMemory(${this._agentId}, '')...`);
 			const results = await memProvider.searchMemory(this._agentId, '');
 			console.log(`[MemoryDetailEditorPane] searchMemory returned: ${results?.length ?? 'null'} results`);
@@ -307,15 +323,17 @@ export class MemoryDetailEditorPane extends EditorPane {
 				metadata: e.metadata,
 				timestamp: e.timestamp,
 			}));
+			// 并入 working(core)/semantic/procedural 独立 scope——这些不在 KV.memories 内，
+			// searchMemory 不返回，故 working/semantic/procedural 类型页签一直为空。
+			newMemories.push(...await this._loadScopedMemories(memProvider));
 			// searchMemory 返回空数组（而非抛异常），不覆盖已有缓存
 			if (newMemories.length === 0 && this._allMemories.length > 0) {
-				console.warn('[MemoryDetailEditorPane] searchMemory returned empty, keeping cached data (memory provider may be unavailable)');
-				this._renderFull();
+				console.warn('[MemoryDetailEditorPane] searchMemory returned empty, keeping cached data');
 			} else {
 				this._allMemories = newMemories;
 				console.log(`[MemoryDetailEditorPane] rendering ${newMemories.length} memories`);
-				this._renderFull();
 			}
+			this._renderFull();
 		} catch (err) {
 			console.error(`[MemoryDetailEditorPane] _doLoadMemory FAILED:`, err);
 			if (this._allMemories.length > 0) {
@@ -325,6 +343,40 @@ export class MemoryDetailEditorPane extends EditorPane {
 				this._renderEmpty(`加载失败: ${err instanceof Error ? err.message : String(err)}`);
 			}
 		}
+	}
+
+	/**
+	 * 读取 working(core)/semantic/procedural 独立 scope，映射为记忆视图条目。
+	 * 这些 scope 不在 KV.memories 内，由 writeMemory 路由（方案A）写入：
+	 *   working → mem:core-memory；semantic → mem:semantic；procedural → mem:procedural。
+	 */
+	private async _loadScopedMemories(memProvider: any): Promise<Array<{ id: string; type: string; content: string; metadata: Record<string, unknown>; timestamp: number }>> {
+		const out: Array<{ id: string; type: string; content: string; metadata: Record<string, unknown>; timestamp: number }> = [];
+		const toTs = (v: unknown): number => {
+			const ms = typeof v === 'number' ? v : new Date(String(v ?? '')).getTime();
+			return Number.isFinite(ms) && ms > 0 ? ms : Date.now();
+		};
+		try {
+			const core = await memProvider.coreMemoryList?.(this._agentId).catch(() => []) ?? [];
+			for (const c of core as Array<Record<string, unknown>>) {
+				out.push({ id: String(c['id'] ?? ''), type: 'working', content: String(c['content'] ?? ''), metadata: c, timestamp: toTs(c['updatedAt'] ?? c['createdAt']) });
+			}
+		} catch { /* scope 读取失败不阻断 */ }
+		try {
+			const sem = await memProvider.semanticList?.(this._agentId).catch(() => []) ?? [];
+			for (const s of sem as Array<Record<string, unknown>>) {
+				out.push({ id: String(s['id'] ?? ''), type: 'semantic', content: String(s['content'] ?? ''), metadata: s, timestamp: toTs(s['updatedAt'] ?? s['createdAt']) });
+			}
+		} catch { /* scope 读取失败不阻断 */ }
+		try {
+			const proc = await memProvider.proceduralList?.(this._agentId).catch(() => []) ?? [];
+			for (const p of proc as Array<Record<string, unknown>>) {
+				const title = String(p['title'] ?? p['content'] ?? '');
+				const steps = Array.isArray(p['steps']) ? (p['steps'] as unknown[]).map(x => String(x)).join(' → ') : '';
+				out.push({ id: String(p['id'] ?? ''), type: 'procedural', content: steps ? `${title}\n${steps}` : title, metadata: p, timestamp: toTs(p['updatedAt'] ?? p['createdAt']) });
+			}
+		} catch { /* scope 读取失败不阻断 */ }
+		return out;
 	}
 
 	private _renderEmpty(msg: string): void {
@@ -343,6 +395,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		const viewNav = append(this._container!, $('.md-view-nav'));
 		const views: Array<{ id: ViewName; label: string }> = [
 			{ id: 'memories', label: '🧠 记忆' },
+			{ id: 'sessions', label: '💬 会话' },
 			{ id: 'slots', label: '📌 槽位' },
 			{ id: 'lessons', label: '📖 教训' },
 			{ id: 'consolidation', label: '🔄 固化' },
@@ -351,7 +404,6 @@ export class MemoryDetailEditorPane extends EditorPane {
 			{ id: 'commits', label: '🔀 提交' },
 			{ id: 'report', label: '📊 报告' },
 			{ id: 'skills', label: '⚡ 技能' },
-			{ id: 'codebase', label: '🧬 代码图谱' },
 		];
 		for (const view of views) {
 			const tab = append(viewNav, $('.md-view-tab'));
@@ -375,6 +427,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		// 注意：slots/lessons 视图现已改为 async（await 网关代理），
 		// 必须 await 后再 return，避免漂浮 Promise。
 		switch (this._currentView) {
+			case 'sessions': await this._renderSessionsView(); return;
 			case 'slots': await this._renderSlotsView(); return;
 			case 'lessons': await this._renderLessonsView(); return;
 			case 'consolidation': await this._renderConsolidationView(); return;
@@ -383,7 +436,6 @@ export class MemoryDetailEditorPane extends EditorPane {
 			case 'commits': this._renderCommitsView(); return;
 			case 'report': this._renderReportView(); return;
 			case 'skills': await this._renderSkillsView(); return;
-			case 'codebase': this._renderCodebaseView(); return;
 		}
 
 		// ── Memories view (default) ──
@@ -432,16 +484,18 @@ export class MemoryDetailEditorPane extends EditorPane {
 		headerRow.appendChild(agentSelect);
 		const stats = append(header, $('.md-stats'));
 		this._addStat(stats, '总数', this._allMemories.length, '');
+		// agentmemory 原版 4 层 + Episodic 原生类型细分
 		const catStats: Array<[string, LayerFilter]> = [
 			['Working', 'working'],
+			['Episodic', 'episodic'],
+			['Semantic', 'semantic'],
+			['Procedural', 'procedural'],
 			['Pattern', 'pattern'],
 			['Fact', 'fact'],
 			['Preference', 'preference'],
 			['Architecture', 'architecture'],
 			['Bug', 'bug'],
 			['Workflow', 'workflow'],
-			['Semantic', 'semantic'],
-			['Procedural', 'procedural'],
 		];
 		for (const [label, type] of catStats) {
 			const el = this._addStat(stats, label, this._countByTier(type), CATEGORY_HOVER_CLS[type]);
@@ -453,23 +507,11 @@ export class MemoryDetailEditorPane extends EditorPane {
 		}
 
 		// Extended stats from AgentMemoryProvider (if available)
-		// getExtendedStats 是 async（网关代理返回 Promise），必须 await，
-		// 否则拿到 Promise 被当成空对象 → 头部的扩展统计不显示。
+		// 注意：getExtendedStats 是 async（网关代理），但 _renderFull 内部不能再 await，
+		// 否则与 _loadMemory 的多次 _renderFull 调用发生 DOM 追加竞态（出现 3 套重复 UI）。
+		// 改为 fire-and-forget：等返回后再次只刷新统计区域。
 		if (memProvider?.getExtendedStats) {
-			try {
-				const extStats = await memProvider.getExtendedStats(this._agentId);
-				if (extStats && typeof extStats === 'object') {
-					const extStatsDiv = append(header, $('.md-stats'));
-					extStatsDiv.style.marginTop = '6px';
-					const entries = Object.entries(extStats).slice(0, 8);
-					for (const [key, value] of entries) {
-						const displayValue = typeof value === 'number'
-							? (value > 1000 ? `${(value / 1000).toFixed(1)}K` : String(value))
-							: typeof value === 'string' ? value.slice(0, 20) : String(value);
-						this._addStat(extStatsDiv, key, displayValue, '');
-					}
-				}
-			} catch { /* best effort */ }
+			this._loadExtendedStatsAsync(memProvider, header);
 		}
 
 		// Action toolbar
@@ -487,31 +529,55 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addToolbarBtn(toolbar, '📄 导出MD', '', () => this._exportMemory('markdown'));
 		this._addToolbarBtn(toolbar, '🔍 搜索历史', '', () => this._showSearchHistory(memProvider!));
 
-		// Layer tabs — agentmemory 原生类型筛选
+		// Layer tabs — agentmemory 原版：第一行 4 层筛选，第二行 Episodic 原生类型细分
 		const layerTabs = append(this._container, $('.md-layer-tabs'));
 		this._addLayerTab(layerTabs, 'all', '全部');
 		this._addLayerTab(layerTabs, 'working', 'Working');
-		this._addLayerTab(layerTabs, 'pattern', 'Pattern');
-		this._addLayerTab(layerTabs, 'fact', 'Fact');
-		this._addLayerTab(layerTabs, 'preference', 'Preference');
-		this._addLayerTab(layerTabs, 'architecture', 'Architecture');
-		this._addLayerTab(layerTabs, 'bug', 'Bug');
-		this._addLayerTab(layerTabs, 'workflow', 'Workflow');
+		this._addLayerTab(layerTabs, 'episodic', 'Episodic');
 		this._addLayerTab(layerTabs, 'semantic', 'Semantic');
 		this._addLayerTab(layerTabs, 'procedural', 'Procedural');
-		// Filter bar
+		const typeTabs = append(this._container, $('.md-layer-tabs.md-type-tabs'));
+		this._addLayerTab(typeTabs, 'pattern', 'Pattern');
+		this._addLayerTab(typeTabs, 'fact', 'Fact');
+		this._addLayerTab(typeTabs, 'preference', 'Preference');
+		this._addLayerTab(typeTabs, 'architecture', 'Architecture');
+		this._addLayerTab(typeTabs, 'bug', 'Bug');
+		this._addLayerTab(typeTabs, 'workflow', 'Workflow');
+		// Filter bar — only search, scope chips removed per user request
 		const filterBar = append(this._container, $('.md-filter-bar'));
-		append(filterBar, $('.md-filter-label')).textContent = '作用域:';
-		this._addFilterChip(filterBar, '全部', 'all', true);
-		this._addFilterChip(filterBar, '工作区', 'workspace');
-		this._addFilterChip(filterBar, '当前会话', 'session');
-		this._addFilterChip(filterBar, '当前 Agent', 'agent');
 		const search = document.createElement('input');
 		search.className = 'md-search'; search.type = 'text'; search.placeholder = '🔍 搜索记忆内容...';
 		search.addEventListener('input', () => { this._searchQuery = search.value.toLowerCase().trim(); this._renderList(); });
 		filterBar.appendChild(search);
 		// List
 		this._renderList();
+	}
+
+	/**
+	 * 异步加载扩展统计（getExtendedStats 是 async 网关调用）。
+	 *
+	 * 注意：必须在 _renderFull 外部 fire-and-forget 调用，因为 _renderFull 内部
+	 * 不能含 await —— 否则与 _loadMemory 多次触发 _renderFull 产生 DOM 追加竞态
+	 * （出现 3 套重复 UI）。
+	 */
+	private _loadExtendedStatsAsync(memProvider: IMemoryProvider, header: HTMLElement): void {
+		const fn = memProvider.getExtendedStats;
+		if (!fn) { return; }
+		Promise.resolve(fn.call(memProvider, this._agentId)).then((extStats: Record<string, unknown> | undefined) => {
+			if (!this._container || !extStats || typeof extStats !== 'object') { return; }
+			// 找已存在的 ext stats div（如果同时多次触发，留最新一份）
+			const existing = header.querySelector('.md-extended-stats');
+			if (existing) { existing.remove(); }
+			const extStatsDiv = append(header, $('.md-stats.md-extended-stats'));
+			extStatsDiv.style.marginTop = '6px';
+			const entries = Object.entries(extStats).slice(0, 8);
+			for (const [key, value] of entries) {
+				const displayValue = typeof value === 'number'
+					? (value > 1000 ? `${(value / 1000).toFixed(1)}K` : String(value))
+					: typeof value === 'string' ? value.slice(0, 20) : String(value);
+				this._addStat(extStatsDiv, key, displayValue, '');
+			}
+		}).catch(() => { /* best effort */ });
 	}
 
 	// ─── Slots View ──────────────────────────────────────────────────────
@@ -531,8 +597,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 
 		// 固定 8 槽位模型：无论记忆提供者是否实现 getSlots、或网关是否返回数据，
 		// 都展示这 8 个固定槽位；网关返回的内容优先覆盖，缺则显示「(空)」。
-		// 这样即使 ActiveMemoryProvider 是 SessionMemoryProvider（无 getSlots）或网关未返回，
-		// 也不会误报「暂无固定槽位 / 暂无槽位数据」。
+		// 这样即使网关未返回槽位数据，也不会误报「暂无固定槽位 / 暂无槽位数据」。
 		try {
 			const slots = memProvider?.getSlots ? await memProvider.getSlots(this._agentId) : [];
 			const map = new Map<string, string>();
@@ -631,6 +696,176 @@ export class MemoryDetailEditorPane extends EditorPane {
 				}
 			}
 		} catch { this._renderEmpty('加载教训失败'); }
+	}
+
+	// ─── Sessions View（基于 agentmemory 会话机制）────────────────────────
+	// 数据流：observe() → mem:obs:<agent>:<session> 暂存 → 阈值/session_end 触发
+	// compressSession() → KV.summaries SessionSummary。本视图呈现该管线状态。
+
+	private async _renderSessionsView(): Promise<void> {
+		if (!this._container) { return; }
+		const memProvider = this._agentOSService.getActiveMemoryProvider() as any;
+		const header = append(this._container, $('.md-header'));
+		append(header, $('h1')).textContent = `💬 会话 (${this._agentId})`;
+
+		const toolbar = append(this._container, $('.md-toolbar'));
+		this._addToolbarBtn(toolbar, '🔄 刷新', 'primary', () => this._renderFull());
+
+		if (!memProvider?.listSessions) {
+			this._renderEmpty('暂无会话数据（记忆服务未提供 listSessions）');
+			return;
+		}
+
+		try {
+			const [sessions, summaries] = await Promise.all([
+				memProvider.listSessions(this._agentId).catch(() => []),
+				(memProvider.listSummaries ? memProvider.listSummaries(this._agentId).catch(() => []) : Promise.resolve([])),
+			]);
+			const sessionList = (sessions ?? []) as Array<Record<string, unknown>>;
+			const summaryList = (summaries ?? []) as Array<Record<string, unknown>>;
+			if (sessionList.length === 0) {
+				this._renderEmpty('暂无会话记录。开始对话后，观察会暂存到会话，达到阈值或会话结束时压缩为摘要。');
+				return;
+			}
+			const summaryById = new Map<string, Record<string, unknown>>(summaryList.map(s => [String(s['sessionId']), s]));
+
+			// 管线统计
+			const totalObs = sessionList.reduce((n, s) => n + (Number(s['observationCount']) || 0), 0);
+			const summarizedCount = sessionList.filter(s => summaryById.has(String(s['id']))).length;
+			const stats = append(this._container, $('.md-stats'));
+			stats.style.padding = '8px 20px';
+			this._addStat(stats, '会话数', sessionList.length, 'l0');
+			this._addStat(stats, '观察总数', totalObs, 'l1');
+			this._addStat(stats, '已压缩会话', summarizedCount, 'l2');
+			this._addStat(stats, '摘要数', summaryList.length, 'l3');
+
+			const list = append(this._container, $('.md-list'));
+			for (const s of sessionList) {
+				const sid = String(s['id'] ?? '');
+				const summary = summaryById.get(sid);
+				this._appendSessionCard(list, s, summary, memProvider);
+			}
+		} catch {
+			this._renderEmpty('加载会话失败');
+		}
+	}
+
+	private _appendSessionCard(list: HTMLElement, s: Record<string, unknown>, summary: Record<string, unknown> | undefined, memProvider: any): void {
+		const sid = String(s['id'] ?? '');
+		const obsCount = Number(s['observationCount']) || 0;
+		const compressed = !!summary;
+		const card = append(list, $('.md-card'));
+
+		// Header
+		const headerEl = append(card, $('.md-card-header'));
+		headerEl.style.cursor = 'pointer';
+		const badge = append(headerEl, $(`.md-badge.${compressed ? 'l1' : 'l0'}`));
+		badge.textContent = compressed ? '已压缩' : '暂存中';
+		const title = (s['firstPrompt'] as string) || sid || '未命名会话';
+		append(headerEl, $('.md-card-title')).textContent = title;
+		append(headerEl, $('.md-card-time')).textContent = this._sessionRelTime(String(s['updatedAt'] ?? s['startedAt'] ?? ''));
+
+		// Meta chips
+		const meta = append(card, $('.md-meta'));
+		meta.style.padding = '0 14px 8px';
+		const obsChip = append(meta, $('.md-meta-chip'));
+		obsChip.textContent = `👁 ${obsCount} 观察`;
+		if (s['project']) {
+			const projChip = append(meta, $('.md-meta-chip'));
+			projChip.textContent = `📁 ${String(s['project'])}`;
+		}
+		if (summary && typeof summary['observationCount'] === 'number') {
+			const compChip = append(meta, $('.md-meta-chip'));
+			compChip.textContent = `🗜 压缩 ${summary['observationCount']} 观察`;
+		}
+
+		// Expandable content
+		const contentBox = append(card, $('.md-content-box'));
+		const contentEl = append(contentBox, $('.md-content'));
+
+		let loaded = false;
+		headerEl.addEventListener('click', async () => {
+			const willExpand = !card.classList.contains('expanded');
+			card.classList.toggle('expanded');
+			if (!willExpand || loaded) { return; }
+			loaded = true;
+			await this._fillSessionDetail(contentEl, sid, summary, compressed, memProvider);
+		});
+	}
+
+	private async _fillSessionDetail(contentEl: HTMLElement, sid: string, summary: Record<string, unknown> | undefined, compressed: boolean, memProvider: any): Promise<void> {
+		// 1. 压缩摘要（已压缩会话）
+		if (compressed && summary) {
+			const titleEl = append(contentEl, $('h3'));
+			titleEl.textContent = `📋 ${String(summary['title'] ?? '会话摘要')}`;
+			if (summary['narrative']) {
+				const p = append(contentEl, $('p'));
+				p.style.whiteSpace = 'pre-wrap';
+				p.textContent = String(summary['narrative']);
+			}
+			const decisions = summary['keyDecisions'] as string[] | undefined;
+			if (decisions?.length) {
+				append(contentEl, $('h3')).textContent = '关键决策';
+				const ul = append(contentEl, $('ul'));
+				for (const d of decisions.slice(0, 10)) { append(ul, $('li')).textContent = String(d); }
+			}
+			const files = summary['filesModified'] as string[] | undefined;
+			if (files?.length) {
+				append(contentEl, $('h3')).textContent = '涉及文件';
+				const ul = append(contentEl, $('ul'));
+				for (const f of files.slice(0, 20)) { append(ul, $('li')).textContent = String(f); }
+			}
+			const concepts = summary['concepts'] as string[] | undefined;
+			if (concepts?.length) {
+				const p = append(contentEl, $('p'));
+				p.style.color = 'var(--vscode-descriptionForeground)';
+				p.textContent = `概念: ${concepts.slice(0, 20).join(', ')}`;
+			}
+		}
+
+		// 2. 会话观察（暂存层）
+		if (memProvider?.observeList) {
+			append(contentEl, $('h3')).textContent = compressed ? '观察（暂存层残留）' : '观察（暂存层）';
+			const loading = append(contentEl, $('p'));
+			loading.textContent = '加载观察…';
+			loading.style.color = 'var(--vscode-descriptionForeground)';
+			try {
+				const obs = (await memProvider.observeList(this._agentId, sid).catch(() => [])) as Array<Record<string, unknown>> | undefined;
+				loading.remove();
+				if (!obs || obs.length === 0) {
+					const none = append(contentEl, $('p'));
+					none.textContent = '（无观察）';
+					none.style.color = 'var(--vscode-descriptionForeground)';
+				} else {
+					const recent = [...obs].sort((a, b) => String(b['timestamp'] ?? '').localeCompare(String(a['timestamp'] ?? ''))).slice(0, 15);
+					const ul = append(contentEl, $('ul'));
+					for (const o of recent) {
+						const li = append(ul, $('li'));
+						const imp = Number(o['importance']) || 0;
+						const mark = o['compressed'] ? '🗜' : (imp >= 5 ? '⭐' : '·');
+						li.textContent = `${mark} [${String(o['hookType'] ?? '')}] ${String(o['title'] ?? '').slice(0, 80)}`;
+					}
+					if (obs.length > 15) {
+						const more = append(contentEl, $('p'));
+						more.style.color = 'var(--vscode-descriptionForeground)';
+						more.textContent = `… 共 ${obs.length} 条观察`;
+					}
+				}
+			} catch {
+				loading.textContent = '观察加载失败';
+			}
+		}
+	}
+
+	private _sessionRelTime(iso: string): string {
+		const ms = new Date(iso).getTime();
+		if (!ms || Number.isNaN(ms)) { return ''; }
+		const diffMin = Math.floor((Date.now() - ms) / 60000);
+		if (diffMin < 1) { return '刚刚'; }
+		if (diffMin < 60) { return `${diffMin}分钟前`; }
+		const diffHour = Math.floor(diffMin / 60);
+		if (diffHour < 24) { return `${diffHour}小时前`; }
+		return `${Math.floor(diffHour / 24)}天前`;
 	}
 
 	private async _addLesson(memProvider: any): Promise<void> {
@@ -1029,18 +1264,59 @@ export class MemoryDetailEditorPane extends EditorPane {
 		subtitle.style.fontSize = '11px';
 		subtitle.style.color = 'var(--vscode-descriptionForeground)';
 		subtitle.style.marginBottom = '8px';
-		subtitle.textContent = '从会话历史自动提取的可复用程序化技能 · 沉淀为标准 SKILL.md 格式 · 写入 ~/.saros/skills/';
+		subtitle.textContent = '从会话历史自动提取的可复用程序化技能 · 沉淀为标准 SKILL.md 格式 · 写入 ~/.vssaros/skills/';
 
 		// Stats — Opt1：真实引擎在网关进程，方法为 async（agentId 为首参）。
 		const stats = memProvider?.getSkillStats
 			? await memProvider.getSkillStats(this._agentId)
 			: undefined;
-		if (stats) {
+
+		// 技能使用追踪（读取 .usage.json sidecar）
+		let usageSummary: { totalReads: number; totalPatches: number; recentUsed: number; pinnedCount: number } | undefined;
+		try {
+			const { URI } = await import('../../../../base/common/uri.js');
+			const { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } = await import('../common/sarosPaths.js');
+			const fs = await import('fs/promises');
+			const path = await import('path');
+			const home = process.env.USERPROFILE || process.env.HOME || '/';
+			const skillsRoot = resolveSarosPath(
+				userDataRootFromRoamingHome(URI.file(home)),
+				SarosPath.skills,
+			).fsPath;
+			let totalReads = 0, totalPatches = 0, recentUsed = 0, pinnedCount = 0;
+			const monthAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+			const entries = await fs.readdir(skillsRoot, { withFileTypes: true }).catch(() => [] as any[]);
+			for (const entry of (entries as any[])) {
+				if (!entry.isDirectory()) { continue; }
+				try {
+					const usagePath = path.join(skillsRoot, entry.name, '.usage.json');
+					const raw = await fs.readFile(usagePath, 'utf-8');
+					const usage = JSON.parse(raw);
+					totalReads += usage.readCount || 0;
+					totalPatches += usage.patchCount || 0;
+					if (usage.lastUsedAt && usage.lastUsedAt > monthAgo) { recentUsed++; }
+					if (usage.pinned) { pinnedCount++; }
+				} catch { /* .usage.json not found = no usage yet */ }
+			}
+			usageSummary = { totalReads, totalPatches, recentUsed, pinnedCount };
+		} catch { /* usage tracking is best-effort */ }
+
+		if (stats || usageSummary) {
 			const statsEl = append(header, $('.md-stats'));
-			this._addStat(statsEl, '总技能', stats.totalSkills, 'l3');
-			this._addStat(statsEl, '平均置信度', stats.avgConfidence, 'confidence');
-			this._addStat(statsEl, '总使用次数', stats.totalUsage, 'usage');
-			this._addStat(statsEl, '已生成 SKILL.md', `${stats.writtenCount}/${stats.totalSkills}`, 'file');
+			if (stats) {
+				this._addStat(statsEl, '总技能', stats.totalSkills, 'l3');
+				this._addStat(statsEl, '平均置信度', stats.avgConfidence, 'confidence');
+				this._addStat(statsEl, '总使用次数', stats.totalUsage, 'usage');
+				this._addStat(statsEl, '已生成 SKILL.md', `${stats.writtenCount}/${stats.totalSkills}`, 'file');
+			}
+			if (usageSummary && usageSummary.totalReads > 0) {
+				this._addStat(statsEl, 'read_skill 调用', usageSummary.totalReads, 'read');
+				this._addStat(statsEl, 'Skill 修改次数', usageSummary.totalPatches, 'patch');
+				this._addStat(statsEl, '近30天活跃', usageSummary.recentUsed, 'recent');
+				if (usageSummary.pinnedCount > 0) {
+					this._addStat(statsEl, '已钉选', usageSummary.pinnedCount, 'pinned');
+				}
+			}
 		}
 
 		// Info banner
@@ -1052,7 +1328,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		banner.style.borderRadius = '6px';
 		banner.style.fontSize = '11px';
 		banner.style.color = '#569cd6';
-		banner.textContent = '💡 技能提取后会自动生成 SKILL.md 文件到 ~/.saros/skills/<技能名>/SKILL.md，可在 Agent Studio 技能商城和 Claude Code 中直接使用';
+		banner.textContent = '💡 技能提取后会自动生成 SKILL.md 文件到 ~/.vssaros/skills/<技能名>/SKILL.md，可在 Agent Studio 技能商城和 Claude Code 中直接使用';
 
 		// Toolbar
 		const toolbar = append(this._container, $('.md-toolbar'));
@@ -1274,7 +1550,7 @@ private _renderSkillCard(list: HTMLElement, skill: any, memProvider: any): void 
 	sessionChip.className = 'md-meta-chip session';
 	if (skill.slug) {
 		const pathChip = append(meta, $('.md-meta-chip'));
-		pathChip.textContent = `~/.saros/skills/${skill.slug}/SKILL.md`;
+		pathChip.textContent = `~/.vssaros/skills/${skill.slug}/SKILL.md`;
 		pathChip.className = 'md-meta-chip';
 		pathChip.style.background = 'rgba(240,160,75,0.1)';
 		pathChip.style.color = '#f0a04b';
@@ -1335,6 +1611,25 @@ private async _editSkill(memProvider: any, skill: any): Promise<void> {
 	} catch (err) { alert(`编辑失败: ${err instanceof Error ? err.message : String(err)}`); }
 }
 
+/** Memory V2 可编辑：编辑长期记忆条目（标题/内容/概念），保存后重新加载记忆列表 */
+private async _editMemory(memProvider: any, item: IMemoryEntry): Promise<void> {
+	if (!memProvider?.updateMemory) { alert('当前记忆提供者不支持编辑'); return; }
+	const currentTitle = (item.metadata?.['title'] as string) ?? '';
+	const title = prompt('标题 (可选):', currentTitle);
+	if (title === null) { return; }
+	const content = prompt('内容:', item.content);
+	if (content === null || !content.trim()) { return; }
+	const currentConcepts = (item.metadata?.['concepts'] as string[] | undefined) ?? [];
+	const conceptsStr = prompt('概念 (逗号分隔, 可选):', currentConcepts.join(','));
+	if (conceptsStr === null) { return; }
+	const concepts = conceptsStr ? conceptsStr.split(',').map((c: string) => c.trim()).filter(Boolean) : [];
+	try {
+		const updated = await memProvider.updateMemory(this._agentId, item.id, { title, content, concepts });
+		if (!updated) { alert('编辑失败：记忆不存在'); return; }
+		await this._loadMemory();
+	} catch (err) { alert(`编辑失败: ${err instanceof Error ? err.message : String(err)}`); }
+}
+
 private async _exportSkillsJson(memProvider: any): Promise<void> {
 	if (!memProvider?.listSkills) return;
 	const skills = await memProvider.listSkills(this._agentId);
@@ -1363,16 +1658,6 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 		tab.addEventListener('click', () => { this._layerFilter = layer; this._renderFull(); });
 	}
 
-	private _addFilterChip(parent: HTMLElement, label: string, scope: ScopeFilter, active = false): void {
-		const chip = append(parent, $('.md-filter-chip'));
-		chip.textContent = label;
-		if (active || this._scopeFilter === scope) { chip.classList.add('active'); }
-		chip.addEventListener('click', () => {
-			this._scopeFilter = scope;
-			this._renderFull();
-		});
-	}
-
 	private _countByTier(tier: LayerFilter): number {
 		if (tier === 'all') { return this._allMemories.length; }
 		return this._allMemories.filter(m => matchesTier(m, tier)).length;
@@ -1382,23 +1667,6 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 		let items = this._allMemories;
 		if (this._layerFilter !== 'all') { items = items.filter(m => matchesTier(m, this._layerFilter)); }
 		if (this._searchQuery) { items = items.filter(m => m.content.toLowerCase().includes(this._searchQuery)); }
-		// Scope filter
-		if (this._scopeFilter === 'workspace') {
-			// 按工作区过滤：metadata.workspaceId 或 metadata.workspace 匹配当前工作区
-			items = items.filter(m => {
-				const wsId = m.metadata?.['workspaceId'] as string ?? m.metadata?.['workspace'] as string ?? '';
-				// 如果记忆没有 workspaceId，也保留（兼容旧数据）
-				return !wsId || wsId === this._currentWorkspaceId;
-			});
-		} else if (this._scopeFilter === 'session') {
-			items = items.filter(m => m.metadata?.['sessionId'] || m.metadata?.['sessionKey']);
-		} else if (this._scopeFilter === 'agent') {
-			// 按当前 agent 过滤
-			items = items.filter(m => {
-				const mAgentId = m.metadata?.['agentId'] as string ?? m.metadata?.['agent'] as string ?? '';
-				return !mAgentId || mAgentId === this._agentId;
-			});
-		}
 		items = items.slice().sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 		return items;
 	}
@@ -1406,6 +1674,8 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 	private _renderList(): void {
 		const oldList = this._container?.querySelector('.md-list');
 		if (oldList) { oldList.remove(); }
+		const oldMore = this._container?.querySelector('.md-load-more');
+		if (oldMore) { oldMore.remove(); }
 		if (!this._container) { return; }
 		const list = append(this._container, $('.md-list'));
 		const items = this._getFiltered();
@@ -1416,6 +1686,48 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 			append(list, $('.md-empty')).textContent = emptyMsg;
 			return;
 		}
+
+		// 分页渲染：16K 条目一次性全部创建 DOM 会导致严重卡顿。
+		// 首屏仅渲染 PAGE_SIZE（默认 200）条，其余通过"加载更多"按钮逐步展开。
+		const PAGE_SIZE = 200;
+		const displayItems = items.slice(0, PAGE_SIZE);
+		this._renderMemoryCards(list, displayItems, items);
+
+		if (items.length > PAGE_SIZE) {
+			const moreDiv = append(this._container, $('.md-load-more'));
+			moreDiv.style.textAlign = 'center';
+			moreDiv.style.padding = '12px';
+			const loadBtn = document.createElement('button');
+			loadBtn.textContent = `加载更多（已显示 ${PAGE_SIZE} / ${items.length}）`;
+			loadBtn.style.padding = '6px 20px';
+			loadBtn.style.cursor = 'pointer';
+			loadBtn.style.background = 'var(--vscode-button-background)';
+			loadBtn.style.color = 'var(--vscode-button-foreground)';
+			loadBtn.style.border = 'none';
+			loadBtn.style.borderRadius = '4px';
+			loadBtn.style.fontSize = '12px';
+			let offset = PAGE_SIZE;
+			const listEl = list;
+			loadBtn.addEventListener('click', () => {
+				const nextBatch = items.slice(offset, offset + PAGE_SIZE);
+				this._renderMemoryCards(listEl, nextBatch, items, offset);
+				offset += PAGE_SIZE;
+				loadBtn.textContent = offset >= items.length
+					? `全部已加载（${items.length} 条）`
+					: `加载更多（已显示 ${offset} / ${items.length}）`;
+				if (offset >= items.length) {
+					loadBtn.disabled = true;
+					loadBtn.style.opacity = '0.5';
+				}
+			});
+			moreDiv.appendChild(loadBtn);
+		}
+	}
+
+	/**
+	 * 渲染一批记忆卡片到指定 DOM 容器。
+	 */
+	private _renderMemoryCards(list: HTMLElement, batch: IMemoryEntry[], allItems: IMemoryEntry[], indexOffset: number = 0): void {
 		const typeLabels: Record<string, string> = {
 			working: 'Working', episodic: 'Episodic', semantic: 'Semantic', procedural: 'Procedural',
 			pattern: 'Pattern', preference: 'Preference', architecture: 'Architecture',
@@ -1425,55 +1737,45 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 			working: 'l0', episodic: 'l1', semantic: 'l2', procedural: 'l3',
 			pattern: 'l1', preference: 'l1', architecture: 'l2', bug: 'l1', workflow: 'l3', fact: 'l1',
 		};
-		// 查找匹配 contentPreview 的条目（记忆 provider 返回的记忆 content）
+
+		// targetContentPreview 查找（仅首屏执行一次）
 		let targetItem: IMemoryEntry | null = null;
-		if (this._targetContentPreview) {
+		if (indexOffset === 0 && this._targetContentPreview) {
 			const preview = this._targetContentPreview.trim();
-			// 精确前缀匹配
-			for (const item of items) {
-				if (typeof item.content === 'string' && item.content.startsWith(preview)) {
-					targetItem = item;
-					break;
-				}
+			for (const item of allItems) {
+				if (typeof item.content === 'string' && item.content.startsWith(preview)) { targetItem = item; break; }
 			}
-			// 回退：忽略空白字符的前缀匹配
 			if (!targetItem) {
 				const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
 				const normPreview = normalize(preview);
-				for (const item of items) {
-					if (typeof item.content === 'string' && normalize(item.content).startsWith(normPreview)) {
-						targetItem = item;
-						break;
-					}
+				for (const item of allItems) {
+					if (typeof item.content === 'string' && normalize(item.content).startsWith(normPreview)) { targetItem = item; break; }
 				}
 			}
-			// 回退：包含匹配（前缀可能被截断）
 			if (!targetItem && preview.length >= 20) {
-				for (const item of items) {
-					if (typeof item.content === 'string' && item.content.includes(preview.slice(0, 30))) {
-						targetItem = item;
-						break;
-					}
+				for (const item of allItems) {
+					if (typeof item.content === 'string' && item.content.includes(preview.slice(0, 30))) { targetItem = item; break; }
 				}
 			}
 		}
 
-	let targetIndex = -1;
-	for (let i = 0; i < items.length; i++) {
-		const item = items[i];
-		const card = document.createElement('div');
-		card.className = 'md-card';
-		// 使用 data-index 而非 id（记忆 provider 返回的 ID 含冒号，CSS 选择器不支持）
-		card.setAttribute('data-mem-index', String(i));
-		// Auto-expand target or first item
-		const isTarget = targetItem && item.id === targetItem.id;
-		if (isTarget) { targetIndex = i; }
-		if (isTarget || (!targetItem && i === 0)) {
-				card.classList.add('expanded');
-			}
-			if (isTarget) {
-				card.classList.add('target');
-			}
+		let targetIndex = -1;
+		// Memory V2 可编辑：提供者支持编辑/删除时在卡片头部显示操作按钮
+		const memProvider = this._agentOSService.getActiveMemoryProvider();
+		const canEdit = !!memProvider?.updateMemory;
+		const canDelete = !!memProvider?.deleteMemory;
+		for (let i = 0; i < batch.length; i++) {
+			const item = batch[i];
+			const globalIndex = indexOffset + i;
+			const card = document.createElement('div');
+			card.className = 'md-card';
+			card.setAttribute('data-mem-index', String(globalIndex));
+
+			const isTarget = targetItem && item.id === targetItem.id;
+			if (isTarget) { targetIndex = globalIndex; }
+			if (isTarget || (!targetItem && globalIndex === 0)) { card.classList.add('expanded'); }
+			if (isTarget) { card.classList.add('target'); }
+
 			// Header
 			const header = document.createElement('div');
 			header.className = 'md-card-header';
@@ -1481,7 +1783,6 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 			badge.className = `md-badge ${typeClasses[item.type] || 'l0'}`;
 			badge.textContent = typeLabels[item.type] ?? item.type;
 			header.appendChild(badge);
-			// 当显示所有 agent 时，在 badge 后显示 agentId 标识
 			if (this._agentFilter === '__all__' && item.metadata?.['agentId']) {
 				const agentBadge = document.createElement('span');
 				agentBadge.className = 'md-badge';
@@ -1500,44 +1801,62 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 				time.textContent = new Date(item.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 				header.appendChild(time);
 			}
-			// Strength indicator (agentmemory provider)
 			const strength = item.metadata?.['strength'] as number | undefined;
 			if (typeof strength === 'number') {
 				const strengthEl = document.createElement('span');
 				strengthEl.className = 'md-card-strength';
 				const pct = Math.round(strength * 100);
-				const colorClass = strength > 0.5 ? 'high' : strength > 0.2 ? 'mid' : 'low';
-				strengthEl.classList.add(colorClass);
+				strengthEl.classList.add(strength > 0.5 ? 'high' : strength > 0.2 ? 'mid' : 'low');
 				strengthEl.textContent = `${pct}%`;
 				strengthEl.title = `强度: ${strength.toFixed(2)}\n访问: ${item.metadata?.['accessCount'] ?? 0} 次`;
 				header.appendChild(strengthEl);
 			}
-			// Superseded badge
 			if (item.metadata?.['supersededBy']) {
 				const supBadge = document.createElement('span');
 				supBadge.className = 'md-badge superseded';
 				supBadge.textContent = '已取代';
 				header.appendChild(supBadge);
 			}
+			// 编辑/删除按钮（Memory V2 可编辑；stopPropagation 避免触发卡片展开）
+			if (canEdit || canDelete) {
+				const mkAction = (label: string, tip: string, onClick: () => void): HTMLSpanElement => {
+					const btn = document.createElement('span');
+					btn.className = 'md-card-action';
+					btn.textContent = label;
+					btn.title = tip;
+					btn.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+					return btn;
+				};
+				if (canEdit) {
+					header.appendChild(mkAction('✏', '编辑记忆', () => { void this._editMemory(memProvider, item); }));
+				}
+				if (canDelete) {
+					header.appendChild(mkAction('🗑', '删除记忆', () => {
+						if (!confirm(`确定删除该记忆？\n\n${item.content.slice(0, 80)}`)) { return; }
+						void (async () => {
+							await memProvider.deleteMemory?.(this._agentId, item.id);
+							await this._loadMemory();
+						})();
+					}));
+				}
+			}
 			const expand = document.createElement('span');
 			expand.className = 'md-expand'; expand.textContent = '▶';
 			header.appendChild(expand);
 			header.addEventListener('click', () => card.classList.toggle('expanded'));
 			card.appendChild(header);
-			// Content box (scrollable + markdown)
+
+			// Content box
 			const contentBox = document.createElement('div');
 			contentBox.className = 'md-content-box';
 			const content = document.createElement('div');
 			content.className = 'md-content';
 			this._renderMarkdown(content, item.content);
 			contentBox.appendChild(content);
-			// Metadata chips
 			if (item.metadata) {
 				const meta = document.createElement('div');
 				meta.className = 'md-meta';
-				const entries = Object.entries(item.metadata)
-					.filter(([k]) => !['owner', 'userId', 'agentId'].includes(k));
-				for (const [k, v] of entries) {
+				for (const [k, v] of Object.entries(item.metadata).filter(([k]) => !['owner', 'userId', 'agentId'].includes(k))) {
 					const chip = document.createElement('span');
 					chip.className = this._getMetaChipClass(k);
 					chip.textContent = `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`;
@@ -1548,8 +1867,9 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 			card.appendChild(contentBox);
 			list.appendChild(card);
 		}
-		// Scroll to target
-		if (targetIndex >= 0) {
+
+		// Scroll to target（仅首屏）
+		if (indexOffset === 0 && targetIndex >= 0) {
 			setTimeout(() => {
 				const targetEl = list.querySelector(`[data-mem-index="${targetIndex}"]`);
 				if (targetEl) { (targetEl as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'center' }); }
@@ -1663,6 +1983,17 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 			el.appendChild(document.createTextNode(text.slice(lastIdx)));
 		}
 		return el;
+	}
+
+	/**
+	 * 公共刷新方法：外部触发当前视图重新加载数据并渲染。
+	 * 用于技能沉淀、记忆写入等操作完成后，自动刷新面板。
+	 */
+	async refreshCurrentView(): Promise<void> {
+		if (this._loadMemoryPromise) {
+			await this._loadMemoryPromise;
+		}
+		await this._loadMemory();
 	}
 
 	/**
@@ -1839,389 +2170,12 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 		this._container.appendChild(panel);
 	}
 
-	// ─── Codebase View ──────────────────────────────────────────────────────
-	//
-	// 嵌入 Memory EditorPane 的代码图谱面板。
-	// 替代独立的 CodebaseMemoryDetailEditorPane 入口。
-	// 提供状态显示、索引操作、配置、进度日志、以及跳转到完整详情/3D 图谱。
-
-	private _cbmLogEl: HTMLElement | null = null;
-	private _cbmProgressDisposable: { dispose: () => void } | null = null;
-
-	private async _renderCodebaseView(): Promise<void> {
-		if (!this._container) { return; }
-
-		const config = this._cbmService.getIndexConfig();
-		const container = this._container;
-		container.style.padding = '0';
-		// 设置基础文字颜色，确保所有子元素继承的默认颜色是亮的
-		container.style.color = 'var(--vscode-foreground)';
-
-		// Loading
-		const loading = append(container, $('div'));
-		loading.style.cssText = 'padding:40px;text-align:center;color:var(--vscode-foreground);';
-		loading.textContent = '⏳ 加载代码图谱状态...';
-		await new Promise(r => setTimeout(r, 0));
-
-		// Fetch status
-		const status = await this._codebaseGraphService.getGraphStatus();
-		const hasData = this._codebaseGraphService.hasGraphData();
-		const isIndexing = this._codebaseGraphService.isIndexing;
-
-		loading.remove();
-
-		// ── Header ───────────────────────────────────────────────────────
-		const header = append(container, $('.md-header'));
-		header.style.padding = '16px 20px';
-		const h1 = append(header, $('h1'));
-		h1.textContent = '🧬 代码图谱';
-		h1.style.fontSize = '18px';
-		h1.style.fontWeight = '600';
-		h1.style.margin = '0 0 4px';
-
-		const subtitle = append(header, $('div'));
-		subtitle.textContent = '基于内置 tree-sitter WASM · 无需外部二进制';
-		subtitle.style.fontSize = '11px';
-		subtitle.style.color = 'var(--vscode-descriptionForeground)';
-
-		// Status badge
-		const statusRow = append(header, $('div'));
-		statusRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;';
-		const badge = append(statusRow, $('span'));
-		const statusCls = isIndexing ? 'indexing' : (status.exists ? 'ready' : 'empty');
-		badge.className = `md-status-badge ${statusCls}`;
-		badge.style.cssText = 'padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600;';
-		badge.textContent = isIndexing ? '⏳ 索引中...' : (status.exists ? '✓ 已就绪' : '○ 未索引');
-		if (statusCls === 'indexing') {
-			badge.style.background = 'rgba(86,156,214,0.15)';
-			badge.style.color = '#569cd6';
-		} else if (statusCls === 'ready') {
-			badge.style.background = 'rgba(78,201,176,0.15)';
-			badge.style.color = '#4ec9b0';
-		} else {
-			badge.style.background = 'rgba(128,128,128,0.1)';
-			badge.style.color = 'var(--vscode-descriptionForeground)';
-		}
-
-		// ── Action buttons ───────────────────────────────────────────────
-		const btnRow = append(header, $('div'));
-		btnRow.style.cssText = 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;';
-
-		const indexBtn = append(btnRow, $('button')) as HTMLButtonElement;
-		indexBtn.className = 'md-btn';
-		indexBtn.textContent = isIndexing ? '⏳ 索引中...' : '▶ 索引代码库';
-		indexBtn.disabled = isIndexing;
-		indexBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-button-background);color:var(--vscode-button-foreground);font-size:12px;';
-		indexBtn.addEventListener('click', async () => {
-			indexBtn.disabled = true;
-			indexBtn.textContent = '⏳ 索引中...';
-			try {
-				const result = await this._cbmService.indexRepository();
-				if (result.success) {
-					this._notificationService.info(`索引完成 (${result.duration}s)`);
-				} else {
-					this._notificationService.warn(`索引失败: ${result.message}`);
-				}
-			} catch (err: any) {
-				this._notificationService.error(`索引错误: ${err?.message || err}`);
-			}
-			this._renderCodebaseView();
-		});
-
-		if (isIndexing) {
-			const cancelBtn = append(btnRow, $('button'));
-			cancelBtn.className = 'md-btn';
-			cancelBtn.textContent = '✖ 取消';
-			cancelBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-input-background);color:var(--vscode-foreground);font-size:12px;';
-			cancelBtn.addEventListener('click', () => {
-				this._cbmService.cancelIndex();
-			});
-		}
-
-		const detailBtn = append(btnRow, $('button'));
-		detailBtn.className = 'md-btn';
-		detailBtn.textContent = '📋 完整详情';
-		detailBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-input-background);color:var(--vscode-foreground);font-size:12px;';
-		detailBtn.addEventListener('click', () => {
-			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
-			this._editorService.openEditor(input, { pinned: true });
-		});
-
-		if (status.exists || hasData) {
-			const graph3dBtn = append(btnRow, $('button'));
-			graph3dBtn.className = 'md-btn';
-			graph3dBtn.textContent = '🌐 3D 图谱';
-			graph3dBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-input-background);color:var(--vscode-foreground);font-size:12px;';
-			graph3dBtn.addEventListener('click', () => {
-				const input = CodebaseGraphViewerEditorInput.getOrCreate();
-				this._editorService.openEditor(input, { pinned: true });
-			});
-
-			const syncBtn = append(btnRow, $('button')) as HTMLButtonElement;
-			syncBtn.className = 'md-btn';
-			syncBtn.textContent = '⬆ 团队同步';
-			syncBtn.style.cssText = 'padding:4px 12px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-input-background);color:var(--vscode-foreground);font-size:12px;';
-			syncBtn.addEventListener('click', async () => {
-				syncBtn.disabled = true;
-				syncBtn.textContent = '⏳ 同步中...';
-				try {
-					const result = await this._cbmService.syncGraph();
-					if (result.success) {
-						this._notificationService.info(result.message);
-					} else {
-						this._notificationService.warn(result.message);
-					}
-				} catch (err: any) {
-					this._notificationService.error(`同步失败: ${err?.message || err}`);
-				}
-				syncBtn.disabled = false;
-				syncBtn.textContent = '⬆ 团队同步';
-			});
-		}
-
-		// ── Stats ────────────────────────────────────────────────────────
-		if (status.exists || hasData) {
-			const statsSection = append(container, $('div'));
-			statsSection.style.cssText = 'padding:12px 20px;';
-			const statsTitle = append(statsSection, $('div'));
-			statsTitle.textContent = '📊 统计';
-			statsTitle.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:8px;color:var(--vscode-descriptionForeground);';
-
-			const statsGrid = append(statsSection, $('div'));
-			statsGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;';
-
-			const addStat = (label: string, value: string | number) => {
-				const card = append(statsGrid, $('div'));
-				card.style.cssText = 'padding:8px 12px;border-radius:4px;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);';
-				const l = append(card, $('div'));
-				l.textContent = label;
-				l.style.cssText = 'font-size:10px;color:var(--vscode-descriptionForeground);';
-				const v = append(card, $('div'));
-				v.textContent = String(value);
-				// 关键修复：value 使用主前景色，确保深色背景下可读
-				v.style.cssText = 'font-size:16px;font-weight:600;margin-top:2px;color:var(--vscode-foreground);';
-			};
-
-			if (hasData) {
-				const schema = this._codebaseGraphService.getGraphSchema();
-				addStat('节点', schema.totalNodes);
-				addStat('边', schema.totalEdges);
-			}
-			if (status.size) {
-				addStat('文件大小', `${(status.size / 1024 / 1024).toFixed(2)} MB`);
-			}
-			if (status.lastModified) {
-				addStat('更新时间', new Date(status.lastModified).toLocaleString());
-			}
-			if (status.graphPath) {
-				const pathEl = append(statsSection, $('div'));
-				// 关键修复：路径文字使用主前景色而非 descriptionForeground
-				pathEl.style.cssText = 'font-size:11px;color:var(--vscode-foreground);margin-top:8px;padding:4px 8px;background:var(--vscode-input-background);border-radius:3px;font-family:monospace;word-break:break-all;';
-				pathEl.textContent = `📄 ${status.graphPath}`;
-			}
-		}
-
-		// ── Index Config ─────────────────────────────────────────────────
-		const configSection = append(container, $('div'));
-		configSection.style.cssText = 'padding:12px 20px;';
-		// ── Index Config — 重写为网格化布局 ─────────────────────────────
-		// 标题行：左标题 + 右模式徽章
-		const titleRow = append(configSection, $('div'));
-		titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
-		const configTitle = append(titleRow, $('div'));
-		configTitle.textContent = '⚙ Index Configuration';
-		configTitle.style.cssText = 'font-size:12px;font-weight:600;color:var(--vscode-foreground);';
-		const modeBadge = append(titleRow, $('span'));
-		modeBadge.className = 'cbm-mode-badge';
-		modeBadge.textContent = (config.mode || 'fast').toUpperCase();
-		modeBadge.style.cssText = 'padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600;background:rgba(86,156,214,0.15);color:#569cd6;';
-
-		// 工具函数：渲染一个 label + 控件行
-		const renderConfigRow = (
-			label: string,
-			placeholder: string,
-			initialValue: string,
-		): HTMLInputElement => {
-			const row = append(configSection, $('div'));
-			row.style.cssText = 'display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;margin-bottom:8px;';
-			const lbl = append(row, $('label'));
-			lbl.textContent = label;
-			lbl.style.cssText = 'font-size:11px;color:var(--vscode-foreground);font-weight:500;text-align:right;';
-			const input = document.createElement('input');
-			input.type = 'text';
-			input.value = initialValue;
-			input.placeholder = placeholder;
-			input.style.cssText = 'width:100%;background:var(--vscode-input-background);border:1px solid var(--vscode-input-border);border-radius:3px;padding:4px 8px;font-size:11px;color:var(--vscode-foreground);font-family:var(--vscode-editor-font-family,monospace);';
-			row.appendChild(input);
-			return input;
-		};
-
-		// ── Mode：3 个并排按钮（segmented control） ─────────────────────
-		const modeRow = append(configSection, $('div'));
-		modeRow.style.cssText = 'display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;margin-bottom:10px;';
-		const modeLbl = append(modeRow, $('label'));
-		modeLbl.textContent = 'Mode';
-		modeLbl.style.cssText = 'font-size:11px;color:var(--vscode-foreground);font-weight:500;text-align:right;';
-		const modeGroup = append(modeRow, $('div'));
-		modeGroup.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;border:1px solid var(--vscode-input-border);border-radius:4px;overflow:hidden;';
-		const modeOptions: Array<{ value: 'fast' | 'moderate' | 'full'; label: string; icon: string }> = [
-			{ value: 'fast', label: 'Fast', icon: '⚡' },
-			{ value: 'moderate', label: 'Moderate', icon: '⚙' },
-			{ value: 'full', label: 'Full', icon: '🔬' },
-		];
-		let currentMode: 'fast' | 'moderate' | 'full' = (config.mode || 'fast') as any;
-		const updateModeBadge = () => {
-			modeBadge.textContent = currentMode.toUpperCase();
-		};
-		const modeButtons: HTMLButtonElement[] = [];
-		for (const opt of modeOptions) {
-			const btn = document.createElement('button');
-			btn.type = 'button';
-			btn.textContent = `${opt.icon} ${opt.label}`;
-			btn.dataset.value = opt.value;
-			const isActive = currentMode === opt.value;
-			btn.style.cssText = `padding:5px 4px;cursor:pointer;border:none;border-right:1px solid var(--vscode-input-border);background:${isActive ? 'var(--vscode-button-background)' : 'var(--vscode-input-background)'};color:${isActive ? 'var(--vscode-button-foreground)' : 'var(--vscode-foreground)'};font-size:11px;font-weight:${isActive ? '600' : '500'};`;
-			if (opt === modeOptions[modeOptions.length - 1]) { btn.style.borderRight = 'none'; }
-			btn.addEventListener('click', () => {
-				currentMode = opt.value;
-				for (const b of modeButtons) {
-					const active = b.dataset.value === currentMode;
-					b.style.background = active ? 'var(--vscode-button-background)' : 'var(--vscode-input-background)';
-					b.style.color = active ? 'var(--vscode-button-foreground)' : 'var(--vscode-foreground)';
-					b.style.fontWeight = active ? '600' : '500';
-				}
-				updateModeBadge();
-			});
-			modeButtons.push(btn);
-			modeGroup.appendChild(btn);
-		}
-
-		// ── Index Path ─────────────────────────────────────────────────
-		const subInput = renderConfigRow(
-			'Index Path',
-			'Leave empty for entire workspace, or e.g. src/vs/sessions',
-			config.subPath || '',
-		);
-
-		// ── Exclude (逗号分隔) ─────────────────────────────────────────
-		const exclInput = renderConfigRow(
-			'Exclude',
-			'node_modules, .git, build, out, dist, ...',
-			config.excludeDirs.join(', '),
-		);
-
-		// ── Keep (新增：保留目录) ──────────────────────────────────────
-		const keepInput = renderConfigRow(
-			'Keep',
-			'Content/Script, src/core (即使父目录被排除也不跳过)',
-			(config.keepDirs || []).join(', '),
-		);
-
-		// ── Action 按钮组 ──────────────────────────────────────────────
-		const btnRow2 = append(configSection, $('div'));
-		btnRow2.style.cssText = 'display:flex;gap:6px;margin-top:14px;';
-
-		// Index Codebase 按钮（紫色）
-		const triggerBtn = document.createElement('button') as HTMLButtonElement;
-		triggerBtn.textContent = isIndexing ? '⏳ 索引中...' : '🔍 Index Codebase';
-		triggerBtn.disabled = isIndexing;
-		triggerBtn.style.cssText = 'padding:6px 14px;border-radius:4px;cursor:pointer;border:1px solid #6366f1;background:#6366f1;color:#fff;font-size:12px;font-weight:500;';
-		triggerBtn.addEventListener('click', async () => {
-			triggerBtn.disabled = true;
-			triggerBtn.textContent = '⏳ 索引中...';
-			try {
-				const result = await this._cbmService.indexRepository();
-				if (result.success) {
-					this._notificationService.info(`索引完成 (${result.duration}s)`);
-				} else {
-					this._notificationService.warn(`索引失败: ${result.message}`);
-				}
-			} catch (err: any) {
-				this._notificationService.error(`索引错误: ${err?.message || err}`);
-			}
-			this._renderCodebaseView();
-		});
-		btnRow2.appendChild(triggerBtn);
-
-		// Save Config 按钮
-		const saveBtn = document.createElement('button') as HTMLButtonElement;
-		saveBtn.textContent = '💾 Save Config';
-		saveBtn.style.cssText = 'padding:6px 14px;border-radius:4px;cursor:pointer;border:1px solid var(--vscode-input-border);background:var(--vscode-button-background);color:var(--vscode-button-foreground);font-size:12px;font-weight:500;';
-		saveBtn.addEventListener('click', () => {
-			const parseList = (raw: string): string[] =>
-				raw.split(/[,\n]/)
-					.map(s => s.trim())
-					.filter(Boolean);
-			const newConfig: IIndexConfig = {
-				mode: currentMode,
-				excludeDirs: parseList(exclInput.value),
-				keepDirs: parseList(keepInput.value),
-				subPath: subInput.value.trim() || undefined,
-			};
-			this._cbmService.setIndexConfig(newConfig);
-			this._notificationService.info('配置已保存');
-		});
-		btnRow2.appendChild(saveBtn);
-
-		// ── Progress Log ─────────────────────────────────────────────────
-		const logSection = append(container, $('div'));
-		logSection.style.cssText = 'padding:12px 20px;';
-		const logTitle = append(logSection, $('div'));
-		logTitle.textContent = '📝 索引日志';
-		logTitle.style.cssText = 'font-size:12px;font-weight:600;margin-bottom:6px;color:var(--vscode-descriptionForeground);';
-
-		this._cbmLogEl = append(logSection, $('div'));
-		this._cbmLogEl.style.cssText = 'max-height:300px;overflow-y:auto;background:var(--vscode-textCodeBlock-background);border:1px solid var(--vscode-input-border);border-radius:4px;padding:8px;font-family:var(--vscode-editor-font-family,monospace);font-size:11px;line-height:1.6;color:var(--vscode-foreground);';
-
-		// Subscribe to progress events (dispose on re-render)
-		if (this._cbmProgressDisposable) {
-			this._cbmProgressDisposable.dispose();
-		}
-		const progDisp = this._register(this._codebaseGraphService.onDidIndexProgress(line => {
-			if (this._cbmLogEl) {
-				const lineEl = document.createElement('div');
-				lineEl.textContent = `[${new Date().toLocaleTimeString()}] ${line}`;
-				// 关键修复：日志行文字使用主前景色，确保可读
-				lineEl.style.color = line.startsWith('✓') ? '#4ec9b0' : (line.startsWith('✗') ? '#f48771' : (line.startsWith('⚠') ? '#f0a04b' : 'var(--vscode-foreground)'));
-				this._cbmLogEl.appendChild(lineEl);
-				this._cbmLogEl.scrollTop = this._cbmLogEl.scrollHeight;
-			}
-		}));
-		const completeDisp = this._register(this._codebaseGraphService.onDidIndexComplete(result => {
-			if (this._cbmLogEl) {
-				const lineEl = document.createElement('div');
-				lineEl.textContent = `[${new Date().toLocaleTimeString()}] ${result.success ? '✓' : '✗'} ${result.message} (${result.duration}s)`;
-				lineEl.style.color = result.success ? '#4ec9b0' : '#f48771';
-				this._cbmLogEl.appendChild(lineEl);
-				this._cbmLogEl.scrollTop = this._cbmLogEl.scrollHeight;
-			}
-			if (result.success) {
-				this._notificationService.info(`索引完成 (${result.duration}s)`);
-				setTimeout(() => this._renderCodebaseView(), 500);
-			}
-		}));
-		this._cbmProgressDisposable = {
-			dispose: () => { progDisp.dispose(); completeDisp.dispose(); }
-		};
-
-		// Empty state hint
-		if (!status.exists && !hasData && !isIndexing) {
-			const hint = append(logSection, $('div'));
-			hint.textContent = '💡 点击"索引代码库"按钮开始构建代码图谱。索引完成后，Agent 可使用 search_graph、query_graph、get_architecture 等工具查询代码结构。';
-			// 关键修复：提示文字用主前景色，确保可读
-			hint.style.cssText = 'color:var(--vscode-foreground);font-size:11px;padding:8px;background:var(--vscode-input-background);border-radius:3px;margin-top:4px;';
-		}
-	}
-
 	/**
-	 * 外部调用入口：切换到 codebase 视图并触发索引。
+	 * 外部调用入口：触发代码库索引（若尚未索引），并打开独立的代码图谱 3D 可视化面板。
+	 * 「代码图谱」页签已从 Memory 中移除，故不再内嵌渲染，而是直接打开独立面板。
 	 * 供 `agentStudio.codebaseMemoryInit` 命令使用。
 	 */
 	async activateCodebaseViewAndIndex(): Promise<void> {
-		this._currentView = 'codebase';
-		this._renderFull();
-		// 等待 DOM 渲染完成
-		await new Promise(r => setTimeout(r, 100));
 		// 自动触发索引（如果未在索引中且无图谱数据）
 		if (!this._codebaseGraphService.isIndexing && !this._codebaseGraphService.hasGraphData()) {
 			try {
@@ -2230,5 +2184,8 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 				this._notificationService.error(`自动索引失败: ${err?.message || err}`);
 			}
 		}
+		// 打开独立的代码图谱 3D 可视化面板
+		const input = CodebaseGraphViewerEditorInput.getOrCreate();
+		await this._editorService.openEditor(input, { pinned: true });
 	}
 }

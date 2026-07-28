@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TapCanvas 融合 · 工作流媒体管线 + Agent 画布工具 Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --panel: #252526; --panel2: #2d2d30; --border: #3c3c3c;
+    --fg: #cccccc; --fg-dim: #858585; --fg-faint: #5a5a5a;
+    --accent: #007fd4; --green: #22c55e; --red: #ef4444;
+    --c-image: #22c55e; --c-video: #3b82f6; --c-audio: #eab308;
+    --c-subtitle: #a855f7; --c-character: #ec4899; --c-text: #9ca3af;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: var(--bg);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--fg); font-size: 13px; }
+  button { font-family: inherit; }
+
+  #topbar { position: fixed; inset: 0 0 auto 0; z-index: 50; height: 44px;
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  .wf-name { font-weight: 600; }
+  .tag { font-size: 10px; letter-spacing: 1px; padding: 3px 10px; border-radius: 10px;
+    border: 1px solid var(--c-video); color: #93c5fd; }
+  .tag.a { border-color: var(--c-character); color: #f9a8d4; }
+  #topbar .spacer { flex: 1; }
+  .tb { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; font-size: 12px;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; cursor: pointer; }
+  .tb:hover { background: #37373b; }
+  .tb.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tb.agent { background: var(--c-character); border-color: var(--c-character); color: #fff; font-weight: 600; }
+
+  /* ── 画布 ── */
+  #viewport { position: fixed; inset: 44px 400px 0 0; cursor: grab; overflow: hidden; }
+  #world { position: absolute; left: 0; top: 0; width: 1500px; height: 900px; transform-origin: 0 0;
+    background-image: radial-gradient(circle, rgba(255,255,255,.06) 1px, transparent 1.2px);
+    background-size: 24px 24px; }
+  #edges { position: absolute; left: 0; top: 0; width: 1500px; height: 900px; pointer-events: none; overflow: visible; }
+  .edge-path { fill: none; stroke-width: 2; opacity: .75; transition: opacity .3s; }
+  .edge-path.hot { opacity: 1; stroke-width: 2.5; }
+  .edge-path.blocked { stroke: #4b5563 !important; stroke-dasharray: 4 6; opacity: .3; }
+  .e-label { position: absolute; transform: translate(-50%,-50%); font-size: 9.5px; padding: 2px 7px;
+    border-radius: 7px; background: #1e1e1e; border: 1px solid var(--border); color: var(--fg-dim);
+    pointer-events: none; font-family: Consolas, monospace; }
+  .e-label.blocked { color: var(--red); border-color: rgba(239,68,68,.4); }
+
+  .node { position: absolute; border-radius: 8px; border: 2px solid var(--nc, #888);
+    background: var(--bg); cursor: pointer; user-select: none;
+    box-shadow: 0 6px 18px -8px rgba(0,0,0,.7);
+    transition: left .6s cubic-bezier(.4,0,.2,1), top .6s cubic-bezier(.4,0,.2,1), opacity .3s; }
+  .n-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px 4px; }
+  .n-icon { font-size: 13px; }
+  .n-type { font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--nc, #888); }
+  .n-status { margin-left: auto; font-size: 9px; padding: 1px 6px; border-radius: 3px; font-weight: 700; }
+  .st-success { background: rgba(34,197,94,.15); color: #7ee2a8; }
+  .st-running { background: rgba(0,127,212,.18); color: #6cb6f5; }
+  .st-queued { background: rgba(255,255,255,.08); color: var(--fg-dim); }
+  .st-error { background: rgba(239,68,68,.18); color: #f48771; }
+  .st-blocked { background: rgba(107,114,128,.2); color: #9ca3af; }
+  .n-label { padding: 0 10px; font-size: 12.5px; font-weight: 600; }
+  .n-detail { padding: 2px 10px 6px; font-size: 10px; color: var(--fg-dim); line-height: 1.5; }
+  .n-progress { margin: 2px 10px 7px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; display: none; }
+  .node.running .n-progress { display: block; }
+  .n-progress i { display: block; height: 100%; width: 0; background: var(--nc, var(--accent)); transition: width .25s; }
+  .n-thumb { margin: 2px 10px 8px; border-radius: 4px; overflow: hidden; position: relative;
+    border: 1px solid rgba(255,255,255,.08); }
+  .n-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .n-thumb .placeholder { display: flex; align-items: center; justify-content: center; height: 100%;
+    color: var(--fg-faint); font-size: 10px; background: rgba(255,255,255,.02); }
+  .n-err { margin: 0 10px 8px; padding: 4px 8px; font-size: 10px; border-radius: 4px;
+    background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.35); color: #f48771; }
+  .port { position: absolute; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--bg); }
+  .port-label { position: absolute; font-size: 9px; color: var(--fg-dim); background: var(--bg);
+    padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border); pointer-events: none;
+    white-space: nowrap; font-family: Consolas, monospace; }
+  .node.blocked { opacity: .38; }
+  .node.new-node { animation: popIn .5s cubic-bezier(.2,1.4,.4,1); }
+  @keyframes popIn { from { transform: scale(.6); opacity: 0; } }
+
+  /* 连线类型色 */
+  .et-image { stroke: var(--c-image); } .et-video { stroke: var(--c-video); }
+  .et-audio { stroke: var(--c-audio); } .et-subtitle { stroke: var(--c-subtitle); }
+  .et-character { stroke: var(--c-character); } .et-text { stroke: var(--c-text); }
+
+  /* ── Agent 浮层（TapCanvas 标志性模式） ── */
+  #agent { position: fixed; right: 0; top: 44px; bottom: 0; width: 400px; z-index: 45;
+    background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+  #agentHead { padding: 10px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; }
+  #agentHead .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+    box-shadow: 0 0 6px var(--green); }
+  #agentHead .t { font-weight: 600; font-size: 13px; }
+  #agentHead .s { font-size: 10.5px; color: var(--fg-dim); }
+  #msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 92%; padding: 9px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.6;
+    animation: msgIn .3s ease; }
+  @keyframes msgIn { from { opacity: 0; transform: translateY(6px); } }
+  .msg.user { align-self: flex-end; background: rgba(0,127,212,.18); border: 1px solid rgba(0,127,212,.4); }
+  .msg.ai { align-self: flex-start; background: var(--panel2); border: 1px solid var(--border); }
+  .msg .who { font-size: 9.5px; color: var(--fg-faint); margin-bottom: 4px; letter-spacing: 1px; }
+  /* 工具调用卡片 */
+  .tool-card { align-self: flex-start; width: 92%; background: rgba(236,72,153,.05);
+    border: 1px solid rgba(236,72,153,.3); border-radius: 8px; padding: 8px 11px;
+    font-size: 11.5px; animation: msgIn .3s ease; }
+  .tool-card .tc-head { display: flex; align-items: center; gap: 7px; font-family: Consolas, monospace; }
+  .tool-card .tc-name { color: #f9a8d4; font-weight: 700; }
+  .tool-card .tc-status { margin-left: auto; font-size: 9.5px; padding: 1px 6px; border-radius: 3px;
+    background: rgba(34,197,94,.15); color: #7ee2a8; font-family: inherit; }
+  .tool-card .tc-args { margin-top: 5px; color: var(--fg-dim); font-family: Consolas, monospace; font-size: 10.5px; }
+  .tool-card .tc-result { margin-top: 6px; border-radius: 5px; overflow: hidden; display: none; }
+  .tool-card .tc-result.show { display: block; }
+  .tool-card .tc-result img { width: 100%; display: block; }
+  .tool-card .tc-audio { display: flex; align-items: center; gap: 8px; padding: 7px 9px;
+    background: rgba(234,179,8,.08); border: 1px solid rgba(234,179,8,.3); border-radius: 5px; }
+  .bars { display: flex; align-items: flex-end; gap: 2px; height: 18px; }
+  .bars i { width: 3px; background: var(--c-audio); border-radius: 1px; animation: barA 1s ease-in-out infinite; }
+  @keyframes barA { 50% { transform: scaleY(.4); } }
+  #agentInput { padding: 10px 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+  #agentInput input { flex: 1; padding: 8px 11px; font-size: 12.5px; background: var(--panel2);
+    color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-family: inherit; }
+  #agentInput input:focus { outline: none; border-color: var(--c-character); }
+
+  #zoomctl { position: fixed; left: 14px; bottom: 14px; z-index: 45; display: flex; gap: 4px; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
+  #zoomLabel { font-size: 11px; color: var(--fg-dim); min-width: 40px; text-align: center; }
+  #legend { position: fixed; left: 14px; bottom: 56px; z-index: 45; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; font-size: 10.5px;
+    color: var(--fg-dim); display: flex; flex-direction: column; gap: 4px; }
+  #legend .row { display: flex; align-items: center; gap: 7px; }
+  #legend .ln { width: 16px; height: 0; border-top: 2.5px solid; }
+
+  #toast { position: fixed; top: 58px; left: 50%; transform: translateX(-50%); z-index: 95;
+    background: var(--panel2); border: 1px solid var(--accent); color: var(--fg);
+    font-size: 12px; padding: 8px 18px; border-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .25s; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="wf-name">novel-to-anime · 小说改动画</span>
+  <span class="tag">TapCanvas 借鉴 · 媒体节点 + 类型化连线</span>
+  <span class="tag a">Agent 画布工具契约</span>
+  <div class="spacer"></div>
+  <button class="tb primary" id="btnRun">▶ 执行 DAG</button>
+  <button class="tb agent" id="btnAgent">🤖 Agent 指令演示</button>
+  <button class="tb" id="btnReset">⟲ 重置</button>
+</div>
+
+<div id="viewport"><div id="world"><svg id="edges"></svg></div></div>
+
+<div id="legend">
+  <div class="row"><span class="ln" style="border-color:var(--c-image)"></span>image</div>
+  <div class="row"><span class="ln" style="border-color:var(--c-video)"></span>video</div>
+  <div class="row"><span class="ln" style="border-color:var(--c-audio)"></span>audio</div>
+  <div class="row"><span class="ln" style="border-color:var(--c-subtitle)"></span>subtitle</div>
+  <div class="row"><span class="ln" style="border-color:var(--c-character)"></span>character</div>
+  <div class="row"><span class="ln" style="border-color:var(--c-text)"></span>text</div>
+</div>
+<div id="zoomctl">
+  <button class="tb" id="btnZoomOut">−</button><span id="zoomLabel">100%</span>
+  <button class="tb" id="btnZoomIn">＋</button><button class="tb" id="btnFit">⛶</button>
+</div>
+
+<!-- Agent 浮层 -->
+<div id="agent">
+  <div id="agentHead">
+    <span class="dot"></span>
+    <div><div class="t">Canvas Agent</div><div class="s">LangGraph · 15 个画布工具 · tool-schemas 契约</div></div>
+  </div>
+  <div id="msgs">
+    <div class="msg ai"><div class="who">AGENT</div>我可以直接操作画布：创建/连线/改参/执行节点。试试「🤖 Agent 指令演示」。</div>
+  </div>
+  <div id="agentInput">
+    <input value="把分镜图改成 4 张，再生成一条配音并接到视频节点" readonly>
+    <button class="tb agent" onclick="document.getElementById('btnAgent').click()">发送</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ═══════ 伪媒体（SVG data URI） ═══════ */
+function img(hue, w = 320, h = 180) {
+  const h2 = (hue + 40) % 360, h3 = (hue + 300) % 360;
+  const s = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue},45%,28%)"/><stop offset="1" stop-color="hsl(${h2},55%,13%)"/></linearGradient><radialGradient id="g" cx="0.68" cy="0.3" r="0.5"><stop offset="0" stop-color="hsl(${hue},80%,72%)" stop-opacity="0.9"/><stop offset="1" stop-color="hsl(${hue},80%,72%)" stop-opacity="0"/></radialGradient></defs><rect width="${w}" height="${h}" fill="url(#s)"/><rect width="${w}" height="${h}" fill="url(#g)"/><circle cx="${w*0.68}" cy="${h*0.3}" r="${h*0.12}" fill="hsl(${hue},85%,82%)"/><polygon points="0,${h} ${w*0.25},${h*0.5} ${w*0.55},${h}" fill="hsl(${h3},40%,16%)"/><polygon points="${w*0.33},${h} ${w*0.62},${h*0.42} ${w},${h}" fill="hsl(${h3},45%,11%)"/></svg>`;
+  return 'data:image/svg+xml,' + encodeURIComponent(s);
+}
+function grid4(hues) {
+  const cells = hues.map((h, i) => {
+    const x = (i % 2) * 160, y = Math.floor(i / 2) * 90;
+    return `<g transform="translate(${x},${y})"><rect width="158" height="88" fill="hsl(${h},40%,${18 + i * 5}%)"/><circle cx="${110}" cy="28" r="12" fill="hsl(${h},80%,75%)"/><polygon points="0,88 50,42 100,88" fill="hsl(${(h + 300) % 360},45%,12%)"/></g>`;
+  }).join('');
+  const s = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">${cells}</svg>`;
+  return 'data:image/svg+xml,' + encodeURIComponent(s);
+}
+
+/* ═══════ 节点 / 边（类型化端口） ═══════ */
+const THUMBS = {
+  char: () => img(330),
+  t2i: () => img(150),
+  mosaic: () => grid4([150, 200, 260, 320]),
+};
+const NODES = [
+  { id:'n-novel', kind:'text',      icon:'📄', t:'文本',     c:'#9ca3af', x:50,  y:280, w:180, label:'小说原文',
+    detail:'第 3 章 · 黄昏森林', thumbH: 66 },
+  { id:'n-char',  kind:'character', icon:'🧝', t:'character', c:'#ec4899', x:300, y:90,  w:200, label:'角色卡 · 林栖少女',
+    detail:'角色锁定 · 一致性参考', thumbH: 84, thumbKey: 'char' },
+  { id:'n-t2i',   kind:'image',     icon:'🖼', t:'textToImage', c:'#22c55e', x:300, y:330, w:200, label:'分镜图',
+    detail:'nano-banana-pro · 16:9', thumbH: 84, thumbKey: 't2i' },
+  { id:'n-video', kind:'video',     icon:'🎬', t:'composeVideo', c:'#3b82f6', x:570, y:170, w:210, label:'动画合成',
+    detail:'sora-2 · 8s · 图生视频', thumbH: 92, fail: true },
+  { id:'n-mosaic',kind:'image',     icon:'▦',  t:'mosaic',   c:'#22c55e', x:570, y:420, w:210, label:'四宫格拼图',
+    detail:'本地合成 · 无模型', thumbH: 92, thumbKey: 'mosaic' },
+  { id:'n-tts',   kind:'audio',     icon:'🔊', t:'tts',      c:'#eab308', x:300, y:600, w:200, label:'旁白配音',
+    detail:'step-tts · 磁性好声', thumbH: 40 },
+  { id:'n-sub',   kind:'subtitle',  icon:'💬', t:'subtitleAlign', c:'#a855f7', x:880, y:280, w:200, label:'字幕对齐',
+    detail:'视频+音频 → 时间轴', thumbH: 66 },
+];
+let nodes = JSON.parse(JSON.stringify(NODES));
+const EDGE_DEF = [
+  { from:'n-novel', to:'n-char',  type:'text',      label:'text' },
+  { from:'n-novel', to:'n-t2i',   type:'text',      label:'text' },
+  { from:'n-novel', to:'n-tts',   type:'text',      label:'text' },
+  { from:'n-char',  to:'n-t2i',   type:'character', label:'character→image ✓' },
+  { from:'n-t2i',   to:'n-video', type:'image',     label:'image→video ✓' },
+  { from:'n-t2i',   to:'n-mosaic',type:'image',     label:'image×4' },
+  { from:'n-tts',   to:'n-sub',   type:'audio',     label:'audio→subtitle ✓' },
+  { from:'n-video', to:'n-sub',   type:'video',     label:'video→subtitle ✓' },
+];
+let edges = JSON.parse(JSON.stringify(EDGE_DEF));
+const byId = id => nodes.find(n => n.id === id);
+const st = {};       // nodeId -> queued/running/success/error/blocked
+const prog = {};     // nodeId -> 0..100
+let extraNodes = [], extraEdges = [];
+
+const world = document.getElementById('world');
+const edgesSvg = document.getElementById('edges');
+const THUMB_EXTRA = 96;
+function nodeH(n) { return 78 + (n.thumbH || 0) + (st[n.id] === 'error' ? 30 : 0); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function render() {
+  world.querySelectorAll('.node,.e-label,.port-label').forEach(el => el.remove());
+  edgesSvg.innerHTML = '';
+  for (const e of edges.concat(extraEdges)) {
+    const a = byId(e.from) || extraNodes.find(n => n.id === e.from);
+    const b = byId(e.to) || extraNodes.find(n => n.id === e.to);
+    if (!a || !b) continue;
+    const blocked = st[b.id] === 'blocked';
+    const x1 = a.x + a.w, y1 = a.y + nodeH(a) / 2, x2 = b.x, y2 = b.y + nodeH(b) / 2;
+    const dx = Math.max(46, (x2 - x1) / 2);
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`);
+    p.setAttribute('class', `edge-path et-${e.type}` + (blocked ? ' blocked' : '') + (st[b.id] === 'success' ? ' hot' : ''));
+    edgesSvg.appendChild(p);
+    const lb = document.createElement('div');
+    lb.className = 'e-label' + (blocked ? ' blocked' : '');
+    lb.textContent = blocked ? '⛔ 上游失败，已阻断' : e.label;
+    lb.style.left = (x1+x2)/2 + 'px'; lb.style.top = (y1+y2)/2 + 'px';
+    world.appendChild(lb);
+  }
+  for (const n of nodes.concat(extraNodes)) {
+    renderNode(n);
+  }
+}
+function renderNode(n) {
+  const h = nodeH(n), s = st[n.id] || 'idle';
+  const el = document.createElement('div');
+  el.className = 'node' + (s === 'running' ? ' running' : '') + (s === 'blocked' ? ' blocked' : '') + (n.isNew ? ' new-node' : '');
+  el.style.cssText = `left:${n.x}px;top:${n.y}px;width:${n.w}px;--nc:${n.c}`;
+  el.dataset.id = n.id;
+  const badge = s === 'running' ? `<span class="n-status st-running">▶ ${prog[n.id] || 0}%</span>`
+    : s === 'success' ? '<span class="n-status st-success">✓ 完成</span>'
+    : s === 'error' ? '<span class="n-status st-error">✗ 失败</span>'
+    : s === 'queued' ? '<span class="n-status st-queued">排队中</span>'
+    : s === 'blocked' ? '<span class="n-status st-blocked">已阻断</span>' : '';
+  let inner = `<div class="n-head"><span class="n-icon">${n.icon}</span><span class="n-type">${n.t}</span>${badge}</div>` +
+    `<div class="n-label">${n.label}</div><div class="n-detail">${n.detail}</div>` +
+    `<div class="n-progress"><i style="width:${prog[n.id] || 0}%"></i></div>`;
+  if (n.thumbH) {
+    const thumbFn = n.thumbKey ? THUMBS[n.thumbKey] : null;
+    const thumb = s === 'success' && thumbFn ? thumbFn() : null;
+    inner += `<div class="n-thumb" style="height:${n.thumbH}px">` +
+      (thumb ? `<img src="${thumb}">` : `<div class="placeholder">${s === 'running' ? '生成中…' : s === 'error' ? '—' : '待执行'}</div>`) + `</div>`;
+  }
+  if (s === 'error') inner += `<div class="n-err">429 配额超限 · 可重试（StatusBanner）</div>`;
+  el.innerHTML = inner;
+  // 类型化端口：左入右出，端口色=数据类型色
+  const mk = (x, y, c) => {
+    const p = document.createElement('div');
+    p.className = 'port'; p.style.cssText = `left:${x}px;top:${y}px;background:${c}`;
+    el.appendChild(p);
+  };
+  const inColor = { 'n-char':'#9ca3af','n-t2i':'#9ca3af','n-video':'#22c55e','n-mosaic':'#22c55e','n-tts':'#9ca3af','n-sub':'#3b82f6' }[n.id];
+  if (inColor) mk(-6, h / 2 - 5, inColor);
+  if (n.id !== 'n-sub') mk(n.w - 4, h / 2 - 5, { 'text':'#9ca3af','character':'#ec4899','image':'#22c55e','video':'#3b82f6','audio':'#eab308','subtitle':'#a855f7' }[n.kind] || n.c);
+  world.appendChild(el);
+}
+
+/* ═══════ 视口 ═══════ */
+const viewport = document.getElementById('viewport');
+const cam = { x: 0, y: 0, k: 0.8 };
+function applyCam() {
+  world.style.transform = `translate3d(${cam.x}px,${cam.y}px,0) scale(${cam.k})`;
+  document.getElementById('zoomLabel').textContent = Math.round(cam.k * 100) + '%';
+}
+function fitView() {
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  for (const n of nodes.concat(extraNodes)) {
+    minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + n.w + 40); maxY = Math.max(maxY, n.y + nodeH(n));
+  }
+  const pad = 40, vw = viewport.clientWidth, vh = viewport.clientHeight;
+  cam.k = Math.min(0.95, Math.min(vw / (maxX - minX + pad * 2), vh / (maxY - minY + pad * 2)));
+  cam.x = (vw - (maxX - minX) * cam.k) / 2 - minX * cam.k;
+  cam.y = (vh - (maxY - minY) * cam.k) / 2 - minY * cam.k;
+  applyCam();
+}
+viewport.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = Math.exp(-e.deltaY * 0.0012), k2 = Math.min(2, Math.max(0.3, cam.k * f));
+  const wx = (e.clientX - cam.x) / cam.k, wy = (e.clientY - cam.y - 44) / cam.k;
+  cam.k = k2; cam.x = e.clientX - wx * k2; cam.y = e.clientY - 44 - wy * k2;
+  applyCam();
+}, { passive: false });
+let pan = null;
+viewport.addEventListener('pointerdown', e => {
+  if (e.target.closest('.node')) return;
+  pan = { px: e.clientX, py: e.clientY, cx: cam.x, cy: cam.y };
+  viewport.setPointerCapture(e.pointerId);
+});
+viewport.addEventListener('pointermove', e => {
+  if (!pan) return;
+  cam.x = pan.cx + e.clientX - pan.px; cam.y = pan.cy + e.clientY - pan.py; applyCam();
+});
+viewport.addEventListener('pointerup', () => { pan = null; });
+document.getElementById('btnFit').onclick = fitView;
+document.getElementById('btnZoomIn').onclick = () => { cam.k = Math.min(2, cam.k * 1.2); applyCam(); };
+document.getElementById('btnZoomOut').onclick = () => { cam.k = Math.max(0.3, cam.k / 1.2); applyCam(); };
+
+/* ═══════ DAG 执行模拟（拓扑序 + 失败阻断下游） ═══════ */
+const ORDER = ['n-novel', 'n-char', 'n-t2i', 'n-tts', 'n-mosaic', 'n-video', 'n-sub'];
+const DOWNSTREAM = { 'n-video': ['n-sub'] };
+async function runNode(id, ms = 1100) {
+  st[id] = 'running'; prog[id] = 0; render();
+  for (let p = 0; p <= 100; p += 20) { prog[id] = p; render(); await sleep(ms / 5); }
+  if (byId(id)?.fail) {
+    st[id] = 'error';
+    for (const d of DOWNSTREAM[id] || []) st[d] = 'blocked';
+    render();
+    return false;
+  }
+  st[id] = 'success'; render();
+  return true;
+}
+let running = false;
+document.getElementById('btnRun').onclick = async () => {
+  if (running) return; running = true;
+  for (const id of ORDER) {
+    if (st[id] === 'blocked') continue;
+    st[id] = 'queued'; render();
+  }
+  await sleep(400);
+  for (const id of ORDER) {
+    if (st[id] === 'blocked') continue;
+    await runNode(id, id === 'n-novel' ? 300 : 1000);
+  }
+  toast('DAG 执行结束 · n-video 失败（429）→ n-sub 已阻断（TapCanvas runner 语义）');
+  running = false;
+};
+
+/* ═══════ Agent 画布工具契约演示 ═══════ */
+const msgs = document.getElementById('msgs');
+function addMsg(cls, who, html) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.innerHTML = `<div class="who">${who}</div>${html}`;
+  msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
+}
+function addToolCard(name, args) {
+  const d = document.createElement('div');
+  d.className = 'tool-card';
+  d.innerHTML = `<div class="tc-head">⚙ <span class="tc-name">${name}</span><span class="tc-status" style="background:rgba(234,179,8,.15);color:#fcd34d">执行中</span></div><div class="tc-args">${args}</div>`;
+  msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
+  return d;
+}
+function toolDone(card, resultHtml) {
+  card.querySelector('.tc-status').textContent = '✓ 完成';
+  card.querySelector('.tc-status').style.cssText = '';
+  if (resultHtml) {
+    const r = document.createElement('div');
+    r.className = 'tc-result show';
+    r.innerHTML = resultHtml;
+    card.appendChild(r);
+  }
+  msgs.scrollTop = msgs.scrollHeight;
+}
+document.getElementById('btnAgent').onclick = async () => {
+  if (running) return; running = true;
+  addMsg('user', 'YOU', '把分镜图改成 4 张，再生成一条配音并接到视频节点');
+  await sleep(500);
+  addMsg('ai', 'AGENT', '好的，我来调整工作流：先把分镜图批量改 4 张，再新建配音节点并接入视频节点的 audio 端口。');
+  await sleep(700);
+  const c1 = addToolCard('updateNode', '{ nodeId: "n-t2i", config: { count: 4 } }');
+  byId('n-t2i').detail = 'nano-banana-pro · 16:9 · ×4';
+  byId('n-t2i').label = '分镜图 ×4';
+  render(); await sleep(700); toolDone(c1);
+  const c2 = addToolCard('createNode', '{ kind: "tts", label: "环境音配音", model: "step-tts" }');
+  await sleep(700);
+  const tts2 = { id:'n-tts2', kind:'audio', icon:'🔊', t:'tts', c:'#eab308', x:300, y:740, w:200, label:'环境音配音',
+    detail:'step-tts · 森林氛围', thumbH: 40, isNew: true };
+  extraNodes.push(tts2); render(); fitView();
+  await sleep(500); toolDone(c2);
+  const c3 = addToolCard('connectNodes', '{ from: "n-tts2", to: "n-video", port: "audio→video ✓" }');
+  await sleep(700);
+  extraEdges.push({ from:'n-tts2', to:'n-video', type:'audio', label:'audio→video ✓（类型校验通过）' });
+  render(); await sleep(500); toolDone(c3);
+  const c4 = addToolCard('runNode', '{ nodeId: "n-tts2" }');
+  st['n-tts2'] = 'running'; prog['n-tts2'] = 0; render();
+  for (let p = 0; p <= 100; p += 25) { prog['n-tts2'] = p; render(); await sleep(220); }
+  st['n-tts2'] = 'success'; render();
+  toolDone(c4, `<div class="tc-audio"><span>▶</span><div class="bars">${'<i style="height:8px"></i><i style="height:14px"></i><i style="height:10px"></i><i style="height:16px"></i><i style="height:7px"></i><i style="height:13px"></i><i style="height:9px"></i><i style="height:15px"></i>'.replace(/<i /g, '<i style="animation-delay:' + Math.random().toFixed(1) + 's;" ') }</div><span style="font-size:10px;color:var(--fg-dim)">ambient-forest.mp3 · 8s（toolCallBindings 气泡内媒体）</span></div>`);
+  await sleep(600);
+  const c5 = addToolCard('canvas_smartLayout', '{ direction: "LR", animate: true }');
+  await sleep(500);
+  // 智能布局动画（CSS transition 已在 .node 上）
+  byId('n-novel').x = 40; byId('n-novel').y = 300;
+  byId('n-char').x = 290; byId('n-char').y = 100;
+  byId('n-t2i').x = 290; byId('n-t2i').y = 330;
+  byId('n-tts').x = 290; byId('n-tts').y = 570;
+  tts2.x = 290; tts2.y = 710; delete tts2.isNew;
+  byId('n-video').x = 570; byId('n-video').y = 180;
+  byId('n-mosaic').x = 570; byId('n-mosaic').y = 420;
+  byId('n-sub').x = 860; byId('n-sub').y = 290;
+  render(); fitView();
+  await sleep(700); toolDone(c5);
+  addMsg('ai', 'AGENT', '已完成：① 分镜图批量 ×4 ② 新建「环境音配音」③ 通过类型校验接入视频节点 audio 端口 ④ 配音已生成（见上方气泡内播放器）⑤ 全图智能布局。注意 n-video 此前 429 失败，建议重试后再跑 n-sub。');
+  toast('Agent 画布工具契约演示完成 · 5 个工具调用全部作用于画布');
+  running = false;
+};
+
+/* ═══════ 重置 / Toast ═══════ */
+document.getElementById('btnReset').onclick = () => {
+  nodes = JSON.parse(JSON.stringify(NODES));
+  edges = JSON.parse(JSON.stringify(EDGE_DEF));
+  extraNodes = []; extraEdges = [];
+  Object.keys(st).forEach(k => delete st[k]);
+  Object.keys(prog).forEach(k => delete prog[k]);
+  msgs.innerHTML = '<div class="msg ai"><div class="who">AGENT</div>我可以直接操作画布：创建/连线/改参/执行节点。试试「🤖 Agent 指令演示」。</div>';
+  render(); fitView(); toast('已重置');
+};
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+}
+
+render();
+fitView();
+</script>
+</body>
+</html>

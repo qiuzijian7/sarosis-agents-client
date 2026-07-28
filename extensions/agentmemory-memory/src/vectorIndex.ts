@@ -126,6 +126,16 @@ export class VectorIndex {
 		}
 	}
 
+	/**
+	 * 便捷方法：直接用文本添加（内部 trigram 同步 embedding，无需 transformers）。
+	 * 用于 gateway 子进程等只需 trigram fallback 的同步场景。查询侧 search()
+	 * 在 transformers 不可用时同样回退到 embedSync，两侧维度一致（384）。
+	 */
+	addText(id: string, text: string): void {
+		const vec = embedSync(text);
+		if (vec) { this.add(id, vec); }
+	}
+
 	remove(id: string): void {
 		this.vectors.delete(id);
 	}

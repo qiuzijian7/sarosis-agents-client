@@ -9,7 +9,6 @@ import type {
 	IAgentInfo,
 	IProviderInfo,
 	IModelInfo,
-	ChatMode,
 	StreamPhase,
 	IWorktreeItem,
 	IWorkspaceItem,
@@ -41,7 +40,8 @@ export interface IChatPanelCallbacks {
 	onRenameSession?: (sessionId: string, newName: string) => void;
 	onDeleteSession?: (sessionId: string) => void;
 	onOpenSettings?: () => void;
-	onChangeMode?: (mode: ChatMode) => void;
+	// onChangeMode removed — replaced by onToggleChatOnly
+	onToggleChatOnly?: (chatOnly: boolean) => void;
 	onSelectProvider?: (providerId: string) => void;
 	onSelectModel?: (modelId: string) => void;
 	onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
@@ -59,7 +59,7 @@ export interface IChatPanelCallbacks {
 	onTipDismiss?: (tipId: string) => void;
 	onApplyCode?: (code: string, language: string, filePath?: string) => void;
 	onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
-	onOpenFile?: (filePath: string, content?: string) => void;
+	onOpenFile?: (filePath: string, contentOrLine?: string | number) => void;
 	onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
 	onAddFileContext?: (filePath: string) => void;
 	onRunInTerminal?: (code: string) => void;
@@ -76,6 +76,8 @@ export interface IChatPanelCallbacks {
 	onClosePlanDialog?: (planId: string) => void;
 	/** 收藏消息到知识库 */
 	onFavoriteMessage?: (messageContent: string) => void;
+	/** 输入框文本变更（每次 input 事件触发；消费方自行 debounce）。用于 per-session 草稿持久化。 */
+	onComposerTextChange?: (text: string) => void;
 
 	// ── Channel 绑定（飞书）相关回调（对齐 AgentSettingsEditorPane）──
 	/** 列出某平台所有 会话→Agent 绑定；Channel 绑定 tab 依赖它，缺失则不显示该 tab。 */
@@ -169,7 +171,7 @@ export interface IChatPanel extends IDisposable {
 	setContextUsage(usage: IContextUsage | null): void;
 
 	// ── Session / worktree / mode ──
-	setChatMode(mode: ChatMode): void;
+	setChatOnly(chatOnly: boolean): void;
 	setSessionInfo(info: ISessionInfo | null): void;
 	setAgentSessions(sessions: ReadonlyArray<IAgentSessionMeta>): void;
 	setWorktrees(items: ReadonlyArray<IWorktreeItem>): void;
@@ -188,6 +190,10 @@ export interface IChatPanel extends IDisposable {
 	// ── UI operations ──
 	focusInput(): void;
 	layout(width: number, height: number): void;
+	/** Read composer text for persistence. */
+	getComposerText(): string;
+	/** Set composer text (for restoring persisted input). */
+	setComposerText(text: string): void;
 
 	// ── Attachments ──
 	getAttachments(): ReadonlyArray<IChatAttachment>;

@@ -25,7 +25,8 @@ import { IWorkspaceContextService } from '../../../../../../platform/workspace/c
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { ToolSecurityLevel } from '../../../common/providers.js';
 import type { IToolResultContent } from '../../../common/providers.js';
-import { SearchHelpers } from './searchHelpers.js';
+import { SearchHelpers, redactSecrets } from './searchHelpers.js';
+import { detectTerminalSearchCommand, terminalSearchCommandHint } from './terminalCommandGuards.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 
 export interface CoreToolContext {
@@ -46,6 +47,8 @@ const READ_LINE_MAX_CHARS = 2000;
 const READ_MAX_CHARS = 100_000;
 const LARGE_FILE_HINT_BYTES = 512 * 1024;
 const LARGE_FILE_HINT_MIN_LIMIT = 200;
+/** 上下文窗口大小（2026-07-26 P2 动态上下文保护）：全读大文件时按占比警告 */
+const CONTEXT_WINDOW_TOKENS = 128_000;
 // P1: 写文件敏感路径拒绝列表（对齐 Hermes file_safety.py）
 const WRITE_DENIED_PREFIXES = ['.ssh/', '.aws/', '.kube/', '.config/gcloud/', '.git-credentials'];
 const WRITE_DENIED_EXACT = ['.env', '.env.local', '.env.production', '.env.development', 'auth.json', '.npmrc', '.pypirc'];
@@ -57,27 +60,6 @@ const READ_REPEAT_BLOCK = 4;
 const READ_DEDUP_BLOCK = 2;
 const READ_DEDUP_CAP = 500;
 const READ_REPEAT_CAP = 1000;
-
-const _REDACT_PATTERNS_WHOLE: ReadonlyArray<readonly [RegExp, string]> = [
-	// PEM 私钥块
-	[/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '<REDACTED PRIVATE KEY>'],
-	// JWT
-	[/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '<REDACTED JWT>'],
-	// AWS Access Key
-	[/\bAKIA[0-9A-Z]{16}\b/g, '<REDACTED AWS KEY>'],
-	// GitHub tokens
-	[/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '<REDACTED>'],
-	[/\bgithub_pat_[A-Za-z0-9_]{22,}\b/g, '<REDACTED>'],
-	// GitLab
-	[/\bglpat-[A-Za-z0-9_-]{20}\b/g, '<REDACTED>'],
-	// Slack
-	[/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '<REDACTED>'],
-	// OpenAI / Anthropic
-	[/\bsk-[A-Za-z0-9]{20,}\b/g, '<REDACTED>'],
-	[/\bsk-ant-[A-Za-z0-9_-]{20,}\b/g, '<REDACTED>'],
-];
-
-const _REDACT_PATTERN_ASSIGN = /((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|authorization|auth)\b)(\s*[:=]\s*)(['"]?)[^\s'"]+/gi;
 
 /** 计算两个字符串的 Levenshtein 编辑距离（Wagner-Fischer 算法）。 */
 function _levenshtein(a: string, b: string): number {
@@ -105,18 +87,6 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 	const _readDedupMap = new Map<string, { mtime: number; stubCount: number }>();
 	const _readRepeatMap = new Map<string, { key: string; count: number }>();
 	const _fileReadMtimeMap = new Map<string, number>();
-
-	// ── 密钥脱敏（对齐 Hermes redact_sensitive_text）─────────────────
-	function redactSecrets(input: string): string {
-		if (!input) { return input; }
-		let out = input;
-		for (const [re, mask] of _REDACT_PATTERNS_WHOLE) {
-			out = out.replace(re, mask);
-		}
-		out = out.replace(_REDACT_PATTERN_ASSIGN,
-			(_m, key: string, sep: string, q: string) => `${key}${sep}${q}<REDACTED>${q}`);
-		return out;
-	}
 
 	async function executeTerminalCommand(
 		command: string,
@@ -399,38 +369,78 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 
 	ctx.logService.info('[BuiltinTools] _registerCoreTools: starting to register core tools');
 
-	// ── clarify: 向用户提问 ─────────────────────────────────────────
+	// ── clarify: 向用户提问（支持单问题 / 多问题表单） ──────────
 	ctx.register({
 		definition: {
 			name: 'clarify',
 			description: [
-				'Ask the user a clarifying question with optional multiple-choice options.',
-				'Use this when requirements are ambiguous and you need user input to proceed.',
-				'The question is presented to the user; their response will arrive as a new message.',
+				'Ask the user clarifying questions. Supports single-question mode (question + options)',
+				'or multi-question form mode (questions array). Use multi-question mode when you have',
+				'several independent points to clarify at once, saving round-trips.',
+				'Each question can have optional multiple-choice options (1-4 items).',
+				'The user\'s answers will arrive as a new message.',
 			].join(' '),
 			inputSchema: {
 				type: 'object',
 				properties: {
-					question: { type: 'string', description: 'The question to ask the user' },
+					question: { type: 'string', description: 'Single question (use this OR questions[], not both)' },
 					options: {
 						type: 'array',
 						items: { type: 'string' },
-						description: 'Multiple-choice options (1-4 items). Omit for open-ended questions.',
+						description: 'Multiple-choice options for single-question mode (1-4 items).',
 						maxItems: 4,
 					},
+					questions: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: {
+								question: { type: 'string', description: 'The question text' },
+								options: {
+									type: 'array',
+									items: { type: 'string' },
+									description: 'Multiple-choice options for this question (optional, 1-4 items).',
+									maxItems: 4,
+								},
+								id: { type: 'string', description: 'Short identifier for this question (optional, auto-generated if omitted).' },
+							},
+							required: ['question'],
+						},
+						description: 'Batch of questions (2-8 items). Each question may have its own options.',
+						maxItems: 8,
+					},
 				},
-				required: ['question'],
+				required: [],
 			},
 			category: 'clarify',
 			source: ctx.id,
 		},
 		handler: async args => {
+			// ── 多问题模式 ──────────────────────────────
+			const questionsArr = Array.isArray(args['questions']) ? (args['questions'] as unknown[]) : undefined;
+			if (questionsArr && questionsArr.length > 0) {
+				const items = questionsArr
+					.filter((q: any) => q && typeof q.question === 'string' && q.question.trim())
+					.map((q: any, i: number) => ({
+						id: q.id || `q${i}`,
+						question: String(q.question).trim(),
+						options: Array.isArray(q.options) ? (q.options as unknown[]).map(String) : undefined,
+					}));
+				if (items.length === 0) {
+					return text('Error: at least one valid question is required');
+				}
+				return [{
+					type: 'text' as const,
+					text: JSON.stringify({ __clarify__: true, questions: items }),
+				}];
+			}
+
+			// ── 单问题模式（向后兼容） ─────────────────
 			const question = String(args['question'] ?? '').trim();
 			if (!question) {
-				return text('Error: question parameter is required');
+				return text('Error: question or questions[] parameter is required');
 			}
 			const options = Array.isArray(args['options']) ? (args['options'] as unknown[]).map(String) : undefined;
-			// 返回结构化内容 — webview 端检测 clarify 卡片并渲染交互 UI
 			return [{
 				type: 'text' as const,
 				text: JSON.stringify({ __clarify__: true, question, options }),
@@ -556,15 +566,27 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				tailParts.push(`[已显示第 ${offset}-${lastLine} 行，文件结束 (${totalLines} 行总计)]`);
 			}
 
-			// 大文件提示
-			if (fileSize > LARGE_FILE_HINT_BYTES && limit > LARGE_FILE_HINT_MIN_LIMIT) {
-				tailParts.push(`[Hint: 这是一个大文件 (${(fileSize / 1024).toFixed(0)}KB)。考虑用更小的 limit 值分段读以加快速度。]`);
-			}
+		// 大文件提示
+		if (fileSize > LARGE_FILE_HINT_BYTES && limit > LARGE_FILE_HINT_MIN_LIMIT) {
+			tailParts.push(`[Hint: 这是一个大文件 (${(fileSize / 1024).toFixed(0)}KB)。考虑用更小的 limit 值分段读以加快速度。]`);
+		}
 
-			// 重复读取警告
-			if (repeatResult.warning) {
-				tailParts.push(`[Warning: 你已连续 ${repeatResult.count} 次读取完全相同的文件区域。]`);
+		// 2026-07-26（P2，Continue FileTooLarge 思路）：动态上下文保护——
+		// 一次性吞下整个文件时，按估算 token 与上下文窗口占比警告。
+		// Continue 超上下文 50% 直接抛错；我们选择「警告不阻止」：
+		// 让模型量化感知（约占上下文 P%），引导探索场景改用局部读取。
+		if (offset === 1 && !hasMore && totalLines >= 500) {
+			const estimatedTokens = Math.ceil(out.length / 4);
+			if (estimatedTokens >= 8_000) {
+				const pct = (estimatedTokens / CONTEXT_WINDOW_TOKENS * 100).toFixed(1);
+				tailParts.push(`[Warning: 一次读取了整个文件（${totalLines} 行 ≈ ${estimatedTokens} tokens，约占上下文窗口的 ${pct}%）。探索代码时优先用 offset/limit 读取相关片段，或用 search_code/get_code_snippet 精准定位符号，避免大量无关内容占用上下文。]`);
 			}
+		}
+
+		// 重复读取警告
+		if (repeatResult.warning) {
+			tailParts.push(`[Warning: 你已连续 ${repeatResult.count} 次读取完全相同的文件区域。]`);
+		}
 
 			const tail = tailParts.length > 0 ? '\n\n' + tailParts.join('\n') : '';
 
@@ -577,7 +599,7 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 	ctx.register({
 		definition: {
 			name: 'file_write',
-			description: 'Write a UTF-8 text file (overwrites). Creates parent directories as needed.',
+			description: 'Write a UTF-8 text file (overwrites). Creates parent directories as needed. For large files (>8KB), prefer writing in multiple smaller steps rather than one big call: a single very large write may hit the model output limit and get truncated, leaving the file incomplete or corrupted. Write an initial portion with this tool, then append the remaining sections with follow-up `patch` calls (use the tail of the already-written content as the search anchor).',
 			inputSchema: {
 				type: 'object',
 				properties: {
@@ -660,73 +682,6 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		},
 	});
 
-	ctx.register({
-		definition: {
-			name: 'search_files',
-			description: 'Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target=\'content\'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target=\'files\'): Find files by glob pattern (e.g., \'*.py\', \'*config*\'). Also use this instead of ls — results sorted by modification time.',
-			inputSchema: {
-				type: 'object',
-				properties: {
-					pattern: { type: 'string', description: 'Regex pattern for content search, or glob pattern (e.g., \'*.py\') for file search' },
-					target: { type: 'string', enum: ['content', 'files'], description: '\'content\' searches inside file contents, \'files\' searches for files by name', default: 'content' },
-					path: { type: 'string', description: 'Directory or file to search in (default: current working directory)', default: '.' },
-					file_glob: { type: 'string', description: 'Filter files by pattern in grep mode (e.g., \'*.py\' to only search Python files)' },
-					limit: { type: 'integer', description: 'Maximum number of results to return (default: 50)', default: 50 },
-					offset: { type: 'integer', description: 'Skip first N results for pagination (default: 0)', default: 0 },
-					output_mode: { type: 'string', enum: ['content', 'files_only', 'count'], description: 'Output format for grep mode: \'content\' shows matching lines with line numbers, \'files_only\' lists file paths, \'count\' shows match counts per file', default: 'content' },
-					context: { type: 'integer', description: 'Number of context lines before and after each match (grep mode only)', default: 0 },
-				},
-				required: ['pattern'],
-			},
-			category: 'filesystem',
-			source: ctx.id,
-		},
-		handler: async (args, _signal, agentId) => {
-			// 兼容旧参数名：query → pattern
-			const pattern = String(args['pattern'] || args['query'] || '');
-			if (!pattern) { throw new Error('pattern is required'); }
-
-			const target = String(args['target'] || 'content');
-			const searchPath = String(args['path'] || '.');
-			const fileGlob = args['file_glob'] ? String(args['file_glob']) : undefined;
-			const limit = Math.min(Math.max(Number(args['limit'] ?? 50), 1), 200);
-			const offset = Math.max(Number(args['offset'] ?? 0), 0);
-			const outputMode = String(args['output_mode'] || 'content');
-			const contextLines = Math.min(Math.max(Number(args['context'] ?? 0), 0), 10);
-
-			// ── 重复搜索熔断 ──
-			const repeat = ctx.searchHelpers.recordSearchRepeat(agentId, pattern, target, searchPath, fileGlob, limit, offset);
-			if (repeat.blocked) {
-				return [{ type: 'text', text: repeat.blocked }];
-			}
-
-			// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
-			const resolvedPath = await ctx.resolveAndCheckWorkspacePath(agentId, searchPath, false);
-
-			let result: string;
-			if (target === 'files') {
-				const glob = ctx.searchHelpers.normalizeFileSearchGlob(pattern);
-				result = await ctx.searchHelpers.searchFilesByGlob(resolvedPath, glob, limit, offset, _signal);
-			} else {
-				result = await ctx.searchHelpers.searchContent(
-					resolvedPath, pattern, fileGlob, limit, offset, outputMode, contextLines, _signal,
-				);
-			}
-
-			// 结果后处理：大小截断 → 脱敏 → densify
-			result = ctx.searchHelpers.enforceSearchSize(result);
-			result = redactSecrets(result);
-			if (!(target === 'files' || outputMode === 'files_only' || outputMode === 'count')) {
-				// content 模式 >=5 条匹配时自动切换到路径分组紧凑格式
-				result = ctx.searchHelpers.densifySearchOutput(result);
-			}
-			if (repeat.warning) {
-				result += '\n\n' + repeat.warning;
-			}
-			return [{ type: 'text', text: result }];
-		},
-	});
-
 	// ── terminal ────────────────────────────────────────────────────
 	ctx.register({
 		definition: {
@@ -753,7 +708,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 			const resolvedCwd = await ctx.resolveAndCheckWorkspacePath(agentId, requestedCwd);
 			const timeoutSec = Math.min(Math.max(Number(args['timeout'] ?? 30), 1), 300);
 
-			return executeTerminalCommand(command, resolvedCwd, timeoutSec, signal);
+			const result = await executeTerminalCommand(command, resolvedCwd, timeoutSec, signal);
+			// ── 搜索类命令护栏（不阻断执行，仅提示）──────────────────────
+			// find/grep -r/Get-ChildItem -Recurse 等纯搜索命令是 search_files/
+			// search_code 的本职工作（索引快路径 + 结构化结果 + 无 shell 可移植性
+			// 问题）。命中模式时在输出末尾追加 tool-hint 引导下次改用专用工具。
+			// 模式表数据驱动，见 terminalCommandGuards.ts。
+			const searchGuardHit = detectTerminalSearchCommand(command);
+			if (searchGuardHit) {
+				ctx.logService.info(`[coreTools] terminal search-like command detected (${searchGuardHit.id}) — appending tool hint`);
+				result.push({ type: 'text', text: terminalSearchCommandHint(searchGuardHit) });
+			}
+			return result;
 		},
 	});
 

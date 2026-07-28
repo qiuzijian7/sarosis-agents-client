@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库 View - Tab 布局 Mockup</title>
+<style>
+	* { margin: 0; padding: 0; box-sizing: border-box; }
+
+	body {
+		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+		background: #0d0d0d;
+		color: #cccccc;
+		display: flex;
+		justify-content: center;
+		padding: 24px;
+		user-select: none;
+	}
+
+	.wrapper {
+		width: 380px;
+		background: #1a1a1a;
+		border: 1px solid #333;
+		border-radius: 6px;
+		overflow: hidden;
+		box-shadow: 0 0 20px rgba(0,0,0,.5);
+		display: flex;
+		flex-direction: column;
+		min-height: 700px;
+	}
+
+	/* ═══ Section Header ═══ */
+	.section {
+		border-bottom: 1px solid #2a2a2a;
+		overflow: hidden;
+		transition: flex .25s ease;
+	}
+	.section:last-child { border-bottom: none; }
+	.section.expanded { flex: 1; display: flex; flex-direction: column; }
+	.section.collapsed { flex: 0 0 auto; }
+
+	.sec-header {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 12px;
+		background: #1e1e1e;
+		cursor: pointer;
+		border-bottom: 1px solid #2a2a2a;
+		font-size: 13px;
+		font-weight: 600;
+		min-height: 36px;
+	}
+	.sec-header:hover { background: #252525; }
+	.section.expanded .sec-header { border-bottom-color: #3a3a3a; }
+	.section.collapsed .sec-header { border-bottom: none; }
+
+	.sec-arrow {
+		font-size: 10px;
+		transition: transform .15s;
+		color: #888;
+		width: 14px;
+		text-align: center;
+	}
+	.section.expanded .sec-arrow { transform: rotate(0deg); }
+	.section.collapsed .sec-arrow { transform: rotate(-90deg); }
+
+	.sec-icon { font-size: 14px; }
+	.sec-label { flex: 1; color: #e0e0e0; }
+	.sec-badge {
+		font-size: 11px;
+		background: #333;
+		color: #aaa;
+		border-radius: 10px;
+		padding: 1px 8px;
+		margin-right: 4px;
+	}
+	.sec-actions { display: flex; gap: 2px; }
+
+	.sec-action {
+		width: 24px; height: 24px;
+		display: flex; align-items: center; justify-content: center;
+		border-radius: 3px; cursor: pointer; font-size: 13px;
+		color: #aaa; background: transparent;
+	}
+	.sec-action:hover { background: #3a3a3a; color: #fff; }
+
+	/* ═══ Section Body ═══ */
+	.sec-body {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+	.section.collapsed .sec-body { display: none; }
+
+	/* ── KB: Vault Bar ── */
+	.vault-bar {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 6px 10px;
+		background: #1e1e1e;
+		border-bottom: 1px solid #2a2a2a;
+		font-size: 12px;
+	}
+	.vault-select {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 8px;
+		background: #2a2a2a;
+		border-radius: 4px;
+		cursor: pointer;
+		flex: 1;
+		min-width: 0;
+	}
+	.vault-select:hover { background: #333; }
+	.vault-icon { font-size: 14px; }
+	.vault-name { color: #ddd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.vault-caret { color: #888; font-size: 10px; margin-left: 2px; }
+	.vault-actions { display: flex; align-items: center; gap: 1px; }
+
+	/* ── Search ── */
+	.search-row {
+		display: flex;
+		gap: 4px;
+		padding: 6px 10px;
+		background: #1e1e1e;
+		border-bottom: 1px solid #2a2a2a;
+	}
+	.search-input {
+		flex: 1;
+		border: 1px solid #3a3a3a;
+		background: #111;
+		color: #ccc;
+		padding: 4px 8px;
+		border-radius: 4px;
+		font-size: 12px;
+		outline: none;
+	}
+	.search-input:focus { border-color: #555; }
+	.search-input::placeholder { color: #555; }
+
+	/* ── Tree ── */
+	.tree-area {
+		flex: 1;
+		overflow-y: auto;
+		padding: 4px 0;
+		font-size: 12px;
+	}
+	.tree-node {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 12px 3px 6px;
+		cursor: pointer;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.tree-node:hover { background: #2a2a2a; }
+	.tree-node.selected { background: #094771; }
+	.tree-indent { width: 16px; flex-shrink: 0; }
+	.tree-arrow { font-size: 9px; color: #777; width: 12px; text-align: center; flex-shrink: 0; }
+	.tree-icon { font-size: 12px; flex-shrink: 0; }
+	.tree-name { color: #ccc; overflow: hidden; text-overflow: ellipsis; }
+	.tree-badge {
+		font-size: 10px; color: #777; margin-left: auto; flex-shrink: 0;
+	}
+
+	/* ── Memory Panel ── */
+	.mem-list {
+		flex: 1;
+		overflow-y: auto;
+		padding: 4px 0;
+	}
+	.mem-item {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		padding: 8px 12px;
+		cursor: pointer;
+		border-bottom: 1px solid #222;
+		transition: background .1s;
+	}
+	.mem-item:hover { background: #2a2a2a; }
+	.mem-icon {
+		width: 28px; height: 28px;
+		display: flex; align-items: center; justify-content: center;
+		border-radius: 4px;
+		font-size: 14px;
+		flex-shrink: 0;
+	}
+	.mem-icon.note { background: #1a3a5c; }    /* 💡 */
+	.mem-icon.fact { background: #2a4a2a; }    /* ✓  */
+	.mem-icon.event { background: #4a3a1a; }   /* 📅 */
+	.mem-body { flex: 1; min-width: 0; }
+	.mem-title {
+		font-size: 12px;
+		color: #ddd;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.mem-meta {
+		display: flex;
+		gap: 8px;
+		margin-top: 2px;
+		font-size: 10px;
+		color: #666;
+	}
+	.mem-tag {
+		font-size: 10px;
+		background: #2a2a2a;
+		color: #888;
+		border-radius: 3px;
+		padding: 0 4px;
+		flex-shrink: 0;
+		margin-top: 1px;
+	}
+
+	/* ── Empty state ── */
+	.empty-state {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		color: #555;
+		font-size: 12px;
+		padding: 24px;
+		text-align: center;
+	}
+	.empty-icon { font-size: 28px; opacity: .4; }
+
+	/* ── Section drag handle ── */
+	.drag-handle {
+		height: 3px;
+		background: #2a2a2a;
+		cursor: row-resize;
+		transition: background .1s;
+		flex-shrink: 0;
+	}
+	.drag-handle:hover { background: #094771; }
+
+	/* ── Tooltip hint ── */
+	.tip-row {
+		padding: 12px;
+		text-align: center;
+		color: #555;
+		font-size: 11px;
+		line-height: 1.5;
+	}
+
+	/* ═══ Scrollbar ═══ */
+	::-webkit-scrollbar { width: 6px; }
+	::-webkit-scrollbar-track { background: transparent; }
+	::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+	::-webkit-scrollbar-thumb:hover { background: #444; }
+
+	/* ═══ Flow diagram ═══ */
+	.notes-box {
+		margin: 16px 12px;
+		padding: 12px 16px;
+		background: #14171a;
+		border: 1px dashed #2a3a4a;
+		border-radius: 6px;
+		color: #555;
+		font-size: 11px;
+		text-align: center;
+	}
+	.notes-box strong { color: #6a9; }
+</style>
+</head>
+<body>
+
+<div class="wrapper">
+
+	<!-- ════════════════════════════════════════════ -->
+	<!--  知识库 Section (默认展开)                    -->
+	<!-- ════════════════════════════════════════════ -->
+	<div class="section expanded" id="kb-section">
+		<div class="sec-header" onclick="toggleSection('kb-section')">
+			<span class="sec-arrow">▼</span>
+			<span class="sec-icon">📚</span>
+			<span class="sec-label">知识库</span>
+			<span class="sec-badge">3 vaults</span>
+			<div class="sec-actions">
+				<span class="sec-action" title="新建" onclick="event.stopPropagation()">+</span>
+				<span class="sec-action" title="导入" onclick="event.stopPropagation()">📥</span>
+				<span class="sec-action" title="设置" onclick="event.stopPropagation()">⚙</span>
+			</div>
+		</div>
+
+		<div class="sec-body">
+			<!-- Vault Bar -->
+			<div class="vault-bar">
+				<div class="vault-select">
+					<span class="vault-icon">📁</span>
+					<span class="vault-name">我的研究知识库</span>
+					<span class="vault-caret">▼</span>
+				</div>
+				<div class="vault-actions">
+					<span class="sec-action" title="记忆库">🧠</span>
+					<span class="sec-action" title="刷新">⭯</span>
+				</div>
+			</div>
+
+			<!-- Search -->
+			<div class="search-row">
+				<input class="search-input" placeholder="🔍 搜索知识库…" />
+				<span class="sec-action" style="font-size:16px">🔍</span>
+			</div>
+
+			<!-- File Tree -->
+			<div class="tree-area">
+				<div class="tree-node selected">
+					<span class="tree-arrow">▼</span><span class="tree-icon">📁</span>
+					<span class="tree-name">📖 库</span>
+					<span class="tree-badge">12</span>
+				</div>
+				<div class="tree-node"><span class="tree-indent"></span><span class="tree-indent"></span><span class="tree-arrow">▶</span><span class="tree-icon">📁</span><span class="tree-name">articles</span><span class="tree-badge">5</span></div>
+				<div class="tree-node"><span class="tree-indent"></span><span class="tree-indent"></span><span class="tree-indent"></span><span class="tree-icon">📄</span><span class="tree-name">react-hooks-patterns.md</span></div>
+				<div class="tree-node"><span class="tree-indent"></span><span class="tree-indent"></span><span class="tree-indent"></span><span class="tree-icon">📄</span><span class="tree-name">python-async-explained.md</span></div>
+				<div class="tree-node"><span class="tree-indent"></span><span class="tree-indent"></span><span class="tree-icon">📁</span><span class="tree-name">videos</span><span class="tree-badge">3</span></div>
+				<div class="tree-node"><span class="tree-indent"></span><span class="tree-indent"></span><span class="tree-icon">📁</span><span class="tree-name">papers</span><span class="tree-badge">4</span></div>
+
+				<div class="tree-node">
+					<span class="tree-arrow">▶</span><span class="tree-icon">📁</span>
+					<span class="tree-name">📝 笔记</span>
+					<span class="tree-badge">28</span>
+				</div>
+
+				<div class="notes-box">
+					<strong>💡 导入流程</strong><br>
+					URL / 文件 / 聊天消息 → 自动分类 → <strong>库</strong><br>
+					→ 结构化抽取 → <strong>笔记</strong> ([[wikilinks]])
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ════════════════════════════════════════════ -->
+	<!--  拖拽分隔条                                    -->
+	<!-- ════════════════════════════════════════════ -->
+	<div class="drag-handle" title="拖拽调整知识库/记忆库高度"></div>
+
+	<!-- ════════════════════════════════════════════ -->
+	<!--  记忆库 Section (默认展开)                    -->
+	<!-- ════════════════════════════════════════════ -->
+	<div class="section expanded" id="mem-section">
+		<div class="sec-header" onclick="toggleSection('mem-section')">
+			<span class="sec-arrow">▼</span>
+			<span class="sec-icon">🧠</span>
+			<span class="sec-label">记忆库</span>
+			<span class="sec-badge">4 types</span>
+			<div class="sec-actions">
+				<span class="sec-action" title="全部刷新" onclick="event.stopPropagation()">⭯</span>
+				<span class="sec-action" title="设置" onclick="event.stopPropagation()">⚙</span>
+			</div>
+		</div>
+
+		<div class="sec-body">
+			<div class="mem-list">
+
+				<!-- 记忆项：笔记 -->
+				<div class="mem-item">
+					<div class="mem-icon note">💡</div>
+					<div class="mem-body">
+						<div class="mem-title">用户偏好：React + TypeScript 技术栈</div>
+						<div class="mem-meta">
+							<span>preference</span><span>•</span><span>3天前</span><span>•</span><span>agent: dev-helper</span>
+						</div>
+					</div>
+					<span class="mem-tag">偏好</span>
+				</div>
+
+				<!-- 记忆项：事实 -->
+				<div class="mem-item">
+					<div class="mem-icon fact">✓</div>
+					<div class="mem-body">
+						<div class="mem-title">项目 sarosis-agents-client 使用 VSCode Shell</div>
+						<div class="mem-meta">
+							<span>fact</span><span>•</span><span>1周前</span><span>•</span><span>agent: claw</span>
+						</div>
+					</div>
+					<span class="mem-tag">事实</span>
+				</div>
+
+				<!-- 记忆项：事件 -->
+				<div class="mem-item">
+					<div class="mem-icon event">📅</div>
+					<div class="mem-body">
+						<div class="mem-title">2026-07-21 — 知识库 agent 技能导入流程上线</div>
+						<div class="mem-meta">
+							<span>event</span><span>•</span><span>今天</span><span>•</span><span>agent: system</span>
+						</div>
+					</div>
+					<span class="mem-tag">事件</span>
+				</div>
+
+				<!-- 记忆项：笔记 -->
+				<div class="mem-item">
+					<div class="mem-icon note">💡</div>
+					<div class="mem-body">
+						<div class="mem-title">决策记录：选用 Mermaid 作为架构图工具</div>
+						<div class="mem-meta">
+							<span>decision</span><span>•</span><span>2周前</span><span>•</span><span>agent: claw</span>
+						</div>
+					</div>
+					<span class="mem-tag">决策</span>
+				</div>
+
+				<!-- 记忆项：事实 -->
+				<div class="mem-item">
+					<div class="mem-icon fact">✓</div>
+					<div class="mem-body">
+						<div class="mem-title">API 端点 base URL: https://api.example.com/v2</div>
+						<div class="mem-meta">
+							<span>fact</span><span>•</span><span>1周前</span><span>•</span><span>agent: api-agent</span>
+						</div>
+					</div>
+					<span class="mem-tag">配置</span>
+				</div>
+
+			</div>
+		</div>
+	</div>
+
+	<!-- ════════════════════════════════════════════ -->
+	<!--  底部提示                                    -->
+	<!-- ════════════════════════════════════════════ -->
+	<div class="tip-row">
+		拖拽中间分隔条调整知识库 / 记忆库高度 · 点击标签头折叠
+	</div>
+</div>
+
+<script>
+	function toggleSection(id) {
+		const sec = document.getElementById(id);
+		sec.classList.toggle('expanded');
+		sec.classList.toggle('collapsed');
+	}
+</script>
+
+</body>
+</html>

@@ -18,6 +18,9 @@ import type { AdrManager } from '../../codebaseGraphAdr.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IFileService } from '../../../../../../platform/files/common/files.js';
 import type { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
+import { type SearchHelpers, redactSecrets } from './searchHelpers.js';
+import { prepareQueryForRipgrep, escapeLiteralForRegex } from './regexValidator.js';
+import { normalizeFileGlobForSearch, normalizePathFilterForRoots, noMatchNoFilterHint, noMatchWithIncludeHint, searchCodeEmptyStreakHint } from './pathFilterNormalize.js';
 
 export interface CodebaseToolContext {
 	register(definition: { definition: any; handler: any }): void;
@@ -26,15 +29,154 @@ export interface CodebaseToolContext {
 	fileService: IFileService;
 	logService: ILogService;
 	adrManager: AdrManager;
+	/** 文件系统级 ripgrep 搜索（search_files 同款引擎），供图谱未命中时回退检索。 */
+	searchHelpers: SearchHelpers;
+	/** 工具 source 标识（用于 definition.source）。 */
+	id: string;
+	/** 工作区路径解析 + 沙箱校验（search_files / 其它工具读取前调用）。 */
+	resolveAndCheckWorkspacePath: (agentId: string | undefined, requestedPath: string, checkSandbox?: boolean) => Promise<string>;
 }
 
 export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 	const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
 	const json = (obj: unknown): IToolResultContent[] => [{ type: 'text', text: JSON.stringify(obj, null, 2) }];
 
-	const ensureGraph = (): boolean => {
+	/**
+	 * search_graph 0 结果时的近似名建议（2026-07-26，事故 1785053998262）：
+	 * 模型搜「CollectGarbageInternal」（UE4 命名/幻觉名）在 UE5EA 图谱必然 0 结果，
+	 * 却把「符号不存在」误读为「名字不对」连试 7 个变体。这里把 namePattern 按
+	 * camelCase/分隔符词段逐级截短（CollectGarbageInternal→CollectGarbage→Collect），
+	 * 用首个有命中的前缀返回 top 5 节点名，让模型第一轮就能自我纠偏。
+	 * 最多 2 次回退搜索（毫秒级），仅长复合名（≥6 字符、≥2 词段）触发。
+	 */
+	const _suggestSimilarNames = async (namePattern: string): Promise<string> => {
+		const trimmed = namePattern.trim();
+		if (trimmed.length < 6) { return ''; }
+		const segs = trimmed.split(/(?=[A-Z])|[_:.\-/]+/).filter(s => s.length > 0);
+		if (segs.length < 2) { return ''; }
+		for (let drop = 1; drop <= Math.min(2, segs.length - 1); drop++) {
+			const prefix = segs.slice(0, segs.length - drop).join('');
+			if (prefix.length < 3 || prefix === trimmed) { continue; }
+			try {
+				const r = await ctx.codebaseGraphService.searchGraphAsync({ namePattern: prefix, limit: 5 });
+				if (r.total > 0 && r.nodes.length > 0) {
+					const names = [...new Set(r.nodes.map((n: any) => n?.name).filter(Boolean))].slice(0, 5);
+					if (names.length > 0) { return names.join(', '); }
+				}
+			} catch { /* best effort */ }
+		}
+		return '';
+	};
+
+	// ── TOON 紧凑表输出（P2-#1） ──────────────────────────────────────
+	// C 版 format:"toon" 对标：无缩进、无重复键名、单字符分隔，较 JSON 省 ~60% token。
+	// 路径压缩为末段（…/dir/file.ts），保留定位所需信息同时大幅降 token。
+	/** 紧凑表：header 行 + 每行用 | 连接；空值输出空串。 */
+	const _toonTable = (headers: string[], rows: (string | number)[][]): string => {
+		const lines = [headers.join('|')];
+		for (const r of rows) {
+			lines.push(r.map(c => (c === undefined || c === null ? '' : String(c))).join('|'));
+		}
+		return lines.join('\n');
+	};
+
+	/**
+	 * 项目相对 filePath → 绝对路径（root/file）。
+	 * 多 folder 工作区（如图谱含 S1Game + UE5EA 双项目）时，相对路径会让模型
+	 * 误拼首个 folder 根导致 file_read "Unable to resolve nonexistent file"——
+	 * 这里直接用节点所属 project 的索引根拼绝对路径，模型可原样 file_read。
+	 * 已是绝对路径（盘符或 / 开头）或根不可解析时原样返回。
+	 */
+	const _absPath = (project: string | undefined, filePath: string): string => {
+		const p = filePath.replace(/\\/g, '/');
+		if (/^[a-zA-Z]:\//.test(p) || p.startsWith('/')) { return p; }
+		const roots = ctx.codebaseGraphService.getProjectRoots();
+		const root = project ? roots[project] : undefined;
+		return root ? `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/${p}` : p;
+	};
+
+	/** 项目相对 filePath → 绝对 loc（root/file:line）；规则同 _absPath。 */
+	const _absLoc = (project: string | undefined, filePath: string | undefined, startLine: number | undefined): string => {
+		if (!filePath) { return '-'; }
+		return `${_absPath(project, filePath)}:${startLine ?? '-'}`;
+	};
+
+	/**
+	 * 截断警告文案（2026-07-26，对齐 Continue 的 Truncation warning 思路）：
+	 * truncated 布尔字段模型常忽略、继续盲搜——把「如何缩小范围」直接写进输出。
+	 */
+	const _truncHint = (shown: number, total: number): string =>
+		`Results truncated (showing ${shown} of ${total}). Narrow down: add filePattern to scope files, pass a more specific query, probe several names at once with identifier|alternation, or use project to limit to one project.`;
+
+	/** search_graph 结果 → TOON 表（含可选 fields 列与 semantic_results 副表）。 */
+	const _buildSearchGraphToon = (resp: any, fieldList?: string[]): string => {
+		const nodes = (resp.nodes as any[]) || [];
+		const headers = ['#', 'type', 'qn', 'loc', 'in', 'out'];
+		if (fieldList && fieldList.length > 0) { headers.push(...fieldList); }
+		const rows = nodes.map((n, i) => {
+			const loc = _absLoc(n.project, n.filePath, n.startLine);
+			const base: (string | number)[] = [
+				i + 1,
+				n.label || n.type || '-',
+				n.qualifiedName || n.name || '-',
+				loc,
+				n.inDegree ?? 0,
+				n.outDegree ?? 0,
+			];
+			if (fieldList && fieldList.length > 0) {
+				const fields = (n.fields || n.properties || {}) as Record<string, unknown>;
+				for (const f of fieldList) { base.push(fields[f] as string | number ?? ''); }
+			}
+			return base;
+		});
+		const head = `TOON search_graph: total=${resp.total ?? nodes.length} returned=${nodes.length} hasMore=${resp.hasMore ?? false}`;
+		let out = head + '\n' + _toonTable(headers, rows);
+		const sem = resp.semantic_results as any[] | undefined;
+		if (sem && sem.length > 0) {
+			const sheaders = ['#', 'type', 'qn', 'loc', 'score'];
+			const srows = sem.map((s, i) => [
+				i + 1,
+				s.type || '-',
+				s.qualifiedName || s.name || '-',
+				_absLoc(s.project, s.filePath, s.startLine),
+				s.score ?? '',
+			]);
+			out += '\n\nsemantic_results:\n' + _toonTable(sheaders, srows);
+		}
+		return out;
+	};
+
+	/** trace_path 结果 → TOON 表（风险列仅在 riskLabels 开启时存在）。 */
+	const _buildTraceToon = (res: any): string => {
+		const hops = (res.hops as any[]) || [];
+		const hasRisk = hops.some(h => h.risk);
+		const headers = ['d', 'type', 'qn', 'loc', ...(hasRisk ? ['risk'] : [])];
+		const rows = hops.map((h: any) => {
+			const node = h.node || {};
+			const loc = _absLoc(node.project, node.filePath, node.startLine);
+			const base: (string | number)[] = [
+				h.depth ?? 0,
+				node.label || node.type || '-',
+				node.qualifiedName || node.name || '-',
+				loc,
+			];
+			if (hasRisk) { base.push(h.risk || '-'); }
+			return base;
+		});
+		const head = `TOON trace_path: found=${res.found ?? false} hops=${hops.length} depth=${res.totalDepth ?? 0}`;
+		const summary = res.summary ? '\n' + res.summary : '';
+		return head + summary + '\n' + _toonTable(headers, rows);
+	};
+
+	const ensureGraph = async (): Promise<boolean> => {
+		// 竞态守卫：启动时 bootstrap 的 loadGraphMerge 可能仍在进行中，
+		// 大图谱（10w+ 节点）加载需数十秒——期间判"无数据"会误导 LLM 触发全量重建
+		await ctx.codebaseGraphService.whenGraphLoaded();
 		if (!ctx.codebaseGraphService.hasGraphData()) {
-			return false;
+			// Phase 2f：内存 store 为空时，从 SQLite 按需加载（仅当 sqliteBackend 启用时生效）
+			if (!await ctx.codebaseGraphService.tryLoadFromSqlite()) {
+				return false;
+			}
 		}
 		return true;
 	};
@@ -69,27 +211,44 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			if (folders.length === 0) {
 				return text('index_repository error: no workspace folder open');
 			}
-			const wsPath = repoPath || folders[0].uri.fsPath;
+
+			// 指定了 repo_path → 单目录索引；未指定 → 依次索引所有工作区目录
+			let targetPaths = repoPath
+				? [repoPath]
+				: folders.map(f => f.uri.fsPath);
 
 			// Guard: skip re-index if graph already loaded with data (unless force=true)
-			if (!force && ctx.codebaseGraphService.hasGraphData()) {
-				const status = ctx.codebaseGraphService.getIndexStatus();
-				const nodeCount = status?.nodeCount ?? 0;
-				if (nodeCount > 0) {
-					return text(`index_repository: graph already loaded (${nodeCount} nodes, ${status?.edgeCount ?? 0} edges from ${status?.fileCount ?? 0} files). ` +
+			// 竞态守卫：先等待启动时的图谱合并加载完成，再判定各 folder 是否已有数据。
+			// 多目录按 folder 逐个检查——全部就绪则整体跳过；部分就绪则只索引缺失的 folder
+			// （旧逻辑多目录永不跳过，配合 LLM 每会话先 index_status 的习惯 → 每次都全量重建）。
+			await ctx.codebaseGraphService.whenGraphLoaded();
+			if (!force) {
+				const notReady = targetPaths.filter(p => !ctx.codebaseGraphService.hasProjectData(p));
+				if (notReady.length === 0) {
+					const status = ctx.codebaseGraphService.getIndexStatus();
+					return text(`index_repository: graph already loaded (${status?.nodeCount ?? 0} nodes, ${status?.edgeCount ?? 0} edges from ${status?.fileCount ?? 0} files). ` +
 						`Set force=true to re-index.`);
 				}
+				if (notReady.length < targetPaths.length) {
+					ctx.logService.info(`[BuiltinTools] index_repository: ${targetPaths.length - notReady.length} folder(s) already indexed, only indexing: ${notReady.join(', ')}`);
+				}
+				targetPaths = notReady;
 			}
 
-			try {
-				const result = await ctx.codebaseGraphService.indexWorkspace(wsPath, {
-					mode,
-					excludeDirs: [],
-				});
-				return text(`Index ${result.success ? 'completed' : 'failed'}: ${result.message}`);
-			} catch (err: any) {
-				return text(`index_repository error: ${err?.message || err}`);
+			const results: string[] = [];
+			for (const wsPath of targetPaths) {
+				try {
+					ctx.logService.info(`[BuiltinTools] [TRACE] index_repository tool → indexWorkspace: ${wsPath}`);
+					const result = await ctx.codebaseGraphService.indexWorkspace(wsPath, {
+						mode,
+						excludeDirs: [],
+					});
+					results.push(`${wsPath}: ${result.success ? 'OK' : 'FAILED'} — ${result.message}`);
+				} catch (err: any) {
+					results.push(`${wsPath}: ERROR — ${err?.message || err}`);
+				}
 			}
+			return text(results.join('\n'));
 		},
 	});
 
@@ -110,11 +269,43 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async () => {
-			if (!ensureGraph()) {
+			if (!await ensureGraph()) {
 				return json({ indexed: false, hint: 'Run index_repository first' });
 			}
-			const status = ctx.codebaseGraphService.getIndexStatus();
-			return json({ indexed: true, ...status });
+			// 优先用异步版本：内存 store 为空时从 SQLite 后端获取真实计数
+			const status = await ctx.codebaseGraphService.getIndexStatusAsync();
+			return json({ indexed: status.nodeCount > 0, ...status });
+		},
+	});
+
+	// ── check_index_coverage ─────────────────────────────────────────
+	ctx.register({
+		definition: {
+			name: 'check_index_coverage',
+			description: 'Report codebase indexing coverage: how many files were fully indexed vs ' +
+				'skipped (unsupported/oversized/long-line), parse-errored, timed-out, or only partially parsed. ' +
+				'Returns a summary with coverage percentage plus the explicit lists of skipped and error files ' +
+				'(each with reason), so you can verify completeness and decide whether to re-index problematic files.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					includeFiles: { type: 'boolean', default: true, description: 'Include the skippedFiles/errorFiles lists (set false for summary only).' },
+				},
+			},
+			category: 'codebase',
+			source: 'saros.builtin-tools',
+		},
+		handler: async (args: Record<string, unknown>) => {
+			if (!await ensureGraph()) {
+				return text('check_index_coverage: no graph loaded. Run index_repository first.');
+			}
+			const report = ctx.codebaseGraphService.getIndexCoverage();
+			const includeFiles = (args['includeFiles'] as boolean | undefined) ?? true;
+			if (!includeFiles) {
+				const { skippedFiles, errorFiles, ...summary } = report;
+				return json(summary);
+			}
+			return json(report);
 		},
 	});
 
@@ -128,7 +319,9 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		source: 'saros.builtin-tools',
 	},
 	handler: async () => {
-		const projects = ctx.codebaseGraphService.listProjects();
+		const roots = ctx.codebaseGraphService.getProjectRoots();
+		const projects = ctx.codebaseGraphService.listProjects()
+			.map(p => ({ ...p, rootPath: roots[p.name] ?? null }));
 		return json({ projects, count: projects.length });
 		},
 	});
@@ -156,19 +349,17 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		},
 	});
 
-	// ── search_graph ─────────────────────────────────────────────────
+	// ── search_graph (PRIMARY code search — use this FIRST) ─────────
 	ctx.register({
 		definition: {
 			name: 'search_graph',
-			description: 'Search the code knowledge graph for functions, classes, routes, and variables. ' +
-				'Three search modes: (1) query="update settings" for BM25 ranked full-text search with camelCase ' +
-				'splitting and structural label boosting — recommended for natural-language discovery; ' +
-				'(2) namePattern=".*regex.*" for exact pattern matching; (3) semantic_query=["send","publish"] ' +
-				'for signal-fusion semantic search that bridges vocabulary (finds publish when you search send). ' +
-				'Modes are independent and can be combined in a single call. ' +
-				'PAGINATION: results are capped at limit (default 200). The response includes "total" (full match count) ' +
-				'and "hasMore" (true when total > returned). Detect truncation with hasMore, then page by re-calling ' +
-				'with offset=offset+limit until hasMore is false.',
+			description: 'PRIMARY code-search tool — ALWAYS use this FIRST for any code-related query. ' +
+				'IMPORTANT: search_graph matches node names/qualified_names/file_paths/signatures only — NOT source code content (function bodies, variable names, call sites). ' +
+				'For searching INSIDE code content (grep-style), use "search_code" instead. ' +
+				'Use this INSTEAD of search_files for code-structure questions like "who calls X?", "where is Y defined?", "what does Z depend on?". ' +
+				'Supports three modes: (1) query="update settings" for natural-language search, (2) namePattern="Handler" for exact name matching, ' +
+				'(3) semantic_query=["send","publish"] for vocabulary-bridging semantic search. Combine modes in a single call. ' +
+				'Paginate with offset/limit when hasMore=true.',
 			inputSchema: {
 				type: 'object',
 				properties: {
@@ -185,15 +376,21 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					maxInDegree: { type: 'number', description: 'Maximum in-degree filter' },
 					minOutDegree: { type: 'number', description: 'Minimum out-degree filter' },
 					maxOutDegree: { type: 'number', description: 'Maximum out-degree filter' },
-					relType: { type: 'string', description: 'Relationship type filter (uppercase, e.g. CALLS, IMPORTS, CONTAINS_FUNCTION)' },
-					semantic_query: { type: 'array', items: { type: 'string' }, description: 'MUST be an ARRAY of keyword strings (e.g. ["send","pubsub","publish"]) — NOT a single string. Each keyword is scored independently via 6-signal fusion; results reflect nodes that score well on ALL keywords (min-score re-ranking). Results appear in "semantic_results" field (separate from "results"). Requires index with similarity/semantic passes enabled (moderate or full mode).' },
-				},
+				relType: { type: 'string', description: 'Relationship type filter (uppercase, e.g. CALLS, IMPORTS, CONTAINS_FUNCTION)' },
+				qnPattern: { type: 'string', description: 'Qualified-name pattern (regex, case-insensitive) to filter results by qualifiedName (e.g. "Controller::.*").' },
+				includeConnected: { type: 'boolean', default: false, description: 'Include directly-connected nodes (edge type + neighbor name) for each result node, enabling one-hop graph exploration.' },
+				fields: { type: 'array', items: { type: 'string' }, description: 'Extra per-node property columns to return (e.g. ["cyclomaticComplexity","returnType","paramTypes","signature","docstring","isTest"]). Pulled from node.properties; missing keys emit as null.' },
+			semantic_query: { type: 'array', items: { type: 'string' }, description: 'MUST be an ARRAY of keyword strings (e.g. ["send","pubsub","publish"]) — NOT a single string. Each keyword is scored independently via 6-signal fusion; results reflect nodes that score well on ALL keywords (min-score re-ranking). Results appear in "semantic_results" field (separate from "results"). Requires index with similarity/semantic passes enabled (moderate or full mode).' },
+			format: { type: 'string', enum: ['json', 'toon'], default: 'toon', description: 'Output format. "toon" (default) returns a compact pipe-delimited table (header row + one row per node), saving ~60% tokens — recommended for large result sets. Extra "fields" columns are appended after the degree columns; semantic_results render as a second table. "json" returns the full structured object.' },
+			},
 			},
 			category: 'codebase',
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!ensureGraph()) { return text('search_graph: no graph loaded. Run index_repository first.'); }
+			// SQLite 后端感知：启用时先查后端计数（避免 Phase 2f 把全图回载内存）；
+			// 未启用时 hasGraphDataAsync===hasGraphData，走原 ensureGraph 磁盘回载路径。
+			if (!await ctx.codebaseGraphService.hasGraphDataAsync() && !await ensureGraph()) { return text('search_graph: no graph loaded. Run index_repository first.'); }
 			// 旧 MCP 参数别名兼容：name_pattern → namePattern, file_pattern → filePattern, min_degree → minInDegree
 			const searchParams = {
 				project: args['project'] as string | undefined,
@@ -209,12 +406,16 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				maxInDegree: (args['maxInDegree'] || args['max_degree']) as number | undefined,
 				minOutDegree: args['minOutDegree'] as number | undefined,
 				maxOutDegree: args['maxOutDegree'] as number | undefined,
-				relType: args['relType'] as string | undefined,
-			};
-			// relType 校验：必须全大写字母+下划线
-			if (searchParams.relType && !/^[A-Z][A-Z_]*$/.test(searchParams.relType)) {
-				return text(`search_graph error: relType must be uppercase letters and underscores, got "${searchParams.relType}"`);
-			}
+			relType: args['relType'] as string | undefined,
+		};
+		// 新增参数（对标 C 版）：qnPattern / includeConnected / fields
+		const qnPattern = args['qnPattern'] as string | undefined;
+		const includeConnected = (args['includeConnected'] as boolean | undefined) ?? false;
+		const fieldList = args['fields'] as string[] | undefined;
+		// relType 校验：必须全大写字母+下划线
+		if (searchParams.relType && !/^[A-Z][A-Z_]*$/.test(searchParams.relType)) {
+			return text(`search_graph error: relType must be uppercase letters and underscores, got "${searchParams.relType}"`);
+		}
 
 			// ── Semantic query (6-signal fusion, per-keyword min-score re-ranking) ──
 			const semanticQuery = args['semantic_query'] as string[] | undefined;
@@ -235,49 +436,116 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				}
 			}
 
-			ctx.logService.info(`[BuiltinTools] search_graph: query="${searchParams.query || '(none)'}", namePattern="${searchParams.namePattern || '(none)'}", label="${searchParams.label || '(none)'}", filePattern="${searchParams.filePattern || '(none)'}", semantic=${semanticQuery?.length || 0} keywords`);
-			const result = ctx.codebaseGraphService.searchGraph(searchParams);
-			if (result.total === 0 && (!semanticResults || semanticResults.length === 0)) {
+		ctx.logService.info(`[BuiltinTools] search_graph: query="${searchParams.query || '(none)'}", namePattern="${searchParams.namePattern || '(none)'}", label="${searchParams.label || '(none)'}", filePattern="${searchParams.filePattern || '(none)'}", semantic=${semanticQuery?.length || 0} keywords`);
+		// P0：SQLite 后端启用时检索走主进程 FTS5/LIKE（不回载全图）；未启用退化为同步内存路径
+		const result = await ctx.codebaseGraphService.searchGraphAsync(searchParams);
+
+		// ── qnPattern: filter by qualifiedName regex ──
+		if (qnPattern && result.nodes.length > 0) {
+			try {
+				const re = new RegExp(qnPattern, 'i');
+				result.nodes = result.nodes.filter((n: any) => n.qualifiedName && re.test(n.qualifiedName));
+				result.total = result.nodes.length;
+			} catch {
+				return text(`search_graph error: invalid qnPattern regex "${qnPattern}"`);
+			}
+		}
+
+		// ── fields + includeConnected: enrich each result node ──
+		if (result.nodes.length > 0 && (fieldList || includeConnected)) {
+			const MAX_CONNECTED = 20;
+			for (const n of result.nodes) {
+				if (fieldList && fieldList.length > 0) {
+					const props = (n as any).properties || {};
+					(n as any).fields = {};
+					for (const f of fieldList) {
+						(n as any).fields[f] = props[f] ?? null;
+					}
+				}
+				if (includeConnected) {
+					try {
+						const edges = ctx.codebaseGraphService.getEdges((n as any).id);
+						(n as any).connected = edges.slice(0, MAX_CONNECTED).map((e: any) => {
+							const otherId = e.source === (n as any).id ? e.target : e.source;
+							const other = ctx.codebaseGraphService.getNode(otherId);
+							return { edgeType: e.type, neighborId: otherId, neighborName: other?.name ?? otherId };
+						});
+					} catch { /* best effort */ }
+				}
+			}
+		}
+
+		if (result.total === 0 && (!semanticResults || semanticResults.length === 0)) {
 				// 空结果时提供诊断提示
 				const totalNodes = ctx.codebaseGraphService.getTotalNodeCount();
 				let hint = `search_graph returned 0 results. Graph has ${totalNodes} nodes total.`;
-				if (searchParams.label && searchParams.namePattern) {
-					hint += ` Searched label="${searchParams.label}" with namePattern="${searchParams.namePattern}". Try broader search: omit label, or use a partial name.`;
-				} else if (searchParams.label) {
-					hint += ` Searched only label="${searchParams.label}". Try without label to search all types.`;
-				} else if (searchParams.namePattern) {
-					hint += ` No nodes match namePattern="${searchParams.namePattern}". Try broader or partial name match.`;
-				} else if (searchParams.query) {
-					hint += ` BM25 search for "${searchParams.query}" returned 0 results. Try different keywords or use list_projects to verify the graph is indexed.`;
+			if (searchParams.label && searchParams.namePattern) {
+				hint += ` Searched label="${searchParams.label}" with namePattern="${searchParams.namePattern}". Try broader search: omit label, or use a partial name.`;
+				const sug = await _suggestSimilarNames(searchParams.namePattern);
+				if (sug) { hint += ` Did you mean: ${sug}?`; }
+			} else if (searchParams.label) {
+				hint += ` Searched only label="${searchParams.label}". Try without label to search all types.`;
+			} else if (searchParams.namePattern) {
+				hint += ` No nodes match namePattern="${searchParams.namePattern}". Try broader or partial name match.`;
+				const sug = await _suggestSimilarNames(searchParams.namePattern);
+				if (sug) { hint += ` Did you mean: ${sug}?`; }
+			} else if (searchParams.query) {
+					hint += ` BM25 search for "${searchParams.query}" returned 0 results. search_graph only matches node names/qualified_names/file_paths/signatures — NOT source code content (function bodies, variable names, call sites). To search inside code content, use the "search_code" tool instead (grep-based, matches any text in indexed files). Try different keywords, or use list_projects to verify the graph is indexed.`;
 				} else if (semanticQuery) {
 					hint += ` Semantic search for ${semanticQuery.length} keyword(s) returned 0 results. Try broader single-word queries, or ensure index was built with moderate/full mode.`;
 				}
-				ctx.logService.warn(`[BuiltinTools] search_graph: 0 results (total=${totalNodes})`);
-				return [{ type: 'text', text: JSON.stringify({ nodes: [], total: 0, hasMore: false, hint }, null, 2) }];
+			ctx.logService.warn(`[BuiltinTools] search_graph: 0 results (total=${totalNodes})`);
+			const fmt0 = (args['format'] as string) || 'toon';
+			if (fmt0 === 'toon') {
+				return text(`TOON search_graph: total=0 returned=0 hasMore=false\n${hint}`);
 			}
-			// Combine graph results with semantic results
-			const response: any = { ...result };
-			if (semanticResults && semanticResults.length > 0) {
-				response.semantic_results = semanticResults;
-			}
-			return json(response);
+			return [{ type: 'text', text: JSON.stringify({ nodes: [], total: 0, hasMore: false, hint }, null, 2) }];
+		}
+	// Combine graph results with semantic results
+	const response: any = { ...result };
+	if (semanticResults && semanticResults.length > 0) {
+		response.semantic_results = semanticResults;
+	}
+	// 多项目图谱：输出前把项目相对 filePath 还原为绝对路径（TOON/JSON 一致，
+	// _absPath 对已绝对路径幂等），模型拿到的路径可直接 file_read。
+	for (const n of (response.nodes as any[]) || []) {
+		if (n.filePath) { n.filePath = _absPath(n.project, n.filePath); }
+	}
+	for (const s of (response.semantic_results as any[]) || []) {
+		if (s.filePath) { s.filePath = _absPath(s.project, s.filePath); }
+	}
+	// [CBSearch] handler 结果汇总：最终召回规模（排查"找不到内容"的最后一环）
+	ctx.logService.info(`[BuiltinTools] [CBSearch][trace] search_graph result: total=${response.total} returned=${((response.nodes as any[]) || []).length} semantic=${semanticResults?.length ?? 0} qnPattern=${qnPattern ?? '-'}`);
+	// 截断警告文本化（Continue Truncation warning 思路）：hasMore 模型常忽略
+	if (response.hasMore) {
+		response.truncated_hint = _truncHint(((response.nodes as any[]) || []).length, Number(response.total) || 0);
+	}
+	const format = (args['format'] as string) || 'toon';
+		if (format === 'toon') {
+			let out = _buildSearchGraphToon(response, fieldList);
+			// TOON 尾部追加 HINT 行（单列短行，UI 解析按 cols<4 跳过，安全）
+			if (response.truncated_hint) { out += `\nHINT: ${response.truncated_hint}`; }
+			return text(out);
+		}
+		return json(response);
 		},
 	});
 
 	// ── query_graph (Cypher) ────────────────────────────────────────
 	ctx.register({
 		definition: {
-			name: 'query_graph',
-			description: 'Query the codebase graph with pattern-matching syntax to find code relationships. ' +
-				'Use MATCH to select nodes/edges, WHERE to filter, RETURN to project fields. ' +
-				'Suitable for cross-file queries like "find all classes that implement interface X" or ' +
-				'"list functions that call a specific module".',
-			inputSchema: {
+		name: 'query_graph',
+		description: 'PREFERRED for cross-file structural queries. Query the codebase graph with pattern-matching to find relationships. ' +
+			'Use MATCH to select nodes/edges, WHERE to filter, RETURN to project. ' +
+			'Faster and more precise than search_code for: "find all callers of X", "classes implementing interface Y", ' +
+			'"functions called by module Z". Use graph_schema first to see node/edge types available.',
+		inputSchema: {
 				type: 'object',
 				properties: {
-					query: { type: 'string', description: 'Cypher query string. Example: MATCH (f:Function) WHERE f.inDegree >= 10 RETURN f.name ORDER BY f.inDegree DESC LIMIT 10' },
+					query: { type: 'string', description: 'Cypher query string. Example: MATCH (f:Function) WHERE f.inDegree >= 10 RETURN f.name ORDER BY f.inDegree DESC LIMIT 10. Ignored when graph="missed".' },
 					project: { type: 'string', description: 'Project name (optional, defaults to current workspace)' },
 					max_rows: { type: 'integer', description: 'Row limit (optional, default unlimited up to 100k ceiling)' },
+					graph: { type: 'string', description: 'Graph selector. Omit for the main code graph. Use "missed" to return the structural graph of NOT-fully-indexed files (Project→Folder→File with kind=skipped/parse_error/timeout/partial and detail=reason).' },
 				},
 				required: ['query'],
 			},
@@ -285,9 +553,14 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!ensureGraph()) { return text('query_graph: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return text('query_graph: no graph loaded. Run index_repository first.'); }
+			const graph = args['graph'] as string | undefined;
+			if (graph === 'missed') {
+				const missed = ctx.codebaseGraphService.getMissedGraph();
+				return json(missed);
+			}
 			const query = String(args['query'] ?? '');
-			if (!query) { return text('query_graph error: "query" is required'); }
+			if (!query) { return text('query_graph error: "query" is required (unless graph="missed")'); }
 			const maxRows = args['max_rows'] as number | undefined;
 			try {
 				const result = ctx.codebaseGraphService.executeCypher(query, maxRows);
@@ -314,8 +587,10 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					aspects: {
 						type: 'array',
 						items: { type: 'string', enum: ['all', 'overview', 'languages', 'packages', 'entryPoints',
-							'routes', 'hotspots', 'crossBoundaries', 'layers', 'communities'] },
-						description: 'Aspects to include. "all" = everything; "overview" = languages+packages+entryPoints+hotspots; omit = all.',
+							'routes', 'hotspots', 'crossBoundaries', 'layers', 'communities',
+							'structure', 'dependencies', 'file_tree', 'fileTree', 'services'] },
+						description: 'Aspects to include. "all" = everything; "overview" = languages+packages+entryPoints+hotspots; ' +
+							'"structure" = packages+layers+fileTree; "dependencies" = crossBoundaries+packages; "file_tree" = fileTree; omit = all.',
 					},
 					path: { type: 'string', description: 'Optional directory prefix to scope architecture (e.g. src/app)' },
 				},
@@ -324,9 +599,24 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!ensureGraph()) { return text('get_architecture: no graph loaded. Run index_repository first.'); }
-			const aspects = args['aspects'] as string[] | undefined;
+			if (!await ensureGraph()) { return text('get_architecture: no graph loaded. Run index_repository first.'); }
+			const rawAspects = args['aspects'] as string[] | undefined;
 			const scopePath = args['path'] as string | undefined;
+			// C 对齐的 aspect 别名 → 具体报告字段（token 高效）
+			const ASPECT_ALIASES: Record<string, string[]> = {
+				structure: ['packages', 'layers', 'fileTree'],
+				dependencies: ['crossBoundaries', 'packages'],
+				file_tree: ['fileTree'],
+			};
+			let aspects = rawAspects;
+			if (rawAspects && rawAspects.length > 0 && rawAspects[0] !== 'all') {
+				const expanded = new Set<string>();
+				for (const a of rawAspects) {
+					if (ASPECT_ALIASES[a]) { ASPECT_ALIASES[a].forEach(x => expanded.add(x)); }
+					else { expanded.add(a); }
+				}
+				aspects = [...expanded];
+			}
 			try {
 				// 获取完整分析报告（async — allows abort signal to fire between packages, P2-6）
 				const fullReport = aspects && aspects.length > 0 && aspects[0] !== 'all'
@@ -355,9 +645,9 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					}
 					if (fullReport.communities) {
 						fullReport.communities = fullReport.communities.filter((c: any) => {
-							if (c.topNodes) {
-								return c.topNodes.some((n: any) => isInScope(n.filePath || n.path || ''));
-							}
+						if (c.top_nodes) {
+							return c.top_nodes.some((n: any) => isInScope(n.filePath || n.path || ''));
+						}
 							if (c.packages) {
 								return c.packages.some((p: string) =>
 									normalize(p).startsWith(normalize(scopePath)));
@@ -413,14 +703,34 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!ensureGraph()) { return text('get_code_snippet: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return text('get_code_snippet: no graph loaded. Run index_repository first.'); }
+			// alias: qualified_name → qualifiedName (MCP compatibility)
+			if (!args['qualifiedName'] && args['qualified_name']) { args['qualifiedName'] = args['qualified_name']; }
 			const qualifiedName = String(args['qualifiedName'] ?? '');
-			if (!qualifiedName) { return text('get_code_snippet error: "qualifiedName" is required'); }
+			if (!qualifiedName) { return text('get_code_snippet error: "qualifiedName" (or "qualified_name") is required'); }
 			const contextLines = (args['contextLines'] as number | undefined) ?? 3;
 			const includeNeighbors = (args['includeNeighbors'] as boolean | undefined) ?? false;
-			const result = await ctx.codebaseGraphService.getCodeSnippet(qualifiedName, contextLines, includeNeighbors);
-			if (!result) { return text(`Code snippet not found for: ${qualifiedName}`); }
-			return json(result);
+		const result = await ctx.codebaseGraphService.getCodeSnippet(qualifiedName, contextLines, includeNeighbors);
+		if (!result) {
+			// 图谱未索引该符号（如 C++ 源码未纳入索引）→ 回退到全工作区 ripgrep 文本检索。
+			// 优先用完整限定名（命中 `GC::ProcessAsync(` 这类定义行），否则用末段叶子符号兜底。
+			const leaf = qualifiedName.split(/::/).pop() || qualifiedName;
+			let fb = await _fallbackGrepWorkspaceCached(qualifiedName, undefined, 30, Math.max(contextLines, 3));
+			if (!fb && leaf !== qualifiedName) {
+				fb = await _fallbackGrepWorkspaceCached(leaf, undefined, 30, Math.max(contextLines, 3));
+			}
+			if (fb) {
+				ctx.logService.info(`[BuiltinTools] get_code_snippet fallback (filesystem grep) for: ${qualifiedName}`);
+				return text(
+					`Code snippet for "${qualifiedName}" not in code graph index (symbol may be in non-indexed source, ` +
+					`e.g. C++ not covered by keepDirs). Falling back to filesystem grep:\n\n${fb}`,
+				);
+			}
+			return text(`Code snippet not found for: ${qualifiedName}`);
+		}
+		// [CBSearch] snippet 命中追踪（含 filePath 与行范围，排查路径归属问题）
+		ctx.logService.info(`[BuiltinTools] [CBSearch][trace] get_code_snippet hit: qn="${qualifiedName}" file=${result.filePath ?? '-'} lines=${result.startLine ?? '?'}-${result.endLine ?? '?'}`);
+		return json(result);
 		},
 	});
 
@@ -434,19 +744,35 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		source: 'saros.builtin-tools',
 	},
 	handler: async () => {
-		if (!ensureGraph()) { return text('get_graph_schema: no graph loaded. Run index_repository first.'); }
-		return json(ctx.codebaseGraphService.getGraphSchema());
+		if (!await ensureGraph()) { return text('get_graph_schema: no graph loaded. Run index_repository first.'); }
+		const schema = ctx.codebaseGraphService.getGraphSchema();
+		// ADR detection (aligns with C version's adr_present + adr_hint)
+		try {
+			const folders = ctx.workspaceService.getWorkspace().folders;
+			if (folders.length > 0) {
+				const adrs = await ctx.adrManager.list(folders[0].uri);
+				if (adrs && adrs.length > 0) {
+					(schema as any).adr_present = true;
+				} else {
+					(schema as any).adr_present = false;
+					(schema as any).adr_hint = 'No ADRs found. Use manage_adr to create architecture decision records.';
+				}
+			}
+		} catch { /* best effort */ }
+		return json(schema);
 	},
 	});
 
 	// ── trace_path ──────────────────────────────────────────────────
 	ctx.register({
 		definition: {
-			name: 'trace_path',
-			description: 'Trace call paths through the code graph. Modes: calls (default, follow CALLS edges), ' +
-				'data_flow (CALLS+DATA_FLOWS with arg expressions), cross_service (through HTTP/async Route nodes). ' +
-				'Use direction to control callers vs callees. Use INSTEAD OF grep for impact analysis or data flow tracing.',
-			inputSchema: {
+		name: 'trace_path',
+		description: 'Trace full call paths through the code graph. Returns structured caller/callee chains with file locations. ' +
+			'Modes: calls (follow CALLS edges — default), data_flow (CALLS+DATA_FLOWS with arg expressions), ' +
+			'cross_service (through HTTP/async Route nodes). ' +
+			'PREFERRED over search_code for: impact analysis, call chain tracing, data flow tracking. ' +
+			'Use direction=up for callers, direction=down for callees.',
+		inputSchema: {
 				type: 'object',
 				properties: {
 					sourceName: { type: 'string', description: 'Source function name to trace from' },
@@ -454,169 +780,491 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					mode: { type: 'string', enum: ['calls', 'data_flow', 'cross_service'], default: 'calls', description: 'Trace mode. calls: follow CALLS edges. data_flow: CALLS+DATA_FLOWS. cross_service: through HTTP/async Routes.' },
 					maxDepth: { type: 'number', description: 'Max trace depth (default 10)' },
 					direction: { type: 'string', enum: ['both', 'callers', 'callees'], default: 'both', description: 'Trace direction' },
-				},
+					includeTests: { type: 'boolean', default: true, description: 'Include test files in results. When false, test nodes are filtered out.' },
+					riskLabels: { type: 'boolean', default: false, description: 'Add risk classification (CRITICAL/HIGH/MEDIUM/LOW) per hop based on in/out degree and depth.' },
+				edgeTypes: { type: 'array', items: { type: 'string' }, description: 'Restrict traversal to these edge types (e.g. ["CALLS","HTTP_CALLS"]). Overrides mode-derived edge types when provided.' },
+				format: { type: 'string', enum: ['json', 'toon'], default: 'toon', description: 'Output format. "toon" (default) returns a compact pipe-delimited table (depth|type|qn|loc[|risk]), saving ~60% tokens. "json" returns the full structured object.' },
+			},
 				required: ['sourceName'],
 			},
 			category: 'codebase',
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!ensureGraph()) { return text('trace_path: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return text('trace_path: no graph loaded. Run index_repository first.'); }
+			// alias: function_name → sourceName (MCP compatibility)
+			if (!args['sourceName'] && args['function_name']) { args['sourceName'] = args['function_name']; }
 			const sourceName = String(args['sourceName'] ?? '');
 			const targetName = args['targetName'] as string | undefined;
 			const mode = (args['mode'] as string | undefined) || 'calls';
 			const maxDepth = args['maxDepth'] as number | undefined;
 			const direction = args['direction'] as 'both' | 'callers' | 'callees' | undefined;
-			const result = (maxDepth || direction)
-				? ctx.codebaseGraphService.tracePathAdvanced(sourceName, targetName, { mode: mode as any, maxDepth, direction })
-				: ctx.codebaseGraphService.tracePath(sourceName, targetName, mode);
-			return json(result);
+			const includeTests = (args['includeTests'] as boolean | undefined) ?? true;
+			const riskLabels = (args['riskLabels'] as boolean | undefined) ?? false;
+			const edgeTypes = args['edgeTypes'] as string[] | undefined;
+
+			const result = ctx.codebaseGraphService.tracePathAdvanced(sourceName, targetName, {
+				mode: mode as any,
+				maxDepth,
+				direction,
+				includeTests,
+				edgeTypes,
+			});
+
+	// risk_labels=false (default): strip risk columns to save tokens (matches C default).
+	if (!riskLabels && result && Array.isArray(result.hops)) {
+		result.hops = result.hops.map((h: any) => {
+			const { risk, riskReason, ...rest } = h;
+			return rest;
+		});
+	}
+	// [CBSearch] trace 结果追踪：hops 数与源解析状态（排查"找不到内容"）
+	ctx.logService.info(`[BuiltinTools] [CBSearch][trace] trace_path source="${sourceName}" target=${targetName ?? '-'} mode=${mode} hops=${result?.hops?.length ?? 0}${result?.error ? ` error=${result.error}` : ''}`);
+	const traceFormat = (args['format'] as string) || 'toon';
+		if (traceFormat === 'toon') {
+			return text(_buildTraceToon(result));
+		}
+		return json(result);
 		},
 	});
 
-	// ── search_code ─────────────────────────────────────────────────
+	// ── 轻量 glob → regex 转换器（path_filter 从 RegExp 改为 glob 语法） ──
+	// LLM 天然倾向 glob 语义（**=递归、*=通配、?=单字符），直接 RegExp 匹配
+	// 会导致 `GarbageCollection/.cpp` 这样的 glob 被静默丢弃（/ 需转义）。
+	// 本函数处理常见 glob 模式：**, *, ?, {a,b}, 保留已有正则能力。
+	const _globToRegex = (pattern: string): RegExp => {
+		// 如果 pattern 已经是正则字面量（/.../flags），直接解析
+		const regexLiteral = /^\/(.+)\/([gimsu]*)$/.exec(pattern);
+		if (regexLiteral) {
+			return new RegExp(regexLiteral[1], regexLiteral[2]);
+		}
+		// 如果 pattern 含 ^/$ 锚点或 \\ 转义 → 可能是用户手写正则，直接尝试
+		if (/^[\^]/.test(pattern) || /[$]$/.test(pattern) || /\\[dDwWsS]/.test(pattern)) {
+			try { return new RegExp(pattern); } catch { /* fall through to glob */ }
+		}
+		// glob → regex: 先转义正则特殊字符，再还原 glob 通配符
+		let rx = pattern
+			// 2026-07-27（日志 1785118063787）：转义字符集必须含 `*`——此前漏了，
+			// 导致 `*` 从未被转义为 `\*`，后续 `\\\*` 还原步骤全部匹配不到，裸 `*`
+			// 留在正则里抛 SyntaxError（"Nothing to repeat"）。调用方普遍 catch
+			// 静默兜底（pathFilter 过滤实际一直失效为"全过"），直到 search_files
+			// 索引快路径的 warn 日志才暴露。
+			.replace(/[.*,+^${}()|[\]\\]/g, '\\$&')  // 转义 regex 特殊字符（含 * 与 ,——,{a,b} 还原依赖）
+			.replace(/\\\*\\\*/g, '<<<GLOBSTAR>>>')   // 保存 **
+			.replace(/\\\*/g, '[^/]*')                 // * → 非斜杠通配
+			.replace(/<<<GLOBSTAR>>>/g, '.*')          // ** → 匹配任意含 / 路径
+			.replace(/\\\?/g, '[^/]')                   // ? → 单字符非斜杠
+			.replace(/\\\{/g, '(').replace(/\\,/g, '|').replace(/\\\}/g, ')'); // {a,b} → (a|b)
+		return new RegExp(rx);
+	};
+
+	// 直接文件 grep 回落已随 search_code 重构移除（2026-07-27）：search_code 改用
+	// ripgrep（SearchHelpers.searchContent + resolvedPath + includePattern）直接扫盘，
+	// 覆盖未索引目录，无需自建目录遍历 grep。
+
+	// 全工作区 ripgrep 回落：图谱索引未命中（例如 C++ 源码未被索引进图谱）时，
+	// 直接走 search_files 同款 ripgrep 引擎在整个工作区搜索，避免"图谱无结果即返回空"。
+	// 遍历所有 workspace folder，逐个调用 SearchHelpers.searchContent 并合并。
+	// 默认仅搜索源码文件（排除 HTML/模板/二进制/文档），避免回落结果被 HTML 标签污染。
+	const SOURCE_CODE_GLOB = '{*.cpp,*.h,*.hpp,*.c,*.cc,*.cxx,*.cs,*.ts,*.tsx,*.js,*.jsx,*.py,*.java,*.go,*.rs,*.rb,*.lua,*.sql,*.m,*.mm,*.swift,*.kt,*.kts,*.scala,*.groovy,*.pl,*.pm,*.php,*.r,*.R,*.f,*.f90,*.f95,*.for,*.pas,*.pp,*.d,*.di,*.nim,*.ex,*.exs,*.erl,*.hrl,*.ml,*.mli,*.hs,*.lhs,*.clj,*.cljs,*.scm,*.ss,*.rkt,*.vim,*.el,*.lisp,*.asm,*.s,*.S}';
+	/** fallback 单 folder 扫描超时（2026-07-26）：UE5EA 全量源码扫 30s+ 曾致连续白扫 */
+	const _FALLBACK_GREP_TIMEOUT_MS = 15_000;
+	const _fallbackGrepWorkspace = async (
+		pattern: string,
+		fileGlob: string | undefined,
+		limit: number,
+		contextLines: number,
+	): Promise<string | null> => {
+		const effectiveGlob = fileGlob || SOURCE_CODE_GLOB;
+		const folders = ctx.workspaceService.getWorkspace().folders;
+		if (folders.length === 0) { return null; }
+		const parts: string[] = [];
+		let totalMatches = 0;
+		for (const f of folders) {
+			// 2026-07-26（日志 1785078531442）：每 folder 15s 超时——UE5EA 全量引擎
+			// 源码扫描 30s+ 无中断手段曾致 6×30s 白扫。超时返回引导文本（模型可据此
+			// 用 filePattern/project 缩小范围）；超时结果非 null → 不会记入否定缓存。
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), _FALLBACK_GREP_TIMEOUT_MS);
+			try {
+				const out = await ctx.searchHelpers.searchContent(
+					f.uri.fsPath, pattern, effectiveGlob, limit, 0, 'content', contextLines, ctrl.signal,
+				);
+				if (out && out.trim().length > 0 && !/no (matches|results)/i.test(out)) {
+					parts.push(out.trim());
+					// 粗略计数（避免重复浪费算力）
+					totalMatches += (out.match(/\n/g) || []).length;
+				}
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				if (/cancel/i.test(msg)) {
+					const rootLabel = f.name ?? f.uri.fsPath;
+					ctx.logService.warn(`[BuiltinTools] [CBSearch][trace] fallback workspace grep TIMED OUT on ${rootLabel} (${_FALLBACK_GREP_TIMEOUT_MS}ms): pattern="${pattern.slice(0, 60)}"`);
+					parts.push(`## ${rootLabel}\n(workspace grep timed out after ${_FALLBACK_GREP_TIMEOUT_MS / 1000}s on this large folder — partial coverage. Narrow down: pass filePattern to scope file types, or use the project parameter to search one project only.)`);
+				}
+				// 其余单个 folder 失败不影响其它 folder
+			} finally {
+				clearTimeout(timer);
+			}
+		}
+		if (parts.length === 0) { return null; }
+		return parts.join('\n\n');
+	};
+	// 2026-07-26（日志 1785078531442）：fallback 否定结果缓存——全工作区 ripgrep
+	// 无结果时缓存 TTL 内直接返回 null。模型常用同一 pattern 反复触发 fallback，
+	// 每次白扫 UE5EA 全量引擎源码 30s+（实测 6×30s 连续白扫）。变体 pattern 靠
+	// search_code 的 recordSearchRepeat 熔断兜底（拦完全相同参数）。
+	const _FALLBACK_NEG_TTL_MS = 60_000;
+	const _fallbackNegCache = new Map<string, number>();
+	const _fallbackGrepWorkspaceCached = async (
+		pattern: string,
+		fileGlob: string | undefined,
+		limit: number,
+		contextLines: number,
+	): Promise<string | null> => {
+		const key = `${pattern}${fileGlob ?? ''}${contextLines}`;
+		const negTs = _fallbackNegCache.get(key);
+		if (negTs !== undefined && Date.now() - negTs < _FALLBACK_NEG_TTL_MS) {
+			ctx.logService.info(`[BuiltinTools] [CBSearch][trace] fallback skipped (negative cache): pattern="${pattern.slice(0, 60)}"`);
+			return null;
+		}
+		const out = await _fallbackGrepWorkspace(pattern, fileGlob, limit, contextLines);
+		if (out === null) {
+			_fallbackNegCache.set(key, Date.now());
+			// 简单容量保护：超 200 条清空（TTL 短，正常不会累积）
+			if (_fallbackNegCache.size > 200) { _fallbackNegCache.clear(); }
+		}
+		return out;
+	};
+	// ── search_files (ripgrep 文件系统搜索；与 search_code 并列) ──────
 	ctx.register({
 		definition: {
-			name: 'search_code',
-			description: 'Graph-augmented code search. Finds text patterns, then enriches results with ' +
-				'the knowledge graph: deduplicates matches into containing functions/classes. ' +
-				'Modes: compact (default, signatures only — token efficient), full (with source), files (just paths). ' +
-				'Multi-word queries are auto-converted to regex (\"foo bar\" → foo.*bar).',
+			name: 'search_files',
+			description: 'Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (mode=\'content\', default): regex search inside files — matching lines with line numbers. Use mode=\'files_with_matches\' for paths-only, mode=\'count\' for per-file counts.\n\nFile search (mode=\'files\'): find files by glob pattern (e.g., \'*.py\', \'*config*\'). Also use this instead of ls — results sorted by modification time.\n\nFor code-structure questions (callers, definitions, dependencies, class hierarchy), use search_graph or query_graph instead — the code knowledge graph understands code relationships, not just text patterns.',
 			inputSchema: {
 				type: 'object',
 				properties: {
-					query: { type: 'string', description: 'Search pattern. Multi-word queries auto-convert to regex (foo bar → foo.*bar).' },
-					mode: { type: 'string', enum: ['compact', 'full', 'files'], default: 'compact', description: 'compact: signatures+metadata (default). full: with source code. files: just file paths.' },
-					filePattern: { type: 'string', description: 'Glob filter for file types (e.g. *.go, *.cpp)' },
-					path_filter: { type: 'string', description: 'Regex filter on result file paths (e.g. ^src/ or \\.go$). Applied AFTER grep, limiting enriched results.' },
-					context: { type: 'number', description: 'Lines of context around each match (like grep -C). Only in compact mode.' },
-					limit: { type: 'number', description: 'Max results (default 30)' },
+					pattern: { type: 'string', description: 'REQUIRED. The actual text to find: a regex for content search, or a glob (e.g., \'*.py\', \'*config*\') when mode=\'files\'. The search term ALWAYS goes here, never in `mode`. Also accepts alias: query.' },
+					mode: { type: 'string', enum: ['content', 'files_with_matches', 'count', 'files'], default: 'content', description: 'What to do with `pattern` (this is the MODE selector, never the search term):\n- \'content\' (default): regex-search inside files, return matching lines with line numbers\n- \'files_with_matches\': regex-search inside files, return only the file paths that contain a match\n- \'count\': regex-search inside files, return match counts per file\n- \'files\': treat `pattern` as a filename glob and find files by NAME (use this instead of ls; sorted by modification time)' },
+					path: { type: 'string', description: 'Directory or file to search in (default: current working directory)', default: '.' },
+					file_glob: { type: 'string', description: 'Filter which files to search by glob (e.g., \'*.py\' to only search Python files). Applies to content/files_with_matches/count modes.' },
+					limit: { type: 'integer', description: 'Maximum number of results to return (default: 50)', default: 50 },
+					offset: { type: 'integer', description: 'Skip first N results for pagination (default: 0)', default: 0 },
+					context: { type: 'integer', description: 'Number of context lines before and after each match (content mode only)', default: 0 },
 				},
-				required: ['query'],
+				// schema 强制 pattern：coerceOrReject 派发前即校验，模型漏参被就地拒绝
+				// 并重生成（不会跑到 handler 抛错后被 guard 空转）。校验是别名感知的——
+				// pattern 的 description 声明「accepts alias: query」，故只发 query 也算满足。
+				// query 别名属性已从 schema 移除（收敛参数面），handler 内的 mode/query/
+				// file_glob 别名恢复仍作为二道防线保留兼容旧会话。
+				required: ['pattern'],
+			},
+			category: 'codebase',
+			source: ctx.id,
+		},
+		handler: async (args: Record<string, unknown>, _signal?: AbortSignal, agentId?: string) => {
+			// 兼容不同参数名：pattern / query / file_glob（LLM 可能混淆）
+			let rawPattern = String(args['pattern'] || args['file_glob'] || args['query'] || '');
+
+			// ── 统一 mode（合并旧的 target + output_mode 双开关，消除语义重叠）──
+			// 新 schema 只暴露单一 `mode`；旧参数 target/output_mode 作为静默别名兼容旧会话。
+			let mode = args['mode'] ? String(args['mode']) : '';
+			if (!mode) {
+				const legacyTarget = args['target'] ? String(args['target']) : '';
+				const legacyOut = args['output_mode'] ? String(args['output_mode']) : '';
+				if (legacyTarget === 'files') {
+					mode = 'files';
+				} else if (legacyOut) {
+					mode = legacyOut === 'files_only' ? 'files_with_matches' : legacyOut; // content/count 直通
+				} else {
+					mode = 'content';
+				}
+				// 兼容：模型偶尔把搜索词误放进 legacyTarget（本是模式选择）
+				if (!rawPattern && legacyTarget && legacyTarget !== 'content' && legacyTarget !== 'files') {
+					rawPattern = legacyTarget;
+					mode = 'content';
+				}
+			}
+			// 归一未知/非法 mode → content
+			if (!['content', 'files_with_matches', 'count', 'files'].includes(mode)) { mode = 'content'; }
+
+			// 设置正确的 pattern 回 args，使 handler 后续逻辑统一从 args['pattern'] 取值
+			if (!args['pattern'] && rawPattern) { args['pattern'] = rawPattern; }
+			const pattern = rawPattern;
+			if (!pattern) { throw new Error('search_files requires "pattern" (the search term). Example — content: search_files({pattern:"parseConfig"}); find files: search_files({mode:"files", pattern:"*.ts"}). Do NOT put the search term in `mode`.'); }
+
+			// 内部两分支所需派生值（target: files vs content；outputMode: searchContent 词汇）
+			const target = mode === 'files' ? 'files' : 'content';
+			const outputMode = mode === 'files_with_matches' ? 'files_only' : mode === 'count' ? 'count' : 'content';
+
+			const searchPath = String(args['path'] || '.');
+			const fileGlob = args['file_glob'] ? String(args['file_glob']) : undefined;
+			const limit = Math.min(Math.max(Number(args['limit'] ?? 50), 1), 200);
+			const offset = Math.max(Number(args['offset'] ?? 0), 0);
+			const contextLines = Math.min(Math.max(Number(args['context'] ?? 0), 0), 10);
+
+			// ── 重复搜索熔断 ──
+			const repeat = ctx.searchHelpers.recordSearchRepeat(agentId, pattern, target, searchPath, fileGlob, limit, offset);
+			if (repeat.blocked) {
+				return [{ type: 'text', text: repeat.blocked }];
+			}
+
+			// 读操作：仅解析相对路径为绝对路径，不触发沙箱判定
+			const resolvedPath = await ctx.resolveAndCheckWorkspacePath(agentId, searchPath, false);
+
+		let result: string;
+		if (target === 'files') {
+			const glob = ctx.searchHelpers.normalizeFileSearchGlob(pattern);
+			// 2026-07-26（P1b，日志 1785078531442）：索引清单快路径——文件名 glob 直接
+			// 匹配图谱已索引文件清单（主进程 DISTINCT SQL，亚秒级），命中充足直接返回，
+			// 免去全 folder ripgrep 扫描（UE5EA 双 folder 实测 17.5s）。命中稀少时
+			// 可能索引未覆盖（如部分文件跳过索引）→ 回落 ripgrep 保持完备性。
+			let indexedResult: string | undefined;
+			try {
+				const indexedFiles = await ctx.codebaseGraphService.listIndexedFilePaths();
+				if (indexedFiles.length > 0) {
+					const re = _globToRegex(glob);
+					const roots = ctx.codebaseGraphService.getProjectRoots();
+					const matched: string[] = [];
+					for (const f of indexedFiles) {
+						if (re && !re.test(f.filePath)) { continue; }
+						const root = roots[f.project];
+						matched.push(root
+							? `${root.replace(/\\/g, '/').replace(/\/+$/, '')}/${f.filePath}`
+							: f.filePath);
+					}
+					// 2026-07-27（日志 1785118063787）：阈值从 ≥10 降为 ≥1——精确文件名
+					// 搜索（GarbageCollection.cpp 全图仅 1-2 个）是 files 查询主流形态，
+					// ≥10 阈值使其永远回落 ripgrep 9s，快路径形同虚设。matched=0 才
+					// 回落（索引未覆盖时保完备）；footer 注明索引范围防误读。
+					if (matched.length >= 1) {
+						const page = matched.slice(offset, offset + limit);
+						const footer = offset + limit < matched.length
+							? `\n\n[共 ${matched.length} 个文件（索引快路径，仅含已索引文件——新文件/未索引目录如 Intermediate 可能未覆盖），已显示 ${page.length}/${matched.length}。使用 offset=${offset + limit} 查看剩余，或用更精确的 pattern/file_glob 缩小范围。]`
+							: `\n\n[共 ${matched.length} 个文件（索引快路径，仅含已索引文件——新文件/未索引目录如 Intermediate 可能未覆盖）]`;
+						indexedResult = (page.join('\n') || '(no matching files)') + footer;
+					}
+				}
+			} catch (err) {
+				ctx.logService.warn(`[BuiltinTools] search_files indexed fast-path failed, fallback to ripgrep: ${err}`);
+			}
+			result = indexedResult ?? await ctx.searchHelpers.searchFilesByGlob(resolvedPath, glob, limit, offset, _signal);
+		} else {
+				result = await ctx.searchHelpers.searchContent(
+					resolvedPath, pattern, fileGlob, limit, offset, outputMode, contextLines, _signal,
+				);
+			}
+
+			// 结果后处理：大小截断 → 脱敏 → densify
+			result = ctx.searchHelpers.enforceSearchSize(result);
+			result = redactSecrets(result);
+			if (!(target === 'files' || outputMode === 'files_only' || outputMode === 'count')) {
+				// content 模式 >=5 条匹配时自动切换到路径分组紧凑格式
+				result = ctx.searchHelpers.densifySearchOutput(result);
+			}
+			if (repeat.warning) {
+				result += '\n\n' + repeat.warning;
+			}
+			return [{ type: 'text', text: result }];
+		},
+	});
+
+	ctx.register({
+		definition: {
+			name: 'search_code',
+			description: 'Regular-expression (regex) text search over the codebase, backed by ripgrep (streams the filesystem — fast even on huge repos). ' +
+				'Use it for raw string/pattern matching inside file bodies. For code STRUCTURE questions (callers, definitions, dependencies, call chains, class hierarchy) prefer search_graph / query_graph / trace_path — they understand code relationships, not just text. ' +
+				'Query tips: multi-word "foo bar" auto-becomes foo.*bar; pipe alternation "SymA|SymB|SymC" matches any of them — use it to probe several candidates in ONE call instead of repeating searches. ' +
+				'Output may be truncated, so use targeted queries. Modes: compact (default, matching lines, token-efficient), full (with surrounding source), files (paths only).',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: 'Regex search pattern. Multi-word queries auto-convert to regex (foo bar → foo.*bar); pipe alternation SymA|SymB matches either. Also accepts alias: pattern.' },
+					mode: { type: 'string', enum: ['compact', 'full', 'files'], default: 'compact', description: 'compact: matching lines with line numbers (default). full: with surrounding source. files: just file paths. Also accepts alias: output_mode (content→full, files_with_matches→files).' },
+					filePattern: { type: 'string', description: 'File glob to RESTRICT which files are searched, passed straight to ripgrep (e.g. **/CoreUObject/**/*.cpp, src/**/*.ts). MUST be a specific path fragment — a bare extension wildcard like "*.cpp" does NOT narrow anything in a large multi-project repo (it matches tens of thousands of files). Also accepts aliases: file_glob, glob.' },
+					path_filter: { type: 'string', description: 'Additional file glob restricting the searched paths (e.g. **/CoreUObject/**, src/**, GarbageCollection.cpp). Paths are matched RELATIVE to each project root — never prefix with the root folder name (use Engine/Source/**, NOT UE5EA/Engine/Source/**). Combined with filePattern as a ripgrep include filter. Also accepts alias: path.' },
+					context: { type: 'number', description: 'Lines of context before and after each match (like grep -C). Compact/full modes.' },
+					regex: { type: 'boolean', default: false, description: 'Treat query as a raw regex. When false (default), a plain literal is escaped and matched literally. Multi-word / pipe-alternation queries auto-enable regex.' },
+				project: { type: 'string', description: 'Project name to scope the search to a single indexed folder (optional, defaults to ALL workspace folders). Use list_projects to discover names — e.g. "UE5EA" to search only engine sources in a multi-folder workspace.' },
+				limit: { type: 'number', description: 'Max results (default 30, capped at 100)' },
+				offset: { type: 'number', description: 'Skip the first N results for pagination (default 0). Increment by `limit` and re-call when results are truncated. Mirrors search_graph\'s offset/limit pagination so the two code-search tools share the same paging API.' },
+			},
+			required: ['query'],
 			},
 			category: 'codebase',
 			source: 'saros.builtin-tools',
 		},
-		handler: async (args: Record<string, unknown>) => {
-			if (!ensureGraph()) { return text('search_code: no graph loaded. Run index_repository first.'); }
+		handler: async (args: Record<string, unknown>, _signal?: AbortSignal, agentId?: string) => {
+			// ── 2026-07-27 重构（复刻 continue 的 grep_search 机制）──────────────
+			// 旧实现走「图谱内容 grep + 20s deadline + 复杂绝对路径提取 + 双 fallback」，
+			// 在 UE5EA(33186 文件) 上大量部分覆盖撞 deadline（9-21s/次，subagent 超时主因）。
+			// continue 的 grep_search = 纯 ripgrep 扫盘（流式、亚秒级）+ filePattern 前置
+			// includePattern（非后置假缩放）+ 正则校验回传 warning + 硬截断 refine 引导。
+			// 本 handler 改用 ctx.searchHelpers.searchContent（同款 ripgrep 引擎，已带
+			// regex 失败回退纯文本 + signal 取消），彻底移除图谱 deadline grep 与 fallback。
+			// alias 恢复（二道防线，兼容旧会话 / ripgrep 风格参数）
+			if (!args['query'] && args['pattern']) { args['query'] = args['pattern']; }
+			if (!args['path_filter'] && args['path']) { args['path_filter'] = args['path']; }
+			if (!args['mode'] && args['output_mode']) {
+				const om = String(args['output_mode']);
+				args['mode'] = om === 'files_with_matches' ? 'files' : om === 'content' ? 'full' : om;
+			}
+			if (!args['filePattern'] && (args['file_glob'] || args['glob'])) {
+				args['filePattern'] = args['file_glob'] ?? args['glob'];
+			}
+			if (args['context'] === undefined && args['contextAround'] !== undefined) {
+				args['context'] = args['contextAround'];
+			}
+
 			const rawQuery = String(args['query'] ?? '');
-			if (!rawQuery) { return text('search_code error: "query" is required'); }
-			const mode = (args['mode'] as string | undefined) || 'compact';
-			const filePattern = args['filePattern'] as string | undefined;
-			const pathFilter = args['path_filter'] as string | undefined;
-			const contextLines = (args['context'] as number | undefined) ?? 0;
-			const limit = (args['limit'] as number | undefined) ?? 30;
+			if (!rawQuery) { return text('search_code requires "query" (the search term). Example: search_code({query:"FooBar"}) or search_code({query:"SymA|SymB", mode:"files"}). Accepts alias `pattern`.'); }
+			let mode = (args['mode'] as string | undefined) || 'compact';
+			if (!['compact', 'full', 'files'].includes(mode)) { mode = 'compact'; }
+		const filePattern = args['filePattern'] as string | undefined;
+		// ── filePattern 归一化（2026-07-28，日志 1785231958842）：裸文件名/裸扩展
+		// glob（*.cpp、GarbageCollection.cpp）无 `/` 时补 `**/`，否则引擎 _globToRegex
+		// 中 `*` 不跨目录，只匹配各搜索根直属文件→嵌套恒 0 命中（log 中 8 次空）。
+		const normalizedFilePattern = filePattern ? normalizeFileGlobForSearch(filePattern) : undefined;
+		let pathFilter = args['path_filter'] as string | undefined;
+		if (pathFilter) {
+			// ── 归一化（2026-07-28，日志 1785228894680）：剥 `**/` 前缀与
+			// 根目录名首段（如 UE5EA/Engine/... → Engine/...）——include glob 按
+			// 各搜索根相对路径匹配，含根目录自身名恒 0 命中（19/19 no-match）。
+			// 纯函数见 pathFilterNormalize.ts；返回 undefined = 搜整个根不过滤。
+			const rootDirNames = ctx.workspaceService.getWorkspace().folders
+				.map(f => f.uri.fsPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '');
+			pathFilter = normalizePathFilterForRoots(pathFilter, rootDirNames);
+		}
+			const contextLines = Math.min(Math.max((args['context'] as number | undefined) ?? 0, 0), 10);
+		const limit = Math.min(Math.max((args['limit'] as number | undefined) ?? 30, 1), 100);
+		const offset = Math.min(Math.max((args['offset'] as number | undefined) ?? 0, 0), 1000);
+		const scopedProject = (args['project'] as string | undefined) ?? undefined;
 
-			// 多词查询自动转 regex: "foo bar" → foo.*bar
+			// ── query 语义：字面 vs 正则（对齐 continue looksLikeLiteralSearch）──
+			let useRegex = (args['regex'] as boolean | undefined) ?? false;
 			let searchQuery = rawQuery;
-			if (rawQuery.includes(' ')) {
-				const tokens = rawQuery.split(/\s+/).filter(Boolean);
-				searchQuery = tokens.join('.*');
+			// 多词 → foo.*bar；无空格的 A|B → alternation（代码搜索几乎总是 OR 意图）
+			if (!useRegex && rawQuery.includes(' ')) {
+				searchQuery = rawQuery.split(/\s+/).filter(Boolean).join('.*');
+				useRegex = true;
+			} else if (!useRegex && rawQuery.includes('|') && !rawQuery.includes(' ')) {
+				useRegex = true;
+			}
+			// 显式/字面：非正则时转义字面量（ripgrep isRegExp=true，故字面量须先转义）
+			let regexWarning: string | undefined;
+			if (!useRegex) {
+				searchQuery = escapeLiteralForRegex(searchQuery);
+			} else {
+				// 正则：过 continue 式校验/净化，warning 回传给模型
+				const prepared = prepareQueryForRipgrep(searchQuery);
+				searchQuery = prepared.query;
+				regexWarning = prepared.warning;
 			}
 
-			const raw = await ctx.codebaseGraphService.searchCode(searchQuery, limit * 5, filePattern); // oversample; filePattern 传递到底层
-			if (!raw || raw.length === 0) {
-				return text('search_code: no matches found.');
+		// 重复搜索熔断（对齐 search_files）：连续相同参数 ≥4 次直接拦截
+		const repeat = ctx.searchHelpers.recordSearchRepeat(agentId, searchQuery, mode, normalizedFilePattern ?? pathFilter ?? '', undefined, limit, offset);
+		if (repeat.blocked) { return text(repeat.blocked); }
+
+			// ── filePattern + path_filter 合并为 ripgrep includePattern（前置过滤，真缩放）──
+			// continue 的 grep 无 filePattern 参数（靠 file_glob_search 定位）；这里保留
+			// filePattern 但直通 ripgrep includePattern（不再是旧的后置正则假缩放）。
+			// 2026-07-27（日志 1785134772329）：path_filter 为【绝对路径】时（模型常传
+			// `f:/.../GarbageCollection.cpp` 或 Unix `/...`），不能再拼 `**/` 前缀——
+			// `**/f:/...` 是畸形 glob，ripgrep 必 0 命中（实测 2 次被迫 no-match 漏检）。
+			// 绝对路径原样直通；相对路径才按文件/目录形态拼 `**/`。
+		const _isAbsPath = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('/');
+		const _globFromPathFilter = (p: string): string => {
+			// 绝对【文件】（带扩展名）直通（1785134772329 修复）。
+			// 绝对【目录】必须补 /**：裸目录作 include glob 只匹配该字面路径、不含其子项，
+			// ripgrep 恒 0 命中（1785224874547：subagent 传 path=f:/.../CoreUObject 全 no-match，
+			// 连 FGarbageCollector 都搜不到 → 反复重试直至 601s timeout）。
+			if (_isAbsPath(p)) { return /\.[A-Za-z0-9]{1,10}$/.test(p) ? p : `${p.replace(/[/\\]+$/, '')}/**`; }
+			return /\.[A-Za-z0-9]{1,10}$/.test(p) ? `**/${p}` : `**/${p}/**`;
+		};
+			const includeGlob = normalizedFilePattern ?? (pathFilter ? _globFromPathFilter(pathFilter) : undefined);
+
+			// ripgrep outputMode 映射：files → files_only；compact/full → content（带行号匹配行）
+			const outputMode = mode === 'files' ? 'files_only' : 'content';
+			// full 模式多给几行上下文（对齐旧 full 语义：匹配点前后源码）
+			const effContext = mode === 'full' ? Math.max(contextLines, 3) : contextLines;
+
+			// ── project → 单 folder scope；否则跨【所有】workspace folders 搜索并合并 ──
+			// 事故（日志 1785151024653）：project 未指定时旧实现只搜 resolveAndCheckWorkspacePath('.')
+			// 解析出的【单个】路径（多根工作区下恒为第一个允许根），导致像 UE5EA 这类第二/第三个
+			// workspace folder 完全搜不到——112 次 search_code 里 51 次 "(no matches)"，命中的
+			// 引擎源码符号全靠 search_files 的索引快路径（自带跨 project 绝对路径）意外补位。
+			// 修复：project=ALL 时遍历 ctx.workspaceService.getWorkspace().folders 逐个搜索，
+			// 结果按 folder 分段合并（与 _fallbackGrepWorkspace 相同的多 folder 语义）。
+			let searchRoots: { label: string; path: string }[];
+			if (scopedProject) {
+				const roots = ctx.codebaseGraphService.getProjectRoots();
+				const root = roots[scopedProject];
+				const resolvedPath = await ctx.resolveAndCheckWorkspacePath(agentId, root ?? '.', false);
+				searchRoots = [{ label: scopedProject, path: resolvedPath }];
+			} else {
+				const folders = ctx.workspaceService.getWorkspace().folders;
+				if (folders.length > 0) {
+					// 使用目录名（fsPath 末段）作 label，与 _fallbackGrepWorkspace 的命名约定一致；
+					// 不用 f.name（workspace folder 显示名，可能为 "VsSaros_S1Game" 这样的自定义名称）。
+					searchRoots = folders.map(f => {
+						const dirName = f.uri.fsPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || f.uri.fsPath;
+						return { label: dirName, path: f.uri.fsPath };
+					});
+				} else {
+					searchRoots = [{ label: 'workspace', path: await ctx.resolveAndCheckWorkspacePath(agentId, '.', false) }];
+				}
 			}
 
-			// 图谱富化：按文件分组查找图节点（O(#files) 而非 O(#results)）
-			const fileSet = new Set(raw.map((r: any) => r.filePath || r.file || ''));
-			const allNodes = ctx.codebaseGraphService.searchGraph({
-				label: undefined,
-				limit: 20000, // 获取所有节点
-			}).nodes;
-			const nodeMap = new Map<string, any[]>(); // filePath → nodes[]
-			for (const n of allNodes) {
-				if (!n.filePath || !fileSet.has(n.filePath)) { continue; }
-				if (!nodeMap.has(n.filePath)) { nodeMap.set(n.filePath, []); }
-				nodeMap.get(n.filePath)!.push(n);
-			}
+			ctx.logService.info(`[BuiltinTools] [CBSearch][trace] search_code(ripgrep) query="${rawQuery.slice(0, 60)}" searchQuery="${searchQuery.slice(0, 80)}" regex=${useRegex} mode=${mode} include=${includeGlob ?? '-'} project=${scopedProject ?? 'ALL'} roots=[${searchRoots.map(r => r.label).join(', ')}]`);
 
-			const enriched = raw.map((r: any) => {
-				const filePath = r.filePath || r.file || '';
-				const lineNo = r.lineNo || r.line || 0;
-				const fileNodes = nodeMap.get(filePath) || [];
-				// 查找包含此位置的图节点
-				const containingNode = fileNodes.find(n =>
-					n.startLine && n.startLine <= lineNo && n.endLine && n.endLine >= lineNo
+			const perRootResults: string[] = [];
+			let anyMatches = false;
+			for (const root of searchRoots) {
+				let r = await ctx.searchHelpers.searchContent(
+					root.path, searchQuery, includeGlob, limit, offset, outputMode, effContext, _signal,
 				);
+				r = redactSecrets(r);
+				if (outputMode === 'content' && mode !== 'full') {
+					r = ctx.searchHelpers.densifySearchOutput(r);
+				}
+				const isEmpty = /^\(no matches\)$/.test(r.trim());
+				if (!isEmpty) { anyMatches = true; }
+				// 单 root（project 指定）时不加分段标题，保持旧输出格式；多 root 才分段标注来源
+				perRootResults.push(searchRoots.length > 1 ? `## [${root.label}]\n${r}` : r);
+			}
+		let result = anyMatches
+			? perRootResults.join('\n\n')
+			: '(no matches)';
+	// 空命中分「过滤问题」vs「符号问题」给不同引导（2026-07-28，日志 1785231958842）：
+	// ①include 非空且全根 no-match → 过滤可能过严（而非 query 问题），打破「重写
+	//   query 重试」无效循环（日志 1785228894680：同一 include 重写正则重试 12 次）。
+	// ②无任何过滤仍全库 0 命中 → 符号多半幻觉/拼写错误，先 search_files/search_graph
+	//   验证符号名（此前此情形静默无提示，模型闷头重写 query 空转）。
+if (!anyMatches) {
+	if (includeGlob) {
+		result += noMatchWithIncludeHint(includeGlob);
+	} else {
+		result += noMatchNoFilterHint();
+	}
+}
+	// 连续空结果引导：模型对同一目标反复换符号猜测而 path_filter/符号本身错误时，
+	// exact-repeat 熔断拦不住（每次参数不同）。连击达阈值即提示转 search_graph
+	//（日志 1785231958842：子代理 434s 烧光预算正因 search_code 反复空命中）。
+	const _emptyStreak = ctx.searchHelpers.recordSearchCodeEmptyStreak(agentId, !anyMatches);
+	if (!anyMatches && _emptyStreak.shouldGuide) {
+		result += searchCodeEmptyStreakHint(_emptyStreak.streak);
+	}
 
-				const isIndexed = fileNodes.length > 0;
-				const entry: any = {
-					filePath,
-					lineNo,
-					text: r.text || r.snippet || '',
-					isIndexed,
-				};
-				if (containingNode) {
-					entry.symbol = containingNode.name;
-					entry.type = containingNode.type;
-					entry.qualifiedName = containingNode.qualifiedName;
-				}
-				return entry;
-			})
-			// path_filter: 按文件路径正则过滤
-			.filter((e: any) => {
-				if (!pathFilter) { return true; }
-				try {
-					return new RegExp(pathFilter).test(e.filePath);
-				} catch { return true; /* invalid regex → pass all */ }
-			})
-			.slice(0, limit);
+			// 结果后处理：大小截断兜底（densify/redact 已按 root 分别做过）
+			result = ctx.searchHelpers.enforceSearchSize(result);
 
-			// Mode-based formatting
-			if (mode === 'files') {
-				const files = [...new Set(enriched.map((e: any) => e.filePath))];
-				return json({ files, total_files: files.length });
-			}
-			if (mode === 'full') {
-				// 读取源文件获取实际代码片段
-				const fullResults = [];
-				for (const e of enriched) {
-					try {
-						const wsFolders = ctx.workspaceService.getWorkspace().folders;
-						let fileUri: URI | undefined;
-						for (const folder of wsFolders) {
-							const candidate = URI.joinPath(folder.uri, e.filePath);
-							if (await ctx.fileService.exists(candidate)) { fileUri = candidate; break; }
-						}
-						if (fileUri && e.lineNo > 0) {
-							const fileContent = (await ctx.fileService.readFile(fileUri)).value.toString();
-							const lines = fileContent.split('\n');
-							const ctxStart = Math.max(0, e.lineNo - 4);
-							const ctxEnd = Math.min(lines.length, e.lineNo + 3);
-							e.source = lines.slice(ctxStart, ctxEnd).map((l: string, i: number) => `${ctxStart + i + 1}: ${l}`).join('\n');
-						}
-					} catch { /* best effort */ }
-					fullResults.push(e);
-				}
-				return json({ results: fullResults, total: fullResults.length, mode: 'full' });
-			}
-			// compact mode — signatures only, token efficient
-			// 如果请求了 context 行, 按需读取文件
-			if (contextLines > 0 && enriched.length > 0) {
-				for (const e of enriched) {
-					try {
-						const wsFolders = ctx.workspaceService.getWorkspace().folders;
-						let fileUri: URI | undefined;
-						for (const folder of wsFolders) {
-							const candidate = URI.joinPath(folder.uri, e.filePath);
-							if (await ctx.fileService.exists(candidate)) { fileUri = candidate; break; }
-						}
-						if (fileUri && e.lineNo > 0) {
-							const fileContent = (await ctx.fileService.readFile(fileUri)).value.toString();
-							const lines = fileContent.split('\n');
-							const ctxStart = Math.max(0, e.lineNo - contextLines - 1);
-							const ctxEnd = Math.min(lines.length, e.lineNo + contextLines);
-							e.context = lines.slice(ctxStart, ctxEnd).map((l: string, i: number) =>
-								`${ctxStart + i + 1}: ${l}`).join('\n');
-						}
-					} catch { /* best effort */ }
-				}
-			}
-			return json({ results: enriched, total: enriched.length, mode: 'compact' });
+			// Truncation warning（对齐 continue：达上限即引导 refine）
+			const parts: string[] = [result];
+			if (regexWarning) { parts.push(`[regex] ${regexWarning}`); }
+			if (repeat.warning) { parts.push(repeat.warning); }
+			return text(parts.join('\n\n'));
 		},
-	});
+});
 
 	// ── detect_changes ──────────────────────────────────────────────
 	ctx.register({
@@ -630,18 +1278,22 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					since: { type: 'string', description: 'Git reference (commit/branch/tag)' },
 					baseBranch: { type: 'string', description: 'Base branch for comparison (optional)' },
 					impactAnalysis: { type: 'boolean', description: 'Run impact analysis (optional)' },
+					scope: { type: 'string', description: 'Directory prefix to limit change detection (e.g. src/app). Only changed files under this path are analyzed.' },
+					depth: { type: 'number', default: 5, description: 'Max BFS hops for downstream impact propagation (default 5).' },
 				},
 			},
 			category: 'codebase',
 			source: 'saros.builtin-tools',
 		},
 		handler: async (args: Record<string, unknown>) => {
-			if (!ensureGraph()) { return text('detect_changes: no graph loaded. Run index_repository first.'); }
+			if (!await ensureGraph()) { return text('detect_changes: no graph loaded. Run index_repository first.'); }
 			try {
 				const result = await ctx.codebaseGraphService.detectChanges({
 					since: args['since'] as string | undefined,
 					baseBranch: args['baseBranch'] as string | undefined,
 					impactAnalysis: args['impactAnalysis'] as boolean | undefined,
+					scope: args['scope'] as string | undefined,
+					depth: args['depth'] as number | undefined,
 				});
 				return json(result);
 			} catch (err: any) {
@@ -654,12 +1306,18 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 	ctx.register({
 		definition: {
 			name: 'ingest_traces',
-			description: 'Ingest OpenTelemetry traces (OTLP JSON) into the codebase graph to enrich ' +
-				'runtime call edges.',
+			description: 'Ingest runtime traces into the codebase graph to enrich runtime call edges. ' +
+				'Accepts either OpenTelemetry OTLP JSON (resourceSpans / flat span array) or a simplified ' +
+				'[{caller, callee, count}] array (P2 lightweight format).',
 			inputSchema: {
 				type: 'object',
 				properties: {
-					otlp_json: { type: 'string', description: 'OTLP JSON trace data' },
+					otlp_json: {
+						type: 'string',
+						description: 'OTLP JSON trace data, OR a simplified JSON array ' +
+							'[{"caller":"foo","callee":"bar","count":42,"edgeType":"CALLS"}]. ' +
+							'Arrays containing caller/callee (and no traceId/spanId) are auto-detected as the simplified format.',
+					},
 				},
 				required: ['otlp_json'],
 			},
@@ -758,7 +1416,89 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 	},
 	});
 
-	ctx.logService.info('[BuiltinTools] _registerCodebaseTools: 14 codebase tools registered (index_repository, index_status, list_projects, delete_project, search_graph, query_graph, get_architecture, get_code_snippet, get_graph_schema, trace_path, search_code, detect_changes, ingest_traces, manage_adr)');
+	// ── export_artifact (P2-#3) ─────────────────────────────────────
+	// Expose GraphPersistence.exportArtifact: dump current graph as a portable
+	// compressed artifact (graph.db.zst + artifact.json) for team sharing / Git branch.
+	ctx.register({
+		definition: {
+			name: 'export_artifact',
+			description: 'Export the current codebase graph as a portable compressed artifact (.codebase-memory/graph.db.zst + artifact.json) for team sharing or Git branching. ' +
+				'Defaults to the workspace .codebase-memory directory. Run index_repository first if no graph is loaded. ' +
+				'Returns the artifact size, node count, and edge count.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					target_path: { type: 'string', description: 'Destination path for graph.db.zst (optional, defaults to {workspace}/.codebase-memory/graph.db.zst)' },
+					slim: { type: 'boolean', description: 'Slim tier (default true): exclude rebuildable BM25 index and 3D layout for a smaller artifact; BM25 is rebuilt automatically on import. Set false for full-fidelity export.', default: true },
+				},
+			},
+			category: 'codebase',
+			source: 'saros.builtin-tools',
+		},
+		handler: async (args: Record<string, unknown>) => {
+			if (!await ensureGraph()) {
+				return text('export_artifact: no graph loaded. Run index_repository first.');
+			}
+			const overridePath = args['target_path'] as string | undefined;
+			let targetPath = overridePath;
+			if (!targetPath) {
+				const folders = ctx.workspaceService.getWorkspace().folders;
+				if (folders.length === 0) {
+					return text('export_artifact error: no workspace folder open and no target_path provided');
+				}
+				targetPath = URI.joinPath(URI.file(folders[0].uri.fsPath), '.codebase-memory', 'graph.db.zst').fsPath;
+			}
+			try {
+				const slim = args['slim'] === false ? false : true;
+				const result = await ctx.codebaseGraphService.exportArtifact(targetPath, { slim });
+				return json({ success: true, path: targetPath, slim, ...result });
+			} catch (err: any) {
+				return text(`export_artifact error: ${err?.message || err}`);
+			}
+		},
+	});
+
+	// ── import_artifact (P2-#3) ─────────────────────────────────────
+	// Expose GraphPersistence.importArtifact: load a portable artifact and replace the current graph.
+	ctx.register({
+		definition: {
+			name: 'import_artifact',
+			description: 'Import a codebase graph from a portable compressed artifact (graph.db.zst / graph.db.gz / graph.json) and replace the current in-memory graph. ' +
+				'Use after a teammate shares an artifact via Git, or to restore a previously exported snapshot. ' +
+				'Returns whether the import succeeded.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					source_path: { type: 'string', description: 'Path to the artifact to import (graph.db.zst / graph.db.gz / graph.json). Defaults to {workspace}/.codebase-memory/graph.db.zst' },
+				},
+			},
+			category: 'codebase',
+			source: 'saros.builtin-tools',
+		},
+		handler: async (args: Record<string, unknown>) => {
+			const overridePath = args['source_path'] as string | undefined;
+			let sourcePath = overridePath;
+			if (!sourcePath) {
+				const folders = ctx.workspaceService.getWorkspace().folders;
+				if (folders.length === 0) {
+					return text('import_artifact error: no workspace folder open and no source_path provided');
+				}
+				sourcePath = URI.joinPath(URI.file(folders[0].uri.fsPath), '.codebase-memory', 'graph.db.zst').fsPath;
+			}
+			try {
+				const ok = await ctx.codebaseGraphService.importArtifact(sourcePath);
+				if (!ok) {
+					return text(`import_artifact: failed to load artifact at ${sourcePath} (file missing, unrecognized format, or failed integrity check)`);
+				}
+				const status = ctx.codebaseGraphService.getIndexStatus();
+				return json({ success: true, path: sourcePath, nodeCount: status.nodeCount, edgeCount: status.edgeCount });
+			} catch (err: any) {
+				return text(`import_artifact error: ${err?.message || err}`);
+			}
+		},
+	});
+
+	ctx.logService.info('[BuiltinTools] _registerCodebaseTools: 17 codebase tools registered (index_repository, index_status, check_index_coverage, list_projects, delete_project, search_graph, query_graph, get_architecture, get_code_snippet, get_graph_schema, trace_path, grep, detect_changes, ingest_traces, manage_adr, export_artifact, import_artifact)');
 }
 
 export function runSemanticSearch(ctx: CodebaseToolContext, keywords: string[], limit: number): any[] {
@@ -781,6 +1521,7 @@ export function runSemanticSearch(ctx: CodebaseToolContext, keywords: string[], 
 				type: r.node.label,
 				qualifiedName: r.node.qualifiedName,
 				filePath: r.node.filePath,
+				project: r.node.project,
 				inDegree: r.node.inDegree,
 				outDegree: r.node.outDegree,
 			},

@@ -50,6 +50,9 @@ export class ScrollbarController extends Disposable {
 	private _pendingScrollToBottomRaf: number | null = null;
 	private _scrollbarUpdateRaf: number | null = null;
 	private readonly _markerDisposables = this._register(new DisposableStore());
+	/** 内容脏标记：仅当消息容器 DOM 真变化时才读 scrollHeight 钉底（见 _streamContentObserver）。 */
+	private _streamContentDirty = true;
+	private _streamContentObserver: MutationObserver | undefined;
 
 	constructor(private readonly _host: IScrollbarHost) {
 		super();
@@ -59,22 +62,40 @@ export class ScrollbarController extends Disposable {
 		if (this._streamScrollRaf !== null) { cancelAnimationFrame(this._streamScrollRaf); this._streamScrollRaf = null; }
 		if (this._scrollbarUpdateRaf !== null) { cancelAnimationFrame(this._scrollbarUpdateRaf); this._scrollbarUpdateRaf = null; }
 		if (this._pendingScrollToBottomRaf !== null) { cancelAnimationFrame(this._pendingScrollToBottomRaf); this._pendingScrollToBottomRaf = null; }
+		this._streamContentObserver?.disconnect();
+		this._streamContentObserver = undefined;
 		super.dispose();
 	}
 
+	/**
+	 * 流式钉底循环。
+	 *
+	 * P2 优化：rAF 循环 60fps 运行，但流式 DOM 渲染按 ~100ms 节流——绝大多数帧 DOM
+	 * 并未变化，此时读 scrollHeight 纯属浪费（且在有 pending 布局失效时会触发强制重排）。
+	 * 改用 MutationObserver 置脏：仅当容器内容真变化（childList/characterData）的那一帧
+	 * 才读 scrollHeight + 写 scrollTop 钉底；干净帧完全跳过，消除无效强制布局。
+	 */
 	startStreamScroll(): void {
 		if (this._streamScrollRaf !== null) { return; }
-		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-		console.debug(`[ScrollDiag] _startStreamScroll START caller: ${diagStack}`);
+		// 监听消息容器内容变化 → 置脏。不观察 attributes，避免 hover/动画类名造成频繁误脏。
+		const container = this._host.messagesContainer;
+		if (container && !this._streamContentObserver) {
+			this._streamContentObserver = new MutationObserver(() => { this._streamContentDirty = true; });
+			this._streamContentObserver.observe(container, { childList: true, subtree: true, characterData: true });
+		}
+		this._streamContentDirty = true; // 首帧必钉一次
 		const tick = () => {
 			this._streamScrollRaf = null;
 			// 流式结束 → 停止循环（唯一合法的停止条件）
 			if (!this._host.isSending || !this._host.messagesContainer) {
+				this._streamContentObserver?.disconnect();
+				this._streamContentObserver = undefined;
 				return;
 			}
 			// 用户滚离底部 → 跳过钉底但保持循环存活，等待 isAtBottom 恢复
 			// 用户正在拖拽滚动条 → 暂停钉底，避免互相冲突
-			if (this._host.isAtBottom && !this._host.isDraggingScrollbar) {
+			if (this._host.isAtBottom && !this._host.isDraggingScrollbar && this._streamContentDirty) {
+				this._streamContentDirty = false;
 				this._host.messagesContainer.scrollTop = this._host.messagesContainer.scrollHeight;
 			}
 			this._streamScrollRaf = requestAnimationFrame(tick);
@@ -86,9 +107,9 @@ export class ScrollbarController extends Disposable {
 		if (this._streamScrollRaf !== null) {
 			cancelAnimationFrame(this._streamScrollRaf);
 			this._streamScrollRaf = null;
-			const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-			console.debug(`[ScrollDiag] _stopStreamScroll STOP caller: ${diagStack}`);
 		}
+		this._streamContentObserver?.disconnect();
+		this._streamContentObserver = undefined;
 	}
 
 	scheduleScrollToBottom(): void {
@@ -220,11 +241,12 @@ export class ScrollbarController extends Disposable {
 	scrollToBottom(force: boolean): void {
 		const el = this._host.messagesContainer;
 		if (!el) { return; }
-		// ── SCROLL DIAG: 记录每次滚动的调用栈 ──
-		const diagStack = new Error().stack?.split('\n').slice(2, 6).map(s => s.trim()).join(' ← ') || '?';
-		const prevTop = el.scrollTop;
-		const prevHeight = el.scrollHeight;
-		const wasAtBtm = (prevHeight - prevTop - el.clientHeight) < 80;
+		// 诊断状态仅开启时捕获：scrollTop/scrollHeight 读取会强制布局，
+		// Error().stack 生成昂贵——默认（__SAROSIS_SCROLL_DIAG 关闭）零开销。
+		const DIAG = !!(window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG;
+		const prevTop = DIAG ? el.scrollTop : 0;
+		const prevHeight = DIAG ? el.scrollHeight : 0;
+		const wasAtBtm = DIAG ? (prevHeight - prevTop - el.clientHeight) < 80 : false;
 
 		const instant = force || this._host.wasLoading;
 
@@ -234,7 +256,7 @@ export class ScrollbarController extends Disposable {
 			this._host.wasLoading = false;
 			this._host.showScrollBtn = false;
 			const btn = this._host.scrollToBottomBtn;
-			if (btn) { btn.style.display = "none"; }
+			if (btn) { btn.classList.remove("visible"); }
 			el.scrollTop = el.scrollHeight;
 			return;
 		}
@@ -260,7 +282,7 @@ export class ScrollbarController extends Disposable {
 			this._host.isAtBottom = false;
 			this._host.showScrollBtn = true;
 			const btn = this._host.scrollToBottomBtn;
-			if (btn) { btn.style.display = "flex"; }
+			if (btn) { btn.classList.add("visible"); }
 			return;
 		}
 
@@ -271,8 +293,9 @@ export class ScrollbarController extends Disposable {
 			el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
 		}
 
-		// ── SCROLL DIAG: 记录滚动效果 ──
-		if (el) {
+		// ── SCROLL DIAG（默认关闭，__SAROSIS_SCROLL_DIAG=1 开启）──
+		if (DIAG) {
+			const diagStack = new Error().stack?.split('\n').slice(2, 6).map(s => s.trim()).join(' ← ') || '?';
 			const delta = el.scrollTop - prevTop;
 			const hDelta = el.scrollHeight - prevHeight;
 			if (Math.abs(delta) > 5 || hDelta !== 0) {

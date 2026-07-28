@@ -11,6 +11,7 @@
 /* eslint-disable local/code-no-unexternalized-strings */
 import { create } from 'zustand';
 import { sendRequest, postMessage } from '../bridge/messageClient';
+import { parseSlashCommands } from '../utils/slashCommands';
 import { useAgentStore } from './useAgentStore';
 
 // ── streamHandler stubs (Phase 2: streamHandler.ts deleted) ──
@@ -1255,18 +1256,8 @@ export const useChatStore = create<ChatState>((set, get) => {
 			let { activeAgentId, activeAgentSessionId, streamState, chatMode } = get();
 			if (!activeAgentId) { return; }
 
-			// ── 解析 /skill <id> 命令，提取显式激活的技能 ID ──
-			const explicitSkillIds: string[] = [];
-			const seenSkillIds = new Set<string>();
-			const skillPattern = /\/skill\s+(\S+)/g;
-			let match: RegExpExecArray | null;
-			while ((match = skillPattern.exec(message)) !== null) {
-				const id = match[1].toLowerCase();
-				if (!seenSkillIds.has(id)) {
-					seenSkillIds.add(id);
-					explicitSkillIds.push(id);
-				}
-			}
+			// ── 解析 slash 命令：/skill <id>、/workflow|/wf <id>、bare /{wf-xxx} ──
+			const { explicitSkillIds, workflowTrigger } = parseSlashCommands(message);
 
 			// ── Auto-cancel current stream if still running (VS Code Copilot Chat
 			// "steering" pattern: sending a new message interrupts the current one) ──
@@ -1378,8 +1369,9 @@ export const useChatStore = create<ChatState>((set, get) => {
 					agentSessionId: activeAgentSessionId ?? undefined,
 					workspaceSessionId,
 					workspaceId,
-					explicitSkillIds: explicitSkillIds.length > 0 ? explicitSkillIds : undefined,
-					chatMode,
+				explicitSkillIds: explicitSkillIds.length > 0 ? explicitSkillIds : undefined,
+				workflowTrigger,
+				chatMode,
 					reasoning,
 					attachments: attachments && attachments.length > 0 ? attachments : undefined,
 				});

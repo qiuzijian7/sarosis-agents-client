@@ -7,7 +7,7 @@
  * Workflow 上传 / 下载 / 更新 测试用例
  *
  * 覆盖以下场景：
- *   1. WorkflowInstaller.install       — 从解压目录导入工作流到 ~/.saros/workflows/
+ *   1. WorkflowInstaller.install       — 从解压目录导入工作流到 ~/.vssaros/workflows/
  *   2. WorkflowInstaller.preparePack   — 将本地工作流打包到临时目录
  *   3. WorkflowInstaller.getInstalledVersion — 从 installed-packages.json 查询已安装版本
  *   4. 版本比较（semver）              — 升级判定逻辑
@@ -156,6 +156,13 @@ class MockPathService {
 	}
 }
 
+// ─── Mock EnvironmentService ──────────────────────────────────────────────────
+
+class MockEnvironmentService {
+	constructor(private readonly _userRoamingDataHome: URI) { }
+	get userRoamingDataHome(): URI { return this._userRoamingDataHome; }
+}
+
 // ─── Mock WorkspaceContextService ──────────────────────────────────────────────
 
 class MockWorkspaceContextService {
@@ -223,9 +230,11 @@ suite('WorkflowMarketOperations', () => {
 	let workflowStorage: MockWorkflowStorage;
 	let pathService: MockPathService;
 	let workspaceService: MockWorkspaceContextService;
+	let environmentService: MockEnvironmentService;
 	let installer: WorkflowInstaller;
 
 	const USER_HOME = URI.file('/test-home/user');
+	const DATA_ROOT = URI.file('/test-data/.vssaros');
 
 	setup(() => {
 		fileService = new MockFileService();
@@ -233,9 +242,11 @@ suite('WorkflowMarketOperations', () => {
 		workflowStorage = new MockWorkflowStorage();
 		pathService = new MockPathService(USER_HOME);
 		workspaceService = new MockWorkspaceContextService();
+		environmentService = new MockEnvironmentService(URI.joinPath(DATA_ROOT, 'User'));
 
-		// WorkflowInstaller constructor: fileService, logService, workflowStorage, pathService, workspaceService
+		// WorkflowInstaller constructor: environmentService, fileService, logService, workflowStorage, pathService, workspaceService
 		installer = new WorkflowInstaller(
+			environmentService as any,
 			fileService as any,
 			logService as any,
 			workflowStorage as any,
@@ -272,7 +283,7 @@ suite('WorkflowMarketOperations', () => {
 		assert.strictEqual(all[0].name, 'New Workflow');
 	});
 
-	test('install: 同时备份到 ~/.saros/workflows/{id}/workflow.json', async () => {
+	test('install: 同时备份到 ~/.vssaros/workflows/{id}/workflow.json', async () => {
 		const manifest = makeManifest({ id: 'wf-backup-001' });
 		const extractedDir = URI.file('/tmp/extract/wf-backup-001');
 		const workflowData = makeWorkflow({ id: 'wf-backup-001', name: 'Backup Test' });
@@ -280,8 +291,8 @@ suite('WorkflowMarketOperations', () => {
 
 		const result = await installer.install(manifest, extractedDir);
 
-		// 备份文件应该存在于 ~/.saros/workflows/{id}/workflow.json
-		const expectedBackupPath = `/test-home/user/.saros/workflows/${manifest.id}/workflow.json`;
+		// 备份文件应该存在于 ~/.vssaros/workflows/{id}/workflow.json
+		const expectedBackupPath = `/test-data/.vssaros/workflows/${manifest.id}/workflow.json`;
 		const backupContent = fileService._getFile(expectedBackupPath);
 		assert.ok(backupContent, `备份文件应存在于 ${expectedBackupPath}`);
 		const parsed = JSON.parse(backupContent!);
@@ -460,28 +471,28 @@ suite('WorkflowMarketOperations', () => {
 
 	// ── 6. 工作流存储路径 ────────────────────────────────────────────────────
 
-	suite('工作流存储路径 ~/.saros/workflows/{workflowid}/', () => {
+	suite('工作流存储路径 ~/.vssaros/workflows/{workflowid}/', () => {
 
-		test('install 后备份目录为 ~/.saros/workflows/{id}/', async () => {
-			const manifest = makeManifest({ id: 'wf-path-001' });
-			const extractedDir = URI.file('/tmp/extract/wf-path-001');
-			fileService._setFile('/tmp/extract/wf-path-001/workflow.json', JSON.stringify(makeWorkflow({ id: 'wf-path-001' })));
+	test('install 后备份目录为 ~/.vssaros/workflows/{id}/', async () => {
+		const manifest = makeManifest({ id: 'wf-path-001' });
+		const extractedDir = URI.file('/tmp/extract/wf-path-001');
+		fileService._setFile('/tmp/extract/wf-path-001/workflow.json', JSON.stringify(makeWorkflow({ id: 'wf-path-001' })));
 
-			const result = await installer.install(manifest, extractedDir);
+		const result = await installer.install(manifest, extractedDir);
 
-			// 验证 targetDir 包含正确的路径
-			assert.ok(result.targetDir.includes('.saros'), 'targetDir 应包含 .saros');
-			assert.ok(result.targetDir.includes('workflows'), 'targetDir 应包含 workflows');
-			assert.ok(result.targetDir.includes('wf-path-001'), 'targetDir 应包含工作流 ID');
-		});
+		// 验证 targetDir 包含正确的路径
+		assert.ok(result.targetDir.includes('.vssaros'), 'targetDir 应包含 .vssaros');
+		assert.ok(result.targetDir.includes('workflows'), 'targetDir 应包含 workflows');
+		assert.ok(result.targetDir.includes('wf-path-001'), 'targetDir 应包含工作流 ID');
+	});
 
-		test('preparePack 的打包目录在 ~/.saros/tmp/ 下', async () => {
-			const wf = makeWorkflow({ id: 'wf-tmp-001' });
-			workflowStorage._seed(wf);
+	test('preparePack 的打包目录在 ~/.vssaros/tmp/ 下', async () => {
+		const wf = makeWorkflow({ id: 'wf-tmp-001' });
+		workflowStorage._seed(wf);
 
-			const result = await installer.preparePack('wf-tmp-001');
+		const result = await installer.preparePack('wf-tmp-001');
 
-			assert.ok(result.localDir.toString().includes('.saros'), '打包目录应在 ~/.saros/ 下');
+		assert.ok(result.localDir.toString().includes('.vssaros'), '打包目录应在 ~/.vssaros/ 下');
 			assert.ok(result.localDir.toString().includes('tmp'), '打包目录应在 tmp 子目录下');
 			assert.ok(result.localDir.toString().includes('workflow-pack'), '打包目录应包含 workflow-pack 前缀');
 		});

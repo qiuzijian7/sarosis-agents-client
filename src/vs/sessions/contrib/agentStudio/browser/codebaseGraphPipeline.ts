@@ -313,6 +313,8 @@ export class CodebaseGraphPipeline {
 					cyclomatic: complexity.cyclomatic,
 					loops: complexity.loops,
 					conditionals: complexity.conditionals,
+					cognitive: complexity.cognitive,
+					loop_count: complexity.loopCount,
 				};
 			}
 		}

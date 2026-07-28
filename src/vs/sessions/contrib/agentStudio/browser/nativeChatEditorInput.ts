@@ -175,10 +175,13 @@ export class NativeChatEditorInput extends EditorInput {
 	 * @param agentId Agent ID
 	 * @param sessionId Optional session ID to persist (for drag-to-new-group restore)
 	 */
-	setAgentInfo(agentName: string, agentId: string, sessionId?: string | null): void {
+	setAgentInfo(agentName: string, agentId: string, sessionId?: string | null, sessionName?: string): void {
 		let changed = false;
-		if (this._name !== agentName) {
-			this._name = agentName;
+		const displayName = (sessionId && sessionName)
+			? `${agentName} (${sessionName})`
+			: agentName;
+		if (this._name !== displayName) {
+			this._name = displayName;
 			changed = true;
 		}
 		if (this._agentId !== agentId) {

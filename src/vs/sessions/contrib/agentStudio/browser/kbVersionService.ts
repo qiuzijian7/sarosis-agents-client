@@ -8,7 +8,7 @@
  *  in the desktop Electron renderer. The `fs` module is also loaded via
  *  `nodeRequire` and passed to isomorphic-git as the `fs` parameter.
  *
- *  The `.git` repo lives at the vault root (`~/.saros/knowledge-base/<vaultId>/`),
+ *  The `.git` repo lives at the vault root (`~/.vssaros/knowledge-base/<vaultId>/`),
  *  covering all `.md` files in that vault.
  *
  *  Ported from SoloMD `git_history.rs` (Rust + libgit2).
@@ -98,7 +98,7 @@ function defaultAutoMessage(): string {
 /**
  * Resolve the vault root from a KB note's resource URI.
  *
- * KB notes are stored at `~/.saros/knowledge-base/<vaultId>/笔记/xxx.md`.
+ * KB notes are stored at `~/.vssaros/knowledge-base/<vaultId>/笔记/xxx.md`.
  * The vault root is the `<vaultId>` directory — two levels up from the file
  * (file → `笔记/` → `<vaultId>/`). We also handle subdirectories within `笔记/`.
  *

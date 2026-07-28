@@ -17,12 +17,37 @@ import { DEFAULT_MAX_SEARCH_RESULTS, IExtendedExtensionSearchOptions, ITextSearc
 import { Range, TextSearchComplete2, TextSearchContext2, TextSearchMatch2, TextSearchProviderOptions, TextSearchQuery2, TextSearchResult2 } from '../common/searchExtTypes.js';
 import { AST as ReAST, RegExpParser, RegExpVisitor } from 'vscode-regexpp';
 import { rgPath } from '@vscode/ripgrep';
+import * as fs from 'fs';
 import { anchorGlob, IOutputChannel, Maybe, rangeToSearchRange, searchRangeToRange } from './ripgrepSearchUtils.js';
 import type { RipgrepTextSearchOptions } from '../common/searchExtTypesInternal.js';
 import { newToOldPreviewOptions } from '../common/searchExtConversionTypes.js';
 
 // If @vscode/ripgrep is in an .asar file, then the binary is unpacked.
 const rgDiskPath = rgPath.replace(/\bnode_modules\.asar\b/, 'node_modules.asar.unpacked');
+
+/**
+ * Whether the ripgrep binary is actually present on disk. See the matching
+ * explanation in `ripgrepFileSearch.ts` for why this check is needed.
+ */
+export const isRipgrepAvailable: boolean = (() => {
+	try {
+		return fs.existsSync(rgDiskPath);
+	} catch {
+		return false;
+	}
+})();
+
+/**
+ * Human-readable hint shown to the user when ripgrep is unavailable.
+ * Kept in sync with `ripgrepFileSearch.ts` and the build-side
+ * `ensureRipgrepBinaryTask` log message.
+ */
+export const RIPGREP_MISSING_HINT =
+	`ripgrep binary not found at ${rgDiskPath}. ` +
+	`Activity bar search requires ripgrep. ` +
+	`Re-install VsSaros (the build should copy rg.exe into node_modules.asar.unpacked) ` +
+	`or copy @vscode/ripgrep/bin/rg[.exe] from a working install into ` +
+	`<app>/node_modules.asar.unpacked/@vscode/ripgrep/bin/ manually.`;
 
 export class RipgrepTextSearchEngine {
 
@@ -60,6 +85,12 @@ export class RipgrepTextSearchEngine {
 			return Promise.resolve({ limitHit: false });
 		}
 
+		// Surface a friendly error up front if ripgrep is missing on disk,
+		// instead of letting `cp.spawn` throw a cryptic ENOENT.
+		if (!isRipgrepAvailable) {
+			return Promise.reject(new Error(RIPGREP_MISSING_HINT));
+		}
+
 		return new Promise((resolve, reject) => {
 			token.onCancellationRequested(() => cancel());
 
@@ -80,7 +111,15 @@ export class RipgrepTextSearchEngine {
 			rgProc.on('error', e => {
 				console.error(e);
 				this.outputChannel.appendLine('Error: ' + (e && e.message));
-				reject(serializeSearchError(new SearchError(e && e.message, SearchErrorCode.rgProcessError)));
+				// If spawn failed with ENOENT at this point (e.g. the binary
+				// was removed between the pre-check and the spawn), surface
+				// the same actionable hint rather than the raw OS error.
+				const errCode = e && (e as NodeJS.ErrnoException).code;
+				if (errCode === 'ENOENT') {
+					reject(new Error(RIPGREP_MISSING_HINT));
+				} else {
+					reject(serializeSearchError(new SearchError(e && e.message, SearchErrorCode.rgProcessError)));
+				}
 			});
 
 			let gotResult = false;

@@ -12,8 +12,8 @@
  * - 在达到阈值时触发后台进化审查
  * - 提供记录查询接口给 UI (EvolutionViewPane / EvolutionDetailEditorPane)
  *
- * 存储结构（统一使用 ~/.saros/ 路径）：
- *   ~/.saros/evolution/
+ * 存储结构（统一使用 ~/.vssaros/saros/ 路径）：
+ *   ~/.vssaros/saros/evolution/
  *     records.json          — 全局进化记录
  *     configs/
  *       <agentId>.json      — 每个 agent 的进化配置
@@ -26,6 +26,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { SarosPath, resolveSarosPath } from '../common/sarosPaths.js';
 import {
 	ISelfEvolutionService,
 	IEvolutionRecord,
@@ -66,8 +67,8 @@ export class SelfEvolutionService extends Disposable implements ISelfEvolutionSe
 	) {
 		super();
 
-		// Use userHome for consistency with other modules (~/.saros/)
-		this._evolutionDir = URI.joinPath(this.environmentService.userHome, '.saros', 'evolution');
+		// Store under VS Code user data directory (~/.vssaros/saros/evolution/)
+		this._evolutionDir = resolveSarosPath(URI.file(this.environmentService.userDataPath), SarosPath.evolution);
 		this._recordsFile = URI.joinPath(this._evolutionDir, 'records.json');
 
 		// Load on construction

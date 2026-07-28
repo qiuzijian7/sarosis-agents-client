@@ -21,6 +21,7 @@ import { IEmbedder } from './embedder.js';
 import { getTemplate, listTemplates, KnowledgeTemplate } from './templates.js';
 import { getMethod, listMethods } from './methodRegistry.js';
 import { AutoTypeConfig } from './types.js';
+import { HybridSearchHit, IGraphSignal, rerankWithGraphSignals, clampToTokenBudget } from './hybridSearch.js';
 
 export interface KnowledgeSessionMeta {
 	readonly id: string;
@@ -53,6 +54,16 @@ export interface SearchResult {
 	readonly nodes?: unknown[];
 	readonly edges?: unknown[];
 	readonly items?: unknown[];
+	/** P0-2：结果因 token 预算被截断 */
+	readonly truncated?: boolean;
+}
+
+export interface SearchOptions {
+	/**
+	 * P0-2 token 预算封顶：结果序列化后估算 token 超过该值时截断
+	 * （保序、至少保 1 条）。undefined = 不封顶。
+	 */
+	maxTokens?: number;
 }
 
 export interface ChatResult {
@@ -294,16 +305,72 @@ export class KnowledgeManager {
 
 	// ── Retrieval ─────────────────────────────
 
-	async search(session: KnowledgeSession, query: string, topK = 5): Promise<SearchResult> {
+	async search(session: KnowledgeSession, query: string, topK = 5, opts?: SearchOptions): Promise<SearchResult> {
 		if (session.kind === 'graph') {
 			// Graph sessions retrieve BOTH nodes and edges; AutoGraph.searchGraph
 			// returns them separately so edges are no longer lost in RAG context.
 			const g = session.autoType as AutoGraph;
 			const { nodes, edges } = await g.searchGraph(query, topK, topK);
-			return { type: 'graph', nodes, edges };
+			// P0-2：图信号重排（度数加成 + 社区多样化，对齐 llm_wiki 图信号检索纪律）
+			const rerankedNodes = this._rerankGraphNodes(g, nodes as unknown[]);
+			// P0-2：token 预算封顶（nodes 优先占预算，剩余给 edges）
+			if (opts?.maxTokens && opts.maxTokens > 0) {
+				const textOf = (x: unknown) => JSON.stringify(x);
+				const nodeClamp = clampToTokenBudget(rerankedNodes, textOf, opts.maxTokens);
+				const edgeBudget = opts.maxTokens - nodeClamp.estTokens;
+				const edgeClamp = edgeBudget > 0
+					? clampToTokenBudget(edges as unknown[], textOf, edgeBudget)
+					: { items: [] as unknown[], truncated: (edges as unknown[]).length > 0, estTokens: 0 };
+				return { type: 'graph', nodes: nodeClamp.items, edges: edgeClamp.items, truncated: nodeClamp.truncated || edgeClamp.truncated };
+			}
+			return { type: 'graph', nodes: rerankedNodes, edges };
 		}
 		const items = await session.autoType.search(query, topK);
+		if (opts?.maxTokens && opts.maxTokens > 0) {
+			const clamp = clampToTokenBudget(items as unknown[], x => JSON.stringify(x), opts.maxTokens);
+			return { type: 'list', items: clamp.items, truncated: clamp.truncated };
+		}
 		return { type: 'list', items };
+	}
+
+	/**
+	 * P0-2：用图结构信号（度数 + Louvain 社区）对检索到的节点重排。
+	 * 度数从当前图 edges 计算；社区 id 读节点的 `community` 字段
+	 * （由 `detectCommunities()` 写入，未跑社区检测时为 undefined）。
+	 */
+	private _rerankGraphNodes(g: AutoGraph, nodes: unknown[]): unknown[] {
+		if (nodes.length <= 1) { return nodes; }
+		try {
+			const data = (g as unknown as { data?: { edges?: Record<string, unknown>[] } }).data;
+			const degree = new Map<string, number>();
+			for (const e of data?.edges ?? []) {
+				for (const k of ['source', 'target'] as const) {
+					const name = String(e[k] ?? '').trim();
+					if (name) { degree.set(name, (degree.get(name) ?? 0) + 1); }
+				}
+			}
+			// 无图信号可用（如空图）时保持原序
+			if (degree.size === 0) { return nodes; }
+			const hits: HybridSearchHit<unknown>[] = nodes.map((n, i) => ({
+				item: n,
+				id: String((n as Record<string, unknown>)['name'] ?? i),
+				vectorScore: -1,
+				ftsScore: -1,
+				rrfScore: 1 / (60 + i + 1), // 用原始排名构造 RRF 基分
+			}));
+			const getSignal = (h: HybridSearchHit<unknown>): IGraphSignal => {
+				const rec = h.item as Record<string, unknown>;
+				const name = String(rec['name'] ?? '');
+				const community = rec['community'];
+				return {
+					degree: degree.get(name) ?? 0,
+					communityId: typeof community === 'number' || typeof community === 'string' ? community : undefined,
+				};
+			};
+			return rerankWithGraphSignals(hits, getSignal).map(h => h.item);
+		} catch {
+			return nodes; // 重排失败按原序兜底
+		}
 	}
 
 	async chat(session: KnowledgeSession, query: string, topK = 5): Promise<ChatResult> {

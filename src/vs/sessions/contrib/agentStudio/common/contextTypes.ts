@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { Agent, ChatMessage, PlanTaskStatus } from './types.js';
-import type { AgentType } from '../../../common/agentStudioTypes.js';
+
 
 // ─── Context Levels (from bottom to top) ───────────────────────────────────────────
 
@@ -84,7 +84,6 @@ export interface IAgentContext {
 	readonly agentId: string;
 	readonly agentName: string;
 	readonly agentRole: string;
-	readonly agentType?: AgentType;
 	readonly model?: string;
 	readonly provider?: string;
 	readonly skills?: ReadonlyArray<string>;

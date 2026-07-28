@@ -186,7 +186,7 @@ const FUZZY_NAME_MAP: Record<string, string> = {
 	rm: "terminal",
 	cp: "terminal",
 	mv: "terminal",
-	grep: "search_files",
+	grep: "search_code",
 	find: "search_files",
 
 	// Task/planning hallucinations — these are "phantom" tool names that the LLM
@@ -417,8 +417,17 @@ export function coerceToolArgs(
 		if (!(key in result)) {
 			continue;
 		}
+		// P2a: oneOf/anyOf 降级 —— schema 无 type 但有 oneOf/anyOf 时，取第一个分支
+		// 的 schema 作为有效 schema。LLM 常把 union 写成 oneOf，取首分支是最小惊讶降级。
+		let effectiveSchema = propSchema;
+		if (!effectiveSchema.type) {
+			const branches = (effectiveSchema.oneOf ?? effectiveSchema.anyOf) as Record<string, unknown>[] | undefined;
+			if (Array.isArray(branches) && branches.length > 0) {
+				effectiveSchema = branches[0] as Record<string, unknown>;
+			}
+		}
 		const value = result[key];
-		const expectedType = propSchema.type as string | undefined;
+		const expectedType = effectiveSchema.type as string | undefined;
 
 		if (expectedType === "integer" || expectedType === "number") {
 			if (typeof value === "string") {
@@ -468,6 +477,20 @@ export function coerceToolArgs(
 					// Not valid JSON — leave as string
 				}
 			}
+			// P2a: 嵌套 object 递归强转 —— 当 object property 自身有 properties 时，
+			// 递归强转其子字段（之前只处理顶层，嵌套对象的类型不匹配被静默忽略）。
+			const nestedProps = effectiveSchema.properties as Record<string, Record<string, unknown>> | undefined;
+			if (nestedProps && typeof result[key] === "object" && result[key] !== null && !Array.isArray(result[key])) {
+				result[key] = coerceToolArgs(result[key] as Record<string, unknown>, effectiveSchema);
+			}
+		}
+
+		// P2a: enum 校验 —— schema 声明了 enum 但值不在合法集合内时，降级到第一个
+		// 合法值。LLM 常传近似的枚举值（如 "Scout" vs "scout"）；降级首值是保守自愈，
+		// 避免 handler 收到非法值后失败重试浪费 token。放在类型强转之后以检查强转后的值。
+		const enumValues = effectiveSchema.enum as unknown[] | undefined;
+		if (Array.isArray(enumValues) && enumValues.length > 0 && !enumValues.includes(result[key])) {
+			result[key] = enumValues[0];
 		}
 	}
 
@@ -531,23 +554,83 @@ export function coerceArgsToSchema(
 		}
 	}
 
-	// Check for missing required fields
+	// Check for extra args not in schema (LLM sometimes adds spurious fields)
+	const props = (schema as Record<string, unknown>).properties as Record<string, unknown> | undefined;
+
+	// Build alias → canonical map from property descriptions. Two documentation
+	// directions are recognized (the alias info already lives in the description
+	// shipped to the model, so no non-standard wire schema fields are added —
+	// important for strict providers like Gemini):
+	//   (A) alias-side:     a property whose desc says "Alias for X" / "Alias for `X`"
+	//                       → this property is an alias of X.
+	//   (B) canonical-side: a property whose desc says "accepts alias: a" /
+	//                       "Also accepts aliases: a, b" → a, b are aliases of it.
+	// Direction (B) lets us drop the redundant standalone alias *properties* from
+	// the schema (token savings + single canonical surface) while the required
+	// check still accepts a call that only supplies a documented alias
+	// (e.g. search_code declares `query` required and documents `pattern` as its
+	// alias; a `pattern`-only call must not be rejected before the handler runs).
+	const aliasToCanonical = new Map<string, string>();
+	if (props && typeof props === 'object') {
+		for (const [propName, propDef] of Object.entries(props)) {
+			const desc = (propDef as Record<string, unknown> | undefined)?.['description'];
+			if (typeof desc !== 'string') { continue; }
+			// (A) alias-side documentation.
+			const a = /\bAlias for\s+[`'"]?([A-Za-z_][A-Za-z0-9_]*)/i.exec(desc);
+			if (a && a[1] && a[1] !== propName) {
+				aliasToCanonical.set(propName, a[1]);
+			}
+			// (B) canonical-side documentation: capture the identifier list after
+			// "accepts alias(es):" up to the first '.' or '(' (so trailing prose /
+			// mapping hints like "(content→full)" are excluded), then register each
+			// leading identifier as an alias of this canonical property.
+			const b = /accepts alias(?:es)?:\s*([^.(]+)/i.exec(desc);
+			if (b && b[1]) {
+				for (const seg of b[1].split(',')) {
+					const idm = /[A-Za-z_][A-Za-z0-9_]*/.exec(seg);
+					if (idm && idm[0] !== propName) {
+						aliasToCanonical.set(idm[0], propName);
+					}
+				}
+			}
+		}
+	}
+
+	// Check for missing required fields (alias-aware: a required field is
+	// satisfied when either its canonical name OR any documented alias of it
+	// is present in the coerced args).
 	const required = (schema as Record<string, unknown>).required as string[] | undefined;
 	const missingRequired: string[] = [];
 	if (required && Array.isArray(required)) {
 		for (const req of required) {
-			if (!(req in (coerced as Record<string, unknown>))) {
+			if (req in (coerced as Record<string, unknown>)) { continue; }
+			let satisfiedByAlias = false;
+			for (const [alias, canonical] of aliasToCanonical) {
+				if (canonical === req && alias in (coerced as Record<string, unknown>)) {
+					satisfiedByAlias = true;
+					break;
+				}
+			}
+			if (!satisfiedByAlias) {
 				warnings.push(`missing required argument: "${req}" — tool may fail`);
 				missingRequired.push(req);
 			}
 		}
 	}
 
-	// Check for extra args not in schema (LLM sometimes adds spurious fields)
-	const props = (schema as Record<string, unknown>).properties as Record<string, unknown> | undefined;
 	if (props && typeof props === 'object') {
 		for (const k of Object.keys(coerced)) {
-			if (!(k in props) && !k.startsWith('_')) {
+			// A key is "unknown" only if it is neither a declared property, nor an
+			// underscore-prefixed internal field, nor a *documented alias* of a
+			// canonical property. Direction-B of P2 lets us drop the standalone
+			// alias properties from the wire schema while still documenting the
+			// alias on the canonical property (e.g. search_code's `query` says
+			// "accepts alias: pattern"). Those alias keys are intentional and are
+			// recovered by the handler — flagging them "unknown … may be ignored"
+			// is both noisy AND factually wrong (they are NOT ignored). Consult the
+			// alias map (already built above for the required check) so the warning
+			// stays consistent with what the description advertises to the model.
+			if (!(k in props) && !k.startsWith('_') && !aliasToCanonical.has(k)) {
 				warnings.push(`unknown argument: "${k}" — not in schema, may be ignored`);
 			}
 		}
@@ -555,6 +638,55 @@ export function coerceArgsToSchema(
 
 	return { args: coerced, warnings, ...(missingRequired.length > 0 ? { missingRequired } : {}) };
 }
+
+/**
+ * P2a: 统一的 coerce + 拒绝入口，消除 agentOSService 两处复制粘贴的
+ * coerce→log→missingRequired 拒绝模式。返回 { args, reject } —— reject 非空时
+ * 调用方应跳过 handler 执行并返回拒绝结果。
+ *
+ * 零依赖：纯函数，委托到 coerceArgsToSchema（已含 enum/oneOf/嵌套递归自愈）。
+ */
+export interface CoerceOrRejectResult {
+	args: Record<string, unknown>;
+	/** 非空时调用方应跳过 handler 执行，直接返回此拒绝结果。 */
+	reject?: { content: { error: string }; success: false };
+}
+
+export function coerceOrReject(
+	args: Record<string, unknown>,
+	schema: Record<string, unknown> | undefined,
+	toolName: string,
+	log: { warn(msg: string): void; info(msg: string): void },
+): CoerceOrRejectResult {
+	if (!schema) { return { args }; }
+	const coerced = coerceArgsToSchema(args, schema);
+	for (const w of coerced.warnings) {
+		log.warn(`[AgentOS][Coerce] "${toolName}" — ${w}`);
+	}
+	if (coerced.missingRequired && coerced.missingRequired.length > 0) {
+		const missList = coerced.missingRequired.join(', ');
+		log.info(`[AgentOS] Tool "${toolName}" rejected early: missing required args [${missList}]`);
+		return {
+			args: coerced.args,
+			reject: {
+				content: { error: `Missing required arguments for "${toolName}": ${missList}. Provide these arguments to retry.` },
+				success: false,
+			},
+		};
+	}
+	return { args: coerced.args };
+}
+
+/**
+ * P2a: 编译时类型安全的工具 handler 签名（零运行时依赖）。
+ * 工具定义者声明 schema 对应的参数类型 T，handler 即获得类型提示；运行时 args
+ * 仍由 coerceOrReject 强转后传入，T 仅用于编译期检查（无运行时开销）。
+ *
+ * 用法：
+ *   interface ReadFileArgs { path: string; encoding?: string }
+ *   const handler: TypedToolHandler<ReadFileArgs> = async (args) => { ... args.path ... }
+ */
+export type TypedToolHandler<T extends Record<string, unknown>> = (args: T) => Promise<unknown>;
 
 /**
  * Try to repair malformed JSON arguments from model output.
@@ -1019,8 +1151,8 @@ export function buildToolSchemaMap(
 
 // ─── Parallel Execution Helpers ─────────────────────────────────────
 
-/** Maximum concurrent tool execution threads */
-export const MAX_TOOL_WORKERS = 8;
+/** Maximum concurrent tool execution threads. Reduced from 8 to 3 to avoid triggering MCP codebase API rate limiting (HTTP 429). */
+export const MAX_TOOL_WORKERS = 3;
 
 /**
  * Tool names that should NEVER be parallelized — they are interactive
@@ -1029,11 +1161,8 @@ export const MAX_TOOL_WORKERS = 8;
 const NEVER_PARALLEL_TOOLS = new Set([
 	"clarify",
 	"delegate_task",
-	"memory",
 	"todo", "update_plan",
 	"memory_remember",
-	"memory_search",
-	"memory_delete",
 	"skill_manage",
 	"cronjob",
 	"send_message",
@@ -1048,7 +1177,7 @@ const PARALLEL_SAFE_TOOLS = new Set([
 	// 基础只读
 	"file_read", "search_files", "search_content",
 	// 技能
-	"skills_list", "skill_view", "read_skill", "list_skills",
+	"read_skill", "list_skills",
 	// 搜索
 	"web_search", "web_extract", "session_search",
 	// 工作流
@@ -1078,10 +1207,42 @@ const DESTRUCTIVE_CMD_RE = /(?:^|\s|&&|\|\||;|`)(?:\b(?:rm|rmdir|cp|install|mv|t
 const REDIRECT_OVERWRITE_RE = /[^>]>[^>]|^>[^>]/;
 
 /**
+ * 主循环工具并行开关（产品决策 2026-07-22）：除 subagent 派发外，主循环工具
+ * 一律串行执行 —— 并行只保留在 subagent 通道内（delegate_task batch /
+ * plan_explore 在 handler 内部自行并行派发子 agent），让并行工作集中呈现在
+ * subagent 工具卡片中，而不是以普通工具卡片并行执行。
+ *
+ * subagent 工具本身不受影响：delegate_task 在 NEVER_PARALLEL_TOOLS 中（多个
+ * delegate_task 调用串行），其 batch/tasks 参数与 plan_explore 的内部并行
+ * 由 unifiedSubAgentDispatch 驱动，与本开关无关。
+ *
+ * 恢复主循环并行：把 MAIN_LOOP_PARALLEL_TOOLS_ENABLED 改回 true 即可
+ * （下方 Hermes 对齐的原有判定逻辑完整保留，仅被本开关短路）。
+ */
+export const MAIN_LOOP_PARALLEL_TOOLS_ENABLED = false;
+
+/**
+ * delegate 分区拆分（2026-07-28，日志 1785237386145）：批次含 ≥2 个 delegate_task
+ * 时返回 { head: 非 delegate 工具, delegates: delegate_task 子集 }；否则返回 null。
+ *
+ * 用途：当整批不可并行（混入了 update_plan 等 NEVER_PARALLEL 工具）时，执行器可先
+ * 串行执行 head（非 delegate 工具），再把 delegates 子集交给并行路径并发执行——
+ * 避免首个 delegate 的内联子 agent 阻塞导致其余 delegate 卡片无内容。
+ */
+export function splitDelegateParallelBatch(calls: IToolCallInfo[]): { head: IToolCallInfo[]; delegates: IToolCallInfo[] } | null {
+	const delegates = calls.filter(c => c.name === 'delegate_task');
+	if (delegates.length < 2) {
+		return null;
+	}
+	return { head: calls.filter(c => c.name !== 'delegate_task'), delegates };
+}
+
+/**
  * Determine whether a batch of tool calls can be safely executed in parallel.
  * 参考 Hermes-Agent `_should_parallelize_tool_batch`。
  *
  * 策略（与 Hermes 对齐 — 默认串行）：
+ *  0. MAIN_LOOP_PARALLEL_TOOLS_ENABLED=false → 全部串行（当前产品决策）
  *  1. Any NEVER_PARALLEL tool → serial
  *  2. Any terminal command that looks destructive → serial
  *  3. PATH_SCOPED tools → parallel only if paths don't overlap
@@ -1090,6 +1251,32 @@ const REDIRECT_OVERWRITE_RE = /[^>]>[^>]|^>[^>]/;
  */
 export function shouldParallelizeToolBatch(calls: IToolCallInfo[]): boolean {
 	if (calls.length <= 1) {
+		return false;
+	}
+
+	// 2026-07-27（日志 1785120071762 / 1785121881324，用户报告「启动多个
+	// delegate_task 只有最后一个在执行 subagent」）：批次含 ≥2 个 delegate_task
+	// 时并行——属于「subagent 通道并行」，与主开关「仅 subagent 通道可并行」的
+	// 决策一致。此前多个 delegate_task 串行，首个 subagent（最长 600s）阻塞
+	// 期间其余排队。
+	//   放宽条件（1785121881324 教训）：真实场景 LLM 常在同一轮夹带只读工具
+	//   （如 read_skill + 3×delegate_task），要求整批纯 delegate_task 过严 →
+	//   混合批次仍串行 → bug 复现。改为：≥2 个 delegate_task，且其余调用均为
+	//   只读安全工具（read_skill / search_* / file_read 等 PARALLEL_SAFE）时并行。
+	//   安全性：delegate 各自 fiber + inlineTraceSink 闭包独立、dispatch 并发
+	//   上限 5 兜底；只读工具无状态写，与 delegate 并行无副作用；混入写工具
+	//   （file_write/terminal 等非 SAFE）则回退串行（保守）。
+	const delegateCount = calls.filter(tc => tc.name === 'delegate_task').length;
+	if (delegateCount >= 2) {
+		const othersAllSafe = calls.every(tc =>
+			tc.name === 'delegate_task' || PARALLEL_SAFE_TOOLS.has(tc.name));
+		if (othersAllSafe) {
+			return true;
+		}
+	}
+
+	// 0. 产品决策：主循环禁止并行（仅 subagent 通道可并行，见常量注释）。
+	if (!MAIN_LOOP_PARALLEL_TOOLS_ENABLED) {
 		return false;
 	}
 

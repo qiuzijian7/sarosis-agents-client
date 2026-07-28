@@ -30,6 +30,8 @@ export const AGENT_STUDIO_CHECK_UPDATES_SETTING = 'sessions.agentStudio.preferen
 // Configuration keys — Skill Budget Limits
 export const AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING = 'sessions.agentStudio.skills.maxSkillsInPrompt';
 export const AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING = 'sessions.agentStudio.skills.maxSkillsPromptChars';
+/** 是否将已存储的工作流作为「可执行型 skill」暴露给 agent（双向打通 A 向）。默认开启。 */
+export const AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING = 'sessions.agentStudio.skills.includeWorkflows';
 
 // Configuration keys — Driver concurrency
 export const AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING = 'sessions.agentStudio.driver.turnConcurrencyLimit';
@@ -73,6 +75,8 @@ export const AGENT_STUDIO_PROVIDER_CUSTOM_API_KEY = 'sessions.agentStudio.provid
 export const AGENT_STUDIO_PROVIDER_CUSTOM_BASE_URL = 'sessions.agentStudio.provider.custom.baseUrl';
 export const AGENT_STUDIO_PROVIDER_OLLAMA_API_KEY = 'sessions.agentStudio.provider.ollama.apiKey';
 export const AGENT_STUDIO_PROVIDER_OLLAMA_BASE_URL = 'sessions.agentStudio.provider.ollama.baseUrl';
+// UI 添加的自定义 provider 列表（Path B：自定义 provider 真正接入聊天模型系统）
+export const AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING = 'sessions.agentStudio.provider.customProviders';
 
 // Configuration keys — Embedding (RAG vectorization provider layer)
 // 方案A 主路径：复用现有 provider 密钥配置做 embedding；方案C 兜底：本地 transformers.js

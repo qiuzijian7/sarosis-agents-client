@@ -1,0 +1,7 @@
+id: code-generator
+name: Code Generator
+description: 代码生成助手，支持多种编程语言
+category: codegen
+tags:
+  - code
+  - generation

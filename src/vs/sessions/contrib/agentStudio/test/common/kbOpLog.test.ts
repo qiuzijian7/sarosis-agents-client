@@ -195,12 +195,12 @@ suite('kbOpLog - storage root resolution', () => {
 
 	const home = '/home/vssaros';
 
-	test('empty config → <userHome>/.saros/kb', () => {
-		assert.strictEqual(normPath(resolveKbRoot('', home)), normPath(join(home, '.saros', 'kb')));
-		assert.strictEqual(normPath(resolveKbRoot(undefined, home)), normPath(join(home, '.saros', 'kb')));
+	test('empty config → <dataRoot>/knowledge-base', () => {
+		assert.strictEqual(normPath(resolveKbRoot('', home)), normPath(join(home, 'knowledge-base')));
+		assert.strictEqual(normPath(resolveKbRoot(undefined, home)), normPath(join(home, 'knowledge-base')));
 	});
 
-	test('"~" prefix expands to the user home', () => {
+	test('"~" prefix expands to the data root', () => {
 		assert.strictEqual(normPath(resolveKbRoot('~/kbroot', home)), normPath(join(home, 'kbroot')));
 	});
 
@@ -208,7 +208,7 @@ suite('kbOpLog - storage root resolution', () => {
 		assert.strictEqual(resolveKbRoot('/data/kb', home), '/data/kb');
 	});
 
-	test('relative path is resolved against the user home', () => {
+	test('relative path is resolved against the data root', () => {
 		assert.strictEqual(normPath(resolveKbRoot('mykb', home)), normPath(join(home, 'mykb')));
 	});
 

@@ -22,6 +22,12 @@ export interface ISarosisLlmChatRequest {
 	readonly apiKey: string;
 	readonly body: Record<string, unknown>;
 	readonly extraHeaders?: Record<string, string>;
+	/** Response/streaming format expected from the endpoint. */
+	readonly responseFormat?: 'openai' | 'anthropic';
+	/** API key auth header scheme. */
+	readonly apiKeyHeader?: 'bearer' | 'x-api-key';
+	/** `anthropic-version` header value, used when apiKeyHeader === 'x-api-key'. */
+	readonly anthropicVersion?: string;
 }
 
 export type LogLevel = 'info' | 'warn' | 'error';
@@ -43,6 +49,12 @@ export interface IChatStreamParams {
 	readonly signal?: AbortSignal;
 	readonly log?: LogFn;
 	readonly onHealth?: (status: 'healthy' | 'degraded' | 'unhealthy') => void;
+	/** Response/streaming format expected from the endpoint. */
+	readonly responseFormat?: 'openai' | 'anthropic';
+	/** API key auth header scheme. */
+	readonly apiKeyHeader?: 'bearer' | 'x-api-key';
+	/** `anthropic-version` header value, used when apiKeyHeader === 'x-api-key'. */
+	readonly anthropicVersion?: string;
 }
 
 /**
@@ -54,8 +66,15 @@ export interface IChatStreamParams {
  */
 export async function* streamChatCompletions(params: IChatStreamParams): AsyncGenerator<IModelDelta> {
 	const { url, apiKey, body, extraHeaders, signal } = params;
+	const responseFormat = params.responseFormat ?? 'openai';
+	const apiKeyHeader = params.apiKeyHeader ?? 'bearer';
+	const anthropicVersion = params.anthropicVersion ?? '2023-06-01';
 	const log = params.log ?? (() => { });
 	const onHealth = params.onHealth ?? (() => { });
+
+	// 原生 Anthropic SSE 解析状态（仅 responseFormat==='anthropic' 时使用）
+	const isAnthropicStream = responseFormat === 'anthropic';
+	const anthropicState = isAnthropicStream ? new AnthropicStreamState() : undefined;
 
 	let lastError = '';
 
@@ -72,7 +91,12 @@ export async function* streamChatCompletions(params: IChatStreamParams): AsyncGe
 				...(extraHeaders ?? {}),
 			};
 			if (apiKey) {
-				headers['Authorization'] = `Bearer ${apiKey}`;
+				if (apiKeyHeader === 'x-api-key') {
+					headers['x-api-key'] = apiKey;
+					headers['anthropic-version'] = anthropicVersion;
+				} else {
+					headers['Authorization'] = `Bearer ${apiKey}`;
+				}
 			}
 			const controller = new AbortController();
 			const timeoutId = setTimeout(() => controller.abort(), 300_000);
@@ -148,6 +172,15 @@ export async function* streamChatCompletions(params: IChatStreamParams): AsyncGe
 							if (typeof parsed.id === 'string' && parsed.id) {
 								capturedResponseId = parsed.id;
 							}
+
+							// 原生 Anthropic SSE：走专用解析器
+							if (isAnthropicStream && anthropicState) {
+								for (const d of anthropicState.push(parsed)) {
+									yield d;
+								}
+								continue;
+							}
+
 							const usageDelta = _extractUsage(parsed);
 							if (usageDelta) { yield usageDelta; }
 							const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
@@ -165,30 +198,39 @@ export async function* streamChatCompletions(params: IChatStreamParams): AsyncGe
 					}
 				}
 
-				const remainingDeltas = _processRemainingBuffer(buffer);
-				if (remainingDeltas.length > 0) { sseDataFound = true; }
-				for (const d of remainingDeltas) { yield d; }
+			const remainingDeltas = _processRemainingBuffer(buffer, anthropicState);
+			if (remainingDeltas.length > 0) { sseDataFound = true; }
+			for (const d of remainingDeltas) { yield d; }
 
-				if (!sseDataFound && fullBodyForFallback.trim()) {
-					log('info', `[vssaros-llm] no streaming data found, trying full JSON fallback`);
-					for (const d of _parseFullJsonFallback(fullBodyForFallback)) {
-						yield d;
-					}
+			if (!sseDataFound && fullBodyForFallback.trim()) {
+				log('info', `[vssaros-llm] no streaming data found, trying full JSON fallback`);
+				for (const d of _parseFullJsonFallback(fullBodyForFallback, anthropicState)) {
+					yield d;
 				}
-			} catch (streamErr) {
-				log('error', `[vssaros-llm] stream read error: ${streamErr}`);
-				onHealth('degraded');
-				yield { type: 'error', error: `Stream error — ${streamErr}` };
-				return;
 			}
+		} catch (streamErr) {
+			log('error', `[vssaros-llm] stream read error: ${streamErr}`);
+			onHealth('degraded');
+			yield { type: 'error', error: `Stream error — ${streamErr}` };
+			return;
+		}
 
-			const doneDeltaBase: IModelDelta = capturedResponseId
-				? { type: 'done', responseId: capturedResponseId }
-				: { type: 'done' };
-			const doneDelta: IModelDelta = capturedFinishReason
-				? { ...doneDeltaBase, finishReason: capturedFinishReason }
-				: doneDeltaBase;
-			yield doneDelta;
+		// 原生 Anthropic：工具块已在 content_block_stop / finish() 中 flush，
+		// 这里统一产出收尾 done（携带 responseId / stop_reason）。
+		if (isAnthropicStream && anthropicState) {
+			for (const d of anthropicState.finish()) {
+				yield d;
+			}
+			return;
+		}
+
+		const doneDeltaBase: IModelDelta = capturedResponseId
+			? { type: 'done', responseId: capturedResponseId }
+			: { type: 'done' };
+		const doneDelta: IModelDelta = capturedFinishReason
+			? { ...doneDeltaBase, finishReason: capturedFinishReason }
+			: doneDeltaBase;
+		yield doneDelta;
 			return;
 		}
 
@@ -246,7 +288,14 @@ export async function discoverModels(
 	try {
 		log?.('info', `[vssaros-llm] discovering models from ${modelsUrl}`);
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		if (apiKey) { headers['Authorization'] = `Bearer ${apiKey}`; }
+		if (apiKey) {
+			if (definition.apiKeyHeader === 'x-api-key') {
+				headers['x-api-key'] = apiKey;
+				headers['anthropic-version'] = definition.anthropicVersion || '2023-06-01';
+			} else {
+				headers['Authorization'] = `Bearer ${apiKey}`;
+			}
+		}
 		const response = await fetch(modelsUrl, {
 			method: 'GET',
 			headers,
@@ -352,7 +401,7 @@ function _parseToolCall(tc: any): { id: string; name: string; arguments: string 
 	return (toolName || toolArgs) ? { id: toolId, name: toolName, arguments: toolArgs } : null;
 }
 
-function _processRemainingBuffer(buffer: string): IModelDelta[] {
+function _processRemainingBuffer(buffer: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
 	const deltas: IModelDelta[] = [];
 	const trimmed = buffer.trim();
 	if (!trimmed) { return deltas; }
@@ -360,6 +409,10 @@ function _processRemainingBuffer(buffer: string): IModelDelta[] {
 	if (!jsonPayload || jsonPayload === '[DONE]') { return deltas; }
 	try {
 		const parsed = JSON.parse(jsonPayload);
+		if (anthropicState) {
+			deltas.push(...anthropicState.push(parsed));
+			return deltas;
+		}
 		const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
 		if (content) { deltas.push(..._parseContentFromJson(content)); }
 		const usageDelta = _extractUsage(parsed);
@@ -370,10 +423,14 @@ function _processRemainingBuffer(buffer: string): IModelDelta[] {
 	return deltas;
 }
 
-function _parseFullJsonFallback(fullBody: string): IModelDelta[] {
+function _parseFullJsonFallback(fullBody: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
 	const deltas: IModelDelta[] = [];
 	try {
 		const parsed = JSON.parse(fullBody);
+		if (anthropicState) {
+			deltas.push(...anthropicState.push(parsed));
+			return deltas;
+		}
 		const usageDelta = _extractUsage(parsed);
 		if (usageDelta) { deltas.push(usageDelta); }
 		const message = parsed.choices?.[0]?.message;
@@ -403,4 +460,98 @@ function _inferCapabilities(m: any): ModelCapability[] {
 	if (id.includes('vision') || desc.includes('vision') || desc.includes('image')) { caps.push(ModelCapability.Vision); }
 	if (id.includes('code') || desc.includes('code') || desc.includes('coding')) { caps.push(ModelCapability.Code); }
 	return caps;
+}
+
+// ─── Anthropic native SSE parser (shared by renderer + main process) ────────
+
+/**
+ * Stateful parser for native Anthropic Messages API SSE streams.
+ * Converts Anthropic events (`message_start` / `content_block_*` / `message_delta`
+ * / `message_stop`) into the engine's `IModelDelta` stream (text / thinking /
+ * tool_call / usage / done). Tool-call arguments are accumulated across
+ * `input_json_delta` chunks and flushed on `content_block_stop`.
+ *
+ * The OpenAI-compatible path is completely unaffected — this is only used when
+ * `IBYOKProviderDefinition.responseFormat === 'anthropic'`.
+ */
+export class AnthropicStreamState {
+	private readonly _blocks = new Map<number, { id: string; name: string; json: string }>();
+	private _stopReason: string | undefined;
+	private _responseId: string | undefined;
+	private _flushed = false;
+
+	push(parsed: any): IModelDelta[] {
+		const out: IModelDelta[] = [];
+		const t = parsed?.type;
+		if (t === 'message_start') {
+			const msg = parsed.message;
+			if (msg?.id) { this._responseId = msg.id; }
+			if (msg?.usage) {
+				const u = _extractAnthropicUsage(msg.usage);
+				if (u) { out.push(u); }
+			}
+		} else if (t === 'content_block_start') {
+			const cb = parsed.content_block;
+			if (cb?.type === 'tool_use') {
+				this._blocks.set(parsed.index, { id: cb.id, name: cb.name, json: '' });
+			}
+		} else if (t === 'content_block_delta') {
+			const d = parsed.delta;
+			if (d?.type === 'text_delta') {
+				out.push({ type: 'text', content: d.text });
+			} else if (d?.type === 'thinking_delta') {
+				out.push({ type: 'thinking', content: d.thinking });
+			} else if (d?.type === 'input_json_delta') {
+				const b = this._blocks.get(parsed.index);
+				if (b) { b.json += (d.partial_json || ''); }
+			}
+		} else if (t === 'content_block_stop') {
+			const b = this._blocks.get(parsed.index);
+			if (b) {
+				out.push({ type: 'tool_call', toolCall: { id: b.id, name: b.name, arguments: b.json || '{}' } });
+				this._blocks.delete(parsed.index);
+			}
+		} else if (t === 'message_delta') {
+			if (parsed.usage) {
+				const u = _extractAnthropicUsage(parsed.usage);
+				if (u) { out.push(u); }
+			}
+			if (parsed.delta?.stop_reason) { this._stopReason = parsed.delta.stop_reason; }
+		} else if (t === 'message_stop') {
+			// no-op; finish() handles final flush + done
+		}
+		return out;
+	}
+
+	finish(): IModelDelta[] {
+		const out: IModelDelta[] = [];
+		// flush any tool blocks not yet closed
+		for (const b of this._blocks.values()) {
+			out.push({ type: 'tool_call', toolCall: { id: b.id, name: b.name, arguments: b.json || '{}' } });
+		}
+		this._blocks.clear();
+		if (!this._flushed) {
+			this._flushed = true;
+			const done: IModelDelta = (this._responseId || this._stopReason)
+				? {
+					type: 'done',
+					...(this._responseId ? { responseId: this._responseId } : {}),
+					...(this._stopReason ? { finishReason: this._stopReason } : {}),
+				}
+				: { type: 'done' };
+			out.push(done);
+		}
+		return out;
+	}
+}
+
+function _extractAnthropicUsage(u: any): IModelDelta | null {
+	const inputTokens = u?.input_tokens;
+	const outputTokens = u?.output_tokens;
+	const cachedTokens = u?.cache_read_input_tokens;
+	const cacheWriteTokens = u?.cache_creation_input_tokens;
+	if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined || cacheWriteTokens !== undefined) {
+		return { type: 'usage', usage: { inputTokens, outputTokens, cachedTokens, cacheWriteTokens } };
+	}
+	return null;
 }

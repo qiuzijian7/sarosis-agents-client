@@ -8,7 +8,6 @@
 // Value exports (enums, classes) - these exist at runtime
 export {
 	AgentStudioSession,
-	AgentType,
 	AgentTarget,
 	AgentSource,
 	ConnectionType,

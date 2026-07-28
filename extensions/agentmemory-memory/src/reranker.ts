@@ -124,7 +124,9 @@ export function rerankSimple(
 	const queryTerms = new Set(query.toLowerCase().split(/\s+/).filter(t => t.length > 1));
 
 	const scored = results.slice(0, topK).map(result => {
-		const contentLower = (result.title ?? '' + ' ' + result.content).toLowerCase();
+		// 修正运算符优先级 bug（2026-07-26 接线时发现）：原式 `result.title ?? '' + ' ' + content`
+		// 中字符串拼接优先于 ??——title 存在时 content 被整体丢弃，term 匹配只匹到 title。
+		const contentLower = ((result.title ?? '') + ' ' + result.content).toLowerCase();
 		let matchCount = 0;
 		for (const term of queryTerms) {
 			if (contentLower.includes(term)) matchCount++;

@@ -279,7 +279,7 @@
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests"
 			],
-			"userDataDir": "${userHome}/.vscode-oss-dev",
+			"userDataDir": "${userHome}/.vssaros-dev",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"
@@ -329,7 +329,7 @@
 				"--skip-sessions-welcome",
 				"--agents"
 			],
-			"userDataDir": "${userHome}/.vscode-oss-agents-dev",
+			"userDataDir": "${userHome}/.vssaros-agents-dev",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"
@@ -378,7 +378,7 @@
 				"--disable-features=CalculateNativeWinOcclusion",
 				"--disable-extension=vscode.vscode-api-tests"
 			],
-			"userDataDir": "${userHome}/.vscode-oss-dev",
+			"userDataDir": "${userHome}/.vssaros-dev",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"

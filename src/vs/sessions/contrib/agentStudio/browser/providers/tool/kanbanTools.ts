@@ -691,7 +691,7 @@ export function registerKanbanTools(ctx: KanbanToolContext): void {
 			description: 'List all saved web-scraping recipes (name, URL pattern, optional board name and task cap).',
 			inputSchema: {
 				type: 'object',
-				properties: {},
+				properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } },
 				required: [],
 			},
 			category: 'kanban',

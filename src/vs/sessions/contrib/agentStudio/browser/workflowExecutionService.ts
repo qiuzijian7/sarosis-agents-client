@@ -8,6 +8,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentChatService } from '../common/agentStudio.js';
 import { IWorkflowStorageService, IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode } from '../common/workflowStorage.js';
+import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
 import { IWorkflowExecutionService, WorkflowExecutionStatus, WorkflowNodeExecutionStatus } from '../common/workflowExecutionService.js';
 import type { IWorkflowExecutionState, IWorkflowExecutionOptions, IWorkflowNodeExecutionState, IWorkflowTraceEvent, IAskUserOption } from '../common/workflowExecutionService.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -68,12 +69,16 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 	 */
 	private _activeStreams = new Map<string, { agentId: string; agentSessionId: string; nodeId: string }>();
 
+	/** P3: 当前执行链中正在运行的 workflowId 集合，用于递归环检测。 */
+	private readonly _activeWorkflowChain = new Set<string>();
+
 	constructor(
 		@ILogService private readonly logService: ILogService,
 		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
 		@IFileService private readonly fileService: IFileService,
 		@IWorkspaceRegistry private readonly workspaceRegistry: IWorkspaceRegistry,
+		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 	) {
 		super();
 	}
@@ -94,6 +99,22 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		// Create execution state. v5a: copy workflow-level breakpoints into the
 		// execution state so the per-node pause check picks them up.
 		const executionId = `wf_exec_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+		// P3: 环检测 —— 防止 workflow 经 skill 节点递归调用自身形成无限循环。
+		// 若同一 workflowId 已在当前执行链中，直接抛错，由嵌套调用方（_executeWorkflowAndAwait）捕获。
+		if (this._activeWorkflowChain.has(workflowId)) {
+			this.logService.warn(`[WorkflowExecution] Cyclic workflow invocation detected: ${workflowId} already in execution chain; aborting to prevent infinite recursion`);
+			throw new Error(`Cyclic workflow invocation: ${workflowId}`);
+		}
+		this._activeWorkflowChain.add(workflowId);
+		// 终态时从链中移除（无论完成/失败/取消），避免跨执行泄漏。
+		const chainSub = this.onDidExecutionStatusChange(state => {
+			if (state.executionId === executionId && (state.status === WorkflowExecutionStatus.Completed || state.status === WorkflowExecutionStatus.Failed || state.status === WorkflowExecutionStatus.Cancelled)) {
+				chainSub.dispose();
+				this._activeWorkflowChain.delete(workflowId);
+			}
+		});
+
 		const executionState: IWorkflowExecutionState = {
 			executionId,
 			workflowId,
@@ -117,7 +138,22 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		let ownerSessionId: string | undefined;
 		let ownerAgentId: string | undefined;
 
-		if (workflowAgentId) {
+		if (options?.sessionId && workflowAgentId) {
+			// P4: 复用发起会话（如 /wf 命令所在的聊天会话），AskUser 交互卡片与
+			// subagent 进度卡片直接显示在用户正看着的会话中，而非另开的「▶ 工作流名」会话。
+			// 跳过 trigger anchor 消息——发起会话中已有用户的 /wf 消息作为锚点。
+			ownerSessionId = options.sessionId;
+			ownerAgentId = workflowAgentId;
+			this._executionSession.set(executionId, {
+				workflowAgentId,
+				sessionId: options.sessionId,
+				workflowName: workflow.name || workflowId,
+			});
+			this._sessionCache.set(`${workflowAgentId}:${executionId}`, options.sessionId);
+			this.logService.info(
+				`[WorkflowExecution] Reusing caller session ${options.sessionId} for ${workflowAgentId} (execution=${executionId})`,
+			);
+		} else if (workflowAgentId) {
 			try {
 				const meta = await this.agentChatService.createAgentSession(
 					workflowAgentId,
@@ -1371,11 +1407,29 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		const skillInput = (data.prompt as string) || '';
 		const skillArgs = (data.skillArgs as Record<string, string>) ?? {};
 
+		const agentId = _options?.agentId || workflow.agentId;
+
 		if (!skillName) {
 			throw new Error(`Skill node ${node.id} has no skillName`);
 		}
 
-		const agentId = _options?.agentId || workflow.agentId;
+		// P2: 双向打通 —— 若 skillName 解析到 workflow 来源的可执行 skill，
+		// 则确定性硬调用该工作流（而非软触发 prompt），把最终输出作为本节点输出。
+		const wfSkill = this._resolveWorkflowSkill(skillName);
+		if (wfSkill?.executor?.kind === 'workflow') {
+			this.logService.info(`[WorkflowExecution] Skill node ${node.id} resolves to workflow ${wfSkill.executor.workflowId} — executing deterministically`);
+			const finalOutput = await this._executeWorkflowAndAwait(wfSkill.executor.workflowId, {
+				context: { input: skillInput },
+				agentId,
+				skipVariableCollection: true,
+			});
+			const nodeState = executionState.nodeStates.get(node.id);
+			if (nodeState) {
+				nodeState.output = finalOutput ?? '';
+			}
+			return;
+		}
+
 		if (!agentId) {
 			throw new Error(`Skill node ${node.id}: No agent ID available`);
 		}
@@ -1416,6 +1470,59 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		if (nodeState) {
 			nodeState.output = message.content || '';
 		}
+	}
+
+	// ─── P2/P3: workflow 型 skill 节点的确定性硬调用 ─────────────────────
+
+	/**
+	 * 解析一个 skill 名称是否为 workflow 来源的可执行 skill。
+	 * 大小写不敏感匹配；返回第一个 source==='workflow' 的 skill 定义。
+	 */
+	private _resolveWorkflowSkill(skillName: string): ISkillDefinition | undefined {
+		const name = skillName.toLowerCase();
+		for (const s of this.skillRegistry.getSkills()) {
+			if (s.source === 'workflow' && s.name.toLowerCase() === name && s.executor?.kind === 'workflow') {
+				return s;
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * 嵌套执行一个工作流并等待其完成，返回最终输出（供 Skill 节点作为本节点输出）。
+	 * - 环检测由 executeWorkflow 入口统一处理（递归调用会抛错），此处捕获并返回空。
+	 * - 通过订阅 onDidExecutionStatusChange 等待目标 executionId 进入终态。
+	 */
+	private async _executeWorkflowAndAwait(workflowId: string, options?: IWorkflowExecutionOptions): Promise<string | undefined> {
+		let executionId: string;
+		try {
+			executionId = await this.executeWorkflow(workflowId, options);
+		} catch (err) {
+			this.logService.warn(`[WorkflowExecution] nested workflow execution skipped (likely cyclic): ${workflowId}`, err);
+			return undefined;
+		}
+		return new Promise<string | undefined>((resolve) => {
+			const sub = this.onDidExecutionStatusChange(state => {
+				if (state.executionId !== executionId) { return; }
+				if (state.status === WorkflowExecutionStatus.Completed
+					|| state.status === WorkflowExecutionStatus.Failed
+					|| state.status === WorkflowExecutionStatus.Cancelled) {
+					sub.dispose();
+					resolve(this._extractFinalOutput(state));
+				}
+			});
+		});
+	}
+
+	/** 从执行状态中提取最终输出（最后一个 completed 且有 output 的节点）。 */
+	private _extractFinalOutput(state: IWorkflowExecutionState): string {
+		let last = '';
+		for (const ns of state.nodeStates.values()) {
+			if (ns.status === WorkflowNodeExecutionStatus.Completed && ns.output) {
+				last = ns.output;
+			}
+		}
+		return last;
 	}
 
 	private async _executeToolNode(

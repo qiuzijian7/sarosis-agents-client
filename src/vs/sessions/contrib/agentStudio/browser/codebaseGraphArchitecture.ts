@@ -57,15 +57,15 @@ export interface Community {
 	id: number;
 	size: number;
 	nodes: number[];
-	avgInDegree: number;
+	avg_in_degree: number;
 	/** 内部边密度：internal/(internal+boundary), 1.0=完全封闭 */
 	cohesion?: number;
-	/** 按 inDegree+outDegree 排序的代表性节点名 (top 5) */
-	topNodes?: string[];
+	/** 按 inDegree+outDegree 排序的代表性节点名 (top 5)，对齐 C 的 top_nodes */
+	top_nodes?: string[];
 	/** 顶层包/目录名 */
 	packages?: string[];
-	/** 社区内边类型 (如 ["CALLS", "IMPORTS"]) */
-	edgeTypes?: string[];
+	/** 社区内边类型 (如 ["CALLS", "IMPORTS"])，对齐 C 的 edge_types */
+	edge_types?: string[];
 }
 
 export interface ArchitectureReport {
@@ -77,6 +77,8 @@ export interface ArchitectureReport {
 	crossBoundaries: CrossBoundary[];
 	layers: LayerAssignment[];
 	communities: Community[];
+	/** 大库跳过社区检测时的说明（2026-07-27：Leiden 同步跑 249k 节点是分钟级主线程阻塞） */
+	communitiesSkipped?: string;
 	services?: any[];
 	fileTree?: any;
 	totalNodes: number;
@@ -93,9 +95,10 @@ const LAYER_PATTERNS: Record<string, { layer: LayerAssignment['layer']; patterns
 	config: { layer: 'config', patterns: [/config/i, /setting/i, /env/i, /constant/i] },
 };
 
-export async function analyzeArchitecture(store: CodebaseGraphStore, project: string): Promise<ArchitectureReport> {
-	const allNodes = store.getAllNodes().filter(n => n.project === project);
-	const allEdges = store.getAllEdges().filter(e => e.project === project);
+export async function analyzeArchitecture(store: CodebaseGraphStore, project: string | undefined): Promise<ArchitectureReport> {
+	// 多 folder：project 为 undefined 时搜索全部项目（含 S1Game + UE5EA 等）
+	const allNodes = project ? store.getAllNodes().filter(n => n.project === project) : store.getAllNodes();
+	const allEdges = project ? store.getAllEdges().filter(e => e.project === project) : store.getAllEdges();
 
 	return {
 		languages: analyzeLanguages(allNodes),
@@ -105,7 +108,13 @@ export async function analyzeArchitecture(store: CodebaseGraphStore, project: st
 		hotspots: findHotspots(allNodes),
 		crossBoundaries: findCrossBoundaries(allNodes, allEdges, store),
 		layers: assignLayers(allNodes),
-		communities: detectCommunities(allNodes, allEdges),
+		// 2026-07-27（日志 1785084338635，app 卡死）：Leiden 社区检测在 249k 节点
+		// × ~50 万边上同步跑是分钟级主线程阻塞。规模保护：超阈值跳过（架构报告
+		// 的 packages/languages/hotspots/layers 仍有价值，communities 为加分项）。
+		communities: allNodes.length > 30_000 ? [] : detectCommunities(allNodes, allEdges),
+		...(allNodes.length > 30_000
+			? { communitiesSkipped: `community detection skipped: graph too large (${allNodes.length} nodes > 30000) — Leiden would block the main thread for minutes` }
+			: {}),
 		// P1 additions: services + fileTree
 		services: analyzeServices(allNodes, allEdges, store, project),
 		fileTree: buildFileTree(allNodes),
@@ -120,7 +129,7 @@ function analyzeLanguages(nodes: GraphNode[]): LanguageStat[] {
 	const stats: Map<string, LanguageStat> = new Map();
 
 	for (const node of nodes) {
-		if (node.label === 'file' && node.filePath) {
+		if ((node.label === 'file' || node.label === 'File') && node.filePath) {
 			const ext = node.filePath.split('.').pop() || 'unknown';
 			const lang = getLanguageName(ext);
 			const stat = stats.get(lang) || { language: lang, files: 0, nodes: 0, loc: 0 };
@@ -155,7 +164,7 @@ function getLanguageName(ext: string): string {
 
 // ─── Package Analysis ─────────────────────────────────────────────────────────
 
-async function analyzePackages(nodes: GraphNode[], edges: GraphEdge[], project: string, store: CodebaseGraphStore): Promise<PackageSummary[]> {
+async function analyzePackages(nodes: GraphNode[], edges: GraphEdge[], project: string | undefined, store: CodebaseGraphStore): Promise<PackageSummary[]> {
 	const pkgMap: Map<string, GraphNode[]> = new Map();
 
 	for (const node of nodes) {
@@ -164,6 +173,24 @@ async function analyzePackages(nodes: GraphNode[], edges: GraphEdge[], project: 
 		const arr = pkgMap.get(pkg) || [];
 		arr.push(node);
 		pkgMap.set(pkg, arr);
+	}
+
+	// 2026-07-27（日志 1785084338635，app 卡死）：原 edgeCount 计算是
+	// O(packages × edges × nodes)——每包 filter 全部边、每边两次 nodes.some，
+	// 249k 节点 × ~50 万边 × N 包 ≈ 10^12 级操作（主线程永久阻塞）。
+	// 重写为 O(N+E)：nodeId→package 预映射 + 单次边遍历累加（语义等价：
+	// 任一端点属于该包的边计入；跨包边两端各计一次，同包边只计一次）。
+	const nodePkg = new Map<number, string>();
+	for (const node of nodes) {
+		if (!node.filePath) { continue; }
+		nodePkg.set(node.id, node.filePath.split('/')[0] || '(root)');
+	}
+	const pkgEdgeCount = new Map<string, number>();
+	for (const e of edges) {
+		const sp = nodePkg.get(e.sourceId);
+		if (sp) { pkgEdgeCount.set(sp, (pkgEdgeCount.get(sp) || 0) + 1); }
+		const tp = nodePkg.get(e.targetId);
+		if (tp && tp !== sp) { pkgEdgeCount.set(tp, (pkgEdgeCount.get(tp) || 0) + 1); }
 	}
 
 	const summaries: PackageSummary[] = [];
@@ -181,10 +208,7 @@ async function analyzePackages(nodes: GraphNode[], edges: GraphEdge[], project: 
 			name,
 			path: name,
 			nodeCount: pkgNodes.length,
-			edgeCount: edges.filter(e =>
-				nodes.some(n => n.id === e.sourceId && n.filePath?.startsWith(name)) ||
-				nodes.some(n => n.id === e.targetId && n.filePath?.startsWith(name))
-			).length,
+			edgeCount: pkgEdgeCount.get(name) ?? 0,
 			languages: Array.from(languages),
 			entryPoints,
 		});
@@ -315,7 +339,7 @@ function detectCommunities(nodes: GraphNode[], edges: GraphEdge[]): Community[] 
 		if (memberIds.length < 2) { continue; }
 
 		const commNodes = memberIds.map(id => nodeMap.get(id)).filter(Boolean) as GraphNode[];
-		const avgInDegree = commNodes.reduce((s, n) => s + n.inDegree, 0) / (commNodes.length || 1);
+		const avg_in_degree = commNodes.reduce((s, n) => s + n.inDegree, 0) / (commNodes.length || 1);
 
 		// Cohesion: 内部边 / (内部边 + 边界边)
 		const internal = internalEdges.get(commId) || 0;
@@ -344,7 +368,7 @@ function detectCommunities(nodes: GraphNode[], edges: GraphEdge[]): Community[] 
 
 		communities.push({
 			id: commId, size: commNodes.length, nodes: memberIds,
-			avgInDegree, cohesion, topNodes, packages, edgeTypes,
+			avg_in_degree, cohesion, top_nodes: topNodes, packages, edge_types: edgeTypes,
 		});
 	}
 
@@ -361,7 +385,7 @@ interface ServiceInfo {
 	dependents: number[];    // nodeIds of callers
 }
 
-function analyzeServices(nodes: GraphNode[], edges: GraphEdge[], store: CodebaseGraphStore, project: string): ServiceInfo[] {
+function analyzeServices(nodes: GraphNode[], edges: GraphEdge[], store: CodebaseGraphStore, project: string | undefined): ServiceInfo[] {
 	const services: ServiceInfo[] = [];
 
 	// Find service nodes (Route handlers, gRPC services, GraphQL resolvers)

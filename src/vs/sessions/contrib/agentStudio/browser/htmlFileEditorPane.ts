@@ -470,9 +470,31 @@ export class HtmlFileEditorPane extends TextFileEditor {
 						// 写盘
 						await this._configHtmlService.writeHtml(agentId, newHtml, { origin: 'html' });
 						this._rawHtml = newHtml;
-						// 不立即 setHtml 刷新——outerHTML 含运行时状态，重载可能引入 JS 错误。
-						// 文件已落盘，用户切换模式或重开时自然加载最新内容。
 						return; // 跳过底部的统一 reply
+					}
+					case 'confightml.kvGet': {
+						if (!agentId) throw new Error('agentId 未识别');
+						const val = await this._configHtmlService.kvGet(agentId, String(msg.key || ''));
+						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true, result: val } as unknown as Record<string, unknown>);
+						return;
+					}
+					case 'confightml.kvSet': {
+						if (!agentId) throw new Error('agentId 未识别');
+						await this._configHtmlService.kvSet(agentId, String(msg.key || ''), msg.value);
+						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
+						return;
+					}
+					case 'confightml.kvDelete': {
+						if (!agentId) throw new Error('agentId 未识别');
+						await this._configHtmlService.kvDelete(agentId, String(msg.key || ''));
+						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
+						return;
+					}
+					case 'confightml.kvList': {
+						if (!agentId) throw new Error('agentId 未识别');
+						const keys = await this._configHtmlService.kvList(agentId, msg.prefix ? String(msg.prefix) : undefined);
+						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true, result: keys } as unknown as Record<string, unknown>);
+						return;
 					}
 				}
 				this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
@@ -629,12 +651,18 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			'chatSend:function(msg,o){return s("confightml.chatSend",Object.assign({message:msg},o||{}))},' +
 			'notify:function(msg,lv){return s("confightml.notify",{message:msg,level:lv||"info"})},' +
 			'runTerminal:function(cmd,args,o){return s("confightml.runTerminal",Object.assign({command:cmd,args:args||[]},o||{}))},' +
-			'writeHtml:function(h){return s("confightml.writeHtml",{html:h})}};' +
+			'writeHtml:function(h){return s("confightml.writeHtml",{html:h})},' +
+			'kvGet:function(k){return s("confightml.kvGet",{key:k})},' +
+			'kvSet:function(k,v){return s("confightml.kvSet",{key:k,value:v})},' +
+			'kvDelete:function(k){return s("confightml.kvDelete",{key:k})},' +
+			'kvList:function(p){return s("confightml.kvList",{prefix:p||""})}};' +
 			'g.AgentConfigHtml={connect:function(){log("connect ok");return Promise.resolve(a)},isConnected:function(){return true},' +
 			'on:function(ev,fn){return a.on(ev,fn)},sendEvent:function(n,d){return a.sendEvent(n,d)},' +
 			'chatSend:function(msg,o){return a.chatSend(msg,o)},notify:function(m,l){return a.notify(m,l)},' +
 			'runTerminal:function(cmd,args,o){return a.runTerminal(cmd,args,o)},' +
-			'writeHtml:function(h){return a.writeHtml(h)}}}(window);</script>';
+			'writeHtml:function(h){return a.writeHtml(h)},' +
+			'kvGet:function(k){return a.kvGet(k)},kvSet:function(k,v){return a.kvSet(k,v)},' +
+			'kvDelete:function(k){return a.kvDelete(k)},kvList:function(p){return a.kvList(p)}}}(window);</script>';
 
 		const sdkWrapper = `<script>console.log('[HtmlFileEditorPane] preview SDK injected, type tag present')</script>` + sdk;
 

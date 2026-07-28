@@ -163,6 +163,12 @@ export interface IWorkflowExecutionOptions {
 	/** Agent ID to use for agent nodes (defaults to workflow's agentId) */
 	agentId?: string;
 	/**
+	 * 复用现有会话作为 owner 会话（而非新建「▶ 工作流名」会话）。
+	 * 聊天触发场景（/workflow、/wf、bare /{wf-id}）传入发起聊天的 sessionId，
+	 * 使 AskUser 交互卡片与 subagent 进度卡片直接显示在用户正看着的会话中。
+	 */
+	sessionId?: string;
+	/**
 	 * Maximum number of conversation history messages to keep when sending
 	 * to agent nodes. When exceeded, the oldest messages are trimmed.
 	 * Default: undefined (no limit, keep all).

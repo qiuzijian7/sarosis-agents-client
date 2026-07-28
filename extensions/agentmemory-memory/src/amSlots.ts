@@ -8,8 +8,8 @@
  *  每条插槽独立 KV key-value
  *--------------------------------------------------------------------------------------------*/
 
-import type { MemorySlot } from './amTypes.js';
-import { KV } from './amSchema.js';
+import type { MemorySlot, Observation } from './amTypes.js';
+import { KV, generateId } from './amSchema.js';
 import { StateKV } from './stateKV.js';
 
 const DEFAULT_SIZE_LIMIT = 2000;
@@ -121,4 +121,127 @@ export async function enrich(kv: StateKV, agentId: string, files: string[], term
 		}
 	}
 	return { context: parts.join('\n').slice(0, 4000) };
+}
+
+// ─── Slot Reflect（复刻 agentmemory mem::slot-reflect，slots.ts:361-486）────
+
+/** reflect 门控：原版 AGENTMEMORY_REFLECT=true 才开（默认关）；
+ *  移植版 slots 常开故默认开，AGENTMEMORY_REFLECT=false 关闭（刻意的默认值差异）。 */
+export function isReflectEnabled(): boolean {
+	try {
+		return (typeof process !== 'undefined' ? process.env['AGENTMEMORY_REFLECT'] : undefined) !== 'false';
+	} catch {
+		return true;
+	}
+}
+
+/**
+ * mem::slot-reflect 复刻：session 结束时把近期观察反思进 slots——
+ *   pending_items    ← 含 "todo" 的观察标题行（去重追加）
+ *   session_patterns ← 错误/命令执行计数（覆盖式摘要）
+ *   project_context  ← 触及文件列表（去重追加，每次 ≤20 条）
+ * 均受 slot.sizeLimit 尾部截断。与原版差异：①观察类型映射 hookType
+ * （error→post_tool_failure；command_run→post_tool_use 且工具名匹配
+ * run/exec/shell/terminal/bash/command）；②无 withKeyedLock（in-process KV
+ * 单线程网关，最坏情况一次丢失更新，可接受）；③审计写 KV.state（与
+ * governanceAuditQuery 的读取约定一致，id 前缀 audit_）。
+ */
+export async function slotReflect(
+	kv: StateKV, agentId: string, sessionId: string, maxObservations: number = 50,
+): Promise<{ success: boolean; applied: number; observationsReviewed: number; reason?: string }> {
+	if (!sessionId) {
+		return { success: false, applied: 0, observationsReviewed: 0, reason: 'sessionId required' };
+	}
+	const max = Number.isInteger(maxObservations) && maxObservations > 0 ? Math.min(200, maxObservations) : 50;
+	const observations = await kv.list<Observation>(KV.observations(agentId, sessionId)).catch(() => [] as Observation[]);
+	if (observations.length === 0) {
+		return { success: true, applied: 0, observationsReviewed: 0, reason: 'no observations for session' };
+	}
+	const recent = [...observations]
+		.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''))
+		.slice(0, max);
+
+	// 聚合：todo 行 / 模式计数 / 触及文件
+	const pendingLines: string[] = [];
+	const patternCounts = new Map<string, number>();
+	const files = new Set<string>();
+	for (const obs of recent) {
+		const d = (obs.data ?? {}) as Record<string, unknown>;
+		const title = String(obs.title ?? d['tool_name'] ?? '').toLowerCase();
+		const narrative = String(d['content'] ?? d['tool_output'] ?? '').toLowerCase();
+		if (narrative.includes('todo') || title.includes('todo')) {
+			pendingLines.push(`- ${obs.title || String(d['content'] ?? '').slice(0, 60) || obs.id}`);
+		}
+		if (obs.hookType === 'post_tool_failure' || obs.hookType === 'tool_failure') {
+			patternCounts.set('errors', (patternCounts.get('errors') ?? 0) + 1);
+		}
+		const toolName = String(d['tool_name'] ?? '');
+		if (obs.hookType === 'post_tool_use' && /run|exec|shell|terminal|bash|command/i.test(toolName)) {
+			patternCounts.set('commands', (patternCounts.get('commands') ?? 0) + 1);
+		}
+		if (Array.isArray(d['files'])) {
+			for (const f of d['files'] as unknown[]) { if (typeof f === 'string') { files.add(f); } }
+		}
+	}
+
+	await seedDefaults(kv, agentId);
+	let applied = 0;
+	const now = new Date().toISOString();
+
+	if (pendingLines.length > 0) {
+		const slot = await slotGet(kv, agentId, 'pending_items');
+		if (slot && !slot.readOnly) {
+			const already = new Set(slot.content.split('\n'));
+			const fresh = pendingLines.filter(l => !already.has(l));
+			if (fresh.length > 0) {
+				const sep = slot.content && !slot.content.endsWith('\n') ? '\n' : '';
+				const next = `${slot.content}${sep}${fresh.join('\n')}`;
+				slot.content = next.length > slot.sizeLimit ? next.slice(next.length - slot.sizeLimit) : next;
+				slot.updatedAt = now;
+				await kv.set(KV.slots(agentId), 'pending_items', slot);
+				applied++;
+			}
+		}
+	}
+
+	if (patternCounts.size > 0) {
+		const slot = await slotGet(kv, agentId, 'session_patterns');
+		if (slot && !slot.readOnly) {
+			const summary = [
+				`last reflection: ${now}`,
+				...[...patternCounts.entries()].map(([kind, count]) => `- ${kind}: ${count} in last ${recent.length} observations`),
+			].join('\n');
+			slot.content = summary.length > slot.sizeLimit ? summary.slice(0, slot.sizeLimit) : summary;
+			slot.updatedAt = now;
+			await kv.set(KV.slots(agentId), 'session_patterns', slot);
+			applied++;
+		}
+	}
+
+	if (files.size > 0) {
+		const slot = await slotGet(kv, agentId, 'project_context');
+		if (slot && !slot.readOnly) {
+			const fresh = [...files].filter(f => !slot.content.includes(f)).slice(0, 20);
+			if (fresh.length > 0) {
+				const header = slot.content.length === 0 ? 'Files touched in recent sessions:' : '';
+				const sep = slot.content && !slot.content.endsWith('\n') ? '\n' : '';
+				const nextRaw = `${slot.content}${sep}${header ? header + '\n' : ''}${fresh.map(f => `- ${f}`).join('\n')}`;
+				slot.content = nextRaw.length > slot.sizeLimit ? nextRaw.slice(nextRaw.length - slot.sizeLimit) : nextRaw;
+				slot.updatedAt = now;
+				await kv.set(KV.slots(agentId), 'project_context', slot);
+				applied++;
+			}
+		}
+	}
+
+	if (applied > 0) {
+		// 审计（对齐原版 recordAudit；移植版约定写 KV.state、id 前缀 audit_）
+		const auditId = generateId('audit');
+		await kv.set(KV.state(agentId), auditId, {
+			id: auditId, ts: now, action: 'slot_reflect', actor: 'mem::slot-reflect',
+			targets: [sessionId], details: { observationCount: recent.length, slotsUpdated: applied },
+		}).catch(() => {});
+	}
+
+	return { success: true, applied, observationsReviewed: recent.length };
 }

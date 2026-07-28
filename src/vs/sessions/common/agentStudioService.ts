@@ -35,6 +35,23 @@ import type {
 	BuildFolderOptions,
 } from "../contrib/agentStudio/browser/knowledge/knowledgeTools.js";
 
+// --- Agent Preset type ---
+
+/** Agent preset from .agent.md — for CreateAgentModal quick-preset panel. */
+export interface AgentPreset {
+	id: string;
+	name: string;
+	role: string;
+	icon: string;
+	description: string;
+	model: string;
+	systemPrompt: string;
+	skills?: string[];
+	tools?: string[];
+	category?: string;
+	source?: string;
+}
+
 // --- Agent Studio Service ---
 
 export const IAgentStudioService =
@@ -49,6 +66,10 @@ export interface IAgentStudioService {
 	readonly onDidSelectAgent: Event<string | null>;
 	/** Fired when the host needs the chat panel to inject a prompt into the active agent conversation. */
 	readonly onDidRequestInjectPrompt: Event<{ agentId: string; message: string }>;
+	/** Request the KB view to refresh its tree (e.g. after background KB agent import completes). */
+	requestKbRefresh(): void;
+	/** Fired when the KB view should refresh (e.g. after background KB agent import). */
+	readonly onDidRequestKbRefresh: Event<void>;
 	/** Fired when agents change (custom agent CRUD). */
 	readonly onDidChangeAgents: Event<void>;
 	/**
@@ -67,6 +88,11 @@ export interface IAgentStudioService {
 	// Agents — chat-ready agent definitions (builtins + custom presets)
 	getAgents(): Promise<Agent[]>;
 	getAgent(id: string): Promise<Agent | undefined>;
+	/**
+	 * 从 ~/.saros/agents/{id}/.agent.md 扫描生成 preset 列表，
+	 * 供 CreateAgentModal 「快速创建」面板使用。与 agent 目录唯一真相源对齐。
+	 */
+	getAgentPresets(): Promise<AgentPreset[]>;
 	/** Resolve the per-agent directory: ~/.saros/agents/{agentId}/ */
 	getAgentDir(agentId: string): Promise<URI>;
 	/** Resolve the OS user home directory path (e.g. /home/user). */
@@ -80,10 +106,34 @@ export interface IAgentStudioService {
 	 */
 	importMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult>;
 	/**
-	 * LLM 驱动的智能内容分类（复刻 Hyper-Extract 模式）。
-	 * 返回最匹配的类别 + 置信度，失败时自动降级到关键词启发式分类。
+	 * LLM-only summary import — does NOT build a vector/embedding index.
+	 * Uses the KB agent's chat LLM (notes_summary template) to summarize the message
+	 * and writes a structured note to `<storage-root>/notes/<key>.md`. Works without an
+	 * embedding provider (only a Chat Provider is required). Used by the chat
+	 * "导入知识库" button to avoid the vector-retrieval path.
 	 */
-	classifyContent(content: string): Promise<{ category: string; label: string; confidence: number; reasoning: string; source: 'llm' | 'keyword' }>;
+	summarizeMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult>;
+	/**
+	 * Raw import — store the message **as-is** into the knowledge base as a markdown
+	 * note. Adds a YAML frontmatter header (date / source / agentid / etc.) and writes
+	 * the original content verbatim to `<storage-root>/notes/<key>.md`. Uses NO LLM and
+	 * NO embedding provider, so it always works offline. This is the preferred path for
+	 * the chat "导入知识库" button when the user wants the raw content preserved.
+	 */
+	importMessageRawToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult>;
+	/**
+	 * Schema 驱动的智能内容分类（对齐 llm_wiki：LLM 依据活动 vault 的 kb-schema.json
+	 * 进行语义类型判断，为唯一分类路径）。返回最匹配的类型 + 置信度。
+	 * LLM 不可用时安全降级为 schema 默认类型（source='fallback'），不做关键词猜测。
+	 */
+	classifyContent(content: string): Promise<{ category: string; label: string; confidence: number; reasoning: string; source: 'llm' | 'fallback' }>;
+
+	/**
+	 * Hyper-Extract 风格技能提取：用 LLM structured output 判断内容是否值得沉淀为技能。
+	 * isSkill=false 时直接拒绝；isSkill=true 时返回完整的 name/description/prompt/scripts。
+	 * 失败时自动降级到纯启发式提取（extractSkillComponents）。
+	 */
+	extractSkillContent(content: string, opts?: { providerId?: string; modelId?: string }): Promise<{ isSkill: boolean; name: string; description: string; prompt: string; category?: string; scripts?: Array<{ filename: string; content: string; language: string }>; source: 'llm' | 'heuristic'; reason: string }>;
 
 	// ── Folder → per-repo RAG (Option A) ──────────────────────────────────────
 	/**
@@ -494,8 +544,19 @@ export interface IChatSendOptions {
 	// allow-any-unicode-next-line
 	/** 用户通过 /skill 命令显式激活的技能 ID 列表 */
 	readonly explicitSkillIds?: readonly string[];
-	/** Current chat mode: craft (full access), ask (read-only tools), plan (decomposition only), workflow (craft + downstream agents) */
+	/**
+	 * 用户通过 /workflow <id>（别名 /wf）或 bare /{wf-xxx} 命令触发的工作流执行请求。
+	 * 设置后本 turn 进入工作流模式：控制权交给 DAG，按工作流配置严格逐节点执行，
+	 * 工作流结束即 turn 结束，最终输出锚定为本 turn 的 assistant 回答。
+	 */
+	readonly workflowTrigger?: {
+		readonly workflowId: string;
+		readonly input?: string;
+	};
+	/** @deprecated 已移除 ChatMode（craft/plan/ask/workflow）。改为 chatOnly 开关。 */
 	readonly chatMode?: ChatMode;
+	/** Chat-only 模式开关（开启时禁用写文件工具，React 范式下同时禁用 delegate_task）。默认关闭。 */
+	readonly chatOnly?: boolean;
 	/**
 	 * 推理/思考（thinking）配置。由聊天输入框的 thinking UI 控件产生，
 	 * 经 host 透传到 IModelOptions.reasoning，最终由各 model provider 映射到原生 API 参数。
@@ -823,14 +884,36 @@ export interface ITaskOrchestrationService {
 	focusTaskInBoard(taskTitle: string): void;
 
 	/**
-	 * Use the planner to decompose a goal into tasks.
-	 * Only agents with agentType='planner' may call this.
+	 * Decompose a goal into tasks. Any agent can drive orchestration.
 	 * Returns a plan in PendingApproval status.
 	 */
 	createPlan(
 		goal: string,
 		workspaceId: string,
 		plannerId: string,
+		agentSessionId?: string,
+	): Promise<OrchestrationPlan>;
+
+	/**
+	 * Create a plan from pre-decomposed tasks (e.g. from Plan Mode's exit_plan_mode).
+	 * Unlike createPlan(), this does NOT re-run AI decomposition — it persists the
+	 * already-approved tasks directly. Dependencies may be referenced by task title
+	 * or 1-based index.
+	 * Returns a plan in PendingApproval status.
+	 */
+	createPlanFromTasks(
+		goal: string,
+		workspaceId: string,
+		plannerId: string,
+		tasks: Array<{
+			title: string;
+			description?: string;
+			files?: string[];
+			complexity?: string;
+			suggestedRole?: string;
+			dependencies?: string[];
+		}>,
+		agentSessionId?: string,
 	): Promise<OrchestrationPlan>;
 
 	/**
@@ -1067,6 +1150,32 @@ export interface IConfigHtmlService {
 		workspaceSessionId?: string;
 	}>;
 
+	/**
+	 * 宿主侧触发一次聊天发送（等价于在预览里点击发送）。供原生 UI（如知识库视图按钮）调用，
+	 * 自动按当前激活会话把消息发给指定 agent。
+	 */
+	requestChatSend(agentId: string, message: string): void;
+
+	/**
+	 * Fired when an LLM-origin write to config.html needs user confirmation.
+	 * The UI layer should present a confirmation card and call
+	 * `resolveModelWriteConfirm` with the user's decision.
+	 */
+	readonly onDidRequestModelWriteConfirm: Event<{
+		requestId: string;
+		agentId: string;
+		contentLen: number;
+		preview: string;
+	}>;
+
+	/**
+	 * Resolve a pending model-write confirmation request.
+	 */
+	resolveModelWriteConfirm(
+		requestId: string,
+		decision: "approve" | "deny" | "always",
+	): void;
+
 	// --- Resource & State --------------------------------------------------
 
 	/**
@@ -1131,6 +1240,18 @@ export interface IConfigHtmlService {
 		args: string[],
 		options?: { cwd?: string; env?: Record<string, string> },
 	): Promise<void>;
+
+	// --- Key-Value Data Store --------------------------------------------
+	// Persistent KV storage at ~/.vssaros/agents/{agentId}/data/kv.json
+
+	/** Read a value by key. Returns undefined if not found. */
+	kvGet(agentId: string, key: string): Promise<unknown | undefined>;
+	/** Write a value by key. Overwrites existing. */
+	kvSet(agentId: string, key: string, value: unknown): Promise<void>;
+	/** Delete a key. No-op if key doesn't exist. */
+	kvDelete(agentId: string, key: string): Promise<void>;
+	/** List all keys, optionally filtered by prefix. */
+	kvList(agentId: string, prefix?: string): Promise<string[]>;
 
 	// --- Push to HTML view ----------------------------------------------
 

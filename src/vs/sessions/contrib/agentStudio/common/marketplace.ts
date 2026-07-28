@@ -162,10 +162,10 @@ export interface IMarketplaceService {
 	// ── 下载安装 ──────────────────────────────────────────
 	/**
 	 * 下载指定版本并安装到本地资源目录。
-	 * - agent  → ~/.saros/agents/custom/{id}/
-	 * - skill  → ~/.saros/skills/{id}/
-	 * - mcp    → ~/.saros/mcp/{id}/
-	 * - knowledge → ~/.saros/knowledge-base/{id}/
+	 * - agent  → ~/.vssaros/agents/custom/{id}/
+	 * - skill  → ~/.vssaros/skills/{id}/
+	 * - mcp    → ~/.vssaros/mcp/{id}/
+	 * - knowledge → ~/.vssaros/knowledge-base/{id}/
 	 */
 	download(storeId: string, version: string, kind: PackageKind): Promise<IInstallResult>;
 

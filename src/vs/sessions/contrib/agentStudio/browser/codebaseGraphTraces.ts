@@ -35,15 +35,61 @@ export interface TraceEdge {
 	properties: Record<string, any>;
 }
 
+/**
+ * 简化 trace 摄入格式（P2 — 兼容上游 `ingest_traces` 的轻量入口）。
+ * 适用于没有完整 OTLP span 树、只有调用计数统计的场景：
+ *   [{ "caller": "foo", "callee": "bar", "count": 42, "edgeType": "CALLS" }]
+ */
+export interface SimpleTrace {
+	caller: string;
+	callee: string;
+	count?: number;       // 调用次数，默认 1
+	edgeType?: string;    // CALLS | HTTP_CALLS | ASYNC_CALLS | DATA_FLOWS，默认 CALLS
+	latencyMs?: number;   // 平均耗时（ms）
+	errorRate?: number;   // 0-1
+}
+
+/** ingest 后归一化的简化 trace（字段已补全默认值，供内部边生成使用）。 */
+interface ResolvedSimpleTrace {
+	caller: string;
+	callee: string;
+	count: number;
+	edgeType: string;
+	latencyMs?: number;
+	errorRate: number;
+}
+
 export class TraceIngester {
 	private _traces: OtlpSpan[] = [];
+	private _simpleTraces: ResolvedSimpleTrace[] = [];
 
 	/**
-	 * Ingest OTLP JSON trace data.
+	 * Ingest OTLP JSON trace data, or a simplified `[{caller,callee,count}]` array.
+	 * Returns the number of ingested entries (spans or simple pairs).
 	 */
 	ingest(jsonData: string): number {
 		try {
 			const data = JSON.parse(jsonData);
+
+			// Simplified trace format: [{caller, callee, count}]  (P2 — 兼容上游轻量摄入)
+			if (Array.isArray(data) && this._isSimpleTraceArray(data)) {
+				let added = 0;
+				for (const t of data) {
+					if (t && typeof t.caller === 'string' && typeof t.callee === 'string') {
+						this._simpleTraces.push({
+							caller: t.caller,
+							callee: t.callee,
+							count: typeof t.count === 'number' && t.count > 0 ? Math.floor(t.count) : 1,
+							edgeType: typeof t.edgeType === 'string' ? t.edgeType.toUpperCase() : 'CALLS',
+							latencyMs: typeof t.latencyMs === 'number' ? t.latencyMs : undefined,
+							errorRate: typeof t.errorRate === 'number' ? Math.min(1, Math.max(0, t.errorRate)) : 0,
+						});
+						added++;
+					}
+				}
+				return added;
+			}
+
 			const spans: OtlpSpan[] = [];
 
 			// Handle OTLP JSON format
@@ -104,9 +150,14 @@ export class TraceIngester {
 	}
 
 	/**
-	 * Convert ingested traces to graph edges.
+	 * Convert ingested traces (OTLP + simplified) to graph edges.
 	 */
 	toGraphEdges(): TraceEdge[] {
+		return [...this._otlpToEdges(), ...this._simpleToEdges()];
+	}
+
+	/** OTLP span 树 → 调用边（既有逻辑）。 */
+	private _otlpToEdges(): TraceEdge[] {
 		const edgeMap: Map<string, TraceEdge> = new Map();
 
 		// Build span tree
@@ -153,8 +204,48 @@ export class TraceIngester {
 		return Array.from(edgeMap.values());
 	}
 
+	/** 简化 `[{caller,callee,count}]` 格式 → 聚合调用边。 */
+	private _simpleToEdges(): TraceEdge[] {
+		const edgeMap: Map<string, TraceEdge> = new Map();
+		for (const t of this._simpleTraces) {
+			const key = `${t.caller}→${t.callee}:${t.edgeType}`;
+			const existing = edgeMap.get(key);
+			if (existing) {
+				const prevCount = existing.count;
+				existing.count += t.count;
+				if (t.latencyMs != null) {
+					existing.latency = (existing.latency * prevCount + t.latencyMs * t.count) / existing.count;
+				}
+				existing.errorRate = (existing.errorRate * prevCount + t.errorRate * t.count) / existing.count;
+			} else {
+				edgeMap.set(key, {
+					sourceFunction: t.caller,
+					targetFunction: t.callee,
+					edgeType: t.edgeType,
+					latency: t.latencyMs ?? 0,
+					count: t.count,
+					errorRate: t.errorRate,
+					properties: { source: 'runtime-trace-simple', simple: true },
+				});
+			}
+		}
+		return Array.from(edgeMap.values());
+	}
+
+	/** 判断数组是否为简化 trace 格式（含 caller/callee，且无 OTLP span 字段）。 */
+	private _isSimpleTraceArray(arr: any[]): boolean {
+		if (arr.length === 0) { return false; }
+		const sample = arr[0];
+		return !!sample && typeof sample === 'object'
+			&& typeof sample.caller === 'string'
+			&& typeof sample.callee === 'string'
+			&& sample.traceId === undefined
+			&& sample.spanId === undefined;
+	}
+
 	clear(): void {
 		this._traces = [];
+		this._simpleTraces = [];
 	}
 
 	get spanCount(): number { return this._traces.length; }

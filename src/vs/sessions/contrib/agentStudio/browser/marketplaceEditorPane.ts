@@ -33,6 +33,8 @@ import { IPlaywrightService } from '../../../../platform/browserView/common/play
 import { ICodebaseMemoryMcpService } from './codebaseMemoryMcpService.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
 const KIND_LABEL: Record<PackageKind, string> = {
 	skill: 'Skill',
@@ -196,6 +198,7 @@ export class MarketplaceEditorPane extends EditorPane {
 		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
 		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
 		@ILogService private readonly logService: ILogService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	) {
 		super(MarketplaceEditorPane.ID, group, telemetryService, themeService, storageService);
 
@@ -801,7 +804,7 @@ export class MarketplaceEditorPane extends EditorPane {
 		installBar.appendChild(installBtn);
 		const hint = document.createElement('span');
 		hint.style.cssText = 'font-size:11px;color:var(--vscode-descriptionForeground,#9d9d9d);';
-		hint.textContent = '\u5B89\u88C5\u5230 ~/.saros/ \u76EE\u5F55\uFF0C\u81EA\u52A8\u542F\u7528'; // 安装到 ~/.saros/ 目录，自动启用
+		hint.textContent = '\u5B89\u88C5\u5230 ~/.vssaros/saros/ \u76EE\u5F55\uFF0C\u81EA\u52A8\u542F\u7528'; // 安装到 ~/.vssaros/saros/ 目录，自动启用
 		installBar.appendChild(hint);
 		this._detailContentEl.appendChild(installBar);
 
@@ -897,8 +900,7 @@ export class MarketplaceEditorPane extends EditorPane {
 	 */
 	private async _syncMcpToVsCode(slug: string): Promise<void> {
 		try {
-			const userHome = await this.pathService.userHome();
-			const configUri = URI.joinPath(userHome, '.saros', 'mcp', slug, 'config.json');
+			const configUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, slug, 'config.json');
 			if (!await this.fileService.exists(configUri)) { return; }
 			const content = await this.fileService.readFile(configUri);
 			const config = JSON.parse(content.value.toString());
@@ -954,7 +956,7 @@ export class MarketplaceEditorPane extends EditorPane {
 			['\u540D\u79F0', `${pkg.icon ?? KIND_ICON[pkg.kind]} ${pkg.name}`], // 名称
 			['\u7248\u672C', `v${pkg.latestVersion}`], // 版本
 			['\u7C7B\u578B', KIND_LABEL[pkg.kind]], // 类型
-			['\u5B89\u88C5\u4F4D\u7F6E', `~/.saros/${pkg.kind === 'knowledge' ? 'knowledge-base' : pkg.kind === 'mcp' ? 'mcp' : pkg.kind === 'agent' ? 'agents/custom' : 'skills'}/${pkg.slug}/`], // 安装位置
+			['\u5B89\u88C5\u4F4D\u7F6E', `~/.vssaros/saros/${pkg.kind === 'knowledge' ? 'knowledge-base' : pkg.kind === 'mcp' ? 'mcp' : pkg.kind === 'agent' ? 'agents/custom' : 'skills'}/${pkg.slug}/`], // 安装位置
 		];
 		for (const [label, val] of rows) {
 			const row = document.createElement('div');
@@ -1188,7 +1190,7 @@ export class MarketplaceEditorPane extends EditorPane {
 				const preview = await this._crawlPreview(originalUrl, appendLog);
 				appendLog('抓取成功，正在自动保存到本地...', 'step');
 				crawlBtn.textContent = '\u{1F4BE} 保存中...';
-				// 直接自动保存到 ~/.saros/skills/
+				// 直接自动保存到 ~/.vssaros/saros/skills/
 				const crawlData = {
 					url: preview.url,
 					kind: preview.kind as PackageKind,
@@ -1347,7 +1349,7 @@ export class MarketplaceEditorPane extends EditorPane {
 				const preview = await this._crawlPreview(url, appendLog);
 				appendLog('抓取成功，正在自动保存到本地...', 'step');
 				crawlBtn.textContent = '\u{1F4BE} 保存中...';
-				// 直接自动保存到 ~/.saros/skills/
+				// 直接自动保存到 ~/.vssaros/saros/skills/
 				const crawlData = {
 					url: preview.url,
 					kind: preview.kind as PackageKind,
@@ -1714,8 +1716,7 @@ export class MarketplaceEditorPane extends EditorPane {
 	/** 通过 Playwright 下载技能 zip 文件：page.on('response') 捕获 zip 响应体（解决 CORS 问题） */
 	/** 通过 Playwright 下载技能 zip：page.on('response') 捕获 zip 响应体（解决 CORS） */
 	private async _downloadSkillZip(sessionId: string, viewId: string, skillSlug: string, log: (msg: string, type?: 'info' | 'success' | 'error' | 'step') => void): Promise<string | null> {
-		const userHome = await this.pathService.userHome();
-		const downloadDir = URI.joinPath(userHome, '.saros', 'skills', '.downloads');
+		const downloadDir = resolveSarosPath(this._getSarosRoot(), SarosPath.skills, '.downloads');
 		try { await this.fileService.createFolder(downloadDir); } catch { /* ignore */ }
 
 		try {
@@ -1845,6 +1846,7 @@ export class MarketplaceEditorPane extends EditorPane {
 						// 浏览器点击"下载到本地"后文件会下载到默认目录（如 D:/Downloads 或 ~/Downloads）
 						// 等待文件出现在下载目录中
 						log('等待浏览器下载完成...', 'step');
+						const userHome = await this.pathService.userHome();
 						const possibleDownloadDirs = [
 							URI.file('D:/Downloads'),
 							URI.joinPath(userHome, 'Downloads'),
@@ -2108,7 +2110,7 @@ export class MarketplaceEditorPane extends EditorPane {
 		}
 	}
 
-	/** 将爬取的资源保存到本地 ~/.saros/{subdir}/{slug}/ */
+	/** 将爬取的资源保存到本地 ~/.vssaros/saros/{subdir}/{slug}/ */
 	private async _saveCrawlLocally(data: {
 		kind: PackageKind; slug: string; name: string; description: string;
 		version: string; tags: string[]; category?: string; icon?: string;
@@ -2119,9 +2121,8 @@ export class MarketplaceEditorPane extends EditorPane {
 		author?: string; wikiUrl?: string;
 		_zipPath?: string;
 	}	): Promise<string> {
-		const userHome = await this.pathService.userHome();
 		const subdir = MarketplaceEditorPane.KIND_SUBDIR[data.kind];
-		const targetDir = URI.joinPath(userHome, '.saros', subdir, data.slug);
+		const targetDir = resolveSarosPath(this._getSarosRoot(), subdir, data.slug);
 		console.log('[Crawl] 保存到: ' + targetDir.fsPath);
 
 		// 创建目录
@@ -2363,8 +2364,7 @@ export class MarketplaceEditorPane extends EditorPane {
 
 	/** 记录到 installed-packages.json */
 	private async _recordInstalled(kind: PackageKind, storeId: string, version: string): Promise<void> {
-		const userHome = await this.pathService.userHome();
-		const fileUri = URI.joinPath(userHome, '.saros', 'installed-packages.json');
+		const fileUri = resolveSarosPath(this._getSarosRoot(), SarosPath.installedPackages);
 		let entries: Array<{ kind: string; storeId: string; version: string; installedAt: string }> = [];
 		try {
 			if (await this.fileService.exists(fileUri)) {
@@ -2386,5 +2386,9 @@ export class MarketplaceEditorPane extends EditorPane {
 		this._detailEl.classList.remove('show');
 		this._overlayEl.classList.remove('show');
 		super.clearInput();
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

@@ -18,6 +18,7 @@ import * as slots from './amSlots.js';
 import * as feat from './amFeatures.js';
 import * as extra from './amExtras.js';
 import * as adv from './amAdvanced.js';
+import * as repl from './amReplication.js';
 import * as rem from './amRemaining.js';
 import * as fin from './amFinal.js';
 import * as compress from './amCompress.js';
@@ -47,16 +48,19 @@ import _os from 'node:os';
 // 但实际的索引检索改由网关 /search 端点提供，renderer 不再持有任何索引
 // 内存（消除「重活塞 4GB renderer isolate」的反模式）。
 
+// 2026-07-25 P1 并发安全：agentId 改为构造期绑定（每次调用新建实例），
+// 删除 static currentAgent 可变字段——多 agent 并发调用时旧实现互相覆盖，
+// 导致跨 agent 召回泄漏。
 class ServerBM25Proxy {
-	static currentAgent = 'default';
 	private _size = 0;
+	constructor(private readonly _agentId: string) { }
 	get size(): number { return this._size; }
 	get available(): boolean { return true; }
 	async search(query: string, limit = 20): Promise<Array<{ id: string; score: number }>> {
 		try {
 			const ctrl = new AbortController();
 			const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
-			const resp = await fetch(`${serverBase()}/search/${encodeURIComponent(ServerBM25Proxy.currentAgent)}`, {
+			const resp = await fetch(`${serverBase()}/search/${encodeURIComponent(this._agentId)}`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ query, limit }),
@@ -79,8 +83,20 @@ class ServerVectorProxy {
 	async search(_query: string, _limit = 20): Promise<Array<{ id: string; score: number }>> { return []; }
 }
 
-const _bm25Proxy = new ServerBM25Proxy();
 const _vectorProxy = new ServerVectorProxy();
+
+// 全量列出上限（searchMemory 空查询 / '*'）：UI 侧栏/详情面板用空查询拉取
+// 全部记忆做分类统计；1000 足以覆盖实际规模，同时避免 KV 全表扫描失控。
+const SEARCH_ALL_LIMIT = 1000;
+
+// 技能文件根目录：与渲染进程 skillRegistryService 的读取路径保持一致
+// （~/.vssaros/skills/）。主进程 spawn 网关时注入 AGENTMEMORY_SKILLS_DIR
+// （= <userDataPath>/skills）；独立运行时回退到 ~/.vssaros/skills。
+// 历史曾硬编码 ~/.saros/skills，与渲染进程读取位置不一致，导致引擎写出的
+// SKILL.md 不可见。
+function _skillsDir(): string {
+	return process.env.AGENTMEMORY_SKILLS_DIR || _path.join(_os.homedir(), '.vssaros', 'skills');
+}
 
 export class AgentMemoryProviderV2 {
 	readonly id = 'agentmemory';
@@ -132,7 +148,7 @@ export class AgentMemoryProviderV2 {
 		// 非宿主（renderer 代理）模式：索引检索走网关 /search 的 HTTP 代理。
 		// 宿主（网关）模式：getter 由网关 loadProvider 注入进程内 BM25，此处跳过。
 		if (!this._hosted) {
-			fn.setIndexGetters(() => _bm25Proxy, () => _vectorProxy);
+			fn.setIndexGetters((agentId) => new ServerBM25Proxy(agentId), () => _vectorProxy);
 		}
 		// 注册内置默认钩子，使 editor pane 的 Hook 视图显示「活跃」而非「未注册」。
 		this._registerDefaultHooks();
@@ -164,10 +180,12 @@ export class AgentMemoryProviderV2 {
 
 	async loadContext(agentId: string, sessionId: string, query?: string, options?: any): Promise<IMemoryContext> {
 		await this._ensureServer();
-		// Plan C: 长程召回走网关 /search（通过 amFunctions 混合逻辑 + 代理）
-		ServerBM25Proxy.currentAgent = agentId;
 		const budget = options?.tokenBudget ?? this._tokenBudget;
-		return fn.loadContextFn(this._kv, agentId, sessionId, query, budget);
+		// includeEntries 默认 false：注入路径不需要长/短期记忆数组
+		// （省去两次全表 list + JSON.parse，防止阻塞网关事件循环）；
+		// UI 等确需数组的消费者显式传 includeEntries: true。
+		return fn.loadContextFn(this._kv, agentId, sessionId, query, budget,
+			{ includeEntries: options?.includeEntries === true });
 	}
 
 	async writeMemory(agentId: string, entry: IMemoryEntry): Promise<void> {
@@ -190,12 +208,17 @@ export class AgentMemoryProviderV2 {
 	async searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]> {
 		await this._ensureServer();
 		// Plan C: 检索经网关 /search（amFunctions 混合召回逻辑保留，
-		// 索引检索走网关代理）。网关索引为空时回退 KV 扫描。
-		ServerBM25Proxy.currentAgent = agentId;
-		if (query === '*' || query === '*:*') {
-			return fn.searchMemoryFn(this._kv, agentId, '', 50);
+		// 索引检索走网关代理——agentId 经 getter 参数显式传递，无可变共享状态）。
+		// 网关索引为空时回退 KV 扫描。
+		// 空查询 / '*' = 全量列出（UI 侧栏与详情面板需要完整列表做分类统计，
+		// 不能套用搜索路径的 20 条上限）。
+		if (query === '*' || query === '*:*' || !query?.trim()) {
+			return fn.searchMemoryFn(this._kv, agentId, '', SEARCH_ALL_LIMIT);
 		}
 		const results = await fn.searchMemories(this._kv, agentId, query, 20);
+		// R4：搜索历史记录（对齐原版 mem::search 的 recent-searches 诊断面，
+		// followupStats 的数据来源；fire-and-forget 不阻塞召回）
+		void fin.recentSearchesAdd(this._kv, agentId, query, results.length).catch(() => {});
 		if (results.length > 0) {
 			return results.map(r => ({
 				id: r.id,
@@ -212,11 +235,28 @@ export class AgentMemoryProviderV2 {
 
 	async recallFormatted(agentId: string, query: string, strategy?: string, limit?: number): Promise<string> {
 		await this._ensureServer();
-		ServerBM25Proxy.currentAgent = agentId;
 		const results = await fn.searchMemories(this._kv, agentId, query, limit ?? 10);
-		if (results.length === 0) return 'memory_recall: no results found';
-		const summary = results.map((r, i) => `[${i + 1}] ${r.content.slice(0, 200)}`).join('\n');
-		return `Recalled ${results.length} memories:\n${summary}`;
+		// G4（对齐原版 mem::smart-search 的 lessons 数组并入召回返回）
+		const lessons = await fn.lessonRecall(this._kv, agentId, query, undefined, 5).catch(() => []);
+		if (results.length === 0 && lessons.length === 0) return 'memory_recall: no results found';
+		const parts: string[] = [];
+		if (results.length > 0) {
+			parts.push(`Recalled ${results.length} memories:\n${results.map((r, i) => `[${i + 1}] ${r.content.slice(0, 200)}`).join('\n')}`);
+		}
+		if (lessons.length > 0) {
+			parts.push(`Lessons:\n${lessons.map(l => `- [${l.source}] ${l.content.slice(0, 200)}`).join('\n')}`);
+		}
+		return parts.join('\n\n');
+	}
+
+	/** 文件相关 bug 记忆（mem::enrich 复刻）——volatile 层「历史 bug 提示」注入用 */
+	async bugMemoriesForFiles(agentId: string, files: string[], project?: string): Promise<Array<{ id: string; title: string; content: string }>> {
+		const memories = await fn.bugMemoriesForFiles(this._kv, agentId, files, project, 3);
+		return memories.map(m => ({
+			id: m.id,
+			title: m.title || m.content.slice(0, 60),
+			content: m.content.slice(0, 160),
+		}));
 	}
 
 	async reinforceMemory(agentId: string, memId: string): Promise<boolean> {
@@ -234,10 +274,41 @@ export class AgentMemoryProviderV2 {
 	/** 触发 Hook — 对齐 V1 triggerHook，供 agentOSService 生命周期调用 */
 	async triggerHook(type: string, ctx: Record<string, unknown>): Promise<void> {
 		const agentId = (ctx['agentId'] as string) ?? 'default';
+		const sessionId = (ctx['sessionId'] as string) ?? 'default';
+		// ── 原版写入时机复刻 ───────────────────────────────────────────
+		// session_start：显式注册会话记录（KV.sessions，summaries/观察块的关联键）
+		if (type === 'session_start') {
+			await fn.sessionStart(this._kv, agentId, sessionId, ctx['project'] as string | undefined, ctx['cwd'] as string | undefined).catch(() => {});
+		}
+		// session_end（客户端每轮末触发）：下限 5 条未压缩观察时压缩为
+		// SessionSummary（对齐原版 session-end → flow-compress；compressSession
+		// 已与既有摘要合并，turn 级分批压缩会累积叙事而不是互相覆盖）。
+		if (type === 'session_end') {
+			const { compressSession, countUncompressed } = await import('./amCompress.js');
+			countUncompressed(this._kv, agentId, sessionId).then(async (n: number) => {
+				let summary: import('./amTypes.js').SessionSummary | null = null;
+				if (n >= 5) {
+					summary = await compressSession(this._kv, agentId, sessionId, ctx['project'] as string | undefined).catch(() => null);
+				}
+				// D2a（doc §13，复刻 mem::slot-reflect）：session 结束把近期观察
+				// 反思进 slots（pending_items/session_patterns/project_context）——
+				// 原版 events.ts session.stopped 事件链标配；AGENTMEMORY_REFLECT=false 关闭。
+				if (slots.isReflectEnabled()) {
+					await slots.slotReflect(this._kv, agentId, sessionId).catch(() => {});
+				}
+				// D2b（复刻 graph-extract 联动）：AGENTMEMORY_GRAPH_EXTRACTION=true 才开
+				// （对齐原版 GRAPH_EXTRACTION_ENABLED 默认关）；从刚压缩的摘要抽取实体。
+				if (process.env['AGENTMEMORY_GRAPH_EXTRACTION'] === 'true' && summary?.narrative) {
+					const { graphExtract } = await import('./amPipeline.js');
+					const text = `${summary.title}\n${summary.narrative}\n${summary.keyDecisions.join('; ')}`;
+					await graphExtract(this._kv, agentId, sessionId, text).catch(() => {});
+				}
+			}).catch(() => {});
+		}
 		// 走真正的 HookSystem（内置默认钩子 + 调用计数），并持久化其 observe 结果。
 		const results = await this._hookSystem.trigger(type as any, {
 			agentId,
-			sessionId: (ctx['sessionId'] as string) ?? 'default',
+			sessionId,
 			timestamp: Date.now(),
 			...ctx,
 		});
@@ -339,6 +410,16 @@ export class AgentMemoryProviderV2 {
 		await this._ensureServer();
 		return fn.coreList(this._kv, agentId);
 	}
+	/** semantic scope 列表（mem:semantic）— memoryDetail 记忆视图聚合用 */
+	async semanticList(agentId: string) {
+		await this._ensureServer();
+		return fn.semanticList(this._kv, agentId);
+	}
+	/** procedural scope 列表（mem:procedural）— memoryDetail 记忆视图聚合用 */
+	async proceduralList(agentId: string) {
+		await this._ensureServer();
+		return fn.proceduralList(this._kv, agentId);
+	}
 
 	async lessonSave(agentId: string, content: string, context?: string, confidence?: number, project?: string) {
 		await this._ensureServer();
@@ -376,6 +457,11 @@ export class AgentMemoryProviderV2 {
 	async slotList(agentId: string) { await this._ensureServer(); return slots.slotList(this._kv, agentId); }
 	async slotGet(agentId: string, label: string) { return slots.slotGet(this._kv, agentId, label); }
 	async slotSet(agentId: string, label: string, content: string) { return slots.slotSet(this._kv, agentId, label, content); }
+	// ─── 原版机制复刻（amReplication）：slots 完整操作 ──────────────
+	async slotCreate(agentId: string, data: { label: string; content?: string; sizeLimit?: number; description?: string; pinned?: boolean; scope?: 'project' | 'global' }) { await this._ensureServer(); return repl.slotCreate(this._kv, agentId, data); }
+	async slotAppend(agentId: string, label: string, text: string) { await this._ensureServer(); return repl.slotAppend(this._kv, agentId, label, text); }
+	async slotReplace(agentId: string, label: string, content: string) { await this._ensureServer(); return repl.slotReplace(this._kv, agentId, label, content); }
+	async slotDelete(agentId: string, label: string) { await this._ensureServer(); return repl.slotDelete(this._kv, agentId, label); }
 	async getSlots(agentId: string): Promise<Array<{ name: string; content: string }>> {
 		const all = await slots.slotList(this._kv, agentId);
 		return all.map(s => ({ name: s.label, content: s.content }));
@@ -481,6 +567,10 @@ export class AgentMemoryProviderV2 {
 	}
 	async actionList(agentId: string) { await this._ensureServer(); return adv.actionList(this._kv, agentId); }
 	async actionGet(agentId: string, id: string) { await this._ensureServer(); return adv.actionGet(this._kv, agentId, id); }
+	/** mem::action-edge-create：行动 DAG 关系边（blocks/depends_on/relates_to/supersedes） */
+	async actionEdgeCreate(agentId: string, from: string, to: string, type?: 'blocks'|'depends_on'|'relates_to'|'supersedes') {
+		await this._ensureServer(); return adv.actionEdgeCreate(this._kv, agentId, from, to, type);
+	}
 	getActions(agentId: string): unknown[] { return []; }
 	async createRoutine(data: any) { await this._ensureServer(); return rem.routineCreate(this._kv, data.agentId || 'default', data); }
 	async getRoutines(agentId: string) { await this._ensureServer(); return rem.routineList(this._kv, agentId); }
@@ -507,8 +597,45 @@ export class AgentMemoryProviderV2 {
 
 	async sketchCreate(agentId: string, title: string, description?: string) { await this._ensureServer(); return adv.sketchCreate(this._kv, agentId, title, description); }
 	async sketchList(agentId: string) { await this._ensureServer(); return adv.sketchList(this._kv, agentId); }
+	// ─── 原版机制复刻（amReplication）：sketch 生命周期 ─────────────
+	async sketchAdd(agentId: string, sketchId: string, actionId: string) { await this._ensureServer(); return repl.sketchAdd(this._kv, agentId, sketchId, actionId); }
+	async sketchGc(agentId: string) { await this._ensureServer(); return repl.sketchGc(this._kv, agentId); }
+	// ─── 原版机制复刻（amReplication）：insights 数据层 ─────────────
+	async insightSearch(agentId: string, query: string, limit?: number) { await this._ensureServer(); return repl.insightSearch(this._kv, agentId, query, limit); }
+	async insightDecaySweep(agentId: string) { await this._ensureServer(); return repl.insightDecaySweep(this._kv, agentId); }
+	// ─── 原版机制复刻（amReplication）：snapshot 恢复 ───────────────
+	async snapshotRestore(agentId: string, snapshotId: string) { await this._ensureServer(); return repl.snapshotRestore(this._kv, agentId, snapshotId); }
+	// ─── 原版机制复刻（amReplication）：routine 状态 ────────────────
+	async routineStatus(agentId: string, runId: string) { await this._ensureServer(); return repl.routineStatus(this._kv, agentId, runId); }
+	async routineFreeze(agentId: string, routineId: string, frozen?: boolean) { await this._ensureServer(); return repl.routineFreeze(this._kv, agentId, routineId, frozen); }
+	async routineStepUpdate(agentId: string, runId: string, stepOrder: number, status: string, result?: string, error?: string) { await this._ensureServer(); return rem.routineStepUpdate(this._kv, agentId, runId, stepOrder, status as 'done'|'failed'|'skipped'|'running', result, error); }
+	async routineDelete(agentId: string, routineId: string) { await this._ensureServer(); return rem.routineDelete(this._kv, agentId, routineId); }
+	async getRoutine(agentId: string, routineId: string) { await this._ensureServer(); return rem.routineGet(this._kv, agentId, routineId); }
+	// ─── 原版机制复刻（amReplication）：signal 线程与清理 ───────────
+	async signalThreads(agentId: string, limit?: number) { await this._ensureServer(); return repl.signalThreads(this._kv, agentId, limit); }
+	async signalCleanup(agentId: string) { await this._ensureServer(); return repl.signalCleanup(this._kv, agentId); }
+	// ─── 原版机制复刻（amReplication）：graph 构建与重置 ────────────
+	async graphBuild(agentId: string) { await this._ensureServer(); return repl.graphBuild(this._kv, agentId); }
+	async graphReset() { await this._ensureServer(); return repl.graphReset(); }
 	async sentinelCreate(agentId: string, name: string, condition: string, type?: string) { await this._ensureServer(); return adv.sentinelCreate(this._kv, agentId, name, condition, type as any); }
 	async sentinelList(agentId: string) { await this._ensureServer(); return adv.sentinelList(this._kv, agentId); }
+	async sentinelCheck(agentId: string) {
+		await this._ensureServer();
+		const result = await adv.sentinelCheck(this._kv, agentId);
+		for (const t of result.triggered) {
+			this._emit('sentinel_triggered', agentId, t);
+		}
+		return result;
+	}
+	async sentinelTrigger(agentId: string, sentinelId: string, result?: Record<string, unknown>) {
+		await this._ensureServer();
+		const r = await adv.sentinelTrigger(this._kv, agentId, sentinelId, result);
+		if (r.success) {
+			this._emit('sentinel_triggered', agentId, { id: sentinelId, name: '', type: 'manual', result: result ?? { reason: 'manual_trigger' } });
+		}
+		return r;
+	}
+	async sentinelCancel(agentId: string, sentinelId: string) { await this._ensureServer(); return adv.sentinelCancel(this._kv, agentId, sentinelId); }
 	async crystallize(agentId: string, actionId: string) { await this._ensureServer(); return adv.crystallize(this._kv, agentId, actionId); }
 	async crystalList(agentId: string) { await this._ensureServer(); return adv.crystalList(this._kv, agentId); }
 	async facetTag(agentId: string, targetId: string, targetType: string, dimension: string, value: string) { await this._ensureServer(); return adv.facetTag(this._kv, agentId, targetId, targetType as any, dimension, value); }
@@ -517,10 +644,31 @@ export class AgentMemoryProviderV2 {
 	// ─── Team / Mesh / Temporal Graph / Frontier ─────────────────────
 
 	async teamShare(agentId: string, itemId: string, itemType: string, project?: string) { await this._ensureServer(); return rem.teamShare(this._kv, agentId, itemId, itemType, project); }
-	async teamQuery(agentId: string, query?: string) { await this._ensureServer(); return rem.teamQuery(this._kv, agentId, query); }
+	async teamQuery(agentId: string, query?: string, teamId?: string) { await this._ensureServer(); return rem.teamQuery(this._kv, agentId, query, teamId); }
+	// ─── 原版机制复刻（amReplication）：team feed/profile ──────────
+	async teamFeed(agentId: string, limit?: number, teamId?: string) { await this._ensureServer(); return repl.teamFeed(this._kv, agentId, limit, teamId); }
+	async teamProfile(agentId: string, teamId?: string) { await this._ensureServer(); return repl.teamProfile(this._kv, agentId, teamId); }
+	/** mem::slot-reflect：把 session 近期观察反思进 slots（D2a 复刻） */
+	async slotReflect(agentId: string, sessionId: string, maxObservations?: number) {
+		await this._ensureServer();
+		return slots.slotReflect(this._kv, agentId, sessionId, maxObservations);
+	}
 	async meshJoin(agentId: string, name: string, url: string, scopes?: string[]) { await this._ensureServer(); return rem.meshJoin(this._kv, agentId, name, url, scopes); }
 	async meshList(agentId: string) { await this._ensureServer(); return rem.meshList(this._kv, agentId); }
 	async meshLeave(agentId: string, peerId: string) { await this._ensureServer(); return rem.meshLeave(this._kv, agentId, peerId); }
+	/** mem::mesh-sync：对等同步（push+pull，delta since lastSyncAt，需 AGENTMEMORY_SECRET） */
+	async meshSync(agentId: string, opts?: { peerId?: string; scopes?: string[]; direction?: 'push' | 'pull' | 'both' }) {
+		await this._ensureServer(); return rem.meshSync(this._kv, agentId, opts);
+	}
+	/** mem::mesh-receive：接受远端推送，LWW 合并（网关 /mesh/receive 路由调用） */
+	async meshReceive(agentId: string, payload: rem.MeshSyncPayload) {
+		await this._ensureServer(); return rem.meshReceive(this._kv, agentId, payload);
+	}
+	/** mesh 数据导出（网关 /mesh/export 路由调用） */
+	async meshExport(agentId: string, scopes?: string[], since?: string) {
+		await this._ensureServer();
+		return rem.collectSyncData(this._kv, agentId, scopes ?? ['memories', 'actions', 'semantic', 'procedural', 'relations'], since);
+	}
 	async temporalExtract(agentId: string, sessionId: string) { await this._ensureServer(); return rem.temporalExtract(this._kv, agentId, sessionId); }
 	async temporalQuery(agentId: string, entity: string) { await this._ensureServer(); return rem.temporalQuery(this._kv, agentId, entity); }
 	async frontierAdd(agentId: string, concept: string, desc?: string, pri?: number) { await this._ensureServer(); return rem.frontierAdd(this._kv, agentId, concept, desc, pri); }
@@ -560,6 +708,12 @@ export class AgentMemoryProviderV2 {
 	async smartSearch(agentId: string, query: string, limit?: number) { await this._ensureServer(); return fin.smartSearch(this._kv, agentId, query, limit); }
 	async recentSearchesAdd(agentId: string, query: string, resultCount: number) { await this._ensureServer(); return fin.recentSearchesAdd(this._kv, agentId, query, resultCount); }
 	async recentSearchesGet(agentId: string, limit?: number) { await this._ensureServer(); return fin.recentSearchesGet(this._kv, agentId, limit); }
+	/** mem::diagnostic::recent-searches-sweep：按窗口与上限修剪搜索历史 */
+	async recentSearchesSweep(agentId: string, maxEntries?: number, windowHours?: number) { await this._ensureServer(); return fin.recentSearchesSweep(this._kv, agentId, maxEntries, windowHours); }
+	/** mem::diagnostic::followup-stats：搜索→写入追问率 */
+	async followupStats(agentId: string, windowMs?: number) { await this._ensureServer(); return fin.followupStats(this._kv, agentId, windowMs); }
+	/** mem::replay::import-jsonl：导入 Claude Code JSONL 会话日志为观察记录 */
+	async replayImportJsonl(agentId: string, sessionId: string, jsonl: string, maxEvents?: number) { await this._ensureServer(); return fin.replayImportJsonl(this._kv, agentId, sessionId, jsonl, maxEvents); }
 	async healthCheck(agentId: string) { await this._ensureServer(); return fin.healthCheck(this._kv, agentId); }
 	async circuitStatesGet(agentId: string) { await this._ensureServer(); return fin.circuitStatesGet(this._kv, agentId); }
 	async dedupCheck(agentId: string, key: string) { await this._ensureServer(); return fin.dedupCheck(this._kv, agentId, key); }
@@ -597,9 +751,35 @@ export class AgentMemoryProviderV2 {
 
 	// ─── Observe / Enrich ─────────────────────────────────────────────
 
+	/**
+	 * 观测写入（对齐原版 mem::observe）：写入 mem:obs:<agent>:<session> 会话暂存层
+	 * —— 便宜 KV set + 滑动窗口上限 + 阈值自动触发 compressSession。
+	 * 2026-07-25 改道：原路由到 slots.observe（mem:core，与 HookSystem 写入重复且
+	 * 污染短期上下文），现统一走 fn.observe（原版语义）。调用方：客户端
+	 * _observeToolResult（工具结果）/ storeTurnObservations（turn 消息）。
+	 */
 	async observe(agentId: string, payload: { sessionId: string; hookType: string; timestamp: string; data: unknown }) {
 		await this._ensureServer();
-		return slots.observe(this._kv, agentId, payload);
+		return fn.observe(this._kv, agentId, payload as any);
+	}
+	async observeList(agentId: string, sessionId: string) {
+		await this._ensureServer();
+		return fn.observeList(this._kv, agentId, sessionId);
+	}
+	async observeCount(agentId: string, sessionId: string) {
+		await this._ensureServer();
+		return fn.observeCount(this._kv, agentId, sessionId);
+	}
+	/** 列出会话记录（KV.sessions）— Dashboard/memoryDetail 会话面板用 */
+	async listSessions(agentId: string) {
+		await this._ensureServer();
+		return fn.sessionList(this._kv, agentId);
+	}
+	/** 列出会话摘要（KV.summaries，按 createdAt desc，可 limit） */
+	async listSummaries(agentId: string, limit?: number) {
+		await this._ensureServer();
+		const all = await fn.sessionSummaryList(this._kv, agentId);
+		return limit ? all.slice(0, limit) : all;
 	}
 	async enrich(agentId: string, files: string[], terms?: string[], project?: string) {
 		await this._ensureServer();
@@ -619,6 +799,21 @@ export class AgentMemoryProviderV2 {
 	async extractSkill(agentId: string, sessionId: string) {
 		await this._ensureServer();
 		return feat.extractSkill(this._kv, agentId, sessionId);
+	}
+	/** mem::skill-list：列出已抽取技能 */
+	async skillList(agentId: string) {
+		await this._ensureServer();
+		return feat.skillList(this._kv, agentId);
+	}
+	/** mem::skill-match：任务文本匹配推荐技能（D3 查询侧补齐） */
+	async skillMatch(agentId: string, task: string, limit?: number) {
+		await this._ensureServer();
+		return feat.skillMatch(this._kv, agentId, task, limit);
+	}
+	/** session_handoff 复刻：生成交接文档并以 SessionSummary 持久化（下个会话策展注入自然携带） */
+	async sessionHandoff(agentId: string, sessionId: string) {
+		await this._ensureServer();
+		return feat.sessionHandoff(this._kv, agentId, sessionId);
 	}
 
 	// ─── Sliding Window ──────────────────────────────────────────────
@@ -665,6 +860,11 @@ export class AgentMemoryProviderV2 {
 	async diagnose(agentId: string) {
 		await this._ensureServer();
 		return extra.diagnose(this._kv, agentId);
+	}
+	/** mem::heal：修复畸形记忆字段（isLatest/strength/concepts/createdAt） */
+	async heal(agentId: string) {
+		await this._ensureServer();
+		return extra.heal(this._kv, agentId);
 	}
 
 	// ─── MemoryDetailEditorPane 兼容方法 ────────────────────────────────
@@ -856,7 +1056,7 @@ export class AgentMemoryProviderV2 {
 		return (await this._readSkills(agentId)).find((s) => s.id === entry.id) ?? null;
 	}
 
-	/** 写入 SKILL.md 到 ~/.saros/skills/<slug>/SKILL.md，并持久化 skillMdWritten */
+	/** 写入 SKILL.md 到 <skillsRoot>/<slug>/SKILL.md，并持久化 skillMdWritten */
 	async writeSkillFile(agentId: string, skillId: string): Promise<{ ok: boolean; path?: string; error?: string }> {
 		try {
 			const skills = await this._readSkills(agentId);
@@ -864,7 +1064,7 @@ export class AgentMemoryProviderV2 {
 			if (!skill) return { ok: false, error: 'skill not found' };
 			const slug = (skill.slug as string) || skillX.generateSlug(skill.title as string);
 			const md = skillX.generateSkillMd(skill as any);
-			const dir = _path.join(_os.homedir(), '.saros', 'skills', slug);
+			const dir = _path.join(_skillsDir(), slug);
 			await _fs.mkdir(dir, { recursive: true });
 			const filePath = _path.join(dir, 'SKILL.md');
 			await _fs.writeFile(filePath, md, 'utf8');
@@ -887,9 +1087,9 @@ export class AgentMemoryProviderV2 {
 			const slug = (skill?.slug as string) || (skill ? skillX.generateSlug(skill.title as string) : '');
 			let deleted = false;
 			if (slug) {
-				const dir = _path.join(_os.homedir(), '.saros', 'skills', slug);
-				await _fs.rm(dir, { recursive: true, force: true });
-				deleted = true;
+			const dir = _path.join(_skillsDir(), slug);
+			await _fs.rm(dir, { recursive: true, force: true });
+			deleted = true;
 			}
 			const entry = await this._kv.get<any>(KV.procedural(agentId), skillId);
 			if (entry) {
@@ -937,6 +1137,36 @@ export class AgentMemoryProviderV2 {
 		const entry = await this._kv.get<any>(KV.procedural(agentId), id);
 		if (!entry) return false;
 		await this._kv.delete(KV.procedural(agentId), id);
+		return true;
+	}
+
+	// ─── 长期记忆条目编辑/删除（Memory V2 可编辑）────────────────────────
+
+	async updateMemory(agentId: string, id: string, updates: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+		await this._ensureServer();
+		const entry = await this._kv.get<any>(KV.memories(agentId), id);
+		if (!entry) { return null; }
+		if (typeof updates.title === 'string') { entry.title = updates.title.slice(0, 200); }
+		if (typeof updates.content === 'string' && updates.content.trim()) { entry.content = updates.content; }
+		if (typeof updates.type === 'string' && ['pattern', 'preference', 'architecture', 'bug', 'workflow', 'fact'].includes(updates.type)) { entry.type = updates.type; }
+		if (Array.isArray(updates.concepts)) { entry.concepts = updates.concepts; }
+		if (Array.isArray(updates.files)) { entry.files = updates.files; }
+		if (typeof updates.strength === 'number' && updates.strength >= 0 && updates.strength <= 1) { entry.strength = updates.strength; }
+		entry.updatedAt = new Date().toISOString();
+		entry.version = (entry.version ?? 1) + 1;
+		await this._kv.set(KV.memories(agentId), id, entry);
+		return entry;
+	}
+
+	async deleteMemory(agentId: string, id: string): Promise<boolean> {
+		await this._ensureServer();
+		const entry = await this._kv.get<any>(KV.memories(agentId), id);
+		if (!entry) { return false; }
+		// 先置 isLatest=false 写回（网关 PUT 钩子据此从搜索索引移除），再硬删除 KV 条目
+		entry.isLatest = false;
+		entry.updatedAt = new Date().toISOString();
+		await this._kv.set(KV.memories(agentId), id, entry);
+		await this._kv.delete(KV.memories(agentId), id);
 		return true;
 	}
 
@@ -1024,6 +1254,22 @@ export class AgentMemoryProviderV2 {
 		await this._ensureServer();
 		const result: Record<string, unknown> = {};
 
+		// 0. D1 一次性迁移：summaries 中误存的 TeamSharedItem → 全局 team scope（幂等）
+		try {
+			const migration = await repl.migrateLegacyTeamShared(this._kv, agentId);
+			if (migration.migrated > 0) { result.teamMigration = migration; }
+		} catch (err: any) {
+			result.teamMigrationError = err?.message ?? String(err);
+		}
+
+		// 0.5 L1-L3 一次性清洗：客户端管线移除后的历史产物 l1-extract/l2-scene/l3-persona（幂等，§17）
+		try {
+			const l1l3 = await repl.purgeLegacyL1L3Extractions(this._kv, agentId);
+			if (l1l3.purged > 0) { result.l1l3Purge = l1l3; }
+		} catch (err: any) {
+			result.l1l3PurgeError = err?.message ?? String(err);
+		}
+
 		// 1. 全量清扫
 		try {
 			result.sweep = await pipe.runFullSweep(this._kv, agentId, agentId, this._tokenBudget);
@@ -1063,6 +1309,25 @@ export class AgentMemoryProviderV2 {
 			result.crystallize = await fin.autoCrystallize(this._kv, agentId);
 		} catch (err: any) {
 			result.crystallizeError = err?.message ?? String(err);
+		}
+
+		// 4. 租约清理（接入 amFinal.leaseCleanup：过期 lease 标记 expired）
+		try {
+			result.leasesCleaned = await fin.leaseCleanup(this._kv, agentId);
+		} catch (err: any) {
+			result.leaseCleanupError = err?.message ?? String(err);
+		}
+
+		// 5. 哨兵评估（接入 amAdvanced.sentinelCheck：threshold/pattern/schedule 条件
+		//    评估，命中的标记 triggered 并逐个发出 sentinel_triggered 事件）
+		try {
+			const sentinelResult = await adv.sentinelCheck(this._kv, agentId);
+			result.sentinels = sentinelResult;
+			for (const t of sentinelResult.triggered) {
+				this._emit('sentinel_triggered', agentId, t);
+			}
+		} catch (err: any) {
+			result.sentinelCheckError = err?.message ?? String(err);
 		}
 
 		return result;

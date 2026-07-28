@@ -268,6 +268,33 @@
 	width: 48px;
 }
 
+/* ===== Activity Bar Separator ===== */
+/* Visual divider between the "tools" group (workspace, search, source control)
+ * and the "AI features" group (session, agents, tasks, workflow, integration,
+ * memory, knowledge base, plugins). Separator is injected by sidebarPart.ts. */
+
+.agent-sessions-workbench .part.sidebar .activity-bar-separator {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 100%;
+	height: auto;
+	margin: 6px 0;
+	padding: 0 8px;
+	flex-shrink: 0;
+	pointer-events: none;
+}
+
+.agent-sessions-workbench .part.sidebar .activity-bar-separator::before {
+	content: '';
+	display: block;
+	width: 24px;
+	height: 1px;
+	background: var(--vscode-sideBar-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+	border-radius: 1px;
+	opacity: 0.4;
+}
+
 /* PaneCompositeBar internal: make actions-container vertical */
 .agent-sessions-workbench .part.sidebar .composite-bar-container .action-bar {
 	display: flex !important;

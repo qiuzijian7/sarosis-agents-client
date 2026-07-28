@@ -32,4 +32,15 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		})
 	);
+
+	// 公共命令：外部（如 agent 工具卡片）打开指定源码的 Mermaid 预览
+	context.subscriptions.push(
+		vscode.commands.registerCommand('_mermaid-chat.openPreview', (markup: string, title?: string) => {
+			if (typeof markup !== 'string' || !markup.trim()) {
+				vscode.window.showWarningMessage('Mermaid 源码为空，无法预览');
+				return;
+			}
+			editorManager.openPreview(markup, title || 'Mermaid 预览');
+		})
+	);
 }

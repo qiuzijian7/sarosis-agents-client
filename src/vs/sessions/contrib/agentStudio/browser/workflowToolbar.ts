@@ -40,12 +40,16 @@ export class WorkflowToolbar extends Disposable {
 	private _versionBadge!: HTMLElement;
 	private _uploadBtn!: HTMLButtonElement;
 	private _upgradeBtn!: HTMLButtonElement;
+	private _versionBtn!: HTMLButtonElement;
 	private _serverVersion: string | undefined;
 	private _localVersion: string | undefined;
 	private _isLoading = false;
 
 	private readonly _onDidRequestDelete = this._register(new Emitter<IStoredWorkflow>());
 	readonly onDidRequestDelete: Event<IStoredWorkflow> = this._onDidRequestDelete.event;
+
+	private readonly _onDidRequestVersionHistory = this._register(new Emitter<void>());
+	readonly onDidRequestVersionHistory: Event<void> = this._onDidRequestVersionHistory.event;
 
 	private readonly _onDidPublish = this._register(new Emitter<IStoredWorkflow>());
 	readonly onDidPublish: Event<IStoredWorkflow> = this._onDidPublish.event;
@@ -138,7 +142,7 @@ export class WorkflowToolbar extends Disposable {
 		delCancelBtn.style.cursor = 'pointer';
 		delCancelBtn.style.fontSize = '11px';
 		delCancelBtn.style.fontWeight = '600';
-		delCancelBtn.onclick = () => { this._cancelDelete(spacer, delConfirm, deleteBtn, this._uploadBtn, this._upgradeBtn); };
+		delCancelBtn.onclick = () => { this._cancelDelete(spacer, delConfirm, deleteBtn, this._uploadBtn, this._upgradeBtn, this._versionBtn); };
 		delConfirm.appendChild(delCancelBtn);
 		this._container.appendChild(delConfirm);
 
@@ -174,6 +178,21 @@ export class WorkflowToolbar extends Disposable {
 		this._uploadBtn.onclick = () => { void this._handleUpload(); };
 		this._container.appendChild(this._uploadBtn);
 
+		// ── 版本历史按钮（始终显示） ──
+		this._versionBtn = $('button.workflow-toolbar-btn.history') as HTMLButtonElement;
+		this._versionBtn.textContent = '🕐 版本历史';
+		this._versionBtn.title = '查看版本历史';
+		this._versionBtn.style.background = 'transparent';
+		this._versionBtn.style.border = '1px solid var(--vscode-panel-border)';
+		this._versionBtn.style.color = 'var(--vscode-foreground)';
+		this._versionBtn.style.padding = '4px 10px';
+		this._versionBtn.style.borderRadius = '3px';
+		this._versionBtn.style.cursor = 'pointer';
+		this._versionBtn.style.fontSize = '11px';
+		this._versionBtn.style.fontWeight = '600';
+		this._versionBtn.onclick = () => { this._onDidRequestVersionHistory.fire(); };
+		this._container.appendChild(this._versionBtn);
+
 		// ── 删除按钮（始终显示） ──
 		const deleteBtn = $('button.workflow-toolbar-btn.delete') as HTMLButtonElement;
 		deleteBtn.textContent = '🗑 删除';
@@ -191,6 +210,7 @@ export class WorkflowToolbar extends Disposable {
 			deleteBtn.style.display = 'none';
 			this._uploadBtn.style.display = 'none';
 			this._upgradeBtn.style.display = 'none';
+			this._versionBtn.style.display = 'none';
 			spacer.style.display = 'none';
 			delConfirm.style.display = 'flex';
 		};
@@ -374,8 +394,10 @@ export class WorkflowToolbar extends Disposable {
 		deleteBtn: HTMLButtonElement,
 		uploadBtn: HTMLButtonElement,
 		upgradeBtn: HTMLButtonElement,
+		versionBtn: HTMLButtonElement,
 	): void {
 		deleteBtn.style.display = '';
+		versionBtn.style.display = '';
 		if (uploadBtn.style.display !== 'none' || !this._serverVersion) {
 			// uploadBtn 的 display 由 _checkServerVersion 控制，可能为空字符串
 		}

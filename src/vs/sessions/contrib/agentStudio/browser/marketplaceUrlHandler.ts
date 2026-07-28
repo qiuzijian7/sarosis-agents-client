@@ -11,8 +11,9 @@ import { IMarketplaceService } from '../common/marketplace.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import type { PackageKind } from '../common/marketplace.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
 /**
  * MCP 配置结构（与 mcpInstaller.ts 中的 McpConfig 一致）。
@@ -36,8 +37,8 @@ interface McpConfig {
  *     → Downloads the package zip and installs it (all kinds).
  *
  *   vssaros://marketplace/install-mcp?slug=<slug>&name=<name>&config=<base64-json>
- *     → Writes MCP config directly to ~/.saros/mcp/{slug}/config.json and
- *       registers in ~/.saros/mcp.json (no zip download needed).
+ *     → Writes MCP config directly to ~/.vssaros/saros/mcp/{slug}/config.json and
+ *       registers in ~/.vssaros/saros/mcp.json (no zip download needed).
  *
  * Flow:
  *   1. User clicks "安装到 VsSaros" on the web marketplace detail page
@@ -51,12 +52,12 @@ export class MarketplaceUrlHandler extends Disposable implements IURLHandler {
 	static readonly ID = 'workbench.handler.marketplace';
 
 	constructor(
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IProgressService private readonly progressService: IProgressService,
 		@IFileService private readonly fileService: IFileService,
-		@IPathService private readonly pathService: IPathService,
-	) {
+		) {
 		super();
 	}
 
@@ -140,7 +141,7 @@ export class MarketplaceUrlHandler extends Disposable implements IURLHandler {
 
 	/**
 	 * Handle `vssaros://marketplace/install-mcp` — write MCP config directly to
-	 * `~/.saros/mcp/{slug}/config.json` and register in `~/.saros/mcp.json`.
+	 * `~/.vssaros/saros/mcp/{slug}/config.json` and register in `~/.vssaros/saros/mcp.json`.
 	 *
 	 * This bypasses the zip download flow: the web marketplace sends the MCP
 	 * configuration (transport/command/args/env/url) as a base64-encoded JSON
@@ -186,7 +187,7 @@ export class MarketplaceUrlHandler extends Disposable implements IURLHandler {
 			this.notificationService.info(
 				`✅ MCP "${slug}" 安装成功！\n` +
 				`配置文件: ${result.configPath}\n` +
-				`已注册到: ~/.saros/mcp.json`
+				`已注册到: ~/.vssaros/saros/mcp.json`
 			);
 
 		} catch (err) {
@@ -198,16 +199,15 @@ export class MarketplaceUrlHandler extends Disposable implements IURLHandler {
 	}
 
 	/**
-	 * Write MCP config to `~/.saros/mcp/{slug}/config.json` and register
-	 * in `~/.saros/mcp.json`. Mirrors the logic in mcpInstaller.ts.
+	 * Write MCP config to `~/.vssaros/saros/mcp/{slug}/config.json` and register
+	 * in `~/.vssaros/saros/mcp.json`. Mirrors the logic in mcpInstaller.ts.
 	 */
 	private async _writeMcpConfig(slug: string, name: string, config: McpConfig): Promise<{ configPath: string }> {
-		const userHome = await this.pathService.userHome();
-		const mcpDir = URI.joinPath(userHome, '.saros', 'mcp', slug);
+		const mcpDir = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, slug);
 		const configFileUri = URI.joinPath(mcpDir, 'config.json');
-		const mcpJsonUri = URI.joinPath(userHome, '.saros', 'mcp.json');
+		const mcpJsonUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 
-		// 1. Create directory ~/.saros/mcp/{slug}/
+		// 1. Create directory ~/.vssaros/saros/mcp/{slug}/
 		await this.fileService.createFolder(mcpDir);
 
 		// 2. Write config.json (with id/name/version filled in)
@@ -228,7 +228,7 @@ export class MarketplaceUrlHandler extends Disposable implements IURLHandler {
 			VSBuffer.fromString(JSON.stringify(configToWrite, null, 2))
 		);
 
-		// 3. Read existing ~/.saros/mcp.json (or create empty)
+		// 3. Read existing ~/.vssaros/saros/mcp.json (or create empty)
 		let mcpJson: { servers: Record<string, unknown> } = { servers: {} };
 		try {
 			const content = await this.fileService.readFile(mcpJsonUri);
@@ -264,5 +264,9 @@ export class MarketplaceUrlHandler extends Disposable implements IURLHandler {
 		);
 
 		return { configPath: mcpDir.fsPath };
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

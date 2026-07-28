@@ -16,10 +16,11 @@ import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
 import { KbFullTextIndex } from '../views/knowledgeBase/kbIndex.js';
+import { resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 
 const KB_SUBDIR = 'knowledge-base';
 
@@ -31,10 +32,10 @@ export class KnowledgeInstaller extends Disposable implements IPackageInstaller 
 	readonly kind: PackageKind = 'knowledge';
 
 	constructor(
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		@IPathService private readonly pathService: IPathService,
-	) {
+		) {
 		super();
 	}
 
@@ -67,7 +68,7 @@ export class KnowledgeInstaller extends Disposable implements IPackageInstaller 
 					const firstDoc = data?.docs?.[0];
 					if (firstDoc?.path && typeof firstDoc.path === 'string') {
 						// Infer source prefix: the common ancestor directory of all docs,
-						// e.g.  /home/alice/.saros/knowledge-base/feishu-kb-01
+						// e.g.  /home/alice/.vssaros/knowledge-base/feishu-kb-01
 						sourcePrefix = this._inferSourcePrefix(data.docs);
 					}
 				} catch { /* remap will fail gracefully below */ }
@@ -172,8 +173,7 @@ export class KnowledgeInstaller extends Disposable implements IPackageInstaller 
 	// ── 内部 ──────────────────────────────────────────────────
 
 	private async resolveDir(id: string): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', KB_SUBDIR, id);
+		return resolveSarosPath(this._getSarosRoot(), KB_SUBDIR, id);
 	}
 
 	private async collectFiles(baseDir: URI, currentDir: URI): Promise<string[]> {
@@ -231,5 +231,9 @@ export class KnowledgeInstaller extends Disposable implements IPackageInstaller 
 		// Trim to last directory separator to get the vault root
 		const lastSep = prefix.lastIndexOf('/');
 		return lastSep > 0 ? prefix.slice(0, lastSep) : prefix;
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

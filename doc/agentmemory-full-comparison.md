@@ -50,7 +50,7 @@ Agent Hook (tool/subtask execute)
 | 功能 | agentmemory | vssaros | 状态 |
 |------|-------------|---------|------|
 | observe（原始观察记录） | ✅ KV 存储 CompressedObservation | ✅ writeMemory (fire-and-forget) | 对齐 |
-| summarize（会话摘要） | ✅ LLM 生成 SessionSummary | ✅ triggerEpisodicExtraction | 已对齐 |
+| summarize（会话摘要） | ✅ LLM 生成 SessionSummary | ✅ session_end 链 compressSession（L1-L3 客户端管线 2026-07-26 已移除） | 已对齐 |
 | consolidate（长期记忆提取） | ✅ LLM 驱动 Episodic/Semantic/Procedural | ✅ ConsolidationPipeline | 已对齐 |
 | working-context（工作记忆上下文） | ✅ Core + Archival 分层 + auto-page | ✅ P12 已实现 | 已对齐 |
 | pinned 记忆 | ✅ CoreMemoryEntry.pinned | ✅ P12 InternalMemoryEntry.pinned | 已对齐 |

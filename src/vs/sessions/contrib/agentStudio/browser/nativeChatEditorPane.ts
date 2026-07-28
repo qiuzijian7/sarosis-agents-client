@@ -21,34 +21,38 @@ import { IModelService } from '../../../../editor/common/services/model.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { IAgentOSService } from '../common/agentOS.js';
-import { extractSkillComponents, buildSkillMdFromComponents, isValidSkillSlug } from '../common/extractSkill.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IBridgeService } from './bridge/bridgeService.js';
-import { SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 
 import { NativeChatEditorInput, type IChatRuntimeState, type ChatTabStatus } from './nativeChatEditorInput.js';
 import { WorkflowTraceController } from './workflowTraceController.js';
 import { CheckpointManager } from './checkpointManager.js';
+import { KbImportController, createKbImportHandler } from './kbImportController.js';
+import { SkillExtractionController } from './skillExtractionController.js';
+import { ChatEditorIntegration } from './chatEditorIntegration.js';
 import { CompressionDetailEditorInput } from './compressionDetailEditorInput.js';
 import { MemoryDetailEditorInput } from './memoryDetailEditorInput.js';
+import { AgentStreamRecorder } from './agentStreamRecorder.js';
 import { MemoryDetailEditorPane } from './memoryDetailEditorPane.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { XtermCliPanel } from '../../../browser/agentChat/xtermTui/xtermCliPanel.js';
 import type { IChatPanel } from '../../../browser/agentChat/iChatPanel.js';
-import { IAgentStudioService, IAgentChatService, IAgentTaskBoardService, ChatMode, IChatAttachmentSend } from '../../../common/agentStudioService.js';
+import { IAgentStudioService, IAgentChatService, IAgentTaskBoardService, IChatAttachmentSend } from '../../../common/agentStudioService.js';
 import { ITaskOrchestrationService } from '../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
-import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
 import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
@@ -96,8 +100,17 @@ export class NativeChatEditorPane extends EditorPane {
 	private _currentAgentId: string | null = null;
 	private _currentAgentSkills: string[] = [];
 	private _currentSessionId: string | null = null;
-	private _currentChatMode: ChatMode | undefined = undefined;
+	private _currentChatOnly: boolean = false;
 	private _currentWorkspaceId: string | null = null;
+
+	// ─── Per-agent input area state persistence keys ─────────────────────────
+	// Store chatMode / provider / model / composerText per agent so switching
+	// agents or restarting the client restores the full input area state.
+	private static readonly _STORAGE_CHAT_ONLY = 'saros:chatOnly';
+	private static readonly _STORAGE_PROVIDER = 'saros:lastProvider';
+	private static readonly _STORAGE_MODEL = 'saros:lastModel';
+	private static readonly _STORAGE_COMPOSER_TEXT = 'saros:composerText';
+
 	private _isSending = false;
 	/**
 	 * 标记当前流式 delta 来源是否为外部发送（如看板任务执行）。
@@ -107,6 +120,13 @@ export class NativeChatEditorPane extends EditorPane {
 	 *   按钮状态 + 记忆 delta 处理（面板回调不会被调用）。
 	 */
 	private _isExternalSend = false;
+	/**
+	 * 标志：本地发送（_sendMessageInternal）是否已结束（done 或 error）。
+	 * 当 _localSendDone=true 时，onDidStreamDelta 的 else 分支禁止重新 _initStreamingMessage，
+	 * 防止 error delta 重置 _isSending=false 后，后续 memory_writing 等广播 delta 误触发
+	 * 第二次流式初始化，导致出现多余空气泡。每次 _sendMessageInternal 入口重置为 false。
+	 */
+	private _localSendDone = false;
 	/**
 	 * Flag to prevent _selectAndLoadAgent reload during the execution‑setup
 	 * window: onDidChangeTaskBoard fires BEFORE executeTaskForBoard starts
@@ -123,6 +143,8 @@ export class NativeChatEditorPane extends EditorPane {
 	 */
 	private _streamingAssistantId: string | null = null;
 	private _streamingAssistantMsg: IAgentChatMessage | null = null;
+	/** LLM 流式输出记录器（createEditor 时初始化；默认关闭，localStorage 开关）。 */
+	private _streamRecorder: AgentStreamRecorder | undefined;
 	/** 看板变更后延迟 reload 的 timer，用于防止多个 board change 堆叠 reload。 */
 	private _taskBoardReloadTimer: ReturnType<typeof setTimeout> | null = null;
 	/**
@@ -144,6 +166,38 @@ export class NativeChatEditorPane extends EditorPane {
 	private static readonly DELTA_FLUSH_INTERVAL_MS = 25;
 	/** 最后发射到 panel 的 text content——用于跳过与上一批重复的 text delta。 */
 	private _lastFlushedTextContent: string = '';
+
+	/**
+	 * 流式期间当前 text 段在完整 content 中的起始偏移量。
+	 * 每当 tool_start 到达时，更新为当时的 content.length——
+	 * 使后续 text delta 生成的 text part 只包含「工具之后的增量文本」，
+	 * 而非全量 content（避免文本在工具卡前后重复渲染）。
+	 */
+	private _streamTextSegmentBase: number = 0;
+
+	/**
+	 * 最近一个 delegate_task / plan_explore 工具调用的真实 callId（LLM 分配）。
+	 *
+	 * delegationTools.ts 的 handler 无法拿到 LLM 分配的真实 callId，只能自己生成
+	 * 内部 `delegate_<ts>_<rand>` 作为 subagent trace 的 parentToolCallId。该内部 ID
+	 * 与主 agent parts 中 delegate_task 工具卡的真实 callId 不匹配，导致 subagent
+	 * 执行详情无法内嵌到 delegate_task 卡片。
+	 *
+	 * 由于 delegate_task 的 tool_start 一定先于其 subagent trace 到达，这里在
+	 * tool_start 时记录真实 callId，onDidSubAgentTrace 到达时用它覆盖 parentToolCallId，
+	 * 使 subagent 数据能正确匹配并内嵌到 delegate_task 卡片。
+	 */
+	private _lastDelegateToolCallId: string | undefined;
+
+	/** [PerfDiag] 流式性能诊断数据 */
+	private _streamPerf?: {
+		startTime: number;
+		deltaCount: number;
+		slowOps: Array<{ type: string; elapsed: number; count: number }>;
+		totalTypes: Record<string, number>;
+		lastFlushTime?: number;
+		lastFlushBatchSize?: number;
+	};
 	/**
 	 * Whether this pane's editor tab is currently the active (focused) tab
 	 * in its group. Tracked via {@link IEditorGroup.onDidActiveEditorChange}.
@@ -152,6 +206,8 @@ export class NativeChatEditorPane extends EditorPane {
 	 * the tab is not active, the status dot turns white (pending) to signal
 	 * unread results; activating the tab clears it to idle.
 	 */
+	/** Message IDs successfully imported to KB (synced to chat panel's _importedKbMessageIds). */
+	private readonly _chatPanelImportedIds = new Set<string>();
 	private _isTabActive = false;
 	/** Reusable streaming-send function, captured from the panel's onSendMessage. */
 	private _sendMessageInternal!: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => Promise<void>;
@@ -165,12 +221,15 @@ export class NativeChatEditorPane extends EditorPane {
 	private _workflowTrace: WorkflowTraceController | undefined;
 	/** Checkpoint manager — refresh bar and handle actions. */
 	private _checkpointMgr: CheckpointManager | undefined;
+	private _kbImport: KbImportController | undefined;
+	private _skillExtract: SkillExtractionController | undefined;
+	private _editorIntegration: ChatEditorIntegration | undefined;
 
 	constructor(
 		group: IEditorGroup,
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
-		@IStorageService storageService: IStorageService,
+		@IStorageService private readonly _storageService: IStorageService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 		@ITaskOrchestrationService private readonly _taskOrchestrationService: ITaskOrchestrationService,
 		@IAgentChatService private readonly _chatService: IAgentChatService,
@@ -185,14 +244,17 @@ export class NativeChatEditorPane extends EditorPane {
 		@IModelService private readonly _modelService: IModelService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ILogService private readonly _logService: ILogService,
+		@INativeEnvironmentService private readonly _envService: INativeEnvironmentService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IRequestService private readonly _requestService: IRequestService,
 		@IMcpService private readonly _mcpService: IMcpService,
 		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IBridgeService private readonly _bridgeService: IBridgeService,
+		@IViewsService private readonly _viewsService: IViewsService,
 	) {
-		super(NativeChatEditorPane.ID, group, telemetryService, themeService, storageService);
+		super(NativeChatEditorPane.ID, group, telemetryService, themeService, _storageService);
 	}
 
 	protected createEditor(parent: HTMLElement): void {
@@ -214,6 +276,8 @@ export class NativeChatEditorPane extends EditorPane {
 		parent.appendChild(this._container);
 
 		this._initChatPanel();
+		// LLM 流式输出记录器（默认关闭；localStorage['saros.streamRecord']='1' 启用）。
+		this._streamRecorder = this._register(new AgentStreamRecorder(this._fileService, this._logService, this._envService));
 		this._logService.debug(`[NativeChatEditorPane][Init] createEditor END t=${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
@@ -313,15 +377,32 @@ export class NativeChatEditorPane extends EditorPane {
 					// Converge the multi-layer session id: always resolve a concrete
 					// agent + session before sending so the stream never falls into the
 					// "noSession bucket" (the historical cross-talk root cause).
-					const ensured = await this._ensureSession();
-					if (!ensured) {
-						this._logService.info('[NativeChatEditorPane] onSendMessage: no usable agent/session');
-						return;
-					}
-					const agentId = ensured.agentId;
-					const sessionId: string = ensured.sessionId;
+			const ensured = await this._ensureSession();
+			if (!ensured) {
+				this._logService.info('[NativeChatEditorPane] onSendMessage: no usable agent/session');
+				return;
+			}
+			const agentId = ensured.agentId;
+			const sessionId: string = ensured.sessionId;
 
-					// 附件不再以占位文本注入消息，而是透传给 sendMessage 的 options.attachments，
+			// 发送后清空该 session 的输入框草稿（panel 已在 _onSendMessage 前清空 composer）
+			this._saveComposerDraft(agentId, sessionId);
+
+				// ── 首条消息 → 会话名自动设为消息内容 ──
+				try {
+					const history = await this._chatService.getHistory(agentId, sessionId);
+					if (!history || history.length === 0) {
+						const autoName = text.trim().substring(0, 30);
+						if (autoName) {
+							await this._chatService.renameAgentSession(agentId, sessionId, autoName);
+							this._logService.debug(`[NativeChatEditorPane] Auto-renamed session ${sessionId} to "${autoName}"`);
+						}
+					}
+				} catch (renameErr) {
+					this._logService.warn('[NativeChatEditorPane] Auto-rename on first message failed:', renameErr);
+				}
+
+				// 附件不再以占位文本注入消息，而是透传给 sendMessage 的 options.attachments，
 					// 由 agentDriverService.executeFromChatOptions → buildUserContentParts 构建多模态
 					// contentParts（图片 → image 块，文件 → 文本上下文），最终经 MessageFormatConverter
 					// 转换为各 LLM API 的多模态格式（OpenAI image_url / Anthropic base64 source /
@@ -329,55 +410,56 @@ export class NativeChatEditorPane extends EditorPane {
 					// 发送 [image: name] / [binary file, N bytes] 占位文本，丢失实际数据）。
 					const fullText = text;
 
-				// Optimistically add user message
-				const userMsg: IAgentChatMessage = {
-					id: `msg_${Date.now()}_user`,
-					role: 'user',
-					content: fullText,
-					timestamp: Date.now(),
-					// 带上附件，使气泡 UI 能展示图片/文件 chip（与输入框 chip 样式一致）。
-					// 真实内容仍经 sendMessage 的 options.attachments 透传给 LLM（见下方 sendMessage 调用）。
-					attachments: attachments && attachments.length > 0 ? attachments : undefined,
-				};
-				this._chatPanel?.addMessage(userMsg);
+					// Optimistically add user message
+					const userMsg: IAgentChatMessage = {
+						id: `msg_${Date.now()}_user`,
+						role: 'user',
+						content: fullText,
+						timestamp: Date.now(),
+						// 带上附件，使气泡 UI 能展示图片/文件 chip（与输入框 chip 样式一致）。
+						// 真实内容仍经 sendMessage 的 options.attachments 透传给 LLM（见下方 sendMessage 调用）。
+						attachments: attachments && attachments.length > 0 ? attachments : undefined,
+					};
+					this._chatPanel?.addMessage(userMsg);
 
-				// Set sending state BEFORE await — switches send button to stop icon immediately
-				this._chatPanel?.setSending(true);
-				this._isSending = true;
-				this._isExternalSend = false; // 本地发送，onDidStreamDelta 监听器跳过
+					// Set sending state BEFORE await — switches send button to stop icon immediately
+					this._chatPanel?.setSending(true);
+					this._isSending = true;
+					this._isExternalSend = false; // 本地发送，onDidStreamDelta 监听器跳过
+					this._localSendDone = false; // 重置本地发送完成标志
 
-				// Create assistant message immediately with isThinking=true so the user
-				// sees a "正在思考..." indicator while waiting for the first LLM delta.
-				this._initStreamingMessage();
+					// Create assistant message immediately with isThinking=true so the user
+					// sees a "正在思考..." indicator while waiting for the first LLM delta.
+					this._initStreamingMessage();
 
-				await this._chatService.sendMessage(
-					agentId,
-					fullText,
-					{
-						chatMode: this._currentChatMode,
-						agentSessionId: sessionId,
-						explicitSkillIds: explicitSkillIds,
-						// 透传附件：图片/文件真实内容经 agentDriverService 构建多模态
-						// contentParts，最终正确送达 LLM（修复此前仅发送占位文本的问题）。
-						attachments: attachments as IChatAttachmentSend[] | undefined,
-					},
-					(delta) => {
-						this._handleStreamDelta(delta);
-					},
-				);
-				// Agent loop fully completed (not per-turn) — reset sending state
-				this._chatPanel?.setSending(false);
-				this._isSending = false;
-				this._resetStreamingMessage();
-			} catch (err) {
-				this._logService.error('[NativeChatEditorPane] sendMessage failed:', err);
-				// sendMessage 抛出后没有 _sendMessageInternal line 644 收尾，必须这里手动
-				// 恢复 UI 状态并触发队列 dispatch（与正常完成路径一致）。
-				this._chatPanel?.setSending(false);
-				this._isSending = false;
-				this._isExternalSend = false;
-				this._resetStreamingMessage();
-			}
+					await this._chatService.sendMessage(
+						agentId,
+						fullText,
+						{
+							chatOnly: this._currentChatOnly,
+							agentSessionId: sessionId,
+							explicitSkillIds: explicitSkillIds,
+							// 透传附件：图片/文件真实内容经 agentDriverService 构建多模态
+							// contentParts，最终正确送达 LLM（修复此前仅发送占位文本的问题）。
+							attachments: attachments as IChatAttachmentSend[] | undefined,
+						},
+						(delta) => {
+							this._handleStreamDelta(delta);
+						},
+					);
+					// Agent loop fully completed (not per-turn) — reset sending state
+					this._chatPanel?.setSending(false);
+					this._isSending = false;
+					this._resetStreamingMessage();
+				} catch (err) {
+					this._logService.error('[NativeChatEditorPane] sendMessage failed:', err);
+					// sendMessage 抛出后没有 _sendMessageInternal line 644 收尾，必须这里手动
+					// 恢复 UI 状态并触发队列 dispatch（与正常完成路径一致）。
+					this._chatPanel?.setSending(false);
+					this._isSending = false;
+					this._isExternalSend = false;
+					this._resetStreamingMessage();
+				}
 			}),
 			onEditMessage: (messageId: string, newText: string) => {
 				void this._handleEditMessage(messageId, newText);
@@ -416,29 +498,44 @@ export class NativeChatEditorPane extends EditorPane {
 					// await 真正退出后会再次 setSending(false) 并触发 executeNext()，这里手动
 					// 调用只更新 UI 状态（_isSending / _streamPhase / stream scroll / send button），
 					// 不触发队列 dispatch，避免与 line 644 双重触发。
-				this._chatPanel?.setSending(false, { triggerExecuteNext: false });
-				this._isSending = false;
-				// 解除共享 Claim：手动停止时 onDidStreamDelta('done') 不会触发，
-				// 必须在此清理，防止该 session 权限被永久泄漏。
-				if (this._isExternalSend && this._taskExecutingSessionId) {
-					NativeChatEditorPane._sharedExternalSendSessions.delete(this._taskExecutingSessionId);
+					this._chatPanel?.setSending(false, { triggerExecuteNext: false });
+					this._isSending = false;
+					// 立即在 LLM 冒泡消息上显示「用户已取消」——cancelStream 仅中断 AbortController，
+					// 真正的 done(canceled:true) delta 要等 for-await 循环 break 后才会发出（可能滞后数秒，
+					// 例如 LLM 正阻塞在工具调用）。这里同步更新气泡，让停止反馈即时可见。
+					// done 事件滞后到达时会再次调用本逻辑，_buildCanceledContent 保证幂等不重复追加。
+					const cancelId = this._streamingAssistantId;
+					const cancelMsg = this._streamingAssistantMsg;
+					if (cancelId && cancelMsg) {
+						this._applyStreamPhase('canceled');
+						this._chatPanel?.updateMessage(cancelId, {
+							content: this._buildCanceledContent(cancelMsg),
+							toolCalls: cancelMsg.toolCalls ? cancelMsg.toolCalls.slice() : undefined,
+							isStreaming: false,
+							isThinking: false,
+							streamPhase: 'canceled',
+						});
+					}
+					// 解除共享 Claim：手动停止时 onDidStreamDelta('done') 不会触发，
+					// 必须在此清理，防止该 session 权限被永久泄漏。
+					if (this._isExternalSend && this._taskExecutingSessionId) {
+						NativeChatEditorPane._sharedExternalSendSessions.delete(this._taskExecutingSessionId);
+					}
+					this._isExternalSend = false;
+				} catch (err) {
+					this._logService.error('[NativeChatEditorPane] cancelExecution failed:', err);
 				}
-				this._isExternalSend = false;
-			} catch (err) {
-				this._logService.error('[NativeChatEditorPane] cancelExecution failed:', err);
-			}
 			},
 			onToggleCollapse: () => {
 				document.dispatchEvent(new CustomEvent('agent-studio:toggle-right-column'));
 			},
-		onSelectAgent: (agentId: string) => {
-			this._logService.debug(`[NativeChatEditorPane#${this._paneId}] onSelectAgent (dropdown): agentId=${agentId} _currentAgentId=${this._currentAgentId}`);
-			this._selectAndLoadAgent(agentId, { force: true });
-		},
-			onChangeMode: (mode: ChatMode) => {
-				this._currentChatMode = mode;
-				// Persist the chat mode so it survives reloads.
-				try { localStorage.setItem('agentChatMode', mode); } catch { /* ignore */ }
+			onSelectAgent: (agentId: string) => {
+				this._logService.debug(`[NativeChatEditorPane#${this._paneId}] onSelectAgent (dropdown): agentId=${agentId} _currentAgentId=${this._currentAgentId}`);
+				this._selectAndLoadAgent(agentId, { force: true });
+			},
+			onToggleChatOnly: (chatOnly: boolean) => {
+				this._currentChatOnly = chatOnly;
+				this._saveInputAreaState();
 			},
 			onOpenSettings: async () => {
 				// Open agent settings page (refer to AgentChat.tsx settings button)
@@ -453,72 +550,72 @@ export class NativeChatEditorPane extends EditorPane {
 						return;
 					}
 					const input = new AgentSettingsEditorInput(agent.id, agent.name);
-					await this.group.openEditor(input, { pinned: true });
+					await this._editorService.openEditor(input, { pinned: true });
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] onOpenSettings failed:', err);
 				}
 			},
 			onListSkills: () => {
-			return this._skillRegistry.getSkills().map(s => ({
-				id: s.id,
-				name: s.name ?? s.id,
-				description: s.description ?? '',
-				activation: s.activation,
-				source: s.source,
-				version: s.version,
-				enabled: s.enabled,
-				category: s.category,
-			}));
-		},
-		onListMcpServers: () => {
-			// 从 IMcpService 获取 MCP 服务器列表
-			const servers = this._mcpService.servers.get();
-			return servers.map(server => ({
-				name: server.definition.label,
-				status: server.connectionState.get().state === 2 ? 'connected' : // McpConnectionState.Kind.Running = 2
-					server.connectionState.get().state === 1 ? 'starting' :
-					server.connectionState.get().state === 3 ? 'error' : 'stopped',
-				toolCount: server.tools.get().length,
-			}));
-		},
-		onOpenMcpSettings: () => {
-			// 打开 VS Code 原生 MCP 设置界面
-			this._commandService.executeCommand('workbench.action.openSettings', 'mcp').catch(err => {
-				this._logService.error('[NativeChatEditorPane] onOpenMcpSettings failed:', err);
-			});
-		},
-		onGetAgentSkills: () => {
-			return this._currentAgentSkills;
-		},
-		onAddSkill: async (skillId: string) => {
-			if (!this._currentAgentId) { return; }
-			if (this._currentAgentSkills.includes(skillId)) { return; }
-			const newSkills = [...this._currentAgentSkills, skillId];
-			await this._agentStudioService.updateAgent(this._currentAgentId, { skills: newSkills } as any);
-			this._currentAgentSkills = newSkills;
-		},
-		onRemoveSkill: async (skillId: string) => {
-			if (!this._currentAgentId) { return; }
-			const newSkills = this._currentAgentSkills.filter(s => s !== skillId);
-			await this._agentStudioService.updateAgent(this._currentAgentId, { skills: newSkills } as any);
-			this._currentAgentSkills = newSkills;
-		},
-		onOpenHtmlPreview: () => {
-			// 打开 agent 的 config.html 文件（检查并创建默认文件，用文本编辑器打开）
-			if (!this._currentAgentId) {
-				this._logService.info('[NativeChatEditorPane] onOpenHtmlPreview: no agent selected');
-				return;
-			}
-			(async () => {
-				try {
-					const agentId = this._currentAgentId!;
-					const agentDir = await this._agentStudioService.getAgentDir(agentId);
-					const configHtmlUri = URI.joinPath(agentDir, 'config.html');
+				return this._skillRegistry.getSkills().map(s => ({
+					id: s.id,
+					name: s.name ?? s.id,
+					description: s.description ?? '',
+					activation: s.activation,
+					source: s.source,
+					version: s.version,
+					enabled: s.enabled,
+					category: s.category,
+				}));
+			},
+			onListMcpServers: () => {
+				// 从 IMcpService 获取 MCP 服务器列表
+				const servers = this._mcpService.servers.get();
+				return servers.map(server => ({
+					name: server.definition.label,
+					status: server.connectionState.get().state === 2 ? 'connected' : // McpConnectionState.Kind.Running = 2
+						server.connectionState.get().state === 1 ? 'starting' :
+							server.connectionState.get().state === 3 ? 'error' : 'stopped',
+					toolCount: server.tools.get().length,
+				}));
+			},
+			onOpenMcpSettings: () => {
+				// 打开 VS Code 原生 MCP 设置界面
+				this._commandService.executeCommand('workbench.action.openSettings', 'mcp').catch(err => {
+					this._logService.error('[NativeChatEditorPane] onOpenMcpSettings failed:', err);
+				});
+			},
+			onGetAgentSkills: () => {
+				return this._currentAgentSkills;
+			},
+			onAddSkill: async (skillId: string) => {
+				if (!this._currentAgentId) { return; }
+				if (this._currentAgentSkills.includes(skillId)) { return; }
+				const newSkills = [...this._currentAgentSkills, skillId];
+				await this._agentStudioService.updateAgent(this._currentAgentId, { skills: newSkills } as any);
+				this._currentAgentSkills = newSkills;
+			},
+			onRemoveSkill: async (skillId: string) => {
+				if (!this._currentAgentId) { return; }
+				const newSkills = this._currentAgentSkills.filter(s => s !== skillId);
+				await this._agentStudioService.updateAgent(this._currentAgentId, { skills: newSkills } as any);
+				this._currentAgentSkills = newSkills;
+			},
+			onOpenHtmlPreview: () => {
+				// 打开 agent 的 config.html 文件（检查并创建默认文件，用文本编辑器打开）
+				if (!this._currentAgentId) {
+					this._logService.info('[NativeChatEditorPane] onOpenHtmlPreview: no agent selected');
+					return;
+				}
+				(async () => {
+					try {
+						const agentId = this._currentAgentId!;
+						const agentDir = await this._agentStudioService.getAgentDir(agentId);
+						const configHtmlUri = URI.joinPath(agentDir, 'config.html');
 
-					// 检查 config.html 是否存在，不存在则创建默认文件
-					if (!(await this._fileService.exists(configHtmlUri))) {
-						const safeName = agentId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-						const defaultHtml = `<!DOCTYPE html>
+						// 检查 config.html 是否存在，不存在则创建默认文件
+						if (!(await this._fileService.exists(configHtmlUri))) {
+							const safeName = agentId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+							const defaultHtml = `<!DOCTYPE html>
 <html lang="zh-CN" data-template-edit-mode="slots">
 <head>
 <meta charset="utf-8" />
@@ -560,40 +657,44 @@ export class NativeChatEditorPane extends EditorPane {
 </body>
 </html>
 `;
-						await this._fileService.createFolder(agentDir);
-						await this._fileService.writeFile(configHtmlUri, VSBuffer.fromString(defaultHtml));
-						this._logService.info(`[NativeChatEditorPane] Created default config.html for agent ${agentId}`);
-					}
+							await this._fileService.createFolder(agentDir);
+							await this._fileService.writeFile(configHtmlUri, VSBuffer.fromString(defaultHtml));
+							this._logService.info(`[NativeChatEditorPane] Created default config.html for agent ${agentId}`);
+						}
 
-					// 在中心（中间栏）的文本编辑器中打开 config.html
-					// GroupsOrder.GRID_APPEARANCE[0] 对应中间栏主编辑器组
-					const centerGroup = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE)[0];
-					await this._editorService.openEditor({ resource: configHtmlUri }, centerGroup);
-					this._logService.info(`[NativeChatEditorPane] Opened config.html for agent ${agentId} in center editor group`);
-				} catch (err) {
-					this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview failed:', err);
-				}
-			})();
-		},
+						// 在中心（中间栏）的文本编辑器中打开 config.html
+						// GroupsOrder.GRID_APPEARANCE[0] 对应中间栏主编辑器组
+						const centerGroup = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE)[0];
+						await this._editorService.openEditor({ resource: configHtmlUri }, centerGroup);
+						this._logService.info(`[NativeChatEditorPane] Opened config.html for agent ${agentId} in center editor group`);
+					} catch (err) {
+						this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview failed:', err);
+					}
+				})();
+			},
 			onNewSession: async () => {
 				// Create a new session for the current agent
 				if (!this._currentAgentId) {
 					this._logService.info('[NativeChatEditorPane] onNewSession: no agent selected');
 					return;
 				}
-				try {
-					const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
-					this._currentSessionId = session.id;
+			try {
+				// 保存旧 session 的输入框草稿（await 之前，此时 composer 内容仍属于旧 session）
+				this._saveComposerDraft();
+				const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
+				this._currentSessionId = session.id;
 					this._logService.debug(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
-					// 持久化 session 到 input（拖拽到新 group 时恢复用）
+					// 持久化 session 到 input（拖拽到新 group 时恢复用），标题格式: agentName (sessionName)
 					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
-						this.input.setAgentInfo(this.input.name, this._currentAgentId, session.id);
+						this.input.setAgentInfo(this.input.name, this._currentAgentId, session.id, session.name);
 					}
 					this._logService.debug(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
-					// Clear messages in UI
-					this._chatPanel?.setMessages([]);
-					// 新会话无压缩历史 → 重置压缩基线
-					this._restoreCompactedBaseline();
+				// Clear messages in UI
+				this._chatPanel?.setMessages([]);
+				// 新 session 无草稿 → 清空输入框（per-session 隔离）
+				this._restoreComposerDraft();
+				// 新会话无压缩历史 → 重置压缩基线
+				this._restoreCompactedBaseline();
 					// New session has no checkpoints yet — reset bar & scope checkpoints to it.
 					this._activateCheckpointSession(this._currentAgentId, session.id);
 					// Refresh session list
@@ -608,22 +709,32 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.info('[NativeChatEditorPane] onOpenSession: no agent selected');
 					return;
 				}
-				const agentId = this._currentAgentId;
-				try {
-					this._currentSessionId = sessionId;
-					this._logService.debug(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
+			const agentId = this._currentAgentId;
+			try {
+				// 保存旧 session 草稿 → 切换 → 恢复目标 session 草稿
+				this._saveComposerDraft();
+				this._currentSessionId = sessionId;
+				this._logService.debug(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
+					// 查找 session name 以正确格式化 Tab 标题: agentName (sessionName)
+					let sessionName: string | undefined;
+					try {
+						const sessions = await this._chatService.listAgentSessions(agentId);
+						sessionName = sessions.find(s => s.id === sessionId)?.name;
+					} catch { /* lookup failure → fall through without sessionName */ }
 					// 持久化 session 到 input（拖拽到新 group 时恢复用）
 					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
-						this.input.setAgentInfo(this.input.name, this._currentAgentId, sessionId);
+						this.input.setAgentInfo(this.input.name, agentId, sessionId, sessionName);
 					}
-					const history = await this._chatService.getHistory(agentId, sessionId);
-					this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
-					// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
-					this._restoreCompactedBaseline();
-					// Scope checkpoints to the newly opened session & refresh the bar.
-					this._activateCheckpointSession(agentId, sessionId);
-				} catch (err) {
-					this._logService.error('[NativeChatEditorPane] onOpenSession failed:', err);
+				const history = await this._chatService.getHistory(agentId, sessionId);
+				this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+				// 恢复目标 session 的输入框草稿（无草稿则清空）
+				this._restoreComposerDraft();
+				// 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）
+				this._restoreCompactedBaseline();
+				// Scope checkpoints to the newly opened session & refresh the bar.
+				this._activateCheckpointSession(agentId, sessionId);
+			} catch (err) {
+				this._logService.error('[NativeChatEditorPane] onOpenSession failed:', err);
 					this._chatPanel?.setMessages([]);
 				}
 			},
@@ -646,8 +757,10 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 				const agentId = this._currentAgentId;
 				try {
-					await this._chatService.deleteAgentSession(agentId, sessionId);
-					this._logService.debug(`[NativeChatEditorPane] onDeleteSession: deleted session ${sessionId}`);
+				await this._chatService.deleteAgentSession(agentId, sessionId);
+				this._logService.debug(`[NativeChatEditorPane] onDeleteSession: deleted session ${sessionId}`);
+				// 清理被删 session 的输入框草稿
+				try { localStorage.removeItem(this._composerDraftKey(agentId, sessionId)); } catch { /* ignore */ }
 					// If the deleted session is the current one, switch to the most recent
 					// remaining session (or clear the view) and reload history + checkpoints.
 					if (this._currentSessionId === sessionId) {
@@ -657,13 +770,14 @@ export class NativeChatEditorPane extends EditorPane {
 							if (this.input instanceof NativeChatEditorInput) {
 								this.input.setAgentInfo(this.input.name, agentId, sessions[0].id);
 							}
-							try {
-								const history = await this._chatService.getHistory(agentId, this._currentSessionId);
-								this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
-							} catch {
-								this._chatPanel?.setMessages([]);
-							}
-							this._activateCheckpointSession(agentId, this._currentSessionId);
+						try {
+							const history = await this._chatService.getHistory(agentId, this._currentSessionId);
+							this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+						} catch {
+							this._chatPanel?.setMessages([]);
+						}
+						this._restoreComposerDraft();
+						this._activateCheckpointSession(agentId, this._currentSessionId);
 					} else {
 						this._currentSessionId = null;
 						if (this.input instanceof NativeChatEditorInput) {
@@ -671,6 +785,8 @@ export class NativeChatEditorPane extends EditorPane {
 						}
 						this._chatPanel?.setMessages([]);
 						this._chatPanel?.setCheckpoint(null);
+						// 无 session → 清空输入框草稿显示
+						this._restoreComposerDraft();
 					}
 					}
 					await this._refreshSessionList();
@@ -683,25 +799,29 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.info('[NativeChatEditorPane] onForkSession: no agent selected');
 					return;
 				}
-				const agentId = this._currentAgentId;
-				try {
-					const meta = await this._chatService.forkAgentSession(agentId, sessionId);
+			const agentId = this._currentAgentId;
+			try {
+				// 保存旧 session 草稿（await fork 之前）
+				this._saveComposerDraft();
+				const meta = await this._chatService.forkAgentSession(agentId, sessionId);
 					this._logService.debug(`[NativeChatEditorPane] onForkSession: forked ${sessionId} → ${meta.id} ("${meta.name}")`);
 					// 切换到新分叉出的独立会话（丢弃外部 provider 线程，可安全发散）
 					this._currentSessionId = meta.id;
 					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
 						this.input.setAgentInfo(this.input.name, agentId, meta.id);
 					}
-					try {
-						const history = await this._chatService.getHistory(agentId, meta.id);
-						this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
-					} catch {
-						this._chatPanel?.setMessages([]);
-					}
-					this._activateCheckpointSession(agentId, meta.id);
-					await this._refreshSessionList();
-				} catch (err) {
-					this._logService.error('[NativeChatEditorPane] onForkSession failed:', err);
+				try {
+					const history = await this._chatService.getHistory(agentId, meta.id);
+					this._chatPanel?.setMessages(this._adaptHistoryMessages(history));
+				} catch {
+					this._chatPanel?.setMessages([]);
+				}
+				// fork 出的新 session 无草稿 → 清空输入框
+				this._restoreComposerDraft();
+				this._activateCheckpointSession(agentId, meta.id);
+				await this._refreshSessionList();
+			} catch (err) {
+				this._logService.error('[NativeChatEditorPane] onForkSession failed:', err);
 				}
 			},
 			// Orchestration plan callbacks
@@ -851,6 +971,7 @@ export class NativeChatEditorPane extends EditorPane {
 					modelId: cur?.modelId ?? '',
 					agentId: cur?.agentId,
 				});
+				this._saveInputAreaState();
 				void this._refreshModelSelector();
 			},
 			onSelectModel: (modelId: string) => {
@@ -861,6 +982,7 @@ export class NativeChatEditorPane extends EditorPane {
 					modelId,
 					agentId: cur.agentId,
 				});
+				this._saveInputAreaState();
 				void this._refreshModelSelector();
 			},
 			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => {
@@ -902,7 +1024,7 @@ export class NativeChatEditorPane extends EditorPane {
 				} else if (ref?.kind === 'file' || ref?.kind === 'code' || ref?.kind === 'symbol') {
 					const filePath = ref.uri || ref.name;
 					if (filePath) {
-						void this._openFileInEditor(filePath, ref.range?.startLine);
+						void this._editorIntegration?.openFileInEditor(filePath, ref.range?.startLine);
 					}
 				}
 			},
@@ -916,7 +1038,7 @@ export class NativeChatEditorPane extends EditorPane {
 				// hiding the tip card internally; no host-side persistence needed.
 			},
 			onApplyCode: (code: string, language: string, filePath?: string) => {
-				void this._handleApplyCode(code, language, filePath);
+				void this._editorIntegration?.handleApplyCode(code, language, filePath);
 			},
 			onSubmitVariables: (executionId: string, values: Record<string, string>) => {
 				this._logService.debug('[NativeChatEditorPane] onSubmitVariables:', executionId, values);
@@ -924,35 +1046,46 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.error('[NativeChatEditorPane] Failed to submit variables:', err);
 				});
 			},
-			onOpenFile: (filePath: string, content?: string) => {
-				if (content) {
+			onOpenFile: (filePath: string, contentOrLine?: string | number) => {
+				if (typeof contentOrLine === 'string') {
 					// 纯内容附件（如 Console Logs）— 在 untitled 编辑器中显示
 					this._editorService.openEditor({
 						resource: URI.from({ scheme: 'untitled', path: filePath }),
-						contents: content,
+						contents: contentOrLine,
 					}).catch(err => {
 						this._logService.error('[NativeChatEditorPane] onOpenFile: failed to open content:', err);
 					});
+				} else if (typeof contentOrLine === 'number' && contentOrLine > 0) {
+					// 行号跳转 — 在编辑器中打开文件并跳转到指定行
+					void this._editorIntegration?.openFileInEditor(filePath, contentOrLine);
 				} else {
 					// 真实文件路径 — 在编辑器中打开文件
-					void this._openFileInEditor(filePath);
+					void this._editorIntegration?.openFileInEditor(filePath);
 				}
 			},
 			// P0-2: @mention 文件搜索
 			onSearchFiles: async (query: string): Promise<Array<{ path: string; name: string }>> => {
-				return this._searchWorkspaceFiles(query);
+				return this._editorIntegration?.searchWorkspaceFiles(query) ?? [];
+			},
+			// 输入框草稿 per-session 持久化（panel input 事件 → debounce 落盘）
+			onComposerTextChange: () => {
+				this._scheduleSaveComposerDraft();
 			},
 			// P0-2: @提及文件选择后添加为上下文
 			onAddFileContext: (filePath: string) => {
-				void this._addFileContextToChat(filePath);
+				void this._editorIntegration?.addFileContextToChat(filePath);
+			},
+			// 通用命令执行（用于工具卡片中的特殊按钮，例如 Mermaid 预览）
+			onExecuteCommand: (commandId: string, ...args: unknown[]) => {
+				return this._commandService.executeCommand(commandId, ...args);
 			},
 			// P1-1: 终端运行代码
 			onRunInTerminal: (code: string) => {
-				void this._runInTerminal(code);
+				void this._editorIntegration?.runInTerminal(code);
 			},
 			// P1-3: 添加编辑器选中代码到聊天
 			onAddSelectionToChat: () => {
-				void this._addEditorSelectionToChat();
+				void this._editorIntegration?.addEditorSelectionToChat();
 			},
 			onOpenLink: (url: string) => {
 				// 其他 http(s) 链接在编辑器区域（webview iframe）中打开
@@ -963,15 +1096,34 @@ export class NativeChatEditorPane extends EditorPane {
 			},
 			/** 收藏 LLM 消息到知识库，自动归类 */
 			onFavoriteMessage: (messageContent: string) => {
-				void this._handleFavoriteMessage(messageContent);
+				void this._kbImport?.handleFavoriteMessage(messageContent, this._currentAgentId ?? null);
 			},
 			/** P2: footer 复制按钮右侧的「导入知识库」按钮 —— 走与 onFavoriteMessage 同一份管线 */
-			onImportToKnowledgeBase: (messageContent: string) => {
-				void this._handleFavoriteMessage(messageContent);
+			onImportToKnowledgeBase: (messageContent: string, messageId: string): Promise<boolean> =>
+				createKbImportHandler(
+					this._kbImport,
+					() => this._currentAgentId ?? null,
+					this._chatPanelImportedIds,
+				)(messageContent, messageId),
+			/** write_file 工具卡片「导入知识库」：读取文件内容 → 入口(落盘到库)+抽取(构建笔记) */
+			onImportFileToKnowledgeBase: async (filePath: string, toolId?: string): Promise<boolean> => {
+				if (!this._kbImport) { return false; }
+				try {
+					const uri = URI.file(filePath);
+					if (!(await this._fileService.exists(uri))) {
+						this._logService.warn(`[NativeChatEditorPane] import-to-kb skipped, file not found: ${filePath}`);
+						return false;
+					}
+				const text = (await this._fileService.readFile(uri)).value.toString();
+				return await this._kbImport.importContentAndBuild(text, this._currentAgentId ?? null, undefined, uri);
+				} catch (err) {
+					this._logService.error(`[NativeChatEditorPane] import file to KB failed: ${filePath}`, err);
+					return false;
+				}
 			},
 			/** P2: footer 导入知识库按钮右侧的「沉淀技能」按钮 —— 提取消息为 SKILL.md */
 			onExtractSkill: (messageContent: string) => {
-				void this._handleExtractSkill(messageContent);
+				void this._skillExtract?.handleExtractSkill(messageContent);
 			},
 			// ── Channel 绑定（飞书）—— 对齐 AgentSettingsEditorPane ──
 			onListFeishuBindings: () => {
@@ -1088,6 +1240,15 @@ export class NativeChatEditorPane extends EditorPane {
 		}));
 		this._register({ dispose: () => { if (modelSelectorTimer) { clearTimeout(modelSelectorTimer); } } });
 
+		// 监听自定义 Provider 设置变化：用户在设置页/侧边栏添加 Provider 后，
+		// 主进程 reconcile 链路可能因时序问题未及时触发 onDidChangeAvailableModels，
+		// 这里直接监听配置键兜底刷新模型选择器，确保聊天框 Provider 下拉立即可见。
+		this._register(this._configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('sessions.agentStudio.provider.customProviders')) {
+				debouncedRefreshModelSelector();
+			}
+		}));
+
 		// Listen for agent selection from agentStudio webview/external sources
 		// 多实例核心修复：仅在 pane 首次初始化且无 agent 时响应全局 onDidSelectAgent。
 		// 已有 agent 的 pane 忽略全局事件——agent 切换通过自己的 dropdown 回调
@@ -1118,82 +1279,131 @@ export class NativeChatEditorPane extends EditorPane {
 		//   - text/thinking/tool_*/usage/phase_change → 通过 _handleStreamDelta 实时更新 UI
 		//   - done → finalize + _resetStreamingMessage() + 延迟 reload history
 		//   - error → finalize + setSending(false) + reset
-	this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }) => {
-		if (agentId !== this._currentAgentId) { return; }
-		if (!this._chatPanel) { return; }
-		if (!delta) { return; }
+		this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }) => {
+			if (agentId !== this._currentAgentId) { return; }
+			if (!this._chatPanel) { return; }
+			if (!delta) { return; }
 
-		// 面板自身发送时，回调已处理，跳过（避免 race condition 和双重处理）
-		if (this._isSending && !this._isExternalSend) { return; }
+			// 面板自身发送时，回调已处理，跳过（避免 race condition 和双重处理）
+			if (this._isSending && !this._isExternalSend) { return; }
 
-		if (delta.type === 'done') {
-			// 外部发送最终结束（整个 agent loop 完成）— finalize + 重置状态。
-			// 注意：此 done 来自 agentChatService for-await 退出后的广播，
-			// 不是 turn 级别的 done（turn done 不广播给外部监听器）。
-			if (this._isExternalSend) {
-				// 解除共享 Claim：释放本 pane 对该 session 外部流的独占权。
-				const claimKey = sessionId || `__nosession_${agentId}`;
-				NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
+			if (delta.type === 'done') {
+				// 外部发送最终结束（整个 agent loop 完成）— finalize + 重置状态。
+				// 注意：此 done 来自 agentChatService for-await 退出后的广播，
+				// 不是 turn 级别的 done（turn done 不广播给外部监听器）。
+				if (this._isExternalSend) {
+					// 解除共享 Claim：释放本 pane 对该 session 外部流的独占权。
+					const claimKey = sessionId || `__nosession_${agentId}`;
+					NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
 
-				this._handleStreamDelta(delta); // finalize assistant msg（不 reset）
-				this._resetStreamingMessage(); // 清理流式状态
-				this._applyStreamPhase('idle');
-				this._chatPanel.setSending(false);
-				this._isSending = false;
-				this._isExternalSend = false;
-				this._taskExecutingSessionId = null;
-				// 标记外部发送刚完成 — onDidChangeTaskBoard 跳过后续 reload 避免闪烁。
-				// 流式 UI 已正确显示所有内容，全量 setMessages 会覆盖导致闪烁。
-				this._externalSendJustFinished = true;
-			}
-			// 本地发送时 done 不做处理 — 由 _sendMessageInternal await 返回后统一收尾
-		} else if (delta.type === 'error') {
-			// 外部发送出错 — 解除共享 Claim，防止该 session 的权限被永久占住。
-			// _handleStreamDelta 内部会设置 _isExternalSend=false（见 line ~1822），
-			// 但共享集合需在此处清理（有 sessionId/agentId 上下文）。
-			if (this._isExternalSend) {
-				const claimKey = sessionId || `__nosession_${agentId}`;
-				NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
-			}
-			this._handleStreamDelta(delta);
-		} else {
-			// 首个非 done delta → 外部发送开始：初始化流式消息 + 标记外部发送
-			if (!this._isSending) {
-				// 修复多窗口并行场景下的 Pane 劫持问题：
-				// 当两个 pane 打开同一 agent 时，看板任务执行会广播 delta 到所有 pane，
-				// 导致 idle 的 pane 被意外切换到任务 session。用共享静态集合做跨 pane 协调：
-				// 如果已有另一个 pane（包括本 pane）claim 了该 session 的外部流，则跳过。
-				// 与 _activeTurns 取消键（agentId::sessionId）不同，此处 session 是 delta
-				// 事件的 sessionId，不含 agentId 前缀，直接匹配。
-				const externalClaimKey = sessionId || `__nosession_${agentId}`;
-				if (NativeChatEditorPane._sharedExternalSendSessions.has(externalClaimKey)) {
-					// 另一个 pane 已经接管了这个外部 session 的流式渲染，跳过。
-					return;
+					this._handleStreamDelta(delta); // finalize assistant msg（不 reset）
+					this._resetStreamingMessage(); // 清理流式状态
+					this._applyStreamPhase('idle');
+					this._chatPanel.setSending(false);
+					this._isSending = false;
+					this._isExternalSend = false;
+					this._taskExecutingSessionId = null;
+					// 标记外部发送刚完成 — onDidChangeTaskBoard 跳过后续 reload 避免闪烁。
+					// 流式 UI 已正确显示所有内容，全量 setMessages 会覆盖导致闪烁。
+					this._externalSendJustFinished = true;
 				}
-				NativeChatEditorPane._sharedExternalSendSessions.add(externalClaimKey);
-
-				// If the delta belongs to a different session than what's
-				// currently loaded in the panel, switch to that session first.
-				// This happens when executeTaskForBoard creates a new session
-				// for the task execution (P2-14: per-task sessions).
-				if (sessionId && this._currentSessionId !== sessionId) {
-					console.info(`[NativeChatEditorPane] External delta for different session: current=${this._currentSessionId} delta=${sessionId}, switching...`);
-					this._currentSessionId = sessionId;
-					if (this.input instanceof NativeChatEditorInput) {
-						this.input.setAgentInfo(this.input.name, agentId, sessionId);
+				// 本地发送时 done 不做处理 — 由 _sendMessageInternal await 返回后统一收尾
+			} else if (delta.type === 'error') {
+				// 外部发送出错 — 解除共享 Claim，防止该 session 的权限被永久占住。
+				// _handleStreamDelta 内部会设置 _isExternalSend=false（见 line ~1822），
+				// 但共享集合需在此处清理（有 sessionId/agentId 上下文）。
+				if (this._isExternalSend) {
+					const claimKey = sessionId || `__nosession_${agentId}`;
+					NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
+				}
+				this._handleStreamDelta(delta);
+			} else {
+				// 首个非 done delta → 外部发送开始：初始化流式消息 + 标记外部发送
+				if (!this._isSending) {
+					// 防止本地发送 error/done 后，_isSending 已被重置为 false，
+					// 后续 memory_writing 等广播 delta 误触发二次 _initStreamingMessage 导致空气泡。
+					if (this._localSendDone) { return; }
+					// 修复多窗口并行场景下的 Pane 劫持问题：
+					// 当两个 pane 打开同一 agent 时，看板任务执行会广播 delta 到所有 pane，
+					// 导致 idle 的 pane 被意外切换到任务 session。用共享静态集合做跨 pane 协调：
+					// 如果已有另一个 pane（包括本 pane）claim 了该 session 的外部流，则跳过。
+					// 与 _activeTurns 取消键（agentId::sessionId）不同，此处 session 是 delta
+					// 事件的 sessionId，不含 agentId 前缀，直接匹配。
+					const externalClaimKey = sessionId || `__nosession_${agentId}`;
+					if (NativeChatEditorPane._sharedExternalSendSessions.has(externalClaimKey)) {
+						// 另一个 pane 已经接管了这个外部 session 的流式渲染，跳过。
+						return;
 					}
-					this._activateCheckpointSession(agentId, sessionId);
+					NativeChatEditorPane._sharedExternalSendSessions.add(externalClaimKey);
+
+					// If the delta belongs to a different session than what's
+					// currently loaded in the panel, switch to that session first.
+					// This happens when executeTaskForBoard creates a new session
+					// for the task execution (P2-14: per-task sessions).
+					if (sessionId && this._currentSessionId !== sessionId) {
+						console.info(`[NativeChatEditorPane] External delta for different session: current=${this._currentSessionId} delta=${sessionId}, switching...`);
+						this._currentSessionId = sessionId;
+						if (this.input instanceof NativeChatEditorInput) {
+							this.input.setAgentInfo(this.input.name, agentId, sessionId);
+						}
+						this._activateCheckpointSession(agentId, sessionId);
+					}
+					this._isSending = true;
+					this._isExternalSend = true;
+					this._taskExecutingSessionId = this._currentSessionId;
+					this._chatPanel.setSending(true);
+					this._initStreamingMessage();
 				}
-				this._isSending = true;
-				this._isExternalSend = true;
-				this._taskExecutingSessionId = this._currentSessionId;
-				this._chatPanel.setSending(true);
-				this._initStreamingMessage();
+				// 走与本地发送完全相同的 delta 处理路径（流式文本/工具/记忆/usage 全部生效）
+				this._handleStreamDelta(delta);
 			}
-			// 走与本地发送完全相同的 delta 处理路径（流式文本/工具/记忆/usage 全部生效）
-			this._handleStreamDelta(delta);
-		}
-	}));
+		}));
+
+		// P0/Bug2: 订阅 subagent 流式旁路总线 —— plan_explore 执行期间实时推送
+		// subagent 的 toolTraces/progress/output 快照，使卡片中间显示流式执行过程，
+		// 而非等 subagent_batch 完成后才一次性渲染。按 subAgent.id upsert（幂等）。
+		// P2: 添加 throttle 批量更新（50ms 合并多次 SubAgentEvent），防止高频 DOM 操作导致卡顿。
+		let _subAgentTraceThrottleTimer: ReturnType<typeof setTimeout> | undefined;
+		let _subAgentTracePendingData: any[] | undefined;
+	this._register(this._agentOSService.onDidSubAgentTrace((snapshot) => {
+		if (!this._chatPanel) { return; }
+		// 流式记录：subagent 旁路总线快照（与主流 delta 同一文件，便于完整回放）
+		this._streamRecorder?.record({ type: 'subagent_trace', groupId: snapshot?.groupId, subagentData: snapshot?.subagentData });
+		const assistantId = this._streamingAssistantId;
+		const assistantMsg = this._streamingAssistantMsg;
+		if (!assistantId || !assistantMsg) { return; }
+		const saData = snapshot?.subagentData as any[] | undefined;
+		if (!saData || saData.length === 0) { return; }
+
+			// 累积最新数据（last-write-wins，throttle 时总是用最新快照）
+			_subAgentTracePendingData = saData;
+
+			if (_subAgentTraceThrottleTimer !== undefined) { return; } // 已有定时器，数据已累积
+
+			_subAgentTraceThrottleTimer = setTimeout(() => {
+				_subAgentTraceThrottleTimer = undefined;
+				const pendingData = _subAgentTracePendingData;
+				_subAgentTracePendingData = undefined;
+				if (!pendingData || !this._chatPanel) { return; }
+				const asstId = this._streamingAssistantId;
+				const asstMsg = this._streamingAssistantMsg;
+				if (!asstId || !asstMsg) { return; }
+
+				const merged = new Map<string, any>((asstMsg.subAgents ?? []).map((s: any) => [s.id, s]));
+				for (const sa of pendingData) { if (sa?.id) { merged.set(sa.id, sa); } }
+				asstMsg.subAgents = [...merged.values()];
+				// 将 subagent 数据附加到各自对应的父 delegate_task/plan_explore 工具卡。
+				this._remapAndAttachSubAgents(asstMsg);
+			// 仅传 subAgents（不带 isStreaming）：走 panel 的轻量原地重建路径
+			// _updateSubAgentCardsInPlace（只重建含 subAgents 的工具卡）。
+			// 若带 isStreaming:true 会落入 isCritical 全量重建——每次 trace 快照
+			// （100ms flush × 多子代理并行）都重渲染 markdown 全文 + 全部卡片，
+			// 一次会话 273 次快照致渲染线程饱和卡死（2026-07-25）。
+			this._chatPanel.updateMessage(asstId, {
+				subAgents: asstMsg.subAgents,
+			});
+			}, 50);
+		}));
 
 		// Reload chat history when the task board changes and the current agent
 		// was assigned to a task that just completed (e.g. kanban-created task finished).
@@ -1297,6 +1507,40 @@ export class NativeChatEditorPane extends EditorPane {
 		this._workflowTrace = this._register(new WorkflowTraceController(
 			this._workflowExecutionService, this._chatService, this._logService,
 		));
+		// KB import controller — encapsulates "import to knowledge base" feature
+		this._kbImport = this._register(new KbImportController(
+			this._configurationService, this._logService, this._fileService, this._envService,
+			this._storageService, this._agentStudioService,
+			this._viewsService, this._editorService, this._notificationService,
+			this._requestService,
+		));
+
+		// Skill extraction controller — encapsulates "save skill" feature (host bridges pane state)
+		this._skillExtract = this._register(new SkillExtractionController(
+			this._notificationService, this._modelSelector, this._agentStudioService, this._fileService,
+			this._logService, this._skillRegistry, this._agentOSService, this._envService,
+			{
+				getCurrentAgentId: () => this._currentAgentId,
+				setCurrentAgentSkills: (skills) => { this._currentAgentSkills = skills; },
+				refreshMemoryDetailPane: async () => {
+					try {
+						const activePane = this._editorService.activeEditorPane;
+						if (activePane instanceof MemoryDetailEditorPane) {
+							await (activePane as MemoryDetailEditorPane).refreshCurrentView();
+						}
+					} catch { /* best-effort */ }
+				},
+			},
+		));
+
+		// Chat editor integration controller — file/code/terminal helpers
+		this._editorIntegration = this._register(new ChatEditorIntegration(
+			this._logService, this._fileService, this._commandService,
+			this._editorService, this._editorGroupsService, this._modelService,
+			this._workspaceContextService,
+			{ getChatPanel: () => this._chatPanel ?? null },
+		));
+
 		const pane = this;
 		this._workflowTrace.start({
 			get chatPanel() { return pane._chatPanel; },
@@ -1412,13 +1656,13 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: gen=${gen} superseded by gen=${this._loadGeneration}, discarding`);
 					return;
 				}
-			// 切换 agent 时重置外部发送状态 — 旧 agent 的 onDidStreamDelta('done')
-			// 不会再被此 pane 处理（agentId 不匹配），避免 _isSending 卡住。
-			// 同时解除共享 Claim，防止该 session 权限被永久泄漏。
-			if (this._currentAgentId && this._currentAgentId !== agentId && this._isExternalSend) {
-				const claimKey = this._taskExecutingSessionId || `__nosession_${this._currentAgentId}`;
-				NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
-				this._isSending = false;
+				// 切换 agent 时重置外部发送状态 — 旧 agent 的 onDidStreamDelta('done')
+				// 不会再被此 pane 处理（agentId 不匹配），避免 _isSending 卡住。
+				// 同时解除共享 Claim，防止该 session 权限被永久泄漏。
+				if (this._currentAgentId && this._currentAgentId !== agentId && this._isExternalSend) {
+					const claimKey = this._taskExecutingSessionId || `__nosession_${this._currentAgentId}`;
+					NativeChatEditorPane._sharedExternalSendSessions.delete(claimKey);
+					this._isSending = false;
 					this._isExternalSend = false;
 					this._chatPanel.setSending(false);
 				}
@@ -1438,36 +1682,37 @@ export class NativeChatEditorPane extends EditorPane {
 					model: emp.model,
 					provider: undefined,
 				});
-		// Auto-create or get active session for this agent
-			try {
-				// 窗口重载恢复：优先使用 input 上的 sessionId
-				const restoredSessionId = (this.input instanceof NativeChatEditorInput) ? this.input.sessionId : undefined;
-				let session: IAgentSessionMeta;
-				if (restoredSessionId) {
-					// 尝试查找恢复的 session
-					const allSessions = await this._chatService.listAgentSessions(agentId);
-					const restored = allSessions.find(s => s.id === restoredSessionId);
-					if (restored) {
-						session = restored;
-						this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: restored session ${session.id} from editor input`);
+				// Auto-create or get active session for this agent
+				try {
+					// 窗口重载恢复：优先使用 input 上的 sessionId
+					const restoredSessionId = (this.input instanceof NativeChatEditorInput) ? this.input.sessionId : undefined;
+					let session: IAgentSessionMeta;
+					if (restoredSessionId) {
+						// 尝试查找恢复的 session
+						const allSessions = await this._chatService.listAgentSessions(agentId);
+						const restored = allSessions.find(s => s.id === restoredSessionId);
+						if (restored) {
+							session = restored;
+							this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: restored session ${session.id} from editor input`);
+						} else {
+							session = await this._chatService.getOrCreateActiveSession(agentId);
+						}
 					} else {
+						this._logService.debug(`[NativeChatEditorPane][Init] calling getOrCreateActiveSession t=${(performance.now() - t0).toFixed(1)}ms`);
 						session = await this._chatService.getOrCreateActiveSession(agentId);
 					}
-				} else {
-					this._logService.debug(`[NativeChatEditorPane][Init] calling getOrCreateActiveSession t=${(performance.now() - t0).toFixed(1)}ms`);
-					session = await this._chatService.getOrCreateActiveSession(agentId);
-				}
 					// Race guard after async: discard if a newer load superseded this one.
 					if (gen !== this._loadGeneration) {
 						this._logService.info(`[NativeChatEditorPane] _selectAndLoadAgent: gen=${gen} superseded after getOrCreateActiveSession, discarding`);
 						return;
 					}
-				this._currentSessionId = session.id;
-				// 持久化 agentId + sessionId 到 input，窗口重载恢复时使用
-				if (this.input instanceof NativeChatEditorInput) {
-					this.input.setAgentInfo(emp.name, agentId, session.id);
-				}
-				this._logService.debug(`[NativeChatEditorPane][Init] getOrCreateActiveSession done session=${session.id} t=${(performance.now() - t0).toFixed(1)}ms`);
+					this._currentSessionId = session.id;
+					// 持久化 agentId + sessionId 到 input，窗口重载恢复时使用。
+					// 页签名称格式: agentName (sessionName)
+					if (this.input instanceof NativeChatEditorInput) {
+						this.input.setAgentInfo(emp.name, agentId, session.id, session.name);
+					}
+					this._logService.debug(`[NativeChatEditorPane][Init] getOrCreateActiveSession done session=${session.id} t=${(performance.now() - t0).toFixed(1)}ms`);
 
 					// Load history messages for this session
 					try {
@@ -1510,6 +1755,10 @@ export class NativeChatEditorPane extends EditorPane {
 				await this._loadWorktrees();
 				// Refresh chat-history panel
 				await this._refreshSessionList();
+				// Restore per-agent input area state (chatMode / provider / model / composer text)
+				// Called after setAgent + _refreshModelSelector so the panel DOM is ready.
+				await this._refreshModelSelector();
+				this._restoreInputAreaState();
 			}
 		} catch (err) {
 			this._logService.info('[NativeChatEditorPane] _selectAndLoadAgent failed:', err);
@@ -1535,6 +1784,121 @@ export class NativeChatEditorPane extends EditorPane {
 			localStorage.setItem(key, String(baseline));
 		} catch { /* localStorage may be unavailable */ }
 	}
+
+	// ─── Per-agent input area state persistence ──────────────────────────
+	// Persist chatMode / provider / model / composerText per agent so that
+	// switching agents or restarting the client restores the full input-area
+	// state. Uses localStorage with agent-scoped keys.
+
+	private _storageKey(baseKey: string): string {
+		return `${baseKey}:${this._currentAgentId ?? 'global'}`;
+	}
+
+// ─── Per-session composer draft persistence ──────────────────────────
+// 输入框草稿按 session 隔离（saros:composerText:{agentId}:{sessionId}）：
+// 切换 session 时保存旧草稿、恢复目标草稿（无草稿则清空输入框）；
+// 输入过程经 onComposerTextChange debounce 400ms 实时落盘。
+// chatOnly / provider / model 仍为 per-agent 偏好（见 _saveInputAreaState）。
+
+private _composerDraftTimer: number | null = null;
+
+private _composerDraftKey(agentId: string, sessionId: string): string {
+	return `${NativeChatEditorPane._STORAGE_COMPOSER_TEXT}:${agentId}:${sessionId}`;
+}
+
+/** 保存当前输入框草稿到指定 session（默认当前；空文本则清除 key）。 */
+private _saveComposerDraft(agentId = this._currentAgentId, sessionId = this._currentSessionId): void {
+	if (!agentId || !sessionId) { return; }
+	try {
+		const key = this._composerDraftKey(agentId, sessionId);
+		const text = this._chatPanel?.getComposerText?.() ?? '';
+		if (text.trim().length > 0) {
+			localStorage.setItem(key, text);
+		} else {
+			localStorage.removeItem(key);
+		}
+	} catch { /* localStorage may be unavailable */ }
+}
+
+/** 恢复当前 session 的输入框草稿；无草稿时清空输入框（per-session 隔离的核心）。
+ *  向后兼容：旧 per-agent key（无 sessionId 段）存在时迁移一次并删除。 */
+private _restoreComposerDraft(): void {
+	if (!this._currentAgentId || !this._chatPanel) { return; }
+	try {
+		let savedText: string | null = null;
+		if (this._currentSessionId) {
+			const key = this._composerDraftKey(this._currentAgentId, this._currentSessionId);
+			savedText = localStorage.getItem(key);
+			if (!savedText) {
+				const legacyKey = this._storageKey(NativeChatEditorPane._STORAGE_COMPOSER_TEXT);
+				const legacy = localStorage.getItem(legacyKey);
+				if (legacy) {
+					localStorage.setItem(key, legacy);
+					localStorage.removeItem(legacyKey);
+					savedText = legacy;
+				}
+			}
+		}
+		const text = savedText && savedText.trim().length > 0 ? savedText : '';
+		// deferred — _renderInputArea must have run first
+		requestAnimationFrame(() => {
+			this._chatPanel?.setComposerText?.(text);
+		});
+	} catch { /* localStorage may be unavailable */ }
+}
+
+/** 输入时 debounce 保存草稿（400ms），避免窗口关闭/崩溃丢失未发送内容。 */
+private _scheduleSaveComposerDraft(): void {
+	if (this._composerDraftTimer !== null) { clearTimeout(this._composerDraftTimer); }
+	this._composerDraftTimer = window.setTimeout(() => {
+		this._composerDraftTimer = null;
+		this._saveComposerDraft();
+	}, 400);
+}
+
+/** Save all input-area state for the current agent. */
+private _saveInputAreaState(): void {
+		if (!this._currentAgentId) { return; }
+		try {
+			localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_CHAT_ONLY), String(this._currentChatOnly));
+			const sel = this._modelSelector.getSelection();
+			if (sel?.providerId) {
+				localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER), sel.providerId);
+			}
+			if (sel?.modelId) {
+				localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_MODEL), sel.modelId);
+			}
+		// Composer 草稿按 session 隔离保存（per-session）
+		this._saveComposerDraft();
+	} catch { /* localStorage may be unavailable */ }
+}
+
+	/** Restore all input-area state for the current agent. Call after setAgent(). */
+	private _restoreInputAreaState(): void {
+		if (!this._currentAgentId || !this._chatPanel) { return; }
+		try {
+			// Restore chatOnly (default: false)
+			const savedChatOnly = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_CHAT_ONLY));
+			const chatOnly = savedChatOnly === 'true';
+			this._currentChatOnly = chatOnly;
+			this._chatPanel.setChatOnly(chatOnly);
+
+			// Restore provider + model: apply to IModelSelectorService so
+			// _refreshModelSelector picks it up naturally on next call.
+			const savedProvider = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER));
+			const savedModel = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_MODEL));
+			if (savedProvider && savedModel) {
+				this._modelSelector.setSelection({
+					providerId: savedProvider,
+					modelId: savedModel,
+					agentId: this._currentAgentId,
+				});
+			}
+
+		// Restore composer draft (per-session；无草稿时清空输入框)
+		this._restoreComposerDraft();
+	} catch { /* localStorage may be unavailable */ }
+}
 
 	/** 从 localStorage 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）。
 	 *  新会话或无压缩历史时清除基线，避免残留旧值。 */
@@ -1600,6 +1964,22 @@ export class NativeChatEditorPane extends EditorPane {
 	}
 
 	/**
+	 * 计算「用户已取消」最终内容：已有真实内容则追加提示，否则仅提示。
+	 * 幂等：若内容已含取消标记则原样返回，避免 onCancelExecution 立即更新
+	 * 与滞后到达的 done(canceled:true) 事件重复追加「用户已取消」。
+	 */
+	private _buildCanceledContent(assistantMsg: IAgentChatMessage): string {
+		const currentContent = assistantMsg.content || '';
+		const marker = '⚠️ 用户已取消';
+		if (currentContent.includes(marker)) {
+			return currentContent;
+		}
+		const hasRealContent = currentContent.trim().length > 0
+			&& !/^[\s\S]*?(正在思考|Thinking\.\.\.)$/m.test(currentContent.trim());
+		return hasRealContent ? currentContent + '\n\n' + marker : marker;
+	}
+
+	/**
 	 * 初始化流式 assistant 消息：创建带 isThinking=true 的占位消息并存入共享字段。
 	 * 由 _sendMessageInternal（本地发送）开始时和 onDidStreamDelta（外部发送）首个 delta 到达时调用。
 	 */
@@ -1610,16 +1990,28 @@ export class NativeChatEditorPane extends EditorPane {
 			id,
 			role: 'assistant',
 			content: '',
+			// P0: 跟踪文本→工具→文本的时间顺序，供 deriveUiMessageParts
+			// 在最终渲染时按实际出现顺序交插文本和工具卡片。
+			parts: [],
 			timestamp: Date.now(),
 			isStreaming: true,
 			isThinking: true,
 			streamPhase: 'llm_streaming',
 			turnId: `turn_${Date.now()}`,
 		};
-		this._chatPanel?.addMessage(msg);
-		this._streamingAssistantId = id;
-		this._streamingAssistantMsg = msg;
-	}
+	this._chatPanel?.addMessage(msg);
+	this._streamingAssistantId = id;
+	this._streamingAssistantMsg = msg;
+	// 新流式消息：重置当前 text 段起点
+	this._streamTextSegmentBase = 0;
+	// 流式记录：会话开始（未启用时零开销）
+	this._streamRecorder?.begin({
+		agentId: this._currentAgentId ?? 'unknown',
+		sessionId: this._currentSessionId ?? undefined,
+		chatId: this._currentInputChatId ?? undefined,
+		startedAt: Date.now(),
+	}, `p${this._paneId}`);
+}
 
 	/**
 	 * 清理流式状态：done/error 后调用，避免下次流式时残留旧引用。
@@ -1634,6 +2026,7 @@ export class NativeChatEditorPane extends EditorPane {
 		}
 		this._deltaBuffer = [];
 		this._lastFlushedTextContent = '';
+		this._streamTextSegmentBase = 0;
 	}
 
 	/**
@@ -1657,13 +2050,43 @@ export class NativeChatEditorPane extends EditorPane {
 	 * 1. 已通过 _initStreamingMessage() 初始化流式消息
 	 * 2. _isSending=true（按钮处于 stop 状态）
 	 */
-	private _handleStreamDelta(delta: any): void {
-		if (!delta) { return; }
+private _handleStreamDelta(delta: any): void {
+	if (!delta) { return; }
+
+	// 流式记录：原始 delta 落盘（缓冲合并前，保真）
+	this._streamRecorder?.record(delta);
+	if (delta.type === 'done' || delta.type === 'error') {
+		void this._streamRecorder?.end(delta.type);
+	}
+
+	// ═══ PerfDiag: delta 接收追踪 ═══
+		{
+			const now = Date.now();
+			if (!this._streamPerf) {
+				this._streamPerf = { startTime: now, deltaCount: 0, slowOps: [], totalTypes: {} as Record<string, number> };
+			}
+			const pf = this._streamPerf;
+			pf.deltaCount++;
+			pf.totalTypes[delta.type] = (pf.totalTypes[delta.type] || 0) + 1;
+			if (pf.deltaCount <= 10 || pf.deltaCount % 100 === 0) {
+				this._logService.trace(`[StreamPerf] delta #${pf.deltaCount} type=${delta.type} queue=${this._deltaBuffer.length} elapsed=${now - pf.startTime}ms`);
+			}
+		}
 
 		// done / error — 立即清空缓冲区后处理，保证 UI 即时响应
 		if (delta.type === 'done' || delta.type === 'error') {
 			this._flushDeltaBuffer();
 			this._processDelta(delta);
+			// ═══ PerfDiag: 流式结束汇总 ═══
+			if (this._streamPerf) {
+				const pf = this._streamPerf;
+				const totalElapsed = Date.now() - pf.startTime;
+				const typeBreakdown = Object.entries(pf.totalTypes).sort((a, b) => b[1] - a[1]).slice(0, 8)
+					.map(([t, c]) => `${t}=${c}`).join(',');
+				const slowCount = pf.slowOps.length;
+				this._logService.info(`[StreamPerf] STREAM_END total=${totalElapsed}ms deltas=${pf.deltaCount} types={${typeBreakdown}} slowFlushes=${slowCount}`);
+				delete this._streamPerf;
+			}
 			return;
 		}
 
@@ -1686,12 +2109,18 @@ export class NativeChatEditorPane extends EditorPane {
 	 * - 其它 delta → 保留全部，按原始顺序
 	 */
 	private _flushDeltaBuffer(): void {
+		const flushStart = Date.now();
+
 		if (this._deltaFlushTimer !== null) {
 			clearTimeout(this._deltaFlushTimer);
 			this._deltaFlushTimer = null;
 		}
 		const batch = this._deltaBuffer;
 		this._deltaBuffer = [];
+		if (this._streamPerf) {
+			this._streamPerf.lastFlushTime = flushStart;
+			this._streamPerf.lastFlushBatchSize = batch.length;
+		}
 		if (batch.length === 0) { return; }
 
 		// 合并：连续 text delta 链压缩为一条，减少同帧 DOM 更新次数。
@@ -1722,7 +2151,7 @@ export class NativeChatEditorPane extends EditorPane {
 			const hasFullText = lastText.delta.fullText !== undefined;
 			let mergedDelta = lastText.delta;
 			let textContent: string;
-			if (hasFullText) {
+			if (hasFullText && lastText.delta.fullText.length >= (this._streamingAssistantMsg?.content ?? '').length) {
 				// 全量快照模式：最后一个 delta 已含完整内容，直接取用。
 				textContent = lastText.delta.fullText;
 			} else {
@@ -1751,9 +2180,134 @@ export class NativeChatEditorPane extends EditorPane {
 		}
 
 		// 成批分发
+		let processedCount = 0;
 		for (const item of merged) {
+			const t0 = Date.now();
 			this._processDelta(item.delta);
+			const dt = Date.now() - t0;
+			processedCount++;
+			if (dt > 16 && this._streamPerf) {
+				this._streamPerf.slowOps.push({ type: item.delta.type, elapsed: dt, count: this._streamPerf.deltaCount });
+			}
 		}
+		const totalTime = Date.now() - flushStart;
+		if (totalTime > 16 && this._streamPerf) {
+			this._logService.warn(`[StreamPerf] SLOW_FLUSH batch=${batch.length} merged=${merged.length} processed=${processedCount} total=${totalTime}ms ` +
+				`delays=${this._streamPerf.slowOps.slice(-3).map(o => o.type + '/' + o.elapsed + 'ms').join(',')}`);
+		} else {
+			this._logService.trace(`[StreamPerf] flush batch=${batch.length} merged=${merged.length} total=${totalTime}ms`);
+		}
+	}
+
+	/**
+	 * 将 subagent 数据附加到父工具调用的 tc.subAgents 字段。
+	 * 替代旧的 _upsertSubAgentCards（创建独立 subagent parts）——
+	 * subagent 数据现在内嵌在工具卡中，不再创建独立的 subagent parts。
+	 */
+	private _attachSubAgentsToToolCall(assistantMsg: any, saData: any[], realToolCallId?: string): void {
+		if (!saData || saData.length === 0) { return; }
+		if (realToolCallId) {
+			const parentTc = (assistantMsg.toolCalls ?? []).find((tc: any) => tc.id === realToolCallId);
+			if (parentTc) {
+				parentTc.subAgents = saData;
+			}
+		}
+		assistantMsg.subAgents = saData;
+	}
+
+	/**
+	 * 将累积的 subagent 数据重映射并挂载到【各自对应】的 delegate_task/plan_explore 工具卡。
+	 *
+	 * 2026-07-27 修复（bug：并行多 delegate_task 时所有 subagent 卡片全挤在最后一张卡）：
+	 * delegationTools.ts 的 handler 拿不到 LLM 分配的真实 callId，只能自造内部
+	 * `delegate_<ts>_<rand>` 作为 parentToolCallId，与工具卡真实 callId 不匹配。
+	 * 旧逻辑回退到【单值】`_lastDelegateToolCallId`——tool_start 触发 N 次后它只剩
+	 * 最后一个 delegate 的 callId，于是 N 个 delegate 的 subagent 全被重映射到最后一张卡。
+	 *
+	 * 新逻辑：按【内部 parentToolCallId 分组】（每个 delegate handler 一个唯一内部 id），
+	 * 每组独立分配到一张 delegate 卡：① 优先按 task 文本匹配（sa.task 与工具卡
+	 * args.task/tasks[] 同源）；② 退化到尚未被占用的 delegate 卡（FIFO，杜绝挤到最后一张）；
+	 * ③ 最终退化到 _lastDelegateToolCallId。usedTc 防止两组映射到同一张卡。
+	 */
+	private _remapAndAttachSubAgents(assistantMsg: any): void {
+		const subAgents = (assistantMsg.subAgents ?? []) as any[];
+		if (subAgents.length === 0) { return; }
+		const delegateTcs = ((assistantMsg.toolCalls ?? []) as any[]).filter(
+			(tc: any) => tc?.name === 'delegate_task' || tc?.name === 'plan_explore');
+		if (delegateTcs.length === 0) { return; }
+
+		// 已占用的真实工具卡（subagent 已直接指向真实 callId 的）
+		const usedTc = new Set<string>();
+		for (const sa of subAgents) {
+			const pid = sa?.parentToolCallId;
+			if (pid && delegateTcs.some((tc: any) => tc.id === pid)) { usedTc.add(pid); }
+		}
+
+		// 按内部 parentToolCallId 分组（跳过已指向真实卡片的）
+		const internalGroups = new Map<string, any[]>();
+		for (const sa of subAgents) {
+			const pid = sa?.parentToolCallId;
+			if (!pid) { continue; }
+			if (delegateTcs.some((tc: any) => tc.id === pid)) { continue; }
+			let g = internalGroups.get(pid);
+			if (!g) { g = []; internalGroups.set(pid, g); }
+			g.push(sa);
+		}
+
+		for (const group of internalGroups.values()) {
+			const probeTask = group[0]?.task;
+			// ① task 文本匹配未占用卡
+			let target = delegateTcs.find((tc: any) => !usedTc.has(tc.id)
+				&& this._delegateTaskKeys(tc).some(k => this._taskKeyMatch(probeTask, k)));
+			// ② FIFO：任一未占用卡
+			if (!target) { target = delegateTcs.find((tc: any) => !usedTc.has(tc.id)); }
+			// ③ 兜底：最近一次 delegate callId
+			if (!target && this._lastDelegateToolCallId) {
+				target = delegateTcs.find((tc: any) => tc.id === this._lastDelegateToolCallId);
+			}
+			if (target) {
+				usedTc.add(target.id);
+				for (const sa of group) { sa.parentToolCallId = target.id; }
+			}
+		}
+
+		// 按最终 parentToolCallId 分组挂载到各工具卡
+		for (const tc of delegateTcs) {
+			const own = subAgents.filter((s: any) => s?.parentToolCallId === tc.id);
+			if (own.length > 0) { tc.subAgents = own; }
+		}
+	}
+
+	/** 从 delegate_task/plan_explore 工具卡的 args 提取 task 文本（支持 JSON、纯文本、tasks[]）。 */
+	private _delegateTaskKeys(tc: any): string[] {
+		const keys: string[] = [];
+		const raw = tc?.args;
+		let a: any = undefined;
+		if (typeof raw === 'string' && raw.length > 0) {
+			try { a = JSON.parse(raw); } catch { keys.push(raw); }
+		} else if (raw && typeof raw === 'object') {
+			a = raw;
+		}
+		if (a) {
+			if (typeof a.task === 'string') { keys.push(a.task); }
+			if (Array.isArray(a.tasks)) {
+				for (const t of a.tasks) {
+					keys.push(typeof t === 'string' ? t : String(t?.task ?? t?.description ?? ''));
+				}
+			}
+		}
+		return keys.filter(k => k && k.length > 0);
+	}
+
+	/** task 文本前缀匹配（sa.task 可能被截断为 200 字符，故按公共前缀比较）。 */
+	private _taskKeyMatch(a: string | undefined, b: string | undefined): boolean {
+		if (!a || !b) { return false; }
+		const n = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+		const x = n(a), y = n(b);
+		if (!x || !y) { return false; }
+		const len = Math.min(x.length, y.length, 100);
+		if (len < 8) { return x === y; }  // 太短要求全等，避免误匹配
+		return x.slice(0, len) === y.slice(0, len);
 	}
 
 	/**
@@ -1769,7 +2323,7 @@ export class NativeChatEditorPane extends EditorPane {
 		// 交互性 delta 到来时，重新激活 sending 状态，确保按钮显示
 		// stop 图标、输入框禁用、流式滚动路径生效。
 		if (!this._isSending) {
-			const reActivateTypes = ['text', 'thinking', 'tool_start', 'tool_args', 'tool_end', 'tool_result', 'phase_change'];
+			const reActivateTypes = ['text', 'thinking', 'tool_start', 'tool_args', 'tool_end', 'tool_result', 'tool_progress', 'phase_change'];
 			if (reActivateTypes.includes(delta.type)) {
 				this._chatPanel?.setSending(true);
 				this._isSending = true;
@@ -1780,26 +2334,64 @@ export class NativeChatEditorPane extends EditorPane {
 			case 'text':
 				if (!assistantMsg || !assistantId) { return; }
 				{
-					const textContent = delta.fullText !== undefined ? delta.fullText : (assistantMsg.content + (delta.content ?? ''));
-					assistantMsg.content = textContent;
-					this._applyStreamPhase('llm_streaming');
-					this._chatPanel?.setStreamTextBuffer(textContent);
-					this._chatPanel?.updateMessage(assistantId, {
-						content: textContent,
-						isStreaming: true,
-						isThinking: false,
-						streamPhase: 'llm_streaming',
-					});
+					// fullText 比 content 短时回退到 append 模式
+					// （agentStudioWebviewController 检测到 tool XML 后会重置 streamingTextBuffer，
+					// 导致后续 fullText 只含工具标签后的文本，无脑替换会清空冒泡内容）
+					const textContent = (delta.fullText !== undefined && delta.fullText.length >= assistantMsg.content.length)
+						? delta.fullText
+						: (assistantMsg.content + (delta.content ?? ''));
+				assistantMsg.content = textContent;
+				this._applyStreamPhase('llm_streaming');
+				this._chatPanel?.setStreamTextBuffer(textContent);
+				// 正文恢复流出 → 参数生成进度文本已过期，清除（若存在）
+				if (assistantMsg.activityText !== undefined) { assistantMsg.activityText = undefined; }
+				this._chatPanel?.updateMessage(assistantId, {
+					content: textContent,
+					activityText: assistantMsg.activityText,
+					isStreaming: true,
+					isThinking: false,
+					streamPhase: 'llm_streaming',
+				});
+					// P0: 跟踪文本→工具→文本的时间顺序。
+					// text part 只保存「当前段」文本 = content.slice(_streamTextSegmentBase)，
+					// 而非全量 content——否则工具后的新 text part 会重复包含工具前的文本，
+					// 导致同一段文本在工具卡前后渲染两次。
+					if (assistantMsg.parts) {
+						const segText = textContent.slice(this._streamTextSegmentBase);
+						const last = assistantMsg.parts[assistantMsg.parts.length - 1];
+						if (last && last.kind === 'text') {
+							// 最后一个 part 是 text → 就地更新当前段
+							(last as any).text = segText;
+						} else if (segText.length > 0) {
+							// 最后一个 part 是 tool（或空）→ 开启新 text 段
+							assistantMsg.parts.push({ kind: 'text', text: segText } as any);
+						}
+					}
 				}
 				break;
 			case 'thinking':
 				if (!assistantMsg || !assistantId) { return; }
 				{
-					const thinkingContent = delta.fullThinking !== undefined ? delta.fullThinking : ((assistantMsg.thinking ?? '') + (delta.content ?? ''));
+					const prevThinking = assistantMsg.thinking ?? '';
+					const thinkingContent = delta.fullThinking !== undefined ? delta.fullThinking : (prevThinking + (delta.content ?? ''));
 					assistantMsg.thinking = thinkingContent;
+					// thinking 作为 parts 流片段（2026-07-26 用户要求：不固定顶部，
+					// 跟随 LLM 流式输出的实际发生位置）。增量追加到当前 episode 的
+					// thinking part；若最后一个 part 非 thinking（文本/工具已流过）
+					// → 开新 episode（新 part），卡片渲染在当轮内容之前。
+					const increment = thinkingContent.slice(prevThinking.length);
+					if (assistantMsg.parts && increment.length > 0) {
+						const last = assistantMsg.parts[assistantMsg.parts.length - 1] as any;
+						if (last && last.kind === 'thinking') {
+							last.text += increment;
+						} else {
+							assistantMsg.parts.push({ kind: 'thinking', text: increment } as any);
+						}
+					}
 					this._chatPanel?.setStreamThinkingBuffer(thinkingContent);
 					this._chatPanel?.updateMessage(assistantId, {
 						thinking: thinkingContent,
+						parts: assistantMsg.parts?.slice(),
 						isThinking: true,
 					});
 				}
@@ -1807,8 +2399,9 @@ export class NativeChatEditorPane extends EditorPane {
 			case 'tool_start': {
 				if (!assistantMsg || !assistantId) { return; }
 				if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
+				const newToolCallId = delta.toolCallId ?? `tool_${Date.now()}`;
 				assistantMsg.toolCalls.push({
-					id: delta.toolCallId ?? `tool_${Date.now()}`,
+					id: newToolCallId,
 					name: delta.toolName ?? '',
 					args: '',
 					status: 'running',
@@ -1817,12 +2410,46 @@ export class NativeChatEditorPane extends EditorPane {
 					defaultShow: delta.defaultShow,
 					textPosition: typeof delta.textPosition === 'number' ? delta.textPosition : (assistantMsg.content?.length ?? 0),
 				});
-				this._applyStreamPhase('tool_executing');
+				// 记录 delegate_task / plan_explore 的真实 callId，供 onDidSubAgentTrace
+				// 将内部 parentToolCallId 重映射为真实 callId（内嵌 subagent 执行详情）。
+				if (delta.toolName === 'delegate_task' || delta.toolName === 'plan_explore') {
+					this._lastDelegateToolCallId = newToolCallId;
+				}
+			this._applyStreamPhase('tool_executing');
+			assistantMsg.activityText = undefined;
+			// P0: 跟踪文本→工具→文本的时间顺序，push 一个 tool part。
+			// 注意：必须先 mutate parts 再 updateMessage 并显式携带 parts——
+			// 否则 panel 侧因工具数量变化触发 deriveUiMessageParts 重派生，
+			// 虽经兜底保留 thinking parts，但 episode 原位信息会降级为置顶。
+			if (assistantMsg.parts) {
+				const tcRef = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1];
+				assistantMsg.parts.push({ kind: 'tool', tool: tcRef } as any);
+				// 记录当前 content 长度作为下一个 text 段的起点——
+				// 后续 text delta 生成的 text part 只含工具之后的增量文本。
+				this._streamTextSegmentBase = assistantMsg.content?.length ?? 0;
+			}
+			this._chatPanel?.updateMessage(assistantId, {
+				toolCalls: assistantMsg.toolCalls.slice(),
+				// 显式携带 parts（含 thinking episodes），跳过 panel 重派生，
+				// 保证 thinking 卡片不移除且保持流式原位（2026-07-26 用户要求）。
+				parts: assistantMsg.parts ? assistantMsg.parts.slice() : undefined,
+				activityText: undefined,
+				isStreaming: true,
+				isThinking: false,
+				streamPhase: 'tool_executing',
+			});
+			break;
+			}
+			case 'tool_progress': {
+				// 工具参数流式生成进度（2026-07-26 治本 UI 化）：此前该信号只喂
+				// idle 计时器，界面上不可见——超大参数（file_write 写大文件，
+				// 万级 tokens 数分钟）期间屏幕假死（事故 1785065604981）。
+				// 现把进度文本透到阶段指示器（activityText），每秒可见刷新。
+				if (!assistantMsg || !assistantId) { return; }
+				assistantMsg.activityText = delta.stage ?? '正在生成工具调用参数…';
 				this._chatPanel?.updateMessage(assistantId, {
-					toolCalls: assistantMsg.toolCalls.slice(),
+					activityText: assistantMsg.activityText,
 					isStreaming: true,
-					isThinking: false,
-					streamPhase: 'tool_executing',
 				});
 				break;
 			}
@@ -1850,13 +2477,17 @@ export class NativeChatEditorPane extends EditorPane {
 					if (isError && endCall.result && !endCall.error) {
 						endCall.error = endCall.result;
 					}
-					this._applyStreamPhase('llm_streaming');
-					this._chatPanel?.updateMessage(assistantId, {
-						toolCalls: assistantMsg.toolCalls!.slice(),
-						isStreaming: true,
-						isThinking: true,
-						streamPhase: 'llm_streaming',
-					});
+				this._applyStreamPhase('llm_streaming');
+				// turn 间「正在思考...」指示器（2026-07-26 修正）：指示器条件已放宽为
+				// 仅 isThinking（见 agentChatPanel.messages.ts _ensurePhaseIndicator），
+				// 无需清空 thinking——旧实现（tool_end 清 thinking）会导致置顶的
+				// thinking 卡片在每个工具边界消失/重现，引发布局跳动（1785065604981）。
+				this._chatPanel?.updateMessage(assistantId, {
+					toolCalls: assistantMsg.toolCalls!.slice(),
+					isStreaming: true,
+					isThinking: true,
+					streamPhase: 'llm_streaming',
+				});
 				}
 				break;
 			}
@@ -1873,15 +2504,84 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 				break;
 			}
+			case 'mode_changed':
+				// Legacy mode_changed — no-op since ChatMode is removed.
+				// chatOnly is toggled via the UI toggle button directly.
+				break;
+			case 'discard_prior_text':
+				// Hermes-style 合成恢复信号：host 检测到 fake-completion / unfinished-intent /
+				// 空回 等"非真实模型输出"并准备注入 nudge 续跑时，会 yield 此事件。
+				// AgentDriver / AgentChatService 收到后会清空各自累积缓冲（已确认，
+				// 见日志 `cleared rawDeltaChunks + assistantChunks` / `clearing fullContent`）。
+				// 但**聊天面板的 _streamingAssistantMsg.content 不会被自动清空**——
+				// 这里显式重置，否则 LLM 重新生成时新文本会被追加到旧文本上，
+				// 出现 "Re  ReachabilityReachability" 这类重复渲染。
+				// 同时清空聊天面板内部的 streamTextBuffer / streamThinkingBuffer 以保持一致。
+				if (assistantMsg) {
+					assistantMsg.content = '';
+					assistantMsg.thinking = '';
+					if (assistantId) {
+						this._chatPanel?.updateMessage(assistantId, {
+							content: '',
+							thinking: '',
+							isStreaming: true,
+							isThinking: true,
+							streamPhase: 'llm_streaming',
+						});
+					}
+				}
+				this._chatPanel?.setStreamTextBuffer('');
+				this._chatPanel?.setStreamThinkingBuffer('');
+				this._logService.info(
+					`[ChatPanel] 🧹 discard_prior_text: cleared local streaming text/thinking buffer ` +
+					`(reason=${delta.metadata?.reason ?? 'unknown'})`
+				);
+				break;
+		case 'subagent_batch':
+			// subagent 数据 → 附加到父工具调用的 tc.subAgents（不再创建独立 subagent parts）
+			if (assistantMsg && assistantId && (delta as any).subagentData) {
+				const saData = (delta as any).subagentData as any[];
+				const realToolCallId = (delta as any).toolCallId;
+				// 用 delta 携带的真实 toolCallId 覆盖 parentToolCallId
+				if (realToolCallId) {
+					for (const sa of saData) { if (sa) { sa.parentToolCallId = realToolCallId; } }
+				}
+				this._attachSubAgentsToToolCall(assistantMsg, saData, realToolCallId);
+				this._chatPanel?.updateMessage(assistantId, {
+					subAgents: saData,
+					isStreaming: true,
+				});
+			}
+			break;
+			case 'plan_tasks':
+				// plan_exit 生成的结构化任务 → 专用任务卡片
+				if (assistantMsg && assistantId && (delta as any).planTasksData) {
+					const planTasks = (delta as any).planTasksData;
+					(assistantMsg as any).planTasks = planTasks;
+					this._chatPanel?.updateMessage(assistantId, {
+						planTasks,
+						isStreaming: true,
+					} as any);
+				}
+				break;
 			case 'phase_change':
 				if (delta.phase) {
 					this._applyStreamPhase(delta.phase);
 				}
 				if (delta.phase && assistantId) {
-					this._chatPanel?.updateMessage(assistantId, {
+					const phasePartial: any = {
 						streamPhase: delta.phase,
 						isStreaming: delta.phase !== 'idle',
-					});
+					};
+				// 进入 LLM 流式阶段 → 重新激活"正在思考"指示器
+				// text delta 到来时（line 2000）会置 isThinking=false 自动隐藏
+				if (delta.phase === 'llm_streaming') {
+					phasePartial.isThinking = true;
+					// 2026-07-26 修正：不再清空 thinking——指示器条件已放宽为仅
+					// isThinking；清空会导致置顶 thinking 卡片在轮次边界消失/重现，
+					// 引发布局跳动（1785065604981）。卡片跨轮累积、稳定置顶。
+				}
+					this._chatPanel?.updateMessage(assistantId, phasePartial);
 				}
 				break;
 			case 'confirmation':
@@ -1906,32 +2606,50 @@ export class NativeChatEditorPane extends EditorPane {
 					});
 				}
 				break;
-			case 'done': {
-				if (assistantMsg && assistantId) {
-					if (assistantMsg.toolCalls) {
-						for (const tc of assistantMsg.toolCalls) {
-							// done 收尾：仅把仍为 running 的工具标记为 success（已被 tool_end 设为 error 的保留不变）。
-							if (tc.status === 'running') { tc.status = 'success'; }
-						}
+		case 'done': {
+			if (assistantMsg && assistantId) {
+				const isCanceled = (delta as any).canceled === true;
+				if (assistantMsg.toolCalls) {
+					for (const tc of assistantMsg.toolCalls) {
+						// done 收尾：仍为 running 的工具——2026-07-27 修复（用户报告
+						// 「点击取消后工具卡片没展示取消状态」）：取消时 handler 被
+						// abort 打断、无 tool_end，此前一律误标 success（绿勾）。
+						// 现按 isCanceled 区分：取消 → 'canceled'（卡片显示已取消），
+						// 正常完成 → 'success'；已被 tool_end 设为 error 的保留不变。
+						if (tc.status === 'running') { tc.status = isCanceled ? 'canceled' : 'success'; }
 					}
-					const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
-					const isCanceled = (delta as any).canceled === true;
+				}
+				const durationMs = Date.now() - (assistantMsg.timestamp || Date.now());
 					// 用户主动取消：在 bubble 末尾追加「用户已取消」提示（保留已生成内容）
 					// 若是空内容（仅"正在思考..."），则直接显示取消提示作为 content
-					const currentContent = assistantMsg.content || '';
-					const hasRealContent = currentContent.trim().length > 0
-						&& !/^[\s\S]*?(正在思考|Thinking\.\.\.)$/m.test(currentContent.trim());
 					const finalContent = isCanceled
-						? (hasRealContent
-							? currentContent + '\n\n⚠️ 用户已取消'
-							: '⚠️ 用户已取消')
-						: currentContent;
+						? this._buildCanceledContent(assistantMsg)
+						: (assistantMsg.content || '');
 					this._applyStreamPhase(isCanceled ? 'canceled' : 'idle');
+					// ── Diag: done 时完整 parts 状态 ──
+					{
+						const partsSummary = (assistantMsg.parts || []).map((p: any) =>
+							p.kind === 'text' ? `text(${p.text?.length ?? 0}c)` :
+							p.kind === 'tool' ? `tool:${p.tool?.name}(${p.tool?.status})` : p.kind
+						).join(' → ');
+						this._logService.info(`[PartsDiag] DONE partsLen=${(assistantMsg.parts || []).length} isCanceled=${isCanceled} parts=[${partsSummary}] contentLen=${(assistantMsg.content||'').length} toolCalls=${(assistantMsg.toolCalls || []).length}`);
+					}
 					// 显式发送最终 content，确保全量重建时读到的不是流式过程中最后一次
 					// delta 的残留（可能因增量渲染产生碎片 DOM）。
+					assistantMsg.activityText = undefined;
 					this._chatPanel?.updateMessage(assistantId, {
 						content: finalContent,
-						toolCalls: assistantMsg.toolCalls ? assistantMsg.toolCalls.slice() : undefined,
+						activityText: undefined, // 流式结束清除瞬时活动文本
+						// P0: 仅当 toolCalls 非空时才发送——空数组会通过 Object.assign
+						// 覆盖掉之前迭代累积的 tool call，导致最终重建时工具卡全部消失。
+						toolCalls: assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0
+							? assistantMsg.toolCalls.slice()
+							: undefined,
+						// P0: 若流式期间已按时间顺序跟踪 parts 列表，直接发送，
+						// 避免 deriveUiMessageParts 依赖跨迭代失效的 textPosition。
+						parts: assistantMsg.parts && assistantMsg.parts.length > 0
+							? assistantMsg.parts.slice()
+							: undefined,
 						isStreaming: false,
 						isThinking: false,
 						streamPhase: isCanceled ? 'canceled' : 'idle',
@@ -1999,22 +2717,31 @@ export class NativeChatEditorPane extends EditorPane {
 				this._chatPanel?.setSending(false);
 				this._isSending = false;
 				this._isExternalSend = false;
+				this._localSendDone = true; // 标记本地发送已结束，防止广播 delta 误触发二次 _initStreamingMessage
 				this._taskExecutingSessionId = null;
 				this._resetStreamingMessage();
 				break;
-			case 'usage':
-				if (delta.usage && assistantMsg && assistantId) {
-					const input = delta.usage.inputTokens ?? 0;
-					const output = delta.usage.outputTokens ?? 0;
-					const total = delta.usage.totalTokens ?? (input + output);
-					const cachedRead = delta.usage.cachedTokens ?? 0;
-					const cacheWrite = delta.usage.cacheWriteTokens ?? 0;
-					const credit = delta.usage.credit;
-					const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
-					const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
-					const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: 0, cacheHitRate, credit };
-					assistantMsg.tokenUsage = tokenUsage;
-					this._chatPanel?.updateMessage(assistantId, { tokenUsage });
+		case 'usage':
+			if (delta.usage && assistantMsg && assistantId) {
+				// usage delta 每个 LLM 轮次末块各发一次（CodeBuddy data part / Knot step end，
+				// 值为本轮聚合）。多轮 agent loop 时 footer 应展示全程总消耗——与
+				// agentChatService 持久化路径一致做累加（原实现为覆盖，多轮时丢失前轮
+				// token 统计与积分 credit，导致积分 pill 不显示）。
+				const prev = assistantMsg.tokenUsage;
+				const input = (prev?.input ?? 0) + (delta.usage.inputTokens ?? 0);
+				const output = (prev?.output ?? 0) + (delta.usage.outputTokens ?? 0);
+				const total = (prev?.total ?? 0) + (delta.usage.totalTokens ?? ((delta.usage.inputTokens ?? 0) + (delta.usage.outputTokens ?? 0)));
+				const cachedRead = (prev?.cachedRead ?? 0) + (delta.usage.cachedTokens ?? 0);
+				const cacheWrite = (prev?.cacheWrite ?? 0) + (delta.usage.cacheWriteTokens ?? 0);
+				const creditSum = (prev?.credit ?? 0) + (delta.usage.credit ?? 0);
+				// 2026-07-27：credit 是否"曾经出现过"（哪怕值为 0）与"从未提供"需区分——
+				// 否则免费/未计费模型的 credit=0 会被误判为"无数据"而不展示占位 pill。
+				const creditSeen = prev?.credit !== undefined || typeof delta.usage.credit === 'number';
+				const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
+				const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
+				const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: 0, cacheHitRate, credit: creditSeen ? creditSum : undefined };
+				assistantMsg.tokenUsage = tokenUsage;
+				this._chatPanel?.updateMessage(assistantId, { tokenUsage });
 					const limit = this._currentMaxContextTokens ?? 0;
 					if (limit > 0) {
 						this._chatPanel?.setStreamUsage({
@@ -2271,41 +2998,40 @@ export class NativeChatEditorPane extends EditorPane {
 						customPrompt: emp.systemPrompt,
 						model: emp.model,
 						provider: undefined,
-						agentType: ((emp as any).agentType ?? (emp.id === 'pm' ? 'planner' : 'general')) as 'general' | 'planner' | string,
 					}))
 				);
 
-			// 默认选中 agent（多级 fallback）：
-			//   1. 窗口重载恢复的 input.agentId（优先）
-			//   2. id / presetId 完全等于 'saros-claw' / 'claw'
-			//   3. id / presetId / name / role 不区分大小写包含 'claw'
-			//   4. 上面都没匹配到 → 列表第一个 agent
-			if (!this._defaultAgentSelected && agents.length > 0) {
-				const lower = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');
-				const matchExact = (a: any) => a.id === 'saros-claw' || a.id === 'claw' || (a as any).presetId === 'claw' || (a as any).presetId === 'saros-claw';
-				const matchFuzzy = (a: any) => lower(a.id).includes('claw') || lower((a as any).presetId).includes('claw') || lower(a.name).includes('claw') || lower(a.role).includes('claw');
+				// 默认选中 agent（多级 fallback）：
+				//   1. 窗口重载恢复的 input.agentId（优先）
+				//   2. id / presetId 完全等于 'saros-claw' / 'claw'
+				//   3. id / presetId / name / role 不区分大小写包含 'claw'
+				//   4. 上面都没匹配到 → 列表第一个 agent
+				if (!this._defaultAgentSelected && agents.length > 0) {
+					const lower = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');
+					const matchExact = (a: any) => a.id === 'saros-claw' || a.id === 'claw' || (a as any).presetId === 'claw' || (a as any).presetId === 'saros-claw';
+					const matchFuzzy = (a: any) => lower(a.id).includes('claw') || lower((a as any).presetId).includes('claw') || lower(a.name).includes('claw') || lower(a.role).includes('claw');
 
-				// 1. 窗口重载恢复的 agentId 优先
-				const restoredAgentId = (this.input instanceof NativeChatEditorInput) ? this.input.agentId : undefined;
-				let target: any | undefined;
-				if (restoredAgentId) {
-					target = agents.find(a => a.id === restoredAgentId || (a as any).presetId === restoredAgentId);
+					// 1. 窗口重载恢复的 agentId 优先
+					const restoredAgentId = (this.input instanceof NativeChatEditorInput) ? this.input.agentId : undefined;
+					let target: any | undefined;
+					if (restoredAgentId) {
+						target = agents.find(a => a.id === restoredAgentId || (a as any).presetId === restoredAgentId);
+						if (target) {
+							this._logService.info(`[NativeChatEditorPane] _loadAvailableAgents: restoring agent "${target.id}" from editor input`);
+						}
+					}
+
+					// 2-4. claw 精确/模糊/fallback
+					if (!target) {
+						target = agents.find(matchExact) ?? agents.find(matchFuzzy) ?? agents[0];
+					}
+
 					if (target) {
-						this._logService.info(`[NativeChatEditorPane] _loadAvailableAgents: restoring agent "${target.id}" from editor input`);
+						this._defaultAgentSelected = true;
+						console.info(`[NativeChatEditorPane] _loadAvailableAgents: defaulting to agent "${target.id}" (${target.name})`);
+						await this._selectAndLoadAgent(target.id, { force: true });
 					}
 				}
-
-				// 2-4. claw 精确/模糊/fallback
-				if (!target) {
-					target = agents.find(matchExact) ?? agents.find(matchFuzzy) ?? agents[0];
-				}
-
-				if (target) {
-					this._defaultAgentSelected = true;
-					console.info(`[NativeChatEditorPane] _loadAvailableAgents: defaulting to agent "${target.id}" (${target.name})`);
-					await this._selectAndLoadAgent(target.id, { force: true });
-				}
-			}
 			}
 		} catch (err) {
 			this._logService.info('[NativeChatEditorPane] _loadAvailableAgents failed:', err);
@@ -2345,15 +3071,15 @@ export class NativeChatEditorPane extends EditorPane {
 				const key = `${it.provider.id}:${it.model.id}`;
 				if (!seenModels.has(key)) {
 					seenModels.add(key);
-				models.push({
-					id: it.model.id,
-					label: it.model.name,
-					provider: it.provider.id,
-					// 与 _resolveContextWindow 对齐：maxInputTokens 是单次请求的上限，
-				// maxAllowedSize 是 input+output 总量，不应作为分母（会使进度条百分比虚低）。
-				maxInputTokens: it.model.maxInputTokens ?? it.model.contextWindow ?? it.model.maxAllowedSize,
-					supportsImages: it.model.supportsImages,
-				});
+					models.push({
+						id: it.model.id,
+						label: it.model.name,
+						provider: it.provider.id,
+						// 与 _resolveContextWindow 对齐：maxInputTokens 是单次请求的上限，
+						// maxAllowedSize 是 input+output 总量，不应作为分母（会使进度条百分比虚低）。
+						maxInputTokens: it.model.maxInputTokens ?? it.model.contextWindow ?? it.model.maxAllowedSize,
+						supportsImages: it.model.supportsImages,
+					});
 				}
 			}
 
@@ -2550,15 +3276,19 @@ export class NativeChatEditorPane extends EditorPane {
 				this._modelSelector.setSelection(saved.modelSelection);
 			}
 
-			// 恢复 agent 显示（如有）
-			if (input.agentId) {
-				void this._restoreAgentDisplay(input.agentId, saved);
-			} else {
-				// 无 agent → 加载默认
-				this._defaultAgentSelected = false;
-				this._loadAvailableAgents();
-			}
+		// 恢复 agent 显示（如有）
+		if (input.agentId) {
+			void this._restoreAgentDisplay(input.agentId, saved);
 		} else {
+			// 无 agent → 加载默认
+			this._defaultAgentSelected = false;
+			this._loadAvailableAgents();
+		}
+
+		// 恢复该 tab 当前 session 的输入框草稿（runtimeState 不含 composer 文本，
+		// per-session 草稿在 localStorage；无草稿时清空，避免残留上一 tab 的内容）
+		this._restoreComposerDraft();
+	} else {
 			// 无运行时状态 → 首次加载或拖拽到新 group
 			if (input.agentId) {
 				this._currentAgentId = input.agentId;
@@ -2665,6 +3395,9 @@ export class NativeChatEditorPane extends EditorPane {
 			modelSelection: modelSel ? { ...modelSel } : undefined,
 		});
 
+		// Persist per-agent input area state to localStorage
+		this._saveInputAreaState();
+
 		this._logService.debug(`[NativeChatEditorPane#${this._paneId}] saved runtime state for ${this._currentInputChatId}: msgs=${messages.length}, phase=${streamPhase}`);
 	}
 
@@ -2763,211 +3496,6 @@ export class NativeChatEditorPane extends EditorPane {
 		}
 	}
 
-	// ─── File / Code helpers ──────────────────────────────────────────
-
-	/**
-	 * P0-3: Apply code — 对已有文件打开 diff 编辑器（原始 vs 新内容），
-	 * 用户保存右侧编辑器 = 接受变更，关闭不保存 = 拒绝。
-	 * HTML 文件：直接写入 + 用 HtmlPreviewEditorInput 渲染预览，跳过 diff。
-	 * 无 filePath 时打开 untitled 编辑器。回退到直接写入。
-	 */
-	private async _handleApplyCode(code: string, _language: string, filePath?: string): Promise<void> {
-		this._logService.info(`[NativeChatEditorPane] _handleApplyCode called — lang="${_language}", filePath=${filePath ?? 'undefined'}, codeLen=${code.length}`);
-		try {
-			if (filePath) {
-				let resource: URI;
-				if (this._isAbsolutePath(filePath)) {
-					resource = URI.file(filePath);
-				} else {
-					const folders = this._workspaceContextService.getWorkspace().folders;
-					if (folders.length === 0) {
-						await this._editorService.openEditor({ resource: undefined, contents: code, options: { pinned: true } });
-						return;
-					}
-					resource = URI.joinPath(folders[0].uri, filePath);
-				}
-
-				// HTML 文件：直接写入 + 用 HtmlPreviewEditorInput 渲染预览（用户要求）
-				if (this._isHtmlFile(filePath)) {
-					this._logService.info(`[NativeChatEditorPane] _handleApplyCode: HTML file detected — writing + opening via HtmlPreviewEditorInput`, filePath);
-					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
-					// 在中间栏（主文本编辑器）打开，而非侧分屏
-					const groups = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
-					const targetGroup = groups[0];
-					const fileName = filePath.split(/[\\/]/).pop() || filePath;
-					const previewInput = new HtmlPreviewEditorInput(resource, `预览：${fileName}`);
-					this._logService.info(`[NativeChatEditorPane] _handleApplyCode: created HtmlPreviewEditorInput(typeId=${HtmlPreviewEditorInput.ID}, resource=${resource.toString()})`);
-					try {
-						const pane = await this._editorService.openEditor(previewInput, { pinned: true }, targetGroup);
-						this._logService.info(`[NativeChatEditorPane] _handleApplyCode: openEditor returned, pane.getId()=${pane?.getId() ?? 'undefined'}, pane.constructor.name=${pane?.constructor.name ?? 'undefined'}`);
-					} catch (err) {
-						this._logService.error(`[NativeChatEditorPane] _handleApplyCode: openEditor threw`, err);
-						throw err;
-					}
-					return;
-				}
-
-				// 读取原始内容
-				let originalContent: string;
-				try {
-					const fc = await this._fileService.readFile(resource);
-					originalContent = fc.value.toString();
-				} catch {
-					// 文件不存在 → 直接创建
-					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
-					await this._openFileInEditor(filePath);
-					return;
-				}
-				if (originalContent === code) {
-					await this._openFileInEditor(filePath);
-					return;
-				}
-				// P0-3: 打开 diff 编辑器
-				const fileName = filePath.split(/[\\/]/).pop() || filePath;
-				// 使用 modelService 获取已打开文件的语言 ID（如果有）
-				const existingModel = this._modelService.getModel(resource);
-				const langId = _language || existingModel?.getLanguageId() || undefined;
-				await this._editorService.openEditor({
-					original: { resource },
-					modified: { resource: undefined, contents: code, languageId: langId },
-					label: `Apply: ${fileName}`,
-					description: '保存右侧编辑器以接受变更',
-					options: { pinned: true },
-				} as any);
-			} else {
-				// 无 filePath：聊天代码块 Apply（仅 code + lang）。
-				if (this._isHtmlLang(_language)) {
-					// HTML 代码块 → 用虚拟 URI + 内存 HTML 内容打开
-					// HtmlPreviewEditorInput（带 编辑/HTML/预览 toggle），
-					// 全程不落盘；pane 直接吃 input.htmlContent 渲染。
-					const virtualUri = URI.from({ scheme: 'saros-html-preview', path: `/chat-apply/${Date.now()}.html` });
-					const previewInput = new HtmlPreviewEditorInput(virtualUri, '预览：Apply HTML', undefined, undefined, undefined, undefined, code);
-					const groups = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
-					const targetGroup = groups[0];
-					this._logService.info(`[NativeChatEditorPane] _handleApplyCode: HTML block Apply (no file) — opening in-memory HtmlPreviewEditorInput`);
-					await this._editorService.openEditor(previewInput, { pinned: true }, targetGroup);
-					return;
-				}
-				await this._editorService.openEditor({
-					resource: undefined,
-					contents: code,
-					options: { pinned: true },
-				});
-			}
-		} catch (err) {
-			this._logService.error('[NativeChatEditorPane] _handleApplyCode failed:', err);
-			// 回退：直接写入
-			if (filePath) {
-				try {
-					const resource = URI.file(filePath);
-					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
-					await this._openFileInEditor(filePath);
-				} catch { /* ignore */ }
-			}
-		}
-	}
-
-	/** 判断是否为 HTML 文件（用于决定 Apply 后的打开方式：预览 vs 文本） */
-	private _isHtmlFile(filePath: string): boolean {
-		return /\.(html?|xhtml)$/i.test(filePath);
-	}
-
-	/** 按语言判定是否为 HTML（无 filePath 的聊天代码块 Apply 用） */
-	private _isHtmlLang(language: string): boolean {
-		return /^(html?|x?html)$/i.test((language || '').trim());
-	}
-
-	/**
-	 * Open a file in the center editor area (first/leftmost group).
-	 * Resolves relative paths against workspace folders.
-	 */
-	private async _openFileInEditor(filePath: string, lineNumber?: number): Promise<void> {
-		try {
-			let absPath = filePath;
-
-			// Resolve relative paths against workspace folders
-			if (!this._isAbsolutePath(absPath)) {
-				const folders = this._workspaceContextService.getWorkspace().folders;
-				for (const folder of folders) {
-					const candidate = URI.joinPath(folder.uri, absPath);
-					try {
-						const stat = await this._fileService.stat(candidate);
-						if (stat) {
-							absPath = candidate.fsPath;
-							break;
-						}
-					} catch {
-						// File doesn't exist in this folder, try next
-					}
-				}
-			}
-
-			const resource = URI.file(absPath);
-			const groups = this._editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
-			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-
-			const selection = lineNumber && lineNumber > 0
-				? { startLineNumber: lineNumber, startColumn: 1, endLineNumber: lineNumber, endColumn: 1 }
-				: undefined;
-
-			await this._editorService.openEditor({
-				resource,
-				options: {
-					pinned: false,
-					...(selection ? { selection } : {}),
-				},
-			}, targetGroup);
-		} catch (err) {
-			this._logService.error('[NativeChatEditorPane] _openFileInEditor failed:', err);
-		}
-	}
-
-	private _isAbsolutePath(p: string): boolean {
-		if (!p) { return false; }
-		if (p.startsWith('/') || p.startsWith('\\\\')) { return true; }
-		return /^[a-zA-Z]:[\\/]/.test(p);
-	}
-
-	/**
-	 * P0-2: 搜索工作区文件——递归遍历 workspace folders，按文件名模糊匹配。
-	 * 跳过 node_modules/.git/dist/out 等目录，限制深度 4 层 + 最多 200 个结果。
-	 */
-	private async _searchWorkspaceFiles(query: string): Promise<Array<{ path: string; name: string }>> {
-		const results: Array<{ path: string; name: string }> = [];
-		const q = query.toLowerCase();
-		const MAX_RESULTS = 50;
-		const MAX_DEPTH = 4;
-		const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', '.codebuddy', '__pycache__', '.sarosworkspace']);
-
-		const searchRecursive = async (uri: URI, depth: number): Promise<void> => {
-			if (depth > MAX_DEPTH || results.length >= MAX_RESULTS) { return; }
-			try {
-				const entry = await this._fileService.resolve(uri, { resolveMetadata: false });
-				if (!entry.children) { return; }
-				for (const child of entry.children) {
-					if (results.length >= MAX_RESULTS) { return; }
-					if (child.isDirectory) {
-						if (SKIP_DIRS.has(child.name) || child.name.startsWith('.')) { continue; }
-						await searchRecursive(child.resource, depth + 1);
-					} else {
-						if (child.name.toLowerCase().includes(q)) {
-							// 路径相对于 workspace folder
-							const wsFolder = this._workspaceContextService.getWorkspace().folders[0];
-							const relPath = child.resource.fsPath.replace(wsFolder?.uri.fsPath ?? '', '').replace(/^[\\/]/, '');
-							results.push({ name: child.name, path: relPath || child.name });
-						}
-					}
-				}
-			} catch { /* ignore permission errors */ }
-		};
-
-		const workspace = this._workspaceContextService.getWorkspace();
-		for (const folder of workspace.folders) {
-			await searchRecursive(folder.uri, 0);
-		}
-		return results;
-	}
-
 	/**
 	 * 添加内容到聊天框作为附件（供外部命令调用）。
 	 * 使用 addTextContext 而非 addFileContext，因为内容可能不是真实文件（如 Console Logs）。
@@ -3020,75 +3548,6 @@ export class NativeChatEditorPane extends EditorPane {
 
 
 	/**
-	 * P0-2: 读取文件内容并添加为聊天上下文附件。
-	 */
-	private async _addFileContextToChat(filePath: string): Promise<void> {
-		try {
-			let uri: URI;
-			if (this._isAbsolutePath(filePath)) {
-				uri = URI.file(filePath);
-			} else {
-				const folders = this._workspaceContextService.getWorkspace().folders;
-				if (folders.length === 0) { return; }
-				uri = URI.joinPath(folders[0].uri, filePath);
-			}
-			const content = await this._fileService.readFile(uri);
-			const text = content.value.toString();
-			// 文件过大时截断
-			const maxSize = 100 * 1024; // 100KB
-			const truncated = text.length > maxSize ? text.slice(0, maxSize) + '\n... (truncated)' : text;
-			this._chatPanel?.addFileContext(filePath, truncated);
-		} catch (err) {
-			this._logService.info('[NativeChatEditorPane] _addFileContextToChat: failed to read file:', filePath, err);
-		}
-	}
-
-	/**
-	 * P1-1: 在集成终端中运行代码。
-	 * 先聚焦/创建终端，然后通过 sendSequence 发送代码。
-	 */
-	private async _runInTerminal(code: string): Promise<void> {
-		try {
-			// 聚焦现有终端（如果不存在会自动创建）
-			await this._commandService.executeCommand('workbench.action.terminal.focus');
-			// 发送代码到终端
-			await this._commandService.executeCommand('workbench.action.terminal.sendSequence', { text: code + '\n' });
-		} catch (err) {
-			this._logService.error('[NativeChatEditorPane] _runInTerminal failed:', err);
-			// 回退：尝试创建新终端
-			try {
-				await this._commandService.executeCommand('workbench.action.terminal.new');
-				await this._commandService.executeCommand('workbench.action.terminal.sendSequence', { text: code + '\n' });
-			} catch (err2) {
-				this._logService.error('[NativeChatEditorPane] _runInTerminal fallback failed:', err2);
-			}
-		}
-	}
-
-	/**
-	 * P1-3: 获取编辑器当前选中的代码，添加为聊天上下文附件。
-	 * 参考 Void SidebarChat 的 CodeSelection 上下文功能。
-	 */
-	private async _addEditorSelectionToChat(): Promise<void> {
-		try {
-			const codeEditor = this._editorService.activeTextEditorControl as any;
-			if (!codeEditor || typeof codeEditor.getModel !== 'function') { return; }
-			const model = codeEditor.getModel();
-			if (!model) { return; }
-			const selection = codeEditor.getSelection();
-			if (!selection || selection.isEmpty) { return; }
-			const selectedText = model.getValueInRange(selection);
-			if (!selectedText.trim()) { return; }
-			// 获取文件名
-			const resource = model.uri;
-			const fileName = resource?.path.split('/').pop() || 'selection';
-			this._chatPanel?.addFileContext(`${fileName} (L${selection.startLineNumber}-${selection.endLineNumber})`, selectedText);
-		} catch (err) {
-			this._logService.info('[NativeChatEditorPane] _addEditorSelectionToChat: no active editor or selection:', err);
-		}
-	}
-
-	/**
 	 * Handle confirmation card button clicks (tool approval / denial).
 	 * Updates the message to remove the confirmation card and dispatches
 	 * the decision through the command service.
@@ -3105,199 +3564,16 @@ export class NativeChatEditorPane extends EditorPane {
 		}
 	}
 
-	/**
-	 * 收藏 LLM 消息到知识库 —— 接入 KB 引擎路径。
-	 *
-	 * 优先走 `importMessageToKnowledgeBase`（kb_build / kb_ingest + notes_summary
-	 * 模板）：内容自动导入知识库并触发总结流程，生成或完善（同一主题重复收藏时）
-	 * 一份结构化笔记（<kbRoot>/notes/<title>.md）。
-	 *
-	 * 当引擎不可用（如未配置 Embedding Provider）时，降级为旧逻辑：把内容按
-	 * LLM 分类写入 .saros/knowledge-base/favorites/<category>/ 下的 markdown。
-	 */
-	private async _handleFavoriteMessage(content: string): Promise<void> {
-		try {
-			const result = await this._agentStudioService.importMessageToKnowledgeBase(content);
-			if (result.success && result.notePath) {
-				const verb = result.action === 'ingest' ? '已完善知识库笔记' : '已收藏到知识库';
-				this._logService.info(`[NativeChatEditorPane] ${verb} [action=${result.action}, id=${result.id}]: ${result.notePath}`);
-				this._notificationService.notify({
-					severity: Severity.Info,
-					message: `${verb}：${result.note ?? result.title ?? ''}`,
-					source: 'agent-chat-favorite',
-				});
-				return;
-			}
-			// 引擎路径失败（如 Embedding 未配置）→ 降级到 favorites 文件夹
-			this._logService.warn(`[NativeChatEditorPane] KB 引擎导入失败，降级到 favorites：${result.error}`);
-			await this._writeLegacyFavorite(content);
-			this._notificationService.notify({
-				severity: Severity.Warning,
-				message: `知识库引擎不可用，已按旧方式收藏（${result.error ?? 'unknown error'}）`,
-				source: 'agent-chat-favorite',
-			});
-		} catch (err) {
-			this._logService.error('[NativeChatEditorPane] 收藏失败:', err);
-			// 兜底降级，保证按钮始终可用
-			try { await this._writeLegacyFavorite(content); } catch { /* ignore */ }
-		}
+override dispose(): void {
+	if (this._taskBoardReloadTimer) { clearTimeout(this._taskBoardReloadTimer); this._taskBoardReloadTimer = null; }
+	// flush pending 的草稿保存，避免 dispose 丢最后 400ms 输入
+	if (this._composerDraftTimer !== null) {
+		clearTimeout(this._composerDraftTimer);
+		this._composerDraftTimer = null;
+		this._saveComposerDraft();
 	}
-
-	/**
-	 * 旧版收藏逻辑：LLM 智能分类后把消息内容写入
-	 * .saros/knowledge-base/favorites/<category>/<title>.md。
-	 * 引擎路径不可用时的降级方案。
-	 */
-	private async _writeLegacyFavorite(content: string): Promise<void> {
-		// 1. 自动提取标题（第一行有效文本，最多 80 字符）
-		const firstLine = content.split('\n').find(l => l.trim().length > 0)?.trim() || '收藏';
-		const title = firstLine.length > 80 ? firstLine.slice(0, 77) + '...' : firstLine;
-
-		// 2. LLM 驱动的智能分类（复刻 Hyper-Extract 的 guideline.target + structured output）
-		//    失败时自动降级到关键词启发式分类（classifyContent 内置 fallback）。
-		const classifyResult = await this._agentStudioService.classifyContent(content);
-
-		// 3. 构建知识库条目路径
-		const userHome = await this._agentStudioService.resolveUserHome();
-		const kbDir = URI.file(`${userHome}/.saros/knowledge-base/favorites/${classifyResult.category}`);
-		const fileName = title.replace(/[<>:"/\\|?*\n\r]/g, '_').slice(0, 100);
-		const fileUri = URI.joinPath(kbDir, `${fileName}.md`);
-
-		// 去重：如已存在则追加时间戳后缀
-		let finalUri = fileUri;
-		try {
-			await this._fileService.stat(finalUri);
-			const ts = Date.now().toString(36);
-			const ext = `.${ts}.md`;
-			const base = fileName.length > 90 ? fileName.slice(0, 90) : fileName;
-			finalUri = URI.joinPath(kbDir, `${base}${ext}`);
-		} catch { /* 文件不存在，使用原始路径 */ }
-
-		// 4. 构建 Markdown 文档（带 front matter 元数据 + 分类信息）
-		const now = new Date().toISOString();
-		const markdown = [
-			'---',
-			`title: "${title}"`,
-			`category: "${classifyResult.label}"`,
-			`category_id: "${classifyResult.category}"`,
-			`confidence: ${classifyResult.confidence}`,
-			`classifier: "${classifyResult.source}"`,
-			`reasoning: "${classifyResult.reasoning}"`,
-			`source: "agent-chat-favorite"`,
-			`created_at: "${now}"`,
-			'---',
-			'',
-			content,
-		].join('\n');
-
-		// 5. 写入文件
-		await this._fileService.createFile(
-			finalUri,
-			VSBuffer.fromString(markdown),
-			{ overwrite: false },
-		);
-
-		this._logService.info(`[NativeChatEditorPane] 已收藏到知识库(legacy) [${classifyResult.label}, conf=${classifyResult.confidence}, src=${classifyResult.source}]: ${finalUri.toString()}`);
-	}
-
-	/**
-	 * 沉淀技能 —— 从 LLM 回复消息中提取可复用的技能，写入 SKILL.md。
-	 *
-	 * 流程：
-	 *   1. 从消息内容提取 name / description / prompt
-	 *   2. 构建 SKILL.md（YAML frontmatter + markdown body）
-	 *   3. 原子写入 ~/.saros/skills/<name>/SKILL.md
-	 *   4. 触发 SkillRegistry.reload()
-	 *   5. 通知用户结果
-	 *
-	 * 同名技能：
-	 *   - 如果 SKILL.md 已存在 → 追加 timestamp 后缀创建新版本
-	 *   - 如果 skill 已在 registry 中但文件名不冲突 → 更新现有内容
-	 */
-	private async _handleExtractSkill(content: string): Promise<void> {
-		try {
-			// 1. 从消息提取技能组分
-			const components = extractSkillComponents(content);
-			if (!isValidSkillSlug(components.name)) {
-				this._notificationService.notify({
-					severity: Severity.Error,
-					message: `无法提取有效的技能名称："${components.name}"`,
-					source: 'agent-chat-extract-skill',
-				});
-				return;
-			}
-
-			// 2. 构建 SKILL.md
-			const skillMd = buildSkillMdFromComponents(components);
-
-			// 3. 确定目标路径
-			const userHome = await this._agentStudioService.resolveUserHome();
-			const skillsRoot = URI.file(`${userHome}/.saros/skills`);
-			let skillMdUri = URI.file(`${userHome}/.saros/skills/${components.name}/SKILL.md`);
-
-			// 4. 检查是否已存在同名技能
-			let isNew = true;
-			try {
-				await this._fileService.stat(skillMdUri);
-				isNew = false;
-				// 已存在 → 追加时间戳后缀
-				const ts = Date.now().toString(36);
-				const versionedName = `${components.name}-${ts}`;
-				skillMdUri = URI.file(`${userHome}/.saros/skills/${versionedName}/SKILL.md`);
-			} catch {
-				// 文件不存在 → 首次创建
-			}
-
-			// 5. 原子写入：先写临时文件再 move
-			const tmpUri = URI.joinPath(skillsRoot, `.skill_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp`);
-			try {
-				await this._fileService.writeFile(tmpUri, VSBuffer.fromString(skillMd));
-				await this._fileService.move(tmpUri, skillMdUri, true);
-			} catch (writeErr) {
-				try { await this._fileService.del(tmpUri); } catch { /* ignore */ }
-				throw writeErr;
-			}
-
-			// 6. 触发 SkillRegistry reload 让新技能立即可用
-			try {
-				await this._skillRegistry.reload();
-			} catch (reloadErr) {
-				this._logService.warn(`[NativeChatEditorPane] skill reload after extract failed (file saved): ${reloadErr instanceof Error ? reloadErr.message : String(reloadErr)}`);
-			}
-
-			// 7. 同步到记忆引擎 —— 让 MemoryDetailEditorPane 技能 Tab 下次渲染时可见
-			try {
-				const memProvider = this._agentOSService.getActiveMemoryProvider();
-				if (memProvider?.writeSkillFile && this._currentAgentId) {
-					await memProvider.writeSkillFile(this._currentAgentId, components.name);
-				}
-			} catch (syncErr) {
-				this._logService.warn(`[NativeChatEditorPane] skill sync to memory engine failed (file saved): ${syncErr instanceof Error ? syncErr.message : String(syncErr)}`);
-			}
-
-			// 7. 通知用户
-			const verb = isNew ? '已创建' : '已更新';
-			this._logService.info(`[NativeChatEditorPane] ${verb}技能 [name=${components.name}]: ${skillMdUri.fsPath}`);
-			this._notificationService.notify({
-				severity: Severity.Info,
-				message: `${verb}技能：${components.name}`,
-				source: 'agent-chat-extract-skill',
-			});
-
-		} catch (err) {
-			this._logService.error('[NativeChatEditorPane] 沉淀技能失败:', err);
-			this._notificationService.notify({
-				severity: Severity.Error,
-				message: `沉淀技能失败：${err instanceof Error ? err.message : String(err)}`,
-				source: 'agent-chat-extract-skill',
-			});
-		}
-	}
-
-	override dispose(): void {
-		if (this._taskBoardReloadTimer) { clearTimeout(this._taskBoardReloadTimer); this._taskBoardReloadTimer = null; }
-		this._chatPanel = undefined;
-		this._isInitialized = false;
-		super.dispose();
-	}
+	this._chatPanel = undefined;
+	this._isInitialized = false;
+	super.dispose();
+}
 }

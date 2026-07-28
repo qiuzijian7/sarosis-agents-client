@@ -18,7 +18,7 @@
  *
  * Skill 来源（按优先级合并，重名后注册的覆盖前者）：
  *   1. 内置目录   `extensions/.../skills/*` （随产品发布）
- *   2. 用户全局目录   `~/.saros/skills/<id>/SKILL.md`
+ *   2. 用户全局目录   `~/.vssaros/skills/<id>/SKILL.md`
  *   3. 由扩展通过 `IAgentOSService` 运行时 register 的内存 skill
  */
 
@@ -51,8 +51,8 @@ export interface ISkillDefinition {
 	readonly recommendedTools?: readonly string[];
 	/** 注入到对话中的正文（已去除 frontmatter） */
 	readonly prompt: string;
-	/** 来源标记，用于 UI 区分内置 / 用户 / 商城 / 扩展 / 内存 */
-	readonly source: 'builtin' | 'user' | 'marketplace' | 'extension' | 'memory';
+	/** 来源标记，用于 UI 区分内置 / 用户 / 商城 / 扩展 / 内存 / 工作流（作为可执行技能） */
+	readonly source: 'builtin' | 'user' | 'marketplace' | 'extension' | 'memory' | 'workflow';
 	/** Skill 文件 URI（可选，用于「在编辑器中打开」） */
 	readonly resource?: URI;
 	/**
@@ -69,6 +69,60 @@ export interface ISkillDefinition {
 	storeId?: string;
 	/** 更新检查 URL */
 	updateUrl?: string;
+	/**
+	 * 适用平台列表（Hermes-Agent 兼容）。
+	 * 例如 `['linux', 'macos', 'windows']`，用于跨平台可见性过滤。
+	 */
+	readonly platforms?: readonly string[];
+	/**
+	 * 分类标签列表（Hermes-Agent 兼容）。
+	 * 例如 `['planning', 'code-review', 'workflow']`，用于标签筛选与搜索。
+	 */
+	readonly tags?: readonly string[];
+	/**
+	 * 关联技能 ID 列表（Hermes-Agent 兼容）。
+	 * 例如 `['subagent-driven-development', 'test-driven-development']`，
+	 * 用于 UI 推荐关联技能。
+	 */
+	readonly relatedSkills?: readonly string[];
+	/** 技能作者（Hermes-Agent 兼容） */
+	readonly author?: string;
+	/** 技能许可证（Hermes-Agent 兼容） */
+	readonly license?: string;
+	/**
+	 * 技能支持目录（references/scripts/assets/templates/tests）中的文件清单，
+	 * 为相对技能根目录的路径（如 "references/api.md"、"scripts/run.py"）。
+	 * 对齐 Agent Skills 规范的渐进披露：扫描时索引，模型经 read_skill(path=...) 按需读取。
+	 */
+	readonly supportFiles?: readonly string[];
+	/**
+	 * 技能声明的工具面白名单（Agent Skills 规范 `allowed-tools`）。
+	 * 当前为 prompt 级约束：激活时在注入内容中声明限制；
+	 * 同时透传为元数据，供后续硬裁剪工具面使用。
+	 */
+	readonly allowedTools?: readonly string[];
+	/** 技能声明的偏好模型（Agent Skills 规范扩展，元数据透传） */
+	readonly model?: string;
+	/**
+	 * 当 source === 'workflow' 时指向底层的 IStoredWorkflow.id。
+	 * 用于「工作流作为可执行技能」双向打通：触发该 skill 即执行对应工作流。
+	 */
+	workflowId?: string;
+	/**
+	 * 可执行型技能的执行器描述。存在时表示触发该 skill 不是注入 prompt 文本，
+	 * 而是由执行引擎运行对应执行器（目前仅支持 workflow 类型）。
+	 * 文本型技能（prompt 注入）此字段为空。
+	 */
+	executor?: ISkillExecutor;
+}
+
+/**
+ * 可执行型技能的执行器描述。
+ * 目前仅支持 workflow：触发 skill 即运行 `IWorkflowExecutionService.executeWorkflow(workflowId)`。
+ */
+export interface ISkillExecutor {
+	readonly kind: 'workflow';
+	readonly workflowId: string;
 }
 
 /**
@@ -92,6 +146,11 @@ export interface ISkillInjection {
 	/** 注入位置：'system' 合入 system prompt；'user' 作为独立 user message（推荐）。 */
 	readonly placement: 'system' | 'user';
 	readonly content: string;
+	/**
+	 * 若该 skill 为可执行型（skill.executor 存在），此处回传执行器描述。
+	 * ExecutionProvider 应据其触发执行而非注入 content 文本。
+	 */
+	readonly executor?: ISkillExecutor;
 }
 
 export const ISkillRegistry = createDecorator<ISkillRegistry>('skillRegistry');
@@ -109,6 +168,14 @@ export interface ISkillRegistry {
 
 	/** 按 id 取单个 skill。 */
 	getSkill(id: string): ISkillDefinition | undefined;
+
+	/**
+	 * 读取技能支持目录（references/scripts/assets/templates）中的文件内容。
+	 * 路径安全：仅允许支持目录内的相对路径，拒绝 `..` 遍历。
+	 * @param skillId 技能 id
+	 * @param relativePath 相对技能根目录的路径（如 "references/api.md"）
+	 */
+	readSkillSupportFile(skillId: string, relativePath: string): Promise<string>;
 
 	/** 注册一个内存中的 skill（典型用途：扩展提供）。 */
 	registerSkill(skill: ISkillDefinition): IDisposable;

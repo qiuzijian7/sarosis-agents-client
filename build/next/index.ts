@@ -410,10 +410,30 @@ function getResourcePatternsForTarget(target: BuildTarget): string[] {
 // Utilities
 // ============================================================================
 
+// `fs.promises.rm` with `force:true` still fails with ENOTEMPTY / EPERM on
+// Windows when a child file is momentarily locked by an external reader
+// (anti-virus, the IDE's file watcher, a content indexer, or the running
+// debug target). Node retries those specific error codes automatically when
+// `maxRetries > 0`, and the outer loop adds extra resilience for slower
+// locks so a single transient hold doesn't abort the whole clean.
+async function rmDirRobust(target: string): Promise<void> {
+	let lastErr: unknown;
+	for (let attempt = 0; attempt < 5; attempt++) {
+		try {
+			await fs.promises.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+			return;
+		} catch (err) {
+			lastErr = err;
+			await new Promise(r => setTimeout(r, 400));
+		}
+	}
+	throw lastErr;
+}
+
 async function cleanDir(dir: string): Promise<void> {
 	const fullPath = path.join(REPO_ROOT, dir);
 	console.log(`[clean] ${dir}`);
-	await fs.promises.rm(fullPath, { recursive: true, force: true });
+	await rmDirRobust(fullPath);
 	await fs.promises.mkdir(fullPath, { recursive: true });
 }
 

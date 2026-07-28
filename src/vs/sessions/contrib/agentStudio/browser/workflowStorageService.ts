@@ -23,10 +23,10 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { IWorkflowStorageService, type IStoredWorkflow } from '../common/workflowStorage.js';
+import { IWorkflowVersionService } from '../common/workflowVersionTypes.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { SarosPath, resolveSarosPath } from '../common/sarosPaths.js';
 
-const USER_SAROS_DIR = '.saros';
-const WORKFLOWS_DIR = 'workflows';
 const WORKFLOW_FILE = 'workflow.json';
 const DEFAULT_WORKFLOW_PRESET_ID = 'workflow-agent';
 
@@ -41,6 +41,7 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		@IFileService private readonly _fileService: IFileService,
 		@IAgentStudioService private readonly _studioService: IAgentStudioService,
 		@INativeEnvironmentService private readonly _envService: INativeEnvironmentService,
+		@IWorkflowVersionService private readonly _versionService: IWorkflowVersionService,
 	) {
 		super();
 	}
@@ -48,13 +49,12 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 	// ─── Directory resolution ────────────────────────────────────────────
 
 	/**
-	 * 解析用户级的 `~/.saros/workflows/` 目录 URI。
+	 * 解析用户级的 `~/.vssaros/saros/workflows/` 目录 URI。
 	 * 所有工作流全局存储，不再按工作区隔离。
 	 */
 	private async _resolveWorkflowsDir(_workspaceId?: string): Promise<URI | undefined> {
 		try {
-			const userHome = this._envService.userHome;
-			const dir = URI.joinPath(userHome, USER_SAROS_DIR, WORKFLOWS_DIR);
+			const dir = resolveSarosPath(URI.file(this._envService.userDataPath), SarosPath.workflows);
 			return dir;
 		} catch (err) {
 			this._logService.error('[WorkflowStorage] Failed to resolve user workflows dir', err);
@@ -186,6 +186,9 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		const uri = URI.joinPath(workflowDir, WORKFLOW_FILE);
 		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(workflow, null, 2)));
 		this._logService.info('[WorkflowStorage] Created workflow', id, 'at', uri.toString());
+		// 版本管理：新建 workflow 后异步初始化 git repo + 初始 commit（fire-and-forget）
+		this._versionService.init(id).catch(err =>
+			this._logService.warn(`[WorkflowStorage] version init failed for ${id}:`, err));
 		this._onDidChangeWorkflows.fire();
 		return workflow;
 	}
@@ -210,6 +213,9 @@ export class WorkflowStorageService extends Disposable implements IWorkflowStora
 		await this._ensureDir(workflowDir);
 		const uri = URI.joinPath(workflowDir, WORKFLOW_FILE);
 		await this._fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(updated, null, 2)));
+		// 版本管理：每次保存后异步 auto-commit（fire-and-forget，不阻塞 UI 保存）
+		this._versionService.autoCommit(id).catch(err =>
+			this._logService.warn(`[WorkflowStorage] autoCommit failed for ${id}:`, err));
 		this._onDidChangeWorkflows.fire();
 		return updated;
 	}

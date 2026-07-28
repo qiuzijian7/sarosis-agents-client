@@ -83,10 +83,16 @@ const CODING_FOCUS_TOOLSETS: readonly string[] = [
 	'tool-search',   // 桥接工具
 	'mcp',           // MCP 工具（折叠）
 	'codebase',      // 代码知识图谱（search_graph / query_graph / get_architecture 等）
+	'codebase-grep', // 代码内容 grep（search_code）——事故 1785144631124：漏此项导致 focus 模式
+	                 // 先于 toolsetsOverride 生效时把 search_code 剪掉，子代理只能用 search_files
 	'memory',        // 记忆
 	'skill',         // 技能
 	'delegation',    // 委派
 	'workflow',      // 工作流
+	'knowledge',     // 知识库（kb_ask/kb_search 等）——事故 1785144785309 复审发现漏项：
+	                 // focus 模式几乎在所有代码工作区都会触发，漏掉 knowledge 导致提示词
+	                 // 文字仍列出 kb_* 但实际无 schema 下发
+	'kanban',        // 看板（kanban_* 系列）——同上审计发现的漏项，一并补齐
 ];
 
 // ─── Focus 模式检测 ──────────────────────────────────────────────────────

@@ -64,7 +64,6 @@ export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
 	'write_file',
 	'patch',
 	'todo',
-	'memory',
 	'skill_manage',
 	'browser_click',
 	'browser_type',

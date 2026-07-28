@@ -6,9 +6,9 @@
 /**
  * McpInstaller —— MCP 服务器配置的安装器实现。
  *
- * install: 解压目录的 config.json → 写入 ~/.saros/mcp/{id}/
- *          → 自动注册到 ~/.saros/mcp.json（IntegrationView 白名单）
- * preparePack: 读 ~/.saros/mcp/{id}/config.json → 构造 manifest
+ * install: 解压目录的 config.json → 写入 ~/.vssaros/saros/mcp/{id}/
+ *          → 自动注册到 ~/.vssaros/saros/mcp.json（IntegrationView 白名单）
+ * preparePack: 读 ~/.vssaros/saros/mcp/{id}/config.json → 构造 manifest
  * getInstalledVersion: 从 config.json 的 version 字段读取
  */
 
@@ -19,7 +19,8 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
-import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 
 const MCP_SUBDIR = 'mcp';
 
@@ -41,10 +42,10 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 	readonly kind: PackageKind = 'mcp';
 
 	constructor(
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		@IPathService private readonly pathService: IPathService,
-	) {
+		) {
 		super();
 	}
 
@@ -59,7 +60,7 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		await this.fileService.createFolder(targetDir);
 		await this.copyContents(extractedDir, targetDir);
 
-		// 自动注册到 ~/.saros/mcp.json（IntegrationView 白名单）
+		// 自动注册到 ~/.vssaros/saros/mcp.json（IntegrationView 白名单）
 		try {
 			await this._registerToMcpJson(manifest.id, targetDir);
 		} catch (e) {
@@ -67,7 +68,7 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		}
 
 		this.logService.info(`[McpInstaller] 安装完成: ${manifest.id} v${manifest.version} → ${targetDir.fsPath}`);
-		this.logService.info(`[McpInstaller] 已自动注册到 ~/.saros/mcp.json，Integration 面板将显示该服务器`);
+		this.logService.info(`[McpInstaller] 已自动注册到 ~/.vssaros/saros/mcp.json，Integration 面板将显示该服务器`);
 
 		return { kind: 'mcp', storeId: manifest.id, version: manifest.version, targetDir: targetDir.fsPath };
 	}
@@ -114,11 +115,10 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 	// ── 内部 ──────────────────────────────────────────────────
 
 	private async resolveDir(id: string): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', MCP_SUBDIR, id);
+		return resolveSarosPath(this._getSarosRoot(), MCP_SUBDIR, id);
 	}
 
-	/** 将 config.json 转换为 ~/.saros/mcp.json 的 server 条目格式 */
+	/** 将 config.json 转换为 ~/.vssaros/saros/mcp.json 的 server 条目格式 */
 	private _convertToMcpJsonEntry(config: McpConfig): Record<string, unknown> {
 		const transport = config.transport || 'stdio';
 		const entry: Record<string, unknown> = { disabled: false };
@@ -141,7 +141,7 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		return entry;
 	}
 
-	/** 读取/创建 ~/.saros/mcp.json，添加或更新服务器条目 */
+	/** 读取/创建 ~/.vssaros/saros/mcp.json，添加或更新服务器条目 */
 	private async _registerToMcpJson(serverId: string, configDir: URI): Promise<void> {
 		// 1. 读取刚安装的 config.json
 		const configUri = URI.joinPath(configDir, 'config.json');
@@ -151,9 +151,8 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		// 2. 转换为 mcp.json 格式
 		const entry = this._convertToMcpJsonEntry(config);
 
-		// 3. 读取现有 ~/.saros/mcp.json
-		const userHome = await this.pathService.userHome();
-		const mcpJsonUri = URI.joinPath(userHome, '.saros', 'mcp.json');
+		// 3. 读取现有 ~/.vssaros/saros/mcp.json
+		const mcpJsonUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 		let mcpConfig: { servers: Record<string, any> } = { servers: {} };
 		try {
 			if (await this.fileService.exists(mcpJsonUri)) {
@@ -172,7 +171,7 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 		await this.fileService.createFolder(URI.joinPath(mcpJsonUri, '..'));
 		await this.fileService.writeFile(mcpJsonUri, VSBuffer.fromString(JSON.stringify(mcpConfig, null, 2)));
 
-		this.logService.info(`[McpInstaller] 已注册 MCP 服务器 "${serverId}" 到 ~/.saros/mcp.json (type=${entry.type})`);
+		this.logService.info(`[McpInstaller] 已注册 MCP 服务器 "${serverId}" 到 ~/.vssaros/saros/mcp.json (type=${entry.type})`);
 	}
 
 	private async copyContents(srcDir: URI, destDir: URI): Promise<void> {
@@ -189,5 +188,9 @@ export class McpInstaller extends Disposable implements IPackageInstaller {
 				await this.fileService.copy(child.resource, target, true);
 			}
 		}
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

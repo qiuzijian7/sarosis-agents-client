@@ -15,7 +15,6 @@ import type {
 	IAgentInfo,
 	IProviderInfo,
 	IModelInfo,
-	ChatMode,
 	StreamPhase,
 	IWorktreeItem,
 	IWorkspaceItem,
@@ -62,7 +61,7 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 	private _streamPhase: StreamPhase = 'idle';
 	private _currentProvider = "";
 	private _currentModel = "";
-	private _chatMode: ChatMode = 'craft';
+	private _chatOnly: boolean = false;
 	private _contextUsage: IContextUsage | null = null;
 	private _streamTextBuffer: string = '';
 	private _streamThinkingBuffer: string = '';
@@ -348,8 +347,9 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 	// IChatPanel — Session / worktree / mode
 	// ═════════════════════════════════════════════════════════════════
 
-	setChatMode(mode: ChatMode): void {
-		this._chatMode = mode;
+	// ChatOnly toggle — replaces legacy setChatMode(mode: ChatMode)
+	setChatOnly(chatOnly: boolean): void {
+		this._chatOnly = chatOnly;
 		this._renderPromptMeta();
 	}
 
@@ -404,6 +404,9 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 	focusInput(): void {
 		this._textarea?.focus();
 	}
+
+	getComposerText(): string { return this._textarea?.value ?? ''; }
+	setComposerText(text: string): void { if (this._textarea) { this._textarea.value = text; } }
 
 	layout(_width: number, _height: number): void {
 		// CSS flexbox handles layout
@@ -680,7 +683,7 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 
 		const mode = document.createElement('span');
 		mode.className = 'cli-footer-mode';
-		mode.textContent = this._chatMode.charAt(0).toUpperCase() + this._chatMode.slice(1);
+		mode.textContent = this._chatOnly ? '只读' : '正常';
 
 		const sep1 = document.createElement('span');
 		sep1.className = 'cli-footer-sep';
@@ -859,11 +862,11 @@ export class CliChatEditorPanel extends Disposable implements IChatPanel {
 			search_pathnames_only: '✱', search_for_files: '✱',
 			web_fetch: '%', http_get: '%', web_search: '◈',
 			delegate_task: '│', task: '│', subagent: '│',
-			skill_manage: '→', read_skill: '→', skill_view: '→', list_skills: '→', skills_list: '→',
+			skill_manage: '→', read_skill: '→', list_skills: '→',
 			todo: '⚙', todowrite: '⚙', update_plan: '⚙',
 			clarify: '→', question: '→',
-			memory_remember: '⚙', memory_search: '⚙', memory_delete: '⚙', memory_list: '⚙',
-			recall: '⚙', memory: '⚙',
+			memory_remember: '⚙', memory_list: '⚙',
+			recall: '⚙',
 		};
 		return icons[name] ?? '⚙';
 	}

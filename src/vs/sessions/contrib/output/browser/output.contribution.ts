@@ -97,7 +97,7 @@ class RegisterSidebarOutputViewContribution extends Disposable implements IWorkb
 			id: SIDEBAR_OUTPUT_CONTAINER_ID,
 			title: localize2('output', 'Output'),
 			icon: sidebarOutputViewIcon,
-			order: 50,
+			order: 160,
 			ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [SIDEBAR_OUTPUT_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: true }]),
 			storageId: SIDEBAR_OUTPUT_CONTAINER_ID,
 			hideIfEmpty: false,

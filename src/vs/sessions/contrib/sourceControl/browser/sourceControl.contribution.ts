@@ -450,14 +450,14 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 			const toAdd = desired.filter(r => !currentVisibleSet.has(r));
 			const toRemove = currentVisible.filter(r => !desiredSet.has(r));
 
-			console.log(`${tag} reconcile[${phase}] allowedRoots=[${allowedRoots.map(fmt).join(', ')}]`);
-			console.log(`${tag}   registered(${allRepos.length})=[${allRepos.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
-			console.log(`${tag}   visibleBefore(${currentVisible.length})=[${currentVisible.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
-			console.log(`${tag}   desired(${desired.length})=[${desired.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
-			console.log(`${tag}   toAdd(${toAdd.length})=[${toAdd.map(r => fmt(r.provider.rootUri)).join(', ')}] toRemove(${toRemove.length})=[${toRemove.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+			console.debug(`${tag} reconcile[${phase}] allowedRoots=[${allowedRoots.map(fmt).join(', ')}]`);
+			console.debug(`${tag}   registered(${allRepos.length})=[${allRepos.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+			console.debug(`${tag}   visibleBefore(${currentVisible.length})=[${currentVisible.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+			console.debug(`${tag}   desired(${desired.length})=[${desired.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
+			console.debug(`${tag}   toAdd(${toAdd.length})=[${toAdd.map(r => fmt(r.provider.rootUri)).join(', ')}] toRemove(${toRemove.length})=[${toRemove.map(r => fmt(r.provider.rootUri)).join(', ')}]`);
 
 			if (toAdd.length === 0 && toRemove.length === 0) {
-				console.log(`${tag}   reconcile[${phase}] no change`);
+				console.debug(`${tag}   reconcile[${phase}] no change`);
 				return;
 			}
 			// Assign the fully-aligned desired set in registry order. Setting the

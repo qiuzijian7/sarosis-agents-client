@@ -194,6 +194,11 @@
 .kb-status.indexed { background: var(--vscode-testing-iconPassed, #6a9955); }
 .kb-status.modified { background: var(--vscode-editorWarning-foreground, #dcdcaa); }
 
+/* P0-1 去抽象化门控：pending（单一来源待确认）笔记灰显 + ⏳ 徽标 */
+.kb-tree-node.kb-pending .kb-name { opacity: 0.5; font-style: italic; }
+.kb-tree-node.kb-pending .kb-icon { opacity: 0.35 !important; }
+.kb-tree-node .kb-pending-badge { font-size: 10px; margin-left: 4px; flex-shrink: 0; opacity: 0.75; }
+
 /* action buttons — hidden by default, shown on hover (SiYuan b3-list-item--hide-action) */
 .kb-node .kb-actions { display: none; align-items: center; gap: 1px; margin-left: 4px; }
 .kb-node:hover .kb-actions { display: flex; }
@@ -248,18 +253,23 @@
 .kb-dropdown .kb-opt .kb-sub { font-size: 10px; color: var(--vscode-descriptionForeground); font-family: var(--vscode-font-family); }
 .kb-dropdown .kb-divider { height: 1px; background: var(--vscode-panel-border, var(--vscode-sideBar-border)); margin: 3px 0; }
 
-/* settings panel (⚙ 知识库设置 — 根目录自定义) */
-.kb-settings { min-width: 300px; padding: 4px 0; }
+/* settings panel (⚙ 知识库设置 — 根目录 / Embedding 模型 / 向量索引) */
+.kb-settings { min-width: 260px; max-width: 480px; padding: 4px 0; box-sizing: border-box; }
 .kb-settings .kb-set-row { display: flex; align-items: center; gap: 6px; padding: 8px 12px; }
-.kb-settings .kb-set-label { font-size: 11px; font-weight: 600; flex-shrink: 0; color: var(--vscode-foreground); }
-.kb-settings .kb-set-path { flex: 1; font-family: var(--vscode-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kb-settings .kb-set-input { flex: 1; background: var(--vscode-input-background, #3c3c3c); border: 1px solid var(--vscode-focusBorder, #007fd4); border-radius: 3px; padding: 3px 6px; color: var(--vscode-input-foreground, #cccccc); font-family: var(--vscode-font-family); font-size: 11px; outline: none; min-width: 0; }
+.kb-settings .kb-set-label { font-size: 11px; font-weight: 600; flex-shrink: 0; color: var(--vscode-foreground); min-width: 64px; }
+.kb-settings .kb-set-path { flex: 1; min-width: 0; font-family: var(--vscode-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-settings .kb-set-input { flex: 1; min-width: 0; background: var(--vscode-input-background, #3c3c3c); border: 1px solid var(--vscode-focusBorder, #007fd4); border-radius: 3px; padding: 3px 6px; color: var(--vscode-input-foreground, #cccccc); font-family: var(--vscode-font-family); font-size: 11px; outline: none; }
 .kb-settings .kb-set-btn { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 4px; cursor: pointer; color: var(--vscode-descriptionForeground); font-size: 13px; border: 1px solid transparent; flex-shrink: 0; }
 .kb-settings .kb-set-btn:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
 .kb-settings .kb-set-btn.primary { color: var(--vscode-button-background, #0e639c); }
-.kb-settings .kb-set-hint { font-size: 10px; color: var(--vscode-descriptionForeground); padding: 0 12px 8px; line-height: 1.4; }
-.kb-settings .kb-set-action { width: 100%; text-align: center; padding: 7px 12px; margin: 2px 8px 4px; border-radius: 4px; cursor: pointer; font-size: 12px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #cccccc); }
+.kb-settings .kb-set-hint { font-size: 10px; color: var(--vscode-descriptionForeground); padding: 0 12px 8px; line-height: 1.4; word-break: break-word; }
+.kb-settings .kb-set-action { width: calc(100% - 16px); box-sizing: border-box; text-align: center; padding: 7px 12px; margin: 2px 8px 4px; border-radius: 4px; cursor: pointer; font-size: 12px; background: var(--vscode-button-secondaryBackground, #3a3d41); color: var(--vscode-button-secondaryForeground, #cccccc); }
 .kb-settings .kb-set-action:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+.kb-settings .kb-set-action.warn { background: var(--vscode-inputValidation-warningBackground, #352a05); color: var(--vscode-inputValidation-warningForeground, #cca700); }
+.kb-settings .kb-set-select { flex: 1; min-width: 0; background: var(--vscode-input-background, #3c3c3c); border: 1px solid var(--vscode-input-border, #555); border-radius: 3px; padding: 3px 6px; color: var(--vscode-input-foreground, #cccccc); font-family: var(--vscode-font-family); font-size: 11px; outline: none; cursor: pointer; }
+.kb-settings .kb-set-select:focus { border-color: var(--vscode-focusBorder, #007fd4); }
+.kb-settings .kb-set-num { flex: 0 0 80px; background: var(--vscode-input-background, #3c3c3c); border: 1px solid var(--vscode-input-border, #555); border-radius: 3px; padding: 3px 6px; color: var(--vscode-input-foreground, #cccccc); font-family: var(--vscode-font-family); font-size: 11px; outline: none; }
+.kb-settings .kb-set-num:focus { border-color: var(--vscode-focusBorder, #007fd4); }
 
 /* sort dropdown */
 .kb-sort-group { padding: 4px 8px; }
@@ -682,6 +692,27 @@
 }
 .kb-note-preview .kb-blockref:hover {
 	background: var(--vscode-textPreformat-background, rgba(128,128,128,0.3));
+}
+
+/* ── 工作区分组（.code-workspace 导入） ── */
+.kb-linked-ws.kb-linked-group { cursor: pointer; }
+.kb-linked-ws.kb-linked-group:hover { background: var(--vscode-list-hoverBackground); }
+.kb-linked-ws .kb-children { padding-left: 18px; border-left: 1px solid var(--vscode-panel-border, #444); margin: 2px 0; }
+.kb-linked-ws .kb-children .kb-node { padding-left: 4px; }
+
+/* ── 记忆库 Section ── */
+.kb-mem-header:hover {
+	background: var(--vscode-toolbar-hoverBackground, #252525) !important;
+}
+
+/* ── 拖拽分隔条 hover ── */
+.kb-drag-handle:hover {
+	background: var(--vscode-focusBorder, #007acc) !important;
+}
+
+/* ── 记忆库入口块 ── */
+.kb-mem-entry {
+	transition: background .1s, border-color .1s;
 }
 
 

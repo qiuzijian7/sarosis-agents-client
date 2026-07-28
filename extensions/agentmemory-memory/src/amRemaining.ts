@@ -8,7 +8,7 @@
 
 import type { StateKV } from './stateKV.js';
 import { KV, generateId } from './amSchema.js';
-import type { Memory, Lesson } from './amTypes.js';
+import type { Memory, Lesson, SemanticMemory, ProceduralMemory } from './amTypes.js';
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -30,8 +30,12 @@ export interface TeamSharedItem {
 	content: unknown; project: string; visibility: 'shared'|'private';
 }
 export interface MeshPeer {
-	id: string; name: string; url: string; status: 'online'|'offline';
+	id: string; name: string; url: string; status: 'online'|'offline'|'syncing'|'error';
 	lastSeen: string; sharedScopes: string[];
+	/** 上次成功同步时间（delta 收集的水位线） */
+	lastSyncAt?: string;
+	/** 同步过滤（如限定 project；对齐原版 syncFilter） */
+	syncFilter?: { project?: string };
 }
 export interface TemporalEdge {
 	id: string; source: string; target: string; type: string;
@@ -93,6 +97,48 @@ export async function routineRun(kv: StateKV, agentId: string, routineId: string
 	return run;
 }
 
+/** 推进 routine 执行进度：记录步骤结果、推进 currentStep，末步完成时自动标记 run 为 completed。 */
+export async function routineStepUpdate(
+	kv: StateKV, agentId: string, runId: string, stepOrder: number,
+	status: 'done' | 'failed' | 'skipped' | 'running',
+	result?: string, error?: string,
+): Promise<RoutineRun | null> {
+	const runs = await kv.list<RoutineRun>(KV.procedural(agentId));
+	const run = runs.find(r => r.id === runId);
+	if (!run) return null;
+	const routines = await kv.list<Routine>(KV.procedural(agentId));
+	const routine = routines.find(r => r.id === run.routineId);
+	if (!routine) return null;
+	const total = routine.steps.length;
+	// 仅前向推进 currentStep（done 才推进，避免失败步骤回退）
+	if (status === 'done' && stepOrder + 1 > run.currentStep) {
+		run.currentStep = Math.min(stepOrder + 1, total);
+	}
+	run.runLog = run.runLog ?? [];
+	run.runLog.push(`${stepOrder}:${status}${result ? ` ${result}` : ''}${error ? ` ERROR=${error}` : ''}`);
+	const lastOrder = total - 1;
+	if (stepOrder >= lastOrder && (status === 'done' || status === 'skipped')) {
+		run.status = 'completed';
+		run.completedAt = new Date().toISOString();
+	} else if (status === 'failed') {
+		run.status = 'failed';
+	}
+	await kv.set(KV.procedural(agentId), run.id, run as unknown as Record<string, unknown>);
+	return run;
+}
+
+/** 删除 routine 及其所有 run 记录。 */
+export async function routineDelete(kv: StateKV, agentId: string, routineId: string): Promise<boolean> {
+	const routines = await kv.list<Routine>(KV.procedural(agentId));
+	if (!routines.find(r => r.id === routineId)) return false;
+	const runs = await kv.list<RoutineRun>(KV.procedural(agentId));
+	for (const r of runs) {
+		if (r.routineId === routineId) await kv.delete(KV.procedural(agentId), r.id);
+	}
+	await kv.delete(KV.procedural(agentId), routineId);
+	return true;
+}
+
 // ─── 2. Team Sharing（对齐 agentmemory team.ts，简化版）──────────────────────
 
 export async function teamShare(kv: StateKV, agentId: string,
@@ -105,13 +151,17 @@ export async function teamShare(kv: StateKV, agentId: string,
 		sharedAt: new Date().toISOString(), type: itemType,
 		content, project: project || '', visibility: 'shared',
 	};
-	await kv.set(KV.summaries(agentId), shared.id, shared as unknown as Record<string,unknown>);
+	// D1 修复（doc §13）：写全局 team scope（mem:team:<teamId>:shared，teamId=project||'default'）
+	// ——跨 agent 可见。此前误写 per-agent summaries scope：其他 agent 永远看不到
+	// （共享语义失效），且 TeamSharedItem 混入摘要被 buildContext 当 SessionSummary 注入。
+	const teamId = project || 'default';
+	await kv.set(KV.teamShared(teamId), shared.id, shared as unknown as Record<string,unknown>);
 	return { success: true, item: shared };
 }
 
-export async function teamQuery(kv: StateKV, agentId: string, query?: string): Promise<TeamSharedItem[]> {
-	const all = await kv.list<TeamSharedItem>(KV.summaries(agentId));
-	const items = all.filter((s: any) => s.id?.startsWith('ts'));
+export async function teamQuery(kv: StateKV, agentId: string, query?: string, teamId: string = 'default'): Promise<TeamSharedItem[]> {
+	// D1 修复：查全局 team scope（跨 agent 共享池），不再过滤 per-agent summaries
+	const items = await kv.list<TeamSharedItem>(KV.teamShared(teamId));
 	if (!query) return items as TeamSharedItem[];
 	const q = query.toLowerCase();
 	return (items as TeamSharedItem[]).filter(i => JSON.stringify(i.content).toLowerCase().includes(q));
@@ -139,6 +189,270 @@ export async function meshLeave(kv: StateKV, agentId: string, peerId: string): P
 	peer.status = 'offline';
 	await kv.set(KV.state(agentId), `mesh:${peerId}`, peer as unknown as Record<string,unknown>);
 	return true;
+}
+
+// ─── 3b. Mesh Sync（复刻 agentmemory mem::mesh-sync / mem::mesh-receive，mesh.ts:196-372）───
+
+export interface MeshSyncPayload {
+	sourceAgentId?: string;
+	memories?: Memory[];
+	actions?: Array<Record<string, unknown>>;
+	semantic?: SemanticMemory[];
+	procedural?: ProceduralMemory[];
+	relations?: Array<Record<string, unknown>>;
+}
+
+const MESH_SYNC_SCOPES = ['memories', 'actions', 'semantic', 'procedural', 'relations'] as const;
+
+/** 复刻原版 isPrivateIP（mesh.ts:19-30） */
+function isPrivateIP(ip: string): boolean {
+	if (ip === '127.0.0.1' || ip === '::1' || ip === '0.0.0.0') { return true; }
+	if (ip.startsWith('10.') || ip.startsWith('192.168.')) { return true; }
+	if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) { return true; }
+	if (ip === '169.254.169.254') { return true; }
+	if (ip.startsWith('fe80:') || ip.startsWith('fc00:') || ip.startsWith('fd')) { return true; }
+	if (ip.startsWith('::ffff:')) { return isPrivateIP(ip.slice(7)); }
+	return false;
+}
+
+/** SSRF 防护（复刻原版 isAllowedUrl，mesh.ts:32-55）。
+ *  与原版差异：AGENTMEMORY_MESH_ALLOW_LOCAL=true 时放行本机/私网——
+ *  原版 mesh 面向公网对等节点故默认阻断；本项目主场景是同机/局域网
+ *  多 IDE 实例互联（且同步本身需 AGENTMEMORY_SECRET 鉴权），提供显式开关。 */
+export async function isAllowedMeshUrl(urlStr: string): Promise<boolean> {
+	try {
+		const parsed = new URL(urlStr);
+		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { return false; }
+		if (parsed.username || parsed.password) { return false; }
+		const allowLocal = (typeof process !== 'undefined' ? process.env['AGENTMEMORY_MESH_ALLOW_LOCAL'] : undefined) === 'true';
+		const host = parsed.hostname.toLowerCase();
+		let isLocal = host === 'localhost';
+		if (!isLocal) {
+			try {
+				const { isIP } = await import('node:net');
+				if (isIP(host)) {
+					isLocal = isPrivateIP(host);
+				} else {
+					// 域名：解析到私网地址则按私网处理（失败放行——fetch 会兜底失败）
+					try {
+						const { lookup } = await import('node:dns/promises');
+						const resolved = await lookup(host, { all: true });
+						isLocal = resolved.some(r => isPrivateIP(r.address));
+					} catch { /* allow */ }
+				}
+			} catch { /* node:net 不可用时按非 IP 处理 */ }
+		}
+		return isLocal ? allowLocal : true;
+	} catch {
+		return false;
+	}
+}
+
+function deltaFilter<T>(items: T[], sinceTime: number, tsField: 'updatedAt' | 'createdAt'): T[] {
+	return items.filter(item => {
+		const ts = (item as Record<string, unknown>)[tsField];
+		return typeof ts === 'string' && new Date(ts).getTime() > sinceTime;
+	});
+}
+
+/** 收集同步数据（mem::mesh-export 数据源）：delta since + syncFilter */
+export async function collectSyncData(
+	kv: StateKV, agentId: string, scopes: readonly string[], since?: string, syncFilter?: { project?: string },
+): Promise<MeshSyncPayload> {
+	const result: MeshSyncPayload = { sourceAgentId: agentId };
+	const parsed = since ? new Date(since).getTime() : 0;
+	const sinceTime = Number.isNaN(parsed) ? 0 : parsed;
+	const projectScoped = !!syncFilter?.project;
+
+	if (scopes.includes('memories')) {
+		let all = await kv.list<Memory>(KV.memories(agentId));
+		if (syncFilter?.project) { all = all.filter(m => m.project === syncFilter.project); }
+		result.memories = deltaFilter(all, sinceTime, 'updatedAt');
+	}
+	if (scopes.includes('actions')) {
+		let all = await kv.list<Record<string, unknown>>(KV.actions(agentId));
+		if (syncFilter?.project) { all = all.filter(a => a['project'] === syncFilter.project); }
+		result.actions = deltaFilter(all, sinceTime, 'updatedAt');
+	}
+	if (scopes.includes('semantic') && !projectScoped) {
+		const all = (await kv.list<unknown>(KV.semantic(agentId)))
+			.filter((e): e is SemanticMemory => typeof e === 'object' && e !== null && !Array.isArray(e));
+		result.semantic = deltaFilter(all, sinceTime, 'updatedAt');
+	}
+	if (scopes.includes('procedural') && !projectScoped) {
+		const all = (await kv.list<unknown>(KV.procedural(agentId)))
+			.filter((e): e is ProceduralMemory => typeof e === 'object' && e !== null && !Array.isArray(e));
+		result.procedural = deltaFilter(all, sinceTime, 'updatedAt');
+	}
+	if (scopes.includes('relations') && !projectScoped) {
+		const all = await kv.list<Record<string, unknown>>(KV.relations(agentId));
+		result.relations = deltaFilter(all, sinceTime, 'createdAt');
+	}
+	return result;
+}
+
+/** LWW 合并（复刻原版 lwwMergeList；无 withKeyedLock——in-process 单线程网关） */
+async function lwwMergeList<T extends { id: string }>(
+	kv: StateKV, scope: string, items: T[] | undefined, tsField: 'updatedAt' | 'createdAt',
+): Promise<number> {
+	if (!items || !Array.isArray(items)) { return 0; }
+	let count = 0;
+	for (const item of items) {
+		if (!item.id || typeof item.id !== 'string') { continue; }
+		const ts = (item as Record<string, unknown>)[tsField];
+		if (typeof ts !== 'string' || Number.isNaN(new Date(ts).getTime())) { continue; }
+		const existing = await kv.get<T>(scope, item.id);
+		if (!existing) {
+			await kv.set(scope, item.id, item);
+			count++;
+		} else {
+			const existingTs = (existing as Record<string, unknown>)[tsField] as string;
+			if (new Date(ts) > new Date(existingTs)) {
+				await kv.set(scope, item.id, item);
+				count++;
+			}
+		}
+	}
+	return count;
+}
+
+/** 应用同步数据（mesh-receive 与 mesh-sync pull 共用） */
+export async function applySyncData(
+	kv: StateKV, agentId: string, data: MeshSyncPayload, scopes: readonly string[],
+): Promise<number> {
+	let applied = 0;
+	if (scopes.includes('memories')) {
+		applied += await lwwMergeList(kv, KV.memories(agentId), data.memories, 'updatedAt');
+	}
+	if (scopes.includes('actions')) {
+		applied += await lwwMergeList(kv, KV.actions(agentId), data.actions as Array<{ id: string }> | undefined, 'updatedAt');
+	}
+	if (scopes.includes('semantic')) {
+		applied += await lwwMergeList(kv, KV.semantic(agentId), data.semantic, 'updatedAt');
+	}
+	if (scopes.includes('procedural')) {
+		applied += await lwwMergeList(kv, KV.procedural(agentId), data.procedural, 'updatedAt');
+	}
+	if (scopes.includes('relations') && data.relations) {
+		for (const rel of data.relations) {
+			const sourceId = rel['sourceId'] as string | undefined;
+			const targetId = rel['targetId'] as string | undefined;
+			const type = rel['type'] as string | undefined;
+			if (!sourceId || !targetId || !type) { continue; }
+			const relKey = `${sourceId}:${targetId}:${type}`;
+			const existing = await kv.get(KV.relations(agentId), relKey);
+			if (!existing) {
+				await kv.set(KV.relations(agentId), relKey, rel);
+				applied++;
+			}
+		}
+	}
+	return applied;
+}
+
+/** mem::mesh-receive：接受远端推送，LWW 合并 + 审计 */
+export async function meshReceive(
+	kv: StateKV, agentId: string, data: MeshSyncPayload,
+): Promise<{ success: boolean; accepted: number; error?: string }> {
+	if (!data || typeof data !== 'object') {
+		return { success: false, accepted: 0, error: 'payload required' };
+	}
+	const accepted = await applySyncData(kv, agentId, data, MESH_SYNC_SCOPES);
+	const auditId = generateId('audit');
+	await kv.set(KV.state(agentId), auditId, {
+		id: auditId, ts: new Date().toISOString(), action: 'mesh_receive', actor: 'mem::mesh-receive',
+		targets: [], details: { accepted, sourceAgentId: data.sourceAgentId ?? 'unknown' },
+	}).catch(() => {});
+	return { success: true, accepted };
+}
+
+/** mem::mesh-sync：对等同步（push + pull，delta since lastSyncAt）。
+ *  需 AGENTMEMORY_SECRET（双方一致）；AGENTMEMORY_MESH_ALLOW_LOCAL=true 才允许本机/私网对等。 */
+export async function meshSync(
+	kv: StateKV, agentId: string,
+	opts?: { peerId?: string; scopes?: string[]; direction?: 'push' | 'pull' | 'both' },
+): Promise<{ success: boolean; results?: Array<{ peerId: string; peerName: string; pushed: number; pulled: number; errors: string[] }>; error?: string }> {
+	const secret = typeof process !== 'undefined' ? process.env['AGENTMEMORY_SECRET'] : undefined;
+	if (!secret) {
+		return { success: false, error: 'mesh sync requires AGENTMEMORY_SECRET' };
+	}
+	const direction = opts?.direction ?? 'both';
+	let peers: MeshPeer[];
+	if (opts?.peerId) {
+		const peer = await kv.get<MeshPeer>(KV.state(agentId), `mesh:${opts.peerId}`);
+		if (!peer) { return { success: false, error: 'peer not found' }; }
+		peers = [peer];
+	} else {
+		peers = await meshList(kv, agentId);
+	}
+	peers = peers.filter(p => p.status !== 'offline');
+
+	const results: Array<{ peerId: string; peerName: string; pushed: number; pulled: number; errors: string[] }> = [];
+	for (const peer of peers) {
+		const result = { peerId: peer.id, peerName: peer.name, pushed: 0, pulled: 0, errors: [] as string[] };
+		const scopes = opts?.scopes ?? peer.sharedScopes ?? ['memories', 'actions'];
+		peer.status = 'syncing';
+		await kv.set(KV.state(agentId), `mesh:${peer.id}`, peer as unknown as Record<string, unknown>);
+		try {
+			if (!(await isAllowedMeshUrl(peer.url))) {
+				result.errors.push('peer URL blocked: private/local address not allowed (set AGENTMEMORY_MESH_ALLOW_LOCAL=true for LAN peers)');
+			} else {
+				const base = peer.url.replace(/\/+$/, '');
+				if (direction === 'push' || direction === 'both') {
+					try {
+						const pushData = await collectSyncData(kv, agentId, scopes, peer.lastSyncAt, peer.syncFilter);
+						const response = await fetch(`${base}/mesh/receive?agent=${encodeURIComponent(agentId)}`, {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${secret}` },
+							body: JSON.stringify(pushData),
+							signal: AbortSignal.timeout(30000),
+							redirect: 'error',
+						});
+						if (response.ok) {
+							const body = await response.json() as { accepted?: number };
+							result.pushed = body.accepted ?? 0;
+						} else {
+							result.errors.push(`push failed: HTTP ${response.status}`);
+						}
+					} catch (err) {
+						result.errors.push(`push failed: ${String(err)}`);
+					}
+				}
+				if (direction === 'pull' || direction === 'both') {
+					try {
+						const response = await fetch(
+							`${base}/mesh/export?agent=${encodeURIComponent(agentId)}&since=${encodeURIComponent(peer.lastSyncAt ?? '')}&scopes=${encodeURIComponent(scopes.join(','))}`,
+							{ headers: { 'Authorization': `Bearer ${secret}` }, signal: AbortSignal.timeout(30000), redirect: 'error' },
+						);
+						if (response.ok) {
+							const pullData = await response.json() as MeshSyncPayload;
+							result.pulled = await applySyncData(kv, agentId, pullData, scopes);
+						} else {
+							result.errors.push(`pull failed: HTTP ${response.status}`);
+						}
+					} catch (err) {
+						result.errors.push(`pull failed: ${String(err)}`);
+					}
+				}
+			}
+			peer.status = result.errors.length > 0 ? 'error' : 'online';
+			if (result.errors.length === 0) {
+				peer.lastSyncAt = new Date().toISOString();
+				peer.lastSeen = peer.lastSyncAt;
+			}
+		} catch (err) {
+			peer.status = 'error';
+			result.errors.push(String(err));
+		}
+		await kv.set(KV.state(agentId), `mesh:${peer.id}`, peer as unknown as Record<string, unknown>);
+		const auditId = generateId('audit');
+		await kv.set(KV.state(agentId), auditId, {
+			id: auditId, ts: new Date().toISOString(), action: 'mesh_sync', actor: 'mem::mesh-sync',
+			targets: [peer.id], details: { direction, scopes, pushed: result.pushed, pulled: result.pulled, errors: result.errors, lastSyncAt: peer.lastSyncAt },
+		}).catch(() => {});
+		results.push(result);
+	}
+	return { success: true, results };
 }
 
 // ─── 4. Temporal Graph（对齐 agentmemory temporal-graph.ts，简化版）───────────

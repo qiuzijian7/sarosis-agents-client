@@ -14,6 +14,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { ICheckpointService } from '../common/checkpointService.js';
+import { resolveSarosPath } from '../common/sarosPaths.js';
 import {
 	ICheckpoint,
 	ICheckpointFileChange,
@@ -197,9 +198,10 @@ export class CheckpointService extends Disposable implements ICheckpointService 
 		}
 
 		if (!baseDir) {
-			// Fallback: user-home dir keeps the feature alive for virtual workspaces.
-			// Unified with other modules under ~/.saros/ (userHome).
-			baseDir = joinPath(this.environmentService.userHome, '.saros', 'checkpoints');
+			// Fallback: user-data dir keeps the feature alive for virtual workspaces.
+			// Unified with other modules under ~/.vssaros/saros/.
+			const root = resolveSarosPath(URI.file(this.environmentService.userDataPath));
+			baseDir = joinPath(root, 'checkpoints');
 		}
 
 		return joinPath(baseDir, '.sarosworkspace', 'checkpoints', agentId, sessionId);

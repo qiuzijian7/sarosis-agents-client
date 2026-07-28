@@ -37,6 +37,13 @@ import { IFileDialogService, IDialogService } from '../../../../../platform/dial
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
+import { INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
+import { IRequestService } from '../../../../../platform/request/common/request.js';
+import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
+import { KbImportController } from '../kbImportController.js';
+import type { IKbVault } from './knowledgeBase/kbTypes.js';
+import { IIndexConfig, IndexMode, ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 import { WorkbenchCompressibleAsyncDataTree } from '../../../../../platform/list/browser/listService.js';
 import { createFileIconThemableTreeContainerScope } from '../../../../../workbench/contrib/files/browser/views/explorerView.js';
 import { ProgressBar } from '../../../../../base/browser/ui/progressbar/progressbar.js';
@@ -417,6 +424,10 @@ export class WorkspaceViewPane extends ViewPane {
 	 */
 	private _isRefreshing = false;
 
+	/** 知识库导入控制器（入口+抽取）。供工作区文件右键「导入知识库」使用。 */
+	private readonly _kbImport: KbImportController;
+
+
 	constructor(
 		options: IViewPaneOptions,
 		@IKeybindingService keybindingService: IKeybindingService,
@@ -439,8 +450,18 @@ export class WorkspaceViewPane extends ViewPane {
 		@IWorkingCopyFileService private readonly workingCopyFileService: IWorkingCopyFileService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IDialogService private readonly dialogService: IDialogService,
+		@IStorageService private readonly storageService: IStorageService,
+		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
+		@INativeEnvironmentService private readonly _envService: INativeEnvironmentService,
+		@IViewsService private readonly _viewsService: IViewsService,
+		@IRequestService private readonly _requestService: IRequestService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
+		this._kbImport = new KbImportController(
+			configurationService, this.logService, this.fileService, this._envService,
+			this.storageService, this.agentStudioService, this._viewsService, this.editorService,
+			this.notificationService, this._requestService,
+		);
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -508,6 +529,29 @@ export class WorkspaceViewPane extends ViewPane {
 			this._register(this.fileService.onDidFilesChange(e => this._onDidFilesChange(e)));
 		} catch (err) {
 			this.logService.warn('[WorkspaceViewPane] Could not subscribe to file changes:', err);
+		}
+
+		// ─── Codebase Memory 索引进度 → 树节点 ⏳ 指示器 ────────────
+		try {
+			let indexingPath: string | undefined;
+			this._register(this._cbmService.onDidIndexProgress((line: string) => {
+				// 解析 "▶ 开始索引代码库: /path/to/workspace" → 提取路径
+				const match = line.match(/▶\s*开始索引代码库:\s*(.+)/);
+				if (match) {
+					indexingPath = match[1].trim();
+					this._updateIndexingFlags(indexingPath, true);
+				}
+			}));
+			this._register(this._cbmService.onDidIndexComplete(() => {
+				if (indexingPath) {
+					this._updateIndexingFlags(indexingPath, false);
+					indexingPath = undefined;
+				}
+				// 兜底：清除所有可能残留的 indexing 标记
+				this._clearAllIndexingFlags();
+			}));
+		} catch (err) {
+			this.logService.warn('[WorkspaceViewPane] Could not subscribe to indexing events:', err);
 		}
 	}
 
@@ -691,7 +735,28 @@ export class WorkspaceViewPane extends ViewPane {
 	private _getContextMenuActions(element: IWorkspaceExplorerElement): IAction[] {
 		const resource = element.resource;
 		const isFile = !element.isDirectory;
+		const isCodeWorkspace = isFile && resource.path.toLowerCase().endsWith('.code-workspace');
 		const actions: IAction[] = [];
+
+		// ─── .code-workspace 导入知识库（链接文件夹到库）──────────────
+		if (isCodeWorkspace) {
+			actions.push(toAction({
+				id: 'agentStudio.workspace.importCodeWorkspaceToKb',
+				label: localize('importToKb', "📚 导入到知识库"),
+				run: () => this._importCodeWorkspaceToKb(resource),
+			}));
+			actions.push(new Separator());
+		}
+
+		// ─── 文件「导入到知识库」（入口落盘到库 + 抽取构建笔记）────────
+		if (isFile && !isCodeWorkspace) {
+			actions.push(toAction({
+				id: 'agentStudio.workspace.importFileToKb',
+				label: localize('importFileToKb', "📚 导入到知识库"),
+				run: () => this._importFileToKb(resource),
+			}));
+			actions.push(new Separator());
+		}
 
 		// ─── Group 1: open ───────────────────────────────────────────
 		if (isFile) {
@@ -824,6 +889,166 @@ export class WorkspaceViewPane extends ViewPane {
 	/**
 	 * Detach a related folder (an additional code repository) from its
 	 * workspace after explicit confirmation. This only edits workspace
+	 * metadata via {@link IAgentStudioService.removeRelatedFolder}; the folder
+	 * and its files on disk are left untouched.
+	 */
+
+	/**
+	 * 解析 .code-workspace 文件，将其中所有工作区目录关联入库。
+	 * 已在库中的目录自动跳过（去重）。
+	 */
+	private async _importCodeWorkspaceToKb(uri: URI): Promise<void> {
+		try {
+			const content = await this.fileService.readFile(uri);
+			const text = content.value.toString();
+			const parsed = JSON.parse(text);
+
+			const folders: { path: string; name?: string }[] = parsed.folders;
+			if (!Array.isArray(folders) || folders.length === 0) {
+				this.notificationService.warn('.code-workspace 文件中没有 folders 配置');
+				return;
+			}
+
+			// 读取当前活动 Vault 的 linkedFolders
+			const STORAGE_VAULTS = 'agentStudio.kb.vaults';
+			const STORAGE_ACTIVE = 'agentStudio.kb.active';
+			const raw = this.storageService.get(STORAGE_VAULTS, StorageScope.APPLICATION);
+			const vaults: IKbVault[] = raw ? JSON.parse(raw) : [];
+			const activeId = this.storageService.get(STORAGE_ACTIVE, StorageScope.APPLICATION);
+			const activeVault = vaults.find(v => v.id === activeId && !v.closed) ?? vaults.find(v => !v.closed);
+
+			if (!activeVault) {
+				this.notificationService.warn('请先在知识库视图中创建或激活一个 Vault');
+				return;
+			}
+
+			// 提取 codebase-memory 配置
+			const cbmConfig = (parsed['codebase-memory'])
+				|| (parsed.settings && parsed.settings['codebase-memory']);
+			if (cbmConfig && typeof cbmConfig === 'object') {
+				const indexConfig: IIndexConfig = {
+					mode: (cbmConfig.mode || 'fast') as IndexMode,
+					excludeDirs: Array.isArray(cbmConfig.excludeDirs) ? cbmConfig.excludeDirs : [],
+					keepDirs: Array.isArray(cbmConfig.keepDirs) ? cbmConfig.keepDirs : [],
+					subPath: typeof cbmConfig.subPath === 'string' ? cbmConfig.subPath : undefined,
+				};
+				this._cbmService.setIndexConfig(indexConfig);
+				this.logService.info(`[WorkspaceView] code-workspace import: saved CBM config (mode=${indexConfig.mode})`);
+			}
+
+			// 解析每个 folder 路径
+			const wsDir = URI.joinPath(uri, '..').fsPath;
+			const existingSet = new Set(activeVault.linkedFolders ?? []);
+			let linkedCount = 0;
+			let skippedCount = 0;
+
+			for (const f of folders) {
+				if (!f.path || typeof f.path !== 'string') { continue; }
+				const isAbs = /^[A-Za-z]:[\\/]/.test(f.path) || f.path.startsWith('/');
+				const folderPath = isAbs
+					? URI.file(f.path).fsPath
+					: URI.joinPath(URI.file(wsDir), f.path).fsPath;
+
+				if (!existingSet.has(folderPath)) {
+					existingSet.add(folderPath);
+					linkedCount++;
+				} else {
+					skippedCount++;
+				}
+			}
+
+			if (linkedCount === 0 && skippedCount > 0) {
+				this.notificationService.info(`工作区目录已全部关联，无需重复导入（${skippedCount} 个目录）`);
+				return;
+			}
+
+			// 持久化
+			activeVault.linkedFolders = [...existingSet];
+			this.storageService.store(STORAGE_VAULTS, JSON.stringify(vaults), StorageScope.APPLICATION, StorageTarget.MACHINE);
+
+			const msg = linkedCount > 0
+				? `已从 .code-workspace 关联 ${linkedCount} 个工作区目录到知识库${skippedCount > 0 ? `（${skippedCount} 个已存在跳过）` : ''}`
+				: '工作区目录已全部关联';
+			this.notificationService.info(msg);
+		} catch (err) {
+			const msg = String((err as any)?.message ?? err);
+			this.notificationService.error(`导入 .code-workspace 失败：${msg}`);
+		}
+	}
+
+	/**
+	 * 工作区文件右键「导入到知识库」：读取文件内容 → 入口(落盘到库) + 抽取(构建笔记)。
+	 * 与聊天框 write_file 卡片的「导入知识库」按钮共用同一份 KbImportController 管线。
+	 */
+	private async _importFileToKb(resource: URI): Promise<void> {
+		try {
+			if (!(await this.fileService.exists(resource))) {
+				this.notificationService.warn(`文件不存在：${resource.fsPath}`);
+				return;
+			}
+			const text = (await this.fileService.readFile(resource)).value.toString();
+			const ok = await this._kbImport.importContentAndBuild(text, null, undefined, resource);
+			if (ok) {
+				this.notificationService.info(`已将「${basename(resource)}」导入知识库（入口+抽取）`);
+			} else {
+				this.notificationService.warn(`导入「${basename(resource)}」到知识库失败`);
+			}
+		} catch (err) {
+			const msg = String((err as any)?.message ?? err);
+			this.notificationService.error(`导入文件到知识库失败：${msg}`);
+		}
+	}
+
+	/**
+	 * Set/clear the `isIndexing` flag on root tree elements whose resource path
+	 * matches the given workspace path.  Triggers a lightweight tree refresh via
+	 * `rerender` so the ⏳ CSS class takes effect without losing expansion state.
+	 */
+	private _updateIndexingFlags(workspacePath: string, indexing: boolean): void {
+		if (!this._workspaceRoots) { return; }
+		const normalizedWs = this._normalizeFsPath(workspacePath);
+		let changed = false;
+		for (const root of this._workspaceRoots) {
+			if (root.isInfoNode || root.isEmptyPlaceholder) { continue; }
+			const rootPath = this._normalizeFsPath(root.resource.fsPath);
+			// root 路径在 workspace 索引路径内 → 设置 isIndexing
+			const isMatch = rootPath === normalizedWs
+				|| rootPath.startsWith(normalizedWs + '/')
+				|| normalizedWs.startsWith(rootPath + '/');
+			if (isMatch && root.isIndexing !== indexing) {
+				root.isIndexing = indexing;
+				changed = true;
+			}
+		}
+		if (changed && this.tree) {
+			this.tree.rerender();
+		}
+	}
+
+	/** 清除所有根元素的 isIndexing 标记（兜底）。 */
+	private _clearAllIndexingFlags(): void {
+		if (!this._workspaceRoots) { return; }
+		let changed = false;
+		for (const root of this._workspaceRoots) {
+			if (root.isIndexing) {
+				root.isIndexing = false;
+				changed = true;
+			}
+		}
+		if (changed && this.tree) {
+			this.tree.rerender();
+		}
+	}
+
+	private _normalizeFsPath(p: string): string {
+		return p.replace(/\\/g, '/').replace(/\/$/, '');
+	}
+
+	/** 当前渲染的工作区根节点引用（_loadWorkspaceRoots 中赋值）。 */
+	private _workspaceRoots: IWorkspaceExplorerElement[] | undefined;
+
+	/**
+	 * Detach a previously related folder from the workspace.  Only removes
 	 * metadata via {@link IAgentStudioService.removeRelatedFolder}; the folder
 	 * and its files on disk are left untouched.
 	 */
@@ -1260,11 +1485,14 @@ export class WorkspaceViewPane extends ViewPane {
 				this.logService.warn('[WorkspaceViewPane] No valid workspace roots found');
 				this.treeContainer.style.display = 'none';
 				this.emptyStateContainer.style.display = 'flex';
+				this._workspaceRoots = undefined;
 				this.wsProgressBar.stop().hide();
 				return;
 			}
 
 			this.logService.info(`[WorkspaceViewPane] Building tree with ${workspaceRoots.length} roots for active workspace`);
+			// 保存根节点引用供索引进度指示器使用
+			this._workspaceRoots = workspaceRoots;
 
 			// Always use a hidden virtual root as tree input.
 			// The tree's input node itself is never rendered by AsyncDataTree,

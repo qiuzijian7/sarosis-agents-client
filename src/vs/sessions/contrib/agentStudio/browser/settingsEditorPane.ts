@@ -129,7 +129,6 @@ const AUX_PROVIDER_OPTIONS = [
 	{ value: 'anthropic', label: 'Anthropic' },
 	{ value: 'main', label: 'Main' },
 	{ value: 'knot', label: 'Knot' },
-	{ value: 'custom', label: 'Custom' },
 ];
 
 function makeAuxBlock(key: string, providerKey: string, modelKey: string, label: string, desc: string): SettingSection {

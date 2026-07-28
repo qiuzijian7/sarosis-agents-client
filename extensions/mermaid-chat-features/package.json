@@ -25,7 +25,8 @@
   "main": "./out/extension",
   "browser": "./dist/browser/extension",
   "activationEvents": [
-    "onWebviewPanel:vscode.chat-mermaid-features.preview"
+    "onWebviewPanel:vscode.chat-mermaid-features.preview",
+    "onCommand:_mermaid-chat.openPreview"
   ],
   "contributes": {
     "commands": [
@@ -40,6 +41,10 @@
       {
         "command": "_mermaid-chat.copySource",
         "title": "Copy Diagram Source"
+      },
+      {
+        "command": "_mermaid-chat.openPreview",
+        "title": "Open Mermaid Preview"
       }
     ],
     "menus": {
@@ -54,6 +59,10 @@
         },
         {
           "command": "_mermaid-chat.copySource",
+          "when": "false"
+        },
+        {
+          "command": "_mermaid-chat.openPreview",
           "when": "false"
         }
       ],

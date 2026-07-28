@@ -5,7 +5,7 @@
  *  via `IFileService`. Keeps the engine free of `vs/` imports: the engine
  *  declares `KBStorageAdapter`; this module is the concrete VS Code impl.
  *
- *  The `<root>` defaults to `<userHome>/.saros/kb` (see `resolveKbRoot`)
+ *  The `<root>` defaults to `<userDataPath>/knowledge-base` (see `resolveKbRoot`)
  *  and can be overridden via the `agentStudio.knowledge.storage.path` config.
  *  `migrateKnowledgeStorage` moves existing KBs when that root changes.
  *--------------------------------------------------------------------------------------------*/
@@ -17,29 +17,29 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import { KBStorageAdapter, KnowledgeSessionMeta, SerializedKB } from './engine/knowledgeManager.js';
 
 /**
- * Default relative sub-path under the user home.
- * Phase E (subsystem unification): aligned with the Vault sidebar default
- * (`~/.saros/knowledge-base`) so Agent kb_* tools and the sidebar share one
- * storage root. Legacy data at `~/.saros/kb` is auto-migrated on config change
- * via `migrateKnowledgeStorage` (called from `_maybeMigrateKbStorage`).
+ * Default KB subdirectory name under the VS Code user data root.
+ * Full default path: `~/.vssaros/knowledge-base/`
  */
-export const KB_DEFAULT_REL = join('.saros', 'knowledge-base');
+export const KB_DEFAULT_REL = 'knowledge-base';
 
 /**
  * Resolve the absolute KB storage root.
  *
- * - Empty/undefined config  → `<userHome>/.saros/kb`
- * - `~` prefix              → expanded to the user home
+ * @param configValue - Value from `agentStudio.knowledge.storage.path` setting
+ * @param dataRoot - The VS Code user data root path (e.g., `~/.vssaros/`)
+ *
+ * - Empty/undefined config  → `<dataRoot>/knowledge-base`
+ * - `~` prefix              → expanded to `dataRoot`
  * - Absolute path           → used as-is
- * - Relative path           → resolved against the user home
+ * - Relative path           → resolved against `dataRoot`
  */
-export function resolveKbRoot(configValue: string | undefined, userHome: string): string {
+export function resolveKbRoot(configValue: string | undefined, dataRoot: string): string {
 	const v = (configValue ?? '').trim();
 	if (!v) {
-		return join(userHome, KB_DEFAULT_REL);
+		return join(dataRoot, KB_DEFAULT_REL);
 	}
-	const expanded = v.replace(/^~(?=$|[\\/])/, userHome);
-	const resolved = isAbsolute(expanded) ? expanded : join(userHome, expanded);
+	const expanded = v.replace(/^~(?=$|[\\/])/, dataRoot);
+	const resolved = isAbsolute(expanded) ? expanded : join(dataRoot, expanded);
 	return resolved.replace(/[\\/]+$/, '');
 }
 
@@ -164,5 +164,34 @@ export async function migrateKnowledgeStorage(fileService: IFileService, oldRoot
 		}
 	}
 
+	// Also migrate the legacy `favorites/` folder (written by the chat
+	// "收藏到知识库" fallback) so existing favorites aren't orphaned on a root change.
+	await migrateFavoritesFolder(fileService, oldUri, newUri);
+
 	return migrated;
+}
+
+/**
+ * Move a whole `favorites/` directory (legacy chat fallback) from `oldUri` to `newUri`.
+ * No-op if the source is missing or the destination already exists.
+ */
+async function migrateFavoritesFolder(fileService: IFileService, oldUri: URI, newUri: URI): Promise<void> {
+	const oldFav = URI.joinPath(oldUri, 'favorites');
+	const newFav = URI.joinPath(newUri, 'favorites');
+	try {
+		const stat = await fileService.resolve(oldFav);
+		if (!stat.children || stat.children.length === 0) { return; }
+	} catch {
+		return;
+	}
+	if (await fileService.exists(newFav)) {
+		// Destination already has favorites; drop the orphaned source to avoid duplicates.
+		try { await fileService.del(oldFav, { recursive: true }); } catch { /* ignore */ }
+		return;
+	}
+	try {
+		await fileService.move(oldFav, newFav, false);
+	} catch {
+		// best-effort: leave source in place if the move isn't supported
+	}
 }

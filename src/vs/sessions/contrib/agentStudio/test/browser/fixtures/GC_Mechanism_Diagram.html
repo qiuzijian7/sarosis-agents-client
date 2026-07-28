@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GR 项目 UE5 GC 机制可视化 · 效果示意图</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#2d3748;
+    --txt:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --accent2:#3fb950;
+    --warn:#d29922; --danger:#f85149; --phase:#bc8cff; --gr:#7ee787;
+    --c-low:#3fb950; --c-mid:#d29922; --c-high:#f85149;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;line-height:1.55;padding:28px 18px;}
+  .wrap{max-width:1240px;margin:0 auto;}
+  header{display:flex;align-items:center;gap:16px;margin-bottom:6px;}
+  header .logo{width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,#58a6ff,#bc8cff);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#0d1117;}
+  h1{font-size:23px;font-weight:800;letter-spacing:.5px;}
+  h2{font-size:17px;margin:30px 0 12px;padding-left:11px;border-left:4px solid var(--accent);display:flex;align-items:center;gap:10px;}
+  h2 .en{font-size:12px;color:var(--muted);font-weight:500;}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:16px;}
+  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:6px;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px;}
+  .card .n{font-size:25px;font-weight:800;color:var(--accent);line-height:1.1;}
+  .card .l{font-size:12px;color:var(--muted);margin-top:3px;}
+  .card.warn .n{color:var(--warn);}
+  .card.danger .n{color:var(--danger);}
+  .card.gr .n{color:var(--gr);}
+
+  /* ===== 8-phase pipeline ===== */
+  .pipe{display:flex;flex-wrap:wrap;gap:0;align-items:stretch;margin-top:6px;}
+  .pnode{flex:1 1 130px;min-width:128px;background:var(--panel2);border:1px solid var(--border);border-top:3px solid var(--phase);border-radius:8px;padding:10px 11px;position:relative;cursor:pointer;transition:transform .15s,box-shadow .15s;margin:0 4px 10px;}
+  .pnode:hover{transform:translateY(-3px);box-shadow:0 6px 18px rgba(0,0,0,.45);}
+  .pnode.active{outline:2px solid var(--accent);}
+  .pnode .idx{position:absolute;top:7px;right:9px;font-size:11px;color:var(--muted);font-weight:700;}
+  .pnode .t{font-weight:700;font-size:13.5px;color:#e6edf3;margin-bottom:2px;}
+  .pnode .en{font-size:10.5px;color:var(--accent);margin-bottom:7px;}
+  .pnode .bar{height:6px;background:#0d1117;border-radius:3px;overflow:hidden;margin-top:4px;}
+  .pnode .bar i{display:block;height:100%;border-radius:3px;}
+  .pnode .rk{font-size:10px;margin-top:5px;font-weight:700;}
+  .rk.low{color:var(--c-low);} .rk.mid{color:var(--c-mid);} .rk.high{color:var(--c-high);}
+  .arrow{display:flex;align-items:center;color:var(--muted);font-size:18px;flex:0 0 18px;justify-content:center;}
+  @media(max-width:1100px){.arrow{display:none;}}
+
+  .detail{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:8px 0 4px;min-height:96px;}
+  .detail .dh{font-size:16px;font-weight:800;color:#e6edf3;margin-bottom:6px;}
+  .detail .dh small{color:var(--muted);font-weight:500;font-size:12px;margin-left:8px;}
+  .detail .dd{font-size:13.5px;color:var(--txt);margin-bottom:8px;}
+  .detail .src{font-size:12px;color:var(--accent2);background:#0d1117;display:inline-block;padding:3px 10px;border-radius:6px;}
+  .detail .src b{color:var(--accent);}
+
+  /* ===== SVG decision tree ===== */
+  .svgbox{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:6px;overflow-x:auto;}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:8px 0 4px;}
+  .legend span{display:inline-flex;align-items:center;gap:6px;}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block;}
+
+  /* ===== worker lanes ===== */
+  .lanes{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:6px;}
+  .lane{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:10px;}
+  .lane .lh{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:8px;display:flex;justify-content:space-between;}
+  .lane .q{display:flex;flex-direction:column;gap:5px;}
+  .job{background:#0d1117;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:11px;color:var(--muted);}
+  .job.busy{border-color:var(--warn);color:var(--warn);}
+  .job.done{opacity:.4;text-decoration:line-through;}
+  .steal{margin-top:10px;font-size:11px;color:var(--gr);background:rgba(126,231,135,.08);border:1px dashed rgba(126,231,135,.4);border-radius:6px;padding:6px 8px;}
+
+  /* ===== clustering viz ===== */
+  .cluster-wrap{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:6px;}
+  .cviz{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:12px;}
+  .cviz .ct{font-size:13px;font-weight:700;margin-bottom:10px;color:#e6edf3;}
+  .obj{width:20px;height:20px;border-radius:5px;background:#30363d;border:1px solid #444c56;display:inline-block;margin:3px;}
+  .obj.cl{background:var(--phase);border-color:var(--phase);box-shadow:0 0 8px rgba(188,140,255,.5);}
+  .clusterbox{margin:6px 0;padding:8px;border:1px dashed var(--phase);border-radius:8px;display:inline-block;}
+
+  /* ===== tables ===== */
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top;}
+  th{background:var(--panel2);color:var(--accent);font-weight:600;}
+  td code{background:#0d1117;padding:1px 6px;border-radius:4px;color:var(--accent2);font-size:12px;}
+  tr.conflict td{background:rgba(248,81,73,.08);}
+  .badge{font-weight:800;}
+  .badge.on{color:var(--c-low);} .badge.off{color:var(--c-high);} .badge.gr{color:var(--gr);}
+
+  /* ===== callouts / opt ===== */
+  .callout{background:var(--panel2);border-left:4px solid var(--warn);border-radius:8px;padding:12px 16px;margin:10px 0;font-size:13px;}
+  .callout.danger{border-left-color:var(--danger);}
+  .callout.gr{border-left-color:var(--gr);}
+  .callout .h{font-weight:800;margin-bottom:4px;color:#e6edf3;}
+  .opt{display:flex;gap:12px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;background:var(--panel2);}
+  .opt .p{flex:0 0 54px;text-align:center;font-weight:800;border-radius:8px;padding:6px 0;font-size:13px;align-self:flex-start;}
+  .opt.p0 .p{background:rgba(248,81,73,.18);color:var(--danger);}
+  .opt.p1 .p{background:rgba(210,153,34,.18);color:var(--warn);}
+  .opt.p2 .p{background:rgba(88,166,255,.18);color:var(--accent);}
+  .opt .b .tt{font-weight:700;color:#e6edf3;margin-bottom:3px;}
+  .opt .b .d{font-size:12.5px;color:var(--muted);}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin-top:26px;padding-top:14px;border-top:1px solid var(--border);}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="logo">GC</div>
+  <div>
+    <h1>GR 项目 (S1Game) · UE5 垃圾回收机制可视化</h1>
+    <div class="sub">由 code-explorer 子代理检索引擎源码 (CoreUObject) + 多平台 ini 配置审计，主代理交叉核实并绘制 · 数据源：UE5EA 源码 &amp; <code>S1Game/Config/*Engine.ini</code></div>
+  </div>
+</header>
+
+<div class="cards">
+  <div class="card"><div class="n">8</div><div class="l">GC 主阶段 (PreGC→PostGC)</div></div>
+  <div class="card warn"><div class="n">Win=1</div><div class="l">Windows 强制开启增量可达性</div></div>
+  <div class="card danger"><div class="n">2ms</div><div class="l">增量时间片 (引擎默认 5ms)</div></div>
+  <div class="card gr"><div class="n">3+</div><div class="l">GR 自研 GC 改造点</div></div>
+</div>
+
+<!-- ============ 一、8 阶段流程 ============ -->
+<h2>一、GC 8 阶段流程（点击节点查看源码定位）<span class="en">CollectGarbageImpl · 8-phase pipeline</span></h2>
+<div class="pipe" id="pipe"></div>
+<div class="detail" id="detail"></div>
+
+<!-- ============ 二、全量 vs 增量 决策树 ============ -->
+<h2>二、三种触发路径：全量 / 增量 / 条件<span class="en">Full · Incremental · Conditional</span></h2>
+<div class="svgbox">
+<svg viewBox="0 0 920 300" width="100%" style="min-width:680px">
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#8b949e"/></marker>
+  </defs>
+  <!-- start -->
+  <rect x="10" y="125" width="120" height="50" rx="8" fill="#1c2330" stroke="#2d3748"/>
+  <text x="70" y="145" fill="#e6edf3" font-size="12" text-anchor="middle">条件采集</text>
+  <text x="70" y="161" fill="#58a6ff" font-size="10" text-anchor="middle">ConditionalCollect</text>
+  <!-- decision -->
+  <polygon points="180,150 250,100 320,150 250,200" fill="#161b22" stroke="#bc8cff"/>
+  <text x="250" y="146" fill="#e6edf3" font-size="11" text-anchor="middle">增量挂起?</text>
+  <text x="250" y="162" fill="#8b949e" font-size="9" text-anchor="middle">bPerformFullPurge</text>
+  <text x="250" y="176" fill="#8b949e" font-size="9" text-anchor="middle">|| !AllowInc</text>
+  <!-- full -->
+  <rect x="360" y="60" width="150" height="54" rx="8" fill="#161b22" stroke="#f85149"/>
+  <text x="435" y="82" fill="#f85149" font-size="12" text-anchor="middle">全量 GC</text>
+  <text x="435" y="100" fill="#8b949e" font-size="10" text-anchor="middle">CollectGarbageFull()</text>
+  <text x="435" y="112" fill="#8b949e" font-size="9" text-anchor="middle">一次性跑完 8 阶段</text>
+  <!-- incremental -->
+  <rect x="360" y="190" width="150" height="54" rx="8" fill="#161b22" stroke="#3fb950"/>
+  <text x="435" y="212" fill="#3fb950" font-size="12" text-anchor="middle">增量 GC</text>
+  <text x="435" y="230" fill="#8b949e" font-size="10" text-anchor="middle">CollectGarbageIncremental()</text>
+  <text x="435" y="242" fill="#8b949e" font-size="9" text-anchor="middle">按 2ms 时间片分帧</text>
+  <!-- arrows -->
+  <line x1="130" y1="150" x2="178" y2="150" stroke="#8b949e" marker-end="url(#ah)"/>
+  <line x1="250" y1="116" x2="360" y2="87" stroke="#f85149" marker-end="url(#ah)"/>
+  <line x1="250" y1="184" x2="360" y2="217" stroke="#3fb950" marker-end="url(#ah)"/>
+  <text x="296" y="98" fill="#f85149" font-size="10">是</text>
+  <text x="296" y="208" fill="#3fb950" font-size="10">否</text>
+  <!-- note: Windows override -->
+  <rect x="560" y="110" width="340" height="80" rx="8" fill="#161b22" stroke="#d29922"/>
+  <text x="578" y="132" fill="#d29922" font-size="12" font-weight="700">⚠ Windows 平台覆盖</text>
+  <text x="578" y="152" fill="#c9d1d9" font-size="11">DefaultEngine.ini: AllowInc=0 (关闭)</text>
+  <text x="578" y="170" fill="#c9d1d9" font-size="11">Windows/WindowsEngine.ini:10 → =1 (开启)</text>
+  <text x="578" y="186" fill="#8b949e" font-size="10">结果：Windows 实际走增量路径</text>
+  <line x1="510" y1="217" x2="558" y2="160" stroke="#d29922" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+</svg>
+</div>
+<div class="callout danger">
+  <div class="h">平台层覆盖 = 行为不一致根因</div>
+  同一套二进制，Windows 客户端因 <code>Windows/WindowsEngine.ini</code> 的 <code>gc.AllowIncrementalReachability=1</code> 走<b>增量</b>路径（每帧受 2ms 时间片约束，但增量结束仍有整图 Rerun）；而 Default/其它平台设 <code>=0</code>，单次 GC 可能完全阻塞主线程。需明确各平台目标策略并统一评估。
+</div>
+
+<!-- ============ 三、多线程可达性 Worker 窃取 ============ -->
+<h2>三、可达性分析：多线程 Worker 窃取<span class="en">PerformReachabilityAnalysisPass · WorkStealing</span></h2>
+<div class="lanes" id="lanes">
+  <div class="lane"><div class="lh"><span>Worker 0</span><span>繁忙</span></div><div class="q">
+    <div class="job busy">Root A ▸ 引用 12 个</div><div class="job busy">对象 X</div><div class="job">对象 Y</div></div></div>
+  <div class="lane"><div class="lh"><span>Worker 1</span><span>窃取中</span></div><div class="q">
+    <div class="job done">Root B</div><div class="job busy">从 W0 窃取 ▸ 对象 Y</div></div></div>
+  <div class="lane"><div class="lh"><span>Worker 2</span><span>空闲</span></div><div class="q">
+    <div class="job done">Root C</div><div class="job">等待任务…</div></div></div>
+  <div class="lane"><div class="lh"><span>Worker 3</span><span>空闲</span></div><div class="q">
+    <div class="job done">Root D</div><div class="job">等待任务…</div></div></div>
+</div>
+<div class="steal">⬅ Worker 窃取：空闲线程从繁忙线程队列尾部 <b>原子无锁</b> 窃取任务（WorkStealingQueue），实现负载均衡。每批处理完检查 <code>IsTimeLimitExceeded()</code> (GarbageCollection.cpp ~3397) → 超时即 suspend，下帧 resume。</div>
+
+<!-- ============ 四、Cluster 簇优化 ============ -->
+<h2>四、Cluster 簇优化：整簇判定<span class="en">UObjectClusters · O(1) reachability</span></h2>
+<div class="cluster-wrap">
+  <div class="cviz"><div class="ct">❌ 无 Cluster：逐个对象遍历</div>
+    <span class="obj"></span><span class="obj"></span><span class="obj"></span><span class="obj"></span><span class="obj"></span><span class="obj"></span><span class="obj"></span><span class="obj"></span>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px">引用图庞大时遍历成本随对象数线性增长。</div>
+  </div>
+  <div class="cviz"><div class="ct">✅ 启用 Cluster：强关联对象打包</div>
+    <div class="clusterbox"><span class="obj cl"></span><span class="obj cl"></span><span class="obj cl"></span></div>
+    <div class="clusterbox"><span class="obj cl"></span><span class="obj cl"></span></div>
+    <div style="font-size:11px;color:var(--gr);margin-top:10px">整簇可达 → <b>O(1)</b> 跳过；整簇不可达 → 直接 <code>DissolveCluster</code> 解散回收。</div>
+  </div>
+</div>
+<div class="callout">
+  <div class="h">GR 项目 Cluster 配置</div>
+  <code>gc.CreateGCClusters=1</code>（引擎默认 1）、<code>gc.MinGCClusterSize=2</code>（引擎默认 2）、<code>gc.ActorClusteringEnabled=True</code>、<code>gc.BlueprintClusteringEnabled=True</code>、<code>gc.AssetClustreringEnabled=True</code>（均为默认开启）。Cluster 根索引 <code>ClusterRootIndex</code> 把强关联对象当单节点，降低可达性遍历规模。
+</div>
+
+<!-- ============ 五、CVar 配置对照 ============ -->
+<h2>五、关键 CVar 对照（引擎默认 vs GR 项目）<span class="en">engine default vs S1Game ini</span></h2>
+<div class="callout gr" style="border-left-color:var(--gr)">
+  <div class="h">说明</div>
+  以下数据由 config 审计子代理从源码 <code>FAutoConsoleVariableRef</code> 实测读取。⚠ 标记的单元格为<b>平台覆盖</b>或<b>与引擎默认值不符</b>。
+</div>
+<table>
+  <tr><th style="width:240px">CVar</th><th>引擎默认</th><th>GR 项目设置</th><th>作用 / 备注</th></tr>
+  <tr class="conflict"><td><code>gc.AllowIncrementalReachability</code></td><td>0</td><td><span class="badge off">0</span> (Default) / <span class="badge on">1</span> (Windows:10)</td><td>⚠ 平台覆盖：Windows 强制开启增量；其它平台关闭。主因行为不一致。</td></tr>
+  <tr class="conflict"><td><code>gc.IncrementalReachabilityTimeLimit</code></td><td>0.005 s</td><td>0.002 s (Default:375)</td><td>⚠ 项目 2ms &lt; 引擎 5ms，单帧切片更激进，首次 Mark+传播易超时。</td></tr>
+  <tr class="conflict"><td><code>gc.MaxObjectsNotConsideredByGC</code></td><td>0</td><td>52083 (Default:1270)</td><td>⚠ 项目显式设为 5 万+，远超引擎默认 0。</td></tr>
+  <tr><td><code>gc.ReachabilityIterationsLimit</code></td><td>25</td><td>默认</td><td>允许跳过的增量迭代次数（0=每帧都跑）。</td></tr>
+  <tr><td><code>gc.NumRetriesBeforeForcingGC</code></td><td>10</td><td>默认</td><td>强制完整 GC 前的重试次数。</td></tr>
+  <tr><td><code>gc.TimeBetweenPurgingPendingKillObjects</code></td><td>60.0 s</td><td>默认</td><td>两次 GC 最短间隔（UnrealEngine.cpp:1727）。</td></tr>
+  <tr><td><code>gc.FlushStreamingOnGC</code></td><td>0</td><td>默认</td><td>GC 前是否冲刷流送（易引发额外卡顿）。</td></tr>
+  <tr><td><code>gc.CreateGCClusters</code></td><td>1</td><td>默认</td><td>启用 Cluster 创建（UObjectClusters.cpp:28）。</td></tr>
+  <tr><td><code>gc.MinGCClusterSize</code></td><td>2</td><td>默认</td><td>最小集群对象数（UObjectClusters.cpp:46）。</td></tr>
+  <tr><td><code>gc.AllowIncrementalGather</code></td><td>—</td><td><span class="badge off">0</span> (Default:374)</td><td>GR 显式关闭增量收集。</td></tr>
+  <tr><td><code>gc.IncrementalGCTimePerFrame</code></td><td>—</td><td>0.001 s (Default:1275)</td><td>每帧增量 GC 时间预算 1ms。</td></tr>
+  <tr><td><code>gc.Minimize.GMinimizeModeOptEnable</code></td><td>0</td><td><span class="badge on">1</span> (Default:268)</td><td>GR 开启最小化 GC 模式。</td></tr>
+  <tr><td><code>gc.PartialGCAllowed</code> / <code>gc.VerifyGCObjectNames</code></td><td colspan="2"><span class="badge off">无 CVar 定义</span></td><td>本代码库 (UE5EA) 中<b>不存在</b>这两个 CVar，旧报告所列无效。</td></tr>
+</table>
+
+<!-- ============ 六、GR 自研改造 ============ -->
+<h2>六、GR 自研 GC 改造（高价值）<span class="en">project-specific patches</span></h2>
+<div class="callout gr">
+  <div class="h">① 结构体数组时间片化（@qiuzijian）</div>
+  UE5 原生 GC 对 <code>TArray&lt;FStruct&gt;</code> / <code>FInstancedStruct</code> 的遍历常作为不可中断大块。GR 新增：
+  <ul style="margin:6px 0 0 18px;font-size:12.5px;color:var(--muted)">
+    <li><code>gc.StructArrayBoundaryTimeCheck</code>：在结构体数组边界检查时间预算，超时即让出当前时间片。</li>
+    <li><code>gc.TraceStructObjects</code>：改为<b>逐数组</b>追踪而非一次性遍历，把成本摊薄到多帧。</li>
+  </ul>
+</div>
+<div class="callout gr">
+  <div class="h">② 增量迭代上限（@yanghuang）</div>
+  <code>gc.ReachabilityIterationsLimit</code>（GR 自研）：限制增量可达性的迭代轮次，防止引用图极深时单帧迭代失控。
+</div>
+<div class="callout gr">
+  <div class="h">③ 大世界流送增量 GC（@LQTech shannonliu）</div>
+  <code>GarbageCollection.cpp</code> 中插入 <code>GIsLevelStreamingGCIncrementalPreparing</code> (5844)，并在 <code>PerformReachabilityAnalysisAndConditionallyPurgeGarbage</code> 内<b>主动 <code>ReleaseGCLock()</code> 并提前返回</b> (6634-6644)，避免大世界流送/加载期间 GC 长时间持锁阻塞主线程。
+</div>
+
+<!-- ============ 七、优化建议 ============ -->
+<h2>七、优化建议（按优先级）<span class="en">P0 / P1 / P2</span></h2>
+<div class="opt p0"><div class="p">P0</div><div class="b">
+  <div class="tt">统一各平台增量可达性策略</div>
+  <div class="d">复核 <code>Windows/WindowsEngine.ini:10</code> 的 <code>=1</code> 与 <code>DefaultEngine.ini</code> 的 <code>=0</code> 冲突。明确 Windows/主机/移动目标策略；对关闭增量的平台评估引入受控增量（配合 <code>IncrementalReachabilityTimeLimit</code> + <code>ReachabilityIterationsLimit</code>）。</div>
+</div></div>
+<div class="opt p0"><div class="p">P0</div><div class="b">
+  <div class="tt">确保结构体数组时间片改造全平台开启</div>
+  <div class="d">确认 <code>gc.StructArrayBoundaryTimeCheck</code> / <code>gc.TraceStructObjects</code> / <code>gc.ReachabilityIterationsLimit</code> 在目标平台均被正确设置，这是压制 Reachability 峰值的主手段。</div>
+</div></div>
+<div class="opt p1"><div class="p">P1</div><div class="b">
+  <div class="tt">控制 Rerun 整图重跑成本</div>
+  <div class="d">监控 Rerun 阶段单帧耗时；若引用图过大，降低 <code>gc.TimeBetweenPurgingPendingKillObjects</code> 触发频率，或拆分大 Actor / 大 DataTable。</div>
+</div></div>
+<div class="opt p1"><div class="p">P1</div><div class="b">
+  <div class="tt">GC 帧错峰：避免同步批量 Spawn / 流送</div>
+  <div class="d">GC 前高频生成会放大 MarkUnreachable + Gather + Purge 成本，建议与 GC 周期错峰。</div>
+</div></div>
+<div class="opt p2"><div class="p">P2</div><div class="b">
+  <div class="tt">验证多线程销毁与 Gather 并行度</div>
+  <div class="d"><code>gc.MultithreadedDestruction=1</code> 默认开启；结合 <code>EGatherOptions::Parallel</code> 确认 Purge/Gather 在多核充分并行，避免主线程退化。</div>
+</div></div>
+
+<footer>
+  本可视化由 code-explorer 子代理检索引擎源码与多平台 ini + 主代理核实生成 · 量化占比需结合 <code>.utrace</code>（gr_gc_deep_analyzer.py）实测 · 源码根：<code>UE5EA/Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp</code>
+</footer>
+</div>
+
+<script>
+const PHASES = [
+  {idx:1, t:"预处理", en:"PreGC", rk:"low", w:12, cost:"低",
+   d:"PreCollectGarbageImpl：准备标记前状态，FlushAsyncLoading 等待异步加载完成，确保引用图稳定后再开始 GC。",
+   src:"<b>GarbageCollection.cpp</b> ~6271 · PreCollectGarbageImpl"},
+  {idx:2, t:"标记不可达", en:"MarkUnreachable", rk:"mid", w:18, cost:"中 · 并行",
+   d:"MarkObjectsAsUnreachable：ParallelFor 遍历所有对象，对非 KeepFlags 对象置 MaybeUnreachable 标记。复杂度 O(N)，多线程加速。",
+   src:"<b>GarbageCollection.cpp</b> ~4988 · MarkObjectsAsUnreachable"},
+  {idx:3, t:"可达性分析", en:"Reachability", rk:"high", w:92, cost:"最高 · 核心瓶颈",
+   d:"PerformReachabilityAnalysis 从 Roots 遍历引用图，清除存活对象的 MaybeUnreachable。增量模式下按时间片分批（Worker 窃取 + IsTimeLimitExceeded 让出）。GC Schema 预编译引用偏移，免反射查找。",
+   src:"<b>ReachabilityAnalysisState.cpp</b> · PerformReachabilityAnalysis / Pass"},
+  {idx:4, t:"重跑校验", en:"Rerun", rk:"mid", w:55, cost:"中高 · 增量后触发",
+   d:"增量 GC 的分批标记结束后，做一次完整可达性重跑以保证引用图一致性。意味着增量并未消除可达性成本，只是把 Reachability+Rerun 拆散到多帧。",
+   src:"<b>GarbageCollection.cpp</b> ~6408 · PerformReachabilityAnalysisAndConditionallyPurgeGarbage"},
+  {idx:5, t:"解散簇", en:"DissolveCluster", rk:"mid", w:22, cost:"中",
+   d:"DissolveUnreachableClusters：解散不可达的 GC 簇，使簇内对象可独立回收。整簇可达则 O(1) 跳过。",
+   src:"<b>UObjectClusters.cpp</b> · DissolveUnreachableClusters"},
+  {idx:6, t:"对象收集", en:"Gather", rk:"mid", w:48, cost:"中 · 可并行",
+   d:"GatherUnreachableObjects：并行（EGatherOptions::Parallel）收集所有 MaybeUnreachable 对象到销毁列表。",
+   src:"<b>GarbageCollection.cpp</b> · GatherUnreachableObjects"},
+  {idx:7, t:"销毁/清除", en:"Purge", rk:"high", w:78, cost:"高 · 主销毁成本",
+   d:"IncrementalPurgeGarbage：分帧调用 BeginDestroy → FinishDestroy 真正释放内存，含 Rolling 增量销毁，避免单帧 spike。",
+   src:"<b>GarbageCollection.cpp</b> ~5262 · IncrementalPurgeGarbage"},
+  {idx:8, t:"收尾", en:"PostGC", rk:"low", w:15, cost:"低",
+   d:"PostCollectGarbageImpl：统计、回调 FCoreUObjectDelegates、GC 历史记录收尾，释放临时数据。",
+   src:"<b>GarbageCollection.cpp</b> · PostCollectGarbageImpl"},
+];
+const RKNAME = {low:"低风险", mid:"中风险", high:"高风险"};
+const RKCOLOR = {low:"var(--c-low)", mid:"var(--c-mid)", high:"var(--c-high)"};
+const pipe = document.getElementById('pipe');
+PHASES.forEach((p,i)=>{
+  const node = document.createElement('div');
+  node.className='pnode'; node.dataset.i=i;
+  node.innerHTML = `<span class="idx">${p.idx}</span><div class="t">${p.t}</div><div class="en">${p.en}</div>`+
+    `<div class="bar"><i style="width:${p.w}%;background:${RKCOLOR[p.rk]}"></i></div>`+
+    `<div class="rk ${p.rk}">${RKNAME[p.rk]}</div>`;
+  node.onclick = ()=>select(i);
+  pipe.appendChild(node);
+  if(i < PHASES.length-1){
+    const ar = document.createElement('div'); ar.className='arrow'; ar.textContent='→'; pipe.appendChild(ar);
+  }
+});
+function select(i){
+  document.querySelectorAll('.pnode').forEach(n=>n.classList.remove('active'));
+  document.querySelector(`.pnode[data-i="${i}"]`).classList.add('active');
+  const p = PHASES[i];
+  document.getElementById('detail').innerHTML =
+    `<div class="dh">阶段 ${p.idx} · ${p.t} <small>${p.en} · 风险：${RKNAME[p.rk]} · 成本：${p.cost}</small></div>`+
+    `<div class="dd">${p.d}</div><div class="src">源码定位： ${p.src}</div>`;
+}
+select(2); // 默认高亮核心瓶颈
+</script>
+</body>
+</html>

@@ -19,17 +19,19 @@ import type { IFileService } from '../../../../../platform/files/common/files.js
 import type { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import type { IAiEmbeddingVectorService } from '../../../../../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.js';
 import { KnowledgeManager } from './engine/knowledgeManager.js';
-import { listMethods } from './engine/methodRegistry.js';
-import { resolveChatModel, createEmbedder } from './knowledgeAdapters.js';
+import { resolveChatModel, createEmbedder, isChatProviderConfigured } from './knowledgeAdapters.js';
+import type { IChatModel } from './engine/llm.js';
 import type { IEmbedder } from './engine/embedder.js';
 import { createFileStorageAdapter } from './knowledgeStorage.js';
+import { getPrompt } from './engine/i18nPrompts.js';
+import type { JsonSchema } from './engine/types.js';
 import { buildFolderRag, stableRepoSessionId, searchAcrossRepos, aggregateItems, classifyRepoStrategy, type BuildFolderOptions } from './engine/folderRagBuild.js';
 export type { BuildFolderOptions } from './engine/folderRagBuild.js';
 import { FsGitRepoProbe } from '../../common/fsGitRepoProbe.js';
 import { appendKbOpLog, type IKbOpLogEntry, type KbOpStatus } from './kbOpLog.js';
 
-export { classifyByKeywords, classifyContentViaLLM } from './classifier.js';
-export type { ClassifyResult } from './classifier.js';
+export { classifyContentViaSchema, safeSchemaFallback } from './classifier.js';
+export type { SchemaClassifyResult } from './classifier.js';
 
 export interface KnowledgeToolDeps {
 	readonly fileService: IFileService;
@@ -40,11 +42,23 @@ export interface KnowledgeToolDeps {
 	/** Resolve the KB storage root (`<userHome>/.saros/kb` by default, config-overridable). */
 	readonly resolveStorageRoot: () => Promise<string>;
 	/**
+	 * Resolve the target notes directory for raw/LLM-summary imports.
+	 * When provided, notes are written under this path (resolved from the active vault's
+	 * notes section). When omitted, falls back to `<storageRoot>/notes/`.
+	 */
+	readonly resolveNotesDir?: () => Promise<string>;
+	/**
 	 * Resolve the knowledge-base agent's currently configured provider + model.
 	 * When provided, `kb_*` tools use the KB agent's own provider/model (instead of
 	 * the hardcoded openrouter default). Tool-level `provider`/`model` args still win.
 	 */
 	readonly resolveKbModel?: () => Promise<{ providerId: string; modelId: string }> | { providerId: string; modelId: string };
+	/**
+	 * 经 AgentOS provider 传输构建 KB chat 模型（与 Agent Chat 同一管线：
+	 * `lm:` 桥接 provider 经扩展宿主调用，无渲染进程 CORS 限制、鉴权由 provider 托管）。
+	 * 提供时优先于旧的 OpenAI 兼容直连路径（resolveChatModel）。
+	 */
+	readonly createKbChatModel?: (opts: { providerId: string; modelId: string; agentId?: string }) => IChatModel | null | Promise<IChatModel | null>;
 	/**
 	 * Build an embedder for the KB agent's provider (provider follows the KB agent,
 	 * embedding model is supplied by the caller). When provided, KB embedding uses
@@ -75,6 +89,29 @@ interface IKbToolDescriptor {
 
 function txt(s: string): IToolResultContent[] {
 	return [{ type: 'text', text: s }];
+}
+
+/**
+ * 判断给定 provider 是否可用于 KB chat 调用。
+ *   - `lm:` 桥接 provider：鉴权由 provider 扩展托管（无 BYOK key 概念），有构建器即可用；
+ *   - 其余 BYOK provider：必须已配 base URL + API key。
+ */
+function isKbChatUsable(deps: KnowledgeToolDeps, providerId: string | undefined, modelId?: string): boolean {
+	if (!providerId) { return false; }
+	if (providerId.startsWith('lm:')) { return !!deps.createKbChatModel; }
+	return isChatProviderConfigured(deps.configurationService, { providerId, modelId });
+}
+
+/**
+ * 构建 KB chat 模型：优先 `deps.createKbChatModel`（AgentOS provider 传输，lm: 无 CORS），
+ * 未提供/未命中时回退旧的 OpenAI 兼容直连路径。
+ */
+async function resolveKbChatModelViaDeps(deps: KnowledgeToolDeps, opts: { providerId?: string; modelId?: string }): Promise<IChatModel> {
+	if (opts.providerId && deps.createKbChatModel) {
+		const m = await deps.createKbChatModel({ providerId: opts.providerId, modelId: opts.modelId ?? '' });
+		if (m) { return m; }
+	}
+	return resolveChatModel(deps.configurationService, opts);
 }
 
 /** A note-export target's dependency surface (decoupled from the `buildKnowledgeToolDescriptors` closure so it is unit-testable). */
@@ -128,18 +165,19 @@ export async function exportToNotes(
 	}
 }
 
-/** Extract the `text` payload from a `kb_*` tool result (the handlers return `[{ type: 'text', text }]`). */
-function firstText(out: IToolResultContent[] | { content: IToolResultContent[]; details?: Record<string, unknown> }): string {
-	const arr = Array.isArray(out) ? out : out.content;
-	const t = arr.find(c => c.type === 'text');
-	return t && 'text' in t ? (t as { text: string }).text : '';
-}
-
 export interface ImportToKbOptions {
 	/** Pre-derived title (defaults to the first non-empty line of the content). */
 	title?: string;
 	/** Force a fresh `kb_build` even if a matching favorite already exists. */
 	forceBuild?: boolean;
+	/** Originating agent id (stored in the note's frontmatter `agentid`). */
+	agentId?: string;
+	/** Origin label (stored in the note's frontmatter `source`). Defaults to `agent-chat-import`. */
+	source?: string;
+	/** Optional category (stored in the note's frontmatter `category`). */
+	category?: string;
+	/** Optional tags (stored in the note's frontmatter `tags`). */
+	tags?: string[];
 }
 
 export interface ImportToKbResult {
@@ -173,96 +211,311 @@ function titleKeyOf(title: string): string {
 /**
  * Wire the chat "收藏到知识库" button to the KB engine.
  *
- * - First import of a topic → `kb_build(template_id='notes_summary')` auto-summarizes
- *   the message and writes a structured Obsidian note.
- * - Re-import of the same topic (matched by a normalized title key, persisted in
- *   `<root>/.fav-index.json`) → `kb_ingest(same id)` merges the new content into the
- *   existing KB and **re-exports the SAME note** (improved, not duplicated).
+ * With `kb_build`/`kb_ingest` removed from agent tools (kb entry point reserved for
+ * Settings UI only), this function delegates directly to
+ * `summarizeMessageToKnowledgeBase` — the LLM-only summary path that writes a
+ * structured note WITHOUT building a `KnowledgeManager` / embedding index.
  *
- * This is the user-facing analogue of the `knowledge-base-expert` agent flow; the
- * manager is built from the same `KnowledgeToolDeps` (injectable for tests).
+ * De-duplication is handled by a sidecar `.fav-index.json`, same as before.
  */
 export async function importMessageToKnowledgeBase(
 	deps: KnowledgeToolDeps,
 	content: string,
 	opts: ImportToKbOptions = {},
 ): Promise<ImportToKbResult> {
-	try {
-		if (!content || !content.trim()) {
-			return { success: false, error: 'Empty content' };
-		}
-		const title = opts.title ?? deriveTitle(content);
-		const key = titleKeyOf(title);
+	// With kb_build/kb_ingest removed from the tool surface, delegate to the
+	// LLM-only summary path which produces the same structured notes_summary output
+	// without requiring a KnowledgeManager / embedding provider.
+	const result = await summarizeMessageToKnowledgeBase(deps, content, opts);
+	if (!result.success) { return result; }
 
+	// Persist de-dup index so re-imports don't create duplicate notes
+	try {
 		const root = await deps.resolveStorageRoot();
 		const favIndexUri = URI.file(join(root, FAV_INDEX_FILE));
 		let favIndex: Record<string, { id: string; title: string }> = {};
 		try {
 			const raw = await deps.fileService.readFile(favIndexUri);
 			favIndex = JSON.parse(raw.value.toString()) as Record<string, { id: string; title: string }>;
-		} catch {
-			// no index yet — fresh import
+		} catch { /* no index yet */ }
+		if (result.id && result.title) {
+			favIndex[titleKeyOf(result.title)] = { id: result.id, title: result.title };
+		}
+		await deps.fileService.writeFile(favIndexUri, VSBuffer.fromString(JSON.stringify(favIndex, null, 2)));
+	} catch { /* best-effort */ }
+
+	return result;
+}
+
+/**
+ * LLM-only summary import — the lightweight analogue of `importMessageToKnowledgeBase`.
+ *
+ * Unlike `importMessageToKnowledgeBase`, this NEVER builds a `KnowledgeManager` /
+ * embedder, so it works WITHOUT an embedding provider. It uses the KB agent's chat
+ * LLM to summarize the message (the `notes_summary` template) and writes a structured
+ * note to `<storage-root>/notes/<key>.md`. This is the preferred path for the chat
+ * "导入知识库" button when vector retrieval (semantic search) is not needed.
+ */
+export async function summarizeMessageToKnowledgeBase(
+	deps: KnowledgeToolDeps,
+	content: string,
+	opts: ImportToKbOptions = {},
+): Promise<ImportToKbResult> {
+	try {
+		if (!content?.trim()) {
+			return { success: false, error: 'Empty content' };
 		}
 
-		const descriptors = buildKnowledgeToolDescriptors(deps);
-		const buildDesc = descriptors.find(d => d.definition.name === 'kb_build')!;
-		const ingestDesc = descriptors.find(d => d.definition.name === 'kb_ingest')!;
+		const kb = (typeof deps.resolveKbModel === 'function') ? await deps.resolveKbModel() : undefined;
 
-		// ── Improve existing note (kb_ingest) ──────────────────────────────────
-		const existing = !opts.forceBuild ? favIndex[key] : undefined;
-		if (existing?.id) {
-			const out = await ingestDesc.handler({
-				id: existing.id,
-				text: content,
-				// keep the same note name so the improved note lands at the same path
-				note_name: key,
-			});
-			const r = JSON.parse(firstText(out));
-			if (r.success) {
-				return {
-					success: true,
-					action: 'ingest',
-					id: r.id,
-					note: r.note?.note,
-					notePath: r.note?.path,
-					title,
-					template: 'notes_summary',
-					itemCount: r.itemCount,
-				};
-			}
-			// KB missing/corrupt → fall through to a fresh build.
+		// 纯 LLM 总结：需要 chat provider，但不需要 embedding provider。
+		if (!isKbChatUsable(deps, kb?.providerId, kb?.modelId)) {
+			return {
+				success: false,
+				error: '未配置 LLM Provider，无法生成总结。请在 Settings → Agent Studio → Model Providers 中配置 Chat Provider（API key + base URL）。',
+			};
 		}
-
-		// ── Generate a new note (kb_build) ─────────────────────────────────────
-		const out = await buildDesc.handler({
-			template_id: 'notes_summary',
-			title,
-			text: content,
-			note_name: key,
+		const chatModel = await resolveKbChatModelViaDeps(deps, {
+			providerId: kb?.providerId,
+			modelId: kb?.modelId,
 		});
-		const r = JSON.parse(firstText(out));
-		if (!r.success) {
-			return { success: false, error: r.error };
+
+		const title = opts.title?.trim() || deriveTitle(content);
+		const key = titleKeyOf(title);
+
+		const prompt = getPrompt('template.notes_summary').replace(/\{source_text\}/g, content);
+
+		const schema: JsonSchema = {
+			type: 'object',
+			properties: {
+				title: { type: 'string', description: '简短标题（中文）' },
+				summary: { type: 'string', description: '一句话/一段总结（中文）' },
+				tags: { type: 'array', items: { type: 'string' }, description: '关键词标签' },
+				category: { type: 'string', description: '分类，如 code_example/experience/concept/doc' },
+				key_points: { type: 'array', items: { type: 'string' }, description: '要点列表' },
+			},
+			required: ['title', 'summary', 'tags', 'category', 'key_points'],
+		};
+
+		const parsed = await chatModel.extract<{
+			title: string;
+			summary: string;
+			tags: string[];
+			category: string;
+			key_points: string[];
+		}>({ prompt, schema });
+
+		const note = renderSummaryNote(parsed, content);
+		const root = await deps.resolveStorageRoot();
+		const notesDir = URI.file(join(root, 'notes'));
+		let noteUri = URI.joinPath(notesDir, `${key}.md`);
+		// 避免覆盖已有笔记：同名则追加时间戳后缀
+		if (await deps.fileService.exists(noteUri)) {
+			noteUri = URI.joinPath(notesDir, `${key}_${Date.now()}.md`);
 		}
-		favIndex[key] = { id: r.id, title };
-		try {
-			await deps.fileService.writeFile(favIndexUri, VSBuffer.fromString(JSON.stringify(favIndex, null, 2)));
-		} catch {
-			// best-effort; the note is still created even if the index write fails
-		}
+		await deps.fileService.createFolder(notesDir);
+		await deps.fileService.writeFile(noteUri, VSBuffer.fromString(note));
+
 		return {
 			success: true,
 			action: 'build',
-			id: r.id,
-			note: r.note?.note,
-			notePath: r.note?.path,
-			title,
-			template: r.template,
-			itemCount: r.itemCount,
+			id: key,
+			note: key,
+			notePath: noteUri.fsPath,
+			title: parsed.title || title,
+			template: 'notes_summary',
 		};
 	} catch (err) {
 		return { success: false, error: err instanceof Error ? err.message : String(err) };
 	}
+}
+
+/**
+ * Raw-import the message **as-is** into the knowledge base.
+ *
+ * Writes the original content verbatim into the vault's notes directory (resolved via
+ * `deps.resolveNotesDir`, falling back to `<storage-root>/notes/`), prefixed with a
+ * YAML frontmatter header carrying metadata (date / source / agentid / category /
+ * tags). The title is LLM-generated from the content when a chat provider is
+ * available, falling back to the first non-empty line otherwise.
+ *
+ * Unlike `importMessageToKnowledgeBase`, this does NOT build a vector/embedding index.
+ * This is the preferred path for the chat "导入知识库" button.
+ */
+export async function importMessageRawToKnowledgeBase(
+	deps: KnowledgeToolDeps,
+	content: string,
+	opts: ImportToKbOptions = {},
+): Promise<ImportToKbResult> {
+	try {
+		if (!content?.trim()) {
+			return { success: false, error: 'Empty content' };
+		}
+
+		// Resolve the target notes directory: prefer the active vault's notes dir
+		// so the document appears in the knowledge-base view (which scans
+		// <vaultId>/笔记/). Fall back to legacy <storageRoot>/notes/.
+		let notesDir: URI;
+		if (typeof deps.resolveNotesDir === 'function') {
+			try {
+				notesDir = URI.file(await deps.resolveNotesDir());
+			} catch {
+				notesDir = URI.file(join(await deps.resolveStorageRoot(), 'notes'));
+			}
+		} else {
+			notesDir = URI.file(join(await deps.resolveStorageRoot(), 'notes'));
+		}
+		await deps.fileService.createFolder(notesDir);
+
+		const now = new Date();
+		const dateStr = now.toISOString().slice(0, 10);
+		const hash = simpleHash(content);
+		const key = `${dateStr}_${hash}`;
+
+		const source = opts.source ?? 'agent-chat-import';
+		const agentId = opts.agentId ?? 'unknown';
+
+		// LLM title generation: ask the chat model for a short title
+		const title = opts.title?.trim() || await deriveTitleFromLLM(deps, content);
+
+		const md = renderRawNote(content, {
+			date: now.toISOString(),
+			source,
+			agentId,
+			category: opts.category,
+			tags: opts.tags,
+			title,
+		});
+
+		const noteUri = URI.joinPath(notesDir, `${key}.md`);
+		await deps.fileService.writeFile(noteUri, VSBuffer.fromString(md));
+
+		return {
+			success: true,
+			action: 'build',
+			id: key,
+			note: key,
+			notePath: noteUri.fsPath,
+			title,
+		};
+	} catch (err) {
+		return { success: false, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/**
+ * Generate a short title from the content via the KB chat LLM.
+ * Falls back to `deriveTitle` (first non-empty line) when no chat provider
+ * is configured or the LLM call fails.
+ */
+async function deriveTitleFromLLM(deps: KnowledgeToolDeps, content: string): Promise<string> {
+	// Check if a chat provider is available
+	try {
+		const kb =
+			typeof deps.resolveKbModel === 'function' ? await deps.resolveKbModel() : undefined;
+		if (!kb || !isKbChatUsable(deps, kb.providerId, kb.modelId)) {
+			return deriveTitle(content);
+		}
+
+		const chatModel = await resolveKbChatModelViaDeps(deps, {
+			providerId: kb.providerId,
+			modelId: kb.modelId,
+		});
+
+		const titleSchema: JsonSchema = {
+			type: 'object',
+			properties: {
+				title: { type: 'string', description: '简短标题，不超过50个字符，用中文概括内容主题' },
+			},
+			required: ['title'],
+		};
+
+		const prompt = [
+			'你是一个标题提取助手。请阅读以下内容，用**不超过50个字符的中文**概括它的主题，只输出标题文本，不要任何额外解释。',
+			'如果内容是技术讨论/代码/配置，标题应体现技术主题（如 "React useEffect 依赖数组最佳实践"）。',
+			'如果内容是对话或问题解答，标题应体现问题或答案要点（如 "Python 协程与多线程的区别"）。',
+			'',
+			'--- 内容 ---',
+			content.slice(0, 3000),
+		].join('\n');
+
+		const parsed = await chatModel.extract<{ title: string }>({
+			prompt,
+			schema: titleSchema,
+		});
+
+		const llmTitle = parsed?.title?.trim();
+		if (llmTitle && llmTitle.length > 0) {
+			return llmTitle.length > 80 ? llmTitle.slice(0, 77) + '...' : llmTitle;
+		}
+	} catch {
+		// LLM unavailable → fall through to deriveTitle
+	}
+	return deriveTitle(content);
+}
+
+/** Render the raw message into a markdown note with a metadata frontmatter header. */
+function renderRawNote(
+	content: string,
+	meta: { date: string; source: string; agentId: string; category?: string; tags?: string[]; title: string },
+): string {
+	const lines: string[] = ['---'];
+	lines.push(`title: ${JSON.stringify(meta.title)}`);
+	lines.push(`date: ${meta.date}`);
+	lines.push(`source: ${meta.source}`);
+	lines.push(`agentid: ${meta.agentId}`);
+	if (meta.category) { lines.push(`category: ${meta.category}`); }
+	if (meta.tags?.length) { lines.push(`tags: [${meta.tags.join(', ')}]`); }
+	lines.push('---');
+	lines.push('');
+	// 原样存档：不修改、不总结正文内容
+	lines.push(content.trimEnd());
+	lines.push('');
+	return lines.join('\n');
+}
+
+/** Deterministic short base36 hash (for de-dup / filename uniqueness). */
+function simpleHash(s: string): string {
+	let h = 0;
+	for (let i = 0; i < s.length; i++) {
+		h = (h << 5) - h + s.charCodeAt(i);
+		h |= 0;
+	}
+	return Math.abs(h).toString(36);
+}
+
+/** Render an LLM summary into a clean, cross-linkable markdown note (no embeddings). */
+function renderSummaryNote(
+	p: { title: string; summary: string; tags: string[]; category: string; key_points: string[] },
+	original: string,
+): string {
+	const tags = Array.isArray(p.tags) ? p.tags : [];
+	const points = Array.isArray(p.key_points) && p.key_points.length
+		? p.key_points.map(k => `- ${k}`).join('\n')
+		: '- （无）';
+	return [
+		'---',
+		`title: ${JSON.stringify(p.title || '未命名')}`,
+		`summary: ${JSON.stringify(p.summary || '')}`,
+		`category: ${p.category || 'note'}`,
+		`tags: [${tags.join(', ')}]`,
+		'source: agent-chat-import',
+		`created_at: ${new Date().toISOString()}`,
+		'---',
+		'',
+		`# ${p.title || '未命名'}`,
+		'',
+		`> ${p.summary || ''}`,
+		'',
+		'## 关键要点',
+		points,
+		'',
+		'## 原文',
+		'```text',
+		original,
+		'```',
+		'',
+	].join('\n');
 }
 
 /**
@@ -284,7 +537,7 @@ export async function buildKbManager(
 	const providerId = opts.provider || kb?.providerId;
 	const modelId = opts.model || kb?.modelId;
 
-	const chatModel = resolveChatModel(deps.configurationService, {
+	const chatModel = await resolveKbChatModelViaDeps(deps, {
 		providerId,
 		modelId,
 	});
@@ -424,181 +677,19 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 		}
 	}
 
-	async function readSource(args: Record<string, unknown>): Promise<string> {
-		const text = (args['text'] as string | undefined)?.trim();
-		if (text) { return text; }
-		const fp = (args['file_path'] as string | undefined)?.trim();
-		if (fp) {
-			const baseDir = await deps.resolveBaseDir();
-			const uri = resolveFileUri(baseDir, fp);
-			if (uri) {
-				try {
-					const stat = await deps.fileService.readFile(uri);
-					const content = stat.value.toString();
-					if (content.trim()) { return content; }
-				} catch {
-					// fall through to empty
-				}
-			}
-		}
-		return '';
-	}
-
 	const embeddingEnabled = () => deps.embeddingService.isEnabled();
 	const available = embeddingEnabled;
 
+	// ── Note ──
+	// `kb_build`, `kb_ingest`, `kb_list_templates`, `kb_list_methods` are intentionally NOT
+	// registered as agent tools. The structured KB knowledge graph / vector index build entry
+	// point is retained ONLY in the KB Settings UI (`🔄 重新构建向量索引` button →
+	// `rebuildVectorIndex()`). The primary chat-agent → KB pipeline uses the structured
+	// extraction flow (🧩 button → knowledge-base-expert agent + [skill:structured-extract])
+	// or the lightweight `importMessageRawToKnowledgeBase` path (chat "导入知识库" button).
+	// ──────────────────────────────────────────────────
+
 	const descriptors: IKbToolDescriptor[] = [
-		// ── kb_list_templates ──────────────────────────────
-		{
-			definition: {
-				name: 'kb_list_templates',
-				description: 'List available knowledge-base templates (e.g. knowledge_graph, entity_list, faq). Call this first to discover which template id to pass to kb_build.',
-				inputSchema: { type: 'object', properties: {} },
-				category: 'knowledge',
-				source: 'saros.knowledge',
-			},
-			handler: async () => {
-				const tmpls = KnowledgeManager.availableTemplates();
-				return txt(JSON.stringify(tmpls, null, 2));
-			},
-		},
-
-		// ── kb_list_methods ──────────────────────────────
-		{
-			definition: {
-				name: 'kb_list_methods',
-				description: 'List available extraction methods (fine-tuned strategies like light_rag, itext2kg, atom). Call this to discover which `method` to pass to kb_build for tuning how entities/relationships are extracted.',
-				inputSchema: { type: 'object', properties: {} },
-				category: 'knowledge',
-				source: 'saros.knowledge',
-			},
-			handler: async () => {
-				const methods = listMethods();
-				return txt(JSON.stringify(
-					methods.map(m => ({ name: m.name, kind: m.kind, description: m.description, domain: m.domain })),
-					null, 2,
-				));
-			},
-		},
-
-		// ── kb_build ──────────────────────────────────────
-		{
-			definition: {
-				name: 'kb_build',
-				description: 'Build a knowledge base from a document. Extracts entities/relationships (or a list) via LLM, embeds them, and persists the index. Returns the kb id for later kb_search / kb_ask. Provide either `text` or `file_path`. With `template_id="notes_summary"` (or `export_notes: true`) it also auto-writes a structured Obsidian note to the KB notes vault (<storage-root>/notes), so a single call turns a document into a cross-linkable note.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						title: { type: 'string', description: 'Human-readable title for the knowledge base' },
-						template_id: { type: 'string', description: 'Template id from kb_list_templates (default: knowledge_graph)' },
-						method: { type: 'string', description: 'Optional extraction method to fine-tune how entities/relationships are extracted. Use kb_list_methods to discover available methods (e.g. light_rag, itext2kg, atom, hyper_rag). When set, the method overrides the template\'s default extraction strategy.' },
-						text: { type: 'string', description: 'Raw document text to parse' },
-						file_path: { type: 'string', description: 'Path to a text/markdown file to parse (relative to the workspace root)' },
-						model: { type: 'string', description: 'Optional model id overriding the default LLM' },
-						provider: { type: 'string', description: 'Optional BYOK provider id (default: openrouter)' },
-						export_notes: { type: 'boolean', description: 'Auto-export a structured Obsidian note (with [[wikilinks]]) into the KB notes vault after building. Default: true when template_id=notes_summary, otherwise false.' },
-						note_name: { type: 'string', description: 'Optional note file name (without .md) when export_notes is true. Defaults to a sanitized KB title.' },
-						mermaid: { type: 'boolean', description: 'Include the ```mermaid graph block when export_notes is true (graph templates only). Default: true.' },
-						wikilinks: { type: 'boolean', description: 'Use Obsidian [[wikilinks]] for node names when export_notes is true. Default: true.' },
-					},
-				},
-				category: 'knowledge',
-				source: 'saros.knowledge',
-			},
-			available,
-		handler: async (args) => {
-			const templateId = (args['template_id'] as string) || 'knowledge_graph';
-			const method = (args['method'] as string) || undefined;
-			const title = (args['title'] as string) || (method ?? templateId);
-			const filePath = (args['file_path'] as string)?.trim();
-		// 导入即自动总结落笔记目录：notes_summary 模板默认导出，其他模板需显式开启
-		const exportNotes = shouldAutoExportNotes(args, templateId);
-			try {
-				const source = await readSource(args);
-					if (!source.trim()) {
-						return txt(JSON.stringify({ success: false, error: 'Provide `text` or `file_path`.' }));
-					}
-					const manager = await buildManager({ model: args['model'] as string, provider: args['provider'] as string });
-					const session = manager.create(templateId, { title, method });
-					await manager.parseText(session, source);
-					// 记录来源文件路径（用于 kb_list 展示）
-					if (filePath) { (session as any)._sourcePath = filePath; }
-					await manager.persist(session);
-					void logKbTool('kb_build', 'success', { target: session.id, detail: { title, template: templateId, method, kind: session.kind, itemCount: session.meta.itemCount, source: filePath } });
-					const result: Record<string, unknown> = {
-						success: true,
-						id: session.id,
-						title: session.title,
-						template: templateId,
-						kind: session.kind,
-						itemCount: session.meta.itemCount,
-					};
-					if (method) { result['method'] = method; }
-					if (exportNotes) {
-						const note = await exportToNotes({ fileService: deps.fileService, resolveStorageRoot: deps.resolveStorageRoot, logKbTool }, manager, session, args);
-						if (note) { result['note'] = note; }
-					}
-					return txt(JSON.stringify(result, null, 2));
-				} catch (err) {
-					void logKbTool('kb_build', 'failure', { detail: { title, template: templateId, method }, error: err instanceof Error ? err.message : String(err) });
-					return txt(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
-				}
-			},
-		},
-
-		// ── kb_ingest ───────────────────────────────────
-		{
-			definition: {
-				name: 'kb_ingest',
-				description: 'Add more documents to an existing knowledge base (by id). Re-extracts and merges with the existing index. Provide either `text` or `file_path`.',
-				inputSchema: {
-					type: 'object',
-					properties: {
-						id: { type: 'string', description: 'Knowledge base id returned by kb_build' },
-						text: { type: 'string', description: 'Raw document text to parse' },
-						file_path: { type: 'string', description: 'Path to a text/markdown file to parse (relative to the workspace root)' },
-						model: { type: 'string', description: 'Optional model id overriding the default LLM' },
-						provider: { type: 'string', description: 'Optional BYOK provider id (default: openrouter)' },
-						export_notes: { type: 'boolean', description: 'Re-export the updated KB as an Obsidian note into the notes vault after ingesting. Default: true when the KB template is notes_summary, otherwise false.' },
-						note_name: { type: 'string', description: 'Optional note file name (without .md) when export_notes is true. Defaults to a sanitized KB title.' },
-						mermaid: { type: 'boolean', description: 'Include the ```mermaid graph block when export_notes is true (graph templates only). Default: true.' },
-						wikilinks: { type: 'boolean', description: 'Use Obsidian [[wikilinks]] for node names when export_notes is true. Default: true.' },
-					},
-					required: ['id'],
-				},
-				category: 'knowledge',
-				source: 'saros.knowledge',
-			},
-			available,
-		handler: async (args) => {
-			const id = args['id'] as string;
-			try {
-				if (!id) { return txt(JSON.stringify({ success: false, error: '`id` is required' })); }
-				const source = await readSource(args);
-					if (!source.trim()) {
-						return txt(JSON.stringify({ success: false, error: 'Provide `text` or `file_path`.' }));
-					}
-					const manager = await buildManager({ model: args['model'] as string, provider: args['provider'] as string });
-					const session = await manager.load(id);
-					const templateId = session.templateId;
-					const exportNotes = shouldAutoExportNotes(args, templateId);
-					await manager.parseText(session, source);
-					await manager.persist(session);
-					void logKbTool('kb_ingest', 'success', { target: session.id, detail: { itemCount: session.meta.itemCount } });
-					const result: Record<string, unknown> = {
-						success: true, id: session.id, itemCount: session.meta.itemCount,
-					};
-					if (exportNotes) {
-						const note = await exportToNotes({ fileService: deps.fileService, resolveStorageRoot: deps.resolveStorageRoot, logKbTool }, manager, session, args);
-						if (note) { result['note'] = note; }
-					}
-					return txt(JSON.stringify(result, null, 2));
-				} catch (err) {
-					void logKbTool('kb_ingest', 'failure', { target: id, error: err instanceof Error ? err.message : String(err) });
-					return txt(JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }));
-				}
-			},
-		},
 
 		// ── kb_search ───────────────────────────────────
 		{
@@ -628,7 +719,8 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 				const topK = typeof args['top_k'] === 'number' ? Math.min(Math.max(1, args['top_k'] as number), 50) : 5;
 				const manager = await buildManager({});
 					const session = await manager.load(id);
-					const result = await manager.search(session, query, topK);
+					// P0-2：token 预算封顶，防检索结果撑爆 LLM 上下文
+					const result = await manager.search(session, query, topK, { maxTokens: 4000 });
 					void logKbTool('kb_search', 'success', { target: id, detail: { query, topK } });
 					return txt(JSON.stringify({ success: true, ...result }, null, 2));
 				} catch (err) {
@@ -805,7 +897,7 @@ export function buildKnowledgeToolDescriptors(deps: KnowledgeToolDeps): IKbToolD
 			definition: {
 				name: 'kb_list',
 				description: 'List all persisted knowledge bases in this workspace.',
-				inputSchema: { type: 'object', properties: {} },
+				inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } },
 				category: 'knowledge',
 				source: 'saros.knowledge',
 			},

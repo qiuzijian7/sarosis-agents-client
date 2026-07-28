@@ -5,7 +5,7 @@
 
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { ILogService } from '../../log/common/log.js';
-import { IEnhancedSessionStore, IMemoryEntry } from '../common/enhancedSessionStore.js';
+import { IEnhancedSessionStore } from '../common/enhancedSessionStore.js';
 import { IMemoryProvider, IToolSchema } from '../common/memoryService.js';
 
 /**
@@ -53,9 +53,7 @@ export class BuiltinMemoryProvider extends Disposable implements IMemoryProvider
 	systemPromptBlock(): string {
 		return [
 			'## Memory',
-			'You have access to a persistent memory system.',
-			'Use `memory_write` to save important information for future sessions.',
-			'Use `memory_search` to recall relevant past knowledge.',
+			'You have access to a persistent memory system (managed via the memory tools).',
 			'Categories: user_preference, project_knowledge, decision, general.',
 			'',
 			'When writing memories:',
@@ -178,93 +176,17 @@ export class BuiltinMemoryProvider extends Disposable implements IMemoryProvider
 	// ── Tool Schemas ────────────────────────────────────────────
 
 	getToolSchemas(): readonly IToolSchema[] {
-		return [
-			{
-				name: 'memory_write',
-				description: 'Save important information to persistent memory for future sessions. Use this to remember user preferences, project decisions, and key information.',
-				parameters: {
-					type: 'object',
-					properties: {
-						content: {
-							type: 'string',
-							description: 'The information to remember. Be concise but include context.',
-						},
-						category: {
-							type: 'string',
-							enum: ['user_preference', 'project_knowledge', 'decision', 'general'],
-							description: 'Category of the memory.',
-							default: 'general',
-						},
-						importance: {
-							type: 'number',
-							minimum: 0,
-							maximum: 1,
-							description: 'Importance score (0.0 to 1.0). Default 0.5.',
-							default: 0.5,
-						},
-						expires_at: {
-							type: 'string',
-							description: 'Optional expiration date (ISO 8601 format).',
-						},
-					},
-					required: ['content'],
-				},
-			},
-			{
-				name: 'memory_search',
-				description: 'Search persistent memory for relevant past knowledge. Use this before making decisions that might be influenced by past context.',
-				parameters: {
-					type: 'object',
-					properties: {
-						query: {
-							type: 'string',
-							description: 'Search query. Use keywords and phrases.',
-						},
-						limit: {
-							type: 'number',
-							description: 'Maximum number of results. Default 5.',
-							default: 5,
-						},
-						category: {
-							type: 'string',
-							description: 'Filter by category.',
-							enum: ['user_preference', 'project_knowledge', 'decision', 'general'],
-						},
-					},
-					required: ['query'],
-				},
-			},
-			{
-				name: 'memory_delete',
-				description: 'Delete a specific memory entry by ID. Use this to remove outdated or incorrect memories.',
-				parameters: {
-					type: 'object',
-					properties: {
-						id: {
-							type: 'string',
-							description: 'Memory entry ID to delete.',
-						},
-					},
-					required: ['id'],
-				},
-			},
-		];
+		return [];
 	}
 
 	// ── Tool Call Handler ───────────────────────────────────────
 
 	async handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
 		try {
-			switch (name) {
-				case 'memory_write':
-					return await this._handleMemoryWrite(args);
-				case 'memory_search':
-					return await this._handleMemorySearch(args);
-				case 'memory_delete':
-					return await this._handleMemoryDelete(args);
-				default:
-					return JSON.stringify({ error: `Unknown tool: ${name}` });
-			}
+		switch (name) {
+			default:
+				return JSON.stringify({ error: `Unknown tool: ${name}` });
+		}
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
 			this.logService.error(`[BuiltinMemoryProvider] Tool ${name} failed`, err);
@@ -272,85 +194,7 @@ export class BuiltinMemoryProvider extends Disposable implements IMemoryProvider
 		}
 	}
 
-	private async _handleMemoryWrite(args: Record<string, unknown>): Promise<string> {
-		const content = args['content'] as string;
-		if (!content) {
-			return JSON.stringify({ error: 'content is required' });
-		}
 
-		const category = (args['category'] as IMemoryEntry['category']) ?? 'general';
-		const importance = (args['importance'] as number) ?? 0.5;
-		const expiresAt = args['expires_at'] as string | undefined;
-
-		const id = this.sessionStore.insertMemory({
-			content,
-			category,
-			importance: Math.max(0, Math.min(1, importance)),
-			sessionId: this._currentSessionId,
-			expiresAt,
-			source: 'tool',
-		});
-
-		return JSON.stringify({
-			success: true,
-			id,
-			message: `Memory saved to ${category} category with importance ${importance}`,
-		});
-	}
-
-	private async _handleMemorySearch(args: Record<string, unknown>): Promise<string> {
-		const query = args['query'] as string;
-		if (!query) {
-			return JSON.stringify({ error: 'query is required' });
-		}
-
-		const limit = (args['limit'] as number) ?? 5;
-		const category = args['category'] as string | undefined;
-
-		const memories = this.sessionStore.getMemories({
-			category,
-			limit,
-			includeExpired: false,
-		});
-
-		if (memories.length === 0) {
-			return JSON.stringify({
-				success: true,
-				results: [],
-				message: 'No relevant memories found.',
-			});
-		}
-
-		// Also search FTS5 for relevance
-		const searchResults = this.sessionStore.searchWithRelevance(query, {
-			maxResults: limit,
-			sourceTypes: ['memory'],
-		});
-
-		return JSON.stringify({
-			success: true,
-			results: searchResults.map(r => ({
-				content: r.content,
-				relevance: r.combinedRank ?? r.rank,
-				sourceType: r.sourceType,
-			})),
-			count: searchResults.length,
-		});
-	}
-
-	private async _handleMemoryDelete(args: Record<string, unknown>): Promise<string> {
-		const id = args['id'] as string;
-		if (!id) {
-			return JSON.stringify({ error: 'id is required' });
-		}
-
-		this.sessionStore.deleteMemory(id);
-
-		return JSON.stringify({
-			success: true,
-			message: `Memory ${id} deleted.`,
-		});
-	}
 
 	// ── Pre-Compression Hook ────────────────────────────────────
 

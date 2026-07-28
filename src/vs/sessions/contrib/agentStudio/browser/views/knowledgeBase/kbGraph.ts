@@ -15,6 +15,8 @@ import { IGraphNode, IGraphLink } from './kbGraphView.js';
 
 const MD_EXTS = new Set(['md', 'markdown']);
 const WIKILINK_RE = /\[\[([^\]\n]+)\]\]/g;
+/** 系统维护文件（导航/洞察/审计/报告）不进图谱，避免污染关系图。 */
+const SYS_FILES = new Set(['index.md', 'overview.md', 'insights.md', 'log.md', 'lint-report.md', 'dedup-report.md']);
 
 interface ILinkDocMeta {
 	uri: URI;
@@ -72,6 +74,44 @@ export class KbLinkGraph {
 			const ext = d.name.split('.').pop()?.toLowerCase();
 			if (!ext || !MD_EXTS.has(ext)) { continue; }
 			this._indexDoc({ uri: d.uri, name: d.name, section: d.section, mtime: d.mtime }, d.text);
+		}
+	}
+
+	/**
+	 * Inject pre-built graph data from Worker (no parsing needed, just register links).
+	 * Used when the heavy wikilink parsing is done off the main thread.
+	 */
+	injectFromWorker(
+		nodes: { uri: URI; name: string }[],
+		links: { sourceUriStr: string; targetUriStr: string }[],
+	): void {
+		this._reset();
+
+		// Register nodes
+		for (const n of nodes) {
+			const meta: ILinkDocMeta = { uri: n.uri, name: n.name, section: 'notes', mtime: Date.now() };
+			this._docs.push(meta);
+			this._nameToDoc.set(this.normalizeTarget(n.name), meta);
+		}
+
+		// Register links
+		const outgoingMap = new Map<string, string[]>();
+		for (const l of links) {
+			// Build outgoing list per source
+			let targets = outgoingMap.get(l.sourceUriStr);
+			if (!targets) { targets = []; outgoingMap.set(l.sourceUriStr, targets); }
+			targets.push(l.targetUriStr);
+
+			// Build by-target reverse index
+			const targetKey = this.normalizeTarget(l.targetUriStr);
+			let set = this._byTarget.get(targetKey);
+			if (!set) { set = new Set(); this._byTarget.set(targetKey, set); }
+			set.add(l.sourceUriStr);
+		}
+
+		// Flush outgoing map
+		for (const [source, targets] of outgoingMap) {
+			this._outgoing.set(source, targets);
 		}
 	}
 
@@ -140,12 +180,15 @@ export class KbLinkGraph {
 	getGraphData(): { nodes: IGraphNode[]; links: IGraphLink[] } {
 		const nodes: IGraphNode[] = this._docs.map(d => {
 			const refs = this._outgoing.get(d.uri.toString())?.length ?? 0;
+			// bug 修复：defs 是被引用数（inbound 反链数），不是出链数（outbound）。
+			// 对齐 IGraphNode 语义「节点大小 = log2(Defs)」与 SiYuan Defs（被引用）。
+			const defs = this._byTarget.get(this.normalizeTarget(d.name))?.size ?? 0;
 			return {
 				id: d.uri.toString(),
 				label: d.name.replace(/\.(md|markdown)$/i, ''),
 				type: 'doc',
 				refs,
-				defs: refs,
+				defs,
 			};
 		});
 		const nodeIds = new Set(nodes.map(n => n.id));
@@ -170,6 +213,8 @@ export class KbLinkGraph {
 			if (c.isDirectory) {
 				await this.walk(c.resource, section);
 			} else {
+				// bug B：系统维护文件不进图谱，避免污染关系图
+				if (SYS_FILES.has(c.name)) { continue; }
 				const ext = c.resource.path.split('.').pop()?.toLowerCase();
 				if (!ext || !MD_EXTS.has(ext)) { continue; }
 				const meta: ILinkDocMeta = { uri: c.resource, name: c.name, section, mtime: c.mtime ?? 0 };
@@ -185,7 +230,8 @@ export class KbLinkGraph {
 
 	private normalizeTarget(raw: string): string {
 		const name = raw.split(/[|#]/)[0].trim();
-		return name.replace(/\.(md|markdown)$/i, '').toLowerCase();
+		// bug C：连字符/空格归一（[[Note Name]] ↔ note-name.md），对齐 llm_wiki resolveTarget 与 _buildInsights normKey
+		return name.replace(/\.(md|markdown)$/i, '').toLowerCase().replace(/\s+/g, '-');
 	}
 
 	private snippetFor(text: string, name: string): string {

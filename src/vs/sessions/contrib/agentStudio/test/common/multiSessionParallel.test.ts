@@ -412,80 +412,61 @@ suite('下游兼容性 —— 记忆写回 sessionId 传播', () => {
 });
 
 // ===========================================================================
-// 5. 下游兼容性：Episodic 提取 agentId::sessionId 双键隔离
+// 5. 下游兼容性：turn 观察捕获（storeTurnObservations）按会话哈希去重
+//    （2026-07-26 重构：L1-L3 客户端管线已移除，turn 末统一走 mem:obs 暂存层，
+//     由引擎 session_end 链 compressSession→slotReflect→graphExtract 接管提炼）
 // ===========================================================================
 
-suite('下游兼容性 —— Episodic 提取双键隔离', () => {
+suite('下游兼容性 —— turn 观察捕获按会话去重', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('Episodic 计数按 agentId::sessionId 双键隔离', () => {
-		// agentOSService: triggerEpisodicExtraction 使用 _turnKey(agentId, sessionId)
-		// 作为 _l1ConversationCountByAgent 的 key
-		const turnKey = (agentId: string, sessionId?: string) =>
-			sessionId ? `${agentId}::${sessionId}` : agentId;
-
-		// 同一 agent 的两个 session 各自计数
-		assert.strictEqual(turnKey('agent-1', 's-a'), 'agent-1::s-a');
-		assert.strictEqual(turnKey('agent-1', 's-b'), 'agent-1::s-b');
-
-		// 不同 key → 不互相推进阈值
-		assert.notStrictEqual(turnKey('agent-1', 's-a'), turnKey('agent-1', 's-b'));
-	});
-
-	test('sessionId 缺失时退化为 agentId 单键（等价旧行为）', () => {
-		const turnKey = (agentId: string, sessionId?: string) =>
-			sessionId ? `${agentId}::${sessionId}` : agentId;
-
-		assert.strictEqual(turnKey('agent-1', undefined), 'agent-1');
-		assert.strictEqual(turnKey('agent-1', undefined), turnKey('agent-1'));
-	});
-
-	test('Episodic 阈值到达后清零（不累加）', () => {
-		const EPISODIC_THRESHOLD = 5; // agentOSService.EPISODIC_EXTRACTION_THRESHOLD
-		const counts = new Map<string, number>();
-
-		const triggerCheck = (key: string) => {
-			const count = (counts.get(key) ?? 0) + 1;
-			counts.set(key, count);
-			if (count >= EPISODIC_THRESHOLD) {
-				counts.set(key, 0); // 达到阈值→清零→触发提取
-				return true; // triggered
-			}
-			return false;
-		};
-
-		// Session A 累计 5 轮 → 触发
-		for (let i = 0; i < 4; i++) {
-			assert.strictEqual(triggerCheck('agent-1::s-a'), false);
+	// 镜像 agentContextRetrieval.storeTurnObservations 的核心逻辑
+	const hashOf = (text: string) => {
+		let hash = 0;
+		for (let i = 0; i < text.length; i++) { hash = (hash * 31 + text.charCodeAt(i)) | 0; }
+		return String(hash);
+	};
+	const capture = (seenBySession: Map<string, Set<string>>, sessionId: string, messages: Array<{ role: string; content: string }>) => {
+		const seen = seenBySession.get(sessionId) ?? new Set<string>();
+		seenBySession.set(sessionId, seen);
+		const stored: string[] = [];
+		for (const m of messages) {
+			if (!m || m.role === 'system') { continue; }
+			const text = (m.content ?? '').trim();
+			if (text.length < 8) { continue; }
+			const key = hashOf(text);
+			if (seen.has(key)) { continue; }
+			seen.add(key);
+			stored.push(m.role);
 		}
-		assert.strictEqual(triggerCheck('agent-1::s-a'), true);
-		assert.strictEqual(counts.get('agent-1::s-a'), 0);
+		return stored;
+	};
+
+	test('system 消息与短内容（<8 字符）被跳过', () => {
+		const seen = new Map<string, Set<string>>();
+		const stored = capture(seen, 's-a', [
+			{ role: 'system', content: 'You are a helpful assistant' },
+			{ role: 'user', content: 'hi' },
+			{ role: 'user', content: '请帮我修复这个编译错误' },
+		]);
+		assert.deepStrictEqual(stored, ['user']);
 	});
 
-	test('Session A 的轮次不推动 Session B 的提取阈值', () => {
-		const EPISODIC_THRESHOLD = 5;
-		const counts = new Map<string, number>();
+	test('同一会话内相同内容只暂存一次（哈希去重）', () => {
+		const seen = new Map<string, Set<string>>();
+		const msgs = [{ role: 'user', content: '请帮我修复这个编译错误' }];
+		assert.strictEqual(capture(seen, 's-a', msgs).length, 1);
+		assert.strictEqual(capture(seen, 's-a', msgs).length, 0); // 重复捕获被去重
+	});
 
-		const triggerCheck = (key: string) => {
-			const count = (counts.get(key) ?? 0) + 1;
-			counts.set(key, count);
-			return count >= EPISODIC_THRESHOLD;
-		};
-
-		// Session A 跑了 4 轮
-		for (let i = 0; i < 4; i++) {
-			triggerCheck('agent-1::s-a');
-		}
-		// Session B 跑了 1 轮
-		triggerCheck('agent-1::s-b');
-
-		// Session A 的计数应为 4，Session B 的计数应为 1
-		// 在旧实现（per-agent 单键）中，Session A + B 合计 = 5 → 误触发
-		// 新实现（双键）中各自独立
-		assert.strictEqual(counts.get('agent-1::s-a'), 4);
-		assert.strictEqual(counts.get('agent-1::s-b'), 1);
-		assert.ok(counts.get('agent-1::s-a')! < EPISODIC_THRESHOLD);
+	test('不同会话的去重命名空间相互隔离', () => {
+		const seen = new Map<string, Set<string>>();
+		const msgs = [{ role: 'assistant', content: '这是 Session A 的回答内容' }];
+		assert.strictEqual(capture(seen, 's-a', msgs).length, 1);
+		// 同一内容在另一会话仍应暂存（sessionId 命名空间独立）
+		assert.strictEqual(capture(seen, 's-b', msgs).length, 1);
+		assert.strictEqual(capture(seen, 's-b', msgs).length, 0);
 	});
 });
 

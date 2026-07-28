@@ -26,6 +26,14 @@ export class StallWatchdog {
 	private _timer: ReturnType<typeof setTimeout> | undefined;
 	private readonly _opts: IStallWatchdogOptions;
 	private _disposed = false;
+	/**
+	 * 暂停计数（2026-07-26 P0：工具执行盲区修复）。tool_start→pause / tool_end→resume。
+	 * tool_start 全部在模型流式装配期到达、tool_end 在执行完成后到达，计数 >0 的
+	 * 整段窗口恰好覆盖「参数流式 + 全部工具执行」——期间看门狗解除武装，杜绝
+	 * 「await 长工具（嵌套 delegate_task 可达数分钟）期间无 delta」导致的误判停滞。
+	 * 工具执行本身由 toolExecutionGuard 兜底（编排工具 630s），无需看门狗重复计时。
+	 */
+	private _pauseCount = 0;
 
 	constructor(opts: IStallWatchdogOptions) {
 		this._opts = opts;
@@ -33,11 +41,33 @@ export class StallWatchdog {
 		this._schedule();
 	}
 
-	/** Record activity — resets the idle clock. Call on every meaningful delta. */
+	/**
+	 * Record activity — resets the idle clock. Call on every meaningful delta.
+	 * 暂停期间仍记录活动（tool_args 流式是模型活动），但不重新武装计时器。
+	 */
 	tick(): void {
 		if (this._disposed) { return; }
 		this._lastActivity = this._now();
-		this._schedule();
+		if (this._pauseCount === 0) {
+			this._schedule();
+		}
+	}
+
+	/** 解除武装（工具执行窗口开始）。可嵌套，需与 resume 配对。 */
+	pause(): void {
+		if (this._disposed) { return; }
+		this._pauseCount++;
+		this._clear();
+	}
+
+	/** 重新武装（最后一个在飞工具完成）并从当前时刻重置空闲时钟。 */
+	resume(): void {
+		if (this._disposed || this._pauseCount === 0) { return; }
+		this._pauseCount--;
+		if (this._pauseCount === 0) {
+			this._lastActivity = this._now();
+			this._schedule();
+		}
 	}
 
 	/**
@@ -46,7 +76,7 @@ export class StallWatchdog {
 	 * injected clock) — production calls it from the internal setTimeout.
 	 */
 	pump(): void {
-		if (this._disposed) { return; }
+		if (this._disposed || this._pauseCount > 0) { return; }
 		const idle = this._now() - this._lastActivity;
 		if (idle >= this._opts.idleTimeoutMs) {
 			this._opts.onStall(idle);

@@ -137,15 +137,21 @@ export class TaskDecomposer {
 
 		for (let i = 0; i < template.phases.length; i++) {
 			const phase = template.phases[i];
+			// Generate the new task's id up-front so the cycle check can refer to it.
+			const id = generateId('orch_task');
 			const deps: string[] = [];
 			if (template.sequential && prevId) {
-				// Cycle-safe: validate before adding dependency
-				if (!wouldCreateCycle(tasks, prevId, prevId)) {
+				// Cycle-safe: adding `prevId` as a dependency of the brand-new `id`
+				// is only unsafe if `prevId` (transitively) already depends on `id`.
+				// `id` is freshly generated and not yet in `tasks`, so it can never be
+				// reached — the check returns false and the dependency is added.
+				if (!wouldCreateCycle(tasks, id, prevId)) {
 					deps.push(prevId);
 				}
 			}
 
 			const task = this._createTask({
+				id,
 				title: `${phase.suffix}: ${goal.slice(0, 50)}`,
 				description: `[${phase.suffix}] ${goal}`,
 				agentName: phase.agentName,
@@ -209,11 +215,12 @@ export class TaskDecomposer {
 	}
 
 	private _createTask(opts: {
+		id?: string;
 		title: string; description: string; agentName: string; role: string;
 		existingAgentNames: Set<string>; deps: string[]; priority: number; now: string;
 	}): PlanTask {
 		return {
-			id: generateId('orch_task'),
+			id: opts.id ?? generateId('orch_task'),
 			title: opts.title,
 			description: opts.description,
 			status: PlanTaskStatus.Pending,

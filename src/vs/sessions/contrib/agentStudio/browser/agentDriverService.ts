@@ -6,25 +6,69 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IAgentDriverService, AgentTurnStatus } from '../common/agentDriver.js';
-import { IAgentTurnRequest, IMemoryContext, IMemoryProvider, ChatImageMimeType, IChatContentPart } from '../common/providers.js';
+import { IAgentTurnRequest, IMemoryProvider, ChatImageMimeType, IChatContentPart } from '../common/providers.js';
+import { wrapUserQuery } from '../common/userQuery.js';
 import type { IChatStreamDelta } from '../common/providers.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IChatSendOptions } from '../common/agentStudio.js';
 import type { IChatAttachmentSend } from '../../../common/agentStudioService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { ISkillRegistry } from '../common/skills.js';
+import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
+import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import type { AgentBinding } from '../../../common/agentStudioTypes.js';
-import { AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING, AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING, AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING } from '../common/constants.js';
-import { filterToolsByChatMode, getModeSystemPrompt, GLOBAL_SYSTEM_SUFFIX } from '../common/chatModeConfig.js';
+import { AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING } from '../common/constants.js';
+import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX, getStrategyGuidance } from '../common/chatModeConfig.js';
+import { getParadigmOverride } from '../common/paradigmOverride.js';
+import { joinSections, composeFrozenPrefix, composeVolatileMessage, buildCompactToolSection, type ISystemPromptTiers } from '../common/systemPromptComposer.js';
+import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
-import { URI } from '../../../../base/common/uri.js';
 import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { restoreRunState } from '../common/agentRunState.js';
 import type { AgentRunState, AgentRunStateSnapshot } from '../common/agentRunState.js';
+
+// ─── Skill 目录 XML 渲染（可单测的纯函数） ───────────────────────────
+// 抽离自 buildSystemPrompt 的 buildSkillEntry 闭包，便于单元测试覆盖
+// 「双向打通」给 workflow 来源 skill 加的 <type>workflow</type> / <executable> /
+// <workflow_id> 标注（行为与原闭包完全一致）。
+
+/**
+ * 把一个 skill 渲染成 `<available_skills>` 目录里的一条 `<skill>` XML。
+ * @param compact 为 true 时省略 <description>（超预算降级用）
+ */
+export function buildSkillEntryXml(s: ISkillDefinition, compact: boolean): string {
+	const lines = ['  <skill>'];
+	lines.push(`    <name>${s.name}</name>`);
+	if (!compact && s.description) {
+		// 截断描述到 80 字符，减少 XML 目录体积（参考 Hermes-Agent 60 字符策略）
+		const desc = s.description.length > 80
+			? s.description.slice(0, 77) + '...'
+			: s.description;
+		lines.push(`    <description>${desc}</description>`);
+	}
+	lines.push(`    <id>${s.id}</id>`);
+	lines.push(`    <activation>${s.activation}</activation>`);
+	// 渐进披露：提示技能附带的支持文件（references/scripts/assets/templates），
+	// 模型可用 read_skill(skill_id, path) 按需读取
+	if (!compact && s.supportFiles && s.supportFiles.length > 0) {
+		const shown = s.supportFiles.slice(0, 10);
+		const suffix = s.supportFiles.length > 10 ? ` (+${s.supportFiles.length - 10} more)` : '';
+		lines.push(`    <support_files>${shown.join(', ')}${suffix}</support_files>`);
+	}
+	// 双向打通：workflow 来源的 skill 为「可执行型」，触发即运行工作流而非注入文本
+	if (s.source === 'workflow') {
+		lines.push(`    <type>workflow</type>`);
+		lines.push(`    <executable>true</executable>`);
+		if (s.workflowId) {
+			lines.push(`    <workflow_id>${s.workflowId}</workflow_id>`);
+		}
+	}
+	lines.push('  </skill>');
+	return lines.join('\n');
+}
 
 // ─── 顶层 Turn 并发限流信号量 ─────────────────────────────────────
 // 多 session / 多 agent / 多窗口同时发送消息时，防止 N 个完整 agent loop
@@ -113,6 +157,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	 */
 	private readonly _bindingWriteLocks = new Map<string, TurnConcurrencySemaphore>();
 
+	/** System prompt 分层缓存 — stable 层 session 内不变，免重复计算 */
+	/** 工具清单缓存（按 chatMode+agentId 分流） */
+	private readonly _toolInventoryCache = new Map<string, string>();
+
 	private _getBindingLock(workspaceId: string, agentId: string): TurnConcurrencySemaphore {
 		const key = `${workspaceId}::${agentId}`;
 		let lock = this._bindingWriteLocks.get(key);
@@ -188,9 +236,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
-		@IFileService private readonly _fileService: IFileService,
-		@IMcpService private readonly _mcpService: IMcpService,
+			@IMcpService private readonly _mcpService: IMcpService,
 		@IStorageService private readonly _storageService: IStorageService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
 		this._logService = logService;
@@ -205,6 +253,109 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		});
 	}
 
+	// ─── 工作流型 skill 触发（双向打通 P1）──────────────────────────────
+
+	/**
+	 * 触发一个 workflow 来源的可执行型 skill：后台启动工作流执行（fire-and-forget）。
+	 * 工作流在其专属 owner agent 会话中运行，AskUser/变量卡等交互由工作流自身处理，
+	 * 不阻塞当前 agent turn。结果通过工作流的 trace 机制呈现，不在本方法内同步回灌。
+	 */
+	private async _triggerWorkflowSkill(workflowId: string, input: string | undefined, name: string): Promise<void> {
+		try {
+			// 懒获取打破循环依赖链：agentDriverService -> workflowExecutionService ->
+			// agentChatService -> agentDriverService。直到 /skill <id> 触发时才解析。
+			const wfService = this._instantiationService.invokeFunction((accessor) =>
+				accessor.get(IWorkflowExecutionService)
+			);
+			const executionId = await wfService.executeWorkflow(workflowId, {
+				context: { input: input ?? '' },
+				skipVariableCollection: true,
+			});
+			this._logService.info(`[AgentDriver] workflow skill execution started: wf=${workflowId} exec=${executionId}`);
+		} catch (err) {
+			this._logService.warn(`[AgentDriver] workflow skill execution failed: wf=${workflowId}`, err);
+		}
+	}
+
+	/**
+	 * 工作流模式 turn（/workflow <id>、/wf、bare /{wf-xxx} 触发）。
+	 *
+	 * 与 _triggerWorkflowSkill 的 fire-and-forget 不同：本方法 await 工作流终态，
+	 * 把最终节点输出作为本 turn 的 assistant 回答锚定返回，期间：
+	 * - owner 会话绑定为当前聊天 agent（options.agentId），subagent 进度卡片内联显示；
+	 * - chat 侧 abort 信号联动 cancelExecution；
+	 * - 严格按工作流配置执行：每节点的 agent/prompt/工具/上下文隔离均由 DAG 决定，
+	 *   本 turn 不走自由 LLM 循环。
+	 */
+	private async *_executeWorkflowTurn(
+		request: IAgentTurnRequest,
+		trigger: { workflowId: string; input?: string },
+		controller: AbortController,
+	): AsyncIterable<IChatStreamDelta> {
+		const wfService = this._instantiationService.invokeFunction((accessor) =>
+			accessor.get(IWorkflowExecutionService)
+		);
+
+		yield {
+			type: 'text',
+			content: `⚙️ 正在执行工作流 **${trigger.workflowId}**${trigger.input ? `（输入：${trigger.input}）` : ''}...\n\n`,
+		};
+
+		let executionId: string;
+		try {
+			executionId = await wfService.executeWorkflow(trigger.workflowId, {
+				agentId: request.agentId,
+				sessionId: request.sessionId,
+				context: { input: trigger.input ?? '' },
+				skipVariableCollection: true,
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this._logService.warn(`[AgentDriver] workflow trigger failed: ${trigger.workflowId}`, err);
+			yield { type: 'text', content: `❌ 工作流启动失败：${msg}` };
+			return;
+		}
+
+		// abort 联动：chat 侧取消 → 取消工作流执行
+		const abortListener = () => { void wfService.cancelExecution(executionId); };
+		controller.signal.addEventListener('abort', abortListener);
+
+		try {
+			// 等待终态（Completed / Failed / Cancelled），收集最终输出
+			const finalOutput = await new Promise<{ output: string; failed: boolean; cancelled: boolean }>((resolve) => {
+				const sub = wfService.onDidExecutionStatusChange(state => {
+					if (state.executionId !== executionId) { return; }
+					const s = state.status as string;
+					if (s === 'completed' || s === 'failed' || s === 'cancelled') {
+						sub.dispose();
+						let last = '';
+						for (const ns of state.nodeStates.values()) {
+							if ((ns.status as string) === 'completed' && ns.output) {
+								last = ns.output;
+							}
+						}
+						resolve({ output: last, failed: s === 'failed', cancelled: s === 'cancelled' });
+					}
+				});
+			});
+
+			if (finalOutput.cancelled) {
+				yield { type: 'text', content: `⏹ 工作流已取消。` };
+			} else if (finalOutput.failed) {
+				yield { type: 'text', content: `❌ 工作流执行失败。${finalOutput.output ? `\n\n${finalOutput.output}` : ''}` };
+			} else {
+				yield {
+					type: 'text',
+					content: finalOutput.output
+						? finalOutput.output
+						: `✅ 工作流 **${trigger.workflowId}** 执行完成（无最终输出）。`,
+				};
+			}
+		} finally {
+			controller.signal.removeEventListener('abort', abortListener);
+		}
+	}
+
 	/** 从配置读取顶层 turn 并发上限，夹在 [1, 32] 区间，非法/缺省回退默认值。 */
 	private _readTurnConcurrencyLimit(): number {
 		const configured = this._configurationService.getValue<number>(AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING);
@@ -214,206 +365,207 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		return Math.min(AgentDriverService.MAX_TOP_LEVEL_TURN_CONCURRENCY_LIMIT, Math.max(1, n));
 	}
 
+	// ─── WorkMode 跨 turn 持久化（P1：planning 阶段不因 turn 边界而丢失） ──
+	// plan_enter → workMode='plan' → 本 turn 结束 → 下一 turn 应从 plan 继续。
+	// 这里用 sessionId 做 key，在 executeTurn stream 中监听 work_mode_changed
+	// delta 并写入 storage，executeFromChatOptions 时恢复注入 IAgentTurnRequest.
+	private static readonly _WORK_MODE_KEY_PREFIX = 'agentStudio.workMode.';
+	private readonly _sessionWorkModes = new Map<string, 'plan' | 'work'>();
+
+	private _workModeKey(sessionId: string): string {
+		return `${AgentDriverService._WORK_MODE_KEY_PREFIX}${sessionId}`;
+	}
+
+	private _saveWorkMode(sessionId: string | undefined, mode: 'plan' | 'work'): void {
+		if (!sessionId) { return; }
+		this._sessionWorkModes.set(sessionId, mode);
+		try {
+			this._storageService.store(this._workModeKey(sessionId), mode, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		} catch { /* best-effort */ }
+	}
+
+	private _restoreWorkMode(sessionId: string | undefined): 'plan' | 'work' | undefined {
+		if (!sessionId) { return undefined; }
+		// Check memory cache first, then fall back to storage.
+		const mem = this._sessionWorkModes.get(sessionId);
+		if (mem) { return mem; }
+		try {
+			const raw = this._storageService.get(this._workModeKey(sessionId), StorageScope.WORKSPACE);
+			if (raw === 'plan' || raw === 'work') {
+				this._sessionWorkModes.set(sessionId, raw);
+				return raw;
+			}
+		} catch { /* ignore */ }
+		return undefined;
+	}
+
 	// ─── 多 agent 图 checkpoint/resume 持久化（supervisor/goto Step D driver 接线）──
 	//
 	// executeAgentGraph（agentOSService）本身存储无关：它在节点边界通过
 	// request.checkpointSink 落盘、从 request.resumeFrom 续跑。driver 是唯一
 	// 知道 sessionId ↔ 存储映射的层，故在此把 sink/resume 接到 IStorageService。
 	//
-	// 零行为变更保证：单 agent 请求不带 agentGraph → executeAgentTurn 不进图分支
-	// → checkpointSink 永不被调用；resumeFrom 在单 agent 路径被忽略。仅当未来
-	// caller 给 executeTurn 传入 ≥2 节点的 agentGraph 时，本接线自动生效，
-	// 无需再改 driver。
+	// ─── Agent Turn Checkpoint（单 agent + 图模式统一，V3 支持断点续跑）───
+	// 单 agent: agentTurnExecutor 每 3 轮 persist snapshot（budget + messages + iteration）
+	// 图模式: executeAgentGraph 在节点边界 persist snapshot（graph + nodeThreads）
+	// 两种模式共用同一 checkpointSink/resumeFrom 接口，存储介质 = workspace storage。
 
-	private static readonly _GRAPH_CHECKPOINT_KEY_PREFIX = 'agentStudio.graphCheckpoint.';
+	private static readonly _TURN_CHECKPOINT_KEY_PREFIX = 'agentStudio.turnCheckpoint.';
 
-	private _graphCheckpointKey(sessionId: string): string {
-		return `${AgentDriverService._GRAPH_CHECKPOINT_KEY_PREFIX}${sessionId}`;
+	private _turnCheckpointKey(sessionId: string): string {
+		return `${AgentDriverService._TURN_CHECKPOINT_KEY_PREFIX}${sessionId}`;
 	}
 
 	/**
-	 * 从 workspace storage 恢复上一次图运行落盘的快照（容错），返回裸 AgentRunState
-	 * 供 request.resumeFrom 使用。无 checkpoint / 解析失败 → undefined（从 entry 起跑）。
+	 * 从 workspace storage 恢复上一次 turn 落盘的快照（容错），返回裸 AgentRunState
+	 * 供 request.resumeFrom 使用。无 checkpoint / 解析失败 → undefined。
+	 * 支持 V2（graph only）和 V3（budget + preExplore + loopMessages）两种格式。
 	 */
-	private _loadGraphCheckpoint(sessionId: string): AgentRunState | undefined {
+	private _loadTurnCheckpoint(sessionId: string): AgentRunState | undefined {
 		try {
-			const raw = this._storageService.get(this._graphCheckpointKey(sessionId), StorageScope.WORKSPACE);
+			const raw = this._storageService.get(this._turnCheckpointKey(sessionId), StorageScope.WORKSPACE);
 			if (!raw) {
 				return undefined;
 			}
-			// restoreRunState 同时接受「快照 {version,state}」与「裸 state」两种形态，
-			// 损坏 / 高版本回退初始态，永不抛出。
 			return restoreRunState(JSON.parse(raw));
 		} catch (err) {
-			this._logService.warn(`[AgentDriver] failed to load graph checkpoint for session ${sessionId}: ${err}`);
+			this._logService.warn(`[AgentDriver] failed to load turn checkpoint for session ${sessionId}: ${err}`);
 			return undefined;
 		}
 	}
 
-	/** 在图节点边界把快照落盘到 workspace storage（sink 抛错仅记日志，不阻断图执行）。 */
-	private _saveGraphCheckpoint(sessionId: string, snapshot: AgentRunStateSnapshot): void {
+	/** 在 turn 执行中把快照落盘到 workspace storage（sink 抛错仅记日志，不阻断执行）。 */
+	private _saveTurnCheckpoint(sessionId: string, snapshot: AgentRunStateSnapshot): void {
 		try {
 			this._storageService.store(
-				this._graphCheckpointKey(sessionId),
+				this._turnCheckpointKey(sessionId),
 				JSON.stringify(snapshot),
 				StorageScope.WORKSPACE,
 				StorageTarget.MACHINE,
 			);
 		} catch (err) {
-			this._logService.warn(`[AgentDriver] failed to save graph checkpoint for session ${sessionId}: ${err}`);
+			this._logService.warn(`[AgentDriver] failed to save turn checkpoint for session ${sessionId}: ${err}`);
+		}
+	}
+
+	/**
+	 * 清除 turn checkpoint — turn 成功完成后调用，防止下一个用户消息
+	 * 错误地从上一个 turn 的 checkpoint 恢复（budget/loopMessages/preExploreDone）。
+	 *
+	 * checkpoint 仅用于崩溃恢复（程序重启时续跑未完成的 turn），不应跨用户消息复用。
+	 */
+	private _clearTurnCheckpoint(sessionId: string): void {
+		try {
+			this._storageService.remove(this._turnCheckpointKey(sessionId), StorageScope.WORKSPACE);
+			this._logService.info(`[AgentDriver] Cleared turn checkpoint for session ${sessionId} (turn completed)`);
+		} catch (err) {
+			this._logService.warn(`[AgentDriver] failed to clear turn checkpoint for session ${sessionId}: ${err}`);
 		}
 	}
 
 	// ─── 统一执行入口 ─────────────────────────────────────
 
 	async *executeTurn(request: IAgentTurnRequest): AsyncIterable<IChatStreamDelta> {
-		// Composite turnId: session-scoped to prevent cross-fork cancellation
 		const turnId = request.sessionId ? `${request.sessionId}::${request.agentId}` : request.agentId;
-
-		// 如果已有同 ID 的轮次在运行，先取消
 		this.cancelTurn(turnId);
 
-		// ── 顶层 turn 并发限流 ─────────────────────────
-		// 多窗口/多 session 同时发消息 → FIFO 排队，避免无限制并行
-		// 打爆 LLM API 限流/配额 + V8 4GB 堆。
-		// 提前登记 AbortController：使外部 cancelTurn 在排队等待期也能中止本 turn
-		// （缺陷修复：原先 acquire 不接受 signal，排队中的 turn 无法被取消）。
+		// 并发限流 + 排队期间可取消（signal-aware acquire）
 		const controller = new AbortController();
 		this._activeTurns.set(turnId, controller);
-
-		// acquire 传入 signal：排队等待期间被取消 → 抛错，此处捕获后直接结束
-		// generator，不占用并发名额、不进入编排逻辑。
 		try {
 			await this._turnSemaphore.acquire(controller.signal);
 		} catch (err) {
 			this._activeTurns.delete(turnId);
-			this._logService.info(`[AgentDriver] Turn ${turnId} cancelled while queued (${err instanceof Error ? err.message : String(err)}), not executing`);
+			this._logService.info(`[AgentDriver] Turn ${turnId} cancelled while queued`);
 			return;
 		}
 		this._turnHoldsSemaphore.add(turnId);
 
-		// 提升到 try 外，使 finally 块可访问（用于 Step 5 写回记忆）
+		// 提升到 try 外供 finally 使用
 		let memoryProvider = this._agentOS.getActiveMemoryProvider();
 		const assistantChunks: string[] = [];
-		// 【关键】rawDeltaChunks 也提升到 try 外，使 finally 中可访问。
-		// 它累积的是"剥离前"的模型原始输出（含 <memory_extract> 标签）。
-		// 写回记忆时优先用 raw 喂给 memoryProvider，由 memoryProvider 端做
-		// 标签剥离 + L1 注入，避免本地流式剥离器的格式容错问题导致 L1 抓不到。
+		// rawDeltaChunks 累积剥离前的原始输出（含 <memory_extract> 标签），供 memory provider 端做标签剥离
 		const rawDeltaChunks: string[] = [];
-
-		// 临时 worktreePath 覆盖的原始值（per-task），finally 块中恢复用。
 		let originalBindingWorktreePath: string | undefined;
-		// 本次 task 是否真的临时覆盖了 binding.worktreePath（仅当覆盖值与当前值不同时）。
-		// 用于 finally 决定是否恢复，避免把用户原本就等于 request.worktreePath 的绑定误清。
 		let didTemporarilyOverride = false;
-
-		// Step 1 计算出的召回作用域选项 —— 同时被 Step 1 (loadContext) 和
-		// Step 6 (enrichedRequest 下传给 AgentOS) 使用，避免重复解析 agent 配置。
 		let resolvedMemoryScope: 'agent' | 'global' = 'agent';
 
 	try {
 		this._updateTurnStatus(turnId, AgentTurnStatus.Running);
 		this._logService.info(`[AgentDriver] executeTurn START: agentId=${request.agentId}, sessionId=${request.sessionId ?? 'none'}, messages=${request.messages.length}, turnId=${turnId}`);
 
-		// ─── 完整编排逻辑 ─────────────────────────────────
-			// 1. Planning Slot 分析意图（如果有 Planning Provider）
-			// 2. Memory Slot 加载上下文（如果有 Memory Provider）
-			// 3. 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
-			// 4. Memory Slot 写回记忆（如果有 Memory Provider）
-			// 5. 返回结果给 UI
+		// ── 工作流模式：/workflow <id>（/wf、bare /{wf-xxx}）触发 ──
+		// 控制权从自由 LLM 循环移交给工作流 DAG：跳过 Memory/Prompt 组装，
+		// 直接由 WorkflowExecutionService 按节点配置严格执行，工作流结束即 turn 结束。
+		if (request.workflowTrigger) {
+			this._logService.info(`[AgentDriver] workflow mode: triggering ${request.workflowTrigger.workflowId}`);
+			yield* this._executeWorkflowTurn(request, request.workflowTrigger, controller);
+			return;
+		}
 
-		// Step 1: 加载 Memory 上下文
-		let memoryContext: IMemoryContext | undefined;
-		this._logService.info(`[AgentDriver] Step 1: loading memory context (provider=${memoryProvider ? 'yes' : 'no'})`);
-		if (memoryProvider) {
-				try {
-					// 抽取最近一条 user 消息作为召回 query —— 让 vendor 能用真实意图
-					// 做 FTS5/embedding 匹配，而不是占位字符串。
-					const recallQuery = [...request.messages].reverse().find(m => m.role === 'user')?.content ?? '';
+	// ── 编排流程：① Memory scope 解析 → ② Prompt 分层组装 → ③ AgentOS 执行 → ④ Memory 写回 ──
 
-					// ── 召回作用域（2026-06）──────────────────────────────────────
-					// 决定本 agent 能看到哪些 agent 的 L1 记忆：
-					//   - 'agent'(默认)   → 仅本 agent 自己的
-					//   - 'global'        → 全库（跨 agent 共享）
-					// 老 agent 配置缺省值视作 'agent'（C2：严格隔离），与文档
-					// Memory-Strategy.md §recall-scope 对齐。
-				let recallOptions: { scope: 'agent' | 'global' } | undefined;
-				try {
-					// Recall scope is per-workspace runtime state → read from
-					// the AgentBinding, not the global Agent.
-					this._logService.info(`[AgentDriver] Step 1a: resolving workspaceId (sessionId=${request.sessionId ?? 'none'})`);
-					const wsId = await this._resolveWorkspaceId(request.sessionId);
-					this._logService.info(`[AgentDriver] Step 1a: resolved workspaceId=${wsId ?? 'none'}`);
-					this._logService.info(`[AgentDriver] Step 1b: getting agent binding (agentId=${request.agentId})`);
-					const binding = wsId
-						? await this._agentStudioService.getAgentBinding(wsId, request.agentId)
-						: undefined;
-					this._logService.info(`[AgentDriver] Step 1b: got binding=${binding ? 'yes' : 'no'}`);
-					const scope: 'agent' | 'global' = binding?.memoryConfig?.scope ?? 'agent';
+	// ① 解析召回作用域（2026-07-25 修正：移除此处每轮的 loadContext 调用——
+	//   其结果从未被消费（真正的注入在下游 agentMemoryInjection 进行），
+	//   且不受 AGENTMEMORY_INJECT_CONTEXT 门控，每轮白付一次网关混合搜索
+	//   + 策展组装。scope 解析保留，经 memoryScope 传给下游。）
+	if (memoryProvider) {
+			try {
+			let recallOptions: { scope: 'agent' | 'global' } | undefined;
+			try {
+				this._logService.info(`[AgentDriver] Step 1a: resolving workspaceId (sessionId=${request.sessionId ?? 'none'})`);
+				const wsId = await this._resolveWorkspaceId(request.sessionId);
+				this._logService.info(`[AgentDriver] Step 1a: resolved workspaceId=${wsId ?? 'none'}`);
+				this._logService.info(`[AgentDriver] Step 1b: getting agent binding (agentId=${request.agentId})`);
+				const binding = wsId
+					? await this._agentStudioService.getAgentBinding(wsId, request.agentId)
+					: undefined;
+				this._logService.info(`[AgentDriver] Step 1b: got binding=${binding ? 'yes' : 'no'}`);
+				const scope: 'agent' | 'global' = binding?.memoryConfig?.scope ?? 'agent';
 
-					if (scope === 'global') {
-						recallOptions = { scope: 'global' };
-					} else {
-						recallOptions = { scope: 'agent' };
-					}
-				} catch (scopeErr) {
-					// 解析作用域失败时按最严格策略（agent）兜底，永远不会"误开放"
-					this._logService.warn(
-						`[AgentDriver] resolve memory scope failed, falling back to 'agent': ${scopeErr instanceof Error ? scopeErr.message : String(scopeErr)}`,
-					);
+				if (scope === 'global') {
+					recallOptions = { scope: 'global' };
+				} else {
 					recallOptions = { scope: 'agent' };
 				}
-
-				// 同步到外层变量，让 Step 6 enrichedRequest 复用，避免重复解析。
-				resolvedMemoryScope = recallOptions.scope;
-
-				this._logService.info(`[AgentDriver] Step 1c: loading memory context (scope=${recallOptions.scope}, queryLen=${recallQuery.length})`);
-				memoryContext = await memoryProvider.loadContext(
-					request.agentId,
-					request.sessionId || '',
-					recallQuery,
-					recallOptions,
+			} catch (scopeErr) {
+				// 解析失败按最严格策略兜底
+				this._logService.warn(
+					`[AgentDriver] resolve memory scope failed, falling back to 'agent': ${scopeErr instanceof Error ? scopeErr.message : String(scopeErr)}`,
 				);
-				this._logService.info(`[AgentDriver] Step 1c: memory context loaded (hasContext=${memoryContext ? 'yes' : 'no'})`);
-				} catch (error) {
-					this._logService.error('[AgentDriver] Failed to load memory context:', error);
-				}
+				recallOptions = { scope: 'agent' };
 			}
 
-		// Step 2: (removed) Planning Provider 预分析阶段
-		// 2026-07-04: 对齐 OpenClaw — 不在执行前做预分析。
-		// OpenClaw 信任 LLM 自主规划能力，通过 update_plan 工具让 LLM 在执行中交织规划。
-		// 旧的 PlanningProvider 基于正则关键词匹配复杂度 + 硬编码步骤模板，产出无实际指导价值。
-		// 现在由 LLM 通过 update_plan 工具自行规划，替代旧的 todo 工具。
+			resolvedMemoryScope = recallOptions.scope;
+			} catch (error) {
+				this._logService.error('[AgentDriver] Failed to resolve memory scope:', error);
+			}
+		}
 
-	// Step 3: 解析并注入已激活的 Skills + 已安装技能清单
+	// ② Prompt 分层组装（stable / context / volatile）
 	const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
 	let enrichedRequest = request;
-	this._logService.info(`[AgentDriver] Step 3: enriching request (memoryCtx=${memoryContext ? 'yes' : 'no'})`);
+	this._logService.info(`[AgentDriver] Step 2: enriching request (memoryScope=${resolvedMemoryScope})`);
 
 			try {
-				// 3a. 生成已安装技能清单 —— 借鉴 OpenClaw 轻量目录模式
-				// 只在 systemPrompt 中放 name + description + id，让模型通过 read_skill 工具按需读取全文
-
-				// 【关键修复】仅注入 agent 实例中配置的技能，未配置的不要注入
+				// 生成已安装技能清单（仅 name + description，全文通过 read_skill 按需读取）
 				const agent = await this._agentStudioService.getAgent(request.agentId);
-				// Persona memory entries are per-workspace runtime state → from the binding.
 				const personaBinding = await this._resolveBinding(request.agentId, request.sessionId);
 
-				// 规范化 skills 格式：处理旧格式（对象数组）和新格式（字符串数组）的混合情况
+				// 规范化 skills 格式：兼容旧格式（对象数组）和新格式（字符串数组）
 				const rawSkills = agent?.skills || [];
 				const agentSkillIds = new Set(
 					rawSkills.map(s => {
 						if (typeof s === 'string') {
-							return s;  // 新格式：字符串 ID
+							return s;
 						} else if (s && typeof s === 'object' && 'id' in s) {
-							return (s as { id: string }).id;  // 旧格式：对象，提取 id
+							return (s as { id: string }).id;
 						}
-						return '';  // 无效格式
-					}).filter(Boolean)  // 过滤空字符串
+						return '';
+					}).filter(Boolean)
 				);
 
-				// 将用户通过 /skill 命令显式选择的技能临时加入 agentSkillIds
+				// 加入用户通过 /skill 显式选择的技能
 				const explicitSkillIds = request.explicitSkillIds || [];
 				const newExplicitIds: string[] = [];
 				for (const id of explicitSkillIds) {
@@ -428,59 +580,68 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					this._logService.info(`[AgentDriver] Explicit skills added for this turn: ${newExplicitIds.join(', ')}`);
 				}
 
-					// allSkills = 所有已注册且启用的技能（展示在 <available_skills> 中）
-				// agent 配置的 skills 仅决定哪些需要强制加载全文（required），不做为过滤条件
+				// allSkills = 所有已注册且启用的技能（展示在 <available_skills> 中）
 				const allSkills = [...this._skillRegistry.getSkills()]
 					.filter(s => s.enabled !== false);
 
-				let mergedSystemPrompt = request.systemPrompt || '';
+			// ── 分层组装系统提示词（stable / context / volatile）────
+			const stableParts: string[] = [];
+			const contextParts: string[] = [];
+			const volatileParts: string[] = [];
 
-				// ── 注入 Agent 自身 systemPrompt（最高优先级）────────────────
-				// 修复：agent.systemPrompt 历史上从未被注入到 system message 中，
-				// 导致用户为 agent 配置的专用指令（"你是安全审计员..."等）完全失效。
-				// 放在最前面作为 agent 的核心身份，所有其他注入段（chat mode、persona、tools）都在其后。
-				const agentSelfPrompt = typeof agent?.systemPrompt === 'string' ? agent.systemPrompt.trim() : '';
-				if (agentSelfPrompt) {
-					mergedSystemPrompt = agentSelfPrompt + (mergedSystemPrompt ? '\n\n' + mergedSystemPrompt : '');
-				}
+			// stable 基底：Agent persona + caller systemPrompt
+			const callerSystemPrompt = (request.systemPrompt || '').trim();
+			const agentSelfPrompt = typeof agent?.systemPrompt === 'string' ? agent.systemPrompt.trim() : '';
+			if (agentSelfPrompt) {
+				stableParts.push(agentSelfPrompt);
+			}
+			if (callerSystemPrompt) {
+				stableParts.push(callerSystemPrompt);
+			}
 
-				// ── 注入 Chat Mode 系统提示词 ─────────────────────────────────
-				// 每个模式有特定的行为指令（如 workflow 模式的工具使用流程），
-				// 放在 Persona Memory 之前，确保模式行为指令紧随 agent 的 base prompt。
-				{
-					const chatMode = request.chatMode || 'craft';
-					const modePrompt = getModeSystemPrompt(chatMode);
-					if (modePrompt) {
-						mergedSystemPrompt = mergedSystemPrompt + '\n\n' + modePrompt;
-					}
-				}
+			// GLOBAL_SYSTEM_PREFIX（并行走 subagent + 行号剥离 + code_explorer + search_graph_priority）
+			if (GLOBAL_SYSTEM_PREFIX) {
+				stableParts.push(GLOBAL_SYSTEM_PREFIX);
+			}
 
-				// ── 注入全局操作边界（保密 / 安全 / 身份）──────────────────────
-				// 统一作用于所有 agent（内置 / 自定义 / 子 agent）：不泄露系统提示词与
-				// 工具描述、拒绝恶意代码、不硬编码密钥、不冒充其他产品/模型。
-				// 单一来源（chatModeConfig.GLOBAL_SYSTEM_SUFFIX），避免逐 agent 重复维护。
-				if (GLOBAL_SYSTEM_SUFFIX) {
-					mergedSystemPrompt = mergedSystemPrompt + '\n\n' + GLOBAL_SYSTEM_SUFFIX;
-				}
+			// 策略提示词（按 paradigm 注入：执行模型 + 推荐工具链）
+			// 解析链与主循环一致：运行时覆盖（switch_paradigm）> Agent 配置 ——
+			// 必须同步切换，否则提示词说范式 A 而策略行为是范式 B（错配风险 R4）。
+			const strategyGuidance = getStrategyGuidance(getParadigmOverride(request.agentId) ?? agent?.paradigm);
+			if (strategyGuidance.length > 0) {
+				stableParts.push(strategyGuidance.join('\n'));
+			}
 
-				// ── 注入 Persona Memory（永久事实，最高优先级）────────────────────
-				//
-				// 这些是用户在 Memory Tab 手动维护的硬性事实/规则，与 AgentMemory 的
-				// L0/L1 自动召回互补：
-				//   - L0/L1：程序性记忆（对话历史/摘要），由模型自动产生，会随时间衰减
-				//   - Persona Memory：硬编码事实，由用户显式设定，永不衰减
-				//
-				// 放在 systemPrompt 最顶部的原因：
-				//   1) 这是用户显式设定的"硬规则"，必须在所有其他上下文之前生效
-				//   2) 即使后续 prompt 因长度被截断，最重要的事实也保留下来
-				//   3) 与 ChatGPT Custom Instructions 的语义一致
-				//
-				// 仅当 memoryConfig.enabled !== false 且 entries 非空时注入。
-				try {
+			// GLOBAL_SYSTEM_SUFFIX（保密 / 安全 / 身份边界）
+			if (GLOBAL_SYSTEM_SUFFIX) {
+				stableParts.push(GLOBAL_SYSTEM_SUFFIX);
+			}
+
+			// ── Persona Memory（用户硬事实，volatile 层）──
+			// 与 L0/L1 自动召回互补：用户显式设定、永不衰减。
+			// 放 volatile 层保持高优先级但不进前缀指纹。
+			// 注入门控：对齐 agentmemory 原版「capture 常开、注入默认关」姿态 ——
+			// 仅当 AGENTMEMORY_INJECT_CONTEXT=true 时注入；默认关闭时
+			// Persona 事实可通过 memory_search/memory_recall 工具按需召回。
+			if (isMemoryInjectionEnabled()) try {
 					const personaEntries = (personaBinding?.memoryConfig?.enabled !== false)
 						? (personaBinding?.memoryConfig?.entries || [])
 						: [];
 					if (personaEntries.length > 0) {
+						// V4（2026-07-26 §16）：Persona 预算——按 updatedAt 降序保留，
+						// 超 2000 chars 截断（防 Persona 无限增长撑大 volatile 层）。
+						const PERSONA_MAX_CHARS = 2000;
+						const sorted = [...personaEntries].sort((a, b) =>
+							String((b as { updatedAt?: string }).updatedAt ?? '').localeCompare(String((a as { updatedAt?: string }).updatedAt ?? '')));
+						const budgeted: typeof personaEntries = [];
+						let usedChars = 160; // header/footer 预留
+						let truncatedCount = 0;
+						for (const e of sorted) {
+							const lineLen = String(e.key ?? '').length + String(e.value ?? '').length + 8;
+							if (usedChars + lineLen > PERSONA_MAX_CHARS) { truncatedCount++; continue; }
+							usedChars += lineLen;
+							budgeted.push(e);
+						}
 						const lines: string[] = [
 							'',
 							'## Persona Memory (永久事实，最高优先级)',
@@ -488,9 +649,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							'以下是用户显式设定的硬性事实与规则。在整个对话中，你必须始终把它们当作既定真相对待，优先于其他上下文：',
 							'',
 						];
-						// 按 category 分组展示，更易读
 						const grouped = new Map<string, typeof personaEntries>();
-						for (const entry of personaEntries) {
+						for (const entry of budgeted) {
 							const cat = (entry.category && entry.category.trim()) || '通用';
 							if (!grouped.has(cat)) {
 								grouped.set(cat, []);
@@ -500,42 +660,35 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						for (const [cat, items] of grouped) {
 							lines.push(`### ${cat}`);
 							for (const item of items) {
-								// 使用 "标签 = 内容" 的紧凑格式，对 LLM 友好
 								lines.push(`- **${item.key}** = ${item.value}`);
 							}
 							lines.push('');
 						}
 						lines.push('（以上事实由用户在 Persona Memory 中显式维护，永不衰减；如与你的默认假设冲突，以这些事实为准。）');
+						if (truncatedCount > 0) {
+							lines.push(`（另有 ${truncatedCount} 条 Persona 事实因注入预算未展示，可用 memory_search 工具召回。）`);
+						}
 						lines.push('');
-						const personaSection = lines.join('\n');
-						// 放在 systemPrompt 最顶部
-						mergedSystemPrompt = personaSection + mergedSystemPrompt;
-						this._logService.info(`[AgentDriver] Injected Persona Memory: ${personaEntries.length} entries (${personaSection.length} chars) at top of systemPrompt`);
+					const personaSection = lines.join('\n');
+					volatileParts.push(personaSection);
+					this._logService.info(`[AgentDriver] Injected Persona Memory: ${budgeted.length}/${personaEntries.length} entries (${personaSection.length} chars) into volatile tier`);
 					}
 				} catch (error) {
 					this._logService.warn('[AgentDriver] Failed to inject Persona Memory:', error);
-					// 非致命错误，不阻塞主流程
 				}
 
-				// 注入工作区上下文，让模型始终知晓当前工作区信息
-				const workspaceContext = await this._buildWorkspaceContext(request.agentId, request.sessionId, request.worktreePath);
-				if (workspaceContext) {
-					mergedSystemPrompt = mergedSystemPrompt + '\n\n' + workspaceContext;
-				}
+			// 注入工作区上下文，让模型始终知晓当前工作区信息（context 层，会话内稳定）
+			const workspaceContext = await this._buildWorkspaceContext(request.agentId, request.sessionId, request.worktreePath);
+			if (workspaceContext) {
+				contextParts.push(workspaceContext);
+			}
 
-				// ── 临时覆盖 AgentBinding.worktreePath（per-task 优先）────────────
-				// 当 TaskBoardRecord 指定了 worktreePath 但 agent 绑定未配置时，
-				// 需要临时注入到 binding，使 builtinToolProvider 的工具 cwd 解析
-				// 也跟随任务的工作区，而非绑定的全局配置。
-				// 执行结束后在 finally 中恢复。
+				// ── 临时覆盖 AgentBinding.worktreePath（per-task 优先）──
 			if (request.worktreePath) {
 				try {
 					const workspaceId = await this._resolveWorkspaceId(request.sessionId);
 					if (workspaceId) {
 						// ── 加锁：防止同 workspace 同 agent 的并发 turn 互相覆盖 ──
-						// 读 binding.worktreePath + 对比 + upsert 三步需原子化，
-						// 否则 Turn A 读到 null → Turn B 读到 null → A 写 pathA →
-						// B 写 pathB（覆盖）→ A 恢复 null → B 恢复 null（丢失 pathA 的中间态）。
 						const bLock = this._getBindingLock(workspaceId, request.agentId);
 						await bLock.acquire();
 						try {
@@ -571,70 +724,22 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					}
 				}
 
-				if (allSkills.length > 0) {
-					// 预算控制：从配置中读取，失败时使用默认值
-					const MAX_SKILLS_IN_PROMPT = this._configurationService.getValue<number>(AGENT_STUDIO_SKILLS_MAX_IN_PROMPT_SETTING) ?? 150;
-					const MAX_SKILLS_PROMPT_CHARS = this._configurationService.getValue<number>(AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING) ?? 18000;
-
-					// 分离 always 类型（必须展示）和其他类型
-					const alwaysSkills = allSkills.filter(s => s.activation === 'always');
-					const onDemandSkills = allSkills.filter(s => s.activation !== 'always');
-
-				// 构建 OpenClaw 风格的 XML 目录
-				const buildSkillEntry = (s: typeof allSkills[0], compact: boolean): string => {
-					const lines = ['  <skill>'];
-					lines.push(`    <name>${s.name}</name>`);
-					if (!compact && s.description) {
-						// 截断描述到 80 字符，减少 XML 目录体积（参考 Hermes-Agent 60 字符策略）
-						const desc = s.description.length > 80
-							? s.description.slice(0, 77) + '...'
-							: s.description;
-						lines.push(`    <description>${desc}</description>`);
-					}
-					lines.push(`    <id>${s.id}</id>`);
-					lines.push(`    <activation>${s.activation}</activation>`);
-					lines.push('  </skill>');
-					return lines.join('\n');
-				};
-
-					// 策略：先尝试完整格式，超预算则降级为 compact（去 description）
-					let skillsToInclude = [...alwaysSkills, ...onDemandSkills].slice(0, MAX_SKILLS_IN_PROMPT);
-					let compact = false;
-					let skillsXml = skillsToInclude.map(s => buildSkillEntry(s, false)).join('\n');
-					if (skillsXml.length > MAX_SKILLS_PROMPT_CHARS) {
-						// 降级为 compact 模式
-						compact = true;
-						skillsXml = skillsToInclude.map(s => buildSkillEntry(s, true)).join('\n');
-						// 如果仍超限，二分截断
-						if (skillsXml.length > MAX_SKILLS_PROMPT_CHARS) {
-							let lo = 0, hi = skillsToInclude.length;
-							while (lo < hi) {
-								const mid = Math.floor((lo + hi + 1) / 2);
-								const candidate = skillsToInclude.slice(0, mid).map(s => buildSkillEntry(s, true)).join('\n');
-								if (candidate.length <= MAX_SKILLS_PROMPT_CHARS) { lo = mid; } else { hi = mid - 1; }
-							}
-							skillsToInclude = skillsToInclude.slice(0, lo);
-							skillsXml = skillsToInclude.map(s => buildSkillEntry(s, true)).join('\n');
-						}
-					}
-
-					const skillListSection = [
-						'',
-						'## Skills',
-						'',
-						'Scan <available_skills> below. If one clearly applies to the user\'s task, use the `read_skill` tool with the skill id to load its full instructions, then follow them.',
-						'If several apply, choose the most specific. If none clearly apply, read none.',
-						'One skill at a time max. Never guess/fabricate skill content.',
-						'',
-						'<available_skills>',
-						skillsXml,
-						'</available_skills>',
-						'',
-						compact ? `(${allSkills.length} skills total, showing ${skillsToInclude.length} in compact mode)` : `(${allSkills.length} skills total)`,
-						'',
-					].join('\n');
-					mergedSystemPrompt = mergedSystemPrompt + skillListSection;
-				}
+		if (allSkills.length > 0) {
+				// Phase 1+2: 不再将 skill catalog 注入 system prompt。
+				// 对齐 MiMo-Code (OpenCode)：system prompt 只保留使用说明，
+				// skill 发现通过 skill_search (BM25)，skill 加载通过 read_skill。
+				const skillsInstruction = [
+					'', '## Skills', '',
+					'Skills provide specialized instructions and workflows for specific tasks.',
+					'On the first user query in a session, when the task might benefit from a specialized workflow, call `skill_search` to find the best matching skill.',
+					'If skill_search returns a match, use `read_skill` with the skill_id to load its full instructions, then follow them.',
+					'If no match, continue normally without a skill.',
+					'Skills tagged <type>workflow</type> are EXECUTABLE skills: triggering them runs a workflow (use /skill <id>), they are NOT prompt-injection skills — do not load their content as instructions via read_skill.',
+					'One skill at a time max. Never guess/fabricate skill content.',
+					'',
+				].join('\n');
+				contextParts.push(skillsInstruction);
+			}
 
 				// 3a-1b. 注入 MCP 服务器摘要（让 LLM 知道有哪些 MCP 能力可用，通过桥接工具访问）
 				{
@@ -661,148 +766,62 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							'MCP tools are discovered via tool_search, not listed here. Use tool_search with descriptive ' +
 							'keywords to find tools, tool_describe to inspect them, and tool_call to invoke.',
 							'',
-							'Servers available:',
-							...serverLines,
-							'',
-						].join('\n');
-						mergedSystemPrompt = mergedSystemPrompt + mcpSection;
-					}
+						'Servers available:',
+						...serverLines,
+						'',
+					].join('\n');
+					contextParts.push(mcpSection);
 				}
+			}
 
-				// 3a-2. 注入已启用工具的使用指引（让模型知道有工具可用）
-				// 【Knot 特殊处理】当使用 Knot 作为 Model Provider 时，不注入 Available Tools
-				// 因为 Knot 在服务端处理工具，客户端不需要告诉模型有哪些工具
+				// 3a-2. 注入已启用工具的使用指引（Knot provider 跳过：服务端处理工具）
 				const activeModelSelection = this._agentOS.getActiveModelSelection();
 				const isKnotProvider = activeModelSelection?.providerId.includes('knot');
 
-				if (!isKnotProvider) {
-					try {
-						const allTools = await this._agentOS.listAllToolsWithState(request.agentId);
-						const enabledToolsRaw = allTools.filter(t => t.enabled);
-						const chatMode = request.chatMode || 'craft';
+			// 缓存 key 必须纳入 focus/toolset/hardPermission 等过滤条件的签名——否则同一 agent
+			// 在不同 workMode（plan/work）、不同 toolsetsOverride、不同 excludedTools/allowedTools
+			// 下会复用错误的旧文字清单，与本轮真实下发的工具 schema 脱节。
+			const toolFilterSignature = JSON.stringify({
+				g: request.agentGraph ? Object.keys(request.agentGraph.nodes).length : 0,
+				t: request.toolsetsOverride ?? null,
+				h: request.workMode ?? request.chatMode ?? null,
+				e: request.excludedTools ?? null,
+				a: request.allowedTools ?? null,
+			});
+			const toolCacheKey = `tools:${request.agentId}:${toolFilterSignature}`;
+		const cachedToolSection = this._toolInventoryCache.get(toolCacheKey);
+		if (cachedToolSection !== undefined) {
+			stableParts.push(cachedToolSection);
+			this._logService.info(`[AgentDriver] Tool inventory CACHE HIT (key=${toolCacheKey})`);
+			} else if (!isKnotProvider) {
+				try {
+					// P0 修复：改用 getEnabledToolNamesForPrompt（focus 模式 + toolset 白名单 +
+					// hardPermission 过滤后的结果），而非 listAllToolsWithState 的全量 enabled 工具。
+					// 后者会导致提示词文字点名了实际未随请求下发 schema 的工具（如 kanban_*/kb_*/
+					// echo/get_time 等被 focus 模式剪掉的工具），模型据此调用必然失败或产生幻觉。
+					const nonMcpToolNames = await this._agentOS.getEnabledToolNamesForPrompt(
+						request.agentId,
+						request.agentGraph,
+						request.toolsetsOverride,
+						this._agentOS._resolveHardPermission(request),
+						request.excludedTools,
+						request.allowedTools,
+					);
+					this._logService.info(`[AgentDriver] Tool inventory (prompt-visible, non-MCP): ${nonMcpToolNames.length}`);
 
-						// Filter tools by chat mode (unified in chatModeConfig)
-						const enabledTools = filterToolsByChatMode(enabledToolsRaw, chatMode);
-
-						// ─── 诊断：系统提示词构建时的工具状态 ──────────────────
-						const mcpAll = allTools.filter(t => t.category?.startsWith('mcp:'));
-						const mcpEnabled = enabledToolsRaw.filter(t => t.category?.startsWith('mcp:'));
-						const mcpAfterFilter = enabledTools.filter(t => t.category?.startsWith('mcp:'));
-						this._logService.info(
-							`[AgentDriver] Tool inventory: all=${allTools.length}, enabled=${enabledToolsRaw.length}, ` +
-							`afterChatModeFilter=${enabledTools.length} (mode=${chatMode})\n` +
-							`  MCP: all=${mcpAll.length}, enabled=${mcpEnabled.length}, afterFilter=${mcpAfterFilter.length}\n` +
-							`  MCP tool names: [${mcpAll.map(t => t.name).join(', ')}]\n` +
-							`  MCP securityLevels: [${mcpAll.map(t => `${t.name}=${t.securityLevel ?? 'undefined'}`).join(', ')}]`
-						);
-						if (mcpAll.length === 0) {
-							this._logService.warn(`[AgentDriver] ⚠ NO MCP TOOLS discovered! McpToolProvider._routes may be empty (server not connected).`);
-						}
-						if (mcpEnabled.length > 0 && mcpAfterFilter.length === 0) {
-							this._logService.warn(`[AgentDriver] ⚠ MCP tools exist (${mcpEnabled.length}) but ALL filtered out by chatMode=${chatMode}! Check securityLevel inference.`);
-						}
-
-					// MCP 工具不在此清单列出：它们经由 ## MCP Servers 通过 tool_search 桥接暴露，
-					// 且不会进入 API 的 tools 参数（agentOSService._getEnabledTools 在 passthrough
-					// 模式下已剥离 MCP 直发 schema，避免 API 400）。若在此列出，LLM 会直接调用它们，
-					// 而被 AgentOS 识别为"幻觉调用"（hallucinated）并丢弃，最终报错
-					// "Tool was not executed (conversation ended before execution)"。
-					const nonMcpTools = enabledTools.filter(t => !t.category?.startsWith('mcp:'));
-
-					if (nonMcpTools.length > 0) {
-						// ── 工具排序（对齐 OpenClaw toolOrder）─────────────────
-						// 将高频分析工具排在前面，避免 LLM 在前几项找到 search_files/terminal 后就停止扫描
-						const HIGH_PRIORITY_TOOLS = new Set([
-							'search_graph', 'query_graph', 'get_architecture', 'trace_path',
-							'search_code', 'get_code_snippet', 'index_repository', 'index_status',
-							'detect_changes', 'update_plan',
-							'tool_search', 'tool_describe', 'tool_call',
-						]);
-						const sortedTools = [...nonMcpTools].sort((a, b) => {
-								const aPri = HIGH_PRIORITY_TOOLS.has(a.name) ? 0 : 1;
-								const bPri = HIGH_PRIORITY_TOOLS.has(b.name) ? 0 : 1;
-								return aPri - bPri || a.name.localeCompare(b.name);
-							});
-
-							const toolSection = [
-								'',
-								'## Available Tools',
-								'',
-								(chatMode === 'ask' || chatMode === 'plan')
-									? 'You have access to the following READ-ONLY tools. You may use them to read files and search code, but you MUST NOT modify, delete, or create any files.'
-									: 'You have access to the following tools. When a user asks you to perform an action that requires interacting with the filesystem, executing commands, searching the web, or any other external system, you MUST use the appropriate tool instead of explaining that you cannot do it.',
-								'',
-								'Available tools:',
-								'',
-								...sortedTools.map(t => {
-									const desc = (t as any).displaySummary || t.description || 'No description';
-									return `- ${t.name}: ${desc}`;
-								}),
-								'',
-							];
-
-						if (chatMode !== 'ask') {
-							toolSection.push(
-								'Usage rules:',
-								'- To execute a shell command (e.g., "print current directory", "list files"), use: **terminal** with {"command": "<your command>"}',
-								'- To read a file, use: **file_read** with {"path": "<file path>"}',
-								'- To write a file, use: **file_write** with {"path": "<file path>", "content": "<content>"}',
-								'- To search files, use: **search_files** with {"path": "<directory>", "pattern": "<pattern>"}',
-							);
-
-							// ─── 通用执行原则（对齐 OpenClaw — 无领域特定引导）─────────
-							// OpenClaw 依赖工具自身的 name+description 让 LLM 自行判断何时使用。
-							// system prompt 只提供通用原则，不硬编码 "use X for Y task" 领域引导。
-							// 工具列表已在 ## Available Tools 中以 `name: description` 格式列出。
-							toolSection.push(
-								'',
-								'## General Tool Usage',
-								'',
-								'When a specialized tool exists in the available tools list above, use it directly.',
-								'Do not simulate or manually reimplement what a tool does by chaining basic operations.',
-								'Review each tool\'s description to understand its capabilities and use the most efficient one.',
-								'',
-							);
-						}
-
-							toolSection.push(
-								'',
-								'When you need to use a tool, respond with a function call using the exact tool name and required arguments.',
-								'',
-								'IMPORTANT: When you need to use a tool, you MUST use the exact tool name from the list above and provide the required arguments.',
-								'If your model supports function calling, use the native function_call format.',
-								'If your model does NOT support function calling, output a JSON object in this exact format: {"name": "<tool_name>", "arguments": {<args>}}.',
-								'DO NOT use XML tags like <tool_call> or <function_call> — they will NOT be recognized.',
-								'Example (correct): {"name": "file_read", "arguments": {"path": "src/main.ts"}}',
-								'Example (wrong, do NOT use): <tool_call>file_list</tool_call>',
-								'Never output tool calls as plain text explanations or code blocks without the proper format.',
-								'',
-								'## CRITICAL ANTI-HALLUCINATION RULES (MUST FOLLOW)',
-								'',
-								'1. **NEVER claim you have done something without actually calling a tool.** If the user asks you to create/modify/delete a file, run a command, or perform any side-effect, you MUST emit an actual tool call. Phrases like "文件已创建成功", "已完成", "I have created the file", "Done!" are STRICTLY FORBIDDEN unless they appear AFTER a real tool call returned a successful result.',
-								'2. **NEVER fabricate tool execution.** Do not write narrative descriptions like "让我使用 file_write 工具" or "I will use the file_write tool" as a substitute for an actual tool call. Either emit the structured tool call, or do not claim the action was taken.',
-								'3. **For ANY filesystem write / command execution / external side-effect: a tool call is MANDATORY.** No exceptions. If you cannot determine the correct tool or arguments, ask the user — do not pretend the action succeeded.',
-								'4. **Output format priority** (in order):',
-								'   a. PREFERRED: native OpenAI function-call format via the `tools` parameter (the API will route this automatically).',
-								'   b. FALLBACK (only if native function-call is unavailable): emit a JSON object in a fenced code block:',
-								'      ```json',
-								'      {"name": "file_write", "arguments": {"path": "g:/example/test.txt", "content": ""}}',
-								'      ```',
-								'5. **Do not narrate the tool call.** Do not write "I am calling file_write now" before emitting it. Just emit the tool call directly.',
-								'6. **After a tool returns:** you may then summarize what happened in natural language, citing the actual tool result.',
-								'',
-							);
-
-							const toolSectionStr = toolSection.join('\n');
-							mergedSystemPrompt = mergedSystemPrompt + toolSectionStr;
-							this._logService.info(`[AgentDriver] Injected ${enabledTools.length} enabled tools into systemPrompt (mode=${chatMode})`);
-						}
-					} catch (error) {
-						this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
-					}
-				} else {
-					this._logService.info(`[AgentDriver] Skipped Available Tools injection (Knot provider detected: ${activeModelSelection?.providerId})`);
+			if (nonMcpToolNames.length > 0) {
+				// P0：工具清单只保留压缩后的「名称清单」（结构化 schema 已随请求下发）
+				const toolSectionStr = buildCompactToolSection(nonMcpToolNames);
+				stableParts.push(toolSectionStr);
+				this._toolInventoryCache.set(toolCacheKey, toolSectionStr);
+				this._logService.info(`[AgentDriver] Injected compact tool section (${nonMcpToolNames.length} enabled, names-only) into stable tier`);
+			}
+				} catch (error) {
+					this._logService.warn('[AgentDriver] Failed to inject tool inventory:', error);
 				}
+			} else if (cachedToolSection === undefined) {
+				this._logService.info(`[AgentDriver] Skipped Available Tools injection (Knot provider detected: ${activeModelSelection?.providerId})`);
+			}
 
 				// 3b. 解析本轮激活的技能内容并注入
 				let mergedMessages = [...request.messages];
@@ -819,65 +838,59 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 					// 不按 agentSkillIds 过滤 —— 所有技能均可通过 activation 关键词匹配
 					// 或 <available_skills> 目录被 LLM 发现。agentSkillIds 仅决定 required（强制加载）。
-					const filteredInjections = injections;
+				const filteredInjections = injections;
 
-					if (filteredInjections.length > 0) {
-						// 分离 system 和 user 注入
-						const systemInjections = filteredInjections.filter(inj => inj.placement === 'system');
-						const userInjections = filteredInjections.filter(inj => inj.placement === 'user');
+				// ── P1: 工作流型（可执行型）skill 触发 ──
+				// workflow skill 默认 manual，仅当用户显式 `/skill <id>` 时触发执行；
+				// required/always 命中的 workflow skill 不自动执行重型工作流，仅作为
+				// 描述文本注入（降级为文本型），避免每个 turn 误触发多 agent 流程。
+				const explicitSet = new Set((explicitSkillIds ?? []).map(s => s.toLowerCase()));
+				const triggeredWorkflowIds = new Set<string>();
+				for (const inj of filteredInjections) {
+					if (inj.executor?.kind === 'workflow' && explicitSet.has(inj.skill.id.toLowerCase())) {
+						const wfId = inj.executor.workflowId;
+						this._logService.info(`[AgentDriver] workflow skill triggered (explicit): ${inj.skill.id} → wf=${wfId}`);
+						void this._triggerWorkflowSkill(wfId, lastUserMessage?.content, inj.skill.name);
+						triggeredWorkflowIds.add(inj.skill.id);
+					}
+				}
 
-						// 将 system 类型的 skill 注入追加到 systemPrompt
-						// 借鉴 OpenClaw：短 skill（<500 chars）直接注入，长 skill 只放摘要
-						// 例外：agent 配置中显式指定的技能（agentSkillIds）直接注入全文，不受阈值限制
-					const ALWAYS_SKILL_INLINE_THRESHOLD = 500;
-					if (systemInjections.length > 0) {
-						const activeParts: string[] = [];
-						const forcedInlineNames: string[] = [];
-						const inlinedSkillNames: string[] = [];
-						const deferredSkillNames: string[] = [];
-						for (const inj of systemInjections) {
-							const isAgentConfigured = agentSkillIds.has(inj.skill.id);
-							if (inj.skill.prompt.length <= ALWAYS_SKILL_INLINE_THRESHOLD || isAgentConfigured) {
-								// 短 skill 或 agent 配置的技能：直接内联注入全文
-								activeParts.push(inj.content);
-								inlinedSkillNames.push(inj.skill.id);
-								if (isAgentConfigured && inj.skill.prompt.length > ALWAYS_SKILL_INLINE_THRESHOLD) {
-									forcedInlineNames.push(inj.skill.id);
-								}
-							} else {
-								// 长 skill（非 agent 配置）：只放摘要，引导模型使用 read_skill
-								activeParts.push([
-									`### Skill: ${inj.skill.name}`,
-									inj.skill.description ? `_${inj.skill.description}_` : '',
-									`(Full instructions: use \`read_skill\` tool with skill_id="${inj.skill.id}")`,
-								].filter(Boolean).join('\n'));
-								deferredSkillNames.push(inj.skill.id);
+				if (filteredInjections.length > 0) {
+					// 分离 system 和 user 注入；已触发执行的 workflow skill 不再注入 prompt 文本
+					const systemInjections = filteredInjections.filter(inj => inj.placement === 'system' && !triggeredWorkflowIds.has(inj.skill.id));
+					const userInjections = filteredInjections.filter(inj => inj.placement === 'user' && !triggeredWorkflowIds.has(inj.skill.id));
+					// 已触发的 workflow skill 收集回执消息（独立数组，避免污染 ISkillInjection[] 类型）
+					const workflowReceipts: Array<{ role: 'user'; content: string }> = [];
+					if (triggeredWorkflowIds.size > 0) {
+						for (const id of triggeredWorkflowIds) {
+							const inj = filteredInjections.find(i => i.skill.id === id);
+							if (inj) {
+								workflowReceipts.push({
+									role: 'user' as const,
+									content: `[Workflow Skill] 已为你启动工作流「${inj.skill.name}」(id=${id})。执行过程在其专属 Agent 会话中展示，完成后会以消息形式回灌。`,
+								});
 							}
 						}
-						if (inlinedSkillNames.length > 0) {
-							this._logService.info(`[AgentDriver] Directly-injected (inlined) skills: ${inlinedSkillNames.join(', ')} (${inlinedSkillNames.length})`);
-						}
-						if (deferredSkillNames.length > 0) {
-							this._logService.info(`[AgentDriver] Deferred (summary-only) skills: ${deferredSkillNames.join(', ')} (${deferredSkillNames.length}) — use read_skill to fetch full text`);
-						}
-						if (forcedInlineNames.length > 0) {
-							this._logService.info(`[AgentDriver] Agent-configured skills inlined (bypass 500-char threshold): ${forcedInlineNames.join(', ')} (${forcedInlineNames.length} skills)`);
-						}
-							const activeSection = [
-								'',
-								'## Active Skills (this turn)',
-								'',
-								...activeParts,
-							].join('\n');
-							mergedSystemPrompt = mergedSystemPrompt + activeSection;
-						}
+					}
+
+						// Phase 1: 移除 inline skill 注入（"Active Skills" section）。
+						// 对齐 MiMo-Code：所有 skill 按需通过 read_skill 加载，
+						// 不再将 skill 内容直接注入 system prompt 的 volatile tier。
+						// systemInjections 不再被注入到 system prompt。
 
 						// 将 user 类型的 skill 注入插入为 user message（在实际用户消息之前）
-						if (userInjections.length > 0) {
-							const skillMessages = userInjections.map(inj => ({
-								role: 'user' as const,
-								content: inj.content,
-							}));
+						if (userInjections.length > 0 || workflowReceipts.length > 0) {
+						const skillMessages: Array<{ role: 'user'; content: string; synthetic?: boolean; sidecar?: 'skill' }> = userInjections.map(inj => ({
+							role: 'user' as const,
+							content: inj.content,
+							// sidecar 标记：auto/explicit 命中的技能激活块（非用户真实输入），
+							// 压缩与持久化前剥离，避免污染干净 transcript（对齐 MiMo synthetic:true）。
+							synthetic: true,
+							sidecar: 'skill' as const,
+						}));
+							if (workflowReceipts.length > 0) {
+								skillMessages.push(...workflowReceipts);
+							}
 							// 插入到最后一条用户消息之前
 							const lastIdx = mergedMessages.length - 1;
 							mergedMessages = [
@@ -892,93 +905,21 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					}
 				}
 
-				// ── 注入 Memory Extract 提示（AgentMemory L1 写入的唯一上行通道）──
-				//
-				// 背景：agentmemory-memory 的 L1 持久化依赖模型在回复末尾自行输出
-				//   <memory_extract>{...}</memory_extract>
-				// 标签。下行解析在 agentDriverService.ts 的 SSE 流式 buffer 和
-				// extensions/agentmemory-memory/src/memoryProvider.ts 都已实现，
-				// 但**没有任何地方告诉模型要输出这个标签**——除了 Knot 服务端
-				// 自己内置的提示词（不可控），其他 Provider 完全不会主动产出，
-				// 导致 Episodic 长期处于"接得到、收不到"的状态。
-				//
-				// 这里在 systemPrompt 尾部追加一段中性、模型无关的指令，
-				// 让所有 Provider 走这条链路时都能稳定写入 L1。
-				// 解析端对未输出标签的回复完全无副作用（regex 匹配不到即跳过），
-				// 因此即使模型偶尔忽略本指令，也不会破坏正常对话。
-				const memoryExtractGuide = [
-					'',
-					'## Long-term Memory Capture',
-					'',
-					'When (and only when) the user reveals durable facts worth remembering across sessions — e.g. personal preferences, project conventions, naming rules, environment specifics, long-term goals, or explicit "remember this" instructions — append a memory tag at the very end of your reply (after all normal content). Format:',
-					'',
-					'```',
-					'<memory_extract>{"content":"<concise fact in user\'s language>","type":"<persona|episodic|instruction>","priority":<1-100>,"scene_name":"<short topic label>"}</memory_extract>',
-					'```',
-					'',
-					'Field semantics:',
-					'- `content`: a single self-contained sentence the next session can use without extra context. Stay concrete; never copy raw chat fragments.',
-					'- `type`: `persona` (who/what the user is), `episodic` (a specific event or decision), `instruction` (a rule the assistant must follow).',
-					'- `priority`: 90+ for hard rules ("always do X"), 70–89 for stable preferences, 40–69 for context-bound facts, <40 for trivia. If unsure, use 70.',
-					'- `scene_name`: 2–6 words summarising the topic, used as a recall anchor.',
-					'',
-					'Rules:',
-					'1. Output **at most one** `<memory_extract>` tag per reply, only when truly worth persisting.',
-					'2. The tag MUST be the **last thing** in your reply, on its own line. Never embed it mid-sentence and never wrap it in code fences.',
-					'3. If nothing in this turn warrants long-term memory, omit the tag entirely — do NOT emit empty or speculative tags.',
-					'4. Multiple tags in one reply, malformed JSON, or unknown `type` values will be silently dropped.',
-					'',
-				].join('\n');
-				mergedSystemPrompt = mergedSystemPrompt + memoryExtractGuide;
+			// ── Memory Extract 提示与 Knot user 补丁已移除（2026-07-25）──
+			// 对齐 agentmemory 原版「capture 常开、注入默认关、召回走工具」姿态：
+			// 原版 prompt 中没有任何每轮记忆指令（capture 靠 PostToolUse 钩子自动
+			// 完成 + remember 工具显式写入）。本项目的等价通道全部保留且默认开启：
+			//   - turn observations（每轮自动写入 mem:obs 暂存层）
+			//   - session_end 链（compressSession→slotReflect→graphExtract，引擎侧自动）
+			//   - memory_remember 工具（LLM 显式写入）
+			// （2026-07-26：L1/L2/L3 客户端抽取管线已移除，提炼语义归引擎 session_end 链）
+			// <memory_extract> 标签的流式剥离代码保留作为被动安全网（模型若从
+			// 训练习惯中自行输出该标签，仍会被捕获而不泄漏到正文）。
+			// 收益：冻结前缀每轮减少 ~1.5KB 指令文本，且消除 Knot 模型对
+			// user 消息的注入式污染。
 
-				// ── 【Knot 专用补丁】把 memory_extract 指令追加到 user message 末尾 ──
-				//
-				// 背景：Knot AG-UI 协议把客户端的 system message 降级为
-				// `background_knowledge` 字段（参见 extensions/knot-agui/src/extension.ts
-				// 第 261 行附近的注释："不会覆盖 agent 自身的系统提示"）。
-				// 实测 hy3-preview 等 Knot Agent 完全无视该字段中的 memory_extract 指令。
-				//
-				// 而 Knot 对 user message 是必收必应的（input.message 字段直接喂给模型），
-				// 因此把指令以"附加上下文"形式追加到最后一条 user message 末尾，
-				// 是当前协议下唯一稳定有效的下行通道。
-				//
-				// 重要：只修改 mergedMessages（送给模型用），不修改 request.messages
-				// （Step 5 写 memory 仍用原始 content，L0 SQLite 不会被污染）。
-				if (isKnotProvider && mergedMessages.length > 0) {
-					const lastIdx = mergedMessages.length - 1;
-					const lastMsg = mergedMessages[lastIdx];
-					if (lastMsg && lastMsg.role === 'user' && typeof lastMsg.content === 'string') {
-						// 用明显的分隔符让模型识别这是"系统补充指令"而非用户原话。
-						// 双换行 + 单字符标记 + 简短指令，最大化模型注意力。
-						const userInjection = [
-							'',
-							'',
-							'---',
-							'',
-							'_[System note for assistant — not part of user content]_',
-							'',
-							'After producing your normal reply, IF the user revealed a durable fact worth remembering across sessions (preferences, conventions, rules, environment specifics, long-term goals, explicit "remember this" instructions), append on a new final line:',
-							'',
-							'`<memory_extract>{"content":"<one self-contained sentence in the user\'s language>","type":"persona|episodic|instruction","priority":1-100,"scene_name":"<2-6 word topic>"}</memory_extract>`',
-							'',
-							'Rules: at most one tag per reply; emit nothing if not worth persisting; tag MUST be the last thing in the reply, on its own line, NOT inside code fences.',
-						].join('\n');
-						mergedMessages = [
-							...mergedMessages.slice(0, lastIdx),
-							{ ...lastMsg, content: lastMsg.content + userInjection },
-						];
-						this._logService.info(`[AgentDriver] 🪝 Knot user-message injection applied (+${userInjection.length} chars to last user msg)`);
-					}
-				}
-
-				// 解析 memoryConfig 中的策略 / 上限，向下游 AgentOS 传递。
-				// 注意：旧值 'sliding_window' 视为 'full'（参见 Agent.memoryConfig 注释）。
-				//
-				// 【B 方案兼容】当 priorMessages 已将完整会话历史灌入 messages 时，
-				// L0 短期记忆（即最近几轮 user+assistant 原文）与 messages 中的历史
-				// 完全重叠。若仍按 'full' 策略注入 L0，模型会看到两份相同的对话内容
-				// → 混淆 → 在回复中重复/回显之前的内容。因此当有历史灌入时，强制
-				// 切换为 'summary'（仅注入 Episodic 长期摘要），避免重复。
+			// 解析 memoryConfig 策略 / 上限，向下游 AgentOS 传递。
+				// B 方案兼容：当 messages 含历史时强制 'summary'，避免 L0 与历史重复。
 				const rawStrategy = personaBinding?.memoryConfig?.strategy;
 				const hasHistoryInMessages = mergedMessages.length > 1;
 				const memoryStrategy: 'summary' | 'full' =
@@ -995,49 +936,56 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					personaBinding.memoryConfig.maxEntries > 0
 				) ? personaBinding.memoryConfig.maxEntries : undefined;
 
-				enrichedRequest = {
-					...request,
-					systemPrompt: mergedSystemPrompt,
-					messages: mergedMessages,
-					memoryStrategy,
-					memoryMaxEntries,
-					memoryScope: resolvedMemoryScope,
-				};
+			// ── 合成冻结前缀（stable+context）与易变层（volatile）────────────
+			// 冻结前缀作为第一条 system 消息 + fork 前缀指纹对象（保持字节稳定 → 缓存命中）；
+			// volatile 作为独立 system 消息由 executor 追加在前缀之后，不进前缀指纹。
+			const promptTiers: ISystemPromptTiers = {
+				stable: joinSections(...stableParts),
+				context: joinSections(...contextParts),
+				volatile: joinSections(...volatileParts),
+			};
+			const frozenPrefix = composeFrozenPrefix(promptTiers);
+			const volatileMessage = composeVolatileMessage(promptTiers);
 
-				this._logService.info(`[AgentDriver] Injected memory_extract guidance (${memoryExtractGuide.length} chars) — provider=${activeModelSelection?.providerId ?? 'none'}`);
-				this._logService.info(`[AgentDriver] Skill inventory: ${allSkills.length} skills (lightweight XML catalog injected), systemPrompt length: ${mergedSystemPrompt.length}`);
-				this._logService.info(`[AgentDriver] systemPrompt preview: ${mergedSystemPrompt.substring(0, 300)}...`);
-				this._logService.info(`[AgentDriver] Memory injection policy: strategy=${memoryStrategy}, maxEntries=${memoryMaxEntries ?? 'unlimited'}, scope=${resolvedMemoryScope} (raw=${rawStrategy ?? 'undefined'})`);
+			enrichedRequest = {
+				...request,
+				systemPrompt: frozenPrefix,
+				systemPromptVolatile: volatileMessage,
+				messages: mergedMessages,
+				memoryStrategy,
+				memoryMaxEntries,
+				memoryScope: resolvedMemoryScope,
+				paradigm: agent?.paradigm,        // AgentLoop 范式（来自 Agent 配置）
+				budgetMaxTotal: agent?.budgetMaxTotal,  // 每 turn 最大预算
+			};
+
+		this._logService.info(
+			`[AgentDriver] Tiered prompt: stable=${promptTiers.stable.length} chars, ` +
+			`context=${promptTiers.context.length} chars, volatile=${promptTiers.volatile.length} chars, ` +
+			`frozenPrefix=${frozenPrefix.length} chars (${allSkills.length} skills catalog)`
+		);
+			this._logService.info(`[AgentDriver] frozenPrefix preview: ${frozenPrefix.substring(0, 300)}...`);
+			this._logService.info(`[AgentDriver] Memory injection policy: strategy=${memoryStrategy}, maxEntries=${memoryMaxEntries ?? 'unlimited'}, scope=${resolvedMemoryScope} (raw=${rawStrategy ?? 'undefined'})`);
 			} catch (error) {
 				this._logService.error('[AgentDriver] Failed to resolve skill activations:', error);
 				// Skill 解析失败不阻塞主流程
 			}
 
-		// Step 4: 委托 AgentOS 执行（ExecutionProvider 或 直通模式）
-		// 同时累积 assistant 文本，便于 Step 5 写回完整一轮的 assistant 记忆。
-		//
-		// 多 agent 图 checkpoint/resume 接线（Step D）：当有 sessionId 时，把
-		// checkpointSink / resumeFrom 接到 workspace storage。仅在 request 携带
-		// ≥2 节点 agentGraph（图模式）时真正生效；单 agent 请求下 sink 不被调、
-		// resumeFrom 被忽略 → 零行为变更。caller 已显式提供者优先，不覆盖。
+		// ③ 委托 AgentOS 执行（累积 assistant 文本供 ④ 写回记忆）
+		// checkpoint/resume：sessionId 存在时接 workspace storage（崩溃恢复用）
 		let graphRequest = enrichedRequest;
 		if (enrichedRequest.sessionId) {
 			const sid = enrichedRequest.sessionId;
 			graphRequest = {
 				...enrichedRequest,
-				resumeFrom: enrichedRequest.resumeFrom ?? this._loadGraphCheckpoint(sid),
-				checkpointSink: enrichedRequest.checkpointSink ?? ((snapshot: AgentRunStateSnapshot) => this._saveGraphCheckpoint(sid, snapshot)),
+				resumeFrom: enrichedRequest.resumeFrom ?? this._loadTurnCheckpoint(sid),
+				checkpointSink: enrichedRequest.checkpointSink ?? ((snapshot: AgentRunStateSnapshot) => this._saveTurnCheckpoint(sid, snapshot)),
 			};
 		}
 		this._logService.info(`[AgentDriver] Step 4: delegating to AgentOS (enrichedMsgs=${graphRequest.messages.length})`);
 		const osStream = this._agentOS.executeAgentTurn(graphRequest);
 
-			// ── 流式记忆标签剥离缓冲区 ──────────────────────────────────────────
-			// Knot 可能在回复末尾输出记忆标签，需要在流式阶段就剥离，避免用户看到。
-			// 支持两种格式：
-			//   1. <memory_extract>{JSON}</memory_extract>  （图里方案，推荐）
-			//   2. [MEMORY:L1:type:priority:scene]内容[/MEMORY]  （旧格式，兼容）
-			// 由于标签可能跨多个 delta 分片，使用缓冲区处理跨片情况。
+			// ── 流式记忆标签剥离（支持 <memory_extract> 和 [MEMORY:] 两种格式）──
 			let tagBuffer = '';
 			let tagOpenLogged = false; // 防止 "awaiting close" 日志在每个 delta 重复刷屏
 			/** 收集本次 processTextChunk 调用中捕获的记忆标签，供主循环 yield memory_extracted 事件 */
@@ -1203,15 +1151,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					for (const mem of capturedMemoryTags) {
 						yield { type: 'memory_extracted', content: mem.content, metadata: { memoryType: mem.type, priority: mem.priority, sceneName: mem.sceneName } };
 					}
-				} else if ((delta as any).type === 'discard_prior_text') {
-					// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────
-					// 参考 Hermes `conversation_loop.py` 的 `_empty_recovery_synthetic`
-					// + while-pop 模式：upstream 检测到 fake-completion / unfinished-intent /
-					// 空回，准备注入 nudge 续跑时，要求下游**完全丢弃刚才那段幻觉/过渡文本**，
-					// 不能让它进入 memory provider（L0 capture）和 chatService.history。
-					//
-					// 否则下一轮 `_toDriverMessages(history)` 会把"您完全正确！我犯了严重错误..."
-					// 这种道歉幻觉作为 prior driver messages 喂回模型，形成对话循环。
+			} else if ((delta as any).type === 'discard_prior_text') {
+				// Hermes-style 合成恢复信号：upstream 检测到 fake-completion / unfinished-intent，
+				// 要求下游完全丢弃刚才的幻觉/过渡文本，防止它进入 memory 和 history 形成对话循环。
 					rawDeltaChunks.length = 0;
 					assistantChunks.length = 0;
 					tagBuffer = '';
@@ -1221,7 +1163,14 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					);
 					// 把信号原样向上游 yield（chatService 同样需要清空 fullContent/fullThinking）
 					yield delta;
+				} else if (delta.type === 'work_mode_changed' && (delta as any).workMode) {
+					// P1: persist WorkMode across turns so the planning/work phase survives turn boundaries.
+					const newWorkMode = (delta as any).workMode as 'plan' | 'work';
+					this._saveWorkMode(request.sessionId, newWorkMode);
+					this._logService.info(`[AgentDriver] WorkMode saved: session=${request.sessionId ?? '(none)'}, mode=${newWorkMode}`);
+					yield delta;
 				} else if (delta.type === 'done') {
+
 					// 流结束：刷新缓冲区，未完成的标签当普通文本处理
 					const flushed = flushTagBuffer();
 					if (flushed.length > 0) {
@@ -1247,20 +1196,12 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 			}
 
-			// 【诊断】流结束后打印 raw 模型输出的尾部（800 字符），用于排查
-			// "Knot 是否真的输出了 <memory_extract> 标签"。
-			// 注意：这是剥离前的原始内容，能看到模型最真实的输出格式。
+			// 【诊断】流结束后打印 raw 模型输出的尾部（排查 memory_extract 标签输出）
 			try {
 				const rawFull = rawDeltaChunks.join('');
-				const tail = rawFull.length > 800 ? rawFull.slice(-800) : rawFull;
 				const hasExtractTag = /<memory_extract>/i.test(rawFull);
 				const hasLegacyTag = /\[MEMORY:/i.test(rawFull);
-				const statsMsg = `[AgentDriver] 🔍 RAW model output stats: totalLen=${rawFull.length}, hasMemoryExtractTag=${hasExtractTag}, hasLegacyMemoryTag=${hasLegacyTag}`;
-				const tailMsg = `[AgentDriver] 🔍 RAW model output tail (last 800 chars): ${JSON.stringify(tail)}`;
-				this._logService.info(statsMsg);
-				this._logService.info(tailMsg);
-				// 同步镜像到 DevTools console
-				try { console.warn(statsMsg); console.warn(tailMsg); } catch { /* noop */ }
+				this._logService.info(`[AgentDriver] RAW model output: totalLen=${rawFull.length}, hasMemoryExtractTag=${hasExtractTag}, hasLegacyMemoryTag=${hasLegacyTag}, tail=${JSON.stringify(rawFull.slice(-800))}`);
 			} catch (diagErr) {
 				this._logService.warn(`[AgentDriver] raw output diagnostic failed: ${(diagErr as Error).message}`);
 			}
@@ -1279,18 +1220,20 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		} finally {
 			this._activeTurns.delete(turnId);
 
-			// ── 顶层 turn 并发限流释放 ────────────────────
-			// 确保异常/取消路径也归还配额，防止 permanently 占用名额。
+			// ── 清除 turn checkpoint（防止下一个用户消息从旧 checkpoint 恢复）──
+			if (request.sessionId) {
+				this._clearTurnCheckpoint(request.sessionId);
+			}
+
+			// 释放并发限流名额
 			if (this._turnHoldsSemaphore.delete(turnId)) {
 				this._turnSemaphore.release();
 			}
 
 			this._logService.info(`[AgentDriver] finally block START (turnId=${turnId})`);
 
-			// ── 恢复 AgentBinding.worktreePath ─────────────────────────
-			// ⚠ 同 memory write 的教训（行 861-866 注释）：async generator 的 finally
-			// 块中 await 会阻塞 generator 的 return，进而阻塞 consumer（agentChatService）
-			// 的 for-await 循环退出。worktree 恢复同样改为 fire-and-forget + 超时保护。
+			// ── 恢复 AgentBinding.worktreePath（fire-and-forget + 超时保护）──
+			// finally 中 await 会阻塞 generator return → 阻塞 consumer for-await 退出。
 			if (originalBindingWorktreePath !== undefined) {
 				const restoreStart = Date.now();
 				void (async () => {
@@ -1346,90 +1289,36 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				})();
 			}
 
-			// Step 5: 写回记忆（放在 finally 确保即使 generator 被外层提前终止也能执行）
-			// ⚠ 关键：必须连续写两条——user 一条 + assistant 一条，
-			// 这样下游 Memory Provider（如 agentmemory-memory）才能配对成完整一轮，
-			// 用于 vendor /capture 接口的 user_content + assistant_content。
-			//
-			// 🔧 2026-06-10 修复：memory 写回改为 fire-and-forget，不再 await。
-			// 原因：async generator 的 finally 块中 await 会阻塞 generator 的 return，
-			// 进而阻塞 consumer（agentChatService）的 for-await 循环退出。
-			// 当 memoryProvider.writeMemory() 因网络抖动/vendor 超时而长时间
-			// 不返回时，整个聊天流会被卡住——用户看到的表现为 "LLM 返回后 app 卡死"。
-			// fire-and-forget 不阻塞流退出，写失败由 catch 静默记录日志。
+			// ④ 写回记忆（finally 中 fire-and-forget，防止 await 阻塞 generator 退出）
+			// 连续写 user + assistant 两条，供 vendor /capture 接口配对。
 			if (memoryProvider) {
 				const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
 				const rawAssistantContent = rawDeltaChunks.join('').trim();
 				const cleanedAssistantContent = assistantChunks.join('').trim();
-				const assistantContent = rawAssistantContent.length > 0 ? rawAssistantContent : cleanedAssistantContent;
-				const ts = Date.now();
-				const sessionMeta: Record<string, unknown> = {
-					owner: 'default',
-					userId: 'default',
-					agentId: request.agentId,
-				};
-				if (request.sessionId) {
-					sessionMeta['sessionId'] = request.sessionId;
-				}
+			const assistantContent = rawAssistantContent.length > 0 ? rawAssistantContent : cleanedAssistantContent;
 
-			// Fire-and-forget: 不阻塞 generator cleanup / consumer 的 for-await 退出
-			// 生成 noticeId 供 UI 卡片状态跟踪 (pending → saved/failed)
-			const noticeId = `mem-l0-${ts}`;
-			// yield memory_writing delta：通知 UI 显示 pending 卡片
-			yield {
-				type: 'memory_writing',
-				content: `Working 记忆写入中：用户消息 + 助手回复 (${assistantContent.length} 字符)`,
-				metadata: {
-					memoryType: 'working',
-					sceneName: 'Working 写入',
-					priority: 50,
-					noticeId,
-				},
-			} as IChatStreamDelta;
-			(async () => {
-					try {
-						if (lastUserMessage) {
-							await memoryProvider.writeMemory(request.agentId, {
-								id: `memory-user-${ts}`,
-								type: 'working',
-								content: lastUserMessage.content,
-								metadata: { ...sessionMeta, role: 'user', noticeId },
-								timestamp: ts,
-							});
-						}
-
-						if (assistantContent.length > 0) {
-							await memoryProvider.writeMemory(request.agentId, {
-								id: `memory-assistant-${ts + 1}`,
-								type: 'working',
-								content: assistantContent,
-								metadata: { ...sessionMeta, role: 'assistant', noticeId },
-								timestamp: ts + 1,
-							});
-						}
-
-						this._logService.info(`[AgentDriver] Wrote memory for ${request.agentId} (user=${lastUserMessage ? 'yes' : 'no'}, assistantLen=${assistantContent.length})`);
-					} catch (error) {
-						this._logService.error('[AgentDriver] Failed to write memory:', error);
-					}
-				})();
-
-				// ─── Episodic 自动提取触发（对齐 AgentMemory L0→L1 pipeline）──────────────
-				// 每 N 轮对话后，后台调用 LLM 从最近对话中提取结构化长期记忆。
-				// 不依赖 LLM 主动调 memory_remember，系统自动提取值得记住的事实。
-				// Wrapped in try-catch: L1 extraction is a background optimization
-				// and must NEVER break the main turn flow (which would skip assistant
-				// message persistence, causing messages to disappear after reload).
+	// W2（2026-07-26 §16 日志实证修复）：turn 级 user/assistant 捕获复用
+		// storeTurnObservations（mem:obs 暂存层 + 内容哈希去重）——此前此处每轮
+		// writeMemory(type=working)×2 直写长期层，与 storeTurnObservations 完全
+		// 重复（§11 分层改造的漏网通道，子代理长任务下洪泛 core memory）。
+		// ExecutionProvider 路径的 turn 消息捕获也经此统一覆盖；删除噪音 UI 卡片。
+		(async () => {
 				try {
-					this._agentOS.triggerEpisodicExtraction(
-						request.agentId,
-						request.sessionId,
-						lastUserMessage?.content ?? '',
-						assistantContent,
-					);
-				} catch (l1Err) {
-					this._logService.error('[AgentDriver] triggerEpisodicExtraction failed (non-fatal):', l1Err);
+					const turnMessages: Array<{ role: string; content: string }> = [];
+					if (lastUserMessage) {
+						turnMessages.push({ role: 'user', content: lastUserMessage.content });
+					}
+					if (assistantContent.length > 0) {
+						turnMessages.push({ role: 'assistant', content: assistantContent });
+					}
+					if (turnMessages.length > 0) {
+						await this._agentOS._storeTurnObservations(memoryProvider, request.agentId, request.sessionId ?? '', turnMessages);
+					}
+					this._logService.info(`[AgentDriver] Stored turn observations for ${request.agentId} (user=${lastUserMessage ? 'yes' : 'no'}, assistantLen=${assistantContent.length})`);
+				} catch (error) {
+					this._logService.error('[AgentDriver] Failed to store turn observations:', error);
 				}
+			})();
 			}
 		}
 		this._logService.info(`[AgentDriver] finally block END (turnId=${turnId}) — generator returning, for-await loop will exit`);
@@ -1609,23 +1498,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		isWorktree: boolean,
 		relatedFolders?: Array<{ path: string; name?: string; isGitRepo?: boolean }>,
 	): Promise<string> {
-		// ── .saros/AGENT.md 人写规则注入（借鉴 Claude Code 双系统设计）──
-		let agentMdSection = '';
-		try {
-			const agentMdUri = URI.joinPath(URI.file(rootDir), '.saros', 'AGENT.md');
-			const exists = await this._fileService.exists(agentMdUri);
-			if (exists) {
-				const buf = await this._fileService.readFile(agentMdUri);
-				const content = buf.value.toString().trim();
-				if (content.length > 0) {
-					agentMdSection = `## Project-level Rules (.saros/AGENT.md)\n\nThe following rules were written by the user and MUST be strictly followed:\n\n${content}`;
-					this._logService.info(`[AgentDriver] Loaded .saros/AGENT.md (${content.length} chars)`);
-				}
-			}
-		} catch (err) {
-			this._logService.debug(`[AgentDriver] .saros/AGENT.md not found or unreadable: ${err instanceof Error ? err.message : String(err)}`);
-		}
-
 		const lines: string[] = [
 			'## Workspace Context',
 			'',
@@ -1666,7 +1538,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		lines.push('- index_repository: Build code knowledge graph (one-time; skips if already loaded unless force=true).');
 		lines.push('- index_status: Check graph status (loaded node/edge/file counts).');
 		lines.push('- search_graph: BM25 full-text search or name_pattern regex. query="..." for natural language. file_pattern/label filter. Pagination via limit+offset+hasMore.');
-		lines.push('- search_code: Grep-style text search enriched with graph structure. mode=compact|full|files, context lines.');
+		lines.push('- search_code: FALLBACK text search within indexed files (use only when search_graph returns nothing). mode=compact|full|files, context lines. Multi-word query → regex.');
 		lines.push('- query_graph: Cypher queries (MATCH, WHERE, RETURN, ORDER BY, LIMIT).');
 		lines.push('- get_architecture: Overview with communities, languages, packages, hotspots. aspects for dimensions.');
 		lines.push('- trace_path: Call chain tracing (mode=calls|data_flow|cross_service).');
@@ -1693,9 +1565,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 		// 把 AGENT.md 的规则放在工作区上下文最前面（最高优先级）
 		const workspaceContextText = lines.join('\n');
-		return agentMdSection
-			? `${agentMdSection}\n\n${workspaceContextText}`
-			: workspaceContextText;
+		return workspaceContextText;
 	}
 
 
@@ -1716,11 +1586,16 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 	): AsyncIterable<IChatStreamDelta> {
 		// 构建多模态 contentParts：文本 + 图片附件（文件附件以文本上下文内联）。
 		// 提取为纯函数 buildUserContentParts 便于单测，且保证与 chat 输入框附件透传逻辑一致。
+		// 用户原始输入用 <user_query>...</user_query> 包装，使模型能明确区分「用户真实指令」
+		// 与注入的 system/skill/memory 上下文（buildUserContentParts 内部对文本块同步包装）。
+		// 注意：buildUserContentParts 自身会包装文本块，此处传入原始 message，
+		// content 字段单独用 wrapUserQuery 包装，二者保持一致、不重复包装。
+		const wrappedUserText = wrapUserQuery(message);
 		const contentParts = buildUserContentParts(message, options.attachments);
 
 		const userMessage: import('../common/providers.js').IChatMessage = {
 			role: 'user',
-			content: message,
+			content: wrappedUserText,
 			contentParts,
 		};
 
@@ -1732,6 +1607,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			messages: [...(priorMessages ?? []), userMessage],
 			systemPrompt: options.systemPrompt,
 			explicitSkillIds: options.explicitSkillIds,
+			workflowTrigger: options.workflowTrigger,
 			worktreePath: options.worktreePath,
 			// Fork 前缀缓存：透传父级 ForkContext，使 (system+tools) 与父级冻结前缀对齐
 			// → 请求构造端注入 cache 断点、命中 provider prompt cache（零行为变更）。
@@ -1741,6 +1617,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			modelOverride: (options.providerId && options.model)
 				? { providerId: options.providerId, modelId: options.model }
 				: undefined,
+			chatOnly: options.chatOnly,
+			chatMode: options.chatMode, // @deprecated — 保留兼容
+			workMode: this._restoreWorkMode(options.agentSessionId),
 			options: {
 				temperature: options.temperature,
 				reasoning: options.reasoning,
@@ -1776,7 +1655,9 @@ export function buildUserContentParts(
 
 	const contentParts: IChatContentPart[] = [];
 	if (message.trim()) {
-		contentParts.push({ type: 'text', text: message });
+		// 用户真实指令用 <user_query>...</user_query> 包装；文件附件上下文在下方追加，
+		// 保持在标签之外（非用户指令）。
+		contentParts.push({ type: 'text', text: wrapUserQuery(message) });
 	}
 
 	for (const att of attachments) {

@@ -2487,6 +2487,7 @@ h3.integration-section-title {
 /* Content area */
 .integration-content {
 	flex: 1;
+	min-height: 0;
 	overflow-y: auto;
 	display: flex;
 	flex-direction: column;
@@ -3969,6 +3970,25 @@ h3.integration-section-title {
 	margin-top: 1px;
 }
 
+/* API 类型徽章（自定义 provider） */
+.provider-card-type-badge {
+	font-size: 9px;
+	padding: 0px 5px;
+	border-radius: 6px;
+	white-space: nowrap;
+	font-weight: 500;
+	line-height: 15px;
+	margin-left: 4px;
+}
+.provider-card-type-badge.anthropic {
+	background: rgba(217, 119, 87, 0.18);
+	color: #d97757;
+}
+.provider-card-type-badge.openai {
+	background: rgba(16, 163, 127, 0.15);
+	color: #10a37f;
+}
+
 /* Chevron indicator */
 .provider-card-chevron {
 	font-size: 11px;
@@ -4031,6 +4051,18 @@ h3.integration-section-title {
 
 .provider-field:last-of-type {
 	margin-bottom: 0;
+}
+
+/* 自定义 Provider 内联高级配置分组标题 */
+.provider-advanced-label {
+	font-size: 10px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	color: var(--vscode-descriptionForeground);
+	margin: 10px 0 2px;
+	padding-top: 8px;
+	border-top: 1px dashed var(--vscode-panel-border);
 }
 
 .provider-field-label {

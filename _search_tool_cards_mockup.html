@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>搜索工具卡片 Mockup</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: #1e1e1e;
+  color: #cccccc;
+  padding: 24px;
+  line-height: 1.5;
+}
+h1 { color: #e0e0e0; font-size: 22px; margin-bottom: 8px; }
+h2 { color: #b0b0b0; font-size: 16px; margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 1px solid #333; }
+h3 { color: #909090; font-size: 13px; margin: 24px 0 12px; }
+.subtitle { color: #666; font-size: 12px; margin-bottom: 24px; }
+
+/* ── 通用卡片 ── */
+.card {
+  background: #252526;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+.card-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  background: #2d2d30;
+  border-bottom: 1px solid #3c3c3c;
+  cursor: pointer;
+  user-select: none;
+}
+.card-header:hover { background: #333337; }
+.header-icon { font-size: 14px; }
+.header-title {
+  flex: 1;
+  font-size: 13px;
+  color: #d4d4d4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.header-badge {
+  min-width: 18px; height: 18px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  color: #8b949e;
+  font-size: 11px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.header-chevron { color: #858585; font-size: 11px; }
+.card-body { padding: 12px 14px; }
+.card-collapsed .card-body { display: none; }
+.card-collapsed .header-chevron { transform: rotate(-90deg); }
+
+/* ── 通用 ── */
+.mono { font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 12px; }
+.dim { color: #8b949e; }
+.dim2 { color: #6e7681; }
+.accent { color: #569cd6; }
+.success { color: #4ec9b0; }
+.warn { color: #dcdcaa; }
+.error { color: #f48771; }
+.keyword { color: #c586c0; }
+.string { color: #ce9178; }
+.number { color: #b5cea8; }
+
+/* ── 摘要条 ── */
+.summary-strip {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0 10px;
+}
+.stat {
+  padding: 2px 8px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 4px;
+  font-size: 11px;
+  color: #8b949e;
+}
+.stat-more { background: rgba(86,156,214,0.15); color: #569cd6; }
+.stat-ok { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+.stat-err { background: rgba(244,135,113,0.15); color: #f48771; }
+.stat-warn { background: rgba(220,220,170,0.15); color: #dcdcaa; }
+
+/* ── 表格行 ── */
+.result-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.result-row:hover { background: rgba(255,255,255,0.04); }
+.result-row.header-row {
+  color: #858585; font-size: 11px;
+  border-bottom: 1px solid #3c3c3c;
+  border-radius: 0;
+  margin-bottom: 4px;
+}
+.col-rank { min-width: 24px; text-align: right; color: #6e7681; }
+.col-name { flex: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-type { min-width: 60px; color: #8b949e; }
+.col-file { flex: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #8b949e; }
+.col-score { min-width: 40px; text-align: right; color: #b5cea8; }
+
+/* ── 文件行（可点击） ── */
+.file-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.file-row:hover { background: rgba(255,255,255,0.04); }
+.file-icon { font-size: 11px; }
+.file-name { font-size: 12px; color: #d4d4d4; }
+.file-path { font-size: 11px; color: #6e7681; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.file-line { font-size: 11px; color: #569cd6; }
+
+/* ── 代码块 ── */
+.code-block {
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  overflow-x: auto;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.code-block .ln { color: #6e7681; padding-right: 12px; user-select: none; text-align: right; min-width: 30px; display: inline-block; }
+.code-block .match { background: rgba(220,220,170,0.2); padding: 0 2px; border-radius: 2px; }
+
+/* ── trace path ── */
+.trace-hop {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.trace-hop-num { min-width: 20px; color: #6e7681; font-weight: bold; }
+.trace-hop-arrow { color: #569cd6; }
+.trace-hop-name { flex: 1; }
+.trace-risk { padding: 1px 6px; border-radius: 3px; font-size: 10px; }
+.risk-low { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+.risk-med { background: rgba(220,220,170,0.15); color: #dcdcaa; }
+.risk-high { background: rgba(244,135,113,0.15); color: #f48771; }
+.risk-crit { background: rgba(255,0,0,0.2); color: #ff6b6b; }
+
+/* ── 架构统计 ── */
+.arch-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  margin: 10px 0;
+}
+.arch-stat {
+  text-align: center;
+  padding: 10px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 6px;
+}
+.arch-value { font-size: 18px; font-weight: 600; color: #d4d4d4; display: block; }
+.arch-label { font-size: 10px; color: #8b949e; display: block; margin-top: 2px; }
+
+/* ── 社区 ── */
+.comm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.comm-card {
+  padding: 8px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 6px;
+  border-left: 3px solid #569cd6;
+}
+.comm-name { font-size: 12px; font-weight: 500; color: #d4d4d4; }
+.comm-stats { font-size: 11px; color: #8b949e; margin-top: 2px; }
+.comm-top { font-size: 10px; color: #6e7681; margin-top: 4px; }
+
+/* ── 分区标题 ── */
+.section-title {
+  font-size: 12px; font-weight: 600;
+  color: #b0b0b0;
+  margin: 14px 0 6px;
+  padding-top: 8px;
+  border-top: 1px solid #3c3c3c;
+}
+
+/* ── 页脚提示 ── */
+.page-hint {
+  margin-top: 10px;
+  padding: 6px 10px;
+  background: rgba(86,156,214,0.1);
+  border-left: 3px solid #569cd6;
+  border-radius: 0 4px 4px 0;
+  font-size: 11px;
+  color: #569cd6;
+}
+
+/* ── 格式标注 ── */
+.format-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  background: rgba(86,156,214,0.15);
+  border-radius: 3px;
+  font-size: 10px;
+  color: #569cd6;
+  margin-left: 8px;
+}
+.format-tag.toon { background: rgba(78,201,176,0.15); color: #4ec9b0; }
+.format-tag.json { background: rgba(220,220,170,0.15); color: #dcdcaa; }
+.format-tag.text { background: rgba(244,135,113,0.15); color: #f48771; }
+.format-tag.mixed { background: rgba(198,134,192,0.15); color: #c586c0; }
+
+/* ── mockup 展示 ── */
+.mockup-label {
+  font-size: 11px; color: #555; margin: 4px 0;
+}
+.result-item {
+  padding: 3px 0;
+}
+.result-item-name { font-size: 12px; color: #d4d4d4; }
+.result-item-name .line { color: #569cd6; }
+.result-item-path { font-size: 11px; color: #6e7681; }
+.file-link { color: #569cd6; cursor: pointer; text-decoration: none; }
+.file-link:hover { text-decoration: underline; }
+
+/* ── TOON 表格模拟 ── */
+.toon-table {
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  padding: 8px;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-x: auto;
+  white-space: pre;
+}
+.toon-header { color: #6e7681; }
+.toon-row { color: #d4d4d4; }
+.toon-col-loc { color: #8b949e; }
+.toon-col-score { color: #b5cea8; }
+
+/* ── 空状态 ── */
+.empty-state {
+  padding: 20px;
+  text-align: center;
+  color: #6e7681;
+  font-size: 12px;
+}
+.empty-state .icon { font-size: 24px; display: block; margin-bottom: 8px; opacity: 0.5; }
+</style>
+</head>
+<body>
+
+<h1>搜索工具卡片 Mockup</h1>
+<p class="subtitle">所有搜索工具的输出格式分析 + 对应卡片设计</p>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>1. TOON 格式 <span class="format-tag toon">TOON</span></h2>
+<p style="color:#666; font-size:12px; margin-bottom:12px;">Pipe 分隔紧凑表格（search_graph / trace_path），为 LLM 优化的文本格式</p>
+
+<h3>1.1 search_graph — 图谱搜索</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🔍</span>
+    <span class="header-title">图谱搜索 · GC incremental reachability analysis state machine</span>
+    <span class="header-badge">38</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat">10 / 38 显示</span>
+      <span class="stat stat-more">hasMore → 翻页</span>
+    </div>
+    <div class="result-row header-row">
+      <span class="col-rank">#</span>
+      <span class="col-name">Symbol</span>
+      <span class="col-type">Type</span>
+      <span class="col-file">File</span>
+      <span class="col-score">Score</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">1</span>
+      <span class="col-name"><a class="file-link">ProcessAsync</a></span>
+      <span class="col-type">function</span>
+      <span class="col-file">GarbageCollection.cpp:123</span>
+      <span class="col-score">3</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">2</span>
+      <span class="col-name"><a class="file-link">SpinUntilAllStopped</a></span>
+      <span class="col-type">function</span>
+      <span class="col-file">GarbageCollection.cpp:456</span>
+      <span class="col-score">2</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">3</span>
+      <span class="col-name"><a class="file-link">PerformReachabilityAnalysisPass</a></span>
+      <span class="col-type">function</span>
+      <span class="col-file">GarbageCollection.cpp:789</span>
+      <span class="col-score">5</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">4</span>
+      <span class="col-name"><a class="file-link">ConditionalCollectGarbage</a></span>
+      <span class="col-type">function</span>
+      <span class="col-file">GarbageCollection.cpp:234</span>
+      <span class="col-score">1</span>
+    </div>
+    <div class="page-hint">⚡ hasMore = true — 共 38 条结果，当前显示前 10 条。用 offset=10 翻页查看更多。</div>
+  </div>
+</div>
+
+<h3>1.2 trace_path — 调用路径</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🔗</span>
+    <span class="header-title">追踪路径 · ProcessAsync → ConditionalCollectGarbage</span>
+    <span class="header-badge">5</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat">5 hops</span>
+      <span class="stat">depth: 3</span>
+      <span class="stat stat-warn">hasCycle: false</span>
+    </div>
+    <div class="trace-hop">
+      <span class="trace-hop-num">H0</span>
+      <span class="trace-hop-name mono">GC::ProcessAsync</span>
+      <span class="trace-risk risk-low">Low</span>
+    </div>
+    <div class="trace-hop">
+      <span class="trace-hop-num">H1</span>
+      <span class="trace-hop-arrow">→</span>
+      <span class="trace-hop-name mono">GC::ConditionalCollectGarbage</span>
+      <span class="trace-risk risk-low">Low</span>
+    </div>
+    <div class="trace-hop">
+      <span class="trace-hop-num">H2</span>
+      <span class="trace-hop-arrow">→</span>
+      <span class="trace-hop-name mono">FGarbageCollector::CollectGarbageIncremental</span>
+      <span class="trace-risk risk-med">Med</span>
+    </div>
+    <div class="trace-hop">
+      <span class="trace-hop-num">H3</span>
+      <span class="trace-hop-arrow">→</span>
+      <span class="trace-hop-name mono">FReferenceFinder::PerformReachabilityAnalysis</span>
+      <span class="trace-risk risk-high">High</span>
+    </div>
+    <div class="trace-hop">
+      <span class="trace-hop-num">H4</span>
+      <span class="trace-hop-arrow">→</span>
+      <span class="trace-hop-name mono">UObjectBaseUtility::MarkAsReachable</span>
+      <span class="trace-risk risk-low">Low</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>2. JSON 结构化 <span class="format-tag json">JSON</span></h2>
+<p style="color:#666; font-size:12px; margin-bottom:12px;">结构化 JSON（search_code / query_graph / grep / get_architecture），带完整的字段和嵌套结构</p>
+
+<h3>2.1 search_code — 代码内容搜索</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">📄</span>
+    <span class="header-title">代码搜索 · FWorkBlockifier</span>
+    <span class="header-badge">12</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat">5 / 12 显示</span>
+      <span class="stat">mode: compact</span>
+    </div>
+    <div class="result-item">
+      <div class="result-item-name"><a class="file-link">GarbageCollection.h</a><span class="line">:45</span></div>
+      <div class="result-item-path">f:/GR_qiuzijian_main/S1Game/Source/...</div>
+      <div class="code-block">
+<span class="ln">45</span>  <span class="keyword">struct</span> <span class="match">FWorkBlockifier</span> {
+<span class="ln">46</span>      <span class="keyword">enum</span> <span class="keyword">class</span> <span class="keyword">EType</span> { Regular, <span class="match">Blockified</span> };
+<span class="ln">47</span>      EType Type = EType::Regular;
+</div>
+    </div>
+    <div class="result-item">
+      <div class="result-item-name"><a class="file-link">GarbageCollection.cpp</a><span class="line">:234</span></div>
+      <div class="result-item-path">f:/GR_qiuzijian_main/S1Game/Source/...</div>
+      <div class="code-block">
+<span class="ln">234</span>  <span class="match">FWorkBlockifier</span>::<span class="match">EType</span> FWorkBlockifier::FromNumItems(
+</div>
+    </div>
+  </div>
+</div>
+
+<h3>2.2 query_graph — 图谱查询</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🕸️</span>
+    <span class="header-title">图谱查询 · MATCH (f:Function)-[c:CALLS]->(g) WHERE f.name="ProcessAsync"</span>
+    <span class="header-badge">3</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat">3 rows</span>
+      <span class="stat stat-ok">query OK</span>
+    </div>
+    <div class="result-row header-row">
+      <span class="col-rank">#</span>
+      <span class="col-name">f.name</span>
+      <span class="col-type">relation</span>
+      <span class="col-file">g.name</span>
+      <span class="col-score">depth</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">1</span>
+      <span class="col-name">ProcessAsync</span>
+      <span class="col-type">CALLS</span>
+      <span class="col-file">ConditionalCollectGarbage</span>
+      <span class="col-score">1</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">2</span>
+      <span class="col-name">ProcessAsync</span>
+      <span class="col-type">CALLS</span>
+      <span class="col-file">SpinUntilAllStopped</span>
+      <span class="col-score">1</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">3</span>
+      <span class="col-name">ConditionalCollectGarbage</span>
+      <span class="col-type">CALLS</span>
+      <span class="col-file">CollectGarbageIncremental</span>
+      <span class="col-score">2</span>
+    </div>
+  </div>
+</div>
+
+<h3>2.3 get_architecture — 架构概览</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🏗️</span>
+    <span class="header-title">架构概览 · S1Game</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="arch-grid">
+      <div class="arch-stat"><span class="arch-value">94,040</span><span class="arch-label">Total Nodes</span></div>
+      <div class="arch-stat"><span class="arch-value">127,583</span><span class="arch-label">Total Edges</span></div>
+      <div class="arch-stat"><span class="arch-value">3</span><span class="arch-label">Languages</span></div>
+      <div class="arch-stat"><span class="arch-value">12</span><span class="arch-label">Packages</span></div>
+    </div>
+    <div class="section-title">🏘️ Communities (6)</div>
+    <div class="comm-grid">
+      <div class="comm-card">
+        <div class="comm-name">GarbageCollection</div>
+        <div class="comm-stats">847 nodes · cohesion 78%</div>
+        <div class="comm-top">Top: ProcessAsync, ConditionalCollectGarbage</div>
+      </div>
+      <div class="comm-card">
+        <div class="comm-name">Renderer</div>
+        <div class="comm-stats">1,234 nodes · cohesion 65%</div>
+        <div class="comm-top">Top: RenderLoop, DrawScene</div>
+      </div>
+      <div class="comm-card">
+        <div class="comm-name">Physics</div>
+        <div class="comm-stats">623 nodes · cohesion 71%</div>
+        <div class="comm-top">Top: SimulatePhysics, BroadPhase</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>2.4 index_repository — 索引状态</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">📊</span>
+    <span class="header-title">索引仓库 · S1Game</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat stat-ok">✓ success</span>
+    </div>
+    <div class="arch-grid">
+      <div class="arch-stat"><span class="arch-value">12,847</span><span class="arch-label">Files Scanned</span></div>
+      <div class="arch-stat"><span class="arch-value">94,040</span><span class="arch-label">Nodes</span></div>
+      <div class="arch-stat"><span class="arch-value">127,583</span><span class="arch-label">Edges</span></div>
+      <div class="arch-stat"><span class="arch-value">186ms</span><span class="arch-label">Duration</span></div>
+    </div>
+    <div class="page-hint">⏭️ Skipped: 3,412 paths (e.g. Binaries, Intermediate, ThirdParty)</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>3. 文本格式 <span class="format-tag text">TEXT</span></h2>
+<p style="color:#666; font-size:12px; margin-bottom:12px;">行级文本（search_files / get_code_snippet / file_read），最直接的 grep / cat 输出</p>
+
+<h3>3.1 search_files — 文件搜索</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">📁</span>
+    <span class="header-title">文件搜索 · GarbageCollection</span>
+    <span class="header-badge">8</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat">8 files</span>
+    </div>
+    <div class="file-row">
+      <span class="file-icon">📄</span>
+      <a class="file-link">GarbageCollection.cpp</a>
+      <span class="file-path">f:/GR_qiuzijian_main/S1Game/Source/S1Game/...</span>
+      <span class="file-line">456</span>
+    </div>
+    <div class="file-row">
+      <span class="file-icon">📄</span>
+      <a class="file-link">GarbageCollection.h</a>
+      <span class="file-path">f:/GR_qiuzijian_main/S1Game/Source/S1Game/...</span>
+      <span class="file-line">123</span>
+    </div>
+    <div class="file-row">
+      <span class="file-icon">📄</span>
+      <a class="file-link">DefaultEngine.ini</a>
+      <span class="file-path">f:/GR_qiuzijian_main/S1Game/Config/...</span>
+      <span class="file-line">372</span>
+    </div>
+  </div>
+</div>
+
+<h3>3.2 get_code_snippet — 代码片段</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">✂️</span>
+    <span class="header-title">代码片段 · GC::ProcessAsync</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat">GarbageCollection.cpp:118-145</span>
+    </div>
+    <div class="code-block">
+<span class="ln">118</span>  <span class="keyword">void</span> GC::<span class="match">ProcessAsync</span>(<span class="keyword">const</span> EGCOptions Options)
+<span class="ln">119</span>  {
+<span class="ln">120</span>      <span class="keyword">if</span> (!bEnabled)
+<span class="ln">121</span>          <span class="keyword">return</span>;
+<span class="ln">122</span>      <span class="keyword">const</span> FGCRequest Request{Options};
+<span class="ln">123</span>      RequestQueue.Enqueue(Request);
+<span class="ln">124</span>      ...
+<span class="ln">145</span>  }
+</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>4. 混合格式 <span class="format-tag mixed">MIXED</span></h2>
+<p style="color:#666; font-size:12px; margin-bottom:12px;">TOON 表格 + 可选 Semantic Results 双区块（search_graph 带 semantic_query 时）</p>
+
+<h3>4.1 search_graph + semantic_results</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🔍</span>
+    <span class="header-title">图谱搜索 · ProcessAsync GC + 语义补充</span>
+    <span class="header-badge">15</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat">10 / 22 显示</span>
+      <span class="stat">+5 semantic</span>
+    </div>
+    <!-- 主结果 -->
+    <div class="result-row header-row">
+      <span class="col-rank">#</span>
+      <span class="col-name">Symbol</span>
+      <span class="col-type">Type</span>
+      <span class="col-file">File</span>
+      <span class="col-score">Score</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">1</span>
+      <span class="col-name"><a class="file-link">ProcessAsync</a></span>
+      <span class="col-type">function</span>
+      <span class="col-file">GarbageCollection.cpp:123</span>
+      <span class="col-score">3</span>
+    </div>
+    <div class="result-row">
+      <span class="col-rank">2</span>
+      <span class="col-name"><a class="file-link">SpinUntilAllStopped</a></span>
+      <span class="col-type">function</span>
+      <span class="col-file">GarbageCollection.cpp:456</span>
+      <span class="col-score">2</span>
+    </div>
+    <!-- Semantic Results -->
+    <div class="section-title">🔮 Semantic Results</div>
+    <div class="result-row" style="background: rgba(198,134,192,0.08);">
+      <span class="col-rank">s1</span>
+      <span class="col-name"><a class="file-link">GCObjectRef</a></span>
+      <span class="col-type">class</span>
+      <span class="col-file">GarbageCollection.h:78</span>
+      <span class="col-score">0.92</span>
+    </div>
+    <div class="result-row" style="background: rgba(198,134,192,0.08);">
+      <span class="col-rank">s2</span>
+      <span class="col-name"><a class="file-link">FGCReferenceFinder</a></span>
+      <span class="col-type">struct</span>
+      <span class="col-file">GarbageCollection.h:112</span>
+      <span class="col-score">0.87</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>5. 空结果 / 错误状态</h2>
+
+<h3>5.1 空结果（无匹配）</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🔍</span>
+    <span class="header-title">图谱搜索 · NonExistentSymbol</span>
+    <span class="header-badge">0</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="empty-state">
+      <span class="icon">🔍</span>
+      没有找到匹配结果<br>
+      <span style="font-size: 11px; margin-top: 8px; display: block; color: #555;">
+      图谱共 94,040 个节点。Try a wider name pattern, a different label filter, or check index_status
+      </span>
+    </div>
+  </div>
+</div>
+
+<h3>5.2 错误状态</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">⚠️</span>
+    <span class="header-title">图谱搜索 · FWorkBlockifier</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat stat-err">✗ failed</span>
+    </div>
+    <div class="empty-state">
+      <span class="icon">⚠️</span>
+      search_graph: no graph loaded. Run index_repository first.
+    </div>
+  </div>
+</div>
+
+<h3>5.3 截断状态（IPC 截断）</h3>
+
+<div class="card">
+  <div class="card-header">
+    <span class="header-icon">🔍</span>
+    <span class="header-title">图谱搜索 · GC</span>
+    <span class="header-badge">2048+</span>
+    <span class="header-chevron">▼</span>
+  </div>
+  <div class="card-body">
+    <div class="summary-strip">
+      <span class="stat stat-warn">⚠️ IPC 截断</span>
+      <span class="stat">2048 字符上限</span>
+    </div>
+    <div class="page-hint">📏 结果已被 IPC 截断（2048 字符上限）。减小 limit 或 file_pattern 以获取完整结果。</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<h2>📋 格式总结</h2>
+<table style="width:100%; border-collapse: collapse; font-size: 12px; margin-top: 12px;">
+<thead>
+<tr style="border-bottom: 2px solid #3c3c3c;">
+  <th style="padding: 8px; text-align: left; color: #b0b0b0;">工具</th>
+  <th style="padding: 8px; text-align: left; color: #b0b0b0;">输出格式</th>
+  <th style="padding: 8px; text-align: left; color: #b0b0b0;">结构</th>
+  <th style="padding: 8px; text-align: left; color: #b0b0b0;">卡片类型</th>
+</tr>
+</thead>
+<tbody>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">search_graph</span></td>
+  <td style="padding: 8px;"><span class="format-tag toon">TOON</span></td>
+  <td style="padding: 8px;">pipe 分隔表格 + 头行</td>
+  <td style="padding: 8px;">表格卡片（Symbol/Type/File/Score）</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">trace_path</span></td>
+  <td style="padding: 8px;"><span class="format-tag toon">TOON</span></td>
+  <td style="padding: 8px;">pipe 分隔 hop 表</td>
+  <td style="padding: 8px;">路径链卡片（H0→H1→H2...）</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">search_code</span></td>
+  <td style="padding: 8px;"><span class="format-tag json">JSON</span></td>
+  <td style="padding: 8px;">{results:[{filePath,lineNo,text,symbol}]}</td>
+  <td style="padding: 8px;">代码块卡片（file:line + context）</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">query_graph</span></td>
+  <td style="padding: 8px;"><span class="format-tag json">JSON</span></td>
+  <td style="padding: 8px;">{rows:[{f.name,relation,g.name}]}</td>
+  <td style="padding: 8px;">表格卡片（动态列）</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">get_architecture</span></td>
+  <td style="padding: 8px;"><span class="format-tag json">JSON</span></td>
+  <td style="padding: 8px;">{totalNodes,totalEdges,languages,communities}</td>
+  <td style="padding: 8px;">统计网格 + 社区卡片</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">index_repository</span></td>
+  <td style="padding: 8px;"><span class="format-tag json">JSON</span></td>
+  <td style="padding: 8px;">{filesScanned,nodesExtracted,edgesExtracted}</td>
+  <td style="padding: 8px;">统计网格卡片</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">search_files</span></td>
+  <td style="padding: 8px;"><span class="format-tag text">TEXT</span></td>
+  <td style="padding: 8px;">file:line 行列表</td>
+  <td style="padding: 8px;">文件列表卡片（可点击）</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">get_code_snippet</span></td>
+  <td style="padding: 8px;"><span class="format-tag text">TEXT</span></td>
+  <td style="padding: 8px;">带行号的源码文本</td>
+  <td style="padding: 8px;">代码块卡片（语法高亮）</td>
+</tr>
+<tr style="border-bottom: 1px solid #2a2a2a;">
+  <td style="padding: 8px;"><span class="accent">grep</span></td>
+  <td style="padding: 8px;"><span class="format-tag json">JSON</span></td>
+  <td style="padding: 8px;">{results:[{filePath,lineNo,text}]}</td>
+  <td style="padding: 8px;">同 search_code</td>
+</tr>
+<tr>
+  <td style="padding: 8px;"><span class="accent">index_status</span></td>
+  <td style="padding: 8px;"><span class="format-tag json">JSON</span></td>
+  <td style="padding: 8px;">{nodeCount,edgeCount,projects[]}</td>
+  <td style="padding: 8px;">统计卡片</td>
+</tr>
+</tbody>
+</table>
+
+</body>
+</html>

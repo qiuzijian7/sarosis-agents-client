@@ -1139,7 +1139,7 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			if (!part?.activeGroup) { return; }
 			const input = NativeChatEditorInput.create();
 			const newGroup = part.addGroup(part.activeGroup, 3 /* GroupDirection.RIGHT */);
-			newGroup.openEditor(input, { pinned: false }).catch(() => { /* 创建失败静默忽略 */ });
+			newGroup.openEditor(input, { pinned: true }).catch(() => { /* 创建失败静默忽略 */ });
 		}, true /* useCapture: 先于 multiEditorTabsControl 内部监听器触发 */));
 	}
 

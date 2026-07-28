@@ -1,0 +1,8 @@
+id: data-analyst
+name: Data Analyst
+description: 数据分析助手，支持 SQL、Python、可视化
+category: data-analysis
+tags:
+  - data
+  - sql
+  - python

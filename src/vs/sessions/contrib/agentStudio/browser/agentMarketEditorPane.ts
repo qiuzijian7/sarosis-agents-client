@@ -18,7 +18,6 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { URI } from '../../../../base/common/uri.js';
 import * as DOM from '../../../../base/browser/dom.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
@@ -31,6 +30,8 @@ import {
 	PackageKind,
 } from '../common/marketplace.js';
 import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
 const { $: $$ } = DOM;
 
@@ -74,14 +75,14 @@ export class AgentMarketEditorPane extends EditorPane {
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@IFileService private readonly fileService: IFileService,
 		@ICommandService private readonly commandService: ICommandService,
-		@IPathService private readonly pathService: IPathService,
-		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+			@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 	) {
 		super(AgentMarketEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -866,8 +867,7 @@ export class AgentMarketEditorPane extends EditorPane {
 	}
 
 	private async _parseAgentFromArchive(archiveUri: URI): Promise<{ agentData: Partial<Agent>; sourceDir: URI }> {
-		const userHome = await this.pathService.userHome();
-		const tmpDir = URI.joinPath(userHome, '.saros', 'tmp', `install-${Date.now()}`);
+		const tmpDir = resolveSarosPath(this._getSarosRoot(), SarosPath.tmp, `install-${Date.now()}`);
 		await this.fileService.createFolder(tmpDir);
 
 		const archivePath = archiveUri.fsPath;
@@ -957,5 +957,9 @@ export class AgentMarketEditorPane extends EditorPane {
 
 	override dispose(): void {
 		super.dispose();
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

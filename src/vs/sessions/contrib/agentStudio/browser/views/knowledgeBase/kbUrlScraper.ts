@@ -60,6 +60,15 @@ export function detectPlatform(url: string): IKbPlatformDef {
 	return KB_URL_PLATFORMS[KB_URL_PLATFORMS.length - 1];
 }
 
+/**
+ * 升级 http:// → https:// 以通过渲染进程 connect-src CSP（仅允许 https:/ws:/localhost）。
+ * 小红书等短链（如 xhslink.com）默认下发 http 链接，若直接请求会被 CSP 拦截；
+ * 绝大多数站点（含 xhslink.com）均支持 https 并会自动跳转，故统一升级为 https。
+ */
+export function toSecureScheme(url: string): string {
+	return /^http:\/\//i.test(url) ? url.replace(/^http:\/\//i, 'https://') : url;
+}
+
 export interface IKbMetaTags {
 	title?: string;
 	author?: string;

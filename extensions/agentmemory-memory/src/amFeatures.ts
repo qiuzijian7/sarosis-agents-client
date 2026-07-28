@@ -7,7 +7,7 @@
  *  4. Skill Extract — 从会话记忆提取可复用技能
  *--------------------------------------------------------------------------------------------*/
 
-import type { Memory, CoreMemoryEntry, SessionSummary } from './amTypes.js';
+import type { Memory, CoreMemoryEntry, SessionSummary, Observation } from './amTypes.js';
 import { KV, generateId, estimateTokens } from './amSchema.js';
 import { StateKV } from './stateKV.js';
 
@@ -185,4 +185,119 @@ export async function extractSkill(kv: StateKV, agentId: string, sessionId: stri
 	});
 
 	return skill;
+}
+
+// ─── 5. Skill List / Match（复刻 agentmemory mem::skill-list / mem::skill-match）──
+
+/** 存储记录 → ExtractedSkill 归一化（持久化形态用 preconditions[0] 存 trigger） */
+function normalizeSkill(raw: Record<string, unknown>): ExtractedSkill | null {
+	const id = typeof raw['id'] === 'string' ? raw['id'] : '';
+	if (!id.startsWith('skl') || !Array.isArray(raw['steps'])) { return null; }
+	const preconditions = Array.isArray(raw['preconditions']) ? raw['preconditions'] as unknown[] : [];
+	return {
+		id,
+		trigger: typeof raw['trigger'] === 'string' ? raw['trigger'] : String(preconditions[0] ?? ''),
+		title: String(raw['title'] ?? ''),
+		steps: raw['steps'] as string[],
+		expectedOutcome: String(raw['expectedOutcome'] ?? ''),
+		tags: Array.isArray(raw['tags']) ? raw['tags'] as string[] : [],
+		confidence: typeof raw['confidence'] === 'number' ? raw['confidence'] : 0.5,
+		sourceSessionIds: Array.isArray(raw['sourceSessionIds']) ? raw['sourceSessionIds'] as string[] : [],
+		createdAt: String(raw['createdAt'] ?? ''),
+	};
+}
+
+/** mem::skill-list：列出 agent 已抽取的技能（按创建时间倒序） */
+export async function skillList(kv: StateKV, agentId: string): Promise<ExtractedSkill[]> {
+	const all = await kv.list<Record<string, unknown>>(KV.procedural(agentId));
+	return all
+		.map(normalizeSkill)
+		.filter((s): s is ExtractedSkill => s !== null)
+		.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** mem::skill-match：任务文本 vs 技能 trigger/title/tags/steps 关键词重叠打分，
+ *  乘置信度权重，取 top N（任务 → 推荐技能的闭环查询侧，D3 补齐）。 */
+export async function skillMatch(kv: StateKV, agentId: string, task: string, limit: number = 3): Promise<Array<{ skill: ExtractedSkill; score: number }>> {
+	if (!task || !task.trim()) { return []; }
+	const skills = await skillList(kv, agentId);
+	if (skills.length === 0) { return []; }
+	const terms = task.toLowerCase().split(/[^a-z0-9_一-龥]+/i).filter(t => t.length >= 2);
+	if (terms.length === 0) { return []; }
+	const scored: Array<{ skill: ExtractedSkill; score: number }> = [];
+	for (const skill of skills) {
+		const hay = `${skill.trigger} ${skill.title} ${skill.tags.join(' ')} ${skill.steps.join(' ')}`.toLowerCase();
+		const hits = terms.filter(t => hay.includes(t)).length;
+		if (hits > 0) {
+			scored.push({ skill, score: (hits / terms.length) * (0.5 + skill.confidence * 0.5) });
+		}
+	}
+	return scored.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+// ─── 6. Session Handoff（复刻 agentmemory MCP session_handoff 工具语义）──────
+
+/**
+ * 生成会话交接文档：本会话摘要 + 未闭合 actions + 近期重要观察 + pinned slots
+ * → markdown；同时以 SessionSummary 形态持久化（key `handoff_<sessionId>`），
+ * 使下一个会话的策展注入（summaries 块）自然携带交接信息。
+ */
+export async function sessionHandoff(
+	kv: StateKV, agentId: string, sessionId: string,
+): Promise<{ markdown: string; entry: SessionSummary } | null> {
+	if (!sessionId) { return null; }
+	const [{ listPinnedSlots }, { actionList }] = await Promise.all([
+		import('./amSlots.js'), import('./amAdvanced.js'),
+	]);
+
+	const summary = await kv.get<SessionSummary>(KV.summaries(agentId), sessionId).catch(() => null);
+	const observations = await kv.list<Observation>(KV.observations(agentId, sessionId)).catch(() => [] as Observation[]);
+	const important = observations
+		.filter(o => (o.importance ?? (o.hookType === 'post_tool_failure' ? 7 : o.hookType === 'post_tool_use' ? 5 : 4)) >= 5)
+		.sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0))
+		.slice(0, 10);
+	const openActions = (await actionList(kv, agentId).catch(() => []))
+		.filter(a => a.status === 'pending' || a.status === 'active' || a.status === 'blocked')
+		.slice(0, 10);
+	const pinned = await listPinnedSlots(kv, agentId).catch(() => []);
+
+	if (!summary && important.length === 0 && openActions.length === 0) { return null; }
+
+	const sections: string[] = [`# Session Handoff — ${sessionId.slice(0, 8)}`, ''];
+	if (summary) {
+		sections.push('## Summary', summary.narrative || summary.title, '');
+		if (summary.keyDecisions.length > 0) {
+			sections.push('## Key Decisions', ...summary.keyDecisions.map(d => `- ${d}`), '');
+		}
+	}
+	if (openActions.length > 0) {
+		sections.push('## Open Actions', ...openActions.map(a => `- [${a.status}] (p${a.priority}) ${a.title}`), '');
+	}
+	if (important.length > 0) {
+		sections.push('## Important Observations', ...important.map(o => {
+			const d = (o.data ?? {}) as Record<string, unknown>;
+			const preview = String(d['content'] ?? d['tool_output'] ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+			return `- [${o.hookType}] ${o.title ?? ''}: ${preview}`;
+		}), '');
+	}
+	if (pinned.length > 0) {
+		sections.push('## Pinned Context', ...pinned.map(s => `- **${s.label}**: ${s.content.trim().slice(0, 120)}`), '');
+	}
+	const markdown = sections.join('\n');
+
+	const now = new Date().toISOString();
+	const entry: SessionSummary = {
+		sessionId,
+		title: `Session Handoff — ${sessionId.slice(0, 8)}`,
+		narrative: markdown.slice(0, 2000),
+		keyDecisions: summary?.keyDecisions ?? [],
+		filesModified: summary?.filesModified ?? [],
+		concepts: summary?.concepts ?? [],
+		observationCount: observations.length,
+		agentId,
+		project: summary?.project ?? '',
+		createdAt: now,
+	};
+	await kv.set(KV.summaries(agentId), `handoff_${sessionId}`, entry);
+	return { markdown, entry };
 }

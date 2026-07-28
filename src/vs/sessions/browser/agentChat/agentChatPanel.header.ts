@@ -505,7 +505,11 @@ protected override _aggregateTurns(messages: IAgentChatMessage[]): IAgentChatMes
 						}
 					}
 					for (const p of tmParts) {
-						mergedParts.push(p.kind === 'text' ? { kind: 'text', text: p.text } : { kind: 'tool', tool: p.tool });
+						if (p.kind === 'text') {
+							mergedParts.push({ kind: 'text', text: p.text });
+						} else if (p.kind === 'tool') {
+							mergedParts.push({ kind: 'tool', tool: p.tool });
+						}
 					}
 				}
 				const flat = flattenMessageParts(mergedParts);

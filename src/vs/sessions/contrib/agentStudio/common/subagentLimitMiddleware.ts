@@ -33,10 +33,10 @@ import type { IToolCallInfo } from './providers.js';
 
 /** Minimum allowed concurrent sub-agents. */
 export const MIN_SUBAGENT_LIMIT = 2;
-/** Maximum allowed concurrent sub-agents. */
-export const MAX_SUBAGENT_LIMIT = 4;
-/** Default maximum concurrent sub-agents. */
-export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 3;
+/** Maximum allowed concurrent sub-agents. 与 delegationTools 的 MAX_TASKS_PER_CALL=5 对齐（2026-07-26）。 */
+export const MAX_SUBAGENT_LIMIT = 5;
+/** Default maximum concurrent sub-agents. 与 MAX_TASKS_PER_CALL=5 对齐（原 3 会把合法的 1-5 批量委派截断）。 */
+export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 5;
 
 /** Tool names that this middleware considers as sub-agent delegation calls. */
 export const SUBAGENT_DELEGATION_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -149,7 +149,7 @@ export class SubagentLimitMiddleware {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-/** Clamp subagent limit to valid range [2, 4] (aligned with deer-flow). */
+/** Clamp subagent limit to valid range [2, 5] (aligned with MAX_TASKS_PER_CALL). */
 export function clampSubagentLimit(value: number): number {
 	return Math.max(MIN_SUBAGENT_LIMIT, Math.min(MAX_SUBAGENT_LIMIT, value));
 }

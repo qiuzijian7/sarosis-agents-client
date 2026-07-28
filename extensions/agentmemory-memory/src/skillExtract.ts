@@ -101,6 +101,11 @@ export function generateSlug(title: string): string {
  *   name: <slug>
  *   description: <description>
  *   version: 1.0.0
+ *   activation: manual
+ *   match:
+ *     - "<trigger>"
+ *   tags:
+ *     - "<tag>"
  *   ---
  *   # <title>
  *   ## 触发条件
@@ -113,11 +118,21 @@ export function generateSlug(title: string): string {
 export function generateSkillMd(skill: ExtractedSkill): string {
 	const slug = skill.slug || generateSlug(skill.title);
 	const description = `${skill.trigger}。${skill.expectedOutcome}`;
+	// 清理 frontmatter 注入风险字符（引号/换行）
+	const clean = (s: string) => s.replace(/["\r\n]/g, ' ').trim();
 
 	let md = `---\n`;
 	md += `name: ${slug}\n`;
 	md += `description: ${description}\n`;
 	md += `version: 1.0.0\n`;
+	// 物化字段补全：manual 激活（与默认行为一致）+ trigger 作为 match 关键词元数据
+	md += `activation: manual\n`;
+	if (skill.trigger) {
+		md += `match:\n  - "${clean(skill.trigger)}"\n`;
+	}
+	if (skill.tags && skill.tags.length > 0) {
+		md += `tags:\n${skill.tags.map(t => `  - "${clean(t)}"`).join('\n')}\n`;
+	}
 	md += `---\n\n`;
 	md += `# ${skill.title}\n\n`;
 	md += `## 触发条件\n\n${skill.trigger}\n\n`;

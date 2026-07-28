@@ -150,6 +150,13 @@ export interface IContextCompressionService {
 	 * Reset compression state for a session (anti-thrashing counter, cooldown timer).
 	 */
 	resetState(sessionId: string): void;
+
+	/**
+	 * Push the current GitHub token (called by the auth dispatch layer after
+	 * successful authentication). The service never pulls tokens itself —
+	 * token ownership stays with the agent implementations.
+	 */
+	setAuthToken?(token: string | undefined): void;
 }
 
 // ── Compression Log Entry (re-exported from enhancedSessionStore) ────────────

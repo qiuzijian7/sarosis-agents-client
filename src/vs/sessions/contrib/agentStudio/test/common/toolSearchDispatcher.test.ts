@@ -68,7 +68,6 @@ suite('ToolSearchDispatcher — searchCatalog', () => {
 		makeDef('kanban_list', 'List all kanban cards'),
 		makeDef('browser_navigate', 'Navigate to a URL'),
 		makeDef('browser_snapshot', 'Take a page snapshot'),
-		makeDef('memory_search', 'Search memory by keyword'),
 	];
 
 	test('returns matching tools for exact name query', () => {

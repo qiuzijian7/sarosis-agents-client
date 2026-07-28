@@ -15,6 +15,9 @@
 
 import { CodebaseGraphStore, GraphNode } from './codebaseGraphStore.js';
 
+/** MinHash 排列数（签名长度）。48 在阈值 0.7 附近分辨率为 ~1/48，兼顾精度与存储。 */
+export const MINHASH_PERM = 48;
+
 // ─── P1-10: pass_usages — 变量/类型引用边 ──────────────────────────────
 
 export interface UsageEdge {
@@ -150,7 +153,7 @@ export class MinHash {
 	private _hashFunctions: ((s: string) => number)[];
 	private _numPerm: number;
 
-	constructor(numPerm: number = 128) {
+	constructor(numPerm: number = MINHASH_PERM) {
 		this._numPerm = numPerm;
 		this._hashFunctions = [];
 		// Generate hash functions: h_i(x) = (a_i * hash(x) + b_i) mod P
@@ -201,21 +204,23 @@ export class MinHash {
  */
 export function detectSimilarCode(nodes: GraphNode[], store: CodebaseGraphStore, threshold: number = 0.7): SimilarityEdge[] {
 	const edges: SimilarityEdge[] = [];
-	const minHash = new MinHash(128);
+	const minHash = new MinHash(MINHASH_PERM);
 
-	// Compute MinHash signatures for all functions
+	// 读取解析期预计算的代码体 MinHash 签名（code-based，而非名字相似）。
+	// 仅对拥有签名、且为函数/方法类型的节点做克隆检测。
 	const signatures: Map<number, number[]> = new Map();
-	const functions = nodes.filter(n => n.label === 'function' || n.label === 'method');
+	const functions = nodes.filter(n =>
+		(n.label === 'function' || n.label === 'method') &&
+		Array.isArray((n.properties as any)?.minHash) &&
+		((n.properties as any).minHash as number[]).length === MINHASH_PERM);
 
 	for (const func of functions) {
-		// Tokenize: function name + file path components
-		const tokens = [...tokenize(func.name), ...tokenize(func.filePath || '')];
-		signatures.set(func.id, minHash.compute(tokens));
+		signatures.set(func.id, (func.properties as any).minHash as number[]);
 	}
 
 	// LSH: band-based candidate generation
-	const numBands = 32;
-	const rowsPerBand = 4;  // 128 / 32 = 4
+	const numBands = 12;
+	const rowsPerBand = 4;  // MINHASH_PERM(48) / 12 = 4
 	const buckets: Map<string, number[]>[] = Array.from({ length: numBands }, () => new Map());
 
 	for (const [nodeId, sig] of signatures) {

@@ -141,7 +141,7 @@ suite('CORE_TOOLS whitelist', () => {
 		assert.strictEqual(isCoreTool('file_read'), true);
 		assert.strictEqual(isCoreTool('file_write'), true);
 		assert.strictEqual(isCoreTool('terminal'), true);
-		assert.strictEqual(isCoreTool('memory'), true);
+		assert.strictEqual(isCoreTool('memory_list'), true);
 		assert.strictEqual(isCoreTool('todo'), true);
 		assert.strictEqual(isCoreTool('web_search'), true);
 	});

@@ -344,47 +344,61 @@ export interface ComplexityResult {
 	cyclomatic: number;
 	loops: number;
 	conditionals: number;
+	/** SonarSource 认知复杂度：结构 +1，嵌套额外 +嵌套层级 */
+	cognitive: number;
+	/** 循环出现次数（=loops，独立字段便于 Cypher 查询） */
+	loopCount: number;
 }
 
-/** Compute cyclomatic complexity by counting decision points. */
+const CMPLX_LOOP_TYPES = new Set([
+	'for_statement', 'for_in_statement', 'while_statement', 'do_statement',
+	'enhanced_for_statement', 'for_each_statement', 'loop_expression',
+]);
+const CMPLX_COND_TYPES = new Set([
+	'if_statement', 'conditional_expression', 'ternary_expression',
+	'switch_statement', 'case_clause', 'when_clause', 'match_arm',
+]);
+
+/** Compute cyclomatic + cognitive complexity by counting decision points. */
 export function computeComplexity(rootNode: SyntaxNode, startLine: number, endLine: number): ComplexityResult {
 	let loops = 0;
 	let conditionals = 0;
+	let cognitive = 0;
 
-	const visit = (node: SyntaxNode) => {
+	const visit = (node: SyntaxNode, nesting: number) => {
 		const line = node.startPosition?.row + 1 || 0;
 		if (line < startLine || line > endLine) {
-			for (const child of node.children || []) { visit(child); }
+			for (const child of node.children || []) { visit(child, nesting); }
 			return;
 		}
 
-		switch (node.type) {
-			// Loops
-			case 'for_statement': case 'for_in_statement': case 'while_statement':
-			case 'do_statement': case 'for_statement': case 'enhanced_for_statement':
-			case 'for_each_statement': case 'loop_expression':
-				loops++; break;
-			// Conditionals
-			case 'if_statement': case 'conditional_expression': case 'ternary_expression':
-			case 'switch_statement': case 'case_clause': case 'when_clause':
-			case 'match_arm':
-				conditionals++; break;
-			// Logical operators
-			case 'binary_expression':
-				if (node.text?.includes('&&') || node.text?.includes('||')) {
-					conditionals++;
-				}
-				break;
+		let isStructure = false;
+		if (CMPLX_LOOP_TYPES.has(node.type)) {
+			loops++;
+			cognitive += 1 + nesting; // 循环：+1 + 嵌套层级
+			isStructure = true;
+		} else if (CMPLX_COND_TYPES.has(node.type)) {
+			conditionals++;
+			cognitive += 1 + nesting; // 分支：+1 + 嵌套层级
+			isStructure = true;
+		} else if (node.type === 'binary_expression') {
+			if (node.text?.includes('&&') || node.text?.includes('||')) {
+				conditionals++;
+				cognitive += 1; // 布尔运算符：+1（不增加嵌套）
+			}
 		}
 
-		for (const child of node.children || []) { visit(child); }
+		const nextNesting = isStructure ? nesting + 1 : nesting;
+		for (const child of node.children || []) { visit(child, nextNesting); }
 	};
 
-	visit(rootNode);
+	visit(rootNode, 0);
 
 	return {
 		cyclomatic: 1 + loops + conditionals,
 		loops,
 		conditionals,
+		cognitive,
+		loopCount: loops,
 	};
 }

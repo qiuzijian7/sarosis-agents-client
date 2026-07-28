@@ -163,3 +163,105 @@ export async function hybridSearch<T>(
 
 	return fuseHybrid(ftsItems, vectorItems, idExtractor, topK);
 }
+
+// ---------------------------------------------------------------------------
+// P0-2 图信号重排（对齐 llm_wiki「图信号检索」纪律）
+// ---------------------------------------------------------------------------
+
+/** 单个条目的图结构信号（由 caller 从图数据中提取）。 */
+export interface IGraphSignal {
+	/** 节点度数（入度+出度）；高连接度 = 图中枢纽，适度加权 */
+	degree?: number;
+	/** Louvain 社区 id；用于结果多样化（避免同社区霸榜） */
+	communityId?: string | number;
+}
+
+export interface IGraphRerankOptions {
+	/** 度数加权强度（最终 boost = 1 + weight * log1p(deg)/log1p(maxDeg)），默认 0.3 */
+	degreeWeight?: number;
+	/** 每个社区最多保留的前排名额，超出者顺延到队尾（不丢弃），默认 3 */
+	maxPerCommunity?: number;
+}
+
+/**
+ * 图信号重排：在 RRF 融合分基础上叠加度数加成，再按社区做多样化。
+ * 纯函数、确定性；无图信号（getSignal 返回 undefined）的条目保持原分。
+ */
+export function rerankWithGraphSignals<T>(
+	hits: HybridSearchHit<T>[],
+	getSignal: (hit: HybridSearchHit<T>) => IGraphSignal | undefined,
+	opts?: IGraphRerankOptions,
+): HybridSearchHit<T>[] {
+	if (hits.length <= 1) { return hits.slice(); }
+	const degreeWeight = opts?.degreeWeight ?? 0.3;
+	const maxPerCommunity = Math.max(1, opts?.maxPerCommunity ?? 3);
+
+	// 1) 度数加成
+	const signals = hits.map(h => getSignal(h));
+	const maxDeg = Math.max(0, ...signals.map(s => s?.degree ?? 0));
+	const scored = hits.map((h, i) => {
+		const deg = signals[i]?.degree ?? 0;
+		const boost = maxDeg > 0 ? 1 + degreeWeight * (Math.log1p(deg) / Math.log1p(maxDeg)) : 1;
+		return { hit: h, signal: signals[i], score: h.rrfScore * boost };
+	});
+	scored.sort((a, b) => b.score - a.score);
+
+	// 2) 社区多样化：同社区前排名额封顶，被挤出者按分数顺延队尾
+	const communityCount = new Map<string, number>();
+	const front: typeof scored = [];
+	const overflow: typeof scored = [];
+	for (const s of scored) {
+		const cid = s.signal?.communityId;
+		if (cid === undefined || cid === null || cid === '') { front.push(s); continue; }
+		const key = String(cid);
+		const n = communityCount.get(key) ?? 0;
+		if (n < maxPerCommunity) {
+			communityCount.set(key, n + 1);
+			front.push(s);
+		} else {
+			overflow.push(s);
+		}
+	}
+	return [...front, ...overflow].map(s => s.hit);
+}
+
+// ---------------------------------------------------------------------------
+// P0-2 token 预算封顶（防检索结果撑爆 LLM 上下文）
+// ---------------------------------------------------------------------------
+
+/** 粗略 token 估算：CJK 字符按 1 token，其余按 4 字符 ≈ 1 token。 */
+export function estimateTokens(text: string): number {
+	let cjk = 0;
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		if (c >= 0x2E80 && c <= 0x9FFF || c >= 0xF900 && c <= 0xFAFF || c >= 0xFF00 && c <= 0xFFEF) { cjk++; }
+	}
+	return cjk + Math.ceil((text.length - cjk) / 4);
+}
+
+export interface ITokenClampResult<T> {
+	items: T[];
+	/** 是否发生截断 */
+	truncated: boolean;
+	/** 保留条目的估算 token 总量 */
+	estTokens: number;
+}
+
+/**
+ * 按 token 预算截断有序结果列表（保序、至少保留 1 条）。
+ * @param textOf 条目 → 参与预算的文本表示
+ */
+export function clampToTokenBudget<T>(items: T[], textOf: (item: T) => string, maxTokens: number): ITokenClampResult<T> {
+	if (items.length === 0 || maxTokens <= 0 || !isFinite(maxTokens)) {
+		return { items: items.slice(), truncated: false, estTokens: 0 };
+	}
+	const kept: T[] = [];
+	let used = 0;
+	for (const it of items) {
+		const t = estimateTokens(textOf(it));
+		if (kept.length > 0 && used + t > maxTokens) { break; }
+		kept.push(it);
+		used += t;
+	}
+	return { items: kept, truncated: kept.length < items.length, estTokens: used };
+}

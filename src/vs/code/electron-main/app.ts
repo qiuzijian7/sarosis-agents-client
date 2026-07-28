@@ -7,7 +7,7 @@ import { app, Details, GPUFeatureStatus, powerMonitor, protocol, session, Sessio
 import { addUNCHostToAllowlist, disableUNCAccessRestrictions } from '../../base/node/unc.js';
 import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js';
 import { execFile, spawn, type ChildProcess } from 'child_process';
-import { hostname, homedir, release } from 'os';
+import { hostname, release } from 'os';
 import { existsSync } from 'fs';
 import { initWindowsVersionInfo } from '../../base/node/windowsVersion.js';
 import { VSBuffer } from '../../base/common/buffer.js';
@@ -143,6 +143,10 @@ import { IMcpGatewayService, McpGatewayChannelName } from '../../platform/mcp/co
 import { McpGatewayService } from '../../platform/mcp/node/mcpGatewayService.js';
 import { McpGatewayChannel } from '../../platform/mcp/node/mcpGatewayChannel.js';
 import { LlmMainChannel } from '../../sessions/contrib/agentStudio/electron-main/llmMainChannel.js';
+import { CodebaseGraphStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/codebaseGraphStoreChannel.js';
+import { CODEBASE_GRAPH_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/codebaseGraphStoreChannel.js';
+import { KbSqliteStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/kbSqliteStoreChannel.js';
+import { KB_SQLITE_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/kbSqliteStoreChannel.js';
 import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
@@ -1421,6 +1425,21 @@ export class CodeApplication extends Disposable {
 		const llmChannel = new LlmMainChannel(accessor.get(ILoggerService));
 		mainProcessElectronServer.registerChannel(VSSAROS_LLM_CHANNEL, llmChannel);
 
+		// AgentStudio Codebase Graph：把图存储（SQLite mmap，根治 V8 4GB）宿主在主进程，
+		// renderer 经 ProxyChannel 代理访问。DB 落 ${userDataPath}/codebase-graph/graph.db。
+		const graphStoreChannel = new CodebaseGraphStoreChannel(
+			join(this.environmentMainService.userDataPath, 'codebase-graph', 'graph.db'),
+			accessor.get(ILoggerService),
+		);
+		mainProcessElectronServer.registerChannel(CODEBASE_GRAPH_STORE_CHANNEL, graphStoreChannel);
+
+		// AgentStudio KB：全文检索存储宿主在主进程（FTS5，根治大库 OOM）。
+		const kbStoreChannel = new KbSqliteStoreChannel(
+			join(this.environmentMainService.userDataPath, 'kb-sqlite', 'kb.db'),
+			accessor.get(ILoggerService),
+		);
+		mainProcessElectronServer.registerChannel(KB_SQLITE_STORE_CHANNEL, kbStoreChannel);
+
 
 		// Logger
 		const loggerChannel = new LoggerChannel(accessor.get(ILoggerMainService),);
@@ -1942,7 +1961,9 @@ export class CodeApplication extends Disposable {
 			const env: NodeJS.ProcessEnv = {
 				...process.env,
 				AGENTMEMORY_PORT: process.env['AGENTMEMORY_PORT'] ?? '3111',
-				AGENTMEMORY_DATA_DIR: process.env['AGENTMEMORY_DATA_DIR'] ?? join(homedir(), '.saros', '.agentmemory'),
+				AGENTMEMORY_DATA_DIR: process.env['AGENTMEMORY_DATA_DIR'] ?? join(this.environmentMainService.userDataPath, '.agentmemory'),
+				// 技能文件根目录（与渲染进程 skillRegistryService 读取路径一致）
+				AGENTMEMORY_SKILLS_DIR: process.env['AGENTMEMORY_SKILLS_DIR'] ?? join(this.environmentMainService.userDataPath, 'skills'),
 				// Plan C: point the gateway at the sibling agentmemory-memory extension
 				// so it can import the compiled BM25 index module (single source of truth).
 				// host.mjs 位于 <extRoot>/agentmemory-gateway/host/host.mjs，兄弟扩展在

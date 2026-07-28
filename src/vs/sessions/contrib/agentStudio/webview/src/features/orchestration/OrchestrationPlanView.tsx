@@ -363,7 +363,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 		onClose?.();
 	}, [activePlan, rejectPlan, closePlanDialog, onClose]);
 	const { activeWorkspaceId } = useWorkspaceStore();
-	const { agents, getPlanners } = useAgentStore();
+	const { agents } = useAgentStore();
 
 	const [goal, setGoal] = useState('');
 	const [selectedPlannerId, setSelectedPlannerId] = useState<string>('');
@@ -375,7 +375,7 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 	const isPendingApproval = activePlan?.status === 'pending_approval';
 	const isExecuting = activePlan?.status === 'executing' || activePlan?.status === 'approved';
 
-	const planners = useMemo(() => getPlanners(), [agents]);
+	const planners = useMemo(() => agents, [agents]);
 	const hasPlanners = planners.length > 0;
 
 	useEffect(() => {
@@ -508,18 +508,18 @@ export function OrchestrationPlanView({ onClose }: OrchestrationPlanViewProps): 
 
 					<div className="orch-role-status">
 						<div className={`orch-role-badge ${hasPlanners ? 'ok' : 'missing'}`}>
-							{hasPlanners ? '✅' : '⚠️'} Planner: {hasPlanners ? `${planners.length} 个可用` : '未创建 — 请先创建一个 agentType=planner 的 Agent'}
+							{hasPlanners ? '✅' : '⚠️'} Planner: {hasPlanners ? `${planners.length} 个可用` : '未创建 — 请先创建一个 Agent'}
 						</div>
 					</div>
 
 					{hasPlanners && (
 						<div className="form-field">
-							<label>选择 Planner</label>
+							<label>选择 Agent</label>
 							<select
 								value={selectedPlannerId}
 								onChange={(e) => setSelectedPlannerId(e.target.value)}
 							>
-								<option value="">-- 选择 Planner Agent --</option>
+								<option value="">-- 选择 Agent --</option>
 								{planners.map(p => (
 									<option key={p.id} value={p.id}>{p.name} ({p.role})</option>
 								))}

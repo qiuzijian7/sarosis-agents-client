@@ -186,10 +186,10 @@ const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
 			renderType: 'ListItems',
 			detailKeys: ['path', 'pattern'],
 		},
-		grep: {
+		search_code: {
 			emoji: '🔍',
-			title: 'Grep',
-			label: 'Grep',
+			title: 'Search Code',
+			label: 'Search Code',
 			renderType: 'ListItems',
 			detailKeys: ['query', 'pattern', 'path'],
 		},
@@ -238,12 +238,7 @@ const TOOL_DISPLAY_CONFIG: ToolDisplayConfig = {
 			label: 'Memory',
 			detailKeys: ['query', 'path'],
 		},
-		memory_search: {
-			emoji: '🧠',
-			title: 'Memory Search',
-			label: 'Memory Search',
-			detailKeys: ['query'],
-		},
+
 
 		// ── Task / Planning ──
 		update_plan: {

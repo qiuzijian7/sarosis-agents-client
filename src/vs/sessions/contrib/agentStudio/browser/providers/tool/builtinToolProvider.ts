@@ -49,8 +49,8 @@ import { ISwarmService } from '../../../common/swarmService.js';
 import { ICheckpointService } from '../../../common/checkpointService.js';
 import { IAgentOSService } from '../../../common/agentOS.js';
 import { IWorkflowStorageService } from '../../../common/workflowStorage.js';
-import { IPathService } from '../../../../../../workbench/services/path/common/pathService.js';
 import { SkillManagerTool } from '../../skillManagerTool.js';
+import { SkillUsageTracker } from '../../skillUsageTracker.js';
 import { ICodebaseGraphService } from '../../codebaseGraphService.js';
 import { AdrManager } from '../../codebaseGraphAdr.js';
 import { registerCodebaseTools } from './codebaseTools.js';
@@ -63,16 +63,21 @@ import { IKanbanRecipeService } from './kanbanRecipeService.js';
 import { SearchHelpers } from './searchHelpers.js';
 import { registerWebTools, type WebToolContext } from './webTools.js';
 import { registerBundledTools, type BundledToolContext } from './bundledTools.js';
-import { registerMemoryTools, type MemoryToolContext } from './memoryTools.js';
 import { registerUnifiedMemoryTools, type UnifiedMemoryToolContext } from './unifiedMemoryTools.js';
+import { registerMemoryTools, type MemoryToolContext } from './memoryTools.js';
+import { registerAdvancedMemoryTools, type AdvancedMemoryToolContext } from './advancedMemoryTools.js';
+import { registerRoutineCrystalFacetTools, type RoutineCrystalFacetToolContext } from './routineCrystalFacetTools.js';
 import { registerSkillTools, type SkillToolContext } from './skillTools.js';
 import { registerCompatibilityTools, type CompatToolContext } from './compatibilityTools.js';
 import { registerDelegationTools, type DelegationToolContext } from './delegationTools.js';
+import { registerPlanExploreTool } from './planExploreTool.js';
+import { registerPlanModeTools } from './planModeTools.js';
 import { createKnowledgeStorageRegistrar, type IKnowledgeStorageRegistrar } from './knowledgeStorageTools.js';
 import { resolveAndCheckWorkspacePathImpl } from './workspaceSecurity.js';
 import { registerCoreTools } from './coreTools.js';
 import { executeToolImpl } from './toolExecutor.js';
 import { registerHandoffTools } from './handoffTools.js';
+import { registerMermaidTools } from './mermaidTools.js';
 import { ToolRegistry, type IBuiltinToolRegistration } from './toolRegistry.js';
 
 /** Config key controlling where knowledge bases are persisted. Empty = `<userHome>/.saros/kb`. */
@@ -125,6 +130,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 
 	/** Skill Manager 工具实例 —— 提供 skill_create 能力 */
 	private _skillManagerTool!: SkillManagerTool;
+	private readonly _skillUsageTracker: SkillUsageTracker;
 
 	// v17: worktree path inherited from the parent agent's execution context.
 	// Set by `setParentWorktreePath()` before each turn; cleared on turn end.
@@ -215,8 +221,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	@ICheckpointService private readonly checkpointService: ICheckpointService,
 	@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 	@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
-	@IPathService private readonly pathService: IPathService,
-	@ICodebaseGraphService private readonly codebaseGraphService: ICodebaseGraphService,
+		@ICodebaseGraphService private readonly codebaseGraphService: ICodebaseGraphService,
 	@IPlaywrightService private readonly playwrightService: IPlaywrightService,
 	@IEditorService private readonly editorService: IEditorService,
 	@ISessionsManagementService private readonly sessionsManagement: ISessionsManagementService,
@@ -229,11 +234,12 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	) {
 		super();
 		this._skillManagerTool = new SkillManagerTool(
+			this.environmentService,
 			this.fileService,
-			this.pathService,
 			this.skillRegistry,
 			this.logService,
 		);
+		this._skillUsageTracker = new SkillUsageTracker(this.fileService, this.logService);
 		this._adrManager = new AdrManager(this.fileService);
 		this._searchHelpers = new SearchHelpers(this.fileService, this.searchService, this.logService);
 		// Phase 1: 注册内置 embedding provider（复用 BYOK API → /v1/embeddings）
@@ -242,16 +248,21 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerCoreTools();
 		this._registerWebTools();
 		this._registerCompatibilityTools();
-		this._registerMemoryTools();
 		this._registerUnifiedMemoryTools(); // G12: recall/improve/forget
+		this._registerMemoryTools(); // remember/search/delete/list（真实 handler，须在 bundled stub 之前注册）
+		this._registerAdvancedMemoryTools(); // 接入引擎编排/治理能力：governance/team/mesh/sentinel/obsidian/cascade
+		this._registerRoutineCrystalFacetTools(); // 接入高阶记忆能力：routine/crystal/facet
 		this._registerSkillTools();
 		this._registerBundledTools();
 		this._registerDelegationTools();
+		this._registerPlanExploreTool(); // WorkBuddy-style plan mode: parallel exploration
+		this._registerPlanModeTools(); // MiMo-style plan_enter/plan_exit tools
 		this._registerKanbanTools();
 		this._registerWorkflowTools();
 		this._registerCodebaseTools();
 		this._registerKnowledgeTools(); // Plan-C Hyper-Extract knowledge engine (kb_* tools)
 		this._registerHandoffTools(); // supervisor 交接工具 transfer_to_agent（Step B）
+		this._registerMermaidTools(); // Mermaid 图示渲染工具
 		// _registerMcpBridgeTools() 已废弃 — MCP 工具统一走 tool_search/tool_describe/tool_call
 		// 保留方法定义以备审计/兼容老调用
 	}
@@ -384,8 +395,8 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * `Tool "recall" does not exist` 错误。
 	 *
 	 * 这里把幻觉变成实际能力：通过 IAgentOSService.getActiveMemoryProvider().searchMemory()
-	 * 调用当前活跃的 Memory Provider（默认 builtinMemoryProvider；接入 AgentMemory 后是
-	 * AgentMemoryProvider，会走 vendor /search/memories）。
+	 * 调用当前活跃的 Memory Provider（统一为 AgentMemoryProviderV2，renderer 代理
+	 * → 网关宿主引擎 → KV 存储 + BM25/Vector/Graph 混合召回）。
 	 *
 	 * 懒查询：在 handler 内部解析 provider，避免构造期循环依赖（builtinToolProvider 自身
 	 * 也是 IToolProvider，会被 IAgentOSService 注册）。
@@ -415,17 +426,6 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		registerCompatibilityTools(ctx);
 	}
 
-	private _registerMemoryTools(): void {
-		const ctx: MemoryToolContext = {
-			register: (d) => this.register(d),
-			agentOS: this.agentOS,
-			logService: this.logService,
-			fileService: this.fileService,
-			environmentService: this.environmentService,
-		};
-		registerMemoryTools(ctx);
-	}
-
 	// ─── G12: Unified Memory API (recall/improve/forget) ─────────────
 
 	/**
@@ -440,14 +440,71 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		registerUnifiedMemoryTools(ctx);
 	}
 
+	/**
+	 * 基础记忆工具（memory_remember/search/delete/list）。
+	 * 必须在 _registerBundledTools 之前注册——否则 bundled 目录中的
+	 * memory_remember/memory_list 会被注册为 stub（isStub=true，LLM 不可调用）。
+	 */
+	private _registerMemoryTools(): void {
+		const ctx: MemoryToolContext = {
+			register: (d) => this.register(d),
+			agentOS: this.agentOS,
+			logService: this.logService,
+		};
+		registerMemoryTools(ctx);
+	}
+
+	/**
+	 * 高级记忆工具 — 接入引擎已移植但休眠的编排/治理能力：
+	 * governance（删除/批量/审计）、team（共享池）、mesh（对等节点）、
+	 * sentinel（条件监视）、obsidianExport（导出）、cascade（级联修复）。
+	 */
+	private _registerAdvancedMemoryTools(): void {
+		const ctx: AdvancedMemoryToolContext = {
+			register: (d) => this.register(d),
+			agentOS: this.agentOS,
+			logService: this.logService,
+		};
+		registerAdvancedMemoryTools(ctx);
+	}
+
+	/**
+	 * 注册高阶记忆工具：routine（可复用工作流）、crystal（行动链结晶）、facet（多维标签）。
+	 * 引擎方法由 AgentMemoryProviderV2 暴露 + 网关转发，此处注册为 LLM 内置工具。
+	 */
+	private _registerRoutineCrystalFacetTools(): void {
+		const ctx: RoutineCrystalFacetToolContext = {
+			register: (d) => this.register(d),
+			agentOS: this.agentOS,
+			logService: this.logService,
+		};
+		registerRoutineCrystalFacetTools(ctx);
+	}
+
 	// ─── Skill 按需读取工具（已抽到 skillTools.ts）───────────────
 
 	private _registerSkillTools(): void {
+		const tracker = this._skillUsageTracker;
 		const ctx: SkillToolContext = {
 			register: (d) => this.register(d),
 			skillRegistry: this.skillRegistry,
 			skillManagerTool: this._skillManagerTool,
 			logService: this.logService,
+			environmentService: this.environmentService,
+			onSkillRead: (skillId, skillResource) => {
+				if (skillResource) {
+					tracker.recordRead(skillResource).catch(err =>
+						this.logService.warn(`[BuiltinToolProvider] onSkillRead fail: ${err}`)
+					);
+				}
+			},
+			onSkillMutated: (_skillName, skillDir) => {
+				if (skillDir) {
+					tracker.recordPatch(skillDir).catch(err =>
+						this.logService.warn(`[BuiltinToolProvider] onSkillMutated fail: ${err}`)
+					);
+				}
+			},
 		};
 		registerSkillTools(ctx);
 	}
@@ -475,8 +532,28 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			getParentWorktreePath: () => this.getParentWorktreePath(),
 			studioService: this.studioService,
 			logService: this.logService,
+			codebaseGraphService: this.codebaseGraphService,
+			workspaceService: this.workspaceService,
 		};
 		registerDelegationTools(ctx);
+	}
+
+	private _registerPlanExploreTool(): void {
+		registerPlanExploreTool({
+			register: (d) => this.register(d),
+			id: this.id,
+			agentOS: this.agentOS,
+			orchestrationService: this.orchestrationService,
+			logService: this.logService,
+			getParentWorktreePath: () => this.getParentWorktreePath(),
+		});
+	}
+
+	private _registerPlanModeTools(): void {
+		registerPlanModeTools({
+			register: (d) => this.register(d),
+			source: 'saros.builtin-tools',
+		});
 	}
 
 	/**
@@ -538,6 +615,9 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			fileService: this.fileService,
 			logService: this.logService,
 			adrManager: this._adrManager,
+			searchHelpers: this._searchHelpers,
+			id: this.id,
+			resolveAndCheckWorkspacePath: (agentId, p, req) => this._resolveAndCheckWorkspacePath(agentId, p, req),
 		});
 	}
 
@@ -550,6 +630,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	// 生成 AgentCommand 路由到下一节点。仅多节点图模式（`request.agentGraph`
 	// 节点 ≥ 2）才暴露给模型（由 _getEnabledTools 过滤），单 agent 模式不可见。
 	// 实现见 handoffTools.ts（保持与其它 registerXxxTools(ctx) 模块一致）。
+	private _registerMermaidTools(): void {
+		registerMermaidTools({
+			register: d => this.register(d),
+			logService: this.logService,
+		});
+	}
+
 	private _registerHandoffTools(): void {
 		registerHandoffTools({
 			register: d => this.register(d),

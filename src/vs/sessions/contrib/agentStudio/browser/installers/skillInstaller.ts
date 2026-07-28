@@ -6,9 +6,9 @@
 /**
  * SkillInstaller —— skill 资源的安装器实现。
  *
- * install: 解压目录的 SKILL.md → 写入 ~/.saros/skills/{id}/SKILL.md
+ * install: 解压目录的 SKILL.md → 写入 ~/.vssaros/saros/skills/{id}/SKILL.md
  *          （回写 storeId/version 到 frontmatter）→ ISkillRegistry.reload()
- * preparePack: 读 ~/.saros/skills/{id}/SKILL.md frontmatter → 构造 manifest
+ * preparePack: 读 ~/.vssaros/saros/skills/{id}/SKILL.md frontmatter → 构造 manifest
  * getInstalledVersion: 从 ISkillRegistry.getSkill(id).version 读取
  */
 
@@ -20,7 +20,8 @@ import { ILogService } from '../../../../../platform/log/common/log.js';
 import { ISkillRegistry } from '../../common/skills.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
-import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
+import { resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 
 const SKILL_SUBDIR = 'skills';
 
@@ -29,11 +30,11 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 	readonly kind: PackageKind = 'skill';
 
 	constructor(
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
-		@IPathService private readonly pathService: IPathService,
-	) {
+		) {
 		super();
 	}
 
@@ -63,6 +64,18 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 
 		await this.fileService.createFolder(targetDir);
 		await this.fileService.writeFile(targetSkillFile, VSBuffer.fromString(updated));
+
+		// 拷贝支持目录（references/templates/assets/scripts），使目录包技能完整安装
+		for (const dirName of SkillInstaller.SUPPORT_DIRS) {
+			const srcDir = URI.joinPath(extractedDir, dirName);
+			try {
+				if (await this.fileService.exists(srcDir)) {
+					await this.fileService.copy(srcDir, URI.joinPath(targetDir, dirName), true);
+				}
+			} catch (e) {
+				this.logService.warn(`[SkillInstaller] 拷贝支持目录 ${dirName} 失败: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
 
 		await this.skillRegistry.reload();
 		this.logService.info(`[SkillInstaller] 安装完成: ${manifest.id} v${manifest.version} → ${targetDir.fsPath}`);
@@ -101,7 +114,7 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 			description,
 			category,
 			author,
-			files: ['SKILL.md'],
+			files: await this.listPackageFiles(localDir),
 			skill: {
 				id: localId,
 				name,
@@ -123,9 +136,35 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 
 	// ── 内部 ──────────────────────────────────────────────────
 
+	/** 技能支持目录（对齐 SkillRegistry.SKILL_SUPPORT_DIRS） */
+	private static readonly SUPPORT_DIRS = ['references', 'templates', 'assets', 'scripts', 'tests'] as const;
+
 	private async resolveDir(id: string): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', SKILL_SUBDIR, id);
+		return resolveSarosPath(this._getSarosRoot(), SKILL_SUBDIR, id);
+	}
+
+	/** 列出包内全部文件（SKILL.md + 支持目录文件），用于 manifest.files 准确反映包内容 */
+	private async listPackageFiles(localDir: URI): Promise<readonly string[]> {
+		const files: string[] = ['SKILL.md'];
+		const collect = async (dir: URI, prefix: string, depth: number): Promise<void> => {
+			if (depth > 3) { return; }
+			try {
+				const stat = await this.fileService.resolve(dir);
+				if (!stat.isDirectory || !stat.children) { return; }
+				for (const child of stat.children) {
+					const rel = `${prefix}/${child.name}`;
+					if (child.isDirectory) {
+						await collect(child.resource, rel, depth + 1);
+					} else {
+						files.push(rel);
+					}
+				}
+			} catch { /* 支持目录不存在 — 正常 */ }
+		};
+		for (const dirName of SkillInstaller.SUPPORT_DIRS) {
+			await collect(URI.joinPath(localDir, dirName), dirName, 0);
+		}
+		return files;
 	}
 
 	/** 解析 SKILL.md frontmatter 为键值对象 */
@@ -199,5 +238,9 @@ export class SkillInstaller extends Disposable implements IPackageInstaller {
 		const toAdd = Object.entries(fields).filter(([k]) => !existing.has(k));
 		const newLines = [...updatedLines, ...toAdd.map(([k, v]) => `${k}: ${JSON.stringify(v)}`)];
 		return `---\n${newLines.join('\n')}\n---${rest}`;
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

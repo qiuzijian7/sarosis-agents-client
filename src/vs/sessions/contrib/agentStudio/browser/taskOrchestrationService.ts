@@ -29,7 +29,8 @@ import { ITaskOrchestrationService, IAgentStudioService, IAgentTaskBoardService,
 import type { IChatAttachmentSend, ITaskExecutionInfo } from '../../../common/agentStudioService.js';
 import type { OrchestrationTaskAction } from '../common/agentStudio.js';
 import type { OrchestrationPlan, PlanTask, Agent, ChatMessage } from '../common/types.js';
-import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource, AgentType } from '../common/types.js';
+import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource } from '../common/types.js';
+import { topologicalSort, getReadyTasks } from '../common/taskDag.js';
 import { TaskReviewStatus, TaskComment } from '../../../common/agentStudioTypes.js';
 import { AGENT_STUDIO_DATA_PATH_SETTING, AGENT_STUDIO_DEFAULT_AGENT_SETTING } from '../common/constants.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -42,8 +43,10 @@ import type { IAgentTurnRequest, IChatStreamDelta } from '../common/providers.js
 import { UnifiedSubAgentDispatch } from '../common/unifiedSubAgentDispatch.js';
 import { StructuredOutputParser } from './structuredOutputParser.js';
 import { RepoOverviewProvider } from './repoOverviewProvider.js';
+import { registerSessionTaskLookup } from './sessionTaskGateBridge.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IterationBudget } from '../common/iterationBudget.js';
+import { getBuiltinAgentIdentity } from '../common/builtinAgents.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 
@@ -117,6 +120,14 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	private readonly _repoOverviewProvider: RepoOverviewProvider;
 	/** Cached repo overview (invalidated on workspace change) */
 	private _cachedRepoOverview: string | undefined;
+	/** P0: AbortControllers keyed by taskId — timeout/cancel signals here to stop execution. */
+	private readonly _taskAbortControllers = new Map<string, AbortController>();
+
+	/**
+	 * 顺序执行模式（默认开启）：plan_exit 后按 task 数组顺序依次执行，
+	 * 不使用 DAG ready queue / 依赖并行调度。这是用户要求的简化编排范式。
+	 */
+	private _sequentialMode = true;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -135,14 +146,55 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		this._decomposer = new TaskDecomposer();
 		this._agentFactory = new AgentFactory(agentStudioService, logService);
 		this._layoutEngine = new CanvasLayoutEngine(agentStudioService, logService);
-		this._subAgentDispatch = new UnifiedSubAgentDispatch(undefined, DEFAULT_MAX_CONCURRENCY, DEFAULT_MAX_SPAWN_DEPTH);
+		this._subAgentDispatch = new UnifiedSubAgentDispatch(
+			undefined,
+			DEFAULT_MAX_CONCURRENCY,
+			DEFAULT_MAX_SPAWN_DEPTH,
+			120_000,
+			// P2d: taskLookup — 查 assigneeId=ownerAgentId 的非终态 task（DB 真相完成门）。
+			// 当前 subagent 不拥有 task board 任务 → 查不到 → gate 不触发（零行为变更）。
+			// 未来 subagent 拥有 task 工具且 assigneeId 设为 subAgent.id 时，gate 自动激活，
+			// 在 subagent 结束时按 DB 真相降级 + ReAct 重入（对齐 MiMo-Code TaskGate）。
+			async ({ ownerAgentId }) => {
+				const all = await this.taskBoardService.getTasks();
+				const nonTerminal = new Set<TaskBoardStatus>([
+					TaskBoardStatus.Triage, TaskBoardStatus.Todo, TaskBoardStatus.Ready, TaskBoardStatus.Running,
+				]);
+				return all
+					.filter(t => t.assigneeId === ownerAgentId && nonTerminal.has(t.status))
+					.map(t => ({ id: t.id, status: t.status as string, summary: t.title }));
+			},
+		);
 		this._outputParser = new StructuredOutputParser(logService);
 		this._repoOverviewProvider = new RepoOverviewProvider(fileService, logService);
 		this._startTimeoutMonitor();
+		// MiMo 范式主会话 TaskGate 桥接：注册会话任务查询（策略层调用）。
+		// 'main' 模式语义 —— 会话级：覆盖该 agent 及其子 agent 的所有非终态任务
+		// （含 subagent 孤儿任务，对齐 MiMo-Code task/gate.ts 'main' 模式）。
+		registerSessionTaskLookup(async (ownerAgentId: string) => {
+			const all = await this.taskBoardService.getTasks();
+			const nonTerminal = new Set<TaskBoardStatus>([
+				TaskBoardStatus.Triage, TaskBoardStatus.Todo, TaskBoardStatus.Ready, TaskBoardStatus.Running,
+			]);
+			return all
+				.filter(t =>
+					nonTerminal.has(t.status) &&
+					(t.assigneeId === ownerAgentId || (t.assigneeId ?? '').startsWith('subagent-')),
+				)
+				.map(t => ({ id: t.id, status: t.status as string, summary: t.title }));
+		});
 	}
 
 	override dispose(): void {
 		if (this._timeoutTimer) { clearInterval(this._timeoutTimer); }
+		// P0: abort all running task executions on dispose.
+		for (const [taskId, controller] of this._taskAbortControllers) {
+			if (!controller.signal.aborted) {
+				controller.abort();
+				this.logService.info(`[Orchestration] Aborted task ${taskId} on dispose`);
+			}
+		}
+		this._taskAbortControllers.clear();
 		super.dispose();
 	}
 
@@ -174,7 +226,6 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_ORCHESTRATION);
 			const content = await this.fileService.readFile(uri);
 			const parsed = JSON.parse(content.value.toString()) as OrchestrationPlan[];
-			// Defensive: filter out null/undefined/corrupted entries that could crash downstream .id access
 			return Array.isArray(parsed) ? parsed.filter(p => p && typeof p === 'object' && p.id) : [];
 		} catch {
 			return [];
@@ -182,18 +233,86 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	}
 
 	private async _writePlans(plans: OrchestrationPlan[]): Promise<void> {
-		// Simple spin-lock to serialise concurrent writes
-		while (this._writeLock) {
-			await new Promise(r => setTimeout(r, 10));
-		}
+		while (this._writeLock) { await new Promise(r => setTimeout(r, 10)); }
 		this._writeLock = true;
 		try {
 			const uri = URI.joinPath(this._getDataUri(), DATA_FILE_ORCHESTRATION);
-			const content = VSBuffer.fromString(JSON.stringify(plans, null, 2));
-			await this.fileService.writeFile(uri, content);
+			// Atomic write: temp file → rename to avoid partial/corrupt on crash
+			const tmpUri = URI.joinPath(this._getDataUri(), `${DATA_FILE_ORCHESTRATION}.tmp`);
+			await this.fileService.writeFile(tmpUri, VSBuffer.fromString(JSON.stringify(plans, null, 2)));
+			try {
+				// Move/rename the temp file to the real path
+				if ((this.fileService as any).move) {
+					await (this.fileService as any).move(tmpUri, uri, true);
+				} else {
+					// Fallback: read-back-and-replace for minimal corruption window
+					await this.fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(plans, null, 2)));
+					try { await this.fileService.del(tmpUri); } catch { /* best-effort */ }
+				}
+			} catch {
+				// If move fails, direct write as last resort
+				await this.fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(plans, null, 2)));
+				try { await this.fileService.del(tmpUri); } catch { /* best-effort */ }
+			}
 		} finally {
 			this._writeLock = false;
 		}
+	}
+
+	/**
+	 * P0: Transactional read-modify-write with CAS (Compare-And-Swap).
+	 *
+	 * Reads plans, calls fn(plan) if plan._version matches expectedVersion,
+	 * increments plan._version, writes back. Retries on version mismatch
+	 * (up to maxRetries times). Returns the mutated plan or throws.
+	 */
+	private async _mutatePlan<T>(
+		planId: string,
+		fn: (plan: OrchestrationPlan) => T | Promise<T>,
+		opts?: { maxRetries?: number; allowAbsent?: boolean },
+	): Promise<{ plan: OrchestrationPlan; result: T }> {
+		const maxRetries = opts?.maxRetries ?? 5;
+		let lastErr: Error | undefined;
+		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+			const plans = await this._readPlans();
+			const idx = plans.findIndex(p => p.id === planId);
+			if (idx === -1) {
+				if (opts?.allowAbsent) {
+					return { plan: null as any, result: undefined as any };
+				}
+				throw new Error(`Plan not found: ${planId}`);
+			}
+			const plan = plans[idx];
+			const expectedVersion = (plan as any)._version ?? 0;
+
+			try {
+				const result = await fn(plan);
+				// Bump CAS version
+				(plan as any)._version = expectedVersion + 1;
+
+				// Re-read to verify no concurrent writer changed our plan's version.
+				const afterPlans = await this._readPlans();
+				const afterPlan = afterPlans.find(p => p.id === planId);
+				const afterVersion = afterPlan ? ((afterPlan as any)._version ?? 0) : -1;
+				if (afterVersion !== expectedVersion) {
+					// Concurrent write happened — retry
+					if (attempt < maxRetries) {
+						this.logService.warn(`[Orchestration] _mutatePlan CAS retry: plan=${planId}, expected=${expectedVersion}, actual=${afterVersion}, attempt=${attempt + 1}/${maxRetries}`);
+						await new Promise(r => setTimeout(r, 5 * (attempt + 1))); // backoff
+						continue;
+					}
+					throw new Error(`_mutatePlan CAS exhausted after ${maxRetries} retries: plan=${planId}`);
+				}
+				// CAS passed: write back
+				plans[idx] = plan;
+				await this._writePlans(plans);
+				return { plan, result };
+			} catch (err) {
+				if (attempt < maxRetries && err instanceof Error && err.message.includes('CAS retry')) { continue; }
+				throw err;
+			}
+		}
+		throw lastErr ?? new Error(`_mutatePlan exceeded maxRetries: ${planId}`);
 	}
 
 	private _generateId(prefix: string): string {
@@ -209,53 +328,8 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	 * Also computes `depth` for each task as a side-effect.
 	 */
 	private _topologicalSort(tasks: PlanTask[]): PlanTask[] {
-		const taskMap = new Map(tasks.map(t => [t.id, t]));
-
-		// Build in-degree counts
-		const inDegree = new Map<string, number>();
-		const adj = new Map<string, string[]>(); // depId → dependentIds (reverse)
-		for (const t of tasks) {
-			inDegree.set(t.id, t.dependencies.length);
-			for (const depId of t.dependencies) {
-				if (!adj.has(depId)) { adj.set(depId, []); }
-				adj.get(depId)!.push(t.id);
-			}
-		}
-
-		// Seed queue with zero in-degree tasks
-		let queue = tasks.filter(t => (inDegree.get(t.id) ?? 0) === 0);
-		const sorted: PlanTask[] = [];
-		let currentDepth = 0;
-
-		while (queue.length > 0) {
-			// Sort current layer by priority (ascending = higher priority first)
-			queue.sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2));
-
-			const nextQueue: PlanTask[] = [];
-			for (const task of queue) {
-				task.depth = currentDepth;
-				sorted.push(task);
-
-				// Decrement in-degree of dependents
-				for (const depId of adj.get(task.id) || []) {
-					const deg = (inDegree.get(depId) ?? 1) - 1;
-					inDegree.set(depId, deg);
-					if (deg === 0) {
-						const depTask = taskMap.get(depId);
-						if (depTask) { nextQueue.push(depTask); }
-					}
-				}
-			}
-			queue = nextQueue;
-			currentDepth++;
-		}
-
-		if (sorted.length !== tasks.length) {
-			const missing = tasks.filter(t => !sorted.includes(t)).map(t => t.id);
-			throw new Error(`检测到循环依赖，涉及任务: ${missing.join(', ')}`);
-		}
-
-		return sorted;
+		// Delegates to the pure, unit-tested helper in common/taskDag.ts.
+		return topologicalSort(tasks);
 	}
 
 	/**
@@ -285,9 +359,29 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	 */
 	private _unblockDependentTasks(plan: OrchestrationPlan, completedTaskId: string): PlanTask[] {
 		const { reverse } = this._buildDependencyGraphs(plan.tasks);
-		const nowRunning = plan.tasks.filter(t => t.status === PlanTaskStatus.Running).length;
-		const maxConc = plan.maxConcurrency || DEFAULT_MAX_CONCURRENCY;
-		const promoted: PlanTask[] = [];
+		const completedTask = plan.tasks.find(t => t.id === completedTaskId);
+		const dependencyFailed = completedTask && (
+			completedTask.status === PlanTaskStatus.Error ||
+			completedTask.status === PlanTaskStatus.Cancelled ||
+			completedTask.status === PlanTaskStatus.Blocked
+		);
+
+		if (dependencyFailed) {
+			// P0: block all direct dependents when a dependency fails or is cancelled.
+			// Without this, downstream tasks stay Pending forever (Plan can't converge).
+			const dependents = reverse.get(completedTaskId) || new Set();
+			const blocked: PlanTask[] = [];
+			for (const depId of dependents) {
+				const task = plan.tasks.find(t => t.id === depId);
+				if (!task || task.status !== PlanTaskStatus.Pending) { continue; }
+				task.status = PlanTaskStatus.Blocked;
+				task.completedAt = new Date().toISOString();
+				task.error = `Blocked: dependency "${completedTask?.title ?? completedTaskId}" failed`;
+				blocked.push(task);
+				this.logService.warn(`[Orchestration] Task "${task.title}" (${task.id}) blocked — dependency "${completedTask?.title ?? completedTaskId}" failed`);
+			}
+			return blocked;
+		}
 
 		const dependents = reverse.get(completedTaskId) || new Set();
 		// Sort dependents by priority so higher-priority tasks get promoted first
@@ -296,18 +390,22 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 			.filter(Boolean)
 			.sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2));
 
+		const promoted: PlanTask[] = [];
 		for (const task of sortedDeps) {
 			if (task.status !== PlanTaskStatus.Pending) { continue; }
-			// Check all deps complete
+			// Check all deps complete (only P0: also treat Blocked deps as completed for chain propagation)
 			const allDepsComplete = task.dependencies.every(depId => {
 				const dep = plan.tasks.find(t => t.id === depId);
-				return dep && dep.status === PlanTaskStatus.Done;
+				return dep && (dep.status === PlanTaskStatus.Done);
 			});
-			if (allDepsComplete && (nowRunning + promoted.length) < maxConc) {
-				task.status = PlanTaskStatus.Running;
-				task.startedAt = new Date().toISOString();
-				promoted.push(task);
+			if (!allDepsComplete) { continue; }
+			// If the assigned agent is busy, leave as Pending for auto-execute later
+			if (task.assigneeId && this._isAgentBusy(task.assigneeId)) {
+				continue;
 			}
+			task.status = PlanTaskStatus.Running;
+			task.startedAt = new Date().toISOString();
+			promoted.push(task);
 		}
 		return promoted;
 	}
@@ -317,21 +415,8 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	 * up to the concurrency limit.
 	 */
 	private _getReadyTasks(plan: OrchestrationPlan): PlanTask[] {
-		const running = plan.tasks.filter(t => t.status === PlanTaskStatus.Running).length;
-		const maxConc = plan.maxConcurrency || DEFAULT_MAX_CONCURRENCY;
-		const slots = maxConc - running;
-		if (slots <= 0) { return []; }
-
-		return plan.tasks
-			.filter(t => t.status === PlanTaskStatus.Pending)
-			.filter(t => {
-				return t.dependencies.every(depId => {
-					const dep = plan.tasks.find(d => d.id === depId);
-					return dep && dep.status === PlanTaskStatus.Done;
-				});
-			})
-			.sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2))
-			.slice(0, slots);
+		// Delegates to the pure, unit-tested helper in common/taskDag.ts.
+		return getReadyTasks(plan.tasks, plan.maxConcurrency || DEFAULT_MAX_CONCURRENCY);
 	}
 
 	// ═══ Timeout Monitor (ported from Ruflo Task.isTimedOut) ═════════════════════
@@ -354,6 +439,11 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 					const elapsed = Date.now() - new Date(task.startedAt).getTime();
 					if (elapsed > (task.timeoutMs || DEFAULT_TIMEOUT_MS)) {
 						this.logService.warn(`[Orchestration] Task ${task.id} timed out after ${elapsed}ms`);
+						// P0: abort the underlying agent execution first, then mark state.
+						const controller = this._taskAbortControllers.get(task.id);
+						if (controller && !controller.signal.aborted) {
+							controller.abort();
+						}
 						this._failTask(plan, task, `Task timed out after ${Math.round(elapsed / 1000)}s`);
 						dirty = true;
 
@@ -413,23 +503,30 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 	}
 
 	private _checkPlanCompletion(plan: OrchestrationPlan): void {
-		const allTerminal = plan.tasks.every(t =>
-			t.status === PlanTaskStatus.Done ||
-			t.status === PlanTaskStatus.Cancelled ||
-			t.status === PlanTaskStatus.Error
-		);
+		const terminalStatuses: PlanTaskStatus[] = [
+			PlanTaskStatus.Done,
+			PlanTaskStatus.Cancelled,
+			PlanTaskStatus.Error,
+			PlanTaskStatus.Blocked,
+		];
+		const allTerminal = plan.tasks.every(t => terminalStatuses.includes(t.status));
+
 		if (allTerminal) {
-			const hasError = plan.tasks.some(t => t.status === PlanTaskStatus.Error);
+			const hasError = plan.tasks.some(t =>
+				t.status === PlanTaskStatus.Error || t.status === PlanTaskStatus.Blocked
+			);
 			plan.status = hasError ? OrchestrationPlanStatus.Error : OrchestrationPlanStatus.Completed;
 			plan.completedAt = new Date().toISOString();
 			plan.updatedAt = plan.completedAt;
 			this._onDidChangePlan.fire(plan);
 
-			// v40: Fire-and-forget: send execution_end trace + append workflow summary
-			if (plan.plannerId && this._streamEventCallback) {
+			// P1: always write completion summary to planner's chat, independent of WebView callback.
+			// Previously guarded by `_streamEventCallback`, meaning a plan could complete
+			// silently with no trace in the chat history.
+			if (plan.plannerId) {
 				void (async () => {
 					try {
-						// Resolve sessionId for trace events
+						// Resolve sessionId for both trace events and chat summary
 						let sessionId: string | undefined;
 						try {
 							const session = await (this.agentChatService as any).getOrCreateActiveSession(
@@ -439,9 +536,9 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 							sessionId = session?.id as string | undefined;
 						} catch { /* ignore */ }
 
-						// Fire execution_end trace event (commit LiveWorkflowExecution to chat history)
-						if (sessionId) {
-							this._streamEventCallback!('workflow.executionTrace', {
+						// Fire execution_end trace event (UI broadcast, best-effort)
+						if (sessionId && this._streamEventCallback) {
+							this._streamEventCallback('workflow.executionTrace', {
 								executionId: plan.id,
 								sessionId,
 								workflowAgentId: plan.plannerId,
@@ -454,15 +551,27 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 						// Build and append summary message
 						const doneCount = plan.tasks.filter(t => t.status === PlanTaskStatus.Done).length;
 						const errorCount = plan.tasks.filter(t => t.status === PlanTaskStatus.Error).length;
+						const blockedCount = plan.tasks.filter(t => t.status === PlanTaskStatus.Blocked).length;
+						const cancelledCount = plan.tasks.filter(t => t.status === PlanTaskStatus.Cancelled).length;
+						const statusIconMap: Record<string, string> = {
+							[PlanTaskStatus.Done]: '✅',
+							[PlanTaskStatus.Error]: '❌',
+							[PlanTaskStatus.Blocked]: '🚫',
+							[PlanTaskStatus.Cancelled]: '✂️',
+						};
 						const summaryLines: string[] = [];
-						summaryLines.push(`## ✅ 工作流执行完成`);
+						summaryLines.push(`## ${hasError ? '⚠️' : '✅'} 工作流执行完成`);
 						summaryLines.push('');
 						summaryLines.push(`- **目标**: ${plan.goal}`);
 						summaryLines.push(`- **状态**: ${hasError ? '⚠️ 部分失败' : '✅ 全部完成'}`);
-						summaryLines.push(`- **任务统计**: ${plan.tasks.length} 个任务 · ${doneCount} 完成 · ${errorCount} 失败`);
+						const statParts: string[] = [`${plan.tasks.length} 个任务`, `${doneCount} 完成`];
+						if (errorCount > 0) { statParts.push(`${errorCount} 失败`); }
+						if (blockedCount > 0) { statParts.push(`${blockedCount} 阻塞`); }
+						if (cancelledCount > 0) { statParts.push(`${cancelledCount} 取消`); }
+						summaryLines.push(`- **任务统计**: ${statParts.join(' · ')}`);
 						summaryLines.push('');
 						for (const t of plan.tasks) {
-							const statusIcon = t.status === PlanTaskStatus.Done ? '✅' : t.status === PlanTaskStatus.Error ? '❌' : '⏭️';
+							const statusIcon = statusIconMap[t.status] || '⏭️';
 							summaryLines.push(`- ${statusIcon} **${t.assigneeName || t.title}**: ${t.result ? t.result.slice(0, 100).replace(/\n/g, ' ') : '无输出'}`);
 						}
 
@@ -542,53 +651,63 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 					.filter(t => t.assigneeId && !this._isAgentBusy(t.assigneeId))
 					.sort((a, b) => (a.priority ?? 2) - (b.priority ?? 2));
 
-				let slotsAvailable = maxConc - running;
+		let slotsAvailable = maxConc - running;
 
-				for (const task of readyTasks) {
-					if (slotsAvailable <= 0) { break; }
+		const tasksToStart: PlanTask[] = [];
+		for (const task of readyTasks) {
+			if (slotsAvailable <= 0) { break; }
 
-					task.status = PlanTaskStatus.Running;
-					task.startedAt = new Date().toISOString();
-					// Note: _markAgentBusy is called inside _executeTask, so we don't
-					// call it here to avoid double-counting.
-					slotsAvailable--;
+			task.status = PlanTaskStatus.Running;
+			task.startedAt = new Date().toISOString();
+			task.attempt = (task.attempt ?? 0) + 1;
+			task.executionId = `exec-${task.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+			task.claimedAt = task.startedAt;
+			slotsAvailable--;
+			tasksToStart.push(task);
 
-					this._onDidChangeTask.fire({ planId: plan.id, task });
-					this.logService.info(`[Orchestration] Auto-executing pending task "${task.title}" (${task.id}) with idle agent ${task.assigneeId}`);
+			this._onDidChangeTask.fire({ planId: plan.id, task });
+			this.logService.info(`[Orchestration] Auto-executing pending task "${task.title}" (${task.id}) with idle agent ${task.assigneeId}`);
 
 					// Notify chat about auto-execution
-					if (task.assigneeId) {
-						try {
-							const chatMessage = {
-								id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-								role: 'system' as const,
-								content: `🚀 自动执行: ${task.title}\n\nAgent空闲，自动启动待执行任务`,
-							agentId: task.assigneeId,
-							agentSessionId: undefined,
-								timestamp: new Date().toISOString(),
-							};
-							await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
-						} catch { /* ignore */ }
+				if (task.assigneeId) {
+					try {
+						const chatMessage = {
+							id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+							role: 'system' as const,
+							content: `🚀 自动执行: ${task.title}\n\nAgent空闲，自动启动待执行任务`,
+						agentId: task.assigneeId,
+						agentSessionId: undefined,
+							timestamp: new Date().toISOString(),
+						};
+						await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
+					} catch { /* ignore */ }
+				}
+			}
+
+			// P0: persist Running changes BEFORE fire-and-forget
+			if (tasksToStart.length > 0) {
+				for (const p of plans) {
+					if (p.id === plan.id) {
+						p.updatedAt = new Date().toISOString();
+						break;
 					}
-
-					// Fire-and-forget: execute the task
-					this._executeTask(plan.id, task).catch(err => {
-						this.logService.error(`[Orchestration] Auto-executed task ${task.id} failed:`, err);
-					});
 				}
-
-				if (readyTasks.length > 0) {
-					plan.updatedAt = new Date().toISOString();
-				}
+				await this._writePlans(plans);
 			}
 
-			// Persist any status changes
-			await this._writePlans(plans);
-			for (const plan of plans) {
-				if (plan.status === OrchestrationPlanStatus.Executing) {
-					this._onDidChangePlan.fire(plan);
+			// Fire-and-forget AFTER persistence
+			for (const task of tasksToStart) {
+				this._executeTask(plan.id, task).catch(err => {
+					this.logService.error(`[Orchestration] Auto-executed task ${task.id} failed:`, err);
+				});
+			}
+
+			for (const planItem of plans) {
+				if (planItem.status === OrchestrationPlanStatus.Executing) {
+					this._onDidChangePlan.fire(planItem);
 				}
 			}
+		}
 		} catch (err) {
 			this.logService.warn('[Orchestration] _tryAutoExecutePendingTasks error:', err);
 		}
@@ -806,7 +925,7 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 		});
 
 		const agentContext = agents.length > 0
-			? `Available team members:\n${agents.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
+			? `Available team members:\n${agents.map(e => `- ${e.name} (id: ${e.id})`).join('\n')}`
 			: 'No team members available.';
 
 		// Build system prompt: prepend planner's systemPrompt if available
@@ -913,18 +1032,12 @@ RULES:
 		return subTasks;
 	}
 
-	async createPlan(goal: string, workspaceId: string, plannerId: string): Promise<OrchestrationPlan> {
+	async createPlan(goal: string, workspaceId: string, plannerId: string, agentSessionId?: string): Promise<OrchestrationPlan> {
 		this.logService.info(`[Orchestration] Creating plan for goal: "${goal}" in workspace: ${workspaceId}, planner: ${plannerId}`);
 
 		const planner = await this.agentStudioService.getAgent(plannerId);
 		if (!planner) { throw new Error(`Planner agent not found: ${plannerId}`); }
-		const isPlanner = planner.agentType === AgentType.Planner
-			|| (planner as any).presetId === 'planner'
-			|| (planner as any).role?.toLowerCase().includes('planner')
-			|| planner.name?.toLowerCase() === 'planner';
-		if (!isPlanner) {
-			throw new Error(`Agent "${planner.name}" is not a planner (type: ${planner.agentType || 'worker'}).`);
-		}
+		// Planning is available to every agent.
 
 		// Agents are global definitions; all are candidates for decomposition
 		// (per-workspace runtime binding is resolved later at dispatch time).
@@ -956,13 +1069,148 @@ RULES:
 		await this._writePlans(plans);
 		this._onDidChangePlan.fire(plan);
 
-		// Persist plan message to planner's chat history so it survives page reloads
+		// Persist plan message to planner's chat history so it survives page reloads.
+		// 🔒 会话隔离（2026-07-22 修复）：携带 agentSessionId，使该消息落入对应
+		// session 桶，而非全局 noSession 桶。否则 getHistory 会把全部 noSession
+		// system 消息 merge 进该 agent 的每一个 session，导致切换会话后重复显示
+		// "任务计划已创建" 通知，且多次创建 plan 会持续累积。
 		try {
 			const planMessage: ChatMessage = {
 				id: `plan_${plan.id}`,
 				role: 'system',
 				content: `✅ 任务计划已创建，请在下方面板中审批：`,
 			agentId: plannerId,
+				agentSessionId: agentSessionId,
+				metadata: { type: 'orchestration_plan', planId: plan.id },
+				timestamp: now,
+			};
+			await this.agentChatService.appendMessage(plannerId, planMessage);
+		} catch (err) {
+			this.logService.warn('[Orchestration] Failed to persist plan message to chat history:', err);
+		}
+
+		return plan;
+	}
+
+	async createPlanFromTasks(
+		goal: string,
+		workspaceId: string,
+		plannerId: string,
+		inputTasks: Array<{
+			title: string;
+			description?: string;
+			files?: string[];
+			complexity?: string;
+			suggestedRole?: string;
+			dependencies?: string[];
+		}>,
+		agentSessionId?: string,
+	): Promise<OrchestrationPlan> {
+		this.logService.info(`[Orchestration] Creating plan from ${inputTasks.length} pre-decomposed task(s) for goal: "${goal}", planner: ${plannerId}, session: ${agentSessionId || '(none)'}`);
+
+		const planner = await this.agentStudioService.getAgent(plannerId);
+		if (!planner) { throw new Error(`Planner agent not found: ${plannerId}`); }
+
+		const now = new Date().toISOString();
+		const existingAgents = await this.agentStudioService.getAgents();
+		// name(lowercase) → id, for resolving suggestedRole to an existing agent
+		const nameToId = new Map<string, string>();
+		for (const a of existingAgents) {
+			if (a.name) { nameToId.set(a.name.toLowerCase(), a.id); }
+		}
+
+		const complexityToPriority = (c?: string): number => {
+			switch ((c || 'medium').toLowerCase()) {
+				case 'critical': return 0;
+				case 'high': return 1;
+				case 'low': return 3;
+				default: return 2; // medium
+			}
+		};
+
+		// First pass: create PlanTask objects and build lookup maps for dependency resolution.
+		const tasks: PlanTask[] = [];
+		const titleToId = new Map<string, string>();
+		for (let i = 0; i < inputTasks.length; i++) {
+			const t = inputTasks[i];
+			const taskId = this._generateId('orch_task_plan');
+			if (t.title) { titleToId.set(t.title.trim().toLowerCase(), taskId); }
+			const resolvedAssigneeId = t.suggestedRole ? nameToId.get(t.suggestedRole.toLowerCase()) : undefined;
+			tasks.push({
+				id: taskId,
+				title: t.title || `Task ${i + 1}`,
+				description: t.description || '',
+				status: PlanTaskStatus.Pending,
+				dependencies: [], // resolved in second pass
+				assigneeId: resolvedAssigneeId,
+				assigneeName: resolvedAssigneeId ? t.suggestedRole : undefined,
+				assigneeRole: t.suggestedRole,
+				autoCreateAgent: !resolvedAssigneeId,
+				priority: complexityToPriority(t.complexity),
+				depth: 0,
+				retryCount: 0,
+				maxRetries: DEFAULT_MAX_RETRIES,
+				timeoutMs: DEFAULT_TIMEOUT_MS,
+				createdAt: now,
+			});
+		}
+
+		// Second pass: resolve dependency references (by title or 1-based index).
+		for (let i = 0; i < inputTasks.length; i++) {
+			const deps = inputTasks[i].dependencies;
+			if (!Array.isArray(deps)) { continue; }
+			for (const dep of deps) {
+				const raw = String(dep).trim();
+				let resolved = titleToId.get(raw.toLowerCase());
+				if (!resolved) {
+					// Try 1-based numeric index (e.g. "1", "task 2", "#3")
+					const numMatch = raw.match(/(\d+)/);
+					if (numMatch) {
+						const idx = parseInt(numMatch[1], 10) - 1;
+						if (idx >= 0 && idx < tasks.length && idx !== i) {
+							resolved = tasks[idx].id;
+						}
+					}
+				}
+				if (resolved && resolved !== tasks[i].id && !tasks[i].dependencies.includes(resolved)) {
+					tasks[i].dependencies.push(resolved);
+				}
+			}
+		}
+
+		// Validate DAG — topological sort throws on cycle.
+		this._topologicalSort(tasks);
+
+		const plan: OrchestrationPlan = {
+			id: this._generateId('orch_plan'),
+			goal,
+			summary: this._generateSummary(tasks),
+			status: OrchestrationPlanStatus.PendingApproval,
+			tasks,
+			workspaceId,
+			plannerId,
+			maxConcurrency: DEFAULT_MAX_CONCURRENCY,
+			createdAt: now,
+			updatedAt: now,
+		};
+
+		const plans = await this._readPlans();
+		plans.push(plan);
+		await this._writePlans(plans);
+		this._onDidChangePlan.fire(plan);
+
+		// Persist plan message to planner's chat history so it survives page reloads.
+		// 🔒 会话隔离（2026-07-22 修复）：携带 agentSessionId，使该消息落入对应
+		// session 桶，而非全局 noSession 桶。否则 getHistory 会把全部 noSession
+		// system 消息 merge 进该 agent 的每一个 session，导致切换会话后重复显示
+		// "任务计划已创建" 通知，且多次创建 plan 会持续累积。
+		try {
+			const planMessage: ChatMessage = {
+				id: `plan_${plan.id}`,
+				role: 'system',
+				content: `✅ 任务计划已创建，请在下方面板中审批：`,
+				agentId: plannerId,
+				agentSessionId: agentSessionId,
 				metadata: { type: 'orchestration_plan', planId: plan.id },
 				timestamp: now,
 			};
@@ -1120,7 +1368,7 @@ RULES:
 
 		// Build agent context string
 		const agentContext = agents.length > 0
-			? `Available team members:\n${agents.map(e => `- ${e.name} (${e.agentType || 'worker'}, id: ${e.id})`).join('\n')}`
+			? `Available team members:\n${agents.map(e => `- ${e.name} (id: ${e.id})`).join('\n')}`
 			: 'No team members available.';
 
 		// Build system prompt: prepend planner's systemPrompt if available
@@ -1455,6 +1703,11 @@ Goal: ${goal}`;
 			case 'cancel':
 				if (task.status === PlanTaskStatus.Done || task.status === PlanTaskStatus.Cancelled) {
 					throw new Error(`Cannot cancel task in status: ${task.status}`);
+				}
+				// P0: abort the underlying execution before marking cancelled.
+				const cancelController = this._taskAbortControllers.get(task.id);
+				if (cancelController && !cancelController.signal.aborted) {
+					cancelController.abort();
 				}
 				task.status = PlanTaskStatus.Cancelled;
 				task.completedAt = now;
@@ -1916,70 +2169,70 @@ Goal: ${goal}`;
 		}
 	}
 
-	async completeTask(planId: string, taskId: string, result?: string): Promise<PlanTask | undefined> {
-		const plans = await this._readPlans();
-		const plan = plans.find(p => p.id === planId);
-		if (!plan) { throw new Error(`Plan not found: ${planId}`); }
-		const task = plan.tasks.find(t => t.id === taskId);
-		if (!task) { throw new Error(`Task not found: ${taskId}`); }
-		if (task.status !== PlanTaskStatus.Running) {
-			throw new Error(`Cannot complete task in status: ${task.status}`);
-		}
+	async completeTask(planId: string, taskId: string, result?: string, expectedExecutionId?: string): Promise<PlanTask | undefined> {
+		// P0: CAS transaction — prevents concurrent completeTask race (Race A).
+		const { plan, result: mutateResult } = await this._mutatePlan(planId, async (plan) => {
+			const task = plan.tasks.find(t => t.id === taskId);
+			if (!task) { throw new Error(`Task not found: ${taskId}`); }
+			if (task.status !== PlanTaskStatus.Running) {
+				throw new Error(`Cannot complete task in status: ${task.status}`);
+			}
+			// Reject stale execution attempts
+			if (expectedExecutionId && task.executionId && task.executionId !== expectedExecutionId) {
+				this.logService.warn(`[Orchestration] Task ${taskId} completion rejected — executionId mismatch (current=${task.executionId}, received=${expectedExecutionId})`);
+				return { task, promoted: [] as PlanTask[], rejected: true };
+			}
+			task.executionId = undefined;
+			task.status = PlanTaskStatus.Done;
+			task.result = result;
+			task.completedAt = new Date().toISOString();
+			plan.updatedAt = task.completedAt;
+			if (task.needsReview) {
+				task.reviewStatus = TaskReviewStatus.Pending;
+			}
+			// DAG propagation inside the transaction so promoted tasks are atomically visible.
+			const promoted = this._unblockDependentTasks(plan, task.id);
+			// Busy-agent check: revert promoted Running→Pending for agents already running.
+			for (const p of promoted) {
+				if (p.assigneeId && this._isAgentBusy(p.assigneeId)) {
+					p.status = PlanTaskStatus.Pending;
+					p.startedAt = undefined;
+					this.logService.info(`[Orchestration] Promoted task "${p.title}" (${p.id}) reverted to Pending — agent ${p.assigneeId} is busy`);
+				}
+			}
+			return { task, promoted, rejected: false };
+		});
 
-		const now = new Date().toISOString();
-		task.status = PlanTaskStatus.Done;
-		task.result = result;
-		task.completedAt = now;
-		plan.updatedAt = now;
+		const { task, promoted, rejected } = mutateResult;
+		if (rejected) { return task; }
 
-		// ─── Human-in-the-Loop: Set review status if task needs review ─────────────────
-		if (task.needsReview) {
-			task.reviewStatus = TaskReviewStatus.Pending;
-		}
-
-		// Send completion message to agent's chat box
+		// Side effects (chat messages, fire-and-forget execution, events) OUTSIDE transaction.
 		if (task.assigneeId) {
 			try {
-				const chatMessage = {
+				await this.agentChatService.appendMessage(task.assigneeId, {
 					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 					role: 'system' as const,
 					content: `✅ 任务执行完成: ${task.title}\n\n${result ? `执行结果: ${result}` : '任务已完成'}\n任务ID: ${task.id}`,
-				agentId: task.assigneeId,
-				agentSessionId: undefined,
+					agentId: task.assigneeId,
+					agentSessionId: undefined,
 					timestamp: new Date().toISOString(),
-				};
-				await this.agentChatService.appendMessage(task.assigneeId, chatMessage);
-				this.logService.info(`[Orchestration] Sent completion message to agent ${task.assigneeId} for task ${task.id}`);
+				});
 			} catch (err) {
-				this.logService.warn(`[Orchestration] Failed to send completion message to agent ${task.assigneeId}:`, err);
+				this.logService.warn(`[Orchestration] Failed to send completion message:`, err);
 			}
 		}
 
-		// Unblock downstream dependents (core DAG propagation)
-		const promoted = this._unblockDependentTasks(plan, task.id);
 		for (const p of promoted) {
-			// If the assigned agent is busy, revert to Pending so that
-			// _tryAutoExecutePendingTasks can pick it up when the agent becomes idle.
-			// This avoids leaving a task in Running state without actual execution.
-			if (p.assigneeId && this._isAgentBusy(p.assigneeId)) {
-				p.status = PlanTaskStatus.Pending;
-				p.startedAt = undefined;
-				this.logService.info(`[Orchestration] Promoted task "${p.title}" (${p.id}) reverted to Pending — agent ${p.assigneeId} is busy, will auto-execute later`);
-			} else if (p.assigneeId) {
-				// Agent is idle — execute immediately
-				this._onDidChangeTask.fire({ planId, task: p });
-				// v40: for workflow plans, use _executeWorkflowTask so trace events fire (SubAgent cards)
+			this._onDidChangeTask.fire({ planId, task: p });
+			if (p.assigneeId && !this._isAgentBusy(p.assigneeId)) {
 				const execFn = planId.startsWith('wf_') ? this._executeWorkflowTask.bind(this) : this._executeTask.bind(this);
 				execFn(planId, p).catch(err => {
 					this.logService.error(`[Orchestration] Promoted task ${p.id} execution failed:`, err);
 				});
-				continue;
 			}
-			this._onDidChangeTask.fire({ planId, task: p });
 		}
 
 		this._checkPlanCompletion(plan);
-		await this._writePlans(plans);
 		await this._syncTaskBoardStatus(task);
 		this._onDidChangeTask.fire({ planId, task });
 		this._onDidChangePlan.fire(plan);
@@ -2113,7 +2366,6 @@ Goal: ${goal}`;
 			const newAgent = await this.agentStudioService.createAgent({
 				name: agentName,
 				role: taskRole || 'Agent',
-				agentType: AgentType.Worker,
 				workspaceId,
 			} as Partial<Agent>);
 			if (planTask) {
@@ -2453,30 +2705,151 @@ Goal: ${goal}`;
 		// ── Step 5: Create task board items ──
 		await this._createTaskBoardItems(planRef);
 
-		// ── Step 6: Start ready tasks (respecting concurrency limit) ──
-		// On initial plan execution, agents are typically idle, but check anyway
-		// for cases where an agent might already be running a task from another plan.
-		const ready = this._getReadyTasks(planRef);
-		for (const task of ready) {
-			// If agent is busy with another task, keep as Pending for auto-execution
-			if (task.assigneeId && this._isAgentBusy(task.assigneeId)) {
-				this.logService.info(`[Orchestration] Ready task "${task.title}" (${task.id}) kept as Pending — agent ${task.assigneeId} is busy with another task`);
+		// 诊断日志（P0-1）：列出每个任务的 assignee 就绪状态，
+		// 便于定位"计划创建但不执行"——若某任务 assignee=NONE，则后续会被 _materializeAssignee 兜底。
+		for (const t of planRef.tasks) {
+			this.logService.info(`[Orchestration] Task readiness: "${t.title}" (${t.id}) assignee=${t.assigneeId ?? 'NONE'} status=${t.status} autoCreate=${t.autoCreateAgent}`);
+		}
+
+		// ── Step 6: Execute tasks ──
+		// 顺序模式（this._sequentialMode，默认开启）：按 task 数组顺序依次执行，
+		// 等待每个任务完成再执行下一个，不使用 DAG ready queue 并行调度。
+		// 这是用户要求的简化范式，并便于通过日志逐步定位问题。
+		// DAG 模式：保留原有 ready queue 并行派发（向后兼容）。
+		if (this._sequentialMode) {
+			this.logService.info(`[Orchestration][Sequential] plan=${planRef.id} mode=SEQUENTIAL, totalTasks=${planRef.tasks.length}`);
+			await this._executePlanSequential(planRef, plans);
+		} else {
+			// ── DAG mode: Start ready tasks — persist Running BEFORE fire-and-forget ──
+			// P0 fix: previously task.status=Running was set in memory and execution
+			// started immediately, but the Running status was only persisted AFTER all
+			// agents were launched (line 2585). If an agent returned quickly,
+			// completeTask read Pending from disk and threw, losing the result.
+			// Now we persist first, then launch.
+			const ready = this._getReadyTasks(planRef);
+			const tasksToStart: PlanTask[] = [];
+			for (const task of ready) {
+				if (task.assigneeId && this._isAgentBusy(task.assigneeId)) {
+					this.logService.info(`[Orchestration] Ready task "${task.title}" (${task.id}) kept as Pending — agent ${task.assigneeId} is busy with another task`);
+					continue;
+				}
+				task.status = PlanTaskStatus.Running;
+				task.startedAt = new Date().toISOString();
+				task.attempt = (task.attempt ?? 0) + 1;
+				task.executionId = `exec-${task.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+				task.claimedAt = task.startedAt;
+				tasksToStart.push(task);
+			}
+
+			if (tasksToStart.length > 0) {
+				planRef.updatedAt = new Date().toISOString();
+				await this._writePlans(plans);
+				this._onDidChangePlan.fire(planRef);
+				for (const task of tasksToStart) {
+					this._onDidChangeTask.fire({ planId: planRef.id, task });
+				}
+			}
+
+			// Fire-and-forget AFTER Running status is securely on disk.
+			for (const task of tasksToStart) {
+				if (task.assigneeId) {
+					this._executeTask(planRef.id, task).catch(err => {
+						this.logService.error(`[Orchestration] Task ${task.id} execution failed:`, err);
+					});
+				}
+			}
+
+			// Fire final event if plans were updated
+			if (tasksToStart.length === 0) {
+				planRef.updatedAt = new Date().toISOString();
+				await this._writePlans(plans);
+				this._onDidChangePlan.fire(planRef);
+			}
+		}
+	}
+
+	/**
+	 * 顺序执行模式：按 plan.tasks 数组顺序逐个执行任务，等待前一个完成再执行下一个。
+	 * 不使用 DAG ready queue / 依赖并行调度。每个任务执行前确保已分配 assignee（P0-1 兜底），
+	 * 全程打点日志便于定位"计划创建但不执行"的问题。
+	 */
+	private async _executePlanSequential(planRef: OrchestrationPlan, plans: OrchestrationPlan[]): Promise<void> {
+		this.logService.info(`[Orchestration][Sequential] Begin: plan=${planRef.id}, taskCount=${planRef.tasks.length}`);
+
+		for (let i = 0; i < planRef.tasks.length; i++) {
+			const task = planRef.tasks[i];
+			const idx = i + 1;
+
+			// 跳过已完成/已取消的任务
+			if (task.status === PlanTaskStatus.Done || task.status === PlanTaskStatus.Cancelled) {
+				this.logService.info(`[Orchestration][Sequential] [${idx}/${planRef.tasks.length}] SKIP "${task.title}" (status=${task.status})`);
 				continue;
 			}
+
+			// P0-1 兜底：确保任务有 assignee 可被执行
+			// （assignAgents 在 Step 2 已整体运行；此处为单任务二次保险，防建 agent 失败漏分配）
+			await this._materializeAssignee(task, planRef);
+			if (!task.assigneeId) {
+				this.logService.error(`[Orchestration][Sequential] [${idx}/${planRef.tasks.length}] "${task.title}" STILL has NO assignee after materialize — marking Error, cannot execute`);
+				task.status = PlanTaskStatus.Error;
+				task.error = 'No assignee agent available (materialize failed)';
+				task.completedAt = new Date().toISOString();
+				planRef.updatedAt = task.completedAt;
+				await this._writePlans(plans);
+				this._onDidChangeTask.fire({ planId: planRef.id, task });
+				this._onDidChangePlan.fire(planRef);
+				continue;
+			}
+
+			// 标记 Running 并落盘（先于执行，避免快速返回丢结果）
 			task.status = PlanTaskStatus.Running;
 			task.startedAt = new Date().toISOString();
+			task.attempt = (task.attempt ?? 0) + 1;
+			task.executionId = `exec-${task.id}-${Date.now().toString(36)}`;
+			task.claimedAt = task.startedAt;
+			planRef.updatedAt = task.startedAt;
+			await this._writePlans(plans);
+			this._onDidChangeTask.fire({ planId: planRef.id, task });
+			this._onDidChangePlan.fire(planRef);
 
-			// Fire-and-forget: actually invoke the agent to execute the task
-			if (task.assigneeId) {
-				this._executeTask(planRef.id, task).catch(err => {
-					this.logService.error(`[Orchestration] Task ${task.id} execution failed:`, err);
-				});
+			this.logService.info(`[Orchestration][Sequential] [${idx}/${planRef.tasks.length}] >>> EXECUTE "${task.title}" (agent=${task.assigneeId})`);
+			const t0 = Date.now();
+			try {
+				await this._executeTask(planRef.id, task);
+				const dur = ((Date.now() - t0) / 1000).toFixed(1);
+				this.logService.info(`[Orchestration][Sequential] [${idx}/${planRef.tasks.length}] <<< DONE "${task.title}" in ${dur}s (status=${task.status})`);
+			} catch (err) {
+				const dur = ((Date.now() - t0) / 1000).toFixed(1);
+				this.logService.error(`[Orchestration][Sequential] [${idx}/${planRef.tasks.length}] !!! ERROR "${task.title}" after ${dur}s:`, err);
 			}
 		}
 
-		planRef.updatedAt = new Date().toISOString();
-		await this._writePlans(plans);
-		this._onDidChangePlan.fire(planRef);
+		this.logService.info(`[Orchestration][Sequential] End: plan=${planRef.id}, all ${planRef.tasks.length} tasks processed`);
+		this._checkPlanCompletion(planRef);
+	}
+
+	/**
+	 * P0-1 安全兜底：确保单个任务拥有可执行它的 assignee。
+	 * 若 assignAgents 已分配则直接返回；否则复用 AgentFactory 为单任务分配/创建 agent，
+	 * 最后再尝试一次直接建 agent。每一步均打日志便于定位"无 assignee 导致任务被静默跳过"。
+	 */
+	private async _materializeAssignee(task: PlanTask, plan: OrchestrationPlan): Promise<void> {
+		if (task.assigneeId) {
+			this.logService.info(`[Orchestration][Materialize] Task "${task.title}" already assigned to ${task.assigneeId} — skip`);
+			return;
+		}
+		this.logService.warn(`[Orchestration][Materialize] Task "${task.title}" (${task.id}) has NO assignee — role=${task.assigneeRole}. Agent creation is disabled; will only reuse an existing project agent.`);
+		try {
+			// 复用 AgentFactory 的单任务分配逻辑（仅从现有 agent 池中匹配，绝不新建）
+			await this._agentFactory.assignAgents({ ...plan, tasks: [task] } as OrchestrationPlan);
+		} catch (err) {
+			this.logService.error(`[Orchestration][Materialize] assignAgents failed for "${task.title}":`, err);
+		}
+		if (task.assigneeId) {
+			this.logService.info(`[Orchestration][Materialize] Resolved assignee ${task.assigneeId} for "${task.title}" via existing AgentFactory pool`);
+		} else {
+			this.logService.error(`[Orchestration][Materialize] No existing agent available for "${task.title}" (role=${task.assigneeRole}) — task cannot execute (agent creation disabled)`);
+		}
 	}
 
 	/**
@@ -2522,7 +2895,7 @@ Goal: ${goal}`;
 			throw new Error(`DAG validation failed: ${err instanceof Error ? err.message : err}`);
 		}
 
-		// ── Step 2: Auto-create agents + intelligent assignment ──
+		// ── Step 2: Assign tasks to existing project agents (agent creation disabled) ──
 		this._agentFactory.resetPool();
 		await this._agentFactory.assignAgents(planRef);
 
@@ -2665,17 +3038,22 @@ Only return the JSON array, no other text.`;
 			};
 
 			// Dispatch parallel explore subagents
+			// agentId 驱动（2026-07-27）：探索子代理以内置 code-explorer Agent 身份实例化。
+			const exploreIdentity = getBuiltinAgentIdentity('code-explorer') ?? {};
 			const results = await this._subAgentDispatch.dispatchParallelExplore(
 				parentAgentId,
 				explorationTasks,
 				executeFn,
-				repoOverview
+				repoOverview,
+				explorationTasks.map(() => ({ ...exploreIdentity })),
 			);
 
-			// Extract outputs from results
-			return results
-				.filter(r => r.success && r.output)
-				.map(r => r.output!);
+			// Extract outputs from results — include failures so the parent agent
+			// knows which areas were NOT covered and can plan accordingly.
+			return results.map(r => {
+				if (r.success && r.output) { return r.output; }
+				return `[FAILED: ${r.exitReason || 'unknown'}] ${r.error || 'no output'}`;
+			});
 		} catch (error) {
 			this.logService.error('[Orchestration] Failed to execute explore subagents:', error);
 			return [];
@@ -2744,6 +3122,10 @@ Keep the summary concise and focused on information needed to execute the task.`
 
 	private async _executeTask(planId: string, task: PlanTask): Promise<void> {
 		if (!task.assigneeId) { return; }
+
+		// P0: create AbortController so timeout/cancel can signal the agent.
+		const abortController = new AbortController();
+		this._taskAbortControllers.set(task.id, abortController);
 
 		let inlineDataForTask: IChatAttachmentSend[] = [];
 
@@ -2828,6 +3210,11 @@ Keep the summary concise and focused on information needed to execute the task.`
 		}
 
 		try {
+			// P0: if task was cancelled via AbortController, bail early instead of starting the agent.
+			if (abortController.signal.aborted) {
+				throw new Error('Task was cancelled before execution started');
+			}
+
 			// Send the task as a user message and get the agent's response,
 			// forwarding stream deltas to the webview for real-time display.
 			const chatMessage = await this.agentChatService.sendMessage(
@@ -2860,7 +3247,7 @@ Keep the summary concise and focused on information needed to execute the task.`
 			}
 
 			// Mark task as completed, which also triggers downstream tasks
-			await this.completeTask(planId, task.id, resultContent);
+			await this.completeTask(planId, task.id, resultContent, task.executionId);
 
 			// Agent is now idle — try to auto-execute pending tasks for this agent
 			this._markAgentIdle(task.assigneeId);
@@ -2869,6 +3256,7 @@ Keep the summary concise and focused on information needed to execute the task.`
 			});
 		} catch (err) {
 			this.logService.error(`[Orchestration] Task ${task.id} execution error:`, err);
+			const wasAborted = abortController.signal.aborted;
 
 			// Agent is no longer busy — mark idle before error handling
 			this._markAgentIdle(task.assigneeId);
@@ -2882,13 +3270,14 @@ Keep the summary concise and focused on information needed to execute the task.`
 				});
 			}
 
-			// Mark task as error so downstream tasks are not stuck
+			// Mark task as error/cancelled so downstream tasks are not stuck
 			try {
 				const plans = await this._readPlans();
 				const plan = plans.find(p => p.id === planId);
 				const taskRef = plan?.tasks.find(t => t.id === task.id);
 				if (taskRef && taskRef.status === PlanTaskStatus.Running) {
-					taskRef.status = PlanTaskStatus.Error;
+					// P0: if aborted, mark as Cancelled (not Error) so retry/block semantics are correct.
+					taskRef.status = wasAborted ? PlanTaskStatus.Cancelled : PlanTaskStatus.Error;
 					taskRef.result = err instanceof Error ? err.message : String(err);
 					taskRef.completedAt = new Date().toISOString();
 					if (plan) { plan.updatedAt = taskRef.completedAt; }
@@ -2914,6 +3303,9 @@ Keep the summary concise and focused on information needed to execute the task.`
 			this._tryAutoExecutePendingTasks().catch(err2 => {
 				this.logService.warn('[Orchestration] Auto-execute check after task error failed:', err2);
 			});
+		} finally {
+			// P0: always clean up the AbortController so it doesn't linger.
+			this._taskAbortControllers.delete(task.id);
 		}
 	}
 
@@ -2931,6 +3323,7 @@ Keep the summary concise and focused on information needed to execute the task.`
 					[PlanTaskStatus.Done]: TaskBoardStatus.Done,
 					[PlanTaskStatus.Cancelled]: TaskBoardStatus.Cancelled,
 					[PlanTaskStatus.Error]: TaskBoardStatus.Done,
+					[PlanTaskStatus.Blocked]: TaskBoardStatus.Cancelled,
 				};
 				const newStatus = statusMap[task.status];
 				if (newStatus && newStatus !== boardTask.status) {

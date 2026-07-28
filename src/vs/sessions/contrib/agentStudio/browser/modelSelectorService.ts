@@ -202,6 +202,10 @@ export class ModelSelectorService extends Disposable implements IModelSelectorSe
 		return this._selectionsByAgent.get(agentId) ?? this.getSelection();
 	}
 
+	getExplicitSelectionForAgent(agentId: string): IModelSelection | undefined {
+		return this._selectionsByAgent.get(agentId);
+	}
+
 	setSelectionForAgent(agentId: string, selection: IModelSelection): void {
 		const sel: IModelSelection = { ...selection, agentId };
 		this._selectionsByAgent.set(agentId, sel);

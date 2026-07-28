@@ -4,7 +4,6 @@ import { mainWindow } from '../../../base/browser/window.js';
 import { IAgentChatMessage, IWorkspaceItem } from './agentChatTypes.js';
 import { positionDropdownAbove, disposeOutsideClick, registerOutsideClickClose } from './modules/dropdownHelpers.js';
 import { renderHistoryOverlay } from './modules/historyOverlay.js';
-import { MODE_OPTIONS } from './agentChatPanel.base.js';
 import { AgentChatPanelComposer } from './agentChatPanel.composer.js';
 
 // Feature: dropdowns. Extracted from AgentChatPanelBase.
@@ -757,7 +756,7 @@ protected override _scrollToMessage(messageId: string): void {
 		const dist = this._messagesContainer.scrollHeight - this._messagesContainer.scrollTop - this._messagesContainer.clientHeight;
 		const show = dist >= 80;
 		this._showScrollBtn = show;
-		if (this._scrollToBottomBtn) { this._scrollToBottomBtn.style.display = show ? "flex" : "none"; }
+		if (this._scrollToBottomBtn) { this._scrollToBottomBtn.classList.toggle("visible", show); }
 		// 高亮闪烁效果
 		el.classList.add('chat-message-flash');
 		mainWindow.setTimeout(() => el.classList.remove('chat-message-flash'), 1200);
@@ -797,7 +796,7 @@ protected override _forceRenderAllMessages(): void {
 		}
 	}
 
-protected override _openModeDropdown(customTrigger?: HTMLElement | null): void {
+	protected override _openModeDropdown(customTrigger?: HTMLElement | null): void {
 		this._closeAllDropdowns();
 		this._modeDropdownTrigger = customTrigger ?? this._modeTrigger;
 		if (this._modeDropdownTrigger) { this._modeDropdownTrigger.classList.add('open'); }
@@ -805,54 +804,41 @@ protected override _openModeDropdown(customTrigger?: HTMLElement | null): void {
 		this._modeDropdownEl = append(mainWindow.document.body, $(".mode-dropdown-composer"));
 		this._positionDropdownAbove(this._modeDropdownEl, this._modeDropdownTrigger);
 
-		// — Disable plan mode for non-planner agents (mirrors webview behaviour)
-		const isPlanner = this._agent?.agentType === 'planner';
+		// ChatOnly toggle dropdown — legacy mode selector replaced by simple chatOnly on/off
+		const chatOnlyItem = append(this._modeDropdownEl, $(`.mode-item${this._chatOnly ? '.active' : ''}`));
+		const ic = append(chatOnlyItem, $(".mode-item-icon"));
+		const sv = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		sv.setAttribute('width', '14');
+		sv.setAttribute('height', '14');
+		sv.setAttribute('viewBox', '0 0 24 24');
+		sv.setAttribute('fill', 'none');
+		sv.setAttribute('stroke', 'currentColor');
+		sv.setAttribute('stroke-width', '2');
+		sv.setAttribute('stroke-linecap', 'round');
+		sv.setAttribute('stroke-linejoin', 'round');
+		const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+		// Eye icon
+		p.setAttribute('d', 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z');
+		sv.appendChild(p);
+		ic.appendChild(sv);
 
-		for (const opt of MODE_OPTIONS) {
-			const isDisabled = opt.id === 'plan' && !isPlanner;
-			const item = append(this._modeDropdownEl, $(`.mode-item${this._chatMode === opt.id ? '.active' : ''}${isDisabled ? '.disabled' : ''}`));
+		const text = append(chatOnlyItem, $(".mode-item-text"));
+		append(text, $("span.mode-item-label", undefined, '纯聊模式'));
+		append(text, $("span.mode-item-tooltip", undefined, this._chatOnly ? '纯聊：已开启（禁止工具执行）' : '纯聊：关闭中（允许工具执行）'));
 
-			// icon
-			const ic = append(item, $(".mode-item-icon"));
-			const sv = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-			sv.setAttribute('width', '14');
-			sv.setAttribute('height', '14');
-			sv.setAttribute('viewBox', '0 0 24 24');
-			sv.setAttribute('fill', 'none');
-			sv.setAttribute('stroke', 'currentColor');
-			sv.setAttribute('stroke-width', '2');
-			sv.setAttribute('stroke-linecap', 'round');
-			sv.setAttribute('stroke-linejoin', 'round');
-			const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-			p.setAttribute('d', opt.icon);
-			sv.appendChild(p);
-			ic.appendChild(sv);
-
-			// label + description
-			const text = append(item, $(".mode-item-text"));
-			append(text, $("span.mode-item-label", undefined, opt.label));
-			append(text, $("span.mode-item-tooltip", undefined, opt.description));
-
-			if (!isDisabled) {
-				this._register(
-					addDisposableListener(item, EventType.CLICK, () => {
-						this._closeModeDropdown();
-						if (opt.id !== this._chatMode) {
-							this._chatMode = opt.id;
-							this._onChangeMode?.(opt.id);
-							// 轻量刷新输入区域（保存/恢复输入框内容），避免 _render() 全量重建清空输入框
-							this._refreshInputArea();
-						}
-					}),
-				);
-			}
-		}
+		this._register(
+			addDisposableListener(chatOnlyItem, EventType.CLICK, () => {
+				this._closeModeDropdown();
+				this._chatOnly = !this._chatOnly;
+				this._refreshInputArea();
+			}),
+		);
 
 		this._disposeOutsideClick(this._modeDropdownOutsideClick);
 		this._modeDropdownOutsideClick = this._registerOutsideClickClose(this._modeDropdownEl, this._modeDropdownTrigger, () => this._closeModeDropdown());
 	}
 
-protected override _closeModeDropdown(): void {
+	protected override _closeModeDropdown(): void {
 		this._disposeOutsideClick(this._modeDropdownOutsideClick);
 		this._modeDropdownOutsideClick = null;
 		if (this._modeDropdownEl) {
@@ -863,7 +849,7 @@ protected override _closeModeDropdown(): void {
 		this._modeDropdownTrigger = null;
 	}
 
-protected override _openProviderDropdown(customTrigger?: HTMLElement | null): void {
+	protected override _openProviderDropdown(customTrigger?: HTMLElement | null): void {
 		this._closeAllDropdowns();
 		this._providerDropdownTrigger = customTrigger ?? this._providerTrigger;
 		if (this._providerDropdownTrigger) { this._providerDropdownTrigger.classList.add('open'); }
@@ -914,7 +900,7 @@ protected override _openModelDropdown(customTrigger?: HTMLElement | null): void 
 		this._modelDropdownEl = append(mainWindow.document.body, $(".provider-dropdown.model-dropdown"));
 		this._positionDropdownAbove(this._modelDropdownEl, this._modelDropdownTrigger);
 
-		// Filter models by current provider when set
+		// 仅显示当前 provider 对应的 model
 		const filtered = this._currentProvider
 			? this._models.filter(m => !m.provider || m.provider === this._currentProvider)
 			: this._models;

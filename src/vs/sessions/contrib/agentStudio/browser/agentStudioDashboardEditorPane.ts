@@ -59,14 +59,6 @@ const STATUS_COLORS: Record<string, string> = {
 	stopped: '#c586c0',
 };
 
-const STATUS_LABELS: Record<string, string> = {
-	running: '运行中',
-	idle: '空闲',
-	failed: '失败',
-	completed: '完成',
-	stopped: '已停止',
-};
-
 // ─── Editor Pane ────────────────────────────────────────────────────────
 
 export class AgentStudioDashboardEditorPane extends EditorPane {
@@ -651,7 +643,8 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 				sessionsBody.appendChild(this._renderSessionItem(session));
 			}
 		}
-		row.appendChild(this._createPanel('💬 会话列表', `${this._data!.sessions.length} 条`, sessionsBody));
+		const summarizedCount = this._data!.sessions.filter(s => s.summarized).length;
+		row.appendChild(this._createPanel('💬 记忆会话', `${this._data!.sessions.length} 条 · ${summarizedCount} 已压缩`, sessionsBody));
 
 		// Memory stats (4-Tier: Working/Episodic/Semantic/Procedural)
 		const memBody = el('div');
@@ -690,17 +683,6 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 			}
 			memBody.appendChild(memGrid);
 
-			// Episodic/Semantic/Procedural extraction info
-			const extractParts: string[] = [];
-			if (mem.l1ExtractionCount > 0) { extractParts.push(`Episodic ${mem.l1ExtractionCount}次`); }
-			if (mem.l2ExtractionCount > 0) { extractParts.push(`Semantic ${mem.l2ExtractionCount}次`); }
-			if (mem.l3ExtractionCount > 0) { extractParts.push(`Procedural ${mem.l3ExtractionCount}次`); }
-			if (extractParts.length > 0) {
-				const extractInfo = el('div', undefined, `记忆提取: ${extractParts.join(' · ')}`);
-				extractInfo.style.cssText = 'font-size: 11px; color: var(--vscode-descriptionForeground, #858585); text-align: center; padding: 8px; background: var(--vscode-editor-background, #1e1e1e); border-radius: 4px; margin-bottom: 8px;';
-				memBody.appendChild(extractInfo);
-			}
-
 			// Extended stats: graph + search + health
 			const extStats: string[] = [];
 			if (mem.graphNodes > 0) { extStats.push(`图谱 ${mem.graphNodes}节点/${mem.graphEdges}边`); }
@@ -722,33 +704,46 @@ export class AgentStudioDashboardEditorPane extends EditorPane {
 		const color = STATUS_COLORS[session.status] ?? '#3c3c3c';
 		item.style.cssText = `background: var(--vscode-editor-background, #1e1e1e); border-radius: 4px; padding: 10px 12px; border-left: 3px solid ${color}; cursor: pointer; margin-bottom: 8px;`;
 
-		// Row 1: name + status
+		// Row 1: 会话标题（firstPrompt）+ 压缩状态徽标
 		const row1 = el('div');
-		row1.style.cssText = 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;';
+		row1.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px;';
 		const name = el('span', undefined, session.name);
-		name.style.cssText = 'font-size: 12px; font-weight: 500;';
+		name.style.cssText = 'font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;';
+		name.title = session.name;
 		row1.appendChild(name);
 
-		const status = el('span', undefined, STATUS_LABELS[session.status] ?? session.status);
-		status.style.cssText = `font-size: 10px; padding: 1px 7px; border-radius: 10px; text-transform: uppercase; font-weight: 600; background: ${color}26; color: ${color};`;
-		row1.appendChild(status);
+		// 压缩管线徽标：已压缩为 SessionSummary（绿）/ 待压缩（灰）
+		const pipelineBadge = el('span', undefined, session.summarized ? '已压缩' : '暂存中');
+		const pipelineColor = session.summarized ? '#89d185' : '#858585';
+		pipelineBadge.style.cssText = `font-size: 10px; padding: 1px 7px; border-radius: 10px; font-weight: 600; flex-shrink: 0; background: ${pipelineColor}26; color: ${pipelineColor};`;
+		row1.appendChild(pipelineBadge);
 		item.appendChild(row1);
 
-		// Row 2: meta
+		// Row 2: agent + 观察数 + 相对时间
 		const row2 = el('div');
 		row2.style.cssText = 'display: flex; justify-content: space-between; font-size: 10px; color: var(--vscode-descriptionForeground, #858585);';
 		const meta = el('div');
-		meta.style.cssText = 'display: flex; gap: 12px;';
-		const badge = el('span', undefined, session.model);
-		badge.style.cssText = 'background: var(--vscode-badge-background, #4d4d4d); padding: 1px 6px; border-radius: 3px; font-size: 10px;';
-		meta.appendChild(badge);
-		meta.appendChild(el('span', undefined, `⏱ ${session.duration}`));
-		if (session.turns > 0) {
-			meta.appendChild(el('span', undefined, `🔄 第 ${session.turns} 轮`));
+		meta.style.cssText = 'display: flex; gap: 10px; align-items: center; overflow: hidden;';
+		if (session.agentId) {
+			const agentBadge = el('span', undefined, session.agentId);
+			agentBadge.style.cssText = 'background: var(--vscode-badge-background, #4d4d4d); padding: 1px 6px; border-radius: 3px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;';
+			agentBadge.title = session.agentId;
+			meta.appendChild(agentBadge);
 		}
+		if ((session.observationCount ?? 0) > 0) {
+			meta.appendChild(el('span', undefined, `👁 ${session.observationCount} 观察`));
+		}
+		meta.appendChild(el('span', undefined, `⏱ ${session.duration}`));
 		row2.appendChild(meta);
-		row2.appendChild(el('span', undefined, session.tokens > 0 ? `${(session.tokens / 1000).toFixed(0)}K tokens` : '—'));
 		item.appendChild(row2);
+
+		// Row 3: 压缩摘要标题（已压缩时显示）
+		if (session.summarized && session.summaryTitle) {
+			const row3 = el('div', undefined, `📋 ${session.summaryTitle}`);
+			row3.style.cssText = 'margin-top: 4px; font-size: 10px; color: #89d185; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
+			row3.title = session.summaryTitle;
+			item.appendChild(row3);
+		}
 
 		return item;
 	}

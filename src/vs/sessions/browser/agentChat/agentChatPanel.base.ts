@@ -7,10 +7,12 @@ import "./media/agentChat.css";
 import { Disposable, IDisposable } from '../../../base/common/lifecycle.js';
 import { $, append, clearNode, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
-import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, HeaderPanelType, ChatMode, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, OrchestrationPlan, PlanTask } from './agentChatTypes.js';
+import { IAgentChatMessage, IToolCall, IMessagePart, deriveUiMessageParts, IChatAttachment, ISubAgentData, IConfirmationData, IAgentInfo, IProviderInfo, IModelInfo, HeaderPanelType, StreamPhase, IModeOption, IWorktreeItem, IWorkspaceItem, ISessionInfo, IAgentSessionMeta, IContextUsage, ICheckpointInfo, IQueueItem, IQueueItemActionCallback, ISuggestedQuestion, IReferenceItem, ILiveWorkflowAskUser, ILiveWorkflowExecution, ILiveWorkflowEvent, ILiveWorkflowSubAgent, ILiveCollectVariable, ITodoItem, ITipMessage, IProgressMessage, IPlanTaskCard, OrchestrationPlan, PlanTask } from './agentChatTypes.js';
+// ChatMode removed — replaced by chatOnly boolean toggle
 import type { IChatPanel } from './iChatPanel.js';
 import { TabbedPanelManager } from './modules/tabbedPanel.js';
 import { ScrollbarController, type IScrollbarHost } from './scrollbarController.js';
+import { StreamingRenderScheduler } from './streamingRenderScheduler.js';
 
 
 
@@ -55,16 +57,13 @@ export const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string
 	recall: { done: '检索记忆', running: '正在检索记忆' },
 	memory: { done: '记忆操作', running: '正在记忆操作' },
 	read_skill: { done: '读取技能', running: '正在读取技能' },
-	skill_view: { done: '读取技能', running: '正在读取技能' },
 	list_skills: { done: '列出技能', running: '正在列出技能' },
-	skills_list: { done: '列出技能', running: '正在列出技能' },
 	skill_manage: { done: '管理技能', running: '正在管理技能' },
 	delegate_task: { done: '委派任务', running: '正在委派任务' },
 
 	clarify: { done: '等待用户选择', running: '正在等待用户选择' },
 	memory_remember: { done: '保存记忆', running: '正在保存记忆' },
-	memory_search: { done: '搜索记忆', running: '正在搜索记忆' },
-	memory_delete: { done: '删除记忆', running: '正在删除记忆' },
+
 	memory_list: { done: '列出记忆', running: '正在列出记忆' },
 	kanban_create: { done: '创建看板任务', running: '正在创建看板任务' },
 	kanban_complete: { done: '完成看板任务', running: '正在完成看板任务' },
@@ -126,13 +125,42 @@ export const TOOL_BUILTIN_TITLES: Record<string, { done: string; running: string
 	index_status: { done: '索引状态', running: '正在查询索引状态' },
 	ingest_traces: { done: '摄入 Trace', running: '正在摄入 Trace' },
 	manage_adr: { done: '管理 ADR', running: '正在管理 ADR' },
+	// ── 计划编排工具 ──
+	plan_explore: { done: '任务分析完成', running: '正在任务分析' },
+	plan_enter: { done: '进入计划模式', running: '正在进入计划模式' },
+	plan_exit: { done: '退出计划模式', running: '正在退出计划模式' },
+	// ── 委派工具 ──
+	transfer_to_agent: { done: '转移至 Agent', running: '正在转移至 Agent' },
+	new_agent: { done: '创建 Agent', running: '正在创建 Agent' },
 };
 
 export const TOOL_TERMINAL_TOOLS = new Set(['terminal', 'run_command', 'run_persistent_command', 'run_terminal_cmd', 'process', 'execute_code']);
 
-export const TOOL_LIST_TOOLS = new Set(['search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep']);
+/** 计划/探索/更新 族（需专用卡片） */
+export const TOOL_PLAN_TOOLS = new Set(['plan_explore', 'plan_enter', 'plan_exit', 'update_plan']);
 
-export const TOOL_CODEBASE_TOOLS = new Set(['search_graph', 'search_code', 'get_architecture', 'trace_path', 'query_graph', 'index_repository', 'get_code_snippet', 'get_graph_schema', 'detect_changes', 'list_projects', 'delete_project', 'index_status', 'ingest_traces', 'manage_adr']);
+/** 委派/子Agent 族（需专用卡片） */
+export const TOOL_DELEGATE_TOOLS = new Set(['delegate_task', 'transfer_to_agent', 'new_agent']);
+
+/** 搜索/查询 族（需列表化结果卡片） */
+export const TOOL_SEARCH_TOOLS = new Set(['search_code', 'search_graph', 'query_graph', 'trace_path', 'get_architecture', 'search_files', 'web_search', 'web_extract', 'get_code_snippet']);
+
+export const TOOL_LIST_TOOLS = new Set(['search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep',
+	// codebase 搜索类工具
+	'search_graph', 'query_graph', 'trace_path', 'get_architecture', 'get_graph_schema', 'get_code_snippet', 'index_repository', 'search_code',
+	// 委派/计划类（也可能有大量文本输出，用列表化展示）
+	'delegate_task', 'plan_explore', 'web_search', 'web_extract']);
+
+/** 文件读取工具键：仅渲染折叠态紧凑卡片，点击打开编辑器跳转到行 */
+export const READ_FILE_KEYS = new Set(['read_file', 'file_read', 'read', 'read_lints']);
+
+export const TOOL_CODEBASE_TOOLS = new Set(['search_graph', 'grep', 'get_architecture', 'trace_path', 'query_graph', 'index_repository', 'get_code_snippet', 'get_graph_schema', 'detect_changes', 'list_projects', 'delete_project', 'index_status', 'ingest_traces', 'manage_adr']);
+
+/** 技能族（read_skill / list_skills 等，需专用卡片） */
+export const TOOL_SKILL_TOOLS = new Set(['read_skill', 'list_skills', 'skill_manage']);
+
+/** Mermaid 图示族（renderMermaidDiagram 等，需专用渲染卡片） */
+export const TOOL_MERMAID_TOOLS = new Set(['rendermermaiddiagram', 'mermaid_render', 'render_diagram']);
 
 export function _patchNestedMarkdown(source: string): string {
 	if (!source.match(/```(\w*|.*)(md|markdown|gfm|github-markdown)/)) {
@@ -223,9 +251,20 @@ protected _onOpenCodebaseDetail: (() => void) | null = null;
 
 protected readonly _toolCallExpandState = new Map<string, boolean>();
 
+/** 子代理区整体的折叠状态（key = `${tc.id}::${sa.id}`），默认展开。 */
+protected readonly _subAgentCollapsed = new Set<string>();
+
+/** 结论面板的展开状态（key = `${tc.id}::${sa.id}`），默认 clamp 3 行。 */
+protected readonly _conclusionExpanded = new Set<string>();
+
 protected _agent: IAgentInfo | null = null;
 
 protected _isSending = false;
+
+/** 全局加载提示药丸（去抖显示 + 不挡交互）。详见 _scheduleLoadingPill / _clearLoadingPill。 */
+private _loadingPillEl: HTMLElement | null = null;
+private _loadingPillTimer: number | null = null;
+private static readonly _LOADING_PILL_DEBOUNCE_MS = 300;
 
 protected _showScrollBtn = false;
 
@@ -240,13 +279,118 @@ protected _streamJustEnded = false;
 protected _streamJustEndedTimer: number | null = null;
 
 
-protected _streamingMdTimer: number | null = null;
+/**
+ * 流式 markdown 渲染调度器（P5a）：统一持有节流定时器与内容基线四元组，
+ * 替代原 _streamingMdTimer/_streamingMdTarget/_streamingMdLastContent/_streamingMdLastRendered
+ * 散字段。hooks 运行时 dispatch 到 markdown 层的 override 实现（base 为 throw stub）。
+ */
+protected _mdScheduler: StreamingRenderScheduler | null = null;
 
-protected _streamingMdLastContent: string = '';
+protected get mdScheduler(): StreamingRenderScheduler {
+	if (!this._mdScheduler) {
+		this._mdScheduler = new StreamingRenderScheduler({
+			renderFull: (c, t) => this._renderMarkdownContent(c, t, true),
+			renderIncremental: (c, t) => this._tryIncrementalMarkdownRender(c, t),
+			resetIncremental: (c) => this._resetIncrementalMd(c),
+		}, AgentChatPanelBase.STREAMING_MD_INTERVAL);
+	}
+	return this._mdScheduler;
+}
 
-protected _streamingMdTarget: { container: HTMLElement } | null = null;
+/**
+ * thinking 卡片 body 的独立渲染调度器（P-T1）：与 content 的 mdScheduler 分离——
+ * 两者可能同帧调度（thinking + text 交替），单 target 调度器会互相覆盖。
+ */
+protected _thinkingMdScheduler: StreamingRenderScheduler | null = null;
 
-protected _streamingMdLastRendered: string = '';
+protected get thinkingMdScheduler(): StreamingRenderScheduler {
+	if (!this._thinkingMdScheduler) {
+		this._thinkingMdScheduler = new StreamingRenderScheduler({
+			renderFull: (c, t) => this._renderMarkdownContent(c, t, true),
+			renderIncremental: (c, t) => this._tryIncrementalMarkdownRender(c, t),
+			resetIncremental: (c) => this._resetIncrementalMd(c),
+		}, AgentChatPanelBase.STREAMING_MD_INTERVAL,
+			// thinking 流式增长时 body 滚动条保持吸底；用户上滚则解除（_attachStreamCardPin）
+			(c) => this._pinStreamCardToBottom(c));
+	}
+	return this._thinkingMdScheduler;
+}
+
+/** thinking 卡片折叠状态记忆（P-T2）：msgId → collapsed。rebuild 后保留用户选择。 */
+protected readonly _thinkingCardState = new Map<string, boolean>();
+
+/** 卡内容器流式钉底状态（WeakMap：元素 GC 自动清理）。
+ *  pinned=false 表示用户上滚解除；lastUserTop 记录用户最后的滚动位置，
+ *  用于全量替换（replaceChildren 物理归零 scrollTop）后恢复；
+ *  programmatic 标记「本类程序化置底」触发的 scroll 事件，避免与用户滚动混淆。 */
+private readonly _streamCardPinState = new WeakMap<HTMLElement, { pinned: boolean; lastUserTop: number; programmatic: boolean }>();
+
+/** 给卡内滚动容器挂载流式钉底（幂等）：渲染更新后自动置底；
+ *  用户滚动离开底部则解除钉底（之后可自由拖拽），滚回底部恢复跟随。
+ *  scroll 事件覆盖滚轮/拖动/键盘；用 programmatic 标志过滤掉自身置底造成的事件。 */
+protected _attachStreamCardPin(container: HTMLElement): void {
+	if (this._streamCardPinState.has(container)) { return; }
+	const state = { pinned: true, lastUserTop: container.scrollTop, programmatic: false };
+	this._streamCardPinState.set(container, state);
+	container.addEventListener('scroll', () => {
+		// 忽略自身程序化置底触发的 scroll 事件，否则会被误判为「用户上滚解除钉底」
+		if (state.programmatic) {
+			state.programmatic = false;
+			state.lastUserTop = container.scrollTop;
+			return;
+		}
+		// 用户手动滚动：任何向上（离开底部）意图即解除钉底，允许自由拖拽；
+		// 滚回底部（<8px）则重新钉底跟随流式增长。
+		if (container.scrollTop < state.lastUserTop) {
+			state.pinned = false;
+		} else if (container.scrollHeight - container.scrollTop - container.clientHeight < 8) {
+			state.pinned = true;
+		}
+		state.lastUserTop = container.scrollTop;
+	}, { passive: true });
+}
+
+/** 渲染后回调（thinkingMdScheduler 的 afterRender）：pinned → 滚到底跟随；
+ *  非 pinned → 尊重用户滚动位置（自由拖拽），仅在「全量替换导致 scrollTop 大幅归零」
+ *  （>50px 跳变，区别于正常拖拽的小步增量）时恢复到 lastUserTop，避免失位。 */
+protected _pinStreamCardToBottom(container: HTMLElement): void {
+	// 兜底自动挂载（2026-07-28 修复思考卡片滚动条不置底）：
+	// _pinAllScrollableBodiesToBottom 对「未溢出」的容器跳过 attach（line 363 continue），
+	// 导致容器首次未溢出时 _streamCardPinState 无状态。若此时调度器 afterRender 调到此，
+	// 旧逻辑 !state 早退不置底；随后全量替换 replaceChildren 把 scrollTop 物理归零，
+	// scroll 事件把 pinned 误判为 false——之后彻底不再置底。这里未挂载则先挂载（pinned
+	// 初始 true），确保 afterRender 总能置底、并保持 scrollHeight 一致避免误判。
+	if (!this._streamCardPinState.has(container)) {
+		this._attachStreamCardPin(container);
+	}
+	const state = this._streamCardPinState.get(container);
+	if (!state) { return; }
+	if (state.pinned) {
+		// 置底前标记 programmatic，避免 scroll 事件把「跟随流式」误判为「用户上滚解除」
+		state.programmatic = true;
+		container.scrollTop = container.scrollHeight;
+	} else if (container.scrollTop < state.lastUserTop - 50) {
+		// 仅 replaceChildren 物理归零（跳变 >50px）时恢复用户位置；正常拖拽增量 <50px 不干扰
+		container.scrollTop = state.lastUserTop;
+	}
+}
+
+/**
+ * 统一钉底：找到容器内所有可滚动卡片体，对已钉底的执行置底跟随。
+ * 覆盖 thinking body / tool body / sub-agent trace-list / sa-body / write-file-stream 等。
+ * 在 _reconcileParts 后处理、_updateToolCardStatuses 等路径调用，
+ * 确保所有卡片内容流式增长时内部滚动条自动贴底。
+ */
+protected _pinAllScrollableBodiesToBottom(container: HTMLElement): void {
+	const scrollables = container.querySelectorAll(
+		'.thinking-card-body, .tool-header-children, .trace-list, .sa-body, .write-file-stream, .conclusion-box, .done-stats'
+	) as NodeListOf<HTMLElement>;
+	for (const el of scrollables) {
+		if (el.scrollHeight <= el.clientHeight) { continue; } // 不可滚动无需钉底
+		this._attachStreamCardPin(el);
+		this._pinStreamCardToBottom(el);
+	}
+}
 
 protected static readonly STREAMING_MD_INTERVAL = 100;
 
@@ -315,7 +459,7 @@ protected readonly _onLoadWorkspaces?: () => Promise<ReadonlyArray<IWorkspaceIte
 
 protected readonly _onSelectWorkspace?: (workspaceId: string, workspaceName: string) => void;
 
-protected _chatMode: ChatMode = 'craft';
+protected _chatOnly: boolean = false;
 
 protected _sessionInfo: ISessionInfo | null = null;
 
@@ -371,9 +515,9 @@ protected _modeDropdownTrigger: HTMLElement | null = null;
 
 protected _providerDropdownEl: HTMLElement | null = null;
 
-protected _providerTrigger: HTMLElement | null = null;
+	protected _providerTrigger: HTMLElement | null = null;
 
-protected _providerDropdownTrigger: HTMLElement | null = null;
+	protected _providerDropdownTrigger: HTMLElement | null = null;
 
 protected _modelDropdownEl: HTMLElement | null = null;
 
@@ -443,9 +587,10 @@ protected readonly _onForkSession?: (sessionId: string) => void;
 
 protected readonly _onOpenSettings?: () => void;
 
-protected readonly _onChangeMode?: (mode: ChatMode) => void;
+	// _onChangeMode removed — replaced by chatOnly toggle (setChatOnly)
+	protected readonly _onChangeMode?: undefined;
 
-protected readonly _onSelectProvider?: (providerId: string) => void;
+	protected readonly _onSelectProvider?: (providerId: string) => void;
 
 protected readonly _onSelectModel?: (modelId: string) => void;
 
@@ -485,11 +630,15 @@ protected readonly _onApplyCode?: (code: string, language: string, filePath?: st
 
 protected readonly _onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
 
-protected readonly _onOpenFile?: (filePath: string, content?: string) => void;
+protected readonly _onOpenFile?: (filePath: string, contentOrLine?: string | number) => void;
 
 protected readonly _onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
 
+protected readonly _onComposerTextChange?: (text: string) => void;
+
 protected readonly _onAddFileContext?: (filePath: string) => void;
+
+protected readonly _onExecuteCommand?: (commandId: string, ...args: unknown[]) => Promise<unknown>;
 
 protected readonly _onRunInTerminal?: (code: string) => void;
 
@@ -517,8 +666,14 @@ protected readonly _onClosePlanDialog?: (planId: string) => void;
 
 protected readonly _onFavoriteMessage?: (messageContent: string) => void;
 
-protected readonly _onImportToKnowledgeBase?: (messageContent: string) => void;
+protected readonly _onImportToKnowledgeBase?: (messageContent: string, messageId: string) => Promise<boolean>;
+protected readonly _onImportFileToKnowledgeBase?: (filePath: string, toolId?: string) => Promise<boolean>;
 protected readonly _onExtractSkill?: (messageContent: string) => void;
+
+/** Set of message IDs that have been successfully imported to KB. */
+protected readonly _importedKbMessageIds = new Set<string>();
+/** Set of tool IDs (write_file 卡片) that have been successfully imported to KB. */
+protected readonly _importedKbFileToolIds = new Set<string>();
 
 	// ── Channel 绑定（飞书）回调 ──
 	protected readonly _onListFeishuBindings?: () => ReadonlyArray<{ conversationId: string; agentId: string }>;
@@ -545,7 +700,7 @@ constructor(opts: {
 		onDeleteSession?: (sessionId: string) => void;
 		onForkSession?: (sessionId: string) => void;
 		onOpenSettings?: () => void;
-		onChangeMode?: (mode: ChatMode) => void;
+		// onChangeMode removed — ChatMode replaced by chatOnly toggle
 		onSelectProvider?: (providerId: string) => void;
 		onSelectModel?: (modelId: string) => void;
 		onCheckpointAction?: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => void;
@@ -567,11 +722,15 @@ constructor(opts: {
 		onTipDismiss?: (tipId: string) => void;
 		onApplyCode?: (code: string, language: string, filePath?: string) => void;
 		onSubmitVariables?: (executionId: string, values: Record<string, string>) => void;
-		onOpenFile?: (filePath: string, content?: string) => void;
-		/** P0-2: @提及文件搜索——用户输入 @ 时搜索工作区文件 */
-		onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
-		/** P0-2: @提及文件选择后——添加文件作为上下文 */
-		onAddFileContext?: (filePath: string) => void;
+		onOpenFile?: (filePath: string, contentOrLine?: string | number) => void;
+	/** P0-2: @提及文件搜索——用户输入 @ 时搜索工作区文件 */
+	onSearchFiles?: (query: string) => Promise<Array<{ path: string; name: string }>>;
+	/** 输入框文本变更（每次 input 事件触发；消费方自行 debounce）。用于 per-session 草稿持久化。 */
+	onComposerTextChange?: (text: string) => void;
+	/** P0-2: @提及文件选择后——添加文件作为上下文 */
+	onAddFileContext?: (filePath: string) => void;
+	/** 通用执行 VS Code 命令回调（用于工具卡片中的特殊按钮，如 Mermaid 预览） */
+	onExecuteCommand?: (commandId: string, ...args: unknown[]) => Promise<unknown>;
 		/** P1-1: 在终端运行代码（shell 语言代码块） */
 		onRunInTerminal?: (code: string) => void;
 		/** P1-3: 添加编辑器当前选中的代码作为上下文 */
@@ -591,8 +750,10 @@ constructor(opts: {
 		onClosePlanDialog?: (planId: string) => void;
 		/** 收藏消息到知识库 */
 		onFavoriteMessage?: (messageContent: string) => void;
-	/** P2: 导入知识库（footer 复制按钮右侧，与 onFavoriteMessage 走同一份管线） */
-	onImportToKnowledgeBase?: (messageContent: string) => void;
+	/** P2: 导入知识库（footer 复制按钮右侧，返回 true 表示导入成功） */
+	onImportToKnowledgeBase?: (messageContent: string, messageId: string) => Promise<boolean>;
+	/** write_file 工具卡片「导入知识库」：自动执行入口(落盘到库)+抽取(构建笔记)。返回 true 表示成功 */
+	onImportFileToKnowledgeBase?: (filePath: string, toolId?: string) => Promise<boolean>;
 	/** P2: 沉淀技能（footer 导入知识库按钮右侧） */
 	onExtractSkill?: (messageContent: string) => void;
 	// ── Channel 绑定（飞书）相关回调（对齐 AgentSettingsEditorPane）──
@@ -619,7 +780,7 @@ constructor(opts: {
 		this._onDeleteSession = opts.onDeleteSession;
 		this._onForkSession = opts.onForkSession;
 		this._onOpenSettings = opts.onOpenSettings;
-		this._onChangeMode = opts.onChangeMode;
+		// _onChangeMode removed — replaced by chatOnly toggle (setChatOnly)
 		this._onSelectProvider = opts.onSelectProvider;
 		this._onSelectModel = opts.onSelectModel;
 		this._onCheckpointAction = opts.onCheckpointAction;
@@ -643,7 +804,9 @@ constructor(opts: {
 		this._onSubmitVariables = opts.onSubmitVariables;
 		this._onOpenFile = opts.onOpenFile;
 		this._onSearchFiles = opts.onSearchFiles;
+		this._onComposerTextChange = opts.onComposerTextChange;
 		this._onAddFileContext = opts.onAddFileContext;
+		this._onExecuteCommand = opts.onExecuteCommand;
 		this._onRunInTerminal = opts.onRunInTerminal;
 		this._onAddSelectionToChat = opts.onAddSelectionToChat;
 		this._onOpenLink = opts.onOpenLink;
@@ -660,6 +823,8 @@ constructor(opts: {
 		this._onClosePlanDialog = opts.onClosePlanDialog;
 		this._onFavoriteMessage = opts.onFavoriteMessage;
 		this._onImportToKnowledgeBase = opts.onImportToKnowledgeBase;
+		this._onImportFileToKnowledgeBase = opts.onImportFileToKnowledgeBase;
+
 		this._onExtractSkill = opts.onExtractSkill;
 		// Channel 绑定（飞书）回调
 		this._onListFeishuBindings = opts.onListFeishuBindings;
@@ -686,6 +851,10 @@ constructor(opts: {
 		// Initial render so the container has visible structure (tabs + empty state)
 		// even before setAgent() / setAvailableAgents() are called.
 		this._render();
+
+		// 性能探针：在 webview 控制台调用 window.__SAROSIS_PERF_PROBE__(rounds)
+		// 触发 N 轮流式负载，量化每帧成本（对齐 Hermes perf-probe 思路）。
+		(window as unknown as Record<string, unknown>).__SAROSIS_PERF_PROBE__ = (rounds?: number) => this.runPerfProbe(rounds);
 	}
 
 get element(): HTMLElement {
@@ -693,8 +862,10 @@ get element(): HTMLElement {
 	}
 
 setAgent(agent: IAgentInfo | null): void {
-		// eslint-disable-next-line no-console
-		console.info('[AgentChatPanel] setAgent:', agent ? `id="${agent.id}", name="${agent.name}"` : 'null', `stack=${new Error().stack?.split('\n').slice(2,5).join(' ← ')}`);
+		if ((window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG) {
+			// eslint-disable-next-line no-console
+			console.info('[AgentChatPanel] setAgent:', agent ? `id="${agent.id}", name="${agent.name}"` : 'null', `stack=${new Error().stack?.split('\n').slice(2, 5).join(' ← ')}`);
+		}
 		this._agent = agent;
 		const t0 = performance.now();
 		this._render();
@@ -715,8 +886,10 @@ setMessages(messages: IAgentChatMessage[]): void {
 		const t0 = performance.now();
 		this._messages = this._aggregateTurns(messages);
 		const tAgg = performance.now();
-		const diagStack = new Error().stack?.split('\n').slice(2,5).map(s => s.trim()).join(' ← ') || '?';
-		console.debug(`[ScrollDiag] setMessages count=${messages.length} _wasLoading=${this._wasLoading} isSending=${this._isSending} caller: ${diagStack}`);
+		if ((window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG) {
+			const diagStack = new Error().stack?.split('\n').slice(2,5).map(s => s.trim()).join(' ← ') || '?';
+			console.debug(`[ScrollDiag] setMessages count=${messages.length} _wasLoading=${this._wasLoading} isSending=${this._isSending} caller: ${diagStack}`);
+		}
 		this._renderMessages();
 		const tRender = performance.now();
 		// 加载历史消息 → 标记 wasLoading，确保 instant 滚动
@@ -923,19 +1096,40 @@ updateMessage(
 		messageId: string,
 		updates: Partial<IAgentChatMessage>,
 	): void {
-		const idx = this._messages.findIndex((m) => m.id === messageId);
-		if (idx >= 0) {
-			Object.assign(this._messages[idx], updates);
-			const m = this._messages[idx];
-			// 阶段E：流式期间由 content + toolCalls 即时派生有序 parts（单一真相），
-			// 除非调用方已显式提供 parts。textPosition 此处仅作本地排序信号，不再跨层传递。
-			// P2: 纯文本 delta 跳过 O(n) deriveUiMessageParts（只在 toolCalls/streaming 变化时重算）
-			if (updates.parts === undefined && m.role === 'assistant') {
-				const hasToolCallChange = updates.toolCalls !== undefined;
-				const isStructural = hasToolCallChange || updates.isStreaming !== undefined;
+	const idx = this._messages.findIndex((m) => m.id === messageId);
+	if (idx >= 0) {
+		// 2026-07-26 卡死修复（日志 1785076308529）：isCritical 判定前先快照
+		// 旧值——text/thinking delta 每帧都携带 isStreaming:true / parts:slice()
+		// （值未变化/仅引用变化），旧判定使「每个 token 同步 _updateMessageDom」，
+		// rAF 帧合并被完全绕过，UE 级长内容场景主线程被流式帧占满（单帧 14.8s）。
+		const prevIsStreaming = this._messages[idx].isStreaming;
+		// 工具签名（id+status）：tool_args 高频 delta 每帧携带 toolCalls 新引用
+		// 但仅 args 增长——签名相同则不 critical，走 rAF 合并（单帧 1.3s 元凶）。
+		const prevToolSig = (this._messages[idx].toolCalls ?? []).map(t => `${t.id}:${t.status}`).join(',');
+		Object.assign(this._messages[idx], updates);
+		const m = this._messages[idx];
 
-				if (isStructural || !m.parts || (m.parts.length === 0 && m.content)) {
-					// 全量派生
+			// ── parts 管理（单一真相：updates.parts > 已有 parts > 重新派生）──
+			// 1. 如果调用方显式提供 parts → 直接使用（流式期间由 _processDelta 维护）
+			// 2. 如果 toolCalls 变化但无 parts → 检查工具数量是否变化：
+			//    - 数量不变 → 保留已有 parts（工具对象共享引用，数据已更新）
+			//    - 数量变化 → 重新派生
+			// 3. 如果仅 content 变化 → 原地更新 text part
+			const hasPartsUpdate = updates.parts !== undefined;
+			const hasToolCallUpdate = updates.toolCalls !== undefined;
+			const hasContentUpdate = updates.content !== undefined;
+
+			if (!hasPartsUpdate && m.role === 'assistant') {
+				if (hasToolCallUpdate) {
+					// toolCalls 变化：检查工具数量是否变化
+					const existingToolParts = m.parts?.filter(p => p.kind === 'tool') ?? [];
+					const newToolCount = m.toolCalls?.length ?? 0;
+				if (existingToolParts.length !== newToolCount || !m.parts || m.parts.length === 0) {
+					// 工具数量变化或无 parts → 重新派生
+					// 2026-07-26 用户要求：thinking 结束后不移除 thinking 卡片。
+					// deriveUiMessageParts 只派生 text/tool——不重派生会丢 thinking parts
+					// （首个 tool_start 触发重派生 → thinking 卡片消失的根因）。
+					const oldThinkingParts = m.parts?.filter(p => p.kind === 'thinking') ?? [];
 					if (m.toolCalls && m.toolCalls.length > 0) {
 						m.parts = deriveUiMessageParts(m.content ?? '', m.toolCalls);
 					} else if (m.content) {
@@ -943,23 +1137,59 @@ updateMessage(
 					} else {
 						m.parts = undefined;
 					}
-				} else if (updates.content !== undefined) {
-					// 纯文本增量：原地更新 text part，避免遍历 toolCalls 数组
-					const textPart = m.parts.find(p => p.kind === 'text');
-					if (textPart && typeof updates.content === 'string') {
-						textPart.text = updates.content;
+					// 保留 thinking parts：重派生丢失 episode 原位信息，插到起始
+					// （思考先于输出的标准位置，与历史恢复逻辑一致）。
+					if (m.parts && oldThinkingParts.length > 0) {
+						m.parts.unshift(...oldThinkingParts);
+					}
+				}
+					// 工具数量不变 → parts 仍有效（工具对象共享引用，subAgents 等数据已更新）
+				} else if (hasContentUpdate && m.parts) {
+					// 纯文本增量：原地更新 text part。
+					// 仅当消息无工具卡时（纯文本消息）才把唯一 text part 更新为全量 content。
+					// 有工具卡时，pane 的 text handler 已在共享 parts 数组中按「当前段」
+					// 正确更新末尾 text part（segText = content.slice(segmentBase)）；
+					// 此处若再用全量 content 覆盖 parts[0]（首个叙述段），会把整段分析
+					// 写到消息顶部、与末尾 text part 重复——「文字被重复插入」的根因。
+					const hasTool = m.parts.some(p => p.kind === 'tool');
+					if (!hasTool) {
+						const textPart = m.parts.find(p => p.kind === 'text');
+						if (textPart && typeof updates.content === 'string') {
+							(textPart as any).text = updates.content;
+						}
 					}
 				}
 			}
 
-			// 关键更新（结构变化、流式状态切换）→ 立即处理，不批处理
-			const isCritical =
-				updates.isStreaming !== undefined ||
-				updates.toolCalls !== undefined ||
-				updates.parts !== undefined ||
-				updates.confirmation !== undefined ||
-				updates.subAgents !== undefined ||
-				updates.tokenUsage !== undefined;
+			// ── 轻量路径：仅 subagent 数据变化 → 原地重建含 subAgents 的工具卡 ──
+			// subagent_batch delta 只携带 subAgents，toolCalls 对象共享引用已更新
+			const subagentDataOnly = (
+				updates.subAgents !== undefined &&
+				updates.toolCalls === undefined &&
+				updates.isStreaming === undefined &&
+				updates.content === undefined &&
+				updates.confirmation === undefined &&
+				updates.tokenUsage === undefined
+			);
+			if (subagentDataOnly) {
+				this._updateSubAgentCardsInPlace(idx, m);
+				return;
+			}
+
+		// 2026-07-26 卡死修复（日志 1785076308529）：critical 按「值变化」判定。
+		// - isStreaming：仅 true↔false 翻转才 critical（流式中每帧重复 true 不 critical）
+		// - toolCalls：仅 id+status 签名变化（新增工具/状态翻转）才 critical——
+		//   tool_args 的 args 增长走 rAF 合并，args 预览由就地 rules 节流刷新
+		// - parts：流式期间高频 slice() 引用必不同，不可按引用判定——流式中走
+		//   rAF 合并（就地 rules 会消费最新 parts），非流式才算 critical
+		// - confirmation/subAgents/tokenUsage：低频事件，保持 critical
+		const isCritical =
+			(updates.isStreaming !== undefined && updates.isStreaming !== prevIsStreaming) ||
+			(updates.toolCalls !== undefined && updates.toolCalls.map(t => `${t.id}:${t.status}`).join(',') !== prevToolSig) ||
+			(updates.parts !== undefined && !m.isStreaming) ||
+			updates.confirmation !== undefined ||
+			updates.subAgents !== undefined ||
+			updates.tokenUsage !== undefined;
 			if (isCritical) {
 				if (this._streamingUpdateRaf !== null) {
 					cancelAnimationFrame(this._streamingUpdateRaf);
@@ -967,8 +1197,6 @@ updateMessage(
 				}
 				this._updateMessageDom(idx, m);
 				this._updateContextRing();
-				// P0: 流式期间 _startStreamScroll rAF 循环持续钉底，
-				// 非流式期间走 rAF 批量滚动避免每个 delta 同步强制回流
 				if (!this._isSending) { this._scrollbar.scheduleScrollToBottom(); }
 				return;
 			}
@@ -1000,8 +1228,10 @@ updateMessage(
 
 setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): void {
 		const { triggerExecuteNext = true } = options;
-		const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
-		console.debug(`[ScrollDiag] setSending(${sending}) wasSending=${this._isSending} caller: ${diagStack}`);
+		if ((window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG) {
+			const diagStack = new Error().stack?.split('\n').slice(2, 5).map(s => s.trim()).join(' ← ') || '?';
+			console.debug(`[ScrollDiag] setSending(${sending}) wasSending=${this._isSending} caller: ${diagStack}`);
+		}
 		this._isSending = sending;
 		this._updateSendButton();
 		// 流式期间显式确保 contentEditable 可编辑：频繁 DOM 更新可能重置 textarea 状态，
@@ -1016,19 +1246,19 @@ setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): vo
 			// 追踪加载状态：新消息或切换 Agent 时，下一帧滚动用 instant
 			this._wasLoading = true;
 			this._scrollbar.startStreamScroll();
-			// P0: 重置增量渲染状态——新流式会话从头开始
-			this._streamingMdLastRendered = '';
+		// P0: 重置增量渲染状态——新流式会话从头开始
+		this._mdScheduler?.reset();
+		this._thinkingMdScheduler?.reset();
+			// 加载态去抖：瞬时回复（< 300ms）不闪烁加载提示；持续处理才显示。
+			this._scheduleLoadingPill();
 		} else {
 			this._streamPhase = 'idle';
 			this._scrollbar.stopStreamScroll();
-			// 清理流式渲染节流定时器和 rAF 批处理
-			if (this._streamingMdTimer !== null) {
-				clearTimeout(this._streamingMdTimer);
-				this._streamingMdTimer = null;
-			}
-			this._streamingMdTarget = null;
-			this._streamingMdLastContent = '';
-			this._streamingMdLastRendered = '';
+			// 加载结束：立即隐藏加载提示（与去抖对应）
+			this._clearLoadingPill();
+		// 清理流式渲染节流定时器和 rAF 批处理
+		this._mdScheduler?.reset();
+		this._thinkingMdScheduler?.reset();
 			// 流式结束后立即更新 context ring（取消 pending 防抖）
 			if (this._contextRingTimer !== null) {
 				clearTimeout(this._contextRingTimer);
@@ -1063,7 +1293,52 @@ setSending(sending: boolean, options: { triggerExecuteNext?: boolean } = {}): vo
 		}
 	}
 
-protected _revealFootersAfterLoop(): void {
+	/** 判断该消息是否为当前最后一条 assistant 消息（用于流式 footer 占位只作用于最后一条）。 */
+	protected _isLastAssistantMessage(msg: IAgentChatMessage): boolean {
+		const messages = this.getMessages();
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (messages[i].role === 'assistant') {
+				return messages[i].id === msg.id;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * 加载态去抖：仅在 _isSending 持续超过 _LOADING_PILL_DEBOUNCE_MS 时才显示
+	 * 全局加载提示药丸，避免瞬时回复闪烁。
+	 * 药丸为 pointer-events:none，绝不拦截滚动 / 点击（对齐 Hermes 加载态不挡交互）。
+	 */
+	protected _scheduleLoadingPill(): void {
+		this._clearLoadingPillTimerOnly();
+		this._loadingPillTimer = setTimeout(() => {
+			this._loadingPillTimer = null;
+			if (!this._loadingPillEl) {
+				const pill = $('.chat-loading-pill');
+				pill.appendChild($('.loading-spinner'));
+				pill.appendChild($('span.chat-loading-pill-label', undefined, '处理中…'));
+				this._container.appendChild(pill);
+				this._loadingPillEl = pill;
+			}
+			this._loadingPillEl.classList.add('visible');
+		}, AgentChatPanelBase._LOADING_PILL_DEBOUNCE_MS) as unknown as number;
+	}
+
+	protected _clearLoadingPill(): void {
+		this._clearLoadingPillTimerOnly();
+		if (this._loadingPillEl) {
+			this._loadingPillEl.classList.remove('visible');
+		}
+	}
+
+	private _clearLoadingPillTimerOnly(): void {
+		if (this._loadingPillTimer !== null) {
+			clearTimeout(this._loadingPillTimer);
+			this._loadingPillTimer = null;
+		}
+	}
+
+	protected _revealFootersAfterLoop(): void {
 		// 找到最后一条 assistant 消息
 		const messages = this.getMessages();
 		let lastAssistantIdx = -1;
@@ -1080,8 +1355,9 @@ protected _revealFootersAfterLoop(): void {
 		if (!lastAssistantEl) { return; }
 		const bubble = lastAssistantEl.querySelector('.chat-bubble');
 		if (!bubble) { return; }
-		// 补齐 footer（如果还没有）
+		// 补齐 footer（如果还没有）：先移除流式期间的占位，避免高度叠加
 		if (!bubble.querySelector('.chat-bubble-footer')) {
+			bubble.querySelector('.chat-bubble-footer-placeholder')?.remove();
 			bubble.appendChild(this._createFooter(lastAssistant));
 		}
 	}
@@ -1182,9 +1458,10 @@ setSelectedWorkspace(id: string): void {
 		if (this._agent) { this._refreshInputArea(); }
 	}
 
-setChatMode(mode: ChatMode): void {
-		this._chatMode = mode;
-		if (this._agent) { this._render(); }
+	// ChatOnly toggle — replaces legacy setChatMode(mode: ChatMode)
+	setChatOnly(chatOnly: boolean): void {
+		this._chatOnly = chatOnly;
+		if (this._agent) { this._refreshInputArea(); }
 	}
 
 setSessionInfo(info: ISessionInfo | null): void {
@@ -1364,6 +1641,8 @@ protected _createFooter(msg: IAgentChatMessage): HTMLElement  { throw new Error(
 
 protected _transitionStreamingToComplete(existingEl: HTMLElement, msg: IAgentChatMessage): void  { throw new Error('[moved-to-feature] _transitionStreamingToComplete'); }
 
+protected runPerfProbe(rounds?: number): Promise<unknown>  { throw new Error('[moved-to-feature] runPerfProbe'); }
+
 protected _createThinkingIndicator(): HTMLElement  { throw new Error('[moved-to-feature] _createThinkingIndicator'); }
 
 protected static readonly _PHASE_LABELS: Record<string, { icon: string; label: string }> = {
@@ -1435,11 +1714,13 @@ protected _parseLinkifyText(text: string): Array<string | { type: 'file' | 'url'
 
 protected _tryIncrementalMarkdownRender(container: HTMLElement, newContent: string): boolean  { throw new Error('[moved-to-feature] _tryIncrementalMarkdownRender'); }
 
+protected _resetIncrementalMd(container: HTMLElement): void  { throw new Error('[moved-to-feature] _resetIncrementalMd'); }
+
 protected _getMarkdownOptions(isStreaming: boolean = false): MarkdownRenderOptions  { throw new Error('[moved-to-feature] _getMarkdownOptions'); }
 
 protected _attachLinkInterceptor(parent: HTMLElement): void  { throw new Error('[moved-to-feature] _attachLinkInterceptor'); }
 
-protected _renderPartsContent(bubble: HTMLElement, parts: readonly IMessagePart[], isStreaming: boolean): void  { throw new Error('[moved-to-feature] _renderPartsContent'); }
+protected _renderPartsContent(bubble: HTMLElement, parts: readonly IMessagePart[], isStreaming: boolean, hostMsg?: IAgentChatMessage): void  { throw new Error('[moved-to-feature] _renderPartsContent'); }
 
 protected _renderInputArea(): void  { throw new Error('[moved-to-feature] _renderInputArea'); }
 
@@ -1640,7 +1921,7 @@ protected _openProviderDropdown(customTrigger?: HTMLElement | null): void  { thr
 
 protected _closeProviderDropdown(): void  { throw new Error('[moved-to-feature] _closeProviderDropdown'); }
 
-protected _openModelDropdown(customTrigger?: HTMLElement | null): void  { throw new Error('[moved-to-feature] _openModelDropdown'); }
+	protected _openModelDropdown(customTrigger?: HTMLElement | null): void  { throw new Error('[moved-to-feature] _openModelDropdown'); }
 
 protected _closeModelDropdown(): void  { throw new Error('[moved-to-feature] _closeModelDropdown'); }
 
@@ -1680,6 +1961,11 @@ protected _renderInlineAttachmentChips(): void  { throw new Error('[moved-to-fea
 
 protected _getComposerText(): string  { throw new Error('[moved-to-feature] _getComposerText'); }
 
+/** Public wrapper for input text persistence — delegates to feature implementation. */
+public getComposerText(): string { return this._getComposerText(); }
+/** Public wrapper for input text persistence — delegates to feature implementation. */
+public setComposerText(text: string): void { this._setComposerText(text); }
+
 protected _updateCharCounter(text: string): void  { throw new Error('[moved-to-feature] _updateCharCounter'); }
 
 protected _setComposerText(text: string): void  { throw new Error('[moved-to-feature] _setComposerText'); }
@@ -1713,9 +1999,11 @@ override dispose(): void {
 		this._closeAgentDropdown();
 		this._abortController?.abort();
 		this._scrollbar.stopStreamScroll();
-		if (this._streamJustEndedTimer !== null) { clearTimeout(this._streamJustEndedTimer); }
-		if (this._streamingMdTimer !== null) { clearTimeout(this._streamingMdTimer); }
-		if (this._streamingUpdateRaf !== null) { cancelAnimationFrame(this._streamingUpdateRaf); }
+	if (this._streamJustEndedTimer !== null) { clearTimeout(this._streamJustEndedTimer); }
+	this._mdScheduler?.cancel();
+	this._thinkingMdScheduler?.cancel();
+	this._thinkingCardState.clear();
+	if (this._streamingUpdateRaf !== null) { cancelAnimationFrame(this._streamingUpdateRaf); }
 		if (this._lazyLoadObserver) { this._lazyLoadObserver.disconnect(); }
 		if (this._contextRingTimer !== null) { clearTimeout(this._contextRingTimer); }
 
@@ -1778,12 +2066,13 @@ override dispose(): void {
 	protected abstract _createKanbanListCard(resultText: string): HTMLElement | null;
 	protected abstract _createKanbanShowCard(resultText: string): HTMLElement | null;
 	protected abstract _createWorkflowListCard(resultText: string): HTMLElement | null;
-	protected abstract _createMemorySearchCard(resultText: string): HTMLElement | null;
 	protected abstract _createMemoryListCard(resultText: string): HTMLElement | null;
 	protected abstract _getToolTitle(key: string, displayName: string | undefined, name: string, isRunning: boolean): string;
 	protected abstract _getToolDesc1(key: string, args: string | undefined, filePath: string | undefined): string;
 	protected abstract _parseToolListItems(resultText: string): Array<{ name: string; path?: string }> | null;
 	protected abstract _createSubAgentCard(sa: ISubAgentData): HTMLElement;
+	/** 仅 subagent 数据变化时原地更新已有卡片 DOM，避免整条消息重建。子类 override。 */
+	protected _updateSubAgentCardsInPlace(_msgIdx: number, _msg: IAgentChatMessage): void { /* default: no-op */ }
 	protected abstract _createCloseIconSVG(): SVGElement;
 	protected abstract _createLiveWorkflowTraceView(
 		workflowExecutions: Record<string, ILiveWorkflowExecution>,
@@ -1798,6 +2087,7 @@ override dispose(): void {
 	protected abstract _createTerminalConfirmationCard(cf: IConfirmationData): HTMLElement;
 	protected abstract _createAskUserCard(askUser: ILiveWorkflowAskUser): HTMLElement;
 	protected abstract _createTodoListCard(todos: ITodoItem[]): HTMLElement;
+	protected abstract _createPlanTasksCard(planTasks: IPlanTaskCard): HTMLElement;
 	protected abstract _createQuestionCarouselCard(questions: ISuggestedQuestion[]): HTMLElement;
 	protected abstract _createReferencesCard(references: IReferenceItem[]): HTMLElement;
 	protected abstract _createTipCard(tip: ITipMessage): HTMLElement;

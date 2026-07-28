@@ -10,7 +10,8 @@ import { hasKey } from '../../../base/common/types.js';
 import { URI } from '../../../base/common/uri.js';
 import { ILogService } from '../../log/common/log.js';
 import { AHPFileSystemProvider } from '../common/agentHostFileSystemProvider.js';
-import { AgentSession, type IAgentService } from '../common/agentService.js';
+import { AgentSession, GITHUB_COPILOT_PROTECTED_RESOURCE, type IAgentService } from '../common/agentService.js';
+import { IContextCompressionService } from '../common/contextCompression.js';
 import type { CommandMap } from '../common/state/protocol/messages.js';
 import type { UnsupportedProtocolVersionErrorData } from '../common/state/protocol/errors.js';
 import { ActionEnvelope, ActionType, INotification, isSessionAction, isTerminalAction, type SessionAction, type TerminalAction, type IRootConfigChangedAction } from '../common/state/sessionActions.js';
@@ -117,6 +118,9 @@ export class ProtocolServerHandler extends Disposable {
 		private readonly _config: IProtocolServerConfig,
 		private readonly _clientFileSystemProvider: AHPFileSystemProvider,
 		@ILogService private readonly _logService: ILogService,
+		// 可选：手动构造处（agentHostServerMain/agentHostMain/测试）省略时为 undefined，
+		// authenticate 的 token 推送自动跳过。
+		private readonly _compressionService?: IContextCompressionService,
 	) {
 		super();
 
@@ -634,6 +638,10 @@ export class ProtocolServerHandler extends Disposable {
 			const result = await this._agentService.authenticate(params);
 			if (!result.authenticated) {
 				throw new ProtocolError(AHP_AUTH_REQUIRED, 'Authentication failed for resource: ' + params.resource);
+			}
+			// 认证成功后向上下文压缩服务推送 GitHub token（Stage 4 LLM 摘要调用所需）
+			if (params.resource === GITHUB_COPILOT_PROTECTED_RESOURCE.resource) {
+				this._compressionService?.setAuthToken?.(params.token);
 			}
 			return {};
 		},

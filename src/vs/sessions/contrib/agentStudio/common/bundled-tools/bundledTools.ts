@@ -77,7 +77,7 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 	},
 	{
 		name: "file_write",
-		description: "Write content to a file. Creates the file and parent directories if they don't exist.",
+		description: "Write content to a file. Creates the file and parent directories if they don't exist. For large files (>8KB), prefer writing in multiple smaller steps rather than one big call: a single very large write may hit the model output limit and get truncated, leaving the file incomplete or corrupted. Write an initial portion with this tool, then append the remaining sections with follow-up `patch` calls (use the tail of the already-written content as the search anchor).",
 		inputSchema: {"type":"object","properties":{"path":{"type":"string","description":"File path to write"},"content":{"type":"string","description":"Content to write"}},"required":["path","content"]},
 		category: "file",
 		source: 'hermes-bundled',
@@ -208,20 +208,7 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		category: "video_gen",
 		source: 'hermes-bundled',
 	},
-	{
-		name: "skills_list",
-		description: "List all available skills with their names, categories, and descriptions.",
-		inputSchema: {"type":"object","properties":{"category":{"type":"string","description":"Filter by category (optional)"}}},
-		category: "skills",
-		source: 'hermes-bundled',
-	},
-	{
-		name: "skill_view",
-		description: "View the full content of a specific skill document by name or ID.",
-		inputSchema: {"type":"object","properties":{"name":{"type":"string","description":"Skill name or ID to view"}},"required":["name"]},
-		category: "skills",
-		source: 'hermes-bundled',
-	},
+
 	{
 		name: "skill_manage",
 		description: "Create, edit, or delete skill documents. Skills are reusable procedure documents the agent can load.",
@@ -243,13 +230,7 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		category: "todo",
 		source: 'hermes-bundled',
 	},
-	{
-		name: "memory",
-		description: "Manage persistent memory across sessions. Save and recall personal notes and user profile information.",
-		inputSchema: {"type":"object","properties":{"action":{"type":"string","enum":["save","recall","search","clear"],"description":"Action to perform"},"key":{"type":"string","description":"Memory key or category"},"content":{"type":"string","description":"Memory content to save"},"query":{"type":"string","description":"Search query (for search action)"}},"required":["action"]},
-		category: "memory",
-		source: 'hermes-bundled',
-	},
+
 	{
 		name: "session_search",
 		description: "Search and recall past conversation sessions. Returns summarized matching sessions.",
@@ -261,7 +242,7 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		name: "clarify",
 		description: "Ask the user a clarifying question with multiple-choice or open-ended options. Pauses the agent loop until the user responds.",
 		inputSchema: {"type":"object","properties":{"question":{"type":"string","description":"The question to ask the user"},"options":{"type":"array","items":{"type":"string"},"description":"Multiple-choice options (optional)"}},"required":["question"]},
-		category: "clarify",
+		category: "clarity",
 		source: 'hermes-bundled',
 	},
 	{
@@ -553,26 +534,22 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		category: "memory",
 		source: 'hermes-bundled',
 	},
-	{
-		name: "memory_search",
-		description: "Search memories by keyword or tag. Returns matching entries sorted by recency.",
-		inputSchema: {"type":"object","properties":{"query":{"type":"string","description":"Search query. Supports: tag:foo, type:short, type:long"},"limit":{"type":"number","description":"Max results (default: 10)"}},"required":["query"]},
-		category: "memory",
-		source: 'hermes-bundled',
-	},
-	{
-		name: "memory_delete",
-		description: "Delete a memory entry by its ID. Use memory_search first to find the entry ID.",
-		inputSchema: {"type":"object","properties":{"id":{"type":"string","description":"Memory entry ID to delete"},"memory_type":{"type":"string","enum":["working","episodic"],"description":"Memory type to delete from"}},"required":["id","memory_type"]},
-		category: "memory",
-		source: 'hermes-bundled',
-	},
+
 	{
 		name: "memory_list",
 		description: "List all memory entries of a given type.",
 		inputSchema: {"type":"object","properties":{"memory_type":{"type":"string","enum":["working","episodic"],"description":"Memory type to list (default: episodic)"},"limit":{"type":"number","description":"Max entries to return (default: 20)"}}},
 		category: "memory",
 		source: 'hermes-bundled',
+	},
+
+	// ── mermaid diagram rendering ─────────────────────────
+	{
+		name: "rendermermaiddiagram",
+		description: "IMPORTANT: Call this whenever the user asks for a diagram, chart, or visual explanation. Renders Mermaid markup as interactive SVG diagram in the chat. Use for flowcharts, sequence diagrams, class diagrams, state machines, ER diagrams, Gantt charts, pie charts, mindmaps, timelines. When user says '画个图'/'visualize'/'diagram'/'流程图'/'架构图', call this tool with Mermaid markup. Parameters: `markup` (required) - Mermaid markup string starting with diagram type keyword (e.g. 'graph TD\\nA-->B'), no wrapping code fence. `title` (optional) - Short title shown in the card header.",
+		inputSchema: {"type":"object","properties":{"markup":{"type":"string","description":"Mermaid markup string. Must start with the diagram type keyword (e.g., 'graph TD\\nA-->B') without a wrapping code fence. Escape newlines as \\n."},"title":{"type":"string","description":"Optional short title for the diagram, shown in the card header (e.g., 'System Architecture', 'Login Flow')."}},"required":["markup"]},
+		category: "clarity",
+		source: 'sarosis-builtin',
 	},
 ];
 
@@ -628,7 +605,7 @@ export const BUNDLED_TOOLSETS: Readonly<Record<string, IToolsetDefinition>> = {
 	},
 	"skills": {
 		description: "Skill management",
-		tools: ["skills_list","skill_view","skill_manage"],
+		tools: ["skill_manage"],
 		includes: [],
 	},
 	"tts": {
@@ -643,7 +620,7 @@ export const BUNDLED_TOOLSETS: Readonly<Record<string, IToolsetDefinition>> = {
 	},
 	"memory": {
 		description: "Persistent memory",
-		tools: ["memory_remember","memory_search","memory_delete","memory_list"],
+		tools: ["memory_remember","memory_list"],
 		includes: [],
 	},
 	"session_search": {
@@ -652,8 +629,8 @@ export const BUNDLED_TOOLSETS: Readonly<Record<string, IToolsetDefinition>> = {
 		includes: [],
 	},
 	"clarity": {
-		description: "Clarifying questions",
-		tools: ["clarify"],
+		description: "Clarifying questions and diagram rendering",
+		tools: ["clarify", "rendermermaiddiagram"],
 		includes: [],
 	},
 	"code_execution": {

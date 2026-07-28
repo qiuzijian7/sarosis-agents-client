@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sarosis 系统提示词框架 · 分层缓存对齐架构</title>
+<style>
+  :root{
+    --bg:#0b1020; --bg2:#101830; --card:#151d38; --card2:#1a2342;
+    --line:#263056; --txt:#e6ebff; --muted:#8b96c4; --faint:#5a6494;
+    --stable:#34d399; --context:#60a5fa; --volatile:#f59e0b; --accent:#8b5cf6;
+    --good:#34d399; --bad:#f87171; --code:#0a0e1d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:linear-gradient(180deg,#0b1020,#0d1430 40%,#0b1020);color:var(--txt);
+    font-family:"Segoe UI",system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.65;-webkit-font-smoothing:antialiased}
+  a{color:var(--context);text-decoration:none}
+  code,kbd{font-family:"Cascadia Code","JetBrains Mono",Consolas,monospace;font-size:.86em;
+    background:#0a0e1d;border:1px solid var(--line);border-radius:5px;padding:.1em .4em;color:#a5f3fc}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);
+    background:rgba(11,16,32,.82);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;gap:22px;height:56px;overflow-x:auto}
+  nav .brand{font-weight:700;letter-spacing:.3px;white-space:nowrap}
+  nav .brand span{color:var(--accent)}
+  nav a.link{color:var(--muted);font-size:13px;white-space:nowrap;padding:4px 2px;border-bottom:2px solid transparent}
+  nav a.link:hover{color:var(--txt);border-bottom-color:var(--accent)}
+
+  /* hero */
+  header.hero{padding:72px 0 40px;text-align:center}
+  .eyebrow{display:inline-block;font-size:12px;letter-spacing:2px;color:var(--accent);
+    border:1px solid var(--line);border-radius:999px;padding:5px 16px;background:rgba(139,92,246,.08);margin-bottom:20px}
+  h1{font-size:clamp(28px,4.5vw,44px);line-height:1.15;font-weight:800;letter-spacing:-.5px}
+  h1 .grad{background:linear-gradient(90deg,var(--stable),var(--context),var(--accent));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--muted);max-width:760px;margin:18px auto 0;font-size:16px}
+  .metaRow{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:26px}
+  .pill{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;
+    padding:5px 14px;background:var(--card)}
+  .pill b{color:var(--txt)}
+
+  section{padding:44px 0}
+  h2{font-size:26px;font-weight:750;margin-bottom:6px;letter-spacing:-.3px}
+  h2 .num{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:10px}
+  .lead{color:var(--muted);margin-bottom:26px;max-width:820px}
+  h3{font-size:17px;margin:22px 0 10px;font-weight:700}
+
+  /* tier diagram */
+  .tiers{display:grid;gap:14px;margin:8px 0 6px}
+  .tier{border:1px solid var(--line);border-radius:14px;padding:20px 22px;position:relative;
+    background:var(--card);overflow:hidden;transition:transform .15s,border-color .15s}
+  .tier:hover{transform:translateY(-2px)}
+  .tier::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px}
+  .tier.stable::before{background:var(--stable)}
+  .tier.context::before{background:var(--context)}
+  .tier.volatile::before{background:var(--volatile)}
+  .tier .tag{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:6px}
+  .tier .dot{width:10px;height:10px;border-radius:50%}
+  .stable .dot{background:var(--stable)} .context .dot{background:var(--context)} .volatile .dot{background:var(--volatile)}
+  .tier .role{font-size:12px;color:var(--faint);text-transform:uppercase;letter-spacing:1px;margin-left:auto}
+  .tier .tag{display:flex}
+  .tier p{color:var(--muted);font-size:14px;margin:6px 0 10px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-size:12px;background:var(--card2);border:1px solid var(--line);border-radius:7px;padding:4px 10px;color:#c3cbf2}
+  .badge{font-size:11px;border-radius:6px;padding:2px 8px;font-weight:600}
+  .b-cache{background:rgba(52,211,153,.14);color:var(--stable);border:1px solid rgba(52,211,153,.3)}
+  .b-nocache{background:rgba(245,158,11,.12);color:var(--volatile);border:1px solid rgba(245,158,11,.3)}
+
+  /* flow */
+  .flow{background:var(--code);border:1px solid var(--line);border-radius:14px;padding:24px;overflow-x:auto}
+  .flow pre{font-family:"Cascadia Code",Consolas,monospace;font-size:13px;line-height:1.7;color:#c3cbf2;white-space:pre}
+  .c-sys{color:var(--stable)} .c-vol{color:var(--volatile)} .c-mem{color:var(--context)} .c-user{color:#e6ebff}
+  .c-dim{color:var(--faint)} .c-acc{color:var(--accent)}
+
+  /* tables */
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:8px}
+  th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid var(--line)}
+  tbody tr:hover{background:rgba(96,165,250,.05)}
+  td.first{font-weight:600;color:#c3cbf2;white-space:nowrap}
+  .good{color:var(--good)} .bad{color:var(--bad)} .warn{color:var(--volatile)}
+  .tscroll{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--card)}
+
+  /* before/after */
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:820px){.ba{grid-template-columns:1fr}}
+  .ba .col{border:1px solid var(--line);border-radius:14px;padding:22px;background:var(--card)}
+  .col.before{border-top:3px solid var(--bad)} .col.after{border-top:3px solid var(--good)}
+  .col h4{font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .col.before h4{color:var(--bad)} .col.after h4{color:var(--good)}
+  .col ul{list-style:none}
+  .col li{font-size:13.5px;color:var(--muted);padding:6px 0 6px 24px;position:relative}
+  .col li::before{content:"✕";position:absolute;left:0;color:var(--bad);font-weight:700}
+  .col.after li::before{content:"✓";color:var(--good)}
+
+  /* principles */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .pcard{border:1px solid var(--line);border-radius:14px;padding:20px;background:var(--card)}
+  .pcard .ic{font-size:22px;margin-bottom:10px}
+  .pcard h4{font-size:15px;margin-bottom:6px}
+  .pcard p{font-size:13px;color:var(--muted)}
+  .pcard .src{margin-top:10px;font-size:11px;color:var(--faint)}
+
+  /* file map */
+  .filemap{font-family:"Cascadia Code",Consolas,monospace;font-size:13px}
+  .filemap .f{display:flex;gap:14px;padding:11px 14px;border-bottom:1px solid var(--line);align-items:baseline}
+  .filemap .f:last-child{border-bottom:none}
+  .filemap .path{color:#a5f3fc;white-space:nowrap;flex-shrink:0}
+  .filemap .desc{color:var(--muted);font-family:inherit;font-size:12.5px}
+  .kbd-new{font-size:10px;background:rgba(52,211,153,.15);color:var(--stable);border-radius:5px;padding:1px 6px;margin-left:8px;border:1px solid rgba(52,211,153,.3)}
+
+  footer{border-top:1px solid var(--line);padding:30px 0 50px;color:var(--faint);font-size:13px;text-align:center}
+  .callout{border-left:3px solid var(--accent);background:rgba(139,92,246,.08);border-radius:0 10px 10px 0;
+    padding:14px 18px;margin:18px 0;font-size:14px;color:#d6cffb}
+</style>
+</head>
+<body>
+<nav>
+  <div class="wrap">
+    <div class="brand">Sarosis <span>·</span> 提示词框架</div>
+    <a class="link" href="#overview">概览</a>
+    <a class="link" href="#tiers">三层架构</a>
+    <a class="link" href="#strategy">策略提示词</a>
+    <a class="link" href="#flow">消息流</a>
+    <a class="link" href="#sidecar">Sidecar 注入</a>
+    <a class="link" href="#compare">框架对比</a>
+    <a class="link" href="#beforeafter">优化前后</a>
+    <a class="link" href="#principles">设计原则</a>
+    <a class="link" href="#files">文件地图</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">SYSTEM PROMPT ARCHITECTURE</div>
+    <h1>分层 · 字节稳定 · <span class="grad">缓存对齐</span> 的系统提示词框架</h1>
+    <p class="sub">从「拼一个 101K blob 再粗暴裁剪到 15K」重构为「stable / context / volatile 三层组装」，
+    让冻结前缀字节稳定、工具走结构化 schema、易变内容隔离在前缀之后 —— 对齐 MiMo-Code / Hermes-Agent / CodeBuddy 的 prompt cache 设计。</p>
+    <div class="metaRow">
+      <div class="pill">冻结前缀 <b>stable + context</b></div>
+      <div class="pill">易变层 <b>volatile 独立消息</b></div>
+      <div class="pill">工具 <b>结构化 tools 字段</b></div>
+      <div class="pill">指纹 <b>FNV-1a 前缀对齐</b></div>
+    </div>
+  </div>
+</header>
+
+<section id="overview">
+  <div class="wrap">
+    <h2><span class="num">01</span>概览</h2>
+    <p class="lead">系统提示词按「可变性」拆成三层，稳定在前、易变在后。发给模型的第一条 system 消息是
+    <b>冻结前缀（stable + context）</b>，它在同一会话内字节不变，是 provider prompt cache 命中与 fork 前缀指纹的计算对象；
+    <b>volatile 层</b>作为独立 system 消息追加在前缀之后，其变化只影响自身位置之后的缓存，不打断前缀。</p>
+    <div class="callout">核心不变量：<b>相同 agent + 相同会话 → 冻结前缀字节相等</b>。一切每轮会变的内容（Persona Memory、本轮激活技能、记忆快照、持久上下文）都被推到前缀边界之后。</div>
+  </div>
+</section>
+
+<section id="tiers">
+  <div class="wrap">
+    <h2><span class="num">02</span>三层架构</h2>
+    <p class="lead">由 <code>agentDriverService.executeTurn</code> 分层组装，经 <code>systemPromptComposer</code> 合成，最终由 <code>agentTurnExecutor</code> 注入消息流。</p>
+    <div class="tiers">
+      <div class="tier stable">
+        <div class="tag"><span class="dot"></span>STABLE <span class="badge b-cache">冻结前缀 · 参与指纹</span><span class="role">字节稳定</span></div>
+        <p>核心身份与行为规则。会话内对同一 agent 不变，是缓存命中的主体。</p>
+        <div class="chips">
+          <span class="chip">Agent persona</span><span class="chip">caller systemPrompt</span>
+          <span class="chip">GLOBAL_SYSTEM_PREFIX</span><span class="chip">策略提示词（getStrategyGuidance）</span>
+          <span class="chip">GLOBAL_SYSTEM_SUFFIX</span>
+          <span class="chip">压缩工具名称清单</span><span class="chip">反幻觉 / 调用格式规则</span>
+          <span class="chip">tool-use enforcement</span>
+        </div>
+      </div>
+      <div class="tier context">
+        <div class="tag"><span class="dot"></span>CONTEXT <span class="badge b-cache">冻结前缀 · 参与指纹</span><span class="role">会话稳定</span></div>
+        <p>发现层与项目约定。会话内稳定，跨会话 / 跨工作区可变。</p>
+        <div class="chips">
+          <span class="chip">workspace 上下文（含 AGENTS.md）</span><span class="chip">&lt;available_skills&gt; 技能目录</span>
+          <span class="chip">MCP Servers 摘要</span><span class="chip">memory_extract 捕获指引</span>
+        </div>
+      </div>
+      <div class="tier volatile">
+        <div class="tag"><span class="dot"></span>VOLATILE <span class="badge b-nocache">独立消息 · 不进指纹</span><span class="role">每轮可变</span></div>
+        <p>每轮可能变化的内容。作为独立 system 消息置于冻结前缀之后。</p>
+        <div class="chips">
+          <span class="chip">Persona Memory（用户硬事实）</span><span class="chip">本轮激活技能（Active Skills）</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="strategy">
+  <div class="wrap">
+    <h2><span class="num">03</span>策略提示词（Strategy Guidance）</h2>
+    <p class="lead">根据 Agent 配置的 <code>paradigm</code> 字段，<code>getStrategyGuidance(paradigm)</code> 返回范式专属的策略提示词，
+    注入 stable 层（GLOBAL_SYSTEM_PREFIX 之后）。让 LLM 明确知道：执行模型 / 优先工具 / 工作结构。
+    preLoop 预分析器已移除，LLM 通过策略提示词在 ReAct 主循环中自主决策。</p>
+
+    <div class="tscroll" style="margin-top:20px"><table>
+      <thead><tr><th>范式</th><th>执行模型</th><th>优先工具链</th><th>核心行为</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="first">budgeted-react<br><span style="font-size:11px;color:var(--good)">（默认）</span></td>
+          <td>ReAct + 迭代预算 + 委托编排</td>
+          <td><code>search_graph</code> → <code>delegate_task(explore)</code> → <code>plan_register</code> → <code>file_write</code> → <code>file_read</code></td>
+          <td>先探索再编码；预算低时优先总结；2+ 独立子任务并行委托；有序多步任务用 plan_register 注册队列依次执行</td>
+        </tr>
+        <tr>
+          <td class="first">plan-explore</td>
+          <td>三阶段：计划 → 探索 → 执行</td>
+          <td><code>update_plan</code> → <code>plan_explore</code> → <code>exit_plan_mode</code> → <code>plan_register</code>（可选）→ <code>file_write</code></td>
+          <td>先出结构化计划文档；并行只读探索；再按计划逐步执行（plan_register 提供队列强约束）</td>
+        </tr>
+        <tr>
+          <td class="first">react</td>
+          <td>纯 ReAct 单循环</td>
+          <td>同 budgeted-react，无委托 / 无预算</td>
+          <td>Reason → Act → Observe 循环；每轮一个工具调用</td>
+        </tr>
+        <tr>
+          <td class="first">delegation</td>
+          <td>Supervisor + 子 Agent 树</td>
+          <td><code>delegate_task(tasks)</code> 为主；<code>search_graph</code> / <code>file_read</code> 仅快速检查</td>
+          <td>分解任务 → 委托子 Agent → 汇总结果；不自做执行</td>
+        </tr>
+        <tr>
+          <td class="first">readonly</td>
+          <td>只读收集</td>
+          <td><code>search_graph</code> / <code>file_read</code> / <code>delegate_task(explore)</code>（写工具全部禁用）</td>
+          <td>收集信息 → 分析 → 生成报告；不编辑文件 / 不执行命令</td>
+        </tr>
+        <tr>
+          <td class="first">graph</td>
+          <td>声明式节点图 / BSP 超步</td>
+          <td><code>transfer_to_agent</code> 路由 + 节点内 budgeted-react</td>
+          <td>一个节点做一部分；完成后 handoff 到下一节点</td>
+        </tr>
+      </tbody>
+    </table></div>
+
+    <div class="callout" style="margin-top:22px">
+      <b>设计决策：移除 preLoop，改用策略提示词</b><br>
+      原架构在 ReAct 前做 LLM 评估（assessFn）+ 并行探索（exploreFn）+ 计划生成（planGenerator），
+      额外消耗 1-2 次 LLM 调用。现在通过 <code>&lt;strategy_guidance&gt;</code> + <code>&lt;code_explorer_subagent&gt;</code> +
+      <code>&lt;search_graph_priority&gt;</code> 三段系统提示词，让 LLM 在 ReAct 主循环中自主决策何时探索、何时委托。
+    </div>
+
+    <div class="callout" style="margin-top:16px">
+      <b>plan_register：工具驱动的串行执行队列（调研 → 拆任务 → 依次执行）</b><br>
+      LLM 在调研（<code>plan_explore</code> / <code>delegate_task(explore)</code>）后调用 <code>plan_register(tasks)</code>，
+      通过 <code>planQueueRegistry</code> 把有序任务列表写入当前 turn 的 <code>planTasks</code> 队列
+      （agentTurnExecutor 在 turn 开始时注册句柄、finally 注销）。主循环在每轮无工具调用时自动推进队列，
+      并注入 <code>CURRENT TASK (k/N)</code> 提醒，形成强引导的依次执行。
+      与 <code>update_plan</code>（软追踪，仅 UI 卡片不回读）互补；无活动队列时降级为文本指引，永不阻塞流程。
+    </div>
+
+    <h3 style="margin-top:26px">策略提示词注入位置</h3>
+    <div class="flow" style="margin-top:10px"><pre><span class="c-sys">┌─ STABLE 层（冻结前缀）──────────────────────────────────────────</span>
+<span class="c-dim">│  [1] Agent persona（核心身份）</span>
+<span class="c-dim">│  [2] caller systemPrompt（workflow / 子 agent 模板）</span>
+<span class="c-acc">│  [3] GLOBAL_SYSTEM_PREFIX（并行优先 + 行号剥离 + code_explorer + search_graph_priority）</span>
+<span class="c-acc">│  [4] getStrategyGuidance(paradigm)  ◄── 策略提示词按范式注入</span>
+<span class="c-dim">│  [5] GLOBAL_SYSTEM_SUFFIX（操作边界：保密 / 安全 / 身份）</span>
+<span class="c-sys">└─────────────────────────────────────────────────────────────────</span></pre></div>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="wrap">
+    <h2><span class="num">04</span>消息流</h2>
+    <p class="lead">最终发给模型的消息序列。缓存断点落在冻结前缀（第一条 system 消息）边界；其后所有内容均为每轮可变的下游，不影响前缀命中。</p>
+    <div class="flow"><pre><span class="c-sys">┌─ [0] system   冻结前缀（stable + context + enforcement）  ◄── cache_control 断点 / fork 指纹</span>
+<span class="c-vol">├─ [1] system   volatile 层（Persona Memory + Active Skills）</span>
+<span class="c-mem">├─ [2] system   &lt;agentmemory-context&gt; 记忆快照（会话内去重注入一次）</span>
+<span class="c-mem">├─ [3] system   durable context（delegation ledger / 目标）</span>
+<span class="c-user">├─ [4..] user / assistant / tool …  对话历史</span>
+<span class="c-acc">├─ [k] user（synthetic sidecar） 策略 reminder / TaskGate nudge / 反思 / 计划推进 / 技能激活</span>
+<span class="c-dim">│        ↑ 仅发送副本，压缩与持久化前由 stripSyntheticSidecars 剥离，不污染干净 transcript</span>
+
+<span class="c-dim">工具定义：</span><span class="c-acc">不进入任何 system 文本</span><span class="c-dim">，经 </span><span class="c-acc">modelOptions.tools</span><span class="c-dim"> 结构化 schema 随请求下发（function-calling），
+MCP / 超限工具经 tool_search → tool_describe → tool_call 桥接按需发现。</span></pre></div>
+  </div>
+</section>
+
+<section id="sidecar">
+  <div class="wrap">
+    <h2><span class="num">04.5</span>Sidecar 注入与 user 消息隔离</h2>
+    <p class="lead">框架会在发送前临时拼入数据——技能激活、策略提醒、控制流重入（TaskGate nudge）、反思、计划推进。
+    这些数据<b>不是用户真实输入</b>。若不隔离，会污染干净 transcript，并在下一轮被当作「用户消息」重放。
+    本框架用 <code>synthetic</code> 标记 + 压缩/持久化剥离，对齐 Hermes 的 <code>api_content</code> sidecar 与 MiMo-Code 的 <code>synthetic: true</code>。</p>
+
+    <h3 style="margin-top:22px">注入通道：system 族（干净） vs user 族（sidecar 可剥离）</h3>
+    <div class="tscroll" style="margin-top:8px"><table>
+      <thead><tr><th>数据</th><th>通道</th><th>标记 / 剥离方式</th></tr></thead>
+      <tbody>
+        <tr><td class="first">冻结前缀（stable+context）</td><td>system（首条，字节稳定）</td><td>进缓存前缀，不参与剥离</td></tr>
+        <tr><td class="first">volatile（Persona Memory + 激活技能）</td><td>system（独立消息）</td><td>每轮重算，不进前缀指纹</td></tr>
+        <tr><td class="first">Agent Memory 快照</td><td>system（&lt;agentmemory-context&gt;）</td><td>会话内 <code>injectedSessions</code> 幂等一次</td></tr>
+        <tr><td class="first">Retrieval 保留上下文</td><td>system（## Preserved Context）</td><td><code>INJECTED_CONTEXT_PREFIX</code> 前缀，压缩剥离</td></tr>
+        <tr><td class="first">Durable Context</td><td>system（&lt;durable_context_data&gt;）</td><td>checkpoint 持久化</td></tr>
+        <tr><td class="first">技能激活（auto/explicit）</td><td><b>user（synthetic）</b></td><td><code>synthetic: true</code> + <code>sidecar: 'skill'</code>；HARD_MAX 修剪前 / 压缩构建器（prunedHead/Tail）/ 结构化 checkpoint 的 firstUser 全部排除 → 不持久化、不重放</td></tr>
+        <tr><td class="first">策略 budget reminder</td><td><b>user（synthetic）</b></td><td><code>synthetic: true</code> + <code>sidecar: 'reminder'</code>，同上剥离</td></tr>
+        <tr><td class="first">TaskGate 重入 nudge</td><td><b>user（synthetic）</b></td><td><code>synthetic: true</code> + <code>sidecar: 'nudge'</code>，同上剥离</td></tr>
+        <tr><td class="first">反思 / 计划推进提醒</td><td><b>user（synthetic）</b></td><td><code>synthetic: true</code> + <code>sidecar: 'reflection' | 'plan'</code>，同上剥离</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="callout" style="margin-top:20px">
+      <b>真实事故：Code Gen 技能强制注入</b><br>
+      <code>code-gen</code> 曾被写死进 5 个内置 agent 的 <code>skills</code> 列表，经 <code>agent.skills → required</code> 每轮强制注入 user 消息，
+      导致用户仅做「GC 卡顿分析」也会被前缀 <code>### Skill activated: Code Gen</code> 污染。修复：从 <code>builtinAgents.ts</code> 移除 <code>code-gen</code>，
+      改为仅命中 <code>match</code> 关键词（code/generate/write code…）的代码请求才自动激活；技能激活块现统一标记为 <code>synthetic</code> sidecar，压缩时剥离。
+    </div>
+
+    <h3 style="margin-top:26px">Canonical 注入顺序（保障 system 前缀字节稳定）</h3>
+    <div class="flow" style="margin-top:10px"><pre><span class="c-sys">① [0] system   冻结前缀（stable + context）              ◄── cache_control 断点 / fork 指纹</span>
+<span class="c-vol">② [1] system   volatile（Persona Memory + Active Skills）</span>
+<span class="c-mem">③ [2] system   &lt;agentmemory-context&gt; 记忆快照（幂等一次）</span>
+<span class="c-mem">④ [3] system   ## Preserved Context（retrieval，前缀剥离）</span>
+<span class="c-mem">⑤ [4] system   &lt;durable_context_data&gt;（checkpoint）</span>
+<span class="c-user">⑥ [5..] user（真实）+ assistant / tool …  对话历史</span>
+<span class="c-acc">⑦  [k] user（synthetic sidecar） 策略 reminder / TaskGate nudge / 反思 / 计划 / 技能激活</span>
+<span class="c-dim">        ↑ 仅发送副本；stripSyntheticSidecars 在 HARD_MAX 修剪前 + 压缩构建器 + checkpoint 剥离</span></pre></div>
+  </div>
+</section>
+
+<section id="compare">
+  <div class="wrap">
+    <h2><span class="num">05</span>与参考框架对比</h2>
+    <p class="lead">重构后的 Sarosis 与三个参考实现在同一套缓存对齐原则上收敛。</p>
+    <div class="tscroll"><table>
+      <thead><tr><th>维度</th><th>MiMo-Code</th><th>Hermes-Agent</th><th>CodeBuddy</th><th>Sarosis（重构后）</th></tr></thead>
+      <tbody>
+        <tr><td class="first">system 体量</td><td>几 KB（模块化）</td><td>分层、session 稳定</td><td>21KB 策展手册</td><td class="good">分层，自然体量</td></tr>
+        <tr><td class="first">结构</td><td>env→skills→instructions</td><td>stable/context/volatile</td><td>11 个标签段</td><td class="good">stable/context/volatile</td></tr>
+        <tr><td class="first">工具定义</td><td>结构化 schema</td><td>结构化（另传）</td><td>独立 tools 字段</td><td class="good">结构化 tools 字段</td></tr>
+        <tr><td class="first">缓存策略</td><td>字节稳定前缀 + fork 相等</td><td>每 session 建一次 + stable 在前</td><td>静态手册进 system，动态进 user</td><td class="good">冻结前缀 + volatile 隔离 + fork 指纹</td></tr>
+        <tr><td class="first">易变上下文</td><td>并入前缀、锚定日期</td><td>volatile 层垫底</td><td>放 user 轮</td><td class="good">volatile / 记忆 / durable 全在前缀后</td></tr>
+        <tr><td class="first">记忆</td><td>自编辑 MEMORY.md</td><td>volatile 层快照</td><td>走 update_memory 工具</td><td class="good">会话内去重注入一次（&lt;agentmemory-context&gt;）</td></tr>
+        <tr><td class="first">构造器</td><td>唯一 buildLLMRequestPrefix</td><td>build_system_prompt 缓存</td><td>服务端组装</td><td class="good">systemPromptComposer 单源</td></tr>
+        <tr><td class="first">user 消息隔离</td><td>synthetic:true 标签</td><td>api_content sidecar（干净 transcript 不改写）</td><td>动态内容进 user 轮</td><td class="good">synthetic 标记 + 压缩/持久化剥离</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<section id="beforeafter">
+  <div class="wrap">
+    <h2><span class="num">06</span>优化前后</h2>
+    <p class="lead">本次重构（P0–P2 为核心）解决了 101K 膨胀、persona 腰斩与缓存击穿三大问题。</p>
+    <div class="ba">
+      <div class="col before">
+        <h4>优化前</h4>
+        <ul>
+          <li>persona + 工具清单 + 技能目录 + 记忆指引拼成单个 101K+ blob</li>
+          <li>工具「名称+描述」大列表与结构化 tools 字段重复发送</li>
+          <li>executor 端用「头 35% + 尾 65%」粗暴裁剪到 15K，腰斩 persona</li>
+          <li>裁剪 marker 每次内容不同 → 彻底打破 prompt 前缀缓存</li>
+          <li>Persona Memory 置顶进 system，易变内容污染前缀</li>
+          <li>fork 指纹基于未含 enforcement 的 systemPrompt，断点常落空</li>
+        </ul>
+      </div>
+      <div class="col after">
+        <h4>优化后</h4>
+        <ul>
+          <li>stable / context / volatile 三层组装，system 文本自然体量</li>
+          <li>P0：工具清单移出 system 文本，仅保留名称清单 + 行为规则</li>
+          <li>删除粗暴裁剪，改为非破坏性体量告警（40K 阈值）</li>
+          <li>冻结前缀字节稳定 → provider prompt cache 命中</li>
+          <li>volatile（Persona Memory + Active Skills）独立消息置于前缀后</li>
+          <li>fork 指纹 / 缓存断点 / modelOptions 统一基于 effectiveSystemPrompt</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="principles">
+  <div class="wrap">
+    <h2><span class="num">07</span>设计原则（四方收敛）</h2>
+    <p class="lead">MiMo / Hermes / CodeBuddy 高度一致的四条原则，本框架全部落地。</p>
+    <div class="grid">
+      <div class="pcard"><div class="ic">🧩</div><h4>工具永远结构化</h4><p>工具以 JSON schema 经 function-calling 下发，绝不以文本形式嵌入 system。超限工具走 tool_search 桥接。</p><div class="src">MiMo · Hermes · CodeBuddy</div></div>
+      <div class="pcard"><div class="ic">✂️</div><h4>靠策展而非裁剪</h4><p>system 文本保持小而精，从源头不产生 101K；删除 head/tail 裁剪，只留非破坏性告警。</p><div class="src">MiMo · Hermes · CodeBuddy</div></div>
+      <div class="pcard"><div class="ic">🧊</div><h4>前缀字节稳定</h4><p>冻结前缀（stable+context）会话内不变；易变内容全部推到前缀边界之后，不打断缓存。</p><div class="src">MiMo · Hermes · CodeBuddy</div></div>
+      <div class="pcard"><div class="ic">🧠</div><h4>记忆不每轮灌</h4><p>记忆快照会话内去重注入一次，置于前缀之后；durable context 同为下游消息。</p><div class="src">MiMo · Hermes · CodeBuddy</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="files">
+  <div class="wrap">
+    <h2><span class="num">08</span>文件地图</h2>
+    <p class="lead">本次重构涉及的核心文件与职责。</p>
+    <div class="tscroll"><div class="filemap">
+      <div class="f"><span class="path">common/systemPromptComposer.ts</span><span class="kbd-new">NEW</span><span class="desc">分层类型 ISystemPromptTiers + joinSections / composeFrozenPrefix / composeVolatileMessage + buildCompactToolSection（压缩工具清单，杜绝 101K 回归）纯函数（单源构造器）</span></div>
+      <div class="f"><span class="path">common/providers.ts</span><span class="desc">IAgentTurnRequest 新增 systemPromptVolatile 字段；systemPrompt 注释明确为冻结前缀</span></div>
+      <div class="f"><span class="path">common/chatTypes.ts</span><span class="kbd-new">UPDATED</span><span class="desc">ChatMessage（User/Assistant/System）新增 <code>synthetic?</code> / <code>sidecar?: SidecarKind</code> 字段；新增 SidecarKind 类型</span></div>
+      <div class="f"><span class="path">common/agentRunState.ts</span><span class="kbd-new">UPDATED</span><span class="desc">新增 <code>stripSyntheticSidecars()</code> 纯函数 + canonical 注入顺序文档（保障 system 前缀字节稳定）</span></div>
+      <div class="f"><span class="path">common/contextManager.ts</span><span class="kbd-new">UPDATED</span><span class="desc">新增 <code>_isSyntheticUserMessage()</code>；压缩构建器（prunedHead/prunedTail）与结构化 checkpoint 的 firstUser 均排除 synthetic user 消息</span></div>
+      <div class="f"><span class="path">browser/agentDriverService.ts</span><span class="kbd-new">UPDATED</span><span class="desc">技能 user 注入标记 <code>synthetic:true, sidecar:'skill'</code>（合法 auto/explicit 注入，但可剥离）；删除 code-gen 强制（见 builtinAgents.ts）</span></div>
+      <div class="f"><span class="path">common/builtinAgents.ts</span><span class="kbd-new">UPDATED</span><span class="desc">从 5 个内置 agent 的 skills 移除 <code>code-gen</code> → 仅命中 match 关键词的代码请求才自动激活，不再每轮强制注入</span></div>
+      <div class="f"><span class="path">browser/agentDriverService.ts</span><span class="desc">executeTurn 按 stable/context/volatile 分层组装；P0 移除工具大列表；合成冻结前缀 + volatile</span></div>
+      <div class="f"><span class="path">browser/agentTurnExecutor.ts</span><span class="desc">删除 15K 粗暴裁剪；注入 volatile 层；fork 指纹 / modelOptions 统一基于 effectiveSystemPrompt</span></div>
+      <div class="f"><span class="path">browser/agentMemoryInjection.ts</span><span class="desc">记忆快照注入（会话内 injectedSessions 去重一次，置于前缀之后）—— 未改动，天然契合分层</span></div>
+      <div class="f"><span class="path">common/forkContext.ts</span><span class="desc">buildForkContext / prefixCacheAligned 前缀指纹（FNV-1a）—— 未改动，指纹对象现基于冻结前缀</span></div>
+      <div class="f"><span class="path">common/adapters/messageFormatConverter.ts</span><span class="desc">frozenSystemIdx 精确匹配 options.systemPrompt 落 cache_control 断点 —— 未改动，现可稳定命中</span></div>
+      <div class="f"><span class="path">common/unifiedSubAgentDispatch.ts</span><span class="desc">_buildSystemPrompt 改经 composer（stable-only）组装，与主 loop 同口径（P4 单源构造器）</span></div>
+      <div class="f"><span class="path">common/chatModeConfig.ts</span><span class="kbd-new">UPDATED</span><span class="desc">新增 getStrategyGuidance(paradigm) — 6 种范式策略提示词，按 agent.paradigm 动态注入 stable 层</span></div>
+      <div class="f"><span class="path">browser/strategies/hermesReActStrategy.ts</span><span class="kbd-new">UPDATED</span><span class="desc">preLoop 移除 preLoopOrchestrate 三阶段编排，改为直接返回空 — LLM 通过策略提示词自主决策</span></div>
+      <div class="f"><span class="path">test/common/systemPromptComposer.test.ts</span><span class="kbd-new">NEW</span><span class="desc">12 个用例：joinSections / composeFrozenPrefix / composeVolatileMessage + 缓存对齐不变量（volatile 不改变前缀指纹）</span></div>
+    </div></div>
+    <div class="callout">说明：<b>P3</b>（记忆会话稳定）由 <code>injectedSessions</code> 去重天然满足；<b>P4</b>（单源构造器）由 <code>systemPromptComposer</code> 落地；<b>P5</b>（AGENTS.md 发现）已存在于 <code>_composeWorkspaceContextText</code>，无需重复建设。</div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">Sarosis Agent Studio · 系统提示词框架文档 · 分层缓存对齐架构（对齐 MiMo-Code / Hermes-Agent / CodeBuddy）</div>
+</footer>
+</body>
+</html>

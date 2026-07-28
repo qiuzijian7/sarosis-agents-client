@@ -6,24 +6,36 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
-import { joinPath } from '../../../../base/common/resources.js';
+import { joinPath, dirname } from '../../../../base/common/resources.js';
+import { join } from '../../../../base/common/path.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import { classifyByKeywords, classifyContentViaLLM } from './knowledge/classifier.js';
-import { resolveChatModel, createKbEmbedder } from './knowledge/knowledgeAdapters.js';
+import type { AgentPreset } from '../../../common/agentStudioService.js';
+import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
+import { DEFAULT_KB_SCHEMA, IKBSchema, loadKbSchema } from './knowledge/kbSchema.js';
+import { resolveChatModel, createKbEmbedder, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
+import { IModelSelectorService } from '../common/modelSelector.js';
+import { IAgentOSService } from '../common/agentOS.js';
+import type { IChatModel } from './knowledge/engine/llm.js';
 import { IAiEmbeddingVectorService } from '../../../../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.js';
 import { resolveAuxEmbeddingConfig, resolveAuxEmbeddingProviderId } from './knowledge/embeddingConfigResolver.js';
 import { resolveKbRoot } from './knowledge/knowledgeStorage.js';
+import { KB_FALLBACK_PROVIDER } from './knowledge/builtinEmbeddingProvider.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome, getLegacyRoot } from '../common/sarosPaths.js';
 import {
 	type KnowledgeToolDeps,
 	importMessageToKnowledgeBase,
+	summarizeMessageToKnowledgeBase,
+	importMessageRawToKnowledgeBase,
 	importFolderToRag,
 	searchFolderRag,
 	type ImportToKbOptions,
@@ -34,10 +46,12 @@ import {
 } from './knowledge/knowledgeTools.js';
 import type { Agent, AgentBinding, Workspace, Connection, AgentStudioSession, WorkspaceLayout } from '../../../common/agentStudioTypes.js';
 import { ITofAuthService } from '../common/tofAuth.js';
+import { IAgentVersionService } from '../common/agentVersionTypes.js';
 import { canUploadAgent as evaluateCanUploadAgent, resolveClaimOwner } from '../common/uploadPermission.js';
 import { ConnectionType } from '../../../common/agentStudioTypes.js';
 import { migrateWorkspace } from '../../../common/agentStudioTypes.js';
-import { DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, DATA_FILE_LAST_ACTIVE_AGENT, DATA_FILE_AGENT_BINDINGS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENT_STUDIO_AUX_CURATOR_PROVIDER, AGENT_STUDIO_AUX_CURATOR_MODEL } from '../common/constants.js';
+import { parseAgentMd, buildAgentMd } from '../common/agentMdFormat.js';
+import { DATA_FILE_WORKSPACES, DATA_FILE_SESSIONS, DATA_FILE_LAST_ACTIVE_WORKSPACE, DATA_FILE_LAST_ACTIVE_AGENT, DATA_FILE_AGENT_BINDINGS, AGENT_STUDIO_DATA_PATH_SETTING, WORKSPACE_DATA_DIR, AGENT_STUDIO_AUX_CURATOR_PROVIDER, AGENT_STUDIO_AUX_CURATOR_MODEL, AGENT_STUDIO_DEFAULT_PROVIDER_SETTING, AGENT_STUDIO_DEFAULT_MODEL_SETTING } from '../common/constants.js';
 import { IWorkspaceLifecycleService, WorkspaceLifecycleEvent, IWorkspaceLifecyclePayload } from '../common/workspaceLifecycle.js';
 import { IWorktreeService } from '../../worktree/common/worktreeService.js';
 import { IWorktreeWorkspaceOptions, WorktreeStatus, IWorktreeStateEvent, IWorktreeDetail } from '../../worktree/common/worktreeTypes.js';
@@ -69,6 +83,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private readonly _onDidRequestInjectPrompt = this._register(new Emitter<{ agentId: string; message: string }>());
 	readonly onDidRequestInjectPrompt: Event<{ agentId: string; message: string }> = this._onDidRequestInjectPrompt.event;
 
+	private readonly _onDidRequestKbRefresh = this._register(new Emitter<void>());
+	readonly onDidRequestKbRefresh: Event<void> = this._onDidRequestKbRefresh.event;
+
 	private readonly _onDidChangeWorktreeState = this._register(new Emitter<{ workspaceId: string; status: string; message?: string }>());
 	readonly onDidChangeWorktreeState: Event<{ workspaceId: string; status: string; message?: string }> = this._onDidChangeWorktreeState.event;
 
@@ -88,9 +105,20 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		this._onDidRequestInjectPrompt.fire({ agentId, message });
 	}
 
+	/** Request the KB view to refresh (e.g. after background agent import completes). */
+	requestKbRefresh(): void {
+		this._onDidRequestKbRefresh.fire();
+	}
+
 	private _globalDataUri: URI | undefined;
 
-	/** 内置 agent 落地到 ~/.saros/agents/ 的 seed 任务（仅执行一次）。 */
+	/**
+	 * 初始化 Promise：迁移旧数据 → seed 内置 agent。
+	 * 确保迁移先于任何数据读写，避免 seed 创建目录后迁移检查跳过。
+	 */
+	private _initPromise?: Promise<void>;
+
+	/** seed 内置 agent 的 Promise 副本，保证 idempotent。 */
 	private _seedBuiltinsPromise?: Promise<void>;
 
 	constructor(
@@ -98,12 +126,16 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		@ILogService private readonly logService: ILogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@IStorageService private readonly storageService: IStorageService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IWorkspaceLifecycleService private readonly workspaceLifecycleService: IWorkspaceLifecycleService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@IPathService private readonly pathService: IPathService,
 		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
+		@IAgentVersionService private readonly agentVersionService: IAgentVersionService,
+		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
+		@IAgentOSService private readonly agentOSService: IAgentOSService,
 	) {
 		super();
 
@@ -118,10 +150,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			void this._clearWorktreeBindings(removedPath);
 		}));
 
-		// Seed builtin agents into ~/.saros/agents/{id}/ on first launch so they
-		// appear in the native chat mode picker and the preset panel. The promise
-		// is cached so concurrent getAgents() calls await the same seed.
-		this._ensureBuiltinsSeeded();
+		// Init: migrate legacy ~/.saros/ → seed builtin agents. Chain is cached
+		// so concurrent getAgents() calls await the same promise.
+		this._initPromise = this._migrateFromLegacySarosDir().then(() => this._ensureBuiltinsSeeded());
 	}
 
 	/**
@@ -280,12 +311,16 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	// ─── Data directory helpers ─────────────────────────────────────────────────
 
 	/**
-	 * Global data directory (~/.saros).
+	 * Global data directory (`~/.vssaros`).
 	 * Stores the global workspace index (workspaces.json) and fallback data
 	 * for workspaces that don't have a local path.
 	 *
-	 * All user-level global data is stored under `~/.saros/` (userHome)
-	 * for consistency with other modules (skills, marketplace, memory, etc.).
+	 * All user-level global data is now stored directly under the VS Code user data
+	 * directory (`.vssaros/` or `.vssaros-dev/` in dev mode). This provides
+	 * automatic dev/prod isolation.
+	 *
+	 * Legacy data (from `~/.saros/`) is migrated on first access via
+	 * `_migrateFromLegacySarosDir()`.
 	 */
 	private _getGlobalDataUri(): URI {
 		if (!this._globalDataUri) {
@@ -293,14 +328,100 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			if (customPath) {
 				this._globalDataUri = URI.file(customPath);
 			} else {
-				// Use userRoamingDataHome's parent as the user home directory.
-				// In VS Code, userRoamingDataHome is typically ~/.vscode-oss,
-				// so we go up one level to get ~/.saros
-				this._globalDataUri = URI.joinPath(this.environmentService.userRoamingDataHome, '..', '.saros');
+				// userRoamingDataHome = ~/.vssaros/User/ → parent = ~/.vssaros/
+				const userDataRoot = userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
+				this._globalDataUri = resolveSarosPath(userDataRoot);
 			}
 			this.logService.debug(`[AgentStudio] Global data directory: ${this._globalDataUri.toString()}`);
 		}
 		return this._globalDataUri;
+	}
+
+	/**
+	 * Migrate user data from legacy `~/.saros/` to the VS Code user data root (`~/.vssaros/`).
+	 * Runs once on first startup after the directory layout change.
+	 * Skips if already migrated (marker file present) or if legacy dir doesn't exist.
+	 *
+	 * Each sub-item from `~/.saros/` is copied directly into `~/.vssaros/`
+	 * (no intermediate `saros/` subdirectory).
+	 */
+	private async _migrateFromLegacySarosDir(): Promise<void> {
+		const newRoot = this._getGlobalDataUri();
+		const markerUri = joinPath(newRoot, '.saros-migrated');
+
+		// Resolve the legacy root up front (don't gate on the marker first — we
+		// want migration to (re)run whenever legacy data actually exists, so a
+		// dev re-adding ~/.saros (or a partial/failed prior run) is retried).
+		let legacyRoot: URI;
+		try {
+			legacyRoot = getLegacyRoot(await this.pathService.userHome());
+		} catch (err) {
+			this.logService.warn('[AgentStudio] Cannot resolve user home for legacy migration:', err);
+			return;
+		}
+
+		// Is there anything to migrate?
+		let legacyExists = false;
+		try { await this.fileService.stat(legacyRoot); legacyExists = true; } catch { /* no legacy dir */ }
+
+		if (!legacyExists) {
+			// Nothing to migrate. Deliberately do NOT write a marker here so a
+			// later-added ~/.saros is still picked up on the next launch.
+			this.logService.info('[AgentStudio] No legacy ~/.saros/ directory to migrate');
+			return;
+		}
+
+		// Legacy data exists — skip only if a prior *successful* migration left
+		// the marker (so ~/.vssaros keeps its migrated data rather than being
+		// overwritten by stale ~/.saros content).
+		try {
+			await this.fileService.stat(markerUri);
+			this.logService.info('[AgentStudio] Legacy ~/.saros/ already migrated (marker present); skipping');
+			return;
+		} catch { /* not yet migrated — proceed */ }
+
+		// Guarantee the destination root exists: fileService.writeFile does NOT
+		// create parent directories, and seed runs *after* migration.
+		try { await this.fileService.createFolder(newRoot); } catch { /* best effort */ }
+
+		this.logService.info(`[AgentStudio] Migrating data: ${legacyRoot.fsPath} → ${newRoot.fsPath}`);
+		try {
+			const legacyStat = await this.fileService.resolve(legacyRoot);
+			for (const child of legacyStat.children ?? []) {
+				const dest = joinPath(newRoot, child.name);
+				if (child.isDirectory) {
+					await this._copyDirRecursive(child.resource, dest);
+				} else {
+					await this._copyFileSafe(child.resource, dest);
+				}
+			}
+			await this.fileService.writeFile(markerUri, VSBuffer.fromString('ok'));
+			this.logService.info('[AgentStudio] Migration complete.');
+		} catch (err) {
+			// Don't write the marker on failure — allow a retry on the next launch.
+			this.logService.error('[AgentStudio] Data migration failed:', err);
+		}
+	}
+
+	private async _copyFileSafe(src: URI, dest: URI): Promise<void> {
+		try {
+			await this.fileService.createFolder(dirname(dest));
+			const content = await this.fileService.readFile(src);
+			await this.fileService.writeFile(dest, content.value);
+		} catch { /* skip individual file errors */ }
+	}
+
+	private async _copyDirRecursive(src: URI, dest: URI): Promise<void> {
+		await this.fileService.createFolder(dest);
+		const stat = await this.fileService.resolve(src);
+		for (const child of stat.children ?? []) {
+			const childDest = joinPath(dest, child.name);
+			if (child.isDirectory) {
+				await this._copyDirRecursive(child.resource, childDest);
+			} else {
+				await this._copyFileSafe(child.resource, childDest);
+			}
+		}
 	}
 
 	/**
@@ -402,7 +523,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	/**
 	 * 读取所有 agent 定义。
 	 *
-	 * 唯一数据源：`~/.saros/agents/{agentId}/agent.json`。
+	 * 唯一数据源：`~/.vssaros/agents/{agentId}/.agent.md`。
 	 * 在首次读取前，确保内置 agent 已落地到该目录（初始安装 VsSaros 时，
 	 * 从内置预设创建各 agent 文件）。其余来源（custom-agents.json 等）已全部移除。
 	 */
@@ -419,22 +540,26 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			return this._agentsCache.data;
 		}
 		const t0 = Date.now();
-		// 确保内置 agent 已落地（幂等；已存在则不覆盖用户编辑）
-		await this._ensureBuiltinsSeeded();
+		// 确保迁移和 seed 已完成（幂等）
+		await this._initPromise;
 
-		const agentsDir = await this._getSarosAgentsDir();
+		const agentsDir = this._getSarosAgentsDir();
 		const agents: Agent[] = [];
 		try {
 			const result = await this.fileService.resolve(agentsDir);
 			const dirs = (result.children ?? []).filter(c => c.isDirectory);
 			// Parallel read — much faster than serial await in for-loop
 			const reads = dirs.map(async child => {
-				const agentJsonUri = joinPath(child.resource, 'agent.json');
+				// Preferred: .agent.md (VS Code Chat standard format, YAML frontmatter)
+				const agentMdUri = joinPath(child.resource, '.agent.md');
 				try {
-					const content = await this.fileService.readFile(agentJsonUri);
-					const agent = JSON.parse(content.value.toString()) as Agent;
-					if (agent && agent.id) { return agent; }
-				} catch { /* missing agent.json — skip */ }
+					const content = await this.fileService.readFile(agentMdUri);
+					const parsed = parseAgentMd(content.value.toString());
+					if (parsed) {
+						const agent = { ...parsed.agent, systemPrompt: parsed.systemPrompt } as Agent;
+						if (agent.id) { return agent; }
+					}
+				} catch { /* .agent.md not found — skip */ }
 				return null;
 			});
 			const results = await Promise.all(reads);
@@ -442,7 +567,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 				if (agent) { agents.push(agent); }
 			}
 		} catch {
-			// ~/.saros/agents 目录尚不存在（极少发生，seeding 应已创建）
+			// ~/.vssaros/agents 目录尚不存在（极少发生，seeding 应已创建）
 		}
 
 		this._agentsCache = { data: agents, ts: performance.now() };
@@ -453,7 +578,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		return agents;
 	}
 
-	/** 确保内置 agent 已落地到 ~/.saros/agents/（仅执行一次，缓存 promise）。 */
+	/** 确保内置 agent 已落地到 ~/.vssaros/agents/（仅执行一次，缓存 promise）。 */
 	private _ensureBuiltinsSeeded(): Promise<void> {
 		if (!this._seedBuiltinsPromise) {
 			this._seedBuiltinsPromise = this.ensureBuiltinAgentMdFiles().catch(err =>
@@ -481,6 +606,94 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 */
 	canUploadAgent(agent: Agent): boolean {
 		return evaluateCanUploadAgent(agent, this._currentUserId);
+	}
+
+	/**
+	 * 从两个数据源合并生成 preset 列表（用于 CreateAgentModal 快速创建面板）：
+	 *   1. resources/.agents/agents/{id}/.agent.md — 内置 agent（始终可用，真相源）
+	 *   2. ~/.vssaros-dev/agents/{id}/.agent.md    — 用户自定义 agent
+	 *
+	 * 内置 agent 以 resources 为准，用户目录中同 ID 的不重复列出。
+	 */
+	async getAgentPresets(): Promise<AgentPreset[]> {
+		const presets: AgentPreset[] = [];
+		const seenIds = new Set<string>();
+
+		// ── 来源 1: resources/.agents/agents/{id}/.agent.md（内置 agent）──
+		const resourceCandidates: URI[] = [];
+		try {
+			const uri1 = FileAccess.asFileUri('vs/../../resources/.agents/agents');
+			resourceCandidates.push(uri1);
+		} catch { /* dev fallback */ }
+		const appRoot = (this.environmentService as any).appRoot as string | undefined;
+		if (appRoot) {
+			const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'agents');
+			if (!resourceCandidates.some(c => c.toString() === uri2.toString())) {
+				resourceCandidates.push(uri2);
+			}
+		}
+
+		for (const candidate of resourceCandidates) {
+			try {
+				const result = await this.fileService.resolve(candidate);
+				const dirs = (result.children ?? []).filter(c => c.isDirectory);
+				for (const d of dirs) {
+					const mdUri = joinPath(d.resource, '.agent.md');
+					try {
+						const buf = await this.fileService.readFile(mdUri);
+						const parsed = parseAgentMd(buf.value.toString());
+						if (parsed?.agent.id) {
+							const p = parsed.agent;
+							presets.push({
+								id: p.id!,
+								name: p.name ?? p.id!,
+								role: p.role ?? 'assistant',
+								icon: p.icon ?? '🤖',
+								description: p.description ?? '',
+								model: p.model ?? 'claude-sonnet-4-20250514',
+								systemPrompt: parsed.systemPrompt,
+								skills: p.skills?.length ? p.skills : undefined,
+								tools: p.tools?.length ? p.tools : undefined,
+								category: p.category,
+								source: 'builtin',
+							});
+							seenIds.add(p.id!);
+						}
+					} catch { /* skip unreadable */ }
+				}
+				if (presets.length > 0) { break; }
+			} catch { /* candidate not accessible */ }
+		}
+
+		// ── 来源 2: ~/.vssaros-dev/agents/{id}/.agent.md（用户自定义）──
+		// 仅添加不在内置集合中的 agent（如 gr-*, wf-*, 其他自定义 agent）
+		try {
+			const userAgents = await this.getAgents();
+			const customPrefixes = new Set(['gr-', 'wf-', 'vssaros-', 'ppt-']);
+			for (const a of userAgents) {
+				if (seenIds.has(a.id)) { continue; }
+				// 自定义 agent：不以内置前缀开头，或明确标记为 custom
+				const isCustom = a.source === 'custom' || customPrefixes.has(a.id);
+				if (isCustom) {
+					presets.push({
+						id: a.id,
+						name: a.name,
+						role: a.role || 'assistant',
+						icon: a.icon || '🤖',
+						description: a.description || '',
+						model: a.model || 'claude-sonnet-4-20250514',
+						systemPrompt: a.systemPrompt || '',
+						skills: a.skills?.length ? a.skills : undefined,
+						tools: a.tools?.length ? a.tools : undefined,
+						category: a.category,
+						source: a.source,
+					});
+					seenIds.add(a.id);
+				}
+			}
+		} catch { /* user dir may not exist */ }
+
+		return presets;
 	}
 
 	/** 上传成功后认领 owner：把 agent.owner 设为当前用户（用于存量 agent 首次上传）。 */
@@ -516,10 +729,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			visibility: data.visibility, agents: data.agents,
 			confidenceThreshold: data.confidenceThreshold,
 			parallelStrategy: data.parallelStrategy,
-			// Agent type is part of the global definition (planner vs worker).
-			agentType: data.agentType,
-			// config.md binding is part of the definition (same across workspaces).
-			configHtml: data.configHtml,
+		// config.md binding is part of the definition (same across workspaces).
+		configHtml: data.configHtml,
 			sortOrder: data.sortOrder,
 			status: data.status,
 			version: data.version,
@@ -534,8 +745,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		// here — it now lives on AgentBinding. If the caller supplied any of
 		// those, persist them as a binding for the target workspace instead.
 
-		// Create the agent's directory: ~/.saros/agents/{agentId}/
-		// Write agent.json and .agent.md so the agent has a persistent home dir.
+		// Create the agent's directory: ~/.vssaros/agents/{agentId}/
+		// Write .agent.md so the agent has a persistent home dir.
 		try {
 			const agentDir = await this.getAgentDir(id);
 			try {
@@ -543,38 +754,28 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			} catch {
 				await this.fileService.createFolder(agentDir);
 			}
-			// Write agent.json
-			const agentJsonUri = joinPath(agentDir, 'agent.json');
-			await this.fileService.writeFile(agentJsonUri, VSBuffer.fromString(JSON.stringify(agent, null, 2)));
-			// Write .agent.md
-			const toolsLine = agent.tools?.length ? `\ntools: ${agent.tools.join(', ')}` : '';
-			const categoryLine = agent.category ? `\ncategory: ${agent.category}` : '';
-			const agentMdContent = `---
-name: ${agent.name}
-description: ${agent.description || ''}
-model: ${agent.model || 'claude-sonnet-4-20250514'}${toolsLine}${categoryLine}
-icon: "${agent.icon || '🤖'}"
----
-
-# ${agent.name}
-
-${agent.systemPrompt || ''}
-`;
-			const agentMdUri = joinPath(agentDir, '.agent.md');
-			await this.fileService.writeFile(agentMdUri, VSBuffer.fromString(agentMdContent));
+		// Write .agent.md (VS Code Chat standard format — primary definition)
+		await this._writeAgentMd(agent);
 			this.logService.info(`[AgentStudio] Created agent dir + files at ${agentDir.toString()}`);
 		} catch (err) {
 			this.logService.warn(`[AgentStudio] createAgent: failed to create agent dir for ${id}: ${err instanceof Error ? err.message : String(err)}`);
 		}
 
-		// If bootstrapTemplates were provided, create a .agent.md file so the
-		// agent appears in the native chat mode picker with its icon and metadata.
+		// bootstrapTemplates no longer writes a separate .agent.md —
+		// _writeAgentMd already generates the VS Code Chat compatible format.
+		// bootstrapTemplates.agentsMd body content (if provided) is appended to
+		// the agent's systemPrompt as project-level instructions.
 		const bootstrap = (data as any).bootstrapTemplates;
 		if (bootstrap?.agentsMd) {
 			try {
-				await this._createAgentMdFile(agent, bootstrap.agentsMd);
+				// Append bootstrap instructions to .agent.md body
+				const agentWithInstructions: Agent = {
+					...agent,
+					systemPrompt: (agent.systemPrompt || '') + '\n\n' + bootstrap.agentsMd,
+				};
+				await this._writeAgentMd(agentWithInstructions);
 			} catch (err) {
-				this.logService.warn(`[AgentStudio] createAgent: failed to create .agent.md for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+				this.logService.warn(`[AgentStudio] createAgent: failed to append bootstrap instructions for ${id}: ${err instanceof Error ? err.message : String(err)}`);
 			}
 		}
 		if (runtime.workspaceId) {
@@ -592,16 +793,17 @@ ${agent.systemPrompt || ''}
 		// 清除缓存，确保下次 getAgents() 返回包含新 agent 的数据
 		this._agentsCache = undefined;
 		this._onDidChangeAgents.fire();
+		// 初始化 git 仓库（版本管理）
+		this.agentVersionService.init(id).catch(() => {});
 		return agent;
 	}
 
 	/**
-	 * Gets the unified agent directory: `~/.saros/agents/`.
+	 * Gets the unified agent directory: `~/.vssaros/agents/`.
 	 * This is the single source of truth for all agent definitions.
 	 */
-	private async _getSarosAgentsDir(): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return joinPath(userHome, '.saros', 'agents');
+	private _getSarosAgentsDir(): URI {
+		return joinPath(this._getGlobalDataUri(), SarosPath.agents);
 	}
 
 	/** Resolve the OS user home directory path (e.g. /home/user). */
@@ -610,11 +812,40 @@ ${agent.systemPrompt || ''}
 		return home.fsPath;
 	}
 
-	/** KB storage root (~/.saros/knowledge-base by default, config-overridable). */
-	private async _resolveKbStorageRoot(): Promise<string> {
+	/** KB storage root (~/.vssaros/knowledge-base by default, config-overridable). */
+	private _resolveKbStorageRoot(): string {
 		const cfg = this.configurationService.getValue<string>('agentStudio.knowledge.storage.path');
-		const userHome = (await this.pathService.userHome()).fsPath;
-		return resolveKbRoot(cfg, userHome);
+		const dataRoot = userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome).fsPath;
+		return resolveKbRoot(cfg, dataRoot);
+	}
+
+	/**
+	 * Resolve the active vault's notes directory so raw/LLM-summary imports land
+	 * where the knowledge-base view expects them. The view scans `<vaultId>/笔记/`;
+	 * this method returns `<root>/<activeVaultId>/笔记/` (or `<root>/notes/` as
+	 * fallback when no vault is active).
+	 */
+	private _resolveNotesDir(): string {
+		const STORAGE_VAULTS = 'agentStudio.kb.vaults';
+		const STORAGE_ACTIVE = 'agentStudio.kb.active';
+		const storageRoot = this._resolveKbStorageRoot();
+
+		try {
+			const raw = this.storageService.get(STORAGE_VAULTS, StorageScope.APPLICATION);
+			const vaults: Array<{ id: string; closed?: boolean }> = raw ? JSON.parse(raw) : [];
+			const activeId = this.storageService.get(STORAGE_ACTIVE, StorageScope.APPLICATION);
+			const activeVault = vaults.find(v => v.id === activeId && !v.closed) ?? vaults.find(v => !v.closed);
+
+			if (activeVault) {
+				// 笔记分区始终在 Vault 内（<vaultRoot>/笔记/）
+				return join(storageRoot, activeVault.id, '笔记');
+			}
+		} catch {
+			// Storage read failed → fall through
+		}
+
+		// Fallback: legacy <root>/notes/
+		return join(storageRoot, 'notes');
 	}
 
 	/** Workspace root — used to resolve relative source file paths in kb_* tools. */
@@ -637,6 +868,24 @@ ${agent.systemPrompt || ''}
 		return importMessageToKnowledgeBase(deps, content, opts);
 	}
 
+	/**
+	 * LLM-only summary import — does NOT build a vector/embedding index.
+	 * Routes to `summarizeMessageToKnowledgeBase` in `knowledgeTools.ts`, which uses the
+	 * KB agent's chat LLM to summarize the message (notes_summary template) and writes a
+	 * structured note to `<storage-root>/notes/<key>.md`. This is the path used by the
+	 * chat "导入知识库" button so it works without an embedding provider.
+	 */
+	async summarizeMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult> {
+		const deps = this._buildKbToolDeps();
+		return summarizeMessageToKnowledgeBase(deps, content, opts);
+	}
+
+	/** Raw-import the message as-is into the knowledge base (markdown + metadata header, no LLM). */
+	async importMessageRawToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult> {
+		const deps = this._buildKbToolDeps();
+		return importMessageRawToKnowledgeBase(deps, content, opts);
+	}
+
 	/** Build the `KnowledgeToolDeps` shared by all KB engine operations (message import + folder RAG). */
 	private _buildKbToolDeps(): KnowledgeToolDeps {
 		return {
@@ -644,19 +893,23 @@ ${agent.systemPrompt || ''}
 			configurationService: this.configurationService,
 			embeddingService: this.embeddingService,
 			resolveBaseDir: () => this._resolveWorkspaceDir(),
-		resolveStorageRoot: () => this._resolveKbStorageRoot(),
-		// 跨库检索：暴露全局文件夹 RAG 索引读取器（kb_search_repo 用它 fan-out 各仓库 session）。
-		readFolderRagIndex: () => this._readFolderRagIndex(),
-		// 知识库操作的 chat 模型一律取自「辅助模型 → Curator」配置，解除对 KB agent 的依赖。
-		resolveKbModel: () => this._resolveKbChatModel(),
+			resolveStorageRoot: async () => this._resolveKbStorageRoot(),
+			resolveNotesDir: async () => this._resolveNotesDir(),
+			// 跨库检索：暴露全局文件夹 RAG 索引读取器（kb_search_repo 用它 fan-out 各仓库 session）。
+			readFolderRagIndex: () => this._readFolderRagIndex(),
+			// 知识库操作的 chat 模型选择（知识库专家优先 → 当前激活 agent → 兜底链）。
+			resolveKbModel: () => this._resolveKbChatModel(),
+			// KB chat 模型构建：优先 AgentOS provider 传输（lm: 桥接 provider 无 CORS、
+			// 鉴权由 provider 托管），未命中时回退旧的 OpenAI 兼容直连路径。
+			createKbChatModel: (opts: { providerId: string; modelId: string; agentId?: string }) => this._createKbChatModelFor(opts),
 			// Embedding 一律使用「辅助模型 → Embedding」配置（provider/model/dimensions），
 			// 不再跟随 KB agent；provider 留空时由 resolver 回退到全局 embedding provider。
 			createKbEmbedder: (_providerId: string) => {
 				// P2 修复：优先取用户显式配置的 aux embedding provider，
 				// 未配置时回退到知识库操作所使用的 chat model 的 provider（_providerId），
 				// 因为 chat model 是可用的（否则 KB 导入本身无法调用 LLM）。
-				const resolvedId = resolveAuxEmbeddingProviderId(this.configurationService)
-					?? (_providerId || 'openrouter');
+			const resolvedId = resolveAuxEmbeddingProviderId(this.configurationService)
+				?? (_providerId || KB_FALLBACK_PROVIDER);
 				return createKbEmbedder(
 					this.configurationService,
 					this.logService,
@@ -741,90 +994,259 @@ ${agent.systemPrompt || ''}
 	}
 
 	/**
-	 * LLM 驱动的智能内容分类（复刻 Hyper-Extract 的 guideline.target + structured output 模式）。
-	 * 失败时自动降级到关键词启发式分类，保证零中断。
+	 * Schema 驱动的智能内容分类（LLM 依据活动 vault 的 kb-schema.json 进行语义类型判断，
+	 * 唯一分类路径）。LLM 不可用时安全降级为 schema 默认类型（source='fallback'），
+	 * 不做关键词猜测。
 	 */
-	async classifyContent(content: string): Promise<{ category: string; label: string; confidence: number; reasoning: string; source: 'llm' | 'keyword' }> {
+	async classifyContent(content: string): Promise<{ category: string; label: string; confidence: number; reasoning: string; source: 'llm' | 'fallback' }> {
+		// schema 驱动语义分类（唯一分类路径）；LLM 不可用时安全降级默认类型，
+		// 不做关键词猜测（对齐 llm_wiki：语义归类 100% 归 LLM）。
+		const schema = await this._loadKbSchemaSafe();
+		const toLegacy = (r: SchemaClassifyResult) => ({
+			category: r.typeId,
+			label: r.typeLabel,
+			confidence: r.confidence,
+			reasoning: r.reasoning,
+			source: r.source,
+		});
+		if (!this.isKbChatProviderAvailable()) {
+			this.logService.info('[AgentStudioService] classifyContent: 无可用 chat provider，安全降级默认类型');
+			return toLegacy(safeSchemaFallback(schema));
+		}
 		try {
-			const kb = this._resolveKbChatModel();
-			const chatModel = resolveChatModel(this.configurationService, { providerId: kb.providerId, modelId: kb.modelId });
-			return await classifyContentViaLLM(chatModel, content);
+			const chatModel = this.createKbChatModel();
+			if (!chatModel) { return toLegacy(safeSchemaFallback(schema)); }
+			return toLegacy(await classifyContentViaSchema(chatModel, schema, content));
 		} catch {
-			return classifyByKeywords(content);
+			return toLegacy(safeSchemaFallback(schema));
 		}
 	}
 
+	/** 解析活动 vault 根目录（与 KB 视图一致：storage kbDir + vaults + customPath）。 */
+	private async _resolveKbVaultRoot(): Promise<URI> {
+		const customRoot = this.storageService.get('agentStudio.kb.kbDir', StorageScope.APPLICATION);
+		const baseRoot = (typeof customRoot === 'string' && customRoot.trim())
+			? URI.file(customRoot.trim())
+			: URI.joinPath(await this.pathService.userHome(), '.vssaros', 'knowledge-base');
+		try {
+			const activeId = this.storageService.get('agentStudio.kb.active', StorageScope.APPLICATION);
+			if (typeof activeId === 'string' && activeId.trim()) {
+				const raw = this.storageService.get('agentStudio.kb.vaults', StorageScope.APPLICATION);
+				if (typeof raw === 'string') {
+					const vaults: { id: string; customPath?: string }[] = JSON.parse(raw);
+					const activeVault = vaults.find(v => v.id === activeId);
+					if (activeVault?.customPath) { return URI.file(activeVault.customPath); }
+					if (activeVault) { return URI.joinPath(baseRoot, activeId); }
+				}
+			}
+		} catch { /* storage parse error → 回退 baseRoot */ }
+		return baseRoot;
+	}
+
 	/**
-	 * 解析知识库操作（收藏 / 分类 / 导入）使用的 chat 模型，解除对 knowledge-base-expert
-	 * agent 的依赖：优先取「辅助模型 → Curator」配置，未配置时回退到默认 openrouter 模型。
+	 * 加载活动 vault 的 kb-schema.json（用户可编辑）；失败时回退内置 DEFAULT_KB_SCHEMA。
+	 * 每次调用重新读取（文件很小），保证用户对 schema 的编辑即时生效。
 	 */
-	private _resolveKbChatModel(): { providerId: string; modelId: string } {
-		const provider = (this.configurationService.getValue<string>(AGENT_STUDIO_AUX_CURATOR_PROVIDER) || 'auto').trim();
-		const model = (this.configurationService.getValue<string>(AGENT_STUDIO_AUX_CURATOR_MODEL) || '').trim();
-		if (provider && provider !== 'auto' && model) {
-			return { providerId: provider, modelId: model };
+	private async _loadKbSchemaSafe(): Promise<IKBSchema> {
+		try {
+			const vaultRoot = await this._resolveKbVaultRoot();
+			return await loadKbSchema(this.fileService, vaultRoot);
+		} catch {
+			return DEFAULT_KB_SCHEMA;
 		}
-		return { providerId: 'openrouter', modelId: 'openai/gpt-4o-mini' };
 	}
 
 	/**
-	 * Resolve the per-agent directory: `~/.saros/agents/{agentId}/`.
-	 * Contains agent.json, .agent.md, config.html, and HTML assets.
+	 * Hyper-Extract 风格技能提取：LLM structured output 判断是否值得沉淀技能。
+	 * 对应 Hyper-Extract `BaseAutoType._extract_data()` + Pydantic schema。
+	 * 失败时自动降级到纯启发式提取，保证按钮零中断。
+	 */
+	async extractSkillContent(
+		content: string,
+		opts?: { providerId?: string; modelId?: string },
+	): Promise<{ isSkill: boolean; name: string; description: string; prompt: string; category?: string; scripts?: Array<{ filename: string; content: string; language: string }>; source: 'llm' | 'heuristic'; reason: string }> {
+		const kbModel = this._resolveKbChatModel();
+		// 手动点击「沉淀技能」时调用方传入当前 agent 的 provider/model，
+		// 优先走 agent 的 LLM 结构化抽取；但若该 provider 未配 API key，
+		// 也要提前跳过 LLM 避免 3 次 401 网络请求后才降级。
+		const useAgentModel = !!(opts?.providerId || opts?.modelId);
+		const modelOpts: ResolveChatModelOpts = useAgentModel
+			? { providerId: opts!.providerId, modelId: opts!.modelId }
+			: kbModel;
+		// 不要硬编码 true — agent 的 provider 同样可能未配 key；
+		// 提前判断，跳过 LLM 避免 3 次 401 请求后才降级。
+		const llmAvailable = useAgentModel
+			? this._isKbChatProviderUsable(opts!.providerId)
+			: this._isKbChatProviderUsable(kbModel.providerId);
+		try {
+			// 预过滤：明显非技能内容直接拒绝
+			const { prefilterSkillIntent, validateExtractionResult, buildExtractSkillPrompt } = await import('../common/extractSkill.js');
+			const pre = prefilterSkillIntent(content);
+			if (!pre.likely) {
+				return { isSkill: false, name: '', description: '', prompt: '', source: 'heuristic', reason: pre.reason };
+			}
+
+			if (!llmAvailable) {
+				throw new Error('no chat provider configured');
+			}
+
+			const chatModel = modelOpts.providerId
+				? this._createKbChatModelFor({ providerId: modelOpts.providerId, modelId: modelOpts.modelId ?? '' })
+				: this.createKbChatModel();
+			if (!chatModel) { throw new Error('no chat model available'); }
+			const { EXTRACT_SKILL_JSON_SCHEMA } = await import('../common/extractSkill.js');
+
+			const raw = await chatModel.extract<Record<string, unknown>>({
+				prompt: buildExtractSkillPrompt(content),
+				schema: EXTRACT_SKILL_JSON_SCHEMA as any,
+			});
+
+			const validated = validateExtractionResult(raw);
+			if ('error' in validated) {
+				// LLM 返回无效 → 降级到启发式
+				throw new Error(validated.error);
+			}
+
+			return { ...validated, source: 'llm' };
+		} catch {
+			// 降级：纯启发式提取
+			const { extractSkillComponents } = await import('../common/extractSkill.js');
+			const heuristic = extractSkillComponents(content);
+			return {
+				isSkill: true,
+				name: heuristic.name,
+				description: heuristic.description,
+				prompt: heuristic.prompt,
+				category: heuristic.category,
+				scripts: heuristic.scripts ? heuristic.scripts.map(s => ({ filename: s.filename, content: s.content, language: s.language })) : undefined,
+				source: 'heuristic',
+				reason: 'LLM extraction failed, using heuristic fallback',
+			};
+		}
+	}
+
+	/**
+	 * 解析知识库操作（收藏 / 分类 / 导入）使用的 chat 模型。
+	 *
+	 * 模型选择逻辑（内部始终新建 session 执行）：
+	 *   1. 用户为「知识库专家」agent（knowledge-base-expert）单独配置过
+	 *      provider+model → 优先使用知识库专家的 provider/model；
+	 *   2. 否则使用当前激活 agent 所使用的 provider/model；
+	 *   3. 兜底链：「辅助模型 → Curator」显式配置 → 全局默认 provider →
+	 *      任一已配 key 的 provider → openai。
+	 */
+	/**
+	 * 判断给定 provider 是否可用于 KB chat 调用。
+	 *   - `lm:` 前缀的 LM 桥接 provider：鉴权由 provider 扩展托管（无 BYOK key 概念），
+	 *     只要在 AgentOS 注册表中存在即视为可用；
+	 *   - 其余 BYOK provider：必须已配 base URL + API key（避免盲选未配 key 的 provider
+	 *     连发多次 401 才降级）。
+	 */
+	private _isKbChatProviderUsable(providerId: string | undefined): boolean {
+		if (!providerId) { return false; }
+		if (providerId.startsWith('lm:')) {
+			return this.agentOSService.getModelProviders().some(p => p.id === providerId);
+		}
+		return isChatProviderConfigured(this.configurationService, { providerId });
+	}
+
+	private _resolveKbChatModel(): { providerId: string; modelId: string; agentId?: string } {
+		const KB_EXPERT_AGENT_ID = 'knowledge-base-expert';
+
+		// 1. 知识库专家 agent 被用户单独配置过 provider+model → 优先使用
+		//    （但需校验该 provider 可用，否则放弃并走兜底链）
+		const kbExpert = this.modelSelectorService.getExplicitSelectionForAgent(KB_EXPERT_AGENT_ID);
+		if (kbExpert && kbExpert.providerId && kbExpert.modelId
+			&& this._isKbChatProviderUsable(kbExpert.providerId)) {
+			return { providerId: kbExpert.providerId, modelId: kbExpert.modelId, agentId: kbExpert.agentId };
+		}
+
+		// 2. 否则使用当前激活 agent 所使用的 provider/model（内部新建 session）
+		//    （同样需校验可用，避免盲选未配 key 的 provider 撞 401）
+		const active = this.modelSelectorService.getSelection();
+		if (active && active.providerId
+			&& this._isKbChatProviderUsable(active.providerId)) {
+			return { providerId: active.providerId, modelId: active.modelId, agentId: active.agentId };
+		}
+
+		// 3. 兜底链
+		// 3a. 「辅助模型 → Curator」显式配置
+		const curatorProvider = (this.configurationService.getValue<string>(AGENT_STUDIO_AUX_CURATOR_PROVIDER) || 'auto').trim();
+		const curatorModel = (this.configurationService.getValue<string>(AGENT_STUDIO_AUX_CURATOR_MODEL) || '').trim();
+		if (curatorProvider && curatorProvider !== 'auto' && curatorModel) {
+			return { providerId: curatorProvider, modelId: curatorModel };
+		}
+		// 3b. 偏好里的默认 provider/model（仅当该 provider 已配 API key 时采用）
+		const defaultProvider = (this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_PROVIDER_SETTING) || '').trim();
+		const defaultModel = (this.configurationService.getValue<string>(AGENT_STUDIO_DEFAULT_MODEL_SETTING) || '').trim();
+		if (defaultProvider && defaultProvider !== 'auto'
+			&& isChatProviderConfigured(this.configurationService, { providerId: defaultProvider })) {
+			return { providerId: defaultProvider, modelId: defaultModel };
+		}
+		// 3c. 任一已配 API key 的 chat provider（内置或自定义）
+		const configured = resolveConfiguredChatProviderId(this.configurationService);
+		if (configured) {
+			return { providerId: configured, modelId: '' };
+		}
+		// 3d. 最终回退（多为未配置任何 provider）
+		return { providerId: KB_FALLBACK_PROVIDER, modelId: 'openai/gpt-4o-mini' };
+	}
+
+	/**
+	 * 为指定 provider/model 构建 KB chat 模型。优先走 AgentOS provider 传输
+	 * （与 Agent Chat 同一管线：`lm:` 桥接 provider 经扩展宿主调用，无 CORS 限制、
+	 * 鉴权由 provider 托管）；未命中 AgentOS 注册表时回退到旧的 OpenAI 兼容直连路径。
+	 */
+	private _createKbChatModelFor(opts: { providerId: string; modelId: string; agentId?: string }): IChatModel | null {
+		const viaAgentOs = createAgentOsChatModel(this.agentOSService.getModelProviders(), opts);
+		if (viaAgentOs) { return viaAgentOs; }
+		try {
+			return resolveChatModel(this.configurationService, { providerId: opts.providerId, modelId: opts.modelId });
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * 构建「导入知识库 / 收藏 / 分类」共用的 KB chat 模型（内部新建 session 执行）。
+	 * 模型选择见 {@link _resolveKbChatModel}；传输优先 AgentOS provider 管线。
+	 * 无法构建时返回 null（调用方应降级到关键词/启发式路径）。
+	 */
+	createKbChatModel(): IChatModel | null {
+		return this._createKbChatModelFor(this._resolveKbChatModel());
+	}
+
+	/**
+	 * 当前是否存在可用的 KB chat provider（lm: 桥接 provider 已注册，或 BYOK provider
+	 * 已配 key）。供导入/构建等入口在调用 LLM 前做前置判断，避免空 key 模型连发失败请求。
+	 */
+	isKbChatProviderAvailable(): boolean {
+		return this._isKbChatProviderUsable(this._resolveKbChatModel().providerId);
+	}
+
+	/**
+	 * Resolve the per-agent directory: `~/.vssaros/agents/{agentId}/`.
+	 * Contains .agent.md, config.html, and HTML assets.
 	 */
 	async getAgentDir(agentId: string): Promise<URI> {
-		const agentsDir = await this._getSarosAgentsDir();
+		const agentsDir = this._getSarosAgentsDir();
 		return joinPath(agentsDir, agentId);
 	}
 
 	/**
-	 * Creates a `.agent.md` file in `~/.saros/agents/{agentId}/` so the agent
-	 * appears in the native chat mode picker with its icon and metadata.
-	 * If the agentsMd content lacks YAML front matter with an `icon` field,
-	 * prepends one using the agent's `icon` property.
-	 */
-	private async _createAgentMdFile(agent: Agent, agentsMdContent: string): Promise<void> {
-		const agentDir = await this.getAgentDir(agent.id);
-
-		// Ensure the directory exists
-		try {
-			await this.fileService.resolve(agentDir);
-		} catch {
-			await this.fileService.createFolder(agentDir);
-		}
-
-		// If the content already has YAML front matter with icon, use as-is.
-		// Otherwise, prepend a minimal front matter with the icon field.
-		let content = agentsMdContent;
-		const hasFrontMatter = content.startsWith('---');
-		const hasIconInFrontMatter = hasFrontMatter && /^---[\s\S]*?icon\s*:/m.test(content);
-
-		if (!hasIconInFrontMatter && agent.icon) {
-			if (hasFrontMatter) {
-				// Insert icon into existing front matter (after the opening ---)
-				content = content.replace(/^---/, `---\nicon: "${agent.icon}"`);
-			} else {
-				// Prepend a new front matter block
-				content = `---\nname: ${agent.name}\ndescription: ${agent.description || ''}\nicon: "${agent.icon}"\n---\n\n${content}`;
-			}
-		}
-
-		const fileUri = joinPath(agentDir, '.agent.md');
-		await this.fileService.writeFile(fileUri, VSBuffer.fromString(content));
-		this.logService.info(`[AgentStudio] Created .agent.md at ${fileUri.toString()}`);
-	}
-
-	/**
 	 * Ensures every builtin agent has a dedicated directory at
-	 * `~/.saros/agents/{agentId}/` containing:
-	 *   - agent.json   (agent definition, for config/reading)
-	 *   - .agent.md    (YAML front matter + system prompt, for chat mode picker)
+	 * `~/.vssaros/agents/{agentId}/` containing:
+	 *   - .agent.md   (VS Code Chat standard format, primary definition)
+	 *
+	 * 内置 agent 定义存放在 `resources/.agents/agents/{id}.agent.md`，
+	 * 首次启动时复制到用户目录。用户编辑后的 .agent.md 不会被覆盖。
 	 *
 	 * Only creates files that don't already exist — never overwrites user edits.
 	 */
 	async ensureBuiltinAgentMdFiles(): Promise<void> {
-		const agentsDir = await this._getSarosAgentsDir();
+		const agentsDir = this._getSarosAgentsDir();
 
-		// Ensure ~/.saros/agents/ exists
+		// Ensure ~/.vssaros/agents/ exists
 		try {
 			await this.fileService.resolve(agentsDir);
 		} catch {
@@ -835,9 +1257,95 @@ ${agent.systemPrompt || ''}
 			}
 		}
 
-		const builtinAgents = getBuiltinAgents();
-		for (const agent of builtinAgents) {
-			const agentDir = joinPath(agentsDir, agent.id);
+		// ── 从 resources/.agents/agents/ 加载内置 agent 定义 ──
+		// 与 skillRegistryService 相同的多候选路径策略
+		const resourceCandidates: URI[] = [];
+		try {
+			const uri1 = FileAccess.asFileUri('vs/../../resources/.agents/agents');
+			resourceCandidates.push(uri1);
+		} catch { /* dev mode fallback */ }
+		const appRoot = (this.environmentService as any).appRoot as string | undefined;
+		if (appRoot) {
+			const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'agents');
+			if (!resourceCandidates.some(c => c.toString() === uri2.toString())) {
+				resourceCandidates.push(uri2);
+			}
+		}
+
+		// 尝试从资源目录扫描 *.agent.md
+		let builtinFiles: Array<{ id: string; content: string }> = [];
+		for (const candidate of resourceCandidates) {
+			try {
+				const result = await this.fileService.resolve(candidate);
+				// 子目录结构：resources/.agents/agents/{id}/.agent.md
+				const dirs = (result.children ?? []).filter(c => c.isDirectory);
+				if (dirs.length > 0) {
+					const reads = dirs.map(async d => {
+						const mdUri = joinPath(d.resource, '.agent.md');
+						try {
+							const buf = await this.fileService.readFile(mdUri);
+							const content = buf.value.toString();
+							const parsed = parseAgentMd(content);
+							const id = parsed?.agent.id ?? d.name;
+							return { id, content };
+						} catch {
+							return null;
+						}
+					});
+					const results = await Promise.all(reads);
+					builtinFiles = results.filter((r): r is { id: string; content: string } => r !== null);
+					this.logService.info(`[AgentStudio] Loaded ${builtinFiles.length} builtin agents from ${candidate.toString()}`);
+					break;
+				}
+			} catch { /* candidate not accessible, try next */ }
+		}
+
+		// Fallback: 如果资源目录不可用，从 getBuiltinAgents() 生成
+		if (builtinFiles.length === 0) {
+			this.logService.info('[AgentStudio] Resource dir not accessible, falling back to getBuiltinAgents()');
+			const builtinAgents = getBuiltinAgents();
+			builtinFiles = builtinAgents.map(a => ({ id: a.id, content: buildAgentMd(a) }));
+		}
+
+		// 复制到用户目录
+		// ── 一次性迁移：清理旧版内置 agent（agent.json 格式 / 过时 .agent.md）──
+		// 已发布的 EXE 版本中，用户机器上可能有旧格式的内置 agent。
+		// 迁移标记文件存在则跳过（仅迁移一次），否则删除所有与 resources 同名的旧 agent 目录，
+		// 然后从 resources 重新 seed。自定义 agent 不受影响。
+		const builtinIds = new Set(builtinFiles.map(f => f.id));
+		const migrationMarker = joinPath(agentsDir, '.builtin-v2-migrated');
+		let needsMigration = false;
+		try {
+			await this.fileService.resolve(migrationMarker);
+		} catch {
+			needsMigration = true;
+		}
+
+		if (needsMigration) {
+			this.logService.info('[AgentStudio] Starting builtin agent migration (v2: .agent.md format)...');
+			try {
+				const result = await this.fileService.resolve(agentsDir);
+				const existingDirs = (result.children ?? []).filter(c => c.isDirectory);
+				for (const dir of existingDirs) {
+					if (builtinIds.has(dir.name)) {
+						try {
+							await this.fileService.del(dir.resource, { recursive: true });
+							this.logService.info(`[AgentStudio] Migration: removed stale builtin agent "${dir.name}"`);
+						} catch (err) {
+							this.logService.warn(`[AgentStudio] Migration: failed to remove "${dir.name}": ${err}`);
+						}
+					}
+				}
+			} catch { /* ignore scan errors */ }
+			// 写迁移标记（即使部分删除失败也写，避免每次启动重试）
+			try {
+				await this.fileService.writeFile(migrationMarker, VSBuffer.fromString(new Date().toISOString()));
+			} catch { /* non-fatal */ }
+			this.logService.info('[AgentStudio] Builtin agent migration (v2) complete.');
+		}
+
+		for (const { id, content } of builtinFiles) {
+			const agentDir = joinPath(agentsDir, id);
 
 			// Ensure per-agent directory exists
 			try {
@@ -846,59 +1354,29 @@ ${agent.systemPrompt || ''}
 				try {
 					await this.fileService.createFolder(agentDir);
 				} catch (err) {
-					this.logService.warn(`[AgentStudio] Failed to create dir for "${agent.name}": ${err}`);
+					this.logService.warn(`[AgentStudio] Failed to create dir for "${id}": ${err}`);
 					continue;
 				}
 			}
 
-			// Write agent.json if it doesn't exist（写入完整 agent 定义）
-			const agentJsonUri = joinPath(agentDir, 'agent.json');
-			try {
-				await this.fileService.resolve(agentJsonUri);
-			} catch {
-				try {
-					await this.fileService.writeFile(agentJsonUri, VSBuffer.fromString(JSON.stringify(agent, null, 2)));
-					this.logService.info(`[AgentStudio] Seeded agent.json for "${agent.name}" at ${agentJsonUri.toString()}`);
-				} catch (err) {
-					this.logService.warn(`[AgentStudio] Failed to seed agent.json for "${agent.name}": ${err}`);
-				}
-			}
-
-			// Write .agent.md if it doesn't exist
+			// Write .agent.md if it doesn't exist (never overwrite user edits)
 			const agentMdUri = joinPath(agentDir, '.agent.md');
 			try {
 				await this.fileService.resolve(agentMdUri);
-				continue; // File exists, skip
 			} catch {
-				// File doesn't exist — proceed to create it
-			}
-
-			const toolsLine = agent.tools?.length ? `\ntools: ${agent.tools.join(', ')}` : '';
-			const categoryLine = agent.category ? `\ncategory: ${agent.category}` : '';
-			const content = `---
-name: ${agent.name}
-description: ${agent.description || ''}
-model: ${agent.model || 'claude-sonnet-4-20250514'}${toolsLine}${categoryLine}
-icon: "${agent.icon || '🤖'}"
----
-
-# ${agent.name}
-
-${agent.systemPrompt || ''}
-`;
-
-			try {
-				await this.fileService.writeFile(agentMdUri, VSBuffer.fromString(content));
-				this.logService.info(`[AgentStudio] Seeded .agent.md for builtin agent "${agent.name}" at ${agentMdUri.toString()}`);
-			} catch (err) {
-				this.logService.warn(`[AgentStudio] Failed to seed .agent.md for "${agent.name}": ${err instanceof Error ? err.message : String(err)}`);
+				try {
+					await this.fileService.writeFile(agentMdUri, VSBuffer.fromString(content));
+					this.logService.info(`[AgentStudio] Seeded .agent.md for builtin agent "${id}" at ${agentMdUri.toString()}`);
+				} catch (err) {
+					this.logService.warn(`[AgentStudio] Failed to seed .agent.md for "${id}": ${err instanceof Error ? err.message : String(err)}`);
+				}
 			}
 		}
 	}
 
 	async updateAgent(id: string, data: Partial<Agent>): Promise<void> {
-		// Split incoming patch: definition fields go to the agent.json file in
-		// ~/.saros/agents/{id}/, per-workspace runtime fields go to the binding.
+		// Split incoming patch: definition fields go to the .agent.md file in
+		// ~/.vssaros/agents/{id}/, per-workspace runtime fields go to the binding.
 		const { workspaceId, worktreePath, worktreeBranch, agentDir, memoryConfig, ...defPatch } = data as Partial<Agent> & {
 			workspaceId?: string; worktreePath?: string; worktreeBranch?: string; agentDir?: string; memoryConfig?: AgentBinding['memoryConfig'];
 		};
@@ -918,15 +1396,20 @@ ${agent.systemPrompt || ''}
 			return;
 		}
 
-		// 读取目录中的 agent.json，合并补丁后写回 ~/.saros/agents/{id}/agent.json
+		// 读取 .agent.md，合并补丁后写回 ~/.vssaros/agents/{id}/.agent.md
 		const agentDirUri = await this.getAgentDir(id);
-		const agentJsonUri = joinPath(agentDirUri, 'agent.json');
+		const agentMdUri = joinPath(agentDirUri, '.agent.md');
 		let existing: Agent;
 		try {
-			const buf = await this.fileService.readFile(agentJsonUri);
-			existing = JSON.parse(buf.value.toString()) as Agent;
+			const buf = await this.fileService.readFile(agentMdUri);
+			const parsed = parseAgentMd(buf.value.toString());
+			if (parsed) {
+				existing = { ...parsed.agent, systemPrompt: parsed.systemPrompt } as Agent;
+			} else {
+				throw new Error('parse failed');
+			}
 		} catch {
-			// agent.json 不存在：基于内置定义创建（用户编辑内置 agent 时也走此路径）
+			// .agent.md 不存在：基于内置定义创建（用户编辑内置 agent 时也走此路径）
 			const builtin = this._getBuiltinAgents().find(a => a.id === id);
 			if (!builtin) { throw new Error(`Agent not found: ${id}`); }
 			existing = { ...builtin };
@@ -939,12 +1422,10 @@ ${agent.systemPrompt || ''}
 			this.logService.info(`[AgentStudio] Auto-added "confightml" skill for agent "${id}" (configHtml enabled)`);
 		}
 
-		await this._updateAgentJsonFile(updated);
+		await this._writeAgentMd(updated);
 
-		// Sync .agent.md file if definition fields changed
-		if (defPatch.name || defPatch.description || defPatch.icon || defPatch.model || defPatch.tools || defPatch.systemPrompt) {
-			await this._updateAgentMdFile(updated);
-		}
+		// 自动提交版本变更
+		this.agentVersionService.autoCommit(id).catch(() => {});
 
 		this._agentsCache = undefined;
 		this._onDidChangeAgents.fire();
@@ -1004,7 +1485,7 @@ ${agent.systemPrompt || ''}
 	}
 
 	async deleteAgent(id: string): Promise<void> {
-		// 删除 agent 目录 ~/.saros/agents/{agentId}/（唯一数据源）。
+		// 删除 agent 目录 ~/.vssaros/agents/{agentId}/（唯一数据源）。
 		// 注意：内置 agent 在下次启动时会被重新 seed（保证始终可用），
 		// 自定义 agent 删除后不会恢复。
 		await this._deleteAgentDir(id);
@@ -1013,7 +1494,7 @@ ${agent.systemPrompt || ''}
 	}
 
 	/**
-	 * Deletes the entire agent directory at `~/.saros/agents/{agentId}/`.
+	 * Deletes the entire agent directory at `~/.vssaros/agents/{agentId}/`.
 	 * Also tries legacy slug-based .agent.md for backward compat.
 	 */
 	private async _deleteAgentDir(agentId: string): Promise<void> {
@@ -1024,78 +1505,24 @@ ${agent.systemPrompt || ''}
 		} catch { /* dir may not exist */ }
 	}
 
-	/**
-	 * Updates the `.agent.md` file for the given agent, syncing the YAML
-	 * front matter with the latest agent definition. If the agent name
-	 * changed, the old file is deleted and a new one is created.
-	 */
-	private async _updateAgentMdFile(agent: Agent): Promise<void> {
-		const agentDir = await this.getAgentDir(agent.id);
-		const targetUri = joinPath(agentDir, '.agent.md');
-
-		// Ensure directory exists
-		try {
-			await this.fileService.resolve(agentDir);
-		} catch {
-			await this.fileService.createFolder(agentDir);
-		}
-
-		// Try to read existing content to preserve user edits
-		let existingContent: string | undefined;
-		try {
-			const buf = await this.fileService.readFile(targetUri);
-			existingContent = buf.value.toString();
-		} catch {
-			// No existing file — will create new
-		}
-
-		// Build updated YAML front matter
-		const toolsLine = agent.tools?.length ? `\ntools: ${agent.tools.join(', ')}` : '';
-		const categoryLine = agent.category ? `\ncategory: ${agent.category}` : '';
-		const frontMatter = `---
-name: ${agent.name}
-description: ${agent.description || ''}
-model: ${agent.model || 'claude-sonnet-4-20250514'}${toolsLine}${categoryLine}
-icon: "${agent.icon || '🤖'}"
----`;
-
-		// Preserve existing body or use systemPrompt
-		let body = '';
-		if (existingContent) {
-			// Extract body after the second --- 
-			const bodyMatch = existingContent.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
-			body = bodyMatch?.[1]?.trim() || '';
-		}
-		if (!body && agent.systemPrompt) {
-			body = `# ${agent.name}\n\n${agent.systemPrompt}`;
-		}
-
-		const content = `${frontMatter}\n\n${body}\n`;
-		await this.fileService.writeFile(targetUri, VSBuffer.fromString(content));
-
-		this.logService.info(`[AgentStudio] Updated .agent.md at ${targetUri.toString()}`);
-	}
+	// ── Agent.md (primary definition format — YAML frontmatter) ─────────────
 
 	/**
-	 * Update the agent.json file in ~/.saros/agents/{agentId}/ when the agent
-	 * definition changes (e.g. rename, description, icon, etc.).
+	 * Write the primary agent definition as agent.md (YAML frontmatter + Markdown body).
+	 * Replaces the legacy agent.json as the canonical format (now removed).
 	 */
-	private async _updateAgentJsonFile(agent: Agent): Promise<void> {
+	private async _writeAgentMd(agent: Agent): Promise<void> {
 		try {
 			const agentDir = await this.getAgentDir(agent.id);
-			const agentJsonUri = joinPath(agentDir, 'agent.json');
-			// Ensure directory exists
-			try {
-				await this.fileService.resolve(agentDir);
-			} catch {
-				await this.fileService.createFolder(agentDir);
-			}
-			await this.fileService.writeFile(agentJsonUri, VSBuffer.fromString(JSON.stringify(agent, null, 2)));
-			this.logService.info(`[AgentStudio] Updated agent.json at ${agentJsonUri.toString()}`);
+			const agentMdUri = joinPath(agentDir, '.agent.md');
+			const md = buildAgentMd(agent);
+			await this.fileService.writeFile(agentMdUri, VSBuffer.fromString(md));
 		} catch (err) {
-			this.logService.warn(`[AgentStudio] Failed to update agent.json for ${agent.id}: ${err instanceof Error ? err.message : String(err)}`);
+			this.logService.warn(`[AgentStudio] Failed to write .agent.md for ${agent.id}: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
+
+	// ── .agent.md writing is handled by _writeAgentMd (VS Code standard format) ──
 
 	async getLastSelectedAgentId(): Promise<string | null> {
 		try {

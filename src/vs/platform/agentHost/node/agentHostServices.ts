@@ -14,9 +14,13 @@ import { ContextCompressionService } from './contextCompressionService.js';
 import { MemoryService } from './memoryServiceImpl.js';
 import { BuiltinMemoryProvider } from './builtinMemoryProvider.js';
 import { ICopilotApiService, CopilotApiService } from './shared/copilotApiService.js';
+import { IAgentService } from '../common/agentService.js';
+import { AgentHostIntegration } from './agentHostIntegration.js';
 
 // TODO: Implement EnhancedSessionStore class - temporary stub
-class EnhancedSessionStore implements IEnhancedSessionStore {
+// 注意：当前为进程内存态实现（不落盘），压缩流水线的记忆持久化/压缩日志为空操作。
+// 接入真实 SQLite 存储是框架 Phase 2 的独立工作项。
+export class EnhancedSessionStore implements IEnhancedSessionStore {
 	declare readonly _serviceBrand: undefined;
 
 	constructor() {}
@@ -66,22 +70,36 @@ class EnhancedSessionStore implements IEnhancedSessionStore {
  * registerAgentHostEnhancementServices(services, instantiationService, logService, configurationService);
  * ```
  */
+/** 框架激活后创建的服务实例集合（供调用方继续接线，如 ProtocolServerHandler 注入压缩服务） */
+export interface IEnhancementServices {
+	readonly sessionStore: IEnhancedSessionStore;
+	readonly copilotApiService: ICopilotApiService;
+	readonly compressionService: ContextCompressionService;
+	readonly memoryService: MemoryService;
+	/** 自动压缩触发器；IAgentService 未注册时为 undefined（降级不激活） */
+	readonly integration: AgentHostIntegration | undefined;
+}
+
 export function registerAgentHostEnhancementServices(
 	services: ServiceCollection,
 	instantiationService: IInstantiationService,
 	logService: ILogService,
 	configurationService: IConfigurationService,
-): void {
-	// 1. Register CopilotApiService (needed for LLM calls in compression)
-	// Note: This needs a fetch function - provide globalThis.fetch or a custom implementation
-	// TODO: Pass real productService instead of empty object
-	const productServiceStub = { _serviceBrand: undefined } as any; // Temporary stub
-	const copilotApiService = new CopilotApiService(
-		globalThis.fetch?.bind(globalThis) ?? fetch,
-		logService,
-		productServiceStub,
-	);
-	services.set(ICopilotApiService, copilotApiService);
+): IEnhancementServices {
+	// 1. CopilotApiService (needed for LLM calls in compression)
+	// 复用集合中已注册的实例（main 中经 createInstance 构造、带完整依赖），仅缺失时新建。
+	let copilotApiService: ICopilotApiService;
+	if (services.has(ICopilotApiService)) {
+		copilotApiService = services.get(ICopilotApiService) as ICopilotApiService;
+	} else {
+		const productServiceStub = { _serviceBrand: undefined } as any; // Temporary stub
+		copilotApiService = new CopilotApiService(
+			globalThis.fetch?.bind(globalThis) ?? fetch,
+			logService,
+			productServiceStub,
+		);
+		services.set(ICopilotApiService, copilotApiService);
+	}
 
 	// 2. Register EnhancedSessionStore
 	// TODO: Pass real DB path when implementing the actual class
@@ -91,11 +109,17 @@ export function registerAgentHostEnhancementServices(
 	// 3. Register ContextCompressionService
 	// This will be created by the instantiation service with proper DI
 	// For now, we create it manually
+	// IAgentService 若已注册则注入（供 _getSessionMessages 经 listSessions/subscribe 快照拉取消息）；
+	// 未注册时传 undefined，服务降级为返回空消息列表并告警。
+	const agentService = instantiationService.invokeFunction(accessor => {
+		try { return accessor.get(IAgentService); } catch { return undefined; }
+	});
 	const compressionService = new ContextCompressionService(
 		enhancedSessionStore,
 		configurationService,
 		logService,
 		copilotApiService,
+		agentService,
 	);
 	services.set(IContextCompressionService, compressionService);
 
@@ -113,7 +137,17 @@ export function registerAgentHostEnhancementServices(
 	);
 	memoryService.registerProvider(builtinProvider);
 
+	// 6. Create AgentHostIntegration（框架激活入口：事件订阅 → 自动压缩触发）。
+	// 依赖 IAgentService —— 缺失时降级不激活并告警。
+	let integration: AgentHostIntegration | undefined;
+	if (agentService) {
+		integration = new AgentHostIntegration(agentService, compressionService, memoryService, logService);
+	} else {
+		logService.warn('[AgentHostServices] IAgentService not registered — AgentHostIntegration (auto-compression) NOT activated');
+	}
+
 	logService.info('[AgentHostServices] Enhancement services registered');
+	return { sessionStore: enhancedSessionStore, copilotApiService, compressionService, memoryService, integration };
 }
 
 /**

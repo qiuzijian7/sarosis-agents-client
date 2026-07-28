@@ -21,6 +21,22 @@ export type ChatMessage =
 	| SystemMessage
 	| CheckpointMessage;
 
+/**
+ * Sidecar 注入种类（标记 synthetic 消息的来源，供压缩/持久化剥离与遥测识别）。
+ * 这些消息由框架在发送前临时注入（技能激活、策略提醒、控制流重入等），
+ * 并非用户真实输入；标记后应在压缩与持久化前剥离，避免污染干净 transcript。
+ * 设计对齐 Hermes 的 `api_content` sidecar 与 MiMo-Code 的 `synthetic: true`。
+ */
+export type SidecarKind =
+	| 'skill'      // 技能激活块（auto/explicit 命中，user placement）
+	| 'reminder'   // 策略级预算 reminder
+	| 'nudge'      // TaskGate 重入 nudge
+	| 'plan'       // 计划任务推进提醒
+	| 'reflection' // 反思阶段提示
+	| 'memory'     // Agent Memory 上下文（system，session 级幂等）
+	| 'retrieval'  // 检索保留上下文（system，压缩时按前缀剥离）
+	| 'durable';   // Durable Context（system，checkpoint 持久化）
+
 // ============================================================================
 // 用户消息
 // ============================================================================
@@ -37,6 +53,11 @@ export interface UserMessage {
 	readonly timestamp: number;
 	/** 消息 ID（可选，用于引用） */
 	readonly id?: string;
+	/** 是否为「sidecar 注入」消息（技能/策略/控制流临时注入），非用户真实输入。
+	 *  标记后压缩与持久化会剥离，避免污染干净 transcript（对齐 Hermes api_content / MiMo synthetic:true）。 */
+	readonly synthetic?: boolean;
+	/** sidecar 注入种类，便于压缩/遥测识别与排序。 */
+	readonly sidecar?: SidecarKind;
 }
 
 // ============================================================================
@@ -55,6 +76,10 @@ export interface AssistantMessage {
 	readonly timestamp: number;
 	/** 消息 ID（可选，用于引用） */
 	readonly id?: string;
+	/** 是否为「sidecar 注入」消息（见 UserMessage.synthetic 说明）。 */
+	readonly synthetic?: boolean;
+	/** sidecar 注入种类，便于压缩/遥测识别与排序。 */
+	readonly sidecar?: SidecarKind;
 }
 
 /**
@@ -272,6 +297,10 @@ export interface SystemMessage {
 	readonly timestamp: number;
 	/** 消息 ID（可选） */
 	readonly id?: string;
+	/** 是否为「sidecar 注入」消息（见 UserMessage.synthetic 说明）。 */
+	readonly synthetic?: boolean;
+	/** sidecar 注入种类，便于压缩/遥测识别与排序。 */
+	readonly sidecar?: SidecarKind;
 }
 
 // ============================================================================

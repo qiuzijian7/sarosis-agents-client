@@ -103,8 +103,10 @@ export function getBuiltinAgents(): Agent[] {
 - Ask clarifying questions when requirements are ambiguous — but when a question has an obvious default interpretation, act on it immediately instead of asking.
 - Do not execute destructive operations without confirmation.
 - If required context is missing, use the appropriate lookup tool (search, file_read, etc.) to retrieve it. Only ask the user when the information cannot be retrieved by tools.`,
-			skills: ['code-gen', 'code-review', 'analysis', 'summarize', 'writing', 'planning'],
-			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'search_files', 'grep_search', 'replace_in_file'],
+			skills: ['code-review', 'analysis', 'summarize', 'writing', 'planning'],
+			tools: ['file_read', 'file_write', 'terminal', 'search_files', 'patch', 'web_search', 'clarify',
+				'search_code', 'query_graph', 'get_architecture', 'trace_path', 'get_code_snippet',
+				'index_repository', 'index_status', 'detect_changes', 'search_graph'],
 			handOffs: [
 				{ agent: 'Coder', label: 'Write Code', prompt: 'Implement the following feature with clean, well-tested code.', send: false },
 				{ agent: 'Researcher', label: 'Research Deeply', prompt: 'Research this topic comprehensively and provide detailed findings.', send: false },
@@ -138,8 +140,11 @@ export function getBuiltinAgents(): Agent[] {
 - Follow the project's existing code style and conventions.
 - Handle errors explicitly — never silently swallow exceptions.
 - Never hardcode secrets or API keys.`,
-			skills: ['code-gen', 'code-review', 'refactor'],
-			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'search_files', 'grep_search', 'replace_in_file'],
+			skills: ['code-review', 'refactor'],
+			tools: ['file_read', 'file_write', 'terminal', 'search_files', 'patch', 'web_search',
+				// Codebase tools — 代码库理解与导航
+				'search_code', 'query_graph', 'get_architecture', 'trace_path', 'get_code_snippet',
+				'index_repository', 'index_status', 'detect_changes', 'search_graph', 'manage_adr'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -163,7 +168,7 @@ export function getBuiltinAgents(): Agent[] {
 - Present findings with clear structure and citations.
 - Highlight uncertainties and gaps in available information.`,
 			skills: ['analysis', 'summarize', 'writing'],
-			tools: ['file_read', 'list_dir', 'search_files', 'grep_search'],
+			tools: ['file_read', 'search_files'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -187,7 +192,7 @@ export function getBuiltinAgents(): Agent[] {
 - Be concise — remove unnecessary words.
 - Verify technical accuracy when writing about technical topics.`,
 			skills: ['writing', 'summarize'],
-			tools: ['write_to_file', 'file_read'],
+			tools: ['file_write', 'file_read'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -211,7 +216,7 @@ export function getBuiltinAgents(): Agent[] {
 - Consider responsive layouts and edge cases.
 - Document design decisions and trade-offs.`,
 			skills: ['writing'],
-			tools: ['write_to_file', 'file_read'],
+			tools: ['file_write', 'file_read'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -235,7 +240,7 @@ export function getBuiltinAgents(): Agent[] {
 - Estimate effort and identify risks.
 - Define clear acceptance criteria for each step.`,
 			skills: ['planning', 'analysis'],
-			tools: ['write_to_file', 'file_read', 'list_dir'],
+			tools: ['file_write', 'file_read'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -258,8 +263,9 @@ export function getBuiltinAgents(): Agent[] {
 - Review code for testability and coverage gaps.
 - Identify potential regression risks.
 - Document test scenarios clearly.`,
-			skills: ['code-gen', 'analysis'],
-			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'grep_search'],
+			skills: ['analysis'],
+			tools: ['file_write', 'file_read', 'terminal', 'search_files',
+				'search_code', 'trace_path', 'get_code_snippet', 'detect_changes'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -282,8 +288,9 @@ export function getBuiltinAgents(): Agent[] {
 - Container and orchestration management.
 - Infrastructure as code.
 - Monitoring and alerting setup.`,
-			skills: ['code-gen', 'analysis'],
-			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'grep_search'],
+			skills: ['analysis'],
+			tools: ['file_write', 'file_read', 'terminal', 'search_files',
+				'search_code', 'detect_changes', 'get_architecture'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -307,7 +314,7 @@ export function getBuiltinAgents(): Agent[] {
 - Conflict resolution guidance.
 - Commit message standards enforcement.`,
 			skills: ['analysis'],
-			tools: ['file_read', 'terminal', 'list_dir'],
+			tools: ['file_read', 'terminal', 'search_code', 'detect_changes'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -330,8 +337,8 @@ export function getBuiltinAgents(): Agent[] {
 - Use appropriate statistical methods.
 - Present findings with clear visualizations and explanations.
 - Highlight limitations and assumptions in the analysis.`,
-			skills: ['analysis', 'summarize', 'code-gen'],
-			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir', 'grep_search'],
+			skills: ['analysis', 'summarize'],
+			tools: ['file_write', 'file_read', 'terminal', 'search_files'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -355,7 +362,9 @@ export function getBuiltinAgents(): Agent[] {
 - Map dependencies between components.
 - Report findings with file paths and line references.`,
 			skills: ['analysis'],
-			tools: ['file_read', 'list_dir', 'search_files', 'grep_search'],
+			tools: ['file_read', 'search_files', 'search_code', 'query_graph', 'get_architecture',
+				'trace_path', 'get_code_snippet', 'search_graph', 'detect_changes',
+				'index_repository', 'index_status', 'check_index_coverage', 'get_graph_schema'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -379,7 +388,9 @@ export function getBuiltinAgents(): Agent[] {
 - Document architecture decisions with rationale.
 - Align with existing patterns in the codebase.`,
 			skills: ['planning', 'analysis', 'writing'],
-			tools: ['write_to_file', 'file_read', 'list_dir', 'grep_search'],
+			tools: ['file_write', 'file_read', 'search_files',
+				'get_architecture', 'query_graph', 'search_graph', 'trace_path',
+				'search_code', 'index_repository', 'index_status', 'detect_changes', 'manage_adr'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -407,7 +418,9 @@ export function getBuiltinAgents(): Agent[] {
 
 Only report issues with high confidence (>= 80%). Flag low-confidence findings for human review.`,
 			skills: ['code-review', 'analysis'],
-			tools: ['file_read', 'list_dir', 'grep_search'],
+			tools: ['file_read', 'search_files',
+				'search_code', 'query_graph', 'trace_path', 'get_code_snippet',
+				'search_graph', 'detect_changes'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -431,7 +444,7 @@ Only report issues with high confidence (>= 80%). Flag low-confidence findings f
 - Assign steps to appropriate specialized agents.
 - Track progress and handle failures gracefully.`,
 			skills: ['planning', 'analysis'],
-			tools: ['write_to_file', 'file_read', 'terminal', 'list_dir'],
+			tools: ['file_write', 'file_read', 'terminal'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -454,7 +467,7 @@ The KB is organized as a file tree with two top-level sections per vault:
 - **库 (Library)**: Raw/imported source material — PDFs, images, scraped articles, reference files.
 - **笔记 (Notes)**: Curated, well-structured markdown notes generated from library content.
 
-The default vault is stored at \`~/.saros/knowledge-base/<vault-id>/\`. Each vault contains \`库/\` and \`笔记/\` as direct subdirectories. The active vault configuration is in \`~/.saros/knowledge-base/vault.json\`.
+The default vault is stored at \`~/.vssaros/knowledge-base/<vault-id>/\`. Each vault contains \`库/\` and \`笔记/\` as direct subdirectories. The active vault configuration is in \`~/.vssaros/knowledge-base/vault.json\`.
 
 ## Core Workflow
 
@@ -466,14 +479,19 @@ When asked to import content, first determine the source type and choose the app
 - **Batch imports**: Process multiple items systematically, organizing them into logical category folders under \`库/\`.
 
 ### 2. Generate Notes → Notes (笔记)
-After importing content into the library, generate a structured note for it. You have two complementary paths:
+After importing content into the library, generate a structured note for it. The primary path is **structured extraction**:
 
-**A. Engine-backed note (recommended for article-style imports):** use the built-in knowledge engine to turn a document into one structured, cross-linkable note in a single step:
-1. Call \`kb_list_templates\` to confirm the available template ids.
-2. Call \`kb_build\` with \`template_id: "notes_summary"\` and the source text or \`file_path\`. This auto-summarizes the document into a single object (title / summary / tags / category / key_points) and **automatically writes it as an Obsidian note with \`[[wikilinks]]\` to the KB notes vault** (\`<storage-root>/notes/<title>.md\`). The result includes a \`note\` field with the on-disk \`path\` — report that path to the user.
-3. For follow-up material on the same topic, call \`kb_ingest\` with the existing \`id\` (it re-exports the updated note automatically). Use \`kb_search\` / \`kb_ask\` to query the built KB, and \`kb_list\` to see all built KBs.
+**A. Structured Extraction (recommended):** read each document in the 「库」section, extract key entities/concepts/processes, and hand-author a structured note in the 「笔记」section using the **obsidian-markdown** skill. For each note:
+1. Read the source document with \`file_read\`.
+2. Identify the core topic, key points, entities, and relationships.
+3. Write a well-formatted markdown note with:
+   - YAML frontmatter: \`title\`, \`tags\`, \`created\`, \`source\` (link back to library file)
+   - \`## 概述\` section summarizing the content
+   - \`## 关键要点\` section with bullet points
+   - \`## 关联实体\` section with \`[[wikilinks]]\` to related notes
+4. Use \`kb_search\` / \`kb_ask\` to query existing notes for cross-linking opportunities.
 
-**B. Hand-authored note:** for richer, custom notes, create them with the **obsidian-markdown** skill (wikilinks, callouts, frontmatter, embeds) in \`<vault>/笔记/<topic-folder>/\`.
+**B. Quick summary via \`kb_export_notes\`:** for simple article-style imports, use \`kb_export_notes\` to auto-generate a note from a previously built vector index (built via Settings UI → 重新构建向量索引).
 
 General note conventions (apply to both paths):
 1. **Link related notes** with \`[[wikilinks]]\` to build a knowledge graph.
@@ -501,7 +519,7 @@ General note conventions (apply to both paths):
 - **Report progress**: After completing operations, summarize what was imported/generated and where files are located.
 - **Handle errors gracefully**: If a URL can't be scraped, note it and move on. If a file can't be read, suggest alternatives.`,
 			skills: ['obsidian-markdown', 'obsidian-bases', 'json-canvas', 'defuddle', 'writing', 'summarize', 'analysis'],
-			tools: ['write_to_file', 'file_read', 'list_dir', 'search_files', 'grep_search', 'terminal', 'kb_build', 'kb_ingest', 'kb_export_notes', 'kb_list_templates', 'kb_list', 'kb_search', 'kb_ask'],
+			tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_export_notes', 'kb_list', 'kb_search', 'kb_ask'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -526,5 +544,48 @@ General note conventions (apply to both paths):
 		a.systemPrompt = (a.systemPrompt || '') + DELEGATION_GUIDANCE;
 	}
 	return agents;
+}
+
+let _builtinAgentMap: Map<string, Agent> | undefined;
+
+/**
+ * Resolve a single builtin Agent definition by id (memoized).
+ * Used by the sub-agent dispatch to instantiate delegated agents with their
+ * real systemPrompt / tools / model instead of a generic Explore fallback.
+ */
+export function getBuiltinAgent(id: string): Agent | undefined {
+	if (!_builtinAgentMap) {
+		_builtinAgentMap = new Map(getBuiltinAgents().map(a => [a.id, a]));
+	}
+	return _builtinAgentMap.get(id);
+}
+
+/** Identity subset a builtin Agent contributes to a dispatched sub-agent. */
+export interface IBuiltinAgentIdentity {
+	readonly agentId: string;
+	readonly systemPrompt?: string;
+	readonly allowedTools?: readonly string[];
+}
+
+/**
+ * Build the {agentId, systemPrompt, allowedTools} identity for a builtin Agent,
+ * shaped to spread directly into sub-agent dispatch options / perTaskOptions.
+ * Used by delegate_task, plan_explore and the pre-loop explorer so every
+ * exploration sub-agent runs as the real `code-explorer` builtin Agent.
+ */
+export function getBuiltinAgentIdentity(id: string): IBuiltinAgentIdentity | undefined {
+	const a = getBuiltinAgent(id);
+	if (!a) { return undefined; }
+	// 子代理不能重新委派：剥离 getBuiltinAgents() 给每个 agent 追加的 DELEGATION_GUIDANCE，
+	// 避免子代理被诱导嵌套委派（与 GLOBAL_SYSTEM_PREFIX_SUBAGENT 同一护栏，事故 1785037741973）。
+	let sys = a.systemPrompt;
+	if (sys && sys.endsWith(DELEGATION_GUIDANCE)) {
+		sys = sys.slice(0, -DELEGATION_GUIDANCE.length).trimEnd();
+	}
+	return {
+		agentId: a.id,
+		...(sys ? { systemPrompt: sys } : {}),
+		...(a.tools?.length ? { allowedTools: a.tools } : {}),
+	};
 }
 

@@ -32,16 +32,9 @@ export interface IKbVault {
 	/** Vault 根目录的绝对磁盘路径（fsPath） */
 	path: string;
 	/**
-	 * 「笔记」分区的自定义根目录（绝对 fsPath）。
-	 * 设置后 sectionUri('notes') 优先返回它，笔记树 / 图谱 / 向量索引均以该目录为准；
-	 * 缺省（undefined）时回退到 Vault 内默认的「笔记」子文件夹。
-	 * 仅影响 notes 分区，不影响 library 分区。
-	 */
-	notesPath?: string;
-	/**
 	 * 外部配置的自定义根目录（用户「配置文件夹为知识库」指定）。
 	 * 存在时 vaultUri 优先返回它，根目录设置改变不会影响它；缺省（默认 Vault）
-	 * 时 vaultUri 跟随全局知识库根目录（STORAGE_ROOT_DIR）。
+	 * 时 vaultUri 跟随全局知识库目录（STORAGE_KB_DIR）。
 	 */
 	customPath?: string;
 	/**
@@ -51,6 +44,11 @@ export interface IKbVault {
 	 * 持久化在 vaults 列表（saveVaults）。
 	 */
 	linkedFolders?: string[];
+	/**
+	 * 从 .code-workspace 导入的工作区分组。
+	 * 树中显示为一个父节点（名称为 workspace 文件名），展开后列出各 folders 子节点。
+	 */
+	linkedWorkspaces?: { name: string; wsUri: string; folders: string[] }[];
 	/**
 	 * 文件夹导入（关联 / 拷贝）后构建的「每 git 仓库 = 一个 RAG session」映射。
 	 * key = 仓库根的绝对 fsPath，value = KnowledgeSession id（落盘于 KB 存储根）。
@@ -130,6 +128,11 @@ export interface IKbNode {
 	ctime: number;
 	/** 子文档数（仅目录，用于排序与计数） */
 	childCount: number;
+	/**
+	 * P0-1 去抽象化门控状态（仅 .md 笔记有值）：
+	 * 'pending' = 单一来源、待确认（树中灰显 + ⏳ 徽标）；'active' = 已被 ≥2 来源确认。
+	 */
+	status?: 'pending' | 'active';
 }
 
 /** 导入来源类型（库分区导入下拉）。 */
@@ -137,12 +140,14 @@ export type KbImportKind =
 	| 'obsidian'
 	| 'files'
 	| 'folder'
-	| 'url';
+	| 'url'
+	| 'codeWorkspace';
 
 export const KB_IMPORT_ITEMS: { kind: KbImportKind; label: string; sub: string; icon: string }[] = [
 	{ kind: 'obsidian', label: '导入 Obsidian 库', sub: '.md + 双链', icon: '📕' },
 	{ kind: 'files', label: '导入文件', sub: 'PDF / DOC / MD / TXT …', icon: '📄' },
 	{ kind: 'folder', label: '导入文件夹', sub: '关联原位 / 拷贝', icon: '📁' },
+	{ kind: 'codeWorkspace', label: '导入 .code-workspace', sub: '解析工作区目录 → 关联入库', icon: '🔧' },
 	{ kind: 'url', label: '导入链接 / URL', sub: '小红书/抖音/知乎/YouTube…', icon: '🔗' },
 ];
 

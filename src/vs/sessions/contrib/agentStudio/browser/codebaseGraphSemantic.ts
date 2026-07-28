@@ -40,7 +40,7 @@ export class SemanticSearch {
 		this._docCount = 0;
 
 		for (const node of this._store.getAllNodes()) {
-			if (node.label === 'file') { continue; }
+			if (node.label === 'file' || node.label === 'File') { continue; }
 			const text = `${node.name} ${node.qualifiedName} ${node.filePath || ''}`;
 			const terms = this._tokenize(text);
 			const tf = new Map<string, number>();

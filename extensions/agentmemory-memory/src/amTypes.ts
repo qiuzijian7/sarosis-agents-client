@@ -111,6 +111,10 @@ export interface Observation {
 	createdAt: string;
 	agentId?: string;
 	compressed?: boolean;
+	/** 短标题（工具名/内容摘要）——mem::context 重要观察块筛选用（o.title 非空） */
+	title?: string;
+	/** 重要性 1-10（失败 > 工具使用 > turn 消息 > 生命周期）——mem::context 筛选 importance>=5 */
+	importance?: number;
 }
 
 export interface ObservationPayload {
@@ -135,6 +139,19 @@ export interface SessionSummary {
 	agentId?: string;
 }
 
+/** 会话记录 — 独立 KV scope mem:sessions（session_start / observe 时注册） */
+export interface SessionRecord {
+	id: string;
+	agentId: string;
+	startedAt: string;
+	updatedAt: string;
+	status: string;
+	observationCount: number;
+	project?: string;
+	cwd?: string;
+	firstPrompt?: string;
+}
+
 /** 访问日志 — 独立 KV scope mem:access */
 export interface AccessLog {
 	memoryId: string;
@@ -157,7 +174,7 @@ export interface RetentionScore {
 
 /** 上下文块 — 对齐 agentmemory ContextBlock */
 export interface ContextBlock {
-	type: 'summary' | 'observation' | 'memory' | 'lesson' | 'slot' | 'core';
+	type: 'summary' | 'observation' | 'memory' | 'lesson' | 'slot' | 'core' | 'routine' | 'crystal';
 	content: string;
 	tokens: number;
 	recency: number;
@@ -171,16 +188,36 @@ export interface SearchResult {
 	content: string;
 	score: number;
 	source: 'bm25' | 'vector' | 'graph' | 'hybrid' | 'kv';
+	/** 记忆关联会话（diversifyBySession 用；remember 写入的全局记忆为空数组） */
+	sessionIds?: string[];
 }
 
 /**
- * agentmemory 原生类型联合 — 直接对齐 agentmemory Memory.type，不做映射。
- * EditorPane 的 matchesTier / LayerFilter 已改为支持这些原生类型。
+ * agentmemory 原版类型模型（2026-07-27 对齐，不再做 4-Tier→fact 坍缩/路由）：
+ * - 层类型（Layer，各有独立 scope）：working→mem:core-memory、semantic→mem:semantic、procedural→mem:procedural
+ * - Episodic 原生类型（KV.memories 内 Memory.type）：pattern/preference/architecture/bug/workflow/fact
+ * 不再有 'episodic' 作为 type 值——Episodic 是「层」，其条目一律用原生类型。
  */
-export type AmMemoryType = 'working' | 'episodic' | 'semantic' | 'procedural'
-	| 'pattern' | 'preference' | 'architecture' | 'bug' | 'workflow' | 'fact';
 
-/** IMemoryEntry 兼容接口 — type 字段使用 agentmemory 原生类型 */
+/** Episodic 原生类型（KV.memories 内 Memory.type 的合法值） */
+export const EPISODIC_TYPES = ['pattern', 'preference', 'architecture', 'bug', 'workflow', 'fact'] as const;
+export type AmEpisodicType = typeof EPISODIC_TYPES[number];
+
+/** 层类型（各有独立 scope 的 agentmemory 层） */
+export type AmLayerType = 'working' | 'semantic' | 'procedural';
+
+/** 合法记忆 type 全集 = 层类型 ∪ Episodic 原生类型（不含 'episodic'） */
+export type AmMemoryType = AmLayerType | AmEpisodicType;
+
+/** type → 所属层（agentmemory 原版 4 层模型），供展示分组用 */
+export function layerOfType(type: string): 'working' | 'episodic' | 'semantic' | 'procedural' {
+	if (type === 'working') { return 'working'; }
+	if (type === 'semantic') { return 'semantic'; }
+	if (type === 'procedural') { return 'procedural'; }
+	return 'episodic';
+}
+
+/** IMemoryEntry 兼容接口 — type 字段使用 agentmemory 原生类型（层类型或 Episodic 原生类型） */
 export interface IMemoryEntry {
 	id: string;
 	type: AmMemoryType | string;
@@ -210,4 +247,8 @@ export interface IMemoryContext {
 	longTermMemories: IMemoryEntry[];
 	systemPrompt: string;
 	relevantDocuments: unknown[];
+	/** 注入策展块数量（对齐原版 mem::context 返回的 blocks 元数据） */
+	contextBlocks?: number;
+	/** 注入实际占用 token 数（含 header/footer，对齐原版 tokens 元数据） */
+	contextTokens?: number;
 }

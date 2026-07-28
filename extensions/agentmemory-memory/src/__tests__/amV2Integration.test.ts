@@ -112,11 +112,14 @@ export async function runAmV2IntegrationTests(): Promise<void> {
 		await fn.coreAdd(kv as any, AGENT_ID, '[session_start] New session', 5, false);
 		// step 2: triggerHook('prompt_submit', { userMessage })
 		await fn.coreAdd(kv as any, AGENT_ID, '[prompt_submit] User says hello', 5, false);
+		// 2026-07-25 mem::context 对齐：core 不进注入文本；注入文本需策展块（此处用 lesson 供给）
+		await fn.lessonSave(kv as any, AGENT_ID, 'run tests before commit', 'testing', 0.9);
 		// step 3: loadContext(agentId, sessionId, recallQuery)
 		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-A1', AGENT_ID, 5000);
 		assert(ctx.systemPrompt.includes('agentmemory-context'), 'context has XML wrapper');
-		// Core memory entries are recorded and context is generated
-		assert(ctx.systemPrompt.length > 0, 'context not empty');
+		assert(ctx.systemPrompt.includes('Lessons Learned'), 'curated lessons block in context');
+		// Core memory entries are recorded（在 shortTermMemories 返回，不进注入文本）
+		assert(!ctx.systemPrompt.includes('[session_start]'), 'core hooks NOT injected');
 		const core = await fn.coreList(kv as any, AGENT_ID);
 		assertEq(core.length, 2, '2 hooks recorded in Core Memory after session_start');
 	});
@@ -295,11 +298,14 @@ export async function runAmV2IntegrationTests(): Promise<void> {
 
 	await test('E1: onPreCompact injects related memories before compression', async (kv) => {
 		// 模拟 agentOSService.ts L1417 onPreCompact 回调
+		// 2026-07-25 mem::context 对齐：注入文本来自策展块（此处用 lesson + summary 供给），
+		// 原始 remember 记忆不进注入文本
 		await fn.remember(kv as any, AGENT_ID, 'React render performance optimization', 'pattern', ['react', 'performance']);
-		await fn.remember(kv as any, AGENT_ID, 'Database query indexing improves speed', 'architecture', ['database']);
-		// 压缩前注入：取相关记忆注入上下文
+		await fn.lessonSave(kv as any, AGENT_ID, 'index before querying large tables', 'database', 0.85);
+		await fn.sessionSummarySave(kv as any, AGENT_ID, 'sess-E1', AGENT_ID, 'Perf tuning session', 'Optimized queries');
 		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-E1', AGENT_ID, 500);
 		assert(ctx.systemPrompt.length > 0, 'compact context not empty');
+		assert(ctx.systemPrompt.includes('Perf tuning session'), 'summary block in compact context');
 		// token budget 截断效果
 		assert(ctx.systemPrompt.length < 3000, 'context is compact (token budget 500 ~= 1500 chars)');
 	});
@@ -693,6 +699,74 @@ export async function runAmV2IntegrationTests(): Promise<void> {
 		const r1 = await fn.observe(kv as any, AGENT_ID, { sessionId: '', hookType: '', timestamp: '' });
 		assert(!r1.success, 'empty fields fail');
 		assert(r1.error!.includes('Invalid'), 'error mentions invalid');
+	});
+
+	await test('O6: observe 懒注册 session 记录（创建+计数+firstPrompt）', async (kv) => {
+		const sid = 'sess-obs-reg';
+		await fn.observe(kv as any, AGENT_ID, { sessionId: sid, hookType: 'prompt_submit', timestamp: new Date().toISOString(), data: { userPrompt: 'fix the login bug please' } });
+		let sess = await kv.get<any>(KV.sessions(AGENT_ID), sid);
+		assert(sess !== null, 'session record created on first observe');
+		assert(sess.observationCount === 1, `observationCount=1 (got ${sess.observationCount})`);
+		assert(sess.firstPrompt === 'fix the login bug please', 'firstPrompt captured');
+		await fn.observe(kv as any, AGENT_ID, { sessionId: sid, hookType: 'tool_use', timestamp: new Date().toISOString() });
+		sess = await kv.get<any>(KV.sessions(AGENT_ID), sid);
+		assert(sess.observationCount === 2, `observationCount=2 (got ${sess.observationCount})`);
+		assert(sess.firstPrompt === 'fix the login bug please', 'firstPrompt NOT overwritten');
+	});
+
+	await test('O7: sessionStart 显式注册（幂等）', async (kv) => {
+		const r1 = await fn.sessionStart(kv as any, AGENT_ID, 'sess-explicit', 'my-project');
+		assert(r1.created === true, 'first call creates');
+		const r2 = await fn.sessionStart(kv as any, AGENT_ID, 'sess-explicit', 'my-project');
+		assert(r2.created === false, 'second call idempotent (no recreate)');
+		const sess = await kv.get<any>(KV.sessions(AGENT_ID), 'sess-explicit');
+		assert(sess.project === 'my-project' && sess.status === 'active', 'session fields correct');
+	});
+
+	await test('O8: compressSession 与既有摘要合并（累积叙事）', async (kv) => {
+		const sid = 'sess-merge';
+		// 第一批观察 → 压缩
+		for (let i = 0; i < 3; i++) {
+			await fn.observe(kv as any, AGENT_ID, { sessionId: sid, hookType: 'tool_use', timestamp: `2026-07-25T0${i}:00:00Z`, data: { tool_output: `first batch output ${i} edited src/a${i}.ts` } });
+		}
+		const s1 = await comp.compressSession(kv as any, AGENT_ID, sid, 'proj');
+		assert(s1 !== null, 'first compression produced summary');
+		// 第二批观察 → 再压缩（应合并而非覆盖）
+		for (let i = 3; i < 6; i++) {
+			await fn.observe(kv as any, AGENT_ID, { sessionId: sid, hookType: 'tool_use', timestamp: `2026-07-25T0${i}:00:00Z`, data: { tool_output: `second batch output ${i} edited src/b${i}.ts` } });
+		}
+		const s2 = await comp.compressSession(kv as any, AGENT_ID, sid, 'proj');
+		assert(s2 !== null, 'second compression produced summary');
+		assert(s2!.observationCount === 6, `cumulative count=6 (got ${s2!.observationCount})`);
+		assert(s2!.narrative.includes('first batch'), 'narrative keeps first batch (merged, not overwritten)');
+		assert(s2!.narrative.includes('second batch'), 'narrative includes second batch');
+	});
+
+	await test('O5: 滑动窗口 —— 超上限淘汰最老未压缩条目', async (kv) => {
+		// 通过环境变量把上限调小便于测试
+		const prev = process.env['AGENTMEMORY_MAX_OBS_PER_SESSION'];
+		process.env['AGENTMEMORY_MAX_OBS_PER_SESSION'] = '5';
+		try {
+			const sid = 'sess-obs-window';
+			// 写 3 条 + 手动标记最老一条为已压缩（应被保护不被淘汰）
+			for (let i = 0; i < 3; i++) {
+				await fn.observe(kv as any, AGENT_ID, { sessionId: sid, hookType: 'tool_use', timestamp: `2026-07-25T0${i}:00:00Z` });
+			}
+			const list1 = await fn.observeList(kv as any, AGENT_ID, sid);
+			const oldest = list1.find(o => o.timestamp.includes('T00:'));
+			if (oldest) { (oldest as any).compressed = true; await kv.set(KV.observations(AGENT_ID, sid), oldest.id, oldest); }
+			// 再写 4 条 → 总数 7 > 上限 5 → 淘汰最老未压缩条目
+			for (let i = 3; i < 7; i++) {
+				await fn.observe(kv as any, AGENT_ID, { sessionId: sid, hookType: 'tool_use', timestamp: `2026-07-25T0${i}:00:00Z` });
+			}
+			const list2 = await fn.observeList(kv as any, AGENT_ID, sid);
+			assert(list2.length <= 5, `capped at 5 (got ${list2.length})`);
+			assert(list2.some(o => (o as any).compressed), 'compressed oldest entry protected from eviction');
+			assert(!list2.some(o => o.timestamp.includes('T01:')), 'oldest uncompressed evicted');
+		} finally {
+			if (prev === undefined) { delete process.env['AGENTMEMORY_MAX_OBS_PER_SESSION']; }
+			else { process.env['AGENTMEMORY_MAX_OBS_PER_SESSION'] = prev; }
+		}
 	});
 
 	// ══════════════════════════════════════════════════════════════════════

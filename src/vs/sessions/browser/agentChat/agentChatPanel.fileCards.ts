@@ -1,0 +1,678 @@
+import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
+import { IToolCall, IAgentChatMessage } from './agentChatTypes.js';
+import { AgentChatPanelCodebaseCards } from './agentChatPanel.codebaseCards.js';
+import { createSvgIcon, FILE_ICON_D, ERROR_ICON_D } from './agentChatPanel.toolCards.js';
+
+/** 自 agentChatPanel.toolCards.ts 抽离（上帝对象拆分）。继承链见继承父类。 */
+export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCards {
+	protected override _createWriteFileToolCard(tc: IToolCall, key: string): HTMLElement {
+			const isRunning = tc.status === 'running';
+			const isError = tc.status === 'error';
+
+			// 提取文件路径（fallback 链：tc.filePath → args.filePath → args.path）
+			const filePath = this._extractFilePath(tc);
+
+			// ── 状态驱动外壳 ──
+			let statusClass = 'tool-card-success';
+			if (isError) { statusClass = 'tool-card-error'; }
+			else if (isRunning) { statusClass = 'tool-card-running'; }
+			const wrapper = $(`.tool-header-wrapper.${statusClass}.write-file-tool-card`);
+			if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
+
+			// ── Body（默认折叠）—— 必须先创建 body，折叠按钮 handler 才能引用 ──
+			const body = append(wrapper, $('.tool-header-children'));
+
+			// ── Header（diff 风格）──
+			const headerEl = append(wrapper, $('.tool-header.write-file-header'));
+			const row = append(headerEl, $('.tool-header-row'));
+
+			// 左侧：chevron + 标题（语言标签 + 文件名 + 修改标记 + diff 行数）
+			const left = append(row, $('.tool-header-left'));
+			const titleContainer = append(left, $('.tool-header-title-container.tool-header-title-clickable'));
+			const chevron = this._svgChevron(titleContainer, 'tool-header-chevron', 14);
+
+			// 文件名 + 修改标记
+			if (filePath) {
+				// 语言标签（基于文件扩展名）
+				const lang = this._getLanguageTag(filePath);
+				if (lang) {
+					const langEl = append(titleContainer, $('span.write-file-lang'));
+					langEl.textContent = lang;
+				}
+
+				const fileName = filePath.split(/[\\/]/).pop() || filePath;
+				const fileNameEl = append(titleContainer, $('span.write-file-name'));
+				fileNameEl.textContent = fileName;
+
+				const modEl = append(titleContainer, $('span.write-file-modified'));
+				modEl.textContent = isRunning ? '(运行中)' : key === 'patch' ? '(修改)' : '(新建)';
+			}
+
+			// diff 行数统计（绿色 +N / 红色 -N）
+			const diffStats = this._computeDiffStats(tc);
+			if (diffStats.added > 0 || diffStats.removed > 0) {
+				const diffEl = append(titleContainer, $('span.write-file-diff-stats'));
+				if (diffStats.added > 0) {
+					const addEl = append(diffEl, $('span.write-file-diff-add'));
+					addEl.textContent = `+${diffStats.added}`;
+				}
+				if (diffStats.removed > 0) {
+					const remEl = append(diffEl, $('span.write-file-diff-rem'));
+					remEl.textContent = `-${diffStats.removed}`;
+				}
+			}
+
+			// 点击标题区域（chevron + 文件名 + diff 统计）展开/折叠，不拦截内部按钮点击
+			this._register(addDisposableListener(titleContainer, EventType.CLICK, (e) => {
+				if ((e.target as HTMLElement)?.closest?.('button')) { return; }
+				e.stopPropagation();
+				const isExpanded = body.classList.toggle('tool-header-children-expanded');
+				if (isExpanded) {
+					this._toolCallExpandState.set(tc.id, true);
+					chevron.classList.add('tool-header-chevron-expanded');
+				} else {
+					this._toolCallExpandState.set(tc.id, false);
+					chevron.classList.remove('tool-header-chevron-expanded');
+				}
+			}));
+
+		// 右侧：状态图标 + 「查看文件」按钮
+		const right = append(row, $('.tool-header-right'));
+		// 查看文件按钮（始终显示）
+		if (this._onOpenFile && filePath && !isRunning) {
+			const viewLink = append(right, $('button.tool-view-file-link'));
+			viewLink.textContent = '查看文件';
+			viewLink.title = `在编辑器中打开 ${filePath}`;
+			this._register(addDisposableListener(viewLink, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				this._onOpenFile?.(filePath);
+			}));
+		}
+		// 「导入知识库」按钮：自动执行(入口落盘到库)+抽取(构建笔记)
+		if (this._onImportFileToKnowledgeBase && filePath && !isRunning) {
+			const kbImported = !!tc.id && this._importedKbFileToolIds.has(tc.id);
+			const kbBtn = append(right, $('button.tool-import-kb-link')) as HTMLButtonElement;
+			kbBtn.textContent = kbImported ? '已导入知识库' : '导入知识库';
+			kbBtn.title = kbImported ? '已导入知识库' : `将 ${filePath} 导入知识库（入口+抽取）`;
+			if (kbImported) { kbBtn.classList.add('tool-import-kb-done'); kbBtn.disabled = true; }
+			this._register(addDisposableListener(kbBtn, EventType.CLICK, async (e) => {
+				e.stopPropagation();
+				if (!tc.id || this._importedKbFileToolIds.has(tc.id) || kbBtn.disabled) { return; }
+				kbBtn.disabled = true;
+				const original = kbBtn.textContent;
+				kbBtn.textContent = '导入中…';
+				try {
+					const ok = await this._onImportFileToKnowledgeBase?.(filePath, tc.id);
+					if (ok) {
+						this._importedKbFileToolIds.add(tc.id);
+						kbBtn.textContent = '已导入知识库';
+						kbBtn.title = '已导入知识库';
+						kbBtn.classList.add('tool-import-kb-done');
+					} else {
+						kbBtn.textContent = original;
+						kbBtn.disabled = false;
+					}
+				} catch {
+					kbBtn.textContent = original;
+					kbBtn.disabled = false;
+				}
+			}));
+		}
+
+			// 展开/折叠 toggle 按钮（chevron-down SVG，旋转 180° 表示展开态）
+			const collapseBtn = append(right, $('button.tool-collapse-btn')) as HTMLButtonElement;
+			collapseBtn.title = '展开/折叠';
+			this._svgChevronDown(collapseBtn, 'tool-collapse-icon');
+			this._register(addDisposableListener(collapseBtn, EventType.CLICK, (e) => {
+				e.stopPropagation();
+				const isExpanded = body.classList.toggle('tool-header-children-expanded');
+				if (isExpanded) {
+					this._toolCallExpandState.set(tc.id, true);
+					chevron.classList.add('tool-header-chevron-expanded');
+					collapseBtn.classList.add('tool-collapse-expanded');
+				} else {
+					this._toolCallExpandState.set(tc.id, false);
+					chevron.classList.remove('tool-header-chevron-expanded');
+					collapseBtn.classList.remove('tool-collapse-expanded');
+				}
+			}));
+
+			const inner = append(body, $('.tool-children-wrapper'));
+			const innerBox = append(inner, $('.tool-children-wrapper-inner'));
+			innerBox.classList.add('write-file-body');
+
+			// 默认折叠（用户可点击展开查看 diff）
+			const expanded = this._toolCallExpandState.get(tc.id) ?? false;
+			// 写回记忆表：流式重建/运行结束后续渲染都按此恢复，避免被自动折叠
+			if (tc.id && !this._toolCallExpandState.has(tc.id)) {
+				this._toolCallExpandState.set(tc.id, expanded);
+			}
+			if (expanded) {
+				body.classList.add('tool-header-children-expanded');
+				chevron.classList.add('tool-header-chevron-expanded');
+				collapseBtn.classList.add('tool-collapse-expanded');
+			}
+
+			// ── Body 内容：直接 diff 代码块（无 section 包装）──
+			if (isRunning && !tc.result) {
+				// 流式写入：把 tc.args 中已到达的 content/new_str/diff 增量刷入滚动预览区，
+				// 避免 tool_end 时一次性渲染大文件 diff 卡住主线程（参考 CodeBuddy IDE 写文件流式卡片）。
+				const streamPre = append(innerBox, $('pre.write-file-stream'));
+				const textNode = wrapper.ownerDocument.createTextNode('');
+				streamPre.appendChild(textNode);
+				this._initWriteFileStreamState(wrapper, streamPre, textNode);
+				if (!tc.args) {
+					// tool_start 到达但参数还未开始生成 → 显示等待占位，避免卡片空白
+					streamPre.textContent = '正在生成工具调用参数...';
+					streamPre.classList.add('write-file-stream-waiting');
+				}
+				this._updateWriteFileStream(wrapper, tc);
+				// 运行期间默认展开，让用户实时看到写入内容（用户可手动折叠）
+				if (!body.classList.contains('tool-header-children-expanded')) {
+					body.classList.add('tool-header-children-expanded');
+					chevron.classList.add('tool-header-chevron-expanded');
+					collapseBtn.classList.add('tool-collapse-expanded');
+				}
+			} else if (tc.result) {
+				const diffBlock = append(innerBox, $('.write-file-diff-block'));
+				if (diffStats.lines && diffStats.lines.length > 0) {
+					// 大文件封顶：只渲染前 MAX_DIFF_LINES 行，避免一次性构建上万 DOM 节点卡住主线程。
+					// 完整内容通过右上角「查看文件」在编辑器中打开。
+					const MAX_DIFF_LINES = 500;
+					const total = diffStats.lines.length;
+					const shown = Math.min(total, MAX_DIFF_LINES);
+					for (let i = 0; i < shown; i++) {
+						const line = diffStats.lines[i];
+						const lineEl = append(diffBlock, $(`div.write-file-diff-line.write-file-diff-${line.type}`));
+						append(lineEl, $('span.write-file-diff-marker')).textContent = line.type === 'add' ? '+' : line.type === 'rem' ? '-' : ' ';
+						append(lineEl, $('span.write-file-diff-content')).textContent = line.text;
+					}
+					if (total > shown) {
+						const more = append(diffBlock, $('.write-file-diff-more'));
+						more.textContent = `… 其余 ${total - shown} 行已省略，点击「查看文件」查看完整内容`;
+					}
+				} else {
+					// 退化为纯文本预览
+					const pre = append(diffBlock, $('.write-file-diff-content'));
+					pre.textContent = tc.result;
+				}
+			}
+
+			// ── 错误详情（无 result 时）──
+			if (isError && tc.error && !tc.result) {
+				const bottom = append(wrapper, $('.tool-bottom-children'));
+				const bh = append(bottom, $('.tool-bottom-children-header'));
+				const bchevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
+				append(bh, $('span.tool-bottom-children-title')).textContent = '错误详情';
+				const bbody = append(bottom, $('.tool-bottom-children-body'));
+				append(bbody, $('.tool-bottom-children-content')).textContent = tc.error;
+				this._register(addDisposableListener(bh, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					const open = bbody.classList.toggle('tool-bottom-children-body-open');
+					bchevron.classList.toggle('tool-bottom-children-chevron-open', open);
+				}));
+			}
+
+			// 取消通知
+			if (tc.status === 'canceled') {
+				this._appendCanceledNotice(wrapper);
+			}
+
+			return wrapper;
+		}
+
+	// ── 写文件流式渲染（参考 CodeBuddy IDE：写大文件时内容边生成边流入卡片，O(delta) 增量、不卡主线程）──
+	/** 分帧追加的每帧字符数（rAF 频率约 16ms/帧，200 字符/帧 = 约 12000 字符/秒的流式速率） */
+	private static readonly WRITE_FILE_CHUNK_SIZE = 200;
+
+	private readonly _writeStreamStates = new WeakMap<HTMLElement, {
+		pre: HTMLElement;
+		textNode: Text;
+		contentStart: number; // JSON 字符串值起点（开引号之后偏移），-1 表示尚未定位
+		rawConsumed: number;  // 已消费的原始字符数（从 contentStart 起）
+		done: boolean;
+		/** 一次性收到大段完整 content 时，用分帧追加模拟流式效果（非增量场景兜底） */
+		pendingText: string;    // 待分帧追加的文本
+		chunkOffset: number;    // pendingText 中下一个待追加字符偏移
+	}>();
+
+	/** 初始化某写文件卡片的流式状态。 */
+	private _initWriteFileStreamState(wrapper: HTMLElement, pre: HTMLElement, textNode: Text): void {
+		this._writeStreamStates.set(wrapper, { pre, textNode, contentStart: -1, rawConsumed: 0, done: false, pendingText: '', chunkOffset: 0 });
+	}
+
+	/**
+	 * 增量把 tc.args 中已到达的 content/new_str/diff 值刷入卡片滚动区。
+	 * 仅解码「上次消费位置 → 当前 args 末尾」的新增片段，整体 O(delta)。
+	 *
+	 * 兜底：CodeBuddy Provider 等实现会在 tool_start 时一次性返回完整 arguments
+	 * 而非逐 tool_args delta 流式发送。此时解码后的文本可能一次就高达 15K+ 字符，
+	 * 直接 appendData 会导致单帧大量 DOM 操作卡顿，且视觉上瞬间出现无流式效果。
+	 * 对此类场景，改用 rAF 分帧分批追加（每帧 WRITE_FILE_CHUNK_SIZE 字符），
+	 * 模拟流式写入体验。
+	 */
+	protected _updateWriteFileStream(wrapper: HTMLElement, tc: IToolCall): void {
+		const st = this._writeStreamStates.get(wrapper);
+		if (!st || st.done) { return; }
+		const args = tc.args || '';
+		if (!args) { return; }
+		if (st.contentStart < 0) {
+			const start = this._locateWriteStreamFieldStart(args);
+			if (start < 0) { return; }
+			st.contentStart = start;
+			st.rawConsumed = 0;
+			// 首次定位到 content 字段 → 清除等待占位符，恢复 Text 节点用于流式追加
+			if (st.pre.classList.contains('write-file-stream-waiting')) {
+				st.pre.textContent = '';
+				st.pre.classList.remove('write-file-stream-waiting');
+				st.pre.appendChild(st.textNode);
+			}
+		}
+		const from = st.contentStart + st.rawConsumed;
+		if (from >= args.length) { return; }
+		const scan = this._scanJsonStringEnd(args, from);
+		const rawSlice = args.slice(from, scan.end);
+		if (rawSlice) {
+			const dec = this._decodeJsonChunk(rawSlice);
+			if (dec.text) {
+				if (dec.text.length > AgentChatPanelFileCards.WRITE_FILE_CHUNK_SIZE && st.chunkOffset === 0) {
+					// 一次性收到的大段内容 → 分帧追加，模拟流式写入
+					st.pendingText = dec.text;
+					st.chunkOffset = 0;
+					this._scheduleWriteFileChunk(st, wrapper);
+				} else {
+					// 小段增量或正在分帧中 → 直接追加或等待上一批分帧完成
+					st.textNode.appendData(dec.text);
+					const MAX = 400000;
+					if (st.textNode.length > MAX) {
+						st.textNode.deleteData(0, st.textNode.length - 300000);
+					}
+					st.pre.scrollTop = st.pre.scrollHeight;
+				}
+			}
+			st.rawConsumed += dec.consumed;
+		}
+		if (scan.complete && st.contentStart + st.rawConsumed >= scan.end) {
+			st.done = true;
+		}
+	}
+
+	/** 用 rAF 分批将 pendingText 追加到 Text 节点，每帧 WRITE_FILE_CHUNK_SIZE 字符。 */
+	private _scheduleWriteFileChunk(
+		st: NonNullable<ReturnType<typeof this._writeStreamStates.get>>,
+		wrapper: HTMLElement,
+	): void {
+		if (!st.pendingText || st.chunkOffset >= st.pendingText.length) {
+			st.pendingText = '';
+			st.chunkOffset = 0;
+			return;
+		}
+		const end = Math.min(st.chunkOffset + AgentChatPanelFileCards.WRITE_FILE_CHUNK_SIZE, st.pendingText.length);
+		const chunk = st.pendingText.slice(st.chunkOffset, end);
+		st.chunkOffset = end;
+		st.textNode.appendData(chunk);
+		const MAX = 400000;
+		if (st.textNode.length > MAX) {
+			st.textNode.deleteData(0, st.textNode.length - 300000);
+		}
+		st.pre.scrollTop = st.pre.scrollHeight;
+
+		if (st.chunkOffset < st.pendingText.length) {
+			const win = (wrapper.ownerDocument || (typeof document !== 'undefined' ? document : undefined))?.defaultView;
+			if (win) {
+				win.requestAnimationFrame(() => this._scheduleWriteFileChunk(st, wrapper));
+			} else {
+				// 降级：一次性追加剩余全部
+				st.textNode.appendData(st.pendingText.slice(st.chunkOffset));
+				st.chunkOffset = st.pendingText.length;
+				st.pre.scrollTop = st.pre.scrollHeight;
+			}
+		}
+	}
+
+	/** 批量刷新一条消息内所有「运行中」写文件卡片的流式内容（供 _updateMessageDom 每帧调用，幂等）。 */
+	protected _updateActiveWriteFileStreams(el: HTMLElement, msg: IAgentChatMessage): void {
+		const cards = el.querySelectorAll('.write-file-tool-card.tool-card-running[data-tool-id]');
+		if (cards.length === 0) { return; }
+		const list = msg.toolCalls;
+		if (!list || list.length === 0) { return; }
+		const byId = new Map<string, IToolCall>();
+		for (const t of list) { if (t?.id) { byId.set(t.id, t); } }
+		cards.forEach((node) => {
+			const cardEl = node as HTMLElement;
+			const id = cardEl.getAttribute('data-tool-id');
+			if (!id) { return; }
+			const tc = byId.get(id);
+			if (tc && tc.status === 'running') { this._updateWriteFileStream(cardEl, tc); }
+		});
+	}
+
+	/** 在（可能不完整的）JSON args 中定位首个可流式字段值的起点（开引号之后）。 */
+	private _locateWriteStreamFieldStart(args: string): number {
+		for (const key of ['content', 'new_str', 'newStr', 'diff', 'code']) {
+			const re = new RegExp('"' + key + '"\\s*:\\s*"');
+			const m = re.exec(args);
+			if (m) { return m.index + m[0].length; }
+		}
+		return -1;
+	}
+
+	/**
+	 * 从干净边界 from 扫描 JSON 字符串值的收尾未转义引号。
+	 * 返回 end（绝对下标）与 complete（是否已遇到收尾引号）。尾部悬空反斜杠本轮不消费。
+	 */
+	private _scanJsonStringEnd(args: string, from: number): { end: number; complete: boolean } {
+		const n = args.length;
+		let i = from;
+		while (i < n) {
+			const c = args.charCodeAt(i);
+			if (c === 92 /* \\ */) {
+				if (i + 1 >= n) { return { end: i, complete: false }; }
+				i += 2;
+				continue;
+			}
+			if (c === 34 /* " */) { return { end: i, complete: true }; }
+			i++;
+		}
+		return { end: n, complete: false };
+	}
+
+	/** 解码一段 JSON 字符串原始片段（不含未转义引号）。返回解码文本与实际消费的原始长度（尾部不完整转义会延迟到下轮）。 */
+	private _decodeJsonChunk(raw: string): { text: string; consumed: number } {
+		let out = '';
+		let i = 0;
+		const n = raw.length;
+		while (i < n) {
+			const ch = raw[i];
+			if (ch === '\\') {
+				if (i + 1 >= n) { break; }
+				const e = raw[i + 1];
+				switch (e) {
+					case 'n': out += '\n'; i += 2; break;
+					case 't': out += '\t'; i += 2; break;
+					case 'r': out += '\r'; i += 2; break;
+					case 'b': out += '\b'; i += 2; break;
+					case 'f': out += '\f'; i += 2; break;
+					case '"': out += '"'; i += 2; break;
+					case '\\': out += '\\'; i += 2; break;
+					case '/': out += '/'; i += 2; break;
+					case 'u': {
+						if (i + 6 > n) { return { text: out, consumed: i }; }
+						const code = parseInt(raw.slice(i + 2, i + 6), 16);
+						out += Number.isNaN(code) ? raw.slice(i, i + 6) : String.fromCharCode(code);
+						i += 6;
+						break;
+					}
+					default: out += e; i += 2; break;
+				}
+			} else {
+				out += ch;
+				i++;
+			}
+		}
+		return { text: out, consumed: i };
+	}
+
+	protected override _createTerminalToolCard(tc: IToolCall, key: string): HTMLElement {
+			const isRunning = tc.status === 'running';
+			const isError = tc.status === 'error';
+			const isSuccess = tc.status === 'success' || (!isRunning && !isError && tc.status !== 'approval_required' && tc.status !== 'rejected' && tc.status !== 'canceled');
+
+			// 提取命令字符串
+			let commandText = '';
+			try {
+				if (tc.args) {
+					const args = JSON.parse(tc.args);
+					commandText = typeof args['command'] === 'string' ? args['command']
+						: typeof args['cmd'] === 'string' ? args['cmd']
+						: typeof args['code'] === 'string' ? args['code'] : '';
+				}
+			} catch { /* ignore */ }
+
+			// ── 状态驱动外壳 ──
+			let statusClass = 'tool-card-success';
+			if (isError) { statusClass = 'tool-card-error'; }
+			else if (isRunning) { statusClass = 'tool-card-running'; }
+			else if (tc.status === 'skipped' || tc.status === 'canceled') { statusClass = 'tool-card-rejected'; }
+			const wrapper = $(`.tool-header-wrapper.${statusClass}.terminal-tool-card`);
+			if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
+
+			// ── Header（单行命令 + 按钮）──
+			const headerEl = append(wrapper, $('.tool-header.terminal-header'));
+			const row = append(headerEl, $('.tool-header-row'));
+
+			// 左侧：终端 logo + 命令
+			const left = append(row, $('.tool-header-left.terminal-left'));
+			const titleContainer = append(left, $('.tool-header-title-container.tool-header-title-clickable'));
+			const chevron = this._svgChevron(titleContainer, 'tool-header-chevron', 14);
+
+			// 终端 logo（`>_` prompt 风格 SVG）
+			this._svgTerminalLogo(titleContainer, 'terminal-logo');
+			// 命令文本（去掉前缀"$ "，使用等宽字体）
+			const cmdEl = append(titleContainer, $('span.terminal-cmd-text'));
+			cmdEl.textContent = commandText || (isRunning ? '执行中…' : '(空命令)');
+
+			// 点击标题区域（chevron + logo + 命令文本）展开/折叠，但不拦截内部按钮点击
+			this._register(addDisposableListener(titleContainer, EventType.CLICK, (e) => {
+				if ((e.target as HTMLElement)?.closest?.('button')) { return; }
+				e.stopPropagation();
+				const isExpanded = body.classList.toggle('tool-header-children-expanded');
+				if (isExpanded) {
+					this._toolCallExpandState.set(tc.id, true);
+					chevron.classList.add('tool-header-chevron-expanded');
+				} else {
+					this._toolCallExpandState.set(tc.id, false);
+					chevron.classList.remove('tool-header-chevron-expanded');
+				}
+			}));
+
+			// 右侧：状态图标 + 复制 + Run in Terminal
+			const right = append(row, $('.tool-header-right'));
+			if (isRunning) {
+				this._svgSpinner(right, 'tool-header-spinner-icon');
+			} else if (isError) {
+				this._svgAlert(right, 'tool-header-error-icon');
+			} else if (isSuccess) {
+				this._svgCheck(right, 'tool-header-success-icon');
+			}
+			if (typeof tc.duration === 'number' && tc.duration >= 0 && !isRunning) {
+				append(right, $('span.tool-header-desc2')).textContent = this._formatDuration(tc.duration);
+			}
+			// 复制按钮
+			if (commandText) {
+				const copyBtn = append(right, $('button.terminal-copy-btn'));
+				copyBtn.title = '复制命令';
+				const copySvg = this._svgCopyIcon();
+				copyBtn.appendChild(copySvg);
+				this._register(addDisposableListener(copyBtn, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					void this._copyToClipboard(commandText);
+					copyBtn.classList.add('terminal-copy-done');
+					setTimeout(() => copyBtn.classList.remove('terminal-copy-done'), 1200);
+				}));
+			}
+			// 独立终端按钮（绿色框图标）
+			if (this._onRunInTerminal && commandText && !isRunning) {
+				const termBtn = append(right, $('button.terminal-open-btn'));
+				termBtn.title = '在独立终端窗口中运行';
+				this._svgTerminalOpenIcon(termBtn, 'terminal-open-icon');
+				this._register(addDisposableListener(termBtn, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					this._onRunInTerminal?.(commandText);
+				}));
+			}
+			// ── Body（默认折叠）—— 提前创建以便 header 点击事件引用 ──
+			const body = append(wrapper, $('.tool-header-children'));
+			const inner = append(body, $('.tool-children-wrapper'));
+			const innerBox = append(inner, $('.tool-children-wrapper-inner'));
+			innerBox.classList.add('terminal-body');
+
+			const expanded = this._toolCallExpandState.get(tc.id) ?? false;
+			// 写回记忆表：流式重建/运行结束后续渲染都按此恢复，避免被自动折叠
+			if (tc.id && !this._toolCallExpandState.has(tc.id)) {
+				this._toolCallExpandState.set(tc.id, expanded);
+			}
+			if (expanded) {
+				body.classList.add('tool-header-children-expanded');
+				chevron.classList.add('tool-header-chevron-expanded');
+			}
+
+			// ── Body 内容：直接放命令结果（无 section 标签）──
+			if (isRunning && !tc.result) {
+				const running = append(innerBox, $('.terminal-running-row'));
+				// 左侧占位文本 + 右侧「继续下一步」按钮
+				const placeholder = append(running, $('span.terminal-placeholder'));
+				placeholder.textContent = '运行中，详情可在终端查看';
+				// 继续下一步按钮：点击后标记跳过 + 取消执行（用户可继续后续步骤）
+				if (this._onCancelExecution) {
+					const continueBtn = append(running, $('button.terminal-continue-btn')) as HTMLButtonElement;
+					continueBtn.textContent = '继续下一步';
+					continueBtn.title = '不等待命令完成，标记为已跳过并继续后续步骤';
+					this._register(addDisposableListener(continueBtn, EventType.CLICK, (e) => {
+						e.stopPropagation();
+						continueBtn.disabled = true;
+						continueBtn.textContent = '已跳过';
+						// 取消当前执行（agent 端 abort → onCancelExecution → bubble 显示「用户已取消」）
+						this._onCancelExecution?.();
+					}));
+				}
+			} else if (tc.result) {
+				const output = append(innerBox, $('.terminal-output-block'));
+				if (isError) { output.classList.add('terminal-output-error'); }
+				const pre = append(output, $('.terminal-output-content'));
+				pre.textContent = tc.result;
+				// exit code 徽标
+				if (typeof tc.exitCode === 'number') {
+					const ec = append(output, $(
+						`.tool-exit-code.${tc.exitCode === 0 ? 'tool-exit-code-zero' : 'tool-exit-code-nonzero'}`
+					));
+					ec.textContent = `exit code ${tc.exitCode}`;
+				}
+			}
+
+			// 错误详情
+			if (isError && tc.error && !tc.result) {
+				const bottom = append(wrapper, $('.tool-bottom-children'));
+				const bh = append(bottom, $('.tool-bottom-children-header'));
+				const bchevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
+				append(bh, $('span.tool-bottom-children-title')).textContent = '错误详情';
+				const bbody = append(bottom, $('.tool-bottom-children-body'));
+				append(bbody, $('.tool-bottom-children-content')).textContent = tc.error;
+				this._register(addDisposableListener(bh, EventType.CLICK, (e) => {
+					e.stopPropagation();
+					const open = bbody.classList.toggle('tool-bottom-children-body-open');
+					bchevron.classList.toggle('tool-bottom-children-chevron-open', open);
+				}));
+			}
+
+			// ── 取消通知（canceled 状态）──
+			if (tc.status === 'canceled') {
+				this._appendCanceledNotice(wrapper);
+			}
+
+			return wrapper;
+		}
+
+	/**
+	 * 读取文件卡片：仅折叠态一行，点击打开编辑器跳转到指定行。
+	 * 不渲染展开 body，不放代码预览。
+	 */
+	protected override _createReadFileCard(tc: IToolCall, key: string): HTMLElement {
+		const isError = tc.status === 'error';
+		const wrapper = $(`.chat-read-card${isError ? '.chat-read-card-error' : ''}`);
+
+		// 图标
+		const icon = append(wrapper, $('.chat-read-card-icon'));
+		icon.appendChild(createSvgIcon(isError ? ERROR_ICON_D : FILE_ICON_D));
+
+		// 正文：文件名 + 行号范围 + 元信息
+		const body = append(wrapper, $('.chat-read-card-body'));
+		const verb = append(body, $('span'));
+		verb.textContent = isError ? '读取' : '读取';
+		verb.style.cssText = 'color:var(--void-fg-3);font-size:12px;flex-shrink:0;';
+
+		// 提取文件路径和行号
+		let p: Record<string, unknown> = {};
+		try { p = tc.args ? JSON.parse(tc.args) : {}; } catch { p = {}; }
+		const fp = (tc.filePath || p.file_path || p.filePath || p.path || p.uri) as string | undefined;
+		const startLine = (p.start_line ?? p.startLine ?? p.offset) as number | undefined;
+		const endLine = (p.end_line ?? p.endLine) as number | undefined;
+
+		const basename = (s: string) => {
+			const parts = s.replace(/\\/g, '/').split('/').filter(Boolean);
+			return parts[parts.length - 1] || s;
+		};
+
+		const fileName = append(body, $('.chat-read-card-file'));
+		fileName.textContent = fp ? basename(fp) : '(未知文件)';
+
+		if (startLine !== undefined && startLine !== null) {
+			const range = append(body, $('.chat-read-card-range'));
+			range.textContent = endLine ? `L${startLine}-${endLine}` : `L${startLine}`;
+		}
+
+		// 元信息
+		if (tc.result) {
+			const meta = append(body, $('.chat-read-card-meta'));
+			meta.textContent = `${tc.result.length} chars`;
+		} else if (typeof tc.duration === 'number') {
+			const meta = append(body, $('.chat-read-card-meta'));
+			meta.textContent = this._formatDuration(tc.duration);
+		}
+
+		// hover 提示 "↗ 打开"
+		if (!isError && fp) {
+			const hint = append(wrapper, $('.chat-read-card-hint'));
+			hint.textContent = '↗ 打开';
+		}
+
+		// 点击 → 打开编辑器
+		if (fp && !isError) {
+			wrapper.addEventListener('click', (e) => {
+				e.stopPropagation();
+				// 传递行号：数字型 → onOpenFile 中按 _openFileInEditor(filePath, line) 跳转
+				if (startLine !== undefined && startLine !== null) {
+					this._onOpenFile?.(fp, startLine);
+				} else {
+					this._onOpenFile?.(fp);
+				}
+			});
+		}
+
+		return wrapper;
+	}
+
+	protected override _createCodebaseResultCard(key: string, resultText: string): HTMLElement | null {
+			try {
+				const data = JSON.parse(resultText);
+				if (!data) { return null; }
+
+				const card = $('.codebase-result-card');
+
+				// ── search_graph: BM25 搜索结果列表 ──
+				if (key === 'search_graph' && data.nodes && Array.isArray(data.nodes)) {
+					return this._renderSearchGraphCard(card, data);
+				}
+				// ── search_code: 代码搜索 + 上下文 ──
+				if (key === 'grep' && data.results && Array.isArray(data.results)) {
+					return this._renderSearchCodeCard(card, data);
+				}
+				// ── get_architecture: 架构总览 ──
+				if (key === 'get_architecture' && (data.totalNodes || data.languages)) {
+					return this._renderArchitectureCard(card, data);
+				}
+				// ── trace_path: 调用链追踪 ──
+				if (key === 'trace_path' && (data.hops || data.path)) {
+					return this._renderTracePathCard(card, data);
+				}
+				// ── index_repository: 索引进度/完成 ──
+				if (key === 'index_repository') {
+					return this._renderIndexRepoCard(card, data);
+				}
+				// ── 其他 codebase 工具：紧凑统计卡 ──
+				return this._renderCodebaseSummaryCard(card, key, data);
+			} catch {
+				return null;
+			}
+		}
+}

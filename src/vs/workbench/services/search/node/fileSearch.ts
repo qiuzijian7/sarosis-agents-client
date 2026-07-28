@@ -20,7 +20,7 @@ import * as types from '../../../../base/common/types.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Promises } from '../../../../base/node/pfs.js';
 import { IFileQuery, IFolderQuery, IProgressMessage, ISearchEngineStats, IRawFileMatch, ISearchEngine, ISearchEngineSuccess, isFilePatternMatch, hasSiblingFn } from '../common/search.js';
-import { spawnRipgrepCmd } from './ripgrepFileSearch.js';
+import { spawnRipgrepCmd, isRipgrepAvailable } from './ripgrepFileSearch.js';
 import { prepareQuery } from '../../../../base/common/fuzzyScorer.js';
 
 interface IDirectoryEntry extends IRawFileMatch {
@@ -204,6 +204,30 @@ export class FileWalker {
 		};
 		let leftover = '';
 		const tree = this.initDirectoryTree();
+
+		// Pure-Node fallback when the ripgrep binary is missing on disk.
+		// We walk the directory tree ourselves and match each entry against
+		// the file pattern / include / exclude rules. The result stream is
+		// the same `IRawFileMatch` shape that ripgrep would produce, so the
+		// rest of the pipeline (UI rendering, matchFile, etc.) needs no
+		// changes. This is slower than ripgrep on large trees but unblocks
+		// the activity bar search when the binary is not available
+		// (e.g. packaged builds where @vscode/ripgrep's postinstall failed).
+		if (!isRipgrepAvailable) {
+			onMessage({ message: `[FileWalker] ripgrep unavailable, falling back to pure Node.js walker for ${rootFolder}` });
+			this.cmdSW = StopWatch.create(false);
+			this.cmdResultCount = 0;
+			this.cmdSW.stop();
+			Promises.readdir(rootFolder).then(children => {
+				if (this.isCanceled) {
+					return done();
+				}
+				this.doWalk(folderQuery, '', children, onResult, err => done(err));
+			}, err => {
+				done(err instanceof Error ? err : new Error(toErrorMessage(err)));
+			});
+			return;
+		}
 
 		const ripgrep = spawnRipgrepCmd(this.config, folderQuery, this.config.includePattern, this.folderExcludePatterns.get(folderQuery.folder.fsPath)!.expression, numThreads);
 		const cmd = ripgrep.cmd;

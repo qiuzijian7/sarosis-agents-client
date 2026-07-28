@@ -9,6 +9,8 @@ import { IAgentGalleryService, AgentTemplate } from '../common/agentInstance.js'
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
 // ─── Agent Gallery Service Implementation ─────────────────────────
 
@@ -21,15 +23,18 @@ export class AgentGalleryService extends Disposable implements IAgentGalleryServ
 
 	private readonly _logService: ILogService;
 	private readonly _fileService: IFileService;
+	private readonly _environmentService: INativeEnvironmentService;
 	private _templates: AgentTemplate[] = [];
 
 	constructor(
 		@ILogService logService: ILogService,
 		@IFileService fileService: IFileService,
+		@INativeEnvironmentService environmentService: INativeEnvironmentService,
 	) {
 		super();
 		this._logService = logService;
 		this._fileService = fileService;
+		this._environmentService = environmentService;
 		this._loadTemplates();
 	}
 
@@ -72,29 +77,113 @@ export class AgentGalleryService extends Disposable implements IAgentGalleryServ
 			return;
 		}
 
-		// 模板目录：.saros/templates/
+		// 模板目录：{appRoot}/resources/templates/
 		// 每个模板是一个子目录，包含 template.yaml
-		const templatesDir = URI.from({ scheme: 'file', path: '.saros/templates' });
+		const appRoot = this._environmentService.appRoot;
+		const templatesDir = URI.joinPath(URI.file(appRoot), 'resources', 'templates');
 
+		// 确保目录存在，不存在则创建并写入默认模板
+		await this._ensureTemplatesDir(templatesDir);
+
+		let children;
 		try {
-			const children = await this._fileService.resolve(templatesDir);
-			if (children.children) {
-				for (const child of children.children) {
-					if (child.isDirectory) {
-						const template = await this._loadTemplateFromDirectory(child.resource);
-						if (template) {
-							this._templates.push(template);
-						}
-					}
-				}
-			}
+			children = await this._fileService.resolve(templatesDir);
 		} catch (error) {
 			this._logService.error('[AgentGallery] Error reading templates directory', error);
 			throw error;
 		}
+
+		if (children?.children) {
+			for (const child of children.children) {
+				if (child.isDirectory) {
+					const template = await this._loadTemplateFromDirectory(child.resource);
+					if (template) {
+						this._templates.push(template);
+					}
+				}
+			}
+		}
 	}
 
-		private async _loadTemplateFromDirectory(dirUri: URI): Promise<AgentTemplate | undefined> {
+	/** 判断是否为文件/目录不存在的错误 */
+	private _isFileNotFound(error: unknown): boolean {
+		const err = error as { code?: string; name?: string; message?: string; constructor?: { name?: string } };
+		return !!(
+			err?.code === 'ENOENT'
+			|| err?.code === 'FileNotFound'
+			|| err?.name === 'ENOENT'
+			|| err?.constructor?.name === 'FileOperationError'
+			|| err?.message?.includes('nonexistent file')
+		);
+	}
+
+	/** 确保模板目录存在，不存在则创建并写入默认模板 */
+	private async _ensureTemplatesDir(templatesDir: URI): Promise<void> {
+		try {
+			await this._fileService.resolve(templatesDir);
+			return; // 已存在
+		} catch (error) {
+			if (!this._isFileNotFound(error)) {
+				throw error;
+			}
+		}
+
+		// 目录不存在 → 创建并写入默认模板
+		this._logService.info(`[AgentGallery] Creating templates directory: ${templatesDir.toString()}`);
+		await this._fileService.createFolder(templatesDir);
+
+		// 写入 3 个默认模板
+		const defaults: Array<{ id: string; yaml: string }> = [
+			{
+				id: 'general-assistant',
+				yaml: [
+					'id: general-assistant',
+					'name: General Assistant',
+					'description: 通用对话助手，适用于大多数场景',
+					'category: general',
+					'tags:',
+					'  - chat',
+					'  - general',
+				].join('\n'),
+			},
+			{
+				id: 'code-generator',
+				yaml: [
+					'id: code-generator',
+					'name: Code Generator',
+					'description: 代码生成助手，支持多种编程语言',
+					'category: codegen',
+					'tags:',
+					'  - code',
+					'  - generation',
+				].join('\n'),
+			},
+			{
+				id: 'data-analyst',
+				yaml: [
+					'id: data-analyst',
+					'name: Data Analyst',
+					'description: 数据分析助手，支持 SQL、Python、可视化',
+					'category: data-analysis',
+					'tags:',
+					'  - data',
+					'  - sql',
+					'  - python',
+				].join('\n'),
+			},
+		];
+
+		for (const { id, yaml } of defaults) {
+			const dirUri = URI.joinPath(templatesDir, id);
+			await this._fileService.createFolder(dirUri);
+			const fileUri = URI.joinPath(dirUri, 'template.yaml');
+			await this._fileService.writeFile(fileUri, VSBuffer.fromString(yaml));
+		}
+
+		this._logService.info(`[AgentGallery] Created ${defaults.length} default templates`);
+	}
+
+	private async _loadTemplateFromDirectory(dirUri: URI): Promise<AgentTemplate | undefined> {
 		try {
 			const templateFile = URI.joinPath(dirUri, 'template.yaml');
 			const content = await this._fileService!.readFile(templateFile);

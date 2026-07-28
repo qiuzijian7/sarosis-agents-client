@@ -1,12 +1,13 @@
 import { $, append } from '../../../base/browser/dom.js';
 import { renderMarkdown, MarkdownRenderOptions } from '../../../base/browser/markdownRenderer.js';
+import { IDisposable } from '../../../base/common/lifecycle.js';
 import type { IMarkdownString } from '../../../base/common/htmlContent.js';
-import { IMessagePart } from './agentChatTypes.js';
+import { IAgentChatMessage, IMessagePart, IThinkingMessagePart } from './agentChatTypes.js';
 import { _patchNestedMarkdown, AgentChatPanelBase } from './agentChatPanel.base.js';
-import { AgentChatPanelToolCards } from './agentChatPanel.toolCards.js';
+import { AgentChatPanelMermaidCard } from './agentChatPanel.mermaidCard.js';
 
 // Feature: markdown. Extracted from AgentChatPanelBase.
-export class AgentChatPanelMarkdown extends AgentChatPanelToolCards {
+export class AgentChatPanelMarkdown extends AgentChatPanelMermaidCard {
 
 protected override _cleanupMarkdownDisposables(root: HTMLElement): void {
 		const toRemove: HTMLElement[] = [];
@@ -145,49 +146,133 @@ protected override _parseLinkifyText(text: string): Array<string | { type: 'file
 		return result;
 	}
 
+/**
+ * 流式增量 markdown 渲染（块边界冻结法）。
+ *
+ * 思路：把 content 分为「已冻结的稳定前缀」+「仍在增长的尾部块」。
+ *  - 稳定前缀：仅在出现新的块边界（空行 \n\n 且代码围栏闭合）时，增量渲染这一段并
+ *    append 到 tailEl 之前冻结（不重排已有 DOM）。
+ *  - 尾部块：每次更新整体重渲（含 fillInIncompleteTokens 补全未闭合围栏），因为尾部
+ *    通常是唯一还在变化的那一块（一段落 / 一个未闭合代码块）。
+ *
+ * 每次更新成本 ≈ O(尾部) 而非 O(整篇)，整条流式渲染由 O(N²) 降为 O(N)；且冻结块是
+ * 完整块（边界处围栏必闭合），规避了旧实现「>4KB 强制全量重建」的碎片化问题。
+ */
+
+/** 每个流式 markdown 容器的增量渲染状态。 */
+private _incMdState = new WeakMap<HTMLElement, {
+	/** 已冻结（渲染进 DOM）的内容长度。 */
+	frozenLen: number;
+	/** 上次渲染的完整 content（用于追加校验）。 */
+	lastRendered: string;
+	/** 尾部块元素（每次更新整体重渲）。 */
+	tailEl: HTMLElement;
+	frozenDisposables: IDisposable[];
+	tailDisposable: IDisposable | null;
+}>();
+
+/**
+ * 查找 content 中自 fromOffset 起、最后一个「块边界」的结束偏移。
+ * 块边界 = 空行（\n\n）且该处代码围栏闭合（偶数个 ```）。
+ * 返回 fromOffset 表示无新边界。fromOffset 处围栏必闭合（只有闭合才冻结），
+ * 因此可从 fromOffset 起扫描 → 摊销 O(新增内容)。
+ */
+protected _advanceStableBoundary(content: string, fromOffset: number): number {
+	let stable = fromOffset;
+	let fenceOpen = false;
+	const n = content.length;
+	let i = fromOffset;
+	while (i < n) {
+		// 行首 ``` → 围栏开/关切换，跳到该行行尾
+		if (content.startsWith('```', i) && (i === 0 || content[i - 1] === '\n')) {
+			fenceOpen = !fenceOpen;
+			while (i < n && content[i] !== '\n') { i++; }
+			continue;
+		}
+		// 空行且围栏闭合 → 新的稳定边界（越过 \n\n）
+		if (!fenceOpen && content[i] === '\n' && content[i + 1] === '\n') {
+			stable = i + 2;
+		}
+		i++;
+	}
+	return stable;
+}
+
+/** 清空某容器的增量渲染状态（全量重建前调用，避免在旧骨架上误增量）。 */
+protected override _resetIncrementalMd(container: HTMLElement): void {
+	const state = this._incMdState.get(container);
+	if (state) {
+		try { state.tailDisposable?.dispose(); } catch { /* ignore */ }
+		for (const d of state.frozenDisposables) { try { d.dispose(); } catch { /* ignore */ } }
+		this._incMdState.delete(container);
+	}
+	const md = this._markdownDisposables.get(container);
+	if (md) {
+		try { md.dispose(); } catch { /* ignore */ }
+		this._markdownDisposables.delete(container);
+	}
+}
+
 protected override _tryIncrementalMarkdownRender(container: HTMLElement, newContent: string): boolean {
-		const oldContent = this._streamingMdLastRendered;
+	let state = this._incMdState.get(container);
 
-		// 无上次渲染 → 无法增量
-		if (!oldContent) { return false; }
+	// 内容被改写 / 新流（非追加）→ 交给全量重建
+	if (state && !newContent.startsWith(state.lastRendered)) {
+		this._resetIncrementalMd(container);
+		return false;
+	}
 
-		// 新内容必须以旧内容为前缀（追加模式）
-		if (!newContent.startsWith(oldContent)) { return false; }
-
-		const appended = newContent.slice(oldContent.length);
-		if (!appended) { return true; } // 无变化
-
-		// 大内容强制全量重建：增量渲染会在表格/代码块/嵌套列表边界产生碎片 DOM，
-		// 导致复杂 markdown（如模型返回的设计方案文档含表格+代码+CSS）显示混乱。
-		// 小内容（<4KB）保留增量以降低流式渲染开销。全量重建已按 200ms 节流，性能可接受。
-		if (newContent.length > 4096) { return false; }
-
-		// 安全检查：旧内容不能结束在代码块中间（``` 标记数为奇数）
-		const fenceCount = (oldContent.match(/```/g) || []).length;
-		if (fenceCount % 2 !== 0) { return false; }
-
-		// 安全检查：旧内容必须在块边界处结束（以 \n 结尾或为空）
-		// 不在行中间切断，否则追加的文本会与旧文本合并不完整的 markdown 块
-		if (!oldContent.endsWith('\n') && oldContent.length > 0) { return false; }
-
-		// 安全：只渲染追加部分——renderMarkdown 会 append 到 container，保留已有 DOM
-		const md: IMarkdownString = { value: appended, isTrusted: true };
-		const options = this._getMarkdownOptions();
-		const newDisposable = renderMarkdown(md, options, container);
-
-		// 组合新旧 disposable——全量重建时一起 dispose
-		const existing = this._markdownDisposables.get(container);
+	// 首次：清掉旧的 markdown disposable / 链接拦截监听，搭建 frozen + tail 骨架。
+	if (!state) {
+		this._resetIncrementalMd(container);
+		container.replaceChildren();
+		const tailEl = append(container, $('div.md-streaming-tail'));
+		state = { frozenLen: 0, lastRendered: '', tailEl, frozenDisposables: [], tailDisposable: null };
+		this._incMdState.set(container, state);
+		// 统一清理入口：dispose 时回收 tail + frozen（读取最新 state）。
+		// 用局部常量捕获，避免 TS 闭包内 possibly-undefined（赋值后 state 必非空）。
+		const st = state;
 		this._markdownDisposables.set(container, {
 			dispose: () => {
-				try { newDisposable.dispose(); } catch { /* already disposed */ }
-				try { existing?.dispose(); } catch { /* already disposed */ }
+				try { st.tailDisposable?.dispose(); } catch { /* ignore */ }
+				for (const d of st.frozenDisposables) { try { d.dispose(); } catch { /* ignore */ } }
 			},
 		});
+		// 事件委托挂在容器上一次即可（覆盖未来所有子节点）。
 		this._attachLinkInterceptor(container);
-		this._linkifyPlainText(container);
-		this._streamingMdLastRendered = newContent;
-		return true;
 	}
+
+	// 推进稳定边界（仅从 frozenLen 向前扫，摊销 O(新增)）。
+	const newStable = this._advanceStableBoundary(newContent, state.frozenLen);
+
+	// 有新稳定块 → 渲染并插入 tailEl 之前（冻结，append 不重排）。
+	if (newStable > state.frozenLen) {
+		const stableText = _patchNestedMarkdown(newContent.slice(state.frozenLen, newStable));
+		const tempDiv = $('div');
+		const d = renderMarkdown({ value: stableText, isTrusted: true }, this._getMarkdownOptions(false), tempDiv);
+		state.frozenDisposables.push(d);
+		this._linkifyPlainText(tempDiv);
+		while (tempDiv.firstChild) {
+			state.tailEl.parentNode!.insertBefore(tempDiv.firstChild, state.tailEl);
+		}
+		state.frozenLen = newStable;
+	}
+
+	// 重渲尾部（不完整块，可能含未闭合围栏 → isStreaming 补全）。
+	const tailText = _patchNestedMarkdown(newContent.slice(state.frozenLen));
+	if (state.tailDisposable) { try { state.tailDisposable.dispose(); } catch { /* ignore */ } }
+	state.tailEl.replaceChildren();
+	state.tailDisposable = renderMarkdown(
+		{ value: tailText, isTrusted: true },
+		this._getMarkdownOptions(true),
+		state.tailEl,
+	);
+	this._linkifyPlainText(state.tailEl);
+
+	state.lastRendered = newContent;
+	// 全局流式基线由 StreamingRenderScheduler 在增量成功后自行同步（P5a）。
+	return true;
+}
 
 protected override _getMarkdownOptions(isStreaming: boolean = false): MarkdownRenderOptions {
 		const LARGE_CODE_THRESHOLD = 30; // lines before auto-collapse
@@ -207,7 +292,7 @@ protected override _getMarkdownOptions(isStreaming: boolean = false): MarkdownRe
 			//   代码文本），再在 `Promise.all(codeBlocks).then()`（微任务）里用
 			//   `outElement.querySelectorAll('div[data-code]')` 替换为真正的代码块。
 			//   但流式全量重建走「离屏 tempDiv 渲染 → replaceChildren 把子节点移动到真实
-			//   容器」的模式（见 _streamingMdTimer 回调），replaceChildren 同步把节点搬出
+			//   容器」的模式（见 StreamingRenderScheduler._flush），replaceChildren 同步把节点搬出
 			//   tempDiv 后，微任务里的 querySelectorAll 在**已清空的 tempDiv** 上找不到占位符
 			//   → 永不替换 → 占位符里转义的裸露 HTML/CSS 文本一直留在可见容器（即错乱）。
 			//   流式结束时 _rebuildMessageElement 直接渲染进真实容器，故「结束后正常」。
@@ -373,36 +458,102 @@ protected override _attachLinkInterceptor(parent: HTMLElement): void {
 		}
 	}
 
-protected override _renderPartsContent(bubble: HTMLElement, parts: readonly IMessagePart[], isStreaming: boolean): void {
+protected override _renderPartsContent(bubble: HTMLElement, parts: readonly IMessagePart[], isStreaming: boolean, hostMsg?: IAgentChatMessage): void {
+		// ── Diag: 进入时输出 parts 概览 ──
+		if ((window as any).__SAROSIS_PARTS_DIAG) {
+			const partsSummary = (parts as readonly any[]).map((p: any, i: number) => {
+				if (p.kind === 'text') return `[${i}] text len=${p.text.length}`;
+				if (p.kind === 'tool') return `[${i}] tool:${p.tool?.name}`;
+				if (p.kind === 'subagent') return `[${i}] subagent:${p.subAgent?.name}`;
+				return `[${i}] ${p.kind}`;
+			}).join(', ');
+			console.info(`[PartsDiag] _renderPartsContent START partsLen=${parts.length} isStreaming=${isStreaming} parts=[${partsSummary}]`);
+		}
+
 		// 找到最后一个非空文本片段索引，流式时把它标记为 streaming-container（增量更新目标）。
 		let lastTextIdx = -1;
 		for (let k = 0; k < parts.length; k++) {
 			const p = parts[k];
 			if (p.kind === 'text' && p.text.trim().length > 0) { lastTextIdx = k; }
 		}
-		// 2026-07-04: update_plan 是"替换语义"——多张卡片只保留最后一张
-		let lastUpdatePlanIndex = -1;
-		for (let k = 0; k < parts.length; k++) {
-			const p = parts[k] as any;
-			if (p.kind === 'tool' && p.tool?.name === 'update_plan') {
-				lastUpdatePlanIndex = k;
-			}
-		}
-		for (let k = 0; k < parts.length; k++) {
+	for (let k = 0; k < parts.length; k++) {
 			const part = parts[k];
 			if (part.kind === 'text') {
 				if (part.text.trim().length === 0) { continue; }
 				const segEl = append(bubble, $(".message-content.parts-text-segment"));
+				segEl.setAttribute('data-part-key', `text:${hostMsg?.id ?? ''}#t${k}`);
 				if (isStreaming && k === lastTextIdx) {
 					segEl.classList.add('streaming-container');
 				}
 				this._renderMarkdownContent(segEl, part.text, isStreaming);
-			} else {
-				// 跳过非最后的 update_plan 卡片（替换语义）
-				const toolPart = (part as any).tool;
-				if (toolPart?.name === 'update_plan' && k !== lastUpdatePlanIndex) { continue; }
-				bubble.appendChild(this._createToolCallCard(toolPart));
+				if ((window as any).__SAROSIS_PARTS_DIAG) {
+					console.info(`[PartsDiag] render parts[${k}] TEXT → append .parts-text-segment, textLen=${part.text.length}, isLastText=${k === lastTextIdx}`);
+				}
+		} else if (part.kind === 'tool') {
+			const toolPart = (part as any).tool;
+			// clarify 工具走专用交互卡片（含选项按钮），否则普通工具卡片
+			const clarifyCard = this._maybeCreateClarifyCard(toolPart);
+				const renderedCard = clarifyCard ?? this._createToolCallCard(toolPart);
+				renderedCard.setAttribute('data-part-key', `tool:${toolPart?.id ?? `auto-${k}`}`);
+				bubble.appendChild(renderedCard);
+				if ((window as any).__SAROSIS_PARTS_DIAG) {
+					const cardType = clarifyCard ? 'clarify-card' : (toolPart?.name === 'delegate_task' ? 'delegate-card' : 'tool-card');
+					console.info(`[PartsDiag] render parts[${k}] TOOL → append ${cardType} toolName=${toolPart?.name} toolStatus=${toolPart?.status} cardClasses="${(renderedCard as HTMLElement).className?.split(' ').slice(0,3).join(' ')}"`);
+				}
+			} else if (part.kind === 'thinking') {
+				// 2026-07-26 用户要求：thinking 卡片跟随流式发生位置渲染（不固定顶部）。
+				// 每个思考 episode 一张卡；仅最后一个 episode 且仍在流式时显示
+				// 「思考中...」活跃态，其余为完成的「思考过程」。
+				const isLastEpisode = k === parts.length - 1;
+				const thinkCard = this._createThinkingCard({
+					...hostMsg,
+					// 每 episode 独立 id——折叠状态 Map（_thinkingCardState）按 msgId 记忆，
+					// 共享同一 msgId 会导致多卡折叠状态串扰
+					id: `${hostMsg?.id ?? ''}#tk${k}`,
+					thinking: (part as IThinkingMessagePart).text,
+					isThinking: isStreaming && isLastEpisode && !!hostMsg?.isThinking,
+				} as IAgentChatMessage);
+				thinkCard.setAttribute('data-part-key', `thinking:${hostMsg?.id ?? ''}#tk${k}`);
+				bubble.appendChild(thinkCard);
+				if ((window as any).__SAROSIS_PARTS_DIAG) {
+					console.info(`[PartsDiag] render parts[${k}] THINKING → len=${(part as IThinkingMessagePart).text.length}`);
+				}
 			}
 		}
+	}
+
+	/**
+	 * 为单个 part 创建 DOM 元素（追加模式用，避免整卡重建导致闪烁）。
+	 * 从 _renderPartsContent 提取的逐 part 创建逻辑，供 _ruleAppendNewParts 调用。
+	 * @returns 创建的 DOM 元素，或 null（空 text part 等）。
+	 */
+	protected _createPartElement(part: IMessagePart, partIndex: number, msg: IAgentChatMessage, isStreaming: boolean): HTMLElement | null {
+		if (part.kind === 'text') {
+			if (part.text.trim().length === 0) { return null; }
+			const segEl = document.createElement('div');
+			segEl.className = 'message-content parts-text-segment';
+			segEl.setAttribute('data-part-key', `text:${msg.id}#t${partIndex}`);
+			this._renderMarkdownContent(segEl, part.text, isStreaming);
+			return segEl;
+		}
+		if (part.kind === 'tool') {
+		const toolPart = (part as any).tool;
+		const clarifyCard = this._maybeCreateClarifyCard(toolPart);
+		const card = clarifyCard ?? this._createToolCallCard(toolPart);
+		card.setAttribute('data-part-key', `tool:${toolPart?.id ?? `auto-${partIndex}`}`);
+		return card;
+	}
+	if (part.kind === 'thinking') {
+			const isLastEpisode = partIndex === (msg.parts?.length ?? 0) - 1;
+			const thinkCard = this._createThinkingCard({
+				...msg,
+				id: `${msg.id}#tk${partIndex}`,
+				thinking: (part as IThinkingMessagePart).text,
+				isThinking: isStreaming && isLastEpisode && !!msg.isThinking,
+			} as IAgentChatMessage);
+			thinkCard.setAttribute('data-part-key', `thinking:${msg.id}#tk${partIndex}`);
+			return thinkCard;
+		}
+		return null;
 	}
 }

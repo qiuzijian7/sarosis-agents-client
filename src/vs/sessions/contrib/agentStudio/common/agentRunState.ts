@@ -14,6 +14,21 @@
 
 import { StreamPhase } from './providers.js';
 import { AgentGraph, createInitialGraphRunState } from './agentGraph.js';
+import { AgentWorkState, AgentWorkEvent, createInitialWorkState, reduceWorkState } from './workMode.js';
+import type { BudgetSnapshot } from './iterationBudget.js';
+import type { AgentParadigm } from './agentLoopStrategy.js';
+
+/** 全部受支持的 agent 范式（用于 checkpoint 恢复的范式校验，避免范式漂移 R3）。 */
+const KNOWN_PARADIGMS: readonly AgentParadigm[] = [
+	'budgeted-react',
+	'plan-explore',
+	'react',
+	'readonly',
+	'delegation',
+	'graph',
+	'mimo',
+];
+
 
 // ─── 消息类型 ──────────────────────────────────────────────────────
 // 与 loop 内现有 `messages: any[]` 兼容；用宽松结构而非 IChatMessage，
@@ -92,8 +107,21 @@ export interface AgentRunState {
 	lastRealPromptTokens: number;
 	/** 灰度模式标记 */
 	reducerMode: 'legacy' | 'reducer';
+	/** ChatMode-independent mutable plan/work runtime state. */
+	work: AgentWorkState;
 	/** 多 agent 图运行时子状态（supervisor / AgentCommand(goto)）。单 agent 为 undefined。 */
 	graph?: AgentGraphRunState;
+	// ─── V3: 单 agent 断点续跑 ──────────────────────────────────────
+	/** IterationBudget 快照（resume 时用于重建预算实例，直接对齐 BudgetSnapshot） */
+	budgetSnapshot?: BudgetSnapshot;
+	/** pre-explore 是否已完成（resume 时跳过 preLoop） */
+	preExploreDone: boolean;
+	/** pre-explore 结果文本（resume 时回填 messages） */
+	preExploreResult?: string;
+	/** 循环快照时 messages 数组的完整副本（resume 时作为初始 messages） */
+	loopMessages?: AgentRunMessage[];
+	/** V3: 本次运行使用的范式（resume 时据此重建同一策略，避免范式漂移 R3） */
+	paradigm?: AgentParadigm;
 }
 
 // ─── Action（动作联合类型）─────────────────────────────────────────
@@ -108,6 +136,12 @@ export type AgentAction =
 	| { type: 'REFLECT' }
 	| { type: 'SET_LAST_PROMPT_TOKENS'; value: number }
 	| { type: 'MARK_FILE_MODIFIED' }
+	| { type: 'WORK_EVENT'; event: AgentWorkEvent }
+	// ─── V3: 单 agent 断点续跑 ────────────────────────────────────
+	| { type: 'SAVE_BUDGET'; snapshot: BudgetSnapshot }
+	| { type: 'SET_PRE_EXPLORE'; done: boolean; result?: string }
+	| { type: 'SET_LOOP_MESSAGES'; messages: AgentRunMessage[] }
+	| { type: 'SET_PARADIGM'; paradigm: AgentParadigm }
 	// ─── 图运行时 action（supervisor / AgentCommand(goto)，Step A）───
 	| { type: 'ENTER_NODE'; nodeId: string }
 	| { type: 'EXIT_NODE'; nodeId: string; messages: AgentRunMessage[] }
@@ -126,8 +160,11 @@ export interface CreateInitialRunStateRequest {
 	/** 跨 turn 持久化的上一轮真实 prompt token（可选，默认 0） */
 	readonly lastRealPromptTokens?: number;
 	readonly reducerMode?: 'legacy' | 'reducer';
+	readonly workState?: AgentWorkState;
 	/** 多 agent 图运行时初始子状态（可选：图模式由 Step C 解释器注入，单 agent 省略 → undefined） */
 	readonly graphRunState?: AgentGraphRunState;
+	/** V3: 本次运行使用的范式（可选，落盘续跑时重建同一策略） */
+	readonly paradigm?: AgentParadigm;
 }
 
 export function createInitialRunState(request: CreateInitialRunStateRequest): AgentRunState {
@@ -149,7 +186,15 @@ export function createInitialRunState(request: CreateInitialRunStateRequest): Ag
 		endedToolIds: [],
 		lastRealPromptTokens: request.lastRealPromptTokens ?? 0,
 		reducerMode: request.reducerMode ?? AGENT_OS_DEFAULT_REDUCER_MODE,
+		work: request.workState ?? createInitialWorkState(),
 		graph: request.graphRunState,
+		// V3 defaults
+		budgetSnapshot: undefined,
+		preExploreDone: false,
+		preExploreResult: undefined,
+		loopMessages: undefined,
+		paradigm: request.paradigm,
+
 	};
 }
 
@@ -173,6 +218,97 @@ export function insertMessages(
 /** messages 压缩替换（纯换底，保留不可变语义） */
 export function compactMessages(_prev: AgentRunMessage[], compressed: AgentRunMessage[]): AgentRunMessage[] {
 	return [...compressed];
+}
+
+/**
+ * 注入顺序约定（canonical injection order，保障 system 前缀字节稳定 → provider prompt cache 命中）：
+ *   ① frozen prefix（stable + context）        → 第 1 条 system 消息（不可变，进缓存前缀）
+ *   ② volatile（Persona Memory + 激活技能）      → 第 2 条独立 system 消息（每轮可变，不进前缀指纹）
+ *   ③ Agent Memory `<agentmemory-context>`      → system 消息（session 级幂等，injectedSessions）
+ *   ④ Retrieval `## Preserved Context`          → system 消息（INJECTED_CONTEXT_PREFIX，压缩按前缀剥离）
+ *   ⑤ Durable Context `<durable_context_data>`  → system 消息（checkpoint 持久化）
+ *   ⑥ 策略 reminder / TaskGate nudge / 反思 / 计划提醒 / 技能激活 → user 角色 synthetic sidecar
+ *        （仅存在于发送副本，压缩与持久化前由 stripSyntheticSidecars 剥离，不污染干净 transcript）
+ * 设计对齐 Hermes 的 `api_content` sidecar（干净 transcript 永不改写）与 MiMo-Code 的 `synthetic: true`。
+ */
+/**
+ * 剥离 synthetic sidecar 消息（技能/策略/控制流临时注入），用于压缩与持久化前清理，
+ * 避免污染干净 transcript（对齐 Hermes api_content / MiMo synthetic:true）。
+ * 仅移除标记为 synthetic 的消息；memory/durable/retrieval 等未标记，不受影响。
+ */
+export function stripSyntheticSidecars(messages: AgentRunMessage[]): AgentRunMessage[] {
+	return messages.filter(m => !(m && (m as { synthetic?: boolean }).synthetic === true));
+}
+
+/**
+ * 消息归一化（OpenAI 兼容网关收口层）。
+ *
+ * 修复两类非法 role 顺序，否则网关返回 HTTP 400 invalid_parameter：
+ *   1. 连续两条 role:'user' → 合并为一条（拼接 content）
+ *   2. assistant 带 tool_calls 后未紧跟 role:'tool' → 为每个 tool_call_id
+ *      插入空 tool 结果占位，保证 tool_calls→tool 的配对约束
+ *
+ * 对齐 hermes-agent / mimo-code / CodeBuddy IDE 的 normalize/coalesce 逻辑。
+ * 纯函数，无副作用。
+ */
+export function normalizeMessages(messages: AgentRunMessage[]): AgentRunMessage[] {
+	if (messages.length < 2) { return messages; }
+
+	const result: AgentRunMessage[] = [];
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+		const prev = result[result.length - 1];
+
+		// ── 规则 1：合并相邻 user ──
+		if (msg.role === 'user' && prev?.role === 'user') {
+			// 拼接 content（string 或 array of parts）
+			const prevContent = prev.content ?? '';
+			const currContent = msg.content ?? '';
+			const merged =
+				typeof prevContent === 'string' && typeof currContent === 'string'
+					? prevContent + '\n\n' + currContent
+					: currContent; // array parts 场景取后者
+			result[result.length - 1] = { ...prev, content: merged };
+			continue;
+		}
+
+		// ── 规则 2：orphaned tool_calls 补 tool 占位 ──
+		if (
+			prev?.role === 'assistant' &&
+			Array.isArray((prev as any).tool_calls) &&
+			(prev as any).tool_calls.length > 0 &&
+			msg.role !== 'tool'
+		) {
+			const toolCalls = (prev as any).tool_calls as Array<{ id: string }>;
+			for (const tc of toolCalls) {
+				result.push({
+					role: 'tool',
+					tool_call_id: tc.id,
+					content: '[Result omitted — turn was interrupted before tool execution]',
+				} as any);
+			}
+		}
+
+		result.push(msg);
+	}
+
+	// 尾部 orphaned tool_calls（最后一条是 assistant+tool_calls）
+	const last = result[result.length - 1];
+	if (
+		last?.role === 'assistant' &&
+		Array.isArray((last as any).tool_calls) &&
+		(last as any).tool_calls.length > 0
+	) {
+		for (const tc of (last as any).tool_calls as Array<{ id: string }>) {
+			result.push({
+				role: 'tool',
+				tool_call_id: tc.id,
+				content: '[Result omitted — turn was interrupted before tool execution]',
+			} as any);
+		}
+	}
+
+	return result;
 }
 
 /** 工具调用历史追加 + 窗口裁剪（对齐 loop 内 _toolCallHistory） */
@@ -223,6 +359,26 @@ export function reduceRunState(state: AgentRunState, action: AgentAction): Agent
 
 		case 'MARK_FILE_MODIFIED':
 			return { ...state, hasModifiedFiles: true };
+
+		case 'WORK_EVENT':
+			return { ...state, work: reduceWorkState(state.work, action.event) };
+
+		// ─── V3: 单 agent 断点续跑 ──────────────────────────────────
+		case 'SAVE_BUDGET':
+			return { ...state, budgetSnapshot: { ...action.snapshot } };
+
+		case 'SET_PRE_EXPLORE':
+			return {
+				...state,
+				preExploreDone: action.done,
+				preExploreResult: action.result,
+			};
+
+		case 'SET_LOOP_MESSAGES':
+			return { ...state, loopMessages: [...action.messages] };
+
+		case 'SET_PARADIGM':
+			return { ...state, paradigm: action.paradigm };
 
 		// ─── 图运行时 action（supervisor / AgentCommand(goto)，Step A）───
 		// 单 agent 模式 graph 为 undefined：下列 action 全部 no-op，零行为变更。
@@ -501,8 +657,11 @@ export function incompleteTurnRetryLimit(kind: IncompleteTurnKind): number {
 // 这里提供带版本的快照封装 + 恢复时的安全校验 / 缺省填充，使 Step D 的
 // checkpoint/resume 与未来 forward-compat 有统一入口（对齐 reducer 设计 §3.5）。
 
-/** 快照格式版本（forward-compat：restore 拒绝未知 / 过高版本）。 */
-export const AGENT_RUN_STATE_VERSION = 1;
+/** 快照格式版本（forward-compat：restore 拒绝未知 / 过高版本）。
+ *  v2: 初始版本（graph checkpoint + work state）
+ *  v3: 新增 budgetSnapshot / preExploreDone / preExploreResult / loopMessages（单 agent 断点续跑）
+ *      含可选 paradigm 字段（R3：resume 时重建同一策略，避免范式漂移） */
+export const AGENT_RUN_STATE_VERSION = 3;
 
 export interface AgentRunStateSnapshot {
 	/** 快照格式版本 */
@@ -594,7 +753,27 @@ function normalizeRunState(raw: Partial<AgentRunState>): AgentRunState {
 		endedToolIds: Array.isArray(raw.endedToolIds) ? raw.endedToolIds : base.endedToolIds,
 		lastRealPromptTokens: typeof raw.lastRealPromptTokens === 'number' ? raw.lastRealPromptTokens : base.lastRealPromptTokens,
 		reducerMode: raw.reducerMode === 'legacy' || raw.reducerMode === 'reducer' ? raw.reducerMode : base.reducerMode,
+		work: isPlainObject(raw.work)
+			? {
+				mode: raw.work.mode === 'plan' ? 'plan' : 'work',
+				planFilePath: typeof raw.work.planFilePath === 'string' ? raw.work.planFilePath : undefined,
+				approvalStatus: ['none', 'pending', 'approved', 'rejected'].includes(String(raw.work.approvalStatus))
+					? raw.work.approvalStatus as AgentWorkState['approvalStatus'] : 'none',
+				executionStatus: ['idle', 'dispatching', 'running', 'completed', 'failed'].includes(String(raw.work.executionStatus))
+					? raw.work.executionStatus as AgentWorkState['executionStatus'] : 'idle',
+			}
+			: base.work,
 		graph,
+		// V3 fields
+		budgetSnapshot: isPlainObject(raw.budgetSnapshot) && typeof (raw.budgetSnapshot as any).maxIterations === 'number'
+			? raw.budgetSnapshot as BudgetSnapshot
+			: undefined,
+		preExploreDone: typeof raw.preExploreDone === 'boolean' ? raw.preExploreDone : false,
+		preExploreResult: typeof raw.preExploreResult === 'string' ? raw.preExploreResult : undefined,
+		loopMessages: Array.isArray(raw.loopMessages) ? (raw.loopMessages as AgentRunMessage[]) : undefined,
+		// V3 paradigm：仅接受已知范式，否则丢弃（resume 时回退到 request/agent 配置）
+		paradigm: KNOWN_PARADIGMS.includes(raw.paradigm as AgentParadigm) ? (raw.paradigm as AgentParadigm) : undefined,
+
 	};
 }
 

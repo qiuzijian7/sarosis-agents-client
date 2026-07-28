@@ -59,6 +59,15 @@ export const DEFAULT_EMBEDDING_CONFIG: Record<string, { model: string; dimension
 /** Fallback embedding 模型：更广泛兼容的旧模型 */
 export const FALLBACK_EMBEDDING_MODEL = 'text-embedding-ada-002';
 
+/** 每批最多发送的文本条数（对标 Hyper-Extract max_batch_size=10，避免 413 Payload Too Large）。 */
+const DEFAULT_EMBED_BATCH_SIZE = 10;
+
+/** 429 rate-limit 最大重试次数。 */
+const MAX_EMBED_RETRIES = 3;
+
+/** KB 操作无用户显式配置时回退到的 provider id（与 agentStudioService._resolveKbChatModel 保持一致）。 */
+export const KB_FALLBACK_PROVIDER = 'openrouter';
+
 /** 确保 baseUrl 不以 / 结尾，以正确拼接 /embeddings 路径 */
 export function normalizeBaseUrl(url: string): string {
 	let u = url.trim();
@@ -186,6 +195,57 @@ export async function embedTextsViaProvider(
 	}
 }
 
+/**
+ * 分批发送 embedding 请求（对标 Hyper-Extract max_batch_size=10）。
+ * 避免单次请求 texts 过多导致 413 Payload Too Large，同时每批失败独立隔离。
+ */
+export async function embedTextsInBatches(
+	baseUrl: string,
+	apiKey: string,
+	model: string,
+	texts: string[],
+	token: CancellationToken,
+	log: (msg: string) => void,
+	batchSize = DEFAULT_EMBED_BATCH_SIZE,
+): Promise<number[][]> {
+	const result: number[][] = [];
+	for (let i = 0; i < texts.length; i += batchSize) {
+		if (token.isCancellationRequested) { break; }
+		const batch = texts.slice(i, i + batchSize);
+		const vectors = await embedWithRetry(() =>
+			embedTextsViaProvider(baseUrl, apiKey, model, batch, token, log)
+		);
+		result.push(...vectors);
+	}
+	return result;
+}
+
+/**
+ * 429 rate-limit 指数退避重试（对标 Hyper-Extract max_retries=2，放宽到 3）。
+ */
+async function embedWithRetry(
+	fn: () => Promise<number[][]>,
+	maxRetries = MAX_EMBED_RETRIES,
+): Promise<number[][]> {
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		try {
+			return await fn();
+		} catch (err: any) {
+			const isRateLimit =
+				err?.message?.includes('429') ||
+				err?.message?.includes('rate') ||
+				err?.message?.includes('too many');
+			if (isRateLimit && attempt < maxRetries) {
+				const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+				await new Promise(r => setTimeout(r, delay));
+				continue;
+			}
+			throw err;
+		}
+	}
+	throw new Error('unreachable');
+}
+
 // ---------------------------------------------------------------------------
 // Provider implementation
 // ---------------------------------------------------------------------------
@@ -207,7 +267,7 @@ export function createBuiltinEmbeddingProvider(
 				);
 			}
 
-			return embedTextsViaProvider(resolved.baseUrl, resolved.apiKey, resolved.model, strings, token, log);
+			return embedTextsInBatches(resolved.baseUrl, resolved.apiKey, resolved.model, strings, token, log);
 		},
 	};
 }

@@ -330,6 +330,27 @@
 	letter-spacing: 0;
 }
 
+/* ─── Indexing Indicator (codebase graph 构建中) ──────────────────── */
+/* Syntax: ‗‗‗‗… */
+.workspace-indexing-entry .monaco-icon-label-description-container .label-description::after {
+	content: " ⏳ 索引中…";
+	display: inline-block;
+	opacity: 0.85;
+	font-size: 10px;
+	font-style: normal;
+	margin-left: 4px;
+	color: var(--vscode-inputValidation-infoForeground, #75beff);
+	animation: workspace-indexing-pulse 1.5s ease-in-out infinite;
+}
+@keyframes workspace-indexing-pulse {
+	0%, 100% { opacity: 0.5; }
+	50% { opacity: 0.85; }
+}
+/* 当处于索引时，文件夹图标也加微动效果 */
+.workspace-indexing-entry .monaco-icon-label::before {
+	filter: brightness(1.2);
+}
+
 /* ─── File Icon ──────────────────────────────────────────────────── */
 
 .workspace-explorer-icon {

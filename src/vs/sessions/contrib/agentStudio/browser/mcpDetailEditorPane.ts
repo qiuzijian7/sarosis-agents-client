@@ -24,9 +24,10 @@ import { IInstallableMcpServer } from '../../../../platform/mcp/common/mcpManage
 import { IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
 import { BUNDLED_MCP_PRESETS } from '../common/bundled-tools/bundledMcpPresets.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IMarketplaceService } from '../common/marketplace.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
 // ─── Unified detail model (from knot market OR bundled preset) ────────────────
 
@@ -112,11 +113,11 @@ export class McpDetailEditorPane extends EditorPane {
 		@ITelemetryService telemetryService: ITelemetryService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
 		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
 		@IFileService private readonly fileService: IFileService,
-		@IPathService private readonly pathService: IPathService,
-		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+			@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 	) {
 		super(McpDetailEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -141,7 +142,7 @@ export class McpDetailEditorPane extends EditorPane {
 
 		// 1. Try built-in presets (synchronous)
 		this._model = resolveMcpDetailModel(input.marketId);
-		// 2. Fallback: read from ~/.saros/mcp/{marketId}/config.json
+		// 2. Fallback: read from ~/.vssaros/saros/mcp/{marketId}/config.json
 		if (!this._model) {
 			this._model = await this._resolveMcpDetailModelFromDisk(input.marketId);
 		}
@@ -150,11 +151,10 @@ export class McpDetailEditorPane extends EditorPane {
 		this._render();
 	}
 
-	/** Read MCP config from ~/.saros/mcp/{marketId}/config.json and build a detail model. */
+	/** Read MCP config from ~/.vssaros/saros/mcp/{marketId}/config.json and build a detail model. */
 	private async _resolveMcpDetailModelFromDisk(marketId: string): Promise<IMcpDetailModel | undefined> {
 		try {
-			const userHome = await this.pathService.userHome();
-			const configUri = URI.joinPath(userHome, '.saros', 'mcp', marketId, 'config.json');
+			const configUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, marketId, 'config.json');
 			if (!await this.fileService.exists(configUri)) {
 				return undefined;
 			}
@@ -547,10 +547,10 @@ export class McpDetailEditorPane extends EditorPane {
 		if (!this._marketSlug) { return; }
 		try {
 			console.log('[McpDetail] Uninstalling MCP:', this._marketSlug);
-			// 1. Uninstall from marketplace (removes ~/.saros/mcp/{slug}/ + installed-packages.json)
+			// 1. Uninstall from marketplace (removes ~/.vssaros/saros/mcp/{slug}/ + installed-packages.json)
 			await this.marketplaceService.uninstall(this._marketSlug, 'mcp');
 
-			// 2. Remove from ~/.saros/mcp.json
+			// 2. Remove from ~/.vssaros/saros/mcp.json
 			await this._removeFromMcpJson(this._marketSlug);
 
 			// 3. Uninstall from VS Code MCP config
@@ -574,11 +574,10 @@ export class McpDetailEditorPane extends EditorPane {
 		}
 	}
 
-	/** Sync MCP config from ~/.saros/mcp/{slug}/config.json to VS Code MCP config */
+	/** Sync MCP config from ~/.vssaros/saros/mcp/{slug}/config.json to VS Code MCP config */
 	private async _syncToVsCodeConfig(slug: string): Promise<void> {
 		try {
-			const userHome = await this.pathService.userHome();
-			const configUri = URI.joinPath(userHome, '.saros', 'mcp', slug, 'config.json');
+			const configUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, slug, 'config.json');
 			if (!await this.fileService.exists(configUri)) { return; }
 			const content = await this.fileService.readFile(configUri);
 			const config = JSON.parse(content.value.toString());
@@ -605,11 +604,10 @@ export class McpDetailEditorPane extends EditorPane {
 		}
 	}
 
-	/** Remove a server entry from ~/.saros/mcp.json */
+	/** Remove a server entry from ~/.vssaros/saros/mcp.json */
 	private async _removeFromMcpJson(slug: string): Promise<void> {
 		try {
-			const userHome = await this.pathService.userHome();
-			const mcpJsonUri = URI.joinPath(userHome, '.saros', 'mcp.json');
+			const mcpJsonUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 			if (!await this.fileService.exists(mcpJsonUri)) { return; }
 			const content = await this.fileService.readFile(mcpJsonUri);
 			const data = JSON.parse(content.value.toString());
@@ -621,5 +619,9 @@ export class McpDetailEditorPane extends EditorPane {
 		} catch (e) {
 			console.warn('[McpDetail] Failed to remove from mcp.json (non-fatal):', e);
 		}
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

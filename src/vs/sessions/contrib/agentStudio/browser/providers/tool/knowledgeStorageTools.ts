@@ -17,7 +17,6 @@
  */
 
 import type { IDisposable } from '../../../../../../base/common/lifecycle.js';
-import { join } from '../../../../../../base/common/path.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { IAiEmbeddingVectorService } from '../../../../../../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.js';
@@ -26,7 +25,7 @@ import { INativeEnvironmentService } from '../../../../../../platform/environmen
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { IAgentStudioService } from '../../../../../common/agentStudioService.js';
 import { buildKnowledgeToolDescriptors, KnowledgeToolDeps } from '../../knowledge/knowledgeTools.js';
-import { resolveKbRoot, migrateKnowledgeStorage, listKbIds } from '../../knowledge/knowledgeStorage.js';
+import { resolveKbRoot, migrateKnowledgeStorage } from '../../knowledge/knowledgeStorage.js';
 import { createBuiltinEmbeddingProvider } from '../../knowledge/builtinEmbeddingProvider.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 
@@ -79,11 +78,6 @@ export function createKnowledgeStorageRegistrar(ctx: KnowledgeStorageContext): I
 			ctx.register(d as unknown as IBuiltinToolRegistration);
 		}
 
-		// Best-effort one-time migration: the default storage root used to be
-		// <workspace>/.saros/kb; it now defaults to <userHome>/.saros/kb.
-		// Move any existing KBs from the legacy location on first activation.
-		void migrateLegacyKbStorage();
-
 		// Auto-migrate when the user changes the storage root setting.
 		ctx.addDisposable(ctx.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(ctx.kbStoragePathKey)) {
@@ -109,12 +103,12 @@ export function createKnowledgeStorageRegistrar(ctx: KnowledgeStorageContext): I
 		return home ?? (typeof process !== 'undefined' ? process.cwd() : '.');
 	}
 
-	/** KB storage root. Default `<userHome>/.saros/kb`; config overrides (supports ~ / absolute / relative-to-home). */
+	/** KB storage root. Default `~/.vssaros/knowledge-base`; config overrides (supports ~ / absolute / relative). */
 	async function resolveKbStorageRoot(): Promise<string> {
 		const cfg = ctx.configurationService.getValue<string>(ctx.kbStoragePathKey);
-		const userHome = (ctx.environmentService as any).userHome?.fsPath
+		const dataRoot = (ctx.environmentService as INativeEnvironmentService).userDataPath
 			?? (typeof process !== 'undefined' ? process.cwd() : '.');
-		const root = resolveKbRoot(cfg, userHome);
+		const root = resolveKbRoot(cfg, dataRoot);
 		_kbStorageRootCache = root;
 		return root;
 	}
@@ -132,41 +126,6 @@ export function createKnowledgeStorageRegistrar(ctx: KnowledgeStorageContext): I
 		} catch (err) {
 			ctx.logService.error(`[Knowledge] KB migration failed: ${err}`);
 		}
-	}
-
-	/** One-time migration from the legacy `<workspace>/.saros/kb` location to the new default home root. */
-	async function migrateLegacyKbStorage(): Promise<void> {
-		try {
-			const userHome = (ctx.environmentService as any).userHome?.fsPath
-				?? (typeof process !== 'undefined' ? process.cwd() : '.');
-			const newRoot = resolveKbRoot(undefined, userHome);
-			const legacyRoot = await legacyKbRoot();
-			if (!legacyRoot || legacyRoot === newRoot) { return; }
-			const legacyIds = await listKbIds(ctx.fileService, legacyRoot);
-			if (legacyIds.length === 0) { return; }
-			const n = await migrateKnowledgeStorage(ctx.fileService, legacyRoot, newRoot);
-			if (n > 0) {
-				ctx.logService.info(`[Knowledge] migrated ${n} legacy knowledge base(s) from ${legacyRoot} → ${newRoot}`);
-			}
-		} catch (err) {
-			ctx.logService.error(`[Knowledge] legacy KB migration failed: ${err}`);
-		}
-	}
-
-	/** The pre-change default KB root: `<workspace>/.saros/kb`. */
-	async function legacyKbRoot(): Promise<string | undefined> {
-		try {
-			const wsId = ctx.studioService.getActiveWorkspaceId();
-			if (wsId) {
-				const ws = await ctx.studioService.getWorkspace(wsId);
-				if (ws?.path) { return join(ws.path, '.saros', 'kb'); }
-			}
-		} catch {
-			// fall through
-		}
-		const folders = ctx.workspaceService.getWorkspace().folders;
-		if (folders.length) { return join(folders[0].uri.fsPath, '.saros', 'kb'); }
-		return undefined;
 	}
 
 	return { registerEmbeddingProvider, registerKnowledgeTools };

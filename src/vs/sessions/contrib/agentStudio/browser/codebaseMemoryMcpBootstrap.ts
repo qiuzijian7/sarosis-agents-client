@@ -10,7 +10,7 @@
  *   原本此模块负责：
  *   1. 创建 .codebase-memory → .sarosworkspace/.codebase-memory junction
  *   2. 检测 codebase-memory-mcp.exe 二进制
- *   3. 同步 ~/.saros/mcp.json → VS Code 配置
+ *   3. 同步 ~/.vssaros/saros/mcp.json → VS Code 配置
  *   4. 启动 MCP 服务器
  *   5. 自动索引工作区到 MCP 服务器内存数据库
  *
@@ -33,9 +33,10 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IWorkbenchMcpManagementService } from '../../../../workbench/services/mcp/common/mcpWorkbenchManagementService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 
 const LOG_TAG = '[CodebaseMemory]';
 const SERVER_NAME = 'codebase-memory-mcp';
@@ -47,12 +48,12 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 	private static readonly STORAGE_KEY_CLEANUP = 'codebaseMemory.legacyMcpConfigCleaned';
 
 	constructor(
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@ICodebaseMemoryMcpService private readonly cbmService: ICodebaseMemoryMcpService,
 		@IAgentStudioLogService private readonly logService: ILogService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IFileService private readonly fileService: IFileService,
-		@IPathService private readonly pathService: IPathService,
-		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
+			@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
 		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
@@ -61,7 +62,9 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 	}
 
 	private async _bootstrap(): Promise<void> {
-		// 0. 一次性清理：移除 ~/.saros/mcp.json 和 VS Code 用户配置中
+		// [TRACE] codebaseMemoryMcpBootstrap._bootstrap 入口
+		this.logService.info(LOG_TAG, `[TRACE] codebaseMemoryMcpBootstrap._bootstrap triggered`);
+		// 0. 一次性清理：移除 ~/.vssaros/saros/mcp.json 和 VS Code 用户配置中
 		//    残留的 codebase-memory-mcp 外部 MCP 服务器条目
 		await this._cleanupLegacyMcpConfig();
 
@@ -112,7 +115,7 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 	 * 一次性清理：移除旧版外部 codebase-memory-mcp.exe 的 MCP 配置残留。
 	 *
 	 * 清理范围：
-	 *   1. ~/.saros/mcp.json 中的 codebase-memory-mcp 条目
+	 *   1. ~/.vssaros/saros/mcp.json 中的 codebase-memory-mcp 条目
 	 *   2. VS Code 用户级 MCP 配置中安装的 codebase-memory-mcp
 	 *
 	 * 仅在首次执行（storage 标记未设置）时运行，后续启动跳过。
@@ -128,9 +131,8 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 
 			this.logService.info(LOG_TAG, 'Cleaning up legacy codebase-memory-mcp MCP config...');
 
-			// 1. 清理 ~/.saros/mcp.json
-			const userHome = await this.pathService.userHome();
-			const sarosConfigUri = URI.joinPath(userHome, '.saros', 'mcp.json');
+			// 1. 清理 ~/.vssaros/saros/mcp.json
+			const sarosConfigUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 			try {
 				const exists = await this.fileService.exists(sarosConfigUri);
 				if (exists) {
@@ -139,11 +141,11 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 					if (data?.servers?.[SERVER_NAME]) {
 						delete data.servers[SERVER_NAME];
 						await this.fileService.writeFile(sarosConfigUri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
-						this.logService.info(LOG_TAG, `Removed "${SERVER_NAME}" from ~/.saros/mcp.json`);
+						this.logService.info(LOG_TAG, `Removed "${SERVER_NAME}" from ~/.vssaros/saros/mcp.json`);
 					}
 				}
 			} catch (e: any) {
-				this.logService.warn(LOG_TAG, `Failed to clean ~/.saros/mcp.json: ${e?.message || e}`);
+				this.logService.warn(LOG_TAG, `Failed to clean ~/.vssaros/saros/mcp.json: ${e?.message || e}`);
 			}
 
 			// 2. 清理 VS Code 用户级 MCP 配置
@@ -169,6 +171,10 @@ class CodebaseMemoryMcpBootstrapContribution extends Disposable implements IWork
 		} catch (err: any) {
 			this.logService.warn(LOG_TAG, `Legacy config cleanup error: ${err?.message || err}`);
 		}
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }
 

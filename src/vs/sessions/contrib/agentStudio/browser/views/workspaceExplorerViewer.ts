@@ -77,6 +77,8 @@ export interface IWorkspaceExplorerElement {
 	isRelatedFolder?: boolean;
 	/** True when this related-folder root is a git repository. */
 	isGitRepo?: boolean;
+	/** 该目录正在被 codebase graph 索引（workspace view 中显示 ⏳ 指示器）。 */
+	isIndexing?: boolean;
 	/**
 	 * Glob patterns (from .code-workspace `settings.files.exclude`) that
 	 * should hide matching child entries. Set on root nodes and propagated
@@ -417,6 +419,9 @@ export class WorkspaceExplorerRenderer implements ICompressibleTreeRenderer<IWor
 		}
 		if (element.isRelatedFolder) {
 			extraClasses.push('workspace-related-folder-entry');
+		}
+		if (element.isIndexing) {
+			extraClasses.push('workspace-indexing-entry');
 		}
 
 		// Description shown to the right of the root name:

@@ -36,6 +36,7 @@ import { IEnvironmentService } from '../../../../platform/environment/common/env
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILanguageModelsService, IChatMessage, IChatMessagePart, IChatMessageToolResultPart, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata, ChatImageMimeType } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
+import { normalizeMessages } from '../common/agentRunState.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING, AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
 import {
@@ -71,6 +72,66 @@ export const VSSAROS_USAGE_MIME = 'application/vnd.saros.usage+json';
  * ⚠️ 同步约定：与 `extensions/codebuddy-provider/src/extension.ts` 中的 MIME 逐字一致。
  */
 export const VSSAROS_FINISH_REASON_MIME = 'application/vnd.saros.finish-reason+json';
+
+/**
+ * 工具参数生成进度 DataPart MIME（2026-07-26 治本，与 provider 扩展约定）。
+ * provider 在 tool_calls arguments 流式期间以 1s 节流上报 {name, bytes}；
+ * 本桥识别后转 tool_progress delta——超大参数（file_write 写大文件，10k+
+ * tokens 需 200s+）生成期间为 resilience/P4/subagent 看门狗的 idle 计时器
+ * 续命，杜绝误判死流（事故日志 1785049332701）。
+ */
+export const VSSAROS_TOOL_CALL_PROGRESS_MIME = 'application/vnd.saros.tool-call-progress+json';
+
+// ── P4: 死流检测 + 有限重试（2026-07-26，对齐 MiMo-Code persistent retry）──────
+// provider 扩展的 fetchWithRetry 只覆盖「等待响应头」阶段（fetch 返回即
+// clearTimeout）；SSE 流迭代期间 TCP 静默死亡（无 FIN）会让 for-await 永远
+// 挂起——主 agent 没有子代理那种看门狗兜底，整个 turn 卡死。
+// 这里给流迭代加 chunk 间隔超时（任一 part 到达即重置，对齐 MiMo wrapSSE），
+// 超时/瞬时网络错误 → 指数退避重试（500ms→1000ms，最多 3 次尝试）。
+// 防重复防线：已产出内容 delta 的 attempt 失败后不重试（避免消费者看到重复
+// 文本）；用户取消（AbortError / 生成器 return）不重试。
+
+/** chunk 间隔超时：5 分钟。推理模型多分钟思考窗口内仍持续发 reasoning chunk
+ * （网关 keep-alive 也算活动），仅连接真死才触发。量级对齐 MiMo headerTimeout。 */
+export const LM_BRIDGE_CHUNK_TIMEOUT_MS = 300_000;
+/** 最大尝试次数（1 次首发 + 2 次重试）。MiMo 用 11 次持久重试，聊天场景收敛到 3。 */
+export const LM_BRIDGE_RETRY_MAX_ATTEMPTS = 3;
+/** raceIteratorNext 的超时哨兵返回值。 */
+export const CHUNK_TIMEOUT_SENTINEL: unique symbol = Symbol('lmBridgeChunkTimeout');
+
+/**
+ * iterator.next() 与超时赛跑（对齐 MiMo wrapSSE 的 per-read 重武装）。
+ * 超时时不取消 iterator（由调用方中止底层请求后统一收尾），只返回哨兵。
+ */
+export async function raceIteratorNext<T>(
+	iterator: AsyncIterator<T>,
+	timeoutMs: number,
+): Promise<IteratorResult<T> | typeof CHUNK_TIMEOUT_SENTINEL> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			iterator.next(),
+			new Promise<typeof CHUNK_TIMEOUT_SENTINEL>(r => {
+				timer = setTimeout(() => r(CHUNK_TIMEOUT_SENTINEL), timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timer !== undefined) { clearTimeout(timer); }
+	}
+}
+
+/**
+ * 可重试的瞬时流错误分类（对齐 MiMo isRetryableTransientError，收敛版）：
+ * - 可重试：SSE 读超时、网络层错误（fetch failed/ECONNRESET/socket hang up）、
+ *   网关 5xx/429；
+ * - 不可重试：用户取消（abort/cancel）、4xx 参数/权限错误（重试必然同样失败）。
+ */
+export function isRetryableStreamError(msg: string): boolean {
+	if (/abort|cancel/i.test(msg)) { return false; }
+	// 429（限流）是 4xx 中唯一可重试的特例——先豁免再做 4xx 守卫。
+	if (/HTTP 4(?!29)\d\d|invalid_parameter|Unauthorized|Forbidden/i.test(msg)) { return false; }
+	return /SSE read timed out|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|socket hang up|network(?:\s|error)|HTTP 429|HTTP 5\d\d|Bad Gateway|Service Unavailable|Gateway Timeout|timed? ?out/i.test(msg);
+}
 
 /**
  * One IModelProvider instance per LM vendor.
@@ -173,16 +234,24 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			// `reasoningUIType` falls through to the `'switch'` branch.
 			const supportsReasoning = this._inferSupportsReasoning(bareId, metadata);
 			const supportsImages = this._inferSupportsImages(bareId, metadata);
-			result.push({
-				id: bareId,                               // strip `vendor/` and `vendor-` prefixes; provider expects bare model id
-				name: this._friendlyModelName(id, metadata),
-				description: metadata.detail ?? metadata.tooltip,
-				contextWindow: metadata.maxInputTokens,
-				maxInputTokens: metadata.maxInputTokens,
-				capabilities: [ModelCapability.Chat],
-				...(supportsReasoning ? { supportsReasoning: true } : {}),
-				...(supportsImages ? { supportsImages: true } : {}),
-			});
+			const maxInput = metadata.maxInputTokens || 128000;
+		const maxOutput = metadata.maxOutputTokens || 4096;
+		// IOA 网关模型（如 hy3-ioa）的 context window 必须预留输出空间：
+		// 网关按 total = input + output 校验，prompt 172K + maxTokens 32K 超出网关限制
+		// → 用 maxInput - maxOutput 作压缩目标窗口，确保压缩在 prompt 填满前触发
+		const contextWin = Math.max(4096, maxInput - maxOutput);
+		result.push({
+			id: bareId,                               // strip `vendor/` and `vendor-` prefixes; provider expects bare model id
+			name: this._friendlyModelName(id, metadata),
+			description: metadata.detail ?? metadata.tooltip,
+			contextWindow: contextWin,
+			maxInputTokens: maxInput,
+			maxOutputTokens: maxOutput,
+			maxAllowedSize: maxInput,
+			capabilities: [ModelCapability.Chat],
+			...(supportsReasoning ? { supportsReasoning: true } : {}),
+			...(supportsImages ? { supportsImages: true } : {}),
+		});
 		}
 		return result;
 	}
@@ -452,12 +521,20 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 
 		this._logService.info(`[LMBridge] chat() called — vendor=${this.vendor} model=${modelId}, tools=${options.tools?.length ?? 0}`);
 
-		const lmMessages = this._toLanguageModelMessages(messages, options);
+		// ── 归一化消息顺序（OpenAI 兼容网关收口）──────────────────────
+		// 修复 agentloop 注入的 system-reminder 等造成的连续 user / orphaned tool_calls，
+		// 否则网关返回 HTTP 400 invalid_parameter。
+		const normalizedMessages = normalizeMessages(messages as any[]);
+		if (normalizedMessages.length !== messages.length) {
+			this._logService.info(
+				`[LMBridge] normalizeMessages: ${messages.length} → ${normalizedMessages.length} ` +
+				`(merged ${messages.length - normalizedMessages.length} consecutive user/orphaned tool_calls)`,
+			);
+		}
+		const lmMessages = this._toLanguageModelMessages(normalizedMessages as any, options);
 
 		// Debug: write request payload to local file if switch is enabled
 		this._debugWriteRequest(modelId, messages, options, context);
-
-		const cts = new CancellationTokenSource();
 
 		// 将 options 传递给 sendChatRequest，以便扩展可以访问 tools 等配置
 		// 注意：systemPrompt 已经在 _toLanguageModelMessages 中处理，不应重复传递
@@ -512,40 +589,55 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 			this._logService.trace(`[LMBridge] Passing ids to extension: convId=${conversationId ?? '(none)'} reqId=${context?.requestId ?? '(none)'} prevRespId=${context?.previousResponseId ?? '(none)'}`);
 		}
 
-		try {
-			this._logService.trace(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})`);
-			const t0_sendRequest = Date.now();
-			const response = await this._lmService.sendChatRequest(
-				modelId,
-				meta.extension,                   // initiating extension = the provider extension itself
-				lmMessages,
-				requestOptions,
-				cts.token,
-			);
-			this._logService.trace(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
+		// P4: 死流重试循环（每次 attempt 独立 CancellationTokenSource——
+		// chunk 超时时会 cancel 以中止悬挂的 fetch，下一次 attempt 需要新 token）。
+		for (let attempt = 1; attempt <= LM_BRIDGE_RETRY_MAX_ATTEMPTS; attempt++) {
+			const attemptCts = new CancellationTokenSource();
+			// 防重复防线：本 attempt 已向下游产出内容 delta 后失败 → 不重试，
+			// 否则消费者会看到重复文本（pre-content 死亡才透明重试）。
+			let yieldedContent = false;
+			try {
+				this._logService.trace(`[LMBridge] sendChatRequest: sending (modelId=${modelId}, msgCount=${lmMessages.length})${attempt > 1 ? ` attempt=${attempt}/${LM_BRIDGE_RETRY_MAX_ATTEMPTS}` : ''}`);
+				const t0_sendRequest = Date.now();
+				const response = await this._lmService.sendChatRequest(
+					modelId,
+					meta.extension,                   // initiating extension = the provider extension itself
+					lmMessages,
+					requestOptions,
+					attemptCts.token,
+				);
+				this._logService.trace(`[LMBridge] sendChatRequest: response received in ${Date.now() - t0_sendRequest}ms, starting stream iteration`);
 
-			let capturedResponseId: string | undefined;
-			let capturedFinishReason: string | undefined;
-			let _firstPartReceived = false;
-			for await (const part of response.stream) {
-				if (!_firstPartReceived) {
-					_firstPartReceived = true;
-					this._logService.info(`[LMBridge] sendChatRequest: first stream part received in ${Date.now() - t0_sendRequest}ms`);
-				}
-				const parts = Array.isArray(part) ? part : [part];
-				for (const p of parts) {
-					// 尝试从 part 上捕获响应流 id（部分扩展会在 part 上挂 id/responseId）。
-					// 抓包证据：响应流 chunk 的 id = 下一次请求的 previous_response_id。
-					const pid = (p as { id?: unknown; responseId?: unknown })?.responseId
-						?? (p as { id?: unknown })?.id;
-					if (typeof pid === 'string' && pid) {
-						capturedResponseId = pid;
+				let capturedResponseId: string | undefined;
+				let capturedFinishReason: string | undefined;
+				let _firstPartReceived = false;
+				const streamIterator = response.stream[Symbol.asyncIterator]();
+				while (true) {
+					const next = await raceIteratorNext(streamIterator, LM_BRIDGE_CHUNK_TIMEOUT_MS);
+					if (next === CHUNK_TIMEOUT_SENTINEL) {
+						attemptCts.cancel(); // 中止悬挂的 fetch，释放底层连接
+						throw new Error('SSE read timed out');
 					}
-					// ── 捕获 finish_reason（经 DataPart 透传，同 usage 模式）──
-					// provider 扩展在 SSE choice.finish_reason 到达时，通过
-					// LanguageModelDataPart.json({finish_reason}, VSSAROS_FINISH_REASON_MIME)
-					// 透传。这里截获并存储，在 stream 结束时随 done delta 一起发出，
-					// 使 agentOSService 的 classifyIncompleteTurn 能检测 length 截断。
+					if (next.done) { break; }
+					const part = next.value;
+					if (!_firstPartReceived) {
+						_firstPartReceived = true;
+						this._logService.info(`[LMBridge] sendChatRequest: first stream part received in ${Date.now() - t0_sendRequest}ms`);
+					}
+					const parts = Array.isArray(part) ? part : [part];
+					for (const p of parts) {
+						// 尝试从 part 上捕获响应流 id（部分扩展会在 part 上挂 id/responseId）。
+						// 抓包证据：响应流 chunk 的 id = 下一次请求的 previous_response_id。
+						const pid = (p as { id?: unknown; responseId?: unknown })?.responseId
+							?? (p as { id?: unknown })?.id;
+						if (typeof pid === 'string' && pid) {
+							capturedResponseId = pid;
+						}
+						// ── 捕获 finish_reason（经 DataPart 透传，同 usage 模式）──
+						// provider 扩展在 SSE choice.finish_reason 到达时，通过
+						// LanguageModelDataPart.json({finish_reason}, VSSAROS_FINISH_REASON_MIME)
+						// 透传。这里截获并存储，在 stream 结束时随 done delta 一起发出，
+						// 使 agentOSService 的 classifyIncompleteTurn 能检测 length 截断。
 					const _frDataPart = p as { mimeType?: string; data?: { toString(): string } };
 					if (_frDataPart.mimeType === VSSAROS_FINISH_REASON_MIME && _frDataPart.data) {
 						try {
@@ -556,25 +648,55 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 						} catch { /* 解码失败 — 忽略 */ }
 						continue; // 不传给 _toModelDelta（它不认识此 MIME）
 					}
-					const delta = this._toModelDelta(p);
-					if (delta) {
-						yield delta;
+					// ── 工具参数生成进度（2026-07-26 治本，同 finish_reason 模式）──
+					// provider 在 tool_calls arguments 流式期间以 1s 节流上报进度；
+					// 转 tool_progress delta 使 resilience/P4/subagent 看门狗的 idle
+					// 计时器续命——超大参数生成期不再误判死流（事故 1785049332701）。
+					if (_frDataPart.mimeType === VSSAROS_TOOL_CALL_PROGRESS_MIME && _frDataPart.data) {
+						let _tpStage = '正在生成工具调用参数…';
+						try {
+							const _tp = JSON.parse(_frDataPart.data.toString());
+							const _kb = Math.max(1, Math.round((Number(_tp?.bytes) || 0) / 1024));
+							const _nm = typeof _tp?.name === 'string' && _tp.name ? ` ${_tp.name}` : '';
+							_tpStage = `正在生成工具调用参数${_nm}… 已 ${_kb} KB`;
+						} catch { /* 解码失败 — 用默认 stage */ }
+						yieldedContent = true; // 流确证存活；此后失败不走 P4 重试（避免重复正文）
+						yield { type: 'tool_progress', content: _tpStage };
+						continue; // 不传给 _toModelDelta（它不认识此 MIME）
+					}
+						const delta = this._toModelDelta(p);
+						if (delta) {
+							yieldedContent = true;
+							yield delta;
+						}
 					}
 				}
-			}
 
-			// 把捕获到的响应 id + finish_reason 随 done 回传给 agentOS。
-			const doneDelta: IModelDelta = {
-				type: 'done',
-				...(capturedResponseId ? { responseId: capturedResponseId } : {}),
-				...(capturedFinishReason ? { finishReason: capturedFinishReason } : {}),
-			};
-			yield doneDelta;
-		} catch (err) {
-			this._logService.error(`[LMBridge] chat() failed for vendor=${this.vendor} model=${modelId}`, err);
-			yield { type: 'error', error: err instanceof Error ? err.message : String(err) };
-		} finally {
-			cts.dispose();
+				// 把捕获到的响应 id + finish_reason 随 done 回传给 agentOS。
+				const doneDelta: IModelDelta = {
+					type: 'done',
+					...(capturedResponseId ? { responseId: capturedResponseId } : {}),
+					...(capturedFinishReason ? { finishReason: capturedFinishReason } : {}),
+				};
+				yield doneDelta;
+				return; // 成功 — 结束生成器
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				const canRetry = attempt < LM_BRIDGE_RETRY_MAX_ATTEMPTS
+					&& !yieldedContent
+					&& isRetryableStreamError(msg);
+				if (canRetry) {
+					const backoffMs = 500 * Math.pow(2, attempt - 1); // 500ms → 1000ms（MiMo 500ms×2 指数）
+					this._logService.warn(`[LMBridge] chat attempt ${attempt}/${LM_BRIDGE_RETRY_MAX_ATTEMPTS} failed (${msg}) — retrying in ${backoffMs}ms`);
+					await new Promise(r => setTimeout(r, backoffMs));
+					continue;
+				}
+				this._logService.error(`[LMBridge] chat() failed for vendor=${this.vendor} model=${modelId}`, err);
+				yield { type: 'error', error: msg };
+				return;
+			} finally {
+				attemptCts.dispose();
+			}
 		}
 
 		// silence unused-var warnings for context — reserved for future use (agentId routing etc.)
@@ -841,6 +963,14 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 						cacheWriteTokens: raw.prompt_tokens_details?.cache_write_tokens ?? undefined,
 						credit: typeof raw.credit === 'number' ? raw.credit : undefined,
 					};
+					// 诊断（2026-07-27）：积分 pill 排查——渡海到 renderer 侧后 credit 是否
+					// 仍在。若此处 usage.credit 为 undefined 但下方 keys 里有形似字段
+					// （credits/cost/price/...），说明字段名在网关侧被改了，未在此同步更新。
+					this._logService.info(
+						`[LMBridge] usage decoded | credit=${usage.credit ?? 'MISSING'} ` +
+						`raw keys=[${Object.keys(raw).join(',')}] raw.credit=${raw.credit ?? 'n/a'} ` +
+						`raw.credits=${raw.credits ?? 'n/a'} raw.cost=${raw.cost ?? 'n/a'}`
+					);
 					if (
 						usage.inputTokens !== undefined ||
 						usage.outputTokens !== undefined ||

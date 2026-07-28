@@ -12,6 +12,7 @@ import * as feat from '../amFeatures.js';
 import * as extra from '../amExtras.js';
 import * as adv from '../amAdvanced.js';
 import * as rem from '../amRemaining.js';
+import * as repl from '../amReplication.js';
 import * as fin from '../amFinal.js';
 import { BM25Index } from '../bm25Index.js';
 import { KV } from '../amSchema.js';
@@ -459,12 +460,16 @@ export async function runAmV2Tests(): Promise<void> {
 	});
 
 	// 12. loadContext
+	// 2026-07-25 注入对齐 mem::context：core/memory 不进注入文本（召回走工具），
+	// systemPrompt 只含策展块（slots/profile/lessons/summaries/observations）
 	await test('loadContext: no query returns full context', async (kv) => {
 		await fn.coreAdd(kv as any, AGENT_ID, 'Core info', 8, true);
 		await fn.remember(kv as any, AGENT_ID, 'Long term memory', 'fact');
 		const ctx = await fn.loadContextFn(kv as any, AGENT_ID, 'session-1', undefined, 2000);
-		assert(ctx.systemPrompt.length > 0, 'systemPrompt not empty');
-		assert(ctx.systemPrompt.includes('<agentmemory-context'), 'XML wrapped');
+		// 无策展内容（无 slots/lessons/summaries）→ 注入文本为空
+		assert(ctx.systemPrompt.length === 0, 'systemPrompt empty without curated blocks');
+		assert(!ctx.systemPrompt.includes('Core info'), 'core NOT injected (recall is tool-driven)');
+		assert(!ctx.systemPrompt.includes('Long term memory'), 'raw memory NOT injected');
 		assert(ctx.shortTermMemories.length > 0, 'shortTermMemories not empty');
 		assert(ctx.longTermMemories.length > 0, 'longTermMemories not empty');
 	});
@@ -473,7 +478,538 @@ export async function runAmV2Tests(): Promise<void> {
 		await fn.remember(kv as any, AGENT_ID, 'React components', 'pattern');
 		await seedBM25FromKV(kv);
 		const ctx = await fn.loadContextFn(kv as any, AGENT_ID, 'session-1', 'React', 2000);
-		assert(ctx.systemPrompt.includes('Search Results'), 'has search results section');
+		// 2026-07-25 P0：query 召回是策展块内的 Relevant Memories 附加块（≤30% 预算），
+		// 不再是替代整个策展的 Search Results 分支
+		assert(ctx.systemPrompt.includes('Relevant Memories'), 'has relevant memories block');
+		assert(ctx.systemPrompt.includes('React components'), 'matched memory in block');
+		assert(ctx.systemPrompt.includes('<agentmemory-context project='), 'curated XML wrapper');
+	});
+
+	// 12b. 注入审计修正（2026-07-25，doc §12）：query 块预算上限 / includeEntries / 元数据
+	await test('loadContext: query block capped at 30% budget', async (kv) => {
+		// 200 字符记忆 ≈ 67 tokens；budget=100 → searchBudget=30，整行放不下 → 块被丢弃
+		await fn.remember(kv as any, AGENT_ID, 'x'.repeat(200), 'pattern');
+		const bm25 = new BM25Index();
+		const all = await kv.list<any>(KV.memories(AGENT_ID));
+		for (const m of all) { if (m.isLatest !== false && m.content) { bm25.add(m.id, m.content); } }
+		fn.setIndexGetters(() => bm25, () => null as any);
+		const ctx = await fn.loadContextFn(kv as any, AGENT_ID, 'session-cap', 'xxx', 100);
+		assert(!ctx.systemPrompt.includes('Relevant Memories'), 'query block dropped when exceeding 30% budget');
+		assert((ctx.contextTokens ?? 0) <= 100, `contextTokens within budget (got ${ctx.contextTokens})`);
+	});
+
+	await test('loadContext: includeEntries=false skips entry arrays', async (kv) => {
+		await fn.coreAdd(kv as any, AGENT_ID, 'Core for includeEntries', 8, true);
+		await fn.remember(kv as any, AGENT_ID, 'Memory for includeEntries', 'fact');
+		const withEntries = await fn.loadContextFn(kv as any, AGENT_ID, 'session-ie', undefined, 2000);
+		assert(withEntries.shortTermMemories.length > 0, 'default includeEntries populates shortTerm');
+		assert(withEntries.longTermMemories.length > 0, 'default includeEntries populates longTerm');
+		const without = await fn.loadContextFn(kv as any, AGENT_ID, 'session-ie', undefined, 2000, { includeEntries: false });
+		assertEq(without.shortTermMemories.length, 0, 'includeEntries=false → empty shortTerm');
+		assertEq(without.longTermMemories.length, 0, 'includeEntries=false → empty longTerm');
+	});
+
+	await test('searchMemories: agent-aware index getters isolate agents', async (kv) => {
+		const ra = await fn.remember(kv as any, 'agent-iso-a', 'alpha react pattern', 'pattern');
+		const rb = await fn.remember(kv as any, 'agent-iso-b', 'beta vue pattern', 'pattern');
+		const bm25a = new BM25Index(); bm25a.add(ra.id!, 'alpha react pattern');
+		const bm25b = new BM25Index(); bm25b.add(rb.id!, 'beta vue pattern');
+		// agent 感知 getter：按 agentId 返回对应索引（并发安全修复验证）
+		fn.setIndexGetters((id: string) => id === 'agent-iso-a' ? bm25a : bm25b, () => null as any);
+		const hitsA = await fn.searchMemories(kv as any, 'agent-iso-a', 'pattern', 10);
+		const hitsB = await fn.searchMemories(kv as any, 'agent-iso-b', 'pattern', 10);
+		assert(hitsA.some(h => h.id === ra.id), 'agent-a recalls from index A');
+		assert(!hitsA.some(h => h.id === rb.id), 'agent-a does NOT leak agent-b memory');
+		assert(hitsB.some(h => h.id === rb.id), 'agent-b recalls from index B');
+		assert(!hitsB.some(h => h.id === ra.id), 'agent-b does NOT leak agent-a memory');
+		// 恢复常规 getter，避免影响后续用例
+		await seedBM25FromKV(kv);
+	});
+
+	// 12c. 注入审计 P2（2026-07-25，doc §12）：观察 importance≥5 筛选 + bug 记忆匹配
+	await test('observe: 写入侧持久化 title/importance 启发式评分', async (kv) => {
+		const ts = new Date().toISOString();
+		await fn.observe(kv as any, AGENT_ID, {
+			sessionId: 'sess-imp', hookType: 'post_tool_failure', timestamp: ts,
+			data: { tool_name: 'edit_file', files: ['src/app.ts'], tool_output: 'ENOENT write failed' },
+		});
+		await fn.observe(kv as any, AGENT_ID, {
+			sessionId: 'sess-imp', hookType: 'turn_observation', timestamp: ts,
+			data: { content: 'user asked about react patterns' },
+		});
+		const obs = await fn.observeList(kv as any, AGENT_ID, 'sess-imp');
+		assertEq(obs.length, 2, 'two observations stored');
+		const fail = obs.find(o => o.hookType === 'post_tool_failure')!;
+		assertEq(fail.importance, 7, 'tool failure importance = 7');
+		assertEq(fail.title, 'edit_file: app.ts', 'title derived from tool_name + file basename');
+		const turn = obs.find(o => o.hookType === 'turn_observation')!;
+		assertEq(turn.importance, 4, 'turn observation importance = 4');
+		assert(turn.title!.includes('user asked'), 'title derived from content');
+	});
+
+	await test('buildContext: 观察块仅选 importance≥5 的重要观察', async (kv) => {
+		const ts = new Date().toISOString();
+		// 高重要性：工具失败（7）
+		await fn.observe(kv as any, AGENT_ID, {
+			sessionId: 'sess-filter', hookType: 'post_tool_failure', timestamp: ts,
+			data: { tool_name: 'run_tests', tool_output: '3 tests failed with assertion error' },
+		});
+		// 低重要性：turn 消息（4）——不应进入观察块
+		await fn.observe(kv as any, AGENT_ID, {
+			sessionId: 'sess-filter', hookType: 'turn_observation', timestamp: ts,
+			data: { content: 'casual chit chat content here' },
+		});
+		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-current', 'proj', 2000);
+		assert(ctx.systemPrompt.includes('run_tests'), 'high-importance observation injected');
+		assert(!ctx.systemPrompt.includes('casual chit chat'), 'low-importance observation filtered out (importance<5)');
+	});
+
+	await test('bugMemoriesForFiles: type=bug ∩ isLatest ∩ files 重叠，top3', async (kv) => {
+		// 命中：bug + 文件重叠
+		const hit = await fn.remember(kv as any, AGENT_ID, 'app.ts crashes on null config', 'bug', undefined, ['src/app.ts']);
+		// 不命中：同文件但 type=pattern
+		await fn.remember(kv as any, AGENT_ID, 'app.ts uses singleton pattern', 'pattern', undefined, ['src/app.ts']);
+		// 不命中：bug 但文件不重叠
+		await fn.remember(kv as any, AGENT_ID, 'db.ts connection pool leak', 'bug', undefined, ['src/db.ts']);
+		// 不命中：bug + 文件重叠但已被取代（isLatest=false）
+		const old = await fn.remember(kv as any, AGENT_ID, 'app.ts old bug superseded', 'bug', undefined, ['src/app.ts']);
+		await fn.forgetMemory(kv as any, AGENT_ID, old.id!);
+		const bugs = await fn.bugMemoriesForFiles(kv as any, AGENT_ID, ['src/app.ts'], undefined, 3);
+		assertEq(bugs.length, 1, 'only matching latest bug returned');
+		assertEq(bugs[0].id, hit.id, 'correct bug memory matched');
+		// 空文件列表 → 空结果
+		assertEq((await fn.bugMemoriesForFiles(kv as any, AGENT_ID, [], undefined, 3)).length, 0, 'empty files → empty result');
+	});
+
+	// 12d. §13 复刻 P0（2026-07-26）：D1 team scope 全局化 + 摘要防御 + D2a slot-reflect
+	await test('teamShare/teamQuery: 全局 team scope 跨 agent 可见且不污染 summaries', async (kv) => {
+		const r = await fn.remember(kv as any, 'agent-team-a', 'shared convention: use tabs', 'pattern');
+		const share = await rem.teamShare(kv as any, 'agent-team-a', r.id!, 'pattern', 'proj-x');
+		assert(share.success, 'share succeeds');
+		const summariesA = await kv.list<any>(KV.summaries('agent-team-a'));
+		assertEq(summariesA.length, 0, 'summaries scope not polluted by share');
+		const seen = await rem.teamQuery(kv as any, 'agent-team-b', undefined, 'proj-x');
+		assertEq(seen.length, 1, 'agent-b sees shared item in team proj-x (cross-agent)');
+		assertEq(seen[0].sharedBy, 'agent-team-a', 'sharedBy recorded');
+		assertEq((await rem.teamQuery(kv as any, 'agent-team-b')).length, 0, 'default team isolated from proj-x');
+	});
+
+	await test('teamFeed/teamProfile: 读全局 team scope', async (kv) => {
+		const r = await fn.remember(kv as any, 'agent-team-c', 'feed pattern with concepts', 'pattern', ['feed-concept'], ['src/feed.ts']);
+		await rem.teamShare(kv as any, 'agent-team-c', r.id!, 'pattern', 'proj-feed');
+		const feed = await repl.teamFeed(kv as any, 'agent-team-d', 20, 'proj-feed');
+		assertEq(feed.total, 1, 'teamFeed reads global scope');
+		const profile = await repl.teamProfile(kv as any, 'agent-team-d', 'proj-feed');
+		assert(profile.members.includes('agent-team-c'), 'teamProfile aggregates members');
+		assertEq(profile.totalSharedItems, 1, 'teamProfile counts shared items');
+	});
+
+	await test('buildContext: 摘要块过滤非 SessionSummary 条目（D1 防御）', async (kv) => {
+		await fn.sessionSummarySave(kv as any, AGENT_ID, 'sess-real', AGENT_ID, 'real session', 'real narrative', ['decision one'], ['a.ts']);
+		await kv.set(KV.summaries(AGENT_ID), 'ts_legacy_1', {
+			id: 'ts_legacy_1', sharedBy: 'x', type: 'pattern',
+			content: { content: 'legacy polluted item' }, sharedAt: new Date().toISOString(),
+		});
+		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-other', 'proj', 2000);
+		assert(ctx.systemPrompt.includes('real narrative'), 'real summary injected');
+		assert(!ctx.systemPrompt.includes('legacy polluted item'), 'TeamSharedItem NOT injected as summary');
+	});
+
+	await test('slotReflect: todo/错误/命令/文件反思进 slots + 审计', async (kv) => {
+		const ts = new Date().toISOString();
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-refl', hookType: 'turn_observation', timestamp: ts, data: { content: 'TODO: fix the flaky test' } });
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-refl', hookType: 'post_tool_failure', timestamp: ts, data: { tool_name: 'edit_file', tool_output: 'write failed' } });
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-refl', hookType: 'post_tool_use', timestamp: ts, data: { tool_name: 'run_in_terminal', tool_output: 'ok', files: ['src/flaky.ts'] } });
+		const r = await sl.slotReflect(kv as any, AGENT_ID, 'sess-refl');
+		assert(r.success && r.applied >= 3, `three slots updated (got ${r.applied})`);
+		const pending = await sl.slotGet(kv as any, AGENT_ID, 'pending_items');
+		assert(pending!.content.includes('TODO: fix the flaky test'), 'pending_items has todo line');
+		const patterns = await sl.slotGet(kv as any, AGENT_ID, 'session_patterns');
+		assert(patterns!.content.includes('errors: 1'), 'session_patterns counts errors');
+		assert(patterns!.content.includes('commands: 1'), 'session_patterns counts commands');
+		const ctxSlot = await sl.slotGet(kv as any, AGENT_ID, 'project_context');
+		assert(ctxSlot!.content.includes('src/flaky.ts'), 'project_context has touched file');
+		const auditEntries = (await kv.list<any>(KV.state(AGENT_ID))).filter(e => String(e.id).startsWith('audit'));
+		assert(auditEntries.length >= 1, 'audit entry recorded');
+	});
+
+	await test('slotReflect: 幂等去重与空会话', async (kv) => {
+		const ts = new Date().toISOString();
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-refl2', hookType: 'post_tool_use', timestamp: ts, data: { tool_name: 'read_file', files: ['src/dup.ts'], tool_output: 'x' } });
+		const r1 = await sl.slotReflect(kv as any, AGENT_ID, 'sess-refl2');
+		assertEq(r1.applied, 1, 'first run applies project_context');
+		const r2 = await sl.slotReflect(kv as any, AGENT_ID, 'sess-refl2');
+		assertEq(r2.applied, 0, 'second run dedup (no new content)');
+		const empty = await sl.slotReflect(kv as any, AGENT_ID, 'sess-nonexistent');
+		assertEq(empty.applied, 0, 'empty session no-op');
+		assert(empty.reason!.includes('no observations'), 'reason reported');
+		assert(sl.isReflectEnabled(), 'reflect enabled by default');
+	});
+
+	// 12e. §13 复刻 P1（2026-07-26）：skill-list/match、session_handoff、小函数补齐
+	await test('skillList/skillMatch: 技能查询与任务匹配（D3）', async (kv) => {
+		// 注意：内容需足够区分，避免 remember 的 Jaccard 去重把两条合并（extractSkill 需 ≥2 条）
+		await fn.remember(kv as any, AGENT_ID, 'write failing test cases before implementation', 'workflow', ['react', 'testing']);
+		await fn.remember(kv as any, AGENT_ID, 'run vitest in watch mode during refactor', 'workflow', ['react', 'testing']);
+		const skill = await feat.extractSkill(kv as any, AGENT_ID, 'sess-skill');
+		assert(skill !== null, 'skill extracted');
+		const list = await feat.skillList(kv as any, AGENT_ID);
+		assertEq(list.length, 1, 'skillList returns extracted skill');
+		assert(list[0].trigger.length > 0, 'trigger normalized from preconditions');
+		const matches = await feat.skillMatch(kv as any, AGENT_ID, 'help me with react testing workflow');
+		assert(matches.length >= 1, 'skillMatch hits on task keywords');
+		assertEq(matches[0].skill.id, skill!.id, 'matched skill is the extracted one');
+		assertEq((await feat.skillMatch(kv as any, AGENT_ID, 'zzz completely unrelated qq')).length, 0, 'no match on unrelated task');
+	});
+
+	await test('sessionHandoff: 交接文档生成与持久化', async (kv) => {
+		await fn.sessionSummarySave(kv as any, AGENT_ID, 'sess-ho', AGENT_ID, 'auth refactor', 'refactored auth module', ['use jwt'], ['src/auth.ts']);
+		await adv.actionCreate(kv as any, AGENT_ID, 'deploy auth service', undefined, 8);
+		const ts = new Date().toISOString();
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-ho', hookType: 'post_tool_failure', timestamp: ts, data: { tool_name: 'run_tests', tool_output: '2 auth tests failed' } });
+		const r = await feat.sessionHandoff(kv as any, AGENT_ID, 'sess-ho');
+		assert(r !== null, 'handoff generated');
+		assert(r!.markdown.includes('Session Handoff'), 'markdown header');
+		assert(r!.markdown.includes('refactored auth module'), 'summary section');
+		assert(r!.markdown.includes('deploy auth service'), 'open actions section');
+		assert(r!.markdown.includes('run_tests'), 'important observations section');
+		const persisted = await kv.get<any>(KV.summaries(AGENT_ID), 'handoff_sess-ho');
+		assert(persisted !== null && persisted.title.includes('Handoff'), 'persisted as summary entry (next-session curation carries it)');
+		// 纯净 agent（无摘要/观察/未闭合 action）→ null
+		assertEq((await feat.sessionHandoff(kv as any, 'agent-empty-ho', 'sess-empty-x')), null, 'nothing to hand off → null');
+	});
+
+	await test('actionEdgeCreate: 行动关系边（存 relations scope）', async (kv) => {
+		const a = await adv.actionCreate(kv as any, AGENT_ID, 'task A', undefined, 5);
+		const b = await adv.actionCreate(kv as any, AGENT_ID, 'task B', undefined, 5);
+		const edge = await adv.actionEdgeCreate(kv as any, AGENT_ID, a!.id, b!.id, 'depends_on');
+		assert(edge !== null && edge.from === a!.id && edge.to === b!.id, 'edge created');
+		assertEq((await adv.actionList(kv as any, AGENT_ID)).length, 2, 'actions scope not polluted by edges');
+		assertEq(await adv.actionEdgeCreate(kv as any, AGENT_ID, a!.id, 'missing-id'), null, 'missing target → null');
+	});
+
+	await test('heal: 修复畸形记忆字段', async (kv) => {
+		await kv.set(KV.memories(AGENT_ID), 'bad-1', { id: 'bad-1', content: 'malformed memory', type: 'fact' });
+		const ok = await fn.remember(kv as any, AGENT_ID, 'healthy memory', 'fact');
+		const r = await extra.heal(kv as any, AGENT_ID);
+		assertEq(r.fixed, 1, 'one malformed memory repaired');
+		const healed = await kv.get<any>(KV.memories(AGENT_ID), 'bad-1');
+		assert(healed.isLatest === true && healed.strength === 5 && Array.isArray(healed.concepts), 'fields backfilled');
+		assert((await kv.get<any>(KV.memories(AGENT_ID), ok.id!)) !== null, 'healthy memory untouched');
+	});
+
+	await test('replayImportJsonl: JSONL 导入为观察记录', async (kv) => {
+		const jsonl = [
+			JSON.stringify({ role: 'user', content: 'please fix the login bug', timestamp: '2026-07-26T10:00:00Z' }),
+			JSON.stringify({ type: 'tool_use', tool_name: 'edit_file', content: 'edited auth.ts', timestamp: '2026-07-26T10:01:00Z' }),
+			'{invalid json line',
+			JSON.stringify({ role: 'assistant', content: 'done' }),
+		].join('\n');
+		const r = await fin.replayImportJsonl(kv as any, AGENT_ID, 'sess-import', jsonl);
+		assertEq(r.imported, 2, 'two events imported (user + tool)');
+		assertEq(r.skipped, 2, 'invalid + unsupported skipped');
+		const obs = await fn.observeList(kv as any, AGENT_ID, 'sess-import');
+		assertEq(obs.length, 2, 'observations stored via observe pipeline');
+		assert(obs.some(o => o.hookType === 'turn_observation'), 'turn observation mapped');
+		assert(obs.some(o => o.hookType === 'post_tool_use'), 'tool observation mapped');
+	});
+
+	await test('recentSearchesSweep/followupStats: 搜索历史修剪与追问率', async (kv) => {
+		await fin.recentSearchesAdd(kv as any, AGENT_ID, 'react patterns', 5);
+		await kv.set(KV.recentSearches(AGENT_ID), 'sr_old', { id: 'sr_old', query: 'ancient query', timestamp: new Date(Date.now() - 48 * 3600_000).toISOString(), resultCount: 1 });
+		const swept = await fin.recentSearchesSweep(kv as any, AGENT_ID, 100, 24);
+		assertEq(swept.removed, 1, 'stale entry outside window removed');
+		await fn.remember(kv as any, AGENT_ID, 'memory written after search', 'fact');
+		const stats = await fin.followupStats(kv as any, AGENT_ID);
+		assert(stats.searches >= 1 && stats.followups >= 1 && stats.rate > 0, `followup rate computed (got ${JSON.stringify(stats)})`);
+	});
+
+	// 12f. §14 召回补齐 R1-R4（2026-07-26）：Graph 流 / rerank / diversify / lessons 并入 / 搜索历史
+	await test('searchMemories: Graph 流召回 BM25 未命中的 BFS 邻居（R1）', async (kv) => {
+		pipe.resetGraph();
+		const x = await fn.remember(kv as any, AGENT_ID, 'jwt token validation happens in src/auth.ts using redis cache', 'pattern');
+		const y = await fn.remember(kv as any, AGENT_ID, 'refresh rotation policy documented in src/auth.ts', 'fact');
+		await pipe.graphExtract(kv as any, AGENT_ID, x.id!, 'jwt token validation happens in src/auth.ts using redis cache');
+		await pipe.graphExtract(kv as any, AGENT_ID, y.id!, 'refresh rotation policy documented in src/auth.ts');
+		const bm25 = new BM25Index();
+		bm25.add(x.id!, 'jwt token validation happens in src/auth.ts using redis cache');
+		bm25.add(y.id!, 'refresh rotation policy documented in src/auth.ts');
+		fn.setIndexGetters(() => bm25, () => null as any);
+		const results = await fn.searchMemories(kv as any, AGENT_ID, 'jwt', 10);
+		assert(results.some(r => r.id === x.id), 'BM25 hit found');
+		assert(results.some(r => r.id === y.id), 'graph-only neighbor hit via src/auth.ts co-occurrence edge');
+		// 关闭 graph 流后邻居命中消失
+		const prev = process.env['AGENTMEMORY_GRAPH_WEIGHT'];
+		process.env['AGENTMEMORY_GRAPH_WEIGHT'] = '0';
+		try {
+			const noGraph = await fn.searchMemories(kv as any, AGENT_ID, 'jwt', 10);
+			assert(!noGraph.some(r => r.id === y.id), 'AGENTMEMORY_GRAPH_WEIGHT=0 → neighbor hit gone');
+		} finally {
+			if (prev === undefined) { delete process.env['AGENTMEMORY_GRAPH_WEIGHT']; } else { process.env['AGENTMEMORY_GRAPH_WEIGHT'] = prev; }
+		}
+		pipe.resetGraph();
+	});
+
+	await test('rerankSimple: 术语覆盖率翻转 + 优先级 bug 修复（R2 组件）', async (kv) => {
+		const { rerankSimple } = await import('../reranker.js');
+		const results = rerankSimple('alpha beta', [
+			{ id: 'A', content: 'alpha alpha alpha alpha alpha', combinedScore: 0.9 },
+			{ id: 'B', content: 'alpha beta', combinedScore: 0.5 },
+		]);
+		assertEq(results[0].id, 'B', 'full term coverage outranks raw score');
+		assertEq(results[0].rerankPosition, 1, 'position assigned');
+		// title 存在时 content 仍参与匹配（运算符优先级修复验证）
+		const withTitle = rerankSimple('gamma', [{ id: 'C', title: 'some title', content: 'gamma in body', combinedScore: 0.1 }]);
+		assert(withTitle[0].rerankScore > 0.05, 'content matched despite title present');
+	});
+
+	await test('searchMemories: diversifyBySession ≤3/session，无归属不挤占（R2）', async (kv) => {
+		const now = new Date().toISOString();
+		for (let i = 0; i < 5; i++) {
+			await kv.set(KV.memories(AGENT_ID), `div-${i}`, {
+				id: `div-${i}`, createdAt: now, updatedAt: now, type: 'fact', title: `diversetest ${i}`,
+				content: `diversetest marker item number ${i}`, concepts: [], files: [],
+				sessionIds: ['sess-shared'], strength: 7, version: 1, isLatest: true,
+			});
+		}
+		for (let i = 0; i < 2; i++) {
+			await kv.set(KV.memories(AGENT_ID), `free-${i}`, {
+				id: `free-${i}`, createdAt: now, updatedAt: now, type: 'fact', title: `diversetest free ${i}`,
+				content: `diversetest marker free item ${i}`, concepts: [], files: [],
+				sessionIds: [], strength: 7, version: 1, isLatest: true,
+			});
+		}
+		const bm25 = new BM25Index();
+		for (const m of await kv.list<any>(KV.memories(AGENT_ID))) { bm25.add(m.id, m.content); }
+		fn.setIndexGetters(() => bm25, () => null as any);
+		const results = await fn.searchMemories(kv as any, AGENT_ID, 'diversetest marker', 10);
+		const fromShared = results.filter(r => r.id.startsWith('div-'));
+		const fromFree = results.filter(r => r.id.startsWith('free-'));
+		assert(fromShared.length <= 3, `same-session capped at 3 (got ${fromShared.length})`);
+		assertEq(fromFree.length, 2, 'no-session memories not capped');
+	});
+
+	await test('V2.recallFormatted 并入 lessons + searchMemory 记录搜索历史（R3+R4）', async (kv) => {
+		const { AgentMemoryProviderV2 } = await import('../agentMemoryProviderV2.js');
+		await fn.lessonSave(kv as any, AGENT_ID, 'always lint before push', 'workflow', 0.9);
+		await fn.remember(kv as any, AGENT_ID, 'lint catches unused imports early', 'fact');
+		const bm25 = new BM25Index();
+		for (const m of await kv.list<any>(KV.memories(AGENT_ID))) { bm25.add(m.id, m.content); }
+		fn.setIndexGetters(() => bm25, () => null as any);
+		// 注意：V2 构造函数接收 config 对象 { kv, hosted }，非裸 kv；
+		// hosted=true 跳过 HTTP 健康检查与索引代理覆盖（保留测试注入的 BM25 getter）
+		const v2 = new AgentMemoryProviderV2({ kv, hosted: true });
+		const out = await v2.recallFormatted(AGENT_ID, 'lint');
+		assert(out.includes('Lessons:'), 'lessons section present');
+		assert(out.includes('always lint before push'), 'lesson content included');
+		await v2.searchMemory(AGENT_ID, 'lint');
+		const searches = await kv.list<any>(KV.recentSearches(AGENT_ID));
+		assert(searches.some(s => s.query === 'lint'), 'recent-searches recorded by searchMemory');
+	});
+
+	// 12g. §16 M1：coreAdd 去重（2026-07-26）
+	await test('coreAdd: 完全相同跳过 / 近重复替换 / 仅编号不同不合并', async (kv) => {
+		const id1 = await fn.coreAdd(kv as any, AGENT_ID, 'prefer tabs over spaces for indentation', 7);
+		const id1b = await fn.coreAdd(kv as any, AGENT_ID, 'prefer tabs over spaces for indentation', 7);
+		assertEq(id1b, id1, 'identical content skipped (same id)');
+		const id2 = await fn.coreAdd(kv as any, AGENT_ID, 'prefer tabs over spaces for code indentation', 8);
+		assertEq(id2, id1, 'near-duplicate (Jaccard≥0.85) replaced in place');
+		const id3 = await fn.coreAdd(kv as any, AGENT_ID, 'Core 1', 5);
+		const id4 = await fn.coreAdd(kv as any, AGENT_ID, 'Core 2', 5);
+		assert(id3 !== id4, 'differing only by short number token NOT merged');
+		const list = await kv.list<any>(KV.coreMemory(AGENT_ID));
+		assertEq(list.length, 3, '1 replaced + 2 distinct entries');
+		const updated = await kv.get<any>(KV.coreMemory(AGENT_ID), id1);
+		assert(updated.content.includes('code indentation'), 'replacement updated content');
+		assertEq(updated.importance, 8, 'replacement updated importance');
+	});
+
+	// 12h. §16 C1：consolidation LLM merge 路径（2026-07-26）
+	await test('runConsolidationPipeline: LLM 路径（semantic facts + procedural 提取与去重强化）', async (kv) => {
+		// 5 个会话摘要（semantic tier 输入）
+		for (let i = 0; i < 5; i++) {
+			await fn.sessionSummarySave(kv as any, AGENT_ID, `sess-c${i}`, AGENT_ID, `session ${i}`, `worked on auth module iteration ${i} with jwt`, [`decision ${i}`], ['src/auth.ts']);
+		}
+		// 2 个跨会话 pattern 记忆（procedural tier 输入，sessionIds≥2）
+		await kv.set(KV.memories(AGENT_ID), 'pat-1', {
+			id: 'pat-1', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+			type: 'pattern', title: 'p1', content: 'always write tests before refactor', concepts: [], files: [],
+			sessionIds: ['s1', 's2'], strength: 5, version: 1, isLatest: true,
+		});
+		await kv.set(KV.memories(AGENT_ID), 'pat-2', {
+			id: 'pat-2', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+			type: 'pattern', title: 'p2', content: 'run linter after every code change', concepts: [], files: [],
+			sessionIds: ['s1', 's3'], strength: 5, version: 1, isLatest: true,
+		});
+
+		// mock LLM：按 system prompt 区分 semantic/procedural 调用
+		const envBackup = { ...process.env };
+		const fetchBackup = globalThis.fetch;
+		process.env['CONSOLIDATION_ENABLED'] = 'true';
+		process.env['AGENTMEMORY_LLM_BASE_URL'] = 'http://mock-llm.local/v1';
+		process.env['AGENTMEMORY_LLM_API_KEY'] = 'mock-key';
+		const llmCalls: string[] = [];
+		globalThis.fetch = (async (url: any, init: any) => {
+			const body = JSON.parse(init.body);
+			const sys = body.messages[0].content as string;
+			llmCalls.push(sys.split('\n')[0]);
+			const content = sys.includes('memory consolidation engine')
+				? '<facts><fact confidence="0.9">auth module uses jwt for sessions</fact><fact confidence="0.8">redis used for caching layer</fact></facts>'
+				: '<procedures><procedure name="safe refactor workflow" trigger="before refactoring code"><step>write failing tests</step><step>refactor implementation</step></procedure></procedures>';
+			return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) } as any;
+		}) as any;
+		try {
+			const r1 = await pipe.runConsolidationPipeline(kv as any, AGENT_ID, 'sess-c0');
+			assertEq(r1.llm, true, 'llm path taken');
+			assertEq(r1.semantic, 2, 'two new semantic facts');
+			assertEq(r1.procedural, 1, 'one new procedure');
+			assert(llmCalls.some(c => c.includes('memory consolidation engine')), 'semantic prompt used');
+			assert(llmCalls.some(c => c.includes('procedural memory extractor')), 'procedural prompt used');
+
+			const semEntries = (await kv.list<any>(KV.semantic(AGENT_ID))).filter(e => typeof e?.content === 'string');
+			assertEq(semEntries.length, 2, 'semantic scope has 2 facts');
+			assert(semEntries.every(e => e.tags.includes('llm')), 'facts tagged llm');
+
+			// 第二次运行：去重强化（无新增，accessCount/confidence 提升）
+			const r2 = await pipe.runConsolidationPipeline(kv as any, AGENT_ID, 'sess-c0');
+			assertEq(r2.semantic, 0, 'second run no new facts (dedup)');
+			assertEq(r2.procedural, 0, 'second run no new procedures (dedup)');
+			const semAfter = (await kv.list<any>(KV.semantic(AGENT_ID))).filter(e => typeof e?.content === 'string');
+			assert(semAfter.every(e => e.accessCount >= 2), 'repeated facts reinforced accessCount');
+			const procAfter = (await kv.list<any>(KV.procedural(AGENT_ID))).filter(e => Array.isArray(e?.steps) && e.title === 'safe refactor workflow');
+			assertEq(procAfter.length, 1, 'procedure deduped by title');
+			assert(procAfter[0].confidence > 0.5, 'procedure confidence reinforced');
+		} finally {
+			globalThis.fetch = fetchBackup;
+			for (const k of Object.keys(process.env)) { if (!(k in envBackup)) { delete process.env[k]; } }
+			Object.assign(process.env, envBackup);
+		}
+	});
+
+	await test('runConsolidationPipeline: 门控关闭时走确定性路径（回退验证）', async (kv) => {
+		const prev = process.env['CONSOLIDATION_ENABLED'];
+		delete process.env['CONSOLIDATION_ENABLED'];
+		try {
+			const { isConsolidationLlmEnabled } = await import('../consolidationLlm.js');
+			assertEq(isConsolidationLlmEnabled(), false, 'gate closed without env');
+			const r = await pipe.runConsolidationPipeline(kv as any, AGENT_ID, 'sess-x');
+			assertEq(r.llm, undefined, 'deterministic path (no llm flag)');
+		} finally {
+			if (prev !== undefined) { process.env['CONSOLIDATION_ENABLED'] = prev; }
+		}
+	});
+
+	// 12i. mesh-sync/mesh-receive 复刻（2026-07-26，mem::143 最后缺口）
+	function meshMem(id: string, content: string, updatedAt: string): Record<string, unknown> {
+		return {
+			id, createdAt: updatedAt, updatedAt, type: 'fact', title: id, content,
+			concepts: [], files: [], sessionIds: [], strength: 5, version: 1, isLatest: true,
+		};
+	}
+
+	await test('meshReceive: LWW 合并（新者胜/旧者跳/新条目插入/关系首写胜）', async (kv) => {
+		const t0 = '2026-07-26T10:00:00Z', t1 = '2026-07-26T11:00:00Z', t2 = '2026-07-26T12:00:00Z';
+		await kv.set(KV.memories(AGENT_ID), 'mem-1', meshMem('mem-1', 'old content', t1));
+		const r = await rem.meshReceive(kv as any, AGENT_ID, {
+			memories: [
+				meshMem('mem-1', 'newer content wins', t2) as any,   // 更新 → 覆盖
+				meshMem('mem-1', 'stale content', t0) as any,      // 更旧 → 跳过（LWW 逐条评估）
+				meshMem('mem-2', 'brand new memory', t0) as any,   // 新条目 → 插入
+			] as any,
+			relations: [{ sourceId: 'mem-1', targetId: 'mem-2', type: 'relates', createdAt: t0 }],
+		});
+		assertEq(r.accepted, 3, '2 memory writes + 1 relation');
+		const m1 = await kv.get<any>(KV.memories(AGENT_ID), 'mem-1');
+		assertEq(m1.content, 'newer content wins', 'LWW: newer wins');
+		const m2 = await kv.get<any>(KV.memories(AGENT_ID), 'mem-2');
+		assert(m2 !== null, 'new memory inserted');
+		// 关系首写胜（再收同三元组不重复计数）
+		const r2 = await rem.meshReceive(kv as any, AGENT_ID, {
+			relations: [{ sourceId: 'mem-1', targetId: 'mem-2', type: 'relates', createdAt: t2 }],
+		});
+		assertEq(r2.accepted, 0, 'relation first-write-wins (dup skipped)');
+	});
+
+	await test('meshSync: 双实例端到端（delta push + pull + 水位线）', async (kv) => {
+		// 时间戳用相对墙钟的过去时间（固定未来时间会让「水位线推进后无 delta」断言失效）
+		const now = Date.now();
+		const t0 = new Date(now - 2 * 3600_000).toISOString();        // 2h 前（水位线下）
+		const t1 = new Date(now - 30 * 60_000).toISOString();          // 30min 前（水位线上）
+		const watermark = new Date(now - 60 * 60_000).toISOString();   // 初始水位线 1h 前
+		// kvB 模拟远端实例（独立 KV）
+		const kvB = new MockStateKV();
+		await kvB.set(KV.memories(AGENT_ID), 'remote-1', meshMem('remote-1', 'memory from remote instance', t1));
+		// 本端：1 条新于水位线（推）、1 条旧于水位线（不推）
+		const peer = await rem.meshJoin(kv as any, AGENT_ID, 'peer-b', 'http://127.0.0.1:3111', ['memories']);
+		await kv.set(KV.state(AGENT_ID), `mesh:${peer.id}`, { ...peer, lastSyncAt: watermark });
+		await kv.set(KV.memories(AGENT_ID), 'local-new', meshMem('local-new', 'local memory after watermark', t1));
+		await kv.set(KV.memories(AGENT_ID), 'local-old', meshMem('local-old', 'local memory before watermark', t0));
+
+		const envBackup = { ...process.env };
+		const fetchBackup = globalThis.fetch;
+		process.env['AGENTMEMORY_SECRET'] = 'mesh-test-secret';
+		process.env['AGENTMEMORY_MESH_ALLOW_LOCAL'] = 'true';
+		globalThis.fetch = (async (url: any, init: any) => {
+			const u = String(url);
+			if (u.includes('/mesh/receive')) {
+				const auth = init?.headers?.['Authorization'];
+				if (auth !== 'Bearer mesh-test-secret') { return { ok: false, status: 401, json: async () => ({}) } as any; }
+				const r = await rem.meshReceive(kvB as any, AGENT_ID, JSON.parse(init.body));
+				return { ok: true, status: 200, json: async () => ({ accepted: r.accepted }) } as any;
+			}
+			if (u.includes('/mesh/export')) {
+				const payload = await rem.collectSyncData(kvB as any, AGENT_ID, ['memories'], undefined);
+				return { ok: true, status: 200, json: async () => payload } as any;
+			}
+			throw new Error(`unexpected fetch: ${u}`);
+		}) as any;
+		try {
+			const r1 = await rem.meshSync(kv as any, AGENT_ID, { peerId: peer.id });
+			assert(r1.success, 'sync succeeds');
+			const res = r1.results![0];
+			assertEq(res.pushed, 1, 'only post-watermark memory pushed');
+			assertEq(res.pulled, 1, 'remote memory pulled');
+			assertEq(res.errors.length, 0, 'no errors');
+			// 远端收到 delta 条目；本端合并远端条目
+			assert((await kvB.get<any>(KV.memories(AGENT_ID), 'local-new')) !== null, 'remote received local-new');
+			assert((await kvB.get<any>(KV.memories(AGENT_ID), 'local-old')) === null, 'pre-watermark NOT pushed');
+			assert((await kv.get<any>(KV.memories(AGENT_ID), 'remote-1')) !== null, 'local merged remote-1');
+			// 水位线推进后第二次同步无 delta
+			const r2 = await rem.meshSync(kv as any, AGENT_ID, { peerId: peer.id });
+			assertEq(r2.results![0].pushed, 0, 'second sync: no new delta pushed');
+			assertEq(r2.results![0].pulled, 0, 'second sync: nothing new pulled');
+			const peerAfter = await kv.get<any>(KV.state(AGENT_ID), `mesh:${peer.id}`);
+			assert(peerAfter.lastSyncAt !== undefined && peerAfter.status === 'online', 'peer watermark advanced + status online');
+		} finally {
+			globalThis.fetch = fetchBackup;
+			for (const k of Object.keys(process.env)) { if (!(k in envBackup)) { delete process.env[k]; } }
+			Object.assign(process.env, envBackup);
+		}
+	});
+
+	await test('meshSync: 鉴权与 SSRF 防护', async (kv) => {
+		// 无 AGENTMEMORY_SECRET → 拒绝
+		const prevSecret = process.env['AGENTMEMORY_SECRET'];
+		delete process.env['AGENTMEMORY_SECRET'];
+		try {
+			const r = await rem.meshSync(kv as any, AGENT_ID);
+			assertEq(r.success, false, 'sync rejected without secret');
+			assert(r.error!.includes('AGENTMEMORY_SECRET'), 'error mentions secret');
+		} finally {
+			if (prevSecret !== undefined) { process.env['AGENTMEMORY_SECRET'] = prevSecret; }
+		}
+		// SSRF：默认阻断本机；AGENTMEMORY_MESH_ALLOW_LOCAL=true 放行
+		const prevLocal = process.env['AGENTMEMORY_MESH_ALLOW_LOCAL'];
+		delete process.env['AGENTMEMORY_MESH_ALLOW_LOCAL'];
+		try {
+			assertEq(await rem.isAllowedMeshUrl('http://127.0.0.1:3111'), false, 'localhost blocked by default');
+			assertEq(await rem.isAllowedMeshUrl('http://192.168.1.10:3111'), false, 'private IP blocked by default');
+			assertEq(await rem.isAllowedMeshUrl('ftp://example.com'), false, 'non-http protocol blocked');
+			process.env['AGENTMEMORY_MESH_ALLOW_LOCAL'] = 'true';
+			assertEq(await rem.isAllowedMeshUrl('http://127.0.0.1:3111'), true, 'localhost allowed with opt-in');
+		} finally {
+			if (prevLocal === undefined) { delete process.env['AGENTMEMORY_MESH_ALLOW_LOCAL']; } else { process.env['AGENTMEMORY_MESH_ALLOW_LOCAL'] = prevLocal; }
+		}
 	});
 
 	// 13. getStats
@@ -619,18 +1155,44 @@ export async function runAmV2Tests(): Promise<void> {
 		assertEq(all[1].sessionId, 'sess-old', 'oldest second');
 	});
 
-	// ─── 20. 跨记忆类型：写入多类型 → loadContext 包含全部 ─────────────
+	// ─── 19b. Session 记录列表（Dashboard/memoryDetail 会话面板用）─────
+	await test('sessionList: observe 注册会话并按 updatedAt desc 排序', async (kv) => {
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-A', hookType: 'prompt_submit', timestamp: new Date().toISOString(), data: { userPrompt: 'first task' } });
+		await new Promise(r => setTimeout(r, 10));
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-B', hookType: 'prompt_submit', timestamp: new Date().toISOString(), data: { userPrompt: 'second task' } });
+		const all = await fn.sessionList(kv as any, AGENT_ID);
+		assertEq(all.length, 2, '2 session records');
+		assertEq(all[0].id, 'sess-B', 'newest (latest updatedAt) first');
+		assertEq(all[0].firstPrompt, 'second task', 'firstPrompt captured');
+		assertEq(all[0].observationCount, 1, 'observationCount tracked');
+	});
+
+	await test('sessionList: observationCount 随观察递增', async (kv) => {
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-C', hookType: 'prompt_submit', timestamp: new Date().toISOString(), data: {} });
+		await fn.observe(kv as any, AGENT_ID, { sessionId: 'sess-C', hookType: 'post_tool_use', timestamp: new Date().toISOString(), data: {} });
+		const all = await fn.sessionList(kv as any, AGENT_ID);
+		assertEq(all.length, 1, 'single session record');
+		assertEq(all[0].observationCount, 2, 'observationCount=2');
+	});
+
+	// ─── 20. 跨记忆类型：策展块注入 + core/memory 仅进返回值 ─────────────
+	// 2026-07-25 对齐 mem::context：lessons/summaries 进注入文本；
+	// core/原始 memory 不进注入文本（召回走工具），仅在 shortTerm/longTerm 返回中
 	await test('loadContext: includes Core + Memory + Lessons + Summary', async (kv) => {
 		await fn.coreAdd(kv as any, AGENT_ID, 'Critical project rule', 10, true);
 		await fn.remember(kv as any, AGENT_ID, 'React component architecture decision', 'architecture');
 		await fn.lessonSave(kv as any, AGENT_ID, 'Always run tests before committing code', 'testing', 0.9);
 		await fn.sessionSummarySave(kv as any, AGENT_ID, 'sess-1', AGENT_ID, 'Setup CI pipeline', 'Configured GitHub Actions');
 		const ctx = await fn.loadContextFn(kv as any, AGENT_ID, 'session-1', undefined, 5000);
-		assert(ctx.systemPrompt.includes('Critical project rule'), 'core memory in context');
-		assert(ctx.systemPrompt.includes('React component architecture'), 'long-term memory in context');
-		assert(ctx.systemPrompt.includes('Lessons Learned'), 'lessons in context');
-		assert(ctx.systemPrompt.includes('Always run tests'), 'lesson content in context');
-		assert(ctx.systemPrompt.includes('Setup CI pipeline'), 'session summary in context');
+		// 策展块进注入文本
+		assert(ctx.systemPrompt.includes('Lessons Learned'), 'lessons in injected context');
+		assert(ctx.systemPrompt.includes('Always run tests'), 'lesson content in injected context');
+		assert(ctx.systemPrompt.includes('Setup CI pipeline'), 'session summary in injected context');
+		// core/memory 不进注入文本，但返回值包含
+		assert(!ctx.systemPrompt.includes('Critical project rule'), 'core NOT injected');
+		assert(!ctx.systemPrompt.includes('React component architecture'), 'raw memory NOT injected');
+		assert(ctx.shortTermMemories.some(m => m.content.includes('Critical project rule')), 'core in shortTermMemories return');
+		assert(ctx.longTermMemories.some(m => m.content.includes('React component architecture')), 'memory in longTermMemories return');
 	});
 
 	// ─── 21. 沉淀：episodic → semantic consolidation ──────────────────
@@ -672,21 +1234,24 @@ export async function runAmV2Tests(): Promise<void> {
 		assertEq(mem1!.version, 1, 'old version=1');
 	});
 
-	// ─── 24. Memory 类型路由：不同 type 存储到正确 scope ───────────────
-	await test('writeMemory: type routing to correct scopes', async (kv) => {
+	// ─── 24. Memory 类型路由：对齐原版（mem::remember→memories + mem::core-add→core）───
+	// 原版 mem::remember 只写长期层 mem:memories（原生类型）；working 走 mem::core-add→core；
+	// semantic/procedural 由固化管线（consolidateSemantic/Procedural）产出，不经 writeMemory。
+	await test('writeMemory: type routing 对齐原版 mem::remember/core-add', async (kv) => {
 		// working → core-memory
 		await fn.writeMemory(kv as any, AGENT_ID, { type: 'working', content: 'Working note', metadata: { pinned: true } });
-		// episodic → memories
-		await fn.writeMemory(kv as any, AGENT_ID, { type: 'episodic', content: 'React state management pattern', metadata: { concepts: ['react'] } });
-		// semantic → memories（保持 agentmemory 原生类型，不做路由映射）
-		await fn.writeMemory(kv as any, AGENT_ID, { type: 'semantic', content: 'Components are reusable UI fragments', metadata: {} });
+		// 原生类型 → KV.memories，type 原样落库（无坍缩）
+		await fn.writeMemory(kv as any, AGENT_ID, { type: 'pattern', content: 'React state management pattern', metadata: { concepts: ['react'] } });
+		await fn.writeMemory(kv as any, AGENT_ID, { type: 'fact', content: 'production port is 443', metadata: {} });
 
 		const core = await kv.list<CoreMemoryEntry>(KV.coreMemory(AGENT_ID));
 		const memories = await kv.list<Memory>(KV.memories(AGENT_ID));
 
 		assertEq(core.length, 1, '1 core entry (working)');
 		assertEq(core[0].pinned, true, 'working → pinned core');
-		assertEq(memories.length, 2, '2 memories (episodic + semantic in memories scope)');
+		assertEq(memories.length, 2, '2 memories (pattern + fact, native types)');
+		assert(memories.some(m => m.type === 'pattern'), 'pattern 原样落库（不坍缩为 fact）');
+		assert(memories.some(m => m.type === 'fact'), 'fact 落库');
 	});
 
 	// ─── 25. TTL 过期：不同记忆类型的 TTL 行为 ─────────────────────────
@@ -1258,11 +1823,12 @@ export async function runAmV2Tests(): Promise<void> {
 	// skill/audit/commit stubs 均为安全默认值（零值），editor pane ?. 守卫不会报错
 
 	// ─── 58. AgentLoop 兼容（agentOSService + builtinToolProvider）─────
+	// 2026-07-25 对齐 mem::context：无策展块时 systemPrompt 为空，原始记忆仅进返回值
 	await test('loadContext: returns structured context', async (kv) => {
 		await fn.remember(kv as any, AGENT_ID, 'Memory for context', 'fact');
 		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-58', AGENT_ID, 5000);
-		assert(!!ctx.systemPrompt, 'has systemPrompt');
-		assert(ctx.longTermMemories.length >= 0, 'has longTermMemories');
+		assert(ctx.systemPrompt === '', 'systemPrompt empty without curated blocks');
+		assert(ctx.longTermMemories.length === 1, 'memory in longTermMemories return');
 	});
 
 	await test('writeMemory + searchMemory roundtrip', async (kv) => {

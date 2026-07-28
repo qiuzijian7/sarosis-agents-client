@@ -34,6 +34,7 @@ import {
 } from '../../common/agentRunState.js';
 import { AgentGraph, createInitialGraphRunState } from '../../common/agentGraph.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import type { BudgetSnapshot } from '../../common/iterationBudget.js';
 
 function reduceAll(state: AgentRunState, actions: AgentAction[]): AgentRunState {
 	return actions.reduce(reduceRunState, state);
@@ -413,6 +414,43 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 			assert.deepStrictEqual(restored.messages, [{ role: 'user', content: 'hi' }]);
 		});
 
+		test('snapshot round-trips WorkMode approval and execution state', () => {
+			let state = createInitialRunState({
+				workState: {
+					mode: 'plan',
+					planFilePath: '/plans/refactor.md',
+					approvalStatus: 'pending',
+					executionStatus: 'idle',
+				},
+			});
+			state = reduceRunState(state, { type: 'WORK_EVENT', event: { type: 'APPROVE_PLAN' } });
+			state = reduceRunState(state, { type: 'WORK_EVENT', event: { type: 'START_EXECUTION' } });
+			const restored = restoreRunState(snapshotRunState(state));
+			assert.strictEqual(restored.work.mode, 'work');
+			assert.strictEqual(restored.work.planFilePath, '/plans/refactor.md');
+			assert.strictEqual(restored.work.approvalStatus, 'approved');
+			assert.strictEqual(restored.work.executionStatus, 'running');
+		});
+
+		test('SET_PARADIGM persists and round-trips through snapshot (R3)', () => {
+			let state = createInitialRunState({});
+			state = reduceRunState(state, { type: 'SET_PARADIGM', paradigm: 'mimo' });
+			assert.strictEqual(state.paradigm, 'mimo');
+			const restored = restoreRunState(snapshotRunState(state));
+			assert.strictEqual(restored.paradigm, 'mimo');
+		});
+
+		test('createInitialRunState seeds paradigm from request', () => {
+			const s = createInitialRunState({ paradigm: 'delegation' });
+			assert.strictEqual(s.paradigm, 'delegation');
+		});
+
+		test('normalizeRunState drops unknown paradigm (resume fallback)', () => {
+			const r = restoreRunState({ paradigm: 'not-a-real-paradigm' } as any);
+			assert.strictEqual(r.paradigm, undefined);
+		});
+
+
 		test('restoreRunState never throws on malformed input (undefined / {})', () => {
 			assert.doesNotThrow(() => restoreRunState(undefined));
 			const r1 = restoreRunState(undefined);
@@ -498,5 +536,93 @@ suite('AgentRunState - reducer (reducer 化 Step 1)', () => {
 			assert.strictEqual(plan.startNodeId, g.entryNodeId);
 			assert.ok(plan.runState.graph);
 		});
+	});
+});
+
+// ─── V3 中断恢复字段 (budget / preExplore / loopMessages) ─────────
+
+suite('AgentRunState — V3 中断恢复字段', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('createInitialRunState V3 默认值', () => {
+		const state = createInitialRunState({ messages: [{ role: 'system', content: 'S' }] });
+		assert.strictEqual(state.budgetSnapshot, undefined);
+		assert.strictEqual(state.preExploreDone, false);
+		assert.strictEqual(state.preExploreResult, undefined);
+		assert.strictEqual(state.loopMessages, undefined);
+	});
+
+	test('SAVE_BUDGET 保存预算快照', () => {
+		let state = createInitialRunState({ messages: [] });
+		const snap: BudgetSnapshot = { maxIterations: 90, remaining: 85, consumed: 5, graceCall: true, graceUsed: false };
+		state = reduceRunState(state, { type: 'SAVE_BUDGET', snapshot: snap });
+		assert.ok(state.budgetSnapshot);
+		assert.strictEqual(state.budgetSnapshot!.maxIterations, 90);
+		assert.strictEqual(state.budgetSnapshot!.consumed, 5);
+		assert.strictEqual(state.budgetSnapshot!.graceCall, true);
+	});
+
+	test('SAVE_BUDGET 覆盖前一次快照', () => {
+		let state = createInitialRunState({ messages: [] });
+		const snap1: BudgetSnapshot = { maxIterations: 50, remaining: 50, consumed: 0, graceCall: false, graceUsed: false };
+		state = reduceRunState(state, { type: 'SAVE_BUDGET', snapshot: snap1 });
+		const snap2: BudgetSnapshot = { maxIterations: 50, remaining: 20, consumed: 30, graceCall: true, graceUsed: true };
+		state = reduceRunState(state, { type: 'SAVE_BUDGET', snapshot: snap2 });
+		assert.strictEqual(state.budgetSnapshot!.consumed, 30);
+	});
+
+	test('SET_PRE_EXPLORE done=true + result', () => {
+		const state = createInitialRunState({ messages: [] });
+		const result = reduceRunState(state, { type: 'SET_PRE_EXPLORE', done: true, result: 'Found files' });
+		assert.strictEqual(result.preExploreDone, true);
+		assert.strictEqual(result.preExploreResult, 'Found files');
+	});
+
+	test('SET_PRE_EXPLORE done=false 未探索', () => {
+		const state = createInitialRunState({ messages: [] });
+		const result = reduceRunState(state, { type: 'SET_PRE_EXPLORE', done: false });
+		assert.strictEqual(result.preExploreDone, false);
+	});
+
+	test('SET_LOOP_MESSAGES 保存副本', () => {
+		const state = createInitialRunState({ messages: [] });
+		const msgs = [{ role: 'system', content: 'S' }, { role: 'user', content: 'Hi' }];
+		const result = reduceRunState(state, { type: 'SET_LOOP_MESSAGES', messages: msgs });
+		assert.strictEqual(result.loopMessages!.length, 2);
+		assert.strictEqual(result.loopMessages![1].content, 'Hi');
+	});
+
+	test('snapshot/restore V3 往返正确', () => {
+		let state = createInitialRunState({ messages: [{ role: 'user', content: 'Hi' }] });
+		state = reduceRunState(state, { type: 'SET_PRE_EXPLORE', done: true, result: 'OK' });
+		state = reduceRunState(state, { type: 'SAVE_BUDGET', snapshot: { maxIterations: 30, remaining: 28, consumed: 2, graceCall: false, graceUsed: false } });
+		state = reduceRunState(state, { type: 'SET_LOOP_MESSAGES', messages: [{ role: 'user', content: 'Hi' }] });
+
+		const snap = snapshotRunState(state);
+		assert.strictEqual(snap.version, 3);
+
+		const restored = restoreRunState(snap);
+		assert.strictEqual(restored.preExploreDone, true);
+		assert.strictEqual(restored.preExploreResult, 'OK');
+		assert.ok(restored.budgetSnapshot);
+		assert.strictEqual(restored.budgetSnapshot!.maxIterations, 30);
+		assert.strictEqual(restored.loopMessages!.length, 1);
+	});
+
+	test('restore V2 快照兼容 V3 字段缺失', () => {
+		const v2Snap = {
+			version: 2, state: {
+				messages: [{ role: 'user', content: 'Old' }], iteration: 5,
+				phase: 'idle', invalidToolNameCount: 0, reflectCount: 0, hasModifiedFiles: false,
+				toolCallHistory: [], startedToolIds: [], endedToolIds: [],
+				lastRealPromptTokens: 100, reducerMode: 'reducer',
+				work: { mode: 'work', approvalStatus: 'none', executionStatus: 'idle' },
+			},
+		};
+		const restored = restoreRunState(v2Snap as any);
+		assert.strictEqual(restored.iteration, 5);
+		assert.strictEqual(restored.preExploreDone, false);
+		assert.strictEqual(restored.budgetSnapshot, undefined);
 	});
 });

@@ -6,10 +6,13 @@
 /**
  * Codebase Graph Bootstrap — 工作区打开后自动加载/索引代码图谱，用户无感知。
  *
- * 1. 工作区打开时检查是否已有 graph.db.zst
- * 2. 有 → 直接加载（毫秒级）+ 启动文件监听
- * 3. 无 → 延迟 5s 后自动索引（后台，不阻塞 UI）
- * 4. 索引完成后启动文件监听 → 文件变更时自动增量索引
+ * 多 folder 工作区（如 S1Game + UE5EA）：每个 folder 各自持久化 graph.db.zst，
+ * 用唯一项目名（folder 目录名）区分；启动时依次合并进同一内存 store（跨 folder 检索）。
+ *
+ * 1. 工作区打开时遍历所有 folder，检查各自是否已有 graph.db.zst
+ * 2. 有 → 合并加载（loadGraphMerge，毫秒级）
+ * 3. 无 → 延迟 5s 后自动索引该 folder（后台，不阻塞 UI）
+ * 4. 全部加载/索引完成后启动文件监听 → 文件变更时自动增量索引
  */
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -17,7 +20,6 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkspaceContextService, IWorkspaceFoldersChangeEvent } from '../../../../platform/workspace/common/workspace.js';
 import { ICodebaseGraphService, IIndexConfig } from './codebaseGraphService.js';
-import { ICodebaseGraphWatcher, CodebaseGraphWatcher } from './codebaseGraphWatcher.js';
 import { URI } from '../../../../base/common/uri.js';
 
 const LOG_TAG = '[CodebaseGraph]';
@@ -27,13 +29,15 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 	static readonly ID = 'workbench.contrib.codebaseGraphBootstrap';
 
 	private _autoIndexTimer: any;
-	private _hasIndexed = false;
+	/** 已加载/已索引的 folder（归一化 fsPath） */
+	private readonly _readyFolders = new Set<string>();
+	/** 待自动索引的 folder（归一化 fsPath → 原始 fsPath） */
+	private readonly _pendingIndex = new Map<string, string>();
 
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 		@ILogService private readonly _logService: ILogService,
-		@ICodebaseGraphWatcher private readonly _graphWatcher: CodebaseGraphWatcher,
 	) {
 		super();
 
@@ -45,32 +49,37 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		this._register(this._graphService.onDidIndexComplete(result => {
 			if (result.success) {
 				this._logService.info(LOG_TAG, `Auto-index complete: ${result.message}`);
-				this._startWatcher();
+				// 启动文件监听（增量重索引触发源，P2-#8）
+				this._graphService.startWatching(this._primaryFolder());
 			} else {
 				this._logService.warn(LOG_TAG, `Auto-index failed: ${result.message}`);
-			}
-		}));
-
-		// Listen for file changes from watcher
-		this._register(this._graphWatcher.onDidChange(e => {
-			if (e.type === 'git-head') {
-				this._logService.info(LOG_TAG, `Git HEAD changed, scheduling re-index...`);
-				this._scheduleAutoIndex();
-			} else if (e.type === 'files' && (e.added?.length || e.modified?.length || e.deleted?.length)) {
-				this._logService.info(LOG_TAG, `Files changed, triggering incremental index...`);
-				this._autoIndex();
 			}
 		}));
 
 		// Listen for workspace folder changes
 		this._register(this._workspaceService.onDidChangeWorkspaceFolders((e: IWorkspaceFoldersChangeEvent) => {
 			if (e.added.length > 0) {
-				this._scheduleAutoIndex();
+				this._bootstrap().catch(err => this._logService.error(LOG_TAG, 'Re-bootstrap failed:', err));
 			}
 		}));
 
 		// Start bootstrap
 		this._bootstrap().catch(err => this._logService.error(LOG_TAG, 'Bootstrap failed:', err));
+	}
+
+	private _normalize(p: string): string {
+		return p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+	}
+
+	private _basename(p: string): string {
+		const norm = p.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+		const idx = norm.lastIndexOf('/');
+		return idx >= 0 ? norm.substring(idx + 1) : norm;
+	}
+
+	private _primaryFolder(): string {
+		const folders = this._workspaceService.getWorkspace().folders;
+		return folders.length > 0 ? folders[0].uri.fsPath : '';
 	}
 
 	private async _bootstrap(): Promise<void> {
@@ -80,27 +89,43 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			return;
 		}
 
-		const wsUri = folders[0].uri;
-		const graphFileUri = URI.joinPath(wsUri, '.codebase-memory', 'graph.db.zst');
+		this._logService.info(LOG_TAG, `Bootstrapping ${folders.length} workspace folder(s): ${folders.map(f => f.uri.fsPath).join(', ')}`);
 
-		// 1. Try to load existing graph
-		try {
-			const loaded = await this._graphService.loadGraph(graphFileUri.fsPath);
-			if (loaded) {
-				this._logService.info(LOG_TAG, 'Existing graph loaded successfully.');
-				this._hasIndexed = true;
-				return;
-			}
-		} catch { /* file doesn't exist yet */ }
+		// 收集需要合并加载的 folder（不含已 ready 的）
+		const toLoad = folders.filter(f => !this._readyFolders.has(this._normalize(f.uri.fsPath)));
 
-		// 2. No existing graph — schedule auto-index
-		this._logService.info(LOG_TAG, 'No existing graph found, scheduling auto-index...');
-		this._scheduleAutoIndex();
+		for (let i = 0; i < toLoad.length; i++) {
+			const folder = toLoad[i];
+			const key = this._normalize(folder.uri.fsPath);
+			const project = this._basename(folder.uri.fsPath) || '_default';
+			const graphFileUri = URI.joinPath(folder.uri, '.codebase-memory', 'graph.db.zst');
+
+			try {
+				// 合并加载；BM25 仅在最后一个 folder 加载后重建一次（避免重复重建开销）
+				const isLast = i === toLoad.length - 1;
+				const loaded = await this._graphService.loadGraphMerge(graphFileUri.fsPath, project, isLast);
+				if (loaded) {
+					this._logService.info(LOG_TAG, `Loaded existing graph for folder "${project}".`);
+					this._readyFolders.add(key);
+					this._pendingIndex.delete(key);
+					// 多 folder：每个已加载 folder 单独启动监听（增量索引，互不覆盖）
+					this._graphService.startWatching(folder.uri.fsPath);
+					continue;
+				}
+			} catch { /* file doesn't exist yet */ }
+
+			// 无既有图谱 → 加入待索引队列
+			this._logService.info(LOG_TAG, `No existing graph for folder "${project}", scheduling auto-index...`);
+			this._pendingIndex.set(key, folder.uri.fsPath);
+		}
+
+		if (this._pendingIndex.size > 0) {
+			this._scheduleAutoIndex();
+		}
 	}
 
 	private _scheduleAutoIndex(): void {
-		if (this._hasIndexed) { return; }
-
+		if (this._pendingIndex.size === 0) { return; }
 		clearTimeout(this._autoIndexTimer);
 		this._autoIndexTimer = setTimeout(() => {
 			this._autoIndex().catch(err =>
@@ -109,30 +134,35 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 	}
 
 	private async _autoIndex(): Promise<void> {
-		const folders = this._workspaceService.getWorkspace().folders;
-		if (folders.length === 0) { return; }
-
-		const wsPath = folders[0].uri.fsPath;
-		const config: IIndexConfig = {
-			mode: 'fast',
-			excludeDirs: [], // Use defaults
-		};
-
-		this._logService.info(LOG_TAG, `Starting auto-index: ${wsPath}`);
-		const result = await this._graphService.indexWorkspace(wsPath, config);
-		if (result.success) {
-			this._hasIndexed = true;
-			this._logService.info(LOG_TAG, `Auto-index completed: ${result.message}`);
+		// [TRACE] codebaseGraphBootstrap._autoIndex 入口
+		this._logService.info(LOG_TAG, `[TRACE] codebaseGraphBootstrap._autoIndex triggered: pending=${this._pendingIndex.size} folders`);
+		// 逐 folder 索引（每个 folder 用其目录名作为唯一项目名，避免多 folder 覆盖）
+		const pending = [...this._pendingIndex.entries()];
+		for (const [key, rootPath] of pending) {
+			const project = this._basename(rootPath) || '_default';
+			const config: IIndexConfig = {
+				mode: 'fast',
+				excludeDirs: [], // Use defaults
+				projectName: project,
+			};
+			this._logService.info(LOG_TAG, `Starting auto-index: ${rootPath} (project=${project})`);
+			try {
+				const result = await this._graphService.indexWorkspace(rootPath, config);
+				if (result.success) {
+					this._readyFolders.add(key);
+					this._pendingIndex.delete(key);
+					// 多 folder：每个已索引 folder 单独启动监听（增量索引，互不覆盖）
+					this._graphService.startWatching(rootPath);
+					this._logService.info(LOG_TAG, `Auto-index completed for "${project}": ${result.message}`);
+				}
+			} catch (err: any) {
+				this._logService.warn(LOG_TAG, `Auto-index failed for "${project}": ${err?.message || err}`);
+			}
 		}
 	}
-
-	private _startWatcher(): void {
-		const folders = this._workspaceService.getWorkspace().folders;
-		if (folders.length === 0) { return; }
-		// Watcher will be started by the service — here we just log
-		this._logService.info(LOG_TAG, 'File watcher will detect changes for incremental indexing.');
-	}
 }
+
+
 
 registerWorkbenchContribution2(
 	CodebaseGraphBootstrapContribution.ID,

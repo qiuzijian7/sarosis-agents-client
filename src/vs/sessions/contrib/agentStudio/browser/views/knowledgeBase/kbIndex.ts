@@ -134,6 +134,7 @@ export class KbFullTextIndex {
 		let stat;
 		try { stat = await this.fileService.resolve(uri); } catch { return; }
 		if (!stat.children) { return; }
+		let _n = 0;
 		for (const c of stat.children) {
 			if (c.isDirectory) {
 				await this._reconcileWalk(c.resource, section, seen);
@@ -169,6 +170,8 @@ export class KbFullTextIndex {
 			} catch {
 				// ignore single-file read failure
 			}
+			// 周期性让出事件循环，避免大库冷构建冻结 UI
+			if ((++_n & 255) === 0) { await new Promise<void>(r => setTimeout(r, 0)); }
 		}
 	}
 
@@ -373,22 +376,30 @@ export class KbFullTextIndex {
 	// 标签索引
 	// -----------------------------------------------------------------------
 
-	/** 从 Markdown 文本中提取 #标签#（对齐 SiYuan Lute SetTag 语义）。 */
+	/** 从 Markdown 文本中提取 #标签#（对齐 SiYuan Lute SetTag 语义）。
+	 *  实现：单次扫描 O(L) 增量构建 cleanText，避免在循环内对整串做
+	 *  slice + repeat + concat 造成的 O(N·L) 时间与 O(N·L) 临时字符串分配——
+	 *  对大笔记（几百 KB+ 多标签）会迅速堆涨乃至撞 V8 4GB 上限。*/
 	private extractTags(text: string): { tags: string[]; cleanText: string } {
 		const tags: string[] = [];
 		// 匹配 #标签# 格式（支持中文标签）
 		const tagRe = /#[^#\s\u2000-\u206F]+#/g;
-		let cleanText = text;
+		const parts: string[] = [];
+		let lastEnd = 0;
 		let m: RegExpExecArray | null;
-		while ((m = tagRe.exec(cleanText)) !== null) {
-			const tag = m[0].slice(1, -1).trim(); // 去掉前后的 #
-			if (tag.length > 0 && tag.length < 64) {
-				tags.push(tag);
-				// 从清洗文本中移除标签（避免 token 流中混入 # 符号）
-				cleanText = cleanText.slice(0, m.index) + ' '.repeat(m[0].length) + cleanText.slice(m.index + m[0].length);
-			}
+		while ((m = tagRe.exec(text)) !== null) {
+			const raw = m[0];
+			const tag = raw.slice(1, -1).trim();
+			const valid = tag.length > 0 && tag.length < 64;
+			if (valid) { tags.push(tag); }
+			// 增量构建：前段原文 + 匹配段（有效则替换为等长空格，无效则保留原文）
+			if (m.index > lastEnd) { parts.push(text.slice(lastEnd, m.index)); }
+			parts.push(valid ? ' '.repeat(raw.length) : raw);
+			lastEnd = m.index + raw.length;
 		}
-		return { tags, cleanText };
+		if (lastEnd === 0) { return { tags, cleanText: text }; }
+		if (lastEnd < text.length) { parts.push(text.slice(lastEnd)); }
+		return { tags, cleanText: parts.join('') };
 	}
 
 	/** 按标签搜索文档（精确匹配）。 */
@@ -461,6 +472,51 @@ export class KbFullTextIndex {
 	}
 
 	/**
+	 * 仅 stat 的元数据遍历（不读取文件内容），返回每个可索引文档的
+	 * {uri, name, section, mtime, size}。用于：(1) 判定大库（文档数超阈值）；
+	 * (2) 驱动 SQLite 增量同步（只重读变更文件），避免对 28000 文件的大库
+	 * 在主线程做全量读盘 + 内存倒排索引构建导致 UI 冻结数十分钟。
+	 * 遍历过程中周期性让出事件循环，保持 UI 响应。
+	 */
+	async collectDocMetas(roots: IKbIndexRoot[]): Promise<{ uri: URI; name: string; section: KbSection; mtime: number; size: number }[]> {
+		const out: { uri: URI; name: string; section: KbSection; mtime: number; size: number }[] = [];
+		let count = 0;
+		for (const root of roots) {
+			await this._collectMetaWalk(root.uri, root.section, out, () => {
+				if ((++count & 511) === 0) {
+					return new Promise<void>(r => setTimeout(r, 0));
+				}
+				return undefined;
+			});
+		}
+		return out;
+	}
+
+	private async _collectMetaWalk(
+		uri: URI,
+		section: KbSection,
+		out: { uri: URI; name: string; section: KbSection; mtime: number; size: number }[],
+		shouldYield?: () => Promise<void> | undefined,
+	): Promise<void> {
+		let stat;
+		try { stat = await this.fileService.resolve(uri); } catch { return; }
+		if (!stat.children) { return; }
+		for (const c of stat.children) {
+			if (c.isDirectory) {
+				await this._collectMetaWalk(c.resource, section, out, shouldYield);
+			} else {
+				const ext = c.resource.path.split('.').pop()?.toLowerCase();
+				if (!ext || !TEXT_EXTS.has(ext)) { continue; }
+				const size = c.size ?? 0;
+				if (size > 2 * 1024 * 1024) { continue; }
+				out.push({ uri: c.resource, name: c.name, section, mtime: c.mtime ?? 0, size });
+			}
+			const y = shouldYield?.();
+			if (y) { await y; }
+		}
+	}
+
+	/**
 	 * Serialize the index to JSON. Stores per-doc metadata + text + tags (not the
 	 * postings table — that is cheaply re-derived by re-tokenizing on load, which
 	 * keeps the cache roughly the size of the vault text instead of ~2x).
@@ -481,7 +537,7 @@ export class KbFullTextIndex {
 	}
 
 	/** Restore the index from serialized JSON. Returns false on malformed input. */
-	deserialize(json: string): boolean {
+	async deserialize(json: string): Promise<boolean> {
 		try {
 			const data = JSON.parse(json);
 			if (!data || data.v !== 1 || !Array.isArray(data.docs)) { return false; }
@@ -489,40 +545,43 @@ export class KbFullTextIndex {
 			this._postings.clear();
 			this._tagIndex.clear();
 			this._allTags.clear();
-			for (const d of data.docs) {
-				const uri = URI.parse(d.uri);
-				const doc: IIndexedDoc = {
-					uri,
-					name: d.name,
-					path: d.path,
-					section: d.section as KbSection,
-					mtime: d.mtime ?? 0,
-					size: d.size ?? 0,
-					length: d.length ?? 0,
-					tags: Array.isArray(d.tags) ? d.tags : [],
-					text: typeof d.text === 'string' ? d.text : '',
-				};
-				const docId = uri.toString();
-				this._docs.set(docId, doc);
-				// rebuild postings by re-tokenizing (CPU-only, no file I/O)
-				const { cleanText } = this.extractTags(doc.text);
-				const toks = this.tokenize(doc.name.toLowerCase() + ' ' + cleanText);
-				const tf = new Map<string, number>();
-				for (const t of toks) { tf.set(t, (tf.get(t) ?? 0) + 1); }
-				for (const [term, f] of tf) {
-					let pm = this._postings.get(term);
-					if (!pm) { pm = new Map(); this._postings.set(term, pm); }
-					pm.set(docId, f);
-				}
-				for (const tag of doc.tags) {
-					const normalized = tag.toLowerCase().trim();
-					if (!normalized) { continue; }
-					this._allTags.add(normalized);
-					let set = this._tagIndex.get(normalized);
-					if (!set) { set = new Set(); this._tagIndex.set(normalized, set); }
-					set.add(docId);
-				}
+		let _n = 0;
+		for (const d of data.docs) {
+			const uri = URI.parse(d.uri);
+			const doc: IIndexedDoc = {
+				uri,
+				name: d.name,
+				path: d.path,
+				section: d.section as KbSection,
+				mtime: d.mtime ?? 0,
+				size: d.size ?? 0,
+				length: d.length ?? 0,
+				tags: Array.isArray(d.tags) ? d.tags : [],
+				text: typeof d.text === 'string' ? d.text : '',
+			};
+			const docId = uri.toString();
+			this._docs.set(docId, doc);
+			// rebuild postings by re-tokenizing (CPU-only, no file I/O)
+			const { cleanText } = this.extractTags(doc.text);
+			const toks = this.tokenize(doc.name.toLowerCase() + ' ' + cleanText);
+			const tf = new Map<string, number>();
+			for (const t of toks) { tf.set(t, (tf.get(t) ?? 0) + 1); }
+			for (const [term, f] of tf) {
+				let pm = this._postings.get(term);
+				if (!pm) { pm = new Map(); this._postings.set(term, pm); }
+				pm.set(docId, f);
 			}
+			for (const tag of doc.tags) {
+				const normalized = tag.toLowerCase().trim();
+				if (!normalized) { continue; }
+				this._allTags.add(normalized);
+				let set = this._tagIndex.get(normalized);
+				if (!set) { set = new Set(); this._tagIndex.set(normalized, set); }
+				set.add(docId);
+			}
+			// 周期性让出事件循环，避免大库缓存加载（re-tokenize）冻结 UI
+			if ((++_n & 255) === 0) { await new Promise<void>(r => setTimeout(r, 0)); }
+		}
 			this._avgLen = data.avgLen ?? 0;
 			this._totalDocs = data.totalDocs ?? this._docs.size;
 			return true;
@@ -606,7 +665,7 @@ export class KbFullTextIndex {
 	async loadCache(uri: URI): Promise<boolean> {
 		try {
 			const content = await this.fileService.readFile(uri);
-			return this.deserialize(content.value.toString());
+			return await this.deserialize(content.value.toString());
 		} catch {
 			return false;
 		}

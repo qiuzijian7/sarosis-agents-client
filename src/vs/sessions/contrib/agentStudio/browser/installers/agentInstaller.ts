@@ -16,24 +16,25 @@ import { URI } from '../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 
 import { Agent } from '../../../../common/agentStudioTypes.js';
 import { IPackageInstaller, PackageManifest, IPreparePackResult } from '../../common/packageInstaller.js';
 import { PackageKind, IInstallResult } from '../../common/marketplace.js';
 import * as path from '../../../../../base/common/path.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
+import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 
 export class AgentInstaller extends Disposable implements IPackageInstaller {
 	declare readonly _serviceBrand: undefined;
 	readonly kind: PackageKind = 'agent';
 
 	constructor(
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
-		@IPathService private readonly pathService: IPathService,
-
+	
 	) {
 		super();
 	}
@@ -50,7 +51,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			files?: { agentsMd?: string; soulMd?: string; identityMd?: string; toolsMd?: string; memoryMd?: string; configHtml?: string; htmlEntry?: string; htmlContent?: string; htmlStyles?: string };
 		};
 
-		// ── Resolve target agent dir: ~/.saros/agents/{agentId}/ ──
+		// ── Resolve target agent dir: ~/.vssaros/saros/agents/{agentId}/ ──
 		const agentId = exportData.agent.id || manifest.id;
 		const agentDir = await this.agentStudioService.getAgentDir(agentId);
 
@@ -85,7 +86,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			await this.fileService.writeFile(configUri, VSBuffer.fromString(exportData.files.configHtml));
 		}
 
-		// 复用 createAgent 落地：写 ~/.saros/agents/{id}/agent.json + .agent.md（若有 agentsMd）
+		// 复用 createAgent 落地：写 ~/.vssaros/saros/agents/{id}/agent.json + .agent.md（若有 agentsMd）
 		const createData: Partial<Agent> & { bootstrapTemplates?: { agentsMd?: string } } = {
 			...exportData.agent,
 			version: manifest.version,
@@ -127,7 +128,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			throw new Error(`agent 不存在: ${localId}`);
 		}
 
-		// Resolve the agent's directory: ~/.saros/agents/{agentId}/
+		// Resolve the agent's directory: ~/.vssaros/saros/agents/{agentId}/
 		const agentDir = await this.agentStudioService.getAgentDir(localId);
 
 		// Read .agent.md from the agent directory
@@ -181,8 +182,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		};
 
 		// 写入临时目录供 tar 打包
-		const userHome = await this.pathService.userHome();
-		const tmpBase = path.join(userHome.fsPath, '.saros', 'tmp');
+		const tmpBase = resolveSarosPath(this._getSarosRoot(), SarosPath.tmp).fsPath;
 		await this.fileService.createFolder(URI.file(tmpBase));
 
 		const tmpDir = path.join(tmpBase, `saros-agent-pack-${Date.now()}`);
@@ -244,5 +244,9 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 
 	getInstalledVersion(storeId: string): string | undefined {
 		return undefined;
+	}
+
+	private _getSarosRoot(): URI {
+		return userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
 	}
 }

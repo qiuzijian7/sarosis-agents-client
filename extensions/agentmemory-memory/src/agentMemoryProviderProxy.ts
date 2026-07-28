@@ -23,6 +23,15 @@ export class AgentMemoryProviderProxy {
 
 	private _handlers = new Map<string, Set<(...args: any[]) => void>>();
 	private _providerBase = `${serverBase()}/provider`;
+	/** 网关连接状态：只在状态迁移时打日志，避免刷屏。 */
+	private _gatewayUp: boolean | undefined = undefined;
+	/** 连续失败计数：单次 5s 超时（网关忙于压缩/大扫除）不判 down，连续 2 次才判（P2 去抖）。 */
+	private _consecutiveFailures = 0;
+	/** P1 写入重试队列：网关短暂不可达时 writeMemory 不再静默丢弃，
+	 *  入队后在下次成功调用/定时器驱动下重放（上限 200 条防内存膨胀，单条最多 5 次）。 */
+	private _writeQueue: Array<{ agentId: string; entry: any; attempts: number }> = [];
+	private _flushTimer: ReturnType<typeof setTimeout> | undefined;
+	private _flushing = false;
 
 	private _on(event: string, handler: (...args: any[]) => void): () => void {
 		if (!this._handlers.has(event)) this._handlers.set(event, new Set());
@@ -33,23 +42,65 @@ export class AgentMemoryProviderProxy {
 		this._handlers.get(event)?.forEach(h => { try { h(...args); } catch { /* ignore */ } });
 	}
 
-	/** 通用转发：POST /provider/<method> { args }，返回解析后的 JSON 或 null。 */
+	private _markGateway(up: boolean, method: string): void {
+		if (up) {
+			this._consecutiveFailures = 0;
+			if (this._gatewayUp !== true) {
+				this._gatewayUp = true;
+				console.log(`[AgentMemory] gateway connected (first ok call: ${method})`);
+			}
+			return;
+		}
+		// 去抖：连续 2 次失败才判 down（单次超时多为网关忙于压缩/大扫除的瞬态）
+		this._consecutiveFailures++;
+		if (this._gatewayUp === false || this._consecutiveFailures < 2) { return; }
+		this._gatewayUp = false;
+		console.warn(`[AgentMemory] gateway UNREACHABLE — memory calls return empty defaults, writes queued for retry (failed: ${method})`);
+	}
+
+	/** 通用转发：POST /provider/<method> { args }，返回解析后的 JSON 或 null。
+	 *
+	 *  故障语义（2026-07-27 修正）：
+	 *  - 网络层失败（连接拒绝/5s 超时）→ 才计入 UNREACHABLE 去抖；
+	 *    冷启动期（_gatewayUp 未知，网关子进程可能仍在重建索引）额外重试 2 次
+	 *    （500ms/1500ms 退避），消除"窗口刚起就发消息 → 误报 UNREACHABLE"竞态。
+	 *  - HTTP 层失败（404 未知方法 / 500 方法内部抛错）→ 网关**可达**，
+	 *    标记 up 并打方法级 warn，绝不误报 UNREACHABLE。
+	 */
 	async _call(method: string, ...args: any[]): Promise<any> {
-		try {
-			const ctrl = new AbortController();
-			const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
-			const resp = await fetch(`${this._providerBase}/${encodeURIComponent(method)}`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ args }),
-				signal: ctrl.signal,
-			});
-			clearTimeout(timer);
-			if (!resp.ok) return null;
-			const txt = await resp.text();
-			return txt ? JSON.parse(txt) : null;
-		} catch {
-			return null;
+		// 冷启动（本 renderer 生命周期内从未成功连过）多给 2 次机会；
+		// 已连通过的网关瞬态失败沿用原有"连续 2 次才判 down"去抖，不加重试
+		// （避免真宕机时每调用 5s×3 = 15s 悬挂）。
+		const maxAttempts = this._gatewayUp === undefined ? 3 : 1;
+		for (let attempt = 1; ; attempt++) {
+			try {
+				const ctrl = new AbortController();
+				const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+				const resp = await fetch(`${this._providerBase}/${encodeURIComponent(method)}`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ args }),
+					signal: ctrl.signal,
+				});
+				clearTimeout(timer);
+				if (!resp.ok) {
+					// 有响应 = 网关可达；是方法级故障（404 方法缺失 / 500 引擎抛错）
+					this._markGateway(true, method);
+					console.warn(`[AgentMemory] provider method '${method}' failed: HTTP ${resp.status} (gateway reachable — method-level error)`);
+					return null;
+				}
+				const txt = await resp.text();
+				const parsed = txt ? JSON.parse(txt) : null;
+				this._markGateway(true, method);
+				return parsed;
+			} catch {
+				if (attempt < maxAttempts) {
+					await new Promise<void>(r => setTimeout(r, attempt === 1 ? 500 : 1500));
+					continue;
+				}
+				this._markGateway(false, method);
+				return null;
+			}
 		}
 	}
 
@@ -57,30 +108,109 @@ export class AgentMemoryProviderProxy {
 
 	async loadContext(agentId: string, sessionId: string, query?: string, options?: any): Promise<any> {
 		// 网关不可达时返回安全空上下文（避免下游 null.longTermMemories 崩溃）
-		return (await this._call('loadContext', agentId, sessionId, query, options))
+		const ctx = (await this._call('loadContext', agentId, sessionId, query, options))
 			?? { longTermMemories: [], shortTermMemories: [], injectedContext: '' };
+		if (this._gatewayUp) {
+			console.log(
+				`[AgentMemory] loadContext agent=${agentId} session=${sessionId}: ` +
+				`short=${ctx.shortTermMemories?.length ?? 0} long=${ctx.longTermMemories?.length ?? 0} ` +
+				`sysPrompt=${(ctx.systemPrompt ?? '').length} chars`
+			);
+		}
+		return ctx;
 	}
 
 	async writeMemory(agentId: string, entry: any): Promise<void> {
 		const ok = await this._call('writeMemory', agentId, entry);
+		const noticeId = entry?.metadata?.['noticeId'] as string | undefined;
+		const memoryType = (entry?.metadata?.['memoryType'] as string) ?? entry?.type;
 		if (ok) {
-			const noticeId = entry?.metadata?.['noticeId'] as string | undefined;
-			const memoryType = (entry?.metadata?.['memoryType'] as string) ?? entry?.type;
+			// 网关 host.mjs 对 void 方法统一回 { ok: true } —— ok 为真即调用成功，
+			// 本地补发 memory_written（网关宿主引擎的事件到不了 renderer，无 SSE 通道）。
+			console.log(`[AgentMemory] writeMemory ok: agent=${agentId} type=${memoryType} len=${entry?.content?.length ?? 0}`);
 			this._emit('memory_written', agentId, {
 				memoryId: entry?.id ?? '',
 				noticeId,
 				memoryType,
 				contentLength: entry?.content?.length ?? 0,
 			});
+			void this._flushWriteQueue(); // 网关恢复时顺带重放积压
+		} else {
+			// P1：不再静默丢弃 —— 入队重试（网关忙于压缩/大扫除的瞬态会恢复）
+			this._enqueueWrite(agentId, entry);
+			console.warn(`[AgentMemory] writeMemory FAILED (queued for retry): agent=${agentId} type=${memoryType} len=${entry?.content?.length ?? 0}`);
+			this._emit('memory_write_failed', agentId, {
+				noticeId,
+				memoryType,
+				error: 'memory gateway unavailable — queued for retry',
+			});
+		}
+	}
+
+	private _enqueueWrite(agentId: string, entry: any): void {
+		if (this._writeQueue.length >= 200) {
+			this._writeQueue.shift(); // 上限：丢最老一条，防内存膨胀
+		}
+		this._writeQueue.push({ agentId, entry, attempts: 0 });
+		this._scheduleFlush();
+	}
+
+	private _scheduleFlush(): void {
+		if (this._flushTimer !== undefined) { return; }
+		this._flushTimer = setTimeout(() => {
+			this._flushTimer = undefined;
+			void this._flushWriteQueue();
+		}, 3000);
+	}
+
+	private async _flushWriteQueue(): Promise<void> {
+		if (this._flushing) { return; }
+		this._flushing = true;
+		try {
+			while (this._writeQueue.length > 0) {
+				const item = this._writeQueue[0];
+				const ok = await this._call('writeMemory', item.agentId, item.entry);
+				if (!ok) {
+					item.attempts++;
+					if (item.attempts >= 5) {
+						this._writeQueue.shift();
+						console.warn(`[AgentMemory] writeMemory dropped after 5 attempts: agent=${item.agentId} len=${item.entry?.content?.length ?? 0}`);
+						continue;
+					}
+					break; // 网关仍不可达，等下一轮
+				}
+				this._writeQueue.shift();
+				const entry = item.entry;
+				console.log(`[AgentMemory] writeMemory replayed ok: agent=${item.agentId} len=${entry?.content?.length ?? 0}`);
+				this._emit('memory_written', item.agentId, {
+					memoryId: entry?.id ?? '',
+					noticeId: entry?.metadata?.['noticeId'] as string | undefined,
+					memoryType: (entry?.metadata?.['memoryType'] as string) ?? entry?.type,
+					contentLength: entry?.content?.length ?? 0,
+				});
+			}
+		} finally {
+			this._flushing = false;
+			if (this._writeQueue.length > 0) { this._scheduleFlush(); }
 		}
 	}
 
 	async searchMemory(agentId: string, query: string): Promise<any[]> {
-		return (await this._call('searchMemory', agentId, query)) ?? [];
+		const results = (await this._call('searchMemory', agentId, query)) ?? [];
+		if (this._gatewayUp) {
+			const q = (query ?? '').length > 40 ? query.slice(0, 40) + '…' : query;
+			console.log(`[AgentMemory] searchMemory agent=${agentId} query="${q}" → ${results.length} results`);
+		}
+		return results;
 	}
 
 	async recallFormatted(agentId: string, query: string, strategy?: string, limit?: number): Promise<string> {
 		return (await this._call('recallFormatted', agentId, query, strategy, limit)) ?? 'memory_recall: no results found';
+	}
+
+	/** 文件相关 bug 记忆（mem::enrich 复刻）——volatile 层「历史 bug 提示」注入用 */
+	async bugMemoriesForFiles(agentId: string, files: string[], project?: string): Promise<Array<{ id: string; title: string; content: string }>> {
+		return (await this._call('bugMemoriesForFiles', agentId, files, project)) ?? [];
 	}
 
 	async reinforceMemory(agentId: string, memId: string): Promise<boolean> {
@@ -155,6 +285,16 @@ export class AgentMemoryProviderProxy {
 		return (await this._call('getProceduralMemories', agentId)) ?? [];
 	}
 
+	/** semantic scope 列表（mem:semantic）— memoryDetail 记忆视图聚合用 */
+	async semanticList(agentId: string): Promise<any[]> {
+		return (await this._call('semanticList', agentId)) ?? [];
+	}
+
+	/** procedural scope 列表（mem:procedural）— memoryDetail 记忆视图聚合用 */
+	async proceduralList(agentId: string): Promise<any[]> {
+		return (await this._call('proceduralList', agentId)) ?? [];
+	}
+
 	async getConsolidationContext(agentId: string): Promise<string> {
 		return (await this._call('getConsolidationContext', agentId)) ?? '';
 	}
@@ -181,6 +321,21 @@ export class AgentMemoryProviderProxy {
 
 	async listAllAgentsWithData(): Promise<string[]> {
 		return (await this._call('listAllAgentsWithData')) ?? [];
+	}
+
+	/** 会话记录（KV.sessions）— Dashboard/memoryDetail 会话面板用 */
+	async listSessions(agentId: string): Promise<any[]> {
+		return (await this._call('listSessions', agentId)) ?? [];
+	}
+
+	/** 会话摘要（KV.summaries，按 createdAt desc，可 limit） */
+	async listSummaries(agentId: string, limit?: number): Promise<any[]> {
+		return (await this._call('listSummaries', agentId, limit)) ?? [];
+	}
+
+	/** 单会话观察列表（mem:obs:<agent>:<session>） */
+	async observeList(agentId: string, sessionId: string): Promise<any[]> {
+		return (await this._call('observeList', agentId, sessionId)) ?? [];
 	}
 
 	async triggerHook(type: string, ctx: Record<string, unknown>): Promise<void> {
@@ -240,6 +395,12 @@ export class AgentMemoryProviderProxy {
 	async deleteSkill(agentId: string, id: string): Promise<boolean> {
 		return (await this._call('deleteSkill', agentId, id)) ?? false;
 	}
+	async updateMemory(agentId: string, id: string, updates: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+		return (await this._call('updateMemory', agentId, id, updates)) ?? null;
+	}
+	async deleteMemory(agentId: string, id: string): Promise<boolean> {
+		return (await this._call('deleteMemory', agentId, id)) ?? false;
+	}
 	getHookStats(): { totalHooks: number; hooksByType: Record<string, number>; callCounts: Record<string, number> } | Promise<{ totalHooks: number; hooksByType: Record<string, number>; callCounts: Record<string, number> }> {
 		// Opt1：真实 HookSystem 在网关进程，必须异步转发（editor pane 会 await）。
 		return this._call('getHookStats').then((r: any) => r ?? { totalHooks: 0, hooksByType: {}, callCounts: {} });
@@ -268,11 +429,29 @@ export class AgentMemoryProviderProxy {
 		return (await this._call('getSlot', agentId, label)) ?? '';
 	}
 	onPreCompact(agentId: string, sessionId: string, messages: Array<{ role: string; content: string; timestamp: number }>, tokenBudget: number): { injectedContext: string; totalTokens: number } {
+		// 机制修复（原为 noop stub）：fire-and-forget 转发到网关 V2.onPreCompact ——
+		// 引擎侧的真实工作是 fire-and-forget compressSession（压缩前写 session summary）。
+		// 同步签名约束：本地立即返回空注入（与 V2 返回值语义一致）。
+		// V2.onPreCompact 接收单个 ctx 对象，按其对齐参数形状。
+		void this._call('onPreCompact', { agentId, sessionId, messages, tokensSaved: 0, contextWindow: tokenBudget });
 		return { injectedContext: '', totalTokens: 0 };
 	}
-	onTaskCompleted(agentId: string, sessionId: string, taskSubject: string, taskId?: string): void { /* noop (hosted) */ }
-	onSubagentStart(parentAgentId: string, task: string): unknown { return undefined; }
-	onSubagentStop(agentId: string, status: 'completed' | 'failed' | 'cancelled', result?: string, error?: string): boolean { return true; }
+	onTaskCompleted(agentId: string, sessionId: string, taskSubject: string, taskId?: string): void {
+		// 机制修复（原为 noop stub）：fire-and-forget 转发到网关 V2.onTaskCompleted
+		// （coreAdd + sessionSummarySave，原版 task_completed hook 的等价物）。
+		void this._call('onTaskCompleted', agentId, sessionId, taskSubject, taskId);
+	}
+	onSubagentStart(parentAgentId: string, task: string): unknown {
+		// 转发到网关 V2.onSubagentStart（返回 { sessionId }）；同步签名下本地
+		// 立即返回 undefined，引擎侧日志异步到达。
+		void this._call('onSubagentStart', parentAgentId, task);
+		return undefined;
+	}
+	onSubagentStop(agentId: string, status: 'completed' | 'failed' | 'cancelled', result?: string, error?: string): boolean {
+		// 转发到网关 V2.onSubagentStop（completed 时写 [subagent_completed] 核心记忆）。
+		void this._call('onSubagentStop', agentId, status, result, error);
+		return true;
+	}
 
 	onMemoryWritten(handler: (agentId: string, data: { memoryId: string; noticeId?: string; memoryType?: string; contentLength?: number }) => void): () => void {
 		return this._on('memory_written', handler);

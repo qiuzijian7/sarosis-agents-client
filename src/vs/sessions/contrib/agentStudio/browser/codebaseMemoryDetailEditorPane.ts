@@ -226,7 +226,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			}
 
 			// Index config section
-			this._renderIndexConfig();
+			await this._renderIndexConfig();
 
 			// Graph details section
 			this._renderGraphDetails(schema);
@@ -251,7 +251,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			// Project management (multi-project)
 			this._renderProjectManager();
 		} else {
-			this._renderIndexConfig();
+			await this._renderIndexConfig();
 		}
 
 		// Indexing progress section (only when indexing)
@@ -364,8 +364,9 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 
 	// ─── Index Config Section ─────────────────────────────────────────────
 
-	private _renderIndexConfig(): void {
+	private async _renderIndexConfig(): Promise<void> {
 		if (!this._content) { return; }
+		await this.cbmService.ensureConfigReady();
 		const config = this.cbmService.getIndexConfig();
 
 		const { section, body, logEl } = this._createCollapsibleSection('Index Configuration', '⚙️', config.mode.toUpperCase(), 'accent');

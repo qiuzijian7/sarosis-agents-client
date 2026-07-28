@@ -22,6 +22,57 @@ import {
 	IToolApprovalHandler,
 } from "./providers.js";
 import type { IForkContext } from "./forkContext.js";
+import type { AgentGraph } from "./agentGraph.js";
+import type { IHardPermissionPolicy } from "./toolPermission.js";
+
+// ─── SubAgent trace streaming (P0/P1: 旁路事件总线) ──────────────────────────
+//
+// plan_explore 是 blocking 工具，执行期间无法向主 turn 的 delta 流插入进度。
+// 因此改走独立的旁路总线：适配层（planExploreTool）维护每个子 agent 的全量卡片
+// 快照，事件驱动更新并节流 fire；UI（nativeChatEditorPane）订阅并按 `id` upsert
+// 到当前流式 assistant 消息的 subagent parts。此结构刻意与 UI 侧 ISubAgentData
+// 对齐，使 UI 收到后可直接当作卡片数据渲染，无需二次映射。
+//
+// 注意：common 层不能 import browser 层的 ISubAgentData，故这里内联等价结构。
+
+/** 单条子 agent 工具执行痕迹（与 UI ISubAgentToolTrace 对齐）。 */
+export interface ISubAgentTraceEntry {
+	readonly id: string;
+	readonly name: string;
+	readonly status: 'running' | 'done' | 'error';
+	readonly args?: string;
+	readonly result?: string;
+}
+
+/** 单个子 agent 卡片快照（与 UI ISubAgentData 的核心字段对齐）。 */
+export interface ISubAgentCardSnapshot {
+	readonly id: string;
+	/** Agent type badge. Fixed values: 'explore' | 'general' | 'scout' — or any registered agent name (e.g. 'code-explorer', 'researcher', 'data'). */
+	readonly type: string;
+	readonly task: string;
+	readonly status: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+	readonly progress?: string;
+	readonly output?: string;
+	readonly error?: string;
+	readonly groupId?: string;
+	readonly toolTraces?: ReadonlyArray<ISubAgentTraceEntry>;
+	/** P0: 将 subagent 卡片归位到其父 plan_explore tool card 之后。 */
+	readonly parentToolCallId?: string;
+	/** Live thinking text emitted by the sub-agent during execution (running only). */
+	readonly thinking?: string;
+	/** 子代理开始/结束时间（epoch ms），供 UI 计算时长（卡片时间 chip 与页脚统计）。 */
+	readonly startedAt?: number;
+	readonly completedAt?: number;
+}
+
+/**
+ * 旁路总线事件载荷：一批子 agent 卡片的全量快照。
+ * UI 按 `subagentData[].id` 幂等 upsert（流式与最终态共用同一批 id，天然去重）。
+ */
+export interface ISubAgentTraceSnapshot {
+	readonly groupId?: string;
+	readonly subagentData: ReadonlyArray<ISubAgentCardSnapshot>;
+}
 
 // ─── Agent OS Service ───────────────────────────────────────────────────────
 
@@ -97,6 +148,14 @@ export interface IAgentOSService {
 	getActiveModelSelection(): IModelSelection;
 	setActiveModelSelection(selection: IModelSelection): void;
 
+	// ─── SubAgent 执行过程流式（P0/P1 旁路总线）─────────────────────
+	//
+	// 订阅方（nativeChatEditorPane）监听 onDidSubAgentTrace，按快照 upsert 卡片；
+	// 产出方（planExploreTool 的 inlineTraceSink）调 fireSubAgentTrace 推送节流后的快照。
+	readonly onDidSubAgentTrace: Event<ISubAgentTraceSnapshot>;
+	/** 推送一批子 agent 卡片快照到 UI（旁路主 delta 流）。 */
+	fireSubAgentTrace(snapshot: ISubAgentTraceSnapshot): void;
+
 	// ─── 其他能力查询（优先级自动选择）────────────────────────────
 
 	getActiveMemoryProvider(): IMemoryProvider | undefined;
@@ -146,32 +205,11 @@ export interface IAgentOSService {
 	cancelAgentLoop(agentId?: string, sessionId?: string): void;
 
 	/**
-	 * Episodic 自动提取：对话轮次达阈值时，后台调用 LLM 从最近对话中提取
-	 * 结构化长期记忆（persona/episodic/instruction），写入 Memory Provider。
-	 * fire-and-forget，不阻塞调用方。
-	 *
-	 * 对齐 AgentMemory 的 Working→Episodic 管线：不再完全依赖 LLM 主动调 memory_remember，
-	 * 系统自动在对话累积后提取值得跨会话记住的事实。
+	 * 将对话增量外置为会话观察（mem:obs 暂存层，按内容哈希去重，跳过 system 消息）。
+	 * 供 driver/turn 边界统一捕获 user/assistant 消息（2026-07-26 W2：替代直写
+	 * writeMemory(type=working) 的历史通道）。
 	 */
-	triggerEpisodicExtraction(agentId: string, sessionId: string | undefined, recentUserText: string, recentAssistantText: string): void;
-
-	/**
-	 * Semantic 提取：Episodic 完成后延迟触发，后台调用 LLM 从近期 Episodic 记忆中
-	 * 提取场景级摘要（如"用户在做 X 项目时遇到 Y 问题"），写入 Memory Provider。
-	 * fire-and-forget，不阻塞调用方。
-	 *
-	 * 对齐 AgentMemory 的 Semantic 层：per-session downward-only timer，delay-after-Episodic 触发。
-	 */
-	triggerSemanticExtraction(agentId: string): void;
-
-	/**
-	 * Procedural 生成：Semantic 完成后触发，后台调用 LLM 从所有场景摘要中
-	 * 生成用户人格画像（偏好、习惯、专业领域等），写入 Memory Provider。
-	 * 全局互斥（concurrency=1），fire-and-forget。
-	 *
-	 * 对齐 AgentMemory 的 Procedural 层：global mutex + pending flag dedup。
-	 */
-	triggerProceduralGeneration(): void;
+	_storeTurnObservations(provider: unknown, agentId: string, sessionId: string, messages: ReadonlyArray<unknown>): Promise<void>;
 
 	// ─── Tool 启用/禁用管理 ─────────────────────────────────────
 
@@ -222,6 +260,33 @@ export interface IAgentOSService {
 	listAllToolsWithState(
 		agentId: string,
 	): Promise<(IToolDefinition & { enabled: boolean })[]>;
+
+	/**
+	 * 返回经过 focus 模式 + toolset 白名单 + hardPermission 过滤后、真正会随请求下发
+	 * function-calling schema 的非 MCP 工具名清单。
+	 *
+	 * 用于 Prompt 组装层生成 "Built-in tools:" 文字清单——必须与真实下发的 schema
+	 * 严格一致，不能再用 listAllToolsWithState() 的全量结果（那会导致提示词点名
+	 * 但实际无 schema 的工具，模型调用必然失败或产生幻觉）。
+	 *
+	 * 参数含义与 executeAgentTurn 内部过滤一致，调用方应原样传入本轮 request 的对应字段。
+	 */
+	getEnabledToolNamesForPrompt(
+		agentId: string,
+		agentGraph?: AgentGraph,
+		toolsetsOverride?: string[],
+		hardPermission?: IHardPermissionPolicy,
+		excludedTools?: readonly string[],
+		allowedTools?: readonly string[],
+	): Promise<string[]>;
+
+	/**
+	 * 解析某次 turn 请求应生效的 hardPermission 策略（work/plan mode 驱动）。
+	 * 供调用方（agentDriverService）在组装 Prompt 阶段与 executeAgentTurn 内部
+	 * 使用同一套 hardPermission，保证 getEnabledToolNamesForPrompt 的过滤结果
+	 * 与真正下发的工具 schema 一致。
+	 */
+	_resolveHardPermission(request: IAgentTurnRequest): IHardPermissionPolicy | undefined;
 
 	/**
 	 * 注册工具审批 UI Handler。
@@ -282,12 +347,6 @@ export interface IAgentOSDashboardStats {
 	compressionAfterTokens: number;
 	/** 工具调用次数（按工具名） */
 	toolCallCounts: Map<string, number>;
-	/** L1 Episodic 自动提取触发次数 */
-	l1ExtractionCount: number;
-	/** L2 Semantic 提取触发次数 */
-	l2ExtractionCount: number;
-	/** L3 Procedural 生成触发次数 */
-	l3ExtractionCount: number;
 }
 
 /** Dashboard 时间序列快照（SQLite metrics_snapshots 表行） */

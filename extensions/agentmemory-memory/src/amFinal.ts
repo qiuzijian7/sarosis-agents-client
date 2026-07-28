@@ -278,6 +278,80 @@ export async function recentSearchesAdd(kv: StateKV, agentId: string,
 	});
 }
 
+/** mem::diagnostic::recent-searches-sweep：按窗口与上限修剪搜索历史 */
+export async function recentSearchesSweep(kv: StateKV, agentId: string,
+	maxEntries: number = 100, windowHours: number = 24
+): Promise<{ removed: number }> {
+	const all = await kv.list<{ id: string; query?: string; timestamp?: string }>(KV.recentSearches(agentId));
+	const cutoff = Date.now() - windowHours * 3600_000;
+	const sorted = all.filter(s => s.query)
+		.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+	let removed = 0;
+	for (let i = 0; i < sorted.length; i++) {
+		const s = sorted[i];
+		const ts = Date.parse(s.timestamp || '') || 0;
+		if (i >= maxEntries || ts < cutoff) {
+			await kv.delete(KV.recentSearches(agentId), s.id);
+			removed++;
+		}
+	}
+	return { removed };
+}
+
+/** mem::diagnostic::followup-stats：搜索后 windowMs 内有记忆写入的追问率 */
+export async function followupStats(kv: StateKV, agentId: string,
+	windowMs: number = 30 * 60 * 1000
+): Promise<{ searches: number; followups: number; rate: number }> {
+	const searches = (await kv.list<{ query?: string; timestamp?: string }>(KV.recentSearches(agentId)))
+		.filter(s => s.query);
+	const memories = await kv.list<Memory>(KV.memories(agentId));
+	const writeTimes = memories.map(m => Date.parse(m.createdAt || '') || 0).filter(t => t > 0);
+	let followups = 0;
+	for (const s of searches) {
+		const t = Date.parse(s.timestamp || '') || 0;
+		if (t > 0 && writeTimes.some(w => w >= t && w - t <= windowMs)) { followups++; }
+	}
+	return { searches: searches.length, followups, rate: searches.length > 0 ? followups / searches.length : 0 };
+}
+
+// ─── 15. Replay Import JSONL（复刻 agentmemory mem::replay::import-jsonl）────
+
+/**
+ * 导入 Claude Code JSONL 会话日志为观察记录（每行一个事件 JSON）。
+ * 字段映射：role/type=user|human → turn_observation；tool_use/tool_result →
+ * post_tool_use（tool_name/tool_output）；其余行跳过。复用 fn.observe
+ * （含滑动窗口与 title/importance 评分），导入后可直接参与压缩/反思管线。
+ */
+export async function replayImportJsonl(kv: StateKV, agentId: string, sessionId: string,
+	jsonl: string, maxEvents: number = 200
+): Promise<{ imported: number; skipped: number }> {
+	const { observe } = await import('./amFunctions.js'); // 动态导入避免模块环
+	let imported = 0;
+	let skipped = 0;
+	const lines = jsonl.split('\n').filter(l => l.trim().length > 0);
+	for (const line of lines) {
+		if (imported >= maxEvents) { skipped++; continue; }
+		let ev: Record<string, unknown>;
+		try { ev = JSON.parse(line); } catch { skipped++; continue; }
+		const role = String(ev['role'] ?? ev['type'] ?? '').toLowerCase();
+		const content = String(ev['content'] ?? ev['text'] ?? '').slice(0, 2000);
+		const ts = typeof ev['timestamp'] === 'string' ? ev['timestamp'] : new Date().toISOString();
+		if ((role === 'user' || role === 'human') && content) {
+			await observe(kv, agentId, { sessionId, hookType: 'turn_observation', timestamp: ts, data: { content } });
+			imported++;
+		} else if ((role === 'tool_use' || role === 'tool_result' || role === 'tool') && (ev['tool_name'] || ev['name'])) {
+			await observe(kv, agentId, {
+				sessionId, hookType: 'post_tool_use', timestamp: ts,
+				data: { tool_name: String(ev['tool_name'] ?? ev['name']), tool_output: content, files: Array.isArray(ev['files']) ? ev['files'] : [] },
+			});
+			imported++;
+		} else {
+			skipped++;
+		}
+	}
+	return { imported, skipped };
+}
+
 // ─── 15. Health Monitor（agentmemory health.ts，简化版）─────────────────────
 
 export async function healthCheck(kv: StateKV, agentId: string): Promise<{

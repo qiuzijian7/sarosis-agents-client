@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as cp from 'child_process';
+import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
 import * as glob from '../../../../base/common/glob.js';
 import { normalizeNFD } from '../../../../base/common/normalization.js';
@@ -17,7 +18,43 @@ import { rgPath } from '@vscode/ripgrep';
 // If @vscode/ripgrep is in an .asar file, then the binary is unpacked.
 const rgDiskPath = rgPath.replace(/\bnode_modules\.asar\b/, 'node_modules.asar.unpacked');
 
+/**
+ * Whether the ripgrep binary is actually present on disk.
+ *
+ * In packaged builds the @vscode/ripgrep postinstall script downloads the
+ * platform binary from GitHub. When that download fails (e.g. CI without
+ * GITHUB_TOKEN, sandboxed environments) the `bin/` directory ends up empty
+ * and `rgDiskPath` points at a file that does not exist. Calling
+ * `cp.spawn` on it then throws ENOENT and the activity bar search fails.
+ *
+ * We probe synchronously at module-load time so that callers can route
+ * around the missing binary (e.g. fall back to a pure Node walker) without
+ * paying the cost of the failed spawn. The result is cached — rg.exe
+ * does not materialize at runtime in a packaged app.
+ */
+export const isRipgrepAvailable: boolean = (() => {
+	try {
+		return fs.existsSync(rgDiskPath);
+	} catch {
+		return false;
+	}
+})();
+
+/**
+ * Human-readable hint shown to the user when ripgrep is unavailable.
+ * Kept in sync with the build-side `ensureRipgrepBinaryTask` log message.
+ */
+export const RIPGREP_MISSING_HINT =
+	`ripgrep binary not found at ${rgDiskPath}. ` +
+	`Activity bar search requires ripgrep. ` +
+	`Re-install VsSaros (the build should copy rg.exe into node_modules.asar.unpacked) ` +
+	`or copy @vscode/ripgrep/bin/rg[.exe] from a working install into ` +
+	`<app>/node_modules.asar.unpacked/@vscode/ripgrep/bin/ manually.`;
+
 export function spawnRipgrepCmd(config: IFileQuery, folderQuery: IFolderQuery, includePattern?: glob.IExpression, excludePattern?: glob.IExpression, numThreads?: number) {
+	if (!isRipgrepAvailable) {
+		throw new Error(RIPGREP_MISSING_HINT);
+	}
 	const rgArgs = getRgArgs(config, folderQuery, includePattern, excludePattern, numThreads);
 	const cwd = folderQuery.folder.fsPath;
 	return {

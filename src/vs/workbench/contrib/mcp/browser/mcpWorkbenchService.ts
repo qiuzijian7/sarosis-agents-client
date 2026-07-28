@@ -33,6 +33,7 @@ import { MCP_CONFIGURATION_KEY, WORKSPACE_STANDALONE_CONFIGURATIONS } from '../.
 import { ACTIVE_GROUP, IEditorService, MODAL_GROUP } from '../../../services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { DidUninstallWorkbenchMcpServerEvent, IWorkbenchLocalMcpServer, IWorkbenchMcpManagementService, IWorkbenchMcpServerInstallResult, IWorkbencMcpServerInstallOptions, LocalMcpServerScope, REMOTE_USER_CONFIG_ID, USER_CONFIG_ID, WORKSPACE_CONFIG_ID, WORKSPACE_FOLDER_CONFIG_ID_PREFIX } from '../../../services/mcp/common/mcpWorkbenchManagementService.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../../../sessions/contrib/agentStudio/common/sarosPaths.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
 import { mcpConfigurationSection } from '../common/mcpConfiguration.js';
 import { McpServerInstallData, McpServerInstallClassification } from '../common/mcpServer.js';
@@ -168,7 +169,7 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 	private _local: McpWorkbenchServer[] = [];
 	get local(): readonly McpWorkbenchServer[] { return [...this._local]; }
 
-	// VsSaros: 用户级 MCP 配置统一位于 ~/.saros/mcp.json
+	// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/saros/mcp.json
 	private readonly sarosMcpResource: URI;
 
 	private readonly _onChange = this._register(new Emitter<IWorkbenchMcpServer | undefined>());
@@ -199,8 +200,11 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 		@IURLService urlService: IURLService,
 	) {
 		super();
-		// VsSaros: 用户级 MCP 配置统一位于 ~/.saros/mcp.json
-		this.sarosMcpResource = URI.joinPath((this.environmentService as IWorkbenchEnvironmentService & { userHome: URI }).userHome, '.saros', 'mcp.json');
+		// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/saros/mcp.json
+		this.sarosMcpResource = resolveSarosPath(
+			userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome),
+			SarosPath.mcpConfig
+		);
 		this._register(this.mcpManagementService.onDidInstallMcpServersInCurrentProfile(e => this.onDidInstallMcpServers(e)));
 		this._register(this.mcpManagementService.onDidUpdateMcpServersInCurrentProfile(e => this.onDidUpdateMcpServers(e)));
 		this._register(this.mcpManagementService.onDidUninstallMcpServerInCurrentProfile(e => this.onDidUninstallMcpServer(e)));
@@ -566,7 +570,7 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 	getMcpConfigPath(arg: URI | IWorkbenchLocalMcpServer): Promise<IMcpConfigPath | undefined> | IMcpConfigPath | undefined {
 		if (arg instanceof URI) {
 			const mcpResource = arg;
-			// VsSaros: 用户级 MCP 配置统一位于 ~/.saros/mcp.json
+			// VsSaros: 用户级 MCP 配置统一位于 ~/.vssaros/saros/mcp.json
 			if (this.uriIdentityService.extUri.isEqual(mcpResource, this.sarosMcpResource)) {
 				return this.getSarosMcpConfigPath(mcpResource);
 			}
@@ -612,13 +616,13 @@ export class McpWorkbenchService extends Disposable implements IMcpWorkbenchServ
 		};
 	}
 
-	// VsSaros: ~/.saros/mcp.json 作为用户级 MCP 配置路径
+	// VsSaros: ~/.vssaros/saros/mcp.json 作为用户级 MCP 配置路径
 	private getSarosMcpConfigPath(mcpResource: URI): IMcpConfigPath {
 		return {
 			id: 'saros',
 			key: 'sarosValue',
 			target: ConfigurationTarget.USER_LOCAL,
-			label: '~/.saros/mcp.json',
+			label: '~/.vssaros/saros/mcp.json',
 			scope: StorageScope.PROFILE,
 			order: McpCollectionSortOrder.User,
 			uri: mcpResource,

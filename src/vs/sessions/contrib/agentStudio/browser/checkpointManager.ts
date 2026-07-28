@@ -49,21 +49,27 @@ export class CheckpointManager extends Disposable {
 				panel.setCheckpoint(null);
 				return;
 			}
-			// Aggregate file changes across all live checkpoints (de-dup by path, last wins)
-			const byPath = new Map<string, { path: string; status: 'modified' | 'created' | 'deleted' }>();
-			for (const cp of live) {
-				if (!cp.files) { continue; }
-				for (const f of cp.files) {
-					const status: 'modified' | 'created' | 'deleted' =
-						(f as any).status === 'created' ? 'created'
-							: (f as any).status === 'deleted' ? 'deleted'
-								: 'modified';
-					byPath.set((f as any).path ?? (f as any).fsPath ?? (f as any).uri ?? '', {
-						path: (f as any).path ?? (f as any).fsPath ?? (f as any).uri ?? '',
-						status,
-					});
-				}
+		// Aggregate file changes across all live checkpoints (de-dup by path,
+		// last status wins; additions/deletions 累加——回退弹窗展示真实 +N -M)
+		const byPath = new Map<string, { path: string; status: 'modified' | 'created' | 'deleted'; additions: number; deletions: number }>();
+		for (const cp of live) {
+			if (!cp.files) { continue; }
+			for (const f of cp.files) {
+				const status: 'modified' | 'created' | 'deleted' =
+					(f as any).status === 'created' ? 'created'
+						: (f as any).status === 'deleted' ? 'deleted'
+							: 'modified';
+				const key = (f as any).path ?? (f as any).fsPath ?? (f as any).uri ?? '';
+				if (!key) { continue; }
+				const prev = byPath.get(key);
+				byPath.set(key, {
+					path: key,
+					status,
+					additions: (prev?.additions ?? 0) + ((f as any).additions ?? 0),
+					deletions: (prev?.deletions ?? 0) + ((f as any).deletions ?? 0),
+				});
 			}
+		}
 			const files = Array.from(byPath.values()).filter(f => !!f.path);
 			const latest = live[live.length - 1];
 			const info: ICheckpointInfo = {

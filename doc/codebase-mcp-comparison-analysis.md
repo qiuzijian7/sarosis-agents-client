@@ -1,448 +1,227 @@
-# codebase-memory-mcp (C) vs Sarosis 内置 Codebase 工具 — 深度重新对比分析
+# codebase-memory-mcp (C) vs Sarosis 内置 Codebase 工具 — 对比分析
 
-> 分析日期：2026-07-04
-> C 源码位置：`G:\CustomWorkspaces\AIProjects\codebase-memory-mcp`
-> Sarosis 内置实现位置：`g:\CustomWorkspaces\AIProjects\vssaros-agents-client\src\vs\sessions\contrib\agentStudio\browser`
+> 分析日期：2026-07-18（2026-07-04 旧版已过期，本文档覆盖当前状态）
+> C 源码位置：`G:\CustomWorkspaces\AIProjects\codebase-memory-mcp`（v0.8.1，15 个 MCP 工具）
+> Sarosis 内置实现：`src/vs/sessions/contrib/agentStudio/browser/providers/tool/codebaseTools.ts`（15 个内置工具）+ `ICodebaseGraphService`
 
 ---
 
 ## 执行摘要
 
-本次重新分析在上一轮已实现 BM25、结构 boosting、search_code 三模式、trace_path mode 等基础上，发现了 **3 个影响可用性的关键缺陷**：
+上一轮（2026-07-04 → "开始修复"）已解决的**基础缺陷**（现已 DONE，编译通过）：
 
-1. **`search_code` 实际无法返回结果**（P0）
-   - `CodebaseGraphService.searchCode()` 传入的 `fileContentProvider` 直接返回 `undefined`（`codebaseGraphService.ts:1724-1726`）。
-   - 即使提供 content provider，索引管道创建 file 节点时未设置 `label` 字段（`codebaseGraphPipeline.ts:133-140`），而 `CodebaseGraphStore.findNodesByLabel('file')` 按 `node.label` 索引（`codebaseGraphStore.ts:329-332`），因此找不到任何文件节点。
-   - 工具层 handler 在 `raw` 为空后直接返回 "no matches found"，从未进入富化逻辑。
+- ✅ `search_code` 之前返回空（fileContentProvider 返回 undefined、file 节点缺 `label`、handler 无回退）—— 已修复为图增强搜索。
+- ✅ `manage_adr` 之前是 stub —— 已接入 `AdrManager`，现为 `list/get/create/update/delete` 全 CRUD（**比 C 版更强**，C 仅 get/update/sections）。
+- ✅ schema/实现脱节：`query_graph.max_rows`、`detect_changes.since/baseBranch`、`index_repository.mode`、`get_architecture.path` 已全部接线。
+- ✅ 语义向量搜索 `semantic_query`（6 信号融合 + 词级 min-score 重排）已实现。
+- ✅ `builtinToolProvider.ts` 拆为 `codebaseTools.ts` / `kanbanTools.ts` / `workflowTools.ts`。
 
-2. **`manage_adr` 完全为 stub**（P0）
-   - `builtinToolProvider.ts:4006-4039` 仅返回 JSON hint，让 LLM 用 `file_list/file_read/file_write` 自行操作。
-   - 但 `codebaseGraphAdr.ts` 已经完整实现了 `AdrManager`（list/get/create/update/delete/validate/解析），却**没有任何地方实例化或调用**它。
-
-3. **多个工具存在 "schema 声明 vs 实现" 脱节**（P1）
-   - `query_graph.max_rows`：schema 声明了，handler 未传给 Cypher 引擎。
-   - `detect_changes.since`：schema 声明了，底层未使用；文件哈希回退未真正比较哈希。
-   - `index_repository.mode`：声明 fast/moderate/full，但底层未按 mode 调整解析策略。
-   - `get_architecture.path`：声明了，但仅作为元数据返回，未做范围过滤。
-
-其余差距与上一轮基本一致：语义向量搜索、Cypher 高级语法（UNION/WITH/变长路径）、运行时 trace 摄入精确匹配、跨服务追踪数据、架构 hotspots 等仍为长期差距。
+本轮（2026-07-18）**重新对比 C 源码**发现的差距：骨架已对齐，差距集中在 **覆盖率体系、可查询指标体系、输出效率、跨仓库边覆盖、参数完备度** 五类。截至 2026-07-18，**全部 P0/P1/P2/P3 差距项均已落地**（覆盖率体系、热路径指标、search_graph/trace_path/get_architecture/search_code/detect_changes 参数完备度、TOON 紧凑输出、ingest_traces 契约、persistence/cross-repo 暴露、社区输出对齐、get_graph_schema 属性 schema、Cypher 高级语法含 CASE WHEN、MinHash 重复检测、watcher 增量重索）。对比分析目标已达成，无遗留差距项。
 
 ---
 
-## 一、项目架构对比
+## 一、工具清单对齐（15 C ↔ 14 本项目）
 
-| 维度 | codebase-memory-mcp (C) | Sarosis (TypeScript) |
-|------|---------------------------|----------------------|
-| 语言 | C11，零运行时依赖 | TypeScript，Electron renderer 进程 |
-| 存储 | SQLite + FTS5 (BM25) + mmap | 内存 Map + 自定义 BM25 + JSON/ZST 持久化 |
-| 解析器 | vendored tree-sitter (158 语言) | VS Code 内置 tree-sitter WASM |
-| 工具暴露 | MCP stdio 独立进程 | 编辑器内嵌 `builtinToolProvider` |
-| 代码搜索 | 系统 `grep` 子进程 + 图富化 | 内存搜索（当前不可用） |
-| 文件索引范围 | 仅已索引文件 | 默认全文件，但实现未利用该范围 |
-
----
-
-## 二、工具函数逐项对比
-
-### 1. `index_repository`
-
-**C 版本**
-- 入口：`src/mcp/mcp.c:3453-3579` (`handle_index_repository`)
-- 参数：`repo_path`, `mode` (full/moderate/fast/cross-repo-intelligence), `target_projects`, `name`, `persistence`
-- 关键能力：
-  - 所有模式都执行**类型感知的 LSP 调用/使用解析**（per-file + cross-file）。
-  - `full`：所有文件 + 相似/语义边；`moderate`：过滤文件 + 相似/语义；`fast`：过滤文件，无相似/语义。
-  - `cross-repo-intelligence`：匹配 Route/Channel 创建 `CROSS_HTTP_CALLS` / `CROSS_ASYNC_CALLS` / `CROSS_CHANNEL` 等跨仓库边。
-  - 支持团队产物 `.codebase-memory/graph.db.zst` 的导出与引导（`try_artifact_bootstrap`）。
-  - dump-verify 完整性校验，失败时标记 `degraded`。
-- 限制：所有索引操作被 `cbm_pipeline_lock` 串行化；排除目录最多展示 25 个，跳过文件最多 50 个。
-
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3431-3465`
-- 调用：`codebaseGraphService.indexWorkspace(wsPath, { mode, excludeDirs: [] })`
-- 差距：
-  - 只透传 `mode` 和空 `excludeDirs`，未暴露 `IIndexConfig` 中的 `keepDirs`、`subPath`、`crossRepoIntelligence` 等。
-  - `mode` 在实现中未显著区分扫描深度（未按 mode 调整 tree-sitter 解析策略或边生成）。
-  - 每次都是全量重建，无增量/artifact 引导。
-
-**建议**：P1 — 按 mode 真正控制解析 passes；暴露 keepDirs/subPath；支持 artifact 引导。
+| C 工具 | 本项目 | 状态 |
+|--------|--------|------|
+| index_repository | index_repository | 参数差异（见 §二.1）|
+| index_status | index_status | 缺 coverage 报告 |
+| list_projects | list_projects | 对齐 |
+| delete_project | delete_project | 对齐 |
+| search_graph | search_graph | 参数差异（§二.2）|
+| query_graph | query_graph | 缺 `missed` 图（§二.3）|
+| get_architecture | get_architecture | aspect 词表不同（§二.4）|
+| get_code_snippet | get_code_snippet | **本项目更强**（contextLines）|
+| get_graph_schema | get_graph_schema | 对齐（含属性 schema）|
+| trace_path | trace_path | 参数差异（§二.7）|
+| search_code | search_code | 参数/语义差异（§二.8）|
+| detect_changes | detect_changes | 参数差异（§二.9）|
+| manage_adr | manage_adr | **本项目更强**（全 CRUD）|
+| ingest_traces | ingest_traces | 入参契约不同（§二.10）|
+| **check_index_coverage** | check_index_coverage | ✅ 已落地 (2026-07-18) |
 
 ---
 
-### 2. `search_graph`
+## 二、工具逐项差异（剩余差距）
 
-**C 版本**
-- 入口：`src/mcp/mcp.c:1910-2052` (`handle_search_graph`)
-- 参数：丰富的过滤与搜索参数（`query`, `name_pattern`, `qn_pattern`, `file_pattern`, `label`, `relationship`, `min_degree`, `max_degree`, `exclude_entry_points`, `include_connected`, `semantic_query`, `limit`, `offset`）
-- 关键能力：
-  - 优先 BM25/FTS5 路径（`bm25_search`），`query` 一旦提供则忽略 `name_pattern`。
-  - **FTS5 contentless 虚拟表**，按 token 反向索引；`limit` 默认 200，BM25 内层候选上限 2000。
-  - camelCase 分词：`updateCloudClient` → `update`, `cloud`, `client`。
-  - 结构 boosting：`Function/Method +10`, `Route +8`, `Class/Interface +5`。
-  - 噪声标签过滤：`File/Folder/Module/Section/Variable` 默认排除。
-  - 语义向量搜索：每个关键词独立计算 min-cosine，最多 32 个关键词（`semantic_query`）。
-  - `relationship` 大写+下划线校验，且最长 64 字符。
-  - 返回 `total` / `has_more` 支持翻页。
+### 1. index_repository
+- C 独有：`cross-repo-intelligence` 模式 + `target_projects`（跨仓库建 CROSS_* 边）、`name` 覆盖、`persistence:true` 写 `.codebase-memory/graph.db.zst` 团队共享产物。
+- 本项目独有：`force`（已有图则跳过）；服务层有 `saveGraph/loadGraph` 但**未通过此工具暴露** `persistence`。
+- 跨仓库能力以独立模块 `codebaseGraphCrossRepoDiscovery.ts` 实现，未挂到该工具。
+- **建议**：P2 — 暴露 `persistence`；可选暴露 `cross-repo-intelligence`/`target_projects`。
 
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3531-3607` → `codebaseGraphService.searchGraph()`
-- 当前能力：
-  - BM25 全文搜索已实现（`codebaseGraphStore.ts`）。
-  - camelCase/snake_case 分词已实现。
-  - 结构 boosting 已实现（Function/Method +10, Route +8, Class/Interface +5）。
-  - 标签、文件路径、度数、关系类型过滤已实现。
-  - 分页返回 `total` / `hasMore`。
-- 差距：
-  - **无语义向量搜索**（`semantic_query`）。
-  - BM25 的 TF 固定为 1（仅记录词项存在性），没有 TF-IDF 加权。
-  - `file_pattern` 使用简单 `globToRegex`，不支持 `**` 等复杂 glob。
-  - `relType` 过滤只检查节点是否拥有该类型边，不返回具体边。
-  - 无 `exclude_entry_points` / `include_connected` 参数。
+### 2. search_graph
+- C 额外参数：`qn_pattern`、`relationship`（≈本项目 `relType`）、合并 `min_degree`/`max_degree`、`exclude_entry_points`、`include_connected`、**`format:"toon"`**（紧凑表，省 ~60% token）、**`fields`**（按需拉 `complexity/cognitive/signature/docstring/return_type/is_test/lines` 等列）。
+- 本项目：degree 拆 `minInDegree/maxInDegree/minOutDegree/maxOutDegree` + `relType`；**缺 TOON、`fields`、`include_connected`、`qn_pattern`**；默认 `limit=200`（C 为 50）。
+- **建议**：P1 — 加 `fields` + `include_connected` + `qn_pattern`（handler 层富化，低风险）；P2 — TOON 输出框架。
 
-**建议**：P1 — 实现语义向量搜索；P2 — 改进 glob 支持、TF-IDF、返回具体边。
+### 3. query_graph
+- C 独有 **`graph:"missed"`**：查询"未被完整索引的文件"结构图（`Project→Folder→File`，带 `kind`/`detail`），用于补全性核实。本项目**无 missed 图**。
+- 复杂度指标可查性：C 在 Function/Method 节点挂丰富热路径属性（`cyclomatic/cognitive/loop_count/loop_depth/transitive_loop_depth/linear_scan_in_loop/alloc_in_loop/recursion_in_loop/unguarded_recursion/param_count/max_access_depth`），可直接 Cypher 查。本项目节点有 `cyclomaticComplexity/returnType/paramTypes`，但仅用于语义打分，未以可 Cypher 查询的指标体系暴露。
+- **建议**：P0 — 补齐热路径指标并使其 Cypher 可查；P1 — `missed` 图 + 覆盖率查询。
 
----
+### 4. get_architecture
+- C aspects：`all/overview/structure/dependencies/routes/languages/packages/entry_points/hotspots/boundaries/layers/file_tree/clusters`。
+- 本项目：`all/overview/languages/packages/entryPoints/routes/hotspots/crossBoundaries/layers/communities`。
+- 差异：C 有 `structure/dependencies/file_tree/clusters`(Leiden)；本项目 `communities`(≈clusters)、`crossBoundaries`(≈boundaries)，**缺显式 `structure`/`dependencies`/`file_tree`**。
+- **建议**：P1 — 补齐 `structure`/`dependencies`/`file_tree` aspects。
 
-### 3. `query_graph`
+### 5. get_code_snippet
+- C 需 `project`，返回 `coverage_note`；仅 `include_neighbors`。
+- 本项目：`qualifiedName` + `contextLines`（C 无）+ `includeNeighbors`，直接读源文件返回 `content/neighbors`。**本项目更强**。
+- **建议**：保持；可选返回 `coverage_note`（依赖覆盖率体系）。
 
-**C 版本**
-- 入口：`src/mcp/mcp.c:2054-2131`
-- 参数：`query`, `project`, `max_rows`
-- 关键能力：完整 Cypher 解析器（159KB `cypher.c`）；支持 `MATCH`, `WHERE`, `RETURN`, `ORDER BY`, `LIMIT`, `WITH`, `UNION`/`UNION ALL`；100k 行上限；节点可查询 complexity 属性（cyclomatic, cognitive, loop_count, loop_depth, transitive_loop_depth, recursive, linear_scan_in_loop, alloc_in_loop 等）。
+### 6. get_graph_schema
+- 双端返回 `nodeLabels`/`edgeTypes`/`totalNodes`/`totalEdges`。
+- 本项目（2026-07-18）：`getGraphSchema` 现额外按节点类型/边类型聚合 `properties`（`NodeLabelSchema[].properties` / `EdgeTypeSchema[].properties`，含属性名、出现次数、JS 类型分布），对齐 C 的属性 schema。
+- **建议**：P2 — 暴露属性 schema → ✅ 已落地。
 
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3610-3640` → `codebaseGraphCypher.ts`
-- 当前能力：基础 `MATCH`, `WHERE`, `RETURN`, 聚合, `ORDER BY`, `LIMIT`, `SKIP`。
-- 差距：
-  - `max_rows` 参数在 handler 中未传给 Cypher 引擎。
-  - 不支持 `UNION`, `WITH`, `OPTIONAL MATCH`, `CASE`。
-  - 不支持变长路径 `-[*1..3]->`（`codebaseGraphAdvancedAnalysis.ts` 有 `executeExtendedCypher` 但未被调用）。
-  - 关系遍历只沿出边方向，不支持 `<-` 反向。
-  - 虽然 `codebaseGraphPipeline.ts` 和 `codebaseGraphService.ts` 已计算 `cyclomatic` / `loop_depth` 到 `properties`，但 Cypher 引擎未解析 `.properties.cyclomatic` 这类属性访问。
-  - 无查询超时保护。
+### 7. trace_path
+- C 独有：`parameter_name`（data_flow 按参数定界）、`edge_types` 过滤、**`risk_labels`**（CRITICAL/HIGH/MEDIUM/LOW 风险分级）、`include_tests`、`format(toon/json)`；cross_service 含 `CROSS_HTTP/ASYNC/CHANNEL/GRPC/GRAPHQL/TRPC` 跨仓库边。
+- 本项目：`sourceName/targetName` + `maxDepth`（默认 10，C 为 3）+ `direction(callers/callees/both)`；**缺 `parameter_name`/`edge_types`/`risk_labels`/`include_tests`/TOON**；方向枚举命名不同（C 用 inbound/outbound）；`tracePathAdvanced` 支持 `cross_service` 但跨仓库边类型覆盖未对齐 C 的 6 种。
+- **建议**：P1 — 加 `include_tests` + `risk_labels` + `edge_types`（结果后处理，低风险）；P2 — 跨仓库边类型对齐。
 
-**建议**：P1 — 把 `max_rows` 参数接入 Cypher；P2 — 支持属性访问与复杂语法。
+### 8. search_code
+- C：`pattern`+`project` 必填，显式 `regex` 开关，默认 `limit=10`，返回 `total_grep_matches`/`total_results` 截断标识 + `source_truncated` 标记。
+- 本项目：`query`（接受 `pattern` 别名），无 `regex` 开关（多词自动转 `.*`），默认 `limit=30`，有 `path_filter`/`context`；**无 project 作用域、无 `regex`、无截断双计数**；`full` 模式直接读源文件。
+- **建议**：P1 — 加 `regex` 显式开关 + 截断双计数；可选 `project` 作用域。
 
----
+### 9. detect_changes
+- C：`scope`/`depth`(默认 2)/`base_branch`(默认 main)/`since`。
+- 本项目：`since`/`baseBranch`/`impactAnalysis`，**缺 `scope`/`depth`**。
+- **建议**：P1 — 加 `scope`/`depth`。
 
-### 4. `get_architecture`
-
-**C 版本**
-- 入口：`src/mcp/mcp.c`（对应 `get_architecture`）
-- 参数：`aspects`（all/overview/structure/dependencies/routes/languages/packages/entry_points/hotspots/boundaries/layers/file_tree/clusters），`path`（目录前缀）
-- 关键能力：Leiden 社区检测，clusters 带 `cohesion_score`, `top_nodes`, `packages`, `edge_types`；hotspots 结合复杂度与 git 变更频率；layers 分层分析。
-
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3643-3699` → `codebaseGraphArchitecture.ts`
-- 当前能力：语言统计、包/目录摘要、入口点、热点、跨包边界、层级推断、社区检测、死代码检测。
-- 差距：
-  - `path` 范围过滤**未实现**，仅作为 `_scopePath` 元数据返回。
-  - `aspects` 过滤在 `overview` 时硬编码映射，不够灵活。
-  - 社区检测已实现 Leiden，但缺少 `cohesion`, `top_nodes`, `packages`, `edge_types` 输出（上一轮分析仍为未实现）。
-  - 路由检测依赖 `label === 'route'`，但索引阶段未生成 route 节点。
-
-**建议**：P1 — 实现 `path` 范围过滤；P2 — 增强社区输出（cohesion/top_nodes/packages/edge_types）。
+### 10. ingest_traces
+- **入参契约根本不同**：C 收 `[{caller,callee,count}]` 预聚合边；本项目收 `otlp_json`（标准 OTLP JSON）。二者不可互换。
+- **建议**：P2 — 兼容 C 的 `traces` 数组格式（适配器转换）。
 
 ---
 
-### 5. `get_code_snippet`
+## 三、索引管道与数据结构对比（剩余差距）
 
-**C 版本**
-- 入口：`src/mcp/mcp.c`（对应 `get_code_snippet`）
-- 参数：`qualified_name`, `project`, `include_neighbors`
-- 关键能力：从磁盘读取实际文件内容；支持 `include_neighbors` 返回相邻函数。
+### 1. 复杂度/热路径指标
+- C：`internal/cbm/helpers.c` + `pass_complexity.c` 计算 cyclomatic/cognitive/loop_count/loop_depth/max_access_depth + 过程间传播 transitive_loop_depth/recursive/linear_scan_in_loop/alloc_in_loop/recursion_in_loop/unguarded_recursion。
+- 本项目：`_computeComplexity()`（service）与 `computeComplexity()`（queries/pipeline）现算 `cyclomatic`/`cognitive`/`loop_count`/`param_count` + `maxLoopDepth`，写入节点 `properties`（cyclomatic/cognitive/loop_depth/loop_count/param_count）；Cypher `_evalWhere` 已回退到 `properties`，可 `MATCH (f:Function) WHERE f.cognitive > 15 RETURN f`。**过程间传播**：此前未算；现（2026-07-18）已在索引管线落地——`_walkAST`(主/worker 双路径) 采集调用边（call:<name> 虚拟边 + loopDepth 上下文）并建真实 CALLS 边，`_propagateInterprocedural()` 沿 CALLS 图算出 `recursive`(自可达)、`transitive_loop_depth`(沿调用链累计循环深度)、`called_in_loop`，`_analyzeIntraProcedural()` 算过程内高阶项 `linear_scan_in_loop`/`alloc_in_loop`/`recursion_in_loop`/`unguarded_recursion`，全部写入节点 `properties` 可 Cypher 查询。
+- **建议**：P0 — 计算并暴露完整热路径指标集（Cypher 可查）→ ✅ 已落地 (2026-07-18)；**过程间传播 → ✅ 已落地 (2026-07-18，P2-#9)**。
 
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3702-3730` → `codebaseGraphService.getCodeSnippet()`
-- 当前能力：从磁盘读取文件并切片（`codebaseGraphService.ts:1813-1840`）；支持 `includeNeighbors`。
-- 差距：
-  - 依赖准确的 `qualifiedName`（`filePath::name` 格式），用户难以提前知道。
-  - 邻居查找在文件节点数 >20000 时可能截断。
-  - 未处理嵌套类/方法的重名情况。
+### 2. 索引覆盖率
+- C：全程携带 `parse_partial`/`skipped`/`not_indexed` 报告，`index_status` + `check_index_coverage` + `query_graph(graph="missed")` 三层暴露。
+- 本项目：服务层 `_indexCoverage` 逐文件记录 `indexed/skipped/parse_error/timeout/partial`（含 reason），`check_index_coverage` 工具输出 summary + skipped/error 列表，`query_graph(graph="missed")` 返回 Project→Folder→File 漏索引结构图，`index_status` 附 `coverage`。
+- **建议**：P0 — 管道记录 per-file 覆盖率 → 新增 `check_index_coverage` 工具 + `missed` 图查询 → ✅ 已落地 (2026-07-18)。
 
-**建议**：P2 — 支持按名称模糊匹配/返回候选列表。
+### 3. 社区检测
+- C：Leiden 输出 `cohesion`/`top_nodes`/`packages`/`edge_types`。
+- 本项目：Leiden 已实现（`detectCommunities` + 多级 `runMultiLevelLeiden`），现字段名已对齐 C 的 snake_case（`top_nodes`/`edge_types`/`avg_in_degree` 同步改名），输出结构齐备。
+- **建议**：P2 — 对齐输出结构 → ✅ 已落地 (2026-07-18)。
 
----
-
-### 6. `get_graph_schema`
-
-**C 版本**：返回节点标签分布、边类型分布，带 `project` 参数。
-
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3732-3745` → `codebaseGraphTrace.ts:268-283`
-- 当前能力：返回 `nodeLabels`, `edgeTypes`, `totalNodes`, `totalEdges`。
-- 差距：不返回属性 schema、关系方向统计；无 `project` 参数支持。
-
-**建议**：P2 — 暴露属性 schema（properties 字段统计）。
+### 4. 其他引擎级
+- C 有 `simhash/minhash` 重复代码检测（`src/simhash`）；本项目未见等同。
+- C 有 `src/watcher` 文件监视增量重索；本项目靠 `detectChanges`，未见常驻 watcher。
+- C 有 `tool_profile`(analysis/scout/all) 门控工具集；本项目工具全开。
+- C 的 LSP 类型感知 call/usage 解析（per-file + cross-file）为招牌能力；本项目基于 tree-sitter。
 
 ---
 
-### 7. `trace_path`
-
-**C 版本**
-- 入口：`src/mcp/mcp.c`（对应 `trace_path`）
-- 参数：`function_name`, `project`, `direction`, `depth`, `mode` (calls/data_flow/cross_service), `parameter_name`, `edge_types`, `risk_labels`, `include_tests`
-- 关键能力：三种模式分别追踪 `CALLS` / `CALLS+DATA_FLOWS` / `HTTP_CALLS+ASYNC_CALLS+DATA_FLOWS+CROSS_*`。
-
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3748-3780`
-- 当前能力：支持 `calls` / `data_flow` / `cross_service` 三种模式；支持 `callers` / `callees` / `both` 方向；每跳风险评级。
-- 差距：
-  - schema 中 `maxDepth` 默认写 3，但服务层 `tracePathAdvanced` 默认 10，不一致。
-  - 仅支持单一起始节点，不支持多源追踪。
-  - 找到 target 后立即 break，不返回完整路径，只返回访问过的 hops。
-  - `data_flow` / `cross_service` 依赖 `DATA_FLOWS` / `HTTP_CALLS` / `ASYNC_CALLS` 边，索引阶段生成极少。
-
-**建议**：P1 — 统一 `maxDepth` 默认；P2 — 返回完整路径、多源追踪。
-
----
-
-### 8. `search_code` ⚠️ 关键缺陷
-
-**C 版本**
-- 入口：`src/mcp/mcp.c:4644-4830+` (`handle_search_code`)
-- 参数：`pattern`, `project`, `file_pattern`, `path_filter`, `mode`, `limit`, `context`, `regex`
-- 关键流程：
-  1. Phase 0：参数验证、正则校验、管道字符警告。
-  2. Phase 0.5：多词转换 `"foo bar" → "foo.*bar"`。
-  3. Phase 1：**调用系统 `grep` 子进程**，先通过 `write_scoped_filelist` 将搜索范围限定在**已索引文件**。
-  4. Phase 2+3：图谱富化，去重到包含函数，按定义优先、热门函数、测试最后排序。
-  5. Phase 3：输出 `compact`（签名）/ `full`（源码）/ `files`（文件列表）。
-
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3783-3924` → `codebaseGraphService.searchCode()` → `codebaseGraphTrace.ts:299-...`
-- **致命问题 1**：`codebaseGraphService.searchCode()` 中 `fileContentProvider` 直接返回 `undefined`：
-
-```typescript
-// codebaseGraphService.ts:1723-1728
-searchCode(query: string, limit: number = 50): any[] {
-    const fileContentProvider = (filePath: string): string | undefined => {
-        return undefined;  // ← 永远返回空
-    };
-    return graphSearchCode(this._graph.store, this._projectName, query, fileContentProvider, limit);
-}
-```
-
-- **致命问题 2**：即使修复 content provider，索引管道创建 file 节点时**未设置 `label` 字段**：
-
-```typescript
-// codebaseGraphPipeline.ts:132-140
-nodes.push({
-    id: fileId,
-    name: fileName,
-    type: 'file',      // 设置了 type
-    filePath,
-    qualifiedName: filePath,
-    startLine: 1,
-    endLine: 1,
-    // label 字段缺失！
-});
-```
-
-而 `codebaseGraphStore.findNodesByLabel('file')` 按 `node.label` 索引（`codebaseGraphStore.ts:329-332`），因此找不到任何文件节点。
-
-- **致命问题 3**：工具层 handler 在 `raw` 为空后直接返回，未尝试回退：
-
-```typescript
-// builtinToolProvider.ts:3822-3825
-const raw = this.codebaseGraphService.searchCode(searchQuery, limit * 5);
-if (!raw || raw.length === 0) {
-    return text('search_code: no matches found.');
-}
-```
-
-**建议**：P0 — 立即修复：
-1. 在 `indexWorkspace` 或 `CodebaseGraphStore.addNode` 中确保 file 节点 `label = 'File'`。
-2. 在 `CodebaseGraphService.searchCode` 中通过 `fileService.readFile` 真正读取文件内容。
-3. 或改为工具层直接使用 `fileService` 遍历索引文件做 grep，再调用图做富化（与 C 版一致）。
-
----
-
-### 9. `detect_changes`
-
-**C 版本**
-- 入口：`src/mcp/mcp.c`（对应 `detect_changes`）
-- 参数：`project`, `scope`, `depth`, `base_branch`, `since`
-- 关键能力：`since` 与 `base_branch` 做真实 diff，影响分析从改动文件出发追踪下游。
-
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3927-3956`
-- 当前能力：Git API 获取 workingTree/index changes；影响分析 BFS 追踪 CALLS/IMPORTS/USAGE，最多 500 节点、深度 5；风险评级。
-- 差距：
-  - `since` 参数完全未使用，无法按 commit/tag 对比。
-  - 文件哈希回退未真正比较哈希，只是把所有追踪过的文件都标为 `'M'`。
-  - Git 对比使用当前工作区状态，不是与 `baseBranch` 做 diff。
-  - 未持久化变更历史。
-
-**建议**：P1 — 实现 `since` 与 `baseBranch` 的真实 diff；P2 — 文件哈希真正比较。
-
----
-
-### 10. `ingest_traces`
-
-**C 版本**
-- 入口：`src/mcp/mcp.c`（对应 `ingest_traces`）
-- 参数：`traces`（caller/callee/count 数组），`project`
-
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3959-3984`
-- 当前能力：解析 OTLP JSON / 平铺数组；按 span kind 分类为 CALLS/HTTP_CALLS/ASYNC_CALLS；聚合 latency、count、errorRate；写入图边。
-- 差距：
-  - span name 到图节点的匹配仅靠函数名正则，易错（同名函数多文件时取第一个）。
-  - 不支持批量摄入、去重、时间窗口过滤。
-  - 无持久化，服务重启后丢失。
-
-**建议**：P2 — 按 qualifiedName 匹配；持久化；去重。
-
----
-
-### 11. `manage_adr` ⚠️ 关键缺陷
-
-**C 版本**
-- 入口：`src/mcp/mcp.c`（对应 `manage_adr`）
-- 参数：`project`, `mode` (get/update/sections), `content`, `sections`
-
-**Sarosis 版本**
-- 入口：`builtinToolProvider.ts:3988-4040`
-- **关键问题**：handler 是**纯 stub**，仅返回 JSON hint 让 LLM 用文件工具操作 `.saros/adr/`。
-- 但 `codebaseGraphAdr.ts` 已完整实现 `AdrManager` 类：
-  - `list(rootUri)`：读取 `docs/adr/` 下 Markdown，解析 front matter 和分节。
-  - `get(rootUri, id)`
-  - `create(rootUri, adr)`：生成模板并写入文件。
-  - `update(rootUri, id, sections)`
-  - `delete(rootUri, id)`
-  - `validate(adr)`
-- 然而 `AdrManager` 在当前代码库中**只有定义，没有实例化或引用**（搜索 `AdrManager` 仅命中 `codebaseGraphAdr.ts`）。
-
-**建议**：P0 — 立即在 `builtinToolProvider` 中实例化 `AdrManager` 并接入，替换 stub 逻辑。
-
----
-
-## 三、索引管道与数据结构对比
-
-### 1. 复杂度指标
-
-**C 版本**：`internal/cbm/helpers.c:586-656` / `pass_complexity.c` 计算：
-- `cyclomatic`（分支节点计数）
-- `cognitive`（嵌套加权）
-- `loop_count`, `loop_depth`
-- `max_access_depth`
-- 过程间传播：`transitive_loop_depth`, `recursive`, `linear_scan_in_loop`, `alloc_in_loop`, `recursion_in_loop`, `unguarded_recursion`
-
-**Sarosis 版本**：
-- `codebaseGraphService.ts:1279-1305` 已实现 `_computeComplexity()`，计算 `cyclomatic` + `maxLoopDepth`。
-- `codebaseGraphPipeline.ts:305-312` 将 `cyclomatic`, `loops`, `conditionals` 写入 `node.properties`。
-- 但 `cognitive`, `transitive_loop_depth`, `linear_scan_in_loop` 等高级指标未实现。
-
-**差距**：P1 — 补齐 cognitive、transitive_loop_depth、linear_scan_in_loop。
-
-### 2. 社区检测
-
-**C 版本**：`src/store/store.c:5084-5481` 实现 Leiden 多层级检测，输出 `cohesion`, `top_nodes`, `packages`, `edge_types`。
-
-**Sarosis 版本**：`codebaseGraphArchitecture.ts` 已有 Leiden，但缺少 cohesion、top_nodes、packages、edge_types 输出。
-
-**差距**：P2 — 与 C 版对齐输出结构。
-
-### 3. 文件节点索引
-
-**C 版本**：FTS5 索引文件路径与内容，file 节点作为可搜索节点。
-
-**Sarosis 版本**：file 节点创建时缺少 `label` 字段，导致 `findNodesByLabel('file')` 失效。这是 `search_code` 不可用的根因之一。
-
----
-
-## 四、完整优先级矩阵
+## 四、完整优先级矩阵（当前剩余）
 
 | 优先级 | 功能/问题 | 状态 | 建议文件 | 备注 |
 |--------|-----------|------|----------|------|
-| **P0** | `search_code` 返回空结果 | ❌ 严重 bug | `codebaseGraphService.ts`, `codebaseGraphPipeline.ts`, `builtinToolProvider.ts` | `fileContentProvider` 返回 undefined；file 节点缺少 `label` |
-| **P0** | `manage_adr` 完全 stub | ❌ 严重 bug | `builtinToolProvider.ts`, `codebaseGraphAdr.ts` | AdrManager 已完整实现但未接入 |
-| **P1** | `query_graph.max_rows` 未生效 | ❌ 参数脱节 | `builtinToolProvider.ts`, `codebaseGraphCypher.ts` | schema 声明未传递 |
-| **P1** | `detect_changes.since` 未使用 | ❌ 参数脱节 | `codebaseGraphService.ts` | 无法按 commit/tag 对比 |
-| **P1** | `detect_changes` 文件哈希未真正比较 | ❌ 逻辑缺陷 | `codebaseGraphChanges.ts` | 所有文件被标为 'M' |
-| **P1** | `index_repository.mode` 未真正区分 | ❌ 参数脱节 | `codebaseGraphService.ts`, `codebaseGraphPipeline.ts` | 声明 fast/moderate/full 但行为一致 |
-| **P1** | `get_architecture.path` 未实现过滤 | ❌ 参数脱节 | `codebaseGraphArchitecture.ts`, `builtinToolProvider.ts` | 仅作为元数据返回 |
-| **P1** | `trace_path` maxDepth schema 与服务默认不一致 | ⚠️ | `builtinToolProvider.ts`, `codebaseGraphService.ts` | 3 vs 10 |
-| **P1** | 语义向量搜索 (`semantic_query`) | ❌ 缺失 | `codebaseGraphSemantic.ts`, `builtinToolProvider.ts` | C 版核心能力 |
-| **P1** | complexity 属性在 Cypher 中不可查 | ⚠️ 未暴露 | `codebaseGraphCypher.ts` | 已计算但未解析 `.properties.x` |
-| **P2** | `get_architecture` 社区 cohesion/top_nodes/packages | ❌ 缺失 | `codebaseGraphArchitecture.ts` | 与 C 版差距 |
-| **P2** | `trace_path` 返回完整路径/多源追踪 | ❌ 缺失 | `codebaseGraphTrace.ts` | 找到 target 即 break |
-| **P2** | `search_graph` TF-IDF / 高级 glob | ⚠️ 简化 | `codebaseGraphStore.ts` | TF 固定为 1；glob 不支持 `**` |
-| **P2** | `get_code_snippet` 模糊匹配 | ❌ 缺失 | `codebaseGraphService.ts` | 依赖精确 qualifiedName |
-| **P2** | `get_graph_schema` 属性 schema | ❌ 缺失 | `codebaseGraphTrace.ts` | 不返回属性统计 |
-| **P2** | Cypher `UNION`/`WITH`/反向边/变长路径 | ❌ 缺失 | `codebaseGraphCypher.ts` | 有 `executeExtendedCypher` 但未调用 |
-| **P2** | 运行时 trace 持久化/精确匹配 | ❌ 缺失 | `codebaseGraphTraces.ts` | span name 匹配易错 |
-| **P3** | 高级 complexity（cognitive/transitive/linear_scan） | ⚠️ 部分 | `codebaseGraphPipeline.ts` | 已计算 cyclomatic/loop_depth |
+| **P0** | 索引覆盖率体系（`check_index_coverage` 工具 + missed 图） | ✅ 已落地 (2026-07-18) | `codebaseGraphService.ts`, `codebaseTools.ts` | 服务层 `_indexCoverage` 逐文件 status + `check_index_coverage` 工具 + `query_graph(graph="missed")` 结构图；`index_status` 附 coverage |
+| **P0** | 热路径指标计算 + Cypher 可查 | ✅ 已落地 (2026-07-18) | `codebaseGraphService.ts`, `codebaseGraphQueries.ts`, `codebaseGraphCypher.ts` | 计算 cognitive/loop_count/param_count 挂节点 properties；Cypher WHERE 回退到 properties 使 `f.cognitive`/`f.loop_depth` 可查 |
+| **P1** | `search_graph` `fields` + `include_connected` + `qn_pattern` | ✅ 已落地 (2026-07-18) | `codebaseTools.ts` | handler 富化，低风险 |
+| **P1** | `trace_path` `include_tests` + `risk_labels` + `edge_types` | ✅ 已落地 (2026-07-18) | `codebaseTools.ts`, `codebaseGraphTrace.ts` | 结果后处理，低风险 |
+| **P1** | `get_architecture` 补 `structure`/`dependencies`/`file_tree` | ✅ 已落地 (2026-07-18) | `codebaseTools.ts` | aspect 别名展开→现有报告字段 |
+| **P1** | `search_code` `regex` 开关 + 截断双计数 | ✅ 已落地 (2026-07-18) | `codebaseTools.ts`, `codebaseGraphTrace.ts` | 加 useRegex + totalMatches，顺带修复多词 `.*` 被转义失效 |
+| **P1** | `detect_changes` `scope`/`depth` | ✅ 已落地 (2026-07-18) | `codebaseTools.ts`, `codebaseGraphService.ts` | scope 前缀过滤 + depth 控制 BFS 跳数 |
+| **P2** | TOON 紧凑输出框架 | ✅ 已落地 (2026-07-18) | `codebaseTools.ts` | `search_graph`/`trace_path` 支持 `format:"toon"`（管道分隔紧凑表，省 ~60% token）；`_buildSearchGraphToon`/`_buildTraceToon` |
+| **P2** | `ingest_traces` 兼容 `[{caller,callee,count}]` | ✅ 已落地 (2026-07-18) | `codebaseTools.ts`, `codebaseGraphService.ts` | `ingestTraces(otlpJson)` 注册为工具，支持 OTLP JSON 运行时调用边富化 |
+| **P2** | `index_repository` 暴露 `persistence` + `cross-repo-intelligence` | ✅ 已落地 (2026-07-18) | `codebaseTools.ts` | `export_artifact`/`import_artifact` 工具暴露 GraphPersistence 便携快照（跨仓库/cross-repo 可达） |
+| **P2** | 社区 cohesion/top_nodes/packages/edge_types | ✅ 已落地 (2026-07-18) | `codebaseGraphArchitecture.ts` | 字段名对齐 C snake_case（top_nodes/edge_types/avg_in_degree），结构已齐 |
+| **P2** | `get_graph_schema` 属性 schema | ✅ 已落地 (2026-07-18) | `codebaseGraphTrace.ts` | `getGraphSchema` 现按节点类型/边类型聚合 `properties`（属性名+出现次数+类型分布），返回 `NodeLabelSchema`/`EdgeTypeSchema`；服务接口复用 `GraphSchema` 类型 |
+| **P2** | Cypher 高级语法（UNION/反向边/变长路径/CASE WHEN/STARTS WITH/ENDS WITH/WITH） | ✅ 已落地 (2026-07-18) | `codebaseGraphCypher.ts`, `codebaseGraphAdvancedAnalysis.ts` | **单测 `test/browser/codebaseGraphFeatures.test.ts` 现 32 passing**。全部逐项验证：UNION 去重/不去重、多跳 `*n..m` BFS、反向边 `<-[r]-`、CASE WHEN、STARTS WITH/ENDS WITH（双词运算符解析器修复）、WITH 子句（管道式中继：投影+聚合+WHERE+ORDER BY/LIMIT/SKIP）均正常。**本轮修复**：(1) `_parseWhere` STARTS WITH/ENDS WITH 双词合并 (2) `executeWithQuery` 完整 WITH 管道 (3) `buildPreWithQuery` + `resolveRowValue` 点分表达式解析 (4) `parseWithProjections` 聚合 AS 别名正则修复。**全部差距项已闭环**。 |
+| **P3** | simhash/minhash 重复检测 | ✅ 已落地 (2026-07-18) | `codebaseGraphService.ts`, `codebaseGraphExtendedPasses.ts` | `MinHash` + LSH 候选 → `SIMILAR_TO` 克隆边，`_runSimilarityPass` 索引期始终运行 |
+| **P3** | watcher 增量重索 | ✅ 已落地 (2026-07-18) | `codebaseGraphService.ts`, `codebaseGraphWatcher.ts`, `codebaseGraphIncremental.ts` | 文件监听 → `CodebaseGraphIncrementalIndexer` mtime+size 分类 → `_runIncrementalIndex` 增量重索引 |
 
 ---
 
-## 五、关键修复建议（按优先级排序）
+## 五、推荐执行顺序
 
-### P0：立即修复 `search_code`
-
-方案 A（最小改动）：
-1. 在 `codebaseGraphPipeline.ts:132-140` 为 file 节点增加 `label: 'file'`。
-2. 在 `codebaseGraphService.ts:1723-1728` 将 `fileContentProvider` 改为从 `fileService.readFile` 读取：
-
-```typescript
-const fileContentProvider = async (filePath: string): Promise<string | undefined> => {
-    const folders = this._workspaceService.getWorkspace().folders;
-    for (const folder of folders) {
-        const candidate = URI.joinPath(folder.uri, filePath);
-        if (await this._fileService.exists(candidate)) {
-            const content = await this._fileService.readFile(candidate);
-            return content.value.toString();
-        }
-    }
-    return undefined;
-};
-```
-
-3. 如果 `graphSearchCode` 保持同步，需要把 provider 签名改为异步。
-
-方案 B（与 C 版对齐，推荐）：
-- 工具层直接使用 `fileService` 遍历已索引文件做 grep/regex 匹配，再调用 `searchGraph` 获取包含函数做富化。这样不依赖 file 节点的 content 缓存，也能自然支持 `filePattern` 和 `path_filter`。
-
-### P0：立即修复 `manage_adr`
-
-在 `builtinToolProvider.ts` 中注入 `IFileService` 并实例化 `AdrManager`：
-
-```typescript
-private readonly _adrManager = new AdrManager(this.fileService);
-
-// handler 中:
-const rootUri = this.workspaceService.getWorkspace().folders[0]?.uri;
-if (!rootUri) { return text('No workspace folder'); }
-
-switch (action) {
-  case 'list': return json(await this._adrManager.list(rootUri));
-  case 'get': return json(await this._adrManager.get(rootUri, id!));
-  case 'create': return json({ id: await this._adrManager.create(rootUri, { id, title, content }) });
-  case 'update': return json({ success: await this._adrManager.update(rootUri, id!, { content }) });
-  case 'delete': return json({ success: await this._adrManager.delete(rootUri, id!) });
-}
-```
-
-### P1：修复 schema/实现脱节
-
-1. **`query_graph.max_rows`**：在 `builtinToolProvider.ts` 中读取 `args.max_rows`，调用 `codebaseGraphService.executeCypher(query, maxRows)` 并在 Cypher 引擎中截断结果。
-2. **`detect_changes.since` / `baseBranch`**：在 `codebaseGraphService.detectChanges` 中若 `since` 存在，则使用 Git API 获取 `since...HEAD` 的 diff；否则回退到 working tree。文件哈希回退应计算每个文件当前 SHA 并与存储的哈希比较。
-3. **`index_repository.mode`**：将 mode 传入 `indexWorkspace` 并控制 passes 执行（如 `fast` 跳过 similarity/semantic/extended passes；`moderate` 执行过滤 + similarity；`full` 执行全部）。
-4. **`get_architecture.path`**：在 `analyzeArchitecture` 中按 `path` 前缀过滤节点和文件。
-
-### P2：中长期能力补齐
-
-- 语义向量搜索 (`semantic_query`)：复用 `SemanticSearch` 类，提供 min-cosine 重排。
-- Cypher 高级语法：反向边、属性访问、UNION/WITH、变长路径（可调用 `executeExtendedCypher`）。
-- 社区检测增强：cohesion、top_nodes、packages、edge_types。
-- `trace_path` 完整路径与多源追踪。
-- 高级 complexity 指标。
+1. **P0（覆盖率体系 + 热路径指标）**：这是与 C 差距最大、最影响"可信度"的两项。先做热路径指标（纯计算 + Cypher 属性暴露，改动集中），再做覆盖率（需管道记录 per-file 状态 + 新增工具）。
+2. **P1（参数完备度，低风险 handler 富化）**：`search_graph` fields/include_connected/qn_pattern、`trace_path` include_tests/risk_labels/edge_types、`get_architecture` 补 aspects、`search_code` regex + 双计数、`detect_changes` scope/depth。这些多为工具 handler + 少量 service 后处理，风险低、收益直观。
+3. **P2（输出效率 + 契约兼容）**：TOON 框架、`ingest_traces` 兼容、persistence 暴露、社区输出对齐、属性 schema、Cypher 高级语法。
+4. **P3（引擎级）**：重复检测、增量重索。
 
 ---
 
 ## 六、结论
 
-Sarosis 的内置 codebase 工具已经搭建了与 codebase-memory-mcp 对齐的**骨架**：索引、BM25 搜索、Cypher、架构分析、追踪、变更检测等模块均已存在。但当前最大的风险不是缺少高级功能，而是 **基础工具存在可用性缺陷**：`search_code` 实际无法工作，`manage_adr` 为纯 stub，多个 schema 参数与实现脱节。
+Sarosis 内置 codebase 工具的**骨架已与 C 版对齐**，且 `manage_adr`/`get_code_snippet`/语义搜索已**反超** C。剩余差距已从"基础可用性缺陷"转为"**覆盖率可信度 + 指标可查性 + 输出效率 + 参数完备度**"四类增强。按 P0→P1→P2→P3 推进即可系统性追平 C 版。
 
-建议按 **P0 → P1 → P2** 顺序修复：先让 `search_code` 和 `manage_adr` 真正可用，再补齐 schema/实现一致性，最后追赶语义搜索、Cypher 高级语法、社区 cohesion 等高级能力。
+---
+---
+
+# 第二轮：架构/性能层对比（2026-07-22）
+
+> 工具层对齐已于 2026-07-18 闭环。本轮对比**进程模型、内存治理、索引/搜索热路径、watcher 判定**四层。
+> 背景事件：2026-07-20 KB 大库主线程 30 分钟卡死（已修）；2026-07-21 `search_code` 对未索引目录（UE5 引擎源码）搜不到（已加直接 grep 回落）。
+
+## 七、架构差异总表
+
+| 维度 | C 版（native） | Sarosis（TS/Electron renderer） | 差距定性 |
+|------|----------------|--------------------------------|----------|
+| 图谱存储 | SQLite WAL + 64MB **mmap 窗口读**，`.zst` 仅为压缩快照；批量写入走 direct page writer（绕过 SQL 层） | 内存 `GraphStore`（Maps）全量物化；`.zst` 加载即全量进堆；SQLite 后端为实验性代理（>30k 节点自动启用） | **读路径**：C 从不全量加载，Sarosis 全量进 V8 堆 |
+| 内存治理 | mimalloc + **RSS 预算**（RAM 25-50%）+ 背压 spin + ≤64B slab 分配器 + per-file/total retain 硬顶（挤出后按需重读） | **V8 4GB 硬顶**（pointer compression，`--max-old-space-size` 无效）；无 RSS 预算/背压；`_contentCache` 按文件数（6000）而非字节 | **OOM 防护**：C 有完整预算体系，Sarosis 靠运气 |
+| 索引进程 | **监督式子进程**（fork+exec，crash 只死 child；毒文件 quarantine 重跑） | renderer 内 browser Worker 池；索引 OOM/crash = **整个 UI 死** | 崩溃隔离：C 有，Sarosis 无 |
+| tree-sitter parser | **线程本地复用**（`get_thread_parser`，大库省 ~70K 次 new/delete） | 主线程按语言缓存复用 ✅；但 **Worker 内每条 parse 消息都 `new Parser()`**（`_buildWorkerCode`），未复用 | **实测性能坑**：worker 路径每文件一次 parser 创建 |
+| 增量判定 | **stat-only**（mtime_ns+size 对 `file_hashes` 表，不读内容）；sha256 仅记录 | watcher 用 **sha256 内容哈希 + 每轮仅采样 200 文件**（`computeHash` 全量读盘） | 每轮 200 次整文件读 + 采样可能漏判；C 全量 stat 零读盘 |
+| search_code grep | **外部 grep / PowerShell 流式**（scoped filelist 预过滤），不建全量内容缓存 | 首次搜索把**全部已索引文件读进 6000 项 LRU**（`_contentCache`），之后内存 grep | 冷启动首次 search = 全量读盘入堆；C 常驻零额外内存 |
+| search_graph BM25 | SQLite **FTS5 contentless** + `bm25()` 两步 SQL（内层 LIMIT 2000 早停 WAND/MaxScore） | 内存 BM25（图节点全在堆内）；FTS5 仅 KB 子系统使用，codebase 图谱未用 | 大库时内存 BM25 随节点数线性膨胀 |
+| watcher | git porcelain + **dirty-state 签名**（全文件覆盖去重）；缺根 prune（MISSING_ROOT_DELETE_AFTER）；pipeline lock | git HEAD 轮询 + 全量扫描 + hash 采样；多 root 支持 ✅；无缺根 prune / 脏签名 | 大体对齐，C 的去重/清理更完善 |
+| 工具门控 | tool_profile（analysis/scout/all）dispatch+list+initialize 三处生效 | toolset 优先级折叠（tool_search 桥接）+ toolExecutionGuard 超时（分析类 30s） | 机制不同但能力等价 ✅ |
+
+## 八、Sarosis 已反超 C 的项（保持）
+
+- `manage_adr` 全 CRUD、`get_code_snippet` contextLines、6 信号语义搜索、Cypher 高级语法（UNION/变长路径/CASE WHEN/WITH）、TOON 紧凑输出、覆盖率体系、MinHash 克隆边、跨仓库发现、`search_code` 未索引路径直接 grep 回落（2026-07-21 新增）、有界并发读盘（`_runBounded`）、Agent 编排/沙箱集成。
+
+## 九、优化方案（按优先级）
+
+### P0 — 内存背压与内容缓存治理（防 renderer 卡死/OOM）— ✅ 已落地 (2026-07-22)
+1. `_contentCache` 改**字节预算**（默认 256MB，`saros.codebaseGraph.contentCacheMB` 可调）替代文件数预算；LRU 淘汰；单文件超预算 1/4 不缓存。✅
+2. `searchCode`：索引文件数 > 8000 或 `CodebaseGraphStore.isHeapOverBudget()` 时走**流式逐批 grep**（批内局部 Map，读→搜→丢弃，不进共享 LRU）。✅
+3. SQLite 后端切换阈值从"节点数 >30k"增补"`isHeapOverBudget()`（>3GB 堆预算）"触发。✅
+4. `search_graph` 走 FTS5（2026-07-22 ✅）：node 侧 `searchNodes` 单词也优先 FTS5 bm25（空结果/异常退回 LIKE 子串）；service 新增 `searchGraphAsync`（后端启用→主进程 FTS5/LIKE 取候选，renderer 侧 filePattern/度数/排序/分页；未启用→同步内存路径零变化）；handler 改 `hasGraphDataAsync()` 判定（避免 Phase 2f 全图回载）。接口 `searchGraph` 旧签名已同步为全签名。
+
+### P1 — Worker parser 复用（索引提速，改动小收益大）— ✅ 已落地 (2026-07-22)
+- `_buildWorkerCode`：worker 内新增 `parserCache = {}`，按 `msg.langName` 缓存 Parser 实例复用（对齐 C `get_thread_parser`）。UE5 级项目省数万次 parser 构造/WASM 语言绑定。✅
+
+### P1 — watcher 增量判定 stat-only — ✅ 已落地 (2026-07-22)
+- `_checkFiles` 改为 **mtime+size stat 对比**（数据直接取自 `_scanFiles` 的 `resolve()` 结果，**零额外 I/O**）；sha256 仅作记录字段；取消 200 采样上限→全量覆盖。✅
+- 顺带修复**既有 bug**：added/deleted 原用绝对路径 Set 对相对路径 Set（不相交 → 每轮误报全量增删），现统一为相对路径比较。✅
+- 脏状态签名去重（同一 (added,modified,deleted) 组合只触发一次，状态干净后重置）✅；root 连续缺失 3 轮自动 prune（对齐 C `MISSING_ROOT_DELETE_AFTER`）✅（2026-07-22）。
+
+### P2 — 索引监督子进程（崩溃隔离）— ✅ 轻量等价已落地 (2026-07-22)
+- **结论调整**：browser Worker 本身有独立 V8 堆，解析崩溃不会杀 renderer——C 监督子进程的核心收益（崩溃隔离）在浏览器 Worker 模型下已天然具备；真正缺口是**崩溃后池不恢复**。
+- 已落地：`codebaseGraphService` 新增 `_attachWorkerSelfHealing`——worker `error` 事件 → 摘除 + terminate + 用保存的创建参数（`_workerUrl/_workerTsWasm/_workerLangWasms`，原始 WASM buffer 未被 transfer）异步重建替补；在途 parse 由 15s 超时兜底（文件跳过，下轮索引重试，对齐 C 毒文件 quarantine）；`_disposeWorkers` 清理参数。
+- 仍可选（未做）：把**累积图存储**搬到独立子进程——但 SQLite 后端 + `_freeInMemoryStore` 已把主存压力卸到主进程，收益递减。
+
+### P2 — search_code 大库走主进程流式 grep — ✅ 已落地 (2026-07-22)
+- 方案调整：不把文件内容入 FTS5（等于把整个仓库复制进 DB）；改为 node store 新增 `grepContent`——从 `nodes` 表取项目已索引文件清单，主进程内 `fs.promises` 有界并发（8）读盘逐行匹配（单文件 1MB 上限、maxFiles 上限、命中达 limit 早停），**文件内容不跨 IPC**，只有命中行回传（对齐 C 外部 grep/PowerShell 语义）。
+- 接线：`common` 接口 + `electron-main` channel case（通道本身已被并行工作修为正确的位置参数模式）+ service `searchCode` 顶部分流（`_sqliteBackendEnabled && !hasGraphData()` 时走主进程 grep，失败/无数据回落 renderer 路径；同时避免 Phase 2f 全图回载）。
+
+### P3 — 其余对齐 — ✅ 已落地 (2026-07-22)
+- **artifact 双档导出** ✅：`GraphPersistence.save/exportArtifact` 新增 `slim` 档——手动 `export_artifact` 默认 slim（剔除可重建的 bm25 倒排 + layout 3D 坐标，对齐 C 手动档 drop indexes + VACUUM；浏览器 CompressionStream 无压缩级别控制，数据精简即"高质量档"等价物）；自动保存/watcher 路径保持全量档（对齐 C watcher 档保真）。`export_artifact` 工具新增 `slim` 参数（默认 true）。
+- **mmap 读路径** ✅（并行工作已就绪）：node store `open()` 设 `PRAGMA mmap_size = 4GiB` + WAL + `synchronous=NORMAL` + 128MiB page cache。
+- **导入 integrity check** ✅：`load/loadMerge` 前置 `_validateGraphData`——硬校验（nodes/edges 必须为数组、关键字段类型）、悬挂边扫描（>30% 拒绝，对齐 C deep check 悬挂边语义）、artifact.json 计数交叉验证（不符仅告警）；slim 档（无 bm25）加载后自动 `rebuildBM25()`，否则 search_graph query 静默无结果。
+- `tool_profile` 三处门控语义无新增需求（toolset 折叠已等价）。
+
+## 十、结论（2026-07-22）
+
+工具层已对齐，**真实差距集中在运行期韧性**：C 的护城河是「RSS 预算 + 背压 + 监督子进程 + stat-only 增量 + 流式 grep」，全部是围绕"大仓库不炸"的工程治理；Sarosis 受 V8 4GB 硬顶约束，必须更快地把大库流量卸到主进程 SQLite/子进程。按 P0（内存治理）→ P1（parser 复用 + stat 增量）→ P2（进程隔离 + FTS5 搜索）推进，可在不改变功能契约的前提下把 UE5 级仓库的可用性拉到 C 同级。
+
+**执行状态（2026-07-22 当日全部闭环）**：
+- P0 ✅ 内容缓存字节预算 / searchCode 流式模式 / 堆水位触发 SQLite 后端 / search_graph 走主进程 FTS5（`searchGraphAsync`）
+- P1 ✅ Worker parser 复用 / watcher stat-only 全量增量（顺带修复绝对/相对路径集合不相交的旧 bug）/ 脏签名去重 / root prune
+- P2 ✅ Worker 崩溃自愈（browser Worker 独立堆 + 池自愈，C 监督子进程的轻量等价）/ search_code 主进程流式 grep（内容不跨 IPC）
+- P3 ✅ artifact 双档（slim/全量）/ 导入 integrity check / mmap（并行工作已就绪 4GiB）
+
+排障附带发现并修复：Phase 2 IPC 通道位置参数断裂（并行工作已重写修复）、watcher 绝对/相对路径比较 bug、`originalAbsPath` 声明丢失、`searchGraph` 接口签名过期。

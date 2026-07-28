@@ -24,11 +24,12 @@
 					'self'
 					vscode-webview:
 				;
-				script-src
-					'self'
-					'unsafe-eval'
-					blob:
-					'nonce-0c6a828f1297'
+			script-src
+				'self'
+				'unsafe-eval'
+				'wasm-unsafe-eval'
+				blob:
+				'nonce-0c6a828f1297'
 				;
 				style-src
 					'self'
@@ -70,6 +71,7 @@
 					richScreenReaderContent
 					chatDebugTokenizer
 					kbLuteScript
+					agentStudioWorker
 				;
 		"/>
 	</head>

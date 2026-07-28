@@ -109,21 +109,21 @@ export function registerUnifiedMemoryTools(ctx: UnifiedMemoryToolContext): void 
 						return ok ? text(`Memory ${memId} reinforced.`) : text(`memory_improve: memory ${memId} not found`);
 					}
 					// 回退（旧行为，可能覆盖原内容）
-					await memProvider.writeMemory(agentId, {
-						id: memId,
-						type: 'episodic',
-						content: '(reinforced)',
-						metadata: { reinforced: true, source: 'memory_improve' },
-					});
-					return text(`Memory ${memId} reinforced.`);
+				await memProvider.writeMemory(agentId, {
+					id: memId,
+					type: 'fact',
+					content: '(reinforced)',
+					metadata: { reinforced: true, source: 'memory_improve' },
+				});
+				return text(`Memory ${memId} reinforced.`);
 				}
 				if ((action === 'update' || action === 'merge') && newContent) {
-					await memProvider.writeMemory(agentId, {
-						id: `${memId}-${action}-${Date.now()}`,
-						type: 'episodic',
-						content: newContent,
-						metadata: { improves: memId, action, source: 'memory_improve' },
-					});
+				await memProvider.writeMemory(agentId, {
+					id: `${memId}-${action}-${Date.now()}`,
+					type: 'fact',
+					content: newContent,
+					metadata: { improves: memId, action, source: 'memory_improve' },
+				});
 					return text(`Memory ${memId} ${action}d with new content.`);
 				}
 				return text(`memory_improve: unknown action "${action}"`);
@@ -167,7 +167,7 @@ export function registerUnifiedMemoryTools(ctx: UnifiedMemoryToolContext): void 
 				// 回退（旧行为：仅写 forget 标记，原记忆仍可被召回）
 				await memProvider.writeMemory(agentId, {
 					id: `forget-${memId}-${Date.now()}`,
-					type: 'episodic',
+					type: 'fact',
 					content: `(forgotten: ${memId})`,
 					metadata: { forgets: memId, reason: reason ?? 'user_request', source: 'memory_forget' },
 				});

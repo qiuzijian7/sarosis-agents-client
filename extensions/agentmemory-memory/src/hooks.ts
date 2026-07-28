@@ -12,7 +12,7 @@
  *    4. pre_tool_use     — 工具调用前：文件富化（注入文件记忆）
  *    5. post_tool_use    — 工具调用后：捕获工具结果 + 文件访问记录
  *    6. post_tool_failure — 工具失败后：记录错误教训
- *    7. stop             — 对话停止：触发 L1 提取 + 持久化
+ *    7. stop             — 对话停止：工作记忆持久化（session_end 链压缩/反思由 triggerHook 另行触发）
  *    8. task_completed   — 任务完成：结晶化 + 技能提取
  *
  *  与现有方法的集成：
@@ -458,7 +458,7 @@ export function createPreCompactHook(): { type: HookType; handler: HookHandler; 
 
 /**
  * 创建默认的 stop 钩子
- * 对话停止：触发 L1 提取 + 持久化
+ * 对话停止：工作记忆持久化（记录最近 turn）；session_end 链（压缩/反思/图提取）由 triggerHook('session_end') 另行触发。
  */
 export function createStopHook(): { type: HookType; handler: HookHandler; priority: number } {
 	return {

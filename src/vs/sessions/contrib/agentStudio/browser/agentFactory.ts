@@ -7,7 +7,7 @@
 
 import type { IAgentStudioService } from '../common/agentStudio.js';
 import type { Agent, OrchestrationPlan } from '../common/types.js';
-import { AgentType, PlanTaskStatus } from '../common/types.js';
+import { PlanTaskStatus } from '../common/types.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
 // ─── Score Weights (ported from Ruflo queen-coordinator) ────────────────────
@@ -96,8 +96,14 @@ export class AgentFactory {
 	 * Assign agents to all tasks in the plan.
 	 * Strategy:
 	 * 1. Reuses existing agents by name match first (pool reuse).
-	 * 2. Falls back to scoring-based selection from available agents.
-	 * 3. Auto-creates agents when no suitable candidate exists.
+	 * 2. Falls back to scoring-based selection from the *existing* agent pool only.
+	 *
+	 * NOTE: Agent auto-creation is intentionally DISABLED in orchestration.
+	 * DAG/agent-loop tasks may only reuse project agents that already exist.
+	 * Users create new agents themselves via the create-agent skill / `new_agent`
+	 * tool / CreateAgent UI — which are NOT part of this orchestration path.
+	 * If no existing agent matches a task, the task is left unassigned (caller
+	 * handles it as an error), never silently auto-created.
 	 */
 	async assignAgents(plan: OrchestrationPlan): Promise<void> {
 		// Agents are global definitions; all are candidates across workspaces.
@@ -134,10 +140,10 @@ export class AgentFactory {
 			}
 
 		// Strategy 2: Score-based selection - 从已有agent中选择评分最高的
-		// 只有当 autoCreateAgent 为 false 时才尝试评分匹配，否则直接创建新 agent
-		if (!task.autoCreateAgent) {
-			const allAgents = await this.agentStudioService.getAgents();
-			const best = this._selectBestAgent(allAgents, task.assigneeRole || '', this._usedAgentIds);
+		// 编排任务仅允许使用当前项目中已有的 agent（agent loop / DAG 不再自动创建 agent）。
+		// 因此始终尝试从现有 agent 池中匹配，绝不新建。
+		{
+			const best = this._selectBestAgent(validAgents, task.assigneeRole || '', this._usedAgentIds);
 			if (best) {
 				task.assigneeId = best.id;
 				task.assigneeName = best.name;
@@ -145,37 +151,9 @@ export class AgentFactory {
 				this.logService.info(`[AgentFactory] [Strategy 2] Score-matched agent "${best.name}" (id=${best.id}, role=${best.role}) for task "${task.title}" (role=${task.assigneeRole})`);
 				continue;
 			} else {
-				this.logService.info(`[AgentFactory] [Strategy 2] No suitable agent found via scoring. Candidates excluded: [${this._usedAgentIds.size} used], role=${task.assigneeRole}`);
+				this.logService.warn(`[AgentFactory] [Strategy 2] No suitable existing agent found for task "${task.title}" (role=${task.assigneeRole}). Agent creation is disabled in orchestration — task left unassigned.`);
 			}
-		} else {
-			this.logService.info(`[AgentFactory] [Strategy 2] Skipping score-based selection because autoCreateAgent=true for task "${task.title}"`);
 		}
-
-			// Strategy 3: Auto-create - 只有当确实没有合适agent时才创建新的
-			const shouldCreate = task.autoCreateAgent || (task.assigneeName && !existingByName.has(task.assigneeName.toLowerCase()));
-			if (shouldCreate) {
-				try {
-					const agentName = task.assigneeName || `Agent-${task.title.slice(0, 20)}`;
-					this.logService.info(`[AgentFactory] [Strategy 3] Auto-creating agent "${agentName}" for task "${task.title}" (autoCreateAgent=${task.autoCreateAgent}, not found in existing=${!existingByName.has((task.assigneeName || '').toLowerCase())})`);
-					const newAgent = await this.agentStudioService.createAgent({
-						name: agentName,
-						role: task.assigneeRole || 'Agent',
-						agentType: AgentType.Worker,
-						workspaceId: plan.workspaceId,
-					} as Partial<Agent>);
-					task.assigneeId = newAgent.id;
-					task.assigneeName = newAgent.name;
-					this._usedAgentIds.add(newAgent.id);
-					existingByName.set(newAgent.name.toLowerCase(), newAgent);
-					this.logService.info(`[AgentFactory] [Strategy 3] Created agent "${newAgent.name}" (id=${newAgent.id}) for task "${task.title}"`);
-				} catch (err) {
-					task.status = PlanTaskStatus.Error;
-					task.error = `Failed to create agent: ${String(err)}`;
-					this.logService.error(`[AgentFactory] [Strategy 3] Failed to create agent "${task.assigneeName}": ${err}`);
-				}
-			} else {
-				this.logService.warn(`[AgentFactory] No suitable agent found for task "${task.title}" and auto-create not triggered (autoCreateAgent=${task.autoCreateAgent}, assigneeName=${task.assigneeName})`);
-			}
 		}
 	}
 

@@ -20,6 +20,62 @@
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 
+/**
+ * 解析 searchCode / get_code_snippet 读取文件时用的 URI。
+ *
+ * C 版 graph.db.zst 把节点的 filePath 存成【绝对路径】（如
+ * "F:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/CoreUObject/GarbageCollection.cpp"）。
+ * 若直接 URI.joinPath(rootUri, absolutePath)，URI.joinPath 会把绝对路径当成相对路径
+ * 拼接到工作区根之后，生成形如
+ * "f:/GR_qiuzijian_main/S1Game/F:/GR_qiuzijian_main/UE5EA/..." 的垃圾路径，
+ * 导致 _fileService.exists() 永远返回 false、文件内容永远读不到，search_code 静默返回
+ * "no matches found"（即使磁盘上该绝对路径真实存在）。
+ *
+ * 因此：绝对路径（Windows 盘符 / *nix 根）直接用 URI.file 解析；相对路径才 joinPath(rootUri)。
+ */
+export function resolveSearchFileUri(rootUri: URI | undefined, filePath: string): URI {
+	const isAbsolute = /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/');
+	if (isAbsolute) {
+		return URI.file(filePath);
+	}
+	if (rootUri) {
+		return URI.joinPath(rootUri, filePath);
+	}
+	return URI.file(filePath);
+}
+
+/**
+ * 解析 searchCode / get_code_snippet 读取文件时的【候选 URI 列表】（多 workspace folder 兼容）。
+ *
+ * 工作区可能含多个 folder（如 S1Game + UE5EA 两个独立根）。C 版 graph.db.zst 的 filePath：
+ *  - 绝对路径（Windows 盘符 / *nix 根）→ 直接用 URI.file 解析（单候选，忽略 folder 列表）
+ *  - 相对路径 → 依次拼接每个 workspace folder，调用方取第一个 exists() 的
+ *    （UE5EA 引擎文件相对路径相对 UE5EA 根，只有依次尝试各 folder 才能命中）
+ *
+ * @param rootUris 所有 workspace folder 的根 URI（顺序敏感，folder[0] 优先）
+ * @param filePath 图中节点的 filePath
+ * @returns 候选 URI 列表（绝对路径为单元素；相对路径为「每个 folder 拼接」的列表）
+ */
+export function resolveSearchFileCandidates(rootUris: URI[], filePath: string): URI[] {
+	const isAbsolute = /^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/');
+	if (isAbsolute) {
+		return [URI.file(filePath)];
+	}
+	if (rootUris.length === 0) {
+		return [URI.file(filePath)];
+	}
+	return rootUris.map(r => URI.joinPath(r, filePath));
+}
+
+
+// ─── Memory-safety constants (Phase 0: 对齐 codebase-memory-mcp 的 limits/预算闸) ──
+/** 单次 search 最多返回的节点数，防止无界结果撑爆内存（对齐 C 版 max_results） */
+export const GRAPH_HARD_RESULT_CAP = 2000;
+/** includeConnected / BFS 遍历的最大跳数，防止循环图无界展开（对齐 C 版 CBM_MCP_MAX_DEPTH=15） */
+export const GRAPH_MAX_BFS_DEPTH = 15;
+/** 超过此节点数时跳过事务整库快照，避免索引期 toJSON 2x 峰值 */
+const GRAPH_TX_SNAPSHOT_NODE_THRESHOLD = 50_000;
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface GraphNode {
@@ -75,6 +131,8 @@ export interface SearchParams {
 	includeConnected?: boolean;    // (P1) include directly connected nodes
 	limit?: number;
 	offset?: number;
+	/** BFS / includeConnected 遍历最大跳数（默认 GRAPH_MAX_BFS_DEPTH，防止循环图无界展开） */
+	maxDepth?: number;
 }
 
 export interface SearchResult {
@@ -229,6 +287,26 @@ export class CodebaseGraphStore {
 	// 延迟 BM25 索引：批量写入时跳过逐条 addDocument，最后一次性重建
 	private _deferBM25 = false;
 
+	/**
+	 * 构建 BM25 索引文本（对齐 C 版 FTS5 索引范围：name + qn + filePath + signature + docstring + ...）
+	 * 扩展索引使 search_graph 能匹配函数签名中的参数名、返回类型等，而非仅匹配节点名。
+	 */
+	private _buildBM25Text(node: GraphNode): string {
+		const parts: string[] = [node.name, node.qualifiedName];
+		if (node.filePath) { parts.push(node.filePath); }
+		if (node.properties) {
+			// 索引常见属性字段（对齐 C 版 FTS5 索引列）
+			const propKeys = ['signature', 'docstring', 'returnType', 'paramTypes', 'return_type', 'param_types', 'doc'];
+			for (const key of propKeys) {
+				const val = node.properties[key];
+				if (typeof val === 'string' && val.length > 0) { parts.push(val); }
+				else if (Array.isArray(val)) { parts.push(val.join(' ')); }
+			}
+		}
+		return parts.join(' ');
+	}
+
+
 	// Layout cache
 	private _layout: Map<number, { x: number; y: number; z: number }> = new Map();
 
@@ -252,7 +330,7 @@ export class CodebaseGraphStore {
 			// Update BM25 index (skip if deferred)
 			if (!this._deferBM25) {
 				this._bm25.removeDocument(existingId);
-				this._bm25.addDocument(existingId, `${node.name} ${node.qualifiedName} ${node.filePath || ''}`);
+				this._bm25.addDocument(existingId, this._buildBM25Text(updated));
 			}
 			return updated;
 		}
@@ -284,7 +362,7 @@ export class CodebaseGraphStore {
 
 		// Add to BM25 index (skip if deferred — will be rebuilt in batch later)
 		if (!this._deferBM25) {
-			this._bm25.addDocument(id, `${node.name} ${node.qualifiedName} ${node.filePath || ''}`);
+			this._bm25.addDocument(id, this._buildBM25Text(newNode));
 		}
 
 		return newNode;
@@ -299,18 +377,25 @@ export class CodebaseGraphStore {
 		this._deferBM25 = defer;
 	}
 
-	/** 批量重建 BM25 索引（在 setDeferBM25(true) ... 写入 ... 之后调用） */
-	rebuildBM25(onProgress?: (done: number, total: number) => void): void {
+	/**
+	 * 批量重建 BM25 索引（在 setDeferBM25(true) ... 写入 ... 之后调用）。
+	 * 改为 async + 时间切片：大图(百万节点)遍历全量建索引是最大单点同步重活，
+	 * 原先纯同步无 yield → 主线程冻结数秒~数十秒（对齐 Phase 1 重路径防卡）。
+	 * 直接迭代 Map.values() 而非 Array.from 全量副本，降低大图内存峰值。
+	 */
+	async rebuildBM25(onProgress?: (done: number, total: number) => void): Promise<void> {
 		this._bm25.clear();
-		const allNodes = Array.from(this._nodes.values());
-		const total = allNodes.length;
-		for (let i = 0; i < total; i++) {
-			const n = allNodes[i];
-			this._bm25.addDocument(n.id, `${n.name} ${n.qualifiedName} ${n.filePath || ''}`);
-			if (onProgress && (i % 10000 === 0 || i === total - 1)) {
-				onProgress(i + 1, total);
+		const total = this._nodes.size;
+		const YIELD_EVERY = 5000; // 每 5000 节点让出主线程一次，保持 UI 响应
+		let done = 0;
+		for (const n of this._nodes.values()) {
+			this._bm25.addDocument(n.id, this._buildBM25Text(n));
+			if (++done % YIELD_EVERY === 0) {
+				if (onProgress) { onProgress(done, total); }
+				await new Promise<void>(resolve => setTimeout(resolve, 0));
 			}
 		}
+		if (onProgress) { onProgress(total, total); }
 	}
 
 	getNode(id: number): GraphNode | undefined {
@@ -330,6 +415,87 @@ export class CodebaseGraphStore {
 	findNodesByLabel(project: string, label: string): GraphNode[] {
 		const ids = this._nodesByLabel.get(`${project}:${label}`) || [];
 		return ids.map(id => this._nodes.get(id)!).filter(Boolean);
+	}
+
+	/**
+	 * 获取文件节点（多 folder 感知）。project 提供时限定单项目，否则遍历所有项目。
+	 * 兼容标签大小写（'file'/'File'）；无 file 标签节点时回退到所有含 filePath 的节点（按 project:filePath 去重）。
+	 */
+	getAllFileNodes(project?: string): GraphNode[] {
+		const collect = (p: string): GraphNode[] => {
+			let n = this.findNodesByLabel(p, 'file');
+			if (n.length === 0) { n = this.findNodesByLabel(p, 'File'); }
+			return n;
+		};
+		let nodes: GraphNode[] = [];
+		if (project) {
+			nodes = collect(project);
+		} else {
+			for (const p of this.listProjects()) { nodes.push(...collect(p.name)); }
+		}
+		if (nodes.length === 0) {
+			const seen = new Set<string>();
+			for (const n of this._nodes.values()) {
+				if (!n.filePath) { continue; }
+				if (project && n.project !== project) { continue; }
+				const key = `${n.project}:${n.filePath}`;
+				if (seen.has(key)) { continue; }
+				seen.add(key);
+				nodes.push(n);
+			}
+		}
+		return nodes;
+	}
+
+	/** 跨项目按 qualifiedName 查找节点（多 folder：qn 可能属于任一 folder 项目）。 */
+	findNodeByQNAnyProject(qualifiedName: string): GraphNode | undefined {
+		for (const p of this.listProjects()) {
+			const n = this.findNodeByQN(p.name, qualifiedName);
+			if (n) { return n; }
+		}
+		return undefined;
+	}
+
+	/**
+	 * 模糊按 qualifiedName 查找节点（多 folder 感知）。容忍 LLM 传入的截断/部分符号名：
+	 * 精确匹配 miss 时，依次尝试 前缀（QN 以 query 开头，如 PerformReachabilityAnalysis →
+	 * PerformReachabilityAnalysisPass）、后缀（QN 以 query 结尾，如 ProcessAsync → GC::ProcessAsync）、
+	 * 末段 leaf 前后缀、子串。大小写不敏感。优先指定项目，否则跨所有项目取最高分。
+	 * query 过短（<4 字符）时直接返回 undefined，避免退化匹配。
+	 */
+	findNodeByQNFuzzy(projectName: string | undefined, qualifiedName: string): GraphNode | undefined {
+		const q = qualifiedName.trim();
+		if (q.length < 4) { return undefined; }
+		const ql = q.toLowerCase();
+		const scoreOf = (qn: string): number => {
+			const qnl = qn.toLowerCase();
+			if (qnl === ql) { return 100; }
+			if (qnl.startsWith(ql)) { return 80; }
+			if (qnl.endsWith(ql)) { return 70; }
+			const leaf = qn.split(/::/).pop() || qn;
+			const leafl = leaf.toLowerCase();
+			if (leafl.startsWith(ql) || leafl.endsWith(ql)) { return 60; }
+			if (qnl.includes(ql)) { return 40; }
+			return -1;
+		};
+		const scan = (onlyProj?: string): GraphNode | undefined => {
+			let best: GraphNode | undefined;
+			let bestScore = -1;
+			for (const [key, id] of this._nodesByQN) {
+				const ci = key.indexOf(':');
+				const proj = ci >= 0 ? key.slice(0, ci) : '';
+				if (onlyProj && proj !== onlyProj) { continue; }
+				const qn = ci >= 0 ? key.slice(ci + 1) : key;
+				const s = scoreOf(qn);
+				if (s > bestScore) { bestScore = s; best = this._nodes.get(id); }
+			}
+			return bestScore > 0 ? best : undefined;
+		};
+		if (projectName) {
+			const hit = scan(projectName);
+			if (hit) { return hit; }
+		}
+		return scan(undefined);
 	}
 
 	deleteNodesByFile(project: string, filePath: string): void {
@@ -474,7 +640,11 @@ export class CodebaseGraphStore {
 				// 项目过滤
 				if (params.project && node.project !== params.project) { continue; }
 				// label 过滤
-				if (params.label && node.type !== params.label) { continue; }
+				if (params.label) {
+					// 兼容：node.type 或 node.label，大小写不敏感（C 版用 'Function'，LLM 传 'function'）
+					const nodeType = (node.type || node.label || '').toLowerCase();
+					if (nodeType !== params.label.toLowerCase()) { continue; }
+				}
 				// filePattern 过滤
 				if (fileRegex && node.filePath && !fileRegex.test(node.filePath)) { continue; }
 				// 结构 boosting
@@ -498,9 +668,9 @@ export class CodebaseGraphStore {
 
 			const total = candidates.length;
 			const offset = params.offset || 0;
-			const paged = candidates.slice(offset, offset + (params.limit || 200));
+		const paged = candidates.slice(offset, offset + Math.min(params.limit || 200, GRAPH_HARD_RESULT_CAP));
 
-			// 收集评分
+		// 收集评分
 			scores = new Map();
 			for (const node of paged) {
 				if (boosted.has(node.id)) { scores.set(node.id, boosted.get(node.id)!); }
@@ -511,7 +681,17 @@ export class CodebaseGraphStore {
 
 		// ── Regex / label 搜索路径 (原有逻辑) ────────────────────────────
 		if (params.label) {
-			candidates = this.findNodesByLabel(params.project || '', params.label);
+			if (params.project) {
+				candidates = this.findNodesByLabel(params.project, params.label);
+			} else {
+				// 多 folder：未指定项目时跨所有项目按标签匹配（大小写不敏感，兼容 C 版 'File'/TS 'file'）
+				const ll = params.label.toLowerCase();
+				candidates = [];
+				for (const node of this._nodes.values()) {
+					const nt = (node.type || node.label || '').toLowerCase();
+					if (nt === ll) { candidates.push(node); }
+				}
+			}
 		} else if (params.filePattern) {
 			const regex = this._globToRegex(params.filePattern);
 			candidates = [];
@@ -533,33 +713,33 @@ export class CodebaseGraphStore {
 
 		const total = candidates.length;
 		const offset = params.offset || 0;
-		const paged = candidates.slice(offset, offset + (params.limit || 100));
+		const paged = candidates.slice(offset, offset + Math.min(params.limit || 100, GRAPH_HARD_RESULT_CAP));
 
-		// Include directly connected nodes (P1)
+		// Include directly connected nodes (P1) — 有界 BFS，防止循环图无界展开（对齐 C 版 max_depth）
 		if (params.includeConnected && paged.length > 0) {
+			const maxDepth = Math.min(params.maxDepth ?? GRAPH_MAX_BFS_DEPTH, GRAPH_MAX_BFS_DEPTH);
 			const connectedSet = new Set(paged.map(n => n.id));
 			const connectedNodes: GraphNode[] = [];
-			for (const node of paged) {
-				for (const edge of this.getEdgesBySource(node.id)) {
-					if (!connectedSet.has(edge.targetId)) {
-						const target = this._nodes.get(edge.targetId);
-						if (target && target.project === (params.project || target.project)) {
-							connectedSet.add(target.id);
-							connectedNodes.push(target);
-						}
-					}
+			let frontier: GraphNode[] = [...paged];
+			for (let depth = 0; depth < maxDepth && connectedNodes.length < GRAPH_HARD_RESULT_CAP; depth++) {
+				const nextFrontier: GraphNode[] = [];
+				for (const node of frontier) {
+					const consider = (nid: number): void => {
+						if (connectedSet.has(nid)) { return; }
+						const n = this._nodes.get(nid);
+						if (!n || (params.project && n.project !== params.project)) { return; }
+						connectedSet.add(nid);
+						connectedNodes.push(n);
+						nextFrontier.push(n);
+					};
+					for (const edge of this.getEdgesBySource(node.id)) { consider(edge.targetId); }
+					for (const edge of this.getEdgesByTarget(node.id)) { consider(edge.sourceId); }
+					if (connectedNodes.length >= GRAPH_HARD_RESULT_CAP) { break; }
 				}
-				for (const edge of this.getEdgesByTarget(node.id)) {
-					if (!connectedSet.has(edge.sourceId)) {
-						const source = this._nodes.get(edge.sourceId);
-						if (source && source.project === (params.project || source.project)) {
-							connectedSet.add(source.id);
-							connectedNodes.push(source);
-						}
-					}
-				}
+				frontier = nextFrontier;
+				if (frontier.length === 0) { break; }
 			}
-			paged.push(...connectedNodes.slice(0, (params.limit || 100) * 2));
+			paged.push(...connectedNodes.slice(0, GRAPH_HARD_RESULT_CAP));
 		}
 
 		return { nodes: paged, total, hasMore: offset + paged.length < total };
@@ -692,6 +872,29 @@ export class CodebaseGraphStore {
 	}
 
 	/**
+	 * 增量迭代节点（不构建全量数组，供流式持久化避免 2x 峰值）。
+	 * 对齐 codebase-memory-mcp 的 dump 分片：调用方逐条 JSON.stringify 后即释放。
+	 */
+	iterateNodes(project?: string): IterableIterator<GraphNode> {
+		if (!project) { return this._nodes.values(); }
+		const result: GraphNode[] = [];
+		for (const n of this._nodes.values()) {
+			if (n.project === project) { result.push(n); }
+		}
+		return result[Symbol.iterator]();
+	}
+
+	/** 增量迭代边（语义同 iterateNodes）。 */
+	iterateEdges(project?: string): IterableIterator<GraphEdge> {
+		if (!project) { return this._edges.values(); }
+		const result: GraphEdge[] = [];
+		for (const e of this._edges.values()) {
+			if (e.project === project) { result.push(e); }
+		}
+		return result[Symbol.iterator]();
+	}
+
+	/**
 	 * 高效获取 top-N 节点（按 degree 排序），直接迭代 Map，不创建全量数组。
 	 * 比 getAllNodes().filter().sort().slice() 更高效。
 	 */
@@ -795,16 +998,63 @@ export class CodebaseGraphStore {
 		this._nextEdgeId = 1;
 	}
 
-	toJSON(): any {
+	/**
+	 * 真实 V8 堆水位看门狗（对齐 codebase-memory-mcp 的 cbm_mem_budget）。
+	 * renderer / Worker 均可用；无 performance.memory 时返回 false（不拦截）。
+	 * 用于在索引/加载重路径前判断是否接近 4GB 上限，提前拒绝而非静默 OOM。
+	 */
+	static readonly HEAP_BUDGET_BYTES = 3 * 1024 * 1024 * 1024; // 3GB（低于 V8 4GB 硬上限）
+	static isHeapOverBudget(extraBytes = 0): boolean {
+		const mem = (globalThis as any)?.performance?.memory;
+		if (!mem || typeof mem.usedJSHeapSize !== 'number') { return false; }
+		return mem.usedJSHeapSize + extraBytes > CodebaseGraphStore.HEAP_BUDGET_BYTES;
+	}
+
+	/**
+	 * 序列化图数据。
+	 * @param project 若提供，仅序列化该项目的 nodes/edges/fileHashes/layout（多 folder：每个 folder 独立持久化）。
+	 *   由于 BM25 以全局 node-id 建索引，project 范围导出时省略 bm25，加载方需在合并后 rebuildBM25()。
+	 */
+	toJSON(project?: string): any {
+		if (!project) {
+			return {
+				nodes: Array.from(this._nodes.values()),
+				edges: Array.from(this._edges.values()),
+				fileHashes: Array.from(this._fileHashes.values()),
+				bm25: this._bm25.toJSON(),
+				layout: Array.from(this._layout.entries()),
+				nextNodeId: this._nextNodeId,
+				nextEdgeId: this._nextEdgeId,
+			};
+		}
+		const nodes = Array.from(this._nodes.values()).filter(n => n.project === project);
+		const nodeIds = new Set(nodes.map(n => n.id));
+		const edges = Array.from(this._edges.values()).filter(e => e.project === project);
+		const fileHashes = Array.from(this._fileHashes.values()).filter(h => h.project === project);
+		const layout = Array.from(this._layout.entries()).filter(([id]) => nodeIds.has(id));
 		return {
-			nodes: Array.from(this._nodes.values()),
-			edges: Array.from(this._edges.values()),
-			fileHashes: Array.from(this._fileHashes.values()),
-			bm25: this._bm25.toJSON(),
-			layout: Array.from(this._layout.entries()),
+			nodes,
+			edges,
+			fileHashes,
+			bm25: undefined,
+			layout,
 			nextNodeId: this._nextNodeId,
 			nextEdgeId: this._nextEdgeId,
 		};
+	}
+
+	/**
+	 * 仅取持久化所需的轻量元数据（fileHashes / bm25 / layout / nextId），
+	 * 【不构建 nodes/edges 全量数组】，供流式 save 使用，避免 toJSON 的 2x 峰值。
+	 * project 提供时省略 bm25（与 toJSON 约定一致，合并后需 rebuildBM25）。
+	 */
+	getMeta(project?: string): { fileHashes: FileHash[]; bm25: any; layout: [number, { x: number; y: number; z: number }][]; nextNodeId: number; nextEdgeId: number } {
+		const fileHashes = project
+			? this.getAllFileHashes(project)
+			: Array.from(this._fileHashes.values());
+		const layout = Array.from(this._layout.entries()) as [number, { x: number; y: number; z: number }][];
+		const bm25 = project ? undefined : this._bm25.toJSON();
+		return { fileHashes, bm25, layout, nextNodeId: this._nextNodeId, nextEdgeId: this._nextEdgeId };
 	}
 
 	fromJSON(data: any): void {
@@ -926,6 +1176,87 @@ export class CodebaseGraphStore {
 		}
 	}
 
+	/**
+	 * 合并加载：把 data 追加到当前 store（不 clear），对 node/edge ID 做重映射以避免与已有数据冲突。
+	 * 用于多 folder 工作区：每个 folder 的图独立持久化，启动时依次合并进同一内存 store。
+	 * @param data 反序列化的图数据
+	 * @param projectOverride 若提供，覆盖所有 node/edge/fileHash 的 project 字段（区分不同 folder）
+	 * 注意：BM25 不在此恢复（node-id 已重映射），调用方须在合并全部 folder 后统一 rebuildBM25()。
+	 */
+	async mergeFromJSONAsync(data: any, projectOverride?: string, onProgress?: (loaded: number, total: number) => void): Promise<void> {
+		const BATCH_SIZE = 8000;
+		const nodes = data.nodes || [];
+		const edges = data.edges || [];
+		const totalItems = nodes.length + edges.length;
+
+		// 旧 id → 新 id 重映射表
+		const idMap = new Map<number, number>();
+
+		// Restore nodes (batched, remapped)
+		for (let i = 0; i < nodes.length; i += BATCH_SIZE) {
+			const end = Math.min(i + BATCH_SIZE, nodes.length);
+			for (let j = i; j < end; j++) {
+				const src = nodes[j];
+				const newId = this._nextNodeId++;
+				idMap.set(src.id, newId);
+				const project = projectOverride ?? src.project;
+				const node: GraphNode = { ...src, id: newId, project };
+				this._nodes.set(newId, node);
+				this._nodesByQN.set(`${project}:${node.qualifiedName}`, newId);
+				if (node.filePath) {
+					const key = `${project}:${node.filePath}`;
+					const arr = this._nodesByFile.get(key) || [];
+					arr.push(newId);
+					this._nodesByFile.set(key, arr);
+				}
+				const labelKey = `${project}:${node.label}`;
+				const labelArr = this._nodesByLabel.get(labelKey) || [];
+				labelArr.push(newId);
+				this._nodesByLabel.set(labelKey, labelArr);
+			}
+			if (onProgress) { onProgress(end, totalItems); }
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+		}
+
+		// Restore edges (batched, remapped source/target；跳过悬空边)
+		for (let i = 0; i < edges.length; i += BATCH_SIZE) {
+			const end = Math.min(i + BATCH_SIZE, edges.length);
+			for (let j = i; j < end; j++) {
+				const src = edges[j];
+				const newSource = idMap.get(src.sourceId);
+				const newTarget = idMap.get(src.targetId);
+				if (newSource === undefined || newTarget === undefined) { continue; }
+				const newId = this._nextEdgeId++;
+				const project = projectOverride ?? src.project;
+				const edge: GraphEdge = { ...src, id: newId, sourceId: newSource, targetId: newTarget, project };
+				this._edges.set(newId, edge);
+				this._edgeDedup.add(`${newSource}:${newTarget}:${edge.type}`);
+				const outArr = this._outEdges.get(newSource) || [];
+				outArr.push(newId);
+				this._outEdges.set(newSource, outArr);
+				const inArr = this._inEdges.get(newTarget) || [];
+				inArr.push(newId);
+				this._inEdges.set(newTarget, inArr);
+			}
+			if (onProgress) { onProgress(nodes.length + end, totalItems); }
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+		}
+
+		// Restore file hashes (project override)
+		for (const hash of data.fileHashes || []) {
+			const project = projectOverride ?? hash.project;
+			this._fileHashes.set(`${project}:${hash.relPath}`, { ...hash, project });
+		}
+
+		// Restore layout (remap ids)
+		if (data.layout) {
+			for (const [oldId, pos] of data.layout) {
+				const newId = idMap.get(oldId);
+				if (newId !== undefined) { this._layout.set(newId, pos); }
+			}
+		}
+	}
+
 	// ─── Transaction / Checkpoint / Integrity (对标 SQLite WAL) ──────────
 
 	private _transactionSnapshot: any = undefined;
@@ -934,6 +1265,13 @@ export class CodebaseGraphStore {
 	/** Begin a transaction — snapshot current state for rollback. */
 	beginTransaction(): void {
 		if (this._inTransaction) { return; }
+		// 大图跳过整库快照：索引期避免 toJSON 2x 峰值（对齐 Phase 0 内存闸）。
+		// 代价：超大图事务出错时不回滚（索引失败可重建），用内存安全换正确性边界。
+		if (this._nodes.size > GRAPH_TX_SNAPSHOT_NODE_THRESHOLD) {
+			this._transactionSnapshot = null;
+			this._inTransaction = true;
+			return;
+		}
 		this._transactionSnapshot = this.toJSON();
 		this._inTransaction = true;
 	}
@@ -946,6 +1284,7 @@ export class CodebaseGraphStore {
 
 	/** Rollback transaction — restore from snapshot. */
 	rollbackTransaction(): void {
+		// 大图快照被跳过时无法回滚（见 beginTransaction），此处静默 no-op 以避免崩溃。
 		if (this._transactionSnapshot) {
 			this.fromJSON(this._transactionSnapshot);
 			this._transactionSnapshot = undefined;
@@ -1105,7 +1444,11 @@ export class CodebaseGraphStore {
 		const escaped = glob
 			.replace(/[.+^${}()|[\]\\]/g, '\\$&')
 			.replace(/\*/g, '.*')
-			.replace(/\?/g, '.');
+			.replace(/\?/g, '.')
+			// 折叠连续 `.*`（glob '**' 会被转成 '.*.*'）为单个 `.*`——连续的 `.*` 前缀
+			// 会在每个不匹配字符串上触发 O(n²) 灾难性回溯（正则引擎枚举所有切分点），
+			// 大图谱（9w+ 节点）上 filePattern 全表扫描因此从毫秒级膨胀到数十秒、卡死 UI。
+			.replace(/(\.\*)+/g, '.*');
 		return new RegExp(escaped, 'i');
 	}
 }

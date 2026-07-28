@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sarosis 工作流编辑器 · 对标 Rivet Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --panel: #252526; --panel2: #2d2d30; --border: #3c3c3c;
+    --fg: #cccccc; --fg-dim: #858585; --fg-faint: #5a5a5a;
+    --accent: #007fd4; --green: #22c55e; --red: #ef4444; --cyan: #06b6d4;
+    --gold: #f59e0b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: var(--bg);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--fg); font-size: 13px; }
+  button { font-family: inherit; }
+
+  /* ── 顶栏 ── */
+  #topbar { position: fixed; inset: 0 0 auto 0; z-index: 50; height: 44px;
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  .wf-name { font-weight: 600; font-size: 13px; }
+  .wf-ver { font-size: 11px; color: var(--fg-dim); }
+  .git-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+    padding: 2px 9px; border-radius: 10px; background: rgba(34,197,94,.12);
+    border: 1px solid rgba(34,197,94,.35); color: #7ee2a8; }
+  .git-badge .b-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .rivet-tag { font-size: 10px; letter-spacing: 1px; padding: 3px 10px; border-radius: 10px;
+    border: 1px solid var(--accent); color: #6cb6f5; }
+  #topbar .spacer { flex: 1; }
+  .tb { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; font-size: 12px;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 4px; cursor: pointer; }
+  .tb:hover { background: #37373b; }
+  .tb.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .tb.primary:hover { background: #1b8ad9; }
+  .tb.danger { border-color: rgba(239,68,68,.5); color: #f48771; }
+  .tb:disabled { opacity: .45; cursor: default; }
+
+  /* ── 左：节点面板 ── */
+  #palette { position: fixed; left: 0; top: 44px; bottom: 0; width: 176px; z-index: 40;
+    background: var(--panel); border-right: 1px solid var(--border);
+    padding: 10px; overflow-y: auto; }
+  .pal-group { font-size: 10px; font-weight: 600; letter-spacing: 1px; color: var(--fg-faint);
+    text-transform: uppercase; margin: 10px 0 5px; }
+  .pal-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin-bottom: 4px;
+    background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid var(--nc, #888);
+    border-radius: 4px; font-size: 12px; cursor: grab; }
+  .pal-item:hover { border-color: var(--nc, #888); }
+  .pal-item .pi { width: 18px; text-align: center; }
+  .pal-item .new { margin-left: auto; font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    background: rgba(0,127,212,.2); color: #6cb6f5; }
+
+  /* ── 画布 ── */
+  #viewport { position: fixed; inset: 44px 300px 0 176px; cursor: grab; overflow: hidden; }
+  #viewport.panning { cursor: grabbing; }
+  #world { position: absolute; left: 0; top: 0; width: 2400px; height: 1200px; transform-origin: 0 0;
+    background-image: radial-gradient(circle, rgba(255,255,255,.06) 1px, transparent 1.2px);
+    background-size: 24px 24px; }
+  #edges { position: absolute; left: 0; top: 0; width: 2400px; height: 1200px; pointer-events: none; overflow: visible; }
+  .edge-path { fill: none; transition: opacity .3s; }
+  .e-idle     { stroke: #4b5563; stroke-width: 1.6; }
+  .e-active   { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 8 6; animation: flow 0.8s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -14; } }
+  .e-taken    { stroke: var(--green); stroke-width: 2.2; }
+  .e-excluded { stroke: #6b7280; stroke-width: 1.4; stroke-dasharray: 4 6; opacity: .45; }
+  .e-error    { stroke: var(--red); stroke-width: 2; stroke-dasharray: 7 5; }
+  .e-label { position: absolute; transform: translate(-50%,-50%); font-size: 10px; padding: 2px 8px;
+    border-radius: 8px; background: #1e1e1e; border: 1px solid var(--border); color: var(--fg-dim);
+    white-space: nowrap; pointer-events: none; }
+  .e-label.taken { color: #7ee2a8; border-color: rgba(34,197,94,.4); }
+  .e-label.excluded { color: var(--fg-faint); font-style: italic; }
+  .e-label.error { color: #f48771; border-color: rgba(239,68,68,.4); }
+
+  /* ── 节点 ── */
+  .node { position: absolute; border-radius: 8px; border: 2px solid var(--nc, #888);
+    background: var(--bg); cursor: pointer; user-select: none;
+    box-shadow: 0 6px 18px -8px rgba(0,0,0,.7); transition: opacity .3s, box-shadow .25s; }
+  .node:hover { box-shadow: 0 8px 22px -8px rgba(0,0,0,.85); }
+  .node.selected { border-color: var(--accent) !important; box-shadow: 0 0 0 2px rgba(0,127,212,.4); }
+  .n-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px 5px; }
+  .n-icon { font-size: 13px; }
+  .n-type { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--nc, #888); }
+  .n-state { margin-left: auto; font-size: 11px; }
+  .n-label { padding: 0 10px; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+  .n-detail { padding: 2px 10px 7px; font-size: 10.5px; color: var(--fg-dim); line-height: 1.5; }
+  .n-output { margin: 0 8px 8px; padding: 4px 8px; font-size: 10px; font-family: Consolas, monospace;
+    background: rgba(0,0,0,.35); border: 1px solid var(--border); border-radius: 4px;
+    color: #9cdcfe; display: none; }
+  .node.has-output .n-output { display: block; }
+  /* 执行态 */
+  .node.st-running { border-color: var(--green) !important; box-shadow: 0 0 0 2px rgba(34,197,94,.35), 0 0 14px rgba(34,197,94,.25);
+    animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(34,197,94,.15), 0 0 20px rgba(34,197,94,.35); } }
+  .node.st-completed { background: rgba(34,197,94,.08); }
+  .node.st-error { background: rgba(239,68,68,.12); border-color: var(--red) !important; }
+  .node.st-waiting { border-color: var(--cyan) !important; animation: pulseCyan 1.6s infinite; }
+  @keyframes pulseCyan { 50% { box-shadow: 0 0 0 4px rgba(6,182,212,.15), 0 0 18px rgba(6,182,212,.4); } }
+  .node.st-dim { opacity: .4; }
+  .node.st-discarded { opacity: .3; }
+  .st-badge { font-size: 9px; padding: 1px 6px; border-radius: 3px; font-weight: 700; }
+  .sb-run { background: rgba(34,197,94,.2); color: #7ee2a8; }
+  .sb-done { background: rgba(34,197,94,.15); color: #7ee2a8; }
+  .sb-err { background: rgba(239,68,68,.2); color: #f48771; }
+  .sb-wait { background: rgba(6,182,212,.2); color: #67e8f9; }
+  .sb-skip { background: rgba(107,114,128,.2); color: #9ca3af; }
+  /* 端口 */
+  .port { position: absolute; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--nc, #888); border: 2px solid var(--bg); }
+  .port.in { left: -6px; top: 50%; transform: translateY(-50%); }
+  .port.err { background: var(--red); }
+  .port-label { position: absolute; font-size: 9.5px; color: var(--fg-dim);
+    background: var(--bg); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border);
+    pointer-events: none; white-space: nowrap; }
+  /* Loop 进度 */
+  .loop-bar { margin: 4px 10px 8px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; }
+  .loop-bar i { display: block; height: 100%; width: 0; background: #8b5cf6; transition: width .4s; }
+  .loop-text { font-size: 9.5px; color: #c4b5fd; padding: 0 10px 6px; }
+  /* Group */
+  .group { position: absolute; border: 1.5px dashed #4b5563; border-radius: 12px;
+    background: rgba(255,255,255,.015); pointer-events: none; }
+  .group .g-label { position: absolute; top: -11px; left: 14px; font-size: 10px; padding: 1px 8px;
+    background: var(--bg); color: var(--fg-dim); border-radius: 3px; }
+  /* 骨架降级（zoom < 45%） */
+  #world.skeleton .node { height: 34px !important; overflow: hidden; }
+  #world.skeleton .n-detail, #world.skeleton .n-output, #world.skeleton .loop-bar,
+  #world.skeleton .loop-text, #world.skeleton .port-label { display: none !important; }
+  #world.skeleton .n-label { font-size: 11px; padding-top: 0; }
+  #world.skeleton .n-head { padding: 6px 10px 0; }
+
+  /* ── 缩放控件 + 小地图 ── */
+  #zoomctl { position: fixed; left: 188px; bottom: 14px; z-index: 45; display: flex; gap: 4px; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
+  #zoomLabel { font-size: 11px; color: var(--fg-dim); min-width: 40px; text-align: center; }
+  #minimap { position: fixed; right: 312px; bottom: 14px; z-index: 45; width: 168px; height: 116px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  #miniCanvas { width: 100%; height: 100%; display: block; }
+
+  /* ── 右侧面板 ── */
+  #side { position: fixed; right: 0; top: 44px; bottom: 0; width: 300px; z-index: 40;
+    background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+  #tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tab { flex: 1; padding: 9px 0; text-align: center; font-size: 12px; color: var(--fg-dim);
+    cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.on { color: var(--fg); border-bottom-color: var(--accent); }
+  .pane { flex: 1; overflow-y: auto; padding: 10px; display: none; }
+  .pane.on { display: block; }
+  /* 执行追踪 */
+  .tr { display: flex; gap: 7px; padding: 4px 2px; font-size: 11px; font-family: Consolas, monospace;
+    border-bottom: 1px solid rgba(255,255,255,.03); line-height: 1.5; }
+  .tr .t { color: var(--fg-faint); flex-shrink: 0; }
+  .tr .k { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+  .tr .m { color: var(--fg); word-break: break-all; }
+  .tr .m em { color: var(--fg-dim); font-style: normal; }
+  /* 对标清单 */
+  .bk { display: flex; gap: 8px; padding: 7px 6px; border-bottom: 1px solid rgba(255,255,255,.04);
+    font-size: 11.5px; line-height: 1.45; align-items: flex-start; }
+  .bk .ph { flex-shrink: 0; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 3px; margin-top: 1px; }
+  .ph-p0 { background: rgba(239,68,68,.18); color: #f48771; }
+  .ph-p1 { background: rgba(245,158,11,.18); color: #fbbf24; }
+  .ph-p2 { background: rgba(0,127,212,.18); color: #6cb6f5; }
+  .ph-p3 { background: rgba(168,85,247,.18); color: #c4b5fd; }
+  .ph-own { background: rgba(34,197,94,.18); color: #7ee2a8; }
+  .bk small { display: block; color: var(--fg-dim); margin-top: 2px; }
+  /* 配置 */
+  .cfg-row { margin-bottom: 10px; }
+  .cfg-row .ck { font-size: 10px; font-weight: 600; color: var(--fg-faint); text-transform: uppercase; margin-bottom: 3px; }
+  .cfg-row .cv { font-size: 12px; padding: 5px 8px; background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; }
+  .cfg-hint { color: var(--fg-faint); font-size: 11.5px; padding: 20px 6px; text-align: center; }
+
+  /* ── AskUser 模态 / 版本面板 / Toast ── */
+  .overlay { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.55); opacity: 0; pointer-events: none; transition: opacity .25s; }
+  .overlay.show { opacity: 1; pointer-events: auto; }
+  .ask-dialog { width: 420px; background: var(--panel); border: 1px solid var(--cyan); border-radius: 10px;
+    box-shadow: 0 0 0 3px rgba(6,182,212,.2), 0 24px 60px -12px rgba(0,0,0,.9); overflow: hidden; }
+  .ask-head { padding: 12px 16px; background: rgba(6,182,212,.08); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; font-size: 12px; color: #67e8f9; }
+  .ask-body { padding: 16px; }
+  .ask-q { font-size: 14px; line-height: 1.7; margin-bottom: 14px; }
+  .ask-opt { display: block; width: 100%; text-align: left; padding: 10px 14px; margin-bottom: 8px;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 13px; cursor: pointer; }
+  .ask-opt:hover { border-color: var(--cyan); background: rgba(6,182,212,.08); }
+  .ask-opt small { display: block; color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
+  #versionPanel { position: fixed; top: 50px; right: 312px; z-index: 70; width: 320px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 16px 40px -10px rgba(0,0,0,.8); display: none; }
+  #versionPanel.show { display: block; }
+  .vp-head { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 12px;
+    display: flex; justify-content: space-between; align-items: center; }
+  .vp-head span { color: var(--fg-dim); font-weight: 400; font-size: 11px; }
+  .vp-commit { padding: 9px 14px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; }
+  .vp-commit .h { font-family: Consolas, monospace; color: #6cb6f5; font-size: 11px; }
+  .vp-commit .meta { color: var(--fg-faint); font-size: 10.5px; margin-top: 2px; }
+  .vp-commit .stat { color: #7ee2a8; }
+  .vp-commit .stat .del { color: #f48771; }
+  #toast { position: fixed; top: 58px; left: 50%; transform: translateX(-50%); z-index: 90;
+    background: var(--panel2); border: 1px solid var(--accent); color: var(--fg);
+    font-size: 12px; padding: 8px 18px; border-radius: 6px; opacity: 0; pointer-events: none;
+    transition: opacity .25s; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<!-- 顶栏 -->
+<div id="topbar">
+  <span class="wf-name">code-review-workflow</span>
+  <span class="wf-ver">v1.4.2</span>
+  <span class="git-badge"><span class="b-dot"></span>main · 3 commits</span>
+  <span class="rivet-tag">对标 Rivet · 优化方案 A 演示</span>
+  <div class="spacer"></div>
+  <button class="tb primary" id="btnRun">▶ 运行</button>
+  <button class="tb" id="btnStep" title="mock">⏭ 单步</button>
+  <button class="tb danger" id="btnError">⚠ 模拟错误路径</button>
+  <button class="tb" id="btnReset">⟲ 重置</button>
+  <button class="tb" id="btnVersion">🕐 版本历史</button>
+</div>
+
+<!-- 左：节点面板 -->
+<div id="palette">
+  <div class="pal-group">基础</div>
+  <div class="pal-item" style="--nc:#22c55e"><span class="pi">▶</span>开始</div>
+  <div class="pal-item" style="--nc:#f97316"><span class="pi">■</span>结束</div>
+  <div class="pal-item" style="--nc:#9ca3af"><span class="pi">📋</span>任务</div>
+  <div class="pal-item" style="--nc:#a855f7"><span class="pi">✎</span>提示</div>
+  <div class="pal-group">执行</div>
+  <div class="pal-item" style="--nc:#3b82f6"><span class="pi">🤖</span>Agent</div>
+  <div class="pal-item" style="--nc:#eab308"><span class="pi">★</span>Skill</div>
+  <div class="pal-item" style="--nc:#fb923c"><span class="pi">🔧</span>Tool</div>
+  <div class="pal-item" style="--nc:#6366f1"><span class="pi">▣</span>子工作流<span class="new">P3</span></div>
+  <div class="pal-group">控制流</div>
+  <div class="pal-item" style="--nc:#ef4444"><span class="pi">↔️</span>If/Else</div>
+  <div class="pal-item" style="--nc:#ec4899"><span class="pi">⑂</span>Switch</div>
+  <div class="pal-item" style="--nc:#8b5cf6"><span class="pi">⟳</span>Loop<span class="new">P1</span></div>
+  <div class="pal-group">并行 <span style="color:#6cb6f5">· Rivet 借鉴</span></div>
+  <div class="pal-item" style="--nc:#14b8a6"><span class="pi">⑃</span>Split 拆分<span class="new">P2</span></div>
+  <div class="pal-item" style="--nc:#f59e0b"><span class="pi">🏁</span>Race 竞速<span class="new">P2</span></div>
+  <div class="pal-group">交互</div>
+  <div class="pal-item" style="--nc:#06b6d4"><span class="pi">❓</span>Ask User</div>
+</div>
+
+<!-- 画布 -->
+<div id="viewport">
+  <div id="world">
+    <svg id="edges"></svg>
+  </div>
+</div>
+
+<!-- 缩放控件 / 小地图 -->
+<div id="zoomctl">
+  <button class="tb" id="btnZoomOut">−</button>
+  <span id="zoomLabel">100%</span>
+  <button class="tb" id="btnZoomIn">＋</button>
+  <button class="tb" id="btnFit">⛶ 适应</button>
+</div>
+<div id="minimap"><canvas id="miniCanvas" width="336" height="232"></canvas></div>
+
+<!-- 右侧面板 -->
+<div id="side">
+  <div id="tabs">
+    <div class="tab on" data-p="trace">执行追踪</div>
+    <div class="tab" data-p="cfg">节点配置</div>
+    <div class="tab" data-p="bench">对标清单</div>
+  </div>
+  <div class="pane on" id="pane-trace"></div>
+  <div class="pane" id="pane-cfg"><div class="cfg-hint">点击画布中的节点查看配置</div></div>
+  <div class="pane" id="pane-bench">
+    <div class="bk"><span class="ph ph-p0">P0</span><div><b>哨兵剪枝</b> control-flow-excluded<small>未选分支向下游传播 excluded 标记 —— 点「▶ 运行」观察 false 分支变灰虚线</small></div></div>
+    <div class="bk"><span class="ph ph-p0">P0</span><div><b>错误输出端口</b> useErrorOutput<small>节点失败转为 error 端口数据流 —— 点「⚠ 模拟错误路径」</small></div></div>
+    <div class="bk"><span class="ph ph-p1">P1</span><div><b>Loop + Tarjan SCC</b> 受控循环<small>「复评审」节点迭代 3 次直到通过，拒绝嵌套循环</small></div></div>
+    <div class="bk"><span class="ph ph-p1">P1</span><div><b>视口性能三件套</b><small>MiniMap（右下）· 缩放骨架降级（缩到 45% 以下试试）· 视口剔除</small></div></div>
+    <div class="bk"><span class="ph ph-p2">P2</span><div><b>Split / Race 并行原语</b><small>按模块并行评审 · 双模型摘要竞速先到先用</small></div></div>
+    <div class="bk"><span class="ph ph-p2">P2</span><div><b>端口动态推导</b><small>If/Else 按 branches、AskUser 按 options 实时生成输出端口</small></div></div>
+    <div class="bk"><span class="ph ph-p3">P3</span><div><b>稳定排序序列化</b><small>workflow.json 键序稳定 → git diff 只显示真实变更</small></div></div>
+    <div class="bk"><span class="ph ph-own">独有</span><div><b>git 版本管理 + 回滚</b><small>per-workflow 独立仓库 —— 点顶栏「🕐 版本历史」</small></div></div>
+    <div class="bk"><span class="ph ph-own">独有</span><div><b>AskUser 会话卡片</b><small>挂起/恢复与会话内交互卡片全链路打通（/wf 触发）</small></div></div>
+    <div class="bk"><span class="ph ph-own">独有</span><div><b>contextScope 三级隔离</b><small>node / branch / global 上下文隔离 + 每节点 retry·timeout</small></div></div>
+  </div>
+</div>
+
+<!-- AskUser 模态 -->
+<div class="overlay" id="askOverlay">
+  <div class="ask-dialog">
+    <div class="ask-head">❓ <b>AskUser checkpoint</b> · 工作流已挂起，等待用户输入…</div>
+    <div class="ask-body">
+      <div class="ask-q" id="askQuestion"></div>
+      <div id="askOptions"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 版本历史面板 -->
+<div id="versionPanel">
+  <div class="vp-head">版本历史 <span>per-workflow git · .vssaros/workflows/code-review</span></div>
+  <div class="vp-commit"><span class="h">a3f9c12</span> fix: 复评审循环上限调整为 3<div class="meta">2 小时前 · <span class="stat">+12 <span class="del">-3</span></span> · workflow.json</div></div>
+  <div class="vp-commit"><span class="h">b77d04e</span> feat: 接入双模型摘要竞速<div class="meta">昨天 · <span class="stat">+86 <span class="del">-10</span></span> · workflow.json</div></div>
+  <div class="vp-commit"><span class="h">c91e2aa</span> chore: 初始版本<div class="meta">3 天前 · <span class="stat">+204</span> · workflow.json</div></div>
+  <div style="padding:10px 14px; display:flex; gap:8px; justify-content:flex-end">
+    <button class="tb" onclick="toast('Mock：Diff a3f9c12..b77d04e')">Diff</button>
+    <button class="tb danger" onclick="toast('Mock：回滚到 b77d04e（工作副本恢复，HEAD 前进）')">回滚到此版本</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ═══════════ 数据层：节点 / 边 ═══════════ */
+const TYPES = {
+  start:{c:'#22c55e',i:'▶',t:'开始'}, end:{c:'#f97316',i:'■',t:'结束'},
+  agent:{c:'#3b82f6',i:'🤖',t:'Agent'}, tool:{c:'#fb923c',i:'🔧',t:'Tool'},
+  ifelse:{c:'#ef4444',i:'↔️',t:'If/Else'}, askuser:{c:'#06b6d4',i:'❓',t:'Ask User'},
+  loop:{c:'#8b5cf6',i:'⟳',t:'Loop'}, split:{c:'#14b8a6',i:'⑃',t:'Split'},
+  race:{c:'#f59e0b',i:'🏁',t:'Race'}, subworkflow:{c:'#6366f1',i:'▣',t:'子工作流'},
+};
+const nodes = [
+  // 主流程：评审 → 修复 → 复评审
+  { id:'n-start',  type:'start',  x:60,   y:300, w:130, h:62,  label:'开始',        detail:'/wf code-review' },
+  { id:'n-collect',type:'agent',  x:250,  y:286, w:210, h:104, label:'收集代码变更', detail:'kimi-k2 · scope: node<br>retry: 2 · timeout: 60s', output:'{ files: 12, +342/-87 }' },
+  { id:'n-split',  type:'split',  x:520,  y:294, w:170, h:88,  label:'按模块拆分',   detail:'isSplitRun: files[]<br>聚合回数组' },
+  { id:'n-revFe',  type:'agent',  x:750,  y:140, w:220, h:104, label:'评审 frontend',detail:'kimi-k2 · scope: branch', output:'{ issues: 2 }' },
+  { id:'n-revBe',  type:'agent',  x:750,  y:440, w:220, h:104, label:'评审 backend', detail:'kimi-k2 · scope: branch', output:'{ issues: 1 }' },
+  { id:'n-if',     type:'ifelse', x:1050, y:286, w:190, h:104, label:'发现阻塞问题?', detail:'{{issues.blocking}} > 0', ports:['true','false'] },
+  { id:'n-ask',    type:'askuser',x:1310, y:120, w:230, h:120, label:'如何处理?',    detail:'问题注入会话卡片<br>multiSelect: false', ports:['✨ 自动修复','仅记录'] },
+  { id:'n-fix',    type:'agent',  x:1610, y:86,  w:210, h:104, label:'自动修复',     detail:'kimi-k2 · scope: node', output:'{ fixes: 3 }' },
+  { id:'n-loop',   type:'loop',   x:1880, y:86,  w:190, h:104, label:'复评审循环',   detail:'maxIterations: 3<br>until: {{blocking}} === 0', loop:true },
+  { id:'n-end',    type:'end',    x:1900, y:300, w:150, h:62,  label:'生成报告',     detail:'输出 → 会话' },
+  // 竞速组
+  { id:'n-race',   type:'race',   x:250,  y:686, w:170, h:88,  label:'摘要竞速',     detail:'先到先赢<br>loser 丢弃' },
+  { id:'n-sumA',   type:'agent',  x:520,  y:600, w:210, h:100, label:'摘要 · kimi',  detail:'~412ms', output:'{ summary: "…" } 🏆' },
+  { id:'n-sumB',   type:'agent',  x:520,  y:788, w:210, h:100, label:'摘要 · gpt',   detail:'~890ms' },
+  { id:'n-pub',    type:'tool',   x:810,  y:690, w:180, h:84,  label:'发布摘要',     detail:'tool: im.send', output:'已发布 #review' },
+  // 错误路径演示
+  { id:'n-deploy', type:'agent',  x:1150, y:686, w:220, h:108, label:'部署预览',     detail:'retry: 1 · timeout: 120s<br><span style="color:#f48771">error 端口已启用</span>', errPort:true, output:'{ url: "https://…" }' },
+  { id:'n-notify', type:'tool',   x:1520, y:786, w:200, h:84,  label:'飞书通知 on-call', detail:'tool: lark.im', output:'已通知' },
+  { id:'n-sub',    type:'subworkflow', x:1520, y:600, w:200, h:84, label:'夜间全量评审', detail:'ref: wf-nightly<br>嵌套子图执行' },
+];
+const edges = [
+  { id:'e1',  from:'n-start',  to:'n-collect' },
+  { id:'e2',  from:'n-collect',to:'n-split' },
+  { id:'e3',  from:'n-split',  to:'n-revFe', label:'files[0]' },
+  { id:'e4',  from:'n-split',  to:'n-revBe', label:'files[1]' },
+  { id:'e5',  from:'n-revFe',  to:'n-if' },
+  { id:'e6',  from:'n-revBe',  to:'n-if' },
+  { id:'e7',  from:'n-if',     to:'n-ask',  port:0, label:'true · 3 个阻塞' },
+  { id:'e8',  from:'n-if',     to:'n-end',  port:1, label:'false · 通过' },
+  { id:'e9',  from:'n-ask',    to:'n-fix',  port:0, label:'✨ 自动修复' },
+  { id:'e10', from:'n-ask',    to:'n-end',  port:1, label:'仅记录' },
+  { id:'e11', from:'n-fix',    to:'n-loop' },
+  { id:'e12', from:'n-loop',   to:'n-end',  label:'评审通过' },
+  { id:'e13', from:'n-race',   to:'n-sumA' },
+  { id:'e14', from:'n-race',   to:'n-sumB' },
+  { id:'e15', from:'n-sumA',   to:'n-pub' },
+  { id:'e16', from:'n-sumB',   to:'n-pub' },
+  { id:'e17', from:'n-deploy', to:'n-sub' },
+  { id:'e18', from:'n-deploy', to:'n-notify', err:true, label:'on error' },
+];
+const byId = id => nodes.find(n => n.id === id);
+const eById = id => edges.find(e => e.id === id);
+const state = {};   // nodeId -> 'running'|'completed'|'error'|'waiting'|'dim'|'discarded'
+const eState = {};  // edgeId -> 'active'|'taken'|'excluded'|'error'
+let loopIter = 0, selectedId = null;
+
+/* ═══════════ 渲染 ═══════════ */
+const world = document.getElementById('world');
+const edgesSvg = document.getElementById('edges');
+function portPos(n, i, count) {
+  return { x: n.x + n.w, y: n.y + ((i + 1) / (count + 1)) * n.h };
+}
+function srcPoint(e) {
+  const n = byId(e.from);
+  if (e.err) return { x: n.x + n.w / 2, y: n.y + n.h };
+  if (e.port != null) return portPos(n, e.port, (n.ports || []).length);
+  return { x: n.x + n.w, y: n.y + n.h / 2 };
+}
+function dstPoint(e) { const n = byId(e.to); return { x: n.x, y: n.y + n.h / 2 }; }
+
+function render() {
+  world.querySelectorAll('.node,.e-label,.port-label,.group').forEach(el => el.remove());
+  edgesSvg.innerHTML = '';
+
+  // Group（竞速组）
+  const g = document.createElement('div');
+  g.className = 'group';
+  g.style.cssText = 'left:210px;top:556px;width:830px;height:390px';
+  g.innerHTML = '<span class="g-label">▭ 竞速组 · Group</span>';
+  world.appendChild(g);
+
+  for (const e of edges) {
+    const p1 = srcPoint(e), p2 = dstPoint(e);
+    const st = eState[e.id] || 'idle';
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    const dx = Math.max(50, (p2.x - p1.x) / 2);
+    path.setAttribute('d', `M ${p1.x} ${p1.y} C ${p1.x + dx} ${p1.y}, ${p2.x - dx} ${p2.y}, ${p2.x} ${p2.y}`);
+    path.setAttribute('class', 'edge-path ' + (st === 'error' ? 'e-error' : 'e-' + st));
+    edgesSvg.appendChild(path);
+    if (e.label || st === 'excluded') {
+      const lb = document.createElement('div');
+      lb.className = 'e-label' + (st === 'taken' ? ' taken' : st === 'excluded' ? ' excluded' : st === 'error' ? ' error' : '');
+      lb.textContent = st === 'excluded' ? (e.label ? e.label + ' · excluded' : 'excluded') : e.label;
+      lb.style.left = (p1.x + p2.x) / 2 + 'px';
+      lb.style.top = (p1.y + p2.y) / 2 + 'px';
+      world.appendChild(lb);
+    }
+  }
+
+  for (const n of nodes) {
+    const t = TYPES[n.type];
+    const st = state[n.id] || 'idle';
+    const el = document.createElement('div');
+    el.className = 'node' + (st !== 'idle' ? ' st-' + st : '') + (n.output && st === 'completed' ? ' has-output' : '') + (selectedId === n.id ? ' selected' : '');
+    el.style.cssText = `left:${n.x}px;top:${n.y}px;width:${n.w}px;--nc:${t.c}`;
+    const badge = st === 'running' ? '<span class="st-badge sb-run">● 运行中</span>'
+      : st === 'completed' ? '<span class="st-badge sb-done">✓ 完成</span>'
+      : st === 'error' ? '<span class="st-badge sb-err">✗ 失败</span>'
+      : st === 'waiting' ? '<span class="st-badge sb-wait">⏸ 等待输入</span>'
+      : st === 'discarded' ? '<span class="st-badge sb-skip">已丢弃</span>'
+      : st === 'dim' ? '<span class="st-badge sb-skip">未触发</span>' : '';
+    el.innerHTML =
+      `<div class="n-head"><span class="n-icon">${t.i}</span><span class="n-type">${t.t}</span><span class="n-state">${badge}</span></div>` +
+      `<div class="n-label">${n.label}</div>` +
+      `<div class="n-detail">${n.detail}</div>` +
+      (n.loop ? `<div class="loop-text">SCC 迭代 <b>${loopIter}</b> / 3 · until: {{blocking}} === 0</div><div class="loop-bar"><i style="width:${loopIter / 3 * 100}%"></i></div>` : '') +
+      (n.output ? `<div class="n-output">→ ${n.output}</div>` : '');
+    // 端口
+    const mkPort = (cls, x, y) => {
+      const p = document.createElement('div');
+      p.className = 'port ' + cls;
+      p.style.left = x + 'px'; p.style.top = y + 'px';
+      el.appendChild(p);
+    };
+    if (n.type !== 'start') mkPort('in', -6, n.h / 2 - 5);
+    if (n.ports) {
+      n.ports.forEach((pl, i) => {
+        const pos = portPos({ ...n, x: 0, y: 0 }, i, n.ports.length);
+        mkPort('', n.w - 4, pos.y - 5);
+        const lb = document.createElement('div');
+        lb.className = 'port-label';
+        lb.textContent = pl;
+        lb.style.left = (n.w + 8) + 'px';
+        lb.style.top = (pos.y - 8) + 'px';
+        el.appendChild(lb);
+      });
+    } else if (n.type !== 'end') {
+      mkPort('', n.w - 4, n.h / 2 - 5);
+    }
+    if (n.errPort) mkPort('err', n.w / 2 - 5, n.h - 4);
+    el.addEventListener('click', ev => { ev.stopPropagation(); selectNode(n.id); });
+    world.appendChild(el);
+  }
+  drawMini();
+}
+
+/* ═══════════ 相机 ═══════════ */
+const viewport = document.getElementById('viewport');
+const cam = { x: 0, y: 0, k: 1 };
+function applyCam() {
+  world.style.transform = `translate3d(${cam.x}px,${cam.y}px,0) scale(${cam.k})`;
+  document.getElementById('zoomLabel').textContent = Math.round(cam.k * 100) + '%';
+  world.classList.toggle('skeleton', cam.k < 0.45);
+  edgesSvg.style.opacity = cam.k < 0.3 ? 0.3 : 1;
+  drawMini();
+}
+function zoomAt(cx, cy, f) {
+  const k2 = Math.min(2, Math.max(0.2, cam.k * f));
+  const wx = (cx - cam.x) / cam.k, wy = (cy - cam.y) / cam.k;
+  cam.k = k2; cam.x = cx - wx * k2; cam.y = cy - wy * k2;
+  applyCam();
+}
+viewport.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0012)); }, { passive: false });
+let pan = null;
+viewport.addEventListener('pointerdown', e => {
+  if (e.target.closest('.node')) return;
+  pan = { px: e.clientX, py: e.clientY, cx: cam.x, cy: cam.y };
+  viewport.classList.add('panning'); viewport.setPointerCapture(e.pointerId);
+});
+viewport.addEventListener('pointermove', e => {
+  if (!pan) return;
+  cam.x = pan.cx + e.clientX - pan.px; cam.y = pan.cy + e.clientY - pan.py;
+  applyCam();
+});
+viewport.addEventListener('pointerup', () => { pan = null; viewport.classList.remove('panning'); selectNode(null); });
+function fitView() {
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + n.w + 90); maxY = Math.max(maxY, n.y + n.h);
+  }
+  const pad = 60, vw = viewport.clientWidth, vh = viewport.clientHeight;
+  const k = Math.max(0.55, Math.min(0.92, Math.min(vw / (maxX - minX + pad * 2), vh / (maxY - minY + pad * 2))));
+  cam.k = k;
+  cam.x = (vw - (maxX - minX) * k) / 2 - minX * k;
+  cam.y = (vh - (maxY - minY) * k) / 2 - minY * k;
+  applyCam();
+}
+document.getElementById('btnFit').onclick = fitView;
+document.getElementById('btnZoomIn').onclick = () => zoomAt(viewport.clientWidth / 2, viewport.clientHeight / 2, 1.25);
+document.getElementById('btnZoomOut').onclick = () => zoomAt(viewport.clientWidth / 2, viewport.clientHeight / 2, 0.8);
+
+/* ═══════════ 小地图 ═══════════ */
+const mini = document.getElementById('miniCanvas').getContext('2d');
+function drawMini() {
+  const s = Math.min(336 / 2300, 232 / 1080);
+  mini.clearRect(0, 0, 336, 232);
+  for (const n of nodes) {
+    const st = state[n.id];
+    mini.fillStyle = st === 'completed' ? 'rgba(34,197,94,.8)' : st === 'running' ? '#22c55e'
+      : st === 'error' ? '#ef4444' : st === 'waiting' ? '#06b6d4' : TYPES[n.type].c + 'aa';
+    mini.fillRect((n.x - 20) * s, (n.y - 40) * s, n.w * s, n.h * s);
+  }
+  const vx = -cam.x / cam.k, vy = -cam.y / cam.k;
+  mini.strokeStyle = '#6cb6f5'; mini.lineWidth = 1.5;
+  mini.strokeRect((vx - 20) * s, (vy - 40) * s, viewport.clientWidth / cam.k * s, viewport.clientHeight / cam.k * s);
+}
+
+/* ═══════════ 选中 + 配置面板 ═══════════ */
+function selectNode(id) {
+  selectedId = id; render();
+  const pane = document.getElementById('pane-cfg');
+  if (!id) { pane.innerHTML = '<div class="cfg-hint">点击画布中的节点查看配置</div>'; return; }
+  const n = byId(id), t = TYPES[n.type];
+  const rows = [
+    ['节点类型', `${t.i} ${t.t}`], ['ID', n.id],
+    ['Label', n.label],
+    ['坐标 / 尺寸', `${n.x}, ${n.y} · ${n.w}×${n.h}`],
+    ['contextScope', n.type === 'agent' ? (n.id.includes('rev') ? 'branch' : 'node') : '—'],
+    ['retry / timeout', n.type === 'agent' ? '2 次 / 60s' : '—'],
+    ['输出端口', n.ports ? n.ports.map((p, i) => `port-${i}: ${p}`).join('<br>') : n.errPort ? 'output · <span style="color:#f48771">error</span>' : 'output'],
+    ['端口推导', n.ports ? '<span style="color:#6cb6f5">动态 · 按配置实时生成（P2）</span>' : '静态'],
+  ];
+  pane.innerHTML = rows.map(r => `<div class="cfg-row"><div class="ck">${r[0]}</div><div class="cv">${r[1]}</div></div>`).join('');
+  switchTab('cfg');
+}
+function switchTab(p) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.p === p));
+  document.querySelectorAll('.pane').forEach(x => x.classList.toggle('on', x.id === 'pane-' + p));
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.p)));
+
+/* ═══════════ 执行追踪 ═══════════ */
+const tracePane = document.getElementById('pane-trace');
+const KIND_COLOR = { start:'#3b82f6', finish:'#22c55e', partial:'#858585', excluded:'#6b7280', error:'#ef4444', user:'#06b6d4', split:'#14b8a6', race:'#f59e0b', sys:'#007fd4' };
+function log(kind, msg) {
+  const d = new Date();
+  const ts = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}.${String(d.getMilliseconds()).padStart(3,'0')}`;
+  const el = document.createElement('div');
+  el.className = 'tr';
+  el.innerHTML = `<span class="t">${ts}</span><span class="k" style="background:${KIND_COLOR[kind]}"></span><span class="m">${msg}</span>`;
+  tracePane.appendChild(el);
+  tracePane.scrollTop = tracePane.scrollHeight;
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function setN(id, st) { state[id] = st; render(); }
+function setE(id, st) { eState[id] = st; render(); }
+function finish(id, edgeIn) {
+  setN(id, 'completed');
+  if (edgeIn) setE(edgeIn, 'taken');
+  log('finish', `nodeFinish · <em>${id}</em> 「${byId(id).label}」`);
+}
+async function runNode(id, edgeIn, ms) {
+  if (edgeIn) setE(edgeIn, 'active');
+  setN(id, 'running');
+  log('start', `nodeStart · <em>${id}</em> 「${byId(id).label}」`);
+  await sleep(ms);
+}
+
+/* ═══════════ 运行模拟 ═══════════ */
+let running = false;
+async function mainFlow() {
+  log('sys', 'workflowStart · code-review-workflow v1.4.2 · trigger: <em>/wf code-review</em>');
+  await runNode('n-start', null, 350); finish('n-start', 'e1');
+  await runNode('n-collect', null, 1000);
+  log('partial', 'partialOutput · 读取 git diff… <em>12 files</em>');
+  finish('n-collect', 'e2');
+  await runNode('n-split', null, 400);
+  log('split', `isSplitRun · files[] 拆分为 <b>2</b> 路并行，聚合回数组`);
+  finish('n-split', null);
+  setE('e3', 'active'); setE('e4', 'active');
+  setN('n-revFe', 'running'); setN('n-revBe', 'running');
+  log('split', '并行执行 · n-revFe ∥ n-revBe（scope: branch 隔离）');
+  await sleep(950);
+  setN('n-revFe', 'completed'); setE('e3', 'taken'); setE('e5', 'taken');
+  log('finish', 'nodeFinish · <em>n-revFe</em> → { issues: 2 }');
+  await sleep(650);
+  setN('n-revBe', 'completed'); setE('e4', 'taken'); setE('e6', 'taken');
+  log('finish', 'nodeFinish · <em>n-revBe</em> → { issues: 1 } · 并行聚合完成');
+  await runNode('n-if', null, 450);
+  log('finish', 'nodeFinish · <em>n-if</em> → true（3 个阻塞问题）');
+  setN('n-if', 'completed');
+  setE('e7', 'taken');
+  setE('e8', 'excluded'); setN('n-end', 'dim');
+  log('excluded', 'control-flow-excluded · false 分支哨兵沿边传播，下游 <em>n-end</em> 惰性剪枝 <b>[P0]</b>');
+  // AskUser 挂起
+  setE('e7', 'taken'); setN('n-ask', 'waiting');
+  log('user', 'userInput · 工作流挂起，等待 AskUser checkpoint…');
+  const choice = await askUser('评审发现 <b>3 个阻塞级问题</b>（2 个 frontend · 1 个 backend）。如何处理？',
+    [{ l: '✨ 自动修复', d: 'Agent 自动修复后进入复评审循环（推荐）' }, { l: '仅记录', d: '写入报告，跳过修复' }]);
+  document.getElementById('askOverlay').classList.remove('show');
+  log('user', `userInput · 收到回复:「${choice === 0 ? '自动修复' : '仅记录'}」· 工作流恢复`);
+  if (choice === 0) {
+    setN('n-ask', 'completed'); setE('e9', 'taken'); setE('e10', 'excluded');
+    log('excluded', 'control-flow-excluded · 「仅记录」分支已剪枝');
+    await runNode('n-fix', null, 1000); finish('n-fix', 'e11');
+    // Loop + SCC
+    setN('n-loop', 'running');
+    log('start', 'nodeStart · <em>n-loop</em> 「复评审循环」· Tarjan SCC 检测到受控环 <b>[P1]</b>');
+    for (loopIter = 1; loopIter <= 3; loopIter++) {
+      render();
+      log('partial', `SCC 迭代 ${loopIter}/3 · 复评审 → blocking: ${3 - loopIter}`);
+      await sleep(550);
+    }
+    setN('n-loop', 'completed'); setE('e12', 'taken');
+    log('finish', 'nodeFinish · <em>n-loop</em> 环退出条件满足（blocking === 0）');
+  } else {
+    setN('n-ask', 'completed'); setE('e10', 'taken'); setE('e9', 'excluded');
+    setN('n-fix', 'dim'); setN('n-loop', 'dim');
+    log('excluded', 'control-flow-excluded · 修复与复评审分支已剪枝');
+  }
+  setN('n-end', 'running'); await sleep(400);
+  setN('n-end', 'completed');
+  log('sys', 'workflowFinish · 评审报告已输出到会话 ✅');
+  toast('工作流执行完成 —— 报告已生成');
+}
+async function raceFlow() {
+  await sleep(3400); // 与主流程并行开始
+  await runNode('n-race', null, 400);
+  log('race', 'RaceInputs · 双模型竞速开始，先到先赢 <b>[P2]</b>');
+  finish('n-race', null);
+  setE('e13', 'active'); setE('e14', 'active');
+  setN('n-sumA', 'running'); setN('n-sumB', 'running');
+  await sleep(900);
+  setN('n-sumA', 'completed'); setE('e13', 'taken'); setE('e15', 'taken');
+  setN('n-sumB', 'discarded'); setE('e14', 'excluded'); setE('e16', 'excluded');
+  log('race', '🏆 kimi 先返回（412ms）· gpt 分支丢弃（discarded）');
+  await sleep(400);
+  await runNode('n-pub', null, 600); finish('n-pub', null);
+}
+function askUser(q, opts) {
+  return new Promise(resolve => {
+    document.getElementById('askQuestion').innerHTML = q;
+    const box = document.getElementById('askOptions');
+    box.innerHTML = '';
+    opts.forEach((o, i) => {
+      const b = document.createElement('button');
+      b.className = 'ask-opt';
+      b.innerHTML = `${o.l}<small>${o.d}</small>`;
+      b.onclick = () => resolve(i);
+      box.appendChild(b);
+    });
+    document.getElementById('askOverlay').classList.add('show');
+  });
+}
+document.getElementById('btnRun').onclick = async () => {
+  if (running) return;
+  resetAll(); running = true;
+  document.getElementById('btnRun').disabled = true;
+  switchTab('trace');
+  await Promise.all([mainFlow(), raceFlow()]);
+  running = false;
+  document.getElementById('btnRun').disabled = false;
+};
+document.getElementById('btnError').onclick = async () => {
+  if (running) return;
+  running = true; switchTab('trace');
+  log('sys', '── 错误路径演示 · useErrorOutput ──');
+  await runNode('n-deploy', 'e17', 900);
+  setN('n-deploy', 'error');
+  log('error', 'nodeError · <em>n-deploy</em> 「部署预览」· Error: ETIMEDOUT（retry 1 次后仍失败）');
+  await sleep(400);
+  setE('e18', 'error');
+  log('error', 'useErrorOutput · 错误转为 error 端口数据流，工作流不中断 <b>[P0]</b>');
+  await runNode('n-notify', null, 700);
+  finish('n-notify', null);
+  log('sys', '错误已被 error 端口路由处理 ✅（对比：无 error 端口时 AggregateError 中断全图）');
+  toast('错误路径演示完成');
+  running = false;
+};
+function resetAll() {
+  Object.keys(state).forEach(k => delete state[k]);
+  Object.keys(eState).forEach(k => delete eState[k]);
+  loopIter = 0; tracePane.innerHTML = ''; render();
+}
+document.getElementById('btnReset').onclick = () => { resetAll(); log('sys', '已重置 · 点击「▶ 运行」开始模拟'); };
+document.getElementById('btnVersion').onclick = () => document.getElementById('versionPanel').classList.toggle('show');
+document.getElementById('btnStep').onclick = () => toast('Mock：单步执行（逐节点推进，对齐调试器）');
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2800);
+}
+addEventListener('keydown', e => { if (e.key === 'Escape') { document.getElementById('askOverlay').classList.remove('show'); document.getElementById('versionPanel').classList.remove('show'); } });
+
+/* ═══════════ 初始化 ═══════════ */
+render();
+fitView();
+log('sys', '工作流已加载 · code-review-workflow v1.4.2（14 节点 / 18 边）');
+log('sys', '点击「▶ 运行」观看执行模拟：并行评审 → 哨兵剪枝 → AskUser 挂起 → Loop 复评审 → 竞速摘要');
+</script>
+</body>
+</html>

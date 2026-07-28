@@ -525,6 +525,41 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 	private readonly _onDidRenderHtml = this._register(new Emitter<{ agentId: string; html: string; version: number; stylesContent?: string }>());
 	readonly onDidRenderHtml: Event<{ agentId: string; html: string; version: number; stylesContent?: string }> = this._onDidRenderHtml.event;
 
+	// ─── LLM 写入确认 ─────────────────────────────────────────────────────
+	/** Agents with "始终同意" write permission — skip confirmation for model writes. */
+	private readonly _alwaysAllowModelWrite = new Set<string>();
+	/** Pending LLM write confirmations: requestId → { resolve, agentId }. */
+	private readonly _pendingModelWriteConfirms = new Map<string, { resolve: (ok: boolean) => void; agentId: string }>();
+	/** Fired when an LLM-originated write needs user approval. */
+	private readonly _onDidRequestModelWriteConfirm = this._register(new Emitter<{ requestId: string; agentId: string; contentLen: number; preview: string }>());
+	readonly onDidRequestModelWriteConfirm: Event<{ requestId: string; agentId: string; contentLen: number; preview: string }> = this._onDidRequestModelWriteConfirm.event;
+
+	/**
+	 * Called by the webview controller when the user approves/denies a model write.
+	 * @param decision 'approve' | 'deny' | 'always'
+	 */
+	resolveModelWriteConfirm(requestId: string, decision: 'approve' | 'deny' | 'always'): void {
+		const pending = this._pendingModelWriteConfirms.get(requestId);
+		if (!pending) { return; }
+		this._pendingModelWriteConfirms.delete(requestId);
+		if (decision === 'always') {
+			this._alwaysAllowModelWrite.add(pending.agentId);
+			this.logService.info(`[ConfigHtml] model write always-approve set: agentId=${pending.agentId}`);
+		}
+		pending.resolve(decision !== 'deny');
+	}
+
+	/** Internal: ask user to confirm an LLM-originated write. Returns true if approved. */
+	private async _confirmModelWrite(agentId: string, contentLen: number, preview: string): Promise<boolean> {
+		if (this._alwaysAllowModelWrite.has(agentId)) { return true; }
+		const requestId = 'mwconfirm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+		return new Promise<boolean>((resolve) => {
+			this._pendingModelWriteConfirms.set(requestId, { resolve, agentId });
+			this._onDidRequestModelWriteConfirm.fire({ requestId, agentId, contentLen, preview: preview.slice(0, 500) });
+			this.logService.info(`[ConfigHtml] model write confirm requested: agentId=${agentId} requestId=${requestId} len=${contentLen}`);
+		});
+	}
+
 	private readonly _onDidEmitCommand = this._register(new Emitter<{ agentId: string; command: IConfigHtmlCommand }>());
 	readonly onDidEmitCommand: Event<{ agentId: string; command: IConfigHtmlCommand }> = this._onDidEmitCommand.event;
 
@@ -601,6 +636,14 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		if (!state) { throw new Error(`Agent '${agentId}' not found`); }
 		// 写盘
 		const origin = options?.origin || 'html';
+		// LLM 写入需要用户确认
+		if (origin === 'model') {
+			const ok = await this._confirmModelWrite(agentId, html.length, html);
+			if (!ok) {
+				this.logService.info(`[ConfigHtml] writeHtml denied by user: agentId=${agentId}`);
+				return { version: state.version };
+			}
+		}
 		state.pendingWriteOrigin = origin;
 		state.selfWriteEpoch++;
 		try {
@@ -734,6 +777,74 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		if (entry.count > RATE_LIMIT_PER_MINUTE) {
 			throw new Error(`ConfigMD rate limit exceeded for agent '${agentId}'`);
 		}
+	}
+
+	// ─── Key-Value Data Store ─────────────────────────────────────────────
+
+	/** In-memory cache of KV stores, keyed by agentId. */
+	private readonly _kvStores = new Map<string, Map<string, unknown>>();
+
+	/** Resolve the KV store file URI: ~/.vssaros/agents/{agentId}/data/kv.json */
+	private async _resolveKvUri(agentId: string): Promise<URI> {
+		const view = await this._resolveAgentView(agentId);
+		if (!view) { throw new Error(`Agent '${agentId}' not found`); }
+		const dirUri = await this._resolveAgentDirUri(view);
+		if (!dirUri) { throw new Error(`Agent directory not resolved for '${agentId}'`); }
+		const dataDir = URI.joinPath(dirUri, 'data');
+		try { await this.fileService.resolve(dataDir); } catch { await this.fileService.createFolder(dataDir); }
+		return URI.joinPath(dataDir, 'kv.json');
+	}
+
+	/** Load KV store from disk (or create empty if file doesn't exist). */
+	private async _ensureKvStore(agentId: string): Promise<Map<string, unknown>> {
+		const cached = this._kvStores.get(agentId);
+		if (cached) { return cached; }
+		const store = new Map<string, unknown>();
+		try {
+			const kvUri = await this._resolveKvUri(agentId);
+			const buf = await this.fileService.readFile(kvUri);
+			const data = JSON.parse(buf.value.toString());
+			if (data && typeof data === 'object') {
+				for (const [k, v] of Object.entries(data)) { store.set(k, v); }
+			}
+		} catch { /* file doesn't exist yet — empty store */ }
+		this._kvStores.set(agentId, store);
+		return store;
+	}
+
+	/** Flush KV store to disk. */
+	private async _flushKvStore(agentId: string): Promise<void> {
+		const store = this._kvStores.get(agentId);
+		if (!store) { return; }
+		const obj: Record<string, unknown> = {};
+		store.forEach((v, k) => { obj[k] = v; });
+		const kvUri = await this._resolveKvUri(agentId);
+		await this.fileService.writeFile(kvUri, VSBuffer.fromString(JSON.stringify(obj, null, 2)));
+	}
+
+	async kvGet(agentId: string, key: string): Promise<unknown | undefined> {
+		const store = await this._ensureKvStore(agentId);
+		return store.get(key);
+	}
+
+	async kvSet(agentId: string, key: string, value: unknown): Promise<void> {
+		const store = await this._ensureKvStore(agentId);
+		store.set(key, value);
+		await this._flushKvStore(agentId);
+		this.logService.info(`[ConfigHtml] kvSet: agentId=${agentId} key=${key}`);
+	}
+
+	async kvDelete(agentId: string, key: string): Promise<void> {
+		const store = await this._ensureKvStore(agentId);
+		store.delete(key);
+		await this._flushKvStore(agentId);
+		this.logService.info(`[ConfigHtml] kvDelete: agentId=${agentId} key=${key}`);
+	}
+
+	async kvList(agentId: string, prefix?: string): Promise<string[]> {
+		const store = await this._ensureKvStore(agentId);
+		const keys = Array.from(store.keys());
+		return prefix ? keys.filter(k => k.startsWith(prefix)) : keys;
 	}
 
 	// ─── Terminal Execution ─────────────────────────────────────────────────
@@ -1050,6 +1161,14 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 		}
 		if (markdown === st.markdown) {
 			return { version: st.version };
+		}
+		// LLM 写入需要用户确认
+		if (origin === 'model') {
+			const ok = await this._confirmModelWrite(agentId, markdown.length, markdown);
+			if (!ok) {
+				this.logService.info(`[ConfigHtml] writeSource denied by user: agentId=${agentId}`);
+				return { version: st.version };
+			}
 		}
 		st.markdown = markdown;
 		st.version++;
@@ -1396,6 +1515,14 @@ export class ConfigHtmlService extends Disposable implements IConfigHtmlService 
 			workspaceId,
 			workspaceSessionId,
 		});
+	}
+
+	/**
+	 * 宿主侧触发一次聊天发送（等价于在预览里点击发送）。供原生 UI（如知识库视图按钮）调用，
+	 * 自动按当前激活会话把消息发给指定 agent。
+	 */
+	requestChatSend(agentId: string, message: string): void {
+		this._sendChatMessage(agentId, message);
 	}
 
 	async handleChatSend(

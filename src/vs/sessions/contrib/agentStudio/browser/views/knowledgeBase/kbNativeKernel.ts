@@ -27,6 +27,7 @@ import {
 	KbVectorIndex, IKbVectorSearchHit, IKbVectorStatus, IKbVectorBuildOptions, KB_RAG_INDEX_FILE,
 } from './kbVectorIndex.js';
 import { IEmbeddingService } from '../../../common/embeddingProvider.js';
+import type { IKbWorkerMentionEntry, IKbWorkerGraphData } from './kbWorkerManager.js';
 
 // ---------------------------------------------------------------------------
 // 类型（对齐 kbKernelApi.ts 的接口，便于无缝替换）
@@ -109,10 +110,12 @@ export class KbNativeKernel extends Disposable {
 	 * @param roots - 库/笔记分区根 URI
 	 * @param persistUri - FTS 索引缓存文件 URI（可选；提供则启动时增量 reconcile，
 	 *                    只重读变更文件，并把 graph/mention 从内存文档派生，避免二次全量读盘）
+	 * @param opts - 可选：skipOffloads 跳过图谱+提及构建（由 Worker 异步注入）
 	 */
 	async build(
 		roots: { uri: URI; section: KbSection }[],
 		persistUri?: URI,
+		opts?: { skipOffloads?: boolean },
 	): Promise<void> {
 		// FTS index: cache load + incremental reconcile + cache save (internal).
 		const indexRoots: IKbIndexRoot[] = roots;
@@ -121,17 +124,69 @@ export class KbNativeKernel extends Disposable {
 		// Graph + mentions: prefer in-memory docs from the FTS index so a cache
 		// hit avoids a second full disk walk. Fall back to disk only when the
 		// index is somehow empty (cold start with no readable files).
-		const docs = this._index.allDocs();
-		if (docs.length > 0) {
-			this._graph.buildFromDocs(docs);
-			this._buildMentionIndexFromDocs(docs);
+		if (!opts?.skipOffloads) {
+			const docs = this._index.allDocs();
+			if (docs.length > 0) {
+				this._graph.buildFromDocs(docs);
+				this._buildMentionIndexFromDocs(docs);
+			} else {
+				const graphRoots: IKbGraphRoot[] = roots;
+				await this._graph.build(graphRoots);
+				await this._buildMentionIndex(roots);
+			}
 		} else {
-			const graphRoots: IKbGraphRoot[] = roots;
-			await this._graph.build(graphRoots);
-			await this._buildMentionIndex(roots);
+			// Worker 模式：只做 FTS，图谱+提及由外部 inject 方法异步填充
 		}
 
 		this._built = true;
+	}
+
+	/**
+	 * 注入 Worker 预计算的提及索引（替代 _buildMentionIndexCore 的主线程执行）。
+	 * 必须在 build({skipOffloads:true}) 之后调用。
+	 * @param entries Worker 返回的提及条目
+	 * @param docs FTS 索引中的全部文档（用于填充 _docNames）
+	 */
+	injectMentionIndex(entries: IKbWorkerMentionEntry[], docs: { uri: URI; name: string }[]): void {
+		this._mentionIndex.clear();
+		this._docNames.clear();
+
+		// 填充 _docNames
+		for (const doc of docs) {
+			const baseName = doc.name.replace(/\.(md|markdown)$/i, '');
+			if (baseName.length < 2) { continue; }
+			const normName = this._normalizeName(baseName);
+			this._docNames.set(normName, { uri: doc.uri, name: doc.name });
+		}
+
+		// 填充 _mentionIndex
+		for (const entry of entries) {
+			const uriSet = new Set<string>(entry.mentionedIn);
+			this._mentionIndex.set(entry.normName, uriSet);
+		}
+	}
+
+	/**
+	 * 注入 Worker 预计算的图谱数据，并从中派生 _docNames 和 _mentionIndex
+	 * （替代 _graph.buildFromDocs 的主线程执行）。
+	 * 必须在 build({skipOffloads:true}) 之后调用。
+	 */
+	injectGraph(graph: IKbWorkerGraphData): void {
+		// 从 graph nodes 填充 _docNames（因为 Worker 模式下 _buildMentionIndexFromDocs 被跳过）
+		for (const node of graph.nodes) {
+			const baseName = node.name.replace(/\.(md|markdown)$/i, '');
+			if (baseName.length < 2) { continue; }
+			const normName = this._normalizeName(baseName);
+			if (!this._docNames.has(normName)) {
+				this._docNames.set(normName, { uri: URI.parse(node.uriStr), name: node.name });
+			}
+		}
+
+		// 注入图谱数据到 KbLinkGraph
+		this._graph.injectFromWorker(
+			graph.nodes.map(n => ({ uri: URI.parse(n.uriStr), name: n.name, text: '' })),
+			graph.links.map(l => ({ sourceUriStr: l.source, targetUriStr: l.target })),
+		);
 	}
 
 	/** 标记索引失效（文件变更后调用）。 */
@@ -142,6 +197,15 @@ export class KbNativeKernel extends Disposable {
 	/** Expose indexed docs from the FTS index (zero-copy from memory). */
 	allDocs(): { uri: URI; name: string; section: string; mtime: number; size: number; text: string }[] {
 		return this._index.allDocs();
+	}
+
+	/**
+	 * 仅 stat 的元数据遍历（不读文件内容），返回每个可索引文档的
+	 * {uri, name, section, mtime, size}。用于判定大库并驱动 SQLite 增量同步，
+	 * 避免对超大库在主线程做全量内存倒排索引构建（会冻结 UI 数十分钟）。
+	 */
+	async collectDocMetas(roots: { uri: URI; section: KbSection }[]): Promise<{ uri: URI; name: string; section: KbSection; mtime: number; size: number }[]> {
+		return this._index.collectDocMetas(roots as IKbIndexRoot[]);
 	}
 
 	// -----------------------------------------------------------------------

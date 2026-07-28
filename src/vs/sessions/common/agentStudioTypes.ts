@@ -234,18 +234,6 @@ export enum DelegationStatus {
 }
 
 /**
- * Agent type determines capabilities within a workspace.
- * - planner: Can decompose goals into tasks (orchestration). Multiple allowed per workspace.
- * - worker: Executes assigned tasks. No orchestration capabilities.
- */
-export enum AgentType {
-	/** Can decompose goals into sub-tasks. Multiple planners allowed per workspace. */
-	Planner = 'planner',
-	/** Regular worker agent — executes tasks. */
-	Worker = 'worker',
-}
-
-/**
  * Portable export format for an agent instance.
  * Contains the agent definition metadata and all bootstrap/config files from the agent directory.
  * Used for import/export across workspaces.
@@ -356,9 +344,6 @@ export interface Agent {
 	/** 商城 storeId（= slug，升级检查溯源用） */
 	storeId?: string;
 
-	/** Agent type: planner (can orchestrate) or worker (default). */
-	agentType?: AgentType;
-
 	/**
 	 * Sandbox mode — controls the level of restriction on agent tool access.
 	 * Part of the agent DEFINITION (same in every workspace), so it belongs on
@@ -366,6 +351,20 @@ export interface Agent {
 	 * control (e.g. ReadOnly restricts to read-only tools regardless of `tools`).
 	 */
 	sandbox?: SandboxMode;
+
+	/**
+	 * AgentLoop 范式覆盖（可选）。
+	 * 不设置时按 chatMode 默认映射（craft→budgeted-react, plan→plan-explore 等）。
+	 * 可选值：budgeted-react | plan-explore | react | graph | delegation | readonly
+	 */
+	paradigm?: string;
+
+	/**
+	 * 每 turn 最大预算（迭代次数，可选）。
+	 * 不设置时使用系统默认值 DEFAULT_BUDGET_MAX=90。
+	 * 仅在 paradigm 为 budgeted-react 时生效（其他范式有各自的终止条件）。
+	 */
+	budgetMaxTotal?: number;
 
 	// ── ⚠️ DO NOT add per-workspace runtime fields here ─────────────────────
 	// `Agent` is a GLOBAL singleton definition: a given agent id (e.g. 'coder')
@@ -700,9 +699,15 @@ export interface Delegation {
 }
 
 export interface ChatMessageMetadata {
-	type?: 'orchestration_plan' | 'workflow';
+	type?: 'orchestration_plan' | 'workflow' | 'compaction';
 	planId?: string;
 	durationMs?: number;
+	/** compaction 边界：压缩前消息数（type === 'compaction' 时携带）。 */
+	originalCount?: number;
+	/** compaction 边界：压缩后消息数。 */
+	compressedCount?: number;
+	/** compaction 边界：节省的估算 tokens。 */
+	tokensSaved?: number;
 }
 
 // Reference item for ReferencesCard (VS Code chatReferencesContentPart pattern)
@@ -1312,6 +1317,8 @@ export enum PlanTaskStatus {
 	Cancelled = 'cancelled',
 	/** Error during execution */
 	Error = 'error',
+	/** Blocked because a dependency failed or was cancelled */
+	Blocked = 'blocked',
 }
 
 /**
@@ -1411,6 +1418,17 @@ export interface PlanTask {
 	blockedBy?: string;
 	/** Block timestamp */
 	blockedAt?: string;
+
+	// ─── Durable execution fields (P1: idempotency + claim/lease) ────────────
+	/** Idempotency key for this task (plan hash + task index) — prevents replay duplication. */
+	idempotencyKey?: string;
+	/** Monotonically increasing execution attempt number. */
+	attempt?: number;
+	/** Unique ID for the current execution attempt — late results with a different
+	 *  executionId are discarded. */
+	executionId?: string;
+	/** Timestamp when the current attempt was claimed (ISO 8601). */
+	claimedAt?: string;
 }
 
 /**
@@ -1441,6 +1459,8 @@ export interface OrchestrationPlan {
 	approvedAt?: string;
 	/** Completion timestamp */
 	completedAt?: string;
+	/** P0: Monotonic CAS version — mutated by mutatePlan, used to detect concurrent writes. */
+	_version?: number;
 }
 
 // ─── ModelSpec Utility Functions ────────────────────────────────────────────

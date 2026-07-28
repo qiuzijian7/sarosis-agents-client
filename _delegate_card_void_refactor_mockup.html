@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delegate 卡片 · Void 风格重构 Mockup（统一滚动列表）</title>
+<style>
+/* ════════════════════════════════════════════════════════════════
+   设计令牌：与 src/vs/sessions/contrib/agentStudio/webview/src/styles/
+   void-tool-card.css 1:1 对齐（VS Code 主题变量 + Void 状态色）
+   ════════════════════════════════════════════════════════════════ */
+:root{
+  --void-bg-3:#1e1e1e;        /* editor background */
+  --void-bg-2:#252526;        /* sideBar background */
+  --void-fg-2:#cccccc;
+  --void-fg-3:#989898;        /* placeholder */
+  --void-fg-4:#6e7681;        /* deemphasized */
+  --void-border-3:rgba(128,128,128,0.25);
+  --void-border-4:rgba(128,128,128,0.18);
+  --void-success:#4ec9b0;
+  --void-warn:#cca700;
+  --void-error:#f14c4c;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  background:#15161a;color:var(--void-fg-2);
+  padding:34px 16px;display:flex;flex-direction:column;align-items:center;gap:20px;
+}
+.chat{max-width:680px;width:100%;display:flex;flex-direction:column;gap:14px;}
+
+.note{
+  max-width:680px;width:100%;font-size:12.5px;line-height:1.65;color:var(--void-fg-3);
+  border:1px dashed var(--void-border-3);border-radius:10px;padding:12px 16px;background:rgba(255,255,255,.02);
+}
+.note b{color:var(--void-fg-2);}
+.note .k{color:var(--void-success);font-weight:600;}
+.note .y{color:var(--void-warn);font-weight:600;}
+
+.demo-bar{display:flex;gap:8px;max-width:680px;width:100%;flex-wrap:wrap;}
+.demo-bar button{
+  background:rgba(255,255,255,.05);color:var(--void-fg-2);border:1px solid var(--void-border-3);
+  border-radius:8px;font-size:11.5px;padding:7px 13px;cursor:pointer;transition:.15s;
+}
+.demo-bar button:hover{background:rgba(78,201,176,.12);border-color:rgba(78,201,176,.35);}
+
+/* ════════════════════════════════════════════════════════════════
+   Delegate 卡片 —— Void 统一壳 .tool-header-wrapper
+   标题行：chevron + 🤖 + 标题 + 子代理/任务 + 右侧(状态 pill + 时长)
+   展开体：单个可滚动列表（任务指令 / 执行列表 / 执行结构 三段顺排）
+   ════════════════════════════════════════════════════════════════ */
+.tool-header-wrapper{margin:4px 0;}
+.tool-header-wrapper .tool-header{
+  width:100%;border:1px solid var(--void-border-3);border-radius:4px;
+  padding:2px 8px;background:var(--void-bg-3);overflow:hidden;
+  transition:border-color .15s ease,background .15s ease;
+}
+.tool-header-wrapper.tool-card-error  .tool-header{border-color:color-mix(in srgb,var(--void-warn) 55%,var(--void-border-3));}
+.tool-header-wrapper.tool-card-running .tool-header{border-color:color-mix(in srgb,var(--void-warn) 50%,var(--void-border-3));background:color-mix(in srgb,var(--void-warn) 5%,var(--void-bg-3));}
+.tool-header-wrapper.tool-card-canceled .tool-header{opacity:.8;border-color:var(--void-border-4);}
+
+.tool-header-row{user-select:none;display:flex;align-items:center;width:100%;gap:8px;overflow:hidden;justify-content:space-between;min-height:26px;}
+.tool-header-left{margin-left:4px;display:flex;align-items:center;overflow:hidden;min-width:0;}
+.tool-header-icon{display:inline-flex;align-items:center;margin-right:6px;flex-shrink:0;font-size:13px;}
+.tool-header-title-container{display:flex;align-items:center;min-width:0;overflow:hidden;flex-grow:1;cursor:pointer;}
+.tool-header-title-container.tool-header-title-clickable{cursor:pointer;transition:filter .15s;}
+.tool-header-title-container.tool-header-title-clickable:hover{filter:brightness(1.25);}
+.tool-header-chevron{color:var(--void-fg-3);width:14px;height:14px;flex-shrink:0;transition:transform .12s;margin-right:2px;}
+.tool-header-chevron.expanded{transform:rotate(90deg);}
+.tool-header-title{color:var(--void-fg-2);font-size:12px;font-weight:500;flex-shrink:0;}
+.tool-header-desc1{color:var(--void-fg-4);font-size:11px;font-style:italic;margin-left:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+/* 右侧：状态 pill + 时长 */
+.tool-header-right{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.status-pill{
+  font-size:11px;font-weight:600;padding:1px 9px;border-radius:99px;flex-shrink:0;
+  display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums;
+}
+.status-pill.running{color:var(--void-warn);background:color-mix(in srgb,var(--void-warn) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-warn) 30%,transparent);}
+.status-pill.done{color:var(--void-success);background:color-mix(in srgb,var(--void-success) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-success) 30%,transparent);}
+.status-pill.error{color:var(--void-error);background:color-mix(in srgb,var(--void-error) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-error) 30%,transparent);}
+.status-pill.canceled{color:var(--void-fg-3);background:rgba(128,128,128,.12);border:1px solid var(--void-border-4);}
+.status-pill .pulse{width:6px;height:6px;border-radius:50%;background:var(--void-warn);animation:pulse 1.1s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.tool-header-duration{font-size:11px;color:var(--void-fg-4);font-variant-numeric:tabular-nums;flex-shrink:0;}
+.dlg-parallel-count{font-size:10.5px;font-weight:600;color:var(--void-fg-2);background:rgba(255,255,255,.05);border:1px solid var(--void-border-3);padding:1px 8px;border-radius:99px;}
+
+/* ── 展开体：单个可滚动列表 ── */
+.tool-header-children{overflow:hidden;max-height:0;opacity:0;transition:all .2s ease-in-out;border-radius:2px;}
+.tool-header-children.expanded{max-height:520px;opacity:1;padding:4px 0;}
+.delegate-scroll{
+  max-height:380px;overflow-y:auto;padding:2px 8px;
+  border-top:1px solid var(--void-border-4);margin-top:2px;
+  scrollbar-width:thin;scrollbar-color:var(--void-border-3) transparent;
+}
+.delegate-scroll::-webkit-scrollbar{width:8px;}
+.delegate-scroll::-webkit-scrollbar-thumb{background:var(--void-border-3);border-radius:8px;}
+.delegate-scroll::-webkit-scrollbar-track{background:transparent;}
+
+/* 三段统一区块 */
+.du-sec{padding:8px 2px 10px;}
+.du-sec + .du-sec{border-top:1px solid var(--void-border-4);}
+.du-sec-label{
+  font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
+  color:var(--void-fg-4);padding:2px 0 8px;display:flex;align-items:center;gap:6px;
+}
+.du-sec-label .tick{width:3px;height:11px;border-radius:2px;background:var(--void-success);display:inline-block;}
+
+/* ① 任务指令（markdown 渲染观感） */
+.du-instr{font-size:12px;line-height:1.6;color:var(--void-fg-2);}
+.du-instr p{margin:0 0 6px;}
+.du-instr strong{color:var(--void-fg-2);font-weight:650;}
+.du-instr ul{margin:4px 0 4px 18px;padding:0;}
+.du-instr li{margin:2px 0;color:var(--void-fg-3);}
+.du-instr code{font-family:ui-monospace,Consolas,monospace;font-size:11px;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:3px;color:#ce9178;}
+
+/* ② 执行列表（扁平工具调用步骤） */
+.du-steps{list-style:none;position:relative;padding-left:14px;}
+.du-steps::before{content:'';position:absolute;left:4px;top:6px;bottom:6px;width:1px;background:var(--void-border-3);}
+.du-step{position:relative;display:flex;align-items:baseline;gap:9px;padding:3px 0;font-size:11.5px;line-height:1.45;}
+.du-step::before{content:'';position:absolute;left:-14px;top:8px;width:7px;height:7px;border-radius:50%;background:var(--void-fg-4);border:1.5px solid var(--void-bg-3);}
+.du-step.ok::before{background:var(--void-success);}
+.du-step.running::before{background:var(--void-warn);animation:pulse 1.1s ease-in-out infinite;}
+.du-step.fail::before{background:var(--void-error);}
+.du-step-name{color:var(--void-fg-2);font-weight:600;flex-shrink:0;}
+.du-step-detail{color:var(--void-fg-4);font-family:ui-monospace,Consolas,monospace;font-size:11px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.du-step-dur{color:var(--void-fg-4);font-size:10.5px;flex-shrink:0;font-variant-numeric:tabular-nums;}
+
+/* ③ 执行结构（子代理分解树） */
+.du-tree{list-style:none;padding-left:2px;}
+.du-node{position:relative;padding:6px 0 6px 18px;}
+.du-node::before{content:'';position:absolute;left:5px;top:0;bottom:0;width:1px;background:var(--void-border-3);}
+.du-node:last-child::before{bottom:14px;}
+.du-node::after{content:'';position:absolute;left:5px;top:13px;width:11px;height:1px;background:var(--void-border-3);}
+.du-node-head{display:flex;align-items:center;gap:8px;}
+.du-node-dot{position:absolute;left:2px;top:9px;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--void-bg-3);z-index:1;}
+.du-node-dot.done{background:var(--void-success);}
+.du-node-dot.running{background:var(--void-warn);animation:pulse 1.1s ease-in-out infinite;}
+.du-node-dot.error{background:var(--void-error);}
+.du-node-badge{width:18px;height:18px;border-radius:5px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;background:rgba(128,128,128,.5);}
+.du-node-role{font-size:10px;color:var(--void-fg-4);font-weight:600;text-transform:uppercase;letter-spacing:.4px;flex-shrink:0;}
+.du-node-task{font-size:11.5px;color:var(--void-fg-2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.du-node-st{font-size:10px;flex-shrink:0;margin-left:auto;font-variant-numeric:tabular-nums;}
+.du-node-st.done{color:var(--void-success);}
+.du-node-st.running{color:var(--void-warn);}
+.du-node-st.error{color:var(--void-error);}
+.du-node-children{list-style:none;margin-top:2px;}
+.du-leaf{position:relative;padding:2px 0 2px 30px;font-size:11px;color:var(--void-fg-4);display:flex;gap:8px;border-left:1px solid var(--void-border-3);margin-left:6px;}
+.du-leaf .ln{color:var(--void-fg-2);font-weight:600;flex-shrink:0;}
+
+/* ③ 执行结果（子代理实际 output 文本）*/
+.du-results{padding:2px 0;}
+.du-result{padding:7px 0;}
+.du-result + .du-result{border-top:1px dashed var(--void-border-4);}
+.du-result-head{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
+.du-result-role{font-size:10px;color:var(--void-fg-4);font-weight:600;text-transform:uppercase;letter-spacing:.4px;flex-shrink:0;}
+.du-result-task{font-size:11.5px;color:var(--void-fg-2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+.du-output{
+  font-size:11.5px;line-height:1.6;color:var(--void-fg-3);
+  background:rgba(255,255,255,.03);border-left:2px solid var(--void-border-3);
+  padding:7px 11px;border-radius:0 4px 4px 0;max-height:130px;overflow:auto;
+  white-space:pre-wrap;word-break:break-word;
+  scrollbar-width:thin;scrollbar-color:var(--void-border-3) transparent;
+}
+.du-output::-webkit-scrollbar{width:7px;}
+.du-output::-webkit-scrollbar-thumb{background:var(--void-border-3);border-radius:7px;}
+.du-output.error{color:var(--void-error);border-left-color:color-mix(in srgb,var(--void-error) 45%,transparent);background:color-mix(in srgb,var(--void-error) 5%,transparent);}
+.du-output-empty{color:var(--void-fg-4);font-style:italic;font-size:11px;padding:4px 0;}
+</style>
+</head>
+<body>
+
+<div class="note">
+  <b>Delegate 卡片 Void 风格重构（统一滚动列表方案）</b><br>
+  • <span class="k">标题行</span>：chevron + 🤖 + 标题「委派任务 / 子代理名 / 任务名」+ 右侧 <b>状态 pill + 时长</b>（并行 fan-out 时显示「并行 ×N」）。<br>
+  • <span class="k">展开体 = 单个可滚动列表</span>（<span class="y">.delegate-scroll</span>）：三段顺排于同一滚动容器内 ——<br>
+  &nbsp;&nbsp;① <b>任务指令</b>：args.task 的 markdown 渲染；<br>
+  &nbsp;&nbsp;② <b>执行列表</b>：所有子代理工具调用的扁平步骤时间线（✓ / ● / ✗ + 名称 + 摘要 + 耗时）；<br>
+  &nbsp;&nbsp;③ <b>执行结构</b>：子代理分解树（角色 + 任务 + 状态，逐子代理展开其工具步骤叶子）。<br>
+  • 与现存「delegate 伞 + 独立 subagent 卡片」方案不同：本方案将指令/列表/结构<b>压平进同一滚动列表</b>，符合本次需求。
+</div>
+
+<div class="demo-bar">
+  <button onclick="document.getElementById('dlg').classList.toggle('expanded')">切换展开/折叠</button>
+  <button onclick="document.getElementById('dlg2').classList.toggle('expanded')">切换「运行中」卡展开</button>
+</div>
+
+<div class="chat">
+
+  <!-- ════════════════ 委派卡片（完成态 · 展开）══════════════ -->
+  <div class="tool-header-wrapper tool-card-success expanded" id="dlg">
+    <div class="tool-header">
+      <div class="tool-header-row">
+        <div class="tool-header-left">
+          <svg class="tool-header-chevron expanded" viewBox="0 0 16 16" width="14" height="14"><path d="M6 4l4 4-4 4" stroke="currentColor" fill="none" stroke-width="1.5"/></svg>
+          <span class="tool-header-icon">🤖</span>
+          <div class="tool-header-title-container tool-header-title-clickable">
+            <span class="tool-header-title">委派任务</span>
+            <span class="tool-header-desc1">Frontend-Explorer · 审计登录模块鉴权流程</span>
+          </div>
+        </div>
+        <div class="tool-header-right">
+          <span class="status-pill done">完成</span>
+          <span class="tool-header-duration">38s</span>
+        </div>
+      </div>
+
+      <!-- 统一滚动列表 -->
+      <div class="tool-header-children expanded">
+        <div class="delegate-scroll">
+
+          <!-- ① 任务指令 -->
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>任务指令</div>
+            <div class="du-instr">
+              <p>审计 <code>src/auth/</code> 下的登录与鉴权实现，确认以下要点：</p>
+              <ul>
+                <li>Token 刷新是否在 <strong>401 拦截器</strong>中统一处理；</li>
+                <li>会话过期后的重定向路径是否指向 <code>/login</code>；</li>
+                <li>是否存在明文存储凭据的代码路径。</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- ② 执行列表（扁平工具步骤）-->
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>执行列表</div>
+            <ul class="du-steps">
+              <li class="du-step ok"><span class="du-step-name">搜索文件</span><span class="du-step-detail">src/auth/login.ts</span><span class="du-step-dur">2.1s</span></li>
+              <li class="du-step ok"><span class="du-step-name">读取文件</span><span class="du-step-detail">useAuth.ts</span><span class="du-step-dur">1.8s</span></li>
+              <li class="du-step ok"><span class="du-step-name">搜索内容</span><span class="du-step-detail">401 拦截器 · refreshToken</span><span class="du-step-dur">1.6s</span></li>
+              <li class="du-step ok"><span class="du-step-name">搜索图</span><span class="du-step-detail">session 引用图</span><span class="du-step-dur">1.9s</span></li>
+              <li class="du-step ok"><span class="du-step-name">读取文件</span><span class="du-step-detail">api/client.ts</span><span class="du-step-dur">1.4s</span></li>
+            </ul>
+          </div>
+
+          <!-- ③ 执行结果（子代理实际 output 文本）-->
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>执行结果</div>
+            <div class="du-results">
+              <div class="du-result">
+                <div class="du-result-head">
+                  <span class="du-node-badge" style="background:rgba(78,201,176,.7)">E</span>
+                  <span class="du-result-role">explore</span>
+                  <span class="du-result-task">审计登录模块鉴权流程</span>
+                </div>
+                <div class="du-output">Token 刷新已在 src/api/client.ts 的 401 拦截器中统一处理（refreshToken 重试一次后回退 login）。
+会话过期重定向目标正确指向 /login（router/guards.ts 守卫生效）。
+未发现明文存储凭据的代码路径——凭据仅存于内存 ref，无 localStorage 落地。</div>
+              </div>
+              <div class="du-result">
+                <div class="du-result-head">
+                  <span class="du-node-badge" style="background:rgba(167,139,250,.7)">G</span>
+                  <span class="du-result-role">general</span>
+                  <span class="du-result-task">验证会话过期重定向路径</span>
+                </div>
+                <div class="du-output">确认 redirect('/login') 在守卫与拦截器两处均触发；
+移动端 deep-link 回跳参数 preserveQuery 已保留，无信息丢失。</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ 委派卡片（运行中 · 折叠态预览 标题含状态+时长）══════════════ -->
+  <div class="tool-header-wrapper tool-card-running" id="dlg2">
+    <div class="tool-header">
+      <div class="tool-header-row">
+        <div class="tool-header-left">
+          <svg class="tool-header-chevron" viewBox="0 0 16 16" width="14" height="14"><path d="M6 4l4 4-4 4" stroke="currentColor" fill="none" stroke-width="1.5"/></svg>
+          <span class="tool-header-icon">🤖</span>
+          <div class="tool-header-title-container tool-header-title-clickable">
+            <span class="tool-header-title">委派任务</span>
+            <span class="tool-header-desc1">Code-Explorer × 3 · 并行审计 GC 增量可达性</span>
+          </div>
+        </div>
+        <div class="tool-header-right">
+          <span class="dlg-parallel-count">并行 ×3</span>
+          <span class="status-pill running"><span class="pulse"></span>执行中</span>
+          <span class="tool-header-duration">43s</span>
+        </div>
+      </div>
+
+      <div class="tool-header-children">
+        <div class="delegate-scroll">
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>任务指令</div>
+            <div class="du-instr">
+              <p>并行审计 UE5 GC 增量可达性：覆盖<b>核心源码</b>（Purge/Cluster）、<b>项目自定义 GC</b>、<b>各平台 ini 的 gc.* 配置覆盖</b>。</p>
+            </div>
+          </div>
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>执行列表</div>
+            <ul class="du-steps">
+              <li class="du-step ok"><span class="du-step-name">搜索文件</span><span class="du-step-detail">GarbageCollection.cpp</span><span class="du-step-dur">2.1s</span></li>
+              <li class="du-step ok"><span class="du-step-name">读取文件</span><span class="du-step-detail">IncrementalPurgeGarbage()</span><span class="du-step-dur">1.8s</span></li>
+              <li class="du-step running"><span class="du-step-name">搜索内容</span><span class="du-step-detail">gc.AssetClusteringEnabled …</span><span class="du-step-dur"></span></li>
+              <li class="du-step ok"><span class="du-step-name">搜索内容</span><span class="du-step-detail">PS5Engine.ini gc.LowMemory…</span><span class="du-step-dur">1.9s</span></li>
+            </ul>
+          </div>
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>执行结果</div>
+            <div class="du-results">
+              <div class="du-result">
+                <div class="du-result-head">
+                  <span class="du-node-badge" style="background:rgba(167,139,250,.7)">E</span>
+                  <span class="du-result-role">explore</span>
+                  <span class="du-result-task">核心 GC 源码 · Purge 链</span>
+                </div>
+                <div class="du-output">IncrementalPurgeGarbage() 已确认沿 Cluster 边界批量回收，无跨 Cluster 悬挂引用；
+PurgePause 时长随 Cluster 数线性增长（实测 14 个 Cluster ≈ 3.2ms）。</div>
+              </div>
+              <div class="du-result">
+                <div class="du-result-head">
+                  <span class="du-node-badge" style="background:rgba(167,139,250,.7)">E</span>
+                  <span class="du-result-role">explore</span>
+                  <span class="du-result-task">平台 ini gc.* 覆盖</span>
+                </div>
+                <div class="du-output-empty">（执行中 · 暂无可输出结果）</div>
+              </div>
+              <div class="du-result">
+                <div class="du-result-head">
+                  <span class="du-node-badge" style="background:rgba(128,128,128,.7)">G</span>
+                  <span class="du-result-role">general</span>
+                  <span class="du-result-task">项目自定义 GC 重构</span>
+                </div>
+                <div class="du-output">项目侧 FCustomGC 已包装引擎 IncrementalPurge，默认开启；
+gc.AssetClusteringEnabled 当前为 true，与引擎默认值一致。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ 委派卡片（失败态 · 标题含状态+时长）══════════════ -->
+  <div class="tool-header-wrapper tool-card-error expanded">
+    <div class="tool-header">
+      <div class="tool-header-row">
+        <div class="tool-header-left">
+          <svg class="tool-header-chevron expanded" viewBox="0 0 16 16" width="14" height="14"><path d="M6 4l4 4-4 4" stroke="currentColor" fill="none" stroke-width="1.5"/></svg>
+          <span class="tool-header-icon">🤖</span>
+          <div class="tool-header-title-container tool-header-title-clickable">
+            <span class="tool-header-title">委派任务</span>
+            <span class="tool-header-desc1">Backend-Worker · 重构缓存层接入 GC 白名单</span>
+          </div>
+        </div>
+        <div class="tool-header-right">
+          <span class="status-pill error">失败</span>
+          <span class="tool-header-duration">18s</span>
+        </div>
+      </div>
+      <div class="tool-header-children expanded">
+        <div class="delegate-scroll">
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>任务指令</div>
+            <div class="du-instr"><p>重构 DataManager 缓存层并接入 GC 白名单，移除明文凭据。</p></div>
+          </div>
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>执行列表</div>
+            <ul class="du-steps">
+              <li class="du-step ok"><span class="du-step-name">搜索文件</span><span class="du-step-detail">DataManager.*</span><span class="du-step-dur">1.2s</span></li>
+              <li class="du-step ok"><span class="du-step-name">读取文件</span><span class="du-step-detail">DataManager.h</span><span class="du-step-dur">1.5s</span></li>
+              <li class="du-step fail"><span class="du-step-name">写入文件</span><span class="du-step-detail">DataManager.cpp — 权限被拒绝</span><span class="du-step-dur">3.0s</span></li>
+            </ul>
+          </div>
+          <div class="du-sec">
+            <div class="du-sec-label"><span class="tick"></span>执行结果</div>
+            <div class="du-results">
+              <div class="du-result">
+                <div class="du-result-head">
+                  <span class="du-node-badge" style="background:rgba(251,113,133,.7)">G</span>
+                  <span class="du-result-role">general</span>
+                  <span class="du-result-task">重构缓存层接入 GC 白名单</span>
+                </div>
+                <div class="du-output error">任务中断于第 3 步「写入 DataManager.cpp」：
+EACCES: 文件被其他进程锁定（疑似编辑器或构建守护占用）。
+已安全回滚临时改动，未留下半成品文件。建议释放句柄后重试。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* 折叠/展开：标题行 + chevron 切换 */
+document.querySelectorAll('.tool-header-title-clickable').forEach(el=>{
+  el.addEventListener('click',()=>{
+    const wrap = el.closest('.tool-header-wrapper');
+    const child = wrap.querySelector('.tool-header-children');
+    const chev = wrap.querySelector('.tool-header-chevron');
+    const open = child.classList.toggle('expanded');
+    chev.classList.toggle('expanded', open);
+    wrap.classList.toggle('expanded', open);
+  });
+});
+document.querySelectorAll('.tool-header-chevron').forEach(el=>{
+  el.style.cursor='pointer';
+  el.addEventListener('click',(e)=>{
+    e.stopPropagation();
+    const wrap = el.closest('.tool-header-wrapper');
+    const child = wrap.querySelector('.tool-header-children');
+    const open = child.classList.toggle('expanded');
+    el.classList.toggle('expanded', open);
+    wrap.classList.toggle('expanded', open);
+  });
+});
+</script>
+
+</body>
+</html>

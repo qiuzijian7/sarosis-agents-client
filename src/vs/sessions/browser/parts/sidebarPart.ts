@@ -7,7 +7,7 @@ import '../../../workbench/browser/parts/sidebar/media/sidebarpart.css';
 import './media/sidebarPart.css';
 import { IWorkbenchLayoutService, Parts, Position as SideBarPosition } from '../../../workbench/services/layout/browser/layoutService.js';
 import { SidebarFocusContext, ActiveViewletContext } from '../../../workbench/common/contextkeys.js';
-import { IStorageService } from '../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../platform/storage/common/storage.js';
 import { IContextMenuService } from '../../../platform/contextview/browser/contextView.js';
 import { IKeybindingService } from '../../../platform/keybinding/common/keybinding.js';
 import { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
@@ -89,10 +89,25 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	private static readonly EXPANDED_MAX_WIDTH = 450;
 	private static readonly EXPANDED_PREFERRED_WIDTH = 250;
 
+	/**
+	 * View container IDs in the "above-separator" (tools) group.
+	 * Must match the registered view containers whose order is in the
+	 * top group (workspace, search, sourcecontrol: order 10/20/30).
+	 */
+	private static readonly TOP_GROUP_IDS = new Set([
+		'agentStudio.workspace',
+		'agentStudio.search',
+		'sessions.sourceControl.container',  // SESSIONS_SOURCE_CONTROL_CONTAINER_ID
+	]);
+
 	private footerContainer: HTMLElement | undefined;
 	private sideBarTitleArea: HTMLElement | undefined;
 	private footerToolbar: MenuWorkbenchToolBar | undefined;
 	private previousLayoutDimensions: { width: number; height: number; top: number; left: number } | undefined;
+	private separatorEl: HTMLElement | undefined;
+
+	/** Last known valid pin order (used to revert invalid drag-and-drop moves). */
+	private _lastValidPinOrder: string | undefined = undefined;
 
 	/** Whether the content panel is currently collapsed (icon strip only). */
 	private _contentCollapsed: boolean = true;
@@ -183,6 +198,8 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		parent.classList.add(SIDEBAR_CONTENT_COLLAPSED_CLASS);
 
 		this.createSidebarToolbar(parent);
+		this._injectActivityBarSeparator(parent);
+		this._setupActivityBarDragValidation();
 		this.createFooter(parent);
 	}
 
@@ -931,6 +948,122 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		}
 
 		return { primaryPath, extraFolders, filesExclude };
+	}
+
+	/**
+	 * Inject a visual separator into the activity bar between the "tools" group
+	 * (workspace, search, sourcecontrol: order <= 40) and the "AI features" group
+	 * (session, agents, tasks, workflow, integration, memory, kb, plugins: order > 40).
+	 *
+	 * The separator is inserted after the last top-group icon and re-positioned
+	 * whenever the icon order changes (e.g., after drag-and-drop).
+	 */
+	private _injectActivityBarSeparator(parent: HTMLElement): void {
+		const compositeBar = parent.querySelector('.composite-bar');
+		if (!compositeBar) { return; }
+
+		const separator = this.separatorEl = $('div.activity-bar-separator');
+		compositeBar.appendChild(separator);
+
+		// Position the separator after the last top-group action item
+		this._repositionSeparator(compositeBar);
+	}
+
+	/**
+	 * Reposition the separator element after the last top-group icon.
+	 * Top-group icons have data-container-id matching TOP_GROUP_IDS.
+	 */
+	private _repositionSeparator(compositeBar?: Element): void {
+		if (!this.separatorEl) { return; }
+		const bar = compositeBar ?? (this.separatorEl.closest('.composite-bar') as HTMLElement | null);
+		if (!bar) { return; }
+
+		const actionItems = bar.querySelectorAll('.action-item');
+		let lastTopIndex = -1;
+
+		for (let i = 0; i < actionItems.length; i++) {
+			const containerId = actionItems[i].getAttribute('data-container-id') ?? '';
+			if (SidebarPart.TOP_GROUP_IDS.has(containerId)) {
+				lastTopIndex = i;
+			}
+		}
+
+		// Place separator after the last top-group icon (or at the end if none found)
+		if (lastTopIndex >= 0 && lastTopIndex + 1 < actionItems.length) {
+			actionItems[lastTopIndex].after(this.separatorEl);
+		} else if (lastTopIndex < 0 && actionItems.length > 0) {
+			// No top-group icons found — place separator at the top
+			actionItems[0].before(this.separatorEl);
+		}
+	}
+
+	/**
+	 * Listen for pinned view container order changes and validate that
+	 * drag-and-drop did not move icons across the activity bar separator.
+	 * If icons crossed the boundary, revert to the last valid order.
+	 */
+	private _setupActivityBarDragValidation(): void {
+		// Snapshot the initial valid order
+		this._lastValidPinOrder = this.storageService.get(
+			SidebarPart.pinnedViewContainersKey,
+			StorageScope.PROFILE,
+		);
+
+		this._register(this.storageService.onDidChangeValue(
+			StorageScope.PROFILE,
+			SidebarPart.pinnedViewContainersKey,
+			this._store,
+		)(() => {
+			const currentValue = this.storageService.get(
+				SidebarPart.pinnedViewContainersKey,
+				StorageScope.PROFILE,
+			);
+			if (!currentValue) { return; }
+
+			if (this._isPinOrderValid(currentValue)) {
+				// Valid order — update the snapshot
+				this._lastValidPinOrder = currentValue;
+			} else {
+				// Invalid order (icons crossed the separator) — revert
+				if (this._lastValidPinOrder) {
+					this.storageService.store(
+						SidebarPart.pinnedViewContainersKey,
+						this._lastValidPinOrder,
+						StorageScope.PROFILE,
+						StorageTarget.USER,
+					);
+				}
+			}
+
+			// Re-position the separator after any order change
+			this._repositionSeparator();
+		}));
+	}
+
+	/**
+	 * Check whether the pinned view container order respects the separator
+	 * boundary: all TOP_GROUP_IDS must appear before any other icons.
+	 */
+	private _isPinOrderValid(pinOrderJson: string): boolean {
+		try {
+			const order: { id: string }[] = JSON.parse(pinOrderJson);
+			if (!Array.isArray(order)) { return true; }
+
+			let seenNonTop = false;
+			for (const item of order) {
+				if (SidebarPart.TOP_GROUP_IDS.has(item.id)) {
+					if (seenNonTop) {
+						// A top-group icon appeared after a non-top icon — invalid
+						return false;
+					}
+				} else {
+					seenNonTop = true;
+				}
+			}
+			return true;
+		} catch {
+			return true; // ignore parse errors
+		}
 	}
 
 	private createFooter(parent: HTMLElement): void {

@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Subagent Card 样式优化 Mockup</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #1e1e2e; color: #cdd6f4;
+  padding: 24px; display: flex; justify-content: center;
+}
+.chat { max-width: 680px; width: 100%; display:flex; flex-direction:column; gap:14px; }
+
+/* ════════════════════════════════════════════════════════
+   Subagent Card — 3 种状态：running / done / error
+   ════════════════════════════════════════════════════════ */
+
+.sa-card {
+  border-radius: 8px; overflow: hidden;
+  border: 1px solid #313244; background: #181825;
+  transition: border-color .15s, box-shadow .15s;
+}
+.sa-card:hover { border-color: #45475a; }
+.sa-card.running { border-color: #f9e2af; }
+.sa-card.error   { border-color: #f38ba8; }
+
+/* ── Header ── */
+.sa-header {
+  display:flex; align-items:center; gap:10px;
+  padding:10px 14px; cursor:pointer; user-select:none;
+  background: #1e1e2e;
+}
+.sa-header:hover { background: rgba(137,180,250,0.04); }
+
+.sa-badge {
+  width:28px; height:28px; border-radius:7px; display:flex;
+  align-items:center; justify-content:center; flex-shrink:0;
+  font-size:13px; font-weight:700;
+}
+.sa-badge.explore  { background:rgba(137,180,250,0.15); color:#89b4fa; }
+.sa-badge.general  { background:rgba(166,227,161,0.15); color:#a6e3a1; }
+.sa-badge.scout    { background:rgba(203,166,247,0.15); color:#cba6f7; }
+
+.sa-meta { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.sa-agent-name { font-size:11px; color:#6c7086; font-weight:500; text-transform:uppercase; letter-spacing:.5px; }
+.sa-task { font-size:13px; color:#cdd6f4; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+.sa-status {
+  font-size:11px; padding:3px 9px; border-radius:99px; flex-shrink:0;
+  font-weight:600; letter-spacing:.3px;
+}
+.sa-status.done    { background:rgba(166,227,161,0.15); color:#a6e3a1; }
+.sa-status.running { background:rgba(249,226,175,0.15); color:#f9e2af; }
+.sa-status.error   { background:rgba(243,139,168,0.15); color:#f38ba8; }
+
+.sa-chevron {
+  color:#6c7086; font-size:11px; transition:transform .2s; flex-shrink:0;
+}
+.sa-card.expanded .sa-chevron { transform:rotate(90deg); }
+
+/* ── Body — collapsed by default ── */
+.sa-body { display:none; }
+.sa-card.expanded .sa-body { display:block; }
+
+.sa-body-inner { padding:0 14px 12px; }
+
+/* ── Tool trace ── */
+.sa-trace-header {
+  display:flex; align-items:center; gap:6px;
+  font-size:11px; color:#6c7086; font-weight:600;
+  padding:6px 0; border-bottom:1px solid #313244; margin-bottom:6px;
+}
+.sa-trace-list { display:flex; flex-direction:column; gap:3px; }
+.sa-trace-item {
+  display:flex; align-items:center; gap:7px;
+  font-size:12px; padding:3px 0;
+}
+.sa-trace-icon { font-size:11px; width:14px; text-align:center; flex-shrink:0; }
+.sa-trace-icon.ok { color:#a6e3a1; }
+.sa-trace-icon.running { color:#f9e2af; }
+.sa-trace-icon.error { color:#f38ba8; }
+.sa-trace-name { color:#cdd6f4; font-weight:500; white-space:nowrap; }
+.sa-trace-detail { color:#6c7086; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ── Output ── */
+.sa-output {
+  margin-top:8px; padding:8px 10px; background:#11111b; border-radius:6px;
+  font-size:12px; line-height:1.6; color:#bac2de;
+  max-height:120px; overflow-y:auto;
+}
+
+/* ── Footer stats ── */
+.sa-footer {
+  display:flex; align-items:center; gap:14px;
+  padding:6px 14px; border-top:1px solid #313244;
+  font-size:11px; color:#6c7086;
+}
+.sa-footer .dot { width:6px; height:6px; border-radius:50%; margin-right:4px; display:inline-block; }
+.sa-footer .dot.ok { background:#a6e3a1; }
+.sa-footer .dot.err { background:#f38ba8; }
+
+/* ── Running state animation ── */
+.sa-card.running .sa-task { overflow:hidden; }
+.sa-card.running .sa-task::after {
+  content:'';
+  display:inline-block; width:6px; height:13px; margin-left:4px;
+  background:#f9e2af; animation: blink .8s infinite;
+  vertical-align:middle; border-radius:1px;
+}
+@keyframes blink { 50% { opacity:0; } }
+
+</style>
+</head>
+<body>
+<div class="chat">
+
+<!-- ════════════════════════════════════════════════════════
+   Running — Explore 在运行中
+   ════════════════════════════════════════════════════════ -->
+<div class="sa-card running expanded">
+
+  <div class="sa-header" onclick="this.parentElement.classList.toggle('expanded')">
+    <div class="sa-badge explore">E</div>
+    <div class="sa-meta">
+      <span class="sa-agent-name">explore</span>
+      <span class="sa-task">S1Game GC 触发机制与自定义代码分析</span>
+    </div>
+    <span class="sa-status running">运行中</span>
+    <span class="sa-chevron">▶</span>
+  </div>
+
+  <div class="sa-body">
+    <div class="sa-body-inner">
+      <!-- Tool trace -->
+      <div class="sa-trace-header">🛠 执行过程 · 4 步</div>
+      <div class="sa-trace-list">
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon ok">✓</span>
+          <span class="sa-trace-name">搜索文件</span>
+          <span class="sa-trace-detail">&#42;CollectGarbage&#42;</span>
+        </div>
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon ok">✓</span>
+          <span class="sa-trace-name">读取文件</span>
+          <span class="sa-trace-detail">Source/S1Game/GameMode/S1GameMode.cpp</span>
+        </div>
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon running">⏳</span>
+          <span class="sa-trace-name">正在搜索代码库图</span>
+          <span class="sa-trace-detail">GarbageCollection handler chain</span>
+        </div>
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon running" style="opacity:.4">◦</span>
+          <span class="sa-trace-name" style="opacity:.4">待执行…</span>
+          <span class="sa-trace-detail"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sa-footer">
+    <span><span class="dot ok"></span> 2 完成</span>
+    <span><span class="dot" style="background:#f9e2af"></span> 1 运行中</span>
+    <span>🕐 4.2s</span>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+   Done — Explore 完成（默认展开）
+   ════════════════════════════════════════════════════════ -->
+<div class="sa-card expanded">
+
+  <div class="sa-header" onclick="this.parentElement.classList.toggle('expanded')">
+    <div class="sa-badge explore">E</div>
+    <div class="sa-meta">
+      <span class="sa-agent-name">explore</span>
+      <span class="sa-task">S1Game GC 配置参数与阈值分析</span>
+    </div>
+    <span class="sa-status done">完成</span>
+    <span class="sa-chevron">▶</span>
+  </div>
+
+  <div class="sa-body">
+    <div class="sa-body-inner">
+      <div class="sa-trace-header">🛠 执行过程 · 3 步</div>
+      <div class="sa-trace-list">
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">搜索文件</span><span class="sa-trace-detail">gc.MaxObjectsInGame</span>
+        </div>
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">读取文件</span><span class="sa-trace-detail">Config/DefaultEngine.ini</span>
+        </div>
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">读取文件</span><span class="sa-trace-detail">Config/ConsoleVariables.ini</span>
+        </div>
+      </div>
+      <div class="sa-output">
+        <strong>发现：</strong>GC 阈值在 DefaultEngine.ini 中配置：gc.MaxObjectsInGame=65536，gc.FrameDelay=120。增量 GC 默认关闭 (gc.IncrementalBeginDelay=0)。
+      </div>
+    </div>
+  </div>
+
+  <div class="sa-footer">
+    <span><span class="dot ok"></span> 3/3 完成</span>
+    <span>🕐 6.1s</span>
+    <span>📊 12K tokens</span>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+   Error — 出错了
+   ════════════════════════════════════════════════════════ -->
+<div class="sa-card error expanded">
+
+  <div class="sa-header" onclick="this.parentElement.classList.toggle('expanded')">
+    <div class="sa-badge explore">E</div>
+    <div class="sa-meta">
+      <span class="sa-agent-name">explore</span>
+      <span class="sa-task">Auth 模块架构分析</span>
+    </div>
+    <span class="sa-status error">失败</span>
+    <span class="sa-chevron">▶</span>
+  </div>
+
+  <div class="sa-body">
+    <div class="sa-body-inner">
+      <div class="sa-trace-header">🛠 执行过程 · 2 步</div>
+      <div class="sa-trace-list">
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">搜索文件</span><span class="sa-trace-detail">auth/&#42;&#42;/&#42;.ts</span>
+        </div>
+        <div class="sa-trace-item">
+          <span class="sa-trace-icon error">✗</span><span class="sa-trace-name">读取文件</span><span class="sa-trace-detail">auth/index.ts — 文件不存在</span>
+        </div>
+      </div>
+      <div class="sa-output" style="color:#f38ba8;">
+        <strong>错误：</strong>Timeout after 30s — sub-agent exceeded iteration budget.
+      </div>
+    </div>
+  </div>
+
+  <div class="sa-footer">
+    <span><span class="dot ok"></span> 1 完成</span>
+    <span><span class="dot err"></span> 1 失败</span>
+    <span>🕐 30s</span>
+  </div>
+
+</div>
+
+<!-- ════════════════════════════════════════════════════════
+   Collapsed — 默认折叠态
+   ════════════════════════════════════════════════════════ -->
+<div class="sa-card">
+
+  <div class="sa-header" onclick="this.parentElement.classList.toggle('expanded')">
+    <div class="sa-badge general">G</div>
+    <div class="sa-meta">
+      <span class="sa-agent-name">general</span>
+      <span class="sa-task">重构 DataManager 模块的缓存层</span>
+    </div>
+    <span class="sa-status done">完成</span>
+    <span class="sa-chevron">▶</span>
+  </div>
+
+  <div class="sa-body">
+    <div class="sa-body-inner">
+      <div class="sa-trace-header">🛠 执行过程 · 6 步</div>
+      <div class="sa-trace-list">
+        <div class="sa-trace-item"><span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">搜索文件</span><span class="sa-trace-detail">DataManager.*</span></div>
+        <div class="sa-trace-item"><span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">读取文件</span><span class="sa-trace-detail">DataManager.h</span></div>
+        <div class="sa-trace-item"><span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">读取文件</span><span class="sa-trace-detail">DataManager.cpp</span></div>
+        <div class="sa-trace-item"><span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">写入文件</span><span class="sa-trace-detail">DataManager.h</span></div>
+        <div class="sa-trace-item"><span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">写入文件</span><span class="sa-trace-detail">DataManager.cpp</span></div>
+        <div class="sa-trace-item"><span class="sa-trace-icon ok">✓</span><span class="sa-trace-name">搜索文件</span><span class="sa-trace-detail">#include "DataManager.h"</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sa-footer">
+    <span><span class="dot ok"></span> 6/6 完成</span>
+    <span>🕐 12.3s</span>
+    <span>📊 45K tokens</span>
+  </div>
+
+</div>
+
+<p style="text-align:center;color:#6c7086;font-size:11px;margin-top:16px;">
+  卡片 1: running · 卡片 2: done · 卡片 3: error · 卡片 4: collapsed
+</p>
+
+</div>
+</body>
+</html>

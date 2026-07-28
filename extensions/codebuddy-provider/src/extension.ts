@@ -1100,11 +1100,36 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		console.log(`[CodeBuddy] body params from model(${selectedModel}) vendor=${perModelVendor ?? '(none)'} xModelId=${apiModel}: temperature=${bodyTemperature}, max_tokens=${bodyMaxTokens} (server=${rawServerMaxTokens ?? 'N/A'}, cap=${OUTPUT_TOKEN_MAX})${modelCfg ? '' : ' (model cfg MISS)'}${bodyMaxTokens !== serverOrCap ? ` [CAPPED]` : ''}`);
 
 		// Reasoning/thinking parameters (P1) — align with CodeBuddy IDE CN body.
-		// The thinking toggle in the chat toolbar flows here as `reasoning`.
+		// The thinking toggle in the chat toolbar flows here as `reasoning`
+		// (ReasoningOption: { enabled, effort?, budget? }).
+		//
+		// **思考开关由模型目录的 `reasoning` 能力字段驱动**
+		// (getServerModelConfig(id).supportsReasoning —— 即模型表里的 `reasoning`
+		// 列：hy3-ioa / gpt-5.x / claude-opus-4.8 = true，claude-opus-4.7 = false)。
+		// 决策优先级：
+		//   • UI 显式开 (reasoning.enabled === true)  → 强制开（缓存冷也尊重用户）
+		//   • UI 显式关 (reasoning.enabled === false) → 强制关
+		//   • UI 未触碰 (reasoning undefined)          → 回退到模型能力字段：
+		//       supportsReasoning=true  → 默认开（实现"能力字段驱动思考开关"）
+		//       supportsReasoning=false → 默认关（避免向不支持的模型发 reasoning 参数）
+		// 这样 reasoning-capable 模型（如 gr-gc 用的 hy3-ioa）默认即思考，
+		// 不再依赖用户手动开工具栏开关；非 reasoning 模型永不发 reasoning 参数。
+		const modelSupportsReasoning =
+			getServerModelConfig(selectedModel)?.supportsReasoning ?? false;
+		const uiReasoningEnabled = reasoning?.enabled; // true | false | undefined
+		let reasoningActive: boolean;
+		if (uiReasoningEnabled === true) {
+			reasoningActive = true;
+		} else if (uiReasoningEnabled === false) {
+			reasoningActive = false;
+		} else {
+			// UI 未触碰：由模型能力字段决定（核心改动点）
+			reasoningActive = modelSupportsReasoning;
+		}
 		// IDE sends BOTH snake_case and camelCase for gateway compatibility, plus
-		// `reasoning_summary: 'auto'`. We only inject when reasoning is enabled, so
+		// `reasoning_summary: 'auto'`. We only inject when reasoning is active, so
 		// non-reasoning turns keep the original body shape unchanged.
-		if (reasoning?.enabled) {
+		if (reasoningActive) {
 			// Effort priority (高→低)，**UI 显式输入永远优先于 server-default**：
 			//   1. UI 显式 effort（effort-slider 模型，用户在工具栏拨过的值）
 			//   2. UI 显式 budget（budget-slider 模型，UI 把 thinking 开关展开成
@@ -1121,29 +1146,40 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 			//   nudge 死循环。修正后：用户在 UI 拨过的任何值（effort 或
 			//   budget）都先于 server-default 起作用，server-default 只在
 			//   "UI 完全没传"的边界情况下兜底。
+			//   注意：当思考由模型能力字段默认开启时（reasoning 为 undefined），
+			//   reasoning.effort / reasoning.budget 均为 undefined，会自然落到
+			//   serverReasoningDefault（catalog 推荐 effort，多为 'medium'），
+			//   不会误用 'high'，规避上面的死循环。
 			const budgetMappedEffort: 'low' | 'medium' | 'high' | undefined =
-				reasoning.budget != null
+				reasoning?.budget != null
 					? (reasoning.budget >= 6144 ? 'high' : reasoning.budget >= 1024 ? 'medium' : 'low')
 					: undefined;
 			const effort: 'low' | 'medium' | 'high' =
-				reasoning.effort
+				reasoning?.effort
 				?? budgetMappedEffort
 				?? serverReasoningDefault?.effort
 				?? 'medium';
 			// Effort source tag for diagnostic logging (no behavior impact).
-			const effortSource = reasoning.effort
+			const effortSource = reasoning?.effort
 				? 'ui-effort'
 				: budgetMappedEffort
 					? 'ui-budget'
 					: serverReasoningDefault?.effort
 						? 'server-default'
 						: 'hardcoded-medium';
+			// Toggle source for diagnostic logging: which rule turned reasoning on.
+			const toggleSource =
+				uiReasoningEnabled === true ? 'ui-on'
+					: uiReasoningEnabled === false ? 'ui-off'
+						: (modelSupportsReasoning ? 'model-capability' : 'model-no-capability');
 			// Summary preference: prefer server-default summary (e.g. 'auto'),
 			// fall back to 'auto' to match IDE behavior.
 			const summary = serverReasoningDefault?.summary ?? 'auto';
 			bodyObj.reasoning_effort = effort;
 			bodyObj.reasoning_summary = summary;
-			console.log(`[CodeBuddy] reasoning enabled: effort=${effort} (source=${effortSource}), summary=${summary}`);
+			console.log(`[CodeBuddy] reasoning enabled (toggle=${toggleSource}): effort=${effort} (source=${effortSource}), summary=${summary}`);
+		} else {
+			console.log(`[CodeBuddy] reasoning disabled (toggle=${uiReasoningEnabled === false ? 'ui-off' : (modelSupportsReasoning ? 'model-capability-on-but-ui-off' : 'model-no-capability')})`);
 		}
 
 		// Stateful multi-turn association (P2) — replay last response id for this
@@ -1341,7 +1377,15 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 					} catch {
 						body = retryBodyJson;
 					}
-					response = await doFetch();
+					try {
+						response = await doFetch();
+					} catch (retryErr) {
+						// 去 previous_response_id 后仍 400 → 真实原因并非 stale ID，
+						// 通常是 token 超上下文窗口或参数非法。附加上下文便于排查，
+						// 避免误判为 prevRespId 问题（见 2026-07-23 hy3-ioa 400 案例）。
+						console.warn(`[CodeBuddy] HTTP 400 persisted after dropping previous_response_id — likely token overflow or invalid params (not prevRespId). messages=${messages.length} tools=${tools?.length ?? 0}`);
+						throw retryErr;
+					}
 				} else {
 					throw err;
 				}
@@ -1379,6 +1423,7 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 		// subsequent chunks append arguments fragments.
 		const toolCallAccumulators = new Map<number, { id: string; name: string; arguments: string }>();
 		let _reasoningSeen = false; // 诊断：标记是否收到过 reasoning_content
+		let _lastToolProgressAt = 0; // 参数进度上报节流（0 → 首个 arguments chunk 立即上报）
 
 		await parseSSEStream(response, progress, cancellationToken, (event) => {
 			// ── SSE 事件采样（受 debugHttp + FORCE_FILE_LOGGING 开关控制）──────────
@@ -1431,6 +1476,20 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 					`completion_tokens=${_u.completion_tokens ?? 'n/a'} ` +
 					`total_tokens=${_u.total_tokens ?? 'n/a'} ` +
 					`cached=${(_u.prompt_tokens_details as any)?.cached_tokens ?? 'n/a'}`
+				);
+				// ── 诊断（2026-07-27）：积分 pill 排查——credit 字段可能被网关改名。
+				// 打印当前 credit 值 + 完整 usage 顶层 key 列表 + 常见改名候选字段值，
+				// 一旦网关把 credit 换成别的字段名（credits/cost/price/billing/amount 等）
+				// 能立刻从日志里看到新字段名及其值，无需猜测。
+				const _creditCandidates = ['credit', 'credits', 'cost', 'price', 'billing', 'amount', 'points', 'quota'];
+				const _creditDump = _creditCandidates
+					.filter(k => _u[k] !== undefined)
+					.map(k => `${k}=${JSON.stringify(_u[k])}`)
+					.join(', ');
+				console.log(
+					`[CodeBuddy] [SSE-Diag] usage.credit=${_u.credit ?? 'MISSING'} ` +
+					`| usage keys=[${Object.keys(_u).join(',')}] ` +
+					`| credit-like fields: ${_creditDump || 'none found'}`
 				);
 				progress.report(
 					vscode.LanguageModelDataPart.json(event.usage, 'application/vnd.saros.usage+json'),
@@ -1498,11 +1557,36 @@ class CodeBuddyChatProvider implements vscode.LanguageModelChatProvider {
 							acc = { id: '', name: '', arguments: '' };
 							toolCallAccumulators.set(idx, acc);
 						}
-						// First chunk for this tool_call provides id and name
-						if (tc.id) { acc.id = tc.id; }
-						if (tc.function?.name) { acc.name = tc.function.name; }
-						if (tc.function?.arguments) { acc.arguments += tc.function.arguments; }
+					// First chunk for this tool_call provides id and name
+					if (tc.id) { acc.id = tc.id; }
+					if (tc.function?.name) { acc.name = tc.function.name; }
+					if (tc.function?.arguments) { acc.arguments += tc.function.arguments; }
+				}
+
+				// ── 2026-07-26 治本：参数流式期间节流上报进度 part ──
+				// 此前 arguments 片段只累积不上报——超大工具参数（如 file_write 写
+				// 30KB HTML，~10k tokens 需 200s+）生成期间零 part 上报，renderer
+				// 各层 idle 计时器（resilience 180s / LMBridge chunk / subagent
+				// 看门狗）误判「流静默挂起」杀健康流（事故日志 1785049332701：
+				// 服务器正常完成响应，客户端 180s 处先行放弃）。
+				// 现以 1s 节流上报轻量进度 DataPart（首个 chunk 立即报），
+				// LMBridge 识别后转 tool_progress delta，为所有 idle 计时器续命。
+				const _nowTp = Date.now();
+				if (_nowTp - _lastToolProgressAt >= 1000) {
+					_lastToolProgressAt = _nowTp;
+					let _tpBytes = 0;
+					let _tpName = '';
+					for (const [, _acc] of toolCallAccumulators) {
+						_tpBytes += _acc.arguments.length;
+						if (!_tpName && _acc.name) { _tpName = _acc.name; }
 					}
+					progress.report(
+						vscode.LanguageModelDataPart.json(
+							{ name: _tpName, bytes: _tpBytes },
+							'application/vnd.saros.tool-call-progress+json',
+						),
+					);
+				}
 
 					// Emit completed tool calls: only when we have id + name + the arguments
 					// are done (finish_reason='tool_calls' signals completion, but we can also

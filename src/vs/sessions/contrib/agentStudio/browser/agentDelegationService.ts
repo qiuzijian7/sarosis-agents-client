@@ -157,7 +157,7 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 			const agents = await this.agentStudioService.getAgents();
 			this.logService.info(`[AgentStudio] [Step 0] Found ${agents.length} agents`);
 			agents.forEach((a, i) => {
-				this.logService.info(`[AgentStudio] [Step 0] Agent[${i}]: id=${a.id}, name="${a.name}", type=${a.agentType || 'unknown'}`);
+				this.logService.info(`[AgentStudio] [Step 0] Agent[${i}]: id=${a.id}, name="${a.name}"`);
 			});
 
 			// Create name-to-id mapping for assignee resolution
@@ -255,7 +255,7 @@ export class AgentDelegationService extends Disposable implements IAgentDelegati
 		
 		// Build agent context string
 		const agentContext = agents.length > 0 
-			? `Available team members:\n${agents.map(a => `- ${a.name} (${a.agentType || 'worker'})`).join('\n')}`
+			? `Available team members:\n${agents.map(a => `- ${a.name}`).join('\n')}`
 			: 'No team members available.';
 		
 		// Build concise system prompt following Paperclip's principles

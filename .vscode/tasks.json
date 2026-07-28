@@ -273,8 +273,8 @@
 		},
 		{
 			"label": "Transpile Client",
-			"type": "npm",
-			"script": "transpile-client",
+			"type": "shell",
+			"command": "npm run transpile-client",
 			"problemMatcher": []
 		},
 		{

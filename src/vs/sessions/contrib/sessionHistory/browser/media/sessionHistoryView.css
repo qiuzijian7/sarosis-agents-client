@@ -1,0 +1,468 @@
+/*---------------------------------------------------------------------------------------------
+ *  Session History View — styles
+ *--------------------------------------------------------------------------------------------*/
+
+/* ========== Container ========== */
+.session-history-container {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+}
+
+/* ========== Filter Bar ========== */
+.session-history-filter-bar {
+	padding: 8px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	border-bottom: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+	flex-shrink: 0;
+	min-width: 0;
+}
+
+.session-history-filter-row {
+	display: flex;
+	gap: 6px;
+	min-width: 0;
+}
+
+.session-history-filter-search-wrapper {
+	flex: 1;
+	min-width: 0;
+	max-width: 100%;
+}
+
+/* Override InputBox internal min-width to prevent overflow */
+.session-history-filter-search-wrapper .monaco-inputbox {
+	min-width: 0 !important;
+	max-width: 100% !important;
+	width: 100% !important;
+}
+
+.session-history-filter-search-wrapper .input {
+	min-width: 0 !important;
+	max-width: 100% !important;
+}
+
+.session-history-filter-select-container {
+	flex: 1;
+	min-width: 0;
+	max-width: 100%;
+	display: block;
+}
+
+/* Override SelectBox min-width to prevent overflow */
+.session-history-filter-select-container .monaco-select-box {
+	min-width: 0 !important;
+	max-width: 100% !important;
+	width: 100% !important;
+}
+
+/* ========== Session List ========== */
+.session-history-list {
+	flex: 1;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 4px 0;
+}
+
+.session-history-list::-webkit-scrollbar {
+	width: 6px;
+}
+
+.session-history-list::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.session-history-list::-webkit-scrollbar-thumb {
+	background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+	border-radius: 3px;
+}
+
+.session-history-list::-webkit-scrollbar-thumb:hover {
+	background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+}
+
+/* ========== Session Item ========== */
+.session-history-item {
+	user-select: none;
+}
+
+.session-history-item-header {
+	display: flex;
+	align-items: center;
+	padding: 5px 8px 5px 12px;
+	height: 34px;
+	cursor: pointer;
+	gap: 6px;
+	transition: background 0.1s;
+}
+
+.session-history-item-header:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.session-history-item.expanded > .session-history-item-header {
+	background: var(--vscode-list-activeSelectionBackground, #37373d);
+}
+
+/* Status dot — color determined by agent via --agent-color CSS var */
+.session-history-status-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+	background: var(--agent-color, var(--vscode-descriptionForeground, #6e6e6e));
+	opacity: 0.4;
+}
+
+.session-history-status-dot.open {
+	background: var(--agent-color, #4ec9b0);
+	opacity: 1;
+	box-shadow: 0 0 4px var(--agent-color, rgba(78, 201, 176, 0.5));
+}
+
+/* Expand arrow */
+.session-history-expand-arrow {
+	width: 14px;
+	height: 14px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	font-size: 9px;
+	flex-shrink: 0;
+	transition: transform 0.15s;
+}
+
+/* Session Info */
+.session-history-info {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.session-history-title {
+	font-size: 13px;
+	color: var(--vscode-foreground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	line-height: 1.2;
+}
+
+.session-history-meta {
+	display: flex;
+	gap: 8px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.session-history-agent-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	padding: 1px 6px 1px 4px;
+	background: var(--vscode-badge-background, #4d4d4d);
+	border-radius: 3px;
+	border-left: 2px solid var(--agent-color, transparent);
+	font-size: 11px;
+	color: var(--vscode-foreground, #cccccc);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 100%;
+}
+
+/* Session count */
+.session-history-count {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	background: var(--vscode-badge-background, #4d4d4d);
+	padding: 1px 6px;
+	border-radius: 10px;
+	flex-shrink: 0;
+}
+
+/* Open tag */
+.session-history-open-tag {
+	font-size: 10px;
+	color: #4ec9b0;
+	background: rgba(78, 201, 176, 0.12);
+	padding: 0 4px;
+	border-radius: 3px;
+	flex-shrink: 0;
+	white-space: nowrap;
+}
+
+/* ========== Messages Container ========== */
+.session-history-messages-container {
+	display: none;
+	border-top: 1px solid var(--vscode-sideBar-border, #3c3c3c);
+	background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.session-history-item.expanded > .session-history-messages-container {
+	display: block;
+}
+
+.session-history-messages-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 6px 12px 6px 28px;
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	border-bottom: 1px solid rgba(60, 60, 60, 0.3);
+}
+
+.session-history-messages-header .sort-indicator {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 10px;
+	opacity: 0.7;
+}
+
+.session-history-messages-empty {
+	padding: 16px 12px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	text-align: center;
+}
+
+/* Loading indicator inside expanded messages container */
+.session-history-messages-loading {
+	padding: 12px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	text-align: center;
+	animation: shPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes shPulse {
+	0%, 100% { opacity: 0.5; }
+	50% { opacity: 1; }
+}
+
+/* ========== Message Item ========== */
+.session-history-message {
+	display: flex;
+	padding: 10px 12px 10px 28px;
+	gap: 8px;
+	border-bottom: 1px solid rgba(60, 60, 60, 0.3);
+	transition: background 0.12s;
+	position: relative;
+	align-items: flex-start;
+	cursor: pointer;
+}
+
+.session-history-message:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.session-history-message:last-child {
+	border-bottom: none;
+}
+
+.session-history-message::before {
+	content: '';
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 2px;
+	background: transparent;
+	transition: background 0.15s;
+	border-radius: 0 1px 1px 0;
+}
+
+.session-history-message:hover::before {
+	background: var(--vscode-textLink-foreground, #007acc);
+	opacity: 0.6;
+}
+
+/* Avatar */
+.session-history-avatar {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	font-size: 13px;
+	background: rgba(0, 122, 204, 0.2);
+	color: var(--vscode-textLink-foreground, #007acc);
+	margin-top: 1px;
+}
+
+/* Message Body */
+.session-history-message-body {
+	flex: 1;
+	min-width: 0;
+}
+
+.session-history-message-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 3px;
+}
+
+.session-history-message-role {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+}
+
+.session-history-message-time {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+}
+
+.session-history-message-text {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--vscode-foreground, #cccccc);
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 60px;
+	overflow: hidden;
+	position: relative;
+	background-color: transparent;
+}
+
+.session-history-message-text.truncated::after {
+	content: '';
+	position: absolute;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	height: 20px;
+	background: linear-gradient(transparent, var(--vscode-editor-background, #1e1e1e));
+	pointer-events: none;
+}
+
+/* ========== Action Buttons ========== */
+.session-history-message-actions {
+	position: absolute;
+	right: 8px;
+	top: 8px;
+	display: flex;
+	gap: 3px;
+	opacity: 0;
+	transition: opacity 0.15s;
+}
+
+.session-history-message:hover .session-history-message-actions {
+	opacity: 1;
+}
+
+.session-history-action-btn {
+	width: 26px;
+	height: 26px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: none;
+	border-radius: 4px;
+	background: var(--vscode-toolbar-hoverBackground, #2d2d30);
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	cursor: pointer;
+	transition: background 0.15s, color 0.15s;
+}
+
+.session-history-action-btn:hover {
+	background: var(--vscode-list-activeSelectionBackground, #37373d);
+	color: var(--vscode-foreground);
+}
+
+.session-history-goto-btn:hover {
+	background: rgba(0, 122, 204, 0.25);
+	color: var(--vscode-textLink-foreground, #007acc);
+}
+
+.session-history-action-btn.copied {
+	color: #4ec9b0;
+}
+
+.session-history-action-btn.copied svg {
+	animation: shCopyFeedback 0.3s ease;
+}
+
+@keyframes shCopyFeedback {
+	0% { transform: scale(1); }
+	50% { transform: scale(1.2); }
+	100% { transform: scale(1); }
+}
+
+/* ========== Empty State ========== */
+.session-history-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: 40px 20px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	gap: 8px;
+}
+
+.session-history-empty-icon {
+	font-size: 32px;
+	opacity: 0.5;
+}
+
+.session-history-empty-text {
+	font-size: 13px;
+}
+
+/* ===== Rename UI ===== */
+.session-history-rename-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground, #6e6e6e);
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 0.15s, background 0.15s, color 0.15s;
+	flex-shrink: 0;
+}
+
+.session-history-item-header:hover .session-history-rename-btn {
+	opacity: 1;
+}
+
+.session-history-rename-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground, #2d2d30);
+	color: var(--vscode-foreground, #cccccc);
+}
+
+.session-history-rename-input {
+	flex: 1;
+	min-width: 0;
+	font-size: 13px;
+	font-family: var(--vscode-font-family);
+	color: var(--vscode-input-foreground, #cccccc);
+	background: var(--vscode-input-background, #3c3c3c);
+	border: 1px solid var(--vscode-focusBorder, #007fd4);
+	border-radius: 3px;
+	outline: none;
+	padding: 1px 4px;
+	margin: 0;
+}

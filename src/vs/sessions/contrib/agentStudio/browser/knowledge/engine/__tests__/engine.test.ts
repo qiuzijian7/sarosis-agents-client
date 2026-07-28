@@ -846,51 +846,60 @@ test('SplitIndex: large index clusters and approximates with high recall', async
 	assert.ok(musicCount >= 1, `music hits in top 5: ${musicCount} (expected >=1)`);
 });
 
-// ── Tests: tool-layer integration (kb_list_methods + kb_build schema) ─────
+// ── Tests: method registry (listMethods still callable, even though kb_list_methods descriptor was removed) ──
 
-test('buildKnowledgeToolDescriptors: includes kb_list_methods with correct schema', async () => {
-	const descriptors = buildKnowledgeToolDescriptors({
-		fileService: {} as any,
-		configurationService: {} as any,
-		embeddingService: { isEnabled: () => true } as any,
-		resolveBaseDir: async () => '/mock/workspace',
-		resolveStorageRoot: async () => '/mock/.saros/kb',
-	});
-
-	const m = descriptors.find(d => d.definition.name === 'kb_list_methods');
-	assert.ok(m, 'kb_list_methods descriptor exists');
-	assert.strictEqual(m!.definition.category, 'knowledge');
-	assert.strictEqual(m!.definition.source, 'saros.knowledge');
-
-	// Handler is pure: call it without deps.
-	const result = await m!.handler({}) as any;
-	assert.ok(result.length > 0, 'handler returns content');
-	const text = result[0].text as string;
-	const parsed = JSON.parse(text);
-	assert.ok(Array.isArray(parsed), 'returns a JSON array of methods');
-	assert.ok(parsed.length >= 6, 'at least 6 methods');
-	const names = parsed.map((x: any) => x.name);
+test('listMethods: returns all registered methods', () => {
+	const methods = listMethods();
+	assert.ok(Array.isArray(methods), 'returns an array');
+	assert.ok(methods.length >= 6, 'at least 6 methods');
+	const names = methods.map((x: any) => x.name);
 	assert.ok(names.includes('light_rag'));
 	assert.ok(names.includes('hyper_rag'));
 });
 
-test('buildKnowledgeToolDescriptors: kb_build schema exposes method parameter', () => {
-	const descriptors = buildKnowledgeToolDescriptors({
+// ── Tests: tool descriptor regression (kb_build/kb_ingest removed, query tools retained) ──
+
+function makeBasicDeps() {
+	return {
 		fileService: {} as any,
 		configurationService: {} as any,
 		embeddingService: { isEnabled: () => true } as any,
 		resolveBaseDir: async () => '/mock/workspace',
 		resolveStorageRoot: async () => '/mock/.saros/kb',
-	});
+	};
+}
 
-	const b = descriptors.find(d => d.definition.name === 'kb_build');
-	assert.ok(b, 'kb_build descriptor exists');
-	const schema = b!.definition.inputSchema as any;
-	assert.ok(schema.properties, 'has properties');
-	assert.ok('method' in schema.properties, 'schema exposes method parameter');
-	assert.strictEqual(schema.properties.method.type, 'string');
-	// template_id is still present (not replaced)
-	assert.ok('template_id' in schema.properties, 'template_id still present');
+test('buildKnowledgeToolDescriptors: kb_build NOT present (settings-UI only)', () => {
+	const descriptors = buildKnowledgeToolDescriptors(makeBasicDeps());
+	const removed = ['kb_build', 'kb_ingest', 'kb_list_templates', 'kb_list_methods'];
+	for (const name of removed) {
+		assert.strictEqual(
+			descriptors.find(d => d.definition.name === name),
+			undefined,
+			`"${name}" should NOT be in agent tool descriptors`,
+		);
+	}
+});
+
+test('buildKnowledgeToolDescriptors: query/read tools retained', () => {
+	const descriptors = buildKnowledgeToolDescriptors(makeBasicDeps());
+	const retained = ['kb_search', 'kb_ask', 'kb_list', 'kb_delete', 'kb_export_notes', 'kb_export', 'kb_search_repo'];
+	for (const name of retained) {
+		const found = descriptors.find(d => d.definition.name === name);
+		assert.ok(found !== undefined, `"${name}" should still be in agent tool descriptors`);
+	}
+});
+
+test('buildKnowledgeToolDescriptors: kb_list does NOT require embedding', () => {
+	const descriptors = buildKnowledgeToolDescriptors(makeBasicDeps());
+	const list = descriptors.find(d => d.definition.name === 'kb_list')!;
+	assert.strictEqual(list.available, undefined, 'kb_list should have no available guard');
+});
+
+test('buildKnowledgeToolDescriptors: kb_search requires embedding', () => {
+	const descriptors = buildKnowledgeToolDescriptors(makeBasicDeps());
+	const search = descriptors.find(d => d.definition.name === 'kb_search')!;
+	assert.strictEqual(typeof search.available, 'function', 'kb_search should have available guard');
 });
 
 // ── Tests: Hybrid Search RRF Fusion ───────────────────────────────────────
@@ -1150,21 +1159,6 @@ test('buildKnowledgeToolDescriptors: kb_ask outputs natural text answer', async 
 	assert.ok((ask!.definition.inputSchema.properties as any)['top_k'], 'has top_k param');
 });
 
-test('buildKnowledgeToolDescriptors: kb_build records source path', () => {
-	const descriptors = buildKnowledgeToolDescriptors({
-		fileService: {} as any,
-		configurationService: {} as any,
-		embeddingService: { isEnabled: () => true } as any,
-		resolveBaseDir: async () => '/mock/workspace',
-		resolveStorageRoot: async () => '/mock/.saros/kb',
-	});
-
-	const build = descriptors.find(d => d.definition.name === 'kb_build');
-	assert.ok(build, 'kb_build descriptor exists');
-	const schema = build!.definition.inputSchema as any;
-	assert.ok('file_path' in schema.properties, 'file_path param exposed');
-});
-
 // ── Tests: note export pipeline (kb_export_notes / auto-export refactor) ──
 
 /** In-memory IFileService for exercising `exportToNotes` without a real FS. */
@@ -1254,7 +1248,15 @@ test('exportToNotes: write failure returns undefined without throwing', async ()
 	assert.strictEqual(note, undefined, 'failure path returns undefined, never throws');
 });
 
-test('buildKnowledgeToolDescriptors: kb_build exposes export_notes + auto-exports notes_summary', () => {
+// ── Pure-function tests for note-export utilities (kb_build/kb_ingest descriptors removed,
+//    but shouldAutoExportNotes / exportToNotes are still internally callable) ──
+
+test('shouldAutoExportNotes: defaults on for notes_summary', () => {
+	assert.strictEqual(shouldAutoExportNotes({}, 'notes_summary'), true, 'notes_summary auto-exports by default');
+	assert.strictEqual(shouldAutoExportNotes({}, 'knowledge_graph'), false, 'knowledge_graph does not auto-export');
+});
+
+test('buildKnowledgeToolDescriptors: kb_export_notes exists with embedded guard', () => {
 	const descriptors = buildKnowledgeToolDescriptors({
 		fileService: {} as any,
 		configurationService: {} as any,
@@ -1263,233 +1265,57 @@ test('buildKnowledgeToolDescriptors: kb_build exposes export_notes + auto-export
 		resolveStorageRoot: async () => STORAGE_ROOT,
 	});
 
-	const build = descriptors.find(d => d.definition.name === 'kb_build')!;
-	const schema = build.definition.inputSchema as any;
-	for (const p of ['export_notes', 'note_name', 'mermaid', 'wikilinks']) {
-		assert.ok(p in schema.properties, `kb_build schema exposes ${p}`);
-	}
-	// Default-on for notes_summary is encoded via shouldAutoExportNotes.
-	assert.strictEqual(shouldAutoExportNotes({}, 'notes_summary'), true, 'notes_summary auto-exports by default');
-
-	const ingest = descriptors.find(d => d.definition.name === 'kb_ingest')!;
-	const iSchema = ingest.definition.inputSchema as any;
-	assert.ok('export_notes' in iSchema.properties, 'kb_ingest schema exposes export_notes');
-
 	const exp = descriptors.find(d => d.definition.name === 'kb_export_notes')!;
 	assert.strictEqual(exp.definition.category, 'knowledge');
+	assert.strictEqual(exp.definition.source, 'saros.knowledge');
+	assert.strictEqual(exp.available, undefined, 'kb_export_notes has no available guard (always available)');
 	assert.ok('note_name' in (exp.definition.inputSchema as any).properties, 'kb_export_notes exposes note_name');
 });
 
-// ── Tests: chat "import to KB" flow → auto-summary → generate / improve note ──
+// ── Tests: importMessageToKnowledgeBase (delegates to summarizeMessageToKnowledgeBase) ──
 //
-// Simulates the user-facing flow: in the chat box the user clicks the
-// "导入/收藏到知识库" button → content is handed to the KB engine via `kb_build`
-// (template_id=notes_summary) → the engine auto-extracts a summary → `exportToNotes`
-// writes a structured note. Follow-up material goes through `kb_ingest` on the same
-// id → merged into the existing KB → the note is re-exported (improved, not duplicated).
-//
-// The manager is injected (no real LLM/embedder) so the whole handler pipeline runs
-// deterministically.
+// With kb_build/kb_ingest removed from agent tools, `importMessageToKnowledgeBase`
+// now delegates directly to `summarizeMessageToKnowledgeBase` (LLM-only summary path,
+// no KnowledgeManager / embedding index). The fav-index sidecar is still maintained
+// for de-duplication.
 
-/** In-memory KB storage adapter shared across build/ingest so `kb_ingest` can `load` what `kb_build` persisted. */
-function memKbStorage(): KBStorageAdapter {
-	const store = new Map<string, SerializedKB>();
-	return {
-		async read(id: string) { return store.get(id); },
-		async write(id: string, p: SerializedKB) { store.set(id, p); },
-		async remove(id: string) { store.delete(id); },
-	};
-}
-
-/** Build kb_* descriptors whose managers are backed by a mock LLM (notes_summary shape) + in-memory storage. */
-function kbDescriptorsWithMockEngine(opts: {
-	fs: MemFileService;
-	storage: KBStorageAdapter;
-	phaseItems: Record<number, unknown[]>;
-}) {
-	let phase = 0;
-	const createManager = async () => {
-		const p = phase++;
-		const items = opts.phaseItems[p] ?? [];
-		const llm = new MockChatModel(() => ({ items }));
-		return new KnowledgeManager({ llm, embedder: embeddingMock, storage: opts.storage });
-	};
-	return buildKnowledgeToolDescriptors({
-		fileService: opts.fs as any,
-		configurationService: {} as any,
-		embeddingService: { isEnabled: () => true } as any,
-		resolveBaseDir: async () => '/mock/workspace',
-		resolveStorageRoot: async () => STORAGE_ROOT,
-		createManager,
-	});
-}
-
-test('chat import → kb_build(notes_summary) auto-generates a structured note', async () => {
-	const fs = new MemFileService();
-	const storage = memKbStorage();
-	const descriptors = kbDescriptorsWithMockEngine({
-		fs, storage,
-		phaseItems: {
-			0: [{ title: 'Alpha Topic', summary: 'Alpha content summary', tags: ['a'], category: 'general', key_points: ['Alpha key point'] }],
-		},
-	});
-
-	const build = descriptors.find(d => d.definition.name === 'kb_build')!;
-	const out = await build.handler({ template_id: 'notes_summary', title: 'My Note', text: 'Document about Alpha Topic.' });
-	const result = JSON.parse((out as any)[0].text);
-
-	assert.strictEqual(result.success, true, 'kb_build succeeds');
-	assert.strictEqual(result.template, 'notes_summary');
-	assert.ok(result.note, 'auto-exported note metadata returned (no explicit export_notes needed)');
-	assert.ok(result.note.path.includes('notes'), 'note written under the notes vault');
-	assert.ok(fs.files.has(result.note.path), 'note file exists in storage');
-	const md = fs.files.get(result.note.path)!;
-	assert.ok(md.includes('Alpha'), 'note contains the imported content summary');
-});
-
-test('chat import → kb_ingest merges content and re-exports the improved note (no duplicate)', async () => {
-	const fs = new MemFileService();
-	const storage = memKbStorage();
-	const descriptors = kbDescriptorsWithMockEngine({
-		fs, storage,
-		// Phase 0 = kb_build, phase 1 = kb_ingest — different items per call.
-		phaseItems: {
-			0: [{ title: 'Alpha Topic', summary: 'Alpha content summary', tags: ['a'], category: 'general', key_points: ['Alpha key point'] }],
-			1: [{ title: 'Beta Topic', summary: 'Beta content summary', tags: ['b'], category: 'general', key_points: ['Beta key point'] }],
-		},
-	});
-
-	const build = descriptors.find(d => d.definition.name === 'kb_build')!;
-	const buildOut = await build.handler({ template_id: 'notes_summary', title: 'My Note', text: 'Document about Alpha Topic.' });
-	const buildRes = JSON.parse((buildOut as any)[0].text);
-	assert.strictEqual(buildRes.success, true);
-	const notePath = buildRes.note.path;
-	const noteName = buildRes.note.note;
-	const countAfterBuild = buildRes.itemCount;
-
-	const ingest = descriptors.find(d => d.definition.name === 'kb_ingest')!;
-	const ingestOut = await ingest.handler({ id: buildRes.id, text: 'Document about Beta Topic.' });
-	const ingestRes = JSON.parse((ingestOut as any)[0].text);
-
-	assert.strictEqual(ingestRes.success, true, 'kb_ingest succeeds');
-	assert.ok(ingestRes.note, 'kb_ingest re-exports the note');
-	// Same note file is updated in place — the existing note is improved, not duplicated.
-	assert.strictEqual(ingestRes.note.note, noteName, 'kb_ingest updates the SAME note file');
-	assert.strictEqual(ingestRes.note.path, notePath, 'kb_ingest writes to the SAME note path');
-	assert.ok(ingestRes.itemCount >= countAfterBuild, 'merged KB item count grows/merges');
-	const md2 = fs.files.get(notePath)!;
-	assert.ok(md2.includes('Alpha'), 'improved note still carries the original content');
-	assert.ok(md2.includes('Beta'), 'improved note now includes the newly ingested content');
-});
-
-test('chat import → non-notes_summary template does NOT auto-export unless export_notes:true', async () => {
-	const fs = new MemFileService();
-	const storage = memKbStorage();
-	const descriptors = kbDescriptorsWithMockEngine({
-		fs, storage,
-		phaseItems: { 0: [{ name: 'Alice', type: 'Person', description: 'Engineer' }] },
-	});
-
-	const build = descriptors.find(d => d.definition.name === 'kb_build')!;
-	// knowledge_graph without export_notes → no note field.
-	const out = await build.handler({ template_id: 'knowledge_graph', title: 'Graph', text: 'Alice is an engineer.' });
-	const result = JSON.parse((out as any)[0].text);
-	assert.strictEqual(result.success, true);
-	assert.strictEqual(result.note, undefined, 'knowledge_graph does not auto-export by default');
-
-	// Explicit export_notes:true → note appears.
-	const out2 = await build.handler({ template_id: 'knowledge_graph', title: 'Graph', text: 'Alice is an engineer.', export_notes: true });
-	const result2 = JSON.parse((out2 as any)[0].text);
-	assert.ok(result2.note, 'knowledge_graph exports when export_notes:true');
-});
-
-// ── Tests: chat "收藏到知识库" button → importMessageToKnowledgeBase ──
-//
-// `importMessageToKnowledgeBase` is the exact function `nativeChatEditorPane`
-// calls from `_handleFavoriteMessage`. It routes to `kb_build` (first import of a
-// topic) or `kb_ingest` (re-import of the same topic, matched by a normalized
-// title key persisted in `<root>/.fav-index.json`), so the note is generated once
-// and then *improved* — never duplicated.
-
-/** Build the `KnowledgeToolDeps` consumed by `importMessageToKnowledgeBase`, with a mock manager. */
-function importerDeps(opts: { fs: MemFileService; storage: KBStorageAdapter; itemPlan: unknown[][] }): any {
-	let callIdx = 0;
-	const createManager = async () => {
-		const items = opts.itemPlan[callIdx++] ?? [];
-		const llm = new MockChatModel(() => ({ items }));
-		return new KnowledgeManager({ llm, embedder: embeddingMock, storage: opts.storage });
-	};
+/** Lightweight deps for importMessageToKnowledgeBase — DOES NOT inject createManager. */
+function importerDeps(opts: { fs: MemFileService; storageRoot?: string }): any {
 	return {
 		fileService: opts.fs as any,
 		configurationService: {} as any,
 		embeddingService: { isEnabled: () => true } as any,
 		resolveBaseDir: async () => '/mock/workspace',
-		resolveStorageRoot: async () => STORAGE_ROOT,
-		createManager,
+		resolveStorageRoot: async () => opts.storageRoot ?? STORAGE_ROOT,
+		// resolveKbModel returns undefined → LLM path unavailable → error returned
+		resolveKbModel: undefined,
 	};
 }
 
-test('importMessageToKnowledgeBase: first import builds a note (action=build)', async () => {
+test('importMessageToKnowledgeBase: empty content rejected', async () => {
 	const fs = new MemFileService();
-	const storage = memKbStorage();
-	const deps = importerDeps({
-		fs, storage,
-		itemPlan: [[{ title: 'Alpha Topic', summary: 'Alpha content', tags: ['a'], category: 'general', key_points: ['Alpha kp'] }]],
-	});
-
-	const r = await importMessageToKnowledgeBase(deps, 'Alpha Topic\n\nSome body about Alpha.');
-	assert.strictEqual(r.success, true, 'import succeeds');
-	assert.strictEqual(r.action, 'build', 'first import → build');
-	assert.ok(r.id, 'kb id returned');
-	assert.ok(r.note, 'note name returned');
-	assert.ok(r.notePath?.includes('notes'), 'note written under notes vault');
-	assert.ok(fs.files.has(r.notePath!), 'note file exists');
-	assert.ok(fs.files.get(r.notePath!)!.includes('Alpha'), 'note carries imported content');
-
-	// fav-index sidecar records the title→id mapping so re-import improves the same note.
-	// (lookup by suffix — URI.fsPath uses platform separators)
-	const idxKey = [...fs.files.keys()].find(k => k.endsWith('.fav-index.json'));
-	assert.ok(idxKey, 'fav-index written');
-	const idx = JSON.parse(fs.files.get(idxKey!)!);
-	assert.ok(idx['alpha_topic'] && idx['alpha_topic'].id === r.id, 'fav-index maps title key → kb id');
-});
-
-test('importMessageToKnowledgeBase: re-import of same topic improves the SAME note (action=ingest)', async () => {
-	const fs = new MemFileService();
-	const storage = memKbStorage();
-	const deps = importerDeps({
-		fs, storage,
-		// call 0 = build (Alpha), call 1 = ingest (Beta) — manager rebuilt per call.
-		itemPlan: [
-			[{ title: 'Alpha Topic', summary: 'Alpha content', tags: ['a'], category: 'general', key_points: ['Alpha kp'] }],
-			[{ title: 'Beta Topic', summary: 'Beta content', tags: ['b'], category: 'general', key_points: ['Beta kp'] }],
-		],
-	});
-
-	const r1 = await importMessageToKnowledgeBase(deps, 'Alpha Topic\n\nBody about Alpha.');
-	assert.strictEqual(r1.action, 'build');
-	const notePath = r1.notePath!;
-	const countAfterBuild = r1.itemCount!;
-
-	const r2 = await importMessageToKnowledgeBase(deps, 'Alpha Topic\n\nBody about Alpha plus Beta.');
-	assert.strictEqual(r2.success, true);
-	assert.strictEqual(r2.action, 'ingest', 're-import of same topic → ingest (improve)');
-	assert.strictEqual(r2.id, r1.id, 'improves the SAME kb');
-	assert.strictEqual(r2.notePath, notePath, 're-exports to the SAME note path');
-	assert.ok(r2.itemCount! >= countAfterBuild, 'merged item count grows/merges');
-	const md = fs.files.get(notePath)!;
-	assert.ok(md.includes('Alpha'), 'improved note keeps original content');
-	assert.ok(md.includes('Beta'), 'improved note now includes ingested content');
-});
-
-test('importMessageToKnowledgeBase: engine failure (empty content) surfaces error, no note', async () => {
-	const fs = new MemFileService();
-	const storage = memKbStorage();
-	const deps = importerDeps({ fs, storage, itemPlan: [[]] });
-
+	const deps = importerDeps({ fs });
 	const r = await importMessageToKnowledgeBase(deps, '   \n  ');
 	assert.strictEqual(r.success, false, 'empty content rejected');
 	assert.ok(r.error, 'error message present');
+	assert.ok(fs.files.size === 0, 'no files written for empty input');
+});
+
+test('importMessageToKnowledgeBase: returns error when chat model not configured', async () => {
+	const fs = new MemFileService();
+	const deps = importerDeps({ fs });
+	const r = await importMessageToKnowledgeBase(deps, 'A meaningful message about AI.');
+	assert.strictEqual(r.success, false, 'should fail when no chat model');
+	assert.ok(r.error?.includes('Chat model not configured') || r.error?.length! > 0, 'error indicates missing config');
+});
+
+test('importMessageToKnowledgeBase: preserves `action` semantics on error', async () => {
+	const fs = new MemFileService();
+	const deps = importerDeps({ fs });
+	const r = await importMessageToKnowledgeBase(deps, 'Test content');
+	assert.strictEqual(r.success, false);
+	assert.strictEqual((r as any).notePath, undefined, 'no note when import fails');
+	assert.strictEqual(fs.files.size, 0, 'no files written on failure');
 });
 
 // ── Test helper: simulate streamComplete ──────────────────────────────────

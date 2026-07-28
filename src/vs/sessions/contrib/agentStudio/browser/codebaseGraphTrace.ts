@@ -46,15 +46,18 @@ const MAX_TRACE_NODES = 200;
 
 export function tracePath(
 	store: CodebaseGraphStore,
-	project: string,
+	project: string | undefined,
 	sourceName: string,
 	targetName: string | undefined,
 	mode: TraceMode = 'calls',
 	maxDepth: number = 10,
 	direction: 'both' | 'callers' | 'callees' = 'callees',
 	includeTests: boolean = true,
+	edgeTypesOverride?: string[],
 ): TraceResult {
-	const edgeTypes = EDGE_TYPE_MAP[mode] || ['CALLS'];
+	const edgeTypes = (edgeTypesOverride && edgeTypesOverride.length > 0)
+		? edgeTypesOverride
+		: (EDGE_TYPE_MAP[mode] || ['CALLS']);
 	const effectiveMaxDepth = Math.min(maxDepth, MAX_TRACE_DEPTH);
 
 	// Find source node
@@ -254,24 +257,92 @@ export function getCodeSnippet(
 
 // ─── Get Graph Schema ────────────────────────────────────────────────────────
 
+/** 单个属性的聚合统计（对齐 C 版 get_graph_schema 的 attributes 字段）。 */
+export interface AttributeStat {
+	name: string;
+	count: number;        // 拥有该属性的节点/边数
+	types: string[];      // 观测到的 JS typeof 取值（去重、排序）
+}
+
+export interface NodeLabelSchema {
+	label: string;
+	count: number;
+	properties: AttributeStat[];   // 按 count 降序，对齐 C 的 attributes
+}
+
+export interface EdgeTypeSchema {
+	type: string;
+	count: number;
+	properties: AttributeStat[];
+}
+
 export interface GraphSchema {
-	nodeLabels: { label: string; count: number }[];
-	edgeTypes: { type: string; count: number }[];
+	nodeLabels: NodeLabelSchema[];    // 兼容旧 {label,count}（含 properties）
+	edgeTypes: EdgeTypeSchema[];      // 兼容旧 {type,count}（含 properties）
 	totalNodes: number;
 	totalEdges: number;
 }
 
 /**
- * Get the graph schema (node labels + edge types).
- * 对标 get_graph_schema MCP 工具。
+ * 聚合一组 properties 记录，得到每个属性名出现的次数与类型分布。
+ * props[i] 可能为 undefined（节点无 properties 字段）。
+ */
+function _aggregateAttributeStats(props: (Record<string, any> | undefined)[]): AttributeStat[] {
+	const stats = new Map<string, { count: number; types: Set<string> }>();
+	for (const p of props) {
+		if (!p) { continue; }
+		for (const [k, v] of Object.entries(p)) {
+			const entry = stats.get(k) ?? { count: 0, types: new Set<string>() };
+			entry.count++;
+			entry.types.add(v === null ? 'null' : typeof v);
+			stats.set(k, entry);
+		}
+	}
+	return Array.from(stats.entries())
+		.map(([name, { count, types }]) => ({ name, count, types: Array.from(types).sort() }))
+		.sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Get the graph schema (node labels + edge types + 每个类型的属性 schema).
+ * 对标 get_graph_schema MCP 工具 — 现补齐 attributes 字段统计（P2-#5）。
  */
 export function getGraphSchema(store: CodebaseGraphStore, project: string): GraphSchema {
-	const nodeLabels = Array.from(store.getNodeTypes(project).entries())
-		.map(([label, count]) => ({ label, count }))
+	const nodes = store.getAllNodes().filter(n => n.project === project);
+	const edges = store.getAllEdges().filter(e => e.project === project);
+
+	const nodesByLabel = new Map<string, (Record<string, any> | undefined)[]>();
+	const nodeTotalByLabel = new Map<string, number>();
+	for (const n of nodes) {
+		nodeTotalByLabel.set(n.label, (nodeTotalByLabel.get(n.label) ?? 0) + 1);
+		const bucket = nodesByLabel.get(n.label) ?? [];
+		bucket.push(n.properties);
+		nodesByLabel.set(n.label, bucket);
+	}
+
+	const nodeLabels: NodeLabelSchema[] = Array.from(nodeTotalByLabel.entries())
+		.map(([label, count]) => ({
+			label,
+			count,
+			properties: _aggregateAttributeStats(nodesByLabel.get(label) ?? []),
+		}))
 		.sort((a, b) => b.count - a.count);
 
-	const edgeTypes = Array.from(store.getEdgeTypes(project).entries())
-		.map(([type, count]) => ({ type, count }))
+	const edgesByType = new Map<string, (Record<string, any> | undefined)[]>();
+	const edgeTotalByType = new Map<string, number>();
+	for (const e of edges) {
+		edgeTotalByType.set(e.type, (edgeTotalByType.get(e.type) ?? 0) + 1);
+		const bucket = edgesByType.get(e.type) ?? [];
+		bucket.push(e.properties);
+		edgesByType.set(e.type, bucket);
+	}
+
+	const edgeTypes: EdgeTypeSchema[] = Array.from(edgeTotalByType.entries())
+		.map(([type, count]) => ({
+			type,
+			count,
+			properties: _aggregateAttributeStats(edgesByType.get(type) ?? []),
+		}))
 		.sort((a, b) => b.count - a.count);
 
 	return {
@@ -290,42 +361,97 @@ export interface CodeSearchResult {
 	text: string;
 	node?: GraphNode;
 	relevanceScore: number;
+	isFileIndexed: boolean;  // 文件是否有图节点（defNodes.length > 0）
 }
 
 /**
  * Graph-augmented code search.
  * 对标 search_code MCP 工具 — grep + 按图结构重要性排序。
+ *
+ * 性能优化（对齐 C 版 mcp.c）：
+ * - GREP_MAX_MATCHES=500 截断保护，防止超大项目搜索爆炸
+ * - per-file defNodes 缓存，避免同一文件多次 findNodesByFile 调用
+ * - 多因子排名：label 加权（Function/Method +10, Route +15, Class +5）+
+ *   vendored 惩罚（-50）、test 惩罚（-5）+ inDegree
  */
+const GREP_MAX_MATCHES = 500;
+
+/** 多因子排名评分（对齐 C 版 compute_search_score） */
+function computeSearchScore(node: any, filePath: string): number {
+	let score = 0;
+	// label 类型加权
+	const label = (node?.label || node?.type || '').toLowerCase();
+	if (label === 'function' || label === 'method') { score += 10; }
+	else if (label === 'route' || label === 'endpoint') { score += 15; }
+	else if (label === 'class' || label === 'interface') { score += 5; }
+	// vendored 惩罚（node_modules / vendor / third_party / .vendor）
+	const fp = filePath.toLowerCase();
+	if (fp.includes('node_modules') || fp.includes('/vendor/') || fp.includes('/third_party/') || fp.includes('/.vendor/')) {
+		score -= 50;
+	}
+	// test 惩罚（test/spec/__tests__）
+	if (fp.includes('/test/') || fp.includes('/tests/') || fp.includes('/__tests__/') || fp.includes('.test.') || fp.includes('.spec.') || fp.includes('_test.')) {
+		score -= 5;
+	}
+	// inDegree 加权
+	score += node?.inDegree ?? 0;
+	return score;
+}
+
 export function searchCode(
 	store: CodebaseGraphStore,
 	project: string,
 	query: string,
 	fileContentProvider: (filePath: string) => string | undefined,
-	limit: number = 50
-): CodeSearchResult[] {
+	limit: number = 50,
+	useRegex: boolean = false
+): { results: CodeSearchResult[]; totalMatches: number } {
 	const results: CodeSearchResult[] = [];
-	const regex = new RegExp(escapeRegex(query), 'i');
+	// useRegex=true: 把 query 当正则；否则转义为字面量（对标 C 的 regex 显式开关）。
+	// 非法正则回退到字面量匹配，避免抛错。
+	// 安全说明：query 仅用于 new RegExp 构造，不涉及 shell 执行，无命令注入风险。
+	let regex: RegExp;
+	try {
+		regex = new RegExp(useRegex ? query : escapeRegex(query), 'i');
+	} catch {
+		regex = new RegExp(escapeRegex(query), 'i');
+	}
 
-	// Get all file nodes
-	const fileNodes = store.findNodesByLabel(project, 'file');
+	// Get all file nodes（多 folder：project 为空时跨所有项目；getAllFileNodes 内部兼容
+	// 'file'/'File' 大小写及无 file 节点回退到含 filePath 节点去重）
+	const fileNodes = store.getAllFileNodes(project || undefined);
+	// per-file defNodes 缓存：避免同一文件多个匹配行重复调用 findNodesByFile（O(1) 哈希查找）
+	const defNodesCache = new Map<string, any[]>();
 
-	for (const fileNode of fileNodes) {
+	outer: for (const fileNode of fileNodes) {
 		if (!fileNode.filePath) { continue; }
 		const content = fileContentProvider(fileNode.filePath);
 		if (!content) { continue; }
 
+		// 廉价预过滤：字面量查询若完全不出现在文件中，直接跳过逐行正则（大幅降低 CPU）。
+		// useRegex=true 时无法做安全的子串预判，跳过快路径。
+		if (!useRegex) {
+			const needle = query.toLowerCase();
+			if (content.toLowerCase().indexOf(needle) === -1) { continue; }
+		}
+
 		const lines = content.split('\n');
 		for (let i = 0; i < lines.length; i++) {
 			if (regex.test(lines[i])) {
-				// Find enclosing definition node
-				const defNodes = store.findNodesByFile(project, fileNode.filePath);
+				// 懒加载 defNodes 缓存（多 folder：用文件节点自身的 project 查同文件定义节点）
+				const cacheKey = `${fileNode.project}:${fileNode.filePath}`;
+				let defNodes = defNodesCache.get(cacheKey);
+				if (defNodes === undefined) {
+					defNodes = store.findNodesByFile(fileNode.project || project, fileNode.filePath);
+					defNodesCache.set(cacheKey, defNodes);
+				}
 				const enclosing = defNodes.find(n =>
 					n.startLine !== undefined && n.endLine !== undefined &&
 					n.startLine <= i + 1 && n.endLine >= i + 1
 				);
 
-				// Relevance score: in-degree of enclosing definition
-				const score = enclosing ? enclosing.inDegree + 1 : 1;
+				// 多因子排名（对齐 C 版 compute_search_score）
+				const score = enclosing ? computeSearchScore(enclosing, fileNode.filePath) : 1;
 
 				results.push({
 					filePath: fileNode.filePath,
@@ -333,14 +459,17 @@ export function searchCode(
 					text: lines[i].trim(),
 					node: enclosing,
 					relevanceScore: score,
+					isFileIndexed: defNodes.length > 0,
 				});
+
+				// grep 级截断保护（对齐 C 版 GREP_MAX_MATCHES=500）
+				if (results.length >= GREP_MAX_MATCHES) { break outer; }
 			}
 		}
 	}
 
-	return results
-		.sort((a, b) => b.relevanceScore - a.relevanceScore)
-		.slice(0, limit);
+	const sorted = results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+	return { results: sorted.slice(0, limit), totalMatches: sorted.length };
 }
 
 // ─── Index Status ─────────────────────────────────────────────────────────────

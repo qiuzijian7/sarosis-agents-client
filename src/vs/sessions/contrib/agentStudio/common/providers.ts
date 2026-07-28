@@ -351,7 +351,10 @@ export interface IReasoningOptions {
 }
 
 export interface IModelDelta {
-	readonly type: 'text' | 'thinking' | 'tool_call' | 'done' | 'error' | 'usage';
+	// tool_progress（2026-07-26）：工具参数流式生成期间的轻量进度信号
+	// （provider 节流上报），content 携带阶段描述。不进入正文/工具装配，
+	// 仅用于 idle 计时器续命与 UI 进度提示。
+	readonly type: 'text' | 'thinking' | 'tool_call' | 'done' | 'error' | 'usage' | 'tool_progress';
 	readonly content?: string;
 	readonly toolCall?: IToolCallInfo;
 	readonly error?: string;
@@ -459,8 +462,20 @@ export interface IMemoryProvider {
 	/** Run extended diagnostics */
 	runExtendedDiagnostics?(agentId: string): Record<string, unknown>;
 
+	/** 文件相关 bug 记忆（mem::enrich 复刻）：type=bug ∩ isLatest ∩ files 路径重叠，updatedAt 倒序 top3 */
+	bugMemoriesForFiles?(agentId: string, files: string[], project?: string): Promise<Array<{ id: string; title: string; content: string }>>;
+
 	/** Flush pending writes */
 	flush?(): Promise<void>;
+
+	// ─── Session Observation（mem:obs 会话暂存层，对齐 agentmemory mem::observe）───
+	/**
+	 * 写入一条会话观察（工具结果 / turn 消息等暂存事件）。
+	 * 与 writeMemory 的区别：写入 mem:obs:<agent>:<session> 会话暂存层——
+	 * 便宜 KV set + 滑动窗口上限 + 阈值自动触发会话压缩，**不走**长期记忆的
+	 * 去重/巩固管线。经 compressSession 压缩后才可能进入长期层。
+	 */
+	observe?(agentId: string, payload: { sessionId: string; hookType: string; timestamp: string; data?: unknown }): Promise<{ success: boolean; observationId?: string; error?: string } | unknown>;
 
 	// ─── Hook System (for agentOSService lifecycle integration) ────────────
 	/**
@@ -556,7 +571,7 @@ export interface IMemoryProvider {
 	/** List all extracted skills. agentId 为首参；filter 可选。 */
 	listSkills?(agentId?: string, filter?: { tags?: string[]; minConfidence?: number }): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
 
-	/** Write a skill's SKILL.md file to ~/.saros/skills/<slug>/SKILL.md */
+	/** Write a skill's SKILL.md file to ~/.vssaros/skills/<slug>/SKILL.md */
 	writeSkillFile?(agentId: string, skillId: string): Promise<{ ok: boolean; path?: string; error?: string }>;
 
 	/** Delete a skill's SKILL.md file */
@@ -573,6 +588,12 @@ export interface IMemoryProvider {
 
 	/** Delete a skill */
 	deleteSkill?(agentId: string, id: string): boolean;
+
+	/** Update a long-term memory entry (edit mode，updates 支持 title/content/type/concepts/files/strength) */
+	updateMemory?(agentId: string, id: string, updates: Record<string, unknown>): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
+
+	/** Delete a long-term memory entry (硬删除，含索引清理) */
+	deleteMemory?(agentId: string, id: string): boolean | Promise<boolean>;
 
 	// ─── Cross-Agent APIs (for memory detail panel) ────────────────────────
 
@@ -607,6 +628,12 @@ export interface IMemoryProvider {
  */
 export interface IMemoryRecallOptions {
 	scope?: 'agent' | 'global';
+	/**
+	 * 是否消费长/短期记忆条目数组（shortTermMemories/longTermMemories）。
+	 * 注入主路径（agentMemoryInjection）默认关闭以省全表扫描；
+	 * executionProvider 循环内显式开启（其 Long-term/Short-term 块依赖条目）。
+	 */
+	includeEntries?: boolean;
 }
 
 export interface IMemoryContext {
@@ -614,11 +641,17 @@ export interface IMemoryContext {
 	readonly longTermMemories: IMemoryEntry[];
 	readonly systemPrompt?: string;
 	readonly relevantDocuments?: IDocumentRef[];
+	/** 注入策展块数量（对齐 agentmemory mem::context 返回的 blocks 元数据） */
+	readonly contextBlocks?: number;
+	/** 注入实际占用 token 数（含 header/footer） */
+	readonly contextTokens?: number;
 }
 
 export interface IMemoryEntry {
 	readonly id: string;
-	readonly type: 'working' | 'episodic' | 'semantic' | 'procedural';
+	/** agentmemory 原生类型（working/episodic/semantic/procedural + pattern/preference/architecture/bug/workflow/fact）。
+	 *  引擎写入侧按类型路由：working→core、semantic/procedural→独立 scope、其余→KV.memories。 */
+	readonly type: string;
 	readonly content: string;
 	readonly metadata?: Record<string, unknown>;
 	readonly timestamp?: number;
@@ -961,12 +994,34 @@ export interface IAgentTurnRequest {
 	readonly agentId: string;
 	readonly sessionId?: string;
 	readonly messages: IChatMessage[];
+	/**
+	 * 冻结前缀（stable + context 层），作为第一条 system 消息发送。保持字节稳定
+	 * 是 provider prompt cache 命中的前提；fork 前缀指纹也基于本字段计算。
+	 */
 	readonly systemPrompt?: string;
+	/**
+	 * 易变层（volatile：Persona Memory + 本轮激活技能）。每轮可变，作为独立
+	 * system 消息追加在冻结前缀之后，不参与前缀指纹，其变化不打断前缀缓存。
+	 * 由 agentDriverService 分层组装产生；直发 / 子 agent 路径省略 → undefined。
+	 */
+	readonly systemPromptVolatile?: string;
 	readonly options?: IModelOptions;
 	/** 用户通过 /skill 命令显式激活的技能 ID 列表 */
 	readonly explicitSkillIds?: readonly string[];
-	/** Current chat mode: craft (full access), ask (read-only tools), plan (decomposition only), workflow (craft + downstream agents) */
-	readonly chatMode?: 'craft' | 'ask' | 'plan' | 'workflow';
+	/**
+	 * 工作流触发请求（来自 /workflow <id> 或 bare /{wf-xxx} 命令）。
+	 * 设置后 executeTurn 进入工作流模式：跳过自由 LLM 循环，由 DAG 驱动逐节点执行。
+	 */
+	readonly workflowTrigger?: {
+		readonly workflowId: string;
+		readonly input?: string;
+	};
+	/** Chat-only 模式开关（来自 UI 切换按钮）。开启时禁用所有写文件工具，React 范式下同时禁用 delegate_task。默认关闭。 */
+	readonly chatOnly?: boolean;
+	/** @deprecated 已移除 ChatMode（craft/plan/ask/workflow），由 AgentLoop 策略范式取代。保留字段仅为兼容旧调用方。 */
+	readonly chatMode?: string;
+	/** Mutable AgentLoop phase: plan is read-only; work can edit/execute. */
+	readonly workMode?: 'plan' | 'work';
 	/**
 	 * Memory 注入策略（来自 Agent 的 memoryConfig.strategy）：
 	 *   - 'full'    → 仅注入 Working（原始对话 / shortTermMemories）
@@ -1012,6 +1067,41 @@ export interface IAgentTurnRequest {
 	 */
 	readonly toolsetsOverride?: string[];
 	/**
+	 * Per-request tool-name exclusion (delegation). When set, the listed tools are
+	 * unconditionally removed from the enabled tool list regardless of toolset —
+	 * lets a parent hide specific tools from a sub-agent without fighting the
+	 * coarse-grained toolset system. E.g. an Explore sub-agent must NOT see
+	 * `index_repository` (the parent pre-builds the graph itself; letting the
+	 * sub-agent call it makes it stop after "index started").
+	 */
+	readonly excludedTools?: readonly string[];
+	/**
+	 * Per-request tool-name allowlist (agentId-driven delegation, 2026-07-27). When set,
+	 * the enabled tools are narrowed to ONLY these tool names (plus mandatory bridge/
+	 * Always-priority tools). Sourced from a builtin Agent's `tools` array so a delegated
+	 * sub-agent faithfully mirrors that Agent's tool surface. Applied as an intersection
+	 * on top of toolsetsOverride/excludedTools. Undefined → no allowlist narrowing.
+	 */
+	readonly allowedTools?: readonly string[];
+	/**
+	 * AgentLoop 范式覆盖（可选，来自 Agent 配置 agent.paradigm）。
+	 * 不提供时 AgentLoopStrategyFactory 按 chatMode 默认映射。
+	 * 可选值：budgeted-react | plan-explore | react | graph | delegation | readonly
+	 */
+	readonly paradigm?: string;
+	/**
+	 * 每 turn 最大预算 / 迭代次数（可选，来自 Agent 配置 agent.budgetMaxTotal）。
+	 * 不提供时使用 DEFAULT_BUDGET_MAX=90。仅在 budgeted-react 范式生效。
+	 */
+	readonly budgetMaxTotal?: number;
+	/**
+	 * 软预算（wall-clock，ms）：turn 耗时超过该值时，主循环注入一次「立即整理
+	 * 发现并收尾」的 system-reminder——不打断执行，目的是让长探索任务在硬超时
+	 * 前主动收敛产出。当前由子代理派发按 timeout×比例设置；主 agent 缺省
+	 * undefined → 不启用。
+	 */
+	readonly softDeadlineMs?: number;
+	/**
 	 * checkpoint/resume（supervisor/goto Step D）：多 agent 图续跑请求时，携带上一次
 	 * 图运行落盘的 AgentRunState，executeAgentGraph 从中恢复 graph.currentNodeId 续跑，
 	 * 而非从 entry 重跑。单 agent / 首次运行省略 → undefined（零行为变更）。
@@ -1034,6 +1124,19 @@ export interface IAgentTurnRequest {
 	 * fork 会话省略 → undefined（零行为变更）。
 	 */
 	readonly forkContext?: IForkContext;
+	/**
+	 * 后台子 agent 标记（P1，审批路由 `decideAskRouting`）。当本请求由
+	 * unifiedSubAgentDispatch 派发的后台子 agent 触发时注入：
+	 *   - `type`       → 子 agent 权限档（explore/general/scout），对齐 SubAgentType 值。
+	 *   - `background` → true 表示后台运行，工具审批走「继承父授权（非交互放行）」而非
+	 *                    弹交互确认阻塞父级 loop（子 agent 可见工具已被 SUB_AGENT_PERMISSIONS
+	 *                    在过滤层收窄，能调到的即在其权限档内）。
+	 * 前台主 agent / 用户直接会话省略 → undefined（审批走交互确认，行为不变）。
+	 */
+	readonly subAgent?: {
+		readonly type: 'explore' | 'general' | 'scout';
+		readonly background: boolean;
+	};
 }
 
 // ─── Stream Phase (Void-inspired: IsRunningType 5-state model) ──────────
@@ -1059,7 +1162,8 @@ export type StreamPhase =
 export interface IChatStreamDelta {
 	readonly type: 'text' | 'thinking' | 'tool_start' | 'tool_args' | 'tool_end' | 'tool_result' | 'done' | 'error' | 'tool_progress' | 'content_replace'
 	| 'references' | 'progress' | 'confirmation' | 'todos' | 'tips' | 'questions' | 'usage' | 'phase_change' | 'context_compacted'
-	| 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end'
+	| 'sub_agent_start' | 'sub_agent_progress' | 'sub_agent_end' | 'subagent_batch' | 'mode_changed' | 'work_mode_changed' | 'plan_tasks'
+
 	// ─── Hermes-style synthetic-recovery signal ─────────────────────────────
 	// 参考 Hermes `agent/conversation_loop.py` 的 `_empty_recovery_synthetic` /
 	// `_thinking_prefill` / `_empty_terminal_sentinel` 三类合成消息标记。
@@ -1149,7 +1253,27 @@ export interface IChatStreamDelta {
 	readonly subAgentProgress?: string;
 	readonly subAgentOutput?: string;
 	readonly subAgentError?: string;
+	/** plan_explore 子代理批量数据（subagent_batch delta, ISubAgentData[]） */
+	readonly subagentData?: any[];
+	/** mode_changed delta — sync an explicit user ChatMode change to UI. */
+	readonly mode?: string;
+	/** work_mode_changed delta — internal AgentLoop phase; does not change the UI ChatMode selector. */
+	readonly workMode?: 'plan' | 'work';
 	readonly subAgentGroupId?: string;
+	/** plan_tasks delta — structured plan tasks generated at plan_exit, for a dedicated chat card. */
+	readonly planTasksData?: {
+		readonly planId?: string;
+		readonly summary?: string;
+		readonly tasks: Array<{
+			readonly title: string;
+			readonly description?: string;
+			readonly files?: string[];
+			readonly dependencies?: string[];
+			readonly deliverable?: string;
+			readonly complexity?: string;
+			readonly status?: string;
+		}>;
+	};
 	/**
 	 * Host-side full text snapshot (Void-inspired fullTextSoFar pattern).
 	 * When present, the WebView should use this instead of incrementally

@@ -25,11 +25,29 @@ import {
 	runWithRetry,
 	type RetryPolicy,
 } from '../common/resilience.js';
+import { decideAskRouting, type IAskRoutingContext } from '../common/askRouting.js';
 
 // ─── Constants ──────────────────────────────────────────────────────
 
 /** 默认工具执行超时时间（毫秒） */
 export const DEFAULT_TOOL_TIMEOUT_MS = 60_000; // 60 seconds
+
+/**
+ * 编排类工具超时：delegate_task / plan_explore / subagent_batch。
+ *
+ * 2026-07-26 重构（事故日志 1785053998262）：**0 = 禁用守卫 wall-clock 超时**。
+ * 旧值 630s 配套的是已废弃的子代理预算模型（300s/attempt + 1 retry）；现行模型
+ * （用户规则 2026-07-25/26）：子代理不限轮数、不限总时长，活性仅由自身
+ * 180s 内容停滞看门狗 + 480s 单响应软上限判定。630s 固定帽砍死过健康长任务
+ * （34 迭代探索子代理在 630.008s 整被 interrupted）。取消固定帽后：
+ * - 活性兜底 = 子代理自身看门狗（180s 无内容 → stall → salvage 部分结果）；
+ * - 取消兜底 = 用户手动停止 / 父 turn abort（parentSignal 链路保留）；
+ * - 工具级重试仍禁用（见 executeWithRetryAndTimeout 的 ORCHESTRATION 分支）。
+ */
+export const DELEGATION_TOOL_TIMEOUT_MS = 0;
+
+/** 编排类工具名（超时与禁重试共用）。 */
+const ORCHESTRATION_TOOLS = new Set(['delegate_task', 'plan_explore', 'subagent_batch']);
 
 /** MCP 工具的超时时间（MCP 服务器可能更慢） */
 export const MCP_TOOL_TIMEOUT_MS = 120_000; // 120 seconds
@@ -75,7 +93,9 @@ export async function executeWithTimeout(
 		parentSignal.addEventListener('abort', parentAbortHandler, { once: true });
 	}
 
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	// timeoutMs<=0（编排类工具，DELEGATION_TOOL_TIMEOUT_MS=0）：不设 wall-clock
+	// 计时器——子代理活性由自身停滞看门狗判定；仅保留父级 signal 取消链路。
+	const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
 
 	try {
 		const result = await provider.executeTool(agentId, toolCall, controller.signal);
@@ -113,7 +133,7 @@ export async function executeWithTimeout(
 			},
 		};
 	} finally {
-		clearTimeout(timer);
+		if (timer !== undefined) { clearTimeout(timer); }
 		if (parentAbortHandler && parentSignal) {
 			parentSignal.removeEventListener('abort', parentAbortHandler);
 		}
@@ -191,6 +211,13 @@ export async function executeWithRetryAndTimeout(
 	options: RetryableToolOptions = {},
 ): Promise<IToolResult> {
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
+	// 编排类工具禁止工具级重试：超时结果是 retryable=true，若按默认策略重试会把
+	// 整批子代理从头再跑一遍（2026-07-25 事故：同一 delegate_task 连续两个 60s
+	// 失败 = 第一次超时 + 一次整批重跑，白耗 120s + 双倍子代理执行）。
+	// 直接单次执行，失败结果原样返回（不经 ToolRetryableError 异常通道）。
+	if (ORCHESTRATION_TOOLS.has(toolCall.name)) {
+		return executeWithTimeout(provider, agentId, toolCall, timeoutMs, options.parentSignal);
+	}
 	const policy = options.retryPolicy ?? DEFAULT_TOOL_RETRY_POLICY;
 	const signal = options.signal ?? options.parentSignal;
 
@@ -216,6 +243,11 @@ export async function executeWithRetryAndTimeout(
  * 根据工具类型确定超时时间
  */
 export function getTimeoutForTool(toolName: string, toolDef?: IToolDefinition, source?: string): number {
+	// 编排类工具：禁用守卫 wall-clock 超时（0；活性由子代理自身看门狗判定，
+	// 见 DELEGATION_TOOL_TIMEOUT_MS 注释与 2026-07-26 事故 1785053998262）
+	if (ORCHESTRATION_TOOLS.has(toolName)) {
+		return DELEGATION_TOOL_TIMEOUT_MS;
+	}
 	// MCP 工具给更多时间
 	if (source?.includes('mcp') || toolName.includes('__')) {
 		return MCP_TOOL_TIMEOUT_MS;
@@ -284,6 +316,7 @@ export class ToolApprovalService {
 	async checkAndApprove(
 		toolCall: IToolCall,
 		toolDef: IToolDefinition | undefined,
+		routing?: IAskRoutingContext,
 	): Promise<boolean> {
 		const securityLevel = toolDef?.securityLevel ?? ToolSecurityLevel.Safe;
 
@@ -298,6 +331,23 @@ export class ToolApprovalService {
 		}
 		if (this._alwaysDenied.has(toolCall.name)) {
 			return false;
+		}
+
+		// ─── P1: 审批路由（MiMo decideAskRouting）─────────────────────
+		// 在弹交互确认之前，按发起 turn 的 agent 身份/模式决定路由：
+		//   - subagent（后台）→ inherit：非交互放行（工具集已被 SUB_AGENT_PERMISSIONS
+		//     收窄，能调到的即在权限档内），不阻塞父级 loop。
+		//   - system         → auto-deny：非交互拒绝越权工具，不阻塞 loop。
+		//   - foreground / 未提供 → interactive：继续走下方 handler 交互确认。
+		if (routing) {
+			const decision = decideAskRouting(routing);
+			if (decision === 'inherit') {
+				return true;
+			}
+			if (decision === 'auto-deny') {
+				return false;
+			}
+			// 'interactive' → 落入下方交互确认流程
 		}
 
 		// Cautious 工具：首次使用时审批

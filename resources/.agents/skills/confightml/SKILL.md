@@ -53,6 +53,10 @@ You are running the **confightml** skill.
 | `chatSendStream(msg, cb)` | `(string, StreamCallbacks) → {cancel()}` | **流式发送 + 接收实时回复**（可取消） | 对话面板、AI 问答 |
 | `runTerminal(cmd, args?, opts?)` | `(string, string[]?, {cwd?, env?}?) → Promise<void>` | **在集成终端中执行命令**（实时输出） | 运行 Python/Node 脚本、pip 安装 |
 | `writeHtml(html)` | `(string) → Promise<void>` | **将 HTML 内容写入 config.html 并落盘** | 保存表单配置、持久化页面修改 |
+| `kvGet(key)` | `(string) → Promise<any>` | **从数据存储读取值** | 读取配置、历史记录 |
+| `kvSet(key, value)` | `(string, any) → Promise<void>` | **写入数据存储并落盘** | 保存配置、存储分析结果 |
+| `kvDelete(key)` | `(string) → Promise<void>` | 删除数据存储中的 key | 清理旧数据 |
+| `kvList(prefix?)` | `(string?) → Promise<string[]>` | 列举 key（可选前缀过滤） | 枚举报告列表 |
 | `sendEvent(name, payload?)` | `(string, any?) → Promise<void>` | 发送自定义事件给 Agent | 按钮点击、状态上报 |
 | `notify(msg, level?)` | `(string, 'info'\|'success'\|'warning'\|'error'?) → Promise<void>` | 在 Agent Studio UI 显示通知 | 操作成功/失败提示 |
 | `on(event, fn)` | `('command'\|'message', fn) → void` | 监听宿主推送事件 | 接收 Agent 指令 |
@@ -331,6 +335,95 @@ await window.AgentConfigHtml.writeHtml(html);
 ```
 
 ---
+
+### 7. 数据存储 kvGet / kvSet / kvDelete / kvList ⭐ 结构化数据持久化
+
+KV 存储提供轻量级结构化数据持久化，数据保存在 `~/.vssaros/agents/{agentId}/data/kv.json`。
+
+```js
+// 保存配置
+await AgentConfigHtml.kvSet('settings', {
+  insightsPath: 'F:/UE5/UnrealInsights.exe',
+  cacheDir: 'D:/TraceCache',
+  autoCpu: true,
+});
+
+// 读取配置
+var settings = await AgentConfigHtml.kvGet('settings');
+// → { insightsPath: '...', cacheDir: '...', autoCpu: true }
+
+// 删除
+await AgentConfigHtml.kvDelete('settings');
+
+// 列举所有 key（可选前缀）
+var allKeys = await AgentConfigHtml.kvList();
+var reportKeys = await AgentConfigHtml.kvList('report_');
+// → ['report_2025-07-01', 'report_2025-07-02']
+```
+
+| 方法 | 参数 | 返回 | 说明 |
+|------|------|------|------|
+| `kvGet(key)` | key: string | `Promise<any \| undefined>` | 读取值，不存在返回 undefined |
+| `kvSet(key, value)` | key: string, value: any | `Promise<void>` | 写入并落盘 |
+| `kvDelete(key)` | key: string | `Promise<void>` | 删除 key |
+| `kvList(prefix?)` | prefix?: string | `Promise<string[]>` | 列举 key，可选前缀过滤 |
+
+**典型场景——分析报告存储与展示：**
+
+```html
+<script>
+// 保存分析结果
+async function saveReport(traceFile, results) {
+  var reportId = 'report_' + new Date().toISOString().slice(0, 10);
+  await AgentConfigHtml.kvSet(reportId, {
+    trace: traceFile,
+    cpuMs: results.cpuMs,
+    gcPct: results.gcPct,
+    status: 'completed',
+    timestamp: Date.now(),
+  });
+}
+
+// 加载所有报告
+async function loadReports() {
+  var keys = await AgentConfigHtml.kvList('report_');
+  var reports = await Promise.all(
+    keys.map(async function(k) {
+      return Object.assign({ id: k }, await AgentConfigHtml.kvGet(k));
+    })
+  );
+  return reports.sort(function(a, b) { return b.timestamp - a.timestamp; });
+}
+
+// 清理旧报告（保留最近 50 条）
+async function cleanupOldReports() {
+  var keys = await AgentConfigHtml.kvList('report_');
+  if (keys.length <= 50) return;
+  var reports = await Promise.all(
+    keys.map(async function(k) {
+      return { key: k, ts: (await AgentConfigHtml.kvGet(k)).timestamp };
+    })
+  );
+  reports.sort(function(a, b) { return b.ts - a.ts; });
+  var toDelete = reports.slice(50);
+  for (var i = 0; i < toDelete.length; i++) {
+    await AgentConfigHtml.kvDelete(toDelete[i].key);
+  }
+}
+</script>
+```
+
+**KV 存储 vs writeHtml：**
+
+| | `kvSet/kvGet` | `writeHtml` |
+|---|---|---|
+| 存储格式 | JSON 结构化数据 | 完整 HTML 文档 |
+| 查询能力 | key 精确 + 前缀过滤 | 无 |
+| 适合场景 | 配置、报告、状态 | 页面结构修改 |
+| 容量 | < 10MB（单 JSON 文件） | 无限制 |
+| 读写延迟 | ~5ms | ~20ms |
+
+---
 ## 输出格式（强制）
 
 - **只输出一个 ```html 代码块**，里面是一份从 `<!DOCTYPE html>` 到 `</html>` 的完整文档。
@@ -390,7 +483,7 @@ await window.AgentConfigHtml.writeHtml(html);
 1. 理解用户意图（面板 / 对话 / 看板 / 落地页…）。
 2. 选视觉风格，定义 `:root` 颜色 + `--deck-chrome-*`。
 3. 写语义化结构，标注 `data-edit-slot`；表单控件设置合理的 `value` / `placeholder` 默认值。
-4. 如需动态交互，按需加入 `<script>`——仅限协议 API 调用（`chatSend` / `chatSendStream` / `runTerminal` / `writeHtml` / `sendEvent` / `notify`），不写编辑器逻辑。
+4. 如需动态交互，按需加入 `<script>`——仅限协议 API 调用（`chatSend` / `chatSendStream` / `runTerminal` / `writeHtml` / `kvGet` / `kvSet` / `kvDelete` / `kvList` / `sendEvent` / `notify`），不写编辑器逻辑。
 5. 自检：零外链、`data-oid` 唯一、API 调用在 try/catch 中。
 6. 输出**单个** ```html 代码块。
 
@@ -494,4 +587,4 @@ await window.AgentConfigHtml.writeHtml(html);
 </html>
 ```
 
-记住：**只输出完整的单文件 HTML，标注好可编辑 slot，表单控件设好默认 value。动态交互仅限 AgentConfigHtml 协议 API（`chatSend` / `chatSendStream` / `runTerminal` / `writeHtml` / `sendEvent` / `notify`），不写编辑器运行时。如需保存表单配置，使用 `writeHtml` + `setAttribute('value', ...)` 模式。**
+记住：**只输出完整的单文件 HTML，标注好可编辑 slot，表单控件设好默认 value。动态交互仅限 AgentConfigHtml 协议 API（`chatSend` / `chatSendStream` / `runTerminal` / `writeHtml` / `kvGet` / `kvSet` / `kvDelete` / `kvList` / `sendEvent` / `notify`），不写编辑器运行时。如需保存表单配置，使用 `writeHtml` + `setAttribute('value', ...)` 或 `kvSet` / `kvGet` 模式。**

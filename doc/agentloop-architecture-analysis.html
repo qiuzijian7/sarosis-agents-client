@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentLoop Framework Architecture</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --fg: #c9d1d9;
+  --blue: #58a6ff;
+  --green: #3fb950;
+  --purple: #d2a8ff;
+  --orange: #f0883e;
+  --red: #f85149;
+  --border: #30363d;
+  --card: #161b22;
+  --code: #1c2128;
+  --dim: #8b949e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6}
+header{background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);padding:2rem 2rem 1.5rem;text-align:center;border-bottom:2px solid var(--blue)}
+header h1{font-size:2rem;color:#fff}
+header p{color:var(--dim)}
+.container{max-width:1200px;margin:0 auto;padding:1.5rem}
+.section{background:var(--card);border:1px solid var(--border);border-radius:12px;margin-bottom:2rem;overflow:hidden}
+.section-header{padding:1rem 1.5rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:.75rem;background:rgba(88,166,255,.04)}
+.section-header .num{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.9rem;background:var(--blue);color:#000;flex-shrink:0}
+.section-header h2{font-size:1.2rem;color:var(--blue)}
+.section-body{padding:1.5rem}
+.file-path{font-family:monospace;font-size:.8rem;color:var(--dim);background:var(--code);padding:3px 10px;border-radius:6px;display:inline-block;margin-bottom:.5rem}
+.info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:1rem;margin:1rem 0}
+.info-card{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:1rem}
+.info-card h4{font-size:.8rem;color:var(--blue);margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px}
+.info-card .val{font-size:1.05rem;font-weight:600;color:#fff}
+.info-card .desc{font-size:.78rem;color:var(--dim);margin-top:.25rem}
+.phase{display:inline-block;padding:2px 10px;border-radius:12px;font-size:.72rem;font-weight:600;margin-right:.4rem}
+.ph-c{background:rgba(210,168,255,.15);color:var(--purple)}
+.ph-s{background:rgba(88,166,255,.15);color:var(--blue)}
+.ph-t{background:rgba(240,136,62,.15);color:var(--orange)}
+.ph-e{background:rgba(248,81,73,.15);color:var(--red)}
+.ph-p{background:rgba(63,185,80,.15);color:var(--green)}
+code{background:var(--code);padding:1px 6px;border-radius:4px;font-size:.85em;color:var(--purple)}
+table{width:100%;border-collapse:collapse;margin:1rem 0}
+th{background:var(--code);color:var(--blue);padding:.6rem 1rem;text-align:left;font-size:.8rem;text-transform:uppercase;border-bottom:1px solid var(--border)}
+td{padding:.6rem 1rem;border-bottom:1px solid var(--border);font-size:.85rem}
+tr:hover{background:rgba(88,166,255,.03)}
+.toc{list-style:none}
+.toc li{padding:.3rem 0}
+.toc a{color:var(--blue);text-decoration:none;font-size:.9rem}
+.toc a:hover{text-decoration:underline}
+
+/* ===== Custom Diagram Styles ===== */
+
+/* Flow diagram: horizontal connected boxes */
+.flow-horizontal{display:flex;align-items:center;flex-wrap:wrap;gap:0;padding:1rem 0;overflow-x:auto}
+.flow-horizontal .node{background:var(--code);border:2px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center;white-space:nowrap;font-size:.85rem;color:#fff;flex-shrink:0}
+.flow-horizontal .node.n-user{border-color:var(--green);background:rgba(63,185,80,.08)}
+.flow-horizontal .node.n-driver{border-color:var(--blue);background:rgba(88,166,255,.08)}
+.flow-horizontal .node.n-loop{border-color:var(--purple);background:rgba(210,168,255,.08)}
+.flow-horizontal .node.n-ui{border-color:var(--orange);background:rgba(240,136,62,.08)}
+.flow-horizontal .arrow-h{color:var(--dim);font-size:1.2rem;margin:0 6px;flex-shrink:0}
+.flow-horizontal .arrow-label{font-size:.7rem;color:var(--dim);text-align:center;margin:0 2px;flex-shrink:0}
+
+/* Sequence diagram: alternating rows */
+.seq-diagram{display:flex;flex-direction:column;gap:2px;font-family:monospace;font-size:.82rem;padding:.5rem 0}
+.seq-row{display:flex;align-items:flex-start;gap:12px;padding:6px 12px;border-radius:6px}
+.seq-row.sr-phase{background:rgba(88,166,255,.06);border-left:3px solid var(--blue);font-weight:600;color:var(--blue);padding:10px 12px;margin:10px 0 6px 0}
+.seq-row.sr-init{background:rgba(63,185,80,.04)}
+.seq-row.sr-loop{background:rgba(210,168,255,.04)}
+.seq-row.sr-tool{background:rgba(240,136,62,.04)}
+.seq-row.sr-end{background:rgba(248,81,73,.04)}
+.seq-row .sr-who{width:140px;text-align:right;flex-shrink:0;color:var(--dim)}
+.seq-row .sr-arrow{width:30px;text-align:center;flex-shrink:0;color:var(--dim)}
+.seq-row .sr-to{width:140px;color:var(--dim);flex-shrink:0}
+.seq-row .sr-msg{color:var(--fg);flex:1}
+.seq-row .sr-comment{color:var(--dim);font-style:italic;font-size:.75rem;margin-left:.5rem}
+
+/* Strategy tree diagram */
+.tree-diagram{padding:1rem}
+.tree-root{display:inline-block;background:var(--code);border:2px solid var(--purple);border-radius:8px;padding:10px 16px;margin-bottom:1rem;font-weight:600}
+.tree-branch{margin-left:2rem;border-left:2px solid var(--border);padding-left:1.5rem;margin-bottom:.5rem}
+.tree-node{display:inline-block;background:var(--code);border:1px solid var(--border);border-radius:6px;padding:6px 12px;margin:4px 8px 4px 0;font-size:.82rem}
+.tree-node.tn-default{border-color:var(--blue);background:rgba(88,166,255,.06)}
+
+/* Flowchart diagram */
+.fc-diagram{display:flex;flex-direction:column;align-items:flex-start;gap:0}
+.fc-row{display:flex;align-items:center;gap:0;margin:3px 0}
+.fc-box{background:var(--code);border:2px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.82rem;white-space:nowrap}
+.fc-box.fc-decision{border-radius:20px;border-color:var(--orange)}
+.fc-box.fc-action{border-color:var(--blue)}
+.fc-box.fc-skip{border-color:var(--red);background:rgba(248,81,73,.06)}
+.fc-box.fc-ok{border-color:var(--green);background:rgba(63,185,80,.06)}
+.fc-arrow{color:var(--dim);margin:0 8px;font-size:.9rem}
+.fc-arrow.fc-down{text-align:center;padding:2px 0}
+.fc-label{font-size:.72rem;color:var(--dim);margin:0 8px}
+.fc-connector{display:flex;flex-direction:column;align-items:center;min-width:20px}
+.fc-vline{border-left:2px solid var(--border);height:16px;width:0}
+.fc-branch{display:flex;gap:1rem;align-items:flex-start}
+.fc-col{display:flex;flex-direction:column;gap:2px;min-width:200px}
+
+/* State diagram */
+.state-diagram{display:flex;flex-wrap:wrap;gap:12px;padding:1rem;align-items:center}
+.state-node{background:var(--code);border:2px solid var(--border);border-radius:8px;padding:8px 14px;font-size:.82rem;text-align:center;white-space:nowrap}
+.state-node.st-active{border-color:var(--green)}
+.state-node.st-stream{border-color:var(--blue)}
+.state-node.st-tool{border-color:var(--orange)}
+.state-node.st-idle{border-color:var(--dim)}
+.state-arrow{color:var(--dim);font-size:1rem}
+.state-note{font-size:.75rem;color:var(--dim);margin-top:1rem;padding:1rem;background:var(--code);border-radius:8px;border:1px dashed var(--border)}
+
+/* Sequence alt blocks */
+.seq-alt{background:var(--code);border:1px solid var(--border);border-radius:8px;margin:8px 0;overflow:hidden}
+.seq-alt-header{padding:6px 12px;background:rgba(88,166,255,.06);font-size:.75rem;color:var(--blue);font-weight:600}
+.seq-alt-body{padding:0}
+
+/* Highlight */
+.hl{background:rgba(240,136,62,.15);padding:.15em .4em;border-radius:3px}
+h3{color:var(--blue);margin:1.5rem 0 .8rem}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AgentLoop Framework Architecture Analysis</h1>
+  <p>Sarosis Agents Client &mdash; executeAgentTurnDirect() + Strategy System + Tool Chain</p>
+</header>
+
+<div class="container">
+
+<!-- TOC -->
+<section class="section">
+<div class="section-header"><span class="num">I</span><h2>Contents</h2></div>
+<div class="section-body">
+<ol class="toc">
+  <li><a href="#s1">1. Overall Data Flow</a></li>
+  <li><a href="#s2">2. Main Loop Sequence</a></li>
+  <li><a href="#s3">3. Strategy System</a></li>
+  <li><a href="#s4">4. Pre-loop Orchestration</a></li>
+  <li><a href="#s5">5. Context Compression</a></li>
+  <li><a href="#s6">6. Tool Execution Chain</a></li>
+  <li><a href="#s7">7. State Management &amp; Termination</a></li>
+  <li><a href="#s8">8. Key Files</a></li>
+</ol>
+</div>
+</section>
+
+<!-- 1. Data Flow -->
+<section class="section" id="s1">
+<div class="section-header"><span class="num">1</span><h2>Overall Data Flow</h2></div>
+<div class="section-body">
+<p><span class="file-path">agentChatService.ts &#8594; agentDriverService.ts &#8594; agentOSService.ts &#8594; agentTurnExecutor.ts</span></p>
+
+<div class="flow-horizontal">
+  <div class="node n-user">
+    <b>User Input</b><br>
+    <span style="font-size:.7rem;color:var(--dim)">ChatPanel.sendMessage()</span>
+  </div>
+  <span class="arrow-h">&#8594;</span>
+  <div class="node n-driver">
+    <b>ChatService</b><br>
+    <span style="font-size:.7rem;color:var(--dim)">sendMessage()</span>
+  </div>
+  <span class="arrow-h">&#8594;</span>
+  <div class="node n-driver">
+    <b>DriverService</b><br>
+    <span style="font-size:.7rem;color:var(--dim)">executeFromChatOptions()</span>
+  </div>
+  <span class="arrow-h">&#8594;</span>
+  <div class="node n-driver">
+    <b>AgentOSService</b><br>
+    <span style="font-size:.7rem;color:var(--dim)">executeAgentTurn()</span>
+  </div>
+  <span class="arrow-h">&#8594;</span>
+  <div class="node n-loop">
+    <b>AgentTurnExecutor</b><br>
+    <span style="font-size:.7rem;color:var(--dim)">executeAgentTurnDirect()</span>
+  </div>
+  <span class="arrow-h">&#8594;</span>
+  <div class="node n-loop">
+    <b>for-await consumer</b><br>
+    <span style="font-size:.7rem;color:var(--dim)">onDelta callback</span>
+  </div>
+  <span class="arrow-h">&#8594;</span>
+  <div class="node n-ui">
+    <b>ChatPanel UI</b><br>
+    <span style="font-size:.7rem;color:var(--dim)">Bubble Message Render</span>
+  </div>
+</div>
+
+<div class="info-grid">
+<div class="info-card"><h4>Entry Point</h4><div class="val">agentChatService.ts</div><div class="desc"><code>sendMessage()</code> &mdash; unique user message entry, creates AbortController + stream</div></div>
+<div class="info-card"><h4>Core Loop</h4><div class="val">agentTurnExecutor.ts</div><div class="desc"><code>executeAgentTurnDirect()</code> &mdash; async generator, while loop yields deltas</div></div>
+<div class="info-card"><h4>Orchestration</h4><div class="val">agentOSService.ts</div><div class="desc"><code>executeAgentTurn()</code> &mdash; model failover, tool assembly</div></div>
+<div class="info-card"><h4>Driver Layer</h4><div class="val">agentDriverService.ts</div><div class="desc"><code>executeFromChatOptions()</code> &mdash; system prompt + skill injection</div></div>
+</div>
+</div>
+</section>
+
+<!-- 2. Main Loop -->
+<section class="section" id="s2">
+<div class="section-header"><span class="num">2</span><h2>Main Loop Sequence</h2></div>
+<div class="section-body">
+<p><span class="file-path">agentTurnExecutor.ts :: executeAgentTurnDirect()</span></p>
+
+<div class="seq-diagram">
+
+  <div class="seq-row sr-phase">Phase: Initialization</div>
+
+  <div class="seq-row sr-init">
+    <span class="sr-who">Init</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Init</span>
+    <span class="sr-msg">create turn AbortController per turnKey(sessionId::agentId)</span>
+  </div>
+  <div class="seq-row sr-init">
+    <span class="sr-who">Init</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Init</span>
+    <span class="sr-msg">AgentLoopStrategyFactory.resolve() &#8594; HermesReActStrategy (default)</span>
+  </div>
+  <div class="seq-row sr-init">
+    <span class="sr-who">Init</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Init</span>
+    <span class="sr-msg">IterationBudget(90) + restore from checkpoint if resume</span>
+  </div>
+
+  <div class="seq-row sr-phase">Phase: Pre-loop Orchestration</div>
+
+  <div class="seq-row sr-init">
+    <span class="sr-who">Init</span><span class="sr-arrow">&#8594;</span><span class="sr-to">strategy.preLoop()</span>
+    <span class="sr-msg">assessFn: LLM decides if exploration needed</span>
+  </div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">alt [needsExploration]</div>
+    <div class="seq-alt-body">
+      <div class="seq-row sr-init"><span class="sr-who">PreLoop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">PreLoop</span><span class="sr-msg">exploreFn: dispatchParallelExplore() &mdash; spawn N code-explorer sub-agents</span></div>
+      <div class="seq-row sr-init"><span class="sr-who">PreLoop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">PreLoop</span><span class="sr-msg">aggregate findings &#8594; inject as context into messages</span></div>
+      <div class="seq-row sr-init"><span class="sr-who">PreLoop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">PreLoop</span><span class="sr-msg">planGenerator: LLM generates ParsedPlanTask[] from findings</span></div>
+    </div>
+  </div>
+
+  <div class="seq-row sr-init">
+    <span class="sr-who">PreLoop</span><span class="sr-arrow">--&#8594;</span><span class="sr-to">Init</span>
+    <span class="sr-msg">return { planTasks[], findings }</span>
+  </div>
+
+  <div class="seq-row sr-phase">Phase: while(iteration &lt; MAX_TOOL_ITERATIONS) &mdash; per-iteration loop</div>
+
+  <div class="seq-row sr-loop">
+    <span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Loop</span>
+    <span class="sr-msg">check turnAbortSignal.aborted (V3: explicit abort checkpoint)</span>
+  </div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">Step 1: Context Compression</div>
+    <div class="seq-alt-body">
+      <div class="seq-row sr-loop"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Compress</span><span class="sr-msg">pruneOldToolOutputs() &mdash; cheap head+tail truncation</span></div>
+      <div class="seq-row sr-loop"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Compress</span><span class="sr-msg">check cooldown (COMPRESSION_COOLDOWN_MS)</span></div>
+      <div class="seq-row sr-loop"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Compress</span><span class="sr-msg">if tokens &gt; window*30% &amp;&amp; msgs &ge; min: compressContext()</span></div>
+    </div>
+  </div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">Step 2: Tool Assembly</div>
+    <div class="seq-alt-body">
+      <div class="seq-row sr-loop"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Assembly</span><span class="sr-msg">getEnabledTools() + ToolSearch bridge expansion</span></div>
+      <div class="seq-row sr-loop"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Assembly</span><span class="sr-msg">buildForkContext() for prefix-cache alignment</span></div>
+    </div>
+  </div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">Step 3: LLM Call</div>
+    <div class="seq-alt-body">
+      <div class="seq-row sr-loop"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">modelProvider</span><span class="sr-msg">.chat(modelId, messages, tools) [conversationId + requestId + previousResponseId]</span></div>
+      <div class="seq-row sr-loop"><span class="sr-who">modelProvider</span><span class="sr-arrow">--&#8594;</span><span class="sr-to">Loop</span><span class="sr-msg">for-await stream delta (text / thinking / tool_call / usage / error)</span></div>
+      <div class="seq-row sr-loop"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Loop</span><span class="sr-msg">on error: transient retry with exponential backoff; TimeoutError thrown upward</span></div>
+    </div>
+  </div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">Step 4: Post-process LLM Response</div>
+    <div class="seq-alt-body">
+      <div class="seq-row sr-loop"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Loop</span><span class="sr-msg">whitelist filter (hallucination guard) + repair deprecated names + dedup + phantom filter</span></div>
+    </div>
+  </div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">alt [no tool calls]</div>
+    <div class="seq-alt-body">
+      <div class="seq-row sr-end"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Loop</span><span class="sr-msg">classifyIncompleteTurn(empty/reasoning-only/length) &#8594; safe retry or continue</span></div>
+      <div class="seq-row sr-end"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Loop</span><span class="sr-msg">Plan-Execute-Reflect: if hasModifiedFiles, inject reflect prompt &#8594; continue</span></div>
+      <div class="seq-row sr-end"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Loop</span><span class="sr-msg">advance planTasks queue: if next task exists &#8594; inject reminder &#8594; continue</span></div>
+      <div class="seq-row sr-end"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Loop</span><span class="sr-msg">yield {type:'done'} &#8594; break [normal termination]</span></div>
+    </div>
+  </div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">Step 5: Tool Execution [has tool calls]</div>
+    <div class="seq-alt-body">
+      <div class="seq-row sr-tool"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">ToolExec</span><span class="sr-msg">hardPermission intercept (plan mode: write tools blocked)</span></div>
+      <div class="seq-row sr-tool"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">ToolExec</span><span class="sr-msg">Tool Call Loop Detection (same params 3x &#8594; anti-loop reminder)</span></div>
+      <div class="seq-row sr-tool"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">ToolExec</span><span class="sr-msg">split serverExecuted (skip local) vs localExecuted</span></div>
+      <div class="seq-row sr-tool"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">ToolExec</span><span class="sr-msg">sandbox confirmation dialog (security violation &#8594; pause loop)</span></div>
+      <div class="seq-row sr-tool"><span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">ToolExec</span><span class="sr-msg">parallel (ParallelToolExecutor) or serial execution</span></div>
+      <div class="seq-row sr-tool"><span class="sr-who">ToolExec</span><span class="sr-arrow">--&#8594;</span><span class="sr-to">Loop</span><span class="sr-msg">return toolResults[]</span></div>
+    </div>
+  </div>
+
+  <div class="seq-row sr-phase">End of Iteration</div>
+
+  <div class="seq-row sr-loop">
+    <span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">State</span>
+    <span class="sr-msg">budget.consume(1) [or refund(1) for delegation rounds]</span>
+  </div>
+  <div class="seq-row sr-loop">
+    <span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">State</span>
+    <span class="sr-msg">V3: checkpoint persist every 3 iterations (budget + messages + runState snapshot)</span>
+  </div>
+
+  <div class="seq-row sr-phase">Loop Exit</div>
+
+  <div class="seq-row sr-end">
+    <span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">Loop</span>
+    <span class="sr-msg">yield {type:'done'} (MAX_TOOL_ITERATIONS reached)</span>
+  </div>
+  <div class="seq-row sr-end">
+    <span class="sr-who">Loop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">State</span>
+    <span class="sr-msg">storeTurnObservations (retrieval-based context externalization)</span>
+  </div>
+
+</div>
+</div>
+</section>
+
+<!-- 3. Strategy System -->
+<section class="section" id="s3">
+<div class="section-header"><span class="num">3</span><h2>Strategy System</h2></div>
+<div class="section-body">
+<p><span class="file-path">agentLoopStrategyFactory.ts + agentLoopStrategy.ts + hermesReActStrategy.ts</span></p>
+
+<div class="tree-diagram">
+
+  <div class="tree-root" style="border-color:var(--purple);">
+    AgentLoopStrategyFactory<b>.resolve()</b>
+    <div style="font-size:.72rem;color:var(--dim);margin-top:4px">
+      Priority: request.paradigm &gt; agent.config.paradigm &gt; DEFAULT_PARADIGM_BY_CHATMODE
+    </div>
+  </div>
+
+  <div style="display:flex;flex-wrap:wrap;gap:1rem;margin-left:1.5rem;border-left:2px solid var(--border);padding-left:1.5rem;">
+
+    <div>
+      <div class="tree-node tn-default" style="font-weight:600;border-color:var(--blue);">budgeted-react</div>
+      <div class="tree-node tn-default" style="font-weight:600;border-color:var(--blue);">plan-explore</div>
+      <div class="tree-node tn-default" style="font-weight:600;border-color:var(--blue);">react</div>
+      <div style="font-size:.72rem;color:var(--dim);margin-top:4px">&rarr; all map to <b>HermesReActStrategy</b></div>
+    </div>
+
+    <div style="border-left:1px dashed var(--border);padding-left:1rem;">
+      <div class="tree-node">readonly &rarr; <b>ReadonlyStrategy</b></div>
+      <div class="tree-node">delegation &rarr; <b>DelegationStrategy</b></div>
+      <div class="tree-node">graph &rarr; <b>GraphStrategy</b></div>
+    </div>
+
+  </div>
+
+  <div style="margin-top:1.5rem;">
+    <div style="font-weight:600;color:var(--blue);margin-bottom:.8rem;">IAgentLoopStrategy &mdash; 5 Hooks:</div>
+    <table>
+      <tr><th>Hook</th><th>Signature</th><th>Role</th></tr>
+      <tr><td><code>preLoop()</code></td><td><code>(request, messages) &rarr; PreLoopPlan</code></td><td>LLM decides explore &#8594; parallel explore &#8594; plan generation</td></tr>
+      <tr><td><code>prepareIteration()</code></td><td><code>(ctx) &rarr; IterationPrep</code></td><td>Budget check + grace reminder injection</td></tr>
+      <tr><td><code>interceptToolCall()</code></td><td><code>(tc, ctx) &rarr; string | null</code></td><td>Intercept plan_exit/delegate_task before normal handler</td></tr>
+      <tr><td><code>shouldTerminate()</code></td><td><code>(ctx) &rarr; boolean</code></td><td>Budget exhausted &#8594; force end</td></tr>
+      <tr><td><code>orchestrateExecution()</code></td><td><code>(ctx) &rarr; ExecutionPlan</code></td><td>Plan queue advance + DAG ready-queue</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="info-grid">
+<div class="info-card"><h4>Default Paradigm</h4><div class="val">budgeted-react</div><div class="desc">HermesReActStrategy: budget-gated + LLM autonomous explore decision + delegation + plan queue</div></div>
+<div class="info-card"><h4>Budget</h4><div class="val">IterationBudget(90)</div><div class="desc">Parent=90, Child=50. delegate_task round refunds parent budget.</div></div>
+<div class="info-card"><h4>Paradigm Switch</h4><div class="val">Runtime dynamic</div><div class="desc">agent.config.paradigm. chatMode default: craft&#8594;budgeted-react</div></div>
+<div class="info-card"><h4>Extension</h4><div class="val">factory.register()</div><div class="desc">External plugins can register new paradigm implementations</div></div>
+</div>
+</div>
+</section>
+
+<!-- 4. Pre-loop -->
+<section class="section" id="s4">
+<div class="section-header"><span class="num">4</span><h2>Pre-loop Orchestration</h2></div>
+<div class="section-body">
+<p><span class="file-path">preLoopOrchestrator.ts</span></p>
+
+<div class="seq-diagram">
+
+  <div class="seq-row sr-phase">strategy.preLoop() &#8594; preLoopOrchestrate(userMessage, deps)</div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">Step 1: LLM Autonomous Assessment &mdash; assessFn(userMessage)</div>
+    <div class="seq-alt-body">
+      <div class="seq-row sr-init">
+        <span class="sr-who">preLoop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">assessFn</span>
+        <span class="sr-msg">Lightweight LLM call: needsExploration? explorationAreas[]? planTasks[]?</span>
+      </div>
+      <div class="seq-row sr-init">
+        <span class="sr-who">assessFn</span><span class="sr-arrow">--&#8594;</span><span class="sr-to">preLoop</span>
+        <span class="sr-msg">PreLoopAssessment { needsExploration, explorationAreas[], planTasks[], reason }</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="seq-alt">
+    <div class="seq-alt-header">alt [needsExploration == false]</div>
+    <div class="seq-alt-body">
+      <div class="seq-row"><span class="sr-who">preLoop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">strategy</span><span class="sr-msg">return { planTasks, assessment } &mdash; directly into main loop</span></div>
+    </div>
+    <div class="seq-alt-header">alt [needsExploration == true]</div>
+    <div class="seq-alt-body">
+      <div class="seq-alt">
+        <div class="seq-alt-header">Step 2: Parallel Exploration &mdash; exploreFn(areas[], goal)</div>
+        <div class="seq-alt-body">
+          <div class="seq-row sr-init"><span class="sr-who">preLoop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">exploreFn</span><span class="sr-msg">dispatchParallelExplore(): spawn N code-explorer sub-agents</span></div>
+          <div class="seq-row sr-init"><span class="sr-who">exploreFn</span><span class="sr-arrow">--&#8594;</span><span class="sr-to">preLoop</span><span class="sr-msg">{ findings (aggregated text), successCount, failCount }</span></div>
+        </div>
+      </div>
+      <div class="seq-alt" style="margin-top:8px;">
+        <div class="seq-alt-header">Step 3: Plan Generation &mdash; planGenerator(userMessage, findings)</div>
+        <div class="seq-alt-body">
+          <div class="seq-row sr-init"><span class="sr-who">preLoop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">planGenerator</span><span class="sr-msg">LLM generates structured tasks from user intent + exploration findings</span></div>
+          <div class="seq-row sr-init"><span class="sr-who">planGenerator</span><span class="sr-arrow">--&#8594;</span><span class="sr-to">preLoop</span><span class="sr-msg">ParsedPlanTask[] (title, description, deps, filePaths)</span></div>
+        </div>
+      </div>
+      <div class="seq-row"><span class="sr-who">preLoop</span><span class="sr-arrow">&#8594;</span><span class="sr-to">strategy</span><span class="sr-msg">return { planTasks[], findings, assessment }</span></div>
+    </div>
+  </div>
+
+  <div class="seq-row sr-phase" style="margin-top:12px;">Fallback: assessFn fails &#8594; original loop; exploreFn fails &#8594; no findings; planGenerator fails &#8594; use assessment.planTasks</div>
+
+</div>
+</div>
+</section>
+
+<!-- 5. Compression -->
+<section class="section" id="s5">
+<div class="section-header"><span class="num">5</span><h2>Context Compression</h2></div>
+<div class="section-body">
+<p><span class="file-path">agentTurnExecutor.ts + ContextManager.compressContext()</span></p>
+
+<div class="fc-diagram" style="gap:0;">
+
+  <div class="fc-row">
+    <div class="fc-box fc-action">Every iteration start</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row">
+    <div class="fc-box">pruneOldToolOutputs()</div>
+    <span class="fc-label">cheap head+tail truncation</span>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row">
+    <div class="fc-box fc-decision">cooldownElapsed &lt; COMPRESSION_COOLDOWN_MS?</div>
+    <span class="fc-arrow">&#8594;</span>
+    <span class="fc-label">yes</span>
+    <span class="fc-arrow">&#8594;</span>
+    <div class="fc-box fc-skip">SKIP<br><span style="font-size:.7rem">cooldown active</span></div>
+  </div>
+
+  <div style="height:8px;"></div>
+  <div class="fc-row" style="margin-left:300px;">
+    <span class="fc-label" style="margin-right:8px;">no</span>
+    <span class="fc-arrow" style="margin:0;">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:340px;">
+    <div class="fc-box">Compute effective tokens<br><span style="font-size:.7rem;">realPromptTokens || estimateMessagesTokens()</span></div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:340px;">
+    <div class="fc-box fc-decision">tokens &gt; compressionWindow * 0.3?</div>
+    <span class="fc-arrow">&#8594;</span>
+    <span class="fc-label">no</span>
+    <span class="fc-arrow">&#8594;</span>
+    <div class="fc-box fc-skip">SKIP<br><span style="font-size:.7rem">below threshold</span></div>
+  </div>
+
+  <div style="height:8px;"></div>
+  <div class="fc-row" style="margin-left:640px;">
+    <span class="fc-label" style="margin-right:8px;">yes</span>
+    <span class="fc-arrow" style="margin:0;">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:680px;">
+    <div class="fc-box fc-decision">messageCount &ge; minMessagesToCompress?</div>
+    <span class="fc-arrow">&#8594;</span>
+    <span class="fc-label">no</span>
+    <span class="fc-arrow">&#8594;</span>
+    <div class="fc-box fc-skip">SKIP<br><span style="font-size:.7rem">below msg min</span></div>
+  </div>
+
+  <div style="height:8px;"></div>
+  <div class="fc-row" style="margin-left:1020px;">
+    <span class="fc-label" style="margin-right:8px;">yes</span>
+    <span class="fc-arrow" style="margin:0;">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:1060px;">
+    <div class="fc-box fc-ok" style="min-width:280px;">
+      <b>compressContext()</b>
+      <div style="font-size:.7rem;color:var(--dim);margin-top:4px;">
+        preCompactInject (memory system) &#8594; retrieveContext (retrieval-based)<br>
+        &#8594; fallback: LLM summary compression<br>
+        &#8594; Replace messages + update _lastCompressionTime
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="info-grid" style="margin-top:1rem;">
+<div class="info-card"><h4>Compression Threshold</h4><div class="val">window * 0.3</div><div class="desc">Triggers when tokens exceed 30% of context window AND msg count meets minimum</div></div>
+<div class="info-card"><h4>Cooldown</h4><div class="val">COMPRESSION_COOLDOWN_MS</div><div class="desc">Prevents rapid repeated compression. Skips even above threshold during cooldown.</div></div>
+<div class="info-card"><h4>Cheap Pruning</h4><div class="val">pruneOldToolOutputs()</div><div class="desc">Every iteration: head+tail truncate old tool outputs beyond recent N messages. No LLM call.</div></div>
+<div class="info-card"><h4>Token Estimation</h4><div class="val">estimateMessagesTokens()</div><div class="desc">chars/4 rough estimate. Compression prefers realPromptTokens from LLM usage response.</div></div>
+</div>
+</div>
+</section>
+
+<!-- 6. Tool Chain -->
+<section class="section" id="s6">
+<div class="section-header"><span class="num">6</span><h2>Tool Execution Chain</h2></div>
+<div class="section-body">
+<p><span class="file-path">agentTurnExecutor.ts &mdash; Tool execution segment</span></p>
+
+<div class="fc-diagram" style="gap:0;">
+
+  <div class="fc-row">
+    <div class="fc-box fc-action">LLM returns toolCalls[]</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row">
+    <div class="fc-box">Whitelist filter (_lastAllEnabledToolNames)</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row">
+    <div class="fc-box">Repair deprecated names (repairToolName)</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row">
+    <div class="fc-box">Deduplicate (deduplicateToolCalls)</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row">
+    <div class="fc-box">Phantom filter (PHANTOM_TOOL_NAMES)</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row">
+    <div class="fc-box fc-decision">serverExecuted?</div>
+    <span class="fc-arrow">&#8594;</span>
+    <span class="fc-label">yes</span>
+    <span class="fc-arrow">&#8594;</span>
+    <div class="fc-box">Skip local, yield placeholder</div>
+  </div>
+
+  <div style="height:8px;"></div>
+  <div class="fc-row" style="margin-left:280px;">
+    <span class="fc-label" style="margin-right:8px;">no</span>
+    <span class="fc-arrow" style="margin:0;">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:320px;">
+    <div class="fc-box">hardPermission intercept (plan mode)</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:320px;">
+    <div class="fc-box fc-decision">Blocked?</div>
+    <span class="fc-arrow">&#8594;</span>
+    <span class="fc-label">yes</span>
+    <span class="fc-arrow">&#8594;</span>
+    <div class="fc-box fc-skip">yield blocked, skip</div>
+  </div>
+
+  <div style="height:8px;"></div>
+  <div class="fc-row" style="margin-left:700px;">
+    <span class="fc-label" style="margin-right:8px;">no</span>
+    <span class="fc-arrow" style="margin:0;">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:740px;">
+    <div class="fc-box">Tool Call Loop Detection</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:740px;">
+    <div class="fc-box fc-decision">Loop detected?</div>
+    <span class="fc-arrow">&#8594;</span>
+    <span class="fc-label">yes</span>
+    <span class="fc-arrow">&#8594;</span>
+    <div class="fc-box fc-skip">anti-loop reminder, skip</div>
+  </div>
+
+  <div style="height:8px;"></div>
+  <div class="fc-row" style="margin-left:1120px;">
+    <span class="fc-label" style="margin-right:8px;">no</span>
+    <span class="fc-arrow" style="margin:0;">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:1160px;">
+    <div class="fc-box fc-decision">shouldParallelize?</div>
+  </div>
+
+  <div class="fc-branch" style="margin-left:1160px;margin-top:4px;">
+    <div class="fc-col">
+      <span class="fc-label">parallel</span>
+      <div class="fc-box fc-action">ParallelToolExecutor<br><span style="font-size:.7rem;">concurrent execution</span></div>
+    </div>
+    <div class="fc-col">
+      <span class="fc-label">serial</span>
+      <div class="fc-box fc-action">executeToolCalls()<br><span style="font-size:.7rem;">sequential execution</span></div>
+    </div>
+  </div>
+
+  <div style="height:8px;"></div>
+  <div class="fc-row" style="margin-left:1160px;">
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:1200px;">
+    <div class="fc-box">per-tool: permission check (askRouting)</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:1200px;">
+    <div class="fc-box fc-decision">sandbox violation?</div>
+    <span class="fc-arrow">&#8594;</span>
+    <span class="fc-label">yes</span>
+    <span class="fc-arrow">&#8594;</span>
+    <div class="fc-box">confirmation dialog &#8594; re-execute or fail</div>
+  </div>
+
+  <div style="height:8px;"></div>
+  <div class="fc-row" style="margin-left:1630px;">
+    <span class="fc-label" style="margin-right:8px;">no</span>
+    <span class="fc-arrow" style="margin:0;">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:1670px;">
+    <div class="fc-box">Execute tool &#8594; write result to messages</div>
+    <span class="fc-arrow">&#8595;</span>
+  </div>
+
+  <div class="fc-row" style="margin-left:1670px;">
+    <div class="fc-box fc-ok">yield tool_result + tool_end<br><span style="font-size:.7rem;">+ consecutive failure tracking</span></div>
+  </div>
+
+</div>
+
+<div class="info-grid" style="margin-top:1rem;">
+<div class="info-card"><h4>hardPermission</h4><div class="val">workMode=plan</div><div class="desc">Write/execute tools blocked. Exception: file_write to plans/*.md allowed.</div></div>
+<div class="info-card"><h4>Loop Detection</h4><div class="val">detectToolCallLoop()</div><div class="desc">Same tool+params 3 consecutive times &#8594; loop detected, inject anti-loop reminder.</div></div>
+<div class="info-card"><h4>Sandbox</h4><div class="val">awaitSandboxConfirmation()</div><div class="desc">Security violation pauses loop, shows confirmation card (allow/workspace/path/cancel).</div></div>
+<div class="info-card"><h4>Consecutive Failure</h4><div class="val">MAX=3</div><div class="desc">After N consecutive failures, inject system-reminder guiding LLM to read errors.</div></div>
+</div>
+</div>
+</section>
+
+<!-- 7. State & Termination -->
+<section class="section" id="s7">
+<div class="section-header"><span class="num">7</span><h2>State Management &amp; Termination</h2></div>
+<div class="section-body">
+
+<h3>AgentRunState &mdash; Pure Function Reducer</h3>
+
+<div class="state-diagram">
+  <div class="state-node st-idle">[start]</div>
+  <span class="state-arrow">&#8594;</span>
+  <div class="state-node st-idle">idle</div>
+  <span class="state-arrow">&#8596;</span>
+  <div class="state-node st-stream">llm_streaming</div>
+  <span class="state-arrow">&#8596;</span>
+  <div class="state-node st-tool">tool_executing</div>
+</div>
+<div class="state-diagram" style="padding-top:0;">
+  <span style="color:var(--dim);font-size:.8rem;margin:0 8px;">&#8595;</span>
+  <div class="state-node st-idle">awaiting_approval</div>
+  <span class="state-arrow">&#8596;</span>
+  <div class="state-node st-tool">tool_executing</div>
+</div>
+<div class="state-diagram" style="padding-top:0;">
+  <div class="state-node st-stream">llm_streaming</div>
+  <span class="state-arrow">&#8596;</span>
+  <div class="state-node st-idle">compressing</div>
+  <span class="state-arrow">&#8594;</span>
+  <div class="state-node st-stream">llm_streaming</div>
+</div>
+<div class="state-diagram" style="padding-top:0;">
+  <div class="state-node st-stream">llm_streaming</div>
+  <span class="state-arrow">&#8596;</span>
+  <div class="state-node st-idle" style="border-color:var(--red);">error</div>
+</div>
+<div class="state-diagram" style="padding-top:0;">
+  <div class="state-node st-stream">llm_streaming</div>
+  <span class="state-arrow">&#8594;</span>
+  <div class="state-node st-idle">idle</div>
+  <span class="state-arrow">&#8594;</span>
+  <div class="state-node st-idle" style="border-style:dashed;">yield done</div>
+</div>
+
+<div class="state-note">
+  <b>State fields:</b>
+  workState.mode (plan|work) &middot;
+  hasModifiedFiles &middot;
+  reflectCount &middot;
+  lastRealPromptTokens &middot;
+  preExploreDone &middot;
+  toolCallHistory[] &middot;
+  pendingToolCalls[] &middot;
+  budgetSnapshot
+</div>
+
+<h3>Termination Condition Matrix</h3>
+<table>
+<tr><th>Condition</th><th>Value</th><th>Trigger</th><th>Behavior</th></tr>
+<tr>
+  <td><span class="phase ph-e">MAX_TOOL_ITERATIONS</span></td>
+  <td><code>50</code></td>
+  <td>while condition</td>
+  <td>yield done, end turn</td>
+</tr>
+<tr>
+  <td><span class="phase ph-e">No tool calls</span></td>
+  <td>effectiveCalls.length == 0</td>
+  <td>iteration end</td>
+  <td>reflect &#8594; plan advance &#8594; end; yield done + break</td>
+</tr>
+<tr>
+  <td><span class="phase ph-e">Budget exhausted</span></td>
+  <td>remaining &le; 0</td>
+  <td>shouldTerminate()</td>
+  <td>grace reminder &#8594; 1 last round &#8594; force end</td>
+</tr>
+<tr>
+  <td><span class="phase ph-e">User cancel</span></td>
+  <td>signal.aborted</td>
+  <td>iteration top</td>
+  <td>break</td>
+</tr>
+<tr>
+  <td><span class="phase ph-e">Plan queue empty</span></td>
+  <td>idx &ge; planTasks.length-1</td>
+  <td>after no calls</td>
+  <td>end (all done)</td>
+</tr>
+<tr>
+  <td><span class="phase ph-e">Reflect done</span></td>
+  <td>reflectCount &ge; 3</td>
+  <td>after no calls</td>
+  <td>skip reflect, end</td>
+</tr>
+</table>
+
+<h3>Key Constants</h3>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Description</th></tr>
+<tr><td><code>MAX_TOOL_ITERATIONS</code></td><td>50</td><td>Max iterations per turn</td></tr>
+<tr><td><code>DEFAULT_BUDGET_MAX</code></td><td>90</td><td>Parent agent budget</td></tr>
+<tr><td><code>COMPRESSION_COOLDOWN_MS</code></td><td>60s</td><td>Min interval between compressions</td></tr>
+<tr><td><code>MAX_REFLECT_ITERATIONS</code></td><td>3</td><td>Max reflect phase iterations</td></tr>
+<tr><td><code>COMPRESSION_THRESHOLD</code></td><td>0.3</td><td>30% of context window triggers compression</td></tr>
+<tr><td><code>MAX_CONSECUTIVE_TOOL_FAILURES</code></td><td>3</td><td>Consecutive failure alert threshold</td></tr>
+<tr><td><code>TRANSIENT_ERROR_MAX_RETRIES</code></td><td>2</td><td>Max transient network error retries</td></tr>
+<tr><td><code>CHEAP_PRUNE_RECENT_KEEP</code></td><td>6</td><td>Recent messages kept during pruning</td></tr>
+</table>
+</div>
+</section>
+
+<!-- 8. Files -->
+<section class="section" id="s8">
+<div class="section-header"><span class="num">8</span><h2>Key Files</h2></div>
+<div class="section-body">
+<table>
+<tr><th>File</th><th>Role</th><th>Core Export</th></tr>
+<tr>
+  <td><code>browser/agentTurnExecutor.ts</code></td>
+  <td>Main loop engine</td>
+  <td><code>executeAgentTurnDirect()</code> &mdash; async generator, while loop + compression + LLM + tools</td>
+</tr>
+<tr>
+  <td><code>browser/agentOSService.ts</code></td>
+  <td>Orchestration</td>
+  <td><code>executeAgentTurn()</code> / <code>_executeWithFallback()</code> &mdash; model failover + tool assembly</td>
+</tr>
+<tr>
+  <td><code>browser/agentDriverService.ts</code></td>
+  <td>Driver</td>
+  <td><code>executeFromChatOptions()</code> &mdash; system prompt + skill injection + agent bind</td>
+</tr>
+<tr>
+  <td><code>browser/agentChatService.ts</code></td>
+  <td>Chat</td>
+  <td><code>sendMessage()</code> &mdash; user entry + stream consumer + delta forward</td>
+</tr>
+<tr>
+  <td><code>browser/agentLoopStrategyFactory.ts</code></td>
+  <td>Strategy factory</td>
+  <td><code>AgentLoopStrategyFactory.resolve()</code> &mdash; paradigm resolution + dispatch</td>
+</tr>
+<tr>
+  <td><code>common/agentLoopStrategy.ts</code></td>
+  <td>Strategy interface</td>
+  <td><code>IAgentLoopStrategy</code> &mdash; 5 hooks</td>
+</tr>
+<tr>
+  <td><code>browser/strategies/hermesReActStrategy.ts</code></td>
+  <td>Default strategy</td>
+  <td><code>HermesReActStrategy</code> &mdash; budgeted-react / plan-explore / react</td>
+</tr>
+<tr>
+  <td><code>common/preLoopOrchestrator.ts</code></td>
+  <td>Pre-loop</td>
+  <td><code>preLoopOrchestrate()</code> &mdash; assessFn &#8594; exploreFn &#8594; planGenerator</td>
+</tr>
+<tr>
+  <td><code>common/unifiedSubAgentDispatch.ts</code></td>
+  <td>Sub-agent</td>
+  <td><code>dispatch()</code> / <code>dispatchParallelExplore()</code> / <code>executeSubAgent()</code></td>
+</tr>
+<tr>
+  <td><code>common/workMode.ts</code></td>
+  <td>Work mode</td>
+  <td><code>reduceRunState()</code> / <code>parsePlanDocument()</code></td>
+</tr>
+<tr>
+  <td><code>common/iterationBudget.ts</code></td>
+  <td>Budget</td>
+  <td><code>IterationBudget</code> &mdash; consume/refund/remaining/restore/snapshot</td>
+</tr>
+<tr>
+  <td><code>browser/agentModelAccess.ts</code></td>
+  <td>Model</td>
+  <td><code>resolveContextWindow()</code> / <code>getActiveModelProvider()</code></td>
+</tr>
+<tr>
+  <td><code>browser/languageModelsBridge.ts</code></td>
+  <td>Model bridge</td>
+  <td><code>listModels()</code> &mdash; CodeBuddy plugin to IModelInfo</td>
+</tr>
+<tr>
+  <td><code>browser/nativeChatEditorPane.ts</code></td>
+  <td>UI</td>
+  <td><code>_handleStreamDelta()</code> &mdash; delta to ChatPanel render</td>
+</tr>
+</table>
+</div>
+</section>
+
+</div><!-- container -->
+</body>
+</html>

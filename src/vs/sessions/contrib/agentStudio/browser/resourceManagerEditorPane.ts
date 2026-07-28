@@ -19,6 +19,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { ResourceManagerEditorInput, ResourceManagerEditorPane_ID } from './resourceManagerEditorInput.js';
 import { ISkillRegistry, ISkillDefinition, SkillActivation } from '../common/skills.js';
 import { ISkillInstallService } from '../common/skillHubTypes.js';
+import { skillSourceLabel } from './skillSourceLabel.js';
 
 
 import { renderMarkdown } from '../../../../base/browser/markdownRenderer.js';
@@ -27,6 +28,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IMarketplacePackage, IMarketplaceService } from '../common/marketplace.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { ISkillVersionService, SkillVersionService } from './skillVersionService.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -59,9 +61,9 @@ interface FileTreeNode {
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const TYPE_CONFIG: Record<ResourceType, { label: string; icon: string; storagePath: string }> = {
-	skill:     { label: 'Skills Library', icon: '💡', storagePath: '~/.saros/skills/' },
-	knowledge: { label: 'Knowledge Base', icon: '📚', storagePath: '~/.saros/knowledge-base/' },
-	workflow:  { label: 'Workflows',      icon: '🔄', storagePath: '~/.saros/workflows/' },
+	skill:     { label: 'Skills Library', icon: '💡', storagePath: '~/.vssaros/skills/' },
+	knowledge: { label: 'Knowledge Base', icon: '📚', storagePath: '~/.vssaros/knowledge-base/' },
+	workflow:  { label: 'Workflows',      icon: '🔄', storagePath: '~/.vssaros/workflows/' },
 };
 
 // ─── EditorPane ──────────────────────────────────────────────────────────────
@@ -98,6 +100,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IEditorService private readonly editorService: IEditorService,
+		@ISkillVersionService private readonly skillVersionService: SkillVersionService,
 	) {
 		super(ResourceManagerEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -322,8 +325,9 @@ export class ResourceManagerEditorPane extends EditorPane {
 		body.appendChild(this._renderTabContent(item, this._currentTabIdx));
 		this._detailEl.appendChild(body);
 
-		// Async ownership check: lock UI if marketplace skill not owned by current user
+		// Async: auto-commit any pending changes + ownership check
 		if (item.kind === 'skill' && !this._isMarketplacePreview) {
+			this.skillVersionService.autoCommit(item.id).catch(() => {});
 			this._checkOwnerLock(item.id).catch(() => { /* ignore */ });
 		}
 	}
@@ -622,6 +626,9 @@ export class ResourceManagerEditorPane extends EditorPane {
 						const result = await this.marketplaceService.download(storeId, marketVersion, pkgKind as any);
 						if (pkgKind === 'skill') {
 							await this.skillRegistry.reload();
+							// Auto-commit version history snapshot
+							this.skillVersionService.autoCommit(item.id,
+								`upgrade: install v${result.version} from marketplace`).catch(() => {});
 						}
 						this.notificationService.info(`\u2705 ${item.name} 已升级到 v${result.version}`);
 						this._renderDetail();
@@ -666,6 +673,10 @@ export class ResourceManagerEditorPane extends EditorPane {
 				try {
 					const result = await this.marketplaceService.publish(storeId, pkgKind as any, formData);
 					this.notificationService.info(`\u2705 ${item.name} v${result.version} 已上传到商城`);
+					// Auto-commit + tag for version history
+					this.skillVersionService.autoCommit(item.id,
+						`publish: v${result.version} to marketplace`).catch(() => {});
+					this.skillVersionService.tag(item.id, `v${result.version}`).catch(() => {});
 					// Trigger registry reload so integration view refreshes its skill list
 					await this.skillRegistry.reload();
 					this._renderDetail();
@@ -1428,6 +1439,8 @@ export class ResourceManagerEditorPane extends EditorPane {
 
 	private _renderVersionTab(skill: ISkillDefinition): HTMLElement {
 		const wrap = $('div');
+
+		// Show current version header
 		if (skill.version) {
 			const v = $('div');
 			v.style.display = 'flex';
@@ -1452,19 +1465,309 @@ export class ResourceManagerEditorPane extends EditorPane {
 			v.appendChild(num);
 
 			const badge = $('span');
-			badge.textContent = '最新';
+			badge.textContent = '当前';
 			badge.style.fontSize = '10px';
 			badge.style.padding = '1px 7px';
 			badge.style.borderRadius = '3px';
-			badge.style.background = 'rgba(210,153,34,0.12)';
-			badge.style.color = '#e3b341';
+			badge.style.background = 'rgba(63,185,80,0.12)';
+			badge.style.color = '#3fb950';
 			v.appendChild(badge);
-
 			wrap.appendChild(v);
-		} else {
-			wrap.appendChild(this._emptyHint('暂无版本信息'));
 		}
+
+		// Git version history (async)
+		const historyWrap = $('div');
+		historyWrap.style.marginTop = '16px';
+
+		const loadingHint = $('div');
+		loadingHint.style.padding = '10px 0';
+		loadingHint.style.color = 'var(--vscode-descriptionForeground)';
+		loadingHint.style.fontSize = '13px';
+		loadingHint.textContent = '\u23F3 加载版本历史...';
+		historyWrap.appendChild(loadingHint);
+		wrap.appendChild(historyWrap);
+
+		this.skillVersionService.status(skill.id).then(async (status: any) => {
+			loadingHint.remove();
+
+			if (!status.initialized) {
+				const hint = $('div');
+				hint.style.padding = '10px 0';
+				hint.style.color = 'var(--vscode-descriptionForeground)';
+				hint.style.fontSize = '13px';
+				hint.textContent = '\u2139\uFE0F 尚未启用版本管理，版本历史将在下次保存或升级后可用';
+				historyWrap.appendChild(hint);
+				return;
+			}
+
+			const commits = await this.skillVersionService.history(skill.id, 30);
+			if (commits.length === 0) {
+				historyWrap.appendChild(this._emptyHint('暂无提交记录'));
+				return;
+			}
+
+			const titleRow = $('div');
+			titleRow.style.display = 'flex';
+			titleRow.style.alignItems = 'center';
+			titleRow.style.justifyContent = 'space-between';
+			titleRow.style.marginBottom = '10px';
+
+			const title = $('span');
+			title.textContent = `\u{1F4DC} 提交记录 (${commits.length})`;
+			title.style.fontSize = '12px';
+			title.style.fontWeight = '600';
+			title.style.color = 'var(--vscode-descriptionForeground)';
+			titleRow.appendChild(title);
+
+			// Manual snapshot button
+			const snapshotBtn = $('button') as HTMLButtonElement;
+			snapshotBtn.textContent = '\u{1F4F8} 保存快照';
+			snapshotBtn.style.padding = '3px 10px';
+			snapshotBtn.style.fontSize = '11px';
+			snapshotBtn.style.background = 'var(--vscode-button-secondaryBackground)';
+			snapshotBtn.style.color = 'var(--vscode-button-secondaryForeground)';
+			snapshotBtn.style.border = 'none';
+			snapshotBtn.style.borderRadius = '3px';
+			snapshotBtn.style.cursor = 'pointer';
+			snapshotBtn.onclick = async () => {
+				snapshotBtn.textContent = '\u23F3 ...';
+				snapshotBtn.disabled = true;
+				try {
+					const sha = await this.skillVersionService.autoCommit(skill.id, `snapshot: ${new Date().toLocaleString()}`);
+					if (sha) {
+						this.notificationService.info(`\u2705 快照已保存: ${sha.substring(0, 7)}`);
+					} else {
+						this.notificationService.info('\u2139\uFE0F 无变更需要提交');
+					}
+					this._currentTabIdx = 2;
+					this._renderDetail();
+				} catch (err) {
+					snapshotBtn.textContent = '\u{1F4F8} 保存快照';
+					snapshotBtn.disabled = false;
+				}
+			};
+			titleRow.appendChild(snapshotBtn);
+			historyWrap.appendChild(titleRow);
+
+			for (let i = 0; i < commits.length; i++) {
+				const c = commits[i];
+				const isHead = i === 0;
+				const row = $('div');
+				row.style.display = 'flex';
+				row.style.alignItems = 'flex-start';
+				row.style.gap = '10px';
+				row.style.padding = '8px 0';
+				row.style.borderBottom = '1px solid var(--vscode-panel-border)';
+
+				// Timeline dot
+				const dot = $('span');
+				dot.style.width = '8px';
+				dot.style.height = '8px';
+				dot.style.borderRadius = '50%';
+				dot.style.flexShrink = '0';
+				dot.style.marginTop = '5px';
+				dot.style.background = isHead ? '#3fb950' : 'var(--vscode-descriptionForeground)';
+				row.appendChild(dot);
+
+				// Content
+				const content = $('div');
+				content.style.flex = '1';
+				content.style.minWidth = '0';
+
+				const msgEl = $('div');
+				msgEl.textContent = c.message;
+				msgEl.style.fontSize = '13px';
+				msgEl.style.whiteSpace = 'nowrap';
+				msgEl.style.overflow = 'hidden';
+				msgEl.style.textOverflow = 'ellipsis';
+				if (isHead) { msgEl.style.fontWeight = '500'; }
+				content.appendChild(msgEl);
+
+				const meta = $('div');
+				meta.style.display = 'flex';
+				meta.style.gap = '12px';
+				meta.style.fontSize = '11px';
+				meta.style.color = 'var(--vscode-descriptionForeground)';
+				meta.style.marginTop = '2px';
+
+				const shaEl = $('span');
+				shaEl.textContent = c.shortSha;
+				shaEl.style.fontFamily = 'monospace';
+				meta.appendChild(shaEl);
+
+				const timeEl = $('span');
+				timeEl.textContent = new Date(c.time * 1000).toLocaleString();
+				meta.appendChild(timeEl);
+
+				if (isHead) {
+					const headBadge = $('span');
+					headBadge.textContent = 'HEAD';
+					headBadge.style.fontSize = '10px';
+					headBadge.style.padding = '0 4px';
+					headBadge.style.borderRadius = '3px';
+					headBadge.style.background = 'rgba(63,185,80,0.12)';
+					headBadge.style.color = '#3fb950';
+					meta.appendChild(headBadge);
+				}
+
+				content.appendChild(meta);
+
+				// Actions: view diff, rollback
+				const actions = $('div');
+				actions.style.display = 'flex';
+				actions.style.gap = '6px';
+				actions.style.marginTop = '4px';
+
+				if (i < commits.length - 1) {
+					const diffBtn = $('button') as HTMLButtonElement;
+					diffBtn.textContent = '\u{1F50D} 差异';
+					diffBtn.style.padding = '2px 8px';
+					diffBtn.style.fontSize = '11px';
+					diffBtn.style.background = 'var(--vscode-button-secondaryBackground)';
+					diffBtn.style.color = 'var(--vscode-button-secondaryForeground)';
+					diffBtn.style.border = 'none';
+					diffBtn.style.borderRadius = '3px';
+					diffBtn.style.cursor = 'pointer';
+					diffBtn.onclick = () => {
+						this._showVersionDiff(skill.id, commits[i + 1].sha, c.sha);
+					};
+					actions.appendChild(diffBtn);
+				}
+
+				if (!isHead) {
+					const rollbackBtn = $('button') as HTMLButtonElement;
+					rollbackBtn.textContent = '\u21A9 回滚';
+					rollbackBtn.style.padding = '2px 8px';
+					rollbackBtn.style.fontSize = '11px';
+					rollbackBtn.style.background = 'rgba(248,81,73,0.12)';
+					rollbackBtn.style.color = '#f85149';
+					rollbackBtn.style.border = '1px solid rgba(248,81,73,0.3)';
+					rollbackBtn.style.borderRadius = '3px';
+					rollbackBtn.style.cursor = 'pointer';
+					rollbackBtn.onclick = async () => {
+						const confirmed = await this.dialogService.confirm({
+							message: '回滚到此版本？',
+							detail: `当前文件将被替换为 v${c.shortSha} 的内容。`,
+							primaryButton: '确认回滚',
+							type: 'warning',
+						});
+						if (!confirmed.confirmed) { return; }
+						try {
+							await this.skillVersionService.rollback(skill.id, c.sha);
+							await this.skillRegistry.reload();
+							this.notificationService.info(`\u2705 已回滚到 ${c.shortSha}`);
+							this._renderDetail();
+						} catch (err) {
+							this.notificationService.error(`回滚失败: ${err instanceof Error ? err.message : String(err)}`);
+						}
+					};
+					actions.appendChild(rollbackBtn);
+				}
+
+				content.appendChild(actions);
+				row.appendChild(content);
+				historyWrap.appendChild(row);
+			}
+		}).catch(() => {
+			loadingHint.textContent = '无法加载版本历史';
+			loadingHint.style.color = 'var(--vscode-errorForeground)';
+		});
+
 		return wrap;
+	}
+
+	private _showVersionDiff(skillId: string, fromSha: string, toSha: string): void {
+		const overlay = $('div');
+		overlay.style.position = 'absolute';
+		overlay.style.inset = '0';
+		overlay.style.background = 'rgba(0,0,0,0.5)';
+		overlay.style.display = 'flex';
+		overlay.style.alignItems = 'center';
+		overlay.style.justifyContent = 'center';
+		overlay.style.zIndex = '1000';
+		overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); } };
+
+		const dialog = $('div');
+		dialog.style.background = 'var(--vscode-editor-background)';
+		dialog.style.border = '1px solid var(--vscode-panel-border)';
+		dialog.style.borderRadius = '8px';
+		dialog.style.width = '70vw';
+		dialog.style.maxWidth = '900px';
+		dialog.style.maxHeight = '80vh';
+		dialog.style.display = 'flex';
+		dialog.style.flexDirection = 'column';
+		dialog.style.boxShadow = '0 8px 32px rgba(0,0,0,0.4)';
+		dialog.onclick = (e) => e.stopPropagation();
+
+		// Header
+		const head = $('div');
+		head.style.display = 'flex';
+		head.style.alignItems = 'center';
+		head.style.justifyContent = 'space-between';
+		head.style.padding = '14px 18px';
+		head.style.borderBottom = '1px solid var(--vscode-panel-border)';
+		head.style.flexShrink = '0';
+		const title = $('span');
+		title.textContent = `\u{1F50D} 差异对比: ${fromSha.substring(0, 7)} → ${toSha.substring(0, 7)}`;
+		title.style.fontSize = '14px';
+		title.style.fontWeight = '600';
+		head.appendChild(title);
+		const closeBtn = $('button') as HTMLButtonElement;
+		closeBtn.textContent = '\u2715';
+		closeBtn.style.background = 'none';
+		closeBtn.style.border = 'none';
+		closeBtn.style.color = 'var(--vscode-descriptionForeground)';
+		closeBtn.style.cursor = 'pointer';
+		closeBtn.style.fontSize = '16px';
+		closeBtn.onclick = () => overlay.remove();
+		head.appendChild(closeBtn);
+		dialog.appendChild(head);
+
+		// Body (loading then diff)
+		const body = $('div');
+		body.style.padding = '18px';
+		body.style.overflowY = 'auto';
+		body.style.flex = '1';
+		body.textContent = '\u23F3 加载差异...';
+		dialog.appendChild(body);
+		overlay.appendChild(dialog);
+		this._container.appendChild(overlay);
+
+		this.skillVersionService.diff(skillId, fromSha, toSha).then((result: any) => {
+			if (result) {
+				const pre = $('pre');
+				pre.style.fontSize = '12px';
+				pre.style.lineHeight = '1.5';
+				pre.style.whiteSpace = 'pre-wrap';
+				pre.style.wordBreak = 'break-all';
+				pre.style.margin = '0';
+				pre.style.color = 'var(--vscode-editor-foreground)';
+				pre.style.background = 'var(--vscode-textCodeBlock-background)';
+				pre.style.padding = '12px';
+				pre.style.borderRadius = '4px';
+				pre.style.overflow = 'auto';
+				// Colorize diff
+				const lines = result.unified.split('\n');
+				const html = lines.map((line: string) => {
+					if (line.startsWith('+') && !line.startsWith('+++')) {
+						return `<span style="color:#3fb950;">${line}</span>`;
+					} else if (line.startsWith('-') && !line.startsWith('---')) {
+						return `<span style="color:#f85149;">${line}</span>`;
+					} else if (line.startsWith('@@')) {
+						return `<span style="color:#58a6ff;">${line}</span>`;
+					}
+					return line;
+				}).join('\n');
+				pre.innerHTML = html;
+				clearNode(body);
+				body.appendChild(pre);
+			} else {
+				body.textContent = '无法加载差异';
+			}
+		}).catch(() => {
+			body.textContent = '加载差异失败';
+			(body as HTMLElement).style.color = 'var(--vscode-errorForeground)';
+		});
 	}
 
 	/** Render version info for a marketplace package */
@@ -1744,13 +2047,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 	}
 
 	private _skillSourceLabel(source: ISkillDefinition['source']): string {
-		switch (source) {
-			case 'builtin': return '📦 内置技能';
-			case 'user': return '📁 用户技能';
-			case 'marketplace': return '☁️ 商城技能';
-			case 'extension': return '🔌 扩展技能';
-			case 'memory': return '🧠 内存技能';
-		}
+		return skillSourceLabel(source);
 	}
 
 }

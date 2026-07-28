@@ -187,3 +187,47 @@ export async function compress(content: string, metadata?: Record<string, unknow
 	}
 	return compressWithLLM(content, metadata);
 }
+
+/** LLM 是否已配置（BASE_URL + API_KEY 均存在） */
+export function isLlmConfigured(): boolean {
+	const env = (globalThis as { process?: { env?: Record<string, string> } })?.process?.env;
+	return !!(env?.['AGENTMEMORY_LLM_BASE_URL'] && env?.['AGENTMEMORY_LLM_API_KEY']);
+}
+
+/**
+ * 通用 LLM chat 调用（consolidation 等场景复用，2026-07-26 C1）。
+ * 未配置 / 请求失败 / 空响应均返回 null（调用方回退确定性路径）。
+ */
+export async function callChatCompletion(
+	system: string, user: string, maxTokens: number = 1000,
+): Promise<string | null> {
+	const env = (globalThis as { process?: { env?: Record<string, string> } })?.process?.env;
+	const baseUrl = env?.['AGENTMEMORY_LLM_BASE_URL'];
+	const apiKey = env?.['AGENTMEMORY_LLM_API_KEY'];
+	const model = env?.['AGENTMEMORY_LLM_MODEL'] ?? 'gpt-4o-mini';
+	if (!baseUrl || !apiKey) { return null; }
+	try {
+		const response = await fetch(`${baseUrl}/chat/completions`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'Authorization': `Bearer ${apiKey}`,
+			},
+			body: JSON.stringify({
+				model,
+				max_tokens: maxTokens,
+				messages: [
+					{ role: 'system', content: system },
+					{ role: 'user', content: user.slice(0, 12000) },
+				],
+			}),
+			signal: AbortSignal.timeout(15000),
+		});
+		if (!response.ok) { return null; }
+		const data = await response.json();
+		const text = data?.choices?.[0]?.message?.content;
+		return typeof text === 'string' && text.trim().length > 0 ? text : null;
+	} catch {
+		return null;
+	}
+}

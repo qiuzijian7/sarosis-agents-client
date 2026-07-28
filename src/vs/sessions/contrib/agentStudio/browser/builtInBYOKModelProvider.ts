@@ -16,6 +16,7 @@ import {
 import { MessageFormatConverter } from '../common/adapters/messageFormatConverter.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
+import type { CustomProviderData } from './views/providerView.js';
 
 /**
  * Safe access to Node.js require() in Electron renderer.
@@ -59,6 +60,70 @@ export interface IBYOKProviderDefinition {
 	 * When set, cache_control will be injected into system messages to enable Prompt Caching (KV Cache).
 	 */
 	readonly isAnthropic?: boolean;
+	/**
+	 * Optional: response/streaming format to expect from the endpoint.
+	 * - 'openai' (default): OpenAI-compatible SSE (`choices[].delta`).
+	 * - 'anthropic': native Anthropic Messages SSE (`content_block_delta` / `message_delta` / ...).
+	 * Only meaningful when the endpoint is a real Anthropic `/v1/messages` gateway.
+	 */
+	readonly responseFormat?: 'openai' | 'anthropic';
+	/**
+	 * Optional: API key auth header scheme.
+	 * - 'bearer' (default): `Authorization: Bearer <key>`.
+	 * - 'x-api-key': `x-api-key: <key>` + `anthropic-version` header (native Anthropic gateways).
+	 */
+	readonly apiKeyHeader?: 'bearer' | 'x-api-key';
+	/** Optional: `anthropic-version` header value, used when apiKeyHeader === 'x-api-key'. Default '2023-06-01'. */
+	readonly anthropicVersion?: string;
+}
+
+/**
+ * Convert a UI-defined custom provider (`CustomProviderData`, persisted under
+ * `sessions.agentStudio.provider.customProviders`) into an `IBYOKProviderDefinition`
+ * so it can be registered into the chat model system (Path B: UI-added providers
+ * actually take effect).
+ *
+ * `apiType: 'anthropic'` wires a real Anthropic `/v1/messages` gateway: native
+ * request body + `x-api-key` auth + native Anthropic SSE parsing. `apiType: 'openai'`
+ * (default) is a plain OpenAI-compatible endpoint.
+ */
+export function customProviderDataToDefinition(cp: CustomProviderData): IBYOKProviderDefinition {
+	const isAnthropic = cp.apiType === 'anthropic';
+	const responseFormat: 'openai' | 'anthropic' = isAnthropic ? 'anthropic' : 'openai';
+	const chatEndpointPath = cp.chatEndpointPath || (isAnthropic ? 'v1/messages' : 'chat/completions');
+	const apiKeyHeader: 'bearer' | 'x-api-key' = cp.apiKeyHeader || (isAnthropic ? 'x-api-key' : 'bearer');
+	const staticModels = isAnthropic
+		? (cp.models || []).map((mid: string) => ({
+			id: mid,
+			name: mid,
+			capabilities: [ModelCapability.Chat, ModelCapability.Code, ModelCapability.FunctionCalling],
+			supportsToolCall: true,
+			capabilityConfig: {
+				supportsSystemMessage: 'separated',
+				specialToolFormat: 'anthropic-style',
+				reasoningType: 'budget-slider',
+				supportsCaching: 'anthropic',
+				supportsFIM: false,
+				reservedOutputTokenSpace: null,
+			} as IModelCapabilityConfig,
+		}))
+		: undefined;
+	return {
+		id: cp.id,
+		name: cp.name,
+		apiKeyConfigKey: `sessions.agentStudio.provider.${cp.id}.apiKey`,
+		baseUrlConfigKey: `sessions.agentStudio.provider.${cp.id}.baseUrl`,
+		defaultBaseUrl: cp.baseUrl || '',
+		priority: 40,
+		openAICompatible: !isAnthropic,
+		isAnthropic,
+		responseFormat,
+		chatEndpointPath,
+		modelsEndpointPath: cp.modelsEndpointPath,
+		staticModels,
+		apiKeyHeader,
+		anthropicVersion: isAnthropic ? (cp.anthropicVersion || '2023-06-01') : undefined,
+	};
 }
 
 // ─── Retry Configuration ────────────────────────────────────────────────────
@@ -340,6 +405,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		const chatPath = this._definition.chatEndpointPath || 'chat/completions';
 		const url = `${baseUrl.replace(/\/+$/, '')}/${chatPath.replace(/^\/+/, '')}`;
 
+		// 原生 Anthropic SSE 解析状态（仅 responseFormat==='anthropic' 时使用，
+		// 不触碰 OpenAI 兼容路径）。
+		const isAnthropicStream = this._definition.responseFormat === 'anthropic';
+		const anthropicState = isAnthropicStream ? new AnthropicStreamState() : undefined;
+
 		this._logService.info(`[BYOK:${this.id}] _streamChat: url=${url}, model=${modelId}, messages=${messages.length}`);
 
 		const body = this._buildRequestBody(modelId, messages, options, context);
@@ -423,6 +493,16 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 							capturedResponseId = parsed.id;
 						}
 
+						// 原生 Anthropic SSE：走专用解析器（不影响 OpenAI 兼容路径）
+						if (isAnthropicStream && anthropicState) {
+							const anthropicDeltas = anthropicState.push(parsed);
+							for (const d of anthropicDeltas) {
+								yieldCount++;
+								yield d;
+							}
+							continue;
+						}
+
 						// Extract token usage
 						const usageDelta = this._extractUsage(parsed);
 						if (usageDelta) {
@@ -453,7 +533,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			}
 
 			// Process remaining buffer
-			const remainingDeltas = this._processRemainingBuffer(buffer);
+			const remainingDeltas = this._processRemainingBuffer(buffer, anthropicState);
 			if (remainingDeltas.length > 0) {
 				sseDataFound = true;
 			}
@@ -465,7 +545,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			// Fallback: parse entire body as non-streaming JSON response
 			if (!sseDataFound && fullBodyForFallback.trim()) {
 				this._logService.info(`[BYOK:${this.id}] _streamChat: no streaming data found, trying full JSON fallback (bodyLen=${fullBodyForFallback.length})`);
-				const fallbackDeltas = this._parseFullJsonFallback(fullBodyForFallback);
+				const fallbackDeltas = this._parseFullJsonFallback(fullBodyForFallback, anthropicState);
 				for (const d of fallbackDeltas) {
 					yieldCount++;
 					yield d;
@@ -482,6 +562,17 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 			// 抓包对齐：流结束后写入响应日志
 			this._debugWriteResponse(sseChunks, body.model as string);
 			this._logService.info(`[BYOK:${this.id}] _streamChat: finally block, yielding done (yields=${yieldCount}, responseId=${capturedResponseId ?? '(none)'})`);
+
+			// 原生 Anthropic：工具块已在 content_block_stop / finish() 中 flush，
+			// 这里统一产出收尾 done（携带 responseId / stop_reason）。
+			if (isAnthropicStream && anthropicState) {
+				for (const d of anthropicState.finish()) {
+					yieldCount++;
+					yield d;
+				}
+				return;
+			}
+
 			const doneDeltaBase: IModelDelta = capturedResponseId
 				? { type: 'done', responseId: capturedResponseId }
 				: { type: 'done' };
@@ -503,6 +594,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		options: IModelOptions,
 		context?: IChatContext,
 	): Record<string, unknown> {
+		// 原生 Anthropic Messages API（/v1/messages）：使用 Anthropic 原生请求体格式
+		if (this._definition.responseFormat === 'anthropic') {
+			return this._buildAnthropicRequestBody(modelId, messages, options, context);
+		}
+
 		const body: Record<string, unknown> = {
 			model: modelId,
 			messages: MessageFormatConverter.toOpenAI(messages, {
@@ -581,6 +677,60 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 	}
 
 	/**
+	 * Build a native Anthropic Messages API request body (`/v1/messages`).
+	 * System prompt is a separate top-level `system` field; messages/tools use
+	 * Anthropic content-block format; `max_tokens` is required by the API.
+	 */
+	private _buildAnthropicRequestBody(
+		modelId: string,
+		messages: IChatMessage[],
+		options: IModelOptions,
+		context?: IChatContext,
+	): Record<string, unknown> {
+		const { messages: anthropicMsgs, systemPrompt } = MessageFormatConverter.toAnthropic(messages, {
+			systemPrompt: options.systemPrompt,
+			tools: options.tools,
+		});
+
+		const body: Record<string, unknown> = {
+			model: modelId,
+			// Anthropic requires max_tokens; default to a sane value when not provided.
+			max_tokens: options.maxTokens ?? 8192,
+			stream: true,
+		};
+		if (systemPrompt) {
+			body.system = systemPrompt;
+		}
+		body.messages = anthropicMsgs;
+
+		// 抓包对齐：注入 previous_response_id（与 OpenAI 路径一致）
+		if (context?.previousResponseId) {
+			body.previous_response_id = context.previousResponseId;
+		}
+		if (options.temperature !== undefined) {
+			body.temperature = options.temperature;
+		}
+		if (options.tools && options.tools.length > 0) {
+			body.tools = MessageFormatConverter.toAnthropicToolDefinitions(
+				options.tools,
+				options.forkContext,
+				true,
+				options.systemPrompt,
+			);
+		}
+
+		// ── Thinking / Reasoning 参数注入（Anthropic 原生 extended thinking）──
+		if (options.reasoning?.enabled) {
+			const budget = options.reasoning.budget;
+			if (budget && budget > 0) {
+				body.thinking = { type: 'enabled', budget_tokens: budget };
+				this._logService.info(`[BYOK:${this.id}] reasoning: thinking budget_tokens=${budget}`);
+			}
+		}
+		return body;
+	}
+
+	/**
 	 * Send the HTTP request with automatic retry for retriable status codes.
 	 * Uses exponential backoff: 1s → 2s → 4s between retries.
 	 * Yields error deltas on failure. Returns the Response on success, or null.
@@ -605,7 +755,12 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 					...(extraHeaders ?? {}),
 				};
 				if (apiKey) {
-					headers['Authorization'] = `Bearer ${apiKey}`;
+					if (this._definition.apiKeyHeader === 'x-api-key') {
+						headers['x-api-key'] = apiKey;
+						headers['anthropic-version'] = this._definition.anthropicVersion || '2023-06-01';
+					} else {
+						headers['Authorization'] = `Bearer ${apiKey}`;
+					}
 				}
 				const controller = new AbortController();
 				const timeoutId = setTimeout(() => controller.abort(), 300_000);
@@ -909,7 +1064,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 	 * Process the remaining buffer at the end of a stream.
 	 * Returns an array of deltas to yield.
 	 */
-	private _processRemainingBuffer(buffer: string): IModelDelta[] {
+	private _processRemainingBuffer(buffer: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
 		const deltas: IModelDelta[] = [];
 		const trimmed = buffer.trim();
 		if (!trimmed) { return deltas; }
@@ -919,6 +1074,10 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 
 		try {
 			const parsed = JSON.parse(jsonPayload);
+			if (anthropicState) {
+				deltas.push(...anthropicState.push(parsed));
+				return deltas;
+			}
 			const content = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
 			if (content) {
 				deltas.push(...this._parseContentFromJson(content));
@@ -939,10 +1098,15 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 	 * Fallback parser for non-streaming responses: parse the entire body as JSON.
 	 * Returns an array of deltas to yield.
 	 */
-	private _parseFullJsonFallback(fullBody: string): IModelDelta[] {
+	private _parseFullJsonFallback(fullBody: string, anthropicState?: AnthropicStreamState): IModelDelta[] {
 		const deltas: IModelDelta[] = [];
 		try {
 			const parsed = JSON.parse(fullBody);
+
+			if (anthropicState) {
+				deltas.push(...anthropicState.push(parsed));
+				return deltas;
+			}
 
 			// Extract usage from non-streaming response
 			const usageDelta = this._extractUsage(parsed);
@@ -969,6 +1133,11 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		return deltas;
 	}
 }
+
+// ─── Anthropic native SSE parser ────────────────────────────────────────────
+// AnthropicStreamState 定义在 ../common/llmBridge.js（renderer 与主进程共享）。
+
+import { AnthropicStreamState } from '../common/llmBridge.js';
 
 // ─── Built-in Provider Definitions ──────────────────────────────────────────
 

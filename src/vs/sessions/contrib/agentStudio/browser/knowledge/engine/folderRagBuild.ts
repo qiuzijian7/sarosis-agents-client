@@ -370,7 +370,11 @@ export function stableRepoSessionId(repoRoot: string): string {
 		h = (((h << 5) + h) + repoRoot.charCodeAt(i)) | 0;
 	}
 	const hex = (h >>> 0).toString(16).padStart(8, '0');
-	const base = repoRoot.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(-24) || 'repo';
+	// 用仓库「目录名」（basename）做可读前缀，便于在 knowledge-base/ 下直观区分不同库；
+	// 仍保留 djb2 哈希后缀，保证唯一性，且同一仓库根在 git pull 增量重摄入时稳定映射到同一 session。
+	const norm = repoRoot.replace(/[\\/]+/g, '/');
+	const name = norm.split('/').filter(Boolean).pop() ?? 'repo';
+	const base = name.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(-32) || 'repo';
 	return `rag-${base}-${hex}`;
 }
 

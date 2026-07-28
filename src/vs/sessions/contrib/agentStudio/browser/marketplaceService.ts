@@ -8,7 +8,7 @@
  *
  * HTTP 通过 IRequestService（无 CORS）。tar 打包/解压需要 Node.js 环境。
  * 四类资源的差异化安装/打包委托给 IPackageInstallerRegistry（按 kind 分发）。
- * 已安装资源统一记录到 ~/.saros/installed-packages.json，供升级检查。
+ * 已安装资源统一记录到 ~/.vssaros/saros/installed-packages.json，供升级检查。
  *
  * 详见 doc/marketplace-integration-analysis.md（方案 A）。
  */
@@ -22,8 +22,9 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import * as path from '../../../../base/common/path.js';
+import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import {
 	IMarketplaceService, IMarketplaceUser, IMarketplacePackage, IMarketplacePackageDetail,
 	IUpgradeInfo, IUpgradeCheckItem, IInstallResult, IPublishOptions, IListPackagesOptions,
@@ -35,7 +36,6 @@ import { ITofAuthService } from '../common/tofAuth.js';
 const TOKEN_KEY = 'saros.marketplace.token';
 const USER_KEY = 'saros.marketplace.user';
 const DEFAULT_ENDPOINT = 'http://21.6.92.5:3040';
-const INSTALLED_FILE = 'installed-packages.json';
 
 /** installed-packages.json 条目 */
 interface IInstalledEntry {
@@ -61,14 +61,22 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	readonly onDidChangeLogin: Event<void> = this._onDidChangeLogin.event;
 
 	private _user: IMarketplaceUser | undefined;
+	private _sarosRoot: URI | undefined;
+
+	private _getSarosRoot(): URI {
+		if (!this._sarosRoot) {
+			this._sarosRoot = userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome);
+		}
+		return this._sarosRoot;
+	}
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@ILogService private readonly logService: ILogService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IConfigurationService private readonly configService: IConfigurationService,
-		@IPathService private readonly pathService: IPathService,
-		@IPackageInstallerRegistry private readonly installerRegistry: IPackageInstallerRegistry,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+			@IPackageInstallerRegistry private readonly installerRegistry: IPackageInstallerRegistry,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 		@ICommandService private readonly commandService: ICommandService,
 	) {
@@ -282,8 +290,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const url = `${this.endpoint}/api/v1/packages/${storeId}/versions/${version}/download`;
 
 		// 1. 准备临时目录
-		const userHome = await this.pathService.userHome();
-		const tmpBase = path.join(userHome.fsPath, '.saros', 'tmp');
+		const tmpBase = resolveSarosPath(this._getSarosRoot(), SarosPath.tmp).fsPath;
 		await this.fileService.createFolder(URI.file(tmpBase));
 
 		const tmpFile = path.join(tmpBase, `saros-dl-${Date.now()}.tar.gz`);
@@ -333,8 +340,8 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 				if (installer) {
 					result = await installer.install(manifest, URI.file(extractDir), { force: true });
 				} else {
-					// 回退：直接解压到 ~/.saros/{subdir}/{id}/
-					const targetDir = await this.resolveInstallDir(kind, storeId);
+					// 回退：直接解压到 ~/.vssaros/saros/{subdir}/{id}/
+					const targetDir = this.resolveInstallDir(kind, storeId);
 					await this.fileService.createFolder(targetDir);
 					result = { kind, storeId, version, targetDir: targetDir.fsPath };
 					this.logService.warn(`[Marketplace] 无 ${kind} installer，回退通用解压到 ${targetDir.fsPath}`);
@@ -381,9 +388,8 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const mcpConfig = manifest.mcp || manifest; // manifest.mcp 或 manifest 本身
 		const actualVersion = version;
 
-		// 2. 写入 ~/.saros/mcp/{storeId}/
-		const userHome = await this.pathService.userHome();
-		const targetDir = URI.joinPath(userHome, '.saros', 'mcp', storeId);
+		// 2. 写入 ~/.vssaros/saros/mcp/{storeId}/
+		const targetDir = resolveSarosPath(this._getSarosRoot(), SarosPath.mcp, storeId);
 		await this.fileService.createFolder(targetDir);
 
 		// config.json（MCP 连接配置）
@@ -409,22 +415,21 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			VSBuffer.fromString(JSON.stringify(manifest, null, 2))
 		);
 
-		// 3. 注册到 ~/.saros/mcp.json（IntegrationView 白名单）
+		// 3. 注册到 ~/.vssaros/saros/mcp.json（IntegrationView 白名单）
 		await this._registerMcpToConfig(storeId, configJson);
 
 		// 4. 记录已安装
 		await this.upsertInstalled({ kind: 'mcp', storeId, version: actualVersion, installedAt: new Date().toISOString() });
 
 		this.logService.info(`[Marketplace] MCP 安装完成: ${storeId} v${actualVersion} → ${targetDir.fsPath}`);
-		this.logService.info(`[Marketplace] 已注册到 ~/.saros/mcp.json`);
+		this.logService.info(`[Marketplace] 已注册到 ~/.vssaros/mcp.json`);
 
 		return { kind: 'mcp', storeId, version: actualVersion, targetDir: targetDir.fsPath };
 	}
 
-	/** 将 MCP 配置注册到 ~/.saros/mcp.json */
+	/** 将 MCP 配置注册到 ~/.vssaros/saros/mcp.json */
 	private async _registerMcpToConfig(serverId: string, config: any): Promise<void> {
-		const userHome = await this.pathService.userHome();
-		const mcpJsonUri = URI.joinPath(userHome, '.saros', 'mcp.json');
+		const mcpJsonUri = resolveSarosPath(this._getSarosRoot(), SarosPath.mcpConfig);
 
 		// 读取现有配置
 		let mcpConfig: { servers: Record<string, any> } = { servers: {} };
@@ -525,8 +530,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		}
 
 		// 2. tar 打包（包含 manifest.json）
-		const userHome = await this.pathService.userHome();
-		const tmpBase = path.join(userHome.fsPath, '.saros', 'tmp');
+		const tmpBase = resolveSarosPath(this._getSarosRoot(), SarosPath.tmp).fsPath;
 		await this.fileService.createFolder(URI.file(tmpBase));
 
 		// 2.1 将 manifest.json 写入技能目录（临时，打包后删除）
@@ -662,18 +666,18 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		this.logService.info(`[Marketplace] 卸载 ${kind}/${storeId}`);
 
 		// 1. 删除安装目录
-		const installDir = await this.resolveInstallDir(kind, storeId);
+		const installDir = this.resolveInstallDir(kind, storeId);
 		if (await this.fileService.exists(installDir)) {
 			await this.fileService.del(installDir, { recursive: true });
 		}
 		// agent 可能安装在 agents/custom/{id} 子目录（installer 路径）
 		if (kind === 'agent') {
-			const customDir = URI.joinPath(await this.pathService.userHome(), '.saros', 'agents', 'custom', storeId);
+			const customDir = resolveSarosPath(this._getSarosRoot(), SarosPath.customAgents, storeId);
 			if (await this.fileService.exists(customDir)) {
 				await this.fileService.del(customDir, { recursive: true });
 			}
-			// Also clean up the unified agent directory ~/.saros/agents/{agentId}/
-			const agentDir = URI.joinPath(await this.pathService.userHome(), '.saros', 'agents', storeId);
+			// Also clean up the unified agent directory ~/.vssaros/saros/agents/{agentId}/
+			const agentDir = resolveSarosPath(this._getSarosRoot(), SarosPath.agents, storeId);
 			if (await this.fileService.exists(agentDir)) {
 				await this.fileService.del(agentDir, { recursive: true });
 			}
@@ -690,14 +694,13 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	}
 
 	// ── 内部：installed-packages.json ─────────────────────────
-	private async getInstalledFileUri(): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', INSTALLED_FILE);
+	private getInstalledFileUri(): URI {
+		return resolveSarosPath(this._getSarosRoot(), SarosPath.installedPackages);
 	}
 
 	private async readInstalled(): Promise<IUpgradeCheckItem[]> {
 		try {
-			const installedFileUri = await this.getInstalledFileUri();
+			const installedFileUri = this.getInstalledFileUri();
 			if (!await this.fileService.exists(installedFileUri)) {
 				return [];
 			}
@@ -711,7 +714,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 	private async upsertInstalled(entry: IInstalledEntry): Promise<void> {
 		let entries: IInstalledEntry[] = [];
-		const installedFileUri = await this.getInstalledFileUri();
+		const installedFileUri = this.getInstalledFileUri();
 		try {
 			if (await this.fileService.exists(installedFileUri)) {
 				const content = await this.fileService.readFile(installedFileUri);
@@ -726,7 +729,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	}
 
 	private async removeInstalled(kind: PackageKind, storeId: string): Promise<void> {
-		const installedFileUri = await this.getInstalledFileUri();
+		const installedFileUri = this.getInstalledFileUri();
 		try {
 			if (!await this.fileService.exists(installedFileUri)) { return; }
 			const content = await this.fileService.readFile(installedFileUri);
@@ -738,9 +741,8 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	}
 
 	// ── 内部：目录解析（回退用）──────────────────────────────
-	private async resolveInstallDir(kind: PackageKind, id: string): Promise<URI> {
-		const userHome = await this.pathService.userHome();
-		return URI.joinPath(userHome, '.saros', KIND_SUBDIR[kind], id);
+	private resolveInstallDir(kind: PackageKind, id: string): URI {
+		return resolveSarosPath(this._getSarosRoot(), KIND_SUBDIR[kind], id);
 	}
 }
 

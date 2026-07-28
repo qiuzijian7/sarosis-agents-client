@@ -21,7 +21,8 @@ import type { ChatMessage } from "../common/types.js";
 import { deriveMessageParts } from "../common/types.js";
 import type { IChatMessage } from "../common/providers.js";
 import { type IForkContext } from "../common/forkContext.js";
-import { IFileService } from "../../../../platform/files/common/files.js";
+import { sliceAtCompactionBoundary, truncateToolResultContent, COMPACTION_METADATA_TYPE, type ICompactionBoundaryInfo } from "../common/historyCompaction.js";
+import { IFileService, FileSystemProviderCapabilities } from "../../../../platform/files/common/files.js";
 import { IEnvironmentService } from "../../../../platform/environment/common/environment.js";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
 import { URI } from "../../../../base/common/uri.js";
@@ -67,13 +68,13 @@ export interface AgentSessionMeta {
 /**
  * AgentChatService — chat history persistence + agent session management.
  *
- * Storage layout (simplified, per-agent):
- *   agents/{slug}/sessions.json          ← session index (array of AgentSessionMeta)
- *   agents/{slug}/sessions/default.json  ← messages for default session
- *   agents/{slug}/sessions/{id}.json     ← messages for other sessions
+ * Storage layout (global, per-agent under ~/.vssaros/):
+ *   chat-history/{agentId}/sessions.json          ← session index (array of AgentSessionMeta)
+ *   chat-history/{agentId}/sessions/{id}.json     ← chat messages per session
  *
- * Global fallback (for agents without workspace path):
- *   {userRoamingDataHome}/agent-studio/chat-history.json
+ * Migration: On first access, legacy workspace-local data
+ *   (workspace/.sarosworkspace/agents/{agentId}/sessions/)
+ *   is automatically copied to the global location.
  */
 export class AgentChatService extends Disposable implements IAgentChatService {
 	declare readonly _serviceBrand: undefined;
@@ -117,6 +118,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * heap comfortably below the 4 GB V8 pointer-compression cage.
 	 */
 	private static readonly MAX_CACHED_SESSION_BUCKETS = 15;
+
+	/** Per-agent migration marker: prevents repeated migration attempts for the same agent. */
+	private readonly _migratedAgents = new Set<string>();
 	/**
 	 * P1: maximum characters of a single tool call result kept inline in
 	 * memory / the session JSON file.  Results exceeding this limit are
@@ -180,8 +184,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * magnitude.  Aligns with agentmemory 的 "原文即弃" 中间段策略。
 	 */
 	private static readonly IPC_TRUNCATE_RESULT_CHARS = 2048;
-	/** P4: minimum prior message count before IPC truncation kicks in. */
-	private static readonly IPC_TRUNCATE_MIN_MESSAGES = 20;
+	// P5: IPC_TRUNCATE_MIN_MESSAGES 已随三段式区域截断一起移除 —— 冻结截断
+	// （truncateToolResultContent，确定性、位置无关）取而代之，见 _toDriverMessages。
 	/**
 	 * P3 retention scoring weights for eviction candidate ranking.
 	 * Replaces pure LRU with a weighted score (recency + activity),
@@ -200,6 +204,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	private static readonly EVICT_ACTIVITY_LOG_CAP = 10;
 	/** Short-lived cache: agentId → session index (avoids 4–5s file read on every task execution). */
 	private _sessionIndexCache: Map<string, { meta: AgentSessionMeta; ts: number }> | undefined;
+	/** Per-agentId promise chain serialising session-index read-modify-write (prevents interleaved writes truncating the JSON). */
+	private readonly _sessionIndexWriteQueue = new Map<string, Promise<void>>();
 	private _historyLoaded = false;
 	private _globalDataUri: URI | undefined;
 
@@ -234,6 +240,21 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 	// ─── Path helpers ────────────────────────────────────────────────────────
 
+	/**
+	 * Resolve the global chat history root directory.
+	 * All chat sessions are stored under ~/.vssaros/chat-history/ (user-global),
+	 * making history accessible across workspaces.
+	 */
+	private _getChatHistoryRoot(): URI {
+		// userRoamingDataHome = ~/.vssaros/User/
+		// Going up one level gives ~/.vssaros/
+		return URI.joinPath(
+			this.environmentService.userRoamingDataHome,
+			'..',
+			'chat-history',
+		);
+	}
+
 	private _getGlobalDataUri(): URI {
 		if (!this._globalDataUri) {
 			const customPath = this.configurationService.getValue<string>(
@@ -256,40 +277,109 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	/**
 	 * Resolve the sessions directory and index file URI for an agent.
 	 *
-	 * Pure agent model — there is NO agent/instance indirection:
-	 *   - The agent's own id is the on-disk directory name.
-	 *   - The storage root follows the currently active workspace
-	 *     (workspace.path), falling back to the global data dir when no
-	 *     workspace is active or it has no disk path.
-	 *
-	 * Layout: {root}/data/agents/{agentId}/sessions(.json)
+	 * Storage is now user-global under ~/.vssaros/chat-history/{agentId}/.
+	 * Legacy workspace-local data (workspace/.sarosworkspace/agents/{agentId}/sessions/)
+	 * is migrated on first access.
 	 */
 	private async _resolveAgentPaths(agentId: string): Promise<{
 		sessionsDirUri: URI;
 		indexUri: URI;
 	}> {
-		// Determine the storage root from the active workspace, if any.
-		let rootUri: URI;
-		const activeWorkspaceId = this.studioService.getActiveWorkspaceId();
-		if (activeWorkspaceId) {
-			const workspace = await this.studioService.getWorkspace(activeWorkspaceId);
-			rootUri = workspace?.path
-				? URI.file(workspace.path)
-				: this._getGlobalDataUri();
-		} else {
-			rootUri = this._getGlobalDataUri();
+		const agentUri = URI.joinPath(this._getChatHistoryRoot(), agentId);
+
+		// Migrate legacy data from workspace-local to global on first access (per-agent)
+		if (!this._migratedAgents.has(agentId)) {
+			await this._migrateLegacySessions(agentId, agentUri);
 		}
 
-		const agentUri = URI.joinPath(
-			rootUri,
-			WORKSPACE_DATA_DIR,
-			AGENTS_DIR,
-			agentId,
-		);
 		return {
 			sessionsDirUri: URI.joinPath(agentUri, "sessions"),
 			indexUri: URI.joinPath(agentUri, "sessions.json"),
 		};
+	}
+
+	/**
+	 * Migrate legacy workspace-local session data to the new global location.
+	 * Source: {workspace}/.sarosworkspace/agents/{agentId}/sessions.json
+	 *         {workspace}/.sarosworkspace/agents/{agentId}/sessions/{id}.json
+	 * Target: ~/.vssaros/chat-history/{agentId}/sessions.json
+	 *         ~/.vssaros/chat-history/{agentId}/sessions/{id}.json
+	 * Only runs once per service lifetime (fire-and-forget, errors are logged).
+	 */
+	private async _migrateLegacySessions(agentId: string, targetAgentUri: URI): Promise<void> {
+		try {
+			const activeWorkspaceId = this.studioService.getActiveWorkspaceId();
+			if (!activeWorkspaceId) {
+				this._migratedAgents.add(agentId);
+				return;
+			}
+
+			const workspace = await this.studioService.getWorkspace(activeWorkspaceId);
+			const workspacePath = workspace?.path;
+			if (!workspacePath) {
+				this._migratedAgents.add(agentId);
+				return;
+			}
+
+			const legacyAgentUri = URI.joinPath(
+				URI.file(workspacePath),
+				WORKSPACE_DATA_DIR,
+				AGENTS_DIR,
+				agentId,
+			);
+			const legacyIndexUri = URI.joinPath(legacyAgentUri, 'sessions.json');
+			const targetIndexUri = URI.joinPath(targetAgentUri, 'sessions.json');
+
+			// Skip if target already exists or legacy doesn't exist
+			if (await this.fileService.exists(targetIndexUri)) {
+				this.logService.info(`[AgentChatService] Migration: target already exists for ${agentId}, skipping`);
+				this._migratedAgents.add(agentId);
+				return;
+			}
+			if (!(await this.fileService.exists(legacyIndexUri))) {
+				// No legacy data for this agent
+				this._migratedAgents.add(agentId);
+				return;
+			}
+
+			this.logService.info(`[AgentChatService] Migrating chat sessions for agent ${agentId} from ${legacyAgentUri.fsPath} to ${targetAgentUri.fsPath}`);
+
+			// Ensure target directory exists
+			const targetSessionsDir = URI.joinPath(targetAgentUri, 'sessions');
+			if (!(await this.fileService.exists(targetAgentUri))) {
+				await this.fileService.createFolder(targetAgentUri);
+			}
+
+			// Copy sessions.json index
+			const legacyIdxContent = await this.fileService.readFile(legacyIndexUri);
+			await this.fileService.writeFile(targetIndexUri, legacyIdxContent.value);
+
+			// Copy individual session files
+			const legacySessionsDir = URI.joinPath(legacyAgentUri, 'sessions');
+			if (await this.fileService.exists(legacySessionsDir)) {
+				if (!(await this.fileService.exists(targetSessionsDir))) {
+					await this.fileService.createFolder(targetSessionsDir);
+				}
+				const children = await this.fileService.resolve(legacySessionsDir);
+				if (children.children) {
+					for (const child of children.children) {
+						if (!child.isDirectory && child.name.endsWith('.json')) {
+							const targetFile = URI.joinPath(targetSessionsDir, child.name);
+							if (!(await this.fileService.exists(targetFile))) {
+								const content = await this.fileService.readFile(child.resource);
+								await this.fileService.writeFile(targetFile, content.value);
+							}
+						}
+					}
+				}
+			}
+
+			this.logService.info(`[AgentChatService] Migration complete for agent ${agentId}`);
+		} catch (err) {
+			this.logService.warn(`[AgentChatService] Migration failed for agent ${agentId}:`, err);
+		} finally {
+			this._migratedAgents.add(agentId);
+		}
 	}
 
 	private _sessionFileUri(sessionsDirUri: URI, sessionId: string): URI {
@@ -880,28 +970,47 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				return [];
 			}
 			const content = await this.fileService.readFile(paths.indexUri);
-			return JSON.parse(content.value.toString()) as AgentSessionMeta[];
-		} catch {
+			const text = content.value.toString();
+			// Empty / whitespace-only file → treat as an empty index without alarming
+			// the user. This is the state left behind by a killed/corrupted write and
+			// is recovered by the next _updateSessionIndex, so it is not an error.
+			if (text.trim().length === 0) {
+				return [];
+			}
+			const parsed = JSON.parse(text) as AgentSessionMeta[];
+			this.logService.info(`[AgentChatService] _readSessionIndex(${agentId}): ${parsed.length} sessions found`);
+			return parsed;
+		} catch (err) {
+			this.logService.warn(`[AgentChatService] _readSessionIndex(${agentId}) error:`, err);
 			return [];
 		}
 	}
 
+	/**
+	 * Write content to the session index file, preferring an atomic
+	 * temp-file+rename when the provider supports it so a crash mid-write can
+	 * never leave a truncated JSON that breaks subsequent reads.
+	 */
 	private async _writeSessionIndex(
 		agentId: string,
 		index: AgentSessionMeta[],
 	): Promise<void> {
 		try {
 			const paths = await this._resolveAgentPaths(agentId);
-			await this.fileService.writeFile(
-				paths.indexUri,
-				VSBuffer.fromString(JSON.stringify(index, null, 2)),
-			);
+			const content = VSBuffer.fromString(JSON.stringify(index, null, 2));
+			if (this.fileService.hasCapability(paths.indexUri, FileSystemProviderCapabilities.FileAtomicWrite)) {
+				await this.fileService.writeFile(paths.indexUri, content, { atomic: { postfix: '.vsctmp' } });
+			} else {
+				await this.fileService.writeFile(paths.indexUri, content);
+			}
 		} catch (err) {
 			this.logService.error(
 				"[AgentChatService] Failed to write session index:",
 				err,
 			);
 		}
+		// Invalidate stale cache so getOrCreateActiveSession sees the latest index
+		this._sessionIndexCache?.delete(agentId);
 	}
 
 	/**
@@ -909,6 +1018,27 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * If the session doesn't exist yet, auto-create it (supports first-message auto-create).
 	 */
 	private async _updateSessionIndex(
+		agentId: string,
+		sessionId: string,
+		messageCount: number,
+	): Promise<void> {
+		// Serialise read-modify-write per agentId: concurrent appendMessage calls
+		// would otherwise interleave read→write of sessions.json, letting one writer
+		// observe (and persist) a half-updated index. Chaining on the previous
+		// promise keeps each mutation strictly ordered.
+		const prev = this._sessionIndexWriteQueue.get(agentId) ?? Promise.resolve();
+		const run = prev.catch(() => { }).then(() => this._doUpdateSessionIndex(agentId, sessionId, messageCount));
+		this._sessionIndexWriteQueue.set(agentId, run);
+		try {
+			await run;
+		} finally {
+			if (this._sessionIndexWriteQueue.get(agentId) === run) {
+				this._sessionIndexWriteQueue.delete(agentId);
+			}
+		}
+	}
+
+	private async _doUpdateSessionIndex(
 		agentId: string,
 		sessionId: string,
 		messageCount: number,
@@ -984,8 +1114,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				);
 			}
 		}
-		messages.push(message);
-		// OOM 诊断：记录本条消息留存字节 + 落库后活跃桶总量
+		// P0: 如果末尾消息 ID 与新消息 ID 相同，REPLACE 而非 push。
+		// streaming 期间已经 push 了一个 streaming message（id 相同），
+		// 流式结束后 sendMessage 又 append 一次会变成两条 → 工具卡重复显示。
+		const tail = messages[messages.length - 1];
+		if (tail && tail.id === message.id) {
+			messages[messages.length - 1] = message;
+		} else {
+			messages.push(message);
+		}
 		this._logMemSnapshot('append', {
 			agentId,
 			sessionId: message.agentSessionId,
@@ -1077,12 +1214,18 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				noSessionMessages = await this._loadFromSessionFile(agentId, undefined);
 			}
 			if (noSessionMessages && noSessionMessages.length > 0) {
-				// 仅保留 system 消息（这是注释里声明的合法用途）
-				const systemOnly = noSessionMessages.filter(m => m.role === 'system');
+				// 仅保留 system 消息（这是注释里声明的合法用途）；
+				// 同时排除 orchestration_plan 类消息（2026-07-22 修复）：plan 通知
+				// 已改为会话隔离存储（见 taskOrchestrationService.createPlan* 的
+				// agentSessionId 参数），应只出现在创建它的那个 session，而非全局泄漏
+				// 进该 agent 的每一个会话。遗留的旧全局 plan 消息亦不再 merge，避免重复显示。
+				const systemOnly = noSessionMessages.filter(
+					m => m.role === 'system' && (m.metadata as any)?.type !== 'orchestration_plan',
+				);
 				const droppedCrossSession = noSessionMessages.length - systemOnly.length;
 				if (droppedCrossSession > 0) {
 					this.logService.warn(
-						`[AgentChatService] getHistory: dropped ${droppedCrossSession} non-system messages from noSession bucket for ${key} (cross-session leakage guard)`,
+						`[AgentChatService] getHistory: dropped ${droppedCrossSession} non-system/plan messages from noSession bucket for ${key} (cross-session leakage guard)`,
 					);
 				}
 				if (systemOnly.length > 0) {
@@ -1205,6 +1348,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	private _toDriverMessages(history: readonly ChatMessage[]): IChatMessage[] {
+		// ─── P5: 压缩边界回放（压缩状态跨 turn 持久化）────────────────────────
+		// 历史中最后一条 metadata.type='compaction' 的消息是压缩边界：其 content
+		// 已承载旧历史摘要，边界之前的消息不再回灌（对齐 opencode/MiMo 的
+		// compaction boundary 持久化），长会话不再每 turn 重新膨胀、重新压缩。
+		history = sliceAtCompactionBoundary(history);
 		// 🧹 一致性兜底（2026-06-05）：折叠**连续重复的 user 消息**。
 		// 历史 session 文件（如 sess_mpwt6z2s_szhpq3.json）因早期持久化双写 race
 		// （webview controller `_handleChatSend` 与 service `sendMessage` 各 append
@@ -1237,49 +1385,22 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 		const out: IChatMessage[] = [];
 		let droppedContaminated = 0;
-		// ─── P4: 计算三段式边界（head/middle/tail），中间段的 tc.result / tool
-		// content 会被截断到 IPC_TRUNCATE_RESULT_CHARS，避免 renderer→ext-host
-		// 的 IPC 序列化压垮 ext host 4GB heap。head/tail 完整保留。 ─────
-		let head = 0;
-		let tail = deduped.length;
-		let truncateActive = false;
-		if (deduped.length >= AgentChatService.IPC_TRUNCATE_MIN_MESSAGES) {
-			// 找到前 COMPACT_PROTECT_HEAD 条非 system 消息的边界
-			let nonSysSeen = 0;
-			for (let i = 0; i < deduped.length; i++) {
-				if (deduped[i].role !== 'system') {
-					nonSysSeen++;
-					if (nonSysSeen >= AgentChatService.COMPACT_PROTECT_HEAD) {
-						head = i + 1;
-						break;
-					}
-				}
-			}
-			// 找到最后 COMPACT_PROTECT_TAIL 条非 system 消息的起点
-			nonSysSeen = 0;
-			for (let i = deduped.length - 1; i >= 0; i--) {
-				if (deduped[i].role !== 'system') {
-					nonSysSeen++;
-					if (nonSysSeen >= AgentChatService.COMPACT_PROTECT_TAIL) {
-						tail = i;
-						break;
-					}
-				}
-			}
-			truncateActive = head < tail;
-		}
+		// ─── P5: 冻结截断文本（frozen truncation，对齐 openclaw projection）────
+		// 工具结果统一做确定性截断（同一内容永远得到逐字节相同的结果），
+		// 不再按 head/middle/tail 区域区分 —— 消除了"消息从 tail 保护区移入
+		// middle 截断区时字节变化"导致的跨 turn 缓存前缀漂移。
+		// 同时仍满足原 P4 目标：renderer→ext-host 的 IPC 序列化不压垮 4GB heap。
 		let ipcTruncatedResults = 0;
 		let ipcTruncatedBytes = 0;
 		const truncateResult = (s: string): string => {
 			if (s.length <= AgentChatService.IPC_TRUNCATE_RESULT_CHARS) { return s; }
 			ipcTruncatedResults++;
 			ipcTruncatedBytes += s.length - AgentChatService.IPC_TRUNCATE_RESULT_CHARS;
-			return s.slice(0, AgentChatService.IPC_TRUNCATE_RESULT_CHARS) + '\n...[truncated for IPC]';
+			return truncateToolResultContent(s, AgentChatService.IPC_TRUNCATE_RESULT_CHARS);
 		};
 
 		for (let mi = 0; mi < deduped.length; mi++) {
 			const m = deduped[mi];
-			const inMiddle = truncateActive && mi >= head && mi < tail;
 			if (m.role === 'user') {
 				out.push({ role: 'user', content: m.content ?? '' });
 			} else if (m.role === 'assistant') {
@@ -1314,34 +1435,33 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 						: {}),
 				};
 				out.push(assistantMsg);
-				// 为每个已完成工具调用补一条配对的 tool 响应消息
-				for (const tc of completed) {
-					const raw = tc.result ?? '';
-					out.push({
-						role: 'tool',
-						content: inMiddle ? truncateResult(raw) : raw,
-						toolCallId: tc.id,
-					});
-				}
-			} else if (m.role === 'system') {
-				out.push({ role: 'system', content: m.content ?? '' });
-			} else if (m.role === 'tool') {
-				// 防御性：host 端通常不产生独立 tool 消息
-				const raw = m.content ?? '';
+			// 为每个已完成工具调用补一条配对的 tool 响应消息
+			for (const tc of completed) {
+				const raw = tc.result ?? '';
 				out.push({
 					role: 'tool',
-					content: inMiddle ? truncateResult(raw) : raw,
-					toolCallId: '',
+					content: truncateResult(raw),
+					toolCallId: tc.id,
 				});
 			}
+		} else if (m.role === 'system') {
+			out.push({ role: 'system', content: m.content ?? '' });
+		} else if (m.role === 'tool') {
+			// 防御性：host 端通常不产生独立 tool 消息
+			const raw = m.content ?? '';
+			out.push({
+				role: 'tool',
+				content: truncateResult(raw),
+				toolCallId: '',
+			});
 		}
-		if (ipcTruncatedResults > 0) {
-			this.logService.info(
-				`[AgentChatService][P4-IPC] Truncated ${ipcTruncatedResults} middle-segment tool result(s) `
-				+ `(-${(ipcTruncatedBytes / 1024).toFixed(1)}KB, head=${AgentChatService.COMPACT_PROTECT_HEAD} `
-				+ `tail=${AgentChatService.COMPACT_PROTECT_TAIL} cap=${AgentChatService.IPC_TRUNCATE_RESULT_CHARS})`,
-			);
-		}
+	}
+	if (ipcTruncatedResults > 0) {
+		this.logService.info(
+			`[AgentChatService][P5-frozen] Truncated ${ipcTruncatedResults} tool result(s) `
+			+ `(-${(ipcTruncatedBytes / 1024).toFixed(1)}KB, cap=${AgentChatService.IPC_TRUNCATE_RESULT_CHARS}, deterministic/frozen)`,
+		);
+	}
 		if (droppedContaminated > 0) {
 			this.logService.info(
 				`[AgentChatService] 🧹 _toDriverMessages: filtered ${droppedContaminated} contaminated assistant messages (fake-completion / unfinished-intent residue)`,
@@ -1443,6 +1563,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		const _fullThinkingChunks: string[] = [];
 		const _toolArgChunks = new Map<string, string[]>();
 		let toolCalls: ChatMessage["toolCalls"];
+		// P0: chronological parts 跟踪——按 LLM 实际输出顺序记录 text→tool→text→tool，
+		// 最终落盘时直接使用，避免 deriveMessageParts 依赖跨迭代失效的 textPosition。
+		const _streamingParts: any[] = [];
 		// 阶段E：textPosition 仅作**落盘时切分 parts 的本地排序信号**，不再跨层依赖。
 		// driver/agentOS 不下发 textPosition，由本侧在 tool_start 时按"当前 turn 内已累积
 		// 文本长度"计算（assistant_turn 结算后归零）。最终 deriveMessageParts 用它把
@@ -1460,6 +1583,11 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			toolCallIds: string[];
 		}
 		const turns: ITurnSnapshot[] = [];
+		// ─── P5: 压缩边界捕获（压缩状态跨 turn 持久化）───────────────────────
+		// executor 在 loop 内压缩后 yield context_compacted（含 compressionSummary）。
+		// 记录边界信息（同一回合多次压缩取最后一次），完成落盘时把边界消息插入
+		// 到压缩点位置；下一 turn 回灌从边界处重放（边界前历史由摘要承载）。
+		let pendingCompaction: ICompactionBoundaryInfo | undefined;
 		// Accumulators for new card data (VS Code Copilot Chat pattern)
 		let references: ChatMessage["references"];
 		let progress: ChatMessage["progress"];
@@ -1473,6 +1601,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		let usageCached = 0;
 		let usageCacheWrite = 0;
 		let usageCredit = 0;
+		let usageCreditSeen = false; // 2026-07-27：区分"网关返回 credit=0"与"网关根本未提供该字段"
 		let usageTotalReported = 0; // total_tokens as reported by the gateway (preferred over input+output)
 		let usageSeen = false;
 
@@ -1576,6 +1705,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				}
 				if (delta.type === "text" && delta.content) {
 					_fullContentChunks.push(delta.content);
+					// P0: chronological parts 跟踪——更新最后一个 text part 或创建新的
+					const lastPart = _streamingParts[_streamingParts.length - 1];
+					if (lastPart && lastPart.kind === 'text') {
+						lastPart.text = (lastPart.text || '') + delta.content;
+					} else {
+						_streamingParts.push({ kind: 'text', text: delta.content });
+					}
 				}
 				if (delta.type === "thinking" && delta.content) {
 					_fullThinkingChunks.push(delta.content);
@@ -1585,6 +1721,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				if (delta.type === "content_replace") {
 					_fullContentChunks.length = 0;
 					if (delta.content) { _fullContentChunks.push(delta.content); }
+					// P0: chronological parts — content_replace 重置文本，更新最后一个 text part
+					const lastPart = _streamingParts[_streamingParts.length - 1];
+					if (lastPart && lastPart.kind === 'text') {
+						lastPart.text = delta.content || '';
+					} else {
+						_streamingParts.push({ kind: 'text', text: delta.content || '' });
+					}
 					currentTurnTextLen = (delta.content ?? "").length;
 				}
 				// ── Hermes-style synthetic-recovery 续跑信号 ──────────────────────
@@ -1623,14 +1766,32 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				// 注意：此时 toolCalls 里这些 id 的 result 可能尚未回填
 				// （tool_result 在 assistant_turn 之后才 yield），因此只记录 id，
 				// 最终持久化时再按 id 从全局 toolCalls 取回填好 result 的副本。
-				if ((delta as any).type === 'assistant_turn') {
-					const md = (delta as any).metadata ?? {};
-					const ids = Array.isArray(md.toolCallIds) ? md.toolCallIds as string[] : [];
-					const turnContent: string = (delta as any).content ?? "";
-					turns.push({
-						content: turnContent,
-						toolCallIds: ids,
-					});
+			// ─── P5: 压缩边界事件捕获 ─────────────────────────────────────
+			// executor 压缩成功后 yield context_compacted（含 compressionSummary）。
+			// 不在此转发/消费（原有 onDelta 转发链不变），只记录边界供完成落盘时插入。
+			if ((delta as any).type === 'context_compacted') {
+				const summary = (delta as any).compressionSummary;
+				if (typeof summary === 'string' && summary.length > 0) {
+					pendingCompaction = {
+						summary,
+						turnCount: turns.length,
+						originalCount: (delta as any).compressionOriginalCount ?? 0,
+						compressedCount: (delta as any).compressionCompressedCount ?? 0,
+						tokensSaved: (delta as any).compressionTokensSaved ?? 0,
+					};
+					this.logService.info(
+						`[AgentChatService][P5] Captured compaction boundary: turnCount=${turns.length}, original=${pendingCompaction.originalCount}→compressed=${pendingCompaction.compressedCount}, saved=${pendingCompaction.tokensSaved} tokens`,
+					);
+				}
+			}
+			if ((delta as any).type === 'assistant_turn') {
+				const md = (delta as any).metadata ?? {};
+				const ids = Array.isArray(md.toolCallIds) ? md.toolCallIds as string[] : [];
+				const turnContent: string = (delta as any).content ?? "";
+				turns.push({
+					content: turnContent,
+					toolCallIds: ids,
+				});
 					// 本轮结算：下一轮工具卡片的 textPosition 从 0 重新计起，
 					// 与 _aggregateTurns 合并各 turn 时按 turn.content 长度累加 offset 对齐。
 					currentTurnTextLen = 0;
@@ -1663,6 +1824,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 							: currentTurnTextLen,
 					});
 					_toolArgChunks.set(delta.toolCallId, []);
+					// P0: chronological parts 跟踪
+					_streamingParts.push({ kind: 'tool', tool: toolCalls[toolCalls.length - 1] });
 				}
 				if (
 					delta.type === "tool_args" &&
@@ -1698,6 +1861,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				if (delta.type === 'confirmation' && delta.confirmationData) {
 					confirmation = delta.confirmationData as unknown as ChatMessage['confirmation'];
 				}
+				if (delta.type === 'confirmation_resolved' && confirmation && (delta as any).confirmationId === confirmation.id) {
+					// Persist approval resolution: approved/rejected/reverted status survives reload
+					confirmation = {
+						...confirmation,
+						status: ((delta as any).confirmationStatus as any) || 'rejected',
+					};
+				}
 				if (delta.type === 'todos' && delta.todosData) {
 					todos = delta.todosData as unknown as ChatMessage['todos'];
 				}
@@ -1718,7 +1888,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					if (typeof delta.usage.cachedTokens === 'number') { usageCached += delta.usage.cachedTokens; }
 					if (typeof delta.usage.cacheWriteTokens === 'number') { usageCacheWrite += delta.usage.cacheWriteTokens; }
 					if (typeof delta.usage.totalTokens === 'number') { usageTotalReported += delta.usage.totalTokens; }
-					if (typeof delta.usage.credit === 'number') { usageCredit += delta.usage.credit; }
+					if (typeof delta.usage.credit === 'number') { usageCredit += delta.usage.credit; usageCreditSeen = true; }
 				}
 				onDelta(delta as any);
 				// Broadcast delta for external panels (kanban, task overview) to stay in sync.
@@ -1793,7 +1963,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					total: usageTotalReported > 0 ? usageTotalReported : usageInput + usageOutput,
 					cached: usageCached > 0 ? usageCached : undefined,
 					cacheWrite: usageCacheWrite > 0 ? usageCacheWrite : undefined,
-					credit: usageCredit > 0 ? usageCredit : undefined,
+					credit: usageCreditSeen ? usageCredit : undefined,
 				}
 				: undefined;
 
@@ -1852,11 +2022,37 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 							tokenUsage: sharedTokenUsage,
 						} : {}),
 					};
-					builtMessages.push(msg);
-				}
+				builtMessages.push(msg);
+			}
 
-				// 顺序持久化（保持磁盘顺序 = 因果顺序）
-				for (const msg of builtMessages) {
+			// ─── P5: 压缩边界消息插入（压缩状态跨 turn 持久化）────────────────
+			// 本回合发生过压缩时，把边界消息插入到压缩点位置（压缩时已有 turnCount
+			// 条 turn 消息，每条 turn 恰好产出一条持久化消息）。边界之后的消息
+			// 是压缩后继续执行的真实迭代；下一 turn 回灌从边界处重放。
+			if (pendingCompaction) {
+				const boundaryMsg: ChatMessage = {
+					id: `msg_compaction_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+					role: "assistant",
+					content: `[上下文压缩] 此前的对话历史（${pendingCompaction.originalCount} 条消息）已压缩为以下摘要：\n\n${pendingCompaction.summary}`,
+					agentId,
+					agentSessionId: options.agentSessionId,
+					timestamp: new Date().toISOString(),
+					metadata: {
+						type: COMPACTION_METADATA_TYPE,
+						originalCount: pendingCompaction.originalCount,
+						compressedCount: pendingCompaction.compressedCount,
+						tokensSaved: pendingCompaction.tokensSaved,
+					},
+				};
+				const insertAt = Math.min(pendingCompaction.turnCount, builtMessages.length);
+				builtMessages.splice(insertAt, 0, boundaryMsg);
+				this.logService.info(
+					`[AgentChatService][P5] Persisting compaction boundary at position ${insertAt}/${builtMessages.length} (cross-turn compression persistence)`,
+				);
+			}
+
+			// 顺序持久化（保持磁盘顺序 = 因果顺序）
+			for (const msg of builtMessages) {
 					await this.appendMessage(agentId, msg).catch((err) =>
 						this.logService.error(
 							"[AgentChatService] Failed to persist assistant turn message:",
@@ -1869,18 +2065,44 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				);
 				// 返回最后一条（其 content 为最终总结，供 configHtmlService 解析）
 				chatMessage = builtMessages[builtMessages.length - 1];
-			} else {
-				// ─── 回退：无边界事件（直连模式/旧后端）持久化单条 ────────────────
-				chatMessage = {
-					id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+		} else {
+			// ─── 回退：无边界事件（直连模式/旧后端）持久化单条 ────────────────
+			// P5: 若本回合发生过压缩（executionProvider 路径也会 yield
+			// context_compacted），先把压缩边界消息单独落盘，再落盘本条 ——
+			// 下一 turn 回灌从边界处重放，语义与多 turn 路径一致。
+			if (pendingCompaction) {
+				const boundaryMsg: ChatMessage = {
+					id: `msg_compaction_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
 					role: "assistant",
-					content: fullContent,
+					content: `[上下文压缩] 此前的对话历史（${pendingCompaction.originalCount} 条消息）已压缩为以下摘要：\n\n${pendingCompaction.summary}`,
+					agentId,
+					agentSessionId: options.agentSessionId,
+					timestamp: new Date().toISOString(),
+					metadata: {
+						type: COMPACTION_METADATA_TYPE,
+						originalCount: pendingCompaction.originalCount,
+						compressedCount: pendingCompaction.compressedCount,
+						tokensSaved: pendingCompaction.tokensSaved,
+					},
+				};
+				this.appendMessage(agentId, boundaryMsg).catch((err) =>
+					this.logService.error("[AgentChatService] Failed to persist compaction boundary message:", err),
+				);
+			}
+			chatMessage = {
+				id: `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+				role: "assistant",
+				content: fullContent,
 					agentId,
 					agentSessionId: options.agentSessionId,
 					thinking: fullThinking || undefined,
 					toolCalls: toolCalls || undefined,
-					// 阶段E：落盘有序 parts（单条回退路径同样写入，重载即按顺序渲染）。
-					parts: deriveMessageParts({ role: "assistant", content: fullContent, toolCalls: toolCalls }),
+				// 阶段E：落盘有序 parts。
+				// P0: 优先使用流式期间按时间顺序跟踪的 chronological parts；
+				// 回退到 deriveMessageParts（依赖 textPosition，跨迭代可能错位）。
+				parts: _streamingParts.length > 0
+					? _streamingParts
+					: deriveMessageParts({ role: "assistant", content: fullContent, toolCalls: toolCalls }),
 					timestamp: new Date().toISOString(),
 					// New card data fields (VS Code Copilot Chat pattern)
 					references: references || undefined,
@@ -1983,16 +2205,13 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					return;
 				}
 
-				// Use actual memoryType for the label instead of hardcoding "Working"
-				const memTypeLabels: Record<string, string> = {
-					working: 'Working',
-					episodic: 'Episodic',
-					scene: 'Semantic',
-					persona: 'Procedural',
-					pattern: 'pattern', preference: 'preference', architecture: 'architecture',
-					bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
-				};
-				const memLabel = memTypeLabels[data.memoryType ?? ''] ?? data.memoryType ?? 'Working';
+			// Use actual memoryType for the label instead of hardcoding "Working"
+			const memTypeLabels: Record<string, string> = {
+				working: 'Working', semantic: 'Semantic', procedural: 'Procedural',
+				pattern: 'Pattern', preference: 'Preference', architecture: 'Architecture',
+				bug: 'Bug', workflow: 'Workflow', fact: 'Fact', instruction: 'Instruction',
+			};
+			const memLabel = memTypeLabels[data.memoryType ?? ''] ?? data.memoryType ?? 'Working';
 				onDelta({
 					type: 'memory_written' as any,
 					content: `${memLabel} 已保存 ${data.contentLength}字`,
@@ -2002,29 +2221,24 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 				// Episodic/Semantic/Procedural 写入完成：直接显示 saved 卡片（无对应 pending 卡片）
 				// Skip 'working' type — working memory writes always go through the noticeId path above.
 				// Hook-triggered working writes (post_tool_use) are redundant with per-iteration writes.
-				const memType = data.memoryType ?? 'episodic';
-				if (memType === 'working' || memType === 'short_term') {
-					return; // Working memory without noticeId = hook-triggered duplicate, skip
-				}
-				// Dedup: 同一 memoryType 在 5 秒内只显示一次（一次提取可能写入多条 fact）
-				const now = Date.now();
-				const lastShown = recentExtractedTypes.get(memType) ?? 0;
-				if (now - lastShown < 5000) {
-					return; // 5 秒内已显示过同类型卡片，跳过
-				}
-				recentExtractedTypes.set(memType, now);
+			const memType = data.memoryType ?? 'fact';
+			if (memType === 'working' || memType === 'short_term') {
+				return; // Working memory without noticeId = hook-triggered duplicate, skip
+			}
+			// Dedup: 同一 memoryType 在 5 秒内只显示一次（一次提取可能写入多条 fact）
+			const now = Date.now();
+			const lastShown = recentExtractedTypes.get(memType) ?? 0;
+			if (now - lastShown < 5000) {
+				return; // 5 秒内已显示过同类型卡片，跳过
+			}
+			recentExtractedTypes.set(memType, now);
 
-				const typeLabels: Record<string, string> = {
-					working: 'Working',
-					episodic: 'Episodic',
-					semantic: 'Semantic',
-					procedural: 'Procedural',
-					scene: 'Semantic',
-					persona: 'Procedural',
-					pattern: 'pattern', preference: 'preference', architecture: 'architecture',
-					bug: 'bug', workflow: 'workflow', fact: 'fact', instruction: 'instruction',
-				};
-				const label = typeLabels[memType] ?? memType ?? 'Episodic';
+			const typeLabels: Record<string, string> = {
+				working: 'Working', semantic: 'Semantic', procedural: 'Procedural',
+				pattern: 'Pattern', preference: 'Preference', architecture: 'Architecture',
+				bug: 'Bug', workflow: 'Workflow', fact: 'Fact', instruction: 'Instruction',
+			};
+			const label = typeLabels[memType] ?? memType ?? 'Fact';
 				onDelta({
 					type: 'memory_extracted' as any,
 					content: `${label} 已提取`,
@@ -2332,6 +2546,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 			return cached.meta;
 		}
 		const index = await this._readSessionIndex(agentId);
+		this.logService.info(`[AgentChatService] getOrCreateActiveSession(${agentId}): index has ${index.length} sessions`);
 		let meta: AgentSessionMeta;
 		if (index.length > 0) {
 			index.sort(
@@ -2339,7 +2554,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 					new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
 			);
 			meta = index[0];
+			this.logService.info(`[AgentChatService] getOrCreateActiveSession(${agentId}): latest session=${meta.id} updatedAt=${meta.updatedAt} name=${meta.name}`);
 		} else {
+			this.logService.info(`[AgentChatService] getOrCreateActiveSession(${agentId}): NO sessions, creating new`);
 			meta = await this.createAgentSession(agentId, name || "新对话");
 		}
 		this._sessionIndexCache ??= new Map();

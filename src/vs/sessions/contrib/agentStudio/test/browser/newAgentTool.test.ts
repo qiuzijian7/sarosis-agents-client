@@ -16,11 +16,10 @@
  */
 
 import assert from 'assert';
-import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { handleNewAgentTool, slugifyAgentName } from '../../browser/providers/tool/delegationTools.js';
 import type { IAgentStudioService } from '../../../../common/agentStudioService.js';
 import type { Agent } from '../../../../common/agentStudioTypes.js';
-import { AgentType } from '../../../../common/agentStudioTypes.js';
 
 // ─── Mock ────────────────────────────────────────────────────────────────────
 
@@ -41,10 +40,9 @@ class MockAgentStudioService implements Pick<IAgentStudioService, 'createAgent'>
 			skills: data.skills || [],
 			tools: data.tools,
 			category: data.category || 'General',
-			systemPrompt: data.systemPrompt,
-			temperature: data.temperature,
-			agentType: data.agentType,
-			source: 'custom',
+		systemPrompt: data.systemPrompt,
+		temperature: data.temperature,
+		source: 'custom',
 			createdAt: now,
 			updatedAt: now,
 		} as Agent;
@@ -104,17 +102,17 @@ suite('new_agent Tool', () => {
 		assert.strictEqual(slugifyAgentName('trailing-dash-'), 'trailing-dash');
 	});
 
-	test('S4: slugifyAgentName — empty / only special chars', () => {
-		assert.strictEqual(slugifyAgentName(''), '');
-		assert.strictEqual(slugifyAgentName('!@#$%'), '');
-		assert.strictEqual(slugifyAgentName('   '), '');
+	test('S4: slugifyAgentName — empty / only special chars fallback', () => {
+		assert.ok(slugifyAgentName('').startsWith('agent-'), 'empty input should return fallback slug');
+		assert.ok(slugifyAgentName('!@#$%').startsWith('agent-'), 'special chars should return fallback slug');
+		assert.ok(slugifyAgentName('   ').startsWith('agent-'), 'whitespace should return fallback slug');
 	});
 
 	test('S5: slugifyAgentName — length limit (40 chars)', () => {
 		const longName = 'This Is A Very Long Agent Name That Exceeds Forty Characters Limit For Sure';
 		const result = slugifyAgentName(longName);
 		assert.ok(result.length <= 40);
-		assert.strictEqual(result, 'this-is-a-very-long-agent-name-that-exc');
+		assert.strictEqual(result, 'this-is-a-very-long-agent-name-that-exce');
 	});
 
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -130,10 +128,9 @@ suite('new_agent Tool', () => {
 		assert.strictEqual(parsed.success, true);
 		assert.strictEqual(parsed.id, EXPECTED_SLUG_NAME, 'id should equal slug name');
 		assert.strictEqual(parsed.name, 'Code Reviewer', 'name should be original human-readable name');
-		assert.strictEqual(parsed.role, 'Reviewer');
-		assert.strictEqual(parsed.agentType, 'worker');
+	assert.strictEqual(parsed.role, 'Reviewer');
 
-		assert.strictEqual(mock.createAgentCalls.length, 1);
+	assert.strictEqual(mock.createAgentCalls.length, 1);
 		const call = mock.createAgentCalls[0];
 		assert.strictEqual(call.id, EXPECTED_SLUG_NAME, 'id passed to createAgent should be slug');
 		assert.strictEqual(call.name, 'Code Reviewer', 'name should be original');
@@ -264,28 +261,7 @@ suite('new_agent Tool', () => {
 		assert.deepStrictEqual(mock.createAgentCalls[0].skills, skills);
 	});
 
-	// ── T9: agentType=planner ────────────────────────────────────────────────
-	test('T9: sets agentType to Planner when specified', async () => {
-		const mock = new MockAgentStudioService();
-		const result = await handleNewAgentTool(
-			{ ...VALID_RAW_INPUT, agentType: 'planner' },
-			mock,
-		);
 
-		const parsed = parseResult(result);
-		assert.strictEqual(parsed.agentType, 'planner');
-		assert.strictEqual(mock.createAgentCalls[0].agentType, AgentType.Planner);
-	});
-
-	// ── T10: agentType 默认值 ────────────────────────────────────────────────
-	test('T10: does not set agentType when not provided (service defaults to worker)', async () => {
-		const mock = new MockAgentStudioService();
-		const result = await handleNewAgentTool(VALID_RAW_INPUT, mock);
-
-		const parsed = parseResult(result);
-		assert.strictEqual(parsed.agentType, 'worker');
-		assert.strictEqual(mock.createAgentCalls[0].agentType, undefined);
-	});
 
 	// ── T11: createAgent 抛异常 ───────────────────────────────────────────────
 	test('T11: returns error when createAgent throws', async () => {
@@ -341,7 +317,6 @@ suite('new_agent Tool', () => {
 			tools: ['read_file'],
 			skills: ['pdf'],
 			category: 'Testing',
-			agentType: 'worker',
 		}, mock);
 
 		const call = mock.createAgentCalls[0];
@@ -350,7 +325,6 @@ suite('new_agent Tool', () => {
 		assert.deepStrictEqual(call.tools, ['read_file']);
 		assert.deepStrictEqual(call.skills, ['pdf']);
 		assert.strictEqual(call.category, 'Testing');
-		assert.strictEqual(call.agentType, AgentType.Worker);
 	});
 
 	// ── T16: 空字符串 name 被视为缺失 ──────────────────────────────────────

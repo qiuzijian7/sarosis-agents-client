@@ -1063,7 +1063,8 @@ export class LanguageModelsService implements ILanguageModelsService {
 			provider = this._providers.get(vendorId);
 		}
 		if (!provider) {
-			this._logService.warn(
+			// 供应商已注册但用户未配置 provider 属正常情况，降级为 debug 避免告警刷屏。
+			this._logService.debug(
 				`[LM] No provider registered for vendor ${vendorId}`,
 			);
 			return;

@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentLoopStrategyFactory - Strategy Selection Flow</title>
+<style>
+:root {
+  --bg:#0d1117; --fg:#c9d1d9; --blue:#58a6ff; --green:#3fb950; --purple:#d2a8ff;
+  --orange:#f0883e; --red:#f85149; --border:#30363d; --card:#161b22; --code:#1c2128;
+  --dim:#8b949e; --yellow:#e3b341;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;line-height:1.6}
+header{background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);padding:2rem 2rem 1.5rem;text-align:center;border-bottom:2px solid var(--blue)}
+header h1{font-size:1.8rem;color:#fff}
+header p{color:var(--dim);margin-top:.5rem}
+.container{max-width:1100px;margin:0 auto;padding:1.5rem}
+.section{background:var(--card);border:1px solid var(--border);border-radius:12px;margin-bottom:2rem;overflow:hidden}
+.section-header{padding:.8rem 1.2rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:.6rem;background:rgba(88,166,255,.04)}
+.section-header h2{font-size:1.1rem;color:var(--blue)}
+.section-body{padding:1.5rem}
+code{background:var(--code);padding:1px 6px;border-radius:4px;font-size:.85em;color:var(--purple)}
+.file-path{font-family:monospace;font-size:.78rem;color:var(--dim);background:var(--code);padding:3px 10px;border-radius:6px;display:inline-block;margin-bottom:.8rem}
+table{width:100%;border-collapse:collapse;margin:1rem 0}
+th{background:var(--code);color:var(--blue);padding:.5rem .8rem;text-align:left;font-size:.78rem;text-transform:uppercase;border-bottom:1px solid var(--border)}
+td{padding:.5rem .8rem;border-bottom:1px solid var(--border);font-size:.82rem}
+tr:hover{background:rgba(88,166,255,.03)}
+h3{color:var(--blue);margin:1.5rem 0 .8rem;font-size:1rem}
+
+/* ── Flow diagram nodes ── */
+.flow{display:flex;flex-direction:column;gap:0;padding:.5rem 0;overflow-x:auto}
+.flow-row{display:flex;align-items:center;gap:0;margin:2px 0}
+.node{background:var(--code);border:2px solid var(--border);border-radius:10px;padding:10px 18px;font-size:.84rem;white-space:nowrap;text-align:center}
+.node.n-entry{border-color:var(--green);background:rgba(63,185,80,.06)}
+.node.n-decision{border-radius:20px;border-color:var(--orange);text-align:left;min-width:260px}
+.node.n-result{border-color:var(--blue);background:rgba(88,166,255,.06)}
+.node.n-fallback{border-color:var(--red);background:rgba(248,81,73,.06)}
+.node.n-hook{border-color:var(--purple);background:rgba(210,168,255,.04)}
+.arrow{color:var(--dim);margin:0 6px;font-size:1rem;flex-shrink:0}
+.arrow-down{text-align:center;padding:1px 0;color:var(--dim)}
+.arrow-label{font-size:.7rem;color:var(--dim);margin:0 4px;white-space:nowrap}
+.branch-line{border-left:2px solid var(--border);height:14px;width:0;margin:0 auto}
+.branch{display:flex;gap:2rem;align-items:flex-start}
+.branch-col{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+.vline{width:0;border-left:2px solid var(--border);height:20px;margin-left:20px}
+.tag{display:inline-block;padding:1px 8px;border-radius:8px;font-size:.68rem;font-weight:600;margin-right:4px}
+.tag-p1{background:rgba(248,81,73,.15);color:var(--red)}
+.tag-p2{background:rgba(240,136,62,.15);color:var(--orange)}
+.tag-p3{background:rgba(88,166,255,.15);color:var(--blue)}
+.tag-out{background:rgba(63,185,80,.15);color:var(--green)}
+
+/* ── Steps list ── */
+.steps{display:flex;flex-direction:column;gap:0;padding-left:0}
+.step{display:flex;align-items:flex-start;gap:12px;padding:8px 0}
+.step-num{width:28px;height:28px;border-radius:50%;background:var(--blue);color:#000;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.8rem;flex-shrink:0}
+.step-content{flex:1}
+.step-content .title{font-weight:600;color:#fff;margin-bottom:2px}
+.step-content .detail{font-size:.78rem;color:var(--dim)}
+.step-line{border-left:2px dashed var(--border);height:16px;margin-left:13px;width:0}
+
+/* ── Code block ── */
+.code-block{background:var(--code);border:1px solid var(--border);border-radius:8px;padding:12px 16px;overflow-x:auto;margin:.5rem 0;font-family:monospace;font-size:.8rem;line-height:1.7}
+.code-block .kw{color:var(--purple)}
+.code-block .fn{color:var(--blue)}
+.code-block .str{color:var(--green)}
+.code-block .cm{color:var(--dim);font-style:italic}
+.code-block .num{color:var(--orange)}
+.code-block .id{color:var(--yellow)}
+
+/* ── Phase box ── */
+.phase-box{background:var(--card);border:2px solid var(--border);border-radius:8px;margin:12px 0;overflow:hidden}
+.phase-box.enter{border-color:var(--green)}
+.phase-box.resolve{border-color:var(--orange)}
+.phase-box.execute{border-color:var(--blue)}
+.phase-box.exit{border-color:var(--purple)}
+.phase-label{padding:6px 14px;font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.phase-box.enter .phase-label{background:rgba(63,185,80,.1);color:var(--green)}
+.phase-box.resolve .phase-label{background:rgba(240,136,62,.1);color:var(--orange)}
+.phase-box.execute .phase-label{background:rgba(88,166,255,.1);color:var(--blue)}
+.phase-box.exit .phase-label{background:rgba(210,168,255,.1);color:var(--purple)}
+.phase-body{padding:10px 14px;font-size:.82rem}
+
+/* ── Current-only highlight ── */
+.only-path{background:rgba(63,185,80,.03);border-left:3px solid var(--green);padding:6px 12px;margin:4px 0;font-size:.8rem}
+.only-path b{color:var(--green)}
+
+/* ── Params source table ── */
+.param-label{font-family:monospace;font-size:.76rem;color:var(--purple)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AgentLoopStrategyFactory &mdash; Strategy Selection Flow</h1>
+  <p>Currently: HermesReActStrategy only. Detailed resolve() chain, per-hook invocation, and fallback paths.</p>
+</header>
+
+<div class="container">
+
+<!-- ======== 1. Entry: How resolve() is called ======== -->
+<section class="section">
+<div class="section-header"><h2>1. Entry Point: agentTurnExecutor calls resolve()</h2></div>
+<div class="section-body">
+<p><span class="file-path">agentTurnExecutor.ts:278-282 (executeAgentTurnDirect)</span></p>
+
+<div class="phase-box enter">
+<div class="phase-label">ENTRY &mdash; Per-Turn Strategy Instantiation</div>
+<div class="phase-body">
+<code>host._strategyFactory</code> is a <b>singleton</b> (created once, reused across turns).<br>
+<code>strategy = host._strategyFactory.resolve(request, request.paradigm)</code> is called <b>per turn</b> &mdash; each execution of <code>executeAgentTurnDirect()</code> gets its own fresh strategy instance, ensuring budget/state isolation across concurrent sessions.
+</div>
+</div>
+
+<div class="code-block">
+<span class="cm">// agentTurnExecutor.ts line 276-284</span>
+<span class="cm">// Per-turn strategy instantiation ensures multi-session budget isolation</span>
+<span class="kw">if</span> (!host._strategyFactory) {
+  host._strategyFactory = <span class="kw">new</span> <span class="fn">AgentLoopStrategyFactory</span>();
+}
+<span class="kw">const</span> <span class="id">strategy</span> = host._strategyFactory.<span class="fn">resolve</span>(
+  request,             <span class="cm">// IAgentTurnRequest { chatMode, paradigm?, ... }</span>
+  request.paradigm <span class="kw">as any</span>,  <span class="cm">// Agent config paradigm (agent.paradigm)</span>
+);
+<span class="kw">const</span> budget = <span class="kw">new</span> <span class="fn">IterationBudget</span>(
+  request.budgetMaxTotal ?? <span class="num">90</span>
+);
+</div>
+</div>
+</section>
+
+<!-- ======== 2. resolve() Decision Tree ======== -->
+<section class="section">
+<div class="section-header"><h2>2. resolve() &mdash; Full Decision Tree</h2></div>
+<div class="section-body">
+<p><span class="file-path">agentLoopStrategyFactory.ts:49-61</span></p>
+
+<div class="flow">
+
+  <!-- Step 1: resolve() entry -->
+  <div class="flow-row">
+    <div class="node n-entry" style="min-width:240px;">
+      <b>resolve(request, agentParadigm?)</b><br>
+      <span style="font-size:.7rem;color:var(--dim)">agentTurnExecutor calls this per-turn</span>
+    </div>
+  </div>
+  <div class="arrow-down" style="margin-left:120px;">&#8595;</div>
+
+  <!-- Step 2: Extract explicit paradigm -->
+  <div class="flow-row">
+    <div class="node n-decision" style="min-width:500px;">
+      <span class="tag tag-p1">P1</span> <b>explicit = request.paradigm</b>
+      <div style="font-size:.72rem;color:var(--dim);margin-top:4px">
+        Extracted from request.paradigm (UI or config passes this).<br>
+        Also checks (request as any).paradigm for backward compatibility.
+      </div>
+    </div>
+  </div>
+  <div class="arrow-down" style="margin-left:250px;">&#8595;</div>
+
+  <!-- Step 3: Extract chatMode -->
+  <div class="flow-row">
+    <div class="node n-decision" style="min-width:500px;">
+      <span class="tag tag-p2">P2</span> <b>chatMode = request.chatMode || 'craft'</b>
+      <div style="font-size:.72rem;color:var(--dim);margin-top:4px">
+        Default: 'craft'. Other values: 'plan', 'ask', 'workflow'.
+      </div>
+    </div>
+  </div>
+  <div class="arrow-down" style="margin-left:250px;">&#8595;</div>
+
+  <!-- Step 4: chatMode to paradigm mapping -->
+  <div class="flow-row">
+    <div class="node n-decision" style="min-width:600px;">
+      <span class="tag tag-p2">P2</span> <b>DEFAULT_PARADIGM_BY_CHATMODE</b> lookup
+      <div style="font-size:.72rem;color:var(--dim);margin-top:4px">
+        craft &#8594; <b style="color:var(--green)">'budgeted-react'</b>&nbsp;&nbsp;|&nbsp;&nbsp;
+        plan &#8594; 'plan-explore'&nbsp;&nbsp;|&nbsp;&nbsp;
+        ask &#8594; 'readonly'&nbsp;&nbsp;|&nbsp;&nbsp;
+        workflow &#8594; 'graph'
+      </div>
+    </div>
+  </div>
+  <div class="arrow-down" style="margin-left:300px;">&#8595;</div>
+
+  <!-- Step 5: Final paradigm resolution -->
+  <div class="flow-row">
+    <div class="node n-decision" style="min-width:580px;">
+      <span class="tag tag-p1">P1</span> <span class="tag tag-p2">P2</span> <span class="tag tag-p3">P3</span>
+      <b>paradigm = explicit ?? agentParadigm ?? fromChatMode</b>
+      <div style="font-size:.72rem;color:var(--dim);margin-top:4px">
+        Priority: P1 &gt; P2 &gt; P3<br>
+        P1 (explicit UI/config override) &#8594; P2 (per-agent config) &#8594; P3 (chatMode default)
+      </div>
+    </div>
+  </div>
+  <div class="arrow-down" style="margin-left:290px;">&#8595;</div>
+
+  <!-- Step 6: Registry lookup -->
+  <div class="flow-row">
+    <div class="node n-decision" style="min-width:450px;">
+      <b>factory = _registry.get(paradigm)</b>
+      <div style="font-size:.72rem;color:var(--dim);margin-top:4px">
+        Looks up the paradigm name in the internal Map<br>
+        Returns a <b>factory function</b> or undefined
+      </div>
+    </div>
+  </div>
+
+  <div class="branch" style="margin-top:6px;margin-left:225px;">
+    <div class="branch-col">
+      <div style="font-size:.72rem;color:var(--dim);margin-bottom:2px;">factory exists</div>
+      <div class="arrow-down">&#8595;</div>
+      <div class="node n-result" style="min-width:280px;">
+        <span class="tag tag-out">RETURN</span> <b>factory()</b>
+        <div style="font-size:.72rem;color:var(--dim);margin-top:4px">
+          Creates a <b>new strategy instance</b><br>
+          per-turn isolation guaranteed
+        </div>
+      </div>
+    </div>
+    <div class="branch-col">
+      <div style="font-size:.72rem;color:var(--dim);margin-bottom:2px;">factory is undefined (unknown paradigm)</div>
+      <div class="arrow-down">&#8595;</div>
+      <div class="node n-fallback" style="min-width:280px;">
+        <span class="tag tag-out">FALLBACK</span> <b>new HermesReActStrategy()</b>
+        <div style="font-size:.72rem;color:var(--dim);margin-top:4px">
+          Ultimate fallback: never crashes.<br>
+          Unknown paradigms get HermesReAct.
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="only-path" style="margin-top:1rem;">
+  <b>&#10003; Current State:</b> Since default chatMode='craft', which maps to 'budgeted-react', and no explicit paradigm overrides are set, <b>all turns resolve to HermesReActStrategy</b>. The Fallback path (unknown paradigm) is unreachable in current configuration.
+</div>
+</div>
+</section>
+
+<!-- ======== 3. Registry Map ======== -->
+<section class="section">
+<div class="section-header"><h2>3. Internal Registry &mdash; Map&lt;Paradigm, Factory&gt;</h2></div>
+<div class="section-body">
+<p><span class="file-path">agentLoopStrategyFactory.ts:26-37 (constructor)</span></p>
+
+<div class="code-block">
+<span class="cm">// Constructor registers 6 paradigms, 4 strategy classes</span>
+<span class="kw">constructor</span>() {
+  <span class="cm">// ReAct family: ALL share HermesReActStrategy engine</span>
+  <span class="kw">this</span>._registry.<span class="fn">set</span>(<span class="str">'budgeted-react'</span>,  () =&gt; <span class="kw">new</span> <span class="fn">HermesReActStrategy</span>());
+  <span class="kw">this</span>._registry.<span class="fn">set</span>(<span class="str">'plan-explore'</span>,    () =&gt; <span class="kw">new</span> <span class="fn">HermesReActStrategy</span>());
+  <span class="kw">this</span>._registry.<span class="fn">set</span>(<span class="str">'react'</span>,           () =&gt; <span class="kw">new</span> <span class="fn">HermesReActStrategy</span>());
+
+  <span class="cm">// Independent implementations</span>
+  <span class="kw">this</span>._registry.<span class="fn">set</span>(<span class="str">'readonly'</span>,    () =&gt; <span class="kw">new</span> <span class="fn">ReadonlyStrategy</span>());
+  <span class="kw">this</span>._registry.<span class="fn">set</span>(<span class="str">'delegation'</span>,  () =&gt; <span class="kw">new</span> <span class="fn">DelegationStrategy</span>());
+  <span class="kw">this</span>._registry.<span class="fn">set</span>(<span class="str">'graph'</span>,       () =&gt; <span class="kw">new</span> <span class="fn">GraphStrategy</span>());
+}
+</div>
+
+<table>
+<tr><th>Paradigm Key</th><th>Strategy Class</th><th>Reachable via chatMode?</th><th>Status</th></tr>
+<tr>
+  <td><code>'budgeted-react'</code></td>
+  <td><span class="tag tag-out">HermesReActStrategy</span></td>
+  <td>Yes &mdash; craft &#8594; 'budgeted-react'</td>
+  <td style="color:var(--green);font-weight:600">&#10003; Active (default)</td>
+</tr>
+<tr>
+  <td><code>'plan-explore'</code></td>
+  <td>HermesReActStrategy</td>
+  <td>Yes &mdash; plan &#8594; 'plan-explore'</td>
+  <td style="color:var(--dim)">Not used (chatMode always 'craft')</td>
+</tr>
+<tr>
+  <td><code>'react'</code></td>
+  <td>HermesReActStrategy</td>
+  <td>No direct chatMode mapping</td>
+  <td style="color:var(--dim)">Only via explicit paradigm override</td>
+</tr>
+<tr>
+  <td><code>'readonly'</code></td>
+  <td>ReadonlyStrategy</td>
+  <td>Yes &mdash; ask &#8594; 'readonly'</td>
+  <td style="color:var(--dim)">Not used (chatMode always 'craft')</td>
+</tr>
+<tr>
+  <td><code>'delegation'</code></td>
+  <td>DelegationStrategy</td>
+  <td>No direct chatMode mapping</td>
+  <td style="color:var(--dim)">Only via explicit paradigm override</td>
+</tr>
+<tr>
+  <td><code>'graph'</code></td>
+  <td>GraphStrategy</td>
+  <td>Yes &mdash; workflow &#8594; 'graph'</td>
+  <td style="color:var(--dim)">Not used (chatMode always 'craft')</td>
+</tr>
+</table>
+</div>
+</section>
+
+<!-- ======== 4. HermesReActStrategy Hook Invocation ======== -->
+<section class="section">
+<div class="section-header"><h2>4. HermesReActStrategy &mdash; Hook Invocation Timeline</h2></div>
+<div class="section-body">
+<p><span class="file-path">HermesReActStrategy implements IAgentLoopStrategy with 5 hooks, 4 implemented</span></p>
+
+<div class="flow">
+
+  <!-- Hook 1: preLoop -->
+  <div class="phase-box enter">
+  <div class="phase-label">Phase A: Before the main while() loop &mdash; agentTurnExecutor.ts:324-345</div>
+  <div class="phase-body">
+    <b>Hook: preLoop(ctx) &#8594; AsyncGenerator &#8594; PreLoopResultMeta</b>
+
+    <div class="only-path" style="margin:8px 0;">
+      <b>Guard condition:</b> <code>strategy.preLoop && !request.agentId.startsWith('subagent-')</code><br>
+      <span style="font-size:.8rem;color:var(--dim)">Skips for sub-agents to prevent recursive explosion</span>
+    </div>
+
+    <table>
+    <tr><th>Step</th><th>Action</th><th>Description</th></tr>
+    <tr>
+      <td>4.1</td>
+      <td><code>buildPreLoopDeps(host, modelProvider, modelId, agentId, signal)</code></td>
+      <td>Constructs assessFn (LLM call), exploreFn (parallel sub-agent dispatch), planGenerator (LLM call)</td>
+    </tr>
+    <tr>
+      <td>4.2</td>
+      <td><code>preLoopOrchestrate(userText, deps)</code></td>
+      <td>assessFn: LLM decides needsExploration<br>If yes: exploreFn dispatches N parallel code-explorer sub-agents<br>planGenerator: LLM generates ParsedPlanTask[] from findings</td>
+    </tr>
+    <tr>
+      <td>4.3</td>
+      <td>Return <code>PreLoopResultMeta</code></td>
+      <td>{ preExploreDone, preExploreResult, planTasks[], findings }</td>
+    </tr>
+    <tr>
+      <td>4.4</td>
+      <td>Main loop receives</td>
+      <td>findings injected as system message; planTasks[0] reminder injected; queue advances in while</td>
+    </tr>
+    </table>
+
+    <div style="font-size:.78rem;color:var(--dim);margin-top:8px;">
+      <b>Fallback:</b> If preLoop throws, caught and returns { preExploreDone: false, planTasks: [] } &mdash; zero overhead fallback to direct ReAct loop.
+    </div>
+  </div>
+  </div>
+
+  <!-- Hook 2: prepareIteration -->
+  <div class="phase-box resolve">
+  <div class="phase-label">Phase B: Every iteration, before LLM call &mdash; agentTurnExecutor.ts:481-490</div>
+  <div class="phase-body">
+    <b>Hook: prepareIteration(ctx, budget) &#8594; IterationPlan</b>
+
+    <table>
+    <tr><th>Condition</th><th>Action</th></tr>
+    <tr>
+      <td><code>budget.remaining / budget.maxIterations &le; 0.1</code></td>
+      <td>Arm grace call (once). Inject <code>system-reminder</code>: "Budget nearly exhausted, summarize and produce final response."</td>
+    </tr>
+    <tr>
+      <td>Otherwise</td>
+      <td>Return default plan: full tool set, no reminder.</td>
+    </tr>
+    </table>
+
+    <div style="font-size:.78rem;color:var(--dim);margin-top:6px;">
+      The reminder is injected as a user message (not just appended to system prompt), ensuring the LLM sees it as a high-priority instruction.
+    </div>
+  </div>
+  </div>
+
+  <!-- Hook 3: interceptToolCall -->
+  <div class="phase-box execute">
+  <div class="phase-label">Phase C: After LLM returns tool calls &mdash; agentTurnExecutor (tool execution segment)</div>
+  <div class="phase-body">
+    <b>Hook: interceptToolCall(ctx, call) &#8594; AsyncGenerator &#8594; InterceptResult</b>
+
+    <table>
+    <tr><th>Intercepted Tool</th><th>Action</th><th>Effect</th></tr>
+    <tr>
+      <td><code>delegate_task</code></td>
+      <td>Sets <code>_delegationRound = true</code></td>
+      <td>Parent budget NOT consumed this iteration (refund at loop end).<br>Tool still executes via normal handler (sub-agent dispatch).</td>
+    </tr>
+    <tr>
+      <td><code>transfer_to_agent</code></td>
+      <td>Sets <code>_delegationRound = true</code></td>
+      <td>Same as delegate_task.</td>
+    </tr>
+    <tr>
+      <td>Any other tool</td>
+      <td>Returns <code>{ handled: false }</code></td>
+      <td>Tool passes through to normal execution handler.</td>
+    </tr>
+    </table>
+
+    <div style="font-size:.78rem;color:var(--dim);margin-top:6px;">
+      <b>Budget accounting:</b> At loop end (agentTurnExecutor.ts:2431-2434), <code>strategy.takeDelegationRound()</code> is checked. If true, <code>budget.refund(1)</code> instead of <code>budget.consume(1)</code> &mdash; delegation rounds don't consume parent iteration budget.
+    </div>
+  </div>
+  </div>
+
+  <!-- Hook 4: shouldTerminate -->
+  <div class="phase-box exit">
+  <div class="phase-label">Phase D: After each iteration, before continuing &mdash; agentTurnExecutor (budget gate)</div>
+  <div class="phase-body">
+    <b>Hook: shouldTerminate(ctx, budget) &#8594; boolean</b>
+
+    <table>
+    <tr><th>Condition</th><th>Return</th><th>Effect</th></tr>
+    <tr>
+      <td><code>!budget.hasRemaining() && !budget.isGraceArmed()</code></td>
+      <td><code style="color:var(--red)">true</code></td>
+      <td>Budget fully exhausted, no grace available. Main loop terminates.</td>
+    </tr>
+    <tr>
+      <td>Otherwise</td>
+      <td><code style="color:var(--green)">false</code></td>
+      <td>Continue loop.</td>
+    </tr>
+    </table>
+
+    <div style="font-size:.78rem;color:var(--dim);margin-top:6px;">
+      <b>Grace mechanism:</b> When budget drops to &le;10%, <code>budget.armGraceCall()</code> is called in prepareIteration. This allows 1 final iteration after budget exhaustion for the LLM to produce a summary. After the grace call is consumed, shouldTerminate returns true on next check.
+    </div>
+  </div>
+  </div>
+
+  <!-- End of loop -->
+  <div class="flow-row" style="margin-top:10px;">
+    <div class="node n-result">
+      <b>Loop End</b>: yield {type:'done'} &mdash; storeTurnObservations &mdash; return
+    </div>
+  </div>
+
+</div>
+</div>
+</section>
+
+<!-- ======== 5. Full Flow Summary ======== -->
+<section class="section">
+<div class="section-header"><h2>5. Complete Lifecycle: One Turn</h2></div>
+<div class="section-body">
+
+<div class="steps">
+
+  <div class="step">
+    <div class="step-num">1</div>
+    <div class="step-content">
+      <div class="title">Strategy Instantiation</div>
+      <div class="detail"><code>AgentLoopStrategyFactory.resolve(request, agentParadigm?)</code> returns a new HermesReActStrategy instance. Budget = new IterationBudget(90).</div>
+    </div>
+  </div>
+  <div class="step-line"></div>
+
+  <div class="step">
+    <div class="step-num">2</div>
+    <div class="step-content">
+      <div class="title">preLoop Hook (once, before loop)</div>
+      <div class="detail">LLM assesses user intent &#8594; decides if exploration needed &#8594; dispatches parallel sub-agents &#8594; generates planTasks queue. Findings injected into messages context.</div>
+    </div>
+  </div>
+  <div class="step-line"></div>
+
+  <div class="step">
+    <div class="step-num">3</div>
+    <div class="step-content">
+      <div class="title">Enter while(iteration &lt; 50) { ... }</div>
+      <div class="detail">Compression check &#8594; Tool assembly &#8594; prepareIteration() (budget low reminder)</div>
+    </div>
+  </div>
+  <div class="step-line"></div>
+
+  <div class="step">
+    <div class="step-num">4</div>
+    <div class="step-content">
+      <div class="title">LLM Call + Process Response</div>
+      <div class="detail">modelProvider.chat() &#8594; stream deltas &#8594; assemble content + toolCalls</div>
+    </div>
+  </div>
+  <div class="step-line"></div>
+
+  <div class="step">
+    <div class="step-num">5</div>
+    <div class="step-content">
+      <div class="title">interceptToolCall Hook</div>
+      <div class="detail">Check each tool call: if delegate_task/transfer_to_agent, mark _delegationRound = true (budget refund at loop end).</div>
+    </div>
+  </div>
+  <div class="step-line"></div>
+
+  <div class="step">
+    <div class="step-num">6</div>
+    <div class="step-content">
+      <div class="title">Tool Execution or Loop Termination</div>
+      <div class="detail">If no tool calls: classify incomplete turns, reflect phase, plan queue advance, or yield done.<br>If has tool calls: hardPermission &#8594; loop detection &#8594; parallel/serial execution.</div>
+    </div>
+  </div>
+  <div class="step-line"></div>
+
+  <div class="step">
+    <div class="step-num">7</div>
+    <div class="step-content">
+      <div class="title">Budget Accounting</div>
+      <div class="detail">If _delegationRound: budget.refund(1). Else: budget.consume(1). Checkpoint persist every 3 iterations.</div>
+    </div>
+  </div>
+  <div class="step-line"></div>
+
+  <div class="step">
+    <div class="step-num">8</div>
+    <div class="step-content">
+      <div class="title">shouldTerminate Hook</div>
+      <div class="detail">Check budget: if exhausted with no grace, terminate. Otherwise continue to next iteration or end normally.</div>
+    </div>
+  </div>
+
+</div>
+
+</div>
+</section>
+
+<!-- ======== 6. Parameter Source Table ======== -->
+<section class="section">
+<div class="section-header"><h2>6. Paradigm Resolution: Parameter Source Table</h2></div>
+<div class="section-body">
+
+<table>
+<tr><th>Priority</th><th>Source</th><th>Field</th><th>Example Value</th><th>How It Gets to resolve()</th></tr>
+<tr>
+  <td><span class="tag tag-p1">P1 (Highest)</span></td>
+  <td>request.paradigm</td>
+  <td><code>IAgentTurnRequest.paradigm</code></td>
+  <td><code>'readonly'</code></td>
+  <td>UI or explicit API caller sets this. Passed as <code>request</code> parameter to <code>executeAgentTurnDirect()</code>.</td>
+</tr>
+<tr>
+  <td><span class="tag tag-p2">P2</span></td>
+  <td>agent.config.paradigm</td>
+  <td>Agent paradigm field</td>
+  <td><code>'plan-explore'</code></td>
+  <td>Read from agent YAML config. Passed as <code>agentParadigm</code> parameter to <code>resolve()</code>.</td>
+</tr>
+<tr>
+  <td><span class="tag tag-p2">P2</span></td>
+  <td>request.chatMode</td>
+  <td><code>IAgentTurnRequest.chatMode</code></td>
+  <td><code>'craft'</code></td>
+  <td>Looked up in <code>DEFAULT_PARADIGM_BY_CHATMODE</code> map. Defaults to 'craft' if not set.</td>
+</tr>
+<tr>
+  <td><span class="tag tag-p3">P3</span></td>
+  <td>DEFAULT_PARADIGM_BY_CHATMODE</td>
+  <td>Static const map</td>
+  <td>{craft:'budgeted-react', plan:'plan-explore', ask:'readonly', workflow:'graph'}</td>
+  <td>Fallback when neither P1 nor P2 is set.</td>
+</tr>
+</table>
+
+</div>
+</section>
+
+<!-- ======== 7. Key Files ======== -->
+<section class="section">
+<div class="section-header"><h2>7. Key Files</h2></div>
+<div class="section-body">
+<table>
+<tr><th>File</th><th>Role</th></tr>
+<tr><td><code>browser/agentLoopStrategyFactory.ts</code></td><td>Paradigm registry + resolve() logic (3-level priority)</td></tr>
+<tr><td><code>common/agentLoopStrategy.ts</code></td><td><code>IAgentLoopStrategy</code> interface: 5 hook signatures</td></tr>
+<tr><td><code>browser/strategies/hermesReActStrategy.ts</code></td><td>Default strategy: implements preLoop, prepareIteration, interceptToolCall, shouldTerminate</td></tr>
+<tr><td><code>common/preLoopOrchestrator.ts</code></td><td><code>preLoopOrchestrate()</code>: assess &#8594; explore &#8594; plan</td></tr>
+<tr><td><code>browser/preLoopDeps.ts</code></td><td><code>buildPreLoopDeps()</code>: constructs assessFn, exploreFn, planGenerator</td></tr>
+<tr><td><code>common/preExploreDecision.ts</code></td><td><code>DEFAULT_PARADIGM_BY_CHATMODE</code> mapping</td></tr>
+<tr><td><code>browser/agentTurnExecutor.ts</code></td><td>Main loop: calls resolve(), invokes 4 hooks at correct lifecycle points</td></tr>
+</table>
+</div>
+</section>
+
+</div><!-- container -->
+</body>
+</html>

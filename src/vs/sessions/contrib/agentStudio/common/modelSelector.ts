@@ -36,6 +36,13 @@ export interface IModelSelectorService {
 	getSelectionForAgent(agentId: string): IModelSelection | undefined;
 
 	/**
+	 * 获取指定 agent 显式专属的模型选择（仅当用户曾为该 agent 单独选过
+	 * provider/model 时返回，不会回退到全局当前选择）。
+	 * 用于判断「知识库专家」等 agent 是否被用户单独配置过。
+	 */
+	getExplicitSelectionForAgent(agentId: string): IModelSelection | undefined;
+
+	/**
 	 * 为指定 agent 保存其专属的模型选择。
 	 */
 	setSelectionForAgent(agentId: string, selection: IModelSelection): void;
