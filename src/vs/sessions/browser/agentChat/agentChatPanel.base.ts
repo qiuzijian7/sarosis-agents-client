@@ -322,29 +322,32 @@ protected readonly _thinkingCardState = new Map<string, boolean>();
 /** 卡内容器流式钉底状态（WeakMap：元素 GC 自动清理）。
  *  pinned=false 表示用户上滚解除；lastUserTop 记录用户最后的滚动位置，
  *  用于全量替换（replaceChildren 物理归零 scrollTop）后恢复；
- *  programmatic 标记「本类程序化置底」触发的 scroll 事件，避免与用户滚动混淆。 */
-private readonly _streamCardPinState = new WeakMap<HTMLElement, { pinned: boolean; lastUserTop: number; programmatic: boolean }>();
+ *  lastUserScrollAt 记录用户最近一次「向上滚动（拖拽/滚轮）」的时间戳，
+ *  用于在宽限期内抑制程序化强制置底，避免高频钉底调用与拖拽争抢滚动位置。 */
+private readonly _streamCardPinState = new WeakMap<HTMLElement, { pinned: boolean; lastUserTop: number; lastUserScrollAt: number }>();
 
 /** 给卡内滚动容器挂载流式钉底（幂等）：渲染更新后自动置底；
  *  用户滚动离开底部则解除钉底（之后可自由拖拽），滚回底部恢复跟随。
- *  scroll 事件覆盖滚轮/拖动/键盘；用 programmatic 标志过滤掉自身置底造成的事件。 */
+ *  scroll 事件覆盖滚轮/拖动/键盘；pinned 纯由「是否贴近底部」驱动，
+ *  用户上滚即解除并记录时间戳，使后续帧暂缓强制置底，彻底解决
+ *  「钉底高频调用吞掉拖拽 scroll 事件 → 滚动条拖不动」的问题。 */
 protected _attachStreamCardPin(container: HTMLElement): void {
 	if (this._streamCardPinState.has(container)) { return; }
-	const state = { pinned: true, lastUserTop: container.scrollTop, programmatic: false };
+	const state = { pinned: true, lastUserTop: container.scrollTop, lastUserScrollAt: 0 };
 	this._streamCardPinState.set(container, state);
 	container.addEventListener('scroll', () => {
-		// 忽略自身程序化置底触发的 scroll 事件，否则会被误判为「用户上滚解除钉底」
-		if (state.programmatic) {
-			state.programmatic = false;
-			state.lastUserTop = container.scrollTop;
-			return;
-		}
-		// 用户手动滚动：任何向上（离开底部）意图即解除钉底，允许自由拖拽；
-		// 滚回底部（<8px）则重新钉底跟随流式增长。
-		if (container.scrollTop < state.lastUserTop) {
-			state.pinned = false;
-		} else if (container.scrollHeight - container.scrollTop - container.clientHeight < 8) {
+		const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+		// 贴近底部（<8px）→ 重新钉底跟随流式增长
+		if (distFromBottom < 8) {
 			state.pinned = true;
+		} else if (container.scrollTop < state.lastUserTop) {
+			// 用户向上滚动（滚轮/拖拽）：解除钉底并打时间戳，使后续帧暂缓强制置底，
+			// 把滚动位置交还给用户，避免与高频钉底调用争抢导致「拖不动」。
+			state.pinned = false;
+			state.lastUserScrollAt = Date.now();
+		} else {
+			// 向下滚动但未到底：保持解除，避免半路被钉回底部
+			state.pinned = false;
 		}
 		state.lastUserTop = container.scrollTop;
 	}, { passive: true });
@@ -355,7 +358,7 @@ protected _attachStreamCardPin(container: HTMLElement): void {
  *  （>50px 跳变，区别于正常拖拽的小步增量）时恢复到 lastUserTop，避免失位。 */
 protected _pinStreamCardToBottom(container: HTMLElement): void {
 	// 兜底自动挂载（2026-07-28 修复思考卡片滚动条不置底）：
-	// _pinAllScrollableBodiesToBottom 对「未溢出」的容器跳过 attach（line 363 continue），
+	// _pinAllScrollableBodiesToBottom 对「未溢出」的容器跳过 attach（continue），
 	// 导致容器首次未溢出时 _streamCardPinState 无状态。若此时调度器 afterRender 调到此，
 	// 旧逻辑 !state 早退不置底；随后全量替换 replaceChildren 把 scrollTop 物理归零，
 	// scroll 事件把 pinned 误判为 false——之后彻底不再置底。这里未挂载则先挂载（pinned
@@ -366,9 +369,14 @@ protected _pinStreamCardToBottom(container: HTMLElement): void {
 	const state = this._streamCardPinState.get(container);
 	if (!state) { return; }
 	if (state.pinned) {
-		// 置底前标记 programmatic，避免 scroll 事件把「跟随流式」误判为「用户上滚解除」
-		state.programmatic = true;
-		container.scrollTop = container.scrollHeight;
+		// 用户近期在向上滚动（拖拽中）则暂缓强制置底，把滚动位置交还给用户；
+		// 200ms 宽限足以覆盖一次拖拽手势，且不依赖不可靠的滚动条指针事件。
+		if (Date.now() - state.lastUserScrollAt < 200) { return; }
+		// 仅在确实未贴底时强制置底跟随流式增长
+		const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+		if (distFromBottom > 8) {
+			container.scrollTop = container.scrollHeight;
+		}
 	} else if (container.scrollTop < state.lastUserTop - 50) {
 		// 仅 replaceChildren 物理归零（跳变 >50px）时恢复用户位置；正常拖拽增量 <50px 不干扰
 		container.scrollTop = state.lastUserTop;

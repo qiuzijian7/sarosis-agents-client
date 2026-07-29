@@ -14,6 +14,8 @@ import { KbSection } from './kbTypes.js';
 import { IGraphNode, IGraphLink } from './kbGraphView.js';
 
 const MD_EXTS = new Set(['md', 'markdown']);
+/** 图谱节点覆盖的文档类型：markdown 双链 + 导入产生的 HTML 副本（作为孤立节点展示）。 */
+const GRAPH_NODE_EXTS = new Set(['md', 'markdown', 'html', 'htm']);
 const WIKILINK_RE = /\[\[([^\]\n]+)\]\]/g;
 /** 系统维护文件（导航/洞察/审计/报告）不进图谱，避免污染关系图。 */
 const SYS_FILES = new Set(['index.md', 'overview.md', 'insights.md', 'log.md', 'lint-report.md', 'dedup-report.md']);
@@ -72,7 +74,7 @@ export class KbLinkGraph {
 		this._reset();
 		for (const d of docs) {
 			const ext = d.name.split('.').pop()?.toLowerCase();
-			if (!ext || !MD_EXTS.has(ext)) { continue; }
+			if (!ext || !GRAPH_NODE_EXTS.has(ext)) { continue; }
 			this._indexDoc({ uri: d.uri, name: d.name, section: d.section, mtime: d.mtime }, d.text);
 		}
 	}
@@ -127,6 +129,9 @@ export class KbLinkGraph {
 		this._docs.push(meta);
 		this._nameToDoc.set(this.normalizeTarget(meta.name), meta);
 		this._textCache.set(meta.uri.toString(), text);
+		// 仅 markdown 解析 [[双链]]；HTML 等导入副本作为孤立节点展示，无出链。
+		const ext = meta.name.split('.').pop()?.toLowerCase();
+		if (!ext || !MD_EXTS.has(ext)) { return; }
 		const targets: string[] = [];
 		let m: RegExpExecArray | null;
 		const re = new RegExp(WIKILINK_RE);
@@ -159,7 +164,7 @@ export class KbLinkGraph {
 		const key = this.normalizeTarget(doc.name);
 		const sources = this._byTarget.get(key);
 		if (!sources) { return []; }
-		const baseName = doc.name.replace(/\.(md|markdown)$/i, '');
+		const baseName = doc.name.replace(/\.(md|markdown|html|htm)$/i, '');
 		const out: IBacklink[] = [];
 		for (const sid of sources) {
 			if (sid === docId) { continue; }
@@ -185,7 +190,7 @@ export class KbLinkGraph {
 			const defs = this._byTarget.get(this.normalizeTarget(d.name))?.size ?? 0;
 			return {
 				id: d.uri.toString(),
-				label: d.name.replace(/\.(md|markdown)$/i, ''),
+				label: d.name.replace(/\.(md|markdown|html|htm)$/i, ''),
 				type: 'doc',
 				refs,
 				defs,
@@ -216,7 +221,7 @@ export class KbLinkGraph {
 				// bug B：系统维护文件不进图谱，避免污染关系图
 				if (SYS_FILES.has(c.name)) { continue; }
 				const ext = c.resource.path.split('.').pop()?.toLowerCase();
-				if (!ext || !MD_EXTS.has(ext)) { continue; }
+				if (!ext || !GRAPH_NODE_EXTS.has(ext)) { continue; }
 				const meta: ILinkDocMeta = { uri: c.resource, name: c.name, section, mtime: c.mtime ?? 0 };
 				try {
 					const content = await this.fileService.readFile(c.resource);

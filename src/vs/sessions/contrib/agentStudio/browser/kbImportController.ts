@@ -49,6 +49,7 @@ export class KbImportController extends Disposable {
 	// 静态常量
 	private static readonly KB_ROOT_SUBPATH = '.vssaros/knowledge-base';
 	static readonly KB_LIBRARY_SUBPATH = '库';
+	static readonly KB_RAW_SUBPATH = 'raw';
 	static readonly KB_NOTES_SUBPATH = '笔记';
 	static readonly SYS_INDEX_FILES: readonly string[] = ['index.md', 'overview.md', 'insights.md', 'log.md', 'lint-report.md', 'dedup-report.md'];
 	static readonly SKILL_DIR = '.kb-skills';
@@ -99,7 +100,7 @@ export class KbImportController extends Disposable {
 	 *        不传则自动从 KB 视图的活动仓库（vault）推导，若未配置则回退到存储根目录。
 	 * @param sourceFile 可选：原始文件 URI（文件导入场景）。传入后库分区保存的是
 	 *        **原始文件的副本**（保留原文件名与内容），而非 frontmatter 包裹的 .md；
-	 *        分类信息由目录路径承载（库/<typeDir>/<topic>/<原始文件名>）。
+	 *        落盘到 库/raw/ 下（库/raw/<原始文件名>），分类交由后续「构建为笔记」阶段处理。
 	 */
 	async handleFavoriteMessage(content: string, currentAgentId: string | null, vaultRootUri?: URI, sourceFile?: URI): Promise<boolean> {
 		try {
@@ -111,15 +112,15 @@ export class KbImportController extends Disposable {
 			const topic = classifyResult.topic;
 			const savedPath = await this._withVaultLock(vaultRoot,
 				() => sourceFile
-					? this._saveFileToKbLibraryStructured(sourceFile, content, typeDir, topic, vaultRoot)
+					? this._saveFileToKbLibraryStructured(sourceFile, content, vaultRoot)
 					: this._saveToKbLibraryStructured(content, currentAgentId, typeDir, topic, vaultRoot));
 			this._lastLibUri = URI.file(savedPath);
-			this._logService.info(`[KbImportController] imported to KB library [${typeDir}/${topic}]: ${savedPath}`);
+			this._logService.info(`[KbImportController] imported to KB library [raw]: ${savedPath}`);
 			await KbImportController.appendKbLog(this._fileService, this._resolveNotesDir(vaultRoot),
 				`导入 → ${savedPath.split(/[\\/]/).pop() ?? savedPath}`);
 			this._notificationService.notify({
 				severity: Severity.Info,
-				message: `已保存到知识库「库」分区（${classifyResult.typeLabel}/${topic}）。可右键库文件「构建为笔记」生成结构化笔记。`,
+				message: `已保存到知识库「库/raw」分区（${classifyResult.typeLabel}/${topic}）。可右键库文件「构建为笔记」生成结构化笔记。`,
 				source: 'agent-chat-favorite',
 			});
 			// 通知 KB view 刷新文件树，确保新入库文件即时可见
@@ -501,7 +502,9 @@ export class KbImportController extends Disposable {
 		// 清理 topic 中的非法文件名字符（Windows: < > : " / \ | ? *）并限长
 		const safeTopic = KbImportController._sanitizeFsName(topic);
 		const safeTypeDir = KbImportController._sanitizeFsName(typeDir);
-		const targetDir = URI.joinPath(libDir, safeTypeDir, safeTopic);
+		// 导入的原始材料统一落到 <vault>/库/raw/（不再按 schema 分 typeDir/topic 子目录），
+		// 分类交由后续「构建为笔记」阶段处理；raw 即未加工的原始落盘区。
+		const targetDir = URI.joinPath(libDir, KbImportController.KB_RAW_SUBPATH);
 		await this._fileService.createFolder(targetDir);
 		const now = new Date();
 		const dateStr = now.toISOString().slice(0, 10);
@@ -567,16 +570,14 @@ export class KbImportController extends Disposable {
 	}
 
 	/**
-	 * 文件导入落盘：将原始文件**原样复制**到 <vault>/库/<typeDir>/<topic>/<原始文件名>，
-	 * 保留文件名与内容不变（不包 frontmatter——分类信息由目录路径承载，见 _parseLibCategory）。
+	 * 文件导入落盘：将原始文件**原样复制**到 <vault>/库/raw/<原始文件名>，
+	 * 保留文件名与内容不变（不包 frontmatter——分类交由后续「构建为笔记」阶段处理）。
 	 * 同名不同内容时自动追加 -2/-3 后缀；同内容命中去重缓存时按需迁移目录。
 	 */
-	private async _saveFileToKbLibraryStructured(sourceFile: URI, content: string, typeDir: string, topic: string, vaultRoot: URI): Promise<string> {
+	private async _saveFileToKbLibraryStructured(sourceFile: URI, content: string, vaultRoot: URI): Promise<string> {
 		const root = vaultRoot;
 		const libDir = URI.joinPath(root, KbImportController.KB_LIBRARY_SUBPATH);
-		const safeTopic = KbImportController._sanitizeFsName(topic);
-		const safeTypeDir = KbImportController._sanitizeFsName(typeDir);
-		const targetDir = URI.joinPath(libDir, safeTypeDir, safeTopic);
+		const targetDir = URI.joinPath(libDir, KbImportController.KB_RAW_SUBPATH);
 		await this._fileService.createFolder(targetDir);
 		const hash = Math.abs(content.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)).toString(36);
 		const dedupKey = `${hash}:${content.length}`;

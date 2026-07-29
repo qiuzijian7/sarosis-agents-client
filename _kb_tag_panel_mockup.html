@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>知识库 · 标签分类面板 Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bg2: #252526;
+    --bg3: #2d2d2d;
+    --border: #2a2a2a;
+    --border2: #3a3a3a;
+    --fg: #cccccc;
+    --fg-dim: #8a8a8a;
+    --fg-faint: #6a6a6a;
+    --accent: #007acc;
+    --accent2: #094771;
+    --badge-bg: #4d4d4d;
+    --tag-bg: #2a3a4a;
+    --tag-fg: #6fb3e0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #141414;
+    color: var(--fg);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    display: flex;
+    justify-content: center;
+    padding: 24px;
+  }
+  /* 模拟整个知识库侧栏 */
+  .kb-pane {
+    width: 320px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5);
+  }
+  .kb-header {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 12px; background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+  }
+  .kb-title { font-weight: 600; flex: 1; }
+  .kb-hbtn {
+    width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+    border-radius: 3px; cursor: pointer; color: var(--fg-dim); font-size: 13px;
+  }
+  .kb-hbtn:hover { background: var(--bg3); color: var(--fg); }
+  .kb-body { display: flex; flex-direction: column; max-height: 640px; }
+
+  .kb-vault-bar {
+    display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+    background: var(--bg2); border-bottom: 1px solid var(--border);
+  }
+  .kb-vname { flex: 1; font-weight: 500; }
+  .kb-caret { color: var(--fg-dim); font-size: 9px; }
+  .kb-abtn { cursor: pointer; color: var(--fg-dim); }
+  .kb-abtn:hover { color: var(--fg); }
+
+  .kb-search-row { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .kb-search-box {
+    display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+    background: #1a1a1a; border: 1px solid var(--border2); border-radius: 4px;
+  }
+  .kb-search-box input { flex: 1; background: none; border: none; outline: none; color: var(--fg); font-size: 12px; }
+  .kb-search-box input::placeholder { color: var(--fg-faint); }
+
+  .kb-scroll { flex: 1; overflow-y: auto; padding-bottom: 8px; }
+
+  /* 分区（库 / 笔记） */
+  .kb-section { border-bottom: 1px solid var(--border); }
+  .kb-section-header {
+    display: flex; align-items: center; gap: 6px; padding: 7px 12px;
+    cursor: pointer; font-weight: 600; font-size: 12px;
+  }
+  .kb-section-header:hover { background: var(--bg2); }
+  .kb-arrow { font-size: 9px; color: var(--fg-dim); width: 12px; text-align: center; }
+  .kb-section-title { flex: 1; }
+  .kb-badge {
+    font-size: 10px; padding: 0 6px; border-radius: 8px; background: var(--badge-bg); color: #ddd;
+  }
+  .kb-node {
+    display: flex; align-items: center; gap: 6px; padding: 3px 12px 3px 28px;
+    font-size: 12px; color: var(--fg); cursor: pointer;
+  }
+  .kb-node:hover { background: var(--bg2); }
+  .kb-folder { color: var(--fg); font-weight: 500; }
+
+  /* ══════ 新增：标签分类面板 ══════ */
+  .kb-tag-panel {
+    border-top: 1px solid var(--border2);
+    margin-top: 2px;
+    background: linear-gradient(180deg, #1b1f24 0%, #1e1e1e 60%);
+    flex-shrink: 0;
+  }
+  .kb-tag-header {
+    display: flex; align-items: center; gap: 6px; padding: 7px 12px;
+    font-size: 12px; font-weight: 600;
+  }
+  .kb-tag-header .kb-tag-title { flex: 1; }
+  .kb-tag-mode {
+    font-size: 10px; padding: 1px 7px; border-radius: 9px; cursor: pointer;
+    background: var(--accent2); color: #9fd0ff; border: 1px solid #0d3a5c;
+  }
+  .kb-tag-mode:hover { background: #0b5a9c; }
+
+  /* 标签筛选条（交集 chip） */
+  .kb-tag-filter {
+    display: flex; flex-wrap: wrap; gap: 5px; padding: 0 12px 8px;
+  }
+  .kb-chip {
+    font-size: 11px; padding: 2px 9px; border-radius: 11px; cursor: pointer;
+    background: var(--tag-bg); color: var(--tag-fg); border: 1px solid transparent;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .kb-chip:hover { border-color: #4d7fa6; }
+  .kb-chip.active { background: var(--accent); color: #fff; border-color: #005a9e; }
+  .kb-chip .cnt { opacity: .7; font-size: 10px; }
+  .kb-chip.clear { background: transparent; color: var(--fg-dim); border: 1px dashed var(--border2); }
+
+  /* 标签分组 */
+  .kb-tag-group { border-top: 1px solid var(--border); }
+  .kb-tag-group-head {
+    display: flex; align-items: center; gap: 6px; padding: 5px 12px; cursor: pointer;
+  }
+  .kb-tag-group-head:hover { background: var(--bg2); }
+  .kb-tag-group-head .g-arrow { font-size: 9px; color: var(--fg-dim); width: 12px; }
+  .kb-tag-group-head .g-name { color: var(--tag-fg); flex: 1; font-weight: 500; }
+  .kb-tag-group-head .g-count { font-size: 10px; color: var(--fg-faint); }
+  .kb-tag-doc {
+    display: flex; align-items: center; gap: 6px; padding: 3px 12px 3px 30px;
+    font-size: 12px; cursor: pointer; color: var(--fg);
+  }
+  .kb-tag-doc:hover { background: var(--bg2); }
+  /* 命中交集高亮 */
+  .kb-tag-doc.hit { background: rgba(0,122,204,.14); }
+  .kb-tag-empty { padding: 8px 14px; font-size: 11px; color: var(--fg-faint); }
+
+  /* 拖拽条 */
+  .kb-drag-handle { height: 3px; background: var(--border); cursor: row-resize; }
+  .kb-drag-handle:hover { background: var(--accent2); }
+
+  /* 记忆库 */
+  .kb-mem-section { display: flex; flex-direction: column; }
+  .kb-mem-header {
+    display: flex; align-items: center; gap: 6px; padding: 7px 12px;
+    background: var(--bg2); cursor: pointer; font-weight: 600;
+    border-top: 1px solid var(--border);
+  }
+  .kb-mem-arrow { font-size: 9px; color: var(--fg-dim); width: 12px; text-align: center; }
+  .kb-mem-label { flex: 1; }
+  .kb-mem-entry {
+    margin: 6px 10px; padding: 9px 12px; border-radius: 4px;
+    background: var(--bg2); border: 1px solid var(--border); cursor: pointer;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .kb-mem-entry:hover { background: #252525; border-color: var(--border2); }
+  .kb-mem-entry .e-title { font-size: 12px; color: #ddd; }
+  .kb-mem-entry .e-meta { font-size: 10px; color: var(--fg-faint); margin-top: 2px; }
+
+  /* 标注说明 */
+  .annot {
+    margin-left: 24px; max-width: 360px; font-size: 12px; color: #bbb;
+    line-height: 1.7; align-self: flex-start;
+  }
+  .annot h3 { color: #9fd0ff; margin: 0 0 8px; font-size: 14px; }
+  .annot code { background: #2d2d2d; padding: 1px 5px; border-radius: 3px; color: #e6b673; }
+  .annot .pro { color: #7ec98f; }
+  .annot .con { color: #e08a8a; }
+  .wrap { display: flex; align-items: flex-start; gap: 8px; }
+  .legend {
+    display:inline-block; width:11px; height:11px; border-radius:2px; vertical-align:middle; margin-right:4px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- 知识库侧栏 mockup -->
+  <div class="kb-pane">
+    <!-- header -->
+    <div class="kb-header">
+      <span class="kb-title">📚 知识库</span>
+      <span class="kb-hbtn" title="关系图谱">🕸️</span>
+      <span class="kb-hbtn" title="刷新">⟳</span>
+      <span class="kb-hbtn" title="批量构建笔记">🏗️</span>
+      <span class="kb-hbtn" title="设置">⚙</span>
+    </div>
+
+    <div class="kb-body">
+      <!-- vault bar -->
+      <div class="kb-vault-bar">
+        <span>📚</span>
+        <span class="kb-vname">我的知识库</span>
+        <span class="kb-caret">▼</span>
+        <span class="kb-abtn" title="记忆库">🧠</span>
+        <span class="kb-abtn" title="视图：树/标签/最近">📂</span>
+      </div>
+
+      <!-- search -->
+      <div class="kb-search-row">
+        <div class="kb-search-box">
+          <span>🔍</span>
+          <input placeholder="搜索知识库 (全文 / 标题 / 标签)…" />
+        </div>
+      </div>
+
+      <!-- scroll area -->
+      <div class="kb-scroll">
+        <!-- 库 -->
+        <div class="kb-section">
+          <div class="kb-section-header">
+            <span class="kb-arrow">▼</span>
+            <span class="kb-section-title">库</span>
+            <span class="kb-badge">5</span>
+          </div>
+          <div class="kb-node kb-folder">📁 库</div>
+        </div>
+
+        <!-- 笔记 -->
+        <div class="kb-section">
+          <div class="kb-section-header">
+            <span class="kb-arrow">▼</span>
+            <span class="kb-section-title">笔记</span>
+            <span class="kb-badge">4</span>
+          </div>
+          <div class="kb-node">📄 index.md</div>
+          <div class="kb-node">📄 insights.md</div>
+          <div class="kb-node">📄 log.md</div>
+          <div class="kb-node">📄 overview.md</div>
+        </div>
+
+        <!-- ══════ 标签分类面板（替代原双链面板） ══════ -->
+        <div class="kb-tag-panel">
+          <div class="kb-tag-header">
+            <span>🏷️</span>
+            <span class="kb-tag-title">标签分类</span>
+            <span class="kb-tag-mode" title="切换交集/并集筛选">交集 AND</span>
+          </div>
+
+          <!-- 标签筛选条 -->
+          <div class="kb-tag-filter">
+            <span class="kb-chip active">#项目A <span class="cnt">4</span></span>
+            <span class="kb-chip">#概览 <span class="cnt">2</span></span>
+            <span class="kb-chip">#洞察 <span class="cnt">1</span></span>
+            <span class="kb-chip">#周报 <span class="cnt">1</span></span>
+            <span class="kb-chip">#日志 <span class="cnt">1</span></span>
+            <span class="kb-chip">#汇报 <span class="cnt">1</span></span>
+            <span class="kb-chip clear">✕ 清除</span>
+          </div>
+
+          <!-- 标签分组：每个标签下列出含该标签的文档 -->
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head">
+              <span class="g-arrow">▼</span>
+              <span class="g-name">#项目A</span>
+              <span class="g-count">4 篇</span>
+            </div>
+            <div class="kb-tag-doc hit">📄 index.md <span style="color:#6a6a6a;font-size:10px;">#概览</span></div>
+            <div class="kb-tag-doc hit">📄 insights.md <span style="color:#6a6a6a;font-size:10px;">#洞察 #周报</span></div>
+            <div class="kb-tag-doc hit">📄 log.md <span style="color:#6a6a6a;font-size:10px;">#日志</span></div>
+            <div class="kb-tag-doc hit">📄 overview.md <span style="color:#6a6a6a;font-size:10px;">#概览 #汇报</span></div>
+          </div>
+
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head">
+              <span class="g-arrow">▼</span>
+              <span class="g-name">#概览</span>
+              <span class="g-count">2 篇</span>
+            </div>
+            <div class="kb-tag-doc">📄 index.md</div>
+            <div class="kb-tag-doc">📄 overview.md</div>
+          </div>
+
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head">
+              <span class="g-arrow">▼</span>
+              <span class="g-name">#洞察</span>
+              <span class="g-count">1 篇</span>
+            </div>
+            <div class="kb-tag-doc">📄 insights.md</div>
+          </div>
+
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head">
+              <span class="g-arrow">▼</span>
+              <span class="g-name">#无标签</span>
+              <span class="g-count">1 篇</span>
+            </div>
+            <div class="kb-tag-doc">📄 raw_未处理文档.md</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 拖拽分隔 -->
+    <div class="kb-drag-handle" title="拖拽调整知识库 / 记忆库高度"></div>
+
+    <!-- 记忆库 -->
+    <div class="kb-mem-section">
+      <div class="kb-mem-header">
+        <span class="kb-mem-arrow">▼</span>
+        <span>🧠</span>
+        <span class="kb-mem-label">记忆库</span>
+        <span class="kb-abtn">⟳</span>
+      </div>
+      <div class="kb-mem-entry">
+        <span style="font-size:18px;">🧠</span>
+        <div>
+          <div class="e-title">查看完整记忆</div>
+          <div class="e-meta">点击打开 MemoryDetailEditorPane</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设计说明 -->
+  <div class="annot">
+    <h3>设计说明 · 标签分类面板</h3>
+    <p><span class="legend" style="background:#2a3a4a;"></span>原「双链面板」区域（红框）改为 <b>标签分类索引</b>：</p>
+    <ul>
+      <li>顶部 <b>标签筛选条</b>：可点选多个标签做 <b>交集 AND / 并集 OR</b> 过滤，命中文档高亮。</li>
+      <li>中部 <b>标签分组</b>：每个标签可折叠，列出含该标签的文档；同一文档可出现在多个分组（多维归属）。</li>
+      <li>底部 <b>#无标签</b> 分组兜底，避免导入 raw 文件时面板再次变空。</li>
+    </ul>
+    <p class="pro">✓ 优点：显式可控、复用现有标签索引、多维归属、填补空白区、支持交集检索、对无链接的 raw 文件友好。</p>
+    <p class="con">✗ 缺点：丢失真正"双链"出/反链语义与溯源；标签需维护词表；与现有「标签云」视图可能冗余；反链能力需另寻出口（如编辑器内"查看引用"）。</p>
+    <p style="color:#888;">实现上复用 <code>_index.searchByTag</code> 与 <code>renderTagView</code> 基建；标签来源沿用 <code>#标签#</code> 内联语法 / frontmatter。</p>
+  </div>
+</div>
+</body>
+</html>

@@ -2019,6 +2019,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private async handleImport(kind: KbImportKind): Promise<void> {
 		if (!this._activeVault) { return; }
 		const target = this.sectionUri(this._activeVault, 'library');
+		// 导入的原始材料（文档/URL/文件夹）统一落入「库/raw」分区，分类交由后续「构建为笔记」阶段处理。
+		const rawTarget = URI.joinPath(target, 'raw');
 
 		// ── URL 导入 → 确定性下载 + SSRF 防护 + 缓存 + 库分区按 schema 落盘（两阶段：库→笔记） ──
 		if (kind === 'url') {
@@ -2050,7 +2052,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			// 确定性下载 + 落盘到库分区
 			this.notificationService.info(localize('kb.urlFetching', '正在下载并导入...'));
 			try {
-				await this.importFromUrl(url, target);
+				await this.importFromUrl(url, rawTarget);
 
 				// 导入成功后：通知用户可稍后构建笔记
 				this.notificationService.info(localize('kb.urlImportedToLib', '已保存到知识库「库」分区。可右键文件「构建为笔记」生成结构化笔记。'));
@@ -2072,7 +2074,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 						title: '导入文件夹（拷贝）', canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
 					});
 					if (picked?.length) {
-						const dest = URI.joinPath(target, this.baseName(picked[0]));
+						const dest = URI.joinPath(rawTarget, this.baseName(picked[0]));
 						await this.copyRecursive(picked[0], dest);
 						void this._logOp('kb.import.folder', 'success', { source: picked[0].fsPath, target: dest.fsPath });
 						void this._importFolderRagAsync(dest.fsPath, this._activeVault);
@@ -2109,7 +2111,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				const picked = await this.fileDialogService.showOpenDialog({ title: '导入文件', canSelectFiles: true, canSelectFolders: false, canSelectMany: true });
 				if (picked?.length) {
 					for (const f of picked) {
-						const dest = URI.joinPath(target, this.baseName(f));
+						const dest = URI.joinPath(rawTarget, this.baseName(f));
 						await this.copyRecursive(f, dest);
 						void this._logOp('kb.import.files', 'success', { source: f.fsPath, target: dest.fsPath });
 					}
@@ -3736,23 +3738,33 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 */
 	private async _openGraph(): Promise<void> {
 		if (!this._activeVault) { return; }
-		if (this._searchDirty) {
-			await this.rebuildSearchAssets();
+		try {
+			// 关系图谱与搜索索引是两条独立链路：图谱只覆盖库/笔记分区的文档，
+			// 直接基于磁盘重建即可（开销很小），不依赖可能失败的搜索索引/Worker 构建，
+			// 否则搜索索引构建抛错会让图谱按钮静默无响应。
+			if (this._searchDirty) {
+				// 先尝试重建搜索索引，失败不影响图谱打开
+				this.rebuildSearchAssets().catch(e => this.logService.warn('[KB graph] search index rebuild failed (non-fatal)', e));
+			}
+			await this._buildNoteGraph();
+			const { nodes, links } = this._graph.getGraphData();
+			if (nodes.length === 0) {
+				this.notificationService.info('知识库暂无可绘制的关系（先导入或创建带双链的笔记）');
+				return;
+			}
+			// 携带库/笔记分区根目录（不含关联的代码仓库），供「关系图谱」EditorPane 内的「构建图谱」按钮重新扫描
+			const roots = this.buildGraphRoots();
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			await this.editorService.openEditor(
+				new KbGraphEditorInput(nodes, links, '关系图谱', roots),
+				{ pinned: true },
+				targetGroup,
+			);
+		} catch (e) {
+			this.logService.error('[KB graph] open failed', e);
+			this.notificationService.error('打开关系图谱失败：' + (e instanceof Error ? e.message : String(e)));
 		}
-		const { nodes, links } = this._graph.getGraphData();
-		if (nodes.length === 0) {
-			this.notificationService.info('知识库暂无可绘制的关系（先导入或创建带双链的笔记）');
-			return;
-		}
-		// 携带库/笔记分区根目录（不含关联的代码仓库），供「关系图谱」EditorPane 内的「构建图谱」按钮重新扫描
-		const roots = this.buildGraphRoots();
-		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
-		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
-		this.editorService.openEditor(
-			new KbGraphEditorInput(nodes, links, '关系图谱', roots),
-			{ pinned: true },
-			targetGroup,
-		);
 	}
 
 	/** 关系图谱根目录：仅库+笔记分区（排除关联的代码仓库），供图谱构建与 EditorPane 重扫使用。 */
@@ -4018,109 +4030,6 @@ description: 导入 Obsidian 库（关联文件夹）：扫描 .md 文件 → �
 	private async _onNoteSedimentationClick(): Promise<void> {
 		// TODO: 笔记沉淀功能开发中，暂未实现，仅占位
 		this.notificationService.info('笔记沉淀功能开发中，敬请期待');
-	}
-
-	// ─── 结构化抽取（打开「知识库专家」Agent 自动抽取当前「库」分区，未来笔记沉淀功能落地后复用）─────────────
-
-	private async _onStructuredExtractClick(): Promise<void> {
-		if (!this._activeVault) {
-			this.notificationService.warn('请先选择一个知识库');
-			return;
-		}
-		const agentId = KnowledgeBaseViewPane.KB_AGENT_ID;
-		const skillId = 'structured-extract';
-
-		try {
-			// 1. Ensure skill exists and is mounted
-			await this._ensureStructuredExtractSkill(agentId, skillId);
-
-			// 2. Open KB agent chat
-			this.modelSelectorService.setSelectedAgentId(agentId);
-			this.agentStudioService.fireSelectAgent(agentId);
-			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
-
-			// 3. Send structured-extract command
-			const libUri = this.sectionUri(this._activeVault, 'library');
-			const message =
-				`[skill:${skillId}] 请对当前知识库「${this._activeVault.name}」的「库」分区（路径：${libUri.fsPath}）进行结构化抽取：` +
-				`逐文档阅读，提炼实体/概念/流程，整理为带 [[wikilinks]] 的结构化笔记输出到「笔记」分区；若同名笔记已存在则增量合并。`;
-			this.configHtmlService.requestChatSend(agentId, message);
-
-			this.notificationService.info(`已打开「知识库专家」并发送结构化抽取指令（库分区：${libUri.fsPath}）`);
-		} catch (err) {
-			this.logService.error(`[KB] 结构化抽取失败: ${err}`);
-			this.notificationService.error(`结构化抽取失败：${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	private async _ensureStructuredExtractSkill(agentId: string, skillId: string): Promise<void> {
-		const skillsRoot = resolveSarosPath(
-			URI.file((this.environmentService as INativeEnvironmentService).userDataPath),
-			SarosPath.skills,
-		);
-		const skillMdUri = URI.joinPath(skillsRoot, skillId, 'SKILL.md');
-
-		try {
-			await this.fileService.stat(skillMdUri);
-		} catch {
-			// 技能文件不存在 → 写入默认 SKILL.md
-			const md = this._buildStructuredExtractSkillMd(skillId);
-			await this.fileService.createFolder(dirname(skillMdUri));
-			await this.fileService.writeFile(skillMdUri, VSBuffer.fromString(md));
-			this.logService.info(`[KB] created ${skillId} skill at ${skillMdUri.toString()}`);
-		}
-
-		// 重新扫描技能目录，让 SkillRegistry 发现它
-		await this._skillRegistry.reload();
-
-		// 挂载到 知识库专家 agent
-		const agent = await this.agentStudioService.getAgent(agentId);
-		if (agent && !(agent.skills ?? []).includes(skillId)) {
-			const skills = [...(agent.skills ?? []), skillId];
-			await this.agentStudioService.updateAgent(agentId, { skills } as any);
-			this.logService.info(`[KB] mounted ${skillId} skill to agent ${agentId}`);
-		}
-
-		// 同步到记忆引擎（best-effort）
-		try {
-			const memProvider = this._agentOSService.getActiveMemoryProvider();
-			if (memProvider?.writeSkillFile) {
-				await memProvider.writeSkillFile(agentId, skillId);
-			}
-		} catch { /* 忽略 */ }
-	}
-
-	private _buildStructuredExtractSkillMd(skillId: string): string {
-		return `---
-name: ${skillId}
-description: 对知识库「库」分区文档进行结构化抽取，输出带 wikilinks 的结构化笔记到「笔记」分区
----
-
-# 结构化抽取（Structured Extraction）
-
-你负责把知识库「库」分区中的非结构化文档，转化为结构化、可检索、互相链接的笔记。
-
-## 输入
-- 由调用方通过消息提供目标「库」分区路径（或具体文档）。
-
-## 流程
-1. 列出「库」分区中的文档，逐篇阅读。
-2. 对每篇文档提炼：
-   - 核心实体 / 概念（名词短语）
-   - 关键流程 / 步骤
-   - 关键结论 / 参数 / 命令
-3. 为提炼出的概念生成独立的 Markdown 笔记，文件名用概念 slug，正文包含：
-   - 一句话定义
-   - 要点列表
-   - 与相关概念的 [[wikilink]] 双向链接
-4. 将笔记写入「笔记」分区；若同名笔记已存在，执行增量合并（去重、补全、保留来源引用）。
-5. 完成后输出一份抽取摘要（共处理 N 篇文档、新建 M 条笔记、更新 K 条笔记）。
-
-## 约束
-- 使用中文。
-- 只基于「库」分区真实内容抽取，不臆造。
-- 笔记之间尽量用 [[概念]] 互链，形成知识网络。
-`;
 	}
 
 	override dispose(): void {

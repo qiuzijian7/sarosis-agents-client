@@ -351,7 +351,7 @@ export class AutoGraph extends BaseAutoType<GraphData> {
 
 	// ── Merge ─────────────────────────────
 
-	mergeBatchData(
+	protected mergeBatchData(
 		data: GraphData[] | [KnowledgeItem[][], KnowledgeItem[][]],
 	): GraphData {
 		let allNodes: KnowledgeItem[];

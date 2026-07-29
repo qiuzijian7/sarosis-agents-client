@@ -354,31 +354,38 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		append(resLabel, $('span')).textContent = '执行结果';
 		const resWrap = append(resSec, $('div.du-results'));
 		if (childSubs.length > 0) {
-			for (const sa of childSubs) {
-				const r = append(resWrap, $('div.du-result'));
-				const rhead = append(r, $('div.du-result-head'));
-				const badgeLetter = sa.type === 'explore' ? 'E' : sa.type === 'scout' ? 'S' : 'G';
-				const badge = append(rhead, $('span.du-result-badge'));
-				badge.textContent = badgeLetter;
-				if (sa.type) { badge.classList.add(`du-badge-${sa.type}`); }
-				append(rhead, $('span.du-result-role')).textContent = sa.type || 'agent';
-				append(rhead, $('span.du-result-task')).textContent = formatSubAgentTask(sa.task, '');
-				const stText = sa.status === 'running' ? '执行中' : sa.status === 'done' ? '完成'
-					: sa.status === 'error' ? '失败' : sa.status === 'cancelled' ? '已取消' : '等待';
-				const stCount = sa.toolTraces?.length ? ` · ${sa.toolTraces.length} 步` : '';
-				append(rhead, $('span.du-result-st')).textContent = stText + stCount;
-				const out = append(r, $('div.du-output'));
-				if (sa.output) {
-					out.textContent = sa.output.slice(0, 4000);
-				} else if (sa.error) {
-					out.classList.add('error');
-					out.textContent = `错误：${sa.error.slice(0, 2000)}`;
-				} else if (sa.status === 'running') {
-					out.classList.add('du-output-empty');
-					out.textContent = '（执行中 · 暂无可输出结果）';
-				} else {
-					out.classList.add('du-output-empty');
-					out.textContent = '（无输出）';
+			// 仍有子代理在执行中：暂不展示任何执行结果（避免未完成子代理的片段/占位误导用户）。
+			// 待所有子代理进入终态（done/error/cancelled）后再渲染结果，符合「未执行完毕不显示结果」。
+			const anySubRunning = childSubs.some((s: any) => s.status === 'running');
+			if (anySubRunning) {
+				append(resWrap, $('div.du-output-empty')).textContent = '（子 Agent 执行中，完成后展示执行结果…）';
+			} else {
+				for (const sa of childSubs) {
+					const r = append(resWrap, $('div.du-result'));
+					const rhead = append(r, $('div.du-result-head'));
+					const badgeLetter = sa.type === 'explore' ? 'E' : sa.type === 'scout' ? 'S' : 'G';
+					const badge = append(rhead, $('span.du-result-badge'));
+					badge.textContent = badgeLetter;
+					if (sa.type) { badge.classList.add(`du-badge-${sa.type}`); }
+					append(rhead, $('span.du-result-role')).textContent = sa.type || 'agent';
+					append(rhead, $('span.du-result-task')).textContent = formatSubAgentTask(sa.task, '');
+					const stText = sa.status === 'running' ? '执行中' : sa.status === 'done' ? '完成'
+						: sa.status === 'error' ? '失败' : sa.status === 'cancelled' ? '已取消' : '等待';
+					const stCount = sa.toolTraces?.length ? ` · ${sa.toolTraces.length} 步` : '';
+					append(rhead, $('span.du-result-st')).textContent = stText + stCount;
+					const out = append(r, $('div.du-output'));
+					if (sa.output) {
+						out.textContent = sa.output.slice(0, 4000);
+					} else if (sa.error) {
+						out.classList.add('error');
+						out.textContent = `错误：${sa.error.slice(0, 2000)}`;
+					} else if (sa.status === 'running') {
+						out.classList.add('du-output-empty');
+						out.textContent = '（执行中 · 暂无可输出结果）';
+					} else {
+						out.classList.add('du-output-empty');
+						out.textContent = '（无输出）';
+					}
 				}
 			}
 		} else {
