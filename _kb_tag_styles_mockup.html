@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>知识库 · 标签 View（多类型可选样式）</title>
+<style>
+  :root{
+    --bg:#1e1e1e; --panel:#252526; --panel2:#2d2d30; --border:#3c3c3c;
+    --fg:#d4d4d4; --muted:#858585; --accent:#0e639c; --accent2:#3794ff;
+    --chip:#3a3d41; --chip-fg:#cfd8e3; --danger:#f14c4c; --ok:#4ec9b0;
+    --warn:#cca700; --hl:#3a3a00; --sel:#37373d;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:"Segoe UI",-apple-system,"Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--fg);font-size:13px;}
+  .kb{display:flex;flex-direction:column;height:100vh;max-width:1180px;margin:0 auto;
+      border-left:1px solid var(--border);border-right:1px solid var(--border);}
+  .kb-head{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);
+           border-bottom:1px solid var(--border);}
+  .kb-head .title{font-weight:600;font-size:14px;}
+  .spacer{flex:1;}
+
+  /* 视图类型选择器 */
+  .types{display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px;background:var(--panel2);
+         border-bottom:1px solid var(--border);}
+  .types .lbl{color:var(--muted);align-self:center;font-size:12px;margin-right:4px;}
+  .types button{background:var(--bg);border:1px solid var(--border);color:var(--muted);
+        padding:5px 12px;border-radius:14px;cursor:pointer;font-size:12px;}
+  .types button:hover{color:var(--fg);border-color:var(--accent2);}
+  .types button.active{background:var(--accent);border-color:var(--accent);color:#fff;}
+
+  .ctrl{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--panel2);
+        border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  .ctrl input[type=text]{background:var(--bg);border:1px solid var(--border);color:var(--fg);
+        padding:5px 9px;border-radius:5px;min-width:160px;outline:none;}
+  .ctrl select{background:var(--bg);border:1px solid var(--border);color:var(--fg);
+        padding:4px 6px;border-radius:5px;outline:none;}
+  .ctrl label{color:var(--muted);font-size:12px;}
+  .selhint{margin-left:auto;color:var(--muted);font-size:11px;}
+
+  .body{flex:1;overflow:auto;padding:14px;}
+  .chip{display:inline-flex;align-items:center;gap:4px;background:var(--chip);color:var(--chip-fg);
+        padding:2px 4px 2px 9px;border-radius:12px;font-size:11px;}
+  .chip .x{cursor:pointer;width:14px;height:14px;border-radius:50%;display:inline-flex;
+        align-items:center;justify-content:center;color:var(--muted);font-size:11px;line-height:1;}
+  .chip .x:hover{background:var(--danger);color:#fff;}
+  .chip.untag{opacity:.7;font-style:italic;}
+  .tagword{color:#fff;font-weight:500;}
+  .tagword.sel{outline:2px solid var(--accent2);outline-offset:2px;border-radius:4px;padding:0 2px;}
+
+  /* 类型1：分组列表 */
+  .group{margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+  .group-hd{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel);cursor:pointer;}
+  .group-hd:hover{background:var(--panel2);}
+  .group-hd .twist{color:var(--muted);font-size:10px;width:14px;}
+  .group-hd .gname{font-weight:600;}
+  .group-hd .gcount{color:var(--muted);font-size:11px;}
+  .group-bd{display:none;padding:6px 10px 10px;background:var(--bg);}
+  .group.open .group-bd{display:block;}
+  .doc{display:flex;align-items:flex-start;gap:8px;padding:7px 8px;border-radius:6px;margin-top:4px;}
+  .doc:hover{background:var(--panel2);}
+  .doc .caret{width:14px;color:var(--muted);font-size:10px;cursor:pointer;flex:none;padding-top:2px;}
+  .doc .name{font-weight:500;flex:none;min-width:150px;cursor:pointer;}
+  .doc .chips{display:flex;flex-wrap:wrap;gap:5px;align-items:center;}
+  .doc .detail{display:none;width:100%;color:var(--muted);font-size:12px;margin-top:4px;
+        padding-top:6px;border-top:1px dashed var(--border);white-space:pre-wrap;}
+
+  /* 类型2：卡片网格 */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;
+        display:flex;flex-direction:column;gap:8px;}
+  .card .chd{display:flex;align-items:center;gap:6px;}
+  .card .ctitle{font-weight:600;font-size:13px;}
+  .card .ccount{margin-left:auto;color:var(--muted);font-size:11px;}
+  .card .cdocs{display:flex;flex-direction:column;gap:5px;max-height:170px;overflow:auto;}
+  .card .cdoc{display:flex;align-items:center;gap:6px;font-size:12px;}
+  .card .cdoc .dn{color:var(--fg);min-width:110px;}
+  .card .cdoc .chips{display:flex;flex-wrap:wrap;gap:4px;}
+
+  /* 类型3：标签云 */
+  .cloud{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding:18px 6px;}
+  .cloud .t{cursor:pointer;line-height:1;padding:4px 2px;user-select:none;transition:transform .12s;}
+  .cloud .t:hover{transform:translateY(-2px);}
+  .cloud .t .n{font-size:10px;color:var(--muted);vertical-align:super;margin-left:2px;}
+
+  /* 类型4：层级树 */
+  .tree{font-size:13px;}
+  .tree .node{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:5px;cursor:pointer;}
+  .tree .node:hover{background:var(--panel2);}
+  .tree .node.leaf .tag-name{cursor:pointer;}
+  .tree .node.leaf .tag-name:hover{text-decoration:underline;}
+  .tree .twist{width:14px;color:var(--muted);font-size:10px;}
+  .tree .count{margin-left:auto;color:var(--muted);font-size:11px;}
+  .tree .children{margin-left:16px;border-left:1px dashed var(--border);padding-left:6px;}
+
+  /* 类型5：紧凑表格 */
+  table.tbl{width:100%;border-collapse:collapse;font-size:12px;}
+  table.tbl th,table.tbl td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);}
+  table.tbl th{color:var(--muted);font-weight:500;background:var(--panel);position:sticky;top:0;}
+  table.tbl tr:hover td{background:var(--panel2);}
+  table.tbl .dn{font-weight:500;white-space:nowrap;}
+  table.tbl .tcol{display:flex;flex-wrap:wrap;gap:4px;}
+
+  .note{margin-top:18px;padding:12px 14px;background:var(--panel);border:1px solid var(--border);
+        border-radius:8px;line-height:1.7;}
+  .note h3{margin:0 0 6px;font-size:13px;color:var(--accent2);}
+  .note code{background:var(--bg);padding:1px 5px;border-radius:4px;color:var(--ok);}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;color:var(--muted);font-size:11px;}
+  .legend span{display:inline-flex;align-items:center;gap:4px;}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block;}
+</style>
+</head>
+<body>
+<div class="kb">
+  <div class="kb-head">
+    <span>📚</span><span class="title">知识库</span>
+    <span>🕸️</span>
+    <div class="spacer"></div>
+  </div>
+
+  <!-- 多类型样式选择器 -->
+  <div class="types" id="types">
+    <span class="lbl">标签 View 样式：</span>
+    <button data-type="list" class="active">① 分组列表</button>
+    <button data-type="grid">② 卡片网格</button>
+    <button data-type="cloud">③ 标签云</button>
+    <button data-type="tree">④ 层级树</button>
+    <button data-type="table">⑤ 紧凑表格</button>
+  </div>
+
+  <div class="ctrl">
+    <input type="text" id="search" placeholder="🔍 搜索标签 / 文档…" />
+    <div style="display:flex;gap:8px;align-items:center;">
+      <label>排序</label>
+      <select id="sort">
+        <option value="hot">热度 ↓</option>
+        <option value="alpha">字母 ↑</option>
+        <option value="hier">层级</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <label>仅显示 ≥</label>
+      <select id="minc">
+        <option value="1">1 篇</option>
+        <option value="2">2 篇</option>
+        <option value="3">3 篇</option>
+      </select>
+    </div>
+    <span class="selhint" id="selHint">未选中标签（点标签仅高亮，不跳转）</span>
+  </div>
+
+  <div class="body" id="body"></div>
+
+  <div class="note">
+    <h3>本次重设计说明（未改动项目代码）</h3>
+    <div>• <b>移除跳转</b>：标签云 / 层级树 / 表格中的标签点击<b>不再切换视图或滚动定位</b>，仅做「选中高亮」+ 同视图内淡化非匹配项，避免打断浏览。</div>
+    <div>• <b>多类型可选样式</b>：顶部「标签 View 样式」提供 5 种视觉形态，用户可一键切换，数据同源：</div>
+    <div>&nbsp;&nbsp;① <code>分组列表</code> 可折叠分组 + 文档 chip（× 移除标签）。</div>
+    <div>&nbsp;&nbsp;② <code>卡片网格</code> 每标签一张卡片，网格自适应，文档 chip 可移除。</div>
+    <div>&nbsp;&nbsp;③ <code>标签云</code> 字号∝文档数，纯浏览高亮。</div>
+    <div>&nbsp;&nbsp;④ <code>层级树</code> 父子折叠，点标签仅高亮。</div>
+    <div>&nbsp;&nbsp;⑤ <code>紧凑表格</code> 文档×标签 密集行，适合大量数据扫描。</div>
+    <div>• 列表/网格中仍保留 <code>×</code> 移除标签（实时重分类），且<b>无「+ 标签」添加框</b>（添加收敛到编辑器/右键）。</div>
+    <div class="legend">
+      <span><i class="dot" style="background:#3794ff"></i>项目类</span>
+      <span><i class="dot" style="background:#4ec9b0"></i>主题类</span>
+      <span><i class="dot" style="background:#cca700"></i>类型类</span>
+    </div>
+  </div>
+</div>
+
+<script>
+const TAG_META={'项目A':'#3794ff','项目B':'#3794ff','项目C':'#3794ff',
+  '前端':'#4ec9b0','后端':'#4ec9b0','复盘':'#4ec9b0','周报':'#4ec9b0',
+  '会议纪要':'#cca700','草稿':'#cca700','重要':'#cca700'};
+const HIER={'项目A':['前端','后端','复盘'],'项目B':['前端','周报'],'类型':['会议纪要','草稿','重要']};
+let docs=[
+  {name:'index.md',tags:['项目A','周报'],detail:'知识库入口索引文档。\n记录各项目概览与导航。'},
+  {name:'insights.md',tags:['项目A','前端','复盘'],detail:'前端架构洞察与踩坑记录。'},
+  {name:'log.md',tags:['周报'],detail:'每周工作日志。'},
+  {name:'overview.md',tags:['项目A'],detail:'项目A 总体概述。'},
+  {name:'meeting_0715.md',tags:['项目B','会议纪要','重要'],detail:'0715 项目B 评审会议纪要。'},
+  {name:'draft_idea.md',tags:['草稿'],detail:'未定稿的想法草稿。'},
+  {name:'raw_未处理.md',tags:[],detail:'外部导入、尚未标注的原始文档。'}
+];
+let curType='list', selectedTag=null;
+let expandedGroups=new Set(), expandedDocs=new Set();
+
+const allTags=()=>{const m={};docs.forEach(d=>d.tags.forEach(t=>m[t]=(m[t]||0)+1));return m;};
+const colorOf=t=>TAG_META[t]||'#888';
+const cssId=t=>'t_'+t.replace(/[^a-z0-9一-龥]/gi,'_');
+const qf=()=>document.getElementById('search').value.trim().toLowerCase();
+const mincf=()=>+document.getElementById('minc').value;
+const sortf=()=>document.getElementById('sort').value;
+
+// 类型切换
+document.querySelectorAll('#types button').forEach(b=>{
+  b.onclick=()=>{curType=b.dataset.type;
+    document.querySelectorAll('#types button').forEach(x=>x.classList.toggle('active',x===b));
+    render();};
+});
+document.getElementById('search').oninput=render;
+document.getElementById('sort').onchange=render;
+document.getElementById('minc').onchange=render;
+
+// 标签选中（仅高亮，不跳转）
+function toggleSelect(t){
+  selectedTag = selectedTag===t ? null : t;
+  document.getElementById('selHint').textContent = selectedTag
+    ? '已选中 #'+selectedTag+'（同视图内淡化非匹配，不跳转）' : '未选中标签（点标签仅高亮，不跳转）';
+  render();
+}
+const dim = t => selectedTag && t!==selectedTag;
+
+// ============ 渲染分发 ============
+function render(){
+  const b=document.getElementById('body'); b.innerHTML='';
+  ({list:renderList,grid:renderGrid,cloud:renderCloud,tree:renderTree,table:renderTable})[curType](b);
+}
+
+// ① 分组列表
+function renderList(b){
+  const tm=allTags(), minc=mincf(), q=qf();
+  let tags=Object.keys(tm).filter(t=>tm[t]>=minc);
+  tags.sort((a,c)=> sortf()==='hot'?tm[c]-tm[a]:a.localeCompare(c,'zh'));
+  const root=document.createElement('div');
+  tags.forEach(t=>{
+    let ds=docs.filter(d=>d.tags.includes(t));
+    if(q && !(t.toLowerCase().includes(q)||ds.some(d=>d.name.toLowerCase().includes(q)))) return;
+    const g=document.createElement('div');g.className='group'+(expandedGroups.has(t)?' open':'');
+    g.innerHTML='<div class="group-hd"><span class="twist">'+(expandedGroups.has(t)?'▾':'▸')+'</span>'+
+      '<span class="gname" style="color:'+colorOf(t)+'">#'+t+'</span><span class="gcount">'+ds.length+' 篇</span></div>';
+    const bd=document.createElement('div');bd.className='group-bd';
+    ds.forEach(d=>bd.appendChild(renderDoc(d)));
+    g.querySelector('.group-hd').onclick=()=>{expandedGroups.has(t)?expandedGroups.delete(t):expandedGroups.add(t);
+      g.classList.toggle('open');g.querySelector('.twist').textContent=expandedGroups.has(t)?'▾':'▸';};
+    g.appendChild(bd);root.appendChild(g);
+  });
+  const unt=docs.filter(d=>d.tags.length===0);
+  if(unt.length && minc<=1){const g=document.createElement('div');g.className='group';
+    g.innerHTML='<div class="group-hd"><span class="twist">▸</span><span class="gname" style="color:var(--muted)">#无标签</span><span class="gcount">'+unt.length+' 篇</span></div>';
+    const bd=document.createElement('div');bd.className='group-bd';unt.forEach(d=>bd.appendChild(renderDoc(d)));g.appendChild(bd);root.appendChild(g);}
+  b.appendChild(root);
+}
+function renderDoc(d){
+  const el=document.createElement('div');el.className='doc';
+  const open=expandedDocs.has(d.name);
+  el.style.opacity = dim(d.name)? 0.4 : 1;
+  el.innerHTML='<span class="caret">'+(open?'▾':'▸')+'</span><span class="name">'+d.name+'</span><span class="chips"></span>';
+  const chips=el.querySelector('.chips');
+  if(d.tags.length===0)chips.innerHTML='<span class="chip untag">（无标签）</span>';
+  d.tags.forEach(t=>{const c=document.createElement('span');c.className='chip';c.style.borderLeft='3px solid '+colorOf(t);
+    c.innerHTML='#'+t+'<span class="x">×</span>';
+    c.querySelector('.x').onclick=e=>{e.stopPropagation();d.tags=d.tags.filter(x=>x!==t);render();};
+    chips.appendChild(c);});
+  const det=document.createElement('div');det.className='detail';det.textContent=d.detail||'（无预览）';det.style.flexBasis='100%';
+  el.appendChild(det);
+  const tog=()=>{expandedDocs.has(d.name)?(expandedDocs.delete(d.name),det.style.display='none',el.querySelector('.caret').textContent='▸'):(expandedDocs.add(d.name),det.style.display='block',el.querySelector('.caret').textContent='▾');};
+  el.querySelector('.caret').onclick=e=>{e.stopPropagation();tog();};
+  el.querySelector('.name').onclick=e=>{e.stopPropagation();tog();};
+  return el;
+}
+
+// ② 卡片网格
+function renderGrid(b){
+  const tm=allTags(), minc=mincf(), q=qf();
+  const root=document.createElement('div');root.className='grid';
+  let tags=Object.keys(tm).filter(t=>tm[t]>=minc);
+  tags.sort((a,c)=> sortf()==='hot'?tm[c]-tm[a]:a.localeCompare(c,'zh'));
+  tags.forEach(t=>{
+    let ds=docs.filter(d=>d.tags.includes(t));
+    if(q && !(t.toLowerCase().includes(q)||ds.some(d=>d.name.toLowerCase().includes(q)))) return;
+    const card=document.createElement('div');card.className='card';card.style.opacity=dim(t)?0.4:1;
+    card.innerHTML='<div class="chd"><span class="ctitle" style="color:'+colorOf(t)+'">#'+t+'</span><span class="ccount">'+ds.length+' 篇</span></div>';
+    const cd=document.createElement('div');cd.className='cdocs';
+    ds.forEach(d=>{
+      const row=document.createElement('div');row.className='cdoc';
+      let ch='<span class="dn">'+d.name+'</span><span class="chips">';
+      if(d.tags.length===0)ch+='<span class="chip untag">无标签</span>';
+      d.tags.forEach(x=>{ch+='<span class="chip" style="border-left:3px solid '+colorOf(x)+'">#'+x+'<span class="x">×</span></span>';});
+      ch+='</span>';
+      row.innerHTML=ch;
+      row.querySelectorAll('.chip .x').forEach((x,i)=>{x.onclick=e=>{e.stopPropagation();const tg=d.tags[i];d.tags=d.tags.filter(y=>y!==tg);render();};});
+      cd.appendChild(row);
+    });
+    card.appendChild(cd);root.appendChild(card);
+  });
+  b.appendChild(root);
+}
+
+// ③ 标签云（点击仅选中高亮，不跳转）
+function renderCloud(b){
+  const tm=allTags(), minc=mincf(), q=qf();
+  const root=document.createElement('div');root.className='cloud';
+  let tags=Object.keys(tm).filter(t=>tm[t]>=minc && (!q||t.toLowerCase().includes(q)));
+  tags.sort((a,c)=> sortf()==='hot'?tm[c]-tm[a]:a.localeCompare(c,'zh'));
+  const max=Math.max(...tags.map(t=>tm[t]),1);
+  tags.forEach(t=>{
+    const s=document.createElement('span');s.className='t';
+    s.style.fontSize=(12+(tm[t]/max)*22)+'px';s.style.color=colorOf(t);
+    if(selectedTag===t)s.style.outline='2px solid var(--accent2)',s.style.outlineOffset='3px',s.style.borderRadius='6px';
+    s.innerHTML='#'+t+'<span class="n">'+tm[t]+'</span>';
+    s.onclick=()=>toggleSelect(t);
+    root.appendChild(s);
+  });
+  if(!tags.length)root.innerHTML='<span style="color:var(--muted)">无匹配标签</span>';
+  b.appendChild(root);
+}
+
+// ④ 层级树（点击仅选中高亮，不跳转）
+function renderTree(b){
+  const root=document.createElement('div');root.className='tree';
+  Object.keys(HIER).forEach(parent=>{
+    const kids=HIER[parent].filter(k=>(allTags()[k]||0)>=mincf());
+    const p=document.createElement('div');p.className='node';
+    p.innerHTML='<span class="twist">▾</span><span style="font-weight:600">'+parent+'</span><span class="count">'+kids.length+' 子</span>';
+    const box=document.createElement('div');box.className='children';
+    kids.forEach(k=>{const c=document.createElement('div');c.className='node leaf';
+      c.style.opacity=dim(k)?0.4:1;
+      c.innerHTML='<span class="twist">•</span><span class="tag-name" style="color:'+colorOf(k)+'">#'+k+'</span><span class="count">'+(allTags()[k]||0)+' 篇</span>';
+      c.querySelector('.tag-name').onclick=e=>{e.stopPropagation();toggleSelect(k);};
+      box.appendChild(c);});
+    if(!kids.length)box.style.display='none';
+    p.querySelector('.twist').onclick=()=>{const o=box.style.display!=='none';box.style.display=o?'none':'block';p.querySelector('.twist').textContent=o?'▸':'▾';};
+    p.appendChild(box);root.appendChild(p);
+  });
+  const top=Object.keys(allTags()).filter(t=>!Object.values(HIER).flat().includes(t)&&allTags()[t]>=mincf());
+  if(top.length){const sep=document.createElement('div');sep.className='node';sep.style.color='var(--muted)';
+    sep.innerHTML='<span class="twist"></span><span>独立标签</span>';root.appendChild(sep);
+    top.forEach(t=>{const c=document.createElement('div');c.className='node leaf';c.style.opacity=dim(t)?0.4:1;
+      c.innerHTML='<span class="twist">•</span><span class="tag-name" style="color:'+colorOf(t)+'">#'+t+'</span><span class="count">'+allTags()[t]+' 篇</span>';
+      c.querySelector('.tag-name').onclick=e=>{e.stopPropagation();toggleSelect(t);};root.appendChild(c);});}
+  b.appendChild(root);
+}
+
+// ⑤ 紧凑表格（点击标签仅选中高亮，不跳转）
+function renderTable(b){
+  const tbl=document.createElement('table');tbl.className='tbl';
+  tbl.innerHTML='<thead><tr><th>文档</th><th>标签</th></tr></thead>';
+  const tb=document.createElement('tbody');
+  let list=docs.slice();const q=qf();
+  if(q)list=list.filter(d=>d.name.toLowerCase().includes(q)||d.tags.some(t=>t.toLowerCase().includes(q)));
+  list.forEach(d=>{
+    const tr=document.createElement('tr');tr.style.opacity=dim(d.name)?0.4:1;
+    let ch='';
+    if(d.tags.length===0)ch='<span class="chip untag">（无标签）</span>';
+    d.tags.forEach(t=>{const sel=selectedTag===t?' sel':'';
+      ch+='<span class="chip tagword'+sel+'" style="border-left:3px solid '+colorOf(t)+'" data-t="'+t+'">#'+t+'<span class="x">×</span></span> ';});
+    tr.innerHTML='<td class="dn">'+d.name+'</td><td class="tcol">'+ch+'</td>';
+    tr.querySelectorAll('.chip[data-t]').forEach(c=>{
+      const t=c.dataset.t;
+      c.querySelector('.x').onclick=e=>{e.stopPropagation();d.tags=d.tags.filter(x=>x!==t);render();};
+      c.onclick=e=>{if(e.target.classList.contains('x'))return;toggleSelect(t);};
+    });
+    tb.appendChild(tr);
+  });
+  tbl.appendChild(tb);b.appendChild(tbl);
+}
+
+render();
+</script>
+</body>
+</html>

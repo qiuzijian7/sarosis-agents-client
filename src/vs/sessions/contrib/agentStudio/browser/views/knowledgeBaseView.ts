@@ -163,6 +163,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	private _libraryOpen = true;
 	private _notesOpen = true;
+	private _tagClassOpen = true;
 	private _sortMode: KbSortMode = 'createdASC';
 
 	/** 已展开文件夹路径（持久化），用于懒加载树的展开恢复 */
@@ -173,8 +174,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 搜索防竞态令牌：每次搜索自增，结果渲染前校验是否最新 */
 	private _searchToken = 0;
-	/** 侧边栏显示模式：文件树 | 标签云 | 最近编辑 */
-	private _viewMode: 'tree' | 'tags' | 'recent' = 'tree';
+	/** 侧边栏显示模式：文件树 | 最近编辑 */
+	private _viewMode: 'tree' | 'recent' = 'tree';
 
 	/** 全文倒排索引（替代遍历式搜索，对齐 FTS5 语义） */
 	private _index: KbFullTextIndex;
@@ -769,9 +770,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._searchToken++; // 使进行中的搜索结果失效
 		this.renderVaultBar();
 		this._scroll.replaceChildren();
-		if (this._viewMode === 'tags') {
-			this.renderTagView();
-		} else if (this._viewMode === 'recent') {
+		if (this._viewMode === 'recent') {
 			this.renderRecentView();
 		} else {
 			this._scroll.appendChild(this.renderSection('library'));
@@ -783,6 +782,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._scroll.appendChild(this._kbTreeContainer);
 		this._createKbTree();
 		this.renderBacklinksPanel();
+		// 标签分类区块（设计图：单一可折叠标题，内含 标签搜索 + 分组列表）
+		this._scroll.appendChild(this.renderTagClassificationSection());
 		const _lf = this._activeVault?.linkedFolders?.length ?? -1;
 		const _ws = this._activeVault?.linkedWorkspaces?.length ?? -1;
 		this.logService.info(`[KB perf] renderAll #${callId} total: ${(performance.now() - t0).toFixed(1)}ms linkedFolders=${_lf} linkedWS=${_ws}`);
@@ -854,62 +855,148 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	// ═══════════════════════════════════════════════════════════
-	//  标签云视图
+	//  标签分类区块（设计图：单一可折叠标题 → 标签搜索 + 分组列表）
 	// ═══════════════════════════════════════════════════════════
 
-	private renderTagView(): void {
-		const tags = this._index.getAllTags();
-		const container = $('div.kb-tags');
-		if (tags.length === 0) {
-			const empty = $('div.kb-empty-inline');
-			empty.textContent = '暂无标签（在笔记中使用 #标签# 格式即可创建标签）';
-			container.appendChild(empty);
-			this._scroll.appendChild(container);
-			return;
-		}
-		// 按引用数降序，同名升序
-		tags.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
-		for (const t of tags) {
-			const item = $('div.kb-tag-item');
-			const nameEl = $('span.kb-tag-name');
-			nameEl.textContent = `#${t.tag}`;
-			const countEl = $('span.kb-tag-count');
-			countEl.textContent = `${t.count}`;
-			item.append(nameEl, countEl);
-			item.onclick = () => { this._filterByTag(t.tag); };
-			container.appendChild(item);
-		}
-		this._scroll.appendChild(container);
+	/** 标签分类区块：单一可折叠标题「🏷️ 标签分类」，内部含标签搜索（联想下拉 + 清除）与按标签分组的文档列表，#无标签 兜底。 */
+	private renderTagClassificationSection(): HTMLElement {
+		const sec = $('div.kb-section.kb-tagclass');
+		if (this._tagClassOpen) { sec.classList.add('open'); }
+
+		// ── 标题（可折叠） ──
+		const header = $('div.kb-section-header');
+		const arrow = $('span.kb-arrow'); arrow.textContent = '▶';
+		const title = $('div.kb-title');
+		const cat = $('span.kb-cat'); cat.textContent = '🏷️';
+		const titleText = $('span'); titleText.textContent = '标签分类';
+		const andBadge = $('span.kb-and-badge'); andBadge.textContent = '交集 AND';
+		const countBadge = $('span.kb-count');
+		title.replaceChildren(cat, titleText, andBadge, countBadge);
+		header.append(arrow, title);
+		header.onclick = () => {
+			this._tagClassOpen = !this._tagClassOpen;
+			sec.classList.toggle('open', this._tagClassOpen);
+		};
+		sec.append(header);
+
+		const body = $('div.kb-section-body');
+
+		// ① 标签搜索（位于分类内部：联想下拉 + 清除，实时过滤分组，不跳转）
+		const searchRow = $('div.kb-tag-search');
+		const box = $('div.kb-search-box');
+		const searchIco = $('span'); searchIco.textContent = '🔍';
+		const input = $('input') as HTMLInputElement;
+		input.type = 'text';
+		input.placeholder = '搜索标签…';
+		input.autocomplete = 'off';
+		const clearBtn = $('span.kb-search-clear'); clearBtn.textContent = '✕';
+		clearBtn.style.display = 'none';
+		box.append(searchIco, input, clearBtn);
+		searchRow.append(box);
+		const suggest = $('div.kb-suggest');
+		searchRow.append(suggest);
+		body.append(searchRow);
+
+		// ② 标签分组列表
+		const groupsEl = $('div.kb-tag-groups');
+		body.append(groupsEl);
+
+		sec.append(body);
+
+		// ── 渲染分组（按搜索词过滤） ──
+		const doRender = () => {
+			const q = input.value.trim().toLowerCase();
+			const tags = this._index.getAllTags()
+				.filter(t => !q || t.tag.toLowerCase().includes(q))
+				.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh'));
+			const untagged = q ? [] : this._index.getUntaggedDocs();
+			groupsEl.replaceChildren();
+			countBadge.textContent = String(tags.length + (untagged.length ? 1 : 0));
+			if (tags.length === 0 && untagged.length === 0) {
+				const empty = $('div.kb-empty-inline');
+				empty.textContent = q ? '无匹配标签' : '暂无标签（在笔记中使用 #标签# 格式即可创建标签）';
+				groupsEl.append(empty);
+				return;
+			}
+			for (const t of tags) {
+				groupsEl.append(this.renderTagGroup(t.tag, t.count));
+			}
+			if (untagged.length > 0) {
+				groupsEl.append(this.renderTagGroup('无标签', untagged.length, untagged));
+			}
+		};
+
+		// ── 联想下拉 ──
+		const runSuggest = () => {
+			const q = input.value.trim().toLowerCase();
+			suggest.replaceChildren();
+			if (!q) { suggest.classList.remove('show'); return; }
+			const hits = this._index.searchTagsByPrefix(q).slice(0, 12);
+			if (hits.length === 0) {
+				const empty = $('div.kb-sug-empty'); empty.textContent = '无匹配标签';
+				suggest.append(empty);
+			} else {
+				for (const tag of hits) {
+					const cnt = this._index.getAllTags().find(x => x.tag.toLowerCase() === tag.toLowerCase())?.count ?? 0;
+					const s = $('div.kb-sug');
+					const ico = $('span.s-ico'); ico.textContent = '🏷️';
+					const name = $('span.s-name'); name.textContent = `#${tag}`;
+					const kind = $('span.s-kind'); kind.textContent = '标签';
+					const cntEl = $('span.s-cnt'); cntEl.textContent = `${cnt} 篇`;
+					s.append(ico, name, kind, cntEl);
+					s.onmousedown = (e) => {
+						e.preventDefault(); // 防止 input 失焦导致下拉先收起
+						input.value = `#${tag}`;
+						clearBtn.style.display = 'inline';
+						doRender();
+						suggest.classList.remove('show');
+					};
+					suggest.append(s);
+				}
+			}
+			suggest.classList.add('show');
+		};
+
+		input.oninput = () => {
+			clearBtn.style.display = input.value ? 'inline' : 'none';
+			doRender();
+			runSuggest();
+		};
+		clearBtn.onclick = () => {
+			input.value = '';
+			clearBtn.style.display = 'none';
+			doRender();
+			suggest.classList.remove('show');
+			input.focus();
+		};
+		input.onblur = () => { setTimeout(() => suggest.classList.remove('show'), 100); };
+
+		doRender();
+		return sec;
 	}
 
-	/** 点标签 → 用标签索引精确搜索，展示命中文档列表。 */
-	private _filterByTag(tag: string): void {
-		this._viewMode = 'tree'; // 切回文件树模式展示结果
-		if (this._searchInput) {
-			this._searchInput.value = `#${tag}`;
-		}
-		// 隐藏分区树，展示标签搜索结果
-		this._scroll.querySelectorAll('.kb-section').forEach(s => (s as HTMLElement).style.display = 'none');
-		if (this._backlinksEl) { this._backlinksEl.style.display = 'none'; }
-		let resultsEl = this._scroll.querySelector('.kb-search-results') as HTMLElement | null;
-		if (!resultsEl) {
-			resultsEl = $('div.kb-search-results');
-			this._scroll.appendChild(resultsEl);
-		}
-		resultsEl.classList.add('show');
-		resultsEl.replaceChildren();
-		const hits = this._index.searchByTag(tag, 100);
-		const h = $('div.kb-search-head');
-		h.textContent = `标签 #${tag}（${hits.length} 个文档）`;
-		resultsEl.appendChild(h);
-		if (hits.length === 0) {
-			const empty = $('div.kb-empty-inline'); empty.textContent = '无文档使用此标签';
-			resultsEl.appendChild(empty);
-			return;
-		}
+	/** 单个标签分组（可折叠），列出命中文档；untaggedDocs 透传用于「#无标签」兜底分组。 */
+	private renderTagGroup(tag: string, count: number, untaggedDocs?: IKbSearchHit[]): HTMLElement {
+		const group = $('div.kb-tag-group');
+		const head = $('div.kb-tag-group-head');
+		const gArrow = $('span.kb-arrow'); gArrow.textContent = '▶';
+		const gName = $('span.kb-tag-group-name'); gName.textContent = tag === '无标签' ? '#无标签' : `#${tag}`;
+		const gCount = $('span.kb-count'); gCount.textContent = `${count} 篇`;
+		head.append(gArrow, gName, gCount);
+		const gBody = $('div.kb-tag-group-body');
+		head.onclick = () => { group.classList.toggle('open'); };
+		group.append(head, gBody);
+
+		const hits = untaggedDocs ?? this._index.searchByTag(tag, 200);
 		for (const hit of hits) {
-			resultsEl.appendChild(this.renderSearchHit(hit, tag));
+			const row = $('div.kb-tag-doc');
+			const ico = $('span.kb-ficon'); ico.textContent = this.fileEmoji(hit.name);
+			const nm = $('span.kb-tag-doc-name'); nm.textContent = hit.name;
+			row.append(ico, nm);
+			row.onclick = () => this.openInEditor(hit);
+			gBody.append(row);
 		}
+		return group;
 	}
 
 	/** 反链面板容器（始终存在，选中文件时填充；搜索态隐藏）。 */
@@ -949,12 +1036,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 		// 视图切换按钮：文件树 → 标签云 → 最近编辑
 		const viewBtn = $('span.kb-abtn');
-		const viewLabels: Record<string, string> = { tree: '📂', tags: '🏷️', recent: '🕐' };
-		const viewTitles: Record<string, string> = { tree: '文件树视图', tags: '标签云视图', recent: '最近编辑' };
+		const viewLabels: Record<string, string> = { tree: '📂', recent: '🕐' };
+		const viewTitles: Record<string, string> = { tree: '文件树视图', recent: '最近编辑' };
 		viewBtn.textContent = viewLabels[this._viewMode];
 		viewBtn.title = viewTitles[this._viewMode];
 		viewBtn.onclick = () => {
-			const seq: Array<'tree' | 'tags' | 'recent'> = ['tree', 'tags', 'recent'];
+			const seq: Array<'tree' | 'recent'> = ['tree', 'recent'];
 			const i = seq.indexOf(this._viewMode);
 			this._viewMode = seq[(i + 1) % seq.length];
 			this.renderAll();

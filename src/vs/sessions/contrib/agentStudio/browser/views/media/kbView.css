@@ -320,22 +320,61 @@
 	border-top: 1px dashed var(--vscode-panel-border, var(--vscode-sideBar-border));
 }
 
-/* ── Tag cloud view ── */
-.kb-tags { padding: 6px 8px; }
-.kb-tag-item {
-	display: flex; align-items: center; gap: 8px;
-	padding: 5px 10px; cursor: pointer; border-radius: 4px;
-	margin: 1px 0;
+/* ── 标签分类（设计图：单一标题下 标签搜索 + 分组列表） ── */
+.kb-tagclass { border-top: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border)); margin-top: 4px; }
+.kb-and-badge {
+	font-size: 9px; font-weight: 600; letter-spacing: .3px;
+	padding: 1px 6px; border-radius: 8px; opacity: .85; margin-left: 2px;
+	background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
 }
-.kb-tag-item:hover { background: var(--vscode-list-hoverBackground); }
-.kb-tag-name {
-	font-size: 13px; color: var(--vscode-textLink-foreground, #3794ff);
-	flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.kb-tag-search { padding: 6px 8px; position: relative; }
+.kb-tag-search .kb-search-box { margin: 0; }
+.kb-tag-search .kb-search-box > span:first-child { color: var(--vscode-descriptionForeground); font-size: 11px; }
+.kb-search-clear {
+	cursor: pointer; color: var(--vscode-input-placeholderForeground);
+	font-size: 11px; padding: 0 2px; flex-shrink: 0;
 }
-.kb-tag-count {
+.kb-search-clear:hover { color: var(--vscode-foreground); }
+.kb-suggest {
+	display: none; flex-direction: column; gap: 1px; margin-top: 4px; padding: 2px;
+	background: var(--vscode-dropdown-background, var(--vscode-input-background));
+	border: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
+	border-radius: 4px; max-height: 180px; overflow: auto;
+}
+.kb-suggest.show { display: flex; }
+.kb-sug { display: flex; align-items: center; gap: 7px; padding: 5px 7px; font-size: 12px; cursor: pointer; border-radius: 3px; }
+.kb-sug:hover { background: var(--vscode-list-hoverBackground); }
+.kb-sug .s-ico { width: 14px; text-align: center; color: var(--vscode-descriptionForeground); }
+.kb-sug .s-name { flex: 1; color: var(--vscode-textLink-foreground, #3794ff); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-sug .s-kind {
 	font-size: 10px; padding: 0 6px; border-radius: 8px; flex-shrink: 0;
 	background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
 }
+.kb-sug .s-cnt { color: var(--vscode-descriptionForeground); font-size: 10px; flex-shrink: 0; }
+.kb-sug-empty { padding: 8px 7px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+
+.kb-tag-groups { padding: 0 0 6px; }
+.kb-tag-group { }
+.kb-tag-group-head {
+	display: flex; align-items: center; gap: 6px;
+	padding: 4px 10px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 4px;
+}
+.kb-tag-group-head:hover { background: var(--vscode-list-hoverBackground); }
+.kb-tag-group-head .kb-arrow { font-size: 10px; color: var(--vscode-descriptionForeground); transition: .15s; width: 12px; }
+.kb-tag-group:not(.open) .kb-arrow { transform: rotate(-90deg); }
+.kb-tag-group-name {
+	flex: 1; font-size: 12px; color: var(--vscode-textLink-foreground, #3794ff);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kb-tag-group .kb-count { font-size: 10px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+.kb-tag-group-body { display: none; }
+.kb-tag-group.open .kb-tag-group-body { display: block; }
+.kb-tag-doc {
+	display: flex; align-items: center; gap: 6px;
+	padding: 3px 12px 3px 28px; font-size: 12px; cursor: pointer; color: var(--vscode-foreground);
+}
+.kb-tag-doc:hover { background: var(--vscode-list-hoverBackground); }
+.kb-tag-doc .kb-ficon { font-size: 11px; flex-shrink: 0; }
 
 /* ── Backlinks ([[双链]] 反链映射面板) ── */
 .kb-backlinks {

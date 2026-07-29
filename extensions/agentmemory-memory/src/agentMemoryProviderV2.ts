@@ -90,12 +90,14 @@ const _vectorProxy = new ServerVectorProxy();
 const SEARCH_ALL_LIMIT = 1000;
 
 // 技能文件根目录：与渲染进程 skillRegistryService 的读取路径保持一致
-// （~/.vssaros/skills/）。主进程 spawn 网关时注入 AGENTMEMORY_SKILLS_DIR
-// （= <userDataPath>/skills）；独立运行时回退到 ~/.vssaros/skills。
+// （~/.vssaros(-dev)/skills/）。主进程 spawn 网关时注入 AGENTMEMORY_SKILLS_DIR
+// （= <userDataPath>/skills，dev 下为 ~/.vssaros-dev/skills）；缺失注入时回退
+// 到 dev 感知目录（VSCODE_DEV 决定 .vssaros-dev，与 product.ts 一致）。
 // 历史曾硬编码 ~/.saros/skills，与渲染进程读取位置不一致，导致引擎写出的
 // SKILL.md 不可见。
 function _skillsDir(): string {
-	return process.env.AGENTMEMORY_SKILLS_DIR || _path.join(_os.homedir(), '.vssaros', 'skills');
+	const folder = process.env.VSCODE_DEV ? '.vssaros-dev' : '.vssaros';
+	return process.env.AGENTMEMORY_SKILLS_DIR || _path.join(_os.homedir(), folder, 'skills');
 }
 
 export class AgentMemoryProviderV2 {

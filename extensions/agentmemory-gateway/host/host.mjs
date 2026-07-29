@@ -13,10 +13,11 @@
  *  gateway child → port 3111 never comes up → the renderer V2 provider
  *  silently no-op'd (looked like "V2 didn't take over").
  *
- *  Storage (SQLite):  ~/.vssaros/.agentmemory/state_store.db (WAL)
- *  Storage (JS-KV):   ~/.vssaros/.agentmemory/kv_store.json
+ *  Storage (SQLite):  ~/.vssaros(-dev)/.agentmemory/state_store.db (WAL)
+ *  Storage (JS-KV):   ~/.vssaros(-dev)/.agentmemory/kv_store.json
  *  （数据根目录由主进程经 AGENTMEMORY_DATA_DIR 注入 = <userDataPath>/.agentmemory；
- *    独立运行时回退 ~/.vssaros/.agentmemory，并自动迁移旧的 ~/.saros/.agentmemory。）
+ *    独立运行时回退 ~/.vssaros(-dev)/.agentmemory（dev 模式下主进程 userDataPath
+ *    为 ~/.vssaros-dev，见下 sarosDataFolderName），并自动迁移旧的 ~/.saros/.agentmemory。）
  *
  *  Endpoints:
  *    GET  /health                         → health check
@@ -113,14 +114,29 @@ function logProviderCall(method, args, result) {
 	} catch { /* 日志绝不影响请求 */ }
 }
 
+// Dev mode follows the product layer's `-dev` dataFolderName so that memory /
+// skills stay in the SAME data dir as the rest of the app. The main process
+// already injects AGENTMEMORY_DATA_DIR / AGENTMEMORY_SKILLS_DIR from
+// userDataPath (= <home>/.vssaros-dev in dev); these helpers only affect the
+// standalone fallback (when those env vars are absent) and the legacy ~/.saros
+// migration target. VSCODE_DEV is the same flag product.ts uses to pick
+// `.vssaros-dev` over `.vssaros`.
+function isDevMode() {
+	return !!process.env.VSCODE_DEV;
+}
+function sarosDataFolderName() {
+	return isDevMode() ? '.vssaros-dev' : '.vssaros';
+}
+
 function resolveDataDir() {
 	const home = process.env.HOME || process.env.USERPROFILE || '.';
 	if (process.env.AGENTMEMORY_DATA_DIR) {
 		return process.env.AGENTMEMORY_DATA_DIR;
 	}
-	const dataDir = path.join(home, '.vssaros', '.agentmemory');
+	const dataDir = path.join(home, sarosDataFolderName(), '.agentmemory');
 	// 历史默认路径为 ~/.saros/.agentmemory —— 若旧目录存在而新目录不存在，
 	// 做一次性迁移（同分区 rename，失败则忽略：新数据仍写入新目录）。
+	// 迁移目标跟随上述 dev/prod 目录（dev 下即 ~/.vssaros-dev/.agentmemory）。
 	try {
 		const legacyDir = path.join(home, '.saros', '.agentmemory');
 		if (fs.existsSync(legacyDir) && !fs.existsSync(dataDir)) {
@@ -713,10 +729,11 @@ async function main() {
 			const skillMatch = url.pathname.match(/^\/skill-md\/([^/]+)$/);
 			if (skillMatch) {
 				const slug = sanitize(skillMatch[1]);
-				const home = process.env.HOME || process.env.USERPROFILE || '.';
-				// 与渲染进程 skillRegistryService 读取路径一致（~/.vssaros/skills/）；
-				// 主进程注入 AGENTMEMORY_SKILLS_DIR = <userDataPath>/skills。
-				const skillsRoot = process.env.AGENTMEMORY_SKILLS_DIR || path.join(home, '.vssaros', 'skills');
+			const home = process.env.HOME || process.env.USERPROFILE || '.';
+			// 与渲染进程 skillRegistryService 读取路径一致（~/.vssaros(-dev)/skills/）；
+			// 主进程注入 AGENTMEMORY_SKILLS_DIR = <userDataPath>/skills（dev 下为
+			// ~/.vssaros-dev/skills）。缺失注入时回退到 dev 感知目录。
+			const skillsRoot = process.env.AGENTMEMORY_SKILLS_DIR || path.join(home, sarosDataFolderName(), 'skills');
 				const skillsDir = path.join(skillsRoot, slug);
 				const skillFile = path.join(skillsDir, 'SKILL.md');
 

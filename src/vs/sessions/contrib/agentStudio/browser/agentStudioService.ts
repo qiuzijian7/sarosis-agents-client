@@ -1027,7 +1027,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		const customRoot = this.storageService.get('agentStudio.kb.kbDir', StorageScope.APPLICATION);
 		const baseRoot = (typeof customRoot === 'string' && customRoot.trim())
 			? URI.file(customRoot.trim())
-			: URI.joinPath(await this.pathService.userHome(), '.vssaros', 'knowledge-base');
+			: URI.joinPath(userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome), 'knowledge-base');
 		try {
 			const activeId = this.storageService.get('agentStudio.kb.active', StorageScope.APPLICATION);
 			if (typeof activeId === 'string' && activeId.trim()) {

@@ -518,6 +518,7 @@ export function getStrategyGuidance(paradigm: string | undefined): string[] {
 			'3. **Delegate codebase exploration**: For broad or parallel codebase exploration, use',
 			'   `delegate_task(type="code-explorer")` to launch sub-agents (see <code_explorer_subagent_usage>).',
 			'   Create sub-agents on demand — scale their count to the actual scope of the task.',
+			'   Do NOT use `new_agent` to create a generic "General Assistant" for exploration — that is what `delegate_task(type="code-explorer")` is for.',
 			'4. **Ordered multi-step execution**: If the goal decomposes into ordered steps AFTER',
 			'   research, call `plan_register` with the task list — the system injects a CURRENT TASK',
 			'   reminder per task and auto-advances the queue when you finish a task and stop calling',

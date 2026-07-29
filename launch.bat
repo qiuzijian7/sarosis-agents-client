@@ -19,7 +19,7 @@ del stdout2.txt stderr2.txt exitcode.txt 2>nul
   --disable-extension=vscode.vscode-api-tests ^
   --skip-sessions-welcome ^
   --agents ^
-  --user-data-dir="%USERPROFILE%\.vssaros-agents-dev" ^
+  --user-data-dir="%USERPROFILE%\.vssaros-dev" ^
   1>stdout2.txt 2>stderr2.txt
 
 echo Exit code: %ERRORLEVEL% > exitcode.txt

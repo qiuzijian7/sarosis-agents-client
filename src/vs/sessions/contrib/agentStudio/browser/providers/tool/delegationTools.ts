@@ -78,7 +78,7 @@ export function extractToolTracesFromResult(result: SubAgentResult): Array<{
 		args: t.argsSizeBytes ? `${t.argsSizeBytes}B args` : undefined,
 		result: typeof t.error === 'string' ? t.error
 			: t.resultSizeBytes ? `${t.resultSizeBytes}B result`
-			: undefined,
+				: undefined,
 	}));
 }
 
@@ -159,10 +159,12 @@ export async function handleNewAgentTool(
 	if (!role?.trim()) { missing.push('role'); }
 	if (!description?.trim()) { missing.push('description'); }
 	if (missing.length > 0) {
-		return [{ type: 'text', text: JSON.stringify({
-			success: false,
-			error: `Missing required parameter(s): ${missing.join(', ')}`,
-		}) }];
+		return [{
+			type: 'text', text: JSON.stringify({
+				success: false,
+				error: `Missing required parameter(s): ${missing.join(', ')}`,
+			})
+		}];
 	}
 
 	// 2. Slug 化名称并对齐 _generateId 的 slug 逻辑（但去掉随机后缀）
@@ -191,22 +193,26 @@ export async function handleNewAgentTool(
 	// 4. 调用 studioService.createAgent
 	try {
 		const agent = await studioService.createAgent(agentData);
-		return [{ type: 'text', text: JSON.stringify({
-			success: true,
-			id: agent.id,
-			name: agent.name,
-			role: agent.role,
-			description: agent.description,
-			category: agent.category,
-			systemPrompt: agent.systemPrompt || '(auto-generated)',
-			message: `Agent "${agent.name}" created successfully. Use delegate_task to assign tasks to it.`,
-		}) }];
+		return [{
+			type: 'text', text: JSON.stringify({
+				success: true,
+				id: agent.id,
+				name: agent.name,
+				role: agent.role,
+				description: agent.description,
+				category: agent.category,
+				systemPrompt: agent.systemPrompt || '(auto-generated)',
+				message: `Agent "${agent.name}" created successfully. Use delegate_task to assign tasks to it.`,
+			})
+		}];
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
-		return [{ type: 'text', text: JSON.stringify({
-			success: false,
-			error: `Failed to create agent: ${msg}`,
-		}) }];
+		return [{
+			type: 'text', text: JSON.stringify({
+				success: false,
+				error: `Failed to create agent: ${msg}`,
+			})
+		}];
 	}
 }
 
@@ -379,93 +385,93 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 	// delegate_task — LLM 自主委派任务给子代理（单次调用 1-5 个子代理）
 	ctx.register({
 		definition: {
-		name: 'delegate_task',
-		displaySummary: 'Delegate a task to a sub-agent.',
-		description:
-			'Launch a sub-agent to do FOCUSED RETRIEVAL work: search the codebase, locate files/symbols, ' +
-			'read specific files, and return the raw materials it found. Each call spawns ONE sub-agent ' +
-			'in an isolated context.\n' +
-			'\n\n' +
-			'**WHY USE THIS (instead of doing it yourself)**\n' +
-			'- Retrieval results come back ONCE as a compact summary — not as dozens of raw search/read outputs filling your own context window.\n' +
-			'- The sub-agent burns its own budget on slow parts (large-repo searches can take 20s+ each), keeping your context and time for reasoning.\n' +
-			'\n\n' +
-			'**WHAT TO DELEGATE — retrieval only**\n' +
-			'- Questions answerable by search + read: "find where X is implemented", "locate all callers of Y", "read files A,B,C and extract the Z logic".\n' +
-			'- The sub-agent collects MATERIALS (file paths, symbol names, code snippets with line numbers) — YOU do the analysis and synthesis on its return.\n' +
-			'\n\n' +
-			'**WHAT NOT TO DELEGATE — open-ended analysis**\n' +
-			'- Do NOT delegate a whole investigation like "analyze the X mechanism" or "write a report on Y". Open-ended tasks make the sub-agent iterate 50+ turns of searching/reading and risk hitting its 10-minute timeout with NOTHING returned.\n' +
-			'- Instead: decompose the investigation into concrete retrieval questions, delegate them one at a time (or in parallel), then synthesize the answers yourself.\n' +
-			'\n\n' +
-			'**TASK BRIEFING (CRITICAL: the sub-agent starts BLANK — it cannot see this conversation)**\n' +
-			'- GOAL: what specific information/materials to find (NOT what conclusion to draw).\n' +
-			'- KNOWN: facts you already established and dead-ends to skip.\n' +
-			'- SCOPE: constrain the search area when possible (project name, directory, file pattern) — unconstrained repo-wide searches are slow (20s+ each).\n' +
-			'- OUTPUT: a compact structured list of findings (paths / symbols / snippets with line numbers), NOT a long-form analysis. Tell it to return what it has even if incomplete — partial materials are useful, a timeout is not.\n' +
-			'- SIZE: aim for ≤15 tool calls per sub-agent.\n' +
-			'\n\n' +
-			'**PARALLEL** (rare — only truly independent retrieval questions)\n' +
-			'- Issue multiple delegate_task calls in one message, each with a single question.\n' +
-			'- Do NOT split aspects of the same question across sub-agents.\n' +
-			'\n\n' +
-			'**WHEN NOT TO USE**\n' +
-			'- Trivial single-file lookup, or the answer is already in your context\n' +
-			'- Simple enough to finish in one turn with your own tools\n' +
-			'- You must keep continuous context across sequential steps (do it yourself)\n' +
-			'- You are already at maximum spawn depth\n' +
-			'\n\n' +
-			`**LIMITS: max ${maxConcurrent} concurrent sub-agents overall; max spawn depth ${maxSpawnDepth} (sub-agents CANNOT spawn their own sub-agents).**\n`,
-		inputSchema: {
-			type: 'object',
-			properties: {
-				task: { type: 'string', description: 'Retrieval task to delegate (spawns ONE sub-agent). Self-contained briefing — the sub-agent cannot see this conversation. Retrieval only: search/locate/read and return materials (paths, symbols, snippets with line numbers); do NOT delegate open-ended analysis ("analyze X", "write a report on Y") — it will iterate 50+ turns and may time out with nothing returned. Aim for ≤15 tool calls; tell it to return partial findings rather than run dry.' },
-			type: {
-				type: 'string',
-				enum: ['code-explorer', 'researcher', 'data'],
-				description: 'Which read-only agent to delegate to. MUST be one of the 3 registered read-only agents: "code-explorer" (codebase search/read), "researcher" (web research), "data" (data analysis). DO NOT create or invent new agent names.',
-			},
-			context: {
-				type: 'string',
-				description: 'Optional background context to inject into the sub-agent (e.g. a summary of prior steps, ' +
-					'relevant findings, or decisions already made). The sub-agent cannot see this conversation, so pass ' +
-					'any facts it needs here.',
-			},
-			toolsets: {
-				type: 'array',
-				items: { type: 'string' },
-				description: 'Optional toolset scope for the sub-agent (e.g. ["core"] for read-only work). ' +
-					'When set, the sub-agent may ONLY use tools from the listed toolsets — a way to constrain ' +
-					'what the delegated work is allowed to do. Defaults to no restriction.',
-			},
-			model: {
-				type: 'string',
-				description: 'Optional model for the sub-agent. Accepts "providerId/modelId" (e.g. ' +
-					'"knot-agui/gpt-4o-mini") or just "modelId" (reuses the session\'s current provider). ' +
-					'When set, the sub-agent runs with this model instead of the session default.',
-			},
-		isolation_level: {
-			type: 'string',
-			enum: ['subagent', 'peer'],
-			description: "Isolation model for this delegation. 'subagent' (default): hierarchical — inherits the parent's worktree, and cancelling the parent turn also cancels this sub-agent (parent fully controls its lifecycle). 'peer': peer-to-peer — runs independently, does NOT inherit the parent's worktree, and a parent-turn cancellation will NOT kill it (only an explicit interrupt or swarm cancel can). Use 'peer' for independent collaborators that should outlive the parent's turn.",
-		},
-		output_schema: {
-			type: 'object',
-			description: 'Optional JSON Schema for the sub-agent\'s final deliverable. When set, the sub-agent must return its conclusion as a JSON object matching this schema (validated, one retry on invalid output); the RESULT body will be the serialized JSON object instead of free text. Use when you need machine-readable structured findings.',
-			properties: {
-				_freeform: {
-					type: 'object',
-					description: 'Arbitrary JSON Schema object',
-					properties: { _value: { type: 'string', description: 'A value (stringified)' } },
+			name: 'delegate_task',
+			displaySummary: 'Delegate a task to a sub-agent.',
+			description:
+				'Launch a sub-agent to do FOCUSED RETRIEVAL work: search the codebase, locate files/symbols, ' +
+				'read specific files, and return the raw materials it found. Each call spawns ONE sub-agent ' +
+				'in an isolated context.\n' +
+				'\n\n' +
+				'**WHY USE THIS (instead of doing it yourself)**\n' +
+				'- Retrieval results come back ONCE as a compact summary — not as dozens of raw search/read outputs filling your own context window.\n' +
+				'- The sub-agent burns its own budget on slow parts (large-repo searches can take 20s+ each), keeping your context and time for reasoning.\n' +
+				'\n\n' +
+				'**WHAT TO DELEGATE — retrieval only**\n' +
+				'- Questions answerable by search + read: "find where X is implemented", "locate all callers of Y", "read files A,B,C and extract the Z logic".\n' +
+				'- The sub-agent collects MATERIALS (file paths, symbol names, code snippets with line numbers) — YOU do the analysis and synthesis on its return.\n' +
+				'\n\n' +
+				'**WHAT NOT TO DELEGATE — open-ended analysis**\n' +
+				'- Do NOT delegate a whole investigation like "analyze the X mechanism" or "write a report on Y". Open-ended tasks make the sub-agent iterate 50+ turns of searching/reading and risk hitting its 10-minute timeout with NOTHING returned.\n' +
+				'- Instead: decompose the investigation into concrete retrieval questions, delegate them one at a time (or in parallel), then synthesize the answers yourself.\n' +
+				'\n\n' +
+				'**TASK BRIEFING (CRITICAL: the sub-agent starts BLANK — it cannot see this conversation)**\n' +
+				'- GOAL: what specific information/materials to find (NOT what conclusion to draw).\n' +
+				'- KNOWN: facts you already established and dead-ends to skip.\n' +
+				'- SCOPE: constrain the search area when possible (project name, directory, file pattern) — unconstrained repo-wide searches are slow (20s+ each).\n' +
+				'- OUTPUT: a compact structured list of findings (paths / symbols / snippets with line numbers), NOT a long-form analysis. Tell it to return what it has even if incomplete — partial materials are useful, a timeout is not.\n' +
+				'- SIZE: aim for ≤15 tool calls per sub-agent.\n' +
+				'\n\n' +
+				'**PARALLEL** (rare — only truly independent retrieval questions)\n' +
+				'- Issue multiple delegate_task calls in one message, each with a single question.\n' +
+				'- Do NOT split aspects of the same question across sub-agents.\n' +
+				'\n\n' +
+				'**WHEN NOT TO USE**\n' +
+				'- Trivial single-file lookup, or the answer is already in your context\n' +
+				'- Simple enough to finish in one turn with your own tools\n' +
+				'- You must keep continuous context across sequential steps (do it yourself)\n' +
+				'- You are already at maximum spawn depth\n' +
+				'\n\n' +
+				`**LIMITS: max ${maxConcurrent} concurrent sub-agents overall; max spawn depth ${maxSpawnDepth} (sub-agents CANNOT spawn their own sub-agents).**\n`,
+			inputSchema: {
+				type: 'object',
+				properties: {
+					task: { type: 'string', description: 'Retrieval task to delegate (spawns ONE sub-agent). Self-contained briefing — the sub-agent cannot see this conversation. Retrieval only: search/locate/read and return materials (paths, symbols, snippets with line numbers); do NOT delegate open-ended analysis ("analyze X", "write a report on Y") — it will iterate 50+ turns and may time out with nothing returned. Aim for ≤15 tool calls; tell it to return partial findings rather than run dry.' },
+					type: {
+						type: 'string',
+						enum: ['code-explorer', 'researcher', 'data'],
+						description: 'Which read-only agent to delegate to. MUST be one of the 3 registered read-only agents: "code-explorer" (codebase search/read), "researcher" (web research), "data" (data analysis). DO NOT create or invent new agent names.',
+					},
+					context: {
+						type: 'string',
+						description: 'Optional background context to inject into the sub-agent (e.g. a summary of prior steps, ' +
+							'relevant findings, or decisions already made). The sub-agent cannot see this conversation, so pass ' +
+							'any facts it needs here.',
+					},
+					toolsets: {
+						type: 'array',
+						items: { type: 'string' },
+						description: 'Optional toolset scope for the sub-agent (e.g. ["core"] for read-only work). ' +
+							'When set, the sub-agent may ONLY use tools from the listed toolsets — a way to constrain ' +
+							'what the delegated work is allowed to do. Defaults to no restriction.',
+					},
+					model: {
+						type: 'string',
+						description: 'Optional model for the sub-agent. Accepts "providerId/modelId" (e.g. ' +
+							'"knot-agui/gpt-4o-mini") or just "modelId" (reuses the session\'s current provider). ' +
+							'When set, the sub-agent runs with this model instead of the session default.',
+					},
+					isolation_level: {
+						type: 'string',
+						enum: ['subagent', 'peer'],
+						description: "Isolation model for this delegation. 'subagent' (default): hierarchical — inherits the parent's worktree, and cancelling the parent turn also cancels this sub-agent (parent fully controls its lifecycle). 'peer': peer-to-peer — runs independently, does NOT inherit the parent's worktree, and a parent-turn cancellation will NOT kill it (only an explicit interrupt or swarm cancel can). Use 'peer' for independent collaborators that should outlive the parent's turn.",
+					},
+					output_schema: {
+						type: 'object',
+						description: 'Optional JSON Schema for the sub-agent\'s final deliverable. When set, the sub-agent must return its conclusion as a JSON object matching this schema (validated, one retry on invalid output); the RESULT body will be the serialized JSON object instead of free text. Use when you need machine-readable structured findings.',
+						properties: {
+							_freeform: {
+								type: 'object',
+								description: 'Arbitrary JSON Schema object',
+								properties: { _value: { type: 'string', description: 'A value (stringified)' } },
+							},
+						},
+					},
 				},
+				required: ['task'],
 			},
+			category: 'delegation',
+			source: ctx.id,
 		},
-		},
-		required: ['task'],
-		},
-				category: 'delegation',
-				source: ctx.id,
-			},
 		handler: async (args, signal, agentId) => {
 			// 模型可能把 task 传成对象（而非 schema 声明的字符串），
 			// 派发前归一化为字符串，避免 subAgent.task 变成对象后 CompletionGate 崩溃。
@@ -483,12 +489,12 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 				}
 			}
 			const typeArg = args['type'] as string | undefined;
-		const contextArg = args['context'] as string | undefined;
-		const toolsetsArg = args['toolsets'] as string[] | undefined;
-		const modelArg = args['model'] as string | undefined;
-		const isolationLevelArg = args['isolation_level'] as string | undefined;
-		// P3（2026-07-26，对齐 MiMo output_schema）：要求子代理返回结构化 JSON 结论。
-		const outputSchemaArg = args['output_schema'] as Record<string, unknown> | undefined;
+			const contextArg = args['context'] as string | undefined;
+			const toolsetsArg = args['toolsets'] as string[] | undefined;
+			const modelArg = args['model'] as string | undefined;
+			const isolationLevelArg = args['isolation_level'] as string | undefined;
+			// P3（2026-07-26，对齐 MiMo output_schema）：要求子代理返回结构化 JSON 结论。
+			const outputSchemaArg = args['output_schema'] as Record<string, unknown> | undefined;
 
 			if (task && (!task.trim().length)) {
 				return [{ type: 'text', text: 'delegate_task error: "task" must be a non-empty self-contained description.' }];
@@ -680,103 +686,103 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 							inlineTraceSink,
 							signal,
 						);
-				} else {
-					result = await dispatchSvc.dispatch(
-						agentId ?? 'unknown',
-						task,
-						executeFn,
-						{ type: subAgentType, isolationLevel, worktreePath: inheritWorktree, context: contextArg, toolsets: effectiveToolsets, model: modelSelection, excludedTools, ...agentIdentity, ...(outputSchemaArg ? { outputSchema: outputSchemaArg } : {}) },
-						inlineTraceSink, // P0/P1: 旁路总线流式驱动 SubAgentCard 工具痕迹
-						signal,     // P3: 父→子取消传播（父 turn abort 信号）
-					);
-				}
+					} else {
+						result = await dispatchSvc.dispatch(
+							agentId ?? 'unknown',
+							task,
+							executeFn,
+							{ type: subAgentType, isolationLevel, worktreePath: inheritWorktree, context: contextArg, toolsets: effectiveToolsets, model: modelSelection, excludedTools, ...agentIdentity, ...(outputSchemaArg ? { outputSchema: outputSchemaArg } : {}) },
+							inlineTraceSink, // P0/P1: 旁路总线流式驱动 SubAgentCard 工具痕迹
+							signal,     // P3: 父→子取消传播（父 turn abort 信号）
+						);
+					}
 
 					// R5 兜底：flush 终态快照，含完整 toolTraces。
 					flushNow();
 
-				// 从 result.toolTrace 提取工具痕迹到 subagentData，
-				// 供 SubAgentCard 渲染（与 planExploreTool 对齐）。
-				// subAgentId 由 inlineTraceSink 的事件写入 cardMap；
-				// 取首个卡片的 id 回填到 subagentData（单任务模式下只有一张卡）。
-				const finalCard = cardMap.size > 0 ? [...cardMap.values()][0] : undefined;
-				const saId = finalCard?.id ?? parentToolCallId;
-				const toolTraces = resolveFinalToolTraces(finalCard, result, saId);
-				const toolSummary = toolTraces.length > 0
-					? `Tools: ${toolTraces.map(t => t.name).slice(0, 8).join(', ')}`
-					: 'No tools used';
+					// 从 result.toolTrace 提取工具痕迹到 subagentData，
+					// 供 SubAgentCard 渲染（与 planExploreTool 对齐）。
+					// subAgentId 由 inlineTraceSink 的事件写入 cardMap；
+					// 取首个卡片的 id 回填到 subagentData（单任务模式下只有一张卡）。
+					const finalCard = cardMap.size > 0 ? [...cardMap.values()][0] : undefined;
+					const saId = finalCard?.id ?? parentToolCallId;
+					const toolTraces = resolveFinalToolTraces(finalCard, result, saId);
+					const toolSummary = toolTraces.length > 0
+						? `Tools: ${toolTraces.map(t => t.name).slice(0, 8).join(', ')}`
+						: 'No tools used';
 
-				ctx.agentOS.fireSubAgentTrace({
-					groupId: batchGroupId,
-					subagentData: [{
-					id: saId,
-					type: agentTypeLabel,
-					task: task.slice(0, 200),
-					status: result.success ? 'done' as const : 'error' as const,
-					output: result.success ? stripCompletionGateFooter(result.output || '(no output)').slice(0, 2000) : (result.error || 'unknown error'),
-					progress: toolSummary,
-					groupId: batchGroupId,
-					parentToolCallId,
-					toolTraces,
-					startedAt: finalCard?.startedAt, completedAt: finalCard?.completedAt,
-				}],
-				});
+					ctx.agentOS.fireSubAgentTrace({
+						groupId: batchGroupId,
+						subagentData: [{
+							id: saId,
+							type: agentTypeLabel,
+							task: task.slice(0, 200),
+							status: result.success ? 'done' as const : 'error' as const,
+							output: result.success ? stripCompletionGateFooter(result.output || '(no output)').slice(0, 2000) : (result.error || 'unknown error'),
+							progress: toolSummary,
+							groupId: batchGroupId,
+							parentToolCallId,
+							toolTraces,
+							startedAt: finalCard?.startedAt, completedAt: finalCard?.completedAt,
+						}],
+					});
 
 					// P2c 末步强制收尾：结构化收尾（含 role + exitReason），不丢失败原因。
 					return [{ type: 'text', text: formatDelegationResult(subAgentType, result, undefined, isolationLevel) }];
 				}
 
-			// Batch tasks mode（1-5 个独立子代理并行）。
-			// agentId 驱动：每个并行子代理都以内置 Agent 身份实例化（systemPrompt/tools/model）。
-			const perTaskOptions = tasks!.map(() => ({
-				type: subAgentType,
-				isolationLevel,
-				toolsets: effectiveToolsets,
-				...agentIdentity,
-				...(inheritWorktree ? { worktreePath: inheritWorktree } : {}),
-				...(toolsetsArg ? { toolsets: toolsetsArg } : {}),
-				...(modelSelection ? { model: modelSelection } : {}),
-				...(excludedTools ? { excludedTools } : {}),
-				...(outputSchemaArg ? { outputSchema: outputSchemaArg } : {}),
-			}));
+				// Batch tasks mode（1-5 个独立子代理并行）。
+				// agentId 驱动：每个并行子代理都以内置 Agent 身份实例化（systemPrompt/tools/model）。
+				const perTaskOptions = tasks!.map(() => ({
+					type: subAgentType,
+					isolationLevel,
+					toolsets: effectiveToolsets,
+					...agentIdentity,
+					...(inheritWorktree ? { worktreePath: inheritWorktree } : {}),
+					...(toolsetsArg ? { toolsets: toolsetsArg } : {}),
+					...(modelSelection ? { model: modelSelection } : {}),
+					...(excludedTools ? { excludedTools } : {}),
+					...(outputSchemaArg ? { outputSchema: outputSchemaArg } : {}),
+				}));
 				const results = await (ctx.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch).dispatchParallelExplore(
 					agentId ?? 'unknown',
 					tasks!,
 					executeFn,
 					contextArg, // shared context injected into every batched sub-agent
-				perTaskOptions,
-				inlineTraceSink, // P0/P1: 旁路总线流式驱动 SubAgentCard 工具痕迹
-				signal,    // P3: 父→子取消传播（父 turn abort 信号）
+					perTaskOptions,
+					inlineTraceSink, // P0/P1: 旁路总线流式驱动 SubAgentCard 工具痕迹
+					signal,    // P3: 父→子取消传播（父 turn abort 信号）
 				);
 
 				// R5 兜底：flush 终态快照
 				flushNow();
 
-			// 从每个 result.toolTrace 提取工具痕迹，构建 subagentData。
-			const subagentData = results.map((r: SubAgentResult, i: number) => {
-				// 按任务文本匹配流式卡片（并行下事件到达顺序 ≠ 任务顺序，
-				// 位置匹配 [...cardMap.keys()][i] 会把 traces/output 错配到别的子代理）。
-				// card.task 来自事件 ev.task = subAgent.task = tasks[i]（dispatch 边界
-				// 已经 normalizeTaskArg 归一化为同一字符串），可精确匹配。
-				const card = [...cardMap.values()].find(c => c.task === tasks![i]);
-				const saId = card?.id ?? `delegate-${parentToolCallId}-${i}`;
-				const toolTraces = resolveFinalToolTraces(card, r, saId);
-				const toolSummary = toolTraces.length > 0
-					? `Tools: ${toolTraces.map(t => t.name).slice(0, 8).join(', ')}`
-					: 'No tools used';
-				return {
-					id: saId,
-					type: agentTypeLabel,
-					task: (tasks![i] || `Task ${i + 1}`).slice(0, 200),
-					status: r.success ? 'done' as const : 'error' as const,
-					output: r.success ? stripCompletionGateFooter(r.output || '(no output)').slice(0, 2000) : (r.error || 'unknown error'),
-					progress: toolSummary,
-					groupId: batchGroupId,
-					parentToolCallId,
-					toolTraces,
-					startedAt: card?.startedAt, completedAt: card?.completedAt,
-					skipSubAgentCard: true,
-				};
-			});
+				// 从每个 result.toolTrace 提取工具痕迹，构建 subagentData。
+				const subagentData = results.map((r: SubAgentResult, i: number) => {
+					// 按任务文本匹配流式卡片（并行下事件到达顺序 ≠ 任务顺序，
+					// 位置匹配 [...cardMap.keys()][i] 会把 traces/output 错配到别的子代理）。
+					// card.task 来自事件 ev.task = subAgent.task = tasks[i]（dispatch 边界
+					// 已经 normalizeTaskArg 归一化为同一字符串），可精确匹配。
+					const card = [...cardMap.values()].find(c => c.task === tasks![i]);
+					const saId = card?.id ?? `delegate-${parentToolCallId}-${i}`;
+					const toolTraces = resolveFinalToolTraces(card, r, saId);
+					const toolSummary = toolTraces.length > 0
+						? `Tools: ${toolTraces.map(t => t.name).slice(0, 8).join(', ')}`
+						: 'No tools used';
+					return {
+						id: saId,
+						type: agentTypeLabel,
+						task: (tasks![i] || `Task ${i + 1}`).slice(0, 200),
+						status: r.success ? 'done' as const : 'error' as const,
+						output: r.success ? stripCompletionGateFooter(r.output || '(no output)').slice(0, 2000) : (r.error || 'unknown error'),
+						progress: toolSummary,
+						groupId: batchGroupId,
+						parentToolCallId,
+						toolTraces,
+						startedAt: card?.startedAt, completedAt: card?.completedAt,
+						skipSubAgentCard: true,
+					};
+				});
 
 				ctx.agentOS.fireSubAgentTrace({
 					groupId: batchGroupId,
@@ -792,9 +798,9 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 				return [{ type: 'text', text: `delegate_task error: ${msg}` }];
 			}
 		},
-			descriptionBuilder: (agentId: string) => {
-				try {
-					const dispatch = ctx.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch;
+		descriptionBuilder: (agentId: string) => {
+			try {
+				const dispatch = ctx.orchestrationService.subAgentDispatch as UnifiedSubAgentDispatch;
 				const config = dispatch.getConfig();
 				return `Delegate a task to a sub-agent (single task per call). ` +
 					`Each sub-agent runs independently and returns its result. ` +
@@ -807,20 +813,20 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 					`- CONTEXT: what you already know / have ruled out\n` +
 					`- ACCEPTANCE: how to know it is done, plus output limits (e.g. "report in <200 words")\n` +
 					`\n\n` +
-				`## All sub-agents are Explore (read-only search/read/list)\n` +
-				`- Searches inside sub-agents do NOT consume your context window.\n` +
-				`- Use plan_explore for parallel multi-area investigation; delegate_task for focused deep-dives.\n` +
-				`\`- isolation_level: 'subagent' (default, parent-controlled) or 'peer' (independent, survives parent-turn cancellation, no inherited worktree).\n` +
-				`\n\n` +
-				`## Pass context with \`context\`:\n` +
-				`- The sub-agent is BLANK, so anything it needs from this conversation must be passed here (prior steps, findings, decisions).\n` +
-				`- Keep it a concise summary — do not paste the whole transcript.\n` +
-				`\n\n` +
-				`## Scope the sub-agent (optional):\n` +
-				`- \`toolsets\`: restrict which toolsets the sub-agent may use, e.g. ["core"] for read-only investigation. Omit for no restriction.\n` +
-				`- \`model\`: run the sub-agent on a specific model, e.g. "knot-agui/gpt-4o-mini" or just "gpt-4o-mini" (reuses the session provider). Use a cheaper model for trivial fan-out to save cost.\n` +
-				`\n\n` +
-				`## When to use:\n` +
+					`## All sub-agents are Explore (read-only search/read/list)\n` +
+					`- Searches inside sub-agents do NOT consume your context window.\n` +
+					`- Use plan_explore for parallel multi-area investigation; delegate_task for focused deep-dives.\n` +
+					`\`- isolation_level: 'subagent' (default, parent-controlled) or 'peer' (independent, survives parent-turn cancellation, no inherited worktree).\n` +
+					`\n\n` +
+					`## Pass context with \`context\`:\n` +
+					`- The sub-agent is BLANK, so anything it needs from this conversation must be passed here (prior steps, findings, decisions).\n` +
+					`- Keep it a concise summary — do not paste the whole transcript.\n` +
+					`\n\n` +
+					`## Scope the sub-agent (optional):\n` +
+					`- \`toolsets\`: restrict which toolsets the sub-agent may use, e.g. ["core"] for read-only investigation. Omit for no restriction.\n` +
+					`- \`model\`: run the sub-agent on a specific model, e.g. "knot-agui/gpt-4o-mini" or just "gpt-4o-mini" (reuses the session provider). Use a cheaper model for trivial fan-out to save cost.\n` +
+					`\n\n` +
+					`## When to use:\n` +
 					`- Exploring ONE feature/mechanism even across multiple files or aspects\n` +
 					`  (e.g. "analyze GC" → ONE task covering all GC aspects; do NOT split by aspect)\n` +
 					`- A single job complex enough to benefit from a dedicated context\n` +
@@ -830,64 +836,69 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 					`- The task is simple and can be completed in one turn\n` +
 					`- You need to maintain ongoing context/memory across steps\n` +
 					`- You are already at maximum spawn depth\n`;
-				} catch {
-					return `Delegate a task to a sub-agent (single task per call). ` +
-						'Each sub-agent runs independently and returns its result.';
-				}
-			},
-		});
-		ctx.logService.info('[BuiltinTools] _registerDelegationTools: delegate_task registered');
+			} catch {
+				return `Delegate a task to a sub-agent (single task per call). ` +
+					'Each sub-agent runs independently and returns its result.';
+			}
+		},
+	});
+	ctx.logService.info('[BuiltinTools] _registerDelegationTools: delegate_task registered');
 
-		// ── new_agent — 创建持久化 Agent 定义 ──────────────────────────────
-		// 与 delegate_task 的区别：new_agent 创建可复用的持久化 Agent，
-		// 而 delegate_task 创建一次性子代理。详见 handleNewAgentTool 文档。
-		ctx.register({
-			definition: {
-				name: 'new_agent',
-				description: [
-					'Create a new persistent agent definition that can be reused for future tasks.',
-					'',
-					'The created agent is saved to ~/.saros/agents/{agentId}/ and becomes available',
-					'for delegation (delegate_task), orchestration plans, and manual invocation.',
-					'',
-					'## When to use:',
-					'- You need a specialized agent that does not exist yet',
-					'- A task requires a role/toolset combination not covered by existing agents',
-					'- You want to create a reusable team member for ongoing work',
-					'',
-					'## When NOT to use:',
-					'- For a one-off task (use delegate_task instead)',
-					'- The agent already exists (use delegate_task to invoke it)',
-				].join('\n'),
-				inputSchema: {
-					type: 'object',
-					properties: {
-						name: { type: 'string', description: 'Human-readable agent name (e.g. "Code Reviewer")' },
-						role: { type: 'string', description: 'Agent role/specialty (e.g. "Reviewer", "Researcher", "Developer")' },
-						description: { type: 'string', description: 'What this agent does and when to use it' },
-						systemPrompt: { type: 'string', description: 'Custom system prompt for the agent' },
-						model: { type: 'string', description: 'LLM model (default: inherits workspace default)' },
-						tools: {
-							type: 'array',
-							items: { type: 'string' },
-							description: 'Enabled tool names (default: all core tools)',
-						},
-						skills: {
-							type: 'array',
-							items: { type: 'string' },
-							description: 'Skill names to enable',
-						},
-						category: { type: 'string', description: 'Category label (default: "General")' },
+	// ── new_agent — 创建持久化 Agent 定义 ──────────────────────────────
+	// 与 delegate_task 的区别：new_agent 创建可复用的持久化 Agent，
+	// 而 delegate_task 创建一次性子代理。详见 handleNewAgentTool 文档。
+	ctx.register({
+		definition: {
+			name: 'new_agent',
+			description: [
+				'Create a new persistent agent definition that can be reused for future tasks.',
+				'',
+				'The created agent is saved to ~/.vssaros/agents/{agentId}/ and becomes available',
+				'for delegation (delegate_task), orchestration plans, and manual invocation.',
+				'',
+				'## When to use:',
+				'- You need a specialized agent that does not exist yet',
+				'- A task requires a role/toolset combination not covered by existing agents',
+				'- You want to create a reusable team member for ongoing work',
+				'',
+				'## When NOT to use:',
+				'- For a one-off or throwaway task — this creates a persistent agent; run the task via the read-only delegation tool instead.',
+				'- For codebase exploration / search — never create a generic "General Assistant"; that belongs to the read-only exploration sub-agent.',
+				'- The agent already exists (reuse it via delegation)',
+				'',
+				'## Role guidance:',
+				'- Set `role` to a CONCRETE specialty that matches the agent purpose (e.g. "Code Reviewer", "Researcher", "Tester").',
+				'- Avoid vague roles like "General Assistant" — a persistent agent should have a focused specialty; one-off exploration is handled by the read-only exploration sub-agent.',
+			].join('\n'),
+			inputSchema: {
+				type: 'object',
+				properties: {
+					name: { type: 'string', description: 'Human-readable agent name (e.g. "Code Reviewer")' },
+					role: { type: 'string', description: 'Agent role/specialty — use a CONCRETE value (e.g. "Code Reviewer", "Researcher", "Tester"). Avoid vague "General Assistant"; a persistent agent should have a focused specialty.' },
+					description: { type: 'string', description: 'What this agent does and when to use it' },
+					systemPrompt: { type: 'string', description: 'Custom system prompt for the agent' },
+					model: { type: 'string', description: 'LLM model (default: inherits workspace default)' },
+					tools: {
+						type: 'array',
+						items: { type: 'string' },
+						description: 'Enabled tool names (default: all core tools)',
 					},
-					required: ['name', 'role', 'description'],
+					skills: {
+						type: 'array',
+						items: { type: 'string' },
+						description: 'Skill names to enable',
+					},
+					category: { type: 'string', description: 'Category label (default: "General")' },
 				},
-				category: 'delegation',
-				source: ctx.id,
-				securityLevel: ToolSecurityLevel.Cautious,
+				required: ['name', 'role', 'description'],
 			},
-			handler: async (args) => {
-				return handleNewAgentTool(args, ctx.studioService);
-			},
-		});
-		ctx.logService.info('[BuiltinTools] _registerDelegationTools: new_agent registered');
+			category: 'delegation',
+			source: ctx.id,
+			securityLevel: ToolSecurityLevel.Cautious,
+		},
+		handler: async (args) => {
+			return handleNewAgentTool(args, ctx.studioService);
+		},
+	});
+	ctx.logService.info('[BuiltinTools] _registerDelegationTools: new_agent registered');
 }

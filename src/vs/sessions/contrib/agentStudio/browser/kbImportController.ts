@@ -897,8 +897,8 @@ export class KbImportController extends Disposable {
 	}
 
 	private async _writeLegacyFavorite(content: string): Promise<void> {
-		// 降级兜底：写入本地备份文件
-		const dir = URI.joinPath(this._envService.userHome, '.vssaros', 'favorites');
+		// 降级兜底：写入本地备份文件（dev 下 userDataPath 为 ~/.vssaros-dev，跟随 dev）
+		const dir = URI.joinPath(URI.file(this._envService.userDataPath), 'favorites');
 		await this._fileService.createFolder(dir);
 		const ts = Date.now();
 		await this._fileService.writeFile(

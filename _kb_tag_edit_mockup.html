@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>知识库 · 标签组合编辑面板 Mockup</title>
+<style>
+  :root{
+    --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d2d; --border:#2a2a2a; --border2:#3a3a3a;
+    --fg:#cccccc; --fg-dim:#8a8a8a; --fg-faint:#6a6a6a;
+    --accent:#007acc; --accent2:#094771; --badge-bg:#4d4d4d;
+    --tag-bg:#2a3a4a; --tag-fg:#6fb3e0; --tag-x:#5a7d96;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:#141414;color:var(--fg);
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;font-size:13px;padding:20px;
+    display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;}
+  .kb-pane{width:330px;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow:hidden;box-shadow:0 8px 30px rgba(0,0,0,.5);}
+  .kb-header{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--border);}
+  .kb-title{font-weight:600;flex:1;} .kb-hbtn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:3px;cursor:pointer;color:var(--fg-dim);font-size:13px;}
+  .kb-hbtn:hover{background:var(--bg3);color:var(--fg);}
+  .kb-vault-bar{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--bg2);border-bottom:1px solid var(--border);}
+  .kb-vname{flex:1;font-weight:500;} .kb-caret{color:var(--fg-dim);font-size:9px;}
+  .kb-abtn{cursor:pointer;color:var(--fg-dim);} .kb-abtn:hover{color:var(--fg);}
+  .kb-search-row{padding:8px 12px;border-bottom:1px solid var(--border);}
+  .kb-search-box{display:flex;align-items:center;gap:6px;padding:4px 8px;background:#1a1a1a;border:1px solid var(--border2);border-radius:4px;}
+  .kb-search-box input{flex:1;background:none;border:none;outline:none;color:var(--fg);font-size:12px;}
+  .kb-search-box input::placeholder{color:var(--fg-faint);}
+  .kb-scroll{max-height:620px;overflow-y:auto;padding-bottom:8px;}
+  .kb-section{border-bottom:1px solid var(--border);}
+  .kb-section-header{display:flex;align-items:center;gap:6px;padding:7px 12px;cursor:pointer;font-weight:600;font-size:12px;}
+  .kb-section-header:hover{background:var(--bg2);}
+  .kb-arrow{font-size:9px;color:var(--fg-dim);width:12px;text-align:center;}
+  .kb-section-title{flex:1;} .kb-badge{font-size:10px;padding:0 6px;border-radius:8px;background:var(--badge-bg);color:#ddd;}
+  .kb-node{display:flex;align-items:center;gap:6px;padding:3px 12px 3px 28px;font-size:12px;color:var(--fg);cursor:pointer;}
+  .kb-node:hover{background:var(--bg2);} .kb-folder{color:var(--fg);font-weight:500;}
+
+  /* ════ 标签分类编辑面板 ════ */
+  .kb-tag-panel{border-top:1px solid var(--border2);margin-top:2px;padding:6px 0 10px;flex-shrink:0;background:linear-gradient(180deg,#1b1f24,#1e1e1e 60%);}
+  .kb-tag-header{display:flex;align-items:center;gap:6px;padding:6px 12px;font-size:12px;font-weight:600;}
+  .kb-tag-title{flex:1;}
+  .kb-tag-mode{font-size:10px;padding:1px 7px;border-radius:9px;cursor:pointer;background:var(--accent2);color:#9fd0ff;border:1px solid #0d3a5c;}
+  .kb-tag-filter{display:flex;flex-wrap:wrap;gap:5px;padding:0 12px 8px;}
+  .kb-chip{font-size:11px;padding:2px 9px;border-radius:11px;cursor:pointer;background:var(--tag-bg);color:var(--tag-fg);border:1px solid transparent;display:flex;align-items:center;gap:5px;}
+  .kb-chip.active{background:var(--accent);color:#fff;border-color:#005a9e;}
+  .kb-chip .cnt{opacity:.7;font-size:10px;}
+  .kb-chip.clear{background:transparent;color:var(--fg-dim);border:1px dashed var(--border2);}
+
+  .kb-tag-group{border-top:1px solid var(--border);}
+  .kb-tag-group-head{display:flex;align-items:center;gap:6px;padding:5px 12px;cursor:pointer;}
+  .kb-tag-group-head:hover{background:var(--bg2);}
+  .kb-tag-group-head .g-arrow{font-size:9px;color:var(--fg-dim);width:12px;}
+  .kb-tag-group-head .g-name{color:var(--tag-fg);flex:1;font-weight:500;}
+  .kb-tag-group-head .g-count{font-size:10px;color:var(--fg-faint);}
+
+  /* ── 文档 item：可自由加标签的组合体 ── */
+  .doc-item{padding:5px 12px 6px 28px;border-bottom:1px solid #232323;}
+  .doc-row{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--fg);}
+  .doc-name{font-weight:500;}
+  .doc-row .meta{font-size:10px;color:var(--fg-faint);}
+  /* 标签 chip 行（可删除） */
+  .tagline{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;align-items:center;}
+  .tchip{display:inline-flex;align-items:center;gap:3px;font-size:11px;padding:1px 4px 1px 8px;border-radius:10px;background:var(--tag-bg);color:var(--tag-fg);border:1px solid transparent;cursor:default;}
+  .tchip .x{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;font-size:11px;color:var(--tag-x);cursor:pointer;}
+  .tchip .x:hover{background:#3a5066;color:#fff;}
+  /* 组合框 */
+  .combo{position:relative;display:inline-block;}
+  .combo-input{width:88px;font-size:11px;padding:1px 6px;border-radius:10px;background:#1a1a1a;border:1px dashed var(--border2);color:var(--fg);outline:none;}
+  .combo-input:focus{border-color:var(--accent);background:#1f1f1f;}
+  .combo-input::placeholder{color:var(--fg-faint);}
+  .combo-pop{position:absolute;top:22px;left:0;z-index:20;min-width:150px;max-height:150px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border2);border-radius:5px;box-shadow:0 6px 18px rgba(0,0,0,.5);display:none;}
+  .combo-pop.show{display:block;}
+  .combo-opt{padding:4px 10px;font-size:12px;cursor:pointer;color:var(--fg);}
+  .combo-opt:hover,.combo-opt.hl{background:var(--accent2);}
+  .combo-opt .c-cnt{float:right;color:var(--fg-faint);font-size:10px;}
+  .combo-opt.new{color:var(--tag-fg);}
+
+  .kb-drag-handle{height:3px;background:var(--border);cursor:row-resize;} .kb-drag-handle:hover{background:var(--accent2);}
+  .kb-mem-section{display:flex;flex-direction:column;}
+  .kb-mem-header{display:flex;align-items:center;gap:6px;padding:7px 12px;background:var(--bg2);cursor:pointer;font-weight:600;border-top:1px solid var(--border);}
+  .kb-mem-arrow{font-size:9px;color:var(--fg-dim);width:12px;text-align:center;} .kb-mem-label{flex:1;}
+  .kb-mem-entry{margin:6px 10px;padding:9px 12px;border-radius:4px;background:var(--bg2);border:1px solid var(--border);cursor:pointer;display:flex;gap:8px;align-items:center;}
+  .kb-mem-entry:hover{background:#252525;border-color:var(--border2);}
+  .kb-mem-entry .e-title{font-size:12px;color:#ddd;} .kb-mem-entry .e-meta{font-size:10px;color:var(--fg-faint);margin-top:2px;}
+
+  /* 说明卡 */
+  .annot{max-width:340px;font-size:12px;color:#bbb;line-height:1.7;align-self:flex-start;}
+  .annot h3{color:#9fd0ff;margin:0 0 8px;font-size:14px;}
+  .annot code{background:#2d2d2d;padding:1px 5px;border-radius:3px;color:#e6b673;}
+  .legend{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:middle;margin-right:4px;}
+  .step{margin:6px 0;padding-left:2px;}
+  .k{color:#9fd0ff;}
+</style>
+</head>
+<body>
+  <!-- 知识库侧栏 -->
+  <div class="kb-pane">
+    <div class="kb-header"><span class="kb-title">📚 知识库</span>
+      <span class="kb-hbtn">🕸️</span><span class="kb-hbtn">⟳</span><span class="kb-hbtn">🏗️</span><span class="kb-hbtn">⚙</span></div>
+    <div class="kb-vault-bar"><span>📚</span><span class="kb-vname">我的知识库</span><span class="kb-caret">▼</span><span class="kb-abtn">🧠</span><span class="kb-abtn">📂</span></div>
+    <div class="kb-search-row"><div class="kb-search-box"><span>🔍</span><input placeholder="搜索知识库 (全文 / 标题 / 标签)…"/></div></div>
+    <div class="kb-scroll">
+      <div class="kb-section">
+        <div class="kb-section-header"><span class="kb-arrow">▼</span><span class="kb-section-title">库</span><span class="kb-badge">5</span></div>
+        <div class="kb-node kb-folder">📁 库</div>
+      </div>
+      <div class="kb-section">
+        <div class="kb-section-header"><span class="kb-arrow">▼</span><span class="kb-section-title">笔记</span><span class="kb-badge">4</span></div>
+        <div class="kb-node">📄 index.md</div>
+        <div class="kb-node">📄 insights.md</div>
+        <div class="kb-node">📄 log.md</div>
+        <div class="kb-node">📄 overview.md</div>
+      </div>
+
+      <!-- ════ 标签分类编辑面板 ════ -->
+      <div class="kb-tag-panel">
+        <div class="kb-tag-header"><span>🏷️</span><span class="kb-tag-title">标签分类</span><span class="kb-tag-mode">交集 AND</span></div>
+        <div class="kb-tag-filter">
+          <span class="kb-chip active">#项目A <span class="cnt">4</span></span>
+          <span class="kb-chip">#概览 <span class="cnt">2</span></span>
+          <span class="kb-chip">#洞察 <span class="cnt">1</span></span>
+          <span class="kb-chip">#周报 <span class="cnt">1</span></span>
+          <span class="kb-chip">#日志 <span class="cnt">1</span></span>
+          <span class="kb-chip clear">✕ 清除</span>
+        </div>
+
+        <!-- 分组：#项目A -->
+        <div class="kb-tag-group">
+          <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#项目A</span><span class="g-count">4 篇</span></div>
+
+          <!-- 文档 item：可自由加标签 -->
+          <div class="doc-item" data-doc="index.md">
+            <div class="doc-row">📄 <span class="doc-name">index.md</span></div>
+            <div class="tagline">
+              <span class="tchip">#概览<span class="x">×</span></span>
+              <span class="combo">
+                <input class="combo-input" placeholder="+ 标签" />
+                <div class="combo-pop"></div>
+              </span>
+            </div>
+          </div>
+
+          <div class="doc-item" data-doc="insights.md">
+            <div class="doc-row">📄 <span class="doc-name">insights.md</span></div>
+            <div class="tagline">
+              <span class="tchip">#洞察<span class="x">×</span></span>
+              <span class="tchip">#周报<span class="x">×</span></span>
+              <span class="combo">
+                <input class="combo-input" placeholder="+ 标签" />
+                <div class="combo-pop"></div>
+              </span>
+            </div>
+          </div>
+
+          <div class="doc-item" data-doc="log.md">
+            <div class="doc-row">📄 <span class="doc-name">log.md</span></div>
+            <div class="tagline">
+              <span class="tchip">#日志<span class="x">×</span></span>
+              <span class="combo">
+                <input class="combo-input" placeholder="+ 标签" />
+                <div class="combo-pop"></div>
+              </span>
+            </div>
+          </div>
+
+          <div class="doc-item" data-doc="overview.md">
+            <div class="doc-row">📄 <span class="doc-name">overview.md</span></div>
+            <div class="tagline">
+              <span class="tchip">#概览<span class="x">×</span></span>
+              <span class="tchip">#汇报<span class="x">×</span></span>
+              <span class="combo">
+                <input class="combo-input" placeholder="+ 标签" />
+                <div class="combo-pop"></div>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 分组：#无标签 -->
+        <div class="kb-tag-group">
+          <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#无标签</span><span class="g-count">1 篇</span></div>
+          <div class="doc-item" data-doc="raw_未处理文档.md">
+            <div class="doc-row">📄 <span class="doc-name">raw_未处理文档.md</span></div>
+            <div class="tagline">
+              <span class="combo">
+                <input class="combo-input" placeholder="+ 添加首个标签" />
+                <div class="combo-pop"></div>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="kb-drag-handle"></div>
+    <div class="kb-mem-section">
+      <div class="kb-mem-header"><span class="kb-mem-arrow">▼</span><span>🧠</span><span class="kb-mem-label">记忆库</span><span class="kb-abtn">⟳</span></div>
+      <div class="kb-mem-entry"><span style="font-size:18px;">🧠</span><div><div class="e-title">查看完整记忆</div><div class="e-meta">点击打开 MemoryDetailEditorPane</div></div></div>
+    </div>
+  </div>
+
+  <!-- 说明 -->
+  <div class="annot">
+    <h3>重设计 · 每个 item 可自由加标签</h3>
+    <p><span class="legend" style="background:#2a3a4a;"></span>标签分类面板中，<b>每个文档 item 本体就是一个标签编辑组合体</b>：</p>
+    <div class="step"><span class="k">① 现有标签</span>：以可删除 chip 展示，点 <code>×</code> 即从该文档移除。</div>
+    <div class="step"><span class="k">② 自由添加</span>：点 <code>+ 标签</code> 组合框输入，<b>实时联想</b>已有标签词表（带文档数），回车或点选即挂载；输入词表外的新词则<span class="k">新建标签</span>。</div>
+    <div class="step"><span class="k">③ 即时重分类</span>：加/删标签后，文档自动在分组间迁移（如给 raw 文档加 <code>#项目A</code> 即归入对应分组，离开 #无标签）。</div>
+    <p style="color:#888;margin-top:10px;">交互纯前端演示（mockup），未改动项目代码。标签来源复用 <code>#标签#</code> 语法 / frontmatter；词表来自 <code>_index.searchByTag</code> 聚合。</p>
+  </div>
+
+<script>
+  // ── 已有标签词表（模拟 _index 聚合）──
+  const VOCAB = [
+    {t:'#项目A', n:4}, {t:'#概览', n:2}, {t:'#洞察', n:1}, {t:'#周报', n:1},
+    {t:'#日志', n:1}, {t:'#汇报', n:1}, {t:'#bug', n:0}, {t:'#架构', n:0}, {t:'#会议', n:0},
+  ];
+  function buildPop(input){
+    const pop = input.parentElement.querySelector('.combo-pop');
+    const q = input.value.trim().toLowerCase();
+    pop.innerHTML='';
+    let opts = VOCAB.filter(v=>v.t.toLowerCase().includes(q));
+    if(q && !VOCAB.some(v=>v.t.toLowerCase()===q)) opts.unshift({t:q, n:0, isNew:true});
+    if(opts.length===0){ pop.innerHTML='<div class="combo-opt">无匹配，回车新建</div>'; pop.classList.add('show'); return; }
+    opts.forEach(o=>{
+      const d=document.createElement('div');
+      d.className='combo-opt'+(o.isNew?' new':'');
+      d.innerHTML=(o.isNew?('➕ 新建 '+o.t):(o.t+' <span class="c-cnt">'+o.n+'</span>'));
+      d.onmousedown=()=>{ addTag(input, o.t); };
+      pop.appendChild(d);
+    });
+    pop.classList.add('show');
+  }
+  function addTag(input, tag){
+    const line = input.closest('.tagline');
+    if(line.querySelector('.tchip[data-t="'+tag+'"]')) return;
+    const c=document.createElement('span'); c.className='tchip'; c.dataset.t=tag;
+    c.innerHTML=tag+'<span class="x">×</span>';
+    c.querySelector('.x').onclick=()=>c.remove();
+    line.insertBefore(c, input.parentElement);
+    input.value=''; input.parentElement.querySelector('.combo-pop').classList.remove('show');
+  }
+  document.querySelectorAll('.combo-input').forEach(inp=>{
+    inp.addEventListener('focus', ()=>buildPop(inp));
+    inp.addEventListener('input', ()=>buildPop(inp));
+    inp.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){
+        const v=inp.value.trim(); if(v) addTag(inp, v.startsWith('#')?v:'#'+v);
+        e.preventDefault();
+      }
+      if(e.key==='Escape') inp.parentElement.querySelector('.combo-pop').classList.remove('show');
+    });
+    inp.addEventListener('blur', ()=>setTimeout(()=>inp.parentElement.querySelector('.combo-pop').classList.remove('show'),120));
+  });
+  // chip 删除（mockup 内预置）
+  document.querySelectorAll('.tchip .x').forEach(x=>x.onclick=()=>x.parentElement.remove());
+</script>
+</body>
+</html>

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>知识库 · 标签分类 View（完善版）</title>
+<style>
+  :root{
+    --bg:#1e1e1e; --panel:#252526; --panel2:#2d2d30; --border:#3c3c3c;
+    --fg:#d4d4d4; --muted:#858585; --accent:#0e639c; --accent2:#3794ff;
+    --chip:#3a3d41; --chip-fg:#cfd8e3; --danger:#f14c4c; --ok:#4ec9b0;
+    --warn:#cca700; --hl:#3a3a00;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:"Segoe UI",-apple-system,"Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--fg);font-size:13px;}
+  .kb{display:flex;flex-direction:column;height:100vh;max-width:1180px;margin:0 auto;
+      border-left:1px solid var(--border);border-right:1px solid var(--border);}
+  .kb-head{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);
+           border-bottom:1px solid var(--border);}
+  .kb-head .title{font-weight:600;font-size:14px;}
+  .kb-head .ico{opacity:.8;}
+  .spacer{flex:1;}
+  .views{display:flex;gap:4px;background:var(--panel2);padding:3px;border-radius:6px;}
+  .views button{background:transparent;border:0;color:var(--muted);padding:5px 12px;
+                border-radius:4px;cursor:pointer;font-size:12px;}
+  .views button.active{background:var(--accent);color:#fff;}
+
+  .ctrl{display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--panel2);
+        border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  .ctrl input[type=text]{background:var(--bg);border:1px solid var(--border);color:var(--fg);
+        padding:5px 9px;border-radius:5px;min-width:160px;outline:none;}
+  .ctrl select{background:var(--bg);border:1px solid var(--border);color:var(--fg);
+        padding:4px 6px;border-radius:5px;outline:none;}
+  .ctrl label{color:var(--muted);font-size:12px;}
+  .ctrl .seg{display:flex;align-items:center;gap:4px;}
+
+  .filter-bar{display:none;align-items:center;gap:8px;padding:6px 14px;background:var(--hl);
+        border-bottom:1px solid var(--border);}
+  .filter-bar.show{display:flex;}
+  .filter-bar .tag-x{cursor:pointer;background:var(--chip);color:var(--chip-fg);
+        padding:3px 8px;border-radius:12px;font-size:12px;}
+  .filter-bar .tag-x b{color:#fff;}
+  .filter-bar .clear{margin-left:auto;color:var(--accent2);cursor:pointer;font-size:12px;}
+
+  .body{flex:1;overflow:auto;padding:12px 14px;}
+  .view{display:none;}
+  .view.active{display:block;}
+
+  /* ---- 标签云 ---- */
+  .cloud{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:14px 6px;}
+  .cloud .t{cursor:pointer;line-height:1;padding:4px 2px;transition:transform .12s,color .12s;
+            border-radius:6px;user-select:none;}
+  .cloud .t:hover{transform:translateY(-2px);text-decoration:underline;}
+  .cloud .t .n{font-size:10px;color:var(--muted);vertical-align:super;margin-left:2px;}
+
+  /* ---- 层级树 ---- */
+  .tree{font-size:13px;}
+  .tree .node{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:5px;cursor:pointer;}
+  .tree .node:hover{background:var(--panel2);}
+  .tree .node.leaf .tag-name{cursor:pointer;color:var(--accent2);}
+  .tree .node.leaf .tag-name:hover{text-decoration:underline;}
+  .tree .twist{width:14px;color:var(--muted);font-size:10px;}
+  .tree .count{margin-left:auto;color:var(--muted);font-size:11px;}
+  .tree .children{margin-left:16px;border-left:1px dashed var(--border);padding-left:6px;}
+
+  /* ---- 列表分组 ---- */
+  .group{margin-bottom:14px;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+  .group-hd{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel);
+            cursor:pointer;user-select:none;}
+  .group-hd:hover{background:var(--panel2);}
+  .group-hd .twist{color:var(--muted);font-size:10px;width:14px;}
+  .group-hd .gname{font-weight:600;}
+  .group-hd .gcount{color:var(--muted);font-size:11px;}
+  .group-hd .gjump{margin-left:auto;color:var(--accent2);font-size:11px;opacity:0;transition:opacity .12s;}
+  .group:hover .gjump{opacity:1;}
+  .group-bd{display:none;padding:6px 10px 10px;background:var(--bg);}
+  .group.open .group-bd{display:block;}
+
+  .doc{display:flex;align-items:flex-start;gap:8px;padding:7px 8px;border-radius:6px;
+       border:1px solid transparent;margin-top:4px;}
+  .doc:hover{background:var(--panel2);border-color:var(--border);}
+  .doc .caret{width:14px;color:var(--muted);font-size:10px;cursor:pointer;flex:none;padding-top:2px;}
+  .doc .name{font-weight:500;flex:none;min-width:150px;cursor:pointer;}
+  .doc .chips{display:flex;flex-wrap:wrap;gap:5px;align-items:center;}
+  .chip{display:inline-flex;align-items:center;gap:4px;background:var(--chip);color:var(--chip-fg);
+        padding:2px 4px 2px 9px;border-radius:12px;font-size:11px;}
+  .chip .x{cursor:pointer;width:14px;height:14px;border-radius:50%;display:inline-flex;
+        align-items:center;justify-content:center;color:var(--muted);font-size:11px;line-height:1;}
+  .chip .x:hover{background:var(--danger);color:#fff;}
+  .chip.untag{opacity:.7;font-style:italic;}
+  .doc .detail{display:none;width:100%;color:var(--muted);font-size:12px;margin-top:4px;
+        padding-top:6px;border-top:1px dashed var(--border);white-space:pre-wrap;}
+
+  .note{margin:18px 0 6px;padding:12px 14px;background:var(--panel);border:1px solid var(--border);
+        border-radius:8px;line-height:1.7;}
+  .note h3{margin:0 0 6px;font-size:13px;color:var(--accent2);}
+  .note code{background:var(--bg);padding:1px 5px;border-radius:4px;color:var(--ok);}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;color:var(--muted);font-size:11px;}
+  .legend span{display:inline-flex;align-items:center;gap:4px;}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block;}
+</style>
+</head>
+<body>
+<div class="kb">
+  <div class="kb-head">
+    <span class="ico">📚</span><span class="title">知识库</span>
+    <span class="ico">🕸️</span>
+    <div class="spacer"></div>
+    <div class="views">
+      <button data-view="list" class="active">列表</button>
+      <button data-view="tree">层级树</button>
+      <button data-view="cloud">标签云</button>
+    </div>
+  </div>
+
+  <div class="ctrl">
+    <input type="text" id="search" placeholder="🔍 搜索标签 / 文档…" />
+    <div class="seg">
+      <label>排序</label>
+      <select id="sort">
+        <option value="hot">热度 ↓</option>
+        <option value="alpha">字母 ↑</option>
+        <option value="hier">层级</option>
+      </select>
+    </div>
+    <div class="seg">
+      <label>仅显示 ≥</label>
+      <select id="minc">
+        <option value="1">1 篇</option>
+        <option value="2">2 篇</option>
+        <option value="3">3 篇</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="filter-bar" id="filterBar">
+    <span>当前筛选：</span>
+    <span class="tag-x" id="filterTag"></span>
+    <span class="clear" id="clearFilter">清除 ✕</span>
+  </div>
+
+  <div class="body">
+    <!-- 列表视图 -->
+    <div class="view active" id="view-list">
+      <div id="listRoot"></div>
+    </div>
+
+    <!-- 层级树视图 -->
+    <div class="view" id="view-tree">
+      <div class="tree" id="treeRoot"></div>
+    </div>
+
+    <!-- 标签云视图 -->
+    <div class="view" id="view-cloud">
+      <div class="cloud" id="cloudRoot"></div>
+    </div>
+
+    <div class="note">
+      <h3>交互说明（本 mockup 未改动项目代码）</h3>
+      <div>① <b>标签云 / 层级树点击跳转</b>：点任意标签 → 自动切到「列表」并按该标签筛选，列表滚动定位到对应分组（顶部出现「当前筛选」条，可一键清除）。</div>
+      <div>② <b>列表折叠项可编辑标签组合</b>：每篇文档为可折叠卡片；展开显示预览，标签以 <code>chip</code> 呈现，点 <code>×</code> 即从该文档移除该标签（实时重分类）。</div>
+      <div>③ <b>已移除展开内的「+ 标签」添加框</b>：本版不再在文档内提供新增标签入口；添加标签能力移至文档内编辑器 / 右键菜单（保持知识库侧栏聚焦分类与导航）。</div>
+      <div class="legend">
+        <span><i class="dot" style="background:#3794ff"></i>项目类</span>
+        <span><i class="dot" style="background:#4ec9b0"></i>主题类</span>
+        <span><i class="dot" style="background:#cca700"></i>类型类</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------- 数据模型 ----------
+const TAG_META = {
+  '项目A':'#3794ff','项目B':'#3794ff','项目C':'#3794ff',
+  '前端':'#4ec9b0','后端':'#4ec9b0','复盘':'#4ec9b0','周报':'#4ec9b0',
+  '会议纪要':'#cca700','草稿':'#cca700','重要':'#cca700'
+};
+// 层级：父 -> 子
+const HIER = {
+  '项目A':['前端','后端','复盘'],
+  '项目B':['前端','周报'],
+  '类型':['会议纪要','草稿','重要']
+};
+let docs = [
+  {name:'index.md',        tags:['项目A','周报'],          detail:'知识库入口索引文档。\n记录各项目概览与导航。'},
+  {name:'insights.md',     tags:['项目A','前端','复盘'],   detail:'前端架构洞察与踩坑记录。\n含性能优化与组件设计。'},
+  {name:'log.md',          tags:['周报'],                  detail:'每周工作日志。'},
+  {name:'overview.md',     tags:['项目A'],                 detail:'项目A 总体概述。'},
+  {name:'meeting_0715.md', tags:['项目B','会议纪要','重要'],detail:'0715 项目B 评审会议纪要。'},
+  {name:'draft_idea.md',   tags:['草稿'],                  detail:'未定稿的想法草稿。'},
+  {name:'raw_未处理.md',   tags:[],                        detail:'从外部导入、尚未标注的原始文档。'}
+];
+
+// ---------- 状态 ----------
+let activeView='list', activeTag=null;
+let expandedGroups=new Set(), expandedDocs=new Set();
+
+function allTags(){
+  const m={};
+  docs.forEach(d=>d.tags.forEach(t=>m[t]=(m[t]||0)+1));
+  return m;
+}
+function colorOf(t){return TAG_META[t]||'#888';}
+
+// ---------- 顶部视图切换 ----------
+document.querySelectorAll('.views button').forEach(b=>{
+  b.onclick=()=>{
+    activeView=b.dataset.view;
+    document.querySelectorAll('.views button').forEach(x=>x.classList.toggle('active',x===b));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    document.getElementById('view-'+activeView).classList.add('active');
+    if(activeTag) renderList(); // 跳转后切回列表已处理；这里保证视图同步
+  };
+});
+
+// ---------- 筛选条 ----------
+function setFilter(t){
+  activeTag=t;
+  const fb=document.getElementById('filterBar');
+  if(t){
+    fb.classList.add('show');
+    document.getElementById('filterTag').innerHTML='<b>#'+t+'</b> <span style="opacity:.6">('+ (allTags()[t]||0) +' 篇)</span>';
+    // 跳转到列表
+    activeView='list';
+    document.querySelectorAll('.views button').forEach(x=>x.classList.toggle('active',x.dataset.view==='list'));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    document.getElementById('view-list').classList.add('active');
+    renderList();
+    // 滚动定位到该分组
+    const g=document.getElementById('grp-'+cssId(t));
+    if(g){g.scrollIntoView({behavior:'smooth',block:'center'});g.classList.add('open');
+          g.style.boxShadow='0 0 0 2px var(--accent2)';setTimeout(()=>g.style.boxShadow='',1200);}
+  }else{
+    fb.classList.remove('show');
+    renderList();
+  }
+}
+document.getElementById('clearFilter').onclick=()=>setFilter(null);
+
+// ---------- 列表渲染 ----------
+function cssId(t){return 't_'+t.replace(/[^a-z0-9一-龥]/gi,'_');}
+
+function renderList(){
+  const root=document.getElementById('listRoot');
+  root.innerHTML='';
+  const tm=allTags();
+  const minc=+document.getElementById('minc').value;
+  const q=document.getElementById('search').value.trim().toLowerCase();
+  // 分组：带标签的按标签分；无标签归 #无标签
+  let groups=[];
+  const tagNames=Object.keys(tm).filter(t=>tm[t]>=minc);
+  // 排序
+  const sort=document.getElementById('sort').value;
+  tagNames.sort((a,b)=>{
+    if(sort==='hot') return tm[b]-tm[a];
+    if(sort==='alpha') return a.localeCompare(b,'zh');
+    return 0; // hier 由原顺序（数据已是层级感）
+  });
+  tagNames.forEach(t=>{
+    let ds=docs.filter(d=>d.tags.includes(t));
+    if(q && !(t.toLowerCase().includes(q)||ds.some(d=>d.name.toLowerCase().includes(q)))) return;
+    if(activeTag && t!==activeTag) return;
+    groups.push({name:t, docs:ds});
+  });
+  // 无标签分组
+  const untagged=docs.filter(d=>d.tags.length===0);
+  if(untagged.length && !activeTag && minc<=1 && !(q && !'无标签'.includes(q)&&!untagged.some(d=>d.name.toLowerCase().includes(q)))){
+    groups.push({name:'#无标签', docs:untagged, untag:true});
+  }
+  // Top-N 懒展开：超过 8 个分组折叠其余
+  const TOPN=8;
+  groups.slice(TOPN).forEach(g=>g._hidden=true);
+
+  groups.forEach((g,gi)=>{
+    if(g._hidden) return;
+    const el=document.createElement('div');
+    el.className='group'+(expandedGroups.has(g.name)?' open':'');
+    el.id='grp-'+cssId(g.name);
+    const open=expandedGroups.has(g.name)?'▾':'▸';
+    el.innerHTML='<div class="group-hd"><span class="twist">'+open+'</span>'+
+      '<span class="gname" style="color:'+(g.untag?'var(--muted)':colorOf(g.name))+'">'+g.name+'</span>'+
+      '<span class="gcount">'+g.docs.length+' 篇</span>'+
+      '<span class="gjump">点此跳转 ↗</span></div>';
+    const bd=document.createElement('div'); bd.className='group-bd';
+    g.docs.forEach(d=>bd.appendChild(renderDoc(d)));
+    el.querySelector('.group-hd').onclick=()=>{
+      if(expandedGroups.has(g.name)) expandedGroups.delete(g.name); else expandedGroups.add(g.name);
+      el.classList.toggle('open');
+      el.querySelector('.twist').textContent=expandedGroups.has(g.name)?'▾':'▸';
+    };
+    el.querySelector('.gjump').onclick=(e)=>{e.stopPropagation();setFilter(g.name);};
+    el.appendChild(bd);
+    root.appendChild(el);
+  });
+  if(groups.length>TOPN){
+    const more=document.createElement('div');
+    more.style.cssText='text-align:center;color:var(--accent2);cursor:pointer;padding:8px;';
+    more.textContent='显示其余 '+(groups.length-TOPN)+' 个分组 ▾';
+    more.onclick=()=>{groups.slice(TOPN).forEach(g=>g._hidden=false);renderList();};
+    root.appendChild(more);
+  }
+  if(groups.length===0){
+    root.innerHTML='<div style="color:var(--muted);padding:20px;text-align:center;">无匹配的标签或文档</div>';
+  }
+}
+
+function renderDoc(d){
+  const el=document.createElement('div'); el.className='doc';
+  const open=expandedDocs.has(d.name);
+  el.innerHTML='<span class="caret">'+(open?'▾':'▸')+'</span>'+
+    '<span class="name">'+d.name+'</span>'+
+    '<span class="chips"></span>';
+  const chips=el.querySelector('.chips');
+  if(d.tags.length===0){
+    chips.innerHTML='<span class="chip untag">（无标签）</span>';
+  }else{
+    ; // 渲染 chips
+  }
+  d.tags.forEach(t=>{
+    const c=document.createElement('span'); c.className='chip';
+    c.style.borderLeft='3px solid '+colorOf(t);
+    c.innerHTML='#'+t+'<span class="x">×</span>';
+    c.querySelector('.x').onclick=(e)=>{
+      e.stopPropagation();
+      d.tags=d.tags.filter(x=>x!==t); // 移除标签 -> 实时重分类
+      renderList();
+    };
+    chips.appendChild(c);
+  });
+  // 展开详情（无 + 标签 添加框）
+  const det=document.createElement('div'); det.className='detail';
+  det.textContent=d.detail||'（无预览内容）';
+  det.style.flexBasis='100%';
+  el.appendChild(det);
+  el.querySelector('.caret').onclick=(e)=>{e.stopPropagation();toggleDoc(d,det,el);};
+  el.querySelector('.name').onclick=(e)=>{e.stopPropagation();toggleDoc(d,det,el);};
+  if(open){det.style.display='block';}
+  return el;
+}
+function toggleDoc(d,det,el){
+  if(expandedDocs.has(d.name)){expandedDocs.delete(d.name);det.style.display='none';el.querySelector('.caret').textContent='▸';}
+  else{expandedDocs.add(d.name);det.style.display='block';el.querySelector('.caret').textContent='▾';}
+}
+
+// ---------- 层级树渲染 ----------
+function renderTree(){
+  const root=document.getElementById('treeRoot');
+  root.innerHTML='';
+  // 父节点
+  Object.keys(HIER).forEach(parent=>{
+    const kids=HIER[parent].filter(k=>(allTags()[k]||0)>=+document.getElementById('minc').value);
+    const pCount=kids.reduce((s,k)=>s+(allTags()[k]||0),0);
+    const p=document.createElement('div'); p.className='node';
+    p.innerHTML='<span class="twist">▾</span><span class="tag-name" style="font-weight:600">'+parent+'</span><span class="count">'+kids.length+' 子 · '+pCount+' 篇</span>';
+    const kidsBox=document.createElement('div'); kidsBox.className='children';
+    kids.forEach(k=>{
+      const c=document.createElement('div'); c.className='node leaf';
+      c.innerHTML='<span class="twist">•</span><span class="tag-name" style="color:'+colorOf(k)+'">#'+k+'</span><span class="count">'+(allTags()[k]||0)+' 篇 ↗</span>';
+      c.querySelector('.tag-name').onclick=(e)=>{e.stopPropagation();setFilter(k);};
+      kidsBox.appendChild(c);
+    });
+    if(kids.length===0) kidsBox.style.display='none';
+    p.querySelector('.twist').onclick=()=>{const o=kidsBox.style.display!=='none';kidsBox.style.display=o?'none':'block';p.querySelector('.twist').textContent=o?'▸':'▾';};
+    p.appendChild(kidsBox);
+    root.appendChild(p);
+  });
+  // 顶层独立标签（无父）
+  const top=Object.keys(allTags()).filter(t=>!Object.values(HIER).flat().includes(t) && (allTags()[t]>=+document.getElementById('minc').value));
+  if(top.length){
+    const sep=document.createElement('div'); sep.className='node'; sep.style.color='var(--muted)';
+    sep.innerHTML='<span class="twist"></span><span>独立标签</span>';
+    root.appendChild(sep);
+    top.forEach(t=>{
+      const c=document.createElement('div'); c.className='node leaf';
+      c.innerHTML='<span class="twist">•</span><span class="tag-name" style="color:'+colorOf(t)+'">#'+t+'</span><span class="count">'+(allTags()[t]||0)+' 篇 ↗</span>';
+      c.querySelector('.tag-name').onclick=(e)=>{e.stopPropagation();setFilter(t);};
+      root.appendChild(c);
+    });
+  }
+}
+
+// ---------- 标签云渲染 ----------
+function renderCloud(){
+  const root=document.getElementById('cloudRoot');
+  root.innerHTML='';
+  const tm=allTags();
+  const minc=+document.getElementById('minc').value;
+  const q=document.getElementById('search').value.trim().toLowerCase();
+  let tags=Object.keys(tm).filter(t=>tm[t]>=minc && (!q||t.toLowerCase().includes(q)));
+  const sort=document.getElementById('sort').value;
+  tags.sort((a,b)=> sort==='hot'? tm[b]-tm[a] : a.localeCompare(b,'zh'));
+  const max=Math.max(...tags.map(t=>tm[t]),1);
+  tags.forEach(t=>{
+    const sz=12+ (tm[t]/max)*22;
+    const s=document.createElement('span'); s.className='t';
+    s.style.fontSize=sz+'px'; s.style.color=colorOf(t);
+    s.innerHTML='#'+t+'<span class="n">'+tm[t]+'</span>';
+    s.title='点击跳转到列表并筛选';
+    s.onclick=()=>setFilter(t);
+    root.appendChild(s);
+  });
+  if(tags.length===0) root.innerHTML='<span style="color:var(--muted)">无匹配标签</span>';
+}
+
+// ---------- 控件事件 ----------
+document.getElementById('search').oninput=()=>{renderList();renderTree();renderCloud();};
+document.getElementById('sort').onchange=()=>{renderList();renderCloud();};
+document.getElementById('minc').onchange=()=>{renderList();renderTree();renderCloud();};
+
+// ---------- 初始 ----------
+renderList();renderTree();renderCloud();
+</script>
+</body>
+</html>

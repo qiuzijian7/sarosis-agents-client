@@ -78,13 +78,26 @@ function doGetUserDataPath(cliArgs: NativeParsedArgs, productName: string): stri
 }
 
 /**
- * Returns the default user data path for a given product name using
- * the platform-specific application data directory.
+ * Returns the default user data path for a given product name.
+ *
+ * VsSaros keeps its user data under the home directory using the product's
+ * `dataFolderName` (e.g. `~/.vssaros`). This makes the layout identical across
+ * platforms and consistent with the agentmemory-gateway and extensions, which
+ * already hard-code `~/.vssaros`.
  */
 export function getDefaultUserDataPath(productName: string): string {
+	return join(homedir(), productName);
+}
+
+/**
+ * Computes the *legacy* default user data path that this product used before
+ * user data moved to the home-directory based `dataFolderName` layout
+ * (`~/.vssaros`). Only used for one-time migration of existing data and may be
+ * removed once migration is no longer relevant.
+ */
+export function getLegacyDefaultUserDataPath(productName: string): string {
 	let appDataPath: string | undefined;
 
-	// 4. Otherwise check per platform
 	switch (process.platform) {
 		case 'win32':
 			appDataPath = process.env['APPDATA'];

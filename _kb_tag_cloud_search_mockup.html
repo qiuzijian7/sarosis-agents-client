@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>知识库 · 标签分类（含标签搜索）同一标题下</title>
+<style>
+  :root {
+    --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d3d; --border:#2a2a2a; --border2:#3a3a3a;
+    --fg:#cccccc; --fg-dim:#8a8a8a; --fg-faint:#6a6a6a;
+    --accent:#007acc; --accent2:#094771;
+    --badge-bg:#4d4d4d; --tag-bg:#2a3a4a; --tag-fg:#6fb3e0;
+    --blue:#9fd0ff;
+    --proj:#5aa9e6; --theme:#6fb3a0; --type:#d6b25a;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#141414; color:var(--fg);
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; font-size:13px; padding:20px; }
+  .wrap { max-width:340px; }
+
+  .kb-pane { width:320px; background:var(--bg); border:1px solid var(--border); border-radius:6px; overflow:hidden; box-shadow:0 8px 30px rgba(0,0,0,.5); }
+  .kb-header { display:flex; align-items:center; gap:6px; padding:8px 12px; background:var(--bg2); border-bottom:1px solid var(--border); }
+  .kb-title { font-weight:600; flex:1; }
+  .kb-hbtn { width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:3px; cursor:pointer; color:var(--fg-dim); font-size:13px; }
+  .kb-hbtn:hover { background:var(--bg3); color:var(--fg); }
+  .kb-vault-bar { display:flex; align-items:center; gap:6px; padding:6px 12px; background:var(--bg2); border-bottom:1px solid var(--border); }
+  .kb-vname { flex:1; font-weight:500; } .kb-caret { color:var(--fg-dim); font-size:9px; }
+  .kb-abtn { cursor:pointer; color:var(--fg-dim); } .kb-abtn:hover { color:var(--fg); }
+  .kb-scroll { max-height:640px; overflow-y:auto; padding-bottom:8px; }
+  .kb-section { border-bottom:1px solid var(--border); }
+  .kb-section-header { display:flex; align-items:center; gap:6px; padding:7px 12px; cursor:pointer; font-weight:600; font-size:12px; }
+  .kb-section-header:hover { background:var(--bg2); }
+  .kb-arrow { font-size:9px; color:var(--fg-dim); width:12px; text-align:center; }
+  .kb-section-title { flex:1; }
+  .kb-badge { font-size:10px; padding:0 6px; border-radius:8px; background:var(--badge-bg); color:#ddd; }
+  .kb-node { display:flex; align-items:center; gap:6px; padding:3px 12px 3px 28px; font-size:12px; color:var(--fg); cursor:pointer; }
+  .kb-node:hover { background:var(--bg2); }
+  .kb-node.sel { background:var(--accent2); }
+  .kb-folder { color:var(--fg); font-weight:500; }
+
+  /* ── 单一标题：标签分类（含 标签搜索 + 分组列表） ── */
+  .kb-tag-section { border-top:1px solid var(--border2); margin-top:2px; background:linear-gradient(180deg,#1b1f24,#1e1e1e 55%); }
+  .kb-tag-section-head { display:flex; align-items:center; gap:6px; padding:8px 12px; cursor:pointer; font-weight:600; font-size:12px; }
+  .kb-tag-section-head:hover { background:var(--bg2); }
+  .kb-tag-section-head .kb-tag-mode { font-size:10px; padding:1px 7px; border-radius:9px; cursor:pointer; background:var(--accent2); color:var(--blue); border:1px solid #0d3a5c; }
+  .kb-tag-section-body { display:block; }
+
+  /* ① 标签搜索（位于分类内部） */
+  .kb-search-row { padding:8px 12px 4px; }
+  .kb-search-box { display:flex; align-items:center; gap:6px; padding:4px 8px; background:#1a1a1a; border:1px solid var(--border2); border-radius:4px; }
+  .kb-search-box:focus-within { border-color:var(--accent); }
+  .kb-search-box input { flex:1; background:none; border:none; outline:none; color:var(--fg); font-size:12px; }
+  .kb-search-box input::placeholder { color:var(--fg-faint); }
+  .kb-search-clear { cursor:pointer; color:var(--fg-dim); display:none; } .kb-search-clear:hover{color:var(--fg);}
+  .kb-suggest { margin-top:6px; display:none; flex-direction:column; gap:1px;
+    background:#1a1a1a; border:1px solid var(--border2); border-radius:4px; max-height:180px; overflow:auto; }
+  .kb-suggest.show { display:flex; }
+  .kb-sug { display:flex; align-items:center; gap:7px; padding:5px 9px; font-size:12px; cursor:pointer; }
+  .kb-sug:hover { background:var(--bg3); }
+  .kb-sug .s-ico { width:14px; text-align:center; color:var(--fg-dim); }
+  .kb-sug .s-name { flex:1; } .kb-sug .s-kind { font-size:10px; padding:0 6px; border-radius:8px; background:var(--tag-bg); color:var(--tag-fg); }
+  .kb-sug .s-cnt { color:var(--fg-faint); font-size:10px; }
+  .kb-sug-empty { padding:8px 9px; font-size:11px; color:var(--fg-faint); }
+
+  /* ② 标签分组列表（同一标题下，沿用原样式） */
+  .kb-tag-group { border-top:1px solid var(--border); }
+  .kb-tag-group.hide { display:none; }
+  .kb-tag-group-head { display:flex; align-items:center; gap:6px; padding:5px 12px; cursor:pointer; }
+  .kb-tag-group-head:hover { background:var(--bg2); }
+  .kb-tag-group-head .g-arrow { font-size:9px; color:var(--fg-dim); width:12px; }
+  .kb-tag-group-head .g-name { color:var(--tag-fg); flex:1; font-weight:500; }
+  .kb-tag-group-head .g-count { font-size:10px; color:var(--fg-faint); }
+  .kb-tag-doc { display:flex; align-items:center; gap:6px; padding:3px 12px 3px 30px; font-size:12px; cursor:pointer; color:var(--fg); }
+  .kb-tag-doc:hover { background:var(--bg2); }
+  .kb-tag-doc.hit { background:rgba(0,122,204,.14); }
+  .tagmini { color:var(--fg-faint); font-size:10px; }
+
+  .note { margin-top:16px; padding:12px 14px; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:12px; line-height:1.7; max-width:320px; }
+  .note h3 { margin:0 0 6px; font-size:13px; color:var(--blue); }
+  .note code { background:#141414; padding:1px 5px; border-radius:4px; color:var(--tag-fg); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="kb-pane">
+    <div class="kb-header"><span class="kb-title">📚 知识库</span>
+      <span class="kb-hbtn">🕸️</span><span class="kb-hbtn">⟳</span><span class="kb-hbtn">🏗️</span><span class="kb-hbtn">⚙</span></div>
+    <div class="kb-vault-bar"><span>📚</span><span class="kb-vname">我的知识库</span><span class="kb-caret">▼</span><span class="kb-abtn">🧠</span><span class="kb-abtn">📂</span></div>
+
+    <div class="kb-scroll">
+      <div class="kb-section">
+        <div class="kb-section-header"><span class="kb-arrow">▼</span><span class="kb-section-title">库</span><span class="kb-badge">5</span></div>
+        <div class="kb-node kb-folder">📁 库</div>
+      </div>
+      <div class="kb-section">
+        <div class="kb-section-header"><span class="kb-arrow">▼</span><span class="kb-section-title">笔记</span><span class="kb-badge">4</span></div>
+        <div class="kb-node">📄 index.md</div>
+        <div class="kb-node">📄 insights.md</div>
+        <div class="kb-node">📄 log.md</div>
+        <div class="kb-node">📄 overview.md</div>
+      </div>
+
+      <!-- 单一标题：标签分类（含 标签搜索 + 分组列表） -->
+      <div class="kb-tag-section" id="tagSection">
+        <div class="kb-tag-section-head" id="tagHead">
+          <span class="kb-arrow" id="tagArrow">▼</span>
+          <span>🏷️ 标签分类</span>
+          <span class="kb-tag-mode">交集 AND</span>
+        </div>
+        <div class="kb-tag-section-body" id="tagBody">
+
+          <!-- ① 标签搜索（位于分类内部） -->
+          <div class="kb-search-row">
+            <div class="kb-search-box">
+              <span>🔍</span>
+              <input id="search" placeholder="搜索标签…" autocomplete="off"/>
+              <span class="kb-search-clear" id="clear">✕</span>
+            </div>
+            <div class="kb-suggest" id="suggest"></div>
+          </div>
+
+          <!-- ② 标签分组列表 -->
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#项目A</span><span class="g-count">4 篇</span></div>
+            <div class="kb-tag-doc hit">📄 index.md <span class="tagmini">#概览</span></div>
+            <div class="kb-tag-doc hit">📄 insights.md <span class="tagmini">#洞察 #周报</span></div>
+            <div class="kb-tag-doc hit">📄 log.md <span class="tagmini">#日志</span></div>
+            <div class="kb-tag-doc hit">📄 overview.md <span class="tagmini">#概览 #汇报</span></div>
+          </div>
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#概览</span><span class="g-count">2 篇</span></div>
+            <div class="kb-tag-doc">📄 index.md</div>
+            <div class="kb-tag-doc">📄 overview.md</div>
+          </div>
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#日志</span><span class="g-count">3 篇</span></div>
+            <div class="kb-tag-doc">📄 log.md</div>
+            <div class="kb-tag-doc">📄 daily_0720.md</div>
+            <div class="kb-tag-doc">📄 daily_0721.md</div>
+          </div>
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#无标签</span><span class="g-count">1 篇</span></div>
+            <div class="kb-tag-doc">📄 raw_未处理文档.md</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+    <div class="note">
+    <h3>布局调整说明（未改动项目代码）</h3>
+    <div>• <b>同一标题</b>：<code>🏷️ 标签分类</code> 作为单一标题/可折叠区块，其下依次容纳 <b>标签搜索 → 标签分组列表</b>（已移除标签云）。</div>
+    <div>• <b>标签搜索位于分类下</b>：从原顶部全局搜索条移入分类区块顶部，专搜标签（含联想下拉、<code>✕</code> 清除），输入即<b>实时过滤</b>下方分组列表。</div>
+    <div>• 分组列表保持原样式，随搜索词隐藏不匹配组。</div>
+  </div>
+</div>
+
+<script>
+const TAGS=[
+  {t:'项目A',cnt:4,c:'var(--proj)'},
+  {t:'概览',cnt:2,c:'var(--theme)'},
+  {t:'洞察',cnt:1,c:'var(--theme)'},
+  {t:'周报',cnt:1,c:'var(--type)'},
+  {t:'日志',cnt:3,c:'var(--type)'},
+  {t:'汇报',cnt:1,c:'var(--type)'},
+  {t:'前端',cnt:2,c:'var(--theme)'},
+  {t:'重要',cnt:1,c:'var(--type)'}
+];
+let curFilter=null;
+
+// 标签搜索（过滤分组）
+const input=document.getElementById('search');
+const suggest=document.getElementById('suggest');
+const clearBtn=document.getElementById('clear');
+function applyFilter(q){
+  q=q.trim().toLowerCase();
+  document.querySelectorAll('.kb-tag-group').forEach(g=>{
+    if(g.querySelector('.g-name').textContent==='#无标签'){g.classList.remove('hide');return;}
+    const tn=g.querySelector('.g-name').textContent.replace(/^#/,'').toLowerCase();
+    g.classList.toggle('hide', q && !tn.includes(q));
+  });
+}
+input.oninput=()=>{
+  clearBtn.style.display=input.value?'inline':'none';
+  applyFilter(input.value); runSuggest();
+};
+clearBtn.onclick=()=>{input.value='';clearBtn.style.display='none';applyFilter('');suggest.classList.remove('show');suggest.innerHTML='';};
+
+function runSuggest(){
+  const q=input.value.trim().toLowerCase();
+  suggest.innerHTML='';
+  if(!q){suggest.classList.remove('show');return;}
+  const hits=TAGS.filter(x=>x.t.toLowerCase().includes(q));
+  if(!hits.length){suggest.innerHTML='<div class="kb-sug-empty">无匹配标签</div>';suggest.classList.add('show');return;}
+  hits.forEach(x=>{
+    const s=document.createElement('div');s.className='kb-sug';
+    s.innerHTML='<span class="s-ico">🏷️</span><span class="s-name">#'+x.t+'</span><span class="s-kind">标签</span><span class="s-cnt">'+x.cnt+' 篇</span>';
+    s.onclick=()=>{input.value='#'+x.t;clearBtn.style.display='inline';applyFilter(input.value);suggest.classList.remove('show');};
+    suggest.appendChild(s);
+  });
+  suggest.classList.add('show');
+}
+document.addEventListener('click',e=>{ if(!e.target.closest('.kb-search-row')) suggest.classList.remove('show'); });
+
+// 折叠整段
+document.getElementById('tagHead').onclick=(e)=>{
+  if(e.target.classList.contains('kb-tag-mode')) return;
+  const body=document.getElementById('tagBody');
+  const open=body.style.display!=='none';
+  body.style.display=open?'none':'block';
+  document.getElementById('tagArrow').textContent=open?'▶':'▼';
+};
+</script>
+</body>
+</html>

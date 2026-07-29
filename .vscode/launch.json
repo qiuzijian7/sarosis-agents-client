@@ -329,7 +329,7 @@
 				"--skip-sessions-welcome",
 				"--agents"
 			],
-			"userDataDir": "${userHome}/.vssaros-agents-dev",
+			"userDataDir": "${userHome}/.vssaros-dev",
 			"webRoot": "${workspaceFolder}",
 			"cascadeTerminateToConfigurations": [
 				"Attach to Extension Host"

@@ -455,6 +455,34 @@ export class KbFullTextIndex {
 		return result;
 	}
 
+	/** 获取没有任何标签的文档（用于「#无标签」兜底分组）。 */
+	getUntaggedDocs(): IKbSearchHit[] {
+		const tagged = new Set<string>();
+		for (const docIds of this._tagIndex.values()) {
+			for (const id of docIds) { tagged.add(id); }
+		}
+		const hits: IKbSearchHit[] = [];
+		for (const doc of this._docs.values()) {
+			if (tagged.has(doc.uri.toString())) { continue; }
+			hits.push({
+				name: doc.name,
+				path: doc.path,
+				uri: doc.uri,
+				isDirectory: false,
+				section: doc.section,
+				size: doc.size,
+				mtime: doc.mtime,
+				ctime: 0,
+				childCount: 0,
+				matchedBy: 'name',
+				score: 0,
+				snippet: doc.text.slice(0, 200).replace(/\s+/g, ' ').trim(),
+				matchedTags: doc.tags,
+			});
+		}
+		return hits;
+	}
+
 	// -----------------------------------------------------------------------
 	// 持久化（缓存到 vault 目录，启动时增量 reconcile，避免全量重读）
 	// -----------------------------------------------------------------------

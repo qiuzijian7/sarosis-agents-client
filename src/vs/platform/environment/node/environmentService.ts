@@ -4,10 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { homedir, tmpdir } from 'os';
+import { existsSync, mkdirSync, readdirSync, cpSync, writeFileSync } from 'fs';
 import { NativeParsedArgs } from '../common/argv.js';
 import { IDebugParams } from '../common/environment.js';
 import { AbstractNativeEnvironmentService, parseDebugParams } from '../common/environmentService.js';
-import { getUserDataPath } from './userDataPath.js';
+import { getUserDataPath, getLegacyDefaultUserDataPath } from './userDataPath.js';
 import { IProductService } from '../../product/common/productService.js';
 import { INodeProcess } from '../../../base/common/platform.js';
 import { join } from '../../../base/common/path.js';
@@ -17,13 +18,52 @@ export class NativeEnvironmentService extends AbstractNativeEnvironmentService {
 
 	constructor(args: NativeParsedArgs, productService: IProductService) {
 		const homeDir = homedir();
+		const userDataDir = getUserDataPath(args, productService.dataFolderName);
+		// One-time best-effort migration of data from the legacy (app-data
+		// based) location to the new home-based `dataFolderName` layout
+		// (`~/.vssaros`). Never blocks startup and never throws.
+		migrateLegacyUserDataDir(userDataDir, getLegacyDefaultUserDataPath(productService.nameShort), isEmbeddedApp());
 		super(args, {
 			homeDir,
 			tmpDir: tmpdir(),
-			userDataDir: getUserDataPath(args, productService.nameShort),
+			userDataDir,
 			parentAppUserDataDir: getParentAppUserDataDir(args, productService),
 			parentAppUserHomeDir: getParentAppUserHomeDir(homeDir, productService)
 		}, productService, isEmbeddedApp());
+	}
+}
+
+/**
+ * Merges the contents of the legacy user data directory into the new
+ * home-based one on first run. Best-effort only: any error is swallowed and a
+ * marker file is written so the work is not repeated.
+ */
+function migrateLegacyUserDataDir(newDir: string, legacyDir: string, embedded: boolean): void {
+	if (embedded || !legacyDir || legacyDir === newDir || !existsSync(legacyDir)) {
+		return;
+	}
+	try {
+		if (!existsSync(newDir)) {
+			mkdirSync(newDir, { recursive: true });
+		}
+		const marker = join(legacyDir, '.vssaros-migrated');
+		if (existsSync(marker)) {
+			return;
+		}
+		for (const entry of readdirSync(legacyDir)) {
+			if (entry === marker) {
+				continue;
+			}
+			const src = join(legacyDir, entry);
+			const dst = join(newDir, entry);
+			if (!existsSync(dst)) {
+				cpSync(src, dst, { recursive: true });
+			}
+		}
+		writeFileSync(marker, '');
+	} catch (err) {
+		// Best-effort: never block startup on migration errors.
+		console.error('[VsSaros] Failed to migrate legacy user data:', err);
 	}
 }
 

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>知识库 · 双链 vs 标签分类 对比 Mockup</title>
+<style>
+  :root {
+    --bg:#1e1e1e; --bg2:#252526; --bg3:#2d2d2d; --border:#2a2a2a; --border2:#3a3a3a;
+    --fg:#cccccc; --fg-dim:#8a8a8a; --fg-faint:#6a6a6a;
+    --accent:#007acc; --accent2:#094771;
+    --badge-bg:#4d4d4d; --tag-bg:#2a3a4a; --tag-fg:#6fb3e0;
+    --green:#7ec98f; --red:#e08a8a; --blue:#9fd0ff;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#141414; color:var(--fg);
+    font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; font-size:13px; padding:20px; }
+  h1 { font-size:18px; color:#e6e6e6; margin:0 0 4px; }
+  .sub { color:var(--fg-dim); margin-bottom:18px; font-size:12px; }
+  .cols { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }
+
+  /* ── 通用侧栏样式 ── */
+  .kb-pane { width:300px; background:var(--bg); border:1px solid var(--border); border-radius:6px; overflow:hidden; box-shadow:0 8px 30px rgba(0,0,0,.5); }
+  .kb-header { display:flex; align-items:center; gap:6px; padding:8px 12px; background:var(--bg2); border-bottom:1px solid var(--border); }
+  .kb-title { font-weight:600; flex:1; }
+  .kb-hbtn { width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:3px; cursor:pointer; color:var(--fg-dim); font-size:13px; }
+  .kb-hbtn:hover { background:var(--bg3); color:var(--fg); }
+  .kb-vault-bar { display:flex; align-items:center; gap:6px; padding:6px 12px; background:var(--bg2); border-bottom:1px solid var(--border); }
+  .kb-vname { flex:1; font-weight:500; } .kb-caret { color:var(--fg-dim); font-size:9px; }
+  .kb-abtn { cursor:pointer; color:var(--fg-dim); } .kb-abtn:hover { color:var(--fg); }
+  .kb-search-row { padding:8px 12px; border-bottom:1px solid var(--border); }
+  .kb-search-box { display:flex; align-items:center; gap:6px; padding:4px 8px; background:#1a1a1a; border:1px solid var(--border2); border-radius:4px; }
+  .kb-search-box input { flex:1; background:none; border:none; outline:none; color:var(--fg); font-size:12px; }
+  .kb-search-box input::placeholder { color:var(--fg-faint); }
+  .kb-scroll { max-height:560px; overflow-y:auto; padding-bottom:8px; }
+  .kb-section { border-bottom:1px solid var(--border); }
+  .kb-section-header { display:flex; align-items:center; gap:6px; padding:7px 12px; cursor:pointer; font-weight:600; font-size:12px; }
+  .kb-section-header:hover { background:var(--bg2); }
+  .kb-arrow { font-size:9px; color:var(--fg-dim); width:12px; text-align:center; }
+  .kb-section-title { flex:1; }
+  .kb-badge { font-size:10px; padding:0 6px; border-radius:8px; background:var(--badge-bg); color:#ddd; }
+  .kb-node { display:flex; align-items:center; gap:6px; padding:3px 12px 3px 28px; font-size:12px; color:var(--fg); cursor:pointer; }
+  .kb-node:hover { background:var(--bg2); }
+  .kb-node.sel { background:var(--accent2); }
+  .kb-folder { color:var(--fg); font-weight:500; }
+
+  /* ── 双链面板（当前）── */
+  .kb-bl-panel { border-top:1px solid var(--border2); margin-top:2px; padding:6px 0 10px; flex-shrink:0; background:linear-gradient(180deg,#221c1c,#1e1e1e 60%); }
+  .kb-bl-head { display:flex; align-items:center; gap:6px; padding:6px 12px; font-size:12px; font-weight:600; }
+  .kb-bl-cur { padding:2px 14px 6px; font-size:11px; color:var(--blue); }
+  .kb-bl-sub { padding:4px 14px 2px; font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--fg-faint); font-weight:600; }
+  .kb-bl-item { display:flex; align-items:center; gap:6px; padding:2px 14px 2px 26px; font-size:12px; cursor:pointer; color:var(--fg); }
+  .kb-bl-item:hover { background:var(--bg2); }
+  .kb-bl-empty { padding:8px 14px; font-size:11px; color:var(--fg-faint); }
+  .kb-bl-dir { font-size:10px; color:var(--fg-dim); }
+
+  /* ── 标签分类面板（提案）── */
+  .kb-tag-panel { border-top:1px solid var(--border2); margin-top:2px; padding:6px 0 10px; flex-shrink:0; background:linear-gradient(180deg,#1b1f24,#1e1e1e 60%); }
+  .kb-tag-header { display:flex; align-items:center; gap:6px; padding:6px 12px; font-size:12px; font-weight:600; }
+  .kb-tag-title { flex:1; }
+  .kb-tag-mode { font-size:10px; padding:1px 7px; border-radius:9px; cursor:pointer; background:var(--accent2); color:#9fd0ff; border:1px solid #0d3a5c; }
+  .kb-tag-filter { display:flex; flex-wrap:wrap; gap:5px; padding:0 12px 8px; }
+  .kb-chip { font-size:11px; padding:2px 9px; border-radius:11px; cursor:pointer; background:var(--tag-bg); color:var(--tag-fg); border:1px solid transparent; display:flex; align-items:center; gap:5px; }
+  .kb-chip.active { background:var(--accent); color:#fff; border-color:#005a9e; }
+  .kb-chip .cnt { opacity:.7; font-size:10px; }
+  .kb-chip.clear { background:transparent; color:var(--fg-dim); border:1px dashed var(--border2); }
+  .kb-tag-group { border-top:1px solid var(--border); }
+  .kb-tag-group-head { display:flex; align-items:center; gap:6px; padding:5px 12px; cursor:pointer; }
+  .kb-tag-group-head:hover { background:var(--bg2); }
+  .kb-tag-group-head .g-arrow { font-size:9px; color:var(--fg-dim); width:12px; }
+  .kb-tag-group-head .g-name { color:var(--tag-fg); flex:1; font-weight:500; }
+  .kb-tag-group-head .g-count { font-size:10px; color:var(--fg-faint); }
+  .kb-tag-doc { display:flex; align-items:center; gap:6px; padding:3px 12px 3px 30px; font-size:12px; cursor:pointer; color:var(--fg); }
+  .kb-tag-doc:hover { background:var(--bg2); }
+  .kb-tag-doc.hit { background:rgba(0,122,204,.14); }
+  .tagmini { color:var(--fg-faint); font-size:10px; }
+
+  /* ── 拖拽条 / 记忆库 ── */
+  .kb-drag-handle { height:3px; background:var(--border); cursor:row-resize; }
+  .kb-drag-handle:hover { background:var(--accent2); }
+  .kb-mem-section { display:flex; flex-direction:column; }
+  .kb-mem-header { display:flex; align-items:center; gap:6px; padding:7px 12px; background:var(--bg2); cursor:pointer; font-weight:600; border-top:1px solid var(--border); }
+  .kb-mem-arrow { font-size:9px; color:var(--fg-dim); width:12px; text-align:center; }
+  .kb-mem-label { flex:1; }
+  .kb-mem-entry { margin:6px 10px; padding:9px 12px; border-radius:4px; background:var(--bg2); border:1px solid var(--border); cursor:pointer; display:flex; gap:8px; align-items:center; }
+  .kb-mem-entry:hover { background:#252525; border-color:var(--border2); }
+  .kb-mem-entry .e-title { font-size:12px; color:#ddd; } .kb-mem-entry .e-meta { font-size:10px; color:var(--fg-faint); margin-top:2px; }
+
+  .col-cap { font-size:12px; font-weight:600; text-align:center; margin:0 0 8px; padding-bottom:6px; border-bottom:1px solid var(--border2); }
+  .col-cap .tag-a { color:var(--blue); } .col-cap .tag-b { color:var(--tag-fg); }
+
+  /* ── 对照表 ── */
+  .cmp { margin-top:26px; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:16px 18px; max-width:980px; }
+  .cmp h2 { margin:0 0 12px; font-size:15px; color:#e6e6e6; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:8px 10px; vertical-align:top; border-bottom:1px solid var(--border); }
+  th { color:var(--fg-dim); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
+  td.dim { width:14%; color:var(--fg-dim); font-weight:600; }
+  .glyph { font-weight:700; margin-right:6px; }
+  .g-pro { color:var(--green); } .g-con { color:var(--red); } .g-neu { color:var(--blue); }
+  td .who { font-size:10px; padding:1px 6px; border-radius:8px; margin-right:4px; }
+  .who-bl { background:#3a2a2a; color:#e0a0a0; } .who-tag { background:#2a3a4a; color:#9fd0ff; }
+  .verdict { margin-top:14px; padding:10px 12px; background:var(--bg2); border-radius:5px; font-size:12px; line-height:1.7; color:#cfcfcf; }
+  .verdict b { color:var(--blue); }
+</style>
+</head>
+<body>
+<h1>知识库面板方案对比：双链 vs 标签分类</h1>
+<div class="sub">同一知识库视图下，红框区两种实现对照（左：现有双链面板 / 右：提案标签分类面板）。底部为对照表与结论。</div>
+
+<div class="cols">
+  <!-- ══════ 左：双链面板（现状） ══════ -->
+  <div>
+    <div class="col-cap"><span class="tag-a">方案 A · 双链面板（现状）</span></div>
+    <div class="kb-pane">
+      <div class="kb-header"><span class="kb-title">📚 知识库</span>
+        <span class="kb-hbtn">🕸️</span><span class="kb-hbtn">⟳</span><span class="kb-hbtn">🏗️</span><span class="kb-hbtn">⚙</span></div>
+      <div class="kb-vault-bar"><span>📚</span><span class="kb-vname">我的知识库</span><span class="kb-caret">▼</span><span class="kb-abtn">🧠</span><span class="kb-abtn">📂</span></div>
+      <div class="kb-search-row"><div class="kb-search-box"><span>🔍</span><input placeholder="搜索知识库…"/></div></div>
+      <div class="kb-scroll">
+        <div class="kb-section">
+          <div class="kb-section-header"><span class="kb-arrow">▼</span><span class="kb-section-title">库</span><span class="kb-badge">5</span></div>
+          <div class="kb-node kb-folder">📁 库</div>
+        </div>
+        <div class="kb-section">
+          <div class="kb-section-header"><span class="kb-arrow">▼</span><span class="kb-section-title">笔记</span><span class="kb-badge">4</span></div>
+          <div class="kb-node">📄 index.md</div>
+          <div class="kb-node sel">📄 insights.md</div>
+          <div class="kb-node">📄 log.md</div>
+          <div class="kb-node">📄 overview.md</div>
+        </div>
+
+        <!-- 双链面板 -->
+        <div class="kb-bl-panel">
+          <div class="kb-bl-head">🔗 双链</div>
+          <div class="kb-bl-cur">当前：insights.md</div>
+          <div class="kb-bl-sub">出链（它指向）</div>
+          <div class="kb-bl-item">📄 overview.md <span class="kb-bl-dir">→ 引用</span></div>
+          <div class="kb-bl-item">📄 log.md <span class="kb-bl-dir">→ 引用</span></div>
+          <div class="kb-bl-sub">反链（指向它）</div>
+          <div class="kb-bl-item">📄 index.md <span class="kb-bl-dir">← 引用</span></div>
+          <div class="kb-bl-item">📄 overview.md <span class="kb-bl-dir">← 引用</span></div>
+        </div>
+      </div>
+      <div class="kb-drag-handle"></div>
+      <div class="kb-mem-section">
+        <div class="kb-mem-header"><span class="kb-mem-arrow">▼</span><span>🧠</span><span class="kb-mem-label">记忆库</span><span class="kb-abtn">⟳</span></div>
+        <div class="kb-mem-entry"><span style="font-size:18px;">🧠</span><div><div class="e-title">查看完整记忆</div><div class="e-meta">点击打开 MemoryDetailEditorPane</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════ 右：标签分类面板（提案） ══════ -->
+  <div>
+    <div class="col-cap"><span class="tag-b">方案 B · 标签分类面板（提案）</span></div>
+    <div class="kb-pane">
+      <div class="kb-header"><span class="kb-title">📚 知识库</span>
+        <span class="kb-hbtn">🕸️</span><span class="kb-hbtn">⟳</span><span class="kb-hbtn">🏗️</span><span class="kb-hbtn">⚙</span></div>
+      <div class="kb-vault-bar"><span>📚</span><span class="kb-vname">我的知识库</span><span class="kb-caret">▼</span><span class="kb-abtn">🧠</span><span class="kb-abtn">📂</span></div>
+      <div class="kb-search-row"><div class="kb-search-box"><span>🔍</span><input placeholder="搜索知识库…"/></div></div>
+      <div class="kb-scroll">
+        <div class="kb-section">
+          <div class="kb-section-header"><span class="kb-arrow">▼</span><span class="kb-section-title">库</span><span class="kb-badge">5</span></div>
+          <div class="kb-node kb-folder">📁 库</div>
+        </div>
+        <div class="kb-section">
+          <div class="kb-section-header"><span class="kb-arrow">▼</span><span class="kb-section-title">笔记</span><span class="kb-badge">4</span></div>
+          <div class="kb-node">📄 index.md</div>
+          <div class="kb-node">📄 insights.md</div>
+          <div class="kb-node">📄 log.md</div>
+          <div class="kb-node">📄 overview.md</div>
+        </div>
+
+        <!-- 标签分类面板 -->
+        <div class="kb-tag-panel">
+          <div class="kb-tag-header"><span>🏷️</span><span class="kb-tag-title">标签分类</span><span class="kb-tag-mode">交集 AND</span></div>
+          <div class="kb-tag-filter">
+            <span class="kb-chip active">#项目A <span class="cnt">4</span></span>
+            <span class="kb-chip">#概览 <span class="cnt">2</span></span>
+            <span class="kb-chip">#洞察 <span class="cnt">1</span></span>
+            <span class="kb-chip">#周报 <span class="cnt">1</span></span>
+            <span class="kb-chip">#日志 <span class="cnt">1</span></span>
+            <span class="kb-chip clear">✕ 清除</span>
+          </div>
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#项目A</span><span class="g-count">4 篇</span></div>
+            <div class="kb-tag-doc hit">📄 index.md <span class="tagmini">#概览</span></div>
+            <div class="kb-tag-doc hit">📄 insights.md <span class="tagmini">#洞察 #周报</span></div>
+            <div class="kb-tag-doc hit">📄 log.md <span class="tagmini">#日志</span></div>
+            <div class="kb-tag-doc hit">📄 overview.md <span class="tagmini">#概览 #汇报</span></div>
+          </div>
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#概览</span><span class="g-count">2 篇</span></div>
+            <div class="kb-tag-doc">📄 index.md</div>
+            <div class="kb-tag-doc">📄 overview.md</div>
+          </div>
+          <div class="kb-tag-group">
+            <div class="kb-tag-group-head"><span class="g-arrow">▼</span><span class="g-name">#无标签</span><span class="g-count">1 篇</span></div>
+            <div class="kb-tag-doc">📄 raw_未处理文档.md</div>
+          </div>
+        </div>
+      </div>
+      <div class="kb-drag-handle"></div>
+      <div class="kb-mem-section">
+        <div class="kb-mem-header"><span class="kb-mem-arrow">▼</span><span>🧠</span><span class="kb-mem-label">记忆库</span><span class="kb-abtn">⟳</span></div>
+        <div class="kb-mem-entry"><span style="font-size:18px;">🧠</span><div><div class="e-title">查看完整记忆</div><div class="e-meta">点击打开 MemoryDetailEditorPane</div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ 对照表 ══════ -->
+<div class="cmp">
+  <h2>双链 vs 标签分类 · 优缺点对照</h2>
+  <table>
+    <thead>
+      <tr><th>维度</th><th><span class="who who-bl">双链</span> 方案 A</th><th><span class="who who-tag">标签分类</span> 方案 B</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="dim">组织方式</td>
+        <td>隐式：文档间 <code>[[链接]]</code> 自动形成图谱</td>
+        <td>显式：作者主动打 <code>#标签#</code>，按标签聚合</td></tr>
+      <tr><td class="dim">语义价值</td>
+        <td><span class="glyph g-pro">✓</span>保留"谁引用谁"的<b>溯源上下文</b>，是双链笔记核心</td>
+        <td><span class="glyph g-con">✗</span>只分类，丢失引用方向与上下文</td></tr>
+      <tr><td class="dim">使用门槛</td>
+        <td><span class="glyph g-con">✗</span>需手动写 <code>[[链接]]</code> 才有内容；无链接则面板为空</td>
+        <td><span class="glyph g-pro">✓</span>标注即生效，即使无链接也能归类（对 raw 友好）</td></tr>
+      <tr><td class="dim">多维归属</td>
+        <td><span class="glyph g-neu">~</span>一篇可链多篇，但"按主题浏览"不如标签直观</td>
+        <td><span class="glyph g-pro">✓</span>一篇可挂多个标签，天然多维分类</td></tr>
+      <tr><td class="dim">检索能力</td>
+        <td><span class="glyph g-neu">~</span>侧重"关系导航"（顺藤摸瓜）</td>
+        <td><span class="glyph g-pro">✓</span>支持标签<b>交集 AND / 并集 OR</b> 聚焦检索</td></tr>
+      <tr><td class="dim">维护成本</td>
+        <td><span class="glyph g-pro">✓</span>引用自动维护，零额外词表负担</td>
+        <td><span class="glyph g-con">✗</span>需统一标签词表，拼写错产生重复标签、缺乏强制层级</td></tr>
+      <tr><td class="dim">与现有功能</td>
+        <td><span class="glyph g-pro">✓</span>独立，不与其他视图冲突</td>
+        <td><span class="glyph g-con">✗</span>与已有"标签云"视图（renderTagView）可能<b>冗余</b></td></tr>
+      <tr><td class="dim">填补空白区</td>
+        <td><span class="glyph g-con">✗</span>未选中文件时仍是空提示（红框依旧空）</td>
+        <td><span class="glyph g-pro">✓</span>始终有内容（标签分组 + #无标签 兜底）</td></tr>
+      <tr><td class="dim">性能</td>
+        <td><span class="glyph g-neu">~</span>选中时按需算反链，轻量</td>
+        <td><span class="glyph g-neu">~</span>打开需扫全库取标签；大库可复用 SQLite 增量索引</td></tr>
+    </tbody>
+  </table>
+
+  <div class="verdict">
+    <b>结论：</b>两者不是替代关系，而是<b>互补</b>。双链强在"关系/溯源"，标签强在"分类/检索"。
+    若只能保留红框一处，优先<b>标签分类</b>能立刻解决"空白区无用 + raw 文件无链接"的痛点；
+    但建议<b>不要彻底移除双链</b>——更优解是：红框区改为<b>「标签分类」常驻</b>，
+    同时在文档右键 / 编辑器内保留<b>"查看双链引用"</b>入口，兼顾分类与溯源。
+  </div>
+</div>
+</body>
+</html>
