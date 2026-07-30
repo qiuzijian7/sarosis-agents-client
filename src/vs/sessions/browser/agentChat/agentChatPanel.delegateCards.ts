@@ -36,8 +36,6 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		const wrapper = $(`.tool-header-wrapper.${statusClass}.tool-card-plan`);
 		// data-tool-id 用于增量更新查重（与 _appendToolCard 一致）
 		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
-		// 默认展开（计划卡内容应直接可见）
-		wrapper.classList.add('expanded');
 
 		const header = append(wrapper, $('.tool-header'));
 		const row = append(header, $('.tool-header-row'));
@@ -75,6 +73,17 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 
 		// ── body（dropdown）──
 		const body = append(header, $('.tool-header-children'));
+		// 默认展开：body 加 tool-header-children-expanded、chevron 加 tool-header-chevron-expanded
+		//（CSS 真正驱动 .tool-header-children 显隐的类，wrapper.expanded 不生效——已修）
+		const _planChev = titleContainer.querySelector('.tool-header-chevron');
+		const _planDefaultExpanded = !!(this._toolCallExpandState.get(tc.id) ?? true);
+		if (_planDefaultExpanded) {
+			body.classList.add('tool-header-children-expanded');
+			_planChev?.classList.add('tool-header-chevron-expanded');
+			if (tc.id) { this._toolCallExpandState.set(tc.id, true); }
+		} else {
+			if (tc.id) { this._toolCallExpandState.set(tc.id, false); }
+		}
 
 		if (key === 'plan_explore') {
 			// ── 任务分析卡片：显示目标 + 探索方向 + 产出 ──
@@ -204,9 +213,10 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 
 		// 点击标题折叠/展开（与 searchCard 一致）
 		titleContainer.addEventListener('click', () => {
-			const isExpanded = wrapper.classList.toggle('expanded');
+			const isExpanded = body.classList.toggle('tool-header-children-expanded');
 			const chev = titleContainer.querySelector('.tool-header-chevron');
-			if (chev) { chev.classList.toggle('expanded', isExpanded); }
+			if (chev) { chev.classList.toggle('tool-header-chevron-expanded', isExpanded); }
+			if (tc.id) { this._toolCallExpandState.set(tc.id, isExpanded); }
 		});
 
 		return wrapper;
@@ -297,8 +307,21 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		const pill = append(right, $(`.status-pill.status-pill-${pillClass}`));
 		if (pillClass === 'running') { append(pill, $('span.status-pill-dot')); }
 		append(pill, $('span')).textContent = pillText;
-		if (typeof tc.duration === 'number') {
-			append(right, $('span.tool-header-duration')).textContent = this._formatDuration(tc.duration);
+		// 耗时：优先取 tc.duration（数据链设置则用），否则从子代理 startedAt/completedAt 计算
+		const childSubs = filterChildSubAgents(tc.subAgents, tc.id);
+		const delegateDuration = typeof tc.duration === 'number' ? tc.duration
+			: (() => {
+				const subs = childSubs as ISubAgentData[] || [];
+				const allStarted = subs.map(s => s.startedAt).filter(Boolean) as number[];
+				if (allStarted.length === 0) { return null; }
+				const start = Math.min(...allStarted);
+				const allEnded = subs.map(s => s.completedAt).filter(Boolean) as number[];
+				const fullyDone = subs.length > 0 && allEnded.length === subs.length;
+				const end = fullyDone ? Math.max(...allEnded) : Date.now();
+				return end - start;
+			})();
+		if (typeof delegateDuration === 'number') {
+			append(right, $('span.tool-header-duration')).textContent = this._formatDuration(delegateDuration);
 		}
 
 
@@ -317,7 +340,6 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 		}
 
 		// ② 执行列表（扁平工具步骤，跨所有子代理）
-		const childSubs = filterChildSubAgents(tc.subAgents, tc.id);
 		const allTraces: any[] = [];
 		for (const sa of childSubs) {
 			const tr = sa.toolTraces;
@@ -335,8 +357,8 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 				append(li, $('span.du-step-name')).textContent = this._getToolTitle(t.name, undefined, t.name, false);
 				const raw = t.args ?? t.result;
 				if (raw != null) {
-					append(li, $('span.du-step-detail')).textContent = cleanTracePreview(
-						typeof raw === 'string' ? raw : JSON.stringify(raw), 120);
+				append(li, $('span.du-step-detail')).textContent = cleanTracePreview(
+					typeof raw === 'string' ? raw : JSON.stringify(raw), 4000);
 				}
 			}
 		} else if (isRunning) {
@@ -404,6 +426,8 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 			const nowExpanded = body.classList.toggle('tool-header-children-expanded');
 			chevron.classList.toggle('tool-header-chevron-expanded', nowExpanded);
 			if (tc.id) { this._toolCallExpandState.set(tc.id, nowExpanded); }
+			// 展开后将内部可滚动容器（.delegate-scroll）钉底，初始展示最新内容
+			if (nowExpanded) { this._pinAllScrollableBodiesToBottom(body); }
 		};
 		this._register(addDisposableListener(titleContainer, EventType.CLICK, (e) => {
 			if ((e.target as HTMLElement)?.closest?.('button')) { return; }
@@ -638,7 +662,7 @@ export abstract class AgentChatPanelDelegateCards extends AgentChatPanelFileCard
 				const rawStr = typeof raw === 'string' ? raw
 					: raw === null || raw === undefined ? ''
 					: JSON.stringify(raw);
-				detail.textContent = cleanTracePreview(rawStr, 120);
+				detail.textContent = cleanTracePreview(rawStr, 4000);
 			}
 				}
 			};

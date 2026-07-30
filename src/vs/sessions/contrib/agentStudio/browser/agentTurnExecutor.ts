@@ -364,6 +364,14 @@ interface ITurnContext {
 	export async function* executeAgentTurnDirect(host: any, request: IAgentTurnRequest): AsyncGenerator<IChatStreamDelta, AgentCommand | undefined> {
 		// chatOnly 开关：开启时禁用写文件工具，React 范式下额外禁用 delegate_task
 		const chatOnly = !!request.chatOnly;
+		// 诊断：软预算收尾提醒是否送达（日志 1785325929739 子代理 404s 超时未触发）
+		if (request.subAgent?.background) {
+			host._logService.info(
+				`[AgentOS] executeAgentTurnDirect(subAgent): agentId=${request.agentId} ` +
+				`softDeadlineMs=${request.softDeadlineMs ?? 'unset'} ` +
+				`timeout(budget)=${request.softDeadlineMs ? Math.round(request.softDeadlineMs / 1000) + 's' : 'none'}`,
+			);
+		}
 		let workState = createInitialWorkState(request.workMode);
 
 		// Plan state is mirrored into AgentRunState for checkpoint compatibility.
@@ -1476,14 +1484,21 @@ interface ITurnContext {
 			const _elapsedMs = Date.now() - _turnStartedAt;
 			if (_elapsedMs >= request.softDeadlineMs && _elapsedMs >= _softBudgetNextReminderAtMs) {
 				_softBudgetNextReminderAtMs = _elapsedMs + SOFT_BUDGET_REMINDER_REFIRE_MS;
+				const agentTag = request.subAgent?.background ? `[subAgent:${request.agentId}]` : '[main]';
 				host._logService.warn(
-					`[AgentOS] Soft budget exceeded (${Math.round(_elapsedMs / 1000)}s >= ${Math.round(request.softDeadlineMs / 1000)}s) — injecting wrap-up reminder`
+					`[AgentOS] ${agentTag} Soft budget exceeded (${Math.round(_elapsedMs / 1000)}s >= ${Math.round(request.softDeadlineMs / 1000)}s) — injecting wrap-up reminder`
 				);
 				messages.push({
 					role: 'user',
 					content: softBudgetWrapUpReminder(Math.round(_elapsedMs / 1000), Math.round(request.softDeadlineMs / 1000)),
 				});
 			}
+		} else if (request.subAgent?.background && iteration === 1) {
+			// 诊断：子代理首轮却无 softDeadlineMs — 说明 unifiedSubAgentDispatch 链路未送达
+			host._logService.warn(
+				`[AgentOS] [subAgent:${request.agentId}] softDeadlineMs is NOT set — ` +
+				`wrap-up reminder will NOT be injected. Check unifiedSubAgentDispatch request construction.`,
+			);
 		}
 		// ─── 策略：本轮准备（预算低时注入「整理总结」提醒）──
 		{

@@ -250,7 +250,10 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 			// 当前列宽（px）
 			const colWidths: number[] = colDefs.map(c => c.initialWidth);
 			const tableWrap = append(parent, $('.toon-table-wrap'));
-			tableWrap.style.maxHeight = '400px';
+			// 自适应 maxHeight：条目少时容器贴合内容，避免 1/1 等场景下空滚动条（2026-07-29）。
+			// 行高 ~26px（12px * 1.5 行高 + 4px×2 padding），表头 24px，容器 padding 8px。
+			const adaptiveMaxH = Math.min(400, 32 + 26 * nodes.length);
+			tableWrap.style.maxHeight = adaptiveMaxH + 'px';
 			tableWrap.style.overflowY = 'auto';
 			const table = append(tableWrap, $('.toon-table'));
 

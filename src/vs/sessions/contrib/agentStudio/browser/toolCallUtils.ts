@@ -557,61 +557,17 @@ export function coerceArgsToSchema(
 	// Check for extra args not in schema (LLM sometimes adds spurious fields)
 	const props = (schema as Record<string, unknown>).properties as Record<string, unknown> | undefined;
 
-	// Build alias → canonical map from property descriptions. Two documentation
-	// directions are recognized (the alias info already lives in the description
-	// shipped to the model, so no non-standard wire schema fields are added —
-	// important for strict providers like Gemini):
-	//   (A) alias-side:     a property whose desc says "Alias for X" / "Alias for `X`"
-	//                       → this property is an alias of X.
-	//   (B) canonical-side: a property whose desc says "accepts alias: a" /
-	//                       "Also accepts aliases: a, b" → a, b are aliases of it.
-	// Direction (B) lets us drop the redundant standalone alias *properties* from
-	// the schema (token savings + single canonical surface) while the required
-	// check still accepts a call that only supplies a documented alias
-	// (e.g. search_code declares `query` required and documents `pattern` as its
-	// alias; a `pattern`-only call must not be rejected before the handler runs).
-	const aliasToCanonical = new Map<string, string>();
-	if (props && typeof props === 'object') {
-		for (const [propName, propDef] of Object.entries(props)) {
-			const desc = (propDef as Record<string, unknown> | undefined)?.['description'];
-			if (typeof desc !== 'string') { continue; }
-			// (A) alias-side documentation.
-			const a = /\bAlias for\s+[`'"]?([A-Za-z_][A-Za-z0-9_]*)/i.exec(desc);
-			if (a && a[1] && a[1] !== propName) {
-				aliasToCanonical.set(propName, a[1]);
-			}
-			// (B) canonical-side documentation: capture the identifier list after
-			// "accepts alias(es):" up to the first '.' or '(' (so trailing prose /
-			// mapping hints like "(content→full)" are excluded), then register each
-			// leading identifier as an alias of this canonical property.
-			const b = /accepts alias(?:es)?:\s*([^.(]+)/i.exec(desc);
-			if (b && b[1]) {
-				for (const seg of b[1].split(',')) {
-					const idm = /[A-Za-z_][A-Za-z0-9_]*/.exec(seg);
-					if (idm && idm[0] !== propName) {
-						aliasToCanonical.set(idm[0], propName);
-					}
-				}
-			}
-		}
-	}
+	// P2（2026-07-29，对齐 kimi zod-only 契约）：别名解析已移除。schema 是唯一
+	// 契约——模型发错参数名即按 missing/unknown 处理并拒绝（带正确参数名），
+	// 不再从 description 文本反向解析 "accepts alias" 建立别名映射（三层别名
+	// 防御的复杂度源头；旧会话的别名恢复 handler 层同步移除）。
 
-	// Check for missing required fields (alias-aware: a required field is
-	// satisfied when either its canonical name OR any documented alias of it
-	// is present in the coerced args).
+	// Check for missing required fields (plain containment — no alias awareness).
 	const required = (schema as Record<string, unknown>).required as string[] | undefined;
 	const missingRequired: string[] = [];
 	if (required && Array.isArray(required)) {
 		for (const req of required) {
-			if (req in (coerced as Record<string, unknown>)) { continue; }
-			let satisfiedByAlias = false;
-			for (const [alias, canonical] of aliasToCanonical) {
-				if (canonical === req && alias in (coerced as Record<string, unknown>)) {
-					satisfiedByAlias = true;
-					break;
-				}
-			}
-			if (!satisfiedByAlias) {
+			if (!(req in (coerced as Record<string, unknown>))) {
 				warnings.push(`missing required argument: "${req}" — tool may fail`);
 				missingRequired.push(req);
 			}
@@ -620,17 +576,9 @@ export function coerceArgsToSchema(
 
 	if (props && typeof props === 'object') {
 		for (const k of Object.keys(coerced)) {
-			// A key is "unknown" only if it is neither a declared property, nor an
-			// underscore-prefixed internal field, nor a *documented alias* of a
-			// canonical property. Direction-B of P2 lets us drop the standalone
-			// alias properties from the wire schema while still documenting the
-			// alias on the canonical property (e.g. search_code's `query` says
-			// "accepts alias: pattern"). Those alias keys are intentional and are
-			// recovered by the handler — flagging them "unknown … may be ignored"
-			// is both noisy AND factually wrong (they are NOT ignored). Consult the
-			// alias map (already built above for the required check) so the warning
-			// stays consistent with what the description advertises to the model.
-			if (!(k in props) && !k.startsWith('_') && !aliasToCanonical.has(k)) {
+			// A key is "unknown" when it is neither a declared property nor an
+			// underscore-prefixed internal field.
+			if (!(k in props) && !k.startsWith('_')) {
 				warnings.push(`unknown argument: "${k}" — not in schema, may be ignored`);
 			}
 		}
@@ -660,8 +608,15 @@ export function coerceOrReject(
 ): CoerceOrRejectResult {
 	if (!schema) { return { args }; }
 	const coerced = coerceArgsToSchema(args, schema);
+	// 2026-07-29：区分无害类型自愈（string→array/number/boolean）与 schema 违规。
+	// 类型自愈是 by-design（coerceToolArgs 中的自动包装/转换），降级 INFO 减少 WARN 噪音。
+	const SCHEMA_ISSUE_RE = /^(?:unknown argument|missing required):/;
 	for (const w of coerced.warnings) {
-		log.warn(`[AgentOS][Coerce] "${toolName}" — ${w}`);
+		if (SCHEMA_ISSUE_RE.test(w)) {
+			log.warn(`[AgentOS][Coerce] "${toolName}" — ${w}`);
+		} else {
+			log.info(`[AgentOS][Coerce] "${toolName}" — type auto-fix: ${w}`);
+		}
 	}
 	if (coerced.missingRequired && coerced.missingRequired.length > 0) {
 		const missList = coerced.missingRequired.join(', ');

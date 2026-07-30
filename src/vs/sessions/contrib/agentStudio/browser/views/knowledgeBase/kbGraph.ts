@@ -73,6 +73,9 @@ export class KbLinkGraph {
 	buildFromDocs(docs: { uri: URI; name: string; section: KbSection; mtime: number; text: string }[]): void {
 		this._reset();
 		for (const d of docs) {
+			// 与 walk 一致排除系统维护文件（index/overview/insights/log…），否则它们在
+			// 库 + 笔记两个分区各出现一次，以同名标签显示成「重复节点」污染关系图。
+			if (SYS_FILES.has(d.name)) { continue; }
 			const ext = d.name.split('.').pop()?.toLowerCase();
 			if (!ext || !GRAPH_NODE_EXTS.has(ext)) { continue; }
 			this._indexDoc({ uri: d.uri, name: d.name, section: d.section, mtime: d.mtime }, d.text);
@@ -128,6 +131,11 @@ export class KbLinkGraph {
 	private _indexDoc(meta: ILinkDocMeta, text: string): void {
 		this._docs.push(meta);
 		this._nameToDoc.set(this.normalizeTarget(meta.name), meta);
+		// 同时按 frontmatter `title` 注册：LLM 构建的笔记用 [[Title]] 互引（title 常含空格或
+		// 后缀，与文件名规范化后不一致，如 文件名 UE5-GC机制总览.md vs title "UE5 GC 机制总览"），
+		// 只按文件名索引会导致双链全部解析失败 → 关系图谱零连线。
+		const title = KbLinkGraph._extractTitle(text);
+		if (title) { this._nameToDoc.set(this.normalizeTarget(title), meta); }
 		this._textCache.set(meta.uri.toString(), text);
 		// 仅 markdown 解析 [[双链]]；HTML 等导入副本作为孤立节点展示，无出链。
 		const ext = meta.name.split('.').pop()?.toLowerCase();
@@ -237,6 +245,19 @@ export class KbLinkGraph {
 		const name = raw.split(/[|#]/)[0].trim();
 		// bug C：连字符/空格归一（[[Note Name]] ↔ note-name.md），对齐 llm_wiki resolveTarget 与 _buildInsights normKey
 		return name.replace(/\.(md|markdown)$/i, '').toLowerCase().replace(/\s+/g, '-');
+	}
+
+	/** 从 Markdown 文档的 YAML frontmatter 提取 `title` 字段（无则返回 undefined）。 */
+	private static _extractTitle(text: string): string | undefined {
+		if (!text.startsWith('---')) { return undefined; }
+		// frontmatter 块：首个 --- 到下一个独立 --- 行之间
+		const end = text.search(/\r?\n---\s*\r?\n/);
+		if (end < 0) { return undefined; }
+		const fm = text.slice(0, end);
+		const m = fm.match(/^title:\s*(.+?)\s*$/m);
+		if (!m) { return undefined; }
+		// 去掉可选引号
+		return m[1].replace(/^["']|["']$/g, '').trim();
 	}
 
 	private snippetFor(text: string, name: string): string {

@@ -55,11 +55,14 @@ function makeCtx(serviceOverrides: Record<string, unknown> = {}, ctxOverrides: R
 		hasTool: (name: string) => tools.has(name),
 		codebaseGraphService: service,
 		workspaceService: { getWorkspace: () => ({ folders: [{ uri: URI.file('/wk') }] }) },
-		fileService: {
-			async resolve(): Promise<never> { throw new Error('ENOENT'); },
-			async readFile(): Promise<never> { throw new Error('ENOENT'); },
-			async exists(): Promise<boolean> { return false; },
-		},
+	fileService: {
+		async resolve(): Promise<never> { throw new Error('ENOENT'); },
+		async readFile(): Promise<never> { throw new Error('ENOENT'); },
+		async exists(): Promise<boolean> { return false; },
+		// search_code P1 搜索根 stat 预检：默认不存在；用例可用 statBehavior 覆盖
+		stat: (ctxOverrides['statBehavior'] as undefined | ((...a: any[]) => Promise<unknown>))
+			?? (async (): Promise<never> => { throw new Error('ENOENT'); }),
+	},
 	searchHelpers: {
 		recordSearchRepeat: recordBehavior ?? ((..._a: any[]) => ({ count: 1 })),
 		// search_code 连续空结果连击（2026-07-28）默认不引导；用例可用
@@ -285,13 +288,14 @@ suite('codebase tool entries: search_code (2026-07-27 ripgrep 重构)', () => {
 		assert.ok(resultText(out).includes('const foo = 1;'), `expected ripgrep text, got: ${resultText(out)}`);
 	});
 
-	test('alias compat: pattern→query, file_glob→includeGlob, output_mode→mode', async () => {
-		let seen: { query?: string; glob?: string; outputMode?: string } = {};
-		const tools = makeCtx({}, captureCtx((a) => { seen = { query: a.query, glob: a.glob, outputMode: a.outputMode }; }));
-		await getTool(tools, 'search_code').handler({ pattern: 'foo', file_glob: '**/CoreUObject/**/*.ts', output_mode: 'files_with_matches' });
-		assert.strictEqual(seen.query, 'foo', 'pattern alias → query');
-		assert.strictEqual(seen.glob, '**/CoreUObject/**/*.ts', 'file_glob alias → ripgrep includeGlob');
-		assert.strictEqual(seen.outputMode, 'files_only', 'output_mode files_with_matches → files → files_only');
+	test('P2 zod-only：别名不再恢复（pattern 不再映射 query → 缺参错误）', async () => {
+		// P2（2026-07-29）移除别名层后，handler 直接读规范参数名；pattern-only
+		// 调用在 handler 内即报缺 query（生产中 coerce 层会更早 reject）。
+		let called = false;
+		const tools = makeCtx({}, captureCtx(() => { called = true; }));
+		const out = await getTool(tools, 'search_code').handler({ pattern: 'foo' });
+		assert.ok(!called, '别名不再恢复，searchContent 不应执行');
+		assert.ok(resultText(out).includes('requires "query"'), `应报缺 query，got: ${resultText(out)}`);
 	});
 
 	test('search_code requires query', async () => {
@@ -367,60 +371,68 @@ suite('codebase tool entries: search_code (2026-07-27 ripgrep 重构)', () => {
 		assert.strictEqual(seenPath, URI.file('/wk').fsPath, '缺省应搜全部 folder（searchPath=folder 根路径）');
 	});
 
-	test('path_filter → ripgrep includeGlob（文件形态不加 /**，目录形态加 /**）', async () => {
+	test('path_filter 相对裸文件名（stat 不存在）→ **/<file> glob 兜底', async () => {
 		let seenGlob: string | undefined;
 		const tools = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
 		await getTool(tools, 'search_code').handler({ query: 'hit', path_filter: 'GarbageCollection.h' });
-		assert.strictEqual(seenGlob, '**/GarbageCollection.h', '含扩展名 → **/<file>（不加 /**）');
-
-		const tools2 = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
-		await getTool(tools2, 'search_code').handler({ query: 'hit', path_filter: 'Runtime/CoreUObject' });
-		assert.strictEqual(seenGlob, '**/Runtime/CoreUObject/**', '目录形态 → **/<dir>/**');
+		assert.strictEqual(seenGlob, '**/GarbageCollection.h', '相对裸文件名按文件名过滤兜底（P1 保持旧结果）');
 	});
 
-	test('path_filter 为绝对路径时不加 **/ 前缀（事故 1785134772329：**/f:/... 畸形 glob 致 0 命中）', async () => {
-		let seenGlob: string | undefined;
-		// Windows 盘符绝对路径：直通，不能拼 **/f:/...
-		const tools = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
+	test('path_filter 相对目录（stat 存在）→ 搜索根替换，不再走 include glob（P1 搜索根模型）', async () => {
+		// 事故 1785224874547/1785228894680 的根治：目录作搜索根（rg <dir> 等价），
+		// 而非 **/<dir>/** include glob（四象限补丁的源头）。
+		let seen: { path: string; glob?: string } | undefined;
+		const tools = makeCtx({}, {
+			...captureCtx((a) => { seen = a; }),
+			statBehavior: async (uri: { fsPath: string }) => ({ isDirectory: true, _p: uri.fsPath }),
+		});
+		await getTool(tools, 'search_code').handler({ query: 'hit', path_filter: 'Runtime/CoreUObject' });
+		assert.ok(seen, 'searchContent 应被调用');
+		assert.ok(seen!.path.endsWith('/Runtime/CoreUObject'), `目录应成为搜索根，got path=${seen!.path}`);
+		assert.strictEqual(seen!.glob, undefined, '搜索根语义下不再传 include glob');
+	});
+
+	test('path_filter 绝对路径（stat 存在）→ 直接作搜索根（文件/目录均可）', async () => {
+		// 事故 1785134772329/1785224874547 的根治：绝对路径不再进 includePattern。
+		let seen: { path: string; glob?: string } | undefined;
+		const tools = makeCtx({}, {
+			...captureCtx((a) => { seen = a; }),
+			statBehavior: async () => ({ isDirectory: false }),
+		});
 		await getTool(tools, 'search_code').handler({ query: 'hit', path_filter: 'f:/gr/ue5ea/Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp' });
-		assert.strictEqual(seenGlob, 'f:/gr/ue5ea/Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp', '绝对路径应原样透传（不加 **/ 前缀）');
-
-		// Unix 绝对路径同理
-		const tools2 = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
-		await getTool(tools2, 'search_code').handler({ query: 'hit', path_filter: '/home/u/proj/src/foo.cpp' });
-		assert.strictEqual(seenGlob, '/home/u/proj/src/foo.cpp', 'Unix 绝对路径也原样透传');
+		assert.ok(seen, 'searchContent 应被调用');
+		assert.strictEqual(seen!.path, 'f:/gr/ue5ea/Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp', '绝对文件直通为搜索路径');
+		assert.strictEqual(seen!.glob, undefined, '不再拼 **/f:/... 畸形 glob');
 	});
 
-	test('path_filter 为绝对【目录】路径时补 /**（事故 1785224874547：subagent path=f:/.../CoreUObject 恒 0 命中致 601s timeout）', async () => {
-		// 裸绝对目录作 include glob 只匹配该字面路径、不含子项 → ripgrep 恒 0 命中
-		// （连 FGarbageCollector 都搜不到）。修复：无扩展名的绝对路径按目录补 /**。
-		let seenGlob: string | undefined;
-		const tools = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
-		await getTool(tools, 'search_code').handler({ query: 'hit', path_filter: 'f:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/CoreUObject' });
-		assert.strictEqual(seenGlob, 'f:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/CoreUObject/**', 'Windows 绝对目录应补 /**');
-
-		const tools2 = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
-		await getTool(tools2, 'search_code').handler({ query: 'hit', path_filter: '/home/u/proj/src' });
-		assert.strictEqual(seenGlob, '/home/u/proj/src/**', 'Unix 绝对目录也补 /**');
-
-		// 尾随斜杠去重，不产 /**/**
-		const tools3 = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
-		await getTool(tools3, 'search_code').handler({ query: 'hit', path_filter: 'f:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/CoreUObject/' });
-		assert.strictEqual(seenGlob, 'f:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/CoreUObject/**', '尾随斜杠应去重');
+	test('path_filter 路径不存在（stat 全失败）→ 显式报错而非假 no matches（对齐 kimi stat 预检）', async () => {
+		const tools = makeCtx({}, captureCtx(() => { /* 不应到达 */ }));
+		const out = await getTool(tools, 'search_code').handler({ query: 'hit', path_filter: 'No/Such/Dir' });
+		const t = resultText(out);
+		assert.ok(t.includes('路径不存在'), `应显式报路径不存在，got: ${t}`);
+		assert.ok(!t.includes('no matches') || t.includes('路径不存在'), '不能与 no matches 混淆');
 	});
 
-	test('file_glob 裸文件名/裸扩展 glob 补 **/ 前缀（log 1785231958842）', async () => {
+	test('path_filter 为 glob（含 *）→ 清洗后走 includePattern', async () => {
 		let seenGlob: string | undefined;
 		const tools = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
-		await getTool(tools, 'search_code').handler({ query: 'hit', file_glob: 'GarbageCollection.cpp' });
+		// 根名首段（wk）应被剥掉（1785228894680 glob 形态）
+		await getTool(tools, 'search_code').handler({ query: 'hit', path_filter: '**/wk/Engine/Source/**' });
+		assert.strictEqual(seenGlob, 'Engine/Source/**', 'glob 剥 **/ 前缀与根名首段后走 includePattern');
+	});
+
+	test('filePattern 裸文件名/裸扩展 glob 补 **/ 前缀（log 1785231958842）', async () => {
+		let seenGlob: string | undefined;
+		const tools = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
+		await getTool(tools, 'search_code').handler({ query: 'hit', filePattern: 'GarbageCollection.cpp' });
 		assert.strictEqual(seenGlob, '**/GarbageCollection.cpp', '裸文件名应补 **/ 才能匹配嵌套');
 
 		const tools2 = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
-		await getTool(tools2, 'search_code').handler({ query: 'hit', file_glob: '*.cpp' });
+		await getTool(tools2, 'search_code').handler({ query: 'hit', filePattern: '*.cpp' });
 		assert.strictEqual(seenGlob, '**/*.cpp', '裸扩展 glob 应补 **/');
 
 		const tools3 = makeCtx({}, captureCtx((a) => { seenGlob = a.glob; }));
-		await getTool(tools3, 'search_code').handler({ query: 'hit', file_glob: '**/CoreUObject/**/*.ts' });
+		await getTool(tools3, 'search_code').handler({ query: 'hit', filePattern: '**/CoreUObject/**/*.ts' });
 		assert.strictEqual(seenGlob, '**/CoreUObject/**/*.ts', '已含 / 的模式原样透传');
 	});
 

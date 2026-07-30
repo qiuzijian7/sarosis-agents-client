@@ -1,0 +1,1252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Saros Canvas · 统一画布 Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --bg2: #252526; --bg3: #2d2d2d;
+    --border: #2a2a2a; --border2: #3a3a3a;
+    --fg: #cccccc; --fg-dim: #8a8a8a; --fg-faint: #6a6a6a;
+    --accent: #007acc; --accent2: #094771;
+    --blue: #4fc1ff; --teal: #4ec9b0; --purple: #c586c0;
+    --orange: #d7a06f; --pink: #e06c9f; --green: #89d185;
+    --yellow: #dcdcaa; --red: #f14c4c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #141414; color: var(--fg);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px; display: flex; flex-direction: column; align-items: center; padding: 16px 20px 24px;
+  }
+
+  /* ── Mockup 视图切换器（演示控件，非产品 UI）── */
+  .view-switcher {
+    display: flex; gap: 4px; background: #1c1c1c; border: 1px solid var(--border2);
+    border-radius: 8px; padding: 4px; margin-bottom: 14px;
+  }
+  .vs-btn {
+    padding: 6px 18px; border-radius: 6px; font-size: 12.5px; color: var(--fg-dim);
+    cursor: pointer; border: none; background: transparent; font-family: inherit;
+  }
+  .vs-btn:hover { color: #fff; }
+  .vs-btn.active { background: var(--accent); color: #fff; font-weight: 600; }
+  .vs-note { font-size: 11px; color: var(--fg-faint); margin: 0 0 14px 4px; align-self: center; }
+
+  .window {
+    width: 1480px; background: var(--bg); border: 1px solid var(--border2);
+    border-radius: 8px; overflow: hidden; box-shadow: 0 12px 50px rgba(0,0,0,.6);
+    display: flex; flex-direction: column;
+  }
+
+  /* ── 标题栏 ── */
+  .titlebar {
+    height: 34px; background: #3c3c3c; display: flex; align-items: center;
+    padding: 0 12px; font-size: 12px; color: #ccc; flex: none;
+  }
+  .titlebar .app-dot {
+    width: 10px; height: 10px; border-radius: 2px; background: var(--accent);
+    margin-right: 8px; display: inline-block;
+  }
+  .titlebar .tt { flex: 1; text-align: center; color: #bbb; }
+  .titlebar .win-ctl { display: flex; gap: 14px; color: #999; font-size: 12px; }
+
+  .workbench { display: flex; height: 830px; }
+
+  /* ── Activity Bar ── */
+  .activitybar {
+    width: 46px; background: #333333; display: flex; flex-direction: column;
+    align-items: center; padding-top: 8px; gap: 4px; flex: none;
+  }
+  .ab-icon {
+    width: 46px; height: 44px; display: flex; align-items: center; justify-content: center;
+    color: #858585; cursor: pointer; border-left: 2px solid transparent;
+  }
+  .ab-icon:hover { color: #fff; }
+  .ab-icon.active { color: #fff; border-left-color: var(--accent); }
+  .ab-icon svg { width: 22px; height: 22px; }
+
+  /* ── 侧栏 ── */
+  .sidebar {
+    width: 240px; background: var(--bg2); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex: none;
+  }
+  .sb-header {
+    padding: 10px 14px 6px; font-size: 11px; letter-spacing: .08em;
+    color: var(--fg-dim); font-weight: 600; display: flex; align-items: center;
+  }
+  .sb-header .sb-actions { margin-left: auto; display: flex; gap: 8px; color: var(--fg-dim); }
+  .sb-header .sb-actions span:hover { color: #fff; cursor: pointer; }
+  .sb-sec { padding: 4px 0 2px; }
+  .sb-sec-title {
+    padding: 3px 14px; font-size: 11px; color: var(--fg-dim); font-weight: 700;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .sb-item {
+    display: flex; align-items: center; gap: 7px; padding: 4px 14px 4px 20px;
+    cursor: pointer; font-size: 12.5px; color: var(--fg);
+  }
+  .sb-item:hover { background: #2a2d2e; }
+  .sb-item.active { background: #37373d; }
+  .sb-item .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-item .role-tag {
+    font-size: 10px; padding: 0 5px; border-radius: 3px; line-height: 15px;
+    background: #3a2f22; color: var(--orange); flex: none;
+  }
+  .sb-item .kb-tag {
+    font-size: 10px; padding: 0 5px; border-radius: 3px; line-height: 15px;
+    background: #33243a; color: var(--purple); flex: none;
+  }
+  .fi { width: 14px; height: 14px; flex: none; }
+
+  /* ── 编辑器区 ── */
+  .editor { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .view { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .tabs { display: flex; background: var(--bg2); flex: none; }
+  .tab {
+    display: flex; align-items: center; gap: 7px; padding: 8px 14px;
+    font-size: 12.5px; color: var(--fg-dim); border-right: 1px solid var(--border);
+    background: var(--bg2); cursor: pointer; position: relative;
+  }
+  .tab.active { background: var(--bg); color: #fff; border-top: 1px solid var(--accent); }
+  .tab .x { opacity: 0; font-size: 11px; }
+  .tab:hover .x { opacity: .7; }
+
+  /* ── 工具条 ── */
+  .canvas-toolbar {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    background: var(--bg); border-bottom: 1px solid var(--border); flex: none;
+  }
+  .role-badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 10px;
+    background: var(--accent2); color: var(--blue); font-weight: 600;
+  }
+  .role-badge.wf { background: #3a2f22; color: var(--orange); }
+  .role-badge.kb { background: #33243a; color: var(--purple); }
+  .ct-sep { width: 1px; height: 18px; background: var(--border2); margin: 0 4px; }
+  .ct-btn {
+    display: flex; align-items: center; gap: 5px; padding: 4px 10px;
+    border: 1px solid var(--border2); border-radius: 4px; background: var(--bg3);
+    color: var(--fg); font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .ct-btn:hover { border-color: var(--accent); color: #fff; }
+  .ct-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ct-btn.primary:hover { background: #1a8ad4; }
+  .ct-btn.danger { color: var(--red); }
+  .ct-btn svg { width: 13px; height: 13px; }
+  .ct-spacer { flex: 1; }
+  .ct-meta { font-size: 11px; color: var(--fg-faint); }
+
+  /* ── 画布视口 ── */
+  .canvas-viewport {
+    flex: 1; position: relative; overflow: hidden;
+    background:
+      radial-gradient(circle, #3a3a3a 1px, transparent 1px) 0 0 / 24px 24px,
+      var(--bg);
+  }
+  .canvas-world { position: absolute; left: 0; top: 0; width: 1280px; height: 800px; }
+  svg.edges { position: absolute; left: 0; top: 0; width: 1280px; height: 800px; pointer-events: none; }
+  .edge-label {
+    font-size: 10.5px; fill: var(--fg-dim);
+    paint-order: stroke; stroke: #1e1e1e; stroke-width: 3px; stroke-linejoin: round;
+  }
+  .edge-label.rag { fill: var(--purple); }
+  .edge-label.port { fill: var(--yellow); }
+  .edge-label.taken { fill: var(--orange); }
+
+  /* ── 节点通用 ── */
+  .node {
+    position: absolute; background: #252526; border: 1.5px solid var(--border2);
+    border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.35); overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .node-hd {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    font-size: 11.5px; font-weight: 600; border-bottom: 1px solid var(--border);
+    background: #2a2a2b; flex: none;
+  }
+  .node-hd .ni { width: 13px; height: 13px; flex: none; }
+  .node-hd .nt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node-bd { padding: 8px 10px; font-size: 12px; flex: 1; overflow: hidden; }
+  .status {
+    font-size: 10px; padding: 1px 7px; border-radius: 8px; font-weight: 600;
+    display: inline-flex; align-items: center; gap: 4px; flex: none;
+  }
+  .status.done { background: #1e3a24; color: var(--green); }
+  .status.running { background: #3a3220; color: var(--yellow); }
+  .status.waiting { background: #3a2c20; color: var(--orange); }
+  .status.idle { background: #333; color: var(--fg-dim); }
+  .spin {
+    width: 8px; height: 8px; border: 1.5px solid var(--yellow);
+    border-top-color: transparent; border-radius: 50%;
+    animation: spin 1s linear infinite; display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+
+  .node::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
+  .node.t-text::before { background: var(--blue); }
+  .node.t-file::before { background: var(--teal); }
+  .node.t-kb::before { background: var(--purple); }
+  .node.t-gen::before { background: var(--pink); }
+  .node.t-img::before { background: var(--blue); }
+  .node.t-wf::before { background: var(--orange); }
+  .node.t-start::before, .node.t-end::before { background: var(--green); }
+  .node.t-agent::before { background: var(--blue); }
+  .node.t-ifelse::before { background: var(--yellow); }
+  .node.t-ask::before { background: var(--purple); }
+  .node.wait-glow { border-color: var(--orange); box-shadow: 0 0 0 1px var(--orange), 0 4px 18px rgba(215,160,111,.25); }
+
+  /* Group 容器 */
+  .group {
+    position: absolute; border: 1.5px dashed #4a4a4a; border-radius: 10px;
+    background: rgba(255,255,255,.015);
+  }
+  .group .g-label {
+    position: absolute; top: -10px; left: 14px; background: var(--bg);
+    padding: 0 8px; font-size: 11px; color: var(--fg-dim); font-weight: 600;
+  }
+
+  .md-h { font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 5px; }
+  .md-p { color: var(--fg); line-height: 1.55; font-size: 12px; }
+  .md-var {
+    font-family: Consolas, monospace; font-size: 11px; background: #17334d;
+    color: var(--blue); padding: 0 4px; border-radius: 3px;
+  }
+
+  .file-preview {
+    flex: 1; margin: 8px 10px; border-radius: 5px; overflow: hidden;
+    border: 1px solid var(--border2); display: flex; align-items: center; justify-content: center;
+    background: #1a1a1a;
+  }
+  .file-name {
+    display: flex; align-items: center; gap: 5px; padding: 0 10px 8px;
+    font-size: 11px; color: var(--fg-dim);
+  }
+
+  .kb-query {
+    display: flex; align-items: center; gap: 6px; background: #1a1a1a;
+    border: 1px solid var(--border2); border-radius: 4px; padding: 5px 8px;
+    font-size: 11.5px; color: var(--fg-dim); margin-bottom: 7px;
+  }
+  .kb-hits { display: flex; flex-direction: column; gap: 4px; }
+  .kb-hit {
+    display: flex; align-items: center; gap: 6px; font-size: 11px;
+    padding: 4px 7px; background: #2b2433; border-radius: 4px; color: var(--purple);
+  }
+  .kb-hit .score { margin-left: auto; color: var(--fg-faint); font-size: 10px; }
+
+  .gen-prompt {
+    background: #1a1a1a; border: 1px solid var(--border2); border-radius: 4px;
+    padding: 6px 8px; font-size: 11.5px; line-height: 1.5; color: var(--fg);
+    margin-bottom: 7px; max-height: 58px; overflow: hidden;
+  }
+  .gen-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-dim); margin-bottom: 6px; }
+  .gen-provider { background: #331f2b; color: var(--pink); padding: 1px 7px; border-radius: 3px; font-weight: 600; }
+  .gen-ref {
+    display: inline-flex; align-items: center; gap: 4px; background: #16332d;
+    color: var(--teal); padding: 1px 7px; border-radius: 3px; font-size: 10.5px;
+  }
+  .gen-progress { height: 4px; background: #333; border-radius: 2px; overflow: hidden; margin-top: 4px; }
+  .gen-progress i {
+    display: block; height: 100%; width: 62%; border-radius: 2px;
+    background: linear-gradient(90deg, var(--pink), var(--purple));
+    animation: prog 1.6s ease-in-out infinite alternate;
+  }
+  @keyframes prog { from { width: 35%; } to { width: 78%; } }
+
+  .img-wrap { flex: 1; overflow: hidden; display: flex; }
+  .img-wrap svg { width: 100%; height: 100%; display: block; }
+  .img-foot {
+    display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+    font-size: 10.5px; color: var(--fg-dim); border-top: 1px solid var(--border); flex: none;
+  }
+  .src-chip { background: #16324a; color: var(--blue); padding: 0 6px; border-radius: 3px; font-size: 10px; }
+
+  .wf-steps { display: flex; align-items: center; gap: 5px; padding: 8px 10px; }
+  .wf-step {
+    font-size: 10.5px; padding: 3px 8px; background: #332a1f; color: var(--orange);
+    border-radius: 4px; white-space: nowrap;
+  }
+  .wf-step.done2 { background: #1e3a24; color: var(--green); }
+  .wf-arrow { color: var(--fg-faint); font-size: 10px; }
+
+  /* ── 工作流视图专属 ── */
+  .mono { font-family: Consolas, monospace; font-size: 11px; }
+  .cfg-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-dim); margin-top: 6px; }
+  .cfg-chip { background: #17334d; color: var(--blue); padding: 0 6px; border-radius: 3px; font-size: 10.5px; }
+  .out-chip { background: #1e3a24; color: var(--green); padding: 0 6px; border-radius: 3px; font-size: 10.5px; }
+  .branch-list { display: flex; flex-direction: column; gap: 5px; }
+  .branch-item {
+    display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 4px 7px;
+    background: #2b2b26; border: 1px solid var(--border2); border-radius: 4px; color: var(--fg);
+  }
+  .branch-item .pid {
+    font-family: Consolas, monospace; font-size: 10px; color: var(--yellow);
+    background: #33301e; padding: 0 5px; border-radius: 3px;
+  }
+  .branch-item.taken { border-color: var(--orange); background: #33271c; }
+  .branch-item.taken .pid { color: var(--orange); background: #3a2c20; }
+  .ask-q { font-size: 12px; line-height: 1.5; margin-bottom: 8px; }
+  .ask-opts { display: flex; gap: 8px; }
+  .ask-opt {
+    flex: 1; text-align: center; padding: 5px 0; border-radius: 4px; font-size: 11.5px;
+    border: 1px solid var(--border2); background: #2b2b2b; color: var(--fg); cursor: pointer;
+  }
+  .ask-opt.ok { border-color: #3f6b45; color: var(--green); }
+  .ask-opt.no { border-color: #6b3f3f; color: var(--red); }
+  .ask-opt:hover { filter: brightness(1.3); }
+  .ask-hint { margin-top: 7px; font-size: 10.5px; color: var(--orange); display: flex; align-items: center; gap: 5px; }
+
+  /* ── 选区 + 魔法工具条 ── */
+  .selection {
+    position: absolute; border: 1.5px dashed var(--accent); border-radius: 6px;
+    background: rgba(0,122,204,.06);
+  }
+  .sel-handle {
+    position: absolute; width: 7px; height: 7px; background: #fff;
+    border: 1.5px solid var(--accent); border-radius: 2px;
+  }
+  .magic-bar {
+    position: absolute; display: flex; align-items: center; gap: 2px;
+    background: #2d2d2d; border: 1px solid var(--border2); border-radius: 6px;
+    padding: 3px; box-shadow: 0 6px 20px rgba(0,0,0,.5);
+  }
+  .magic-btn {
+    display: flex; align-items: center; gap: 5px; padding: 4px 9px;
+    border-radius: 4px; font-size: 11.5px; color: var(--fg); cursor: pointer; white-space: nowrap;
+  }
+  .magic-btn:hover { background: #3a3a3a; }
+  .magic-btn.gen { background: linear-gradient(90deg, #7a3fa0, #b0418a); color: #fff; font-weight: 600; }
+  .magic-btn.gen:hover { filter: brightness(1.15); }
+  .magic-sep { width: 1px; height: 16px; background: var(--border2); margin: 0 2px; }
+
+  .callout {
+    position: absolute; width: 19px; height: 19px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,.5); z-index: 20;
+  }
+
+  /* ── 小地图 / 缩放 ── */
+  .minimap {
+    position: absolute; right: 14px; bottom: 14px; width: 150px; height: 96px;
+    background: #1a1a1a; border: 1px solid var(--border2); border-radius: 6px; overflow: hidden;
+  }
+  .minimap .mm-node { position: absolute; border-radius: 1px; opacity: .8; }
+  .minimap .mm-view {
+    position: absolute; border: 1px solid var(--blue); border-radius: 2px;
+    background: rgba(79,193,255,.08);
+  }
+  .zoomctl {
+    position: absolute; left: 14px; bottom: 14px; display: flex; align-items: center; gap: 2px;
+    background: #2d2d2d; border: 1px solid var(--border2); border-radius: 5px; padding: 2px 6px;
+    font-size: 11.5px; color: var(--fg-dim);
+  }
+  .zoomctl b { color: var(--fg); padding: 0 4px; font-weight: 500; }
+
+  /* ── 图例条 ── */
+  .legend {
+    display: flex; align-items: center; gap: 18px; padding: 7px 14px;
+    background: var(--bg2); border-top: 1px solid var(--border); flex: none;
+    font-size: 11px; color: var(--fg-dim); overflow: hidden;
+  }
+  .legend .li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .legend .ln {
+    width: 15px; height: 15px; border-radius: 50%; background: var(--accent);
+    color: #fff; font-size: 10px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+  }
+
+  /* ── 知识库视图（思维导图） ── */
+  .kb-view { flex: 1; display: flex; min-height: 0; }
+  .kb-outline {
+    width: 212px; border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    background: var(--bg2); flex: none;
+  }
+  .kb-outline-hd {
+    display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+    font-size: 11px; font-weight: 700; color: var(--fg-dim); border-bottom: 1px solid var(--border);
+  }
+  .ol-tree { flex: 1; overflow-y: auto; padding: 8px 6px; display: flex; flex-direction: column; gap: 1px; font-size: 12px; }
+  .ol-item {
+    display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 4px;
+    cursor: pointer; white-space: nowrap; overflow: hidden;
+  }
+  .ol-item:hover { background: #2a2d2e; }
+  .ol-item.active { background: #37373d; }
+  .ol-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .ol-item .cnt { margin-left: auto; font-size: 10px; color: var(--fg-faint); flex: none; }
+  .ol-item.lv1 { font-weight: 700; }
+  .ol-item.lv2 { padding-left: 22px; font-weight: 600; }
+  .ol-item.lv3 { padding-left: 38px; color: var(--fg-dim); font-size: 11.5px; }
+  .ol-item .hitmark {
+    margin-left: auto; font-size: 9.5px; background: #5a4a12; color: #ffe9a8;
+    border-radius: 3px; padding: 0 4px; flex: none;
+  }
+  .ol-foot { padding: 8px 12px; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--fg-faint); line-height: 1.7; }
+  .ol-foot b { color: var(--fg-dim); font-weight: 600; }
+
+  .mind-viewport {
+    flex: 1; position: relative; overflow: hidden;
+    background:
+      radial-gradient(circle, #3a3a3a 1px, transparent 1px) 0 0 / 24px 24px,
+      var(--bg);
+  }
+  svg.mind-edges { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+
+  .mnode {
+    position: absolute; display: flex; align-items: center; gap: 7px;
+    border: 1.5px solid var(--border2); background: #252526; border-radius: 19px;
+    box-shadow: 0 4px 14px rgba(0,0,0,.35); padding: 0 12px; font-size: 12px;
+  }
+  .mnode .mi { width: 13px; height: 13px; flex: none; }
+  .mnode.root {
+    flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px;
+    border-radius: 12px; padding: 11px 16px;
+    background: linear-gradient(135deg, #3a2547, #2b1d38); border-color: var(--purple);
+    box-shadow: 0 0 0 1px rgba(197,134,192,.35), 0 6px 24px rgba(197,134,192,.18);
+  }
+  .mnode.root .rt { font-size: 13.5px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 7px; }
+  .mnode.root .rm { font-size: 10.5px; color: var(--purple); }
+  .mnode.branch { height: 40px; font-weight: 600; justify-content: center; font-size: 12.5px; }
+  .mnode.b-blue { border-color: #2f5f8f; background: #17273a; color: var(--blue); }
+  .mnode.b-pink { border-color: #6b3a55; background: #2d1c27; color: var(--pink); }
+  .mnode.b-orange { border-color: #6b552f; background: #2d251a; color: var(--orange); }
+  .mnode.b-teal { border-color: #2f6b5d; background: #16302b; color: var(--teal); }
+  .mnode.b-yellow { border-color: #6b662f; background: #2d2c1a; color: var(--yellow); }
+  .mnode.leaf { height: 38px; border-radius: 8px; font-size: 11.5px; color: var(--fg); }
+  .mnode.leaf .ln2 { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mnode.leaf .lm { font-size: 10px; color: var(--fg-faint); flex: none; }
+  .mnode.hit { border-color: var(--purple); box-shadow: 0 0 0 1px var(--purple), 0 4px 16px rgba(197,134,192,.3); }
+  .mnode.chunk {
+    flex-direction: column; align-items: stretch; gap: 4px; padding: 7px 10px;
+    border-radius: 8px; background: #2b2433; border-color: #4a3a58;
+  }
+  .mnode.chunk .ck-top { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 600; color: var(--purple); }
+  .mnode.chunk .ck-top .sc { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 400; color: var(--fg-dim); }
+  .mnode.chunk .ck-snip { font-size: 10.5px; line-height: 1.45; color: var(--fg-dim); }
+  .mnode.chunk mark { background: #5a4a12; color: #ffe9a8; border-radius: 2px; padding: 0 1px; }
+  .idx-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .idx-dot.ok { background: var(--green); }
+  .idx-dot.pending { background: var(--yellow); }
+  .score-bar { width: 44px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; }
+  .score-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--purple), var(--pink)); border-radius: 2px; }
+  .drag-chip {
+    align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; margin-top: 2px;
+    font-size: 10.5px; color: var(--blue); background: #16324a; border: 1px dashed #2f5f8f;
+    padding: 2px 8px; border-radius: 4px; cursor: grab;
+  }
+  .add-sub {
+    position: absolute; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,.5); cursor: pointer; z-index: 12;
+  }
+  .add-tip {
+    position: absolute; font-size: 10.5px; color: var(--fg-dim); background: #2d2d2d;
+    border: 1px solid var(--border2); border-radius: 4px; padding: 2px 8px; z-index: 12;
+    white-space: nowrap;
+  }
+  .mind-search {
+    position: absolute; top: 12px; left: 16px;
+    display: flex; align-items: center; gap: 8px; background: #2d2d2d;
+    border: 1px solid var(--accent); border-radius: 6px; padding: 6px 12px;
+    font-size: 12px; box-shadow: 0 6px 20px rgba(0,0,0,.5); z-index: 15; white-space: nowrap;
+  }
+  .mind-search .q { color: #fff; font-weight: 600; }
+  .mind-search .hits { color: var(--purple); font-size: 11px; }
+
+  /* ── 聊天面板 ── */
+  .chat {
+    width: 330px; background: var(--bg2); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; flex: none;
+  }
+  .chat-hd {
+    padding: 9px 14px; font-size: 11px; font-weight: 700; letter-spacing: .06em;
+    color: var(--fg-dim); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .chat-hd .dotlive { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+  .chat-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { display: flex; flex-direction: column; gap: 4px; }
+  .msg .who { font-size: 10.5px; color: var(--fg-faint); font-weight: 600; }
+  .msg.user .bub {
+    align-self: flex-end; background: var(--accent2); color: #dce9f5;
+    border-radius: 10px 10px 2px 10px; padding: 7px 11px; font-size: 12.5px; max-width: 92%;
+  }
+  .msg.agent .bub {
+    align-self: flex-start; background: #2b2b2c; border: 1px solid var(--border);
+    border-radius: 2px 10px 10px 10px; padding: 7px 11px; font-size: 12.5px; max-width: 96%;
+  }
+  .tool-card {
+    align-self: flex-start; width: 96%; background: #2b2419;
+    border: 1px solid #4a3b22; border-radius: 6px; overflow: hidden;
+  }
+  .tool-card .tc-hd {
+    display: flex; align-items: center; gap: 6px; padding: 6px 9px;
+    font-size: 11px; font-weight: 600; color: var(--orange);
+  }
+  .tool-card .tc-bd { padding: 0 9px 8px; font-size: 11px; color: var(--fg-dim); line-height: 1.6; }
+  .tool-card .tc-bd code {
+    font-family: Consolas, monospace; font-size: 10.5px; background: #1a1a1a;
+    padding: 1px 5px; border-radius: 3px; color: var(--yellow);
+  }
+  .insert-note {
+    align-self: flex-start; display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--blue); background: #16324a;
+    border: 1px dashed #2f5f8f; border-radius: 5px; padding: 5px 9px;
+  }
+  .chat-input {
+    margin: 10px 12px 12px; background: #1b1b1b; border: 1px solid var(--border2);
+    border-radius: 6px; padding: 8px 10px; display: flex; align-items: center; gap: 8px;
+  }
+  .chat-input span { flex: 1; color: var(--fg-faint); font-size: 12px; }
+  .send-btn {
+    width: 22px; height: 22px; border-radius: 4px; background: var(--accent);
+    display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px;
+  }
+
+  /* ── 状态栏 ── */
+  .statusbar {
+    height: 24px; background: var(--accent); color: #fff; display: flex;
+    align-items: center; padding: 0 12px; font-size: 11.5px; gap: 16px; flex: none;
+  }
+  .statusbar .sb-r { margin-left: auto; display: flex; gap: 16px; }
+</style>
+</head>
+<body>
+
+<!-- Mockup 视图切换器（演示控件） -->
+<div style="display:flex;align-items:center">
+  <div class="view-switcher">
+    <button class="vs-btn active" data-view="canvas" onclick="switchView('canvas')">画布视图</button>
+    <button class="vs-btn" data-view="workflow" onclick="switchView('workflow')">工作流视图</button>
+    <button class="vs-btn" data-view="kb" onclick="switchView('kb')">知识库视图</button>
+  </div>
+  <span class="vs-note">← 点击切换：同一 .canvas 格式下的三种角色视图</span>
+</div>
+
+<div class="window">
+
+  <!-- 标题栏 -->
+  <div class="titlebar">
+    <span class="app-dot"></span>
+    <span style="color:#999">VsSaros</span>
+    <span class="tt" id="winTitle">赛博猫生成流.canvas — Agent Studio</span>
+    <div class="win-ctl"><span>─</span><span>□</span><span>✕</span></div>
+  </div>
+
+  <div class="workbench">
+
+    <!-- Activity Bar -->
+    <div class="activitybar">
+      <div class="ab-icon" title="资源管理器"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5h6l2 2h10v12H3z"/></svg></div>
+      <div class="ab-icon" title="搜索"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg></div>
+      <div class="ab-icon active" title="Saros Canvas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="8" height="6" rx="1.5"/><rect x="13" y="12" width="8" height="6" rx="1.5"/><path d="M11 7h4a2 2 0 0 1 2 2v3"/></svg></div>
+      <div class="ab-icon" title="Agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="4"/><path d="M5 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5"/></svg></div>
+      <div style="flex:1"></div>
+      <div class="ab-icon" title="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg></div>
+    </div>
+
+    <!-- 侧栏 -->
+    <div class="sidebar">
+      <div class="sb-header">SAROS CANVAS
+        <div class="sb-actions"><span title="新建画布">＋</span><span title="导入 .canvas">⇪</span></div>
+      </div>
+      <div class="sb-sec">
+        <div class="sb-sec-title">▾ 画布</div>
+        <div class="sb-item active" id="sb-canvas">
+          <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8"><rect x="3" y="4" width="8" height="6" rx="1.5"/><rect x="13" y="12" width="8" height="6" rx="1.5"/><path d="M11 7h4a2 2 0 0 1 2 2v3"/></svg>
+          <span class="fname">赛博猫生成流.canvas</span>
+        </div>
+        <div class="sb-item">
+          <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><rect x="3" y="4" width="8" height="6" rx="1.5"/><rect x="13" y="12" width="8" height="6" rx="1.5"/><path d="M11 7h4a2 2 0 0 1 2 2v3"/></svg>
+          <span class="fname">产品架构脑图.canvas</span>
+        </div>
+        <div class="sb-item">
+          <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" stroke-width="1.8"><rect x="3" y="4" width="8" height="6" rx="1.5"/><rect x="13" y="12" width="8" height="6" rx="1.5"/><path d="M11 7h4a2 2 0 0 1 2 2v3"/></svg>
+          <span class="fname">营销素材板.canvas</span>
+        </div>
+      </div>
+      <div class="sb-sec">
+        <div class="sb-sec-title">▾ 工作流</div>
+        <div class="sb-item" id="sb-workflow">
+          <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#d7a06f" stroke-width="1.8"><circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M6.5 7.8 10.5 16M17.5 7.8 13.5 16M7.2 6h9.6"/></svg>
+          <span class="fname">内容审核流.canvas</span><span class="role-tag">workflow</span>
+        </div>
+        <div class="sb-item">
+          <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#d7a06f" stroke-width="1.8"><circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M6.5 7.8 10.5 16M17.5 7.8 13.5 16M7.2 6h9.6"/></svg>
+          <span class="fname">日报生成流.canvas</span><span class="role-tag">workflow</span>
+        </div>
+      </div>
+      <div class="sb-sec">
+        <div class="sb-sec-title">▾ 知识库</div>
+        <div class="sb-item" id="sb-kb">
+          <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#c586c0" stroke-width="1.8"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></svg>
+          <span class="fname">设计规范</span><span class="kb-tag">42 文档</span>
+        </div>
+        <div class="sb-item">
+          <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#c586c0" stroke-width="1.8"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></svg>
+          <span class="fname">品牌资产</span><span class="kb-tag">18 文档</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 编辑器 -->
+    <div class="editor">
+
+      <!-- ══════════ 视图 1：画布视图 ══════════ -->
+      <div class="view" id="view-canvas">
+        <div class="tabs">
+          <div class="tab active">
+            <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8" style="width:13px;height:13px"><rect x="3" y="4" width="8" height="6" rx="1.5"/><rect x="13" y="12" width="8" height="6" rx="1.5"/><path d="M11 7h4a2 2 0 0 1 2 2v3"/></svg>
+            赛博猫生成流.canvas <span class="x">✕</span>
+            <span class="callout" style="position:absolute;right:-9px;top:-9px">5</span>
+          </div>
+          <div class="tab">
+            <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#d7a06f" stroke-width="1.8" style="width:13px;height:13px"><circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M6.5 7.8 10.5 16M17.5 7.8 13.5 16M7.2 6h9.6"/></svg>
+            内容审核流.canvas <span class="x">✕</span>
+          </div>
+        </div>
+
+        <div class="canvas-toolbar">
+          <span class="role-badge">画布 · canvas</span>
+          <div class="ct-sep"></div>
+          <button class="ct-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>节点 ▾</button>
+          <button class="ct-btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z"/><path d="M18.5 15l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg>生成图像</button>
+          <button class="ct-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M4 15v4h16v-4"/></svg>导出 .canvas</button>
+          <button class="ct-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>运行工作流</button>
+          <div class="ct-spacer"></div>
+          <span class="ct-meta">canvases/cv-cyber-cat/canvas.canvas · formatVersion 2</span>
+        </div>
+
+        <div class="canvas-viewport">
+          <div class="canvas-world">
+            <svg class="edges">
+              <path d="M324 178 C 400 178, 396 236, 470 236" fill="none" stroke="#5a5a5a" stroke-width="1.8"/>
+              <path d="M470 236 l-8 -4 v8 z" fill="#5a5a5a"/>
+              <text x="392" y="168" class="edge-label" text-anchor="middle">prompt</text>
+              <path d="M324 362 C 400 362, 396 300, 470 300" fill="none" stroke="#5a5a5a" stroke-width="1.8"/>
+              <path d="M470 300 l-8 -4 v8 z" fill="#5a5a5a"/>
+              <text x="392" y="352" class="edge-label" text-anchor="middle">参考图</text>
+              <path d="M326 615 C 420 615, 420 400, 505 396" fill="none" stroke="#c586c0" stroke-width="1.8" stroke-dasharray="6 4"/>
+              <path d="M505 396 l-8 -4 v8 z" fill="#c586c0"/>
+              <text x="420" y="520" class="edge-label rag" text-anchor="middle">RAG 注入 · dataflow</text>
+              <path d="M760 288 C 806 288, 804 300, 850 300" fill="none" stroke="#5a5a5a" stroke-width="1.8"/>
+              <path d="M850 300 l-8 -4 v8 z" fill="#5a5a5a"/>
+              <text x="805" y="280" class="edge-label" text-anchor="middle">output</text>
+              <path d="M1010 480 C 1010 510, 1000 512, 1000 540" fill="none" stroke="#5a5a5a" stroke-width="1.8"/>
+              <path d="M1000 540 l-4 -8 h8 z" fill="#5a5a5a"/>
+              <text x="1032" y="514" class="edge-label" text-anchor="middle">送审</text>
+              <circle cx="324" cy="178" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="324" cy="362" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="326" cy="615" r="4" fill="#1e1e1e" stroke="#c586c0" stroke-width="1.6"/>
+              <circle cx="470" cy="236" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="470" cy="300" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="505" cy="396" r="4" fill="#1e1e1e" stroke="#c586c0" stroke-width="1.6"/>
+              <circle cx="760" cy="288" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="850" cy="300" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+            </svg>
+
+            <div class="group" style="left:40px;top:56px;width:310px;height:440px">
+              <span class="g-label">输入素材</span>
+            </div>
+
+            <div class="node t-text" style="left:64px;top:100px;width:260px;height:156px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+                <span class="nt">目标描述</span>
+                <span class="status idle">text</span>
+              </div>
+              <div class="node-bd">
+                <div class="md-h"># 目标</div>
+                <div class="md-p">生成一只<b>赛博朋克风格的猫</b>：霓虹灯光、雨夜街道、青色×品红配色，电影感构图。</div>
+              </div>
+            </div>
+
+            <div class="node t-file" style="left:64px;top:272px;width:260px;height:180px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#4ec9b0" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5-9 9"/></svg>
+                <span class="nt">参考图</span>
+                <span class="status idle">file</span>
+              </div>
+              <div class="file-preview">
+                <svg viewBox="0 0 200 110" style="width:100%;height:100%">
+                  <rect width="200" height="110" fill="#20242a"/>
+                  <path d="M70 84 L70 62 L62 44 L76 54 Q100 44 124 54 L138 44 L130 62 L130 84 Z"
+                        fill="none" stroke="#9aa4b0" stroke-width="2.5" stroke-linejoin="round"/>
+                  <circle cx="88" cy="66" r="3" fill="#9aa4b0"/>
+                  <circle cx="112" cy="66" r="3" fill="#9aa4b0"/>
+                  <path d="M96 76 q4 3 8 0" fill="none" stroke="#9aa4b0" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </div>
+              <div class="file-name">
+                <svg style="width:11px;height:11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/></svg>
+                assets/ref-cat.png
+              </div>
+            </div>
+
+            <div class="selection" style="left:52px;top:88px;width:284px;height:376px">
+              <span class="sel-handle" style="left:-5px;top:-5px"></span>
+              <span class="sel-handle" style="right:-5px;top:-5px"></span>
+              <span class="sel-handle" style="left:-5px;bottom:-5px"></span>
+              <span class="sel-handle" style="right:-5px;bottom:-5px"></span>
+            </div>
+
+            <div class="magic-bar" style="left:64px;top:472px">
+              <div class="magic-btn gen">
+                <svg style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z"/></svg>
+                生成图像
+              </div>
+              <div class="magic-sep"></div>
+              <div class="magic-btn">建组</div>
+              <div class="magic-btn">颜色</div>
+              <div class="magic-btn">⋯</div>
+              <span class="callout" style="position:absolute;right:-30px;top:-4px">1</span>
+            </div>
+
+            <div class="node t-kb" style="left:56px;top:540px;width:270px;height:150px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#c586c0" stroke-width="1.8"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></svg>
+                <span class="nt">设计规范知识库</span>
+                <span class="status done">kb · 2 命中</span>
+              </div>
+              <div class="node-bd">
+                <div class="kb-query">
+                  <svg style="width:11px;height:11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+                  霓虹配色 / 赛博视觉规范
+                </div>
+                <div class="kb-hits">
+                  <div class="kb-hit"><span>neon-palette.md</span><span class="score">0.91</span></div>
+                  <div class="kb-hit"><span>cyberpunk-lighting.md</span><span class="score">0.86</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="node t-gen" style="left:470px;top:180px;width:290px;height:216px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#e06c9f" stroke-width="1.8"><path d="M12 3l1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z"/><path d="M18.5 15l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg>
+                <span class="nt">图像生成</span>
+                <span class="status running"><span class="spin"></span>生成中 62%</span>
+              </div>
+              <div class="node-bd">
+                <div class="gen-prompt"><span class="md-var">{{n1.text}}</span> + RAG(2) — 霓虹青×品红，雨夜街道，电影感…</div>
+                <div class="gen-row">
+                  <span class="gen-provider">volces-seedream 4.0</span>
+                  <span>1024×1024</span>
+                </div>
+                <div class="gen-row">
+                  <span class="gen-ref">
+                    <svg style="width:10px;height:10px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5-9 9"/></svg>
+                    ref-cat.png
+                  </span>
+                  <span style="margin-left:auto;color:var(--fg-faint)">taskId: ig-8f21</span>
+                </div>
+                <div class="gen-progress"><i></i></div>
+              </div>
+            </div>
+
+            <div class="node t-img" style="left:850px;top:120px;width:320px;height:360px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5-9 9"/></svg>
+                <span class="nt">img-9f2.png</span>
+                <span class="status done">✓ 已生成</span>
+              </div>
+              <div class="img-wrap">
+                <svg viewBox="0 0 320 320" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0" stop-color="#1c0f38"/><stop offset=".55" stop-color="#2b1650"/><stop offset="1" stop-color="#0d0620"/>
+                    </linearGradient>
+                    <linearGradient id="neonStroke" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0" stop-color="#22e6ff"/><stop offset="1" stop-color="#ff3fd8"/>
+                    </linearGradient>
+                    <radialGradient id="ground" cx=".5" cy="1" r=".9">
+                      <stop offset="0" stop-color="#ff3fd8" stop-opacity=".28"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+                    </radialGradient>
+                    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+                      <feGaussianBlur stdDeviation="3.2" result="b"/>
+                      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                  </defs>
+                  <rect width="320" height="320" fill="url(#sky)"/>
+                  <g fill="#150a28">
+                    <rect x="0" y="176" width="52" height="144"/><rect x="60" y="146" width="44" height="174"/>
+                    <rect x="236" y="158" width="40" height="162"/><rect x="282" y="188" width="38" height="132"/>
+                  </g>
+                  <g fill="#ff9de2" opacity=".85">
+                    <rect x="66" y="158" width="6" height="8"/><rect x="78" y="158" width="6" height="8"/><rect x="66" y="174" width="6" height="8"/>
+                    <rect x="288" y="200" width="6" height="8"/><rect x="300" y="200" width="6" height="8"/>
+                  </g>
+                  <g fill="#59f7ff" opacity=".85">
+                    <rect x="8" y="188" width="6" height="8"/><rect x="20" y="188" width="6" height="8"/>
+                    <rect x="242" y="170" width="6" height="8"/><rect x="254" y="170" width="6" height="8"/><rect x="248" y="186" width="6" height="8"/>
+                  </g>
+                  <g stroke="#6fd8ff" stroke-width="1" opacity=".22">
+                    <line x1="40" y1="18" x2="30" y2="54"/><line x1="90" y1="8" x2="80" y2="44"/>
+                    <line x1="140" y1="24" x2="130" y2="60"/><line x1="196" y1="10" x2="186" y2="46"/>
+                    <line x1="250" y1="28" x2="240" y2="64"/><line x1="300" y1="12" x2="290" y2="48"/>
+                  </g>
+                  <ellipse cx="160" cy="306" rx="150" ry="26" fill="url(#ground)"/>
+                  <g filter="url(#glow)">
+                    <path d="M112 268 L112 216 L100 178 L126 194 Q160 180 194 194 L220 178 L208 216 L208 268
+                             Q208 286 190 286 L130 286 Q112 286 112 268 Z"
+                          fill="#0b0616" stroke="url(#neonStroke)" stroke-width="3" stroke-linejoin="round"/>
+                    <path d="M262 286 Q246 268 236 240 Q230 218 244 206" fill="none" stroke="url(#neonStroke)" stroke-width="3" stroke-linecap="round"/>
+                    <path d="M132 236 q10 -8 20 0" fill="none" stroke="#22e6ff" stroke-width="3.4" stroke-linecap="round"/>
+                    <path d="M168 236 q10 -8 20 0" fill="none" stroke="#ff3fd8" stroke-width="3.4" stroke-linecap="round"/>
+                    <path d="M154 258 q6 5 12 0" fill="none" stroke="#9adfff" stroke-width="2.4" stroke-linecap="round"/>
+                  </g>
+                  <rect x="118" y="288" width="90" height="3" rx="1.5" fill="url(#neonStroke)" opacity=".55"/>
+                </svg>
+              </div>
+              <div class="img-foot">
+                <span>assets/img-9f2.png</span>
+                <span class="src-chip">源: 图像生成 ig-8f21</span>
+                <span class="callout" style="position:static;margin-left:auto">3</span>
+              </div>
+            </div>
+
+            <div class="node t-wf" style="left:850px;top:540px;width:300px;height:130px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#d7a06f" stroke-width="1.8"><circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M6.5 7.8 10.5 16M17.5 7.8 13.5 16M7.2 6h9.6"/></svg>
+                <span class="nt">内容审核流</span>
+                <span class="status done">✓ workflow · 已完成</span>
+              </div>
+              <div class="node-bd" style="padding:0">
+                <div class="wf-steps">
+                  <span class="wf-step done2">start</span><span class="wf-arrow">→</span>
+                  <span class="wf-step done2">agent:审核</span><span class="wf-arrow">→</span>
+                  <span class="wf-step done2">ifElse</span><span class="wf-arrow">→</span>
+                  <span class="wf-step">end</span>
+                </div>
+                <div style="padding:0 10px;font-size:10.5px;color:var(--fg-faint)">workflowRef: 内容审核流.canvas · 嵌套执行 · output: pass</div>
+              </div>
+              <span class="callout" style="right:-9px;top:-9px">4</span>
+            </div>
+
+            <span class="callout" style="left:408px;top:560px">2</span>
+          </div>
+
+          <div class="minimap">
+            <div class="mm-node" style="left:4px;top:6px;width:33px;height:46px;background:#4a4a4a"></div>
+            <div class="mm-node" style="left:5px;top:56px;width:29px;height:15px;background:#c586c0"></div>
+            <div class="mm-node" style="left:49px;top:19px;width:31px;height:22px;background:#e06c9f"></div>
+            <div class="mm-node" style="left:89px;top:13px;width:34px;height:37px;background:#4fc1ff"></div>
+            <div class="mm-node" style="left:89px;top:56px;width:32px;height:14px;background:#d7a06f"></div>
+            <div class="mm-view" style="left:0;top:0;width:120px;height:76px"></div>
+          </div>
+
+          <div class="zoomctl"><span>−</span><b>92%</b><span>＋</span><span style="margin-left:4px">⤢ 适应</span></div>
+        </div>
+
+        <div class="legend">
+          <div class="li"><span class="ln">1</span>选区魔法生成（模式 A）</div>
+          <div class="li"><span class="ln">2</span>kb 节点 → RAG 注入 dataflow 边</div>
+          <div class="li"><span class="ln">3</span>结果自动落位 + 溯源（sourceGenNodeId）</div>
+          <div class="li"><span class="ln">4</span>嵌套工作流节点（workflowRef）</div>
+          <div class="li"><span class="ln">5</span>统一 .canvas 格式（画布与工作流同构）</div>
+        </div>
+      </div>
+
+      <!-- ══════════ 视图 2：工作流视图 ══════════ -->
+      <div class="view" id="view-workflow" style="display:none">
+        <div class="tabs">
+          <div class="tab">
+            <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8" style="width:13px;height:13px"><rect x="3" y="4" width="8" height="6" rx="1.5"/><rect x="13" y="12" width="8" height="6" rx="1.5"/><path d="M11 7h4a2 2 0 0 1 2 2v3"/></svg>
+            赛博猫生成流.canvas <span class="x">✕</span>
+          </div>
+          <div class="tab active">
+            <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#d7a06f" stroke-width="1.8" style="width:13px;height:13px"><circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M6.5 7.8 10.5 16M17.5 7.8 13.5 16M7.2 6h9.6"/></svg>
+            内容审核流.canvas <span class="x">✕</span>
+            <span class="callout" style="position:absolute;right:-9px;top:-9px">4</span>
+          </div>
+        </div>
+
+        <div class="canvas-toolbar">
+          <span class="role-badge wf">工作流 · workflow</span>
+          <div class="ct-sep"></div>
+          <button class="ct-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>节点 ▾</button>
+          <button class="ct-btn primary"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4l13 8-13 8z"/></svg>运行</button>
+          <button class="ct-btn danger"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>停止</button>
+          <button class="ct-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M4 15v4h16v-4"/></svg>导出 .canvas</button>
+          <div class="ct-spacer"></div>
+          <span class="ct-meta">canvases/cv-content-review/canvas.canvas · role=workflow · 执行 #exec-347 挂起中</span>
+        </div>
+
+        <div class="canvas-viewport">
+          <div class="canvas-world">
+            <svg class="edges">
+              <!-- start → agent -->
+              <path d="M210 185 C 250 185, 250 190, 290 190" fill="none" stroke="#5a5a5a" stroke-width="1.8"/>
+              <path d="M290 190 l-8 -4 v8 z" fill="#5a5a5a"/>
+              <!-- agent → ifElse -->
+              <path d="M550 190 C 596 190, 594 185, 640 185" fill="none" stroke="#5a5a5a" stroke-width="1.8"/>
+              <path d="M640 185 l-8 -4 v8 z" fill="#5a5a5a"/>
+              <text x="595" y="176" class="edge-label" text-anchor="middle">output</text>
+              <!-- ifElse branch-0 → end-pass -->
+              <path d="M880 150 C 940 150, 940 155, 1000 155" fill="none" stroke="#89d185" stroke-width="1.8" opacity=".55"/>
+              <path d="M1000 155 l-8 -4 v8 z" fill="#89d185" opacity=".55"/>
+              <text x="940" y="140" class="edge-label" text-anchor="middle"><tspan fill="#dcdcaa">branch-0</tspan> · 通过</text>
+              <!-- ifElse branch-1 → askUser（实际路径，高亮） -->
+              <path d="M760 260 C 760 300, 760 320, 760 360" fill="none" stroke="#d7a06f" stroke-width="2.4"/>
+              <path d="M760 360 l-4 -8 h8 z" fill="#d7a06f"/>
+              <text x="806" y="312" class="edge-label taken" text-anchor="middle"><tspan fill="#d7a06f">branch-1</tspan> · 需复核（0.62 &lt; 0.8）</text>
+              <!-- askUser option-0 → end-pass -->
+              <path d="M880 415 C 950 415, 960 190, 1000 170" fill="none" stroke="#5a5a5a" stroke-width="1.8" stroke-dasharray="6 4"/>
+              <path d="M1000 170 l-6 -7 10 1 z" fill="#5a5a5a"/>
+              <text x="962" y="300" class="edge-label port" text-anchor="middle"><tspan fill="#dcdcaa">option-0</tspan> · 通过</text>
+              <!-- askUser option-1 → end-reject -->
+              <path d="M880 465 C 940 465, 940 455, 1000 455" fill="none" stroke="#5a5a5a" stroke-width="1.8" stroke-dasharray="6 4"/>
+              <path d="M1000 455 l-8 -4 v8 z" fill="#5a5a5a"/>
+              <text x="940" y="490" class="edge-label port" text-anchor="middle"><tspan fill="#dcdcaa">option-1</tspan> · 驳回</text>
+              <!-- 端口点 -->
+              <circle cx="210" cy="185" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="290" cy="190" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="550" cy="190" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="640" cy="185" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="880" cy="150" r="4" fill="#1e1e1e" stroke="#89d185" stroke-width="1.6"/>
+              <circle cx="760" cy="260" r="4" fill="#1e1e1e" stroke="#d7a06f" stroke-width="1.6"/>
+              <circle cx="880" cy="415" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="880" cy="465" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <circle cx="1000" cy="155" r="4" fill="#1e1e1e" stroke="#89d185" stroke-width="1.6"/>
+              <circle cx="1000" cy="455" r="4" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="1.6"/>
+              <span class="callout" style="position:absolute;left:700px;top:300px">1</span>
+            </svg>
+
+            <!-- start -->
+            <div class="node t-start" style="left:60px;top:150px;width:150px;height:70px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="#89d185"><path d="M7 4l13 8-13 8z"/></svg>
+                <span class="nt">start</span>
+                <span class="status done">✓</span>
+              </div>
+              <div class="node-bd" style="font-size:11px;color:var(--fg-dim)">输入：待审图片 + 规范</div>
+            </div>
+
+            <!-- agent -->
+            <div class="node t-agent" style="left:290px;top:110px;width:260px;height:160px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M5 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5"/></svg>
+                <span class="nt">agent · 内容审核</span>
+                <span class="status done">✓ 3.1s</span>
+              </div>
+              <div class="node-bd">
+                <div class="gen-prompt" style="max-height:48px">审核 <span class="md-var">{{start.image}}</span> 是否符合 <span class="md-var">{{kb.规范}}</span>，输出 score 0~1…</div>
+                <div class="cfg-row"><span class="cfg-chip">knot</span><span class="cfg-chip">默认模型</span><span class="out-chip" style="margin-left:auto">output: score=0.62</span></div>
+              </div>
+            </div>
+
+            <!-- ifElse -->
+            <div class="node t-ifelse" style="left:640px;top:110px;width:240px;height:150px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#dcdcaa" stroke-width="1.8"><path d="M8 4h8l4 8-4 8H8l-4-8z"/></svg>
+                <span class="nt">ifElse · 审核判定</span>
+                <span class="status done">✓</span>
+              </div>
+              <div class="node-bd">
+                <div class="branch-list">
+                  <div class="branch-item"><span class="pid">branch-0</span>score ≥ 0.8 → 通过</div>
+                  <div class="branch-item taken"><span class="pid">branch-1</span>否则 → 人工复核 ✓已选</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- askUser（挂起） -->
+            <div class="node t-ask wait-glow" style="left:640px;top:360px;width:240px;height:170px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#c586c0" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.8.35-.9 1-.9 1.7"/><circle cx="12" cy="16.8" r=".6" fill="#c586c0"/></svg>
+                <span class="nt">askUser · 人工复核</span>
+                <span class="status waiting pulse">等待选择</span>
+              </div>
+              <div class="node-bd">
+                <div class="ask-q">AI 置信度 <b>0.62</b>（阈值 0.8），是否放行该图片？</div>
+                <div class="ask-opts">
+                  <div class="ask-opt ok">✓ 通过</div>
+                  <div class="ask-opt no">✕ 驳回</div>
+                </div>
+                <div class="ask-hint"><span class="spin" style="border-color:var(--orange);border-top-color:transparent"></span>执行挂起 · 路由端口 option-0 / option-1</div>
+              </div>
+              <span class="callout" style="right:-9px;top:-9px">3</span>
+            </div>
+
+            <!-- end-pass -->
+            <div class="node t-end" style="left:1000px;top:120px;width:170px;height:70px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#89d185" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+                <span class="nt">end · 发布</span>
+                <span class="status idle">待触发</span>
+              </div>
+              <div class="node-bd" style="font-size:11px;color:var(--fg-dim)">图片标记为 pass，写回画布</div>
+            </div>
+
+            <!-- end-reject -->
+            <div class="node t-end" style="left:1000px;top:420px;width:170px;height:70px">
+              <div class="node-hd">
+                <svg class="ni" viewBox="0 0 24 24" fill="none" stroke="#89d185" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+                <span class="nt">end · 驳回</span>
+                <span class="status idle">待触发</span>
+              </div>
+              <div class="node-bd" style="font-size:11px;color:var(--fg-dim)">图片标记为 reject + 原因</div>
+            </div>
+
+            <span class="callout" style="left:560px;top:96px">2</span>
+          </div>
+
+          <div class="minimap">
+            <div class="mm-node" style="left:7px;top:18px;width:16px;height:8px;background:#89d185"></div>
+            <div class="mm-node" style="left:32px;top:13px;width:28px;height:17px;background:#4fc1ff"></div>
+            <div class="mm-node" style="left:69px;top:13px;width:26px;height:16px;background:#dcdcaa"></div>
+            <div class="mm-node" style="left:69px;top:40px;width:26px;height:18px;background:#c586c0"></div>
+            <div class="mm-node" style="left:107px;top:14px;width:18px;height:8px;background:#89d185"></div>
+            <div class="mm-node" style="left:107px;top:47px;width:18px;height:8px;background:#89d185"></div>
+            <div class="mm-view" style="left:0;top:0;width:120px;height:76px"></div>
+          </div>
+
+          <div class="zoomctl"><span>−</span><b>100%</b><span>＋</span><span style="margin-left:4px">⤢ 适应</span></div>
+        </div>
+
+        <div class="legend">
+          <div class="li"><span class="ln">1</span>端口路由：fromPort = branch-N / option-N</div>
+          <div class="li"><span class="ln">2</span>节点执行状态回显（output / 分支决策）</div>
+          <div class="li"><span class="ln">3</span>AskUser 挂起，等用户选择后继续</div>
+          <div class="li"><span class="ln">4</span>与画布同一 .canvas 格式（role=workflow）</div>
+        </div>
+      </div>
+
+      <!-- ══════════ 视图 3：知识库视图 ══════════ -->
+      <div class="view" id="view-kb" style="display:none">
+        <div class="tabs">
+          <div class="tab active">
+            <svg class="fi" viewBox="0 0 24 24" fill="none" stroke="#c586c0" stroke-width="1.8" style="width:13px;height:13px"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></svg>
+            设计规范知识库.canvas <span class="x">✕</span>
+          </div>
+        </div>
+
+        <div class="canvas-toolbar">
+          <span class="role-badge kb">知识库 · kb</span>
+          <div class="ct-sep"></div>
+          <button class="ct-btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.7 2.7-2-2z"/></svg>AI 生成导图</button>
+          <button class="ct-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>子主题</button>
+          <button class="ct-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>导入文档</button>
+          <button class="ct-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>重建索引</button>
+          <div class="ct-spacer"></div>
+          <span class="ct-meta">knowledge/设计规范知识库.canvas · role=kb · index.sqlite (FTS5)</span>
+        </div>
+
+        <div class="kb-view">
+          <!-- 左：大纲面板（与导图双向同步） -->
+          <div class="kb-outline">
+            <div class="kb-outline-hd">大纲<span style="margin-left:auto;color:var(--fg-faint);font-weight:400">与导图双向同步</span></div>
+            <div class="ol-tree">
+              <div class="ol-item lv1 active"><span class="ol-dot" style="background:var(--purple)"></span>设计规范知识库<span class="cnt">42 文档</span></div>
+              <div class="ol-item lv2"><span class="ol-dot" style="background:var(--blue)"></span>配色规范<span class="cnt">27 块</span></div>
+              <div class="ol-item lv3">neon-palette.md<span class="hitmark">命中 0.91</span></div>
+              <div class="ol-item lv3">visual-moodboard.md<span class="cnt">15 块</span></div>
+              <div class="ol-item lv2"><span class="ol-dot" style="background:var(--pink)"></span>光影与场景<span class="cnt">8 块</span></div>
+              <div class="ol-item lv3">cyberpunk-lighting.md<span class="hitmark">命中 0.86</span></div>
+              <div class="ol-item lv2"><span class="ol-dot" style="background:var(--orange)"></span>品牌资产<span class="cnt">待解析</span></div>
+              <div class="ol-item lv3">brand-guide-2026.pdf<span class="cnt">4.8 MB</span></div>
+              <div class="ol-item lv2"><span class="ol-dot" style="background:var(--teal)"></span>字体排印<span class="cnt">6 块</span></div>
+              <div class="ol-item lv3">typography.txt<span class="cnt">6 块</span></div>
+              <div class="ol-item lv2"><span class="ol-dot" style="background:var(--yellow)"></span>动效规范<span class="cnt">9 块</span></div>
+              <div class="ol-item lv3">ui-motion-spec.md<span class="cnt">9 块</span></div>
+            </div>
+            <div class="ol-foot"><b>42</b> 文档 · <b>156</b> 块 · FTS5 ✓<br/>向量索引 sqlite-vec · M6 待启用<br/>embedding：knot / 默认</div>
+          </div>
+
+          <!-- 右：思维导图视口 -->
+          <div class="mind-viewport">
+            <!-- 检索胶囊：命中路径高亮 -->
+            <div class="mind-search">
+              <svg style="width:13px;height:13px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>
+              <span class="q">霓虹配色</span>
+              <span class="hits">命中 2 文档 · 2 块 · 路径已高亮</span>
+            </div>
+
+            <!-- 导图连线 -->
+            <svg class="mind-edges">
+              <!-- 命中路径（紫色高亮） -->
+              <path d="M198 340 C228 340 216 94 246 94" stroke="#c586c0" stroke-width="2" fill="none" opacity=".9"/>
+              <path d="M364 94 C400 94 394 47 430 47" stroke="#c586c0" stroke-width="2" fill="none" opacity=".9"/>
+              <path d="M446 66 C446 104 436 124 452 124" stroke="#c586c0" stroke-width="1.6" stroke-dasharray="5 4" fill="none" opacity=".9"/>
+              <path d="M198 340 C228 340 216 230 246 230" stroke="#c586c0" stroke-width="2" fill="none" opacity=".9"/>
+              <path d="M364 230 C400 230 394 231 430 231" stroke="#c586c0" stroke-width="2" fill="none" opacity=".9"/>
+              <path d="M446 250 C446 288 436 308 452 308" stroke="#c586c0" stroke-width="1.6" stroke-dasharray="5 4" fill="none" opacity=".9"/>
+              <!-- 常规分支 -->
+              <path d="M198 340 C228 340 216 372 246 372" stroke="#d7a06f" stroke-width="1.6" fill="none" opacity=".5"/>
+              <path d="M198 340 C228 340 216 510 246 510" stroke="#4ec9b0" stroke-width="1.6" fill="none" opacity=".5"/>
+              <path d="M198 340 C228 340 216 600 246 600" stroke="#dcdcaa" stroke-width="1.6" fill="none" opacity=".5"/>
+              <path d="M364 94 C400 94 394 187 430 187" stroke="#4fc1ff" stroke-width="1.6" fill="none" opacity=".5"/>
+              <path d="M364 372 C400 372 394 375 430 375" stroke="#d7a06f" stroke-width="1.6" fill="none" opacity=".5"/>
+              <path d="M364 510 C400 510 394 509 430 509" stroke="#4ec9b0" stroke-width="1.6" fill="none" opacity=".5"/>
+              <path d="M364 600 C400 600 394 599 430 599" stroke="#dcdcaa" stroke-width="1.6" fill="none" opacity=".5"/>
+            </svg>
+
+            <!-- 根节点 -->
+            <div class="mnode root" style="left:18px;top:310px;width:180px">
+              <div class="rt">
+                <svg style="width:15px;height:15px" viewBox="0 0 24 24" fill="none" stroke="#c586c0" stroke-width="1.8"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6"/><path d="M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></svg>
+                设计规范知识库
+              </div>
+              <div class="rm">42 文档 · 156 块 · FTS5 ✓</div>
+            </div>
+            <span class="callout" style="left:186px;top:292px">1</span>
+
+            <!-- 一级分支：AI 自动聚类主题 -->
+            <div class="mnode branch b-blue" style="left:246px;top:74px;width:118px">配色规范</div>
+            <div class="mnode branch b-pink" style="left:246px;top:210px;width:118px">光影与场景</div>
+            <div class="mnode branch b-orange" style="left:246px;top:352px;width:118px">品牌资产</div>
+            <div class="mnode branch b-teal" style="left:246px;top:490px;width:118px">字体排印</div>
+            <div class="mnode branch b-yellow" style="left:246px;top:580px;width:118px">动效规范</div>
+
+            <!-- 二级：文档节点 -->
+            <div class="mnode leaf hit" style="left:430px;top:28px;width:190px">
+              <svg class="mi" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8"><path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/></svg>
+              <span class="ln2">neon-palette.md</span><span class="lm">12 块</span><span class="idx-dot ok"></span>
+            </div>
+            <span class="callout" style="left:612px;top:16px">2</span>
+            <div class="mnode leaf" style="left:430px;top:168px;width:190px">
+              <svg class="mi" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8"><path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/></svg>
+              <span class="ln2">visual-moodboard.md</span><span class="lm">15 块</span><span class="idx-dot ok"></span>
+            </div>
+            <div class="mnode leaf hit" style="left:430px;top:212px;width:190px">
+              <svg class="mi" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8"><path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/></svg>
+              <span class="ln2">cyberpunk-lighting.md</span><span class="lm">8 块</span><span class="idx-dot ok"></span>
+            </div>
+            <div class="mnode leaf" style="left:430px;top:356px;width:190px">
+              <svg class="mi" viewBox="0 0 24 24" fill="none" stroke="#e06c9f" stroke-width="1.8"><path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/></svg>
+              <span class="ln2">brand-guide-2026.pdf</span><span class="lm">待解析</span><span class="idx-dot pending"></span>
+            </div>
+            <div class="mnode leaf" style="left:430px;top:490px;width:190px">
+              <svg class="mi" viewBox="0 0 24 24" fill="none" stroke="#4ec9b0" stroke-width="1.8"><path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/></svg>
+              <span class="ln2">typography.txt</span><span class="lm">6 块</span><span class="idx-dot ok"></span>
+            </div>
+            <div class="mnode leaf" style="left:430px;top:580px;width:190px">
+              <svg class="mi" viewBox="0 0 24 24" fill="none" stroke="#4fc1ff" stroke-width="1.8"><path d="M13 3H6v18h12V8z"/><path d="M13 3v5h5"/></svg>
+              <span class="ln2">ui-motion-spec.md</span><span class="lm">9 块</span><span class="idx-dot ok"></span>
+            </div>
+
+            <!-- 三级：命中分块节点 -->
+            <div class="mnode chunk" style="left:452px;top:84px;width:196px">
+              <div class="ck-top">块 #3<span class="sc"><span class="score-bar"><i style="width:91%"></i></span>0.91</span></div>
+              <div class="ck-snip"><mark>霓虹配色</mark>以青色 #22e6ff 与品红 #ff3fd8 为主色对，暗部不低于 #0d0620…</div>
+              <span class="drag-chip">⠿ 拖入画布为 kb 节点</span>
+            </div>
+            <span class="callout" style="left:640px;top:150px">3</span>
+            <div class="mnode chunk" style="left:452px;top:268px;width:196px">
+              <div class="ck-top">块 #1<span class="sc"><span class="score-bar"><i style="width:86%"></i></span>0.86</span></div>
+              <div class="ck-snip">主光源品红、补光青色，<mark>霓虹</mark>灯管辉光 blur 3~5px…</div>
+              <span class="drag-chip">⠿ 拖入画布为 kb 节点</span>
+            </div>
+
+            <!-- 添加子主题（悬停态演示） -->
+            <span class="add-sub" style="left:356px;top:572px">+</span>
+            <div class="add-tip" style="left:382px;top:570px">添加子主题 · Tab</div>
+
+            <!-- 文件格式标注 -->
+            <div class="add-tip" style="left:14px;bottom:46px">📄 设计规范知识库.canvas · role=kb · JSON Canvas 超集</div>
+            <span class="callout" style="left:308px;bottom:46px">4</span>
+
+            <!-- 小地图 + 缩放 -->
+            <div class="minimap">
+              <div class="mm-node" style="left:8px;top:42px;width:16px;height:9px;background:#c586c0"></div>
+              <div class="mm-node" style="left:36px;top:12px;width:11px;height:5px;background:#4fc1ff"></div>
+              <div class="mm-node" style="left:36px;top:28px;width:11px;height:5px;background:#e06c9f"></div>
+              <div class="mm-node" style="left:36px;top:46px;width:11px;height:5px;background:#d7a06f"></div>
+              <div class="mm-node" style="left:36px;top:62px;width:11px;height:5px;background:#4ec9b0"></div>
+              <div class="mm-node" style="left:36px;top:76px;width:11px;height:5px;background:#dcdcaa"></div>
+              <div class="mm-node" style="left:62px;top:6px;width:14px;height:4px;background:#777"></div>
+              <div class="mm-node" style="left:62px;top:22px;width:14px;height:4px;background:#777"></div>
+              <div class="mm-node" style="left:62px;top:30px;width:14px;height:4px;background:#777"></div>
+              <div class="mm-node" style="left:62px;top:47px;width:14px;height:4px;background:#777"></div>
+              <div class="mm-node" style="left:62px;top:64px;width:14px;height:4px;background:#777"></div>
+              <div class="mm-node" style="left:62px;top:78px;width:14px;height:4px;background:#777"></div>
+              <div class="mm-node" style="left:84px;top:12px;width:13px;height:7px;background:#8a5fa0"></div>
+              <div class="mm-node" style="left:84px;top:36px;width:13px;height:7px;background:#8a5fa0"></div>
+              <div class="mm-view" style="left:3px;top:3px;width:118px;height:88px"></div>
+            </div>
+            <div class="zoomctl">−<b>82%</b>+</div>
+          </div>
+        </div>
+
+        <div class="legend">
+          <div class="li"><span class="ln">1</span>AI 从文档自动聚类生成导图</div>
+          <div class="li"><span class="ln">2</span>FTS5 检索命中路径高亮</div>
+          <div class="li"><span class="ln">3</span>分块节点拖入画布为 kb 节点</div>
+          <div class="li"><span class="ln">4</span>导图同为 .canvas（role=kb）</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 聊天面板 -->
+    <div class="chat">
+      <div class="chat-hd"><span class="dotlive"></span>AGENT · 创作助手</div>
+      <div class="chat-body">
+        <div class="msg user">
+          <div class="bub">帮我生成一只赛博朋克风格的猫，霓虹雨夜氛围，参考画布上的素材</div>
+        </div>
+        <div class="msg agent">
+          <div class="who">创作助手</div>
+          <div class="tool-card">
+            <div class="tc-hd">
+              <svg style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.7 2.7-2-2z"/></svg>
+              generate_image · volces-seedream
+              <span class="status done" style="margin-left:auto">✓ 完成 8.2s</span>
+            </div>
+            <div class="tc-bd">
+              prompt: 赛博朋克风格的猫，霓虹雨夜…<br/>
+              ref: <code>assets/ref-cat.png</code> · size: <code>1024×1024</code><br/>
+              → <code>canvases/cv-cyber-cat/assets/img-9f2.png</code>
+            </div>
+          </div>
+          <div class="insert-note">
+            <svg style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            已自动插入活动画布（模式 B · 对话驱动插图）
+          </div>
+          <div class="bub">图片已生成并放到画布右侧。我还从「设计规范」知识库取了两条霓虹配色规范注入提示词，需要换品红为主色调再生成一版吗？</div>
+        </div>
+      </div>
+      <div class="chat-input"><span>询问、修改或继续生成…</span><div class="send-btn">➤</div></div>
+    </div>
+  </div>
+
+  <!-- 状态栏 -->
+  <div class="statusbar">
+    <span> main*</span>
+    <span>⊘ 0&nbsp; ⚠ 0</span>
+    <div class="sb-r">
+      <span id="sbStats">8 节点 · 5 连线 · 1 任务运行中</span>
+      <span>JSON Canvas 超集 · formatVersion 2</span>
+      <span>UTF-8</span>
+      <span>VsSaros</span>
+    </div>
+  </div>
+</div>
+
+<script>
+function switchView(name) {
+  document.querySelectorAll('.view').forEach(function(v) { v.style.display = 'none'; });
+  document.getElementById('view-' + name).style.display = 'flex';
+  document.querySelectorAll('.vs-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.view === name);
+  });
+  ['canvas', 'workflow', 'kb'].forEach(function(k) {
+    var el = document.getElementById('sb-' + k);
+    if (el) el.classList.toggle('active', k === name);
+  });
+  var meta = {
+    canvas: ['赛博猫生成流.canvas — Agent Studio', '8 节点 · 5 连线 · 1 任务运行中'],
+    workflow: ['内容审核流.canvas — Agent Studio', '6 节点 · 5 连线 · 执行挂起：等待 AskUser'],
+    kb: ['设计规范知识库.canvas — Agent Studio', '14 导图节点 · 13 连线 · 42 文档 · 156 块']
+  };
+  document.getElementById('winTitle').textContent = meta[name][0];
+  document.getElementById('sbStats').textContent = meta[name][1];
+}
+</script>
+</body>
+</html>

@@ -139,8 +139,8 @@ export const TOOL_TERMINAL_TOOLS = new Set(['terminal', 'run_command', 'run_pers
 /** 计划/探索/更新 族（需专用卡片） */
 export const TOOL_PLAN_TOOLS = new Set(['plan_explore', 'plan_enter', 'plan_exit', 'update_plan']);
 
-/** 委派/子Agent 族（需专用卡片） */
-export const TOOL_DELEGATE_TOOLS = new Set(['delegate_task', 'transfer_to_agent', 'new_agent']);
+/** 委派/子Agent 族（需专用卡片）。new_agent 是配置型 action，不走委派卡（回退通用工具卡）。 */
+export const TOOL_DELEGATE_TOOLS = new Set(['delegate_task', 'transfer_to_agent']);
 
 /** 搜索/查询 族（需列表化结果卡片） */
 export const TOOL_SEARCH_TOOLS = new Set(['search_code', 'search_graph', 'query_graph', 'trace_path', 'get_architecture', 'search_files', 'web_search', 'web_extract', 'get_code_snippet']);
@@ -391,7 +391,7 @@ protected _pinStreamCardToBottom(container: HTMLElement): void {
  */
 protected _pinAllScrollableBodiesToBottom(container: HTMLElement): void {
 	const scrollables = container.querySelectorAll(
-		'.thinking-card-body, .tool-header-children, .trace-list, .sa-body, .write-file-stream, .conclusion-box, .done-stats'
+		'.thinking-card-body, .tool-header-children, .trace-list, .sa-body, .write-file-stream, .conclusion-box, .done-stats, .delegate-scroll'
 	) as NodeListOf<HTMLElement>;
 	for (const el of scrollables) {
 		if (el.scrollHeight <= el.clientHeight) { continue; } // 不可滚动无需钉底

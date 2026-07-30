@@ -124,8 +124,8 @@ const EDGE_LABEL_MAP: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 const LAYOUT = {
-	/** 节点碰撞半径（防止重叠） */
-	COLLIDE_RADIUS: 40,
+	/** 节点碰撞半径（防止重叠），40 → 28 允许节点更紧凑排布 */
+	COLLIDE_RADIUS: 28,
 	/** 标签相对于节点中心的底部偏移 */
 	LABEL_OFFSET: 15,
 	/** 标签背景圆角 */
@@ -451,7 +451,8 @@ export class KbGraphView extends Disposable {
 
 	private _simulateStep(): void {
 		const area = this._centerX * 2 * this._centerY * 2;
-		const k = Math.sqrt(area / (this._nodes.length || 1)) * 0.2;
+		// 缩短理想边长（原 *0.2 → *0.16），让相连节点更紧凑，避免整体摊得过开
+		const k = Math.sqrt(area / (this._nodes.length || 1)) * 0.16;
 		const alpha = this._alpha;
 		const collideRadius = LAYOUT.COLLIDE_RADIUS;
 
@@ -485,7 +486,8 @@ export class KbGraphView extends Disposable {
 			let dx = edge.target.x - edge.source.x;
 			let dy = edge.target.y - edge.source.y;
 			const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-			const force = (dist - k * 2) * alpha * 0.1;
+			// 增强弹簧引力（0.1 → 0.2），相连节点被拉得更近
+			const force = (dist - k * 2) * alpha * 0.2;
 			dx /= dist;
 			dy /= dist;
 			edge.source.vx += dx * force;
@@ -494,11 +496,11 @@ export class KbGraphView extends Disposable {
 			edge.target.vy -= dy * force;
 		}
 
-		// 中心引力 + 速度衰减
+		// 中心引力（0.001 → 0.008，显著增强以收敛整体散布）+ 速度衰减
 		for (const node of this._nodes) {
 			if (node === this._dragging) { continue; }
-			node.vx += (this._centerX - node.x) * alpha * 0.001;
-			node.vy += (this._centerY - node.y) * alpha * 0.001;
+			node.vx += (this._centerX - node.x) * alpha * 0.008;
+			node.vy += (this._centerY - node.y) * alpha * 0.008;
 			node.vx *= 0.9;
 			node.vy *= 0.9;
 			node.x += node.vx;
@@ -843,7 +845,22 @@ export class KbGraphView extends Disposable {
 	private _onWheel = (e: WheelEvent): void => {
 		e.preventDefault();
 		const delta = e.deltaY > 0 ? 0.9 : 1.1;
-		this._scale = Math.max(0.1, Math.min(3, this._scale * delta));
+		const oldScale = this._scale;
+		const newScale = Math.max(0.1, Math.min(3, oldScale * delta));
+		if (newScale === oldScale) { return; }
+
+		// 以鼠标位置为中心缩放：保持鼠标下的世界坐标点在缩放前后不动。
+		// 世界→屏幕变换：screen = (world - center) * scale + offset + center
+		const rect = this._canvas.getBoundingClientRect();
+		const mx = e.clientX - rect.left;
+		const my = e.clientY - rect.top;
+		// 鼠标下的世界坐标（缩放前）
+		const worldX = (mx - this._offsetX - this._centerX) / oldScale + this._centerX;
+		const worldY = (my - this._offsetY - this._centerY) / oldScale + this._centerY;
+		// 反解新 offset，使该世界点在新缩放下仍位于鼠标处
+		this._offsetX = mx - (worldX - this._centerX) * newScale - this._centerX;
+		this._offsetY = my - (worldY - this._centerY) * newScale - this._centerY;
+		this._scale = newScale;
 		this._requestDraw();
 	};
 

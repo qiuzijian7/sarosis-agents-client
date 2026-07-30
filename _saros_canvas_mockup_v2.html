@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sarosis · Canvas + Agent Studio Chat</title>
+<style>
+  :root {
+    --bg-app: #0e1116;
+    --bg-panel: #161b22;
+    --bg-sidebar: #11161d;
+    --bg-drop: #1c2330;
+    --ec-bg-secondary: #161b22;
+    --ec-bg-tertiary: #1c2128;
+    --ec-border-primary: rgba(128, 128, 128, 0.22);
+    --ec-border-secondary: rgba(128, 128, 128, 0.14);
+    --ec-text-primary: #e6edf3;
+    --ec-text-secondary: #9da7b3;
+    --ec-text-muted: #6a737d;
+    --ec-accent: #4da3ff;
+    --ec-accent-soft: rgba(77, 163, 255, 0.14);
+    --node-blue: #1f6feb;
+    --node-purple: #8957e5;
+    --node-green: #2da44e;
+    --node-orange: #db6d28;
+    --node-pink: #bf3989;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "SF Mono", "Cascadia Code", Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font);
+    background: var(--bg-app);
+    color: var(--ec-text-primary);
+    overflow: hidden;
+    font-size: 13px;
+  }
+
+  /* ── App shell ─────────────────────────────────── */
+  .app {
+    display: grid;
+    grid-template-rows: 38px 1fr;
+    grid-template-columns: 1fr;
+    height: 100vh;
+  }
+  .titlebar {
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 14px;
+    background: var(--bg-sidebar);
+    border-bottom: 1px solid var(--ec-border-secondary);
+    -webkit-app-region: drag;
+    font-size: 12.5px;
+    color: var(--ec-text-secondary);
+  }
+  .titlebar .logo { font-weight: 700; color: var(--ec-text-primary); letter-spacing: .3px; }
+  .titlebar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); }
+  .titlebar .crumb { color: var(--ec-text-muted); }
+  .titlebar .spacer { flex: 1; }
+
+  .body {
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: 52px 1fr 420px;
+    height: 100%;
+    min-height: 0;
+  }
+
+  /* ── Activity bar (left) ───────────────────────── */
+  .activitybar {
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--ec-border-secondary);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: top 0;
+    gap: 4px;
+  }
+  .activitybar .ab-btn {
+    width: 52px;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 19px;
+    color: var(--ec-text-muted);
+    cursor: pointer;
+    border-left: 2px solid transparent;
+  }
+  .activitybar .ab-btn:hover { color: var(--ec-text-primary); }
+  .activitybar .ab-btn.active { color: var(--ec-text-primary); border-left-color: var(--ec-accent); }
+
+  /* ═══════════════════════════════════════════════════════
+     CANVAS PANE  (left/center — the graph editor)
+     ═══════════════════════════════════════════════════════ */
+  .canvas-pane {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(255,255,255,.05) 1px, transparent 0);
+    background-size: 22px 22px;
+    background-color: #0c0f14;
+    position: relative;
+  }
+  .canvas-toolbar {
+    height: 44px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--ec-border-secondary);
+  }
+  .canvas-toolbar .ct-title {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .canvas-toolbar .ct-title .pill {
+    font-size: 11px; font-weight: 500;
+    padding: 1px 8px; border-radius: 999px;
+    background: var(--ec-accent-soft); color: var(--ec-accent);
+  }
+  .canvas-toolbar .ct-spacer { flex: 1; }
+  .ct-btn {
+    height: 28px; padding: 0 10px;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--ec-bg-tertiary);
+    border: 1px solid var(--ec-border-primary);
+    color: var(--ec-text-secondary);
+    border-radius: 7px; cursor: pointer; font-size: 12px;
+  }
+  .ct-btn:hover { color: var(--ec-text-primary); border-color: rgba(124,185,255,.4); }
+  .ct-btn.primary { background: var(--node-blue); border-color: var(--node-blue); color: #fff; }
+  .ct-btn.primary:hover { background: #2a7bff; }
+
+  .canvas-stage {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* SVG edges layer */
+  .edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .edges path { fill: none; stroke: #3b4654; stroke-width: 2; }
+  .edges path.active { stroke: var(--ec-accent); }
+  .edges .handle { fill: #5a6675; }
+
+  /* Nodes */
+  .node {
+    position: absolute;
+    width: 196px;
+    background: var(--ec-bg-tertiary);
+    border: 1px solid var(--ec-border-primary);
+    border-radius: 12px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.35);
+    overflow: hidden;
+    user-select: none;
+  }
+  .node .n-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 11px;
+    font-weight: 600; font-size: 12.5px;
+    border-bottom: 1px solid var(--ec-border-secondary);
+  }
+  .node .n-ico {
+    width: 22px; height: 22px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: #fff; flex-shrink: 0;
+  }
+  .node .n-body { padding: 9px 11px; font-size: 11.5px; color: var(--ec-text-secondary); }
+  .node .n-tag {
+    display: inline-block; margin-top: 6px;
+    font-size: 10.5px; padding: 1px 7px; border-radius: 999px;
+    background: rgba(255,255,255,.06); color: var(--ec-text-muted);
+  }
+  .node .port {
+    position: absolute; width: 11px; height: 11px; border-radius: 50%;
+    background: #5a6675; border: 2px solid var(--ec-bg-tertiary);
+    top: 50%; transform: translateY(-50%);
+  }
+  .node .port.in { left: -6px; }
+  .node .port.out { right: -6px; }
+  .node .port.br { /* branch port on bottom */ left: 50%; top: auto; bottom: -6px; transform: translateX(-50%); }
+
+  .node.blue  .n-ico { background: var(--node-blue); }
+  .node.purple .n-ico { background: var(--node-purple); }
+  .node.green .n-ico { background: var(--node-green); }
+  .node.orange .n-ico { background: var(--node-orange); }
+  .node.pink  .n-ico { background: var(--node-pink); }
+  .node.blue  { border-top: 2px solid var(--node-blue); }
+  .node.purple{ border-top: 2px solid var(--node-purple); }
+  .node.green { border-top: 2px solid var(--node-green); }
+  .node.orange{ border-top: 2px solid var(--node-orange); }
+  .node.pink  { border-top: 2px solid var(--node-pink); }
+
+  .node.selected { border-color: var(--ec-accent); box-shadow: 0 0 0 2px var(--ec-accent-soft), 0 6px 18px rgba(0,0,0,.4); }
+
+  /* Minimap */
+  .minimap {
+    position: absolute; right: 14px; bottom: 14px;
+    width: 158px; height: 104px;
+    background: rgba(12,15,20,.82);
+    border: 1px solid var(--ec-border-primary);
+    border-radius: 10px; backdrop-filter: blur(4px);
+    overflow: hidden;
+  }
+  .minimap .mm-node { position: absolute; border-radius: 3px; opacity: .8; }
+  .minimap .mm-view {
+    position: absolute; border: 1px solid rgba(124,185,255,.6);
+    border-radius: 4px; background: rgba(124,185,255,.08);
+  }
+  /* Zoom controls */
+  .zoom-ctl {
+    position: absolute; left: 14px; bottom: 14px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .zoom-ctl button {
+    width: 32px; height: 32px; border-radius: 8px;
+    background: var(--ec-bg-tertiary); border: 1px solid var(--ec-border-primary);
+    color: var(--ec-text-secondary); cursor: pointer; font-size: 15px;
+  }
+  .zoom-ctl button:hover { color: var(--ec-text-primary); border-color: rgba(124,185,255,.4); }
+
+  /* ═══════════════════════════════════════════════════════
+     AGENT STUDIO CHAT  (right — SEPARATE panel, not in canvas)
+     ═══════════════════════════════════════════════════════ */
+  .chat-pane {
+    background: var(--ec-bg-secondary);
+    border-left: 1px solid var(--ec-border-secondary);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  /* Header */
+  .chat-header {
+    display: flex; align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--ec-border-secondary);
+    background: var(--ec-bg-secondary);
+  }
+  .chat-header-left { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+  .chat-header-agent-selector {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 8px 3px 3px; border-radius: 8px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .chat-header-agent-selector:hover { background: rgba(255,255,255,.04); border-color: var(--ec-border-primary); }
+  .chat-header-avatar-wrap { position: relative; width: 28px; height: 28px; flex-shrink: 0; }
+  .chat-header-avatar-border {
+    width: 28px; height: 28px; border-radius: 7px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #1f6feb, #8957e5); color: #fff; font-size: 14px;
+  }
+  .chat-header-status-dot {
+    position: absolute; right: -2px; bottom: -2px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--ok); border: 2px solid var(--ec-bg-secondary);
+  }
+  .chat-header-info { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+  .chat-header-name { font-weight: 600; font-size: 13px; }
+  .chat-header-role { font-size: 11px; color: var(--ec-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-header-spacer { flex: 1; }
+  .chat-header-actions { display: flex; gap: 4px; }
+  .chat-header-action-btn {
+    width: 30px; height: 30px; border-radius: 7px; border: none;
+    background: transparent; color: var(--ec-text-secondary); cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+  }
+  .chat-header-action-btn:hover { background: rgba(255,255,255,.06); color: var(--ec-text-primary); }
+
+  /* Agent tabs */
+  .chat-tabs-container { border-bottom: 1px solid var(--ec-border-secondary); background: var(--ec-bg-secondary); }
+  .chat-tabs { display: flex; gap: 4px; padding: 6px 10px 0; overflow-x: auto; scrollbar-width: none; }
+  .chat-tabs::-webkit-scrollbar { display: none; }
+  .chat-tab {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: 8px 8px 0 0; cursor: pointer;
+    color: var(--ec-text-secondary); font-size: 12px; white-space: nowrap;
+    border: 1px solid transparent; border-bottom: none;
+  }
+  .chat-tab:hover { background: rgba(255,255,255,.04); color: var(--ec-text-primary); }
+  .chat-tab.active { background: var(--ec-bg-tertiary); color: var(--ec-text-primary); border-color: var(--ec-border-primary); }
+  .chat-tab-avatar { width: 16px; height: 16px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; background: #30363d; }
+  .chat-tab-label { font-weight: 500; }
+
+  /* Messages */
+  .chat-messages-wrapper { position: relative; flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+  .chat-messages { flex: 1; overflow-y: auto; padding: 12px 4px 12px 0; min-height: 0; scrollbar-width: thin; scrollbar-color: #30363d transparent; }
+  .chat-messages::-webkit-scrollbar { width: 8px; }
+  .chat-messages::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+
+  .chat-message { display: flex; align-items: flex-start; gap: 8px; padding: 6px 14px; margin-bottom: 4px; }
+  .chat-message.user { flex-direction: row-reverse; padding-bottom: 30px; }
+  .chat-avatar {
+    width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: #fff;
+  }
+  .chat-avatar.assistant { background: linear-gradient(135deg, #1f6feb, #8957e5); }
+  .chat-avatar.user { background: #30363d; color: var(--ec-text-primary); }
+  .chat-bubble {
+    max-width: 86%; padding: 10px 14px; border-radius: 14px;
+    font-size: 12.5px; line-height: 1.55; word-break: break-word; position: relative;
+    user-select: text;
+  }
+  .chat-bubble.assistant {
+    background: var(--ec-bg-tertiary); color: var(--ec-text-primary);
+    border: 1px solid var(--ec-border-secondary); border-bottom-left-radius: 4px; flex: 1 1 auto; min-width: 0;
+  }
+  .chat-bubble.user {
+    background: #2d333b; color: var(--ec-text-primary);
+    border-bottom-right-radius: 4px; max-width: 76%;
+  }
+  .chat-bubble p { margin: 0 0 6px; }
+  .chat-bubble p:last-child { margin-bottom: 0; }
+  .chat-bubble code { font-family: var(--mono); background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+
+  /* Tool-call card */
+  .tool-calls-section { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; width: 100%; }
+  .tool-call-card {
+    background: var(--bg-panel); border: 1px solid var(--ec-border-primary);
+    border-radius: 9px; overflow: hidden;
+  }
+  .tool-call-card.completed { border-left: 3px solid var(--ok); }
+  .tool-call-header { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; }
+  .tool-call-icon { font-size: 13px; }
+  .tool-call-name { font-weight: 600; font-size: 12px; }
+  .tool-call-emoji { margin-left: auto; font-size: 11px; color: var(--ok); }
+  .tool-call-duration { font-size: 10.5px; color: var(--ec-text-muted); }
+  .tool-call-body { padding: 0 10px 9px 10px; font-size: 11.5px; color: var(--ec-text-secondary); display: none; }
+  .tool-call-card.open .tool-call-body { display: block; }
+  .tool-call-code { font-family: var(--mono); background: rgba(0,0,0,.3); padding: 7px 9px; border-radius: 6px; font-size: 11px; white-space: pre-wrap; }
+
+  /* Subagent card */
+  .subagent-card.enhanced {
+    background: var(--bg-panel); border: 1px solid var(--ec-border-primary);
+    border-radius: 11px; margin: 4px 0 8px; overflow: hidden; width: 100%;
+  }
+  .subagent-card.enhanced.running { border-color: rgba(210,153,34,.5); }
+  .subagent-card-header { display: flex; align-items: center; gap: 9px; padding: 9px 12px; cursor: pointer; }
+  .subagent-card-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; background: rgba(77,163,255,.16); color: var(--ec-accent); font-weight: 600; }
+  .subagent-card.running .subagent-card-badge { background: rgba(210,153,34,.18); color: var(--warn); }
+  .subagent-card-title { font-weight: 600; font-size: 12.5px; flex: 1; min-width: 0; }
+  .subagent-card-meta { font-size: 11px; color: var(--ec-text-muted); }
+  .subagent-card-body { padding: 4px 14px 12px; }
+  .subagent-card-body p { margin: 4px 0; color: var(--ec-text-secondary); }
+  .subagent-exec-summary { font-size: 11.5px; color: var(--ec-text-muted); white-space: nowrap; }
+  .subagent-exec-stat { color: var(--ec-text-primary); font-weight: 500; }
+
+  /* Input area */
+  .composer-resize-handle { height: 8px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; position: relative; }
+  .composer-resize-handle::before {
+    content: ''; position: absolute; left: 20%; right: 20%; height: 2px;
+    background: var(--ec-border-primary); border-radius: 1px;
+  }
+  .composer-resize-handle:hover::before { background: rgba(124,185,255,.6); left: 10%; right: 10%; }
+  .chat-input-area { padding: 0 14px 12px; background: var(--ec-bg-secondary); flex-shrink: 0; }
+  .chat-composer-box {
+    background: var(--ec-bg-tertiary); border: 1px solid var(--ec-border-primary);
+    border-radius: 16px; overflow: hidden; display: flex; flex-direction: column;
+  }
+  .chat-composer-box:focus-within { border-color: rgba(124,185,255,.4); }
+  .skill-chips-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--ec-border-primary); }
+  .skill-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px;
+    background: rgba(124,185,255,.12); border: 1px solid rgba(124,185,255,.25); font-size: 12px; color: var(--ec-accent); cursor: default; }
+  .chat-composer-textarea {
+    width: 100%; padding: 12px 16px 6px; background: transparent; color: var(--ec-text-primary);
+    font-size: 13.5px; border: none; outline: none; resize: none; line-height: 1.5;
+    min-height: 24px; max-height: 220px; overflow-y: auto; font-family: var(--font);
+    box-sizing: border-box; white-space: pre-wrap; word-break: break-word;
+  }
+  .chat-composer-textarea:empty::before { content: attr(data-placeholder); color: var(--ec-text-muted); opacity: .6; }
+  .chat-composer-toolbar { display: flex; align-items: center; gap: 4px; padding: 6px 8px 8px; }
+  .ctool { width: 30px; height: 30px; border-radius: 7px; border: none; background: transparent; color: var(--ec-text-secondary); cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; }
+  .ctool:hover { background: rgba(255,255,255,.06); color: var(--ec-text-primary); }
+  .model-pick { display: flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 7px; font-size: 11.5px; color: var(--ec-text-secondary); border: 1px solid var(--ec-border-primary); cursor: pointer; }
+  .model-pick:hover { color: var(--ec-text-primary); }
+  .ctool-spacer { flex: 1; }
+  .send-btn {
+    width: 34px; height: 30px; border-radius: 8px; border: none; cursor: pointer;
+    background: var(--node-blue); color: #fff; font-size: 15px; display: flex; align-items: center; justify-content: center;
+  }
+  .send-btn:hover { background: #2a7bff; }
+
+  /* hint badge */
+  .hint {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(124,185,255,.12); color: var(--ec-accent);
+    border: 1px solid rgba(124,185,255,.3); padding: 4px 12px; border-radius: 999px;
+    font-size: 11px; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Title bar -->
+  <div class="titlebar">
+    <span class="logo">Sarosis</span>
+    <span class="crumb">/ 工作区 · canvas / 产品发布流程图.canvas</span>
+    <span class="dot" title="已连接"></span>
+    <span class="spacer"></span>
+    <span>Agent Studio Chat 已分离为独立面板 →</span>
+  </div>
+
+  <div class="body">
+    <!-- Activity bar -->
+    <div class="activitybar">
+      <div class="ab-btn" title="资源管理器">🗂️</div>
+      <div class="ab-btn active" title="画布 Canvas">🧩</div>
+      <div class="ab-btn" title="知识库">📚</div>
+      <div class="ab-btn" title="智能体">🤖</div>
+      <div class="ab-btn" title="搜索">🔍</div>
+    </div>
+
+    <!-- ── Canvas pane ── -->
+    <div class="canvas-pane">
+      <div class="canvas-toolbar">
+        <div class="ct-title">🧩 产品发布流程图 <span class="pill">.canvas</span></div>
+        <div class="ct-spacer"></div>
+        <button class="ct-btn" title="适应视图">⤢ 适应</button>
+        <button class="ct-btn" title="自动布局">⊞ 布局</button>
+        <button class="ct-btn primary" title="运行">▶ 运行</button>
+      </div>
+
+      <div class="canvas-stage">
+        <div class="hint">画布仅作图编辑 · 对话在右侧 Agent Studio Chat 面板</div>
+
+        <!-- edges -->
+        <svg class="edges" viewBox="0 0 900 600" preserveAspectRatio="none">
+          <path d="M300,140 C360,140 360,250 420,250" />
+          <path d="M300,250 C360,250 360,250 420,250" />
+          <path d="M496,310 C560,310 560,180 624,180" />
+          <path d="M496,310 C560,310 560,430 624,430" class="active" />
+          <path d="M720,190 C780,190 780,300 840,300" />
+          <path d="M720,440 C780,440 780,300 840,300" />
+        </svg>
+
+        <!-- nodes -->
+        <div class="node green" style="left:90px; top:110px;">
+          <div class="port out"></div>
+          <div class="n-head"><span class="n-ico">⚡</span> 触发器 Trigger</div>
+          <div class="n-body">事件：每天 09:00<em class="n-tag">start</em></div>
+        </div>
+
+        <div class="node blue" style="left:90px; top:225px;">
+          <div class="port in"></div><div class="port out"></div>
+          <div class="n-head"><span class="n-ico">📝</span> 生成文案 Draft</div>
+          <div class="n-body">LLM 起草发布文案<em class="n-tag">llm</em></div>
+        </div>
+
+        <div class="node purple" style="left:420px; top:215px;">
+          <div class="port in"></div><div class="port out br"></div>
+          <div class="n-head"><span class="n-ico">🔀</span> 条件分支 Branch</div>
+          <div class="n-body">是否含配图？<em class="n-tag">switch</em></div>
+        </div>
+
+        <div class="node pink" style="left:624px; top:150px;">
+          <div class="port in"></div><div class="port out"></div>
+          <div class="n-head"><span class="n-ico">🎨</span> 图像生成 Image</div>
+          <div class="n-body">文生图：产品主视觉<em class="n-tag">image</em></div>
+        </div>
+
+        <div class="node orange" style="left:624px; top:400px;">
+          <div class="port in"></div><div class="port out"></div>
+          <div class="n-head"><span class="n-ico">📚</span> 知识检索 KB</div>
+          <div class="n-body">检索发布规范 / 历史<em class="n-tag">knowledge</em></div>
+        </div>
+
+        <div class="node blue selected" style="left:840px; top:270px;">
+          <div class="port in"></div>
+          <div class="n-head"><span class="n-ico">📤</span> 发布 Publish</div>
+          <div class="n-body">汇总并推送至渠道<em class="n-tag">end</em></div>
+        </div>
+
+        <!-- minimap -->
+        <div class="minimap">
+          <div class="mm-node" style="left:14px; top:18px; width:34px; height:16px; background:var(--node-green);"></div>
+          <div class="mm-node" style="left:14px; top:46px; width:34px; height:16px; background:var(--node-blue);"></div>
+          <div class="mm-node" style="left:120px; top:40px; width:34px; height:16px; background:var(--node-purple);"></div>
+          <div class="mm-node" style="left:120px; top:14px; width:34px; height:16px; background:var(--node-pink);"></div>
+          <div class="mm-node" style="left:120px; top:74px; width:34px; height:16px; background:var(--node-orange);"></div>
+          <div class="mm-node" style="left:200px; top:52px; width:34px; height:16px; background:var(--node-blue);"></div>
+          <div class="mm-view" style="left:8px; top:10px; width:150px; height:90px;"></div>
+        </div>
+
+        <!-- zoom -->
+        <div class="zoom-ctl">
+          <button title="放大">＋</button>
+          <button title="缩小">－</button>
+          <button title="适应">⤢</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════ Agent Studio Chat (separate panel) ════════ -->
+    <div class="chat-pane">
+      <!-- header -->
+      <div class="chat-header">
+        <div class="chat-header-left">
+          <div class="chat-header-agent-selector">
+            <div class="chat-header-avatar-wrap">
+              <div class="chat-header-avatar-border">🤖</div>
+              <div class="chat-header-status-dot"></div>
+            </div>
+            <div class="chat-header-info">
+              <div class="chat-header-name">发布助手</div>
+              <div class="chat-header-role">Orchestrator · 可调用全部工具</div>
+            </div>
+          </div>
+        </div>
+        <div class="chat-header-actions">
+          <button class="chat-header-action-btn" title="新对话">＋</button>
+          <button class="chat-header-action-btn" title="历史">🕘</button>
+          <button class="chat-header-action-btn" title="更多">⋯</button>
+        </div>
+      </div>
+
+      <!-- agent tabs -->
+      <div class="chat-tabs-container">
+        <div class="chat-tabs">
+          <div class="chat-tab active"><span class="chat-tab-avatar">🤖</span><span class="chat-tab-label">发布助手</span></div>
+          <div class="chat-tab"><span class="chat-tab-avatar">🎨</span><span class="chat-tab-label">视觉设计</span></div>
+          <div class="chat-tab"><span class="chat-tab-avatar">📚</span><span class="chat-tab-label">知识检索</span></div>
+          <div class="chat-tab"><span class="chat-tab-avatar">⚡</span><span class="chat-tab-label">代码</span></div>
+        </div>
+      </div>
+
+      <!-- messages -->
+      <div class="chat-messages-wrapper">
+        <div class="chat-messages" id="msgList">
+          <!-- user -->
+          <div class="chat-message user">
+            <div class="chat-avatar user">🧑</div>
+            <div class="chat-bubble user">帮我把「产品发布流程图」跑一遍，先看下是否符合发布规范，再生成主视觉图。</div>
+          </div>
+
+          <!-- assistant: text + tool -->
+          <div class="chat-message">
+            <div class="chat-avatar assistant">🤖</div>
+            <div class="chat-bubble assistant">
+              <p>好的，我先检索知识库里的发布规范，再核对画布节点。</p>
+              <div class="tool-calls-section">
+                <div class="tool-call-card completed open" data-card>
+                  <div class="tool-call-header" onclick="this.parentNode.classList.toggle('open')">
+                    <span class="tool-call-icon">📚</span>
+                    <span class="tool-call-name">knowledge_base.search</span>
+                    <span class="tool-call-duration">0.8s</span>
+                    <span class="tool-call-emoji">✓</span>
+                  </div>
+                  <div class="tool-call-body">
+                    <div class="tool-call-code">query: "发布规范 主视觉 尺寸"
+hits: 3  →  brand-guide.md, size-spec.md, history-2025Q4.md</div>
+                  </div>
+                </div>
+              </div>
+              <p>规范已读取：主视觉建议 <code>1200×628</code>，配色沿用品牌蓝。</p>
+            </div>
+          </div>
+
+          <!-- subagent card -->
+          <div class="chat-message">
+            <div class="chat-avatar assistant">🤖</div>
+            <div class="chat-bubble assistant">
+              <div class="subagent-card enhanced running" data-sub>
+                <div class="subagent-card-header" onclick="this.parentNode.classList.toggle('collapsed')">
+                  <span class="subagent-card-badge">运行中</span>
+                  <span class="subagent-card-title">视觉设计 · 生成产品主视觉</span>
+                  <span class="subagent-card-meta">3 工具调用</span>
+                </div>
+                <div class="subagent-card-body">
+                  <p>🎨 image.generate — 文生图 (1200×628)</p>
+                  <p>✓ 已产出 2 张候选，等待你挑选</p>
+                  <div class="subagent-exec-summary">耗时 <span class="subagent-exec-stat">12.4s</span> · token <span class="subagent-exec-stat">3.1k</span></div>
+                </div>
+              </div>
+              <p>子智能体正在生成主视觉，完成后我会汇总进「发布」节点。</p>
+            </div>
+          </div>
+
+          <!-- user -->
+          <div class="chat-message user">
+            <div class="chat-avatar user">🧑</div>
+            <div class="chat-bubble user">选第 1 张，直接推送到渠道。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- input -->
+      <div class="chat-input-area">
+        <div class="composer-resize-handle"></div>
+        <div class="chat-composer-box">
+          <div class="skill-chips-bar">
+            <span class="skill-chip"><span class="skill-chip-icon">⚡</span><span class="skill-chip-name">run_canvas</span></span>
+            <span class="skill-chip"><span class="skill-chip-icon">📚</span><span class="skill-chip-name">kb_search</span></span>
+          </div>
+          <div class="chat-composer-textarea" id="composer" contenteditable="true" data-placeholder="Message 发布助手..."></div>
+          <div class="chat-composer-toolbar">
+            <button class="ctool" title="附件">📎</button>
+            <button class="ctool" title="技能">✨</button>
+            <div class="model-pick">⚙️ claude-sonnet-4 ▾</div>
+            <div class="ctool-spacer"></div>
+            <button class="send-btn" title="发送" onclick="sendMsg()">➤</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function sendMsg() {
+    const c = document.getElementById('composer');
+    const text = c.innerText.trim();
+    if (!text) return;
+    const list = document.getElementById('msgList');
+    const m = document.createElement('div');
+    m.className = 'chat-message user';
+    m.innerHTML = '<div class="chat-avatar user">🧑</div><div class="chat-bubble user"></div>';
+    m.querySelector('.chat-bubble').textContent = text;
+    list.appendChild(m);
+    c.innerHTML = '';
+    list.scrollTop = list.scrollHeight;
+  }
+  document.getElementById('composer').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+  });
+</script>
+</body>
+</html>

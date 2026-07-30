@@ -17,16 +17,17 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { ISearchService, QueryType, type ITextQuery, type IFileQuery, type ISearchComplete } from '../../../../../../workbench/services/search/common/search.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../../../base/common/errors.js';
-import { advanceSearchCodeEmptyStreak, searchCodeEmptyStreakThresholdFor } from './pathFilterNormalize.js';
+import { advanceSearchCodeEmptyStreak } from './pathFilterNormalize.js';
 
 export class SearchHelpers {
-	// 重复搜索熔断：连续相同搜索计数阈值（对齐 Hermes-Agent）
-	private static readonly SEARCH_REPEAT_WARN = 3;
-	private static readonly SEARCH_REPEAT_BLOCK = 4;
+	// 重复搜索熔断：连续相同搜索 ≥N 次直接拦截（P3 2026-07-29：只拦不警，
+	// 删除 warn 档——告警形同虚设，模型照样重试；kimi 零治理靠信息回传，本项目
+	// 保留硬拦一挡防烧钱，日志 1785231958842 证明模型会空转 434s）。
+	private static readonly SEARCH_REPEAT_BLOCK = 3;
 	// search_code 连续空结果引导阈值：连击达其倍数即提示转 search_graph
 	//（日志 1785231958842：模型对同一目标反复换符号猜测，exact-repeat 熔断拦不住——
 	// 每次 query 都不同，故按「连续 0 命中」连击而非「相同参数」计数）。
-	// 阈值按 agentId 类型由 searchCodeEmptyStreakThresholdFor 决定（子代理更敏感）。
+	// 阈值内联于 recordSearchCodeEmptyStreak（子代理 2 / 主 agent 3）。
 	// 结果大小上限（对齐 Hermes max_result_size_chars）与单条匹配截断长度
 	private static readonly SEARCH_MAX_RESULT_CHARS = 100_000;
 	private static readonly SEARCH_LINE_MAX_CHARS = 500;
@@ -57,6 +58,11 @@ export class SearchHelpers {
 		'**/Intermediate/**', '**/Saved/**', '**/Binaries/**', '**/DerivedDataCache/**',
 		// out-build/out-test/out-vscode（Sarosis 自身仓库）
 		'**/out-build/**', '**/out-test/**', '**/out-vscode/**',
+		// 敏感文件（P4 2026-07-29，对齐 kimi SENSITIVE_FILTER_RG_ARGS）：密钥/凭据
+		// 永不进 grep 结果（redactSecrets 是后过滤，此处源头排除更彻底）
+		'**/.env', '**/.env.*',
+		'**/id_rsa', '**/id_rsa.*', '**/id_ed25519', '**/id_ed25519.*', '**/id_ecdsa', '**/id_ecdsa.*',
+		'**/.aws', '**/.aws/**', '**/.gcp', '**/.gcp/**',
 	];
 
 	/** IExpression 形态，惰性构造一次复用。 */
@@ -104,14 +110,14 @@ export class SearchHelpers {
 	) { }
 
 	/**
-	 * 跟踪连续相同搜索，对齐 Hermes-Agent 的 repeated-search guard。
+	 * 跟踪连续相同搜索，对齐 Hermes-Agent 的 repeated-search guard（P3：只拦不警）。
 	 * 签名包含分页参数（limit/offset），因此合法翻页不会触发熔断。
-	 * 连续 ≥3 次返回 warning，连续 ≥4 次返回 blocked（直接拦截，不执行 rg）。
+	 * 连续 ≥3 次返回 blocked（直接拦截，不执行 rg）。
 	 */
 	recordSearchRepeat(
 		agentId: string | undefined, pattern: string, target: string, searchPath: string,
 		fileGlob: string | undefined, limit: number, offset: number,
-	): { count: number; warning?: string; blocked?: string } {
+	): { count: number; blocked?: string } {
 		const bucket = agentId ?? '';
 		const key = JSON.stringify([pattern, target, searchPath, fileGlob ?? null, limit, offset]);
 		const prev = this._searchRepeatMap.get(bucket) ?? { key: null, count: 0 };
@@ -124,13 +130,6 @@ export class SearchHelpers {
 				blocked:
 					`BLOCKED: 你已连续 ${count} 次发起完全相同的搜索（pattern=${pattern}, target=${target}），结果没有任何变化。` +
 					`你已掌握这些信息，请停止重复搜索，转而推进任务（可调整 pattern/路径，或用 offset 翻页查看被截断的结果）。`,
-			};
-		}
-		if (count >= SearchHelpers.SEARCH_REPEAT_WARN) {
-			return {
-				count,
-				warning:
-					`警告：你已连续 ${count} 次发起相同的搜索，结果未变化。请使用已获取的信息，避免重复搜索。`,
 			};
 		}
 		return { count };
@@ -149,9 +148,10 @@ export class SearchHelpers {
 		agentId: string | undefined, isEmpty: boolean,
 	): { streak: number; shouldGuide: boolean } {
 		const bucket = agentId ?? '';
+		// 阈值内联（P3）：子代理（agentId 前缀 subagent-）预算更紧阈值 2，主 agent 3。
+		const threshold = bucket.startsWith('subagent-') ? 2 : 3;
 		const result = advanceSearchCodeEmptyStreak(
-			this._searchCodeEmptyStreakMap.get(bucket) ?? 0, isEmpty,
-			searchCodeEmptyStreakThresholdFor(agentId),
+			this._searchCodeEmptyStreakMap.get(bucket) ?? 0, isEmpty, threshold,
 		);
 		this._searchCodeEmptyStreakMap.set(bucket, result.streak);
 		return result;
@@ -438,6 +438,8 @@ export class SearchHelpers {
 					if (NOISE.has(c.name) || c.name.startsWith('.')) { continue; }
 					await walk(fullPath);
 				} else {
+					// 敏感文件跳过（P5，补齐 _nodeFileSearch 与 _walkAndGrep/ripgrep 一致）
+					if (/^\.env(?:\..*)?$|^id_(?:rsa|ed25519|ecdsa)(?:\..*)?$/i.test(c.name)) { continue; }
 					visited++;
 					if (regex.test(fullPath)) {
 						try {
@@ -565,9 +567,11 @@ export class SearchHelpers {
 					await walk(child.resource);
 					continue;
 				}
-				if (!child.isFile) { continue; }
-				// Skip binary files by extension before any I/O.
-				if (BINARY_EXT_RE.test(child.name)) { continue; }
+			if (!child.isFile) { continue; }
+			// Skip binary files by extension before any I/O.
+			if (BINARY_EXT_RE.test(child.name)) { continue; }
+			// 敏感文件跳过（P4，对齐 kimi SENSITIVE_FILTER；.aws/.gcp 目录已被 dot-dir skip 覆盖）
+			if (/^\.env(?:\..*)?$|^id_(?:rsa|ed25519|ecdsa)(?:\..*)?$/i.test(child.name)) { continue; }
 				// Existing 512 KiB safety net (we keep it as a second line of defense).
 				if (typeof child.size === 'number' && child.size > 512 * 1024) { continue; }
 

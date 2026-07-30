@@ -30,90 +30,74 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
-import { IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
+import { IFileService, IFileStat, FileChangesEvent, FileKind } from '../../../../../platform/files/common/files.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IFileDialogService, IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IWorkingCopyFileService } from '../../../../../workbench/services/workingCopy/common/workingCopyFileService.js';
+import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
+import { IUndoRedoService, UndoRedoSource, UndoRedoGroup, UndoRedoElementType, IWorkspaceUndoRedoElement } from '../../../../../platform/undoRedo/common/undoRedo.js';
+import { CodeDataTransfers } from '../../../../../platform/dnd/browser/dnd.js';
+import { DataTransfers } from '../../../../../base/browser/dnd.js';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { basename as uriBasename, extname as uriExtname, isEqual } from '../../../../../base/common/resources.js';
 import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService, GroupsOrder, IEditorGroup } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { EditorsOrder } from '../../../../../workbench/common/editor.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { IRequestService, asText } from '../../../../../platform/request/common/request.js';
+import { IRequestService } from '../../../../../platform/request/common/request.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
-import { IConfigHtmlService } from '../../../../common/agentStudioService.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
-import { ISkillRegistry } from '../../common/skills.js';
-import { IAgentOSService } from '../../common/agentOS.js';
-import { SarosPath, resolveSarosPath } from '../../common/sarosPaths.js';
-import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
 import { CodebaseGraphViewerEditorInput } from '../codebaseGraphViewerEditorInput.js';
 import { KbImportController } from '../kbImportController.js';
-import { validateSafeUrl } from '../knowledge/urlSafety.js';
-import { UrlIngestCache } from '../knowledge/urlIngestCache.js';
-import { sanitizeUrlContent } from '../knowledge/urlContentSanitizer.js';
-import { UrlIngestQueue, type QueueItem } from '../knowledge/urlIngestQueue.js';
 import { lintVault, formatLintReport } from '../knowledge/kbLint.js';
 import { detectDuplicates, formatDedupReport, mergeDuplicates, type DedupGroup } from '../knowledge/dedup.js';
 import { writeReviewNote, listReviewNotes, approveReviewNote, routeLintToReview } from '../knowledge/reviewStore.js';
 import { CodebaseIndexEditorInput } from '../codebaseIndexEditorInput.js';
 import { ICodebaseGraphService } from '../codebaseGraphService.js';
 
-// ─── 原生树组件（VS Code WorkbenchCompressibleAsyncDataTree）───────────
-import { ITreeContextMenuEvent } from '../../../../../base/browser/ui/tree/tree.js';
-import { WorkbenchCompressibleAsyncDataTree } from '../../../../../platform/list/browser/listService.js';
-import { FuzzyScore } from '../../../../../base/common/filters.js';
-import { createFileIconThemableTreeContainerScope } from '../../../../../workbench/contrib/files/browser/views/explorerView.js';
-import {
-	KbTreeDelegate, KbTreeDataSource, KbNodeRenderer, KbSectionRenderer,
-	KbTreeFilter, KbTreeSorter, KbTreeAccessibilityProvider, kbTreeIdentityProvider,
-	KbTreeDragAndDrop,
-	type KbTreeElement, type IKbTreeSection,
-} from './knowledgeBase/kbTreeViewer.js';
-
-function isSectionNode(e: KbTreeElement): e is IKbTreeSection {
-	return (e as IKbTreeSection).kind === 'section';
-}
+import { type KbSearchMode } from './knowledgeBase/kbTreeViewer.js';
 import { IIndexConfig, IndexMode, ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
 import { createKbSqliteStoreProxy } from '../kbSqliteStoreProxy.js';
 import type { IKbSqliteBackend, IKbSqliteDoc } from '../../common/kbSqliteStoreChannel.js';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { dirname } from '../../../../../base/common/resources.js';
-import { VSBuffer, streamToBuffer } from '../../../../../base/common/buffer.js';
-import { IWebContentExtractorService, ISharedWebContentExtractorService } from '../../../../../platform/webContentExtractor/common/webContentExtractor.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { $ } from '../../../../../base/browser/dom.js';
 import { safeSetInnerHtml } from '../../../../../base/browser/domSanitize.js';
+import { getIconClasses } from '../../../../../editor/common/services/getIconClasses.js';
+import { IModelService } from '../../../../../editor/common/services/model.js';
+import { ILanguageService } from '../../../../../editor/common/languages/language.js';
+import { Action, IAction, Separator } from '../../../../../base/common/actions.js';
 
 import { localize } from '../../../../../nls.js';
 
 import {
-	IKbVault, IKbNode, KbSection, KB_SECTION_LABEL,
-	KbSortMode, KB_SORT_GROUPS, KB_IMPORT_ITEMS, KbImportKind, newVaultId,
+	IKbVault, IKbNode, KbSection,
+	KbSortMode, KB_SORT_GROUPS, newVaultId,
 } from './knowledgeBase/kbTypes.js';
-import {
-	detectPlatform, parseMetaTags, guessMediaExt, isDownloadableMedia,
-	composeArticleMarkdown, composeVideoMarkdown,
-	findMarkdownImageUrls, rewriteMarkdownImageUrls, toSecureScheme, type IKbMetaTags,
-} from './knowledgeBase/kbUrlScraper.js';
+import { KbMindmapGenerator } from './knowledge/kbMindmapGenerator.js';
+import type { IKbMindmap, IKbMindmapNode } from './knowledge/kbMindmapGenerator.js';
+import type { IChatModel } from '../knowledge/engine/llm.js';
 import { KbFullTextIndex, IKbSearchHit } from './knowledgeBase/kbIndex.js';
 import { KbLinkGraph, IKbGraphRoot } from './knowledgeBase/kbGraph.js';
 import { KbNativeKernel, INativeBacklinkResult } from './knowledgeBase/kbNativeKernel.js';
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { resolveAuxEmbeddingProviderId, resolveAuxEmbeddingConfig } from '../knowledge/embeddingConfigResolver.js';
-import { isEmbedderConfigured, isChatProviderConfigured } from '../knowledge/knowledgeAdapters.js';
+import { isEmbedderConfigured } from '../knowledge/knowledgeAdapters.js';
 import {
 	AGENT_STUDIO_AUX_EMBEDDING_PROVIDER,
 	AGENT_STUDIO_AUX_EMBEDDING_MODEL,
 	AGENT_STUDIO_AUX_EMBEDDING_DIMENSIONS,
-	AGENT_STUDIO_CHAT_VIEW_ID,
 } from '../../common/constants.js';
 import { KbWorkerManager } from './knowledgeBase/kbWorkerManager.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { MemoryDetailEditorInput } from '../memoryDetailEditorInput.js';
 import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
+import { CanvasEditorInput } from '../canvasEditor/canvasEditorInput.js';
+import type { IMindmapData } from '../../common/mindmap/mindmapTypes.js';
 import { appendKbOpLog, type IKbOpLogEntry, type KbOpChannel, type KbOpStatus } from '../knowledge/kbOpLog.js';
 import { resolveKbRoot } from '../knowledge/knowledgeStorage.js';
 import { IKbVectorSearchHit } from './knowledgeBase/kbVectorIndex.js';
@@ -125,7 +109,6 @@ const STORAGE_ACTIVE = 'agentStudio.kb.active';
 const STORAGE_KB_DIR = 'agentStudio.kb.kbDir';
 const STORAGE_SORT_PREFIX = 'agentStudio.kb.sort.';
 const STORAGE_EXPANDED_PREFIX = 'agentStudio.kb.expanded.';
-const STORAGE_SECTION_PREFIX = 'agentStudio.kb.section.';
 
 
 
@@ -155,22 +138,29 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _activeVault: IKbVault | undefined;
 	/** P3-3：文件监听 debounce handle。 */
 	private _kbRefreshHandle: ReturnType<typeof setTimeout> | undefined;
-	/** P1-2：URL 导入持久化队列 + 重试 */
-	private _urlQueue: UrlIngestQueue | undefined;
-	/** VS Code 原生文件树（替代手动 DOM 渲染） */
-	private _kbTree!: WorkbenchCompressibleAsyncDataTree<null, KbTreeElement, FuzzyScore>;
-	private _kbTreeContainer!: HTMLElement;
+	/** 重命名进行中：禁止任何视图重建（避免输入框被 replaceChildren 销毁导致重命名被取消）。 */
+	private _renameActive = false;
 
-	private _libraryOpen = true;
-	private _notesOpen = true;
+	/** C 档虚拟化：rAF 分片渲染每帧渲染的节点上限（≤阈值时同步一次性渲染，省去 rAF 调度开销）。 */
+	private static readonly KB_CHUNK_SIZE = 96;
+
 	private _tagClassOpen = true;
 	private _sortMode: KbSortMode = 'createdASC';
+	/** P0: 搜索模式——全文检索或树内文件名筛选 */
+	private _searchMode: KbSearchMode = 'fulltext';
+	/** 知识库文件操作的撤销源，Ctrl+Z 时按此源撤销。 */
+	private _kbUndoSource = new UndoRedoSource();
+	/** 思维导图自动生成器（懒初始化） */
+	private _mindmapGenerator?: KbMindmapGenerator;
 
 	/** 已展开文件夹路径（持久化），用于懒加载树的展开恢复 */
 	private _expandedFolders = new Set<string>();
 
 	/** 正在加载中的文件夹 URI 字符串，避免重复加载 */
 	private _loadingFolders = new Set<string>();
+
+	/** 正在「构建为笔记」的库文件路径集合，用于文档 item 上显示「构建中」提示 */
+	private _buildingPaths = new Set<string>();
 
 	/** 搜索防竞态令牌：每次搜索自增，结果渲染前校验是否最新 */
 	private _searchToken = 0;
@@ -189,6 +179,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _searchRebuildTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 搜索防抖定时器：避免逐键触发搜索（大库 SQLite IPC） */
 	private _searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 思维导图自动生成防抖（30 秒），防止频繁触发 LLM 调用 */
+	private _mindmapDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	/** DOM 层多选：记录被选中的节点路径（Ctrl+Click 多选） */
+	private _domSelectedPaths = new Set<string>();
+	/** DOM 层最后选中项（Shift+Click 范围选择的锚点） */
+	private _domLastSelectedPath: string | null = null;
+	/** KB 文件剪贴板：{ uris, cut }。cut=true 表示剪切（粘贴时移动），false 表示复制。对齐 Explorer 剪贴板模型。 */
+	private _kbClipboard: { uris: URI[]; cut: boolean } | null = null;
 	/** 延迟构建标志：FTS 已就绪但提及索引/图谱未建（Worker 模式或手动延迟） */
 	private _mentionPending = false;
 	/** 大库标志（文档数 > KB_SQLITE_AUTO_THRESHOLD）：走 SQLite 增量同步，跳过内存倒排索引全量构建 */
@@ -224,8 +222,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
-		@IHoverService hoverService: IHoverService,
-		@IFileService private readonly fileService: IFileService,
+	@IHoverService hoverService: IHoverService,
+	@IFileService private readonly fileService: IFileService,
+	@IModelService private readonly modelService: IModelService,
+	@ILanguageService private readonly languageService: ILanguageService,
 		@IStorageService private readonly storageService: IStorageService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
@@ -234,8 +234,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@ILogService private readonly logService: ILogService,
 		@IRequestService private readonly requestService: IRequestService,
-		@IWebContentExtractorService private readonly _webContentExtractor: IWebContentExtractorService,
-		@ISharedWebContentExtractorService private readonly _sharedWebContentExtractor: ISharedWebContentExtractorService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
 	@IEmbeddingService private readonly _ragEmbeddingService: IEmbeddingService,
@@ -243,12 +241,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	@ICodebaseGraphService private readonly _codebaseGraphService: ICodebaseGraphService,
 	@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
 	@IMainProcessService private readonly _mainProcessService: IMainProcessService,
-	@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
-	@IViewsService private readonly viewsService: IViewsService,
-	@IConfigHtmlService private readonly configHtmlService: IConfigHtmlService,
-	@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
-	@IAgentOSService private readonly _agentOSService: IAgentOSService,
-) {
+		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
+		@IWorkingCopyFileService private readonly workingCopyFileService: IWorkingCopyFileService,
+		@IUndoRedoService private readonly undoRedoService: IUndoRedoService,
+		@IClipboardService private readonly clipboardService: IClipboardService,
+	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._index = new KbFullTextIndex(this.fileService);
 		this._graph = new KbLinkGraph(this.fileService);
@@ -294,6 +291,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private sectionUri(v: IKbVault, section: KbSection): URI {
 		const folder: SectionFolderName = section === 'library' ? '库' : '笔记';
 		return URI.joinPath(this.vaultUri(v), folder);
+	}
+
+	/** 由文件系统路径推断所属分区（library/notes）。 */
+	private sectionOfPath(path: string): KbSection {
+		if (!this._activeVault) { return 'notes'; }
+		const lib = this.sectionUri(this._activeVault, 'library').fsPath.replace(/\\/g, '/').toLowerCase();
+		const norm = path.replace(/\\/g, '/').toLowerCase();
+		return (norm === lib || norm.startsWith(lib + '/')) ? 'library' : 'notes';
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -348,15 +353,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this.storageService.store(STORAGE_EXPANDED_PREFIX + vaultId + '.' + section, JSON.stringify([...this._expandedFolders]), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
-	private loadSectionOpen(section: KbSection): boolean {
-		const raw = this.storageService.get(STORAGE_SECTION_PREFIX + section, StorageScope.APPLICATION);
-		return raw === undefined ? true : raw === '1';
-	}
-
-	private saveSectionOpen(section: KbSection): void {
-		this.storageService.store(STORAGE_SECTION_PREFIX + section, this._libraryOpen && section === 'library' || this._notesOpen && section === 'notes' ? '1' : '0', StorageScope.APPLICATION, StorageTarget.MACHINE);
-	}
-
 	// ═══════════════════════════════════════════════════════════
 	//  Render
 	// ═══════════════════════════════════════════════════════════
@@ -377,6 +373,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		graphBtn.textContent = '🕸️'; graphBtn.title = '关系图谱（在中间栏打开）';
 		graphBtn.onclick = () => this._openGraph();
 		header.appendChild(graphBtn);
+		const mindmapBtn = $('span.kb-hbtn');
+		mindmapBtn.textContent = '🧠'; mindmapBtn.title = '思维导图（打开或生成 .canvas）';
+		mindmapBtn.onclick = () => void this._openMindmap();
+		header.appendChild(mindmapBtn);
 		const refreshBtn = $('span.kb-hbtn');
 		refreshBtn.textContent = '⟳'; refreshBtn.title = '刷新';
 		refreshBtn.onclick = () => this.refresh();
@@ -405,27 +405,112 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._vaultMenu = $('div.kb-vault-menu');
 		kbBody.appendChild(this._vaultMenu);
 
-		// Search
+		// Search row: 搜索框 + 搜索模式切换 + 排序按钮
 		const searchRow = $('div.kb-search-row');
 		const searchBox = $('div.kb-search-box');
 		safeSetInnerHtml(searchBox, '<span>🔍</span>');
 		const searchInput = document.createElement('input');
-		searchInput.placeholder = '搜索知识库 (全文 / 标题 / 标签)…';
+		searchInput.placeholder = '搜索知识库…';
 		searchInput.oninput = () => this.applyFilter(searchInput.value.trim().toLowerCase());
 		this._searchInput = searchInput;
 		searchBox.appendChild(searchInput);
+
+		// 搜索模式切换按钮（全文 / 文件名）
+		const modeBtn = $('span.kb-search-mode-btn');
+		modeBtn.title = '当前：全文检索（点击切换为文件名筛选）';
+		modeBtn.textContent = '全文';
+		modeBtn.onclick = (e) => {
+			e.stopPropagation();
+			this._searchMode = this._searchMode === 'fulltext' ? 'filename' : 'fulltext';
+			const isFileMode = this._searchMode === 'filename';
+			modeBtn.classList.toggle('filename', isFileMode);
+			if (isFileMode) {
+				modeBtn.textContent = '文件名';
+				modeBtn.title = '当前：文件名筛选（点击切换为全文检索）';
+				searchInput.placeholder = '输入文件名筛选…';
+			} else {
+				modeBtn.textContent = '全文';
+				modeBtn.title = '当前：全文检索（点击切换为文件名筛选）';
+				searchInput.placeholder = '搜索知识库…';
+			}
+			// 触发重新过滤
+			this.applyFilter(searchInput.value.trim().toLowerCase());
+		};
+		searchBox.appendChild(modeBtn);
+
+		// 排序按钮
+		const sortBtn = $('span.kb-search-sort-btn');
+		sortBtn.textContent = '↑↓';
+		sortBtn.title = '排序';
+		sortBtn.onclick = (e) => {
+			e.stopPropagation();
+			this.openSearchSortDropdown(sortBtn);
+		};
+		searchBox.appendChild(sortBtn);
+
 		searchRow.appendChild(searchBox);
 		kbBody.appendChild(searchRow);
 
-		// Scroll area (file tree) — 使用 VS Code 原生 WorkbenchCompressibleAsyncDataTree
+		// Scroll area（文件树）— DOM 渲染层（单一层）
 		this._scroll = $('div.kb-scroll');
-		this._kbTreeContainer = $('div.kb-tree-container');
-		this._kbTreeContainer.style.cssText = 'flex:1;overflow:hidden;';
-		// 先挂 scroll 容器，后续 initVaults 后通过 _createKbTree 注入原生树
-		this._scroll.appendChild(this._kbTreeContainer);
 		kbBody.appendChild(this._scroll);
 
 		this._body.appendChild(kbBody);
+
+		// DOM 层键盘快捷键（Delete/F2）— 挂在 scroll 区域
+		this._scroll.tabIndex = -1; // 使 div 可聚焦以接收键盘事件
+		this._scroll.addEventListener('keydown', (e) => {
+			this.logService.info(`[KB-DOM] keydown: key=${e.key} sel=${this._domSelectedPaths.size}`);
+			const selNodes: IKbNode[] = [];
+			for (const p of this._domSelectedPaths) {
+				const el = this._scroll.querySelector(`.kb-node[data-path="${this.cssEscape(p)}"]`) as HTMLElement | null;
+				const node = el ? this.nodeFromEl(el) : null;
+				if (node) { selNodes.push(node); }
+			}
+			if (e.key === 'Delete' && !e.ctrlKey && !e.altKey) {
+				e.preventDefault();
+				// Shift+Delete = 永久删除（对齐 Explorer Delete Permanently）；Delete = 移入回收站
+				if (e.shiftKey) {
+					if (selNodes.length > 1) { void this._batchDeleteNodesPermanent(selNodes); }
+					else if (selNodes.length === 1) { void this._deleteNodePermanent(selNodes[0]); }
+				} else {
+					if (selNodes.length > 1) { void this._batchDeleteNodes(selNodes); }
+					else if (selNodes.length === 1) { void this.deleteNode(selNodes[0]); }
+				}
+			}
+			if (e.key === 'F2') {
+				e.preventDefault();
+				const el = this._scroll.querySelector(`.kb-node[data-path="${this.cssEscape(this._domLastSelectedPath ?? '')}"]`) as HTMLElement | null;
+				if (el) { void this.startRename(el, this.nodeFromEl(el)!); }
+			}
+			// Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y — KB 视图内文件操作撤销/重做（对齐 Explorer）
+			if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+				e.preventDefault();
+				if (e.shiftKey) { void this._kbRedo(); } else { void this._kbUndo(); }
+			}
+			if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+				e.preventDefault();
+				void this._kbRedo();
+			}
+			// Ctrl+X / Ctrl+C / Ctrl+V — 剪切/复制/粘贴（对齐 Explorer）
+			if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'x' || e.key === 'X')) {
+				e.preventDefault(); this._kbCopyToClipboard(true);
+			}
+			if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+				e.preventDefault(); this._kbCopyToClipboard(false);
+			}
+			if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+				e.preventDefault();
+				const target = this._resolvePasteTargetDir();
+				if (target) { void this._kbPaste(target); }
+			}
+			// Ctrl+N / Ctrl+Shift+N — 新建文件 / 新建文件夹（对齐原全局命令，作用于当前选中分区）
+			if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'n' || e.key === 'N')) {
+				e.preventDefault();
+				const section = this._domLastSelectedPath ? this.sectionOfPath(this._domLastSelectedPath) : 'notes';
+				if (e.shiftKey) { void this.newFolder(section); } else { void this.newFile(section); }
+			}
+		});
 
 		// ── ═══ 拖拽分隔条 ═══ ──
 		const dragHandle = $('div.kb-drag-handle');
@@ -485,8 +570,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// initVaults
 		this.logService.info(`[KB perf] renderBody skeleton: ${(performance.now() - t0).toFixed(1)}ms, starting initVaults...`);
 		void this.initVaults().then(() => {
-			this._createKbTree();
 			this.logService.info(`[KB perf] renderBody total: ${(performance.now() - t0).toFixed(1)}ms`);
+			// 首次打开时补检：导入可能在视图关闭时完成，需要触发导图生成
+			this._scheduleMindmapGenerationOnInit();
 		}).catch((err) => {
 			this.logService.error(`[KB] initVaults failed: ${err}`);
 			this.notificationService.error(localize('kb.initFailed', '知识库初始化失败：{0}', String(err?.message ?? err)));
@@ -684,16 +770,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._searchDirty = true;
 		this._sortMode = this.loadSort(v.id);
 		this._expandedFolders = new Set();
-		this._libraryOpen = this.loadSectionOpen('library');
-		this._notesOpen = this.loadSectionOpen('notes');
 		await this.ensureVaultFolders(v);
 		const t1 = performance.now();
 		this.renderAll();
 		this.logService.info(`[KB perf] activateVault(${v.name}): ensureFolders=${(t1 - t0).toFixed(1)}ms, renderAll=${(performance.now() - t1).toFixed(1)}ms, total=${(performance.now() - t0).toFixed(1)}ms`);
 	}
 
-	/** P3-3：vault 文件变化（库/笔记分区）→ debounce 刷新视图 + 重建确定性导航。 */
-	private _onVaultFilesChange(e: { affects(uri: URI): boolean }): void {
+	/** B 档「事件中枢」：vault 文件变化（库/笔记分区）→ debounce 后按真实变更 URI 做靶向增量刷新 + 重建确定性导航。 */
+	private _onVaultFilesChange(e: FileChangesEvent): void {
 		const v = this._activeVault;
 		if (!v) { return; }
 		const notes = this.sectionUri(v, 'notes');
@@ -702,11 +786,131 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		if (this._kbRefreshHandle !== undefined) { clearTimeout(this._kbRefreshHandle); }
 		this._kbRefreshHandle = setTimeout(() => {
 			this._kbRefreshHandle = undefined;
-			this.logService.info('[KB] vault file change detected → refresh + maintain navigation');
-			void this.refreshSection('notes');
-			void this.refreshSection('library');
-			void KbImportController.maintainKbNavigation(this.fileService, notes);
+			// 重命名进行中跳过视图刷新，保护内联重命名输入框（逻辑态，非 hack）。
+			// 其余一律走 _reloadForFileChanges 的靶向增量刷新——与显式操作共用 _reloadChildren，
+			// 不再整段 replaceChildren 重建，因此无需「抑制窗」去重。
+			if (this._renameActive) {
+				this.logService.info('[KB] vault file change → skip (rename in progress)');
+			} else {
+				this.logService.info('[KB] vault file change detected → targeted incremental refresh');
+				void this._reloadVisible(notes, lib);
+			}
+			void KbImportController.maintainKbNavigation(this.fileService, lib);
+			// 触发思维导图自动生成（独立 30 秒防抖，避免频繁 LLM 调用）
+			if (e.affects(lib)) {
+				this._scheduleMindmapGeneration();
+			}
 		}, 300);
+	}
+
+	/**
+	 * B 档「事件中枢」核心：vault 文件变化后做增量刷新——只重列「分区顶层」与「当前已展开的每个目录」，
+	 * 替代原先「整段 refreshSection 重建 + 抑制窗去重」的粗暴做法。
+	 * - 顶层重载由 _reloadChildren(null) 完成，保留关联文件夹行与已展开子树 DOM；
+	 * - 每个已展开目录单独 _reloadChildren(path)，重列其直接子节点并复用更深层已展开子树
+	 *   （preserved 机制，等价于 loadSectionTree 的展开恢复，但开销仅为「若干次单目录 listChildren」）；
+	 * - 折叠（未展开）目录内的变化不在 DOM 中呈现，故跳过（与 Explorer 一致），用户展开时自然拉取最新。
+	 * 全程走 _reloadChildren，绝不做 refreshSection 整段重建，因此不再需要「抑制窗」去重。
+	 * 注：关联文件夹的内部内容在 watch 路径下不单独重载（其节点本身随顶层刷新），外部直改关联目录文件时
+	 * 以显式 KB 操作或手动刷新为准——与本项目「KB 视图自身操作为主」的使用模型一致。
+	 */
+	private async _reloadVisible(notes: URI, lib: URI): Promise<void> {
+		const run = async (section: KbSection) => {
+			const toReload = new Set<string | null>([null]); // 顶层
+			for (const p of this._expandedFolders) {
+				const sec = this.sectionOfPath(p);
+				if (sec === section) { toReload.add(p); }
+			}
+			for (const key of toReload) { await this._reloadChildren(section, key); }
+		};
+		await run('notes');
+		await run('library');
+	}
+
+	/** 多选 .canvas 文件：合并为一个思维导图。 */
+	private async _mergeCanvasFiles(files: IKbNode[]): Promise<void> {
+		if (files.length < 2) { return; }
+		try {
+			if (!this._mindmapGenerator) {
+				this._mindmapGenerator = new KbMindmapGenerator(this.fileService, this.logService);
+			}
+			// 读取所有思维导图
+			const graphs: { uri: URI; name: string; data: IKbMindmap }[] = [];
+			for (const f of files) {
+				const uri = f.uri;
+				const data = await this._mindmapGenerator.readMindmap(uri);
+				if (data) {
+					graphs.push({ uri, name: f.name.replace(/\.canvas$/, ''), data });
+				}
+			}
+			if (graphs.length < 2) {
+				this.notificationService.warn('无法合并：需要至少 2 个有效的思维导图文件');
+				return;
+			}
+
+			// 合并所有节点和边
+			let merged: IKbMindmap = { nodes: [], edges: [] };
+			const usedIds = new Set<string>();
+			const usedEdgeIds = new Set<string>();
+			const existingContents = new Set<string>();
+
+			for (const g of graphs) {
+				for (const n of g.data.nodes) {
+					const key = (n.content || '').slice(0, 60).toLowerCase().replace(/\s+/g, ' ');
+					if (existingContents.has(key)) { continue; }
+					existingContents.add(key);
+					let id = n.id;
+					while (usedIds.has(id)) { id = 'n' + Math.random().toString(36).slice(2, 10); }
+					usedIds.add(id);
+					merged.nodes.push({ ...n, id });
+				}
+				for (const e of g.data.edges) {
+					if (merged.edges.some(x => x.fromNode === e.fromNode && x.toNode === e.toNode)) { continue; }
+					let eid = e.id;
+					while (usedEdgeIds.has(eid)) { eid = 'e' + Math.random().toString(36).slice(2, 10); }
+					usedEdgeIds.add(eid);
+					merged.edges.push({ ...e, id: eid });
+				}
+			}
+
+			// 重排布局
+			(merged.nodes as IKbMindmapNode[]).forEach((n, i) => {
+				const cols = 5;
+				n.x = (i % cols) * 360;
+				n.y = Math.floor(i / cols) * 140;
+				n.width = 300;
+				n.height = 100;
+			});
+
+			// 写入第一个文件（保留第一个文件名），删除其余
+			const target = graphs[0];
+			await this._mindmapGenerator.writeMindmap(target.uri, merged);
+			for (let i = 1; i < graphs.length; i++) {
+				await this.fileService.del(graphs[i].uri, { recursive: false });
+			}
+
+			this.notificationService.info(`已合并 ${graphs.length} 个思维导图为「${target.name}.canvas」（${merged.nodes.length} 节点, ${merged.edges.length} 边）`);
+			await this.refreshSection('notes');
+		} catch (err) {
+			this.logService.warn(`[mindmap] merge failed: ${err}`);
+			this.notificationService.warn(`合并思维导图失败: ${err}`);
+		}
+	}
+
+	/** 首次打开视图时检查：可能存在视图关闭期间完成的导入。 */
+	private _scheduleMindmapGenerationOnInit(): void {
+		if (!this._activeVault) { return; }
+		// 2 秒延迟，确保 KbImportController 的 _openKbViewAndNavigate 已打开导航
+		setTimeout(() => { this._scheduleMindmapGeneration(); }, 2_000);
+	}
+
+	/** 思维导图自动生成防抖调度（30 秒窗口合并）。 */
+	private _scheduleMindmapGeneration(): void {
+		if (this._mindmapDebounceTimer !== undefined) { clearTimeout(this._mindmapDebounceTimer); }
+		this._mindmapDebounceTimer = setTimeout(() => {
+			this._mindmapDebounceTimer = undefined;
+			void this._generateMindmapAfterImport();
+		}, 30_000);
 	}
 
 	private async createVault(name: string, icon = '📚'): Promise<void> {
@@ -765,9 +969,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._renderAllCount++;
 		const callId = this._renderAllCount;
 		const t0 = performance.now();
-		// 重建前清除搜索态，避免结果元素被清空但搜索框仍残留文字
+		// 重建前清除搜索态
 		if (this._searchInput) { this._searchInput.value = ''; }
-		this._searchToken++; // 使进行中的搜索结果失效
+		this._searchToken++;
 		this.renderVaultBar();
 		this._scroll.replaceChildren();
 		if (this._viewMode === 'recent') {
@@ -776,12 +980,10 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this._scroll.appendChild(this.renderSection('library'));
 			this._scroll.appendChild(this.renderSection('notes'));
 		}
-		// 重建原生树容器（被 replaceChildren 清空）并重新挂载树
-		this._kbTreeContainer = $('div.kb-tree-container');
-		this._kbTreeContainer.style.cssText = 'flex:1;overflow:hidden;';
-		this._scroll.appendChild(this._kbTreeContainer);
-		this._createKbTree();
 		this.renderBacklinksPanel();
+		// 填充 section body 内容（DOM 是当前主可见内容）
+		void this.refreshSection('library');
+		void this.refreshSection('notes');
 		// 标签分类区块（设计图：单一可折叠标题，内含 标签搜索 + 分组列表）
 		this._scroll.appendChild(this.renderTagClassificationSection());
 		const _lf = this._activeVault?.linkedFolders?.length ?? -1;
@@ -793,65 +995,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const _sameRef = this._vaults?.[0] === this._activeVault;
 			this.logService.info(`[KB renderAll DEBUG] empty linkedFolders at #${callId}; activeVaultId=${this._activeVault?.id}; activeSameAsVaults0=${_sameRef}; _vaults.length=${this._vaults?.length ?? -1}; _vaults=[${_vaultsInfo}]; stack=${(new Error()).stack}`);
 		}
-	}
-
-	// ═══════════════════════════════════════════════════════════
-	//  最近编辑视图
-	// ═══════════════════════════════════════════════════════════
-
-	private renderRecentView(): void {
-		const container = $('div.kb-recent');
-		const allDocs = this._index.allDocs();
-		if (allDocs.length === 0) {
-			const empty = $('div.kb-empty-inline');
-			empty.textContent = '暂无笔记（先在库或笔记分区中导入/创建笔记）';
-			container.appendChild(empty);
-			this._scroll.appendChild(container);
-			return;
-		}
-		// 按最后修改时间降序，取最近 50 篇
-		allDocs.sort((a, b) => b.mtime - a.mtime);
-		const recent = allDocs.slice(0, 50);
-		const limitEl = $('div.kb-recent-limit');
-		limitEl.textContent = `最近 ${recent.length} 篇笔记（共 ${allDocs.length} 篇）`;
-		container.appendChild(limitEl);
-		for (const doc of recent) {
-			const item = $('div.kb-recent-item');
-			const icon = $('span.kb-ficon');
-			icon.textContent = doc.name.endsWith('.md') ? '📝' : '📄';
-			const name = $('span.kb-recent-name');
-			name.textContent = doc.name;
-			const time = $('span.kb-recent-time');
-			time.textContent = this._formatRelativeTime(doc.mtime);
-			item.append(icon, name, time);
-			item.onclick = () => {
-				this._openNoteEditor({
-					uri: doc.uri, name: doc.name, path: doc.uri.fsPath,
-					isDirectory: false, section: doc.section,
-					size: doc.size, mtime: doc.mtime, ctime: 0, childCount: 0,
-				});
-			};
-			container.appendChild(item);
-		}
-		this._scroll.appendChild(container);
-	}
-
-	/** 相对时间格式化（今天/昨天/N天前/N周前/日期）。 */
-	private _formatRelativeTime(mtime: number): string {
-		if (!mtime) { return ''; }
-		const now = Date.now();
-		const diffMs = now - mtime;
-		const diffMin = Math.floor(diffMs / 60000);
-		if (diffMin < 1) { return '刚刚'; }
-		if (diffMin < 60) { return `${diffMin} 分钟前`; }
-		const diffHr = Math.floor(diffMin / 60);
-		if (diffHr < 24) { return `${diffHr} 小时前`; }
-		const diffDay = Math.floor(diffHr / 24);
-		if (diffDay === 1) { return '昨天'; }
-		if (diffDay < 7) { return `${diffDay} 天前`; }
-		if (diffDay < 30) { return `${Math.floor(diffDay / 7)} 周前`; }
-		const d = new Date(mtime);
-		return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -990,7 +1133,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const hits = untaggedDocs ?? this._index.searchByTag(tag, 200);
 		for (const hit of hits) {
 			const row = $('div.kb-tag-doc');
-			const ico = $('span.kb-ficon'); ico.textContent = this.fileEmoji(hit.name);
+			const ico = this._fileIconEl(hit);
 			const nm = $('span.kb-tag-doc-name'); nm.textContent = hit.name;
 			row.append(ico, nm);
 			row.onclick = () => this.openInEditor(hit);
@@ -1102,7 +1245,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 		};
 		// right-click: rename / close / delete
-		opt.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); this.vaultContextMenu(v); };
+		opt.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); this.vaultContextMenu(v, e); };
 		return opt;
 	}
 
@@ -1110,17 +1253,29 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._vaultMenu.classList.toggle('show');
 	}
 
-	private vaultContextMenu(v: IKbVault): void {
-		const items: { label: string; run: () => void }[] = [
-			{ label: '重命名', run: async () => { const r = await this.dialogService.input({ message: '重命名知识库', inputs: [{ value: v.name }] }); const nm = r.values?.[0]?.trim(); if (r.confirmed && nm) { await this.renameVault(v, nm); } } },
-			{ label: v.closed ? '打开' : '关闭', run: () => { v.closed = !v.closed; this.saveVaults(); this.renderVaultMenu(); if (v.closed && this._activeVault?.id === v.id) { this._activeVault = this._vaults.find(x => !x.closed); if (this._activeVault) { void this.activateVault(this._activeVault); } } } },
-			{ label: '体检（结构校验）', run: () => { void this._runLint(v); } },
-			{ label: '隔离低质笔记（人环）', run: () => { void this._routeLintToReview(v); } },
-			{ label: '整理去重', run: () => { void this._runDedup(v); } },
-			{ label: '审核队列…', run: () => { void this._showReviewQueue(v); } },
-			{ label: '删除', run: () => { void this.removeVault(v); } },
+	private vaultContextMenu(v: IKbVault, ev?: MouseEvent): void {
+		const actions: IAction[] = [
+			new Action('kb.vaultRename', '重命名', undefined, true, async () => {
+				const r = await this.dialogService.input({ message: '重命名知识库', inputs: [{ value: v.name }] });
+				const nm = r.values?.[0]?.trim(); if (r.confirmed && nm) { await this.renameVault(v, nm); }
+			}),
+			new Action('kb.vaultToggle', v.closed ? '打开' : '关闭', undefined, true, () => {
+				v.closed = !v.closed; this.saveVaults(); this.renderVaultMenu();
+				if (v.closed && this._activeVault?.id === v.id) {
+					this._activeVault = this._vaults.find(x => !x.closed);
+					if (this._activeVault) { void this.activateVault(this._activeVault); }
+				}
+			}),
+			new Separator(),
+			new Action('kb.vaultLint', '体检（结构校验）', undefined, true, () => { void this._runLint(v); }),
+			new Action('kb.vaultRouteLint', '隔离低质笔记（人环）', undefined, true, () => { void this._routeLintToReview(v); }),
+			new Action('kb.vaultDedup', '整理去重', undefined, true, () => { void this._runDedup(v); }),
+			new Action('kb.vaultReview', '审核队列…', undefined, true, () => { void this._showReviewQueue(v); }),
+			new Separator(),
+			new Action('kb.vaultDelete', '删除', undefined, true, () => { void this.removeVault(v); }),
 		];
-		this.showSimpleMenu(items);
+		const anchor = ev ? { x: ev.clientX, y: ev.clientY } : { x: 100, y: 100 };
+		this.contextMenuService.showContextMenu({ getAnchor: () => anchor, getActions: () => actions });
 	}
 
 	/** P2-1 审核队列入口：列出 .review/ 待审核笔记，支持移回笔记根 / 清空。 */
@@ -1140,10 +1295,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	/** P2-1 回流：确认审核——把 .review/<name> 移回笔记根（destDir=notesDir，用户后续可归类）。 */
 	private async _approveReview(v: IKbVault, name: string, notesDir: URI): Promise<void> {
 		const vaultRoot = this.vaultUri(v);
+		const libDir = this.sectionUri(v, 'library');
 		try {
 			await approveReviewNote(this.fileService, vaultRoot, name, notesDir);
-			await KbImportController.appendKbLog(this.fileService, notesDir, `确认审核移回：${name}`);
-			await KbImportController.maintainKbNavigation(this.fileService, notesDir);
+			await KbImportController.appendKbLog(this.fileService, libDir, `确认审核移回：${name}`);
+			await KbImportController.maintainKbNavigation(this.fileService, libDir);
 			await this.refreshSection('notes');
 			this.notificationService.info(`已移回笔记根：${name}`);
 		} catch (err) { this.notificationService.error('移回失败：' + String(err)); }
@@ -1157,8 +1313,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const confirm = await this.dialogService.confirm({ message: `确定删除审核队列全部 ${notes.length} 篇待审核笔记？此操作不可撤销。`, primaryButton: '删除' });
 		if (!confirm.confirmed) { return; }
 		for (const n of notes) { await this.fileService.del(n, { recursive: true }).catch(() => undefined); }
-		const notesDir = this.sectionUri(v, 'notes');
-		await KbImportController.appendKbLog(this.fileService, notesDir, `清空审核队列：${notes.length} 篇`);
+		const libDir = this.sectionUri(v, 'library');
+		await KbImportController.appendKbLog(this.fileService, libDir, `清空审核队列：${notes.length} 篇`);
 		this.notificationService.info(`已清空审核队列（${notes.length} 篇）`);
 	}
 
@@ -1170,7 +1326,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const issues = await lintVault(this.fileService, libDir);
 			const report = formatLintReport(libDir, issues);
 			await this.fileService.writeFile(URI.joinPath(notesDir, 'lint-report.md'), VSBuffer.fromString(report));
-			await KbImportController.appendKbLog(this.fileService, notesDir, `体检：${issues.length} 项问题`);
+			await KbImportController.appendKbLog(this.fileService, libDir, `体检：${issues.length} 项问题`);
 			await this.refreshSection('notes');
 			const cnt = (s: string) => issues.filter(i => i.severity === s).length;
 			this.notificationService.info(`知识库体检完成：${issues.length} 项（error ${cnt('error')} / warning ${cnt('warning')} / info ${cnt('info')}），详见 lint-report.md`);
@@ -1184,8 +1340,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		try {
 			const issues = await lintVault(this.fileService, libDir);
 			const { routed, skipped } = await routeLintToReview(this.fileService, vaultRoot, issues, 'warning');
-			const notesDir = this.sectionUri(v, 'notes');
-			await KbImportController.appendKbLog(this.fileService, notesDir, `隔离低质笔记：${routed.length} 篇移入审核队列`);
+			await KbImportController.appendKbLog(this.fileService, libDir, `隔离低质笔记：${routed.length} 篇移入审核队列`);
 			await this.refreshSection('notes');
 			if (routed.length === 0) {
 				this.notificationService.info(`无达到隔离阈值（warning）的低质笔记；已跳过 ${skipped} 篇。可在「审核队列…」中查看既有待审核项。`);
@@ -1204,9 +1359,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			const name = node.uri.path.split('/').pop() ?? 'note.md';
 			await writeReviewNote(this.fileService, vaultRoot, name, content);
 			await this.fileService.del(node.uri, { recursive: true });
-			const notesDir = this.sectionUri(this._activeVault, 'notes');
-			await KbImportController.appendKbLog(this.fileService, notesDir, `移入审核：${name}`);
-			await KbImportController.maintainKbNavigation(this.fileService, notesDir);
+			const libDir = this.sectionUri(this._activeVault, 'library');
+			await KbImportController.appendKbLog(this.fileService, libDir, `移入审核：${name}`);
+			await KbImportController.maintainKbNavigation(this.fileService, libDir);
 			await this.refreshSection('notes');
 			this.notificationService.info(`已移入审核队列：${name}（位于 .review/，确认后可用 approveReviewNote 移回）`);
 		} catch (err) { this.notificationService.error('移入审核失败：' + String(err)); }
@@ -1215,11 +1370,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	/** P3-1 视图入口：跑去重检测，写 dedup-report.md 并通知（仅检测，不自动合并）。 */
 	private async _runDedup(v: IKbVault): Promise<void> {
 		const notesDir = this.sectionUri(v, 'notes');
+		const libDir = this.sectionUri(v, 'library');
 		try {
 			const groups = await detectDuplicates(this.fileService, notesDir);
 			const report = formatDedupReport(notesDir, groups);
 			await this.fileService.writeFile(URI.joinPath(notesDir, 'dedup-report.md'), VSBuffer.fromString(report));
-			await KbImportController.appendKbLog(this.fileService, notesDir, `整理去重：${groups.length} 组疑似重复`);
+			await KbImportController.appendKbLog(this.fileService, libDir, `整理去重：${groups.length} 组疑似重复`);
 			await this.refreshSection('notes');
 			this.notificationService.info(`整理去重完成：${groups.length} 组疑似重复（共 ${groups.reduce((s, g) => s + g.notes.length, 0)} 篇），详见 dedup-report.md`);
 			// P3-1 合并入口：检测到重复后进入逐组确认合并流程
@@ -1233,6 +1389,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	/** P3-1 合并流程：逐组确认保留项（默认首项），确认后调 mergeDuplicates 删除其余并重写引用。 */
 	private async _runDedupMerge(v: IKbVault, groups: DedupGroup[]): Promise<void> {
 		const notesDir = this.sectionUri(v, 'notes');
+		const libDir = this.sectionUri(v, 'library');
 		const displayName = (u: URI): string => u.path.split('/').pop()!.replace(/\.(md|markdown)$/i, '');
 		let merged = 0;
 		for (const g of groups) {
@@ -1245,11 +1402,11 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			});
 			if (!confirm.confirmed) { continue; }
 			const r = await mergeDuplicates(this.fileService, notesDir, g, keep);
-			await KbImportController.appendKbLog(this.fileService, notesDir, `合并去重「${g.key}」：删 ${r.deleted.length} 篇，重写 ${r.rewritten.length} 篇引用`);
+			await KbImportController.appendKbLog(this.fileService, libDir, `合并去重「${g.key}」：删 ${r.deleted.length} 篇，重写 ${r.rewritten.length} 篇引用`);
 			merged++;
 		}
 		if (merged > 0) {
-			await KbImportController.maintainKbNavigation(this.fileService, notesDir);
+			await KbImportController.maintainKbNavigation(this.fileService, libDir);
 			await this.refreshSection('notes');
 			this.notificationService.info(`已合并 ${merged} 组重复（引用已重写）`);
 		} else {
@@ -1283,76 +1440,64 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	// ═══════════════════════════════════════════════════════════
 
 	private renderSection(section: KbSection): HTMLElement {
-		const open = section === 'library' ? this._libraryOpen : this._notesOpen;
-		const sectionEl = $('div.kb-section');
-		sectionEl.classList.add(section === 'library' ? 'sec-library' : 'sec-notes');
-		if (open) { sectionEl.classList.add('open'); }
+		const sec = $('div.kb-section');
+		sec.setAttribute('data-section', section);
 
-		// Header
 		const header = $('div.kb-section-header');
-		const arrow = $('span.kb-arrow'); arrow.textContent = '▾';
-		const titleWrap = $('span.kb-title');
-		const cat = $('span.kb-cat'); cat.textContent = section === 'library' ? '📂' : '📦';
-		const tlabel = $('span'); tlabel.textContent = KB_SECTION_LABEL[section];
-		const count = $('span.kb-count'); count.textContent = '0';
-		titleWrap.append(cat, tlabel, count);
-		header.append(arrow, titleWrap);
+		const arrow = $('span.kb-arrow'); arrow.textContent = '▶';
+		const title = $('span.kb-title'); title.textContent = section === 'library' ? '库' : '笔记';
+		const count = $('span.kb-count'); count.textContent = '...';
+		const spacer = $('span.kb-section-spacer');
 
-		// Toolbar
 		const toolbar = $('div.kb-section-toolbar');
-		if (section === 'library') {
-			const newFile = $('span.kb-sec-btn'); newFile.textContent = '📄'; newFile.title = '新建文件';
-			newFile.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
-			const newFolder = $('span.kb-sec-btn'); newFolder.textContent = '📁'; newFolder.title = '新建文件夹';
-			newFolder.onclick = (e) => { e.stopPropagation(); void this.newFolder(section); };
-			const importBtn = $('span.kb-sec-btn.primary'); importBtn.textContent = '📥'; importBtn.title = '导入数据源';
-			importBtn.onclick = (e) => { e.stopPropagation(); this.openImportDropdown(sectionEl, importBtn); };
-		// 笔记沉淀（占位：功能开发中，暂未实现）
-		const sedimentBtn = $('span.kb-sec-btn'); sedimentBtn.textContent = '💾'; sedimentBtn.title = '笔记沉淀（功能开发中，敬请期待）';
-		sedimentBtn.onclick = (e) => { e.stopPropagation(); void this._onNoteSedimentationClick(); };
-		toolbar.append(newFile, newFolder, importBtn, sedimentBtn);
-		} else {
-			const newFile = $('span.kb-sec-btn'); newFile.textContent = '📄'; newFile.title = '新建文件';
-			newFile.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
-			const newFolder = $('span.kb-sec-btn'); newFolder.textContent = '📁'; newFolder.title = '新建文件夹';
-			newFolder.onclick = (e) => { e.stopPropagation(); void this.newFolder(section); };
-			const sortBtn = $('span.kb-sec-btn'); sortBtn.textContent = '↑↓'; sortBtn.title = '排序';
-			sortBtn.onclick = (e) => { e.stopPropagation(); this.openSortDropdown(sectionEl, sortBtn); };
-			const toggleBtn = $('span.kb-sec-btn'); toggleBtn.id = 'kbToggleAll'; toggleBtn.textContent = '⊏'; toggleBtn.title = '全部折叠 / 全部展开';
-			toggleBtn.onclick = (e) => { e.stopPropagation(); this.toggleAllSections(toggleBtn); };
-			toolbar.append(newFile, newFolder, sortBtn, toggleBtn);
-		}
-		header.appendChild(toolbar);
-		header.onclick = (e) => {
-			if ((e.target as HTMLElement).closest('.kb-section-toolbar')) { return; }
-			this.toggleSection(section, sectionEl);
-		};
-		sectionEl.appendChild(header);
+		const newFileBtn = $('span.kb-tool-btn'); newFileBtn.textContent = '📄+'; newFileBtn.title = '新建文件';
+		newFileBtn.onclick = (e) => { e.stopPropagation(); void this.newFile(section); };
+		const newFolderBtn = $('span.kb-tool-btn'); newFolderBtn.textContent = '📁+'; newFolderBtn.title = '新建文件夹';
+		newFolderBtn.onclick = (e) => { e.stopPropagation(); void this.newFolder(section); };
+		toolbar.append(newFileBtn, newFolderBtn);
 
-		// Body (tree)
+		header.append(arrow, title, count, spacer, toolbar);
+		header.onclick = () => { sec.classList.toggle('open'); arrow.textContent = sec.classList.contains('open') ? '▼' : '▶'; };
+		sec.append(header);
+
 		const body = $('div.kb-section-body');
-		body.dataset.section = section;
-		sectionEl.appendChild(body);
-		void this.loadSectionTree(section, body, count);
-
-		return sectionEl;
+		body.setAttribute('data-section', section);
+		// 拖拽到分区空白处 → 移出到分区根目录
+		body.addEventListener('dragover', (ev) => {
+			ev.preventDefault();
+			body.classList.add('kb-drop-target');
+			if (ev.dataTransfer) { ev.dataTransfer.dropEffect = (ev.ctrlKey || ev.altKey) ? 'copy' : 'move'; }
+		});
+		body.addEventListener('dragleave', () => { body.classList.remove('kb-drop-target'); });
+		body.addEventListener('drop', (ev) => {
+			ev.preventDefault();
+			ev.stopPropagation();
+			body.classList.remove('kb-drop-target');
+			const raw = ev.dataTransfer?.getData('application/x-kb-drag');
+			if (!raw) { return; }
+			try {
+				const paths = JSON.parse(raw) as string[];
+				const sectionUri = this.sectionUri(this._activeVault!, section);
+				const isCopy = ev.ctrlKey || ev.altKey;
+				this.logService.info(`[DnD-DOM] drop to section root: ${paths.length} items (mode=${isCopy ? 'copy' : 'move'})`);
+				void this._doMoveFiles(paths, { name: section === 'library' ? '库' : '笔记', path: sectionUri.fsPath, uri: sectionUri, isDirectory: true, section, size: 0, mtime: 0, ctime: 0, childCount: 0 }, isCopy ? 'copy' : 'move');
+			} catch { /* ignore */ }
+		});
+		sec.append(body);
+		sec.classList.add('open');
+		return sec;
 	}
 
-	private toggleSection(section: KbSection, el: HTMLElement): void {
-		const open = el.classList.toggle('open');
-		if (section === 'library') { this._libraryOpen = open; } else { this._notesOpen = open; }
-		this.saveSectionOpen(section);
-	}
-
-	private toggleAllSections(btn: HTMLElement): void {
-		const anyOpen = this._libraryOpen || this._notesOpen;
-		this._libraryOpen = !anyOpen;
-		this._notesOpen = !anyOpen;
-		this.saveSectionOpen('library');
-		this.saveSectionOpen('notes');
-		this.renderAll();
-		btn.textContent = anyOpen ? '⊐' : '⊏';
-		btn.title = anyOpen ? '全部展开' : '全部折叠';
+	private renderRecentView(): void {
+		const sec = $('div.kb-section');
+		const header = $('div.kb-section-header');
+		const title = $('span.kb-title'); title.textContent = '最近';
+		header.appendChild(title);
+		sec.appendChild(header);
+		const body = $('div.kb-section-body');
+		body.textContent = '最近打开的文件将出现在这里…';
+		sec.appendChild(body);
+		this._scroll.appendChild(sec);
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -1372,9 +1517,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				const empty = $('div.kb-empty-inline'); empty.textContent = '暂无内容';
 				body.appendChild(empty);
 			} else {
-				for (const node of nodes) {
-					body.appendChild(this.renderNode(node, 0));
-				}
+				await this._appendNodesChunked(body, nodes, 0);
 			}
 			// 库分区：追加「已关联文件夹」条目（原位索引，可取消关联）
 			if (section === 'library' && this._activeVault?.linkedFolders?.length) {
@@ -1418,13 +1561,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 			countEl.textContent = String(this.countNodes(section, nodes) + linkCount);
 			this.logService.info(`[KB loadSectionTree] countEl="${countEl.textContent}" (vaultNodes=${nodes.length} + linkCount=${linkCount}) body childNodes after=${body.children.length}`);
-			// 恢复已展开文件夹（一级，await 确保子节点恢复到 DOM 后再返回）
-			for (const node of nodes) {
-				if (node.isDirectory && this._expandedFolders.has(node.path)) {
+			// 恢复已展开文件夹（并行，避免逐个 await 造成的级联抖动；各文件夹写各自容器互不干扰）
+			await Promise.all(nodes
+				.filter(node => node.isDirectory && this._expandedFolders.has(node.path))
+				.map(node => {
 					const el = body.querySelector(`.kb-node[data-path="${this.cssEscape(node.path)}"]`);
-					if (el) { await this.expandFolder(el as HTMLElement, node); }
-				}
-			}
+					return el ? this.expandFolder(el as HTMLElement, node) : Promise.resolve();
+				}));
 			this.logService.info(`[KB perf] loadSectionTree(${section}): ${(performance.now() - t0).toFixed(1)}ms, ${nodes.length} nodes`);
 		} catch (err) {
 			this.logService.warn(`[KB] loadSectionTree(${section}) failed after ${(performance.now() - t0).toFixed(1)}ms: ${err}`);
@@ -1436,6 +1579,33 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private countNodes(_section: KbSection, nodes: IKbNode[]): number {
 		// 仅统计顶层数量；如有需要可递归
 		return nodes.length;
+	}
+
+	/**
+	 * C 档虚拟化（rAF 分片渲染）：把大量同级节点的渲染分摊到多个动画帧，
+	 * 避免千级节点时主线程被一次性 renderNode 阻塞导致 UI 冻结。
+	 * - 容器先清空，再每帧追加 KB_CHUNK_SIZE 个节点；
+	 * - 小规模（≤阈值）直接同步追加，省去 rAF 调度开销；
+	 * - 返回 Promise 在全部追加完成后 resolve，供调用方 await 以保证后续依赖 DOM 的时序（如恢复展开子树、挂回关联行）。
+	 * 注意：调用方若在调用前已捕获需复用的子树引用（如 _reloadChildren 的 preserved），须在其调用本方法前完成捕获——本方法会清空容器。
+	 */
+	private async _appendNodesChunked(container: HTMLElement, nodes: IKbNode[], depth: number): Promise<void> {
+		container.replaceChildren();
+		if (nodes.length === 0) { return; }
+		if (nodes.length <= KnowledgeBaseViewPane.KB_CHUNK_SIZE) {
+			for (const n of nodes) { container.appendChild(this.renderNode(n, depth)); }
+			return;
+		}
+		await new Promise<void>(resolve => {
+			let i = 0;
+			const step = () => {
+				const end = Math.min(i + KnowledgeBaseViewPane.KB_CHUNK_SIZE, nodes.length);
+				for (; i < end; i++) { container.appendChild(this.renderNode(nodes[i], depth)); }
+				if (i < nodes.length) { requestAnimationFrame(step); }
+				else { resolve(); }
+			};
+			requestAnimationFrame(step);
+		});
 	}
 
 	private async listChildren(uri: URI, section: KbSection): Promise<IKbNode[]> {
@@ -1500,6 +1670,21 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 	}
 
+	/**
+	 * 生成与 VS Code Explorer 一致的文件/文件夹图标：使用活动文件图标主题（getIconClasses）。
+	 * 元素基础类为 `codicon codicon-file|codicion-folder`（提供 codicon 字形兜底），
+	 * 再叠加 getIconClasses 返回的 `file-icon|folder-icon` + 扩展名/语言主题类。
+	 * node 只需提供 `uri` 与 `isDirectory`（IKbNode / IKbSearchHit 均满足）。
+	 */
+	private _fileIconEl(node: { uri: URI; isDirectory: boolean }): HTMLElement {
+		const icon = $('span.kb-ficon');
+		const fileKind = node.isDirectory ? FileKind.FOLDER : FileKind.FILE;
+		const cls = getIconClasses(this.modelService, this.languageService, node.uri, fileKind);
+		const baseGlyph = node.isDirectory ? 'codicon-folder' : 'codicon-file';
+		icon.className = `kb-ficon codicon ${baseGlyph} ${cls.join(' ')}`;
+		return icon;
+	}
+
 	private renderNode(node: IKbNode, depth: number): HTMLElement {
 		const el = $('div.kb-node');
 		el.dataset.path = node.path;
@@ -1515,20 +1700,23 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 		el.appendChild(twist);
 
-		const icon = $('span.kb-ficon');
-		icon.textContent = node.isDirectory ? '📁' : this.fileEmoji(node.name);
+		const icon = this._fileIconEl(node);
 		el.appendChild(icon);
 
 		const name = $('span.kb-name'); name.textContent = node.name;
 		el.appendChild(name);
 
 		if (!node.isDirectory) {
+			// 库分区中区分「原始来源」与「已建笔记」：构建笔记也落在库分区（库/概念/…），
+			// 不能一律按分区显示「未索引」。非 Markdown 来源（html 等）= 未索引（待构建）；
+			// .md 笔记（构建产物）= 已建笔记（显示大小）。
+			const isRawLib = node.section === 'library' && !/\.(md|markdown)$/i.test(node.name);
 			const meta = $('span.kb-meta');
-			meta.textContent = node.section === 'library' ? '未索引' : `${this.fmtSize(node.size)}`;
+			meta.textContent = isRawLib ? '未索引' : `${this.fmtSize(node.size)}`;
 			el.appendChild(meta);
 			const status = $('span.kb-status');
-			status.classList.add(node.section === 'library' ? 'raw' : 'indexed');
-			status.title = node.section === 'library' ? '待索引' : '已索引';
+			status.classList.add(isRawLib ? 'raw' : 'indexed');
+			status.title = isRawLib ? '待构建为笔记' : '已建笔记';
 			el.appendChild(status);
 		}
 
@@ -1545,19 +1733,99 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		actions.append(newBtn, newFolder, renameBtn, delBtn);
 		el.appendChild(actions);
 
-		el.onclick = () => {
+		el.onclick = (e) => {
 			if (node.isDirectory) {
-				// 点击文件夹行：选中并伸缩（展开/折叠）
-				this.selectNode(el);
+				this.selectNode(el, e);
 				void this.expandFolder(el, node);
 			} else {
-				this.selectNode(el);
+				this.selectNode(el, e);
 			}
+			this._scroll.focus(); // 确保 scroll 获得焦点以接收 Delete/F2 快捷键
 		};
 		el.ondblclick = () => { if (!node.isDirectory) { this.openInEditor(node); } };
 		el.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); this.nodeContextMenu(e, el, node); };
 
+		// ─── DOM 层拖拽支持 ───
+		el.draggable = true;
+		el.setAttribute('draggable', 'true');
+		el.style.userSelect = 'none';
+		el.dataset.section = node.section;
+		el.addEventListener('dragstart', (ev) => {
+			ev.stopPropagation();
+			// 若当前项已选中，拖拽所有选中项；否则只拖拽当前一项
+			const inSelection = this._domSelectedPaths.has(node.path);
+			const draggedPaths = inSelection && this._domSelectedPaths.size > 1
+				? Array.from(this._domSelectedPaths) : [node.path];
+			ev.dataTransfer?.setData('text/plain', JSON.stringify(draggedPaths));
+			ev.dataTransfer?.setData('application/x-kb-drag', JSON.stringify(draggedPaths));
+			// 让 VS Code 资源管理器（及系统）识别本次拖拽为真实文件：
+			//  - CodeDataTransfers.FILES: fsPath 数组（Explorer 据此做导入/移动）
+			//  - DataTransfers.RESOURCES: URI 字符串数组（Explorer 据此解析资源）
+			ev.dataTransfer?.setData(CodeDataTransfers.FILES, JSON.stringify(draggedPaths));
+			ev.dataTransfer?.setData(DataTransfers.RESOURCES, JSON.stringify(draggedPaths.map(p => URI.file(p).toString())));
+			if (ev.dataTransfer) { ev.dataTransfer.effectAllowed = 'copyMove'; }
+			this.logService.info(`[DnD-DOM] dragstart: ${draggedPaths.length} items (inSelection=${inSelection})`);
+		});
+		el.addEventListener('dragover', (ev) => {
+			// 仅文件夹节点拦截 dragover（作为有效放置目标）；
+			// 文件节点不拦截，让事件冒泡到 body（分区根）或上层目录节点——否则从文件夹内拖文件到根/其他位置时，
+			// 鼠标经过的文件节点会吞掉 dragover 导致浏览器不允许在 body 上 drop。
+			if (!node.isDirectory) { return; }
+			ev.preventDefault();
+			ev.stopPropagation();
+			el.classList.add('kb-drop-target');
+			if (ev.dataTransfer) { ev.dataTransfer.dropEffect = (ev.ctrlKey || ev.altKey) ? 'copy' : 'move'; }
+		});
+		el.addEventListener('dragleave', () => { el.classList.remove('kb-drop-target'); });
+		el.addEventListener('drop', (ev) => {
+			// 同上：仅文件夹节点处理 drop；文件节点让事件冒泡
+			if (!node.isDirectory) { return; }
+			ev.preventDefault();
+			ev.stopPropagation();
+			el.classList.remove('kb-drop-target');
+			const raw = ev.dataTransfer?.getData('application/x-kb-drag');
+			if (!raw) { return; }
+			try {
+				const paths = JSON.parse(raw) as string[];
+				if (paths.includes(node.path)) { return; }
+				const isCopy = ev.ctrlKey || ev.altKey;
+				this.logService.info(`[DnD-DOM] drop: ${paths.length} items → ${node.name} (mode=${isCopy ? 'copy' : 'move'})`);
+				void this._doMoveFiles(paths, node, isCopy ? 'copy' : 'move');
+			} catch { /* ignore */ }
+		});
+
+		// 构建中提示：若该库文件正在构建笔记，渲染旋转图标
+		if (this._buildingPaths.has(node.path)) { this._applyBuildingUi(el, true); }
+
 		return el;
+	}
+
+	/** 设置/清除某库文件路径的「构建中」状态，并实时更新已渲染的文档 item。 */
+	private _setNodeBuilding(path: string, building: boolean): void {
+		if (building) { this._buildingPaths.add(path); }
+		else { this._buildingPaths.delete(path); }
+		const nodes = this._scroll.querySelectorAll('.kb-node');
+		nodes.forEach((n) => {
+			const el = n as HTMLElement;
+			if (el.dataset.path === path) { this._applyBuildingUi(el, building); }
+		});
+	}
+
+	/** 在文档 item 上应用/移除「构建中」旋转图标与样式。 */
+	private _applyBuildingUi(el: HTMLElement, building: boolean): void {
+		let badge = el.querySelector('.kb-building') as HTMLElement | null;
+		if (building) {
+			el.classList.add('kb-building');
+			if (!badge) {
+				badge = $('span.kb-building');
+				badge.classList.add('codicon', 'codicon-loading');
+				badge.title = '正在构建笔记…';
+				el.appendChild(badge);
+			}
+		} else {
+			el.classList.remove('kb-building');
+			if (badge) { badge.remove(); }
+		}
 	}
 
 	private async expandFolder(el: HTMLElement, node: IKbNode): Promise<void> {
@@ -1585,7 +1853,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this._expandedFolders.add(node.path);
 		try {
 			const nodes = await this.listChildren(node.uri, node.section);
-			if (childrenEl) { childrenEl.replaceChildren(); } else {
+			if (childrenEl) {
+				// 复用现有 .kb-children 容器（清空交由分片渲染统一处理）
+			} else {
 				childrenEl = $('div.kb-children');
 				el.after(childrenEl);
 			}
@@ -1593,11 +1863,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				const empty = $('div.kb-empty-inline'); empty.style.paddingLeft = '20px'; empty.textContent = '空文件夹';
 				childrenEl.appendChild(empty);
 			} else {
+				await this._appendNodesChunked(childrenEl, nodes, this.depthOf(el) + 1);
+				// 递归恢复已展开的子目录（fire-and-forget，不阻塞分片渲染）
 				for (const child of nodes) {
-					const childEl = this.renderNode(child, this.depthOf(el) + 1);
-					childrenEl.appendChild(childEl);
 					if (child.isDirectory && this._expandedFolders.has(child.path)) {
-						void this.expandFolder(childEl, child);
+						const childEl = this.findNodeEl(child.section, child.path);
+						if (childEl) { void this.expandFolder(childEl, child); }
 					}
 				}
 			}
@@ -1619,32 +1890,59 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		if (this._activeVault) { this.saveExpanded(this._activeVault.id, section); }
 	}
 
-	private selectNode(el: HTMLElement): void {
+	private selectNode(el: HTMLElement, e?: MouseEvent): void {
+		const path = el.dataset.path;
+		if (!path) { return; }
+
+		if (e?.ctrlKey || e?.metaKey) {
+			// Ctrl+Click: 切换选中状态（多选）
+			if (this._domSelectedPaths.has(path)) {
+				this._domSelectedPaths.delete(path);
+				el.classList.remove('selected');
+			} else {
+				this._domSelectedPaths.add(path);
+				el.classList.add('selected');
+			}
+			this._domLastSelectedPath = path;
+			return;
+		}
+
+		if (e?.shiftKey && this._domLastSelectedPath && this._domLastSelectedPath !== path) {
+			// Shift+Click: 范围选择
+			const allEls = Array.from(this._body.querySelectorAll('.kb-node')) as HTMLElement[];
+			const anchorIdx = allEls.findIndex(n => n.dataset.path === this._domLastSelectedPath);
+			const targetIdx = allEls.findIndex(n => n.dataset.path === path);
+			if (anchorIdx >= 0 && targetIdx >= 0) {
+				const [start, end] = anchorIdx < targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+				for (let i = start; i <= end; i++) {
+					const p = allEls[i].dataset.path;
+					if (p) {
+						this._domSelectedPaths.add(p);
+						allEls[i].classList.add('selected');
+					}
+				}
+			}
+			return;
+		}
+
+		// 单选：清除所有选中，只选当前
+		this._domSelectedPaths.clear();
 		this._body.querySelectorAll('.kb-node.selected').forEach(n => n.classList.remove('selected'));
+		this._domSelectedPaths.add(path);
+		this._domLastSelectedPath = path;
 		el.classList.add('selected');
+
 		const node = this.nodeFromEl(el);
 		if (node) {
 			void this.updateBacklinks(node);
-			// 点击文件 → 在中间栏直接打开 WYSIWYG 编辑器（对齐 SiYuan 中心 Tab 范式）
+			// 点击文件 → 在中间栏直接打开编辑器
 			if (!node.isDirectory) {
-				this._openNoteEditor(node);
+				if (node.uri.path.endsWith('.canvas')) {
+					void this._openCanvasEditor(node.uri);
+				} else {
+					this._openNoteEditor(node);
+				}
 			}
-		}
-	}
-
-	private fileEmoji(name: string): string {
-		const ext = name.split('.').pop()?.toLowerCase();
-		switch (ext) {
-			case 'md': case 'markdown': return '📝';
-			case 'pdf': return '📕';
-			case 'doc': case 'docx': return '📘';
-			case 'txt': return '📄';
-			case 'png': case 'jpg': case 'jpeg': case 'gif': case 'webp': case 'svg': return '🖼️';
-			case 'mp4': case 'mov': case 'webm': return '🎬';
-			case 'mp3': case 'wav': case 'm4a': return '🎵';
-			case 'json': case 'yaml': case 'yml': return '⚙️';
-			case 'html': case 'htm': return '🌐';
-			default: return '📄';
 		}
 	}
 
@@ -1682,9 +1980,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const uri = await this.uniqueName(dir, '未命名', '.md');
 		await this.fileService.writeFile(uri, VSBuffer.fromString('# ' + uri.path.split('/').pop() + '\n'));
 		void this._logOp('file.create', 'success', { target: uri.fsPath, detail: { section } });
-		await this.refreshSection(section);
-		// 确保父目录已展开（子节点在 DOM 中），再选中并进入重命名
-		if (parent) { await this.ensureParentExpanded(parent); }
+		// 增量刷新：仅重列父目录（顶层=newFile 影响的层级），不整段重建，消除抖动
+		if (parent) {
+			// 刚展开的场景下 expandFolder 已渲染最新内容（含新文件），无需再走一次 listChildren
+			const justExpanded = await this.ensureParentExpanded(parent);
+			if (!justExpanded) { await this._reloadChildren(section, parent.path); }
+		} else {
+			await this._reloadChildren(section, null);
+		}
 		const el = this.findNodeEl(section, uri.fsPath);
 		if (el) { this.selectNode(el); const node = this.nodeFromEl(el); if (node) { this.startRename(el, node); } }
 	}
@@ -1694,24 +1997,35 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const uri = await this.uniqueName(dir, '未命名文件夹');
 		await this.fileService.createFolder(uri);
 		void this._logOp('folder.create', 'success', { target: uri.fsPath, detail: { section } });
-		await this.refreshSection(section);
-		if (parent) { await this.ensureParentExpanded(parent); }
+		// 增量刷新：仅重列父目录（顶层=newFolder 影响的层级），不整段重建，消除抖动
+		if (parent) {
+			// 刚展开的场景下 expandFolder 已渲染最新内容（含新文件夹），无需再走一次 listChildren
+			const justExpanded = await this.ensureParentExpanded(parent);
+			if (!justExpanded) { await this._reloadChildren(section, parent.path); }
+		} else {
+			await this._reloadChildren(section, null);
+		}
 		const el = this.findNodeEl(section, uri.fsPath);
 		if (el) { this.selectNode(el); const node = this.nodeFromEl(el); if (node) { this.startRename(el, node); } }
 	}
 
-	/** 确保指定文件夹的父节点已展开（子节点已在 DOM 中），用于新建文件/文件夹后定位子元素。 */
-	private async ensureParentExpanded(parent: IKbNode): Promise<void> {
+	/**
+	 * 确保指定文件夹的父节点已展开（子节点已在 DOM 中），用于新建文件/文件夹后定位子元素。
+	 * 返回 true 表示本次执行了展开（expandFolder 内部已 listChildren 渲染最新内容，调用方无需再增量刷新）。
+	 */
+	private async ensureParentExpanded(parent: IKbNode): Promise<boolean> {
 		const parentEl = this.findNodeEl(parent.section, parent.path);
-		if (!parentEl) { return; }
+		if (!parentEl) { return false; }
 		// 已展开则无需再加载（expandFolder 遇到已展开会跳过 loading 检查直接折叠，所以这里做判断）
-		if (this._expandedFolders.has(parent.path)) { return; }
+		if (this._expandedFolders.has(parent.path)) { return false; }
 		await this.expandFolder(parentEl, parent);
+		return true;
 	}
 
 	private async deleteNode(node: IKbNode): Promise<void> {
 		const confirm = await this.dialogService.confirm({
 			message: localize('kb.deleteNode', '确定删除「{0}」？', node.name),
+			detail: localize('kb.deleteNodeDetail', '文件将移入回收站，可从回收站还原。'),
 			primaryButton: localize('kb.delete', '删除'),
 		});
 		if (!confirm.confirmed) { return; }
@@ -1719,57 +2033,168 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		let cascadeDeleted = 0;
 		if (node.section === 'library' && this._activeVault) {
 			const notesDir = this.sectionUri(this._activeVault, 'notes');
+			const libDir = this.sectionUri(this._activeVault, 'library');
 			cascadeDeleted = (await KbImportController.cascadeDeleteLibraryNotes(this.fileService, node.uri, notesDir)).length;
 			if (cascadeDeleted > 0) {
-				await KbImportController.maintainKbNavigation(this.fileService, notesDir);
+				await KbImportController.maintainKbNavigation(this.fileService, libDir);
 			}
 		}
 		try {
-			await this.fileService.del(node.uri, { recursive: true });
+			// Explorer 对齐：优先移入系统回收站（软删除，可从回收站还原）
+			await this._deleteToTrash(node.uri);
 			void this._logOp('node.delete', 'success', { target: node.uri.fsPath, detail: { section: node.section, isDirectory: node.isDirectory, cascadeNotes: cascadeDeleted } });
 		} catch (err) {
 			void this._logOp('node.delete', 'failure', { target: node.uri.fsPath, detail: { section: node.section }, error: String(err) });
 		}
 		this._expandedFolders.delete(node.path);
-		await this.refreshSection(node.section);
+		// 删除后同步清理关系图谱与搜索索引：in-memory 图谱 / FTS 内核索引不会随文件删除自动剔除，
+		// 否则已删文档会残留在「关系图谱」节点、搜索结果、反链与 @提及 中（频繁删除后尤为明显）。
+		// invalidate() 让内核下次全量重建走 _reconcile 剔除已删文件，markSearchDirty() 触发该重建（防抖合并频繁删除）。
+		this._nativeKernel?.invalidate();
+		this.markSearchDirty();
+		// 增量移除（对齐 Explorer：仅移除被删节点的 DOM，不整段重建，消除抖动）
+		this._removeNodeFromDom(node);
 		if (cascadeDeleted > 0) {
+			// 级联删除的笔记文件位于另一分区，整段重建一次（不影响当前分区视图）
 			await this.refreshSection('notes');
 		}
+	}
+
+	/** 永久删除（对齐 Explorer Shift+Delete / Delete Permanently）：不经过回收站，二次确认。 */
+	private async _deleteNodePermanent(node: IKbNode): Promise<void> {
+		const confirm = await this.dialogService.confirm({
+			message: localize('kb.deletePermNode', '确定永久删除「{0}」？', node.name),
+			detail: localize('kb.deletePermDetail', '此操作不可撤销，文件将被彻底删除且无法从回收站还原。'),
+			primaryButton: localize('kb.deletePermBtn', '永久删除'),
+		});
+		if (!confirm.confirmed) { return; }
+		let cascadeDeleted = 0;
+		if (node.section === 'library' && this._activeVault) {
+			const notesDir = this.sectionUri(this._activeVault, 'notes');
+			const libDir = this.sectionUri(this._activeVault, 'library');
+			cascadeDeleted = (await KbImportController.cascadeDeleteLibraryNotes(this.fileService, node.uri, notesDir)).length;
+			if (cascadeDeleted > 0) { await KbImportController.maintainKbNavigation(this.fileService, libDir); }
+		}
+		try {
+			await this.workingCopyFileService.delete([{ resource: node.uri, recursive: true, useTrash: false }], CancellationToken.None);
+			void this._logOp('node.deletePermanent', 'success', { target: node.uri.fsPath, detail: { section: node.section, cascadeNotes: cascadeDeleted } });
+		} catch (err) {
+			void this._logOp('node.deletePermanent', 'failure', { target: node.uri.fsPath, error: String(err) });
+			this.notificationService.warn(String(err));
+		}
+		this._expandedFolders.delete(node.path);
+		// 增量移除（对齐 Explorer：仅移除被删节点的 DOM，不整段重建，消除抖动）
+		this._removeNodeFromDom(node);
+		if (cascadeDeleted > 0) { await this.refreshSection('notes'); }
 	}
 
 	private startRename(el: HTMLElement, node: IKbNode): void {
 		const nameEl = el.querySelector('.kb-name') as HTMLElement;
 		const actions = el.querySelector('.kb-actions') as HTMLElement | null;
 		if (actions) { actions.style.display = 'none'; }
+		this._renameActive = true; // 重命名期间禁止文件监听重建视图（防输入框被销毁）
 		const input = document.createElement('input');
 		input.className = 'kb-rename-input';
 		input.value = node.name;
 		nameEl.replaceWith(input);
-		input.focus(); input.select();
+		// 对齐 Explorer：文件默认只选中主名（不含扩展名），文件夹全选
+		const dotIdx = node.isDirectory ? -1 : node.name.lastIndexOf('.');
+		input.focus();
+		if (dotIdx > 0) { input.setSelectionRange(0, dotIdx); } else { input.select(); }
+
+		// 内联校验消息（复用 .kb-rename-msg 样式）
+		const showMsg = (text: string | null) => {
+			let msg = el.querySelector('.kb-rename-msg') as HTMLElement | null;
+			if (!text) { msg?.remove(); return; }
+			if (!msg) { msg = $('span.kb-rename-msg'); input.after(msg); }
+			msg.className = 'kb-rename-msg invalid';
+			msg.textContent = text;
+		};
+		input.addEventListener('input', () => { showMsg(this._validateRename(input.value.trim(), node)); });
 
 		const finish = async (commit: boolean) => {
 			const newName = input.value.trim();
 			if (commit && newName && newName !== node.name) {
+				// 提交前校验：非法字符 / 保留名（对齐 Explorer validateFileName）
+				const invalid = this._validateRename(newName, node);
+				if (invalid) { showMsg(invalid); input.focus(); return; }
 				const target = URI.joinPath(node.uri, '..', newName);
+				// 重名校验（大小写不敏感文件系统下同名不同 case 允许通过 move 处理）
+				if (!isEqual(node.uri, target, true) && await this.fileService.exists(target)) {
+					showMsg(localize('kb.renameExists', '此位置已存在名为「{0}」的文件或文件夹', newName));
+					input.focus();
+					return;
+				}
+				// 扩展名变更提示（文件）
+				if (!node.isDirectory) {
+					const oldExt = node.name.includes('.') ? node.name.slice(node.name.lastIndexOf('.')) : '';
+					const newExt = newName.includes('.') ? newName.slice(newName.lastIndexOf('.')) : '';
+					if (oldExt !== newExt) {
+						const confirm = await this.dialogService.confirm({
+							message: localize('kb.renameExtChange', '确定要将扩展名从「{0}」更改为「{1}」吗？', oldExt || '(无)', newExt || '(无)'),
+							detail: localize('kb.renameExtChangeDetail', '更改扩展名可能导致文件无法正常打开。'),
+							primaryButton: localize('kb.renameConfirm', '更改'),
+						});
+						if (!confirm.confirmed) { input.focus(); return; }
+					}
+				}
+				const sourceUri = node.uri;
 				try {
-					await this.fileService.move(node.uri, target, false);
-					void this._logOp('node.rename', 'success', { source: node.uri.fsPath, target: target.fsPath, detail: { section: node.section } });
-					await this.refreshSection(node.section);
+					await this.workingCopyFileService.move([{ file: { source: sourceUri, target } }], CancellationToken.None);
+					void this._logOp('node.rename', 'success', { source: sourceUri.fsPath, target: target.fsPath, detail: { section: node.section } });
+					// 注册 undo：改回原名
+					this._pushKbUndoElement(
+						localize('kb.undoRename', '重命名「{0}」为「{1}」', node.name, newName), 'kb.rename',
+						[sourceUri, target],
+						async () => {
+						try { await this.workingCopyFileService.move([{ file: { source: target, target: sourceUri } }], CancellationToken.None, { isUndoing: true }); } catch (e) { this.logService.warn(`[KB-Undo] rename-back failed: ${e}`); }
+						// 增量刷新：仅重列被改名节点的父目录
+						await this._reloadChildren(node.section, this._parentReloadKey(node.section, node.path));
+						},
+						async () => {
+						try { await this.workingCopyFileService.move([{ file: { source: sourceUri, target } }], CancellationToken.None); } catch (e) { this.logService.warn(`[KB-Redo] rename failed: ${e}`); }
+						// 增量刷新：仅重列被改名节点的父目录
+						await this._reloadChildren(node.section, this._parentReloadKey(node.section, node.path));
+						},
+					);
+					this._renameActive = false; // 重命名完成，允许后续刷新
+					// 增量刷新：仅重列被改名节点的父目录（重列后按原排序归位，不整段重建）
+					await this._reloadChildren(node.section, this._parentReloadKey(node.section, node.path));
 				} catch (err) {
+					this._renameActive = false;
 					this.notificationService.warn(String(err));
-					void this._logOp('node.rename', 'failure', { source: node.uri.fsPath, target: target.fsPath, error: String(err) });
+					void this._logOp('node.rename', 'failure', { source: sourceUri.fsPath, target: target.fsPath, error: String(err) });
 					this.revertRename(el, node.name, actions);
 				}
 			} else {
+				this._renameActive = false;
 				this.revertRename(el, node.name, actions);
 			}
 		};
 
 		input.onkeydown = (e) => {
+			e.stopPropagation(); // 避免触发 scroll 层 Delete/F2/Ctrl+Z 快捷键
 			if (e.key === 'Enter') { e.preventDefault(); void finish(true); }
 			else if (e.key === 'Escape') { e.preventDefault(); void finish(false); }
 		};
 		input.onblur = () => { setTimeout(() => void finish(false), 150); };
+	}
+
+	/** 重命名校验（对齐 Explorer validateFileName）：返回错误消息或 null。 */
+	private _validateRename(name: string, node: IKbNode): string | null {
+		if (!name) { return localize('kb.renameEmpty', '必须提供文件或文件夹名称'); }
+		if (name === node.name) { return null; }
+		// Windows 非法字符 + 通用非法（/ 在所有平台非法，因为会被解释为路径分隔）
+		if (/[\\/:*?"<>|]/.test(name)) {
+			return localize('kb.renameInvalidChars', '名称不能包含以下字符: \\ / : * ? " < > |');
+		}
+		if (name === '.' || name === '..') { return localize('kb.renameDots', '名称无效'); }
+		if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(name)) {
+			return localize('kb.renameReserved', '「{0}」是系统保留名称，不能使用', name);
+		}
+		if (/[. ]$/.test(name)) { return localize('kb.renameTrailing', '名称不能以「.」或空格结尾'); }
+		if (name.length > 255) { return localize('kb.renameTooLong', '名称过长'); }
+		return null;
 	}
 
 	private revertRename(el: HTMLElement, name: string, actions: HTMLElement | null): void {
@@ -1784,21 +2209,54 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	private openInEditor(node: IKbNode): void {
+		// Route .canvas 文件到思维导图编辑器
+		if (node.uri.path.endsWith('.canvas')) {
+			void this._openCanvasEditor(node.uri);
+			return;
+		}
 		const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
 		const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 		this.editorService.openEditor({ resource: node.uri, options: { pinned: true } }, targetGroup);
 	}
 
+	/**
+	 * 打开 .canvas 思维导图编辑器。
+	 * 读取 JSON Canvas 文件内容 → 解析 → 创建 CanvasEditorInput → 中间栏打开。
+	 */
+	private async _openCanvasEditor(uri: URI): Promise<void> {
+		this.logService.info(`[KB canvas] _openCanvasEditor: ${uri.toString()}`);
+		try {
+			const raw = await this.fileService.readFile(uri);
+			const text = raw.value.toString();
+			this.logService.info(`[KB canvas] _openCanvasEditor: file read OK, length=${text.length}`);
+			const data: IMindmapData = JSON.parse(text);
+			// Ensure nodes/edges exist
+			if (!data.nodes) { data.nodes = []; }
+			if (!data.edges) { data.edges = []; }
+			// Ensure mindmap flag
+			if (data.mindmap === undefined) { data.mindmap = true; }
+			this.logService.info(`[KB canvas] _openCanvasEditor: parsed nodes=${data.nodes.length}, edges=${data.edges.length}, mindmapFlag=${data.mindmap}`);
+
+			const input = new CanvasEditorInput(uri, data);
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			this.logService.info(`[KB canvas] _openCanvasEditor: opening CanvasEditorInput (targetGroup=${targetGroup})`);
+			await this.editorService.openEditor(input, { pinned: true }, targetGroup);
+		} catch (err) {
+			this.logService.warn(`[KB canvas] _openCanvasEditor: FALLBACK to plain text editor. Error: ${err}`);
+			// Fallback: open as plain text
+			const groups = this.editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			this.editorService.openEditor({ resource: uri, options: { pinned: true } }, targetGroup);
+		}
+	}
+
 	private async refreshSection(section: KbSection): Promise<void> {
 		this.markSearchDirty();
-		// 优先刷新原生树
-		this._refreshKbTree();
-		// 兼容旧 DOM 渲染：若树不可用则回退至 DOM 渲染
-		if (!this._kbTree) {
-			const body = this._scroll.querySelector(`.kb-section-body[data-section="${section}"]`) as HTMLElement | null;
-			const countEl = body?.parentElement?.querySelector('.kb-count') as HTMLElement | null;
-			if (body) { await this.loadSectionTree(section, body, countEl ?? $('span.kb-count')); }
-		}
+		// DOM 渲染：始终填充
+		const body = this._scroll.querySelector(`.kb-section-body[data-section="${section}"]`) as HTMLElement | null;
+		const countEl = body?.parentElement?.querySelector('.kb-count') as HTMLElement | null;
+		if (body) { await this.loadSectionTree(section, body, countEl ?? $('span.kb-count')); }
 	}
 
 	private refresh(): void {
@@ -2076,144 +2534,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 	}
 
-	// ═══════════════════════════════════════════════════════════
-	//  Import
-	// ═══════════════════════════════════════════════════════════
-
-	private openImportDropdown(anchorSection: HTMLElement, anchorBtn: HTMLElement): void {
-		// 移除已有
-		this._body.querySelectorAll('.kb-dropdown.show').forEach(d => d.classList.remove('show'));
-		const dd = $('div.kb-dropdown');
-		dd.id = 'kbImportDD';
-		for (const item of KB_IMPORT_ITEMS) {
-			if (item.kind === 'codeWorkspace') {
-				const div = $('div.kb-divider'); dd.appendChild(div);
-				const title = $('div.kb-dd-title'); title.textContent = '从工作区导入'; dd.appendChild(title);
-			}
-			if (item.kind === 'url') {
-				const div = $('div.kb-divider'); dd.appendChild(div);
-				const title = $('div.kb-dd-title'); title.textContent = '从 URL 导入'; dd.appendChild(title);
-			}
-			const opt = $('div.kb-opt');
-			safeSetInnerHtml(opt, `<span class="kb-ic">${item.icon}</span><span class="kb-txt">${item.label}</span><span class="kb-sub">${item.sub}</span>`);
-			opt.onclick = (e) => { e.stopPropagation(); dd.classList.remove('show'); void this.handleImport(item.kind); };
-			dd.appendChild(opt);
-		}
-		this.positionDropdown(dd, anchorBtn);
-		dd.classList.add('show');
-	}
-
-	private async handleImport(kind: KbImportKind): Promise<void> {
-		if (!this._activeVault) { return; }
-		const target = this.sectionUri(this._activeVault, 'library');
-		// 导入的原始材料（文档/URL/文件夹）统一落入「库/raw」分区，分类交由后续「构建为笔记」阶段处理。
-		const rawTarget = URI.joinPath(target, 'raw');
-
-		// ── URL 导入 → 确定性下载 + SSRF 防护 + 缓存 + 库分区按 schema 落盘（两阶段：库→笔记） ──
-		if (kind === 'url') {
-			const r = await this.dialogService.input({
-				message: localize('kb.enterUrl', '粘贴要导入的链接（小红书 / 抖音 / 知乎 / B站 / YouTube / 微博 / 公众号 …）'),
-				inputs: [{ value: '', placeholder: 'https://...' }],
-			});
-			const url = r.values?.[0]?.trim();
-			if (!r.confirmed || !url) { return; }
-
-			// P1 SSRF 防护
-			const safety = validateSafeUrl(url);
-			if (!safety.safe) {
-				this.notificationService.warn(localize('kb.urlBlocked', 'URL 被安全策略拒绝：{0}', safety.reason ?? 'unknown'));
-				return;
-			}
-
-			// P0 内容去重：检查 URL 是否已导入
-			const cache = new UrlIngestCache(this.vaultUri(this._activeVault));
-			try {
-				// 先只检查 URL 是否已导入（无内容时无法 hash，后续会补）
-				const cachedPath = await cache.check(this.fileService, url, url); // key=url+urlHash → 仅 URL 同（近似检查）
-				if (cachedPath) {
-					this.notificationService.info(localize('kb.urlCached', '该 URL 已导入过：{0}', cachedPath));
-					return;
-				}
-			} catch { /* cache read fail → proceed */ }
-
-			// 确定性下载 + 落盘到库分区
-			this.notificationService.info(localize('kb.urlFetching', '正在下载并导入...'));
-			try {
-				await this.importFromUrl(url, rawTarget);
-
-				// 导入成功后：通知用户可稍后构建笔记
-				this.notificationService.info(localize('kb.urlImportedToLib', '已保存到知识库「库」分区。可右键文件「构建为笔记」生成结构化笔记。'));
-			} catch (err) {
-				this.logService.warn(`[KB] URL import error: ${err}`);
-				this.notificationService.warn(localize('kb.urlFetchFailed', '导入失败：{0}', String(err)));
-			}
-			return;
-		}
-
-		// ── Obsidian 库 / 文件夹关联导入 → 走 知识库专家 agent 技能 ──
-		if (kind === 'obsidian' || kind === 'folder') {
-			if (kind === 'folder') {
-				const mode = await this.askImportFolderMode();
-				if (!mode) { return; }
-				// copy 模式：保持原位拷贝（不需要 agent 技能）
-				if (mode !== 'link') {
-					const picked = await this.fileDialogService.showOpenDialog({
-						title: '导入文件夹（拷贝）', canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
-					});
-					if (picked?.length) {
-						const dest = URI.joinPath(rawTarget, this.baseName(picked[0]));
-						await this.copyRecursive(picked[0], dest);
-						void this._logOp('kb.import.folder', 'success', { source: picked[0].fsPath, target: dest.fsPath });
-						void this._importFolderRagAsync(dest.fsPath, this._activeVault);
-					}
-					await this.refreshSection('library');
-					return;
-				}
-				// link 模式：继续走 agent 技能
-			}
-
-			const title = kind === 'obsidian' ? '导入 Obsidian 库' : '关联文件夹';
-			const picked = await this.fileDialogService.showOpenDialog({
-				title, canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
-			});
-			if (!picked?.length) { return; }
-
-			const folderPath = picked[0].fsPath;
-			const skillId = 'kb-import-obsidian';
-			const vaultName = this._activeVault.name;
-			const libPath = target.fsPath;
-			const notesPath = this.sectionUri(this._activeVault, 'notes').fsPath;
-			await this._routeImportToKbAgent(
-				skillId,
-				this._buildImportObsidianSkillMd(),
-				`[skill:${skillId}] 请将以下文件夹导入到知识库「${vaultName}」中（关联模式：扫描原文件，不复制，结果落盘到库和笔记分区）：\n\n文件夹路径: \`${folderPath}\`\n库分区路径: \`${libPath}\`\n笔记分区路径: \`${notesPath}\`\n\n请按照 skill 描述的完整链（扫描→分类→落盘库→结构化抽取→落盘笔记→操作日志）处理。`,
-				`${title}: ${folderPath}`,
-			);
-			return;
-		}
-
-		// ── 文件导入 / codeWorkspace：保持原路径（纯文件操作，不走 agent）──
-		try {
-			if (kind === 'files') {
-				const picked = await this.fileDialogService.showOpenDialog({ title: '导入文件', canSelectFiles: true, canSelectFolders: false, canSelectMany: true });
-				if (picked?.length) {
-					for (const f of picked) {
-						const dest = URI.joinPath(rawTarget, this.baseName(f));
-						await this.copyRecursive(f, dest);
-						void this._logOp('kb.import.files', 'success', { source: f.fsPath, target: dest.fsPath });
-					}
-				}
-			} else if (kind === 'codeWorkspace') {
-				this.logService.info(`[KB import handler] before importCodeWorkspace() — linkedFolders=${this._activeVault?.linkedFolders?.length ?? 0}`);
-				await this.importCodeWorkspace();
-				this.logService.info(`[KB import handler] after importCodeWorkspace() — linkedFolders=${this._activeVault?.linkedFolders?.length ?? 0}`);
-			}
-		} catch (err) {
-			void this._logOp('kb.import', 'failure', { detail: { kind }, error: String(err) });
-		}
-		await this.refreshSection('library');
-	}
-
 	/** 大库（> 2000 文档）自动同步到主进程 SQLite FTS5，卸载 V8 内存文本。 */
 	private async _syncKbToSqliteIfNeeded(
 		vault: IKbVault | undefined,
@@ -2351,57 +2671,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		return `${(mb / 1024).toFixed(1)} GB`;
 	}
 
-	private async copyRecursive(source: URI, target: URI): Promise<void> {
-		let stat;
-		try {
-			stat = await this.fileService.resolve(source);
-		} catch (err) {
-			this.logService.warn(`[KB] copyRecursive resolve failed: ${err}`);
-			return;
-		}
-		if (stat.isDirectory) {
-			await this.fileService.createFolder(target);
-			for (const child of stat.children ?? []) {
-				await this.copyRecursive(child.resource, URI.joinPath(target, child.name));
-			}
-		} else {
-			try {
-				const content = await this.fileService.readFile(source);
-				await this.fileService.writeFile(target, content.value);
-			} catch (err) {
-				this.logService.warn(`[KB] copy file failed: ${err}`);
-			}
-		}
-	}
-
 	// ═══════════════════════════════════════════════════════════
 	//  URL import (web clip → Markdown)
 	// ═══════════════════════════════════════════════════════════
-
-	/**
-	 * 导入文件夹前询问用户意图：
-	 *  - 'link'：关联外部文件夹（保持文件原位，原地索引）
-	 *  - 'copy'：拷贝文件夹内容到 VsSaros 知识库根目录（库分区）
-	 *  - undefined：用户取消
-	 */
-	private async askImportFolderMode(srcPath?: string): Promise<'link' | 'copy' | undefined> {
-		const base = srcPath ? this.baseName(URI.file(srcPath)) : '';
-		const r = await this.dialogService.prompt<'link' | 'copy'>({
-			message: base
-				? localize('kb.importFolderMode.title', '导入文件夹「{0}」：关联还是拷贝？', base)
-				: localize('kb.importFolderMode.title.generic', '导入文件夹：关联还是拷贝？'),
-			detail: localize(
-				'kb.importFolderMode.detail',
-				'「关联」保持文件在当前位置不动，仅登记为索引根（原位扫描，不占知识库空间）；「拷贝」会把文件夹内容复制到 VsSaros 知识库根目录的「库」分区。',
-			),
-			buttons: [
-				{ label: localize('kb.importFolderMode.link', '关联（保持文件原位）'), run: () => 'link' as const },
-				{ label: localize('kb.importFolderMode.copy', '拷贝到知识库'), run: () => 'copy' as const },
-			],
-			cancelButton: localize('kb.cancel', '取消'),
-		});
-		return r.result;
-	}
 
 	/** 关联外部文件夹：登记为索引根并原地索引（不复制任何文件）。 */
 	// @ts-expect-error: reserved — direct link-folder path (bypassed by _routeImportToKbAgent)
@@ -2798,11 +3070,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		el.onclick = () => { void this.openerService.open(URI.file(path), { openExternal: true }); };
 		el.oncontextmenu = (e) => {
 			e.preventDefault(); e.stopPropagation();
-			this.showSimpleMenu([
-				{ label: '在文件管理器打开', run: () => { void this.openerService.open(URI.file(path), { openExternal: true }); } },
-				{ label: '代码图谱', run: () => { const input = new CodebaseGraphViewerEditorInput(path); void this.editorService.openEditor(input, { pinned: true }); } },
-				{ label: '取消关联', run: () => { void this.unlinkFolder(path); } },
-			], e.clientX, e.clientY);
+			const actions: IAction[] = [
+				new Action('kb.openExternal', '在文件管理器打开', undefined, true, () => { void this.openerService.open(URI.file(path), { openExternal: true }); }),
+				new Action('kb.codeGraph', '代码图谱', undefined, true, () => { const input = new CodebaseGraphViewerEditorInput(path); void this.editorService.openEditor(input, { pinned: true }); }),
+				new Separator(),
+				new Action('kb.unlink', '取消关联', undefined, true, () => { void this.unlinkFolder(path); }),
+			];
+			this.contextMenuService.showContextMenu({ getAnchor: () => ({ x: e.clientX, y: e.clientY }), getActions: () => actions });
 		};
 		return el;
 	}
@@ -2866,198 +3140,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	/** parse workspace DAG → topology（暂时未用，预留） */
-	/** 确定性下载 URL 内容并保存到库分区（两阶段工作流的阶段 1）。
-	 *  P1-2：经持久化队列 + 重试，失败自动恢复。 */
-	private async importFromUrl(url: string, target: URI): Promise<void> {
-		const platform = detectPlatform(url);
-		this.notificationService.info(localize('kb.urlFetching', '正在抓取「{0}」：{1}', platform.name, url));
-		const queue = this._getUrlQueue();
-		await queue.enqueue(url, target.fsPath);
-		await queue.run((item: QueueItem) => this._processUrlItem(item));
-	}
-
-	// ─── P0-3 + P1-2：URL 导入处理（队列消费 + 内容清洗管道）─────────────
-
-	private _getUrlQueue(): UrlIngestQueue {
-		if (!this._urlQueue) {
-			this._urlQueue = new UrlIngestQueue(this.vaultUri(this._activeVault!), this.fileService, this.logService);
-		}
-		return this._urlQueue;
-	}
-
-	/** 队列 handler：提取 → 清洗 → 组装 → 落盘。异常上抛以触发队列重试。 */
-	private async _processUrlItem(item: QueueItem): Promise<void> {
-		const url = item.url;
-		const target = URI.file(item.targetFsPath);
-		const platform = detectPlatform(url);
-
-		// 内容抽取 + 元信息（并行）
-		const uri = URI.parse(url);
-		const [extractRes, ogMeta] = await Promise.all([
-			this._webContentExtractor.extract([uri], { followRedirects: true, trustedDomains: ['*'] }),
-			this.fetchOgMeta(url),
-		]);
-		const ext = extractRes[0];
-		if (!ext || ext.status === 'redirect') {
-			throw new Error(ext?.status === 'redirect' ? `需跳转至 ${ext.toURI}` : '未能获取页面内容');
-		}
-		let body = ext.status === 'ok' ? ext.result : (ext.result ?? '');
-		const meta: IKbMetaTags = {
-			title: ext.title || ogMeta.title || undefined,
-			author: ogMeta.author,
-			siteName: ogMeta.siteName ?? platform.name,
-			description: ogMeta.description,
-			date: ogMeta.date,
-			cover: ogMeta.cover,
-			videoUrl: ogMeta.videoUrl,
-			durationSec: ogMeta.durationSec,
-			tags: ogMeta.tags,
-		};
-		const base = this.slugFromUrl(url);
-		const mediaDir = URI.joinPath(target, 'media');
-
-		// P0-3：内容清洗管道（去 HTML 残留 / 脚本 / 样式 / 实体解码 / 空白规范化）
-		const sanitized = sanitizeUrlContent(body, url, platform.type);
-		body = sanitized.text;
-
-		if (platform.type === 'video') {
-			// 视频：先 best-effort 下载直链媒体，再落盘元数据 Markdown
-			let mediaLocalPath: string | undefined;
-			let downloaded = false;
-			if (meta.videoUrl && isDownloadableMedia(meta.videoUrl)) {
-				mediaLocalPath = await this.tryDownloadMedia(meta.videoUrl, mediaDir, base, true);
-				downloaded = !!mediaLocalPath;
-			}
-			const md = composeVideoMarkdown({ url, platformName: platform.name, meta, mediaLocalPath, downloaded });
-			const fileUri = await this.uniqueName(target, base, '.md');
-			await this.fileService.writeFile(fileUri, VSBuffer.fromString(md));
-			await this.refreshSection('library');
-			this.notificationService.info(localize(
-				downloaded ? 'kb.urlImportedVideo' : 'kb.urlImportedMeta',
-				downloaded ? '已抓取视频并导入：{0}' : '已记录视频元信息（未能直接下载文件）：{0}',
-				fileUri.path.split('/').pop(),
-			));
-			void this._logOp('kb.import.url', 'success', { source: url, target: fileUri.fsPath, detail: { platform: platform.id, type: 'video', downloaded } });
-			return;
-		}
-
-		// 图文 / mixed：本地化正文内图片 + 组装 Markdown
-		const localizedBody = await this.localizeBodyImages(body, mediaDir, base);
-		let coverLocalPath: string | undefined;
-		if (meta.cover) {
-			coverLocalPath = await this.tryDownloadImage(meta.cover, mediaDir, base + '_cover');
-		}
-		const extraNote = !localizedBody.trim()
-			? '\n> ⚠️ 未能抓取正文（页面可能需要登录或启用了强反爬）。已保留链接与元信息，可手动补齐。\n'
-			: '';
-		const md = composeArticleMarkdown({ url, platformName: platform.name, meta, body: localizedBody + extraNote, coverLocalPath });
-		const fileUri = await this.uniqueName(target, base, '.md');
-		await this.fileService.writeFile(fileUri, VSBuffer.fromString(md));
-		await this.refreshSection('library');
-		this.notificationService.info(localize('kb.urlImported', '已导入：{0}', fileUri.path.split('/').pop()));
-		void this._logOp('kb.import.url', 'success', { source: url, target: fileUri.fsPath, detail: { platform: platform.id, type: platform.type } });
-	}
-
-	/** 经主进程网络层（IRequestService，绕过渲染进程 CORS）取回页面 HTML 并解析 OG 元信息。失败返回空对象。 */
-	private async fetchOgMeta(url: string): Promise<IKbMetaTags> {
-		try {
-			const context = await this.requestService.request({
-				type: 'GET',
-				url: toSecureScheme(url),
-				followRedirects: 5,
-				headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SarosisKB/1.0)' },
-				callSite: 'saros.knowledgeBase.urlImport.og',
-			}, CancellationToken.None);
-			const status = context.res.statusCode;
-			if (!status || status < 200 || status >= 300) { return {}; }
-			return parseMetaTags((await asText(context)) ?? '');
-		} catch (err) {
-			this.logService.warn(`[KB] fetchOgMeta failed: ${err}`);
-			return {};
-		}
-	}
-
-	/** best-effort 下载媒体（视频，经 IRequestService 流式写入）到目录；失败返回 undefined。 */
-	private async tryDownloadMedia(url: string, dir: URI, base: string, isVideo = false): Promise<string | undefined> {
-		try {
-			await this.fileService.createFolder(dir);
-			const secureUrl = toSecureScheme(url);
-			const context = await this.requestService.request({
-				type: 'GET',
-				url: secureUrl,
-				followRedirects: 5,
-				headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SarosisKB/1.0)', 'Referer': secureUrl },
-				callSite: 'saros.knowledgeBase.urlImport.media',
-			}, CancellationToken.None);
-			const status = context.res.statusCode;
-			if (!status || status < 200 || status >= 300) { return undefined; }
-			const mime = (context.res.headers['content-type'] as string | undefined) ?? '';
-			if (isVideo && !isDownloadableMedia(url, mime)) { return undefined; }
-			const ext = guessMediaExt(url, mime);
-			const fileUri = await this.uniqueName(dir, base, '.' + ext);
-			const buf = await streamToBuffer(context.stream);
-			await this.fileService.writeFile(fileUri, buf);
-			return fileUri.fsPath;
-		} catch (err) {
-			this.logService.warn(`[KB] media download failed: ${err}`);
-			return undefined;
-		}
-	}
-
-	/** best-effort 下载单张图片（经 SharedWebContentExtractor，已校验 image/* MIME）到目录；失败返回 undefined。 */
-	private async tryDownloadImage(url: string, dir: URI, base: string): Promise<string | undefined> {
-		try {
-			const buf = await this._sharedWebContentExtractor.readImage(URI.parse(url), CancellationToken.None);
-			if (!buf) { return undefined; }
-			await this.fileService.createFolder(dir);
-			const ext = guessMediaExt(url);
-			const fileUri = await this.uniqueName(dir, base, '.' + ext);
-			await this.fileService.writeFile(fileUri, buf);
-			return fileUri.fsPath;
-		} catch (err) {
-			this.logService.warn(`[KB] image download failed: ${err}`);
-			return undefined;
-		}
-	}
-
-	/**
-	 * 把正文 Markdown 中的远程图片（![alt](url)）下载到 media/ 并改写为本地相对路径。
-	 * 复用 Markdown 内嵌的 URL（WebContentExtractor 已把 AX 树里的图片转成 ![]()）。
-	 */
-	private async localizeBodyImages(body: string, dir: URI, base: string): Promise<string> {
-		const imgUrls = findMarkdownImageUrls(body);
-		const replacements = new Map<string, string>();
-		const tasks: Promise<void>[] = [];
-		imgUrls.forEach((imgUrl, idx) => {
-			const localName = `${base}_img${idx}`;
-			tasks.push(
-				this.tryDownloadImage(imgUrl, dir, localName).then(local => {
-					if (local) { replacements.set(imgUrl, local); }
-				})
-			);
-		});
-		if (tasks.length) { await Promise.all(tasks); }
-		return rewriteMarkdownImageUrls(body, replacements);
-	}
-
-
-
-	private slugFromUrl(url: string): string {
-		try {
-			const u = new URL(url);
-			const last = u.pathname.split('/').filter(Boolean).pop() || u.hostname;
-			const clean = last.replace(/[\\/:*?"<>|#.]/g, '_').slice(0, 60);
-			return clean || 'import';
-		} catch {
-			return 'import';
-		}
-	}
 
 	// ═══════════════════════════════════════════════════════════
 	//  Sort
 	// ═══════════════════════════════════════════════════════════
 
-	private openSortDropdown(anchorSection: HTMLElement, anchorBtn: HTMLElement): void {
+	/** 搜索栏旁的排序下拉（P0：全局可访问排序按钮）。 */
+	private openSearchSortDropdown(anchorBtn: HTMLElement): void {
 		this._body.querySelectorAll('.kb-dropdown.show').forEach(d => d.classList.remove('show'));
 		const dd = $('div.kb-dropdown');
 		dd.id = 'kbSortDD';
@@ -3088,6 +3177,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 右键菜单：对单个库文件构建结构化笔记。 */
 	private async _buildNoteFromLibrary(node: IKbNode): Promise<void> {
+		this._setNodeBuilding(node.path, true);
 		try {
 			const vaultRoot = this.vaultUri(this._activeVault!);
 			const built = await KbImportController.buildNotesFromLibrary(node.uri, vaultRoot, {
@@ -3101,9 +3191,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			if (!built) { this.notificationService.warn('构建失败或 LLM 未生成笔记。'); return; }
 			await this.refreshSection('notes');
 			await this.refreshSection('library');
+			this.markSearchDirty(); // 让新构建的笔记进入搜索索引 / 关系图谱
 		} catch (err) {
 			this.logService.warn(`[KB] buildNoteFromLibrary: ${err}`);
 			this.notificationService.warn(`构建失败：${err}`);
+		} finally {
+			this._setNodeBuilding(node.path, false);
 		}
 	}
 
@@ -3112,134 +3205,447 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		try {
 			if (!this._activeVault) { this.notificationService.warn('请先选择知识库。'); return; }
 			const vaultRoot = this.vaultUri(this._activeVault);
-			await KbImportController.buildAllPendingNotes(vaultRoot, {
-				fileService: this.fileService,
-				configService: this.configurationService,
-				logService: this.logService,
-				notificationService: this.notificationService,
-				agentStudioService: this.agentStudioService,
-				requestService: this.requestService,
-			});
+			// 标记所有库文件 item 为「构建中」
+			const libNodes = this._scroll.querySelectorAll('.kb-node[data-section="library"]:not(.dir)');
+			libNodes.forEach((n) => { this._setNodeBuilding((n as HTMLElement).dataset.path ?? '', true); });
+			try {
+				await KbImportController.buildAllPendingNotes(vaultRoot, {
+					fileService: this.fileService,
+					configService: this.configurationService,
+					logService: this.logService,
+					notificationService: this.notificationService,
+					agentStudioService: this.agentStudioService,
+					requestService: this.requestService,
+				});
+			} finally {
+				// 清除全部构建中标记（避免刷新后残留）
+				Array.from(this._buildingPaths).forEach(p => this._setNodeBuilding(p, false));
+			}
 			await this.refreshSection('notes');
 			await this.refreshSection('library');
+			this.markSearchDirty(); // 让新构建的笔记进入搜索索引 / 关系图谱
 		} catch (err) {
 			this.logService.warn(`[KB] batchBuildAll: ${err}`);
 			this.notificationService.warn(`批量构建失败：${err}`);
 		}
 	}
 
-	// ═══════════════════════════════════════════════════════════
-	//  原生文件树（WorkbenchCompressibleAsyncDataTree）
-	// ═══════════════════════════════════════════════════════════
+	/** P2: 批量删除（多选确认）。 */
+	private async _batchDeleteNodes(nodes: IKbNode[]): Promise<void> {
+		const names = nodes.map(n => n.name).join('、');
+		const confirm = await this.dialogService.confirm({
+			message: localize('kb.batchDelete', '确定删除以下 {0} 项？\n{1}', nodes.length, names),
+			detail: localize('kb.batchDeleteDetail', '文件将移入回收站，可从回收站还原。'),
+			primaryButton: localize('kb.delete', '删除 ({0})', nodes.length),
+		});
+		if (!confirm.confirmed) { return; }
+		for (const node of nodes) {
+			try {
+				await this._deleteToTrash(node.uri);
+				this._expandedFolders.delete(node.path);
+				// 增量移除（对齐 Explorer：逐个移除节点，不整段重建，消除批量删除抖动）
+				this._removeNodeFromDom(node);
+			} catch (err) {
+				this.logService.warn(`[KB] batchDelete failed for ${node.name}: ${err}`);
+			}
+		}
+		this._domSelectedPaths.clear();
+		this._domLastSelectedPath = null;
+		this.notificationService.info(localize('kb.batchDeleted', '已删除 {0} 项', nodes.length));
+	}
 
-	private _createKbTree(): void {
-		if (!this._activeVault || !this._kbTreeContainer) { return; }
-		const vault = this._activeVault;
-		const container = this._kbTreeContainer;
+	/** 批量永久删除（Shift+Delete，对齐 Explorer Delete Permanently）。 */
+	private async _batchDeleteNodesPermanent(nodes: IKbNode[]): Promise<void> {
+		const names = nodes.map(n => n.name).join('、');
+		const confirm = await this.dialogService.confirm({
+			message: localize('kb.batchDeletePerm', '确定永久删除以下 {0} 项？\n{1}', nodes.length, names),
+			detail: localize('kb.batchDeletePermDetail', '此操作不可撤销，文件将被彻底删除且无法从回收站还原。'),
+			primaryButton: localize('kb.deletePerm', '永久删除 ({0})', nodes.length),
+		});
+		if (!confirm.confirmed) { return; }
+		for (const node of nodes) {
+			try {
+				await this.workingCopyFileService.delete([{ resource: node.uri, recursive: true, useTrash: false }], CancellationToken.None);
+				this._expandedFolders.delete(node.path);
+				// 增量移除（对齐 Explorer：逐个移除节点，不整段重建，消除批量删除抖动）
+				this._removeNodeFromDom(node);
+			} catch (err) {
+				this.logService.warn(`[KB] batchDeletePermanent failed for ${node.name}: ${err}`);
+			}
+		}
+		this._domSelectedPaths.clear();
+		this._domLastSelectedPath = null;
+		this.notificationService.info(localize('kb.batchDeletedPerm', '已永久删除 {0} 项', nodes.length));
+	}
 
-		// 清除旧树实例
-		if (this._kbTree) {
-			this._kbTree.dispose();
+	/** DOM 层拖拽：移动/复制选中文件到目标文件夹（对齐 Explorer 行为）。
+	 *  Explorer 规则：不能移到自身/后代/同级父目录；移动后源自动移除；
+	 *  冲突时确认替换/跳过；复制模式冲突自动生成「xxx copy」；操作可 Ctrl+Z 撤销。 */
+	private async _doMoveFiles(paths: string[], targetDirNode: IKbNode, mode: 'move' | 'copy' = 'move'): Promise<void> {
+		const targetDirUri = targetDirNode.uri;
+		let doneCount = 0;
+		const errors: string[] = [];
+		const verb = mode === 'copy' ? '复制' : '移动';
+		// 记录成功的操作用于 undo：{ source, target, overwrote }
+		const doneOps: { source: URI; target: URI; overwrote: boolean }[] = [];
+		let replaceAll: boolean | undefined; // 多冲突时「全部替换/全部跳过」记忆
+
+		for (const p of paths) {
+			const srcUri = URI.file(p);
+			// 不能移到自身
+			if (isEqual(srcUri, targetDirUri, false)) { errors.push(`源与目标相同: ${p}`); continue; }
+			// 不能移到自身子孙目录（父目录不能放入其子目录）
+			if (this._isParentOf(srcUri, targetDirUri)) { errors.push(`目标在源内: ${p}`); continue; }
+			// 同级父目录：移动无意义；复制则生成副本
+			const parentUri = URI.joinPath(srcUri, '..');
+			if (mode === 'move' && isEqual(parentUri, targetDirUri, false)) { errors.push(`已在目标目录: ${p}`); continue; }
+
+			let targetUri = URI.joinPath(targetDirUri, srcUri.path.split(/[\\/]/).pop() ?? '');
+			let overwrite = false;
+
+			if (await this.fileService.exists(targetUri)) {
+				if (mode === 'copy') {
+					// 复制冲突：自动生成增量名「xxx copy」「xxx copy 2」（对齐 Explorer 粘贴行为）
+					targetUri = await this._incrementalCopyName(targetUri);
+				} else {
+					// 移动冲突：确认替换 / 跳过（对齐 Explorer 覆盖确认）
+					let replace: boolean;
+					if (replaceAll !== undefined) {
+						replace = replaceAll;
+					} else {
+						const name = uriBasename(targetUri);
+						const confirm = await this.dialogService.confirm({
+							message: localize('kb.moveConflict', '目标文件夹中已存在「{0}」，是否替换？', name),
+							detail: paths.length > 1
+								? localize('kb.moveConflictDetailMulti', '替换将覆盖目标文件夹中的同名文件。此选择将应用于本次所有冲突项。')
+								: localize('kb.moveConflictDetail', '替换将覆盖目标文件夹中的同名文件，被覆盖内容无法通过撤销恢复。'),
+							primaryButton: localize('kb.replace', '替换'),
+							cancelButton: localize('kb.skip', '跳过'),
+						});
+						replace = confirm.confirmed;
+						if (paths.length > 1) { replaceAll = replace; }
+					}
+					if (!replace) { errors.push(`已跳过（目标同名）: ${uriBasename(targetUri)}`); continue; }
+					overwrite = true;
+				}
+			}
+
+			try {
+				if (mode === 'copy') {
+					await this.workingCopyFileService.copy([{ file: { source: srcUri, target: targetUri }, overwrite }], CancellationToken.None);
+				} else {
+					await this.workingCopyFileService.move([{ file: { source: srcUri, target: targetUri }, overwrite }], CancellationToken.None);
+				}
+				doneOps.push({ source: srcUri, target: targetUri, overwrote: overwrite });
+				doneCount++;
+				this.logService.info(`[DnD-DOM] ${mode}: ${p} → ${targetDirNode.name}`);
+				this._domSelectedPaths.delete(p);
+			} catch (err) {
+				errors.push(`${p}: ${err}`);
+				this.logService.warn(`[DnD-DOM] ${mode} failed for ${p}: ${err}`);
+			}
 		}
 
-		const libraryUri = this.sectionUri(vault, 'library');
-		const notesUri = this.sectionUri(vault, 'notes');
-
-		this._register(createFileIconThemableTreeContainerScope(container, this.themeService));
-
-		const dataSource = new KbTreeDataSource(
-			this.fileService,
-			() => ({ libraryUri, notesUri }),
-			() => this._sortMode,
-		);
-
-		const filter = new KbTreeFilter(() => this._searchInput?.value?.trim().toLowerCase() ?? '');
-
-		// 拖拽移动：把文件/文件夹拖到分区根或目录节点上 → 移动到该目录
-		const dnd = new KbTreeDragAndDrop(
-			this.fileService,
-			(section) => this.sectionUri(vault, section),
-			() => this._refreshKbTree(),
-		);
-
-		this._kbTree = this._register(this.instantiationService.createInstance(
-			WorkbenchCompressibleAsyncDataTree<null, KbTreeElement, FuzzyScore>,
-			'KnowledgeBase', container,
-			new KbTreeDelegate(),
-			{ isIncompressible: () => true },
-			[new KbSectionRenderer(), new KbNodeRenderer()],
-			dataSource,
-			{
-			accessibilityProvider: new KbTreeAccessibilityProvider(),
-			filter,
-			dnd,
-			sorter: new KbTreeSorter(),
-				multipleSelectionSupport: false,
-				identityProvider: kbTreeIdentityProvider(),
-				keyboardNavigationLabelProvider: {
-					getKeyboardNavigationLabel(e: KbTreeElement) {
-						return isSectionNode(e) ? e.label : e.name;
+		// 注册 undo（仅未覆盖的操作可安全回退；覆盖操作无法恢复被替换文件，不纳入撤销）
+		const undoableOps = doneOps.filter(o => !o.overwrote);
+		if (undoableOps.length > 0) {
+			if (mode === 'move') {
+				this._pushKbUndoElement(
+					localize('kb.undoMove', '移动 {0} 项到「{1}」', undoableOps.length, targetDirNode.name), 'kb.move',
+					undoableOps.flatMap(o => [o.source, o.target]),
+					async () => { // undo: 移回原处
+						for (const o of [...undoableOps].reverse()) {
+							try { await this.workingCopyFileService.move([{ file: { source: o.target, target: o.source } }], CancellationToken.None, { isUndoing: true }); } catch (e) { this.logService.warn(`[KB-Undo] move-back failed: ${e}`); }
+						}
+						await this._reloadAfterMove(targetDirNode.section, targetDirNode, undoableOps.map(o => o.source));
 					},
-					getCompressedNodeKeyboardNavigationLabel(e: KbTreeElement[]) {
-						return e.map(x => isSectionNode(x) ? x.label : x.name).join('/');
+					async () => { // redo: 再次移动
+						for (const o of undoableOps) {
+							try { await this.workingCopyFileService.move([{ file: { source: o.source, target: o.target } }], CancellationToken.None); } catch (e) { this.logService.warn(`[KB-Redo] move failed: ${e}`); }
+						}
+						await this._reloadAfterMove(targetDirNode.section, targetDirNode, undoableOps.map(o => o.source));
 					},
-				},
-			},
-		));
-
-		// 双击/Enter 打开文件
-		this._register(this._kbTree.onDidOpen(e => {
-			if (e.element && !isSectionNode(e.element) && !e.element.isDirectory) {
-				this.openInEditor(e.element);
+				);
+			} else {
+				this._pushKbUndoElement(
+					localize('kb.undoCopy', '复制 {0} 项到「{1}」', undoableOps.length, targetDirNode.name), 'kb.copy',
+					undoableOps.map(o => o.target),
+					async () => { // undo: 删除副本
+						for (const o of undoableOps) {
+							try { await this.workingCopyFileService.delete([{ resource: o.target, recursive: true, useTrash: true }], CancellationToken.None, { isUndoing: true }); } catch (e) { this.logService.warn(`[KB-Undo] delete-copy failed: ${e}`); }
+						}
+						await this._reloadAfterMove(targetDirNode.section, targetDirNode, undoableOps.map(o => o.target));
+					},
+					async () => { // redo: 再次复制
+						for (const o of undoableOps) {
+							try { await this.workingCopyFileService.copy([{ file: { source: o.source, target: o.target } }], CancellationToken.None); } catch (e) { this.logService.warn(`[KB-Redo] copy failed: ${e}`); }
+						}
+						await this._reloadAfterMove(targetDirNode.section, targetDirNode, undoableOps.map(o => o.target));
+					},
+				);
 			}
-		}));
+		}
 
-		// 右键菜单
-		this._register(this._kbTree.onContextMenu((e: ITreeContextMenuEvent<KbTreeElement>) => {
-			if (!e.element || isSectionNode(e.element)) { return; }
-			const node = e.element as IKbNode;
-			const items: { label: string; run: () => void }[] = [
-				{ label: '新建文件', run: () => { void this.newFile(node.section, node.isDirectory ? node : undefined); } },
-				{ label: '新建文件夹', run: () => { void this.newFolder(node.section, node.isDirectory ? node : undefined); } },
-				{ label: '重命名', run: () => { /* TODO: tree rename */ } },
-				{ label: '删除', run: () => { void this.deleteNode(node); } },
-			];
-			if (!node.isDirectory) { items.push({ label: '打开', run: () => this.openInEditor(node) }); }
-			if (!node.isDirectory && node.section === 'library') {
-				items.push({ label: '构建为笔记', run: () => { void this._buildNoteFromLibrary(node); } });
-			}
-			if (!node.isDirectory && node.section === 'notes') {
-				items.push({ label: '移入审核', run: () => { void this._moveToReview(node); } });
-			}
-			const me = e.browserEvent as MouseEvent;
-			this.showSimpleMenu(items, me.clientX, me.clientY);
-		}));
-
-		this._kbTree.layout();
-		this._kbTree.setInput(null);
-
-		// 默认展开两个 section
-		this._kbTree.expandAll();
+		this._domSelectedPaths.clear();
+		this._domLastSelectedPath = null;
+		this._body.querySelectorAll('.kb-node.selected').forEach(n => n.classList.remove('selected'));
+		await this._reloadAfterMove(targetDirNode.section, targetDirNode, doneOps.map(o => o.source));
+		if (errors.length > 0) {
+			this.notificationService.warn(`已${verb} ${doneCount} 项，${errors.length} 项未处理：${errors.join('; ')}`);
+		} else if (doneCount > 0) {
+			this.notificationService.info(`已${verb} ${doneCount} 项到「${targetDirNode.name}」（Ctrl+Z 可撤销）`);
+		}
 	}
 
-	private _refreshKbTree(): void {
-		if (!this._kbTree || !this._activeVault) { return; }
-		// 递归刷新所有已展开节点：重新向 DataSource 查询，保留用户展开状态，
-		// 新增/删除/重命名的文件与文件夹会即时反映（替代 setInput(null)，
-		// 后者只重建 root 且仅展开两个 section，导致已展开子文件夹折叠且内容不刷新）。
-		void this._kbTree.updateChildren();
-		// 保证「库 / 笔记」两个 root section 始终展开，便于用户看到变化
-		this._kbTree.expandAll();
+	/** 复制冲突时生成增量名：「xxx copy.md」「xxx copy 2.md」（对齐 Explorer findValidPasteFileTarget）。 */
+	private async _incrementalCopyName(targetUri: URI): Promise<URI> {
+		const dir = URI.joinPath(targetUri, '..');
+		const ext = uriExtname(targetUri);
+		const base = uriBasename(targetUri).slice(0, uriBasename(targetUri).length - ext.length);
+		for (let i = 1; i < 100; i++) {
+			const name = i === 1 ? `${base} copy${ext}` : `${base} copy ${i}${ext}`;
+			const candidate = URI.joinPath(dir, name);
+			if (!(await this.fileService.exists(candidate))) { return candidate; }
+		}
+		return URI.joinPath(dir, `${base} copy ${Date.now()}${ext}`);
 	}
 
-	protected override layoutBody(height: number, width: number): void {
-		super.layoutBody(height, width);
-		this._kbTree?.layout(height, width);
+	/** 把一次 KB 文件操作注册进 undo/redo 栈（workspace 级元素，挂在 KB 专属 UndoRedoSource 上）。 */
+	private _pushKbUndoElement(label: string, code: string, resources: URI[], undo: () => Promise<void>, redo: () => Promise<void>): void {
+		const element: IWorkspaceUndoRedoElement = {
+			type: UndoRedoElementType.Workspace,
+			resources,
+			label,
+			code,
+			undo,
+			redo,
+		};
+		this.undoRedoService.pushElement(element, UndoRedoGroup.None, this._kbUndoSource);
+	}
+
+	/** KB 视图内撤销（只作用于 KB 文件操作栈）。 */
+	private async _kbUndo(): Promise<void> {
+		if (!this.undoRedoService.canUndo(this._kbUndoSource)) {
+			this.notificationService.info(localize('kb.nothingToUndo', '没有可撤销的知识库文件操作'));
+			return;
+		}
+		await this.undoRedoService.undo(this._kbUndoSource);
+	}
+
+	/** KB 视图内重做。 */
+	private async _kbRedo(): Promise<void> {
+		if (!this.undoRedoService.canRedo(this._kbUndoSource)) { return; }
+		await this.undoRedoService.redo(this._kbUndoSource);
+	}
+
+	/** 软删除：优先移入系统回收站（对齐 Explorer files.enableTrash 默认行为）；trash 不可用时回退硬删除。 */
+	private async _deleteToTrash(uri: URI): Promise<void> {
+		try {
+			await this.workingCopyFileService.delete([{ resource: uri, recursive: true, useTrash: true }], CancellationToken.None);
+		} catch (err) {
+			this.logService.warn(`[KB] trash delete failed, falling back to permanent delete: ${err}`);
+			await this.fileService.del(uri, { recursive: true });
+		}
+	}
+
+	/** 检查 srcUri 是否是 targetDirUri 的父目录（或其祖先）。 */
+	private _isParentOf(srcUri: URI, targetDirUri: URI): boolean {
+		const srcPath = srcUri.path.toLowerCase();
+		const targetPath = targetDirUri.path.toLowerCase();
+		// 父目录判定：目标路径以源路径为前缀（不含相等）
+		return targetPath.startsWith(srcPath + '/') && targetPath.length > srcPath.length + 1;
+	}
+
+	// ─── 剪贴板：剪切 / 复制 / 粘贴 / 复制路径 / 在系统资源管理器显示（对齐 Explorer） ───
+
+	/** 当前用于剪贴板/批量操作的路径集：显式 paths > DOM 多选 > 单节点 fallback。 */
+	private _pathsForClipboard(fallback?: string, explicitPaths?: string[]): string[] {
+		if (explicitPaths && explicitPaths.length) { return explicitPaths; }
+		if (this._domSelectedPaths.size > 0) { return Array.from(this._domSelectedPaths); }
+		return fallback ? [fallback] : [];
+	}
+
+	/** 剪切或复制选中项到剪贴板（同时写入系统剪贴板，支持跨窗口）。 */
+	private _kbCopyToClipboard(cut: boolean, fallback?: string, explicitPaths?: string[]): void {
+		const paths = this._pathsForClipboard(fallback, explicitPaths);
+		if (!paths.length) { return; }
+		const uris = paths.map(p => URI.file(p));
+		this._kbClipboard = { uris, cut };
+		void this.clipboardService.writeResources(uris);
+		// 剪切视觉反馈：半透明标记（对齐 Explorer cut 项变暗）
+		for (const el of this._scroll.querySelectorAll('.kb-node.kb-cut')) { el.classList.remove('kb-cut'); }
+		if (cut) {
+			for (const p of paths) {
+				this.findNodeEl(this.sectionOfPath(p), p)?.classList.add('kb-cut');
+			}
+		}
+		this.notificationService.info(localize(
+			cut ? 'kb.copied.cut' : 'kb.copied.copy',
+			cut ? '已剪切 {0} 项' : '已复制 {0} 项', paths.length));
+	}
+
+	/** 粘贴到目标目录：剪切=移动（冲突确认），复制=复制（冲突增量命名）。复用 _doMoveFiles 的冲突/undo 逻辑。 */
+	private async _kbPaste(targetDirNode: IKbNode): Promise<void> {
+		let uris: URI[];
+		let cut = false;
+		if (this._kbClipboard && this._kbClipboard.uris.length) {
+			uris = this._kbClipboard.uris;
+			cut = this._kbClipboard.cut;
+		} else {
+			// 回退到系统剪贴板（从 VS Code Explorer / OS 复制的文件）→ 一律按「复制」处理，绝不删除外部源
+			try { uris = await this.clipboardService.readResources(); } catch { uris = []; }
+			uris = uris.filter(u => u.scheme === 'file');
+		}
+		if (!uris.length) {
+			this.notificationService.info(localize('kb.clipboardEmpty', '剪贴板为空'));
+			return;
+		}
+		const paths = uris.map(u => u.fsPath);
+		await this._doMoveFiles(paths, targetDirNode, cut ? 'move' : 'copy');
+		// 剪切粘贴成功后清空剪贴板（移动语义一次性），并移除剪切标记
+		if (cut) {
+			this._kbClipboard = null;
+			for (const el of this._scroll.querySelectorAll('.kb-node.kb-cut')) { el.classList.remove('kb-cut'); }
+		}
+	}
+
+	/** 解析粘贴目标目录：文件夹→自身；文件→其父目录；无→当前分区根。 */
+	private _resolvePasteTargetDir(node?: IKbNode): IKbNode | null {
+		if (!this._activeVault) { return null; }
+		if (node) {
+			if (node.isDirectory) { return node; }
+			const parentUri = URI.joinPath(node.uri, '..');
+			return { name: uriBasename(parentUri), path: parentUri.fsPath, uri: parentUri, isDirectory: true, section: node.section, size: 0, mtime: 0, ctime: 0, childCount: 0 };
+		}
+		// 键盘 Ctrl+V：以最后选中项为准，否则当前 notes 分区根
+		const last = this._domLastSelectedPath;
+		if (last) {
+			const el = this.findNodeEl(this.sectionOfPath(last), last);
+			const n = el ? this.nodeFromEl(el) : null;
+			if (n) { return this._resolvePasteTargetDir(n); }
+		}
+		const sectionUri = this.sectionUri(this._activeVault, 'notes');
+		return { name: '笔记', path: sectionUri.fsPath, uri: sectionUri, isDirectory: true, section: 'notes', size: 0, mtime: 0, ctime: 0, childCount: 0 };
+	}
+
+	/** 复制路径（绝对或相对知识库根）。 */
+	private _kbCopyPath(node: IKbNode, relative: boolean): void {
+		let text = node.uri.fsPath;
+		if (relative && this._activeVault) {
+			const vaultRoot = this.vaultUri(this._activeVault).fsPath;
+			text = node.uri.fsPath.startsWith(vaultRoot)
+				? node.uri.fsPath.slice(vaultRoot.length).replace(/^[\\/]/, '')
+				: node.uri.fsPath;
+		}
+		void this.clipboardService.writeText(text);
+		this.notificationService.info(localize('kb.pathCopied', '已复制路径'));
+	}
+
+	/** 在系统资源管理器中显示：文件→打开其父目录并定位；文件夹→打开自身。 */
+	private _kbRevealInOS(node: IKbNode): void {
+		const target = node.isDirectory ? node.uri : URI.joinPath(node.uri, '..');
+		void this.openerService.open(target, { openExternal: true });
+	}
+
+	/** 导入后自动生成/更新思维导图（JSON Canvas 格式，落盘笔记目录）。
+	 *  增量扫描最近导入内容 → LLM 提取结构化图谱 → 合并到已有 .canvas 或新建。 */
+	private async _generateMindmapAfterImport(): Promise<void> {
+		if (!this._activeVault) { return; }
+		// 延迟执行，确保文件系统已落盘
+		await new Promise(r => setTimeout(r, 600));
+		try {
+			if (!this._mindmapGenerator) {
+				this._mindmapGenerator = new KbMindmapGenerator(
+					this.fileService, this.logService,
+				);
+			}
+			const notesDir = this.sectionUri(this._activeVault, 'notes');
+
+		// 增量策略：只取 mtime ≤ 5 分钟前的文件（刚导入/构建的）；少于 3 条时回退扫描全量
+		// 扫描源为「笔记分区」而非「库分区」：HTML 等导入经「构建为笔记」后结构化内容落在
+		// notes/（概念/对比/…），库分区往往只剩原始 .html，若只扫库分区会导致 libFiles 为空、
+		// 思维导图永远不生成（此前 bug）。
+		const recentCutoff = Date.now() - 5 * 60_000;
+		const noteFiles: { fileName: string; content: string }[] = [];
+		try {
+			const st = await this.fileService.resolve(notesDir);
+			const walk = async (d: typeof st) => {
+				if (!d.children) { return; }
+				for (const c of d.children) {
+					if (c.isDirectory && !c.name.startsWith('.')) {
+						try { await walk(await this.fileService.resolve(c.resource)); } catch { /* skip */ }
+					} else if (!c.isDirectory && c.name.endsWith('.md')) {
+						const isRecent = (c.mtime ?? 0) > recentCutoff;
+						if (!isRecent) { continue; }
+						try {
+							const raw = await this.fileService.readFile(c.resource);
+							const text = raw.value.toString().slice(0, 3000);
+							const relName = c.resource.fsPath.slice(notesDir.fsPath.length + 1);
+							noteFiles.push({ fileName: relName, content: text });
+						} catch { /* skip */ }
+					}
+				}
+			};
+			await walk(st);
+			// 增量太少则回退全量扫描（兜底：可能 mtime 未精确落盘）
+			if (noteFiles.length < 3) {
+				noteFiles.length = 0;
+				const fullWalk = async (d: typeof st) => {
+					if (!d.children) { return; }
+					for (const c of d.children) {
+						if (c.isDirectory && !c.name.startsWith('.')) {
+							try { await fullWalk(await this.fileService.resolve(c.resource)); } catch { /* skip */ }
+						} else if (!c.isDirectory && c.name.endsWith('.md')) {
+							try {
+								const raw = await this.fileService.readFile(c.resource);
+								noteFiles.push({ fileName: c.resource.fsPath.slice(notesDir.fsPath.length + 1), content: raw.value.toString().slice(0, 3000) });
+							} catch { /* skip */ }
+						}
+					}
+				};
+				await fullWalk(st);
+			}
+		} catch { /* 笔记区无文件 */ }
+		if (noteFiles.length === 0) { return; }
+
+			// 查找已有思维导图（笔记目录中任意 .canvas）
+			const existingMap = await this._mindmapGenerator.listMindmaps(notesDir);
+			let existingUri: URI | undefined;
+			if (existingMap.size > 0) {
+				// 优先使用 mindmap.canvas，其次第一个
+				existingUri = existingMap.get('mindmap.canvas') ?? existingMap.values().next().value;
+			}
+
+			// 获取 LLM 模型
+			const chatModel = await this._getOrCreateChatModel();
+			if (!chatModel) { return; }
+
+		const result = await this._mindmapGenerator.generateOrUpdate(
+			chatModel, notesDir, noteFiles, existingUri,
+		);
+			if (result) {
+				this.logService.info(`[mindmap] updated ${result.fsPath}`);
+				await this.refreshSection('notes');
+			}
+		} catch (err) {
+			this.logService.warn(`[mindmap] generation failed: ${err}`);
+		}
+	}
+
+	/** 获取 LLM ChatModel（复用 AgentStudioService.createKbChatModel 链）。
+	 *  优先 agentStudioService，回退到本地配置解析。 */
+	private async _getOrCreateChatModel(): Promise<IChatModel | null> {
+		try {
+			const svc = this.agentStudioService as unknown as { createKbChatModel?: () => IChatModel | null };
+			const model = svc.createKbChatModel?.();
+			if (model) { return model; }
+		} catch { /* fall through */ }
+		return null;
 	}
 
 	override focus(): void {
 		super.focus();
-		this._kbTree?.domFocus();
+		this._scroll?.focus();
 	}
 
 	// ═══════════════════════════════════════════════════════════
@@ -3247,23 +3653,82 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	// ═══════════════════════════════════════════════════════════
 
 	private nodeContextMenu(e: MouseEvent, el: HTMLElement, node: IKbNode): void {
+		// 右键命中多选集合中的节点 → 弹多选批量菜单（不折叠选择），对齐原树层多选菜单
+		if (this._domSelectedPaths.size > 1 && this._domSelectedPaths.has(node.path)) {
+			this._nodeMultiContextMenu(e, node);
+			return;
+		}
 		this.selectNode(el);
-		const items: { label: string; run: () => void }[] = [
-			{ label: '新建文件', run: () => { void this.newFile(node.section, node.isDirectory ? node : undefined); } },
-			{ label: '新建文件夹', run: () => { void this.newFolder(node.section, node.isDirectory ? node : undefined); } },
-			{ label: '重命名', run: () => this.startRename(el, node) },
-			{ label: '删除', run: () => { void this.deleteNode(node); } },
+		const pasteTarget = node.isDirectory ? node : this._resolvePasteTargetDir(node);
+		const canPaste = !!this._kbClipboard?.uris.length;
+		const actions: IAction[] = [
+			// navigation：新建
+			new Action('kb.newFile', localize('kb.newFile', '新建文件'), undefined, true, () => { void this.newFile(node.section, node.isDirectory ? node : undefined); }),
+			new Action('kb.newFolder', localize('kb.newFolder', '新建文件夹'), undefined, true, () => { void this.newFolder(node.section, node.isDirectory ? node : undefined); }),
+			new Separator(),
 		];
-		if (!node.isDirectory) { items.push({ label: '打开', run: () => this.openInEditor(node) }); }
-		// 库文件：构建为笔记（双阶段 LLM + FILE 块）
+		// 打开 / 在系统资源管理器显示
+		if (!node.isDirectory) {
+			actions.push(new Action('kb.open', localize('kb.open', '打开'), undefined, true, () => this.openInEditor(node)));
+		}
+		actions.push(new Action('kb.revealInOS', localize('kb.revealInOS', '在系统资源管理器中显示'), undefined, true, () => this._kbRevealInOS(node)));
+		// 剪贴板
+		actions.push(
+			new Separator(),
+			new Action('kb.cut', localize('kb.cut', '剪切'), undefined, true, () => this._kbCopyToClipboard(true, node.path)),
+			new Action('kb.copy', localize('kb.copy', '复制'), undefined, true, () => this._kbCopyToClipboard(false, node.path)),
+			new Action('kb.paste', localize('kb.paste', '粘贴'), undefined, canPaste, () => { if (pasteTarget) { void this._kbPaste(pasteTarget); } }),
+			new Separator(),
+			new Action('kb.copyPath', localize('kb.copyPath', '复制路径'), undefined, true, () => this._kbCopyPath(node, false)),
+			new Action('kb.copyRelPath', localize('kb.copyRelPath', '复制相对路径'), undefined, true, () => this._kbCopyPath(node, true)),
+			new Separator(),
+			new Action('kb.rename', localize('kb.rename', '重命名'), undefined, true, () => this.startRename(el, node)),
+			new Action('kb.delete', localize('kb.delete', '删除'), undefined, true, () => { void this.deleteNode(node); }),
+			new Action('kb.deletePerm', localize('kb.deletePerm', '永久删除'), undefined, true, () => { void this._deleteNodePermanent(node); }),
+		);
+		// KB 专有动作
 		if (!node.isDirectory && node.section === 'library') {
-			items.push({ label: '构建为笔记', run: () => { void this._buildNoteFromLibrary(node); } });
+			actions.push(new Separator(), new Action('kb.buildNote', '构建为笔记', undefined, true, () => { void this._buildNoteFromLibrary(node); }));
 		}
-		// P2-1：笔记节点可「移入审核」（低质量笔记先隔离到 .review/，供人工确认）
 		if (!node.isDirectory && node.section === 'notes') {
-			items.push({ label: '移入审核', run: () => { void this._moveToReview(node); } });
+			actions.push(new Action('kb.moveToReview', '移入审核', undefined, true, () => { void this._moveToReview(node); }));
 		}
-		this.showSimpleMenu(items, e.clientX, e.clientY);
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => ({ x: e.clientX, y: e.clientY }),
+			getActions: () => actions,
+		});
+	}
+
+	/** 多选右键菜单：批量剪切/复制/粘贴/删除/永久删除 + 多 .canvas 合并思维导图。 */
+	private _nodeMultiContextMenu(e: MouseEvent, anchorNode: IKbNode): void {
+		const nodes: IKbNode[] = [];
+		for (const p of this._domSelectedPaths) {
+			const elx = this.findNodeEl(this.sectionOfPath(p), p);
+			const n = elx ? this.nodeFromEl(elx) : null;
+			if (n) { nodes.push(n); }
+		}
+		if (!nodes.length) { return; }
+		const selPaths = nodes.map(n => n.path);
+		const pasteTarget = this._resolvePasteTargetDir(anchorNode);
+		const canPaste = !!this._kbClipboard?.uris.length;
+		const actions: IAction[] = [
+			new Action('kb.cut', `剪切 (${nodes.length} 项)`, undefined, true, () => this._kbCopyToClipboard(true, undefined, selPaths)),
+			new Action('kb.copy', `复制 (${nodes.length} 项)`, undefined, true, () => this._kbCopyToClipboard(false, undefined, selPaths)),
+			new Action('kb.paste', '粘贴', undefined, canPaste, () => { if (pasteTarget) { void this._kbPaste(pasteTarget); } }),
+			new Separator(),
+			new Action('kb.delete', `删除 (${nodes.length} 项)`, undefined, true, () => { void this._batchDeleteNodes(nodes); }),
+			new Action('kb.deletePerm', `永久删除 (${nodes.length} 项)`, undefined, true, () => { void this._batchDeleteNodesPermanent(nodes); }),
+		];
+		// 多选 .canvas 思维导图：合并为一个
+		const canvasFiles = nodes.filter(s => !s.isDirectory && s.name.endsWith('.canvas'));
+		if (canvasFiles.length >= 2 && canvasFiles.every(s => s.section === 'notes')) {
+			actions.push(new Separator());
+			actions.push(new Action('kb.mergeCanvas', `合并思维导图 (${canvasFiles.length} 个)`, undefined, true, () => { void this._mergeCanvasFiles(canvasFiles); }));
+		}
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => ({ x: e.clientX, y: e.clientY }),
+			getActions: () => actions,
+		});
 	}
 
 	private showSimpleMenu(items: { label: string; run: () => void }[], x?: number, y?: number): void {
@@ -3334,8 +3799,192 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		};
 	}
 
+	/**
+	 * 增量移除已删除节点：只移除对应 DOM 元素并重算计数，绝不整段 replaceChildren 重建。
+	 * 对齐 Explorer 的增量刷新（删除单个 tree element + 刷新其父节点），消除删除抖动。
+	 * 文件监听引发的重复刷新已由 B 档「事件中枢」改为靶向增量刷新（见 _reloadForFileChanges），无需抑制窗。
+	 */
+	private _removeNodeFromDom(node: IKbNode): void {
+		const section = node.section;
+		const body = this._scroll.querySelector(`.kb-section-body[data-section="${section}"]`) as HTMLElement | null;
+		if (!body) { return; }
+		// 移除元素（目录则其嵌套后代一并移除）
+		const el = this.findNodeEl(section, node.path);
+		if (el) {
+			// 目录：清理所选集合中的嵌套后代路径
+			if (node.isDirectory) {
+				for (const c of Array.from(el.querySelectorAll('.kb-node'))) {
+					const cp = (c as HTMLElement).dataset.path as string | undefined;
+					if (cp) { this._domSelectedPaths.delete(cp); }
+				}
+				// 子节点渲染在紧随其后的 .kb-children 兄弟容器（见 expandFolder 的 el.after），
+				// 删除目录时必须一并移除该容器，否则子文件夹/子文件残留在视图中（看似未删除）。
+				const childrenEl = el.nextElementSibling as HTMLElement | null;
+				if (childrenEl && childrenEl.classList.contains('kb-children')) {
+					childrenEl.remove();
+				}
+			}
+			if (el.parentElement) { el.parentElement.removeChild(el); }
+		}
+		// 清理选择状态与上次选中
+		this._domSelectedPaths.delete(node.path);
+		if (this._domLastSelectedPath === node.path) { this._domLastSelectedPath = null; }
+		// 重算计数：等于 body 顶层 .kb-node 数量（vault 节点 + 关联文件夹 + 工作区分组均为顶层 .kb-node，与原 countNodes+linkCount 等价）
+		// 嵌套展开的子项位于 .kb-children 内，不计入顶层，故与 section 计数语义一致。
+		const topCount = Array.from(body.children).filter(c => (c as HTMLElement).classList?.contains('kb-node')).length;
+		const countEl = body.parentElement?.querySelector('.kb-count') as HTMLElement | null;
+		if (countEl) { countEl.textContent = String(topCount); }
+		// 分区变空时显示空态
+		if (topCount === 0 && !body.querySelector('.kb-empty-inline')) {
+			const empty = $('div.kb-empty-inline'); empty.textContent = '暂无内容';
+			body.replaceChildren(empty);
+		}
+	}
+
+	/**
+	 * 增量刷新某目录的「直接子节点」（对齐 Explorer 的「刷新父节点」）：只对该目录的 .kb-children 容器
+	 * 重新 listChildren 并重渲染，绝不做整段分区 replaceChildren；已展开的子目录 DOM 子树被保留复用，
+	 * 因此开销仅为「单次 listChildren + 单容器重渲染」，消除 newFile/rename/move 的整段重建抖动。
+	 * folderPath=null 表示分区根（刷新 body 顶层，并保留关联文件夹行与已展开子树）。
+	 * 未展开（无 .kb-children 容器）的目录直接跳过——折叠子树不显示内容，无需刷新（与 Explorer 一致）。
+	 */
+	private async _reloadChildren(section: KbSection, folderPath: string | null): Promise<void> {
+		if (!this._activeVault) { return; }
+		const body = this._scroll.querySelector(`.kb-section-body[data-section="${section}"]`) as HTMLElement | null;
+		if (!body) { return; }
+		const container: HTMLElement | null = folderPath === null
+			? body
+			: (() => {
+				const el = this.findNodeEl(section, folderPath);
+				const sib = el?.nextElementSibling as HTMLElement | null;
+				return (sib && sib.classList.contains('kb-children')) ? sib : null;
+			})();
+		if (!container) { return; }
+
+		const parentUri = folderPath === null ? this.sectionUri(this._activeVault!, section) : URI.file(folderPath);
+		let nodes: IKbNode[];
+		try { nodes = await this.listChildren(parentUri, section); }
+		catch { return; }
+
+		// 保留已展开子目录的 DOM 子树（仅重列「直接子节点」，不做递归重建）
+		const preserved = new Map<string, HTMLElement>();
+		for (const child of Array.from(container.children) as HTMLElement[]) {
+			if (child.classList.contains('kb-node') && child.classList.contains('dir') && this._expandedFolders.has(child.dataset.path ?? '')) {
+				const kids = child.nextElementSibling as HTMLElement | null;
+				if (kids && kids.classList.contains('kb-children')) { preserved.set(child.dataset.path ?? '', kids); }
+			}
+		}
+		// 顶层刷新时还需保留关联条目行：单独关联文件夹（.kb-linked）与工作区分组（.kb-linked-ws，
+		// 其子项在自身内部而非 sibling）。二者都是 body 直接子级，且 classList 精确匹配互不包含，必须分别判定。
+		const linkedEls = folderPath === null
+			? (Array.from(body.children) as HTMLElement[]).filter(c => c.classList.contains('kb-linked') || c.classList.contains('kb-linked-ws'))
+			: [];
+
+		const depth = folderPath === null ? 0 : (this.depthOf(container.previousElementSibling as HTMLElement) + 1);
+		if (nodes.length === 0) {
+			// 对齐原渲染的空态文案（顶层「暂无内容」/ 子目录「空文件夹」）
+			const empty = $('div.kb-empty-inline');
+			if (folderPath === null) { empty.textContent = '暂无内容'; } else { empty.style.paddingLeft = '20px'; empty.textContent = '空文件夹'; }
+			container.replaceChildren(empty);
+		} else {
+			await this._appendNodesChunked(container, nodes, depth);
+		}
+
+		// 恢复已展开子目录的 DOM
+		for (const n of nodes) {
+			if (n.isDirectory && preserved.has(n.path)) {
+				const el = this.findNodeEl(section, n.path);
+				if (el && el.parentElement) { el.insertAdjacentElement('afterend', preserved.get(n.path)!); }
+			}
+		}
+		// 顶层刷新：重新挂回关联条目行并同步计数徽章
+		if (folderPath === null) {
+			if (linkedEls.length > 0) {
+				// 有关联条目时不应残留「暂无内容」占位
+				body.querySelector('.kb-empty-inline')?.remove();
+				for (const l of linkedEls) { body.appendChild(l); }
+			}
+			// 计数口径与 _removeNodeFromDom 一致：body 顶层 .kb-node 数（vault 节点 + 关联文件夹 + 工作区分组）
+			const topCount = (Array.from(body.children) as HTMLElement[]).filter(c => c.classList?.contains('kb-node')).length;
+			const countEl = body.parentElement?.querySelector('.kb-count') as HTMLElement | null;
+			if (countEl) { countEl.textContent = String(topCount); }
+		}
+	}
+
+	/** 路径比较归一化（与 sectionOfPath 同口径：统一斜杠 + 小写，兼容 Windows 盘符大小写差异）。 */
+	private _normPath(p: string): string {
+		return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+	}
+
+	/** 分区根路径（用于判断某路径的父级是否为分区根，从而把刷新键归一到 null）。 */
+	private _sectionRootPath(section: KbSection): string {
+		return this._activeVault ? this.sectionUri(this._activeVault, section).fsPath : '';
+	}
+
+	/** 把子节点路径换算成「父目录刷新键」：父级是分区根则返回 null，否则返回父目录路径。 */
+	private _parentReloadKey(section: KbSection, childPath: string): string | null {
+		const parent = URI.joinPath(URI.file(childPath), '..').fsPath;
+		return this._normPath(parent) === this._normPath(this._sectionRootPath(section)) ? null : parent;
+	}
+
+	/**
+	 * 移动/复制后的靶向增量刷新（替代 _refreshAllSections 重建所有分区）：
+	 * 只重列「目标目录」与「各源文件所在父目录」的直接子节点；跨分区时按各路径所属分区分别刷新。
+	 */
+	private async _reloadAfterMove(section: KbSection, targetDirNode: IKbNode, children: URI[]): Promise<void> {
+		const toReload = new Map<KbSection, Set<string | null>>();
+		const add = (sec: KbSection, key: string | null) => {
+			if (!toReload.has(sec)) { toReload.set(sec, new Set()); }
+			toReload.get(sec)!.add(key);
+		};
+		// 目标目录：真实目录刷新其 .kb-children；分区根伪节点刷新顶层
+		const targetIsRoot = this._normPath(targetDirNode.path) === this._normPath(this._sectionRootPath(section));
+		add(section, targetDirNode.isDirectory && !targetIsRoot ? targetDirNode.path : null);
+		// 各源/副本所在父目录
+		for (const c of children) {
+			const sec = this.sectionOfPath(c.fsPath);
+			add(sec, this._parentReloadKey(sec, c.fsPath));
+		}
+		for (const [sec, keys] of toReload) {
+			for (const key of keys) { await this._reloadChildren(sec, key); }
+		}
+	}
+
+	/** DOM 层文件名过滤：按名称匹配显隐节点；目录在其自身或后代匹配时保留可见（对齐原 KbTreeFilter 行为）。 */
+	private _applyDomFilenameFilter(query: string): void {
+		const q = query.trim().toLowerCase();
+		for (const body of Array.from(this._scroll.querySelectorAll('.kb-section-body[data-section]'))) {
+			const nodes = Array.from(body.querySelectorAll('.kb-node')) as HTMLElement[];
+			// 先按名称匹配标记文件节点
+			const visible = new Map<HTMLElement, boolean>();
+			for (const el of nodes) {
+				const name = (el.querySelector('.kb-name')?.textContent ?? '').toLowerCase();
+				visible.set(el, !q || name.includes(q));
+			}
+			// 目录：自身匹配或任一后代可见则保留（保证匹配项的祖先链可见）
+			for (const el of nodes) {
+				if (!el.classList.contains('dir')) { continue; }
+				if (visible.get(el)) { continue; }
+				const descendantVisible = Array.from(el.querySelectorAll('.kb-node')).some(c => visible.get(c as HTMLElement));
+				visible.set(el, descendantVisible);
+			}
+			for (const el of nodes) { el.style.display = visible.get(el) ? '' : 'none'; }
+		}
+	}
+
 	private applyFilter(_q: string): void {
 		const q = _q.trim().toLowerCase();
+		// 文件名模式：由 _applyDomFilenameFilter 处理树内过滤，不需要全文搜索路径
+		if (this._searchMode === 'filename') {
+			// 清除全文搜索结果
+			const fr = this._scroll.querySelector('.kb-search-results') as HTMLElement | null;
+			if (fr) { fr.classList.remove('show'); fr.replaceChildren(); }
+			// 显示分区树，让树 filter 自行过滤可见性
+			this._scroll.querySelectorAll('.kb-section').forEach(s => (s as HTMLElement).style.display = '');
+			if (this._backlinksEl) { this._backlinksEl.style.display = ''; }
+			this._applyDomFilenameFilter(q);
+			return;
+		}
 		let resultsEl = this._scroll.querySelector('.kb-search-results') as HTMLElement | null;
 		if (!q) {
 			// 清空搜索：取消待处理搜索 + 恢复分区树
@@ -3343,6 +3992,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this._scroll.querySelectorAll('.kb-section').forEach(s => (s as HTMLElement).style.display = '');
 			if (resultsEl) { resultsEl.classList.remove('show'); resultsEl.replaceChildren(); }
 			if (this._backlinksEl) { this._backlinksEl.style.display = ''; }
+			// 文件名模式下残留的过滤 → 清空恢复全部可见
+			this._applyDomFilenameFilter('');
 			return;
 		}
 		// 隐藏分区树，展示搜索结果容器
@@ -3626,7 +4277,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	private renderSearchHit(hit: IKbSearchHit, q: string): HTMLElement {
 		const el = $('div.kb-search-hit');
-		const icon = $('span.kb-ficon'); icon.textContent = this.fileEmoji(hit.name); el.appendChild(icon);
+		const icon = this._fileIconEl(hit); el.appendChild(icon);
 		const name = $('span.kb-name');
 		// 名称命中：高亮匹配片段
 		const idx = hit.name.toLowerCase().indexOf(q);
@@ -3854,6 +4505,42 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 	}
 
+	/**
+	 * 点击「🧠 思维导图」按钮 → 打开或生成 .canvas 思维导图。
+	 * 如果已有 mindmap.canvas 文件 → 直接在 CanvasEditorPane 打开；
+	 * 否则先触发生成再打开。
+	 */
+	private async _openMindmap(): Promise<void> {
+		if (!this._activeVault) { return; }
+		if (!this._mindmapGenerator) {
+			this._mindmapGenerator = new KbMindmapGenerator(this.fileService, this.logService);
+		}
+		try {
+			const notesDir = this.sectionUri(this._activeVault, 'notes');
+			// 查找已有思维导图
+			const existingMap = await this._mindmapGenerator.listMindmaps(notesDir);
+			let canvasUri: URI;
+			if (existingMap.size > 0) {
+				canvasUri = existingMap.get('mindmap.canvas') ?? existingMap.values().next().value!;
+			} else {
+				// 先生成
+				this.notificationService.info('正在生成思维导图…');
+				await this._generateMindmapAfterImport();
+				// 再次检查
+				const retryMap = await this._mindmapGenerator.listMindmaps(notesDir);
+				if (retryMap.size === 0) {
+					this.notificationService.warn('未找到可生成的内容，请先导入笔记。');
+					return;
+				}
+				canvasUri = retryMap.get('mindmap.canvas') ?? retryMap.values().next().value!;
+			}
+			await this._openCanvasEditor(canvasUri);
+		} catch (err) {
+			this.logService.error('[KB mindmap] open failed', err);
+			this.notificationService.error('打开思维导图失败：' + (err instanceof Error ? err.message : String(err)));
+		}
+	}
+
 	/** 关系图谱根目录：仅库+笔记分区（排除关联的代码仓库），供图谱构建与 EditorPane 重扫使用。 */
 	private buildGraphRoots(): IKbGraphRoot[] {
 		if (!this._activeVault) { return []; }
@@ -3985,139 +4672,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	//  Unified KB import → knowledge-base-expert agent skills
 	// ═══════════════════════════════════════════════════════════
 
-	private static readonly KB_AGENT_ID = 'knowledge-base-expert';
-
-	/**
-	 * Check whether the knowledge-base-expert agent has a configured chat provider
-	 * (API key + base URL). Returns a user-facing error message when not configured.
-	 */
-	private _checkKbAgentProvider(): string | null {
-		// 只要存在任一已配置 API key 的 chat provider 即可；KB agent 不绑定特定 provider。
-		if (isChatProviderConfigured(this.configurationService)) {
-			return null; // OK
-		}
-		const configPath = '设置 → Agent Studio → Model Providers';
-		return `知识库专家 Agent 尚未配置 Chat Provider（API key + base URL）。请在「${configPath}」中添加 Provider 后重试。`;
-	}
-
-	/**
-	 * Route an import action through the knowledge-base-expert agent's skill.
-	 *
-	 * 1. Checks that a chat provider is configured — if not, notifies and returns.
-	 * 2. Ensures the import skill SKILL.md exists in the user skills directory.
-	 * 3. Opens the KB agent chat and sends the `[skill:xxx]` command.
-	 *
-	 * @param skillId   Skill ID (e.g. 'kb-import-url', 'kb-import-message')
-	 * @param skillMd   SKILL.md content to write if the skill doesn't exist
-	 * @param message   The message text to send to the agent (after opening chat)
-	 * @param label     Short label for the notification (e.g. 'URL 导入')
-	 */
-	private async _routeImportToKbAgent(
-		skillId: string,
-		skillMd: string,
-		message: string,
-		label: string,
-	): Promise<void> {
-		const agentId = KnowledgeBaseViewPane.KB_AGENT_ID;
-
-		// 0. Guard: check provider
-		const providerErr = this._checkKbAgentProvider();
-		if (providerErr) {
-			this.notificationService.warn(providerErr);
-			return;
-		}
-
-		try {
-			// 1. Ensure skill exists + mount to agent
-			await this._ensureImportSkill(agentId, skillId, skillMd);
-
-			// 2. Open KB agent chat
-			this.modelSelectorService.setSelectedAgentId(agentId);
-			this.agentStudioService.fireSelectAgent(agentId);
-			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
-
-			// 3. Send import command
-			this.configHtmlService.requestChatSend(agentId, message);
-
-			this.notificationService.info(`已将「${label}」发送至「知识库专家」Agent 处理`);
-		} catch (err) {
-			this.logService.error(`[KB] ${label} send failed:`, err);
-			this.notificationService.error(`${label} 发送失败：${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	/**
-	 * Ensure a KB import skill SKILL.md exists and is mounted to the agent.
-	 * Idempotent — if the file already exists, only registry reload + agent binding runs.
-	 */
-	private async _ensureImportSkill(agentId: string, skillId: string, mdContent: string): Promise<void> {
-		const skillsRoot = resolveSarosPath(
-			URI.file((this.environmentService as INativeEnvironmentService).userDataPath),
-			SarosPath.skills,
-		);
-		const skillMdUri = URI.joinPath(skillsRoot, skillId, 'SKILL.md');
-
-		try {
-			await this.fileService.stat(skillMdUri);
-		} catch {
-			await this.fileService.createFolder(dirname(skillMdUri));
-			await this.fileService.writeFile(skillMdUri, VSBuffer.fromString(mdContent));
-			this.logService.info(`[KB] created ${skillId} skill at ${skillMdUri.toString()}`);
-		}
-
-		// Re-scan so SkillRegistry discovers it
-		await this._skillRegistry.reload();
-
-		// Mount to agent
-		const agent = await this.agentStudioService.getAgent(agentId);
-		if (agent && !(agent.skills ?? []).includes(skillId)) {
-			const skills = [...(agent.skills ?? []), skillId];
-			await this.agentStudioService.updateAgent(agentId, { skills } as any);
-			this.logService.info(`[KB] mounted ${skillId} skill to agent ${agentId}`);
-		}
-
-		// Sync to memory engine
-		try {
-			const memProvider = this._agentOSService.getActiveMemoryProvider();
-			if (memProvider?.writeSkillFile) {
-				await memProvider.writeSkillFile(agentId, skillId);
-			}
-		} catch { /* ignore */ }
-	}
-
-	// ── Import skill SKILL.md generators ──────────────────────
-
-	private _buildImportObsidianSkillMd(): string {
-		return `---
-name: kb-import-obsidian
-description: 导入 Obsidian 库（关联文件夹）：扫描 .md 文件 → 自动分类落盘到「库」→ 结构化抽取 → 输出笔记到「笔记」→ 记录操作日志
----
-
-# 导入 Obsidian 库（kb-import-obsidian）
-
-## 输入
-- 调用方通过消息提供 Obsidian 库根目录的绝对路径。
-
-## 流程（完整链）
-1. **扫描**：列出 \`.md\` 文件，保留原始 \`[[wikilinks]]\` 和 frontmatter。跳过 \`.obsidian/\`、\`.trash/\` 等非内容目录。
-2. **自动分类**：解析 frontmatter（tags/aliases/category）和目录结构，自动确定分类；缺省按原 Obsidian 目录结构映射到 \`<vault>/库/<category>/\`。
-3. **落盘到库**：复制 Markdown 到 \`<vault>/库/<category>/\`（保留双链语法）。
-4. **结构化抽取**：对每篇文档执行结构化抽取，提炼实体/概念/流程，生成带 \`[[wikilinks]]\` 的笔记。跨文档的双链（如 \`[[Another Note]]\`）转换为可追踪的内部链接。
-5. **落盘到笔记**：将结构化笔记写入 \`<vault>/笔记/<category>/\`（增量合并同名笔记）。
-6. **操作日志**：每条导入完成后向 \`<kb-root>/.op-log.jsonl\` 追加一行 JSONL 记录。
-
-## 输出
-- 导入完成后，向用户报告：导入数量 / 库路径 / 笔记路径 / 操作日志摘要`;
-	}
-
 	// ── End of import skill generators ─────────────────────
-
-	// ─── 笔记沉淀（占位：功能开发中，暂未实现）──────────────
-
-	private async _onNoteSedimentationClick(): Promise<void> {
-		// TODO: 笔记沉淀功能开发中，暂未实现，仅占位
-		this.notificationService.info('笔记沉淀功能开发中，敬请期待');
-	}
 
 	override dispose(): void {
 		document.removeEventListener('click', this._onGlobalClick);

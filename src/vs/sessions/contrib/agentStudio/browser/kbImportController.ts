@@ -238,10 +238,29 @@ export class KbImportController extends Disposable {
 			return null;
 		}
 
+		// 系统导航文件（index/overview/insights/log 等由 maintainKbNavigation 自动维护）不作为构建源，
+		// 避免「构建为笔记」/批量构建把它们当素材抽取并污染构建缓存。
+		const baseName = libFileUri.path.split('/').pop() ?? '';
+		if (KbImportController.SYS_INDEX_FILES.includes(baseName)) {
+			notificationService.notify({ severity: Severity.Info, message: `${baseName} 是系统导航文件，无需构建。`, source: 'kb-build' });
+			return null;
+		}
+
 		const cache = await KbImportController._readBuildCache(fileService, vaultRoot);
-		if (cache[libFileUri.fsPath]) {
-			notificationService.notify({ severity: Severity.Info, message: `已构建: ${cache[libFileUri.fsPath]}`, source: 'kb-build' });
-			return cache[libFileUri.fsPath];
+		const cachedNote = cache[libFileUri.fsPath];
+		if (cachedNote) {
+			// 缓存命中前必须验证笔记文件仍存在——笔记被删/移后缓存即失效，
+			// 直接返回幽灵路径会让用户看到「已构建」却什么都没生成。
+			let cachedExists = false;
+			try { await fileService.resolve(URI.file(cachedNote)); cachedExists = true; } catch { /* missing */ }
+			if (cachedExists) {
+				logService.info(`[KbImportController] build cache hit: ${libFileUri.fsPath} → ${cachedNote}`);
+				notificationService.notify({ severity: Severity.Info, message: `已构建: ${cachedNote}`, source: 'kb-build' });
+				return cachedNote;
+			}
+			delete cache[libFileUri.fsPath];
+			await KbImportController._writeBuildCache(fileService, vaultRoot, cache);
+			logService.info(`[KbImportController] build cache stale (note missing), evicted: ${cachedNote}`);
 		}
 
 		// lm 感知的前置判断：lm: 桥接 provider 已注册即可用，否则要求 BYOK provider 已配 key。
@@ -259,13 +278,26 @@ export class KbImportController extends Disposable {
 		}
 
 		try {
-			// 抽取结果写入源文件所在的库目录（与源文件同在 库/ 下，方便定位与管理）
-			const outputDir = URI.joinPath(libFileUri, '..');
+			// FILE 块落盘锚点 = 库根：LLM 按 prompt 输出带 schema 类型目录前缀的路径（概念/xxx.md），
+			// 笔记据此归类到 库/<typeDir>/<topic>/。
+			// 注意：阶段 1 已把原始材料统一放 库/raw/，若按「源文件所在目录」锚定，
+			// 会把 概念/xxx 等路径嵌套进 raw（库/raw/概念/...），归类失效。
+			const outputDir = libDir;
+			// 兜底锚点 = 源文件所在目录：salvage 无路径信息，落源文件旁保留分类上下文。
+			const salvageDir = URI.joinPath(libFileUri, '..');
 			const libContent = (await fileService.readFile(libFileUri)).value.toString();
 			const schema = await KbImportController._getSchemaStatic(fileService, vaultRoot);
 			const schemaText = buildSchemaPromptText(schema);
-			const typeDirs = new Set(schema.types.map(t => t.dir)); // 方案A 平铺：用于剥掉 FILE 块路径中的类型目录前缀
-			const dirCandidates = await KbImportController._listAllNoteSubdirs(fileService, libDir);
+		// 类型 → 目录映射（含 id / label / dir 三种键）：模型未按 prompt 输出类型前缀时，
+		// 依据笔记 frontmatter 的 type 字段二次归类到 库/<typeDir>/，避免笔记平铺到库根。
+		const typeToDir = new Map<string, string>();
+		for (const t of schema.types) {
+			if (t.id) { typeToDir.set(t.id, t.dir); }
+			if (t.label) { typeToDir.set(t.label, t.dir); }
+			if (t.dir) { typeToDir.set(t.dir, t.dir); }
+		}
+		const defaultTypeDir = schema.types.find(t => t.id === schema.defaultType)?.dir;
+		const dirCandidates = await KbImportController._listAllNoteSubdirs(fileService, libDir);
 			const dirCandidateList = dirCandidates.length
 				? dirCandidates.map(s => `  - ${s}`).join('\n')
 				: '  (none)';
@@ -291,10 +323,10 @@ export class KbImportController extends Disposable {
 				// 兜底：模型未按 FILE 块格式输出时，将原始输出落为单篇笔记到源文件目录
 				const libCat = KbImportController._parseLibCategory(libContent, libDir, libFileUri);
 				const safeName = KbImportController._sanitizeFsName(libCat.topic) || '未命名';
-				const salvaged = await KbImportController._salvageSingleNoteToDir(gen, safeName, outputDir, fileService);
+				const salvaged = await KbImportController._salvageSingleNoteToDir(gen, safeName, salvageDir, fileService);
 				written = salvaged ? [salvaged] : [];
 			} else {
-				written = await KbImportController._writeFileBlocks(blocks, outputDir, vaultRoot, fileService, logService, typeDirs);
+				written = await KbImportController._writeFileBlocks(blocks, outputDir, vaultRoot, fileService, logService, typeToDir, defaultTypeDir);
 			}
 
 			if (written.length === 0) {
@@ -309,7 +341,8 @@ export class KbImportController extends Disposable {
 			await KbImportController._writeBuildCache(fileService, vaultRoot, cache);
 			// 构造完整的库内相对路径作为双链 target（而非仅文件名）
 			const relFromLib = KbImportController._relativeFromLib(libFileUri, libDir);
-			await KbImportController._injectSourcesUnder(fileService, outputDir, relFromLib);
+			// 仅注入本次新写笔记（outputDir 已为库根，全库扫描注入会误伤无关笔记）
+			await KbImportController._injectSourcesIntoFiles(fileService, written, relFromLib);
 			// P2-2 确定性补链：对本次新写笔记扫描全库标题互链（零 LLM 成本），增强图谱连通性
 			await KbImportController._enrichNewNotes(fileService, libDir, written, logService);
 			await KbImportController.maintainKbNavigation(fileService, libDir);
@@ -365,8 +398,12 @@ export class KbImportController extends Disposable {
 	): Promise<number> {
 		const libDir = URI.joinPath(vaultRoot, KbImportController.KB_LIBRARY_SUBPATH);
 		const cache = await KbImportController._readBuildCache(fileService, vaultRoot);
-		const libFiles = await KbImportController._collectMdFiles(fileService, libDir);
-		const pending = libFiles.filter(f => !cache[f.fsPath]);
+		// 排除系统导航文件（index/overview/insights 等，由 maintainKbNavigation 维护，非素材）
+		const libFiles = await KbImportController._collectMdFiles(fileService, libDir, KbImportController.SYS_INDEX_FILES);
+		// 排除已知的构建产出笔记（cache values）：库/<typeDir>/ 下的 .md 多为已生成笔记，
+		// 再当素材构建会造成「笔记→笔记」递归 churn。
+		const builtNotes = new Set(Object.values(cache).map(p => p.toLowerCase()));
+		const pending = libFiles.filter(f => !cache[f.fsPath] && !builtNotes.has(f.fsPath.toLowerCase()));
 		if (pending.length === 0) { notificationService.notify({ severity: Severity.Info, message: '所有库文件已构建。', source: 'kb-build' }); return 0; }
 		notificationService.notify({ severity: Severity.Info, message: `批量构建 ${pending.length} 篇笔记...`, source: 'kb-build' });
 		let built = 0;
@@ -691,11 +728,13 @@ export class KbImportController extends Disposable {
 
 	private static async _listAllNoteSubdirs(fileService: IFileService, notesDir: URI): Promise<string[]> {
 		const set = new Set<string>();
+		// raw 是源文件存放区，不应作为笔记归类目标目录暴露给 LLM
+		const excludeDirs = new Set([KbImportController.KB_RAW_SUBPATH]);
 		try {
 			const st = await fileService.resolve(notesDir);
 			if (st.children) {
 				for (const c of st.children) {
-					if (c.isDirectory && !c.name.startsWith('.')) {
+					if (c.isDirectory && !c.name.startsWith('.') && !excludeDirs.has(c.name)) {
 						set.add(c.name);
 						try {
 							const sub = await fileService.resolve(c.resource);
@@ -841,33 +880,51 @@ export class KbImportController extends Disposable {
 		}
 	}
 
-	/** Stage 2：解析 FILE 块并确定性落盘到笔记分区（平铺：剥掉类型子目录前缀；同批次同名自动改名防覆盖）。 */
+	/** Stage 2：解析 FILE 块并确定性落盘（按 schema 类型目录归类；模型未带前缀时按 frontmatter.type 二次归类）。 */
 	private static async _writeFileBlocks(
 		blocks: { path: string; content: string }[],
 		notesDir: URI,
 		vaultRoot: URI,
 		fileService: IFileService,
 		logService: ILogService,
-		typeDirs?: ReadonlySet<string>,
+		typeToDir?: ReadonlyMap<string, string>,
+		defaultTypeDir?: string,
 	): Promise<string[]> {
 		const written: string[] = [];
+		const dirSet = typeToDir ? new Set(typeToDir.values()) : new Set<string>();
 		const isWithin = (uri: URI) => uri.fsPath.toLowerCase().startsWith(vaultRoot.fsPath.toLowerCase());
 		const used = new Set<string>(); // 同批次已用路径
 		for (const b of blocks) {
 			let rel = (b.path || '').replace(/^[\\/]+/, '');
 			rel = rel.replace(/^笔记[\\/]/i, '').replace(/^notes[\\/]/i, '');
 			if (!rel) { continue; }
-			const segs = rel.split(/[\\/]+/).filter(s => s && s !== '.' && s !== '..');
+			let segs = rel.split(/[\\/]+/).filter(s => s && s !== '.' && s !== '..');
 			if (segs.length === 0) { continue; }
-			// 方案A 平铺：首段是 schema 类型目录则剥掉（type 只留 frontmatter，不再嵌套类型子目录）
-			if (typeDirs && segs.length > 1 && typeDirs.has(segs[0])) { segs.shift(); }
-			const parentSegs = segs.slice(0, -1);
-			const filename = segs[segs.length - 1];
+
+			// 1) 模型已带 schema 类型目录前缀（概念/对比/…）→ 保留并据此归类
+			let prefixDir: string | undefined;
+			if (dirSet.has(segs[0])) {
+				prefixDir = segs[0];
+				segs = segs.slice(1); // 余下视为文件名（可能含主题子目录 概念/主题/xxx.md）
+			}
+
+			// 2) 模型未按 prompt 输出类型前缀（常见：平铺裸文件名）→ 依据 frontmatter.type 二次归类，
+			//    避免笔记落到 库/ 根目录（此前 bug：笔记全部平铺在库根，无类型目录）。
+			if (!prefixDir) {
+				const fmType = KbImportController._frontmatterType(b.content);
+				prefixDir = (fmType && typeToDir?.get(fmType)) || defaultTypeDir;
+			}
+
+			// 3) 仍无法判定类型：平铺到 notesDir（保持旧行为，避免丢失），不加类型前缀
+			const routedSegs = prefixDir ? [prefixDir, ...segs] : segs;
+
+			const parentSegs = routedSegs.slice(0, -1);
+			const filename = routedSegs[routedSegs.length - 1];
 			const stem = filename.replace(/\.md$/i, '');
 			const ext = filename.slice(stem.length);
-			let targetUri = URI.joinPath(notesDir, ...segs);
+			let targetUri = URI.joinPath(notesDir, ...routedSegs);
 			if (!isWithin(targetUri)) { continue; }
-			// 同批次同名冲突：自动改名 xxx_2.md，避免平铺后同名不同类笔记互相覆盖
+			// 同批次同名冲突：自动改名 xxx_2.md，避免同名不同类笔记互相覆盖
 			let finalName = filename;
 			let n = 2;
 			while (used.has(targetUri.toString())) {
@@ -886,6 +943,19 @@ export class KbImportController extends Disposable {
 			}
 		}
 		return written;
+	}
+
+	/** 从笔记内容 frontmatter 提取 type 字段（id / label 均可），用于 FILE 块落盘时的二次归类。 */
+	private static _frontmatterType(content: string): string | undefined {
+		try {
+			const fm = parseFrontmatter(content).frontmatter;
+			if (!fm) { return undefined; }
+			const t = fm.type;
+			if (Array.isArray(t)) { return typeof t[0] === 'string' ? t[0] : undefined; }
+			return typeof t === 'string' ? t : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async _readIngestCache(uri: URI): Promise<Record<string, string>> {
@@ -907,22 +977,21 @@ export class KbImportController extends Disposable {
 		);
 	}
 
-	private static async _injectSourcesUnder(fileService: IFileService, targetDir: URI, sourceRel: string): Promise<void> {
-		try {
-			const all = await KbImportController._collectMdFiles(fileService, targetDir);
-			for (const f of all) {
-				try {
-					const raw = (await fileService.readFile(f)).value.toString();
-					if (raw.includes(sourceRel)) { continue; }
-					const refLink = `[[${sourceRel}]]`;
-					const refBase = sourceRel.split(/[\\/]/).pop() || sourceRel;
-					const { content: updated, changed } = injectSources(raw, refLink, refBase);
-					if (changed) {
-						await fileService.writeFile(f, VSBuffer.fromString(updated));
-					}
-				} catch { /* skip */ }
-			}
-		} catch { /* ignore */ }
+	/** 给本次新写笔记注入来源双链（仅这批文件，避免全库扫描误注入无关笔记）。 */
+	private static async _injectSourcesIntoFiles(fileService: IFileService, notePaths: string[], sourceRel: string): Promise<void> {
+		for (const p of notePaths) {
+			try {
+				const f = URI.file(p);
+				const raw = (await fileService.readFile(f)).value.toString();
+				if (raw.includes(sourceRel)) { continue; }
+				const refLink = `[[${sourceRel}]]`;
+				const refBase = sourceRel.split(/[\\/]/).pop() || sourceRel;
+				const { content: updated, changed } = injectSources(raw, refLink, refBase);
+				if (changed) {
+					await fileService.writeFile(f, VSBuffer.fromString(updated));
+				}
+			} catch { /* skip */ }
+		}
 	}
 
 	/** P2-2 确定性补链：对本次新写笔记扫描全库标题，把整词出现的其他笔记标题包裹为 [[标题]]。 */
@@ -1086,9 +1155,9 @@ export class KbImportController extends Disposable {
 		await KbImportController._writeIfChanged(fileService, insightsUri, out.join('\n'));
 	}
 
-	static async appendKbLog(fileService: IFileService, notesDir: URI, entry: string): Promise<void> {
+	static async appendKbLog(fileService: IFileService, targetDir: URI, entry: string): Promise<void> {
 		try {
-			const logUri = URI.joinPath(notesDir, 'log.md');
+			const logUri = URI.joinPath(targetDir, 'log.md');
 			const ts = new Date().toISOString();
 			let existing = '';
 			try { existing = (await fileService.readFile(logUri)).value.toString(); } catch { /* new file */ }

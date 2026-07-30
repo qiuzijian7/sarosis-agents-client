@@ -131,6 +131,9 @@ export class MemoryDetailEditorPane extends EditorPane {
 					metadata: { ...e.metadata, agentId: e.agentId },
 					timestamp: e.timestamp,
 				}));
+				// 并入 working(core)/semantic/procedural 独立 scope 数据
+				// （searchAllAgents 仅返回 KV.memories 的 episodic 层）
+				await this._appendScopedMemoriesAsync(memProvider);
 				this._renderFull();
 			} catch (err) {
 				console.error('[MemoryDetailEditorPane] searchAllAgents failed:', err);
@@ -181,6 +184,7 @@ export class MemoryDetailEditorPane extends EditorPane {
 		/* Episodic 原生类型细分（第二行，视觉次级） */
 		.md-layer-tabs.md-type-tabs { background: var(--vscode-sideBar-background, rgba(128,128,128,0.04)); }
 		.md-layer-tabs.md-type-tabs .md-layer-tab { padding: 5px 14px; font-size: 11px; opacity: 0.85; }
+		.md-type-tabs-label { font-size: 10px; color: var(--vscode-descriptionForeground); display: flex; align-items: center; padding: 5px 8px; border-right: 1px solid var(--vscode-widget-border); margin-right: 4px; }
 		/* Filter bar */
 			.md-filter-bar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; border-bottom: 1px solid var(--vscode-widget-border); flex-shrink: 0; }
 			.md-filter-label { font-size: 11px; color: var(--vscode-descriptionForeground); }
@@ -349,27 +353,29 @@ export class MemoryDetailEditorPane extends EditorPane {
 	 * 读取 working(core)/semantic/procedural 独立 scope，映射为记忆视图条目。
 	 * 这些 scope 不在 KV.memories 内，由 writeMemory 路由（方案A）写入：
 	 *   working → mem:core-memory；semantic → mem:semantic；procedural → mem:procedural。
+	 * @param agentId 指定 agentId；不传则用当前视图的 _agentId。
 	 */
-	private async _loadScopedMemories(memProvider: any): Promise<Array<{ id: string; type: string; content: string; metadata: Record<string, unknown>; timestamp: number }>> {
+	private async _loadScopedMemories(memProvider: any, agentId?: string): Promise<Array<{ id: string; type: string; content: string; metadata: Record<string, unknown>; timestamp: number }>> {
+		const aid = agentId ?? this._agentId;
 		const out: Array<{ id: string; type: string; content: string; metadata: Record<string, unknown>; timestamp: number }> = [];
 		const toTs = (v: unknown): number => {
 			const ms = typeof v === 'number' ? v : new Date(String(v ?? '')).getTime();
 			return Number.isFinite(ms) && ms > 0 ? ms : Date.now();
 		};
 		try {
-			const core = await memProvider.coreMemoryList?.(this._agentId).catch(() => []) ?? [];
+			const core = await memProvider.coreMemoryList?.(aid).catch(() => []) ?? [];
 			for (const c of core as Array<Record<string, unknown>>) {
 				out.push({ id: String(c['id'] ?? ''), type: 'working', content: String(c['content'] ?? ''), metadata: c, timestamp: toTs(c['updatedAt'] ?? c['createdAt']) });
 			}
 		} catch { /* scope 读取失败不阻断 */ }
 		try {
-			const sem = await memProvider.semanticList?.(this._agentId).catch(() => []) ?? [];
+			const sem = await memProvider.semanticList?.(aid).catch(() => []) ?? [];
 			for (const s of sem as Array<Record<string, unknown>>) {
 				out.push({ id: String(s['id'] ?? ''), type: 'semantic', content: String(s['content'] ?? ''), metadata: s, timestamp: toTs(s['updatedAt'] ?? s['createdAt']) });
 			}
 		} catch { /* scope 读取失败不阻断 */ }
 		try {
-			const proc = await memProvider.proceduralList?.(this._agentId).catch(() => []) ?? [];
+			const proc = await memProvider.proceduralList?.(aid).catch(() => []) ?? [];
 			for (const p of proc as Array<Record<string, unknown>>) {
 				const title = String(p['title'] ?? p['content'] ?? '');
 				const steps = Array.isArray(p['steps']) ? (p['steps'] as unknown[]).map(x => String(x)).join(' → ') : '';
@@ -377,6 +383,27 @@ export class MemoryDetailEditorPane extends EditorPane {
 			}
 		} catch { /* scope 读取失败不阻断 */ }
 		return out;
+	}
+
+	/**
+	 * 从 _allMemories 提取所有 agentId，对每个 agent 加载其 scoped 记忆
+	 * 并并入 _allMemories。用于 __all__ 全量视图。
+	 */
+	private async _appendScopedMemoriesAsync(memProvider: any): Promise<void> {
+		const agentIds = new Set<string>();
+		for (const m of this._allMemories) {
+			const aid = (m.metadata?.agentId as string) || '';
+			if (aid) { agentIds.add(aid); }
+		}
+		if (agentIds.size === 0) { return; }
+		const results = await Promise.all(
+			Array.from(agentIds).map(aid =>
+				this._loadScopedMemories(memProvider, aid).catch(() => [] as any[])
+			)
+		);
+		for (const entries of results) {
+			this._allMemories.push(...entries);
+		}
 	}
 
 	private _renderEmpty(msg: string): void {
@@ -484,12 +511,29 @@ export class MemoryDetailEditorPane extends EditorPane {
 		headerRow.appendChild(agentSelect);
 		const stats = append(header, $('.md-stats'));
 		this._addStat(stats, '总数', this._allMemories.length, '');
-		// agentmemory 原版 4 层 + Episodic 原生类型细分
-		const catStats: Array<[string, LayerFilter]> = [
-			['Working', 'working'],
-			['Episodic', 'episodic'],
-			['Semantic', 'semantic'],
-			['Procedural', 'procedural'],
+		// 第一行：4 层统计
+		const layers: Array<[string, LayerFilter, string]> = [
+			['Working', 'working', 'l0'],
+			['Episodic', 'episodic', 'l1'],
+			['Semantic', 'semantic', 'l2'],
+			['Procedural', 'procedural', 'l3'],
+		];
+		for (const [label, type, cls] of layers) {
+			const el = this._addStat(stats, label, this._countByTier(type), cls);
+			if (CATEGORY_TRIGGER_TIPS[type]) {
+				this._register(this._hoverService.setupDelayedHover(el, () => ({
+					content: new MarkdownString(CATEGORY_TRIGGER_TIPS[type]),
+				})));
+			}
+		}
+		// 第二行：Episodic 层的 6 种原生类型细分
+		const typesRow = append(header, $('.md-stats'));
+		// 微缩进 + 分隔符表明是 Episodic 子分类
+		const typesDivider = document.createElement('span');
+		typesDivider.style.cssText = 'font-size:10px;color:var(--vscode-descriptionForeground);display:flex;align-items:center;padding:0 2px;';
+		typesDivider.textContent = '↳';
+		typesRow.appendChild(typesDivider);
+		const nativeTypes: Array<[string, LayerFilter]> = [
 			['Pattern', 'pattern'],
 			['Fact', 'fact'],
 			['Preference', 'preference'],
@@ -497,8 +541,8 @@ export class MemoryDetailEditorPane extends EditorPane {
 			['Bug', 'bug'],
 			['Workflow', 'workflow'],
 		];
-		for (const [label, type] of catStats) {
-			const el = this._addStat(stats, label, this._countByTier(type), CATEGORY_HOVER_CLS[type]);
+		for (const [label, type] of nativeTypes) {
+			const el = this._addStat(typesRow, label, this._countByTier(type), CATEGORY_HOVER_CLS[type]);
 			if (CATEGORY_TRIGGER_TIPS[type]) {
 				this._register(this._hoverService.setupDelayedHover(el, () => ({
 					content: new MarkdownString(CATEGORY_TRIGGER_TIPS[type]),
@@ -536,7 +580,13 @@ export class MemoryDetailEditorPane extends EditorPane {
 		this._addLayerTab(layerTabs, 'episodic', 'Episodic');
 		this._addLayerTab(layerTabs, 'semantic', 'Semantic');
 		this._addLayerTab(layerTabs, 'procedural', 'Procedural');
-		const typeTabs = append(this._container, $('.md-layer-tabs.md-type-tabs'));
+		// 子类型分隔标签：表明第二行是 Episodic 层的子分类
+		const typeTabsContainer = append(this._container, $('.md-layer-tabs.md-type-tabs'));
+		const typeLabel = document.createElement('span');
+		typeLabel.className = 'md-type-tabs-label';
+		typeLabel.textContent = 'Episodic 子类型';
+		typeTabsContainer.appendChild(typeLabel);
+		const typeTabs = typeTabsContainer;
 		this._addLayerTab(typeTabs, 'pattern', 'Pattern');
 		this._addLayerTab(typeTabs, 'fact', 'Fact');
 		this._addLayerTab(typeTabs, 'preference', 'Preference');

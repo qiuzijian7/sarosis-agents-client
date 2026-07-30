@@ -217,6 +217,10 @@ import { KbBlocksEditorPane } from './kbBlocksEditorPane.js';
 import { KbNoteEditorInput } from './kbNoteEditorInput.js';
 import { KnowledgeBaseGraphEditorPane } from './kbGraphEditorPane.js';
 import { KbGraphEditorInput } from './kbGraphEditorInput.js';
+import { CanvasEditorPane, getActiveCanvasPane } from './canvasEditor/canvasEditorPane.js';
+import { CanvasEditorInput } from './canvasEditor/canvasEditorInput.js';
+import { IMindmapData } from '../common/mindmap/mindmapTypes.js';
+import { IEditorResolverService, RegisteredEditorPriority } from '../../../../workbench/services/editor/common/editorResolverService.js';
 import { WorkflowViewPane } from './views/workflowView.js';
 import { IWikiTagService } from './services/wikiTagService.js';
 import { WikiTagServiceImpl } from './services/wikiTagServiceImpl.js';
@@ -611,6 +615,50 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.skills.includeWorkflows', "将已存储的工作流作为「可执行型 skill」暴露给 agent（双向打通 A 向）。开启后可用 /skill <workflowId> 触发执行工作流；关闭则不再暴露。默认开启。"),
+		},
+	},
+});
+
+// --- Canvas Editor Settings -------------------------------------------------------
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'sarosis.canvas',
+	title: localize('sarosis.canvas', "思维导图编辑器"),
+	properties: {
+		'sarosis.canvas.autoLayout': {
+			type: 'boolean', default: false,
+			description: localize('sarosis.canvas.autoLayout', "修改节点后自动触发布局重排。"),
+		},
+		'sarosis.canvas.autoColor': {
+			type: 'boolean', default: true,
+			description: localize('sarosis.canvas.autoColor', "新增节点时自动继承父分支颜色。"),
+		},
+		'sarosis.canvas.horizontalGap': {
+			type: 'number', default: 80, minimum: 20, maximum: 300,
+			description: localize('sarosis.canvas.horizontalGap', "父子节点间的水平间距 (px)。"),
+		},
+		'sarosis.canvas.verticalGap': {
+			type: 'number', default: 20, minimum: 5, maximum: 100,
+			description: localize('sarosis.canvas.verticalGap', "兄弟节点间的垂直间距 (px)。"),
+		},
+		'sarosis.canvas.defaultNodeWidth': {
+			type: 'number', default: 300, minimum: 100, maximum: 800,
+			description: localize('sarosis.canvas.defaultNodeWidth', "新创建节点的默认宽度 (px)。"),
+		},
+		'sarosis.canvas.defaultNodeHeight': {
+			type: 'number', default: 60, minimum: 40, maximum: 600,
+			description: localize('sarosis.canvas.defaultNodeHeight', "新创建节点的默认高度 (px)。"),
+		},
+		'sarosis.canvas.maxNodeHeight': {
+			type: 'number', default: 300, minimum: 60, maximum: 1200,
+			description: localize('sarosis.canvas.maxNodeHeight', "编辑中节点自动扩展的最大高度 (px)。"),
+		},
+		'sarosis.canvas.zoomPadding': {
+			type: 'number', default: 50, minimum: 10, maximum: 200,
+			description: localize('sarosis.canvas.zoomPadding', "聚焦节点时的视口边距 (px)。"),
+		},
+		'sarosis.canvas.mouseNavigation': {
+			type: 'boolean', default: true,
+			description: localize('sarosis.canvas.mouseNavigation', "启用鼠标侧键前进/后退导航。"),
 		},
 	},
 });
@@ -1111,6 +1159,137 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 		new SyncDescriptor(KbGraphEditorInput)
 	]
 );
+
+// Register CanvasEditorPane — 「🧠 思维导图编辑器」
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		CanvasEditorPane,
+		CanvasEditorPane.ID,
+		localize('canvasEditor', "思维导图编辑器"),
+	),
+	[
+		new SyncDescriptor(CanvasEditorInput)
+	]
+);
+
+// ─── Canvas Editor：把 .canvas 文件关联到思维导图编辑器 ────────────────
+// 否则在文件树 / 资源管理器中点击 .canvas 文件会走默认文本编辑器，看不到思维导图。
+class CanvasEditorResolverContribution extends Disposable {
+	constructor(
+		@IEditorResolverService private readonly _editorResolverService: IEditorResolverService,
+		@IFileService private readonly _fileService: IFileService,
+		@ILogService private readonly _logService: ILogService,
+	) {
+		super();
+		this._register(
+			this._editorResolverService.registerEditor(
+				'*.canvas',
+				{
+					// id 必须是「编辑器面板 id」（CanvasEditorPane.ID），与 CanvasEditorInput.editorId 一致；
+					// 否则 resolver 按此 id 找不到 canvas 面板，会回退到默认文本编辑器（打开成纯 JSON）。
+					id: CanvasEditorPane.ID,
+					label: localize('canvasEditor', "思维导图编辑器"),
+					priority: RegisteredEditorPriority.exclusive,
+				},
+				{
+					canSupportResource: (resource) => resource.path.endsWith('.canvas'),
+				},
+				{
+					createEditorInput: async (editor) => {
+						const resource = editor.resource;
+						this._logService.info(`[CanvasEditor] resolver.createEditorInput: resource=${resource?.toString()}`);
+						let mindmapData: IMindmapData = { nodes: [], edges: [] };
+						if (resource) {
+							try {
+								const content = await this._fileService.readFile(resource);
+								mindmapData = JSON.parse(content.value.toString()) as IMindmapData;
+								this._logService.info(`[CanvasEditor] resolver.createEditorInput: parsed nodes=${(mindmapData.nodes ?? []).length}, edges=${(mindmapData.edges ?? []).length}, mindmapFlag=${mindmapData.mindmap}`);
+							} catch (e) {
+								this._logService.warn(`[CanvasEditor] resolver.createEditorInput: 读取/解析 ${resource.toString()} 失败，使用空思维导图`, e);
+							}
+						}
+						return { editor: new CanvasEditorInput(resource!, mindmapData) };
+					},
+				},
+			)
+		);
+	}
+}
+registerWorkbenchContribution2(
+	'workbench.contrib.canvasEditorResolver',
+	CanvasEditorResolverContribution,
+	WorkbenchPhase.BlockStartup,
+);
+
+// ─── Canvas Editor 键盘命令 ──────────────────────────────────────────
+
+const canvasCmd = (
+	id: string, title: string, primary: number | 0, handler: (pane: CanvasEditorPane) => void,
+) => {
+	registerAction2(class extends Action2 {
+		constructor() {
+			const opts: any = { id, title: localize2(id, title), f1: false };
+			if (primary !== 0) { opts.keybinding = { primary, weight: 200 }; }
+			super(opts);
+		}
+		override async run(): Promise<void> {
+			const pane = getActiveCanvasPane();
+			if (pane) { handler(pane); }
+		}
+	});
+};
+
+// 节点操作
+canvasCmd('sarosis.canvas.addChild', '思维导图：添加子节点',
+	KeyCode.Tab, p => p.cmdAddChild());
+canvasCmd('sarosis.canvas.addSibling', '思维导图：添加兄弟节点',
+	KeyMod.Shift | KeyCode.Enter, p => p.cmdAddSibling());
+canvasCmd('sarosis.canvas.deleteNode', '思维导图：删除节点',
+	KeyCode.Delete, p => p.cmdDeleteNode());
+canvasCmd('sarosis.canvas.editNode', '思维导图：编辑节点',
+	KeyCode.Enter, p => p.cmdEditNode());
+canvasCmd('sarosis.canvas.saveAndExit', '思维导图：保存并退出编辑',
+	KeyMod.CtrlCmd | KeyCode.Enter, p => p.cmdSaveAndExit());
+
+// 布局/风格
+canvasCmd('sarosis.canvas.relayout', '思维导图：自动布局',
+	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyL, p => p.cmdRelayout());
+canvasCmd('sarosis.canvas.applyColors', '思维导图：分支着色',
+	0, p => p.cmdApplyColors());
+canvasCmd('sarosis.canvas.flipBranch', '思维导图：翻转分支',
+	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyF, p => p.cmdFlipBranch());
+canvasCmd('sarosis.canvas.toggleBalance', '思维导图：平衡布局',
+	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyB, p => p.cmdToggleBalance());
+
+// Undo/Redo
+canvasCmd('sarosis.canvas.undo', '思维导图：撤销',
+	KeyMod.CtrlCmd | KeyCode.KeyZ, p => p.cmdUndo());
+canvasCmd('sarosis.canvas.redo', '思维导图：重做',
+	KeyMod.CtrlCmd | KeyCode.KeyY, p => p.cmdRedo());
+
+// 导航
+canvasCmd('sarosis.canvas.navigateUp', '思维导图：导航上移',
+	KeyCode.UpArrow, p => p.cmdNavigate('up'));
+canvasCmd('sarosis.canvas.navigateDown', '思维导图：导航下移',
+	KeyCode.DownArrow, p => p.cmdNavigate('down'));
+canvasCmd('sarosis.canvas.navigateLeft', '思维导图：导航左移',
+	KeyCode.LeftArrow, p => p.cmdNavigate('left'));
+canvasCmd('sarosis.canvas.navigateRight', '思维导图：导航右移',
+	KeyCode.RightArrow, p => p.cmdNavigate('right'));
+
+// 视图
+canvasCmd('sarosis.canvas.fitViewport', '思维导图：适应窗口',
+	KeyMod.CtrlCmd | KeyCode.Digit0, p => p.cmdFitViewport());
+canvasCmd('sarosis.canvas.toggleOutline', '思维导图：切换大纲面板',
+	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyO, p => p.toggleOutline());
+
+// 导航历史 + 引用
+canvasCmd('sarosis.canvas.goBack', '思维导图：后退',
+	KeyMod.Alt | KeyCode.LeftArrow, p => p.cmdGoBack());
+canvasCmd('sarosis.canvas.goForward', '思维导图：前进',
+	KeyMod.Alt | KeyCode.RightArrow, p => p.cmdGoForward());
+canvasCmd('sarosis.canvas.copyNodeLink', '思维导图：复制节点链接',
+	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyL, p => p.cmdCopyNodeLink());
 
 // Register a unified command to add content/files to the active Agent Studio chat panel.
 // - From webview "Add to Chat" buttons → receives { name, value, fullName } entry object

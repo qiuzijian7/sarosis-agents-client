@@ -520,50 +520,22 @@ suite('Argument coercion & repair (P2a zero-dependency)', () => {
 		assert.strictEqual(r.args.count, 42, 'coercion must still apply when no reject');
 	});
 
-	test('coerceOrReject: required satisfied by documented alias -> no reject', () => {
-		// search_code-style: `query` required, `pattern` documented as its alias.
+	test('coerceOrReject: alias no longer satisfies required (P2 zod-only) -> reject', () => {
+		// P2（2026-07-29）：别名解析已移除，schema 是唯一契约。`pattern` 只是
+		// 未声明参数——required `query` 不被满足，直接拒绝并点名正确参数名。
 		const schema = {
 			required: ['query'],
 			properties: {
 				query: { type: 'string', description: 'Search pattern.' },
-				pattern: { type: 'string', description: 'Alias for query.' },
 			},
 		};
 		const r = coerceOrReject({ pattern: 'FooBar' }, schema, 'search_code', { warn: () => {}, info: () => {} });
-		assert.strictEqual(r.reject, undefined, 'supplying the documented alias must satisfy the required field');
-	});
-
-	test('coerceOrReject: required satisfied by backtick-wrapped alias -> no reject', () => {
-		// search_files-style: `pattern` required, `query` documents "Alias for `pattern`".
-		const schema = {
-			required: ['pattern'],
-			properties: {
-				pattern: { type: 'string', description: 'REQUIRED. The actual text to find.' },
-				query: { type: 'string', description: 'Alias for `pattern` — the search term.' },
-			},
-		};
-		const r = coerceOrReject({ query: 'parseConfig' }, schema, 'search_files', { warn: () => {}, info: () => {} });
-		assert.strictEqual(r.reject, undefined, 'backtick-wrapped alias must also satisfy the required field');
-	});
-
-	test('coerceOrReject: required missing with neither canonical nor alias -> reject', () => {
-		const schema = {
-			required: ['query'],
-			properties: {
-				query: { type: 'string', description: 'Search pattern.' },
-				pattern: { type: 'string', description: 'Alias for query.' },
-			},
-		};
-		const r = coerceOrReject({ mode: 'files' }, schema, 'search_code', { warn: () => {}, info: () => {} });
-		assert.ok(r.reject, 'missing both canonical and alias must still reject');
+		assert.ok(r.reject, 'alias-only call must be rejected (no alias layer)');
 		assert.ok(r.reject!.content.error.includes('query'), 'reject must name the canonical required field');
 	});
 
-	test('coerceOrReject: canonical-side alias doc satisfies required (P2 — alias property removed)', () => {
-		// New schema shape after P2: the standalone `pattern` property is removed;
-		// the alias is documented ON the canonical `query` property instead. The
-		// direction-B parser must still map pattern→query so a pattern-only call
-		// is not rejected before the handler's silent normalization runs.
+	test('coerceOrReject: "accepts alias" description text is inert (P2 — no desc parsing)', () => {
+		// 描述里的 "accepts alias" 文案不再被解析成别名映射（旧 direction-B）。
 		const schema = {
 			required: ['query'],
 			properties: {
@@ -571,74 +543,62 @@ suite('Argument coercion & repair (P2a zero-dependency)', () => {
 			},
 		};
 		const r = coerceOrReject({ pattern: 'FooBar' }, schema, 'search_code', { warn: () => {}, info: () => {} });
-		assert.strictEqual(r.reject, undefined, 'canonical-side "accepts alias" doc must satisfy the required field');
+		assert.ok(r.reject, 'documented-alias text must NOT satisfy the required field anymore');
 	});
 
-	test('coerceOrReject: canonical-side plural aliases doc, stops at parenthesis', () => {
-		// filePattern-style plural list + a mode-style value-mapping hint in parens
-		// that must NOT be swallowed into the alias identifier list.
-		const schema = {
-			required: ['pattern'],
-			properties: {
-				pattern: { type: 'string', description: 'The search term. Also accepts alias: query.' },
-				filePattern: { type: 'string', description: 'Glob filter (e.g. *.go). Also accepts aliases: file_glob, glob.' },
-				mode: { type: 'string', description: 'Output mode. Also accepts alias: output_mode (content→full, files_with_matches→files).' },
-			},
-		};
-		const r = coerceOrReject({ query: 'parseConfig', file_glob: '*.ts', output_mode: 'files_with_matches' }, schema, 'search_files', { warn: () => {}, info: () => {} });
-		assert.strictEqual(r.reject, undefined, 'query alias satisfies required `pattern`; file_glob/output_mode are recognized aliases (warn-free)');
-	});
-
-	test('coerceOrReject: documented aliases must NOT be flagged as unknown arguments', () => {
-		// Regression for the log-noise bug: after P2 removed the standalone alias
-		// properties, the "unknown argument … may be ignored" check kept firing for
-		// documented aliases (pattern/path/output_mode/file_glob) even though they
-		// are recognized and recovered by the handler. The warning was both noisy
-		// (a full stack trace per call) and factually wrong. The unknown-arg check
-		// must consult the same alias map the required check uses.
+	test('coerceOrReject: required missing -> reject', () => {
 		const schema = {
 			required: ['query'],
 			properties: {
-				query: { type: 'string', description: 'Search pattern. Also accepts alias: pattern.' },
-				mode: { type: 'string', description: 'Output mode. Also accepts alias: output_mode (content→full).' },
-				filePattern: { type: 'string', description: 'Glob filter. Also accepts aliases: file_glob, glob.' },
-				path_filter: { type: 'string', description: 'Path glob. Also accepts alias: path.' },
+				query: { type: 'string', description: 'Search pattern.' },
+			},
+		};
+		const r = coerceOrReject({ mode: 'files' }, schema, 'search_code', { warn: () => {}, info: () => {} });
+		assert.ok(r.reject, 'missing required must reject');
+		assert.ok(r.reject!.content.error.includes('query'), 'reject must name the required field');
+	});
+
+	test('coerceOrReject: former alias keys now warn unknown (P2)', () => {
+		// 旧别名（pattern/path/file_glob/output_mode）现在就是普通未声明参数，
+		// 逐一报 unknown —— 这正是 kimi zod 校验失败时给出的信号形态。
+		const schema = {
+			required: ['query'],
+			properties: {
+				query: { type: 'string', description: 'Search pattern.' },
+				mode: { type: 'string', description: 'Output mode.' },
+				filePattern: { type: 'string', description: 'Glob filter.' },
+				path_filter: { type: 'string', description: 'Search root.' },
 			},
 		};
 		const warnings: string[] = [];
-		const r = coerceOrReject(
-			{ pattern: 'FGCInfo', path: 'Runtime/CoreUObject', file_glob: '*.cpp', output_mode: 'content' },
+		coerceOrReject(
+			{ query: 'FGCInfo', path: 'Runtime/CoreUObject', file_glob: '*.cpp', output_mode: 'content' },
 			schema, 'search_code', { warn: (m) => warnings.push(m), info: () => {} },
 		);
-		assert.strictEqual(r.reject, undefined, 'pattern alias satisfies required `query`');
-		const unknownWarns = warnings.filter((w) => w.includes('unknown argument'));
-		assert.deepStrictEqual(unknownWarns, [], `documented aliases must not warn unknown; got: ${unknownWarns.join(' | ')}`);
+		for (const k of ['path', 'file_glob', 'output_mode']) {
+			assert.ok(warnings.some((w) => w.includes('unknown argument') && w.includes(k)), `former alias "${k}" must warn unknown`);
+		}
 	});
 
 	test('coerceOrReject: a genuinely unknown argument still warns', () => {
-		// Guardrail: the alias exemption must be narrow — a key that is neither a
-		// declared property nor a documented alias must still be flagged.
 		const schema = {
 			properties: {
-				query: { type: 'string', description: 'Search pattern. Also accepts alias: pattern.' },
+				query: { type: 'string', description: 'Search pattern.' },
 			},
 		};
 		const warnings: string[] = [];
 		coerceOrReject({ query: 'x', bogusField: 1 }, schema, 'search_code', { warn: (m) => warnings.push(m), info: () => {} });
-		assert.ok(warnings.some((w) => w.includes('unknown argument') && w.includes('bogusField')), 'a non-alias, non-property key must still warn');
+		assert.ok(warnings.some((w) => w.includes('unknown argument') && w.includes('bogusField')), 'a non-property key must still warn');
 	});
 
 	test('coerceOrReject: search_code `offset` must NOT warn unknown (it is a declared pagination param)', () => {
 		// Regression for log 1785204849282: the model passes `offset` to search_code
-		// (it mirrors search_graph, which paginates with offset/limit). search_code
-		// used to hard-code offset=0 AND not declare `offset` in its schema, so the
-		// coerce check fired "unknown argument: offset — may be ignored" on every
-		// paginated call — both noisy AND a lie (offset is now honored end-to-end).
-		// Declaring offset in the schema must silence the warning.
+		// (it mirrors search_graph, which paginates with offset/limit). offset is a
+		// declared schema property (declared + honored end-to-end), so no warning.
 		const schema = {
 			properties: {
-				query: { type: 'string', description: 'Regex search pattern. Also accepts alias: pattern.' },
-				filePattern: { type: 'string', description: 'File glob. Also accepts aliases: file_glob, glob.' },
+				query: { type: 'string', description: 'Regex search pattern.' },
+				filePattern: { type: 'string', description: 'File glob.' },
 				limit: { type: 'number', description: 'Max results.' },
 				offset: { type: 'number', description: 'Skip first N results (pagination).' },
 			},

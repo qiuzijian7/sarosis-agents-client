@@ -126,6 +126,24 @@
 .kb-search-box:focus-within { border-color: var(--vscode-focusBorder); }
 .kb-search-box input { flex: 1; background: none; border: none; outline: none; color: var(--vscode-foreground); font-size: 12px; }
 .kb-search-box input::placeholder { color: var(--vscode-input-placeholderForeground); }
+.kb-search-mode-btn {
+	flex-shrink: 0; font-size: 10.5px; font-weight: 600;
+	padding: 2px 7px; border-radius: 3px; cursor: pointer;
+	background: var(--vscode-badge-background, #4d4d4d);
+	color: var(--vscode-badge-foreground, #fff);
+	user-select: none; white-space: nowrap;
+}
+.kb-search-mode-btn:hover { opacity: 0.85; }
+.kb-search-mode-btn.filename { background: rgba(77,163,255,.2); color: #4da3ff; }
+.kb-search-sort-btn {
+	flex-shrink: 0; width: 24px; height: 22px; display: flex; align-items: center; justify-content: center;
+	border-radius: 3px; cursor: pointer; color: var(--vscode-descriptionForeground); font-size: 13px; user-select: none;
+}
+.kb-search-sort-btn:hover { background: rgba(255,255,255,.08); color: var(--vscode-foreground); }
+.kb-tree-node .kb-meta {
+	font-size: 10px; color: var(--vscode-descriptionForeground); flex-shrink: 0;
+	margin-left: auto; padding-left: 8px; white-space: nowrap;
+}
 
 /* ── Scroll area ── */
 .kb-scroll { flex: 1; overflow-y: auto; }
@@ -167,6 +185,7 @@
 
 .kb-section-body { padding-bottom: 4px; display: none; }
 .kb-section.open .kb-section-body { display: block; }
+.kb-section-body.kb-drop-target { background: rgba(77,163,255,.08); border-radius: 4px; }
 
 /* ── Tree node (b3-list-item style) ── */
 .kb-node {
@@ -180,14 +199,32 @@
 }
 .kb-node:hover { background: var(--vscode-list-hoverBackground); }
 .kb-node.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+/* 剪切标记：半透明（对齐 Explorer cut 项变暗） */
+.kb-node.kb-cut { opacity: 0.5; }
+/* 多选：选中项稍淡背景区分单选 */
+.kb-node.selected:not(:only-of-type) { background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-activeSelectionBackground)); }
+/* 拖拽放置目标 */
+.kb-node.kb-drop-target { outline: 2px dashed var(--vscode-focusBorder, #4da3ff); outline-offset: -2px; background: rgba(77,163,255,.08); }
+.kb-node[draggable="true"] { cursor: grab; }
+.kb-node[draggable="true"]:active { cursor: grabbing; }
 .kb-node .kb-twist {
 	width: 14px; text-align: center; color: var(--vscode-descriptionForeground);
 	font-size: 10px; cursor: pointer; flex-shrink: 0;
 }
 .kb-node .kb-twist.empty { visibility: hidden; }
-.kb-node .kb-ficon { width: 16px; text-align: center; font-size: 13px; flex-shrink: 0; }
+/* 文件/文件夹图标：对齐 VS Code Explorer，使用活动文件图标主题（getIconClasses 产出 file-icon/folder-icon 等类）。
+   基础类 codicon 提供 16px 字形兜底；主题 CSS 控制 background 定位与尺寸。 */
+.kb-node .kb-ficon { width: 16px; height: 16px; flex-shrink: 0; display: inline-block; }
 .kb-node.dir .kb-ficon { color: var(--vscode-symbolIcon-folderForeground, #dcb67a); }
-.kb-node .kb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.kb-ficon { color: var(--vscode-symbolIcon-fileForeground, #cccccc); }
+.kb-node.building { color: var(--vscode-textLink-foreground, #4da3ff); }
+.kb-node .kb-building {
+	width: 14px; height: 14px; flex-shrink: 0; margin-left: 4px;
+	font-size: 13px; line-height: 14px;
+	animation: kb-spin 1s linear infinite;
+}
+@keyframes kb-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.kb-node .kb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; line-height: 22px; }
 .kb-node .kb-meta { font-size: 10px; color: var(--vscode-descriptionForeground); margin-left: 6px; font-family: var(--vscode-font-family); }
 .kb-node .kb-status { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-left: 4px; }
 .kb-status.raw { background: var(--vscode-textLink-foreground, #569cd6); }
@@ -296,7 +333,7 @@
 	margin: 1px 8px; white-space: nowrap;
 }
 .kb-search-hit:hover { background: var(--vscode-list-hoverBackground); }
-.kb-search-hit .kb-ficon { width: 16px; text-align: center; font-size: 13px; flex-shrink: 0; }
+.kb-search-hit .kb-ficon { width: 16px; height: 16px; flex-shrink: 0; display: inline-block; }
 .kb-search-hit .kb-name { flex: 0 0 auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
 .kb-search-hit .kb-name mark {
 	background: var(--vscode-editor-findMatchHighlightBackground, #515c6a);
@@ -374,7 +411,7 @@
 	padding: 3px 12px 3px 28px; font-size: 12px; cursor: pointer; color: var(--vscode-foreground);
 }
 .kb-tag-doc:hover { background: var(--vscode-list-hoverBackground); }
-.kb-tag-doc .kb-ficon { font-size: 11px; flex-shrink: 0; }
+.kb-tag-doc .kb-ficon { width: 16px; height: 16px; flex-shrink: 0; display: inline-block; }
 
 /* ── Backlinks ([[双链]] 反链映射面板) ── */
 .kb-backlinks {

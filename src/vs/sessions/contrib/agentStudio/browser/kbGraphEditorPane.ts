@@ -61,6 +61,14 @@ export class KnowledgeBaseGraphEditorPane extends EditorPane {
 		this._container.style.overflow = 'hidden';
 		this._container.style.background = 'var(--vscode-editor-background)';
 		parent.appendChild(this._container);
+
+		// 切回图谱 Tab（或首次聚焦）时重新扫描磁盘构建图谱：删除文档后内存图谱不会自动剔除，
+		// 不刷新会残留已删节点（「关系图谱中的节点异常」）。磁盘 walk 天然排除已删文件。
+		this._register(this.onDidFocus(() => {
+			if (this._graphView && this._roots.length > 0) {
+				void this._rebuildGraphData();
+			}
+		}));
 	}
 
 	override async setInput(
@@ -143,7 +151,20 @@ export class KnowledgeBaseGraphEditorPane extends EditorPane {
 		].join(';');
 	}
 
-	/** 重新扫描知识库分区并重建力导向图。 */
+	/** 重新扫描知识库分区并重建力导向图（纯数据重建，不触碰工具条按钮状态）。 */
+	private async _rebuildGraphData(): Promise<void> {
+		if (!this._graphView || this._roots.length === 0) { return; }
+		try {
+			const linkGraph = new KbLinkGraph(this.fileService);
+			await linkGraph.build(this._roots);
+			const { nodes, links } = linkGraph.getGraphData();
+			this._graphView.loadGraph(nodes, links);
+		} catch (err) {
+			this.logService.error(`[KB Graph] 构建图谱失败：${err}`);
+		}
+	}
+
+	/** 重新扫描知识库分区并重建力导向图（工具条「🔄 构建图谱」按钮）。 */
 	private async _rebuildGraph(btn: HTMLButtonElement): Promise<void> {
 		if (!this._graphView) { return; }
 		if (this._roots.length === 0) {
@@ -155,12 +176,7 @@ export class KnowledgeBaseGraphEditorPane extends EditorPane {
 		btn.textContent = '⏳ 构建中…';
 		btn.style.opacity = '0.6';
 		try {
-			const linkGraph = new KbLinkGraph(this.fileService);
-			await linkGraph.build(this._roots);
-			const { nodes, links } = linkGraph.getGraphData();
-			this._graphView.loadGraph(nodes, links);
-		} catch (err) {
-			this.logService.error(`[KB Graph] 构建图谱失败：${err}`);
+			await this._rebuildGraphData();
 		} finally {
 			btn.disabled = false;
 			btn.textContent = original;

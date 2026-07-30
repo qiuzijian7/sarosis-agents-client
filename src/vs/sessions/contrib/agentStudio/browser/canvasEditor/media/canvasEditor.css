@@ -1,0 +1,62 @@
+/*---------------------------------------------------------------------------------------------
+ *  Sarosis Agents — Canvas Editor Styles
+ *--------------------------------------------------------------------------------------------*/
+
+/* ── Editor Pane ──────────────────────────────────────────────────── */
+
+.canvas-editor-pane {
+	--canvas-color-1: #ef4444;
+	--canvas-color-2: #f97316;
+	--canvas-color-3: #eab308;
+	--canvas-color-4: #22c55e;
+	--canvas-color-5: #3b82f6;
+	--canvas-color-6: #8b5cf6;
+}
+
+/* ── Viewport ────────────────────────────────────────────────────── */
+
+.canvas-viewport {
+	position: relative;
+}
+
+/* ── Node ────────────────────────────────────────────────────────── */
+
+.canvas-node {
+	box-sizing: border-box;
+	min-width: 120px;
+	min-height: 40px;
+	cursor: move;
+	transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.canvas-node:hover {
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
+}
+
+.canvas-node[contenteditable="true"] {
+	cursor: text;
+	box-shadow: 0 0 0 2px var(--vscode-focusBorder, #007fd4);
+	z-index: 10;
+}
+
+.canvas-node-text {
+	user-select: text;
+}
+
+/* ── Node colors ─────────────────────────────────────────────────── */
+
+/* Use inline style border-color via JS, but provide SVG edge colors */
+.canvas-edge-layer path {
+	vector-effect: non-scaling-stroke;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────── */
+
+.canvas-editor-toolbar button:hover {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.canvas-editor-toolbar button:active {
+	background: var(--vscode-button-hoverBackground);
+}

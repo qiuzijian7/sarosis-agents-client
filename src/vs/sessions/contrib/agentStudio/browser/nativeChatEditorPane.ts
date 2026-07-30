@@ -2399,6 +2399,19 @@ private _handleStreamDelta(delta: any): void {
 			case 'tool_start': {
 				if (!assistantMsg || !assistantId) { return; }
 				if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
+
+				// 清除 tool_progress 期间为 file_write 创建的合成卡片
+				const synthId = (assistantMsg as any)._tpFileWriteId as string | undefined;
+				if (synthId && delta.toolName === 'file_write') {
+					const si = assistantMsg.toolCalls.findIndex((t: any) => t.id === synthId);
+					if (si >= 0) { assistantMsg.toolCalls.splice(si, 1); }
+					if (assistantMsg.parts) {
+						const pi = assistantMsg.parts.findIndex((p: any) => p.kind === 'tool' && p.tool?.id === synthId);
+						if (pi >= 0) { assistantMsg.parts.splice(pi, 1); }
+					}
+					delete (assistantMsg as any)._tpFileWriteId;
+				}
+
 				const newToolCallId = delta.toolCallId ?? `tool_${Date.now()}`;
 				assistantMsg.toolCalls.push({
 					id: newToolCallId,
@@ -2447,9 +2460,42 @@ private _handleStreamDelta(delta: any): void {
 				// 现把进度文本透到阶段指示器（activityText），每秒可见刷新。
 				if (!assistantMsg || !assistantId) { return; }
 				assistantMsg.activityText = delta.stage ?? '正在生成工具调用参数…';
+
+				// file_write 参数服务端生成期间（非增量 tool_args）：提前创建合成卡片，
+				// 在真实 tool_start 到达前显示「正在生成文件内容…」占位 + KB 进度提示。
+				const tpStage = delta.stage || '';
+				const tpMatch = tpStage.match(/正在生成工具调用参数\s+(\S+)/);
+				const tpToolName = tpMatch?.[1];
+				const isFw = tpToolName === 'file_write';
+				const hasRealFwCard = assistantMsg.toolCalls?.some(
+					(t: any) => t.name === 'file_write' && t.status === 'running' && t.id !== (assistantMsg as any)._tpFileWriteId);
+				let toolCallsChanged = false;
+				if (isFw && !hasRealFwCard) {
+					if (!assistantMsg.toolCalls) { assistantMsg.toolCalls = []; }
+					let synthId = (assistantMsg as any)._tpFileWriteId as string | undefined;
+					// 首次创建：生成合成工具调用并加入 parts
+					if (!synthId || !assistantMsg.toolCalls.some((t: any) => t.id === synthId)) {
+						synthId = `_tp_fw_${Date.now()}`;
+						(assistantMsg as any)._tpFileWriteId = synthId;
+						assistantMsg.toolCalls.push({
+							id: synthId, name: 'file_write', args: '', status: 'running',
+							displayName: '写入文件', renderType: 'file_write', defaultShow: true,
+						});
+						if (assistantMsg.parts) {
+							const tcRef = assistantMsg.toolCalls[assistantMsg.toolCalls.length - 1];
+							assistantMsg.parts.push({ kind: 'tool', tool: tcRef } as any);
+						}
+						toolCallsChanged = true;
+					}
+					// 后续进度：仅通过 activityText 刷新 KB 计数（卡片本身占位不变）
+				}
 				this._chatPanel?.updateMessage(assistantId, {
 					activityText: assistantMsg.activityText,
 					isStreaming: true,
+				...(toolCallsChanged ? {
+					toolCalls: (assistantMsg.toolCalls ?? []).slice(),
+					parts: assistantMsg.parts?.slice(),
+				} : {}),
 				});
 				break;
 			}
@@ -2699,7 +2745,7 @@ private _handleStreamDelta(delta: any): void {
 					);
 					assistantMsg.toolCalls = [...existing, syntheticToolCall];
 					this._chatPanel?.updateMessage(assistantId, {
-						toolCalls: assistantMsg.toolCalls.slice(),
+						toolCalls: [...existing, syntheticToolCall],
 						isStreaming: false,
 						isThinking: false,
 						streamPhase: 'error',

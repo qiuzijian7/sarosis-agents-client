@@ -499,11 +499,10 @@ export class AgentMemoryProviderV2 {
 		} catch { return []; }
 	}
 
-	/** semantic 层记忆：type='architecture'（语义层高度相关） */
+	/** semantic 层记忆：从独立 semantic scope 读取 */
 	async getSemanticMemories(agentId: string): Promise<unknown[]> {
 		try {
-			const mems = await this._kv.list<Memory>(KV.memories(agentId));
-			return mems.filter(m => m.isLatest !== false && m.type === 'architecture');
+			return await this._kv.list<any>(KV.semantic(agentId));
 		} catch { return []; }
 	}
 
@@ -526,9 +525,9 @@ export class AgentMemoryProviderV2 {
 			return [
 				`## Consolidation Context (${agentId})`,
 				``,
-				`Episodic: ${epArr.length} memories (pattern/preference/bug/fact/episodic)`,
-				`Semantic: ${smArr.length} memories (semantic/architecture)`,
-				`Procedural: ${prArr.length} skills`,
+			`Episodic: ${epArr.length} memories (pattern/preference/bug/fact/architecture/workflow)`,
+			`Semantic: ${smArr.length} entries (mem:semantic scope)`,
+			`Procedural: ${prArr.length} entries (mem:procedural scope)`,
 			].join('\n');
 		} catch { return ''; }
 	}

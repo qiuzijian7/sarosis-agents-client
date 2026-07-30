@@ -162,8 +162,8 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 				streamPre.appendChild(textNode);
 				this._initWriteFileStreamState(wrapper, streamPre, textNode);
 				if (!tc.args) {
-					// tool_start 到达但参数还未开始生成 → 显示等待占位，避免卡片空白
-					streamPre.textContent = '正在生成工具调用参数...';
+					// tool_start 到达但参数还未开始生成 → 显示等待占位（含耗时计数，避免空白）
+					streamPre.textContent = '正在生成文件内容…';
 					streamPre.classList.add('write-file-stream-waiting');
 				}
 				this._updateWriteFileStream(wrapper, tc);
@@ -234,11 +234,33 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 		/** 一次性收到大段完整 content 时，用分帧追加模拟流式效果（非增量场景兜底） */
 		pendingText: string;    // 待分帧追加的文本
 		chunkOffset: number;    // pendingText 中下一个待追加字符偏移
+		/** 卡片进入等待态的时刻（Date.now()），用于显示已等待时长 */
+		startedAt: number;
+		/** 已到达的总字符数（用于 tool_progress 空心跳期间展示 args 长度感知） */
+		totalChars: number;
 	}>();
 
 	/** 初始化某写文件卡片的流式状态。 */
 	private _initWriteFileStreamState(wrapper: HTMLElement, pre: HTMLElement, textNode: Text): void {
-		this._writeStreamStates.set(wrapper, { pre, textNode, contentStart: -1, rawConsumed: 0, done: false, pendingText: '', chunkOffset: 0 });
+		this._writeStreamStates.set(wrapper, { pre, textNode, contentStart: -1, rawConsumed: 0, done: false, pendingText: '', chunkOffset: 0, startedAt: Date.now(), totalChars: 0 });
+	}
+
+	/**
+	 * 更新等待占位文本，显示已等待时长（供每帧轮询调用）。
+	 * 仅有“等待态”卡片（contentStart < 0）需要刷新，已开始接收内容的卡片从此不再更新。
+	 */
+	private _updateWriteFileWaitingText(wrapper: HTMLElement): void {
+		const st = this._writeStreamStates.get(wrapper);
+		if (!st || st.contentStart >= 0 || st.done) { return; }
+		const pre = st.pre;
+		if (!pre.classList.contains('write-file-stream-waiting')) { return; }
+		const elapsed = Math.floor((Date.now() - st.startedAt) / 1000);
+		const elapsedStr = elapsed >= 60
+			? `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒`
+			: `${elapsed} 秒`;
+		const argsLen = st.totalChars;
+		const charsStr = argsLen > 0 ? `，已生成参数 ${argsLen.toLocaleString()} 字符` : '';
+		pre.textContent = `正在生成文件内容… (已等待 ${elapsedStr}${charsStr})`;
 	}
 
 	/**
@@ -257,6 +279,8 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 		const args = tc.args || '';
 		if (!args) { return; }
 		if (st.contentStart < 0) {
+			// 内容字段尚未出现：追踪 args 长度变化，用于等待态进度展示
+			st.totalChars = Math.max(st.totalChars, args.length);
 			const start = this._locateWriteStreamFieldStart(args);
 			if (start < 0) { return; }
 			st.contentStart = start;
@@ -343,7 +367,10 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			const id = cardEl.getAttribute('data-tool-id');
 			if (!id) { return; }
 			const tc = byId.get(id);
-			if (tc && tc.status === 'running') { this._updateWriteFileStream(cardEl, tc); }
+			if (!tc || tc.status !== 'running') { return; }
+			this._updateWriteFileStream(cardEl, tc);
+			// 等待态卡片：更新已等待时长显示
+			this._updateWriteFileWaitingText(cardEl);
 		});
 	}
 

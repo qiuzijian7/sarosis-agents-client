@@ -16,6 +16,7 @@ import { IListVirtualDelegate } from '../../../../../../base/browser/ui/list/lis
 import { IListAccessibilityProvider } from '../../../../../../base/browser/ui/list/listWidget.js';
 import { IAsyncDataSource, ITreeNode, ITreeFilter, ITreeSorter } from '../../../../../../base/browser/ui/tree/tree.js';
 import { ICompressibleTreeRenderer } from '../../../../../../base/browser/ui/tree/objectTree.js';
+import { ICompressedTreeNode } from '../../../../../../base/browser/ui/tree/compressedObjectTreeModel.js';
 import { FuzzyScore } from '../../../../../../base/common/filters.js';
 import { DisposableStore } from '../../../../../../base/common/lifecycle.js';
 import { dirname, isEqual, joinPath } from '../../../../../../base/common/resources.js';
@@ -88,12 +89,30 @@ export class KbSectionRenderer implements ICompressibleTreeRenderer<IKbTreeSecti
 interface IKbNodeTemplate {
 	icon: HTMLSpanElement;
 	label: HTMLSpanElement;
+	meta: HTMLSpanElement;
 	badge: HTMLSpanElement;
 	container: HTMLElement;
 	disposables: DisposableStore;
 }
 
-export class KbNodeRenderer implements ICompressibleTreeRenderer<IKbNode, FuzzyScore, IKbNodeTemplate> {
+function formatSize(bytes: number): string {
+	if (bytes < 1024) { return `${bytes}B`; }
+	if (bytes < 1024 * 1024) { return `${(bytes / 1024).toFixed(1)}KB`; }
+	return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+function formatMtime(ts: number): string {
+	if (!ts) { return ''; }
+	const now = Date.now();
+	const diffMs = now - ts;
+	if (diffMs < 60_000) { return '刚刚'; }
+	if (diffMs < 3600_000) { return `${Math.floor(diffMs / 60_000)}分钟前`; }
+	if (diffMs < 86400_000) { return `${Math.floor(diffMs / 3600_000)}小时前`; }
+	if (diffMs < 172800_000) { return '昨天'; }
+	if (diffMs < 604800_000) { return `${Math.floor(diffMs / 86400_000)}天前`; }
+	return `${Math.floor(diffMs / 604800_000)}周前`;
+}
+
+export class KbNodeRenderer implements ICompressibleTreeRenderer<KbTreeElement, FuzzyScore, IKbNodeTemplate> {
 	static readonly TEMPLATE_ID = 'kb.node';
 	readonly templateId = KbNodeRenderer.TEMPLATE_ID;
 
@@ -105,16 +124,20 @@ export class KbNodeRenderer implements ICompressibleTreeRenderer<IKbNode, FuzzyS
 		const label = document.createElement('span');
 		label.classList.add('kb-name');
 		container.appendChild(label);
+		const meta = document.createElement('span');
+		meta.classList.add('kb-meta');
+		meta.style.display = 'none';
+		container.appendChild(meta);
 		const badge = document.createElement('span');
 		badge.classList.add('kb-pending-badge');
 		badge.textContent = '⏳';
 		badge.style.display = 'none';
 		container.appendChild(badge);
-		return { icon, label, badge, container, disposables: new DisposableStore() };
+		return { icon, label, meta, badge, container, disposables: new DisposableStore() };
 	}
 
-	renderElement(node: ITreeNode<IKbNode, FuzzyScore>, _index: number, t: IKbNodeTemplate): void {
-		const n = node.element;
+	renderElement(node: ITreeNode<KbTreeElement, FuzzyScore>, _index: number, t: IKbNodeTemplate): void {
+		const n = node.element as IKbNode;
 		// 图标
 		if (n.isDirectory) {
 			t.icon.textContent = node.collapsed ? '📁' : '📂';
@@ -124,7 +147,22 @@ export class KbNodeRenderer implements ICompressibleTreeRenderer<IKbNode, FuzzyS
 			t.icon.style.opacity = '0.6';
 		}
 		t.label.textContent = n.name;
-		t.label.title = n.path;
+		// P0: 元数据行：文件夹显示子文件数，文件显示大小 + 修改时间
+		if (n.isDirectory) {
+			const count = n.childCount;
+			t.meta.textContent = count > 0 ? `${count}项` : '';
+			t.meta.style.display = count > 0 ? '' : 'none';
+			t.label.title = n.path;
+		} else {
+			const parts: string[] = [];
+			if (n.size > 0) { parts.push(formatSize(n.size)); }
+			if (n.mtime > 0) { parts.push(formatMtime(n.mtime)); }
+			t.meta.textContent = parts.length > 0 ? parts.join(' · ') : '';
+			t.meta.style.display = parts.length > 0 ? '' : 'none';
+			t.label.title = n.path +
+				(n.size > 0 ? `\n大小: ${formatSize(n.size)}` : '') +
+				(n.mtime > 0 ? `\n修改: ${new Date(n.mtime).toLocaleString()}` : '');
+		}
 		// P0-1 去抽象化门控：pending 笔记灰显 + ⏳ 徽标
 		const pending = n.status === 'pending';
 		t.container.classList.toggle('kb-pending', pending);
@@ -135,9 +173,20 @@ export class KbNodeRenderer implements ICompressibleTreeRenderer<IKbNode, FuzzyS
 		}
 	}
 
-	renderCompressedElements(): void { /* no compression */ }
+	renderCompressedElements(node: ITreeNode<ICompressedTreeNode<KbTreeElement>, FuzzyScore>, _index: number, t: IKbNodeTemplate): void {
+		const filtered = node.element.elements.filter((e): e is IKbNode => !isSection(e));
+		const names = filtered.map(e => e.name);
+		t.icon.textContent = '📁';
+		t.icon.style.opacity = '1';
+		t.label.textContent = names.join('/');
+		t.label.title = filtered.map(e => e.path).join(' → ');
+		t.meta.textContent = '';
+		t.meta.style.display = 'none';
+		t.badge.style.display = 'none';
+		t.container.classList.remove('kb-pending');
+	}
 	disposeTemplate(t: IKbNodeTemplate): void { t.disposables.dispose(); }
-	disposeElement?(_node: ITreeNode<IKbNode, FuzzyScore>, _index: number, _t: IKbNodeTemplate): void { /* optional */ }
+	disposeElement?(_node: ITreeNode<KbTreeElement, FuzzyScore>, _index: number, _t: IKbNodeTemplate): void { /* optional */ }
 }
 
 
@@ -158,7 +207,6 @@ export class KbTreeDataSource implements IAsyncDataSource<null, KbTreeElement> {
 
 	async getChildren(e: null | KbTreeElement): Promise<KbTreeElement[]> {
 		if (e === null) {
-			// 返回两个 section 虚拟节点
 			const { libraryUri, notesUri } = this.getSections();
 			return [
 				{ kind: 'section' as const, section: 'library' as const, label: '库', uri: libraryUri },
@@ -168,7 +216,6 @@ export class KbTreeDataSource implements IAsyncDataSource<null, KbTreeElement> {
 		if (isSection(e)) {
 			return this._loadChildren(e.uri, e.section);
 		}
-		// IKbNode directory
 		return this._loadChildren(e.uri, e.section);
 	}
 
@@ -235,12 +282,19 @@ export class KbTreeDataSource implements IAsyncDataSource<null, KbTreeElement> {
 
 // ─── Filter ────────────────────────────────────────────────────────────
 
+export type KbSearchMode = 'fulltext' | 'filename';
+
 export class KbTreeFilter implements ITreeFilter<KbTreeElement> {
-	constructor(private readonly getSearchQuery: () => string) { }
+	constructor(
+		private readonly getSearchQuery: () => string,
+		private readonly getSearchMode: () => KbSearchMode,
+	) { }
 
 	filter(e: KbTreeElement): boolean {
 		const q = this.getSearchQuery();
-		if (!q) { return true; }
+		const mode = this.getSearchMode();
+		// fulltext 模式：不过滤树节点，搜索结果显示在独立面板中
+		if (!q || mode === 'fulltext') { return true; }
 		if (isSection(e)) { return true; } // 搜索时始终显示 section
 		return e.name.toLowerCase().includes(q.toLowerCase());
 	}
@@ -302,13 +356,12 @@ export class KbTreeDragAndDrop implements ITreeDragAndDrop<KbTreeElement> {
 	) { }
 
 	getDragURI(element: KbTreeElement): string | null {
-		// 分区不可拖拽；文件/文件夹返回 URI 作为拖拽标识
 		if (isSection(element)) { return null; }
 		return element.uri.toString();
 	}
 
 	onDragStart(_data: IDragAndDropData, _originalEvent: DragEvent): void {
-		// 知识库内部移动，无需设置外部 dataTransfer
+		// 无需处理
 	}
 
 	onDragOver(
@@ -321,7 +374,6 @@ export class KbTreeDragAndDrop implements ITreeDragAndDrop<KbTreeElement> {
 		const dragged = this._draggedNodes(data);
 		if (!dragged.length || !target) { return false; }
 		if (isSection(target)) {
-			// 目标为分区根：允许落入该分区根目录
 			return TreeDragOverReactions.acceptBubbleDown();
 		}
 		if (target.isDirectory) {
@@ -335,7 +387,6 @@ export class KbTreeDragAndDrop implements ITreeDragAndDrop<KbTreeElement> {
 			}
 			return TreeDragOverReactions.acceptBubbleDown();
 		}
-		// 目标为文件：不直接落在文件上（语义不清）
 		return false;
 	}
 
@@ -363,16 +414,16 @@ export class KbTreeDragAndDrop implements ITreeDragAndDrop<KbTreeElement> {
 			&& !isEqual(dirname(d.uri), targetDir, false), // 已在目标目录则跳过
 		);
 		if (!moving.length) { return; }
-		try {
-			for (const d of moving) {
+		for (const d of moving) {
+			try {
 				const dest = joinPath(targetDir, d.name);
 				if (await this.fileService.exists(dest)) { continue; } // 同名目标存在则跳过，避免覆盖
 				await this.fileService.move(d.uri, dest, false);
+			} catch {
+				// 单个移动失败不中断其余项
 			}
-			await this.onDidMove();
-		} catch (err) {
-			console.error('[KB] 拖拽移动失败', err);
 		}
+		await this.onDidMove();
 	}
 
 	onDragEnd(_originalEvent: DragEvent): void {

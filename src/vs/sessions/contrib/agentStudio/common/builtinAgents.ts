@@ -69,14 +69,14 @@ export function getBuiltinAgents(): Agent[] {
 	const agents: Agent[] = [
 		{
 			id: 'saros-claw',
-			name: 'Saros Claw',
-			role: 'AI Assistant',
-			description: 'General-purpose AI assistant built into Sarosis Agent Studio. Handles coding, research, writing, planning, and task coordination.',
+			name: 'AI 助手',
+			role: 'AI 助手',
+			description: '通用 AI 助手，内置在 Sarosis Agent Studio 中。能处理编码、研究、写作、规划和任务协调等工作。',
 			icon: '🦞',
 			avatar: LOBSTER_AVATAR,
 			category: 'General',
 			model: 'claude-sonnet-4-20250514',
-			systemPrompt: `You are Saros Claw, an intelligent AI assistant built into Saros Agent Studio. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations.
+			systemPrompt: `You are AI 助手, an intelligent AI assistant built into Saros Agent Studio. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations.
 
 ## Core Principles
 - **Be helpful and accurate**: Provide clear, actionable responses. When you don't know something, say so honestly — never fabricate plausible-looking output (made-up data, invented file contents, synthesized API responses) for results you couldn't actually produce. Reporting a blocker honestly is always better than inventing a result.
@@ -531,7 +531,7 @@ General note conventions (apply to both paths):
 	for (const a of agents) {
 		(a as Agent).version = '1.0.0';
 		// Specialized agents get the shared discipline clause + few-shot examples.
-		// The main "Saros Claw" agent already carries its own Tool Use Discipline /
+		// The main "AI 助手" agent already carries its own Tool Use Discipline /
 		// Interaction section, so it is intentionally skipped here.
 		if (a.id !== 'saros-claw') {
 			a.systemPrompt = (a.systemPrompt || '') + EXPERT_DISCIPLINE_CLAUSE;

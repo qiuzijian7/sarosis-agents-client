@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sarosis · Canvas + Jaaz 画图 + 知识库 + 属性面板</title>
+<style>
+  :root {
+    --bg-app: #0e1116;
+    --bg-panel: #161b22;
+    --bg-sidebar: #11161d;
+    --bg-drop: #1c2330;
+    --ec-bg-secondary: #161b22;
+    --ec-bg-tertiary: #1c2128;
+    --ec-border-primary: rgba(128, 128, 128, 0.22);
+    --ec-border-secondary: rgba(128, 128, 128, 0.14);
+    --ec-text-primary: #e6edf3;
+    --ec-text-secondary: #9da7b3;
+    --ec-text-muted: #6a737d;
+    --ec-accent: #4da3ff;
+    --ec-accent-soft: rgba(77, 163, 255, 0.14);
+    --node-blue: #1f6feb;
+    --node-purple: #8957e5;
+    --node-green: #2da44e;
+    --node-orange: #db6d28;
+    --node-pink: #bf3989;
+    --node-cyan: #38bdf8;
+    --node-magenta: #e879f9;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "SF Mono", "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: var(--font); background: var(--bg-app); color: var(--ec-text-primary); overflow: hidden; font-size: 13px; }
+
+  .app { display: grid; grid-template-rows: 38px 1fr; height: 100vh; }
+  .titlebar {
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    background: var(--bg-sidebar); border-bottom: 1px solid var(--ec-border-secondary);
+    font-size: 12.5px; color: var(--ec-text-secondary);
+  }
+  .titlebar .logo { font-weight: 700; color: var(--ec-text-primary); }
+  .titlebar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); }
+  .titlebar .crumb { color: var(--ec-text-muted); }
+  .titlebar .spacer { flex: 1; }
+
+  .body { display: grid; grid-template-columns: 52px 1fr 400px; height: 100%; min-height: 0; }
+  .body.kbview { grid-template-columns: 52px 1fr 400px; }
+
+  /* Activity bar */
+  .activitybar { background: var(--bg-sidebar); border-right: 1px solid var(--ec-border-secondary); display: flex; flex-direction: column; align-items: center; padding-top: 4px; gap: 2px; }
+  .ab-btn { width: 52px; height: 46px; display: flex; align-items: center; justify-content: center; font-size: 19px; color: var(--ec-text-muted); cursor: pointer; border-left: 2px solid transparent; }
+  .ab-btn:hover { color: var(--ec-text-primary); }
+  .ab-btn.active { color: var(--ec-text-primary); border-left-color: var(--ec-accent); }
+
+  /* main area (palette + view + property) */
+  .main { display: grid; min-width: 0; min-height: 0; grid-template-columns: 212px 1fr 286px; }
+  .body.kbview .main { grid-template-columns: 0 1fr 0; }
+
+  /* node palette */
+  .palette { background: var(--bg-panel); border-right: 1px solid var(--ec-border-secondary); overflow-y: auto; padding: 10px 8px; }
+  .palette.hidden, .property.hidden { display: none; }
+  .pal-cat { font-size: 10.5px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--ec-text-muted); margin: 10px 6px 6px; }
+  .pal-cat:first-child { margin-top: 2px; }
+  .pal-item {
+    display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px;
+    cursor: grab; color: var(--ec-text-secondary); border: 1px solid transparent; margin-bottom: 3px;
+  }
+  .pal-item:hover { background: rgba(255,255,255,.04); color: var(--ec-text-primary); border-color: var(--ec-border-primary); }
+  .pal-ico { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff; flex-shrink: 0; }
+  .pal-name { font-size: 12px; }
+
+  /* canvas pane */
+  .canvas-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: radial-gradient(circle at 1px 1px, rgba(255,255,255,.05) 1px, transparent 0); background-size: 22px 22px; background-color: #0c0f14; position: relative; }
+  .canvas-toolbar { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--bg-panel); border-bottom: 1px solid var(--ec-border-secondary); }
+  .canvas-toolbar .ct-title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .canvas-toolbar .ct-title .pill { font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 999px; background: var(--ec-accent-soft); color: var(--ec-accent); }
+  .canvas-toolbar .ct-spacer { flex: 1; }
+  .ct-btn { height: 28px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; background: var(--ec-bg-tertiary); border: 1px solid var(--ec-border-primary); color: var(--ec-text-secondary); border-radius: 7px; cursor: pointer; font-size: 12px; }
+  .ct-btn:hover { color: var(--ec-text-primary); border-color: rgba(124,185,255,.4); }
+  .ct-btn.primary { background: var(--node-blue); border-color: var(--node-blue); color: #fff; }
+  .canvas-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+  .edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .edges path { fill: none; stroke: #3b4654; stroke-width: 2; }
+  .edges path.active { stroke: var(--ec-accent); }
+  .node { position: absolute; width: 188px; background: var(--ec-bg-tertiary); border: 1px solid var(--ec-border-primary); border-radius: 12px; box-shadow: 0 6px 18px rgba(0,0,0,.35); overflow: hidden; user-select: none; cursor: pointer; }
+  .node .n-head { display: flex; align-items: center; gap: 8px; padding: 9px 11px; font-weight: 600; font-size: 12.5px; border-bottom: 1px solid var(--ec-border-secondary); }
+  .node .n-ico { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #fff; flex-shrink: 0; }
+  .node .n-body { padding: 9px 11px; font-size: 11.5px; color: var(--ec-text-secondary); }
+  .node .n-tag { display: inline-block; margin-top: 6px; font-size: 10.5px; padding: 1px 7px; border-radius: 999px; background: rgba(255,255,255,.06); color: var(--ec-text-muted); }
+  .node .port { position: absolute; width: 11px; height: 11px; border-radius: 50%; background: #5a6675; border: 2px solid var(--ec-bg-tertiary); top: 50%; transform: translateY(-50%); }
+  .node .port.in { left: -6px; } .node .port.out { right: -6px; }
+  .node.blue { border-top: 2px solid var(--node-blue); } .node.blue .n-ico { background: var(--node-blue); }
+  .node.purple { border-top: 2px solid var(--node-purple); } .node.purple .n-ico { background: var(--node-purple); }
+  .node.green { border-top: 2px solid var(--node-green); } .node.green .n-ico { background: var(--node-green); }
+  .node.orange { border-top: 2px solid var(--node-orange); } .node.orange .n-ico { background: var(--node-orange); }
+  .node.pink { border-top: 2px solid var(--node-pink); } .node.pink .n-ico { background: var(--node-pink); }
+  .node.cyan { border-top: 2px solid var(--node-cyan); } .node.cyan .n-ico { background: var(--node-cyan); }
+  .node.magenta { border-top: 2px solid var(--node-magenta); } .node.magenta .n-ico { background: var(--node-magenta); }
+  .node.selected { border-color: var(--ec-accent); box-shadow: 0 0 0 2px var(--ec-accent-soft), 0 6px 18px rgba(0,0,0,.4); }
+  .node .n-thumb { margin: 4px 11px 10px; border-radius: 6px; overflow: hidden; border: 1px dashed rgba(124,185,255,.35); background: repeating-conic-gradient(rgba(255,255,255,.05) 0 25%, transparent 0 50%) 0 0 / 12px 12px; }
+  .node .n-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .node .n-thumb .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 92px; color: rgba(124,185,255,.5); font-size: 10px; gap: 4px; }
+  .minimap { position: absolute; right: 14px; bottom: 14px; width: 158px; height: 104px; background: rgba(12,15,20,.82); border: 1px solid var(--ec-border-primary); border-radius: 10px; overflow: hidden; }
+  .minimap .mm-node { position: absolute; border-radius: 3px; opacity: .8; }
+  .minimap .mm-view { position: absolute; border: 1px solid rgba(124,185,255,.6); border-radius: 4px; background: rgba(124,185,255,.08); }
+  .zoom-ctl { position: absolute; left: 14px; bottom: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .zoom-ctl button { width: 32px; height: 32px; border-radius: 8px; background: var(--ec-bg-tertiary); border: 1px solid var(--ec-border-primary); color: var(--ec-text-secondary); cursor: pointer; font-size: 15px; }
+  .zoom-ctl button:hover { color: var(--ec-text-primary); border-color: rgba(124,185,255,.4); }
+  .stage-hint { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(124,185,255,.12); color: var(--ec-accent); border: 1px solid rgba(124,185,255,.3); padding: 4px 12px; border-radius: 999px; font-size: 11px; pointer-events: none; }
+
+  /* property panel */
+  .property { background: var(--bg-panel); border-left: 1px solid var(--ec-border-secondary); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .prop-head { display: flex; align-items: center; gap: 9px; padding: 11px 12px; border-bottom: 1px solid var(--ec-border-secondary); }
+  .prop-head .prop-ico { width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 14px; color: #fff; }
+  .prop-head .prop-title { font-weight: 600; font-size: 13px; }
+  .prop-head .prop-type { font-size: 10.5px; color: var(--ec-text-muted); }
+  .prop-body { flex: 1; overflow-y: auto; padding: 12px; }
+  .prop-empty { color: var(--ec-text-muted); font-size: 12px; text-align: center; margin-top: 32px; line-height: 1.7; }
+  .prop-empty .big { font-size: 34px; opacity: .5; display: block; margin-bottom: 8px; }
+  .field { margin-bottom: 13px; }
+  .field label { display: block; font-size: 10.5px; font-weight: 600; color: var(--ec-text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 5px; }
+  .field input, .field select, .field textarea {
+    width: 100%; padding: 7px 9px; font-size: 12px; border-radius: 7px;
+    background: var(--ec-bg-tertiary); border: 1px solid var(--ec-border-primary); color: var(--ec-text-primary);
+    font-family: var(--font); outline: none; box-sizing: border-box;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus { border-color: rgba(124,185,255,.5); }
+  .field textarea { resize: vertical; min-height: 64px; line-height: 1.5; font-family: var(--font); }
+  .field .hint { font-size: 10.5px; color: var(--ec-text-muted); margin-top: 4px; }
+  .field .btn-full { width: 100%; padding: 9px; border-radius: 8px; border: 1px solid var(--node-magenta); background: rgba(232,121,249,.12); color: #f0abfc; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .field .btn-full:hover { background: rgba(232,121,249,.2); }
+  .prop-section { font-size: 10.5px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--ec-text-muted); margin: 4px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--ec-border-secondary); }
+  .prop-src { font-family: var(--mono); font-size: 10px; background: rgba(0,0,0,.3); border: 1px solid var(--ec-border-primary); border-radius: 6px; padding: 8px; color: #9cdcfe; white-space: pre-wrap; line-height: 1.5; margin-top: 6px; }
+
+  /* KB view */
+  .kb-pane { display: none; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg-app); }
+  .body.kbview .kb-pane { display: flex; }
+  .kb-toolbar { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--bg-panel); border-bottom: 1px solid var(--ec-border-secondary); }
+  .kb-toolbar .kb-title { font-weight: 600; }
+  .kb-tabs { display: flex; gap: 4px; margin-left: 10px; }
+  .kb-tab { padding: 5px 12px; border-radius: 7px; font-size: 12px; cursor: pointer; color: var(--ec-text-secondary); border: 1px solid transparent; }
+  .kb-tab:hover { color: var(--ec-text-primary); background: rgba(255,255,255,.04); }
+  .kb-tab.active { background: var(--ec-bg-tertiary); color: var(--ec-text-primary); border-color: var(--ec-border-primary); }
+  .kb-body { flex: 1; overflow-y: auto; padding: 18px; }
+  .kb-view { display: none; }
+  .kb-view.active { display: block; }
+
+  /* 图文卡片 */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .img-card { background: var(--ec-bg-tertiary); border: 1px solid var(--ec-border-primary); border-radius: 12px; overflow: hidden; }
+  .img-card .thumb { width: 100%; height: 150px; object-fit: cover; display: block; }
+  .img-card .cc-body { padding: 12px 14px; }
+  .img-card .cc-title { font-weight: 600; font-size: 13px; margin-bottom: 5px; }
+  .img-card .cc-text { font-size: 11.5px; color: var(--ec-text-secondary); line-height: 1.6; }
+  .img-card .cc-tags { margin-top: 9px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .cc-tag { font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--ec-accent-soft); color: var(--ec-accent); }
+
+  /* chat pane (Agent Studio Chat, separate panel) */
+  .chat-pane { background: var(--ec-bg-secondary); border-left: 1px solid var(--ec-border-secondary); display: flex; flex-direction: column; min-height: 0; }
+  .chat-header { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--ec-border-secondary); }
+  .chat-header-left { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+  .chat-header-agent-selector { display: flex; align-items: center; gap: 8px; padding: 3px 8px 3px 3px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+  .chat-header-agent-selector:hover { background: rgba(255,255,255,.04); border-color: var(--ec-border-primary); }
+  .chat-header-avatar-wrap { position: relative; width: 28px; height: 28px; flex-shrink: 0; }
+  .chat-header-avatar-border { width: 28px; height: 28px; border-radius: 7px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1f6feb, #8957e5); color: #fff; font-size: 14px; }
+  .chat-header-status-dot { position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border-radius: 50%; background: var(--ok); border: 2px solid var(--ec-bg-secondary); }
+  .chat-header-info { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+  .chat-header-name { font-weight: 600; font-size: 13px; }
+  .chat-header-role { font-size: 11px; color: var(--ec-text-muted); }
+  .chat-header-actions { display: flex; gap: 4px; }
+  .chat-header-action-btn { width: 30px; height: 30px; border-radius: 7px; border: none; background: transparent; color: var(--ec-text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .chat-header-action-btn:hover { background: rgba(255,255,255,.06); color: var(--ec-text-primary); }
+  .chat-tabs-container { border-bottom: 1px solid var(--ec-border-secondary); }
+  .chat-tabs { display: flex; gap: 4px; padding: 6px 10px 0; overflow-x: auto; scrollbar-width: none; }
+  .chat-tabs::-webkit-scrollbar { display: none; }
+  .chat-tab { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 8px 8px 0 0; cursor: pointer; color: var(--ec-text-secondary); font-size: 12px; border: 1px solid transparent; border-bottom: none; }
+  .chat-tab:hover { background: rgba(255,255,255,.04); color: var(--ec-text-primary); }
+  .chat-tab.active { background: var(--ec-bg-tertiary); color: var(--ec-text-primary); border-color: var(--ec-border-primary); }
+  .chat-tab-avatar { width: 16px; height: 16px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; background: #30363d; }
+  .chat-messages-wrapper { position: relative; flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+  .chat-messages { flex: 1; overflow-y: auto; padding: 12px 4px 12px 0; min-height: 0; scrollbar-width: thin; scrollbar-color: #30363d transparent; }
+  .chat-messages::-webkit-scrollbar { width: 8px; } .chat-messages::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+  .chat-message { display: flex; align-items: flex-start; gap: 8px; padding: 6px 14px; margin-bottom: 4px; }
+  .chat-message.user { flex-direction: row-reverse; padding-bottom: 24px; }
+  .chat-avatar { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #fff; }
+  .chat-avatar.assistant { background: linear-gradient(135deg, #1f6feb, #8957e5); }
+  .chat-avatar.user { background: #30363d; color: var(--ec-text-primary); }
+  .chat-bubble { max-width: 86%; padding: 10px 14px; border-radius: 14px; font-size: 12.5px; line-height: 1.55; word-break: break-word; position: relative; user-select: text; }
+  .chat-bubble.assistant { background: var(--ec-bg-tertiary); color: var(--ec-text-primary); border: 1px solid var(--ec-border-secondary); border-bottom-left-radius: 4px; flex: 1 1 auto; min-width: 0; }
+  .chat-bubble.user { background: #2d333b; color: var(--ec-text-primary); border-bottom-right-radius: 4px; max-width: 76%; }
+  .chat-bubble p { margin: 0 0 6px; } .chat-bubble p:last-child { margin-bottom: 0; }
+  .chat-bubble code { font-family: var(--mono); background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+  .tool-calls-section { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; width: 100%; }
+  .tool-call-card { background: var(--bg-panel); border: 1px solid var(--ec-border-primary); border-radius: 9px; overflow: hidden; }
+  .tool-call-card.completed { border-left: 3px solid var(--ok); }
+  .tool-call-header { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; }
+  .tool-call-icon { font-size: 13px; } .tool-call-name { font-weight: 600; font-size: 12px; }
+  .tool-call-emoji { margin-left: auto; font-size: 11px; color: var(--ok); }
+  .tool-call-body { padding: 0 10px 9px 10px; font-size: 11.5px; color: var(--ec-text-secondary); display: none; }
+  .tool-call-card.open .tool-call-body { display: block; }
+  .tool-call-code { font-family: var(--mono); background: rgba(0,0,0,.3); padding: 7px 9px; border-radius: 6px; font-size: 11px; white-space: pre-wrap; }
+  .subagent-card.enhanced { background: var(--bg-panel); border: 1px solid var(--ec-border-primary); border-radius: 11px; margin: 4px 0 8px; overflow: hidden; width: 100%; }
+  .subagent-card.enhanced.running { border-color: rgba(210,153,34,.5); }
+  .subagent-card-header { display: flex; align-items: center; gap: 9px; padding: 9px 12px; cursor: pointer; }
+  .subagent-card-badge { font-size: 10px; padding: 1px 7px; border-radius: 999px; background: rgba(77,163,255,.16); color: var(--ec-accent); font-weight: 600; }
+  .subagent-card.running .subagent-card-badge { background: rgba(210,153,34,.18); color: var(--warn); }
+  .subagent-card-title { font-weight: 600; font-size: 12.5px; flex: 1; min-width: 0; }
+  .subagent-card-meta { font-size: 11px; color: var(--ec-text-muted); }
+  .subagent-card-body { padding: 4px 14px 12px; }
+  .subagent-card-body p { margin: 4px 0; color: var(--ec-text-secondary); }
+  .subagent-exec-summary { font-size: 11.5px; color: var(--ec-text-muted); } .subagent-exec-stat { color: var(--ec-text-primary); font-weight: 500; }
+  .composer-resize-handle { height: 8px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; position: relative; }
+  .composer-resize-handle::before { content: ''; position: absolute; left: 20%; right: 20%; height: 2px; background: var(--ec-border-primary); border-radius: 1px; }
+  .composer-resize-handle:hover::before { background: rgba(124,185,255,.6); left: 10%; right: 10%; }
+  .chat-input-area { padding: 0 14px 12px; background: var(--ec-bg-secondary); flex-shrink: 0; }
+  .chat-composer-box { background: var(--ec-bg-tertiary); border: 1px solid var(--ec-border-primary); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
+  .chat-composer-box:focus-within { border-color: rgba(124,185,255,.4); }
+  .skill-chips-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--ec-border-primary); }
+  .skill-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; background: rgba(124,185,255,.12); border: 1px solid rgba(124,185,255,.25); font-size: 12px; color: var(--ec-accent); }
+  .chat-composer-textarea { width: 100%; padding: 12px 16px 6px; background: transparent; color: var(--ec-text-primary); font-size: 13.5px; border: none; outline: none; resize: none; line-height: 1.5; min-height: 24px; max-height: 220px; overflow-y: auto; font-family: var(--font); box-sizing: border-box; white-space: pre-wrap; word-break: break-word; }
+  .chat-composer-textarea:empty::before { content: attr(data-placeholder); color: var(--ec-text-muted); opacity: .6; }
+  .chat-composer-toolbar { display: flex; align-items: center; gap: 4px; padding: 6px 8px 8px; }
+  .ctool { width: 30px; height: 30px; border-radius: 7px; border: none; background: transparent; color: var(--ec-text-secondary); cursor: pointer; font-size: 15px; display: flex; align-items: center; justify-content: center; }
+  .ctool:hover { background: rgba(255,255,255,.06); color: var(--ec-text-primary); }
+  .model-pick { display: flex; align-items: center; gap: 5px; padding: 4px 9px; border-radius: 7px; font-size: 11.5px; color: var(--ec-text-secondary); border: 1px solid var(--ec-border-primary); cursor: pointer; }
+  .ctool-spacer { flex: 1; }
+  .send-btn { width: 34px; height: 30px; border-radius: 8px; border: none; cursor: pointer; background: var(--node-blue); color: #fff; font-size: 15px; display: flex; align-items: center; justify-content: center; }
+  .send-btn:hover { background: #2a7bff; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="logo">Sarosis</span>
+    <span class="crumb">/ 工作区 · canvas / 产品发布流程图.canvas</span>
+    <span class="dot"></span>
+    <span class="spacer"></span>
+    <span>左侧调色板含 工作流 + Jaaz 画图 节点 · 选中节点看右侧属性面板 · 📚 切换知识库视图</span>
+  </div>
+
+  <div class="body" id="body">
+    <!-- Activity bar -->
+    <div class="activitybar">
+      <div class="ab-btn" title="资源管理器">🗂️</div>
+      <div class="ab-btn active" id="abCanvas" title="画布 Canvas" onclick="switchView('canvas')">🧩</div>
+      <div class="ab-btn" id="abKb" title="知识库" onclick="switchView('kb')">📚</div>
+      <div class="ab-btn" title="智能体">🤖</div>
+      <div class="ab-btn" title="搜索">🔍</div>
+    </div>
+
+    <!-- main area -->
+    <div class="main">
+      <!-- node palette -->
+      <div class="palette" id="palette">
+        <div class="pal-cat">工作流节点</div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-green)">▶</span><span class="pal-name">开始 Start</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-orange)">■</span><span class="pal-name">结束 End</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-blue)">🤖</span><span class="pal-name">智能体 Agent</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-purple)">💬</span><span class="pal-name">提示词 Prompt</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-orange)">🔧</span><span class="pal-name">工具 Tool</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-purple)">✨</span><span class="pal-name">技能 Skill</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-blue)">📋</span><span class="pal-name">任务 Task</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-cyan)">🔀</span><span class="pal-name">条件 IfElse</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-cyan)">⤴</span><span class="pal-name">分支 Switch</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-green)">❓</span><span class="pal-name">询问用户 Ask</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--ec-text-muted)">▦</span><span class="pal-name">分组 Group</span></div>
+        <div class="pal-cat">Jaaz 画图节点</div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-magenta)">🎨</span><span class="pal-name">画图 Canvas</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-cyan)">✨</span><span class="pal-name">文生图 ImageGen</span></div>
+        <div class="pal-item"><span class="pal-ico" style="background:var(--node-cyan)">🖼</span><span class="pal-name">图生图 Edit</span></div>
+      </div>
+
+      <!-- canvas pane -->
+      <div class="canvas-pane">
+        <div class="canvas-toolbar">
+          <div class="ct-title">🧩 产品发布流程图 <span class="pill">.canvas</span></div>
+          <div class="ct-spacer"></div>
+          <button class="ct-btn" title="适应视图">⤢ 适应</button>
+          <button class="ct-btn" title="自动布局">⊞ 布局</button>
+          <button class="ct-btn primary" title="运行">▶ 运行</button>
+        </div>
+        <div class="canvas-stage">
+          <div class="stage-hint">画布仅作图编辑 · 对话在右侧 Agent Studio Chat 面板 · 选中节点看属性面板</div>
+          <svg class="edges" viewBox="0 0 900 620" preserveAspectRatio="none">
+            <path d="M280,130 C340,130 340,250 400,250" />
+            <path d="M280,250 C340,250 340,250 400,250" />
+            <path d="M476,310 C540,310 540,180 604,180" />
+            <path d="M476,310 C540,310 540,440 604,440" class="active" />
+            <path d="M700,190 C760,190 760,310 820,310" />
+            <path d="M700,450 C760,450 760,310 820,310" />
+          </svg>
+
+          <!-- workflow nodes -->
+          <div class="node green" data-type="start" style="left:90px; top:105px;">
+            <div class="port out"></div>
+            <div class="n-head"><span class="n-ico">▶</span> 开始</div>
+            <div class="n-body">触发：每天 09:00<em class="n-tag">start</em></div>
+          </div>
+          <div class="node purple" data-type="prompt" style="left:90px; top:225px;">
+            <div class="port in"></div><div class="port out"></div>
+            <div class="n-head"><span class="n-ico">💬</span> 提示词</div>
+            <div class="n-body">分镜描述（吉卜力风）<em class="n-tag">prompt</em></div>
+          </div>
+          <div class="node cyan" data-type="switch" style="left:400px; top:215px;">
+            <div class="port in"></div><div class="port out"></div>
+            <div class="n-head"><span class="n-ico">⤴</span> 分支 Switch</div>
+            <div class="n-body">是否含配图？<em class="n-tag">switch</em></div>
+          </div>
+
+          <!-- Jaaz drawing nodes -->
+          <div class="node magenta selected" data-type="canvas" style="left:604px; top:135px;">
+            <div class="port in"></div><div class="port out"></div>
+            <div class="n-head"><span class="n-ico">🎨</span> 画图 Canvas</div>
+            <div class="n-body" style="padding-bottom:4px">手绘分镜构图</div>
+            <div class="n-thumb" style="height:92px"><img id="canvasThumb" alt=""></div>
+            <div class="n-body"><em class="n-tag">image · mask · strokes</em></div>
+          </div>
+          <div class="node cyan" data-type="imagegen" style="left:604px; top:405px;">
+            <div class="port in"></div><div class="port out"></div>
+            <div class="n-head"><span class="n-ico">✨</span> 文生图 ImageGen</div>
+            <div class="n-body" style="padding-bottom:4px">seedream-4 · 16:9</div>
+            <div class="n-thumb" style="height:92px"><img id="genThumb" alt=""></div>
+            <div class="n-body"><em class="n-tag">generation</em></div>
+          </div>
+
+          <div class="node blue" data-type="agent" style="left:820px; top:280px;">
+            <div class="port in"></div>
+            <div class="n-head"><span class="n-ico">🤖</span> 智能体 Agent</div>
+            <div class="n-body">视觉设计 · 评估主视觉<em class="n-tag">agent</em></div>
+          </div>
+
+          <div class="minimap">
+            <div class="mm-node" style="left:14px; top:18px; width:34px; height:16px; background:var(--node-green);"></div>
+            <div class="mm-node" style="left:14px; top:46px; width:34px; height:16px; background:var(--node-purple);"></div>
+            <div class="mm-node" style="left:120px; top:40px; width:34px; height:16px; background:var(--node-cyan);"></div>
+            <div class="mm-node" style="left:120px; top:14px; width:34px; height:16px; background:var(--node-magenta);"></div>
+            <div class="mm-node" style="left:120px; top:74px; width:34px; height:16px; background:var(--node-cyan);"></div>
+            <div class="mm-node" style="left:200px; top:52px; width:34px; height:16px; background:var(--node-blue);"></div>
+            <div class="mm-view" style="left:8px; top:10px; width:150px; height:90px;"></div>
+          </div>
+          <div class="zoom-ctl">
+            <button title="放大">＋</button><button title="缩小">－</button><button title="适应">⤢</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- property panel -->
+      <div class="property" id="property">
+        <div class="prop-head">
+          <div class="prop-ico" id="propIco" style="background:var(--node-magenta)">🎨</div>
+          <div>
+            <div class="prop-title" id="propTitle">画图 Canvas</div>
+            <div class="prop-type" id="propType">type: canvas · Jaaz 画图节点</div>
+          </div>
+        </div>
+        <div class="prop-body" id="propBody"></div>
+      </div>
+
+      <!-- KB view -->
+      <div class="kb-pane" id="kbPane">
+        <div class="kb-toolbar">
+          <span class="kb-title">📚 知识库</span>
+          <div class="kb-tabs">
+            <div class="kb-tab active" data-kb="cards" onclick="switchKb('cards')">图文卡片</div>
+            <div class="kb-tab" data-kb="mindmap" onclick="switchKb('mindmap')">思维导图</div>
+            <div class="kb-tab" data-kb="flow" onclick="switchKb('flow')">流程图</div>
+          </div>
+        </div>
+        <div class="kb-body">
+          <!-- 图文卡片 -->
+          <div class="kb-view active" id="kb-cards">
+            <div class="card-grid">
+              <div class="img-card"><img class="thumb" id="kbImg1"><div class="cc-body"><div class="cc-title">发布规范 · 主视觉尺寸</div><div class="cc-text">主视觉建议 1200×628（Open Graph 标准），社媒缩略 1:1。配色沿用品牌蓝 #1f6feb，避免高饱和渐变。</div><div class="cc-tags"><span class="cc-tag">规范</span><span class="cc-tag">设计</span></div></div></div>
+              <div class="img-card"><img class="thumb" id="kbImg2"><div class="cc-body"><div class="cc-title">历史发布复盘 Q4</div><div class="cc-text">Q4 共 12 次发布，图文并茂的卡片式公告 CTR 高 38%。配图优先使用生成式主视觉。</div><div class="cc-tags"><span class="cc-tag">复盘</span><span class="cc-tag">数据</span></div></div></div>
+              <div class="img-card"><img class="thumb" id="kbImg3"><div class="cc-body"><div class="cc-title">品牌色板参考</div><div class="cc-text">主色 #1f6feb / 辅色 #8957e5 / 强调 #db6d28。文字对比度需满足 WCAG AA。</div><div class="cc-tags"><span class="cc-tag">品牌</span><span class="cc-tag">色板</span></div></div></div>
+              <div class="img-card"><img class="thumb" id="kbImg4"><div class="cc-body"><div class="cc-title">发布检查清单</div><div class="cc-text">① 标题 ≤ 20 字 ② 主图就位 ③ 摘要含关键词 ④ 定时 09:00 ⑤ 回流知识库。</div><div class="cc-tags"><span class="cc-tag">流程</span><span class="cc-tag">checklist</span></div></div></div>
+            </div>
+          </div>
+          <!-- 思维导图 -->
+          <div class="kb-view" id="kb-mindmap">
+            <svg viewBox="0 0 900 560" width="100%" style="max-width:920px;margin:0 auto;display:block">
+              <defs>
+                <radialGradient id="mg" cx="0.5" cy="0.5" r="0.6">
+                  <stop offset="0" stop-color="#1f6feb" stop-opacity=".25"/><stop offset="1" stop-color="#1f6feb" stop-opacity="0"/>
+                </radialGradient>
+              </defs>
+              <g stroke="#3b4654" stroke-width="1.6" fill="none">
+                <path d="M450,280 C540,280 560,140 640,140"/>
+                <path d="M450,280 C540,280 560,420 640,420"/>
+                <path d="M450,280 C360,280 340,140 260,140"/>
+                <path d="M450,280 C360,280 340,420 260,420"/>
+                <path d="M640,140 C700,140 710,90 760,90"/>
+                <path d="M640,420 C700,420 710,470 760,470"/>
+                <path d="M260,140 C200,140 190,90 140,90"/>
+                <path d="M260,420 C200,420 190,470 140,470"/>
+              </g>
+              <g font-family="var(--font)" font-size="13" fill="#e6edf3" text-anchor="middle">
+                <circle cx="450" cy="280" r="46" fill="#1f6feb"/><text x="450" y="284">产品发布</text>
+                <circle cx="640" cy="140" r="34" fill="#8957e5"/><text x="640" y="144">内容</text>
+                <circle cx="640" cy="420" r="34" fill="#db6d28"/><text x="640" y="424">视觉</text>
+                <circle cx="260" cy="140" r="34" fill="#2da44e"/><text x="260" y="144">渠道</text>
+                <circle cx="260" cy="420" r="34" fill="#bf3989"/><text x="260" y="424">复盘</text>
+                <circle cx="760" cy="90" r="26" fill="#30363d"/><text x="760" y="94" font-size="11">文案</text>
+                <circle cx="760" cy="470" r="26" fill="#30363d"/><text x="760" y="474" font-size="11">主图</text>
+                <circle cx="140" cy="90" r="26" fill="#30363d"/><text x="140" y="94" font-size="11">社媒</text>
+                <circle cx="140" cy="470" r="26" fill="#30363d"/><text x="140" y="474" font-size="11">数据</text>
+              </g>
+            </svg>
+          </div>
+          <!-- 流程图 -->
+          <div class="kb-view" id="kb-flow">
+            <svg viewBox="0 0 900 320" width="100%" style="max-width:920px;margin:0 auto;display:block">
+              <defs><marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#6a737d"/></marker></defs>
+              <g font-family="var(--font)" font-size="12.5" fill="#e6edf3" text-anchor="middle">
+                <rect x="40" y="130" width="120" height="56" rx="10" fill="#1c2128" stroke="#2da44e"/><text x="100" y="163">触发 09:00</text>
+                <rect x="220" y="130" width="120" height="56" rx="10" fill="#1c2128" stroke="#8957e5"/><text x="280" y="163">生成文案</text>
+                <rect x="400" y="130" width="120" height="56" rx="10" fill="#1c2128" stroke="#38bdf8"/><text x="460" y="163">🎨 画图</text>
+                <rect x="580" y="130" width="120" height="56" rx="10" fill="#1c2128" stroke="#38bdf8"/><text x="640" y="163">✨ 文生图</text>
+                <rect x="760" y="130" width="120" height="56" rx="10" fill="#1c2128" stroke="#1f6feb"/><text x="820" y="163">发布</text>
+              </g>
+              <g stroke="#6a737d" stroke-width="1.8" fill="none" marker-end="url(#arw)">
+                <path d="M160,158 H218"/><path d="M340,158 H398"/><path d="M520,158 H578"/><path d="M700,158 H758"/>
+              </g>
+              <text x="459" y="120" font-family="var(--font)" font-size="11" fill="#9da7b3" text-anchor="middle">手绘构图 → 作为底图</text>
+              <text x="639" y="120" font-family="var(--font)" font-size="11" fill="#9da7b3" text-anchor="middle">参考图注入</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════ Agent Studio Chat (separate panel) ════════ -->
+    <div class="chat-pane">
+      <div class="chat-header">
+        <div class="chat-header-left">
+          <div class="chat-header-agent-selector">
+            <div class="chat-header-avatar-wrap">
+              <div class="chat-header-avatar-border">🤖</div>
+              <div class="chat-header-status-dot"></div>
+            </div>
+            <div class="chat-header-info">
+              <div class="chat-header-name">发布助手</div>
+              <div class="chat-header-role">Orchestrator · 可调用全部工具</div>
+            </div>
+          </div>
+        </div>
+        <div class="chat-header-actions">
+          <button class="chat-header-action-btn" title="新对话">＋</button>
+          <button class="chat-header-action-btn" title="历史">🕘</button>
+          <button class="chat-header-action-btn" title="更多">⋯</button>
+        </div>
+      </div>
+      <div class="chat-tabs-container">
+        <div class="chat-tabs">
+          <div class="chat-tab active"><span class="chat-tab-avatar">🤖</span><span class="chat-tab-label">发布助手</span></div>
+          <div class="chat-tab"><span class="chat-tab-avatar">🎨</span><span class="chat-tab-label">视觉设计</span></div>
+          <div class="chat-tab"><span class="chat-tab-avatar">📚</span><span class="chat-tab-label">知识检索</span></div>
+          <div class="chat-tab"><span class="chat-tab-avatar">⚡</span><span class="chat-tab-label">代码</span></div>
+        </div>
+      </div>
+      <div class="chat-messages-wrapper">
+        <div class="chat-messages" id="msgList">
+          <div class="chat-message user">
+            <div class="chat-avatar user">🧑</div>
+            <div class="chat-bubble user">帮我把「产品发布流程图」跑一遍，先看下是否符合发布规范，再生成主视觉图。</div>
+          </div>
+          <div class="chat-message">
+            <div class="chat-avatar assistant">🤖</div>
+            <div class="chat-bubble assistant">
+              <p>好的，我先检索知识库里的发布规范，再核对画布节点。</p>
+              <div class="tool-calls-section">
+                <div class="tool-call-card completed open" data-card>
+                  <div class="tool-call-header" onclick="this.parentNode.classList.toggle('open')">
+                    <span class="tool-call-icon">📚</span><span class="tool-call-name">knowledge_base.search</span>
+                    <span class="tool-call-duration">0.8s</span><span class="tool-call-emoji">✓</span>
+                  </div>
+                  <div class="tool-call-body"><div class="tool-call-code">query: "发布规范 主视觉 尺寸"
+hits: 3  →  brand-guide.md, size-spec.md, history-2025Q4.md</div></div>
+                </div>
+              </div>
+              <p>规范已读取：主视觉建议 <code>1200×628</code>，配色沿用品牌蓝。画布中的 🎨 画图节点与 ✨ 文生图节点已就位。</p>
+            </div>
+          </div>
+          <div class="chat-message">
+            <div class="chat-avatar assistant">🤖</div>
+            <div class="chat-bubble assistant">
+              <div class="subagent-card enhanced running" data-sub>
+                <div class="subagent-card-header" onclick="this.parentNode.classList.toggle('collapsed')">
+                  <span class="subagent-card-badge">运行中</span>
+                  <span class="subagent-card-title">视觉设计 · 生成产品主视觉</span>
+                  <span class="subagent-card-meta">3 工具调用</span>
+                </div>
+                <div class="subagent-card-body">
+                  <p>🎨 image.generate — 文生图 (1200×628)</p>
+                  <p>✓ 已产出 2 张候选，等待你挑选</p>
+                  <div class="subagent-exec-summary">耗时 <span class="subagent-exec-stat">12.4s</span> · token <span class="subagent-exec-stat">3.1k</span></div>
+                </div>
+              </div>
+              <p>子智能体正在生成主视觉，完成后我会汇总进「发布」节点。</p>
+            </div>
+          </div>
+          <div class="chat-message user">
+            <div class="chat-avatar user">🧑</div>
+            <div class="chat-bubble user">选第 1 张，直接推送到渠道。</div>
+          </div>
+        </div>
+      </div>
+      <div class="chat-input-area">
+        <div class="composer-resize-handle"></div>
+        <div class="chat-composer-box">
+          <div class="skill-chips-bar">
+            <span class="skill-chip"><span class="skill-chip-icon">⚡</span><span class="skill-chip-name">run_canvas</span></span>
+            <span class="skill-chip"><span class="skill-chip-icon">📚</span><span class="skill-chip-name">kb_search</span></span>
+            <span class="skill-chip"><span class="skill-chip-icon">🎨</span><span class="skill-chip-name">canvas_draw</span></span>
+          </div>
+          <div class="chat-composer-textarea" id="composer" contenteditable="true" data-placeholder="Message 发布助手..."></div>
+          <div class="chat-composer-toolbar">
+            <button class="ctool" title="附件">📎</button>
+            <button class="ctool" title="技能">✨</button>
+            <div class="model-pick">⚙️ claude-sonnet-4 ▾</div>
+            <div class="ctool-spacer"></div>
+            <button class="send-btn" title="发送" onclick="sendMsg()">➤</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* fake gradient image (SVG data URI) for thumbs */
+function fakeImage(hue, w=480, h=270) {
+  const h2=(hue+40)%360, h3=(hue+300)%360;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue},45%,26%)"/><stop offset="1" stop-color="hsl(${h2},55%,12%)"/></linearGradient><radialGradient id="g" cx="0.68" cy="0.3" r="0.5"><stop offset="0" stop-color="hsl(${hue},80%,72%)" stop-opacity="0.9"/><stop offset="1" stop-color="hsl(${hue},80%,72%)" stop-opacity="0"/></radialGradient></defs><rect width="${w}" height="${h}" fill="url(#s)"/><rect width="${w}" height="${h}" fill="url(#g)"/><circle cx="${w*0.68}" cy="${h*0.3}" r="${h*0.11}" fill="hsl(${hue},85%,82%)" opacity="0.95"/><polygon points="0,${h} ${w*0.25},${h*0.5} ${w*0.55},${h}" fill="hsl(${h3},40%,16%)"/><polygon points="${w*0.33},${h} ${w*0.62},${h*0.4} ${w},${h}" fill="hsl(${h3},45%,11%)"/><rect y="${h*0.87}" width="${w}" height="${h*0.13}" fill="hsl(${h2},50%,8%)" opacity="0.85"/></svg>`;
+  return 'data:image/svg+xml,'+encodeURIComponent(svg);
+}
+document.getElementById('canvasThumb').src = fakeImage(305, 360, 184);
+document.getElementById('genThumb').src = fakeImage(205, 360, 184);
+['kbImg1','kbImg2','kbImg3','kbImg4'].forEach((id,i)=>{ document.getElementById(id).src = fakeImage([205,150,265,30][i], 360, 150); });
+
+/* ═══════ Property Panel profiles ═══════ */
+const PROFILES = {
+  start:   { title:'开始 Start', type:'type: start', icon:'▶', color:'var(--node-green)', fields:[
+    {k:'label', l:'名称', t:'text', v:'开始'},
+    {k:'trigger', l:'触发方式', t:'select', o:['手动','定时','Webhook'], v:'定时'},
+    {k:'cron', l:'Cron 表达式', t:'text', v:'0 9 * * *'},
+  ]},
+  prompt:  { title:'提示词 Prompt', type:'type: prompt', icon:'💬', color:'var(--node-purple)', fields:[
+    {k:'label', l:'名称', t:'text', v:'分镜描述'},
+    {k:'prompt', l:'提示词', t:'textarea', v:'黄昏的森林小径，暖色灯火点缀，吉卜力手绘风格，16:9 电影分镜'},
+  ]},
+  agent:   { title:'智能体 Agent', type:'type: agent', icon:'🤖', color:'var(--node-blue)', fields:[
+    {k:'label', l:'名称', t:'text', v:'视觉设计'},
+    {k:'agent', l:'智能体', t:'select', o:['发布助手','视觉设计','知识检索','代码'], v:'视觉设计'},
+    {k:'prompt', l:'提示词', t:'textarea', v:'分析生成的主视觉图，输出风格评估与修改建议'},
+    {k:'provider', l:'Provider', t:'select', o:['默认','OpenAI','Anthropic','本地'], v:'默认'},
+    {k:'model', l:'模型', t:'select', o:['默认','gpt-4o','claude-sonnet-4','kimi-k2'], v:'默认'},
+    {k:'worktree', l:'Worktree', t:'select', o:['— None —','feature/visual'], v:'— None —'},
+  ]},
+  tool:    { title:'工具 Tool', type:'type: tool', icon:'🔧', color:'var(--node-orange)', fields:[
+    {k:'label', l:'名称', t:'text', v:'图生图放大'},
+    {k:'tool', l:'工具', t:'select', o:['image.upscale','image.edit','kb.search','http.request'], v:'image.upscale'},
+    {k:'args', l:'参数 (JSON)', t:'textarea', v:'{ "scale": 2 }'},
+  ]},
+  skill:   { title:'技能 Skill', type:'type: skill', icon:'✨', color:'var(--node-purple)', fields:[
+    {k:'label', l:'名称', t:'text', v:'海报生成'},
+    {k:'skill', l:'技能', t:'select', o:['poster-gen','brand-kit','seo-optimize'], v:'poster-gen'},
+  ]},
+  task:    { title:'任务 Task', type:'type: task', icon:'📋', color:'var(--node-blue)', fields:[
+    {k:'label', l:'名称', t:'text', v:'市场调研'},
+    {k:'desc', l:'任务描述', t:'textarea', v:'汇总竞品发布节奏与视觉趋势'},
+    {k:'subagents', l:'子智能体数', t:'select', o:['1','2','3','4'], v:'2'},
+  ]},
+  switch:  { title:'分支 Switch', type:'type: switch', icon:'⤴', color:'var(--node-cyan)', fields:[
+    {k:'label', l:'名称', t:'text', v:'是否含配图'},
+    {k:'expr', l:'表达式', t:'text', v:'{{input.hasImage}}'},
+    {k:'cases', l:'分支', t:'textarea', v:'true → 文生图\nfalse → 仅文案'},
+  ]},
+  ifelse:  { title:'条件 IfElse', type:'type: ifelse', icon:'🔀', color:'var(--node-cyan)', fields:[
+    {k:'label', l:'名称', t:'text', v:'质量校验'},
+    {k:'cond', l:'条件', t:'text', v:'score >= 0.8'},
+  ]},
+  askuser: { title:'询问用户 Ask', type:'type: askuser', icon:'❓', color:'var(--node-green)', fields:[
+    {k:'label', l:'名称', t:'text', v:'确认主图'},
+    {k:'question', l:'问题', t:'textarea', v:'选用哪张主视觉？'},
+  ]},
+  group:   { title:'分组 Group', type:'type: group', icon:'▦', color:'var(--ec-text-muted)', fields:[
+    {k:'label', l:'分组名', t:'text', v:'发布子流程'},
+  ]},
+  end:     { title:'结束 End', type:'type: end', icon:'■', color:'var(--node-orange)', fields:[
+    {k:'label', l:'名称', t:'text', v:'输出'},
+    {k:'output', l:'输出到', t:'select', o:['会话','文件','Webhook'], v:'会话'},
+  ]},
+  canvas:  { title:'画图节点 Canvas', type:'type: canvas · Jaaz 画图节点', icon:'🎨', color:'var(--node-magenta)', fields:[
+    {k:'label', l:'名称', t:'text', v:'手绘分镜'},
+    {k:'width', l:'画布宽', t:'number', v:960},
+    {k:'height', l:'画布高', t:'number', v:540},
+    {k:'strokes', l:'笔画数', t:'text', v:'3（可序列化）', disabled:true},
+    {k:'open', l:'', t:'button', v:'🎨 打开绘图编辑器'},
+  ], src:'{\n  "id": "n-canvas", "type": "canvas",\n  "data": { "label":"手绘分镜",\n    "width":960,"height":540,\n    "strokes":[...],  // 笔画数组可序列化\n    "imageKey":"img:…" }\n}'},
+  imagegen:{ title:'文生图节点 ImageGen', type:'type: imagegen · Jaaz 画图节点', icon:'✨', color:'var(--node-cyan)', fields:[
+    {k:'label', l:'名称', t:'text', v:'分镜渲染'},
+    {k:'prompt', l:'提示词', t:'textarea', v:'{{n-prompt.output}}，16:9 电影分镜'},
+    {k:'model', l:'模型', t:'select', o:['seedream-4','flux-schnell','gpt-image-1'], v:'seedream-4'},
+    {k:'size', l:'尺寸', t:'select', o:['16:9','1:1','9:16','4:3'], v:'16:9'},
+    {k:'quality', l:'质量', t:'select', o:['high','medium','low'], v:'high'},
+    {k:'count', l:'批量数量', t:'select', o:['4','1','2','3'], v:'4'},
+    {k:'mode', l:'模式', t:'select', o:['generation','edit'], v:'generation'},
+  ], src:'{\n  "id":"n-gen1","type":"imageGen",\n  "data":{ "label":"分镜渲染",\n    "prompt":"{{n-prompt.output}}",\n    "model":"seedream-4","size":"16:9",\n    "quality":"high","count":4,\n    "mode":"generation|edit" }\n}'},
+};
+
+const fieldHTML = f => {
+  if (f.t === 'button') return `<div class="field"><button class="btn-full" onclick="alert('打开 Jaaz 绘图编辑器（画笔/橡皮/颜色/撤销重做）')">${f.v}</button></div>`;
+  const common = `id="f_${f.k}" ${f.disabled?'disabled':''}`;
+  let ctrl;
+  if (f.t === 'textarea') ctrl = `<textarea ${common}>${f.v}</textarea>`;
+  else if (f.t === 'select') ctrl = `<select ${common}>${f.o.map(o=>`<option ${o===f.v?'selected':''}>${o}</option>`).join('')}</select>`;
+  else ctrl = `<input type="${f.t}" ${common} value="${f.v}">`;
+  return `<div class="field"><label>${f.l}</label>${ctrl}</div>`;
+};
+
+function selectNode(type) {
+  document.querySelectorAll('.node').forEach(n=>n.classList.remove('selected'));
+  const el = document.querySelector(`.node[data-type="${type}"]`);
+  if (el) el.classList.add('selected');
+  const p = PROFILES[type]; if (!p) return;
+  document.getElementById('propIco').textContent = p.icon;
+  document.getElementById('propIco').style.background = p.color;
+  document.getElementById('propTitle').textContent = p.title;
+  document.getElementById('propType').textContent = p.type;
+  document.getElementById('propBody').innerHTML =
+    `<div class="prop-section">属性</div>` +
+    p.fields.map(fieldHTML).join('') +
+    (p.src ? `<div class="prop-section">数据契约 (workflow.json)</div><div class="prop-src">${p.src}</div>` : '');
+}
+
+document.querySelectorAll('.node').forEach(n=>{
+  n.addEventListener('click', ()=> selectNode(n.dataset.type));
+});
+
+/* view switch */
+function switchView(v) {
+  const body = document.getElementById('body');
+  if (v === 'kb') {
+    body.classList.add('kbview');
+    document.getElementById('abKb').classList.add('active');
+    document.getElementById('abCanvas').classList.remove('active');
+  } else {
+    body.classList.remove('kbview');
+    document.getElementById('abCanvas').classList.add('active');
+    document.getElementById('abKb').classList.remove('active');
+  }
+}
+function switchKb(name) {
+  document.querySelectorAll('.kb-tab').forEach(t=>t.classList.toggle('active', t.dataset.kb===name));
+  document.querySelectorAll('.kb-view').forEach(v=>v.classList.toggle('active', v.id==='kb-'+name));
+}
+
+/* chat send */
+function sendMsg() {
+  const c = document.getElementById('composer');
+  const text = c.innerText.trim(); if (!text) return;
+  const list = document.getElementById('msgList');
+  const m = document.createElement('div');
+  m.className = 'chat-message user';
+  m.innerHTML = '<div class="chat-avatar user">🧑</div><div class="chat-bubble user"></div>';
+  m.querySelector('.chat-bubble').textContent = text;
+  list.appendChild(m); c.innerHTML = ''; list.scrollTop = list.scrollHeight;
+}
+document.getElementById('composer').addEventListener('keydown', e=>{
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+});
+</script>
+</body>
+</html>

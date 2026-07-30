@@ -159,6 +159,13 @@ export const TOOLSET_DEFINITIONS: readonly IToolsetDefinition[] = [
 		deferrable: true,
 	},
 	{
+		id: 'canvas',
+		label: 'Canvas',
+		priority: ToolsetPriority.Low,
+		prefixes: ['mindmap_'],
+		deferrable: true,
+	},
+	{
 		id: 'utility',
 		label: 'Utility',
 		priority: ToolsetPriority.Low,

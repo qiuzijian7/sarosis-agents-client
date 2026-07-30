@@ -20,7 +20,7 @@ import { IContextMenuService, IContextViewService } from '../../../../../platfor
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { ExplorerFindProviderActive, IFilesConfiguration, UndoConfirmLevel } from '../../common/files.js';
-import { dirname, joinPath, distinctParents, relativePath } from '../../../../../base/common/resources.js';
+import { basename, dirname, joinPath, distinctParents, relativePath } from '../../../../../base/common/resources.js';
 import { InputBox, MessageType } from '../../../../../base/browser/ui/inputbox/inputBox.js';
 import { localize } from '../../../../../nls.js';
 import { createSingleCallFunction } from '../../../../../base/common/functional.js';
@@ -1780,6 +1780,61 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 		}
 	}
 
+	/** 是否为知识库视图（KB View）发起的拖拽：其 dragstart 会写入 application/x-kb-drag 类型。 */
+	private isKnowledgeBaseDrag(e: DragEvent): boolean {
+		return !!e.dataTransfer && containsDragType(e, 'application/x-kb-drag');
+	}
+
+	/** 处理 KB 视图拖出的文件：把文件从知识库移动到目标位置（删除 KB 源文件）。 */
+	private async handleKnowledgeBaseDragDrop(target: ExplorerItem, e: DragEvent): Promise<void> {
+		const raw = e.dataTransfer?.getData('application/x-kb-drag');
+		if (!raw) { return; }
+		let paths: string[];
+		try { paths = JSON.parse(raw); } catch { return; }
+		if (!paths.length) { return; }
+
+		const sources = paths.map(p => URI.file(p));
+		let replaceAll: boolean | undefined;
+		const edits: ResourceFileEdit[] = [];
+
+		for (const source of sources) {
+			// 不能把文件移入自身或其子孙目录
+			if (this.uriIdentityService.extUri.isEqualOrParent(target.resource, source)) { continue; }
+			const targetUri = joinPath(target.resource, basename(source));
+			let overwrite = false;
+			if (await this.fileService.exists(targetUri)) {
+				let replace: boolean;
+				if (replaceAll !== undefined) {
+					replace = replaceAll;
+				} else {
+					const confirm = await this.dialogService.confirm({
+						message: localize('kbDropConflict', "目标位置已存在「{0}」，是否替换？", basename(source)),
+						detail: sources.length > 1
+							? localize('kbDropConflictMulti', '替换将覆盖目标位置的同名文件。此选择将应用于本次所有冲突项。')
+							: localize('kbDropConflictSingle', '替换将覆盖目标位置的同名文件，被覆盖内容无法通过撤销恢复。'),
+						primaryButton: localize('kbDropReplace', "替换"),
+						cancelButton: localize('kbDropSkip', "跳过"),
+					});
+					replace = confirm.confirmed;
+					if (sources.length > 1) { replaceAll = replace; }
+				}
+				if (!replace) { continue; }
+				overwrite = true;
+			}
+			// 不传 copy 选项即为 move（rename），源文件被移走
+			edits.push(new ResourceFileEdit(source, targetUri, { overwrite }));
+		}
+
+		if (!edits.length) { return; }
+
+		const undoLevel = this.configurationService.getValue<IFilesConfiguration>().explorer.confirmUndo;
+		await this.explorerService.applyBulkEdit(edits, {
+			undoLabel: edits.length === 1 ? localize('kbMoveOne', "Move {0}", basename(edits[0].newResource!)) : localize('kbMoveN', "Move {0} resources", edits.length),
+			progressLabel: edits.length === 1 ? localize('kbMovingOne', "Moving {0}", basename(edits[0].newResource!)) : localize('kbMovingN', "Moving {0} resources", edits.length),
+			confirmBeforeUndo: undoLevel === UndoConfirmLevel.Verbose || undoLevel === UndoConfirmLevel.Default,
+		});
+	}
+
 	async drop(data: IDragAndDropData, target: ExplorerItem | undefined, targetIndex: number | undefined, targetSector: ListViewTargetSector | undefined, originalEvent: DragEvent): Promise<void> {
 		this.compressedDropTargetDisposable.dispose();
 
@@ -1805,6 +1860,13 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 		}
 		const resolvedTarget = target;
 		if (!resolvedTarget) {
+			return;
+		}
+
+		// Knowledge Base 视图拖出的文件：执行真实「移动」（从 KB 删除源文件），
+		// 而非默认的「导入复制」。资源管理器据此把文件落到目标并删除 KB 源，KB 视图通过文件监听自动刷新。
+		if (this.isKnowledgeBaseDrag(originalEvent) && resolvedTarget.isDirectory && !resolvedTarget.isReadonly) {
+			await this.handleKnowledgeBaseDragDrop(resolvedTarget, originalEvent);
 			return;
 		}
 

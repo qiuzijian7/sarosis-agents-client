@@ -692,7 +692,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		assert.ok(t && t.includes('UE5 GC'), `<title> 行清洗后应保留语义文本，实际：${t}`);
 	});
 
-	test('LLM 分类归档：库文件落入 概念/UE5垃圾回收机制，frontmatter 正确', async () => {
+	test('LLM 分类归档：库文件落入 raw（分类交由构建阶段），frontmatter 正确', async () => {
 		const fs = new MockFileService();
 		const html = loadGcHtml();
 		const ctrl = makeFlowCtrl(fs, { createKbChatModel: () => classifyLlm });
@@ -703,9 +703,9 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		const libFiles = fs.listFiles('/库/').filter(k => k.endsWith('.md'));
 		assert.strictEqual(libFiles.length, 1, '库分区应恰好 1 个文件');
 		const libPath = decodeURIComponent(libFiles[0]);
-		assert.ok(libPath.includes('/库/概念/UE5垃圾回收机制/'), `应归档到 概念/UE5垃圾回收机制，实际：${libPath}`);
+		assert.ok(libPath.includes('/库/raw/'), `原始材料应统一落 库/raw/，实际：${libPath}`);
 		assert.ok(!libPath.includes('DOCTYPE'), '路径不得包含 DOCTYPE 垃圾目录名');
-		assert.ok(/\/库\/概念\/UE5垃圾回收机制\/UE5垃圾回收机制-\d{4}-\d{2}-\d{2}\.md$/.test(libPath),
+		assert.ok(/\/库\/raw\/UE5垃圾回收机制-\d{4}-\d{2}-\d{2}\.md$/.test(libPath),
 			`文件名应为 <topic>-<日期>.md（语义可读），实际：${libPath}`);
 
 		const content = (fs as any)._files.get(libFiles[0]) as string; // map key 为 percent-encoded 形式
@@ -715,7 +715,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		ctrl.dispose?.();
 	});
 
-	test('无 LLM 时安全降级：落入 杂记/未分类，同样不产生 DOCTYPE 目录', async () => {
+	test('无 LLM 时安全降级：落入 raw/未分类，同样不产生 DOCTYPE 目录', async () => {
 		const fs = new MockFileService();
 		const html = loadGcHtml();
 		const ctrl = makeFlowCtrl(fs, {}); // 无 createKbChatModel → safeSchemaFallback
@@ -726,8 +726,8 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		const libFiles = fs.listFiles('/库/').filter(k => k.endsWith('.md'));
 		assert.strictEqual(libFiles.length, 1, '库分区应恰好 1 个文件');
 		const libPath = decodeURIComponent(libFiles[0]);
-		assert.ok(libPath.includes('/库/杂记/未分类/'), `无 LLM 时应安全降级到 杂记/未分类，实际：${libPath}`);
-		assert.ok(/\/杂记\/未分类\/未分类-\d{4}-\d{2}-\d{2}\.md$/.test(libPath), `降级文件名应为 未分类-<日期>.md，实际：${libPath}`);
+		assert.ok(libPath.includes('/库/raw/'), `原始材料应统一落 库/raw/，实际：${libPath}`);
+		assert.ok(/\/库\/raw\/未分类-\d{4}-\d{2}-\d{2}\.md$/.test(libPath), `降级文件名应为 未分类-<日期>.md，实际：${libPath}`);
 		assert.ok(!libPath.includes('DOCTYPE'), '不得产生 DOCTYPE 目录');
 		ctrl.dispose?.();
 	});
@@ -752,24 +752,23 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		ctrl.dispose?.();
 	});
 
-	test('去重迁移：同内容重复导入，文件从旧错误目录迁到新分类目录', async () => {
+	test('去重：同内容重复导入（无论分类是否变化）不产生新文件，保留原路径', async () => {
 		const fs = new MockFileService();
 		const html = loadGcHtml();
 
-		// 第一次：无 LLM → 杂记/未分类
+		// 第一次：无 LLM → raw/未分类-<date>.md
 		const ctrl1 = makeFlowCtrl(fs, {});
 		assert.strictEqual(await ctrl1.handleFavoriteMessage(html, null, vault()), true);
 		const before = fs.listFiles('/库/').filter(k => k.endsWith('.md'));
 		assert.strictEqual(before.length, 1);
-		assert.ok(decodeURIComponent(before[0]).includes('/库/杂记/未分类/'), `首次应降级到 杂记/未分类，实际：${decodeURIComponent(before[0])}`);
+		assert.ok(decodeURIComponent(before[0]).includes('/库/raw/未分类-'), `首次应降级到 raw/未分类，实际：${decodeURIComponent(before[0])}`);
 
-		// 第二次：有 LLM → 概念/UE5垃圾回收机制；同内容 hash 命中去重 → 迁移而非重复落盘
+		// 第二次：有 LLM；同内容 hash 命中去重 → raw 设计下目标目录恒为 raw，原地保留而非重复落盘
 		const ctrl2 = makeFlowCtrl(fs, { createKbChatModel: () => classifyLlm });
 		assert.strictEqual(await ctrl2.handleFavoriteMessage(html, null, vault()), true);
 		const after = fs.listFiles('/库/').filter(k => k.endsWith('.md'));
 		assert.strictEqual(after.length, 1, '去重：仍应只有 1 个库文件');
-		assert.ok(decodeURIComponent(after[0]).includes('/库/概念/UE5垃圾回收机制/'), `应迁移到新分类目录，实际：${decodeURIComponent(after[0])}`);
-		assert.ok(!fs.listFiles('/库/杂记/未分类/').some(k => k.endsWith('.md')), '旧目录不应残留文件');
+		assert.strictEqual(after[0], before[0], '去重命中应保留原文件路径');
 		ctrl1.dispose?.();
 		ctrl2.dispose?.();
 	});
@@ -783,14 +782,14 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		// 先经 LLM 分类入库（得到带 frontmatter type/topic 的库文件）
 		const ctrl = makeFlowCtrl(fs, { createKbChatModel: () => classifyLlm });
 		assert.strictEqual(await ctrl.handleFavoriteMessage(html, null, vault()), true);
-		const libPath = fs.listFiles('/库/').filter(k => k.endsWith('.md'))[0];
+		const libPath = fs.listFiles('/库/raw/').filter(k => k.endsWith('.md'))[0];
 		const libPathDec = decodeURIComponent(libPath);
-		const libRel = libPathDec.substring(libPathDec.indexOf('/库/') + 1); // '库/概念/UE5垃圾回收机制/<date>_<hash>.md'
+		const libRel = libPathDec.substring(libPathDec.indexOf('/库/') + 1); // '库/raw/UE5垃圾回收机制-<date>.md'
 
 		// 构建 LLM：stage1（系统提示含「架构师」）返回规划文本；stage2 返回 FILE 块
-		// FILE 块路径相对于源文件所在目录（库/概念/UE5垃圾回收机制/）
+		// FILE 块路径相对库根、必须带 schema 类型目录前缀（与 buildFileBlockPrompt 契约一致）
 		const fileBlock = [
-			'---FILE: UE5垃圾回收机制.md ---',
+			'---FILE: 概念/UE5垃圾回收机制/UE5垃圾回收机制.md ---',
 			'---',
 			'type: 概念',
 			'title: UE5 垃圾回收机制',
@@ -821,7 +820,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		);
 		assert.ok(notePath, '构建应成功（返回笔记路径）');
 
-		// 笔记应写入源文件所在库目录（库/概念/UE5垃圾回收机制/UE5垃圾回收机制.md）
+		// 笔记应按 schema 归类写入库根锚定路径（库/概念/UE5垃圾回收机制/UE5垃圾回收机制.md）
 		const expectedNoteUri = URI.joinPath(vault(), '库', '概念', 'UE5垃圾回收机制', 'UE5垃圾回收机制.md');
 		const note = fs.contentOf(expectedNoteUri);
 		assert.ok(note, '笔记应写入 库/概念/UE5垃圾回收机制/UE5垃圾回收机制.md');
@@ -870,28 +869,28 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 
 	// ── 文件导入：原始文件保留文件名入库 ────────────────────────────────────
 
-	test('文件导入：原始文件原样复制入库并保留文件名（不包 frontmatter），抽取兜底按目录路径推导分类', async () => {
+	test('文件导入：原始文件原样复制入 raw 并保留文件名（不包 frontmatter），抽取兜底落源文件旁', async () => {
 		const fs = new MockFileService();
 		const html = loadGcHtml();
 		const srcUri = URI.file('/src/GC_Mechanism_Diagram.html');
 		fs.addFile(srcUri, html);
 
-		// 入口：文件导入（LLM 分类为 concept/UE5垃圾回收机制）→ 原始文件副本入库
+		// 入口：文件导入 → 原始文件副本统一入 raw（分类交由构建阶段）
 		const ctrl = makeFlowCtrl(fs, { createKbChatModel: () => classifyLlm });
 		assert.strictEqual(await ctrl.handleFavoriteMessage(html, null, vault(), srcUri), true, '文件导入应成功');
 
 		const libFiles = fs.listFiles('/库/').filter(k => k.endsWith('.html'));
 		assert.strictEqual(libFiles.length, 1, '库分区应恰好 1 个 .html 文件（原始文件副本）');
 		const libPath = decodeURIComponent(libFiles[0]);
-		assert.ok(libPath.includes('/库/概念/UE5垃圾回收机制/GC_Mechanism_Diagram.html'),
-			`应保留原始文件名并归入分类目录，实际：${libPath}`);
+		assert.ok(libPath.includes('/库/raw/GC_Mechanism_Diagram.html'),
+			`原始材料应统一落 库/raw/ 并保留文件名，实际：${libPath}`);
 		assert.ok(!libPath.includes('DOCTYPE'), '路径不得包含 DOCTYPE 垃圾目录');
 		// 原样复制：内容与原始文件完全一致，且无 frontmatter 包裹
 		const libContent = (fs as any)._files.get(libFiles[0]) as string;
 		assert.strictEqual(libContent, html, '库文件应与原始文件内容完全一致（原样复制）');
 		assert.ok(!libContent.startsWith('---'), '文件导入的库文件不应包 frontmatter');
 
-		// 抽取：stage2 无 FILE 块 → 兜底笔记的分类按「库/<typeDir>/<topic>/<file>」目录路径推导
+		// 抽取：stage2 无 FILE 块 → 兜底落源文件旁（raw 内无分类上下文 → 未分类）
 		const garbage = '这是一段没有按 FILE 块格式输出的模型回复，包含对 GC 机制的零散描述。'.repeat(4);
 		const buildLlm = {
 			complete: async (system: string) => system.includes('架构师') ? '规划' : garbage,
@@ -908,11 +907,11 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		);
 		assert.ok(notePath, '兜底应产出笔记而非失败');
 
-		// 兜底笔记落在源文件所在库目录（分类按库目录路径推导 typeDir=topic）
-		const expectedNoteUri = URI.joinPath(vault(), '库', '概念', 'UE5垃圾回收机制', 'UE5垃圾回收机制.md');
+		// 兜底笔记落在源文件旁（库/raw/未分类.md；raw 路径推导不出分类 → 未分类）
+		const expectedNoteUri = URI.joinPath(vault(), '库', 'raw', '未分类.md');
 		const note = fs.contentOf(expectedNoteUri);
-		assert.ok(note, '兜底笔记应落在 库/概念/UE5垃圾回收机制/UE5垃圾回收机制.md（分类按库目录路径推导）');
-		assert.ok(note!.includes('title: UE5垃圾回收机制'), '兜底笔记 frontmatter 应含路径推导出的 topic');
+		assert.ok(note, '兜底笔记应落在 库/raw/未分类.md（源文件旁，raw 无分类上下文 → 未分类）');
+		assert.ok(note!.includes('title: 未分类'), '兜底笔记 frontmatter 应含路径推导出的 topic=未分类');
 		ctrl.dispose?.();
 	});
 });
@@ -1033,50 +1032,46 @@ suite('AgentStudio - _matchCategory 统一分词 + 模糊匹配修复', () => {
 	});
 });
 
-suite('AgentStudio - _writeFileBlocks 方案A 平铺落盘', () => {
+suite('AgentStudio - _writeFileBlocks 按 schema 类型目录归类落盘', () => {
 
 	const logMock = { warn: () => { } } as any;
 	const TYPE_DIRS = new Set(['概念', '方法', '综合', '实体', '杂记', '来源', '查询']);
 	// 平台无关：fsPath 在 Windows 用反斜杠，统一归一为正斜杠再断言
 	const norm = (p: string) => decodeURIComponent(p).replace(/\\/g, '/');
 
+	// 与生产一致：落盘基准 = 库根（_buildNoteCore 的 outputDir=libDir），FILE 块路径带类型目录前缀
 	function call(blocks: { path: string; content: string }[], fs: MockFileService, typeDirs?: ReadonlySet<string>): Promise<string[]> {
 		return (KbImportController as any)._writeFileBlocks(
-			blocks, URI.file('/vault/库/概念/UE5 GC 机制'), URI.file('/vault'), fs, logMock, typeDirs,
+			blocks, URI.file('/vault/库'), URI.file('/vault'), fs, logMock, typeDirs,
 		);
 	}
 
-	test('剥掉类型目录前缀 → 平铺进主题目录', async () => {
+	test('保留类型目录前缀 → 按 schema 归类到库根下对应目录', async () => {
 		const fs = new MockFileService();
 		const written = await call([
 			{ path: '概念/UE5 GC 机制.md', content: '概念笔记' },
 			{ path: '方法/UE5 GC 调优.md', content: '方法笔记' },
 		], fs, TYPE_DIRS);
-		const names = written.map(p => norm(p).split('/').pop()!);
-		assert.ok(names.includes('UE5 GC 机制.md'), '概念笔记应平铺');
-		assert.ok(names.includes('UE5 GC 调优.md'), '方法笔记应平铺');
-		// 主题目录内不应再有类型子目录（文件应直接落在 base 下，无额外 /）
-		const base = '/vault/库/概念/UE5 GC 机制/';
-		for (const p of written) {
-			const dec = norm(p);
-			assert.ok(dec.startsWith(base), '应在主题目录内：' + dec);
-			assert.ok(!dec.slice(base.length).includes('/'), '主题目录内不应再有类型子目录：' + dec);
-		}
+		const normed = written.map(p => norm(p));
+		assert.ok(normed.some(p => p.endsWith('/库/概念/UE5 GC 机制.md')), '概念笔记应归类到 库/概念/：' + normed.join('; '));
+		assert.ok(normed.some(p => p.endsWith('/库/方法/UE5 GC 调优.md')), '方法笔记应归类到 库/方法/：' + normed.join('; '));
+		// 类型前缀不得被剥掉（归类语义依赖它）
+		assert.ok(!normed.some(p => p.endsWith('/库/UE5 GC 机制.md')), '不得平铺到库根丢失归类：' + normed.join('; '));
 	});
 
-	test('平铺后同名冲突 → 自动改名 _2，避免互相覆盖', async () => {
+	test('同一路径冲突 → 自动改名 _2，避免互相覆盖', async () => {
 		const fs = new MockFileService();
 		const written = await call([
-			{ path: '概念/UE5 GC 机制.md', content: '概念版' },
-			{ path: '方法/UE5 GC 机制.md', content: '方法版（平铺后与概念同名）' },
+			{ path: '概念/UE5 GC 机制.md', content: '第一版' },
+			{ path: '概念/UE5 GC 机制.md', content: '第二版（同路径冲突）' },
 		], fs, TYPE_DIRS);
 		const names = written.map(p => norm(p).split('/').pop()!);
 		assert.ok(names.includes('UE5 GC 机制.md'), '第一篇保留原名');
-		assert.ok(names.includes('UE5 GC 机制_2.md'), '同名第二篇应自动改名');
+		assert.ok(names.includes('UE5 GC 机制_2.md'), '同路径第二篇应自动改名');
 		// 两篇内容都应保留（未被覆盖）
-		const dir = '/vault/库/概念/UE5 GC 机制';
-		assert.ok(fs.contentOf(URI.file(dir + '/UE5 GC 机制.md'))?.includes('概念版'));
-		assert.ok(fs.contentOf(URI.file(dir + '/UE5 GC 机制_2.md'))?.includes('方法版'));
+		const dir = '/vault/库/概念';
+		assert.ok(fs.contentOf(URI.file(dir + '/UE5 GC 机制.md'))?.includes('第一版'));
+		assert.ok(fs.contentOf(URI.file(dir + '/UE5 GC 机制_2.md'))?.includes('第二版'));
 	});
 
 	test('无类型前缀的路径原样落盘（不剥首段）', async () => {

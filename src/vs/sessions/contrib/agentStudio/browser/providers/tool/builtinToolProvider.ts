@@ -56,6 +56,7 @@ import { AdrManager } from '../../codebaseGraphAdr.js';
 import { registerCodebaseTools } from './codebaseTools.js';
 import { registerKanbanTools } from './kanbanTools.js';
 import { registerWorkflowTools } from './workflowTools.js';
+import { registerMindmapTools } from './mindmapTools.js';
 import { IPlaywrightService } from '../../../../../../platform/browserView/common/playwrightService.js';
 import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
 import { ISessionsManagementService } from '../../../../../../sessions/services/sessions/common/sessionsManagement.js';
@@ -258,6 +259,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerPlanExploreTool(); // WorkBuddy-style plan mode: parallel exploration
 		this._registerPlanModeTools(); // MiMo-style plan_enter/plan_exit tools
 		this._registerKanbanTools();
+		this._registerMindmapTools();
 		this._registerWorkflowTools();
 		this._registerCodebaseTools();
 		this._registerKnowledgeTools(); // Plan-C Hyper-Extract knowledge engine (kb_* tools)
@@ -590,7 +592,12 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		});
 	}
 
-
+	private _registerMindmapTools(): void {
+		registerMindmapTools({
+			register: (def) => this.register(def),
+			logService: this.logService,
+		});
+	}
 
 	private _registerWorkflowTools(): void {
 		registerWorkflowTools({

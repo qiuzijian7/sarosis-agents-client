@@ -20,7 +20,7 @@ import type { IFileService } from '../../../../../../platform/files/common/files
 import type { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { type SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { prepareQueryForRipgrep, escapeLiteralForRegex } from './regexValidator.js';
-import { normalizeFileGlobForSearch, normalizePathFilterForRoots, noMatchNoFilterHint, noMatchWithIncludeHint, searchCodeEmptyStreakHint } from './pathFilterNormalize.js';
+import { normalizeFileGlobForSearch, normalizeSearchPathFilter, searchRootCandidates, searchOutcomeHint } from './pathFilterNormalize.js';
 
 export interface CodebaseToolContext {
 	register(definition: { definition: any; handler: any }): void;
@@ -944,7 +944,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			inputSchema: {
 				type: 'object',
 				properties: {
-					pattern: { type: 'string', description: 'REQUIRED. The actual text to find: a regex for content search, or a glob (e.g., \'*.py\', \'*config*\') when mode=\'files\'. The search term ALWAYS goes here, never in `mode`. Also accepts alias: query.' },
+					pattern: { type: 'string', description: 'REQUIRED. The actual text to find: a regex for content search, or a glob (e.g., \'*.py\', \'*config*\') when mode=\'files\'. The search term ALWAYS goes here, never in `mode`.' },
 					mode: { type: 'string', enum: ['content', 'files_with_matches', 'count', 'files'], default: 'content', description: 'What to do with `pattern` (this is the MODE selector, never the search term):\n- \'content\' (default): regex-search inside files, return matching lines with line numbers\n- \'files_with_matches\': regex-search inside files, return only the file paths that contain a match\n- \'count\': regex-search inside files, return match counts per file\n- \'files\': treat `pattern` as a filename glob and find files by NAME (use this instead of ls; sorted by modification time)' },
 					path: { type: 'string', description: 'Directory or file to search in (default: current working directory)', default: '.' },
 					file_glob: { type: 'string', description: 'Filter which files to search by glob (e.g., \'*.py\' to only search Python files). Applies to content/files_with_matches/count modes.' },
@@ -952,44 +952,22 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 					offset: { type: 'integer', description: 'Skip first N results for pagination (default: 0)', default: 0 },
 					context: { type: 'integer', description: 'Number of context lines before and after each match (content mode only)', default: 0 },
 				},
-				// schema 强制 pattern：coerceOrReject 派发前即校验，模型漏参被就地拒绝
-				// 并重生成（不会跑到 handler 抛错后被 guard 空转）。校验是别名感知的——
-				// pattern 的 description 声明「accepts alias: query」，故只发 query 也算满足。
-				// query 别名属性已从 schema 移除（收敛参数面），handler 内的 mode/query/
-				// file_glob 别名恢复仍作为二道防线保留兼容旧会话。
-				required: ['pattern'],
+			// schema 强制 pattern：coerceOrReject 派发前即校验，模型漏参被就地拒绝
+			// 并重生成（不会跑到 handler 抛错后被 guard 空转）。
+			required: ['pattern'],
 			},
 			category: 'codebase',
 			source: ctx.id,
 		},
 		handler: async (args: Record<string, unknown>, _signal?: AbortSignal, agentId?: string) => {
-			// 兼容不同参数名：pattern / query / file_glob（LLM 可能混淆）
-			let rawPattern = String(args['pattern'] || args['file_glob'] || args['query'] || '');
+			// P2（2026-07-29，kimi zod-only）：旧 target/output_mode/query 别名恢复
+			// 已移除——schema 单一 mode + required pattern 是唯一契约。
+			const rawPattern = String(args['pattern'] || '');
 
-			// ── 统一 mode（合并旧的 target + output_mode 双开关，消除语义重叠）──
-			// 新 schema 只暴露单一 `mode`；旧参数 target/output_mode 作为静默别名兼容旧会话。
-			let mode = args['mode'] ? String(args['mode']) : '';
-			if (!mode) {
-				const legacyTarget = args['target'] ? String(args['target']) : '';
-				const legacyOut = args['output_mode'] ? String(args['output_mode']) : '';
-				if (legacyTarget === 'files') {
-					mode = 'files';
-				} else if (legacyOut) {
-					mode = legacyOut === 'files_only' ? 'files_with_matches' : legacyOut; // content/count 直通
-				} else {
-					mode = 'content';
-				}
-				// 兼容：模型偶尔把搜索词误放进 legacyTarget（本是模式选择）
-				if (!rawPattern && legacyTarget && legacyTarget !== 'content' && legacyTarget !== 'files') {
-					rawPattern = legacyTarget;
-					mode = 'content';
-				}
-			}
+			let mode = args['mode'] ? String(args['mode']) : 'content';
 			// 归一未知/非法 mode → content
 			if (!['content', 'files_with_matches', 'count', 'files'].includes(mode)) { mode = 'content'; }
 
-			// 设置正确的 pattern 回 args，使 handler 后续逻辑统一从 args['pattern'] 取值
-			if (!args['pattern'] && rawPattern) { args['pattern'] = rawPattern; }
 			const pattern = rawPattern;
 			if (!pattern) { throw new Error('search_files requires "pattern" (the search term). Example — content: search_files({pattern:"parseConfig"}); find files: search_files({mode:"files", pattern:"*.ts"}). Do NOT put the search term in `mode`.'); }
 
@@ -1056,16 +1034,13 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			}
 
 			// 结果后处理：大小截断 → 脱敏 → densify
-			result = ctx.searchHelpers.enforceSearchSize(result);
-			result = redactSecrets(result);
-			if (!(target === 'files' || outputMode === 'files_only' || outputMode === 'count')) {
-				// content 模式 >=5 条匹配时自动切换到路径分组紧凑格式
-				result = ctx.searchHelpers.densifySearchOutput(result);
-			}
-			if (repeat.warning) {
-				result += '\n\n' + repeat.warning;
-			}
-			return [{ type: 'text', text: result }];
+		result = ctx.searchHelpers.enforceSearchSize(result);
+		result = redactSecrets(result);
+		if (!(target === 'files' || outputMode === 'files_only' || outputMode === 'count')) {
+			// content 模式 >=5 条匹配时自动切换到路径分组紧凑格式
+			result = ctx.searchHelpers.densifySearchOutput(result);
+		}
+		return [{ type: 'text', text: result }];
 		},
 	});
 
@@ -1079,10 +1054,10 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			inputSchema: {
 				type: 'object',
 				properties: {
-					query: { type: 'string', description: 'Regex search pattern. Multi-word queries auto-convert to regex (foo bar → foo.*bar); pipe alternation SymA|SymB matches either. Also accepts alias: pattern.' },
-					mode: { type: 'string', enum: ['compact', 'full', 'files'], default: 'compact', description: 'compact: matching lines with line numbers (default). full: with surrounding source. files: just file paths. Also accepts alias: output_mode (content→full, files_with_matches→files).' },
-					filePattern: { type: 'string', description: 'File glob to RESTRICT which files are searched, passed straight to ripgrep (e.g. **/CoreUObject/**/*.cpp, src/**/*.ts). MUST be a specific path fragment — a bare extension wildcard like "*.cpp" does NOT narrow anything in a large multi-project repo (it matches tens of thousands of files). Also accepts aliases: file_glob, glob.' },
-					path_filter: { type: 'string', description: 'Additional file glob restricting the searched paths (e.g. **/CoreUObject/**, src/**, GarbageCollection.cpp). Paths are matched RELATIVE to each project root — never prefix with the root folder name (use Engine/Source/**, NOT UE5EA/Engine/Source/**). Combined with filePattern as a ripgrep include filter. Also accepts alias: path.' },
+				query: { type: 'string', description: 'Regex search pattern. Multi-word queries auto-convert to regex (foo bar → foo.*bar); pipe alternation SymA|SymB matches either.' },
+				mode: { type: 'string', enum: ['compact', 'full', 'files'], default: 'compact', description: 'compact: matching lines with line numbers (default). full: with surrounding source. files: just file paths.' },
+				filePattern: { type: 'string', description: 'File glob to RESTRICT which files are searched, passed straight to ripgrep (e.g. **/CoreUObject/**/*.cpp, src/**/*.ts). MUST be a specific path fragment — a bare extension wildcard like "*.cpp" does NOT narrow anything in a large multi-project repo (it matches tens of thousands of files).' },
+				path_filter: { type: 'string', description: 'Directory or file to search in — a search ROOT (like `rg <path>`), resolved against each workspace folder when relative (e.g. Engine/Source/Runtime/CoreUObject, f:/.../CoreUObject, GarbageCollection.cpp). May also be a glob containing * (e.g. **/CoreUObject/**). A non-existent path returns an explicit error, NOT "no matches". To filter by file name/type instead, use filePattern.' },
 					context: { type: 'number', description: 'Lines of context before and after each match (like grep -C). Compact/full modes.' },
 					regex: { type: 'boolean', default: false, description: 'Treat query as a raw regex. When false (default), a plain literal is escaped and matched literally. Multi-word / pipe-alternation queries auto-enable regex.' },
 				project: { type: 'string', description: 'Project name to scope the search to a single indexed folder (optional, defaults to ALL workspace folders). Use list_projects to discover names — e.g. "UE5EA" to search only engine sources in a multi-folder workspace.' },
@@ -1102,22 +1077,11 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			// includePattern（非后置假缩放）+ 正则校验回传 warning + 硬截断 refine 引导。
 			// 本 handler 改用 ctx.searchHelpers.searchContent（同款 ripgrep 引擎，已带
 			// regex 失败回退纯文本 + signal 取消），彻底移除图谱 deadline grep 与 fallback。
-			// alias 恢复（二道防线，兼容旧会话 / ripgrep 风格参数）
-			if (!args['query'] && args['pattern']) { args['query'] = args['pattern']; }
-			if (!args['path_filter'] && args['path']) { args['path_filter'] = args['path']; }
-			if (!args['mode'] && args['output_mode']) {
-				const om = String(args['output_mode']);
-				args['mode'] = om === 'files_with_matches' ? 'files' : om === 'content' ? 'full' : om;
-			}
-			if (!args['filePattern'] && (args['file_glob'] || args['glob'])) {
-				args['filePattern'] = args['file_glob'] ?? args['glob'];
-			}
-			if (args['context'] === undefined && args['contextAround'] !== undefined) {
-				args['context'] = args['contextAround'];
-			}
+		// P2（2026-07-29，kimi zod-only）：别名恢复已移除——schema 是唯一契约，
+		// 发错参数名在 coerce 层即被拒（missing required 带正确参数名）。
 
-			const rawQuery = String(args['query'] ?? '');
-			if (!rawQuery) { return text('search_code requires "query" (the search term). Example: search_code({query:"FooBar"}) or search_code({query:"SymA|SymB", mode:"files"}). Accepts alias `pattern`.'); }
+		const rawQuery = String(args['query'] ?? '');
+		if (!rawQuery) { return text('search_code requires "query" (the search term). Example: search_code({query:"FooBar"}) or search_code({query:"SymA|SymB", mode:"files"}).'); }
 			let mode = (args['mode'] as string | undefined) || 'compact';
 			if (!['compact', 'full', 'files'].includes(mode)) { mode = 'compact'; }
 		const filePattern = args['filePattern'] as string | undefined;
@@ -1125,16 +1089,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		// glob（*.cpp、GarbageCollection.cpp）无 `/` 时补 `**/`，否则引擎 _globToRegex
 		// 中 `*` 不跨目录，只匹配各搜索根直属文件→嵌套恒 0 命中（log 中 8 次空）。
 		const normalizedFilePattern = filePattern ? normalizeFileGlobForSearch(filePattern) : undefined;
-		let pathFilter = args['path_filter'] as string | undefined;
-		if (pathFilter) {
-			// ── 归一化（2026-07-28，日志 1785228894680）：剥 `**/` 前缀与
-			// 根目录名首段（如 UE5EA/Engine/... → Engine/...）——include glob 按
-			// 各搜索根相对路径匹配，含根目录自身名恒 0 命中（19/19 no-match）。
-			// 纯函数见 pathFilterNormalize.ts；返回 undefined = 搜整个根不过滤。
-			const rootDirNames = ctx.workspaceService.getWorkspace().folders
-				.map(f => f.uri.fsPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '');
-			pathFilter = normalizePathFilterForRoots(pathFilter, rootDirNames);
-		}
+		const pathFilter = args['path_filter'] as string | undefined;
 			const contextLines = Math.min(Math.max((args['context'] as number | undefined) ?? 0, 0), 10);
 		const limit = Math.min(Math.max((args['limit'] as number | undefined) ?? 30, 1), 100);
 		const offset = Math.min(Math.max((args['offset'] as number | undefined) ?? 0, 0), 1000);
@@ -1165,38 +1120,72 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		const repeat = ctx.searchHelpers.recordSearchRepeat(agentId, searchQuery, mode, normalizedFilePattern ?? pathFilter ?? '', undefined, limit, offset);
 		if (repeat.blocked) { return text(repeat.blocked); }
 
-			// ── filePattern + path_filter 合并为 ripgrep includePattern（前置过滤，真缩放）──
-			// continue 的 grep 无 filePattern 参数（靠 file_glob_search 定位）；这里保留
-			// filePattern 但直通 ripgrep includePattern（不再是旧的后置正则假缩放）。
-			// 2026-07-27（日志 1785134772329）：path_filter 为【绝对路径】时（模型常传
-			// `f:/.../GarbageCollection.cpp` 或 Unix `/...`），不能再拼 `**/` 前缀——
-			// `**/f:/...` 是畸形 glob，ripgrep 必 0 命中（实测 2 次被迫 no-match 漏检）。
-			// 绝对路径原样直通；相对路径才按文件/目录形态拼 `**/`。
-		const _isAbsPath = (p: string) => /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('/');
-		const _globFromPathFilter = (p: string): string => {
-			// 绝对【文件】（带扩展名）直通（1785134772329 修复）。
-			// 绝对【目录】必须补 /**：裸目录作 include glob 只匹配该字面路径、不含其子项，
-			// ripgrep 恒 0 命中（1785224874547：subagent 传 path=f:/.../CoreUObject 全 no-match，
-			// 连 FGarbageCollector 都搜不到 → 反复重试直至 601s timeout）。
-			if (_isAbsPath(p)) { return /\.[A-Za-z0-9]{1,10}$/.test(p) ? p : `${p.replace(/[/\\]+$/, '')}/**`; }
-			return /\.[A-Za-z0-9]{1,10}$/.test(p) ? `**/${p}` : `**/${p}/**`;
-		};
-			const includeGlob = normalizedFilePattern ?? (pathFilter ? _globFromPathFilter(pathFilter) : undefined);
+		// ── P1（2026-07-29，对齐 kimi Grep / search_files 的搜索根模型）─────────
+		// path_filter = 搜索根（目录或文件路径），不再塞进 includePattern（glob 语义）。
+		// 旧 include-glob 路线须处理 相对/绝对 × 文件/目录 四象限，已致 4 起事故
+		//（1785134772329 绝对文件、1785224874547 绝对目录、1785228894680 根目录名首段、
+		// 1785231958842 裸 glob）。分流：含 `*` → includePattern glob（先清洗 **/ ./ 前缀与
+		// 根目录名首段）；否则 stat 判定——文件→单文件 grep、目录→搜索根；全候选不存在时，
+		// 带扩展名的按裸文件名 glob（**/name）兜底，目录形态才显式报错（≠ no matches）。
+		let includeGlob: string | undefined = normalizedFilePattern;
+		let explicitSearchRoot: string | undefined;
+		if (pathFilter && !normalizedFilePattern) {
+			const rootDirNames = ctx.workspaceService.getWorkspace().folders
+				.map(f => f.uri.fsPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '');
+			const pf = normalizeSearchPathFilter(pathFilter, rootDirNames);
+			if (pf.includes('*')) {
+				includeGlob = pf;
+			} else if (pf) {
+				const candidates = searchRootCandidates(
+					pf,
+					ctx.workspaceService.getWorkspace().folders.map(f => f.uri.fsPath),
+				);
+				if (candidates.length === 0) {
+					// 无 workspace folder 时的兜底解析（沙箱校验）；失败即"不存在"
+					try {
+						candidates.push(await ctx.resolveAndCheckWorkspacePath(agentId, pf, false));
+					} catch { /* fall through → 显式不存在报错 */ }
+				}
+				for (const c of candidates) {
+					try {
+						await ctx.fileService.stat(URI.file(c));
+						explicitSearchRoot = c;
+						break;
+					} catch { /* 尝试下一个候选 */ }
+				}
+				if (!explicitSearchRoot) {
+					const isAbs = /^[a-zA-Z]:\//.test(pf) || pf.startsWith('/');
+					if (!isAbs && /\.[A-Za-z0-9]{1,10}$/.test(pf)) {
+						// 相对裸文件名（GarbageCollection.cpp）：模型意图是按文件名过滤
+						// （绝对路径不兜底——`**/f:/...` 是畸形 glob，事故 1785134772329）
+						includeGlob = `**/${pf}`;
+					} else {
+						return text(`search_code: path_filter 路径不存在: ${pathFilter}（已按搜索根解析并检查所有 workspace 根）。\npath_filter 是搜索根（目录或文件路径）；按文件名过滤请改用 filePattern（glob，如 **/*.cpp）；确认路径存在后重试，或去掉 path_filter 全库搜索。`);
+					}
+				}
+			}
+			// pf 为空（裸根名）→ 不过滤
+		}
 
 			// ripgrep outputMode 映射：files → files_only；compact/full → content（带行号匹配行）
 			const outputMode = mode === 'files' ? 'files_only' : 'content';
 			// full 模式多给几行上下文（对齐旧 full 语义：匹配点前后源码）
 			const effContext = mode === 'full' ? Math.max(contextLines, 3) : contextLines;
 
-			// ── project → 单 folder scope；否则跨【所有】workspace folders 搜索并合并 ──
-			// 事故（日志 1785151024653）：project 未指定时旧实现只搜 resolveAndCheckWorkspacePath('.')
-			// 解析出的【单个】路径（多根工作区下恒为第一个允许根），导致像 UE5EA 这类第二/第三个
-			// workspace folder 完全搜不到——112 次 search_code 里 51 次 "(no matches)"，命中的
-			// 引擎源码符号全靠 search_files 的索引快路径（自带跨 project 绝对路径）意外补位。
-			// 修复：project=ALL 时遍历 ctx.workspaceService.getWorkspace().folders 逐个搜索，
-			// 结果按 folder 分段合并（与 _fallbackGrepWorkspace 相同的多 folder 语义）。
-			let searchRoots: { label: string; path: string }[];
-			if (scopedProject) {
+		// ── project → 单 folder scope；否则跨【所有】workspace folders 搜索并合并 ──
+		// 事故（日志 1785151024653）：project 未指定时旧实现只搜 resolveAndCheckWorkspacePath('.')
+		// 解析出的【单个】路径（多根工作区下恒为第一个允许根），导致像 UE5EA 这类第二/第三个
+		// workspace folder 完全搜不到——112 次 search_code 里 51 次 "(no matches)"，命中的
+		// 引擎源码符号全靠 search_files 的索引快路径（自带跨 project 绝对路径）意外补位。
+		// 修复：project=ALL 时遍历 ctx.workspaceService.getWorkspace().folders 逐个搜索，
+		// 结果按 folder 分段合并（与 _fallbackGrepWorkspace 相同的多 folder 语义）。
+		let searchRoots: { label: string; path: string }[];
+		if (explicitSearchRoot) {
+			// path_filter 搜索根优先（kimi：path overrides workspaceDir）。文件或目录均可——
+			// searchContent 内部对文件路径走 fileService 单文件 grep。
+			const dirName = explicitSearchRoot.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || explicitSearchRoot;
+			searchRoots = [{ label: dirName, path: explicitSearchRoot }];
+		} else if (scopedProject) {
 				const roots = ctx.codebaseGraphService.getProjectRoots();
 				const root = roots[scopedProject];
 				const resolvedPath = await ctx.resolveAndCheckWorkspacePath(agentId, root ?? '.', false);
@@ -1215,7 +1204,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				}
 			}
 
-			ctx.logService.info(`[BuiltinTools] [CBSearch][trace] search_code(ripgrep) query="${rawQuery.slice(0, 60)}" searchQuery="${searchQuery.slice(0, 80)}" regex=${useRegex} mode=${mode} include=${includeGlob ?? '-'} project=${scopedProject ?? 'ALL'} roots=[${searchRoots.map(r => r.label).join(', ')}]`);
+			ctx.logService.info(`[BuiltinTools] [CBSearch][trace] search_code(ripgrep) query="${rawQuery.slice(0, 60)}" searchQuery="${searchQuery.slice(0, 80)}" regex=${useRegex} mode=${mode} include=${includeGlob ?? '-'} root=${explicitSearchRoot ?? '-'} project=${scopedProject ?? 'ALL'} roots=[${searchRoots.map(r => r.label).join(', ')}]`);
 
 			const perRootResults: string[] = [];
 			let anyMatches = false;
@@ -1236,33 +1225,23 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			? perRootResults.join('\n\n')
 			: '(no matches)';
 	// 空命中分「过滤问题」vs「符号问题」给不同引导（2026-07-28，日志 1785231958842）：
-	// ①include 非空且全根 no-match → 过滤可能过严（而非 query 问题），打破「重写
-	//   query 重试」无效循环（日志 1785228894680：同一 include 重写正则重试 12 次）。
-	// ②无任何过滤仍全库 0 命中 → 符号多半幻觉/拼写错误，先 search_files/search_graph
-	//   验证符号名（此前此情形静默无提示，模型闷头重写 query 空转）。
-if (!anyMatches) {
-	if (includeGlob) {
-		result += noMatchWithIncludeHint(includeGlob);
-	} else {
-		result += noMatchNoFilterHint();
-	}
-}
-	// 连续空结果引导：模型对同一目标反复换符号猜测而 path_filter/符号本身错误时，
-	// exact-repeat 熔断拦不住（每次参数不同）。连击达阈值即提示转 search_graph
-	//（日志 1785231958842：子代理 434s 烧光预算正因 search_code 反复空命中）。
-	const _emptyStreak = ctx.searchHelpers.recordSearchCodeEmptyStreak(agentId, !anyMatches);
-	if (!anyMatches && _emptyStreak.shouldGuide) {
-		result += searchCodeEmptyStreakHint(_emptyStreak.streak);
-	}
+		// 空命中引导（P3 三合一）：①include 非空且全根 no-match → 过滤可能过严
+		//（日志 1785228894680：同一 include 重写正则重试 12 次）；②无过滤仍 0 命中 →
+		// 符号多半幻觉/拼写错误，先 search_files/search_graph 验证；③连续空命中达阈值 →
+		// 强引导换 search_graph（exact-repeat 熔断拦不住换参重试，日志 1785231958842 子代理
+		// 434s 烧光预算）。单次 searchOutcomeHint 调用覆盖三分支。
+		const _emptyStreak = ctx.searchHelpers.recordSearchCodeEmptyStreak(agentId, !anyMatches);
+		if (!anyMatches) {
+			result += searchOutcomeHint(includeGlob, _emptyStreak.streak, _emptyStreak.shouldGuide);
+		}
 
-			// 结果后处理：大小截断兜底（densify/redact 已按 root 分别做过）
-			result = ctx.searchHelpers.enforceSearchSize(result);
+		// 结果后处理：大小截断兜底（densify/redact 已按 root 分别做过）
+		result = ctx.searchHelpers.enforceSearchSize(result);
 
-			// Truncation warning（对齐 continue：达上限即引导 refine）
-			const parts: string[] = [result];
-			if (regexWarning) { parts.push(`[regex] ${regexWarning}`); }
-			if (repeat.warning) { parts.push(repeat.warning); }
-			return text(parts.join('\n\n'));
+		// Truncation warning（对齐 continue：达上限即引导 refine）
+		const parts: string[] = [result];
+		if (regexWarning) { parts.push(`[regex] ${regexWarning}`); }
+		return text(parts.join('\n\n'));
 		},
 });
 

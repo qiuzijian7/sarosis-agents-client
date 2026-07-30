@@ -423,7 +423,11 @@ private readonly _msgUpdateSlowRules: IMsgUpdateRule[] = [
 
 /** thinking 状态变化 → 强制重建（phase activity indicator 增删改 fast path 处理不全）。 */
 private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
-	const existingIndicator = ctx.el.querySelector('.thinking-indicator, .phase-activity-indicator');
+	// 仅查 .thinking-indicator（thking 指示器自身带 .phase-activity-indicator.phase-thinking）。
+	// 工具参数流式期间 _ensurePhaseIndicator 会插入 .phase-activity-indicator.phase-executing
+	// 显示「正在生成工具调用参数…」，若误纳进此查询会与 shouldShowThinking 失配，
+	// 触发整条消息 _rebuildMessageElement → 所有 thinking/delegate/tool 卡片整体重渲染闪烁。
+	const existingIndicator = ctx.el.querySelector('.thinking-indicator');
 	const shouldShowThinking = !!(ctx.msg.isStreaming && ctx.msg.isThinking && !ctx.msg.thinking);
 	if (!!existingIndicator === shouldShowThinking) { return false; }
 	if ((window as any).__SAROSIS_PARTS_DIAG) {
@@ -935,11 +939,18 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 			// 丢失会导致 _reconcileParts 重复创建卡片（subagent 区域不可见）。
 			const oldPartKey = oldCard.getAttribute('data-part-key');
 			if (oldPartKey) { newCard.setAttribute('data-part-key', oldPartKey); }
+			// 恢复展开态：以旧 DOM 为准覆盖 _createToolCallCard 的默认值，
+			// 同时写入 _toolCallExpandState Map 确保后续重建路径读到一致的状态。
+			const newBody = newCard.querySelector('.tool-header-children');
+			const ch = newCard.querySelector('.tool-header-chevron');
 			if (wasExpanded) {
-				const newBody = newCard.querySelector('.tool-header-children');
 				newBody?.classList.add('tool-header-children-expanded');
-				const ch = newCard.querySelector('.tool-header-chevron');
 				ch?.classList.add('tool-header-chevron-expanded');
+				if (tc.id) { this._toolCallExpandState.set(tc.id, true); }
+			} else {
+				newBody?.classList.remove('tool-header-children-expanded');
+				ch?.classList.remove('tool-header-chevron-expanded');
+				if (tc.id) { this._toolCallExpandState.set(tc.id, false); }
 			}
 			this._preserveStableSubagentNodes(oldCard, newCard);
 			// 保留静态「任务指令」节点：args.task 永不变化，避免整卡重建时重渲染其 markdown。
@@ -953,6 +964,8 @@ protected override _rebuildMessageElement(existingEl: HTMLElement, msg: IAgentCh
 			oldCard.replaceWith(newCard);
 			this._applySubAgentRefreshFX(newCard, prevSa);
 			this._restoreScrollPositionsDeferred(newCard, savedScroll);
+			// 流式重建后重新钉底：使 delegate 卡片内 .delegate-scroll 自动跟随内容增长置底
+			this._pinAllScrollableBodiesToBottom(newCard);
 			rebuiltAny = true;
 		}
 		// 子代理已到达但对应工具卡尚未渲染（极少见：subagent 先于 delegate tool call 出现）：
@@ -999,6 +1012,15 @@ protected override _updateToolCardStatuses(existingEl: HTMLElement, msg: IAgentC
 				const ch = newCard.querySelector('.tool-header-chevron') as HTMLElement | null;
 				if (ch) { ch.classList.add('tool-header-chevron-expanded'); }
 				if (tc.id) { this._toolCallExpandState.set(tc.id, true); }
+			}
+		} else {
+			// 旧卡折叠态同样写回 Map，避免 defaultShow / 其他重建路径把卡片重新展开
+			const newBody = newCard.querySelector('.tool-header-children') as HTMLElement | null;
+			if (newBody) {
+				newBody.classList.remove('tool-header-children-expanded');
+				const ch = newCard.querySelector('.tool-header-chevron') as HTMLElement | null;
+				if (ch) { ch.classList.remove('tool-header-chevron-expanded'); }
+				if (tc.id) { this._toolCallExpandState.set(tc.id, false); }
 			}
 		}
 		// 保留 title/conclusion 节点身份，消除流式整卡重建导致的标题/结论闪烁
