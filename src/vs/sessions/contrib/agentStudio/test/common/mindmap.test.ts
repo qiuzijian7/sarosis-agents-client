@@ -18,13 +18,16 @@ import type { IMindmapData } from '../../common/mindmap/mindmapTypes.js';
 import { LayoutEngine } from '../../common/mindmap/layoutEngine.js';
 import { buildForest, getDescendants, getNextSibling, getPrevSibling,
 	countChildrenPerSide, findTreeForNode, collectDescendantNodes,
-	getDirectChildNodes, getParentNode, detectDirection } from '../../common/mindmap/treeModel.js';
+	getDirectChildNodes, getParentNode, detectDirection, getVisibleNodeIds } from '../../common/mindmap/treeModel.js';
 import { addChild, addSibling, deleteAndFocusParent, flipBranch,
 	toggleBalancedLayout } from '../../common/mindmap/nodeOperations.js';
 import { applyBranchColors, clearAllColors } from '../../common/mindmap/branchColors.js';
 import { computeEdgeSides, updateAllEdgeSides } from '../../common/mindmap/edgeSides.js';
 import { freemindToCanvas, estimateNodeHeight, type IFreeMindNode } from '../../common/mindmap/freemindLayout.js';
 import { genId } from '../../common/mindmap/idGenerator.js';
+import { CanvasEditorController } from '../../browser/canvasEditor/canvasEditorController.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { KbMindmapGenerator } from '../../browser/views/knowledge/kbMindmapGenerator.js';
 
 // ─── 辅助 ────────────────────────────────────────────────────────────────
 
@@ -249,6 +252,195 @@ suite('Mindmap — treeModel', () => {
 			assert.ok(desc.some(n => n.id === 'c1'));
 			assert.ok(desc.some(n => n.id === 'c2'));
 		});
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 折叠/展开 (collapse & expand)
+// ═══════════════════════════════════════════════════════════════════════════
+
+suite('Mindmap — 折叠/展开 (collapse & expand)', () => {
+	function tree(): IMindmapData {
+		return {
+			nodes: [
+				{ id: 'a', type: 'text', x: 0, y: 0, width: 300, height: 60, text: 'A' },
+				{ id: 'b', type: 'text', x: 400, y: 0, width: 300, height: 60, text: 'B' },
+				{ id: 'c', type: 'text', x: 800, y: 0, width: 300, height: 60, text: 'C' },
+				{ id: 'd', type: 'text', x: 1200, y: 0, width: 300, height: 60, text: 'D' },
+			],
+			edges: [
+				{ id: 'e1', fromNode: 'a', toNode: 'b' },
+				{ id: 'e2', fromNode: 'b', toNode: 'c' },
+				{ id: 'e3', fromNode: 'b', toNode: 'd' },
+			],
+		};
+	}
+
+	test('默认全展开：所有节点可见', () => {
+		const visible = getVisibleNodeIds(tree());
+		assert.strictEqual(visible.size, 4);
+		for (const id of ['a', 'b', 'c', 'd']) { assert.ok(visible.has(id), `节点 ${id} 应可见`); }
+	});
+
+	test('折叠中间节点 b：b 仍可见、其后代 c/d 隐藏', () => {
+		const data = tree();
+		data.nodes[1].expanded = false; // 折叠 b
+		const visible = getVisibleNodeIds(data);
+		assert.strictEqual(visible.size, 2);
+		assert.ok(visible.has('a') && visible.has('b'));
+		assert.ok(!visible.has('c') && !visible.has('d'));
+	});
+
+	test('折叠 b 后 buildForest 不含 c/d 子树', () => {
+		const data = tree();
+		data.nodes[1].expanded = false;
+		const forest = buildForest(data);
+		assert.strictEqual(forest.length, 1);
+		assert.strictEqual(forest[0].node.id, 'a');
+		assert.strictEqual(forest[0].children.length, 1);
+		assert.strictEqual(forest[0].children[0].node.id, 'b');
+		assert.strictEqual(forest[0].children[0].children.length, 0);
+	});
+
+	test('折叠不影响根节点坐标；展开后恢复完整子树', () => {
+		const engine = new LayoutEngine({ horizontalGap: 80, verticalGap: 20, nodeWidth: 300, nodeHeight: 60 });
+		const data = tree();
+		data.nodes[1].expanded = false;
+		engine.computeLayout(data); // 折叠态布局（b 仅自身）
+		const collapsedA = data.nodes[0].x;
+		data.nodes[1].expanded = true;
+		const expandedMap = engine.computeLayout(data);
+		assert.strictEqual(data.nodes[0].x, collapsedA);
+		assert.ok(expandedMap.positions.get('c') !== undefined);
+		assert.ok(expandedMap.positions.get('d') !== undefined);
+	});
+
+	test('折叠态下 addChild 仍可加入子节点，展开后可见', () => {
+		const data = tree();
+		data.nodes[1].expanded = false; // 折叠 b
+		const res = addChild(data, 'b', { kind: 'text' });
+		assert.ok(res && res.newNodeId);
+		const added = res.data; // addChild 为纯函数，返回新 data
+		assert.ok(!getVisibleNodeIds(added).has(res!.newNodeId!)); // 折叠时不可见
+		added.nodes.find(n => n.id === 'b')!.expanded = true;
+		assert.ok(getVisibleNodeIds(added).has(res!.newNodeId!)); // 展开后可见
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 方向模式 (direction modes)
+// ═══════════════════════════════════════════════════════════════════════════
+
+suite('Mindmap — 方向模式 (direction modes)', () => {
+	function diamond(): IMindmapData {
+		return {
+			nodes: [
+				makeNode('r', 0, 0, 300, 60, 'Root'),
+				makeNode('c1', 0, 0, 300, 60, 'C1'),
+				makeNode('c2', 0, 0, 300, 60, 'C2'),
+				makeNode('c3', 0, 0, 300, 60, 'C3'),
+			],
+			edges: [
+				makeEdge('e1', 'r', 'c1'),
+				makeEdge('e2', 'r', 'c2'),
+				makeEdge('e3', 'r', 'c3'),
+			],
+			mindmap: true,
+		};
+	}
+	const byId = (data: IMindmapData, id: string) => data.nodes.find(n => n.id === id)!;
+
+	suite('computeLayout 按 data.direction 分派', () => {
+		const engine = new LayoutEngine({ horizontalGap: 80, verticalGap: 20, nodeWidth: 300, nodeHeight: 60 });
+
+		test("'right'：所有子节点位于根右侧", () => {
+			const data = diamond();
+			data.direction = 'right';
+			const layout = engine.computeLayout(data);
+			const root = byId(data, 'r');
+			for (const id of ['c1', 'c2', 'c3']) {
+				const p = layout.positions.get(id)!;
+				assert.ok(p.x > root.x + root.width - 1, `${id} 应在右侧 (x=${p.x})`);
+			}
+		});
+
+		test("'left'：所有子节点位于根左侧", () => {
+			const data = diamond();
+			data.direction = 'left';
+			const layout = engine.computeLayout(data);
+			const root = byId(data, 'r');
+			for (const id of ['c1', 'c2', 'c3']) {
+				const node = byId(data, id);
+				const p = layout.positions.get(id)!;
+				assert.ok(p.x + node.width < root.x + 1, `${id} 应在左侧 (x=${p.x})`);
+			}
+		});
+
+		test("'both'：显式平衡（左右各至少一子）", () => {
+			const data = diamond();
+			data.direction = 'both';
+			const layout = engine.computeLayout(data);
+			const root = byId(data, 'r');
+			let left = 0, right = 0;
+			for (const id of ['c1', 'c2', 'c3']) {
+				const node = byId(data, id);
+				const p = layout.positions.get(id)!;
+				if (p.x + node.width < root.x) { left++; }
+				if (p.x > root.x + root.width) { right++; }
+			}
+			assert.ok(left >= 1, '应至少 1 个左侧子节点');
+			assert.ok(right >= 1, '应至少 1 个右侧子节点');
+		});
+
+		test("'tree'：所有子节点位于根下方并水平居中", () => {
+			const data = diamond();
+			data.direction = 'tree';
+			const layout = engine.computeLayout(data);
+			const root = byId(data, 'r');
+			for (const id of ['c1', 'c2', 'c3']) {
+				const p = layout.positions.get(id)!;
+				assert.ok(p.y > root.y + root.height - 1, `${id} 应在下方 (y=${p.y})`);
+			}
+			const xs = ['c1', 'c2', 'c3'].map(id => layout.positions.get(id)!.x);
+			const ws = ['c1', 'c2', 'c3'].map(id => byId(data, id).width);
+			const minX = Math.min(...xs);
+			const maxRight = Math.max(...xs.map((x, i) => x + ws[i]));
+			const childrenCx = (minX + maxRight) / 2;
+			const rootCx = root.x + root.width / 2;
+			assert.ok(Math.abs(childrenCx - rootCx) < 1, `子节点应水平居中 (childrenCx=${childrenCx}, rootCx=${rootCx})`);
+		});
+
+		test("'flower'：子节点环绕根分布（覆盖四象限）", () => {
+			const data = diamond();
+			data.direction = 'flower';
+			const layout = engine.computeLayout(data);
+			const root = byId(data, 'r');
+			const rootCx = root.x + root.width / 2;
+			const rootCy = root.y + root.height / 2;
+			let left = false, right = false, above = false, below = false;
+			for (const id of ['c1', 'c2', 'c3']) {
+				const node = byId(data, id);
+				const p = layout.positions.get(id)!;
+				const cx = p.x + node.width / 2;
+				const cy = p.y + node.height / 2;
+				if (cx < rootCx) { left = true; }
+				if (cx > rootCx) { right = true; }
+				if (cy < rootCy) { above = true; }
+				if (cy > rootCy) { below = true; }
+			}
+			assert.ok(left && right, 'flower 应有左右分布');
+			assert.ok(above && below, 'flower 应有上下分布');
+		});
+	});
+
+	test("computeChildrenLayout 同样遵循 data.direction（tree 局部重排）", () => {
+		const engine = new LayoutEngine({ horizontalGap: 80, verticalGap: 20, nodeWidth: 300, nodeHeight: 60 });
+		const data = diamond();
+		data.direction = 'tree';
+		const layout = engine.computeChildrenLayout(data, 'r');
+		for (const id of ['c1', 'c2', 'c3']) {
+			assert.ok(layout.positions.has(id), `${id} 应在局部重排结果中`);
+		}
 	});
 });
 
@@ -660,5 +852,182 @@ suite('Mindmap — 综合', () => {
 			assert.strictEqual(ids.has(id), false);
 			ids.add(id);
 		}
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// source 字段（Ctrl+点击跳源码）
+// ═══════════════════════════════════════════════════════════════════════════
+
+suite('Mindmap — source 字段（Ctrl+点击跳源码）', () => {
+
+	test('getJsonData 保留节点的 source 字段', () => {
+		const data: IMindmapData = {
+			nodes: [
+				{ id: 'a', type: 'text', x: 0, y: 0, width: 300, height: 60, text: 'A', source: { file: 'src/foo.ts', line: 10, column: 4 } },
+				{ id: 'b', type: 'text', x: 400, y: 0, width: 300, height: 60, text: 'B', content: 'B' },
+			],
+			edges: [{ id: 'e1', fromNode: 'a', toNode: 'b' }],
+		};
+		const ctrl = new CanvasEditorController(data);
+		const json = JSON.parse(ctrl.getJsonData()) as IMindmapData;
+		const a = json.nodes.find(n => n.id === 'a');
+		assert.ok(a);
+		assert.ok(a!.source, 'source 应被保留');
+		assert.strictEqual(a!.source!.file, 'src/foo.ts');
+		assert.strictEqual(a!.source!.line, 10);
+		assert.strictEqual(a!.source!.column, 4);
+	});
+
+	test('从 JSON Canvas（content 字段）加载并保存后保留 source', () => {
+		// 模拟 _openCanvasEditor 路径：kbMindmapGenerator 生成 .canvas（content 字段）→ 编辑器 JSON.parse 加载
+		const canvasJson = JSON.stringify({
+			nodes: [
+				{ id: 'a', type: 'text', x: 0, y: 0, width: 280, height: 80, content: '**A**\ndesc', source: { file: 'notes/x.md', line: 3 } },
+			],
+			edges: [],
+		});
+		const data = JSON.parse(canvasJson) as IMindmapData;
+		// 编辑器用 text||content 渲染，source 必须保留
+		assert.ok(data.nodes[0].source, '加载后 source 应存在');
+		assert.strictEqual(data.nodes[0].source!.file, 'notes/x.md');
+		assert.strictEqual(data.nodes[0].source!.line, 3);
+		// 再经 getJsonData 保存仍保留
+		const ctrl = new CanvasEditorController(data);
+		const saved = JSON.parse(ctrl.getJsonData()) as IMindmapData;
+		assert.strictEqual(saved.nodes[0].source!.file, 'notes/x.md');
+		assert.strictEqual(saved.nodes[0].source!.line, 3);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// KbMindmapGenerator 生成 / 重新生成流程（用 mock LLM + 内存文件服务）
+// ═══════════════════════════════════════════════════════════════════════════
+
+class MemFileService {
+	private _store = new Map<string, string>();
+	async resolve(uri: any) {
+		const dir = uri.fsPath;
+		const children: any[] = [];
+		for (const k of this._store.keys()) {
+			if (k.startsWith(dir + '/') || k.startsWith(dir + '\\')) {
+				const rest = k.slice(dir.length + 1);
+				if (!rest.includes('/') && !rest.includes('\\')) {
+					children.push({ name: rest, resource: URI.file(k), isDirectory: false });
+				}
+			}
+		}
+		return { children };
+	}
+	async readFile(uri: any) {
+		const c = this._store.get(uri.fsPath);
+		if (c === undefined) { throw new Error('not found: ' + uri.fsPath); }
+		return { value: { toString: () => c } };
+	}
+	async writeFile(uri: any, content: any) {
+		this._store.set(uri.fsPath, content.toString());
+	}
+	async createFolder(_uri: any) { /* no-op */ }
+	async del(uri: any, _opts: any) { this._store.delete(uri.fsPath); }
+	get raw() { return this._store; }
+}
+
+class NoopLog {
+	info() { } warn() { } error() { } trace() { } debug() { } dispose() { }
+}
+
+class MockChatModel {
+	constructor(private _json: string) { }
+	async complete(_s: string | undefined, _u: string, _t?: number): Promise<string> {
+		return this._json;
+	}
+}
+
+function parseWritten(fs: MemFileService, fsPath: string): any {
+	return JSON.parse(fs.raw.get(fsPath)!);
+}
+
+function assertNoOverlap(nodes: any[]): void {
+	for (let i = 0; i < nodes.length; i++) {
+		for (let j = i + 1; j < nodes.length; j++) {
+			const a = nodes[i], b = nodes[j];
+			const overlapX = a.x < b.x + b.width && b.x < a.x + a.width;
+			const overlapY = a.y < b.y + b.height && b.y < a.y + a.height;
+			assert.ok(!(overlapX && overlapY), `节点 ${a.id} 与 ${b.id} 布局重叠`);
+		}
+	}
+}
+
+suite('Mindmap — KbMindmapGenerator 生成/重生成流程', () => {
+	const notesDir = URI.file('/virtual-notes-dir');
+	const mkChat = (json: string) => new MockChatModel(json) as any;
+
+	test('generateOrUpdate：从内容生成思维导图（relayout + mindmap:true + 边侧/箭头）', async () => {
+		const fs = new MemFileService();
+		const gen = new KbMindmapGenerator(fs as any, new NoopLog() as any);
+
+		const uri = await gen.generateOrUpdate(mkChat(JSON.stringify({
+			nodes: [
+				{ id: 'n1', type: 'text', content: '**UE5 GC 优化**\n中心主题' },
+				{ id: 'n2', type: 'text', content: '**标记阶段**\n描述' },
+				{ id: 'n3', type: 'text', content: '**回收阶段**\n描述' },
+				{ id: 'n4', type: 'text', content: '**增量回收**\n描述' },
+			],
+			edges: [
+				{ id: 'e1', fromNode: 'n1', toNode: 'n2' },
+				{ id: 'e2', fromNode: 'n1', toNode: 'n3' },
+				{ id: 'e3', fromNode: 'n3', toNode: 'n4' },
+			],
+		})), notesDir, [{ fileName: 'ue5-gc.md', content: 'UE5 垃圾回收机制优化相关知识' }]);
+
+		assert.ok(uri, '应返回生成的 URI');
+		const written = parseWritten(fs, uri!.fsPath);
+		assert.strictEqual(written.mindmap, true, '应标记 mindmap:true');
+		assert.strictEqual(written.nodes.length, 4, '4 个节点');
+		assert.strictEqual(written.edges.length, 3, '3 条边');
+		for (const n of written.nodes) {
+			assert.ok(typeof n.x === 'number' && typeof n.y === 'number', `节点 ${n.id} 应有 x/y`);
+			assert.ok(n.width > 0 && n.height > 0, `节点 ${n.id} 应有尺寸`);
+		}
+		for (const e of written.edges) {
+			assert.ok(e.fromSide && e.toSide, `边 ${e.id} 应有连接面`);
+			assert.strictEqual(e.fromEnd, 'none');
+			assert.strictEqual(e.toEnd, 'arrow');
+		}
+		assertNoOverlap(written.nodes);
+	});
+
+	test('generateOrUpdate（existingUri）：合并新内容并重新生成', async () => {
+		const fs = new MemFileService();
+		const gen = new KbMindmapGenerator(fs as any, new NoopLog() as any);
+
+		const uri1 = await gen.generateOrUpdate(mkChat(JSON.stringify({
+			nodes: [
+				{ id: 'n1', type: 'text', content: '**Root**\n根' },
+				{ id: 'n2', type: 'text', content: '**Child**\n子' },
+			],
+			edges: [{ id: 'e1', fromNode: 'n1', toNode: 'n2' }],
+		})), notesDir, [{ fileName: 'a.md', content: 'A' }]);
+		assert.ok(uri1);
+
+		// 重新生成：基于已存在文件合并新增节点 n3
+		const uri2 = await gen.generateOrUpdate(mkChat(JSON.stringify({
+			nodes: [
+				{ id: 'n3', type: 'text', content: '**NewChild**\n新增' },
+			],
+			edges: [{ id: 'e2', fromNode: 'n1', toNode: 'n3' }],
+		})), notesDir, [{ fileName: 'b.md', content: 'B' }], uri1!);
+		assert.ok(uri2);
+
+		const written = parseWritten(fs, uri2!.fsPath);
+		assert.strictEqual(written.nodes.length, 3, '合并后应为 3 个节点');
+		assert.strictEqual(written.edges.length, 2, '合并后应为 2 条边');
+		assert.strictEqual(written.mindmap, true, '重新生成仍标记 mindmap:true');
+		const root = written.nodes.find((n: any) => n.id === 'n1');
+		assert.ok(root, '原 Root 节点应保留');
+		assert.strictEqual(root.content, '**Root**\n根');
+		const n3 = written.nodes.find((n: any) => n.id === 'n3');
+		assert.ok(n3, '新增 NewChild 节点应存在');
+		assertNoOverlap(written.nodes);
 	});
 });

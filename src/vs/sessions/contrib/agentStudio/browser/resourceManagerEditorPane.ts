@@ -29,6 +29,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { IMarketplacePackage, IMarketplaceService } from '../common/marketplace.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ISkillVersionService, SkillVersionService } from './skillVersionService.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { MarketplaceVersionsPanel } from './marketplaceVersionsPanel.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -101,6 +103,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IEditorService private readonly editorService: IEditorService,
 		@ISkillVersionService private readonly skillVersionService: SkillVersionService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) {
 		super(ResourceManagerEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -1475,9 +1478,35 @@ export class ResourceManagerEditorPane extends EditorPane {
 			wrap.appendChild(v);
 		}
 
+		// 商城版本区块（Releases）：展示商城已发布版本，支持安装指定版本 / 下架
+		const mkPanel = this._renderDisposables.add(this.instantiationService.createInstance(MarketplaceVersionsPanel, {
+			storeId: skill.id,
+			kind: 'skill',
+			onAfterInstall: async (version: string) => {
+				await this.skillVersionService.autoCommit(skill.id, `install: v${version} from marketplace`);
+				this._currentTabIdx = 2;
+				this._renderDetail();
+			},
+		}));
+		const mkWrap = $('div');
+		mkWrap.style.marginTop = '16px';
+		mkWrap.appendChild(mkPanel.element);
+		wrap.appendChild(mkWrap);
+		void mkPanel.load();
+
+		// 本地历史标题
+		const localTitle = $('div');
+		localTitle.textContent = '本地历史（Git）';
+		localTitle.style.fontSize = '13px';
+		localTitle.style.fontWeight = '600';
+		localTitle.style.marginTop = '16px';
+		localTitle.style.marginBottom = '10px';
+		localTitle.style.color = 'var(--vscode-foreground)';
+		wrap.appendChild(localTitle);
+
 		// Git version history (async)
 		const historyWrap = $('div');
-		historyWrap.style.marginTop = '16px';
+		historyWrap.style.marginTop = '0';
 
 		const loadingHint = $('div');
 		loadingHint.style.padding = '10px 0';

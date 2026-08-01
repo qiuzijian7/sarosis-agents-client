@@ -19,9 +19,9 @@ import { streamToBuffer } from '../../../../../base/common/buffer.js';
 import { BUILTIN_BYOK_PROVIDERS, customProviderDataToDefinition, IBYOKProviderDefinition } from '../builtInBYOKModelProvider.js';
 import type { CustomProviderData } from '../views/providerView.js';
 import { AGENT_STUDIO_CUSTOM_PROVIDERS_SETTING } from '../../common/constants.js';
-import { IChatModel, OpenAICompatibleJsonModel, ExtractRequest, stripCodeFence } from './engine/llm.js';
+import { IChatModel, OpenAICompatibleJsonModel, ExtractRequest, stripCodeFence } from './llm.js';
 import type { IModelProvider } from '../../common/providers.js';
-import { IEmbedder } from './engine/embedder.js';
+import { IEmbedder } from './embedder.js';
 import { resolveEmbeddingConfigForProvider, embedTextsInBatches } from './builtinEmbeddingProvider.js';
 import { resolveOrFallbackAdapter } from './embeddingProviders.js';
 

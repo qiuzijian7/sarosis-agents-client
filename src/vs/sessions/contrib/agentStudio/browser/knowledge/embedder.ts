@@ -1,9 +1,9 @@
 /*---------------------------------------------------------------------------------------------
- *  Hyper-Extract (TS port) — Embedder abstraction
+ *  Embedder abstraction (shared by the llm-wiki knowledge pipeline)
  *
- *  Port of `langchain_core.embeddings.Embeddings`. The engine only needs a way
- *  to turn strings into vectors; the VS Code glue supplies an implementation that
- *  delegates to `IAiEmbeddingVectorService`.
+ *  The knowledge pipeline only needs a way to turn strings into vectors; the
+ *  VS Code glue supplies an implementation that delegates to
+ *  `IAiEmbeddingVectorService`.
  *--------------------------------------------------------------------------------------------*/
 
 export interface IEmbedder {

@@ -9,17 +9,7 @@
 
 import { ILogService } from "../../../../../platform/log/common/log.js";
 import { IScheduledTaskStore, ScheduledTask } from "./bridgeScheduler.js";
-
-function nodeRequire(moduleName: string): any {
-	if (typeof globalThis !== "undefined" && typeof (globalThis as any).require === "function") {
-		try {
-			return (globalThis as any).require(moduleName);
-		} catch {
-			return undefined;
-		}
-	}
-	return undefined;
-}
+import { nodeRequire } from "../rendererNodeRequire.js";
 
 /** 调度任务持久化文件名（相对 workDir）。 */
 export const BRIDGE_SCHEDULER_FILE = "scheduler.json";

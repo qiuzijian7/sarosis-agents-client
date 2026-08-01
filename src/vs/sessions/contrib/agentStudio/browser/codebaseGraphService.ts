@@ -371,7 +371,7 @@ const DEFAULT_EXCLUDE_DIRS = [
 	'Binaries', 'Intermediate', 'Programs', 'Saved', 'DerivedDataCache',
 	'ThirdParty', 'Plugins', 'Content', 'Config', 'Build',
 	'.codebase-memory', 'target', '__pycache__', '.next', '.nuxt',
-	'coverage', '.cache', 'tmp', 'temp',
+	'coverage', '.cache', 'tmp', 'temp', 'enc_temp_folder',
 	'Intermediate', 'Saved', 'Binaries', 'Build',
 ];
 

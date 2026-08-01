@@ -19,6 +19,7 @@ import { AgentStudioWebviewController } from './agentStudioWebviewController.js'
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
 import { WorkflowToolbar } from './workflowToolbar.js';
 import { WorkflowVersionPanel } from './workflowVersionPanel.js';
+import { IWorkflowVersionService } from '../common/workflowVersionTypes.js';
 import { IMarketplaceService } from '../common/marketplace.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -53,6 +54,7 @@ export class WorkflowEditorPane extends EditorPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IEditorService private readonly editorService: IEditorService,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
+		@IWorkflowVersionService private readonly workflowVersionService: IWorkflowVersionService,
 	) {
 		super(WorkflowEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -134,6 +136,7 @@ export class WorkflowEditorPane extends EditorPane {
 			this.notificationService,
 			this.workflowStorageService,
 			this.tofAuthService,
+			this.workflowVersionService,
 		);
 		this._toolbar.render();
 		// 删除后关闭编辑器标签页

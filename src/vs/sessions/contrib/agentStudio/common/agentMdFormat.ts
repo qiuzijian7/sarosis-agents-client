@@ -27,6 +27,7 @@ interface AgentMdRaw {
 	name?: string;
 	description?: string;
 	model?: string | string[];
+	providerId?: string;
 	tools?: string | string[];
 	icon?: string;
 	handoffs?: unknown;       // VS Code 用 lowercase `handoffs`
@@ -159,6 +160,7 @@ export function buildAgentMd(agent: Agent): string {
 	fm.name = agent.name;
 	if (agent.description) { fm.description = agent.description; }
 	if (agent.model) { fm.model = agent.model; }
+	if (agent.providerId) { fm.providerId = agent.providerId; }
 	if (agent.tools && agent.tools.length > 0) { fm.tools = agent.tools; }
 	if (agent.icon && agent.icon !== '🤖') { fm.icon = agent.icon; }
 	// VS Code 用 lowercase `handoffs`（PromptHeaderAttributes.handOffs = 'handoffs'）
@@ -241,6 +243,7 @@ export function parseAgentMd(content: string): { agent: Partial<Agent>; systemPr
 		icon: typeof raw.icon === 'string' ? raw.icon : '🤖',
 		model: typeof raw.model === 'string' ? raw.model
 			: (Array.isArray(raw.model) && raw.model.length > 0 ? raw.model[0] : 'claude-sonnet-4-20250514'),
+		providerId: typeof raw.providerId === 'string' ? raw.providerId : undefined,
 		category: typeof raw.category === 'string' ? raw.category : 'General',
 		source: (raw.source === 'builtin' || raw.source === 'custom') ? raw.source : 'custom',
 		owner: typeof raw.owner === 'string' ? raw.owner : undefined,

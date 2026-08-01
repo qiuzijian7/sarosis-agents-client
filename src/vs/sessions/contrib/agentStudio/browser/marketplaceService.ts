@@ -28,7 +28,7 @@ import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../com
 import {
 	IMarketplaceService, IMarketplaceUser, IMarketplacePackage, IMarketplacePackageDetail,
 	IUpgradeInfo, IUpgradeCheckItem, IInstallResult, IPublishOptions, IListPackagesOptions,
-	PackageKind, MARKETPLACE_URL_SETTING,
+	IInstalledPackageInfo, PackageKind, MARKETPLACE_URL_SETTING,
 } from '../common/marketplace.js';
 import { IPackageInstallerRegistry, PackageManifest } from '../common/packageInstaller.js';
 import { ITofAuthService } from '../common/tofAuth.js';
@@ -43,6 +43,8 @@ interface IInstalledEntry {
 	storeId: string;
 	version: string;
 	installedAt: string;
+	/** 来源：installed=从商城下载；published=本机上传。旧数据缺省按 installed 兼容 */
+	source?: 'installed' | 'published';
 }
 
 /** 各 kind 的本地安装子目录（回退用，installer 注册后由 installer 决定） */
@@ -134,6 +136,15 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	// ── 认证 ──────────────────────────────────────────────────
 	isLoggedIn(): boolean { return !!this._user; }
 	getCurrentUser(): IMarketplaceUser | undefined { return this._user; }
+
+	/**
+	 * 公开登录守卫：未登录时尝试用 TOF 票据自动同步登录，仍失败则抛出
+	 * "未登录商城，请先在 VsSaros 中完成 TOF 登录"。供上传/下载等操作的 UI
+	 * 在发起请求前前置校验，未登录即可直接弹错误通知拦截，避免请求失败后才报错。
+	 */
+	async ensureLoggedIn(): Promise<void> {
+		await this._ensureLoggedIn();
+	}
 
 	async login(username: string, password: string): Promise<void> {
 		const res = await this.api<{ token: string; user: any }>('POST', '/auth/login', { username, password });
@@ -357,7 +368,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		try { await this.fileService.del(URI.file(extractDir), { recursive: true }); } catch { /* ignore */ }
 		// 记录已安装时使用 result.kind（而非参数 kind），解决商城 API 把 MCP 包错误标记为 skill 的情况
 		const installedKind = result.kind;
-		await this.upsertInstalled({ kind: installedKind, storeId, version: result.version, installedAt: new Date().toISOString() });
+		await this.upsertInstalled({ kind: installedKind, storeId, version: result.version, installedAt: new Date().toISOString(), source: 'installed' });
 
 		this.logService.info(`[Marketplace] 安装完成: ${installedKind}/${storeId} v${result.version}`);
 		return result;
@@ -419,7 +430,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		await this._registerMcpToConfig(storeId, configJson);
 
 		// 4. 记录已安装
-		await this.upsertInstalled({ kind: 'mcp', storeId, version: actualVersion, installedAt: new Date().toISOString() });
+		await this.upsertInstalled({ kind: 'mcp', storeId, version: actualVersion, installedAt: new Date().toISOString(), source: 'installed' });
 
 		this.logService.info(`[Marketplace] MCP 安装完成: ${storeId} v${actualVersion} → ${targetDir.fsPath}`);
 		this.logService.info(`[Marketplace] 已注册到 ~/.vssaros/mcp.json`);
@@ -498,12 +509,20 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		try {
 			const existing = await this.getPackage(localId);
 			packageExists = true;
-			if (existing.latestVersion === version) {
+			// kind 冲突预检：slug 全局唯一，同名不同类型必然被服务端拒绝，提前给出可操作指引
+			if (existing.kind !== kind) {
+				throw new Error(`商城已存在同名的 ${existing.kind} 包 "${localId}"，与本次发布的 ${kind} 类型冲突，请为其中一方更换标识后重试`);
+			}
+			// 版本冲突预检：同时比对 latestVersion 与完整 versions 列表（latestVersion 可能因
+			// 服务端未填充而漏判，仅比 latest 会让已知冲突请求打到服务端才被 400 拒绝）
+			const taken = existing.latestVersion === version
+				|| (existing.versions ?? []).some(v => v.version === version);
+			if (taken) {
 				throw new Error(`版本 v${version} 已存在于商城，请递增版本号后重试`);
 			}
 		} catch (err) {
-			// 版本冲突错误直接抛出
-			if (err instanceof Error && err.message.includes('已存在于商城')) {
+			// 版本冲突 / kind 冲突错误直接抛出
+			if (err instanceof Error && (err.message.includes('已存在于商城') || err.message.includes('类型冲突'))) {
 				throw err;
 			}
 			// 404 = 包不存在，需要先创建
@@ -572,8 +591,8 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const result = text ? JSON.parse(text) : {};
 		const publishedVersion = result.version || version;
 
-		// 4. 记录已安装
-		await this.upsertInstalled({ kind, storeId: localId, version: publishedVersion, installedAt: new Date().toISOString() });
+		// 4. 记录已安装（本机发布 → source=published，区别于商城下载安装）
+		await this.upsertInstalled({ kind, storeId: localId, version: publishedVersion, installedAt: new Date().toISOString(), source: 'published' });
 
 		// 4.5 同步本地 SKILL.md 的版本号，避免上传后显示"升级"按钮
 		const skillMdUri = URI.joinPath(localDir, 'SKILL.md');
@@ -596,13 +615,21 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		return { version: publishedVersion };
 	}
 
+	// ── 版本下架 ──────────────────────────────────────────────
+	async deleteVersion(storeId: string, version: string): Promise<void> {
+		this.logService.info(`[Marketplace] 下架版本 ${storeId} v${version}`);
+		await this._ensureLoggedIn();
+		await this.api('DELETE', `/packages/${storeId}/versions/${encodeURIComponent(version)}`);
+	}
+
 	// ── 升级检查 ──────────────────────────────────────────────
 	async checkUpgrades(items?: readonly IUpgradeCheckItem[]): Promise<readonly IUpgradeInfo[]> {
 		// 确保已登录
 		await this._ensureLoggedIn();
 
 		// 未传 items 时，从 installed-packages.json 统一读取
-		const checkItems = items ?? await this.readInstalled();
+		const checkItems: readonly IUpgradeCheckItem[] = items
+			?? (await this.readInstalled()).map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version }));
 		const res = await this.api<{ updates: any[] }>('POST', '/upgrade/check', { items: checkItems });
 		return res.updates.map((u: any) => ({
 			kind: u.kind as PackageKind, storeId: u.storeId, current: u.current, latest: u.latest,
@@ -689,7 +716,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		this.logService.info(`[Marketplace] 卸载完成: ${kind}/${storeId}`);
 	}
 
-	async getInstalled(): Promise<readonly { kind: PackageKind; storeId: string; version: string }[]> {
+	async getInstalled(): Promise<readonly IInstalledPackageInfo[]> {
 		return this.readInstalled();
 	}
 
@@ -698,7 +725,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		return resolveSarosPath(this._getSarosRoot(), SarosPath.installedPackages);
 	}
 
-	private async readInstalled(): Promise<IUpgradeCheckItem[]> {
+	private async readInstalled(): Promise<IInstalledPackageInfo[]> {
 		try {
 			const installedFileUri = this.getInstalledFileUri();
 			if (!await this.fileService.exists(installedFileUri)) {
@@ -706,7 +733,10 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			}
 			const content = await this.fileService.readFile(installedFileUri);
 			const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
-			return entries.map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version }));
+			return entries.map(e => ({
+				kind: e.kind, storeId: e.storeId, version: e.version,
+				source: e.source, installedAt: e.installedAt,
+			}));
 		} catch {
 			return [];
 		}

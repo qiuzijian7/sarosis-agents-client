@@ -10,7 +10,7 @@
  *  代码侧只保留确定性的文件名安全清洗（sanitizeTopic / sanitizeKbTopic）。
  *--------------------------------------------------------------------------------------------*/
 
-import { IChatModel } from './engine/llm.js';
+import { IChatModel } from './llm.js';
 import { IKBSchema, buildTypeClassificationPrompt, findTypeById } from './kbSchema.js';
 
 // ─── Schema-driven 分类（LLM 语义分类，唯一分类路径） ───────────────────────

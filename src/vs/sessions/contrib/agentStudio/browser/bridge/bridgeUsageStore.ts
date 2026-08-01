@@ -9,17 +9,7 @@
 
 import { ILogService } from "../../../../../platform/log/common/log.js";
 import { IUsageStatsStore, UsageSnapshot } from "./bridgeUsage.js";
-
-function nodeRequire(moduleName: string): any {
-	if (typeof globalThis !== "undefined" && typeof (globalThis as any).require === "function") {
-		try {
-			return (globalThis as any).require(moduleName);
-		} catch {
-			return undefined;
-		}
-	}
-	return undefined;
-}
+import { nodeRequire } from "../rendererNodeRequire.js";
 
 /** 用量持久化文件名（相对 workDir）。 */
 export const BRIDGE_USAGE_FILE = "usage.json";

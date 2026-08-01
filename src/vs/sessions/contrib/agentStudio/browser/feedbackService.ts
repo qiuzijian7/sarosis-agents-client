@@ -7,6 +7,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentStudioLogService } from './agentStudioLogService.js';
+import { nodeRequire } from './rendererNodeRequire.js';
 import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
 import { ITofAuthService } from '../common/tofAuth.js';
@@ -253,11 +254,10 @@ export class FeedbackService extends Disposable implements IFeedbackService {
 	 */
 	private async _uploadImage(dataUrl: string, token: string): Promise<{ markdown?: string; error?: string }> {
 		try {
-			const g = globalThis as unknown as { require?: (module: string) => unknown };
-			if (typeof g.require !== 'function') {
+			const https = nodeRequire('https') as typeof import('https');
+			if (!https) {
 				return { error: 'require unavailable (sandbox)' };
 			}
-			const https = g.require('https') as typeof import('https');
 
 			// Parse data URL: "data:image/png;base64,...."
 			const match = dataUrl.match(/^data:(image\/[\w+]+);base64,(.+)$/);

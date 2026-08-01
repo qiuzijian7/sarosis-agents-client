@@ -97,13 +97,24 @@ export class KnowledgeBaseGraphEditorPane extends EditorPane {
 		const graphView = this.instantiationService.createInstance(KbGraphView);
 		graphView.render(host);
 		graphView.onNodeClick(e => {
-			// 双击文档节点 → 在中间栏打开对应笔记的 WYSIWYG 编辑器
-			if (e.node && e.node.type === 'doc') {
-				const uri = URI.parse(e.node.id);
+			// 双击文档节点 → 在中间栏打开对应文档
+			if (!e.node) { return; }
+			const uri = URI.parse(e.node.id);
+			const ext = uri.path.split('.').pop()?.toLowerCase();
+			if (ext === 'md' || ext === 'markdown') {
+				// 笔记：.md 无 resource resolver（仅绑定 KbNoteEditorInput），须显式用
+				// Block 编辑器，否则会回退到默认纯文本编辑器。
 				const name = e.node.label;
 				this.editorService.openEditor(
 					new KbNoteEditorInput(uri, `${name}.md`),
 					{ pinned: true },
+					this.group,
+				);
+			} else {
+				// 其它来源（库/raw/*.html 原始导入、.canvas 等）：交给 resolver 打开对应编辑器。
+				// 此前一律强当作 markdown 笔记打开，导致原始来源孤立节点（html）点不开「对应文档」。
+				void this.editorService.openEditor(
+					{ resource: uri, options: { pinned: true } },
 					this.group,
 				);
 			}

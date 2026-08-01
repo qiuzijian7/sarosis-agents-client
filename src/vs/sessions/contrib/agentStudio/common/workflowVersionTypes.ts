@@ -65,8 +65,11 @@ export interface IWorkflowVersionService {
 	/** 初始化 workflow 目录为 git 仓库（仅首次） */
 	init(workflowId: string): Promise<void>;
 
-	/** 自动提交 workflow.json 变更（无变化则跳过，返回 sha 或 null） */
-	autoCommit(workflowId: string): Promise<string | null>;
+	/** 自动提交 workflow.json 变更（无变化则跳过，返回 sha 或 null）；message 可选自定义提交消息 */
+	autoCommit(workflowId: string, message?: string): Promise<string | null>;
+
+	/** 打发布锚点 tag（通常 vX.Y.Z，发布到商城成功后调用，关联商城版本与本地历史） */
+	tag(workflowId: string, tagName: string): Promise<void>;
 
 	/** 获取 workflow.json 的提交历史（默认 50 条） */
 	history(workflowId: string, limit?: number): Promise<WorkflowCommitMeta[]>;

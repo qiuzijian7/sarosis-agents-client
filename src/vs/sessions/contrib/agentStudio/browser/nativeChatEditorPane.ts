@@ -1893,11 +1893,29 @@ private _saveInputAreaState(): void {
 					modelId: savedModel,
 					agentId: this._currentAgentId,
 				});
+			} else {
+				// 无本地覆盖时，使用 Agent 配置的默认 provider/model
+				void this._applyAgentDefaultModelSelection();
 			}
 
 		// Restore composer draft (per-session；无草稿时清空输入框)
 		this._restoreComposerDraft();
 	} catch { /* localStorage may be unavailable */ }
+}
+
+/** 无本地保存的模型选择时，应用 Agent 在设置页配置的默认 provider/model */
+private async _applyAgentDefaultModelSelection(): Promise<void> {
+	if (!this._currentAgentId) { return; }
+	try {
+		const agent = await this._agentStudioService.getAgent(this._currentAgentId);
+		if (agent?.providerId && agent?.model) {
+			this._modelSelector.setSelection({
+				providerId: agent.providerId,
+				modelId: agent.model,
+				agentId: this._currentAgentId,
+			});
+		}
+	} catch { /* agent 加载失败时保持全局默认选择 */ }
 }
 
 	/** 从 localStorage 恢复压缩基线（窗口重载后 token 进度条保持压缩后数值）。

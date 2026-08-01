@@ -1,19 +1,30 @@
 /*---------------------------------------------------------------------------------------------
- *  Hyper-Extract (TS port) — LLM structured-output adapter
+ *  LLM structured-output adapter (shared by the llm-wiki knowledge pipeline)
  *
- *  Port of `langchain_core` `llm.with_structured_output(schema)` + the RAG `chat`
- *  completion. The original relies on LangChain's `with_structured_output`; here we
- *  speak directly to an OpenAI-compatible `/chat/completions` endpoint and coerce
+ *  Speaks directly to an OpenAI-compatible `/chat/completions` endpoint and coerces
  *  the model to emit JSON via (in priority order):
  *     1. `response_format: { type: 'json_schema', json_schema: {...} }`
  *     2. tool-calling with a single forced tool
  *     3. prompt-instructed JSON (lowest fidelity fallback)
  *
- *  This keeps the engine dependency-free (uses the platform `fetch`). A VS Code
- *  glue layer supplies credentials/URL from the existing provider configuration.
+ *  Dependency-free (uses the platform `fetch`). A VS Code glue layer supplies
+ *  credentials/URL from the existing provider configuration.
  *--------------------------------------------------------------------------------------------*/
 
-import { JsonSchema } from './types.js';
+/**
+ * Minimal JSON-Schema subset used to drive the LLM structured-output request.
+ * Mirrors the `response_format.json_schema` shape accepted by OpenAI-compatible
+ * chat completions endpoints.
+ */
+export interface JsonSchema {
+	type: 'object' | 'array' | 'string' | 'number' | 'boolean' | 'integer';
+	properties?: Record<string, JsonSchema>;
+	items?: JsonSchema;
+	required?: string[];
+	description?: string;
+	enum?: unknown[];
+	[key: string]: unknown;
+}
 
 export interface ChatModelOptions {
 	/** Base URL of an OpenAI-compatible API, e.g. https://openrouter.ai/api/v1 */
@@ -45,16 +56,16 @@ export interface ExtractRequest {
 export type StreamTokenCallback = (token: string, accumulated: string) => boolean | void;
 
 /**
- * The structured-LLM contract used by the engine. Decouples AutoType/OMem from
- * any concrete provider so the engine stays portable + testable.
+ * The structured-LLM contract used by the knowledge pipeline. Decouples callers
+ * from any concrete provider so the code stays portable + testable.
  */
 export interface IChatModel {
 	/** Extract a JSON object conforming to `req.schema` from `req.prompt`. */
 	extract<T = Record<string, unknown>>(req: ExtractRequest): Promise<T>;
-	/** Free-form completion (used by RAG `chat`). Returns the answer text. */
+	/** Free-form completion. Returns the answer text. */
 	complete(system: string | undefined, user: string, temperature?: number): Promise<string>;
 	/**
-	 * Streaming completion (Phase 4.1). Calls `onToken` for each delta,
+	 * Streaming completion. Calls `onToken` for each delta,
 	 * returns the full accumulated text. If `onToken` returns `true`, abort early.
 	 */
 	streamComplete?(system: string | undefined, user: string, onToken: StreamTokenCallback, temperature?: number): Promise<string>;

@@ -28,6 +28,17 @@ export interface IKbBuildRoot {
 	section: KbSection;
 }
 
+export interface IKbFulltextHit {
+	/** Document URI (file://...). */
+	readonly uri: string;
+	/** Document title (node name). */
+	readonly title: string;
+	/** Matched snippet (truncated). */
+	readonly snippet: string;
+	/** BM25 relevance score. */
+	readonly score: number;
+}
+
 export const IKbNativeKernelService = createDecorator<IKbNativeKernelService>('kbNativeKernelService');
 
 export interface IKbNativeKernelService {
@@ -60,6 +71,12 @@ export interface IKbNativeKernelService {
 
 	/** Semantic vector search over the built index. */
 	searchVector(query: string, topK?: number, providerId?: string): Promise<IKbVectorSearchHit[]>;
+
+	/** BM25 full-text search over the built knowledge index (no embedding required). */
+	searchFulltext(query: string, limit?: number): Promise<IKbFulltextHit[]>;
+
+	/** Whether any build context (vault) has been recorded — gates the kb_search tool. */
+	hasActiveVault(): boolean;
 
 	/** Import a pre-built RAG library from a .kbrag.json file on disk. */
 	importVectorFromFile(uri: URI): Promise<boolean>;
@@ -219,6 +236,22 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 	async searchVector(query: string, topK = 8, providerId?: string): Promise<IKbVectorSearchHit[]> {
 		const kernel = this._ensureKernel();
 		return kernel.searchVector(query, topK, providerId);
+	}
+
+	hasActiveVault(): boolean {
+		return this._roots.length > 0;
+	}
+
+	async searchFulltext(query: string, limit = 20): Promise<IKbFulltextHit[]> {
+		await this.ensureBuilt();
+		if (!this._kernel) { return []; }
+		const { blocks } = await this._kernel.search(query);
+		return blocks.slice(0, limit).map((h) => ({
+			uri: h.uri.toString(),
+			title: h.name,
+			snippet: (h.snippet ?? '').slice(0, 300),
+			score: h.score,
+		}));
 	}
 
 	async importVectorFromFile(uri: URI): Promise<boolean> {

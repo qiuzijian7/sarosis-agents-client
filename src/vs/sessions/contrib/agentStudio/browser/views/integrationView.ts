@@ -45,6 +45,7 @@ import { IAgentStudioLogService } from '../agentStudioLogService.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
+import { applySavedOrder, CardDragSorter, CardOrderStore, CardPinStore, showCardContextMenu } from './cardItemBehaviors.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -116,6 +117,12 @@ export class IntegrationViewPane extends ViewPane {
 	private skillsLoadingHubId: string | undefined;
 	private skillsCountBadge!: HTMLElement;
 	private skillsSearchInput!: HTMLInputElement;
+	/** 排序 + 置顶持久化 + 拖拽排序（与 preset / workflow 视图共用实现） */
+	private _skillOrderStore!: CardOrderStore;
+	private _skillPinStore!: CardPinStore;
+	private _skillDragSorter!: CardDragSorter;
+	/** 可升级的 skill id → 目标版本（_checkMarketSkillUpgrades 异步填充） */
+	private _skillUpgradeTargets = new Map<string, string>();
 
 	// ── MCP state ─────────────────────────────────────────────────
 	private mcpTools: McpToolUI[] = [];
@@ -279,6 +286,15 @@ export class IntegrationViewPane extends ViewPane {
 				this._renderHubEntries(this.skillsLoadingHubId);
 			}
 		}));
+
+		// 拖拽排序 + 置顶 + 持久化（与 preset / workflow 视图共用实现）
+		this._skillOrderStore = new CardOrderStore(this.storageService, 'agentStudio.skillOrder.v1');
+		this._skillPinStore = new CardPinStore(this.storageService, 'agentStudio.skillPinned.v1');
+		this._skillDragSorter = new CardDragSorter({
+			getContainer: () => this.contentContainer?.querySelector('#integration-skills-list') as HTMLElement | null ?? undefined,
+			getVisibleIds: () => applySavedOrder(this.skills, this._skillOrderStore.load(), s => s.id, this._skillPinStore.load()).map(s => s.id),
+			onReorder: (ids) => { this._skillOrderStore.save(ids); this._renderSkillsList(); },
+		});
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -495,6 +511,9 @@ export class IntegrationViewPane extends ViewPane {
 			return;
 		}
 
+		// 清空过期的升级目标（_checkMarketSkillUpgrades 会异步重新填充）
+		this._skillUpgradeTargets.clear();
+
 		let filtered = this.skills;
 
 		if (this.skillsSearchQuery) {
@@ -520,9 +539,16 @@ export class IntegrationViewPane extends ViewPane {
 			return;
 		}
 
-		for (const skill of filtered) {
+		// 持久化排序 + 置顶优先（共享实现）
+		const ordered = applySavedOrder(filtered, this._skillOrderStore.load(), s => s.id, this._skillPinStore.load());
+
+		for (const skill of ordered) {
 			const item = $('div.skill-item');
 			item.classList.toggle('skill-enabled', skill.enabled !== false);
+
+			// 置顶标记
+			const isPinned = this._skillPinStore.isPinned(skill.id);
+			if (isPinned) { item.classList.add('pinned'); }
 
 			const toggleContainer = $('div.skill-toggle');
 			const toggle = $('input.skill-toggle-input') as HTMLInputElement;
@@ -564,6 +590,14 @@ export class IntegrationViewPane extends ViewPane {
 			const nameEl = $('span.skill-name');
 			nameEl.textContent = skill.name;
 			nameRow.appendChild(nameEl);
+
+			// 置顶图标
+			if (isPinned) {
+				const pinIcon = $('span.skill-pin-icon');
+				pinIcon.textContent = '📌';
+				pinIcon.title = '已置顶';
+				nameRow.appendChild(pinIcon);
+			}
 
 			// Version badge
 			if (skill.version) {
@@ -608,6 +642,26 @@ export class IntegrationViewPane extends ViewPane {
 					}
 				});
 			};
+
+			// 右键菜单：置顶 / 复制 / 删除 / 升级(按需) / 上传(按需)（共享实现）
+			item.oncontextmenu = (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				const targetVersion = this._skillUpgradeTargets.get(skill.id);
+				const isLocalSkill = skill.source === 'user' || skill.source === 'builtin';
+				showCardContextMenu(this.contextMenuService, e, {
+					pinned: isPinned,
+					onTogglePin: () => { this._skillPinStore.toggle(skill.id); this._renderSkillsList(); },
+					onDuplicate: () => { void this._handleDuplicateSkill(skill); },
+					upgradeLabel: targetVersion ? `升级到 v${targetVersion}` : undefined,
+					onUpgrade: targetVersion ? () => { void this._handleUpgrade('skill', skill.id); } : undefined,
+					onUpload: isLocalSkill ? () => { void this._handleUpload('skill', skill.id); } : undefined,
+					onDelete: () => { void this._handleDelete('skill', skill.id, skill.name); },
+				});
+			};
+
+			// 拖拽排序（共享实现，顺序持久化）
+			this._skillDragSorter.attach(item, skill.id);
 
 			listEl.appendChild(item);
 		}
@@ -1828,6 +1882,9 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 				// Compare versions: only show if server version is higher
 				if (this._compareVersions(info.latest, info.current) <= 0) { continue; }
 
+				// 记录升级目标（供右键菜单「升级」按需显示）
+				this._skillUpgradeTargets.set(info.storeId, info.latest);
+
 				// Create upgrade button
 				const btn = $('button.act-btn.upgrade') as HTMLButtonElement;
 				btn.textContent = '\u2B06';
@@ -1875,10 +1932,48 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			this.notificationService.info(`Upgrading ${storeId} to v${pkg.latestVersion}...`);
 			await this.marketplaceService.download(storeId, pkg.latestVersion, kind);
 			this.notificationService.info(`\u2705 Upgraded ${storeId} to v${pkg.latestVersion}.`);
+			this._skillUpgradeTargets.delete(storeId);
 			this._refreshActiveTab();
 		} catch (err) {
 			this.notificationService.error(`Upgrade failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
+	}
+
+	// ── Duplicate handler ──────────────────────────────────────────
+
+	/** 复制技能：读取 SKILL.md 内容，改名后经 installFromContent 安装为新技能 */
+	private async _handleDuplicateSkill(skill: ISkillDefinition): Promise<void> {
+		try {
+			if (!skill.resource) {
+				this.notificationService.warn(`Cannot duplicate "${skill.name}": no source file.`);
+				return;
+			}
+			const content = (await this.fileService.readFile(skill.resource)).value.toString();
+			const newName = `${skill.name}-copy`;
+			// 替换 frontmatter name 字段；无 frontmatter 时在头部补一个
+			const newContent = this._rewriteSkillMdName(content, skill.name, newName);
+			await this.skillInstallService.installFromContent(newContent);
+			this.notificationService.info(`✅ Duplicated "${skill.name}" as "${newName}".`);
+			this._refreshSkills();
+		} catch (err) {
+			this.notificationService.error(`Duplicate failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	/** 替换 SKILL.md frontmatter 中的 name 字段（无 frontmatter 则前置插入） */
+	private _rewriteSkillMdName(content: string, oldName: string, newName: string): string {
+		const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+		if (fmMatch) {
+			const fm = fmMatch[1];
+			if (/^name\s*:/m.test(fm)) {
+				const newFm = fm.replace(/^name\s*:.*$/m, `name: ${newName}`);
+				return content.replace(fmMatch[0], `---\n${newFm}\n---`);
+			}
+			// frontmatter 存在但无 name 字段 → 追加
+			return content.replace(fmMatch[0], `---\n${fm}\nname: ${newName}\n---`);
+		}
+		// 无 frontmatter → 补一个最小 frontmatter
+		return `---\nname: ${newName}\ndescription: Copy of ${oldName}\n---\n\n${content}`;
 	}
 
 	// ── Delete handler ─────────────────────────────────────────────

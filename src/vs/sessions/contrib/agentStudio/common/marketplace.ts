@@ -89,6 +89,19 @@ export interface IUpgradeCheckItem {
 	readonly version: string;
 }
 
+/** 已安装包记录（installed-packages.json 条目） */
+export interface IInstalledPackageInfo {
+	readonly kind: PackageKind;
+	readonly storeId: string;
+	readonly version: string;
+	/**
+	 * 来源：installed=从商城下载安装；published=本机上传到商城。
+	 * 旧数据无此字段时按 installed 兼容处理。
+	 */
+	readonly source?: 'installed' | 'published';
+	readonly installedAt?: string;
+}
+
 /** 下载安装结果 */
 export interface IInstallResult {
 	readonly kind: PackageKind;
@@ -150,6 +163,11 @@ export interface IMarketplaceService {
 	// ── 认证 ──────────────────────────────────────────────
 	isLoggedIn(): boolean;
 	getCurrentUser(): IMarketplaceUser | undefined;
+	/**
+	 * 公开登录守卫：未登录时尝试用 TOF 票据自动同步登录，仍失败则抛出
+	 * "未登录商城，请先在 VsSaros 中完成 TOF 登录"。供上传等操作的 UI 前置校验。
+	 */
+	ensureLoggedIn(): Promise<void>;
 	login(username: string, password: string): Promise<void>;
 	/** 用 TOF 票据登录商城（复用 VsSaros 登录态） */
 	loginWithTof(): Promise<void>;
@@ -177,15 +195,20 @@ export interface IMarketplaceService {
 
 	// ── 已安装查询 ────────────────────────────────────────
 	/**
-	 * 读取本地 installed-packages.json，返回已安装的资源列表。
+	 * 读取本地 installed-packages.json，返回已安装的资源列表（含 source 来源标记）。
 	 */
-	getInstalled(): Promise<readonly { kind: PackageKind; storeId: string; version: string }[]>;
+	getInstalled(): Promise<readonly IInstalledPackageInfo[]>;
 
 	// ── 上传发布 ──────────────────────────────────────────
 	/**
 	 * 将本地资源打包发布到商城。localId 为本地资源标识（对应 manifest.id = slug）。
 	 */
 	publish(localId: string, kind: PackageKind, opts?: IPublishOptions): Promise<{ version: string }>;
+
+	/**
+	 * 下架指定版本（仅作者）。服务端会在删除 is_latest 版本后自动重算最新版本。
+	 */
+	deleteVersion(storeId: string, version: string): Promise<void>;
 
 	// ── 升级检查 ──────────────────────────────────────────
 	/** 批量检查已安装资源是否有更新 */

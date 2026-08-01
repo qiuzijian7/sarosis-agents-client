@@ -14,6 +14,7 @@ import { IThemeService } from '../../../../../platform/theme/common/themeService
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { $, clearNode } from '../../../../../base/browser/dom.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { EditorsOrder } from '../../../../../workbench/common/editor.js';
@@ -26,6 +27,12 @@ import { IModelSelectorService } from '../../common/modelSelector.js';
 import { AGENT_STUDIO_CHAT_VIEW_ID } from '../../common/constants.js';
 import { WorkflowEditorInput } from '../workflowEditorInput.js';
 import { WorkflowMarketEditorInput } from '../workflowMarketEditorInput.js';
+import { IMarketplaceService } from '../../common/marketplace.js';
+import { IStorageService } from '../../../../../platform/storage/common/storage.js';
+import { ITofAuthService } from '../../common/tofAuth.js';
+import { IWorkflowVersionService } from '../../common/workflowVersionTypes.js';
+import { WorkflowPublishModal } from '../workflowPublishModal.js';
+import { applySavedOrder, CardDragSorter, CardOrderStore, CardPinStore, showCardContextMenu } from './cardItemBehaviors.js';
 
 /**
  * Workflow View - 工作流管理面板 (ActivityBar Sidebar)
@@ -45,6 +52,13 @@ export class WorkflowViewPane extends ViewPane {
 	private _loading = false;
 	private _creating = false;
 
+	/** 排序 + 置顶持久化 + 拖拽排序（共享实现） */
+	private _orderStore!: CardOrderStore;
+	private _pinStore!: CardPinStore;
+	private _dragSorter!: CardDragSorter;
+	/** 可升级的 workflow id → 目标版本（来自商城 checkUpgrades） */
+	private _upgradeTargets = new Map<string, string>();
+
 	constructor(
 		options: IViewPaneOptions,
 		@IKeybindingService keybindingService: IKeybindingService,
@@ -63,6 +77,11 @@ export class WorkflowViewPane extends ViewPane {
 		@IWorkflowExecutionService private readonly workflowExecutionService: IWorkflowExecutionService,
 		@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
 		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
+		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+		@IStorageService private readonly storageService: IStorageService,
+		@ITofAuthService private readonly tofAuthService: ITofAuthService,
+		@IWorkflowVersionService private readonly workflowVersionService: IWorkflowVersionService,
+		@IDialogService private readonly dialogService: IDialogService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -70,6 +89,15 @@ export class WorkflowViewPane extends ViewPane {
 		this._register(this.workflowStorage.onDidChangeWorkflows(() => {
 			void this._reload();
 		}));
+
+		// 拖拽排序 + 置顶 + 持久化（与 preset / skill 视图共用实现）
+		this._orderStore = new CardOrderStore(this.storageService, 'agentStudio.workflowOrder.v1');
+		this._pinStore = new CardPinStore(this.storageService, 'agentStudio.workflowPinned.v1');
+		this._dragSorter = new CardDragSorter({
+			getContainer: () => this._listContainer,
+			getVisibleIds: () => applySavedOrder(this._workflows, this._orderStore.load(), w => w.id, this._pinStore.load()).map(w => w.id),
+			onReorder: (ids) => { this._orderStore.save(ids); this._renderList(); },
+		});
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -121,6 +149,10 @@ export class WorkflowViewPane extends ViewPane {
 
 		try {
 			this._workflows = await this.workflowStorage.listWorkflows();
+			// 顺带拉取商城升级信息（失败静默，不阻塞列表）
+			void this._loadUpgradeInfo().then(() => {
+				if (this._workflows.length > 0) { this._renderList(); }
+			});
 			if (this._workflows.length === 0) {
 				this._renderEmpty('No workflows yet. Click "+ Create" to add one.');
 			} else {
@@ -132,6 +164,22 @@ export class WorkflowViewPane extends ViewPane {
 		} finally {
 			this._loading = false;
 		}
+	}
+
+	/** 拉取商城升级信息：本地有安装/发布记录的 workflow 才查 */
+	private async _loadUpgradeInfo(): Promise<void> {
+		this._upgradeTargets.clear();
+		try {
+			const installed = await this.marketplaceService.getInstalled();
+			const local = installed
+				.filter(e => e.kind === 'workflow')
+				.map(e => ({ kind: 'workflow' as const, storeId: e.storeId, version: e.version }));
+			if (local.length === 0) { return; }
+			const upgrades = await this.marketplaceService.checkUpgrades(local);
+			for (const u of upgrades) {
+				this._upgradeTargets.set(u.storeId, u.latest);
+			}
+		} catch { /* 升级信息获取失败不影响列表 */ }
 	}
 
 	/** Open the Workflow Marketplace editor */
@@ -157,9 +205,16 @@ export class WorkflowViewPane extends ViewPane {
 	private _renderList(): void {
 		clearNode(this._listContainer);
 
-		for (const wf of this._workflows) {
+		// 持久化排序 + 置顶优先（共享实现）
+		const ordered = applySavedOrder(this._workflows, this._orderStore.load(), w => w.id, this._pinStore.load());
+
+		for (const wf of ordered) {
 			const item = $('div.workflow-item');
 			item.title = wf.description || wf.name;
+
+			// 置顶标记
+			const isPinned = this._pinStore.isPinned(wf.id);
+			if (isPinned) { item.classList.add('pinned'); }
 
 			// ── Status bar (left vertical accent) ──
 			const statusBar = $('div.workflow-status-bar');
@@ -178,6 +233,14 @@ export class WorkflowViewPane extends ViewPane {
 			const nameEl = $('span.workflow-item-name');
 			nameEl.textContent = wf.name;
 			titleRow.appendChild(nameEl);
+
+			// 置顶图标
+			if (isPinned) {
+				const pinIcon = $('span.workflow-pin-icon');
+				pinIcon.textContent = '📌';
+				pinIcon.title = '已置顶';
+				titleRow.appendChild(pinIcon);
+			}
 
 			// Version badge
 			if (wf.version) {
@@ -206,18 +269,8 @@ export class WorkflowViewPane extends ViewPane {
 
 			item.appendChild(body);
 
-			// ── Actions (right side) ──
+			// ── Actions (right side)（删除保留，复制移入右键菜单） ──
 			const actions = $('div.workflow-actions');
-
-			// Duplicate button
-			const dupBtn = $('button.workflow-btn.duplicate') as HTMLButtonElement;
-			dupBtn.textContent = '📋';
-			dupBtn.title = `复制 ${wf.name}`;
-			dupBtn.onclick = (e) => {
-				e.stopPropagation();
-				void this._handleDuplicate(wf);
-			};
-			actions.appendChild(dupBtn);
 
 			// Delete button — always shown
 			const delBtn = $('button.workflow-btn.delete') as HTMLButtonElement;
@@ -232,7 +285,59 @@ export class WorkflowViewPane extends ViewPane {
 			item.appendChild(actions);
 
 			item.onclick = () => this._openWorkflow(wf);
+
+			// 右键菜单：置顶 / 复制 / 删除 / 升级(按需) / 上传(按需)（共享实现）
+			item.oncontextmenu = (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				const targetVersion = this._upgradeTargets.get(wf.id);
+				showCardContextMenu(this.contextMenuService, e, {
+					pinned: isPinned,
+					onTogglePin: () => { this._pinStore.toggle(wf.id); this._renderList(); },
+					onDuplicate: () => { void this._handleDuplicate(wf); },
+					upgradeLabel: targetVersion ? `升级到 v${targetVersion}` : undefined,
+					onUpgrade: targetVersion ? () => { void this._handleUpgrade(wf, targetVersion); } : undefined,
+					onUpload: () => { this._handleUpload(wf); },
+					onDelete: () => { void this._handleDelete(wf); },
+				});
+			};
+
+			// 拖拽排序（共享实现，顺序持久化）
+			this._dragSorter.attach(item, wf.id);
+
 			this._listContainer.appendChild(item);
+		}
+	}
+
+	/** 上传工作流到商城（复用发布 Modal） */
+	private _handleUpload(wf: IStoredWorkflow): void {
+		const modal = new WorkflowPublishModal(
+			wf,
+			this.marketplaceService,
+			this.notificationService,
+			this.workflowStorage,
+			this.tofAuthService,
+			this.workflowVersionService,
+		);
+		modal.onDidPublish(() => { void this._reload(); });
+		modal.show();
+	}
+
+	/** 从商城升级工作流（下载最新版覆盖安装） */
+	private async _handleUpgrade(wf: IStoredWorkflow, targetVersion: string): Promise<void> {
+		try {
+			const confirmed = await this.dialogService.confirm({
+				message: `升级工作流 "${wf.name}" 到 v${targetVersion}？`,
+				primaryButton: '升级',
+			});
+			if (!confirmed.confirmed) { return; }
+
+			await this.marketplaceService.download(wf.id, targetVersion, 'workflow');
+			this.notificationService.info(`已升级到 v${targetVersion}`);
+			this._upgradeTargets.delete(wf.id);
+			await this._reload();
+		} catch (err) {
+			this._flashMessage(`升级失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
@@ -810,6 +915,23 @@ export class WorkflowViewPane extends ViewPane {
 				border-bottom: 1px solid var(--vscode-panel-border);
 				transition: background 0.1s;
 				position: relative;
+			}
+			.workflow-item.pinned {
+				background: var(--vscode-list-hoverBackground, rgba(90, 93, 94, 0.15));
+			}
+			.workflow-pin-icon {
+				font-size: 11px;
+				opacity: 0.8;
+				flex-shrink: 0;
+			}
+			.workflow-item.dragging {
+				opacity: 0.4;
+			}
+			.workflow-item.drop-before {
+				box-shadow: 0 -2px 0 0 var(--vscode-focusBorder, #007fd4);
+			}
+			.workflow-item.drop-after {
+				box-shadow: 0 2px 0 0 var(--vscode-focusBorder, #007fd4);
 			}
 			.workflow-item:hover {
 				background: var(--vscode-list-hoverBackground);

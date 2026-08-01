@@ -302,6 +302,13 @@ export interface Agent {
 	icon: string;
 	avatar?: string;
 	model: string;
+	/**
+	 * 默认 LM provider ID（如 'knot'、'lm:xxx'）。
+	 * 与 model 配合作为该 Agent 的默认模型选择：聊天页无本地覆盖时使用，
+	 * workflow 节点的 agentConfig 自动填充也读取此字段。
+	 * 未设置 = 跟随全局默认 provider。
+	 */
+	providerId?: string;
 	skills: string[];
 	tools?: string[];
 	/**

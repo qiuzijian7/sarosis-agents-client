@@ -294,13 +294,14 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 
 			out.push({
 				skill,
-				// * required（agent 配置强制加载）→ system placement，确保：
-				//   1. 经过 agentDriverService 的 500-char 内联/截断路径（长技能仅放摘要 + read_skill 指引）
-				//   2. Knot AG-UI 路径通过 background_knowledge 到达模型（user placement 会被丢弃）
-				//   3. BVOK/direct 路径通过 system message 到达模型
-				// * activation='always' → system placement（与 required 一致）
-				// * 其余（explicit/auto 命中）→ user placement（独立 user message，避免 system prompt 失效缓存）
-				placement: (required.has(skill.id.toLowerCase()) || skill.activation === 'always') ? 'system' : 'user',
+				// 渐进披露（Phase 1）：所有激活技能统一以 user placement 注入为独立 user message，
+				// 不再内联 system prompt（避免冻结前缀失效缓存 + 符合系统提示词通用性约束）。
+				// required（agent 配置强制）/ always / explicit（/skill）/ auto（关键词命中）
+				// 均走同一路径，确保强制/常驻技能真正进入 LLM。
+				// 注：Knot 的 background_knowledge 路径从未实现（仅历史注释），Knot 现走标准
+				// messages 路径，user placement 技能可正常到达模型（见 agentDriverService L909-916）。
+				// 已触发的 workflow 技能不注入文本，由 agentDriverService 转交执行引擎。
+				placement: 'user',
 				content: this._renderInjection(skill),
 				// 可执行型 skill（workflow 来源）携带 executor，供 ExecutionProvider 触发执行而非注入文本
 				executor: skill.executor,

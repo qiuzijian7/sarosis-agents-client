@@ -147,6 +147,8 @@ import { CodebaseGraphStoreChannel } from '../../sessions/contrib/agentStudio/el
 import { CODEBASE_GRAPH_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/codebaseGraphStoreChannel.js';
 import { KbSqliteStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/kbSqliteStoreChannel.js';
 import { KB_SQLITE_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/kbSqliteStoreChannel.js';
+import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-main/gitVersionChannel.js';
+import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
 import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
@@ -1439,6 +1441,12 @@ export class CodeApplication extends Disposable {
 			accessor.get(ILoggerService),
 		);
 		mainProcessElectronServer.registerChannel(KB_SQLITE_STORE_CHANNEL, kbStoreChannel);
+
+		// AgentStudio 版本管理：isomorphic-git + fs 宿主在主进程。
+		// renderer 为 Chromium 沙箱（无 Node require，preload require 亦为受限 polyfill），
+		// 无法加载 fs/isomorphic-git，故 agent/skill/workflow/kb 的 git 操作全部经此 channel 代理。
+		const gitVersionChannel = this._register(new GitVersionChannel());
+		mainProcessElectronServer.registerChannel(GIT_VERSION_CHANNEL, gitVersionChannel);
 
 
 		// Logger

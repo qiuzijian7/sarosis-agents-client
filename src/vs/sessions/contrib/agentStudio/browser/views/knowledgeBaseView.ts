@@ -78,15 +78,14 @@ import {
 	KbSortMode, KB_SORT_GROUPS, newVaultId,
 } from './knowledgeBase/kbTypes.js';
 import { KbMindmapGenerator } from './knowledge/kbMindmapGenerator.js';
-import type { IKbMindmap, IKbMindmapNode } from './knowledge/kbMindmapGenerator.js';
-import type { IChatModel } from '../knowledge/engine/llm.js';
+import { STORAGE_VAULTS, STORAGE_ACTIVE, STORAGE_KB_DIR } from '../knowledge/kbVaultState.js';
+import type { IChatModel } from '../knowledge/llm.js';
 import { KbFullTextIndex, IKbSearchHit } from './knowledgeBase/kbIndex.js';
 import { KbLinkGraph, IKbGraphRoot } from './knowledgeBase/kbGraph.js';
 import { KbNativeKernel, INativeBacklinkResult } from './knowledgeBase/kbNativeKernel.js';
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { resolveAuxEmbeddingProviderId, resolveAuxEmbeddingConfig } from '../knowledge/embeddingConfigResolver.js';
-import { isEmbedderConfigured } from '../knowledge/knowledgeAdapters.js';
 import {
 	AGENT_STUDIO_AUX_EMBEDDING_PROVIDER,
 	AGENT_STUDIO_AUX_EMBEDDING_MODEL,
@@ -103,10 +102,6 @@ import { resolveKbRoot } from '../knowledge/knowledgeStorage.js';
 import { IKbVectorSearchHit } from './knowledgeBase/kbVectorIndex.js';
 
 const KB_ROOT_SUBPATH = '.vssaros/knowledge-base';
-const STORAGE_VAULTS = 'agentStudio.kb.vaults';
-const STORAGE_ACTIVE = 'agentStudio.kb.active';
-/** 知识库目录：单一路径，Vault 及其「库」「笔记」子文件夹均在此目录下。 */
-const STORAGE_KB_DIR = 'agentStudio.kb.kbDir';
 const STORAGE_SORT_PREFIX = 'agentStudio.kb.sort.';
 const STORAGE_EXPANDED_PREFIX = 'agentStudio.kb.expanded.';
 
@@ -834,66 +829,92 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			if (!this._mindmapGenerator) {
 				this._mindmapGenerator = new KbMindmapGenerator(this.fileService, this.logService);
 			}
-			// 读取所有思维导图
-			const graphs: { uri: URI; name: string; data: IKbMindmap }[] = [];
-			for (const f of files) {
-				const uri = f.uri;
-				const data = await this._mindmapGenerator.readMindmap(uri);
-				if (data) {
-					graphs.push({ uri, name: f.name.replace(/\.canvas$/, ''), data });
-				}
-			}
-			if (graphs.length < 2) {
+			// 委托生成器：读取全部 → 按内容去重合并 → 重排为思维导图 → 写入首个并删除其余
+			const finalUri = await this._mindmapGenerator.mergeMindmaps(files.map(f => f.uri));
+			if (!finalUri) {
 				this.notificationService.warn('无法合并：需要至少 2 个有效的思维导图文件');
 				return;
 			}
-
-			// 合并所有节点和边
-			let merged: IKbMindmap = { nodes: [], edges: [] };
-			const usedIds = new Set<string>();
-			const usedEdgeIds = new Set<string>();
-			const existingContents = new Set<string>();
-
-			for (const g of graphs) {
-				for (const n of g.data.nodes) {
-					const key = (n.content || '').slice(0, 60).toLowerCase().replace(/\s+/g, ' ');
-					if (existingContents.has(key)) { continue; }
-					existingContents.add(key);
-					let id = n.id;
-					while (usedIds.has(id)) { id = 'n' + Math.random().toString(36).slice(2, 10); }
-					usedIds.add(id);
-					merged.nodes.push({ ...n, id });
-				}
-				for (const e of g.data.edges) {
-					if (merged.edges.some(x => x.fromNode === e.fromNode && x.toNode === e.toNode)) { continue; }
-					let eid = e.id;
-					while (usedEdgeIds.has(eid)) { eid = 'e' + Math.random().toString(36).slice(2, 10); }
-					usedEdgeIds.add(eid);
-					merged.edges.push({ ...e, id: eid });
-				}
-			}
-
-			// 重排布局
-			(merged.nodes as IKbMindmapNode[]).forEach((n, i) => {
-				const cols = 5;
-				n.x = (i % cols) * 360;
-				n.y = Math.floor(i / cols) * 140;
-				n.width = 300;
-				n.height = 100;
-			});
-
-			// 写入第一个文件（保留第一个文件名），删除其余
-			const target = graphs[0];
-			await this._mindmapGenerator.writeMindmap(target.uri, merged);
-			for (let i = 1; i < graphs.length; i++) {
-				await this.fileService.del(graphs[i].uri, { recursive: false });
-			}
-
-			this.notificationService.info(`已合并 ${graphs.length} 个思维导图为「${target.name}.canvas」（${merged.nodes.length} 节点, ${merged.edges.length} 边）`);
+			this.notificationService.info(`已合并 ${files.length} 个思维导图为思维导图`);
 			await this.refreshSection('notes');
 		} catch (err) {
 			this.logService.warn(`[mindmap] merge failed: ${err}`);
 			this.notificationService.warn(`合并思维导图失败: ${err}`);
+		}
+	}
+
+	/** 补充/完善单个思维导图：让 LLM 在保留现有节点基础上改进描述并补充缺失概念。 */
+	private async _supplementMindmap(node: IKbNode): Promise<void> {
+		if (!node.name.endsWith('.canvas')) { return; }
+		const chatModel = await this._getOrCreateChatModel();
+		if (!chatModel) {
+			this.notificationService.warn('未获取到 LLM 模型，无法补充思维导图');
+			return;
+		}
+		if (!this._mindmapGenerator) {
+			this._mindmapGenerator = new KbMindmapGenerator(this.fileService, this.logService);
+		}
+		try {
+			this.notificationService.info('正在补充/完善思维导图…');
+			const finalUri = await this._mindmapGenerator.refineMindmap(chatModel, node.uri);
+			if (!finalUri) {
+				this.notificationService.warn('该思维导图内容为空，无法补充');
+				return;
+			}
+			await this.refreshSection('notes');
+			this.notificationService.info('已补充/完善思维导图');
+		} catch (err) {
+			this.logService.warn(`[mindmap] refine failed: ${err}`);
+			this.notificationService.warn(`补充思维导图失败: ${err}`);
+		}
+	}
+
+	/** 按内容优化思维导图文件命名：用 LLM 建议的简短主题名（回退到内容推导）重命名。 */
+	private async _optimizeMindmapName(node: IKbNode): Promise<void> {
+		if (!node.name.endsWith('.canvas')) { return; }
+		if (!this._mindmapGenerator) {
+			this._mindmapGenerator = new KbMindmapGenerator(this.fileService, this.logService);
+		}
+		try {
+			const data = await this._mindmapGenerator.readMindmap(node.uri);
+			if (!data || data.nodes.length === 0) {
+				this.notificationService.warn('该思维导图为空，无法生成名称');
+				return;
+			}
+			// 1) 优先用 LLM 建议的简短主题名；2) 否则回退到确定性内容推导
+			let newName = this._mindmapGenerator.deriveMindmapTitle(data);
+			const chatModel = await this._getOrCreateChatModel();
+			if (chatModel) {
+				const suggested = await this._mindmapGenerator.suggestMindmapTitle(chatModel, data);
+				if (suggested) { newName = suggested; }
+			}
+			if (newName === node.name) {
+				this.notificationService.info(`名称已符合内容：「${node.name}」`);
+				return;
+			}
+			let target = URI.joinPath(node.uri, '..', newName);
+			let i = 2;
+			while (await this.fileService.exists(target)) {
+				const base = newName.replace(/\.canvas$/, '');
+				target = URI.joinPath(node.uri, '..', `${base}-${i}.canvas`);
+				i++;
+			}
+			await this.workingCopyFileService.move(
+				[{ file: { source: node.uri, target } }],
+				CancellationToken.None,
+			);
+			this._pushKbUndoElement(
+				localize('kb.undoRenameCanvas', '重命名思维导图「{0}」为「{1}」', node.name, newName),
+				'kb.rename',
+				[node.uri, target],
+				async () => { try { await this.workingCopyFileService.move([{ file: { source: target, target: node.uri } }], CancellationToken.None, { isUndoing: true }); } catch (e) { this.logService.warn(`[KB-Undo] rename-back failed: ${e}`); } await this.refreshSection('notes'); },
+				async () => { try { await this.workingCopyFileService.move([{ file: { source: node.uri, target } }], CancellationToken.None); } catch (e) { this.logService.warn(`[KB-Redo] rename failed: ${e}`); } await this.refreshSection('notes'); },
+			);
+			await this.refreshSection('notes');
+			this.notificationService.info(`已按内容重命名：「${node.name}」→「${newName}」`);
+		} catch (err) {
+			this.logService.warn(`[mindmap] rename failed: ${err}`);
+			this.notificationService.warn(`重命名失败: ${err}`);
 		}
 	}
 
@@ -2696,8 +2717,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this.renderAll();
 		this.notificationService.info(localize('kb.linked', '已关联文件夹（文件保持原位，原地索引）：{0}', this.baseName(uri)));
 		void this._logOp('kb.link', 'success', { source: p });
-		// 后台构建「每 git 仓库 = 一个 RAG session」语义索引（与全文索引解耦，故障隔离）。
-		void this._importFolderRagAsync(p, this._activeVault);
 	}
 
 	/**
@@ -2763,7 +2782,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			let linkedCount = 0;
 			let skippedCount = 0;
 
-			const newFolders: string[] = [];
 			const resolvedFolders: string[] = [];
 			for (const f of folders) {
 				if (!f.path || typeof f.path !== 'string') { continue; }
@@ -2776,7 +2794,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				resolvedFolders.push(folderPath);
 				if (!existingList.has(folderPath)) {
 					existingList.add(folderPath);
-					newFolders.push(folderPath);
 					linkedCount++;
 				} else {
 					skippedCount++;
@@ -2821,11 +2838,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			void this._logOp('kb.import.codeWorkspace', 'success', {
 				detail: { linked: linkedCount, skipped: skippedCount, total: folders.length },
 			});
-
-			// 4. 后台 RAG 语义索引（每个新增目录建一个 session）
-			for (const p of newFolders) {
-				void this._importFolderRagAsync(p, this._activeVault);
-			}
 		} catch (err) {
 			const msg = String((err as any)?.message ?? err);
 			this.notificationService.error(`导入 .code-workspace 失败：${msg}`);
@@ -2839,10 +2851,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * 行为：
 	 *  - 前台：轻量登记（linkedFolders + save + renderAll），不调用 linkFolder /
 	 *    rebuildSearchAssets（二者是大仓库 OOM 主因）。
-	 *  - 后台 RAG：_importFolderRagAsync（chunked，安全）。
 	 *  - 后台类型判断：快速扫描顶层文件扩展名，检测是否为代码仓库。
 	 *    • 代码仓库 → 额外触发 codebase tree-sitter 索引（_codebaseGraphService.indexWorkspace）。
-	 *    • 纯文档 / 无脚本 → 仅保留 RAG 知识图谱索引。
+	 *    • 纯文档 / 无脚本 → 不做额外索引。
 	 *
 	 * 同一路径重复触发幂等去重。
 	 */
@@ -2867,8 +2878,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this.saveVaults();
 			// 注意：不调用 markSearchDirty / rebuildSearchAssets（OOM 风险，见上方注释）
 			this.renderAll();
-			// 后台 RAG 语义索引（chunked，安全）
-			void this._importFolderRagAsync(p, this._activeVault);
 
 			// 根据文件夹内容类型决定是否额外触发 codebase 源码索引
 			this._detectAndIndexCodebase(p);
@@ -2955,8 +2964,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			this._activeVault.ragSessions = Object.keys(kept).length ? kept : undefined;
 		}
 		this._activeVault.ragUnversionedSessionId = undefined;
-		// 同步清理全局文件夹 RAG 索引（repoRoot→sessionId 映射），避免 kb_search_repo 检索到已取消关联的仓库。
-		try { await this.agentStudioService.unlinkFolderRag(path); } catch (e) { this.logService.warn('[KB] failed to unlink folder RAG index', e); }
 		this.saveVaults();
 		this.markSearchDirty();
 		await this.rebuildSearchAssets();
@@ -2994,44 +3001,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this.renderAll();
 		this.notificationService.info(`已取消关联 ${paths.length} 个文件夹`);
 		void this._logOp('kb.unlinkBatch', 'success', { detail: { count: paths.length } });
-	}
-
-	/**
-	 * 后台为导入的文件夹构建「每 git 仓库 = 一个 RAG session」语义索引（方案 A）。
-	 * 与全文索引（rebuildSearchAssets）解耦：即使语义构建失败 / 部分失败，全文索引仍可用。
-	 * 完成后把 repoRoot→sessionId 映射写回 vault 元数据，供后续跨库检索 / git pull 增量重摄入。
-	 */
-	private async _importFolderRagAsync(folderPath: string, vault: IKbVault): Promise<void> {
-		if (!vault) { return; }
-		// 未配置任何可用 embedder（无 API key）时不自动构建语义索引，仅完成目录关联即可，
-		// 避免 createKbEmbedder 抛 "KbEmbedder 未配置" 的 WARN/噪声。需要时再手动触发。
-		if (!isEmbedderConfigured(this.configurationService)) {
-			this.logService.info(`[KB] 跳过文件夹 RAG 自动索引（未配置 embedder provider/API key）: ${folderPath}`);
-			return;
-		}
-		try {
-			const result = await this.agentStudioService.importFolderToRag(folderPath, { includeUnversioned: false });
-			const errEntries = result.errors ?? {};
-			if (Object.keys(errEntries).length) {
-				this.logService.warn(`[KB] folder RAG partial failure for ${folderPath}:`, errEntries);
-			}
-			vault.ragSessions = { ...(vault.ragSessions ?? {}), ...result.sessions };
-			vault.ragUnversionedSessionId = result.unversionedSessionId ?? vault.ragUnversionedSessionId ?? null;
-			this.saveVaults();
-			const n = Object.keys(result.sessions).length;
-			const errN = Object.keys(errEntries).length;
-			if (errN) {
-				this.notificationService.info(localize('kb.folderRag.partial', '已为「{0}」构建 {1} 个仓库语义索引（{2} 个失败，全文索引仍可用）', this.baseName(URI.file(folderPath)), n, errN));
-			} else {
-				this.notificationService.info(localize('kb.folderRag.done', '已为「{0}」构建 {1} 个仓库语义索引（可跨库检索）', this.baseName(URI.file(folderPath)), n));
-			}
-			void this._logOp('kb.import.folderRag', 'success', { source: folderPath, detail: { sessions: result.sessions, errors: errEntries } });
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this.logService.warn(`[KB] folder RAG import failed for ${folderPath}:`, err);
-			this.notificationService.warn(localize('kb.folderRag.failed', '文件夹语义索引构建失败（全文索引仍可用）：{0}', msg));
-			void this._logOp('kb.import.folderRag', 'failure', { source: folderPath, error: msg });
-		}
 	}
 
 	/** 汇总当前 Vault 的全部索引根：库 / 笔记 分区 + 关联（链接）的外部文件夹。 */
@@ -3192,6 +3161,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			await this.refreshSection('notes');
 			await this.refreshSection('library');
 			this.markSearchDirty(); // 让新构建的笔记进入搜索索引 / 关系图谱
+			// 构建流程最后一步：生成/刷新思维导图（确保产出的是思维导图画布）
+			void this._generateMindmapAfterImport();
 		} catch (err) {
 			this.logService.warn(`[KB] buildNoteFromLibrary: ${err}`);
 			this.notificationService.warn(`构建失败：${err}`);
@@ -3224,6 +3195,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			await this.refreshSection('notes');
 			await this.refreshSection('library');
 			this.markSearchDirty(); // 让新构建的笔记进入搜索索引 / 关系图谱
+			// 批量构建末尾：生成/刷新思维导图（确保产出的是思维导图画布）
+			void this._generateMindmapAfterImport();
 		} catch (err) {
 			this.logService.warn(`[KB] batchBuildAll: ${err}`);
 			this.notificationService.warn(`批量构建失败：${err}`);
@@ -3692,6 +3665,14 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 		if (!node.isDirectory && node.section === 'notes') {
 			actions.push(new Action('kb.moveToReview', '移入审核', undefined, true, () => { void this._moveToReview(node); }));
+		}
+		// 笔记区 .canvas 思维导图：补充完善 / 按内容重命名
+		if (!node.isDirectory && node.name.endsWith('.canvas') && node.section === 'notes') {
+			actions.push(
+				new Separator(),
+				new Action('kb.supplementCanvas', '补充/完善思维导图', undefined, true, () => { void this._supplementMindmap(node); }),
+				new Action('kb.optimizeCanvasName', '按内容重命名', undefined, true, () => { void this._optimizeMindmapName(node); }),
+			);
 		}
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => ({ x: e.clientX, y: e.clientY }),

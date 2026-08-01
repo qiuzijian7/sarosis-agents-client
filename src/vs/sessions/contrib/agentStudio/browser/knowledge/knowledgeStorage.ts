@@ -11,10 +11,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../../base/common/uri.js';
-import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { join, isAbsolute } from '../../../../../base/common/path.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
-import { KBStorageAdapter, KnowledgeSessionMeta, SerializedKB } from './engine/knowledgeManager.js';
 
 /**
  * Default KB subdirectory name under the VS Code user data root.
@@ -41,70 +39,6 @@ export function resolveKbRoot(configValue: string | undefined, dataRoot: string)
 	const expanded = v.replace(/^~(?=$|[\\/])/, dataRoot);
 	const resolved = isAbsolute(expanded) ? expanded : join(dataRoot, expanded);
 	return resolved.replace(/[\\/]+$/, '');
-}
-
-export function createFileStorageAdapter(fileService: IFileService, root: string): KBStorageAdapter {
-	const uriFor = (id: string) => URI.file(join(root, id, 'kb.json'));
-
-	function metaFromPayload(p: SerializedKB): KnowledgeSessionMeta {
-		const m = (p.metadata ?? {}) as Record<string, unknown>;
-		return {
-			id: (m['id'] as string) ?? '',
-			templateId: (m['templateId'] as string) ?? 'knowledge_graph',
-			title: (m['title'] as string) ?? 'Untitled',
-			kind: (m['kind'] as 'graph' | 'list') ?? 'graph',
-			itemCount: 0,
-			createdAt: (m['createdAt'] as string) ?? new Date().toISOString(),
-			updatedAt: (m['updatedAt'] as string) ?? new Date().toISOString(),
-		};
-	}
-
-	return {
-		async read(id: string): Promise<SerializedKB | undefined> {
-			try {
-				const stat = await fileService.readFile(uriFor(id));
-				return JSON.parse(stat.value.toString()) as SerializedKB;
-			} catch {
-				return undefined;
-			}
-		},
-
-		async write(id: string, payload: SerializedKB): Promise<void> {
-			const uri = uriFor(id);
-			await fileService.createFolder(URI.joinPath(uri, '..'));
-			await fileService.writeFile(uri, VSBuffer.fromString(JSON.stringify(payload, null, 2)));
-		},
-
-		async remove(id: string): Promise<void> {
-			try {
-				await fileService.del(uriFor(id), { recursive: true });
-			} catch {
-				// already gone
-			}
-		},
-
-		async list(): Promise<KnowledgeSessionMeta[]> {
-			try {
-				const dirUri = URI.file(root);
-				const stat = await fileService.resolve(dirUri, { resolveMetadata: true });
-				const out: KnowledgeSessionMeta[] = [];
-				if (stat.children) {
-					for (const child of stat.children) {
-						if (!child.isDirectory) { continue; }
-						try {
-							const p = await this.read(child.name);
-							if (p?.metadata) { out.push(metaFromPayload(p)); }
-						} catch {
-							// skip corrupt entry
-						}
-					}
-				}
-				return out;
-			} catch {
-				return [];
-			}
-		},
-	};
 }
 
 /** List knowledge-base ids (sub-directory names) under a storage root. */

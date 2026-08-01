@@ -9,19 +9,7 @@
 
 import { sanitizeAttachmentFileName } from "../../common/bridge/bridgeSecurity.js";
 import { InboundAttachment } from "../../common/bridge/bridgeTypes.js";
-
-// ─── nodeRequire：Electron renderer 中安全访问 Node 内置模块 ───────────────
-
-function nodeRequire(moduleName: string): any {
-	if (typeof globalThis !== "undefined" && typeof (globalThis as any).require === "function") {
-		try {
-			return (globalThis as any).require(moduleName);
-		} catch {
-			return undefined;
-		}
-	}
-	return undefined;
-}
+import { nodeRequire } from "../rendererNodeRequire.js";
 
 let _fs: any | undefined;
 let _path: any | undefined;

@@ -31,6 +31,7 @@ import { Disposable } from '../../../../../../base/common/lifecycle.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { ISearchService } from '../../../../../../workbench/services/search/common/search.js';
+import { IKbNativeKernelService } from '../../kbNativeKernelService.js';
 import { IStorageService } from '../../../../../../platform/storage/common/storage.js';
 import { Registry } from '../../../../../../platform/registry/common/platform.js';
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions } from '../../../../../../platform/configuration/common/configurationRegistry.js';
@@ -232,6 +233,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
 		@IRequestService private readonly requestService: IRequestService,
 		@ISearchService private readonly searchService: ISearchService,
+		@IKbNativeKernelService private readonly kbKernelService: IKbNativeKernelService,
 	) {
 		super();
 		this._skillManagerTool = new SkillManagerTool(
@@ -262,7 +264,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerMindmapTools();
 		this._registerWorkflowTools();
 		this._registerCodebaseTools();
-		this._registerKnowledgeTools(); // Plan-C Hyper-Extract knowledge engine (kb_* tools)
+		this._registerKnowledgeTools(); // llm-wiki 知识内核（kb_search 工具）
 		this._registerHandoffTools(); // supervisor 交接工具 transfer_to_agent（Step B）
 		this._registerMermaidTools(); // Mermaid 图示渲染工具
 		// _registerMcpBridgeTools() 已废弃 — MCP 工具统一走 tool_search/tool_describe/tool_call
@@ -321,7 +323,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		return this._registry.register(descriptor);
 	}
 
-	// ─── Knowledge tools (Plan-C Hyper-Extract engine) ─────────────────────
+	// ─── Knowledge tools (llm-wiki 知识内核：kb_search) ───────────────────
 
 	// ─── Phase 1: 内置 Embedding Provider（激活 RAG 引擎）──────────────────
 
@@ -344,6 +346,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 				workspaceService: this.workspaceService,
 				environmentService: this.environmentService,
 				logService: this.logService,
+				kernelService: this.kbKernelService,
 				kbStoragePathKey: AGENT_STUDIO_KB_STORAGE_PATH,
 			});
 		}

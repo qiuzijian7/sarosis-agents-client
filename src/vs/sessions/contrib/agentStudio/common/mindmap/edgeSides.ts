@@ -20,19 +20,27 @@ export interface IEdgeSides {
 }
 
 /**
- * 计算边的连接侧。
- * 水平偏移 ≥ 0 → from=right, to=left；否则 from=left, to=right。
- * 思维导图边始终水平连接。
+ * 计算边的连接侧（dominant-axis 启发式）。
+ * - 水平偏移绝对值 ≥ 垂直偏移绝对值 → 水平连接（left/right）
+ * - 否则 → 垂直连接（top/bottom），用于树状/放射状布局
  */
 export function computeEdgeSides(fromNode: IMindmapNode, toNode: IMindmapNode): IEdgeSides {
 	const fromCx = fromNode.x + fromNode.width / 2;
+	const fromCy = fromNode.y + fromNode.height / 2;
 	const toCx = toNode.x + toNode.width / 2;
+	const toCy = toNode.y + toNode.height / 2;
 
-	if (toCx >= fromCx) {
-		return { fromSide: 'right', toSide: 'left' };
-	} else {
-		return { fromSide: 'left', toSide: 'right' };
+	const dx = toCx - fromCx;
+	const dy = toCy - fromCy;
+
+	if (Math.abs(dx) >= Math.abs(dy)) {
+		return dx >= 0
+			? { fromSide: 'right', toSide: 'left' }
+			: { fromSide: 'left', toSide: 'right' };
 	}
+	return dy >= 0
+		? { fromSide: 'bottom', toSide: 'top' }
+		: { fromSide: 'top', toSide: 'bottom' };
 }
 
 /**

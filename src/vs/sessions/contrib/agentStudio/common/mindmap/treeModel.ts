@@ -31,7 +31,7 @@ export interface TreeNode {
  * 无入边节点为树根。跳过 group 类型节点。
  * 多根按子树大小降序排列。
  */
-export function buildForest(data: IMindmapData): TreeNode[] {
+export function buildForest(data: IMindmapData, includeGroups = false): TreeNode[] {
 	const nodeMap = new Map<string, TreeNode>();
 	const childIds = new Set<string>();
 
@@ -66,6 +66,11 @@ export function buildForest(data: IMindmapData): TreeNode[] {
 		const parentTree = nodeMap.get(edge.fromNode);
 		const childTree = nodeMap.get(edge.toNode);
 		if (parentTree && childTree) {
+			// 折叠节点（expanded===false）不展开其子节点：其后代不进入森林，
+			// 因此不参与布局、导航与大纲，仅节点本身保持可见。
+			if (parentTree.node.expanded === false) {
+				continue;
+			}
 			childTree.parent = parentTree;
 			parentTree.children.push(childTree);
 		}
@@ -155,6 +160,32 @@ function countReachable(node: TreeNode): number {
 		count += countReachable(child);
 	}
 	return count;
+}
+
+/**
+ * 返回某分组（group）所包含的成员节点 id 列表。
+ * 采用「几何包含」规则：成员节点中心点落在分组矩形 (x, y, width, height) 内，
+ * 与 layoutEngine.computeForestLayout 的包围盒判定一致。
+ * 用于分组可视化（计算包围盒）与框选命中判定。
+ */
+export function getGroupMemberIds(data: IMindmapData, groupId: string): string[] {
+	const group = data.nodes.find(n => n.id === groupId);
+	if (!group) { return []; }
+	const gx = group.x ?? 0;
+	const gy = group.y ?? 0;
+	const gw = group.width ?? 0;
+	const gh = group.height ?? 0;
+	if (gw <= 0 || gh <= 0) { return []; }
+	const result: string[] = [];
+	for (const n of data.nodes) {
+		if (n.id === groupId || n.type === 'group') { continue; }
+		const cx = (n.x ?? 0) + (n.width ?? 0) / 2;
+		const cy = (n.y ?? 0) + (n.height ?? 0) / 2;
+		if (cx >= gx && cx <= gx + gw && cy >= gy && cy <= gy + gh) {
+			result.push(n.id);
+		}
+	}
+	return result;
 }
 
 function setDepths(node: TreeNode, depth: number): void {
@@ -277,4 +308,32 @@ export function collectDescendantNodes(rootNodeId: string, data: IMindmapData): 
 		}
 	}
 	return result;
+}
+
+/**
+ * 计算当前应可见的节点集合：从根（无父节点）出发，遇到 expanded===false 的节点则停止深入其后代。
+ * 折叠节点本身仍可见，但其后代被隐藏（不渲染、不绘制其边）。
+ */
+export function getVisibleNodeIds(data: IMindmapData): Set<string> {
+	const parentOf = new Map<string, string>();
+	for (const edge of data.edges) {
+		parentOf.set(edge.toNode, edge.fromNode);
+	}
+	const visible = new Set<string>();
+	const roots = data.nodes.filter(n => !parentOf.has(n.id));
+	const stack = roots.map(r => r.id);
+	while (stack.length) {
+		const id = stack.pop()!;
+		visible.add(id);
+		const node = data.nodes.find(n => n.id === id);
+		if (node && node.expanded === false) {
+			continue;
+		}
+		for (const edge of data.edges) {
+			if (edge.fromNode === id) {
+				stack.push(edge.toNode);
+			}
+		}
+	}
+	return visible;
 }

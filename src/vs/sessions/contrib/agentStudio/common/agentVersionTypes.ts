@@ -55,11 +55,17 @@ export interface AgentDiffResult {
 export interface IAgentVersionService {
 	readonly _serviceBrand: undefined;
 
+	/** Git 环境是否可用（Electron renderer 中可加载 isomorphic-git + fs） */
+	isAvailable(): boolean;
+
 	/** 初始化 agent 目录为 git 仓库（仅首次） */
 	init(agentId: string): Promise<void>;
 
-	/** 自动提交 .agent.md 变更（无变化则跳过） */
-	autoCommit(agentId: string): Promise<string | null>;
+	/** 自动提交 .agent.md 变更（无变化则跳过）；message 可选自定义提交消息 */
+	autoCommit(agentId: string, message?: string): Promise<string | null>;
+
+	/** 打发布锚点 tag（通常 vX.Y.Z，发布到商城成功后调用，关联商城版本与本地历史） */
+	tag(agentId: string, tagName: string): Promise<void>;
 
 	/** 获取 .agent.md 的提交历史（默认 50 条） */
 	history(agentId: string, limit?: number): Promise<AgentCommitMeta[]>;

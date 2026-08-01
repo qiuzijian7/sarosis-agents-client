@@ -81,6 +81,8 @@ import { WorkspaceLifecycleService } from './workspaceLifecycleService.js';
 import { ISkillLifecycleService } from '../common/skillLifecycle.js';
 import { SkillLifecycleService } from './skillLifecycleService.js';
 import { IKbNativeKernelService, KbNativeKernelService } from './kbNativeKernelService.js';
+import { migrateLegacyKbSessions } from './knowledge/kbLegacyMigration.js';
+import { loadActiveKbVault, resolveVaultNotesDir, resolveKbRootUri } from './knowledge/kbVaultState.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
 import { SkillVersionService, ISkillVersionService } from './skillVersionService.js';
 import { AgentVersionService } from './agentVersionService.js';
@@ -219,7 +221,7 @@ import { KnowledgeBaseGraphEditorPane } from './kbGraphEditorPane.js';
 import { KbGraphEditorInput } from './kbGraphEditorInput.js';
 import { CanvasEditorPane, getActiveCanvasPane } from './canvasEditor/canvasEditorPane.js';
 import { CanvasEditorInput } from './canvasEditor/canvasEditorInput.js';
-import { IMindmapData } from '../common/mindmap/mindmapTypes.js';
+import { IMindmapData, type MindmapDirection } from '../common/mindmap/mindmapTypes.js';
 import { IEditorResolverService, RegisteredEditorPriority } from '../../../../workbench/services/editor/common/editorResolverService.js';
 import { WorkflowViewPane } from './views/workflowView.js';
 import { IWikiTagService } from './services/wikiTagService.js';
@@ -1246,6 +1248,13 @@ canvasCmd('sarosis.canvas.addSibling', '思维导图：添加兄弟节点',
 	KeyMod.Shift | KeyCode.Enter, p => p.cmdAddSibling());
 canvasCmd('sarosis.canvas.deleteNode', '思维导图：删除节点',
 	KeyCode.Delete, p => p.cmdDeleteNode());
+// 参考实现同时支持 Backspace 删除（节点 / 选中连线）
+canvasCmd('sarosis.canvas.deleteNodeBackspace', '思维导图：删除节点（Backspace）',
+	KeyCode.Backspace, p => p.cmdDeleteNode());
+canvasCmd('sarosis.canvas.copyNodes', '思维导图：复制节点',
+	KeyMod.CtrlCmd | KeyCode.KeyC, p => p.cmdCopyNodes());
+canvasCmd('sarosis.canvas.pasteNodes', '思维导图：粘贴节点',
+	KeyMod.CtrlCmd | KeyCode.KeyV, p => p.cmdPasteNodes());
 canvasCmd('sarosis.canvas.editNode', '思维导图：编辑节点',
 	KeyCode.Enter, p => p.cmdEditNode());
 canvasCmd('sarosis.canvas.saveAndExit', '思维导图：保存并退出编辑',
@@ -1260,6 +1269,28 @@ canvasCmd('sarosis.canvas.flipBranch', '思维导图：翻转分支',
 	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyF, p => p.cmdFlipBranch());
 canvasCmd('sarosis.canvas.toggleBalance', '思维导图：平衡布局',
 	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyB, p => p.cmdToggleBalance());
+	canvasCmd('sarosis.canvas.toggleExpand', '思维导图：折叠/展开节点',
+		KeyCode.Space, p => p.cmdToggleExpand());
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: 'sarosis.canvas.setDirection',
+				title: localize2('sarosis.canvas.setDirection', '思维导图：设置布局方向'),
+				f1: true,
+			});
+		}
+		override async run(_accessor: ServicesAccessor, mode?: MindmapDirection): Promise<void> {
+			const pane = getActiveCanvasPane();
+			if (!pane) { return; }
+			const valid: MindmapDirection[] = ['right', 'left', 'both', 'tree', 'flower'];
+			if (mode && valid.includes(mode)) {
+				pane.cmdSetDirection(mode);
+			} else {
+				pane.cmdCycleDirection();
+			}
+		}
+	});
 
 // Undo/Redo
 canvasCmd('sarosis.canvas.undo', '思维导图：撤销',
@@ -1276,6 +1307,8 @@ canvasCmd('sarosis.canvas.navigateLeft', '思维导图：导航左移',
 	KeyCode.LeftArrow, p => p.cmdNavigate('left'));
 canvasCmd('sarosis.canvas.navigateRight', '思维导图：导航右移',
 	KeyCode.RightArrow, p => p.cmdNavigate('right'));
+canvasCmd('sarosis.canvas.navigateToSource', '思维导图：跳转到源码（Ctrl+点击节点）',
+	0, p => p.cmdNavigateToSource());
 
 // 视图
 canvasCmd('sarosis.canvas.fitViewport', '思维导图：适应窗口',
@@ -1379,6 +1412,61 @@ registerAction2(class extends Action2 {
 			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
 		} else {
 			await editorService.openEditor(input, { pinned: true }, groups[0]);
+		}
+	}
+});
+
+// ─── 迁移旧版知识库（系统 A / Hyper-Extract）到 llm-wiki ───────────────
+// 一次性迁移命令：把 `<kb-storage-root>/<id>/kb.json` 旧 session 转成 Markdown
+// 笔记写入激活 Vault 的「笔记 / 迁移」目录，并把旧目录安全归档（不硬删）。
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'agentStudio.kb.migrateLegacy',
+			title: localize2('agentStudio.kb.migrateLegacy', '迁移旧版知识库到 llm-wiki'),
+			category: localize2('agentStudio.category', 'Agent Studio'),
+			f1: true,
+		});
+	}
+	override async run(accessor: ServicesAccessor): Promise<void> {
+		const fileService = accessor.get(IFileService);
+		const logService = accessor.get(ILogService);
+		const notificationService = accessor.get(INotificationService);
+		const storageService = accessor.get(IStorageService);
+		const envService = accessor.get(IEnvironmentService) as INativeEnvironmentService;
+		const kbKernelService = accessor.get(IKbNativeKernelService);
+		try {
+			const kbRoot = resolveKbRootUri(storageService, envService);
+			const vault = loadActiveKbVault(storageService);
+			if (!vault) {
+				notificationService.warn(localize('kb.migrate.noVault', '未找到可用的知识库 Vault，请先打开知识库视图并创建一个 Vault。'));
+				return;
+			}
+			const targetDir = resolveVaultNotesDir(vault, kbRoot);
+			const report = await migrateLegacyKbSessions({ fileService, logService }, kbRoot, targetDir);
+			if (report.scanned === 0) {
+				notificationService.info(localize('kb.migrate.none', '未发现旧版知识库数据，无需迁移。'));
+				return;
+			}
+			// 失效内核缓存，使迁移笔记在下次打开知识库时被索引（best-effort）
+			try {
+				kbKernelService.invalidate();
+				await kbKernelService.ensureBuilt();
+			} catch (e) {
+				logService.warn('[KB-migrate] rebuild after migration failed (notes will index on next KB open)', e);
+			}
+			const msg = localize('kb.migrate.done',
+				'已迁移 {0}/{1} 个旧版知识库 session 到「笔记/迁移」（{2} 个失败）。旧数据已归档至 {3}，未删除。',
+				report.migrated, report.scanned, report.failed.length, report.archiveDir ?? '(无)');
+			if (report.failed.length) {
+				notificationService.warn(msg);
+			} else {
+				notificationService.info(msg);
+			}
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			logService.error('[KB-migrate] unexpected error', e);
+			notificationService.error(localize('kb.migrate.error', '迁移失败：{0}', msg));
 		}
 	}
 });
@@ -2016,7 +2104,8 @@ import { IKanbanScrapeService, KanbanScrapeService } from './providers/tool/kanb
 import { SwarmService } from './providers/swarm/swarmService.js';
 import { McpToolProvider } from './providers/tool/mcpToolProvider.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
-import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ICheckpointService } from '../common/checkpointService.js';
 import { CheckpointService } from './checkpointService.js';

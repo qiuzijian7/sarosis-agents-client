@@ -143,7 +143,7 @@ export interface ISkillActivationContext {
  */
 export interface ISkillInjection {
 	readonly skill: ISkillDefinition;
-	/** 注入位置：'system' 合入 system prompt；'user' 作为独立 user message（推荐）。 */
+	/** 注入位置：统一为 'user'——作为独立 user message 注入（Phase 1 渐进披露，不再内联 system prompt；required/always 也走此路径以确保生效）。 */
 	readonly placement: 'system' | 'user';
 	readonly content: string;
 	/**

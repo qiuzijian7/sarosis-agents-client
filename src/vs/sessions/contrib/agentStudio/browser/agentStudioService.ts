@@ -7,7 +7,6 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { joinPath, dirname } from '../../../../base/common/resources.js';
-import { join } from '../../../../base/common/path.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -22,28 +21,12 @@ import { IAgentStudioService } from '../common/agentStudio.js';
 import type { AgentPreset } from '../../../common/agentStudioService.js';
 import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
 import { DEFAULT_KB_SCHEMA, IKBSchema, loadKbSchema } from './knowledge/kbSchema.js';
-import { resolveChatModel, createKbEmbedder, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
+import { resolveChatModel, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
-import type { IChatModel } from './knowledge/engine/llm.js';
-import { IAiEmbeddingVectorService } from '../../../../workbench/services/aiEmbeddingVector/common/aiEmbeddingVectorService.js';
-import { resolveAuxEmbeddingConfig, resolveAuxEmbeddingProviderId } from './knowledge/embeddingConfigResolver.js';
-import { resolveKbRoot } from './knowledge/knowledgeStorage.js';
+import type { IChatModel } from './knowledge/llm.js';
 import { KB_FALLBACK_PROVIDER } from './knowledge/builtinEmbeddingProvider.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome, getLegacyRoot } from '../common/sarosPaths.js';
-import {
-	type KnowledgeToolDeps,
-	importMessageToKnowledgeBase,
-	summarizeMessageToKnowledgeBase,
-	importMessageRawToKnowledgeBase,
-	importFolderToRag,
-	searchFolderRag,
-	type ImportToKbOptions,
-	type ImportToKbResult,
-	type FolderRagResult,
-	type FolderRagSearchResult,
-	type BuildFolderOptions,
-} from './knowledge/knowledgeTools.js';
 import type { Agent, AgentBinding, Workspace, Connection, AgentStudioSession, WorkspaceLayout } from '../../../common/agentStudioTypes.js';
 import { ITofAuthService } from '../common/tofAuth.js';
 import { IAgentVersionService } from '../common/agentVersionTypes.js';
@@ -131,7 +114,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		@IWorkspaceLifecycleService private readonly workspaceLifecycleService: IWorkspaceLifecycleService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@IPathService private readonly pathService: IPathService,
-		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 		@IAgentVersionService private readonly agentVersionService: IAgentVersionService,
 		@IModelSelectorService private readonly modelSelectorService: IModelSelectorService,
@@ -594,7 +576,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/** 当前登录用户的内部标准 ID（taihu:staffid:xxx），未登录返回 undefined */
-	private get _currentUserId(): string | undefined {
+	get currentUserId(): string | undefined {
 		return this.tofAuthService?.currentUser?.user_id;
 	}
 
@@ -605,7 +587,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	 * - owner 非空：仅 owner 本人可上传，避免多人维护时互相覆盖。
 	 */
 	canUploadAgent(agent: Agent): boolean {
-		return evaluateCanUploadAgent(agent, this._currentUserId);
+		return evaluateCanUploadAgent(agent, this.currentUserId);
 	}
 
 	/**
@@ -698,7 +680,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 
 	/** 上传成功后认领 owner：把 agent.owner 设为当前用户（用于存量 agent 首次上传）。 */
 	async claimAgentOwnership(agentId: string): Promise<void> {
-		const owner = resolveClaimOwner(this._currentUserId);
+		const owner = resolveClaimOwner(this.currentUserId);
 		if (!owner) { return; }
 		try {
 			await this.updateAgent(agentId, { owner });
@@ -810,187 +792,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	async resolveUserHome(): Promise<string> {
 		const home = await this.pathService.userHome();
 		return home.fsPath;
-	}
-
-	/** KB storage root (~/.vssaros/knowledge-base by default, config-overridable). */
-	private _resolveKbStorageRoot(): string {
-		const cfg = this.configurationService.getValue<string>('agentStudio.knowledge.storage.path');
-		const dataRoot = userDataRootFromRoamingHome(this.environmentService.userRoamingDataHome).fsPath;
-		return resolveKbRoot(cfg, dataRoot);
-	}
-
-	/**
-	 * Resolve the active vault's notes directory so raw/LLM-summary imports land
-	 * where the knowledge-base view expects them. The view scans `<vaultId>/笔记/`;
-	 * this method returns `<root>/<activeVaultId>/笔记/` (or `<root>/notes/` as
-	 * fallback when no vault is active).
-	 */
-	private _resolveNotesDir(): string {
-		const STORAGE_VAULTS = 'agentStudio.kb.vaults';
-		const STORAGE_ACTIVE = 'agentStudio.kb.active';
-		const storageRoot = this._resolveKbStorageRoot();
-
-		try {
-			const raw = this.storageService.get(STORAGE_VAULTS, StorageScope.APPLICATION);
-			const vaults: Array<{ id: string; closed?: boolean }> = raw ? JSON.parse(raw) : [];
-			const activeId = this.storageService.get(STORAGE_ACTIVE, StorageScope.APPLICATION);
-			const activeVault = vaults.find(v => v.id === activeId && !v.closed) ?? vaults.find(v => !v.closed);
-
-			if (activeVault) {
-				// 笔记分区始终在 Vault 内（<vaultRoot>/笔记/）
-				return join(storageRoot, activeVault.id, '笔记');
-			}
-		} catch {
-			// Storage read failed → fall through
-		}
-
-		// Fallback: legacy <root>/notes/
-		return join(storageRoot, 'notes');
-	}
-
-	/** Workspace root — used to resolve relative source file paths in kb_* tools. */
-	private async _resolveWorkspaceDir(): Promise<string> {
-		const wsId = this.getActiveWorkspaceId();
-		if (wsId) {
-			const ws = await this.getWorkspace(wsId);
-			if (ws?.path) { return ws.path; }
-		}
-		return (await this.pathService.userHome()).fsPath;
-	}
-
-	/**
-	 * Import an LLM chat message into the knowledge base engine. Routes to
-	 * `kb_build` (new note) or `kb_ingest` (improve existing note) via
-	 * `importMessageToKnowledgeBase` in `knowledgeTools.ts`.
-	 */
-	async importMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult> {
-		const deps = this._buildKbToolDeps();
-		return importMessageToKnowledgeBase(deps, content, opts);
-	}
-
-	/**
-	 * LLM-only summary import — does NOT build a vector/embedding index.
-	 * Routes to `summarizeMessageToKnowledgeBase` in `knowledgeTools.ts`, which uses the
-	 * KB agent's chat LLM to summarize the message (notes_summary template) and writes a
-	 * structured note to `<storage-root>/notes/<key>.md`. This is the path used by the
-	 * chat "导入知识库" button so it works without an embedding provider.
-	 */
-	async summarizeMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult> {
-		const deps = this._buildKbToolDeps();
-		return summarizeMessageToKnowledgeBase(deps, content, opts);
-	}
-
-	/** Raw-import the message as-is into the knowledge base (markdown + metadata header, no LLM). */
-	async importMessageRawToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult> {
-		const deps = this._buildKbToolDeps();
-		return importMessageRawToKnowledgeBase(deps, content, opts);
-	}
-
-	/** Build the `KnowledgeToolDeps` shared by all KB engine operations (message import + folder RAG). */
-	private _buildKbToolDeps(): KnowledgeToolDeps {
-		return {
-			fileService: this.fileService,
-			configurationService: this.configurationService,
-			embeddingService: this.embeddingService,
-			resolveBaseDir: () => this._resolveWorkspaceDir(),
-			resolveStorageRoot: async () => this._resolveKbStorageRoot(),
-			resolveNotesDir: async () => this._resolveNotesDir(),
-			// 跨库检索：暴露全局文件夹 RAG 索引读取器（kb_search_repo 用它 fan-out 各仓库 session）。
-			readFolderRagIndex: () => this._readFolderRagIndex(),
-			// 知识库操作的 chat 模型选择（知识库专家优先 → 当前激活 agent → 兜底链）。
-			resolveKbModel: () => this._resolveKbChatModel(),
-			// KB chat 模型构建：优先 AgentOS provider 传输（lm: 桥接 provider 无 CORS、
-			// 鉴权由 provider 托管），未命中时回退旧的 OpenAI 兼容直连路径。
-			createKbChatModel: (opts: { providerId: string; modelId: string; agentId?: string }) => this._createKbChatModelFor(opts),
-			// Embedding 一律使用「辅助模型 → Embedding」配置（provider/model/dimensions），
-			// 不再跟随 KB agent；provider 留空时由 resolver 回退到全局 embedding provider。
-			createKbEmbedder: (_providerId: string) => {
-				// P2 修复：优先取用户显式配置的 aux embedding provider，
-				// 未配置时回退到知识库操作所使用的 chat model 的 provider（_providerId），
-				// 因为 chat model 是可用的（否则 KB 导入本身无法调用 LLM）。
-			const resolvedId = resolveAuxEmbeddingProviderId(this.configurationService)
-				?? (_providerId || KB_FALLBACK_PROVIDER);
-				return createKbEmbedder(
-					this.configurationService,
-					this.logService,
-					{
-						providerId: resolvedId,
-						model: resolveAuxEmbeddingConfig(this.configurationService).modelId,
-						dimensions: resolveAuxEmbeddingConfig(this.configurationService).dimensions,
-					},
-				);
-			},
-		};
-	}
-
-	/**
-	 * Import a linked/copied folder as per-repo RAG (Option A): one git repository →
-	 * one KnowledgeSession. Delegates to `importFolderToRag` in knowledgeTools, which
-	 * builds a real KnowledgeManager + an IFileService-backed probe and persists the
-	 * sessions to the KB storage root. Returns the repoRoot→sessionId map (plus any
-	 * per-repo errors) so the caller can record it on the vault for later re-query or
-	 * re-ingest after a `git pull`.
-	 */
-	async importFolderToRag(folderPath: string, opts?: BuildFolderOptions): Promise<FolderRagResult> {
-		const result = await importFolderToRag(this._buildKbToolDeps(), folderPath, opts);
-		// Register the new repoRoot→sessionId map in the global folder-RAG index so
-		// `kb_search_repo` can fan out across every imported repository session.
-		const index = await this._readFolderRagIndex();
-		for (const [repoRoot, sid] of Object.entries(result.sessions)) {
-			index[repoRoot] = sid;
-		}
-		if (result.unversionedSessionId) {
-			index[`${folderPath}::unversioned`] = result.unversionedSessionId;
-		}
-		await this._writeFolderRagIndex(index);
-		return result;
-	}
-
-	// ── Folder RAG global index (cross-repo search registry) ──────────────────
-	// Aggregates `repoRoot → sessionId` across ALL imported folders, independent of
-	// per-vault bookkeeping, so `kb_search_repo` / `searchFolderRag` can query every
-	// imported repository regardless of which vault it lives in. Stored next to the
-	// KB storage root as `.folderRagIndex.json`.
-
-	private async _folderRagIndexPath(): Promise<URI> {
-		return URI.joinPath(URI.file(await this._resolveKbStorageRoot()), '.folderRagIndex.json');
-	}
-
-	private async _readFolderRagIndex(): Promise<Record<string, string>> {
-		try {
-			const buf = await this.fileService.readFile(await this._folderRagIndexPath());
-			const parsed = JSON.parse(buf.value.toString());
-			return (parsed && typeof parsed === 'object') ? (parsed as Record<string, string>) : {};
-		} catch {
-			return {};
-		}
-	}
-
-	private async _writeFolderRagIndex(map: Record<string, string>): Promise<void> {
-		const root = await this._resolveKbStorageRoot();
-		await this._ensureDir(URI.file(root));
-		await this.fileService.writeFile(await this._folderRagIndexPath(), VSBuffer.fromString(JSON.stringify(map, null, 2)));
-	}
-
-	/** Remove a folder (and its sub-tree) from the global folder-RAG index (on unlink). */
-	async unlinkFolderRag(folderPath: string): Promise<void> {
-		const index = await this._readFolderRagIndex();
-		const kept: Record<string, string> = {};
-		for (const [repoRoot, sid] of Object.entries(index)) {
-			if (repoRoot === folderPath
-				|| repoRoot.startsWith(folderPath + '/')
-				|| repoRoot.startsWith(folderPath + '\\')
-				|| repoRoot === `${folderPath}::unversioned`) {
-				continue;
-			}
-			kept[repoRoot] = sid;
-		}
-		await this._writeFolderRagIndex(kept);
-	}
-
-	/** Cross-repository semantic search over every imported folder's RAG sessions. */
-	async searchFolderRag(query: string, topK = 5): Promise<FolderRagSearchResult> {
-		return searchFolderRag(this._buildKbToolDeps(), query, topK);
 	}
 
 	/**

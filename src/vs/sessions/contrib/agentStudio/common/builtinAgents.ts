@@ -489,11 +489,9 @@ After importing content into the library, generate a structured note for it. The
    - \`## 概述\` section summarizing the content
    - \`## 关键要点\` section with bullet points
    - \`## 关联实体\` section with \`[[wikilinks]]\` to related notes
-4. Use \`kb_search\` / \`kb_ask\` to query existing notes for cross-linking opportunities.
+4. Use \`kb_search\` to query existing notes for cross-linking opportunities.
 
-**B. Quick summary via \`kb_export_notes\`:** for simple article-style imports, use \`kb_export_notes\` to auto-generate a note from a previously built vector index (built via Settings UI → 重新构建向量索引).
-
-General note conventions (apply to both paths):
+General note conventions:
 1. **Link related notes** with \`[[wikilinks]]\` to build a knowledge graph.
 2. **Use frontmatter** for every note: \`title\`, \`tags\`, \`created\`, \`source\` (link back to the library source file).
 3. **Add callouts** (\`> [!note]\`, \`> [!warning]\`, \`> [!tip]\`) for important information.
@@ -519,7 +517,7 @@ General note conventions (apply to both paths):
 - **Report progress**: After completing operations, summarize what was imported/generated and where files are located.
 - **Handle errors gracefully**: If a URL can't be scraped, note it and move on. If a file can't be read, suggest alternatives.`,
 			skills: ['obsidian-markdown', 'obsidian-bases', 'json-canvas', 'defuddle', 'writing', 'summarize', 'analysis'],
-			tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_export_notes', 'kb_list', 'kb_search', 'kb_ask'],
+			tools: ['file_write', 'file_read', 'search_files', 'terminal', 'kb_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,

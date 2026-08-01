@@ -4,8 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * Knowledge Storage Tools — 内置 Embedding Provider + Plan-C Hyper-Extract 知识引擎 (kb_* tools)
+ * Knowledge Storage Tools — 内置 Embedding Provider + llm-wiki 知识内核 (kb_search 工具)
  * 与 KB 存储根迁移逻辑。
+ *
+ * 注：原「Plan-C Hyper-Extract 抽取式知识引擎」（`browser/knowledge/engine/`、`knowledgeTools.ts`、
+ * 每仓库 RAG session、`kb_ask`/`kb_search_repo`/`kb_export*`/`kb_list`）已于 2026-07-31 整体下线，
+ * Agent 侧唯一检索入口为 `kb_search`（`kbVaultRecallTools.ts`，统一走 `IKbNativeKernelService`）。
  *
  * 从 builtinToolProvider.ts 的 _registerEmbeddingProvider / _registerKnowledgeTools 及其 5 个
  * 私有 helper (_resolveWorkspaceDir / _resolveKbStorageRoot / _maybeMigrateKbStorage /
@@ -24,13 +28,14 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { INativeEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { IAgentStudioService } from '../../../../../common/agentStudioService.js';
-import { buildKnowledgeToolDescriptors, KnowledgeToolDeps } from '../../knowledge/knowledgeTools.js';
 import { resolveKbRoot, migrateKnowledgeStorage } from '../../knowledge/knowledgeStorage.js';
 import { createBuiltinEmbeddingProvider } from '../../knowledge/builtinEmbeddingProvider.js';
+import { registerKbVaultRecallTools } from './kbVaultRecallTools.js';
+import type { IKbNativeKernelService } from '../../kbNativeKernelService.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 
 export interface KnowledgeStorageContext {
-	/** 注册一个内置工具（来自 buildKnowledgeToolDescriptors 的 descriptor）。 */
+	/** 注册一个内置工具（kb_* 系列）。 */
 	register(registration: IBuiltinToolRegistration): IDisposable;
 	/** 注册一个需要随 provider 释放的 Disposable（如配置变更监听）。 */
 	addDisposable(d: IDisposable): void;
@@ -41,6 +46,8 @@ export interface KnowledgeStorageContext {
 	workspaceService: IWorkspaceContextService;
 	environmentService: INativeEnvironmentService;
 	logService: ILogService;
+	/** 系统 B 知识库内核（与「知识库」视图共享），kb_search 的唯一数据源。 */
+	kernelService: IKbNativeKernelService;
 	/** 配置键：KB 存储根路径（即主文件中的 AGENT_STUDIO_KB_STORAGE_PATH）。 */
 	kbStoragePathKey: string;
 }
@@ -67,16 +74,13 @@ export function createKnowledgeStorageRegistrar(ctx: KnowledgeStorageContext): I
 	}
 
 	function registerKnowledgeTools(): void {
-		const deps: KnowledgeToolDeps = {
-			fileService: ctx.fileService,
-			configurationService: ctx.configurationService,
-			embeddingService: ctx.embeddingService,
-			resolveBaseDir: () => resolveWorkspaceDir(),
-			resolveStorageRoot: () => resolveKbStorageRoot(),
-		};
-		for (const d of buildKnowledgeToolDescriptors(deps)) {
-			ctx.register(d as unknown as IBuiltinToolRegistration);
-		}
+		// 系统 A（Hyper-Extract 抽取式引擎 + 每仓库 RAG session）已下线，
+		// Agent 侧只保留基于 KbNativeKernel 的统一入口 kb_search。
+		registerKbVaultRecallTools({
+			register: ctx.register,
+			kernelService: ctx.kernelService,
+			logService: ctx.logService,
+		});
 
 		// Auto-migrate when the user changes the storage root setting.
 		ctx.addDisposable(ctx.configurationService.onDidChangeConfiguration(e => {
@@ -84,23 +88,6 @@ export function createKnowledgeStorageRegistrar(ctx: KnowledgeStorageContext): I
 				void maybeMigrateKbStorage();
 			}
 		}));
-	}
-
-	/** Workspace root — used to resolve relative source/output file paths in kb_* tools. */
-	async function resolveWorkspaceDir(): Promise<string> {
-		try {
-			const wsId = ctx.studioService.getActiveWorkspaceId();
-			if (wsId) {
-				const ws = await ctx.studioService.getWorkspace(wsId);
-				if (ws?.path) { return ws.path; }
-			}
-		} catch {
-			// fall through to VS Code folders
-		}
-		const folders = ctx.workspaceService.getWorkspace().folders;
-		if (folders.length) { return folders[0].uri.fsPath; }
-		const home = (ctx.environmentService as any).userHome?.fsPath;
-		return home ?? (typeof process !== 'undefined' ? process.cwd() : '.');
 	}
 
 	/** KB storage root. Default `~/.vssaros/knowledge-base`; config overrides (supports ~ / absolute / relative). */

@@ -16,6 +16,8 @@ import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IStorageService } from '../../../../../platform/storage/common/storage.js';
+import { applySavedOrder, CardDragSorter, CardOrderStore, CardPinStore, showCardContextMenu } from './cardItemBehaviors.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { $ } from '../../../../../base/browser/dom.js';
@@ -26,6 +28,8 @@ import { AgentSettingsEditorInput } from '../agentSettingsEditorInput.js';
 import { AgentCreateEditorInput } from '../agentCreateEditorInput.js';
 import type { Agent } from '../../../../common/agentStudioTypes.js';
 import { IMarketplaceService, IMarketplacePackage, PackageKind } from '../../common/marketplace.js';
+import { IAgentVersionService } from '../../common/agentVersionTypes.js';
+import { bumpPatch, suggestNextVersion, validatePublishVersion, isVersionConflictError } from '../publishVersioning.js';
 
 // ─── Preset Data Model ────────────────────────────────────────────────────────
 
@@ -66,10 +70,17 @@ export class PresetAgentViewPane extends ViewPane {
 	private _marketPackages = new Map<string, IMarketplacePackage>();
 	/** Installed agent packages keyed by storeId (= slug), value = local version */
 	private _installedVersions = new Map<string, string>();
+	/** Self-published agent packages keyed by storeId, value = published version（本机发布的记录，区别于商城安装） */
+	private _publishedVersions = new Map<string, string>();
 	/** Upgrading preset IDs (to show spinner / disable button) */
 	private _upgradingIds = new Set<string>();
 	/** Deleting preset IDs */
 	private _deletingIds = new Set<string>();
+
+	/** 排序 + 置顶持久化 + 拖拽排序（共享实现） */
+	private _orderStore!: CardOrderStore;
+	private _pinStore!: CardPinStore;
+	private _dragSorter!: CardDragSorter;
 
 	/**
 	 * @deprecated Unused field — tracked via workspace change event but never read.
@@ -95,6 +106,8 @@ export class PresetAgentViewPane extends ViewPane {
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+		@IAgentVersionService private readonly agentVersionService: IAgentVersionService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._listenActiveWorkspace();
@@ -108,6 +121,15 @@ export class PresetAgentViewPane extends ViewPane {
 		this._loadMarketplaceData().catch(err =>
 			console.warn('[PresetAgentView] Failed to load marketplace data:', err),
 		);
+
+		// 拖拽排序 + 置顶 + 持久化（与 skill / workflow 视图共用实现）
+		this._orderStore = new CardOrderStore(this.storageService, 'agentStudio.presetOrder.v1');
+		this._pinStore = new CardPinStore(this.storageService, 'agentStudio.presetPinned.v1');
+		this._dragSorter = new CardDragSorter({
+			getContainer: () => this.listContainer,
+			getVisibleIds: () => this._getFilteredPresets().map(p => p.id),
+			onReorder: (ids) => { this._orderStore.save(ids); this._renderPresets(); },
+		});
 	}
 
 	/**
@@ -297,11 +319,17 @@ export class PresetAgentViewPane extends ViewPane {
 				this._marketPackages.set(pkg.slug, pkg);
 			}
 
-			// Fetch installed records (from installed-packages.json — marketplace-installed)
+			// Fetch installed records (from installed-packages.json — marketplace-installed).
+			// source=published 的记录是本机自己发布的，单独进 _publishedVersions：
+			// 既不算"商城已安装"（不挡上传按钮），又可用作本地版本比对（修复 vundefined）。
 			const installed = await this.marketplaceService.getInstalled();
 			this._installedVersions.clear();
+			this._publishedVersions.clear();
 			for (const entry of installed) {
-				if (entry.kind === 'agent') {
+				if (entry.kind !== 'agent') { continue; }
+				if (entry.source === 'published') {
+					this._publishedVersions.set(entry.storeId, entry.version);
+				} else {
 					this._installedVersions.set(entry.storeId, entry.version);
 				}
 			}
@@ -364,7 +392,8 @@ export class PresetAgentViewPane extends ViewPane {
 			);
 		}
 
-		return presets;
+		// 持久化排序 + 置顶优先（共享实现）
+		return applySavedOrder(presets, this._orderStore.load(), p => p.id, this._pinStore.load());
 	}
 
 	private _renderPresets(): void {
@@ -413,18 +442,32 @@ export class PresetAgentViewPane extends ViewPane {
 		// ── Resolve marketplace status ──
 		const slug = this._getMarketSlug(preset);
 		const serverPkg = this._marketPackages.get(slug);
-		const localVersion = this._installedVersions.get(slug);
+		const installedVersion = this._installedVersions.get(slug);
+		const publishedVersion = this._publishedVersions.get(slug);
+		// 本地有效版本：商城安装 > 本机发布 > agent 声明版本（修复自发布 agent 显示 vundefined）
+		const localVersion = installedVersion ?? publishedVersion ?? preset.version;
 		const serverVersion = serverPkg?.latestVersion;
-		const isInstalled = !!localVersion;
+		const isInstalled = !!installedVersion;
+		const isSelfPublished = !!publishedVersion;
 		const canUpgrade = this._isVersionHigher(serverVersion, localVersion);
 		const isUpgrading = this._upgradingIds.has(preset.id);
 		const isDeleting = this._deletingIds.has(preset.id);
 		const isLoading = isUpgrading || isDeleting;
 
+		// 上传可见性：自定义 + 非商城安装 + 有权限 + 有新版本可发（与商城同步则隐藏，避免无意义重传）
+		const isCustom = preset.source === 'custom';
+		const nextLocalVersion = preset.version ?? publishedVersion;
+		const hasNewToUpload = !serverVersion || this._isVersionHigher(nextLocalVersion, serverVersion);
+		const showUpload = isCustom && !isInstalled && this.agentStudioService.canUploadAgent(preset) && hasNewToUpload;
+
 		// ── Status class on card ──
 		if (isLoading) { card.classList.add('loading'); }
 		else if (canUpgrade) { card.classList.add('upgradable'); }
-		else if (isInstalled) { card.classList.add('installed'); }
+		else if (isInstalled || isSelfPublished) { card.classList.add('installed'); }
+
+		// 置顶标记
+		const isPinned = this._pinStore.isPinned(preset.id);
+		if (isPinned) { card.classList.add('pinned'); }
 
 		// ── Status bar (left vertical accent) ──
 		const statusBar = $('div.preset-status-bar');
@@ -444,8 +487,16 @@ export class PresetAgentViewPane extends ViewPane {
 		nameEl.textContent = preset.name;
 		titleRow.appendChild(nameEl);
 
+		// 置顶图标
+		if (isPinned) {
+			const pinIcon = $('span.preset-pin-icon');
+			pinIcon.textContent = '📌';
+			pinIcon.title = '已置顶';
+			titleRow.appendChild(pinIcon);
+		}
+
 		// Version badge
-		if (isInstalled || serverVersion) {
+		if (isInstalled || isSelfPublished || serverVersion) {
 			const verBadge = $('span.preset-version-badge');
 			if (isLoading) {
 				verBadge.textContent = isUpgrading ? '升级中...' : '卸载中...';
@@ -454,7 +505,10 @@ export class PresetAgentViewPane extends ViewPane {
 				verBadge.textContent = `v${localVersion} → v${serverVersion}`;
 				verBadge.classList.add('outdated');
 			} else if (isInstalled) {
-				verBadge.textContent = `v${localVersion}`;
+				verBadge.textContent = `v${installedVersion}`;
+				verBadge.classList.add('installed');
+			} else if (isSelfPublished) {
+				verBadge.textContent = `v${publishedVersion}`;
 				verBadge.classList.add('installed');
 			} else {
 				verBadge.textContent = `v${serverVersion}`;
@@ -518,10 +572,8 @@ export class PresetAgentViewPane extends ViewPane {
 			};
 			actions.appendChild(deleteBtn);
 
-		// Upload button — only for locally created agents (not marketplace-installed)
-		// AND only if the current user is the owner (or the agent is unclaimed).
-		const isCustom = preset.source === 'custom';
-		if (isCustom && !isInstalled && this.agentStudioService.canUploadAgent(preset)) {
+			// Upload button — 自定义 + 有权限 + 有新版本可发（与商城同步时隐藏）
+			if (showUpload) {
 				const uploadBtn = $('button.preset-btn.upload') as HTMLButtonElement;
 				uploadBtn.textContent = '📤';
 				uploadBtn.title = `上传 "${preset.name}" 到商城`;
@@ -531,16 +583,6 @@ export class PresetAgentViewPane extends ViewPane {
 				};
 				actions.appendChild(uploadBtn);
 			}
-
-			// Duplicate button — create a copy of this agent
-			const dupBtn = $('button.preset-btn.duplicate') as HTMLButtonElement;
-			dupBtn.textContent = '📋';
-			dupBtn.title = `复制 ${preset.name}`;
-			dupBtn.onclick = (e) => {
-				e.stopPropagation();
-				this._duplicatePreset(preset);
-			};
-			actions.appendChild(dupBtn);
 
 			// Chat button (primary)
 			const chatBtn = $('button.preset-btn.chat') as HTMLButtonElement;
@@ -559,6 +601,25 @@ export class PresetAgentViewPane extends ViewPane {
 		card.onclick = () => {
 			this._openPresetEditor(preset);
 		};
+
+		// 右键菜单：置顶 / 复制 / 删除 / 升级(按需) / 上传(按需)（共享实现）
+		card.oncontextmenu = (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			if (isLoading) { return; }
+			showCardContextMenu(this.contextMenuService, e, {
+				pinned: isPinned,
+				onTogglePin: () => { this._pinStore.toggle(preset.id); this._renderPresets(); },
+				onDuplicate: () => { void this._duplicatePreset(preset); },
+				upgradeLabel: canUpgrade && serverVersion ? `升级到 v${serverVersion}` : undefined,
+				onUpgrade: canUpgrade && serverVersion ? () => { void this._upgradePreset(preset, slug, serverVersion); } : undefined,
+				onUpload: showUpload ? () => { void this._publishPreset(preset); } : undefined,
+				onDelete: () => { void this._deletePreset(preset, slug); },
+			});
+		};
+
+		// 拖拽排序（共享实现，顺序持久化到 storage）
+		this._dragSorter.attach(card, preset.id);
 
 		return card;
 	}
@@ -812,54 +873,88 @@ export class PresetAgentViewPane extends ViewPane {
 
 		const name = preset.name;
 
-		// Ask for version before publishing
-		const result = await this.dialogService.input({
-			title: `上传 "${name}" 到商城`,
-			message: `输入版本号 (如 1.0.0)`,
-			inputs: [{ value: '1.0.0', placeholder: '版本号' }],
-			primaryButton: '上传',
-			cancelButton: '取消',
-		});
-		if (!result.confirmed) { return; }
+		// 版本预检：拉取商城远端信息（无包则 undefined），用于建议版本号与发布前校验。
+		const remote = await this.marketplaceService.getPackage(preset.id).catch(() => undefined);
+		let version = remote ? suggestNextVersion(remote) : (preset.version || '1.0.0');
 
-		const version = result.values?.[0]?.trim() || '1.0.0';
-
-		try {
-			// Collect skill/MCP refs from preset
-			const skillRefs = preset.skills || [];
-			const mcpRefs = preset.tools?.filter(t => t.startsWith('mcp:')) || [];
-
-			// Auto-upload missing dependencies first
-			await this._uploadMissingDeps(skillRefs, version);
-
-			this.notificationService.info(`正在上传 "${name}" v${version}...`);
-			// Use preset.id directly — preparePack resolves agent by this ID
-			await this.marketplaceService.publish(preset.id, 'agent' as PackageKind, {
-				name,
-				version,
-				description: preset.description || undefined,
-				category: preset.category || undefined,
-				skillRefs: skillRefs.length > 0 ? skillRefs : undefined,
-				mcpRefs: mcpRefs.length > 0 ? mcpRefs : undefined,
+		while (true) {
+			// Ask for version before publishing
+			const result = await this.dialogService.input({
+				title: `上传 "${name}" 到商城`,
+				message: `输入版本号 (如 1.0.0)`,
+				inputs: [
+					{ value: version, placeholder: '版本号' },
+					{ value: '', placeholder: '更新说明 changelog（可选），如：修复表格抽取越界' },
+				],
+				primaryButton: '上传',
+				cancelButton: '取消',
 			});
-			// Track as installed after successful upload
-			const slug = this._getMarketSlug(preset);
-			this._installedVersions.set(slug, version);
-			this._renderPresets();
-			this.notificationService.info(`"${name}" v${version} 已上传到商城`);
-			// Claim ownership so non-owners cannot re-upload later.
-			await this.agentStudioService.claimAgentOwnership(preset.id);
-		} catch (err) {
-			this.notificationService.error(
-				`上传 "${name}" 失败: ${err instanceof Error ? err.message : String(err)}`
-			);
+			if (!result.confirmed) { return; }
+
+			version = result.values?.[0]?.trim() || version;
+			const changelog = result.values?.[1]?.trim() || undefined;
+
+			// 发布前校验：格式 / 历史版本查重 / 必须大于 latest
+			const versionError = validatePublishVersion(version, remote);
+			if (versionError) {
+				this.notificationService.warn(versionError);
+				continue;
+			}
+
+			try {
+				// Collect skill/MCP refs from preset
+				const skillRefs = preset.skills || [];
+				const mcpRefs = preset.tools?.filter(t => t.startsWith('mcp:')) || [];
+
+				// Auto-upload missing dependencies first
+				await this._uploadMissingDeps(skillRefs, version, preset.id);
+
+				this.notificationService.info(`正在上传 "${name}" v${version}...`);
+				// Use preset.id directly — preparePack resolves agent by this ID
+				const { version: published } = await this.marketplaceService.publish(preset.id, 'agent' as PackageKind, {
+					name,
+					version,
+					description: preset.description || undefined,
+					category: preset.category || undefined,
+					skillRefs: skillRefs.length > 0 ? skillRefs : undefined,
+					mcpRefs: mcpRefs.length > 0 ? mcpRefs : undefined,
+					changelog,
+				});
+				// 发布锚点：autoCommit + git tag，关联商城版本与本地 git 历史（best-effort）
+				try {
+					await this.agentVersionService.autoCommit(preset.id, `publish: v${published} to marketplace`);
+					await this.agentVersionService.tag(preset.id, `v${published}`);
+				} catch { /* non-critical */ }
+				// Track as self-published after successful upload（与 _loadMarketplaceData 口径一致）
+				const slug = this._getMarketSlug(preset);
+				this._publishedVersions.set(slug, published);
+				this._renderPresets();
+				this.notificationService.info(`"${name}" v${published} 已上传到商城`);
+				// Claim ownership so non-owners cannot re-upload later.
+				await this.agentStudioService.claimAgentOwnership(preset.id);
+				return;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.notificationService.error(`上传 "${name}" 失败: ${msg}`);
+				// 版本冲突：自动递增版本号并重新弹框，引导用户重试。
+				if (isVersionConflictError(msg)) {
+					version = bumpPatch(version);
+					continue;
+				}
+				return;
+			}
 		}
 	}
 
 	/** Auto-upload missing skill dependencies before uploading the agent. */
-	private async _uploadMissingDeps(skillRefs: string[], version: string): Promise<number> {
+	private async _uploadMissingDeps(skillRefs: string[], version: string, agentId?: string): Promise<number> {
 		let uploadedCount = 0;
 		for (const slug of skillRefs) {
+			// 与 Agent 同名的依赖：slug 全局唯一，先发布 skill 会抢占标识导致 agent 发布被服务端拒绝，跳过并指引改名
+			if (agentId && slug === agentId) {
+				this.notificationService.warn(`关联 Skill "${slug}" 与 Agent 同名，商城标识全局唯一。请先将该 Skill 改名（如 ${slug}-skill）并更新 Agent 的 skills 引用后再上传`);
+				continue;
+			}
 			try {
 				const exists = await this._checkPackageExists(slug);
 				if (!exists) {

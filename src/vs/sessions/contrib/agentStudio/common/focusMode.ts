@@ -89,7 +89,7 @@ const CODING_FOCUS_TOOLSETS: readonly string[] = [
 	'skill',         // 技能
 	'delegation',    // 委派
 	'workflow',      // 工作流
-	'knowledge',     // 知识库（kb_ask/kb_search 等）——事故 1785144785309 复审发现漏项：
+	'knowledge',     // 知识库（kb_search）——事故 1785144785309 复审发现漏项：
 	                 // focus 模式几乎在所有代码工作区都会触发，漏掉 knowledge 导致提示词
 	                 // 文字仍列出 kb_* 但实际无 schema 下发
 	'kanban',        // 看板（kanban_* 系列）——同上审计发现的漏项，一并补齐

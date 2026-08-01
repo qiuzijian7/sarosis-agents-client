@@ -43,6 +43,46 @@
 	user-select: text;
 }
 
+/* ── 连接点（四向）hover 放大 ─────────────────────────────────────── */
+/* 参考实现 drawConnectionPoints：hover 时半径 12 → 16、色值 #22c55e → #10b981 */
+
+.canvas-connect-handle:hover {
+	width: 32px !important;
+	height: 32px !important;
+	background: #10b981 !important;
+	box-shadow: 0 0 16px rgba(16, 185, 129, 0.9) !important;
+}
+
+.canvas-connect-handle:hover .canvas-connect-dot {
+	width: 8px;
+	height: 8px;
+}
+
+/* ── 节点内滚动条 ────────────────────────────────────────────────── */
+/* 参考实现 drawScrollbar：宽 8、轨道 #2a2a2a、滑块 #666（选中时 #007fd4） */
+
+.canvas-node-text::-webkit-scrollbar {
+	width: 8px;
+}
+
+.canvas-node-text::-webkit-scrollbar-track {
+	background: #2a2a2a;
+	border-radius: 4px;
+}
+
+.canvas-node-text::-webkit-scrollbar-thumb {
+	background: #666666;
+	border-radius: 4px;
+}
+
+.canvas-node-text::-webkit-scrollbar-thumb:hover {
+	background: #808080;
+}
+
+.canvas-node.selected .canvas-node-text::-webkit-scrollbar-thumb {
+	background: #007fd4;
+}
+
 /* ── Node colors ─────────────────────────────────────────────────── */
 
 /* Use inline style border-color via JS, but provide SVG edge colors */
@@ -59,4 +99,129 @@
 
 .canvas-editor-toolbar button:active {
 	background: var(--vscode-button-hoverBackground);
+}
+
+/* ── Minimap（无限画布概览）────────────────────────────────────── */
+.canvas-minimap {
+	position: absolute;
+	right: 12px;
+	bottom: 12px;
+	width: 220px;
+	height: 160px;
+	background: rgba(30, 30, 30, 0.85);
+	border: 1px solid #414141;
+	border-radius: 6px;
+	overflow: hidden;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+	cursor: crosshair;
+	z-index: 30;
+}
+.canvas-minimap svg {
+	width: 100%;
+	height: 100%;
+	display: block;
+}
+.canvas-minimap .mm-node {
+	fill: #5a6069;
+}
+.canvas-minimap .mm-node--selected {
+	fill: #007fd4;
+}
+.canvas-minimap .mm-edge {
+	stroke: #7a828c;
+	stroke-width: 1;
+}
+.canvas-minimap .mm-viewport {
+	fill: rgba(59, 130, 246, 0.15);
+	stroke: #3b82f6;
+	stroke-width: 1.5;
+}
+
+/* ── Rulers（标尺）─────────────────────────────────────────────── */
+.canvas-ruler {
+	position: absolute;
+	pointer-events: none;
+	overflow: hidden;
+	z-index: 25;
+	background: rgba(30, 30, 30, 0.6);
+	user-select: none;
+}
+.canvas-ruler--top {
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 22px;
+	border-bottom: 1px solid #414141;
+}
+.canvas-ruler--left {
+	top: 0;
+	bottom: 0;
+	left: 0;
+	width: 22px;
+	border-right: 1px solid #414141;
+}
+.canvas-ruler--corner {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 22px;
+	height: 22px;
+	pointer-events: none;
+	background: rgba(30, 30, 30, 0.85);
+	border-right: 1px solid #414141;
+	border-bottom: 1px solid #414141;
+	z-index: 26;
+}
+.canvas-ruler svg {
+	display: block;
+}
+.canvas-ruler .tick {
+	stroke: #5a5a5a;
+}
+.canvas-ruler .tick-major {
+	stroke: #7a7a7a;
+}
+.canvas-ruler .label {
+	fill: #9a9a9a;
+	font-size: 9px;
+	font-family: var(--vscode-font-family, sans-serif);
+}
+
+/* ── 节点引用链接（node:<id>）────────────────────────────────────── */
+.canvas-node-link {
+	color: var(--vscode-textLink-foreground, #4daafc);
+	cursor: pointer;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+.canvas-node-link:hover {
+	color: var(--vscode-textLink-activeForeground, #6cb6ff);
+}
+
+/* ── 分组（group）包围盒 ─────────────────────────────────────────── */
+.canvas-group {
+	border: 1.5px dashed #8b5cf6;
+	background: rgba(139, 92, 246, 0.08);
+}
+.canvas-group.selected {
+	border-color: #007fd4;
+	background: rgba(0, 127, 212, 0.12);
+}
+.canvas-group-label {
+	font-family: var(--vscode-font-family, sans-serif);
+}
+
+/* ── 活动节点高亮（大纲双向滚动联动）────────────────────────────── */
+.canvas-node.canvas-node-active {
+	box-shadow: 0 0 0 2px #007fd4, 0 0 12px rgba(0, 127, 212, 0.5);
+}
+
+/* ── 大纲（Outline）双向高亮 ─────────────────────────────────────── */
+.canvas-editor-outline .outline-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+.canvas-editor-outline .outline-item.outline-active {
+	background: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+	outline: 1px solid #007fd4;
 }

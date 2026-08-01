@@ -14,7 +14,7 @@
 
 import type {
 	IMindmapData,
-	INodePosition, ILayoutConfig, IDepthExtent, BranchDirection,
+	INodePosition, ILayoutConfig, IDepthExtent, BranchDirection, MindmapDirection,
 } from './mindmapTypes.js';
 import { DEFAULT_LAYOUT_CONFIG } from './mindmapTypes.js';
 import {
@@ -61,6 +61,13 @@ export class LayoutEngine {
 		const forest = buildForest(data);
 		if (forest.length === 0) { return { positions: new Map(), edgesChanged: false }; }
 
+		const mode = data.direction;
+		if (mode === 'tree') { return this._layoutTree(data, forest, '__root__'); }
+		if (mode === 'flower') { return this._layoutFlower(data, forest, '__root__'); }
+
+		// 右/左/平衡/默认：覆盖方向后走原有分组布局
+		this._applyMode(forest, mode);
+
 		const positions = new Map<string, INodePosition>();
 
 		for (const root of forest) {
@@ -87,6 +94,12 @@ export class LayoutEngine {
 	computeChildrenLayout(data: IMindmapData, parentNodeId: string): ILayoutResult {
 		const forest = buildForest(data);
 		if (forest.length === 0) { return { positions: new Map(), edgesChanged: false }; }
+
+		const mode = data.direction;
+		if (mode === 'tree') { return this._layoutTree(data, forest, parentNodeId); }
+		if (mode === 'flower') { return this._layoutFlower(data, forest, parentNodeId); }
+
+		this._applyMode(forest, mode);
 
 		const parentTreeNode = findTreeForNode(forest, parentNodeId);
 		if (!parentTreeNode || parentTreeNode.children.length === 0) {
@@ -122,6 +135,141 @@ export class LayoutEngine {
 
 		const edgesChanged = updateAllEdgeSides(data);
 		return { positions, edgesChanged };
+	}
+
+	// ── 方向模式覆盖 ──────────────────────────────────────────────────
+
+	/**
+	 * 依据 data.direction 覆盖森林中各节点的分支方向。
+	 * - 'right'/'left'：整树强制单向
+	 * - 'both'：每一层左右交替（平衡）
+	 * - undefined：保持 buildForest 的 x 坐标推断（兼容旧数据）
+	 */
+	private _applyMode(forest: TreeNode[], mode: MindmapDirection | undefined): void {
+		if (!mode) { return; }
+		if (mode === 'right' || mode === 'left') {
+			for (const root of forest) {
+				this._forceDirection(root, mode);
+			}
+			return;
+		}
+		if (mode === 'both') {
+			for (const root of forest) {
+				this._balanceSplit(root);
+			}
+			return;
+		}
+		// tree / flower 由调用方单独处理
+	}
+
+	private _forceDirection(node: TreeNode, dir: BranchDirection): void {
+		node.direction = dir;
+		for (const c of node.children) {
+			this._forceDirection(c, dir);
+		}
+	}
+
+	private _balanceSplit(node: TreeNode): void {
+		node.children.forEach((c, i) => {
+			c.direction = i % 2 === 0 ? 'right' : 'left';
+		});
+		for (const c of node.children) {
+			this._balanceSplit(c);
+		}
+	}
+
+	// ── 树状布局（自上而下） ──────────────────────────────────────────
+
+	private _layoutTree(data: IMindmapData, forest: TreeNode[], rootId: string): ILayoutResult {
+		const positions = new Map<string, INodePosition>();
+		if (rootId === '__root__') {
+			for (const root of forest) {
+				this._treeAssign(root, root.node.x, root.node.y, positions);
+			}
+		} else {
+			const node = findTreeForNode(forest, rootId);
+			if (node) {
+				this._treeAssign(node, node.node.x, node.node.y, positions);
+			}
+		}
+		const edgesChanged = updateAllEdgeSides(data);
+		return { positions, edgesChanged };
+	}
+
+	private _treeMeasure(node: TreeNode): { w: number; h: number } {
+		const w = node.node.width || this.config.nodeWidth;
+		const h = node.node.height || this.config.nodeHeight;
+		if (node.children.length === 0) {
+			return { w, h };
+		}
+		const childSizes = node.children.map(c => this._treeMeasure(c));
+		const totalW = childSizes.reduce((s, c) => s + c.w, 0) + (node.children.length - 1) * this.config.horizontalGap;
+		const maxChildH = childSizes.reduce((m, c) => Math.max(m, c.h), 0);
+		return { w: Math.max(w, totalW), h: h + this.config.verticalGap + maxChildH };
+	}
+
+	private _treeAssign(node: TreeNode, x: number, y: number, positions: Map<string, INodePosition>): void {
+		positions.set(node.node.id, { x, y });
+		const childCount = node.children.length;
+		if (childCount === 0) { return; }
+		const w = node.node.width || this.config.nodeWidth;
+		const h = node.node.height || this.config.nodeHeight;
+		const childSizes = node.children.map(c => this._treeMeasure(c));
+		const totalW = childSizes.reduce((s, c) => s + c.w, 0) + (childCount - 1) * this.config.horizontalGap;
+		const startX = x + w / 2 - totalW / 2;
+		const childY = y + h + this.config.verticalGap;
+		let cursorX = startX;
+		node.children.forEach((c, i) => {
+			this._treeAssign(c, cursorX, childY, positions);
+			cursorX += childSizes[i].w + this.config.horizontalGap;
+		});
+	}
+
+	// ── 放射状布局（花瓣） ────────────────────────────────────────────
+
+	private _layoutFlower(data: IMindmapData, forest: TreeNode[], rootId: string): ILayoutResult {
+		const positions = new Map<string, INodePosition>();
+		const placeRoot = (root: TreeNode) => {
+			positions.set(root.node.id, { x: root.node.x, y: root.node.y });
+			const cx = root.node.x + (root.node.width || this.config.nodeWidth) / 2;
+			const cy = root.node.y + (root.node.height || this.config.nodeHeight) / 2;
+			if (root.children.length > 0) {
+				this._flowerAssign(root, cx, cy, 0, Math.PI * 2, positions);
+			}
+		};
+		if (rootId === '__root__') {
+			for (const root of forest) { placeRoot(root); }
+		} else {
+			const node = findTreeForNode(forest, rootId);
+			if (node) { placeRoot(node); }
+		}
+		const edgesChanged = updateAllEdgeSides(data);
+		return { positions, edgesChanged };
+	}
+
+	private _flowerAssign(
+		node: TreeNode,
+		cx: number,
+		cy: number,
+		sectorStart: number,
+		sectorEnd: number,
+		positions: Map<string, INodePosition>,
+	): void {
+		const n = node.children.length;
+		if (n === 0) { return; }
+		const span = sectorEnd - sectorStart;
+		const radius = (node.node.width || this.config.nodeWidth) + this.config.horizontalGap + (node.node.height || this.config.nodeHeight);
+		node.children.forEach((c, i) => {
+			const segStart = sectorStart + (span * i) / n;
+			const segEnd = sectorStart + (span * (i + 1)) / n;
+			const angle = (segStart + segEnd) / 2;
+			const ccx = cx + radius * Math.cos(angle);
+			const ccy = cy + radius * Math.sin(angle);
+			const cw = c.node.width || this.config.nodeWidth;
+			const ch = c.node.height || this.config.nodeHeight;
+			positions.set(c.node.id, { x: ccx - cw / 2, y: ccy - ch / 2 });
+			this._flowerAssign(c, ccx, ccy, segStart, segEnd, positions);
+		});
 	}
 
 	// ── 森林网格布局 ──────────────────────────────────────────────────

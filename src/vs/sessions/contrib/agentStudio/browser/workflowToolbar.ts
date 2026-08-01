@@ -32,6 +32,7 @@ import { IMarketplaceService } from '../common/marketplace.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IWorkflowStorageService, IStoredWorkflow } from '../common/workflowStorage.js';
 import { ITofAuthService } from '../common/tofAuth.js';
+import { IWorkflowVersionService } from '../common/workflowVersionTypes.js';
 import { WorkflowPublishModal } from './workflowPublishModal.js';
 
 export class WorkflowToolbar extends Disposable {
@@ -61,6 +62,7 @@ export class WorkflowToolbar extends Disposable {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
+		@IWorkflowVersionService private readonly workflowVersionService: IWorkflowVersionService,
 	) {
 		super();
 	}
@@ -334,6 +336,7 @@ export class WorkflowToolbar extends Disposable {
 			this.notificationService,
 			this.workflowStorage,
 			this.tofAuthService,
+			this.workflowVersionService,
 		);
 		const publishSub = modal.onDidPublish((published) => {
 			// 发布成功后同步本地版本号，避免升级按钮误显示

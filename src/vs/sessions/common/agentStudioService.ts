@@ -27,13 +27,6 @@ import type {
 	ConfigHtmlCapability,
 } from "./agentStudioTypes.js";
 import type { IWorktreeWorkspaceOptions } from "../contrib/worktree/common/worktreeTypes.js";
-import type {
-	ImportToKbOptions,
-	ImportToKbResult,
-	FolderRagResult,
-	FolderRagSearchResult,
-	BuildFolderOptions,
-} from "../contrib/agentStudio/browser/knowledge/knowledgeTools.js";
 
 // --- Agent Preset type ---
 
@@ -98,30 +91,6 @@ export interface IAgentStudioService {
 	/** Resolve the OS user home directory path (e.g. /home/user). */
 	resolveUserHome(): Promise<string>;
 	/**
-	 * Import an LLM chat message into the knowledge base engine
-	 * (`kb_build` / `kb_ingest` with the `notes_summary` template). The engine
-	 * auto-summarizes the message and writes a structured Obsidian note. Re-importing
-	 * the same topic merges into the existing note (improved, not duplicated).
-	 * Returns the result (success / id / note path / action).
-	 */
-	importMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult>;
-	/**
-	 * LLM-only summary import — does NOT build a vector/embedding index.
-	 * Uses the KB agent's chat LLM (notes_summary template) to summarize the message
-	 * and writes a structured note to `<storage-root>/notes/<key>.md`. Works without an
-	 * embedding provider (only a Chat Provider is required). Used by the chat
-	 * "导入知识库" button to avoid the vector-retrieval path.
-	 */
-	summarizeMessageToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult>;
-	/**
-	 * Raw import — store the message **as-is** into the knowledge base as a markdown
-	 * note. Adds a YAML frontmatter header (date / source / agentid / etc.) and writes
-	 * the original content verbatim to `<storage-root>/notes/<key>.md`. Uses NO LLM and
-	 * NO embedding provider, so it always works offline. This is the preferred path for
-	 * the chat "导入知识库" button when the user wants the raw content preserved.
-	 */
-	importMessageRawToKnowledgeBase(content: string, opts?: ImportToKbOptions): Promise<ImportToKbResult>;
-	/**
 	 * Schema 驱动的智能内容分类（对齐 llm_wiki：LLM 依据活动 vault 的 kb-schema.json
 	 * 进行语义类型判断，为唯一分类路径）。返回最匹配的类型 + 置信度。
 	 * LLM 不可用时安全降级为 schema 默认类型（source='fallback'），不做关键词猜测。
@@ -135,18 +104,6 @@ export interface IAgentStudioService {
 	 */
 	extractSkillContent(content: string, opts?: { providerId?: string; modelId?: string }): Promise<{ isSkill: boolean; name: string; description: string; prompt: string; category?: string; scripts?: Array<{ filename: string; content: string; language: string }>; source: 'llm' | 'heuristic'; reason: string }>;
 
-	// ── Folder → per-repo RAG (Option A) ──────────────────────────────────────
-	/**
-	 * Import a linked/copied folder as per-repo RAG: one git repository → one
-	 * KnowledgeSession. Also registers the resulting `repoRoot → sessionId` map in
-	 * the global folder-RAG index so `kb_search_repo` can fan out across it.
-	 */
-	importFolderToRag(folderPath: string, opts?: BuildFolderOptions): Promise<FolderRagResult>;
-	/** Remove a folder (and its sub-tree) from the global folder-RAG index (on unlink). */
-	unlinkFolderRag(folderPath: string): Promise<void>;
-	/** Cross-repository semantic search over every imported folder's RAG sessions. */
-	searchFolderRag(query: string, topK?: number): Promise<FolderRagSearchResult>;
-
 	createAgent(data: Partial<Agent>): Promise<Agent>;
 	updateAgent(id: string, data: Partial<Agent>): Promise<void>;
 	deleteAgent(id: string): Promise<void>;
@@ -157,6 +114,8 @@ export interface IAgentStudioService {
 	 * - owner 非空：仅 owner 本人可上传，避免多人维护时互相覆盖。
 	 */
 	canUploadAgent(agent: Agent): boolean;
+	/** 当前登录用户的内部 ID（taihu:staffid:xxx），未登录返回 undefined */
+	readonly currentUserId: string | undefined;
 	/** 上传成功后认领 owner：把 agent.owner 设为当前用户（用于存量 agent 首次上传）。 */
 	claimAgentOwnership(agentId: string): Promise<void>;
 	getLastSelectedAgentId(): Promise<string | null>;

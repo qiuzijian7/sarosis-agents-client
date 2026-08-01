@@ -5,7 +5,7 @@
  *  负责 undo/redo、保存、键盘命令路由。
  *--------------------------------------------------------------------------------------------*/
 
-import type { IMindmapData, INodePosition } from '../../common/mindmap/mindmapTypes.js';
+import type { IMindmapData, IMindmapEdge, INodePosition, MindmapDirection } from '../../common/mindmap/mindmapTypes.js';
 import { LayoutEngine } from '../../common/mindmap/layoutEngine.js';
 import {
 	addChild, addSibling, deleteAndFocusParent, flipBranch, toggleBalancedLayout,
@@ -44,6 +44,8 @@ export class CanvasEditorController {
 	onLayoutApplied: ((positions: Map<string, INodePosition>) => void) | null = null;
 	onFocusRequest: ((nodeId: string) => void) | null = null;
 	onNavigateToNode: ((nodeId: string) => void) | null = null;
+	onExpandChanged: ((nodeId: string, expanded: boolean) => void) | null = null;
+	onDirectionChanged: ((direction: MindmapDirection) => void) | null = null;
 
 	constructor(data: IMindmapData) {
 		this._data = data;
@@ -59,6 +61,27 @@ export class CanvasEditorController {
 		this._selectedNodeId = nodeId;
 		if (nodeId) { this.recordVisit(nodeId); }
 		this.onSelectionChanged?.(nodeId);
+	}
+
+	/** 多选：主选中为第一个，其余仅加入参观历史 */
+	selectNodes(ids: string[]): void {
+		if (ids.length === 0) {
+			this._selectedNodeId = null;
+			this.onSelectionChanged?.(null);
+			return;
+		}
+		this._selectedNodeId = ids[0];
+		this.recordVisit(ids[0]);
+		this.onSelectionChanged?.(ids[0]);
+	}
+
+	/** FreeMind/.mm 导入：整体替换当前画布内容（支持撤销），并清空选择。 */
+	importData(newData: IMindmapData): void {
+		this.pushUndo();
+		this._data = newData;
+		this._selectedNodeId = null;
+		this.onDataChanged?.(this._data);
+		this.onSelectionChanged?.(null);
 	}
 
 	// ── 快照（操作前推入 undo 栈） ─────────────────────────────────────
@@ -144,8 +167,9 @@ export class CanvasEditorController {
 
 	/** 生成节点引用命令 URI */
 	generateNodeLink(nodeId: string): string {
-		const label = this._data.nodes.find(n => n.id === nodeId)?.text || 'Untitled';
-		return `command:sarosis.canvas.revealNode?${encodeURIComponent(JSON.stringify({ nodeId, label }))}`;
+		// 以 `node:<id>` 形式输出：可在任意节点文本中粘贴后自动渲染为可点击引用，
+		// 点击即跳转（viewport 的 _linkifyNodeRefs + onNodeLinkClick）。
+		return `node:${nodeId}`;
 	}
 
 	/** 根据节点 ID 导航（供 URI handler 调用） */
@@ -238,6 +262,49 @@ export class CanvasEditorController {
 		this.applyOperation(result);
 	}
 
+	/**
+	 * 折叠/展开节点子树（思维导图核心交互，参考 Code-Mind-Map / MindElixir）。
+	 * @param nodeId 目标节点；省略时使用当前选中节点。
+	 * 折叠：expanded=false → 后代被森林剪枝，不渲染/不布局（节点本身仍可见）。
+	 * 展开：重排子树使子节点回到正确位置。
+	 */
+	toggleExpand(nodeId?: string): void {
+		const targetId = nodeId ?? this._selectedNodeId;
+		if (!targetId) { return; }
+		const node = this._data.nodes.find(n => n.id === targetId);
+		if (!node) { return; }
+		// 仅对拥有后代的节点有意义
+		const hasChildren = this._data.edges.some(e => e.fromNode === targetId);
+		if (!hasChildren) { return; }
+
+		this._selectedNodeId = targetId;
+		this.pushUndo();
+		const nowExpanded = node.expanded === false;
+		node.expanded = nowExpanded;
+
+		// 展开时重排子树使子节点就位；折叠时子节点被 forest 剪枝，可见布局不受影响
+		const layout = this._layoutEngine.computeChildrenLayout(this._data, targetId);
+		this._applyPositions(layout.positions);
+
+		this.onDataChanged?.(this._data);
+		this.onSelectionChanged?.(targetId);
+		this.onExpandChanged?.(targetId, nowExpanded);
+	}
+
+	/**
+	 * 切换全局布局方向模式（right/left/both/tree/flower）。
+	 * 整图重排并写入 undo 栈。
+	 */
+	setDirection(direction: MindmapDirection): void {
+		if (!this._data) { return; }
+		this.pushUndo();
+		this._data.direction = direction;
+		const layout = this._layoutEngine.computeLayout(this._data);
+		this._applyPositions(layout.positions);
+		this.onDataChanged?.(this._data);
+		this.onDirectionChanged?.(direction);
+	}
+
 	// ── 布局 ───────────────────────────────────────────────────────────
 
 	relayout(): void {
@@ -307,6 +374,36 @@ export class CanvasEditorController {
 		while (root.parent) { root = root.parent; }
 		const desc = getDescendants(root);
 		return [root.node.id, ...desc.map(d => d.node.id)];
+	}
+
+	// ── 自由连接：创建边 ────────────────────────────────────────────────
+
+	/**
+	 * 在两个节点之间创建一条有向边（用于画布上的自由连接交互）。
+	 * 自动忽略自连接与已存在的重复/反向边。
+	 * @returns 新建边的 ID，或 null（非法 / 重复）。
+	 */
+	connectNodes(fromId: string, toId: string): string | null {
+		if (fromId === toId) { return null; }
+		const from = this._data.nodes.find(n => n.id === fromId);
+		const to = this._data.nodes.find(n => n.id === toId);
+		if (!from || !to) { return null; }
+
+		const duplicated = this._data.edges.some(e =>
+			(e.fromNode === fromId && e.toNode === toId) ||
+			(e.fromNode === toId && e.toNode === fromId) // 反向视为重复，避免环形思维导图
+		);
+		if (duplicated) { return null; }
+
+		this.pushUndo();
+		const id = `e${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+		const edge: IMindmapEdge = { id, fromNode: fromId, toNode: toId, fromSide: 'right', toSide: 'left' };
+		this._data.edges.push(edge);
+		updateAllEdgeSides(this._data); // 依据坐标重算连接面/箭头方向
+		this._selectedNodeId = toId;
+		this.onDataChanged?.(this._data);
+		this.onSelectionChanged?.(toId);
+		return id;
 	}
 
 	// ── 辅助 ───────────────────────────────────────────────────────────

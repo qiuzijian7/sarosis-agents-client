@@ -856,9 +856,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 
 				if (filteredInjections.length > 0) {
-					// 分离 system 和 user 注入；已触发执行的 workflow skill 不再注入 prompt 文本
-					const systemInjections = filteredInjections.filter(inj => inj.placement === 'system' && !triggeredWorkflowIds.has(inj.skill.id));
-					const userInjections = filteredInjections.filter(inj => inj.placement === 'user' && !triggeredWorkflowIds.has(inj.skill.id));
+				// 渐进披露（Phase 1）：所有激活技能统一作为独立 user message 注入，
+				// 不再内联 system prompt。已触发执行的 workflow skill 不注入 prompt 文本。
+				const userInjections = filteredInjections.filter(inj => !triggeredWorkflowIds.has(inj.skill.id));
 					// 已触发的 workflow skill 收集回执消息（独立数组，避免污染 ISkillInjection[] 类型）
 					const workflowReceipts: Array<{ role: 'user'; content: string }> = [];
 					if (triggeredWorkflowIds.size > 0) {
@@ -873,12 +873,7 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 						}
 					}
 
-						// Phase 1: 移除 inline skill 注入（"Active Skills" section）。
-						// 对齐 MiMo-Code：所有 skill 按需通过 read_skill 加载，
-						// 不再将 skill 内容直接注入 system prompt 的 volatile tier。
-						// systemInjections 不再被注入到 system prompt。
-
-						// 将 user 类型的 skill 注入插入为 user message（在实际用户消息之前）
+					// 将激活技能注入插入为 synthetic user message（在实际用户消息之前，sidecar='skill'）
 						if (userInjections.length > 0 || workflowReceipts.length > 0) {
 						const skillMessages: Array<{ role: 'user'; content: string; synthetic?: boolean; sidecar?: 'skill' }> = userInjections.map(inj => ({
 							role: 'user' as const,
@@ -900,8 +895,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 							];
 						}
 
-						const allInjectedSkillIds = filteredInjections.map(i => i.skill.id);
-						this._logService.info(`[AgentDriver] Injected ${filteredInjections.length} skills (system: ${systemInjections.length}, user: ${userInjections.length}): ${allInjectedSkillIds.join(', ')}`);
+					const allInjectedSkillIds = filteredInjections.map(i => i.skill.id);
+					this._logService.info(`[AgentDriver] Injected ${filteredInjections.length} skills (user: ${userInjections.length}): ${allInjectedSkillIds.join(', ')}`);
 					}
 				}
 

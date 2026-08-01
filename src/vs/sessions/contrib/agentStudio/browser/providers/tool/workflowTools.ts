@@ -325,7 +325,7 @@ export function registerWorkflowTools(ctx: WorkflowToolContext): void {
 								: Array.isArray(workflowAgent.model)
 									? workflowAgent.model[0]
 									: (workflowAgent.model as { primary: string })?.primary;
-							const defaultProviderId = (workflowAgent as any).providerId || '';
+							const defaultProviderId = workflowAgent.providerId || '';
 
 							for (const node of nodes) {
 								if (node.type === 'agent') {

@@ -13,7 +13,7 @@
 import * as assert from 'assert';
 import { classifyContentViaSchema, safeSchemaFallback } from './classifier.js';
 import { DEFAULT_KB_SCHEMA, buildTypeClassificationPrompt } from './kbSchema.js';
-import type { IChatModel, ExtractRequest } from './engine/llm.js';
+import type { IChatModel, ExtractRequest } from './llm.js';
 
 // ── 辅助：Mock LLM（返回指定的分类结果）──────────────────────────────
 class MockClassifyLLM implements IChatModel {

@@ -9,6 +9,7 @@
 // 调用方据此退化为内存态（createMemoryBindingStore）。
 
 import { ILogService } from "../../../../../platform/log/common/log.js";
+import { nodeRequire } from "../rendererNodeRequire.js";
 
 /** 会话→Agent 绑定存储接口。 */
 export interface IConversationBindingStore {
@@ -28,17 +29,6 @@ export const BRIDGE_BINDINGS_FILE = "bindings.json";
 interface BindingsFile {
 	// platform -> conversationId -> agentId
 	[platform: string]: { [conversationId: string]: string };
-}
-
-function nodeRequire(moduleName: string): any {
-	if (typeof globalThis !== "undefined" && typeof (globalThis as any).require === "function") {
-		try {
-			return (globalThis as any).require(moduleName);
-		} catch {
-			return undefined;
-		}
-	}
-	return undefined;
 }
 
 /**

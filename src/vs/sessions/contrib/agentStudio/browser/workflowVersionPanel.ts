@@ -12,6 +12,8 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { $ } from '../../../../base/browser/dom.js';
 import { IWorkflowVersionService, type WorkflowCommitMeta } from '../common/workflowVersionTypes.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { MarketplaceVersionsPanel } from './marketplaceVersionsPanel.js';
 
 export class WorkflowVersionPanel extends Disposable {
 	readonly element: HTMLElement;
@@ -20,11 +22,13 @@ export class WorkflowVersionPanel extends Disposable {
 	private _commits: WorkflowCommitMeta[] = [];
 
 	private readonly _listContainer!: HTMLElement;
+	private _marketplacePanel!: MarketplaceVersionsPanel;
 
 	constructor(
 		private readonly _workflowId: string,
 		@IWorkflowVersionService private readonly _versionService: IWorkflowVersionService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
 
@@ -62,7 +66,10 @@ export class WorkflowVersionPanel extends Disposable {
 		refreshBtn.style.cursor = 'pointer';
 		refreshBtn.style.fontSize = '14px';
 		refreshBtn.style.padding = '0 6px';
-		this._register(DOM.addDisposableListener(refreshBtn, 'click', () => void this._loadHistory()));
+		this._register(DOM.addDisposableListener(refreshBtn, 'click', () => {
+			void this._loadHistory();
+			void this._marketplacePanel.load();
+		}));
 		header.appendChild(refreshBtn);
 
 		// 关闭按钮
@@ -80,7 +87,31 @@ export class WorkflowVersionPanel extends Disposable {
 
 		this.element.appendChild(header);
 
+		// ── 商城版本区块（Releases）──
+		this._marketplacePanel = this._register(this._instantiationService.createInstance(MarketplaceVersionsPanel, {
+			storeId: this._workflowId,
+			kind: 'workflow',
+			onAfterInstall: async (version: string) => {
+				await this._versionService.autoCommit(this._workflowId, `install: v${version} from marketplace`);
+				this._loadHistory();
+			},
+		}));
+		const mkWrap = $('div');
+		mkWrap.style.padding = '8px 8px 0 8px';
+		mkWrap.style.flexShrink = '0';
+		mkWrap.appendChild(this._marketplacePanel.element);
+		this.element.appendChild(mkWrap);
+
 		// ── 列表区 ──
+		const localTitle = $('div');
+		localTitle.textContent = '本地历史（Git）';
+		localTitle.style.fontSize = '12px';
+		localTitle.style.fontWeight = '600';
+		localTitle.style.margin = '8px 8px 0 8px';
+		localTitle.style.color = 'var(--vscode-foreground)';
+		localTitle.style.flexShrink = '0';
+		this.element.appendChild(localTitle);
+
 		this._listContainer = $('div.workflow-version-list');
 		this._listContainer.style.flex = '1';
 		this._listContainer.style.overflowY = 'auto';
@@ -98,6 +129,7 @@ export class WorkflowVersionPanel extends Disposable {
 		if (this._commits.length === 0) {
 			void this._loadHistory();
 		}
+		void this._marketplacePanel.load();
 	}
 
 	hide(): void {
@@ -125,7 +157,20 @@ export class WorkflowVersionPanel extends Disposable {
 		this._listContainer.appendChild(loadingEl);
 
 		try {
+			// Git 不可用时直接显示准确提示
+			if (!this._versionService.isAvailable()) {
+				this._listContainer.textContent = '';
+				const msg = $('div.git-unavailable');
+				msg.textContent = 'Git 不可用（需要在桌面客户端中使用）';
+				this._listContainer.appendChild(msg);
+				return;
+			}
 			this._commits = await this._versionService.history(this._workflowId, 50);
+			// 兼容旧 workflow（版本管理落地前创建、无 .git）：首次打开自动初始化仓库。
+			if (this._commits.length === 0) {
+				await this._versionService.init(this._workflowId);
+				this._commits = await this._versionService.history(this._workflowId, 50);
+			}
 			this._renderCommitList();
 		} catch (err) {
 			this._listContainer.textContent = '';

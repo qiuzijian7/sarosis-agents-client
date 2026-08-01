@@ -51,6 +51,14 @@ small{color:var(--text-muted);}
 <h1>Sarosis 知识库 · 图谱生成与 MD 导出使用说明</h1>
 <div class="sub">Hyper-Extract（TS 移植引擎）接入后的实操指南 · 适用于 <code>agentStudio</code> 内置 <code>kb_*</code> 工具与侧边栏「知识库」视图</div>
 
+<div class="note" style="border-color:rgba(244,135,113,.5);background:rgba(244,135,113,.1);">
+  <b>⚠ 本文档已过时（2026-07-31）</b>：原「Hyper-Extract 抽取式知识引擎」（<code>browser/knowledge/engine/</code>、
+  <code>knowledgeTools.ts</code>、每仓库 RAG session、<code>kb_ask</code> / <code>kb_search_repo</code> / <code>kb_export*</code> / <code>kb_list</code>）
+  已整体下线。现知识库统一为 <b>llm-wiki（系统 B）</b>：侧边栏「知识库」视图负责导入/编辑/双链/向量索引，
+  Agent 侧唯一检索工具为 <code>kb_search</code>（混合 BM25 + 向量，统一走 <code>IKbNativeKernelService</code>）。
+  旧版数据可用命令面板 <code>Agent Studio: 迁移旧版知识库到 llm-wiki</code> 一次性迁移。
+</div>
+
 <div class="note">本文档覆盖三件事：<b>① 如何生成图谱</b>　<b>② 如何把图谱导出成 Markdown（<code>.md</code>）文件</b>　<b>③ 检索与 RAG 问答的用法</b>。所有能力均已在 <code>src/vs/sessions/contrib/agentStudio/browser/knowledge/</code> 实现并通过单元验证（19/19 用例通过）。</div>
 
 <h2>一、接入现状一句话</h2>

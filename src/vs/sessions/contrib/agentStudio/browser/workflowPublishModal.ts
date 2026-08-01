@@ -23,8 +23,10 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { $ } from '../../../../base/browser/dom.js';
 import { IMarketplaceService, IPublishOptions } from '../common/marketplace.js';
+import { validatePublishVersion } from './publishVersioning.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IWorkflowStorageService, IStoredWorkflow } from '../common/workflowStorage.js';
+import { IWorkflowVersionService } from '../common/workflowVersionTypes.js';
 import { ITofAuthService } from '../common/tofAuth.js';
 import { Event, Emitter } from '../../../../base/common/event.js';
 
@@ -50,6 +52,7 @@ export class WorkflowPublishModal extends Disposable {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
+		@IWorkflowVersionService private readonly workflowVersionService: IWorkflowVersionService,
 	) {
 		super();
 	}
@@ -408,6 +411,18 @@ export class WorkflowPublishModal extends Disposable {
 		authorInput.placeholder = '作者名称';
 		authorRow.appendChild(authorInput);
 		pubSection.appendChild(authorRow);
+
+		// 更新说明（changelog，随版本发布到商城，版本历史与升级提示中展示）
+		const changelogRow = $('div.wpm-form-row.col');
+		const changelogLabel = $('span.wpm-label-col');
+		changelogLabel.textContent = '更新说明';
+		changelogRow.appendChild(changelogLabel);
+		const changelogInput = $('input.wpm-input') as HTMLInputElement;
+		changelogInput.type = 'text';
+		changelogInput.id = 'wpm-field-changelog';
+		changelogInput.placeholder = '本版本的变更摘要（可选），如：修复表格抽取越界';
+		changelogRow.appendChild(changelogInput);
+		pubSection.appendChild(changelogRow);
 		body.appendChild(pubSection);
 
 		// Section: 可见性
@@ -689,6 +704,7 @@ export class WorkflowPublishModal extends Disposable {
 		const category = this._getFieldValue('category');
 		const author = this._getFieldValue('author');
 		const useGuide = this._getFieldValue('useGuide');
+		const changelog = this._getFieldValue('changelog');
 
 		if (!version) {
 			this.notificationService.warn('请输入版本号');
@@ -698,6 +714,15 @@ export class WorkflowPublishModal extends Disposable {
 
 		if (!/^\d+\.\d+\.\d+/.test(version)) {
 			this.notificationService.warn('版本号格式不正确，应为 x.y.z 格式（如 1.0.0）');
+			this._isPublishing = false;
+			return;
+		}
+
+		// 商城版本预检：历史版本查重 + 必须大于 latest（无包则跳过）
+		const remote = await this.marketplaceService.getPackage(this.workflow.id).catch(() => undefined);
+		const versionError = validatePublishVersion(version, remote);
+		if (versionError) {
+			this.notificationService.warn(versionError);
 			this._isPublishing = false;
 			return;
 		}
@@ -724,6 +749,7 @@ export class WorkflowPublishModal extends Disposable {
 				visibility: this._visibility,
 				tags: this._tags.length > 0 ? this._tags : undefined,
 				useGuide: useGuide || undefined,
+				changelog: changelog || undefined,
 			};
 
 			const result = await this.marketplaceService.publish(this.workflow.id, 'workflow', opts);
@@ -738,6 +764,14 @@ export class WorkflowPublishModal extends Disposable {
 					tags: this._tags.length > 0 ? this._tags : undefined,
 					useGuide: useGuide || undefined,
 				});
+			} catch {
+				// 非致命 — 商城已发布成功
+			}
+
+			// 发布锚点：autoCommit + git tag，关联商城版本与本地 git 历史（best-effort）
+			try {
+				await this.workflowVersionService.autoCommit(this.workflow.id, `publish: v${result.version} to marketplace`);
+				await this.workflowVersionService.tag(this.workflow.id, `v${result.version}`);
 			} catch {
 				// 非致命 — 商城已发布成功
 			}

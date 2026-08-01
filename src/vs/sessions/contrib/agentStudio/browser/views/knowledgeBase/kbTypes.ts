@@ -50,13 +50,12 @@ export interface IKbVault {
 	 */
 	linkedWorkspaces?: { name: string; wsUri: string; folders: string[] }[];
 	/**
-	 * 文件夹导入（关联 / 拷贝）后构建的「每 git 仓库 = 一个 RAG session」映射。
-	 * key = 仓库根的绝对 fsPath，value = KnowledgeSession id（落盘于 KB 存储根）。
-	 * 由 `agentStudioService.importFolderToRag` 写入，供后续 `kb_search` 跨库检索 /
-	 * `git pull` 后增量重摄入（reingestRepo）使用。仅元数据，删除不删磁盘 session。
+	 * @deprecated 系统 A（Hyper-Extract 抽取式引擎 + 每仓库 RAG session）已下线，
+	 * 不再有任何代码写入该字段。仅为兼容旧版本 vault.json 元数据而保留读取，
+	 * 取消目录关联时会被清理。检索统一走 `kb_search`（KbNativeKernel 全文 + 向量）。
 	 */
 	ragSessions?: Record<string, string>;
-	/** 可选的「松散文件」session id（仅当导入时开启 includeUnversioned）。 */
+	/** @deprecated 同 {@link ragSessions}，旧版「松散文件」session id。 */
 	ragUnversionedSessionId?: string | null;
 }
 

@@ -24,14 +24,17 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IAgentStudioService } from '../common/agentStudio.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { ISkillRegistry } from '../common/skills.js';
-import { IMarketplaceService, PackageKind } from '../common/marketplace.js';
+import { IMarketplaceService, IMarketplaceVersion, PackageKind } from '../common/marketplace.js';
+import { bumpPatch, compareSemver, suggestNextVersion, validatePublishVersion, isVersionConflictError } from './publishVersioning.js';
 import { IAgentVersionService, type AgentCommitMeta } from '../common/agentVersionTypes.js';
+import { gitUnavailableReason } from './gitVersionCore.js';
+import { ITofAuthService } from '../common/tofAuth.js';
 import type { Agent } from '../../../common/agentStudioTypes.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
 
 const { $: $$ } = DOM;
 
-type TabId = 'prompt' | 'skills' | 'tools' | 'mcp' | 'rules' | 'binding' | 'versions' | 'runtime';
+type TabId = 'prompt' | 'skills' | 'mcp' | 'rules' | 'binding' | 'versions' | 'runtime';
 
 interface TabDef {
 	id: TabId;
@@ -42,7 +45,6 @@ interface TabDef {
 const TABS: TabDef[] = [
 	{ id: 'prompt', label: 'System Prompt', icon: '💬' },
 	{ id: 'skills', label: '技能配置', icon: '🛠' },
-	{ id: 'tools', label: 'Tool 配置', icon: '🔧' },
 	{ id: 'versions', label: '版本管理', icon: '🕐' },
 	{ id: 'runtime', label: '运行时配置', icon: '⚙️' },
 	{ id: 'mcp', label: 'MCP 配置', icon: '🔌' },
@@ -80,9 +82,16 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _uploadBtn: HTMLButtonElement | undefined;
 	private _isUploaded = false;
 
-	// ── Read-only state ──
-	/** 非 owner / 内置 agent → 锁定为只读，禁止编辑与上传 */
+	// ── Read-only / Upload-disabled state ──
+	/**
+	 * 完全只读：内置 agent 或（已登录且非 owner）→ 禁止一切编辑。
+	 * 未登录时不设此标志 —— 用户仍应能编辑本地自定义 agent，只是不能上传。
+	 */
 	private _readOnly = false;
+	/** 上传被禁用：未登录或非 owner → 隐藏/禁用上传按钮，但编辑不受限 */
+	private _uploadDisabled = false;
+	/** 只读原因（用于横幅文案诊断） */
+	private _readOnlyReason: string | undefined;
 	private _bindingAddBtn: HTMLButtonElement | undefined;
 
 	// ── Rename state ──
@@ -101,6 +110,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 	// Runtime config (paradigm + budget)
 	private _paradigmSelect: HTMLSelectElement | undefined;
 	private _budgetInput: HTMLInputElement | undefined;
+	private _modelProviderSelect: HTMLSelectElement | undefined;
+	private _modelIdSelect: HTMLSelectElement | undefined;
 
 	// ── Skills tab ──
 	private _skillsInstalledContainer: HTMLElement | undefined;
@@ -108,17 +119,12 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _allSkills: Array<{ id: string; name: string; category: string; activation: string; description?: string; source?: string }> = [];
 	private _agentSkills: string[] = [];
 
-	// ── Tools tab ──
-	private _toolsInstalledContainer: HTMLElement | undefined;
-	private _toolsAvailableContainer: HTMLElement | undefined;
-	private _toolsFilterInput: HTMLInputElement | undefined;
-	private _allTools: Array<{ name: string; description: string; category?: string }> = [];
-	private _agentTools: string[] = [];
-
 	// ── Versions tab ──
 	private _versionsListContainer: HTMLElement | undefined;
 	private _versionsLoading = false;
 	private _versionCommits: AgentCommitMeta[] = [];
+	private _marketplaceVersionsContainer: HTMLElement | undefined;
+	private _marketplaceVersionsLoading = false;
 
 	constructor(
 		group: IEditorGroup,
@@ -135,6 +141,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		@IBridgeService private readonly bridgeService: IBridgeService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@IAgentVersionService private readonly agentVersionService: IAgentVersionService,
+		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 	) {
 		super(AgentSettingsEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -170,8 +177,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 		// Load skills
 		await this._loadSkills();
-		// Load tools
-		this._loadTools().catch(() => {});
 
 		// Listen for agent changes (external updates)
 		this._register(this.agentStudioService.onDidChangeAgents(async () => {
@@ -208,7 +213,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 		// Build all tab contents
 		this._buildPromptTab();
 		this._buildSkillsTab();
-		this._buildToolsTab();
 		this._buildVersionsTab();
 		this._buildRuntimeTab();
 		this._buildPlaceholderTab('mcp');
@@ -417,46 +421,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 		this._tabContentContainer?.appendChild(section);
 	}
 
-	// ── Tools Tab ──
-
-	private _buildToolsTab(): void {
-		const section = $$('div.agent-settings-tab-pane');
-		section.dataset.tabPane = 'tools';
-
-		const desc = $$('div.tab-pane-desc');
-		desc.textContent = '为 Agent 配置工具。点击右侧可用工具添加，点击左侧已配置工具移除。';
-		section.appendChild(desc);
-
-		const panel = $$('div.skills-dnd-panel');
-
-		// Left: installed tools
-		const leftCol = $$('div.skills-column');
-		const leftHeader = $$('div.skills-column-header');
-		leftHeader.textContent = '已配置工具';
-		leftCol.appendChild(leftHeader);
-		this._toolsInstalledContainer = $$('div.skills-list');
-		leftCol.appendChild(this._toolsInstalledContainer);
-		panel.appendChild(leftCol);
-
-		// Right: available tools
-		const rightCol = $$('div.skills-column');
-		const rightHeader = $$('div.skills-column-header');
-		rightHeader.textContent = '可用工具';
-		rightCol.appendChild(rightHeader);
-		this._toolsFilterInput = document.createElement('input');
-		this._toolsFilterInput.className = 'skills-filter-input';
-		this._toolsFilterInput.type = 'text';
-		this._toolsFilterInput.placeholder = '搜索工具...';
-		this._toolsFilterInput.oninput = () => this._renderTools();
-		rightCol.appendChild(this._toolsFilterInput);
-		this._toolsAvailableContainer = $$('div.skills-list');
-		rightCol.appendChild(this._toolsAvailableContainer);
-		panel.appendChild(rightCol);
-
-		section.appendChild(panel);
-		this._tabContentContainer?.appendChild(section);
-	}
-
 	// ── Channel Binding Tab ──
 
 	private _buildBindingTab(): void {
@@ -617,44 +581,75 @@ export class AgentSettingsEditorPane extends EditorPane {
 		}
 	}
 
-	// ── Read-only lock ──
+	// ── Read-only / Upload-disabled lock ──
 
 	/**
-	 * 非 owner / 内置 agent 时锁定为只读：禁用所有编辑控件并显示提示横幅。
-	 * 在 _loadAgentData 末尾（数据加载、各 tab 渲染之后）调用。
+	 * 应用只读/上传禁用状态。在 _loadAgentData 末尾调用。
+	 *   - _readOnly=true  → 禁用所有编辑控件 + 横幅
+	 *   - _uploadDisabled=true 但 _readOnly=false → 仅禁用上传按钮 + 轻量提示
 	 */
 	private _applyReadOnlyState(): void {
-		if (!this._readOnly) { return; }
-
-		// 禁用固定编辑控件
-		if (this._promptTextarea) { this._promptTextarea.disabled = true; }
-		if (this._promptSaveBtn) { this._promptSaveBtn.style.display = 'none'; }
-		if (this._bindingInput) { this._bindingInput.disabled = true; }
-		if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = true; }
-		if (this._bindingAddBtn) { this._bindingAddBtn.disabled = true; }
-		if (this._renameInput) { this._renameInput.disabled = true; }
-		if (this._paradigmSelect) { this._paradigmSelect.disabled = true; }
-		if (this._budgetInput) { this._budgetInput.disabled = true; }
-
-		// 禁用重命名触发（标题双击 + 铅笔按钮）
-		if (this._nameEl) {
-			this._nameEl.classList.remove('editable');
-			this._nameEl.ondblclick = null;
-			this._nameEl.title = '仅创建者(owner)可编辑';
-		}
-		const renameBtn = this._container?.querySelector('.agent-settings-rename-btn') as HTMLButtonElement | null;
-		if (renameBtn) {
-			renameBtn.disabled = true;
-			renameBtn.title = '仅创建者(owner)可编辑';
-		}
-
-		// 只读提示横幅
 		const main = this._container?.querySelector('.agent-settings-main') as HTMLElement | null;
-		if (main && !main.querySelector('.agent-settings-readonly-banner')) {
+		if (!main) { return; }
+
+		// 先清除已有横幅（auth 竞态恢复后重新评估时，旧横幅必须移除）
+		main.querySelectorAll('.agent-settings-readonly-banner').forEach(el => el.remove());
+
+		if (this._readOnly) {
+			// 禁用固定编辑控件
+			if (this._promptTextarea) { this._promptTextarea.disabled = true; }
+			if (this._promptSaveBtn) { this._promptSaveBtn.style.display = 'none'; }
+			if (this._bindingInput) { this._bindingInput.disabled = true; }
+			if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = true; }
+			if (this._bindingAddBtn) { this._bindingAddBtn.disabled = true; }
+			if (this._renameInput) { this._renameInput.disabled = true; }
+			if (this._paradigmSelect) { this._paradigmSelect.disabled = true; }
+			if (this._budgetInput) { this._budgetInput.disabled = true; }
+			if (this._modelProviderSelect) { this._modelProviderSelect.disabled = true; }
+			if (this._modelIdSelect) { this._modelIdSelect.disabled = true; }
+
+			// 禁用重命名触发（标题双击 + 铅笔按钮）
+			if (this._nameEl) {
+				this._nameEl.classList.remove('editable');
+				this._nameEl.ondblclick = null;
+				this._nameEl.title = '仅创建者(owner)可编辑';
+			}
+			const renameBtn = this._container?.querySelector('.agent-settings-rename-btn') as HTMLButtonElement | null;
+			if (renameBtn) {
+				renameBtn.disabled = true;
+				renameBtn.title = '仅创建者(owner)可编辑';
+			}
+
+			// 只读提示横幅（含诊断原因）
 			const banner = $$('div.agent-settings-readonly-banner');
-			banner.textContent = '🔒 只读模式：仅创建者(owner)可编辑此 Agent';
+			banner.textContent = `🔒 只读模式：${this._readOnlyReason || '仅创建者(owner)可编辑此 Agent'}`;
 			banner.style.cssText = 'margin:8px 12px;padding:8px 12px;border-radius:6px;background:var(--vscode-badge-background,#3a3d41);color:var(--vscode-badge-foreground,#fff);font-size:12px;';
 			main.insertBefore(banner, main.firstChild);
+		} else if (this._uploadDisabled) {
+			// 可编辑但不可上传 —— 仅显示轻量提示，不锁编辑控件
+			const banner = $$('div.agent-settings-readonly-banner');
+			banner.textContent = '⚠️ 上传不可用：当前未登录（TOF），请登录后发布到商城';
+			banner.style.cssText = 'margin:8px 12px;padding:6px 12px;border-radius:6px;background:var(--vscode-inputValidation-warningBackground,#352a05);color:var(--vscode-inputValidation-warningForeground,#ccc);font-size:11px;border:1px solid var(--vscode-inputValidation-warningBorder,#b89500);';
+			main.insertBefore(banner, main.firstChild);
+		}
+		// 否则：既不只读也不禁上传 —— 恢复编辑控件（auth 竞态恢复路径）
+		else {
+			if (this._promptTextarea) { this._promptTextarea.disabled = false; }
+			if (this._promptSaveBtn) { this._promptSaveBtn.style.display = ''; }
+			if (this._bindingInput) { this._bindingInput.disabled = false; }
+			if (this._bindingDefaultToggle) { this._bindingDefaultToggle.disabled = false; }
+			if (this._bindingAddBtn) { this._bindingAddBtn.disabled = false; }
+			if (this._renameInput) { this._renameInput.disabled = false; }
+			if (this._paradigmSelect) { this._paradigmSelect.disabled = false; }
+			if (this._budgetInput) { this._budgetInput.disabled = false; }
+			if (this._modelProviderSelect) { this._modelProviderSelect.disabled = false; }
+			if (this._modelIdSelect) { this._modelIdSelect.disabled = false; }
+			if (this._nameEl) {
+				this._nameEl.classList.add('editable');
+				this._nameEl.title = '双击重命名';
+			}
+			const renameBtn = this._container?.querySelector('.agent-settings-rename-btn') as HTMLButtonElement | null;
+			if (renameBtn) { renameBtn.disabled = false; renameBtn.title = ''; }
 		}
 	}
 
@@ -677,7 +672,10 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 		const refreshBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
 		refreshBtn.textContent = '🔄 刷新';
-		refreshBtn.onclick = () => this._loadVersionHistory();
+		refreshBtn.onclick = () => {
+			this._loadVersionHistory();
+			this._loadMarketplaceVersions();
+		};
 		toolbar.appendChild(refreshBtn);
 
 		const hint = $$('span');
@@ -686,6 +684,28 @@ export class AgentSettingsEditorPane extends EditorPane {
 		hint.style.color = 'var(--vscode-descriptionForeground)';
 		toolbar.appendChild(hint);
 		section.appendChild(toolbar);
+
+		// ── 商城版本区块（Releases）──
+		const mkTitle = $$('div.versions-section-title');
+		mkTitle.textContent = '商城版本（Releases）';
+		mkTitle.style.fontSize = '12px';
+		mkTitle.style.fontWeight = '600';
+		mkTitle.style.margin = '4px 0 8px 0';
+		mkTitle.style.color = 'var(--vscode-foreground)';
+		section.appendChild(mkTitle);
+
+		this._marketplaceVersionsContainer = $$('div.marketplace-versions-list');
+		this._marketplaceVersionsContainer.style.marginBottom = '16px';
+		section.appendChild(this._marketplaceVersionsContainer);
+
+		// ── 本地历史区块（Git）──
+		const localTitle = $$('div.versions-section-title');
+		localTitle.textContent = '本地历史（Git）';
+		localTitle.style.fontSize = '12px';
+		localTitle.style.fontWeight = '600';
+		localTitle.style.margin = '4px 0 8px 0';
+		localTitle.style.color = 'var(--vscode-foreground)';
+		section.appendChild(localTitle);
 
 		// 列表容器
 		this._versionsListContainer = $$('div.versions-list');
@@ -715,7 +735,27 @@ export class AgentSettingsEditorPane extends EditorPane {
 		}
 
 		try {
+			// Git 不可用时给出**具体**原因，避免误导为"尚未初始化"或"环境不支持"
+			// （桌面端最常见成因是主进程通道未就绪，与运行环境无关）
+			if (!this.agentVersionService.isAvailable()) {
+				const container = this._versionsListContainer;
+				if (container) {
+					const reason = gitUnavailableReason();
+					container.textContent = reason
+						? `Git 版本管理暂不可用：${reason}`
+						: '当前环境不支持 Git 版本管理（需在桌面客户端中使用）';
+					container.style.padding = '12px 4px';
+					container.style.color = 'var(--vscode-descriptionForeground)';
+				}
+				return;
+			}
 			this._versionCommits = await this.agentVersionService.history(this._agentId, 50);
+			// 兼容旧 agent（版本管理落地前创建、无 .git）：首次打开版本页自动初始化仓库，
+			// 与 autoCommit 的懒初始化行为对齐。
+			if (this._versionCommits.length === 0) {
+				await this.agentVersionService.init(this._agentId);
+				this._versionCommits = await this.agentVersionService.history(this._agentId, 50);
+			}
 			this._renderVersionList();
 		} catch (err) {
 			if (this._versionsListContainer) {
@@ -735,6 +775,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _renderVersionList(): void {
 		if (!this._versionsListContainer) { return; }
 		this._versionsListContainer.textContent = '';
+		// 有内容时左对齐（初始化时设的 center 仅用于空状态提示）
+		this._versionsListContainer.style.textAlign = 'left';
 
 		if (this._versionCommits.length === 0) {
 			const empty = $$('div');
@@ -752,6 +794,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		countEl.style.fontSize = '11px';
 		countEl.style.marginBottom = '8px';
 		countEl.style.padding = '0 4px';
+		countEl.style.textAlign = 'center';
 		this._versionsListContainer.appendChild(countEl);
 
 		for (const c of this._versionCommits) {
@@ -767,6 +810,7 @@ export class AgentSettingsEditorPane extends EditorPane {
 		row.style.borderRadius = '6px';
 		row.style.cursor = 'pointer';
 		row.style.transition = 'background 0.15s';
+		row.style.textAlign = 'left';
 
 		row.onmouseenter = () => { row.style.background = 'var(--vscode-list-hoverBackground, #2a2d2e)'; };
 		row.onmouseleave = () => { row.style.background = ''; };
@@ -801,12 +845,15 @@ export class AgentSettingsEditorPane extends EditorPane {
 		msg.style.fontSize = '12px';
 		msg.style.color = 'var(--vscode-foreground)';
 		msg.style.marginBottom = '6px';
+		msg.style.lineHeight = '1.4';
+		msg.style.textAlign = 'left';
 		row.appendChild(msg);
 
 		// ── 折叠区：diff + 操作 ──
 		const detail = $$('div.version-commit-detail');
 		detail.style.display = 'none';
 		detail.style.marginTop = '8px';
+		detail.style.textAlign = 'left';
 		row.appendChild(detail);
 
 		// Diff 文本
@@ -883,6 +930,156 @@ export class AgentSettingsEditorPane extends EditorPane {
 			await this._loadVersionHistory();
 		} catch (err) {
 			this.notificationService.error(`回滚失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	// ── 商城版本（Releases）──────────────────────────────────────
+
+	private async _loadMarketplaceVersions(): Promise<void> {
+		if (!this._agentId || !this._marketplaceVersionsContainer || this._marketplaceVersionsLoading) { return; }
+		this._marketplaceVersionsLoading = true;
+		const container = this._marketplaceVersionsContainer;
+		container.textContent = '⏳ 加载商城版本...';
+		container.style.padding = '12px 4px';
+		container.style.color = 'var(--vscode-descriptionForeground)';
+		container.style.fontSize = '12px';
+		try {
+			const detail = await this.marketplaceService.getPackage(this._agentId);
+			this._renderMarketplaceVersions(detail.versions ?? []);
+		} catch {
+			container.textContent = '尚未发布到商城（或商城不可达）';
+		} finally {
+			this._marketplaceVersionsLoading = false;
+		}
+	}
+
+	private _renderMarketplaceVersions(versions: readonly IMarketplaceVersion[]): void {
+		const container = this._marketplaceVersionsContainer;
+		if (!container) { return; }
+		container.textContent = '';
+		container.style.padding = '0';
+		if (versions.length === 0) {
+			container.textContent = '商城暂无已发布版本';
+			container.style.padding = '12px 4px';
+			container.style.color = 'var(--vscode-descriptionForeground)';
+			container.style.fontSize = '12px';
+			return;
+		}
+		// 按版本号降序展示（最新在前）
+		const sorted = [...versions].sort((a, b) => compareSemver(b.version, a.version));
+		for (const v of sorted) {
+			container.appendChild(this._renderMarketplaceVersionRow(v));
+		}
+	}
+
+	private _renderMarketplaceVersionRow(v: IMarketplaceVersion): HTMLElement {
+		const row = $$('div.marketplace-version-row');
+		row.style.padding = '8px 12px';
+		row.style.marginBottom = '6px';
+		row.style.border = '1px solid var(--vscode-panel-border, #3c3c3c)';
+		row.style.borderRadius = '6px';
+		row.style.display = 'flex';
+		row.style.alignItems = 'center';
+		row.style.gap = '8px';
+
+		// 版本号 + latest 徽章
+		const verBadge = $$('code');
+		verBadge.textContent = `v${v.version}`;
+		verBadge.style.fontSize = '11px';
+		verBadge.style.fontFamily = 'monospace';
+		verBadge.style.background = 'var(--vscode-badge-background, #4d4d4d)';
+		verBadge.style.color = 'var(--vscode-badge-foreground, #fff)';
+		verBadge.style.padding = '1px 6px';
+		verBadge.style.borderRadius = '3px';
+		row.appendChild(verBadge);
+
+		if (v.isLatest) {
+			const latestBadge = $$('span');
+			latestBadge.textContent = 'latest';
+			latestBadge.style.fontSize = '10px';
+			latestBadge.style.padding = '1px 6px';
+			latestBadge.style.borderRadius = '3px';
+			latestBadge.style.background = 'var(--vscode-testing-iconPassed, #73c991)';
+			latestBadge.style.color = '#000';
+			row.appendChild(latestBadge);
+		}
+
+		// changelog（截断单行）
+		const changelog = $$('span');
+		changelog.textContent = v.changelog || '';
+		changelog.style.flex = '1';
+		changelog.style.fontSize = '11px';
+		changelog.style.color = 'var(--vscode-descriptionForeground)';
+		changelog.style.overflow = 'hidden';
+		changelog.style.textOverflow = 'ellipsis';
+		changelog.style.whiteSpace = 'nowrap';
+		changelog.title = v.changelog || '';
+		row.appendChild(changelog);
+
+		// 安装此版本（商城回滚：覆盖安装旧版本，并写入本地 git 历史）
+		const installBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+		installBtn.textContent = '安装此版本';
+		installBtn.style.fontSize = '11px';
+		installBtn.style.padding = '2px 10px';
+		if (this._readOnly) {
+			installBtn.disabled = true;
+			installBtn.title = '只读模式下不可安装';
+			installBtn.style.opacity = '0.5';
+		} else {
+			installBtn.onclick = (e) => { e.stopPropagation(); void this._handleInstallMarketVersion(v); };
+		}
+		row.appendChild(installBtn);
+
+		// 下架（仅作者/owner）
+		if (this._agent && this.agentStudioService.canUploadAgent(this._agent) && !this._readOnly) {
+			const deleteBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+			deleteBtn.textContent = '下架';
+			deleteBtn.style.fontSize = '11px';
+			deleteBtn.style.padding = '2px 10px';
+			deleteBtn.style.color = 'var(--vscode-errorForeground, #f14c4c)';
+			deleteBtn.onclick = (e) => { e.stopPropagation(); void this._handleDeleteMarketVersion(v); };
+			row.appendChild(deleteBtn);
+		}
+
+		return row;
+	}
+
+	/** 安装商城指定版本（含旧版本回滚）：下载覆盖安装 + 本地 git 记录 */
+	private async _handleInstallMarketVersion(v: IMarketplaceVersion): Promise<void> {
+		if (!this._agentId) { return; }
+		try {
+			this.notificationService.info(`正在安装 v${v.version}...`);
+			await this.marketplaceService.download(this._agentId, v.version, 'agent' as PackageKind);
+			// 商城回滚也写入本地 git 历史，保持双轨一致
+			try {
+				await this.agentVersionService.autoCommit(this._agentId, `install: v${v.version} from marketplace`);
+			} catch { /* non-critical */ }
+			this.notificationService.info(`已安装 v${v.version}，请重新打开设置页查看内容`);
+			this._loadVersionHistory();
+			this._loadMarketplaceVersions();
+		} catch (err) {
+			this.notificationService.error(`安装 v${v.version} 失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	/** 下架商城指定版本（仅作者）。删除 latest 版本时提示服务端会重算最新版本。 */
+	private async _handleDeleteMarketVersion(v: IMarketplaceVersion): Promise<void> {
+		if (!this._agentId) { return; }
+		const confirm = await this.dialogService.confirm({
+			message: `确定下架 v${v.version} 吗？`,
+			detail: v.isLatest
+				? '该版本是当前最新版本，下架后商城最新版本将回退到次新版本。已安装的用户不受影响。'
+				: '下架后其他用户将无法再下载该版本，已安装的用户不受影响。',
+			primaryButton: '下架',
+			cancelButton: '取消',
+		});
+		if (!confirm.confirmed) { return; }
+		try {
+			await this.marketplaceService.deleteVersion(this._agentId, v.version);
+			this.notificationService.info(`v${v.version} 已下架`);
+			this._loadMarketplaceVersions();
+		} catch (err) {
+			this.notificationService.error(`下架失败: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
 
@@ -975,7 +1172,111 @@ export class AgentSettingsEditorPane extends EditorPane {
 		budgetGroup.appendChild(this._budgetInput);
 		section.appendChild(budgetGroup);
 
+		// ── 默认 Provider & Model ──
+		const providerGroup = $$('div.agent-settings-form-group');
+		const providerLabel = $$('label.agent-settings-label');
+		providerLabel.textContent = '默认 Provider / 模型';
+		providerGroup.appendChild(providerLabel);
+
+		const providerDesc = $$('div.agent-settings-desc');
+		providerDesc.textContent = '该 Agent 对话与工作流节点使用的默认模型。选择「跟随全局默认」时使用 Provider 视图的全局配置';
+		providerGroup.appendChild(providerDesc);
+
+		this._modelProviderSelect = document.createElement('select');
+		this._modelProviderSelect.className = 'agent-settings-select';
+		const autoOpt = document.createElement('option');
+		autoOpt.value = '';
+		autoOpt.textContent = '跟随全局默认';
+		this._modelProviderSelect.appendChild(autoOpt);
+		for (const p of this.agentOSService.getModelProviders()) {
+			const opt = document.createElement('option');
+			opt.value = p.id;
+			opt.textContent = p.name;
+			this._modelProviderSelect.appendChild(opt);
+		}
+		this._modelProviderSelect.onchange = () => {
+			void this._onModelProviderChanged();
+		};
+		providerGroup.appendChild(this._modelProviderSelect);
+
+		this._modelIdSelect = document.createElement('select');
+		this._modelIdSelect.className = 'agent-settings-select';
+		this._modelIdSelect.style.marginTop = '6px';
+		this._modelIdSelect.onchange = () => {
+			void this._saveModelConfig();
+		};
+		providerGroup.appendChild(this._modelIdSelect);
+		section.appendChild(providerGroup);
+
 		this._tabContentContainer?.appendChild(section);
+	}
+
+	/** Provider 切换：重新加载该 provider 的模型列表并保存 */
+	private async _onModelProviderChanged(): Promise<void> {
+		await this._refreshModelOptions();
+		await this._saveModelConfig();
+	}
+
+	/** 刷新模型下拉（按当前选中 provider）；preferModelId 用于加载时预选 */
+	private async _refreshModelOptions(preferModelId?: string): Promise<void> {
+		const providerSelect = this._modelProviderSelect;
+		const modelSelect = this._modelIdSelect;
+		if (!providerSelect || !modelSelect) { return; }
+
+		const providerId = providerSelect.value;
+		modelSelect.replaceChildren();
+
+		// 跟随全局默认：模型下拉禁用，仅展示提示项
+		if (!providerId) {
+			const opt = document.createElement('option');
+			opt.value = '';
+			opt.textContent = '（跟随全局默认模型）';
+			modelSelect.appendChild(opt);
+			modelSelect.disabled = true;
+			return;
+		}
+
+		modelSelect.disabled = this._readOnly;
+		const provider = this.agentOSService.getModelProviders().find(p => p.id === providerId);
+		let models: { id: string; name: string }[] = [];
+		try {
+			models = (await provider?.listModels() ?? []).map(m => ({ id: m.id, name: m.name || m.id }));
+		} catch { /* provider 模型列表加载失败时仅回退到当前值 */ }
+
+		// 当前已保存的模型必须始终可选（即使 provider 列表中不存在）
+		const current = preferModelId ?? this._agent?.model ?? '';
+		if (current && !models.some(m => m.id === current)) {
+			models = [{ id: current, name: `${current}（当前）` }, ...models];
+		}
+		for (const m of models) {
+			const opt = document.createElement('option');
+			opt.value = m.id;
+			opt.textContent = m.name;
+			modelSelect.appendChild(opt);
+		}
+		if (current) {
+			modelSelect.value = current;
+		}
+	}
+
+	private async _saveModelConfig(): Promise<void> {
+		if (!this._agentId || this._readOnly || !this._modelProviderSelect) { return; }
+		try {
+			const providerId = this._modelProviderSelect.value || undefined;
+			const patch: Partial<Agent> = { providerId };
+			// 仅在指定 provider 时同步写入模型；跟随全局默认时保留原 model 字段不动
+			if (providerId && this._modelIdSelect?.value) {
+				patch.model = this._modelIdSelect.value;
+			}
+			await this.agentStudioService.updateAgent(this._agentId, patch);
+			if (this._agent) {
+				this._agent.providerId = providerId;
+				if (patch.model) { this._agent.model = patch.model; }
+			}
+			this._renderHeader();
+		} catch (err) {
+			this.notificationService.warn(`保存模型配置失败: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	private async _saveRuntimeConfig(): Promise<void> {
@@ -1016,9 +1317,10 @@ export class AgentSettingsEditorPane extends EditorPane {
 		if (tabId === 'binding') {
 			this._renderBindingTab();
 		}
-		// 进入版本管理页签时自动加载历史
+		// 进入版本管理页签时自动加载历史（本地 git + 商城 releases）
 		if (tabId === 'versions') {
 			this._loadVersionHistory();
+			this._loadMarketplaceVersions();
 		}
 		// Update tab buttons
 		const tabs = this._container?.querySelectorAll('.agent-settings-tab');
@@ -1045,8 +1347,46 @@ export class AgentSettingsEditorPane extends EditorPane {
 				return;
 			}
 			this._agent = agent;
-			// 非 owner / 内置 agent → 只读锁定（禁止编辑与上传）
-			this._readOnly = !this.agentStudioService.canUploadAgent(agent);
+
+			// ── 权限判定前先等 TOF 就绪 ──
+			// restoreSession 是幂等的（内部有 _sessionRestoring 去重），
+			// 若已登录则立即返回，若未恢复则等其完成。避免 auth 竞态导致误判。
+			if (!this.tofAuthService.currentUser) {
+				console.log(`[AgentSettings] TOF 未就绪，等待 restoreSession...`);
+				await this.tofAuthService.restoreSession();
+			}
+
+			// ── 权限判定（分离「编辑」与「上传」）──
+			//   内置 agent → 完全只读（系统资产）
+			//   已登录但非 owner → 完全只读（他人资产）
+			//   未登录 + 有 owner → 可编辑本地，但不能上传（票据过期/未登录）
+			//   owner / 未认领 → 完全权限
+			const canUpload = this.agentStudioService.canUploadAgent(agent);
+			const uid = this.agentStudioService.currentUserId;
+			// 诊断日志：打印实际比对值，方便排障
+			console.log(`[AgentSettings] 权限判定: id=${this._agentId}, source=${agent.source}, owner=${JSON.stringify(agent.owner)}, currentUserId=${JSON.stringify(uid)}, canUpload=${canUpload}`);
+			if (agent.source === 'builtin') {
+				this._readOnly = true;
+				this._uploadDisabled = true;
+				this._readOnlyReason = '内置系统 Agent';
+			} else if (!canUpload) {
+				// canUpload=false 的原因：要么未登录，要么非 owner
+				if (!uid && agent.owner) {
+					// 未登录但有 owner → 允许编辑，禁止上传
+					this._readOnly = false;
+					this._uploadDisabled = true;
+					this._readOnlyReason = undefined; // 不显示只读横幅（可编辑）
+				} else {
+					// 已登录但非 owner → 完全只读
+					this._readOnly = true;
+					this._uploadDisabled = true;
+					this._readOnlyReason = `当前用户(${uid ?? '?'})非创建者(owner=${agent.owner ?? '空'})`;
+				}
+			} else {
+				this._readOnly = false;
+				this._uploadDisabled = false;
+				this._readOnlyReason = undefined;
+			}
 
 			// Show main, hide loading
 			const loading = this._container?.querySelector('.agent-settings-loading');
@@ -1077,6 +1417,12 @@ export class AgentSettingsEditorPane extends EditorPane {
 			if (this._paradigmSelect && this._budgetInput) {
 				this._paradigmSelect.value = this._agent.paradigm || '';
 				this._budgetInput.value = this._agent.budgetMaxTotal !== undefined ? String(this._agent.budgetMaxTotal) : '';
+			}
+
+			// Update default provider/model config
+			if (this._modelProviderSelect) {
+				this._modelProviderSelect.value = this._agent.providerId || '';
+				await this._refreshModelOptions(this._agent.model);
 			}
 
 			// Update bindings tab
@@ -1134,7 +1480,10 @@ export class AgentSettingsEditorPane extends EditorPane {
 			const stat2 = $$('span.stat-item');
 			const stat2Icon = $$('span.stat-icon'); stat2Icon.textContent = '🤖'; stat2.appendChild(stat2Icon);
 			stat2.appendChild(document.createTextNode(' '));
-			const stat2Val = $$('span.stat-value'); stat2Val.textContent = model; stat2.appendChild(stat2Val);
+			const stat2Val = $$('span.stat-value');
+			stat2Val.textContent = this._agent.providerId ? `${this._agent.providerId} / ${model}` : model;
+			if (this._agent.providerId) { stat2.title = `默认 Provider: ${this._agent.providerId}`; }
+			stat2.appendChild(stat2Val);
 			this._statsEl.appendChild(stat2);
 
 			if (category) {
@@ -1345,120 +1694,6 @@ export class AgentSettingsEditorPane extends EditorPane {
 		}
 	}
 
-	// ── Tools ──
-
-	private async _addTool(toolName: string): Promise<void> {
-		if (this._readOnly) { return; }
-		if (!this._agentId) { return; }
-		const newTools = [...new Set([...(this._agentTools ?? []), toolName])];
-		try {
-			await this.agentStudioService.updateAgent(this._agentId, { tools: newTools } as Partial<Agent>);
-			this._agentTools = newTools;
-			if (this._agent) { this._agent.tools = newTools; }
-			this._renderTools();
-			if (this._agent) { this._agent.tools = newTools; }
-		} catch (err) {
-			this.notificationService.error(`添加工具失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	private async _removeTool(toolName: string): Promise<void> {
-		if (this._readOnly) { return; }
-		if (!this._agentId) { return; }
-		const newTools = (this._agentTools ?? []).filter(t => t !== toolName);
-		try {
-			await this.agentStudioService.updateAgent(this._agentId, { tools: newTools } as Partial<Agent>);
-			this._agentTools = newTools;
-			if (this._agent) { this._agent.tools = newTools; }
-			this._renderTools();
-		} catch (err) {
-			this.notificationService.error(`移除工具失败: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	private _renderTools(): void {
-		if (!this._toolsInstalledContainer || !this._toolsAvailableContainer) { return; }
-		const filter = this._toolsFilterInput?.value?.toLowerCase().trim() ?? '';
-
-		// Installed tools
-		this._toolsInstalledContainer.replaceChildren();
-		const installed = this._allTools.filter(t => this._agentTools.includes(t.name));
-		if (installed.length === 0) {
-			const empty = $$('div.skills-empty');
-			empty.textContent = '暂无已配置工具';
-			this._toolsInstalledContainer.appendChild(empty);
-		} else {
-			for (const t of installed) {
-				const item = $$('div.skill-item installed');
-				const info = $$('div.skill-item-info');
-				const nameEl = $$('span.skill-item-name');
-				nameEl.textContent = t.name;
-				info.appendChild(nameEl);
-				if (t.description) {
-					const descEl = $$('span.skill-item-cat');
-					descEl.textContent = t.description.slice(0, 60);
-					info.appendChild(descEl);
-				}
-				item.appendChild(info);
-				const removeBtn = $$('button.skill-remove-btn') as HTMLButtonElement;
-				removeBtn.title = '移除';
-				removeBtn.textContent = '✕';
-				removeBtn.disabled = this._readOnly;
-				removeBtn.onclick = () => this._removeTool(t.name);
-				item.appendChild(removeBtn);
-				this._toolsInstalledContainer!.appendChild(item);
-			}
-		}
-
-		// Available tools
-		this._toolsAvailableContainer.replaceChildren();
-		const available = this._allTools
-			.filter(t => !this._agentTools.includes(t.name))
-			.filter(t => !filter || t.name.toLowerCase().includes(filter) || t.description?.toLowerCase().includes(filter));
-		if (available.length === 0) {
-			const empty = $$('div.skills-empty');
-			empty.textContent = filter ? '无匹配工具' : '无可用工具';
-			this._toolsAvailableContainer.appendChild(empty);
-		} else {
-			for (const t of available) {
-				const item = $$('div.skill-item available');
-				const info = $$('div.skill-item-info');
-				const nameEl = $$('span.skill-item-name');
-				nameEl.textContent = t.name;
-				info.appendChild(nameEl);
-				if (t.description) {
-					const descEl = $$('span.skill-item-cat');
-					descEl.textContent = t.description.slice(0, 60);
-					info.appendChild(descEl);
-				}
-				item.appendChild(info);
-				const addBtn = $$('button.skill-add-btn') as HTMLButtonElement;
-				addBtn.title = '添加';
-				addBtn.textContent = '+';
-				addBtn.disabled = this._readOnly;
-				addBtn.onclick = () => this._addTool(t.name);
-				item.appendChild(addBtn);
-				this._toolsAvailableContainer!.appendChild(item);
-			}
-		}
-	}
-
-	private async _loadTools(): Promise<void> {
-		try {
-			const toolsWithState = await this.agentOSService.listAllToolsWithState(this._agentId ?? '');
-			const enabled = toolsWithState.filter(t => t.enabled && !t.category?.startsWith('mcp:'));
-			this._allTools = enabled.map(t => ({
-				name: t.name,
-				description: (t as any).displaySummary || t.description || '',
-				category: t.category,
-			}));
-			this._agentTools = this._agent?.tools ?? [];
-			this._renderTools();
-		} catch (err) {
-			console.warn('[AgentSettingsEditorPane] Failed to load tools:', err);
-		}
-	}
-
 	// ── ConfigHtml ──
 
 	private async _openConfigHtmlPreview(): Promise<void> {
@@ -1477,9 +1712,9 @@ export class AgentSettingsEditorPane extends EditorPane {
 
 	private async _checkUploadStatus(): Promise<void> {
 		if (!this._agentId || !this._agent) { return; }
-		// Builtin agents cannot be uploaded; custom agents check marketplace + owner permission
-		if (this._agent.source === 'builtin' || !this.agentStudioService.canUploadAgent(this._agent)) {
-			this._isUploaded = true; // hide upload button (builtin or non-owner)
+		// 上传被禁用（未登录 / 非 owner / 内置）→ 直接隐藏按钮
+		if (this._uploadDisabled) {
+			this._isUploaded = true;
 		} else {
 			try {
 				await this.marketplaceService.getPackage(this._agentId);
@@ -1504,48 +1739,86 @@ export class AgentSettingsEditorPane extends EditorPane {
 			this.notificationService.warn(`仅创建者(owner)可上传该 Agent「${this._agent.name}」`);
 			return;
 		}
-		const name = this._agent.name;
-
-		const result = await this.dialogService.input({
-			title: `上传 "${name}" 到商城`,
-			message: `输入版本号 (如 1.0.0)`,
-			inputs: [{ value: this._agent.version || '1.0.0', placeholder: '版本号' }],
-			primaryButton: '上传',
-			cancelButton: '取消',
-		});
-		if (!result.confirmed) { return; }
-
-		const version = result.values?.[0]?.trim() || '1.0.0';
-
+		// Login guard: 未登录（含 TOF 票据自动同步失败）时立即弹错误通知并拦截，
+		// 避免弹出版本号 dialog 后才在 publish 时失败。
 		try {
-			// Collect skill and MCP references from the agent
-			const skillRefs = this._agent.skills || [];
-			const mcpRefs = this._agent.tools?.filter(t => t.startsWith('mcp:')) || [];
+			await this.marketplaceService.ensureLoggedIn();
+		} catch (err) {
+			this.notificationService.error(err instanceof Error ? err.message : '请先登录商城后再上传');
+			return;
+		}
+		const name = this._agent.name;
+		// 版本预检：拉取商城远端信息（无包则 undefined），用于建议版本号与发布前校验。
+		const remote = await this.marketplaceService.getPackage(this._agentId).catch(() => undefined);
+		// 版本号建议：远端已有包则在 latest 基础上 patch+1；否则取 agent 当前版本。
+		// 若上传因「版本已存在」失败，会自动递增后重新弹框引导重试。
+		let version = remote ? suggestNextVersion(remote) : (this._agent.version || '1.0.0');
 
-			// Auto-upload missing skill/MCP dependencies first
-			const uploadedDeps = await this._uploadMissingDeps(skillRefs, mcpRefs, version);
-			if (uploadedDeps > 0) {
-				this.notificationService.info(`已自动上传 ${uploadedDeps} 个依赖`);
+		while (true) {
+			const result = await this.dialogService.input({
+				title: `上传 "${name}" 到商城`,
+				message: `输入版本号 (如 1.0.0)`,
+				inputs: [
+					{ value: version, placeholder: '版本号' },
+					{ value: '', placeholder: '更新说明 changelog（可选），如：修复表格抽取越界' },
+				],
+				primaryButton: '上传',
+				cancelButton: '取消',
+			});
+			if (!result.confirmed) { return; }
+
+			version = result.values?.[0]?.trim() || version;
+			const changelog = result.values?.[1]?.trim() || undefined;
+
+			// 发布前校验：格式 / 历史版本查重 / 必须大于 latest
+			const versionError = validatePublishVersion(version, remote);
+			if (versionError) {
+				this.notificationService.warn(versionError);
+				continue;
 			}
 
-			this.notificationService.info(`正在上传 "${name}" v${version}...`);
-			await this.marketplaceService.publish(this._agentId, 'agent' as PackageKind, {
-				name,
-				version,
-				description: this._agent.description || undefined,
-				category: this._agent.category || undefined,
-				skillRefs: skillRefs.length > 0 ? skillRefs : undefined,
-				mcpRefs: mcpRefs.length > 0 ? mcpRefs : undefined,
-			});
-			this.notificationService.info(`"${name}" v${version} 已上传到商城`);
-			this._isUploaded = true;
-			this._updateUploadBtn();
-			// Claim ownership so non-owners cannot re-upload later.
-			await this.agentStudioService.claimAgentOwnership(this._agentId);
-		} catch (err) {
-			this.notificationService.error(
-				`上传 "${name}" 失败: ${err instanceof Error ? err.message : String(err)}`
-			);
+			try {
+				// Collect skill and MCP references from the agent
+				const skillRefs = this._agent.skills || [];
+				const mcpRefs = this._agent.tools?.filter(t => t.startsWith('mcp:')) || [];
+
+				// Auto-upload missing skill/MCP dependencies first
+				const uploadedDeps = await this._uploadMissingDeps(skillRefs, mcpRefs, version);
+				if (uploadedDeps > 0) {
+					this.notificationService.info(`已自动上传 ${uploadedDeps} 个依赖`);
+				}
+
+				this.notificationService.info(`正在上传 "${name}" v${version}...`);
+				const { version: published } = await this.marketplaceService.publish(this._agentId, 'agent' as PackageKind, {
+					name,
+					version,
+					description: this._agent.description || undefined,
+					category: this._agent.category || undefined,
+					skillRefs: skillRefs.length > 0 ? skillRefs : undefined,
+					mcpRefs: mcpRefs.length > 0 ? mcpRefs : undefined,
+					changelog,
+				});
+				// 发布锚点：autoCommit + git tag，关联商城版本与本地 git 历史（best-effort）
+				try {
+					await this.agentVersionService.autoCommit(this._agentId!, `publish: v${published} to marketplace`);
+					await this.agentVersionService.tag(this._agentId!, `v${published}`);
+				} catch { /* non-critical */ }
+				this.notificationService.info(`"${name}" v${published} 已上传到商城`);
+				this._isUploaded = true;
+				this._updateUploadBtn();
+				// Claim ownership so non-owners cannot re-upload later.
+				await this.agentStudioService.claimAgentOwnership(this._agentId);
+				return;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.notificationService.error(`上传 "${name}" 失败: ${msg}`);
+				// 版本冲突：自动递增版本号并重新弹框，引导用户重试。
+				if (isVersionConflictError(msg)) {
+					version = bumpPatch(version);
+					continue;
+				}
+				return;
+			}
 		}
 	}
 
@@ -1553,6 +1826,11 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private async _uploadMissingDeps(skillRefs: string[], _mcpRefs: string[], version: string): Promise<number> {
 		let uploadedCount = 0;
 		for (const slug of skillRefs) {
+			// 与 Agent 同名的依赖：slug 全局唯一，先发布 skill 会抢占标识导致 agent 发布被服务端拒绝，跳过并指引改名
+			if (slug === this._agentId) {
+				this.notificationService.warn(`关联 Skill "${slug}" 与 Agent 同名，商城标识全局唯一。请先将该 Skill 改名（如 ${slug}-skill）并更新 Agent 的 skills 引用后再上传`);
+				continue;
+			}
 			try {
 				const exists = await this._checkPackageExists(slug);
 				if (!exists) {
