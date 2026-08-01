@@ -32,6 +32,7 @@ import {
 import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { ISkillRegistry } from '../common/skills.js';
 
 const { $: $$ } = DOM;
 
@@ -83,6 +84,7 @@ export class AgentMarketEditorPane extends EditorPane {
 		@IFileService private readonly fileService: IFileService,
 		@ICommandService private readonly commandService: ICommandService,
 			@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
+		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 	) {
 		super(AgentMarketEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -305,8 +307,11 @@ export class AgentMarketEditorPane extends EditorPane {
 	/** 检查 agent 的依赖是否已安装，返回缺失列表 */
 	private _checkDeps(slug: string): { missingSkills: string[]; missingMcps: string[] } {
 		const { skillRefs, mcpRefs } = this._getDeps(slug);
-		// _installedSlugs 包含所有已安装的包（skill/mcp/agent）
-		const missingSkills = skillRefs.filter(s => !this._installedSlugs.has(s));
+		// 缺失判定：既看商城安装记录（_installedSlugs），也看本地技能注册表
+		// （builtin/user 技能不在 installed-packages.json 里，只看前者会误判缺失）
+		const missingSkills = skillRefs.filter(s =>
+			!this._installedSlugs.has(s) && !this.skillRegistry.getSkill(s)
+		);
 		const missingMcps = mcpRefs.filter(m => !this._installedSlugs.has(m));
 		return { missingSkills, missingMcps };
 	}
@@ -523,15 +528,17 @@ export class AgentMarketEditorPane extends EditorPane {
 					...missingSkills.map(s => ({ slug: s, kind: 'skill' as PackageKind })),
 					...missingMcps.map(m => ({ slug: m, kind: 'mcp' as PackageKind })),
 				];
-				this.notificationService.info(`正在自动安装 ${allMissing.length} 个关联依赖...`);
-				for (const dep of allMissing) {
-					try {
-						await this.marketplaceService.download(dep.slug, '', dep.kind);
-						this._installedSlugs.add(dep.slug);
-					} catch {
-						this.notificationService.warn(`依赖 ${dep.kind}:${dep.slug} 自动安装失败，已跳过`);
-					}
+			this.notificationService.info(`正在自动安装 ${allMissing.length} 个关联依赖...`);
+			for (const dep of allMissing) {
+				try {
+					await this.marketplaceService.download(dep.slug, '', dep.kind);
+					this._installedSlugs.add(dep.slug);
+				} catch (depErr) {
+					const reason = depErr instanceof Error ? depErr.message : String(depErr);
+					console.warn(`[AgentMarket] 依赖 ${dep.kind}:${dep.slug} 自动安装失败:`, depErr);
+					this.notificationService.warn(`依赖 ${dep.kind}:${dep.slug} 自动安装失败（${reason}），已跳过`);
 				}
+			}
 			}
 
 			this.notificationService.info(`✅ ${pkg.name} v${result.version} 安装成功`);

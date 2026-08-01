@@ -27,6 +27,7 @@ import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IMarketplacePackage, IMarketplaceService } from '../common/marketplace.js';
+import { resolvePublishAuthor } from '../common/publishAuthor.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ISkillVersionService, SkillVersionService } from './skillVersionService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -339,17 +340,30 @@ export class ResourceManagerEditorPane extends EditorPane {
 		try {
 			const pkg = await this.marketplaceService.getPackage(skillId);
 			const currentUser = this.marketplaceService.getCurrentUser();
-			if (pkg.author?.id && currentUser?.id && pkg.author.id !== currentUser.id) {
-				// Not the owner — lock the UI
+			if (!pkg.author || !currentUser) { return; } // 无作者/未登录 → 无法判定非 owner，不锁
+			// 归一化比较：id 转字符串 trim（防 number/string 类型不一致误判），
+			// 并附 username 兜底（防 id 体系/格式差异导致 owner 被误判为非 owner）
+			const authorId = String(pkg.author.id ?? '').trim();
+			const myId = String(currentUser.id ?? '').trim();
+			const authorName = (pkg.author.username ?? '').trim().toLowerCase();
+			const myName = (currentUser.username ?? '').trim().toLowerCase();
+			const isOwner = (authorId !== '' && authorId === myId)
+				|| (authorName !== '' && authorName === myName);
+			console.log(`[ResourceManager] owner check: skill=${skillId}, authorId=${authorId}, myId=${myId}, authorName=${authorName}, myName=${myName}, isOwner=${isOwner}`);
+			if (!isOwner) {
+				// Not the owner — lock the UI（横幅显示作者 vs 当前账号，让 mismatch 一目了然）
 				if (this._actionsContainer) {
 					clearNode(this._actionsContainer);
+					const authorLabel = pkg.author.displayName ?? pkg.author.username ?? '未知';
+					const meLabel = currentUser.displayName ?? currentUser.username ?? '未知';
 					const lockBadge = $('span');
-					lockBadge.textContent = '\u{1F512} 只读';
+					lockBadge.textContent = `🔒 只读（作者: ${authorLabel} / 当前: ${meLabel}）`;
 					lockBadge.style.fontSize = '11px';
 					lockBadge.style.padding = '3px 8px';
 					lockBadge.style.borderRadius = '3px';
 					lockBadge.style.background = 'rgba(255,255,255,0.06)';
 					lockBadge.style.color = 'var(--vscode-descriptionForeground)';
+					lockBadge.title = `此包在商城的作者是 ${authorLabel}，与当前登录账号 ${meLabel} 不一致，故只读`;
 					this._actionsContainer.appendChild(lockBadge);
 				}
 			}
@@ -527,6 +541,33 @@ export class ResourceManagerEditorPane extends EditorPane {
 				}
 			};
 			actions.appendChild(delBtn);
+
+			// 商城来源技能：异步校验服务器端包是否仍存在。
+			// 已被作者从商城删除时，该技能实为本地副本 —— 来源标签降级、按钮语义改为「删除」。
+			if (item.source.includes('商城')) {
+				this.marketplaceService.getPackage(item.id).then(
+					() => { /* 服务器端仍存在，无需调整 */ },
+					(err) => {
+						const msg = err instanceof Error ? err.message : String(err);
+						if (!msg.includes('404')) { return; } // 仅 404 判定为「已删除」，网络错误不误判
+						sourceSpan.textContent = `🔗 来源：📁 本地技能（商城已删除）`;
+						delBtn.textContent = '🗑️ 删除';
+						delBtn.onclick = async () => {
+							const confirmed = await this.dialogService.confirm({
+								message: `技能 "${item.name}" 已从商城删除，此操作将删除本地副本，是否继续？`,
+								primaryButton: '删除',
+								cancelButton: '取消',
+							});
+							if (confirmed.confirmed) {
+								await this.skillInstallService.uninstallSkill(item.id);
+								await this.skillRegistry.reload();
+								this._currentItemId = undefined;
+								this._renderDetail();
+							}
+						};
+					},
+				);
+			}
 		}
 
 		// Marketplace status buttons (upload / upgrade) — for local and builtin skills
@@ -540,7 +581,7 @@ export class ResourceManagerEditorPane extends EditorPane {
 		row1.appendChild(actions);
 		header.appendChild(row1);
 
-		// Row2: meta
+		// Row2: meta（来源单独成 span，商城已删除时可异步改写）
 		const meta = $('div');
 		meta.style.display = 'flex';
 		meta.style.gap = '18px';
@@ -548,15 +589,19 @@ export class ResourceManagerEditorPane extends EditorPane {
 		meta.style.fontSize = '12px';
 		meta.style.color = 'var(--vscode-descriptionForeground)';
 
-		const metaParts: string[] = [];
-		if (item.author) { metaParts.push(`👤 作者：${item.author}`); }
-		if (item.version) { metaParts.push(`🏷️ 版本：v${item.version}`); }
-		metaParts.push(`🔗 来源：${item.source}`);
+		const addMeta = (text: string): HTMLSpanElement => {
+			const s = $('span');
+			s.textContent = text;
+			meta.appendChild(s);
+			return s;
+		};
+		if (item.author) { addMeta(`👤 作者：${item.author}`); }
+		if (item.version) { addMeta(`🏷️ 版本：v${item.version}`); }
+		const sourceSpan = addMeta(`🔗 来源：${item.source}`);
 		if (item.activation) {
 			const actLabel = item.activation === 'auto' ? '自动激活' : item.activation === 'manual' ? '手动调用' : '始终激活';
-			metaParts.push(`⚡ 激活：${actLabel}`);
+			addMeta(`⚡ 激活：${actLabel}`);
 		}
-		meta.textContent = metaParts.join('   ');
 		header.appendChild(meta);
 
 		// Row3: tags
@@ -667,6 +712,11 @@ export class ResourceManagerEditorPane extends EditorPane {
 			uploadBtn.style.borderRadius = '3px';
 			uploadBtn.style.cursor = 'pointer';
 			uploadBtn.onclick = async () => {
+				// 未登录不允许上传
+				if (!this.marketplaceService.isLoggedIn()) {
+					this.notificationService.warn('未登录商城，请先完成 TOF 登录后再上传');
+					return;
+				}
 				// Show manifest form dialog before uploading
 				const formData = await this._showUploadManifestDialog(item);
 				if (!formData) { return; } // User cancelled
@@ -871,12 +921,18 @@ export class ResourceManagerEditorPane extends EditorPane {
 			catField.appendChild(catRow);
 			body.appendChild(catField);
 
-			// Author
+			// Author — 自动从登录信息获取，只读（作者身份应由登录态决定，不允许手填伪造）
+			const currentUser = this.marketplaceService.getCurrentUser();
+			const resolvedAuthor = resolvePublishAuthor(currentUser, item.author);
 			const authorInput = $('input') as HTMLInputElement;
 			authorInput.type = 'text';
-			authorInput.value = item.author || '';
+			authorInput.value = resolvedAuthor || '';
+			authorInput.readOnly = true;
+			authorInput.style.opacity = '0.7';
+			authorInput.style.cursor = 'not-allowed';
+			authorInput.title = currentUser ? `作者自动取自登录账号（${currentUser.username}）` : '作者（未获取到登录信息）';
 			inputStyle(authorInput);
-			body.appendChild(createField('作者', authorInput));
+			body.appendChild(createField('作者（自动取自登录账号）', authorInput));
 
 			// Changelog
 			const changelogInput = $('textarea') as HTMLTextAreaElement;

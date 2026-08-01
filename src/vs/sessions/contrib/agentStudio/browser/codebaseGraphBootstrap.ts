@@ -20,6 +20,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkspaceContextService, IWorkspaceFoldersChangeEvent } from '../../../../platform/workspace/common/workspace.js';
 import { ICodebaseGraphService, IIndexConfig } from './codebaseGraphService.js';
+import { ICodebaseMemoryMcpService, IIndexConfig as IUserIndexConfig } from './codebaseMemoryMcpService.js';
 import { URI } from '../../../../base/common/uri.js';
 
 const LOG_TAG = '[CodebaseGraph]';
@@ -36,6 +37,7 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 
 	constructor(
 		@ICodebaseGraphService private readonly _graphService: ICodebaseGraphService,
+		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -50,7 +52,7 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			if (result.success) {
 				this._logService.info(LOG_TAG, `Auto-index complete: ${result.message}`);
 				// 启动文件监听（增量重索引触发源，P2-#8）
-				this._graphService.startWatching(this._primaryFolder());
+				void this._startWatching(this._primaryFolder());
 			} else {
 				this._logService.warn(LOG_TAG, `Auto-index failed: ${result.message}`);
 			}
@@ -109,7 +111,7 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 					this._readyFolders.add(key);
 					this._pendingIndex.delete(key);
 					// 多 folder：每个已加载 folder 单独启动监听（增量索引，互不覆盖）
-					this._graphService.startWatching(folder.uri.fsPath);
+					await this._startWatching(folder.uri.fsPath);
 					continue;
 				}
 			} catch { /* file doesn't exist yet */ }
@@ -133,26 +135,53 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		}, AUTO_INDEX_DELAY_MS);
 	}
 
+	/**
+	 * 读取用户在「代码库索引」面板保存的配置（P2）。
+	 * 此前 auto-index 硬编码 `mode:'fast'` + `excludeDirs:[]`，完全绕过用户配置，
+	 * 导致「面板里改了排除目录，但启动自动索引仍按默认扫」。
+	 */
+	private async _readUserIndexConfig(): Promise<IUserIndexConfig | undefined> {
+		try {
+			await this._cbmService.ensureConfigReady();
+			return this._cbmService.getIndexConfig();
+		} catch (err: any) {
+			this._logService.warn(LOG_TAG, `Failed to read user index config, falling back to defaults: ${err?.message || err}`);
+			return undefined;
+		}
+	}
+
+	/** 启动 watcher，并把用户配置的排除目录一并传入（否则 watcher 与索引扫描口径不一致）。 */
+	private async _startWatching(rootPath: string): Promise<void> {
+		if (!rootPath) { return; }
+		const userConfig = await this._readUserIndexConfig();
+		this._graphService.startWatching(rootPath, userConfig?.excludeDirs);
+	}
+
 	private async _autoIndex(): Promise<void> {
 		// [TRACE] codebaseGraphBootstrap._autoIndex 入口
 		this._logService.info(LOG_TAG, `[TRACE] codebaseGraphBootstrap._autoIndex triggered: pending=${this._pendingIndex.size} folders`);
+		const userConfig = await this._readUserIndexConfig();
+		// subPath 是全局单值配置：多 folder 工作区下无法判定它属于哪个 folder，故仅单 folder 时透传
+		const singleFolder = this._workspaceService.getWorkspace().folders.length === 1;
 		// 逐 folder 索引（每个 folder 用其目录名作为唯一项目名，避免多 folder 覆盖）
 		const pending = [...this._pendingIndex.entries()];
 		for (const [key, rootPath] of pending) {
 			const project = this._basename(rootPath) || '_default';
 			const config: IIndexConfig = {
-				mode: 'fast',
-				excludeDirs: [], // Use defaults
+				mode: userConfig?.mode ?? 'fast',
+				excludeDirs: userConfig?.excludeDirs ?? [], // 空 = 仅用默认；graphService 会与默认表取并集
+				keepDirs: userConfig?.keepDirs,
+				subPath: singleFolder ? userConfig?.subPath : undefined,
 				projectName: project,
 			};
-			this._logService.info(LOG_TAG, `Starting auto-index: ${rootPath} (project=${project})`);
+			this._logService.info(LOG_TAG, `Starting auto-index: ${rootPath} (project=${project}, mode=${config.mode}, exclude=${config.excludeDirs.length} items, subPath=${config.subPath || '(none)'})`);
 			try {
 				const result = await this._graphService.indexWorkspace(rootPath, config);
 				if (result.success) {
 					this._readyFolders.add(key);
 					this._pendingIndex.delete(key);
 					// 多 folder：每个已索引 folder 单独启动监听（增量索引，互不覆盖）
-					this._graphService.startWatching(rootPath);
+					this._graphService.startWatching(rootPath, config.excludeDirs);
 					this._logService.info(LOG_TAG, `Auto-index completed for "${project}": ${result.message}`);
 				}
 			} catch (err: any) {

@@ -125,6 +125,8 @@ export class AgentSettingsEditorPane extends EditorPane {
 	private _versionCommits: AgentCommitMeta[] = [];
 	private _marketplaceVersionsContainer: HTMLElement | undefined;
 	private _marketplaceVersionsLoading = false;
+	/** 本地已安装/已发布的商城版本号，用于隐藏「安装此版本」 */
+	private _localMarketVersion: string | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -944,7 +946,13 @@ export class AgentSettingsEditorPane extends EditorPane {
 		container.style.color = 'var(--vscode-descriptionForeground)';
 		container.style.fontSize = '12px';
 		try {
-			const detail = await this.marketplaceService.getPackage(this._agentId);
+			const [detail, installed] = await Promise.all([
+				this.marketplaceService.getPackage(this._agentId),
+				this.marketplaceService.getInstalled().catch(() => [] as { kind: string; storeId: string; version?: string }[]),
+			]);
+			// 本地版本：installed-packages.json 记录优先，fallback 到 agent 声明的 version
+			const record = installed.find(e => e.kind === 'agent' && e.storeId === this._agentId);
+			this._localMarketVersion = record?.version ?? this._agent?.version;
 			this._renderMarketplaceVersions(detail.versions ?? []);
 		} catch {
 			container.textContent = '尚未发布到商城（或商城不可达）';
@@ -1017,21 +1025,33 @@ export class AgentSettingsEditorPane extends EditorPane {
 		row.appendChild(changelog);
 
 		// 安装此版本（商城回滚：覆盖安装旧版本，并写入本地 git 历史）
-		const installBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
-		installBtn.textContent = '安装此版本';
-		installBtn.style.fontSize = '11px';
-		installBtn.style.padding = '2px 10px';
-		if (this._readOnly) {
-			installBtn.disabled = true;
-			installBtn.title = '只读模式下不可安装';
-			installBtn.style.opacity = '0.5';
+		// 本地已是该版本时不显示按钮，改为「当前版本」标记
+		if (this._localMarketVersion && v.version === this._localMarketVersion) {
+			const currentTag = $$('span');
+			currentTag.textContent = '当前版本';
+			currentTag.style.fontSize = '11px';
+			currentTag.style.padding = '2px 10px';
+			currentTag.style.borderRadius = '4px';
+			currentTag.style.background = 'var(--vscode-badge-background, #4d4d4d)';
+			currentTag.style.color = 'var(--vscode-badge-foreground, #fff)';
+			row.appendChild(currentTag);
 		} else {
-			installBtn.onclick = (e) => { e.stopPropagation(); void this._handleInstallMarketVersion(v); };
+			const installBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
+			installBtn.textContent = '安装此版本';
+			installBtn.style.fontSize = '11px';
+			installBtn.style.padding = '2px 10px';
+			if (this._readOnly) {
+				installBtn.disabled = true;
+				installBtn.title = '只读模式下不可安装';
+				installBtn.style.opacity = '0.5';
+			} else {
+				installBtn.onclick = (e) => { e.stopPropagation(); void this._handleInstallMarketVersion(v); };
+			}
+			row.appendChild(installBtn);
 		}
-		row.appendChild(installBtn);
 
-		// 下架（仅作者/owner）
-		if (this._agent && this.agentStudioService.canUploadAgent(this._agent) && !this._readOnly) {
+		// 下架（仅作者/owner + 仅最新版本）：历史版本不允许单独下架
+		if (this._agent && this.agentStudioService.canUploadAgent(this._agent) && !this._readOnly && v.isLatest) {
 			const deleteBtn = $$('button.agent-settings-btn') as HTMLButtonElement;
 			deleteBtn.textContent = '下架';
 			deleteBtn.style.fontSize = '11px';
@@ -1777,11 +1797,25 @@ export class AgentSettingsEditorPane extends EditorPane {
 				continue;
 			}
 
-			try {
-				// Collect skill and MCP references from the agent
-				const skillRefs = this._agent.skills || [];
-				const mcpRefs = this._agent.tools?.filter(t => t.startsWith('mcp:')) || [];
+			// Collect skill and MCP references from the agent（依赖检查与上传共用）
+			const skillRefs = this._agent.skills || [];
+			const mcpRefs = this._agent.tools?.filter(t => t.startsWith('mcp:')) || [];
 
+			// 依赖 skill 冲突检查（先于 agent 自身检查）：任一依赖 slug/name 冲突则中止本次上传
+			const depConflict = await this._checkDepsConflicts(skillRefs);
+			if (depConflict) {
+				this.notificationService.error(`上传中止：${depConflict}`);
+				return;
+			}
+			// agent 自身 slug + name 冲突检查
+			try {
+				await this.marketplaceService.checkPublishConflicts(this._agentId, name, 'agent');
+			} catch (conflictErr) {
+				this.notificationService.error(`上传中止：${conflictErr instanceof Error ? conflictErr.message : String(conflictErr)}`);
+				return;
+			}
+
+			try {
 				// Auto-upload missing skill/MCP dependencies first
 				const uploadedDeps = await this._uploadMissingDeps(skillRefs, mcpRefs, version);
 				if (uploadedDeps > 0) {
@@ -1820,6 +1854,27 @@ export class AgentSettingsEditorPane extends EditorPane {
 				return;
 			}
 		}
+	}
+
+	/**
+	 * 依赖 skill 冲突检查（先于 agent 自身检查）。
+	 * 对每个依赖 skill 校验 slug+name 在商城唯一；返回首个冲突的提示文案，全部通过返回 null。
+	 * 仅检查本地存在（能被上传）的依赖；本地不存在的依赖不参与检查。
+	 */
+	private async _checkDepsConflicts(skillRefs: string[]): Promise<string | null> {
+		for (const slug of skillRefs) {
+			// 与 Agent 同名的依赖由 _uploadMissingDeps 单独提示，这里跳过避免重复报错
+			if (slug === this._agentId) { continue; }
+			// 本地不存在的依赖不会上传，无需检查
+			const skill = this.skillRegistry.getSkill(slug);
+			if (!skill) { continue; }
+			try {
+				await this.marketplaceService.checkPublishConflicts(slug, skill.name || slug, 'skill');
+			} catch (err) {
+				return `依赖 Skill "${skill.name || slug}" 检查未通过：${err instanceof Error ? err.message : String(err)}`;
+			}
+		}
+		return null;
 	}
 
 	/** Auto-upload missing dependencies before uploading the agent. Returns count of uploaded deps. */

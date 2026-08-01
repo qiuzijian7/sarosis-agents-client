@@ -31,6 +31,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { ICodebaseGraphService, IIndexConfig as IGraphIndexConfig } from './codebaseGraphService.js';
+import { COMMON_EXCLUDE_DIRS } from '../common/codebaseIndexDefaults.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -138,7 +139,8 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 
 	// 索引配置：持久化 mode + 排除目录
 	private static readonly STORAGE_KEY_INDEX_CONFIG = 'codebaseMemory.indexConfig';
-	private static readonly DEFAULT_EXCLUDE_DIRS = ['node_modules', '.git', 'build', 'out', 'dist', '.vscode-test', 'extensions', 'test', 'tests', 'resources', 'dev', 'docs', 'doc', 'scripts', '.worktrees', 'deploy-package', 'cli', 'Intermediate', 'Saved', 'Binaries', 'Build'];
+	// 单一来源见 common/codebaseIndexDefaults.ts（UE 目录由 graphService 按 *.uproject 条件叠加）
+	private static readonly DEFAULT_EXCLUDE_DIRS: readonly string[] = COMMON_EXCLUDE_DIRS;
 
 	// Fallback config loaded from .code-workspace files on initialization
 	private _workspaceFileConfig: Partial<IIndexConfig> | null = null;

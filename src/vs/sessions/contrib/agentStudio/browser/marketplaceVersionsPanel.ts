@@ -42,6 +42,8 @@ export class MarketplaceVersionsPanel extends Disposable {
 	private readonly _listContainer: HTMLElement;
 	private _loading = false;
 	private _canModifyResolved: boolean | undefined;
+	/** 本地已安装/已发布的版本号（installed-packages.json 记录），用于隐藏「安装此版本」 */
+	private _localVersion: string | undefined;
 
 	constructor(
 		private readonly _opts: IMarketplaceVersionsPanelOptions,
@@ -74,11 +76,12 @@ export class MarketplaceVersionsPanel extends Disposable {
 		this._listContainer.style.color = 'var(--vscode-descriptionForeground)';
 		this._listContainer.style.fontSize = '12px';
 		try {
-			const [detail, canModify] = await Promise.all([
+			const [detail, localState] = await Promise.all([
 				this.marketplaceService.getPackage(this._opts.storeId),
-				this._resolveCanModify(),
+				this._resolveLocalState(),
 			]);
-			this._canModifyResolved = canModify;
+			this._canModifyResolved = localState.canModify;
+			this._localVersion = localState.localVersion;
 			this._render(detail.versions ?? []);
 		} catch {
 			this._listContainer.textContent = '尚未发布到商城（或商城不可达）';
@@ -87,16 +90,15 @@ export class MarketplaceVersionsPanel extends Disposable {
 		}
 	}
 
-	/** canModify 未显式传入时自动判定：本机发布的（source==='published'）才允许下架 */
-	private async _resolveCanModify(): Promise<boolean> {
-		if (this._opts.canModify !== undefined) { return this._opts.canModify; }
+	/** 一次 getInstalled 同时解析 canModify 与本地版本（installed-packages.json 记录） */
+	private async _resolveLocalState(): Promise<{ canModify: boolean; localVersion: string | undefined }> {
+		let entry: { source?: string; version?: string } | undefined;
 		try {
 			const installed = await this.marketplaceService.getInstalled();
-			const entry = installed.find(e => e.kind === this._opts.kind && e.storeId === this._opts.storeId);
-			return entry?.source === 'published';
-		} catch {
-			return false;
-		}
+			entry = installed.find(e => e.kind === this._opts.kind && e.storeId === this._opts.storeId);
+		} catch { /* 视为无本地记录 */ }
+		const canModify = this._opts.canModify ?? (entry?.source === 'published');
+		return { canModify, localVersion: entry?.version };
 	}
 
 	private _render(versions: readonly IMarketplaceVersion[]): void {
@@ -160,17 +162,28 @@ export class MarketplaceVersionsPanel extends Disposable {
 		changelog.title = v.changelog || '';
 		row.appendChild(changelog);
 
-		// 安装此版本
-		const installBtn = $('button') as HTMLButtonElement;
-		installBtn.textContent = '安装此版本';
-		installBtn.style.fontSize = '11px';
-		installBtn.style.padding = '2px 10px';
-		installBtn.style.cursor = 'pointer';
-		installBtn.onclick = (e) => { e.stopPropagation(); void this._install(v); };
-		row.appendChild(installBtn);
+		// 安装此版本 —— 本地已是该版本时不显示，改为「当前版本」标记
+		if (this._localVersion && v.version === this._localVersion) {
+			const currentTag = $('span');
+			currentTag.textContent = '当前版本';
+			currentTag.style.fontSize = '11px';
+			currentTag.style.padding = '2px 10px';
+			currentTag.style.borderRadius = '4px';
+			currentTag.style.background = 'var(--vscode-badge-background, #4d4d4d)';
+			currentTag.style.color = 'var(--vscode-badge-foreground, #fff)';
+			row.appendChild(currentTag);
+		} else {
+			const installBtn = $('button') as HTMLButtonElement;
+			installBtn.textContent = '安装此版本';
+			installBtn.style.fontSize = '11px';
+			installBtn.style.padding = '2px 10px';
+			installBtn.style.cursor = 'pointer';
+			installBtn.onclick = (e) => { e.stopPropagation(); void this._install(v); };
+			row.appendChild(installBtn);
+		}
 
-		// 下架（仅作者）
-		if (this._canModifyResolved) {
+		// 下架（仅作者 + 仅最新版本）：历史版本不允许单独下架，避免版本链断裂
+		if (this._canModifyResolved && v.isLatest) {
 			const deleteBtn = $('button') as HTMLButtonElement;
 			deleteBtn.textContent = '下架';
 			deleteBtn.style.fontSize = '11px';

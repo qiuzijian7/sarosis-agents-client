@@ -687,7 +687,10 @@ export class CanvasViewport {
 				const textEl = el.querySelector('.canvas-node-text') as HTMLElement | null;
 				if (textEl) {
 					const natural = textEl.scrollHeight;
-					const fitH = Math.max(this._resizeMinH, Math.min(natural, MAX_AUTO_NODE_HEIGHT));
+					// 只增不减：内容超过当前高度才撑高；绝不把显式高度（如文件里的 80px）压小，
+					// 否则会无谓触发重排、破坏文件原有布局（修复「布局混乱」）。
+					const needed = Math.max(this._resizeMinH, Math.min(natural, MAX_AUTO_NODE_HEIGHT));
+					const fitH = Math.max(node.height ?? 0, needed);
 					if (Math.abs((node.height ?? 0) - fitH) > 1) {
 						node.height = fitH;
 						el.style.height = fitH + 'px';
@@ -699,7 +702,9 @@ export class CanvasViewport {
 
 		// 高度变化后重新布局，修正兄弟节点的垂直间距（避免重叠）；
 		// 与参考实现「先测量文本高度、再布局」的顺序一致。
-		if (heightChanged) {
+		// 仅当文件显式指定了布局方向时才自动重排；否则（带显式坐标的文件）保留原坐标，
+		// 避免用默认方向重排而打散既有布局（修复「布局混乱」）。
+		if (heightChanged && data.direction) {
 			this._relayoutFromViewport(data);
 		}
 

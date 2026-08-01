@@ -59,6 +59,7 @@ import { ICodebaseGraphService } from '../codebaseGraphService.js';
 
 import { type KbSearchMode } from './knowledgeBase/kbTreeViewer.js';
 import { IIndexConfig, IndexMode, ICodebaseMemoryMcpService } from '../codebaseMemoryMcpService.js';
+import { COMMON_EXCLUDE_DIRS } from '../../common/codebaseIndexDefaults.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
 import { createKbSqliteStoreProxy } from '../kbSqliteStoreProxy.js';
 import type { IKbSqliteBackend, IKbSqliteDoc } from '../../common/kbSqliteStoreChannel.js';
@@ -2939,7 +2940,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		try {
 			const config: IIndexConfig = {
 				mode: 'fast' as IndexMode,
-				excludeDirs: ['node_modules', '.git', 'build', 'dist', 'out', '.next', 'tmp', 'out-build', 'out-test', 'out-vscode'],
+				// 单一来源见 common/codebaseIndexDefaults.ts（graphService 还会叠加 UE / .cbmignore）
+				excludeDirs: COMMON_EXCLUDE_DIRS.slice(),
 			};
 			await this._codebaseGraphService.indexWorkspace(folderPath, config);
 		} catch (err) {

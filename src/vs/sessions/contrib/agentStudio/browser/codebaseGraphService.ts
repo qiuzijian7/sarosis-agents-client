@@ -49,6 +49,7 @@ import { linkConfigToCode } from './codebaseGraphConfigLink.js';
 import { TraceIngester } from './codebaseGraphTraces.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher, CodebaseGraphChangeEvent } from './codebaseGraphWatcher.js';
 import { CodebaseGraphIncrementalIndexer } from './codebaseGraphIncremental.js';
+import { COMMON_EXCLUDE_DIRS, mergeExcludeDirs, parseCbmIgnore, extractExcludeDirNames } from '../common/codebaseIndexDefaults.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -363,17 +364,12 @@ const LOOP_NODE_TYPES = new Set([
 	'for_statement', 'while_statement', 'do_statement',
 ]);
 
-const DEFAULT_EXCLUDE_DIRS = [
-	'node_modules', '.git', 'build', 'out', 'dist', '.vscode-test',
-	'extensions', 'test', 'tests', 'resources', 'dev', 'docs', 'doc',
-	'scripts', '.worktrees', 'deploy-package', 'cli', '.sarosworkspace',
-	// UE / game-engine dirs — avoid scanning hundreds of thousands of binary/asset files
-	'Binaries', 'Intermediate', 'Programs', 'Saved', 'DerivedDataCache',
-	'ThirdParty', 'Plugins', 'Content', 'Config', 'Build',
-	'.codebase-memory', 'target', '__pycache__', '.next', '.nuxt',
-	'coverage', '.cache', 'tmp', 'temp', 'enc_temp_folder',
-	'Intermediate', 'Saved', 'Binaries', 'Build',
-];
+/**
+ * 通用默认排除目录 —— 单一来源见 `common/codebaseIndexDefaults.ts`。
+ * UE / 游戏引擎等特异性排除不再硬编码，改为读取 code-workspace 的
+ * `search.exclude`/`files.exclude` 配置（见 `_resolveExcludeDirs`）。
+ */
+const DEFAULT_EXCLUDE_DIRS = COMMON_EXCLUDE_DIRS;
 
 const MAX_FILE_SIZE = 1024 * 1024; // 1 MB
 const MAX_LINE_LENGTH = 10000;   // 超过此行长的文件跳过（minified/生成代码会导致 tree-sitter 挂起）
@@ -1398,7 +1394,9 @@ self.onmessage = async function(e) {
 
 
 			// 1. Scan files
-			const excludeDirs = new Set([...DEFAULT_EXCLUDE_DIRS, ...config.excludeDirs]);
+			// 全量索引前刷新缓存：用户可能刚改过 .cbmignore / 刚添加 .uproject
+			this._invalidateExcludeCache(rootPath);
+			const excludeDirs = await this._resolveExcludeDirs(rootPath, config.excludeDirs);
 			this._onDidIndexProgress.fire('📁 扫描文件...');
 			const files = await this._scanFiles(rootPath, excludeDirs, config.subPath, cts.token, config.keepDirs);
 			const filesScanned = files.length;
@@ -1704,10 +1702,14 @@ self.onmessage = async function(e) {
 		const project = this._rootProjectMap.get(this._normalizeRoot(rootPath)) || this._basename(rootPath.replace(/[\\/]+$/, '')) || this._projectName;
 		// 统一入口写回映射（覆盖 loadMerge/自动索引等所有建立 project 的路径，避免 watcher 用错 project）
 		this._rootProjectMap.set(this._normalizeRoot(rootPath), project);
-		// watcher 扫描与索引扫描使用同一套目录排除（否则 Intermediate/ 等目录每轮误报全量 added）
-		const excludeDirs = new Set([...DEFAULT_EXCLUDE_DIRS, ...(extraExcludeDirs ?? [])]);
-		this._logService.info('[CodebaseGraph]', `Starting graph watcher for ${rootPath} (project=${project}, ${supportedExtensions.size} extensions)`);
-		this._graphWatcher.start(rootPath, this._graph.store, project, supportedExtensions, excludeDirs);
+		// watcher 扫描与索引扫描使用同一套目录排除（否则 Intermediate/ 等目录每轮误报全量 added）。
+		// 排除集解析含异步探测（*.uproject / .cbmignore），故 start 延后到解析完成。
+		void this._resolveExcludeDirs(rootPath, extraExcludeDirs).then(excludeDirs => {
+			this._logService.info('[CodebaseGraph]', `Starting graph watcher for ${rootPath} (project=${project}, ${supportedExtensions.size} extensions, ${excludeDirs.size} excluded dirs)`);
+			this._graphWatcher.start(rootPath, this._graph.store, project, supportedExtensions, excludeDirs);
+		}, err => {
+			this._logService.warn('[CodebaseGraph]', `Failed to start watcher for ${rootPath}: ${err?.message || err}`);
+		});
 	}
 
 	private async _onWatcherChange(e: CodebaseGraphChangeEvent): Promise<void> {
@@ -1762,7 +1764,7 @@ self.onmessage = async function(e) {
 			this._graph.setActiveProject(project);
 			this._onDidIndexProgress.fire('⚡ 增量索引：扫描变更文件...');
 
-			const absFiles = await this._scanFiles(rootPath, new Set(DEFAULT_EXCLUDE_DIRS), undefined, cts.token);
+			const absFiles = await this._scanFiles(rootPath, await this._resolveExcludeDirs(rootPath), undefined, cts.token);
 			const relToAbs = new Map<string, string>();
 			for (const abs of absFiles) { relToAbs.set(this._getRelativePath(abs), abs); }
 
@@ -1891,6 +1893,63 @@ self.onmessage = async function(e) {
 		}
 	}
 
+
+	// ─── Exclude Dirs Resolution (P1/P3/P4) ──────────────────────────────────
+
+	/** .cbmignore 解析缓存：归一化 root → 目录名列表 */
+	private readonly _cbmIgnoreCache = new Map<string, string[]>();
+
+	/**
+	 * 读取 code-workspace 的 `search.exclude` / `files.exclude` 配置，提取目录名。
+	 * UE / 游戏引擎等特异性排除由用户在 code-workspace 中显式配置，索引器不再探测 `*.uproject`。
+	 */
+	private _readWorkspaceExcludes(rootPath: string): string[] {
+		const resource = URI.file(rootPath);
+		const searchExclude = this._configurationService.getValue<Record<string, boolean | { when?: string }>>('search.exclude', { resource });
+		const filesExclude = this._configurationService.getValue<Record<string, boolean | { when?: string }>>('files.exclude', { resource });
+		return mergeExcludeDirs(extractExcludeDirNames(searchExclude), extractExcludeDirNames(filesExclude));
+	}
+
+	/** 读取并解析 `<root>/.cbmignore`（P4：此前只写不读）。不存在时返回空列表。 */
+	private async _readCbmIgnore(rootPath: string): Promise<string[]> {
+		const key = this._normalizeRoot(rootPath);
+		const cached = this._cbmIgnoreCache.get(key);
+		if (cached !== undefined) { return cached; }
+		let dirs: string[] = [];
+		try {
+			const content = await this._fileService.readFile(URI.joinPath(URI.file(rootPath), '.cbmignore'));
+			dirs = parseCbmIgnore(content.value.toString());
+		} catch {
+			// 文件不存在是常态，不记日志
+		}
+		this._cbmIgnoreCache.set(key, dirs);
+		return dirs;
+	}
+
+	/**
+	 * 解析某个 root 的最终排除目录集合：
+	 * 通用默认 + code-workspace 的 `search.exclude`/`files.exclude` + `.cbmignore` + 调用方额外指定。
+	 */
+	private async _resolveExcludeDirs(rootPath: string, extra?: readonly string[]): Promise<Set<string>> {
+		const cbmIgnore = await this._readCbmIgnore(rootPath);
+		const wsExcludes = this._readWorkspaceExcludes(rootPath);
+		const merged = mergeExcludeDirs(
+			DEFAULT_EXCLUDE_DIRS,
+			wsExcludes,
+			cbmIgnore,
+			extra,
+		);
+		if (wsExcludes.length || cbmIgnore.length) {
+			this._logService.info('[CodebaseGraph]', `[exclude] ${rootPath}: workspace=${wsExcludes.length} items, cbmignore=${cbmIgnore.length} items, total=${merged.length}`);
+		}
+		return new Set(merged);
+	}
+
+	/** 使排除目录相关缓存失效（配置变更 / 重新索引时调用）。 */
+	private _invalidateExcludeCache(rootPath: string): void {
+		const key = this._normalizeRoot(rootPath);
+		this._cbmIgnoreCache.delete(key);
+	}
 
 	// ─── File Scanning ───────────────────────────────────────────────────────
 

@@ -32,6 +32,8 @@ import {
 } from '../common/marketplace.js';
 import { IPackageInstallerRegistry, PackageManifest } from '../common/packageInstaller.js';
 import { ITofAuthService } from '../common/tofAuth.js';
+import { compareSemver } from './publishVersioning.js';
+import { resolvePublishAuthor } from '../common/publishAuthor.js';
 
 const TOKEN_KEY = 'saros.marketplace.token';
 const USER_KEY = 'saros.marketplace.user';
@@ -78,7 +80,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		@IStorageService private readonly storageService: IStorageService,
 		@IConfigurationService private readonly configService: IConfigurationService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
-			@IPackageInstallerRegistry private readonly installerRegistry: IPackageInstallerRegistry,
+		@IPackageInstallerRegistry private readonly installerRegistry: IPackageInstallerRegistry,
 		@ITofAuthService private readonly tofAuthService: ITofAuthService,
 		@ICommandService private readonly commandService: ICommandService,
 	) {
@@ -243,14 +245,24 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	 * 优先复用 TOF 登录态，未登录则尝试同步。
 	 */
 	private async _ensureLoggedIn(): Promise<void> {
-		if (this._user && this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION)) {
-			return; // 已登录且有 token
-		}
-		// 尝试用 TOF 票据登录
 		const tofUser = this.tofAuthService.currentUser;
 		const ticket = this.tofAuthService.currentTicket;
+		// TOF 已登录：强制商城会话与 TOF 身份一致，不一致则用 TOF 票据重新登录。
+		// 否则会沿用陈旧会话（如 admin）的 token 发布，导致包作者归属错误
+		// （服务端按 Bearer token 定作者，会覆盖 manifest 里的 author 字段）。
 		if (tofUser && ticket) {
+			if (this._user && this._user.username === tofUser.login_name
+				&& this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION)) {
+				return; // 身份一致且有 token
+			}
+			if (this._user && this._user.username !== tofUser.login_name) {
+				this.logService.warn(`[Marketplace] 商城会话(${this._user.username})与 TOF 身份(${tofUser.login_name})不一致，重新登录`);
+			}
 			await this.loginWithTof();
+			return;
+		}
+		// TOF 未登录：沿用已有商城会话（纯商城账号场景）
+		if (this._user && this.storageService.get(TOKEN_KEY, StorageScope.APPLICATION)) {
 			return;
 		}
 		throw new Error('未登录商城，请先在 VsSaros 中完成 TOF 登录');
@@ -266,7 +278,53 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		if (opts.pageSize) { qs.set('pageSize', String(opts.pageSize)); }
 		if (opts.sort) { qs.set('sort', opts.sort); }
 		const res = await this.api<{ items: any[]; total: number }>('GET', `/packages?${qs.toString()}`);
-		return { items: res.items.map(mapPackage), total: res.total };
+		// 按 slug 去重：服务端可能按版本返回多条同 slug 记录，列表只保留最新版本的一条
+		const bySlug = new Map<string, IMarketplacePackage>();
+		for (const pkg of res.items.map(mapPackage)) {
+			const existing = bySlug.get(pkg.slug);
+			if (!existing || compareSemver(pkg.latestVersion ?? '', existing.latestVersion ?? '') > 0) {
+				bySlug.set(pkg.slug, pkg);
+			}
+		}
+		// 再按名称去重：同名但 slug 不同的重复发布（历史上传过多个 slug），
+		// 列表只保留版本最高的一条，避免同一名称出现多张卡片
+		const byName = new Map<string, IMarketplacePackage>();
+		for (const pkg of bySlug.values()) {
+			const key = pkg.name.trim().toLowerCase();
+			const existing = byName.get(key);
+			if (!existing || compareSemver(pkg.latestVersion ?? '', existing.latestVersion ?? '') > 0) {
+				byName.set(key, pkg);
+			}
+		}
+		return { items: [...byName.values()], total: byName.size };
+	}
+
+	/**
+	 * 发布前冲突检查：slug 与 name 均需在商城唯一，否则抛错（上传失败）。
+	 * - slug 冲突：已有同 slug 但不同 kind 的包（slug 全局唯一）
+	 * - name 冲突：已有同名（忽略大小写）但不同 slug 的包
+	 * 已存在的同 slug 同 kind 包（版本更新）不算冲突。
+	 */
+	async checkPublishConflicts(slug: string, name: string, kind: PackageKind): Promise<void> {
+		// slug 冲突：同 slug 但不同 kind
+		try {
+			const existing = await this.getPackage(slug);
+			if (existing.kind !== kind) {
+				throw new Error(`商城已存在同名的 ${existing.kind} 包 "${slug}"，与本次发布的 ${kind} 类型冲突，请为其中一方更换标识后重试`);
+			}
+		} catch (err) {
+			if (err instanceof Error && err.message.includes('类型冲突')) { throw err; }
+			// 404 = slug 未被占用，继续 name 检查
+		}
+		// name 冲突：同名（忽略大小写）但不同 slug
+		const target = name.trim().toLowerCase();
+		if (target) {
+			const { items } = await this.listPackages({ kind, pageSize: 200 });
+			const conflict = items.find(p => p.slug !== slug && p.name.trim().toLowerCase() === target);
+			if (conflict) {
+				throw new Error(`商城已存在同名 ${kind} 包 "${conflict.name}"（slug: ${conflict.slug}），与本次发布的 "${name}" 名称冲突，请更换名称或 slug 后重试`);
+			}
+		}
 	}
 
 	async getPackage(slug: string): Promise<IMarketplacePackageDetail> {
@@ -284,6 +342,13 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 
 	// ── 下载安装 ──────────────────────────────────────────────
 	async download(storeId: string, version: string, kind: PackageKind): Promise<IInstallResult> {
+		// 空版本号 → 自动解析为最新版（自动装依赖等调用方会传 ''，
+		// 直接拼 URL 会得到 /versions//download 双斜杠 404）
+		if (!version) {
+			const detail = await this.getPackage(storeId);
+			version = detail.versions.find(v => v.isLatest)?.version ?? detail.latestVersion ?? '';
+			if (!version) { throw new Error(`包 ${storeId} 没有可下载的版本`); }
+		}
 		this.logService.info(`[Marketplace] 下载 ${kind}/${storeId} v${version}`);
 
 		// 确保已登录（复用 TOF 登录态）
@@ -489,13 +554,15 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		const { localDir, manifest } = await installer.preparePack(localId);
 
 		// Apply user-provided overrides to manifest
+		// author 三级兜底：显式 override > manifest 自带 > 当前登录用户
+		// （依赖 skill 自动上传等路径不传 author，也能落到登录者身份）
 		const finalManifest: Record<string, unknown> = {
 			...manifest,
 			name: opts.name || manifest.name,
 			version: opts.version || manifest.version,
 			description: opts.description ?? manifest.description,
 			category: opts.category ?? manifest.category,
-			author: opts.author ?? manifest.author,
+			author: opts.author ?? manifest.author ?? resolvePublishAuthor(this._user),
 		};
 		// Inject skillRefs/mcpRefs if provided
 		if (kind === 'agent') {
@@ -503,6 +570,9 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			if (opts.mcpRefs?.length) { finalManifest.mcpRefs = opts.mcpRefs; }
 		}
 		const version = finalManifest.version;
+
+		// 1.4 slug + name 冲突检查：两者均需在商城唯一，否则上传失败
+		await this.checkPublishConflicts(localId, String(finalManifest.name ?? localId), kind);
 
 		// 1.5 预检：如果服务器已有同版本，拒绝上传；如果包不存在，先创建
 		let packageExists = false;
@@ -619,6 +689,12 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	async deleteVersion(storeId: string, version: string): Promise<void> {
 		this.logService.info(`[Marketplace] 下架版本 ${storeId} v${version}`);
 		await this._ensureLoggedIn();
+		// 防线：仅允许下架最新版本（UI 层已限制，此处兜底防止绕过）
+		const detail = await this.getPackage(storeId);
+		const latest = detail.versions.find(v => v.isLatest)?.version ?? detail.latestVersion;
+		if (latest && version !== latest) {
+			throw new Error(`仅允许下架最新版本（当前最新为 v${latest}），v${version} 为历史版本`);
+		}
 		await this.api('DELETE', `/packages/${storeId}/versions/${encodeURIComponent(version)}`);
 	}
 

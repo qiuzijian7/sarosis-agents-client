@@ -118,13 +118,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
 	// Create tar.gz from a directory in the extension host (for publish)
 	// Usage: vscode.commands.executeCommand('marketplace.createTar', { sourceDir, outputFile })
+	// 排除规则：不打包 VCS 元数据、编译缓存、系统垃圾文件，避免泄漏本地 git 历史与机器相关产物
+	const TAR_EXCLUDES = ['.git', '.svn', '.hg', '__pycache__', '*.pyc', '*.pyo', '.DS_Store', 'Thumbs.db'];
 	context.subscriptions.push(
 		vscode.commands.registerCommand('marketplace.createTar', async (opts: {
 			sourceDir: string;
 			outputFile: string;
 		}): Promise<void> => {
 			return new Promise((resolve, reject) => {
-				execFile('tar', ['-czf', opts.outputFile, '-C', opts.sourceDir, '.'], (err) => {
+				const args = [...TAR_EXCLUDES.map(e => `--exclude=${e}`), '-czf', opts.outputFile, '-C', opts.sourceDir, '.'];
+				execFile('tar', args, (err) => {
 					if (err) {
 						reject(new Error(`tar compression failed: ${err.message}`));
 					} else {

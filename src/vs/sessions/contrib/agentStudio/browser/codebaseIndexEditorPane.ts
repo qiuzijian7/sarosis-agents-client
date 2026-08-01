@@ -30,6 +30,7 @@ import { CodebaseIndexEditorInput } from './codebaseIndexEditorInput.js';
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { COMMON_EXCLUDE_DIRS } from '../common/codebaseIndexDefaults.js';
 
 
 export class CodebaseIndexEditorPane extends EditorPane {
@@ -104,7 +105,7 @@ export class CodebaseIndexEditorPane extends EditorPane {
 
 		// 读取已保存的索引配置（持久化到 workspace storage 或 .code-workspace 文件），用于回填表单
 		let savedMode: IndexMode = 'fast';
-		let savedExcl = 'node_modules,.git,build,dist,out,.next,tmp';
+		let savedExcl = COMMON_EXCLUDE_DIRS.join(',');
 		let savedKeep = '';
 		try {
 			await this._cbmService.ensureConfigReady();
@@ -290,7 +291,7 @@ export class CodebaseIndexEditorPane extends EditorPane {
 
 		const config: IIndexConfig = {
 			mode,
-			excludeDirs: excludeDirs.length ? excludeDirs : ['node_modules', '.git', 'build', 'dist', 'out', '.next', 'tmp'],
+			excludeDirs: excludeDirs.length ? excludeDirs : COMMON_EXCLUDE_DIRS.slice(),
 			keepDirs: keepDirs.length ? keepDirs : undefined,
 		};
 

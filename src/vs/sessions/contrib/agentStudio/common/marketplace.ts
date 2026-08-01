@@ -206,6 +206,14 @@ export interface IMarketplaceService {
 	publish(localId: string, kind: PackageKind, opts?: IPublishOptions): Promise<{ version: string }>;
 
 	/**
+	 * 发布前冲突检查：slug 与 name 均需在商城唯一，否则抛错。
+	 * - slug 冲突：已有同 slug 但不同 kind 的包
+	 * - name 冲突：已有同名（忽略大小写）但不同 slug 的包
+	 * 供 publish 内部及 agent 依赖（skill 先检）复用。
+	 */
+	checkPublishConflicts(slug: string, name: string, kind: PackageKind): Promise<void>;
+
+	/**
 	 * 下架指定版本（仅作者）。服务端会在删除 is_latest 版本后自动重算最新版本。
 	 */
 	deleteVersion(storeId: string, version: string): Promise<void>;

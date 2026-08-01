@@ -20,6 +20,7 @@ import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInp
 import { CodebaseGraphViewerEditorInput } from './codebaseGraphViewerEditorInput.js';
 import { ICodebaseMemoryMcpService, IIndexConfig } from './codebaseMemoryMcpService.js';
 import { ICodebaseGraphService, IGraphStatus } from './codebaseGraphService.js';
+import { COMMON_EXCLUDE_DIRS } from '../common/codebaseIndexDefaults.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
@@ -414,7 +415,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 		const exclInput = append(exclRow, $('input.cbm-input')) as HTMLInputElement;
 		exclInput.type = 'text';
 		exclInput.value = config.excludeDirs.join(', ');
-		exclInput.placeholder = 'node_modules, .git, build, out, dist, Intermediate, Saved, Binaries';
+		exclInput.placeholder = COMMON_EXCLUDE_DIRS.slice(0, 6).join(', ') + ', …';
 
 		// Keep dirs (保留目录：即使父目录被排除也保留)
 		const keepRow = append(body, $('.cbm-config-row'));

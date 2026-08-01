@@ -28,6 +28,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IWorkflowStorageService, IStoredWorkflow } from '../common/workflowStorage.js';
 import { IWorkflowVersionService } from '../common/workflowVersionTypes.js';
 import { ITofAuthService } from '../common/tofAuth.js';
+import { resolvePublishAuthor } from '../common/publishAuthor.js';
 import { Event, Emitter } from '../../../../base/common/event.js';
 
 // CSS 注入的唯一 ID，避免重复注入
@@ -399,16 +400,19 @@ export class WorkflowPublishModal extends Disposable {
 		splitRow.appendChild(catCol);
 		pubSection.appendChild(splitRow);
 
-		// 作者
+		// 作者 — 自动从登录信息获取，只读（作者身份应由登录态决定）
 		const authorRow = $('div.wpm-form-row.col');
 		const authorLabel = $('span.wpm-label-col');
-		authorLabel.textContent = '作者';
+		authorLabel.textContent = '作者（自动取自登录账号）';
 		authorRow.appendChild(authorLabel);
 		const authorInput = $('input.wpm-input') as HTMLInputElement;
 		authorInput.type = 'text';
 		authorInput.id = 'wpm-field-author';
-		authorInput.value = this.tofAuthService.currentUser?.login_name || this.workflow.author || '';
-		authorInput.placeholder = '作者名称';
+		authorInput.value = resolvePublishAuthor({ username: this.tofAuthService.currentUser?.login_name }, this.workflow.author) || '';
+		authorInput.readOnly = true;
+		authorInput.style.opacity = '0.7';
+		authorInput.style.cursor = 'not-allowed';
+		authorInput.title = this.tofAuthService.currentUser ? `作者自动取自登录账号（${this.tofAuthService.currentUser.login_name}）` : '作者（未获取到登录信息）';
 		authorRow.appendChild(authorInput);
 		pubSection.appendChild(authorRow);
 
@@ -698,6 +702,11 @@ export class WorkflowPublishModal extends Disposable {
 
 	private async _handlePublish(): Promise<void> {
 		if (this._isPublishing) { return; }
+		// 未登录不允许上传
+		if (!this.tofAuthService.currentUser) {
+			this.notificationService.warn('未登录商城，请先完成 TOF 登录后再上传');
+			return;
+		}
 		this._isPublishing = true;
 
 		const version = this._getFieldValue('version');
