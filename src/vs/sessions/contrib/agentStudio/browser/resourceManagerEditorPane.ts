@@ -20,6 +20,7 @@ import { ResourceManagerEditorInput, ResourceManagerEditorPane_ID } from './reso
 import { ISkillRegistry, ISkillDefinition, SkillActivation } from '../common/skills.js';
 import { ISkillInstallService } from '../common/skillHubTypes.js';
 import { skillSourceLabel } from './skillSourceLabel.js';
+import { MdFileEditorPane } from './mdFileEditorPane.js';
 
 
 import { renderMarkdown } from '../../../../base/browser/markdownRenderer.js';
@@ -32,6 +33,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { ISkillVersionService, SkillVersionService } from './skillVersionService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { MarketplaceVersionsPanel } from './marketplaceVersionsPanel.js';
+import { isValidSkillId, slugifySkillId } from '../common/skillId.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -421,6 +423,43 @@ export class ResourceManagerEditorPane extends EditorPane {
 		titleName.style.fontWeight = '600';
 		title.appendChild(titleName);
 
+		// Rename button (pencil icon) next to skill name
+		const renameBtn = $('button') as HTMLButtonElement;
+		renameBtn.textContent = '\u270F\uFE0F';
+		renameBtn.title = '重命名技能';
+		renameBtn.style.background = 'none';
+		renameBtn.style.border = '1px solid transparent';
+		renameBtn.style.color = 'var(--vscode-foreground)';
+		renameBtn.style.cursor = 'pointer';
+		renameBtn.style.padding = '2px 6px';
+		renameBtn.style.borderRadius = '4px';
+		renameBtn.style.fontSize = '14px';
+		renameBtn.onmouseenter = () => { renameBtn.style.borderColor = 'var(--vscode-focusBorder)'; };
+		renameBtn.onmouseleave = () => { renameBtn.style.borderColor = 'transparent'; };
+		renameBtn.onclick = () => {
+			void (async () => {
+				const input = await this._showRenameSkillDialog(item);
+				if (!input) { return; }
+				try {
+					const result = await this.skillInstallService.renameSkill(item.id, input.name, input.slug);
+					if (result.success) {
+						this._currentItemId = result.skillId;
+						this._renderDetail();
+						this.notificationService.info(`✅ 已重命名为 "${result.skillName}"`);
+						return;
+					}
+					// 失败：弹通知 + 对话框（详情）
+					this.notificationService.error(`❌ 重命名失败：${result.error ?? '未知错误'}`);
+					await this.dialogService.info('重命名失败', result.error ?? '未知错误');
+				} catch (err) {
+					// 兜底：renameSkill 抛异常（未被内部捕获）也必须有可见反馈
+					const msg = err instanceof Error ? err.message : String(err);
+					this.notificationService.error(`❌ 重命名异常：${msg}`);
+				}
+			})();
+		};
+		title.appendChild(renameBtn);
+
 		// Version badge next to title
 		if (item.version) {
 			const verBadge = $('span');
@@ -509,9 +548,12 @@ export class ResourceManagerEditorPane extends EditorPane {
 			editBtn.style.borderRadius = '3px';
 			editBtn.style.cursor = 'pointer';
 			editBtn.onclick = async () => {
-				// Open SKILL.md in a separate editor tab
+				// 打开 SKILL.md 并直接切到 Markdown（源码/可编辑）模式，而非只读预览
 				const skillFileUri = URI.joinPath(URI.file(item.resource!.path), 'SKILL.md');
-				await this.editorService.openEditor({ resource: skillFileUri });
+				const pane = await this.editorService.openEditor({ resource: skillFileUri });
+				if (pane instanceof MdFileEditorPane) {
+					pane.setMode('markdown');
+				}
 			};
 			actions.appendChild(editBtn);
 		}
@@ -724,11 +766,14 @@ export class ResourceManagerEditorPane extends EditorPane {
 				uploadBtn.textContent = '\u23F3 上传中...';
 				uploadBtn.disabled = true;
 				try {
-					const result = await this.marketplaceService.publish(storeId, pkgKind as any, formData);
-					this.notificationService.info(`\u2705 ${item.name} v${result.version} 已上传到商城`);
-					// Auto-commit + tag for version history
-					this.skillVersionService.autoCommit(item.id,
-						`publish: v${result.version} to marketplace`).catch(() => {});
+				const result = await this.marketplaceService.publish(storeId, pkgKind as any, formData);
+				this.notificationService.info(`\u2705 ${item.name} v${result.version} 已上传到商城`);
+				// 把发布版本写回本地 SKILL.md frontmatter —— 否则本地无 version 被视为 '0'，
+				// 商城状态检查会误报「升级到 vX」（实际刚发布的就是最新版）
+				await this.skillInstallService.setSkillVersion(item.id, result.version);
+				// Auto-commit + tag for version history（在版本写回之后，快照含 version 字段）
+				this.skillVersionService.autoCommit(item.id,
+					`publish: v${result.version} to marketplace`).catch(() => {});
 					this.skillVersionService.tag(item.id, `v${result.version}`).catch(() => {});
 					// Trigger registry reload so integration view refreshes its skill list
 					await this.skillRegistry.reload();
@@ -740,6 +785,232 @@ export class ResourceManagerEditorPane extends EditorPane {
 				}
 			};
 			actions.appendChild(uploadBtn);
+		});
+	}
+
+	/**
+	 * 重命名技能对话框：同时编辑显示名（name）与 slug（技能 id / 目录名）。
+	 *
+	 * 交互：
+	 *  - slug 默认跟随 name 自动 slug 化（对齐 common/skillId.ts 规则），用户手动编辑 slug 后停止跟随；
+	 *  - slug 留空则提交时按 name 自动生成；中文名等无法生成有效 slug 时必须显式填写；
+	 *  - 显式 slug 会写入 frontmatter `id` 作为权威键（Hermes identifier 语义）。
+	 *
+	 * 返回 { name, slug }；取消/无变化返回 undefined。
+	 */
+	private _showRenameSkillDialog(item: IResourceItem): Promise<{ name: string; slug: string } | undefined> {
+		return new Promise((resolve) => {
+			// Overlay
+			const overlay = $('div');
+			overlay.style.position = 'absolute';
+			overlay.style.inset = '0';
+			overlay.style.background = 'rgba(0,0,0,0.5)';
+			overlay.style.display = 'flex';
+			overlay.style.alignItems = 'center';
+			overlay.style.justifyContent = 'center';
+			overlay.style.zIndex = '1000';
+
+			let settled = false;
+			const finish = (val: { name: string; slug: string } | undefined) => {
+				if (settled) { return; }
+				settled = true;
+				overlay.remove();
+				resolve(val);
+			};
+			overlay.onclick = (e) => { if (e.target === overlay) { finish(undefined); } };
+
+			// Dialog
+			const dialog = $('div');
+			dialog.style.background = 'var(--vscode-editor-background)';
+			dialog.style.border = '1px solid var(--vscode-panel-border)';
+			dialog.style.borderRadius = '8px';
+			dialog.style.width = '440px';
+			dialog.style.maxWidth = '90%';
+			dialog.style.display = 'flex';
+			dialog.style.flexDirection = 'column';
+			dialog.style.boxShadow = '0 8px 24px rgba(0,0,0,0.4)';
+			dialog.onclick = (e) => e.stopPropagation();
+
+			// Head
+			const head = $('div');
+			head.style.display = 'flex';
+			head.style.alignItems = 'center';
+			head.style.justifyContent = 'space-between';
+			head.style.padding = '14px 18px';
+			head.style.borderBottom = '1px solid var(--vscode-panel-border)';
+			const headTitle = $('span');
+			headTitle.textContent = '重命名技能';
+			headTitle.style.fontSize = '14px';
+			headTitle.style.fontWeight = '600';
+			head.appendChild(headTitle);
+			const closeBtn = $('button') as HTMLButtonElement;
+			closeBtn.textContent = '✕';
+			closeBtn.style.background = 'none';
+			closeBtn.style.border = 'none';
+			closeBtn.style.color = 'var(--vscode-descriptionForeground)';
+			closeBtn.style.cursor = 'pointer';
+			closeBtn.style.fontSize = '16px';
+			closeBtn.onclick = () => finish(undefined);
+			head.appendChild(closeBtn);
+			dialog.appendChild(head);
+
+			// Body
+			const body = $('div');
+			body.style.padding = '18px';
+
+			const createField = (labelText: string, inputEl: HTMLElement, hintText?: string): HTMLElement => {
+				const field = $('div');
+				field.style.marginBottom = '14px';
+				const label = $('label');
+				label.textContent = labelText;
+				label.style.display = 'block';
+				label.style.fontSize = '12px';
+				label.style.color = 'var(--vscode-descriptionForeground)';
+				label.style.marginBottom = '4px';
+				field.appendChild(label);
+				inputEl.style.width = '100%';
+				inputEl.style.padding = '6px 10px';
+				inputEl.style.background = 'var(--vscode-input-background)';
+				inputEl.style.border = '1px solid var(--vscode-input-border)';
+				inputEl.style.borderRadius = '4px';
+				(inputEl as HTMLInputElement).style.color = 'var(--vscode-input-foreground)';
+				inputEl.style.fontSize = '13px';
+				(inputEl as HTMLInputElement).style.outline = 'none';
+				inputEl.style.boxSizing = 'border-box';
+				field.appendChild(inputEl);
+				if (hintText) {
+					const hint = $('div');
+					hint.textContent = hintText;
+					hint.style.fontSize = '11px';
+					hint.style.color = 'var(--vscode-descriptionForeground)';
+					hint.style.marginTop = '4px';
+					field.appendChild(hint);
+				}
+				return field;
+			};
+
+			// 名称
+			const nameInput = $('input') as HTMLInputElement;
+			nameInput.type = 'text';
+			nameInput.value = item.name;
+			nameInput.onfocus = () => { nameInput.style.borderColor = 'var(--vscode-focusBorder)'; };
+			nameInput.onblur = () => { nameInput.style.borderColor = 'var(--vscode-input-border)'; };
+			body.appendChild(createField('名称 *', nameInput, '人类可读显示名，可含中文/空格'));
+
+			// Slug
+			const slugInput = $('input') as HTMLInputElement;
+			slugInput.type = 'text';
+			slugInput.value = item.id;
+			slugInput.spellcheck = false;
+			slugInput.onfocus = () => { slugInput.style.borderColor = 'var(--vscode-focusBorder)'; };
+			slugInput.onblur = () => { slugInput.style.borderColor = 'var(--vscode-input-border)'; };
+			body.appendChild(createField('Slug（技能 ID / 目录名）', slugInput, '小写字母开头，仅含小写字母/数字/-/_；留空则按名称自动生成'));
+
+			// 行内校验提示
+			const errLabel = $('div');
+			errLabel.style.fontSize = '12px';
+			errLabel.style.color = 'var(--vscode-errorForeground)';
+			errLabel.style.marginTop = '-8px';
+			errLabel.style.marginBottom = '10px';
+			errLabel.style.display = 'none';
+			body.appendChild(errLabel);
+			const showError = (msg: string) => {
+				errLabel.textContent = msg;
+				errLabel.style.display = msg ? 'block' : 'none';
+			};
+
+			// slug 跟随 name 自动生成，直到用户手动编辑 slug
+			let slugDirty = false;
+			slugInput.addEventListener('input', () => {
+				slugDirty = slugInput.value.trim().length > 0;
+				showError('');
+			});
+			nameInput.addEventListener('input', () => {
+				if (!slugDirty) {
+					slugInput.value = slugifySkillId(nameInput.value);
+				}
+				showError('');
+			});
+
+			dialog.appendChild(body);
+
+			// Footer
+			const footer = $('div');
+			footer.style.display = 'flex';
+			footer.style.justifyContent = 'flex-end';
+			footer.style.gap = '8px';
+			footer.style.padding = '12px 18px';
+			footer.style.borderTop = '1px solid var(--vscode-panel-border)';
+
+			const cancelBtn = $('button') as HTMLButtonElement;
+			cancelBtn.textContent = '取消';
+			cancelBtn.style.padding = '6px 14px';
+			cancelBtn.style.background = 'transparent';
+			cancelBtn.style.color = 'var(--vscode-foreground)';
+			cancelBtn.style.border = '1px solid var(--vscode-panel-border)';
+			cancelBtn.style.borderRadius = '4px';
+			cancelBtn.style.cursor = 'pointer';
+			cancelBtn.style.fontSize = '13px';
+			cancelBtn.onclick = () => finish(undefined);
+			footer.appendChild(cancelBtn);
+
+			const okBtn = $('button') as HTMLButtonElement;
+			okBtn.textContent = '确定';
+			okBtn.style.padding = '6px 14px';
+			okBtn.style.background = 'var(--vscode-button-background)';
+			okBtn.style.color = 'var(--vscode-button-foreground)';
+			okBtn.style.border = 'none';
+			okBtn.style.borderRadius = '4px';
+			okBtn.style.cursor = 'pointer';
+			okBtn.style.fontSize = '13px';
+
+			const submit = () => {
+				const name = nameInput.value.trim();
+				const slug = slugInput.value.trim().toLowerCase();
+				if (!name) {
+					showError('名称不能为空');
+					nameInput.focus();
+					return;
+				}
+				if (slug && !isValidSkillId(slug)) {
+					showError(`Slug "${slug}" 不合法：须以小写字母开头，仅含小写字母/数字/-/_`);
+					slugInput.focus();
+					return;
+				}
+				// 无变化 → 视为取消
+				const effectiveSlug = slug || slugifySkillId(name);
+				if (name === item.name && effectiveSlug === item.id) {
+					finish(undefined);
+					return;
+				}
+				if (!effectiveSlug) {
+					showError('无法从名称生成有效 slug（需含小写字母/数字），请手动填写 slug');
+					slugInput.focus();
+					return;
+				}
+				finish({ name, slug });
+			};
+			okBtn.onclick = submit;
+			footer.appendChild(okBtn);
+			dialog.appendChild(footer);
+
+			// 键盘：Enter 提交 / Esc 取消（阻止全局键盘服务拦截，避免 IME 组词误提交）
+			dialog.onkeydown = (e: KeyboardEvent) => {
+				if (e.isComposing || e.keyCode === 229) { return; }
+				e.stopPropagation();
+				if (e.key === 'Enter') {
+					e.preventDefault();
+					submit();
+				} else if (e.key === 'Escape') {
+					e.preventDefault();
+					finish(undefined);
+				}
+			};
+
+			overlay.appendChild(dialog);
+			this._container.appendChild(overlay);
+			nameInput.focus();
+			nameInput.select();
 		});
 	}
 

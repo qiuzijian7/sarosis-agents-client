@@ -21,7 +21,7 @@ import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
 import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
 import { IMarketplaceService, IMarketplacePackage } from '../common/marketplace.js';
 import { ISkillRegistry } from '../common/skills.js';
-import { ISkillInstallService } from '../common/skillHubTypes.js';
+import { ISkillInstallService, ISkillFolderUploadFile } from '../common/skillHubTypes.js';
 
 // ─── EditorPane ──────────────────────────────────────────────────────────────
 
@@ -172,18 +172,19 @@ export class SkillMarketEditorPane extends EditorPane {
 		refreshBtn.onclick = () => { void this._loadPackages(); };
 		actions.appendChild(refreshBtn);
 
-		const localBtn = $('button') as HTMLButtonElement;
-		localBtn.textContent = '\u{1F4C1} 从本地文件安装';
-		localBtn.style.padding = '4px 12px';
-		localBtn.style.fontSize = '12px';
-		localBtn.style.background = 'var(--vscode-button-secondaryBackground)';
-		localBtn.style.color = 'var(--vscode-button-secondaryForeground)';
-		localBtn.style.border = '1px solid var(--vscode-panel-border)';
-		localBtn.style.borderRadius = '6px';
-		localBtn.style.cursor = 'pointer';
-		localBtn.style.whiteSpace = 'nowrap';
-		localBtn.onclick = () => this._showLocalInstallDialog();
-		actions.appendChild(localBtn);
+		const folderBtn = $('button') as HTMLButtonElement;
+		folderBtn.textContent = '\u{1F5C2} 从文件夹安装';
+		folderBtn.title = '选择包含 SKILL.md 的技能文件夹，整体复制到 ~/.vssaros/skills（过滤 .git/__pycache__ 等并初始化 .git）';
+		folderBtn.style.padding = '4px 12px';
+		folderBtn.style.fontSize = '12px';
+		folderBtn.style.background = 'var(--vscode-button-secondaryBackground)';
+		folderBtn.style.color = 'var(--vscode-button-secondaryForeground)';
+		folderBtn.style.border = '1px solid var(--vscode-panel-border)';
+		folderBtn.style.borderRadius = '6px';
+		folderBtn.style.cursor = 'pointer';
+		folderBtn.style.whiteSpace = 'nowrap';
+		folderBtn.onclick = () => this._showFolderInstallDialog();
+		actions.appendChild(folderBtn);
 
 		const urlBtn = $('button') as HTMLButtonElement;
 		urlBtn.textContent = '\u{1F517} 从 URL 安装';
@@ -571,29 +572,34 @@ export class SkillMarketEditorPane extends EditorPane {
 	//  INSTALL DIALOGS
 	// ══════════════════════════════════════════════════════════════════════════
 
-	private _showLocalInstallDialog(): void {
-		const fileInput = $('input') as HTMLInputElement;
-		fileInput.type = 'file';
-		fileInput.accept = '.md,.markdown';
-		fileInput.style.display = 'none';
-		fileInput.onchange = async () => {
-			const file = fileInput.files?.[0];
-			if (!file) { return; }
-			const text = await file.text();
-			const result = await this.skillInstallService.installFromContent(text);
+	private _showFolderInstallDialog(): void {
+		// 用 Chromium 原生 webkitdirectory 选择文件夹（沙箱安全，不依赖原生对话框 IPC）
+		const input = $('input') as HTMLInputElement;
+		input.type = 'file';
+		input.style.display = 'none';
+		input.setAttribute('webkitdirectory', '');
+		input.onchange = async () => {
+			const fileList = input.files;
+			input.remove();
+			if (!fileList || fileList.length === 0) { return; }
+			const files: ISkillFolderUploadFile[] = [];
+			for (const file of Array.from(fileList)) {
+				// webkitRelativePath 形如 "<文件夹>/SKILL.md"，去掉首段根文件夹名
+				const rawPath = file.webkitRelativePath || file.name;
+				const relativePath = rawPath.includes('/') ? rawPath.split('/').slice(1).join('/') : file.name;
+				const data = new Uint8Array(await file.arrayBuffer());
+				files.push({ relativePath, data });
+			}
+			const result = await this.skillInstallService.installFromFolderUpload(files);
 			if (result.success) {
-				void this.skillRegistry.reload();
+				this.notificationService.info(`已安装技能 "${result.skillName}"`);
 				this._renderGrid();
 			} else {
-				await this.dialogService.info(
-					`安装失败: ${result.error ?? '未知错误'}`,
-					'安装失败'
-				);
+				await this.dialogService.info('安装失败', result.error ?? '未知错误');
 			}
 		};
-		this._container.appendChild(fileInput);
-		fileInput.click();
-		fileInput.remove();
+		this._container.appendChild(input);
+		input.click();
 	}
 
 	private _showUrlInstallDialog(): void {

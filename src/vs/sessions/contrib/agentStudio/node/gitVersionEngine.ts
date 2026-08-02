@@ -54,6 +54,7 @@ function pickModule(mod: any, probe: string): any {
 }
 
 let _git: any = null;
+let _http: any = null;
 let _diff: any = null;
 let _loadError: string | null = null;
 
@@ -62,6 +63,13 @@ try {
 	if (!_git) { _loadError = 'isomorphic-git 导出形态异常'; }
 } catch (err) {
 	_loadError = `isomorphic-git 加载失败: ${err instanceof Error ? err.message : String(err)}`;
+}
+
+try {
+	// clone/fetch 需要 http 传输层（node 侧实现）
+	_http = pickModule(nodeRequire('isomorphic-git/http/node'), 'request');
+} catch {
+	_http = null;
 }
 
 try {
@@ -114,6 +122,14 @@ export class GitVersionEngine implements IGitVersionBackend {
 			}
 		}
 		return true;
+	}
+
+	async cloneRepo(dir: string, url: string): Promise<void> {
+		if (!_git) { throw new Error(`isomorphic-git 不可用: ${_loadError ?? '未知'}`); }
+		if (!_http) { throw new Error('isomorphic-git/http/node 加载失败，无法克隆远程仓库'); }
+		if (!/^https?:\/\//i.test(url)) { throw new Error(`仅支持 http(s) git URL（不支持 ssh/git@）: ${url}`); }
+		fs.mkdirSync(dir, { recursive: true });
+		await _git.clone({ fs, http: _http, dir, url, depth: 1, singleBranch: true });
 	}
 
 	async commitChanges(dir: string, req: GitCommitRequest): Promise<string | null> {

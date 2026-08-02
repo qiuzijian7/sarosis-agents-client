@@ -64,6 +64,9 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 	private readonly _onDidChangeLogin = this._register(new Emitter<void>());
 	readonly onDidChangeLogin: Event<void> = this._onDidChangeLogin.event;
 
+	private readonly _onDidChangeInstalled = this._register(new Emitter<void>());
+	readonly onDidChangeInstalled: Event<void> = this._onDidChangeInstalled.event;
+
 	private _user: IMarketplaceUser | undefined;
 	private _sarosRoot: URI | undefined;
 
@@ -832,6 +835,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 		entries.push(entry);
 		await this.fileService.createFolder(URI.joinPath(installedFileUri, '..'));
 		await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(entries, null, 2)));
+		this._onDidChangeInstalled.fire();
 	}
 
 	private async removeInstalled(kind: PackageKind, storeId: string): Promise<void> {
@@ -843,6 +847,7 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			const filtered = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
 			if (filtered.length === entries.length) { return; }
 			await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
+			this._onDidChangeInstalled.fire();
 		} catch { /* ignore */ }
 	}
 

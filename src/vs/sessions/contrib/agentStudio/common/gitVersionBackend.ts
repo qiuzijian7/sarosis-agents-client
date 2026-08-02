@@ -135,6 +135,13 @@ export interface IGitVersionBackend {
 	/** 初始化 dir 为 git 仓库（已初始化则跳过）。返回是否新初始化。 */
 	initRepo(dir: string, opts: GitInitOptions): Promise<boolean>;
 
+	/**
+	 * 浅克隆 http(s) git 仓库到 dir（depth=1, singleBranch）。
+	 * dir 不存在时自动创建；失败（网络/认证/非 http(s) URL）抛错。
+	 * 仅支持 http(s) URL —— isomorphic-git 的 http 传输不支持 ssh（git@host:...）。
+	 */
+	cloneRepo(dir: string, url: string): Promise<void>;
+
 	/** 暂存 + 提交。未初始化 / 无变化 / 预检失败均返回 null，否则返回新 sha。 */
 	commitChanges(dir: string, req: GitCommitRequest): Promise<string | null>;
 

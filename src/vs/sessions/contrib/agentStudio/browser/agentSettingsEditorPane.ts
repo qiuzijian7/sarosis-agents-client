@@ -31,6 +31,8 @@ import { gitUnavailableReason } from './gitVersionCore.js';
 import { ITofAuthService } from '../common/tofAuth.js';
 import type { Agent } from '../../../common/agentStudioTypes.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
+import { ResourceManagerEditorInput } from './resourceManagerEditorInput.js';
+import { ResourceManagerEditorPane } from './resourceManagerEditorPane.js';
 
 const { $: $$ } = DOM;
 
@@ -1527,6 +1529,13 @@ export class AgentSettingsEditorPane extends EditorPane {
 			for (const skillId of this._agentSkills) {
 				const skill = this._allSkills.find(s => s.id === skillId);
 				const item = $$('div.skill-item installed');
+				// 点击技能 item（非按钮区域）→ 打开独立的技能详情 editorpane
+				item.style.cursor = 'pointer';
+				item.title = '点击查看技能详情';
+				item.onclick = (e) => {
+					if ((e.target as HTMLElement).closest('button')) { return; }
+					void this._openSkillDetail(skillId);
+				};
 				const info = $$('div.skill-item-info');
 				const nameEl = $$('span.skill-item-name');
 				nameEl.textContent = skill?.name || skillId;
@@ -1563,6 +1572,13 @@ export class AgentSettingsEditorPane extends EditorPane {
 		} else {
 			for (const skill of available) {
 				const item = $$('div.skill-item available');
+				// 点击技能 item（非按钮区域）→ 打开独立的技能详情 editorpane
+				item.style.cursor = 'pointer';
+				item.title = '点击查看技能详情';
+				item.onclick = (e) => {
+					if ((e.target as HTMLElement).closest('button')) { return; }
+					void this._openSkillDetail(skill.id);
+				};
 				const info = $$('div.skill-item-info');
 				const nameEl = $$('span.skill-item-name');
 				nameEl.textContent = skill.name;
@@ -1591,6 +1607,20 @@ export class AgentSettingsEditorPane extends EditorPane {
 	// ═══════════════════════════════════════════════════════════════════════════
 	//  Actions
 	// ═══════════════════════════════════════════════════════════════════════════
+
+	/**
+	 * 在独立的技能详情 editorpane（ResourceManager）中打开指定技能。
+	 * 复用 IntegrationView / SkillMarketEditorPane 的既有模式：
+	 * 单例 input → openEditor → getControl() → showDetailOnly。
+	 */
+	private async _openSkillDetail(skillId: string): Promise<void> {
+		const input = ResourceManagerEditorInput.getInstance();
+		const pane = await this.editorService.openEditor(input, { pinned: true });
+		const control = pane?.getControl();
+		if (control instanceof ResourceManagerEditorPane) {
+			await control.showDetailOnly('skill', skillId);
+		}
+	}
 
 	// ── Rename ──
 

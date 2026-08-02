@@ -56,6 +56,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { IWorkflowStorageService, IStoredWorkflow } from '../common/workflowStorage.js';
 import { AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING } from '../common/constants.js';
+import { ensureNonEmptySkillId, resolveSkillId } from '../common/skillId.js';
 
 /**
  * 计算 skill 内容指纹：基于 prompt 正文生成 8 位十六进制哈希。
@@ -68,6 +69,8 @@ function computeSkillContentHash(prompt: string): string {
 }
 
 interface IRawFrontmatter {
+	/** 显式权威 id（Hermes `identifier` 语义）：合法时优先于 name slug */
+	id?: unknown;
 	name?: unknown;
 	description?: unknown;
 	activation?: unknown;
@@ -572,11 +575,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				if (supportFiles.length > 0) {
 					skill = { ...skill, supportFiles };
 				}
-				if (this._skills.has(skill.id)) {
-					const existing = this._skills.get(skill.id)!;
-					this.logService.info(`[SkillRegistry] Skill "${skill.id}" overwritten: ${existing.source} → ${skill.source} (from ${dir.fsPath})`);
-				}
-				this._skills.set(skill.id, skill);
+			this._setSkillWithPriority(skill, dir.fsPath);
 				thisDirHasSkill = true;
 				this.logService.debug(`[SkillRegistry] _scanFolderRecursive: loaded skill "${skill.id}" (depth=${depth}, cat="${skill.category ?? '-'}", path="${relativePath.join('/')}")`);
 			}
@@ -616,6 +615,45 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	private async _scanFolder(dir: URI, source: 'user' | 'builtin'): Promise<void> {
 		const loaded = await this._scanFolderRecursive(dir, source);
 		this.logService.info(`[SkillRegistry] _scanFolder(${source}): loaded ${loaded} skills from ${dir.toString()} (recursive)`);
+	}
+
+	/**
+	 * 同 id 冲突时的来源优先级（对齐 Hermes `_trust_rank`：builtin < trusted < community 的显式分级思想）。
+	 * 值越大优先级越高：用户/商城安装的技能覆盖同名内置技能；workflow/runtime 视图最高。
+	 */
+	private static readonly SKILL_SOURCE_RANK: Readonly<Record<ISkillDefinition['source'], number>> = {
+		builtin: 1,
+		extension: 1,
+		marketplace: 2,
+		user: 2,
+		workflow: 3,
+		memory: 4,
+	};
+
+	/**
+	 * 按来源优先级写入技能表（复刻 Hermes 加载期去重：不再无条件后者覆盖前者）：
+	 *   - 新来源优先级更高 → 替换并记录；
+	 *   - 优先级相同 → first-wins，保留先扫描到者并警告（附双方来源路径，便于排查同名碰撞）；
+	 *   - 新来源优先级更低 → 保留既有者并记录。
+	 */
+	private _setSkillWithPriority(skill: ISkillDefinition, fromPath?: string): void {
+		const existing = this._skills.get(skill.id);
+		if (!existing) {
+			this._skills.set(skill.id, skill);
+			return;
+		}
+		const incomingRank = SkillRegistry.SKILL_SOURCE_RANK[skill.source] ?? 0;
+		const existingRank = SkillRegistry.SKILL_SOURCE_RANK[existing.source] ?? 0;
+		const existingPath = existing.resource?.fsPath ?? '(no path)';
+		const incomingPath = fromPath ?? skill.resource?.fsPath ?? '(no path)';
+		if (incomingRank > existingRank) {
+			this._skills.set(skill.id, skill);
+			this.logService.info(`[SkillRegistry] Skill "${skill.id}" replaced by higher-priority source: ${existing.source} (${existingPath}) ← ${skill.source} (${incomingPath})`);
+		} else if (incomingRank === existingRank) {
+			this.logService.warn(`[SkillRegistry] Skill id 冲突 "${skill.id}"（同级来源 ${skill.source}）：保留 ${existingPath}，忽略 ${incomingPath}。如需共存请在 frontmatter 显式指定不同 id。`);
+		} else {
+			this.logService.info(`[SkillRegistry] Skill "${skill.id}" kept ${existing.source} (${existingPath}), ignored lower-priority ${skill.source} (${incomingPath})`);
+		}
 	}
 
 	/**
@@ -662,9 +700,17 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			this.logService.debug(`[SkillRegistry] SKILL.md missing 'name', falling back to folder name "${fallbackName}": ${folder.toString()}`);
 			name = fallbackName;
 		}
-		const description = typeof meta.description === 'string' ? meta.description : '';
-		const id = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-_]/g, '').replace(/-+/g, '-');
-		const prompt = body.trim();
+	const description = typeof meta.description === 'string' ? meta.description : '';
+	// id 解析（单点真源 common/skillId.ts，对齐 Hermes identifier 语义）：
+	// frontmatter 显式 `id` 合法时优先，否则从 name slug 派生；
+	// slug 为空（纯非 ASCII 名）时用目录路径哈希兜底，保证 id 稳定且非空。
+	const explicitId = typeof meta.id === 'string' ? meta.id : undefined;
+	let id = resolveSkillId(explicitId, name);
+	if (!id) {
+		id = ensureNonEmptySkillId('', `${folder.fsPath}::${name}`);
+		this.logService.warn(`[SkillRegistry] name "${name}" 无法 slug 出有效 id（纯非 ASCII），回退为 "${id}"；建议在 frontmatter 显式指定 id 字段: ${folder.toString()}`);
+	}
+	const prompt = body.trim();
 		// 如果 SKILL.md frontmatter 含有 storeId，说明是商城下载的，标记为 marketplace
 		const hasStoreId = typeof meta.storeId === 'string' && meta.storeId.length > 0;
 		const effectiveSource = (hasStoreId && source === 'user') ? 'marketplace' : source;
@@ -751,10 +797,10 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 					contentHash: this._computeWorkflowContentHash(wf),
 					enabled: true,
 					version: wf.version,
-					category: wf.category || 'workflow',
-				};
-				this._skills.set(id, skill);
-			}
+				category: wf.category || 'workflow',
+			};
+			this._setSkillWithPriority(skill);
+		}
 		} catch (err) {
 			this.logService.info('[SkillRegistry] workflow skills load failed', err);
 		}

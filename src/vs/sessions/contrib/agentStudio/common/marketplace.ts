@@ -157,6 +157,13 @@ export interface IMarketplaceService {
 	/** 登录态变化事件 */
 	readonly onDidChangeLogin: Event<void>;
 
+	/**
+	 * 安装/发布/卸载记录（installed-packages.json）变化事件。
+	 * 订阅方（各资源 view）据此重读 getInstalled() 刷新「已上传/已安装/可升级」状态，
+	 * 解决「从 editorpane 发布后列表视图不刷新」的问题。
+	 */
+	readonly onDidChangeInstalled: Event<void>;
+
 	/** 商城服务端地址 */
 	readonly endpoint: string;
 

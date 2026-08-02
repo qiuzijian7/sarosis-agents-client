@@ -1231,7 +1231,15 @@ const canvasCmd = (
 	registerAction2(class extends Action2 {
 		constructor() {
 			const opts: any = { id, title: localize2(id, title), f1: false };
-			if (primary !== 0) { opts.keybinding = { primary, weight: 200 }; }
+			if (primary !== 0) {
+				// 仅在画布编辑器激活时生效 —— 否则全局劫持 Backspace/Delete/方向键等，
+				// 导致其他编辑器/输入框里无法删除文本（weight 200 优先级很高）
+				opts.keybinding = {
+					primary,
+					weight: 200,
+					when: ActiveEditorContext.isEqualTo(CanvasEditorPane.ID),
+				};
+			}
 			super(opts);
 		}
 		override async run(): Promise<void> {
@@ -2204,6 +2212,32 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 }
 
 registerWorkbenchContribution2(BuiltinCapabilityContribution.ID, BuiltinCapabilityContribution, WorkbenchPhase.AfterRestored);
+
+// --- Auto-open Skill Detail after Install ----------------------------------
+// 安装（或复制）新技能成功后，自动在 ResourceManagerEditorPane 打开其详情页。
+class SkillInstallAutoOpenContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'sessions.skillInstallAutoOpen';
+
+	constructor(
+		@IEditorService private readonly editorService: IEditorService,
+		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
+	) {
+		super();
+		this._register(
+			this.skillInstallService.onDidInstallSkill(({ skillId }) => {
+				const input = ResourceManagerEditorInput.getInstance();
+				this.editorService.openEditor(input, { pinned: true }).then((pane) => {
+					const control = pane?.getControl();
+					if (control instanceof ResourceManagerEditorPane) {
+						control.showDetailOnly('skill', skillId);
+					}
+				});
+			})
+		);
+	}
+}
+
+registerWorkbenchContribution2(SkillInstallAutoOpenContribution.ID, SkillInstallAutoOpenContribution, WorkbenchPhase.AfterRestored);
 
 // --- ExecutionProvider Registration (default non-stub) ------------------------
 // 注册内置的 ExecutionProvider（实现真实 LLM 调用的 agent loop）。

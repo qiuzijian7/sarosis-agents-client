@@ -20,6 +20,7 @@
 
 import type { Agent } from '../../../common/agentStudioTypes.js';
 import { parse, type YamlNode } from '../../../../base/common/yaml.js';
+import { slugifySkillId } from './skillId.js';
 
 /** YAML frontmatter 中的原始数据（解析后未经过滤） */
 interface AgentMdRaw {
@@ -229,7 +230,7 @@ export function parseAgentMd(content: string): { agent: Partial<Agent>; systemPr
 	// id 回退：优先 id 字段，否则用 name slug 化
 	const nameStr = typeof raw.name === 'string' ? raw.name : '';
 	const idStr = typeof raw.id === 'string' ? raw.id
-		: (nameStr ? nameStr.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-_]/g, '').replace(/-+/g, '-') : '');
+		: (nameStr ? slugifySkillId(nameStr) : '');
 	if (!idStr) { return null; }
 
 	// tools 支持 string（逗号分隔）或 string[]

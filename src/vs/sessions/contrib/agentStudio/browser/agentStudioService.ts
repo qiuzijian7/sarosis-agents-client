@@ -18,7 +18,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
-import type { AgentPreset } from '../../../common/agentStudioService.js';
+import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult } from '../../../common/agentStudioService.js';
 import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
 import { DEFAULT_KB_SCHEMA, IKBSchema, loadKbSchema } from './knowledge/kbSchema.js';
 import { resolveChatModel, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
@@ -1292,6 +1292,67 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		await this._deleteAgentDir(id);
 		this._agentsCache = undefined;
 		this._onDidChangeAgents.fire();
+	}
+
+	/**
+	 * 从本地文件夹安装 agent：整体复制（含 .agent.md 配套文件，过滤垃圾）到
+	 * `~/.vssaros/agents/<id>/`。id 解析与重复检查规则和技能安装对齐（Hermes 身份模型）。
+	 */
+	async installAgentFromFolder(files: readonly IAgentFolderUploadFile[]): Promise<IAgentInstallResult> {
+		try {
+			if (files.length === 0) {
+				return { success: false, agentId: '', agentName: '', error: '未选择任何文件' };
+			}
+			// 过滤垃圾文件/目录（.git/__pycache__/node_modules 等，按路径段判断）
+			const kept: { segments: string[]; data: Uint8Array }[] = [];
+			for (const f of files) {
+				const segments = f.relativePath.split('/').filter(s => s.length > 0);
+				if (segments.length === 0) { continue; }
+				if (segments.some(s => this._isJunkEntry(s))) { continue; }
+				kept.push({ segments, data: f.data });
+			}
+			// 校验根目录有 .agent.md
+			const agentMd = kept.find(k => k.segments.length === 1 && k.segments[0].toLowerCase() === '.agent.md');
+			if (!agentMd) {
+				return { success: false, agentId: '', agentName: '', error: '所选文件夹中没有 .agent.md' };
+			}
+			const parsed = parseAgentMd(VSBuffer.wrap(agentMd.data).toString());
+			const agentId = parsed?.agent.id ?? '';
+			const agentName = parsed?.agent.name || agentId;
+			if (!agentId) {
+				return { success: false, agentId: '', agentName: '', error: '.agent.md 缺少有效的 id 或 name 字段' };
+			}
+			// 重复 id 检查：已加载或磁盘目标已存在 → 不允许导入
+			if (await this.getAgent(agentId) || await this.fileService.exists(joinPath(this._getSarosAgentsDir(), agentId, '.agent.md'))) {
+				return { success: false, agentId, agentName, error: `Agent ID "${agentId}" 已存在，无法重复导入` };
+			}
+
+			const targetDir = joinPath(this._getSarosAgentsDir(), agentId);
+			for (const k of kept) {
+				if (k.segments.length > 1) {
+					await this.fileService.createFolder(joinPath(targetDir, ...k.segments.slice(0, -1)));
+				}
+				await this.fileService.writeFile(joinPath(targetDir, ...k.segments), VSBuffer.wrap(k.data));
+			}
+			this.logService.info(`[AgentStudio] Agent "${agentId}" 从文件夹安装到 ${targetDir.toString()}`);
+
+			// 清缓存 + 通知各视图刷新 + 初始化 .git 版本管理（best-effort）
+			this._agentsCache = undefined;
+			this._onDidChangeAgents.fire();
+			this.agentVersionService.init(agentId).catch(() => {});
+			return { success: true, agentId, agentName };
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			return { success: false, agentId: '', agentName: '', error: msg };
+		}
+	}
+
+	/** 垃圾文件/目录规则（与 skillInstallService._isJunkEntry 对齐，按路径段判断） */
+	private _isJunkEntry(name: string): boolean {
+		if (name === '.git' || name === '__pycache__' || name === 'node_modules' || name === '.DS_Store') { return true; }
+		if (name.endsWith('.pyc')) { return true; }
+		if (name.endsWith('.log')) { return true; }
+		return false;
 	}
 
 	/**

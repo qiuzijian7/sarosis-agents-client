@@ -158,7 +158,8 @@ export class MdFileEditorPane extends TextFileEditor {
 
 		const control = this.getControl();
 		if (control) {
-			control.updateOptions({ readOnly: mode === 'markdown' && this._isMd });
+			// 预览（渲染）模式只读；Markdown（源码）模式必须可编辑
+			control.updateOptions({ readOnly: mode === 'preview' && this._isMd });
 		}
 
 		if (mode === 'preview') {

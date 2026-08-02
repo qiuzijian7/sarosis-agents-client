@@ -45,6 +45,23 @@ export interface AgentPreset {
 	source?: string;
 }
 
+// --- Agent folder install types ---
+
+/** webkitdirectory 选择器产出的单个文件（相对路径已去掉根文件夹首段） */
+export interface IAgentFolderUploadFile {
+	/** POSIX 相对路径（如 `.agent.md`、`scripts/run.sh`） */
+	readonly relativePath: string;
+	readonly data: Uint8Array;
+}
+
+/** 从文件夹安装 agent 的结果 */
+export interface IAgentInstallResult {
+	readonly success: boolean;
+	readonly agentId: string;
+	readonly agentName: string;
+	readonly error?: string;
+}
+
 // --- Agent Studio Service ---
 
 export const IAgentStudioService =
@@ -107,6 +124,14 @@ export interface IAgentStudioService {
 	createAgent(data: Partial<Agent>): Promise<Agent>;
 	updateAgent(id: string, data: Partial<Agent>): Promise<void>;
 	deleteAgent(id: string): Promise<void>;
+	/**
+	 * 从本地文件夹安装 agent：文件夹根目录需包含 `.agent.md`。
+	 * 整体复制到 `~/.vssaros/agents/<id>/`（过滤 .git/__pycache__/node_modules 等垃圾），
+	 * 初始化 .git 版本管理并触发 onDidChangeAgents。
+	 * id 冲突（已存在同 id agent）时拒绝安装。
+	 * @param files webkitdirectory 选择器产出的相对路径文件列表（已去掉根文件夹首段）
+	 */
+	installAgentFromFolder(files: readonly IAgentFolderUploadFile[]): Promise<IAgentInstallResult>;
 	/**
 	 * 判定当前登录用户是否可上传（发布到商城）该 agent。
 	 * - 内置 agent（source==='builtin'）不可上传（系统资产）。

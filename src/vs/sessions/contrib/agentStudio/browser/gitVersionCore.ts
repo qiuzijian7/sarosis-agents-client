@@ -152,6 +152,12 @@ export async function gitInitRepo(dir: string, opts: GitInitOptions): Promise<bo
 	return _backend ? _backend.initRepo(dir, opts) : false;
 }
 
+/** 浅克隆 http(s) git 仓库到 dir。后端未绑定时抛错。 */
+export async function gitCloneRepo(dir: string, url: string): Promise<void> {
+	if (!_backend) { throw new Error('git backend not available'); }
+	return _backend.cloneRepo(dir, url);
+}
+
 export interface GitCommitOptions {
 	/** 未初始化时调用（壳层提供，内部应调 init）——留在 renderer 侧，因需回调壳层逻辑 */
 	readonly ensureInit: () => Promise<void>;

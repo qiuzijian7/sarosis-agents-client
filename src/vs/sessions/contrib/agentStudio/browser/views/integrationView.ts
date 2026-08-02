@@ -21,7 +21,7 @@ import { autorun, IObservable } from '../../../../../base/common/observable.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IAgentOSService } from '../../common/agentOS.js';
 import { ISkillRegistry, ISkillDefinition } from '../../common/skills.js';
-import { ISkillInstallService, ISkillHubEntry } from '../../common/skillHubTypes.js';
+import { ISkillInstallService, ISkillHubEntry, ISkillFolderUploadFile } from '../../common/skillHubTypes.js';
 import { IEventBridgeService } from '../../common/eventBridge.js';
 import { IMcpService, IMcpServer, McpConnectionState, McpServerCacheState } from '../../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { startServerAndWaitForLiveTools } from '../../../../../workbench/contrib/mcp/common/mcpTypesUtils.js';
@@ -421,12 +421,14 @@ export class IntegrationViewPane extends ViewPane {
 		this.skillsCountBadge = $('span.skills-count');
 		header.appendChild(this.skillsCountBadge);
 
+		// Install 下拉菜单：商城 / 文件夹 / Git
+		header.style.position = 'relative';
 		const installBtn = $('button.skills-install-btn');
-		installBtn.textContent = '+ Install';
-		installBtn.title = 'Browse and install skills from the marketplace';
-		installBtn.onclick = () => {
-			const input = SkillMarketEditorInput.getInstance();
-			this.editorService.openEditor(input, { pinned: true });
+		installBtn.textContent = '+ Install ▾';
+		installBtn.title = '安装技能：从商城 / 文件夹 / Git 仓库';
+		installBtn.onclick = (e) => {
+			e.stopPropagation();
+			this._toggleInstallDropdown(header);
 		};
 		header.appendChild(installBtn);
 
@@ -459,6 +461,175 @@ export class IntegrationViewPane extends ViewPane {
 		const listContainer = $('div.integration-skills-list');
 		listContainer.id = 'integration-skills-list';
 		container.appendChild(listContainer);
+	}
+
+	/** 「+ Install」下拉菜单：从商城 / 从文件夹 / 从 Git 安装 */
+	private _toggleInstallDropdown(anchor: HTMLElement): void {
+		// 已展开则关闭（toggle 语义）
+		const existing = anchor.querySelector('.skills-install-dropdown');
+		if (existing) {
+			existing.remove();
+			return;
+		}
+
+		const menu = $('div.skills-install-dropdown');
+		menu.style.position = 'absolute';
+		menu.style.top = '100%';
+		menu.style.right = '0';
+		menu.style.zIndex = '1000';
+		menu.style.minWidth = '190px';
+		menu.style.background = 'var(--vscode-editor-background)';
+		menu.style.border = '1px solid var(--vscode-panel-border)';
+		menu.style.borderRadius = '6px';
+		menu.style.boxShadow = '0 4px 16px rgba(0,0,0,0.35)';
+		menu.style.padding = '4px';
+		menu.style.marginTop = '4px';
+
+		const close = () => {
+			menu.remove();
+			document.removeEventListener('click', onOutside, true);
+		};
+		const onOutside = (e: MouseEvent) => {
+			if (!menu.contains(e.target as Node)) { close(); }
+		};
+
+		const addItem = (label: string, desc: string, onClick: () => void) => {
+			const item = $('div');
+			item.style.padding = '6px 10px';
+			item.style.borderRadius = '4px';
+			item.style.cursor = 'pointer';
+			const title = $('div');
+			title.textContent = label;
+			title.style.fontSize = '12px';
+			title.style.color = 'var(--vscode-foreground)';
+			item.appendChild(title);
+			const d = $('div');
+			d.textContent = desc;
+			d.style.fontSize = '11px';
+			d.style.color = 'var(--vscode-descriptionForeground)';
+			d.style.marginTop = '2px';
+			item.appendChild(d);
+			item.onmouseenter = () => { item.style.background = 'var(--vscode-list-hoverBackground)'; };
+			item.onmouseleave = () => { item.style.background = ''; };
+			item.onclick = (e) => { e.stopPropagation(); close(); onClick(); };
+			menu.appendChild(item);
+		};
+
+		addItem('\u{1F6D2} 从商城安装', '浏览 Skill Marketplace', () => {
+			const input = SkillMarketEditorInput.getInstance();
+			this.editorService.openEditor(input, { pinned: true });
+		});
+		addItem('\u{1F5C2} 从文件夹安装', '选择本地技能文件夹', () => this._pickAndInstallSkillFolder());
+		addItem('\u{1F310} 从 Git 安装', '克隆 git 仓库中的技能', () => this._promptInstallFromGit());
+
+		anchor.appendChild(menu);
+		// 延迟注册外部点击关闭，避免本次点击立即触发
+		setTimeout(() => document.addEventListener('click', onOutside, true), 0);
+	}
+
+	/** 用 Chromium 原生 webkitdirectory 选择技能文件夹并安装（沙箱安全，不依赖原生对话框 IPC） */
+	private _pickAndInstallSkillFolder(): void {
+		const input = $('input') as HTMLInputElement;
+		input.type = 'file';
+		input.style.display = 'none';
+		input.setAttribute('webkitdirectory', '');
+		input.onchange = async () => {
+			const fileList = input.files;
+			input.remove();
+			if (!fileList || fileList.length === 0) { return; }
+			const files: ISkillFolderUploadFile[] = [];
+			for (const file of Array.from(fileList)) {
+				// webkitRelativePath 形如 "<文件夹>/SKILL.md"，去掉首段根文件夹名
+				const rawPath = file.webkitRelativePath || file.name;
+				const relativePath = rawPath.includes('/') ? rawPath.split('/').slice(1).join('/') : file.name;
+				const data = new Uint8Array(await file.arrayBuffer());
+				files.push({ relativePath, data });
+			}
+			const result = await this.skillInstallService.installFromFolderUpload(files);
+			if (result.success) {
+				this.notificationService.info(`已安装技能 "${result.skillName}"`);
+				this._refreshSkills();
+			} else {
+				await this.dialogService.info('安装失败', result.error ?? '未知错误');
+			}
+		};
+		this.contentContainer.appendChild(input);
+		input.click();
+	}
+
+	/** 从 Git 安装：弹出 URL 输入框 → 克隆 → 安装 */
+	private _promptInstallFromGit(): void {
+		const overlay = $('div.skill-paste-overlay');
+		const dialog = $('div.skill-paste-dialog');
+
+		const title = $('h4');
+		title.textContent = '从 Git 仓库安装技能';
+		dialog.appendChild(title);
+
+		const hint = $('div');
+		hint.textContent = '支持仓库地址或 GitHub/GitLab 子目录链接（.../tree/main/path/to/skill），仅 http(s)';
+		hint.style.fontSize = '11px';
+		hint.style.color = 'var(--vscode-descriptionForeground)';
+		hint.style.marginBottom = '8px';
+		dialog.appendChild(hint);
+
+		const urlInput = $('input') as HTMLInputElement;
+		urlInput.type = 'text';
+		urlInput.placeholder = 'https://github.com/owner/repo 或 .../tree/main/skill-dir';
+		urlInput.style.width = '100%';
+		urlInput.style.boxSizing = 'border-box';
+		urlInput.style.padding = '6px 10px';
+		urlInput.style.background = 'var(--vscode-input-background)';
+		urlInput.style.color = 'var(--vscode-input-foreground)';
+		urlInput.style.border = '1px solid var(--vscode-input-border)';
+		urlInput.style.borderRadius = '4px';
+		urlInput.style.marginBottom = '10px';
+		dialog.appendChild(urlInput);
+
+		const actions = $('div.skill-paste-actions');
+		const cancelBtn = $('button');
+		cancelBtn.textContent = '取消';
+		cancelBtn.onclick = () => overlay.remove();
+		actions.appendChild(cancelBtn);
+
+		const installBtn = $('button.primary') as HTMLButtonElement;
+		installBtn.textContent = '克隆并安装';
+		const submit = async () => {
+			const url = urlInput.value.trim();
+			if (!url) { urlInput.focus(); return; }
+			installBtn.textContent = '克隆中...';
+			installBtn.disabled = true;
+			try {
+				const result = await this.skillInstallService.installFromGit(url);
+				if (result.success) {
+					overlay.remove();
+					this.notificationService.info(`已安装技能 "${result.skillName}"`);
+					this._refreshSkills();
+				} else {
+					installBtn.textContent = '克隆并安装';
+					installBtn.disabled = false;
+					await this.dialogService.info('安装失败', result.error ?? '未知错误');
+				}
+			} catch (err) {
+				installBtn.textContent = '克隆并安装';
+				installBtn.disabled = false;
+				const msg = err instanceof Error ? err.message : String(err);
+				await this.dialogService.info('安装失败', msg);
+			}
+		};
+		installBtn.onclick = () => void submit();
+		urlInput.onkeydown = (e: KeyboardEvent) => {
+			if (e.isComposing || e.keyCode === 229) { return; }
+			e.stopPropagation();
+			if (e.key === 'Enter') { e.preventDefault(); void submit(); }
+			else if (e.key === 'Escape') { e.preventDefault(); overlay.remove(); }
+		};
+		actions.appendChild(installBtn);
+
+		dialog.appendChild(actions);
+		overlay.appendChild(dialog);
+		this.contentContainer.parentElement?.appendChild(overlay);
+		urlInput.focus();
 	}
 
 	private _refreshSkills(): void {
@@ -756,8 +927,8 @@ export class IntegrationViewPane extends ViewPane {
 				this._refreshSkills();
 			} else {
 				await this.dialogService.info(
-					`Failed to install skill: ${result.error ?? 'Unknown error'}`,
-					'Installation Failed'
+					'Installation Failed',
+					result.error ?? 'Unknown error'
 				);
 			}
 		};
@@ -767,6 +938,13 @@ export class IntegrationViewPane extends ViewPane {
 		browseBtn.textContent = '\u{1F4C1} Browse SKILL.md';
 		browseBtn.onclick = () => fileInput.click();
 		localActions.appendChild(browseBtn);
+
+		// 从文件夹安装：整体复制 + 过滤垃圾文件 + 建 git（推荐，保留配套脚本）
+		const folderBtn = $('button.skill-install-browse-btn');
+		folderBtn.textContent = '\u{1F5C2} 从文件夹安装';
+		folderBtn.title = '选择包含 SKILL.md 的技能文件夹，整体复制到 ~/.vssaros/skills（过滤 .git/__pycache__ 等并初始化 .git）';
+		folderBtn.onclick = () => this._pickAndInstallSkillFolder();
+		localActions.appendChild(folderBtn);
 
 		const pasteBtn = $('button.skill-install-paste-btn');
 		pasteBtn.textContent = '\u{1F4CB} Paste Content';
@@ -806,14 +984,14 @@ export class IntegrationViewPane extends ViewPane {
 					this._refreshSkills();
 				} else {
 					await this.dialogService.info(
-						`Failed to install: ${result.error ?? 'Unknown error'}`,
-						'Installation Failed'
+						'Installation Failed',
+						result.error ?? 'Unknown error'
 					);
 				}
 			} catch (err) {
 				await this.dialogService.info(
-					`Error: ${err instanceof Error ? err.message : String(err)}`,
-					'Installation Failed'
+					'Installation Failed',
+					err instanceof Error ? err.message : String(err)
 				);
 			} finally {
 				urlBtn.textContent = 'Install';
@@ -940,8 +1118,8 @@ export class IntegrationViewPane extends ViewPane {
 						installBtn.textContent = 'Install';
 						(installBtn as HTMLButtonElement).disabled = false;
 						await this.dialogService.info(
-							`Failed to install "${entry.name}": ${result.error ?? 'Unknown error'}`,
-							'Installation Failed'
+							'Installation Failed',
+							`Failed to install "${entry.name}": ${result.error ?? 'Unknown error'}`
 						);
 					}
 				};
@@ -985,8 +1163,8 @@ export class IntegrationViewPane extends ViewPane {
 				installBtn.textContent = 'Install';
 				(installBtn as HTMLButtonElement).disabled = false;
 				await this.dialogService.info(
-					`Failed to install: ${result.error ?? 'Unknown error'}`,
-					'Installation Failed'
+					'Installation Failed',
+					result.error ?? 'Unknown error'
 				);
 			}
 		};
@@ -1813,10 +1991,14 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		}
 		try {
 			this.notificationService.info(`Uploading ${id} to marketplace...`);
-			const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from vsSarosis at ${new Date().toISOString()}` });
-			this.notificationService.info(`\u2705 Published ${id} v${result.version} to marketplace.`);
-			// Auto-commit + tag for version history
-			this.skillVersionService.autoCommit(id, `publish: v${result.version} to marketplace`).catch(() => {});
+		const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from vsSarosis at ${new Date().toISOString()}` });
+		this.notificationService.info(`\u2705 Published ${id} v${result.version} to marketplace.`);
+		// 把发布版本写回本地 SKILL.md —— 否则本地无 version 被视为 '0'，商城状态检查会误报「有升级」
+		if (kind === 'skill') {
+			await this.skillInstallService.setSkillVersion(id, result.version);
+		}
+		// Auto-commit + tag for version history（在版本写回之后，快照含 version 字段）
+		this.skillVersionService.autoCommit(id, `publish: v${result.version} to marketplace`).catch(() => {});
 			this.skillVersionService.tag(id, `v${result.version}`).catch(() => {});
 			// Refresh skill list to update button states
 			if (tab === 'skill') { this._refreshSkills(); }

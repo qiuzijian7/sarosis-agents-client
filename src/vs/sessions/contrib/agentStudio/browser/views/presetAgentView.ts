@@ -27,6 +27,7 @@ import { EditorInput } from '../../../../../workbench/common/editor/editorInput.
 import { AgentSettingsEditorInput } from '../agentSettingsEditorInput.js';
 import { AgentCreateEditorInput } from '../agentCreateEditorInput.js';
 import type { Agent } from '../../../../common/agentStudioTypes.js';
+import type { IAgentFolderUploadFile } from '../../../../common/agentStudioService.js';
 import { IMarketplaceService, IMarketplacePackage, PackageKind } from '../../common/marketplace.js';
 import { IAgentVersionService } from '../../common/agentVersionTypes.js';
 import { bumpPatch, suggestNextVersion, validatePublishVersion, isVersionConflictError } from '../publishVersioning.js';
@@ -116,6 +117,12 @@ export class PresetAgentViewPane extends ViewPane {
 		// Listen for agent changes (create/update/delete) and refresh the list
 		this._register(this.agentStudioService.onDidChangeAgents(() => {
 			this._loadAgents();
+		}));
+		// 商城安装/发布/卸载记录变化（如从 agent editorpane 上传成功）→ 重拉商城数据刷新 item 状态
+		this._register(this.marketplaceService.onDidChangeInstalled(() => {
+			this._loadMarketplaceData().catch(err =>
+				console.warn('[PresetAgentView] Failed to reload marketplace data:', err),
+			);
 		}));
 		// Load marketplace data for version comparison (upgrade/delete buttons)
 		this._loadMarketplaceData().catch(err =>
@@ -242,10 +249,15 @@ export class PresetAgentViewPane extends ViewPane {
 		createBtn.onclick = () => this._openCreateAgentPane();
 		actions.appendChild(createBtn);
 
+		// Install 下拉菜单：从商城 / 从文件夹
+		actions.style.position = 'relative';
 		const installBtn = $('button.preset-install-btn');
-		installBtn.textContent = '⬇ Install';
-		installBtn.title = '从 Agent 商城安装智能体';
-		installBtn.onclick = () => this.commandService.executeCommand('agentStudio.openMarket');
+		installBtn.textContent = '⬇ Install ▾';
+		installBtn.title = '安装 Agent：从商城 / 从文件夹';
+		installBtn.onclick = (e) => {
+			e.stopPropagation();
+			this._toggleInstallDropdown(actions);
+		};
 		actions.appendChild(installBtn);
 
 		header.appendChild(actions);
@@ -286,6 +298,100 @@ export class PresetAgentViewPane extends ViewPane {
 		this.listContainer = $('div.preset-grid');
 		this._renderPresets();
 		container.appendChild(this.listContainer);
+	}
+
+	// ── Install Dropdown (marketplace / folder) ─────────────────────────────
+
+	/** 「⬇ Install」下拉菜单：从商城安装 / 从文件夹安装 */
+	private _toggleInstallDropdown(anchor: HTMLElement): void {
+		// 已展开则关闭（toggle 语义）
+		const existing = anchor.querySelector('.preset-install-dropdown');
+		if (existing) {
+			existing.remove();
+			return;
+		}
+
+		const menu = $('div.preset-install-dropdown');
+		menu.style.position = 'absolute';
+		menu.style.top = '100%';
+		menu.style.right = '0';
+		menu.style.zIndex = '1000';
+		menu.style.minWidth = '180px';
+		menu.style.background = 'var(--vscode-editor-background)';
+		menu.style.border = '1px solid var(--vscode-panel-border)';
+		menu.style.borderRadius = '6px';
+		menu.style.boxShadow = '0 4px 16px rgba(0,0,0,0.35)';
+		menu.style.padding = '4px';
+		menu.style.marginTop = '4px';
+
+		const close = () => {
+			menu.remove();
+			document.removeEventListener('click', onOutside, true);
+		};
+		const onOutside = (e: MouseEvent) => {
+			if (!menu.contains(e.target as Node)) { close(); }
+		};
+
+		const addItem = (label: string, desc: string, onClick: () => void) => {
+			const item = $('div');
+			item.style.padding = '6px 10px';
+			item.style.borderRadius = '4px';
+			item.style.cursor = 'pointer';
+			const title = $('div');
+			title.textContent = label;
+			title.style.fontSize = '12px';
+			title.style.color = 'var(--vscode-foreground)';
+			item.appendChild(title);
+			const d = $('div');
+			d.textContent = desc;
+			d.style.fontSize = '11px';
+			d.style.color = 'var(--vscode-descriptionForeground)';
+			d.style.marginTop = '2px';
+			item.appendChild(d);
+			item.onmouseenter = () => { item.style.background = 'var(--vscode-list-hoverBackground)'; };
+			item.onmouseleave = () => { item.style.background = ''; };
+			item.onclick = (e) => { e.stopPropagation(); close(); onClick(); };
+			menu.appendChild(item);
+		};
+
+		addItem('\u{1F6D2} 从商城安装', '浏览 Agent Marketplace', () => {
+			void this.commandService.executeCommand('agentStudio.openMarket');
+		});
+		addItem('\u{1F5C2} 从文件夹安装', '选择本地 Agent 文件夹（含 .agent.md）', () => this._pickAndInstallAgentFolder());
+
+		anchor.appendChild(menu);
+		// 延迟注册外部点击关闭，避免本次点击立即触发
+		setTimeout(() => document.addEventListener('click', onOutside, true), 0);
+	}
+
+	/** 用 Chromium 原生 webkitdirectory 选择 agent 文件夹并安装（沙箱安全） */
+	private _pickAndInstallAgentFolder(): void {
+		const input = $('input') as HTMLInputElement;
+		input.type = 'file';
+		input.style.display = 'none';
+		input.setAttribute('webkitdirectory', '');
+		input.onchange = async () => {
+			const fileList = input.files;
+			input.remove();
+			if (!fileList || fileList.length === 0) { return; }
+			const files: IAgentFolderUploadFile[] = [];
+			for (const file of Array.from(fileList)) {
+				// webkitRelativePath 形如 "<文件夹>/.agent.md"，去掉首段根文件夹名
+				const rawPath = file.webkitRelativePath || file.name;
+				const relativePath = rawPath.includes('/') ? rawPath.split('/').slice(1).join('/') : file.name;
+				const data = new Uint8Array(await file.arrayBuffer());
+				files.push({ relativePath, data });
+			}
+			const result = await this.agentStudioService.installAgentFromFolder(files);
+			if (result.success) {
+				this.notificationService.info(`已安装 Agent "${result.agentName}"`);
+				// 列表刷新由 onDidChangeAgents 订阅自动触发
+			} else {
+				await this.dialogService.info('安装失败', result.error ?? '未知错误');
+			}
+		};
+		this.element.appendChild(input);
+		input.click();
 	}
 
 	// ── Render Preset Cards ──────────────────────────────────────────────────

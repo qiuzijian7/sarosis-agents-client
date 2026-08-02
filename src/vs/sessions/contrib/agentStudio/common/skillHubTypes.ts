@@ -12,6 +12,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
+import { URI } from '../../../../base/common/uri.js';
 
 
 // ─── Hub 定义 ────────────────────────────────────────────────────
@@ -98,6 +99,19 @@ export interface ISkillInstallResult {
 	readonly error?: string;
 }
 
+/** webkitdirectory 上传的单个文件（相对路径 + 内容） */
+export interface ISkillFolderUploadFile {
+	/** 已去掉根文件夹名的相对路径（'/' 分隔），如 'SKILL.md'、'scripts/run.sh' */
+	readonly relativePath: string;
+	readonly data: Uint8Array;
+}
+
+/** 安装成功后派发的事件载荷 */
+export interface ISkillInstallEvent {
+	readonly skillId: string;
+	readonly skillName: string;
+}
+
 // ─── 服务接口 ────────────────────────────────────────────────────
 
 export const ISkillInstallService = createDecorator<ISkillInstallService>('skillInstallService');
@@ -126,14 +140,54 @@ export interface ISkillInstallService {
 	/** 从原始 SKILL.md 文本内容安装 skill */
 	installFromContent(content: string): Promise<ISkillInstallResult>;
 
+	/**
+	 * 从本地文件夹安装 skill：选中包含 SKILL.md 的文件夹，
+	 * 整体复制到 ~/.vssaros/skills/<id>/（过滤垃圾文件）并初始化 .git。
+	 */
+	installFromFolder(folderUri: URI): Promise<ISkillInstallResult>;
+
+	/**
+	 * 从 webkitdirectory 上传的文件列表安装 skill（renderer 沙箱安全的文件夹选择方案，
+	 * 不依赖原生文件对话框 IPC）。relativePath 为已去掉根文件夹名的相对路径。
+	 */
+	installFromFolderUpload(files: readonly ISkillFolderUploadFile[]): Promise<ISkillInstallResult>;
+
 	/** 卸载一个已安装的 skill（从工作区目录删除） */
 	uninstallSkill(skillId: string): Promise<boolean>;
+
+	/**
+	 * 重命名已安装的 skill：重命名目录、更新 SKILL.md frontmatter、
+	 * 迁移 lock 溯源条目并刷新 registry（保留 .git 历史）。
+	 * @param newName 新显示名（frontmatter `name`）
+	 * @param newId 可选，新 slug/id（目录名与唯一标识，须匹配 `^[a-z][a-z0-9_-]*$`）。
+	 *              留空则按 name 自动 slug 化；显式指定时会写入 frontmatter `id` 作为权威键，
+	 *              可用于给中文名技能指定稳定 id 或让同名技能以不同 id 共存。
+	 */
+	renameSkill(skillId: string, newName: string, newId?: string): Promise<ISkillInstallResult>;
+
+	/**
+	 * 将版本号写入已安装 skill 的 SKILL.md frontmatter `version` 字段并刷新 registry。
+	 * 用于发布商城成功后同步本地版本——否则本地无 version 被视为 '0'，
+	 * 商城状态检查会误报「有升级」（实际刚发布的就是最新版）。
+	 */
+	setSkillVersion(skillId: string, version: string): Promise<boolean>;
+
+	/**
+	 * 从 git 仓库安装技能：浅克隆（主进程 isomorphic-git）→ 定位 SKILL.md
+	 * （根目录优先 / 唯一嵌套目录 / URL 指定的子目录）→ 复制到 ~/.vssaros/skills/<id>。
+	 * 支持 GitHub/GitLab 的 `/tree/<branch>/<subdir>` 子目录链接；仅 http(s) URL。
+	 * 重复 id 拒绝安装（与其他安装路径一致）。
+	 */
+	installFromGit(url: string): Promise<ISkillInstallResult>;
 
 	/** 检查指定 skill 是否已安装到工作区 */
 	isInstalled(skillId: string): boolean;
 
 	/** 获取指定 Hub 的所有条目（使用缓存） */
 	getCachedEntries(hubId: string): readonly ISkillHubEntry[];
+
+	/** 安装成功后派发（skillId + skillName），供 UI 自动打开该技能详情 */
+	readonly onDidInstallSkill: Event<ISkillInstallEvent>;
 }
 
 // ─── 内置 Hub 预设 ───────────────────────────────────────────────
