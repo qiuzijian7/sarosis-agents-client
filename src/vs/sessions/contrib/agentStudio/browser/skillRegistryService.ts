@@ -57,6 +57,7 @@ import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../com
 import { IWorkflowStorageService, IStoredWorkflow } from '../common/workflowStorage.js';
 import { AGENT_STUDIO_SKILLS_INCLUDE_WORKFLOWS_SETTING } from '../common/constants.js';
 import { ensureNonEmptySkillId, resolveSkillId } from '../common/skillId.js';
+import { skillScriptAbsolutePaths } from './providers/tool/executeCodeGuards.js';
 
 /**
  * 计算 skill 内容指纹：基于 prompt 正文生成 8 位十六进制哈希。
@@ -745,6 +746,21 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		return [
 			`### Skill activated: ${skill.name}`,
 			skill.description ? `_${skill.description}_` : '',
+			// skill 目录基准（借鉴 void「激活即注入绝对根路径 + 执行工具带 cwd」）：
+			// 技能脚本/资源（scripts/、references/ 等）以此目录为基准执行，而非 workspace root。
+			skill.resource
+				? `**Skill directory**: \`${skill.resource.fsPath}\` — this skill's scripts/resources live under THIS directory. Run its CLI/scripts via execute_code with cwd set to THIS directory (not the workspace root).`
+				: '',
+			// 脚本绝对路径清单：模型应**默认用绝对路径调用**（python3 "<abs>/scripts/xxx.py" ...），
+			// 避免相对路径依赖 cwd（子代理 cwd 可能是另一个 workspace → 相对路径解析失败 exit 2）。
+			skill.resource && skill.supportFiles?.length
+				? (() => {
+					const scriptPaths = skillScriptAbsolutePaths(skill.resource.fsPath, skill.supportFiles);
+					return scriptPaths.length > 0
+						? `**Executable scripts (absolute paths — use these directly, no cwd needed):**\n${scriptPaths.map(p => `- \`${p}\``).join('\n')}`
+						: '';
+				})()
+				: '',
 			'',
 			skill.prompt,
 			// allowed-tools（Agent Skills 规范）：prompt 级工具面约束

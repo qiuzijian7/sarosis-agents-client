@@ -770,6 +770,14 @@ export class IntegrationViewPane extends ViewPane {
 				nameRow.appendChild(pinIcon);
 			}
 
+			// 内置标识
+			if (skill.source === 'builtin') {
+				const builtinBadge = $('span.builtin-badge');
+				builtinBadge.textContent = '内置';
+				builtinBadge.title = '产品内置技能';
+				nameRow.appendChild(builtinBadge);
+			}
+
 			// Version badge
 			if (skill.version) {
 				const verBadge = $('span.skill-version-badge');
@@ -788,8 +796,8 @@ export class IntegrationViewPane extends ViewPane {
 			const skillActions = this._createActionButtons('skill', skill.id, skill.name, {
 				// Show upload for user and builtin (not marketplace-downloaded)
 				showUpload: skill.source === 'user' || skill.source === 'builtin',
-				// Show delete for all sources (user, builtin, marketplace)
-				showDelete: skill.source === 'user' || skill.source === 'builtin' || skill.source === 'marketplace',
+				// Show delete for user and marketplace (builtin skills are read-only)
+				showDelete: skill.source === 'user' || skill.source === 'marketplace',
 			});
 			// Mark marketplace skills for async upgrade check
 			if (skill.source === 'marketplace') {
@@ -827,7 +835,7 @@ export class IntegrationViewPane extends ViewPane {
 					upgradeLabel: targetVersion ? `升级到 v${targetVersion}` : undefined,
 					onUpgrade: targetVersion ? () => { void this._handleUpgrade('skill', skill.id); } : undefined,
 					onUpload: isLocalSkill ? () => { void this._handleUpload('skill', skill.id); } : undefined,
-					onDelete: () => { void this._handleDelete('skill', skill.id, skill.name); },
+					onDelete: skill.source !== 'builtin' ? () => { void this._handleDelete('skill', skill.id, skill.name); } : undefined,
 				});
 			};
 

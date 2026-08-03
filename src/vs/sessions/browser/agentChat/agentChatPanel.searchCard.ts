@@ -7,6 +7,7 @@ import { createSvgIcon, SEARCH_ICON_D } from './agentChatPanel.toolCards.js';
 /**
  * 搜索/查询专用工具卡片（search_code / search_files / search_graph / query_graph / trace_path）+ TOON 渲染。
  * 自 agentChatPanel.toolCards.ts 抽离（上帝对象拆分）。继承链 ToolCards → SearchCard → MermaidCard。
+ * 注：web_search / web_extract / anysearch 已迁移到 agentChatPanel.webCard.ts（WebCard 位于本类之上）。
  */
 export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCards {
 	/**
@@ -59,7 +60,6 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 			query_graph: '图谱查询',
 			trace_path: '调用链追踪',
 			get_architecture: '架构概览',
-			web_search: 'Web 搜索',
 			get_code_snippet: '获取代码片段',
 		};
 
@@ -75,14 +75,14 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 		}
 		if (isRunning) { title.classList.add('shimmer'); }
 
-		// 匹配数徽标（标题右侧）— 仅统计有效文件路径项
-		let totalItems = 0;
-		if (tc.result && !isRunning) {
-			const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
-			const resultText = this._toolResultText(raw);
-			const items = this._parseSearchResultItems(resultText, key);
-			totalItems = items ? items.length : 0;
-		}
+	// 匹配数徽标（标题右侧）— 仅统计有效文件路径项
+	let totalItems = 0;
+	if (tc.result && !isRunning) {
+		const raw = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result);
+		const resultText = this._toolResultText(raw);
+		const items = this._parseSearchResultItems(resultText, key);
+		totalItems = items ? items.length : 0;
+	}
 		if (!isRunning && totalItems > 0) {
 			const countBadge = append(header, $('span.search-header-count'));
 			countBadge.textContent = `${totalItems}`;
@@ -583,7 +583,7 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 	}
 
 	/** 创建 chevron SVG 图标（用于折叠/展开） */
-	private _createChevronIcon(): SVGElement {
+	protected _createChevronIcon(): SVGElement {
 		const svg = $.SVG('svg', { width: '14', height: '14', viewBox: '0 0 16 16', fill: 'currentColor' });
 		const path = document.createElementNS('http://www.w3.org/2000/svg', 'path') as SVGPathElement;
 		path.setAttribute('d', 'M6 4l4 4-4 4');

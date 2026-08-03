@@ -944,6 +944,17 @@ export interface IToolResultContent {
 	readonly mimeType?: string;
 }
 
+/**
+ * 工具永久性错误：重试不可能改变结果（如 HTTP 404/403、参数非法）。
+ *
+ * toolExecutor 捕获后把 `metadata.retryable` 置为 false，executeWithRetryAndTimeout
+ * 的 runWithRetry 因而不会重试（避免对确定性失败白费 3 次尝试 + 三倍日志噪音）。
+ * 与 SandboxViolationError 的 isSandboxViolation 标记同一模式。
+ */
+export class NonRetryableToolError extends Error {
+	readonly isNonRetryableToolError = true;
+}
+
 // ─── Planning Provider Interface ──────────────────────────────────────────────
 
 export interface IPlanningProvider {

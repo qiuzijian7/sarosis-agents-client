@@ -59,6 +59,7 @@ import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../../../platform/environment/common/environment.js';
+import { skillScriptAbsolutePaths } from './executeCodeGuards.js';
 
 export interface SkillToolContext {
 	register(registration: IBuiltinToolRegistration): void;
@@ -143,12 +144,23 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 
 		// 对齐 Hermes 格式
 		return text(JSON.stringify({
-			success: true,
-			name: skill.name,
-			id: skill.id,
-			description: skill.description ?? '',
-			category: skill.category ?? '',
-			activation: skill.activation,
+		success: true,
+		name: skill.name,
+		id: skill.id,
+		// skill 目录绝对路径（SKILL.md 所在目录，skill.resource 即该目录 URI）。
+		// 技能脚本/资源（scripts/、references/ 等）以此目录为基准执行/读取，而非 workspace
+		// root —— 借鉴 void「激活即注入绝对根路径 + 执行工具带 cwd」。agent 应用
+		// execute_code(cwd=skillDir) 运行 scripts/ 下的 CLI。
+		skillDir: skill.resource?.fsPath,
+		// 脚本绝对路径清单：模型应**默认用绝对路径**调用 CLI
+		// （python3 "<abs>/scripts/xxx.py" ...），避免相对路径依赖 cwd
+		// （子代理 cwd 可能是另一个 workspace → 相对路径解析失败 exit 2）。
+		scriptPaths: skill.resource && skill.supportFiles?.length
+			? skillScriptAbsolutePaths(skill.resource.fsPath, skill.supportFiles)
+			: undefined,
+		description: skill.description ?? '',
+		category: skill.category ?? '',
+		activation: skill.activation,
 			content: (skill.prompt ?? '').slice(0, MAX_SKILL_BYTES),
 			match: skill.match ?? [],
 			recommendedTools: skill.recommendedTools ?? [],
@@ -392,6 +404,14 @@ export function registerSkillTools(ctx: SkillToolContext): void {
 				}
 
 				if (action === 'delete') {
+					// 内置技能不允许删除
+					try {
+						await ctx.skillRegistry.whenReady();
+					} catch { /* ignore */ }
+					const existingSkill = ctx.skillRegistry.getSkill(name);
+					if (existingSkill?.source === 'builtin') {
+						return text(`Skill "${name}" is a builtin skill and cannot be deleted.`);
+					}
 					try {
 						const fs = await import('fs/promises');
 						const sarosRoot = userDataRootFromRoamingHome(ctx.environmentService.userRoamingDataHome);

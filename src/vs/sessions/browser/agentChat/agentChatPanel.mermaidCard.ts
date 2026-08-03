@@ -1,6 +1,6 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IToolCall } from './agentChatTypes.js';
-import { AgentChatPanelSearchCard } from './agentChatPanel.searchCard.js';
+import { AgentChatPanelWebCard } from './agentChatPanel.webCard.js';
 
 // Reads the pixel size from width/height attributes (absolute px only) or the
 // viewBox, so the rendered <img> gets a sane intrinsic width and scales via
@@ -29,7 +29,7 @@ function _svgIntrinsicSize(svg: string): { width: number; height: number } | und
  * 本类是 toolCards 上帝对象拆分的第一步：将 Mermaid 卡片整组（含辅助方法）抽离到
  * 独立 feature class，插入继承链 ToolCards → MermaidCard → Markdown。
  */
-export abstract class AgentChatPanelMermaidCard extends AgentChatPanelSearchCard {
+export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 
 	/**
 	 * Creates an SVG icon element via native DOM (no innerHTML).

@@ -23,19 +23,18 @@ protected override _handleSendMessage(): void {
 				status: 'pending',
 			});
 
-			// 清空输入框（保持当前高度不变，避免排队时输入框塌缩）
-			const savedHeight = this._textarea.style.height;
-			this._setComposerText('');
-			this._textarea.style.height = savedHeight || 'auto';
-			this._skillChips = [];
-			this._renderSkillChips();
-			this._attachments = [];
-			this._updateSendButton();
-			return;
-		}
+		// 清空输入框（保持当前高度不变，避免排队时输入框塌缩）
+		const savedHeight = this._textarea.style.height;
+		this._setComposerText('');
+		this._textarea.style.height = savedHeight || 'auto';
+		this._attachments = [];
+		this._updateSendButton();
+		return;
+	}
 
-		// Get explicit skill IDs from skill chips
-		const explicitSkillIds = this._skillChips.length > 0 ? this._skillChips.map(c => c.id) : undefined;
+	// Get explicit skill IDs from inline skill chips（DOM 为唯一真源）
+	const skillChipIds = this._getSkillChipIds();
+	const explicitSkillIds = skillChipIds.length > 0 ? skillChipIds : undefined;
 
 		// Snapshot attachments before clearing
 		const attachments = this._attachments.length > 0 ? this._attachments.slice() : undefined;
@@ -47,12 +46,10 @@ protected override _handleSendMessage(): void {
 		const newHeight = this._userHasAdjustedHeight
 			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
 			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
-		this._textarea.style.height = newHeight + 'px';
-		this._skillChips = [];
-		this._renderSkillChips();
+	this._textarea.style.height = newHeight + 'px';
 
-		// Clear attachments (inline chips already cleared by _setComposerText)
-		this._attachments = [];
+	// Clear attachments (inline chips already cleared by _setComposerText)
+	this._attachments = [];
 
 		// Send message with skill IDs + attachments
 		this._onSendMessage(text || '', explicitSkillIds, attachments);

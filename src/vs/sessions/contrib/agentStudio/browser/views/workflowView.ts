@@ -242,6 +242,14 @@ export class WorkflowViewPane extends ViewPane {
 				titleRow.appendChild(pinIcon);
 			}
 
+			// 内置标识
+			if (wf.source === 'builtin') {
+				const builtinBadge = $('span.builtin-badge');
+				builtinBadge.textContent = '内置';
+				builtinBadge.title = '产品内置工作流';
+				titleRow.appendChild(builtinBadge);
+			}
+
 			// Version badge
 			if (wf.version) {
 				const verBadge = $('span.workflow-version-badge');
@@ -272,15 +280,17 @@ export class WorkflowViewPane extends ViewPane {
 			// ── Actions (right side)（删除保留，复制移入右键菜单） ──
 			const actions = $('div.workflow-actions');
 
-			// Delete button — always shown
-			const delBtn = $('button.workflow-btn.delete') as HTMLButtonElement;
-			delBtn.textContent = '🗑';
-			delBtn.title = `删除 ${wf.name}`;
-			delBtn.onclick = (e) => {
-				e.stopPropagation();
-				void this._handleDelete(wf);
-			};
-			actions.appendChild(delBtn);
+			// Delete button — 内置工作流不可删除
+			if (wf.source !== 'builtin') {
+				const delBtn = $('button.workflow-btn.delete') as HTMLButtonElement;
+				delBtn.textContent = '🗑';
+				delBtn.title = `删除 ${wf.name}`;
+				delBtn.onclick = (e) => {
+					e.stopPropagation();
+					void this._handleDelete(wf);
+				};
+				actions.appendChild(delBtn);
+			}
 
 			item.appendChild(actions);
 
@@ -297,8 +307,8 @@ export class WorkflowViewPane extends ViewPane {
 					onDuplicate: () => { void this._handleDuplicate(wf); },
 					upgradeLabel: targetVersion ? `升级到 v${targetVersion}` : undefined,
 					onUpgrade: targetVersion ? () => { void this._handleUpgrade(wf, targetVersion); } : undefined,
-					onUpload: () => { this._handleUpload(wf); },
-					onDelete: () => { void this._handleDelete(wf); },
+					onUpload: wf.source !== 'builtin' ? () => { this._handleUpload(wf); } : undefined,
+					onDelete: wf.source !== 'builtin' ? () => { void this._handleDelete(wf); } : undefined,
 				});
 			};
 

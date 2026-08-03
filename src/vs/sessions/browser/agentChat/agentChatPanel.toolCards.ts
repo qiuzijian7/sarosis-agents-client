@@ -1,6 +1,7 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IAgentChatMessage, IToolCall, IChatAttachment, IPlanTaskCard } from './agentChatTypes.js';
-import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS } from './agentChatPanel.base.js';
+import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS } from './agentChatPanel.base.js';
+import { isAnysearchArgs } from './agentChatPanel.webCard.js';
 
 /** 纯函数 HTML 转义，避免 XSS。 */
 export function escapeHtml(s: string): string {
@@ -362,6 +363,15 @@ protected _createSearchToolCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createSearchToolCard');
 }
 
+/**
+ * Web 族专用卡片（web_search / web_extract / anysearch）— 已抽取到
+ * agentChatPanel.webCard.ts（AgentChatPanelWebCard）。
+ * 保留 stub 供 dispatcher `_createToolCallCard` 调用；运行时由子类 override 提供实现。
+ */
+protected _createWebToolCard(tc: IToolCall, key: string): HTMLElement {
+	throw new Error('[moved-to-feature] _createWebToolCard');
+}
+
 protected override _createToolCallCard(tc: IToolCall): HTMLElement {
 		const key = (tc.name || '').toLowerCase();
 
@@ -377,6 +387,10 @@ protected override _createToolCallCard(tc: IToolCall): HTMLElement {
 
 		// ── 终端命令：专用终端卡片（复刻 Void 风格：命令预览 + 输出代码块 + exit code）──
 		if (TOOL_TERMINAL_TOOLS.has(key)) {
+			// anysearch CLI（execute_code 运行 anysearch_cli.py）→ Web 族卡片
+			if (key === 'execute_code' && isAnysearchArgs(tc.args)) {
+				return this._createWebToolCard(tc, 'anysearch');
+			}
 			return this._createTerminalToolCard(tc, key);
 		}
 
@@ -393,6 +407,11 @@ protected override _createToolCallCard(tc: IToolCall): HTMLElement {
 		// ── 委派/子Agent ──
 		if (TOOL_DELEGATE_TOOLS.has(key)) {
 			return this._createDelegateTaskCard(tc, key);
+		}
+
+		// ── Web 族（web_search 联网搜索 / web_extract 整页抓取：专用 Web 卡片）──
+		if (TOOL_WEB_TOOLS.has(key)) {
+			return this._createWebToolCard(tc, key);
 		}
 
 		// ── 搜索/查询（专用搜索卡片：查询词 + 匹配数 + 结果列表）──
@@ -1171,14 +1190,29 @@ protected _createPlanTasksCard(planTasks: IPlanTaskCard): HTMLElement {
 
 
 protected override _renderUserContent(parent: HTMLElement, content: string): void {
-		// Highlight @mentions
-		const parts = content.split(/(@[\w\u4e00-\u9fff]+)/g);
-		for (const part of parts) {
-			if (part.startsWith("@") && part.length > 1) {
-				const mention = append(parent, $("span.msg-mention"));
-				mention.textContent = part;
-			} else {
-				append(parent, $("span")).textContent = part;
+		// 解析内联 skill 标记（/skill <id>）→ 只读 pill；其余文本高亮 @mentions
+		const segments = content.split(/(\/skill\s+[\w-]+)/g);
+		for (const seg of segments) {
+			const skillMatch = seg.match(/^\/skill\s+([\w-]+)$/);
+			if (skillMatch) {
+				const id = skillMatch[1];
+				const name = this._onListSkills().find(s => s.id === id)?.name || id;
+				const chip = append(parent, $('span.bubble-skill-chip'));
+				const icon = append(chip, $('span.bubble-skill-chip-icon'));
+				icon.textContent = '⚡';
+				const label = append(chip, $('span.bubble-skill-chip-name'));
+				label.textContent = name;
+				chip.title = `技能: ${name} (${id})`;
+				continue;
+			}
+			const parts = seg.split(/(@[\w\u4e00-\u9fff]+)/g);
+			for (const part of parts) {
+				if (part.startsWith("@") && part.length > 1) {
+					const mention = append(parent, $("span.msg-mention"));
+					mention.textContent = part;
+				} else {
+					append(parent, $("span")).textContent = part;
+				}
 			}
 		}
 	}

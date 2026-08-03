@@ -142,8 +142,12 @@ export const TOOL_PLAN_TOOLS = new Set(['plan_explore', 'plan_enter', 'plan_exit
 /** 委派/子Agent 族（需专用卡片）。new_agent 是配置型 action，不走委派卡（回退通用工具卡）。 */
 export const TOOL_DELEGATE_TOOLS = new Set(['delegate_task', 'transfer_to_agent']);
 
-/** 搜索/查询 族（需列表化结果卡片） */
-export const TOOL_SEARCH_TOOLS = new Set(['search_code', 'search_graph', 'query_graph', 'trace_path', 'get_architecture', 'search_files', 'web_search', 'web_extract', 'get_code_snippet']);
+/** 搜索/查询 族（需列表化结果卡片）。web_search/web_extract 不在此列——已迁移到 TOOL_WEB_TOOLS（专用 Web 卡片）。 */
+export const TOOL_SEARCH_TOOLS = new Set(['search_code', 'search_graph', 'query_graph', 'trace_path', 'get_architecture', 'search_files', 'get_code_snippet']);
+
+/** Web 族（web_search 联网搜索 / web_extract 整页抓取）—— 走 agentChatPanel.webCard.ts 专用卡片。
+ *  anysearch 不在此列：它经 execute_code 调 CLI，由 dispatcher 按 args 内容识别后同样走 Web 卡片。 */
+export const TOOL_WEB_TOOLS = new Set(['web_search', 'web_extract']);
 
 export const TOOL_LIST_TOOLS = new Set(['search_files', 'ls_dir', 'list_files', 'get_dir_tree', 'search_pathnames_only', 'search_for_files', 'search_content', 'search_in_file', 'grep',
 	// codebase 搜索类工具
@@ -554,10 +558,6 @@ protected _mentionQuery = '';
 protected _mentionResults: Array<{ path: string; name: string }> = [];
 
 protected _mentionSearchTimer: number | null = null;
-
-protected _skillChipsBar: HTMLElement | null = null;
-
-protected _skillChips: Array<{ id: string; name: string }> = [];
 
 protected _orchestrationPlanEl: HTMLElement | null = null;
 

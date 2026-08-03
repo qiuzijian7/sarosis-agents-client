@@ -487,6 +487,12 @@ export class SkillInstallService extends Disposable implements ISkillInstallServ
 			return false;
 		}
 
+		// 内置技能不可卸载
+		if (skill.source === 'builtin') {
+			this.logService.warn(`[SkillInstall] uninstallSkill("${skillId}"): rejected — builtin skill is read-only`);
+			throw new Error(`内置技能 "${skillId}" 不允许卸载。`);
+		}
+
 		if (!skill.resource) {
 			return false;
 		}

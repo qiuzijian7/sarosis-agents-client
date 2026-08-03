@@ -49,13 +49,9 @@ protected override _renderInputArea(): void {
 		// Composer box
 		const composerBox = append(inputArea, $(".chat-composer-box"));
 
-		// Skill chips bar (inserted before textarea)
-		// Note: visibility is controlled by _renderSkillChips() -> line 3103
-		this._skillChipsBar = append(composerBox, $(".skill-chips-bar")) as HTMLElement;
-		// Initialize skill chips bar visibility
-		this._renderSkillChips();
-
 		// ContentEditable div（替代 textarea，支持文本+内联附件芯片混排）
+		// 注意：skill chips 已改为内联芯片（span.inline-skill-chip），直接插入本 div 的文本流中，
+		// 不再有独立的 chips bar。
 		this._textarea = append(
 			composerBox,
 			$("div.chat-composer-textarea"),
@@ -305,46 +301,48 @@ protected override _renderInputArea(): void {
 						return;
 					}
 
-					// Backspace: if composer is empty and we have skill chips, remove the last chip
-					// Also handle: if cursor is right after an inline attachment chip, delete the chip
-					if (e.key === 'Backspace') {
-						const sel = window.getSelection();
-						if (sel && sel.rangeCount > 0) {
-							const range = sel.getRangeAt(0);
-							const container = range.startContainer;
-							const offset = range.startOffset;
-							// 找到光标前紧邻的「有效节点」（跳过纯空白文本节点）
-							let prevNode: Node | null = null;
-							if (container.nodeType === Node.ELEMENT_NODE) {
-								prevNode = container.childNodes[offset - 1] ?? null;
-								// 若前一个是空白文本节点且再前一个是芯片，则定位到芯片（删除芯片）
-								if (prevNode && prevNode.nodeType === Node.TEXT_NODE && /^\s*$/.test(prevNode.textContent ?? '') && offset - 2 >= 0) {
-									const beforeThat = container.childNodes[offset - 2];
-									if (beforeThat && (beforeThat as HTMLElement).classList?.contains('inline-attachment-chip')) {
-										prevNode = beforeThat;
-									}
+				// Backspace: if cursor is right after an inline chip (attachment / skill), delete the chip
+				if (e.key === 'Backspace') {
+					const sel = window.getSelection();
+					if (sel && sel.rangeCount > 0) {
+						const range = sel.getRangeAt(0);
+						const container = range.startContainer;
+						const offset = range.startOffset;
+						// 找到光标前紧邻的「有效节点」（跳过纯空白文本节点）
+						let prevNode: Node | null = null;
+						if (container.nodeType === Node.ELEMENT_NODE) {
+							prevNode = container.childNodes[offset - 1] ?? null;
+							// 若前一个是空白文本节点且再前一个是芯片，则定位到芯片（删除芯片）
+							if (prevNode && prevNode.nodeType === Node.TEXT_NODE && /^\s*$/.test(prevNode.textContent ?? '') && offset - 2 >= 0) {
+								const beforeThat = container.childNodes[offset - 2];
+								if (beforeThat && (beforeThat as HTMLElement).classList?.contains('inline-attachment-chip')) {
+									prevNode = beforeThat;
 								}
-							} else if (container.nodeType === Node.TEXT_NODE && offset === 0) {
-								prevNode = container.previousSibling;
 							}
-							if (prevNode && prevNode.nodeType === Node.ELEMENT_NODE && (prevNode as HTMLElement).classList.contains('inline-attachment-chip')) {
+						} else if (container.nodeType === Node.TEXT_NODE && offset === 0) {
+							prevNode = container.previousSibling;
+						}
+						if (prevNode && prevNode.nodeType === Node.ELEMENT_NODE) {
+							const prevEl = prevNode as HTMLElement;
+							if (prevEl.classList.contains('inline-attachment-chip')) {
 								e.preventDefault();
-								const attId = (prevNode as HTMLElement).dataset.attId;
+								const attId = prevEl.dataset.attId;
 								if (attId) {
 									this._attachments = this._attachments.filter(a => a.id !== attId);
-									(prevNode as ChildNode).remove();
+									prevEl.remove();
 									this._updateSendButton();
 								}
 								return;
 							}
-						}
-						if (!this._getComposerText().trim() && this._skillChips.length > 0) {
-							e.preventDefault();
-							const lastChip = this._skillChips[this._skillChips.length - 1];
-							this._removeSkillChip(lastChip.id);
-							return;
+							if (prevEl.classList.contains('inline-skill-chip')) {
+								e.preventDefault();
+								prevEl.remove();
+								this._updateSendButton();
+								return;
+							}
 						}
 					}
+				}
 
 					// ── 编辑快捷键（contentEditable 内优先于 VS Code 宿主 keybinding）──
 					// Ctrl+A：全选（选区覆盖整个 contentEditable 文本）
@@ -1063,59 +1061,88 @@ protected override _highlightSlashMenuItem(): void {
 		if (selected) { selected.scrollIntoView({ block: 'nearest' }); }
 	}
 
+/** 创建内联 skill chip 节点：嵌在 contentEditable 文本流中，与文字混排。 */
+protected _createSkillChipNode(id: string, name: string): HTMLElement {
+	const chip = document.createElement('span');
+	chip.className = 'inline-skill-chip';
+	chip.dataset.skillId = id;
+	chip.setAttribute('contenteditable', 'false');
+	chip.title = `技能: ${name} (${id})`;
+
+	const icon = document.createElement('span');
+	icon.className = 'inline-skill-chip-icon';
+	icon.textContent = '⚡';
+	chip.appendChild(icon);
+
+	const label = document.createElement('span');
+	label.className = 'inline-skill-chip-name';
+	label.textContent = name;
+	chip.appendChild(label);
+
+	const removeBtn = document.createElement('span');
+	removeBtn.className = 'inline-skill-chip-remove';
+	removeBtn.textContent = '✕';
+	chip.appendChild(removeBtn);
+	this._register(addDisposableListener(removeBtn, EventType.CLICK, (e) => {
+		e.stopPropagation();
+		e.preventDefault();
+		this._removeSkillChip(id);
+	}));
+	return chip;
+}
+
+/** 从 DOM 收集当前 composer 内的 skill id（DOM 是唯一真源）。 */
+protected _getSkillChipIds(): string[] {
+	const root = this._textarea;
+	if (!root) { return []; }
+	return Array.from(root.querySelectorAll('.inline-skill-chip'))
+		.map(el => (el as HTMLElement).dataset.skillId ?? '')
+		.filter(Boolean);
+}
+
 protected override _addSkillChip(id: string, name: string): void {
-		// Check if already added
-		if (this._skillChips.some(c => c.id === id)) { return; }
-		this._skillChips.push({ id, name });
-		this._renderSkillChips();
+	const root = this._textarea;
+	if (!root) { return; }
+	// 去重：DOM 中已存在同 id chip 则跳过
+	if (root.querySelector(`.inline-skill-chip[data-skill-id="${CSS.escape(id)}"]`)) { return; }
+	const chip = this._createSkillChipNode(id, name);
+	const spaceBefore = document.createTextNode(' ');
+	const spaceAfter = document.createTextNode(' ');
+	root.focus();
+	const sel = window.getSelection();
+	if (sel && sel.rangeCount > 0) {
+		const range = sel.getRangeAt(0);
+		range.deleteContents();
+		const frag = document.createDocumentFragment();
+		frag.appendChild(spaceBefore);
+		frag.appendChild(chip);
+		frag.appendChild(spaceAfter);
+		range.insertNode(frag);
+		range.setStartAfter(spaceAfter);
+		range.collapse(true);
+		sel.removeAllRanges();
+		sel.addRange(range);
+	} else {
+		root.appendChild(spaceBefore);
+		root.appendChild(chip);
+		root.appendChild(spaceAfter);
+		this._focusComposerEnd();
 	}
+	// 触发 input 事件以更新自动高度与发送按钮状态
+	root.dispatchEvent(new Event('input'));
+}
 
 protected override _removeSkillChip(id: string): void {
-		this._skillChips = this._skillChips.filter(c => c.id !== id);
-		this._renderSkillChips();
-	}
+	const root = this._textarea;
+	if (!root) { return; }
+	root.querySelector(`.inline-skill-chip[data-skill-id="${CSS.escape(id)}"]`)?.remove();
+	this._updateSendButton();
+}
 
 protected override _renderSkillChips(): void {
-		if (!this._skillChipsBar) { return; }
-		// Clear existing chips
-		while (this._skillChipsBar.firstChild) {
-			this._skillChipsBar.removeChild(this._skillChipsBar.firstChild);
-		}
-		// Render chips
-		for (const chip of this._skillChips) {
-			const chipEl = append(this._skillChipsBar, $('span.skill-chip'));
-			chipEl.title = `技能: ${chip.name} (${chip.id})`;
-			append(chipEl, $('span.skill-chip-icon', undefined, '⚡'));
-			append(chipEl, $('span.skill-chip-name', undefined, chip.name));
-		const removeBtn = append(chipEl, $('button.skill-chip-remove'));
-			// Create SVG element directly (avoid TrustedHTML issues with DOMParser)
-			const removeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-			removeSvg.setAttribute('width', '10');
-			removeSvg.setAttribute('height', '10');
-			removeSvg.setAttribute('viewBox', '0 0 24 24');
-			removeSvg.setAttribute('fill', 'none');
-			removeSvg.setAttribute('stroke', 'currentColor');
-			removeSvg.setAttribute('stroke-width', '2.5');
-			const removeLine1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-			removeLine1.setAttribute('x1', '18');
-			removeLine1.setAttribute('y1', '6');
-			removeLine1.setAttribute('x2', '6');
-			removeLine1.setAttribute('y2', '18');
-			removeSvg.appendChild(removeLine1);
-			const removeLine2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-			removeLine2.setAttribute('x1', '6');
-			removeLine2.setAttribute('y1', '6');
-			removeLine2.setAttribute('x2', '18');
-			removeLine2.setAttribute('y2', '18');
-			removeSvg.appendChild(removeLine2);
-			removeBtn.appendChild(removeSvg);
-			this._register(addDisposableListener(removeBtn, EventType.CLICK, () => {
-				this._removeSkillChip(chip.id);
-			}));
-		}
-		// Show/hide bar
-		this._skillChipsBar.style.display = this._skillChips.length > 0 ? 'flex' : 'none';
-	}
+	// no-op：skill chips 已改为内联在 contentEditable 文本流中，
+	// DOM 即真源，无需独立渲染函数。保留空实现以兼容 base 类声明。
+}
 
 protected override _selectSlashMenuItem(): void {
 		const items = this._slashMenuEl?.querySelectorAll('.slash-menu-item');
@@ -1128,21 +1155,15 @@ protected override _selectSlashMenuItem(): void {
 	}
 
 protected override _insertSlashSkill(skillId: string, skillName: string): void {
-		// Add skill chip
-		this._addSkillChip(skillId, skillName);
-		// Clear composer (skill is now in chip)
-		this._setComposerText('');
-		this._textarea.style.color = '';
-		this._textarea.removeAttribute('data-slash-command');
-		// Auto-resize and reposition cursor to end
-		this._textarea.style.height = 'auto';
-		const maxAllowed = 320;
-		const newHeight = this._userHasAdjustedHeight
-			? Math.min(Math.max(this._textarea.scrollHeight, this._resizeMaxH), maxAllowed)
-			: Math.min(this._textarea.scrollHeight, this._resizeMaxH);
-		this._textarea.style.height = newHeight + 'px';
-		this._focusComposerEnd();
-	}
+	// slash 菜单仅在整段内容为 /xxx 时触发，直接清空后把 skill 内联 chip 插到末尾，
+	// 光标落在 chip 之后，用户可继续输入文本。
+	this._setComposerText('');
+	this._textarea.style.color = '';
+	this._textarea.removeAttribute('data-slash-command');
+	// Add skill chip（内联插入到 composer 文本流末尾）
+	this._addSkillChip(skillId, skillName);
+	this._focusComposerEnd();
+}
 
 protected override _closeSlashMenu(): void {
 		if (this._slashMenuEl) {
@@ -1292,10 +1313,17 @@ protected override _getComposerText(): string {
 				out += node.textContent ?? '';
 				return;
 			}
-			if (node.nodeType !== Node.ELEMENT_NODE) { return; }
-			const el = node as HTMLElement;
-			if (el.classList.contains('inline-attachment-chip')) { return; }
-			const tag = el.tagName;
+		if (node.nodeType !== Node.ELEMENT_NODE) { return; }
+		const el = node as HTMLElement;
+		if (el.classList.contains('inline-attachment-chip')) { return; }
+		// skill chip → 内联标记 `/skill <id>`：保留 chip 在文本流中的位置，
+		// 气泡渲染与历史恢复据此解析还原 chip pill。
+		if (el.classList.contains('inline-skill-chip')) {
+			const id = el.dataset.skillId;
+			out += id ? `/skill ${id}` : '';
+			return;
+		}
+		const tag = el.tagName;
 			if (tag === 'BR') { out += '\n'; return; }
 			if (tag === 'DIV' || tag === 'P') {
 				if (out.length > 0 && !out.endsWith('\n')) { out += '\n'; }
@@ -1317,7 +1345,18 @@ protected override _setComposerText(text: string): void {
 		const root = this._textarea;
 		if (!root) { return; }
 		clearNode(root);
-		if (text) { root.textContent = text; }
+		if (text) {
+			// 解析内联 skill 标记（/skill <id>）→ 重建 chip 节点（历史恢复/草稿恢复）
+			const segments = text.split(/(\/skill\s+[\w-]+)/g);
+			for (const seg of segments) {
+				const m = seg.match(/^\/skill\s+([\w-]+)$/);
+				if (m) {
+					root.appendChild(this._createSkillChipNode(m[1], this._resolveSkillName(m[1])));
+					continue;
+				}
+				if (seg) { root.appendChild(document.createTextNode(seg)); }
+			}
+		}
 		// 重新计算高度，避免多行时被截断
 		root.style.height = 'auto';
 		const maxAllowed = 320;
@@ -1327,6 +1366,12 @@ protected override _setComposerText(text: string): void {
 		root.style.height = newHeight + 'px';
 		// 更新字符计数器
 		this._updateCharCounter(text);
+	}
+
+	/** 按 skill id 查显示名（用于标记 → chip 还原）；查不到回退 id 本身。 */
+	private _resolveSkillName(id: string): string {
+		const skills = this._onListSkills();
+		return skills.find(s => s.id === id)?.name || id;
 	}
 
 protected override _getCaretOffset(): number {
@@ -1344,7 +1389,7 @@ protected override _getCaretOffset(): number {
 				offset += (n.textContent ?? '').length;
 			} else if (n.nodeType === Node.ELEMENT_NODE) {
 				const el = n as HTMLElement;
-				if (!el.classList.contains('inline-attachment-chip')) {
+				if (!el.classList.contains('inline-attachment-chip') && !el.classList.contains('inline-skill-chip')) {
 					offset += (el.textContent ?? '').length;
 				}
 			}

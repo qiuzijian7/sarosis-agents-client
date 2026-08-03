@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>web_extract 工具卡片 · Void 风格 Mockup</title>
+<style>
+/* ════════════════════════════════════════════════════════════════
+   设计令牌：与 void-tool-card.css 1:1 对齐
+   ════════════════════════════════════════════════════════════════ */
+:root{
+  --void-bg-3:#1e1e1e;        /* editor background */
+  --void-bg-2:#252526;        /* sideBar background */
+  --void-fg-2:#cccccc;
+  --void-fg-3:#989898;        /* placeholder */
+  --void-fg-4:#6e7681;        /* deemphasized */
+  --void-border-3:rgba(128,128,128,0.25);
+  --void-border-4:rgba(128,128,128,0.18);
+  --void-success:#4ec9b0;
+  --void-warn:#cca700;
+  --void-error:#f14c4c;
+  --void-link:#569cd6;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  background:#15161a;color:var(--void-fg-2);
+  padding:34px 16px;display:flex;flex-direction:column;align-items:center;gap:20px;
+}
+.chat{max-width:680px;width:100%;display:flex;flex-direction:column;gap:14px;}
+
+.note{
+  max-width:680px;width:100%;font-size:12.5px;line-height:1.65;color:var(--void-fg-3);
+  border:1px dashed var(--void-border-3);border-radius:10px;padding:12px 16px;background:rgba(255,255,255,.02);
+}
+.note b{color:var(--void-fg-2);}
+.note .k{color:var(--void-success);font-weight:600;}
+.note .y{color:var(--void-warn);font-weight:600;}
+
+.demo-bar{display:flex;gap:8px;max-width:680px;width:100%;flex-wrap:wrap;}
+.demo-bar button{
+  background:rgba(255,255,255,.05);color:var(--void-fg-2);border:1px solid var(--void-border-3);
+  border-radius:8px;font-size:11.5px;padding:7px 13px;cursor:pointer;transition:.15s;
+}
+.demo-bar button:hover{background:rgba(78,201,176,.12);border-color:rgba(78,201,176,.35);}
+
+/* ════════════════════════════════════════════════════════════════
+   web_extract 工具卡片 —— Void 统一壳 .tool-header-wrapper
+   标题行：chevron + 🌐 + 页面标题 + 右侧(状态 pill + 耗时)
+   展开体：页面信息栏（favicon + 域名 + URL + 状态） + 正文（可滚动）
+   ════════════════════════════════════════════════════════════════ */
+.tool-header-wrapper{margin:4px 0;}
+.tool-header-wrapper .tool-header{
+  width:100%;border:1px solid var(--void-border-3);border-radius:4px;
+  padding:2px 8px;background:var(--void-bg-3);overflow:hidden;
+  transition:border-color .15s ease,background .15s ease;
+}
+.tool-header-wrapper.tool-card-error  .tool-header{border-color:color-mix(in srgb,var(--void-warn) 55%,var(--void-border-3));}
+.tool-header-wrapper.tool-card-running .tool-header{border-color:color-mix(in srgb,var(--void-warn) 50%,var(--void-border-3));background:color-mix(in srgb,var(--void-warn) 5%,var(--void-bg-3));}
+.tool-header-wrapper.tool-card-canceled .tool-header{opacity:.8;border-color:var(--void-border-4);}
+
+.tool-header-row{user-select:none;display:flex;align-items:center;width:100%;gap:8px;overflow:hidden;justify-content:space-between;min-height:26px;}
+.tool-header-left{margin-left:4px;display:flex;align-items:center;overflow:hidden;min-width:0;}
+.tool-header-icon{display:inline-flex;align-items:center;margin-right:6px;flex-shrink:0;font-size:13px;}
+.tool-header-title-container{display:flex;align-items:center;min-width:0;overflow:hidden;flex-grow:1;cursor:pointer;}
+.tool-header-title-container.tool-header-title-clickable{cursor:pointer;transition:filter .15s;}
+.tool-header-title-container.tool-header-title-clickable:hover{filter:brightness(1.25);}
+.tool-header-chevron{color:var(--void-fg-3);width:14px;height:14px;flex-shrink:0;transition:transform .12s;margin-right:2px;}
+.tool-header-chevron.expanded{transform:rotate(90deg);}
+.tool-header-title{color:var(--void-fg-2);font-size:12px;font-weight:500;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tool-header-desc1{color:var(--void-fg-4);font-size:11px;font-style:italic;margin-left:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+/* 右侧：状态 pill + 耗时 */
+.tool-header-right{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.status-pill{
+  font-size:11px;font-weight:600;padding:1px 9px;border-radius:99px;flex-shrink:0;
+  display:inline-flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums;
+}
+.status-pill.running{color:var(--void-warn);background:color-mix(in srgb,var(--void-warn) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-warn) 30%,transparent);}
+.status-pill.done{color:var(--void-success);background:color-mix(in srgb,var(--void-success) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-success) 30%,transparent);}
+.status-pill.error{color:var(--void-error);background:color-mix(in srgb,var(--void-error) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-error) 30%,transparent);}
+.status-pill.canceled{color:var(--void-fg-3);background:rgba(128,128,128,.12);border:1px solid var(--void-border-4);}
+.status-pill .pulse{width:6px;height:6px;border-radius:50%;background:var(--void-warn);animation:pulse 1.1s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.tool-header-duration{font-size:11px;color:var(--void-fg-4);font-variant-numeric:tabular-nums;flex-shrink:0;}
+
+/* ── 展开体 ── */
+.tool-header-children{overflow:hidden;max-height:0;opacity:0;transition:all .2s ease-in-out;border-radius:2px;}
+.tool-header-children.expanded{max-height:520px;opacity:1;}
+
+/* ── 页面信息栏（favicon + 域名 + URL + 状态） ── */
+.web-extract-info{
+  display:flex;align-items:center;gap:8px;padding:6px 10px;
+  border-bottom:1px solid var(--void-border-4);background:rgba(255,255,255,.02);
+}
+.web-extract-favicon{
+  width:16px;height:16px;border-radius:3px;flex-shrink:0;
+  background:var(--void-bg-2);display:flex;align-items:center;justify-content:center;
+  font-size:11px;color:var(--void-fg-4);border:1px solid var(--void-border-4);
+}
+.web-extract-domain{
+  font-size:11.5px;font-weight:600;color:var(--void-fg-2);flex-shrink:0;
+}
+.web-extract-url{
+  font-size:11px;color:var(--void-link);text-decoration:none;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;
+}
+.web-extract-url:hover{text-decoration:underline;}
+.web-extract-status{
+  font-size:10px;font-weight:600;padding:1px 7px;border-radius:99px;flex-shrink:0;
+  font-variant-numeric:tabular-nums;
+}
+.web-extract-status.ok{color:var(--void-success);background:color-mix(in srgb,var(--void-success) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-success) 30%,transparent);}
+.web-extract-status.redirect{color:var(--void-warn);background:color-mix(in srgb,var(--void-warn) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-warn) 30%,transparent);}
+.web-extract-status.error{color:var(--void-error);background:color-mix(in srgb,var(--void-error) 14%,transparent);border:1px solid color-mix(in srgb,var(--void-error) 30%,transparent);}
+
+/* ── 正文内容区（可滚动） ── */
+.web-extract-body{
+  max-height:380px;overflow-y:auto;padding:10px 12px;
+  scrollbar-width:thin;scrollbar-color:var(--void-border-3) transparent;
+}
+.web-extract-body::-webkit-scrollbar{width:8px;}
+.web-extract-body::-webkit-scrollbar-thumb{background:var(--void-border-3);border-radius:8px;}
+.web-extract-body::-webkit-scrollbar-track{background:transparent;}
+
+/* 页面标题（大） */
+.web-extract-page-title{
+  font-size:13px;font-weight:600;color:var(--void-fg-2);
+  margin-bottom:6px;line-height:1.4;
+}
+/* 页面元信息（URL 重复显示供复制） */
+.web-extract-meta{
+  font-size:11px;color:var(--void-fg-4);margin-bottom:8px;
+  display:flex;align-items:center;gap:6px;
+}
+.web-extract-meta a{color:var(--void-link);text-decoration:none;}
+.web-extract-meta a:hover{text-decoration:underline;}
+/* 内容字数统计 */
+.web-extract-wordcount{
+  font-size:10px;color:var(--void-fg-4);font-variant-numeric:tabular-nums;
+  margin-left:auto;flex-shrink:0;
+}
+
+/* 正文 */
+.web-extract-content{
+  font-size:12px;line-height:1.65;color:var(--void-fg-2);
+  white-space:pre-wrap;word-break:break-word;
+}
+.web-extract-content p{margin:0 0 8px 0;}
+.web-extract-content h1,.web-extract-content h2,.web-extract-content h3{
+  font-size:12.5px;font-weight:600;color:var(--void-fg-2);
+  margin:12px 0 6px 0;line-height:1.4;
+}
+.web-extract-content code{
+  font-family:ui-monospace,Consolas,monospace;font-size:11px;
+  background:rgba(255,255,255,.06);padding:1px 4px;border-radius:3px;
+  color:#ce9178;
+}
+.web-extract-content pre{
+  font-family:ui-monospace,Consolas,monospace;font-size:11px;
+  background:var(--void-bg-2);padding:8px 10px;border-radius:4px;
+  overflow-x:auto;margin:6px 0;border:1px solid var(--void-border-4);
+}
+.web-extract-content ul,.web-extract-content ol{padding-left:20px;margin:4px 0;}
+.web-extract-content li{margin:2px 0;}
+.web-extract-content blockquote{
+  border-left:2px solid var(--void-border-3);padding-left:10px;
+  margin:6px 0;color:var(--void-fg-3);font-style:italic;
+}
+.web-extract-content table{
+  border-collapse:collapse;width:100%;font-size:11.5px;margin:6px 0;
+}
+.web-extract-content th,.web-extract-content td{
+  border:1px solid var(--void-border-3);padding:4px 8px;text-align:left;
+}
+.web-extract-content th{background:var(--void-bg-2);font-weight:600;}
+
+/* ── 截断警告 ── */
+.web-extract-truncation{
+  margin-top:10px;padding:8px 10px;border-radius:4px;
+  background:color-mix(in srgb,var(--void-warn) 8%,transparent);
+  border:1px solid color-mix(in srgb,var(--void-warn) 30%,transparent);
+  font-size:11px;line-height:1.5;color:var(--void-fg-3);
+}
+.web-extract-truncation .trunc-title{
+  font-weight:600;color:var(--void-warn);margin-bottom:3px;font-size:11.5px;
+}
+.web-extract-truncation code{
+  font-family:ui-monospace,Consolas,monospace;font-size:10.5px;
+  color:#ce9178;word-break:break-all;
+}
+
+/* ── 空状态 ── */
+.web-extract-empty{
+  padding:16px 12px;text-align:center;font-size:12px;color:var(--void-fg-4);
+}
+.web-extract-empty .empty-icon{font-size:20px;margin-bottom:6px;display:block;}
+
+/* ── 加载中 ── */
+.web-extract-loading{
+  padding:16px 12px;text-align:center;font-size:12px;color:var(--void-fg-4);
+}
+.web-extract-loading .loading-dots{display:inline-flex;gap:3px;margin-left:4px;}
+.web-extract-loading .loading-dot{
+  width:5px;height:5px;border-radius:50%;background:var(--void-warn);
+  animation:delegate-pulse 1.1s ease-in-out infinite;
+}
+.web-extract-loading .loading-dot:nth-child(2){animation-delay:.2s;}
+.web-extract-loading .loading-dot:nth-child(3){animation-delay:.4s;}
+@keyframes delegate-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</head>
+<body>
+
+<div class="note">
+  <b>web_extract 工具卡片 · Void 风格 Mockup</b><br>
+  <span class="k">设计要点</span>：统一壳 .tool-header-wrapper；标题行展示页面标题（非固定"网页提取"）；
+  信息栏展示 favicon + 域名 + URL + 抓取状态；正文区限高滚动；
+  截断时尾部追加 <span class="y">⚠ Truncation warning</span>。<br>
+  <b>输出契约</b>（对齐 webSearchParse.ts）：<code># {title}\n\nURL: {url}\n\n{content}</code>
+</div>
+
+<div class="demo-bar">
+  <button onclick="setState('done')">✅ 完成（正常）</button>
+  <button onclick="setState('running')">⏳ 运行中</button>
+  <button onclick="setState('error')">❌ 失败</button>
+  <button onclick="setState('redirect')">🔀 重定向</button>
+  <button onclick="setState('truncated')">📏 超长截断</button>
+</div>
+
+<div class="chat" id="chat">
+
+<!-- ═══════════ 1. 完成状态（正常页面） ═══════════ -->
+<div class="tool-header-wrapper tool-card-done" id="card-1" style="display:none;">
+  <div class="tool-header">
+    <div class="tool-header-row">
+      <div class="tool-header-left">
+        <div class="tool-header-title-container tool-header-title-clickable" onclick="toggleCard(this)">
+          <span class="tool-header-chevron expanded">▸</span>
+          <span class="tool-header-icon">🌐</span>
+          <span class="tool-header-title">Understanding VS Code Extensions API - Visual Studio Code</span>
+          <span class="tool-header-desc1">code.visualstudio.com</span>
+        </div>
+      </div>
+      <div class="tool-header-right">
+        <span class="status-pill done">✓ 完成</span>
+        <span class="tool-header-duration">2.3s</span>
+      </div>
+    </div>
+  </div>
+  <div class="tool-header-children expanded">
+    <!-- 页面信息栏 -->
+    <div class="web-extract-info">
+      <span class="web-extract-favicon">🌐</span>
+      <span class="web-extract-domain">code.visualstudio.com</span>
+      <a class="web-extract-url" href="#" onclick="return false">https://code.visualstudio.com/api/extension-guides/overview</a>
+      <span class="web-extract-status ok">200 OK</span>
+    </div>
+    <!-- 正文 -->
+    <div class="web-extract-body">
+      <div class="web-extract-page-title">Understanding VS Code Extensions API</div>
+      <div class="web-extract-meta">
+        <a href="#" onclick="return false">https://code.visualstudio.com/api/extension-guides/overview</a>
+        <span class="web-extract-wordcount">4,283 chars</span>
+      </div>
+      <div class="web-extract-content">
+        <p>VS Code is built on a modular architecture that lets you build extensions using any programming language. The Extension API provides hooks into the editor's lifecycle, from activation events to UI contribution points.</p>
+        <p>Extensions are packaged as npm modules that can be published to the Visual Studio Marketplace. Each extension has a unique identifier in the format <code>publisher.name</code>.</p>
+        <h2>Activation Events</h2>
+        <p>Extensions are activated when certain conditions are met. Common activation events include:</p>
+        <ul>
+          <li><code>onLanguage:{languageId}</code> — when a file of a specific language is opened</li>
+          <li><code>onCommand:{commandId}</code> — when a specific command is invoked</li>
+          <li><code>onDebug</code> — when a debug session is started</li>
+          <li><code>workspaceContains:{pattern}</code> — when the workspace contains files matching a pattern</li>
+        </ul>
+        <p>Activation events are declared in the extension's <code>package.json</code> under the <code>activationEvents</code> array.</p>
+        <h2>Contribution Points</h2>
+        <p>Contribution points define what an extension contributes to VS Code. Examples include commands, menus, settings, keybindings, themes, and more.</p>
+        <p>Each contribution point is declared in <code>package.json</code> under the <code>contributes</code> object. For example, to register a command:</p>
+        <pre><code>{
+  "contributes": {
+    "commands": [{
+      "command": "myExtension.helloWorld",
+      "title": "Hello World"
+    }]
+  }
+}</code></pre>
+        <p>The extension host runs in a separate process from the editor, ensuring extensions don't block the UI thread. Communication between the extension and the editor happens through the Extension API.</p>
+        <p>Extensions can register providers for features like hover information, code completion, document symbols, and more. These providers are called on-demand as the user interacts with the editor.</p>
+        <p>The <code>vscode.window</code> namespace provides access to the UI, while <code>vscode.workspace</code> provides access to the file system and workspace settings.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 2. 运行中状态 ═══════════ -->
+<div class="tool-header-wrapper tool-card-running" id="card-2" style="display:none;">
+  <div class="tool-header">
+    <div class="tool-header-row">
+      <div class="tool-header-left">
+        <div class="tool-header-title-container tool-header-title-clickable">
+          <span class="tool-header-chevron expanded">▸</span>
+          <span class="tool-header-icon">🌐</span>
+          <span class="tool-header-title" style="opacity:.7">https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise</span>
+          <span class="tool-header-desc1">developer.mozilla.org</span>
+        </div>
+      </div>
+      <div class="tool-header-right">
+        <span class="status-pill running"><span class="pulse"></span>抓取中</span>
+      </div>
+    </div>
+  </div>
+  <div class="tool-header-children expanded">
+    <div class="web-extract-info">
+      <span class="web-extract-favicon">🌐</span>
+      <span class="web-extract-domain">developer.mozilla.org</span>
+      <a class="web-extract-url" href="#" onclick="return false">https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise</a>
+      <span class="web-extract-status ok">…</span>
+    </div>
+    <div class="web-extract-loading">
+      <span>正在抓取页面内容</span>
+      <span class="loading-dots">
+        <span class="loading-dot"></span>
+        <span class="loading-dot"></span>
+        <span class="loading-dot"></span>
+      </span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 3. 失败状态 ═══════════ -->
+<div class="tool-header-wrapper tool-card-error" id="card-3" style="display:none;">
+  <div class="tool-header">
+    <div class="tool-header-row">
+      <div class="tool-header-left">
+        <div class="tool-header-title-container tool-header-title-clickable" onclick="toggleCard(this)">
+          <span class="tool-header-chevron expanded">▸</span>
+          <span class="tool-header-icon">🌐</span>
+          <span class="tool-header-title">https://example.com/broken-page</span>
+          <span class="tool-header-desc1">example.com</span>
+        </div>
+      </div>
+      <div class="tool-header-right">
+        <span class="status-pill error">✗ 失败</span>
+        <span class="tool-header-duration">1.1s</span>
+      </div>
+    </div>
+  </div>
+  <div class="tool-header-children expanded">
+    <div class="web-extract-info">
+      <span class="web-extract-favicon">🌐</span>
+      <span class="web-extract-domain">example.com</span>
+      <a class="web-extract-url" href="#" onclick="return false">https://example.com/broken-page</a>
+      <span class="web-extract-status error">404</span>
+    </div>
+    <div class="web-extract-empty">
+      <span class="empty-icon">⚠</span>
+      Web extract failed: Page not found (HTTP 404)
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 4. 重定向状态 ═══════════ -->
+<div class="tool-header-wrapper tool-card-done" id="card-4" style="display:none;">
+  <div class="tool-header">
+    <div class="tool-header-row">
+      <div class="tool-header-left">
+        <div class="tool-header-title-container tool-header-title-clickable" onclick="toggleCard(this)">
+          <span class="tool-header-chevron expanded">▸</span>
+          <span class="tool-header-icon">🌐</span>
+          <span class="tool-header-title">Getting Started with React — Redirected to new docs</span>
+          <span class="tool-header-desc1">react.dev</span>
+        </div>
+      </div>
+      <div class="tool-header-right">
+        <span class="status-pill done">✓ 完成</span>
+        <span class="tool-header-duration">1.8s</span>
+      </div>
+    </div>
+  </div>
+  <div class="tool-header-children expanded">
+    <div class="web-extract-info">
+      <span class="web-extract-favicon">🌐</span>
+      <span class="web-extract-domain">react.dev</span>
+      <a class="web-extract-url" href="#" onclick="return false">https://react.dev/learn/getting-started</a>
+      <span class="web-extract-status redirect">301 → 200</span>
+    </div>
+    <div class="web-extract-body">
+      <div class="web-extract-page-title">Getting Started with React</div>
+      <div class="web-extract-meta">
+        <a href="#" onclick="return false">https://react.dev/learn/getting-started</a>
+        <span class="web-extract-wordcount">3,156 chars</span>
+      </div>
+      <div class="web-extract-content">
+        <p>React is a JavaScript library for building user interfaces. It lets you compose complex UIs from small and isolated pieces of code called "components".</p>
+        <p>React components can be class components or function components. Since React 16.8, function components with Hooks are the recommended way to write React components.</p>
+        <p>To get started with React, you can create a new React application using Create React App, Vite, or a framework like Next.js.</p>
+        <p>The most important concept in React is the idea of <strong>declarative UI</strong>. You describe what the UI should look like for a given state, and React takes care of efficiently updating the DOM to match.</p>
+        <p>Components are the building blocks of React applications. A component is a JavaScript function or class that accepts inputs (called "props") and returns React elements describing what should appear on the screen.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 5. 超长截断状态 ═══════════ -->
+<div class="tool-header-wrapper tool-card-done" id="card-5" style="display:none;">
+  <div class="tool-header">
+    <div class="tool-header-row">
+      <div class="tool-header-left">
+        <div class="tool-header-title-container tool-header-title-clickable" onclick="toggleCard(this)">
+          <span class="tool-header-chevron expanded">▸</span>
+          <span class="tool-header-icon">🌐</span>
+          <span class="tool-header-title">Complete API Reference Documentation — Node.js Official Guide</span>
+          <span class="tool-header-desc1">nodejs.org</span>
+        </div>
+      </div>
+      <div class="tool-header-right">
+        <span class="status-pill done">✓ 完成</span>
+        <span class="tool-header-duration">4.2s</span>
+      </div>
+    </div>
+  </div>
+  <div class="tool-header-children expanded">
+    <div class="web-extract-info">
+      <span class="web-extract-favicon">🌐</span>
+      <span class="web-extract-domain">nodejs.org</span>
+      <a class="web-extract-url" href="#" onclick="return false">https://nodejs.org/api/fs.html</a>
+      <span class="web-extract-status ok">200 OK</span>
+    </div>
+    <div class="web-extract-body">
+      <div class="web-extract-page-title">Complete API Reference Documentation — Node.js</div>
+      <div class="web-extract-meta">
+        <a href="#" onclick="return false">https://nodejs.org/api/fs.html</a>
+        <span class="web-extract-wordcount">20,000 / 87,452 chars</span>
+      </div>
+      <div class="web-extract-content">
+        <p>The File System API provides an extensive set of methods for interacting with the file system in Node.js. It includes both synchronous and asynchronous variants for every operation.</p>
+        <p>The module provides operations for file system operations such as reading, writing, updating, and deleting files, as well as directory operations like creating, listing, and removing directories.</p>
+        <h2>File System Constants</h2>
+        <p>The following constants are exported by the fs module:</p>
+        <table>
+          <tr><th>Constant</th><th>Description</th></tr>
+          <tr><td><code>fs.constants.F_OK</code></td><td>File exists (use with access)</td></tr>
+          <tr><td><code>fs.constants.R_OK</code></td><td>File is readable</td></tr>
+          <tr><td><code>fs.constants.W_OK</code></td><td>File is writable</td></tr>
+          <tr><td><code>fs.constants.X_OK</code></td><td>File is executable</td></tr>
+          <tr><td><code>fs.constants.S_IRWXU</code></td><td>Read, write, execute by owner</td></tr>
+          <tr><td><code>fs.constants.S_IRWXG</code></td><td>Read, write, execute by group</td></tr>
+          <tr><td><code>fs.constants.S_IRWXO</code></td><td>Read, write, execute by others</td></tr>
+        </table>
+        <h2>fs.readFile(path, options, callback)</h2>
+        <p>Asynchronously reads the entire contents of a file. The callback is passed two arguments <code>(err, data)</code> where data is the contents of the file.</p>
+        <p>When the path is a directory, the behavior of <code>fs.readFile()</code> is platform-specific. On Linux and macOS, an error is returned. On Windows, an error is returned as well.</p>
+        <h2>fs.writeFile(path, data, options, callback)</h2>
+        <p>Asynchronously writes data to a file, replacing the file if it already exists. The callback is passed a single argument <code>err</code>.</p>
+        <p>The <code>data</code> argument can be a string, buffer, or Uint8Array. When the <code>data</code> is a buffer, it is written as-is. When it is a string, it is encoded using the specified encoding.</p>
+        <h2>fs.appendFile(path, data, options, callback)</h2>
+        <p>Asynchronously appends data to a file, creating the file if it does not exist. The callback is passed a single argument <code>err</code>.</p>
+        <h2>fs.stat(path, options, callback)</h2>
+        <p>Asynchronously returns information about a file. The callback is passed two arguments <code>(err, stats)</code> where <code>stats</code> is an <code>fs.Stats</code> object.</p>
+        <p>An <code>fs.Stats</code> object provides methods to check if the file is a regular file, directory, symlink, or other special file types.</p>
+        <h2>fs.mkdir(path, options, callback)</h2>
+        <p>Asynchronously creates a directory. The callback is passed a single argument <code>err</code>.</p>
+        <p>Options include <code>recursive</code> (boolean) and <code>mode</code> (number). When <code>recursive</code> is true, parent directories are created as needed.</p>
+        <h2>fs.rmdir(path, options, callback)</h2>
+        <p>Asynchronously removes a directory. The callback is passed a single argument <code>err</code>.</p>
+        <p>Note: The <code>fs.rmdir()</code> method is deprecated. Use <code>fs.rm()</code> instead for removing files and directories.</p>
+        <h2>fs.readdir(path, options, callback)</h2>
+        <p>Asynchronously reads the contents of a directory. The callback is passed two arguments <code>(err, files)</code> where <code>files</code> is an array of filenames in the directory.</p>
+        <p>The <code>files</code> array is returned with filenames as strings. When the <code>withFileTypes</code> option is set to true, the <code>files</code> array will contain <code>fs.Dirent</code> objects.</p>
+        <h2>fs.unlink(path, callback)</h2>
+        <p>Asynchronously removes a file or symbolic link. The callback is passed a single argument <code>err</code>.</p>
+        <h2>fs.symlink(target, path, type, callback)</h2>
+        <p>Asynchronously creates a symlink. The callback is passed a single argument <code>err</code>.</p>
+        <p>The <code>type</code> argument can be 'file', 'dir', or 'junction'. On Windows, the default is 'junction'.</p>
+        <h2>fs.watchFile(filename, options, listener)</h2>
+        <p>Watches a file for changes. The listener is called each time the file is accessed or modified.</p>
+        <p>Options include <code>interval</code> (number of milliseconds between polling) and <code>persistent</code> (whether to keep the process running).</p>
+        <h2>fs.unwatchFile(filename, listener)</h2>
+        <p>Stops watching for changes on the specified file.</p>
+        <h2>fs.createReadStream(path, options)</h2>
+        <p>Returns a readable stream for the specified file. The stream supports the standard readable stream interface.</p>
+        <h2>fs.createWriteStream(path, options)</h2>
+        <p>Returns a writable stream for the specified file. The stream supports the standard writable stream interface.</p>
+        <h2>fs.copyFile(src, dest, callback)</h2>
+        <p>Asynchronously copies a file from source to destination. The callback is passed a single argument <code>err</code>.</p>
+        <p>If the destination already exists, it is overwritten. The callback is invoked when the operation completes.</p>
+        <h2>fs.chmod(path, mode, callback)</h2>
+        <p>Asynchronously changes the permissions of a file. The callback is passed a single argument <code>err</code>.</p>
+        <p>The <code>mode</code> argument is an integer representing the file permissions (e.g., <code>0o644</code> for read/write for owner, read-only for group and others).</p>
+        <h2>fs.chown(path, uid, gid, callback)</h2>
+        <p>Asynchronously changes the owner and group of a file. The callback is passed a single argument <code>err</code>.</p>
+        <h2>fs.utimes(path, atime, mtime, callback)</h2>
+        <p>Asynchronously changes the access and modification times of a file. The callback is passed a single argument <code>err</code>.</p>
+        <p>The <code>atime</code> and <code>mtime</code> arguments can be Date objects or Unix timestamps (in milliseconds).</p>
+        <h2>fs.truncate(path, len, callback)</h2>
+        <p>Asynchronously truncates a file to a specified length. The callback is passed a single argument <code>err</code>.</p>
+        <h2>fs.rename(oldPath, newPath, callback)</h2>
+        <p>Asynchronously renames a file from oldPath to newPath. The callback is passed a single argument <code>err</code>.</p>
+        <h2>fs.access(path, mode, callback)</h2>
+        <p>Asynchronously tests a user's permissions for the file specified by path. The callback is passed a single argument <code>err</code>.</p>
+        <p>The <code>mode</code> argument can be one or more of the fs.constants values (e.g., <code>fs.constants.R_OK | fs.constants.W_OK</code>).</p>
+        <h2>fs.link(existingPath, newPath, callback)</h2>
+        <p>Asynchronously creates a new link to an existing file. The callback is passed a single argument <code>err</code>.</p>
+        <h2>fs.readlink(path, options, callback)</h2>
+        <p>Asynchronously reads the contents of a symbolic link. The callback is passed two arguments <code>(err, linkString)</code>.</p>
+        <h2>fs.realpath(path, options, callback)</h2>
+        <p>Asynchronously computes the canonical pathname by resolving symbolic links. The callback is passed two arguments <code>(err, resolvedPath)</code>.</p>
+        <h2>fs.mkdtemp(prefix, options, callback)</h2>
+        <p>Asynchronously creates a unique temporary directory. The callback is passed two arguments <code>(err, folder)</code>.</p>
+        <p>The directory name is generated by appending six random characters to the given prefix.</p>
+        <h2>fs.rm(path, options, callback)</h2>
+        <p>Asynchronously removes files and directories. The callback is passed a single argument <code>err</code>.</p>
+        <p>Options include <code>force</code> (ignore non-existent paths), <code>recursive</code> (remove directories), and <code>maxRetries</code>.</p>
+        <h2>fs.cp(src, dest, options, callback)</h2>
+        <p>Asynchronously copies an entire directory structure. The callback is passed a single argument <code>err</code>.</p>
+        <p>Options include <code>recursive</code>, <code>force</code>, <code>preserveTimestamps</code>, and more.</p>
+        <h2>fs.exists(path, callback)</h2>
+        <p>Asynchronously tests whether a file exists. The callback is passed a single boolean argument <code>exists</code>.</p>
+        <p>Note: This method is deprecated. Use <code>fs.stat()</code> or <code>fs.access()</code> instead.</p>
+        <h2>fs.readFileSync(path, options)</h2>
+        <p>Synchronously reads the entire contents of a file. Returns the contents of the file.</p>
+        <h2>fs.writeFileSync(path, data, options)</h2>
+        <p>Synchronously writes data to a file, replacing the file if it already exists.</p>
+        <h2>fs.appendFileSync(path, data, options)</h2>
+        <p>Synchronously appends data to a file, creating the file if it does not exist.</p>
+        <h2>fs.statSync(path, options)</h2>
+        <p>Synchronously returns information about a file. Returns an <code>fs.Stats</code> object.</p>
+        <h2>fs.mkdirSync(path, options)</h2>
+        <p>Synchronously creates a directory. Returns undefined.</p>
+        <h2>fs.rmdirSync(path, options)</h2>
+        <p>Synchronously removes a directory. Returns undefined.</p>
+        <h2>fs.readdirSync(path, options)</h2>
+        <p>Synchronously reads the contents of a directory. Returns an array of filenames.</p>
+        <h2>fs.unlinkSync(path)</h2>
+        <p>Synchronously removes a file or symbolic link. Returns undefined.</p>
+        <h2>fs.symlinkSync(target, path, type)</h2>
+        <p>Synchronously creates a symlink. Returns undefined.</p>
+        <h2>fs.chmodSync(path, mode)</h2>
+        <p>Synchronously changes the permissions of a file. Returns undefined.</p>
+        <h2>fs.chownSync(path, uid, gid)</h2>
+        <p>Synchronously changes the owner and group of a file. Returns undefined.</p>
+        <h2>fs.utimesSync(path, atime, mtime)</h2>
+        <p>Synchronously changes the access and modification times of a file. Returns undefined.</p>
+        <h2>fs.truncateSync(path, len)</h2>
+        <p>Synchronously truncates a file to a specified length. Returns undefined.</p>
+        <h2>fs.renameSync(oldPath, newPath)</h2>
+        <p>Synchronously renames a file from oldPath to newPath. Returns undefined.</p>
+        <h2>fs.accessSync(path, mode)</h2>
+        <p>Synchronously tests a user's permissions for the file specified by path. Returns undefined.</p>
+        <h2>fs.linkSync(existingPath, newPath)</h2>
+        <p>Synchronously creates a new link to an existing file. Returns undefined.</p>
+        <h2>fs.readlinkSync(path, options)</h2>
+        <p>Synchronously reads the contents of a symbolic link. Returns the link string.</p>
+        <h2>fs.realpathSync(path, options)</h2>
+        <p>Synchronously computes the canonical pathname by resolving symbolic links. Returns the resolved path.</p>
+        <h2>fs.mkdtempSync(prefix, options)</h2>
+        <p>Synchronously creates a unique temporary directory. Returns the folder path.</p>
+        <h2>fs.rmSync(path, options)</h2>
+        <p>Synchronously removes files and directories. Returns undefined.</p>
+        <h2>fs.cpSync(src, dest, options)</h2>
+        <p>Synchronously copies an entire directory structure. Returns undefined.</p>
+        <h2>fs.existsSync(path)</h2>
+        <p>Synchronously tests whether a file exists. Returns a boolean.</p>
+        <p>Note: This method is deprecated. Use <code>fs.statSync()</code> or <code>fs.accessSync()</code> instead.</p>
+        <h2>fs.watch(filename, options, listener)</h2>
+        <p>Watches a file for changes. The listener is called each time the file is accessed or modified.</p>
+        <h2>fs.unwatch(filename, listener)</h2>
+        <p>Stops watching for changes on the specified file.</p>
+        <h2>fs.promises</h2>
+        <p>The fs.promises API provides an alternative set of methods that return Promise objects instead of accepting callbacks.</p>
+        <p>All of the synchronous methods are also available in promise form through the fs.promises API.</p>
+        <p>Example: <code>const data = await fs.promises.readFile('/path/to/file.txt', 'utf8');</code></p>
+      </div>
+      <!-- 截断警告 -->
+      <div class="web-extract-truncation">
+        <div class="trunc-title">⚠ Truncation warning</div>
+        The content from <code>https://nodejs.org/api/fs.html</code> was truncated because it exceeded the 20,000 character limit.
+        If you need more content, consider fetching specific sections or using a more targeted approach.
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ── 状态切换 ────────────────────────────────────────────────────────────────
+function setState(state) {
+  const cards = document.querySelectorAll('.tool-header-wrapper');
+  cards.forEach(c => c.style.display = 'none');
+  const map = { done: 'card-1', running: 'card-2', error: 'card-3', redirect: 'card-4', truncated: 'card-5' };
+  const el = document.getElementById(map[state]);
+  if (el) el.style.display = 'block';
+}
+
+// ── 折叠/展开 ────────────────────────────────────────────────────────────────
+function toggleCard(el) {
+  const wrapper = el.closest('.tool-header-wrapper');
+  const children = wrapper.querySelector('.tool-header-children');
+  const chevron = el.querySelector('.tool-header-chevron');
+  const isExpanded = children.classList.toggle('expanded');
+  chevron.classList.toggle('expanded', isExpanded);
+}
+
+// 默认显示完成状态
+setState('done');
+</script>
+</body>
+</html>

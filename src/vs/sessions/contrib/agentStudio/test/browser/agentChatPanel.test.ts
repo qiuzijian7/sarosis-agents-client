@@ -448,9 +448,9 @@ suite('AgentChatPanel — Types & Data Structures', () => {
 	suite('IAgentInfo', () => {
 		test('basic agent info', () => {
 			const info: IAgentInfo = {
-				id: 'saros-claw',
-				name: 'AI 助手',
-				role: 'AI 助手',
+			id: 'saros-claw',
+			name: '助理',
+			role: '助理',
 			status: 'idle' as AgentStatus,
 		};
 		assert.strictEqual(info.id, 'saros-claw');

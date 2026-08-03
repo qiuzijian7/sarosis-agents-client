@@ -27,8 +27,8 @@ export interface ICardMenuEntries {
 	readonly onUpgrade?: () => void;
 	/** 上传（有则显示） */
 	readonly onUpload?: () => void;
-	/** 删除（必有） */
-	readonly onDelete: () => void;
+	/** 删除（有则显示，内置项不显示） */
+	readonly onDelete?: () => void;
 }
 
 /** 在鼠标位置弹出标准卡片右键菜单 */
@@ -54,8 +54,10 @@ export function showCardContextMenu(
 		const run = entries.onUpload;
 		actions.push(toAction({ id: 'card.upload', label: '上传到商城', run }));
 	}
-	actions.push(new Separator());
-	actions.push(toAction({ id: 'card.delete', label: '删除', run: entries.onDelete }));
+	if (entries.onDelete) {
+		actions.push(new Separator());
+		actions.push(toAction({ id: 'card.delete', label: '删除', run: entries.onDelete }));
+	}
 	contextMenuService.showContextMenu({
 		getAnchor: () => ({ x: e.clientX, y: e.clientY }),
 		getActions: () => actions,

@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ILogService } from '../../../../../../platform/log/common/log.js';
-import { IToolCall, IToolResult, IToolResultContent } from '../../../common/providers.js';
+import { IToolCall, IToolResult, IToolResultContent, NonRetryableToolError } from '../../../common/providers.js';
 import { SandboxViolationError } from './workspaceSecurity.js';
 
 /** handler 返回内容：要么直接是 content 数组，要么带额外 details 的包。 */
@@ -114,12 +114,16 @@ export async function executeToolImpl(
 				},
 			};
 		}
+		// 永久性错误（NonRetryableToolError，如 HTTP 404/403）：标记 retryable=false，
+		// executeWithRetryAndTimeout 的 runWithRetry 不会重试（避免对确定性失败白费
+		// 3 次尝试 + 三倍日志噪音）。
+		const retryable = (err as NonRetryableToolError)?.isNonRetryableToolError !== true;
 		return {
 			toolCallId: toolCall.id,
 			success: false,
 			content: [],
 			error: msg,
-			metadata: { executionTimeMs: Date.now() - startTime, retryable: true },
+			metadata: { executionTimeMs: Date.now() - startTime, retryable },
 		};
 	}
 }

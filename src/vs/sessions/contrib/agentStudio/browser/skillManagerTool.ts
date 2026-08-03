@@ -309,6 +309,15 @@ export class SkillManagerTool {
 			};
 		}
 
+		// 内置技能不允许编辑（防止用户覆写污染产品源）
+		if (existing.source === 'builtin') {
+			return {
+				success: false,
+				message: `Skill "${name}" is a builtin skill and cannot be modified. Create a new skill with a different name instead.`,
+				error: `Builtin skill "${name}" is read-only.`,
+			};
+		}
+
 		const skillsRoot = resolveSarosPath(this._getSarosRoot(), SarosPath.skills);
 		const skillDir = URI.joinPath(skillsRoot, name);
 		const skillMd = URI.joinPath(skillDir, 'SKILL.md');
@@ -376,6 +385,15 @@ export class SkillManagerTool {
 				success: false,
 				message: `Skill "${name}" does not exist.`,
 				error: `Skill "${name}" not found.`,
+			};
+		}
+
+		// 内置技能不允许编辑
+		if (existing.source === 'builtin') {
+			return {
+				success: false,
+				message: `Skill "${name}" is a builtin skill and cannot be patched.`,
+				error: `Builtin skill "${name}" is read-only.`,
 			};
 		}
 

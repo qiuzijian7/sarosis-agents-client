@@ -127,6 +127,26 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 
 			const IDLE_TIMEOUT_MS = 1500; // 1.5s 无新输出视为命令完成
 
+			// ── 等待 shell 就绪（processReady + 首次输出）──
+			// PowerShell profile 加载需 1.5-3s，若在 shell 未就绪时 sendText，
+			// 命令写入 buffer 但输出在收集窗口关闭后才到达 → "(no output)"。
+			// 等待 processReady（pty 创建）+ 首次 onData（shell 已产出 prompt/welcome），
+			// 确保 shell 可接受输入后再发命令。
+			const SHELL_READY_TIMEOUT_MS = 8000;
+			try {
+				// 1. 等待 pty 进程创建
+				await instance.processReady;
+
+				// 2. 等待首次 shell 输出（prompt 或 welcome banner），超时则直接继续
+				let firstDataListener: IDisposable | undefined;
+				const firstOutput = new Promise<void>((resolve) => {
+					firstDataListener = instance.onData(() => { resolve(); });
+					setTimeout(() => resolve(), SHELL_READY_TIMEOUT_MS);
+				});
+				await firstOutput;
+				firstDataListener?.dispose();
+			} catch { /* 就绪检测失败不影响后续执行 */ }
+
 			const outputPromise = new Promise<string>((resolve) => {
 				let idleTimer: ReturnType<typeof setTimeout>;
 

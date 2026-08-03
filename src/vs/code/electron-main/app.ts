@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { app, Details, GPUFeatureStatus, powerMonitor, protocol, session, Session, systemPreferences, WebFrameMain } from 'electron';
+import { app, Details, GPUFeatureStatus, net, powerMonitor, protocol, session, Session, systemPreferences, WebFrameMain } from 'electron';
 import { addUNCHostToAllowlist, disableUNCAccessRestrictions } from '../../base/node/unc.js';
 import { validatedIpcMain } from '../../base/parts/ipc/electron-main/ipcMain.js';
 import { execFile, spawn, type ChildProcess } from 'child_process';
@@ -598,14 +598,106 @@ export class CodeApplication extends Disposable {
 					if (!settled) {
 						settled = true;
 						clearTimeout(timeoutHandle);
-						resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
-					}
-				});
+					resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
+				}
 			});
 		});
+	});
 
-		//#endregion
-	}
+	// Generic code/script execution handler: lets the renderer run shell commands
+	// (python3/node/shell, e.g. the anysearch CLI) via the main process child_process.
+	// Non-interactive, single-shot with a REAL exit code + timeout kill — distinct from
+	// the pty-based `terminal` tool (interactive shell, no reliable exit code, idle-detect).
+	// Backs the agentStudio `execute_code` tool (researcher subagent runs anysearch via it).
+	validatedIpcMain.handle('vscode:execCode', async (event, payload: { command?: string; script?: string; interpreter?: string; cwd?: string; timeoutMs?: number }) => {
+		return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
+		const timeoutMs = Math.min(Math.max(payload?.timeoutMs ?? 30000, 1000), 120000);
+		// PYTHONIOENCODING/PYTHONUTF8：Windows 终端默认 GBK 编码，Python print()
+		// 遇到 emoji 等非 GBK 字符会抛 UnicodeEncodeError（exit 1）。强制 UTF-8
+		// 模式让任何 Python 脚本都能安全输出 Unicode（其他平台无副作用）。
+		const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+		let child: ReturnType<typeof spawn>;
+		if (payload?.script !== undefined && payload?.interpreter) {
+			// heredoc 脚本：spawn <interpreter>（无参数）并从 stdin 喂入脚本。
+			// python3/node 无参数时从 stdin 读取并执行脚本 —— 跨平台（Windows cmd
+			// 不支持 `python3 << 'EOF'` heredoc，会报 "此时不应有 <<"，exit 1）。
+			child = spawn(payload.interpreter, [], {
+				cwd: payload?.cwd,
+				env,
+				windowsHide: true,
+			});
+			child.stdin?.write(payload.script);
+			child.stdin?.end();
+		} else {
+			const command = payload?.command ?? '';
+			child = spawn(command, [], {
+				cwd: payload?.cwd,
+				env,
+				windowsHide: true,
+				shell: true,
+			});
+		}
+
+			let stdout = '';
+			let stderr = '';
+			let settled = false;
+
+			const timeoutHandle = setTimeout(() => {
+				if (!settled) {
+					settled = true;
+					try { child.kill('SIGKILL'); } catch { /* ignore */ }
+					resolve({ success: false, stdout, stderr: stderr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 });
+				}
+			}, timeoutMs);
+
+			child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
+			child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+			child.on('error', (err) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timeoutHandle);
+					resolve({ success: false, stdout, stderr: err.message, exitCode: -1 });
+				}
+			});
+
+			child.on('close', (code) => {
+				if (!settled) {
+					settled = true;
+					clearTimeout(timeoutHandle);
+					resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
+				}
+			});
+		});
+	});
+
+	// Renderer → main process HTTP fetch channel: bypasses CORS (the renderer's
+	// browser fetch() is subject to origin checks that can block DuckDuckGo /
+	// anysearch API endpoints — DDG returns 403 for origin vscode-file://vscode-app).
+	// Uses Chromium's net.fetch (Electron main process, no CORS constraints).
+	// Backs the agentStudio web_search / web_extract tools in the renderer process.
+	validatedIpcMain.handle('vscode:webFetch', async (_event, payload: { url: string; headers?: Record<string, string> }) => {
+		const url = (payload?.url ?? '').trim();
+		if (!url) { throw new Error('url is required'); }
+
+		// net.fetch 使用 Chromium 网络栈：自动处理重定向、HTTPS、压缩，
+		// 且无 CORS 限制。比 Node.js http/https 模块更可靠。
+		const response = await net.fetch(url, {
+			method: 'GET',
+			headers: payload?.headers ?? { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36' },
+		});
+
+		const body = await response.text();
+		return {
+			ok: response.ok,
+			status: response.status,
+			statusText: response.statusText,
+			body: body.slice(0, 512 * 1024), // 512KB cap — DDG HTML/lite pages are ~30-80KB
+		};
+	});
+
+	//#endregion
+}
 
 	async startup(): Promise<void> {
 		this.logService.debug('Starting VS Code');

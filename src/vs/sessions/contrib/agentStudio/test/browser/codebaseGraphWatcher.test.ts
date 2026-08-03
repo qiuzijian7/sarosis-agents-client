@@ -203,4 +203,81 @@ suite('CodebaseGraphWatcher dirty-signature dedup & root prune (2026-07-22)', ()
 	});
 });
 
+suite('CodebaseGraphWatcher keepDirs exception (2026-08-03)', () => {
+	// 背景：全量索引支持 keepDirs（exclude 内例外，如 Content 排除但保留 content/script），
+	// watcher 此前不支持 → 全量索引扫入的保留文件在 watcher 扫描中消失 → 幻影 deleted。
+
+	test('excluded dir skipped; keepDirs exception keeps ancestor open', async () => {
+		// 语义对齐 graphService._scanDir：排除按目录名匹配。Content 因是 keep 目标
+		// 'content/script' 的祖先被保开；保开后其子目录（UI/Script）按名字正常判定——
+		// 'UI' 不在排除表 → 同样被扫到。即 keepDirs 的真实语义 = 打开被排除的祖先目录，
+		// 而非"只扫 keep 目标子树"。
+		const files: Record<string, IFileSpec> = {
+			'Content/Script/a.ts': { mtime: 100, size: 10 },
+			'Content/UI/b.ts': { mtime: 100, size: 20 },
+			'src/c.ts': { mtime: 100, size: 30 },
+		};
+		const events: any[] = [];
+		const watcher = new CodebaseGraphWatcher(makeFs(files) as any, makeLog() as any);
+		watcher.onDidChange(e => events.push(e));
+		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS, new Set(['content']), ['content/script']);
+		const root = (watcher as any)._roots[0];
+		await (watcher as any)._poll(root);
+		assert.strictEqual(events.length, 1);
+		assert.deepStrictEqual(
+			[...events[0].added].sort(),
+			['Content/Script/a.ts', 'Content/UI/b.ts', 'src/c.ts'].sort(),
+		);
+		watcher.dispose();
+	});
+
+	test('excluded name under kept ancestor is still skipped', async () => {
+		// 保开的 Content 之下，名字命中排除表的子目录仍被跳过（node_modules 为例）
+		const files: Record<string, IFileSpec> = {
+			'Content/Script/a.ts': { mtime: 100, size: 10 },
+			'Content/node_modules/x.ts': { mtime: 100, size: 20 },
+		};
+		const events: any[] = [];
+		const watcher = new CodebaseGraphWatcher(makeFs(files) as any, makeLog() as any);
+		watcher.onDidChange(e => events.push(e));
+		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS, new Set(['content', 'node_modules']), ['content/script']);
+		const root = (watcher as any)._roots[0];
+		await (watcher as any)._poll(root);
+		assert.strictEqual(events.length, 1);
+		assert.deepStrictEqual(events[0].added, ['Content/Script/a.ts']);
+		watcher.dispose();
+	});
+
+	test('no keepDirs → excluded dir fully skipped', async () => {
+		const files: Record<string, IFileSpec> = {
+			'Content/Script/a.ts': { mtime: 100, size: 10 },
+			'src/c.ts': { mtime: 100, size: 30 },
+		};
+		const events: any[] = [];
+		const watcher = new CodebaseGraphWatcher(makeFs(files) as any, makeLog() as any);
+		watcher.onDidChange(e => events.push(e));
+		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS, new Set(['content']));
+		const root = (watcher as any)._roots[0];
+		await (watcher as any)._poll(root);
+		assert.strictEqual(events.length, 1);
+		assert.deepStrictEqual(events[0].added, ['src/c.ts']);
+		watcher.dispose();
+	});
+
+	test('keepDirs normalization: backslash + case + trailing slash', async () => {
+		const files: Record<string, IFileSpec> = {
+			'Content/Script/a.ts': { mtime: 100, size: 10 },
+		};
+		const events: any[] = [];
+		const watcher = new CodebaseGraphWatcher(makeFs(files) as any, makeLog() as any);
+		watcher.onDidChange(e => events.push(e));
+		watcher.start(ROOT, makeStore([]) as any, 'P', EXTS, new Set(['Content']), ['Content\\Script\\']);
+		const root = (watcher as any)._roots[0];
+		await (watcher as any)._poll(root);
+		assert.strictEqual(events.length, 1);
+		assert.deepStrictEqual(events[0].added, ['Content/Script/a.ts']);
+		watcher.dispose();
+	});
+});
+
 export {};

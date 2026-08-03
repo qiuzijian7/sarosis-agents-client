@@ -601,6 +601,14 @@ export class PresetAgentViewPane extends ViewPane {
 			titleRow.appendChild(pinIcon);
 		}
 
+		// 内置标识
+		if (preset.source === 'builtin') {
+			const builtinBadge = $('span.builtin-badge');
+			builtinBadge.textContent = '内置';
+			builtinBadge.title = '产品内置 Agent';
+			titleRow.appendChild(builtinBadge);
+		}
+
 		// Version badge
 		if (isInstalled || isSelfPublished || serverVersion) {
 			const verBadge = $('span.preset-version-badge');
@@ -668,15 +676,17 @@ export class PresetAgentViewPane extends ViewPane {
 				actions.appendChild(upgradeBtn);
 			}
 
-			// Delete button — always shown for all agents
-			const deleteBtn = $('button.preset-btn.delete') as HTMLButtonElement;
-			deleteBtn.textContent = '🗑';
-			deleteBtn.title = `删除 ${preset.name}`;
-			deleteBtn.onclick = (e) => {
-				e.stopPropagation();
-				this._deletePreset(preset, slug);
-			};
-			actions.appendChild(deleteBtn);
+			// Delete button — 内置 agent 不可删除
+			if (preset.source !== 'builtin') {
+				const deleteBtn = $('button.preset-btn.delete') as HTMLButtonElement;
+				deleteBtn.textContent = '🗑';
+				deleteBtn.title = `删除 ${preset.name}`;
+				deleteBtn.onclick = (e) => {
+					e.stopPropagation();
+					this._deletePreset(preset, slug);
+				};
+				actions.appendChild(deleteBtn);
+			}
 
 			// Upload button — 自定义 + 有权限 + 有新版本可发（与商城同步时隐藏）
 			if (showUpload) {
@@ -720,7 +730,7 @@ export class PresetAgentViewPane extends ViewPane {
 				upgradeLabel: canUpgrade && serverVersion ? `升级到 v${serverVersion}` : undefined,
 				onUpgrade: canUpgrade && serverVersion ? () => { void this._upgradePreset(preset, slug, serverVersion); } : undefined,
 				onUpload: showUpload ? () => { void this._publishPreset(preset); } : undefined,
-				onDelete: () => { void this._deletePreset(preset, slug); },
+				onDelete: preset.source !== 'builtin' ? () => { void this._deletePreset(preset, slug); } : undefined,
 			});
 		};
 

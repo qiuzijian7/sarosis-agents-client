@@ -259,7 +259,15 @@ export class SkillMarketEditorPane extends EditorPane {
 
 		try {
 			const result = await this.marketplaceService.listPackages({ kind: 'skill' });
-			this._packages = result.items;
+			// 过滤内置技能：商城不展示已随产品内置的技能
+			const builtinSkillIds = new Set(
+				this.skillRegistry.getSkills()
+					.filter(s => s.source === 'builtin')
+					.map(s => s.id)
+			);
+			this._packages = result.items.filter(pkg =>
+				!builtinSkillIds.has(pkg.slug) && !builtinSkillIds.has(pkg.id)
+			);
 			this._renderGrid();
 		} catch (err) {
 			console.error('[SkillMarket] Failed to load packages:', err);

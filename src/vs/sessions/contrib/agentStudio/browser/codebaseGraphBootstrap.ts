@@ -18,6 +18,7 @@
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService, IWorkspaceFoldersChangeEvent } from '../../../../platform/workspace/common/workspace.js';
 import { ICodebaseGraphService, IIndexConfig } from './codebaseGraphService.js';
 import { ICodebaseMemoryMcpService, IIndexConfig as IUserIndexConfig } from './codebaseMemoryMcpService.js';
@@ -40,6 +41,7 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 		@ICodebaseMemoryMcpService private readonly _cbmService: ICodebaseMemoryMcpService,
 		@IWorkspaceContextService private readonly _workspaceService: IWorkspaceContextService,
 		@ILogService private readonly _logService: ILogService,
+		@IFileService private readonly _fileService: IFileService,
 	) {
 		super();
 
@@ -116,8 +118,19 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				}
 			} catch { /* file doesn't exist yet */ }
 
-			// 无既有图谱 → 加入待索引队列
-			this._logService.info(LOG_TAG, `No existing graph for folder "${project}", scheduling auto-index...`);
+			// 无既有图谱 → 加入待索引队列。
+			// 区分"首次索引"与"图谱丢失"：.codebase-memory 目录存在但 graph.db.zst 缺失，
+			// 说明图谱曾被创建过（外部删除 / 保存中断 / 引擎目录被刷新），值得 warn 提醒。
+			let graphLost = false;
+			try {
+				await this._fileService.stat(URI.joinPath(folder.uri, '.codebase-memory'));
+				graphLost = true;
+			} catch { /* 目录也不存在 = 首次索引 */ }
+			if (graphLost) {
+				this._logService.warn(LOG_TAG, `Graph artifact missing but .codebase-memory dir exists for "${project}" (external deletion or interrupted save?), scheduling auto-index...`);
+			} else {
+				this._logService.info(LOG_TAG, `No existing graph for folder "${project}", scheduling auto-index...`);
+			}
 			this._pendingIndex.set(key, folder.uri.fsPath);
 		}
 
@@ -154,7 +167,7 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 	private async _startWatching(rootPath: string): Promise<void> {
 		if (!rootPath) { return; }
 		const userConfig = await this._readUserIndexConfig();
-		this._graphService.startWatching(rootPath, userConfig?.excludeDirs);
+		this._graphService.startWatching(rootPath, userConfig?.excludeDirs, userConfig?.keepDirs);
 	}
 
 	private async _autoIndex(): Promise<void> {
@@ -180,8 +193,10 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 				if (result.success) {
 					this._readyFolders.add(key);
 					this._pendingIndex.delete(key);
-					// 多 folder：每个已索引 folder 单独启动监听（增量索引，互不覆盖）
-					this._graphService.startWatching(rootPath, config.excludeDirs);
+					// 多 folder：每个已索引 folder 单独启动监听（增量索引，互不覆盖）。
+					// keepDirs 一并透传：与全量索引扫描口径一致（否则 Content/script 等保留目录
+					// 在 watcher/增量扫描中被整目录排除，产生幻影 deleted）。
+					this._graphService.startWatching(rootPath, config.excludeDirs, config.keepDirs);
 					this._logService.info(LOG_TAG, `Auto-index completed for "${project}": ${result.message}`);
 				}
 			} catch (err: any) {

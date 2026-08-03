@@ -173,7 +173,7 @@ export interface ICodebaseGraphService {
 
 	indexWorkspace(rootPath: string, config: IIndexConfig, token?: CancellationToken): Promise<IIndexResult>;
 	cancelIndex(): void;
-	startWatching(rootPath: string, extraExcludeDirs?: readonly string[]): void;
+	startWatching(rootPath: string, extraExcludeDirs?: readonly string[], keepDirs?: readonly string[]): void;
 	getGraphStatus(workspacePath?: string): Promise<IGraphStatus>;
 	saveGraph(targetPath: string): Promise<void>;
 	loadGraph(sourcePath: string): Promise<boolean>;
@@ -644,6 +644,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _graph: GraphStore = new GraphStore();
 	private _parsers: Map<string, TreeSitterParser> = new Map();
 	private _languages: Map<string, TreeSitterLanguage> = new Map();
+	/** 每个根目录"已生效的索引范围"（解析后的排除集 + keepDirs）— indexWorkspace / watcher / incremental 三条扫描路径口径一致 */
+	private readonly _watchScopeCache = new Map<string, { excludeDirs: Set<string>; keepDirs?: string[] }>();
 	private _cypherEngine: CypherEngine | undefined;
 	private _semanticSearch: SemanticSearch | undefined;
 	private _projectName = '_default';
@@ -1393,12 +1395,14 @@ self.onmessage = async function(e) {
 		this._indexCoverage = new Map(); // 重置逐文件覆盖率记录
 
 
-			// 1. Scan files
-			// 全量索引前刷新缓存：用户可能刚改过 .cbmignore / 刚添加 .uproject
-			this._invalidateExcludeCache(rootPath);
-			const excludeDirs = await this._resolveExcludeDirs(rootPath, config.excludeDirs);
-			this._onDidIndexProgress.fire('📁 扫描文件...');
-			const files = await this._scanFiles(rootPath, excludeDirs, config.subPath, cts.token, config.keepDirs);
+		// 1. Scan files
+		// 全量索引前刷新缓存：用户可能刚改过 .cbmignore / 刚添加 .uproject
+		this._invalidateExcludeCache(rootPath);
+		const excludeDirs = await this._resolveExcludeDirs(rootPath, config.excludeDirs);
+		// 记录本次全量索引的生效范围，供 watcher/增量索引用同一口径（防幻影变更）
+		this._watchScopeCache.set(this._normalizeRoot(rootPath), { excludeDirs, keepDirs: config.keepDirs ? [...config.keepDirs] : undefined });
+		this._onDidIndexProgress.fire('📁 扫描文件...');
+		const files = await this._scanFiles(rootPath, excludeDirs, config.subPath, cts.token, config.keepDirs);
 			const filesScanned = files.length;
 			this._onDidIndexProgress.fire(`📁 找到 ${filesScanned} 个源文件`);
 
@@ -1693,7 +1697,7 @@ self.onmessage = async function(e) {
 	// ─── Watcher & Incremental Indexing (P2-#8) ──────────────────────────
 
 	/** 启动文件监听（增量重索引触发源）。应在首次全量索引 / 加载既有图谱完成后调用。 */
-	startWatching(rootPath: string, extraExcludeDirs?: readonly string[]): void {
+	startWatching(rootPath: string, extraExcludeDirs?: readonly string[], keepDirs?: readonly string[]): void {
 		this._watchRootPath = rootPath;
 		const supportedExtensions = new Set(Object.keys(EXTENSION_TO_WASM_LANG));
 		// 多 folder：用该 root 对应的项目名。回退按 basename 解析（与 indexWorkspace 一致）——
@@ -1703,10 +1707,13 @@ self.onmessage = async function(e) {
 		// 统一入口写回映射（覆盖 loadMerge/自动索引等所有建立 project 的路径，避免 watcher 用错 project）
 		this._rootProjectMap.set(this._normalizeRoot(rootPath), project);
 		// watcher 扫描与索引扫描使用同一套目录排除（否则 Intermediate/ 等目录每轮误报全量 added）。
-		// 排除集解析含异步探测（*.uproject / .cbmignore），故 start 延后到解析完成。
+		// 排除集解析含异步探测（.cbmignore / workspace exclude 配置），故 start 延后到解析完成。
 		void this._resolveExcludeDirs(rootPath, extraExcludeDirs).then(excludeDirs => {
-			this._logService.info('[CodebaseGraph]', `Starting graph watcher for ${rootPath} (project=${project}, ${supportedExtensions.size} extensions, ${excludeDirs.size} excluded dirs)`);
-			this._graphWatcher.start(rootPath, this._graph.store, project, supportedExtensions, excludeDirs);
+			const keep = keepDirs?.length ? [...keepDirs] : undefined;
+			// 记录生效范围：增量索引 / git-head 全量重建复用同一口径（防幻影变更翻烧饼）
+			this._watchScopeCache.set(this._normalizeRoot(rootPath), { excludeDirs, keepDirs: keep });
+			this._logService.info('[CodebaseGraph]', `Starting graph watcher for ${rootPath} (project=${project}, ${supportedExtensions.size} extensions, ${excludeDirs.size} excluded dirs, keepDirs=${keep?.length ?? 0})`);
+			this._graphWatcher.start(rootPath, this._graph.store, project, supportedExtensions, excludeDirs, keep);
 		}, err => {
 			this._logService.warn('[CodebaseGraph]', `Failed to start watcher for ${rootPath}: ${err?.message || err}`);
 		});
@@ -1719,7 +1726,10 @@ self.onmessage = async function(e) {
 		if (e.type === 'git-head') {
 			this._logService.info('[CodebaseGraph]', `[TRACE] watcher git-head changed → indexWorkspace: ${rootPath}`);
 			this._logService.info('[CodebaseGraph]', 'Git HEAD changed, running full re-index...');
-			await this.indexWorkspace(rootPath, { mode: 'fast', excludeDirs: [] });
+			// 复用该 root 已生效的索引范围（用户 excludeDirs + keepDirs），避免全量重建丢配置。
+			// 已解析的排除集作为 extra 再次并入是幂等的（mergeExcludeDirs 去重）。
+			const scope = this._watchScopeCache.get(this._normalizeRoot(rootPath));
+			await this.indexWorkspace(rootPath, { mode: 'fast', excludeDirs: scope ? [...scope.excludeDirs] : [], keepDirs: scope?.keepDirs });
 		} else if (e.type === 'files' && (e.added?.length || e.modified?.length || e.deleted?.length)) {
 			this._logService.info('[CodebaseGraph]', `[TRACE] watcher files changed → incremental index: ${rootPath}`);
 			this._logService.info('[CodebaseGraph]', 'Files changed, running incremental index...');
@@ -1764,7 +1774,12 @@ self.onmessage = async function(e) {
 			this._graph.setActiveProject(project);
 			this._onDidIndexProgress.fire('⚡ 增量索引：扫描变更文件...');
 
-			const absFiles = await this._scanFiles(rootPath, await this._resolveExcludeDirs(rootPath), undefined, cts.token);
+			// 复用 watcher/全量索引已生效的索引范围（用户 excludeDirs + keepDirs）——
+			// 旧实现空调用 _resolveExcludeDirs(rootPath)（零 extra、无 keepDirs），与全量索引口径不一致，
+			// 导致基线 fileHashes 与增量扫描集错配：watcher 报幻影 deleted → 增量又报 added（翻烧饼循环）。
+			const cachedScope = this._watchScopeCache.get(this._normalizeRoot(rootPath));
+			const incExcludeDirs = cachedScope?.excludeDirs ?? await this._resolveExcludeDirs(rootPath);
+			const absFiles = await this._scanFiles(rootPath, incExcludeDirs, undefined, cts.token, cachedScope?.keepDirs);
 			const relToAbs = new Map<string, string>();
 			for (const abs of absFiles) { relToAbs.set(this._getRelativePath(abs), abs); }
 

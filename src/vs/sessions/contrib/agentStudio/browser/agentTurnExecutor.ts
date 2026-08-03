@@ -356,6 +356,36 @@ interface ITurnContext {
 			);
 		}
 
+		// ─── User Message XML Tag Enrichment ────────────────────────────
+		// 找最后一条 user 消息，用 XML 标签包裹环境上下文信息（对齐 CodeBuddy 格式）。
+		// 仅当 enricher 已初始化时才执行（首次预热后）。
+		if (host._userMessageEnricher) {
+			let lastUserIdx = -1;
+			for (let i = messages.length - 1; i >= 0; i--) {
+				if (messages[i]?.role === 'user') { lastUserIdx = i; break; }
+			}
+			if (lastUserIdx >= 0 && typeof messages[lastUserIdx].content === 'string') {
+				try {
+					const enriched = await host._userMessageEnricher.enrich(
+						messages[lastUserIdx].content as string,
+						{ request, agent: host._currentAgent },
+					);
+					messages = messages.slice(); // shallow copy 后修改，避免污染 request.messages 引用
+					const enrichedMsg = { ...messages[lastUserIdx], content: enriched };
+					if (lastUserIdx === messages.length - 1) {
+						messages = [...messages.slice(0, lastUserIdx), enrichedMsg];
+					} else {
+						messages = [...messages.slice(0, lastUserIdx), enrichedMsg, ...messages.slice(lastUserIdx + 1)];
+					}
+					const origLen = (messages[lastUserIdx].content as string).length;
+					host._logService.info(
+						`[AgentOS] Enriched user message with XML tags (${enriched.length - origLen} chars added)`,
+					);
+				} catch (err) {
+					host._logService.warn(`[AgentOS] User message enrichment failed: ${err}`);
+				}
+			}
+		}
 
 	return { modelProvider, selection, enabledTools, messages, memoryProvider, effectiveSystemPrompt };
 }

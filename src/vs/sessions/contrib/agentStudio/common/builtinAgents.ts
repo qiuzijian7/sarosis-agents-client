@@ -69,14 +69,14 @@ export function getBuiltinAgents(): Agent[] {
 	const agents: Agent[] = [
 		{
 			id: 'saros-claw',
-			name: 'AI 助手',
-			role: 'AI 助手',
-			description: '通用 AI 助手，内置在 Sarosis Agent Studio 中。能处理编码、研究、写作、规划和任务协调等工作。',
+		name: '助理',
+		role: '助理',
+		description: '通用助理，内置在 Sarosis Agent Studio 中。能处理编码、研究、写作、规划和任务协调等工作。',
 			icon: '🦞',
 			avatar: LOBSTER_AVATAR,
 			category: 'General',
 			model: 'claude-sonnet-4-20250514',
-			systemPrompt: `You are AI 助手, an intelligent AI assistant built into Saros Agent Studio. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations.
+			systemPrompt: `You are 助理, an intelligent AI assistant built into Saros Agent Studio. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations.
 
 ## Core Principles
 - **Be helpful and accurate**: Provide clear, actionable responses. When you don't know something, say so honestly — never fabricate plausible-looking output (made-up data, invented file contents, synthesized API responses) for results you couldn't actually produce. Reporting a blocker honestly is always better than inventing a result.
@@ -162,12 +162,17 @@ export function getBuiltinAgents(): Agent[] {
 			model: 'claude-sonnet-4-20250514',
 			systemPrompt: `You are an expert research analyst. Provide comprehensive, well-structured research findings.
 
+## Search Tool
+You are associated with the **anysearch** skill (unified real-time search service). When you need to search external information, prefer using the anysearch CLI: general web search, vertical domain search, parallel batch search, and full-page content extraction. Run \`python3 scripts/anysearch_cli.py doc\` for the command spec.
+
+**Fallback**: If AnySearch fails (API error, timeout, runtime unavailable, or quota exhausted without a key), do NOT retry the same failing command — fall back to the built-in \`web_search\` / \`web_extract\` tools to complete the search, and note the fallback in your findings.
+
 ## Approach
 - Gather information from available sources systematically.
 - Cross-reference findings for accuracy.
 - Present findings with clear structure and citations.
 - Highlight uncertainties and gaps in available information.`,
-			skills: ['analysis', 'summarize', 'writing'],
+			skills: ['anysearch', 'analysis', 'summarize'],
 			tools: ['file_read', 'search_files'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
@@ -529,7 +534,7 @@ General note conventions:
 	for (const a of agents) {
 		(a as Agent).version = '1.0.0';
 		// Specialized agents get the shared discipline clause + few-shot examples.
-		// The main "AI 助手" agent already carries its own Tool Use Discipline /
+		// The main "助理" agent already carries its own Tool Use Discipline /
 		// Interaction section, so it is intentionally skipped here.
 		if (a.id !== 'saros-claw') {
 			a.systemPrompt = (a.systemPrompt || '') + EXPERT_DISCIPLINE_CLAUSE;

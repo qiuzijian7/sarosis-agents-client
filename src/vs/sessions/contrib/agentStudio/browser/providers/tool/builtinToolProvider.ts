@@ -30,6 +30,7 @@
 import { Disposable } from '../../../../../../base/common/lifecycle.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { IWebContentExtractorService } from '../../../../../../platform/webContentExtractor/common/webContentExtractor.js';
 import { ISearchService } from '../../../../../../workbench/services/search/common/search.js';
 import { IKbNativeKernelService } from '../../kbNativeKernelService.js';
 import { IStorageService } from '../../../../../../platform/storage/common/storage.js';
@@ -232,6 +233,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		@IStorageService private readonly storageService: IStorageService,
 		@IAiEmbeddingVectorService private readonly embeddingService: IAiEmbeddingVectorService,
 		@IRequestService private readonly requestService: IRequestService,
+		@IWebContentExtractorService private readonly webContentExtractorService: IWebContentExtractorService,
 		@ISearchService private readonly searchService: ISearchService,
 		@IKbNativeKernelService private readonly kbKernelService: IKbNativeKernelService,
 	) {
@@ -385,6 +387,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			register: (d) => this.register(d),
 			requestService: this.requestService,
 			logService: this.logService,
+			webContentExtractorService: this.webContentExtractorService,
 		};
 		registerWebTools(ctx);
 	}
@@ -420,12 +423,15 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 * 3. 平台不适用 → 返回友好提示（web_search/web_extract 建议配置 MCP server，process 建议 terminal）
 	 */
 	private _registerCompatibilityTools(): void {
+		const folders = this.workspaceService.getWorkspace().folders;
+		const workspaceRoot = folders.length > 0 ? folders[0].uri.fsPath : undefined;
 		const ctx: CompatToolContext = {
 			register: (d) => this.register(d),
 			agentOS: this.agentOS,
 			fileService: this.fileService,
 			logService: this.logService,
 			id: this.id,
+			workspaceRoot,
 			resolveAndCheckWorkspacePath: (agentId, p, req) => this._resolveAndCheckWorkspacePath(agentId, p, req),
 		};
 		registerCompatibilityTools(ctx);

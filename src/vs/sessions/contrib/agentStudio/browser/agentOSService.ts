@@ -107,6 +107,8 @@ import {
 import { SandboxGuard } from './agentSandboxGuard.js';
 import { getEnabledTools, type ToolAssemblyDeps } from './agentToolAssembly.js';
 import { executeAgentTurnDirect } from './agentTurnExecutor.js';
+import { UserMessageEnricher } from './messageEnrichment/userMessageEnricher.js';
+import { createBuiltinTagProviders } from './messageEnrichment/builtinTagProviders.js';
 export class AgentOSService extends Disposable implements IAgentOSService {
 
 	declare readonly _serviceBrand: undefined;
@@ -156,6 +158,13 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	private readonly _delegationLedger = new DelegationLedgerManager();
 	/** Survives summarization compression — injected as hidden system message before each LLM call. */
 	private readonly _durableContext = new DurableContextManager();
+	/**
+	 * User message XML tag enricher — wraps environment context into user messages.
+	 * Populated by {@link _initUserMessageEnricher} on first use (lazy init).
+	 * Tag providers that require external data (rules, git status, etc.) are mutable
+	 * and should be populated by agentDriverService before each turn.
+	 */
+	_userMessageEnricher: UserMessageEnricher | undefined;
 	/** Applied before tool execution to truncate excess sub-agent calls. */
 	private readonly _subagentLimitMw = new SubagentLimitMiddleware(DEFAULT_MAX_CONCURRENT_SUBAGENTS);
 	/** Session-level token usage aggregation across all sub-agents. */
@@ -415,6 +424,9 @@ private readonly _sandboxGuard: SandboxGuard;
 			this._logService.warn('[AgentOS] Failed to restore orphaned approvals:', err),
 		);
 
+		// Init user message XML tag enricher (lazy — first enrich call triggers warmup)
+		this._initUserMessageEnricher();
+
 		this._register(CommandsRegistry.registerCommand(
 			'agentStudio.confirmationAction',
 			(_accessor, confirmationId: string, decision: string) => {
@@ -553,6 +565,17 @@ private readonly _sandboxGuard: SandboxGuard;
 				this._logService.warn(`[AgentOS] Found ${files.length} orphaned approval file(s) from a previous session — they will be cleaned up on next resolution.`);
 			}
 		} catch { /* dir may not exist yet */ }
+	}
+
+	/**
+	 * 初始化 User Message XML Tag Enricher。
+	 * 创建所有内置 TagProvider。需要外部数据（rules/git/workingMemory 等）
+	 * 的 provider 由 agentDriverService 在每个 turn 前填充。
+	 */
+	private _initUserMessageEnricher(): void {
+		const providers = createBuiltinTagProviders();
+		this._userMessageEnricher = new UserMessageEnricher(providers);
+		this._logService.info('[AgentOS] User message XML enricher initialized');
 	}
 
 	// ─── Plan mode approval ────────────────────────────────────────────

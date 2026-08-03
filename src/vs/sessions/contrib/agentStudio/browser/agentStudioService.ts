@@ -500,14 +500,33 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		return getBuiltinAgents();
 	}
 
+	/**
+	 * 判断 agent 是否为内置 agent（含 resources 目录中的扩展内置 agent）。
+	 * 用于 updateAgent/deleteAgent 的只读保护。
+	 */
+	private async _isBuiltinAgent(agentId: string): Promise<boolean> {
+		// 快路径：代码级内置 agent
+		if (getBuiltinAgents().some(a => a.id === agentId)) { return true; }
+		// 慢路径：resources 目录中的扩展内置 agent（gr、gr-gc-expert 等）
+		try {
+			const builtinAgents = await this._loadBuiltinAgentsFromSource();
+			return builtinAgents.some(a => a.id === agentId);
+		} catch {
+			return false;
+		}
+	}
+
 	// ── Agent CRUD ──────────────────────────────────────────────────────────
 
 	/**
 	 * 读取所有 agent 定义。
 	 *
-	 * 唯一数据源：`~/.vssaros/agents/{agentId}/.agent.md`。
-	 * 在首次读取前，确保内置 agent 已落地到该目录（初始安装 VsSaros 时，
-	 * 从内置预设创建各 agent 文件）。其余来源（custom-agents.json 等）已全部移除。
+	 * 数据源（按优先级）：
+	 * 1. 内置 agent — 直读产品源（`resources/.agents/agents/` 或 `getBuiltinAgents()`），
+	 *    不播种到用户目录，更新产品定义即生效。
+	 * 2. 用户覆写 — `~/.vssaros/agents/{builtinId}/.agent.md` 存在时优先于内置定义
+	 *    （用户通过设置面板编辑内置 agent 后产生）。
+	 * 3. 自定义 agent — `~/.vssaros/agents/{id}/.agent.md`（非内置 ID）。
 	 */
 	async getAgents(): Promise<Agent[]> {
 		// Cache for 30s — agents rarely change during a session, and
@@ -522,17 +541,21 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			return this._agentsCache.data;
 		}
 		const t0 = Date.now();
-		// 确保迁移和 seed 已完成（幂等）
+		// 确保迁移和清理已完成（幂等）
 		await this._initPromise;
 
+		// 1. 内置 agent（产品源）
+		const builtinAgents = await this._loadBuiltinAgentsFromSource();
+		const builtinIds = new Set(builtinAgents.map(a => a.id));
+
+		// 2. 扫描用户目录：收集覆写 + 自定义 agent
+		const userOverrides = new Map<string, Agent>();
+		const customAgents: Agent[] = [];
 		const agentsDir = this._getSarosAgentsDir();
-		const agents: Agent[] = [];
 		try {
 			const result = await this.fileService.resolve(agentsDir);
 			const dirs = (result.children ?? []).filter(c => c.isDirectory);
-			// Parallel read — much faster than serial await in for-loop
 			const reads = dirs.map(async child => {
-				// Preferred: .agent.md (VS Code Chat standard format, YAML frontmatter)
 				const agentMdUri = joinPath(child.resource, '.agent.md');
 				try {
 					const content = await this.fileService.readFile(agentMdUri);
@@ -546,25 +569,79 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			});
 			const results = await Promise.all(reads);
 			for (const agent of results) {
-				if (agent) { agents.push(agent); }
+				if (!agent) { continue; }
+				if (builtinIds.has(agent.id)) {
+					userOverrides.set(agent.id, agent); // 用户覆写内置 agent
+				} else {
+					customAgents.push(agent); // 自定义 agent
+				}
 			}
 		} catch {
-			// ~/.vssaros/agents 目录尚不存在（极少发生，seeding 应已创建）
+			// ~/.vssaros/agents 目录不存在 — 仅使用内置 agent
 		}
+
+		// 3. 合并：用户覆写优先，内置兜底，自定义追加
+		const agents: Agent[] = builtinAgents.map(a => userOverrides.get(a.id) ?? a);
+		agents.push(...customAgents);
 
 		this._agentsCache = { data: agents, ts: performance.now() };
 		const t1 = Date.now();
 		this.logService.info(
-			`[AS-PERF][service] getAgents: TOTAL ${t1 - t0}ms, agents=${agents.length} (from ${agentsDir.toString()})`,
+			`[AS-PERF][service] getAgents: TOTAL ${t1 - t0}ms, agents=${agents.length} (builtin=${builtinAgents.length}, overrides=${userOverrides.size}, custom=${customAgents.length})`,
 		);
 		return agents;
 	}
 
-	/** 确保内置 agent 已落地到 ~/.vssaros/agents/（仅执行一次，缓存 promise）。 */
+	/**
+	 * 从产品源加载内置 agent 定义。
+	 * 优先读 `resources/.agents/agents/{id}/.agent.md`，回退到 `getBuiltinAgents()`。
+	 */
+	private async _loadBuiltinAgentsFromSource(): Promise<Agent[]> {
+		// 与 ensureBuiltinAgentMdFiles 相同的多候选路径策略
+		const resourceCandidates: URI[] = [];
+		try {
+			resourceCandidates.push(FileAccess.asFileUri('vs/../../resources/.agents/agents'));
+		} catch { /* dev mode fallback */ }
+		const appRoot = (this.environmentService as any).appRoot as string | undefined;
+		if (appRoot) {
+			const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'agents');
+			if (!resourceCandidates.some(c => c.toString() === uri2.toString())) {
+				resourceCandidates.push(uri2);
+			}
+		}
+
+		for (const candidate of resourceCandidates) {
+			try {
+				const result = await this.fileService.resolve(candidate);
+				const dirs = (result.children ?? []).filter(c => c.isDirectory);
+				if (dirs.length > 0) {
+					const reads = dirs.map(async d => {
+						const mdUri = joinPath(d.resource, '.agent.md');
+						try {
+							const buf = await this.fileService.readFile(mdUri);
+							const parsed = parseAgentMd(buf.value.toString());
+							if (parsed) {
+								return { ...parsed.agent, systemPrompt: parsed.systemPrompt } as Agent;
+							}
+						} catch { /* skip */ }
+						return null;
+					});
+					const results = await Promise.all(reads);
+					const agents = results.filter((a): a is Agent => a !== null);
+					if (agents.length > 0) { return agents; }
+				}
+			} catch { /* candidate not accessible, try next */ }
+		}
+
+		// Fallback: 资源目录不可用时从代码定义生成
+		return getBuiltinAgents();
+	}
+
+	/** 一次性清理旧播种的内置 agent 目录（内置 agent 直读产品源，不再播种）。 */
 	private _ensureBuiltinsSeeded(): Promise<void> {
 		if (!this._seedBuiltinsPromise) {
 			this._seedBuiltinsPromise = this.ensureBuiltinAgentMdFiles().catch(err =>
-				this.logService.warn('[AgentStudioService] Failed to seed builtin agent files:', err),
+				this.logService.warn('[AgentStudioService] Failed to cleanup seeded builtin agents:', err),
 			);
 		}
 		return this._seedBuiltinsPromise;
@@ -1035,14 +1112,10 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/**
-	 * Ensures every builtin agent has a dedicated directory at
-	 * `~/.vssaros/agents/{agentId}/` containing:
-	 *   - .agent.md   (VS Code Chat standard format, primary definition)
-	 *
-	 * 内置 agent 定义存放在 `resources/.agents/agents/{id}.agent.md`，
-	 * 首次启动时复制到用户目录。用户编辑后的 .agent.md 不会被覆盖。
-	 *
-	 * Only creates files that don't already exist — never overwrites user edits.
+	 * 内置 agent 不再播种到用户目录。
+	 * 一次性清理：删除 `~/.vssaros/agents/` 下所有已播种的内置 agent 目录。
+	 * 之后内置 agent 直读产品源（`_loadBuiltinAgentsFromSource`），
+	 * 用户目录仅保留自定义 agent 和用户覆写。
 	 */
 	async ensureBuiltinAgentMdFiles(): Promise<void> {
 		const agentsDir = this._getSarosAgentsDir();
@@ -1058,72 +1131,23 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			}
 		}
 
-		// ── 从 resources/.agents/agents/ 加载内置 agent 定义 ──
-		// 与 skillRegistryService 相同的多候选路径策略
-		const resourceCandidates: URI[] = [];
+		// ── 收集内置 agent ID 集合 ──
+		const builtinAgents = await this._loadBuiltinAgentsFromSource();
+		const builtinIds = new Set(builtinAgents.map(a => a.id));
+
+		// ── 一次性清理：删除已播种的内置 agent 目录 ──
+		// 迁移标记文件存在则跳过（仅清理一次），否则删除所有与内置同名的旧 agent 目录。
+		// 自定义 agent（非内置 ID）不受影响。
+		const cleanupMarker = joinPath(agentsDir, '.builtin-v3-noseed-migrated');
+		let needsCleanup = false;
 		try {
-			const uri1 = FileAccess.asFileUri('vs/../../resources/.agents/agents');
-			resourceCandidates.push(uri1);
-		} catch { /* dev mode fallback */ }
-		const appRoot = (this.environmentService as any).appRoot as string | undefined;
-		if (appRoot) {
-			const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'agents');
-			if (!resourceCandidates.some(c => c.toString() === uri2.toString())) {
-				resourceCandidates.push(uri2);
-			}
-		}
-
-		// 尝试从资源目录扫描 *.agent.md
-		let builtinFiles: Array<{ id: string; content: string }> = [];
-		for (const candidate of resourceCandidates) {
-			try {
-				const result = await this.fileService.resolve(candidate);
-				// 子目录结构：resources/.agents/agents/{id}/.agent.md
-				const dirs = (result.children ?? []).filter(c => c.isDirectory);
-				if (dirs.length > 0) {
-					const reads = dirs.map(async d => {
-						const mdUri = joinPath(d.resource, '.agent.md');
-						try {
-							const buf = await this.fileService.readFile(mdUri);
-							const content = buf.value.toString();
-							const parsed = parseAgentMd(content);
-							const id = parsed?.agent.id ?? d.name;
-							return { id, content };
-						} catch {
-							return null;
-						}
-					});
-					const results = await Promise.all(reads);
-					builtinFiles = results.filter((r): r is { id: string; content: string } => r !== null);
-					this.logService.info(`[AgentStudio] Loaded ${builtinFiles.length} builtin agents from ${candidate.toString()}`);
-					break;
-				}
-			} catch { /* candidate not accessible, try next */ }
-		}
-
-		// Fallback: 如果资源目录不可用，从 getBuiltinAgents() 生成
-		if (builtinFiles.length === 0) {
-			this.logService.info('[AgentStudio] Resource dir not accessible, falling back to getBuiltinAgents()');
-			const builtinAgents = getBuiltinAgents();
-			builtinFiles = builtinAgents.map(a => ({ id: a.id, content: buildAgentMd(a) }));
-		}
-
-		// 复制到用户目录
-		// ── 一次性迁移：清理旧版内置 agent（agent.json 格式 / 过时 .agent.md）──
-		// 已发布的 EXE 版本中，用户机器上可能有旧格式的内置 agent。
-		// 迁移标记文件存在则跳过（仅迁移一次），否则删除所有与 resources 同名的旧 agent 目录，
-		// 然后从 resources 重新 seed。自定义 agent 不受影响。
-		const builtinIds = new Set(builtinFiles.map(f => f.id));
-		const migrationMarker = joinPath(agentsDir, '.builtin-v2-migrated');
-		let needsMigration = false;
-		try {
-			await this.fileService.resolve(migrationMarker);
+			await this.fileService.resolve(cleanupMarker);
 		} catch {
-			needsMigration = true;
+			needsCleanup = true;
 		}
 
-		if (needsMigration) {
-			this.logService.info('[AgentStudio] Starting builtin agent migration (v2: .agent.md format)...');
+		if (needsCleanup) {
+			this.logService.info('[AgentStudio] Starting builtin agent no-seed cleanup (v3)...');
 			try {
 				const result = await this.fileService.resolve(agentsDir);
 				const existingDirs = (result.children ?? []).filter(c => c.isDirectory);
@@ -1131,47 +1155,18 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 					if (builtinIds.has(dir.name)) {
 						try {
 							await this.fileService.del(dir.resource, { recursive: true });
-							this.logService.info(`[AgentStudio] Migration: removed stale builtin agent "${dir.name}"`);
+							this.logService.info(`[AgentStudio] Cleanup: removed seeded builtin agent "${dir.name}"`);
 						} catch (err) {
-							this.logService.warn(`[AgentStudio] Migration: failed to remove "${dir.name}": ${err}`);
+							this.logService.warn(`[AgentStudio] Cleanup: failed to remove "${dir.name}": ${err}`);
 						}
 					}
 				}
 			} catch { /* ignore scan errors */ }
-			// 写迁移标记（即使部分删除失败也写，避免每次启动重试）
+			// 写清理标记（即使部分删除失败也写，避免每次启动重试）
 			try {
-				await this.fileService.writeFile(migrationMarker, VSBuffer.fromString(new Date().toISOString()));
+				await this.fileService.writeFile(cleanupMarker, VSBuffer.fromString(new Date().toISOString()));
 			} catch { /* non-fatal */ }
-			this.logService.info('[AgentStudio] Builtin agent migration (v2) complete.');
-		}
-
-		for (const { id, content } of builtinFiles) {
-			const agentDir = joinPath(agentsDir, id);
-
-			// Ensure per-agent directory exists
-			try {
-				await this.fileService.resolve(agentDir);
-			} catch {
-				try {
-					await this.fileService.createFolder(agentDir);
-				} catch (err) {
-					this.logService.warn(`[AgentStudio] Failed to create dir for "${id}": ${err}`);
-					continue;
-				}
-			}
-
-			// Write .agent.md if it doesn't exist (never overwrite user edits)
-			const agentMdUri = joinPath(agentDir, '.agent.md');
-			try {
-				await this.fileService.resolve(agentMdUri);
-			} catch {
-				try {
-					await this.fileService.writeFile(agentMdUri, VSBuffer.fromString(content));
-					this.logService.info(`[AgentStudio] Seeded .agent.md for builtin agent "${id}" at ${agentMdUri.toString()}`);
-				} catch (err) {
-					this.logService.warn(`[AgentStudio] Failed to seed .agent.md for "${id}": ${err instanceof Error ? err.message : String(err)}`);
-				}
-			}
+			this.logService.info('[AgentStudio] Builtin agent no-seed cleanup (v3) complete.');
 		}
 	}
 
@@ -1195,6 +1190,13 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		if (Object.keys(defPatch).length === 0) {
 			if (hasRuntimePatch) { this._agentsCache = undefined; this._onDidChangeAgents.fire(); }
 			return;
+		}
+
+		// 内置 agent 不允许编辑定义字段（systemPrompt/skills/tools/name 等）。
+		// 运行时字段（worktreePath/agentDir/memoryConfig）已通过 binding 处理，不受此限。
+		if (await this._isBuiltinAgent(id)) {
+			this.logService.warn(`[AgentStudio] updateAgent(${id}): rejected — builtin agent is read-only`);
+			throw new Error(`内置 Agent "${id}" 为只读，不允许编辑。如需自定义请创建新 Agent。`);
 		}
 
 		// 读取 .agent.md，合并补丁后写回 ~/.vssaros/agents/{id}/.agent.md
@@ -1286,8 +1288,12 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	async deleteAgent(id: string): Promise<void> {
+		// 内置 agent 不允许删除
+		if (await this._isBuiltinAgent(id)) {
+			this.logService.warn(`[AgentStudio] deleteAgent(${id}): rejected — builtin agent cannot be deleted`);
+			throw new Error(`内置 Agent "${id}" 不允许删除。`);
+		}
 		// 删除 agent 目录 ~/.vssaros/agents/{agentId}/（唯一数据源）。
-		// 注意：内置 agent 在下次启动时会被重新 seed（保证始终可用），
 		// 自定义 agent 删除后不会恢复。
 		await this._deleteAgentDir(id);
 		this._agentsCache = undefined;

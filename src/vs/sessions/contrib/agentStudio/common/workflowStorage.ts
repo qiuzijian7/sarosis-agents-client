@@ -70,6 +70,8 @@ export interface IStoredWorkflow extends IWorkflow {
 	tags?: string[];
 	/** 使用指南（Markdown 格式） */
 	useGuide?: string;
+	/** 来源：builtin=产品内置，undefined=用户/商城 */
+	source?: string;
 }
 
 // ------------------------------------------------------------------------------------------------

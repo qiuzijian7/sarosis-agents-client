@@ -211,7 +211,13 @@ export class WorkflowMarketEditorPane extends EditorPane {
 				this.workflowStorage.listWorkflows().catch(() => [] as IStoredWorkflow[]),
 			]);
 
-			this._packages = result.items;
+			// 过滤内置工作流：商城不展示已随产品内置的工作流
+			const builtinWfIds = new Set(
+				installedWorkflows.filter(w => w.source === 'builtin').map(w => w.id)
+			);
+			this._packages = result.items.filter(pkg =>
+				!builtinWfIds.has(pkg.slug) && !builtinWfIds.has(pkg.id)
+			);
 			this._installedWorkflowIds = new Set(installedWorkflows.map(w => w.id));
 			this._renderGrid();
 		} catch (err) {

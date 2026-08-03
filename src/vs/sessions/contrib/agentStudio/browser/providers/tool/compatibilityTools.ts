@@ -5,16 +5,18 @@
 
 import { URI } from '../../../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
+import { isWindows } from '../../../../../../base/common/platform.js';
 import type { IFileService } from '../../../../../../platform/files/common/files.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IAgentOSService } from '../../../common/agentOS.js';
-import { IToolResultContent } from '../../../common/providers.js';
+import { IToolResultContent, NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 import type { ParsedPlanTask } from '../../../common/workMode.js';
 import { getPlanQueueHandle } from '../../../common/planQueueRegistry.js';
 import { formatCurrentTaskReminder } from '../../../common/preLoopOrchestrator.js';
 import type { AgentParadigm } from '../../../common/agentLoopStrategy.js';
 import { setParadigmOverride, getParadigmOverride, clearParadigmOverride, SWITCHABLE_PARADIGMS } from '../../../common/paradigmOverride.js';
+import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS } from './executeCodeGuards.js';
 
 export interface CompatToolContext {
 	register: (d: IBuiltinToolRegistration) => void;
@@ -22,6 +24,8 @@ export interface CompatToolContext {
 	fileService: IFileService;
 	logService: ILogService;
 	id: string;
+	/** 工作区根目录（首个 folder 的 fsPath），execute_code 默认 cwd 回退到此处。 */
+	workspaceRoot: string | undefined;
 	resolveAndCheckWorkspacePath: (agentId: string | undefined, p: string, requireInWorkspace?: boolean) => Promise<string>;
 }
 
@@ -245,18 +249,156 @@ export function registerCompatibilityTools(ctx: CompatToolContext): void {
 			},
 		});
 
-		// ── process / session_search / execute_code ─────────────────
-		// 平台不适用 — 返回友好提示（web_search/web_extract 已有真实 handler，不在此注册 stub）
-		for (const [name, desc, msg] of [
-			['process', 'Manage background processes.', 'Process management is not natively available. Use the terminal tool to launch commands. For long-running processes, use the timeout parameter to control execution duration.'],
-			['session_search', 'Search past conversation sessions.', 'Session search is not yet available. Past conversations are stored in ~/.saros/sessions/.'],
-			['execute_code', 'Execute a Python script in a sandbox.', 'Code execution sandbox is not available. Use the terminal tool to run scripts.'],
-		] as const) {
-			ctx.register({
-				definition: { name, description: desc, inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } }, category: 'utility', source: ctx.id },
-				handler: async () => text(msg),
-			});
-		}
+	// ── process / session_search ─────────────────
+	// 平台不适用 — 返回友好提示（web_search/web_extract 已有真实 handler，不在此注册 stub）
+	for (const [name, desc, msg] of [
+		['process', 'Manage background processes.', 'Process management is not natively available. Use the terminal tool to launch commands. For long-running processes, use the timeout parameter to control execution duration.'],
+		['session_search', 'Search past conversation sessions.', 'Session search is not yet available. Past conversations are stored in ~/.saros/sessions/.'],
+	] as const) {
+		ctx.register({
+			definition: { name, description: desc, inputSchema: { type: 'object', properties: { _no_params: { type: 'boolean', description: 'No parameters needed' } } }, category: 'utility', source: ctx.id },
+			handler: async () => text(msg),
+		});
+	}
 
-		ctx.logService.info('[BuiltinTools] _registerCompatibilityTools: registered aliases + missing core tools');
+	// ── execute_code：真实代码执行沙箱（主进程 spawn，非交互式，真实 exit code）─────
+	// 区别于 terminal（pty 交互 shell，1.5s idle 判完成、无可靠 exit code、无资源限制）：
+	// execute_code 经主进程 vscode:execCode 用 child_process.spawn 单次执行命令，拿到
+	// 真实 exit code + 超时 kill + 输出截断。researcher 子代理（只读、无 terminal）经此
+	// 运行 anysearch CLI（python3 scripts/anysearch_cli.py <cmd>）。
+	ctx.register({
+		definition: {
+			name: 'execute_code',
+			description: 'Execute a shell command or script (e.g. a python3/node CLI) and return stdout, stderr and the real exit code. Non-interactive single-shot execution with timeout kill — use THIS (not the interactive terminal) to run one-off CLI scripts such as the anysearch search service: `python3 scripts/anysearch_cli.py search "your query"`. Requires the interpreter (python3/node) to be installed on PATH.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					command: { type: 'string', description: 'Shell command to execute, e.g. "python3 scripts/anysearch_cli.py search \\"your query\\""' },
+					cwd: { type: 'string', description: 'Working directory (default: workspace root)' },
+					timeout: { type: 'number', description: 'Timeout in seconds (default 30, max 120)' },
+				},
+				required: ['command'],
+			},
+			category: 'terminal', source: ctx.id, securityLevel: ToolSecurityLevel.Dangerous,
+		},
+		handler: async (args) => {
+			const command = String(args['command'] ?? '').trim();
+			if (!command) { throw new Error('command is required'); }
+			const timeoutSec = Math.min(Math.max(Number(args['timeout']) || 30, 1), 120);
+			// Windows 护栏：Unix-only 命令（head/grep/sed…）在 cmd.exe 下必败（exit 255），
+			// 提前抛出带 PowerShell 等价写法的不可重试错误，模型据此自行改写成正确命令。
+			if (isWindows) {
+				const unixCmd = detectUnixOnlyCommand(command);
+				if (unixCmd) {
+					throw new NonRetryableToolError(
+						`execute_code: Unix-only command '${unixCmd}' is not available on Windows (cmd.exe) — it would fail with exit 255. ` +
+						`Rewrite the pipeline with a PowerShell equivalent: ... | ${UNIX_ONLY_COMMAND_HINTS[unixCmd] ?? unixCmd} ` +
+						`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue execute_code with the corrected command.`
+					);
+				}
+			}
+			const rawCwd = typeof args['cwd'] === 'string' && args['cwd'].trim() ? args['cwd'].trim() : undefined;
+			// cwd 不为空时走沙箱校验；否则默认使用工作区根目录（不传 cwd 时
+			// Node.js spawn 默认 process.cwd() = Electron app dir，不是 workspace root）。
+			// 技能 CLI 不在此做自动解析——绝对路径由技能注入/read_skill 直接给出。
+			const cwd: string | undefined = rawCwd
+				? await ctx.resolveAndCheckWorkspacePath(undefined, rawCwd, false)
+				: ctx.workspaceRoot;
+		// Windows cmd 不支持 heredoc（`python3 << 'EOF' ... EOF` 报 "此时不应有 <<", exit 1）。
+		// 检测 heredoc：提取解释器 + 脚本，改经 stdin 传给解释器执行（跨平台）。
+		const heredoc = _extractHeredoc(command);
+		if (heredoc) {
+			ctx.logService.info(`[CompatTools] execute_code: heredoc detected, running ${heredoc.interpreter} via stdin`);
+		}
+		const result = await _execCodeSandbox(command, cwd, timeoutSec * 1000, ctx.logService, heredoc);
+			const out = _truncateExecOutput(result.stdout);
+			const err = _truncateExecOutput(result.stderr);
+			const parts = [`$ ${command}`, ''];
+			if (out) { parts.push(out); }
+			if (err) { parts.push(`[stderr]\n${err}`); }
+			parts.push(`(exit code: ${result.exitCode})`);
+			const body = parts.join('\n');
+			// 失败（非 0 exit / 启动失败 / 超时）→ 抛错触发失败熔断，避免子代理对失败命令反复重试
+			if (!result.success) {
+				throw new Error(`execute_code failed (exit ${result.exitCode}):\n${body}`);
+			}
+			return text(body);
+		},
+	});
+
+	ctx.logService.info('[BuiltinTools] _registerCompatibilityTools: registered aliases + missing core tools');
+}
+
+// ── execute_code 沙箱执行 helpers ────────────────────────────────────────────
+interface IExecCodeResult { success: boolean; stdout: string; stderr: string; exitCode: number; }
+
+/**
+ * 技能 CLI 路径策略（用户拍板 2026-08-03）：execute_code **不**自动到 skillRegistry
+ * 查找脚本。绝对路径由技能注入/read_skill 直接给出（_renderInjection 的
+ * scriptPaths 与 read_skill 返回的 scriptPaths 字段），模型应直接使用绝对路径
+ * 调用 CLI——从根上避免相对路径 + cwd 解析问题。
+ */
+
+async function _execCodeSandbox(command: string, cwd: string | undefined, timeoutMs: number, logService: ILogService, heredoc?: { interpreter: string; script: string }): Promise<IExecCodeResult> {
+	// 优先：主进程 vscode:execCode（Electron 桌面，主进程 child_process.spawn，见 app.ts）。
+	const vscodeBridge = (globalThis as any).vscode;
+	if (vscodeBridge?.ipcRenderer?.invoke) {
+		try {
+			logService.trace(`[CompatTools] execute_code via main-process vscode:execCode: ${command}`);
+			return await vscodeBridge.ipcRenderer.invoke('vscode:execCode', heredoc
+				? { script: heredoc.script, interpreter: heredoc.interpreter, cwd, timeoutMs }
+				: { command, cwd, timeoutMs }) as IExecCodeResult;
+		} catch (invokeErr) {
+			logService.warn(`[CompatTools] execute_code: vscode:execCode invoke failed, trying child_process fallback: ${invokeErr}`);
+		}
+	}
+	// 回退：当前上下文可直接 require child_process（Electron renderer nodeIntegration）。
+	if (typeof process !== 'undefined' && (process as any).versions?.electron) {
+		return _execCodeNodeFallback(command, cwd, timeoutMs, heredoc);
+	}
+	throw new Error('execute_code is not available in this context (no main-process channel, no child_process)');
+}
+
+function _execCodeNodeFallback(command: string, cwd: string | undefined, timeoutMs: number, heredoc?: { interpreter: string; script: string }): Promise<IExecCodeResult> {
+	return new Promise((resolve) => {
+		try {
+			// eslint-disable-next-line local/code-import-patterns
+			const cp = require('child_process') as typeof import('child_process');
+			// 与主进程 vscode:execCode 一致：强制 Python UTF-8 输出（Windows 默认 GBK
+			// 遇 emoji 等抛 UnicodeEncodeError exit 1）。
+			const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+			const child = heredoc
+				? cp.spawn(heredoc.interpreter, [], { cwd, env, windowsHide: true })
+				: cp.spawn(command, [], { shell: true, cwd, env, windowsHide: true });
+			if (heredoc) { child.stdin?.write(heredoc.script); child.stdin?.end(); }
+			let stdout = ''; let stderr = ''; let settled = false;
+			const t = setTimeout(() => {
+				if (!settled) { settled = true; try { child.kill('SIGKILL'); } catch { /* ignore */ } resolve({ success: false, stdout, stderr: stderr + `\n[timeout: process killed after ${Math.round(timeoutMs / 1000)}s]`, exitCode: -1 }); }
+			}, timeoutMs);
+			child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+			child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+			child.on('error', (err) => { if (!settled) { settled = true; clearTimeout(t); resolve({ success: false, stdout, stderr: err.message, exitCode: -1 }); } });
+			child.on('close', (code) => { if (!settled) { settled = true; clearTimeout(t); resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 }); } });
+		} catch (err) {
+			resolve({ success: false, stdout: '', stderr: String(err), exitCode: -1 });
+		}
+	});
+}
+
+/**
+ * 检测 shell heredoc 命令（`python3 << 'EOF'\n<script>\nEOF`），提取解释器与脚本内容。
+ * Windows cmd 不支持 heredoc 语法（报 "此时不应有 <<"），需改为经 stdin 传脚本执行。
+ * 支持 `<< TAG` / `<<- TAG` / `<< 'TAG'` / `<< "TAG"`，解释器限 python/python3/py/node/deno/bash/sh。
+ */
+function _extractHeredoc(command: string): { interpreter: string; script: string } | undefined {
+	const m = command.match(/^\s*(python3?|py|node|deno|bash|sh)\s*<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\s*\r?\n([\s\S]*?)\r?\n\2\s*;?\s*$/);
+	if (!m) { return undefined; }
+	return { interpreter: m[1], script: m[3] };
+}
+
+const EXEC_OUTPUT_MAX = 65536; // 64KB，与 terminal 输出截断一致
+function _truncateExecOutput(s: string): string {
+	if (!s || s.length <= EXEC_OUTPUT_MAX) { return s; }
+	const half = EXEC_OUTPUT_MAX >> 1;
+	return s.slice(0, half) + `\n... (${s.length - EXEC_OUTPUT_MAX} chars omitted) ...\n` + s.slice(-half);
 }

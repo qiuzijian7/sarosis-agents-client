@@ -40,6 +40,8 @@ interface IWatcherRoot {
 	exts: Set<string>;
 	/** 目录排除集（与索引扫描一致，防止 Intermediate/ 等生成目录误扫）。 */
 	excludeDirs: Set<string>;
+	/** keepDirs 例外集（exclude 内保留的子目录，小写 / 分隔相对路径，与索引扫描口径一致）。 */
+	keepDirs: Set<string>;
 	lastGitHead?: string;
 	/** 脏状态签名：同一 (added,modified,deleted) 组合不重复触发重索引（对齐 C 版 dirty-state 签名去重）。 */
 	lastDirtySig?: string;
@@ -76,7 +78,7 @@ export class CodebaseGraphWatcher extends Disposable {
 	/**
 	 * 注册一个监听根目录。多 folder 工作区：每个 folder 各调用一次，互不覆盖（同 root 去重替换）。
 	 */
-	start(rootPath: string, store: CodebaseGraphStore, project: string, supportedExtensions: Set<string>, excludeDirs?: Set<string>): void {
+	start(rootPath: string, store: CodebaseGraphStore, project: string, supportedExtensions: Set<string>, excludeDirs?: Set<string>, keepDirs?: readonly string[]): void {
 		const norm = this._normalizeRoot(rootPath);
 		// 同 root 去重（重复 start 同一 folder 时替换而非新增）。
 		// 保留 lastDirtySig：索引完成后会重新 start（刷新 project/excludeDirs），若丢弃签名，
@@ -86,7 +88,10 @@ export class CodebaseGraphWatcher extends Disposable {
 		// excludeDirs 统一小写化存储（扫描比较用小写名）
 		const excludeLower = new Set<string>();
 		for (const d of excludeDirs ?? []) { excludeLower.add(d.toLowerCase()); }
-		this._roots.push({ rootPath, store, project, exts: supportedExtensions, excludeDirs: excludeLower, lastDirtySig: prev?.lastDirtySig });
+		// keepDirs 归一化：小写 + / 分隔 + 去首尾斜杠（与 graphService._scanFiles 口径一致）
+		const keepLower = new Set<string>();
+		for (const k of keepDirs ?? []) { keepLower.add(k.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase()); }
+		this._roots.push({ rootPath, store, project, exts: supportedExtensions, excludeDirs: excludeLower, keepDirs: keepLower, lastDirtySig: prev?.lastDirtySig });
 		this._logService.info(LOG_TAG, `Watching ${rootPath} (project=${project}); active roots=${this._roots.length}`);
 		if (!this._started) {
 			this._started = true;
@@ -168,7 +173,7 @@ export class CodebaseGraphWatcher extends Disposable {
 		const { rootPath, store, project, exts } = root;
 		// 与索引扫描一致的目录排除（旧实现传空集：UE 项目 Intermediate/ 生成目录
 		// 会扫出 18w+ 文件，每轮误报全量 added）
-		const currentFiles = await this._scanFiles(URI.file(rootPath), exts, root.excludeDirs, 0);
+		const currentFiles = await this._scanFiles(URI.file(rootPath), exts, root.excludeDirs, 0, rootPath, root.keepDirs);
 		// 元数据兜底：部分 provider 的 resolve 不返回 children 的 mtime/size（全为 0），
 		// 会导致所有带哈希的文件被误判 modified（实证：全量 6268/28674 误报）。
 		// 对缺元数据的条目用 stat() 补齐（32 并发分批，28k 文件约秒级）。
@@ -239,7 +244,7 @@ export class CodebaseGraphWatcher extends Disposable {
 		}
 	}
 
-	private async _scanFiles(dirUri: URI, exts: Set<string>, excludeDirs: Set<string>, depth: number): Promise<{ path: string; mtimeNs: number; size: number }[]> {
+	private async _scanFiles(dirUri: URI, exts: Set<string>, excludeDirs: Set<string>, depth: number, rootPath: string, keepDirs: Set<string>): Promise<{ path: string; mtimeNs: number; size: number }[]> {
 		if (depth > 30) { return []; }
 
 		let stat;
@@ -252,13 +257,26 @@ export class CodebaseGraphWatcher extends Disposable {
 
 		const results: { path: string; mtimeNs: number; size: number }[] = [];
 		for (const child of stat.children) {
-			// 大小写不敏感匹配（排除集与实际目录名大小写常不一致，如 'scripts' vs 'Scripts'——
-			// 曾致排除静默失效：watcher 扫入索引排除的目录，每轮误报 added）
-			if (excludeDirs.has(child.name.toLowerCase()) || (child.name.startsWith('.') && child.name.length > 1)) {
+			if (child.name.startsWith('.') && child.name.length > 1) {
 				continue;
 			}
+			// 大小写不敏感匹配（排除集与实际目录名大小写常不一致，如 'scripts' vs 'Scripts'——
+			// 曾致排除静默失效：watcher 扫入索引排除的目录，每轮误报 added）
+			if (excludeDirs.has(child.name.toLowerCase())) {
+				// keepDirs 例外：被排除目录中的保留子目录仍扫描（与 graphService._scanDir 三段匹配口径一致）
+				if (child.isDirectory && keepDirs.size > 0) {
+					const rel = this._getRelPath(rootPath, child.resource.fsPath).toLowerCase();
+					let keep = false;
+					for (const k of keepDirs) {
+						if (rel === k || rel.startsWith(k + '/') || k.startsWith(rel + '/')) { keep = true; break; }
+					}
+					if (!keep) { continue; }
+				} else {
+					continue;
+				}
+			}
 			if (child.isDirectory) {
-				const sub = await this._scanFiles(child.resource, exts, excludeDirs, depth + 1);
+				const sub = await this._scanFiles(child.resource, exts, excludeDirs, depth + 1, rootPath, keepDirs);
 				// 不用 results.push(...sub)：子目录文件极多时展开成参数会触发
 				// "Maximum call stack size exceeded"（V8 函数参数上限）。逐元素入栈安全。
 				for (let i = 0; i < sub.length; i++) {
