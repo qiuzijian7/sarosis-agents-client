@@ -18,7 +18,12 @@ const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 function installAgentStudioWebview() {
 	return new Promise<void>((resolve, reject) => {
 		try {
-			execSync('npm install --prefer-offline', {
+			// Do NOT use --prefer-offline: in CI there is no local npm cache, so
+			// --prefer-offline would fail to fetch and leave node_modules/katex absent,
+			// causing esbuild.kbblocks.config.mjs to ENOENT on katex/dist/katex.min.css.
+			// The CI env sets npm_config_registry to the npmmirror mirror, so a plain
+			// install goes through it.
+			execSync('npm install --ignore-scripts --no-audit --no-fund', {
 				cwd: WEBVIEW_DIR,
 				stdio: 'inherit',
 			});
@@ -52,6 +57,13 @@ function buildAgentStudioWebview() {
 function buildAgentStudioKbBlocks() {
 	return new Promise<void>((resolve, reject) => {
 		try {
+			// Ensure deps (katex etc.) are present before bundling. In CI the webview
+			// node_modules may be absent; install on demand so the kbblocks bundle never
+			// fails with ENOENT on katex/dist/katex.min.css.
+			if (!fs.existsSync(path.join(WEBVIEW_DIR, 'node_modules', 'katex', 'dist', 'katex.min.css'))) {
+				console.log('[agentStudio] katex not found in webview node_modules, installing...');
+				installAgentStudioWebview();
+			}
 			execSync('node esbuild.kbblocks.config.mjs', {
 				cwd: WEBVIEW_DIR,
 				stdio: 'inherit',
@@ -98,6 +110,8 @@ const compileAllAgentStudioTask = task.define('compile-all-agent-studio',
 
 gulp.task(compileAgentStudioWebviewTask);
 gulp.task(buildAgentStudioKbBlocksTask);
+
+export { installAgentStudioWebview };
 gulp.task(compileAllAgentStudioTask);
 
 export { compileAgentStudioWebviewTask, buildAgentStudioKbBlocksTask, compileAllAgentStudioTask };

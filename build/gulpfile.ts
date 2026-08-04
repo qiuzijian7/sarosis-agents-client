@@ -17,6 +17,7 @@ import * as compilation from './lib/compilation.ts';
 import * as task from './lib/task.ts';
 import * as util from './lib/util.ts';
 import { runEsbuildTranspile } from './lib/esbuild.ts';
+import { installAgentStudioWebview } from './gulpfile.agentStudio.ts';
 
 // ── Media asset pre-build (BlockSuite KB probe) ─────────────────────────────
 
@@ -33,6 +34,14 @@ function compileKbBlocksMedia() {
 			return resolve();
 		}
 		try {
+			// Self-heal: katex must be present in the webview node_modules for the
+			// katex-css esbuild plugin; install on demand if missing (CI may not
+			// have run the webview npm install step).
+			const katexCss = path.join(WEBVIEW_DIR, 'node_modules', 'katex', 'dist', 'katex.min.css');
+			if (!fs.existsSync(katexCss)) {
+				console.log('[gulpfile] build:kbblocks katex missing, installing webview deps...');
+				installAgentStudioWebview();
+			}
 			execSync('node esbuild.kbblocks.config.mjs', {
 				cwd: WEBVIEW_DIR,
 				stdio: 'inherit',

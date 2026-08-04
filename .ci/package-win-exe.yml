@@ -253,6 +253,25 @@ stages:
                 }
                 Write-Host "[FIX] typescript hoisted to $extTsTarget"
               }
+
+              # ===== 8d. Install Agent Studio webview dependencies =====
+              # The KB markdown renderer (kbblocks) bundles katex + react-markdown via
+              # esbuild from the webview's OWN node_modules. The root --ignore-scripts
+              # install does NOT cover this sub-directory, so katex/dist/katex.min.css
+              # is missing at build time -> esbuild fails with ENOENT. Install it here,
+              # mirroring the extensions loop above.
+              $webviewDir = "src\vs\sessions\contrib\agentStudio\webview"
+              if (Test-Path "$webviewDir\package.json") {
+                Push-Location $webviewDir
+                npm install --ignore-scripts
+                if ($LASTEXITCODE -ne 0) {
+                  Write-Host "[WARN] $webviewDir npm install exited $LASTEXITCODE (non-critical)"
+                }
+                Pop-Location
+                Write-Host "[OK] Agent Studio webview dependencies installed"
+              } else {
+                Write-Host "[WARN] $webviewDir/package.json not found, skipping webview install"
+              }
             shell: powershell
 
           # ---------- 4. 生产编译（带 mangling，失败回退 dev 编译） ----------
