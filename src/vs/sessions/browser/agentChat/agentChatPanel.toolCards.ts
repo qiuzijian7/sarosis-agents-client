@@ -1,7 +1,23 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
 import { IAgentChatMessage, IToolCall, IChatAttachment, IPlanTaskCard } from './agentChatTypes.js';
 import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS } from './agentChatPanel.base.js';
-import { isAnysearchArgs } from './agentChatPanel.webCard.js';
+
+/** 解析 tc.args —— 兼容 string(JSON) / object / undefined 三种形态。 */
+export function parseToolArgs(raw: unknown): Record<string, unknown> {
+	if (!raw) { return {}; }
+	if (typeof raw === 'object') { return raw as Record<string, unknown>; }
+	if (typeof raw === 'string') {
+		try { return JSON.parse(raw) as Record<string, unknown>; } catch { return {}; }
+	}
+	return {};
+}
+
+/** 判断 execute_code 的 args 是否为 anysearch CLI 调用（command 含 anysearch_cli.py）。 */
+export function isAnysearchArgs(args: unknown): boolean {
+	const parsed = parseToolArgs(args);
+	const cmd = typeof parsed.command === 'string' ? parsed.command : '';
+	return cmd.includes('anysearch_cli.py');
+}
 
 /** 纯函数 HTML 转义，避免 XSS。 */
 export function escapeHtml(s: string): string {

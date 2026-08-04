@@ -1,7 +1,7 @@
 import { $, append } from '../../../base/browser/dom.js';
 import { IToolCall } from './agentChatTypes.js';
 import { AgentChatPanelSearchCard } from './agentChatPanel.searchCard.js';
-import { createSvgIcon, SEARCH_ICON_D } from './agentChatPanel.toolCards.js';
+import { createSvgIcon, SEARCH_ICON_D, parseToolArgs } from './agentChatPanel.toolCards.js';
 
 /**
  * Web 族工具卡片：web_search / web_extract / anysearch（execute_code 运行 anysearch_cli.py）。
@@ -48,23 +48,6 @@ function isTitleJustUrl(title: string, url: string): boolean {
 	return /^https?:\/\//i.test(title) || title === url;
 }
 
-/** 解析 tc.args —— 兼容 string(JSON) / object / undefined 三种形态。 */
-function _parseArgs(raw: unknown): Record<string, unknown> {
-	if (!raw) { return {}; }
-	if (typeof raw === 'object') { return raw as Record<string, unknown>; }
-	if (typeof raw === 'string') {
-		try { return JSON.parse(raw) as Record<string, unknown>; } catch { return {}; }
-	}
-	return {};
-}
-
-/** 判断 execute_code 的 args 是否为 anysearch CLI 调用（command 含 anysearch_cli.py）。 */
-export function isAnysearchArgs(args: unknown): boolean {
-	const parsed = _parseArgs(args);
-	const cmd = typeof parsed.command === 'string' ? parsed.command : '';
-	return cmd.includes('anysearch_cli.py');
-}
-
 /** 从 anysearch CLI 命令中解析子命令与查询词。 */
 function parseAnysearchCommand(cmd: string): { subcommand: string; query: string } {
 	const sub = cmd.match(/anysearch_cli\.py\s+(\w+)/);
@@ -88,7 +71,7 @@ function createWebExtractCard(tc: IToolCall): HTMLElement {
 
 	// ── 解析参数 ──
 	// tc.args 是 JSON 字符串（IToolCall/ISubAgentToolTrace 定义），需先 parse 才能取 url
-	const args = _parseArgs(tc.args);
+	const args = parseToolArgs(tc.args);
 	const url = typeof args.url === 'string' ? args.url : '';
 
 	// ── 解析结果 ──
@@ -315,7 +298,7 @@ export abstract class AgentChatPanelWebCard extends AgentChatPanelSearchCard {
 		const isRunning = tc.status === 'running';
 		const isErr = tc.status === 'error';
 
-		const args = _parseArgs(tc.args);
+		const args = parseToolArgs(tc.args);
 		const command = typeof args.command === 'string' ? args.command : '';
 		const { query } = parseAnysearchCommand(command);
 

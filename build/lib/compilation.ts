@@ -131,7 +131,26 @@ export function compileTask(src: string, out: string, build: boolean, options: {
 		}
 
 		const compile = createCompile(src, { build, emitError: true, transpileOnly: false, preserveEnglish: !!options.preserveEnglish });
-		const srcPipe = gulp.src([`${src}/**`, `!${src}/**/node_modules/**`, `!${src}/vs/sessions/contrib/agentStudio/webview/**`, `!${src}/vs/sessions/contrib/agentStudio/test/**`], { base: `${src}` });
+
+		// Test files are not part of the shipped product. When mangling is enabled, the
+		// mangler renames exported symbols (e.g. base classes such as `EditorInput`), which
+		// leaves `extends` clauses and imports inside test/fixture files dangling and produces
+		// spurious "does not extend another class" / "has no exported member" errors. Those
+		// files are already excluded from the dev compile via `src/tsconfig.json`, but this
+		// task pipes `src/**` directly into the compiler, bypassing that exclude. Keep them out
+		// of the mangled production build to mirror the dev-compile semantics.
+		const excludeTestFilesFromMangleBuild = build && !options.disableMangle;
+		const srcPipe = gulp.src([
+			`${src}/**`,
+			`!${src}/**/node_modules/**`,
+			`!${src}/vs/sessions/contrib/agentStudio/webview/**`,
+			`!${src}/vs/sessions/contrib/agentStudio/test/**`,
+			...(excludeTestFilesFromMangleBuild ? [
+				`!${src}/vs/**/test/**`,
+				`!${src}/vs/**/*.test.ts`,
+				`!${src}/vs/**/*.fixture.ts`,
+			] : []),
+		], { base: `${src}` });
 		const generator = new MonacoGenerator(false);
 		if (src === 'src') {
 			generator.execute();
