@@ -68,6 +68,7 @@ export class AgentMarketEditorPane extends EditorPane {
 	private _installedSlugs = new Set<string>();         // from installed-packages.json
 	private _localAgentNames = new Set<string>();        // from agentStudioService.getAgents()
 	private _localAgentIds = new Set<string>();          // from agentStudioService.getAgents() — 用于交叉校验
+	private _builtinAgentIds = new Set<string>();        // source==='builtin' 的产品内置 agent id — 用于商城展示过滤
 	private _packageDetails = new Map<string, IMarketplacePackageDetail>(); // slug → detail (含 manifest)
 
 	private _initialized = false;
@@ -215,22 +216,27 @@ export class AgentMarketEditorPane extends EditorPane {
 			const { items } = await Promise.race([listPromise, timeoutPromise]);
 			console.log('[AgentMarket] 获取到', items.length, '个 agent 包');
 
-			// Load local agents for builtin filtering + name matching
-			try {
-				const agents = await this.agentStudioService.getAgents();
-				this._localAgentNames.clear();
-				this._localAgentIds.clear();
-				for (const a of agents) {
-					if (a.name) { this._localAgentNames.add(a.name.toLowerCase()); }
-					if (a.id) { this._localAgentIds.add(a.id); }
-				}
-			} catch { /* ignore — local agent list is best-effort */ }
+		// Load local agents for builtin filtering + name matching
+		try {
+			const agents = await this.agentStudioService.getAgents();
+			this._localAgentNames.clear();
+			this._localAgentIds.clear();
+			this._builtinAgentIds.clear();
+			for (const a of agents) {
+				if (a.name) { this._localAgentNames.add(a.name.toLowerCase()); }
+				if (a.id) { this._localAgentIds.add(a.id); }
+				if (a.source === 'builtin' && a.id) { this._builtinAgentIds.add(a.id); }
+			}
+		} catch { /* ignore — local agent list is best-effort */ }
 
-			// 过滤内置 agent：商城不展示已随产品内置的 agent（builtinAgents.ts + resources/.agents/agents/）
-			this._packages = items.filter(pkg =>
-				!this._localAgentIds.has(pkg.slug) && !this._localAgentIds.has(pkg.id)
-			);
-			console.log('[AgentMarket] 过滤内置后剩余', this._packages.length, '个 agent 包');
+		// 过滤内置 agent：商城不展示已随产品内置的 agent（source==='builtin'）。
+		// 关键：仅按"产品内置"过滤，绝不按"本地已安装"过滤——已安装的自定义 agent
+		// 仍应在商城展示（显示 删除/升级 按钮），否则商城会被掏空（本 bug：用 _localAgentIds
+		// 会把已安装的 gr-gc专家/GR埋点专家/PPT专家 等自定义 agent 也一并隐藏 → 0 个智能体）。
+		this._packages = items.filter(pkg =>
+			!this._builtinAgentIds.has(pkg.slug) && !this._builtinAgentIds.has(pkg.id)
+		);
+		console.log('[AgentMarket] 过滤内置后剩余', this._packages.length, '个 agent 包');
 
 			// Load installed records from installed-packages.json
 			const installed = await this.marketplaceService.getInstalled();
@@ -242,11 +248,18 @@ export class AgentMarketEditorPane extends EditorPane {
 
 			// 交叉校验：installed-packages.json 中的 agent 记录若本地目录不存在，
 			// 视为残留（目录被外部删除但记录未清理），从 _installedSlugs 中移除。
+			const staleRecords: Array<{ kind: PackageKind; storeId: string }> = [];
 			for (const slug of [...this._installedSlugs]) {
 				const pkg = items.find(p => p.slug === slug || p.id === slug);
 				if (pkg?.kind === 'agent' && !this._localAgentIds.has(slug) && !this._localAgentIds.has(pkg.id)) {
 					this._installedSlugs.delete(slug);
+					staleRecords.push({ kind: 'agent' as PackageKind, storeId: slug });
 				}
+			}
+			// 持久化清理：把已识别的残留记录写回 installed-packages.json，
+			// 避免每次启动重复校正，同时修正依赖 getInstalled() 的其他消费方（如升级检查）。
+			if (staleRecords.length > 0) {
+				void this.marketplaceService.removeInstalledRecords(staleRecords);
 			}
 
 			// Fetch package details (含 manifest 中的 skillRefs/mcpRefs) — 并行获取

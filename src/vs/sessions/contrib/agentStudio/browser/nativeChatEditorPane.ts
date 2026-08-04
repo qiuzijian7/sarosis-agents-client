@@ -27,6 +27,7 @@ import { IRequestService } from '../../../../platform/request/common/request.js'
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { ISkillRegistry } from '../common/skills.js';
 import { IAgentOSService } from '../common/agentOS.js';
+import { filterUserFacingAgents } from '../common/builtinAgents.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IBridgeService } from './bridge/bridgeService.js';
 
@@ -3095,8 +3096,9 @@ private _handleStreamDelta(delta: any): void {
 		const t0 = performance.now();
 		this._logService.debug(`[NativeChatEditorPane][Init] _loadAvailableAgents START`);
 		try {
-			const agents = await this._agentStudioService.getAgents();
-			this._logService.debug(`[NativeChatEditorPane][Init] _loadAvailableAgents getAgents done count=${agents?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
+		// 仅对外展示白名单内置 agent + 自定义 agent；其余内置 agent 仅内部使用
+		const agents = filterUserFacingAgents(await this._agentStudioService.getAgents());
+		this._logService.debug(`[NativeChatEditorPane][Init] _loadAvailableAgents getAgents done count=${agents?.length ?? 0} t=${(performance.now() - t0).toFixed(1)}ms`);
 			console.info(
 				`[NativeChatEditorPane] _loadAvailableAgents: fetched ${agents?.length ?? 0} agents — ` +
 				`ids=[${(agents ?? []).map(a => a.id).join(', ')}]`

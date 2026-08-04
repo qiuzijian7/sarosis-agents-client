@@ -31,6 +31,7 @@ import type { IAgentFolderUploadFile } from '../../../../common/agentStudioServi
 import { IMarketplaceService, IMarketplacePackage, PackageKind } from '../../common/marketplace.js';
 import { IAgentVersionService } from '../../common/agentVersionTypes.js';
 import { bumpPatch, suggestNextVersion, validatePublishVersion, isVersionConflictError } from '../publishVersioning.js';
+import { filterUserFacingAgents } from '../../common/builtinAgents.js';
 
 // ─── Preset Data Model ────────────────────────────────────────────────────────
 
@@ -197,7 +198,8 @@ export class PresetAgentViewPane extends ViewPane {
 	private async _loadAgents(): Promise<void> {
 		try {
 			const agents = await this.agentStudioService.getAgents();
-			this.agents = agents;
+			// 仅对外展示白名单内置 agent + 自定义 agent；其余内置 agent 仅内部使用
+			this.agents = filterUserFacingAgents(agents);
 			this._renderPresets();
 			this._updateCount();
 		} catch (err) {

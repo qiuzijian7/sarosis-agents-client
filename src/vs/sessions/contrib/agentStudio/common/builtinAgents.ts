@@ -64,6 +64,30 @@ Rules that keep delegation effective:
 - Pick a role with \`type\`: General (read+write) for build/edit/review, Explore (read-only) for investigation, Scout (read-only) for external research. Batch tasks default to Explore — set General if a batched task must write files.
 - Do NOT delegate: trivial single lookups, work that must keep continuous context across steps, or when you are already at max spawn depth.`;
 
+/**
+ * 对外（用户）可见的内置 agent 白名单。
+ * 只有这些内置 agent 会出现在用户界面（预设面板、聊天框 agent 下拉框等）；
+ * 其余内置 agent 仅作为内部子代理/编排使用（delegate_task、handoff、subagent 等），
+ * 不对用户展示。自定义 agent 不受此限制（始终可见）。
+ */
+export const USER_FACING_BUILTIN_AGENT_IDS: ReadonlySet<string> = new Set([
+	'saros-claw',            // AI 助手（主助理）
+	'knowledge-base-expert', // 知识库专家
+]);
+
+/**
+ * 判断 agent 是否应在用户界面（预设面板、聊天框下拉框等）对外展示。
+ * 自定义 agent 始终可见；内置 agent 仅白名单内可见。
+ */
+export function isUserFacingAgent(agent: { readonly id: string; readonly source?: string }): boolean {
+	return agent.source !== 'builtin' || USER_FACING_BUILTIN_AGENT_IDS.has(agent.id);
+}
+
+/** 过滤出应对外展示的 agent 列表（保留自定义 agent + 白名单内置 agent）。 */
+export function filterUserFacingAgents<T extends { readonly id: string; readonly source?: string }>(agents: readonly T[]): T[] {
+	return agents.filter(isUserFacingAgent);
+}
+
 export function getBuiltinAgents(): Agent[] {
 	const now = new Date().toISOString();
 	const agents: Agent[] = [

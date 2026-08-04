@@ -96,8 +96,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	private _globalDataUri: URI | undefined;
 
 	/**
-	 * 初始化 Promise：迁移旧数据 → seed 内置 agent。
-	 * 确保迁移先于任何数据读写，避免 seed 创建目录后迁移检查跳过。
+	 * 初始化 Promise：迁移旧数据 → 清理用户目录中的内置 agent。
+	 * 确保迁移先于任何数据读写，避免清理/迁移顺序颠倒。
 	 */
 	private _initPromise?: Promise<void>;
 
@@ -132,8 +132,8 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			void this._clearWorktreeBindings(removedPath);
 		}));
 
-		// Init: migrate legacy ~/.saros/ → seed builtin agents. Chain is cached
-		// so concurrent getAgents() calls await the same promise.
+		// Init: migrate legacy ~/.saros/ → cleanup builtin agents from user dir.
+		// Chain is cached so concurrent getAgents() calls await the same promise.
 		this._initPromise = this._migrateFromLegacySarosDir().then(() => this._ensureBuiltinsSeeded());
 	}
 
@@ -621,7 +621,9 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 							const buf = await this.fileService.readFile(mdUri);
 							const parsed = parseAgentMd(buf.value.toString());
 							if (parsed) {
-								return { ...parsed.agent, systemPrompt: parsed.systemPrompt } as Agent;
+								// 产品源内置 agent 统一标记 source='builtin'（resources .agent.md 不含 source 字段，
+								// parseAgentMd 会默认 'custom'，需在此纠正，否则内置标识/可见性过滤失效）。
+								return { ...parsed.agent, systemPrompt: parsed.systemPrompt, source: 'builtin' } as Agent;
 							}
 						} catch { /* skip */ }
 						return null;
@@ -637,7 +639,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		return getBuiltinAgents();
 	}
 
-	/** 一次性清理旧播种的内置 agent 目录（内置 agent 直读产品源，不再播种）。 */
+	/** 持续清理用户目录中的内置 agent 目录（内置 agent 直读产品源，不播种、不出现在用户目录）。 */
 	private _ensureBuiltinsSeeded(): Promise<void> {
 		if (!this._seedBuiltinsPromise) {
 			this._seedBuiltinsPromise = this.ensureBuiltinAgentMdFiles().catch(err =>
@@ -1112,10 +1114,15 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/**
-	 * 内置 agent 不再播种到用户目录。
-	 * 一次性清理：删除 `~/.vssaros/agents/` 下所有已播种的内置 agent 目录。
-	 * 之后内置 agent 直读产品源（`_loadBuiltinAgentsFromSource`），
-	 * 用户目录仅保留自定义 agent 和用户覆写。
+	 * 内置 agent 不播种到用户目录，并保证用户目录中不出现内置 agent。
+	 *
+	 * 每次启动持续清理：删除 `~/.vssaros/agents/` 下所有与内置同名的目录。
+	 * 内置 agent 直读产品源（`_loadBuiltinAgentsFromSource`）且只读
+	 * （`updateAgent` 拒绝编辑内置），用户目录不可能存在合法的"用户覆写"，
+	 * 因此任何内置 ID 目录都是历史播种/残留，删除总是安全。
+	 *
+	 * 持续清理（而非一次性 marker 门控）可保证：即使旧版本或异常路径再次写入
+	 * 内置目录，升级重启后也会被清除，产品源定义始终生效。自定义 agent（非内置 ID）不受影响。
 	 */
 	async ensureBuiltinAgentMdFiles(): Promise<void> {
 		const agentsDir = this._getSarosAgentsDir();
@@ -1131,43 +1138,28 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 			}
 		}
 
-		// ── 收集内置 agent ID 集合 ──
+		// ── 内置 agent ID 集合 ──
 		const builtinAgents = await this._loadBuiltinAgentsFromSource();
 		const builtinIds = new Set(builtinAgents.map(a => a.id));
 
-		// ── 一次性清理：删除已播种的内置 agent 目录 ──
-		// 迁移标记文件存在则跳过（仅清理一次），否则删除所有与内置同名的旧 agent 目录。
-		// 自定义 agent（非内置 ID）不受影响。
-		const cleanupMarker = joinPath(agentsDir, '.builtin-v3-noseed-migrated');
-		let needsCleanup = false;
+		// ── 持续清理：删除所有与内置同名的用户目录（每次启动都执行）──
 		try {
-			await this.fileService.resolve(cleanupMarker);
-		} catch {
-			needsCleanup = true;
-		}
-
-		if (needsCleanup) {
-			this.logService.info('[AgentStudio] Starting builtin agent no-seed cleanup (v3)...');
-			try {
-				const result = await this.fileService.resolve(agentsDir);
-				const existingDirs = (result.children ?? []).filter(c => c.isDirectory);
-				for (const dir of existingDirs) {
-					if (builtinIds.has(dir.name)) {
-						try {
-							await this.fileService.del(dir.resource, { recursive: true });
-							this.logService.info(`[AgentStudio] Cleanup: removed seeded builtin agent "${dir.name}"`);
-						} catch (err) {
-							this.logService.warn(`[AgentStudio] Cleanup: failed to remove "${dir.name}": ${err}`);
-						}
+			const result = await this.fileService.resolve(agentsDir);
+			const existingDirs = (result.children ?? []).filter(c => c.isDirectory);
+			for (const dir of existingDirs) {
+				if (builtinIds.has(dir.name)) {
+					try {
+						await this.fileService.del(dir.resource, { recursive: true });
+						this.logService.info(`[AgentStudio] Cleanup: removed builtin agent dir "${dir.name}" from user agents dir`);
+					} catch (err) {
+						this.logService.warn(`[AgentStudio] Cleanup: failed to remove "${dir.name}": ${err}`);
 					}
 				}
-			} catch { /* ignore scan errors */ }
-			// 写清理标记（即使部分删除失败也写，避免每次启动重试）
-			try {
-				await this.fileService.writeFile(cleanupMarker, VSBuffer.fromString(new Date().toISOString()));
-			} catch { /* non-fatal */ }
-			this.logService.info('[AgentStudio] Builtin agent no-seed cleanup (v3) complete.');
-		}
+			}
+		} catch { /* ignore scan errors */ }
+
+		// 清理废弃的一次性迁移标记（不再使用 marker 门控）。
+		try { await this.fileService.del(joinPath(agentsDir, '.builtin-v3-noseed-migrated')); } catch { /* non-fatal */ }
 	}
 
 	async updateAgent(id: string, data: Partial<Agent>): Promise<void> {

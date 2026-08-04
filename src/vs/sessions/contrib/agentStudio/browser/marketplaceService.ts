@@ -844,7 +844,23 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			if (!await this.fileService.exists(installedFileUri)) { return; }
 			const content = await this.fileService.readFile(installedFileUri);
 			const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
-			const filtered = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
+		const filtered = entries.filter(e => !(e.kind === kind && e.storeId === storeId));
+		if (filtered.length === entries.length) { return; }
+		await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
+		this._onDidChangeInstalled.fire();
+	} catch { /* ignore */ }
+}
+
+	/** 批量移除残留安装记录（仅更新 installed-packages.json，不删除目录）。 */
+	async removeInstalledRecords(records: ReadonlyArray<{ kind: PackageKind; storeId: string }>): Promise<void> {
+		if (records.length === 0) { return; }
+		const installedFileUri = this.getInstalledFileUri();
+		try {
+			if (!await this.fileService.exists(installedFileUri)) { return; }
+			const content = await this.fileService.readFile(installedFileUri);
+			const entries: IInstalledEntry[] = JSON.parse(content.value.toString());
+			const toRemove = new Set(records.map(r => `${r.kind}:${r.storeId}`));
+			const filtered = entries.filter(e => !toRemove.has(`${e.kind}:${e.storeId}`));
 			if (filtered.length === entries.length) { return; }
 			await this.fileService.writeFile(installedFileUri, VSBuffer.fromString(JSON.stringify(filtered, null, 2)));
 			this._onDidChangeInstalled.fire();

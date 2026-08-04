@@ -331,6 +331,14 @@ const skippedExportMangledProjects = [
 	// Test projects
 	'vscode-api-tests',
 
+	// Test directories (mangling breaks test imports)
+	'/test/',
+	'/tests/',
+	'.test.',
+	'.spec.',
+	'fixtureUtils',
+	'workbenchTestServices',
+
 	// These projects use webpack to dynamically rewrite imports, which messes up our mangling
 	'configuration-editing',
 	'github-authentication',

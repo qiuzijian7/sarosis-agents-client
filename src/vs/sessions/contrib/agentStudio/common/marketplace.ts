@@ -206,6 +206,13 @@ export interface IMarketplaceService {
 	 */
 	getInstalled(): Promise<readonly IInstalledPackageInfo[]>;
 
+	// ── 残留记录清理 ──────────────────────────────────────
+	/**
+	 * 批量移除「已安装」记录（仅更新 installed-packages.json，不删除任何目录）。
+	 * 用于清理本地目录已被外部删除但记录未清理的残留项。
+	 */
+	removeInstalledRecords(records: ReadonlyArray<{ kind: PackageKind; storeId: string }>): Promise<void>;
+
 	// ── 上传发布 ──────────────────────────────────────────
 	/**
 	 * 将本地资源打包发布到商城。localId 为本地资源标识（对应 manifest.id = slug）。
