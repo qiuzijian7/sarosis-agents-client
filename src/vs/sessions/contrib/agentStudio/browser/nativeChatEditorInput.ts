@@ -6,7 +6,6 @@
 import { URI } from '../../../../base/common/uri.js';
 import { EditorInputCapabilities, GroupIdentifier } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { localize } from '../../../../nls.js';
 
 /**
  * Runtime state snapshot for a chat tab.
@@ -75,6 +74,8 @@ export class NativeChatEditorInput extends EditorInput {
 	/**
 	 * Counter for temporarily allowing move operations (popOut/popIn flow).
 	 * Non-zero means canMove() passes. Incremented by beginForceMove().
+	 * Note: canMove() now always returns true; this counter is kept for
+	 * potential future use but is no longer checked.
 	 */
 	private static _forceAllowMove = 0;
 
@@ -274,17 +275,20 @@ export class NativeChatEditorInput extends EditorInput {
 	}
 
 	/**
-	 * Chat tabs are locked to the right-side Agent Editor Part.
-	 * Drag-to-move is disabled; use "New Chat" to open additional chats.
+	 * Chat tabs can be moved freely.
 	 *
-	 * Temporarily bypassed via {@link beginForceMove} / {@link endForceMove}
-	 * for the popOut/popIn flow.
+	 * Note: Originally this method returned a veto message to prevent users from
+	 * dragging chat tabs out of the Agent Editor Part. However, this also blocked
+	 * VS Code's auxiliary window close flow (onBeforeUnload → canMove validation),
+	 * making popped-out chat windows impossible to close.
+	 *
+	 * Since the main window's IEditorGroupsService cannot access auxiliary window
+	 * groups (each window has its own service instance), we cannot reliably detect
+	 * the window-close scenario. Therefore we always allow moves and rely on other
+	 * mechanisms (e.g., UI cues) to guide users.
 	 */
 	override canMove(_sourceGroup: GroupIdentifier, _targetGroup: GroupIdentifier): true | string {
-		if (NativeChatEditorInput._forceAllowMove > 0) {
-			return true;
-		}
-		return localize('nativeChat.cannotMove', "Agent chat tabs must stay in the right-side panel. Use 'New Chat' to open additional chats.");
+		return true;
 	}
 
 	/**

@@ -1756,6 +1756,14 @@ registerAction2(class extends Action2 {
 				for (const editor of chatEditors) {
 					const gi = editorToGroupIndex.get(editor) ?? 0;
 					const target = targetGroups[Math.min(gi, targetGroups.length - 1)];
+					const chatId = (editor as NativeChatEditorInput).chatId;
+
+					// 检查 target group 是否已有相同 editor（防止重复创建）
+					const alreadyInTarget = target.editors.some(e => editor.matches(e));
+					if (alreadyInTarget) {
+						continue;
+					}
+
 					// 找到 editor 当前所在的 group（aux window 或已被 VS Code 自动 move back）
 					let sourceGroup: IEditorGroup | undefined;
 					for (const part of editorGroupsService.parts) {
@@ -1770,14 +1778,37 @@ registerAction2(class extends Action2 {
 					if (sourceGroup && sourceGroup !== target) {
 						sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], target);
 					} else if (!sourceGroup) {
-						// aux 已销毁 editor 实例 — fallback 用快照 create 新实例（内容会丢失）
+						// aux 已销毁 editor 实例 — VS Code 已通过 onBeforeUnload 自动移回 editor
+						// 但自动移回可能尚未完成，延迟检查后再决定是否创建新实例
+						const chatIdToCheck = chatId;
+						const targetGroupToCheck = target;
 						const snap = movedEditors.find(s => s.chatId === (editor as any).chatId);
-						if (snap) {
-							const input = NativeChatEditorInput.create(
-								snap.chatId, snap.agentId, snap.sessionId, snap.name,
-							);
-							target.openEditor(input, { pinned: true });
-						}
+						setTimeout(() => {
+							// 检查所有 groups 是否已有相同 chatId 的 editor（VS Code 自动移回的结果）
+							let existingEditor: NativeChatEditorInput | undefined;
+							for (const part of editorGroupsService.parts) {
+								for (const g of part.groups) {
+									for (const e of g.editors) {
+										if (e instanceof NativeChatEditorInput && e.chatId === chatIdToCheck) {
+											existingEditor = e;
+											break;
+										}
+									}
+									if (existingEditor) { break; }
+								}
+								if (existingEditor) { break; }
+							}
+							if (existingEditor) {
+								return;
+							}
+							// 真正找不到 editor — fallback 用快照 create 新实例（内容会丢失）
+							if (snap) {
+								const input = NativeChatEditorInput.create(
+									snap.chatId, snap.agentId, snap.sessionId, snap.name,
+								);
+								targetGroupToCheck.openEditor(input, { pinned: true });
+							}
+						}, 100); // 延迟 100ms 让 VS Code 自动移回完成
 					}
 				}
 
@@ -1830,8 +1861,14 @@ registerAction2(class extends Action2 {
 		const input = NativeChatEditorInput.create();
 		// 每个新聊天默认开在独立的 group 中——仅当用户手动拖拽时，
 		// 才允许同一 group 下存在多个聊天 tab。
-		const newGroup = agentPart.addGroup(agentPart.activeGroup, 3 /* GroupDirection.RIGHT */);
-		newGroup.openEditor(input, { pinned: true }).then(() => {
+		// 修复：全部页签关闭后活动 group 为空时，复用空 group，
+		// 避免拆出「空 group + 聊天 group」两个分栏。
+		const active = agentPart.activeGroup;
+		const targetGroup = active.editors.length === 0
+			? active
+			: (agentPart.groups.find(g => g.editors.length === 0)
+				?? agentPart.addGroup(active, 3 /* GroupDirection.RIGHT */));
+		targetGroup.openEditor(input, { pinned: true }).then(() => {
 			// Chat editor opened successfully in agent part
 		}).catch((err: any) => {
 			logService.error('[newChatInEditor] failed to open editor:', err);

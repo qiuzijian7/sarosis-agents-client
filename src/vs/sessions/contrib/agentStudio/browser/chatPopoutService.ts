@@ -80,18 +80,20 @@ export class ChatPopoutService extends Disposable {
 
 			// Temporarily allow move (canMove() is normally locked to prevent
 			// users from dragging chat tabs out of the Agent Editor Part).
+			// IMPORTANT: We do NOT call endForceMove() here — we keep _forceAllowMove > 0
+			// for the entire lifetime of the auxiliary window. This is needed because
+			// VS Code's auxiliaryEditorPart.onBeforeUnload calls canMove() on every
+			// editor when the window is closing, and we must allow that move so the
+			// window can close cleanly. The balance is restored in onWillDispose below.
 			NativeChatEditorInput.beginForceMove();
-			try {
-				// Move each editor from its original group to the aux window
-				for (const editor of chatEditors) {
-					const sourceGroupId = editorToGroupId.get(editor)!;
-					const sourceGroup = this._editorGroupsService.getGroup(sourceGroupId);
-					if (sourceGroup) {
-						sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], auxGroup);
-					}
+
+			// Move each editor from its original group to the aux window
+			for (const editor of chatEditors) {
+				const sourceGroupId = editorToGroupId.get(editor)!;
+				const sourceGroup = this._editorGroupsService.getGroup(sourceGroupId);
+				if (sourceGroup) {
+					sourceGroup.moveEditors([{ editor, options: { preserveFocus: false } as any }], auxGroup);
 				}
-			} finally {
-				NativeChatEditorInput.endForceMove();
 			}
 
 			// Hide the Agent editor (right column)
@@ -106,9 +108,14 @@ export class ChatPopoutService extends Disposable {
 			// Build snapshot for restoration
 			const snapshots = this._collectSnapshots(chatEditors);
 
-			// Register restoration callback for when aux window closes
+			// Register restoration callback for when aux window closes.
+			// This is where we restore the forceAllowMove balance.
 			auxPart.onWillDispose(() => {
-				this.popIn(snapshots, groupIdsWithChat.length);
+				try {
+					this.popIn(snapshots, groupIdsWithChat.length);
+				} finally {
+					NativeChatEditorInput.endForceMove();
+				}
 			});
 
 			return true;

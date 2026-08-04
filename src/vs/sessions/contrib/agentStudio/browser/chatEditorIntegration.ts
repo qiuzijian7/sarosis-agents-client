@@ -10,8 +10,11 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IEditorGroupsService, GroupsOrder } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
+import { IEditorPane, IUntypedEditorInput } from '../../../../workbench/common/editor.js';
+import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { IEditorGroupView } from '../../../../workbench/browser/parts/editor/editor.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { HtmlPreviewEditorInput } from './htmlPreviewEditorInput.js';
@@ -48,6 +51,40 @@ export class ChatEditorIntegration extends Disposable {
 		return this._host as IChatEditorIntegrationHost;
 	}
 
+	// ─── 中间栏编辑器实例路由 ──────────────────────────────────────────
+	/**
+	 * 聊天框内所有「非聊天面板」的编辑器打开请求，强制落到中间栏（mainPart）编辑器组，
+	 * 禁止落到右侧 agentPart（聊天区）的编辑器组覆盖聊天面板。
+	 * sessions 布局下 mainPart = 中间栏主编辑器，agentPart = 右侧聊天区。
+	 */
+	private get _mainColumnGroup(): IEditorGroupView | undefined {
+		const parts = this._editorGroupsService as unknown as { mainPart?: { activeGroup?: IEditorGroupView } };
+		return parts.mainPart?.activeGroup;
+	}
+
+	private _openInMainColumn(input: EditorInput | IUntypedEditorInput, options?: IEditorOptions): Promise<IEditorPane | undefined> {
+		const group = this._mainColumnGroup;
+		if (group) {
+			if (input instanceof EditorInput) {
+				return this._editorService.openEditor(input, options, group);
+			}
+			// 描述符：group 为第 2 参数，options 内联进 descriptor
+			const descriptor = input as IUntypedEditorInput;
+			return this._editorService.openEditor(
+				{ ...descriptor, options: { ...(descriptor.options ?? {}), ...(options ?? {}) } } as IUntypedEditorInput,
+				group,
+			);
+		}
+		// 兜底：理论不会发生（mainPart 恒有组），退回默认 activeGroup
+		if (input instanceof EditorInput) {
+			return this._editorService.openEditor(input, options);
+		}
+		const descriptor = input as IUntypedEditorInput;
+		return this._editorService.openEditor(
+			{ ...descriptor, options: { ...(descriptor.options ?? {}), ...(options ?? {}) } } as IUntypedEditorInput,
+		);
+	}
+
 	// ─── Apply code (diff editor / HTML preview) ──────────────────────────
 
 	/**
@@ -63,10 +100,10 @@ export class ChatEditorIntegration extends Disposable {
 					resource = URI.file(filePath);
 				} else {
 					const folders = this._workspaceContextService.getWorkspace().folders;
-					if (folders.length === 0) {
-						await this._editorService.openEditor({ resource: undefined, contents: code, options: { pinned: true } });
-						return;
-					}
+				if (folders.length === 0) {
+					await this._openInMainColumn({ resource: undefined, contents: code }, { pinned: true });
+					return;
+				}
 					resource = URI.joinPath(folders[0].uri, filePath);
 				}
 
@@ -74,12 +111,10 @@ export class ChatEditorIntegration extends Disposable {
 				if (this._isHtmlFile(filePath)) {
 					this._logService.info(`[ChatEditorIntegration] HTML file detected — writing + opening via HtmlPreviewEditorInput`, filePath);
 					await this._fileService.writeFile(resource, VSBuffer.fromString(code));
-					const groups = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
-					const targetGroup = groups[0];
 					const fileName = filePath.split(/[\\/]/).pop() || filePath;
 					const previewInput = new HtmlPreviewEditorInput(resource, `预览：${fileName}`);
 					try {
-						const pane = await this._editorService.openEditor(previewInput, { pinned: true }, targetGroup);
+						const pane = await this._openInMainColumn(previewInput, { pinned: true });
 						this._logService.info(`[ChatEditorIntegration] openEditor returned, pane=${pane?.getId() ?? 'undefined'}`);
 					} catch (err) {
 						this._logService.error(`[ChatEditorIntegration] openEditor threw`, err);
@@ -106,29 +141,25 @@ export class ChatEditorIntegration extends Disposable {
 				const fileName = filePath.split(/[\\/]/).pop() || filePath;
 				const existingModel = this._modelService.getModel(resource);
 				const langId = _language || existingModel?.getLanguageId() || undefined;
-				await this._editorService.openEditor({
+				await this._openInMainColumn({
 					original: { resource },
 					modified: { resource: undefined, contents: code, languageId: langId },
 					label: `Apply: ${fileName}`,
 					description: '保存右侧编辑器以接受变更',
-					options: { pinned: true },
-				} as any);
+				} as unknown as IUntypedEditorInput, { pinned: true });
 			} else {
 				// No filePath: chat code-block Apply (code + lang only).
 				if (this._isHtmlLang(_language)) {
 					const virtualUri = URI.from({ scheme: 'saros-html-preview', path: `/chat-apply/${Date.now()}.html` });
 					const previewInput = new HtmlPreviewEditorInput(virtualUri, '预览：Apply HTML', undefined, undefined, undefined, undefined, code);
-					const groups = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE);
-					const targetGroup = groups[0];
 					this._logService.info(`[ChatEditorIntegration] HTML block Apply (no file) — opening in-memory HtmlPreviewEditorInput`);
-					await this._editorService.openEditor(previewInput, { pinned: true }, targetGroup);
+					await this._openInMainColumn(previewInput, { pinned: true });
 					return;
 				}
-				await this._editorService.openEditor({
+				await this._openInMainColumn({
 					resource: undefined,
 					contents: code,
-					options: { pinned: true },
-				});
+				}, { pinned: true });
 			}
 		} catch (err) {
 			this._logService.error('[ChatEditorIntegration] handleApplyCode failed:', err);
@@ -180,20 +211,18 @@ export class ChatEditorIntegration extends Disposable {
 			}
 
 			const resource = URI.file(absPath);
-			const groups = this._editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
-			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
 
 			const selection = lineNumber && lineNumber > 0
 				? { startLineNumber: lineNumber, startColumn: 1, endLineNumber: lineNumber, endColumn: 1 }
 				: undefined;
 
-			await this._editorService.openEditor({
+			await this._openInMainColumn({
 				resource,
 				options: {
 					pinned: false,
 					...(selection ? { selection } : {}),
 				},
-			}, targetGroup);
+			});
 		} catch (err) {
 			this._logService.error('[ChatEditorIntegration] _openFileInEditor failed:', err);
 		}

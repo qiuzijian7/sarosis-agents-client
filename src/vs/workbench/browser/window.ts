@@ -9,7 +9,7 @@ import { DomEmitter } from '../../base/browser/event.js';
 import { HidDeviceData, requestHidDevice, requestSerialPort, requestUsbDevice, SerialPortData, UsbDeviceData } from '../../base/browser/deviceAccess.js';
 import { timeout } from '../../base/common/async.js';
 import { Event } from '../../base/common/event.js';
-import { Disposable, IDisposable, dispose, toDisposable } from '../../base/common/lifecycle.js';
+import { Disposable, IDisposable, dispose, markAsDisposed, toDisposable } from '../../base/common/lifecycle.js';
 import { matchesScheme, Schemas } from '../../base/common/network.js';
 import { isIOS, isMacintosh } from '../../base/common/platform.js';
 import Severity from '../../base/common/severity.js';
@@ -158,6 +158,9 @@ export abstract class BaseWindow extends Disposable {
 					timeoutDisposables.delete(timeoutDisposable);
 					// Remove from the window's DisposableStore without re-disposing (we're already inside dispose)
 					disposables.deleteAndLeak(timeoutDisposable);
+					// deleteAndLeak re-parents to null, which re-registers this (already spent) disposable
+					// with the GC-based leak tracker. Mark it disposed so it isn't falsely reported as leaked.
+					markAsDisposed(timeoutDisposable);
 				});
 
 				disposables.add(timeoutDisposable);

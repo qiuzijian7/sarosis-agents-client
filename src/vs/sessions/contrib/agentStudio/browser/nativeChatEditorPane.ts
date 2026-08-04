@@ -8,9 +8,10 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
-import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
+import { IEditorOpenContext, IEditorPane, IUntypedEditorInput } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IEditorGroup, IEditorGroupsService, GroupsOrder } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroupView } from '../../../../workbench/browser/parts/editor/editor.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -52,7 +53,7 @@ import { IWorkflowExecutionService } from '../common/workflowExecutionService.js
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
-import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
+import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import type { AgentStatus as AgentChatAgentStatus, IProviderInfo as IPanelProviderInfo, IModelInfo as IPanelModelInfo, IAgentSessionMeta, IAgentChatMessage, IContextUsage, IChatAttachment } from '../../../browser/agentChat/agentChatTypes.js';
 import { adaptPersistedChatMessage } from '../../../browser/agentChat/agentChatTypes.js';
 import type { ChatMessage } from '../../../common/agentStudioTypes.js';
@@ -253,8 +254,66 @@ export class NativeChatEditorPane extends EditorPane {
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IBridgeService private readonly _bridgeService: IBridgeService,
 		@IViewsService private readonly _viewsService: IViewsService,
+		@IOpenerService private readonly _openerService: IOpenerService,
 	) {
 		super(NativeChatEditorPane.ID, group, telemetryService, themeService, _storageService);
+	}
+
+	// ─── 外部 http(s) 链接：系统浏览器打开 ─────────────────────────────
+	/**
+	 * 把外部 http(s) 链接交给系统浏览器打开，而不是内嵌到中间栏预览。
+	 * 内嵌第三方页面会因 CSP(frame-ancestors) / 沙箱 / WAF 反爬等机制
+	 * 在控制台抛出大量与产品无关的噪音，故改为系统浏览器。
+	 */
+	private _openExternalInSystemBrowser(rawUrl: string): void {
+		let uri: URI;
+		try {
+			uri = URI.parse(rawUrl);
+		} catch {
+			uri = URI.from({ scheme: 'https', path: rawUrl });
+		}
+		if (uri.scheme !== 'http' && uri.scheme !== 'https') {
+			// 仅外部 http(s) 链接走系统浏览器，其余（如相对路径）忽略
+			return;
+		}
+		void this._openerService.open(uri, { openExternal: true }).then(
+			() => {},
+			(err) => this._logService.error('[NativeChatEditorPane] openExternalInSystemBrowser failed:', err),
+		);
+	}
+
+	// ─── 中间栏编辑器实例路由 ──────────────────────────────────────────
+	/**
+	 * 聊天框内所有「非聊天面板」的编辑器打开请求，强制落到中间栏（mainPart）编辑器组，
+	 * 禁止落到右侧 agentPart（聊天区）的编辑器组覆盖聊天面板。
+	 * sessions 布局下 mainPart = 中间栏主编辑器，agentPart = 右侧聊天区。
+	 */
+	private get _mainColumnGroup(): IEditorGroupView | undefined {
+		const parts = this._editorGroupsService as unknown as { mainPart?: { activeGroup?: IEditorGroupView } };
+		return parts.mainPart?.activeGroup;
+	}
+
+	private _openInMainColumn(input: EditorInput | IUntypedEditorInput, options?: IEditorOptions): Promise<IEditorPane | undefined> {
+		const group = this._mainColumnGroup;
+		if (group) {
+			if (input instanceof EditorInput) {
+				return this._editorService.openEditor(input, options, group);
+			}
+			// 描述符：group 为第 2 参数，options 内联进 descriptor
+			const descriptor = input as IUntypedEditorInput;
+			return this._editorService.openEditor(
+				{ ...descriptor, options: { ...(descriptor.options ?? {}), ...(options ?? {}) } } as IUntypedEditorInput,
+				group,
+			);
+		}
+		// 兜底：理论不会发生（mainPart 恒有组），退回默认 activeGroup
+		if (input instanceof EditorInput) {
+			return this._editorService.openEditor(input, options);
+		}
+		const descriptor = input as IUntypedEditorInput;
+		return this._editorService.openEditor(
+			{ ...descriptor, options: { ...(descriptor.options ?? {}), ...(options ?? {}) } } as IUntypedEditorInput,
+		);
 	}
 
 	protected createEditor(parent: HTMLElement): void {
@@ -550,7 +609,7 @@ export class NativeChatEditorPane extends EditorPane {
 						return;
 					}
 					const input = new AgentSettingsEditorInput(agent.id, agent.name);
-					await this._editorService.openEditor(input, { pinned: true });
+					await this._openInMainColumn(input, { pinned: true });
 				} catch (err) {
 					this._logService.error('[NativeChatEditorPane] onOpenSettings failed:', err);
 				}
@@ -662,10 +721,8 @@ export class NativeChatEditorPane extends EditorPane {
 							this._logService.info(`[NativeChatEditorPane] Created default config.html for agent ${agentId}`);
 						}
 
-						// 在中心（中间栏）的文本编辑器中打开 config.html
-						// GroupsOrder.GRID_APPEARANCE[0] 对应中间栏主编辑器组
-						const centerGroup = this._editorGroupsService.getGroups(GroupsOrder.GRID_APPEARANCE)[0];
-						await this._editorService.openEditor({ resource: configHtmlUri }, centerGroup);
+					// 在中间栏（mainPart）文本编辑器中打开 config.html
+					await this._openInMainColumn({ resource: configHtmlUri });
 						this._logService.info(`[NativeChatEditorPane] Opened config.html for agent ${agentId} in center editor group`);
 					} catch (err) {
 						this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview failed:', err);
@@ -1015,12 +1072,9 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 			},
 			onReferenceClick: (ref: { kind: string; uri?: string; name: string; range?: { startLine: number } }) => {
-				// Open file references in the editor, URL references in the URL preview.
+				// Open file references in the editor, URL references in the system browser.
 				if (ref?.kind === 'url' && ref.uri) {
-					const input = UrlPreviewEditorInput.getOrCreate(ref.uri);
-					this._editorService.openEditor(input, { pinned: true }).catch(err => {
-						this._logService.error('[NativeChatEditorPane] onReferenceClick: failed to open URL:', err);
-					});
+					this._openExternalInSystemBrowser(ref.uri);
 				} else if (ref?.kind === 'file' || ref?.kind === 'code' || ref?.kind === 'symbol') {
 					const filePath = ref.uri || ref.name;
 					if (filePath) {
@@ -1048,8 +1102,8 @@ export class NativeChatEditorPane extends EditorPane {
 			},
 			onOpenFile: (filePath: string, contentOrLine?: string | number) => {
 				if (typeof contentOrLine === 'string') {
-					// 纯内容附件（如 Console Logs）— 在 untitled 编辑器中显示
-					this._editorService.openEditor({
+					// 纯内容附件（如 Console Logs）— 在中间栏 untitled 编辑器中显示
+					this._openInMainColumn({
 						resource: URI.from({ scheme: 'untitled', path: filePath }),
 						contents: contentOrLine,
 					}).catch(err => {
@@ -1088,11 +1142,9 @@ export class NativeChatEditorPane extends EditorPane {
 				void this._editorIntegration?.addEditorSelectionToChat();
 			},
 			onOpenLink: (url: string) => {
-				// 其他 http(s) 链接在编辑器区域（webview iframe）中打开
-				const input = UrlPreviewEditorInput.getOrCreate(url);
-				this._editorService.openEditor(input, { pinned: true }).catch(err => {
-					this._logService.error('[NativeChatEditorPane] onOpenLink: failed to open URL preview:', err);
-				});
+				// 外部 http(s) 链接 → 在系统浏览器中打开（不再内嵌中间栏预览，
+				// 避免第三方站点的 CSP(frame-ancestors)/沙箱/WAF 反爬噪音）
+				this._openExternalInSystemBrowser(url);
 			},
 			/** 收藏 LLM 消息到知识库，自动归类 */
 			onFavoriteMessage: (messageContent: string) => {
@@ -1182,7 +1234,7 @@ export class NativeChatEditorPane extends EditorPane {
 		// 设置系统消息面板的详情回调
 		this._chatPanel?.setOpenCompressionDetailCallback((data) => {
 			const input = CompressionDetailEditorInput.getOrCreate(data as any);
-			this._editorService.openEditor(input, { pinned: true }).catch(err => {
+			this._openInMainColumn(input, { pinned: true }).catch(err => {
 				this._logService.error('[NativeChatEditorPane] Failed to open compression detail:', err);
 			});
 		});
@@ -1191,7 +1243,7 @@ export class NativeChatEditorPane extends EditorPane {
 			input.targetMemoryId = null;
 			input.targetLayer = memoryType ?? null;
 			input.fromAgentChat = true; // 标记从聊天框跳转，仅显示当前 agent 数据
-			this._editorService.openEditor(input, { pinned: true }).then(() => {
+			this._openInMainColumn(input, { pinned: true }).then(() => {
 				const pane = this._editorService.activeEditorPane;
 				if (pane instanceof MemoryDetailEditorPane) {
 					// 技能沉淀消息点击：跳转到技能页签
@@ -1208,7 +1260,7 @@ export class NativeChatEditorPane extends EditorPane {
 		});
 		this._chatPanel?.setOpenCodebaseDetailCallback(() => {
 			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
-			this._editorService.openEditor(input, { pinned: true }).catch(err => {
+			this._openInMainColumn(input, { pinned: true }).catch(err => {
 				this._logService.error('[NativeChatEditorPane] Failed to open codebase memory detail:', err);
 			});
 		});

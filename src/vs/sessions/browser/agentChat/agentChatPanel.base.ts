@@ -1533,7 +1533,7 @@ focusInput(): void {
 		this._textarea?.focus();
 	}
 
-protected _render(): void {
+	protected _render(): void {
 		// Close all floating dropdowns before re-render
 		this._closeAllDropdowns();
 		// P3: 清理所有 markdown disposables 防止内存泄漏——clearNode 只移除 DOM，

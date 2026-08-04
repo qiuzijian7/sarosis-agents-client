@@ -116,6 +116,13 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 	}
 
 	/**
+	 * 是否在标题栏显示「反馈 / Toggle Panel / Toggle Sidebar」按钮。
+	 * 主窗口显示；popout 独立窗口（AuxiliaryTitlebarPart）隐藏——
+	 * 这些按钮只作用于主窗口布局，在独立窗口中无意义。
+	 */
+	protected get _showTitlebarToggles(): boolean { return true; }
+
+	/**
 	 * Handle feedback button click.
 	 * Subclasses (e.g., NativeTitlebarPart) may override to use native OS APIs
 	 * for opening the logs folder in the OS file explorer.
@@ -210,9 +217,10 @@ export class TitlebarPart extends Part implements ITitlebarPart {
 					$('div.window-controls-container')
 				);
 
-				// ── 伸缩按钮：折叠右侧栏（弹出按钮已移至 Chat Editor 标题栏右侧，
-				// 通过 MenuId.EditorTitle 在 chat editor 激活时自动渲染） ──
-			if (primaryWindowControlsLocation === 'right') {
+			// ── 伸缩按钮：折叠右侧栏（弹出按钮已移至 Chat Editor 标题栏右侧，
+			// 通过 MenuId.EditorTitle 在 chat editor 激活时自动渲染） ──
+			// popout 独立窗口（AuxiliaryTitlebarPart）不显示反馈/Panel/Sidebar 切换按钮
+		if (primaryWindowControlsLocation === 'right' && this._showTitlebarToggles) {
 				const toggleContainer = append(this.rightContent, $('div.titlebar-toggle-container'));
 				toggleContainer.id = 'agent-studio-titlebar-toggle-container';
 
@@ -424,6 +432,9 @@ export class AuxiliaryTitlebarPart extends TitlebarPart implements IAuxiliaryTit
 	override get preventZoom(): boolean {
 		return getZoomFactor(getWindow(this.element)) < 1 || !this.mainTitlebar.hasZoomableElements;
 	}
+
+	/** popout 独立窗口：隐藏标题栏的反馈 / Toggle Panel / Toggle Sidebar 按钮（只作用于主窗口布局） */
+	protected override get _showTitlebarToggles(): boolean { return false; }
 }
 
 /**

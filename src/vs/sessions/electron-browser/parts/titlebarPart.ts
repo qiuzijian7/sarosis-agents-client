@@ -183,6 +183,9 @@ class AuxiliaryNativeTitlebarPart extends NativeTitlebarPart implements IAuxilia
 	override get preventZoom(): boolean {
 		return getZoomFactor(getWindow(this.element)) < 1 || !this.mainTitlebar.hasZoomableElements;
 	}
+
+	/** popout 独立窗口：隐藏标题栏的反馈 / Toggle Panel / Toggle Sidebar 按钮（只作用于主窗口布局） */
+	protected override get _showTitlebarToggles(): boolean { return false; }
 }
 
 export class NativeTitleService extends TitleService {

@@ -775,8 +775,14 @@ export class PresetAgentViewPane extends ViewPane {
 				// 找到 agent part，创建新 group 确保新聊天开在独立 group 中
 				const agentPart = (this.editorGroupsService as any).agentPart;
 				if (agentPart?.activeGroup) {
-					const newGroup = agentPart.addGroup(agentPart.activeGroup, 3 /* GroupDirection.RIGHT */);
-					await newGroup.openEditor(input, { pinned: true });
+					// 修复：全部页签关闭后活动 group 为空时，复用空 group，
+					// 避免拆出「空 group + 聊天 group」两个分栏。
+					const active = agentPart.activeGroup;
+					const targetGroup = active.editors.length === 0
+						? active
+						: (agentPart.groups.find((g: { editors: readonly unknown[] }) => g.editors.length === 0)
+							?? agentPart.addGroup(active, 3 /* GroupDirection.RIGHT */));
+					await targetGroup.openEditor(input, { pinned: true });
 				} else {
 					await this.editorService.openEditor(input, { pinned: true });
 				}

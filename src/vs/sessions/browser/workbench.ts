@@ -1138,8 +1138,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 			const part = (this.editorGroupService as SessionsEditorParts).agentPart;
 			if (!part?.activeGroup) { return; }
 			const input = NativeChatEditorInput.create();
-			const newGroup = part.addGroup(part.activeGroup, 3 /* GroupDirection.RIGHT */);
-			newGroup.openEditor(input, { pinned: true }).catch(() => { /* 创建失败静默忽略 */ });
+			// 修复：全部页签关闭后活动 group 为空时，复用空 group，
+			// 避免拆出「空 group + 聊天 group」两个分栏。
+			const active = part.activeGroup;
+			const targetGroup = active.editors.length === 0
+				? active
+				: (part.groups.find(g => g.editors.length === 0)
+					?? part.addGroup(active, 3 /* GroupDirection.RIGHT */));
+			targetGroup.openEditor(input, { pinned: true }).catch(() => { /* 创建失败静默忽略 */ });
 		}, true /* useCapture: 先于 multiEditorTabsControl 内部监听器触发 */));
 	}
 
@@ -1732,6 +1738,19 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		const visDefaults = this.layoutPolicy.getPartVisibilityDefaults();
 		this.partVisibility.sidebar = visDefaults.sidebar;
 		this.partVisibility.editor = true; // Editor is always visible in this layout
+
+		// [Sarosis] Inject cross-zone drag-block guard so Agent Studio
+		// editors (chat, agent, etc.) cannot be dragged into the main
+		// file zone and vice-versa.  Used by editorDropTarget.ts and
+		// multiEditorTabsControl.ts via globalThis.
+		(globalThis as any).__sarosCrossZoneDragBlocked__ = (sourceGroupId: number, targetGroupId: number): boolean => {
+			if (sourceGroupId === targetGroupId) {
+				return false;
+			}
+			const sourceIsAgent = AgentStudioEditorInput.isAgentStudioGroup(sourceGroupId, this.editorGroupService);
+			const targetIsAgent = AgentStudioEditorInput.isAgentStudioGroup(targetGroupId, this.editorGroupService);
+			return sourceIsAgent !== targetIsAgent;
+		};
 	}
 
 	private registerLayoutListeners(): void {

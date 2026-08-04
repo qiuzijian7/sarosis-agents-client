@@ -165,14 +165,14 @@ export class AgentStudioEditorInput extends EditorInput {
 
 	/**
 	 * Check whether a given editor group contains at least one
-	 * Agent Studio editor. Used by drag-drop guards to identify
-	 * the right-side Agent Studio zone.
+	 * Agent Studio editor (including native-chat editors). Used by
+	 * drag-drop guards to identify the right-side Agent Studio zone.
 	 */
 	static isAgentStudioGroup(groupId: GroupIdentifier, editorGroupsService?: IEditorGroupsService): boolean {
 		if (editorGroupsService) {
 			const group = editorGroupsService.getGroup(groupId);
 			if (group) {
-				return group.editors.some(e => e instanceof AgentStudioEditorInput);
+				return group.editors.some(e => e instanceof AgentStudioEditorInput || e.resource?.scheme === 'native-chat');
 			}
 		}
 		return false;
