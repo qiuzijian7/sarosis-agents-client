@@ -637,6 +637,15 @@ export interface IAgentChatService {
 	clearHistory(agentId: string, sessionId?: string): Promise<void>;
 	cancelStream(agentId: string, agentSessionId?: string): void;
 
+	/**
+	 * 尝试获取会话跨实例锁（多开 --instance 同会话双开只读）。
+	 * acquired=false 表示另一实例正在编辑（含持锁实例 ID）；锁过期自动接管。
+	 */
+	tryAcquireSessionLock(agentId: string, sessionId: string): Promise<{ acquired: boolean; holderInstanceId?: string }>;
+
+	/** 释放当前持有的会话锁（仅删自己的锁）。 */
+	releaseSessionLock(): Promise<void>;
+
 	/** Append a message to the chat history for an agent and persist. */
 	appendMessage(agentId: string, message: ChatMessage): Promise<void>;
 

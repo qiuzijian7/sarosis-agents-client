@@ -104,6 +104,11 @@ export class NativeChatEditorPane extends EditorPane {
 	private _currentSessionId: string | null = null;
 	private _currentChatOnly: boolean = false;
 	private _currentWorkspaceId: string | null = null;
+	/**
+	 * 会话只读（多开 --instance）：当前会话锁被另一实例持有时为 true，
+	 * _sendMessageInternal 拦截发送并提示，防止双写覆盖聊天历史。
+	 */
+	private _sessionReadOnly = false;
 
 	// ─── Per-agent input area state persistence keys ─────────────────────────
 	// Store chatMode / provider / model / composerText per agent so switching
@@ -434,6 +439,15 @@ export class NativeChatEditorPane extends EditorPane {
 				// 注：防重入逻辑已下移到 AgentChatPanel._handleSendMessage（流式时入队，非流式时直接发送）
 				// 此处不再拦截，让 Panel 的队列机制处理并发发送。
 				try {
+					// 会话只读（多开同会话双开）：锁被另一实例持有时拦截发送
+					if (this._sessionReadOnly) {
+						this._notificationService.notify({
+							severity: Severity.Warning,
+							message: '该会话正在另一个实例中编辑，当前窗口为只读。请切换到该实例操作，或在此窗口新建会话。',
+						});
+						this._logService.warn('[NativeChatEditorPane] onSendMessage blocked: session locked by another instance (read-only)');
+						return;
+					}
 					// Converge the multi-layer session id: always resolve a concrete
 					// agent + session before sending so the stream never falls into the
 					// "noSession bucket" (the historical cross-talk root cause).
@@ -741,6 +755,7 @@ export class NativeChatEditorPane extends EditorPane {
 				this._saveComposerDraft();
 				const session = await this._chatService.createAgentSession(this._currentAgentId, `Session ${new Date().toLocaleString()}`);
 				this._currentSessionId = session.id;
+				void this._updateSessionLock();
 					this._logService.debug(`[NativeChatEditorPane] onNewSession: created session ${session.id}`);
 					// 持久化 session 到 input（拖拽到新 group 时恢复用），标题格式: agentName (sessionName)
 					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
@@ -772,6 +787,7 @@ export class NativeChatEditorPane extends EditorPane {
 				// 保存旧 session 草稿 → 切换 → 恢复目标 session 草稿
 				this._saveComposerDraft();
 				this._currentSessionId = sessionId;
+				void this._updateSessionLock();
 				this._logService.debug(`[NativeChatEditorPane] onOpenSession: switched to session ${sessionId}`);
 					// 查找 session name 以正确格式化 Tab 标题: agentName (sessionName)
 					let sessionName: string | undefined;
@@ -825,6 +841,7 @@ export class NativeChatEditorPane extends EditorPane {
 						const sessions = await this._chatService.listAgentSessions(agentId);
 						if (sessions.length > 0) {
 							this._currentSessionId = sessions[0].id;
+							void this._updateSessionLock();
 							if (this.input instanceof NativeChatEditorInput) {
 								this.input.setAgentInfo(this.input.name, agentId, sessions[0].id);
 							}
@@ -865,6 +882,7 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.debug(`[NativeChatEditorPane] onForkSession: forked ${sessionId} → ${meta.id} ("${meta.name}")`);
 					// 切换到新分叉出的独立会话（丢弃外部 provider 线程，可安全发散）
 					this._currentSessionId = meta.id;
+					void this._updateSessionLock();
 					if (this.input instanceof NativeChatEditorInput && this._currentAgentId) {
 						this.input.setAgentInfo(this.input.name, agentId, meta.id);
 					}
@@ -3690,8 +3708,36 @@ override dispose(): void {
 		this._composerDraftTimer = null;
 		this._saveComposerDraft();
 	}
+	// 释放会话锁（多开）：窗口关闭后另一实例可接管编辑
+	void this._chatService.releaseSessionLock().catch(() => { /* ignore */ });
 	this._chatPanel = undefined;
 	this._isInitialized = false;
 	super.dispose();
+}
+
+/**
+ * 为当前 agent/session 获取会话锁（多开 --instance 同会话双开只读）。
+ * 锁被另一实例持有时标记 _sessionReadOnly=true（发送被拦截）并提示一次；
+ * 否则恢复可写。在每次会话激活（打开/新建/切换/删除切换/fork）后调用。
+ */
+private async _updateSessionLock(): Promise<void> {
+	const agentId = this._currentAgentId;
+	const sessionId = this._currentSessionId;
+	if (!agentId || !sessionId) {
+		this._sessionReadOnly = false;
+		await this._chatService.releaseSessionLock().catch(() => { /* ignore */ });
+		return;
+	}
+	const res = await this._chatService.tryAcquireSessionLock(agentId, sessionId);
+	if (!res.acquired) {
+		this._sessionReadOnly = true;
+		this._notificationService.notify({
+			severity: Severity.Warning,
+			message: `会话正在另一个实例${res.holderInstanceId ? `（实例 ${res.holderInstanceId}）` : ''}中编辑，当前窗口为只读。`,
+		});
+		this._logService.warn(`[NativeChatEditorPane] session ${sessionId} locked by instance ${res.holderInstanceId ?? '?'} → read-only`);
+	} else if (this._sessionReadOnly) {
+		this._sessionReadOnly = false;
+	}
 }
 }

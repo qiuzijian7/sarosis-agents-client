@@ -160,28 +160,53 @@ stages:
               Pop-Location
 
               # ===== 7. ripgrep download =====
-              # Priority: npmmirror CDN → GitHub postinstall → build/ copy → skip
+              # Priority: npmmirror CDN(zip) → GitHub postinstall → build/ copy → vendored → HARD FAIL
+              # 必须在 Step 6（vscode-win32-x64 生成 asar/暂存）之前完成，否则 rg 进不了包。
               $mainRg = "node_modules\@vscode\ripgrep\bin\rg.exe"
               $buildRg = "build\node_modules\@vscode\ripgrep\bin\rg.exe"
               if (-not (Test-Path $mainRg)) {
-                # Try npmmirror CDN first (no GitHub dependency)
-                $rgVersion = "13.0.0-10"  # @vscode/ripgrep semver
-                $rgUrl = "https://registry.npmmirror.com/-/binary/ripgrep/v$rgVersion/x86_64-pc-windows-msvc/rg.exe"
-                Write-Host "[RG] Trying npmmirror CDN: $rgUrl"
-                try {
-                  $rgDir = Split-Path $mainRg
-                  New-Item -Force -ItemType Directory $rgDir | Out-Null
-                  Invoke-WebRequest -Uri $rgUrl -OutFile $mainRg -TimeoutSec 30 -UseBasicParsing
-                  if ((Get-Item $mainRg).Length -gt 100000) {
-                    Write-Host "[RG] Downloaded from npmmirror CDN ($([math]::Round((Get-Item $mainRg).Length/1MB, 2)) MB)"
-                  } else {
-                    Remove-Item $mainRg -Force -EA SilentlyContinue
-                    throw "Downloaded file too small (likely error page)"
-                  }
-                } catch {
-                  Write-Host "[RG] npmmirror CDN failed: $_"
-                  if (Test-Path $mainRg) { Remove-Item $mainRg -Force -EA SilentlyContinue }
+                # Try npmmirror CDN first (no GitHub dependency)。
+                # 2026-08-05 修正：原 URL（/-/binary/ripgrep/vX/...rg.exe）恒 404；
+                # 有效地址是 ripgrep-prebuilt 项目的 zip 包（已实测 200），需下载后解压取 rg.exe。
+                # 参考 void：信任 @vscode/ripgrep 包自身版本，杜绝硬编码过期版本。
+                # 二进制真实版本由该包 lib/postinstall.js 的 VERSION 常量决定
+                # （当前 @vscode/ripgrep@1.17.x -> ripgrep v15.0.1）。下次升级包时
+                # 此解析会自动跟随，无需人工同步，避免下载到不存在/错误的版本。
+                $rgVersion = "v15.0.1"   # 兜底；优先从已安装包解析
+                $postinstall = Join-Path $PWD "node_modules/@vscode/ripgrep/lib/postinstall.js"
+                if (Test-Path $postinstall) {
+                    $pc = Get-Content $postinstall -Raw
+                    if ($pc -match "VERSION\s*=\s*'([^']+)'") { $rgVersion = $Matches[1] }
                 }
+                if ($rgVersion -notmatch '^v') { $rgVersion = "v$rgVersion" }
+                Write-Host "ripgrep 目标版本（来自已安装 @vscode/ripgrep）: $rgVersion"
+                $rgZipUrls = @(
+                  "https://registry.npmmirror.com/-/binary/ripgrep-prebuilt/v$rgVersion/ripgrep-v$rgVersion-x86_64-pc-windows-msvc.zip",
+                  "https://cdn.npmmirror.com/binaries/ripgrep-prebuilt/v$rgVersion/ripgrep-v$rgVersion-x86_64-pc-windows-msvc.zip"
+                )
+                $rgZip = Join-Path $env:TEMP "rg-$rgVersion.zip"
+                $rgExtract = Join-Path $env:TEMP "rg-$rgVersion-extract"
+                foreach ($rgUrl in $rgZipUrls) {
+                  if (Test-Path $mainRg) { break }
+                  Write-Host "[RG] Trying npmmirror CDN: $rgUrl"
+                  try {
+                    Invoke-WebRequest -Uri $rgUrl -OutFile $rgZip -TimeoutSec 60 -UseBasicParsing
+                    if ((Get-Item $rgZip).Length -lt 100000) { throw "Downloaded zip too small (likely error page)" }
+                    if (Test-Path $rgExtract) { Remove-Item $rgExtract -Recurse -Force }
+                    Expand-Archive -Path $rgZip -DestinationPath $rgExtract -Force
+                    $rgBin = Get-ChildItem $rgExtract -Recurse -Filter rg.exe | Select-Object -First 1
+                    if (-not $rgBin) { throw "rg.exe not found inside zip" }
+                    $rgDir = Split-Path $mainRg
+                    New-Item -Force -ItemType Directory $rgDir | Out-Null
+                    Copy-Item $rgBin.FullName $mainRg -Force
+                    Write-Host "[RG] Downloaded from npmmirror CDN ($([math]::Round((Get-Item $mainRg).Length/1MB, 2)) MB)"
+                  } catch {
+                    Write-Host "[RG] npmmirror CDN failed: $_"
+                    if (Test-Path $mainRg) { Remove-Item $mainRg -Force -EA SilentlyContinue }
+                  }
+                }
+                Remove-Item $rgZip -Force -EA SilentlyContinue
+                Remove-Item $rgExtract -Recurse -Force -EA SilentlyContinue
               }
               if (-not (Test-Path $mainRg)) {
                 Write-Host "[RG] Trying GitHub postinstall..."

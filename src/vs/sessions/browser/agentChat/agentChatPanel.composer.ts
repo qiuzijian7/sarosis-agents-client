@@ -3,6 +3,25 @@ import { IChatAttachment, IContextUsage } from './agentChatTypes.js';
 import { renderContextUsageRing } from './modules/contextRing.js';
 import { AgentChatPanelMarkdown } from './agentChatPanel.markdown.js';
 
+/** 内部剪贴板格式：选区含 chip 时用自定义 MIME 保存结构化内容（文本+技能+附件），
+ *  粘贴时据此恢复 chip，避免 contenteditable=false 的 chip 被浏览器序列化成纯文本。 */
+const COMPOSER_CLIPBOARD_MIME = 'application/vnd.vssaros-composer';
+
+/** 选区剪贴板片段：文本 / 技能 chip / 附件（图片）chip。 */
+interface IComposerClipSegment {
+	type: 'text' | 'skill' | 'attachment';
+	text?: string;
+	id?: string;                  // skill id
+	attId?: string;               // attachment id（序列化前）
+	name?: string;                // attachment 文件名
+	mimeType?: string;
+	data?: string;                // base64
+	size?: number;
+	attType?: 'image' | 'file';
+	isPasted?: boolean;
+	filePath?: string;
+}
+
 // Feature: composer. Extracted from AgentChatPanelBase.
 export class AgentChatPanelComposer extends AgentChatPanelMarkdown {
 
@@ -217,6 +236,19 @@ protected override _renderInputArea(): void {
 			const clipboardData = (e as ClipboardEvent).clipboardData;
 			if (!clipboardData) { return; }
 
+			// 内部复制/剪切带 chip 的内容 → 恢复 chip（图片/技能），避免退化成纯文本
+			const composerClip = clipboardData.getData(COMPOSER_CLIPBOARD_MIME);
+			if (composerClip) {
+				try {
+					const parsed = JSON.parse(composerClip) as { v?: number; segments?: IComposerClipSegment[] };
+					if (parsed && Array.isArray(parsed.segments) && parsed.segments.length) {
+						e.preventDefault();
+						this._restoreComposerPaste(parsed.segments);
+						return;
+					}
+				} catch { /* 损坏的自定义数据 → 走默认逻辑 */ }
+			}
+
 			// 收集所有图片文件。复制的图片（截图、从图片软件复制等）通常以
 			// clipboardData.items 中 kind==='file' 的形式存在，此时 clipboardData.files 为空；
 			// 而从文件管理器/拖拽复制则在 files 中。两者都要覆盖，否则图片 chip 不显示。
@@ -253,6 +285,16 @@ protected override _renderInputArea(): void {
 			if (plain) {
 				this._insertTextAtCaret(plain);
 			}
+		}));
+
+		// Copy/Cut handling — 选区含 chip（技能/图片附件）时，浏览器默认会把
+		// contenteditable=false 的 chip 序列化成纯文本（图标+名字），图片信息丢失。
+		// 改为写入自定义剪贴板格式（含完整 base64 与技能 id），粘贴时恢复 chip。
+		this._register(addDisposableListener(this._textarea, 'copy', (e) => {
+			this._handleComposerCopyCut(e as ClipboardEvent, false);
+		}));
+		this._register(addDisposableListener(this._textarea, 'cut', (e) => {
+			this._handleComposerCopyCut(e as ClipboardEvent, true);
 		}));
 
 		// Attachment preview area — 已移至内联芯片模式（附件直接嵌入 contentEditable 文本流中）
@@ -1098,6 +1140,11 @@ protected _createSkillChipNode(id: string, name: string): HTMLElement {
 	removeBtn.className = 'inline-skill-chip-remove';
 	removeBtn.textContent = '✕';
 	chip.appendChild(removeBtn);
+	// mousedown 时阻止默认选中：chip 现为 user-select:all，避免点 ✕ 先触发整片选中
+	this._register(addDisposableListener(removeBtn, EventType.MOUSE_DOWN, (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+	}));
 	this._register(addDisposableListener(removeBtn, EventType.CLICK, (e) => {
 		e.stopPropagation();
 		e.preventDefault();
@@ -1429,23 +1476,196 @@ protected override _insertTextAtCaret(text: string): void {
 		const root = this._textarea;
 		if (!root) { return; }
 		root.focus();
+		// 优先 execCommand('insertText')：浏览器原生在光标处插入文本，并把光标
+		// 正确置于插入文字之后（等同打字/原生粘贴），自动处理相邻文本节点合并。
+		// 手动 insertNode + setStartAfter(textNode) 在浏览器合并相邻文本节点后，
+		// textNode 引用失效（detached），setStartAfter 会落到错误位置导致光标不在尾部。
+		// 成功时已触发原生 input 事件，无需再手动派发。
+		let inserted = false;
+		try {
+			inserted = document.execCommand('insertText', false, text);
+		} catch { inserted = false; }
+		if (inserted) { return; }
+
+		// 回退：手动 Range 插入 + 光标定位
 		const sel = window.getSelection();
 		const textNode = document.createTextNode(text);
 		const existing = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
 		if (existing && root.contains(existing.startContainer)) {
-			// 在光标处就地插入，并把光标移到插入文字的尾部
 			existing.deleteContents();
 			existing.insertNode(textNode);
 		} else {
-			// 无有效选区（焦点不在输入框内等）→ 追加到末尾
 			root.appendChild(textNode);
 		}
-		// 统一将光标折叠到插入文字之后（粘贴文字的尾部）
 		const caret = document.createRange();
 		caret.setStartAfter(textNode);
 		caret.collapse(true);
 		sel?.removeAllRanges();
 		sel?.addRange(caret);
 		root.dispatchEvent(new Event('input'));
+	}
+
+	/** 选区含 chip 时拦截复制/剪切：写入自定义格式 + 可读纯文本，避免图片信息丢失。 */
+	private _handleComposerCopyCut(e: ClipboardEvent, isCut: boolean): void {
+		const serialized = this._serializeComposerClipboard();
+		if (!serialized) { return; } // 无 chip 或空选区 → 走浏览器默认行为
+
+		e.preventDefault();
+		const cd = e.clipboardData;
+		if (cd) {
+			cd.setData('text/plain', serialized.text);
+			cd.setData(COMPOSER_CLIPBOARD_MIME, serialized.json);
+		}
+		if (isCut) {
+			const sel = window.getSelection();
+			const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+			if (range && this._textarea.contains(range.startContainer)) {
+				range.deleteContents();
+			}
+			this._syncAttachmentsFromDom();
+			this._updateSendButton();
+			this._textarea.dispatchEvent(new Event('input'));
+		}
+	}
+
+	/** 把当前选区序列化为片段数组；仅当包含 chip 时才返回（否则交给浏览器默认复制）。 */
+	private _serializeComposerClipboard(): { json: string; text: string } | null {
+		const root = this._textarea;
+		const sel = window.getSelection();
+		if (!sel || sel.rangeCount === 0) { return null; }
+		const range = sel.getRangeAt(0);
+		if (range.collapsed || !root.contains(range.startContainer)) { return null; }
+
+		const fragment = range.cloneContents();
+		const segments: IComposerClipSegment[] = [];
+		let hasChip = false;
+
+		const pushText = (t: string) => {
+			if (!t) { return; }
+			const last = segments[segments.length - 1];
+			if (last && last.type === 'text') { last.text = (last.text ?? '') + t; }
+			else { segments.push({ type: 'text', text: t }); }
+		};
+		const walk = (node: Node) => {
+			if (node.nodeType === Node.TEXT_NODE) {
+				pushText(node.textContent ?? '');
+				return;
+			}
+			if (node.nodeType !== Node.ELEMENT_NODE) { return; }
+			const el = node as HTMLElement;
+			if (el.tagName === 'BR') { pushText('\n'); return; }
+			if (el.classList.contains('inline-skill-chip')) {
+				const id = el.dataset.skillId;
+				if (id) {
+					segments.push({ type: 'skill', id });
+					hasChip = true;
+				}
+				return;
+			}
+			if (el.classList.contains('inline-attachment-chip')) {
+				const attId = el.dataset.attId;
+				const att = attId ? this._attachments.find(a => a.id === attId) : undefined;
+				if (att) {
+					segments.push({
+						type: 'attachment', attId, name: att.name, mimeType: att.mimeType,
+						data: att.data, size: att.size, attType: att.type, isPasted: att.isPasted, filePath: att.filePath,
+					});
+					hasChip = true;
+				}
+				return;
+			}
+			if (el.tagName === 'DIV' || el.tagName === 'P') { pushText('\n'); }
+			for (const child of Array.from(el.childNodes)) { walk(child); }
+		};
+		for (const child of Array.from(fragment.childNodes)) { walk(child); }
+
+		if (!segments.length || !hasChip) { return null; }
+
+		// 可读纯文本（复制到外部程序时用）：技能用 /skill 标记、附件用文件名
+		let text = '';
+		for (const s of segments) {
+			if (s.type === 'text') { text += s.text; }
+			else if (s.type === 'skill') { text += `/skill ${s.id}`; }
+			else if (s.type === 'attachment') { text += `[${s.name ?? '附件'}]`; }
+		}
+		return { json: JSON.stringify({ v: 1, segments }), text };
+	}
+
+	/** 恢复内部剪贴板片段：在光标处重建文本 + 技能 chip + 附件（图片）chip。 */
+	private _restoreComposerPaste(segments: IComposerClipSegment[]): void {
+		const root = this._textarea;
+		if (!root) { return; }
+		root.focus();
+		const sel = window.getSelection();
+		const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+		if (range && root.contains(range.startContainer)) { range.deleteContents(); }
+
+		const frag = document.createDocumentFragment();
+		let lastWasChip = false;
+		for (const seg of segments) {
+			if (seg.type === 'text') {
+				if (seg.text) { frag.appendChild(document.createTextNode(seg.text)); }
+				lastWasChip = false;
+			} else if (seg.type === 'skill' && seg.id) {
+				if (!lastWasChip) { frag.appendChild(document.createTextNode(' ')); }
+				frag.appendChild(this._createSkillChipNode(seg.id, this._resolveSkillName(seg.id)));
+				frag.appendChild(document.createTextNode(' '));
+				lastWasChip = true;
+			} else if (seg.type === 'attachment' && seg.name && seg.mimeType) {
+				const att: IChatAttachment = {
+					id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+					type: seg.attType ?? (seg.mimeType.startsWith('image/') ? 'image' : 'file'),
+					name: seg.name,
+					mimeType: seg.mimeType,
+					data: seg.data ?? '',
+					size: seg.size ?? 0,
+					isPasted: true,
+					filePath: seg.filePath,
+				};
+				this._attachments.push(att);
+				if (!lastWasChip) { frag.appendChild(document.createTextNode(' ')); }
+				frag.appendChild(this._createAttachmentChipNode(att));
+				frag.appendChild(document.createTextNode(' '));
+				lastWasChip = true;
+			}
+		}
+
+		const lastNode = frag.lastChild ?? null;
+		if (range && root.contains(range.startContainer)) {
+			range.insertNode(frag);
+			// 光标移到插入内容之后（片段末尾）。insertNode 后 range 位置不可靠，
+			// 显式 setStartAfter(lastNode)；节点被浏览器合并时回退到 collapse(false)。
+			if (lastNode) {
+				try {
+					const caret = document.createRange();
+					caret.setStartAfter(lastNode);
+					caret.collapse(true);
+					sel?.removeAllRanges();
+					sel?.addRange(caret);
+				} catch {
+					range.collapse(false);
+					sel?.removeAllRanges();
+					sel?.addRange(range);
+				}
+			} else {
+				range.collapse(false);
+				sel?.removeAllRanges();
+				sel?.addRange(range);
+			}
+		} else {
+			root.appendChild(frag);
+			this._focusComposerEnd();
+		}
+		this._updateSendButton();
+		root.dispatchEvent(new Event('input'));
+	}
+
+	/** 让 _attachments 与 DOM 中的附件 chip 对齐（剪切/删除 chip 后清理数组）。 */
+	private _syncAttachmentsFromDom(): void {
+		const root = this._textarea;
+		const kept = this._attachments.filter(a => root.querySelector(`.inline-attachment-chip[data-att-id="${CSS.escape(a.id)}"]`));
+		if (kept.length !== this._attachments.length) {
+			this._attachments = kept;
+		}
 	}
 }

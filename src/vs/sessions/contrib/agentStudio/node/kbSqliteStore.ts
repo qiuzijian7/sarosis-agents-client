@@ -80,6 +80,8 @@ export class KbSqliteStore {
 		// 启用 WAL + mmap 以降低锁竞争
 		this._db.pragma('journal_mode = WAL');
 		this._db.pragma('mmap_size = 268435456'); // 256MB
+		// 多开（--instance）：并发写时等待锁释放而非立即 SQLITE_BUSY（5s 上限）
+		this._db.pragma('busy_timeout = 5000');
 
 		// 创建表
 		this._db.exec(CREATE_DOCS);

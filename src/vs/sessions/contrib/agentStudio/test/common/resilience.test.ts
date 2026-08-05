@@ -4,7 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { withStreamTimeout } from '../../common/resilience.js';
+import {
+	withStreamTimeout,
+	computeAdaptiveFirstTokenTimeout,
+	ADAPTIVE_FIRST_TOKEN_THRESHOLD,
+	ADAPTIVE_FIRST_TOKEN_STEP_TOKENS,
+	ADAPTIVE_FIRST_TOKEN_STEP_MS,
+	ADAPTIVE_FIRST_TOKEN_CAP_MS,
+} from '../../common/resilience.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -123,5 +130,50 @@ suite('Resilience - withStreamTimeout (P0b)', () => {
 		}
 		assert.deepStrictEqual(out, ['a', 'b']);
 		assert.ok(Date.now() - t0 >= 100, '应至少等待首 token 延迟（未被 30ms idle 误杀）');
+	});
+});
+
+suite('computeAdaptiveFirstTokenTimeout', () => {
+	const BASE = 45_000;
+
+	test('at or below threshold returns base unchanged', () => {
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(0, BASE), BASE);
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(8_000, BASE), BASE);
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(ADAPTIVE_FIRST_TOKEN_THRESHOLD, BASE), BASE);
+	});
+
+	test('non-finite / negative input returns base unchanged', () => {
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(NaN, BASE), BASE);
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(-1, BASE), BASE);
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(Infinity, BASE), BASE);
+	});
+
+	test('grows in steps above threshold', () => {
+		// 16k→base；+1 token 即进第一档 → base+15s；24k→base+15s；24k+1→base+30s
+		assert.strictEqual(
+			computeAdaptiveFirstTokenTimeout(ADAPTIVE_FIRST_TOKEN_THRESHOLD + 1, BASE),
+			BASE + ADAPTIVE_FIRST_TOKEN_STEP_MS,
+		);
+		assert.strictEqual(
+			computeAdaptiveFirstTokenTimeout(ADAPTIVE_FIRST_TOKEN_THRESHOLD + ADAPTIVE_FIRST_TOKEN_STEP_TOKENS, BASE),
+			BASE + ADAPTIVE_FIRST_TOKEN_STEP_MS,
+		);
+		assert.strictEqual(
+			computeAdaptiveFirstTokenTimeout(ADAPTIVE_FIRST_TOKEN_THRESHOLD + ADAPTIVE_FIRST_TOKEN_STEP_TOKENS + 1, BASE),
+			BASE + 2 * ADAPTIVE_FIRST_TOKEN_STEP_MS,
+		);
+	});
+
+	test('real-world incident case: 34k tokens gets ≥46s budget (no false kill at 45s)', () => {
+		// 生产事故：hy3-ioa 34.2k tokens 冷缓存 TTFB=46.4s 被 45s 阈值误杀。
+		// 34k → 45s + ceil(18k/8k)*15s = 45+45 = 90s，足以覆盖。
+		const budget = computeAdaptiveFirstTokenTimeout(34_200, BASE);
+		assert.strictEqual(budget, 90_000);
+		assert.ok(budget > 46_400, `34k tokens 预算 ${budget}ms 应大于事故 TTFB 46.4s`);
+	});
+
+	test('caps at ADAPTIVE_FIRST_TOKEN_CAP_MS (below HTTP layer 120s)', () => {
+		assert.strictEqual(computeAdaptiveFirstTokenTimeout(200_000, BASE), ADAPTIVE_FIRST_TOKEN_CAP_MS);
+		assert.ok(ADAPTIVE_FIRST_TOKEN_CAP_MS < 120_000, '封顶必须低于 HTTP 层 120s 请求超时');
 	});
 });

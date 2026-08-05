@@ -1403,11 +1403,14 @@ private readonly _sandboxGuard: SandboxGuard;
 	 *    抛 TimeoutError 触发模型 fallback。runTimeout 不启用，避免误杀合法长输出。
 	 *    注：必须 ≥ HTTP 请求超时（120s），否则 resilience 会在 HTTP 层之前误杀一个
 	 *    仍存活（只是慢）的流。真正死连接由 HTTP 层在 120s 以 AbortError 兜底。
-	 *  - firstTokenTimeout（45s）：流「首 token 之前」的慢启动宽限。实测 CodeBuddy
+	 *  - firstTokenTimeout（45s 基准）：流「首 token 之前」的慢启动宽限。实测 CodeBuddy
 	 *    网关冷启动首 delta 延迟可达 51s 且返回空响应（仅 usage + done）；
 	 *    45s 超时可在冷启动场景提前 abort → 触发 fallback 或 retry，避免浪费 51s
 	 *    等待一个空响应。MAX_VISIBLE_TOOLS=30 已收敛 payload，正常请求首 token
 	 *    远低于 45s。
+	 *    注：此值为基准值。agentTurnExecutor 在每次调用前按估算 prompt token 数
+	 *    阶梯放宽（computeAdaptiveFirstTokenTimeout：>16k 每 8k +15s，封顶 115s），
+	 *    避免大 prompt 冷缓存 prefill（实测 34k tokens TTFB 46.4s）被 45s 基准误杀。
 	 */
 	private readonly _modelStreamTimeoutPolicy: TimeoutPolicy = {
 		idleTimeout: 180_000,

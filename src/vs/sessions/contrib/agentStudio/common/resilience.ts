@@ -360,6 +360,37 @@ export interface StreamTimeoutOptions {
 }
 
 /**
+ * 自适应首 token 超时（方案 B）：按估算 prompt 大小放宽慢启动宽限。
+ *
+ * 背景：固定 45s 首 token 超时对「大 prompt + 冷缓存 prefill」场景过紧——
+ * 实测 hy3-ioa 网关 34k tokens 冷缓存请求 TTFB 达 46.4s（同会话小 prompt 仅 5.8s），
+ * 固定阈值会误杀一个仍存活（只是慢）的请求。prefill 耗时与 prompt 大小正相关，
+ * 因此宽限随估算 token 数阶梯增长。
+ *
+ * 规则：base 以下不调整；超过 {@link ADAPTIVE_FIRST_TOKEN_THRESHOLD} 后每
+ * {@link ADAPTIVE_FIRST_TOKEN_STEP_TOKENS} 增加 {@link ADAPTIVE_FIRST_TOKEN_STEP_MS}；
+ * 上限 {@link ADAPTIVE_FIRST_TOKEN_CAP_MS}（不得 ≥ HTTP 层 120s 请求超时，否则
+ * resilience 会在 HTTP 层之前误杀慢流）。
+ *
+ * 示例（base=45s）：16k→45s，24k→60s，32k→75s，40k→90s，≥72k→120s（封顶）。
+ */
+export const ADAPTIVE_FIRST_TOKEN_THRESHOLD = 16_000;
+export const ADAPTIVE_FIRST_TOKEN_STEP_TOKENS = 8_000;
+export const ADAPTIVE_FIRST_TOKEN_STEP_MS = 15_000;
+export const ADAPTIVE_FIRST_TOKEN_CAP_MS = 115_000;
+
+export function computeAdaptiveFirstTokenTimeout(
+	estPromptTokens: number,
+	baseMs: number,
+): number {
+	if (!Number.isFinite(estPromptTokens) || estPromptTokens <= ADAPTIVE_FIRST_TOKEN_THRESHOLD) {
+		return baseMs;
+	}
+	const steps = Math.ceil((estPromptTokens - ADAPTIVE_FIRST_TOKEN_THRESHOLD) / ADAPTIVE_FIRST_TOKEN_STEP_TOKENS);
+	return Math.min(baseMs + steps * ADAPTIVE_FIRST_TOKEN_STEP_MS, ADAPTIVE_FIRST_TOKEN_CAP_MS);
+}
+
+/**
  * 给一个异步可迭代流（如 LLM 流式响应）套上「run（硬墙钟）+ idle（无进度）双超时」
  * （对齐 LangGraph TimeoutPolicy，流式版）。
  *

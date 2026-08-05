@@ -33,6 +33,10 @@ import {
 	WORKSPACE_DATA_DIR,
 	AGENTS_DIR,
 } from "../common/constants.js";
+import { createIndexLockToken, isIndexLockStale, parseIndexLock, serializeIndexLock } from './codebaseIndexLock.js';
+
+/** 会话锁过期阈值：2min 未心跳视为持有方崩溃，可接管（短于索引锁的 5min——会话崩溃恢复应更快）。 */
+const SESSION_LOCK_STALE_MS = 2 * 60 * 1000;
 
 // ─── Agent Session Index ────────────────────────────────────────────────────
 
@@ -388,6 +392,79 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 
 	private _cacheKey(agentId: string, sessionId?: string): string {
 		return sessionId ? `${agentId}::${sessionId}` : agentId;
+	}
+
+	// ─── 会话跨实例锁（多开 --instance 同会话双开只读）─────────────────────────
+	// 锁文件：sessions/{sessionId}.lock（JSON {token, instanceId, acquiredAt}，复用
+	// codebaseIndexLock 的解析/过期判定）。持锁期间 30s 心跳刷新 mtime；2min 未刷新
+	// 视为持有方崩溃，可接管。释放仅删自己的锁。
+
+	private _sessionLockToken: string | undefined;
+	private _sessionLockHeartbeat: ReturnType<typeof setInterval> | undefined;
+	private _sessionLockUri: URI | undefined;
+
+	/**
+	 * 尝试获取会话锁。返回 acquired=false 时表示另一实例正在编辑（含持锁实例 ID）。
+	 * 锁过期（持有方崩溃 2min）自动接管。
+	 */
+	async tryAcquireSessionLock(agentId: string, sessionId: string): Promise<{ acquired: boolean; holderInstanceId?: string }> {
+		try {
+			const { sessionsDirUri } = await this._resolveAgentPaths(agentId);
+			const lockUri = URI.joinPath(sessionsDirUri, `${sessionId}.lock`);
+			const instanceId = (this.environmentService as unknown as { instanceId?: string }).instanceId;
+			if (!this._sessionLockToken) {
+				this._sessionLockToken = createIndexLockToken(instanceId);
+			}
+			const token = this._sessionLockToken;
+
+			// 已有锁且新鲜且属他人 → 拒绝
+			try {
+				const existing = await this.fileService.readFile(lockUri);
+				const mtime = (await this.fileService.stat(lockUri)).mtime;
+				const content = parseIndexLock(existing.value.toString());
+				if (content && content.token !== token && !isIndexLockStale(mtime, Date.now(), SESSION_LOCK_STALE_MS)) {
+					return { acquired: false, holderInstanceId: content.instanceId };
+				}
+			} catch { /* 无锁文件 → 可获取 */ }
+
+			// 释放旧锁（切换会话）
+			await this._releaseSessionLockFile();
+
+			const writeLock = async () => {
+				await this.fileService.writeFile(lockUri, VSBuffer.fromString(serializeIndexLock({
+					token, instanceId, acquiredAt: Date.now(),
+				})));
+			};
+			await writeLock();
+			this._sessionLockUri = lockUri;
+			this._sessionLockHeartbeat = setInterval(() => { void writeLock().catch(() => { /* 心跳失败忽略 */ }); }, 30_000);
+			return { acquired: true };
+		} catch (err) {
+			this.logService.warn(`[AgentChatService] tryAcquireSessionLock failed (fail-open): ${err}`);
+			return { acquired: true }; // 文件系统异常时放行，避免锁死用户输入
+		}
+	}
+
+	/** 释放当前持有的会话锁（仅删自己的锁）。 */
+	async releaseSessionLock(): Promise<void> {
+		if (this._sessionLockHeartbeat) {
+			clearInterval(this._sessionLockHeartbeat);
+			this._sessionLockHeartbeat = undefined;
+		}
+		await this._releaseSessionLockFile();
+	}
+
+	private async _releaseSessionLockFile(): Promise<void> {
+		const lockUri = this._sessionLockUri;
+		this._sessionLockUri = undefined;
+		if (!lockUri || !this._sessionLockToken) { return; }
+		try {
+			const cur = await this.fileService.readFile(lockUri);
+			const content = parseIndexLock(cur.value.toString());
+			if (content?.token === this._sessionLockToken) {
+				await this.fileService.del(lockUri);
+			}
+		} catch { /* 锁已被删/被接管，忽略 */ }
 	}
 
 	// ─── P1: Tool result externalisation ────────────────────────────────────

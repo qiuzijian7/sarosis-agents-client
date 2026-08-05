@@ -110,12 +110,13 @@ function fromLocal(extensionPath: string, forWeb: boolean, _disableMangle: boole
 		delete data.scripts;
 		delete data.devDependencies;
 		if (data.main && isBundled) {
-			// esbuild extensions bundle everything into a single file but
-			// vsce (the marketplace packaging tool) only respects the `main`
-			// field if it points to an existing file. For esbuild extensions,
-			// the `main` field points to uncompiled source that no longer
-			// exists after bundling, so we clear it.
-			delete data.main;
+			// esbuild extensions bundle the extension host entry into dist/;
+			// rewrite `main` from the tsc dev output (out/) to the bundled
+			// output (dist/) so the desktop extension host can load it.
+			// (Upstream VS Code uses the same replace; deleting `main` here
+			// left the packaged extension with no entry point and broke
+			// activation → "command ... not found".)
+			data.main = data.main.replace('/out/', '/dist/');
 		}
 		return data;
 	});

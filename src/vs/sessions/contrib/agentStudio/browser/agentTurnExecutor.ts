@@ -5,7 +5,7 @@
 	IToolDefinition, IToolCallInfo,
 	ISandboxViolationInfo,
 } from '../common/providers.js';
-import { withStreamTimeout } from '../common/resilience.js';
+import { withStreamTimeout, computeAdaptiveFirstTokenTimeout } from '../common/resilience.js';
 import { buildBuildSwitchReminder } from '../common/chatModeConfig.js';
 import { isToolCallDeniedByHardPermission } from '../common/toolPermission.js';
 import { generatePlanPath, isPlanFilePath } from '../common/planFile.js';
@@ -1743,7 +1743,26 @@ interface ITurnContext {
 				const rawStream = modelProvider.chat(selection.modelId, messages, modelOptions, context);
 				// 流式 idle 超时：模型静默挂起（无 delta 心跳超过阈值）时抛 TimeoutError，
 				// 由下方 catch 重新抛出并触发 _executeWithFallback 的备用模型切换（对齐 LangGraph TimeoutPolicy）。
-				const stream = withStreamTimeout(rawStream, host._modelStreamTimeoutPolicy, {
+				// ─── 自适应首 token 超时（方案 B）────────────────────────────
+				// 固定 45s 对大 prompt 冷缓存请求过紧（实测 hy3-ioa 34k tokens TTFB 46.4s，
+				// 被误杀后 1.4s 网关实际正常返回）。prefill 耗时与 prompt 大小正相关，
+				// 按估算 token 数阶梯放宽（>16k 每 8k +15s，封顶 115s < HTTP 120s）。
+				// 取本轮粗估与上轮真实 prompt_tokens 的较大者，避免粗估低估导致宽限不足。
+				const _estPromptTok = Math.max(
+					host._estimateMessagesTokens(messages),
+					runState.lastRealPromptTokens ?? 0,
+				);
+				const _baseFirstTok = host._modelStreamTimeoutPolicy.firstTokenTimeout ?? 45_000;
+				const _adaptiveFirstTok = computeAdaptiveFirstTokenTimeout(_estPromptTok, _baseFirstTok);
+				const _callTimeoutPolicy = _adaptiveFirstTok !== _baseFirstTok
+					? { ...host._modelStreamTimeoutPolicy, firstTokenTimeout: _adaptiveFirstTok }
+					: host._modelStreamTimeoutPolicy;
+				if (_adaptiveFirstTok !== _baseFirstTok) {
+					host._logService.info(
+						`[AgentOS] Adaptive first-token timeout: ${_baseFirstTok}ms → ${_adaptiveFirstTok}ms (estPromptTokens=${_estPromptTok})`,
+					);
+				}
+				const stream = withStreamTimeout(rawStream, _callTimeoutPolicy, {
 					signal: host._loopAbortController?.signal,
 					log: (lvl, msg) => {
 						if (lvl === 'error') { host._logService.error(msg); }

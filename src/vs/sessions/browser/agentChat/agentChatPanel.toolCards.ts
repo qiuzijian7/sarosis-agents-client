@@ -1457,6 +1457,11 @@ protected override _createAttachmentChipNode(att: IChatAttachment): HTMLElement 
 		removeBtn.className = 'inline-attachment-chip-remove';
 		removeBtn.textContent = '✕';
 		chip.appendChild(removeBtn);
+		// mousedown 时阻止默认选中：chip 现为 user-select:all，避免点 ✕ 先触发整片选中
+		this._register(addDisposableListener(removeBtn, EventType.MOUSE_DOWN, (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+		}));
 		this._register(addDisposableListener(removeBtn, EventType.CLICK, (e) => {
 			e.stopPropagation();
 			e.preventDefault();

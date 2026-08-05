@@ -59,7 +59,11 @@ export function formatUserFacingError(
 		const isFirstToken = typeof error.message === 'string' && error.message.includes('first-token');
 		const tried = triedModels.length > 0 ? triedModels.join('、') : '';
 		if (isFirstToken) {
-			const firstSec = Math.round((deps.modelStreamTimeoutPolicy.firstTokenTimeout ?? 45_000) / 1000);
+			// 优先从错误消息解析实际生效的预算（自适应首 token 超时会按 prompt 大小放宽，
+			// 静态 policy 值可能与实际不符）。格式：'Stream first-token timeout after 90000ms'。
+			const match = /after (\d+)ms/.exec(error.message);
+			const effectiveMs = match ? Number(match[1]) : (deps.modelStreamTimeoutPolicy.firstTokenTimeout ?? 45_000);
+			const firstSec = Math.round(effectiveMs / 1000);
 			return [
 				'⚠️ 模型响应超时（首 token）',
 				'',

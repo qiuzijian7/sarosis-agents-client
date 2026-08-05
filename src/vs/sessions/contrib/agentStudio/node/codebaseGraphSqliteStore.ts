@@ -279,6 +279,8 @@ export class CodebaseGraphSqliteStore {
 		await dbExec(this.db, `PRAGMA mmap_size = ${this._mmap}`);
 		await dbExec(this.db, 'PRAGMA journal_mode = WAL');
 		await dbExec(this.db, 'PRAGMA synchronous = NORMAL');
+		// 多开（--instance）：并发写时等待锁释放而非立即 SQLITE_BUSY（5s 上限）
+		await dbExec(this.db, 'PRAGMA busy_timeout = 5000');
 		// 页面缓存（负数表示 KiB）：-131072 = 128 MiB
 		await dbExec(this.db, 'PRAGMA cache_size = -131072');
 		await dbExec(this.db, 'PRAGMA foreign_keys = OFF');

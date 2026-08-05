@@ -2008,6 +2008,11 @@
 	max-width: 220px;
 	cursor: default;
 }
+/* 仅输入框内的附件 chip：改为 user-select:all，使其作为原子单元可被
+   Ctrl+A 全选/复制/删除包含（消息气泡里的只读附件 chip 不受影响）。 */
+.chat-composer-textarea .inline-attachment-chip {
+	user-select: all;
+}
 .inline-attachment-chip-icon {
 	font-size: 12px;
 }
@@ -6404,7 +6409,10 @@
 	line-height: 1.4;
 	color: var(--vscode-textLink-foreground, #4da3ff);
 	vertical-align: baseline;
-	user-select: none;
+	/* user-select:all（而非 none）：让 chip 作为原子单元可被选中，从而被
+	   Ctrl+A 全选/复制/删除包含；none 会把 chip 排除在选区之外。配合
+	   contenteditable=false，chip 仍作为整体被选中，不会被部分选中。 */
+	user-select: all;
 	white-space: nowrap;
 	max-width: 220px;
 	cursor: default;
