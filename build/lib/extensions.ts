@@ -209,7 +209,20 @@ function fromLocalNormal(extensionPath: string): Stream {
 	const vsce = require('@vscode/vsce') as typeof import('@vscode/vsce');
 	const result = es.through();
 
-	vsce.listFiles({ cwd: extensionPath, packageManager: vsce.PackageManager.Npm })
+	vsce.listFiles({
+		cwd: extensionPath,
+		// PackageManager.None tells vsce to skip its production-dependency
+		// enumeration (`npm list --production`). That result is discarded below
+		// anyway: node_modules is filtered out (these local extensions are fully
+		// bundled via esbuild/vite and ship no node_modules), and
+		// updateExtensionPackageJSON strips dependencies. The npm list call is
+		// strict — it aborts the whole build with ELSPROBLEMS on any missing /
+		// extraneous / invalid dep (e.g. copilot's `tslib` peer dep, which
+		// legacy-peer-deps skips installing) — for zero benefit. Verified: with
+		// None, vsce returns the extension's own files only (no node_modules),
+		// which is exactly what the node_modules filter below keeps.
+		packageManager: vsce.PackageManager.None,
+	})
 		.then(fileNames => {
 			const files = fileNames
 				.filter(fileName => !fileName.startsWith('node_modules') && !fileName.includes('/node_modules/'))
