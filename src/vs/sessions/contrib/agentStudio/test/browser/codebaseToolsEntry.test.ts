@@ -78,6 +78,9 @@ function makeCtx(serviceOverrides: Record<string, unknown> = {}, ctxOverrides: R
 		normalizeFileSearchGlob: (g: string) => g,
 		enforceSearchSize: (s: string) => s,
 		densifySearchOutput: (s: string) => s,
+		// searchOutcomeHint 降级提示依赖（codebaseTools 空命中 hint 参数）；
+		// 默认 ripgrep 正常（不降级）。
+		isContentSearchDegraded: () => false,
 	},
 		// search_code 重构后用 resolveAndCheckWorkspacePath 解析 searchPath（project→folder）
 		resolveAndCheckWorkspacePath: (ctxOverrides['resolvePathBehavior'] as undefined | ((...a: any[]) => Promise<string>))

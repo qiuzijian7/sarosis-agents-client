@@ -217,13 +217,28 @@ protected override _renderInputArea(): void {
 			const clipboardData = (e as ClipboardEvent).clipboardData;
 			if (!clipboardData) { return; }
 
-			// 有图片/文件 → 保持本地图片/文件 chip 显示（原逻辑），不做格式化、不受影响
+			// 收集所有图片文件。复制的图片（截图、从图片软件复制等）通常以
+			// clipboardData.items 中 kind==='file' 的形式存在，此时 clipboardData.files 为空；
+			// 而从文件管理器/拖拽复制则在 files 中。两者都要覆盖，否则图片 chip 不显示。
+			const imageFiles: File[] = [];
 			if (clipboardData.files?.length) {
-				const imageFiles = Array.from(clipboardData.files).filter(f => f.type.startsWith("image/"));
-				if (imageFiles.length > 0) {
-					e.preventDefault();
-					this._addFiles(imageFiles, true);
+				for (const f of Array.from(clipboardData.files)) {
+					if (f.type.startsWith("image/")) { imageFiles.push(f); }
 				}
+			}
+			if (!imageFiles.length && clipboardData.items?.length) {
+				for (const it of Array.from(clipboardData.items)) {
+					if (it.kind === 'file' && it.type.startsWith("image/")) {
+						const f = it.getAsFile();
+						if (f) { imageFiles.push(f); }
+					}
+				}
+			}
+
+			// 有图片 → 保持本地图片 chip 显示（原逻辑），不做格式化、不受影响
+			if (imageFiles.length > 0) {
+				e.preventDefault();
+				this._addFiles(imageFiles, true);
 				return;
 			}
 
@@ -1415,18 +1430,22 @@ protected override _insertTextAtCaret(text: string): void {
 		if (!root) { return; }
 		root.focus();
 		const sel = window.getSelection();
-		if (sel && sel.rangeCount > 0) {
-			const range = sel.getRangeAt(0);
-			range.deleteContents();
-			const node = document.createTextNode(text);
-			range.insertNode(node);
-			range.setStartAfter(node);
-			range.collapse(true);
-			sel.removeAllRanges();
-			sel.addRange(range);
+		const textNode = document.createTextNode(text);
+		const existing = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+		if (existing && root.contains(existing.startContainer)) {
+			// 在光标处就地插入，并把光标移到插入文字的尾部
+			existing.deleteContents();
+			existing.insertNode(textNode);
 		} else {
-			root.appendChild(document.createTextNode(text));
+			// 无有效选区（焦点不在输入框内等）→ 追加到末尾
+			root.appendChild(textNode);
 		}
+		// 统一将光标折叠到插入文字之后（粘贴文字的尾部）
+		const caret = document.createRange();
+		caret.setStartAfter(textNode);
+		caret.collapse(true);
+		sel?.removeAllRanges();
+		sel?.addRange(caret);
 		root.dispatchEvent(new Event('input'));
 	}
 }

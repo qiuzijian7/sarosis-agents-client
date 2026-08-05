@@ -2057,7 +2057,35 @@ export class CodeApplication extends Disposable {
 				return;
 			}
 
-			// 收集子进程 env — 仅文件服务器需要的变量
+			// 多开（--instance <id>）：网关端口固定 3111，第二个实例的 spawn 会
+			// EADDRINUSE 失败。改为先探活——端口已被占用且数据目录相同（共享
+			// userDataPath → 同一 .agentmemory 数据），则直接复用既有网关。
+			if (this.environmentMainService.instanceId) {
+				void this._probeOrSpawnAgentMemoryGateway(hostPath);
+				return;
+			}
+
+			this._spawnAgentMemoryGateway(hostPath);
+		} catch (err) {
+			this.logService.error(`[agentmemory-gateway] 启动逻辑异常（已忽略）: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	/** 多开实例：探活 3111 端口，已被占用则复用既有网关，否则 spawn 自己的。 */
+	private async _probeOrSpawnAgentMemoryGateway(hostPath: string): Promise<void> {
+		try {
+			const res = await net.fetch('http://127.0.0.1:3111/health', { signal: AbortSignal.timeout(1500) });
+			if (res.ok) {
+				this.logService.info(`[agentmemory-gateway] 多开实例（id=${this.environmentMainService.instanceId}）：3111 已被占用，复用既有网关（数据目录共享）`);
+				return;
+			}
+	} catch { /* 探活失败 → 端口空闲，继续 spawn */ }
+		this._spawnAgentMemoryGateway(hostPath);
+	}
+
+	/** spawn agentmemory 网关子进程（单实例或多开且端口空闲时调用）。 */
+	private _spawnAgentMemoryGateway(hostPath: string): void {
+		try {
 			const env: NodeJS.ProcessEnv = {
 				...process.env,
 				AGENTMEMORY_PORT: process.env['AGENTMEMORY_PORT'] ?? '3111',

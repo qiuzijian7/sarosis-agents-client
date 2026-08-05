@@ -178,6 +178,18 @@ export interface INativeEnvironmentService extends IEnvironmentService {
 	tmpDir: URI;
 	userDataPath: string;
 
+	// --- multi-instance（--instance <id>）
+	/**
+	 * 多开实例 ID；未指定为 undefined（默认单实例行为）。
+	 * 同一数据目录下多进程运行时，可变状态按实例拆分、静态数据共享。
+	 */
+	instanceId: string | undefined;
+	/**
+	 * 实例化可变状态根目录（User/instances/<id>/；默认实例 = appSettingsHome）。
+	 * globalStorage / workspaceStorage 等单写者状态落在此目录。
+	 */
+	instanceStateHome: URI;
+
 	// --- extensions
 	extensionsPath: string;
 	extensionsDownloadLocation: URI;

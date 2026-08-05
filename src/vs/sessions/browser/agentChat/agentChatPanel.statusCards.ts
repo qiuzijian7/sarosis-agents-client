@@ -94,14 +94,17 @@ export abstract class AgentChatPanelStatusCards extends AgentChatPanelWorkflowCa
 		body.scrollTop = body.scrollHeight;
 	}
 
-	/** P-T1：就地更新 thinking 卡片 header（active/icon/title），不重建卡片。 */
-	protected _updateThinkingCardHeader(card: HTMLElement, msg: IAgentChatMessage): void {
-			card.classList.toggle('active', !!msg.isThinking);
-			const icon = card.querySelector('.thinking-card-icon') as HTMLElement | null;
-			if (icon) { this._renderThinkingCardIcon(icon, msg.isThinking); }
-			const title = card.querySelector('.thinking-card-title');
-			if (title) { title.textContent = msg.isThinking ? '思考中...' : '思考过程'; }
-		}
+	/** P-T1：就地更新 thinking 卡片 header（active/icon/title），不重建卡片。
+	 *  @param isThinking 该卡片自身是否处于「正在思考」活跃态（仅最后一个仍在流式的
+	 *         episode 为 true），切勿传 message 级 isThinking，否则多卡时所有卡都会被
+	 *         误标为「思考中...」。 */
+	protected _updateThinkingCardHeader(card: HTMLElement, isThinking: boolean): void {
+		card.classList.toggle('active', !!isThinking);
+		const icon = card.querySelector('.thinking-card-icon') as HTMLElement | null;
+		if (icon) { this._renderThinkingCardIcon(icon, isThinking); }
+		const title = card.querySelector('.thinking-card-title');
+		if (title) { title.textContent = isThinking ? '思考中...' : '思考过程'; }
+	}
 
 	protected override _createKanbanListCard(resultText: string): HTMLElement | null {
 			const text = this._toolResultText(resultText);

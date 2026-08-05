@@ -57,6 +57,13 @@ export interface NativeParsedArgs {
 	'agents'?: boolean;
 	locale?: string;
 	'user-data-dir'?: string;
+	/**
+	 * 多开实例 ID（如 `--instance 2`）。同一数据目录（user-data-dir）下允许多个
+	 * 独立进程运行：IPC handle / lockfile / 可变状态（globalStorage、workspaceStorage、
+	 * backups、logs）按实例拆分，而 agents/skills/settings/extensions 等静态数据共享。
+	 * 未指定时为默认单实例行为。
+	 */
+	instance?: string;
 	'prof-startup'?: boolean;
 	'prof-startup-prefix'?: string;
 	'prof-append-timers'?: string;

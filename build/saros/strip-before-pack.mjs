@@ -196,6 +196,64 @@ try {
 	console.log('  ✅ 已清理空目录');
 } catch { /* ignore */ }
 
+// === 5. 关键构件校验与自愈（2026-08-05，生产事故 1785894964584） ===
+// rg.exe 缺失 → 内容搜索降级慢速 walk；agentmemory dist 缺失 → 能力插件 404；
+// kbWorker.js 缺失 → KB worker 404 回退主线程。缺任何一样都不得出包。
+console.log('\n🩺 [关键构件] 校验与自愈:');
+const repoRoot = path.resolve(__dirname, '../..');
+let criticalMissing = 0;
+
+function ensureFile(label, stagingRel, repoRelCandidates) {
+	const stagingAbs = path.join(buildDir, stagingRel);
+	if (existsSync(stagingAbs)) { console.log(`  ✅ ${label}`); return; }
+	for (const repoRel of repoRelCandidates) {
+		const repoAbs = path.join(repoRoot, repoRel);
+		if (existsSync(repoAbs)) {
+			mkdirSync(path.dirname(stagingAbs), { recursive: true });
+			cpSync(repoAbs, stagingAbs, { recursive: true });
+			console.log(`  ♻️  ${label} —— 已从 ${repoRel} 恢复`);
+			return;
+		}
+	}
+	console.log(`  ❌ ${label} 缺失且无法自愈（${stagingRel}）`);
+	criticalMissing++;
+}
+
+// 1) ripgrep（整包恢复：bin/rg.exe + lib + package.json）
+if (!existsSync(path.join(buildDir, 'resources/app/node_modules/@vscode/ripgrep/bin/rg.exe'))) {
+	const src = path.join(repoRoot, 'node_modules/@vscode/ripgrep');
+	if (existsSync(path.join(src, 'bin/rg.exe'))) {
+		mkdirSync(path.join(buildDir, 'resources/app/node_modules/@vscode'), { recursive: true });
+		cpSync(src, path.join(buildDir, 'resources/app/node_modules/@vscode/ripgrep'), { recursive: true });
+		console.log('  ♻️  @vscode/ripgrep —— 已从仓库 node_modules 整包恢复');
+	} else {
+		console.log('  ❌ @vscode/ripgrep/bin/rg.exe 缺失且仓库无可恢复源');
+		criticalMissing++;
+	}
+} else {
+	console.log('  ✅ @vscode/ripgrep/bin/rg.exe');
+}
+
+// 2) agentmemory 能力插件 dist（AgentCapability 回退路径硬编码加载）
+ensureFile(
+	'agentmemory-memory/dist/extension.js',
+	'resources/app/extensions/agentmemory-memory/dist/extension.js',
+	['extensions/agentmemory-memory/dist/extension.js'],
+);
+
+// 3) kbWorker.js（KB 内核 Worker 按 URL 加载；bundle 不产出 per-file 时需独立入口）
+ensureFile(
+	'kbWorker.js',
+	'resources/app/out/vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/kbWorker.js',
+	['out/vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/kbWorker.js'],
+);
+
+if (criticalMissing > 0) {
+	console.error(`\n💥 ${criticalMissing} 项关键构件缺失且无法自愈——禁止带病出包！`);
+	console.error('   请先执行：node build/next/index.ts transpile-plugins && npm run transpile-client，重建打包目录后重试。');
+	process.exit(1);
+}
+
 // === 汇总 ===
 console.log(`\n📊 总计释放: ${(totalFreed / 1024 / 1024).toFixed(1)}MB`);
 console.log('✅ 清理完成，可以执行 Inno Setup 打包');

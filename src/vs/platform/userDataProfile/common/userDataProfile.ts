@@ -345,7 +345,14 @@ export class UserDataProfilesService extends Disposable implements IUserDataProf
 
 	protected createDefaultProfile() {
 		const defaultProfile = toUserDataProfile('__default__profile__', localize('defaultProfile', "Default"), this.environmentService.userRoamingDataHome, this.profilesCacheHome);
-		return { ...defaultProfile, extensionsResource: this.getDefaultProfileExtensionsLocation() ?? defaultProfile.extensionsResource, isDefault: true };
+		// 多开（--instance <id>）：全局状态库（state.vscdb）按实例拆分到
+		// instanceStateHome/globalStorage，避免多进程并发写同一 SQLite 库损坏。
+		// 默认实例 instanceStateHome === appSettingsHome，路径与改造前完全一致。
+		const env = this.environmentService as IEnvironmentService & { instanceId?: string; instanceStateHome?: URI };
+		const globalStorageHome = env.instanceId && env.instanceStateHome
+			? joinPath(env.instanceStateHome.with({ scheme: this.environmentService.userRoamingDataHome.scheme }), 'globalStorage')
+			: defaultProfile.globalStorageHome;
+		return { ...defaultProfile, globalStorageHome, extensionsResource: this.getDefaultProfileExtensionsLocation() ?? defaultProfile.extensionsResource, isDefault: true };
 	}
 
 	async createTransientProfile(workspaceIdentifier?: IAnyWorkspaceIdentifier): Promise<IUserDataProfile> {

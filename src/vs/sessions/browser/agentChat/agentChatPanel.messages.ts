@@ -501,7 +501,12 @@ private _ruleThinkingStateChange(ctx: IMsgUpdateCtx): boolean {
 		if (part.kind === 'text') {
 			this.mdScheduler.schedule(el, part.text, 'markdown');
 		} else if (part.kind === 'thinking') {
-			this._updateThinkingCardHeader(el, msg);
+			// P-T1 修正：逐卡片判定是否处于「正在思考」活跃态——仅当该 episode 是
+			// 最后一个 part 且 message 仍在思考流式时，本卡才显示「思考中...」。
+			// 此前误用 message 级 msg.isThinking，导致多思考卡时所有卡都被标为思考中。
+			const isLastPart = !!msg.parts && msg.parts[msg.parts.length - 1] === part;
+			const cardIsThinking = !!msg.isStreaming && isLastPart && !!msg.isThinking;
+			this._updateThinkingCardHeader(el, cardIsThinking);
 			const body = el.querySelector('.thinking-card-body') as HTMLElement | null;
 			if (body && body.dataset.rendered === '1') {
 				this._attachStreamCardPin(body);
@@ -1495,7 +1500,7 @@ protected override _transitionStreamingToComplete(existingEl: HTMLElement, msg: 
 	const thinkingCards = bubble.querySelectorAll('.thinking-card');
 	const thinkingCard = thinkingCards[thinkingCards.length - 1] as HTMLElement | undefined;
 	if (thinkingCard && msg.thinking) {
-		this._updateThinkingCardHeader(thinkingCard, msg);
+		this._updateThinkingCardHeader(thinkingCard, !!msg.isThinking);
 		const body = thinkingCard.querySelector('.thinking-card-body') as HTMLElement | null;
 		if (body && body.dataset.rendered === '1') {
 			const lastThinkingPart = msg.parts

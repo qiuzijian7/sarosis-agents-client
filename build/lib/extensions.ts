@@ -90,11 +90,17 @@ function fromLocal(extensionPath: string, forWeb: boolean, _disableMangle: boole
 		input = isStandardEsbuild
 			? es.merge(
 				fromLocalEsbuild(extensionPath, esbuildConfigFileName),
+				// Also collect the extension files (dist, chat-webview-out, etc.)
+				// so that webview bundles and other assets are included in the package.
+				fromLocalNormal(extensionPath),
 				// Standard esbuild extensions need a separate type check step
 				...getBuildRootsForExtension(extensionPath).map(root => typeCheckExtensionStream(root, forWeb)),
 			)
 			// Extensions with their own build system (e.g. .esbuild.mts) handle type checking internally
-			: fromLocalEsbuild(extensionPath, esbuildConfigFileName);
+			: es.merge(
+				fromLocalEsbuild(extensionPath, esbuildConfigFileName),
+				fromLocalNormal(extensionPath),
+			);
 		isBundled = true;
 	} else {
 		input = fromLocalNormal(extensionPath);
@@ -149,36 +155,50 @@ function fromLocalEsbuild(extensionPath: string, esbuildConfigFileName: string):
 		`--rootDirName=extensions/${path.basename(extensionPath)}`
 	];
 
-	const child = cp.fork(
-		path.join(import.meta.dirname, 'esbuild-runner.mjs'),
-		args,
-		{
-			env: { ...process.env, FORCE_COLOR: '1' },
-			stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-			silent: true
-		}
-	);
-
 	let hasError = false;
 
-	child.stdout?.on('data', (data) => {
-		process.stdout.write(data);
-	});
+	function runEsbuild(configPath: string, onDone: () => void) {
+		const child = cp.fork(
+			path.join(import.meta.dirname, 'esbuild-runner.mjs'),
+			[configPath, ...args.slice(1)],
+			{
+				env: { ...process.env, FORCE_COLOR: '1' },
+				stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+				silent: true
+			}
+		);
 
-	child.stderr?.on('data', (data) => {
-		process.stderr.write(data);
-	});
+		child.stdout?.on('data', (data) => {
+			process.stdout.write(data);
+		});
 
-	child.on('error', (err: Error & { code?: string }) => {
-		hasError = true;
-		result.emit('error', err);
-	});
+		child.stderr?.on('data', (data) => {
+			process.stderr.write(data);
+		});
 
-	child.on('exit', (code: number) => {
-		if (code === 0 && !hasError) {
+		child.on('error', (err: Error & { code?: string }) => {
+			hasError = true;
+			result.emit('error', err);
+		});
+
+		child.on('exit', (code: number) => {
+			if (code === 0 && !hasError) {
+				onDone();
+			} else if (!hasError) {
+				result.emit('error', new Error(`esbuild exited with code ${code}`));
+			}
+		});
+	}
+
+	// Run main esbuild config, then optionally run esbuild.webview.mts if present
+	runEsbuild(esbuildConfigPath, () => {
+		const webviewConfigPath = path.join(extensionPath, 'esbuild.webview.mts');
+		if (fs.existsSync(webviewConfigPath)) {
+			runEsbuild(webviewConfigPath, () => {
+				result.end();
+			});
+		} else {
 			result.end();
-		} else if (!hasError) {
-			result.emit('error', new Error(`esbuild exited with code ${code}`));
 		}
 	});
 

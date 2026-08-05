@@ -147,6 +147,14 @@ export abstract class AbstractUpdateService implements IUpdateService {
 			return; // updates are never enabled when running out of sources
 		}
 
+		// 多开（--instance <id>）：更新检查仅默认实例执行——多实例同时下载/替换
+		// 同一安装目录会互相冲突（文件占用、版本回滚）。非默认实例标记禁用。
+		if (this.environmentMainService.instanceId) {
+			this.setState(State.Disabled(DisablementReason.DisabledByEnvironment));
+			this.logService.info(`update#ctor - updates disabled for secondary instance (id=${this.environmentMainService.instanceId}); only the default instance checks for updates`);
+			return;
+		}
+
 		await this.trackVersionChange();
 
 		if (this.environmentMainService.disableUpdates) {

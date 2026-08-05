@@ -48,7 +48,11 @@ export class EnvironmentMainService extends NativeEnvironmentService implements 
 	private _snapEnv: Record<string, string> = {};
 
 	@memoize
-	get backupHome(): string { return join(this.userDataPath, 'Backups'); }
+	get backupHome(): string {
+		// 多开（--instance <id>）：热退出备份按实例拆分——两实例若共享 Backups，
+		// 未保存文件恢复会互相覆盖。
+		return this.instanceId ? join(this.userDataPath, 'Backups', 'instances', this.instanceId) : join(this.userDataPath, 'Backups');
+	}
 
 	/**
 	 * Override logsHome to store ALL VS Code native log files inside the
@@ -77,7 +81,9 @@ export class EnvironmentMainService extends NativeEnvironmentService implements 
 				// Packaged EXE: VS Code native timestamp subdir under product logs
 				// Format matches the parent class: YYYYMMDDTHHMMSSsss
 				const key = toLocalISOString(new Date()).replace(/-|:|\.\d+Z$/g, '');
-				this.args.logsPath = resolve(this.appRoot, '..', '..', '..', 'logs', key);
+				// 多开：日志按实例拆分子目录，避免并发写同一 log 文件
+				const instanceSeg = this.instanceId ? join('instances', this.instanceId) : '';
+				this.args.logsPath = resolve(this.appRoot, '..', '..', '..', 'logs', instanceSeg, key);
 			}
 			// Dev mode: fall through to parent class (original behavior)
 		}
@@ -85,10 +91,19 @@ export class EnvironmentMainService extends NativeEnvironmentService implements 
 	}
 
 	@memoize
-	get mainIPCHandle(): string { return createStaticIPCHandle(this.userDataPath, 'main', this.productService.version); }
+	get mainIPCHandle(): string {
+		// 多开（--instance <id>）：IPC handle 名加实例前缀——claimInstance 据此认为
+		// 管道未被占用，从而允许同数据目录下的第二个独立进程运行。
+		// 实例 1（无 --instance）的 handle 与改造前完全一致（向后兼容既有转发逻辑）。
+		const channel = this.instanceId ? `${this.instanceId}-main` : 'main';
+		return createStaticIPCHandle(this.userDataPath, channel, this.productService.version);
+	}
 
 	@memoize
-	get mainLockfile(): string { return join(this.userDataPath, 'code.lock'); }
+	get mainLockfile(): string {
+		// 多开：lockfile 按实例命名（记录各实例 PID，互不覆盖）
+		return this.instanceId ? join(this.userDataPath, `code-${this.instanceId}.lock`) : join(this.userDataPath, 'code.lock');
+	}
 
 	@memoize
 	get disableUpdates(): boolean { return !!this.args['disable-updates']; }

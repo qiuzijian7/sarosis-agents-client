@@ -17,7 +17,7 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { ISearchService, QueryType, type ITextQuery, type IFileQuery, type ISearchComplete } from '../../../../../../workbench/services/search/common/search.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../../../base/common/errors.js';
-import { advanceSearchCodeEmptyStreak } from './pathFilterNormalize.js';
+import { advanceSearchCodeEmptyStreak, globToRegexForSearch } from './pathFilterNormalize.js';
 
 export class SearchHelpers {
 	// 重复搜索熔断：连续相同搜索 ≥N 次直接拦截（P3 2026-07-29：只拦不警，
@@ -102,6 +102,13 @@ export class SearchHelpers {
 	 * 避免反复报错（回退路径功能等价，仅速度略慢）。
 	 */
 	private _ripgrepBroken = false;
+
+	/**
+	 * 内容搜索是否处于 ripgrep 不可用的慢速 walk 降级态（2026-08-05）。
+	 * 供 search_code 等调用方在 0 命中时如实提示（不得声称 include 过滤以
+	 * ripgrep 语义生效——walk 回退过滤语义不同且大树可能未扫全）。
+	 */
+	isContentSearchDegraded(): boolean { return this._ripgrepBroken; }
 
 	constructor(
 		private readonly fileService: IFileService,
@@ -312,7 +319,7 @@ export class SearchHelpers {
 	}
 
 	private async _searchContentWalkFallback(
-		resolvedPath: string, pattern: string, _fileGlob: string | undefined,
+		resolvedPath: string, pattern: string, fileGlob: string | undefined,
 		limit: number, offset: number, _outputMode: string, signal?: AbortSignal,
 	): Promise<string> {
 		const normalizedUri = URI.file(resolvedPath);
@@ -320,7 +327,11 @@ export class SearchHelpers {
 		if (stat === null) { return '(no such file or directory)'; }
 		if (!stat.isDirectory) { return await this._grepSingleFile(normalizedUri, pattern, limit, offset, signal, _outputMode, 0); }
 		const hits: string[] = [];
-		await this._walkAndGrep(normalizedUri, pattern, hits, Math.min(limit + offset, 500), signal);
+		// 兑现 fileGlob（此前形参被丢弃：文件名过滤完全失效 → 全树逐文件 grep，
+		// 5000 文件预算在 Engine/Plugins 等噪声目录耗尽，永远到不了 Engine/Source——
+		// 日志 1785894964584：12+ 次 search_code 恒 27-32s 全 no matches）。
+		const globRe = globToRegexForSearch(fileGlob ?? '');
+		await this._walkAndGrep(normalizedUri, pattern, hits, Math.min(limit + offset, 500), signal, globRe);
 		const total = hits.length;
 		const paged = hits.slice(offset, offset + limit);
 		return this._appendSearchFooter(paged.join('\n') || '(no matches)', total, paged.length, offset, limit, 'match');
@@ -417,14 +428,9 @@ export class SearchHelpers {
 		let visited = 0;
 		const NOISE = SearchHelpers.NOISE_DIR_NAMES;
 
-		// 简易 glob → regex
-		const globToRegex = (g: string): RegExp => {
-			let r = g.replace(/\./g, '\\.').replace(/\*\*/g, '<<<RECURSIVE>>>')
-				.replace(/\*/g, '[^/\\\\]*').replace(/\?/g, '[^/\\\\]')
-				.replace(/<<<RECURSIVE>>>/g, '.*');
-			return new RegExp(`^${r}$`, 'i');
-		};
-		const regex = globToRegex(pattern);
+		// glob → regex（2026-08-05 换用共享转换器：原版不支持 {a,b} 花括号——
+		// SOURCE_CODE_GLOB 等花括号模式在 rg 不可用的 node 回退下恒不匹配）。
+		const regex = globToRegexForSearch(pattern) ?? /^.*$/i;
 
 		const walk = async (dir: string): Promise<void> => {
 			if (visited >= MAX_VISIT) { return; }
@@ -524,14 +530,19 @@ export class SearchHelpers {
 		return this._appendSearchFooter(out, total, paged.length, offset, limit, 'match');
 	}
 
-	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal): Promise<void> {
+	private async _walkAndGrep(dir: URI, query: string, out: string[], limit: number, signal?: AbortSignal, fileGlobRe?: RegExp): Promise<void> {
 		// Hard global cap on files we will read+grep regardless of `limit`.
 		// This protects against pathological recursion (huge build trees, symlink
 		// loops, accidentally pointing at C:\) which can OOM the renderer because
 		// each file we open allocates a UTF-8 string copy of the buffer.
 		const MAX_FILES_VISITED = 5_000;
+		// glob 过滤生效时，不命中文件不读不占预算（只耗目录 resolve）——
+		// 目录访问单独设上限防符号链接环/畸形树无界遍历。
+		const MAX_DIRS_VISITED = 30_000;
 		const filesVisited = { count: 0 };
+		const dirsVisited = { count: 0 };
 		const seenDirs = new Set<string>();
+		const rootFs = fileGlobRe ? dir.fsPath.replace(/\\/g, '/') : '';
 		const NOISE_DIRS = SearchHelpers.NOISE_DIR_NAMES;
 		// Extension blacklist — we never grep into binary-shaped files. The toString()
 		// on a 500KB binary creates a large garbage string + thousands of split parts,
@@ -549,9 +560,11 @@ export class SearchHelpers {
 			if (signal?.aborted) { return; }
 			if (out.length >= limit) { return; }
 			if (filesVisited.count >= MAX_FILES_VISITED) { return; }
+			if (dirsVisited.count >= MAX_DIRS_VISITED) { return; }
 			const key = current.toString();
 			if (seenDirs.has(key)) { return; }
 			seenDirs.add(key);
+			dirsVisited.count++;
 
 			let stat;
 			try { stat = await this.fileService.resolve(current); } catch { return; }
@@ -561,6 +574,7 @@ export class SearchHelpers {
 				if (signal?.aborted) { return; }
 				if (out.length >= limit) { return; }
 				if (filesVisited.count >= MAX_FILES_VISITED) { return; }
+				if (dirsVisited.count >= MAX_DIRS_VISITED) { return; }
 
 				if (child.isDirectory) {
 					if (NOISE_DIRS.has(child.name) || child.name.startsWith('.')) { continue; }
@@ -574,6 +588,14 @@ export class SearchHelpers {
 			if (/^\.env(?:\..*)?$|^id_(?:rsa|ed25519|ecdsa)(?:\..*)?$/i.test(child.name)) { continue; }
 				// Existing 512 KiB safety net (we keep it as a second line of defense).
 				if (typeof child.size === 'number' && child.size > 512 * 1024) { continue; }
+
+				// fileGlob 过滤：不命中文件名 glob 的文件不读、不占 filesVisited 预算
+				//（此前形参丢弃 → 全树逐文件 grep，预算在噪声目录耗尽——日志 1785894964584）
+				if (fileGlobRe) {
+					const childFs = child.resource.fsPath.replace(/\\/g, '/');
+					const rel = childFs.startsWith(rootFs) ? childFs.slice(rootFs.length).replace(/^\//, '') : child.name;
+					if (!fileGlobRe.test(rel)) { continue; }
+				}
 
 				filesVisited.count++;
 

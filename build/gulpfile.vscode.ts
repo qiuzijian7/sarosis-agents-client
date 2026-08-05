@@ -56,6 +56,7 @@ const vscodeEntryPoints = [
 	buildfile.workerProfileAnalysis,
 	buildfile.workerOutputLinks,
 	buildfile.workerBackgroundTokenization,
+	buildfile.workerKb,
 	buildfile.workbenchDesktop,
 	buildfile.code
 ].flat();

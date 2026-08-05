@@ -69,6 +69,33 @@ export abstract class AbstractNativeEnvironmentService implements INativeEnviron
 	@memoize
 	get appSettingsHome(): URI { return URI.file(join(this.userDataPath, 'User')); }
 
+	/**
+	 * 多开实例 ID（`--instance <id>`），未指定返回 undefined（默认单实例行为）。
+	 * 路径安全的实例 ID（仅字母数字/-/\_），非法值视为未指定。
+	 */
+	@memoize
+	get instanceId(): string | undefined {
+		const raw = this.args['instance'];
+		if (typeof raw === 'string' && /^[a-zA-Z0-9_-]{1,32}$/.test(raw)) {
+			return raw;
+		}
+		return undefined;
+	}
+
+	/**
+	 * 实例化可变状态根目录：`User/instances/<id>/`。
+	 *
+	 * 多开（--instance）时，settings/keybindings/snippets 仍共享（appSettingsHome），
+	 * 但 globalStorage（state.vscdb）、workspaceStorage 等单写者状态拆分到此目录，
+	 * 避免多进程并发写同一 SQLite 库导致损坏。默认实例返回 appSettingsHome 本身，
+	 * 路径与改造前完全一致（向后兼容）。
+	 */
+	@memoize
+	get instanceStateHome(): URI {
+		const id = this.instanceId;
+		return id ? joinPath(this.appSettingsHome, 'instances', id) : this.appSettingsHome;
+	}
+
 	@memoize
 	get tmpDir(): URI { return URI.file(this.paths.tmpDir); }
 
@@ -76,7 +103,7 @@ export abstract class AbstractNativeEnvironmentService implements INativeEnviron
 	get cacheHome(): URI { return URI.file(this.userDataPath); }
 
 	@memoize
-	get stateResource(): URI { return joinPath(this.appSettingsHome, 'globalStorage', 'storage.json'); }
+	get stateResource(): URI { return joinPath(this.instanceStateHome, 'globalStorage', 'storage.json'); }
 
 	@memoize
 	get userRoamingDataHome(): URI { return this.appSettingsHome.with({ scheme: Schemas.vscodeUserData }); }
@@ -97,7 +124,7 @@ export abstract class AbstractNativeEnvironmentService implements INativeEnviron
 	get sync(): 'on' | 'off' | undefined { return this.args.sync; }
 
 	@memoize
-	get workspaceStorageHome(): URI { return joinPath(this.appSettingsHome, 'workspaceStorage'); }
+	get workspaceStorageHome(): URI { return joinPath(this.instanceStateHome, 'workspaceStorage'); }
 
 	@memoize
 	get localHistoryHome(): URI { return joinPath(this.appSettingsHome, 'History'); }

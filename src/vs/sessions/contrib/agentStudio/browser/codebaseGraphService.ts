@@ -39,6 +39,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { createCodebaseGraphSqliteBackend } from './codebaseGraphStoreProxy.js';
 import type { ICodebaseGraphSqliteBackend } from '../common/codebaseGraphStoreChannel.js';
 import { LspCrossResolver } from './codebaseGraphLsp.js';
+import { INDEX_LOCK_FILENAME, INDEX_LOCK_HEARTBEAT_MS, createIndexLockToken, isIndexLockStale, parseIndexLock, serializeIndexLock } from './codebaseIndexLock.js';
 import { buildSemanticEdges, detectSimilarCode, MinHash, MINHASH_PERM } from './codebaseGraphExtendedPasses.js';
 import { runMultiLevelLeiden, detectDeadCodeEnhanced, computeTwoLevelLOD, executeExtendedCypher, computeAllSignals } from './codebaseGraphAdvancedAnalysis.js';
 import { CrossRepoDiscovery } from './codebaseGraphCrossRepoDiscovery.js';
@@ -925,12 +926,79 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 		return true;
 	}
 
-	private async _lockIndex(): Promise<() => void> {
+	private async _lockIndex(rootPath: string): Promise<() => void> {
 		if (this._indexLocked) {
 			throw new Error('Index already locked');
 		}
 		this._indexLocked = true;
-		return () => { this._indexLocked = false; };
+		// 跨进程文件锁（多开 --instance / 同 workspace 多窗口）：防止并发写
+		// <root>/.codebase-memory/graph.db.zst 导致图谱损坏。获取失败时回滚进程内锁并抛出。
+		try {
+			return await this._acquireIndexFileLock(rootPath);
+		} catch (err) {
+			this._indexLocked = false;
+			throw err;
+		}
+	}
+
+	/** 本进程（窗口）的索引锁 token——实例 ID + 随机串，用于释放时归属校验。 */
+	private _indexLockToken: string | undefined;
+	private _indexLockHeartbeat: ReturnType<typeof setInterval> | undefined;
+
+	/**
+	 * 获取 `<root>/.codebase-memory/index.lock` 跨进程文件锁。
+	 * 新鲜锁属他人 → 抛错；锁过期（持有方崩溃）→ 接管。返回释放函数（仅删自己的锁）。
+	 */
+	private async _acquireIndexFileLock(rootPath: string): Promise<() => void> {
+		const lockUri = URI.joinPath(URI.file(rootPath), '.codebase-memory', INDEX_LOCK_FILENAME);
+		if (!this._indexLockToken) {
+			const instanceId = (this._environmentService as unknown as { instanceId?: string }).instanceId;
+			this._indexLockToken = createIndexLockToken(instanceId);
+		}
+		const token = this._indexLockToken;
+
+		// 1. 读现有锁：新鲜且属他人 → 拒绝
+		try {
+			const existing = await this._fileService.readFile(lockUri);
+			const mtime = (await this._fileService.stat(lockUri)).mtime;
+			const content = parseIndexLock(existing.value.toString());
+			if (content && content.token !== token && !isIndexLockStale(mtime, Date.now())) {
+				throw new Error(`索引正被另一进程执行（实例 ${content.instanceId ?? 'default'}），请稍候`);
+			}
+		} catch (err) {
+			// 文件不存在 → 无锁可继续；其他错误若非"拒绝"语义则视为无锁（宽松获取）
+			if (err instanceof Error && err.message.includes('索引正被另一进程执行')) { throw err; }
+		}
+
+		// 2. 写入自己的锁 + 启动心跳刷新 mtime
+		const writeLock = async () => {
+			await this._fileService.writeFile(lockUri, VSBuffer.fromString(serializeIndexLock({
+				token,
+				instanceId: (this._environmentService as unknown as { instanceId?: string }).instanceId,
+				acquiredAt: Date.now(),
+			})));
+		};
+		await this._fileService.createFolder(URI.joinPath(URI.file(rootPath), '.codebase-memory'));
+		await writeLock();
+		this._indexLockHeartbeat = setInterval(() => { void writeLock().catch(() => { /* 心跳失败忽略 */ }); }, INDEX_LOCK_HEARTBEAT_MS);
+
+		// 3. 释放：停心跳，仅当锁仍属自己才删除
+		return () => {
+			if (this._indexLockHeartbeat) {
+				clearInterval(this._indexLockHeartbeat);
+				this._indexLockHeartbeat = undefined;
+			}
+			void (async () => {
+				try {
+					const cur = await this._fileService.readFile(lockUri);
+					const content = parseIndexLock(cur.value.toString());
+					if (content?.token === token) {
+						await this._fileService.del(lockUri);
+					}
+				} catch { /* 锁已被删/被接管，忽略 */ }
+			})();
+			this._indexLocked = false;
+		};
 	}
 
 	// ─── Worker Pool: parallel tree-sitter parsing ──────────────────────
@@ -1379,10 +1447,10 @@ self.onmessage = async function(e) {
 
 		let releaseLock: () => void;
 		try {
-			releaseLock = await this._lockIndex();
-		} catch {
+			releaseLock = await this._lockIndex(rootPath);
+		} catch (lockErr) {
 			this._isIndexing = false;
-			return { success: false, message: '索引已被锁定，请稍候...' };
+			return { success: false, message: lockErr instanceof Error ? lockErr.message : '索引已被锁定，请稍候...' };
 		}
 
 		try {
@@ -1761,10 +1829,10 @@ self.onmessage = async function(e) {
 
 		let releaseLock: () => void;
 		try {
-			releaseLock = await this._lockIndex();
-		} catch {
+			releaseLock = await this._lockIndex(rootPath);
+		} catch (lockErr) {
 			this._isIndexing = false;
-			return { success: false, message: '索引已被锁定，跳过增量索引' };
+			return { success: false, message: lockErr instanceof Error ? lockErr.message : '索引已被锁定，跳过增量索引' };
 		}
 
 		try {

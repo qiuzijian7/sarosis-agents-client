@@ -19,6 +19,11 @@ export const workerLocalFileSearch = createModuleDescription('vs/workbench/servi
 export const workerProfileAnalysis = createModuleDescription('vs/platform/profiling/electron-browser/profileAnalysisWorkerMain');
 export const workerOutputLinks = createModuleDescription('vs/workbench/contrib/output/common/outputLinkComputerMain');
 export const workerBackgroundTokenization = createModuleDescription('vs/workbench/services/textMate/browser/backgroundTokenization/worker/textMateTokenizationWorker.workerMain');
+// KB 内核 Worker（AgentStudio）。kbWorkerManager._loadWorkerCode 按 URL 读取
+// out/vs/sessions/.../kbWorker.js（FileAccess.asFileUri + fetch 回退）——
+// bundle 打包必须作为独立入口产出，否则打包版该文件 404、KB 检索回退主线程（大库卡 UI）。
+// Worker 源自包含、无外部 import，可安全独立打包。
+export const workerKb = createModuleDescription('vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/kbWorker');
 
 export const workbenchDesktop = [
 	createModuleDescription('vs/workbench/contrib/debug/node/telemetryApp'),

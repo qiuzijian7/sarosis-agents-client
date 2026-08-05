@@ -1232,7 +1232,8 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		// 434s 烧光预算）。单次 searchOutcomeHint 调用覆盖三分支。
 		const _emptyStreak = ctx.searchHelpers.recordSearchCodeEmptyStreak(agentId, !anyMatches);
 		if (!anyMatches) {
-			result += searchOutcomeHint(includeGlob, _emptyStreak.streak, _emptyStreak.shouldGuide);
+			// 降级态（ripgrep 不可用）如实提示：不得让模型以为 include 过滤以 rg 语义生效
+			result += searchOutcomeHint(includeGlob, _emptyStreak.streak, _emptyStreak.shouldGuide, ctx.searchHelpers.isContentSearchDegraded());
 		}
 
 		// 结果后处理：大小截断兜底（densify/redact 已按 root 分别做过）

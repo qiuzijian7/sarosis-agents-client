@@ -197,8 +197,17 @@ stages:
                 Copy-Item $buildRg $mainRg -Force
                 Write-Host "[RG] Copied from build/"
               }
+              # 仓库内嵌兜底（离线/镜像全挂也能出包）：build/saros/bin/rg.exe
+              # 此前三回退全失败仅 WARN 继续打包 → 打包版 rg 缺失，内容搜索降级慢速 walk
+              # （生产日志 1785894964584：12+ 次 search_code 恒 27-32s 全 no matches）。
+              $vendoredRg = "build/saros/bin/rg.exe"
+              if (-not (Test-Path $mainRg) -and (Test-Path $vendoredRg)) {
+                Copy-Item $vendoredRg $mainRg -Force
+                Write-Host "[RG] Restored from vendored build/saros/bin/rg.exe"
+              }
               if (-not (Test-Path $mainRg)) {
-                Write-Host "[WARN] rg.exe not available. Search falls back to built-in engine."
+                Write-Error "rg.exe unavailable after all fallbacks (npmmirror/GitHub/build/vendored). Refusing to package without ripgrep."
+                exit 1
               }
 
               # ===== 8. Install extension dependencies =====
@@ -291,6 +300,23 @@ stages:
               }
             shell: powershell
 
+          # ---------- 4.5 构建能力插件（dist/extension.js） ----------
+          # compile-build-with-mangling 走经典 tsc+mangle（compilation.ts），不经过
+          # build/next transpile()，因此不会执行 transpileCapabilityPlugins——
+          # extensions/<name>/dist/extension.js 不会被刷新/产出。
+          # 缺失时打包版 AgentCapability 回退路径 extensions/<name>/dist/extension.js 404
+          # （生产日志 1785894964584：agentmemory-memory 能力插件加载失败）。
+          - name: "构建能力插件 transpile-plugins"
+            run: |
+              $nvmNodeDir = "$env:LOCALAPPDATA\nvm\v22.22.1"
+              $env:PATH = "$nvmNodeDir;$env:PATH"
+              node build/next/index.ts transpile-plugins
+              if ($LASTEXITCODE -ne 0) { Write-Error "transpile-plugins failed"; exit 1 }
+              if (-not (Test-Path "extensions/agentmemory-memory/dist/extension.js")) {
+                Write-Error "agentmemory-memory/dist/extension.js not produced"; exit 1
+              }
+            shell: powershell
+
           # ---------- 5. 编译内置扩展 ----------
           - name: "编译扩展 compile-extensions-build"
             run: |
@@ -330,6 +356,33 @@ stages:
             run: |
               npx gulp vscode-win32-x64 --verbose
               if ($LASTEXITCODE -ne 0) { Write-Error "Packaging failed"; exit 1 }
+            shell: powershell
+
+          # ---------- 6.5 打包产物关键构件验证（缺失即失败，禁止带病出包） ----------
+          # 历史事故（生产日志 1785894964584）：rg.exe 缺失→搜索降级慢速 walk；
+          # agentmemory dist 缺失→能力插件 404；kbWorker.js 缺失→KB worker 404 回退主线程。
+          - name: "验证打包关键构件"
+            run: |
+              $appRoot = Join-Path (Split-Path $pwd.Path -Parent) "VSCode-win32-x64\resources\app"
+              if (-not (Test-Path $appRoot)) { $appRoot = "..\VSCode-win32-x64\resources\app" }
+              Write-Host "Verifying staging dir: $appRoot"
+              $required = @(
+                "node_modules\@vscode\ripgrep\bin\rg.exe",
+                "extensions\agentmemory-memory\dist\extension.js",
+                "out\vs\sessions\contrib\agentStudio\browser\views\knowledgeBase\kbWorker.js",
+                "out\vs\sessions\sessions.desktop.main.js"
+              )
+              $missing = @()
+              foreach ($rel in $required) {
+                $p = Join-Path $appRoot $rel
+                if (Test-Path $p) { Write-Host "  [OK] $rel" }
+                else { Write-Host "  [MISSING] $rel"; $missing += $rel }
+              }
+              if ($missing.Count -gt 0) {
+                Write-Error ("Staging verification failed, missing:`n - " + ($missing -join "`n - "))
+                exit 1
+              }
+              Write-Host "[OK] All critical artifacts present in staging."
             shell: powershell
 
           # ---------- 7. 生成 EXE 安装包（user + system setup） ----------

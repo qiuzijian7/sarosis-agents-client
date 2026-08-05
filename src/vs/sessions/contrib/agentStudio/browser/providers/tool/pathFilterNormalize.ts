@@ -66,10 +66,19 @@ export function searchRootCandidates(cleanedPath: string, workspaceRoots: readon
  * @param includeGlob 本次 include 过滤（有则提示过滤过严，无则引导验证符号名）
  * @param streak      连续 0 命中连击数
  * @param shouldGuide 连击是否达阈值（达则追加"换 search_graph"强引导）
+ * @param walkDegraded 本次是否处于 ripgrep 不可用降级（2026-08-05，日志 1785894964584：
+ *        降级时不得声称 include 过滤已生效——walk 回退的过滤语义不同且大目录可能未扫全）
  */
-export function searchOutcomeHint(includeGlob: string | undefined, streak: number, shouldGuide: boolean): string {
+export function searchOutcomeHint(includeGlob: string | undefined, streak: number, shouldGuide: boolean, walkDegraded = false): string {
 	const parts: string[] = [];
-	if (includeGlob) {
+	if (walkDegraded) {
+		parts.push(
+			'ripgrep is unavailable in this environment — content search ran as a slow directory walk ' +
+			'(file-name filter applied, but very large trees may be only partially scanned before the visit cap). ' +
+			'Prefer: (1) narrow path_filter to an exact subdirectory or file path, (2) file_read on the known path, ' +
+			'or (3) search_files to locate the exact file first.'
+		);
+	} else if (includeGlob) {
 		parts.push(
 			`0 matches with include filter "${includeGlob}". The path filter may be too restrictive: ` +
 			'paths are matched RELATIVE to each project root — do NOT prefix with the root folder name. ' +
@@ -114,4 +123,40 @@ export function advanceSearchCodeEmptyStreak(
 ): { streak: number; shouldGuide: boolean } {
 	const streak = isEmpty ? current + 1 : 0;
 	return { streak, shouldGuide: streak > 0 && threshold > 0 && streak % threshold === 0 };
+}
+
+/**
+ * glob → RegExp（Node-walk 回退路径的文件名过滤，2026-08-05，日志 1785894964584）。
+ *
+ * 背景：ripgrep 不可用时 walk 回退此前**丢弃 fileGlob**（形参下划线前缀），
+ * 指定文件名过滤完全失效 → 全树逐文件 grep，5000 文件预算在 Engine/Plugins
+ * 等噪声目录耗尽，永远到不了 Engine/Source（12+ 次 search_code 恒 27-32s 全 no matches）。
+ *
+ * 转换规则：
+ *  - 剥离开头 globstar+斜杠（任意深度语义由 `(^|.../)` 前缀表达）；
+ *  - globstar → 跨目录任意序列（用可打印占位串防被单 `*` 规则二次吃掉——
+ *    既有 `_globToRegex`/`globToRegex` 内联版均踩过此坑：globstar 先转 `.*`，
+ *    其中的 `*` 又被后续规则转成 `[^/]*`，退化为「恰好一层目录」；
+ *    注意勿用控制字符占位——经工具链写入时会丢失成空串）；
+ *  - 单 `*` → 不跨目录；`?` → 单非分隔字符；`{a,b}` → `(a|b)`；
+ *  - 纯 globstar 输入返回 undefined（= 不过滤）。
+ *
+ * 匹配目标：以 `(^|.../)` 前缀锚定路径段边界，对绝对路径与根相对路径均可用
+ * （比 ripgrep 的根锚定语义略宽，回退场景宁宽勿漏）。
+ */
+export function globToRegexForSearch(glob: string): RegExp | undefined {
+	let g = String(glob ?? '').replace(/\\/g, '/').trim();
+	if (!g) { return undefined; }
+	// 纯 globstar（任意深度全匹配）= 不过滤
+	if (/^(\*\*\/)*\*\*$/.test(g)) { return undefined; }
+	while (g.startsWith('**/')) { g = g.slice(3); }
+	if (!g) { return undefined; }
+	const body = g
+		.replace(/[.+^$()|[\]\\]/g, '\\$&')
+		.replace(/\{(.*?)\}/g, (_m, inner) => '(' + String(inner).replace(/,/g, '|') + ')')
+		.replace(/\*\*/g, '@@GS@@')           // 占位：防被单 * 规则吃掉
+		.replace(/\*/g, '[^/]*')
+		.replace(/\?/g, '[^/]')
+		.replace(/@@GS@@/g, '.*');            // 还原 globstar
+	return new RegExp('(^|.*/)' + body + '$', 'i');
 }

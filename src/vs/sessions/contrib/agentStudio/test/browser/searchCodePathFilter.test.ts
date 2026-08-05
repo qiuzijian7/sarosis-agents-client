@@ -7,6 +7,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	advanceSearchCodeEmptyStreak,
+	globToRegexForSearch,
 	normalizeFileGlobForSearch,
 	normalizeSearchPathFilter,
 	searchRootCandidates,
@@ -210,5 +211,70 @@ suite('search_code path_filter（P1 搜索根模型，log 1785228894680）', () 
 			cur = r.streak; seen.push(r.shouldGuide);
 		}
 		assert.deepStrictEqual(seen, [false, false, true], '阈值 3 时第 3 次才触发');
+	});
+
+	// ─── globToRegexForSearch（walk 回退文件名过滤，log 1785894964584）────────
+
+	test('globToRegexForSearch: 指定文件名 glob 任意深度匹配（绝对/相对路径均可）', () => {
+		const re = globToRegexForSearch('**/FastReferenceCollector.h');
+		assert.ok(re);
+		assert.ok(re!.test('Engine/Source/Runtime/CoreUObject/Public/UObject/FastReferenceCollector.h'));
+		assert.ok(re!.test('FastReferenceCollector.h'));
+		assert.ok(re!.test('f:/GR_qiuzijian_main/UE5EA/Engine/Source/Runtime/CoreUObject/Public/UObject/FastReferenceCollector.h'));
+		assert.ok(!re!.test('Engine/Source/XFastReferenceCollector.h'), '段边界：前缀粘连不得命中');
+		assert.ok(!re!.test('Engine/Source/FastReferenceCollector.hpp'));
+	});
+
+	test('globToRegexForSearch: 扩展名 glob', () => {
+		const re = globToRegexForSearch('**/*.cpp');
+		assert.ok(re);
+		assert.ok(re!.test('Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp'));
+		assert.ok(!re!.test('Engine/Source/FastReferenceCollector.h'));
+	});
+
+	test('globToRegexForSearch: 中段 globstar 不被单星规则吃掉（历史 bug：退化为恰好一层目录）', () => {
+		const re = globToRegexForSearch('Source/**/Public/**');
+		assert.ok(re);
+		assert.ok(re!.test('Source/Runtime/CoreUObject/Public/UObject/x.h'), 'globstar 必须跨多层目录');
+		assert.ok(!re!.test('Source/Runtime/Private/x.h'));
+	});
+
+	test('globToRegexForSearch: 花括号扩展', () => {
+		const re = globToRegexForSearch('{*.cpp,*.h}');
+		assert.ok(re);
+		assert.ok(re!.test('a/b/c.cpp'));
+		assert.ok(re!.test('x.h'));
+		assert.ok(!re!.test('x.cs'));
+	});
+
+	test('globToRegexForSearch: 纯 globstar / 空 = 不过滤（undefined）', () => {
+		assert.strictEqual(globToRegexForSearch('**'), undefined);
+		assert.strictEqual(globToRegexForSearch('**/**'), undefined);
+		assert.strictEqual(globToRegexForSearch(''), undefined);
+	});
+
+	test('globToRegexForSearch: 大小写不敏感', () => {
+		const re = globToRegexForSearch('**/garbagecollection.cpp');
+		assert.ok(re!.test('Engine/Source/GarbageCollection.cpp'));
+	});
+
+	// ─── searchOutcomeHint 降级态如实提示（2026-08-05）────────────────────
+
+	test('searchOutcomeHint（降级分支）: 声明 ripgrep 不可用，不误导为普通过滤过严', () => {
+		const hint = searchOutcomeHint('**/FastReferenceCollector.h', 1, false, true);
+		assert.ok(hint.includes('ripgrep is unavailable'), '应声明 ripgrep 不可用');
+		assert.ok(!hint.includes('path filter may be too restrictive'), '降级时不得声称普通过滤语义');
+	});
+
+	test('searchOutcomeHint（降级分支）: 未降级时保持既有 include 分支', () => {
+		const hint = searchOutcomeHint('**/x.cpp', 1, false, false);
+		assert.ok(hint.includes('path filter may be too restrictive'));
+		assert.ok(!hint.includes('ripgrep is unavailable'));
+	});
+
+	test('searchOutcomeHint（降级分支）: 与连空强引导叠加', () => {
+		const hint = searchOutcomeHint(undefined, 3, true, true);
+		assert.ok(hint.includes('ripgrep is unavailable'));
+		assert.ok(hint.includes('3 times in a row'));
 	});
 });

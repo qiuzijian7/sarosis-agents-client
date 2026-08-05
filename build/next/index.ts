@@ -1556,6 +1556,7 @@ function printUsage(): void {
 
 Commands:
 	transpile          Transpile TypeScript to JavaScript (single-file, fast)
+	transpile-plugins  Bundle capability plugins only (extensions/<name>/dist/extension.js + out/vs/extensions/...)
 	bundle             Bundle entry points into optimized bundles
 
 Options for 'transpile':
@@ -1616,6 +1617,17 @@ async function main(): Promise<void> {
 				console.log(`[transpile] Done in ${Date.now() - t1}ms`);
 				}
 				break;
+
+			case 'transpile-plugins': {
+				// 仅构建能力插件（extensions/<name>/dist/extension.js + <outDir>/vs/extensions/...）。
+				// CI 打包路径（compile-build-with-mangling = 经典 tsc+mangle）不经过 transpile()，
+				// 若不在打包前单独跑本命令，dist/ 产物不会被刷新——
+				// 打包版 AgentCapability 回退路径 extensions/<name>/dist/extension.js 将缺失(404)。
+				const pluginsOutDir = options.out ?? OUT_DIR;
+				console.log(`[transpile-plugins] Building capability plugins (out=${pluginsOutDir})...`);
+				await transpileCapabilityPlugins(pluginsOutDir);
+				break;
+			}
 
 			case 'bundle':
 				await bundle(options.out ?? OUT_VSCODE_DIR, options.minify, options.nls, options.manglePrivates, options.target as BuildTarget, options.sourceMapBaseUrl);
