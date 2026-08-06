@@ -100,6 +100,12 @@ venv/
 .vs/*
 .workbuddy/*
 build/*
+# vendored ripgrep 二进制必须入库：内网 CI 无法访问 npmmirror/GitHub 时
+# 这是唯一的 rg 来源（.ci/package-win-exe.yml Step 3 兜底链末位）。
+# 若删除，CI 打包版将缺 rg -> 内容搜索降级为慢速 walk。
+!build/saros/
+!build/saros/bin/
+!build/saros/bin/rg.exe
 
 deploy-package/*
 resources/thirdparty/*
