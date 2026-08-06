@@ -106,6 +106,10 @@ build/*
 !build/saros/
 !build/saros/bin/
 !build/saros/bin/rg.exe
+# vendored @vscode/sqlite3 原生二进制同样必须入库：CI 的 npm rebuild 对其无
+# install 脚本是空操作，缺失将导致打包版图谱 SQLite 后端（search_graph/query_graph）
+# 不可用。lib/sqlite3-binding.js 硬编码 require('../build/Release/vscode-sqlite3.node')。
+!build/saros/bin/vscode-sqlite3.node
 
 deploy-package/*
 resources/thirdparty/*

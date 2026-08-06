@@ -133,6 +133,26 @@ stages:
                 --foreground-scripts
               if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: native rebuild failed"; exit 1 }
 
+              # ===== 5.5 @vscode/sqlite3 原生模块（图谱 SQLite 后端必需）=====
+              # 注意：@vscode/sqlite3 无 install 脚本 → npm rebuild 对它空操作；
+              # lib/sqlite3-binding.js 硬编码 require('../build/Release/vscode-sqlite3.node')。
+              # 缺失 → 打包版 search_graph/query_graph/get_code_snippet 走 SQLite 后端必挂。
+              # 优先用 vendored 兜底（build/saros/bin/vscode-sqlite3.node，随仓库 checkout 到位）。
+              $sqliteNode = "node_modules\@vscode\sqlite3\build\Release\vscode-sqlite3.node"
+              if (-not (Test-Path $sqliteNode)) {
+                $vendoredSqlite = "build\saros\bin\vscode-sqlite3.node"
+                if (Test-Path $vendoredSqlite) {
+                  New-Item -ItemType Directory -Force -Path (Split-Path $sqliteNode) | Out-Null
+                  Copy-Item $vendoredSqlite $sqliteNode -Force
+                  Write-Host "[FIX] @vscode/sqlite3 native restored from vendored: $sqliteNode"
+                }
+              }
+              if (-not (Test-Path $sqliteNode)) {
+                Write-Error "FATAL: @vscode/sqlite3 native binary missing (node_modules\@vscode\sqlite3\build\Release\vscode-sqlite3.node) — 图谱 SQLite 后端不可用"
+                exit 1
+              }
+              Write-Host "[OK] @vscode/sqlite3 native binary present ($((Get-Item $sqliteNode).Length) bytes)"
+
               if (-not (Test-Path "node_modules\gulp\bin\gulp.js")) {
                 Write-Error "FATAL: node_modules/gulp not found after npm install + rebuild"
                 exit 1

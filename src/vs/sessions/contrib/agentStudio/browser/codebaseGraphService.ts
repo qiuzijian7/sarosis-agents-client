@@ -3096,8 +3096,17 @@ self.onmessage = async function(e) {
 	async hasGraphDataAsync(): Promise<boolean> {
 		await this.whenGraphLoaded();
 		if (this._sqliteBackendEnabled) {
-			const count = await this._sqliteBackend.getTotalNodeCount(this._projectName);
-			return count > 0;
+			try {
+				const count = await this._sqliteBackend.getTotalNodeCount(this._projectName);
+				if (count > 0) { return true; }
+				// sqlite 库为空（图从 gzip artifact 加载、本会话未索引同步）→ 回退内存 store
+				this._logService.warn('[CodebaseGraph] hasGraphDataAsync: sqlite empty, falling back to in-memory store');
+				return this.hasGraphData();
+			} catch (err) {
+				// sqlite 后端不可用（打包版缺原生模块 / channel 未注册）→ 回退内存 store
+				this._logService.warn('[CodebaseGraph] hasGraphDataAsync: sqlite backend failed, falling back to in-memory store:', err);
+				return this.hasGraphData();
+			}
 		}
 		return this.hasGraphData();
 	}
@@ -3696,12 +3705,23 @@ self.onmessage = async function(e) {
 		let candidates: GraphNode[];
 		const _tFetch = Date.now();
 		const _fetchPath = needle ? 'searchNodes' : 'getAllNodes';
-		if (needle) {
-			// 文本检索走主进程 FTS5/LIKE（label=file 的语义交给下方 filePattern 过滤）
-			const nodeType = params.label && params.label !== 'file' ? params.label : undefined;
-			candidates = await this._sqliteBackend!.searchNodes(needle, nodeType, candidateCap);
-		} else {
-			candidates = await this._sqliteBackend!.getAllNodes(params.project ?? this._projectName, candidateCap);
+		try {
+			if (needle) {
+				// 文本检索走主进程 FTS5/LIKE（label=file 的语义交给下方 filePattern 过滤）
+				const nodeType = params.label && params.label !== 'file' ? params.label : undefined;
+				candidates = await this._sqliteBackend!.searchNodes(needle, nodeType, candidateCap);
+			} else {
+				candidates = await this._sqliteBackend!.getAllNodes(params.project ?? this._projectName, candidateCap);
+			}
+		} catch (err) {
+			// sqlite 后端不可用（打包版缺原生模块等）→ 回退内存图（图已从 gzip 加载时仍可用）
+			this._logService.warn('[CodebaseGraph] [searchGraphAsync] sqlite backend failed — falling back to in-memory graph:', err);
+			return this.searchGraph(params);
+		}
+		if (candidates.length === 0 && this.hasGraphData()) {
+			// sqlite 库为空（图从 gzip 加载、本会话未同步）→ 回退内存图
+			this._logService.info('[CodebaseGraph] [searchGraphAsync] sqlite empty — falling back to in-memory graph');
+			return this.searchGraph(params);
 		}
 		const _tFetchMs = Date.now() - _tFetch;
 		if (_tFetchMs > 500) { this._logService.warn(`[CodebaseGraph] [searchGraphAsync][diag] sqlite fetch slow: ${_tFetchMs}ms needle="${needle.slice(0, 40)}" candidates=${candidates.length} path=${_fetchPath}`); }

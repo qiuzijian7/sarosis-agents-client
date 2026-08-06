@@ -39,7 +39,8 @@
  *   - @vscode/sandbox-runtime (1.5MB) — 沙箱运行时
  */
 
-import { rmSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { rmSync, existsSync, readdirSync, statSync, mkdirSync, cpSync } from 'node:fs';
+import path from 'node:path';
 import { join, resolve, dirname } from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -246,6 +247,15 @@ ensureFile(
 	'kbWorker.js',
 	'resources/app/out/vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/kbWorker.js',
 	['out/vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/kbWorker.js'],
+);
+
+// 4) @vscode/sqlite3 原生模块（Codebase 图谱 SQLite 后端 + KB SQLite 必需）。
+//    缺失 → 主进程 require('@vscode/sqlite3') 抛错 → search_graph/query_graph
+//    走 SQLite 后端全部失败。需在 asar.unpacked 内（asar 内无法加载原生模块）。
+ensureFile(
+	'@vscode/sqlite3/build/Release/vscode-sqlite3.node',
+	'resources/app/node_modules.asar.unpacked/@vscode/sqlite3/build/Release/vscode-sqlite3.node',
+	['build/saros/bin/vscode-sqlite3.node'],
 );
 
 if (criticalMissing > 0) {
