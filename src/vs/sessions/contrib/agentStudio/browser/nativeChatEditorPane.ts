@@ -2872,9 +2872,12 @@ private _handleStreamDelta(delta: any): void {
 				// 2026-07-27：credit 是否"曾经出现过"（哪怕值为 0）与"从未提供"需区分——
 				// 否则免费/未计费模型的 credit=0 会被误判为"无数据"而不展示占位 pill。
 				const creditSeen = prev?.credit !== undefined || typeof delta.usage.credit === 'number';
-				const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
-				const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
-				const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: 0, cacheHitRate, credit: creditSeen ? creditSum : undefined };
+			const cacheMiss = Math.max(0, input - cachedRead - cacheWrite);
+			const cacheHitRate = input > 0 ? (cachedRead / input) * 100 : 0;
+			// reasoning 不再硬编码 0：usage delta 现已携带 reasoning_tokens（OpenAI 系），
+			// 与子代理 subagentTokenCollector.reasoningTokens 口径对齐
+			const reasoning = (prev?.reasoning ?? 0) + (delta.usage.reasoning ?? 0);
+			const tokenUsage = { input, output, total, cached: cachedRead || undefined, cachedRead: cachedRead || undefined, cacheWrite: cacheWrite || undefined, cacheMiss, reasoning: reasoning || undefined, cacheHitRate, credit: creditSeen ? creditSum : undefined };
 				assistantMsg.tokenUsage = tokenUsage;
 				this._chatPanel?.updateMessage(assistantId, { tokenUsage });
 					const limit = this._currentMaxContextTokens ?? 0;

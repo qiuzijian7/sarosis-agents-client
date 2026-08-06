@@ -404,6 +404,23 @@ html, body {
 	color: #aaa;
 }
 
+/* Rendered Mermaid diagram (SVG injected by the host renderer) */
+.kb-mermaid {
+	margin: 0.9em 0;
+	padding: 10px;
+	border-radius: 6px;
+	background: #181818;
+	overflow-x: auto;
+}
+.kb-mermaid svg {
+	max-width: 100%;
+	height: auto;
+	display: block;
+	margin: 0 auto;
+}
+.kb-mermaid-loading { font: 12px system-ui; color: #888; padding: 14px 10px; }
+.kb-mermaid-error { border: 1px dashed #a44; background: #1c1414; }
+
 /* KaTeX blocks */
 .katex-block { margin: 0.9em 0; overflow-x: auto; }
 .katex-inline { font-size: 1em; }

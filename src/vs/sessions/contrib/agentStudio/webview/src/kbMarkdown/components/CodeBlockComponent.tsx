@@ -2,6 +2,7 @@ import { type ComponentPropsWithoutRef, isValidElement, type ReactNode } from 'r
 import { PrismLight as SyntaxHighlighter, oneDark } from './prismLanguages';
 import { CopyButton } from './CopyButton';
 import { CsvTable } from './CsvTable';
+import { MermaidDiagram } from './MermaidDiagram';
 
 interface CodeProps {
 	className?: string;
@@ -23,12 +24,7 @@ export function CodeBlockComponent(props: ComponentPropsWithoutRef<'pre'>): Reac
 		const className = children.props.className ?? '';
 		const code = extractText(children.props.children).trim();
 		if (/\blanguage-mermaid\b/.test(className)) {
-			return (
-				<div className="kb-diagram-placeholder">
-					<div className="kb-diagram-label">Mermaid 图示（需安装 mermaid 依赖后启用渲染）</div>
-					<pre className="kb-diagram-code">{code}</pre>
-				</div>
-			);
+			return <MermaidDiagram source={code} />;
 		}
 		if (/\blanguage-d2\b/.test(className)) {
 			return (

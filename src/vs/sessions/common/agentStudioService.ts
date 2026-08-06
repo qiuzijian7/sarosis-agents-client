@@ -400,6 +400,8 @@ export interface IChatStreamDelta {
 		readonly cacheWriteTokens?: number;
 		/** Total tokens (some gateways provide total_tokens in final chunk; defaults to input+output). */
 		readonly totalTokens?: number;
+		/** Reasoning tokens (OpenAI `completion_tokens_details.reasoning_tokens`, 对齐子代理 subagentTokenCollector.reasoningTokens 口径). */
+		readonly reasoning?: number;
 		/** Billing credits consumed by this call (from gateway final-chunk usage.credit, e.g. CodeBuddy). */
 		readonly credit?: number;
 	};

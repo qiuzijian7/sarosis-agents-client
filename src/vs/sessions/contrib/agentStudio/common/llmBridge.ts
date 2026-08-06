@@ -355,8 +355,11 @@ function _extractUsage(parsed: any): IModelDelta | null {
 	const cacheWriteTokens = u.cache_creation_input_tokens ?? undefined;
 	const inputTokens = u.prompt_tokens ?? u.input_tokens ?? undefined;
 	const outputTokens = u.completion_tokens ?? u.output_tokens ?? undefined;
-	if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined || cacheWriteTokens !== undefined) {
-		return { type: 'usage', usage: { inputTokens, outputTokens, cachedTokens, cacheWriteTokens } };
+	// Reasoning tokens：OpenAI/OpenRouter 在 completion_tokens_details.reasoning_tokens，
+	// 部分网关直接给 reasoning_tokens（对齐子代理 subagentTokenCollector 口径）。
+	const reasoning = u.completion_tokens_details?.reasoning_tokens ?? u.reasoning_tokens ?? undefined;
+	if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined || cacheWriteTokens !== undefined || reasoning !== undefined) {
+		return { type: 'usage', usage: { inputTokens, outputTokens, cachedTokens, cacheWriteTokens, reasoning } };
 	}
 	return null;
 }

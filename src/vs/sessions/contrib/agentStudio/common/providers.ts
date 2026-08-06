@@ -392,6 +392,8 @@ export interface IModelUsage {
 	readonly cacheWriteTokens?: number;
 	/** 总 token 数（部分网关在末块 usage 直接给出 total_tokens；缺省时可由 input+output 推导） */
 	readonly totalTokens?: number;
+	/** 推理 token 数（OpenAI completion_tokens_details.reasoning_tokens / 部分网关 reasoning_tokens） */
+	readonly reasoning?: number;
 	/** 本次调用消耗的计费额度 / 积分（来自 CodeBuddy 网关末块 usage.credit 等字段） */
 	readonly credit?: number;
 }

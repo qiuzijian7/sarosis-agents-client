@@ -310,11 +310,22 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 				|| bodyCls.contains('vscode-dark') || bodyCls.contains('vscode-high-contrast');
 			const svg = await cmd('_agentStudio.renderMermaidSvg', markup.replace(/\\n/g, '\n'), isDark ? 'dark' : 'default');
 			if (typeof svg === 'string' && svg.indexOf('<svg') !== -1) {
-				// Render via an <img> backed by a Blob URL. This avoids DOMParser/TrustedTypes
-				// entirely (CSP img-src allows blob:), is more robust than a data: URL for
-				// large/arbitrary SVG payloads (no percent-encoding pitfalls or length caps),
-				// and an SVG loaded as an image still applies the diagram's own internal
-				// <style> for correct theming.
+				// 优先直接把 SVG 解析成 DOM 节点注入（而非 <img blob:>）：
+				//   - <img> 受主窗口 img-src CSP 限制（打包版 blob: 可能被拦，onerror 不显示）
+				//   - <img> 受限上下文不渲染 foreignObject（HTML 标签），流程图标签会空白
+				// DOMParser 用 image/svg+xml（XML 解析）不触发 TrustedTypes；
+				// importNode + appendChild 同样不是 HTML 解析 sink，可绕过工作台 TrustedTypes CSP。
+				const svgNode = this._parseMermaidSvgToNode(svg);
+				if (svgNode) {
+					loadingEl.remove();
+					previewPanel.appendChild(svgNode);
+					if (copySvgBtn) {
+						copySvgBtn.style.opacity = '1';
+						copySvgBtn.style.pointerEvents = 'auto';
+					}
+					return;
+				}
+				// 回退：<img> backed by Blob URL（DOMParser 解析失败等极端情况）
 				const img = document.createElement('img');
 				img.alt = 'Mermaid diagram';
 				const size = _svgIntrinsicSize(svg);
@@ -347,6 +358,31 @@ export abstract class AgentChatPanelMermaidCard extends AgentChatPanelWebCard {
 		} catch (err) {
 			const msg = (err instanceof Error ? err.message : String(err));
 			this._mcShowError(previewPanel, loadingEl, msg);
+		}
+	}
+
+	/**
+	 * 解析 Mermaid SVG 字符串为可直接注入页面的 <svg> DOM 节点。
+	 * - 用 image/svg+xml（XML 解析）走 DOMParser，不触发 TrustedTypes。
+	 * - 防御性清理：mermaid strict 模式已消毒输出，这里再剥掉可能的 <script> 与 on* 事件属性。
+	 * - 返回 null 表示解析失败（由调用方回退到 <img> 方案）。
+	 */
+	private _parseMermaidSvgToNode(svg: string): SVGElement | null {
+		try {
+			const safe = svg
+				.replace(/<script[\s\S]*?<\/script>/gi, '')
+				.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+			const doc = new DOMParser().parseFromString(safe, 'image/svg+xml');
+			const root = doc.documentElement;
+			if (!root || root.tagName.toLowerCase() !== 'svg' || root.getAttribute('xmlns') === 'http://www.w3.org/1999/xhtml') {
+				return null;
+			}
+			const node = document.importNode(root, true) as unknown as SVGElement;
+			// 自适应宽度：.mc-preview 为 flex 容器，min-width:0 允许收缩到 max-width:100%
+			node.style.cssText = 'max-width:100%;height:auto;display:block;margin:0 auto;min-width:0;';
+			return node;
+		} catch {
+			return null;
 		}
 	}
 

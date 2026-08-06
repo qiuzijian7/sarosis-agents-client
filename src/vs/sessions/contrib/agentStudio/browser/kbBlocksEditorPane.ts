@@ -45,6 +45,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IKbNativeKernelService } from './kbNativeKernelService.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
 import type { KbCommitMeta, KbDiffResult } from './kbVersionTypes.js';
+import { IMermaidInlineRenderer } from './mermaidInlineRenderer.js';
 
 interface KbHostMessage {
 	direction: 'toHost';
@@ -86,6 +87,7 @@ export class KbBlocksEditorPane extends EditorPane {
 		@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@IKbVersionService private readonly _versionService: KbVersionService,
+		@IMermaidInlineRenderer private readonly _mermaidRenderer: IMermaidInlineRenderer,
 	) {
 		super(KbBlocksEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -305,7 +307,28 @@ export class KbBlocksEditorPane extends EditorPane {
 			if (typeof payload?.sha === 'string') {
 				void this._handleRestoreVersion(payload.sha);
 			}
+		} else if (msg.type === 'kbblocks.renderMermaid') {
+			const payload = msg.payload as { source?: string; requestId?: string; theme?: string } | undefined;
+			if (typeof payload?.source === 'string' && typeof payload?.requestId === 'string') {
+				void this._handleRenderMermaid(payload.source, payload.requestId, payload.theme);
+			}
 		}
+	}
+
+	/** Render Mermaid source via the shared inline renderer and stream the SVG back to the webview. */
+	private async _handleRenderMermaid(source: string, requestId: string, theme?: string): Promise<void> {
+		let svg = '';
+		let error = '';
+		try {
+			svg = await this._mermaidRenderer.renderToSvg(source, theme === 'dark' ? 'dark' : 'default');
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+		}
+		this._webview?.postMessage({
+			direction: 'toWebview',
+			type: 'kbblocks.mermaidResult',
+			data: { requestId, svg, error },
+		});
 	}
 
 	/** Query the shared KB kernel for backlinks/mentions and push to the webview. */

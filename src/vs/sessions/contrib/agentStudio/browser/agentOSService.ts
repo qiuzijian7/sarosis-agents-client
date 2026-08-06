@@ -107,8 +107,10 @@ import {
 import { SandboxGuard } from './agentSandboxGuard.js';
 import { getEnabledTools, type ToolAssemblyDeps } from './agentToolAssembly.js';
 import { executeAgentTurnDirect } from './agentTurnExecutor.js';
+import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { UserMessageEnricher } from './messageEnrichment/userMessageEnricher.js';
-import { createBuiltinTagProviders } from './messageEnrichment/builtinTagProviders.js';
+import { createBuiltinTagProviders, WorkingMemoryTagProvider } from './messageEnrichment/builtinTagProviders.js';
+
 export class AgentOSService extends Disposable implements IAgentOSService {
 
 	declare readonly _serviceBrand: undefined;
@@ -575,7 +577,86 @@ private readonly _sandboxGuard: SandboxGuard;
 	private _initUserMessageEnricher(): void {
 		const providers = createBuiltinTagProviders();
 		this._userMessageEnricher = new UserMessageEnricher(providers);
+		this._workingMemoryTagProvider = providers.find(p => p instanceof WorkingMemoryTagProvider) as WorkingMemoryTagProvider | undefined;
 		this._logService.info('[AgentOS] User message XML enricher initialized');
+	}
+
+	/** 只读工作记忆注入：working_memory_content 标签的数据源（存 provider 实例引用）。 */
+	private _workingMemoryTagProvider: WorkingMemoryTagProvider | undefined;
+
+	/**
+	 * 2026-08-06 修正：working_memory_content 标签的数据源**从 agentmemory
+	 * 记忆系统**读取（经 loadContext 策展），不再读取/依赖 `.codebuddy/memory/`
+	 * 文件——该目录是错误路径，产品代码不读写它，模型也不得创建。
+	 *
+	 * 设计要点：
+	 *   - P0 会话级 TTL 缓存：同 agent+session 30s 内复用 loadContext 结果，
+	 *     避免每轮白付一次策展（对齐 agentMemoryInjection 的 _injectedSessions 幂等）。
+	 *   - P0 与 MemoryInjection 互斥：AGENTMEMORY_INJECT_CONTEXT=true 时由
+	 *     <agentmemory-context> 承担注入，working_memory_content 不重复注入。
+	 *   - P1 includeEntries=false：保持「召回走工具」姿态——只注入策展块
+	 *     （pinned slots / project profile / lessons / summaries），不直接
+	 *     喂记忆条目数组（模型应调 memory_search 按需检索）。
+	 *   - P2 agentId 为空时不注入，避免空 agentId 导致意外全局召回。
+	 */
+	private _workingMemoryCache: { key: string; content: string | null; at: number } | undefined;
+	private static readonly WORKING_MEMORY_TTL_MS = 30_000;
+
+	public async _refreshWorkingMemoryContent(agentId?: string, sessionId?: string): Promise<void> {
+		if (!this._workingMemoryTagProvider) { return; }
+
+		// P0：与 agentMemoryInjection 互斥——MemoryInjection 开启时 <agentmemory-context>
+		// 已注入完整策展上下文，working_memory_content 不再重复注入。
+		if (isMemoryInjectionEnabled()) {
+			this._workingMemoryTagProvider.workingMemoryContent = null;
+			return;
+		}
+
+		// P2：agentId 为空不注入（避免空 agentId 触发全局召回）
+		const aid = agentId ?? '';
+		if (!aid) {
+			this._workingMemoryTagProvider.workingMemoryContent = null;
+			return;
+		}
+
+		// P0：TTL 缓存——同 agent+session 30s 内复用，不重复调 loadContext
+		const cacheKey = `${aid}::${sessionId ?? ''}`;
+		const cached = this._workingMemoryCache;
+		if (cached && cached.key === cacheKey && Date.now() - cached.at < AgentOSService.WORKING_MEMORY_TTL_MS) {
+			this._workingMemoryTagProvider.workingMemoryContent = cached.content;
+			return;
+		}
+
+		const memProvider = this.getActiveMemoryProvider();
+		if (!memProvider?.loadContext) {
+			this._workingMemoryTagProvider.workingMemoryContent = null;
+			this._workingMemoryCache = { key: cacheKey, content: null, at: Date.now() };
+			return;
+		}
+		try {
+			const ctx: any = await Promise.race([
+				// P1：includeEntries=false——只注入策展块，不喂条目数组（召回走工具）
+				memProvider.loadContext(aid, sessionId ?? '', '', { includeEntries: false }),
+				new Promise<null>(resolve => setTimeout(() => resolve(null), 2000)),
+			]);
+			if (!ctx || typeof ctx.systemPrompt !== 'string' || !ctx.systemPrompt.trim()) {
+				this._workingMemoryTagProvider.workingMemoryContent = null;
+				this._workingMemoryCache = { key: cacheKey, content: null, at: Date.now() };
+				return;
+			}
+			let joined = ctx.systemPrompt.trim();
+			const MAX_WORKING_MEMORY_CHARS = 6000;
+			if (joined.length > MAX_WORKING_MEMORY_CHARS) {
+				joined = joined.slice(0, MAX_WORKING_MEMORY_CHARS) + '\n…(truncated)';
+			}
+			this._workingMemoryTagProvider.workingMemoryContent = joined;
+			this._workingMemoryCache = { key: cacheKey, content: joined, at: Date.now() };
+			this._logService.info(`[AgentOS] Working memory injected from agentmemory (${joined.length} chars, agent=${aid}, cacheKey=${cacheKey})`);
+		} catch (err) {
+			this._workingMemoryTagProvider.workingMemoryContent = null;
+			this._workingMemoryCache = { key: cacheKey, content: null, at: Date.now() };
+			this._logService.warn(`[AgentOS] Failed to load working memory from agentmemory: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	// ─── Plan mode approval ────────────────────────────────────────────

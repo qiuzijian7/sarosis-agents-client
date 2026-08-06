@@ -227,9 +227,13 @@ export class SystemReminderTagProvider implements IUserMessageTagProvider {
 
 	buildContent(ctx: IEnrichContext): string | null {
 		const reminders: string[] = [];
+		// 2026-08-06 修正：工作记忆经 working_memory_content 标签**只读**注入，
+		// 数据源为 agentmemory 记忆系统（MemoryProvider 策展上下文）。
+		// 模型无需自行做记忆持久化——原 "must update .codebuddy/memory/" 强指令
+		// 曾导致模型在工作区根目录凭空造文件（该目录是错误路径），故改为只读提示。
 		reminders.push(
-			'After substantive work, you MUST update the working memory files (.codebuddy/memory/). '
-			+ 'See the memory workflow for details.'
+			'Working memory is provided read-only in the <working_memory_content> tag when present. '
+			+ 'Memory persistence is handled by the system — you do not need to save it yourself.'
 		);
 		if (ctx.agent && !ctx.agent.tools?.some(t => typeof t === 'string' && (t === 'file_write' || t === 'patch'))) {
 			reminders.push('This is a read-only agent — it cannot modify files on disk. Focus on research and planning.');

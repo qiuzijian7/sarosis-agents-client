@@ -366,6 +366,10 @@ interface ITurnContext {
 			}
 			if (lastUserIdx >= 0 && typeof messages[lastUserIdx].content === 'string') {
 				try {
+					// 2026-08-06：enrich 前从 agentmemory 记忆系统读取策展上下文
+					// 只读注入 working_memory_content 标签（数据源为 MemoryProvider，
+					// 非 .codebuddy/memory/ 文件）
+					await host._refreshWorkingMemoryContent?.(request.agentId, request.sessionId);
 					const enriched = await host._userMessageEnricher.enrich(
 						messages[lastUserIdx].content as string,
 						{ request, agent: host._currentAgent },

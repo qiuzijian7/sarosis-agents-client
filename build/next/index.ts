@@ -272,6 +272,10 @@ const desktopResourcePatterns = [
 	'vs/sessions/contrib/agentStudio/webview/media/webview.js',
 	'vs/sessions/contrib/agentStudio/webview/media/webview.css',
 
+	// KB markdown editor bundle (react-markdown + Mermaid)
+	'vs/sessions/contrib/agentStudio/webview/media/kbblocks.js',
+	'vs/sessions/contrib/agentStudio/webview/media/kbblocks.css',
+
 	// Shell scripts
 	'vs/base/node/*.sh',
 	'vs/workbench/contrib/terminal/common/scripts/*.sh',
