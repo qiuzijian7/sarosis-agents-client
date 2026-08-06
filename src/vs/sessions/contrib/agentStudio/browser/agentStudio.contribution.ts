@@ -264,6 +264,12 @@ import { ICodebaseMemoryMcpService, CodebaseMemoryMcpService } from './codebaseM
 import { ICodebaseGraphService, CodebaseGraphService } from './codebaseGraphService.js';
 import { ICodebaseGraphWatcher, CodebaseGraphWatcher } from './codebaseGraphWatcher.js';
 import './codebaseGraphBootstrap.js';
+// C++ DefinitionProvider（基于图谱，无 LSP 依赖）→ 解锁 Ctrl+点击 / F12 / Peek 跳转。Self-registers.
+import './codebaseGraphLanguageFeatures.contribution.js';
+// Find Symbol（Shift+Alt+S，VAX 风格符号搜索 QuickPick）。Self-registers.
+import './codebaseGraphFindSymbol.contribution.js';
+// VAX 检索命令集（Open File/Find References/Goto Implementation/List Methods）。Self-registers.
+import './codebaseGraphVaxSearch.contribution.js';
 // Integrated browser "创建看板任务" right-click → kanban scrape. Self-registers.
 import './browserKanbanContextMenu.contribution.js';
 import { IAgentStudioDashboardService, AgentStudioDashboardService } from './agentStudioDashboardService.js';
@@ -332,6 +338,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	id: 'sessions',
 	properties: {
 		...channelConfigProperties(),
+		'saros.codebaseGraph.sqliteBackend': {
+			type: 'boolean',
+			default: true,
+			description: localize('agentStudio.codebaseGraph.sqliteBackend', "Codebase 图谱查询/搜索默认走主进程 SQLite（FTS5）后端，避免内存全量扫描。默认开启；设为 false 关闭后回退内存 store。"),
+		},
 		[AGENT_STUDIO_ENABLED_SETTING]: {
 			type: 'boolean',
 			default: true,

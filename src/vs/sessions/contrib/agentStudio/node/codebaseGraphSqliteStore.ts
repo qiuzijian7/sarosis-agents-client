@@ -470,6 +470,19 @@ export class CodebaseGraphSqliteStore {
 		await dbExec(db, `INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')`);
 	}
 
+	/**
+	 * WAL checkpoint + TRUNCATE：压缩 WAL 文件，避免大同步后 WAL 膨胀导致读查询变慢。
+	 * WAL 模式下读需合并 WAL，WAL 达数百 MB 时读延迟显著；同步完成/分批后调用此方法把 WAL 收敛回主库。
+	 */
+	async checkpoint(): Promise<void> {
+		const db = this._ensureDb();
+		try {
+			await dbExec(db, `PRAGMA wal_checkpoint(TRUNCATE)`);
+		} catch {
+			try { await dbExec(db, `PRAGMA wal_checkpoint(PASSIVE)`); } catch { /* 忙则跳过 */ }
+		}
+	}
+
 	/** 清空全部图数据（保留表结构） */
 	async clear(): Promise<void> {
 		const db = this._ensureDb();
@@ -490,6 +503,27 @@ export class CodebaseGraphSqliteStore {
 				await dbRun(db, `DELETE FROM file_hashes WHERE key LIKE ?`, [`${project}:%`]);
 			}
 		});
+	}
+
+	/**
+	 * 删除单个文件的所有节点及其关联边/FTS/布局行（增量索引补丁用，替代全量 deleteProject+重建）。
+	 * 返回被删节点 id 列表（调用方一般无需；文件级节点数远小于 SQLITE_MAX_VARIABLE_NUMBER 上限）。
+	 */
+	async deleteNodesByFile(project: string, filePath: string): Promise<number[]> {
+		const db = this._ensureDb();
+		let ids: number[] = [];
+		await this.transaction(async () => {
+			const rows = await dbAll(db,
+				`SELECT id FROM nodes WHERE project = ? AND file_path = ?`, [project, filePath]) as unknown as { id: number }[];
+			ids = rows.map(r => r.id);
+			if (ids.length === 0) { return; }
+			// 用子查询而非 IN(字面量)，避免超大单文件超过 SQLITE_MAX_VARIABLE_NUMBER（默认 999）。
+			await dbRun(db, `DELETE FROM nodes_fts WHERE rowid IN (SELECT id FROM nodes WHERE project = ? AND file_path = ?)`, [project, filePath]);
+			await dbRun(db, `DELETE FROM edges WHERE source IN (SELECT id FROM nodes WHERE project = ? AND file_path = ?) OR target IN (SELECT id FROM nodes WHERE project = ? AND file_path = ?)`, [project, filePath, project, filePath]);
+			await dbRun(db, `DELETE FROM layout WHERE node_id IN (SELECT id FROM nodes WHERE project = ? AND file_path = ?)`, [project, filePath]);
+			await dbRun(db, `DELETE FROM nodes WHERE project = ? AND file_path = ?`, [project, filePath]);
+		});
+		return ids;
 	}
 
 	// ─── Read path ────────────────────────────────────────────────────────

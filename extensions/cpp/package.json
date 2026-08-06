@@ -128,6 +128,132 @@
         "language": "cpp",
         "path": "./snippets/cpp.code-snippets"
       }
+    ],
+    "tokenColors": [
+      {
+        "scope": [
+          "comment source.cpp",
+          "comment.block source.cpp",
+          "comment.line source.cpp"
+        ],
+        "settings": {
+          "foreground": "#6A9955"
+        }
+      },
+      {
+        "scope": [
+          "keyword.control source.cpp",
+          "keyword.other source.cpp",
+          "keyword source.cpp"
+        ],
+        "settings": {
+          "foreground": "#569CD6"
+        }
+      },
+      {
+        "scope": [
+          "storage.type source.cpp",
+          "storage.modifier source.cpp",
+          "storage source.cpp"
+        ],
+        "settings": {
+          "foreground": "#569CD6"
+        }
+      },
+      {
+        "scope": [
+          "entity.name.type source.cpp",
+          "entity.name.scope-resolution.type source.cpp"
+        ],
+        "settings": {
+          "foreground": "#4EC9B0"
+        }
+      },
+      {
+        "scope": [
+          "entity.name.namespace source.cpp"
+        ],
+        "settings": {
+          "foreground": "#4EC9B0"
+        }
+      },
+      {
+        "scope": [
+          "string source.cpp",
+          "string.quoted source.cpp",
+          "string.quoted.raw source.cpp"
+        ],
+        "settings": {
+          "foreground": "#CE9178"
+        }
+      },
+      {
+        "scope": [
+          "constant.numeric source.cpp"
+        ],
+        "settings": {
+          "foreground": "#B5CEA8"
+        }
+      },
+      {
+        "scope": [
+          "constant.language source.cpp"
+        ],
+        "settings": {
+          "foreground": "#569CD6"
+        }
+      },
+      {
+        "scope": [
+          "meta.preprocessor source.cpp",
+          "keyword.control.directive source.cpp"
+        ],
+        "settings": {
+          "foreground": "#569CD6"
+        }
+      },
+      {
+        "scope": [
+          "entity.name.function.ue source.cpp",
+          "entity.name.other.preprocessor.macro.predefined source.cpp",
+          "entity.name.function.preprocessor source.cpp"
+        ],
+        "settings": {
+          "foreground": "#C586C0"
+        }
+      },
+      {
+        "scope": [
+          "meta.preprocessor.string source.cpp"
+        ],
+        "settings": {
+          "foreground": "#CE9178"
+        }
+      },
+      {
+        "scope": [
+          "keyword.operator source.cpp"
+        ],
+        "settings": {
+          "foreground": "#D4D4D4"
+        }
+      },
+      {
+        "scope": [
+          "variable.language source.cpp"
+        ],
+        "settings": {
+          "foreground": "#569CD6"
+        }
+      },
+      {
+        "scope": [
+          "entity.name.function source.cpp"
+        ],
+        "settings": {
+          "foreground": "#DCDCDC"
+        }
+      }
     ]
   },
   "repository": {

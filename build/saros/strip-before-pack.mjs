@@ -220,16 +220,28 @@ function ensureFile(label, stagingRel, repoRelCandidates) {
 	criticalMissing++;
 }
 
-// 1) ripgrep（整包恢复：bin/rg.exe + lib + package.json）
-if (!existsSync(path.join(buildDir, 'resources/app/node_modules/@vscode/ripgrep/bin/rg.exe'))) {
-	const src = path.join(repoRoot, 'node_modules/@vscode/ripgrep');
-	if (existsSync(path.join(src, 'bin/rg.exe'))) {
-		mkdirSync(path.join(buildDir, 'resources/app/node_modules/@vscode'), { recursive: true });
-		cpSync(src, path.join(buildDir, 'resources/app/node_modules/@vscode/ripgrep'), { recursive: true });
+// 1) ripgrep（运行时路径：node_modules.asar.unpacked/@vscode/ripgrep/bin/rg.exe，
+//    与 runtime rgPath.replace(/node_modules.asar/, 'node_modules.asar.unpacked') 及
+//    ensureRipgrepBinaryTask 的落点一致）。CI 用 --ignore-scripts 装依赖，postinstall
+//    不会下载 rg.exe，故需整包恢复（bin/rg.exe + lib + package.json）或回退内嵌二进制。
+const rgStaging = 'resources/app/node_modules.asar.unpacked/@vscode/ripgrep/bin/rg.exe';
+if (!existsSync(path.join(buildDir, rgStaging))) {
+	const pkgSrc = path.join(repoRoot, 'node_modules/@vscode/ripgrep');
+	if (existsSync(path.join(pkgSrc, 'bin/rg.exe'))) {
+		mkdirSync(path.join(buildDir, 'resources/app/node_modules.asar.unpacked/@vscode'), { recursive: true });
+		cpSync(pkgSrc, path.join(buildDir, 'resources/app/node_modules.asar.unpacked/@vscode/ripgrep'), { recursive: true });
 		console.log('  ♻️  @vscode/ripgrep —— 已从仓库 node_modules 整包恢复');
 	} else {
-		console.log('  ❌ @vscode/ripgrep/bin/rg.exe 缺失且仓库无可恢复源');
-		criticalMissing++;
+		const embedded = path.join(repoRoot, 'build/saros/bin/rg.exe');
+		if (existsSync(embedded)) {
+			const dest = path.join(buildDir, rgStaging);
+			mkdirSync(path.dirname(dest), { recursive: true });
+			cpSync(embedded, dest);
+			console.log('  ♻️  @vscode/ripgrep/bin/rg.exe —— 已从内嵌 build/saros/bin 恢复');
+		} else {
+			console.log('  ❌ @vscode/ripgrep/bin/rg.exe 缺失且仓库与内嵌源均不可用');
+			criticalMissing++;
+		}
 	}
 } else {
 	console.log('  ✅ @vscode/ripgrep/bin/rg.exe');
@@ -256,6 +268,16 @@ ensureFile(
 	'@vscode/sqlite3/build/Release/vscode-sqlite3.node',
 	'resources/app/node_modules.asar.unpacked/@vscode/sqlite3/build/Release/vscode-sqlite3.node',
 	['build/saros/bin/vscode-sqlite3.node'],
+);
+
+// 5) better-sqlite3 原生模块（KB 全文检索 kbSqliteStore 必需；root package.json 已声明
+//    12.11.1，JS 壳随 node_modules.asar 打包，此处保证 Electron-ABI 的 .node 落位
+//    asar.unpacked）。bindings 为 better-sqlite3 的 npm 依赖，声明后自动进 asar。
+//    非 N-API（V8 API）→ 升级 Electron 必须同步重编 build/saros/bin/sqlite/better_sqlite3.node。
+ensureFile(
+	'better-sqlite3/build/Release/better_sqlite3.node',
+	'resources/app/node_modules.asar.unpacked/better-sqlite3/build/Release/better_sqlite3.node',
+	['build/saros/bin/sqlite/better_sqlite3.node'],
 );
 
 if (criticalMissing > 0) {

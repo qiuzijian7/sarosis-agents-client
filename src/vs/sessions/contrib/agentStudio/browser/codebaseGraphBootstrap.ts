@@ -104,19 +104,34 @@ class CodebaseGraphBootstrapContribution extends Disposable implements IWorkbenc
 			const project = this._basename(folder.uri.fsPath) || '_default';
 			const graphFileUri = URI.joinPath(folder.uri, '.codebase-memory', 'graph.db.zst');
 
+			// 合并加载；BM25 仅在最后一个 folder 加载后重建一次（避免重复重建开销）
+			const isLast = i === toLoad.length - 1;
+			let loaded = false;
 			try {
-				// 合并加载；BM25 仅在最后一个 folder 加载后重建一次（避免重复重建开销）
-				const isLast = i === toLoad.length - 1;
-				const loaded = await this._graphService.loadGraphMerge(graphFileUri.fsPath, project, isLast);
-				if (loaded) {
-					this._logService.info(LOG_TAG, `Loaded existing graph for folder "${project}".`);
-					this._readyFolders.add(key);
-					this._pendingIndex.delete(key);
-					// 多 folder：每个已加载 folder 单独启动监听（增量索引，互不覆盖）
-					await this._startWatching(folder.uri.fsPath);
-					continue;
-				}
-			} catch { /* file doesn't exist yet */ }
+				loaded = await this._graphService.loadGraphMerge(graphFileUri.fsPath, project, isLast);
+			} catch { /* 读取/解析异常，落入下方区分逻辑 */ }
+			if (loaded) {
+				this._logService.info(LOG_TAG, `Loaded existing graph for folder "${project}".`);
+				this._readyFolders.add(key);
+				this._pendingIndex.delete(key);
+				// 多 folder：每个已加载 folder 单独启动监听（增量索引，互不覆盖）
+				await this._startWatching(folder.uri.fsPath);
+				continue;
+			}
+
+			// 未加载成功：区分「图文件存在但加载失败」与「图文件缺失」。
+			// 图文件存在但加载失败（如过大/损坏/内存不足）时【跳过自动索引】——
+			// 否则会对超大图谱反复全量重建（用户视角"莫名扫描"），且几乎必然再次失败。
+			// 此时保留内存/sqlite 兜底读取，用户可手动触发索引。
+			let graphFileExists = false;
+			try {
+				await this._fileService.stat(graphFileUri);
+				graphFileExists = true;
+			} catch { /* 文件不存在 */ }
+			if (graphFileExists) {
+				this._logService.warn(LOG_TAG, `Graph artifact exists but failed to load for "${project}" — skipping auto-index to avoid full rescan (artifact may be too large / corrupted / OOM). Use in-memory/sqlite fallback or manually re-index.`);
+				continue;
+			}
 
 			// 无既有图谱 → 加入待索引队列。
 			// 区分"首次索引"与"图谱丢失"：.codebase-memory 目录存在但 graph.db.zst 缺失，

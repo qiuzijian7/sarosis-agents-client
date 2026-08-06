@@ -378,6 +378,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 
 		// Mode segmented control
 		const modeRow = append(body, $('.cbm-config-row'));
+		modeRow.style.flexWrap = 'wrap'; // 让 modeHint (width:100%) 换行独占，不挤压 segmented
 		append(modeRow, $('.cbm-config-label')).textContent = 'Mode';
 		const segmented = append(modeRow, $('.cbm-segmented')) as HTMLElement;
 		const modes: { value: string; label: string }[] = [
@@ -393,12 +394,22 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			if (m.value === config.mode) { btn.classList.add('active'); }
 			modeBtns.push(btn);
 		}
-		// Mode selection toggle
+		// Mode selection toggle + 模式说明（随选择动态更新）
+		const MODE_DESC: Record<string, string> = {
+			fast: '⚡ Fast：基础 AST 解析，最快；跳过扩展 pass（跨文件引用/LSP 推断）。SQLite 同步照常。适合快速验证。',
+			moderate: '⚖️ Moderate：基础 + 扩展 pass + SQLite 同步。推荐日常使用。',
+			full: '🔬 Full：当前与 Moderate 等价（预留语义/相似度索引，尚未接入）。',
+		};
+		const modeHint = append(modeRow, $('div.cbm-mode-hint'));
+		modeHint.style.cssText = 'width:100%;font-size:11px;color:var(--vscode-descriptionForeground);margin-top:4px;line-height:1.5;';
+		const updateModeHint = (mode: string) => { modeHint.textContent = MODE_DESC[mode] ?? ''; };
+		updateModeHint(config.mode);
 		segmented.addEventListener('click', (e) => {
 			const target = e.target as HTMLButtonElement;
 			if (target.tagName !== 'BUTTON') { return; }
 			modeBtns.forEach(b => b.classList.remove('active'));
 			target.classList.add('active');
+			updateModeHint(target.dataset.mode ?? 'fast');
 		});
 
 		// Index path
@@ -469,10 +480,7 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 				indexBtn.textContent = '🔍 Index Codebase';
 				return;
 			}
-			const wsPath = folders[0].uri.fsPath;
-			this._appendSectionLog(logEl, `📁 工作区: ${wsPath}`);
-
-			// 订阅索引进度
+			// 遍历 workspace 所有 folder 逐个索引（一次点击索引全部）
 			let progressReceived = 0;
 			const progressDisposable = this._graphService.onDidIndexProgress(line => {
 				progressReceived++;
@@ -492,22 +500,25 @@ export class CodebaseMemoryDetailEditorPane extends EditorPane {
 			});
 
 			this._appendSectionLog(logEl, `📋 配置: mode=${newConfig.mode}, subPath=${newConfig.subPath || '(全部)'}, exclude=${newConfig.excludeDirs.length}项, keep=${newConfig.keepDirs?.length || 0}项`);
-			this._appendSectionLog(logEl, `▶ 调用 indexWorkspace...`);
 
 			try {
-				const result = await this._graphService.indexWorkspace(wsPath, newConfig);
+				for (const folder of folders) {
+					const wsPath = folder.uri.fsPath;
+					this._appendSectionLog(logEl, `📁 索引: ${wsPath}`);
+					const result = await this._graphService.indexWorkspace(wsPath, newConfig);
+					if (result.success) {
+						this._appendSectionLog(logEl, `✓ ${result.message} (${result.duration}s)`, 'success');
+					} else {
+						this._appendSectionLog(logEl, `✗ ${result.message}`, 'error');
+						// 取消/失败后停止后续 folder
+						break;
+					}
+				}
 				progressDisposable.dispose();
 				this._appendSectionLog(logEl, `📊 进度事件收到 ${progressReceived} 条`);
-				if (result.success) {
-					this.notificationService.info(`索引完成 (${result.duration}s)`);
-					this._appendSectionLog(logEl, `✓ ${result.message} (${result.duration}s)`, 'success');
-					progressFill.style.width = '100%';
-					// 刷新整个面板
-					setTimeout(() => this._renderAll(), 500);
-				} else {
-					this.notificationService.warn(result.message);
-					this._appendSectionLog(logEl, `✗ ${result.message}`, 'error');
-				}
+				progressFill.style.width = '100%';
+				this.notificationService.info('工作区索引完成');
+				setTimeout(() => this._renderAll(), 500);
 			} catch (err: any) {
 				progressDisposable.dispose();
 				this._appendSectionLog(logEl, `✗ 索引异常: ${err?.message || err}`, 'error');

@@ -35,6 +35,8 @@ export const COMMON_EXCLUDE_DIRS: readonly string[] = Object.freeze([
 	'tmp', 'temp', 'enc_temp_folder',
 	// 工具自身产物
 	'.vscode-test', '.codebase-memory', '.sarosworkspace',
+	// IDE/工具配置与缓存（UE 的 compile_commands_* 预处理产物也在 .vscode 下，动辄数万文件）
+	'.vscode', '.idea', '.vs', '.vscode-server', '.ugs',
 	// 非源码资产 / 文档 / 脚本（索引价值低、体量大）
 	'test', 'tests', 'resources', 'docs', 'doc', 'scripts', 'dev', 'extensions', 'cli',
 ]);

@@ -213,11 +213,23 @@ export class CodebaseIndexEditorPane extends EditorPane {
 		modeSelect.style.cssText = 'flex:1;padding:4px 8px;font-size:12px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border);border-radius:4px;';
 		for (const m of ['fast', 'moderate', 'full']) {
 			const opt = document.createElement('option');
-			opt.value = m; opt.textContent = m;
+			opt.value = m;
+			opt.textContent = m === 'fast' ? '⚡ Fast' : m === 'moderate' ? '⚖️ Moderate' : '🔬 Full';
 			if (m === savedMode) { opt.selected = true; }
 			modeSelect.appendChild(opt);
 		}
 		modeRow.appendChild(modeSelect);
+		// 模式说明（随选择动态更新）
+		const MODE_DESC: Record<string, string> = {
+			fast: '⚡ Fast：基础 AST 解析，最快；跳过扩展 pass（跨文件引用/LSP 推断）。SQLite 同步照常。适合快速验证。',
+			moderate: '⚖️ Moderate：基础 + 扩展 pass + SQLite 同步。推荐日常使用。',
+			full: '🔬 Full：当前与 Moderate 等价（预留语义/相似度索引，尚未接入）。',
+		};
+		const modeHint = append(cfgWrap, $('div'));
+		modeHint.style.cssText = 'font-size:11px;color:var(--vscode-descriptionForeground);margin:0 0 8px 60px;line-height:1.5;';
+		const updateModeHint = () => { modeHint.textContent = MODE_DESC[modeSelect.value] ?? ''; };
+		updateModeHint();
+		modeSelect.onchange = updateModeHint;
 
 		// Exclude dirs
 		const exclRow = append(cfgWrap, $('div'));
@@ -300,8 +312,17 @@ export class CodebaseIndexEditorPane extends EditorPane {
 			this._cbmService.setIndexConfig(config);
 		} catch { /* 持久化失败不阻塞索引 */ }
 
-		this._appendLog(`🚀 开始索引 "${rootName}" (mode=${mode})...`);
-		this._appendLog(`  路径: ${rootPath}`);
+		// 目标 folder：遍历 workspace 所有 folder 逐个索引（一次点击索引全部）；
+		// 无 workspace folder 时回退到面板绑定/当前根。
+		const wsFolders = this._workspaceService.getWorkspace().folders;
+		const targets: { root: string; name: string }[] = [];
+		if (wsFolders.length > 0) {
+			for (const f of wsFolders) {
+				targets.push({ root: f.uri.fsPath, name: basename(f.uri.fsPath) });
+			}
+		} else {
+			targets.push({ root: rootPath, name: rootName });
+		}
 
 		const idxBtn = (this as any)._indexBtnEl as HTMLButtonElement | undefined;
 		const cancelBtn = (this as any)._cancelBtnEl as HTMLButtonElement | undefined;
@@ -310,9 +331,14 @@ export class CodebaseIndexEditorPane extends EditorPane {
 
 		this._indexCts = new CancellationTokenSource();
 		try {
-			const result = await this._graphService.indexWorkspace(rootPath, config, this._indexCts.token);
-			if (!result.success && !this._indexCts.token.isCancellationRequested) {
-				this._notificationService.warn(`索引失败: ${result.message}`);
+			for (const t of targets) {
+				if (this._indexCts.token.isCancellationRequested) { break; }
+				this._appendLog(`🚀 开始索引 "${t.name}" (mode=${mode})...`);
+				this._appendLog(`  路径: ${t.root}`);
+				const result = await this._graphService.indexWorkspace(t.root, config, this._indexCts.token);
+				if (!result.success && !this._indexCts.token.isCancellationRequested) {
+					this._notificationService.warn(`索引 "${t.name}" 失败: ${result.message}`);
+				}
 			}
 		} catch (err: any) {
 			this._appendLog(`❌ 异常: ${err?.message || err}`);

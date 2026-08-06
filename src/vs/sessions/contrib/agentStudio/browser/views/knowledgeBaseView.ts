@@ -95,6 +95,7 @@ import {
 import { KbWorkerManager } from './knowledgeBase/kbWorkerManager.js';
 import { KbNoteEditorInput } from '../kbNoteEditorInput.js';
 import { MemoryDetailEditorInput } from '../memoryDetailEditorInput.js';
+import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
 import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
 import { CanvasEditorInput } from '../canvasEditor/canvasEditorInput.js';
 import type { IMindmapData } from '../../common/mindmap/mindmapTypes.js';
@@ -125,6 +126,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 记忆库 Section 折叠状态 */
 	private _memSectionCollapsed = false;
+	private _codeSectionCollapsed = false;
 	/** 记忆库 section 的 body 容器 */
 	private _memSectionBody?: HTMLElement;
 	/** 记忆库列表容器 */
@@ -560,6 +562,58 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// 拖拽逻辑：记忆库 section 高度可拖拽调整
 		this._setupMemoryDragResize(dragHandle, memSection);
 
+		// ── ═══ 代码库 Section ═══ ──（独立于记忆库，不参与拖拽；单一入口直达 Codebase Detail Editor Pane）
+		const codebaseSection = $('div.kb-codebase-section');
+		codebaseSection.style.cssText = 'display:flex;flex-direction:column;flex-shrink:0;border-top:1px solid #2a2a2a;';
+		this._body.appendChild(codebaseSection);
+
+		const codeHeader = $('div.kb-codebase-header');
+		codeHeader.style.cssText = 'display:flex;align-items:center;gap:6px;padding:7px 12px;background:#1e1e1e;font-size:12px;font-weight:600;border-bottom:1px solid #2a2a2a;min-height:32px;flex-shrink:0;cursor:pointer;';
+		codeHeader.onclick = () => this._toggleCodebaseSection(codebaseSection, codeHeader);
+		codeHeader.onmouseenter = () => { codeHeader.style.background = '#252525'; };
+		codeHeader.onmouseleave = () => { codeHeader.style.background = '#1e1e1e'; };
+		const codeHeaderIcon = $('span');
+		codeHeaderIcon.textContent = '🧬';
+		codeHeaderIcon.style.cssText = 'font-size:13px;flex-shrink:0;';
+		const codeHeaderLabel = $('span');
+		codeHeaderLabel.textContent = '代码库';
+		codeHeaderLabel.style.cssText = 'flex:1;color:#e0e0e0;';
+		const codeArrow = $('span');
+		codeArrow.className = 'kb-code-arrow';
+		codeArrow.textContent = '▼';
+		codeArrow.style.cssText = 'font-size:9px;color:#777;flex-shrink:0;transition:transform .15s;';
+		codeHeader.replaceChildren(codeHeaderIcon, codeHeaderLabel, codeArrow);
+		codebaseSection.appendChild(codeHeader);
+
+		const codeBody = $('div.kb-codebase-body');
+		codeBody.style.cssText = 'padding:4px 0;';
+		const codeEntry = $('div.kb-codebase-entry');
+		codeEntry.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;font-size:12px;margin:4px 8px;border-radius:4px;background:#1e1e1e;border:1px solid #2a2a2a;';
+		codeEntry.onmouseenter = () => { codeEntry.style.background = '#252525'; codeEntry.style.borderColor = '#3a3a3a'; };
+		codeEntry.onmouseleave = () => { codeEntry.style.background = '#1e1e1e'; codeEntry.style.borderColor = '#2a2a2a'; };
+		codeEntry.onclick = () => this._openCodebaseDetailEditor();
+		const ceIcon = $('span');
+		ceIcon.textContent = '🧬';
+		ceIcon.style.cssText = 'font-size:18px;flex-shrink:0;';
+		codeEntry.appendChild(ceIcon);
+		const ceText = $('div');
+		ceText.style.cssText = 'flex:1;min-width:0;';
+		const ceTitle = $('div');
+		ceTitle.textContent = '查看完整代码库';
+		ceTitle.style.cssText = 'color:#ddd;';
+		ceText.appendChild(ceTitle);
+		const ceMeta = $('div');
+		ceMeta.textContent = '点击打开 CodebaseDetailEditorPane';
+		ceMeta.style.cssText = 'font-size:10px;color:#555;margin-top:2px;';
+		ceText.appendChild(ceMeta);
+		codeEntry.appendChild(ceText);
+		const ceArrow = $('span');
+		ceArrow.textContent = '→';
+		ceArrow.style.cssText = 'color:#555;font-size:14px;flex-shrink:0;';
+		codeEntry.appendChild(ceArrow);
+		codeBody.appendChild(codeEntry);
+		codebaseSection.appendChild(codeBody);
+
 		// Global click closes popups
 		document.addEventListener('click', this._onGlobalClick);
 
@@ -602,6 +656,22 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			memHeader.style.borderBottom = '1px solid #2a2a2a';
 			// 展开时刷新记忆列表
 			this._renderMemoryList();
+		}
+	}
+
+	/** 折叠/展开代码库 section */
+	private _toggleCodebaseSection(codebaseSection: HTMLElement, codeHeader: HTMLElement): void {
+		this._codeSectionCollapsed = !this._codeSectionCollapsed;
+		const arrow = codeHeader.querySelector('.kb-code-arrow') as HTMLElement | null;
+		const body = codebaseSection.querySelector('.kb-codebase-body') as HTMLElement | null;
+		if (this._codeSectionCollapsed) {
+			if (body) { body.style.display = 'none'; }
+			if (arrow) { arrow.style.transform = 'rotate(-90deg)'; }
+			codeHeader.style.borderBottom = 'none';
+		} else {
+			if (body) { body.style.display = ''; }
+			if (arrow) { arrow.style.transform = 'rotate(0deg)'; }
+			codeHeader.style.borderBottom = '';
 		}
 	}
 
@@ -709,6 +779,16 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			void this.editorService.openEditor(input, { pinned: true });
 		} catch (err) {
 			this.logService.error(`[KB] failed to open MemoryDetailEditorPane: ${err}`);
+		}
+	}
+
+	/** 打开「代码库」编辑器面板（Codebase Memory Detail Editor Pane）。 */
+	private _openCodebaseDetailEditor(): void {
+		try {
+			const input = CodebaseMemoryDetailEditorInput.getOrCreate();
+			void this.editorService.openEditor(input, { pinned: true });
+		} catch (err) {
+			this.logService.error(`[KB] failed to open CodebaseDetailEditorPane: ${err}`);
 		}
 	}
 
@@ -4189,10 +4269,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				return;
 			}
 		}
+		// 局部持有 proxy 引用：避免与 _syncToSqlite 等并发路径（其失败时会把共享字段 _kbSqliteStore 置 undefined）竞态，
+		// 导致后续 upsertDocsBatch 读取 undefined 属性报错。
+		const store: IKbSqliteBackend = this._kbSqliteStore;
 
 		// 增量：比对 DB 现有文档的 mtime+size，只重读变更文件；并删除已从磁盘移除的文档。
 		// 一次 getAllUris 查询同时用于变更检测与删除清理。
-		const dbDocs = await this._kbSqliteStore.getAllUris();
+		const dbDocs = await store.getAllUris();
 		const dbMap = new Map<string, { mtime: number; size: number }>();
 		for (const d of dbDocs) { dbMap.set(d.uri, { mtime: d.mtime, size: d.size }); }
 		const metaSet = new Set(metas.map(m => m.uri.toString()));
@@ -4215,7 +4298,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 			if (docs.length > 0) {
 				const t = performance.now();
-				await this._kbSqliteStore.upsertDocsBatch(docs);
+				await store.upsertDocsBatch(docs);
 				this.logService.info(`[KB SQLite] synced ${docs.length} changed docs (${(performance.now() - t).toFixed(1)}ms)`);
 			}
 		} else {
@@ -4226,7 +4309,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		try {
 			let removed = 0;
 			for (const u of dbDocs) {
-				if (!metaSet.has(u.uri)) { await this._kbSqliteStore.deleteDoc(u.uri); removed++; }
+				if (!metaSet.has(u.uri)) { await store.deleteDoc(u.uri); removed++; }
 			}
 			if (removed > 0) { this.logService.info(`[KB SQLite] removed ${removed} deleted docs`); }
 		} catch (err) {

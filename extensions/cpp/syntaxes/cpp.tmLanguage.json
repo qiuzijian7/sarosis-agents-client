@@ -12,6 +12,12 @@
 			"include": "#ever_present_context"
 		},
 		{
+			"include": "#ue_macro"
+		},
+		{
+			"include": "#ue_module_api"
+		},
+		{
 			"include": "#constructor_root"
 		},
 		{
@@ -97,6 +103,19 @@
 		}
 	],
 	"repository": {
+		"ue_macro": {
+			"begin": "\\b(?:UCLASS|UINTERFACE|USTRUCT|UENUM|UPROPERTY|UFUNCTION|UDELEGATE|GENERATED_BODY|GENERATED_USTRUCT_BODY|GENERATED_UCLASS_BODY|GENERATED_UINTERFACE_BODY|UE_LOG|DECLARE_LOG_CATEGORY_EXTERN|DECLARE_LOG_CATEGORY_CLASS|DECLARE_STATS_GROUP|DECLARE_CYCLE_STAT|DECLARE_FLOAT_ACCUMULATOR_STAT|IMPLEMENT_MODULE|IMPLEMENT_GAME_MODULE|IMPLEMENT_PRIMARY_GAME_MODULE|IMPLEMENT_VTABLE_REGISTRAR)\\b\\s*(?=\\()",
+			"end": "\\)",
+			"beginCaptures": {
+				"0": {
+					"name": "entity.name.function.ue.cpp"
+				}
+			}
+		},
+		"ue_module_api": {
+			"match": "\\b[A-Z][A-Z0-9_]{0,31}_API\\b",
+			"name": "entity.name.function.ue.api.cpp"
+		},
 		"access_control_keywords": {
 			"match": "((?:((?:\\s*+\\/\\*(?:[^\\*]++|\\*+(?!\\/))*+\\*\\/\\s*+)+)|(?:\\s++)|(?<=\\W)|(?=\\W)|^|(?:\\n?$)|\\A|\\Z))(((?:(?:protected)|(?:private)|(?:public)))(?:\\s+)?(:))",
 			"captures": {
@@ -499,6 +518,9 @@
 			"name": "meta.block.cpp",
 			"patterns": [
 				{
+					"include": "#ue_macro"
+				},
+				{
 					"include": "#function_body_context"
 				}
 			]
@@ -760,10 +782,13 @@
 					"name": "punctuation.terminator.statement.cpp"
 				}
 			},
-			"name": "meta.block.class.cpp",
-			"patterns": [
-				{
-					"begin": "\\G ?",
+      "name": "meta.block.class.cpp",
+      "patterns": [
+        {
+          "include": "#ue_macro"
+        },
+        {
+          "begin": "\\G ?",
 					"end": "(?:\\{|<%|\\?\\?<|(?=;))",
 					"beginCaptures": {},
 					"endCaptures": {
@@ -795,6 +820,9 @@
 					},
 					"name": "meta.body.class.cpp",
 					"patterns": [
+						{
+							"include": "#ue_macro"
+						},
 						{
 							"include": "#function_pointer"
 						},
@@ -3704,6 +3732,9 @@
 					"include": "#parentheses"
 				},
 				{
+					"include": "#ue_macro"
+				},
+				{
 					"include": "#function_call"
 				},
 				{
@@ -3722,6 +3753,9 @@
 		},
 		"ever_present_context": {
 			"patterns": [
+				{
+					"include": "#ue_macro"
+				},
 				{
 					"include": "#pragma_mark"
 				},
@@ -3884,6 +3918,9 @@
 		},
 		"function_body_context": {
 			"patterns": [
+				{
+					"include": "#ue_macro"
+				},
 				{
 					"include": "#ever_present_context"
 				},
@@ -9720,6 +9757,9 @@
 					"include": "#storage_types"
 				},
 				{
+					"include": "#ue_macro"
+				},
+				{
 					"include": "#function_call"
 				},
 				{
@@ -13217,10 +13257,13 @@
 					"name": "punctuation.terminator.statement.cpp"
 				}
 			},
-			"name": "meta.block.struct.cpp",
-			"patterns": [
-				{
-					"begin": "\\G ?",
+      "name": "meta.block.struct.cpp",
+      "patterns": [
+        {
+          "include": "#ue_macro"
+        },
+        {
+          "begin": "\\G ?",
 					"end": "(?:\\{|<%|\\?\\?<|(?=;))",
 					"beginCaptures": {},
 					"endCaptures": {
@@ -13918,6 +13961,9 @@
 				},
 				{
 					"include": "#parentheses"
+				},
+				{
+					"include": "#ue_macro"
 				},
 				{
 					"include": "#function_call"

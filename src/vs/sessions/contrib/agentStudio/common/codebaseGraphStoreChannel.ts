@@ -46,8 +46,12 @@ export interface ICodebaseGraphSqliteBackend {
 	getFileHash(key: string): Promise<Record<string, unknown> | undefined>;
 	setLayout(nodeId: number, x: number, y: number, z: number): Promise<void>;
 	rebuildFTS(): Promise<void>;
+	/** WAL checkpoint（压缩 WAL，防读变慢） */
+	checkpoint(): Promise<void>;
 	clear(): Promise<void>;
 	deleteProject(project: string, opts?: { keepFileHashes?: boolean }): Promise<void>;
+	/** 删除单文件所有节点/边/FTS（增量索引补丁用，替代全量重建），返回被删节点 id。 */
+	deleteNodesByFile(project: string, filePath: string): Promise<number[]>;
 
 	// ── 读 ──
 	getNode(id: number): Promise<GraphNode | undefined>;

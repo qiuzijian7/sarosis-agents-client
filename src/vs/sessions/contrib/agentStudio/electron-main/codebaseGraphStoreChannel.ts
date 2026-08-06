@@ -85,6 +85,8 @@ export class CodebaseGraphStoreChannel<TContext> extends Disposable implements I
 			case 'rebuildFTS': return s.rebuildFTS() as unknown as T;
 			case 'clear': return s.clear() as unknown as T;
 			case 'deleteProject': return s.deleteProject(args![0] as string, args![1] as { keepFileHashes?: boolean } | undefined) as unknown as T;
+			case 'deleteNodesByFile': return s.deleteNodesByFile(args![0] as string, args![1] as string) as unknown as T;
+			case 'checkpoint': return s.checkpoint() as unknown as T;
 			case 'getNode': return s.getNode(args![0] as number) as unknown as T;
 			case 'getNodeByQN': return s.getNodeByQN(args![0] as string, args![1] as string) as unknown as T;
 			case 'getNodesByFile': return s.getNodesByFile(args![0] as string, args![1] as string) as unknown as T;

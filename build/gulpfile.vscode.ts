@@ -686,10 +686,17 @@ function ensureRipgrepBinaryTask(platform: string, _arch: string, destinationFol
 			: path.join(outputDir, versionedResourcesFolder, 'resources', 'app');
 
 		const ripgrepExeName = process.platform === 'win32' ? 'rg.exe' : 'rg';
-		// 1) Source: the host's installed @vscode/ripgrep/bin (from npm install).
-		//    For cross-compilation the host's binary is wrong; in that case
-		//    downstream the runtime fallback (Node.js walker) takes over.
+		// Candidate sources, in priority order:
+		//   1) The host's installed @vscode/ripgrep/bin (from `npm install` /
+		//      postinstall). For cross-compilation the host's binary is wrong,
+		//      so we fall through to the embedded one below.
+		//   2) The checked-in embedded binary under build/saros/bin. CI installs
+		//      dev deps with `--ignore-scripts`, so the npm postinstall that
+		//      downloads rg.exe never runs — this fallback keeps search working
+		//      in the packaged build instead of degrading to the slow Node walker.
 		const hostSource = path.join(root, 'node_modules', '@vscode', 'ripgrep', 'bin', ripgrepExeName);
+		const embeddedSource = path.join(root, 'build', 'saros', 'bin', ripgrepExeName);
+		const sourceCandidates = [hostSource, embeddedSource];
 		// 2) Destination: the deployed app's asar-unpacked tree, mirroring the
 		//    layout that `rgPath.replace(...)` expects at runtime.
 		const deployedAsarUnpacked = path.join(appBase, 'node_modules.asar.unpacked', '@vscode', 'ripgrep', 'bin');
@@ -701,10 +708,11 @@ function ensureRipgrepBinaryTask(platform: string, _arch: string, destinationFol
 			return;
 		}
 
-		if (!fs.existsSync(hostSource)) {
+		const resolvedSource = sourceCandidates.find(c => fs.existsSync(c));
+		if (!resolvedSource) {
 			console.warn(
-				`[ensureRipgrepBinary] SKIPPED: host ripgrep binary missing at ${hostSource}. ` +
-				`Search will fall back to Node.js walker at runtime. ` +
+				`[ensureRipgrepBinary] SKIPPED: ripgrep binary missing at ${hostSource} and no embedded ` +
+				`fallback at ${embeddedSource}. Search will fall back to Node.js walker at runtime. ` +
 				`To fix: run \`npm rebuild @vscode/ripgrep\` or \`node node_modules/@vscode/ripgrep/lib/postinstall.js\`.`,
 			);
 			return;
@@ -712,14 +720,14 @@ function ensureRipgrepBinaryTask(platform: string, _arch: string, destinationFol
 
 		try {
 			fs.mkdirSync(deployedAsarUnpacked, { recursive: true });
-			fs.copyFileSync(hostSource, deployedDest);
+			fs.copyFileSync(resolvedSource, deployedDest);
 			// Match the source file's executable bit on POSIX so the binary
 			// can be spawned by the search engine.
 			if (process.platform !== 'win32') {
-				const srcStat = fs.statSync(hostSource);
+				const srcStat = fs.statSync(resolvedSource);
 				fs.chmodSync(deployedDest, srcStat.mode);
 			}
-			console.log(`[ensureRipgrepBinary] Copied ${hostSource} → ${deployedDest}`);
+			console.log(`[ensureRipgrepBinary] Copied ${resolvedSource} → ${deployedDest}`);
 		} catch (err) {
 			console.warn(`[ensureRipgrepBinary] FAILED to materialize ${deployedDest}: ${err}. Search will fall back to Node.js walker at runtime.`);
 		}

@@ -181,7 +181,8 @@ export class MenuBar extends Disposable {
 		}));
 
 		this._register(DOM.addDisposableListener(window, DOM.EventType.KEY_DOWN, (e: KeyboardEvent) => {
-			if (!this.options.enableMnemonics || !e.altKey || e.ctrlKey || e.defaultPrevented) {
+			// mnemonic 触发键：Alt+字母 → Ctrl+Alt+字母（释放 Alt+G/Alt+M 供项目命令使用）
+			if (!this.options.enableMnemonics || !e.ctrlKey || !e.altKey || e.defaultPrevented) {
 				return;
 			}
 
@@ -603,7 +604,7 @@ export class MenuBar extends Disposable {
 			const mnemonic = !!mnemonicMatches[1] ? mnemonicMatches[1] : mnemonicMatches[3];
 
 			if (this.options.enableMnemonics) {
-				buttonElement.setAttribute('aria-keyshortcuts', 'Alt+' + mnemonic.toLocaleLowerCase());
+				buttonElement.setAttribute('aria-keyshortcuts', 'Ctrl+Alt+' + mnemonic.toLocaleLowerCase());
 			} else {
 				buttonElement.removeAttribute('aria-keyshortcuts');
 			}

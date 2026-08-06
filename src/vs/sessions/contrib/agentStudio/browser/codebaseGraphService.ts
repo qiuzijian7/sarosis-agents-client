@@ -39,6 +39,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { createCodebaseGraphSqliteBackend } from './codebaseGraphStoreProxy.js';
 import type { ICodebaseGraphSqliteBackend } from '../common/codebaseGraphStoreChannel.js';
 import { LspCrossResolver } from './codebaseGraphLsp.js';
+import { extractInherits } from './codebaseGraphQueries.js';
 import { INDEX_LOCK_FILENAME, INDEX_LOCK_HEARTBEAT_MS, createIndexLockToken, isIndexLockStale, parseIndexLock, serializeIndexLock } from './codebaseIndexLock.js';
 import { buildSemanticEdges, detectSimilarCode, MinHash, MINHASH_PERM } from './codebaseGraphExtendedPasses.js';
 import { runMultiLevelLeiden, detectDeadCodeEnhanced, computeTwoLevelLOD, executeExtendedCypher, computeAllSignals } from './codebaseGraphAdvancedAnalysis.js';
@@ -166,6 +167,15 @@ export interface IGraphStatus {
 
 export const ICodebaseGraphService = createDecorator<ICodebaseGraphService>('ICodebaseGraphService');
 
+/** 类继承树节点（VA View / HCB 风格，递归树）。 */
+export interface IClassHierarchyNode {
+	node: GraphNode;
+	/** 根节点为 'root'；基类方向来自 INHERITS，接口方向来自 IMPLEMENTS。 */
+	kind: 'root' | 'INHERITS' | 'IMPLEMENTS';
+	bases: IClassHierarchyNode[];
+	derived: IClassHierarchyNode[];
+}
+
 export interface ICodebaseGraphService {
 	readonly _serviceBrand: undefined;
 	readonly onDidIndexProgress: Event<string>;
@@ -228,6 +238,15 @@ export interface ICodebaseGraphService {
 	getNodeSignals(qualifiedName: string): { name: string; score: number; detail: string }[] | undefined;
 	getEdges(nodeId?: string): GraphEdge[];
 
+	/**
+	 * 符号引用查找（对齐 VAX Find References，Shift+Alt+F）。
+	 * 返回所有指向该符号的入边（CALLS / INHERITS / IMPLEMENTS / IMPORTS / USAGE …）的源节点。
+	 * @param qualifiedName 符号 QN（file::name）或纯名称（内部反查）
+	 * @param edgeTypes 可选过滤边类型（如 ['CALLS']）；缺省返回全部引用
+	 * @param access 可选读写过滤（'read' | 'write'，仅对 USAGE 边生效；其余边恒视为 read）
+	 */
+	getNodeReferences(qualifiedName: string, edgeTypes?: string[], access?: 'read' | 'write'): { node: GraphNode; edgeType: string; access: 'read' | 'write' }[] | undefined;
+
 	executeCypher(query: string, maxRows?: number): { columns: string[]; rows: any[][] };
 	semanticSearch(query: string, limit?: number): { node: GraphNode; score: number; signals: Record<string, number> }[];
 
@@ -287,6 +306,15 @@ export interface ICodebaseGraphService {
 		includeTests?: boolean;
 		edgeTypes?: string[];
 	}): any;
+
+	/**
+	 * 类继承树（VA View / Hovering Class Browser 风格）：沿 INHERITS/IMPLEMENTS 边双向 BFS。
+	 * @param qualifiedName 类节点 QN（如 file::Foo），或纯名称（内部用 searchNodes 反查）
+	 * @param direction  'bases'（向上基类）| 'derived'（向下派生）| 'both'
+	 * @param maxDepth   最大深度（默认 8，防环防爆）
+	 * @returns 嵌套树：节点 + bases[] + derived[]，每层附 kind（INHERITS|IMPLEMENTS）
+	 */
+	getClassHierarchy(qualifiedName: string, direction?: 'bases' | 'derived' | 'both', maxDepth?: number): IClassHierarchyNode | undefined;
 
 	getArchitectureAdvanced(dimensions?: string[]): Promise<any>;
 	getCodeSnippet(qualifiedName: string, contextLines?: number, includeNeighbors?: boolean): Promise<{ filePath: string; startLine: number; endLine: number; content: string; language: string; neighbors?: { name: string; content: string }[] } | null>;
@@ -654,6 +682,10 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	private _rootProjectMap = new Map<string, string>();
 	/** 累积的调用边（虚拟目标 call:<name>），索引后由 _matchCallsToDefinitions 解析为真实 CALLS 边（#9） */
 	private _pendingCallEdges: { source: string; callee: string; loopDepth: number }[] = [];
+	/** 累积的继承边（虚拟目标 inherits:/implements:<baseName>），索引后由 _matchInheritsToDefinitions 解析为真实 INHERITS/IMPLEMENTS 边 */
+	private _pendingInheritEdges: { source: string; baseName: string; kind: 'INHERITS' | 'IMPLEMENTS' }[] = [];
+	/** 累积的使用边（虚拟目标 usage:<name>，access=read|write），索引后由 _matchUsageEdgesToDefinitions 解析为真实 USAGE 边 */
+	private _pendingUsageEdges: { source: string; name: string; access: 'read' | 'write' }[] = [];
 	private _lspResolver: LspCrossResolver | undefined;
 	private _crossRepoEnabled = false;
 
@@ -707,20 +739,13 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 	 */
 	private readonly _sqliteBackend: ICodebaseGraphSqliteBackend;
 
-	/** 大仓库自动 SQLite 阈值：内存 store 节点数超过此值自动启用主进程 SQLite 后端。 */
-	private static readonly SQLITE_AUTO_THRESHOLD = 30_000;
-
+	/**
+	 * 主进程 SQLite 后端是否启用：**默认开启**。
+	 * 仅显式设置 `saros.codebaseGraph.sqliteBackend=false` 才会关闭；
+	 * 未配置或显式 true 均启用（搜索/查询走 FTS5 索引，避免内存全量扫描）。
+	 */
 	private get _sqliteBackendEnabled(): boolean {
-		const cfg = this._configurationService.getValue<boolean | undefined>('saros.codebaseGraph.sqliteBackend');
-		// 显式 true/false 覆盖 auto 模式
-		if (cfg === true) { return true; }
-		if (cfg === false) { return false; }
-		// Auto 模式：节点数超过阈值自动启用
-		const nodeCount = this._graph.store.getNodeCount(this._projectName);
-		if (nodeCount > CodebaseGraphService.SQLITE_AUTO_THRESHOLD) { return true; }
-		// 堆水位触发（P0）：接近 V8 4GB 硬顶（>3GB 预算）时切 SQLite 后端，
-		// 把图数据卸出 renderer 堆（对齐 C 版 RSS 预算驱动的存储降级）。
-		return CodebaseGraphStore.isHeapOverBudget();
+		return this._configurationService.getValue<boolean | undefined>('saros.codebaseGraph.sqliteBackend') !== false;
 	}
 
 	/** 把内存 store 的文件哈希同步到主进程 SQLite（fire-and-forget，失败静默）。 */
@@ -732,15 +757,16 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 	/**
 	 * Phase 2b 核心：将内存 store 的完整图数据批量复制到主进程 SQLite。
-	 * 在 indexWorkspace 末尾调用（当 `saros.codebaseGraph.sqliteBackend` 启用时）。
+	 * 在 indexWorkspace 末尾调用（当 `saros.codebaseGraph.sqliteBackend` 启用时）；
+	 * 也可传 projectOverride 同步指定项目（如 gzip 加载的 UE5EA）。
 	 *
 	 * 使用与内存 store 相同的 numeric id，确保边引用一致。
 	 * 采用分批 + progress fire 以避免大图时长时间阻塞 UI。
 	 */
-	async _syncGraphToSqlite(): Promise<void> {
+	async _syncGraphToSqlite(projectOverride?: string): Promise<void> {
 		if (!this._sqliteBackendEnabled) { return; }
 		const store = this._graph.store;
-		const project = this._projectName;
+		const project = projectOverride ?? this._projectName;
 		const nodes = store.getAllNodes().filter(n => n.project === project);
 		// 只同步本项目边（旧实现同步全项目边：2.8M 全量重插且 upsertEdge 无 id 冲突可撞
 		// → 每次同步重复累积，边表无限膨胀）
@@ -776,7 +802,13 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			}));
 			await this._sqliteBackend.upsertNodesBatch(graphNodes);
 			if ((i + BATCH) % 50000 === 0 || i + BATCH >= nodes.length) {
-				this._logService.info('[CodebaseGraph]', `SQLite sync nodes: ${Math.min(i + BATCH, nodes.length)}/${nodes.length}`);
+				const done = Math.min(i + BATCH, nodes.length);
+				this._logService.info('[CodebaseGraph]', `SQLite sync nodes: ${done}/${nodes.length}`);
+				this._onDidIndexProgress.fire(`💾 同步 SQLite: ${done}/${nodes.length} 节点...`);
+			}
+			// 分批 checkpoint：防止 WAL 膨胀到数百 MB（读查询需合并 WAL 会显著变慢）
+			if ((i + BATCH) % 200000 === 0 || i + BATCH >= nodes.length) {
+				await this._sqliteBackend.checkpoint();
 			}
 			// yield to UI
 			if (i % 20000 === 0 && i > 0) {
@@ -797,7 +829,9 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			}));
 			await this._sqliteBackend.upsertEdgesBatch(edgePayloads);
 			if ((i + BATCH) % 50000 === 0 || i + BATCH >= edges.length) {
-				this._logService.info('[CodebaseGraph]', `SQLite sync edges: ${Math.min(i + BATCH, edges.length)}/${edges.length}`);
+				const done = Math.min(i + BATCH, edges.length);
+				this._logService.info('[CodebaseGraph]', `SQLite sync edges: ${done}/${edges.length}`);
+				this._onDidIndexProgress.fire(`💾 同步 SQLite: ${done}/${edges.length} 边...`);
 			}
 			if (i % 20000 === 0 && i > 0) {
 				await new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -806,35 +840,86 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 		// 重建 FTS5
 		await this._sqliteBackend.rebuildFTS();
+		// 重建后 WAL checkpoint（TRUNCATE）压缩 WAL——否则大同步后 WAL 达数百 MB，读查询要合并 WAL 显著变慢
+		await this._sqliteBackend.checkpoint();
 
 		const dur = Date.now() - tStart;
 		this._logService.info('[CodebaseGraph]', `SQLite sync done: ${nodes.length} nodes + ${edges.length} edges in ${dur}ms`);
 
-		// Phase 2e：同步完成后释放内存 store 的 V8 堆数据。
-		// 轻量级映射（_nodeIdMap / _revIdMap / _nodesByFile / _fileHashes）保留在 GraphStore 上，
-		// 仅释放 CodebaseGraphStore 内部的节点/边 Maps + BM25 索引（这才是 4GB 的根源）。
-		if (nodes.length > 0) {
-			this._freeInMemoryStore();
+		// 注意：SQLite 默认开启后【不】自动释放内存 store——
+		// GotoImpl/ListMethods 等同步路径依赖 hasGraphData()/searchGraph() 的内存数据，
+		// 释放会让这些入口失效（图谱"消失"）。SQLite 仅作为异步加速读路径 + FTS5 搜索，
+		// 内存 store 保留供同步查询与回退兜底（V8 堆压力留给未来 async 读路径改造解决）。
+	}
+
+	/**
+	 * Phase 2b 增量补丁：仅把变更文件同步到主进程 SQLite（不触发全量 deleteProject+upsert+rebuildFTS）。
+	 *
+	 * 正确性前提：全量同步（_syncGraphToSqlite）用内存 numeric id 显式写入，故内存 id 与 sqlite id 一致；
+	 * 增量重解析给变更文件分配的新 id 单调递增（一定大于 sqlite 现存最大 id），deleteNodesByFile
+	 * 清掉旧节点后，显式 id upsert 无冲突，边引用（sourceId/targetId 用内存 id）保持有效。
+	 * 失败仅让 sqlite 落后于内存（搜索回退内存兜底），不影响增量索引本身。
+	 */
+	private async _syncIncrementalToSqlite(project: string, changedRels: string[]): Promise<void> {
+		if (!this._sqliteBackendEnabled || changedRels.length === 0) { return; }
+		const store = this._graph.store;
+		const changedSet = new Set(changedRels);
+		const tStart = Date.now();
+		try {
+			// 1. 删除变更文件的旧节点/边/FTS（sqlite 侧，含其他文件指向变更节点的边）
+			for (const rel of changedRels) {
+				await this._sqliteBackend.deleteNodesByFile(project, rel);
+			}
+			// 2. 收集变更文件的内存节点（显式 id = 内存 id，与 sqlite id 保持一致）
+			const nodes: GraphNode[] = [];
+			const changedNodeIds = new Set<number>();
+			for (const n of store.getAllNodes()) {
+				if (n.project === project && n.filePath && changedSet.has(n.filePath)) {
+					nodes.push({
+						id: String(n.id),
+						name: n.name,
+						type: n.type ?? n.label,
+						label: n.label,
+						filePath: n.filePath,
+						qualifiedName: n.qualifiedName,
+						inDegree: n.inDegree,
+						outDegree: n.outDegree,
+						startLine: n.startLine,
+						endLine: n.endLine,
+						project: n.project,
+						properties: n.properties,
+					});
+					if (typeof n.id === 'number') { changedNodeIds.add(n.id); }
+				}
+			}
+			await this._sqliteBackend.upsertNodesBatch(nodes as (GraphNode & { id?: string | number })[]);
+			// 3. 收集涉及变更文件节点的边（源或目标 ∈ 变更节点），用内存 id 引用，去重后批量 upsert
+			const edgeMap = new Map<string, { sourceId: number; targetId: number; type: string; properties?: Record<string, any> }>();
+			for (const nid of changedNodeIds) {
+				for (const e of store.getEdgesBySource(nid)) {
+					if (e.sourceId == null || e.targetId == null) { continue; }
+					edgeMap.set(`${e.sourceId}:${e.targetId}:${e.type}`, { sourceId: e.sourceId, targetId: e.targetId, type: e.type, properties: e.properties });
+				}
+				for (const e of store.getEdgesByTarget(nid)) {
+					if (e.sourceId == null || e.targetId == null) { continue; }
+					edgeMap.set(`${e.sourceId}:${e.targetId}:${e.type}`, { sourceId: e.sourceId, targetId: e.targetId, type: e.type, properties: e.properties });
+				}
+			}
+			const edges = [...edgeMap.values()];
+			await this._sqliteBackend.upsertEdgesBatch(edges as (GraphEdge & { sourceId?: number; targetId?: number })[]);
+			const dur = Date.now() - tStart;
+			this._logService.info('[CodebaseGraph]', `SQLite incremental patch done: ${nodes.length} nodes + ${edges.length} edges (${changedRels.length} files, ${dur}ms)`);
+		} catch (err) {
+			this._logService.warn('[CodebaseGraph]', 'SQLite incremental patch failed (sqlite may lag until next full sync):', err);
 		}
 	}
 
 	/**
-	 * Phase 2e：释放内存 `CodebaseGraphStore` 中持有的全量节点/边数据（V8 堆大头），
-	 * 仅保留 GraphStore 上的轻量级 id 映射（供 `getNodeAsync` 等解析）。
-	 *
-	 * 调用后 sync 读 API（getGraphData / getVisualizationData(searchNodes / getNode 等）
-	 * 返回空/null/0 —— 此时所有读取应走 async 重载（`xxxAsync`），后者从 SQLite 后端读取。
-	 *
-	 * 实验性：仅在 `_sqliteBackendEnabled` 为 true 时由 `_syncGraphToSqlite` 自动调用。
+	 * 注意：历史上有"同步后自动释放内存 store（_freeInMemoryStore）"以腾出 V8 堆。
+	 * SQLite 默认开启后【不】自动释放——GotoImpl/ListMethods 等同步路径依赖
+	 * hasGraphData()/searchGraph() 的内存数据，释放会让图谱在这些入口"消失"。
+	 * 需要释放内存时，调用方显式 replace GraphStore._store 并清空 _cachedSortedNodes。
 	 */
-	private _freeInMemoryStore(): void {
-		// 替换 GraphStore 内部的 CodebaseGraphStore 实例为空的新实例（旧实例变为 GC eligible）
-		(this._graph as any)._store = new CodebaseGraphStore();
-		// 清理服务级可视化缓存（持有旧 store 的节点引用）
-		this._cachedSortedNodes = [];
-		this._cachedSortedProject = '';
-		this._logService.info('[CodebaseGraph]', 'In-memory graph store freed — reads now served from SQLite backend (mmap, off-V8-heap)');
-	}
 
 	/**
 	 * Phase 2f：当 `_sqliteBackendEnabled` 且内存 store 为空时，从主进程 SQLite 按需
@@ -947,7 +1032,8 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 
 	/**
 	 * 获取 `<root>/.codebase-memory/index.lock` 跨进程文件锁。
-	 * 新鲜锁属他人 → 抛错；锁过期（持有方崩溃）→ 接管。返回释放函数（仅删自己的锁）。
+	 * 新鲜锁属其他实例 → 抛错；锁过期（持有方崩溃）→ 接管；同实例残留锁（进程重启/上次中断）→ 覆盖接管。
+	 * 返回释放函数（仅删自己的锁）。
 	 */
 	private async _acquireIndexFileLock(rootPath: string): Promise<() => void> {
 		const lockUri = URI.joinPath(URI.file(rootPath), '.codebase-memory', INDEX_LOCK_FILENAME);
@@ -956,14 +1042,20 @@ export class CodebaseGraphService extends Disposable implements ICodebaseGraphSe
 			this._indexLockToken = createIndexLockToken(instanceId);
 		}
 		const token = this._indexLockToken;
+		const myInstance = (this._environmentService as unknown as { instanceId?: string }).instanceId ?? 'default';
 
-		// 1. 读现有锁：新鲜且属他人 → 拒绝
+		// 1. 读现有锁：新鲜且属其他实例 → 拒绝；同实例（token 不同 = 本进程上次中断残留）→ 覆盖接管
 		try {
 			const existing = await this._fileService.readFile(lockUri);
 			const mtime = (await this._fileService.stat(lockUri)).mtime;
 			const content = parseIndexLock(existing.value.toString());
 			if (content && content.token !== token && !isIndexLockStale(mtime, Date.now())) {
-				throw new Error(`索引正被另一进程执行（实例 ${content.instanceId ?? 'default'}），请稍候`);
+				const lockInstance = content.instanceId ?? 'default';
+				if (lockInstance !== myInstance) {
+					throw new Error(`索引正被另一进程执行（实例 ${lockInstance}），请稍候`);
+				}
+				// 同实例残留锁（上次索引被中断/进程重启后 _indexLocked=false）：允许覆盖接管
+				this._logService.info('[CodebaseGraph]', `index lock: taking over own residual lock (instance ${lockInstance})`);
 			}
 		} catch (err) {
 			// 文件不存在 → 无锁可继续；其他错误若非"拒绝"语义则视为无锁（宽松获取）
@@ -1223,7 +1315,45 @@ var IDENTIFIER_TYPES = {
   identifier: true, field_identifier: true, type_identifier: true,
   namespace_identifier: true, template_name: true, destructor_name: true
 };
+// C/C++ 函数名提取：沿 declarator 链取真正函数名（返回类型 type_identifier 在 DFS 中会先命中，
+// 如 inline TArray X::ConvertToArray() 会被误取名 "TArray"，须优先走 declarator）
+var _isDeclaratorWrapper = function (t) {
+  return t === 'function_declarator' || t === 'pointer_declarator' ||
+    t === 'reference_declarator' || t === 'parenthesized_declarator' || t === 'init_declarator';
+};
+function _extractDeclaratorName(node, source) {
+  var n = node;
+  for (var i = 0; i < 12; i++) {
+    var decl = n.childForFieldName ? n.childForFieldName('declarator') : undefined;
+    if (!decl) {
+      // reference_declarator 等的 function_declarator 无 declarator 字段，从 children 找
+      var cs = n.children || [];
+      for (var k = 0; k < cs.length; k++) { if (_isDeclaratorWrapper(cs[k].type)) { decl = cs[k]; break; } }
+    }
+    if (!decl) break;
+    n = decl;
+    if (_isDeclaratorWrapper(n.type)) { continue; }
+    break;
+  }
+  // qualified_identifier 的 name 可能嵌套（ns::deep::method → deep::method），循环取最内层
+  while (n.type === 'qualified_identifier') {
+    var nm = n.childForFieldName ? n.childForFieldName('name') : undefined;
+    if (!nm || typeof nm.startIndex !== 'number') break;
+    if (nm.type === 'qualified_identifier') { n = nm; continue; }
+    return source.substring(nm.startIndex, nm.endIndex);
+  }
+  if (n.type === 'identifier' || n.type === 'field_identifier' || n.type === 'type_identifier' ||
+    n.type === 'destructor_name' || n.type === 'operator_name' || n.type === 'template_name' ||
+    n.type === 'namespace_identifier') {
+    return source.substring(n.startIndex, n.endIndex);
+  }
+  return undefined;
+}
 function extractName(node, source) {
+  if (node.type === 'function_definition' || node.type === 'function_declaration' || node.type === 'function_declarator') {
+    var fnName = _extractDeclaratorName(node, source);
+    if (fnName !== undefined) return fnName;
+  }
   function recurse(n) {
     if (IDENTIFIER_TYPES[n.type]) return source.substring(n.startIndex, n.endIndex);
     if (n.type === 'name') return source.substring(n.startIndex, n.endIndex);
@@ -1303,6 +1433,86 @@ function _analyzeIntra(node, source, fnName) {
   return r;
 }
 
+// 继承/接口实现提取（worker 内联版，无法 import 外部模块，逻辑与 codebaseGraphQueries.extractInherits 对齐）：
+// C++ base_class_clause / TS-Java heritage(extends_clause|implements_clause) / Python superclasses / Ruby superclass
+function _extractInheritNames(node, source) {
+  var result = { inherits: [], implements: [] };
+  function collectInto(n, out) {
+    var children = n.children || [];
+    for (var i = 0; i < children.length; i++) {
+      var c = children[i];
+      if (c.type === 'identifier' || c.type === 'type_identifier' || c.type === 'constant') {
+        out.push(source.substring(c.startIndex, c.endIndex));
+      }
+      collectInto(c, out);
+    }
+  }
+  if (node.childForFieldName) {
+    var heritage = node.childForFieldName('heritage');
+    if (heritage) {
+      var hc = heritage.children || [];
+      for (var j = 0; j < hc.length; j++) {
+        if (hc[j].type === 'extends_clause') { collectInto(hc[j], result.inherits); }
+        else if (hc[j].type === 'implements_clause') { collectInto(hc[j], result.implements); }
+        else { collectInto(hc[j], result.inherits); }
+      }
+    }
+    var f = node.childForFieldName('superclasses'); if (f) collectInto(f, result.inherits);
+    f = node.childForFieldName('base_class_clause'); if (f) collectInto(f, result.inherits);
+    f = node.childForFieldName('superclass'); if (f) collectInto(f, result.inherits);
+  }
+  return result;
+}
+
+// USAGE 提取（读写区分，worker 内联版，与主线程 _isUsageNode/_collectUsageEdges 对齐）
+function _isUsageNode(t) {
+  return t === 'assignment_expression' || t === 'assignment' ||
+    t === 'augmented_assignment_expression' || t === 'compound_assignment_expression' ||
+    t === 'type_annotation' || t === 'type_identifier' || t === 'type_hint' ||
+    t === 'new_expression' || t === 'object_creation_expression';
+}
+function _collectUsageEdges(node, source, currentFn, edges) {
+  var add = function (name, access) {
+    if (name && name.length > 0 && name !== 'this') {
+      edges.push({ source: currentFn, target: 'usage:' + name, type: 'USAGE', properties: { access: access } });
+    }
+  };
+  if (node.type === 'assignment_expression' || node.type === 'assignment' ||
+    node.type === 'augmented_assignment_expression' || node.type === 'compound_assignment_expression') {
+    var left = node.childForFieldName ? (node.childForFieldName('left') || node.childForFieldName('target')) : undefined;
+    if (left) {
+      if (left.type === 'identifier' || left.type === 'field_identifier') {
+        add(source.substring(left.startIndex, left.endIndex), 'write');
+      } else if (left.childForFieldName) {
+        var prop = left.childForFieldName('property') || left.childForFieldName('field');
+        if (prop && (prop.type === 'property_identifier' || prop.type === 'identifier')) {
+          add(source.substring(prop.startIndex, prop.endIndex), 'write');
+        }
+      }
+    }
+    return;
+  }
+  if (node.type === 'type_annotation' || node.type === 'type_hint') {
+    var ch = node.children || [];
+    for (var i = 0; i < ch.length; i++) {
+      if (ch[i].type === 'type_identifier' || ch[i].type === 'identifier') {
+        add(source.substring(ch[i].startIndex, ch[i].endIndex), 'read');
+      }
+    }
+    return;
+  }
+  if (node.type === 'type_identifier') {
+    add(source.substring(node.startIndex, node.endIndex), 'read');
+    return;
+  }
+  if (node.type === 'new_expression' || node.type === 'object_creation_expression') {
+    var ctor = node.childForFieldName ? (node.childForFieldName('constructor') || node.childForFieldName('type') || node.childForFieldName('class')) : undefined;
+    if (ctor) {
+      add(source.substring(ctor.startIndex, ctor.endIndex), 'read');
+    }
+  }
+}
+
 function walkAST(node, source, filePath, nodes, edges, currentFn, loopDepth) {
   if (loopDepth === undefined) loopDepth = 0;
   const nodeType = AST_TO_NODE_TYPE[node.type];
@@ -1313,6 +1523,10 @@ function walkAST(node, source, filePath, nodes, edges, currentFn, loopDepth) {
     if (callee) {
       edges.push({ source: currentFn, target: 'call:' + callee, type: 'CALLS', properties: { loopDepth: loopDepth } });
     }
+  }
+  // Usage sites → USAGE edge (read/write, resolved later in _matchUsageEdgesToDefinitions)
+  if (currentFn && _isUsageNode(node.type)) {
+    _collectUsageEdges(node, source, currentFn, edges);
   }
   if (nodeType) {
     const name = extractName(node, source);
@@ -1333,6 +1547,16 @@ function walkAST(node, source, filePath, nodes, edges, currentFn, loopDepth) {
       }
       nodes.push({ id: qualifiedName, name: name, type: nodeType, filePath: filePath, qualifiedName: qualifiedName, inDegree: 0, outDegree: 0, startLine: startLine, endLine: endLine, properties: props });
       edges.push({ source: filePath, target: qualifiedName, type: 'CONTAINS' });
+      // 继承/接口实现边（虚拟目标 inherits:/implements:<baseName>，索引后由 _matchInheritsToDefinitions 解析）
+      if (nodeType === 'class' || nodeType === 'interface') {
+        var bases = _extractInheritNames(node, source);
+        for (var bi = 0; bi < bases.inherits.length; bi++) {
+          edges.push({ source: qualifiedName, target: 'inherits:' + bases.inherits[bi], type: 'INHERITS' });
+        }
+        for (var ii = 0; ii < bases.implements.length; ii++) {
+          edges.push({ source: qualifiedName, target: 'implements:' + bases.implements[ii], type: 'IMPLEMENTS' });
+        }
+      }
       myFn = qualifiedName;
     }
   }
@@ -1545,6 +1769,15 @@ self.onmessage = async function(e) {
 				// call: 虚拟边暂存，待 _matchCallsToDefinitions 解析为真实 CALLS 边（#9）
 				if (edge.target && typeof edge.target === 'string' && edge.target.startsWith('call:')) {
 					this._pendingCallEdges.push({ source: edge.source, callee: edge.target.slice(5), loopDepth: edge.properties?.loopDepth ?? 0 });
+				} else if (edge.target && typeof edge.target === 'string' && (edge.target.startsWith('inherits:') || edge.target.startsWith('implements:'))) {
+					// inherits:/implements: 虚拟边暂存，待 _matchInheritsToDefinitions 解析为真实继承边
+					const kind: 'INHERITS' | 'IMPLEMENTS' = edge.target.startsWith('implements:') ? 'IMPLEMENTS' : 'INHERITS';
+					this._pendingInheritEdges.push({ source: edge.source, baseName: edge.target.slice(edge.target.indexOf(':') + 1), kind });
+				} else if (edge.target && typeof edge.target === 'string' && edge.target.startsWith('usage:')) {
+					// usage: 虚拟边暂存，待 _matchUsageEdgesToDefinitions 解析为真实 USAGE 边（带 access 读写）
+					const name = edge.target.slice(6);
+					const access: 'read' | 'write' = edge.properties?.access === 'write' ? 'write' : 'read';
+					this._pendingUsageEdges.push({ source: edge.source, name, access });
 				} else {
 					this._graph.addEdge(edge);
 				}
@@ -1588,6 +1821,15 @@ self.onmessage = async function(e) {
 				// call: 虚拟边暂存，待 _matchCallsToDefinitions 解析为真实 CALLS 边（#9）
 				if (edge.target && typeof edge.target === 'string' && edge.target.startsWith('call:')) {
 					this._pendingCallEdges.push({ source: edge.source, callee: edge.target.slice(5), loopDepth: edge.properties?.loopDepth ?? 0 });
+				} else if (edge.target && typeof edge.target === 'string' && (edge.target.startsWith('inherits:') || edge.target.startsWith('implements:'))) {
+					// inherits:/implements: 虚拟边暂存，待 _matchInheritsToDefinitions 解析为真实继承边
+					const kind: 'INHERITS' | 'IMPLEMENTS' = edge.target.startsWith('implements:') ? 'IMPLEMENTS' : 'INHERITS';
+					this._pendingInheritEdges.push({ source: edge.source, baseName: edge.target.slice(edge.target.indexOf(':') + 1), kind });
+				} else if (edge.target && typeof edge.target === 'string' && edge.target.startsWith('usage:')) {
+					// usage: 虚拟边暂存，待 _matchUsageEdgesToDefinitions 解析为真实 USAGE 边（带 access 读写）
+					const name = edge.target.slice(6);
+					const access: 'read' | 'write' = edge.properties?.access === 'write' ? 'write' : 'read';
+					this._pendingUsageEdges.push({ source: edge.source, name, access });
 				} else {
 					this._graph.addEdge(edge);
 				}
@@ -1621,6 +1863,14 @@ self.onmessage = async function(e) {
 			this._onDidIndexProgress.fire('🔗 匹配调用关系...');
 		const matchedEdges = await this._matchCallsToDefinitions();
 		edgesExtracted += matchedEdges;
+
+		// 3.5 Match inheritance edges to class definitions (INHERITS / IMPLEMENTS)
+		const matchedInherits = await this._matchInheritsToDefinitions();
+		edgesExtracted += matchedInherits;
+
+		// 3.6 Match usage edges to variable/type definitions (USAGE, access=read|write)
+		const matchedUsage = await this._matchUsageEdgesToDefinitions();
+		edgesExtracted += matchedUsage;
 
 		// #9 过程间热路径传播（基于已解析的 CALLS 图）
 		await this._propagateInterprocedural();
@@ -1708,21 +1958,16 @@ self.onmessage = async function(e) {
 			// 8. Save graph to {rootPath}/.codebase-memory/graph.db.zst（仅本 folder 子图）
 			await this._saveGraph(rootPath, this._projectName);
 
-			// Phase 2b：将完整图数据同步到主进程 SQLite（大仓库自动启用或手动配置启用）
-			const wasAutoSqlite = this._sqliteBackendEnabled && !this._configurationService.getValue<boolean>('saros.codebaseGraph.sqliteBackend');
+			// Phase 2b：将完整图数据同步到主进程 SQLite（默认开启；仅显式 false 关闭）。
+			// 所有模式（含 fast）都全量同步——保证 sqlite 库始终有最新完整图数据，搜索走 FTS5；
+			// 增量变更走 _syncIncrementalToSqlite 补丁（见 _runIncrementalIndex）。
+			// 同步成功后不再释放内存 store（同步路径 hasGraphData()/searchGraph 依赖它）。
 		if (this._sqliteBackendEnabled) {
 			this._onDidIndexProgress.fire('💾 同步到 SQLite 后端...');
-			let syncOk = false;
 			try {
 				await this._syncGraphToSqlite();
-				syncOk = true;
 			} catch (err) {
 				this._logService.error('[CodebaseGraph]', 'SQLite sync failed:', err);
-			}
-			// 自动模式：同步【成功】后才释放 V8 堆内存——同步失败时释放会让读取落到
-			// 残缺的 SQLite 上（图谱"消失"→ 下次启动误判无图 → 全量重建循环）
-			if (wasAutoSqlite && syncOk) {
-				this._freeInMemoryStore();
 			}
 		}
 
@@ -1890,7 +2135,22 @@ self.onmessage = async function(e) {
 				try {
 					const result = await this._parseFile(abs, cts.token);
 					for (const n of result.nodes) { this._graph.addNode(n); nodesExtracted++; }
-					for (const e of result.edges) { this._graph.addEdge(e); edgesExtracted++; }
+					for (const e of result.edges) {
+						// call:/inherits:/implements:/usage: 虚拟边暂存（与全量索引同一分流逻辑）
+						if (e.target && typeof e.target === 'string' && e.target.startsWith('call:')) {
+							this._pendingCallEdges.push({ source: e.source, callee: e.target.slice(5), loopDepth: e.properties?.loopDepth ?? 0 });
+						} else if (e.target && typeof e.target === 'string' && (e.target.startsWith('inherits:') || e.target.startsWith('implements:'))) {
+							const kind: 'INHERITS' | 'IMPLEMENTS' = e.target.startsWith('implements:') ? 'IMPLEMENTS' : 'INHERITS';
+							this._pendingInheritEdges.push({ source: e.source, baseName: e.target.slice(e.target.indexOf(':') + 1), kind });
+						} else if (e.target && typeof e.target === 'string' && e.target.startsWith('usage:')) {
+							const name = e.target.slice(6);
+							const access: 'read' | 'write' = e.properties?.access === 'write' ? 'write' : 'read';
+							this._pendingUsageEdges.push({ source: e.source, name, access });
+						} else {
+							this._graph.addEdge(e);
+						}
+						edgesExtracted++;
+					}
 					// 更新文件哈希（仅 mtime+size，避免 SHA-256 开销）
 					try {
 						const stat = await this._fileService.stat(URI.file(abs));
@@ -1916,7 +2176,21 @@ self.onmessage = async function(e) {
 			// 增量克隆检测（基于重解析节点的预计算签名，insertEdge 按端点去重，天然幂等）
 			const similarEdges = this._runSimilarityPass();
 
+			// 增量继承边匹配（暂存的 inherits:/implements: 虚拟边 → 真实 INHERITS/IMPLEMENTS 边）
+			const matchedInherits = await this._matchInheritsToDefinitions();
+			edgesExtracted += matchedInherits;
+
+			// 增量使用边匹配（暂存的 usage: 虚拟边 → 真实 USAGE 边，带 access 读写）
+			const matchedUsage = await this._matchUsageEdgesToDefinitions();
+			edgesExtracted += matchedUsage;
+
 			await this._saveGraph(rootPath, project);
+
+			// Phase 2b 增量补丁：仅同步变更文件到 sqlite（不触发全量重建）
+			if (this._sqliteBackendEnabled) {
+				this._onDidIndexProgress.fire('💾 SQLite 增量补丁...');
+				await this._syncIncrementalToSqlite(project, [...classification.deleted, ...classification.modified, ...classification.added]);
+			}
 
 			const duration = Math.round((Date.now() - startTime) / 1000);
 			const message = `增量索引完成: +${classification.added.length} ~${classification.modified.length} -${classification.deleted.length} (${nodesExtracted} 节点, ${edgesExtracted} 边, ${similarEdges} 克隆边, ${duration}s)`;
@@ -2112,12 +2386,20 @@ self.onmessage = async function(e) {
 							break;
 						}
 					}
-					if (shouldKeep) {
-						this._logService.info('[CodebaseGraph]', `[scan] keeping excluded dir: ${relPath}`);
-						// 继续扫描此目录
-					} else {
+				if (shouldKeep) {
+					// 该被排除目录是"通向 keep 的祖先"（keep 是其子孙）→ 只沿 keep 路径下钻，
+					// 禁止全量遍历祖先（防止 Content 等巨型目录因 keep 命中而卡死/海量扫描）
+					const isKeepAncestor = [...keepSet].some(k => k.startsWith(relPathLower + '/'));
+					if (isKeepAncestor) {
+						this._logService.info('[CodebaseGraph]', `[scan] keep-path descend through excluded ancestor: ${relPath}`);
+						await this._scanKeepPath(child.resource, relPathLower, excludeDirs, results, token, keepSet, depth + 1);
 						continue;
 					}
+					this._logService.info('[CodebaseGraph]', `[scan] keeping excluded dir: ${relPath}`);
+					// 继续扫描此目录（keep 精确命中）
+				} else {
+					continue;
+				}
 				} else {
 					continue;
 				}
@@ -2150,6 +2432,40 @@ self.onmessage = async function(e) {
 	private _getExtension(fileName: string): string {
 		const idx = fileName.lastIndexOf('.');
 		return idx >= 0 ? fileName.substring(idx).toLowerCase() : '';
+	}
+
+	/**
+	 * 沿 keep 路径逐级下钻（每级只进入通向 keep 的下一段），直到某目录本身是 keep 精确命中时，
+	 * 再对该目录执行完整 _scanDir。用于"被排除祖先仅因 keep 保留"的场景：
+	 * 例如 keep=content/script 时，只遍历 Content/Script 分支，跳过 Content/Art、Content/Audio 等。
+	 * relPathLower 为 dirUri 相对扫描根的路径（小写 / 分隔）。
+	 */
+	private async _scanKeepPath(dirUri: URI, relPathLower: string, excludeDirs: Set<string>, results: string[], token: CancellationToken, keepSet: Set<string>, depth: number): Promise<void> {
+		// 提取 dirUri 下所有"通向 keep"的下一段目录名
+		const nextSegs = new Set<string>();
+		let exactKeep = false;
+		for (const keep of keepSet) {
+			if (keep === relPathLower) { exactKeep = true; }
+			else if (keep.startsWith(relPathLower + '/')) {
+				nextSegs.add(keep.slice(relPathLower.length + 1).split('/')[0]);
+			}
+		}
+		// 当前目录本身就是 keep 精确目录 → 整目录全扫（含其全部子树）
+		if (exactKeep) {
+			this._logService.info('[CodebaseGraph]', `[scan] keep-path reached keep dir: ${relPathLower}`);
+			await this._scanDir(dirUri, excludeDirs, results, token, depth, keepSet);
+			return;
+		}
+		// 否则只沿下一段目录下钻（不遍历祖先的其他内容）
+		for (const seg of nextSegs) {
+			if (token.isCancellationRequested) { return; }
+			const childUri = URI.joinPath(dirUri, seg);
+			const stat = await this._fileService.stat(childUri).catch(() => undefined);
+			if (stat?.isDirectory) {
+				this._logService.info('[CodebaseGraph]', `[scan] keep-path descend: ${relPathLower}/${seg}`);
+				await this._scanKeepPath(childUri, `${relPathLower}/${seg}`, excludeDirs, results, token, keepSet, depth + 1);
+			}
+		}
 	}
 
 	/** 取路径最后一段作为默认项目名（多 folder：每 folder 用其目录名作项目名）。 */
@@ -2257,6 +2573,11 @@ self.onmessage = async function(e) {
 			}
 		}
 
+		// 使用边采集（读写区分）→ 供 Find References 读/写过滤（对齐 VAX）
+		if (currentFnId && this._isUsageNode(node.type)) {
+			this._collectUsageEdges(node, source, currentFnId, edges);
+		}
+
 		let enclosingFnId = currentFnId;
 		if (nodeType) {
 			const name = this._extractName(node, source);
@@ -2314,6 +2635,21 @@ self.onmessage = async function(e) {
 					target: qualifiedName,
 					type: 'CONTAINS',
 				});
+
+				// 继承/接口实现边（虚拟目标 inherits:/implements:<baseName>，
+				// 索引后由 _matchInheritsToDefinitions 解析为真实 INHERITS/IMPLEMENTS 边）
+				if (nodeType === 'class' || nodeType === 'interface') {
+					// C++ base_class_clause 不区分 kind，只产 INHERITS（避免 implements 分支重复收集）
+					const isCpp = node.type === 'class_specifier' || node.type === 'struct_specifier';
+					for (const base of extractInherits(node, 'extends')) {
+						edges.push({ source: qualifiedName, target: `inherits:${base}`, type: 'INHERITS' });
+					}
+					if (!isCpp) {
+						for (const base of extractInherits(node, 'implements')) {
+							edges.push({ source: qualifiedName, target: `implements:${base}`, type: 'IMPLEMENTS' });
+						}
+					}
+				}
 
 				enclosingFnId = qualifiedName;
 			}
@@ -2417,6 +2753,59 @@ self.onmessage = async function(e) {
 	 * 提取调用表达式的被调函数名（函数名或 method_expression 的方法名）。
 	 * 供 _analyzeIntraProcedural 与 _walkAST 的调用边采集共用。
 	 */
+	/** USAGE 提取关注的 AST 节点类型（赋值=写引用，其余=读引用）。 */
+	private _isUsageNode(nodeType: string): boolean {
+		return nodeType === 'assignment_expression' || nodeType === 'assignment' ||
+			nodeType === 'augmented_assignment_expression' || nodeType === 'compound_assignment_expression' ||
+			nodeType === 'type_annotation' || nodeType === 'type_identifier' || nodeType === 'type_hint' ||
+			nodeType === 'new_expression' || nodeType === 'object_creation_expression';
+	}
+
+	/** 从赋值/类型注解/构造节点中提取 USAGE 虚拟边（access=read|write），仅当有明确目标名时。 */
+	private _collectUsageEdges(node: any, source: string, currentFnId: string, edges: GraphEdge[]): void {
+		const add = (name: string | undefined, access: 'read' | 'write'): void => {
+			if (name && name.length > 0 && name !== 'this') {
+				edges.push({ source: currentFnId, target: `usage:${name}`, type: 'USAGE', properties: { access } });
+			}
+		};
+		// 赋值：左侧为目标变量（写），右侧可有条件地取引用（读）——为控制边数，仅记录左侧
+		if (node.type === 'assignment_expression' || node.type === 'assignment' ||
+			node.type === 'augmented_assignment_expression' || node.type === 'compound_assignment_expression') {
+			const left = node.childForFieldName ? (node.childForFieldName('left') ?? node.childForFieldName('target')) : undefined;
+			if (left) {
+				if (left.type === 'identifier' || left.type === 'field_identifier') {
+					add(source.substring(left.startIndex, left.endIndex), 'write');
+				} else if (left.childForFieldName) {
+					const prop = left.childForFieldName('property') ?? left.childForFieldName('field');
+					if (prop && (prop.type === 'property_identifier' || prop.type === 'identifier')) {
+						add(source.substring(prop.startIndex, prop.endIndex), 'write');
+					}
+				}
+			}
+			return;
+		}
+		// 类型注解 / 类型引用：读
+		if (node.type === 'type_annotation' || node.type === 'type_hint') {
+			for (const child of node.children || []) {
+				if (child.type === 'type_identifier' || child.type === 'identifier') {
+					add(source.substring(child.startIndex, child.endIndex), 'read');
+				}
+			}
+			return;
+		}
+		if (node.type === 'type_identifier') {
+			add(source.substring(node.startIndex, node.endIndex), 'read');
+			return;
+		}
+		// 构造表达式：读
+		if (node.type === 'new_expression' || node.type === 'object_creation_expression') {
+			const ctor = node.childForFieldName ? (node.childForFieldName('constructor') ?? node.childForFieldName('type') ?? node.childForFieldName('class')) : undefined;
+			if (ctor) {
+				add(source.substring(ctor.startIndex, ctor.endIndex), 'read');
+			}
+		}
+	}
+
 	private _extractCalleeName(node: any, source: string): string | undefined {
 		const fnNode = node.childForFieldName ? node.childForFieldName('function') : undefined;
 		if (fnNode) {
@@ -2527,7 +2916,55 @@ self.onmessage = async function(e) {
 	 *
 	 * 修复（2026-07-04）：递归搜索所有子节点，同时扩展 C++ 特有类型匹配。
 	 */
+	/**
+	 * 从 C/C++ 函数节点沿 declarator 链提取真正函数名。
+	 *
+	 * 背景（2026-08-06 修复）：tree-sitter-cpp 的 function_definition 结构为
+	 *   function_definition → type(返回类型) + declarator:function_declarator → declarator:名称节点
+	 * 通用 DFS 先序会先命中返回类型里的 type_identifier（如 `inline TArray<uint8> X::ConvertToArray()`
+	 * 会被误取名 "TArray"），必须优先走 declarator 链。支持解包 qualified_identifier
+	 * （取 name 字段）、pointer/reference/parenthesized 包装与 operator/destructor 名。
+	 */
+	private _extractFunctionName(node: any, source: string): string | undefined {
+		const isWrapper = (t: string): boolean => t === 'function_declarator' || t === 'pointer_declarator' ||
+			t === 'reference_declarator' || t === 'parenthesized_declarator' || t === 'init_declarator';
+		// 部分包装（如 reference_declarator 的 function_declarator）没有 declarator 字段，从 children 里找声明符系列
+		const findDeclaratorChild = (n: any): any | undefined => {
+			for (const c of (n.children || [])) {
+				if (isWrapper(c.type)) { return c; }
+			}
+			return undefined;
+		};
+		let n: any = node;
+		for (let i = 0; i < 12; i++) {
+			let decl = n.childForFieldName ? n.childForFieldName('declarator') : undefined;
+			if (!decl) { decl = findDeclaratorChild(n); }
+			if (!decl) { break; }
+			n = decl;
+			if (isWrapper(n.type)) { continue; }
+			break;
+		}
+		// qualified_identifier（成员函数定义 X::foo）：name 字段可能嵌套（ns::deep::method → deep::method），循环取最内层
+		while (n.type === 'qualified_identifier') {
+			const nm = n.childForFieldName ? n.childForFieldName('name') : undefined;
+			if (!nm || typeof nm.startIndex !== 'number') { break; }
+			if (nm.type === 'qualified_identifier') { n = nm; continue; }
+			return source.substring(nm.startIndex, nm.endIndex);
+		}
+		if (n.type === 'identifier' || n.type === 'field_identifier' || n.type === 'type_identifier' ||
+			n.type === 'destructor_name' || n.type === 'operator_name' || n.type === 'template_name' ||
+			n.type === 'namespace_identifier') {
+			return source.substring(n.startIndex, n.endIndex);
+		}
+		return undefined;
+	}
+
 	private _extractName(node: any, source: string): string | undefined {
+		// C/C++ 函数定义/声明：返回类型（type）在 DFS 中先于函数名，必须优先走 declarator 链
+		if (node.type === 'function_definition' || node.type === 'function_declaration' || node.type === 'function_declarator') {
+			const fnName = this._extractFunctionName(node, source);
+			if (fnName !== undefined) { return fnName; }
+		}
 		const IDENTIFIER_TYPES = new Set([
 			'identifier', 'field_identifier', 'type_identifier',
 			'namespace_identifier', 'template_name', 'destructor_name',
@@ -2604,6 +3041,107 @@ self.onmessage = async function(e) {
 		}
 		this._logService.info('[CodebaseGraph]', `Matched ${added} CALLS edges from ${this._pendingCallEdges.length} call sites`);
 		this._pendingCallEdges = [];
+		return added;
+	}
+
+	/**
+	 * 把虚拟继承边（inherits:/implements:<baseName>）解析为真实 INHERITS / IMPLEMENTS 边。
+	 * 与 _matchCallsToDefinitions 同构：全局 name → nodeId 索引 + 同文件优先。
+	 * 目标必须是 class/interface 节点；未找到（如基类在外部依赖/标准库）则丢弃虚拟边。
+	 */
+	private async _matchInheritsToDefinitions(): Promise<number> {
+		if (this._pendingInheritEdges.length === 0) { return 0; }
+		const store = this._graph.store;
+		const project = this._projectName;
+
+		// 构建 name → nodeId[] 索引（只收 class/interface，避免把基类误解析到同名函数/变量）
+		const nameIndex = new Map<string, number[]>();
+		for (const n of store.getAllNodes()) {
+			if (n.project !== project) { continue; }
+			if (n.label !== 'class' && n.label !== 'interface') { continue; }
+			const list = nameIndex.get(n.name);
+			if (list) { list.push(n.id); } else { nameIndex.set(n.name, [n.id]); }
+		}
+
+		let added = 0;
+		let sinceYield = 0;
+		for (const inh of this._pendingInheritEdges) {
+			// 时间切片：大仓库大量继承点同步循环会冻结 UI
+			if (++sinceYield >= 20000) {
+				sinceYield = 0;
+				await new Promise<void>(resolve => setTimeout(resolve, 0));
+			}
+			const srcNode = store.findNodeByQN(project, inh.source);
+			if (!srcNode) { continue; }
+			const cands = nameIndex.get(inh.baseName);
+			if (!cands || cands.length === 0) { continue; }
+			// 优先同文件基类（类与其基类常在同头文件声明；跨文件退化为第一个匹配）
+			let targetId = cands[0];
+			const srcFile = inh.source.split('::')[0];
+			for (const cid of cands) {
+				const cn = store.getNode(cid);
+				if (cn && cn.filePath === srcFile) { targetId = cid; break; }
+			}
+			const edge = store.insertEdge({
+				project,
+				sourceId: srcNode.id,
+				targetId,
+				type: inh.kind,
+				properties: {},
+			});
+			if (edge) { added++; }
+		}
+		this._logService.info('[CodebaseGraph]', `Matched ${added} INHERITS/IMPLEMENTS edges from ${this._pendingInheritEdges.length} base clauses`);
+		this._pendingInheritEdges = [];
+		return added;
+	}
+
+	/**
+	 * 把虚拟使用边（usage:<name>）解析为真实 USAGE 边（携带 access=read|write 属性，
+	 * 供 Find References 读/写过滤）。与继承/调用匹配同构：name → nodeId 索引 + 同文件优先。
+	 * 目标限定 class/interface/variable（类型与变量引用）；未找到则丢弃虚拟边。
+	 */
+	private async _matchUsageEdgesToDefinitions(): Promise<number> {
+		if (this._pendingUsageEdges.length === 0) { return 0; }
+		const store = this._graph.store;
+		const project = this._projectName;
+
+		const nameIndex = new Map<string, number[]>();
+		for (const n of store.getAllNodes()) {
+			if (n.project !== project) { continue; }
+			if (n.label !== 'class' && n.label !== 'interface' && n.label !== 'variable') { continue; }
+			const list = nameIndex.get(n.name);
+			if (list) { list.push(n.id); } else { nameIndex.set(n.name, [n.id]); }
+		}
+
+		let added = 0;
+		let sinceYield = 0;
+		for (const u of this._pendingUsageEdges) {
+			if (++sinceYield >= 20000) {
+				sinceYield = 0;
+				await new Promise<void>(resolve => setTimeout(resolve, 0));
+			}
+			const srcNode = store.findNodeByQN(project, u.source);
+			if (!srcNode) { continue; }
+			const cands = nameIndex.get(u.name);
+			if (!cands || cands.length === 0) { continue; }
+			let targetId = cands[0];
+			const srcFile = u.source.split('::')[0];
+			for (const cid of cands) {
+				const cn = store.getNode(cid);
+				if (cn && cn.filePath === srcFile) { targetId = cid; break; }
+			}
+			const edge = store.insertEdge({
+				project,
+				sourceId: srcNode.id,
+				targetId,
+				type: 'USAGE',
+				properties: { access: u.access },
+			});
+			if (edge) { added++; }
+		}
+		this._logService.info('[CodebaseGraph]', `Matched ${added} USAGE edges from ${this._pendingUsageEdges.length} usage sites`);
+		this._pendingUsageEdges = [];
 		return added;
 	}
 
@@ -3155,6 +3693,122 @@ self.onmessage = async function(e) {
 			return this._graph.getEdgesOf(nodeId);
 		}
 		return this._graph.getAllEdges();
+	}
+
+	getClassHierarchy(qualifiedName: string, direction: 'bases' | 'derived' | 'both' = 'both', maxDepth?: number): IClassHierarchyNode | undefined {
+		const store = this._graph.store;
+		const project = this._projectName;
+		// 支持纯名称反查（QN 是 file::name；先找 class/interface 节点）
+		let storeNode = store.findNodeByQN(project, qualifiedName);
+		if (!storeNode) {
+			// 纯名称 → 从 store 全节点里精确匹配（避免 service 层 id 字符串/数字混用）
+			const escaped = qualifiedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+			const regex = new RegExp(`^${escaped}$`, 'i');
+			for (const n of store.getAllNodes()) {
+				if (n.project !== project) { continue; }
+				if ((n.label !== 'class' && n.label !== 'interface') && (n.type !== 'class' && n.type !== 'interface')) { continue; }
+				if (regex.test(n.name)) { storeNode = n; break; }
+			}
+		}
+		if (!storeNode) { return undefined; }
+
+		const toServiceNode = (n: typeof storeNode): GraphNode => ({
+			id: String(n.id),
+			name: n.name,
+			type: n.type ?? n.label,
+			label: n.label,
+			filePath: n.filePath,
+			qualifiedName: n.qualifiedName,
+			inDegree: n.inDegree,
+			outDegree: n.outDegree,
+			startLine: n.startLine,
+			endLine: n.endLine,
+			project: n.project,
+			properties: n.properties,
+		});
+
+		const depth = maxDepth && maxDepth > 0 ? maxDepth : 8;
+		const root: IClassHierarchyNode = { node: toServiceNode(storeNode), kind: 'root', bases: [], derived: [] };
+
+		// 沿 INHERITS/IMPLEMENTS 边双向 BFS（图可能有环，visited 按 store id 防环）
+		const walkBases = (current: IClassHierarchyNode, visited: Set<number>, d: number): void => {
+			if (d >= depth) { return; }
+			const curStoreId = Number(current.node.id);
+			for (const edge of store.getEdgesByTarget(curStoreId)) {
+				if (edge.type !== 'INHERITS' && edge.type !== 'IMPLEMENTS') { continue; }
+				const src = store.getNode(edge.sourceId);
+				if (!src || visited.has(src.id)) { continue; }
+				visited.add(src.id);
+				const child: IClassHierarchyNode = { node: toServiceNode(src), kind: edge.type as any, bases: [], derived: [] };
+				current.bases.push(child);
+				walkBases(child, visited, d + 1);
+			}
+		};
+		const walkDerived = (current: IClassHierarchyNode, visited: Set<number>, d: number): void => {
+			if (d >= depth) { return; }
+			const curStoreId = Number(current.node.id);
+			for (const edge of store.getEdgesBySource(curStoreId)) {
+				if (edge.type !== 'INHERITS' && edge.type !== 'IMPLEMENTS') { continue; }
+				const tgt = store.getNode(edge.targetId);
+				if (!tgt || visited.has(tgt.id)) { continue; }
+				visited.add(tgt.id);
+				const child: IClassHierarchyNode = { node: toServiceNode(tgt), kind: edge.type as any, bases: [], derived: [] };
+				current.derived.push(child);
+				walkDerived(child, visited, d + 1);
+			}
+		};
+
+		if (direction === 'bases' || direction === 'both') { walkBases(root, new Set([Number(root.node.id)]), 0); }
+		if (direction === 'derived' || direction === 'both') { walkDerived(root, new Set([Number(root.node.id)]), 0); }
+		return root;
+	}
+
+	getNodeReferences(qualifiedName: string, edgeTypes?: string[], access?: 'read' | 'write'): { node: GraphNode; edgeType: string; access: 'read' | 'write' }[] | undefined {
+		const store = this._graph.store;
+		const project = this._projectName;
+		// 反查节点（支持 QN 与纯名称，复用 getClassHierarchy 的精确反查策略）
+		let storeNode = store.findNodeByQN(project, qualifiedName);
+		if (!storeNode) {
+			const escaped = qualifiedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+			const regex = new RegExp(`^${escaped}$`, 'i');
+			for (const n of store.getAllNodes()) {
+				if (n.project !== project) { continue; }
+				if (regex.test(n.name)) { storeNode = n; break; }
+			}
+		}
+		if (!storeNode) { return undefined; }
+
+		const typeFilter = edgeTypes ? new Set(edgeTypes) : undefined;
+		const toServiceNode = (n: typeof storeNode): GraphNode => ({
+			id: String(n.id),
+			name: n.name,
+			type: n.type ?? n.label,
+			label: n.label,
+			filePath: n.filePath,
+			qualifiedName: n.qualifiedName,
+			inDegree: n.inDegree,
+			outDegree: n.outDegree,
+			startLine: n.startLine,
+			endLine: n.endLine,
+			project: n.project,
+			properties: n.properties,
+		});
+
+		const refs: { node: GraphNode; edgeType: string; access: 'read' | 'write' }[] = [];
+		const seen = new Set<number>();
+		for (const edge of store.getEdgesByTarget(storeNode.id)) {
+			if (typeFilter && !typeFilter.has(edge.type)) { continue; }
+			// 读写过滤：仅对 USAGE 边读取 properties.access；其余边（CALLS/INHERITS/…）恒为 read
+			const edgeAccess: 'read' | 'write' = edge.type === 'USAGE'
+				? (edge.properties?.access === 'write' ? 'write' : 'read')
+				: 'read';
+			if (access && edgeAccess !== access) { continue; }
+			const src = store.getNode(edge.sourceId);
+			if (!src || seen.has(src.id)) { continue; }
+			seen.add(src.id);
+			refs.push({ node: toServiceNode(src), edgeType: edge.type, access: edgeAccess });
+		}
+		return refs;
 	}
 
 	getNode(id: string): GraphNode | undefined {
@@ -4314,16 +4968,31 @@ self.onmessage = async function(e) {
 					// 从文件路径推导 rootPath 并注册到 _rootProjectMap（多 folder 项目名解析）
 					const graphDirIdx = p.lastIndexOf('/.codebase-memory/') >= 0 ? p.lastIndexOf('/.codebase-memory/')
 						: p.lastIndexOf('\\.codebase-memory\\');
-					if (graphDirIdx > 0) {
-						const rootPath = this._normalizeRoot(p.substring(0, graphDirIdx));
-						const proj = projectOverride || this._basename(rootPath) || '_default';
-						this._rootProjectMap.set(rootPath, proj);
-						if (this._projectName === '_default') {
-							this._projectName = proj;  // 首个加载的 project 改为默认
-						}
+				if (graphDirIdx > 0) {
+					const rootPath = this._normalizeRoot(p.substring(0, graphDirIdx));
+					const proj = projectOverride || this._basename(rootPath) || '_default';
+					this._rootProjectMap.set(rootPath, proj);
+					if (this._projectName === '_default') {
+						this._projectName = proj;  // 首个加载的 project 改为默认
 					}
 					this._logService.info('[CodebaseGraph]', `[loadGraphMerge] merged ${p} as project="${projectOverride ?? '(original)'}" (${Date.now() - tStart}ms), store nodes=${this._graph.nodeCount}`);
-					return true;
+					// gzip 加载后若 SQLite 无该 project 数据则同步一次（幂等：listProjects 检查，
+					// 避免每次启动全量重建；首次加载才同步，一次性成本）
+					if (this._sqliteBackendEnabled && proj !== '_default') {
+						try {
+							const existingProjects = await this._sqliteBackend.listProjects();
+							if (!existingProjects.some(pj => pj.name === proj)) {
+								this._logService.info('[CodebaseGraph]', `SQLite missing project "${proj}" — syncing loaded graph...`);
+								await this._syncGraphToSqlite(proj);
+							} else {
+								this._logService.info('[CodebaseGraph]', `SQLite already has project "${proj}" — skip sync`);
+							}
+						} catch (err: any) {
+							this._logService.warn('[CodebaseGraph]', `SQLite load-sync check failed: ${err?.message || err}`);
+						}
+					}
+				}
+				return true;
 				}
 			} catch (err: any) {
 				// warn 级：加载失败会导致调用方判定"无图"并触发全量重建——失败原因必须可见

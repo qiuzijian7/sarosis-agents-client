@@ -2222,8 +2222,8 @@ private async _exportSkillsJson(memProvider: any): Promise<void> {
 
 	/**
 	 * 外部调用入口：触发代码库索引（若尚未索引），并打开独立的代码图谱 3D 可视化面板。
-	 * 「代码图谱」页签已从 Memory 中移除，故不再内嵌渲染，而是直接打开独立面板。
-	 * 供 `agentStudio.codebaseMemoryInit` 命令使用。
+	 * 「代码图谱」已从 Memory 详情面板移除（改为 KB 视图侧"代码库"section 入口），故本方法
+	 * 只打开独立 CodebaseGraphViewerEditorPane。供 `agentStudio.codebaseMemoryInit` 命令使用。
 	 */
 	async activateCodebaseViewAndIndex(): Promise<void> {
 		// 自动触发索引（如果未在索引中且无图谱数据）
