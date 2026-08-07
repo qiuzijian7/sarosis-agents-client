@@ -1,5 +1,5 @@
-# 生成 EXE 安装包 (user & system setup)
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+﻿# 生成 EXE 安装包 (user & system setup)
+$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
 npx gulp vscode-win32-x64-inno-updater --verbose

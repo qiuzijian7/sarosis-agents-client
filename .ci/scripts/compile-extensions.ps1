@@ -1,5 +1,5 @@
-# 编译扩展 compile-extensions-build
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+﻿# 编译扩展 compile-extensions-build
+$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
 # Delete extensions known to fail vsce packaging (workspace cache safety)

@@ -1,5 +1,5 @@
-# 生产编译 compile-build-with-mangling
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+﻿# 生产编译 compile-build-with-mangling
+$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
 $nodeVersion = "22.22.1"

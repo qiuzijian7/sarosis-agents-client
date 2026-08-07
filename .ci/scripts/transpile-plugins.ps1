@@ -1,5 +1,5 @@
-# 构建能力插件 transpile-plugins
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+﻿# 构建能力插件 transpile-plugins
+$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
 $nvmNodeDir = ($env:LOCALAPPDATA + '\nvm\v22.22.1')

@@ -1,5 +1,5 @@
-# 验证打包关键构件
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+﻿# 验证打包关键构件
+$repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
 
 $appRoot = Join-Path (Split-Path $pwd.Path -Parent) "VSCode-win32-x64\resources\app"
