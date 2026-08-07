@@ -220,34 +220,7 @@ function ensureFile(label, stagingRel, repoRelCandidates) {
 	criticalMissing++;
 }
 
-// 1) ripgrep（运行时路径：node_modules.asar.unpacked/@vscode/ripgrep/bin/rg.exe，
-//    与 runtime rgPath.replace(/node_modules.asar/, 'node_modules.asar.unpacked') 及
-//    ensureRipgrepBinaryTask 的落点一致）。CI 用 --ignore-scripts 装依赖，postinstall
-//    不会下载 rg.exe，故需整包恢复（bin/rg.exe + lib + package.json）或回退内嵌二进制。
-const rgStaging = 'resources/app/node_modules.asar.unpacked/@vscode/ripgrep/bin/rg.exe';
-if (!existsSync(path.join(buildDir, rgStaging))) {
-	const pkgSrc = path.join(repoRoot, 'node_modules/@vscode/ripgrep');
-	if (existsSync(path.join(pkgSrc, 'bin/rg.exe'))) {
-		mkdirSync(path.join(buildDir, 'resources/app/node_modules.asar.unpacked/@vscode'), { recursive: true });
-		cpSync(pkgSrc, path.join(buildDir, 'resources/app/node_modules.asar.unpacked/@vscode/ripgrep'), { recursive: true });
-		console.log('  ♻️  @vscode/ripgrep —— 已从仓库 node_modules 整包恢复');
-	} else {
-		const embedded = path.join(repoRoot, 'build/saros/bin/rg.exe');
-		if (existsSync(embedded)) {
-			const dest = path.join(buildDir, rgStaging);
-			mkdirSync(path.dirname(dest), { recursive: true });
-			cpSync(embedded, dest);
-			console.log('  ♻️  @vscode/ripgrep/bin/rg.exe —— 已从内嵌 build/saros/bin 恢复');
-		} else {
-			console.log('  ❌ @vscode/ripgrep/bin/rg.exe 缺失且仓库与内嵌源均不可用');
-			criticalMissing++;
-		}
-	}
-} else {
-	console.log('  ✅ @vscode/ripgrep/bin/rg.exe');
-}
-
-// 2) agentmemory 能力插件 dist（AgentCapability 回退路径硬编码加载）
+// 1) agentmemory 能力插件 dist（AgentCapability 回退路径硬编码加载）
 ensureFile(
 	'agentmemory-memory/dist/extension.js',
 	'resources/app/extensions/agentmemory-memory/dist/extension.js',

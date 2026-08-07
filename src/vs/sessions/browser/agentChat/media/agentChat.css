@@ -11308,6 +11308,14 @@
 	display: block;
 	margin: 0 auto;
 }
+/* Mermaid 工具卡片：SVG 经 TrustedHTML 注入 .mc-preview（flex 容器）。
+   !important 覆盖 mermaid 内联 style="max-width:...px"；min-width:0 允许 flex 项收缩。 */
+.mc-preview svg {
+	max-width: 100% !important;
+	min-width: 0;
+	height: auto;
+	display: block;
+}
 .mermaid-diagram.mermaid-loaded {
 	background: #fff;
 }

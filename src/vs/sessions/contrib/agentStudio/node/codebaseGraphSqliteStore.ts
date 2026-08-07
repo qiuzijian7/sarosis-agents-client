@@ -161,6 +161,30 @@ export const graphStoreMigrations: readonly IGraphStoreMigration[] = [
 			)`,
 		].join(';\n'),
 	},
+	{
+		version: 2,
+		// 2026-08-06 P1 瘦身：FTS5 改 external content（索引与原文分离，省 ~400MB）+ 删重复索引
+		//   - content='nodes' + content_rowid='id'：nodes_fts 只存倒排索引，原文（body 等）放 nodes 表。
+		//     rebuild 仍可用；DELETE rowid 语义正常（已验证）；无条件 DELETE FROM nodes_fts 会
+		//     SQLITE_CORRUPT_VTAB（FTS5 行为），故 clear() 改用 delete-all 命令。
+		//   - idx_nodes_qn 与 UNIQUE(project, qualified_name) 自动索引完全重复 → 删除省 ~100MB。
+		sql: [
+			// ① nodes 增加 body 列（external content 的内容来源，rebuild 依赖）
+			`ALTER TABLE nodes ADD COLUMN body TEXT NOT NULL DEFAULT ''`,
+			// ② 存量回填 body：从旧 contentful FTS 原文复制（新库无旧表，UPDATE 0 行幂等）
+			`UPDATE nodes SET body = (SELECT f.body FROM nodes_fts f WHERE f.rowid = nodes.id) WHERE EXISTS (SELECT 1 FROM nodes_fts f WHERE f.rowid = nodes.id)`,
+			// ③ 删除与 UNIQUE(project, qualified_name) 重复的显式索引
+			`DROP INDEX IF EXISTS idx_nodes_qn`,
+			// ④ 重建 FTS 为 external content（只存索引）
+			`DROP TABLE IF EXISTS nodes_fts`,
+			`CREATE VIRTUAL TABLE nodes_fts USING fts5(
+				name, qualified_name, file_path, body,
+				content='nodes', content_rowid='id', tokenize='unicode61'
+			)`,
+			// ⑤ 从 nodes 重建索引（external content 支持 rebuild）
+			`INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')`,
+		].join(';\n'),
+	},
 ];
 
 // ---- Row → GraphNode 映射 ----
@@ -309,16 +333,25 @@ export class CodebaseGraphSqliteStore {
 		const pending = graphStoreMigrations
 			.filter(m => m.version > current)
 			.sort((a, b) => a.version - b.version);
+		let didMigrate = false;
 		for (const m of pending) {
 			await dbExec(db, 'BEGIN');
 			try {
 				await dbExec(db, m.sql);
 				await dbExec(db, `PRAGMA user_version = ${m.version}`);
 				await dbExec(db, 'COMMIT');
+				didMigrate = true;
 			} catch (err) {
 				await dbExec(db, 'ROLLBACK');
 				throw err;
 			}
+		}
+		if (didMigrate) {
+			// 迁移后旧 FTS 表空间进入 freelist，文件不缩小；VACUUM 压缩归还磁盘。
+			// 大库（1-2GB）耗时数秒~数十秒，仅迁移时执行一次。
+			try { await dbExec(db, 'VACUUM'); } catch { /* 空间不足等场景降级：下次同步自然复用 */ }
+			// FTS rebuild 产生大量 WAL 页，checkpoint TRUNCATE 收敛
+			try { await dbExec(db, `PRAGMA wal_checkpoint(TRUNCATE)`); } catch { /* 忙则跳过 */ }
 		}
 	}
 
@@ -352,33 +385,34 @@ export class CodebaseGraphSqliteStore {
 		const label = node.label ?? node.type ?? '';
 		const type = node.type ?? node.label ?? '';
 		const props = JSON.stringify(node.properties ?? {});
+		const body = this._buildFTSBody(node);
 		const explicitId = node.id !== undefined ? Number(node.id) : undefined;
 
 		if (explicitId !== undefined) {
 			await dbRun(db,
-				`INSERT INTO nodes (id, project, name, label, type, qualified_name, file_path, start_line, end_line, in_degree, out_degree, properties_json)
-				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+				`INSERT INTO nodes (id, project, name, label, type, qualified_name, file_path, start_line, end_line, in_degree, out_degree, properties_json, body)
+				 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 				 ON CONFLICT(id) DO UPDATE SET
 				   project=excluded.project, name=excluded.name, label=excluded.label, type=excluded.type,
 				   qualified_name=excluded.qualified_name, file_path=excluded.file_path,
 				   start_line=excluded.start_line, end_line=excluded.end_line,
-				   in_degree=excluded.in_degree, out_degree=excluded.out_degree, properties_json=excluded.properties_json`,
+				   in_degree=excluded.in_degree, out_degree=excluded.out_degree, properties_json=excluded.properties_json, body=excluded.body`,
 				[explicitId, project, node.name, label, type, qn, node.filePath ?? null,
-					node.startLine ?? null, node.endLine ?? null, node.inDegree ?? 0, node.outDegree ?? 0, props]);
+					node.startLine ?? null, node.endLine ?? null, node.inDegree ?? 0, node.outDegree ?? 0, props, body]);
 			await this._upsertFTS(explicitId, node);
 			return explicitId;
 		}
 
 		const res = await dbRun(db,
-			`INSERT INTO nodes (project, name, label, type, qualified_name, file_path, start_line, end_line, in_degree, out_degree, properties_json)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?)
+			`INSERT INTO nodes (project, name, label, type, qualified_name, file_path, start_line, end_line, in_degree, out_degree, properties_json, body)
+			 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 			 ON CONFLICT(project, qualified_name) DO UPDATE SET
 			   name=excluded.name, label=excluded.label, type=excluded.type,
 			   file_path=excluded.file_path, start_line=excluded.start_line, end_line=excluded.end_line,
-			   in_degree=excluded.in_degree, out_degree=excluded.out_degree, properties_json=excluded.properties_json
+			   in_degree=excluded.in_degree, out_degree=excluded.out_degree, properties_json=excluded.properties_json, body=excluded.body
 			 RETURNING id`,
 			[project, node.name, label, type, qn, node.filePath ?? null,
-				node.startLine ?? null, node.endLine ?? null, node.inDegree ?? 0, node.outDegree ?? 0, props]);
+				node.startLine ?? null, node.endLine ?? null, node.inDegree ?? 0, node.outDegree ?? 0, props, body]);
 		const id = res.lastID;
 		await this._upsertFTS(id, node);
 		return id;
@@ -387,7 +421,9 @@ export class CodebaseGraphSqliteStore {
 	private async _upsertFTS(id: number, node: GraphNode): Promise<void> {
 		const db = this._ensureDb();
 		const body = this._buildFTSBody(node);
-		// content='' 外部内容表：用 rowid 关联 nodes.id
+		// v2 起为 external content（content='nodes'）：INSERT 只更新倒排索引，
+		// 原文（含 body）存 nodes 表；rebuild 时从 nodes 读，故 upsertNode 必须同步写 nodes.body。
+		// rowid 与 nodes.id 对齐（content_rowid='id'）。
 		try {
 			await dbRun(db,
 				`INSERT INTO nodes_fts (rowid, name, qualified_name, file_path, body) VALUES (?,?,?,?,?)`,
@@ -486,7 +522,9 @@ export class CodebaseGraphSqliteStore {
 	/** 清空全部图数据（保留表结构） */
 	async clear(): Promise<void> {
 		const db = this._ensureDb();
-		await dbExec(db, 'DELETE FROM nodes_fts; DELETE FROM edges; DELETE FROM nodes; DELETE FROM file_hashes; DELETE FROM layout;');
+		// FTS5 external content 表不支持无 WHERE 的 DELETE（SQLITE_CORRUPT_VTAB），
+		// 须用 'delete-all' 命令清空索引。
+		await dbExec(db, `INSERT INTO nodes_fts(nodes_fts) VALUES('delete-all'); DELETE FROM edges; DELETE FROM nodes; DELETE FROM file_hashes; DELETE FROM layout;`);
 	}
 
 	async deleteProject(project: string, opts?: { keepFileHashes?: boolean }): Promise<void> {

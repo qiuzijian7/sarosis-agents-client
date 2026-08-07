@@ -1476,33 +1476,82 @@ protected override _insertTextAtCaret(text: string): void {
 		const root = this._textarea;
 		if (!root) { return; }
 		root.focus();
-		// 优先 execCommand('insertText')：浏览器原生在光标处插入文本，并把光标
-		// 正确置于插入文字之后（等同打字/原生粘贴），自动处理相邻文本节点合并。
-		// 手动 insertNode + setStartAfter(textNode) 在浏览器合并相邻文本节点后，
-		// textNode 引用失效（detached），setStartAfter 会落到错误位置导致光标不在尾部。
-		// 成功时已触发原生 input 事件，无需再手动派发。
-		let inserted = false;
-		try {
-			inserted = document.execCommand('insertText', false, text);
-		} catch { inserted = false; }
-		if (inserted) { return; }
-
-		// 回退：手动 Range 插入 + 光标定位
 		const sel = window.getSelection();
-		const textNode = document.createTextNode(text);
 		const existing = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
 		if (existing && root.contains(existing.startContainer)) {
+			// 用「纯文本偏移量」定位光标：先记下插入点（选区起点）的偏移，插入后把光标
+			// 放到 insertOffset + text.length。偏移量基于 DOM 字符计数、不依赖插入的
+			// textNode 引用——浏览器把新文本节点与相邻文本节点合并后引用会失效，
+			// setStartAfter(detachedNode) 会落错位置（打包版曾因此光标不在尾部）。
+			const insertOffset = this._computeCaretOffset(true);
 			existing.deleteContents();
-			existing.insertNode(textNode);
+			existing.insertNode(document.createTextNode(text));
+			this._setCaretOffset(insertOffset + text.length);
 		} else {
-			root.appendChild(textNode);
+			root.appendChild(document.createTextNode(text));
+			this._focusComposerEnd();
 		}
-		const caret = document.createRange();
-		caret.setStartAfter(textNode);
-		caret.collapse(true);
-		sel?.removeAllRanges();
-		sel?.addRange(caret);
 		root.dispatchEvent(new Event('input'));
+	}
+
+	/** 计算当前选区端点处的「纯文本」偏移（跳过 chip 内文本）。useStart=true 取选区起点。 */
+	private _computeCaretOffset(useStart: boolean): number {
+		const root = this._textarea;
+		if (!root) { return 0; }
+		const sel = window.getSelection();
+		if (!sel || sel.rangeCount === 0) { return 0; }
+		const range = sel.getRangeAt(0);
+		const pre = range.cloneRange();
+		pre.selectNodeContents(root);
+		if (useStart) { pre.setEnd(range.startContainer, range.startOffset); }
+		else { pre.setEnd(range.endContainer, range.endOffset); }
+		let offset = 0;
+		pre.cloneContents().childNodes.forEach((n) => {
+			if (n.nodeType === Node.TEXT_NODE) {
+				offset += (n.textContent ?? '').length;
+			} else if (n.nodeType === Node.ELEMENT_NODE) {
+				const el = n as HTMLElement;
+				if (!el.classList.contains('inline-attachment-chip') && !el.classList.contains('inline-skill-chip')) {
+					offset += (el.textContent ?? '').length;
+				}
+			}
+		});
+		return offset;
+	}
+
+	/** 把光标折叠到 composer 内第 target 个「纯文本」字符之后（跳过 chip 内文本）。 */
+	private _setCaretOffset(target: number): void {
+		const root = this._textarea;
+		if (!root) { return; }
+		root.focus();
+		const sel = window.getSelection();
+		if (!sel) { return; }
+		let remaining = Math.max(0, target);
+		const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+			acceptNode: (n) => {
+				const p = (n as Text).parentElement;
+				return (p && p.closest('.inline-attachment-chip, .inline-skill-chip')) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+			},
+		});
+		let node: Node | null;
+		while ((node = walker.nextNode())) {
+			const t = node as Text;
+			if (remaining <= t.length) {
+				const r = document.createRange();
+				r.setStart(t, remaining);
+				r.collapse(true);
+				sel.removeAllRanges();
+				sel.addRange(r);
+				return;
+			}
+			remaining -= t.length;
+		}
+		// 超出末尾 → 折叠到最后
+		const r = document.createRange();
+		r.selectNodeContents(root);
+		r.collapse(false);
+		sel.removeAllRanges();
+		sel.addRange(r);
 	}
 
 	/** 选区含 chip 时拦截复制/剪切：写入自定义格式 + 可读纯文本，避免图片信息丢失。 */

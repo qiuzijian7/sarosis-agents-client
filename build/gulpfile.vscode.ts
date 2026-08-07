@@ -649,91 +649,6 @@ function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinati
 	};
 }
 
-/**
- * Ensures ripgrep's `rg` binary is present in the deployed app's
- * `node_modules.asar.unpacked/@vscode/ripgrep/bin/` directory.
- *
- * Background: `@vscode/ripgrep`'s postinstall script downloads the platform
- * binary from GitHub. In environments without network access (e.g. CI without
- * GITHUB_TOKEN, behind firewalls) the download fails, leaving `bin/` empty.
- * In that case the build's `unpackGlobs` (the @vscode/ripgrep/bin entry with
- * recursive pattern) matches nothing and `node_modules.asar.unpacked/` is never
- * created. At runtime
- * the search engine then fails with `spawn ... rg.exe ENOENT` and the activity bar
- * search panel cannot be used.
- *
- * This task self-heals the layout by copying `rg` from the host's
- * `node_modules/@vscode/ripgrep/bin/` (where it does exist after a normal
- * `npm install`) into the deployed `node_modules.asar.unpacked/` tree.
- *
- * Layout expected by `ripgrepFileSearch.ts` / `ripgrepTextSearchEngine.ts`:
- *   - `rgPath` (from @vscode/ripgrep/lib/index.js) resolves to
- *     `.../node_modules.asar/@vscode/ripgrep/bin/rg[.exe]`
- *   - the `.replace(/\bnode_modules\.asar\b/, 'node_modules.asar.unpacked')`
- *     turn it into `.../node_modules.asar.unpacked/@vscode/ripgrep/bin/rg[.exe]`
- *
- * Failures here are non-fatal: if the local source is also missing we warn
- * loudly so the operator knows to install ripgrep manually, but the build
- * keeps going (mirroring the `prepareCopilotRipgrepShim` policy).
- */
-function ensureRipgrepBinaryTask(platform: string, _arch: string, destinationFolderName: string) {
-	const outputDir = path.join(path.dirname(root), destinationFolderName);
-
-	return async () => {
-		const versionedResourcesFolder = util.getVersionedResourcesFolder(platform, commit!);
-		const appBase = platform === 'darwin'
-			? path.join(outputDir, `${product.nameLong}.app`, 'Contents', 'Resources', 'app')
-			: path.join(outputDir, versionedResourcesFolder, 'resources', 'app');
-
-		const ripgrepExeName = process.platform === 'win32' ? 'rg.exe' : 'rg';
-		// Candidate sources, in priority order:
-		//   1) The host's installed @vscode/ripgrep/bin (from `npm install` /
-		//      postinstall). For cross-compilation the host's binary is wrong,
-		//      so we fall through to the embedded one below.
-		//   2) The checked-in embedded binary under build/saros/bin. CI installs
-		//      dev deps with `--ignore-scripts`, so the npm postinstall that
-		//      downloads rg.exe never runs — this fallback keeps search working
-		//      in the packaged build instead of degrading to the slow Node walker.
-		const hostSource = path.join(root, 'node_modules', '@vscode', 'ripgrep', 'bin', ripgrepExeName);
-		const embeddedSource = path.join(root, 'build', 'saros', 'bin', ripgrepExeName);
-		const sourceCandidates = [hostSource, embeddedSource];
-		// 2) Destination: the deployed app's asar-unpacked tree, mirroring the
-		//    layout that `rgPath.replace(...)` expects at runtime.
-		const deployedAsarUnpacked = path.join(appBase, 'node_modules.asar.unpacked', '@vscode', 'ripgrep', 'bin');
-		const deployedDest = path.join(deployedAsarUnpacked, ripgrepExeName);
-
-		// Already in place (e.g. asar postinstall succeeded) → no-op.
-		if (fs.existsSync(deployedDest)) {
-			console.log(`[ensureRipgrepBinary] rg already present at ${deployedDest}`);
-			return;
-		}
-
-		const resolvedSource = sourceCandidates.find(c => fs.existsSync(c));
-		if (!resolvedSource) {
-			console.warn(
-				`[ensureRipgrepBinary] SKIPPED: ripgrep binary missing at ${hostSource} and no embedded ` +
-				`fallback at ${embeddedSource}. Search will fall back to Node.js walker at runtime. ` +
-				`To fix: run \`npm rebuild @vscode/ripgrep\` or \`node node_modules/@vscode/ripgrep/lib/postinstall.js\`.`,
-			);
-			return;
-		}
-
-		try {
-			fs.mkdirSync(deployedAsarUnpacked, { recursive: true });
-			fs.copyFileSync(resolvedSource, deployedDest);
-			// Match the source file's executable bit on POSIX so the binary
-			// can be spawned by the search engine.
-			if (process.platform !== 'win32') {
-				const srcStat = fs.statSync(resolvedSource);
-				fs.chmodSync(deployedDest, srcStat.mode);
-			}
-			console.log(`[ensureRipgrepBinary] Copied ${resolvedSource} → ${deployedDest}`);
-		} catch (err) {
-			console.warn(`[ensureRipgrepBinary] FAILED to materialize ${deployedDest}: ${err}. Search will fall back to Node.js walker at runtime.`);
-		}
-	};
-}
-
 const buildRoot = path.dirname(root);
 
 const BUILD_TARGETS = [
@@ -760,7 +675,6 @@ BUILD_TARGETS.forEach(buildTarget => {
 			util.rimraf(path.join(buildRoot, destinationFolderName)),
 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
 			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName),
-			ensureRipgrepBinaryTask(platform, arch, destinationFolderName),
 		];
 
 		if (platform === 'win32') {
