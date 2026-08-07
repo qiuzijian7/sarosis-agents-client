@@ -43,322 +43,45 @@ stages:
       - name: 安装依赖 (npm ci)
         with:
           charsetType: UTF_8
-        run: |+
-          # ===== 1. Node =====
-          $nodeVersion = "22.22.1"
-          if (-not (nvm list 2>$null | Select-String $nodeVersion)) { nvm install $nodeVersion }
-          nvm use $nodeVersion
-          node --version
-
-          # ===== 2. Cleanup =====
-          cmd /c "rd /s /q node_modules 2>nul"
-          cmd /c "rd /s /q build\node_modules 2>nul"
-
-          # ===== 3. Install Spectre =====
-          $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Community"
-          $vsInstaller = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe"
-          $latestMsvc = Get-ChildItem ($vsPath + '\VC\Tools\MSVC') -Directory -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-          if ($latestMsvc -and -not (Test-Path ($vsPath + '\VC\Tools\MSVC\' + $latestMsvc.Name + '\lib\spectre\x64\libcmt.lib'))) {
-            Write-Host "=== Installing Spectre Libraries ==="
-            & $vsInstaller modify --installPath $vsPath --quiet --norestart `
-              --add Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre `
-              --add Microsoft.VisualStudio.Component.VC.ATL.Spectre `
-              --add Microsoft.VisualStudio.Component.VC.MFC.Spectre 2>&1 | Out-Null
-          }
-          $vsMsvcDir = $vsPath + '\VC\Tools\MSVC\14.38.33130'
-          Remove-Item -Recurse -Force $vsMsvcDir -ErrorAction SilentlyContinue
-
-          # ===== 4. Env vars for Electron native build =====
-          $env:GYP_MSVS_VERSION      = "2022"
-          $env:npm_config_target     = "39.8.8"
-          $env:npm_config_runtime    = "electron"
-          $env:npm_config_disturl    = "https://electronjs.org/headers"
-          $env:npm_config_arch       = "x64"
-          $env:npm_config_target_arch = "x64"
-          $env:npm_config_build_from_source = "true"
-          $env:npm_config_registry   = "https://registry.npmmirror.com/"
-          $env:ELECTRON_MIRROR       = "https://npmmirror.com/mirrors/electron/"
-
-          # ===== 5. Install root dependencies =====
-          npm install --ignore-scripts
-          if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: npm install --ignore-scripts failed"; exit 1 }
-
-          npm rebuild `
-            @parcel/watcher @vscode/native-watchdog @vscode/policy-watcher `
-            @vscode/spdlog @vscode/windows-process-tree @vscode/windows-registry `
-            @vscode/deviceid @vscode/sqlite3 @vscode/windows-mutex `
-            @vscode/windows-ca-certs kerberos native-keymap node-pty `
-            windows-foreground-love `
-            --foreground-scripts
-          if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: native rebuild failed"; exit 1 }
-
-          # ===== 5.5 @vscode/sqlite3 vendored fallback (图谱 SQLite 后端必需) =====
-          $sqliteNode = "node_modules\@vscode\sqlite3\build\Release\vscode-sqlite3.node"
-          if (-not (Test-Path $sqliteNode)) {
-            $vendoredSqlite = "build\saros\bin\vscode-sqlite3.node"
-            if (Test-Path $vendoredSqlite) {
-              New-Item -ItemType Directory -Force -Path (Split-Path $sqliteNode) | Out-Null
-              Copy-Item $vendoredSqlite $sqliteNode -Force
-              Write-Host "[FIX] @vscode/sqlite3 native restored from vendored"
-            }
-          }
-          if (-not (Test-Path $sqliteNode)) {
-            Write-Error "FATAL: @vscode/sqlite3 native binary missing — 图谱 SQLite 后端不可用"
-            exit 1
-          }
-          $sqliteSize = (Get-Item $sqliteNode).Length
-          Write-Host ('[OK] @vscode/sqlite3 present ' + $sqliteSize + ' bytes')
-
-          if (-not (Test-Path "node_modules\gulp\bin\gulp.js")) {
-            Write-Error "FATAL: node_modules/gulp not found after npm install + rebuild"
-            exit 1
-          }
-          Write-Host "[OK] node_modules/gulp found"
-
-          # ===== 6. Install build/ dependencies =====
-          Push-Location build
-          npm install --ignore-scripts
-          if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ npm install failed"; exit 1 }
-
-          # FIX: tree-sitter binding.gyp forces /std:c++17, but Node 39.8.8 requires C++20
-          $tsGyp = "node_modules\tree-sitter\binding.gyp"
-          if (Test-Path $tsGyp) {
-            $gypContent = Get-Content $tsGyp -Raw
-            $gypContent = $gypContent -replace '/std:c\+\+17', '/std:c++20'
-            [System.IO.File]::WriteAllText((Resolve-Path $tsGyp), $gypContent, (New-Object System.Text.UTF8Encoding $false))
-            Write-Host "[FIX] tree-sitter binding.gyp patched: /std:c++17 -> /std:c++20"
-          }
-
-          # FIX: only rebuild tree-sitter (avoids triggering ripgrep postinstall -> 403)
-          npm rebuild tree-sitter --foreground-scripts
-          if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: build/ tree-sitter rebuild failed"; exit 1 }
-          Pop-Location
-
-          # ===== 7. ripgrep (postinstall → vendored 兜底，缺则 fail) =====
-          $mainRg = "node_modules\@vscode\ripgrep\bin\rg.exe"
-          if (-not (Test-Path $mainRg)) {
-            Write-Host "[RG] Trying postinstall (GitHub CDN)..."
-            try {
-              node node_modules/@vscode/ripgrep/lib/postinstall.js --force
-            } catch { Write-Host ('[RG] postinstall failed: ' + $_) }
-          }
-          $vendoredRg = "build/saros/bin/rg.exe"
-          if (-not (Test-Path $mainRg) -and (Test-Path $vendoredRg)) {
-            New-Item -Force -ItemType Directory (Split-Path $mainRg) | Out-Null
-            Copy-Item $vendoredRg $mainRg -Force
-            Write-Host "[RG] Restored from vendored build/saros/bin/rg.exe"
-          }
-          if (-not (Test-Path $mainRg)) {
-            Write-Error "rg.exe unavailable. Refusing to package without ripgrep."
-            exit 1
-          }
-
-          # ===== 8. Install extension dependencies =====
-          $extRoots = Get-ChildItem extensions -Directory -Depth 2
-          foreach ($extDir in $extRoots) {
-            if (Test-Path ($extDir.FullName + '/package.json')) {
-              Push-Location $extDir.FullName
-              npm install --ignore-scripts
-              if ($LASTEXITCODE -ne 0) {
-                Write-Host ('[WARN] ' + $extDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
-              }
-              Pop-Location
-            }
-          }
-          Write-Host "[OK] Extension dependencies installed"
-
-          # ===== 8b. Install .vscode/extensions dependencies =====
-          if (Test-Path ".vscode/extensions") {
-            $vscExtRoots = Get-ChildItem .vscode/extensions -Directory
-            foreach ($extDir in $vscExtRoots) {
-              if (Test-Path ($extDir.FullName + '/package.json')) {
-                Push-Location $extDir.FullName
-                npm install --ignore-scripts
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host ('[WARN] ' + $extDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
-                }
-                Pop-Location
-              }
-            }
-            Write-Host "[OK] .vscode/extensions dependencies installed"
-          }
-
-          # ===== 8c. Hoist typescript to extensions/node_modules =====
-          $extTsTarget = "extensions\node_modules\typescript"
-          $rootTs = "node_modules\typescript"
-          if ((Test-Path $rootTs) -and -not (Test-Path $extTsTarget)) {
-            New-Item -Force -ItemType Directory "extensions\node_modules" | Out-Null
-            $resolvedRootTs = (Resolve-Path $rootTs).Path
-            New-Item -ItemType Junction -Path $extTsTarget -Target $resolvedRootTs -Force 2>&1 | Out-Null
-            if (-not (Test-Path ($extTsTarget + '\lib\typescript.d.ts'))) {
-              Write-Host "[INFO] junction failed, falling back to copy"
-              Copy-Item -Recurse -Force $rootTs $extTsTarget
-            }
-            Write-Host ('[FIX] typescript hoisted to ' + $extTsTarget)
-          }
-
-          # ===== 8d. Agent Studio webview dependencies (katex 等，kbblocks 构建必需) =====
-          $webviewDir = "src\vs\sessions\contrib\agentStudio\webview"
-          if (Test-Path ($webviewDir + '\package.json')) {
-            Push-Location $webviewDir
-            npm install --ignore-scripts
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host ('[WARN] ' + $webviewDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
-            }
-            Pop-Location
-            Write-Host "[OK] Agent Studio webview dependencies installed"
-          }
-
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/install-deps.ps1'
         shell: powershell
 
       # ---------- 3.5 构建 KB markdown webview bundle (kbblocks.js) ----------
       - name: 构建 KB 渲染 bundle (kbblocks)
-        run: |
-          $webviewDir = "src\vs\sessions\contrib\agentStudio\webview"
-          if (Test-Path ($webviewDir + '\package.json')) {
-            Push-Location $webviewDir
-            npm install --ignore-scripts --no-audit --no-fund
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host ('[WARN] webview npm install exited ' + $LASTEXITCODE + ' (non-fatal)')
-            }
-            Pop-Location
-          }
-          Push-Location $webviewDir
-          node esbuild.kbblocks.config.mjs
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "[WARN] kbblocks esbuild failed (may use stale bundle if available)"
-          } elseif (Test-Path "media\kbblocks.js") {
-            $sz = (Get-Item "media\kbblocks.js").Length
-            Write-Host ('[OK] kbblocks.js built ' + $sz + ' bytes')
-          }
-          Pop-Location
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/build-kbblocks.ps1'
         shell: powershell
 
       - name: 生产编译 compile-build-with-mangling
         with:
           charsetType: UTF_8
-        run: |
-          # 1. 安装并使用 Node 22（如果已安装则跳过安装直接使用）
-          $nodeVersion = "22.22.1"
-          $installed = nvm list 2>$null | Select-String $nodeVersion
-          if (-not $installed) {
-            Write-Host ('Installing Node ' + $nodeVersion + '...')
-            nvm install $nodeVersion
-          }
-          nvm use $nodeVersion
-          node --version
-          npm --version
-
-          # 2. 然后编译
-          npx gulp compile-build-with-mangling --verbose
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "compile-build-with-mangling failed, fallback to dev compile..."
-            npm run compile
-            if ($LASTEXITCODE -ne 0) { Write-Error "Compile failed"; exit 1 }
-          }
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/compile-build.ps1'
         shell: powershell
 
       # ---------- 4.5 复制 kbblocks webview 资源到 out-build ----------
       - name: 复制 kbblocks webview 资源到 out-build
-        run: |
-          $srcMedia = "src\vs\sessions\contrib\agentStudio\webview\media"
-          $outMedia = "out-build\vs\sessions\contrib\agentStudio\webview\media"
-          New-Item -Force -ItemType Directory $outMedia | Out-Null
-          foreach ($ext in @('js', 'css')) {
-            $f = ('kbblocks.' + $ext)
-            if (Test-Path ($srcMedia + '\' + $f)) {
-              Copy-Item ($srcMedia + '\' + $f) ($outMedia + '\' + $f) -Force
-              $fSize = (Get-Item ($outMedia + '\' + $f)).Length
-              Write-Host ('[OK] Copied ' + $f + ' to out-build (' + $fSize + ' bytes)')
-            } else {
-              Write-Host ('[WARN] ' + $f + ' not found — KB markdown Mermaid will not render')
-            }
-          }
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/copy-kbblocks.ps1'
         shell: powershell
 
       # ---------- 5.0 构建能力插件（dist/extension.js） ----------
       - name: 构建能力插件 transpile-plugins
-        run: |
-          $nvmNodeDir = ($env:LOCALAPPDATA + '\nvm\v22.22.1')
-          $env:PATH = ($nvmNodeDir + ';' + $env:PATH)
-          node build/next/index.ts transpile-plugins
-          if ($LASTEXITCODE -ne 0) { Write-Error "transpile-plugins failed"; exit 1 }
-          if (-not (Test-Path "extensions/agentmemory-memory/dist/extension.js")) {
-            Write-Error "agentmemory-memory/dist/extension.js not produced"; exit 1
-          }
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/transpile-plugins.ps1'
         shell: powershell
 
       - name: 编译扩展 compile-extensions-build
-        run: |
-          # Delete extensions known to fail vsce packaging (workspace cache safety)
-          cmd /c "rd /s /q extensions\hermes-agent 2>nul"
-          cmd /c "rd /s /q extensions\execution-example 2>nul"
-          cmd /c "rd /s /q extensions\kanban-example 2>nul"
-          cmd /c "rd /s /q extensions\memory-example 2>nul"
-          cmd /c "rd /s /q extensions\planning-example 2>nul"
-          cmd /c "rd /s /q extensions\retrieval-example 2>nul"
-          cmd /c "rd /s /q extensions\tool-example 2>nul"
-
-          # 强制修正 shared/package.json 的 name（workspace 跨次复用，旧 @saros/shared 可能残留）。
-          # 内容纯 ASCII，但必须写【无 BOM】：PS 5.1 的 Set-Content -Encoding utf8 会加 BOM，
-          # vsce 的 JSON.parse 拒绝 BOM 前缀，报 "Unexpected token"。用 WriteAllText + UTF8Encoding($false)。
-          $sharedJson = '{"name":"saros-shared","version":"1.0.0","description":"Shared utilities","main":"./out/index.js","engines":{"vscode":"^1.95.0"},"activationEvents":[],"types":"./out/index.d.ts","dependencies":{},"scripts":{"compile":"tsc -p ./","watch":"tsc -watch -p ./"},"devDependencies":{"@types/node":"22.x","@types/vscode":"^1.95.0","typescript":"^6.0.3"}}'
-          [IO.File]::WriteAllText(($pwd.Path + '\extensions\shared\package.json'), $sharedJson, (New-Object Text.UTF8Encoding $false))
-
-          # 切勿重写 codebuddy-provider/package.json：含中文 description，GBK 下会污染字节。
-          # 仓库副本已正确（dep=saros-shared, UTF-8），只需 reinstall 刷新符号链接。
-          Push-Location extensions\codebuddy-provider
-          Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\@sarosis
-          Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\saros-shared
-          npm install --ignore-scripts
-          Pop-Location
-
-          npx gulp compile-extensions-build --verbose
-          if ($LASTEXITCODE -ne 0) { Write-Error "Extensions build failed"; exit 1 }
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/compile-extensions.ps1'
         shell: powershell
 
       - name: 打包 vscode-win32-x64
-        run: |
-          npx gulp vscode-win32-x64 --verbose
-          if ($LASTEXITCODE -ne 0) { Write-Error "Packaging failed"; exit 1 }
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/package-vscode.ps1'
         shell: powershell
 
       # ---------- 6.5 打包产物关键构件验证 ----------
       - name: 验证打包关键构件
-        run: |
-          $appRoot = Join-Path (Split-Path $pwd.Path -Parent) "VSCode-win32-x64\resources\app"
-          if (-not (Test-Path $appRoot)) { $appRoot = "..\VSCode-win32-x64\resources\app" }
-          Write-Host ('Verifying staging dir: ' + $appRoot)
-          $required = @(
-            "node_modules\@vscode\ripgrep\bin\rg.exe",
-            "extensions\agentmemory-memory\dist\extension.js",
-            "out\vs\sessions\contrib\agentStudio\browser\views\knowledgeBase\kbWorker.js",
-            "out\vs\sessions\sessions.desktop.main.js",
-            "out\vs\sessions\contrib\agentStudio\webview\media\kbblocks.js"
-          )
-          $missing = @()
-          foreach ($rel in $required) {
-            $p = Join-Path $appRoot $rel
-            if (Test-Path $p) { Write-Host ('  [OK] ' + $rel) }
-            else { Write-Host ('  [MISSING] ' + $rel); $missing += $rel }
-          }
-          if ($missing.Count -gt 0) {
-            Write-Error (('Staging verification failed, missing:' + [Environment]::NewLine + ' - ') + ($missing -join ([Environment]::NewLine + ' - ')))
-            exit 1
-          }
-          Write-Host "[OK] All critical artifacts present in staging."
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/verify-staging.ps1'
         shell: powershell
 
       - name: 生成 EXE 安装包 (user & system setup)
-        run: |-
-          npx gulp vscode-win32-x64-inno-updater --verbose
-          if ($LASTEXITCODE -ne 0) { Write-Error "Inno updater setup failed"; exit 1 }
-          Start-Sleep -Seconds 5
-          npx gulp vscode-win32-x64-user-setup --verbose
-          if ($LASTEXITCODE -ne 0) { Write-Error "User setup failed"; exit 1 }
-          Start-Sleep -Seconds 5
-          npx gulp vscode-win32-x64-system-setup --verbose
-          if ($LASTEXITCODE -ne 0) { Write-Error "System setup failed"; exit 1 }
+        run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/generate-exe.ps1'
         shell: powershell
       - name: 归档构件
         id: Rz97AF
@@ -370,7 +93,7 @@ stages:
         id: hgg5hu
         with:
           charsetType: UTF_8
-        run: "powershell -ExecutionPolicy Bypass -File deploy-package/scripts/bk-pipeline-upload.ps1\r\n"
+        run: ' powershell -ExecutionPolicy Bypass -File deploy-package/scripts/bk-pipeline-upload.ps1'
         shell: powershell
 concurrency: {}
 syntax-dialect: INHERIT
