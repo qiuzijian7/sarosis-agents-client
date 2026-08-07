@@ -889,7 +889,7 @@ protected override _scheduleMentionSearch(query: string): void {
 		}, 300) as unknown as number;
 	}
 
-protected override _openMentionMenu(): void {
+	protected override _openMentionMenu(): void {
 		this._closeMentionMenu();
 		if (!this._textarea || this._mentionResults.length === 0) { return; }
 
@@ -897,8 +897,11 @@ protected override _openMentionMenu(): void {
 		this._mentionEl = document.createElement('div');
 		this._mentionEl.className = 'mention-menu';
 		this._mentionEl.style.left = `${rect.left}px`;
-		this._mentionEl.style.bottom = `${window.innerHeight - rect.top + 4}px`;
 		this._mentionEl.style.maxWidth = `${Math.max(rect.width, 320)}px`;
+		// 智能定位：优先贴在 textarea 上方，空间不足则翻转到下方。
+		// popout 独立窗口高度可能远小于主窗口，force above 会导致 dropdown
+		// 超出视口顶部完全不可见（position:fixed 不会产生 body 滚动条）。
+		this._positionDropdownRelativeTo(this._mentionEl, rect, 280);
 
 		const list = document.createElement('div');
 		list.className = 'mention-menu-list';
@@ -998,6 +1001,26 @@ protected override _closeMentionMenu(): void {
 		this._mentionIndex = 0;
 	}
 
+	/**
+	 * 智能定位 dropdown popup 相对 textarea：优先贴在上方，空间不足（<120px 或
+	 * 下方空间更大）时翻转到 textarea 下方显示。position:fixed 下超出视口时
+	 * 不会产生滚动条，会导致 popout 独立窗口中完全不可见。
+	 */
+	private _positionDropdownRelativeTo(popup: HTMLElement, rect: DOMRect, defaultMaxHeight: number): void {
+		const spaceAbove = rect.top;
+		const spaceBelow = window.innerHeight - rect.bottom;
+		const useAbove = spaceAbove >= 120 || spaceAbove >= spaceBelow;
+		if (useAbove) {
+			popup.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+			popup.style.top = '';
+			popup.style.maxHeight = `${Math.min(defaultMaxHeight, spaceAbove - 8)}px`;
+		} else {
+			popup.style.top = `${rect.bottom + 4}px`;
+			popup.style.bottom = '';
+			popup.style.maxHeight = `${Math.min(defaultMaxHeight, spaceBelow - 8)}px`;
+		}
+	}
+
 protected override _openSlashMenu(filter: string): void {
 		this._closeSlashMenu();
 
@@ -1016,10 +1039,10 @@ protected override _openSlashMenu(filter: string): void {
 
 		this._slashMenuEl = document.createElement('div');
 		this._slashMenuEl.className = 'slash-menu';
-		// Position above textarea
 		this._slashMenuEl.style.left = `${rect.left}px`;
-		this._slashMenuEl.style.bottom = `${window.innerHeight - rect.top + 4}px`;
 		this._slashMenuEl.style.maxWidth = `${Math.max(rect.width, 260)}px`;
+		// 智能定位（同上 _openMentionMenu）
+		this._positionDropdownRelativeTo(this._slashMenuEl, rect, 280);
 
 		// Items (render directly since we just created the element)
 		const list = document.createElement('div');

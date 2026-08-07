@@ -106,7 +106,7 @@ stages:
             exit 1
           }
           $sqliteSize = (Get-Item $sqliteNode).Length
-          Write-Host "[OK] @vscode/sqlite3 present ($sqliteSize bytes)"
+          Write-Host ('[OK] @vscode/sqlite3 present ' + $sqliteSize + ' bytes')
 
           if (-not (Test-Path "node_modules\gulp\bin\gulp.js")) {
             Write-Error "FATAL: node_modules/gulp not found after npm install + rebuild"
@@ -227,7 +227,7 @@ stages:
             Write-Host "[WARN] kbblocks esbuild failed (may use stale bundle if available)"
           } elseif (Test-Path "media\kbblocks.js") {
             $sz = (Get-Item "media\kbblocks.js").Length
-            Write-Host "[OK] kbblocks.js built ($sz bytes)"
+            Write-Host ('[OK] kbblocks.js built ' + $sz + ' bytes')
           }
           Pop-Location
         shell: powershell
@@ -266,7 +266,8 @@ stages:
             $f = "kbblocks.$ext"
             if (Test-Path "$srcMedia\$f") {
               Copy-Item "$srcMedia\$f" "$outMedia\$f" -Force
-              Write-Host "[OK] Copied $f to out-build ($((Get-Item "$outMedia\$f").Length) bytes)"
+              $fSize = (Get-Item "$outMedia\$f").Length
+              Write-Host ('[OK] Copied ' + $f + ' to out-build (' + $fSize + ' bytes)')
             } else {
               Write-Host "[WARN] $f not found — KB markdown Mermaid will not render"
             }

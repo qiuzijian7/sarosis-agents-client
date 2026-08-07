@@ -9,12 +9,22 @@ import { AgentChatPanelComposer } from './agentChatPanel.composer.js';
 // Feature: dropdowns. Extracted from AgentChatPanelBase.
 export class AgentChatPanelDropdowns extends AgentChatPanelComposer {
 
+	/**
+	 * 获取 dropdown 容器应挂载的 document.body。popout 独立窗口是另一个 window，
+	 * 若 append 到 mainWindow.document.body，则 trigger.getBoundingClientRect()
+	 * 拿到的 popout 视口坐标与挂载点不在同一 viewport，定位完全错乱。
+	 * 用 trigger 所在 document 即可（trigger 与 dropdown 必须同 viewport）。
+	 */
+	private _dropdownBody(trigger: HTMLElement | null | undefined): HTMLElement {
+		return trigger?.ownerDocument?.body ?? mainWindow.document.body;
+	}
+
 protected override _openWorktreeDropdown(): void {
 		this._closeAllDropdowns();
 		this._activeHeaderPanel = 'worktree';
 		if (this._worktreeTrigger) { this._worktreeTrigger.classList.add('open'); }
 
-		this._worktreeDropdownEl = append(mainWindow.document.body, $(".chat-worktree-dropdown"));
+		this._worktreeDropdownEl = append(this._dropdownBody(this._worktreeTrigger), $(".chat-worktree-dropdown"));
 		// 输入框中 worktree 选择器 → 弹出方向：向上（避免被输入框遮挡）
 		this._positionDropdownAbove(this._worktreeDropdownEl, this._worktreeTrigger);
 
@@ -57,7 +67,7 @@ protected override _openWorkspaceDropdown(): void {
 		this._closeAllDropdowns();
 		if (this._workspaceTrigger) { this._workspaceTrigger.classList.add('open'); }
 
-		this._workspaceDropdownEl = append(mainWindow.document.body, $(".workspace-dropdown"));
+		this._workspaceDropdownEl = append(this._dropdownBody(this._workspaceTrigger), $(".workspace-dropdown"));
 		// 输入框中 workspace 选择器 → 弹出方向：向上（避免被输入框遮挡）
 		this._positionDropdownAbove(this._workspaceDropdownEl, this._workspaceTrigger);
 
@@ -801,7 +811,7 @@ protected override _forceRenderAllMessages(): void {
 		this._modeDropdownTrigger = customTrigger ?? this._modeTrigger;
 		if (this._modeDropdownTrigger) { this._modeDropdownTrigger.classList.add('open'); }
 
-		this._modeDropdownEl = append(mainWindow.document.body, $(".mode-dropdown-composer"));
+		this._modeDropdownEl = append(this._dropdownBody(this._modeDropdownTrigger), $(".mode-dropdown-composer"));
 		this._positionDropdownAbove(this._modeDropdownEl, this._modeDropdownTrigger);
 
 		// ChatOnly toggle dropdown — legacy mode selector replaced by simple chatOnly on/off
@@ -854,7 +864,7 @@ protected override _forceRenderAllMessages(): void {
 		this._providerDropdownTrigger = customTrigger ?? this._providerTrigger;
 		if (this._providerDropdownTrigger) { this._providerDropdownTrigger.classList.add('open'); }
 
-		this._providerDropdownEl = append(mainWindow.document.body, $(".provider-dropdown"));
+		this._providerDropdownEl = append(this._dropdownBody(this._providerDropdownTrigger), $(".provider-dropdown"));
 		this._positionDropdownAbove(this._providerDropdownEl, this._providerDropdownTrigger);
 
 		if (this._providers.length === 0) {
@@ -897,7 +907,7 @@ protected override _openModelDropdown(customTrigger?: HTMLElement | null): void 
 		this._modelDropdownTrigger = customTrigger ?? this._modelTrigger;
 		if (this._modelDropdownTrigger) { this._modelDropdownTrigger.classList.add('open'); }
 
-		this._modelDropdownEl = append(mainWindow.document.body, $(".provider-dropdown.model-dropdown"));
+		this._modelDropdownEl = append(this._dropdownBody(this._modelDropdownTrigger), $(".provider-dropdown.model-dropdown"));
 		this._positionDropdownAbove(this._modelDropdownEl, this._modelDropdownTrigger);
 
 		// 仅显示当前 provider 对应的 model
