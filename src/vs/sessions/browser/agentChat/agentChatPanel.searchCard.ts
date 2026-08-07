@@ -466,16 +466,16 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 		};
 
 		const onMouseUp = () => {
-			document.removeEventListener('mousemove', onMouseMove);
-			document.removeEventListener('mouseup', onMouseUp);
-			document.body.style.cursor = '';
-			document.body.style.userSelect = '';
+			this._ownerDocument.removeEventListener('mousemove', onMouseMove);
+			this._ownerDocument.removeEventListener('mouseup', onMouseUp);
+			this._ownerDocument.body.style.cursor = '';
+			this._ownerDocument.body.style.userSelect = '';
 		};
 
-		document.addEventListener('mousemove', onMouseMove);
-		document.addEventListener('mouseup', onMouseUp);
-		document.body.style.cursor = 'col-resize';
-		document.body.style.userSelect = 'none';
+		this._ownerDocument.addEventListener('mousemove', onMouseMove);
+		this._ownerDocument.addEventListener('mouseup', onMouseUp);
+		this._ownerDocument.body.style.cursor = 'col-resize';
+		this._ownerDocument.body.style.userSelect = 'none';
 	}
 
 	/** 渲染 trace_path TOON 卡片（hop 链） */

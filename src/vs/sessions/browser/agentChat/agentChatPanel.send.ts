@@ -422,7 +422,7 @@ public override showOrchestrationPlanDialog(plan: OrchestrationPlan): void {
 
 		// ─── Assemble ──────────────────────────────────────────────────
 		overlay.appendChild(dialog);
-		document.body.appendChild(overlay);
+		this._ownerDocument.body.appendChild(overlay);
 		this._orchestrationPlanEl = overlay;
 	}
 
@@ -519,7 +519,7 @@ protected override _showEditTaskForm(task: PlanTask, plan: OrchestrationPlan): v
 		dialog.appendChild(actions);
 
 		overlay.appendChild(dialog);
-		document.body.appendChild(overlay);
+		this._ownerDocument.body.appendChild(overlay);
 	}
 
 protected override _showEditGoalForm(plan: OrchestrationPlan): void {
@@ -573,6 +573,6 @@ protected override _showEditGoalForm(plan: OrchestrationPlan): void {
 		dialog.appendChild(actions);
 
 		overlay.appendChild(dialog);
-		document.body.appendChild(overlay);
+		this._ownerDocument.body.appendChild(overlay);
 	}
 }

@@ -62,10 +62,10 @@ export abstract class AgentChatPanelConfirmCards extends AgentChatPanelStatusCar
 			svgIcon.setAttribute('fill', 'none');
 			svgIcon.setAttribute('stroke', 'currentColor');
 			svgIcon.setAttribute('stroke-width', '2');
-			const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+			const polyline = this._ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'polyline');
 			polyline.setAttribute('points', '4 17 10 11 4 5');
 			svgIcon.appendChild(polyline);
-			const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+			const line = this._ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'line');
 			line.setAttribute('x1', '12');
 			line.setAttribute('y1', '19');
 			line.setAttribute('x2', '20');
@@ -103,10 +103,10 @@ export abstract class AgentChatPanelConfirmCards extends AgentChatPanelStatusCar
 			approveSvg.setAttribute('fill', 'none');
 			approveSvg.setAttribute('stroke', 'currentColor');
 			approveSvg.setAttribute('stroke-width', '2');
-			const approvePolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+			const approvePolyline = this._ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'polyline');
 			approvePolyline.setAttribute('points', '20 6 9 17 4 12');
 			approveSvg.appendChild(approvePolyline);
-			approveBtn.appendChild(document.createTextNode('执行'));
+			approveBtn.appendChild(this._ownerDocument.createTextNode('执行'));
 			this._register(addDisposableListener(approveBtn, EventType.CLICK, () => {
 				this._onConfirmationAction?.(cf.id, 'allow_once');
 			}));
@@ -121,7 +121,7 @@ export abstract class AgentChatPanelConfirmCards extends AgentChatPanelStatusCar
 			toggleSvg.setAttribute('fill', 'none');
 			toggleSvg.setAttribute('stroke', 'currentColor');
 			toggleSvg.setAttribute('stroke-width', '2');
-			const togglePolyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+			const togglePolyline = this._ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'polyline');
 			togglePolyline.setAttribute('points', '6 9 12 15 18 9');
 			toggleSvg.appendChild(togglePolyline);
 
@@ -147,19 +147,19 @@ export abstract class AgentChatPanelConfirmCards extends AgentChatPanelStatusCar
 			rejectSvg.setAttribute('fill', 'none');
 			rejectSvg.setAttribute('stroke', 'currentColor');
 			rejectSvg.setAttribute('stroke-width', '2');
-			const rejectLine1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+			const rejectLine1 = this._ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'line');
 			rejectLine1.setAttribute('x1', '18');
 			rejectLine1.setAttribute('y1', '6');
 			rejectLine1.setAttribute('x2', '6');
 			rejectLine1.setAttribute('y2', '18');
 			rejectSvg.appendChild(rejectLine1);
-			const rejectLine2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+			const rejectLine2 = this._ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'line');
 			rejectLine2.setAttribute('x1', '6');
 			rejectLine2.setAttribute('y1', '6');
 			rejectLine2.setAttribute('x2', '18');
 			rejectLine2.setAttribute('y2', '18');
 			rejectSvg.appendChild(rejectLine2);
-			rejectBtn.appendChild(document.createTextNode('取消'));
+			rejectBtn.appendChild(this._ownerDocument.createTextNode('取消'));
 			this._register(addDisposableListener(rejectBtn, EventType.CLICK, () => {
 				this._onConfirmationAction?.(cf.id, 'reject');
 			}));

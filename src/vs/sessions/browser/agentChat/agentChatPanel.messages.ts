@@ -199,7 +199,7 @@ protected override _renderMessagesArea(): void {
 			}),
 		);
 		this._register(
-			addDisposableListener(document, EventType.MOUSE_MOVE, (e: MouseEvent) => {
+			addDisposableListener(this._scrollbarThumb.ownerDocument, EventType.MOUSE_MOVE, (e: MouseEvent) => {
 				if (!this._isDraggingScrollbar || !this._scrollbarThumb || !this._scrollbarTrack || !this._messagesContainer) { return; }
 				const deltaY = e.clientY - dragStartY;
 				const maxScroll = this._messagesContainer.scrollHeight - this._messagesContainer.clientHeight;
@@ -209,7 +209,7 @@ protected override _renderMessagesArea(): void {
 			}),
 		);
 		this._register(
-			addDisposableListener(document, EventType.MOUSE_UP, () => {
+			addDisposableListener(this._scrollbarThumb.ownerDocument, EventType.MOUSE_UP, () => {
 				if (this._isDraggingScrollbar) {
 					this._isDraggingScrollbar = false;
 					this._scrollbarThumb?.classList.remove('dragging');
@@ -2084,11 +2084,11 @@ protected override async _copyToClipboard(text: string): Promise<boolean> {
 			ta.style.position = 'fixed';
 			ta.style.left = '-9999px';
 			ta.style.top = '0';
-			document.body.appendChild(ta);
+			this._ownerDocument.body.appendChild(ta);
 			ta.focus();
 			ta.select();
-			const ok = document.execCommand('copy');
-			document.body.removeChild(ta);
+			const ok = this._ownerDocument.execCommand('copy');
+			this._ownerDocument.body.removeChild(ta);
 			return ok;
 		} catch {
 			return false;

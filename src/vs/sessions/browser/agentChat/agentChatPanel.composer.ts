@@ -51,11 +51,11 @@ protected override _renderInputArea(): void {
 				}
 			};
 			const onUp = () => {
-				document.removeEventListener('mousemove', onMove);
-				document.removeEventListener('mouseup', onUp);
+				this._ownerDocument.removeEventListener('mousemove', onMove);
+				this._ownerDocument.removeEventListener('mouseup', onUp);
 			};
-			document.addEventListener('mousemove', onMove);
-			document.addEventListener('mouseup', onUp);
+			this._ownerDocument.addEventListener('mousemove', onMove);
+			this._ownerDocument.addEventListener('mouseup', onUp);
 		}));
 
 
@@ -360,7 +360,7 @@ protected override _renderInputArea(): void {
 
 				// Backspace: if cursor is right after an inline chip (attachment / skill), delete the chip
 				if (e.key === 'Backspace') {
-					const sel = window.getSelection();
+					const sel = this._ownerWindow?.getSelection();
 					if (sel && sel.rangeCount > 0) {
 						const range = sel.getRangeAt(0);
 						const container = range.startContainer;
@@ -406,10 +406,10 @@ protected override _renderInputArea(): void {
 					if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
 						e.preventDefault();
 						e.stopPropagation();
-						const sel = window.getSelection();
+						const sel = this._ownerWindow?.getSelection();
 						const textarea = this._textarea;
 						if (sel && textarea) {
-							const range = document.createRange();
+							const range = this._ownerDocument.createRange();
 							range.selectNodeContents(textarea);
 							sel.removeAllRanges();
 							sel.addRange(range);
@@ -420,14 +420,14 @@ protected override _renderInputArea(): void {
 					if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
 						e.preventDefault();
 						e.stopPropagation();
-						document.execCommand('undo');
+						this._ownerDocument.execCommand('undo');
 						return;
 					}
 					// Ctrl+Y / Ctrl+Shift+Z：重做
 					if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
 						e.preventDefault();
 						e.stopPropagation();
-						document.execCommand('redo');
+						this._ownerDocument.execCommand('redo');
 						return;
 					}
 					// Ctrl+C / Ctrl+X：复制 / 剪切（contentEditable 内让浏览器默认行为生效，但要阻止 VS Code 捕获）
@@ -663,7 +663,7 @@ protected override _appendToolbarBtn(
 
 		// Extra SVG elements (like the globe for web search)
 		if (opts.extraSvgElements) {
-			const wrapper = document.createElementNS(
+			const wrapper = this._ownerDocument.createElementNS(
 				"http://www.w3.org/2000/svg",
 				"svg",
 			);
@@ -683,7 +683,7 @@ protected override _appendToolbarBtn(
 		}
 
 		// Main SVG
-		const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+		const svg = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
 		svg.setAttribute("width", "16");
 		svg.setAttribute("height", "16");
 		svg.setAttribute("viewBox", "0 0 24 24");
@@ -692,7 +692,7 @@ protected override _appendToolbarBtn(
 		svg.setAttribute("stroke-width", "2");
 		svg.setAttribute("stroke-linecap", "round");
 		svg.setAttribute("stroke-linejoin", "round");
-		const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		const path = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
 		path.setAttribute("d", opts.svgPath);
 		svg.appendChild(path);
 		btn.appendChild(svg);
@@ -705,7 +705,7 @@ protected override _appendToolbarBtn(
 
 		// Chevron
 		if (opts.showChevron) {
-			const chevron = document.createElementNS(
+			const chevron = this._ownerDocument.createElementNS(
 				"http://www.w3.org/2000/svg",
 				"svg",
 			);
@@ -715,7 +715,7 @@ protected override _appendToolbarBtn(
 			chevron.setAttribute("fill", "none");
 			chevron.setAttribute("stroke", "currentColor");
 			chevron.setAttribute("stroke-width", "2.5");
-			const chevronPath = document.createElementNS(
+			const chevronPath = this._ownerDocument.createElementNS(
 				"http://www.w3.org/2000/svg",
 				"path",
 			);
@@ -734,7 +734,7 @@ protected override _renderSendButtonSvg(): void {
 
 		if (isQueueing) {
 			// Queue icon — 双层堆叠文档（表示"追加到队列"）
-			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+			const svg = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
 			svg.setAttribute("width", "14");
 			svg.setAttribute("height", "14");
 			svg.setAttribute("viewBox", "0 0 24 24");
@@ -744,20 +744,20 @@ protected override _renderSendButtonSvg(): void {
 			svg.setAttribute("stroke-linecap", "round");
 			svg.setAttribute("stroke-linejoin", "round");
 			// 下层文档
-			const outer = document.createElementNS("http://www.w3.org/2000/svg", "path");
+			const outer = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
 			outer.setAttribute("d", "M4 5h12l4 4v12H4z");
 			svg.appendChild(outer);
 			// 上层文档（偏移）
-			const inner = document.createElementNS("http://www.w3.org/2000/svg", "path");
+			const inner = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
 			inner.setAttribute("d", "M2 4h12l4 4v12H2z");
 			svg.appendChild(inner);
 			// 加号
-			const plus = document.createElementNS("http://www.w3.org/2000/svg", "line");
+			const plus = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "line");
 			plus.setAttribute("x1", "12"); plus.setAttribute("y1", "8");
 			plus.setAttribute("x2", "12"); plus.setAttribute("y2", "16");
 			plus.setAttribute("stroke-width", "3");
 			svg.appendChild(plus);
-			const plusH = document.createElementNS("http://www.w3.org/2000/svg", "line");
+			const plusH = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "line");
 			plusH.setAttribute("x1", "8"); plusH.setAttribute("y1", "12");
 			plusH.setAttribute("x2", "16"); plusH.setAttribute("y2", "12");
 			plusH.setAttribute("stroke-width", "3");
@@ -765,12 +765,12 @@ protected override _renderSendButtonSvg(): void {
 			this._sendBtn.appendChild(svg);
 		} else if (this._isSending) {
 			// Stop icon — 使用与发送箭头相同 14x14 尺寸，方块填充 viewBox 核心区域
-			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+			const svg = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
 			svg.setAttribute("width", "14");
 			svg.setAttribute("height", "14");
 			svg.setAttribute("viewBox", "0 0 24 24");
 			svg.setAttribute("fill", "currentColor");
-			const rect = document.createElementNS(
+			const rect = this._ownerDocument.createElementNS(
 				"http://www.w3.org/2000/svg",
 				"rect",
 			);
@@ -783,7 +783,7 @@ protected override _renderSendButtonSvg(): void {
 			this._sendBtn.appendChild(svg);
 		} else {
 			// Arrow up icon
-			const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+			const svg = this._ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
 			svg.setAttribute("width", "12");
 			svg.setAttribute("height", "12");
 			svg.setAttribute("viewBox", "0 0 24 24");
@@ -792,7 +792,7 @@ protected override _renderSendButtonSvg(): void {
 			svg.setAttribute("stroke-width", "2.5");
 			svg.setAttribute("stroke-linecap", "round");
 			svg.setAttribute("stroke-linejoin", "round");
-			const line = document.createElementNS(
+			const line = this._ownerDocument.createElementNS(
 				"http://www.w3.org/2000/svg",
 				"line",
 			);
@@ -801,7 +801,7 @@ protected override _renderSendButtonSvg(): void {
 			line.setAttribute("x2", "12");
 			line.setAttribute("y2", "5");
 			svg.appendChild(line);
-			const polyline = document.createElementNS(
+			const polyline = this._ownerDocument.createElementNS(
 				"http://www.w3.org/2000/svg",
 				"polyline",
 			);
@@ -894,7 +894,7 @@ protected override _scheduleMentionSearch(query: string): void {
 		if (!this._textarea || this._mentionResults.length === 0) { return; }
 
 		const rect = this._textarea.getBoundingClientRect();
-		this._mentionEl = document.createElement('div');
+		this._mentionEl = this._ownerDocument.createElement('div');
 		this._mentionEl.className = 'mention-menu';
 		this._mentionEl.style.left = `${rect.left}px`;
 		this._mentionEl.style.maxWidth = `${Math.max(rect.width, 320)}px`;
@@ -903,23 +903,23 @@ protected override _scheduleMentionSearch(query: string): void {
 		// 超出视口顶部完全不可见（position:fixed 不会产生 body 滚动条）。
 		this._positionDropdownRelativeTo(this._mentionEl, rect, 280);
 
-		const list = document.createElement('div');
+		const list = this._ownerDocument.createElement('div');
 		list.className = 'mention-menu-list';
 		this._mentionResults.forEach((r, i) => {
-			const item = document.createElement('div');
+			const item = this._ownerDocument.createElement('div');
 			item.className = 'mention-menu-item';
 			item.dataset.path = r.path;
-			const icon = document.createElement('span');
+			const icon = this._ownerDocument.createElement('span');
 			icon.className = 'mention-menu-item-icon';
 			icon.textContent = '📄';
 			item.appendChild(icon);
-			const info = document.createElement('span');
+			const info = this._ownerDocument.createElement('span');
 			info.className = 'mention-menu-item-info';
-			const name = document.createElement('span');
+			const name = this._ownerDocument.createElement('span');
 			name.className = 'mention-menu-item-name';
 			name.textContent = r.name;
 			info.appendChild(name);
-			const path = document.createElement('span');
+			const path = this._ownerDocument.createElement('span');
 			path.className = 'mention-menu-item-path';
 			path.textContent = r.path;
 			info.appendChild(path);
@@ -932,7 +932,7 @@ protected override _scheduleMentionSearch(query: string): void {
 		});
 
 		this._mentionEl.appendChild(list);
-		document.body.appendChild(this._mentionEl);
+		this._ownerDocument.body.appendChild(this._mentionEl);
 		this._mentionIndex = 0;
 		this._highlightMentionItem();
 	}
@@ -953,7 +953,7 @@ protected override _selectMentionItem(): void {
 		// 替换 contentEditable 中的 @query 为 @filename
 		const root = this._textarea;
 		if (!root) { return; }
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		if (sel && sel.rangeCount > 0) {
 			const range = sel.getRangeAt(0);
 			const container = range.endContainer;
@@ -971,7 +971,7 @@ protected override _selectMentionItem(): void {
 					textNode.textContent = newBefore + afterCursor;
 					// 光标移动到 replacement 之后
 					const newPos = newBefore.length;
-					const newRange = document.createRange();
+					const newRange = this._ownerDocument.createRange();
 					newRange.setStart(textNode, newPos);
 					newRange.collapse(true);
 					sel.removeAllRanges();
@@ -1037,7 +1037,7 @@ protected override _openSlashMenu(filter: string): void {
 		const textarea = this._textarea;
 		const rect = textarea.getBoundingClientRect();
 
-		this._slashMenuEl = document.createElement('div');
+		this._slashMenuEl = this._ownerDocument.createElement('div');
 		this._slashMenuEl.className = 'slash-menu';
 		this._slashMenuEl.style.left = `${rect.left}px`;
 		this._slashMenuEl.style.maxWidth = `${Math.max(rect.width, 260)}px`;
@@ -1045,24 +1045,24 @@ protected override _openSlashMenu(filter: string): void {
 		this._positionDropdownRelativeTo(this._slashMenuEl, rect, 280);
 
 		// Items (render directly since we just created the element)
-		const list = document.createElement('div');
+		const list = this._ownerDocument.createElement('div');
 		list.className = 'slash-menu-list';
 		filtered.forEach((s, i) => {
-			const item = document.createElement('div');
+			const item = this._ownerDocument.createElement('div');
 			item.className = 'slash-menu-item';
 			item.dataset.skillId = s.id;
 			item.dataset.skillName = s.name || s.id;
-			const icon = document.createElement('span');
+			const icon = this._ownerDocument.createElement('span');
 			icon.className = 'slash-menu-item-icon';
 			icon.textContent = '/';
 			item.appendChild(icon);
-			const info = document.createElement('span');
+			const info = this._ownerDocument.createElement('span');
 			info.className = 'slash-menu-item-info';
-			const name = document.createElement('span');
+			const name = this._ownerDocument.createElement('span');
 			name.className = 'slash-menu-item-name';
 			name.textContent = s.id;
 			info.appendChild(name);
-			const desc = document.createElement('span');
+			const desc = this._ownerDocument.createElement('span');
 			desc.className = 'slash-menu-item-desc';
 			desc.textContent = s.name;
 			info.appendChild(desc);
@@ -1076,7 +1076,7 @@ protected override _openSlashMenu(filter: string): void {
 		});
 
 		this._slashMenuEl.appendChild(list);
-		document.body.appendChild(this._slashMenuEl);
+		this._ownerDocument.body.appendChild(this._slashMenuEl);
 		this._slashMenuIndex = 0;
 		this._highlightSlashMenuItem();
 	}
@@ -1100,20 +1100,20 @@ protected override _renderSlashMenuItems(filter: string): void {
 		}
 
 		filtered.forEach((s, i) => {
-			const item = document.createElement('div');
+			const item = this._ownerDocument.createElement('div');
 			item.className = 'slash-menu-item';
 			item.dataset.skillId = s.id;
-			const icon = document.createElement('span');
+			const icon = this._ownerDocument.createElement('span');
 			icon.className = 'slash-menu-item-icon';
 			icon.textContent = '/';
 			item.appendChild(icon);
-			const info = document.createElement('span');
+			const info = this._ownerDocument.createElement('span');
 			info.className = 'slash-menu-item-info';
-			const name = document.createElement('span');
+			const name = this._ownerDocument.createElement('span');
 			name.className = 'slash-menu-item-name';
 			name.textContent = s.id;
 			info.appendChild(name);
-			const desc = document.createElement('span');
+			const desc = this._ownerDocument.createElement('span');
 			desc.className = 'slash-menu-item-desc';
 			desc.textContent = s.name;
 			info.appendChild(desc);
@@ -1143,23 +1143,23 @@ protected override _highlightSlashMenuItem(): void {
 
 /** 创建内联 skill chip 节点：嵌在 contentEditable 文本流中，与文字混排。 */
 protected _createSkillChipNode(id: string, name: string): HTMLElement {
-	const chip = document.createElement('span');
+	const chip = this._ownerDocument.createElement('span');
 	chip.className = 'inline-skill-chip';
 	chip.dataset.skillId = id;
 	chip.setAttribute('contenteditable', 'false');
 	chip.title = `技能: ${name} (${id})`;
 
-	const icon = document.createElement('span');
+	const icon = this._ownerDocument.createElement('span');
 	icon.className = 'inline-skill-chip-icon';
 	icon.textContent = '⚡';
 	chip.appendChild(icon);
 
-	const label = document.createElement('span');
+	const label = this._ownerDocument.createElement('span');
 	label.className = 'inline-skill-chip-name';
 	label.textContent = name;
 	chip.appendChild(label);
 
-	const removeBtn = document.createElement('span');
+	const removeBtn = this._ownerDocument.createElement('span');
 	removeBtn.className = 'inline-skill-chip-remove';
 	removeBtn.textContent = '✕';
 	chip.appendChild(removeBtn);
@@ -1191,14 +1191,14 @@ protected override _addSkillChip(id: string, name: string): void {
 	// 去重：DOM 中已存在同 id chip 则跳过
 	if (root.querySelector(`.inline-skill-chip[data-skill-id="${CSS.escape(id)}"]`)) { return; }
 	const chip = this._createSkillChipNode(id, name);
-	const spaceBefore = document.createTextNode(' ');
-	const spaceAfter = document.createTextNode(' ');
-	root.focus();
-	const sel = window.getSelection();
+	const spaceBefore = this._ownerDocument.createTextNode(' ');
+	const spaceAfter = this._ownerDocument.createTextNode(' ');
+		root.focus();
+		const sel = this._ownerWindow?.getSelection();
 	if (sel && sel.rangeCount > 0) {
 		const range = sel.getRangeAt(0);
 		range.deleteContents();
-		const frag = document.createDocumentFragment();
+		const frag = this._ownerDocument.createDocumentFragment();
 		frag.appendChild(spaceBefore);
 		frag.appendChild(chip);
 		frag.appendChild(spaceAfter);
@@ -1380,8 +1380,8 @@ protected override _renderInlineAttachmentChips(): void {
 		if (!root) { return; }
 		for (const att of this._attachments) {
 			if (root.querySelector(`.inline-attachment-chip[data-att-id="${att.id}"]`)) { continue; }
-			const spaceBefore = document.createTextNode(' ');
-			const spaceAfter = document.createTextNode(' ');
+			const spaceBefore = this._ownerDocument.createTextNode(' ');
+			const spaceAfter = this._ownerDocument.createTextNode(' ');
 			root.appendChild(spaceBefore);
 			root.appendChild(this._createAttachmentChipNode(att));
 			root.appendChild(spaceAfter);
@@ -1439,7 +1439,7 @@ protected override _setComposerText(text: string): void {
 					root.appendChild(this._createSkillChipNode(m[1], this._resolveSkillName(m[1])));
 					continue;
 				}
-				if (seg) { root.appendChild(document.createTextNode(seg)); }
+				if (seg) { root.appendChild(this._ownerDocument.createTextNode(seg)); }
 			}
 		}
 		// 重新计算高度，避免多行时被截断
@@ -1462,7 +1462,7 @@ protected override _setComposerText(text: string): void {
 protected override _getCaretOffset(): number {
 		const root = this._textarea;
 		if (!root) { return 0; }
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		if (!sel || sel.rangeCount === 0) { return 0; }
 		const range = sel.getRangeAt(0);
 		const pre = range.cloneRange();
@@ -1486,9 +1486,9 @@ protected override _focusComposerEnd(): void {
 		const root = this._textarea;
 		if (!root) { return; }
 		root.focus();
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		if (!sel) { return; }
-		const range = document.createRange();
+		const range = this._ownerDocument.createRange();
 		range.selectNodeContents(root);
 		range.collapse(false);
 		sel.removeAllRanges();
@@ -1499,7 +1499,7 @@ protected override _insertTextAtCaret(text: string): void {
 		const root = this._textarea;
 		if (!root) { return; }
 		root.focus();
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		const existing = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
 		if (existing && root.contains(existing.startContainer)) {
 			// 用「纯文本偏移量」定位光标：先记下插入点（选区起点）的偏移，插入后把光标
@@ -1508,10 +1508,10 @@ protected override _insertTextAtCaret(text: string): void {
 			// setStartAfter(detachedNode) 会落错位置（打包版曾因此光标不在尾部）。
 			const insertOffset = this._computeCaretOffset(true);
 			existing.deleteContents();
-			existing.insertNode(document.createTextNode(text));
+			existing.insertNode(this._ownerDocument.createTextNode(text));
 			this._setCaretOffset(insertOffset + text.length);
 		} else {
-			root.appendChild(document.createTextNode(text));
+			root.appendChild(this._ownerDocument.createTextNode(text));
 			this._focusComposerEnd();
 		}
 		root.dispatchEvent(new Event('input'));
@@ -1521,7 +1521,7 @@ protected override _insertTextAtCaret(text: string): void {
 	private _computeCaretOffset(useStart: boolean): number {
 		const root = this._textarea;
 		if (!root) { return 0; }
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		if (!sel || sel.rangeCount === 0) { return 0; }
 		const range = sel.getRangeAt(0);
 		const pre = range.cloneRange();
@@ -1547,10 +1547,10 @@ protected override _insertTextAtCaret(text: string): void {
 		const root = this._textarea;
 		if (!root) { return; }
 		root.focus();
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		if (!sel) { return; }
 		let remaining = Math.max(0, target);
-		const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+		const walker = this._ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
 			acceptNode: (n) => {
 				const p = (n as Text).parentElement;
 				return (p && p.closest('.inline-attachment-chip, .inline-skill-chip')) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
@@ -1560,7 +1560,7 @@ protected override _insertTextAtCaret(text: string): void {
 		while ((node = walker.nextNode())) {
 			const t = node as Text;
 			if (remaining <= t.length) {
-				const r = document.createRange();
+				const r = this._ownerDocument.createRange();
 				r.setStart(t, remaining);
 				r.collapse(true);
 				sel.removeAllRanges();
@@ -1570,7 +1570,7 @@ protected override _insertTextAtCaret(text: string): void {
 			remaining -= t.length;
 		}
 		// 超出末尾 → 折叠到最后
-		const r = document.createRange();
+		const r = this._ownerDocument.createRange();
 		r.selectNodeContents(root);
 		r.collapse(false);
 		sel.removeAllRanges();
@@ -1589,7 +1589,7 @@ protected override _insertTextAtCaret(text: string): void {
 			cd.setData(COMPOSER_CLIPBOARD_MIME, serialized.json);
 		}
 		if (isCut) {
-			const sel = window.getSelection();
+			const sel = this._ownerWindow?.getSelection();
 			const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
 			if (range && this._textarea.contains(range.startContainer)) {
 				range.deleteContents();
@@ -1603,7 +1603,7 @@ protected override _insertTextAtCaret(text: string): void {
 	/** 把当前选区序列化为片段数组；仅当包含 chip 时才返回（否则交给浏览器默认复制）。 */
 	private _serializeComposerClipboard(): { json: string; text: string } | null {
 		const root = this._textarea;
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		if (!sel || sel.rangeCount === 0) { return null; }
 		const range = sel.getRangeAt(0);
 		if (range.collapsed || !root.contains(range.startContainer)) { return null; }
@@ -1668,20 +1668,20 @@ protected override _insertTextAtCaret(text: string): void {
 		const root = this._textarea;
 		if (!root) { return; }
 		root.focus();
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
 		if (range && root.contains(range.startContainer)) { range.deleteContents(); }
 
-		const frag = document.createDocumentFragment();
+		const frag = this._ownerDocument.createDocumentFragment();
 		let lastWasChip = false;
 		for (const seg of segments) {
 			if (seg.type === 'text') {
-				if (seg.text) { frag.appendChild(document.createTextNode(seg.text)); }
+				if (seg.text) { frag.appendChild(this._ownerDocument.createTextNode(seg.text)); }
 				lastWasChip = false;
 			} else if (seg.type === 'skill' && seg.id) {
-				if (!lastWasChip) { frag.appendChild(document.createTextNode(' ')); }
+				if (!lastWasChip) { frag.appendChild(this._ownerDocument.createTextNode(' ')); }
 				frag.appendChild(this._createSkillChipNode(seg.id, this._resolveSkillName(seg.id)));
-				frag.appendChild(document.createTextNode(' '));
+				frag.appendChild(this._ownerDocument.createTextNode(' '));
 				lastWasChip = true;
 			} else if (seg.type === 'attachment' && seg.name && seg.mimeType) {
 				const att: IChatAttachment = {
@@ -1695,9 +1695,9 @@ protected override _insertTextAtCaret(text: string): void {
 					filePath: seg.filePath,
 				};
 				this._attachments.push(att);
-				if (!lastWasChip) { frag.appendChild(document.createTextNode(' ')); }
+				if (!lastWasChip) { frag.appendChild(this._ownerDocument.createTextNode(' ')); }
 				frag.appendChild(this._createAttachmentChipNode(att));
-				frag.appendChild(document.createTextNode(' '));
+				frag.appendChild(this._ownerDocument.createTextNode(' '));
 				lastWasChip = true;
 			}
 		}
@@ -1709,7 +1709,7 @@ protected override _insertTextAtCaret(text: string): void {
 			// 显式 setStartAfter(lastNode)；节点被浏览器合并时回退到 collapse(false)。
 			if (lastNode) {
 				try {
-					const caret = document.createRange();
+					const caret = this._ownerDocument.createRange();
 					caret.setStartAfter(lastNode);
 					caret.collapse(true);
 					sel?.removeAllRanges();

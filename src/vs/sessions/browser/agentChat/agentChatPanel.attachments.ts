@@ -86,7 +86,7 @@ protected override _resizeImage(file: File, maxWidth: number, maxHeight: number)
 				const ratio = Math.min(maxWidth / width, maxHeight / height);
 				width = Math.round(width * ratio);
 				height = Math.round(height * ratio);
-				const canvas = document.createElement('canvas');
+				const canvas = this._ownerDocument.createElement('canvas');
 				canvas.width = width;
 				canvas.height = height;
 				const ctx = canvas.getContext('2d');
@@ -103,14 +103,14 @@ protected override _insertInlineAttachmentChip(att: IChatAttachment): void {
 		const root = this._textarea;
 		if (!root) { return; }
 		const chip = this._createAttachmentChipNode(att);
-		const spaceBefore = document.createTextNode(' ');
-		const spaceAfter = document.createTextNode(' ');
+		const spaceBefore = this._ownerDocument.createTextNode(' ');
+		const spaceAfter = this._ownerDocument.createTextNode(' ');
 		root.focus();
-		const sel = window.getSelection();
+		const sel = this._ownerWindow?.getSelection();
 		if (sel && sel.rangeCount > 0) {
 			const range = sel.getRangeAt(0);
 			range.deleteContents();
-			const frag = document.createDocumentFragment();
+			const frag = this._ownerDocument.createDocumentFragment();
 			frag.appendChild(spaceBefore);
 			frag.appendChild(chip);
 			frag.appendChild(spaceAfter);
@@ -130,17 +130,17 @@ protected override _insertInlineAttachmentChip(att: IChatAttachment): void {
 	}
 
 protected override _createReadOnlyAttachmentChip(att: IChatAttachment): HTMLElement {
-		const chip = document.createElement('span');
+		const chip = this._ownerDocument.createElement('span');
 		chip.className = 'inline-attachment-chip message-attachment-chip';
 		chip.dataset.attId = att.id;
 		chip.setAttribute('contenteditable', 'false');
 
-		const icon = document.createElement('span');
+		const icon = this._ownerDocument.createElement('span');
 		icon.className = 'inline-attachment-chip-icon';
 		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : '\u{1F4C4}';
 		chip.appendChild(icon);
 
-		const label = document.createElement('span');
+		const label = this._ownerDocument.createElement('span');
 		label.className = 'inline-attachment-chip-label';
 		label.textContent = att.name;
 		chip.appendChild(label);
@@ -163,17 +163,17 @@ protected override _renderAttachmentPreviews(): void {
 
 protected override _showLightbox(src: string): void {
 		// Remove any existing lightbox
-		document.querySelector('.chat-lightbox-overlay')?.remove();
+		this._ownerDocument.querySelector('.chat-lightbox-overlay')?.remove();
 
-		const overlay = document.createElement('div');
+		const overlay = this._ownerDocument.createElement('div');
 		overlay.className = 'chat-lightbox-overlay';
 
-		const img = document.createElement('img');
+		const img = this._ownerDocument.createElement('img');
 		img.src = src;
 		img.className = 'chat-lightbox-image';
 		overlay.appendChild(img);
 
-		const closeBtn = document.createElement('button');
+		const closeBtn = this._ownerDocument.createElement('button');
 		closeBtn.className = 'chat-lightbox-close';
 		closeBtn.textContent = '✕';
 		closeBtn.addEventListener('click', () => overlay.remove());
@@ -183,32 +183,32 @@ protected override _showLightbox(src: string): void {
 			if (e.target === overlay) { overlay.remove(); }
 		});
 
-		document.addEventListener('keydown', (e) => {
+		this._ownerDocument.addEventListener('keydown', (e) => {
 			if (e.key === 'Escape') { overlay.remove(); }
 		}, { once: true });
 
-		document.body.appendChild(overlay);
+		this._ownerDocument.body.appendChild(overlay);
 	}
 
 protected override _showImageTooltip(att: IChatAttachment, chip: HTMLElement): void {
 		if (!att.data) { return; }
 		this._hideImageTooltip();
 
-		const tip = document.createElement('div');
+		const tip = this._ownerDocument.createElement('div');
 		tip.className = 'inline-attachment-thumb-tip';
 
-		const img = document.createElement('img');
+		const img = this._ownerDocument.createElement('img');
 		img.className = 'inline-attachment-thumb-tip-img';
 		img.src = `data:${att.mimeType};base64,${att.data}`;
 		tip.appendChild(img);
 
-		const caption = document.createElement('div');
+		const caption = this._ownerDocument.createElement('div');
 		caption.className = 'inline-attachment-thumb-tip-caption';
 		caption.textContent = att.name;
 		tip.appendChild(caption);
 
 		this._imageTooltip = tip;
-		document.body.appendChild(tip);
+		this._ownerDocument.body.appendChild(tip);
 
 		const position = () => {
 			const rect = chip.getBoundingClientRect();

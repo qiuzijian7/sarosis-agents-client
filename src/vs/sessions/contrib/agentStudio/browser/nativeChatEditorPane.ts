@@ -105,6 +105,12 @@ export class NativeChatEditorPane extends EditorPane {
 	private _currentChatOnly: boolean = false;
 	private _currentWorkspaceId: string | null = null;
 	/**
+	 * 面板本地 Provider/Model 选择状态（不写入共享单例 IModelSelectorService）。
+	 * 多面板共存时（主窗口 + popout），每个面板的选择互不影响。
+	 */
+	private _localProviderId: string = '';
+	private _localModelId: string = '';
+	/**
 	 * 会话只读（多开 --instance）：当前会话锁被另一实例持有时为 true，
 	 * _sendMessageInternal 拦截发送并提示，防止双写覆盖聊天历史。
 	 */
@@ -1041,25 +1047,16 @@ export class NativeChatEditorPane extends EditorPane {
 				// This callback is a notification hook only — no host-side action needed.
 			},
 			onSelectProvider: (providerId: string) => {
-				const cur = this._modelSelector.getSelection();
-				this._modelSelector.setSelection({
-					providerId,
-					modelId: cur?.modelId ?? '',
-					agentId: cur?.agentId,
-				});
+				// 仅更新面板本地状态，不写入共享单例 _modelSelector（避免跨面板污染）
+				this._localProviderId = providerId;
+				this._chatPanel?.setCurrentProvider(providerId);
 				this._saveInputAreaState();
-				void this._refreshModelSelector();
 			},
 			onSelectModel: (modelId: string) => {
-				const cur = this._modelSelector.getSelection();
-				if (!cur) { return; }
-				this._modelSelector.setSelection({
-					providerId: cur.providerId,
-					modelId,
-					agentId: cur.agentId,
-				});
+				// 仅更新面板本地状态，不写入共享单例 _modelSelector
+				this._localModelId = modelId;
+				this._chatPanel?.setCurrentModel(modelId);
 				this._saveInputAreaState();
-				void this._refreshModelSelector();
 			},
 			onCheckpointAction: (action: 'undoAll' | 'keepAll' | 'openDiff', payload?: { filePath?: string; checkpointId?: string }) => {
 				void this._handleCheckpointAction(action, payload);
@@ -1303,9 +1300,8 @@ export class NativeChatEditorPane extends EditorPane {
 		};
 		this._logService.debug(`[NativeChatEditorPane][Init] calling _refreshModelSelector (debounced) t=${(performance.now() - t0).toFixed(1)}ms`);
 		debouncedRefreshModelSelector();
-		this._register(this._modelSelector.onDidChangeSelection(() => {
-			debouncedRefreshModelSelector();
-		}));
+		// 不再监听 onDidChangeSelection：选择状态已改为面板本地（_localProviderId/_localModelId），
+		// 监听此事件会导致其他面板的选择变更污染当前面板。
 		this._register(this._modelSelector.onDidChangeAvailableModels(() => {
 			debouncedRefreshModelSelector();
 		}));
@@ -1929,19 +1925,19 @@ private _scheduleSaveComposerDraft(): void {
 
 /** Save all input-area state for the current agent. */
 private _saveInputAreaState(): void {
-		if (!this._currentAgentId) { return; }
-		try {
-			localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_CHAT_ONLY), String(this._currentChatOnly));
-			const sel = this._modelSelector.getSelection();
-			if (sel?.providerId) {
-				localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER), sel.providerId);
-			}
-			if (sel?.modelId) {
-				localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_MODEL), sel.modelId);
-			}
-		// Composer 草稿按 session 隔离保存（per-session）
-		this._saveComposerDraft();
-	} catch { /* localStorage may be unavailable */ }
+	if (!this._currentAgentId) { return; }
+	try {
+		localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_CHAT_ONLY), String(this._currentChatOnly));
+		// 使用面板本地状态（不读共享 _modelSelector）
+		if (this._localProviderId) {
+			localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER), this._localProviderId);
+		}
+		if (this._localModelId) {
+			localStorage.setItem(this._storageKey(NativeChatEditorPane._STORAGE_MODEL), this._localModelId);
+		}
+	// Composer 草稿按 session 隔离保存（per-session）
+	this._saveComposerDraft();
+} catch { /* localStorage may be unavailable */ }
 }
 
 	/** Restore all input-area state for the current agent. Call after setAgent(). */
@@ -1954,16 +1950,14 @@ private _saveInputAreaState(): void {
 			this._currentChatOnly = chatOnly;
 			this._chatPanel.setChatOnly(chatOnly);
 
-			// Restore provider + model: apply to IModelSelectorService so
-			// _refreshModelSelector picks it up naturally on next call.
+			// Restore provider + model to 面板本地状态（不写共享 _modelSelector）
 			const savedProvider = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_PROVIDER));
 			const savedModel = localStorage.getItem(this._storageKey(NativeChatEditorPane._STORAGE_MODEL));
 			if (savedProvider && savedModel) {
-				this._modelSelector.setSelection({
-					providerId: savedProvider,
-					modelId: savedModel,
-					agentId: this._currentAgentId,
-				});
+				this._localProviderId = savedProvider;
+				this._localModelId = savedModel;
+				this._chatPanel.setCurrentProvider(savedProvider);
+				this._chatPanel.setCurrentModel(savedModel);
 			} else {
 				// 无本地覆盖时，使用 Agent 配置的默认 provider/model
 				void this._applyAgentDefaultModelSelection();
@@ -1980,11 +1974,10 @@ private async _applyAgentDefaultModelSelection(): Promise<void> {
 	try {
 		const agent = await this._agentStudioService.getAgent(this._currentAgentId);
 		if (agent?.providerId && agent?.model) {
-			this._modelSelector.setSelection({
-				providerId: agent.providerId,
-				modelId: agent.model,
-				agentId: this._currentAgentId,
-			});
+			this._localProviderId = agent.providerId;
+			this._localModelId = agent.model;
+			this._chatPanel?.setCurrentProvider(agent.providerId);
+			this._chatPanel?.setCurrentModel(agent.model);
 		}
 	} catch { /* agent 加载失败时保持全局默认选择 */ }
 }
@@ -3225,13 +3218,15 @@ private _handleStreamDelta(delta: any): void {
 			this._chatPanel.setProviders(providers);
 			this._chatPanel.setModels(models);
 
-			const selection = this._modelSelector.getSelection();
-			if (selection) {
-				this._chatPanel.setCurrentProvider(selection.providerId);
-				this._chatPanel.setCurrentModel(selection.modelId);
+			// 使用面板本地选择状态（不读共享 _modelSelector，避免跨面板污染）
+			const localProviderId = this._localProviderId;
+			const localModelId = this._localModelId;
+			if (localProviderId || localModelId) {
+				if (localProviderId) { this._chatPanel.setCurrentProvider(localProviderId); }
+				if (localModelId) { this._chatPanel.setCurrentModel(localModelId); }
 
 				const matched = items.find(
-					it => it.provider.id === selection.providerId && it.model.id === selection.modelId,
+					it => it.provider.id === localProviderId && it.model.id === localModelId,
 				);
 				this._currentMaxContextTokens = matched?.model.maxInputTokens
 					?? matched?.model.contextWindow
@@ -3410,9 +3405,12 @@ private _handleStreamDelta(delta: any): void {
 			this._defaultAgentSelected = saved.agentLoaded;
 
 			// 恢复此 tab 保存的 model selection（每个 tab 独立切换 model）
-			// 全局 IModelSelectorService 是单例，切换 tab 时需要恢复该 tab 的选择
+			// 使用面板本地状态，不写共享 IModelSelectorService 单例
 			if (saved.modelSelection) {
-				this._modelSelector.setSelection(saved.modelSelection);
+				this._localProviderId = saved.modelSelection.providerId ?? '';
+				this._localModelId = saved.modelSelection.modelId ?? '';
+				this._chatPanel?.setCurrentProvider(this._localProviderId);
+				this._chatPanel?.setCurrentModel(this._localModelId);
 			}
 
 		// 恢复 agent 显示（如有）
@@ -3523,8 +3521,10 @@ private _handleStreamDelta(delta: any): void {
 		const streamPhase = (this._chatPanel as any)?._streamPhase ?? 'idle';
 		const isSending = (this._chatPanel as any)?._isSending ?? false;
 
-		// 保存当前 tab 的 model selection（全局单例 IModelSelectorService 的当前值）
-		const modelSel = this._modelSelector.getSelection();
+		// 保存当前 tab 的 model selection（面板本地状态，每个 tab 独立）
+		const modelSel = this._localProviderId || this._localModelId
+			? { providerId: this._localProviderId, modelId: this._localModelId, agentId: this._currentAgentId ?? undefined }
+			: undefined;
 
 		currentInput.saveRuntimeState({
 			messages: [...messages],  // shallow copy

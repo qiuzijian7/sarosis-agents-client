@@ -225,6 +225,21 @@ protected _scrollbarTrack: HTMLElement | null = null;
 
 protected _scrollbarThumb: HTMLElement | null = null;
 
+	/**
+	 * 当前面板所属窗口。在「独立聊天框窗口」（moveEditorToNewWindow 产生的 aux window）
+	 * 中，模块作用域里的裸 `window`/`document` 仍指向主窗口，直接用 window.getSelection() 或
+	 * document.* 会拿到主窗口的选区/节点，对本窗口 DOM 无效甚至抛跨文档错误。
+	 * 因此一律通过元素自身的 ownerDocument 取正确的 window/document。
+	 */
+	protected get _ownerWindow(): Window | null {
+		return this._textarea?.ownerDocument.defaultView ?? null;
+	}
+
+	/** 当前面板所属 document（popout 下 != 全局 document）。 */
+	protected get _ownerDocument(): Document {
+		return this._textarea?.ownerDocument ?? document;
+	}
+
 protected _worktreeDropdownOutsideClick: IDisposable | null = null;
 
 protected _modeDropdownOutsideClick: IDisposable | null = null;
