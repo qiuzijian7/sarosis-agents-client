@@ -105,7 +105,8 @@ stages:
             Write-Error "FATAL: @vscode/sqlite3 native binary missing — 图谱 SQLite 后端不可用"
             exit 1
           }
-          Write-Host "[OK] @vscode/sqlite3 present ($((Get-Item $sqliteNode).Length) bytes)"
+          $sqliteSize = (Get-Item $sqliteNode).Length
+          Write-Host "[OK] @vscode/sqlite3 present ($sqliteSize bytes)"
 
           if (-not (Test-Path "node_modules\gulp\bin\gulp.js")) {
             Write-Error "FATAL: node_modules/gulp not found after npm install + rebuild"
