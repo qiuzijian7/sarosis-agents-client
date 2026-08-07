@@ -303,8 +303,10 @@ protected override _openAgentDropdown(): void {
 			this._agentSelectorTrigger.classList.add("open");
 		}
 
-		// Create dropdown panel on document.body to avoid any overflow:hidden clipping
-		this._agentDropdownEl = append(mainWindow.document.body, $(".chat-agent-dropdown"));
+		// Create dropdown panel on trigger's document.body — popout 独立窗口是另一个 window，
+		// mainWindow.document.body 挂在主窗口 DOM 上，定位坐标错乱
+		const dropdownBody = this._agentSelectorTrigger?.ownerDocument?.body ?? mainWindow.document.body;
+		this._agentDropdownEl = append(dropdownBody, $(".chat-agent-dropdown"));
 
 		// Fixed position aligned to the chat container
 		const containerRect = this._container.getBoundingClientRect();
@@ -317,8 +319,9 @@ protected override _openAgentDropdown(): void {
 
 		this._renderAgentDropdownContent();
 
-		// Close on outside click
-		const outsideHandler = addDisposableListener(mainWindow.document.body, EventType.CLICK, (e) => {
+		// Close on outside click（监听 trigger 所在 window 的 document）
+		const outsideDoc = this._agentSelectorTrigger?.ownerDocument ?? mainWindow.document;
+		const outsideHandler = addDisposableListener(outsideDoc.body, EventType.CLICK, (e) => {
 			if (this._agentDropdownEl && !this._agentDropdownEl.contains(e.target as Node) &&
 				this._agentSelectorTrigger && !this._agentSelectorTrigger.contains(e.target as Node)) {
 				this._closeAgentDropdown();

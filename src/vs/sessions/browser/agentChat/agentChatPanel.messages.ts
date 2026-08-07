@@ -1876,12 +1876,13 @@ protected override _openUndoConfirmDialog(): void {
 			this._onCheckpointAction?.('undoAll');
 		}));
 
-		// ESC 关闭
+		// ESC 关闭（绑定 trigger 所在 window，popout 中 mainWindow 收不到）
+		const escWin = dialog.ownerDocument?.defaultView ?? mainWindow;
 		const onEsc = (e: KeyboardEvent) => {
 			if (e.key === 'Escape') { closeDialog(); }
 		};
-		mainWindow.addEventListener('keydown', onEsc);
-		this._register({ dispose: () => mainWindow.removeEventListener('keydown', onEsc) });
+		escWin.addEventListener('keydown', onEsc);
+		this._register({ dispose: () => escWin.removeEventListener('keydown', onEsc) });
 	}
 
 protected override _openUserEditOverlay(msg: IAgentChatMessage): void {
@@ -2001,7 +2002,9 @@ protected override _openUserEditOverlay(msg: IAgentChatMessage): void {
 			}
 			restore();
 		};
-		this._register(addDisposableListener(mainWindow.document, EventType.MOUSE_DOWN, onOutsideMousedown));
+		// 监听 composer 所在 window 的 document（popout 独立窗口是另一个 window）
+		const outsideDoc = composer.ownerDocument ?? mainWindow.document;
+		this._register(addDisposableListener(outsideDoc, EventType.MOUSE_DOWN, onOutsideMousedown));
 
 		const commit = () => {
 			const newText = textarea.value.trim();

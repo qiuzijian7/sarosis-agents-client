@@ -57,15 +57,16 @@ stages:
           # ===== 3. Install Spectre =====
           $vsPath = "C:\Program Files\Microsoft Visual Studio\2022\Community"
           $vsInstaller = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe"
-          $latestMsvc = Get-ChildItem "$vsPath\VC\Tools\MSVC" -Directory -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-          if ($latestMsvc -and -not (Test-Path "$vsPath\VC\Tools\MSVC\$($latestMsvc.Name)\lib\spectre\x64\libcmt.lib")) {
+          $latestMsvc = Get-ChildItem ($vsPath + '\VC\Tools\MSVC') -Directory -EA SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+          if ($latestMsvc -and -not (Test-Path ($vsPath + '\VC\Tools\MSVC\' + $latestMsvc.Name + '\lib\spectre\x64\libcmt.lib'))) {
             Write-Host "=== Installing Spectre Libraries ==="
-            & "$vsInstaller" modify --installPath $vsPath --quiet --norestart `
+            & $vsInstaller modify --installPath $vsPath --quiet --norestart `
               --add Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre `
               --add Microsoft.VisualStudio.Component.VC.ATL.Spectre `
               --add Microsoft.VisualStudio.Component.VC.MFC.Spectre 2>&1 | Out-Null
           }
-          cmd /c "rd /s /q `"$vsPath\VC\Tools\MSVC\14.38.33130`" 2>nul"
+          $vsMsvcDir = $vsPath + '\VC\Tools\MSVC\14.38.33130'
+          Remove-Item -Recurse -Force $vsMsvcDir -ErrorAction SilentlyContinue
 
           # ===== 4. Env vars for Electron native build =====
           $env:GYP_MSVS_VERSION      = "2022"
@@ -139,7 +140,7 @@ stages:
             Write-Host "[RG] Trying postinstall (GitHub CDN)..."
             try {
               node node_modules/@vscode/ripgrep/lib/postinstall.js --force
-            } catch { Write-Host "[RG] postinstall failed: $_" }
+            } catch { Write-Host ('[RG] postinstall failed: ' + $_) }
           }
           $vendoredRg = "build/saros/bin/rg.exe"
           if (-not (Test-Path $mainRg) -and (Test-Path $vendoredRg)) {
@@ -155,11 +156,11 @@ stages:
           # ===== 8. Install extension dependencies =====
           $extRoots = Get-ChildItem extensions -Directory -Depth 2
           foreach ($extDir in $extRoots) {
-            if (Test-Path "$($extDir.FullName)/package.json") {
+            if (Test-Path ($extDir.FullName + '/package.json')) {
               Push-Location $extDir.FullName
               npm install --ignore-scripts
               if ($LASTEXITCODE -ne 0) {
-                Write-Host "[WARN] $extDir npm install exited $LASTEXITCODE (non-critical)"
+                Write-Host ('[WARN] ' + $extDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
               }
               Pop-Location
             }
@@ -170,11 +171,11 @@ stages:
           if (Test-Path ".vscode/extensions") {
             $vscExtRoots = Get-ChildItem .vscode/extensions -Directory
             foreach ($extDir in $vscExtRoots) {
-              if (Test-Path "$($extDir.FullName)/package.json") {
+              if (Test-Path ($extDir.FullName + '/package.json')) {
                 Push-Location $extDir.FullName
                 npm install --ignore-scripts
                 if ($LASTEXITCODE -ne 0) {
-                  Write-Host "[WARN] $extDir npm install exited $LASTEXITCODE (non-critical)"
+                  Write-Host ('[WARN] ' + $extDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
                 }
                 Pop-Location
               }
@@ -187,21 +188,22 @@ stages:
           $rootTs = "node_modules\typescript"
           if ((Test-Path $rootTs) -and -not (Test-Path $extTsTarget)) {
             New-Item -Force -ItemType Directory "extensions\node_modules" | Out-Null
-            cmd /c "mklink /J `"$extTsTarget`" `"$((Resolve-Path $rootTs).Path)`"" 2>&1 | Out-Null
-            if (-not (Test-Path "$extTsTarget\lib\typescript.d.ts")) {
+            $resolvedRootTs = (Resolve-Path $rootTs).Path
+            New-Item -ItemType Junction -Path $extTsTarget -Target $resolvedRootTs -Force 2>&1 | Out-Null
+            if (-not (Test-Path ($extTsTarget + '\lib\typescript.d.ts'))) {
               Write-Host "[INFO] junction failed, falling back to copy"
               Copy-Item -Recurse -Force $rootTs $extTsTarget
             }
-            Write-Host "[FIX] typescript hoisted to $extTsTarget"
+            Write-Host ('[FIX] typescript hoisted to ' + $extTsTarget)
           }
 
           # ===== 8d. Agent Studio webview dependencies (katex 等，kbblocks 构建必需) =====
           $webviewDir = "src\vs\sessions\contrib\agentStudio\webview"
-          if (Test-Path "$webviewDir\package.json") {
+          if (Test-Path ($webviewDir + '\package.json')) {
             Push-Location $webviewDir
             npm install --ignore-scripts
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "[WARN] $webviewDir npm install exited $LASTEXITCODE (non-critical)"
+              Write-Host ('[WARN] ' + $webviewDir + ' npm install exited ' + $LASTEXITCODE + ' (non-critical)')
             }
             Pop-Location
             Write-Host "[OK] Agent Studio webview dependencies installed"
@@ -213,11 +215,11 @@ stages:
       - name: 构建 KB 渲染 bundle (kbblocks)
         run: |
           $webviewDir = "src\vs\sessions\contrib\agentStudio\webview"
-          if (Test-Path "$webviewDir\package.json") {
+          if (Test-Path ($webviewDir + '\package.json')) {
             Push-Location $webviewDir
             npm install --ignore-scripts --no-audit --no-fund
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "[WARN] webview npm install exited $LASTEXITCODE (non-fatal)"
+              Write-Host ('[WARN] webview npm install exited ' + $LASTEXITCODE + ' (non-fatal)')
             }
             Pop-Location
           }
@@ -240,7 +242,7 @@ stages:
           $nodeVersion = "22.22.1"
           $installed = nvm list 2>$null | Select-String $nodeVersion
           if (-not $installed) {
-            Write-Host "Installing Node $nodeVersion..."
+            Write-Host ('Installing Node ' + $nodeVersion + '...')
             nvm install $nodeVersion
           }
           nvm use $nodeVersion
@@ -263,13 +265,13 @@ stages:
           $outMedia = "out-build\vs\sessions\contrib\agentStudio\webview\media"
           New-Item -Force -ItemType Directory $outMedia | Out-Null
           foreach ($ext in @('js', 'css')) {
-            $f = "kbblocks.$ext"
-            if (Test-Path "$srcMedia\$f") {
-              Copy-Item "$srcMedia\$f" "$outMedia\$f" -Force
-              $fSize = (Get-Item "$outMedia\$f").Length
+            $f = ('kbblocks.' + $ext)
+            if (Test-Path ($srcMedia + '\' + $f)) {
+              Copy-Item ($srcMedia + '\' + $f) ($outMedia + '\' + $f) -Force
+              $fSize = (Get-Item ($outMedia + '\' + $f)).Length
               Write-Host ('[OK] Copied ' + $f + ' to out-build (' + $fSize + ' bytes)')
             } else {
-              Write-Host "[WARN] $f not found — KB markdown Mermaid will not render"
+              Write-Host ('[WARN] ' + $f + ' not found — KB markdown Mermaid will not render')
             }
           }
         shell: powershell
@@ -277,8 +279,8 @@ stages:
       # ---------- 5.0 构建能力插件（dist/extension.js） ----------
       - name: 构建能力插件 transpile-plugins
         run: |
-          $nvmNodeDir = "$env:LOCALAPPDATA\nvm\v22.22.1"
-          $env:PATH = "$nvmNodeDir;$env:PATH"
+          $nvmNodeDir = ($env:LOCALAPPDATA + '\nvm\v22.22.1')
+          $env:PATH = ($nvmNodeDir + ';' + $env:PATH)
           node build/next/index.ts transpile-plugins
           if ($LASTEXITCODE -ne 0) { Write-Error "transpile-plugins failed"; exit 1 }
           if (-not (Test-Path "extensions/agentmemory-memory/dist/extension.js")) {
@@ -301,7 +303,7 @@ stages:
           # 内容纯 ASCII，但必须写【无 BOM】：PS 5.1 的 Set-Content -Encoding utf8 会加 BOM，
           # vsce 的 JSON.parse 拒绝 BOM 前缀，报 "Unexpected token"。用 WriteAllText + UTF8Encoding($false)。
           $sharedJson = '{"name":"saros-shared","version":"1.0.0","description":"Shared utilities","main":"./out/index.js","engines":{"vscode":"^1.95.0"},"activationEvents":[],"types":"./out/index.d.ts","dependencies":{},"scripts":{"compile":"tsc -p ./","watch":"tsc -watch -p ./"},"devDependencies":{"@types/node":"22.x","@types/vscode":"^1.95.0","typescript":"^6.0.3"}}'
-          [IO.File]::WriteAllText("$pwd\extensions\shared\package.json", $sharedJson, (New-Object Text.UTF8Encoding $false))
+          [IO.File]::WriteAllText(($pwd.Path + '\extensions\shared\package.json'), $sharedJson, (New-Object Text.UTF8Encoding $false))
 
           # 切勿重写 codebuddy-provider/package.json：含中文 description，GBK 下会污染字节。
           # 仓库副本已正确（dep=saros-shared, UTF-8），只需 reinstall 刷新符号链接。
@@ -326,7 +328,7 @@ stages:
         run: |
           $appRoot = Join-Path (Split-Path $pwd.Path -Parent) "VSCode-win32-x64\resources\app"
           if (-not (Test-Path $appRoot)) { $appRoot = "..\VSCode-win32-x64\resources\app" }
-          Write-Host "Verifying staging dir: $appRoot"
+          Write-Host ('Verifying staging dir: ' + $appRoot)
           $required = @(
             "node_modules\@vscode\ripgrep\bin\rg.exe",
             "extensions\agentmemory-memory\dist\extension.js",
@@ -337,11 +339,11 @@ stages:
           $missing = @()
           foreach ($rel in $required) {
             $p = Join-Path $appRoot $rel
-            if (Test-Path $p) { Write-Host "  [OK] $rel" }
-            else { Write-Host "  [MISSING] $rel"; $missing += $rel }
+            if (Test-Path $p) { Write-Host ('  [OK] ' + $rel) }
+            else { Write-Host ('  [MISSING] ' + $rel); $missing += $rel }
           }
           if ($missing.Count -gt 0) {
-            Write-Error ("Staging verification failed, missing:`n - " + ($missing -join "`n - "))
+            Write-Error (('Staging verification failed, missing:' + [Environment]::NewLine + ' - ') + ($missing -join ([Environment]::NewLine + ' - ')))
             exit 1
           }
           Write-Host "[OK] All critical artifacts present in staging."

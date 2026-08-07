@@ -99,7 +99,9 @@ export function renderHistoryOverlay(
 			renameBtn.appendChild(renameSvg);
 			registerFn(addDisposableListener(renameBtn, EventType.CLICK, (e) => {
 				e.stopPropagation();
-				const next = mainWindow.prompt('新的会话名称', s.name);
+				// popout 独立窗口中 mainWindow.prompt 会把 dialog 弹到主窗口，用当前 window
+			const win = renameBtn.ownerDocument?.defaultView ?? mainWindow;
+			const next = win.prompt('新的会话名称', s.name);
 				if (next && next.trim() && next.trim() !== s.name) {
 					cbs.onRenameSession?.(s.id, next.trim());
 				}
@@ -120,7 +122,9 @@ export function renderHistoryOverlay(
 			delBtn.appendChild(delSvg);
 			registerFn(addDisposableListener(delBtn, EventType.CLICK, (e) => {
 				e.stopPropagation();
-				if (mainWindow.confirm(`确认删除会话「${s.name}」?`)) {
+				// popout 独立窗口中 mainWindow.confirm 会把 dialog 弹到主窗口，用当前 window
+				const win = delBtn.ownerDocument?.defaultView ?? mainWindow;
+				if (win.confirm(`确认删除会话「${s.name}」?`)) {
 					cbs.onDeleteSession?.(s.id);
 				}
 			}));
