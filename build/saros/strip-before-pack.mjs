@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * strip-before-pack.mjs — VsSarosis 安装包预打包清理脚本
+ * strip-before-pack.mjs — VsSaros 安装包预打包清理脚本
  *
  * 在 gulp vscode-win32-x64-ci 之后、Inno Setup 打包之前运行。
  * 从构建输出目录中删除不需要的文件，显著减小安装包体积。
@@ -18,9 +18,9 @@
  *   - LICENSES.chromium.html (~15MB)
  *   - node-pty 跨平台 prebuilds (仅保留 win32-x64, ~12MB)
  *
- * 【VsSarosis 品牌下不工作 - 可安全排除】
+ * 【VsSaros 品牌下不工作 - 可安全排除】
  *   - @github/copilot (整个目录, 49MB) — 使用 Knot AG-UI, 不需要 GitHub Copilot
- *   - @microsoft/1ds-* 遥测 SDK — 连接 Microsoft 端点, VsSarosis 不应连 MS
+ *   - @microsoft/1ds-* 遥测 SDK — 连接 Microsoft 端点, VsSaros 不应连 MS
  *   - @microsoft/applicationinsights-* — 同上
  *   - @microsoft/dynamicproto-js — 同上
  *   - @microsoft/dev-tunnels-* — 需 Microsoft 账户
@@ -158,8 +158,8 @@ if (existsSync(ptyPrebuilds)) {
 	}
 }
 
-// === 2. VsSarosis 品牌下不工作 ===
-console.log('\n🏷️  [品牌] VsSarosis 不需要的模块:');
+// === 2. VsSaros 品牌下不工作 ===
+console.log('\n🏷️  [品牌] VsSaros 不需要的模块:');
 
 removeDir('@github/copilot (整个目录)', 'resources/app/node_modules/@github/copilot');
 removeDir('@github/copilot-sdk', 'resources/app/node_modules/@github/copilot-sdk');

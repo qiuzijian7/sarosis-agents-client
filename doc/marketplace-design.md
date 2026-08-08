@@ -1,7 +1,7 @@
 # Agent / Skill / MCP / 知识库 商城方案设计
 
 > 版本：v1.0 ｜ 日期：2026-06-23
-> 范围：独立商城服务端（部署于 AnyDev）+ 管理网站 + vsSarosis 客户端上传/下载 + 本地升级机制
+> 范围：独立商城服务端（部署于 AnyDev）+ 管理网站 + VsSaros 客户端上传/下载 + 本地升级机制
 
 ---
 
@@ -23,7 +23,7 @@
 └─────────────────┼──────────────────────────┼────────────────────────┘
                   │                          │
         ┌─────────┴─────────┐    ┌──────────┴──────────┐
-        │  管理网站 (浏览器)  │    │  vsSarosis 客户端     │
+        │  管理网站 (浏览器)  │    │  VsSaros 客户端     │
         │  登录 / 增删改查     │    │  上传 / 下载 / 升级    │
         └───────────────────┘    └─────────────────────┘
                                           │
@@ -170,7 +170,7 @@ CREATE TABLE downloads (
   package_id    TEXT NOT NULL,
   version_id    TEXT NOT NULL,
   user_id       TEXT,                        -- 可空（匿名/客户端 token）
-  client_id     TEXT,                        -- vsSarosis 实例标识
+  client_id     TEXT,                        -- VsSaros 实例标识
   ip            TEXT,
   created_at    INTEGER NOT NULL
 );
@@ -384,7 +384,7 @@ JWT 载荷示例：`{ "uid": "u-xxx", "role": "user", "iat": ..., "exp": ... }`
 
 ---
 
-## 4. vsSarosis 客户端集成（上传/下载）
+## 4. VsSaros 客户端集成（上传/下载）
 
 ### 4.1 新增服务：`IMarketplaceService`
 
@@ -523,7 +523,7 @@ upgrade(storeId, kind):
 
 | 维度 | update-server（已有） | marketplace upgrade（新增） |
 |------|----------------------|---------------------------|
-| 更新对象 | vsSarosis 客户端本体（exe） | agent/skill/mcp/知识库 资源包 |
+| 更新对象 | VsSaros 客户端本体（exe） | agent/skill/mcp/知识库 资源包 |
 | 协议 | `GET /api/update/{platform}/{quality}/{commit}` | `POST /api/v1/upgrade/check` |
 | 比较基准 | git commit sha | 语义化版本 |
 | 部署位置 | zijianqiu-any1.devcloud.woa.com:3030 | AnyDev :3040（新服务） |

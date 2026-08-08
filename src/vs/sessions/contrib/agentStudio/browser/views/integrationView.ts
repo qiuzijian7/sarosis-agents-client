@@ -1999,7 +1999,7 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		}
 		try {
 			this.notificationService.info(`Uploading ${id} to marketplace...`);
-		const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from vsSarosis at ${new Date().toISOString()}` });
+		const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from VsSaros at ${new Date().toISOString()}` });
 		this.notificationService.info(`\u2705 Published ${id} v${result.version} to marketplace.`);
 		// 把发布版本写回本地 SKILL.md —— 否则本地无 version 被视为 '0'，商城状态检查会误报「有升级」
 		if (kind === 'skill') {

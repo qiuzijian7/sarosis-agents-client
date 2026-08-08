@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * VsSarosis 最小 Update Feed 服务（零依赖，Node 原生 http）
+ * VsSaros 最小 Update Feed 服务（零依赖，Node 原生 http）
  * ============================================================
  * 实现 VS Code 客户端期望的更新协议：
  *
@@ -71,8 +71,8 @@ let _manifestCache = { mtimeMs: -1, manifest: null };
 const ASSET_NAME_BY_PLATFORM = {
 	'win32-x64-user': 'VsSarosUserSetup',
 	'win32-arm64-user': 'VsSarosUserSetup',
-	'win32-x64': 'VsSarosisSetup',
-	'win32-arm64': 'VsSarosisSetup'
+	'win32-x64': 'VsSarosSetup',
+	'win32-arm64': 'VsSarosSetup'
 };
 
 /**
@@ -403,7 +403,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-	console.log(`VsSarosis update server 已启动: http://localhost:${PORT}`);
+	console.log(`VsSaros update server 已启动: http://localhost:${PORT}`);
 	console.log(`模式: ${GH_REPO ? `GitHub Releases (${GH_REPO})` : `本地清单 (${MANIFEST_PATH})`}`);
 	console.log(`下载目录: ${DOWNLOADS_DIR}`);
 	console.log(`上传端点: POST /admin/upload（鉴权: ${UPLOAD_TOKEN ? '已启用 X-Upload-Token' : '未启用（UPLOAD_TOKEN 未设置）'}）`);

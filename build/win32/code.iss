@@ -18,7 +18,7 @@ OutputDir={#OutputDir}
 #if "user" == InstallTarget
 OutputBaseFilename=VsSarosUserSetup
 #else
-OutputBaseFilename=VsSarosisSetup
+OutputBaseFilename=VsSarosSetup
 #endif
 Compression=lzma2/ultra64
 SolidCompression=yes

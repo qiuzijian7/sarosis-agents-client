@@ -1,11 +1,11 @@
-# VsSarosis 完整部署指南
+# VsSaros 完整部署指南
 
-本指南将引导你完成 VsSarosis 的完整部署，包括更新服务器搭建和热更升级配置。
+本指南将引导你完成 VsSaros 的完整部署，包括更新服务器搭建和热更升级配置。
 
 ## 架构概述
 
 ```
-[客户端 VsSarosis]
+[客户端 VsSaros]
     |
     | 每小时检查更新
     v
@@ -78,10 +78,10 @@ iptables -A INPUT -p tcp --dport 3030 -j ACCEPT
 
 **Windows Firewall:**
 ```powershell
-New-NetFirewallRule -DisplayName "VsSarosis Update Server" -Direction Inbound -Protocol TCP -LocalPort 3030 -Action Allow
+New-NetFirewallRule -DisplayName "VsSaros Update Server" -Direction Inbound -Protocol TCP -LocalPort 3030 -Action Allow
 ```
 
-### 步骤 2: 构建 VsSarosis 安装包
+### 步骤 2: 构建 VsSaros 安装包
 
 #### 2.1 修复品牌配置
 
@@ -112,7 +112,7 @@ npm run gulp vscode-win32-x64-system-setup
 
 构建完成后，安装包位于：
 - 用户级: `.build\win32-x64\user-setup\VsSarosUserSetup.exe`
-- 系统级: `.build\win32-x64\system-setup\VsSarosisSetup.exe`
+- 系统级: `.build\win32-x64\system-setup\VsSarosSetup.exe`
 
 ### 步骤 3: 上传安装包
 
@@ -190,8 +190,8 @@ curl http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros
 
 #### 6.2 安装并测试客户端
 
-1. 在安装包机器上运行 `VsSarosUserSetup.exe` 安装 VsSarosis
-2. 打开 VsSarosis
+1. 在安装包机器上运行 `VsSarosUserSetup.exe` 安装 VsSaros
+2. 打开 VsSaros
 3. 等待约 1 小时，或手动触发更新检查（通过帮助菜单）
 4. 应该看到更新提示，后台下载并安装更新
 

@@ -1,6 +1,6 @@
-# VsSarosis 热更部署包
+# VsSaros 热更部署包
 
-本目录包含部署 VsSarosis 更新服务器所需的文件。
+本目录包含部署 VsSaros 更新服务器所需的文件。
 
 ## 目录结构
 
@@ -43,7 +43,7 @@ node update-server/server.mjs
 
 ### 3. 构建安装包
 
-在本地构建 VsSarosis 安装包：
+在本地构建 VsSaros 安装包：
 
 ```bash
 cd /d g:\CustomWorkspaces\AIProjects\saros-agents-client

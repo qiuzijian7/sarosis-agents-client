@@ -1,5 +1,5 @@
 version: v3.0
-name: VsSarosis-Win-EXE-Package
+name: VsSaros-Win-EXE-Package
 on:
   push:
     name: Git事件触发

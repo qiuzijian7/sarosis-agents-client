@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * set-version.mjs — VsSarosis 版本号设置脚本
+ * set-version.mjs — VsSaros 版本号设置脚本
  *
  * 将 product.json 的 version 字段设置为 {major}.{a}.{b} 格式。
  *   a = floor(commitCount / 65536)  — 进位段，每 65536 次提交 +1

@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * VsSarosis 品牌校验 / 修复脚本
+ * VsSaros 品牌校验 / 修复脚本
  * ------------------------------------------------------------
  * 背景：product.json 的品牌字段会被 git 操作或上游构建脚本还原成
  *      "Code - OSS"，并把 AppId 写成单大括号格式，导致打包出错误品牌或
@@ -26,12 +26,12 @@ const productJsonPath = path.join(repoRoot, 'product.json');
 const FIX = process.argv.includes('--fix');
 
 /**
- * 期望的品牌基准字段（VsSarosis）。
+ * 期望的品牌基准字段（VsSaros）。
  * AppId 必须是 Inno Setup 要求的双大括号格式 {{...}}。
  */
 const EXPECTED = {
-	nameShort: 'VsSarosis',
-	nameLong: 'VsSarosis',
+	nameShort: 'VsSaros',
+	nameLong: 'VsSaros',
 	applicationName: 'vssaros',
 	dataFolderName: '.vssaros',
 	sharedDataFolderName: '.vssaros-shared',
@@ -41,15 +41,15 @@ const EXPECTED = {
 	serverApplicationName: 'vssaros-server',
 	serverDataFolderName: '.vssaros-server',
 	tunnelApplicationName: 'vssaros-tunnel',
-	win32DirName: 'VsSarosis',
-	win32NameVersion: 'VsSarosis',
-	win32RegValueName: 'VsSarosis',
+	win32DirName: 'VsSaros',
+	win32NameVersion: 'VsSaros',
+	win32RegValueName: 'VsSaros',
 	win32x64AppId: '{{89BECFC9-67A9-4ED0-A91E-643CEFE58C71}}',
 	win32arm64AppId: '{{ADAAC19C-C02A-4DD2-8A7B-DBBBDCA82048}}',
 	win32x64UserAppId: '{{007F569F-0EC1-443E-B300-8B33C515C7D7}}',
 	win32arm64UserAppId: '{{1923881D-C3FF-49EE-B978-F037664E0938}}',
-	win32AppUserModelId: 'Microsoft.VsSarosis',
-	win32ShellNameShort: 'Vs&Sarosis',
+	win32AppUserModelId: 'Microsoft.VsSaros',
+	win32ShellNameShort: 'Vs&Saros',
 	win32TunnelServiceMutex: 'vssaros-tunnelservice',
 	win32TunnelMutex: 'vssaros-tunnel',
 	darwinBundleIdentifier: 'com.vssaros.vssaros',
@@ -101,7 +101,7 @@ function main() {
 	}
 
 	if (mismatches.length === 0) {
-		log('✓', 'product.json 品牌字段全部一致（VsSarosis）');
+		log('✓', 'product.json 品牌字段全部一致（VsSaros）');
 		// 软校验：updateUrl 存在性（值不固定，仅提醒，不影响退出码）
 		if (!product.updateUrl) {
 			log('!', '提示：未配置 updateUrl，自动热更新将被禁用（仅提示，不影响打包）');

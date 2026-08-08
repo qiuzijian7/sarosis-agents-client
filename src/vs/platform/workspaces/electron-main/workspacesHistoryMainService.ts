@@ -326,10 +326,11 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 			return;
 		}
 
-		// Skip in the sessions app to avoid polluting the jump list
-		if ((process as INodeProcess).isEmbeddedApp) {
-			return;
-		}
+		// Note: we deliberately no longer skip when `isEmbeddedApp` is set — the
+		// Agent Studio (sessions) app still wants the "New Window" task in the
+		// taskbar jump list so users can launch additional instances from there.
+		// The recent-workspaces section below is naturally empty for embedded
+		// apps that never opened a folder/workspace, so it causes no pollution.
 
 		await this.updateWindowsJumpList();
 		this._register(this.onDidChangeRecentlyOpened(() => this.updateWindowsJumpList()));

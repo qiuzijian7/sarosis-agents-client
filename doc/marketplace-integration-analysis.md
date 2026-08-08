@@ -1,6 +1,6 @@
 # 四类资源与商城交互的横向对比分析
 
-> 日期：2026-06-23 ｜ 范围：vsSarosis 客户端中 skill / agent / mcp / knowledge 的设计现状与商城交互优化方案
+> 日期：2026-06-23 ｜ 范围：VsSaros 客户端中 skill / agent / mcp / knowledge 的设计现状与商城交互优化方案
 
 ---
 

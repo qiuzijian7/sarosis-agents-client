@@ -1,5 +1,5 @@
 /**
- * VsSarosis Update Feed — Cloudflare Worker 版（Serverless 部署）
+ * VsSaros Update Feed — Cloudflare Worker 版（Serverless 部署）
  * ============================================================
  * 与 server.mjs 同协议，但跑在 Cloudflare Worker 上，免运维、全球边缘节点。
  * 数据源：GitHub Releases（最新 release 的 assets）。
@@ -23,8 +23,8 @@
 const ASSET_NAME_BY_PLATFORM = {
 	'win32-x64-user': 'VsSarosUserSetup',
 	'win32-arm64-user': 'VsSarosUserSetup',
-	'win32-x64': 'VsSarosisSetup',
-	'win32-arm64': 'VsSarosisSetup'
+	'win32-x64': 'VsSarosSetup',
+	'win32-arm64': 'VsSarosSetup'
 };
 
 export default {

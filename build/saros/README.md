@@ -1,6 +1,6 @@
-# VsSarosis 打包与热更新
+# VsSaros 打包与热更新
 
-本目录是 VsSarosis 品牌固化 + 自动热更新的配套工具集。
+本目录是 VsSaros 品牌固化 + 自动热更新的配套工具集。
 
 ## 目录结构
 
@@ -29,7 +29,7 @@ npm run fix-branding        # 检测并自动修复所有品牌字段
 ```
 
 校验的字段基准定义在脚本顶部的 `EXPECTED`，包含：
-- 全部 VsSarosis 命名字段（nameShort / applicationName / dataFolderName ...）
+- 全部 VsSaros 命名字段（nameShort / applicationName / dataFolderName ...）
 - 4 个**双大括号** AppId（system + user × x64 + arm64）
 - 热更新字段 `quality: "saros"`
 
@@ -40,7 +40,7 @@ npm run fix-branding        # 检测并自动修复所有品牌字段
 源构建产物位于**仓库父目录** `../VSCode-win32-x64/`（不在 .build 内）。
 
 ```bash
-# 系统级安装包 → .build/win32-x64/system-setup/VsSarosisSetup.exe
+# 系统级安装包 → .build/win32-x64/system-setup/VsSarosSetup.exe
 npm run gulp vscode-win32-x64-system-setup
 
 # 用户级安装包（免管理员权限）→ .build/win32-x64/user-setup/VsSarosUserSetup.exe
@@ -48,11 +48,11 @@ npm run gulp vscode-win32-x64-user-setup
 ```
 
 > `code.iss` 已改为根据 InstallTarget 区分输出名：
-> user → `VsSarosUserSetup.exe`，system → `VsSarosisSetup.exe`，两者不再互相覆盖。
+> user → `VsSarosUserSetup.exe`，system → `VsSarosSetup.exe`，两者不再互相覆盖。
 
 | 维度 | 系统级 (system) | 用户级 (user) |
 |------|----------------|---------------|
-| 安装路径 | `C:\Program Files\VsSarosis` | `%LOCALAPPDATA%\Programs\VsSarosis` |
+| 安装路径 | `C:\Program Files\VsSaros` | `%LOCALAPPDATA%\Programs\VsSaros` |
 | 权限 | 需要管理员 | 普通用户即可 |
 | AppId | `win32x64AppId` | `win32x64UserAppId` |
 | 更新平台串 | `win32-x64` | `win32-x64-user` |
@@ -102,7 +102,7 @@ wrangler deploy
 # 把得到的 URL 写入 product.json 的 updateUrl
 ```
 
-数据源是 GitHub Releases：发版时上传 `VsSarosUserSetup.exe` / `VsSarosisSetup.exe` 到 release，
+数据源是 GitHub Releases：发版时上传 `VsSarosUserSetup.exe` / `VsSarosSetup.exe` 到 release，
 并在 release body 写一行 `commit: <40位完整sha>`（可选 `sha256-win32-x64-user: <hash>`）。
 
 ### 部署方式 B：本地 / 自托管 Node 服务

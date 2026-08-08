@@ -1,6 +1,6 @@
-# VsSarosis 快速部署指南
+# VsSaros 快速部署指南
 
-本指南帮助你在服务器 `zijianqiu-any1.devcloud.woa.com` 上快速部署 VsSarosis 更新服务器。
+本指南帮助你在服务器 `zijianqiu-any1.devcloud.woa.com` 上快速部署 VsSaros 更新服务器。
 
 ## 前提条件
 
@@ -73,7 +73,7 @@ firewall-cmd --reload
 
 #### Windows Firewall
 ```powershell
-New-NetFirewallRule -DisplayName "VsSarosis Update Server" -Direction Inbound -Protocol TCP -LocalPort 3030 -Action Allow
+New-NetFirewallRule -DisplayName "VsSaros Update Server" -Direction Inbound -Protocol TCP -LocalPort 3030 -Action Allow
 ```
 
 ### 步骤 4: 测试更新服务器
@@ -99,7 +99,7 @@ curl http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros
 }
 ```
 
-### 步骤 5: 构建 VsSarosis 安装包 (可选，如需发布新版本)
+### 步骤 5: 构建 VsSaros 安装包 (可选，如需发布新版本)
 
 在本地 `saros-agents-client` 目录执行：
 
@@ -131,7 +131,7 @@ npm run gulp vscode-win32-x64-user-setup
 2. **访问更新 API**: `http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000`
    - 预期响应: JSON 包含版本信息
 
-3. **客户端自动检测更新** (安装并运行 VsSarosis 后)
+3. **客户端自动检测更新** (安装并运行 VsSaros 后)
    - 客户端每小时检查一次更新
    - 或手动触发: Help > Check for Updates
 

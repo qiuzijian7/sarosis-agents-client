@@ -1,7 +1,7 @@
 # Sarosis 商城使用说明
 
 > 版本：v0.1（mockup）｜ 更新：2026-06-24
-> 涵盖：商城网站 + vsSarosis 客户端集成 + 资源包格式
+> 涵盖：商城网站 + VsSaros 客户端集成 + 资源包格式
 
 ---
 
@@ -67,11 +67,11 @@
 
 ---
 
-## 三、vsSarosis 客户端集成使用
+## 三、VsSaros 客户端集成使用
 
 ### 3.1 配置
 
-在 vsSarosis 设置中配置（`settings.json`）：
+在 VsSaros 设置中配置（`settings.json`）：
 
 ```jsonc
 {
