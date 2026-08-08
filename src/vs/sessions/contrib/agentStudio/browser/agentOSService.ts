@@ -601,6 +601,9 @@ private readonly _sandboxGuard: SandboxGuard;
 	 */
 	private _workingMemoryCache: { key: string; content: string | null; at: number } | undefined;
 	private static readonly WORKING_MEMORY_TTL_MS = 30_000;
+	/** 新 session 跟踪：已注入过工作记忆的 agent::session 组合（LRU 500）。 */
+	private _injectedWorkingMemorySessions = new Set<string>();
+	private static readonly WORKING_MEMORY_SESSION_CACHE_MAX = 500;
 
 	public async _refreshWorkingMemoryContent(agentId?: string, sessionId?: string): Promise<void> {
 		if (!this._workingMemoryTagProvider) { return; }
@@ -645,13 +648,39 @@ private readonly _sandboxGuard: SandboxGuard;
 				return;
 			}
 			let joined = ctx.systemPrompt.trim();
+
+			// 2026-08-07：新 session 元信息模式——首条消息不注入具体记忆内容，
+			// 只注入「存在记忆 + 可用工具检索」的元信息标记，防止旧结论锚定新任务。
+			// 后续轮次恢复正常完整注入。
+			const isNewSession = !this._injectedWorkingMemorySessions.has(cacheKey);
+			if (isNewSession) {
+				// LRU 清理
+				if (this._injectedWorkingMemorySessions.size >= AgentOSService.WORKING_MEMORY_SESSION_CACHE_MAX) {
+					const first = this._injectedWorkingMemorySessions.values().next().value;
+					if (first !== undefined) { this._injectedWorkingMemorySessions.delete(first); }
+				}
+				this._injectedWorkingMemorySessions.add(cacheKey);
+				const blockCount = ctx?.contextBlocks ?? 0;
+				const tokens = ctx?.contextTokens ?? Math.ceil(joined.length / 3);
+				joined = [
+					'<!-- NEW SESSION: Historical memory context exists but is intentionally NOT shown',
+					'to avoid anchoring. The current task is NEW — do NOT assume previous conclusions apply.',
+					'Use memory_search / memory_recall tools to retrieve relevant memories if needed. -->',
+					'',
+					`存在历史记忆上下文（约 ${blockCount} 个策展块，~${tokens} tokens）。为避免旧结论锚定新任务，`,
+					'未直接展示内容。请使用 memory_search / memory_recall 工具按需检索相关记忆。',
+				].join('\n');
+				this._logService.info(`[AgentOS] New session — injected working-memory META-INFO only (agent=${aid}, ${blockCount} blocks, ~${tokens} tokens)`);
+			} else {
+				this._logService.info(`[AgentOS] Working memory injected from agentmemory (${joined.length} chars, agent=${aid}, cacheKey=${cacheKey})`);
+			}
+
 			const MAX_WORKING_MEMORY_CHARS = 6000;
 			if (joined.length > MAX_WORKING_MEMORY_CHARS) {
 				joined = joined.slice(0, MAX_WORKING_MEMORY_CHARS) + '\n…(truncated)';
 			}
 			this._workingMemoryTagProvider.workingMemoryContent = joined;
 			this._workingMemoryCache = { key: cacheKey, content: joined, at: Date.now() };
-			this._logService.info(`[AgentOS] Working memory injected from agentmemory (${joined.length} chars, agent=${aid}, cacheKey=${cacheKey})`);
 		} catch (err) {
 			this._workingMemoryTagProvider.workingMemoryContent = null;
 			this._workingMemoryCache = { key: cacheKey, content: null, at: Date.now() };
@@ -2061,6 +2090,7 @@ private readonly _sandboxGuard: SandboxGuard;
 		abortSignal?: AbortSignal,
 		worktreePath?: string,
 		askRouting?: IAskRoutingContext,
+		agentSessionId?: string,
 	): Promise<IToolResult> {
 		// 确保 dispatcher context 可用（_getEnabledTools 已构建，这是防御）
 		if (!this._lastDispatcherCtx || !this._lastAssembly) {
@@ -2134,7 +2164,7 @@ private readonly _sandboxGuard: SandboxGuard;
 			try {
 				return await executeWithRetryAndTimeout(
 					knownProvider, agentId ?? '',
-					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath },
+					{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath, sessionId: agentSessionId },
 					{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 				);
 			} catch (err) {
@@ -2149,7 +2179,7 @@ private readonly _sandboxGuard: SandboxGuard;
 				if (ptools.some(t => t.name === underlyingName)) {
 					return await executeWithRetryAndTimeout(
 						p, agentId ?? '',
-						{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath },
+						{ id: toolCallId, name: underlyingName, arguments: underlyingArgs, worktreePath, sessionId: agentSessionId },
 						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 					);
 				}
@@ -2215,7 +2245,7 @@ private readonly _sandboxGuard: SandboxGuard;
 	 *  - **[P0] Approval flow** (securityLevel-based user confirmation)
 	 *  - **[P1] Execution metadata** (timing, truncation, timeout info)
 	 */
-	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
+	private async _executeToolCalls(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): Promise<Array<{ toolCallId: string; content: any; success: boolean }>> {
 		const results: Array<{ toolCallId: string; content: any; success: boolean }> = [];
 
 		// ─── Dashboard 统计：工具调用计数 ──
@@ -2339,7 +2369,7 @@ private readonly _sandboxGuard: SandboxGuard;
 					bridgeArgs = repairToolArguments(toolCall.arguments || '') ?? {};
 				}
 				const bridgeResult = await this._executeBridgeTool(
-					toolCall.name, bridgeArgs, agentId, toolCall.id, abortSignal, worktreePath, askRouting,
+					toolCall.name, bridgeArgs, agentId, toolCall.id, abortSignal, worktreePath, askRouting, agentSessionId,
 				);
 				const limitedStr0 = safeStringifyToolResult(bridgeResult.content);
 				let finalContent0: unknown = bridgeResult.content;
@@ -2474,7 +2504,7 @@ private readonly _sandboxGuard: SandboxGuard;
 				try {
 					const result = await executeWithRetryAndTimeout(
 						_execKnown, agentId,
-						{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
+						{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath, sessionId: agentSessionId },
 						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 					);
 					this._executionTracker.complete(toolCall.id);
@@ -2518,7 +2548,7 @@ private readonly _sandboxGuard: SandboxGuard;
 							const result: IToolResult = await executeWithRetryAndTimeout(
 								provider,
 								agentId,
-								{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
+								{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath, sessionId: agentSessionId },
 								{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 							);
 
@@ -2600,7 +2630,7 @@ private readonly _sandboxGuard: SandboxGuard;
 	 *
 	 * Skipped entries (validation failures) are yielded synchronously up
 	 * front so the UI can mark them done immediately.
-	 */ public async *_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
+	 */ public async *_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean }, void, unknown> {
 		// v17: same as the serial path — push the worktree down to tool providers
 		// (e.g. BuiltinToolProvider) so sub-agents inherit it.
 		if (worktreePath) {
@@ -2773,7 +2803,7 @@ private readonly _sandboxGuard: SandboxGuard;
 			if (isBridgeTool(targetToolName)) {
 				this._logService.info(`[AgentOS] [parallel] Bridge tool "${targetToolName}" executing`);
 				const bridgeResult = await this._executeBridgeTool(
-					targetToolName, args, agentId, toolCall.id, abortSignal, worktreePath, askRouting,
+					targetToolName, args, agentId, toolCall.id, abortSignal, worktreePath, askRouting, agentSessionId,
 				);
 				const limitedStrB = safeStringifyToolResult(bridgeResult.content);
 				let finalContentB: unknown = bridgeResult.content;
@@ -2826,7 +2856,7 @@ private readonly _sandboxGuard: SandboxGuard;
 					const result: IToolResult = await executeWithRetryAndTimeout(
 						provider,
 						agentId,
-						{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath },
+						{ id: toolCall.id, name: targetToolName, arguments: args, worktreePath, sessionId: agentSessionId },
 						{ timeoutMs, parentSignal: abortSignal ?? this._loopAbortController?.signal },
 					);
 					// safeStringifyToolResult: guards against pathological payloads

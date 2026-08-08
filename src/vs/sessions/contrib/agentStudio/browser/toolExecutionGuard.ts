@@ -98,7 +98,9 @@ export async function executeWithTimeout(
 	const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
 
 	try {
-		const result = await provider.executeTool(agentId, toolCall, controller.signal);
+		// 串台防护：把 toolCall 上携带的 sessionId 透传给 provider.executeTool → 工具
+		// handler，使记忆写入事件能按 agentId::sessionId 精确路由到对应会话。
+		const result = await provider.executeTool(agentId, toolCall, controller.signal, toolCall.sessionId);
 		const executionTimeMs = Date.now() - startTime;
 
 		// 补充 metadata

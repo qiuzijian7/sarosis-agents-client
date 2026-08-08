@@ -22,10 +22,13 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 
 		// ── 解析查询参数 ──
 		let query = '';
+		let project = '';
 		try {
 			if (tc.args) {
-				const args = JSON.parse(tc.args);
-				query = args.query || args.pattern || args.q || args.keyword || args.name || '';
+			const args = JSON.parse(tc.args);
+			query = args.query || args.pattern || args.q || args.keyword || args.name || '';
+			// 多根工作区：LLM 可指定 project 限定搜索根，标题展示以区分同 query 不同根的卡片
+			project = (args.project || args.projects || '') || '';
 				// 工具特定的主检索字段（通用字段未命中时回退）
 				if (!query) {
 					switch (key) {
@@ -70,6 +73,12 @@ export abstract class AgentChatPanelSearchCard extends AgentChatPanelConfirmCard
 			title.textContent = `${baseLabel} · `;
 			const qSpan = append(title, $('span.search-title-query'));
 			qSpan.textContent = String(query).slice(0, 80);
+			// 多根工作区：同 query 不同 project 的并行搜索卡片，展示根名以区分
+			if (project) {
+				title.appendChild(document.createTextNode(' '));
+				const pSpan = append(title, $('span.search-title-project'));
+				pSpan.textContent = `[${String(project).slice(0, 40)}]`;
+			}
 		} else {
 			title.textContent = baseLabel;
 		}

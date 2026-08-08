@@ -71,7 +71,7 @@ export function registerMemoryTools(ctx: MemoryToolContext): void {
 			category: 'memory',
 			source,
 		},
-		handler: async (args, _signal, agentId) => {
+		handler: async (args, _signal, agentId, sessionId) => {
 			if (!agentId) { return [{ type: 'text', text: 'memory_remember error: agentId is required' }]; }
 			const content = args['content'] as string;
 			if (!content) { return [{ type: 'text', text: 'memory_remember error: content is required' }]; }
@@ -101,7 +101,7 @@ export function registerMemoryTools(ctx: MemoryToolContext): void {
 					content,
 					timestamp: Date.now(),
 					importance: 8,
-					metadata: { slot_id: slotId, source: 'llm_slot_edit' },
+					metadata: { slot_id: slotId, source: 'llm_slot_edit', ...(sessionId ? { sessionId } : {}) },
 				});
 					return [{ type: 'text', text: `Slot "${slotId}" updated: ${content.slice(0, 100)}` }];
 				} catch (err) {
@@ -120,7 +120,8 @@ export function registerMemoryTools(ctx: MemoryToolContext): void {
 				timestamp: Date.now(),
 				importance,
 				// importance/tags 一并放 metadata，供引擎 writeMemory 读取（working→coreAdd；原生类型→remember→mem:memories）
-				metadata: { importance, ...(tags ? { tags } : {}) },
+				// sessionId 由工具执行器透传，用于记忆写入事件按 agentId::sessionId 精确路由（防多开聊天框串台）。
+				metadata: { importance, ...(tags ? { tags } : {}), ...(sessionId ? { sessionId } : {}) },
 			};
 
 			try {

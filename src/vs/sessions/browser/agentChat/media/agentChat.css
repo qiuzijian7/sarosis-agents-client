@@ -4886,6 +4886,14 @@
 	font-weight: 500;
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.tool-card-search .search-title-project {
+	flex-shrink: 0;
+	padding: 0 5px; border-radius: 6px;
+	font-family: var(--monaco-monospace-font); font-size: 10px; font-weight: 600;
+	letter-spacing: 0.2px;
+	background: var(--void-bg-2, rgba(88,166,255,0.12));
+	color: var(--text-link-foreground, #58a6ff);
+}
 .tool-card-search .tool-duration {
 	font-size: 10px; color: var(--void-fg-4, #6e7681); flex-shrink: 0;
 }

@@ -103,6 +103,7 @@ import {
 	AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING,
 	AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING,
 	AGENT_STUDIO_LANGUAGE_SETTING,
+	AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING,
 	AGENT_STUDIO_SEND_KEY_SETTING,
 	AGENT_STUDIO_DEFAULT_PROVIDER_SETTING,
 	AGENT_STUDIO_DEFAULT_MODEL_SETTING,
@@ -367,9 +368,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// --- Preferences ---
 		[AGENT_STUDIO_LANGUAGE_SETTING]: {
 			type: 'string',
-			default: 'en',
+			default: 'zh-CN',
 			enum: ['en', 'zh-CN', 'ja'],
 			description: localize('agentStudio.preferences.language', "Display language."),
+		},
+		[AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING]: {
+			type: 'string',
+			default: 'auto',
+			enum: ['auto', 'match-user', 'en', 'zh-Hans', 'zh-Hant', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru', 'it'],
+			description: localize('agentStudio.preferences.responseLanguage', "Language the LLM should respond in. 'auto' uses the operating system's current language; 'match-user' follows the user's input language."),
 		},
 		[AGENT_STUDIO_SEND_KEY_SETTING]: {
 			type: 'string',

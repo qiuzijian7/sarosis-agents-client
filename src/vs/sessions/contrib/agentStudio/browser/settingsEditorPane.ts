@@ -23,8 +23,9 @@ import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { renderProviderSettings } from './providerSettingsRenderer.js';
 import {
-	AGENT_STUDIO_LANGUAGE_SETTING,
-	AGENT_STUDIO_SEND_KEY_SETTING,
+		AGENT_STUDIO_LANGUAGE_SETTING,
+		AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING,
+		AGENT_STUDIO_SEND_KEY_SETTING,
 	AGENT_STUDIO_BOT_NAME_SETTING,
 	AGENT_STUDIO_SHOW_TOKEN_USAGE_SETTING,
 	AGENT_STUDIO_NOTIFICATION_SOUND_SETTING,
@@ -93,10 +94,25 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 		fields: [
 			// Theme is rendered as a VSCode-native theme picker using IWorkbenchThemeService
 			{ key: 'workbench.colorTheme', label: '颜色主题', description: '选择 VS Code 颜色主题，应用于整个编辑器界面', type: 'vscode-theme' as any, default: '' },
-			{ key: AGENT_STUDIO_LANGUAGE_SETTING, label: '语言', description: '显示语言', type: 'select', default: 'en', options: [
+			{ key: AGENT_STUDIO_LANGUAGE_SETTING, label: '语言', description: '显示语言', type: 'select', default: 'zh-CN', options: [
 				{ value: 'en', label: 'English' },
 				{ value: 'zh-CN', label: '简体中文' },
 				{ value: 'ja', label: '日本語' },
+			] },
+			{ key: AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING, label: '回答语言', description: 'LLM 回复使用的语言。auto = 跟随操作系统当前语言；match-user = 跟随用户输入语言', type: 'select', default: 'auto', options: [
+				{ value: 'auto', label: '自动（操作系统当前语言）' },
+				{ value: 'match-user', label: '跟随用户输入语言' },
+				{ value: 'en', label: 'English' },
+				{ value: 'zh-Hans', label: '简体中文' },
+				{ value: 'zh-Hant', label: '繁體中文' },
+				{ value: 'ja', label: '日本語' },
+				{ value: 'ko', label: '한국어' },
+				{ value: 'fr', label: 'Français' },
+				{ value: 'de', label: 'Deutsch' },
+				{ value: 'es', label: 'Español' },
+				{ value: 'pt', label: 'Português' },
+				{ value: 'ru', label: 'Русский' },
+				{ value: 'it', label: 'Italiano' },
 			] },
 			{ key: AGENT_STUDIO_SEND_KEY_SETTING, label: '发送键', description: '发送消息的快捷键', type: 'select', default: 'enter', options: [
 				{ value: 'enter', label: 'Enter 发送，Shift+Enter 换行' },

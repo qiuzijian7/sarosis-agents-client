@@ -17,6 +17,7 @@ export const AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING = 'sessions.agentSt
 // Configuration keys — Preferences
 export const AGENT_STUDIO_THEME_SETTING = 'sessions.agentStudio.preferences.theme';
 export const AGENT_STUDIO_LANGUAGE_SETTING = 'sessions.agentStudio.preferences.language';
+export const AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING = 'sessions.agentStudio.preferences.responseLanguage';
 export const AGENT_STUDIO_SEND_KEY_SETTING = 'sessions.agentStudio.preferences.sendKey';
 export const AGENT_STUDIO_DEFAULT_PROVIDER_SETTING = 'sessions.agentStudio.preferences.defaultProvider';
 export const AGENT_STUDIO_DEFAULT_MODEL_SETTING = 'sessions.agentStudio.preferences.defaultModel';

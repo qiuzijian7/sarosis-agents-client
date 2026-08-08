@@ -2842,7 +2842,7 @@ interface ITurnContext {
 				const _delegateSubset = _delegateSplit.delegates;
 				host._logService.info(`[AgentOS] [parallel] delegate split: ${_headCalls.length} serial + ${_delegateSubset.length} delegate_task parallel`);
 				// 先行串行执行非 delegate 工具（复用串行路径的沙箱确认 + 结果后处理逻辑）。
-				const headSerial = await host._executeToolCalls(_headCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting);
+				const headSerial = await host._executeToolCalls(_headCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting, request.sessionId);
 				for (const toolResult of headSerial) {
 					const sr = toolResult as unknown as { toolCallId: string; content: any; success: boolean; metadata?: { sandboxViolation?: ISandboxViolationInfo } };
 					let finalResult = toolResult;
@@ -2881,7 +2881,7 @@ interface ITurnContext {
 						// 未完成的 tool 用 success=false 标记（对齐 OpenCode Deferred settle 模式）。
 						const _executedToolIds = new Set<string>();
 						try {
-					for await (const toolResult of host._executeToolCallsParallelStreaming(_parallelCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting)) {
+					for await (const toolResult of host._executeToolCallsParallelStreaming(_parallelCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting, request.sessionId)) {
 					_executedToolIds.add(toolResult.toolCallId);
 					toolResults.push(toolResult);
 					// R1: per-tool-call observe (对齐 agentmemory PostToolUse Hook → mem::observe)
@@ -2905,7 +2905,7 @@ interface ITurnContext {
 					} else {
 						// Serial path: keep old behavior (each tool naturally finishes
 						// sequentially so head-of-line blocking is not an issue here).
-						const serial = await host._executeToolCalls(localExecutedCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting);
+						const serial = await host._executeToolCalls(localExecutedCalls, request.agentId, request.worktreePath, turnAbortSignal, askRouting, request.sessionId);
 						for (const toolResult of serial) {
 							// ─── 沙箱确认（完整暂停等待）──────────────────────────
 							// 工具因安全沙箱限制失败时，暂停 agent loop，向原生 chat

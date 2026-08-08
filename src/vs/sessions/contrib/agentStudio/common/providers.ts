@@ -612,17 +612,20 @@ export interface IMemoryProvider {
 
 	/**
 	 * 订阅记忆写入成功事件。
-	 * @param handler 回调，接收 agentId、memoryId 和可选的 noticeId（来自 entry.metadata.noticeId）
+	 * @param handler 回调，接收 agentId、memoryId 和可选的 noticeId（来自 entry.metadata.noticeId）。
+	 * 串台防护（2026-08）：data 额外携带 sessionId（来自 entry.metadata.sessionId），
+	 * 消费方可据此按 agentId::sessionId 精确路由到对应会话，避免多开聊天框同 agent 不同
+	 * session 时记忆卡片串台。
 	 * @returns 取消订阅函数
 	 */
-	onMemoryWritten?(handler: (agentId: string, data: { memoryId: string; noticeId?: string; memoryType?: string; contentLength?: number }) => void): () => void;
+	onMemoryWritten?(handler: (agentId: string, data: { memoryId: string; noticeId?: string; memoryType?: string; contentLength?: number; sessionId?: string }) => void): () => void;
 
 	/**
 	 * 订阅记忆写入失败事件。
 	 * @param handler 回调，接收 agentId、错误信息和可选的 noticeId
 	 * @returns 取消订阅函数
 	 */
-	onMemoryWriteFailed?(handler: (agentId: string, data: { noticeId?: string; error: string; memoryType?: string }) => void): () => void;
+	onMemoryWriteFailed?(handler: (agentId: string, data: { noticeId?: string; error: string; memoryType?: string; sessionId?: string }) => void): () => void;
 }
 
 /**
@@ -804,7 +807,7 @@ export interface IToolProvider {
 	readonly name: string;
 
 	listTools(agentId: string): Promise<IToolDefinition[]>;
-	executeTool(agentId: string, toolCall: IToolCall, signal?: AbortSignal): Promise<IToolResult>;
+	executeTool(agentId: string, toolCall: IToolCall, signal?: AbortSignal, sessionId?: string): Promise<IToolResult>;
 
 	/**
 	 * 启用一个工具
@@ -906,6 +909,14 @@ export interface IToolCall {
 	 * 可选：未指定时工具按 provider 默认工作区执行。
 	 */
 	readonly worktreePath?: string;
+	/**
+	 * 当前工具调用所属的会话 sessionId（agentId::sessionId 的 sessionId 部分）。
+	 *
+	 * 用途：记忆写入类工具（memory_remember）据此把 sessionId 写入 entry.metadata，
+	 * 使 memory_written 事件能按 agentId::sessionId 精确路由到对应聊天框，避免多开
+	 * 聊天框（同 agentId 不同 session）时记忆卡片串台。由 AgentOS 在执行前注入。
+	 */
+	readonly sessionId?: string;
 }
 
 export interface IToolResult {

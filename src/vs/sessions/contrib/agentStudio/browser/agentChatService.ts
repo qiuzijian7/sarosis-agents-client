@@ -100,7 +100,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * 并发流式输出。
 	 */
 	private readonly _activeOnDeltas = new Map<string, (delta: IChatStreamDelta) => void>();
-	/** 每个 streamKey 的创建时间，用于在内存事件桥接时选出"最近一次"流。 */
+	/** 每个 streamKey 的创建时间，用于在内存事件桥接时选出"最近一次"流（兜底）。 */
 	private readonly _streamCreatedAt = new Map<string, number>();
 	/** provider 事件取消订阅函数 */
 	private _memoryEventUnsub: (() => void) | null = null;
@@ -1626,6 +1626,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 将真实的写入结果转发给 onDelta，使 UI 卡片从 pending → saved/failed。
 		// 替代旧的 fire-and-forget + 假"已保存"信号模式。
 		// 并发修复：每个 streamKey 独立注册回调，而非覆盖单例。
+		// 串台防护：事件 data 携带 sessionId（由写入方写入 entry.metadata.sessionId），
+		// _getOnDeltaForAgent 优先按 agentId::sessionId 精确命中对应 session 的 onDelta，
+		// 仅在 sessionId 缺失时退化为"同 agent 最近一次活跃流"，避免多开聊天框串台。
 		this._activeOnDeltas.set(streamKey, onDelta);
 		this._streamCreatedAt.set(streamKey, Date.now());
 		this._ensureMemoryEventBridge();
@@ -2261,7 +2264,9 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		}
 
 		const unsubWritten = provider.onMemoryWritten((agentId, data) => {
-			const onDelta = this._getOnDeltaForAgent(agentId);
+			// 串台防护：优先按 data.sessionId 精确路由到对应会话（agentId::sessionId）；
+			// sessionId 缺失时退化为"同 agent 最近活跃流"。
+			const onDelta = this._getOnDeltaForAgent(agentId, data.sessionId);
 			if (!onDelta) {
 				return;
 			}
@@ -2325,7 +2330,8 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		});
 
 		const unsubFailed = provider.onMemoryWriteFailed?.((_agentId, data) => {
-			const onDelta = this._getOnDeltaForAgent(_agentId);
+			// 串台防护：按 data.sessionId 精确路由（缺失时退化为最近活跃流）。
+			const onDelta = this._getOnDeltaForAgent(_agentId, data.sessionId);
 			if (onDelta && data.noticeId) {
 				onDelta({
 					type: 'memory_write_failed' as any,
@@ -2365,17 +2371,26 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	}
 
 	/**
-	 * 并发路由：给定 agentId，返回该 agent 最近一次活跃流的 onDelta 回调。
+	 * 并发路由：给定 agentId（及可选 sessionId），返回应接收该 memory 事件的 onDelta 回调。
 	 *
-	 * 内存 provider 的 onMemoryWritten/onMemoryWriteFailed 是全局事件，不直接携带
-	 * sessionId，因此按 agentId 前缀匹配所有 streamKey（agentId 或 agentId::sessionId），
-	 * 选取创建时间最新的一条。当两个 chat 属于不同 agent 时路由无歧义；同 agent 多会话时
-	 * 路由到最近发起的流（memory 事件通常紧跟对应生成，可接受）。
+	 * 内存 provider 的 onMemoryWritten/onMemoryWriteFailed 是全局事件。路由优先级：
+	 *   1. 若传入 sessionId → 精确按 agentId::sessionId 命中对应会话的 onDelta（不串台）。
+	 *      同 agent 多 session 并发时，A 的记忆写入结果只回 A 的聊天框。
+	 *   2. 否则退化为"同 agent 最近一次活跃流"（sessionId 缺失的事件，如
+	 *      memory_extracted / skill_extracted，仍走此兜底）。
 	 */
-	private _getOnDeltaForAgent(agentId: string): ((delta: IChatStreamDelta) => void) | undefined {
+	private _getOnDeltaForAgent(agentId: string, sessionId?: string): ((delta: IChatStreamDelta) => void) | undefined {
 		if (!agentId) {
 			return undefined;
 		}
+		// 1) 按 sessionId 精确路由（sessionId 由写入方写入 entry.metadata.sessionId 并透传）
+		if (sessionId) {
+			const key = `${agentId}::${sessionId}`;
+			if (this._activeOnDeltas.has(key)) {
+				return this._activeOnDeltas.get(key);
+			}
+		}
+		// 2) 退化：同 agent 最近一次活跃流
 		let bestKey: string | undefined;
 		let bestTime = -1;
 		for (const [key, time] of this._streamCreatedAt) {

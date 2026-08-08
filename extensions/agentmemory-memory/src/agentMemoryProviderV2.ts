@@ -196,11 +196,18 @@ export class AgentMemoryProviderV2 {
 		if (ok) {
 			const noticeId = entry.metadata?.['noticeId'] as string | undefined;
 			const memoryType = (entry.metadata?.['memoryType'] as string) ?? entry.type;
+			// 串台防护：把 entry 携带的 sessionId 一并透传给 memory_written 事件，
+			// 使消费方（agentChatService）能按 agentId::sessionId 精确路由到对应会话，
+			// 而非仅靠"同 agent 最近活跃流"兜底（解决多开聊天框、相同 agentId 不同
+			// session 时记忆卡片串台）。sessionId 由写入方写入 entry.metadata。
+			const sessionId = (entry.metadata?.['sessionId'] as string | undefined)
+				?? (entry.metadata?.['session_id'] as string | undefined);
 			this._emit('memory_written', agentId, {
 				memoryId: entry.id ?? '',
 				noticeId,
 				memoryType,
 				contentLength: entry.content?.length ?? 0,
+				sessionId,
 			});
 			this._auditLog.record('write', agentId, [entry.id ?? ''], { type: entry.type, memoryType });
 			// Plan C: 索引更新由网关在收到 KV PUT 时自动增量完成，renderer 不再持有索引。

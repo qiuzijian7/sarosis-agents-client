@@ -19,7 +19,9 @@ import { IWorkflowExecutionService } from '../common/workflowExecutionService.js
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import type { AgentBinding } from '../../../common/agentStudioTypes.js';
-import { AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING } from '../common/constants.js';
+import { AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING, AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING } from '../common/constants.js';
+import { buildResponseLanguageDirective } from '../common/responseLanguage.js';
+import { language as platformLanguage } from '../../../../base/common/platform.js';
 import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX, getStrategyGuidance } from '../common/chatModeConfig.js';
 import { getParadigmOverride } from '../common/paradigmOverride.js';
 import { joinSections, composeFrozenPrefix, composeVolatileMessage, buildCompactToolSection, type ISystemPromptTiers } from '../common/systemPromptComposer.js';
@@ -612,10 +614,25 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				stableParts.push(strategyGuidance.join('\n'));
 			}
 
-			// GLOBAL_SYSTEM_SUFFIX（保密 / 安全 / 身份边界）
-			if (GLOBAL_SYSTEM_SUFFIX) {
-				stableParts.push(GLOBAL_SYSTEM_SUFFIX);
+		// GLOBAL_SYSTEM_SUFFIX（保密 / 安全 / 身份边界）
+		if (GLOBAL_SYSTEM_SUFFIX) {
+			stableParts.push(GLOBAL_SYSTEM_SUFFIX);
+		}
+
+		// ── 回答语言限制（全局边界规则，stable 层）──
+		// 默认 'auto' = 操作系统当前语言（renderer navigator.languages，等价于 void 的
+		// app.getPreferredSystemLanguages()）；子代理通过继承 request.systemPrompt 自动获得，
+		// 保证语言一致性（Hermes 风格）。
+		try {
+			const responseLang = this._configurationService.getValue<string>(AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING);
+			// continue 风格：优先使用平台 UI 语言（等价于 vscode.env.language / platform.language）
+			const langDirective = buildResponseLanguageDirective(responseLang, platformLanguage);
+			if (langDirective) {
+				stableParts.push(langDirective);
 			}
+		} catch (error) {
+			this._logService.warn('[AgentDriver] Failed to inject response language directive:', error);
+		}
 
 			// ── Persona Memory（用户硬事实，volatile 层）──
 			// 与 L0/L1 自动召回互补：用户显式设定、永不衰减。

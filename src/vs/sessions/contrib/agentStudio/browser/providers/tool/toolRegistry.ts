@@ -10,7 +10,7 @@ import { IToolDefinition, IToolResultContent } from '../../../common/providers.j
 import { getToolsetForTool } from '../../../common/toolsetConfig.js';
 
 type ToolHandlerResult = IToolResultContent[] | { content: IToolResultContent[]; details?: Record<string, unknown> };
-type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string) => Promise<ToolHandlerResult>;
+type ToolHandler = (args: Record<string, unknown>, signal?: AbortSignal, agentId?: string, sessionId?: string) => Promise<ToolHandlerResult>;
 
 export interface IToolDescriptor {
 	readonly definition: IToolDefinition;

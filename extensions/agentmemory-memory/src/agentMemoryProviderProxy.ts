@@ -124,6 +124,9 @@ export class AgentMemoryProviderProxy {
 		const ok = await this._call('writeMemory', agentId, entry);
 		const noticeId = entry?.metadata?.['noticeId'] as string | undefined;
 		const memoryType = (entry?.metadata?.['memoryType'] as string) ?? entry?.type;
+		// 串台防护：透传 entry.metadata.sessionId，使消费方按 agentId::sessionId 精确路由。
+		const sessionId = (entry?.metadata?.['sessionId'] as string | undefined)
+			?? (entry?.metadata?.['session_id'] as string | undefined);
 		if (ok) {
 			// 网关 host.mjs 对 void 方法统一回 { ok: true } —— ok 为真即调用成功，
 			// 本地补发 memory_written（网关宿主引擎的事件到不了 renderer，无 SSE 通道）。
@@ -133,6 +136,7 @@ export class AgentMemoryProviderProxy {
 				noticeId,
 				memoryType,
 				contentLength: entry?.content?.length ?? 0,
+				sessionId,
 			});
 			void this._flushWriteQueue(); // 网关恢复时顺带重放积压
 		} else {
@@ -143,6 +147,7 @@ export class AgentMemoryProviderProxy {
 				noticeId,
 				memoryType,
 				error: 'memory gateway unavailable — queued for retry',
+				sessionId,
 			});
 		}
 	}
@@ -182,11 +187,14 @@ export class AgentMemoryProviderProxy {
 				this._writeQueue.shift();
 				const entry = item.entry;
 				console.log(`[AgentMemory] writeMemory replayed ok: agent=${item.agentId} len=${entry?.content?.length ?? 0}`);
+				const replaySessionId = (entry?.metadata?.['sessionId'] as string | undefined)
+					?? (entry?.metadata?.['session_id'] as string | undefined);
 				this._emit('memory_written', item.agentId, {
 					memoryId: entry?.id ?? '',
 					noticeId: entry?.metadata?.['noticeId'] as string | undefined,
 					memoryType: (entry?.metadata?.['memoryType'] as string) ?? entry?.type,
 					contentLength: entry?.content?.length ?? 0,
+					sessionId: replaySessionId,
 				});
 			}
 		} finally {

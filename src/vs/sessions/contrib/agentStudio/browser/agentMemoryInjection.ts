@@ -150,7 +150,41 @@ export async function* injectMemoryContext(
 			// 「最近触碰」是每轮可变语义，放策展块内既污染一次性注入、又因
 			// stash 每轮清空而从未生效（死代码，见 doc §12 F3）。
 
-			if (blocks.length > 0) {
+			// 2026-08-07：新 session 元信息模式——首条消息不注入具体记忆内容，
+			// 只注入「存在记忆 + 可用工具检索」的元信息标记，防止旧结论锚定新任务。
+			// 后续轮次恢复正常完整注入。planModePrefix 保留（同 session 的 plan 模式仍需）。
+			const isNewSession = !deps.injectedSessions.has(sessionKey);
+
+			if (isNewSession && blocks.length > 0) {
+				// 新 session 且有记忆上下文：注入元信息而非具体内容
+				const blockCount = memoryContext.contextBlocks ?? blocks.length;
+				const tokens = memoryContext.contextTokens ?? Math.ceil(blocks.join('\n\n').length / 3);
+				const metaInfo = [
+					'<!-- NEW SESSION: Historical memory context exists but is intentionally NOT shown',
+					'to avoid anchoring. The current task is NEW — do NOT assume previous conclusions apply.',
+					'Use memory_search / memory_recall tools to retrieve relevant memories if needed. -->',
+					'',
+					`存在历史记忆上下文（约 ${blockCount} 个策展块，~${tokens} tokens）。为避免旧结论锚定新任务，`,
+					'未直接展示内容。请使用 memory_search / memory_recall 工具按需检索相关记忆。',
+				].join('\n');
+				const result = `<agentmemory-context>\n${metaInfo}\n</agentmemory-context>`;
+				let insertIdx = 0;
+				for (let i = 0; i < messages.length; i++) {
+					if (messages[i]?.role === 'system') { insertIdx = i + 1; }
+					else { break; }
+				}
+				messages = insertMessages(messages, insertIdx, { role: 'system', content: result });
+				deps.injectedSessions.add(sessionKey);
+				deps.logService.info(
+					`[AgentOS] New session — injected memory META-INFO only (${blockCount} blocks, ~${tokens} tokens, agent=${request.agentId})`
+				);
+				yield {
+					type: 'memory_injected',
+					content: '新会话：已注入记忆元信息（内容未展示，可用工具检索）',
+					metadata: { strategy, newSession: true, contextBlocks: blockCount, contextTokens: tokens },
+				} as any;
+			} else if (blocks.length > 0) {
+				// 后续轮次：正常完整注入
 				// 优先用引擎返回的真实预算占用（含 header/footer），缺失时回退字符粗估
 				const usedTokens = memoryContext.contextTokens ?? Math.ceil(blocks.join('\n\n').length / 3);
 				// Plan 模式下为记忆上下文加前缀警告：历史结论不应阻止新规划

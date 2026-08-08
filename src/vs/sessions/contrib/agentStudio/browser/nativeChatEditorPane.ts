@@ -97,6 +97,17 @@ export class NativeChatEditorPane extends EditorPane {
 	 */
 	private static readonly _sharedExternalSendSessions = new Set<string>();
 
+	/**
+	 * 共享本地发送会话状态：防止「多开聊天框、相同 agentId 不同 session」时串台。
+	 * 当某 pane 通过自身输入框发起本地发送（_sendMessageInternal）时，会将本次
+	 * sessionId 加入此集合；其它同 agent 的 pane 在 onDidStreamDelta 监听器里
+	 * 见到属于该 session 的广播 delta 会直接忽略（流式内容已由发起 pane 自己的
+	 * onDelta 渲染），从而避免把 A 会话的 LLM 输出渲染进 B 会话的聊天框。
+	 * Key = sessionId（无前缀，与 delta 事件 sessionId 对齐），不含 agentId。
+	 * 发送开始 → add；done/error → delete。
+	 */
+	private static readonly _sharedLocalSendSessions = new Set<string>();
+
 	private _isInitialized = false;
 	private _defaultAgentSelected = false;
 	private _currentAgentId: string | null = null;
@@ -442,9 +453,11 @@ export class NativeChatEditorPane extends EditorPane {
 		const PanelCtor = useCliPanel ? XtermCliPanel : AgentChatPanel;
 		this._chatPanel = this._register(new PanelCtor({
 			onSendMessage: (this._sendMessageInternal = async (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[]) => {
-				// 注：防重入逻辑已下移到 AgentChatPanel._handleSendMessage（流式时入队，非流式时直接发送）
-				// 此处不再拦截，让 Panel 的队列机制处理并发发送。
-				try {
+			// 注：防重入逻辑已下移到 AgentChatPanel._handleSendMessage（流式时入队，非流式时直接发送）
+			// 此处不再拦截，让 Panel 的队列机制处理并发发送。
+			// 跨 pane 串台防护用的 sessionId（在 finally 中统一释放，避免本地发送异常时泄漏标记）。
+			let sentSessionId: string | null = null;
+			try {
 					// 会话只读（多开同会话双开）：锁被另一实例持有时拦截发送
 					if (this._sessionReadOnly) {
 						this._notificationService.notify({
@@ -512,6 +525,11 @@ export class NativeChatEditorPane extends EditorPane {
 					// sees a "正在思考..." indicator while waiting for the first LLM delta.
 					this._initStreamingMessage();
 
+					// 标记本 session 为「本地发送中」，供其它同 agent 的 pane 在
+					// onDidStreamDelta 监听器里忽略其流式 delta（防止多开聊天框串台）。
+					sentSessionId = sessionId;
+					NativeChatEditorPane._sharedLocalSendSessions.add(sessionId);
+
 					await this._chatService.sendMessage(
 						agentId,
 						fullText,
@@ -539,6 +557,12 @@ export class NativeChatEditorPane extends EditorPane {
 					this._isSending = false;
 					this._isExternalSend = false;
 					this._resetStreamingMessage();
+				} finally {
+					// 本地发送结束（正常或异常）：释放该 session 的串台防护标记，
+					// 让其它同 agent 的 pane 恢复对该 session 流式 delta 的监听。
+					if (sentSessionId) {
+						NativeChatEditorPane._sharedLocalSendSessions.delete(sentSessionId);
+					}
 				}
 			}),
 			onEditMessage: (messageId: string, newText: string) => {
@@ -1348,6 +1372,12 @@ export class NativeChatEditorPane extends EditorPane {
 		//   - error → finalize + setSending(false) + reset
 		this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }) => {
 			if (agentId !== this._currentAgentId) { return; }
+			// 串台防护：本地发送（用户在某个聊天框点击发送）的流式 delta 由发起
+			// pane 自身的 onDelta 处理；其它同 agent、不同 session 的 pane 必须忽略，
+			// 否则会把 A 会话的 LLM 输出渲染进 B 会话的聊天框（多开聊天框串台根因）。
+			// 看板等外部发送不在此集合内，仍走下方 _sharedExternalSendSessions claim 逻辑。
+			const localKey = sessionId || `__nosession_${agentId}`;
+			if (NativeChatEditorPane._sharedLocalSendSessions.has(localKey)) { return; }
 			if (!this._chatPanel) { return; }
 			if (!delta) { return; }
 

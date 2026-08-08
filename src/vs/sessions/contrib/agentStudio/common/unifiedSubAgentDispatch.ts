@@ -27,6 +27,7 @@ import type { IAgentTurnRequest, IChatStreamDelta, IChatMessage, IModelSelection
 import { SubagentTokenCollector, type SubagentTokenUsage } from './subagentTokenCollector.js';
 import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX_SUBAGENT } from './chatModeConfig.js';
 import { composeFrozenPrefix, joinSections } from './systemPromptComposer.js';
+import { buildResponseLanguageDirective } from './responseLanguage.js';
 import { gateResult, extractAcceptanceCriteria, type ISubAgentStructuredResult, type ICompletionGateContext } from './completionGate.js';
 import { injectReturnFormatIntoTask } from './subAgentReturnFormat.js';
 import { wrapUserQuery } from './userQuery.js';
@@ -1942,11 +1943,16 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 	// agentId 驱动（2026-07-27）：委派 / plan_explore / pre-loop 解析到内置 Agent 后，
 	// 直接用其真实 systemPrompt 作为 stable 主体，替代按 type 选取的通用折中提示词。
 	const stablePrompt = subAgent.options.systemPrompt || typePrompts[subAgent.type] || typePrompts[SubAgentType.General];
+	// 回答语言限制（与父代理一致，Hermes 风格）：子代理默认跟随操作系统当前语言。
+	// 子代理无 configurationService，统一走 'auto'（OS 检测）；父代理显式覆盖场景经
+	// forkContext 路径复用父 frozen prompt 已含该指令。
+	const responseLangDirective = buildResponseLanguageDirective(undefined);
 	return composeFrozenPrefix({
 		stable: joinSections(
 			stablePrompt,
 			GLOBAL_SYSTEM_PREFIX_SUBAGENT,
 			GLOBAL_SYSTEM_SUFFIX,
+			responseLangDirective,
 		),
 			context: '',
 			volatile: '',
