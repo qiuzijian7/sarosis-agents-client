@@ -32,7 +32,7 @@ import type { OrchestrationPlan, PlanTask, Agent, ChatMessage } from '../common/
 import { OrchestrationPlanStatus, PlanTaskStatus, TaskBoardStatus, TaskSource } from '../common/types.js';
 import { topologicalSort, getReadyTasks } from '../common/taskDag.js';
 import { TaskReviewStatus, TaskComment } from '../../../common/agentStudioTypes.js';
-import { AGENT_STUDIO_DATA_PATH_SETTING, AGENT_STUDIO_DEFAULT_AGENT_SETTING } from '../common/constants.js';
+import { AGENT_STUDIO_DATA_PATH_SETTING, AGENT_STUDIO_DEFAULT_AGENT_SETTING, AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING, AGENT_STUDIO_LANGUAGE_SETTING } from '../common/constants.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { TaskDecomposer } from './taskDecomposer.js';
 import { AgentFactory } from './agentFactory.js';
@@ -165,6 +165,18 @@ export class TaskOrchestrationService extends Disposable implements ITaskOrchest
 					.map(t => ({ id: t.id, status: t.status as string, summary: t.title }));
 			},
 		);
+		// 回答语言：完全由 Agent Studio 设置决定（不探测操作系统语言）。'auto' 回退到
+		// sessions.agentStudio.preferences.language（默认 zh-CN）。跟随设置变更实时更新。
+		this._subAgentDispatch.responseLanguageSetting = this.configurationService.getValue<string>(AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING) ?? 'auto';
+		this._subAgentDispatch.languageSetting = this.configurationService.getValue<string>(AGENT_STUDIO_LANGUAGE_SETTING) ?? 'zh-CN';
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING)) {
+				this._subAgentDispatch.responseLanguageSetting = this.configurationService.getValue<string>(AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING) ?? 'auto';
+			}
+			if (e.affectsConfiguration(AGENT_STUDIO_LANGUAGE_SETTING)) {
+				this._subAgentDispatch.languageSetting = this.configurationService.getValue<string>(AGENT_STUDIO_LANGUAGE_SETTING) ?? 'zh-CN';
+			}
+		}));
 		this._outputParser = new StructuredOutputParser(logService);
 		this._repoOverviewProvider = new RepoOverviewProvider(fileService, logService);
 		this._startTimeoutMonitor();

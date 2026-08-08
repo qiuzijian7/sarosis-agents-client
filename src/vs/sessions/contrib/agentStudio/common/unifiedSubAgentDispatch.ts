@@ -696,6 +696,11 @@ export interface SubAgentStatusReport {
  * 4. Permission-aware tool filtering
  */
 export class UnifiedSubAgentDispatch {
+	/** 回答语言设置（sessions.agentStudio.preferences.responseLanguage），由调用方注入；undefined → 'auto'。 */
+	public responseLanguageSetting?: string;
+	/** 显示语言设置（sessions.agentStudio.preferences.language），undefined → 'zh-CN'；'auto' 以此为回退，不探测操作系统语言。 */
+	public languageSetting?: string;
+
 	private readonly _activeSubAgents = new Map<string, SubAgentInstance>();
 	private readonly _parentBudget: IterationBudget;
 	private readonly _maxConcurrent: number;
@@ -1943,10 +1948,10 @@ TOTAL BUDGET: ~30 calls. Exceeding this wastes time and LLM tokens.
 	// agentId 驱动（2026-07-27）：委派 / plan_explore / pre-loop 解析到内置 Agent 后，
 	// 直接用其真实 systemPrompt 作为 stable 主体，替代按 type 选取的通用折中提示词。
 	const stablePrompt = subAgent.options.systemPrompt || typePrompts[subAgent.type] || typePrompts[SubAgentType.General];
-	// 回答语言限制（与父代理一致，Hermes 风格）：子代理默认跟随操作系统当前语言。
-	// 子代理无 configurationService，统一走 'auto'（OS 检测）；父代理显式覆盖场景经
+	// 回答语言限制（与父代理一致，Hermes 风格）：'auto' 跟随 Agent Studio 显示语言设置
+	//（this.languageSetting，默认 zh-CN），不探测操作系统语言。父代理显式覆盖场景经
 	// forkContext 路径复用父 frozen prompt 已含该指令。
-	const responseLangDirective = buildResponseLanguageDirective(undefined);
+	const responseLangDirective = buildResponseLanguageDirective(this.responseLanguageSetting, this.languageSetting);
 	return composeFrozenPrefix({
 		stable: joinSections(
 			stablePrompt,

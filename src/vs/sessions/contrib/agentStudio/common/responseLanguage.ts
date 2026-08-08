@@ -6,15 +6,15 @@
 /**
  * LLM 回答语言限制。
  *
- * 设计参考（兄弟项目源码）：
- *  - mimo-code: renderer 侧 `navigator.languages` 检测 OS 语言（packages/desktop/src/renderer/i18n/index.ts
- *    `detectLocale()`），prompt 用 "Match the user's language unless instructed otherwise"。
- *  - void (VS Code fork): 主进程 `app.getPreferredSystemLanguages()?.[0]` 作为 osLocale（src/main.ts）。
- *  - Hermes-Agent: 语言通过 prompt / system message 注入；子代理需继承父语言（delegate_tool 注释）。
- *  - continue: 读取 `vscode.env.language`。
+ * 设计原则：回答语言完全由 Agent Studio 的设置决定，**不**探测操作系统语言。
+ *  - `sessions.agentStudio.preferences.responseLanguage` 设为具体语言（如 zh-Hans）时直接使用；
+ *  - 设为 `auto` 时，跟随 `sessions.agentStudio.preferences.language`（Agent Studio 显示语言，
+ *    默认 zh-CN），由调用方（agentDriverService / taskOrchestrationService）传入，而非读取
+ *    navigator.languages / platform.language 等操作系统/UI 语言。
+ *  - 设为 `match-user` 时，跟随用户当轮输入语言。
  *
- * 本实现采用 mimo-code/void 的 renderer 检测法（Electron Chromium 下 `navigator.languages`
- * 即 OS 首选语言，等价于 void 的 `app.getPreferredSystemLanguages()`），无需 IPC。
+ * 参考：Hermes-Agent / mimo-code 通过 prompt 注入语言；continue 读 vscode.env.language——
+ * 但本实现以 Agent Studio 显式设置为准，避免与操作系统语言产生预期差异。
  */
 
 /** 归一化语言码 → 自然语言名称（用于 prompt 指令）。 */
@@ -36,50 +36,6 @@ export const LANGUAGE_NAMES: Record<string, string> = {
 export const MATCH_USER_LANGUAGE = 'match-user';
 
 /**
- * 检测操作系统当前设置的语言。
- *
- * 优先级（参考 continue 读 vscode.env.language 的做法）：
- *  1. caller 显式传入（如 agentDriverService 从 platform.language 注入）
- *  2. renderer navigator.languages（mimo-code detectLocale / void getPreferredSystemLanguages 等价法）
- *  3. 回退 'en'
- *
- * 返回归一化语言码（en / zh-Hans / zh-Hant / ja / ko / fr / de / es / pt / ru / it）。
- */
-export function detectOSLanguage(overrideLang?: string): string {
-	// continue 风格：优先使用 VS Code 平台 UI 语言（等价于 vscode.env.language）
-	if (overrideLang) {
-		return normalizeLangCode(overrideLang);
-	}
-
-	// mimo-code / void 风格：renderer navigator.languages
-	if (typeof navigator !== 'object' || !navigator) {
-		return 'en';
-	}
-	const languages: readonly string[] =
-		(navigator.languages && navigator.languages.length > 0)
-			? navigator.languages
-			: (navigator.language ? [navigator.language] : []);
-	for (const raw of languages) {
-		if (!raw) { continue; }
-		const code = normalizeLangCode(raw);
-		if (code !== 'en') { return code; }
-	}
-	return 'en';
-}
-
-/**
- * 解析最终生效的语言码。
- * @param setting 用户设置值（'auto' | 'match-user' | 'en' | 'zh-Hans' | 'zh-Hant' | 'ja' | ...）
- * @param osLanguage 平台 UI 语言（等价于 vscode.env.language / platform.language），传 undefined 则自动检测
- */
-export function resolveResponseLanguageCode(setting: string | undefined, osLanguage?: string): string {
-	if (!setting || setting === 'auto') {
-		return detectOSLanguage(osLanguage);
-	}
-	return setting;
-}
-
-/**
  * BCP-47 / VS Code 语言码 → 归一化码。
  */
 function normalizeLangCode(raw: string): string {
@@ -98,13 +54,29 @@ function normalizeLangCode(raw: string): string {
 }
 
 /**
+ * 解析最终生效的语言码。
+ * @param setting 用户设置值（'auto' | 'match-user' | 'en' | 'zh-Hans' | 'zh-Hant' | 'ja' | ...）
+ * @param fallbackLanguage 当 setting='auto' 时使用的语言（由调用方传入，
+ *        例如 Agent Studio 的显示语言设置 sessions.agentStudio.preferences.language，默认 zh-CN）。
+ *        传 undefined / 'auto' 时回退 'en'。不再探测操作系统语言。
+ */
+export function resolveResponseLanguageCode(setting: string | undefined, fallbackLanguage?: string): string {
+	if (!setting || setting === 'auto') {
+		// 'auto' = 跟随 Agent Studio 显示语言设置（由调用方提供），不再探测操作系统语言
+		const fb = (fallbackLanguage && fallbackLanguage !== 'auto') ? normalizeLangCode(fallbackLanguage) : 'en';
+		return fb;
+	}
+	return setting;
+}
+
+/**
  * 构造「回答语言」系统提示词段落（## Response Language）。
  * 作为全局边界规则注入 stable 层；子代理通过继承 request.systemPrompt 自动获得（Hermes 风格一致性）。
- * @param setting 用户设置值
- * @param osLanguage 平台 UI 语言（等价于 vscode.env.language / platform.language），传 undefined 则自动检测
+ * @param setting 用户设置值（'auto' | 'match-user' | 具体语言）。非 'auto' 时直接生效。
+ * @param fallbackLanguage 当 setting='auto' 时使用的语言（由调用方传入 = Agent Studio 显示语言设置）。
  */
-export function buildResponseLanguageDirective(setting: string | undefined, osLanguage?: string): string {
-	const code = resolveResponseLanguageCode(setting, osLanguage);
+export function buildResponseLanguageDirective(setting: string | undefined, fallbackLanguage?: string): string {
+	const code = resolveResponseLanguageCode(setting, fallbackLanguage);
 
 	if (code === MATCH_USER_LANGUAGE) {
 		return [

@@ -99,8 +99,8 @@ const PREFERENCES_SECTIONS: SettingSection[] = [
 				{ value: 'zh-CN', label: '简体中文' },
 				{ value: 'ja', label: '日本語' },
 			] },
-			{ key: AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING, label: '回答语言', description: 'LLM 回复使用的语言。auto = 跟随操作系统当前语言；match-user = 跟随用户输入语言', type: 'select', default: 'auto', options: [
-				{ value: 'auto', label: '自动（操作系统当前语言）' },
+			{ key: AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING, label: '回答语言', description: 'LLM 回复使用的语言。auto = 跟随 Agent Studio 显示语言；match-user = 跟随用户输入语言', type: 'select', default: 'auto', options: [
+				{ value: 'auto', label: '自动（Agent Studio 显示语言）' },
 				{ value: 'match-user', label: '跟随用户输入语言' },
 				{ value: 'en', label: 'English' },
 				{ value: 'zh-Hans', label: '简体中文' },

@@ -376,7 +376,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'string',
 			default: 'auto',
 			enum: ['auto', 'match-user', 'en', 'zh-Hans', 'zh-Hant', 'ja', 'ko', 'fr', 'de', 'es', 'pt', 'ru', 'it'],
-			description: localize('agentStudio.preferences.responseLanguage', "Language the LLM should respond in. 'auto' uses the operating system's current language; 'match-user' follows the user's input language."),
+			description: localize('agentStudio.preferences.responseLanguage', "Language the LLM should respond in. 'auto' uses the Agent Studio display language (sessions.agentStudio.preferences.language); 'match-user' follows the user's input language."),
 		},
 		[AGENT_STUDIO_SEND_KEY_SETTING]: {
 			type: 'string',

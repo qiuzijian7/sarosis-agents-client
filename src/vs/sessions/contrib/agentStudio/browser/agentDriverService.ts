@@ -19,9 +19,8 @@ import { IWorkflowExecutionService } from '../common/workflowExecutionService.js
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
 import type { AgentBinding } from '../../../common/agentStudioTypes.js';
-import { AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING, AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING } from '../common/constants.js';
+import { AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING, AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING, AGENT_STUDIO_LANGUAGE_SETTING } from '../common/constants.js';
 import { buildResponseLanguageDirective } from '../common/responseLanguage.js';
-import { language as platformLanguage } from '../../../../base/common/platform.js';
 import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX, getStrategyGuidance } from '../common/chatModeConfig.js';
 import { getParadigmOverride } from '../common/paradigmOverride.js';
 import { joinSections, composeFrozenPrefix, composeVolatileMessage, buildCompactToolSection, type ISystemPromptTiers } from '../common/systemPromptComposer.js';
@@ -620,13 +619,16 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		}
 
 		// ── 回答语言限制（全局边界规则，stable 层）──
-		// 默认 'auto' = 操作系统当前语言（renderer navigator.languages，等价于 void 的
-		// app.getPreferredSystemLanguages()）；子代理通过继承 request.systemPrompt 自动获得，
-		// 保证语言一致性（Hermes 风格）。
+		// 完全由 Agent Studio 设置决定，不探测操作系统语言。'auto' 跟随
+		// sessions.agentStudio.preferences.language（langSetting，默认 zh-CN）；
+		// 子代理经 forkContext 继承本 prompt，或由 taskOrchestrationService 注入
+		// dispatch 字段后由 _buildSystemPrompt 重新生成，保证语言一致性（Hermes 风格）。
 		try {
 			const responseLang = this._configurationService.getValue<string>(AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING);
-			// continue 风格：优先使用平台 UI 语言（等价于 vscode.env.language / platform.language）
-			const langDirective = buildResponseLanguageDirective(responseLang, platformLanguage);
+			// 'auto' 跟随 Agent Studio 显示语言设置（sessions.agentStudio.preferences.language，默认 zh-CN），
+			// 完全由设置决定，不探测操作系统语言（navigator.languages / platform.language）。
+			const langSetting = this._configurationService.getValue<string>(AGENT_STUDIO_LANGUAGE_SETTING) || 'zh-CN';
+			const langDirective = buildResponseLanguageDirective(responseLang, langSetting);
 			if (langDirective) {
 				stableParts.push(langDirective);
 			}
