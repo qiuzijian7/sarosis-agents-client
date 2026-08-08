@@ -225,6 +225,15 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	readonly onDidStreamDelta: Event<{ agentId: string; sessionId: string; delta: IChatStreamDelta }> =
 		this._onDidStreamDeltaEmitter.event;
 
+	/** 广播 user 消息（经 onDidStreamDelta 以 'user_message' delta 形式下发）。 */
+	fireUserMessageAdded(agentId: string, sessionId: string, message: unknown): void {
+		this._onDidStreamDeltaEmitter.fire({
+			agentId,
+			sessionId: sessionId || '',
+			delta: { type: 'user_message', message } as any,
+		});
+	}
+
 	constructor(
 		@ILogService logService: ILogService,
 		@IAgentDriverService driverService: IAgentDriverService,

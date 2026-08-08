@@ -1903,7 +1903,7 @@ protected override _openUserEditOverlay(msg: IAgentChatMessage): void {
 		// Composer（与底部 chat-composer-box 完全一致）
 		const composer = append(bubble, $(".chat-user-edit-composer"));
 		const textarea = append(composer, $("textarea.chat-user-edit-input")) as HTMLTextAreaElement;
-		textarea.value = msg.content;
+		textarea.value = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
 		textarea.placeholder = "编辑消息...";
 		textarea.rows = 1;
 		textarea.style.height = 'auto';
@@ -2008,7 +2008,10 @@ protected override _openUserEditOverlay(msg: IAgentChatMessage): void {
 
 		const commit = () => {
 			const newText = textarea.value.trim();
-			if (!newText || newText === msg.content.trim()) {
+			// content 理论上为 string，但多模态/工具消息可能携带非字符串 content——
+			// 直接 .trim() 会抛 TypeError，导致点击发送静默失败（无任何反应）。
+			const origText = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
+			if (!newText || newText === origText.trim()) {
 				restore();
 				return;
 			}

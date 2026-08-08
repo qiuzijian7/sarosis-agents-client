@@ -513,10 +513,18 @@ export class NativeChatEditorPane extends EditorPane {
 						// 真实内容仍经 sendMessage 的 options.attachments 透传给 LLM（见下方 sendMessage 调用）。
 						attachments: attachments && attachments.length > 0 ? attachments : undefined,
 					};
-					this._chatPanel?.addMessage(userMsg);
+				this._chatPanel?.addMessage(userMsg);
 
-					// Set sending state BEFORE await — switches send button to stop icon immediately
-					this._chatPanel?.setSending(true);
+				// 广播 user 消息：让同 agent + 同 session 的其它窗口（popout 独立窗口）
+				// 同步显示该用户消息气泡（对方 onDidStreamDelta 监听 'user_message' delta）。
+				try {
+					this._chatService.fireUserMessageAdded(agentId, sessionId ?? '', userMsg);
+				} catch (e) {
+					this._logService.warn('[NativeChatEditorPane] fireUserMessageAdded failed:', e);
+				}
+
+				// Set sending state BEFORE await — switches send button to stop icon immediately
+				this._chatPanel?.setSending(true);
 					this._isSending = true;
 					this._isExternalSend = false; // 本地发送，onDidStreamDelta 监听器跳过
 					this._localSendDone = false; // 重置本地发送完成标志
@@ -1373,13 +1381,49 @@ export class NativeChatEditorPane extends EditorPane {
 		this._register(this._chatService.onDidStreamDelta(({ agentId, sessionId, delta }) => {
 			if (agentId !== this._currentAgentId) { return; }
 			// 串台防护：本地发送（用户在某个聊天框点击发送）的流式 delta 由发起
-			// pane 自身的 onDelta 处理；其它同 agent、不同 session 的 pane 必须忽略，
-			// 否则会把 A 会话的 LLM 输出渲染进 B 会话的聊天框（多开聊天框串台根因）。
-			// 看板等外部发送不在此集合内，仍走下方 _sharedExternalSendSessions claim 逻辑。
+			// pane 自身的 onDelta 处理；其它 pane 必须忽略——但仅限【不同 session】。
+			// 同一 agent + 同一 session 的其它 pane（如 popout 独立窗口）需要【同步渲染】：
+			// 发起 pane 因 _isSending && !_isExternalSend 会在下方 line 1385 跳过（不重复），
+			// 同 session 的其它 pane 走「外部接管」分支各自渲染同一流，实现多窗口实时同步。
+			// 不同 session 的 pane 仍必须忽略，否则会把 A 会话的 LLM 输出渲染进 B 会话的
+			// 聊天框（多开聊天框串台根因）。
+			//
+			// ⚠️ 全局防线（2026-08-08 修复日志 1786178468122 串台）：
+			// 旧实现只在本 pane 处于「本地发送」时（sessionId ∈ _sharedLocalSendSessions）才做
+			// session 匹配检查。但外部发送路径（看板任务 executeTaskForBoard / webview 直接调
+			// agentChatService.sendMessage / workflow 等）不会把 sessionId 写入 _sharedLocalSendSessions，
+			// 此时不同 session 的空闲 pane 会落入「外部接管」分支并【切换 _currentSessionId】渲染对方
+			// 会话的 LLM 输出 → 两个 gr-gc-expert 会话并发时，A pane 显示了 B 的内容。
+			// 修复：只要本 pane 已绑定会话且与广播 sessionId 不同，一律忽略（不进入外部接管）。
+			// 仅当本 pane 尚未绑定会话（_currentSessionId 为空）时允许接管，用于看板任务创建
+			// 新 session 后在空闲 pane 上显示其执行流。
+			if (sessionId && this._currentSessionId && this._currentSessionId !== sessionId) {
+				return;
+			}
 			const localKey = sessionId || `__nosession_${agentId}`;
-			if (NativeChatEditorPane._sharedLocalSendSessions.has(localKey)) { return; }
+			if (NativeChatEditorPane._sharedLocalSendSessions.has(localKey)) {
+				// 归一化：_currentSessionId 可能是 null，广播的 sessionId 可能是 ''（无 session）。
+				if ((this._currentSessionId ?? '') !== (sessionId ?? '')) {
+					return;
+				}
+			}
 			if (!this._chatPanel) { return; }
 			if (!delta) { return; }
+
+			// 跨窗口同步 user 消息：同 agent + 同 session 的其它 pane 收到
+			// 'user_message' delta 后 addMessage（幂等，避免与本地 addMessage 重复）。
+			{
+				const d = delta as { type?: string; message?: unknown };
+				if (d.type === 'user_message') {
+					if ((this._currentSessionId ?? '') === (sessionId ?? '')) {
+						const um = d.message as IAgentChatMessage | undefined;
+						if (um && !this._chatPanel.getMessages().some(m => m.id === um.id)) {
+							this._chatPanel.addMessage(um);
+						}
+					}
+					return;
+				}
+			}
 
 			// 面板自身发送时，回调已处理，跳过（避免 race condition 和双重处理）
 			if (this._isSending && !this._isExternalSend) { return; }
@@ -1419,7 +1463,15 @@ export class NativeChatEditorPane extends EditorPane {
 				if (!this._isSending) {
 					// 防止本地发送 error/done 后，_isSending 已被重置为 false，
 					// 后续 memory_writing 等广播 delta 误触发二次 _initStreamingMessage 导致空气泡。
-					if (this._localSendDone) { return; }
+					if (this._localSendDone) {
+						// 本地发送已完成：残留广播（memory_writing 等）跳过防空气泡。
+						// 但其它 pane 发起的【同 session 新流】（phase_change/text/thinking
+						// 起始 delta）应重置标志并接管渲染 —— 多窗口实时同步。
+						if (delta.type !== 'phase_change' && delta.type !== 'text' && delta.type !== 'thinking') {
+							return;
+						}
+						this._localSendDone = false;
+					}
 					// 修复多窗口并行场景下的 Pane 劫持问题：
 					// 当两个 pane 打开同一 agent 时，看板任务执行会广播 delta 到所有 pane，
 					// 导致 idle 的 pane 被意外切换到任务 session。用共享静态集合做跨 pane 协调：
@@ -1427,11 +1479,17 @@ export class NativeChatEditorPane extends EditorPane {
 					// 与 _activeTurns 取消键（agentId::sessionId）不同，此处 session 是 delta
 					// 事件的 sessionId，不含 agentId 前缀，直接匹配。
 					const externalClaimKey = sessionId || `__nosession_${agentId}`;
-					if (NativeChatEditorPane._sharedExternalSendSessions.has(externalClaimKey)) {
+					// 同 session 的 pane 需要同步渲染 → 不参与 claim 独占（各 pane 独立渲染
+					// 同一流）；不同 session 的 pane 仍由首个 pane claim，防止 idle pane 被
+					// 意外切换到任务 session（多窗口并行 Pane 劫持）。
+					const isSameSession = (this._currentSessionId ?? '') === (sessionId ?? '');
+					if (!isSameSession && NativeChatEditorPane._sharedExternalSendSessions.has(externalClaimKey)) {
 						// 另一个 pane 已经接管了这个外部 session 的流式渲染，跳过。
 						return;
 					}
-					NativeChatEditorPane._sharedExternalSendSessions.add(externalClaimKey);
+					if (!isSameSession) {
+						NativeChatEditorPane._sharedExternalSendSessions.add(externalClaimKey);
+					}
 
 					// If the delta belongs to a different session than what's
 					// currently loaded in the panel, switch to that session first.
@@ -3090,23 +3148,57 @@ private _handleStreamDelta(delta: any): void {
 	 * through the normal streaming flow.
 	 */
 	private async _handleEditMessage(messageId: string, newText: string): Promise<void> {
-		if (!this._currentAgentId) {
+		// 解析实际会话（与 _sendMessageInternal 一致，含 claw 兜底）。避免
+		// `if (!this._currentAgentId) return;` 静默 no-op——面板已在 commit() 里
+		// 截断了视图，若此处直接 return，会表现为「点了发送没反应」（无回复）。
+		const ensured = await this._ensureSession();
+		if (!ensured) {
+			this._logService.info('[NativeChatEditorPane] _handleEditMessage: no usable agent/session, aborting');
 			return;
 		}
-		const agentId = this._currentAgentId;
-		const sessionId = this._currentSessionId ?? undefined;
+		const agentId = ensured.agentId;
+		const sessionId = ensured.sessionId;
 		try {
 			const history = await this._chatService.getHistory(agentId, sessionId);
 			const idx = history.findIndex(m => m.id === messageId);
-			if (idx <= 0) {
+			if (idx === 0) {
+				// 编辑的是首条消息 → 清空整个会话（历史中该消息不存在保留意义）
 				await this._chatService.clearHistory(agentId, sessionId);
-			} else {
+			} else if (idx > 0) {
+				// 保留到被编辑消息的前一条，删掉被编辑消息及其之后的内容
 				await this._chatService.deleteMessagesAfter(agentId, sessionId, history[idx - 1].id);
+			} else {
+				// 未在历史中找到该消息：不截断（绝不误清空整个会话），仅重新发送
+				this._logService.warn(`[NativeChatEditorPane] _handleEditMessage: message ${messageId} not found in history, sending without truncation`);
 			}
 		} catch (err) {
-			this._logService.error('[NativeChatEditorPane] _handleEditMessage: truncate failed:', err);
-			return;
+			// 截断失败不阻断发送——面板视图已截断，仍应按新文本重新生成，
+			// 否则用户会看到「点了发送没反应」。
+			this._logService.error('[NativeChatEditorPane] _handleEditMessage: truncate failed (send anyway):', err);
 		}
+
+		// ── 关键：发送前必须先 cancel 残留 stream + 重置 isSending ──
+		// 上次发送若崩溃（EXCEPTION_ACCESS_VIOLATION 等），sendMessage 的 for-await
+		// 残留但 AbortController 未触发，_isSending 残留为 true —— 此时再次
+		// _sendMessageInternal 会与残留流并发对同一 session 发请求，导致：
+		//   1) AgentChatPanel._handleSendMessage 入队（_isSending=true → 入队）
+		//   2) 或 sendMessage 内部对同一 stream key 抛错被吞
+		// 表现为「编辑覆盖层点击发送没反应」（commit 截断做了，发送却被残留状态吞掉）。
+		// 强制 cancel 残留流 + 同步重置本地状态，再走正常 _sendMessageInternal 路径。
+		if (this._isSending) {
+			try {
+				this._chatService.cancelStream(agentId, sessionId);
+			} catch (e) {
+				this._logService.warn('[NativeChatEditorPane] _handleEditMessage: cancelStream failed', e);
+			}
+			// 同步重置 UI 状态（与 onCancelExecution 同样的手动收尾，但 triggerExecuteNext=false
+			// 避免与 _sendMessageInternal 完成后重复触发队列 dispatch）。
+			this._chatPanel?.setSending(false, { triggerExecuteNext: false });
+			this._isSending = false;
+			this._isExternalSend = false;
+			this._resetStreamingMessage();
+		}
+
 		await this._sendMessageInternal(newText);
 	}
 
@@ -3393,9 +3485,24 @@ private _handleStreamDelta(delta: any): void {
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		this._logService.debug(`[NativeChatEditorPane#${this._paneId}] setInput: type=${input.constructor.name}, resource=${input.resource?.toString()}`);
+
+		// ── 1. 切换前保存当前 chat 的运行时状态到【旧 input】+ 释放本地流式 claim ──
+		// 必须在 super.setInput() 之前执行：基类 EditorPane.setInput 会同步把
+		// this._input 改为新 input，若在其后才调用 _saveCurrentRuntimeState()，
+		// 保存目标会错误地变成新 input（旧实现正是如此，导致 tab 切换/移动时
+		// 状态串台、popout 时流式内容丢失）。
+		const isChatInput = input instanceof NativeChatEditorInput;
+		const newChatId = isChatInput ? input.chatId : undefined;
+		// 从当前 chat 切到「不同 chat 或非 chat（如 Canvas）」时才保存/交接；
+		// 从非 chat 切回同一 chat（_currentInputChatId 仍为该 chat）不重复保存。
+		if (this._currentInputChatId !== undefined && newChatId !== this._currentInputChatId) {
+			this._saveCurrentRuntimeState();
+			this._handoffActiveStream();
+		}
+
 		await super.setInput(input, options, context, token);
 
-		if (!(input instanceof NativeChatEditorInput)) {
+		if (!isChatInput) {
 			this._logService.info('[NativeChatEditorPane] setInput: not a NativeChatEditorInput, skipping');
 			return;
 		}
@@ -3404,8 +3511,6 @@ private _handleStreamDelta(delta: any): void {
 			return;
 		}
 
-		const newChatId = input.chatId;
-
 		// 同一个 chatId，无需切换
 		if (newChatId === this._currentInputChatId) {
 			this._logService.debug(`[NativeChatEditorPane#${this._paneId}] setInput: same chatId, skipping state switch`);
@@ -3413,11 +3518,6 @@ private _handleStreamDelta(delta: any): void {
 		}
 
 		this._logService.info(`[NativeChatEditorPane#${this._paneId}] setInput: chatId=${newChatId} (prev=${this._currentInputChatId})`);
-
-		// ── 1. 保存当前 chat 的运行时状态到旧的 input ──
-		// VS Code 复用同一个 EditorPane，面板的 messages/streamPhase/isSending
-		// 属于 pane 而非 chat。切换前必须存到 input 上，切回时恢复。
-		this._saveCurrentRuntimeState();
 
 		// ── 2. 切换到新 chat ──
 		this._currentInputChatId = newChatId;
@@ -3441,6 +3541,26 @@ private _handleStreamDelta(delta: any): void {
 				this._localModelId = saved.modelSelection.modelId ?? '';
 				this._chatPanel?.setCurrentProvider(this._localProviderId);
 				this._chatPanel?.setCurrentModel(this._localModelId);
+			}
+
+			// ── 流式接管（同步，赶在任何 delta 到达之前）──
+			// 保存的状态显示该 chat 正在流式输出（saved.isSending）：发起该流的面板
+			// 已通过 _handoffActiveStream 释放 _sharedLocalSendSessions claim，本面板
+			// 立即切为「外部发送」模式并经全局 onDidStreamDelta 续接渲染。必须在
+			// _restoreAgentDisplay 的 await 之前同步完成，否则中途到达的 delta 会因
+			// _isSending=false 触发 _initStreamingMessage 新建空气泡（重复气泡）。
+			if (saved.isSending) {
+				this._isSending = true;
+				this._isExternalSend = true;
+				this._taskExecutingSessionId = this._currentSessionId;
+				const streamingMsg = (saved.messages as any[]).slice().reverse().find((m: any) =>
+					m && (m.isStreaming === true || m.streamPhase === 'llm_streaming'));
+				if (streamingMsg) {
+					this._streamingAssistantId = streamingMsg.id;
+					this._streamingAssistantMsg = streamingMsg;
+					// 续接文本段：从已恢复内容长度起算，避免重复生成历史文本 part
+					this._streamTextSegmentBase = typeof streamingMsg.content === 'string' ? streamingMsg.content.length : 0;
+				}
 			}
 
 		// 恢复 agent 显示（如有）
@@ -3571,6 +3691,24 @@ private _handleStreamDelta(delta: any): void {
 	}
 
 	/**
+	 * 交接当前正在进行的本地流式输出：
+	 * 1. 释放串台防护 claim（_sharedLocalSendSessions），使接管该 chat 的
+	 *    面板（如 popout 后的独立窗口）能经全局 onDidStreamDelta 续接渲染；
+	 * 2. 清空本面板的流式引用，避免本面板（已切走/清除）继续处理 delta 造成
+	 *    在共享消息对象上的双重累计（内容重复/乱码）。
+	 *
+	 * 调用时机：pane 停止显示某 chat（setInput 切走 / clearInput / dispose）。
+	 */
+	private _handoffActiveStream(): void {
+		if (this._isSending && !this._isExternalSend && this._currentSessionId) {
+			NativeChatEditorPane._sharedLocalSendSessions.delete(this._currentSessionId);
+		}
+		if (this._streamingAssistantId || this._streamingAssistantMsg) {
+			this._resetStreamingMessage();
+		}
+	}
+
+	/**
 	 * 从保存的运行时状态恢复面板显示（不触发服务器请求）。
 	 * 用于 tab 切换时快速恢复消息列表 + 流式状态。
 	 */
@@ -3632,7 +3770,8 @@ private _handleStreamDelta(delta: any): void {
 					this._chatPanel.setMessages(saved.messages as any);
 				}
 
-				// 恢复流式状态
+				// 恢复流式状态（接管模式已在 setInput 中同步建立：_isExternalSend /
+				// _streamingAssistantId 已就绪，此处仅恢复 UI 发送态与 streamPhase）
 				this._isTabActive = this.group.activeEditor === this.input;
 				this._applyStreamPhase(saved.streamPhase);
 				if (saved.isSending) {
@@ -3733,7 +3872,19 @@ private _handleStreamDelta(delta: any): void {
 		}
 	}
 
+	override clearInput(): void {
+		// 聊天 editor 被移走/关闭且所在 group 变空时，VS Code 调用 clearInput()
+		// （而非 setInput）——必须在此把当前 chat 的运行时状态存回 input，
+		// 否则 popout 移动后独立窗口恢复到的 runtime state 是过期的（流式内容丢失）。
+		this._saveCurrentRuntimeState();
+		this._handoffActiveStream();
+		super.clearInput();
+	}
+
 override dispose(): void {
+	// dispose 前保存运行时状态 + 释放流式 claim（若聊天仍在流式输出中）
+	this._saveCurrentRuntimeState();
+	this._handoffActiveStream();
 	if (this._taskBoardReloadTimer) { clearTimeout(this._taskBoardReloadTimer); this._taskBoardReloadTimer = null; }
 	// flush pending 的草稿保存，避免 dispose 丢最后 400ms 输入
 	if (this._composerDraftTimer !== null) {

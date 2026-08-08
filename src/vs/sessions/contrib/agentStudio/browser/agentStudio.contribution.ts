@@ -285,7 +285,7 @@ import { ISelfEvolutionService } from '../common/selfEvolution.js';
 import { SelfEvolutionService } from './selfEvolutionService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
-import { IEditorGroupsService, IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroupsService, IEditorGroup, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 /**
  * Type-safe accessor for the agent editor part (AGENT_EDITOR_PART).
@@ -1871,24 +1871,66 @@ registerAction2(class extends Action2 {
 	}
 	run(accessor: ServicesAccessor): void {
 		const editorGroupsService = accessor.get(IEditorGroupsService);
+		const editorService = accessor.get(IEditorService);
 		const logService = accessor.get(ILogService);
+		const input = NativeChatEditorInput.create();
+
+		// 聊天框的合法归属只有两个：主窗口 agentPart（右侧 agent 专区）或 popout 出的
+		// 独立窗口（aux part）。严禁落入中间栏 mainPart（file editor instance）。
+		//
+		// 目标 part 判定用「活动编辑器（+ 按钮所在标题栏）的 group」经 getPart(group)
+		// 按 group→part 确定性路由（一个 group id 只属于一个 part），而非依赖
+		// `getActiveElement()` 的焦点检测——后者在 agentPart 内点击按钮时可能因焦点
+		// 未落到 part 容器内而误判成 mainPart。
 		const agentPart = getAgentPart(editorGroupsService);
-		if (!agentPart?.activeGroup) {
+		const activePane = editorService.activeEditorPane;
+		const activeGroup = activePane?.group;
+		const activePart = activeGroup ? editorGroupsService.getPart(activeGroup) : undefined;
+
+		// ① 活动编辑器在 agentPart（主窗口 agent 专区）：每个新聊天默认开在独立 group。
+		if (activePart && agentPart && activePart === (agentPart as unknown as IEditorPart)) {
+			const active = agentPart.activeGroup;
+			const targetGroup = active.editors.length === 0
+				? active
+				: (agentPart.groups.find(g => g.editors.length === 0)
+					?? agentPart.addGroup(active, 3 /* GroupDirection.RIGHT */));
+			targetGroup.openEditor(input, { pinned: true }).then(() => {
+				// Chat editor opened successfully in agent part
+			}).catch((err: any) => {
+				logService.error('[newChatInEditor] failed to open editor:', err);
+			});
 			return;
 		}
-		const input = NativeChatEditorInput.create();
-		// 每个新聊天默认开在独立的 group 中——仅当用户手动拖拽时，
-		// 才允许同一 group 下存在多个聊天 tab。
-		// 修复：全部页签关闭后活动 group 为空时，复用空 group，
-		// 避免拆出「空 group + 聊天 group」两个分栏。
-		const active = agentPart.activeGroup;
-		const targetGroup = active.editors.length === 0
-			? active
-			: (agentPart.groups.find(g => g.editors.length === 0)
-				?? agentPart.addGroup(active, 3 /* GroupDirection.RIGHT */));
-		targetGroup.openEditor(input, { pinned: true }).then(() => {
-			// Chat editor opened successfully in agent part
-		}).catch((err: any) => {
+
+		// ② 活动编辑器在独立聊天窗口（aux part，非 mainPart）：在「当前活动 group」
+		//    直接新增页签，保证页签出现在独立窗口里。
+		if (activeGroup && activePart && activePart !== editorGroupsService.mainPart) {
+			activeGroup.openEditor(input, { pinned: true }).then(() => {
+				// Chat editor opened successfully in current (standalone) window
+			}).catch((err: any) => {
+				logService.error('[newChatInEditor] failed to open editor:', err);
+			});
+			return;
+		}
+
+		// ③ 主窗口且焦点判定失效（活动编辑器实际在 agentPart，但 activePane 误落在
+		//    mainPart），或聊天误入 mainPart：一律重定向到 agentPart，绝不落入中间栏。
+		if (agentPart?.activeGroup) {
+			const active = agentPart.activeGroup;
+			const targetGroup = active.editors.length === 0
+				? active
+				: (agentPart.groups.find(g => g.editors.length === 0)
+					?? agentPart.addGroup(active, 3 /* GroupDirection.RIGHT */));
+			targetGroup.openEditor(input, { pinned: true }).then(() => {
+				// Chat editor opened successfully in agent part
+			}).catch((err: any) => {
+				logService.error('[newChatInEditor] failed to open editor:', err);
+			});
+			return;
+		}
+
+		// 极端兜底：agentPart 也不可用时回退到 editorService。
+		editorService.openEditor(input, { pinned: true }).catch((err: any) => {
 			logService.error('[newChatInEditor] failed to open editor:', err);
 		});
 	}

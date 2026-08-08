@@ -549,19 +549,26 @@ export async function runAmV2Tests(): Promise<void> {
 
 	await test('buildContext: 观察块仅选 importance≥5 的重要观察', async (kv) => {
 		const ts = new Date().toISOString();
-		// 高重要性：工具失败（7）
+		// 高重要性：工具失败（7）——属于当前会话，应注入
 		await fn.observe(kv as any, AGENT_ID, {
-			sessionId: 'sess-filter', hookType: 'post_tool_failure', timestamp: ts,
+			sessionId: 'sess-current', hookType: 'post_tool_failure', timestamp: ts,
 			data: { tool_name: 'run_tests', tool_output: '3 tests failed with assertion error' },
 		});
 		// 低重要性：turn 消息（4）——不应进入观察块
 		await fn.observe(kv as any, AGENT_ID, {
-			sessionId: 'sess-filter', hookType: 'turn_observation', timestamp: ts,
+			sessionId: 'sess-current', hookType: 'turn_observation', timestamp: ts,
 			data: { content: 'casual chit chat content here' },
 		});
+		// 串台防护：其他会话的高重要性观察也不应注入（2026-08-08，日志 1786178468122）
+		await fn.observe(kv as any, AGENT_ID, {
+			sessionId: 'sess-other-agent', hookType: 'post_tool_failure', timestamp: ts,
+			data: { tool_name: 'run_other_task', tool_output: 'other session secret detail' },
+		});
 		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-current', 'proj', 2000);
-		assert(ctx.systemPrompt.includes('run_tests'), 'high-importance observation injected');
+		assert(ctx.systemPrompt.includes('run_tests'), 'high-importance observation (current session) injected');
 		assert(!ctx.systemPrompt.includes('casual chit chat'), 'low-importance observation filtered out (importance<5)');
+		assert(!ctx.systemPrompt.includes('run_other_task'), 'other session observation NOT injected (anti-cross-talk)');
+		assert(!ctx.systemPrompt.includes('other session secret'), 'other session observation content NOT injected');
 	});
 
 	await test('bugMemoriesForFiles: type=bug ∩ isLatest ∩ files 重叠，top3', async (kv) => {
@@ -605,14 +612,19 @@ export async function runAmV2Tests(): Promise<void> {
 	});
 
 	await test('buildContext: 摘要块过滤非 SessionSummary 条目（D1 防御）', async (kv) => {
+		await fn.sessionSummarySave(kv as any, AGENT_ID, 'sess-other-agent', AGENT_ID, 'other session summary', 'other narrative', ['other decision'], ['other.ts']);
 		await fn.sessionSummarySave(kv as any, AGENT_ID, 'sess-real', AGENT_ID, 'real session', 'real narrative', ['decision one'], ['a.ts']);
 		await kv.set(KV.summaries(AGENT_ID), 'ts_legacy_1', {
 			id: 'ts_legacy_1', sharedBy: 'x', type: 'pattern',
 			content: { content: 'legacy polluted item' }, sharedAt: new Date().toISOString(),
 		});
-		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-other', 'proj', 2000);
-		assert(ctx.systemPrompt.includes('real narrative'), 'real summary injected');
+		const ctx = await fn.buildContext(kv as any, AGENT_ID, 'sess-real', 'proj', 2000);
+		// 当前会话自己的 summary 注入；TeamSharedItem 过滤
+		assert(ctx.systemPrompt.includes('real narrative'), 'current session summary injected');
 		assert(!ctx.systemPrompt.includes('legacy polluted item'), 'TeamSharedItem NOT injected as summary');
+		// 串台防护（2026-08-08，日志 1786178468122）：其他会话的 summary 不注入当前会话
+		assert(!ctx.systemPrompt.includes('other session summary'), 'other session summary NOT injected (anti-cross-talk)');
+		assert(!ctx.systemPrompt.includes('other narrative'), 'other session narrative NOT injected');
 	});
 
 	await test('slotReflect: todo/错误/命令/文件反思进 slots + 审计', async (kv) => {
@@ -1182,7 +1194,7 @@ export async function runAmV2Tests(): Promise<void> {
 		await fn.coreAdd(kv as any, AGENT_ID, 'Critical project rule', 10, true);
 		await fn.remember(kv as any, AGENT_ID, 'React component architecture decision', 'architecture');
 		await fn.lessonSave(kv as any, AGENT_ID, 'Always run tests before committing code', 'testing', 0.9);
-		await fn.sessionSummarySave(kv as any, AGENT_ID, 'sess-1', AGENT_ID, 'Setup CI pipeline', 'Configured GitHub Actions');
+		await fn.sessionSummarySave(kv as any, AGENT_ID, 'session-1', AGENT_ID, 'Setup CI pipeline', 'Configured GitHub Actions');
 		const ctx = await fn.loadContextFn(kv as any, AGENT_ID, 'session-1', undefined, 5000);
 		// 策展块进注入文本
 		assert(ctx.systemPrompt.includes('Lessons Learned'), 'lessons in injected context');

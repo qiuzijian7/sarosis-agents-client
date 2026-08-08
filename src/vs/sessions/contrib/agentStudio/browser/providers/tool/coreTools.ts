@@ -540,13 +540,25 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 				mtime = result.mtime;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				if (msg.includes('FILE_NOT_FOUND') || msg.includes('ENOENT') || msg.includes('not found') || msg.includes('not exist')) {
-					const suggestions = await suggestSimilarFiles(resolvedPath);
-					if (suggestions.length > 0) {
-						throw new Error(`File not found: ${requestedPath}\nDid you mean one of these?\n${suggestions.map(s => `  - ${s}`).join('\n')}`);
-					}
+			if (msg.includes('FILE_NOT_FOUND') || msg.includes('ENOENT') || msg.includes('not found') || msg.includes('not exist')) {
+				const suggestions = await suggestSimilarFiles(resolvedPath);
+				if (suggestions.length > 0) {
+					throw new Error(`File not found: ${requestedPath}\nDid you mean one of these?\n${suggestions.map(s => `  - ${s}`).join('\n')}`);
 				}
-				throw err;
+				// 事故（日志 1786172213634）：LLM 凭记忆/推断拼路径（如
+				// Engine\Source\\UObject\GarbageCollection.cpp 少了一级 Runtime\CoreUObject\Private），
+				// 父目录也不存在 → suggestSimilarFiles 必然空 → 原始错误无引导，模型盲试 3 次。
+				// 此处给可执行的纠错反馈：引导用 search_files 拿真实绝对路径（对齐范式"可执行的纠错反馈"）。
+				throw new Error(
+					`File not found: ${requestedPath}\n` +
+					`The parent directory does not exist either. This is usually caused by manually guessing or assembling a path ` +
+					`instead of copying the exact absolute path from a search result.\n` +
+					`Action: call search_files with filePattern "**/${requestedPath.split(/[\\/]/).pop()}" ` +
+					`(e.g. **/GarbageCollection.cpp) to locate the real absolute path, then pass that exact path to file_read. ` +
+					`Do NOT guess the path again.`
+				);
+			}
+			throw err;
 			}
 
 			// 去重 stub

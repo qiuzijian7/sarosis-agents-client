@@ -12,6 +12,7 @@
 
 import { IChatMessage } from '../common/providers.js';
 import { IModelProvider } from '../common/providers.js';
+import type { IModelOptions } from '../common/providers.js';
 import type {
 	IWorkspaceContext,
 	IProjectContext,
@@ -1015,10 +1016,19 @@ export class ContextManager implements IContextManager {
 				`messages=${messages.length} promptChars=${prompt.length} ` +
 				`model=${this._config.summaryModelId || this._modelId}`
 			);
+			// 压缩摘要完全关闭 reasoning（2026-08-08 日志 1786172213634：server-default
+			// effort=high 致摘要耗时 50.8s 阻塞主链路）。摘要任务是结构化提取，无需任何
+			// thinking 预算——enabled:false 时 provider 不注入 thinking 参数（对齐 LMBridge
+			// 透传语义：仅 enabled=true 才透传 reasoning）。
+			const summaryOptions: IModelOptions = {
+				temperature: 0.3,
+				maxTokens: ContextManager.SUMMARY_MAX_TOKENS,
+				reasoning: { enabled: false },
+			};
 			const stream = this._modelProvider.chat(
 				this._config.summaryModelId || this._modelId,
 				[{ role: 'user', content: prompt } as IChatMessage],
-				{ temperature: 0.3, maxTokens: ContextManager.SUMMARY_MAX_TOKENS },
+				summaryOptions,
 				{}
 			);
 

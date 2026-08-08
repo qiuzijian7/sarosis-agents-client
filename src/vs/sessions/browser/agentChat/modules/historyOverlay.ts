@@ -5,7 +5,6 @@
 
 import type { IDisposable } from '../../../../base/common/lifecycle.js';
 import { $, append, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
-import { mainWindow } from '../../../../base/browser/window.js';
 import type { IAgentSessionMeta } from '../agentChatTypes.js';
 
 export interface HistoryCallbacks {
@@ -57,7 +56,7 @@ export function renderHistoryOverlay(
 		for (const s of context.agentSessions) {
 			const item = append(list, $(".chat-history-item"));
 			const info = append(item, $(".chat-history-item-info"));
-			append(info, $("span.chat-history-item-name", undefined, s.name));
+			const nameEl = append(info, $("span.chat-history-item-name", undefined, s.name));
 			const time = append(info, $("span.chat-history-item-time"));
 			time.textContent = formatRelativeTime(s.updatedAt);
 
@@ -99,12 +98,40 @@ export function renderHistoryOverlay(
 			renameBtn.appendChild(renameSvg);
 			registerFn(addDisposableListener(renameBtn, EventType.CLICK, (e) => {
 				e.stopPropagation();
-				// popout 独立窗口中 mainWindow.prompt 会把 dialog 弹到主窗口，用当前 window
-			const win = renameBtn.ownerDocument?.defaultView ?? mainWindow;
-			const next = win.prompt('新的会话名称', s.name);
-				if (next && next.trim() && next.trim() !== s.name) {
-					cbs.onRenameSession?.(s.id, next.trim());
-				}
+				// Electron 不支持 window.prompt（无实现，返回 null/抛错）→ 用内联 input
+				// 重命名，与 sessionHistoryView._startRenameSession 模式一致。
+				if (nameEl.querySelector('input')) { return; }  // 已处于编辑态
+				const original = s.name;
+				const input = document.createElement('input');
+				input.type = 'text';
+				input.className = 'chat-history-item-rename-input';
+				input.value = original;
+				input.maxLength = 100;
+				input.placeholder = '会话名称';
+				nameEl.replaceWith(input);
+				input.focus();
+				input.select();
+				let finished = false;
+				const finish = (commit: boolean) => {
+					if (finished) { return; }
+					finished = true;
+					const newName = input.value.trim() || original;
+					const newSpan = document.createElement('span');
+					newSpan.className = 'chat-history-item-name';
+					newSpan.textContent = newName;
+					input.replaceWith(newSpan);
+					if (commit && newName !== original) {
+						cbs.onRenameSession?.(s.id, newName);
+					}
+				};
+				registerFn(addDisposableListener(input, EventType.KEY_DOWN, (ev) => {
+					const key = (ev as KeyboardEvent).key;
+					if (key === 'Enter') { ev.preventDefault(); finish(true); }
+					else if (key === 'Escape') { ev.preventDefault(); finish(false); }
+				}));
+				registerFn(addDisposableListener(input, 'blur', () => finish(true)));
+				registerFn(addDisposableListener(input, EventType.CLICK, (ev) => ev.stopPropagation()));
+				registerFn(addDisposableListener(input, EventType.MOUSE_DOWN, (ev) => ev.stopPropagation()));
 			}));
 
 			// Delete
@@ -120,13 +147,29 @@ export function renderHistoryOverlay(
 			dp1.setAttribute('d', 'M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2');
 			delSvg.appendChild(dp1);
 			delBtn.appendChild(delSvg);
+			// Electron 不支持 window.confirm（无实现）→ 两步确认：第一次点击进入
+			// 待确认态（按钮变红，3s 后自动复位），再次点击才删除。
+			let deleteArmed = false;
+			let armTimer: number | undefined;
 			registerFn(addDisposableListener(delBtn, EventType.CLICK, (e) => {
 				e.stopPropagation();
-				// popout 独立窗口中 mainWindow.confirm 会把 dialog 弹到主窗口，用当前 window
-				const win = delBtn.ownerDocument?.defaultView ?? mainWindow;
-				if (win.confirm(`确认删除会话「${s.name}」?`)) {
-					cbs.onDeleteSession?.(s.id);
+				if (!deleteArmed) {
+					deleteArmed = true;
+					delBtn.classList.add('armed');
+					delBtn.title = '再次点击确认删除';
+					if (armTimer) { window.clearTimeout(armTimer); }
+					armTimer = window.setTimeout(() => {
+						deleteArmed = false;
+						delBtn.classList.remove('armed');
+						delBtn.title = '删除';
+					}, 3000);
+					return;
 				}
+				deleteArmed = false;
+				if (armTimer) { window.clearTimeout(armTimer); }
+				delBtn.classList.remove('armed');
+				delBtn.title = '删除';
+				cbs.onDeleteSession?.(s.id);
 			}));
 
 			registerFn(addDisposableListener(item, EventType.CLICK, () => {

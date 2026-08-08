@@ -628,6 +628,14 @@ export interface IAgentChatService {
 	 */
 	readonly onDidStreamDelta: Event<{ agentId: string; sessionId: string; delta: IChatStreamDelta }>;
 
+	/**
+	 * 广播一条 user 消息（本地发送、构造 userMsg 后立即调用），让同 agent + 同 session
+	 * 的其它窗口（如 popout 独立窗口）同步显示该用户消息气泡。
+	 * message 为发起 pane 构造的 IAgentChatMessage；此处用 unknown 避免 common 层
+	 * 依赖 browser 层类型（agentChatTypes）。
+	 */
+	fireUserMessageAdded(agentId: string, sessionId: string, message: unknown): void;
+
 	sendMessage(
 		agentId: string,
 		message: string,

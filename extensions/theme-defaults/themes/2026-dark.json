@@ -304,7 +304,7 @@
 				"string.comment"
 			],
 			"settings": {
-				"foreground": "#8b949e"
+				"foreground": "#6a9955"
 			}
 		},
 		{
@@ -313,7 +313,7 @@
 				"constant.character"
 			],
 			"settings": {
-				"foreground": "#ff7b72"
+				"foreground": "#569cd6"
 			}
 		},
 		{
@@ -326,7 +326,7 @@
 				"entity"
 			],
 			"settings": {
-				"foreground": "#79c0ff"
+				"foreground": "#4ec9b0"
 			}
 		},
 		{
@@ -336,7 +336,7 @@
 				"meta.definition.variable"
 			],
 			"settings": {
-				"foreground": "#ffa657"
+				"foreground": "#4ec9b0"
 			}
 		},
 		{
@@ -350,13 +350,13 @@
 				"meta.embedded.expression"
 			],
 			"settings": {
-				"foreground": "#c9d1d9"
+				"foreground": "#9cdcfe"
 			}
 		},
 		{
 			"scope": "entity.name.function",
 			"settings": {
-				"foreground": "#d2a8ff"
+				"foreground": "#dcdcaa"
 			}
 		},
 		{
@@ -365,13 +365,13 @@
 				"support.class.component"
 			],
 			"settings": {
-				"foreground": "#7ee787"
+				"foreground": "#569cd6"
 			}
 		},
 		{
 			"scope": "keyword",
 			"settings": {
-				"foreground": "#ff7b72"
+				"foreground": "#569cd6"
 			}
 		},
 		{
@@ -380,7 +380,7 @@
 				"storage.type"
 			],
 			"settings": {
-				"foreground": "#ff7b72"
+				"foreground": "#569cd6"
 			}
 		},
 		{
@@ -390,7 +390,7 @@
 				"storage.type.java"
 			],
 			"settings": {
-				"foreground": "#c9d1d9"
+				"foreground": "#569cd6"
 			}
 		},
 		{
@@ -399,31 +399,37 @@
 				"string punctuation.section.embedded source"
 			],
 			"settings": {
-				"foreground": "#a5d6ff"
+				"foreground": "#ce9178"
 			}
 		},
 		{
 			"scope": "support",
 			"settings": {
-				"foreground": "#79c0ff"
+				"foreground": "#4ec9b0"
 			}
 		},
 		{
 			"scope": "meta.property-name",
 			"settings": {
-				"foreground": "#79c0ff"
+				"foreground": "#9cdcfe"
 			}
 		},
 		{
 			"scope": "variable",
 			"settings": {
-				"foreground": "#ffa657"
+				"foreground": "#9cdcfe"
 			}
 		},
 		{
 			"scope": "variable.other",
 			"settings": {
-				"foreground": "#c9d1d9"
+				"foreground": "#9cdcfe"
+			}
+		},
+		{
+			"scope": "constant.numeric",
+			"settings": {
+				"foreground": "#b5cea8"
 			}
 		},
 		{

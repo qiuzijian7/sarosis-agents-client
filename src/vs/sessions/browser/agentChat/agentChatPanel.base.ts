@@ -278,6 +278,10 @@ protected readonly _conclusionExpanded = new Set<string>();
 
 protected _agent: IAgentInfo | null = null;
 
+/** 标记 setAgent 是否曾成功加载过有效 agent。仅用于判断是否真的“丢失了 agent”，
+ * 避免构造期（_render 在 setAgent 之前被调用）误报 console.warn。 */
+private _agentLoadedOnce = false;
+
 protected _isSending = false;
 
 /** 全局加载提示药丸（去抖显示 + 不挡交互）。详见 _scheduleLoadingPill / _clearLoadingPill。 */
@@ -884,12 +888,13 @@ get element(): HTMLElement {
 		return this._container;
 	}
 
-setAgent(agent: IAgentInfo | null): void {
+	setAgent(agent: IAgentInfo | null): void {
 		if ((window as unknown as Record<string, unknown>).__SAROSIS_SCROLL_DIAG) {
 			// eslint-disable-next-line no-console
 			console.info('[AgentChatPanel] setAgent:', agent ? `id="${agent.id}", name="${agent.name}"` : 'null', `stack=${new Error().stack?.split('\n').slice(2, 5).join(' ← ')}`);
 		}
 		this._agent = agent;
+		if (agent) { this._agentLoadedOnce = true; }
 		const t0 = performance.now();
 		this._render();
 		console.info(`[AgentChatPanel] setAgent: _render done in ${(performance.now() - t0).toFixed(1)}ms`);
@@ -1565,8 +1570,12 @@ focusInput(): void {
 		this._tabsContainer = undefined;
 
 		if (!this._agent) {
-			// eslint-disable-next-line no-console
-			console.warn('[AgentChatPanel] _render: rendering empty state — _agent is null/undefined');
+			// 构造期（setAgent 之前）_render 被调用属正常流程，不应告警；
+			// 仅当曾成功加载过 agent 之后又变为 null（异常丢失）才警告。
+			if (this._agentLoadedOnce) {
+				// eslint-disable-next-line no-console
+				console.warn('[AgentChatPanel] _render: rendering empty state — _agent was previously loaded but is now null/undefined');
+			}
 			this._renderEmptyState();
 			return;
 		}

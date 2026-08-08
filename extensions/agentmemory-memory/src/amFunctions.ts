@@ -490,12 +490,19 @@ export async function buildContext(
 		blocks.push({ type: 'lesson', content, tokens: estimateTokens(content), recency: mostRecent, sourceIds: relevantLessons.map(l => l.id) });
 	}
 
-	// Session summaries（最近 10 个会话，排除当前）
+	// Session summaries（仅当前会话自己的，排除其他会话）
 	// D1 防御（doc §13）：过滤非 SessionSummary 条目——历史版本 teamShare 曾把
 	// TeamSharedItem 误存进 summaries scope（无 narrative/keyDecisions 字段），
 	// 直接渲染会产出 "undefined" 畸形行；迁移由 runMaintenanceSweep 一次性完成。
+	// ⚠️ 串台防护（2026-08-08，日志 1786178468122）：原实现注入了 agent 名下**所有**
+	// 会话的 summary（含其他会话）！memoryScope=agent 时同一 agent 的多会话并发（如
+	// 两个 gr-gc-expert 聊天框），A 会话的 loadContext 会把 B 会话的 session summary
+	// 注入 A 的 LLM 请求 → "A 的问题被 B 回答"。注入范围收敛为**当前会话自己的
+	// summary**（供模型记住本会话压缩历史）；其他会话经验走 memory_search/recall 工具
+	// 按需召回，不自动倾倒进上下文。
 	const summaries = (await kv.list<SessionSummary>(KV.summaries(agentId)))
-		.filter(s => typeof s.narrative === 'string' && Array.isArray(s.keyDecisions));
+		.filter(s => typeof s.narrative === 'string' && Array.isArray(s.keyDecisions))
+		.filter(s => s.sessionId === sessionId);
 	const summarizedSessionIds = new Set(summaries.map(s => s.sessionId));
 	for (const s of summaries.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 10)) {
 		const content = `## ${s.title}\n${s.narrative}\nDecisions: ${s.keyDecisions.join('; ')}\nFiles: ${s.filesModified.join(', ')}`;
@@ -503,9 +510,14 @@ export async function buildContext(
 	}
 
 	// 重要观察（对齐原版：无摘要会话的近期观察，每会话取最近 3 条）
+	// ⚠️ 串台防护（2026-08-08）：原实现 `s.id !== sessionId` 反而**只注入其他会话**的
+	// 观察——memoryScope=agent 并发多会话时，A 会话请求会带上 B 会话的 hook 观察
+	// （工具输出预览），同样导致"A 的问题被 B 回答"。观察是会话级数据，注入范围
+	// 收敛为**当前会话自己的无摘要观察**；其他会话经验走 memory_search/recall 工具
+	// 按需召回，不自动倾倒进上下文。
 	const sessions = await kv.list<{ id: string; startedAt: string }>(KV.sessions(agentId));
 	const recentUnsummarized = sessions
-		.filter(s => s.id !== sessionId && !summarizedSessionIds.has(s.id))
+		.filter(s => s.id === sessionId && !summarizedSessionIds.has(s.id))
 		.sort((a, b) => b.startedAt.localeCompare(a.startedAt))
 		.slice(0, 5);
 	// 并行加载各会话观察（对齐原版 Promise.all；此前串行 await 在 SQLite 后端下放大延迟）

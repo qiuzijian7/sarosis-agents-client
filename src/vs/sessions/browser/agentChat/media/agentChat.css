@@ -8291,6 +8291,28 @@
 	color: var(--vscode-errorForeground, #f14c4c);
 }
 
+.chat-history-item-btn.armed {
+	color: var(--vscode-errorForeground, #f14c4c);
+	background: rgba(241, 76, 76, 0.15);
+}
+
+.chat-history-item-rename-input {
+	box-sizing: border-box;
+	width: 100%;
+	max-width: 220px;
+	font-size: 13px;
+	color: var(--as-fg-primary, var(--vscode-foreground, #cccccc));
+	background: var(--as-bg-input, var(--vscode-input-background, #3c3c3c));
+	border: 1px solid var(--vscode-input-border, rgba(255, 255, 255, 0.12));
+	border-radius: 4px;
+	padding: 2px 6px;
+	outline: none;
+}
+
+.chat-history-item-rename-input:focus {
+	border-color: var(--vscode-focusBorder, #007fd4);
+}
+
 .chat-history-footer {
 	padding: 12px 16px;
 	border-top: 1px solid var(--as-border, rgba(128, 128, 128, 0.15));
