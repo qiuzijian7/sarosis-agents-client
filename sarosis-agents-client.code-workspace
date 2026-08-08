@@ -1,0 +1,158 @@
+{
+	"folders": [
+		{
+			"name": "sarosis-agents-client",
+			"path": "."
+		}
+	],
+	"settings": {
+		// 本仓库自带 npm/ts 脚本管理，禁止自动探测避免误报任务。
+		"typescript.tsc.autoDetect": "off",
+		"npm.autoDetect": "off",
+		// ── Codebase 索引相关配置 ─────────────────────────────────────────
+		// 索引器（codebaseGraphService._resolveExcludeDirs）会读取 code-workspace 的
+		// `search.exclude` / `files.exclude`，按目录名提取后并入排除集
+		// （COMMON_EXCLUDE_DIRS + 此处配置 + .cbmignore + 调用方 extra）。
+		// 参考：agentStudio/common/codebaseIndexDefaults.ts
+		//
+		// search.exclude 与代码库索引口径保持一致：排除依赖、构建产物、缓存、
+		// 临时目录、测试与文档等噪声目录，避免污染知识图谱（内容搜索降级慢速 walk）。
+		"search.exclude": {
+			// 依赖 / 版本控制
+			"**/node_modules": true,
+			"**/.git": true,
+			"**/.worktrees": true,
+			// 工具自身工作数据与幽灵目录
+			"**/.claude": true,
+			"**/.codebuddy": true,
+			"**/.vscode-test": true,
+			"**/.codebase-memory": true,
+			// 构建 / 分发产物
+			"**/build": true,
+			"**/out": true,
+			"**/out-build": true,
+			"**/out-test": true,
+			"**/out-vscode": true,
+			"**/dist": true,
+			"**/target": true,
+			"**/deploy-package": true,
+			"**/coverage": true,
+			// 缓存 / 临时目录
+			"**/.next": true,
+			"**/.nuxt": true,
+			"**/__pycache__": true,
+			"**/.cache": true,
+			"**/tmp": true,
+			"**/temp": true,
+			// IDE 配置与缓存
+			"**/.vscode": true,
+			"**/.idea": true,
+			"**/.vs": true,
+			"**/.vscode-server": true,
+			"**/.ugs": true,
+			// 非源码资产 / 测试 / 文档 / 脚本
+			"**/test": true,
+			"**/tests": true,
+			"**/resources": true,
+			"**/docs": true,
+			"**/doc": true,
+			"**/scripts": true,
+			"**/dev": true,
+			"**/extensions": true,
+			"**/extensions/hermes-agent": true,
+			"**/cli": true,
+			"**/examples": true,
+			"**/notes": true,
+			"**/public": true,
+			"**/generated-images": true
+		},
+		// 资源管理器排除：仅隐藏生成/缓存/临时目录，保留可编辑源码
+		//（build/、test/、src/ 等源码目录不隐藏）。
+		"files.exclude": {
+			"**/.git": true,
+			"**/.worktrees": true,
+			"**/.claude": true,
+			"**/.codebuddy": true,
+			"**/node_modules": true,
+			"**/out": true,
+			"**/out-build": true,
+			"**/out-test": true,
+			"**/out-vscode": true,
+			"**/dist": true,
+			"**/tmp": true
+		},
+		// 文件监视排除：减轻 watcher 负载（大目录抖动会触发重复索引/日志爆炸）。
+		"files.watcherExclude": {
+			"**/.git/objects/**": true,
+			"**/.git/subtree-cache/**": true,
+			"**/.worktrees/**": true,
+			"**/.claude/**": true,
+			"**/.codebuddy/**": true,
+			"**/node_modules/**": true,
+			"**/build/**": true,
+			"**/out/**": true,
+			"**/out-build/**": true,
+			"**/out-test/**": true,
+			"**/out-vscode/**": true,
+			"**/dist/**": true,
+			"**/deploy-package/**": true,
+			"**/tmp/**": true,
+			"**/extensions/**": true,
+			"**/test/**": true,
+			"**/tests/**": true
+		}
+	},
+	"extensions": {
+		"recommendations": []
+	},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "Compile Check (tsgo)",
+				"type": "shell",
+				"command": "npm run compile-check-ts-native",
+				"group": "build",
+				"problemMatcher": "$tsc",
+				"presentation": {
+					"reveal": "always",
+					"panel": "dedicated"
+				}
+			},
+			{
+				"label": "Compile (gulp + extensions)",
+				"type": "shell",
+				"command": "npm run compile",
+				"group": "build",
+				"problemMatcher": "$tsc",
+				"presentation": {
+					"reveal": "always",
+					"panel": "dedicated"
+				}
+			},
+			{
+				"label": "Transpile Client (F5)",
+				"type": "shell",
+				"command": "npm run transpile-client",
+				"group": "build",
+				"problemMatcher": "$tsc",
+				"presentation": {
+					"reveal": "always",
+					"panel": "dedicated"
+				}
+			},
+			{
+				"label": "Watch (client + extensions)",
+				"type": "shell",
+				"command": "npm run watch",
+				"group": "build",
+				"problemMatcher": "$tsc",
+				"isBackground": true,
+				"presentation": {
+					"reveal": "always",
+					"panel": "dedicated"
+				}
+			}
+		]
+	}
+}
