@@ -27,6 +27,8 @@ import { ToolSecurityLevel } from '../../../common/providers.js';
 import type { IToolResultContent } from '../../../common/providers.js';
 import { SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { detectTerminalSearchCommand, terminalSearchCommandHint } from './terminalCommandGuards.js';
+import { detectUnixOnlyCommand, UNIX_ONLY_COMMAND_HINTS } from './executeCodeGuards.js';
+import { isWindows } from '../../../../../../base/common/platform.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 
 export interface CoreToolContext {
@@ -715,10 +717,18 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 	});
 
 	// ── terminal ────────────────────────────────────────────────────
+	// 2026-08-09：平台感知描述——模型多次在 Windows 上写 Unix 语法
+	// （dir ... | head -50，日志 1786264843850）。把当前 OS/Shell 直接写进
+	// 工具描述，让模型在决策时即知环境，而非事后靠护栏纠错。
+	const terminalPlatformNote = isWindows
+		? ' Runs on Windows. The command is executed via PowerShell/cmd.exe — Unix-only commands (head/tail/grep/sed/awk/find/ls/cat) are NOT available. ' +
+		  'Use PowerShell equivalents: Select-Object -First <N> (head), Select-String (grep), Get-ChildItem (ls), Get-Content (cat), ' +
+		  'Sort-Object/Take (sort/head). For code search prefer search_code / search_files tools instead of shell pipelines.'
+		: ' Runs on a Unix-like OS (Linux/macOS) — bash/zsh commands are available.';
 	ctx.register({
 		definition: {
 			name: 'terminal',
-			description: 'Execute a shell command and return the output. Works on desktop only. Returns stdout, stderr, and exit code.',
+			description: 'Execute a shell command and return the output. Works on desktop only. Returns stdout, stderr, and exit code.' + terminalPlatformNote,
 			inputSchema: {
 				type: 'object',
 				properties: {
@@ -734,13 +744,28 @@ export function registerCoreTools(ctx: CoreToolContext): { resetPerTurn(): void 
 		},
 		available: () => typeof process !== 'undefined' || typeof navigator !== 'undefined',
 		handler: async (args, signal, agentId) => {
-			const command = String(args['command'] ?? '').trim();
-			if (!command) { throw new Error('command is required'); }
-			const requestedCwd = args['cwd'] ? String(args['cwd']) : '.';
-			const resolvedCwd = await ctx.resolveAndCheckWorkspacePath(agentId, requestedCwd);
-			const timeoutSec = Math.min(Math.max(Number(args['timeout'] ?? 30), 1), 300);
+		const command = String(args['command'] ?? '').trim();
+		if (!command) { throw new Error('command is required'); }
+		// Windows 护栏（日志 1786264843850）：与 execute_code 一致，拦截管道中的
+		// Unix-only 命令（head/tail/grep/sed/awk）——cmd.exe/PowerShell 下必败。
+		// 模型在 Windows 上写 `dir ... | head -50` 会直接失败，提前给可执行纠错反馈。
+		if (isWindows) {
+			const unixCmd = detectUnixOnlyCommand(command);
+			if (unixCmd) {
+				throw new Error(
+					`terminal: Unix-only command '${unixCmd}' is not available on Windows (cmd.exe/PowerShell). ` +
+					`Rewrite the pipeline with a PowerShell equivalent: ... | ${UNIX_ONLY_COMMAND_HINTS[unixCmd] ?? unixCmd} ` +
+					`(e.g. powershell -NoProfile -Command "<your cmd> | Select-Object -First 60"), then reissue terminal with the corrected command.`
+				);
+			}
+		}
+		const requestedCwd = args['cwd'] ? String(args['cwd']) : '.';
+		// 2026-08-09：沙箱仅限制【写】操作。terminal 属执行/读性质，cwd 解析
+		// 不触发沙箱判定（checkSandbox=false），允许按用户要求自由访问任意目录。
+		const resolvedCwd = await ctx.resolveAndCheckWorkspacePath(agentId, requestedCwd, false);
+		const timeoutSec = Math.min(Math.max(Number(args['timeout'] ?? 30), 1), 300);
 
-			const result = await executeTerminalCommand(command, resolvedCwd, timeoutSec, signal);
+		const result = await executeTerminalCommand(command, resolvedCwd, timeoutSec, signal);
 			// ── 搜索类命令护栏（不阻断执行，仅提示）──────────────────────
 			// find/grep -r/Get-ChildItem -Recurse 等纯搜索命令是 search_files/
 			// search_code 的本职工作（索引快路径 + 结构化结果 + 无 shell 可移植性

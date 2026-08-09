@@ -316,7 +316,14 @@ export interface ICodebaseGraphService {
 	 */
 	getClassHierarchy(qualifiedName: string, direction?: 'bases' | 'derived' | 'both', maxDepth?: number): IClassHierarchyNode | undefined;
 
-	getArchitectureAdvanced(dimensions?: string[]): Promise<any>;
+	/**
+	 * 高级架构分析（Leiden 社区检测 + dead code 检测）。
+	 * @param dimensions 请求的报告维度（可省略 → 全量）
+	 * @param project 限定项目名；缺省用当前项目（_projectName），跨项目则显式传。
+	 *               2026-08-09：此前固定传 undefined 会全量分析含 UE5EA 等所有项目，
+	 *               70 万节点导致 get_architecture 卡住数分钟（日志 1786268047075）。
+	 */
+	getArchitectureAdvanced(dimensions?: string[], project?: string): Promise<any>;
 	getCodeSnippet(qualifiedName: string, contextLines?: number, includeNeighbors?: boolean): Promise<{ filePath: string; startLine: number; endLine: number; content: string; language: string; neighbors?: { name: string; content: string }[] } | null>;
 
 	listProjects(): { name: string; nodeCount: number; edgeCount: number; fileCount: number }[];
@@ -4445,9 +4452,11 @@ self.onmessage = async function(e) {
 		return tracePath(this._graph.store, undefined, sourceName, targetName, mode as any, maxDepth, direction, includeTests, opts?.edgeTypes);
 	}
 
-	async getArchitectureAdvanced(dimensions?: string[]): Promise<any> {
-		// 多 folder：不传 project → 搜索全部项目（含 S1Game + UE5EA 等）
-		const report: any = await analyzeArchitecture(this._graph.store, undefined);
+	async getArchitectureAdvanced(dimensions?: string[], project?: string): Promise<any> {
+		// 2026-08-09：默认限定当前项目（避免全量分析含 UE5EA 等所有项目导致卡住）；
+		// 显式传 project 时跨项目分析。
+		const projectName = project || this._projectName;
+		const report: any = await analyzeArchitecture(this._graph.store, projectName);
 
 		try {
 			report.deadCode = detectDeadCodeEnhanced(this._graph.store, this._projectName);

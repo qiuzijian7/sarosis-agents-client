@@ -1166,7 +1166,9 @@ protected override _createMessageElement(msg: IAgentChatMessage): HTMLElement {
 		}
 
 		// Confirmation card
-		if (!isUser && msg.confirmation && msg.confirmation.status === 'pending') {
+		// 2026-08-09：写文件/补丁等工具卡片已内嵌沙箱询问按钮（confirmation.toolCallId 匹配时），
+		// 此时跳过独立确认卡片，避免重复 UI；其余（terminal 等）仍走独立确认卡片。
+		if (!isUser && msg.confirmation && msg.confirmation.status === 'pending' && !this._isConfirmationEmbeddedInWriteCard(msg)) {
 			bubble.appendChild(this._createConfirmationCard(msg.confirmation));
 		}
 
@@ -1687,6 +1689,43 @@ protected override _toolResultText(result: string): string {
 		} catch {
 			return result;
 		}
+	}
+
+protected override _normalizeToolResultText(result: unknown): string {
+		// 2026-08-09：通用工具 result 归一化。base.tc.result 可能是
+		//   - string（原生 panel 持久化时已 stringify）
+		//   - [{type:'text', text:'...'}]（codebaseTools/coreTools 的 `json()` helper 包装）
+		//   - { __truncated__, content } / { content: [{...}] } 对象
+		// 统一解包为可读 string。
+		if (typeof result === 'string') {
+			// 复用既有的 _toolResultText 解析（支持 '[{...}]' 形式 + 对象包装）
+			return this._toolResultText(result);
+		}
+		if (Array.isArray(result)) {
+			if (result.length === 1 && result[0]?.type === 'text' && typeof result[0].text === 'string') {
+				return result[0].text;
+			}
+			const joined = result
+				.map((c: any) => (typeof c?.text === 'string' ? c.text : ''))
+				.join('');
+			if (joined) { return joined; }
+			try { return JSON.stringify(result, null, 2); } catch { return String(result); }
+		}
+		if (result && typeof result === 'object') {
+			// safeStringifyToolResult 截断回退：{ __truncated__: true, content: '...' }
+			const truncatedObj = result as { __truncated__?: boolean; content?: unknown };
+			if (truncatedObj.__truncated__ && typeof truncatedObj.content === 'string') {
+				return truncatedObj.content;
+			}
+			// 对象包装 {content:[{type:'text', text:'...'}]}
+			if (Array.isArray(truncatedObj.content)) {
+				return (truncatedObj.content as any[])
+					.map((c: any) => (typeof c?.text === 'string' ? c.text : ''))
+					.join('');
+			}
+			try { return JSON.stringify(result, null, 2); } catch { return String(result); }
+		}
+		return String(result);
 	}
 
 protected override _formatDuration(ms: number): string {

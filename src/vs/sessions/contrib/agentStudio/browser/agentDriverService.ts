@@ -21,6 +21,7 @@ import { IAgentStudioService } from '../common/agentStudio.js';
 import type { AgentBinding } from '../../../common/agentStudioTypes.js';
 import { AGENT_STUDIO_DRIVER_TURN_CONCURRENCY_LIMIT_SETTING, AGENT_STUDIO_RESPONSE_LANGUAGE_SETTING, AGENT_STUDIO_LANGUAGE_SETTING } from '../common/constants.js';
 import { buildResponseLanguageDirective } from '../common/responseLanguage.js';
+import { buildEnvironmentDirective } from '../common/environmentDirective.js';
 import { GLOBAL_SYSTEM_SUFFIX, GLOBAL_SYSTEM_PREFIX, getStrategyGuidance } from '../common/chatModeConfig.js';
 import { getParadigmOverride } from '../common/paradigmOverride.js';
 import { joinSections, composeFrozenPrefix, composeVolatileMessage, buildCompactToolSection, type ISystemPromptTiers } from '../common/systemPromptComposer.js';
@@ -634,6 +635,20 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			}
 		} catch (error) {
 			this._logService.warn('[AgentDriver] Failed to inject response language directive:', error);
+		}
+
+		// ── 运行环境（OS / Shell，stable 层）──
+		// 2026-08-09：此前仅 user_info 标签带 OS 信息（贴在 user message 上），
+		// system prompt 层无平台信息 → 模型在 Windows 上反复写 Unix 语法
+		// （dir ... | head -50，日志 1786264843850）。这里注入 system prompt 层，
+		// 模型每轮决策时都可见。子代理经继承自动获得。
+		try {
+			const envDirective = buildEnvironmentDirective();
+			if (envDirective) {
+				stableParts.push(envDirective);
+			}
+		} catch (error) {
+			this._logService.warn('[AgentDriver] Failed to inject environment directive:', error);
 		}
 
 			// ── Persona Memory（用户硬事实，volatile 层）──

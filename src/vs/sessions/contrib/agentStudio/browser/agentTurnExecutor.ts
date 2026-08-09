@@ -2854,6 +2854,8 @@ interface ITurnContext {
 						const confirmationId = `sandbox-${toolResult.toolCallId}-${Date.now().toString(36)}`;
 						const cf = host._buildSandboxConfirmationCard(toolName, v);
 						cf.id = confirmationId;
+						// 关联工具调用 ID：写文件等工具卡片内嵌询问按钮时匹配用
+						cf.toolCallId = toolResult.toolCallId;
 						yield { type: 'confirmation', confirmationData: cf };
 						const decision = await host._awaitSandboxConfirmation(confirmationId);
 						yield {
@@ -2918,12 +2920,14 @@ interface ITurnContext {
 								const v = sr.metadata!.sandboxViolation!;
 								const tc = localExecutedCalls.find((c: any) => c.id === toolResult.toolCallId);
 								const toolName = tc?.name ?? toolResult.toolCallId;
-								const confirmationId = `sandbox-${toolResult.toolCallId}-${Date.now().toString(36)}`;
-								const cf = host._buildSandboxConfirmationCard(toolName, v);
-								cf.id = confirmationId;
-								// 渲染确认卡片（原生 pane 的 _processDelta 处理 confirmation delta）
-								yield { type: 'confirmation', confirmationData: cf };
-								const decision = await host._awaitSandboxConfirmation(confirmationId);
+						const confirmationId = `sandbox-${toolResult.toolCallId}-${Date.now().toString(36)}`;
+						const cf = host._buildSandboxConfirmationCard(toolName, v);
+						cf.id = confirmationId;
+						// 关联工具调用 ID：写文件等工具卡片内嵌询问按钮时匹配用
+						cf.toolCallId = toolResult.toolCallId;
+						// 渲染确认卡片（原生 pane 的 _processDelta 处理 confirmation delta）
+						yield { type: 'confirmation', confirmationData: cf };
+						const decision = await host._awaitSandboxConfirmation(confirmationId);
 								yield {
 									type: 'confirmation_resolved',
 									confirmationId,

@@ -1709,6 +1709,15 @@ protected _appendCanceledNotice(wrapper: HTMLElement): void  { throw new Error('
 
 protected _toolResultText(result: string): string  { throw new Error('[moved-to-feature] _toolResultText'); }
 
+/**
+ * 2026-08-09：通用工具 result 归一化（与 delegateCards.ts:113-119 一致）。
+ * codebaseTools/coreTools 的 `json()` helper 返回 `[{type:'text', text:'...'}]` 数组，
+ * 经 agentOSService 的 safeStringifyToolResult + JSON.parse 后 tc.result 仍是 array。
+ * 通用工具卡片直接 set textContent=array 会得到 [object Object] 或空白。
+ * 实现放在 agentChatPanel.messages.ts（与 _toolResultText 一致的 moved-to-feature 模式）。
+ */
+protected _normalizeToolResultText(result: unknown): string  { throw new Error('[moved-to-feature] _normalizeToolResultText'); }
+
 protected _formatDuration(ms: number): string  { throw new Error('[moved-to-feature] _formatDuration'); }
 
 protected _toggleNodeCollapse(
@@ -2053,6 +2062,51 @@ override dispose(): void {
 	// ── tool-card methods implemented in agentChatPanel.toolCards.ts ──
 	protected abstract _createThinkingCard(msg: IAgentChatMessage): HTMLElement;
 	protected abstract _maybeCreateClarifyCard(tc: IToolCall): HTMLElement | null;
+
+	/**
+	 * 取与指定工具调用匹配的沙箱确认（confirmation.toolCallId === toolCallId 且 pending）。
+	 * 写文件等工具卡片内嵌「询问用户」按钮时由 toolCards/fileCards 使用。
+	 */
+	protected _getToolConfirmation(msg: IAgentChatMessage | undefined, toolCallId: string | undefined): IConfirmationData | undefined {
+		if (!msg || !msg.confirmation || msg.confirmation.status !== 'pending' || !toolCallId) {
+			return undefined;
+		}
+		return msg.confirmation.toolCallId === toolCallId ? msg.confirmation : undefined;
+	}
+
+	/** 写文件类工具键（沙箱确认内嵌到这些卡片上显示询问按钮） */
+	protected static readonly WRITE_FILE_TOOL_KEYS = new Set(['file_write', 'patch', 'file_edit', 'create_file']);
+
+	/**
+	 * 判断沙箱确认是否已内嵌到写文件工具卡片（此时跳过独立确认卡片，避免重复 UI）。
+	 * 非写文件工具（如 terminal）的确认仍走独立确认卡片。
+	 */
+	protected _isConfirmationEmbeddedInWriteCard(msg: IAgentChatMessage | undefined): boolean {
+		if (!msg || !msg.confirmation || msg.confirmation.status !== 'pending' || !msg.confirmation.toolCallId) {
+			return false;
+		}
+		const toolId = msg.confirmation.toolCallId;
+		// toolCalls 数组
+		if (msg.toolCalls) {
+			for (const tc of msg.toolCalls) {
+				if (tc.id === toolId && AgentChatPanelBase.WRITE_FILE_TOOL_KEYS.has((tc.name || '').toLowerCase())) {
+					return true;
+				}
+			}
+		}
+		// parts 模式
+		if (msg.parts) {
+			for (const p of msg.parts) {
+				if (p.kind === 'tool') {
+					const t = (p as any).tool as IToolCall | undefined;
+					if (t && t.id === toolId && AgentChatPanelBase.WRITE_FILE_TOOL_KEYS.has((t.name || '').toLowerCase())) {
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}
 	protected abstract _buildTaskCardFromData(data: { title: string; description: string; source?: string; taskId?: string; dependencies?: readonly string[]; attachments?: readonly { name: string; mimeType: string }[] }): HTMLElement | null;
 	protected abstract _appendToolCallsWithPhaseGroups(
 		parent: HTMLElement,
@@ -2060,10 +2114,10 @@ override dispose(): void {
 		streamPhase?: string,
 	): void;
 	protected abstract _appendToolCard(container: HTMLElement, tc: IToolCall, msg: IAgentChatMessage): void;
-	protected abstract _createWriteFileToolCard(tc: IToolCall, key: string): HTMLElement;
+	protected abstract _createWriteFileToolCard(tc: IToolCall, key: string, confirmation?: IConfirmationData): HTMLElement;
 	protected abstract _svgChevronDown(parent: HTMLElement, className: string): void;
 	protected abstract _createTerminalToolCard(tc: IToolCall, key: string): HTMLElement;
-	protected abstract _createToolCallCard(tc: IToolCall): HTMLElement;
+	protected abstract _createToolCallCard(tc: IToolCall, confirmation?: IConfirmationData): HTMLElement;
 	protected abstract _svgChevron(parent: HTMLElement, className: string, size: number): SVGElement;
 	protected abstract _svgSpinner(parent: HTMLElement, className: string): void;
 	protected abstract _createPlanCard(tc: IToolCall): HTMLElement;

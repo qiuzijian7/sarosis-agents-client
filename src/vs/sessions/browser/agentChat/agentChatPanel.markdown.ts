@@ -493,7 +493,7 @@ protected override _renderPartsContent(bubble: HTMLElement, parts: readonly IMes
 			const toolPart = (part as any).tool;
 			// clarify 工具走专用交互卡片（含选项按钮），否则普通工具卡片
 			const clarifyCard = this._maybeCreateClarifyCard(toolPart);
-				const renderedCard = clarifyCard ?? this._createToolCallCard(toolPart);
+				const renderedCard = clarifyCard ?? this._createToolCallCard(toolPart, this._getToolConfirmation(hostMsg, toolPart?.id));
 				renderedCard.setAttribute('data-part-key', `tool:${toolPart?.id ?? `auto-${k}`}`);
 				bubble.appendChild(renderedCard);
 				if ((window as any).__SAROSIS_PARTS_DIAG) {
@@ -539,7 +539,7 @@ protected override _renderPartsContent(bubble: HTMLElement, parts: readonly IMes
 		if (part.kind === 'tool') {
 		const toolPart = (part as any).tool;
 		const clarifyCard = this._maybeCreateClarifyCard(toolPart);
-		const card = clarifyCard ?? this._createToolCallCard(toolPart);
+		const card = clarifyCard ?? this._createToolCallCard(toolPart, this._getToolConfirmation(msg, toolPart?.id));
 		card.setAttribute('data-part-key', `tool:${toolPart?.id ?? `auto-${partIndex}`}`);
 		return card;
 	}

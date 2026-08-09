@@ -153,6 +153,8 @@ export interface IConfirmationData {
 	command?: string;
 	/** Tool call name (to identify terminal tools) */
 	toolName?: string;
+	/** 关联的工具调用 ID（沙箱确认内嵌到对应工具卡片时使用） */
+	toolCallId?: string;
 }
 
 /** Tool call within a message */

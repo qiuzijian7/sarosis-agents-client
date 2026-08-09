@@ -1,5 +1,5 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
-import { IAgentChatMessage, IToolCall, IChatAttachment, IPlanTaskCard } from './agentChatTypes.js';
+import { IAgentChatMessage, IToolCall, IChatAttachment, IPlanTaskCard, IConfirmationData } from './agentChatTypes.js';
 import { AgentChatPanelBase, TOOL_BUILTIN_TITLES, TOOL_TERMINAL_TOOLS, TOOL_LIST_TOOLS, TOOL_CODEBASE_TOOLS, READ_FILE_KEYS, TOOL_PLAN_TOOLS, TOOL_DELEGATE_TOOLS, TOOL_SEARCH_TOOLS, TOOL_WEB_TOOLS, TOOL_SKILL_TOOLS, TOOL_MERMAID_TOOLS } from './agentChatPanel.base.js';
 
 /** 解析 tc.args —— 兼容 string(JSON) / object / undefined 三种形态。 */
@@ -333,7 +333,7 @@ protected override _appendToolCard(container: HTMLElement, tc: IToolCall, msg: I
 			container.appendChild(clarifyCard);
 			return;
 		}
-		const wrapper = this._createToolCallCard(tc);
+		const wrapper = this._createToolCallCard(tc, this._getToolConfirmation(msg, tc.id));
 		if (tc.id) { wrapper.setAttribute('data-tool-id', tc.id); }
 		container.appendChild(wrapper);
 	}
@@ -388,7 +388,7 @@ protected _createWebToolCard(tc: IToolCall, key: string): HTMLElement {
 	throw new Error('[moved-to-feature] _createWebToolCard');
 }
 
-protected override _createToolCallCard(tc: IToolCall): HTMLElement {
+protected override _createToolCallCard(tc: IToolCall, confirmation?: IConfirmationData): HTMLElement {
 		const key = (tc.name || '').toLowerCase();
 
 		// ── update_plan: 专用计划卡片 ──
@@ -397,8 +397,8 @@ protected override _createToolCallCard(tc: IToolCall): HTMLElement {
 		}
 
 		// ── 写文件/编辑文件：diff 风格专用卡片（默认折叠）──
-		if (key === 'file_write' || key === 'patch' || key === 'file_edit' || key === 'create_file') {
-			return this._createWriteFileToolCard(tc, key);
+		if (AgentChatPanelBase.WRITE_FILE_TOOL_KEYS.has(key)) {
+			return this._createWriteFileToolCard(tc, key, confirmation);
 		}
 
 		// ── 终端命令：专用终端卡片（复刻 Void 风格：命令预览 + 输出代码块 + exit code）──
@@ -654,21 +654,27 @@ protected override _createToolCallCard(tc: IToolCall): HTMLElement {
 						return;
 					}
 					const resultText = tc.result!;
+					// 2026-08-09：通用工具 result 归一化。codebaseTools/coreTools 的 `json()` helper
+					// 返回 `[{type:'text', text:'...'}]` 数组，经 agentOSService 的
+					// safeStringifyToolResult + JSON.parse 后 tc.result 仍是 array。
+					// 通用 else 分支直接 set textContent=array 会得到 [object Object] 或空白。
+					// 与 delegateCards.ts:113-119 一致地解包。
+					const normalized = this._normalizeToolResultText(resultText);
 					// 增强渲染
-					const enhanced = this._maybeCreateEnhancedResult(key, resultText);
+					const enhanced = this._maybeCreateEnhancedResult(key, normalized);
 					if (enhanced) {
 						container.appendChild(enhanced);
 					} else if (TOOL_TERMINAL_TOOLS.has(key)) {
 						const term = append(container, $('.tool-children-terminal'));
 						const codeBox = append(term, $('.tool-terminal-code'));
-						append(codeBox, $('pre')).textContent = resultText;
+						append(codeBox, $('pre')).textContent = normalized;
 						if (typeof tc.exitCode === 'number') {
 							const ec = append(term, $(`.tool-exit-code.${tc.exitCode === 0 ? 'tool-exit-code-zero' : 'tool-exit-code-nonzero'}`));
 							ec.textContent = `exit code ${tc.exitCode}`;
 						}
 					} else if (TOOL_LIST_TOOLS.has(key)) {
 						// 统一搜索卡片：search bar + options + results
-						const items = this._parseToolListItems(resultText);
+						const items = this._parseToolListItems(normalized);
 						const isSearch = key.includes('search') || key === 'grep' ||
 							key.includes('query') || key.includes('trace') || key.includes('architecture') ||
 							key.includes('schema') || key.includes('snippet') || key.includes('index') ||
@@ -748,7 +754,7 @@ protected override _createToolCallCard(tc: IToolCall): HTMLElement {
 						const code = append(container, $('.tool-code-children'));
 						const sel = append(code, $('.tool-code-children-selectable'));
 						if (isError) { code.classList.add('tool-result-error'); }
-						append(sel, $('pre')).textContent = resultText;
+						append(sel, $('pre')).textContent = normalized;
 					}
 				},
 			});

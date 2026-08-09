@@ -21,6 +21,8 @@ import type { IWorkspaceContextService } from '../../../../../../platform/worksp
 import { type SearchHelpers, redactSecrets } from './searchHelpers.js';
 import { prepareQueryForRipgrep, escapeLiteralForRegex } from './regexValidator.js';
 import { normalizeFileGlobForSearch, normalizeSearchPathFilter, searchRootCandidates, searchOutcomeHint } from './pathFilterNormalize.js';
+import type { IAgentStudioService } from '../../../common/agentStudio.js';
+import type { IWorkspaceFolder } from '../../../../../../platform/workspace/common/workspace.js';
 
 export interface CodebaseToolContext {
 	register(definition: { definition: any; handler: any }): void;
@@ -35,11 +37,45 @@ export interface CodebaseToolContext {
 	id: string;
 	/** 工作区路径解析 + 沙箱校验（search_files / 其它工具读取前调用）。 */
 	resolveAndCheckWorkspacePath: (agentId: string | undefined, requestedPath: string, checkSandbox?: boolean) => Promise<string>;
+	/**
+	 * 2026-08-09：Agent Studio 当前激活工作区。搜索/索引/get_architecture 等工具
+	 * 应当基于此（用户在工作区下拉中选择的 sarosis-agents-client/main）而非
+	 * `workspaceService.getWorkspace().folders`（multi-workspace folders 合并，
+	 * 会把已切换走的工作区如 S1Game/UE5EA 一起带回来）。
+	 */
+	studioService?: IAgentStudioService;
 }
 
 export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 	const text = (s: string): IToolResultContent[] => [{ type: 'text', text: s }];
 	const json = (obj: unknown): IToolResultContent[] => [{ type: 'text', text: JSON.stringify(obj, null, 2) }];
+
+	/**
+	 * 2026-08-09：搜索/索引/get_architecture 等工具的根应取【当前激活的 agent 工作区】
+	 * （用户在工作区下拉中选定的 sarosis-agents-client），而非
+	 * `ctx.workspaceService.getWorkspace().folders`（multi-workspace folders 合并，
+	 * 会把已切换走的工作区如 S1Game/UE5EA 一起带回来）。无 active workspace 时回退到
+	 * VS Code 全部 folders。
+	 */
+	const getSearchFolders = async (): Promise<IWorkspaceFolder[]> => {
+		const studioSvc = ctx.studioService;
+		if (studioSvc) {
+			const activeId = studioSvc.getActiveWorkspaceId();
+			if (activeId) {
+				const ws = await studioSvc.getWorkspace(activeId);
+				if (ws?.path) {
+					const uri = URI.file(ws.path);
+					return [{
+						uri,
+						name: ws.name,
+						index: 0,
+						toResource: (relativePath: string) => URI.joinPath(uri, relativePath),
+					}];
+				}
+			}
+		}
+		return ctx.workspaceService.getWorkspace().folders;
+	};
 
 	/**
 	 * search_graph 0 结果时的近似名建议（2026-07-26，事故 1785053998262）：
@@ -207,7 +243,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			const repoPath = args['repo_path'] as string | undefined;
 			const mode = (args['mode'] as 'fast' | 'moderate' | 'full' | undefined) || 'fast';
 			const force = (args['force'] as boolean | undefined) ?? false;
-			const folders = ctx.workspaceService.getWorkspace().folders;
+			const folders = await getSearchFolders();
 			if (folders.length === 0) {
 				return text('index_repository error: no workspace folder open');
 			}
@@ -748,7 +784,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		const schema = ctx.codebaseGraphService.getGraphSchema();
 		// ADR detection (aligns with C version's adr_present + adr_hint)
 		try {
-			const folders = ctx.workspaceService.getWorkspace().folders;
+			const folders = await getSearchFolders();
 			if (folders.length > 0) {
 				const adrs = await ctx.adrManager.list(folders[0].uri);
 				if (adrs && adrs.length > 0) {
@@ -876,7 +912,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		contextLines: number,
 	): Promise<string | null> => {
 		const effectiveGlob = fileGlob || SOURCE_CODE_GLOB;
-		const folders = ctx.workspaceService.getWorkspace().folders;
+		const folders = await getSearchFolders();
 		if (folders.length === 0) { return null; }
 		const parts: string[] = [];
 		let totalMatches = 0;
@@ -1130,7 +1166,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		let includeGlob: string | undefined = normalizedFilePattern;
 		let explicitSearchRoot: string | undefined;
 		if (pathFilter && !normalizedFilePattern) {
-			const rootDirNames = ctx.workspaceService.getWorkspace().folders
+			const rootDirNames = (await getSearchFolders())
 				.map(f => f.uri.fsPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '');
 			const pf = normalizeSearchPathFilter(pathFilter, rootDirNames);
 			if (pf.includes('*')) {
@@ -1138,7 +1174,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			} else if (pf) {
 				const candidates = searchRootCandidates(
 					pf,
-					ctx.workspaceService.getWorkspace().folders.map(f => f.uri.fsPath),
+					(await getSearchFolders()).map(f => f.uri.fsPath),
 				);
 				if (candidates.length === 0) {
 					// 无 workspace folder 时的兜底解析（沙箱校验）；失败即"不存在"
@@ -1177,7 +1213,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 		// 解析出的【单个】路径（多根工作区下恒为第一个允许根），导致像 UE5EA 这类第二/第三个
 		// workspace folder 完全搜不到——112 次 search_code 里 51 次 "(no matches)"，命中的
 		// 引擎源码符号全靠 search_files 的索引快路径（自带跨 project 绝对路径）意外补位。
-		// 修复：project=ALL 时遍历 ctx.workspaceService.getWorkspace().folders 逐个搜索，
+		// 修复：project=ALL 时遍历 getSearchFolders() 逐个搜索，
 		// 结果按 folder 分段合并（与 _fallbackGrepWorkspace 相同的多 folder 语义）。
 		let searchRoots: { label: string; path: string }[];
 		if (explicitSearchRoot) {
@@ -1191,7 +1227,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 				const resolvedPath = await ctx.resolveAndCheckWorkspacePath(agentId, root ?? '.', false);
 				searchRoots = [{ label: scopedProject, path: resolvedPath }];
 			} else {
-				const folders = ctx.workspaceService.getWorkspace().folders;
+				const folders = await getSearchFolders();
 				if (folders.length > 0) {
 					// 使用目录名（fsPath 末段）作 label，与 _fallbackGrepWorkspace 的命名约定一致；
 					// 不用 f.name（workspace folder 显示名，可能为 "VsSaros_S1Game" 这样的自定义名称）。
@@ -1342,7 +1378,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			const title = args['title'] as string | undefined;
 			const content = args['content'] as string | undefined;
 
-			const folders = ctx.workspaceService.getWorkspace().folders;
+			const folders = await getSearchFolders();
 			if (folders.length === 0) {
 				return text('manage_adr: no workspace folder open.');
 			}
@@ -1422,7 +1458,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			const overridePath = args['target_path'] as string | undefined;
 			let targetPath = overridePath;
 			if (!targetPath) {
-				const folders = ctx.workspaceService.getWorkspace().folders;
+				const folders = await getSearchFolders();
 				if (folders.length === 0) {
 					return text('export_artifact error: no workspace folder open and no target_path provided');
 				}
@@ -1459,7 +1495,7 @@ export function registerCodebaseTools(ctx: CodebaseToolContext): void {
 			const overridePath = args['source_path'] as string | undefined;
 			let sourcePath = overridePath;
 			if (!sourcePath) {
-				const folders = ctx.workspaceService.getWorkspace().folders;
+				const folders = await getSearchFolders();
 				if (folders.length === 0) {
 					return text('import_artifact error: no workspace folder open and no source_path provided');
 				}

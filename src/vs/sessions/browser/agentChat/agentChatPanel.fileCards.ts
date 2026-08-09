@@ -1,13 +1,17 @@
 import { $, append, addDisposableListener, EventType } from '../../../base/browser/dom.js';
-import { IToolCall, IAgentChatMessage } from './agentChatTypes.js';
+import { IToolCall, IAgentChatMessage, IConfirmationData } from './agentChatTypes.js';
 import { AgentChatPanelCodebaseCards } from './agentChatPanel.codebaseCards.js';
 import { createSvgIcon, FILE_ICON_D, ERROR_ICON_D } from './agentChatPanel.toolCards.js';
 
 /** 自 agentChatPanel.toolCards.ts 抽离（上帝对象拆分）。继承链见继承父类。 */
 export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCards {
-	protected override _createWriteFileToolCard(tc: IToolCall, key: string): HTMLElement {
-			const isRunning = tc.status === 'running';
-			const isError = tc.status === 'error';
+	protected override _createWriteFileToolCard(tc: IToolCall, key: string, confirmation?: IConfirmationData): HTMLElement {
+		const isRunning = tc.status === 'running';
+		const isError = tc.status === 'error';
+		// 沙箱确认内嵌：该工具调用因路径越界被沙箱拦截时，confirmation 带 toolCallId
+		// 匹配到本卡片 → 在卡片底部渲染「询问用户」按钮（允许本次/允许此工作区/取消）。
+		const isSandboxPending = !!confirmation && confirmation.status === 'pending'
+			&& confirmation.toolCallId === tc.id;
 
 			// 提取文件路径（fallback 链：tc.filePath → args.filePath → args.path）
 			const filePath = this._extractFilePath(tc);
@@ -216,6 +220,42 @@ export abstract class AgentChatPanelFileCards extends AgentChatPanelCodebaseCard
 			// 取消通知
 			if (tc.status === 'canceled') {
 				this._appendCanceledNotice(wrapper);
+			}
+
+			// ── 沙箱确认内嵌询问按钮（2026-08-09 用户需求）──
+			// 写文件/补丁目标路径越沙箱时，工具卡片内直接提供「允许本次 / 允许此工作区 /
+			// 取消」按钮（无需用户另找独立的确认卡片）。点击后经 _onConfirmationAction
+			// 派发 agentStudio.confirmationAction 命令，resolve agentTurnExecutor 挂起的
+			// _awaitSandboxConfirmation，随后重执行或保留失败。
+			if (isSandboxPending && confirmation && this._onConfirmationAction) {
+				const bottom = append(wrapper, $('.tool-bottom-children'));
+				const bh = append(bottom, $('.tool-bottom-children-header'));
+				const sbChevron = this._svgChevron(bh, 'tool-bottom-children-chevron', 12);
+				append(bh, $('span.tool-bottom-children-title')).textContent = '沙箱确认';
+				const bbody = append(bottom, $('.tool-bottom-children-body'));
+				bbody.classList.add('tool-bottom-children-body-open');
+				sbChevron.classList.add('tool-bottom-children-chevron-open');
+				// 说明文本
+				append(bbody, $('p.confirmation-card-message')).textContent = confirmation.message;
+				if (confirmation.detail) {
+					append(bbody, $('pre.confirmation-card-detail')).textContent = confirmation.detail;
+				}
+				// 按钮行（复用确认卡片按钮样式）
+				const actions = append(bbody, $('.confirmation-card-actions'));
+				for (const btn of confirmation.buttons) {
+					const el = append(actions, $(
+						`button.confirmation-card-btn${btn.primary ? '.primary' : ''}${btn.danger ? '.danger' : ''}`,
+						undefined,
+						btn.label,
+					));
+					this._register(addDisposableListener(el, EventType.CLICK, (e) => {
+						e.stopPropagation();
+						this._onConfirmationAction?.(confirmation.id, btn.id);
+						// 本地立即标记为已处理（防重复点击）
+						(el as HTMLButtonElement).disabled = true;
+						el.textContent = btn.label + ' ✓';
+					}));
+				}
 			}
 
 			return wrapper;
