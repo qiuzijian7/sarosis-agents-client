@@ -128,6 +128,17 @@ export class LaunchMainService implements ILaunchMainService {
 	}
 
 	private async startOpenWindow(args: NativeParsedArgs, userEnv: IProcessEnvironment): Promise<void> {
+		// [Sarosis] Dev-mode "New Window": a second instance launched from the taskbar
+		// jump list passes the app path as argv[1] (bare electron needs it to load the
+		// app). That path is NOT a folder the user asked to open — drop it so we create
+		// an empty new window, matching the packaged behaviour of `VsSaros.exe -n`.
+		if (!app.isPackaged && args['new-window'] && args._.length === 1) {
+			const normPath = (p: string) => p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+			if (normPath(args._[0]) === normPath(app.getAppPath())) {
+				args._ = [];
+			}
+		}
+
 		const context = isLaunchedFromCli(userEnv) ? OpenContext.CLI : OpenContext.DESKTOP;
 
 		let usedWindows: ICodeWindow[] = [];
