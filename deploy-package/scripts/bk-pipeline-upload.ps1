@@ -81,7 +81,7 @@ Write-Host ""
 # ---- Packages to upload ----
 $packages = @(
     @{ Platform = "win32-x64-user"; ExePath = ".build\win32-x64\user-setup\VsSarosUserSetup.exe"; Name = "User Setup" }
-    @{ Platform = "win32-x64";     ExePath = ".build\win32-x64\system-setup\VsSarosisSetup.exe"; Name = "System Setup" }
+    @{ Platform = "win32-x64";     ExePath = ".build\win32-x64\system-setup\VsSarosSetup.exe"; Name = "System Setup" }
 )
 
 # ---- Upload each package ----
