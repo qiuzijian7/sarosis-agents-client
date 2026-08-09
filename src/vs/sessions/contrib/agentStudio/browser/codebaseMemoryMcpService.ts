@@ -21,6 +21,8 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
+import { parse as parseJsonc } from '../../../../base/common/json.js';
+import type { ParseError } from '../../../../base/common/json.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentStudioLogService } from './agentStudioLogService.js';
@@ -257,7 +259,15 @@ export class CodebaseMemoryMcpService extends Disposable implements ICodebaseMem
 				const text = content.value.toString();
 				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: file size=' + text.length + ' bytes');
 				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: file preview: ' + text.substring(0, 300));
-				const parsed = JSON.parse(text);
+				// VS Code .code-workspace 是 JSONC（支持注释 + 尾逗号），严格 JSON.parse 会
+				// 在含注释时失败（日志 2026-08-09: Expected property name or '}' in JSON at position 104）。
+				// 用 vs/base/common/json 的容错解析器（默认允许注释与尾逗号）。
+				const parseErrors: ParseError[] = [];
+				const parsed = parseJsonc(text, parseErrors);
+				if (parseErrors.length > 0) {
+					this.logService.warn('[CodebaseMemory] _initWorkspaceFileConfig: JSONC parse had ' + parseErrors.length +
+						' error(s) (tolerated): ' + parseErrors.map(e => `@${e.offset}:${e.error}`).join(', '));
+				}
 
 				const topLevelKeys = Object.keys(parsed);
 				this.logService.info('[CodebaseMemory] _initWorkspaceFileConfig: top-level keys in ' + wsFile.name + ': ' + topLevelKeys.join(', '));
