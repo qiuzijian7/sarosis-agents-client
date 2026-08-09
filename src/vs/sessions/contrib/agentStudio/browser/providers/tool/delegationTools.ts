@@ -14,6 +14,7 @@ import { IterationBudget } from '../../../common/iterationBudget.js';
 import { reduceCardState, type MutableCardState } from '../../../common/subAgentCardReducer.js';
 import type { Agent } from '../../../../../common/agentStudioTypes.js';
 import { getBuiltinAgentIdentity } from '../../../common/builtinAgents.js';
+import { isValidSkillId } from '../../../common/skillId.js';
 import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
 import type { ICodebaseGraphService } from '../../codebaseGraphService.js';
 import type { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
@@ -150,6 +151,7 @@ export async function handleNewAgentTool(
 	studioService: Pick<IAgentStudioService, 'createAgent'>,
 ): Promise<IToolResultContent[]> {
 	const rawName = args['name'] as string | undefined;
+	const rawId = args['id'] as string | undefined;
 	const role = args['role'] as string | undefined;
 	const description = args['description'] as string | undefined;
 
@@ -167,15 +169,40 @@ export async function handleNewAgentTool(
 		}];
 	}
 
-	// 2. Slug 化名称并对齐 _generateId 的 slug 逻辑（但去掉随机后缀）
-	const slugName = slugifyAgentName(rawName!);
+	// 2. 解析 agent id（唯一标识）：
+	//    - 优先采用模型显式提供的 `id`（有意义的唯一 slug，如 "Saros记忆专家" → "saros-memory-agent"）；
+	//    - 名称纯 ASCII 时自动从名称 slug 派生；
+	//    - 名称含非 ASCII（中文等）且未提供 `id` 时，slug 会剥离中文、丢失唯一性
+	//      （多个中文名共享同一 ASCII 前缀 → 互相覆盖），故明确报错并引导模型提供 `id`。
+	const explicitId = rawId?.trim();
+	let id: string;
+	if (explicitId) {
+		id = explicitId.toLowerCase();
+		if (!isValidSkillId(id)) {
+			return [{
+				type: 'text', text: JSON.stringify({
+					success: false,
+					error: `Invalid "id" "${explicitId}". Use lowercase letters, digits, hyphens, underscores (must start with a letter).`,
+				})
+			}];
+		}
+	} else if (!/[^\x00-\x7F]/.test(rawName ?? '')) {
+		id = slugifyAgentName(rawName!);
+	} else {
+		return [{
+			type: 'text', text: JSON.stringify({
+				success: false,
+				error: `Agent name "${rawName}" contains non-ASCII characters, so no unique id can be auto-derived (the ASCII part would collide across similar names, e.g. "Saros记忆专家"/"Saros工作区专家" both → "saros"). Please provide a unique ASCII "id" based on the name's meaning — e.g. name "Saros记忆专家" → id "saros-memory-agent".`,
+			})
+		}];
+	}
 	const displayName = rawName!.trim();
 
-	// 3. 构建 Partial<Agent> — displayName 保留用户原始输入，id 使用 slug
+	// 3. 构建 Partial<Agent> — displayName 保留用户原始输入，id 使用解析出的 id
 	const trimmedRole = role!.trim();
 	const trimmedDesc = description!.trim();
 	const agentData: Partial<Agent> = {
-		id: slugName,
+		id,
 		name: displayName,
 		role: trimmedRole,
 		description: trimmedDesc,
@@ -866,14 +893,24 @@ export function registerDelegationTools(ctx: DelegationToolContext): void {
 				'- For codebase exploration / search — never create a generic "General Assistant"; that belongs to the read-only exploration sub-agent.',
 				'- The agent already exists (reuse it via delegation)',
 				'',
-				'## Role guidance:',
-				'- Set `role` to a CONCRETE specialty that matches the agent purpose (e.g. "Code Reviewer", "Researcher", "Tester").',
-				'- Avoid vague roles like "General Assistant" — a persistent agent should have a focused specialty; one-off exploration is handled by the read-only exploration sub-agent.',
-			].join('\n'),
-			inputSchema: {
-				type: 'object',
-				properties: {
-					name: { type: 'string', description: 'Human-readable agent name (e.g. "Code Reviewer")' },
+			'## Role guidance:',
+			'- Set `role` to a CONCRETE specialty that matches the agent purpose (e.g. "Code Reviewer", "Researcher", "Tester").',
+			'- Avoid vague roles like "General Assistant" — a persistent agent should have a focused specialty; one-off exploration is handled by the read-only exploration sub-agent.',
+			'',
+			'## id guidance (IMPORTANT):',
+			'- `id` is the unique ASCII slug used as the agent identifier and folder name.',
+			'- ALWAYS provide a stable, meaningful `id` when the agent name is non-English / non-ASCII.',
+			'  Auto-deriving an id from such names strips the non-ASCII characters and collides',
+			'  (e.g. "Saros记忆专家" and "Saros工作区专家" would both become "saros" and overwrite each other).',
+			'- Derive `id` from the name\'s English meaning, lowercase, hyphenated.',
+			'  Example: name "Saros记忆专家" → id "saros-memory-agent"; name "Saros工作区专家" → id "saros-workspace-agent".',
+			'- For pure-ASCII names `id` is optional (auto-derived); for non-ASCII names it is REQUIRED.',
+		].join('\n'),
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'Unique ASCII slug used as the agent identifier (lowercase letters/digits/hyphens/underscores, start with a letter). REQUIRED when the name is non-ASCII — derive it from the name\'s meaning, e.g. name "Saros记忆专家" → id "saros-memory-agent".' },
+				name: { type: 'string', description: 'Human-readable agent name (e.g. "Code Reviewer")' },
 					role: { type: 'string', description: 'Agent role/specialty — use a CONCRETE value (e.g. "Code Reviewer", "Researcher", "Tester"). Avoid vague "General Assistant"; a persistent agent should have a focused specialty.' },
 					description: { type: 'string', description: 'What this agent does and when to use it' },
 					systemPrompt: { type: 'string', description: 'Custom system prompt for the agent' },

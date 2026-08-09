@@ -115,6 +115,14 @@ suite('new_agent Tool', () => {
 		assert.strictEqual(result, 'this-is-a-very-long-agent-name-that-exce');
 	});
 
+	test('S6: slugifyAgentName — 中文名剥离非 ASCII，仅保留 ASCII 前缀（无哈希）', () => {
+		// 说明：slug 函数本身会剥离中文，多个中文名共享同一 ASCII 前缀是预期的；
+		// 防覆盖由 handleNewAgentTool 层保证——非 ASCII 名必须显式提供唯一 id。
+		assert.strictEqual(slugifyAgentName('Saros记忆专家'), 'saros');
+		assert.strictEqual(slugifyAgentName('Saros工作区专家'), 'saros');
+		assert.strictEqual(slugifyAgentName('Saros聊天框专家'), 'saros');
+	});
+
 	// ═══════════════════════════════════════════════════════════════════════════
 	// handleNewAgentTool 核心测试
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -354,5 +362,66 @@ suite('new_agent Tool', () => {
 		assert.strictEqual(parsed.id, 'senior-backend-developer', 'id should be slugified');
 		assert.strictEqual(mock.createAgentCalls[0].name, 'Senior Backend_Developer', 'name should be original');
 		assert.strictEqual(mock.createAgentCalls[0].id, 'senior-backend-developer', 'id should be slugified');
+	});
+
+	// ── T18: 显式 id 用于中文名（Saros记忆专家 → saros-memory-agent） ─────────
+	test('T18: uses explicit id for non-ASCII name (Saros记忆专家 → saros-memory-agent)', async () => {
+		const mock = new MockAgentStudioService();
+		const result = await handleNewAgentTool(
+			{ name: 'Saros记忆专家', id: 'saros-memory-agent', role: '记忆专家', description: '记忆管理' },
+			mock,
+		);
+
+		const parsed = parseResult(result);
+		assert.strictEqual(parsed.success, true);
+		assert.strictEqual(parsed.id, 'saros-memory-agent');
+		assert.strictEqual(mock.createAgentCalls[0].id, 'saros-memory-agent');
+		assert.strictEqual(mock.createAgentCalls[0].name, 'Saros记忆专家', 'name should keep original');
+	});
+
+	// ── T18.5: 多个中文名提供不同显式 id → 互不覆盖 ─────────────────────────
+	test('T18.5: distinct explicit ids for multiple Chinese names → no overwrite', async () => {
+		const mock = new MockAgentStudioService();
+		await handleNewAgentTool(
+			{ name: 'Saros记忆专家', id: 'saros-memory-agent', role: '记忆专家', description: '记忆管理' },
+			mock,
+		);
+		await handleNewAgentTool(
+			{ name: 'Saros工作区专家', id: 'saros-workspace-agent', role: '工作区专家', description: '工作区管理' },
+			mock,
+		);
+		assert.strictEqual(mock.createAgentCalls.length, 2);
+		assert.notStrictEqual(mock.createAgentCalls[0].id, mock.createAgentCalls[1].id);
+		assert.strictEqual(mock.createAgentCalls[0].id, 'saros-memory-agent');
+		assert.strictEqual(mock.createAgentCalls[1].id, 'saros-workspace-agent');
+	});
+
+	// ── T19: 中文名未提供 id → 报错引导（防静默覆盖） ───────────────────────
+	test('T19: rejects non-ASCII name without explicit id (prevents silent overwrite)', async () => {
+		const mock = new MockAgentStudioService();
+		const result = await handleNewAgentTool(
+			{ name: 'Saros记忆专家', role: '记忆专家', description: '记忆管理' },
+			mock,
+		);
+
+		const parsed = parseResult(result);
+		assert.strictEqual(parsed.success, false);
+		assert.ok(parsed.error.toLowerCase().includes('id'), `error should mention id: ${parsed.error}`);
+		assert.ok(parsed.error.includes('saros-memory-agent'), 'error should give a concrete id example');
+		assert.strictEqual(mock.createAgentCalls.length, 0);
+	});
+
+	// ── T20: 非法 id 格式 → 报错 ────────────────────────────────────────────
+	test('T20: rejects invalid id format', async () => {
+		const mock = new MockAgentStudioService();
+		const result = await handleNewAgentTool(
+			{ name: 'Foo', id: 'Foo Bar!', role: 'Tester', description: 'Test' },
+			mock,
+		);
+
+		const parsed = parseResult(result);
+		assert.strictEqual(parsed.success, false);
+		assert.ok(parsed.error.toLowerCase().includes('invalid "id"'));
+		assert.strictEqual(mock.createAgentCalls.length, 0);
 	});
 });
