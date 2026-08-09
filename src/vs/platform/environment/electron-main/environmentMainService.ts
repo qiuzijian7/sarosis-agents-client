@@ -55,37 +55,27 @@ export class EnvironmentMainService extends NativeEnvironmentService implements 
 	}
 
 	/**
-	 * Override logsHome to store ALL VS Code native log files inside the
-	 * product directory for packaged EXE releases, using the original VS
-	 * Code timestamp sub-directory layout so all native log channels
-	 * (main, renderer, editSessions, mcpgateway, network-shared,
+	 * logsHome override — keep VS Code's standard behaviour: all native log
+	 * channels (main, renderer, editSessions, mcpgateway, network-shared,
 	 * remoteTunnelService, sharedprocess, telemetry, terminal,
-	 * tunnelHostService, userDataSync, window1/, ...) end up under the
-	 * product folder.
+	 * tunnelHostService, userDataSync, window1/, ...) live under the user data
+	 * directory, which is writable for normal users:
 	 *
-	 * Packaged:
-	 *   {productRoot}/logs/20260704T233319/main.log
-	 *   {productRoot}/logs/20260704T233319/window1/renderer.log
-	 *   {productRoot}/logs/20260704T233319/editSessions.log
+	 *   {userDataPath}/logs/20260704T233319/main.log
+	 *   {userDataPath}/logs/20260704T233319/window1/renderer.log
+	 *   {userDataPath}/logs/20260704T233319/editSessions.log
 	 *   ...
 	 *
-	 * Dev mode:
-	 *   {userDataPath}/logs/{timestamp}/...  (original VS Code behavior)
-	 *
-	 * Note: appRoot is at {productRoot}/resources/app/out/,
-	 * so resolve '..' x3 to reach productRoot.
+	 * (Previously logs were written under the install directory — for an Inno
+	 * install that resolves to `Program Files\...\logs`, which regular users
+	 * cannot write to. See the old `appRoot/..x3` code.)
 	 */
 	override get logsHome(): URI {
 		if (!this.args.logsPath) {
-			if (this.isBuilt) {
-				// Packaged EXE: VS Code native timestamp subdir under product logs
-				// Format matches the parent class: YYYYMMDDTHHMMSSsss
-				const key = toLocalISOString(new Date()).replace(/-|:|\.\d+Z$/g, '');
-				// 多开：日志按实例拆分子目录，避免并发写同一 log 文件
-				const instanceSeg = this.instanceId ? join('instances', this.instanceId) : '';
-				this.args.logsPath = resolve(this.appRoot, '..', '..', '..', 'logs', instanceSeg, key);
-			}
-			// Dev mode: fall through to parent class (original behavior)
+			const key = toLocalISOString(new Date()).replace(/-|:|\.\d+Z$/g, '');
+			// 多开：日志按实例拆分子目录，避免并发写同一 log 文件
+			const instanceSeg = this.instanceId ? join('instances', this.instanceId) : '';
+			this.args.logsPath = join(this.userDataPath, 'logs', instanceSeg, key);
 		}
 		return super.logsHome;
 	}
