@@ -234,6 +234,15 @@ ensureFile(
 	['out/vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/kbWorker.js'],
 );
 
+// 3.5) new-window.ps1（任务栏 jump list "New Window" 多开启动脚本；须落在 asar 外
+//      resources/saros/，外部 PowerShell 进程才能读取执行。workspacesHistoryMainService
+//      的 getNewWindowScriptArgs() 按 process.resourcesPath 解析此路径）
+ensureFile(
+	'resources/saros/new-window.ps1',
+	'resources/saros/new-window.ps1',
+	['scripts/new-window.ps1'],
+);
+
 // 4) @vscode/sqlite3 原生模块（Codebase 图谱 SQLite 后端 + KB SQLite 必需）。
 //    缺失 → 主进程 require('@vscode/sqlite3') 抛错 → search_graph/query_graph
 //    走 SQLite 后端全部失败。需在 asar.unpacked 内（asar 内无法加载原生模块）。

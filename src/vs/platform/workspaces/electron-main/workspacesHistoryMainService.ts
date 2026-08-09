@@ -11,6 +11,7 @@ import { normalizeDriveLetter, splitRecentLabel } from '../../../base/common/lab
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { Schemas } from '../../../base/common/network.js';
 import { isMacintosh, INodeProcess, isWindows } from '../../../base/common/platform.js';
+import { join, resolve } from 'path';
 import { basename, extUriBiasedIgnorePathCase, originalFSPath } from '../../../base/common/resources.js';
 import { URI } from '../../../base/common/uri.js';
 import { Promises } from '../../../base/node/pfs.js';
@@ -344,6 +345,8 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 		const jumpList: JumpListCategory[] = [];
 
 		// Tasks
+		const newWindowArgs = this.getNewWindowScriptArgs();
+		this.logService.info(`updateWindowsJumpList: New Window task args=${newWindowArgs}`);
 		jumpList.push({
 			type: 'tasks',
 			items: [
@@ -351,11 +354,13 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 					type: 'task',
 					title: localize('newWindow', "New Window"),
 					description: localize('newWindowDesc', "Opens a new window"),
-					program: process.execPath,
-					// In dev (unpackaged) mode, `process.execPath` is the bare electron
-					// binary and Electron needs the app path as the first arg; in a
-					// packaged build the exe is the app itself, so `-n` alone is enough.
-					args: app.isPackaged ? '-n' : `"${app.getAppPath()}" -n`,
+					// [Sarosis] "New Window" 启动一个【独立】的 VsSaros 实例（多开），
+					// 而不是转发给已运行的主实例。经 PowerShell 隐藏窗口脚本每次生成
+					// 唯一 --instance <id>：新进程 IPC 单实例锁/可变状态按实例拆分，
+					// agents/skills/settings/extensions 共享；agentmemory 网关自动复用
+					// 3111（见 app.ts startAgentMemoryGateway 探活逻辑）。
+					program: join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+					args: newWindowArgs,
 					iconPath: process.execPath,
 					iconIndex: 0
 				}
@@ -428,6 +433,41 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 		} catch (error) {
 			this.logService.warn('updateWindowsJumpList#setJumpList', error); // since setJumpList is relatively new API, make sure to guard for errors
 		}
+	}
+
+	/**
+	 * [Sarosis] Jump-list "New Window" 的 PowerShell 启动参数。
+	 *
+	 * 用隐藏窗口的 PowerShell 跑 new-window.ps1，每次点击生成唯一 --instance <id>
+	 * 并启动一个独立的 VsSaros 实例（多开），而不是把请求转发给主实例。
+	 *
+	 * 注意：判断 dev/打包必须用 `environmentMainService.isBuilt`，不能用
+	 * `app.isPackaged`——dev 下通过 `.build/electron/VsSaros.exe <appPath>` 启动时
+	 * electron 按独立 app 加载，`app.isPackaged` 已经是 true，会错误地走打包分支
+	 * （指向不存在的 `resources/saros/new-window.ps1`，导致脚本加载失败）。
+	 *
+	 * - dev（未 built）：脚本在仓库 `scripts/new-window.ps1`；electron 二进制需要
+	 *   app path 作第一参数，且要传当前 user-data-dir（dev 默认 ~/.vssaros-dev）
+	 *   保持与主实例同一数据目录（共享 agents/skills/settings）。
+	 * - built：脚本随安装包落在 `resources/saros/new-window.ps1`（asar 外，
+	 *   外部 PowerShell 可读）；exe 自身即 app，无需 app path。
+	 */
+	private getNewWindowScriptArgs(): string {
+		const scriptPath = this.environmentMainService.isBuilt
+			? join(process.resourcesPath ?? '', 'saros', 'new-window.ps1')
+			: join(resolve(app.getAppPath()), 'scripts', 'new-window.ps1');
+
+		let args = `-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}" -ExePath "${process.execPath}"`;
+
+		// Dev：electron 二进制需要 app path（绝对路径）作为第一个参数，并显式带上
+		// 与主实例一致的 user-data-dir，保证多开共享同一数据目录。同时传 -Dev 让
+		// 脚本为新实例补 VSCODE_DEV=1（本进程由 code.bat 设置了该变量，但经
+		// explorer 上下文的 powershell 启动的新实例不会继承，会被误判为 built）。
+		if (!this.environmentMainService.isBuilt) {
+			args += ` -Dev -AppPath "${resolve(app.getAppPath())}" -UserDataDir "${this.environmentMainService.userDataPath}"`;
+		}
+
+		return args;
 	}
 
 	private getWindowsJumpListLabel(workspace: IWorkspaceIdentifier | URI, recentLabel: string | undefined): { title: string; description: string } {

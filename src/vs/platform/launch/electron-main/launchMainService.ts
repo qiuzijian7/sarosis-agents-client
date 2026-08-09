@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { app } from 'electron';
+import { resolve } from 'path';
 import { coalesce } from '../../../base/common/arrays.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { IProcessEnvironment, isMacintosh } from '../../../base/common/platform.js';
@@ -133,7 +134,10 @@ export class LaunchMainService implements ILaunchMainService {
 		// app). That path is NOT a folder the user asked to open — drop it so we create
 		// an empty new window, matching the packaged behaviour of `VsSaros.exe -n`.
 		if (!app.isPackaged && args['new-window'] && args._.length === 1) {
-			const normPath = (p: string) => p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
+			// Resolve both sides to absolute paths: `app.getAppPath()` can be
+			// relative (e.g. `electron .` in dev), while the forwarded jump-list
+			// arg is the resolved absolute path we registered.
+			const normPath = (p: string) => resolve(p).replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
 			if (normPath(args._[0]) === normPath(app.getAppPath())) {
 				args._ = [];
 			}
