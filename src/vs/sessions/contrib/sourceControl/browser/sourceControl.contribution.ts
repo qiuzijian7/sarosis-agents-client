@@ -254,7 +254,21 @@ class SourceControlWorkspaceSyncContribution extends Disposable implements IWork
 
 		// When VS Code workspace folders change, update git detection context key
 		// and refresh the worktree view
+		//
+		// ALSO re-run the full _initialSync() so that setUrisTrust + addFolders
+		// run for the active workspace's roots. Without this, if agentStudioService
+		// was not yet ready at BlockStartup (so the original _initialSync took the
+		// "no activeId" else-branch and never called _syncWorkspaceFolder) AND the
+		// user has not switched the active workspace since, the git extension's
+		// openRepository() never gets the workspace-trusted roots it needs to
+		// register an SCM provider, and the Changes view shows "No Git repository
+		// found" even though .git exists. The onDidChangeWorkspaceFolders event
+		// fires reliably whenever any code path (sessions/agentStudio) injects the
+		// workspace folder into the synthetic workspace, so this is the right hook
+		// to re-drive the trust injection. _syncWorkspaceFolder is idempotent
+		// (sameAsCurrent + _isUriTrusted filter), so this is safe to fire often.
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => {
+			this._initialSync();
 			this._updateGitContextKey();
 		}));
 

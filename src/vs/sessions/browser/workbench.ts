@@ -2008,11 +2008,20 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 		};
 
 		// ── Sidebar ──
+		// [Sarosis] The sidebar node is ALWAYS visible in the grid — the
+		// 48px activity-bar icon strip never collapses. `partVisibility.sidebar`
+		// only means "content panel expanded vs collapsed", which is expressed
+		// by `sideBarSize` (expanded width vs 48) plus the CSS classes
+		// sidebar-content-collapsed/expanded — never by hiding the grid node.
+		// Previously `visible: this.partVisibility.sidebar` removed the whole
+		// sidebar from the grid whenever a previous session persisted a
+		// collapsed state (sessions.layout.sidebarVisible=false), making the
+		// left sidebar completely invisible on restart.
 		const sideBarNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.SIDEBAR_PART },
 			size: sideBarSize,
-			visible: this.partVisibility.sidebar
+			visible: true
 		};
 
 		// ── File Editor ──
@@ -2468,6 +2477,14 @@ export class Workbench extends Disposable implements IAgentWorkbenchLayoutServic
 	 * across full restarts (via `restoreLayoutPreferences()`).
 	 */
 	private handleSidebarContentCollapsed(collapsed: boolean): void {
+		// [Sarosis] Keep `partVisibility.sidebar` in sync with the actual
+		// content-panel state. `setSideBarHidden()` already sets it, but the
+		// SidebarPart.openPaneComposite() path (clicking an activity-bar icon)
+		// only calls setContentCollapsed(false) — without this sync the expanded
+		// state would be persisted as collapsed and the sidebar would reappear
+		// folded (48px icon strip) on the next restart.
+		this.partVisibility.sidebar = !collapsed;
+
 		const targetWidth = collapsed ? 48 : this._sidebarExpandedWidth;
 
 		// [Sarosis] Save agent editor width before sidebar toggle so the
