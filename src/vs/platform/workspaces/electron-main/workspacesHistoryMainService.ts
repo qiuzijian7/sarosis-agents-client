@@ -352,7 +352,10 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 					title: localize('newWindow', "New Window"),
 					description: localize('newWindowDesc', "Opens a new window"),
 					program: process.execPath,
-					args: '-n', // force new window
+					// In dev (unpackaged) mode, `process.execPath` is the bare electron
+					// binary and Electron needs the app path as the first arg; in a
+					// packaged build the exe is the app itself, so `-n` alone is enough.
+					args: app.isPackaged ? '-n' : `"${app.getAppPath()}" -n`,
 					iconPath: process.execPath,
 					iconIndex: 0
 				}
