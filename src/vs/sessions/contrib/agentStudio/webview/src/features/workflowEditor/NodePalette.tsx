@@ -8,6 +8,7 @@
 
 import React from 'react';
 import { useWorkflowEditorStore, nodeCategories, type NodeCategory } from './store';
+import { buildComfyPaletteItems, type PaletteItem, subscribeNodeRegistry, getNodeRegistryVersion } from './comfyHost/registry';
 
 const CATEGORY_COLORS: Record<NodeCategory, string> = {
 	system: '#6b7280',
@@ -16,12 +17,42 @@ const CATEGORY_COLORS: Record<NodeCategory, string> = {
 	layout: '#8b5cf6',
 };
 
+/** Dynamic Comfy groups: ComfyTV stages + ComfyUI native nodes from the registry. */
+interface ComfyPaletteGroup {
+	key: string;
+	label: string;
+	color: string;
+	items: PaletteItem[];
+}
+
+function comfyGroups(): ComfyPaletteGroup[] {
+	const tv = buildComfyPaletteItems('schema');
+	const native = buildComfyPaletteItems('native');
+	const groups: ComfyPaletteGroup[] = [];
+	if (tv.length) {
+		groups.push({ key: 'comfyTV', label: `ComfyTV Stages (${tv.length})`, color: '#e879f9', items: tv });
+	}
+	if (native.length) {
+		groups.push({ key: 'comfyUI', label: `ComfyUI Native (${native.length})`, color: '#f59e0b', items: native });
+	}
+	return groups;
+}
+
 export const NodePalette: React.FC<{
 	collapsed: boolean;
 	onToggle: () => void;
 	width: number; // v40: resizable width from WorkflowEditorPanel
 }> = ({ collapsed, onToggle, width }) => {
 	const addNode = useWorkflowEditorStore(s => s.addNode);
+
+	// Re-render when ComfyTV/native nodes are registered (runner stages load in).
+	// Without this, the palette stays frozen at its first render and the ComfyTV
+	// group never appears until the whole panel remounts.
+	React.useSyncExternalStore(
+		subscribeNodeRegistry,
+		getNodeRegistryVersion,
+		getNodeRegistryVersion,
+	);
 
 	const handleAdd = (type: string) => {
 		const x = 200 + Math.random() * 200;
@@ -108,13 +139,54 @@ export const NodePalette: React.FC<{
 										textAlign: 'left',
 									}}
 								>
-									<span style={{ fontSize: '13px' }}>{nt.icon}</span>
-									<span style={{ fontWeight: 500 }}>{nt.label}</span>
-								</button>
-							))}
+							<span style={{ fontSize: '13px' }}>{nt.icon}</span>
+								<span style={{ fontWeight: 500 }}>{nt.label}</span>
+							</button>
+						))}
+					</div>
+				))}
+				{/* Dynamic Comfy groups (ComfyTV stages + ComfyUI native) */}
+				{comfyGroups().map(g => (
+					<div key={g.key} style={{ marginBottom: '16px' }}>
+						<div style={{
+							fontSize: '10px', fontWeight: 600,
+							color: g.color,
+							marginBottom: '6px',
+							textTransform: 'uppercase',
+							letterSpacing: '0.5px',
+							paddingBottom: '4px',
+							borderBottom: `1px solid ${g.color}22`,
+						}}>
+							{g.label}
 						</div>
-					))}
-					{/* Quick tips */}
+						{g.items.map(item => (
+							<button
+								key={item.type}
+								onClick={() => handleAdd(item.type)}
+								title={item.description}
+								style={{
+									display: 'flex',
+									alignItems: 'center',
+									gap: '6px',
+									width: '100%',
+									padding: '6px 8px',
+									marginBottom: '3px',
+									border: '1px solid var(--vscode-panel-border)',
+									borderRadius: '6px',
+									backgroundColor: 'var(--vscode-editor-background)',
+									color: 'var(--vscode-foreground)',
+									cursor: 'pointer',
+									fontSize: '11px',
+									textAlign: 'left',
+								}}
+							>
+								<span style={{ fontSize: '13px' }}>{item.icon}</span>
+								<span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</span>
+							</button>
+						))}
+					</div>
+				))}
+				{/* Quick tips */}
 					<div style={{
 						marginTop: '12px', padding: '8px',
 						backgroundColor: 'var(--vscode-textBlockQuote-background)',

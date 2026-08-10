@@ -92,6 +92,10 @@ export const enum WorkflowNodeType {
 	Switch = 'switch',
 	AskUser = 'askUser',
 	Group = 'group',
+	/** ComfyUI 兼容节点（LiteGraph 画布引入） */
+	Comfy = 'comfy',
+	/** ComfyTV 风格媒体 stage 节点 */
+	ComfyStage = 'comfyStage',
 }
 
 /** 节点画布位置 */

@@ -611,7 +611,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			description: localize('agentStudio.tof.paasid', "TOF 应用 appkey (paasid)，用于构造 passport.woa.com 登录 URL。"),
 		},
 		[TOF_SITE_BASE_URL_SETTING]: {
-			type: 'string', default: 'http://saroasis-mcp.woa.com',
+			type: 'string', default: 'http://vssaros.woa.com',
 			description: localize('agentStudio.tof.siteBaseUrl', "网关站点基础 URL，TOF 回调地址前缀（须为 .woa.com 白名单域名）。"),
 		},
 		[TOF_GATEWAY_BASE_URL_SETTING]: {
@@ -1295,28 +1295,28 @@ canvasCmd('sarosis.canvas.flipBranch', '思维导图：翻转分支',
 	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyF, p => p.cmdFlipBranch());
 canvasCmd('sarosis.canvas.toggleBalance', '思维导图：平衡布局',
 	KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyB, p => p.cmdToggleBalance());
-	canvasCmd('sarosis.canvas.toggleExpand', '思维导图：折叠/展开节点',
-		KeyCode.Space, p => p.cmdToggleExpand());
+canvasCmd('sarosis.canvas.toggleExpand', '思维导图：折叠/展开节点',
+	KeyCode.Space, p => p.cmdToggleExpand());
 
-	registerAction2(class extends Action2 {
-		constructor() {
-			super({
-				id: 'sarosis.canvas.setDirection',
-				title: localize2('sarosis.canvas.setDirection', '思维导图：设置布局方向'),
-				f1: true,
-			});
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'sarosis.canvas.setDirection',
+			title: localize2('sarosis.canvas.setDirection', '思维导图：设置布局方向'),
+			f1: true,
+		});
+	}
+	override async run(_accessor: ServicesAccessor, mode?: MindmapDirection): Promise<void> {
+		const pane = getActiveCanvasPane();
+		if (!pane) { return; }
+		const valid: MindmapDirection[] = ['right', 'left', 'both', 'tree', 'flower'];
+		if (mode && valid.includes(mode)) {
+			pane.cmdSetDirection(mode);
+		} else {
+			pane.cmdCycleDirection();
 		}
-		override async run(_accessor: ServicesAccessor, mode?: MindmapDirection): Promise<void> {
-			const pane = getActiveCanvasPane();
-			if (!pane) { return; }
-			const valid: MindmapDirection[] = ['right', 'left', 'both', 'tree', 'flower'];
-			if (mode && valid.includes(mode)) {
-				pane.cmdSetDirection(mode);
-			} else {
-				pane.cmdCycleDirection();
-			}
-		}
-	});
+	}
+});
 
 // Undo/Redo
 canvasCmd('sarosis.canvas.undo', '思维导图：撤销',

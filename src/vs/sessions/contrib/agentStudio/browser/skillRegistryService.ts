@@ -39,7 +39,7 @@
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, IFileService, IFileStat } from '../../../../platform/files/common/files.js';
 import { IEnvironmentService, INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -195,6 +195,8 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	private readonly _onDidChangeSkills = this._register(new Emitter<void>());
 	readonly onDidChangeSkills: Event<void> = this._onDidChangeSkills.event;
 	private readonly _readyPromise: Promise<void>;
+	/** In-flight reload promise — coalesces concurrent reload() calls (single-flight). */
+	private _reloadPromise: Promise<void> | undefined;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -337,6 +339,18 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 	}
 
 	async reload(): Promise<void> {
+		// 单飞：若已有 reload 在途（初始加载 / workflow 变更 / runtime skill 注册释放
+		// 可能并发触发），直接复用同一 Promise，避免交错扫描导致同目录被扫多次。
+		if (this._reloadPromise) {
+			return this._reloadPromise;
+		}
+		this._reloadPromise = this._doReload().finally(() => {
+			this._reloadPromise = undefined;
+		});
+		return this._reloadPromise;
+	}
+
+	private async _doReload(): Promise<void> {
 		this.logService.info(`[SkillRegistry] reload() called`);
 		// 调试信息：打印 _VSCODE_FILE_ROOT 和 appRoot 帮助诊断路径问题
 		try {
@@ -410,10 +424,16 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 					await this._scanFolder(builtinDir, 'builtin');
 					this.logService.info(`[SkillRegistry] after builtin scan (${builtinDir.toString()}): ${this._skills.size} skills`);
 					scannedAny = true;
-				} catch (e) {
-					this.logService.info(`[SkillRegistry] builtin dir not found or scan failed: ${builtinDir.toString()}, error: ${e}`);
+			} catch (e) {
+				// 目录不存在（如 dev 模式下 candidate3 = dirname(appRoot)/resources 必然
+				// 缺失）是正常探测结果，降级为 debug 避免误导性 INFO；真正的扫描错误保留 INFO。
+				if (e instanceof FileOperationError && e.fileOperationResult === FileOperationResult.FILE_NOT_FOUND) {
+					this.logService.debug(`[SkillRegistry] builtin candidate dir does not exist (skipped): ${builtinDir.toString()}`);
+				} else {
+					this.logService.info(`[SkillRegistry] builtin dir scan failed: ${builtinDir.toString()}, error: ${e}`);
 				}
 			}
+		}
 			if (!scannedAny) {
 				this.logService.info(`[SkillRegistry] no builtin skills dir found. tried: ${uniqueCandidates.map(c => c.toString()).join(' | ')}`);
 			}
@@ -647,6 +667,11 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		const existingRank = SkillRegistry.SKILL_SOURCE_RANK[existing.source] ?? 0;
 		const existingPath = existing.resource?.fsPath ?? '(no path)';
 		const incomingPath = fromPath ?? skill.resource?.fsPath ?? '(no path)';
+		// 幂等去重：同 id + 同来源 + 同路径 = 同一技能被重复扫描（并发 reload 交错、
+		// 嵌套目录被多次访问等），保留先注册者即可，静默跳过，避免无意义冲突警告。
+		if (existing.source === skill.source && existingPath === incomingPath) {
+			return;
+		}
 		if (incomingRank > existingRank) {
 			this._skills.set(skill.id, skill);
 			this.logService.info(`[SkillRegistry] Skill "${skill.id}" replaced by higher-priority source: ${existing.source} (${existingPath}) ← ${skill.source} (${incomingPath})`);

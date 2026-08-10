@@ -8,6 +8,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentChatService } from '../common/agentStudio.js';
 import { IWorkflowStorageService, IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode } from '../common/workflowStorage.js';
+import type { IComfyExecutionDelegate, ComfyExecutionInput } from '../common/comfyBridge.js';
 import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
 import { IWorkflowExecutionService, WorkflowExecutionStatus, WorkflowNodeExecutionStatus } from '../common/workflowExecutionService.js';
 import type { IWorkflowExecutionState, IWorkflowExecutionOptions, IWorkflowNodeExecutionState, IWorkflowTraceEvent, IAskUserOption } from '../common/workflowExecutionService.js';
@@ -71,6 +72,13 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 
 	/** P3: 当前执行链中正在运行的 workflowId 集合，用于递归环检测。 */
 	private readonly _activeWorkflowChain = new Set<string>();
+
+	/** Comfy 执行委托（懒注入，避免构造期 DI 环）。未设置时 Comfy 节点跳过。 */
+	private _comfyDelegate: IComfyExecutionDelegate | undefined;
+
+	setComfyExecutionDelegate(delegate: IComfyExecutionDelegate | undefined): void {
+		this._comfyDelegate = delegate;
+	}
 
 	constructor(
 		@ILogService private readonly logService: ILogService,
@@ -745,6 +753,12 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 					}
 				}
 				break;
+
+				case WorkflowNodeType.Comfy:
+				case WorkflowNodeType.ComfyStage:
+					await this._executeComfyNode(executionState, workflow, node, options);
+					nextNodeIds = this._getNextNodes(node.id, adj);
+					break;
 
 				default:
 					this.logService.warn(`[WorkflowExecution] Unknown node type: ${node.type}, skipping`);
@@ -1577,6 +1591,65 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		if (nodeState) {
 			nodeState.output = message.content || '';
 		}
+	}
+
+	/**
+	 * Execute a ComfyUI-compatible node (WorkflowNodeType.Comfy / ComfyStage).
+	 * The actual Comfy invocation is delegated to an injected
+	 * `IComfyExecutionDelegate` (set via setComfyExecutionDelegate), so the
+	 * executor stays decoupled from the webview HTTP client. When no delegate is
+	 * configured the node is skipped with a warning (same as unknown types).
+	 */
+	private async _executeComfyNode(
+		executionState: IWorkflowExecutionState,
+		workflow: IStoredWorkflow,
+		node: WorkflowGraphNode,
+		_options?: IWorkflowExecutionOptions,
+	): Promise<void> {
+		this.logService.info(`[WorkflowExecution] Executing Comfy node: ${node.id} (${node.type})`);
+		const data = node.data ?? {};
+		const comfy = (data.comfy ?? {}) as { mode?: 'workflow' | 'stage'; stageClass?: string; workflowId?: string };
+
+		if (!this._comfyDelegate) {
+			this.logService.warn(
+				`[WorkflowExecution] Comfy node ${node.id} skipped: no Comfy execution delegate registered. ` +
+				`Use setComfyExecutionDelegate() to enable ComfyUI execution.`,
+			);
+			return;
+		}
+
+		// Collect resolved binding values: read the node's bindings + defaults and
+		// resolve template variables against upstream node outputs (shared memory).
+		const bindings = (data.bindings ?? {}) as Record<string, string>;
+		const defaults = (data.defaults ?? {}) as Record<string, unknown>;
+		const values: Record<string, unknown> = {};
+		for (const [key, binding] of Object.entries(bindings)) {
+			const resolved = WorkflowExecutionService._replaceVariables(
+				typeof binding === 'string' ? binding : String(binding),
+				this._buildEvalContext(executionState),
+			);
+			if (resolved !== undefined && resolved !== '') {
+				values[key] = resolved;
+			} else if (defaults[key] !== undefined) {
+				values[key] = defaults[key];
+			}
+		}
+		// Include the node's own label/description as a fallback context — but only
+		// when no binding (e.g. `label: '{{n-prompt.output}}'`) already filled it.
+		if (values['label'] === undefined) {
+			values['label'] = data.label ?? node.name ?? node.id;
+		}
+
+		const input: ComfyExecutionInput = { values, defaults };
+		const result = await this._comfyDelegate.execute(node, input, { executionId: executionState.executionId });
+
+		const nodeState = executionState.nodeStates.get(node.id);
+		if (nodeState) {
+			nodeState.output = result.summary ?? JSON.stringify(result.outputs);
+		}
+		this.logService.info(
+			`[WorkflowExecution] Comfy node ${node.id} completed (mode=${comfy.mode ?? 'workflow'}, outputs=${Object.keys(result.outputs).length})`,
+		);
 	}
 
 	private async _executeIfElseNode(

@@ -454,14 +454,22 @@ export class AgentStudioWebviewController extends Disposable {
 			// CRITICAL: iframes cannot be re-parented without losing state (Chromium
 			// limitation). Use absolute-position overlay: keep the pool container on
 			// document.body and position it precisely over our panel container.
+			// Layer discipline: the overlay must NEVER compete with VS Code UI —
+			// keep z-index at 1 (above the plain container content, below VS Code
+			// parts like the sidebar/panel which use higher z-indexes) and clip
+			// the iframe so it can never bleed outside its mirrored rect.
 			const poolContainer = pooled.container;
 			poolContainer.style.position = 'absolute';
-			poolContainer.style.overflow = '';
+			poolContainer.style.overflow = 'hidden';
+			poolContainer.style.zIndex = '1';
 			poolContainer.removeAttribute('data-agent-studio-pool');
 
 			// Track our panel container's geometry and mirror it onto the pool container.
 			const syncLayout = () => {
 				const rect = this.container.getBoundingClientRect();
+				const hidden = rect.width <= 0 || rect.height <= 0;
+				poolContainer.style.display = hidden ? 'none' : '';
+				if (hidden) { return; }
 				poolContainer.style.left = `${rect.left}px`;
 				poolContainer.style.top = `${rect.top}px`;
 				poolContainer.style.width = `${rect.width}px`;
@@ -473,13 +481,21 @@ export class AgentStudioWebviewController extends Disposable {
 			// re-position the iframe when the editor pane is re-shown.
 			this._poolSyncLayout = syncLayout;
 
-			// Re-sync on resize / layout changes.
+			// Re-sync on resize / layout changes. A plain ResizeObserver misses
+			// geometry shifts where the container keeps its size but moves (zoom,
+			// layout/zoom-level changes, toolbar height changes) — window resize +
+			// capture-phase scroll re-run the mirror for those cases.
 			const resizeObserver = new ResizeObserver(syncLayout);
 			resizeObserver.observe(this.container);
 			this._register({ dispose: () => resizeObserver.disconnect() });
+			const syncOnWindow = () => syncLayout();
+			window.addEventListener('resize', syncOnWindow);
+			window.addEventListener('scroll', syncOnWindow, true);
 			this._register({
 				dispose: () => {
 					this._poolSyncLayout = undefined;
+					window.removeEventListener('resize', syncOnWindow);
+					window.removeEventListener('scroll', syncOnWindow, true);
 					poolContainer.remove();
 				}
 			});
@@ -565,6 +581,12 @@ export class AgentStudioWebviewController extends Disposable {
 			},
 			contentOptions: {
 				allowScripts: true,
+				// allow the same webview document to call acquireVsCodeApi() multiple
+				// times — the shared-renderer/pinned-origin setup re-executes the
+				// bundle in some conditions and the default (single-acquire) throws
+				// "An instance of the VS Code API has already been acquired", which
+				// aborts the whole IIFE and leaves the panel on the loading spinner.
+				allowMultipleAPIAcquire: true,
 				localResourceRoots: [mediaUri],
 			},
 			extension: undefined,
@@ -584,12 +606,19 @@ export class AgentStudioWebviewController extends Disposable {
 		const targetWindow = targetDoc.defaultView as CodeWindow;
 		const coldOverlay = targetDoc.createElement('div');
 		coldOverlay.style.position = 'absolute';
-		coldOverlay.style.zIndex = '10';
+		// Keep the overlay beneath VS Code parts (sidebar/panel/editor chrome)
+		// so it can never visually mask unrelated UI; it only needs to cover
+		// the panel container itself (which sits at layer 0/auto).
+		coldOverlay.style.zIndex = '1';
+		coldOverlay.style.overflow = 'hidden';
 		coldOverlay.setAttribute('data-agent-studio-overlay', 'cold');
 		targetDoc.body.appendChild(coldOverlay);
 
 		const coldSyncLayout = () => {
 			const rect = this.container.getBoundingClientRect();
+			const hidden = rect.width <= 0 || rect.height <= 0;
+			coldOverlay.style.display = hidden ? 'none' : '';
+			if (hidden) { return; }
 			coldOverlay.style.left = `${rect.left}px`;
 			coldOverlay.style.top = `${rect.top}px`;
 			coldOverlay.style.width = `${rect.width}px`;
@@ -602,9 +631,14 @@ export class AgentStudioWebviewController extends Disposable {
 		const coldResizeObserver = new ResizeObserver(coldSyncLayout);
 		coldResizeObserver.observe(this.container);
 		this._register({ dispose: () => coldResizeObserver.disconnect() });
+		const coldSyncOnWindow = () => coldSyncLayout();
+		targetWindow.addEventListener('resize', coldSyncOnWindow);
+		targetWindow.addEventListener('scroll', coldSyncOnWindow, true);
 		this._register({
 			dispose: () => {
 				this._poolSyncLayout = undefined;
+				targetWindow.removeEventListener('resize', coldSyncOnWindow);
+				targetWindow.removeEventListener('scroll', coldSyncOnWindow, true);
 				coldOverlay.remove();
 			}
 		});
@@ -748,6 +782,56 @@ export class AgentStudioWebviewController extends Disposable {
 		window.__AS_PERF_INLINE_TS__ = Date.now();
 		// Track whether the bundle script fires
 		window.__AS_BUNDLE_LOADED__ = false;
+
+		// ── Fallback: if the bundle never reaches __AS_BUNDLE_LOADED__ = true
+		//    (e.g. crash before index.tsx runs, or a duplicate acquireVsCodeApi
+		//    that aborts the whole IIFE), the inline loading placeholder would
+		//    sit forever. After 6s, force-remove it and show a diagnostic so
+		//    the user is never stuck. ──────────────────────────────
+		(function() {
+			var done = false;
+			function dismiss() {
+				if (done) { return; }
+				done = true;
+				var el = document.getElementById('as-preload');
+				if (el && el.parentNode) { el.parentNode.removeChild(el); }
+			}
+			// index.tsx first line sets this flag. If it appears, dismiss the placeholder.
+			try {
+				Object.defineProperty(window, '__AS_BUNDLE_LOADED__', {
+					configurable: true,
+					set: function(v) { if (v) { dismiss(); } }
+				});
+			} catch (e) { /* fallback already exists; relying on timeout */ }
+			// Also clear the placeholder once React renders anything into #root.
+			try {
+				var root = document.getElementById('root');
+				if (root) {
+					var obs = new MutationObserver(function() {
+						if (root.childElementCount > 0 && !document.getElementById('as-preload')) {
+							dismiss();
+						}
+					});
+					obs.observe(root, { childList: true });
+				}
+			} catch (e) { /* MutationObserver optional */ }
+			// 6s hard timeout: show diagnostic.
+			setTimeout(function() {
+				if (done) { return; }
+				var el = document.getElementById('as-preload');
+				if (el) {
+					el.innerHTML =
+						'<div style="padding:16px;max-width:560px;text-align:left;font-family:Consolas,monospace;font-size:12px;line-height:1.6;">' +
+						'<div style="color:#f48771;font-weight:600;margin-bottom:6px;">Agent Studio bundle did not finish loading (6s timeout)</div>' +
+						'<div style="color:var(--vscode-descriptionForeground,#858585);">Open the webview DevTools (Command Palette → Developer: Toggle Webview Developer Tools) to inspect the console. Likely causes:</div>' +
+						'<ul style="margin:6px 0 0 18px;color:var(--vscode-foreground,#ccc);">' +
+						'<li>Duplicate acquireVsCodeApi() call (mitigated by window cache + try/catch)</li>' +
+						'<li>An ESM import throws before the IIFE finishes (e.g. FileSystemError)</li>' +
+						'<li>Try: Developer: Reload Webview or restart VS Code.</li>' +
+						'</ul></div>';
+				}
+			}, 6000);
+		})();
 	</script>
 	<!-- Single IIFE bundle — inlined or loaded externally.
 	     When inlined, no service-worker-proxied fetch is needed. -->
@@ -1169,6 +1253,18 @@ export class AgentStudioWebviewController extends Disposable {
 				);
 			case "providers.openSettings":
 				return this._handleProvidersOpenSettings(p as { providerId?: string });
+			case "imagegen.generate":
+				return this._handleImageGenGenerate(
+					p as unknown as {
+						providerId: string;
+						modelId: string;
+						prompt: string;
+						negativePrompt?: string;
+						width?: number;
+						height?: number;
+						numImages?: number;
+					},
+				);
 
 			// ─── Workspace Sessions (Fork) ─────────────────────────
 			case "workspaceSession.list":
@@ -3128,6 +3224,7 @@ export class AgentStudioWebviewController extends Disposable {
 				maxAllowedSize?: number;
 				supportsToolCall?: boolean;
 				supportsImages?: boolean;
+				supportsImageGen?: boolean;
 				supportsReasoning?: boolean;
 				onlyReasoning?: boolean;
 				reasoningType?: 'budget-slider' | 'effort-slider' | false;
@@ -3149,6 +3246,7 @@ export class AgentStudioWebviewController extends Disposable {
 					maxAllowedSize: m.maxAllowedSize,
 					supportsToolCall: m.supportsToolCall,
 					supportsImages: m.supportsImages,
+					supportsImageGen: m.supportsImageGen,
 					supportsReasoning: m.supportsReasoning,
 					onlyReasoning: m.onlyReasoning,
 					reasoningType: m.capabilityConfig?.reasoningType,
@@ -3239,6 +3337,41 @@ export class AgentStudioWebviewController extends Disposable {
 
 	private _handleProvidersOpenSettings(payload: { providerId?: string }): void {
 		this.modelSelectorService.openSettings(payload.providerId);
+	}
+
+	/**
+	 * 文生图：webview 请求指定 provider + model 生成图片。
+	 * 走该 provider 的 generateImage()（主进程 channel / renderer 直连），
+	 * 返回 `{ images: [{ url? | b64? }] }`。
+	 */
+	private async _handleImageGenGenerate(payload: {
+		providerId: string;
+		modelId: string;
+		prompt: string;
+		negativePrompt?: string;
+		width?: number;
+		height?: number;
+		numImages?: number;
+	}): Promise<{ images: Array<{ url?: string; b64?: string }> }> {
+		const provider = this.agentOSService.getModelProviders().find(p => p.id === payload.providerId);
+		if (!provider) {
+			throw new Error(`未找到 Provider：${payload.providerId}`);
+		}
+		if (!provider.generateImage) {
+			throw new Error(`Provider ${provider.name} 不支持文生图`);
+		}
+		const result = await provider.generateImage(
+			{
+				modelId: payload.modelId,
+				prompt: payload.prompt,
+				negativePrompt: payload.negativePrompt,
+				width: payload.width,
+				height: payload.height,
+				numImages: payload.numImages,
+			},
+			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
+		);
+		return { images: result.images ?? [] };
 	}
 
 	// ─── Skills ─────────────────────────────────────────────────────

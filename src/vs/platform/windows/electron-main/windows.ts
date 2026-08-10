@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import electron, { Display, Rectangle } from 'electron';
+import { existsSync } from 'fs';
 import { Color } from '../../../base/common/color.js';
 import { Event } from '../../../base/common/event.js';
 import { join } from '../../../base/common/path.js';
@@ -184,7 +185,16 @@ export function defaultBrowserWindowOptions(accessor: ServicesAccessor, windowSt
 			// For sub app the proxy executable acts as a launcher to the main executable whose
 			// icon will be used when creating windows if the following override is not set.
 			// This avoids sharing icon with the main application.
-			options.icon = join(environmentMainService.appRoot, 'resources/win32/sessions.ico');
+			//
+			// [Sarosis] `resources/win32/sessions.ico` is referenced by the build pipeline
+			// (gulpfile.vscode.ts + win32ProxyIcon) but the file is not present in the repo.
+			// When F5-debugging the built embedded binary (e.g. "Launch VS Code" / "Main
+			// Process" configs that don't set VSCODE_DEV), Electron would otherwise receive
+			// a non-existent icon path and the window/taskbar would render blank. Fall back
+			// to the existing code.ico so the icon is always present.
+			const sessionsIcon = join(environmentMainService.appRoot, 'resources/win32/sessions.ico');
+			const fallbackIcon = join(environmentMainService.appRoot, 'resources/win32/code.ico');
+			options.icon = existsSync(sessionsIcon) ? sessionsIcon : fallbackIcon;
 		}
 	}
 

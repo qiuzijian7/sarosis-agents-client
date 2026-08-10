@@ -466,6 +466,16 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			platform,
 			arch: arch === 'armhf' ? 'arm' : arch,
 			ffmpegChromium: false,
+			// [Sarosis] Embed the win32 .exe icon so the taskbar/Start Menu show
+			// VsSaros's icon instead of the generic blank-document fallback.
+			// `win32ProxyIcon` below is only used by the embedded sub-app's
+			// electron_proxy.exe, not by the main VsSaros.exe we ship out of
+			// `gulp electron`. Without an `icon` here, electron-builder
+			// leaves the .exe with no icon resource, so Windows displays the
+			// default .exe association icon (a blank page) in the taskbar.
+			// TODO: replace with a dedicated `resources/win32/sessions.ico`
+			// once the brand icon is committed to the repo.
+			icon: 'resources/win32/code.ico',
 			...(embedded ? {
 				darwinMiniAppName: embedded.nameShort,
 				darwinMiniAppDisplayName: embedded.nameLong,

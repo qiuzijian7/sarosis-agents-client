@@ -32,7 +32,8 @@ export interface IModelInfo {
 	readonly maxAllowedSize?: number;   // 最大上下文大小（input + output）
 	readonly capabilities?: ModelCapability[];
 	readonly supportsToolCall?: boolean; // 是否支持工具调用
-	readonly supportsImages?: boolean;  // 是否支持图片
+	readonly supportsImages?: boolean;  // 是否支持图片（输入/输出）
+	readonly supportsImageGen?: boolean; // 是否支持文生图（text → image generation）
 	readonly supportsReasoning?: boolean; // 是否支持推理/思考模式
 	readonly onlyReasoning?: boolean;   // 是否仅推理模式
 	readonly temperature?: number;      // 温度参数
@@ -181,6 +182,34 @@ export interface IModelProvider {
 		options: IModelOptions,
 		context?: IChatContext,
 	): AsyncIterable<IModelDelta>;
+
+	// ─── 文生图（可选）────────────────────────────────────────
+	// 支持 text → image 的 Provider 实现此方法。生成的图片以 URL 或
+	// base64 data URL 返回，供画布节点（ImageStage 等）直接展示。
+	generateImage?(params: IImageGenParams, context?: IChatContext): Promise<IImageGenResult>;
+}
+
+// ─── 文生图参数与结果 ─────────────────────────────────────────────────────────
+
+/** 文生图请求参数。 */
+export interface IImageGenParams {
+	/** 目标模型 ID（已通过 listModels 暴露，且 supportsImageGen=true） */
+	readonly modelId: string;
+	/** 正向提示词 */
+	readonly prompt: string;
+	/** 负向提示词（可选） */
+	readonly negativePrompt?: string;
+	/** 输出宽度（像素，可选） */
+	readonly width?: number;
+	/** 输出高度（像素，可选） */
+	readonly height?: number;
+	/** 生成数量（默认 1） */
+	readonly numImages?: number;
+}
+
+/** 文生图结果：每张图片以 URL 或 base64 data URL 表达。 */
+export interface IImageGenResult {
+	readonly images: Array<{ url?: string; b64?: string }>;
 }
 
 // ─── Chat Context ──────────────────────────────────────────────────────

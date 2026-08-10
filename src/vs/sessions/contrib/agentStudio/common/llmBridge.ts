@@ -319,6 +319,7 @@ export async function discoverModels(
 				capabilities: _inferCapabilities(m),
 				supportsToolCall: m.supportsToolCall ?? (m.capabilityConfig?.specialToolFormat !== undefined),
 				supportsReasoning: m.supportsReasoning ?? (m.capabilityConfig?.reasoningType ? true : undefined),
+				supportsImageGen: m.supportsImageGen ?? inferImageGen(m),
 				capabilityConfig: m.capabilityConfig || undefined,
 				pricing: m.pricing ? {
 					inputPerMillion: typeof m.pricing.prompt === 'string' ? parseFloat(m.pricing.prompt) * 1_000_000 : m.pricing.input_per_million,
@@ -328,6 +329,80 @@ export async function discoverModels(
 	} catch (err) {
 		log?.('warn', `[vssaros-llm] failed to fetch models: ${err}`);
 		return definition.staticModels ?? [];
+	}
+}
+
+// ─── 文生图（主进程侧执行）───────────────────────────────────────────────────
+
+/**
+ * 文生图参数（OpenAI 兼容 `/images/generations` 端点）。
+ */
+export interface IImageGenBridgeParams {
+	/** images endpoint URL，例如 `${baseUrl}/images/generations` */
+	readonly url: string;
+	readonly apiKey: string;
+	/** 请求体（含 model/prompt/size/n 等） */
+	readonly body: Record<string, unknown>;
+	readonly extraHeaders?: Record<string, string>;
+	/** API key auth header scheme（默认 'bearer'） */
+	readonly apiKeyHeader?: 'bearer' | 'x-api-key';
+	readonly signal?: AbortSignal;
+	readonly log?: LogFn;
+}
+
+/**
+ * 调用 OpenAI 兼容 `/images/generations` 端点生成图片，返回 `{ images: [{ url } | { b64 }] }`。
+ * 在主进程侧执行以把网络调用移出 renderer（与 streamChatCompletions 同模式）。
+ */
+export async function generateImage(params: IImageGenBridgeParams): Promise<{ images: Array<{ url?: string; b64?: string }> }> {
+	const { url, apiKey, body, extraHeaders, signal, log } = params;
+	const apiKeyHeader = params.apiKeyHeader ?? 'bearer';
+	log?.('info', `[vssaros-llm] generateImage → ${url}`);
+
+	const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(extraHeaders ?? {}) };
+	if (apiKey) {
+		if (apiKeyHeader === 'x-api-key') {
+			headers['x-api-key'] = apiKey;
+			headers['anthropic-version'] = '2023-06-01';
+		} else {
+			headers['Authorization'] = `Bearer ${apiKey}`;
+		}
+	}
+
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), 120_000);
+	let onOuterAbort: (() => void) | undefined;
+	if (signal) {
+		onOuterAbort = () => controller.abort();
+		signal.addEventListener('abort', onOuterAbort, { once: true });
+	}
+	try {
+		const response = await fetch(url, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(body),
+			signal: controller.signal,
+		});
+		if (!response.ok) {
+			const text = await response.text().catch(() => '');
+			log?.('error', `[vssaros-llm] generateImage failed: ${response.status} ${text}`);
+			throw new Error(`图片生成接口返回 ${response.status}${text ? `：${text.slice(0, 200)}` : ''}`);
+		}
+		const data: any = await response.json();
+		const rawImages: any[] = Array.isArray(data?.data) ? data.data : [];
+		return {
+			images: rawImages.map((img: any) => {
+				if (typeof img?.url === 'string' && img.url) { return { url: img.url }; }
+				if (typeof img?.b64_json === 'string' && img.b64_json) { return { b64: img.b64_json }; }
+				return {};
+			}).filter(img => img.url || img.b64),
+		};
+	} catch (err) {
+		log?.('error', `[vssaros-llm] generateImage error: ${err}`);
+		throw err;
+	} finally {
+		clearTimeout(timeoutId);
+		if (signal && onOuterAbort) { signal.removeEventListener('abort', onOuterAbort); }
 	}
 }
 
@@ -463,6 +538,22 @@ function _inferCapabilities(m: any): ModelCapability[] {
 	if (id.includes('vision') || desc.includes('vision') || desc.includes('image')) { caps.push(ModelCapability.Vision); }
 	if (id.includes('code') || desc.includes('code') || desc.includes('coding')) { caps.push(ModelCapability.Code); }
 	return caps;
+}
+
+/**
+ * Infer whether a model supports text→image generation from its id/description.
+ * Shared by renderer (BuiltInBYOKModelProvider) and main-process (discoverModels)
+ * so both sides label the same models as image-gen capable.
+ */
+export function inferImageGen(m: { id?: string; name?: string; description?: string }): boolean {
+	const hay = `${m.id ?? ''} ${m.name ?? ''} ${m.description ?? ''}`.toLowerCase();
+	// Explicit generation phrases ("text to image", "image generation", …)
+	if (/(text[- ]to[- ]image|image[- ]generation|image[- ]gen|generate[ -]images|text2image|t2i)/.test(hay)) {
+		return true;
+	}
+	// Common text→image model markers (OpenAI dalle/gpt-image, Stability,
+	// Flux, Seedream, Ideogram, Hunyuan image, etc.)
+	return /(^|[^a-z])(dall-?e|gpt-image|flux|stable-diffusion|sdxl|sd3|seedream|ideogram|imagen|recraft|kandinsky|sana|hunyuan[- _]image|kolors|pixart)([^a-z]|$)/.test(hay);
 }
 
 // ─── Anthropic native SSE parser (shared by renderer + main process) ────────

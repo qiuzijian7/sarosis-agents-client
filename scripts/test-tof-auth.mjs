@@ -224,7 +224,7 @@ async function runTests() {
 	console.log('--- 1. TOF signin URL 构造 ---');
 
 	await test('signin URL 包含所有必需参数', () => {
-		const url = buildSigninUrl('sls_mcp_app', 'http://saroasis-mcp.woa.com', 12345, 'state123');
+		const url = buildSigninUrl('sls_mcp_app', 'http://vssaros.woa.com', 12345, 'state123');
 		assert.ok(url.includes('passport.woa.com'));
 		assert.ok(url.includes('oauth=true'));
 		assert.ok(url.includes('appkey=sls_mcp_app'));

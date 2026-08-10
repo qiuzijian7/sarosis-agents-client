@@ -45,6 +45,7 @@ export interface ProviderModelInfo {
 	maxAllowedSize?: number;   // 最大上下文大小（input + output）
 	supportsToolCall?: boolean; // 是否支持工具调用
 	supportsImages?: boolean;  // 是否支持图片
+	supportsImageGen?: boolean; // 是否支持文生图（text → image）
 	supportsReasoning?: boolean; // 是否支持推理/思考模式
 	onlyReasoning?: boolean;   // 是否仅推理模式
 	reasoningType?: 'budget-slider' | 'effort-slider' | false; // 推理 UI 形态（预算滑块 / 努力滑块）

@@ -92,18 +92,18 @@ function fromLocal(extensionPath: string, forWeb: boolean, _disableMangle: boole
 				fromLocalEsbuild(extensionPath, esbuildConfigFileName),
 				// Also collect the extension files (dist, chat-webview-out, etc.)
 				// so that webview bundles and other assets are included in the package.
-				fromLocalNormal(extensionPath),
+				fromLocalNormal(extensionPath, false),
 				// Standard esbuild extensions need a separate type check step
 				...getBuildRootsForExtension(extensionPath).map(root => typeCheckExtensionStream(root, forWeb)),
 			)
 			// Extensions with their own build system (e.g. .esbuild.mts) handle type checking internally
 			: es.merge(
 				fromLocalEsbuild(extensionPath, esbuildConfigFileName),
-				fromLocalNormal(extensionPath),
+				fromLocalNormal(extensionPath, false),
 			);
 		isBundled = true;
 	} else {
-		input = fromLocalNormal(extensionPath);
+		input = fromLocalNormal(extensionPath, true);
 	}
 
 	return updateExtensionPackageJSON(input, data => {
@@ -206,7 +206,26 @@ function fromLocalEsbuild(extensionPath: string, esbuildConfigFileName: string):
 	return result;
 }
 
-function fromLocalNormal(extensionPath: string): Stream {
+function walkFiles(dir: string): string[] {
+	const out: string[] = [];
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return out;
+	}
+	for (const entry of entries) {
+		const full = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			out.push(...walkFiles(full));
+		} else if (entry.isFile()) {
+			out.push(full);
+		}
+	}
+	return out;
+}
+
+function fromLocalNormal(extensionPath: string, restoreProductionDependencies = false): Stream {
 	const vsce = require('@vscode/vsce') as typeof import('@vscode/vsce');
 	const result = es.through();
 
@@ -238,15 +257,31 @@ function fromLocalNormal(extensionPath: string): Stream {
 					}
 				});
 
+			let allFiles: string[];
+			if (restoreProductionDependencies) {
+				// Restore production dependencies for tsc-compiled extensions that
+				// declare runtime deps (e.g. git's @vscode/fs-copyfile). Upstream VS Code
+				// enumerates these via vsce with PackageManager.Npm; we switched to
+				// PackageManager.None to avoid npm ls on bundled/esbuild extensions, so we
+				// recover them explicitly here for the tsc branch only.
+				const productionDependencyFiles = getProductionDependencies(extensionPath).flatMap(dep => {
+					const relative = path.relative(extensionPath, dep);
+					return walkFiles(dep).map(f => path.join('node_modules', relative, path.relative(dep, f)));
+				});
+				allFiles = [...files, ...productionDependencyFiles];
+			} else {
+				allFiles = files;
+			}
+
 			// Push files one-by-one with backpressure to avoid EMFILE
 			// when packaging large extensions with many files.
 			let i = 0;
 			function pushNext() {
-				if (i >= files.length) {
+				if (i >= allFiles.length) {
 					result.end();
 					return;
 				}
-				const filePath = files[i++];
+				const filePath = allFiles[i++];
 				const file = new File({
 					path: filePath,
 					stat: fs.statSync(filePath),

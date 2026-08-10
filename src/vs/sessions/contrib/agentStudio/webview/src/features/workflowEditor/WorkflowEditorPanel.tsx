@@ -15,9 +15,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { ReactFlowProvider } from '@xyflow/react';
-import { WorkflowCanvas } from './WorkflowCanvas';
-import { NodePalette } from './NodePalette';
+import { LiteGraphCanvas, type LiteGraphCanvasHandle } from './LiteGraphCanvas';
+import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
+import { GroupMenu, GroupEditPopup, applyGroupEdit, type GroupMenuState } from './groupMenu';
+import { RunnerManagerPanel } from './RunnerManagerPanel';
+import { NodeEditorPopup } from './NodeEditorPopup';
+import { ComfyRunnerRegistry, createDefaultLocalRunner, collectRunnerRows } from './comfyHost/comfyRunner';
+import { guiToApi } from './comfyHost/comfyApiAdapter';
+import { registerDefaultComfyTVStages, getNodeSpec } from './comfyHost/registry';
+import { isComfyExecutableSpec, runGraphExecution, runNodeOrStage } from './comfyHost/workflowRun';
+import { buildExecutionPlan } from './comfyHost/executionGraph';
+import { loadObjectInfoNodes } from './comfyHost/comfyObjectInfoLoader';
+import { loadComfyTVStages } from './comfyHost/comfyTvLoader';
+import { loadComfyTVCaps } from './comfyHost/capsLoader';
 import { useWorkflowEditorStore, undo as doUndo, redo as doRedo } from './store';
 import { sendRequest } from '../../bridge/messageClient';
 import { useAgentStore } from '../../store/useAgentStore';
@@ -25,13 +35,93 @@ import { useWorkspaceStore } from '../../store/useWorkspaceStore';
 import type { IStoredWorkflow } from '../../types/workflowStorage';
 
 export const WorkflowEditorPanel: React.FC = () => {
-	const [paletteCollapsed, setPaletteCollapsed] = useState(false);
-	const paletteWidth = 400; // fixed at maximum width, no drag resize
+	// right-click "Add Node" menu (ComfyUI-style) — replaces the left Nodes panel
+	const [ctxMenu, setCtxMenu] = useState<NodeContextMenuState | null>(null);
+	// right-click on a group → group ops menu (rename/recolor/pin/remove)
+	const [groupMenu, setGroupMenu] = useState<GroupMenuState | null>(null);
+	const [groupEditOpen, setGroupEditOpen] = useState(false);
 	const [editingDescription, setEditingDescription] = useState(false); // v41: multi-line edit toggle
 	const [loaded, setLoaded] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 	const [validationMsg, setValidationMsg] = useState<string | null>(null);
+
+	// Canvas engine: LiteGraph (ComfyUI 底层框架) — ReactFlow 已移除，唯一引擎
+	const [showRunners, setShowRunners] = useState(false);
+	const comfyRegistryRef = useRef<InstanceType<typeof ComfyRunnerRegistry> | null>(null);
+	if (!comfyRegistryRef.current) {
+		comfyRegistryRef.current = new ComfyRunnerRegistry();
+	}
+	// 节点编辑器浮层：双击画布节点 → 打开（输入提示词 → 生成出图）
+	const [editingNode, setEditingNode] = useState<{ nodeId: string; nodeType: string; upstreams: string[]; data?: Record<string, unknown> } | null>(null);
+	const [runnerPreference, setRunnerPreference] = useState('auto');
+
+	// P0: 全图 Comfy 执行状态（与 P3 host 执行状态分离）
+	const [comfyRunState, setComfyRunState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
+	const [comfyRunMsg, setComfyRunMsg] = useState<string | null>(null);
+	// 双击弹窗提交的参数 → 全图执行时复用（nodeId → coerced values）
+	const comfyRunValuesRef = useRef<Record<string, Record<string, unknown>>>({});
+
+	// ── 挂载即加载：内置 ComfyTV 预设 + 自动探测本地 runner 能力 ──
+	// NodePalette 订阅了 registry，所以这里注册的节点会立即出现在面板里。
+	React.useEffect(() => {
+		// 1) 默认 ComfyTV stages —— 保证即使无 runner 面板也有 ComfyTV 节点入口。
+		registerDefaultComfyTVStages();
+		// 2) 自动探测本地 ComfyUI（localhost:8188）并加载 object_info + stages。
+		const registry = comfyRegistryRef.current!;
+		if (!registry.get('local')) {
+			registry.register(createDefaultLocalRunner());
+		}
+		let cancelled = false;
+		(async () => {
+			try {
+				const rows = await collectRunnerRows(registry.list());
+				const healthy = rows.find(r => r.ok);
+				if (!healthy || cancelled) { return; }
+				await Promise.allSettled([
+					loadObjectInfoNodes(healthy.baseUrl),
+					loadComfyTVStages(healthy.baseUrl),
+					loadComfyTVCaps(healthy.baseUrl),
+				]);
+			} catch {
+				// 无本地 ComfyUI 时静默 —— 默认 stages 已提供入口。
+			}
+		})();
+		return () => { cancelled = true; };
+	}, []);
+
+	// LiteGraph 画布命令式句柄（导入/导出）
+	const liteGraphRef = useRef<LiteGraphCanvasHandle | null>(null);
+	const comfyFileInputRef = useRef<HTMLInputElement | null>(null);
+	const [comfyImportMsg, setComfyImportMsg] = useState<string | null>(null);
+
+	const handleComfyImportFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+		const file = e.target.files?.[0];
+		if (!file) { return; }
+		try {
+			const text = await file.text();
+			const raw = JSON.parse(text);
+			const issues = liteGraphRef.current?.importComfyWorkflow(raw) ?? ['canvas not ready'];
+			setComfyImportMsg(issues.length ? `导入完成（${issues.length} 个警告）` : 'ComfyUI 工作流导入成功');
+		} catch (err) {
+			setComfyImportMsg(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			if (comfyFileInputRef.current) { comfyFileInputRef.current.value = ''; }
+		}
+	}, []);
+
+	const handleComfyExport = useCallback(() => {
+		const wf = liteGraphRef.current?.exportApi();
+		if (!wf) { setComfyImportMsg('画布为空，无可导出内容'); return; }
+		const blob = new Blob([JSON.stringify(guiToApi(wf), null, 2)], { type: 'application/json' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = 'comfyui-api.json';
+		a.click();
+		URL.revokeObjectURL(url);
+		setComfyImportMsg('已导出 api.json');
+	}, []);
 
 	// Execution state (P3: execution control UI)
 	const [executionId, setExecutionId] = useState<string | null>(null);
@@ -247,8 +337,88 @@ export const WorkflowEditorPanel: React.FC = () => {
 		return () => clearTimeout(autoSaveTimerRef.current);
 	}, [nodes, edges, loaded, workflowId, autoSave]);
 
+	// 卡片 ▶ 运行按钮（wf-node-run → onNodeRun）→ 单节点执行。
+	// values 来自 node.data（= 画布 properties，内嵌控件已写回）。
+	const runSingleSchemaNode = useCallback(async (nodeId: string, nodeType: string) => {
+		const canvas = liteGraphRef.current;
+		const runner = comfyRegistryRef.current?.resolve(runnerPreference);
+		if (!canvas || !runner) {
+			setComfyRunState('failed');
+			setComfyRunMsg('未连接可用的 ComfyUI Runner');
+			return;
+		}
+		const store = canvas.snapshotStore();
+		if (!store) { return; }
+		const state = useWorkflowEditorStore.getState();
+		const node = state.nodes.find(n => n.id === nodeId);
+		const values = (node?.data ?? {}) as Record<string, unknown>;
+		setComfyRunState('running');
+		setComfyRunMsg(null);
+		const r = await runNodeOrStage({
+			runner,
+			nodeId,
+			type: nodeType,
+			getSpec: (t) => getNodeSpec(t),
+			values,
+			store,
+			onProgress: (p) => {
+				canvas.cardStateStore().set(nodeId, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
+			},
+		});
+		if (r.status === 'success') {
+			setComfyRunState('done');
+			setComfyRunMsg('节点执行完成');
+			canvas.cardStateStore().set(nodeId, { runState: 'success', progress: 100, durationMs: r.durationMs });
+		} else {
+			setComfyRunState('failed');
+			setComfyRunMsg(r.error ?? '执行失败');
+			canvas.cardStateStore().set(nodeId, { runState: 'error', progress: 0, errorMsg: r.error ?? '执行失败' });
+		}
+	}, [runnerPreference]);
+
 	const handleExecute = useCallback(async () => {
 		if (!workflowId) { return; }
+		// ── P0: Comfy 全图执行（画布包含可执行 Comfy 节点时优先）──
+		const state = useWorkflowEditorStore.getState();
+		const canvas = liteGraphRef.current;
+		const plan = buildExecutionPlan(state.nodes, state.edges, type => isComfyExecutableSpec(getNodeSpec(type)));
+		if (plan.steps.length > 0 && canvas) {
+			const runner = comfyRegistryRef.current?.resolve(runnerPreference);
+			if (!runner) {
+				setComfyRunState('failed');
+				setComfyRunMsg('画布包含 Comfy 节点，但未连接可用的 ComfyUI Runner');
+				return;
+			}
+			setComfyRunState('running');
+			setComfyRunMsg(null);
+			if (plan.hasCycle) {
+				setComfyRunState('failed');
+				setComfyRunMsg('检测到环路，已中止执行');
+				return;
+			}
+			const r = await runGraphExecution({
+				nodes: state.nodes,
+				edges: state.edges,
+				getSpec: (t) => getNodeSpec(t),
+				resolveRunner: () => runner,
+				snapshotStore: canvas.snapshotStore()!,
+				cardState: canvas.cardStateStore(),
+				nodeValues: comfyRunValuesRef.current,
+				onNodeStart: ({ id }) => setCurrentNodeId(id),
+			});
+			if (r.success) {
+				setComfyRunState('done');
+				setComfyRunMsg(`全图执行完成 · ${r.ran.length} 个节点`);
+			} else if (r.failed) {
+				setComfyRunState('failed');
+				setComfyRunMsg(`执行失败：${r.failed.error}（节点 ${r.failed.nodeId}）`);
+			} else {
+				setComfyRunState('failed');
+				setComfyRunMsg('执行中止');
+			}
+			return;
+		}
+		// ── P3: host Agent 执行（无可执行 Comfy 节点时回退）──
 		try {
 			const result = await sendRequest('workflow.execute', {
 				workflowId,
@@ -268,7 +438,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 		} catch (err) {
 			console.error('[WorkflowEditor] Failed to execute workflow:', err);
 		}
-	}, [workflowId]);
+	}, [workflowId, runnerPreference]);
 
 	const handlePause = useCallback(async () => {
 		if (!executionId) { return; }
@@ -315,14 +485,13 @@ export const WorkflowEditorPanel: React.FC = () => {
 	}, []);
 
 	return (
-		<ReactFlowProvider>
-			<div style={{
-				width: '100%',
-				height: '100%',
-				display: 'flex',
-				flexDirection: 'column',
-				overflow: 'hidden',
-			}}>
+		<div style={{
+			width: '100%',
+			height: '100%',
+			display: 'flex',
+			flexDirection: 'column',
+			overflow: 'hidden',
+		}}>
 				{/* Toolbar */}
 				<div style={{
 					display: 'flex',
@@ -363,6 +532,42 @@ export const WorkflowEditorPanel: React.FC = () => {
 						</span>
 					</div>
 					<div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+						<button
+							onClick={() => setShowRunners(prev => !prev)}
+							title="ComfyUI Runner 管理"
+							style={{
+								...iconBtnStyle,
+								borderColor: showRunners ? 'var(--vscode-focusBorder)' : 'var(--vscode-panel-border)',
+								backgroundColor: showRunners ? 'rgba(34,197,94,0.12)' : 'transparent',
+								fontSize: '10px',
+								width: 'auto',
+								padding: '0 8px',
+								fontFamily: 'inherit',
+							}}
+						>
+							🖥 Runner
+						</button>
+						<button
+							onClick={() => comfyFileInputRef.current?.click()}
+							title="导入 ComfyUI 工作流 JSON"
+							style={{ ...iconBtnStyle, borderColor: 'var(--vscode-panel-border)', fontSize: '10px', width: 'auto', padding: '0 8px', fontFamily: 'inherit' }}
+						>
+							⤵ 导入
+						</button>
+						<button
+							onClick={handleComfyExport}
+							title="导出为 ComfyUI api.json"
+							style={{ ...iconBtnStyle, borderColor: 'var(--vscode-panel-border)', fontSize: '10px', width: 'auto', padding: '0 8px', fontFamily: 'inherit' }}
+						>
+							⤴ 导出 API
+						</button>
+						<input
+							ref={comfyFileInputRef}
+							type="file"
+							accept=".json,application/json"
+							style={{ display: 'none' }}
+							onChange={handleComfyImportFile}
+						/>
 						<span style={{ fontSize: '11px', color: validationMsg?.startsWith('✓') ? '#22c55e' : validationMsg ? '#f59e0b' : saveStatus === 'saved' ? '#22c55e' : saveStatus === 'error' ? '#ef4444' : 'var(--vscode-descriptionForeground)' }}>
 							{validationMsg
 								? validationMsg
@@ -384,19 +589,30 @@ export const WorkflowEditorPanel: React.FC = () => {
 							}}>
 							{saving ? 'Saving...' : 'Save'}
 						</button>
+						{/* P0 Comfy 全图执行结果提示 */}
+						{comfyRunMsg && (
+							<span style={{ fontSize: '11px', color: comfyRunState === 'done' ? '#22c55e' : '#ef4444' }}>
+								{comfyRunMsg}
+							</span>
+						)}
 						{/* Execution control buttons (P3) */}
 						{!executionStatus || executionStatus === 'completed' || executionStatus === 'failed' || executionStatus === 'cancelled' ? (
-							<button onClick={handleExecute} title="Run workflow" style={{
-								padding: '4px 12px',
-								border: '1px solid #22c55e',
-								borderRadius: '4px',
-								backgroundColor: '#22c55e',
-								color: 'white',
-								cursor: 'pointer',
-								fontSize: '12px',
-								fontWeight: 600,
-							}}>
-								▶ Run
+							<button
+								onClick={handleExecute}
+								disabled={comfyRunState === 'running'}
+								title="Run workflow（画布含 Comfy 节点时全图顺序执行）"
+								style={{
+									padding: '4px 12px',
+									border: '1px solid #22c55e',
+									borderRadius: '4px',
+									backgroundColor: '#22c55e',
+									color: 'white',
+									cursor: comfyRunState === 'running' ? 'wait' : 'pointer',
+									fontSize: '12px',
+									fontWeight: 600,
+									opacity: comfyRunState === 'running' ? 0.6 : 1,
+								}}>
+								{comfyRunState === 'running' ? '运行中…' : comfyRunState === 'done' ? '✓ 完成' : comfyRunState === 'failed' ? '✕ 重试' : '▶ Run'}
 							</button>
 						) : executionStatus === 'running' ? (
 							<>
@@ -553,65 +769,149 @@ export const WorkflowEditorPanel: React.FC = () => {
 					)}
 				</div>
 
-			{/* Main area — palette overlays canvas, canvas always full-width */}
+				{/* Main area — canvas fills everything; nodes are added via right-click menu */}
 			<div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
-				{/* v41: Palette floats above the canvas as an absolute overlay.
-				     When collapsed it slides off-screen; canvas width is never affected. */}
-				<div style={{
-					position: 'absolute',
-					left: paletteCollapsed ? -paletteWidth : 0,
-					top: 0,
-					bottom: 0,
-					zIndex: 10,
-					transition: 'left 0.22s ease',
-					display: 'flex',
-				}}>
-					<NodePalette
-						collapsed={paletteCollapsed}
-						onToggle={() => setPaletteCollapsed(!paletteCollapsed)}
-						width={paletteWidth}
+
+				{/* Canvas — always fills the full area; engine is LiteGraph (ComfyUI) */}
+				<div style={{ width: '100%', height: '100%' }}>
+					<LiteGraphCanvas
+						ref={liteGraphRef}
+						className="wf-litegraph-host"
+					onNodeDoubleClick={(nodeId, nodeType) => {
+						// Double-click always opens the property editor — it never
+						// executes the node (execution lives on the card ▶ button).
+						const upstreams = edges.filter(e => e.target === nodeId).map(e => e.source);
+						const node = nodes.find(n => n.id === nodeId);
+						setEditingNode({ nodeId, nodeType, upstreams, data: node?.data });
+					}}
+					onNodeRun={(nodeId, nodeType) => {
+						void runSingleSchemaNode(nodeId, nodeType);
+					}}
+						onCanvasContextMenu={(graphX, graphY, clientX, clientY) => {
+							setCtxMenu({ graphX, graphY, clientX, clientY });
+						}}
+						onGroupContextMenu={(group, graphX, graphY, clientX, clientY) => {
+							setCtxMenu(null);
+							setGroupMenu({ group, clientX, clientY });
+						}}
+						onRequestRun={handleExecute}
+					/>
+					{/* ComfyUI-style right-click node menu */}
+					{ctxMenu && (
+						<>
+							<div
+								style={{
+									position: 'fixed', inset: 0, zIndex: 99,
+									background: 'transparent',
+								}}
+								onClick={() => setCtxMenu(null)}
+								onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }}
+							/>
+						<NodeContextMenu
+							menu={ctxMenu}
+							onPick={() => setCtxMenu(null)}
+							onClose={() => setCtxMenu(null)}
+						/>
+					</>
+				)}
+				{/* ComfyUI-style group ops menu (right-click on a group) */}
+				{groupMenu && (
+					<>
+						<div
+							style={{ position: 'fixed', inset: 0, zIndex: 99, background: 'transparent' }}
+							onClick={() => setGroupMenu(null)}
+							onContextMenu={(e) => { e.preventDefault(); setGroupMenu(null); }}
+						/>
+						<GroupMenu
+							menu={groupMenu}
+							onEdit={() => setGroupEditOpen(true)}
+							onPin={() => {
+								const g = groupMenu.group;
+								g.pinned ? g.unpin() : g.pin();
+								setGroupMenu(null);
+							}}
+							onRemove={() => {
+								liteGraphRef.current?.removeGroup(groupMenu.group);
+								setGroupMenu(null);
+							}}
+							onClose={() => setGroupMenu(null)}
+						/>
+					</>
+				)}
+				{groupEditOpen && groupMenu && (
+					<GroupEditPopup
+						group={groupMenu.group}
+						onSave={(edit) => {
+							applyGroupEdit(groupMenu.group, edit);
+							setGroupEditOpen(false);
+							setGroupMenu(null);
+						}}
+						onClose={() => setGroupEditOpen(false)}
+					/>
+				)}
+				{/* 节点编辑器浮层：双击节点 → 输入提示词 → 生成出图 */}
+					{editingNode && liteGraphRef.current?.snapshotStore() && (
+						<NodeEditorPopup
+							nodeId={editingNode.nodeId}
+							nodeType={editingNode.nodeType}
+							runners={comfyRegistryRef.current!}
+							store={liteGraphRef.current.snapshotStore()!}
+							cardStateStore={liteGraphRef.current.cardStateStore()}
+							preference={runnerPreference}
+							initialData={editingNode.data}
+							upstreams={editingNode.upstreams}
+							onValuesCommit={(id, values) => {
+						comfyRunValuesRef.current[id] = values;
+						// Sarosis (react) nodes persist their parameters into node.data.
+						const spec = getNodeSpec(editingNode.nodeType);
+						if (spec?.kind === 'react') {
+							useWorkflowEditorStore.getState().updateNodeData(id, values);
+						}
+					}}
+							onClose={() => setEditingNode(null)}
+							onSelectRunner={() => setShowRunners(true)}
+						/>
+					)}
+					{comfyImportMsg && (
+						<div style={{
+							position: 'absolute', bottom: 12, left: 12, zIndex: 5,
+							fontSize: 11, padding: '5px 10px', borderRadius: 4,
+							background: 'var(--vscode-notifications-background)',
+							border: '1px solid var(--vscode-panel-border)',
+							color: 'var(--vscode-foreground)',
+						}}>
+							{comfyImportMsg}
+							<button
+								onClick={() => setComfyImportMsg(null)}
+								style={{ marginLeft: 8, background: 'transparent', border: 'none', color: 'var(--vscode-foreground)', cursor: 'pointer', fontSize: 11 }}
+							>✕</button>
+						</div>
+					)}
+				</div>
+
+				{/* Comfy Runner 管理面板浮层 */}
+				{showRunners && comfyRegistryRef.current && (
+					<div style={{
+						position: 'absolute',
+						top: 40,
+						right: 12,
+						zIndex: 30,
+						width: 320,
+						maxHeight: 'calc(100% - 60px)',
+						overflowY: 'auto',
+						borderRadius: 8,
+						background: 'var(--vscode-sideBar-background)',
+						border: '1px solid var(--vscode-panel-border)',
+						boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+					}}>
+					<RunnerManagerPanel
+						registry={comfyRegistryRef.current}
+						onRunnerResolved={setRunnerPreference}
 					/>
 				</div>
-
-				{/* Collapsed-state floating trigger — slides in when palette is hidden */}
-				{paletteCollapsed && (
-					<button
-						onClick={() => setPaletteCollapsed(false)}
-						title="Show Nodes panel"
-						style={{
-							position: 'absolute',
-							left: 6,
-							top: 8,
-							zIndex: 11,
-							width: 26,
-							height: 26,
-							borderRadius: 4,
-							border: '1px solid var(--vscode-panel-border)',
-							backgroundColor: 'var(--vscode-sideBar-background)',
-							color: 'var(--vscode-foreground)',
-							cursor: 'pointer',
-							display: 'flex',
-							alignItems: 'center',
-							justifyContent: 'center',
-							fontSize: 11,
-							opacity: 0.85,
-							boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
-							transition: 'opacity 0.15s ease',
-						}}
-						onMouseEnter={e => { (e.target as HTMLElement).style.opacity = '1'; }}
-						onMouseLeave={e => { (e.target as HTMLElement).style.opacity = '0.85'; }}
-					>
-						▶
-					</button>
-				)}
-
-				{/* Canvas — always fills the full area */}
-				<div style={{ width: '100%', height: '100%' }}>
-					<WorkflowCanvas />
-				</div>
+			)}
 			</div>
-			</div>
-		</ReactFlowProvider>
+		</div>
 	);
 };
 

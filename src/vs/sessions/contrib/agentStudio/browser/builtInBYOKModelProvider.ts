@@ -12,11 +12,13 @@ import {
 	IModelProvider, IModelInfo, ModelAuthStatus,
 	IModelOptions, IModelDelta, IChatMessage, IChatContext,
 	ModelCapability, IModelCapabilityConfig,
+	IImageGenParams, IImageGenResult,
 } from '../common/providers.js';
 import { MessageFormatConverter } from '../common/adapters/messageFormatConverter.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
 import type { CustomProviderData } from './views/providerView.js';
+import { inferImageGen } from '../common/llmBridge.js';
 
 /**
  * Safe access to Node.js require() in Electron renderer.
@@ -55,6 +57,11 @@ export interface IBYOKProviderDefinition {
 	readonly apiKeyOptional?: boolean;
 	/** Optional: chat completions endpoint path (default: 'chat/completions'). E.g. Ollama uses 'v1/chat/completions'. */
 	readonly chatEndpointPath?: string;
+	/**
+	 * Optional: images generation endpoint path (default: 'images/generations').
+	 * OpenAI-compatible text→image endpoint, e.g. 'v1/images/generations'.
+	 */
+	readonly imageGenEndpointPath?: string;
 	/**
 	 * Optional: if true, this provider targets the native Anthropic Messages API (not OpenAI-compatible).
 	 * When set, cache_control will be injected into system messages to enable Prompt Caching (KV Cache).
@@ -227,6 +234,54 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		return this._streamChat(modelId, messages, options, context);
 	}
 
+	/**
+	 * 文生图：调用 OpenAI 兼容 `/images/generations` 端点。
+	 * renderer 直连路径（web/remote 环境）；主进程环境由
+	 * `MainProcessModelProvider` 覆写为经 IPC 转发。
+	 */
+	async generateImage(params: IImageGenParams): Promise<IImageGenResult> {
+		const apiKey = this._getApiKey();
+		const baseUrl = this._getBaseUrl();
+		if (!this._definition.apiKeyOptional && !apiKey) {
+			throw new Error(`${this.name}: API key not configured`);
+		}
+		const imagePath = this._definition.imageGenEndpointPath || 'images/generations';
+		const url = `${baseUrl.replace(/\/+$/, '')}/${imagePath.replace(/^\/+/, '')}`;
+		const body: Record<string, unknown> = {
+			model: params.modelId,
+			prompt: params.prompt,
+			n: params.numImages ?? 1,
+		};
+		if (params.width && params.height) {
+			body['size'] = `${params.width}x${params.height}`;
+		}
+		if (params.negativePrompt) {
+			body['negative_prompt'] = params.negativePrompt;
+		}
+		const response = await fetch(url, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+			},
+			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(120_000),
+		});
+		if (!response.ok) {
+			const text = await response.text().catch(() => '');
+			throw new Error(`图片生成接口返回 ${response.status}${text ? `：${text.slice(0, 200)}` : ''}`);
+		}
+		const data: any = await response.json();
+		const rawImages: any[] = Array.isArray(data?.data) ? data.data : [];
+		return {
+			images: rawImages.map((img: any) => {
+				if (typeof img?.url === 'string' && img.url) { return { url: img.url }; }
+				if (typeof img?.b64_json === 'string' && img.b64_json) { return { b64: img.b64_json }; }
+				return {};
+			}).filter(img => img.url || img.b64),
+		};
+	}
+
 	// ─── Internal ─────────────────────────────────────────────
 
 	protected _getApiKey(): string {
@@ -333,6 +388,7 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 					capabilities: this._inferCapabilities(m),
 					supportsToolCall: m.supportsToolCall ?? (m.capabilityConfig?.specialToolFormat !== undefined),
 					supportsReasoning: m.supportsReasoning ?? (m.capabilityConfig?.reasoningType ? true : undefined),
+					supportsImageGen: m.supportsImageGen ?? inferImageGen(m),
 					capabilityConfig: m.capabilityConfig || undefined,
 					pricing: m.pricing ? {
 						inputPerMillion: typeof m.pricing.prompt === 'string' ? parseFloat(m.pricing.prompt) * 1_000_000 : m.pricing.input_per_million,

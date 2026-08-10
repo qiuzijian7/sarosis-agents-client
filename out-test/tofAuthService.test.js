@@ -126,11 +126,11 @@ suite('Agent Studio - TOF Auth Service', () => {
         const configService = createMockConfigService({});
         // 模拟 TofAuthService._getConfig 的默认值逻辑
         const paasid = configService.getValue('sessions.agentStudio.tof.paasid') || 'sls_mcp_app';
-        const siteBaseUrl = configService.getValue('sessions.agentStudio.tof.siteBaseUrl') || 'http://saroasis-mcp.woa.com';
+        const siteBaseUrl = configService.getValue('sessions.agentStudio.tof.siteBaseUrl') || 'http://vssaros.woa.com';
         const gatewayBaseUrl = configService.getValue('sessions.agentStudio.tof.gatewayBaseUrl') || 'http://21.169.46.116:8080';
         const timeout = configService.getValue('sessions.agentStudio.tof.loginTimeout') || 180;
         assert.strictEqual(paasid, 'sls_mcp_app');
-        assert.strictEqual(siteBaseUrl, 'http://saroasis-mcp.woa.com');
+        assert.strictEqual(siteBaseUrl, 'http://vssaros.woa.com');
         assert.strictEqual(gatewayBaseUrl, 'http://21.169.46.116:8080');
         assert.strictEqual(timeout, 180);
     });
@@ -163,7 +163,7 @@ suite('Agent Studio - TOF Auth Service', () => {
     // ─── 登录 URL 构造测试 ─────────────────────────────────────
     test('TOF signin URL — 包含所有必需参数', () => {
         const paasid = 'sls_mcp_app';
-        const siteBaseUrl = 'http://saroasis-mcp.woa.com';
+        const siteBaseUrl = 'http://vssaros.woa.com';
         const callbackPath = '/api/v1/auth/tof/callback';
         const port = 12345;
         const state = 'abc123';
@@ -178,10 +178,10 @@ suite('Agent Studio - TOF Auth Service', () => {
         assert.ok(signinUrl.includes(encodeURIComponent(callbackPath)));
     });
     test('TOF signin URL — siteBaseUrl 尾部斜杠被去除', () => {
-        const siteBaseUrl = 'http://saroasis-mcp.woa.com/';
+        const siteBaseUrl = 'http://vssaros.woa.com/';
         const callbackPath = '/api/v1/auth/tof/callback';
         const gwCallback = `${siteBaseUrl.replace(/\/$/, '')}${callbackPath}`;
-        assert.strictEqual(gwCallback, 'http://saroasis-mcp.woa.com/api/v1/auth/tof/callback');
+        assert.strictEqual(gwCallback, 'http://vssaros.woa.com/api/v1/auth/tof/callback');
     });
     // ─── whoami 响应解析测试 ───────────────────────────────────
     test('whoami 响应 — 解析完整字段', () => {

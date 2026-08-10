@@ -1,12 +1,16 @@
 /*---------------------------------------------------------------------------------------------
  *  Workflow Editor Zustand Store
  *
- *  Manages ReactFlow nodes, edges, selection, and workflow metadata.
+ *  Manages workflow nodes, edges, selection, and workflow metadata.
  *  Mirrors cc-wf-studio's workflow-store.ts but simplified for our use case.
  *
  *  Time-travel: wrapped with zundo `temporal` middleware so nodes/edges/metadata
  *  changes can be undone/redone (Ctrl+Z / Ctrl+Shift+Z). Tracking is paused during
  *  node dragging so a drag results in a single undo step.
+ *
+ *  The canvas backend is LiteGraph (ComfyUI). The store keeps a framework-agnostic
+ *  node/edge model (position/data/style only — no ReactFlow types) that the
+ *  LiteGraph canvas two-way syncs with the graph.
  *
  *  Node categories: Basic Nodes (prompt, agent, skill, tool, task),
  *  Control Flow (ifElse, switch, askUser),
@@ -15,14 +19,37 @@
 
 import { create } from 'zustand';
 import { temporal } from 'zundo';
-import type { Node, Edge, OnNodesChange, OnEdgesChange, OnConnect } from '@xyflow/react';
-import { applyNodeChanges, applyEdgeChanges, addEdge } from '@xyflow/react';
 import type {
 	IStoredWorkflow,
 	WorkflowGraphNode,
 	WorkflowGraphConnection,
 } from '../../types/workflowStorage';
 import type { WorkflowExecutionStatus, IWorkflowNodeExecutionState } from '../../types/workflowExecution';
+
+// ─── Framework-agnostic node/edge model ────────────────────────────────────────
+
+export interface WorkflowEditorNode {
+	id: string;
+	type: string;
+	position: { x: number; y: number };
+	data: Record<string, unknown> & { label?: string };
+	selected?: boolean;
+	parentId?: string;
+	style?: { width?: number; height?: number };
+	zIndex?: number;
+}
+
+export interface WorkflowEditorEdge {
+	id: string;
+	source: string;
+	target: string;
+	sourceHandle?: string;
+	targetHandle?: string;
+	type?: string;
+	data?: Record<string, unknown>;
+	animated?: boolean;
+	selected?: boolean;
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -31,14 +58,14 @@ function uid(prefix: string): string {
 	return `${prefix}-${Date.now()}-${++_nodeCounter}`;
 }
 
-const DEFAULT_START: Node = {
+const DEFAULT_START: WorkflowEditorNode = {
 	id: 'start',
 	type: 'start',
 	position: { x: 80, y: 250 },
 	data: { label: 'Start' },
 };
 
-const DEFAULT_END: Node = {
+const DEFAULT_END: WorkflowEditorNode = {
 	id: 'end',
 	type: 'end',
 	position: { x: 600, y: 250 },
@@ -111,14 +138,10 @@ export interface WorkflowValidationResult {
 
 // ─── Store Interface ─────────────────────────────────────────────────────────
 
-export type InteractionMode = 'pan' | 'select';
-export type ScrollMode = 'classic' | 'pan';
-export type MinimapMode = 'hidden' | 'auto' | 'always';
-
 interface WorkflowEditorState {
-	// ReactFlow state
-	nodes: Node[];
-	edges: Edge[];
+	// Graph state (framework-agnostic; LiteGraph canvas syncs bidirectionally)
+	nodes: WorkflowEditorNode[];
+	edges: WorkflowEditorEdge[];
 	selectedNodeId: string | null;
 
 	// Workflow metadata
@@ -131,10 +154,6 @@ interface WorkflowEditorState {
 
 	// UI state
 	isPropertyPanelOpen: boolean;
-	interactionMode: InteractionMode;
-	scrollMode: ScrollMode;
-	isEdgeAnimationEnabled: boolean;
-	minimapMode: MinimapMode;
 
 	// Default agent config for new agent nodes (inherited from workflow's bound agent)
 	defaultAgentConfig: { agentId?: string; providerId?: string; modelId?: string };
@@ -146,14 +165,9 @@ interface WorkflowEditorState {
 	nodeExecutionStates: Record<string, IWorkflowNodeExecutionState>;
 	breakpoints: string[];
 
-	// ReactFlow handlers
-	onNodesChange: OnNodesChange;
-	onEdgesChange: OnEdgesChange;
-	onConnect: OnConnect;
-
-	// Direct setters (batch operations / paste)
-	setNodes: (nodes: Node[]) => void;
-	setEdges: (edges: Edge[]) => void;
+	// Direct setters (batch operations / paste / LiteGraph sync)
+	setNodes: (nodes: WorkflowEditorNode[]) => void;
+	setEdges: (edges: WorkflowEditorEdge[]) => void;
 
 	// Actions
 	setSelectedNode: (id: string | null) => void;
@@ -175,12 +189,6 @@ interface WorkflowEditorState {
 	toggleWorkflowBreakpoint: (nodeId: string) => void;
 	clearExecutionState: () => void;
 
-	// Interaction
-	toggleInteractionMode: () => void;
-	toggleScrollMode: () => void;
-	toggleEdgeAnimation: () => void;
-	setMinimapMode: (mode: MinimapMode) => void;
-
 	// Validation
 	validateWorkflow: () => WorkflowValidationResult;
 
@@ -197,7 +205,7 @@ function defaultDataForType(type: string): Record<string, unknown> {
 
 	switch (type) {
 		case 'prompt':
-			return { ...base, label: 'Prompt', prompt: '', variables: {} };
+			return { ...base, label: '提示', prompt: '', variables: {} };
 		case 'agent':
 			return { ...base, label: 'Agent', agentId: '', agentConfig: { providerId: '', modelId: '' }, prompt: '{{input}}' };
 		case 'skill':
@@ -205,7 +213,7 @@ function defaultDataForType(type: string): Record<string, unknown> {
 		case 'tool':
 			return { ...base, label: 'Tool', toolName: '', toolParams: {} };
 		case 'task':
-			return { ...base, label: 'Task', executorId: '', taskId: '' };
+			return { ...base, label: '任务', executorId: '', taskId: '' };
 		case 'ifElse':
 			return {
 				...base, label: 'If/Else', evaluationTarget: '',
@@ -263,33 +271,15 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 			workflowName: '',
 			workflowDescription: '',
 			isPropertyPanelOpen: false,
-			interactionMode: 'pan' as InteractionMode,
-			scrollMode: 'classic' as ScrollMode,
-		isEdgeAnimationEnabled: true,
-		minimapMode: 'auto' as MinimapMode,
-		defaultAgentConfig: {},
-		workflowBreakpoints: [],
+			defaultAgentConfig: {},
+			workflowBreakpoints: [],
 
-		// Execution state (P3)
-		executionId: null,
-		executionStatus: null,
-		currentNodeId: null,
-		nodeExecutionStates: {},
-		breakpoints: [],
-
-		// ── ReactFlow handlers ──
-
-			onNodesChange: (changes) => {
-				set({ nodes: applyNodeChanges(changes, get().nodes) });
-			},
-
-			onEdgesChange: (changes) => {
-				set({ edges: applyEdgeChanges(changes, get().edges) });
-			},
-
-			onConnect: (connection) => {
-				set({ edges: addEdge({ ...connection, type: 'deletable' }, get().edges) });
-			},
+			// Execution state (P3)
+			executionId: null,
+			executionStatus: null,
+			currentNodeId: null,
+			nodeExecutionStates: {},
+			breakpoints: [],
 
 			// ── Direct setters ──
 
@@ -324,7 +314,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 				const style = type === 'group' ? { width: 400, height: 300 } : undefined;
 				const zIndex = type === 'group' ? -1001 : undefined;
 
-				const newNode: Node = { id, type, position, data, ...(style ? { style } : {}), ...(zIndex !== undefined ? { zIndex } : {}) };
+				const newNode: WorkflowEditorNode = { id, type, position, data, ...(style ? { style } : {}), ...(zIndex !== undefined ? { zIndex } : {}) };
 				set({
 					nodes: [...get().nodes, newNode],
 					selectedNodeId: id,
@@ -347,7 +337,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 				const source = get().nodes.find(n => n.id === id);
 				if (!source) { return null; }
 				const newId = uid(source.type || 'node');
-				const clone: Node = {
+				const clone: WorkflowEditorNode = {
 					...source,
 					id: newId,
 					position: { x: source.position.x + 40, y: source.position.y + 40 },
@@ -378,44 +368,37 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 
 			setWorkflowName: (name) => set({ workflowName: name }),
 			setWorkflowDescription: (desc) => set({ workflowDescription: desc }),
-		setDefaultAgentConfig: (config) => set({ defaultAgentConfig: config }),
+			setDefaultAgentConfig: (config) => set({ defaultAgentConfig: config }),
 
-		// ── Execution state actions (P3) ──
+			// ── Execution state actions (P3) ──
 
-		setExecutionState: (executionId, status, currentNodeId, nodeStates) => set({
-			executionId,
-			executionStatus: status,
-			currentNodeId,
-			nodeExecutionStates: nodeStates,
-		}),
+			setExecutionState: (executionId, status, currentNodeId, nodeStates) => set({
+				executionId,
+				executionStatus: status,
+				currentNodeId,
+				nodeExecutionStates: nodeStates,
+			}),
 
-		setBreakpoints: (breakpoints) => set({ breakpoints }),
+			setBreakpoints: (breakpoints) => set({ breakpoints }),
 
-		// v5a: workflow-level breakpoints
-		setWorkflowBreakpoints: (breakpoints) => set({ workflowBreakpoints: breakpoints }),
-		toggleWorkflowBreakpoint: (nodeId) => set(state => {
-			const has = state.workflowBreakpoints.includes(nodeId);
-			return {
-				workflowBreakpoints: has
-					? state.workflowBreakpoints.filter(id => id !== nodeId)
-					: [...state.workflowBreakpoints, nodeId],
-			};
-		}),
+			// v5a: workflow-level breakpoints
+			setWorkflowBreakpoints: (breakpoints) => set({ workflowBreakpoints: breakpoints }),
+			toggleWorkflowBreakpoint: (nodeId) => set(state => {
+				const has = state.workflowBreakpoints.includes(nodeId);
+				return {
+					workflowBreakpoints: has
+						? state.workflowBreakpoints.filter(id => id !== nodeId)
+						: [...state.workflowBreakpoints, nodeId],
+				};
+			}),
 
-		clearExecutionState: () => set({
-			executionId: null,
-			executionStatus: null,
-			currentNodeId: null,
-			nodeExecutionStates: {},
-			breakpoints: [],
-		}),
-
-		// ── Interaction ──
-
-			toggleInteractionMode: () => set(state => ({ interactionMode: state.interactionMode === 'pan' ? 'select' : 'pan' })),
-			toggleScrollMode: () => set(state => ({ scrollMode: state.scrollMode === 'classic' ? 'pan' : 'classic' })),
-			toggleEdgeAnimation: () => set(state => ({ isEdgeAnimationEnabled: !state.isEdgeAnimationEnabled })),
-			setMinimapMode: (mode: MinimapMode) => set({ minimapMode: mode }),
+			clearExecutionState: () => set({
+				executionId: null,
+				executionStatus: null,
+				currentNodeId: null,
+				nodeExecutionStates: {},
+				breakpoints: [],
+			}),
 
 			// ── Validation ──
 
@@ -498,8 +481,8 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 			loadWorkflow: (wf) => {
 				if (!wf) { return; }
 
-				const nodes: Node[] = [];
-				const edges: Edge[] = [];
+				const nodes: WorkflowEditorNode[] = [];
+				const edges: WorkflowEditorEdge[] = [];
 				// v5a: workflow-level breakpoints loaded from the host JSON
 				const breakpoints = new Set<string>(wf.breakpoints ?? []);
 
@@ -551,7 +534,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 								id: `e-${prevId}-${stepId}`,
 								source: prevId,
 								target: stepId,
-								type: 'deletable',
+								type: 'default',
 							});
 							prevId = stepId;
 						}
@@ -561,7 +544,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 						id: `e-${prevId}-end`,
 						source: prevId,
 						target: 'end',
-						type: 'deletable',
+						type: 'default',
 					});
 				}
 
@@ -573,7 +556,7 @@ export const useWorkflowEditorStore = create<WorkflowEditorState>()(
 							target: conn.to,
 							sourceHandle: conn.fromPort,
 							targetHandle: conn.toPort,
-							type: 'deletable',
+							type: 'default',
 							data: conn.condition ? { condition: conn.condition } : undefined,
 						});
 					}

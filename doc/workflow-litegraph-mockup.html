@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LiteGraph 画布 · React 卡片 · 无 Vue 桥 Mockup</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --panel: #252526; --panel2: #2d2d30; --border: #3c3c3c;
+    --fg: #cccccc; --fg-dim: #858585; --fg-faint: #5a5a5a;
+    --green: #22c55e; --red: #ef4444; --gold: #f59e0b;
+    --c-image: #22c55e; --c-video: #3b82f6; --c-audio: #eab308;
+    --c-text: #a855f7; --c-json: #9ca3af; --c-any: #e5e7eb;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: var(--bg);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--fg); font-size: 13px; }
+  button, input, select { font-family: inherit; }
+
+  #topbar { position: fixed; inset: 0 0 auto 0; z-index: 50; height: 44px;
+    display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  .wf-name { font-weight: 600; }
+  .tag { font-size: 10px; letter-spacing: 1px; padding: 3px 10px; border-radius: 10px;
+    border: 1px solid var(--c-any); color: #d1d5db; }
+  .tag.r { border-color: var(--c-video); color: #93c5fd; }
+  #topbar .spacer { flex: 1; }
+  .tb { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; font-size: 12px;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+  .tb:hover { background: #37373b; }
+  .tb.primary { background: var(--c-video); border-color: var(--c-video); color: #fff; font-weight: 600; }
+  .tb.green { background: var(--green); border-color: var(--green); color: #04140a; font-weight: 600; }
+
+  /* ── 画布（LiteGraph 视觉） ── */
+  #viewport { position: fixed; inset: 44px 330px 0 0; cursor: grab; overflow: hidden; }
+  #world { position: absolute; left: 0; top: 0; width: 1800px; height: 1000px; transform-origin: 0 0;
+    background-image: radial-gradient(circle, rgba(255,255,255,.07) 1px, transparent 1.2px);
+    background-size: 28px 28px; }
+  #edges { position: absolute; left: 0; top: 0; width: 1800px; height: 1000px; pointer-events: none; overflow: visible; }
+  .edge-path { fill: none; stroke-width: 2; opacity: .8; }
+  .edge-path.hot { stroke-width: 2.6; opacity: 1; }
+  .edge-path.blocked { stroke: #4b5563 !important; stroke-dasharray: 5 6; opacity: .3; }
+  .et-image { stroke: var(--c-image); } .et-video { stroke: var(--c-video); }
+  .et-audio { stroke: var(--c-audio); } .et-text { stroke: var(--c-text); }
+  .et-json { stroke: var(--c-json); } .et-any { stroke: var(--c-any); }
+  .e-label { position: absolute; transform: translate(-50%,-50%); font-size: 9px; padding: 2px 7px;
+    border-radius: 7px; background: #1e1e1e; border: 1px solid var(--border); color: var(--fg-faint);
+    pointer-events: none; font-family: Consolas, monospace; }
+
+  /* ── LiteGraph 风格节点 ── */
+  .node { position: absolute; border-radius: 10px; border: 2px solid #333;
+    background: #232323; cursor: pointer; user-select: none;
+    box-shadow: 0 8px 24px -10px rgba(0,0,0,.8);
+    transition: left .6s cubic-bezier(.4,0,.2,1), top .6s cubic-bezier(.4,0,.2,1), border-color .2s; }
+  .node:hover { border-color: #555; }
+  .node.selected { border-color: var(--accent, #60a5fa); box-shadow: 0 0 0 2px rgba(96,165,250,.35); }
+  .node.running { border-color: var(--c-video); box-shadow: 0 0 0 2px rgba(59,130,246,.3); }
+  .node.success { border-color: var(--green); }
+  .node.error { border-color: var(--red); }
+  .node.blocked { opacity: .35; }
+  .n-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px 5px;
+    border-radius: 8px 8px 0 0; }
+  .n-title { font-size: 12.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .n-type { margin-left: auto; font-size: 8.5px; padding: 1px 6px; border-radius: 3px; font-weight: 700;
+    letter-spacing: .5px; }
+  .n-status { margin-left: 4px; font-size: 9px; padding: 1px 6px; border-radius: 3px; font-weight: 700; }
+  .st-success { background: rgba(34,197,94,.18); color: #7ee2a8; }
+  .st-running { background: rgba(59,130,246,.2); color: #93c5fd; }
+  .st-error { background: rgba(239,68,68,.2); color: #f87171; }
+  .st-blocked { background: rgba(107,114,128,.2); color: #9ca3af; }
+  .n-progress { margin: 0 10px 6px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.1); overflow: hidden; display: none; }
+  .node.running .n-progress { display: block; }
+  .n-progress i { display: block; height: 100%; width: 0; background: var(--c-video); transition: width .25s; }
+
+  /* 端口：LiteGraph 左侧输入 / 右侧输出 */
+  .port { position: absolute; width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid #232323; box-shadow: 0 0 4px rgba(0,0,0,.5); }
+  .port.in { left: -7px; }
+  .port.out { right: -7px; }
+  .port-label { position: absolute; font-size: 9px; color: var(--fg-dim); background: rgba(30,30,30,.9);
+    padding: 1px 6px; border-radius: 3px; pointer-events: none; white-space: nowrap;
+    font-family: Consolas, monospace; }
+  .port-label.il { left: 12px; } .port-label.ol { right: 12px; text-align: right; }
+
+  /* 三种卡片实现 */
+  .n-body { padding: 6px 10px 10px; }
+  .chip { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 3px; margin: 0 4px 4px 0; }
+  .chip.react { background: rgba(59,130,246,.15); color: #93c5fd; border: 1px solid rgba(59,130,246,.3); }
+  .chip.schema { background: rgba(232,121,249,.15); color: #f0abfc; border: 1px solid rgba(232,121,249,.3); }
+  .chip.native { background: rgba(245,158,11,.15); color: #fbbf24; border: 1px solid rgba(245,158,11,.3); }
+  .n-desc { font-size: 10.5px; color: var(--fg-dim); line-height: 1.6; margin: 4px 0; }
+  .n-desc code { color: #9cdcfe; font-family: Consolas, monospace; }
+  /* Sarosis 卡片（React 表单感） */
+  .react-row { display: flex; gap: 6px; margin: 4px 0; }
+  .react-row input { flex: 1; padding: 4px 7px; font-size: 11px; background: var(--panel2);
+    color: var(--fg); border: 1px solid var(--border); border-radius: 4px; }
+  .react-row textarea { flex: 1; padding: 4px 7px; font-size: 11px; background: var(--panel2);
+    color: var(--fg); border: 1px solid var(--border); border-radius: 4px; resize: vertical; min-height: 40px; }
+  .tag-row { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0; }
+  .tag-pill { font-size: 9.5px; padding: 2px 8px; border-radius: 9px;
+    background: rgba(255,255,255,.06); border: 1px solid var(--border); color: var(--fg-dim); }
+  /* ComfyTV schema 卡片（React 重写，无 Vue） */
+  .schema-btn { width: 100%; padding: 6px; font-size: 11px; font-weight: 600;
+    background: var(--c-video); color: #fff; border: none; border-radius: 5px; cursor: pointer; }
+  .schema-btn:disabled { opacity: .4; cursor: default; }
+  .schema-thumb { margin-top: 6px; height: 78px; border-radius: 5px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.08); position: relative; }
+  .schema-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .schema-thumb .ph { display: flex; align-items: center; justify-content: center; height: 100%;
+    color: var(--fg-faint); font-size: 10px; }
+  .schema-meta { font-size: 9.5px; color: var(--fg-faint); font-family: Consolas, monospace; margin-top: 4px; }
+  /* ComfyUI 原生 widget */
+  .lg-widget { margin: 3px 0; }
+  .lg-widget .w-label { font-size: 10px; color: var(--fg-dim); margin-bottom: 2px; }
+  .lg-widget input, .lg-widget select { width: 100%; padding: 4px 7px; font-size: 11px;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; }
+  .lg-widget select { cursor: pointer; }
+  .n-err { margin: 0 10px 8px; padding: 4px 8px; font-size: 10px; border-radius: 4px;
+    background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.35); color: #f87171; }
+
+  /* ── 右侧面板 ── */
+  #side { position: fixed; right: 0; top: 44px; bottom: 0; width: 330px; z-index: 40;
+    background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; padding: 12px; }
+  .sec-t { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: var(--fg-dim);
+    text-transform: uppercase; margin: 6px 0 8px; }
+  .kv { display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; margin-bottom: 5px;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; font-size: 11.5px; }
+  .kv b { color: var(--fg); font-weight: 600; }
+  .kv span { color: var(--fg-dim); text-align: right; font-family: Consolas, monospace; font-size: 10.5px; }
+  .runner { padding: 9px 10px; border-radius: 6px; margin-bottom: 6px; font-size: 11.5px;
+    border: 1px solid var(--border); background: var(--panel2); }
+  .runner.ok { border-color: rgba(34,197,94,.4); }
+  .runner .rd { display: flex; align-items: center; gap: 6px; }
+  .runner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .runner .rk { margin-left: auto; color: var(--fg-faint); font-size: 10px; font-family: Consolas, monospace; }
+  .src { font-size: 10px; font-family: Consolas, monospace; color: #9cdcfe; background: rgba(0,0,0,.35);
+    border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; margin-top: 6px; line-height: 1.6;
+    white-space: pre-wrap; }
+  .note { font-size: 11px; color: var(--fg-dim); line-height: 1.7; padding: 8px;
+    border-left: 2px solid var(--c-video); background: rgba(59,130,246,.05); margin-top: 8px; }
+
+  #toast { position: fixed; top: 58px; left: 50%; transform: translateX(-50%); z-index: 95;
+    background: var(--panel2); border: 1px solid var(--accent, #60a5fa); color: var(--fg);
+    font-size: 12px; padding: 8px 18px; border-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .25s; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="wf-name">AI 分镜渲染管线</span>
+  <span class="tag r">LiteGraph 画布</span>
+  <span class="tag">React 卡片 · 无 Vue 桥</span>
+  <div class="spacer"></div>
+  <button class="tb primary" id="btnRun">▶ 运行</button>
+  <button class="tb green" id="btnReset">⟲ 重置</button>
+</div>
+
+<div id="viewport"><div id="world"><svg id="edges"></svg></div></div>
+
+<div id="side">
+  <div class="sec-t">架构：React 保留 + LiteGraph 画布 + 无 Vue 桥</div>
+  <div class="note">
+    画布换 <b>LiteGraph</b>（ComfyUI 底层，框架无关）；三种节点的卡片全部用 <b>React</b> 实现，
+    不加载 Vue 运行时。<br><br>
+    ① <span class="chip react">React</span> Sarosis 现有节点（组件不变，包一层 widgetBridge）<br>
+    ② <span class="chip schema">schema→React</span> ComfyTV 节点（只消费其 kind/inputs/outputs 注册信息，卡片 React 重写）<br>
+    ③ <span class="chip native">原生</span> ComfyUI 节点（object_info 动态注册，用 LiteGraph 原生 widget）
+  </div>
+  <div class="sec-t" style="margin-top:12px">Runner</div>
+  <div class="runner ok"><div class="rd"><span class="dot"></span><b>本地 ComfyUI</b><span>localhost:8188</span><span class="rk">v1.10.5 ✓</span></div></div>
+  <div class="kv"><b>object_info 拉取</b><span>3s · 2,304 节点</span></div>
+  <div class="kv"><b>ComfyTV bundle</b><span>已加载 schema（无 Vue）</span></div>
+  <div class="sec-t">LiteGraph 节点序列化</div>
+  <div class="src" id="srcPreview">{
+  "last_node_id": 6,
+  "last_link_id": 7,
+  "nodes": [
+    { "id": 1, "type": "Sarosis.Prompt", "pos": [60, 200], "size": [220, 150], "widgets_values": ["黄昏森林小径…"] },
+    { "id": 2, "type": "ComfyTV.ImageStage", "pos": [340, 200], "size": [230, 260], "widgets_values": ["nano-banana-pro", 1] },
+    { "id": 3, "type": "KSampler", "pos": [640, 160], "size": [220, 220], "widgets_values": [123, 20] }
+  ],
+  "links": [ [1, 1, 0, 2, 0, "TEXT"], [2, 2, 0, 3, 0, "IMAGE"] ],
+  "groups": [], "version": 0.4
+}</div>
+  <div class="note" style="border-color:var(--c-text)">点击节点查看配置；「▶ 运行」演示拓扑执行 + 类型化连线 + 失败阻断。</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ═══════ 伪媒体 ═══════ */
+function img(hue, w = 320, h = 180) {
+  const h2 = (hue + 40) % 360, h3 = (hue + 300) % 360;
+  const s = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue},45%,28%)"/><stop offset="1" stop-color="hsl(${h2},55%,13%)"/></linearGradient></defs><rect width="${w}" height="${h}" fill="url(#s)"/><circle cx="${w*0.68}" cy="${h*0.3}" r="${h*0.12}" fill="hsl(${hue},85%,82%)"/><polygon points="0,${h} ${w*0.25},${h*0.5} ${w*0.55},${h}" fill="hsl(${h3},40%,16%)"/></svg>`;
+  return 'data:image/svg+xml,' + encodeURIComponent(s);
+}
+
+/* ═══════ 节点 / 边（LiteGraph link type） ═══════ */
+const NODES = [
+  { id: 1, type:'Sarosis.Start',  title:'开始',    color:'#22c55e', x:40,  y:210, w:170, kind:'react', desc:'/wf storyboard', height:70 },
+  { id: 2, type:'Sarosis.Prompt', title:'分镜描述', color:'#a855f7', x:250, y:180, w:230, kind:'react',
+    desc:'prompt → <code>{{output}}</code>', height:160, prompt:true },
+  { id: 3, type:'ComfyTV.ImageStage', title:'文生图', color:'#e879f9', x:530, y:120, w:240, kind:'schema',
+    desc:'schema: {kind:image, workflow_kind:image}', schema:true, height:250 },
+  { id: 4, type:'KSampler',      title:'KSampler',  color:'#f59e0b', x:830, y:80,  w:230, kind:'native',
+    desc:'ComfyUI 原生节点 · object_info 动态注册', native:true, height:230, fail:true },
+  { id: 5, type:'Sarosis.Agent', title:'视觉分析',  color:'#3b82f6', x:1120, y:170, w:230, kind:'react',
+    desc:'input: <code>{{n3.image}}</code>', height:130 },
+  { id: 6, type:'Sarosis.End',   title:'结束',      color:'#f97316', x:1400, y:190, w:160, kind:'react', desc:'→ 会话', height:70 },
+];
+const LINKS = [
+  { id:1, from:1, to:2, type:'json',   label:'SAROSIS_JSON' },
+  { id:2, from:2, to:3, type:'text',   label:'TEXT' },
+  { id:3, from:3, to:4, type:'image',  label:'IMAGE' },
+  { id:4, from:4, to:5, type:'image',  label:'IMAGE' },
+  { id:5, from:5, to:6, type:'json',   label:'SAROSIS_JSON' },
+];
+const byId = id => NODES.find(n => n.id === id);
+const st = {}, prog = {};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const world = document.getElementById('world');
+const edgesSvg = document.getElementById('edges');
+
+function nodeH(n) { return n.height + (st[n.id] === 'error' ? 30 : 0); }
+
+function render() {
+  world.querySelectorAll('.node,.e-label,.port-label').forEach(el => el.remove());
+  edgesSvg.innerHTML = '';
+  for (const l of LINKS) {
+    const a = byId(l.from), b = byId(l.to);
+    const blocked = st[b.id] === 'blocked';
+    const hot = st[b.id] === 'success';
+    const x1 = a.x + a.w, y1 = a.y + nodeH(a) / 2, x2 = b.x, y2 = b.y + nodeH(b) / 2;
+    const dx = Math.max(46, (x2 - x1) / 2);
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2-dx} ${y2}, ${x2} ${y2}`);
+    p.setAttribute('class', `edge-path et-${l.type}` + (blocked ? ' blocked' : '') + (hot ? ' hot' : ''));
+    edgesSvg.appendChild(p);
+    const lb = document.createElement('div');
+    lb.className = 'e-label';
+    lb.textContent = blocked ? '⛔ 上游失败' : l.label;
+    lb.style.left = (x1+x2)/2 + 'px'; lb.style.top = (y1+y2)/2 + 'px';
+    world.appendChild(lb);
+  }
+  for (const n of NODES) renderNode(n);
+}
+
+function renderNode(n) {
+  const h = nodeH(n), s = st[n.id] || 'idle';
+  const el = document.createElement('div');
+  el.className = 'node' + (s === 'running' ? ' running' : '') + (s === 'success' ? ' success' : '')
+    + (s === 'error' ? ' error' : '') + (s === 'blocked' ? ' blocked' : '');
+  el.style.cssText = `left:${n.x}px;top:${n.y}px;width:${n.w}px;--accent:${n.color}`;
+  el.dataset.id = n.id;
+
+  const badge = s === 'running' ? `<span class="n-status st-running">▶ ${prog[n.id] || 0}%</span>`
+    : s === 'success' ? '<span class="n-status st-success">✓</span>'
+    : s === 'error' ? '<span class="n-status st-error">✗</span>'
+    : s === 'blocked' ? '<span class="n-status st-blocked">阻断</span>' : '';
+
+  let chip = n.kind === 'react' ? '<span class="chip react">React</span>'
+    : n.kind === 'schema' ? '<span class="chip schema">schema→React</span>'
+    : '<span class="chip native">原生</span>';
+
+  let body = '';
+  if (n.prompt) {
+    body = `<div class="react-row"><textarea>黄昏的森林小径，暖色灯火，吉卜力手绘风格，16:9 电影分镜</textarea></div>
+      <div class="tag-row"><span class="tag-pill">style: 吉卜力</span><span class="tag-pill">ratio: 16:9</span></div>`;
+  } else if (n.schema) {
+    body = `<div class="n-desc">${n.desc}</div>
+      <button class="schema-btn" onclick="window.__runSchema && window.__runSchema()">✨ 生成</button>
+      <div class="schema-thumb" id="thumb3"><div class="ph">未生成 · 待 Run</div></div>
+      <div class="schema-meta">model: nano-banana-pro · n=1 · bindings: main_prompt</div>`;
+  } else if (n.native) {
+    body = `<div class="n-desc">${n.desc}</div>
+      <div class="lg-widget"><div class="w-label">seed</div><input value="123456789"></div>
+      <div class="lg-widget"><div class="w-label">steps</div><input value="20"></div>
+      <div class="lg-widget"><div class="w-label">cfg</div><input value="7.0"></div>
+      <div class="lg-widget"><div class="w-label">sampler_name</div><select><option>euler</option><option>dpmpp_2m</option></select></div>`;
+  } else if (n.id === 5) {
+    body = `<div class="n-desc">${n.desc}</div><div class="tag-row"><span class="tag-pill">model: kimi-k2</span><span class="tag-pill">scope: node</span></div>`;
+  } else {
+    body = `<div class="n-desc">${n.desc}</div>`;
+  }
+
+  el.innerHTML = `
+    <div class="n-head"><span class="n-title">${n.title}</span>${badge}</div>
+    <div class="n-progress"><i style="width:${prog[n.id] || 0}%"></i></div>
+    <div class="n-body">${chip}${body}</div>
+    ${s === 'error' ? '<div class="n-err">429 配额超限 · 可重试</div>' : ''}`;
+
+  // LiteGraph 端口：左入右出，类型色
+  const mk = (side, y, c) => {
+    const p = document.createElement('div');
+    p.className = 'port ' + side;
+    p.style.cssText = `top:${y}px;background:${c}`;
+    el.appendChild(p);
+  };
+  const inType = { 2:'#9ca3af', 3:'#a855f7', 4:'#22c55e', 5:'#22c55e' }[n.id];
+  const outType = { 1:'#9ca3af', 2:'#a855f7', 3:'#22c55e', 4:'#22c55e', 5:'#9ca3af' }[n.id];
+  if (n.id !== 1) mk('in', h / 2 - 6, inType);
+  if (n.id !== 6) mk('out', h / 2 - 6, outType);
+  el.addEventListener('click', () => selectNode(n.id));
+  world.appendChild(el);
+}
+
+function selectNode(id) {
+  document.querySelectorAll('.node').forEach(e => e.classList.toggle('selected', +e.dataset.id === id));
+  const n = byId(id);
+  if (!n) return;
+  toast(`选中 ${n.type}（${n.kind === 'react' ? 'React 卡片' : n.kind === 'schema' ? 'schema→React 卡片' : 'LiteGraph 原生 widget'}）`);
+}
+
+/* ═══════ 视口 pan/zoom ═══════ */
+const viewport = document.getElementById('viewport');
+const cam = { x: 0, y: 0, k: 0.75 };
+function applyCam() { world.style.transform = `translate3d(${cam.x}px,${cam.y}px,0) scale(${cam.k})`; }
+function fitView() {
+  let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+  for (const n of NODES) {
+    minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + n.w + 30); maxY = Math.max(maxY, n.y + nodeH(n));
+  }
+  const pad = 40, vw = viewport.clientWidth, vh = viewport.clientHeight;
+  cam.k = Math.min(0.9, Math.min(vw / (maxX - minX + pad * 2), vh / (maxY - minY + pad * 2)));
+  cam.x = (vw - (maxX - minX) * cam.k) / 2 - minX * cam.k;
+  cam.y = (vh - (maxY - minY) * cam.k) / 2 - minY * cam.k;
+  applyCam();
+}
+viewport.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = Math.exp(-e.deltaY * 0.0012), k2 = Math.min(2, Math.max(0.3, cam.k * f));
+  const wx = (e.clientX - cam.x) / cam.k, wy = (e.clientY - cam.y - 44) / cam.k;
+  cam.k = k2; cam.x = e.clientX - wx * k2; cam.y = e.clientY - 44 - wy * k2;
+  applyCam();
+}, { passive: false });
+let pan = null;
+viewport.addEventListener('pointerdown', e => {
+  if (e.target.closest('.node')) return;
+  pan = { px: e.clientX, py: e.clientY, cx: cam.x, cy: cam.y };
+  viewport.setPointerCapture(e.pointerId);
+});
+viewport.addEventListener('pointermove', e => {
+  if (!pan) return;
+  cam.x = pan.cx + e.clientX - pan.px; cam.y = pan.cy + e.clientY - pan.py; applyCam();
+});
+viewport.addEventListener('pointerup', () => { pan = null; });
+
+/* ═══════ 执行模拟（拓扑序 + 类型化连线 + 失败阻断） ═══════ */
+async function runNode(id, ms = 900) {
+  st[id] = 'running'; prog[id] = 0; render();
+  for (let p = 0; p <= 100; p += 20) { prog[id] = p; render(); await sleep(ms / 5); }
+  if (byId(id)?.fail) {
+    st[id] = 'error';
+    for (const l of LINKS) if (l.from === id) st[l.to] = 'blocked';
+    render(); return false;
+  }
+  st[id] = 'success';
+  if (id === 3) {
+    const t = document.getElementById('thumb3');
+    if (t) t.innerHTML = `<img src="${img(150)}">`;
+  }
+  render(); return true;
+}
+let running = false;
+document.getElementById('btnRun').onclick = async () => {
+  if (running) return; running = true;
+  for (const n of NODES) { if (!st[n.id]) st[n.id] = 'queued'; }
+  render(); await sleep(400);
+  for (const n of NODES) {
+    if (st[n.id] === 'blocked') continue;
+    const ok = await runNode(n.id, n.id === 4 ? 800 : n.kind === 'schema' ? 1000 : 600);
+    if (!ok) break;
+  }
+  toast('执行结束 · KSampler 失败（429）→ 下游已阻断（LiteGraph 节点状态机）');
+  running = false;
+};
+window.__runSchema = () => {
+  if (running) return;
+  runNode(3, 1100);
+  toast('ComfyTV.ImageStage 单独 Run（逐节点快照语义）');
+};
+document.getElementById('btnReset').onclick = () => {
+  Object.keys(st).forEach(k => delete st[k]);
+  Object.keys(prog).forEach(k => delete prog[k]);
+  const t = document.getElementById('thumb3');
+  if (t) t.innerHTML = '<div class="ph">未生成 · 待 Run</div>';
+  render(); toast('已重置');
+};
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+render();
+fitView();
+</script>
+</body>
+</html>

@@ -10,7 +10,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { IModelDelta, IModelInfo, ModelAuthStatus, IChatMessage, IModelOptions, IChatContext } from '../common/providers.js';
+import { IModelDelta, IModelInfo, ModelAuthStatus, IChatMessage, IModelOptions, IChatContext, IImageGenParams, IImageGenResult } from '../common/providers.js';
 import { VSSAROS_LLM_CHANNEL, type ISarosisLlmChatRequest } from '../common/llmBridge.js';
 import { BuiltInBYOKModelProvider, type IBYOKProviderDefinition } from './builtInBYOKModelProvider.js';
 
@@ -65,6 +65,41 @@ export class MainProcessModelProvider extends BuiltInBYOKModelProvider {
 			return models ?? (this._definition.staticModels ?? []);
 		} catch {
 			return this._definition.staticModels ?? [];
+		}
+	}
+
+	/** 文生图：构造 OpenAI 兼容 images 请求并经主进程 channel 执行。 */
+	override async generateImage(params: IImageGenParams): Promise<IImageGenResult> {
+		const apiKey = this._getApiKey();
+		const baseUrl = this._getBaseUrl();
+		if (!this._definition.apiKeyOptional && !apiKey) {
+			throw new Error(`${this.name}: API key not configured`);
+		}
+		const imagePath = this._definition.imageGenEndpointPath || 'images/generations';
+		const url = `${baseUrl.replace(/\/+$/, '')}/${imagePath.replace(/^\/+/, '')}`;
+		const body: Record<string, unknown> = {
+			model: params.modelId,
+			prompt: params.prompt,
+			n: params.numImages ?? 1,
+		};
+		if (params.width && params.height) {
+			body['size'] = `${params.width}x${params.height}`;
+		}
+		if (params.negativePrompt) {
+			body['negative_prompt'] = params.negativePrompt;
+		}
+		this._logService.info(`[BYOK:${this.id}] MainProcessModelProvider: generateImage → ${url} (model=${params.modelId})`);
+		try {
+			return await this._channel.call<IImageGenResult>('imageGenerate', {
+				url,
+				apiKey,
+				body,
+				extraHeaders: {},
+				apiKeyHeader: this._definition.apiKeyHeader,
+			});
+		} catch (e) {
+			this._logService.error(`[BYOK:${this.id}] MainProcessModelProvider: generateImage error:`, e);
+			throw e;
 		}
 	}
 

@@ -14,6 +14,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { WorkflowEditorInput } from './workflowEditorInput.js';
 import { AgentStudioWebviewController } from './agentStudioWebviewController.js';
 import { IWorkflowStorageService } from '../common/workflowStorage.js';
@@ -41,6 +42,7 @@ export class WorkflowEditorPane extends EditorPane {
 	private _webviewController: AgentStudioWebviewController | undefined;
 	private _currentWorkflowId: string | undefined;
 	private _toolbar: WorkflowToolbar | undefined;
+	private _toolbarDisposables = new DisposableStore();
 	private _versionPanel: WorkflowVersionPanel | undefined;
 
 	constructor(
@@ -110,6 +112,7 @@ export class WorkflowEditorPane extends EditorPane {
 
 		// Different workflow or first open — dispose old and create new
 		this._disposeWebview();
+		this._toolbarDisposables.clear();
 
 		this._currentWorkflowId = workflowId;
 
@@ -139,8 +142,8 @@ export class WorkflowEditorPane extends EditorPane {
 			this.workflowVersionService,
 		);
 		this._toolbar.render();
-		// 删除后关闭编辑器标签页
-		this._toolbar.onDidRequestDelete(async (wf) => {
+		// 删除后关闭编辑器标签页（订阅归入 _toolbarDisposables，每次 setInput 重建时先清理旧的）
+		this._toolbarDisposables.add(this._toolbar.onDidRequestDelete(async (wf) => {
 			try {
 				await this.workflowStorageService.deleteWorkflow(wf.id);
 				this.notificationService.info(`已删除工作流 "${wf.name}"`);
@@ -153,11 +156,11 @@ export class WorkflowEditorPane extends EditorPane {
 			if (this.input) {
 				this.editorService.closeEditor({ editor: this.input, groupId: this.group.id });
 			}
-		});
+		}));
 		// 版本历史面板切换
-		this._toolbar.onDidRequestVersionHistory(() => {
+		this._toolbarDisposables.add(this._toolbar.onDidRequestVersionHistory(() => {
 			this._versionPanel?.toggle();
-		});
+		}));
 
 		// ── 横向分割布局：webview（左）+ 版本面板（右）──
 		const splitContainer = DOM.$('div.workflow-split');
@@ -220,6 +223,7 @@ export class WorkflowEditorPane extends EditorPane {
 			this._toolbar.dispose();
 			this._toolbar = undefined;
 		}
+		this._toolbarDisposables.clear();
 		this._disposeVersionPanel();
 		if (this._webviewController) {
 			this._webviewController.dispose();

@@ -72,6 +72,7 @@ export type RequestType =
 	| 'providers.getSelection'
 	| 'providers.getSelectionForAgent'
 	| 'providers.openSettings'
+	| 'imagegen.generate'
 	| 'workspaceSession.list'
 	| 'workspaceSession.get'
 	| 'workspaceSession.create'

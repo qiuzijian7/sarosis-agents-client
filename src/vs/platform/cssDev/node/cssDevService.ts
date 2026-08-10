@@ -4,7 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { spawn } from 'child_process';
-import { relative } from '../../../base/common/path.js';
+import { existsSync } from 'fs';
+import { join, relative } from '../../../base/common/path.js';
 import { FileAccess } from '../../../base/common/network.js';
 import { StopWatch } from '../../../base/common/stopwatch.js';
 import { IEnvironmentService } from '../../environment/common/environment.js';
@@ -51,16 +52,37 @@ export class CSSDevelopmentService implements ICSSDevelopmentService {
 
 			const chunks: Buffer[] = [];
 			const basePath = FileAccess.asFileUri('').fsPath;
-			const process = spawn(rg.rgPath, ['-g', '**/*.css', '--files', '--no-ignore', basePath], {});
 
-			process.stdout.on('data', data => {
+			// Resolve the ripgrep binary with fallbacks. `npm install --ignore-scripts`
+			// skips the @vscode/ripgrep postinstall download, leaving bin/rg.exe missing;
+			// without a working rg the CSS module list is empty and the dev CSS import-map
+			// is never generated -> every `import "*.css"` fails with a MIME error.
+			const binName = process.platform === 'win32' ? 'rg.exe' : 'rg';
+			const rgCandidates = [
+				rg.rgPath,
+				join(basePath, 'node_modules', '@vscode', 'ripgrep', 'bin', binName),
+				join(basePath, 'build', 'saros', 'bin', binName)
+			];
+			const rgPath = rgCandidates.find(candidate => existsSync(candidate));
+			if (!rgPath) {
+				this.logService.error('[CSS_DEV] FAILED to compute CSS data: no ripgrep binary found. Candidates: ' + rgCandidates.join(', '));
+				resolve([]);
+				return;
+			}
+			if (rgPath !== rg.rgPath) {
+				this.logService.warn(`[CSS_DEV] Using fallback ripgrep binary: ${rgPath}`);
+			}
+
+			const rgProcess = spawn(rgPath, ['-g', '**/*.css', '--files', '--no-ignore', basePath], {});
+
+			rgProcess.stdout.on('data', data => {
 				chunks.push(data);
 			});
-			process.on('error', err => {
+			rgProcess.on('error', err => {
 				this.logService.error('[CSS_DEV] FAILED to compute CSS data', err);
 				resolve([]);
 			});
-			process.on('close', () => {
+			rgProcess.on('close', () => {
 				const data = Buffer.concat(chunks).toString('utf8');
 				const result = data.split('\n').filter(Boolean).map(path => relative(basePath, path).replace(/\\/g, '/')).filter(Boolean).sort();
 				if (result.some(path => path.indexOf('vs/') !== 0)) {

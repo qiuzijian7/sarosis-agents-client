@@ -53,6 +53,7 @@ export type RequestType =
 	| 'providers.getSelection'
 	| 'providers.getSelectionForAgent'
 	| 'providers.openSettings'
+	| 'imagegen.generate'
 	| 'workspaceSession.list'
 	| 'workspaceSession.get'
 	| 'workspaceSession.create'
@@ -155,8 +156,51 @@ const DEFAULT_TIMEOUT = 30_000; // 30s timeout for requests
 let requestIdCounter = 0;
 const pendingRequests = new Map<string, PendingRequest>();
 
-// Acquire VS Code API (available in webview context)
-const vscode = acquireVsCodeApi();
+// Acquire VS Code API (available in webview context).
+//
+// IMPORTANT: the bundle may execute more than once within the same webview
+// document (VM31/VM32/VM33 duplicate executions were observed when multiple
+// Agent Studio webviews share a pinned renderer/origin). `acquireVsCodeApi()`
+// must only be called ONCE per document — a second call throws
+// "An instance of the VS Code API has already been acquired". We:
+//   1. cache the instance on `window` (cheap re-use path)
+//   2. wrap in try/catch as a last-resort guard in case the same bundle is
+//      re-evaluated before the window cache is written
+declare global {
+	interface Window {
+		__AS_VSCODE_API__?: ReturnType<typeof acquireVsCodeApi>;
+	}
+}
+
+type VsCodeApi = ReturnType<typeof acquireVsCodeApi>;
+
+function safeAcquire(): VsCodeApi {
+	if (window.__AS_VSCODE_API__) { return window.__AS_VSCODE_API__; }
+	try {
+		const api = acquireVsCodeApi();
+		window.__AS_VSCODE_API__ = api;
+		return api;
+	} catch {
+		// Second call within the same document — fall back to a minimal stub so
+		// the rest of the bundle can still boot (calls become no-ops).
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		return (window.__AS_VSCODE_API__ ?? makeStub()) as VsCodeApi;
+	}
+}
+
+function makeStub(): VsCodeApi {
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const noop = (): any => undefined;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const stub = {
+		postMessage: noop,
+		getState: () => ({}),
+		setState: noop,
+	} as unknown as VsCodeApi;
+	return stub;
+}
+
+const vscode: VsCodeApi = safeAcquire();
 
 /**
  * Send a request to the Host and wait for a response.

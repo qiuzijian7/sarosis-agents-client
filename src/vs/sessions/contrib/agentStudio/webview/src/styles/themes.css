@@ -116,24 +116,6 @@ body,
   background: var(--as-bg-primary) !important;
 }
 
-.agent-node {
-  border-color: var(--as-border);
-}
-
-.agent-node:hover {
-  border-color: var(--as-accent);
-  box-shadow: 0 8px 16px var(--as-shadow);
-}
-
-.agent-node.selected {
-  border-color: var(--as-border-focus);
-  box-shadow: 0 0 0 2px var(--as-accent-bg), 0 8px 16px var(--as-shadow);
-}
-
-.agent-card-avatar-fallback {
-  background: linear-gradient(135deg, var(--as-node-gradient-start), var(--as-node-gradient-end));
-}
-
 .task-board-panel {
   background-color: var(--as-bg-secondary);
   border-top-color: var(--as-border);
@@ -248,7 +230,6 @@ body,
 .chat-composer-box,
 .task-board-panel,
 .task-card,
-.agent-node,
 .chat-message .message-content {
   transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }

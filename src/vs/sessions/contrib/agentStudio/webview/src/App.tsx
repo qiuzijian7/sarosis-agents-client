@@ -10,8 +10,8 @@ import { AgentEditorPane } from './features/agentEditor/AgentEditorPane';
 import { TaskBoardPanel } from './features/taskboard/TaskBoardPanel';
 import { useWorkspaceStore } from './store/useWorkspaceStore';
 
-// Lazy-load the workflow editor — it pulls in @xyflow/react (~390 KB input)
-// which is only needed when the user actually opens the workflow editor panel.
+// Lazy-load the workflow editor — it pulls in LiteGraph (~large input) which is
+// only needed when the user actually opens the workflow editor panel.
 const WorkflowEditorPanel = React.lazy(() => import('./features/workflowEditor/WorkflowEditorPanel'));
 import { useAgentStore } from './store/useAgentStore';
 import { useProviderStore } from './store/useProviderStore';

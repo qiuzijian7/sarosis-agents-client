@@ -6,6 +6,14 @@
 (window as any).__AS_BUNDLE_LOADED__ = true;
 console.log('[AS-BUNDLE] index.tsx: module execution started');
 
+// Dismiss the inline "Agent Studio 加载中..." placeholder (the pre/index.html
+// fallback also dismisses it on this flag, but doing it here too ensures the
+// placeholder is cleared even if the pre-script fallback is patched out).
+(function dismissPreload() {
+	const el = document.getElementById('as-preload');
+	if (el && el.parentNode) { el.parentNode.removeChild(el); }
+})();
+
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
@@ -28,7 +36,6 @@ import './styles/chat-cards.css';
 import './styles/configHtml.css';
 import './styles/agent-editor.css';
 import './styles/void-tool-card.css';
-import '@xyflow/react/dist/style.css';
 
 // Initialize the message bridge (must happen before React mounts)
 perfTrace.mark('bundle-eval');
