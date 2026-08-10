@@ -63,6 +63,30 @@ function updateExtensionPackageJSON(input: Stream, update: (data: any) => any): 
 		.pipe(packageJsonFilter.restore);
 }
 
+/**
+ * Returns true when the extension's esbuild config externalizes a runtime
+ * dependency other than the reserved `vscode` module (e.g. git's
+ * `@vscode/fs-copyfile`). Such extensions must ship their node_modules, so we
+ * restore production dependencies (see fromLocalNormal) instead of filtering
+ * node_modules out of the package — otherwise activation fails at runtime with
+ * "Cannot find module '@vscode/fs-copyfile'".
+ */
+function esbuildExternalsNeedRestore(extensionPath: string, esbuildConfigFileName: string): boolean {
+	const configPath = path.join(extensionPath, esbuildConfigFileName);
+	if (!fs.existsSync(configPath)) {
+		return false;
+	}
+	const text = fs.readFileSync(configPath, 'utf8');
+	const match = text.match(/external\s*:\s*\[([^\]]*)\]/);
+	if (!match) {
+		return false;
+	}
+	return match[1].split(',').some(part => {
+		const token = part.trim().replace(/['"`]/g, '');
+		return token.length > 0 && token !== 'vscode';
+	});
+}
+
 function fromLocal(extensionPath: string, forWeb: boolean, _disableMangle: boolean): Stream {
 
 	let esbuildConfigFileName = forWeb
@@ -87,19 +111,26 @@ function fromLocal(extensionPath: string, forWeb: boolean, _disableMangle: boole
 
 	if (hasEsbuild) {
 		const isStandardEsbuild = !esbuildConfigFileName.startsWith('.');
+		// esbuild bundles most deps, but some extensions (e.g. git) externalize a
+		// native runtime dep like `@vscode/fs-copyfile`. Those deps must be shipped
+		// inside the extension's node_modules, otherwise activation fails at runtime
+		// with "Cannot find module '@vscode/fs-copyfile'". Detect this case and
+		// restore production dependencies (see fromLocalNormal) instead of filtering
+		// node_modules out of the package.
+		const restoresProdDeps = isStandardEsbuild && esbuildExternalsNeedRestore(extensionPath, esbuildConfigFileName);
 		input = isStandardEsbuild
 			? es.merge(
 				fromLocalEsbuild(extensionPath, esbuildConfigFileName),
 				// Also collect the extension files (dist, chat-webview-out, etc.)
 				// so that webview bundles and other assets are included in the package.
-				fromLocalNormal(extensionPath, false),
+				fromLocalNormal(extensionPath, restoresProdDeps),
 				// Standard esbuild extensions need a separate type check step
 				...getBuildRootsForExtension(extensionPath).map(root => typeCheckExtensionStream(root, forWeb)),
 			)
 			// Extensions with their own build system (e.g. .esbuild.mts) handle type checking internally
 			: es.merge(
 				fromLocalEsbuild(extensionPath, esbuildConfigFileName),
-				fromLocalNormal(extensionPath, false),
+				fromLocalNormal(extensionPath, restoresProdDeps),
 			);
 		isBundled = true;
 	} else {
