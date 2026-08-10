@@ -55,6 +55,23 @@ npm rebuild `
   --foreground-scripts
 if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: native rebuild failed"; exit 1 }
 
+# ===== 5.4 @vscode/tree-sitter-wasm 显式保障（语法高亮 wasm 打包必需）=====
+# 背景：蓝盾构建机 npm install 偶发漏装该包，导致打包产物 resources/app/node_modules/
+# @vscode/tree-sitter-wasm 缺失，运行时 vscode.git / 实验性 tree-sitter 高亮报
+# "Failed to load resource: net::ERR_FILE_NOT_FOUND"。
+$treeSitterJs = "node_modules\@vscode\tree-sitter-wasm\wasm\tree-sitter.js"
+if (-not (Test-Path $treeSitterJs)) {
+  Write-Host "[FIX] @vscode/tree-sitter-wasm 缺失，从 registry 显式安装..."
+  npm install @vscode/tree-sitter-wasm@0.3.1 --ignore-scripts --no-save --no-fund --no-audit
+  if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: @vscode/tree-sitter-wasm install failed"; exit 1 }
+}
+if (-not (Test-Path $treeSitterJs)) {
+  Write-Error "FATAL: @vscode/tree-sitter-wasm wasm\tree-sitter.js 缺失 - 语法高亮 wasm 不可用"
+  exit 1
+}
+$tswWasmCount = (Get-ChildItem "node_modules\@vscode\tree-sitter-wasm\wasm" -Filter *.wasm -EA SilentlyContinue).Count
+Write-Host ('[OK] @vscode/tree-sitter-wasm present (' + $tswWasmCount + ' wasm files)')
+
 # ===== 5.5 @vscode/sqlite3 vendored fallback (图谱 SQLite 后端必需) =====
 $sqliteNode = "node_modules\@vscode\sqlite3\build\Release\vscode-sqlite3.node"
 if (-not (Test-Path $sqliteNode)) {
