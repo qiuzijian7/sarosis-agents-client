@@ -92,6 +92,11 @@ const workerEntryPoints = [
 // Desktop-only workers (use electron-browser)
 const desktopWorkerEntryPoints = [
 	'vs/platform/profiling/electron-browser/profileAnalysisWorkerMain',
+	// KB 内核 Worker（AgentStudio）。kbWorkerManager._loadWorkerCode 通过
+	// FileAccess.asFileUri 读取 out/vs/sessions/.../kbWorker.js。它必须作为独立
+	// esbuild 入口产出，否则打包版该文件 404、KB 检索静默回退主线程（大库卡 UI）。
+	// （buildfile.ts 的 workerKb 仅供旧 optimize 路径，useEsbuildTranspile=true 时不生效）
+	'vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/kbWorker',
 ];
 
 // Desktop workbench and code entry points
