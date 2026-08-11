@@ -134,7 +134,20 @@ function fromLocal(extensionPath: string, forWeb: boolean, _disableMangle: boole
 			);
 		isBundled = true;
 	} else {
-		input = fromLocalNormal(extensionPath, true);
+		// tsc-compiled extensions: only restore production dependencies when the
+		// extension actually declares runtime deps in `dependencies`.
+		// agentmemory-memory has an empty `dependencies` (its native modules such as
+		// better-sqlite3 / @vscode/sqlite3 live in the app root node_modules) but a
+		// huge `optionalDependencies` (@xenova/transformers). getProductionDependencies
+		// (npm ls --all --omit=dev) would recursively enumerate thousands of files
+		// across those packages, and the Windows build machine then hits
+		// "EMFILE: too many open files" while packaging the extension.
+		let hasRuntimeDeps = false;
+		try {
+			const pkgJson = JSON.parse(fs.readFileSync(path.join(extensionPath, 'package.json'), 'utf8'));
+			hasRuntimeDeps = Object.keys(pkgJson.dependencies ?? {}).length > 0;
+		} catch { /* keep false */ }
+		input = fromLocalNormal(extensionPath, hasRuntimeDeps);
 	}
 
 	return updateExtensionPackageJSON(input, data => {
@@ -302,12 +315,18 @@ function fromLocalNormal(extensionPath: string, restoreProductionDependencies = 
 					// it under `node_modules` again would produce a bogus double prefix.
 					const relative = path.relative(extensionPath, dep);
 					return walkFiles(dep)
-						// Skip dev shims (e.g. .bin/tsc) and nested node_modules that may
-						// have been installed by devDependencies; only the package itself ships.
+						// Only ship the package's runtime payload: skip dev shims (.bin),
+						// nested node_modules and non-runtime folders (@types, test, tests,
+						// docs, examples, src) — they massively bloat the package and can
+						// exhaust the file descriptor limit (EMFILE) on the Windows build
+						// machine when a dependency tree is deep.
 						.filter(f => {
 							const rel = path.relative(dep, f);
 							const parts = rel.split(path.sep);
-							return !parts.includes('node_modules') && !parts.includes('.bin');
+							if (parts.includes('node_modules') || parts.includes('.bin')) {
+								return false;
+							}
+							return !parts.some(p => p === '@types' || p === 'test' || p === 'tests' || p === 'docs' || p === 'examples' || p === 'src');
 						})
 						.map(f => path.join(extensionPath, relative, path.relative(dep, f)));
 				}).filter(f => {
