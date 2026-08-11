@@ -296,8 +296,27 @@ function fromLocalNormal(extensionPath: string, restoreProductionDependencies = 
 				// PackageManager.None to avoid npm ls on bundled/esbuild extensions, so we
 				// recover them explicitly here for the tsc branch only.
 				const productionDependencyFiles = getProductionDependencies(extensionPath).flatMap(dep => {
+					// dep is the absolute package dir (e.g. .../node_modules/@vscode/fs-copyfile).
+					// Rebuild an absolute path so gulp/vinyl and fs.statSync agree on it —
+					// path.relative() already contains the `node_modules/` prefix, so joining
+					// it under `node_modules` again would produce a bogus double prefix.
 					const relative = path.relative(extensionPath, dep);
-					return walkFiles(dep).map(f => path.join('node_modules', relative, path.relative(dep, f)));
+					return walkFiles(dep)
+						// Skip dev shims (e.g. .bin/tsc) and nested node_modules that may
+						// have been installed by devDependencies; only the package itself ships.
+						.filter(f => {
+							const rel = path.relative(dep, f);
+							const parts = rel.split(path.sep);
+							return !parts.includes('node_modules') && !parts.includes('.bin');
+						})
+						.map(f => path.join(extensionPath, relative, path.relative(dep, f)));
+				}).filter(f => {
+					// Tolerate broken symlinks / vanished files (e.g. .bin shims on Windows)
+					try {
+						return fs.statSync(f).isFile();
+					} catch {
+						return false;
+					}
 				});
 				allFiles = [...files, ...productionDependencyFiles];
 			} else {
