@@ -149,6 +149,8 @@ import { KbSqliteStoreChannel } from '../../sessions/contrib/agentStudio/electro
 import { KB_SQLITE_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/kbSqliteStoreChannel.js';
 import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-main/gitVersionChannel.js';
 import { GIT_VERSION_CHANNEL } from '../../sessions/contrib/agentStudio/common/gitVersionBackend.js';
+import { MediaStoreChannel } from '../../sessions/contrib/agentStudio/electron-main/mediaStoreChannel.js';
+import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/mediaStoreChannel.js';
 import { VSSAROS_LLM_CHANNEL } from '../../sessions/contrib/agentStudio/common/llmBridge.js';
 import { IWebContentExtractorService } from '../../platform/webContentExtractor/common/webContentExtractor.js';
 import { NativeWebContentExtractorService } from '../../platform/webContentExtractor/electron-main/webContentExtractorService.js';
@@ -1539,6 +1541,15 @@ export class CodeApplication extends Disposable {
 		// 无法加载 fs/isomorphic-git，故 agent/skill/workflow/kb 的 git 操作全部经此 channel 代理。
 		const gitVersionChannel = this._register(new GitVersionChannel());
 		mainProcessElectronServer.registerChannel(GIT_VERSION_CHANNEL, gitVersionChannel);
+
+		// AgentStudio 媒体资产库（生成图片管理，P1）：文件 + SQLite 元数据宿主在主进程，
+		// renderer 经 ProxyChannel 代理（browser/mediaStoreProxy.ts）。DB/文件落
+		// ${userDataPath}/media/（dev 为 ~/.vssaros-dev/media）。
+		const mediaStoreChannel = new MediaStoreChannel(
+			join(this.environmentMainService.userDataPath, 'media'),
+			accessor.get(ILoggerService),
+		);
+		mainProcessElectronServer.registerChannel(MEDIA_STORE_CHANNEL, mediaStoreChannel);
 
 
 		// Logger

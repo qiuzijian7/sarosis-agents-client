@@ -58,6 +58,7 @@ import { AdrManager } from '../../codebaseGraphAdr.js';
 import { registerCodebaseTools } from './codebaseTools.js';
 import { registerKanbanTools } from './kanbanTools.js';
 import { registerWorkflowTools } from './workflowTools.js';
+import { registerCanvasTools } from './canvasTools.js';
 import { registerMindmapTools } from './mindmapTools.js';
 import { IPlaywrightService } from '../../../../../../platform/browserView/common/playwrightService.js';
 import { IEditorService } from '../../../../../../workbench/services/editor/common/editorService.js';
@@ -265,6 +266,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		this._registerKanbanTools();
 		this._registerMindmapTools();
 		this._registerWorkflowTools();
+		this._registerCanvasTools();
 		this._registerCodebaseTools();
 		this._registerKnowledgeTools(); // llm-wiki 知识内核（kb_search 工具）
 		this._registerHandoffTools(); // supervisor 交接工具 transfer_to_agent（Step B）
@@ -613,6 +615,13 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 			register: (def) => this.register(def),
 			workflowStorageService: this.workflowStorageService,
 			studioService: this.studioService,
+			logService: this.logService,
+		});
+	}
+
+	private _registerCanvasTools(): void {
+		registerCanvasTools({
+			register: (def) => this.register(def),
 			logService: this.logService,
 		});
 	}

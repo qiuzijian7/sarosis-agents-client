@@ -18,6 +18,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { LiteGraph, LGraphNode } from '@comfyorg/litegraph';
+import { comfyDrawWidgets } from '../comfyNodeStyle.js';
 
 export interface SarosisNodeConfig {
 	type: string;
@@ -40,6 +41,18 @@ const NODE_CONFIGS: SarosisNodeConfig[] = [
 	{ type: 'Sarosis.Switch', title: 'Switch', color: '#a855f7', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'case', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'evaluationTarget', value: '' }] },
 	{ type: 'Sarosis.AskUser', title: '询问', color: '#06b6d4', inputs: [{ name: 'value', type: 'SAROSIS_JSON' }], outputs: [{ name: 'answer', type: 'SAROSIS_JSON' }], widgets: [{ type: 'text', name: 'questionText', value: '' }] },
 	{ type: 'Sarosis.Group', title: '分组', color: '#888780' },
+	{ type: 'Sarosis.ProviderPicker', title: 'Provider 选择', color: '#8b5cf6', inputs: [], outputs: [{ name: 'config', type: 'TEXT' }], widgets: [
+		{ type: 'text', name: 'providerId', value: '' },
+		{ type: 'text', name: 'modelId', value: '' },
+	] },
+	// Provider 文生图：经 imagegen.generate RPC 调已认证 LLM provider。
+	// kind='llm' → runNodeOrStage 走 runProviderImage，不依赖 ComfyUI runner。
+	{ type: 'Sarosis.ModelImageGen', title: '模型文生图', color: '#06b6d4', inputs: [{ name: 'prompt', type: 'TEXT' }], outputs: [{ name: 'image', type: 'IMAGE' }], widgets: [
+		{ type: 'text', name: 'providerId', value: '' },
+		{ type: 'text', name: 'modelId', value: '' },
+		{ type: 'text', name: 'prompt', value: '', multiline: true },
+		{ type: 'text', name: 'size', value: '1024x1024' },
+	] },
 ];
 
 /** Build the LGraphNode subclass for a Sarosis node config. */
@@ -104,6 +117,24 @@ export function createSarosisNodeClass(cfg: SarosisNodeConfig): typeof LGraphNod
 					(widget as { value: unknown }).value = props[name];
 				}
 			}
+		}
+
+		/**
+		 * Override `drawWidgets` on the Sarosis subclass instead of relying on
+		 * the `LGraphNode.prototype.drawWidgets` patch from
+		 * `applyComfyNodeStyle`. LiteGraph 0.17's subclass `extends LGraphNode`
+		 * still resolves `drawWidgets` through the prototype chain, so the
+		 * Sarosis nodes were double-painted — once by the original
+		 * 0.17 `drawWidgets` (TextWidget.draw 渲染 label+value 文字，无背景框
+		 * 的"参数面板上面一层") and once by our `comfyDrawWidgets` (字段框).
+		 * Owning the override on the subclass guarantees a single render path.
+		 */
+		override drawWidgets(
+			this: Parameters<typeof comfyDrawWidgets>[0],
+			ctx: CanvasRenderingContext2D,
+			options: unknown,
+		): void {
+			comfyDrawWidgets.call(this, ctx, options);
 		}
 	};
 }

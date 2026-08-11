@@ -30,6 +30,8 @@ export const SAROSIS_NODE_TYPES = new Set<string>([
 	'Sarosis.Switch',
 	'Sarosis.AskUser',
 	'Sarosis.Group',
+	'Sarosis.ModelImageGen',
+	'Sarosis.ProviderPicker',
 ]);
 
 /** Node types the LiteGraph engine can render meaningfully.

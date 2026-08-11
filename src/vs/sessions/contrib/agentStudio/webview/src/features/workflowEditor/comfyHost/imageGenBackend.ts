@@ -12,7 +12,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { IComfyRunner } from './comfyRunner.js';
-import type { MediaRef } from './mediaSnapshot.js';
+import type { MediaRef, MediaSnapshotEntry } from './mediaSnapshot.js';
+import type { MediaSnapshotStore } from './mediaSnapshotStore.js';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -135,6 +136,35 @@ export function buildProviderImageBody(params: NormalizedImageParams): Record<st
 		body.input_image = params.imageInput;
 	}
 	return body;
+}
+
+/**
+ * First upstream IMAGE snapshot ref (by execution order). Pure — used by
+ * both runProviderImage (img2img input) and the Comfy LoadImage bridge
+ * (B-scenario: provider output → ComfyUI native LoadImage).
+ */
+export function findUpstreamImageRef(
+	store: MediaSnapshotStore,
+	upstreams: string[] | undefined,
+): string | undefined {
+	for (const up of upstreams ?? []) {
+		for (const entry of store.byNode(up)) {
+			if (entry.media.kind === 'image' && typeof entry.media.ref === 'string' && entry.media.ref) {
+				return entry.media.ref;
+			}
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Build a ComfyUI native LoadImage node's inputs from an upstream IMAGE ref.
+ * The ref is passed through `image` (a Comfy /view URL or uploaded filename);
+ * nodeExecutor's runner binding resolves /view URLs at prompt-build time. Pure.
+ */
+export function buildLoadImageInput(imageRef: string | undefined): Record<string, unknown> | undefined {
+	if (!imageRef) { return undefined; }
+	return { image: imageRef, upload: 'image' };
 }
 
 /** Convert a provider result ({url|b64}[]) into normalized media refs. Pure. */

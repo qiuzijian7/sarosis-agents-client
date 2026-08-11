@@ -205,6 +205,12 @@ export interface IImageGenParams {
 	readonly height?: number;
 	/** 生成数量（默认 1） */
 	readonly numImages?: number;
+	/**
+	 * img2img：上游输入图片引用（URL / data URL / 画布快照 ref）。
+	 * 透传到 OpenAI 兼容请求体的 `input_image` 字段（部分端点用
+	 * `image` 或 `init_image`，由 provider 端点适配）。
+	 */
+	readonly imageInput?: string;
 }
 
 /** 文生图结果：每张图片以 URL 或 base64 data URL 表达。 */

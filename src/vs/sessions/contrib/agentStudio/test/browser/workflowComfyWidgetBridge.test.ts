@@ -8,6 +8,9 @@ import {
 	nodeToOverlayRect,
 	createWidgetBridgeHost,
 	attachOverlayLayer,
+	widgetAreaInsets,
+	LITEGRAPH_TITLE_HEIGHT,
+	LITEGRAPH_SLOT_HEIGHT,
 	type MinimalDocument,
 } from '../../webview/src/features/workflowEditor/comfyHost/widgetBridge.js';
 
@@ -69,6 +72,32 @@ const fakeDocument: MinimalDocument = {
 
 suite('widgetBridge', () => {
 
+	suite('widgetAreaInsets (LiteGraph widget area)', () => {
+
+		test('top clears the title bar plus one row per port pair', () => {
+			// LiteGraph stacks input/output slots vertically under the title bar,
+			// so the card must start below max(inputs, outputs) rows or it paints
+			// over the pins.
+			assert.strictEqual(widgetAreaInsets(0, 0).top, LITEGRAPH_TITLE_HEIGHT);
+			assert.strictEqual(widgetAreaInsets(1, 1).top, LITEGRAPH_TITLE_HEIGHT + LITEGRAPH_SLOT_HEIGHT);
+			assert.strictEqual(widgetAreaInsets(2, 2).top, LITEGRAPH_TITLE_HEIGHT + 2 * LITEGRAPH_SLOT_HEIGHT);
+		});
+
+		test('row count uses the larger of inputs/outputs', () => {
+			assert.strictEqual(widgetAreaInsets(3, 1).top, widgetAreaInsets(1, 3).top);
+			assert.strictEqual(widgetAreaInsets(3, 1).top, LITEGRAPH_TITLE_HEIGHT + 3 * LITEGRAPH_SLOT_HEIGHT);
+		});
+
+		test('side insets match BaseWidget.margin so port circles stay clear', () => {
+			// Port circles are drawn at x = NODE_SLOT_HEIGHT/2 = 10 with radius
+			// 4–5, spanning x = 5..15 — a 15px inset never covers them.
+			const insets = widgetAreaInsets(1, 1);
+			assert.strictEqual(insets.left, 15);
+			assert.strictEqual(insets.right, 15);
+			assert.strictEqual(insets.bottom, 8);
+		});
+	});
+
 	suite('nodeToOverlayRect (pure math)', () => {
 
 		test('identity viewport maps 1:1', () => {
@@ -105,40 +134,59 @@ suite('widgetBridge', () => {
 			const el = (layer as unknown as FakeElement).children[0];
 			assert.ok(el, 'container should exist');
 			// nodeToOverlayRect: left=(10+5)*1=15, top=(20+5)*1=25.
-			// WidgetBridge insets leave room for LiteGraph's port dots (8px) and
-			// title bar (~22px): left = 15+8=23, top = 25+22=47.
-			assert.strictEqual(el.style.left, '23px');
-			assert.strictEqual(el.style.top, '47px');
-			assert.strictEqual(el.style.width, '84px');
+			// Default insets are GRAPH units mirroring LiteGraph's widget area:
+			// left/right = BaseWidget.margin (15), top = NODE_TITLE_HEIGHT (30) +
+			// one slot row (20) = 50, bottom = 8.
+			// left = 15 + 15*1 = 30, top = 25 + 50*1 = 75, width = 100-30 = 70.
+			assert.strictEqual(el.style.left, '30px');
+			assert.strictEqual(el.style.top, '75px');
+			assert.strictEqual(el.style.width, '70px');
 			assert.strictEqual(el.style.display, 'block');
 		});
 
-		test('sync keeps DESIGN size + transform scale so card content zooms as one unit', () => {
+		test('insets are graph units so the card stays on the widget area when zoomed', () => {
 			const layer = new FakeElement() as unknown as HTMLElement;
 			const host = createWidgetBridgeHost(layer, fakeDocument);
 			host.sync([
 				{ id: 'n', node: { pos: [10, 20], size: [100, 80] } },
 			], { x: 5, y: 5, scale: 2 });
 			const el = (layer as unknown as FakeElement).children[0];
-			// rect.left=(10+5)*2=30 → left=30+8=38; rect.top=50 → top=50+22=72.
-			assert.strictEqual(el.style.left, '38px');
-			assert.strictEqual(el.style.top, '72px');
-			// Design px (unscaled): width = 100 - 2*(8/2)=92; height = 80 - 22/2 - 8/2 = 65.
-			assert.strictEqual(el.style.width, '92px');
-			assert.strictEqual(el.style.height, '65px');
+			// rect.left=(10+5)*2=30, rect.top=(20+5)*2=50. The inset is scaled
+			// with the zoom (30 + 15*2 = 60 / 50 + 50*2 = 150) — a screen-px
+			// inset would drift off the ports as soon as the zoom changed.
+			assert.strictEqual(el.style.left, '60px');
+			assert.strictEqual(el.style.top, '150px');
+			// Design px (unscaled) = node size minus the graph-unit insets.
+			assert.strictEqual(el.style.width, '70px');
+			assert.strictEqual(el.style.height, '22px');
 			assert.strictEqual(el.style.transform, 'scale(2)');
 			assert.strictEqual(el.style.transformOrigin, '0 0');
 		});
 
-		test('fullCover at non-1 scale: design px = node size, insets convert back to screen px', () => {
+		test('explicit insets override the defaults', () => {
+			const layer = new FakeElement() as unknown as HTMLElement;
+			const host = createWidgetBridgeHost(layer, fakeDocument);
+			host.sync([
+				{ id: 'n', node: { pos: [0, 0], size: [200, 200] }, insets: { left: 10, right: 20, top: 40, bottom: 5 } },
+			], { x: 0, y: 0, scale: 1 });
+			const el = (layer as unknown as FakeElement).children[0];
+			assert.strictEqual(el.style.left, '10px');
+			assert.strictEqual(el.style.top, '40px');
+			assert.strictEqual(el.style.width, '170px');  // 200 - 10 - 20
+			assert.strictEqual(el.style.height, '155px'); // 200 - 40 - 5
+		});
+
+		test('fullCover at non-1 scale: card is flush with the node rect (no inset)', () => {
 			const layer = new FakeElement() as unknown as HTMLElement;
 			const host = createWidgetBridgeHost(layer, fakeDocument);
 			host.sync([
 				{ id: 'fc', node: { pos: [0, 0], size: [230, 320] }, fullCover: true },
 			], { x: 0, y: 0, scale: 0.5 });
 			const el = (layer as unknown as FakeElement).children[0];
-			// side inset 8/0.5=16 design px each side; top/bottom insets = 0.
-			assert.strictEqual(el.style.width, '198px');
+			// fullCover nodes are one DOM layer — the card fills the whole node
+			// rect so canvas border and card border align at every zoom. Port
+			// clearance lives in the card's inner padding instead.
+			assert.strictEqual(el.style.width, '230px');
 			assert.strictEqual(el.style.height, '320px');
 			assert.strictEqual(el.style.transform, 'scale(0.5)');
 		});
@@ -159,6 +207,24 @@ suite('widgetBridge', () => {
 			host.sync([], { x: 0, y: 0, scale: 1 });
 			const el = (layer as unknown as FakeElement).children[0];
 			assert.strictEqual(el.style.display, 'none');
+		});
+
+		test('releaseContainer detaches the card (collapsed node path)', () => {
+			// LiteGraphCanvas skips the overlay for collapsed nodes; it must
+			// also tear down any card that was previously rendered, otherwise
+			// the parameter panel stays visible below the collapsed title bar.
+			const layer = new FakeElement() as unknown as HTMLElement;
+			const host = createWidgetBridgeHost(layer, fakeDocument);
+			host.sync([{ id: 'c', node: { pos: [0, 0] } }], { x: 0, y: 0, scale: 1 });
+			assert.strictEqual((layer as unknown as FakeElement).children.length, 1, 'card attached after sync');
+			host.releaseContainer('c');
+			// releaseContainer removes the DOM node entirely (not just hides)
+			// so the parameter panel truly disappears.
+			assert.strictEqual((layer as unknown as FakeElement).children.length, 0, 'card detached after releaseContainer');
+			// And the slot is reusable — re-syncing the same id brings the
+			// card back instead of leaking a fresh DOM node each time.
+			host.sync([{ id: 'c', node: { pos: [0, 0] } }], { x: 0, y: 0, scale: 1 });
+			assert.strictEqual((layer as unknown as FakeElement).children.length, 1, 're-sync recreates the container');
 		});
 
 		test('releaseContainer removes DOM', () => {

@@ -111,3 +111,97 @@ export function buildExecutionPlan(
 	}
 	return { steps, hasCycle, skipped };
 }
+
+// ─── Parallel execution plan (docs/Agent-画布编排设计方案.md P1) ─────────────
+
+/**
+ * Parallel execution layers. Each layer is a set of steps that are mutually
+ * independent (no edges among them given a valid topological ordering), so they
+ * MAY run concurrently. Layers must be run as barriers: all steps in layer i
+ * finish before any step in layer i+1 starts — this preserves the "upstream
+ * snapshots are available before downstream consumers run" invariant.
+ *
+ * The layer list preserves Kahn's ordering: within a layer the original
+ * topological order is kept (deterministic), across layers every edge goes from
+ * an earlier layer to a later one.
+ */
+export interface ParallelExecutionPlan {
+	/** Layers of executable step ids, in execution order (barrier between layers). */
+	layers: ExecutableStep[][];
+	hasCycle: boolean;
+	skipped: string[];
+}
+
+/**
+ * Build a parallel execution plan by grouping the topological order into
+ * "waves" of independent steps:
+ *   - layer 0 = all nodes with indegree 0,
+ *   - layer k = nodes whose every upstream is in layers < k.
+ *
+ * Runs in O(V + E) via a modified Kahn pass that records the max upstream layer.
+ * Pure + DOM-free.
+ */
+export function buildParallelExecutionPlan(
+	nodes: ExecutionNodeLike[],
+	edges: ExecutionEdgeLike[],
+	isExecutable: (type: string) => boolean,
+): ParallelExecutionPlan {
+	const indegree = new Map<string, number>();
+	const adj = new Map<string, string[]>();
+	for (const n of nodes) {
+		indegree.set(n.id, 0);
+		adj.set(n.id, []);
+	}
+	for (const e of edges) {
+		if (!adj.has(e.source) || !indegree.has(e.target)) { continue; }
+		adj.get(e.source)!.push(e.target);
+		indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
+	}
+
+	const layerOf = new Map<string, number>();
+	const queue: string[] = [];
+	for (const [id, deg] of indegree) {
+		if (deg === 0) { queue.push(id); layerOf.set(id, 0); }
+	}
+
+	let orderCount = 0;
+	while (queue.length > 0) {
+		const id = queue.shift()!;
+		orderCount++;
+		for (const next of adj.get(id) ?? []) {
+			const d = (indegree.get(next) ?? 0) - 1;
+			indegree.set(next, d);
+			if (d === 0) { queue.push(next); }
+			// A node's layer = max(layer of its already-processed upstreams) + 1.
+			const candidate = (layerOf.get(id) ?? 0) + 1;
+			layerOf.set(next, Math.max(layerOf.get(next) ?? 0, candidate));
+		}
+	}
+
+	const hasCycle = orderCount < nodes.length;
+	if (hasCycle) {
+		return { layers: [], hasCycle, skipped: nodes.map(n => n.id) };
+	}
+
+	// Group executable nodes by layer (keeping topological order within layers).
+	const maxLayer = [...layerOf.values()].reduce((a, b) => Math.max(a, b), -1);
+	const layerBuckets: Array<{ step: ExecutableStep }>[] = [];
+	for (let i = 0; i <= maxLayer; i++) { layerBuckets.push([]); }
+	const skipped: string[] = [];
+	for (const n of nodes) {
+		const l = layerOf.get(n.id) ?? 0;
+		const executable = isExecutable(n.type ?? '');
+		if (executable) {
+			const step: ExecutableStep = { id: n.id, type: n.type ?? '', upstreams: collectUpstreamNodeIds(n.id, edges) };
+			layerBuckets[l].push({ step });
+		} else {
+			skipped.push(n.id);
+		}
+	}
+
+	const layers = layerBuckets
+		.filter(b => b.length > 0)
+		.map(b => b.map(x => x.step));
+
+	return { layers, hasCycle, skipped };
+}

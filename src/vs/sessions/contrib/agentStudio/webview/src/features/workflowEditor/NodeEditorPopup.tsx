@@ -13,9 +13,10 @@ import * as React from 'react';
 import { getNodeSpec } from './comfyHost/registry';
 import { buildEditorFields, coerceEditorValue, buildSarosisEditorFields, sarosisDataToValues, sarosisValuesToData, type EditorField } from './comfyHost/nodeEditorForm';
 import { type SingleNodeRunResult } from './comfyHost/nodeExecutor';
-import { runNodeOrStage, isPickerNode, isLoaderNode, collectUpstreamCandidates } from './comfyHost/workflowRun';
+import { runNodeOrStage, runProviderImage, isPickerNode, isLoaderNode, collectUpstreamCandidates, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
 import { ComfyRunnerRegistry } from './comfyHost/comfyRunner';
 import type { MediaSnapshotStore } from './comfyHost/mediaSnapshotStore';
+import { mediaList, resolveAssetUrl, type MediaAsset } from './mediaAssets';
 import type { MediaKind } from './comfyHost/mediaSnapshot';
 import { useMediaSnapshotRef } from './comfyHost/useMediaSnapshot';
 import { primarySnapshotKey } from './comfyHost/mediaSnapshot';
@@ -47,6 +48,8 @@ export const COMFY_IMAGE_PROVIDER_ID = 'comfyui';
 
 /** 判定该 schema 节点是否为文生图类（ImageStage / ImageBatchStage 等）。 */
 export function isImageGenStage(spec: { kind?: string; comfyTV?: { stageKind?: string } } | undefined, nodeType: string): boolean {
+	// Provider 文生图节点（kind='llm'，如 Sarosis.ModelImageGen）固定走 imagegen RPC。
+	if (spec?.kind === 'llm') { return true; }
 	if (spec?.kind !== 'schema') { return false; }
 	const kind = spec.comfyTV?.stageKind ?? nodeType;
 	return kind === 'image' || kind === 'image-batch';
@@ -124,6 +127,19 @@ export function NodeEditorPopup({
 		() => (isPicker ? collectUpstreamCandidates(store, upstreams) : []),
 		[isPicker, store, upstreams],
 	);
+	// 媒体库历史资产（生成图片管理 P2 复用入口）：按 picker 节点类型过滤
+	const pickerKind = isPicker
+		? (nodeType.includes('Video') ? 'video' : nodeType.includes('Audio') ? 'audio' : 'image')
+		: undefined;
+	const [libAssets, setLibAssets] = React.useState<MediaAsset[]>([]);
+	React.useEffect(() => {
+		if (!pickerKind) { setLibAssets([]); return; }
+		let done = false;
+		void mediaList({ kind: pickerKind, limit: 60 })
+			.then(r => { if (!done) { setLibAssets(r.items); } })
+			.catch(() => {});
+		return () => { done = true; };
+	}, [pickerKind]);
 	const posterImages = React.useMemo(
 		() => (isPoster ? collectUpstreamCandidates(store, upstreams).filter(c => c.media.kind === 'image').map(c => ({ ref: c.media.ref })) : []),
 		[isPoster, store, upstreams],
@@ -274,6 +290,14 @@ export function NodeEditorPopup({
 		setImageGenModelId(first?.id ?? '');
 	}, [imageGenProviders]);
 
+	// Provider (llm) 文生图节点不能选 ComfyUI —— 自动选中第一个 imagegen provider。
+	React.useEffect(() => {
+		if (spec?.kind === 'llm' && imageGenProviderId === COMFY_IMAGE_PROVIDER_ID && imageGenProviders.length > 0) {
+			handleImageGenProviderChange(imageGenProviders[0].id);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [spec?.kind, imageGenProviderId, imageGenProviders]);
+
 	// 首次出现 image 类节点时若默认是 LLM provider 则补选 model
 	React.useEffect(() => {
 		if (isImageGen && imageGenProviderId !== COMFY_IMAGE_PROVIDER_ID && !imageGenModelId) {
@@ -296,52 +320,39 @@ export function NodeEditorPopup({
 		setResult(null);
 		cardStateStore?.set(nodeId, { runState: 'running', progress: 5 });
 
-		// 文生图节点选择非 ComfyUI provider → 走 LLM 文生图 RPC
-		if (isImageGen && imageGenProviderId !== COMFY_IMAGE_PROVIDER_ID) {
-			if (!imageGenModelId) {
-				setState('error');
-				setResult({ promptId: '', status: 'error', error: '请选择文生图模型', entries: [] });
-				cardStateStore?.set(nodeId, { runState: 'error', progress: 0, errorMsg: '请选择文生图模型' });
-				return;
-			}
-			const prompt = typeof values.prompt === 'string' ? values.prompt : '';
-			if (!prompt.trim()) {
-				setState('error');
-				setResult({ promptId: '', status: 'error', error: '请输入提示词', entries: [] });
-				cardStateStore?.set(nodeId, { runState: 'error', progress: 0, errorMsg: '请输入提示词' });
-				return;
-			}
-			try {
-				const resp = await sendRequest<{
-					providerId: string; modelId: string; prompt: string;
-					negativePrompt?: string; width?: number; height?: number; numImages?: number;
-				}, { images: Array<{ url?: string; b64?: string }> }>('imagegen.generate', {
+		// 文生图节点选择非 ComfyUI provider → 走统一的 Provider 文生图执行器
+		// （runProviderImage：自动路由 provider/model + img2img 上游 IMAGE 注入）。
+		// kind='llm'（如 Sarosis.ModelImageGen）固定走 provider，不允许回退 ComfyUI。
+		if (isImageGen && (spec?.kind === 'llm' || imageGenProviderId !== COMFY_IMAGE_PROVIDER_ID)) {
+			const r = await runProviderImage({
+				runner: runners.resolve(preference)!,
+				nodeId,
+				type: nodeType,
+				getSpec: (t) => getNodeSpec(t),
+				values: {
+					...coerced,
 					providerId: imageGenProviderId,
 					modelId: imageGenModelId,
-					prompt,
+					prompt: typeof values.prompt === 'string' ? values.prompt : '',
 					negativePrompt: typeof values.negative_prompt === 'string' ? values.negative_prompt : undefined,
-					width: Number(values.width) || undefined,
-					height: Number(values.height) || undefined,
 					numImages: 1,
-				}, 180_000);
-				const images = resp?.images ?? [];
-				if (images.length === 0) {
-					throw new Error('图片生成接口未返回图片');
-				}
-				const first = images[0];
-				const ref = first.url ?? (first.b64 ? `data:image/png;base64,${first.b64}` : '');
-				if (!ref) {
-					throw new Error('图片生成接口返回了空的图片地址');
-				}
-				const entry = { nodeId, port: 'output', key: `${nodeId}:output:0`, media: { kind: 'image' as const, ref }, index: 0 };
-				store.put(entry);
+				},
+				upstreams,
+				store,
+				onProgress: (p) => {
+					cardStateStore?.set(nodeId, { runState: 'running', progress: p.progress ?? p.value ?? 50 });
+				},
+				// 弹窗路径：provider/model 已在 UI 下拉选择，仍注入 RPC 以备 llm 节点缺省。
+				sendImageGen: (payload) => sendRequest<Record<string, unknown>, { images: Array<{ url?: string; b64?: string }> }>('imagegen.generate', payload, 180_000),
+				resolveImageGenDefaults: async () => resolveFirstImageGenDefaults(imageGenProviders),
+			});
+			setResult(r);
+			if (r.status === 'success') {
 				setState('success');
-				setResult({ promptId: '', status: 'success', entries: [entry] });
 				cardStateStore?.set(nodeId, { runState: 'success', progress: 100 });
-			} catch (err) {
+			} else {
 				setState('error');
-				setResult({ promptId: '', status: 'error', error: err instanceof Error ? err.message : String(err), entries: [] });
-				cardStateStore?.set(nodeId, { runState: 'error', progress: 0, errorMsg: err instanceof Error ? err.message : String(err) });
+				cardStateStore?.set(nodeId, { runState: 'error', progress: 0, errorMsg: r.error ?? '图片生成失败' });
 			}
 			return;
 		}
@@ -401,6 +412,36 @@ export function NodeEditorPopup({
 			type: nodeType,
 			getSpec: (t) => getNodeSpec(t),
 			values: { selected_index: idx + 1 },
+			store,
+			upstreams,
+			onProgress: () => {},
+		});
+		setResult(r);
+		setState(r.status === 'success' ? 'success' : 'error');
+		cardStateStore?.set(nodeId, r.status === 'success'
+			? { runState: 'success', progress: 100 }
+			: { runState: 'error', progress: 0, errorMsg: r.error ?? '执行失败' });
+	}, [runners, preference, nodeId, nodeType, store, upstreams, onValuesCommit, cardStateStore]);
+
+	// P2 picker + 媒体库：选择历史生成资产 → 经 runNodeOrStage 输出（mediaAssetId 被
+	// runPickerNode 优先解析，整图执行时同样生效）。
+	const handlePickAsset = React.useCallback(async (asset: MediaAsset) => {
+		const runner = runners.resolve(preference);
+		if (!runner) {
+			setState('error');
+			setResult({ promptId: '', status: 'error', error: '未找到可用的 ComfyUI Runner。', entries: [] });
+			return;
+		}
+		onValuesCommit?.(nodeId, { mediaAssetId: asset.id, selected_index: 0 });
+		setState('running');
+		setResult(null);
+		cardStateStore?.set(nodeId, { runState: 'running', progress: 50 });
+		const r = await runNodeOrStage({
+			runner,
+			nodeId,
+			type: nodeType,
+			getSpec: (t) => getNodeSpec(t),
+			values: { mediaAssetId: asset.id, selected_index: 0 },
 			store,
 			upstreams,
 			onProgress: () => {},
@@ -519,6 +560,21 @@ export function NodeEditorPopup({
 									<span style={{ fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.media.kind}</span>
 								</button>
 							))}
+						</div>
+						{/* 媒体库历史资产（生成图片管理 P2 复用入口） */}
+						<div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+							<div style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>
+								媒体库（历史生成图，点击即输出）
+							</div>
+							<div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 132, overflowY: 'auto' }}>
+								{libAssets.length === 0 ? (
+									<span style={{ fontSize: 10, color: 'var(--vscode-descriptionForeground)' }}>暂无媒体库资产，运行工作流生成图片后会自动收录。</span>
+								) : (
+									libAssets.map(a => (
+										<LibraryThumb key={a.id} asset={a} onClick={() => void handlePickAsset(a)} />
+									))
+								)}
+							</div>
 						</div>
 					</div>
 				)}
@@ -691,7 +747,7 @@ export function NodeEditorPopup({
 								该节点没有可编辑参数（动态上游端口）。
 							</div>
 						)}
-						{fields.map(f => <FieldEditor key={f.key} field={f} value={values[f.key]} onChange={v => setField(f.key, v)} />)}
+						{fields.map(f => <FieldEditor key={f.key} field={f} value={values[f.key]} providerId={String(values.providerId ?? '')} onChange={v => setField(f.key, v)} />)}
 					</>
 				)}
 
@@ -759,7 +815,7 @@ export function NodeEditorPopup({
 	);
 }
 
-function FieldEditor({ field, value, onChange }: { field: EditorField; value: unknown; onChange: (v: unknown) => void }): React.JSX.Element {
+function FieldEditor({ field, value, onChange, providerId }: { field: EditorField; value: unknown; onChange: (v: unknown) => void; providerId?: string }): React.JSX.Element {
 	const labelStyle: React.CSSProperties = { fontSize: 10, color: 'var(--vscode-descriptionForeground)', marginBottom: 2, display: 'block' };
 	const inputStyle: React.CSSProperties = {
 		width: '100%', boxSizing: 'border-box', padding: '5px 8px', fontSize: 11,
@@ -767,6 +823,28 @@ function FieldEditor({ field, value, onChange }: { field: EditorField; value: un
 		border: '1px solid var(--vscode-input-border)', borderRadius: 4,
 		fontFamily: 'inherit', outline: 'none',
 	};
+
+	if (field.kind === 'provider') {
+		return <ProviderModelSelect
+			mode="provider"
+			value={String(value ?? '')}
+			providerId={String(value ?? '')}
+			onChange={onChange}
+			labelStyle={labelStyle}
+			inputStyle={inputStyle}
+		/>;
+	}
+
+	if (field.kind === 'providerModel') {
+		return <ProviderModelSelect
+			mode="model"
+			value={String(value ?? '')}
+			providerId={providerId ?? ''}
+			onChange={onChange}
+			labelStyle={labelStyle}
+			inputStyle={inputStyle}
+		/>;
+	}
 
 	if (field.kind === 'agent' || field.kind === 'skill') {
 		return <SearchableSelect
@@ -820,11 +898,84 @@ function FieldEditor({ field, value, onChange }: { field: EditorField; value: un
 	);
 }
 
+/* ── Provider / Model 联动下拉（ProviderPicker 节点）────────────────────
+ * provider：列出所有已认证且有文生图模型的 provider；model：联动当前
+ * provider 的 supportsImageGen 模型。value 为空时自动选中第一个可用项。 */
+function ProviderModelSelect({ mode, value, providerId, onChange, labelStyle, inputStyle }: {
+	mode: 'provider' | 'model';
+	value: string;
+	providerId: string;
+	onChange: (v: unknown) => void;
+	labelStyle: React.CSSProperties;
+	inputStyle: React.CSSProperties;
+}): React.JSX.Element {
+	const providers = useProviderStore(s => s.providers);
+	const imageGenProviders = React.useMemo(
+		() => providers.filter(p => p.authStatus === 'authenticated' && p.models.some(m => m.supportsImageGen)),
+		[providers],
+	);
+	const models = React.useMemo(() => {
+		const p = imageGenProviders.find(x => x.id === providerId);
+		return (p?.models ?? []).filter(m => m.supportsImageGen);
+	}, [imageGenProviders, providerId]);
+
+	if (mode === 'provider') {
+		const effective = value || imageGenProviders[0]?.id || '';
+		return (
+			<div>
+				<label style={labelStyle}>Provider</label>
+				<select value={effective} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+					{imageGenProviders.length === 0 && <option value="">（无已认证的文生图 Provider）</option>}
+					{imageGenProviders.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+				</select>
+			</div>
+		);
+	}
+	const effective = value || models[0]?.id || '';
+	return (
+		<div>
+			<label style={labelStyle}>Model</label>
+			<select value={effective} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+				{models.length === 0 && <option value="">（该 Provider 无文生图模型）</option>}
+				{models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+			</select>
+		</div>
+	);
+}
+
 /* ── Searchable dropdown (Agent / Skill fields) ────────────────────────────
  * Renders a filterable combobox populated with every current agent / skill.
  * The filter input appears when the list is open; click an item to pick.
  * Also lets the user keep the previously persisted value even when it's not
  * in the current list (e.g. an agent was deleted). */
+/** 媒体库资产缩略（懒解析可加载 URL）。 */
+function LibraryThumb({ asset, onClick }: { asset: MediaAsset; onClick: () => void }): React.JSX.Element {
+	const [url, setUrl] = React.useState<string | null>(null);
+	React.useEffect(() => {
+		let done = false;
+		void resolveAssetUrl(asset).then(u => { if (!done) { setUrl(u); } }).catch(() => {});
+		return () => { done = true; };
+	}, [asset]);
+	return (
+		<button
+			onClick={onClick}
+			title={asset.fileName ?? asset.ref}
+			style={{
+				width: 56, height: 56, borderRadius: 5, overflow: 'hidden', padding: 0, cursor: 'pointer',
+				border: '1px solid rgba(255,255,255,.12)', background: 'rgba(255,255,255,.04)',
+			}}
+		>
+			{asset.kind === 'image' && url ? (
+				<img src={url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+			) : (
+				<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', fontSize: 9, color: 'var(--vscode-descriptionForeground)' }}>
+					{asset.kind}
+				</div>
+			)}
+		</button>
+	);
+}
+
 function SearchableSelect({ field, value, onChange, labelStyle, inputStyle }: {
 	field: EditorField;
 	value: string;

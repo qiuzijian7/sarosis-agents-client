@@ -20,18 +20,26 @@ import { NodeContextMenu, type NodeContextMenuState } from './NodeContextMenu';
 import { GroupMenu, GroupEditPopup, applyGroupEdit, type GroupMenuState } from './groupMenu';
 import { RunnerManagerPanel } from './RunnerManagerPanel';
 import { NodeEditorPopup } from './NodeEditorPopup';
+import { MediaGallery } from './MediaGallery';
 import { ComfyRunnerRegistry, createDefaultLocalRunner, collectRunnerRows } from './comfyHost/comfyRunner';
-import { guiToApi } from './comfyHost/comfyApiAdapter';
+import { guiToApi, stripSarosisNodesForExport } from './comfyHost/comfyApiAdapter';
 import { registerDefaultComfyTVStages, getNodeSpec } from './comfyHost/registry';
-import { isComfyExecutableSpec, runGraphExecution, runNodeOrStage } from './comfyHost/workflowRun';
+import { isComfyExecutableSpec, isExecutableSpec, runGraphExecution, runNodeOrStage, resolveFirstImageGenDefaults } from './comfyHost/workflowRun';
 import { buildExecutionPlan } from './comfyHost/executionGraph';
+import { applyCanvasOps, type CanvasModel, type CanvasNode, type CanvasEdge, type CanvasOp } from './comfyHost/canvasOps';
+import { buildGenerateFlow } from './comfyHost/generateFlow';
+import { computeDagLayout } from './comfyHost/dagLayout';
+import { buildSubflowFromGraph } from './comfyHost/subflow';
+import { PluginManagerPanel } from './PluginManagerPanel';
+import { runReversePrompt } from './comfyHost/reversePromptRun';
 import { loadObjectInfoNodes } from './comfyHost/comfyObjectInfoLoader';
 import { loadComfyTVStages } from './comfyHost/comfyTvLoader';
 import { loadComfyTVCaps } from './comfyHost/capsLoader';
-import { useWorkflowEditorStore, undo as doUndo, redo as doRedo } from './store';
+import { useWorkflowEditorStore, undo as doUndo, redo as doRedo, pauseTracking, resumeTracking, type WorkflowEditorNode, type WorkflowEditorEdge } from './store';
 import { sendRequest } from '../../bridge/messageClient';
 import { useAgentStore } from '../../store/useAgentStore';
 import { useWorkspaceStore } from '../../store/useWorkspaceStore';
+import { useProviderStore, type ProviderInfo } from '../../store/useProviderStore';
 import type { IStoredWorkflow } from '../../types/workflowStorage';
 
 export const WorkflowEditorPanel: React.FC = () => {
@@ -48,6 +56,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 
 	// Canvas engine: LiteGraph (ComfyUI 底层框架) — ReactFlow 已移除，唯一引擎
 	const [showRunners, setShowRunners] = useState(false);
+	const [showMediaLibrary, setShowMediaLibrary] = useState(false);
 	const comfyRegistryRef = useRef<InstanceType<typeof ComfyRunnerRegistry> | null>(null);
 	if (!comfyRegistryRef.current) {
 		comfyRegistryRef.current = new ComfyRunnerRegistry();
@@ -59,6 +68,10 @@ export const WorkflowEditorPanel: React.FC = () => {
 	// P0: 全图 Comfy 执行状态（与 P3 host 执行状态分离）
 	const [comfyRunState, setComfyRunState] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
 	const [comfyRunMsg, setComfyRunMsg] = useState<string | null>(null);
+	// P1: 并行执行模式（同层无依赖节点并发；Comfy 后端步骤仍串行）
+	const [comfyRunParallel, setComfyRunParallel] = useState(false);
+	// P2: 插件管理面板开关
+	const [showPluginManager, setShowPluginManager] = useState(false);
 	// 双击弹窗提交的参数 → 全图执行时复用（nodeId → coerced values）
 	const comfyRunValuesRef = useRef<Record<string, Record<string, unknown>>>({});
 
@@ -113,7 +126,16 @@ export const WorkflowEditorPanel: React.FC = () => {
 	const handleComfyExport = useCallback(() => {
 		const wf = liteGraphRef.current?.exportApi();
 		if (!wf) { setComfyImportMsg('画布为空，无可导出内容'); return; }
-		const blob = new Blob([JSON.stringify(guiToApi(wf), null, 2)], { type: 'application/json' });
+		// Provider/编排节点没有 ComfyUI class_type —— 导出前剔除，避免生成
+		// 无法在 ComfyUI 运行的 api.json（如 Sarosis.ModelImageGen）。
+		const { workflow, skipped } = stripSarosisNodesForExport(wf, t => {
+			const spec = getNodeSpec(t);
+			return spec?.kind === 'react' || spec?.kind === 'llm';
+		});
+		if (skipped.length) {
+			setComfyImportMsg(`已跳过 ${skipped.length} 个非 Comfy 节点：${skipped.join(', ')}`);
+		}
+		const blob = new Blob([JSON.stringify(guiToApi(workflow), null, 2)], { type: 'application/json' });
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
@@ -224,6 +246,101 @@ export const WorkflowEditorPanel: React.FC = () => {
 		window.addEventListener('agentStudio:workflow-state-applied', handler);
 		return () => window.removeEventListener('agentStudio:workflow-state-applied', handler);
 	}, [loadWorkflow, agents, setDefaultAgentConfig, autoSwitchChatToWorkflowAgent]);
+
+	// Agent-driven canvas (P0): apply canvas ops pushed from the host (from
+	// canvas_apply_ops / canvas_generate tools) and reply with the result.
+	useEffect(() => {
+		const handler = async (e: Event) => {
+			const detail = (e as CustomEvent).detail as {
+				requestId: string;
+				ops: Array<Record<string, unknown>>;
+			} | undefined;
+			if (!detail?.requestId || !Array.isArray(detail.ops)) { return; }
+			try {
+				const state = useWorkflowEditorStore.getState();
+				const providers = useProviderStore.getState().providers;
+				// P0: batch = single undo step. Pause zundo tracking around the whole
+				// batch so multiple setNodes/setEdges collapse into ONE undo entry.
+				pauseTracking();
+				let result;
+				try {
+					result = applyCanvasOpsToStore(state, detail.ops, providers, {
+						undo: () => doUndo(),
+						redo: () => doRedo(),
+					});
+				} finally {
+					resumeTracking();
+				}
+				// Attach a canvas state snapshot so the host's <canvas_context>
+				// tag can inject node results into the next user message (P0).
+				const canvasContext = buildCanvasContextSnapshot(state, liteGraphRef.current?.cardStateStore?.());
+				await sendRequest('workflow.canvasOpsResult', {
+					requestId: detail.requestId,
+					result,
+					workflowId: useWorkflowEditorStore.getState().workflowId ?? undefined,
+					canvasContext,
+				});
+				// P0: canvas_generate with run:true → trigger full-graph execution.
+				const wantsRun = detail.ops.some(o =>
+					o.op === 'add_node' && o.type === '__generate_flow__' && (o.data as Record<string, unknown> | undefined)?.run === true);
+				if (wantsRun && result.ok) { executeRef.current(); }
+				// P2: canvas_generate with layout:true → auto-layout after applying.
+				const wantsLayout = detail.ops.some(o =>
+					o.op === 'add_node' && o.type === '__generate_flow__' && (o.data as Record<string, unknown> | undefined)?.layout === true);
+				if (wantsLayout && result.ok) { autoLayoutRef.current(); }
+				// P2: __reverse_prompt__ → describe an upstream image back into the
+				// node's prompt (async RPC). The op is special: it does NOT mutate
+				// the canvas model via applyCanvasOps; it runs the reverse-prompt
+				// pipeline and writes the result into the target node.
+				const reverseOp = detail.ops.find(o =>
+					o.op === 'add_node' && o.type === '__reverse_prompt__');
+				if (reverseOp) {
+					const target = String((reverseOp.data as Record<string, unknown> | undefined)?.target ?? reverseOp.id ?? '');
+					const revResult = await runReversePrompt({
+						target,
+						store: liteGraphRef.current?.snapshotStore() as never,
+						nodes: useWorkflowEditorStore.getState().nodes as never,
+						edges: useWorkflowEditorStore.getState().edges as never,
+						providers: useProviderStore.getState().providers as never,
+						reversePrompt: (args) => sendRequest('reversePrompt.generate', args, 60_000),
+					});
+					if (revResult.ok && revResult.nodeId && revResult.prompt) {
+						const s = useWorkflowEditorStore.getState();
+						pauseTracking();
+						try {
+							s.setNodes(s.nodes.map(n =>
+								n.id === revResult.nodeId ? { ...n, data: { ...n.data, prompt: revResult.prompt! } } : n) as never);
+						} finally {
+							resumeTracking();
+						}
+						const ctx = buildCanvasContextSnapshot(useWorkflowEditorStore.getState(), liteGraphRef.current?.cardStateStore?.());
+						void sendRequest('workflow.canvasOpsResult', {
+							requestId: detail.requestId,
+							result: { ok: true, model: { nodes: [], edges: [] }, results: [{ opIndex: 0, summary: `已反推提示词：${revResult.prompt.slice(0, 80)}${revResult.prompt.length > 80 ? '…' : ''}` }] },
+							workflowId: useWorkflowEditorStore.getState().workflowId ?? undefined,
+							canvasContext: ctx,
+						});
+					} else {
+						void sendRequest('workflow.canvasOpsResult', {
+							requestId: detail.requestId,
+							result: { ok: false, error: revResult.error, model: { nodes: [], edges: [] }, results: [] },
+						});
+					}
+				}
+			} catch (err) {
+				console.error('[WorkflowEditor] canvas ops apply failed', err);
+				void sendRequest('workflow.canvasOpsResult', {
+					requestId: detail.requestId,
+					result: {
+						ok: false,
+						error: err instanceof Error ? err.message : String(err),
+					},
+				});
+			}
+		};
+		window.addEventListener('agentStudio:workflow-canvas-ops', handler as EventListener);
+		return () => window.removeEventListener('agentStudio:workflow-canvas-ops', handler as EventListener);
+	}, []);
 
 	// Keyboard shortcut: Ctrl+S to save
 	useEffect(() => {
@@ -376,15 +493,96 @@ export const WorkflowEditorPanel: React.FC = () => {
 		}
 	}, [runnerPreference]);
 
+	// Latest handleExecute — the canvas-ops listener (stable effect) calls this
+	// when canvas_generate is issued with run:true (P0 closure).
+	const executeRef = useRef<() => void>(() => { });
+	executeRef.current = () => { void handleExecute(); };
+
+	// Latest handleAutoLayout — the canvas-ops listener calls this when a batch
+	// requests auto-layout (canvas_generate layout:true, P2).
+	// P2: auto-layout — recompute node positions via computeDagLayout (layered
+	// Kahn) and apply to the store. Wrapped in pause/resume so it's one undo step.
+	const handleAutoLayout = useCallback(() => {
+		const state = useWorkflowEditorStore.getState();
+		if (state.nodes.length === 0) { return; }
+		const layout = computeDagLayout(
+			state.nodes.map(n => ({ id: n.id })),
+			state.edges.map(e => ({ source: e.source, target: e.target })),
+		);
+		const nodes = state.nodes.map(n => {
+			const pos = layout.get(n.id);
+			return pos ? { ...n, position: { ...n.position, x: pos.x, y: pos.y } } : n;
+		});
+		pauseTracking();
+		try { state.setNodes(nodes); } finally { resumeTracking(); }
+	}, []);
+
+	// Latest handleAutoLayout — the canvas-ops listener calls this when a batch
+	// requests auto-layout (canvas_generate layout:true, P2). Assigned AFTER the
+	// useCallback declaration to avoid a TDZ reference on first render.
+	const autoLayoutRef = useRef<() => void>(() => { });
+	autoLayoutRef.current = () => handleAutoLayout();
+
+	// P2: wrap the currently selected nodes into a Subflow composition node.
+	// Uses buildSubflowFromGraph (pure) + replaces the selected nodes with a
+	// single Sarosis.Subflow node carrying data.subflow. Original nodes are
+	// preserved inside the subflow definition (flattenSubflows expands them
+	// back at execution time).
+	const handleWrapSubflow = useCallback(() => {
+		const canvas = liteGraphRef.current;
+		if (!canvas) { return; }
+		const selected = canvas.getSelectedNodes();
+		if (selected.length < 2) {
+			// A single-node subflow is allowed but rarely useful; keep it minimal.
+			return;
+		}
+		const state = useWorkflowEditorStore.getState();
+		const allNodes = state.nodes;
+		const allEdges = state.edges;
+		const subflow = buildSubflowFromGraph(
+			`subflow-${Date.now()}`,
+			'组合',
+			selected.map(s => ({ id: s.id, type: s.type, data: s.data })),
+			allEdges.map(e => ({ source: e.source, target: e.target })),
+		);
+		// Replace selected nodes with a single subflow node; rewire edges that
+		// crossed the boundary to/from the subflow node.
+		const selectedIds = new Set(selected.map(s => s.id));
+		const anchorNode = state.nodes.find(n => n.id === selected[0].id);
+		const subflowNode: CanvasNode = {
+			id: subflow.id,
+			type: 'Sarosis.Subflow',
+			position: anchorNode?.position ?? { x: 0, y: 0 },
+			data: { label: subflow.name, subflow },
+		};
+		const keptNodes = state.nodes.filter(n => !selectedIds.has(n.id));
+		const newEdges = state.edges
+			.filter(e => !(selectedIds.has(e.source) && selectedIds.has(e.target)))
+			.map(e => {
+				if (selectedIds.has(e.source)) { return { ...e, source: subflow.id }; }
+				if (selectedIds.has(e.target)) { return { ...e, target: subflow.id }; }
+				return e;
+			});
+		pauseTracking();
+		try {
+			state.setNodes([...keptNodes, subflowNode] as never);
+			state.setEdges(newEdges as never);
+		} finally {
+			resumeTracking();
+		}
+	}, []);
+
 	const handleExecute = useCallback(async () => {
 		if (!workflowId) { return; }
-		// ── P0: Comfy 全图执行（画布包含可执行 Comfy 节点时优先）──
+		// ── P0: Comfy + Provider 全图执行（画布包含可执行节点时优先）──
+		// 可执行 = schema/native（ComfyUI runner）+ llm（imagegen.generate RPC）。
 		const state = useWorkflowEditorStore.getState();
 		const canvas = liteGraphRef.current;
-		const plan = buildExecutionPlan(state.nodes, state.edges, type => isComfyExecutableSpec(getNodeSpec(type)));
+		const plan = buildExecutionPlan(state.nodes, state.edges, type => isExecutableSpec(getNodeSpec(type)));
 		if (plan.steps.length > 0 && canvas) {
-			const runner = comfyRegistryRef.current?.resolve(runnerPreference);
-			if (!runner) {
+			const needsRunner = plan.steps.some(s => isComfyExecutableSpec(getNodeSpec(s.type)));
+			const runner = needsRunner ? comfyRegistryRef.current?.resolve(runnerPreference) : undefined;
+			if (needsRunner && !runner) {
 				setComfyRunState('failed');
 				setComfyRunMsg('画布包含 Comfy 节点，但未连接可用的 ComfyUI Runner');
 				return;
@@ -405,6 +603,12 @@ export const WorkflowEditorPanel: React.FC = () => {
 				cardState: canvas.cardStateStore(),
 				nodeValues: comfyRunValuesRef.current,
 				onNodeStart: ({ id }) => setCurrentNodeId(id),
+				sendImageGen: (payload) => sendRequest('imagegen.generate', payload, 180_000),
+				resolveImageGenDefaults: async () =>
+					resolveFirstImageGenDefaults(useProviderStore.getState().providers),
+				mode: comfyRunParallel ? 'parallel' : 'serial',
+				parallelConcurrency: 4,
+				taskId: `run-${Date.now()}`,
 			});
 			if (r.success) {
 				setComfyRunState('done');
@@ -485,6 +689,7 @@ export const WorkflowEditorPanel: React.FC = () => {
 	}, []);
 
 	return (
+		<>
 		<div style={{
 			width: '100%',
 			height: '100%',
@@ -548,6 +753,21 @@ export const WorkflowEditorPanel: React.FC = () => {
 							🖥 Runner
 						</button>
 						<button
+							onClick={() => setShowMediaLibrary(true)}
+							title="媒体库（生成图片资产管理）"
+							style={{
+								...iconBtnStyle,
+								borderColor: showMediaLibrary ? 'var(--vscode-focusBorder)' : 'var(--vscode-panel-border)',
+								backgroundColor: showMediaLibrary ? 'rgba(99,102,241,0.12)' : 'transparent',
+								fontSize: '10px',
+								width: 'auto',
+								padding: '0 8px',
+								fontFamily: 'inherit',
+							}}
+						>
+							🖼 媒体库
+						</button>
+						<button
 							onClick={() => comfyFileInputRef.current?.click()}
 							title="导入 ComfyUI 工作流 JSON"
 							style={{ ...iconBtnStyle, borderColor: 'var(--vscode-panel-border)', fontSize: '10px', width: 'auto', padding: '0 8px', fontFamily: 'inherit' }}
@@ -595,12 +815,70 @@ export const WorkflowEditorPanel: React.FC = () => {
 								{comfyRunMsg}
 							</span>
 						)}
+						{/* P1: 并行执行开关（同层无依赖节点并发；Comfy 后端步骤仍串行） */}
+						<label title="并行执行：同层无依赖节点并发运行（provider/本地节点共用 4 并发；ComfyUI 后端步骤保持串行）"
+							style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#9ca3af', cursor: 'pointer', userSelect: 'none' }}>
+							<input
+								type="checkbox"
+								checked={comfyRunParallel}
+								onChange={e => setComfyRunParallel(e.target.checked)}
+								style={{ cursor: 'pointer' }}
+							/>
+							并行
+						</label>
+						{/* P2: 自动布局（Kahn 分层 → 列布局，一步 undo） */}
+						<button
+							onClick={handleAutoLayout}
+							disabled={comfyRunState === 'running'}
+							title="自动布局：按依赖分层排列节点（拓扑列布局，可撤销）"
+							style={{
+								padding: '4px 10px',
+								border: '1px solid #3b82f6',
+								borderRadius: '4px',
+								backgroundColor: 'transparent',
+								color: '#60a5fa',
+								cursor: 'pointer',
+								fontSize: '12px',
+							}}>
+							自动布局
+						</button>
+						{/* P2: 封装为 Subflow（选中 ≥2 节点 → 组合为可复用子图，执行时展平） */}
+						<button
+							onClick={handleWrapSubflow}
+							disabled={comfyRunState === 'running'}
+							title="封装为 Subflow：把当前选中的节点组合为可复用子图（执行时自动展平，可撤销）"
+							style={{
+								padding: '4px 10px',
+								border: '1px solid #8b5cf6',
+								borderRadius: '4px',
+								backgroundColor: 'transparent',
+								color: '#a78bfa',
+								cursor: 'pointer',
+								fontSize: '12px',
+							}}>
+							封装 Subflow
+						</button>
+						{/* P2: 插件管理（URL 安装/卸载/重载） */}
+						<button
+							onClick={() => setShowPluginManager(true)}
+							title="管理画布插件（URL 安装 / 卸载）"
+							style={{
+								padding: '4px 10px',
+								border: '1px solid #f59e0b',
+								borderRadius: '4px',
+								backgroundColor: 'transparent',
+								color: '#fbbf24',
+								cursor: 'pointer',
+								fontSize: '12px',
+							}}>
+							插件
+						</button>
 						{/* Execution control buttons (P3) */}
 						{!executionStatus || executionStatus === 'completed' || executionStatus === 'failed' || executionStatus === 'cancelled' ? (
 							<button
 								onClick={handleExecute}
 								disabled={comfyRunState === 'running'}
-								title="Run workflow（画布含 Comfy 节点时全图顺序执行）"
+								title="Run workflow（画布含 Comfy 节点时全图执行；勾选「并行」后同层节点并发）"
 								style={{
 									padding: '4px 12px',
 									border: '1px solid #22c55e',
@@ -774,9 +1052,10 @@ export const WorkflowEditorPanel: React.FC = () => {
 
 				{/* Canvas — always fills the full area; engine is LiteGraph (ComfyUI) */}
 				<div style={{ width: '100%', height: '100%' }}>
-					<LiteGraphCanvas
-						ref={liteGraphRef}
-						className="wf-litegraph-host"
+				<LiteGraphCanvas
+					ref={liteGraphRef}
+					className="wf-litegraph-host"
+					workflowId={workflowId}
 					onNodeDoubleClick={(nodeId, nodeType) => {
 						// Double-click always opens the property editor — it never
 						// executes the node (execution lives on the card ▶ button).
@@ -872,6 +1151,14 @@ export const WorkflowEditorPanel: React.FC = () => {
 							onSelectRunner={() => setShowRunners(true)}
 						/>
 					)}
+
+					{/* 媒体库（生成图片管理 P1）：按当前 workflow 过滤 + 全库 */}
+					{showMediaLibrary && (
+						<MediaGallery
+							workflowId={workflowId}
+							onClose={() => setShowMediaLibrary(false)}
+						/>
+					)}
 					{comfyImportMsg && (
 						<div style={{
 							position: 'absolute', bottom: 12, left: 12, zIndex: 5,
@@ -912,6 +1199,11 @@ export const WorkflowEditorPanel: React.FC = () => {
 			)}
 			</div>
 		</div>
+		{/* P2: 插件管理面板 */}
+		{showPluginManager && (
+			<PluginManagerPanel onClose={() => setShowPluginManager(false)} />
+		)}
+	</>
 	);
 };
 
@@ -928,5 +1220,158 @@ const iconBtnStyle: React.CSSProperties = {
 	cursor: 'pointer',
 	fontSize: '14px',
 };
+
+/**
+ * Apply an Agent-driven canvas ops batch to the workflow editor store.
+ * Pure (DOM-free) so it is unit-testable:
+ *  - `__generate_flow__` ops are expanded via buildGenerateFlow.
+ *  - all other ops run through applyCanvasOps atomically.
+ * Returns the result shape mirrored in host-side canvasOpsBridge.ts.
+ */
+export interface CanvasOpsCallbacks {
+	/** P0: single-step undo of the last applied batch (zundo temporal). */
+	undo?: () => void;
+	redo?: () => void;
+}
+
+export function applyCanvasOpsToStore(
+	state: {
+		nodes: WorkflowEditorNode[];
+		edges: WorkflowEditorEdge[];
+		setNodes: (nodes: WorkflowEditorNode[]) => void;
+		setEdges: (edges: WorkflowEditorEdge[]) => void;
+	},
+	ops: Array<Record<string, unknown>>,
+	providers?: ProviderInfo[],
+	callbacks: CanvasOpsCallbacks = {},
+): {
+	model: { nodes: CanvasNode[]; edges: CanvasEdge[] };
+	results: Array<{ opIndex: number; summary: string; ids?: string[] }>;
+	ok: boolean;
+	error?: string;
+	failedOpIndex?: number;
+	selectedNodeId?: string | null;
+} {
+	// P0: undo/redo ops are handled directly (zundo temporal), no model mutation.
+	const undoOp = ops.find(o => o.op === 'undo');
+	if (undoOp) {
+		callbacks.undo?.();
+		const s = useWorkflowEditorStore.getState();
+		return {
+			model: { nodes: s.nodes as never, edges: s.edges as never },
+			results: [{ opIndex: ops.indexOf(undoOp), summary: '已撤销上一步画布操作' }],
+			ok: true,
+		};
+	}
+	const redoOp = ops.find(o => o.op === 'redo');
+	if (redoOp) {
+		callbacks.redo?.();
+		const s = useWorkflowEditorStore.getState();
+		return {
+			model: { nodes: s.nodes as never, edges: s.edges as never },
+			results: [{ opIndex: ops.indexOf(redoOp), summary: '已重做画布操作' }],
+			ok: true,
+		};
+	}
+	// Build the current canvas model from the store.
+	const model: CanvasModel = {
+		nodes: state.nodes.map(n => ({
+			id: n.id,
+			type: n.type,
+			position: n.position,
+			data: n.data ?? {},
+		})),
+		edges: state.edges.map(e => ({
+			id: e.id,
+			source: e.source,
+			target: e.target,
+			sourceHandle: e.sourceHandle,
+			targetHandle: e.targetHandle,
+		})),
+	};
+
+	// Expand a __generate_flow__ op (from canvas_generate) into real nodes/edges.
+	const generateFlowOps = ops.filter(o => o.op === 'add_node' && o.type === '__generate_flow__');
+	if (generateFlowOps.length > 0) {
+		const gf = generateFlowOps[0];
+		const data = (gf.data ?? {}) as Record<string, unknown>;
+		const goal = String(data.goal ?? '');
+		const providersList = providers ?? [];
+		const flow = buildGenerateFlow(goal, {
+			providerId: typeof data.providerId === 'string' ? data.providerId : undefined,
+			modelId: typeof data.modelId === 'string' ? data.modelId : undefined,
+			providers: providersList,
+			negativePrompt: typeof data.negativePrompt === 'string' ? data.negativePrompt : undefined,
+			size: typeof data.size === 'string' ? data.size : undefined,
+			variants: Array.isArray(data.variants) ? data.variants as Array<{ prompt?: string; label?: string }> : undefined,
+			existing: { nodes: model.nodes, edges: model.edges },
+		});
+		const merged: CanvasModel = { nodes: flow.nodes, edges: flow.edges };
+		state.setNodes(merged.nodes as unknown as WorkflowEditorNode[]);
+		state.setEdges(merged.edges as unknown as WorkflowEditorEdge[]);
+		return {
+			model: merged,
+			results: [{
+				opIndex: 0,
+				summary: `已生成画布流程：${flow.entryIds.length} 个图像节点（${flow.promptIds.length} 个提示节点）已创建并连线`,
+				ids: [...flow.promptIds, ...flow.entryIds],
+			}],
+			ok: true,
+		};
+	}
+
+	// Regular ops: atomic batch via applyCanvasOps.
+	const result = applyCanvasOps(model, ops as CanvasOp[]);
+	if (result.ok) {
+		state.setNodes(result.model.nodes as unknown as WorkflowEditorNode[]);
+		state.setEdges(result.model.edges as unknown as WorkflowEditorEdge[]);
+	}
+	return result;
+}
+
+/**
+ * Build a canvas context snapshot from the current store + card states.
+ * Pure and DOM-free — unit-testable. Card state is optional; without it nodes
+ * report 'idle' (the host still gets the node inventory for the Agent).
+ */
+export function buildCanvasContextSnapshot(
+	state: {
+		nodes: WorkflowEditorNode[];
+		edges: WorkflowEditorEdge[];
+		workflowId?: string;
+	},
+	cardStateStore?: { get(nodeId: string): { runState: string; progress?: number; errorMsg?: string; durationMs?: number } },
+): {
+	workflowId: string;
+	nodes: Array<{ id: string; label: string; type: string; runState: string; errorMsg?: string; durationMs?: number }>;
+	edges: Array<{ id: string; source: string; target: string; sourceHandle?: string; targetHandle?: string }>;
+	lastOpsSummary: string[];
+	updatedAt: string;
+} {
+	const nodes = state.nodes.map(n => {
+		const cs = cardStateStore?.get(n.id);
+		return {
+			id: n.id,
+			label: typeof n.data?.label === 'string' && n.data.label ? n.data.label : n.id,
+			type: n.type,
+			runState: cs?.runState ?? 'idle',
+			...(cs?.errorMsg ? { errorMsg: cs.errorMsg } : {}),
+			...(cs?.durationMs != null ? { durationMs: cs.durationMs } : {}),
+		};
+	});
+	return {
+		workflowId: state.workflowId ?? 'default',
+		nodes,
+		edges: state.edges.map(e => ({
+			id: e.id,
+			source: e.source,
+			target: e.target,
+			...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}),
+			...(e.targetHandle ? { targetHandle: e.targetHandle } : {}),
+		})),
+		lastOpsSummary: [],
+		updatedAt: new Date().toISOString(),
+	};
+}
 
 export default WorkflowEditorPanel;

@@ -27,12 +27,17 @@ import { registerSarosisLiteGraphNodes } from './comfyHost/sarosisLiteGraphNodes
 import { toLiteGraph, fromLiteGraph } from './comfyHost/ComfyGraphAdapter';
 import { filterNodesForLiteGraph, findUnsupportedNodes } from './comfyHost/canvasNodeFilter';
 import { CardStateStore } from './comfyHost/cardState';
-import { attachOverlayLayer, createWidgetBridgeHost, type WidgetBridgeHost } from './comfyHost/widgetBridge';
+import { attachOverlayLayer, createWidgetBridgeHost, widgetAreaInsets, type WidgetBridgeHost } from './comfyHost/widgetBridge';
 import { getNodeCardMeta, createNodeCard } from './comfyHost/nodeCard';
+import { patchInlineWidgetEditor } from './comfyHost/inlineWidgetEditor';
+import type { MediaSnapshotEntry } from './comfyHost/mediaSnapshot';
 import { buildMinimapScene, minimapToGraph, applyMinimapPan, renderMinimap } from './minimap';
 import { applyComfyNodeStyle } from './comfyNodeStyle';
 import { parseGuiWorkflow, guiToApi, type ComfyGuiWorkflow } from './comfyHost/comfyApiAdapter';
-import { MediaSnapshotStore, createMemoryBackend } from './comfyHost/mediaSnapshotStore';
+import { MediaSnapshotStore } from './comfyHost/mediaSnapshotStore';
+import { createIndexedDBBackend } from './comfyHost/indexedDBBackend';
+import { mediaImport } from './mediaAssets';
+import { shouldCollectMedia } from './comfyHost/mediaCollect';
 import type { WorkflowGraphNode, WorkflowGraphConnection } from '../../../types/workflowStorage';
 
 /**
@@ -121,6 +126,9 @@ export interface LiteGraphCanvasHandle {
 	cardStateStore(): CardStateStore;
 	/** Remove a group from the graph (nodes keep their positions). */
 	removeGroup(group: LGraphGroup): void;
+	/** P2: currently selected nodes (LiteGraph lc.selected_nodes), mapped to
+	 *  { sarosisId, type, data } for Subflow wrapping. */
+	getSelectedNodes(): Array<{ id: string; type: string; data: Record<string, unknown> }>;
 }
 
 interface LiteGraphCanvasProps {
@@ -131,6 +139,9 @@ interface LiteGraphCanvasProps {
 	/** Card ▶ run button (`wf-node-run`). Kept separate from double-click:
 	 *  double-click opens the editor; the card button executes the node. */
 	onNodeRun?: (nodeId: string, nodeType: string) => void;
+	/** Namespaces the persistent media-snapshot backend per workflow, so node
+	 *  keys (`n1:image:0`) don't collide across workflow tabs. */
+	workflowId?: string;
 	/** Right-click on the canvas → open the node menu at the clicked graph position. */
 	onCanvasContextMenu?: (graphX: number, graphY: number, clientX: number, clientY: number) => void;
 	/** Right-click on a group → open the group menu. */
@@ -139,8 +150,28 @@ interface LiteGraphCanvasProps {
 	onRequestRun?: () => void;
 }
 
+// ── Media auto-collect (P1) ─────────────────────────────────────────────
+// Dedupes by workflow + ref: each distinct produced media URL is imported
+// into the host media library exactly once per session. blob: URLs are
+// session-transient and skipped. Pure decision logic lives in
+// comfyHost/mediaCollect.ts (unit-tested); this function only performs the
+// side effect (mediaImport IPC).
+const collectedAssetKeys = new Set<string>();
+function collectAsset(workflowId: string, entry: MediaSnapshotEntry): void {
+	const decision = shouldCollectMedia(workflowId, entry.media.ref, collectedAssetKeys);
+	if (!decision) { return; }
+	collectedAssetKeys.add(decision.key);
+	void mediaImport({
+		ref: entry.media.ref,
+		kind: entry.media.kind,
+		workflowId: workflowId || undefined,
+		nodeId: entry.nodeId,
+		provider: decision.provider,
+	});
+}
+
 export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraphCanvasProps>(
-	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onRequestRun }: LiteGraphCanvasProps, ref): React.JSX.Element {
+	function LiteGraphCanvas({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onRequestRun, workflowId }: LiteGraphCanvasProps, ref): React.JSX.Element {
 	const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
 	const graphRef = React.useRef<LGraph | null>(null);
 	const canvasInstanceRef = React.useRef<LGraphCanvas | null>(null);
@@ -149,7 +180,25 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 	const suppressStoreSync = React.useRef(false);
 	const snapshotStoreRef = React.useRef<MediaSnapshotStore | null>(null);
 	if (!snapshotStoreRef.current) {
-		snapshotStoreRef.current = new MediaSnapshotStore(createMemoryBackend());
+		// P0 persistence: refs live in IndexedDB (namespaced per workflow) so
+		// generated-image previews survive a tab refresh. The persistent store
+		// never evicts — the persisted refs ARE the history. hydrate() restores
+		// them asynchronously; cards re-render once the refs come back.
+		const dbName = workflowId ? `vssaros-media-${workflowId}` : 'vssaros-media';
+		snapshotStoreRef.current = new MediaSnapshotStore(
+			createIndexedDBBackend({ dbName }),
+			{
+				persistent: true,
+				// P1 auto-collect: every produced media ref is also indexed in
+				// the host media library (media.db), so the gallery shows the
+				// workflow's generated images even before a manual "save".
+				onAsset: (entry) => {
+					if (entry.media.kind !== 'image') { return; }
+					collectAsset(workflowId, entry);
+				},
+			},
+		);
+		void snapshotStoreRef.current.hydrate();
 	}
 	const cardStateStoreRef = React.useRef<CardStateStore | null>(null);
 	if (!cardStateStoreRef.current) {
@@ -184,6 +233,9 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 		(liteCanvas as unknown as { connectionColor: string }).connectionColor = '#c0a000';
 		(liteCanvas as unknown as { linkColor: string }).linkColor = '#c0a000';
 		(liteCanvas as unknown as { link_width: number }).link_width = 2;
+		// Replace LiteGraph's floating `.graphdialog` prompt with an in-place DOM
+		// input overlay over the widget itself (ComfyUI-style inline editing).
+		patchInlineWidgetEditor(liteCanvas as unknown as Parameters<typeof patchInlineWidgetEditor>[0]);
 		// ComfyUI node look for ALL nodes: title bar (⌄ + type chips), dark
 		// palette, rounded widgets, yellow connections, error banners.
 		applyComfyNodeStyle(liteCanvas, LGraphNode, LiteGraph, (nodeId) => {
@@ -456,9 +508,20 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 				seen.add(nodeId);
 				const type = String(props['__liteType'] ?? n.type ?? '');
 				const spec = getNodeSpec(type);
-				// Only ComfyTV (schema) + ComfyUI-native nodes get an overlay card.
-				// Sarosis react nodes already draw their widgets on the canvas.
-				if (!spec || spec.kind === 'react') { continue; }
+			// Only ComfyTV (schema) + ComfyUI-native nodes get an overlay card.
+			// Sarosis react/llm nodes already draw their widgets on the canvas —
+			// an opaque card on top would hide the widget fields (and the links
+			// passing under it), which reads as "params blocked by a UI".
+			if (!spec || spec.kind === 'react' || spec.kind === 'llm') { continue; }
+			// Collapsed nodes have no widget area — LiteGraph compresses them
+			// to a thin title bar, so rendering the card at the full body
+			// would still show the parameter panel below the title. Skip
+			// the overlay entirely; `releaseContainer` removes any stale card.
+			if (n.collapsed) {
+				bridge.releaseContainer(nodeId);
+				cardUnmounts.delete(nodeId);
+				continue;
+			}
 				// Bump height for ComfyTV schema nodes (no class default → 60px).
 				// Native nodes already compute a reasonable size from widgets.
 				if (spec.kind === 'schema' && (n.size?.[1] ?? 0) < 320) {
@@ -494,13 +557,16 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 					nodeAny.onDrawForeground = () => { /* state ring lives in the DOM layer */ };
 				}
 			}
-			// Schema stages hide their canvas title bar (NO_TITLE class), so
-			// the card covers the whole node rect — the whole node becomes
-			// one DOM layer and z-order follows draw order cleanly.
+			// ComfyTV-style: card sits INSIDE the widget area — below the canvas
+			// title bar AND below the port rows. LiteGraph stacks slots under
+			// the title (NODE_TITLE_HEIGHT + rows * NODE_SLOT_HEIGHT), so the
+			// card's top inset must clear them or it paints over the pins.
+			// Insets are graph units, so they scale correctly with zoom.
 			nodesForSync.push({
 				id: nodeId,
 				node: { pos: n.pos, size: n.size },
-				fullCover: spec.kind === 'schema',
+				fullCover: false,
+				insets: widgetAreaInsets(n.inputs?.length ?? 0, n.outputs?.length ?? 0),
 				selected: isSelected,
 				state: cardStateStoreRef.current?.get(nodeId)?.runState,
 			});
@@ -792,6 +858,25 @@ export const LiteGraphCanvas = React.forwardRef<LiteGraphCanvasHandle, LiteGraph
 			if (!g) { return; }
 			g.remove(group);
 			g.change();
+		},
+		getSelectedNodes(): Array<{ id: string; type: string; data: Record<string, unknown> }> {
+			const lc = canvasInstanceRef.current;
+			const g = graphRef.current;
+			if (!lc || !g) { return []; }
+			const out: Array<{ id: string; type: string; data: Record<string, unknown> }> = [];
+			for (const k of Object.keys(lc.selected_nodes ?? {})) {
+				const n = g.getNodeById(k);
+				if (!n) { continue; }
+				// sarosisId (logical) is stored in properties.__sarosisId; fall back
+				// to the LiteGraph numeric id stringified.
+				const sarosisId = String((n.properties as Record<string, unknown> | undefined)?.__sarosisId ?? k);
+				out.push({
+					id: sarosisId,
+					type: String((n.properties as Record<string, unknown> | undefined)?.__liteType ?? n.type ?? ''),
+					data: (n.properties as Record<string, unknown> | undefined)?.__data as Record<string, unknown> ?? {},
+				});
+			}
+			return out;
 		},
 	}), [storeApi, ref]);
 

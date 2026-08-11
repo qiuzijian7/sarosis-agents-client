@@ -258,6 +258,9 @@ export class BuiltInBYOKModelProvider extends Disposable implements IModelProvid
 		if (params.negativePrompt) {
 			body['negative_prompt'] = params.negativePrompt;
 		}
+		if (params.imageInput) {
+			body['input_image'] = params.imageInput;
+		}
 		const response = await fetch(url, {
 			method: 'POST',
 			headers: {

@@ -11,6 +11,9 @@ import {
 	IWebviewService,
 } from "../../../../workbench/contrib/webview/browser/webview.js";
 import { asWebviewUri } from "../../../../workbench/contrib/webview/common/webview.js";
+import { IMainProcessService } from "../../../../platform/ipc/common/mainProcessService.js";
+import { MEDIA_STORE_CHANNEL, type IMediaBackend, type MediaImportRequest, type MediaListFilter } from "../common/mediaStoreChannel.js";
+import { createMediaStoreProxy } from "./mediaStoreProxy.js";
 import { IInstantiationService } from "../../../../platform/instantiation/common/instantiation.js";
 import { ICommandService } from "../../../../platform/commands/common/commands.js";
 import { ILogService } from "../../../../platform/log/common/log.js";
@@ -51,6 +54,8 @@ import { IWorktreeService } from "../../worktree/common/worktreeService.js";
 import type { IToolApprovalHandler, IToolApprovalRequest } from "../common/providers.js";
 import { ToolApprovalDecision } from "../common/providers.js";
 import { workflowAppliedEmitter } from './providers/tool/builtinToolProvider.js';
+import { canvasOpsRequestEmitter, resolveCanvasOps } from './providers/tool/canvasOpsBridge.js';
+import { canvasContextStore } from './messageEnrichment/canvasContextStore.js';
 import { IWorkbenchThemeService } from "../../../../workbench/services/themes/common/workbenchThemeService.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
@@ -169,6 +174,15 @@ export class AgentStudioWebviewController extends Disposable {
 	/** Feature flag: if true, use Native Chat mode (skip webview creation) */
 	private _useNativeMode = false;
 
+	/** 媒体资产库后端（经主进程 ProxyChannel，懒初始化）。 */
+	private _mediaBackend: IMediaBackend | null = null;
+	private _getMediaBackend(): IMediaBackend | null {
+		if (!this._mediaBackend && this.mainProcessService?.getChannel(MEDIA_STORE_CHANNEL)) {
+			this._mediaBackend = createMediaStoreProxy(this.mainProcessService);
+		}
+		return this._mediaBackend;
+	}
+
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly panelType: AgentStudioPanelType | undefined,
@@ -209,6 +223,7 @@ export class AgentStudioWebviewController extends Disposable {
 		@IWorkflowStorageService private readonly workflowStorageService: IWorkflowStorageService,
 		@IWorkflowExecutionService private readonly workflowExecutionService: IWorkflowExecutionService,
 		@IAgentStudioWebviewPool private readonly webviewPool: IAgentStudioWebviewPool,
+		@IMainProcessService private readonly mainProcessService: IMainProcessService,
 	) {
 		super();
 
@@ -1265,6 +1280,16 @@ export class AgentStudioWebviewController extends Disposable {
 						numImages?: number;
 					},
 				);
+			case "reversePrompt.generate":
+				// P2: describe an image via a provider's chat (reverse prompt).
+				return this._handleReversePromptGenerate(
+					p as unknown as {
+						providerId: string;
+						modelId: string;
+						imageRef: string;
+						prompt?: string;
+					},
+				);
 
 			// ─── Workspace Sessions (Fork) ─────────────────────────
 			case "workspaceSession.list":
@@ -1598,6 +1623,34 @@ export class AgentStudioWebviewController extends Disposable {
 			case "skills.list":
 				return this._handleSkillsList();
 
+			// ─── Media assets (生成图片管理 P1) ───────────────────
+			case "media.import":
+				return this._handleMediaImport(payload as MediaImportRequest);
+			case "media.list":
+				return this._handleMediaList(payload as MediaListFilter);
+			case "media.get":
+				return this._handleMediaGet(payload as { id: string });
+			case "media.getUrl":
+				return this._handleMediaGetUrl(payload as { id: string });
+			case "media.remove":
+				await this._handleMediaRemove(payload as { id: string });
+				return undefined;
+			case "media.restore":
+				await this._handleMediaRestore(payload as { id: string });
+				return undefined;
+			case "media.setFavorite":
+				await this._handleMediaSetFavorite(payload as { id: string; favorite: boolean });
+				return undefined;
+			case "media.setBoard":
+				await this._handleMediaSetBoard(payload as { id: string; board: string | null });
+				return undefined;
+			case "media.stats":
+				return this._handleMediaStats();
+			case "media.purgeDeleted":
+				return this._handleMediaPurgeDeleted();
+			case "media.enforceQuota":
+				return this._handleMediaEnforceQuota(payload as { maxDays?: number; maxTotalBytes?: number });
+
 			// ─── Workflow Editor ──────────────────────────────────
 			case "workflow.get": {
 				const wp = p as unknown as { id: string; workspaceId?: string };
@@ -1646,6 +1699,29 @@ export class AgentStudioWebviewController extends Disposable {
 			case "workflow.submitVariables": {
 				const vp = p as unknown as { executionId: string; values: Record<string, string> };
 				return this._handleWorkflowSubmitVariables(vp);
+			}
+			case "workflow.canvasOpsResult": {
+				// Agent-driven canvas (P0): webview replies with the applied result.
+				// Forward it to the pending requestCanvasOps promise in the tool layer.
+				const cr = p as unknown as {
+					requestId: string;
+					result: import('./providers/tool/canvasOpsBridge.js').CanvasOpsResult;
+					workflowId?: string;
+					canvasContext?: import('./messageEnrichment/canvasContextStore.js').CanvasContextSnapshot;
+				};
+				if (cr?.requestId) {
+					const resolved = resolveCanvasOps(cr.requestId, cr.result);
+					if (!resolved) {
+						this.logService.warn(`[AgentStudioWebviewController] workflow.canvasOpsResult: unknown requestId=${cr.requestId} (already resolved/timed out)`);
+					}
+				}
+				// Cache the canvas state snapshot so the `<canvas_context>` tag can
+				// inject it into the next user message (P0 closure).
+				if (cr?.canvasContext) {
+					const wfId = cr.workflowId ?? 'default';
+					canvasContextStore.set(wfId, cr.canvasContext);
+				}
+				return { success: true };
 			}
 
 			// ─── Memory inspection (TDB-AM gateway proxy) ──────────
@@ -3204,6 +3280,16 @@ export class AgentStudioWebviewController extends Disposable {
 				});
 			}),
 		);
+
+		// Agent-driven canvas (P0): forward canvas ops requests to the webview.
+		this._register(
+			canvasOpsRequestEmitter.event((req: import('./providers/tool/canvasOpsBridge.js').CanvasOpsRequest) => {
+				this.logService.info(
+					`[AgentStudio] canvas_apply_ops: forwarding ${req.ops.length} ops (requestId=${req.requestId}) to webview`,
+				);
+				this._sendEvent('workflow.canvasOps', req);
+			}),
+		);
 	}
 
 	// ─── Provider Handlers ─────────────────────────────────────────────────────
@@ -3352,6 +3438,7 @@ export class AgentStudioWebviewController extends Disposable {
 		width?: number;
 		height?: number;
 		numImages?: number;
+		imageInput?: string;
 	}): Promise<{ images: Array<{ url?: string; b64?: string }> }> {
 		const provider = this.agentOSService.getModelProviders().find(p => p.id === payload.providerId);
 		if (!provider) {
@@ -3368,10 +3455,72 @@ export class AgentStudioWebviewController extends Disposable {
 				width: payload.width,
 				height: payload.height,
 				numImages: payload.numImages,
+				imageInput: payload.imageInput,
 			},
 			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
 		);
 		return { images: result.images ?? [] };
+	}
+
+	// ─── Reverse Prompt (P2) ────────────────────────────────────────
+
+	/**
+	 * Handle `reversePrompt.generate` — describe an image via a provider's chat
+	 * (reverse prompt). The image reference (data URL or http(s) URL) is resolved
+	 * to base64 and sent as an image content part alongside the instruction.
+	 */
+	private async _handleReversePromptGenerate(payload: {
+		providerId: string;
+		modelId: string;
+		imageRef: string;
+		prompt?: string;
+	}): Promise<{ text: string }> {
+		const provider = this.agentOSService.getModelProviders().find(p => p.id === payload.providerId);
+		if (!provider) {
+			throw new Error(`未找到 Provider：${payload.providerId}`);
+		}
+		if (typeof provider.chat !== 'function') {
+			throw new Error(`Provider ${provider.name} 不支持文本对话（反推提示词需要）`);
+		}
+		const { data, mimeType } = await this._resolveImageData(payload.imageRef);
+		const instruction = payload.prompt
+			?? 'Describe this image in rich detail for image-generation purposes: subject, style, lighting, composition, colors, mood, and any text visible. Return a single detailed English prompt.';
+		const parts: import('../common/providers.js').IChatContentPart[] = [
+			{ type: 'text', text: instruction },
+			{ type: 'image', data, mimeType: mimeType as import('../common/providers.js').ChatImageMimeType },
+		];
+		let text = '';
+		for await (const delta of provider.chat(
+			payload.modelId,
+			[{ role: 'user', content: '', contentParts: parts }],
+			{ temperature: 0.4 },
+			{ agentId: this.modelSelectorService.getSelectedAgentId?.() ?? undefined },
+		)) {
+			if (delta.type === 'text' && delta.content) { text += delta.content; }
+		}
+		if (!text.trim()) {
+			throw new Error('模型未返回描述文本');
+		}
+		return { text: text.trim() };
+	}
+
+	/** Resolve an image reference (data URL / http URL) to { data(base64), mimeType }. */
+	private async _resolveImageData(ref: string): Promise<{ data: string; mimeType: string }> {
+		// data URL: `data:image/png;base64,AAAA...`
+		const dataUrlMatch = /^data:([^;]+);base64,(.+)$/s.exec(ref);
+		if (dataUrlMatch) {
+			return { data: dataUrlMatch[2], mimeType: dataUrlMatch[1] };
+		}
+		if (/^https?:\/\//.test(ref)) {
+			const resp = await fetch(ref);
+			if (!resp.ok) {
+				throw new Error(`无法获取图片（HTTP ${resp.status}）`);
+			}
+			const buf = Buffer.from(await resp.arrayBuffer());
+			const mimeType = resp.headers.get('content-type')?.split(';')[0] ?? 'image/png';
+			return { data: buf.toString('base64'), mimeType };
+		}
+		throw new Error(`不支持的图片引用：${ref.slice(0, 64)}`);
 	}
 
 	// ─── Skills ─────────────────────────────────────────────────────
@@ -3398,6 +3547,85 @@ export class AgentStudioWebviewController extends Disposable {
 			`[AS-PERF][host] _handleSkillsList: done in ${Date.now() - t0}ms, returned ${result.length} skills`
 		);
 		return result;
+	}
+
+	// ─── Media assets (生成图片管理 P1) ─────────────────────────────────
+
+	private async _handleMediaImport(req: MediaImportRequest) {
+		const backend = this._getMediaBackend();
+		if (!backend) { throw new Error('media store unavailable'); }
+		return backend.importAsset(req);
+	}
+
+	private async _handleMediaList(filter: MediaListFilter) {
+		const backend = this._getMediaBackend();
+		if (!backend) { return { total: 0, items: [] }; }
+		return backend.list(filter);
+	}
+
+	private async _handleMediaGet(payload: { id: string }) {
+		const backend = this._getMediaBackend();
+		if (!backend) { return null; }
+		return backend.get(payload.id);
+	}
+
+	/** 返回 webview 可加载的资产 URL：本地镜像经 asWebviewUri 转 vscode-webview://，
+	 *  其余（http/data URL 引用）原样返回。 */
+	private async _handleMediaGetUrl(payload: { id: string }) {
+		const backend = this._getMediaBackend();
+		if (!backend) { return null; }
+		const asset = await backend.get(payload.id);
+		if (!asset) { return null; }
+		if (asset.filePath) {
+			try {
+				return asWebviewUri(URI.file(asset.filePath)).toString();
+			} catch {
+				return null;
+			}
+		}
+		return asset.ref || null;
+	}
+
+	private async _handleMediaRemove(payload: { id: string }) {
+		const backend = this._getMediaBackend();
+		if (!backend) { return; }
+		await backend.remove(payload.id);
+	}
+
+	private async _handleMediaRestore(payload: { id: string }) {
+		const backend = this._getMediaBackend();
+		if (!backend) { return; }
+		await backend.restore(payload.id);
+	}
+
+	private async _handleMediaSetFavorite(payload: { id: string; favorite: boolean }) {
+		const backend = this._getMediaBackend();
+		if (!backend) { return; }
+		await backend.setFavorite(payload.id, !!payload.favorite);
+	}
+
+	private async _handleMediaSetBoard(payload: { id: string; board: string | null }) {
+		const backend = this._getMediaBackend();
+		if (!backend) { return; }
+		await backend.setBoard(payload.id, payload.board ?? null);
+	}
+
+	private async _handleMediaStats() {
+		const backend = this._getMediaBackend();
+		if (!backend) { return null; }
+		return backend.stats();
+	}
+
+	private async _handleMediaPurgeDeleted() {
+		const backend = this._getMediaBackend();
+		if (!backend) { return { count: 0, freedBytes: 0 }; }
+		return backend.purgeDeleted();
+	}
+
+	private async _handleMediaEnforceQuota(opts: { maxDays?: number; maxTotalBytes?: number }) {
+		const backend = this._getMediaBackend();
+		if (!backend) { return { removed: 0, freedBytes: 0 }; }
+		return backend.enforceQuota(opts);
 	}
 
 	// ─── Memory inspection helpers (AgentMemoryProvider) ──────────────────────

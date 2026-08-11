@@ -126,6 +126,37 @@ export function guiToApi(wf: ComfyGuiWorkflow): ComfyApiPrompt {
 	return prompt;
 }
 
+export interface ExportFilterResult {
+	/** GUI workflow with non-Comfy nodes (and their links) removed. */
+	workflow: ComfyGuiWorkflow;
+	/** Distinct node types that were skipped (react/llm Sarosis nodes). */
+	skipped: string[];
+}
+
+/**
+ * Strip Sarosis orchestration/provider nodes (kind 'react'/'llm') from a GUI
+ * workflow before exporting to ComfyUI api.json. These types have no ComfyUI
+ * class_type and would otherwise be exported as broken nodes. Links touching a
+ * removed node are dropped. Pure + injectable predicate → unit-testable.
+ */
+export function stripSarosisNodesForExport(
+	wf: ComfyGuiWorkflow,
+	isNonComfyNode: (type: string) => boolean,
+): ExportFilterResult {
+	const kept: ComfyGuiNode[] = [];
+	const skipped: string[] = [];
+	for (const node of wf.nodes ?? []) {
+		if (isNonComfyNode(node.type)) {
+			if (!skipped.includes(node.type)) { skipped.push(node.type); }
+			continue;
+		}
+		kept.push(node);
+	}
+	const keptIds = new Set(kept.map(n => n.id));
+	const links = (wf.links ?? []).filter(l => keptIds.has(l[1]) && keptIds.has(l[3]));
+	return { workflow: { ...wf, nodes: kept, links }, skipped };
+}
+
 /** Resolve every `[nodeId, slot]` reference in an api.json into the source class_type. */
 export function resolveApiReferences(prompt: ComfyApiPrompt): Array<{ field: string; targetNode: string; targetSlot: number; sourceType?: string }> {
 	const refs: Array<{ field: string; targetNode: string; targetSlot: number; sourceType?: string }> = [];

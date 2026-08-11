@@ -54,6 +54,18 @@ export type RequestType =
 	| 'providers.getSelectionForAgent'
 	| 'providers.openSettings'
 	| 'imagegen.generate'
+	| 'reversePrompt.generate'
+	| 'media.import'
+	| 'media.list'
+	| 'media.get'
+	| 'media.getUrl'
+	| 'media.remove'
+	| 'media.restore'
+	| 'media.setFavorite'
+	| 'media.setBoard'
+	| 'media.stats'
+	| 'media.purgeDeleted'
+	| 'media.enforceQuota'
 	| 'workspaceSession.list'
 	| 'workspaceSession.get'
 	| 'workspaceSession.create'
@@ -124,6 +136,7 @@ export type RequestType =
 	| 'workflow.reorder'
 	| 'workflow.open'
 	| 'workflow.submitVariables'
+	| 'workflow.canvasOpsResult'
 	| 'agents.list'
 	| 'agents.presets'
 	| 'agents.create'
@@ -175,6 +188,9 @@ declare global {
 type VsCodeApi = ReturnType<typeof acquireVsCodeApi>;
 
 function safeAcquire(): VsCodeApi {
+	// Node/SSR/unit-test environments have no window (and no acquireVsCodeApi);
+	// return a stub so importing this module never throws at load time.
+	if (typeof window === 'undefined') { return makeStub(); }
 	if (window.__AS_VSCODE_API__) { return window.__AS_VSCODE_API__; }
 	try {
 		const api = acquireVsCodeApi();

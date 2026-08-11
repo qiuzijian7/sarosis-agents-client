@@ -42,6 +42,7 @@ export function buildMenuGroups(): MenuGroup[] {
 	}));
 	return [
 		...staticCats,
+		{ id: 'llm', label: 'PROVIDER 文生图', color: '#06b6d4', items: buildComfyPaletteItems('llm') },
 		{ id: 'comfyTV', label: 'COMFYTV STAGES', color: '#e879f9', items: buildComfyPaletteItems('schema') },
 		{ id: 'comfyUI', label: 'COMFYUI NATIVE', color: '#f59e0b', items: buildComfyPaletteItems('native') },
 	];

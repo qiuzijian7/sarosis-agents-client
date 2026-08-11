@@ -73,6 +73,17 @@ export type RequestType =
 	| 'providers.getSelectionForAgent'
 	| 'providers.openSettings'
 	| 'imagegen.generate'
+	| 'media.import'
+	| 'media.list'
+	| 'media.get'
+	| 'media.getUrl'
+	| 'media.remove'
+	| 'media.restore'
+	| 'media.setFavorite'
+	| 'media.setBoard'
+	| 'media.stats'
+	| 'media.purgeDeleted'
+	| 'media.enforceQuota'
 	| 'workspaceSession.list'
 	| 'workspaceSession.get'
 	| 'workspaceSession.create'
@@ -147,7 +158,9 @@ export type RequestType =
 	| 'workflow.list'            // v10: list all workflows (WebView → Host)
 	| 'workflow.reorder'         // v19: reorder workflow list (WebView → Host)
 	| 'workflow.open'            // v19: open a workflow in the editor (WebView → Host)
-	| 'workflow.submitVariables'; // v6: submit pre-execution variable values (WebView → Host)
+	| 'workflow.submitVariables' // v6: submit pre-execution variable values (WebView → Host)
+	| 'workflow.canvasOpsResult' // Agent-driven canvas: webview replies with the result of applying canvas ops (P0)
+	| 'reversePrompt.generate';  // P2: describe an image via provider chat (WebView → Host)
 
 // Event types (Host → WebView, unsolicited)
 export type EventType =
@@ -185,7 +198,8 @@ export type EventType =
 	| 'workflow.saved'           // host confirms save to webview
 	| 'workflow.stateApplied'    // host pushes AI-generated workflow state to webview editor
 	| 'workflow.executionUpdate' // host pushes execution state updates to webview editor
-	| 'workflow.executionTrace'; // P4: host pushes subagent trace (start/delta/end) to owner agent's chat
+	| 'workflow.executionTrace'  // P4: host pushes subagent trace (start/delta/end) to owner agent's chat
+	| 'workflow.canvasOps';      // Agent-driven canvas: host pushes canvas ops batch to webview (P0)
 
 // ─── Message Interfaces ─────────────────────────────────────────────────────────
 

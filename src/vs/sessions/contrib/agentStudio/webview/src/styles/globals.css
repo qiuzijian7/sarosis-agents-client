@@ -6525,3 +6525,106 @@ html, body, #root {
 .message-image-lightbox-close:hover {
   background: rgba(255, 255, 255, 0.25);
 }
+
+/* ═══ LiteGraph dialog (prompt()) — styles needed because litegraph.css is NOT
+ *    imported. Without `position: absolute` the inline `style.left`/`style.top`
+ *    that LGraphCanvas#prompt() sets are ignored, and the dialog collapses into
+ *    document flow at the canvas parent's origin (invisible behind the workflow
+ *    overlay, hence "右侧 Sarosis 节点参数无法编辑"). z-index must exceed our
+ *    workflow overlay layer (which is also z-index 10) so the dialog appears on top. */
+.graphdialog {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  min-height: 2em;
+  background-color: #2a2a2a;
+  color: #d0d0d0;
+  font-size: 13px;
+  box-shadow: 0 0 10px black;
+  z-index: 1000;
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.graphdialog .name {
+  color: #8a8a8a;
+  font-size: 12px;
+}
+
+.graphdialog input.value,
+.graphdialog textarea.value,
+.graphdialog select.value {
+  background-color: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #e6e6e6;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+  min-width: 180px;
+  font-family: inherit;
+}
+
+.graphdialog textarea.value {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.graphdialog button {
+  background-color: #4a9eff;
+  color: white;
+  border: 0;
+  padding: 4px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.graphdialog button:hover {
+  background-color: #5fb0ff;
+}
+
+/* ═══ LiteGraph inline widget editor (ComfyUI-style in-place edit) ═══════
+ * Replaces the floating `.graphdialog` for text/number widgets on the canvas.
+ * Position is computed by inlineWidgetEditor.ts (canvas-space → screen-space).
+ * The editor commits on Enter/blur and cancels on Escape.
+ * `display: flex; align-items: center` + `padding: 0` mirrors comfyDrawWidgets'
+ * label baseline (label is drawn at y + wH/2, not at the top of the row). */
+.litegraph-inline-editor {
+  background-color: #1a1a1a;
+  border: 1px solid #4a9eff;
+  border-radius: 3px;
+  color: #e6e6e6;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 0 4px;
+  margin: 0;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(74, 158, 255, 0.18);
+  box-sizing: border-box;
+  resize: none;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+}
+
+.litegraph-inline-editor:focus {
+  border-color: #5fb0ff;
+  box-shadow: 0 0 0 2px rgba(95, 176, 255, 0.28);
+}
+
+.litegraph-inline-editor[multiline],
+.litegraph-inline-editor:not([type]) {
+  /* textarea — let it grow vertically and align text to top so multi-line
+   * content reads naturally, matching what comfyDrawWidgets' multiline
+   * field would look like if the user typed into a grown widget. */
+  align-items: flex-start;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  line-height: 1.2;
+}

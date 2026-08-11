@@ -128,6 +128,84 @@ suite('mediaSnapshotStore', () => {
 		});
 	});
 
+	suite('persistence (refs = history, refresh recovery)', () => {
+
+		test('put persists ref metadata via backend meta', async () => {
+			const backend = createMemoryBackend();
+			const store = new MediaSnapshotStore(backend);
+			await store.savePayload('n1', 'image', 0, 'data', 'image');
+			const metas = await backend.listMeta!();
+			assert.strictEqual(metas.length, 1);
+			assert.strictEqual(metas[0].key, 'n1:image:0');
+			assert.strictEqual(metas[0].media.ref, 'n1:image:0');
+			assert.strictEqual(metas[0].media.kind, 'image');
+		});
+
+		test('remove clears backend meta too', async () => {
+			const backend = createMemoryBackend();
+			const store = new MediaSnapshotStore(backend);
+			await store.savePayload('n1', 'image', 0, 'data');
+			await store.remove('n1:image:0');
+			assert.deepStrictEqual(await backend.listMeta!(), []);
+		});
+
+		test('hydrate restores persisted refs into a fresh store and notifies', async () => {
+			const backend = createMemoryBackend();
+			const source = new MediaSnapshotStore(backend);
+			await source.savePayload('n9', 'image', 2, 'b', 'image');
+
+			const restored = new MediaSnapshotStore(backend);
+			let calls = 0;
+			restored.subscribe(() => { calls++; });
+			const v0 = restored.getSnapshot();
+			await restored.hydrate();
+			assert.strictEqual(restored.has('n9:image:2'), true);
+			assert.strictEqual(restored.get('n9:image:2')!.kind, 'image');
+			assert.strictEqual(calls, 1);
+			assert.strictEqual(restored.getSnapshot(), v0 + 1);
+		});
+
+		test('hydrate does not mask in-memory refs from a concurrent session', async () => {
+			const backend = createMemoryBackend();
+			const source = new MediaSnapshotStore(backend);
+			await source.savePayload('n1', 'image', 0, 'old');
+			// simulate a live session that holds a newer URL ref for the key
+			const live = new MediaSnapshotStore(backend);
+			live.put({ nodeId: 'n1', port: 'image', key: 'n1:image:0', media: { kind: 'image', ref: 'http://live/now.png' }, index: 0 });
+			await live.hydrate();
+			assert.strictEqual(live.get('n1:image:0')!.ref, 'http://live/now.png');
+		});
+
+		test('persistent store never evicts refs', async () => {
+			const backend = createMemoryBackend();
+			const store = new MediaSnapshotStore(backend, { persistent: true, maxPreviewRefs: 1 });
+			await store.savePayload('n1', 'image', 0, 'a');
+			await store.savePayload('n1', 'image', 1, 'b');
+			await store.savePayload('n2', 'image', 0, 'c');
+			assert.strictEqual(store.has('n1:image:0'), true);
+			assert.strictEqual(store.has('n1:image:1'), true);
+			assert.strictEqual(store.has('n2:image:0'), true);
+			assert.strictEqual((await backend.listMeta!()).length, 3);
+		});
+
+		test('eviction in a volatile store drops backend meta for the evicted ref', async () => {
+			const backend = createMemoryBackend();
+			const store = new MediaSnapshotStore(backend, { maxPreviewRefs: 1 });
+			await store.savePayload('n1', 'image', 0, 'a');
+			await store.savePayload('n2', 'image', 0, 'b');
+			assert.strictEqual(store.has('n1:image:0'), false);
+			const metas = await backend.listMeta!();
+			assert.deepStrictEqual(metas.map(m => m.key), ['n2:image:0']);
+		});
+
+		test('getPayload returns locally-saved payload', async () => {
+			const backend = createMemoryBackend();
+			const store = new MediaSnapshotStore(backend);
+			await store.savePayload('n1', 'image', 0, 'hello');
+			assert.strictEqual(await store.getPayload('n1:image:0'), 'hello');
+		});
+	});
+
 	suite('store operations', () => {
 
 		test('put/get by node and eviction LRU', async () => {

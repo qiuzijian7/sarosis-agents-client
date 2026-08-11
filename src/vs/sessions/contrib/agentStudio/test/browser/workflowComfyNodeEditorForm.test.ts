@@ -164,4 +164,36 @@ suite('nodeEditorForm', () => {
 			assert.strictEqual(coerceEditorValue(undefined, field), '');
 		});
 	});
+
+	suite('ProviderPicker fields', () => {
+
+		test('react ProviderPicker spec → provider + providerModel fields', () => {
+			const fields = buildEditorFields(spec({ type: 'Sarosis.ProviderPicker', kind: 'react' }));
+			const provider = fields.find(f => f.key === 'providerId');
+			const model = fields.find(f => f.key === 'modelId');
+			assert.ok(provider, 'expected providerId field');
+			assert.strictEqual(provider!.kind, 'provider');
+			assert.ok(model, 'expected modelId field');
+			assert.strictEqual(model!.kind, 'providerModel');
+		});
+
+		test('ProviderPicker persists providerId/modelId flat (no agentConfig)', () => {
+			const data = sarosisValuesToData('Sarosis.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
+			assert.strictEqual(data.providerId, 'openrouter');
+			assert.strictEqual(data.modelId, 'flux');
+			assert.strictEqual(data.agentConfig, undefined);
+		});
+
+		test('ProviderPicker round-trips through sarosisDataToValues', () => {
+			const values = sarosisDataToValues('Sarosis.ProviderPicker', { providerId: 'openrouter', modelId: 'flux' });
+			assert.strictEqual(values.providerId, 'openrouter');
+			assert.strictEqual(values.modelId, 'flux');
+		});
+
+		test('Agent still uses agentConfig (regression guard)', () => {
+			const data = sarosisValuesToData('Sarosis.Agent', { providerId: 'p', modelId: 'm' });
+			assert.deepStrictEqual(data.agentConfig, { providerId: 'p', modelId: 'm' });
+			assert.strictEqual(data.providerId, undefined);
+		});
+	});
 });

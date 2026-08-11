@@ -20,7 +20,13 @@ export type PortType = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'TEXT' | 'SAROSIS_JSON' | '
 import { INSTANT_WIDGETS } from './instantNodes.js';
 import { registerSchemaLiteGraphNode } from './schemaLiteGraphNodes.js';
 
-export type NodeKind = 'react' | 'schema' | 'native';
+export type NodeKind = 'react' | 'schema' | 'native' | 'llm';
+
+/** Which execution backend a node maps to (drives runNodeOrStage routing). */
+export type BackendKind = 'comfy' | 'provider';
+
+/** Provider capability a node requires (llm nodes filter by provider caps). */
+export type ProviderCaps = 'imageGen';
 
 export interface PortSpec {
 	name: string;
@@ -42,6 +48,10 @@ export interface NodeSpec {
 	widgets?: Array<{ name: string; type: string; default?: unknown; options?: string[]; min?: number; max?: number; step?: number }>;
 	/** schema nodes: ComfyTV stage metadata (kind, workflow_kind, …) */
 	comfyTV?: { stageKind?: string; workflowKind?: string };
+	/** llm nodes: which execution backend runs this node (defaults to 'comfy') */
+	backendKind?: BackendKind;
+	/** llm nodes: provider capability required (nodes filtered by provider caps) */
+	providerCaps?: ProviderCaps;
 	/** default color used by palette + canvas header */
 	color?: string;
 }
@@ -234,17 +244,19 @@ export interface PaletteItem {
 }
 
 /**
- * Build palette items for schema (ComfyTV) + native (ComfyUI) node kinds.
- * Pure — lets the editor palette stay static while Comfy nodes populate dynamically.
+ * Build palette items for schema (ComfyTV) + native (ComfyUI) + llm (Provider)
+ * node kinds. Pure — lets the editor palette stay static while Comfy nodes populate dynamically.
  */
-export function buildComfyPaletteItems(kind: 'schema' | 'native'): PaletteItem[] {
+export function buildComfyPaletteItems(kind: 'schema' | 'native' | 'llm'): PaletteItem[] {
 	return getSpecsByKind(kind).map(spec => ({
 		type: spec.type,
 		label: spec.title ?? spec.type,
 		description: spec.kind === 'native'
 			? `ComfyUI 原生节点 · ${spec.inputs.length} 输入 / ${spec.outputs.length} 输出`
-			: `ComfyTV stage · ${spec.comfyTV?.stageKind ?? '?'}`,
-		icon: spec.kind === 'native' ? '🧩' : '🎨',
+			: spec.kind === 'llm'
+				? `Provider 文生图 · ${spec.backendKind ?? 'provider'} 后端`
+				: `ComfyTV stage · ${spec.comfyTV?.stageKind ?? '?'}`,
+		icon: spec.kind === 'native' ? '🧩' : spec.kind === 'llm' ? '🖼️' : '🎨',
 	}));
 }
 
@@ -269,6 +281,43 @@ export function registerSarosisNodes(): void {
 	registerNodeSpec({ type: 'Sarosis.Agent', kind: 'react', title: 'Agent', category: 'basic', inputs: [json()], outputs: [json(false)], color: '#f97316' });
 	registerNodeSpec({ type: 'Sarosis.Skill', kind: 'react', title: 'Skill', category: 'basic', inputs: [json()], outputs: [json(false)], color: '#eab308' });
 	registerNodeSpec({ type: 'Sarosis.Tool', kind: 'react', title: 'Tool', category: 'basic', inputs: [json()], outputs: [json(false)], color: '#10b981' });
+	// Provider 选择器：本地解析（无 RPC），输出 TEXT "provider:<providerId>:<modelId>"
+	// 供 ModelImageGen 消费。kind='react' → runNodeOrStage 走 runProviderPickerNode。
+	registerNodeSpec({
+		type: 'Sarosis.ProviderPicker',
+		kind: 'react',
+		title: 'Provider 选择',
+		category: 'basic',
+		inputs: [],
+		outputs: [{ name: 'config', type: 'TEXT' }],
+		widgets: [
+			{ name: 'providerId', type: 'STRING', default: '' },
+			{ name: 'modelId', type: 'STRING', default: '' },
+		],
+		color: '#8b5cf6',
+	});
+	// Provider + Model 图像生成节点：经 imagegen.generate RPC 走已认证 LLM
+	// provider 的 /images/generations 端点（OpenAI 兼容）。纯 provider 后端，
+	// 不依赖 ComfyUI runner；输出 IMAGE 快照可与 Comfy 节点接力（P1+）。
+	registerNodeSpec({
+		type: 'Sarosis.ModelImageGen',
+		kind: 'llm',
+		title: '模型文生图',
+		category: 'sarosis',
+		inputs: [{ name: 'prompt', type: 'TEXT' }],
+		outputs: [{ name: 'image', type: 'IMAGE' }],
+		widgets: [
+			{ name: 'providerId', type: 'STRING', default: '' },
+			{ name: 'modelId', type: 'STRING', default: '' },
+			{ name: 'prompt', type: 'TEXT', default: '' },
+			{ name: 'negativePrompt', type: 'TEXT', default: '' },
+			{ name: 'size', type: 'STRING', default: '1024x1024' },
+			{ name: 'numImages', type: 'INT', default: 1, min: 1, max: 4 },
+		],
+		backendKind: 'provider',
+		providerCaps: 'imageGen',
+		color: '#06b6d4',
+	});
 	registerNodeSpec({ type: 'Sarosis.IfElse', kind: 'react', title: 'If/Else', category: 'controlFlow', inputs: [json()], outputs: [{ name: 'true', type: 'SAROSIS_JSON' }, { name: 'false', type: 'SAROSIS_JSON' }], color: '#ef4444' });
 	registerNodeSpec({ type: 'Sarosis.Switch', kind: 'react', title: 'Switch', category: 'controlFlow', inputs: [json()], outputs: [{ name: 'case', type: 'SAROSIS_JSON' }], color: '#a855f7' });
 	registerNodeSpec({ type: 'Sarosis.AskUser', kind: 'react', title: '询问', category: 'controlFlow', inputs: [json()], outputs: [{ name: 'answer', type: 'SAROSIS_JSON' }], color: '#06b6d4' });
@@ -355,28 +404,48 @@ export function registerComfyUINativeNode(def: {
 export function registerDefaultComfyTVStages(): void {
 	// Built-in default widgets so a stage is usable before a runner is connected.
 	// A live runner's /comfytv/stages schema (registerComfyTVNode) overwrites these.
+	// Order matches ComfyTV's upstream layout: workflow / resolution /
+	// aspect_ratio / batch_size come first, the prompt textarea sits below.
+	// The built-in seed/width/height/steps are basic fallbacks for when no
+	// runner is connected — a live /comfytv/stages schema (registerComfyTVNode)
+	// replaces these with the real ComfyTV widget set.
 	const imageWidgets = [
-		{ name: 'prompt', type: 'TEXT', default: '' },
+		{ name: 'workflow', type: 'COMBO', default: '', options: [] },
 		{ name: 'seed', type: 'INT', default: -1 },
 		{ name: 'width', type: 'INT', default: 512 },
 		{ name: 'height', type: 'INT', default: 512 },
 		{ name: 'steps', type: 'INT', default: 20 },
-		{ name: 'workflow', type: 'COMBO', default: '', options: [] },
+		{ name: 'prompt', type: 'TEXT', default: '' },
 	];
-	const stage = (type: string, title: string, stageKind: string, workflowKind: string, widgets?: NodeSpec['widgets']): void => {
+	const stage = (type: string, title: string, stageKind: string, workflowKind: string,
+		widgets?: NodeSpec['widgets'],
+		extraInputs: { name: string; type: string }[] = [],
+		extraOutputs: { name: string; type: string }[] = []): void => {
 		registerNodeSpec({
 			type,
 			kind: 'schema',
 			title,
 			category: 'comfyTV',
-			inputs: [{ name: 'input', type: 'ANY' }],
-			outputs: [{ name: 'output', type: normalizePortType(stageKind) }],
+			// ComfyTV-style: each stage exposes the autogrow lists it consumes
+			// (texts/images/videos/...) plus its own output channels. The
+			// single 'input'/'output' generic port is replaced by typed pins so
+			// users see `texts`, `images`, etc. on the canvas — matching the
+			// upstream ComfyTV reference layout (which exposes exactly the
+			// autogrow lists as connectable pins; everything else is socketless).
+			inputs: extraInputs.length > 0
+				? extraInputs
+				: [{ name: 'input', type: 'ANY' }],
+			outputs: extraOutputs.length > 0
+				? extraOutputs
+				: [{ name: 'output', type: normalizePortType(stageKind) }],
 			widgets,
 			color: '#e879f9',
 			comfyTV: { stageKind, workflowKind },
 		});
 	};
-	stage('ComfyTV.ImageStage', '文生图', 'image', 'image-to-image', imageWidgets);
+	stage('ComfyTV.ImageStage', 'Image Stage', 'image', 'image-to-image', imageWidgets,
+		[{ name: 'texts', type: 'COMFYTV_TEXT' }, { name: 'images', type: 'COMFYTV_IMAGE' }],
+		[{ name: 'images', type: 'COMFYTV_IMAGES' }, { name: 'image', type: 'COMFYTV_IMAGE' }]);
 	stage('ComfyTV.VideoStage', '文生视频', 'video', 'video');
 	stage('ComfyTV.AudioStage', '文生音频', 'audio', 'audio');
 	stage('ComfyTV.TextStage', '文生文本', 'text', 'text');

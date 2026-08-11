@@ -14,6 +14,7 @@ import type {
 	WorkflowGraphConnection,
 	WorkflowNodePosition,
 } from '../../../types/workflowStorage';
+import { isUsableNodeTitle } from './schemaLiteGraphNodes';
 
 /** LiteGraph serialised node (subset we read/write). */
 export interface LiteGraphSerialisedNode {
@@ -89,12 +90,20 @@ export function toLiteGraph(
 		// node is rendered at its computeSize-based size — the card drifts.
 		const width = wfNode.style?.width ?? 220;
 		const height = wfNode.style?.height ?? 60;
+		// Old workflows persisted `name = liteNode.title ?? liteNode.type`, so
+		// `name` can be a type string ("ComfyTV.ImageStage") or a truncated
+		// fragment ("t"). Restoring those would show internal implementation
+		// detail in the title bar — drop them and let LiteGraph fall back to
+		// the registered class title (spec.title). Genuine renames are kept.
+		const savedTitle = wfNode.data?.label ?? wfNode.name;
+		const liteType = toLiteGraphType(wfNode.type);
+		const keepTitle = isUsableNodeTitle(savedTitle, liteType);
 		liteNodes.push({
 			id: liteId,
-			type: toLiteGraphType(wfNode.type),
+			type: liteType,
 			pos: [position.x, position.y],
 			size: [width, height],
-			title: wfNode.data?.label ?? wfNode.name,
+			title: keepTitle ? savedTitle : undefined,
 			properties: { ...(wfNode.data ?? {}), __sarosisId: wfNode.id },
 		});
 	}

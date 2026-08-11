@@ -23,13 +23,14 @@ import { useSyncExternalStore } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { NodeSpec, PortSpec } from './registry';
 import type { MediaSnapshotStore } from './mediaSnapshotStore';
+import type { MediaSnapshotEntry } from './mediaSnapshot';
 import { useNodeSnapshots } from './useMediaSnapshot';
 import { useNodeCardState, type CardStateStore, type NodeRunState } from './cardState';
 import { buildSarosisEditorFields } from './nodeEditorForm';
 
 export interface NodeCardMeta {
 	title: string;
-	kind: 'react' | 'schema' | 'native';
+	kind: 'react' | 'schema' | 'native' | 'llm';
 	kindLabel: string;
 	inputs: PortSpec[];
 	outputs: PortSpec[];
@@ -87,17 +88,34 @@ function firstNonEmpty(...values: unknown[]): string {
 	return '';
 }
 
+/** Background color for the schema-node header chip. ComfyTV uses stage-kind
+ * badges (IMAGE=purple, VIDEO=green, AUDIO=amber, TEXT=blue) so users can tell
+ * node types apart at a glance. The chip itself lives next to the title in
+ * NodeCard; the port dots use the same palette (see portTypeColor). */
+function kindBadgeColor(stageKind: string | undefined): string {
+	switch (stageKind) {
+		case 'image': case 'image-batch': return '#a855f7';
+		case 'video': return '#10b981';
+		case 'audio': return '#f59e0b';
+		case 'text': return '#3b82f6';
+		default: return '#6b7280';
+	}
+}
+
 /** Derive card display metadata from a spec + node properties. Pure, unit-testable. */
 export function getNodeCardMeta(spec: NodeSpec | undefined, properties: Record<string, unknown>): NodeCardMeta {
-	const title = firstNonEmpty(
-		properties.title,
-		properties.label,
-		spec?.title,
-		spec?.type,
-		'Node',
-	);
+	const isSchema = spec?.kind === 'schema';
+	// Schema nodes use spec.title (e.g. "文生图") as the visible title —
+	// ComfyTV's reference UI shows `▾ Image Stage` (display name, not type).
+	// Other node kinds keep the previous precedence (user-editable title wins).
+	const rawTitle = isSchema
+		? firstNonEmpty(spec?.title, properties.title, properties.label, spec?.type, 'Node')
+		: firstNonEmpty(properties.title, properties.label, spec?.title, spec?.type, 'Node');
+	// Strip the "ComfyTV." / "Comfy." / "Sarosis." prefix when it's the type
+	// string (it would look like internal implementation detail in the UI).
+	const title = rawTitle.replace(/^(?:ComfyTV\.|Comfy\.|Sarosis\.)/i, '');
 	const kind = spec?.kind ?? 'react';
-	const kindLabel = kind === 'schema' ? 'schema→React' : kind === 'native' ? 'ComfyUI 原生' : 'React';
+	const kindLabel = kind === 'schema' ? 'schema→React' : kind === 'native' ? 'ComfyUI 原生' : kind === 'llm' ? 'Provider 文生图' : 'React';
 
 	let widgetSummary = spec?.widgets?.length
 		? spec.widgets.slice(0, 4).map(w => {
@@ -145,6 +163,7 @@ const KIND_COLOR: Record<string, string> = {
 	react: '#3b82f6',
 	schema: '#e879f9',
 	native: '#f59e0b',
+	llm: '#06b6d4',
 };
 
 const RUN_LABEL: Record<string, { label: string; icon: string }> = {
@@ -198,6 +217,37 @@ function ErrorBanner({ message, cancel }: { message: string; cancel: boolean }):
 	);
 }
 
+/** Derive a friendly download filename from a snapshot ref (URL or key). */
+function snapshotFileName(entry: MediaSnapshotEntry): string {
+	const m = /[^/?#]+\.[A-Za-z0-9]{2,5}(?:[?#]|$)/.exec(entry.media.ref);
+	if (m) { return m[0].replace(/[?#].*$/, ''); }
+	const safe = entry.key.replace(/[^A-Za-z0-9_.-]/g, '_');
+	const ext = entry.media.kind === 'image' ? '.png' : entry.media.kind === 'video' ? '.mp4' : '.bin';
+	return `${safe}${ext}`;
+}
+
+/** Download a snapshot: fetch URL refs, or read locally-saved payloads. */
+async function downloadSnapshot(store: MediaSnapshotStore, entry: MediaSnapshotEntry): Promise<void> {
+	let blob: Blob | null = null;
+	const ref = entry.media.ref;
+	if (/^https?:\/\//i.test(ref) || ref.startsWith('data:')) {
+		try {
+			const res = await fetch(ref);
+			if (res.ok) { blob = await res.blob(); }
+		} catch { blob = null; }
+	} else {
+		const data = await store.getPayload(entry.key);
+		if (data != null) { blob = data instanceof Blob ? data : new Blob([data]); }
+	}
+	if (!blob) { return; }
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = snapshotFileName(entry);
+	a.click();
+	setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /** Thumbnail preview — grid of all image outputs, or a label row for other media. */
 function SnapshotPreview({ store, nodeId }: { store: MediaSnapshotStore; nodeId: string }): React.JSX.Element | null {
 	const entries = useNodeSnapshots(store, nodeId);
@@ -207,12 +257,37 @@ function SnapshotPreview({ store, nodeId }: { store: MediaSnapshotStore; nodeId:
 	if (images.length > 0) {
 		return (
 			<div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+				{/* ComfyTV shows a "BATCH: N" badge when a stage emits multiple images. */}
+				{images.length > 1 && (
+					<div style={{
+						width: '100%', fontSize: 9, fontFamily: 'Consolas, monospace',
+						color: 'var(--vscode-descriptionForeground, #858585)', marginBottom: -1,
+					}}>
+						BATCH: {images.length}
+					</div>
+				)}
 				{images.map((e, i) => (
 					<div key={i} style={{
-						width: 64, height: 64, borderRadius: 4, overflow: 'hidden',
+						position: 'relative', width: 64, height: 64, borderRadius: 4, overflow: 'hidden',
 						border: '1px solid rgba(255,255,255,.12)', background: 'rgba(255,255,255,.03)',
+						// thumbnails are interactive (download) even though the
+						// overlay container is pointer-events:none
+						pointerEvents: 'auto',
 					}}>
 						<img src={e.media.ref} alt="preview" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+						<button
+							title="下载"
+							onClick={(ev) => { ev.stopPropagation(); void downloadSnapshot(store, e); }}
+							style={{
+								position: 'absolute', right: 2, bottom: 2, width: 16, height: 16,
+								display: 'flex', alignItems: 'center', justifyContent: 'center',
+								fontSize: 9, lineHeight: 1, cursor: 'pointer',
+								background: 'rgba(0,0,0,.55)', color: '#fff', border: 'none', borderRadius: 3,
+								opacity: 0, transition: 'opacity .12s',
+							}}
+							onMouseEnter={ev => { ev.currentTarget.style.opacity = '1'; }}
+							onMouseLeave={ev => { ev.currentTarget.style.opacity = '0'; }}
+						>⤓</button>
 					</div>
 				))}
 			</div>
@@ -283,6 +358,8 @@ export function getPromptStore(): PromptStore {
 	return promptStoreSingleton;
 }
 
+
+
 export interface NodeCardProps {
 	meta: NodeCardMeta;
 	snapshotStore?: MediaSnapshotStore;
@@ -298,6 +375,17 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }: NodeCa
 	const duration = run.durationMs != null && run.durationMs > 0
 		? run.durationMs < 60000 ? `${(run.durationMs / 1000).toFixed(1)}s` : `${Math.floor(run.durationMs / 60000)}m ${Math.round((run.durationMs % 60000) / 1000)}s`
 		: '';
+	// ComfyTV shows `OUTPUT (TYPE)` next to the Output label. Prefer the
+	// primary COMFYTV_IMAGES / COMFYTV_IMAGE output type, fall back to the
+	// first output's type or the stage kind.
+	const primaryOutputType = (() => {
+		const outs = meta.outputs ?? [];
+		const prefer = outs.find(o => o.type === 'COMFYTV_IMAGES' || o.type === 'COMFYTV_IMAGE');
+		const fallback = outs[0]?.type;
+		const raw = prefer?.type ?? fallback;
+		if (!raw) { return undefined; }
+		return raw.startsWith('COMFYTV_') ? raw.slice('COMFYTV_'.length) : raw;
+	})();
 	const showOutput = run.runState === 'success' || run.runState === 'error';
 
 	// Inline prompt editor (schema stages). Value is kept in a tiny store so the
@@ -349,34 +437,36 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }: NodeCa
 				pointerEvents: 'none',
 				userSelect: 'none',
 				overflow: 'hidden',
-				borderRadius: 8,
 				border: `1.5px solid ${kindColor}55`,
-				// Opaque card background so overlapping cards fully occlude
-				// the card behind them (semi-transparent .94 let the lower
-				// card bleed through, which looked like "z-order" chaos).
-				background: 'linear-gradient(180deg, rgb(38,38,46), rgb(24,24,28))',
 				color: 'var(--vscode-foreground, #ccc)',
 				fontFamily: 'inherit',
-				boxShadow: '0 4px 18px rgba(0,0,0,.45)',
 				fontSize: 11,
-				padding: '6px 8px',
+				display: 'flex',
+				flexDirection: 'column',
+			}}
+		>
+			{/* Inner content wrapper — opaque background + boxShadow. The
+			    container is already inset to LiteGraph's widget area by
+			    widgetBridge (left/right = BaseWidget.margin 15, top = title bar
+			    + port rows), so the port dots and labels are OUTSIDE the card
+			    and stay visible. Padding here is minimal so the parameter rows
+			    fill the widget area edge-to-edge like ComfyTV's reference UI. */}
+			<div style={{
+				background: 'linear-gradient(180deg, rgb(38,38,46), rgb(24,24,28))',
+				boxShadow: '0 4px 18px rgba(0,0,0,.45)',
+				padding: '4px 4px 6px',
 				display: 'flex',
 				flexDirection: 'column',
 				gap: 3,
-			}}
-		>
-			{/* Schema stages hide the canvas title bar (NO_TITLE class), so the
-			    card renders the node's title itself — the whole node is then one
-			    DOM layer and overlapping nodes stack correctly. Native ComfyUI
-			    nodes still let LiteGraph draw the title bar. */}
-			{meta.kind === 'schema' && (
-				<div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-					<span style={{ fontSize: 11, fontWeight: 600, color: 'var(--vscode-foreground, #e8e8e8)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-						{meta.title}
-					</span>
-				</div>
-			)}
-			{meta.brand && (
+				flex: 1,
+				minWidth: 0,
+				overflow: 'hidden',
+			}}>
+			{/* Schema nodes: LiteGraph draws the title bar on the canvas, so
+			    we DON'T render the title here. The card only covers the
+			    widget content area. */}
+			{/* Non-schema cards keep the legacy layout (they don't render ComfyTV-style). */}
+			{meta.kind !== 'schema' && meta.brand && (
 				<div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
 					<span style={{ fontSize: 8, letterSpacing: 1.5, textTransform: 'uppercase', opacity: .45, color: 'var(--vscode-descriptionForeground, #858585)' }}>
 						{meta.brand}
@@ -388,40 +478,55 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }: NodeCa
 					)}
 				</div>
 			)}
-			{!meta.brand && meta.schemaDetail && (
+			{meta.kind !== 'schema' && !meta.brand && meta.schemaDetail && (
 				<div style={{ fontSize: 9, color: 'var(--vscode-descriptionForeground, #858585)', fontFamily: 'Consolas, monospace' }}>
 					{meta.schemaDetail}
 				</div>
 			)}
-			{meta.widgetSummary && (
+			{meta.kind !== 'schema' && meta.widgetSummary && (
 				<div style={{ fontSize: 9, color: '#9cdcfe', fontFamily: 'Consolas, monospace' }}>
 					{meta.widgetSummary}
 				</div>
 			)}
 
-			{/* Inline parameter controls (ComfyTVWidget equivalents). 2-column
-				 grid to keep the card height small even with 6+ widgets. */}
+			{/* Inline parameter controls (ComfyTVWidget equivalents). ComfyTV
+				 renders every widget on its own full-width row so the label is
+				 always readable; we follow that for schema nodes. Non-schema
+				 cards keep the compact 2-column grid. */}
 			{showRun && meta.controls && meta.controls.length > 0 && (
-				<div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3 }}>
+				<div style={{ display: 'grid', gridTemplateColumns: meta.kind === 'schema' ? '1fr' : '1fr 1fr', gap: meta.kind === 'schema' ? 4 : 3 }}>
 					{meta.controls.map(c => {
 						const val = controlDrafts[c.name] ?? c.value;
+						// ComfyTV gives every widget a full-width row with a
+						// fixed label width so the input controls align. Smaller
+						// label for the legacy 2-column grid on non-schema nodes.
+						const isSchema = meta.kind === 'schema';
+						const labelStyle = {
+							color: 'var(--vscode-descriptionForeground, #858585)',
+							width: isSchema ? 70 : 38,
+							flexShrink: 0, overflow: 'hidden',
+							textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+						} as const;
+						const inputStyle = {
+							flex: 1, padding: isSchema ? '3px 6px' : '1px 3px',
+							borderRadius: 3, minWidth: 0,
+							background: 'var(--vscode-input-background, rgba(255,255,255,.06))',
+							color: 'var(--vscode-foreground, #e8e8e8)',
+							border: '1px solid var(--vscode-input-border, rgba(255,255,255,.14))',
+							fontSize: isSchema ? 11 : 9,
+							fontFamily: 'inherit',
+						} as const;
 						if (c.type === 'COMBO') {
 							// Combos with options get a full row, otherwise they
 							// would crowd the grid label.
 							const wide = !c.options || c.options.length === 0;
 							return (
-								<label key={c.name} style={{ gridColumn: wide ? '1 / -1' : 'auto', display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, minWidth: 0 }}>
-									<span style={{ color: 'var(--vscode-descriptionForeground, #858585)', width: 38, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+								<label key={c.name} style={{ gridColumn: wide ? '1 / -1' : 'auto', display: 'flex', alignItems: 'center', gap: 6, fontSize: isSchema ? 11 : 9, minWidth: 0, pointerEvents: 'auto' }}>
+									<span style={labelStyle}>{c.name}</span>
 									<select
 										value={String(val ?? '')}
 										onChange={e => commitControl(c.name, e.target.value)}
-										style={{
-											pointerEvents: 'auto', flex: 1, padding: '1px 3px', borderRadius: 3, minWidth: 0,
-											background: 'var(--vscode-input-background, rgba(255,255,255,.06))',
-											color: 'var(--vscode-foreground, #e8e8e8)',
-											border: '1px solid var(--vscode-input-border, rgba(255,255,255,.14))',
-											fontSize: 9, fontFamily: 'inherit',
-										}}
+										style={inputStyle}
 									>
 										{(c.options && c.options.length > 0)
 											? c.options.map(o => <option key={String(o)} value={String(o)}>{String(o)}</option>)
@@ -432,33 +537,26 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }: NodeCa
 						}
 						if (c.type === 'INT' || c.type === 'FLOAT') {
 							return (
-								<label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, minWidth: 0 }}>
-									<span style={{ color: 'var(--vscode-descriptionForeground, #858585)', width: 38, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+								<label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: isSchema ? 11 : 9, minWidth: 0, pointerEvents: 'auto' }}>
+									<span style={labelStyle}>{c.name}</span>
 									<input
 										type="number"
 										value={String(val ?? '')}
 										min={c.min}
 										max={c.max}
 										onChange={e => commitControl(c.name, c.type === 'INT' ? Math.round(Number(e.target.value)) : Number(e.target.value))}
-										style={{
-											pointerEvents: 'auto', flex: 1, padding: '1px 3px', borderRadius: 3, minWidth: 0,
-											background: 'var(--vscode-input-background, rgba(255,255,255,.06))',
-											color: 'var(--vscode-foreground, #e8e8e8)',
-											border: '1px solid var(--vscode-input-border, rgba(255,255,255,.14))',
-											fontSize: 9, fontFamily: 'inherit',
-										}}
+										style={inputStyle}
 									/>
 								</label>
 							);
 						}
 						if (c.type === 'BOOLEAN') {
 							return (
-								<label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, minWidth: 0 }}>
+								<label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 9, minWidth: 0, pointerEvents: 'auto' }}>
 									<input
 										type="checkbox"
 										checked={!!val}
 										onChange={e => commitControl(c.name, e.target.checked)}
-										style={{ pointerEvents: 'auto' }}
 									/>
 									<span style={{ color: 'var(--vscode-descriptionForeground, #858585)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
 								</label>
@@ -528,8 +626,18 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }: NodeCa
 					{run.runState === 'error' && <ErrorBanner message={run.errorMsg ?? '执行失败'} cancel={false} />}
 					{showOutput && (
 						<>
-							<div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
-								<SectionLabel>Output</SectionLabel>
+							{/* ComfyTV-style "OUTPUT (TYPE)" header: All-caps TYPE chip
+							    following the Output label, matching the upstream UI. */}
+							<div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 4 }}>
+								<span style={{ fontSize: 8, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase', color: 'var(--vscode-descriptionForeground, #858585)' }}>Output</span>
+								{primaryOutputType && (
+									<span style={{
+										fontSize: 8, fontWeight: 700, letterSpacing: 1, padding: '1px 5px', borderRadius: 3,
+										background: 'rgba(168, 85, 247, .18)', color: '#a855f7',
+									}}>
+										({primaryOutputType})
+									</span>
+								)}
 								<span style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--vscode-descriptionForeground, #858585)', fontFamily: 'Consolas, monospace' }}>
 									{duration}
 								</span>
@@ -567,6 +675,14 @@ export function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }: NodeCa
 					)}
 				</>
 			)}
+			{/* ComfyTV footer mark — matches the "ComfyTV" caption in the
+			     reference UI; gives the card a clear visual owner. */}
+			{meta.kind === 'schema' && (
+				<div style={{ marginTop: 'auto', paddingTop: 4, fontSize: 7.5, fontWeight: 600, letterSpacing: 1, textTransform: 'uppercase', opacity: .35, color: 'var(--vscode-descriptionForeground, #858585)', textAlign: 'left' }}>
+					ComfyTV
+				</div>
+			)}
+			</div>
 		</div>
 	);
 }

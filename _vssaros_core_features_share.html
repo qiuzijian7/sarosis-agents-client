@@ -1,0 +1,999 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VsSaros 核心能力 · Agent · Skill · 知识库 · 多窗口</title>
+<style>
+  :root{
+    --bg:#080a10;
+    --bg-2:#0d1119;
+    --surface:#111622;
+    --surface-2:#161c2a;
+    --line:rgba(255,255,255,.075);
+    --line-2:rgba(255,255,255,.14);
+    --ink:#eaedf4;
+    --ink-2:#9aa3b5;
+    --ink-3:#5f6879;
+    --gold:#d9a95f;
+    --gold-soft:rgba(217,169,95,.14);
+    --teal:#4ec4ae;
+    --teal-soft:rgba(78,196,174,.13);
+    --azure:#5d92d8;
+    --violet:#a58ada;
+    --coral:#e8776a;
+    --amber:#d79a4c;
+    --rose:#e06c8a;
+    --mono:"Cascadia Mono","JetBrains Mono","Consolas",ui-monospace,monospace;
+    --serif:"Source Han Serif SC","Noto Serif CJK SC","Songti SC",Georgia,"Times New Roman",serif;
+    --sans:"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei","Segoe UI",-apple-system,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    font-size:15px;
+    line-height:1.8;
+    -webkit-font-smoothing:antialiased;
+    position:relative;
+    overflow-x:hidden;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.016) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.016) 1px,transparent 1px);
+    background-size:64px 64px,64px 64px;
+  }
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(900px 520px at 88% -8%, rgba(217,169,95,.075), transparent 62%),
+      radial-gradient(760px 480px at 4% 12%, rgba(78,196,174,.055), transparent 58%),
+      radial-gradient(1100px 700px at 50% 108%, rgba(93,146,216,.05), transparent 60%);
+  }
+  ::selection{background:rgba(217,169,95,.24)}
+  a{color:inherit;text-decoration:none}
+
+  .prog{position:fixed;top:0;left:0;height:2px;width:0;z-index:60;
+    background:linear-gradient(90deg,var(--teal),var(--gold));box-shadow:0 0 12px rgba(217,169,95,.5)}
+
+  .shell{position:relative;z-index:1;max-width:1280px;margin:0 auto;padding:0 30px}
+  .grid{display:block}
+  @media(min-width:1060px){
+    .grid{display:grid;grid-template-columns:210px 1fr;gap:66px;align-items:start}
+  }
+
+  /* ============ 左侧导航 ============ */
+  .rail{display:none}
+  @media(min-width:1060px){
+    .rail{display:block;position:sticky;top:0;height:100vh;padding:46px 0;overflow:auto}
+    .rail::-webkit-scrollbar{width:0}
+  }
+  .rail .brand{font-family:var(--mono);font-size:9.5px;letter-spacing:.28em;color:var(--ink-3);text-transform:uppercase}
+  .rail .brand b{color:var(--gold);font-weight:400}
+  .nav{list-style:none;margin-top:22px;position:relative}
+  .nav::before{content:"";position:absolute;left:4px;top:12px;bottom:12px;width:1px;background:var(--line)}
+  .nav a{
+    display:flex;gap:13px;align-items:baseline;padding:8px 0 8px 0;position:relative;
+    font-size:12.5px;color:var(--ink-3);transition:color .2s;line-height:1.5;
+  }
+  .nav a .bul{
+    position:relative;flex:none;width:9px;height:9px;margin-left:0;border-radius:50%;
+    border:1px solid var(--line-2);background:var(--bg);transition:.2s;top:5px;
+  }
+  .nav a .nn{font-family:var(--mono);font-size:10px;opacity:.75;flex:none;width:16px}
+  .nav a:hover{color:var(--ink-2)}
+  .nav a.on{color:var(--ink)}
+  .nav a.on .bul{background:var(--gold);border-color:var(--gold);box-shadow:0 0 0 3px rgba(217,169,95,.16)}
+  .nav a.on .nn{color:var(--gold);opacity:1}
+  .rail .foot{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;color:var(--ink-3);line-height:2}
+
+  /* ============ 报头 ============ */
+  .hero{padding:76px 0 8px;position:relative}
+  .kicker{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:10.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--gold)}
+  .kicker .ln{width:44px;height:1px;background:linear-gradient(90deg,var(--gold),transparent)}
+  h1{
+    font-family:var(--serif);font-weight:600;letter-spacing:-.5px;
+    font-size:clamp(30px,5.1vw,55px);line-height:1.24;margin:24px 0 0;
+  }
+  h1 .hl{
+    background:linear-gradient(100deg,var(--gold) 8%,#f0d9a8 40%,var(--teal) 92%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .hero .lede{margin-top:26px;font-size:16px;color:var(--ink-2);max-width:74ch}
+  .hero .lede b{color:var(--ink);font-weight:600}
+
+  .spec{display:grid;grid-template-columns:repeat(3,1fr);margin-top:44px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  @media(max-width:720px){.spec{grid-template-columns:1fr}}
+  .spec > div{padding:18px 24px 18px 0;border-right:1px solid var(--line)}
+  .spec > div:last-child{border-right:none}
+  @media(max-width:720px){.spec > div{border-right:none;border-bottom:1px solid var(--line);padding-right:0}.spec > div:last-child{border-bottom:none}}
+  .spec .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3)}
+  .spec .v{font-size:14px;color:var(--ink);margin-top:5px}
+
+  /* ============ 四大支柱 ============ */
+  .tenets{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:44px}
+  @media(max-width:1000px){.tenets{grid-template-columns:1fr 1fr}}
+  @media(max-width:540px){.tenets{grid-template-columns:1fr}}
+  .tenet{
+    position:relative;padding:26px 24px 24px;overflow:hidden;
+    background:linear-gradient(168deg,var(--surface-2),var(--surface) 70%);
+    border:1px solid var(--line);border-radius:3px;
+  }
+  .tenet::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--c),transparent 88%)}
+  .tenet .ghost{
+    position:absolute;right:14px;top:-4px;font-family:var(--serif);font-size:82px;font-weight:700;
+    color:var(--c);opacity:.09;line-height:1;pointer-events:none;
+  }
+  .tenet .tg{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--c);text-transform:uppercase}
+  .tenet h3{font-family:var(--serif);font-size:20px;font-weight:600;margin:10px 0 10px}
+  .tenet p{font-size:13.5px;color:var(--ink-2);position:relative}
+  .n1{--c:var(--teal)} .n2{--c:var(--azure)} .n3{--c:var(--violet)} .n4{--c:var(--rose)}
+
+  /* ============ 章节 ============ */
+  section{padding:86px 0 0;scroll-margin-top:16px;position:relative}
+  .sh{position:relative;margin-bottom:32px;padding-bottom:16px;border-bottom:1px solid var(--line-2)}
+  .sh .no{font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;color:var(--gold)}
+  .sh h2{font-family:var(--serif);font-size:clamp(22px,3.3vw,33px);font-weight:600;line-height:1.3;margin-top:8px;letter-spacing:-.3px;max-width:36ch}
+  .sh .tail{
+    position:absolute;right:0;bottom:16px;font-family:var(--mono);font-size:10px;letter-spacing:.18em;
+    color:var(--ink-3);text-transform:uppercase;display:none;
+  }
+  @media(min-width:780px){.sh .tail{display:block}}
+  .sh .wm{
+    position:absolute;right:-4px;top:-30px;font-family:var(--serif);font-weight:700;font-size:112px;
+    line-height:1;color:#fff;opacity:.028;pointer-events:none;letter-spacing:-4px;
+  }
+  .intro{color:var(--ink-2);max-width:76ch;margin-bottom:30px}
+  .intro b{color:var(--ink);font-weight:600}
+
+  .memo{
+    margin-top:30px;border:1px solid var(--line);border-left:2px solid var(--gold);
+    background:linear-gradient(100deg,var(--gold-soft),rgba(255,255,255,.012) 46%);
+    padding:16px 20px;font-size:13.5px;color:var(--ink-2);border-radius:0 3px 3px 0;
+  }
+  .memo b{color:var(--ink);font-weight:600}
+  .memo .lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--gold);text-transform:uppercase;display:block;margin-bottom:5px}
+
+  .pull{
+    margin:44px 0 4px;padding:38px 30px;text-align:center;position:relative;
+    border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  }
+  .pull q{
+    font-family:var(--serif);font-size:clamp(19px,2.9vw,28px);font-weight:600;line-height:1.55;quotes:none;
+  }
+  .pull i{font-style:normal;color:var(--gold)}
+
+  /* ============ 能力卡片 ============ */
+  .caps{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:860px){.caps{grid-template-columns:1fr 1fr}}
+  @media(max-width:520px){.caps{grid-template-columns:1fr}}
+  .cap{
+    border:1px solid var(--line);border-top:2px solid var(--c);border-radius:0 0 3px 3px;
+    background:rgba(255,255,255,.014);padding:20px 18px;transition:background .2s,transform .2s;
+  }
+  .cap:hover{background:rgba(255,255,255,.028);transform:translateY(-2px)}
+  .cap .nm{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:var(--c)}
+  .cap h5{font-family:var(--serif);font-size:17px;font-weight:600;margin:6px 0 8px}
+  .cap ul{list-style:none}
+  .cap li{font-size:12.5px;color:var(--ink-2);padding-left:13px;position:relative;margin:4px 0;line-height:1.65}
+  .cap li::before{content:"·";position:absolute;left:2px;color:var(--c);font-weight:700}
+  .c1{--c:var(--teal)} .c2{--c:var(--azure)} .c3{--c:var(--violet)}
+
+  /* ============ 对比表格 ============ */
+  .tri{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:26px}
+  .tri th{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);
+    text-align:left;font-weight:400;padding:0 14px 10px 0;border-bottom:1px solid var(--line-2);
+  }
+  .tri td{padding:14px 14px 14px 0;border-bottom:1px solid var(--line);color:var(--ink-2);vertical-align:middle}
+  .tri tbody tr:last-child td{border-bottom:none}
+  .tri td.c1{width:1%;white-space:nowrap;font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--ink);padding-right:20px}
+  .tri td.c1 i{display:inline-block;width:3px;height:15px;margin-right:11px;vertical-align:-3px;border-radius:1px}
+  .tri td.c2{color:var(--ink);font-weight:600;width:20%}
+  .tri td.c4{color:var(--teal);font-weight:600;width:14%;white-space:nowrap}
+  .tri td.c4.win{color:var(--gold);font-weight:700}
+  @media(max-width:760px){
+    .tri thead{display:none}
+    .tri td{display:block;border-bottom:none;padding:3px 0}
+    .tri tr{display:block;border-bottom:1px solid var(--line);padding:14px 0}
+  }
+
+  /* ============ Before/After 对比 ============ */
+  .shift{display:flex;flex-direction:column;gap:12px}
+  .sr{
+    display:grid;grid-template-columns:1fr 44px 1fr;gap:0;align-items:stretch;
+    border:1px solid var(--line);border-radius:3px;overflow:hidden;background:var(--surface);
+  }
+  .sr .stg{
+    grid-column:1/-1;padding:9px 18px;border-bottom:1px solid var(--line);
+    font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);
+    background:linear-gradient(90deg,var(--gold-soft),transparent 60%);
+  }
+  .sr .was,.sr .now{padding:16px 18px;font-size:13.5px}
+  .sr .was{color:var(--ink-3)}
+  .sr .now{color:var(--ink-2);background:rgba(78,196,174,.045);border-left:1px solid var(--line)}
+  .sr .now b{color:var(--ink);font-weight:600;box-shadow:inset 0 -.55em 0 rgba(78,196,174,.16)}
+  .sr .arw{
+    display:grid;place-items:center;font-family:var(--mono);color:var(--ink-3);font-size:14px;
+    border-left:1px solid var(--line);background:rgba(255,255,255,.015);
+  }
+  @media(max-width:840px){
+    .sr{grid-template-columns:1fr}
+    .sr .arw{display:none}
+    .sr .now{border-left:none;border-top:1px solid var(--line)}
+    .sr .was::before{content:"WorkBuddy / CodeBuddy · ";font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;color:var(--ink-3)}
+    .sr .now::before{content:"VsSaros · ";font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;color:var(--teal)}
+  }
+
+  /* ============ 能力对比双卡 ============ */
+  .duo{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:880px){.duo{grid-template-columns:1fr}}
+  .term{border:1px solid var(--line);border-radius:3px;overflow:hidden;background:#0b0f17;display:flex;flex-direction:column}
+  .term-h{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface)}
+  .term-h .n{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);display:flex;align-items:center;gap:9px}
+  .term-h .n::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--dc,var(--ink-3));box-shadow:0 0 8px var(--dc,transparent)}
+  .term-h .b{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;color:var(--ink-3);border:1px solid var(--line);padding:2px 8px;border-radius:2px}
+  .term.in .term-h{--dc:var(--coral)}
+  .term.in .term-h .b{color:var(--coral);border-color:rgba(232,119,106,.35);background:rgba(232,119,106,.1)}
+  .term.out .term-h{--dc:var(--teal)}
+  .term.out .term-h .b{color:var(--teal);border-color:rgba(78,196,174,.35);background:var(--teal-soft)}
+  pre.tx{margin:0;padding:16px;overflow-x:auto;font-family:var(--mono);font-size:12px;line-height:1.78;color:var(--ink);flex:1}
+  pre.tx .c{color:var(--ink-3)}
+  pre.tx .k{color:var(--azure)}
+  pre.tx .g{color:var(--teal)}
+  pre.tx .r{color:var(--coral)}
+  pre.tx .p{color:var(--violet)}
+  pre.tx .w{color:var(--amber)}
+
+  /* ============ 圆环指标 ============ */
+  .cls2{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:20px}
+  @media(max-width:860px){.cls2{grid-template-columns:1fr 1fr}}
+  @media(max-width:480px){.cls2{grid-template-columns:1fr}}
+  .cl2{border:1px solid var(--line);border-left:2px solid var(--c);border-radius:0 3px 3px 0;padding:14px 15px;background:rgba(255,255,255,.014)}
+  .cl2 .cn2{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--c)}
+  .cl2 .fg{font-family:var(--serif);font-size:26px;font-weight:700;color:var(--ink);line-height:1.2;margin:4px 0 2px}
+  .cl2 .dd{font-size:12.5px;color:var(--ink-2);line-height:1.6}
+
+  /* ============ 数据卡片 ============ */
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--line);background:var(--surface);border-radius:3px}
+  @media(max-width:760px){.stats{grid-template-columns:1fr}}
+  .stat{padding:26px 24px;border-right:1px solid var(--line);position:relative}
+  .stat:last-child{border-right:none}
+  @media(max-width:760px){.stat{border-right:none;border-bottom:1px solid var(--line)}.stat:last-child{border-bottom:none}}
+  .stat .fig{font-family:var(--serif);font-size:34px;font-weight:700;letter-spacing:-1px;color:var(--gold);line-height:1.15}
+  .stat .t{font-size:14.5px;font-weight:600;margin-top:8px;padding-top:10px;border-top:1px solid var(--line)}
+  .stat .d{font-size:13px;color:var(--ink-2);margin-top:5px}
+
+  /* ============ 亮点徽章行 ============ */
+  .badges{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}
+  .badge{
+    display:inline-flex;align-items:center;gap:7px;padding:8px 14px;
+    border:1px solid var(--line);border-radius:3px;font-size:12.5px;color:var(--ink-2);
+    background:rgba(255,255,255,.02);transition:background .15s;
+  }
+  .badge .dot{width:6px;height:6px;border-radius:50%;flex:none}
+  .badge .dot.g{background:var(--teal)} .badge .dot.b{background:var(--azure)}
+  .badge .dot.v{background:var(--violet)} .badge .dot.a{background:var(--amber)}
+  .badge .dot.r{background:var(--coral)} .badge .dot.p{background:var(--rose)}
+
+  /* ============ 架构层级图 ============ */
+  .stack{display:flex;flex-direction:column;gap:0;border:1px solid var(--line);border-radius:3px;overflow:hidden;margin-top:26px}
+  .layer{display:flex;align-items:center;padding:16px 20px;border-bottom:1px solid var(--line);gap:18px;transition:background .2s}
+  .layer:hover{background:rgba(255,255,255,.015)}
+  .layer:last-child{border-bottom:none}
+  .layer .ln{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--ink-3);width:80px;flex:none}
+  .layer .lname{font-family:var(--serif);font-size:16px;font-weight:600;width:140px;flex:none}
+  .layer .ldesc{font-size:13px;color:var(--ink-2);flex:1}
+  .layer .lrole{
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;padding:4px 10px;border:1px solid;border-radius:2px;flex:none;
+  }
+  .l1{border-left:3px solid var(--teal)} .l1 .lrole{color:var(--teal);border-color:rgba(78,196,174,.4);background:var(--teal-soft)}
+  .l2{border-left:3px solid var(--azure)} .l2 .lrole{color:var(--azure);border-color:rgba(93,146,216,.4);background:rgba(93,146,216,.1)}
+  .l3{border-left:3px solid var(--violet)} .l3 .lrole{color:var(--violet);border-color:rgba(165,138,218,.4);background:rgba(165,138,218,.12)}
+  .l4{border-left:3px solid var(--amber)} .l4 .lrole{color:var(--amber);border-color:rgba(215,154,76,.4);background:rgba(215,154,76,.12)}
+  .l5{border-left:3px solid var(--rose)} .l5 .lrole{color:var(--rose);border-color:rgba(224,108,138,.4);background:rgba(224,108,138,.12)}
+
+  /* ============ 落款 ============ */
+  .colophon{
+    margin-top:26px;padding:20px 0 84px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  }
+  .colophon .thread{flex:1;height:1px;min-width:24px;background:linear-gradient(90deg,transparent,var(--line-2))}
+  .colophon .thread.r{background:linear-gradient(90deg,var(--line-2),transparent)}
+  .colophon .sig{
+    display:inline-flex;align-items:center;gap:11px;flex:none;
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;color:var(--ink-3);
+  }
+
+  /* ============ 标签分段控件 ============ */
+  .seg-ctl{display:inline-flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;background:var(--surface);margin-bottom:26px}
+  .sc{
+    padding:11px 22px;font-size:13.5px;font-weight:600;color:var(--ink-3);cursor:pointer;user-select:none;
+    transition:.18s;position:relative;
+  }
+  .sc + .sc{border-left:1px solid var(--line)}
+  .sc:hover{color:var(--ink-2)}
+  .sc.on{color:var(--ink);background:var(--surface-2)}
+  .sc.on::after{content:"";position:absolute;left:14px;right:14px;bottom:0;height:2px;background:var(--gold)}
+  .sc .tn{font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-right:8px;letter-spacing:.1em}
+  .sc.on .tn{color:var(--gold)}
+  .pane{display:none}
+  .pane.on{display:block;animation:rise .28s ease}
+  @keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+
+  .rz{margin-top:26px;border-top:1px solid var(--line);padding-top:20px}
+  .rz .rt2{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--ink-3);text-transform:uppercase;margin-bottom:12px}
+  .rz ul{list-style:none}
+  .rz li{font-size:13.5px;color:var(--ink-2);padding-left:22px;position:relative;margin:9px 0}
+  .rz li::before{content:"◈";position:absolute;left:0;color:var(--teal);font-size:10px;top:1px}
+  .rz li b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="prog" id="prog"></div>
+
+<div class="shell">
+<div class="grid">
+
+  <!-- ============ 导航 ============ -->
+  <nav class="rail">
+    <div class="brand">VsSaros<br><b>Core Capabilities</b></div>
+    <ul class="nav" id="nav">
+      <li><a href="#s01"><span class="bul"></span><span class="nn">01</span>架构总览</a></li>
+      <li><a href="#s02"><span class="bul"></span><span class="nn">02</span>Agent 系统</a></li>
+      <li><a href="#s03"><span class="bul"></span><span class="nn">03</span>Skill 体系</a></li>
+      <li><a href="#s04"><span class="bul"></span><span class="nn">04</span>知识库</a></li>
+      <li><a href="#s05"><span class="bul"></span><span class="nn">05</span>多窗口聊天</a></li>
+      <li><a href="#s06"><span class="bul"></span><span class="nn">06</span>对比 WB / CB</a></li>
+      <li><a href="#s07"><span class="bul"></span><span class="nn">07</span>核心优势</a></li>
+    </ul>
+    <div class="foot">Agent · Skill<br>Knowledge Base<br>Multi-Window Chat</div>
+  </nav>
+
+  <!-- ============ 正文 ============ -->
+  <main>
+
+  <div class="hero">
+    <span class="kicker"><span class="ln"></span>AI 编程助手 · 能力全景</span>
+    <h1>从<span class="hl">聊天助手</span>到<span class="hl">Agent 操作系统</span></h1>
+    <p class="lede">市面上的 AI 编程助手大多数是"一个聊天框 + 一个模型"——你在对话框里提问，它帮你写代码。VsSaros 走的是另一条路：<b>它把 VS Code 变成了一个完整的 Agent 运行环境</b>——多个 Agent 可以并发工作、Skill 体系让能力可复用可组合、知识库沉淀团队经验、多窗口让并行工作流成为现实。这不是一个更好的 Copilot，而是一个<b>Agent 操作系统</b>。</p>
+    <div class="spec">
+      <div><div class="k">底层</div><div class="v">完整 VS Code 定制版，自有窗口系统和插件生态</div></div>
+      <div><div class="k">Agent 规模</div><div class="v">多 Agent 并发，Supervisor-子Agent 委托，DAG 编排</div></div>
+      <div><div class="k">扩展体系</div><div class="v">Skill / MCP / Workflow / Plugin 四层扩展，130+ 核心服务</div></div>
+    </div>
+  </div>
+
+  <div class="tenets">
+    <div class="tenet n1">
+      <span class="ghost">01</span>
+      <div class="tg">AGENT · 多智能体</div>
+      <h3>不是"一个 AI"，是"一个团队"</h3>
+      <p>Supervisor-子Agent 委托模式、DAG 任务编排、Crew 团队协作——多个 Agent 并发工作，人只需要拍板。</p>
+    </div>
+    <div class="tenet n2">
+      <span class="ghost">02</span>
+      <div class="tg">SKILL · 可复用</div>
+      <h3>能力不随对话消失</h3>
+      <p>Skill 是可安装、可版本化、可共享的能力包。三层加载（内置/用户/运行时），一次写好，永久复用。</p>
+    </div>
+    <div class="tenet n3">
+      <span class="ghost">03</span>
+      <div class="tg">KB · 知识沉淀</div>
+      <h3>团队的经验不会丢</h3>
+      <p>Obsidian 式 Vault + 代码图谱 + 向量检索。代码怎么改、坑怎么踩，全部结构化沉淀，新人来了直接搜。</p>
+    </div>
+    <div class="tenet n4">
+      <span class="ghost">04</span>
+      <div class="tg">WINDOWS · 多窗口</div>
+      <h3>一个屏幕，多个上下文</h3>
+      <p>专用 Agent Sessions 窗口，多 Chat 聚合，Worktree 隔离。一个窗口搞需求，一个窗口修 Bug，互不干扰。</p>
+    </div>
+  </div>
+
+  <!-- ========== 01 ========== -->
+  <section id="s01">
+    <div class="sh">
+      <span class="wm">01</span>
+      <div class="no">§ 01</div>
+      <h2>架构总览：从聊天助手到 Agent 操作系统</h2>
+      <span class="tail">六层架构</span>
+    </div>
+    <p class="intro">VsSaros 不是一个 VS Code 插件——<b>它是一个完整的 VS Code 定制版</b>，拥有自有的窗口系统、扩展生态和 Agent 运行时。从底层的 VS Code Shell 到顶层的 Agent 编排，每一层都是为"让 AI 真正参与开发工作流"而设计的。</p>
+
+    <div class="stack">
+      <div class="layer l1">
+        <div class="ln">L5 · 编排</div>
+        <div class="lname">Agent Orchestration</div>
+        <div class="ldesc">DAG 任务编排、Crew 团队协作、Supervisor 委托——多个 Agent 并行推进复杂任务</div>
+        <div class="lrole">ORCHESTRATION</div>
+      </div>
+      <div class="layer l2">
+        <div class="ln">L4 · 运行时</div>
+        <div class="lname">Agent OS Runtime</div>
+        <div class="ldesc">AgentGraph 状态机驱动 ReAct 循环，6 个能力槽位：Model / Memory / Tool / Planning / Execution / Retrieval</div>
+        <div class="lrole">RUNTIME</div>
+      </div>
+      <div class="layer l3">
+        <div class="ln">L3 · 能力</div>
+        <div class="lname">Capability Layer</div>
+        <div class="ldesc">Skill 注册/发现/执行、MCP Server 管理、Workflow 引擎、CodebaseGraph 代码图谱</div>
+        <div class="lrole">CAPABILITY</div>
+      </div>
+      <div class="layer l4">
+        <div class="ln">L2 · 会话</div>
+        <div class="lname">Session Management</div>
+        <div class="ldesc">多 Chat 聚合、Worktree 隔离、多 Provider 聚合、Session 持久化与恢复</div>
+        <div class="lrole">SESSION</div>
+      </div>
+      <div class="layer l5">
+        <div class="ln">L1 · 集成</div>
+        <div class="lname">Platform Integration</div>
+        <div class="ldesc">飞书认证、TAPD 导入、BYOK 模型接入、Hermes Agent 桥接、外部 Connector 生态</div>
+        <div class="lrole">INTEGRATION</div>
+      </div>
+      <div class="layer" style="border-left:3px solid var(--gold)">
+        <div class="ln">L0 · 基础</div>
+        <div class="lname">VS Code Custom Build</div>
+        <div class="ldesc">自有窗口系统、113+ 内置扩展、专用 Agent Sessions 工作台、Canvas 编辑器</div>
+        <div class="lrole" style="color:var(--gold);border-color:rgba(217,169,95,.4);background:var(--gold-soft)">FOUNDATION</div>
+      </div>
+    </div>
+
+    <div class="memo"><span class="lbl">关键区别</span>WorkBuddy 和 CodeBuddy 本质上是"<b>VS Code 上的 AI 插件</b>"——它们增强编辑器的 AI 能力，但受限于插件的沙箱。VsSaros 是"<b>把 VS Code 作为 Agent 的操作系统来定制</b>"——它有自有的窗口系统、会话管理、扩展生态。这就像浏览器插件 vs 操作系统——能做事情的量级完全不同。</div>
+  </section>
+
+  <!-- ========== 02 ========== -->
+  <section id="s02">
+    <div class="sh">
+      <span class="wm">02</span>
+      <div class="no">§ 02</div>
+      <h2>Agent 系统：不是"一个 AI"，是"一个团队"</h2>
+      <span class="tail">多 Agent 协作</span>
+    </div>
+    <p class="intro">WorkBuddy/CodeBuddy 的 Agent 模式是单线程的——一个对话里只有一个 Agent 在工作。VsSaros 的 Agent 系统支持<b>多 Agent 并发、委托、编排</b>——你可以让一个 Supervisor Agent 把任务拆解成子任务，分发给多个子 Agent 并行处理，最后汇总结果。</p>
+
+    <div class="caps">
+      <div class="cap c1">
+        <div class="nm">AgentOS · 核心运行时</div>
+        <h5>6 槽位 Agent 引擎</h5>
+        <ul>
+          <li>Model / Memory / Tool / Planning / Execution / Retrieval</li>
+          <li>AgentGraph 状态机驱动 ReAct 循环</li>
+          <li>5 种可插拔 Loop 策略</li>
+          <li>支持 Hermes / Graph / Delegation / ReadOnly / MIMO 模式</li>
+        </ul>
+      </div>
+      <div class="cap c2">
+        <div class="nm">Supervisor · 委托模式</div>
+        <h5>拆任务，派子 Agent</h5>
+        <ul>
+          <li>Supervisor 拆解复杂目标为子任务图</li>
+          <li>子 Agent 独立上下文，互不干扰</li>
+          <li>结果汇总与结构化输出</li>
+          <li>人只在拍板环节介入</li>
+        </ul>
+      </div>
+      <div class="cap c3">
+        <div class="nm">Crew · 团队协作</div>
+        <h5>多 Agent 并行推进</h5>
+        <ul>
+          <li>DAG 任务编排，自动识别依赖</li>
+          <li>Canvas 可视化编排界面</li>
+          <li>并发限流 FIFO，避免资源争抢</li>
+          <li>统一 Agent 调度与生命周期管理</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="shift" style="margin-top:28px">
+      <div class="sr">
+        <div class="stg">复杂任务处理</div>
+        <div class="was">WorkBuddy / CodeBuddy：一个对话里逐条处理，任务多时只能排队。复杂任务需要人工拆解后分多次对话完成。</div>
+        <div class="arw">→</div>
+        <div class="now"><b>VsSaros：Supervisor 自动拆解目标 → 多个子 Agent 并行处理 → 汇总结果。一次输入，全自动推进。</b></div>
+      </div>
+      <div class="sr">
+        <div class="stg">上下文管理</div>
+        <div class="was">WorkBuddy / CodeBuddy：单对话上下文有限，复杂任务容易超出窗口，需要人工总结后重新开始。</div>
+        <div class="arw">→</div>
+        <div class="now"><b>VsSaros：子 Agent 各自独立上下文，大文件自动拆给 subagent，避免主 Agent 上下文被撑爆。</b></div>
+      </div>
+      <div class="sr">
+        <div class="stg">失败恢复</div>
+        <div class="was">WorkBuddy / CodeBuddy：Agent 失败时需要人工介入重新描述需求，之前的工作进度可能丢失。</div>
+        <div class="arw">→</div>
+        <div class="now"><b>VsSaros：DAG 编排下单个子任务失败只影响该节点，其余并行推进不受阻。分段重试，不用从头来。</b></div>
+      </div>
+    </div>
+
+    <div class="memo"><span class="lbl">关键优势</span>WorkBuddy/CodeBuddy 的 Agent 本质上是"<b>一个对话线程</b>"——你可以创建多个对话，但它们之间不协作。VsSaros 的 Agent 是"<b>一个可编排的工作流</b>"——它们有分工、有协作、有生命周期管理。这在处理像"分支合并"这样需要大量并发工作的场景时，差距是数量级的。</div>
+  </section>
+
+  <!-- ========== 03 ========== -->
+  <section id="s03">
+    <div class="sh">
+      <span class="wm">03</span>
+      <div class="no">§ 03</div>
+      <h2>Skill 体系：能力不随对话消失，一次写好永久复用</h2>
+      <span class="tail">可复用能力包</span>
+    </div>
+    <p class="intro">WorkBuddy/CodeBuddy 也有 Skill/Slash Command，但它们的 Skill 本质上是一个<b>预定义的 Prompt 模板</b>——执行时就是把一段文本注入到对话中。VsSaros 的 Skill 是一个<b>完整的能力包</b>：有版本管理、有使用追踪、有三层加载策略、有市场分发，而且是 Agent 直接调用的工具，不只是 Prompt 注入。</p>
+
+    <div class="caps">
+      <div class="cap c1">
+        <div class="nm">三层加载 · 灵活覆盖</div>
+        <h5>内置 → 用户 → 运行时</h5>
+        <ul>
+          <li>内置 Skill：项目级 .agents/skills/ 目录</li>
+          <li>用户 Skill：~/.vssaros/saros/skills/ 个人配置</li>
+          <li>运行时注入：对话中动态注册</li>
+          <li>后注册覆盖同名，灵活可控</li>
+        </ul>
+      </div>
+      <div class="cap c2">
+        <div class="nm">标准化格式 · SKILL.md</div>
+        <h5>兼容 Hermes / Claude</h5>
+        <ul>
+          <li>YAML frontmatter 元数据定义</li>
+          <li>activation / match / category 精确触发</li>
+          <li>recommended_tools 工具绑定</li>
+          <li>Markdown body 为 Agent 执行指令</li>
+        </ul>
+      </div>
+      <div class="cap c3">
+        <div class="nm">生命周期管理</div>
+        <h5>安装 → 使用 → 追踪 → 更新</h5>
+        <ul>
+          <li>Skill 市场：搜索 / 安装 / 发布</li>
+          <li>使用追踪：统计调用频率与成功率</li>
+          <li>版本管理：升级不破坏已有工作流</li>
+          <li>从对话中提取新 Skill</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="duo" style="margin-top:28px">
+      <div class="term in">
+        <div class="term-h"><span class="n">WorkBuddy / CodeBuddy Skill</span><span class="b">INPUT</span></div>
+        <pre class="tx"><span class="c"># Skill 本质上是 Prompt 模板</span>
+<span class="k">触发方式</span>   用户在对话框输入 /command
+<span class="k">执行方式</span>   将 SKILL.md 内容注入对话上下文
+<span class="k">作用域</span>     当前对话内生效，对话结束即消失
+<span class="k">能力复用</span>   跨对话需要重新触发
+
+<span class="r"># 局限：</span>
+<span class="r">- 无法被 Agent 主动调用，只能人工触发</span>
+<span class="r">- 没有版本管理，更新靠覆盖文件</span>
+<span class="r">- 没有使用追踪，不知道哪些 Skill 真正有用</span></pre>
+      </div>
+      <div class="term out">
+        <div class="term-h"><span class="n">VsSaros Skill</span><span class="b">OUTPUT</span></div>
+        <pre class="tx"><span class="c"># Skill 是 Agent 直接调用的能力包</span>
+<span class="g">触发方式</span>   人工 /command 或 Agent 自动按需调用
+<span class="g">执行方式</span>   作为 Agent 的 Tool 被调度执行
+<span class="g">作用域</span>     跨对话持久化，注册后全局可用
+<span class="g">能力复用</span>   版本化安装，市场分发
+
+<span class="g"># 优势：</span>
+<span class="g">+ Agent 可以自己决定何时调用哪个 Skill</span>
+<span class="g">+ 版本管理 + 使用追踪 + 市场分发</span>
+<span class="g">+ 三层加载策略：项目 → 用户 → 运行时</span>
+<span class="g">+ 从对话中提取 Skill，经验自动沉淀</span></pre>
+      </div>
+    </div>
+
+    <div class="memo"><span class="lbl">关键优势</span>WorkBuddy/CodeBuddy 的 Skill 是"<b>给用户的快捷方式</b>"——你记住一个命令，输入它，AI 帮你做一件事。VsSaros 的 Skill 是"<b>给 Agent 的工具箱</b>"——Agent 自己知道什么时候该用哪个 Skill，不需要你告诉它。而且 Skill 有版本管理，这意味着团队的 Skill 可以像代码一样 review、迭代、发布——这是真正的工程化能力复用。</div>
+  </section>
+
+  <!-- ========== 04 ========== -->
+  <section id="s04">
+    <div class="sh">
+      <span class="wm">04</span>
+      <div class="no">§ 04</div>
+      <h2>知识库：团队的经验不会丢，新人来了直接搜</h2>
+      <span class="tail">结构化知识管理</span>
+    </div>
+    <p class="intro">WorkBuddy/CodeBuddy 的"记忆"功能本质上是一个<b>对话摘要存储</b>——它记住你和 AI 聊过什么，下次能引用。VsSaros 的知识库是一个<b>完整的知识管理系统</b>：Obsidian 式 Vault + 代码图谱 + 向量检索 + 社区检测。代码怎么改、坑怎么踩、为什么这样设计——全部结构化沉淀，新人来了直接搜。</p>
+
+    <div class="caps">
+      <div class="cap c1">
+        <div class="nm">Obsidian 式 Vault</div>
+        <h5>笔记 + 双向链接</h5>
+        <ul>
+          <li>14 种笔记类型：entity / concept / source / query / comparison / synthesis 等</li>
+          <li>Wikilinks 双向链接，自动发现关联</li>
+          <li>可配置分类体系 kb-schema.json</li>
+          <li>别名管理 + 标签系统</li>
+        </ul>
+      </div>
+      <div class="cap c2">
+        <div class="nm">代码图谱 · 235KB 引擎</div>
+        <h5>代码即知识</h5>
+        <ul>
+          <li>LSP 驱动的符号搜索</li>
+          <li>文件扫描 + Git 历史追踪</li>
+          <li>增量更新，不重复分析</li>
+          <li>类继承链 / 调用面自动构建</li>
+        </ul>
+      </div>
+      <div class="cap c3">
+        <div class="nm">智能检索</div>
+        <h5>不止是关键词匹配</h5>
+        <ul>
+          <li>Embedding 向量检索</li>
+          <li>LLM 驱动自动分类</li>
+          <li>社区检测 / 聚类发现隐藏关联</li>
+          <li>去重避免知识碎片化</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="shift" style="margin-top:28px">
+      <div class="sr">
+        <div class="stg">知识存储</div>
+        <div class="was">WorkBuddy / CodeBuddy：对话摘要存储在隐藏目录，格式不透明。跨项目不共享，换机器就丢失。</div>
+        <div class="arw">→</div>
+        <div class="now"><b>VsSaros：Markdown 文件存储在项目 .agents/vault/ 目录，Git 可版本化。知识库就是代码的一部分。</b></div>
+      </div>
+      <div class="sr">
+        <div class="stg">知识检索</div>
+        <div class="was">WorkBuddy / CodeBuddy：基于对话历史的上下文匹配，只能检索"聊过什么"，不能检索"代码怎么写的"。</div>
+        <div class="arw">→</div>
+        <div class="now"><b>VsSaros：向量检索 + 代码图谱 + Wikilinks 双向链接。搜"这个接口怎么改的"能直接定位到相关笔记和代码。</b></div>
+      </div>
+      <div class="sr">
+        <div class="stg">知识共享</div>
+        <div class="was">WorkBuddy / CodeBuddy：个人记忆，无法在团队间共享。每个人的 AI 助手都是"新人"。</div>
+        <div class="arw">→</div>
+        <div class="now"><b>VsSaros：Git 版本化的知识库，团队共享。新人克隆项目即获得全部团队知识沉淀。</b></div>
+      </div>
+    </div>
+
+    <div class="memo"><span class="lbl">关键优势</span>WorkBuddy/CodeBuddy 的记忆是"<b>个人笔记</b>"——你一个人的 AI 助手越来越懂你，但团队其他人享受不到。VsSaros 的知识库是"<b>团队 Wiki</b>"——所有人的经验沉淀在同一个 Vault 里，Git 版本化，新人来了就能用。而且代码图谱让 AI 能理解的不只是文本，还有代码之间的关系——这是做代码级决策的基础。</div>
+  </section>
+
+  <!-- ========== 05 ========== -->
+  <section id="s05">
+    <div class="sh">
+      <span class="wm">05</span>
+      <div class="no">§ 05</div>
+      <h2>多窗口聊天：一个屏幕，多个上下文，互不干扰</h2>
+      <span class="tail">会话管理革新</span>
+    </div>
+    <p class="intro">WorkBuddy/CodeBuddy 的聊天界面是<b>单一面板</b>——你可以在一个面板里切换对话，但同一时间只能看到一个。VsSaros 把聊天框设计成了<b>独立的 Agent Sessions 工作台</b>——三栏布局、多 Chat 聚合、Worktree 隔离、Chat 可弹出独立窗口。一个窗口搞需求分析，一个窗口修 Bug，一个窗口做代码审查，互不干扰。</p>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="fig">三栏</div>
+        <div class="t">Agent Sessions 工作台</div>
+        <div class="d">左侧 Activity Bar + 中间文件编辑 + 右侧 Agent Studio（Chat / TaskBoard / Canvas 粘性标签）</div>
+      </div>
+      <div class="stat">
+        <div class="fig">多 Chat</div>
+        <div class="t">一个 Session 多个对话</div>
+        <div class="d">同一 Session 下可创建多个 Chat，共享上下文，不同任务用不同 Chat 推进</div>
+      </div>
+      <div class="stat">
+        <div class="fig">Worktree</div>
+        <div class="t">分支级隔离</div>
+        <div class="d">每个 Session 绑定独立 Worktree + Git 分支，改代码互不污染</div>
+      </div>
+    </div>
+
+    <div class="caps" style="margin-top:28px">
+      <div class="cap c1">
+        <div class="nm">Session 管理</div>
+        <h5>多 Provider 聚合</h5>
+        <ul>
+          <li>CopilotChat + RemoteAgentHost 多源聚合</li>
+          <li>统一 ISession facade 抽象</li>
+          <li>Session 持久化，重启不丢失</li>
+          <li>AgentSessionsPicker 快速切换</li>
+        </ul>
+      </div>
+      <div class="cap c2">
+        <div class="nm">Chat 管理</div>
+        <h5>弹出 / 聚合 / 切换</h5>
+        <ul>
+          <li>ChatPopoutService：聊天窗口弹出独立运行</li>
+          <li>多 Chat 聚合在一个 Session 下</li>
+          <li>跨 Chat 上下文共享</li>
+          <li>Chat 独立历史记录</li>
+        </ul>
+      </div>
+      <div class="cap c3">
+        <div class="nm">工作区隔离</div>
+        <h5>互不干扰的并行工作</h5>
+        <ul>
+          <li>Worktree 绑定独立 Git 分支</li>
+          <li>文件变更不跨 Session 泄漏</li>
+          <li>并行开多个 Agent 窗口</li>
+          <li>每个窗口独立 Agent 实例</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="shift" style="margin-top:28px">
+      <div class="sr">
+        <div class="stg">多任务并行</div>
+        <div class="was">WorkBuddy / CodeBuddy：一个聊天面板，切换对话靠 Tab。做需求时要切出去修 Bug，上下文就断了。</div>
+        <div class="arw">→</div>
+        <div class="now"><b>VsSaros：一个窗口搞需求，一个窗口修 Bug，各自独立 Agent、独立 Worktree、独立分支。同时推进不打架。</b></div>
+      </div>
+      <div class="sr">
+        <div class="stg">上下文保持</div>
+        <div class="was">WorkBuddy / CodeBuddy：对话切换时上下文重新加载，大项目里每次切换都要重新描述背景。</div>
+        <div class="arw">→</div>
+        <div class="now"><b>VsSaros：Session 持久化，重启不丢失。Worktree 绑定意味着改过的代码就是上下文的一部分。</b></div>
+      </div>
+    </div>
+
+    <div class="memo"><span class="lbl">关键优势</span>WorkBuddy/CodeBuddy 的聊天是"<b>一个电话</b>"——你一次只能跟一个人说话，切换就要挂断重拨。VsSaros 的聊天是"<b>一个指挥中心</b>"——多个 Agent 同时在线，各自在独立的工作区里工作，你可以随时切过去看进度、拍板，然后切回来继续做自己的事。这不是 UI 层面的差异，而是<b>工作模式的根本变化</b>。</div>
+  </section>
+
+  <!-- ========== 06 ========== -->
+  <section id="s06">
+    <div class="sh">
+      <span class="wm">06</span>
+      <div class="no">§ 06</div>
+      <h2>对比 WorkBuddy / CodeBuddy：十二个维度</h2>
+      <span class="tail">全面对比</span>
+    </div>
+    <p class="intro">说清楚一件事：<b>WorkBuddy 和 CodeBuddy 都是优秀的 AI 编程助手</b>。它们在"聊天写代码"这件事上做得很好。VsSaros 的不同在于——它解决的问题不是"怎么让 AI 帮你写代码"，而是"<b>怎么让 AI 成为你的开发团队的一员</b>"。以下从十二个维度展开对比。</p>
+
+    <table class="tri">
+      <thead><tr><th>维度</th><th>WorkBuddy / CodeBuddy</th><th>VsSaros</th><th>优势</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="c1"><i style="background:var(--teal)"></i>底层架构</td>
+          <td class="c2">VS Code 插件 / 独立客户端</td>
+          <td>完整 VS Code 定制版，自有窗口系统</td>
+          <td class="c4 win">系统级</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--azure)"></i>Agent 模式</td>
+          <td class="c2">单 Agent，一个对话一个 AI</td>
+          <td>多 Agent 并发 + 委托 + DAG 编排 + Crew 团队</td>
+          <td class="c4 win">N:1</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--violet)"></i>Agent 运行时</td>
+          <td class="c2">对话线程，无状态管理</td>
+          <td>AgentOS 6 槽位引擎 + AgentGraph 状态机</td>
+          <td class="c4 win">全栈</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--amber)"></i>Loop 策略</td>
+          <td class="c2">单一对话循环</td>
+          <td>5 种可插拔策略：ReAct / Delegation / Graph / ReadOnly / MIMO</td>
+          <td class="c4 win">5x</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--teal)"></i>Skill 体系</td>
+          <td class="c2">Prompt 模板，人工触发</td>
+          <td>完整能力包：版本管理 + 使用追踪 + 市场分发 + Agent 自动调用</td>
+          <td class="c4 win">工程化</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--coral)"></i>知识库</td>
+          <td class="c2">对话摘要存储，个人记忆</td>
+          <td>Obsidian Vault + 代码图谱 + 向量检索 + 团队共享</td>
+          <td class="c4 win">结构化</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--azure)"></i>会话管理</td>
+          <td class="c2">单面板 Tab 切换</td>
+          <td>专用 Sessions 工作台 + 多 Chat + Worktree 隔离</td>
+          <td class="c4 win">多窗口</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--violet)"></i>任务编排</td>
+          <td class="c2">无原生支持</td>
+          <td>Canvas 可视化 DAG 编排 + Workflow 引擎</td>
+          <td class="c4 win">独有</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--amber)"></i>代码理解</td>
+          <td class="c2">LSP 上下文注入</td>
+          <td>235KB CodebaseGraph 引擎：符号搜索 + 继承链 + 调用面 + Git 历史</td>
+          <td class="c4 win">图谱化</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--teal)"></i>扩展生态</td>
+          <td class="c2">MCP / Skill 市场</td>
+          <td>113+ 内置扩展 + MCP + Skill 市场 + Workflow 引擎 + Plugin 系统</td>
+          <td class="c4 win">4 层</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--coral)"></i>企业集成</td>
+          <td class="c2">部分 Connector（飞书/TAPD 等）</td>
+          <td>飞书认证 + TAPD 导入 + BYOK + Hermes 桥接 + Connector 生态</td>
+          <td class="c4 win">深度</td>
+        </tr>
+        <tr>
+          <td class="c1"><i style="background:var(--rose)"></i>版本管理</td>
+          <td class="c2">配置文件 / 本地存储</td>
+          <td>Skill 版本化 + Workflow 版本化 + 知识库 Git 版本化</td>
+          <td class="c4 win">可追溯</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="pull"><q>WorkBuddy / CodeBuddy 是<i>给你一个更聪明的 Copilot</i>。<br>VsSaros 是<i>给你一个完整的 AI 开发团队</i>。</q></div>
+  </section>
+
+  <!-- ========== 07 ========== -->
+  <section id="s07">
+    <div class="sh">
+      <span class="wm">07</span>
+      <div class="no">§ 07</div>
+      <h2>核心优势：四个"为什么选择 VsSaros"</h2>
+      <span class="tail">价值主张</span>
+    </div>
+
+    <div class="cls2">
+      <div class="cl2" style="--c:var(--teal)">
+        <div class="cn2">工程化</div>
+        <div class="fg">不是黑盒</div>
+        <div class="dd">Skill 版本化、Workflow 版本化、知识库 Git 化。AI 的能力可以 review、迭代、发布——和代码一样工程化管理。</div>
+      </div>
+      <div class="cl2" style="--c:var(--azure)">
+        <div class="cn2">团队化</div>
+        <div class="fg">不是个人工具</div>
+        <div class="dd">多 Agent 协作、知识库共享、Skill 市场分发。一个人的经验沉淀为团队的能力。</div>
+      </div>
+      <div class="cl2" style="--c:var(--violet)">
+        <div class="cn2">系统化</div>
+        <div class="fg">不是插件</div>
+        <div class="dd">完整 VS Code 定制版，自有窗口系统和扩展生态。能做的事情远超插件的沙箱限制。</div>
+      </div>
+      <div class="cl2" style="--c:var(--amber)">
+        <div class="cn2">可编排</div>
+        <div class="fg">不是单线程</div>
+        <div class="dd">DAG 编排 + Crew 协作 + Supervisor 委托。复杂任务自动拆解、并行推进、结果汇总。</div>
+      </div>
+    </div>
+
+    <div class="seg-ctl" id="ctl" style="margin-top:32px">
+      <div class="sc on" data-p="flow"><span class="tn">A</span>典型工作流对比</div>
+      <div class="sc" data-p="arch"><span class="tn">B</span>技术架构差异</div>
+      <div class="sc" data-p="team"><span class="tn">C</span>团队协作场景</div>
+    </div>
+
+    <div class="pane on" data-p="flow">
+      <div class="shift">
+        <div class="sr">
+          <div class="stg">需求开发</div>
+          <div class="was">打开 WB/CB → 描述需求 → AI 生成代码 → 人工 review → 手动测试 → 提交。每一步都需要人在场。</div>
+          <div class="arw">→</div>
+          <div class="now"><b>打开 VsSaros → Agent 读取 TAPD 需求 → 自动拆解为子任务 → 多个 Agent 并行开发 → 编译验证 → 生成 review 报告。人只需要在关键节点拍板。</b></div>
+        </div>
+        <div class="sr">
+          <div class="stg">Bug 修复</div>
+          <div class="was">复制 Bug 描述 → 粘贴到 WB/CB → AI 分析 → 手动定位代码 → 手动修复 → 手动测试。</div>
+          <div class="arw">→</div>
+          <div class="now"><b>VsSaros Agent 直接读取 TAPD Bug → CodebaseGraph 定位根因 → 自动生成修复 → 编译验证 → 生成 PR。全程自动。</b></div>
+        </div>
+        <div class="sr">
+          <div class="stg">代码审查</div>
+          <div class="was">打开 PR → 逐文件阅读 → 手动写评论。AI 只能做辅助建议。</div>
+          <div class="arw">→</div>
+          <div class="now"><b>Agent 自动审查 PR → 对比知识库中的历史决策 → 检测反模式 → 生成结构化 review 报告。</b></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane" data-p="arch">
+      <div class="duo">
+        <div class="term in">
+          <div class="term-h"><span class="n">WorkBuddy / CodeBuddy 架构</span><span class="b">插件模式</span></div>
+          <pre class="tx"><span class="c"># 本质是 VS Code 扩展</span>
+<span class="k">运行时</span>      VS Code Extension Host
+<span class="k">AI 引擎</span>    通过 API 调用 LLM
+<span class="k">能力扩展</span>    MCP / Skill（Prompt 模板）
+<span class="k">窗口系统</span>    受限于 VS Code Webview
+<span class="k">会话管理</span>    单面板 Tab 切换
+<span class="k">多 Agent</span>    <span class="r">不支持原生并发协作</span>
+
+<span class="c"># 优势：安装简单，即开即用</span>
+<span class="c"># 局限：受限于插件沙箱，无法深度定制 VS Code</span></pre>
+        </div>
+        <div class="term out">
+          <div class="term-h"><span class="n">VsSaros 架构</span><span class="b">定制版</span></div>
+          <pre class="tx"><span class="c"># 完整 VS Code 定制版</span>
+<span class="g">运行时</span>      自有 Agent OS + AgentGraph 状态机
+<span class="g">AI 引擎</span>     多模型 BYOK + Hermes 桥接
+<span class="g">能力扩展</span>    Skill / MCP / Workflow / Plugin 四层
+<span class="g">窗口系统</span>    自有 Agent Sessions 工作台 + Canvas
+<span class="g">会话管理</span>    Session + 多 Chat + Worktree 隔离
+<span class="g">多 Agent</span>    <span class="g">Supervisor 委托 + DAG 编排 + Crew 协作</span>
+
+<span class="c"># 优势：系统级定制，无沙箱限制</span>
+<span class="c"># 局限：需要安装定制版 VS Code</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane" data-p="team">
+      <div class="rz">
+        <div class="rt2">团队协作中的差异</div>
+        <ul>
+          <li><b>知识传承</b>：WB/CB 的知识只在个人对话里，换人就清零。VsSaros 的知识库 Git 版本化，新人克隆即获得全部经验。</li>
+          <li><b>能力共享</b>：WB/CB 的 Skill 需要每个人各自安装。VsSaros 的 Skill 随项目分发，项目级 Skill 自动生效。</li>
+          <li><b>并行工作</b>：WB/CB 不支持多人同时用 AI 处理同一个复杂任务。VsSaros 的 Crew 模式允许多个 Agent 并行推进同一目标。</li>
+          <li><b>决策追溯</b>：WB/CB 的 AI 决策没有记录。VsSaros 的知识库记录每一次重要决策的上下文和理由。</li>
+          <li><b>新人上手</b>：WB/CB 的新人 AI 助手是"新人"。VsSaros 的新人 AI 助手自带团队知识库，知道项目的历史决策和代码结构。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="memo"><span class="lbl">客观评价</span>WorkBuddy/CodeBuddy 在<b>轻量级日常编码辅助</b>场景下体验很好——安装简单、即开即用、响应迅速。VsSaros 的定位不同——它面向的是<b>需要 AI 深度参与开发流程</b>的团队：多人协作、复杂任务编排、团队知识管理。如果你的需求是"让 AI 帮忙写几行代码"，WB/CB 完全够用；如果你的需求是"<b>让 AI 成为团队的生产力基础设施</b>"，VsSaros 是唯一的选择。</div>
+  </section>
+
+  <!-- ========== 落款 ========== -->
+  <div class="colophon">
+    <span class="thread"></span>
+    <div class="sig">
+      <span class="nm3">VsSaros · Agent 操作系统</span>
+      <span class="dv"></span>
+      <span>Saroasis Studio System</span>
+    </div>
+    <span class="thread r"></span>
+  </div>
+
+  </main>
+</div>
+</div>
+
+<script>
+(function(){
+  /* 阅读进度条 */
+  const prog = document.getElementById('prog');
+  window.addEventListener('scroll', function(){
+    const h = document.documentElement;
+    const pct = Math.min(100, Math.round((h.scrollTop / (h.scrollHeight - h.clientHeight)) * 100));
+    prog.style.width = pct + '%';
+  });
+
+  /* 导航高亮 */
+  const nav = document.getElementById('nav');
+  const links = nav.querySelectorAll('a');
+  const sections = [];
+  links.forEach(a => {
+    const id = a.getAttribute('href').slice(1);
+    const el = document.getElementById(id);
+    if(el) sections.push({el, a});
+  });
+
+  function updateNav(){
+    const top = window.scrollY + 120;
+    let active = sections[0];
+    for(let i = sections.length-1; i >= 0; i--){
+      if(sections[i].el.offsetTop <= top){ active = sections[i]; break; }
+    }
+    links.forEach(a => a.classList.remove('on'));
+    if(active) active.a.classList.add('on');
+  }
+  window.addEventListener('scroll', updateNav);
+  updateNav();
+
+  /* 分段控件 */
+  var ctl = document.querySelectorAll('#ctl .sc');
+  var panes = document.querySelectorAll('.pane');
+  ctl.forEach(function(c){
+    c.addEventListener('click',function(){
+      var k = c.dataset.p;
+      ctl.forEach(function(x){x.classList.toggle('on',x===c)});
+      panes.forEach(function(p){p.classList.toggle('on',p.dataset.p===k)});
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

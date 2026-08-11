@@ -293,6 +293,38 @@ nodeId 前缀：
 - ComfyTV 后端依赖 ComfyUI 实例（8188）运行，VsSaros 侧所有执行走 Runner 探测 + fetchApi，断连时保持现有降级提示。
 - fx_spec 链与全图拓扑执行的冲突：fx 链节点间是「参数依赖」而非「媒体依赖」，拓扑序需特殊处理（链节点不强制先于 FXChain 渲染，全部链节点无媒体输入时由 FXChain 聚合）。
 
+### 3.6 落地进度核对（截至 2026-08-11）
+
+> 与第 3.1 分层的逐项核对（✅=完成 / 🟡=部分 / ⬜=未做）。
+
+| 分层 | 项 | 状态 | 说明 |
+| --- | --- | --- | --- |
+| P0 | 节点注册 + 表单 + 全图拓扑执行 | ✅ | 178 stage 全注册；caps 表单；`runGraphExecution` 串行拓扑 |
+| P1 | `COMFYTV_TEXT/IMAGE/VIDEO/AUDIO/MODEL` 快照连线 | ✅ | annotated 注入 + `upstream_<kind>[:annotated]` 绑定 |
+| P1 | `selected_index` 批量语义 | ✅ | `COMFYTV_IMAGES` 网格 + 选中项 |
+| P1 | **fx_spec 链一次渲染** | ✅ | `comfyHost/fxChain.ts`（pack/unpack/isFxBuildNode）+ `runNodeOrStage` 链尾 FXChainStage 渲染；79 个 FX 节点（VideoFX 54 + AudioFX 25）全部接入 |
+| P2 | 无 Run 节点（Loader/Picker/Compare/Text Loader） | ✅ | 即点即用透传，不入队 |
+| P2 | 即时节点（Crop/Rotate/Mirror/ColorGrade/GridSplit） | ✅ | instantNodes + 浏览器端处理 |
+| P2 | 工具节点统一 `runStageWorkflow` fetchApi 通道 | ✅ | StageWorkflowUnavailableError 降级 |
+| P3 | 内嵌编辑器 8 个：relight/poster/cornerPin/rotoMask/layer/storyboard/material/scene3d | ✅ | `*Editor.ts`（纯函数）+ `*Executor.ts` + `*Editor.tsx`，kind='native'，接入 NodeEditorPopup |
+| P4 | Bridge 节点注册 | ✅ | registry 注册 10 个 Bridge |
+| P4 | **BridgeTo*/BridgeFrom* 执行路由（原生子图桥接）** | 🟡 | provider→Comfy `LoadImage` 上传桥（imageGenToComfyBridge）已通；**原生张量子图级 To/From 执行待验证** |
+| P5 | Music 链（Score→Performer→Synth） | ⬜ | 依赖后端 runner，优先级最低 |
+| P5 | 3D 工坊（Primitive→Ops→Boolean→Bake→LineArt） | ⬜ | 仅 Scene3D 摆场编辑器落地 |
+| P5 | Panorama 链（导入/截取） | ⬜ | 未接入 |
+| — | 占位节点标记（ExtractVocal/VideoUpscale 等） | ⬜ | 应标记「路线图/未实现」，避免误执行 |
+
+### 3.7 配套测试计划（覆盖已落地项 + 未落地项验收）
+
+| 功能 | 测试文件 | 关键用例 |
+| --- | --- | --- |
+| fx_spec 链 | `workflowFxChain.test.ts` | pack/unpack 往返；链尾一次渲染（非逐节点）；无上游视频纯 fx；链参数合并优先级 |
+| 内嵌编辑器纯函数 | `workflowComfyNodeEditorForm.test.ts` 等（已有 8 组） | 编辑器 `*Editor.ts` 纯函数已覆盖；补 executor 快照归属断言 |
+| Bridge provider→Comfy 上传 | `workflowImageGenBackend.test.ts` / `workflowComfyMediaSnapshot.test.ts` | `imageGenToComfyBridge` 上传路径（已有 15）；**补 LoadImage 失败降级与 annotated 注入** |
+| 批量 selected_index | `workflowComfyMediaSnapshot.test.ts` | `[idx]` 后缀取批量项；越界回退 0 |
+| 即时节点 | `workflowComfyNodeStyle.test.ts` | 浏览器端处理不调后端（mock runner 断言未调用） |
+| P4/P5 未落地项验收 | 待实现时补 | BridgeTo 原生子图执行；Music/3D/Panorama 链的 `runStageWorkflow` 集成 |
+
 ---
 
 ## 附：节点功能速查（一句话）

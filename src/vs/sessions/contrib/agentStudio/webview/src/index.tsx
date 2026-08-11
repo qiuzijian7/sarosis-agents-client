@@ -437,6 +437,14 @@ initMessageClient((type, data) => {
 		}
 		break;
 	}
+	case 'workflow.canvasOps': {
+		// Agent-driven canvas (P0): host forwards canvas ops batch (from
+		// canvas_apply_ops / canvas_generate tools). The WorkflowEditorPanel
+		// applies them via applyCanvasOps and replies with canvasOpsResult.
+		console.log(`[AgentStudio] workflow.canvasOps → ops=${(data as { ops?: unknown[] } | undefined)?.ops?.length ?? 0}`);
+		window.dispatchEvent(new CustomEvent('agentStudio:workflow-canvas-ops', { detail: data }));
+		break;
+	}
 	case 'workflow.executionUpdate': {
 		// Host pushed workflow execution status / node state / breakpoints update.
 		// Dispatch as a custom event so WorkflowEditorPanel can update the canvas

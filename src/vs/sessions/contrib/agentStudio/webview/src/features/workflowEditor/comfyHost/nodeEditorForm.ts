@@ -17,7 +17,7 @@
 
 import { getStageOptions, type NodeSpec } from './registry.js';
 
-export type EditorFieldKind = 'textarea' | 'text' | 'number' | 'select' | 'agent' | 'skill';
+export type EditorFieldKind = 'textarea' | 'text' | 'number' | 'select' | 'agent' | 'skill' | 'provider' | 'providerModel';
 
 export interface EditorField {
 	key: string;
@@ -67,7 +67,7 @@ const STAGE_KIND_FIELDS: Record<string, Omit<EditorField, 'key'>[]> = {
 // uses JSON textareas for structured fields (variables/skillArgs/toolParams/
 // branches/options) so a workflow can be round-tripped without data loss.
 
-const SAROSIS_FIELDS: Record<string, EditorField[]> = {
+const VSSAROS_FIELDS: Record<string, EditorField[]> = {
 	'Sarosis.Prompt': [
 		{ key: 'prompt', label: '提示词', kind: 'textarea', defaultValue: '', placeholder: '提示词模板，支持 {{input}} 等变量替换' },
 		{ key: 'variables', label: '变量 (JSON)', kind: 'textarea', defaultValue: '{}' },
@@ -99,6 +99,10 @@ const SAROSIS_FIELDS: Record<string, EditorField[]> = {
 		{ key: 'options', label: '选项 (JSON)', kind: 'textarea', defaultValue: '[{"label":"Option 1"},{"label":"Option 2"}]' },
 		{ key: 'multiSelect', label: '多选', kind: 'select', defaultValue: 'no', options: ['yes', 'no'] },
 	],
+	'Sarosis.ProviderPicker': [
+		{ key: 'providerId', label: 'Provider', kind: 'provider', defaultValue: '' },
+		{ key: 'modelId', label: 'Model', kind: 'providerModel', defaultValue: '' },
+	],
 };
 
 /** JSON-typed field keys whose value is stored as a structured object/array. */
@@ -106,15 +110,16 @@ const SAROSIS_JSON_KEYS = new Set(['variables', 'skillArgs', 'toolParams', 'bran
 
 /** Editor fields for a Sarosis (react) node type. */
 export function buildSarosisEditorFields(type: string): EditorField[] {
-	return SAROSIS_FIELDS[type] ?? [];
+	return VSSAROS_FIELDS[type] ?? [];
 }
 
 /** Convert persisted `node.data` → flat editor values (JSON fields stringified). */
 export function sarosisDataToValues(type: string, data: Record<string, unknown> | undefined): Record<string, unknown> {
-	const fields = SAROSIS_FIELDS[type] ?? [];
+	const fields = VSSAROS_FIELDS[type] ?? [];
 	const out: Record<string, unknown> = {};
 	for (const f of fields) {
-		if (f.key === 'providerId' || f.key === 'modelId') {
+		// Agent 用 agentConfig 子对象；ProviderPicker 等节点平铺存 providerId/modelId。
+		if ((f.key === 'providerId' || f.key === 'modelId') && type === 'Sarosis.Agent') {
 			const cfg = (data?.agentConfig as { providerId?: string; modelId?: string } | undefined) ?? {};
 			out[f.key] = cfg[f.key as 'providerId' | 'modelId'] ?? '';
 		} else if (SAROSIS_JSON_KEYS.has(f.key)) {
@@ -132,8 +137,9 @@ export function sarosisDataToValues(type: string, data: Record<string, unknown> 
 /** Convert flat editor values → persisted `node.data` (JSON fields parsed). */
 export function sarosisValuesToData(type: string, values: Record<string, unknown>): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
-	for (const f of SAROSIS_FIELDS[type] ?? []) {
-		if (f.key === 'providerId' || f.key === 'modelId') {
+	for (const f of VSSAROS_FIELDS[type] ?? []) {
+		// Agent 用 agentConfig 子对象；ProviderPicker 等节点平铺存 providerId/modelId。
+		if ((f.key === 'providerId' || f.key === 'modelId') && type === 'Sarosis.Agent') {
 			const cfg = (out.agentConfig as { providerId?: string; modelId?: string } | undefined) ?? {};
 			cfg[f.key as 'providerId' | 'modelId'] = String(values[f.key] ?? '');
 			out.agentConfig = cfg;

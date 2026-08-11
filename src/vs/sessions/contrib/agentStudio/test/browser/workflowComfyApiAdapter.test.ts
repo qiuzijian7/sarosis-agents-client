@@ -7,6 +7,7 @@ import {
 	guiToApi,
 	apiToGui,
 	resolveApiReferences,
+	stripSarosisNodesForExport,
 	type ComfyGuiWorkflow,
 } from '../../webview/src/features/workflowEditor/comfyHost/comfyApiAdapter.js';
 
@@ -145,6 +146,47 @@ suite('comfyApiAdapter', () => {
 			const wf = apiToGui({ '1': { class_type: 'A', inputs: { x: ['99', 0] } } });
 			assert.strictEqual(wf.nodes.length, 1);
 			assert.strictEqual(wf.links!.length, 0);
+		});
+	});
+
+	suite('stripSarosisNodesForExport', () => {
+
+		const isNonComfy = (t: string) => t === 'Sarosis.ModelImageGen' || t === 'Sarosis.Prompt';
+
+		const MIXED: ComfyGuiWorkflow = {
+			nodes: [
+				{ id: 1, type: 'CheckpointLoaderSimple', pos: [0, 0], inputs: [], outputs: [], widgets_values: ['a'] },
+				{ id: 2, type: 'Sarosis.Prompt', pos: [0, 0], inputs: [], outputs: [] },
+				{ id: 3, type: 'Sarosis.ModelImageGen', pos: [0, 0], inputs: [{ name: 'prompt', type: 'TEXT', link: 100 }], outputs: [] },
+				{ id: 4, type: 'KSampler', pos: [0, 0], inputs: [{ name: 'model', type: 'MODEL', link: 101 }], outputs: [] },
+			],
+			links: [
+				[100, 2, 0, 3, 0, 'TEXT'],   // 2 → 3 (both removed)
+				[101, 1, 0, 4, 0, 'MODEL'],  // 1 → 4 (kept)
+			],
+		};
+
+		test('removes Sarosis nodes and dangling links, keeps Comfy nodes', () => {
+			const { workflow, skipped } = stripSarosisNodesForExport(MIXED, isNonComfy);
+			assert.deepStrictEqual(skipped, ['Sarosis.Prompt', 'Sarosis.ModelImageGen']);
+			assert.deepStrictEqual(workflow.nodes.map(n => n.type), ['CheckpointLoaderSimple', 'KSampler']);
+			assert.strictEqual(workflow.links!.length, 1);
+			assert.deepStrictEqual(workflow.links![0], [101, 1, 0, 4, 0, 'MODEL']);
+		});
+
+		test('all-Sarosis workflow → empty nodes, no links', () => {
+			const { workflow, skipped } = stripSarosisNodesForExport(
+				{ nodes: [{ id: 9, type: 'Sarosis.Prompt', inputs: [], outputs: [] }], links: [] },
+				isNonComfy,
+			);
+			assert.strictEqual(workflow.nodes.length, 0);
+			assert.strictEqual(skipped.length, 1);
+		});
+
+		test('no non-Comfy nodes → unchanged workflow', () => {
+			const { workflow, skipped } = stripSarosisNodesForExport(GUI_WF, isNonComfy);
+			assert.strictEqual(workflow.nodes.length, GUI_WF.nodes.length);
+			assert.strictEqual(skipped.length, 0);
 		});
 	});
 });

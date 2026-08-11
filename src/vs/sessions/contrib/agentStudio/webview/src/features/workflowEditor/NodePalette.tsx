@@ -26,9 +26,13 @@ interface ComfyPaletteGroup {
 }
 
 function comfyGroups(): ComfyPaletteGroup[] {
+	const llm = buildComfyPaletteItems('llm');
 	const tv = buildComfyPaletteItems('schema');
 	const native = buildComfyPaletteItems('native');
 	const groups: ComfyPaletteGroup[] = [];
+	if (llm.length) {
+		groups.push({ key: 'llm', label: `Provider 文生图 (${llm.length})`, color: '#06b6d4', items: llm });
+	}
 	if (tv.length) {
 		groups.push({ key: 'comfyTV', label: `ComfyTV Stages (${tv.length})`, color: '#e879f9', items: tv });
 	}

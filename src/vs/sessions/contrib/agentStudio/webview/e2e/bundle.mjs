@@ -24,9 +24,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// ../node_modules/react/cjs/react.production.js
+// node_modules/react/cjs/react.production.js
 var require_react_production = __commonJS({
-  "../node_modules/react/cjs/react.production.js"(exports) {
+  "node_modules/react/cjs/react.production.js"(exports) {
     "use strict";
     var REACT_ELEMENT_TYPE = Symbol.for("react.transitional.element");
     var REACT_PORTAL_TYPE = Symbol.for("react.portal");
@@ -66,15 +66,15 @@ var require_react_production = __commonJS({
       this.updater = updater || ReactNoopUpdateQueue;
     }
     Component.prototype.isReactComponent = {};
-    Component.prototype.setState = function(partialState, callback) {
+    Component.prototype.setState = function(partialState, callback2) {
       if ("object" !== typeof partialState && "function" !== typeof partialState && null != partialState)
         throw Error(
           "takes an object of state variables to update or a function which returns an object of state variables."
         );
-      this.updater.enqueueSetState(this, partialState, callback, "setState");
+      this.updater.enqueueSetState(this, partialState, callback2, "setState");
     };
-    Component.prototype.forceUpdate = function(callback) {
-      this.updater.enqueueForceUpdate(this, callback, "forceUpdate");
+    Component.prototype.forceUpdate = function(callback2) {
+      this.updater.enqueueForceUpdate(this, callback2, "forceUpdate");
     };
     function ComponentDummy() {
     }
@@ -143,7 +143,7 @@ var require_react_production = __commonJS({
       }
       throw thenable;
     }
-    function mapIntoArray(children, array, escapedPrefix, nameSoFar, callback) {
+    function mapIntoArray(children, array, escapedPrefix, nameSoFar, callback2) {
       var type = typeof children;
       if ("undefined" === type || "boolean" === type) children = null;
       var invokeCallback = false;
@@ -167,20 +167,20 @@ var require_react_production = __commonJS({
                   array,
                   escapedPrefix,
                   nameSoFar,
-                  callback
+                  callback2
                 );
             }
         }
       if (invokeCallback)
-        return callback = callback(children), invokeCallback = "" === nameSoFar ? "." + getElementKey(children, 0) : nameSoFar, isArrayImpl(callback) ? (escapedPrefix = "", null != invokeCallback && (escapedPrefix = invokeCallback.replace(userProvidedKeyEscapeRegex, "$&/") + "/"), mapIntoArray(callback, array, escapedPrefix, "", function(c) {
+        return callback2 = callback2(children), invokeCallback = "" === nameSoFar ? "." + getElementKey(children, 0) : nameSoFar, isArrayImpl(callback2) ? (escapedPrefix = "", null != invokeCallback && (escapedPrefix = invokeCallback.replace(userProvidedKeyEscapeRegex, "$&/") + "/"), mapIntoArray(callback2, array, escapedPrefix, "", function(c) {
           return c;
-        })) : null != callback && (isValidElement(callback) && (callback = cloneAndReplaceKey(
-          callback,
-          escapedPrefix + (null == callback.key || children && children.key === callback.key ? "" : ("" + callback.key).replace(
+        })) : null != callback2 && (isValidElement(callback2) && (callback2 = cloneAndReplaceKey(
+          callback2,
+          escapedPrefix + (null == callback2.key || children && children.key === callback2.key ? "" : ("" + callback2.key).replace(
             userProvidedKeyEscapeRegex,
             "$&/"
           ) + "/") + invokeCallback
-        )), array.push(callback)), 1;
+        )), array.push(callback2)), 1;
       invokeCallback = 0;
       var nextNamePrefix = "" === nameSoFar ? "." : nameSoFar + ":";
       if (isArrayImpl(children))
@@ -190,7 +190,7 @@ var require_react_production = __commonJS({
             array,
             escapedPrefix,
             type,
-            callback
+            callback2
           );
       else if (i = getIteratorFn(children), "function" === typeof i)
         for (children = i.call(children), i = 0; !(nameSoFar = children.next()).done; )
@@ -199,7 +199,7 @@ var require_react_production = __commonJS({
             array,
             escapedPrefix,
             type,
-            callback
+            callback2
           );
       else if ("object" === type) {
         if ("function" === typeof children.then)
@@ -208,7 +208,7 @@ var require_react_production = __commonJS({
             array,
             escapedPrefix,
             nameSoFar,
-            callback
+            callback2
           );
         array = String(children);
         throw Error(
@@ -246,13 +246,13 @@ var require_react_production = __commonJS({
     }
     var reportGlobalError = "function" === typeof reportError ? reportError : function(error) {
       if ("object" === typeof window && "function" === typeof window.ErrorEvent) {
-        var event = new window.ErrorEvent("error", {
+        var event2 = new window.ErrorEvent("error", {
           bubbles: true,
           cancelable: true,
           message: "object" === typeof error && null !== error && "string" === typeof error.message ? String(error.message) : String(error),
           error
         });
-        if (!window.dispatchEvent(event)) return;
+        if (!window.dispatchEvent(event2)) return;
       } else if ("object" === typeof process && "function" === typeof process.emit) {
         process.emit("uncaughtException", error);
         return;
@@ -271,11 +271,11 @@ var require_react_production = __commonJS({
         );
       },
       count: function(children) {
-        var n = 0;
+        var n2 = 0;
         mapChildren(children, function() {
-          n++;
+          n2++;
         });
-        return n;
+        return n2;
       },
       toArray: function(children) {
         return mapChildren(children, function(child) {
@@ -407,22 +407,22 @@ var require_react_production = __commonJS({
     exports.useActionState = function(action, initialState, permalink) {
       return ReactSharedInternals.H.useActionState(action, initialState, permalink);
     };
-    exports.useCallback = function(callback, deps) {
-      return ReactSharedInternals.H.useCallback(callback, deps);
+    exports.useCallback = function(callback2, deps) {
+      return ReactSharedInternals.H.useCallback(callback2, deps);
     };
     exports.useContext = function(Context) {
       return ReactSharedInternals.H.useContext(Context);
     };
     exports.useDebugValue = function() {
     };
-    exports.useDeferredValue = function(value, initialValue) {
-      return ReactSharedInternals.H.useDeferredValue(value, initialValue);
+    exports.useDeferredValue = function(value2, initialValue) {
+      return ReactSharedInternals.H.useDeferredValue(value2, initialValue);
     };
     exports.useEffect = function(create2, deps) {
       return ReactSharedInternals.H.useEffect(create2, deps);
     };
-    exports.useEffectEvent = function(callback) {
-      return ReactSharedInternals.H.useEffectEvent(callback);
+    exports.useEffectEvent = function(callback2) {
+      return ReactSharedInternals.H.useEffectEvent(callback2);
     };
     exports.useId = function() {
       return ReactSharedInternals.H.useId();
@@ -465,9 +465,9 @@ var require_react_production = __commonJS({
   }
 });
 
-// ../node_modules/react/cjs/react.development.js
+// node_modules/react/cjs/react.development.js
 var require_react_development = __commonJS({
-  "../node_modules/react/cjs/react.development.js"(exports, module) {
+  "node_modules/react/cjs/react.development.js"(exports, module) {
     "use strict";
     "production" !== process.env.NODE_ENV && function() {
       function defineDeprecationWarning(methodName, info) {
@@ -512,12 +512,12 @@ var require_react_development = __commonJS({
       }
       function noop() {
       }
-      function testStringCoercion(value) {
-        return "" + value;
+      function testStringCoercion(value2) {
+        return "" + value2;
       }
-      function checkKeyStringCoercion(value) {
+      function checkKeyStringCoercion(value2) {
         try {
-          testStringCoercion(value);
+          testStringCoercion(value2);
           var JSCompiler_inline_result = false;
         } catch (e2) {
           JSCompiler_inline_result = true;
@@ -525,13 +525,13 @@ var require_react_development = __commonJS({
         if (JSCompiler_inline_result) {
           JSCompiler_inline_result = console;
           var JSCompiler_temp_const = JSCompiler_inline_result.error;
-          var JSCompiler_inline_result$jscomp$0 = "function" === typeof Symbol && Symbol.toStringTag && value[Symbol.toStringTag] || value.constructor.name || "Object";
+          var JSCompiler_inline_result$jscomp$0 = "function" === typeof Symbol && Symbol.toStringTag && value2[Symbol.toStringTag] || value2.constructor.name || "Object";
           JSCompiler_temp_const.call(
             JSCompiler_inline_result,
             "The provided key is an unsupported type %s. This value must be coerced to a string before using it here.",
             JSCompiler_inline_result$jscomp$0
           );
-          return testStringCoercion(value);
+          return testStringCoercion(value2);
         }
       }
       function getComponentNameFromType(type) {
@@ -717,7 +717,7 @@ var require_react_development = __commonJS({
         }
         throw thenable;
       }
-      function mapIntoArray(children, array, escapedPrefix, nameSoFar, callback) {
+      function mapIntoArray(children, array, escapedPrefix, nameSoFar, callback2) {
         var type = typeof children;
         if ("undefined" === type || "boolean" === type) children = null;
         var invokeCallback = false;
@@ -741,23 +741,23 @@ var require_react_development = __commonJS({
                     array,
                     escapedPrefix,
                     nameSoFar,
-                    callback
+                    callback2
                   );
               }
           }
         if (invokeCallback) {
           invokeCallback = children;
-          callback = callback(invokeCallback);
+          callback2 = callback2(invokeCallback);
           var childKey = "" === nameSoFar ? "." + getElementKey(invokeCallback, 0) : nameSoFar;
-          isArrayImpl(callback) ? (escapedPrefix = "", null != childKey && (escapedPrefix = childKey.replace(userProvidedKeyEscapeRegex, "$&/") + "/"), mapIntoArray(callback, array, escapedPrefix, "", function(c) {
+          isArrayImpl(callback2) ? (escapedPrefix = "", null != childKey && (escapedPrefix = childKey.replace(userProvidedKeyEscapeRegex, "$&/") + "/"), mapIntoArray(callback2, array, escapedPrefix, "", function(c) {
             return c;
-          })) : null != callback && (isValidElement(callback) && (null != callback.key && (invokeCallback && invokeCallback.key === callback.key || checkKeyStringCoercion(callback.key)), escapedPrefix = cloneAndReplaceKey(
-            callback,
-            escapedPrefix + (null == callback.key || invokeCallback && invokeCallback.key === callback.key ? "" : ("" + callback.key).replace(
+          })) : null != callback2 && (isValidElement(callback2) && (null != callback2.key && (invokeCallback && invokeCallback.key === callback2.key || checkKeyStringCoercion(callback2.key)), escapedPrefix = cloneAndReplaceKey(
+            callback2,
+            escapedPrefix + (null == callback2.key || invokeCallback && invokeCallback.key === callback2.key ? "" : ("" + callback2.key).replace(
               userProvidedKeyEscapeRegex,
               "$&/"
             ) + "/") + childKey
-          ), "" !== nameSoFar && null != invokeCallback && isValidElement(invokeCallback) && null == invokeCallback.key && invokeCallback._store && !invokeCallback._store.validated && (escapedPrefix._store.validated = 2), callback = escapedPrefix), array.push(callback));
+          ), "" !== nameSoFar && null != invokeCallback && isValidElement(invokeCallback) && null == invokeCallback.key && invokeCallback._store && !invokeCallback._store.validated && (escapedPrefix._store.validated = 2), callback2 = escapedPrefix), array.push(callback2));
           return 1;
         }
         invokeCallback = 0;
@@ -769,7 +769,7 @@ var require_react_development = __commonJS({
               array,
               escapedPrefix,
               type,
-              callback
+              callback2
             );
         else if (i = getIteratorFn(children), "function" === typeof i)
           for (i === children.entries && (didWarnAboutMaps || console.warn(
@@ -780,7 +780,7 @@ var require_react_development = __commonJS({
               array,
               escapedPrefix,
               type,
-              callback
+              callback2
             );
         else if ("object" === type) {
           if ("function" === typeof children.then)
@@ -789,7 +789,7 @@ var require_react_development = __commonJS({
               array,
               escapedPrefix,
               nameSoFar,
-              callback
+              callback2
             );
           array = String(children);
           throw Error(
@@ -869,12 +869,12 @@ var require_react_development = __commonJS({
               "timers"
             ).setImmediate;
           } catch (_err) {
-            enqueueTaskImpl = function(callback) {
+            enqueueTaskImpl = function(callback2) {
               false === didWarnAboutMessageChannel && (didWarnAboutMessageChannel = true, "undefined" === typeof MessageChannel && console.error(
                 "This browser does not have a MessageChannel implementation, so enqueuing tasks via await act(async () => ...) will fail. Please file an issue at https://github.com/facebook/react/issues if you encounter this warning."
               ));
               var channel = new MessageChannel();
-              channel.port1.onmessage = callback;
+              channel.port1.onmessage = callback2;
               channel.port2.postMessage(void 0);
             };
           }
@@ -911,17 +911,17 @@ var require_react_development = __commonJS({
           var i = 0;
           try {
             for (; i < queue.length; i++) {
-              var callback = queue[i];
+              var callback2 = queue[i];
               do {
                 ReactSharedInternals.didUsePromise = false;
-                var continuation = callback(false);
+                var continuation = callback2(false);
                 if (null !== continuation) {
                   if (ReactSharedInternals.didUsePromise) {
-                    queue[i] = callback;
+                    queue[i] = callback2;
                     queue.splice(0, i);
                     return;
                   }
-                  callback = continuation;
+                  callback2 = continuation;
                 } else break;
               } while (1);
             }
@@ -950,15 +950,15 @@ var require_react_development = __commonJS({
       }, assign = Object.assign, emptyObject = {};
       Object.freeze(emptyObject);
       Component.prototype.isReactComponent = {};
-      Component.prototype.setState = function(partialState, callback) {
+      Component.prototype.setState = function(partialState, callback2) {
         if ("object" !== typeof partialState && "function" !== typeof partialState && null != partialState)
           throw Error(
             "takes an object of state variables to update or a function which returns an object of state variables."
           );
-        this.updater.enqueueSetState(this, partialState, callback, "setState");
+        this.updater.enqueueSetState(this, partialState, callback2, "setState");
       };
-      Component.prototype.forceUpdate = function(callback) {
-        this.updater.enqueueForceUpdate(this, callback, "forceUpdate");
+      Component.prototype.forceUpdate = function(callback2) {
+        this.updater.enqueueForceUpdate(this, callback2, "forceUpdate");
       };
       var deprecatedAPIs = {
         isMounted: [
@@ -1007,21 +1007,21 @@ var require_react_development = __commonJS({
       var unknownOwnerDebugTask = createTask(getTaskName(UnknownOwner));
       var didWarnAboutMaps = false, userProvidedKeyEscapeRegex = /\/+/g, reportGlobalError = "function" === typeof reportError ? reportError : function(error) {
         if ("object" === typeof window && "function" === typeof window.ErrorEvent) {
-          var event = new window.ErrorEvent("error", {
+          var event2 = new window.ErrorEvent("error", {
             bubbles: true,
             cancelable: true,
             message: "object" === typeof error && null !== error && "string" === typeof error.message ? String(error.message) : String(error),
             error
           });
-          if (!window.dispatchEvent(event)) return;
+          if (!window.dispatchEvent(event2)) return;
         } else if ("object" === typeof process && "function" === typeof process.emit) {
           process.emit("uncaughtException", error);
           return;
         }
         console.error(error);
-      }, didWarnAboutMessageChannel = false, enqueueTaskImpl = null, actScopeDepth = 0, didWarnNoAwaitAct = false, isFlushing = false, queueSeveralMicrotasks = "function" === typeof queueMicrotask ? function(callback) {
+      }, didWarnAboutMessageChannel = false, enqueueTaskImpl = null, actScopeDepth = 0, didWarnNoAwaitAct = false, isFlushing = false, queueSeveralMicrotasks = "function" === typeof queueMicrotask ? function(callback2) {
         queueMicrotask(function() {
-          return queueMicrotask(callback);
+          return queueMicrotask(callback2);
         });
       } : enqueueTask;
       deprecatedAPIs = Object.freeze({
@@ -1042,11 +1042,11 @@ var require_react_development = __commonJS({
           );
         },
         count: function(children) {
-          var n = 0;
+          var n2 = 0;
           mapChildren(children, function() {
-            n++;
+            n2++;
           });
-          return n;
+          return n2;
         },
         toArray: function(children) {
           return mapChildren(children, function(child) {
@@ -1071,17 +1071,17 @@ var require_react_development = __commonJS({
       exports.Suspense = REACT_SUSPENSE_TYPE;
       exports.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE = ReactSharedInternals;
       exports.__COMPILER_RUNTIME = deprecatedAPIs;
-      exports.act = function(callback) {
+      exports.act = function(callback2) {
         var prevActQueue = ReactSharedInternals.actQueue, prevActScopeDepth = actScopeDepth;
         actScopeDepth++;
         var queue = ReactSharedInternals.actQueue = null !== prevActQueue ? prevActQueue : [], didAwaitActCall = false;
         try {
-          var result = callback();
+          var result = callback2();
         } catch (error) {
           ReactSharedInternals.thrownErrors.push(error);
         }
         if (0 < ReactSharedInternals.thrownErrors.length)
-          throw popActScope(prevActQueue, prevActScopeDepth), callback = aggregateErrors(ReactSharedInternals.thrownErrors), ReactSharedInternals.thrownErrors.length = 0, callback;
+          throw popActScope(prevActQueue, prevActScopeDepth), callback2 = aggregateErrors(ReactSharedInternals.thrownErrors), ReactSharedInternals.thrownErrors.length = 0, callback2;
         if (null !== result && "object" === typeof result && "function" === typeof result.then) {
           var thenable = result;
           queueSeveralMicrotasks(function() {
@@ -1134,7 +1134,7 @@ var require_react_development = __commonJS({
           ));
         }), ReactSharedInternals.actQueue = null);
         if (0 < ReactSharedInternals.thrownErrors.length)
-          throw callback = aggregateErrors(ReactSharedInternals.thrownErrors), ReactSharedInternals.thrownErrors.length = 0, callback;
+          throw callback2 = aggregateErrors(ReactSharedInternals.thrownErrors), ReactSharedInternals.thrownErrors.length = 0, callback2;
         return {
           then: function(resolve, reject) {
             didAwaitActCall = true;
@@ -1363,8 +1363,8 @@ var require_react_development = __commonJS({
           permalink
         );
       };
-      exports.useCallback = function(callback, deps) {
-        return resolveDispatcher().useCallback(callback, deps);
+      exports.useCallback = function(callback2, deps) {
+        return resolveDispatcher().useCallback(callback2, deps);
       };
       exports.useContext = function(Context) {
         var dispatcher = resolveDispatcher();
@@ -1373,11 +1373,11 @@ var require_react_development = __commonJS({
         );
         return dispatcher.useContext(Context);
       };
-      exports.useDebugValue = function(value, formatterFn) {
-        return resolveDispatcher().useDebugValue(value, formatterFn);
+      exports.useDebugValue = function(value2, formatterFn) {
+        return resolveDispatcher().useDebugValue(value2, formatterFn);
       };
-      exports.useDeferredValue = function(value, initialValue) {
-        return resolveDispatcher().useDeferredValue(value, initialValue);
+      exports.useDeferredValue = function(value2, initialValue) {
+        return resolveDispatcher().useDeferredValue(value2, initialValue);
       };
       exports.useEffect = function(create2, deps) {
         null == create2 && console.warn(
@@ -1385,8 +1385,8 @@ var require_react_development = __commonJS({
         );
         return resolveDispatcher().useEffect(create2, deps);
       };
-      exports.useEffectEvent = function(callback) {
-        return resolveDispatcher().useEffectEvent(callback);
+      exports.useEffectEvent = function(callback2) {
+        return resolveDispatcher().useEffectEvent(callback2);
       };
       exports.useId = function() {
         return resolveDispatcher().useId();
@@ -1437,9 +1437,9 @@ var require_react_development = __commonJS({
   }
 });
 
-// ../node_modules/react/index.js
+// node_modules/react/index.js
 var require_react = __commonJS({
-  "../node_modules/react/index.js"(exports, module) {
+  "node_modules/react/index.js"(exports, module) {
     "use strict";
     if (process.env.NODE_ENV === "production") {
       module.exports = require_react_production();
@@ -1449,9 +1449,9 @@ var require_react = __commonJS({
   }
 });
 
-// ../node_modules/scheduler/cjs/scheduler.production.js
+// node_modules/scheduler/cjs/scheduler.production.js
 var require_scheduler_production = __commonJS({
-  "../node_modules/scheduler/cjs/scheduler.production.js"(exports) {
+  "node_modules/scheduler/cjs/scheduler.production.js"(exports) {
     "use strict";
     function push(heap, node2) {
       var index = heap.length;
@@ -1556,11 +1556,11 @@ var require_scheduler_production = __commonJS({
               b: {
                 advanceTimers(currentTime);
                 for (currentTask = peek(taskQueue); null !== currentTask && !(currentTask.expirationTime > currentTime && shouldYieldToHost()); ) {
-                  var callback = currentTask.callback;
-                  if ("function" === typeof callback) {
+                  var callback2 = currentTask.callback;
+                  if ("function" === typeof callback2) {
                     currentTask.callback = null;
                     currentPriorityLevel = currentTask.priorityLevel;
-                    var continuationCallback = callback(
+                    var continuationCallback = callback2(
                       currentTask.expirationTime <= currentTime
                     );
                     currentTime = exports.unstable_now();
@@ -1613,9 +1613,9 @@ var require_scheduler_production = __commonJS({
       };
     var channel;
     var port;
-    function requestHostTimeout(callback, ms) {
+    function requestHostTimeout(callback2, ms) {
       taskTimeoutID = localSetTimeout(function() {
-        callback(exports.unstable_now());
+        callback2(exports.unstable_now());
       }, ms);
     }
     exports.unstable_IdlePriority = 5;
@@ -1675,7 +1675,7 @@ var require_scheduler_production = __commonJS({
         currentPriorityLevel = previousPriorityLevel;
       }
     };
-    exports.unstable_scheduleCallback = function(priorityLevel, callback, options) {
+    exports.unstable_scheduleCallback = function(priorityLevel, callback2, options) {
       var currentTime = exports.unstable_now();
       "object" === typeof options && null !== options ? (options = options.delay, options = "number" === typeof options && 0 < options ? currentTime + options : currentTime) : options = currentTime;
       switch (priorityLevel) {
@@ -1697,7 +1697,7 @@ var require_scheduler_production = __commonJS({
       timeout = options + timeout;
       priorityLevel = {
         id: taskIdCounter++,
-        callback,
+        callback: callback2,
         priorityLevel,
         startTime: options,
         expirationTime: timeout,
@@ -1707,13 +1707,13 @@ var require_scheduler_production = __commonJS({
       return priorityLevel;
     };
     exports.unstable_shouldYield = shouldYieldToHost;
-    exports.unstable_wrapCallback = function(callback) {
+    exports.unstable_wrapCallback = function(callback2) {
       var parentPriorityLevel = currentPriorityLevel;
       return function() {
         var previousPriorityLevel = currentPriorityLevel;
         currentPriorityLevel = parentPriorityLevel;
         try {
-          return callback.apply(this, arguments);
+          return callback2.apply(this, arguments);
         } finally {
           currentPriorityLevel = previousPriorityLevel;
         }
@@ -1722,9 +1722,9 @@ var require_scheduler_production = __commonJS({
   }
 });
 
-// ../node_modules/scheduler/cjs/scheduler.development.js
+// node_modules/scheduler/cjs/scheduler.development.js
 var require_scheduler_development = __commonJS({
-  "../node_modules/scheduler/cjs/scheduler.development.js"(exports) {
+  "node_modules/scheduler/cjs/scheduler.development.js"(exports) {
     "use strict";
     "production" !== process.env.NODE_ENV && function() {
       function performWorkUntilDeadline() {
@@ -1743,11 +1743,11 @@ var require_scheduler_development = __commonJS({
                 b: {
                   advanceTimers(currentTime);
                   for (currentTask = peek(taskQueue); null !== currentTask && !(currentTask.expirationTime > currentTime && shouldYieldToHost()); ) {
-                    var callback = currentTask.callback;
-                    if ("function" === typeof callback) {
+                    var callback2 = currentTask.callback;
+                    if ("function" === typeof callback2) {
                       currentTask.callback = null;
                       currentPriorityLevel = currentTask.priorityLevel;
-                      var continuationCallback = callback(
+                      var continuationCallback = callback2(
                         currentTask.expirationTime <= currentTime
                       );
                       currentTime = exports.unstable_now();
@@ -1842,9 +1842,9 @@ var require_scheduler_development = __commonJS({
       function shouldYieldToHost() {
         return needsPaint ? true : exports.unstable_now() - startTime < frameInterval ? false : true;
       }
-      function requestHostTimeout(callback, ms) {
+      function requestHostTimeout(callback2, ms) {
         taskTimeoutID = localSetTimeout(function() {
-          callback(exports.unstable_now());
+          callback2(exports.unstable_now());
         }, ms);
       }
       "undefined" !== typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ && "function" === typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart && __REACT_DEVTOOLS_GLOBAL_HOOK__.registerInternalModuleStart(Error());
@@ -1932,7 +1932,7 @@ var require_scheduler_development = __commonJS({
           currentPriorityLevel = previousPriorityLevel;
         }
       };
-      exports.unstable_scheduleCallback = function(priorityLevel, callback, options) {
+      exports.unstable_scheduleCallback = function(priorityLevel, callback2, options) {
         var currentTime = exports.unstable_now();
         "object" === typeof options && null !== options ? (options = options.delay, options = "number" === typeof options && 0 < options ? currentTime + options : currentTime) : options = currentTime;
         switch (priorityLevel) {
@@ -1954,7 +1954,7 @@ var require_scheduler_development = __commonJS({
         timeout = options + timeout;
         priorityLevel = {
           id: taskIdCounter++,
-          callback,
+          callback: callback2,
           priorityLevel,
           startTime: options,
           expirationTime: timeout,
@@ -1964,13 +1964,13 @@ var require_scheduler_development = __commonJS({
         return priorityLevel;
       };
       exports.unstable_shouldYield = shouldYieldToHost;
-      exports.unstable_wrapCallback = function(callback) {
+      exports.unstable_wrapCallback = function(callback2) {
         var parentPriorityLevel = currentPriorityLevel;
         return function() {
           var previousPriorityLevel = currentPriorityLevel;
           currentPriorityLevel = parentPriorityLevel;
           try {
-            return callback.apply(this, arguments);
+            return callback2.apply(this, arguments);
           } finally {
             currentPriorityLevel = previousPriorityLevel;
           }
@@ -1981,9 +1981,9 @@ var require_scheduler_development = __commonJS({
   }
 });
 
-// ../node_modules/scheduler/index.js
+// node_modules/scheduler/index.js
 var require_scheduler = __commonJS({
-  "../node_modules/scheduler/index.js"(exports, module) {
+  "node_modules/scheduler/index.js"(exports, module) {
     "use strict";
     if (process.env.NODE_ENV === "production") {
       module.exports = require_scheduler_production();
@@ -1993,9 +1993,9 @@ var require_scheduler = __commonJS({
   }
 });
 
-// ../node_modules/react-dom/cjs/react-dom.production.js
+// node_modules/react-dom/cjs/react-dom.production.js
 var require_react_dom_production = __commonJS({
-  "../node_modules/react-dom/cjs/react-dom.production.js"(exports) {
+  "node_modules/react-dom/cjs/react-dom.production.js"(exports) {
     "use strict";
     var React8 = require_react();
     function formatProdErrorMessage(code) {
@@ -2142,15 +2142,15 @@ var require_react_dom_production = __commonJS({
   }
 });
 
-// ../node_modules/react-dom/cjs/react-dom.development.js
+// node_modules/react-dom/cjs/react-dom.development.js
 var require_react_dom_development = __commonJS({
-  "../node_modules/react-dom/cjs/react-dom.development.js"(exports) {
+  "node_modules/react-dom/cjs/react-dom.development.js"(exports) {
     "use strict";
     "production" !== process.env.NODE_ENV && function() {
       function noop() {
       }
-      function testStringCoercion(value) {
-        return "" + value;
+      function testStringCoercion(value2) {
+        return "" + value2;
       }
       function createPortal$1(children, containerInfo, implementation) {
         var key = 3 < arguments.length && void 0 !== arguments[3] ? arguments[3] : null;
@@ -2386,9 +2386,9 @@ var require_react_dom_development = __commonJS({
   }
 });
 
-// ../node_modules/react-dom/index.js
+// node_modules/react-dom/index.js
 var require_react_dom = __commonJS({
-  "../node_modules/react-dom/index.js"(exports, module) {
+  "node_modules/react-dom/index.js"(exports, module) {
     "use strict";
     function checkDCE() {
       if (typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ === "undefined" || typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.checkDCE !== "function") {
@@ -2412,9 +2412,9 @@ var require_react_dom = __commonJS({
   }
 });
 
-// ../node_modules/react-dom/cjs/react-dom-client.production.js
+// node_modules/react-dom/cjs/react-dom-client.production.js
 var require_react_dom_client_production = __commonJS({
-  "../node_modules/react-dom/cjs/react-dom-client.production.js"(exports) {
+  "node_modules/react-dom/cjs/react-dom-client.production.js"(exports) {
     "use strict";
     var Scheduler = require_scheduler();
     var React8 = require_react();
@@ -2628,10 +2628,10 @@ var require_react_dom_client_production = __commonJS({
     function pop(cursor) {
       0 > index || (cursor.current = valueStack[index], valueStack[index] = null, index--);
     }
-    function push(cursor, value) {
+    function push(cursor, value2) {
       index++;
       valueStack[index] = cursor.current;
-      cursor.current = value;
+      cursor.current = value2;
     }
     var contextStackCursor = createCursor(null);
     var contextFiberStackCursor = createCursor(null);
@@ -3158,11 +3158,11 @@ var require_react_dom_client_production = __commonJS({
       illegalAttributeNameCache[attributeName] = true;
       return false;
     }
-    function setValueForAttribute(node2, name, value) {
+    function setValueForAttribute(node2, name, value2) {
       if (isAttributeNameSafe(name))
-        if (null === value) node2.removeAttribute(name);
+        if (null === value2) node2.removeAttribute(name);
         else {
-          switch (typeof value) {
+          switch (typeof value2) {
             case "undefined":
             case "function":
             case "symbol":
@@ -3175,13 +3175,13 @@ var require_react_dom_client_production = __commonJS({
                 return;
               }
           }
-          node2.setAttribute(name, "" + value);
+          node2.setAttribute(name, "" + value2);
         }
     }
-    function setValueForKnownAttribute(node2, name, value) {
-      if (null === value) node2.removeAttribute(name);
+    function setValueForKnownAttribute(node2, name, value2) {
+      if (null === value2) node2.removeAttribute(name);
       else {
-        switch (typeof value) {
+        switch (typeof value2) {
           case "undefined":
           case "function":
           case "symbol":
@@ -3189,13 +3189,13 @@ var require_react_dom_client_production = __commonJS({
             node2.removeAttribute(name);
             return;
         }
-        node2.setAttribute(name, "" + value);
+        node2.setAttribute(name, "" + value2);
       }
     }
-    function setValueForNamespacedAttribute(node2, namespace, name, value) {
-      if (null === value) node2.removeAttribute(name);
+    function setValueForNamespacedAttribute(node2, namespace, name, value2) {
+      if (null === value2) node2.removeAttribute(name);
       else {
-        switch (typeof value) {
+        switch (typeof value2) {
           case "undefined":
           case "function":
           case "symbol":
@@ -3203,19 +3203,19 @@ var require_react_dom_client_production = __commonJS({
             node2.removeAttribute(name);
             return;
         }
-        node2.setAttributeNS(namespace, name, "" + value);
+        node2.setAttributeNS(namespace, name, "" + value2);
       }
     }
-    function getToStringValue(value) {
-      switch (typeof value) {
+    function getToStringValue(value2) {
+      switch (typeof value2) {
         case "bigint":
         case "boolean":
         case "number":
         case "string":
         case "undefined":
-          return value;
+          return value2;
         case "object":
-          return value;
+          return value2;
         default:
           return "";
       }
@@ -3230,15 +3230,15 @@ var require_react_dom_client_production = __commonJS({
         valueField
       );
       if (!node2.hasOwnProperty(valueField) && "undefined" !== typeof descriptor && "function" === typeof descriptor.get && "function" === typeof descriptor.set) {
-        var get = descriptor.get, set = descriptor.set;
+        var get2 = descriptor.get, set = descriptor.set;
         Object.defineProperty(node2, valueField, {
           configurable: true,
           get: function() {
-            return get.call(this);
+            return get2.call(this);
           },
-          set: function(value) {
-            currentValue = "" + value;
-            set.call(this, value);
+          set: function(value2) {
+            currentValue = "" + value2;
+            set.call(this, value2);
           }
         });
         Object.defineProperty(node2, valueField, {
@@ -3248,8 +3248,8 @@ var require_react_dom_client_production = __commonJS({
           getValue: function() {
             return currentValue;
           },
-          setValue: function(value) {
-            currentValue = "" + value;
+          setValue: function(value2) {
+            currentValue = "" + value2;
           },
           stopTracking: function() {
             node2._valueTracker = null;
@@ -3273,9 +3273,9 @@ var require_react_dom_client_production = __commonJS({
       var tracker = node2._valueTracker;
       if (!tracker) return true;
       var lastValue = tracker.getValue();
-      var value = "";
-      node2 && (value = isCheckable(node2) ? node2.checked ? "true" : "false" : node2.value);
-      node2 = value;
+      var value2 = "";
+      node2 && (value2 = isCheckable(node2) ? node2.checked ? "true" : "false" : node2.value);
+      node2 = value2;
       return node2 !== lastValue ? (tracker.setValue(node2), true) : false;
     }
     function getActiveElement(doc) {
@@ -3288,41 +3288,41 @@ var require_react_dom_client_production = __commonJS({
       }
     }
     var escapeSelectorAttributeValueInsideDoubleQuotesRegex = /[\n"\\]/g;
-    function escapeSelectorAttributeValueInsideDoubleQuotes(value) {
-      return value.replace(
+    function escapeSelectorAttributeValueInsideDoubleQuotes(value2) {
+      return value2.replace(
         escapeSelectorAttributeValueInsideDoubleQuotesRegex,
         function(ch) {
           return "\\" + ch.charCodeAt(0).toString(16) + " ";
         }
       );
     }
-    function updateInput(element, value, defaultValue, lastDefaultValue, checked, defaultChecked, type, name) {
+    function updateInput(element, value2, defaultValue, lastDefaultValue, checked, defaultChecked, type, name) {
       element.name = "";
       null != type && "function" !== typeof type && "symbol" !== typeof type && "boolean" !== typeof type ? element.type = type : element.removeAttribute("type");
-      if (null != value)
+      if (null != value2)
         if ("number" === type) {
-          if (0 === value && "" === element.value || element.value != value)
-            element.value = "" + getToStringValue(value);
+          if (0 === value2 && "" === element.value || element.value != value2)
+            element.value = "" + getToStringValue(value2);
         } else
-          element.value !== "" + getToStringValue(value) && (element.value = "" + getToStringValue(value));
+          element.value !== "" + getToStringValue(value2) && (element.value = "" + getToStringValue(value2));
       else
         "submit" !== type && "reset" !== type || element.removeAttribute("value");
-      null != value ? setDefaultValue(element, type, getToStringValue(value)) : null != defaultValue ? setDefaultValue(element, type, getToStringValue(defaultValue)) : null != lastDefaultValue && element.removeAttribute("value");
+      null != value2 ? setDefaultValue(element, type, getToStringValue(value2)) : null != defaultValue ? setDefaultValue(element, type, getToStringValue(defaultValue)) : null != lastDefaultValue && element.removeAttribute("value");
       null == checked && null != defaultChecked && (element.defaultChecked = !!defaultChecked);
       null != checked && (element.checked = checked && "function" !== typeof checked && "symbol" !== typeof checked);
       null != name && "function" !== typeof name && "symbol" !== typeof name && "boolean" !== typeof name ? element.name = "" + getToStringValue(name) : element.removeAttribute("name");
     }
-    function initInput(element, value, defaultValue, checked, defaultChecked, type, name, isHydrating2) {
+    function initInput(element, value2, defaultValue, checked, defaultChecked, type, name, isHydrating2) {
       null != type && "function" !== typeof type && "symbol" !== typeof type && "boolean" !== typeof type && (element.type = type);
-      if (null != value || null != defaultValue) {
-        if (!("submit" !== type && "reset" !== type || void 0 !== value && null !== value)) {
+      if (null != value2 || null != defaultValue) {
+        if (!("submit" !== type && "reset" !== type || void 0 !== value2 && null !== value2)) {
           track(element);
           return;
         }
         defaultValue = null != defaultValue ? "" + getToStringValue(defaultValue) : "";
-        value = null != value ? "" + getToStringValue(value) : defaultValue;
-        isHydrating2 || value === element.value || (element.value = value);
-        element.defaultValue = value;
+        value2 = null != value2 ? "" + getToStringValue(value2) : defaultValue;
+        isHydrating2 || value2 === element.value || (element.value = value2);
+        element.defaultValue = value2;
       }
       checked = null != checked ? checked : defaultChecked;
       checked = "function" !== typeof checked && "symbol" !== typeof checked && !!checked;
@@ -3331,8 +3331,8 @@ var require_react_dom_client_production = __commonJS({
       null != name && "function" !== typeof name && "symbol" !== typeof name && "boolean" !== typeof name && (element.name = name);
       track(element);
     }
-    function setDefaultValue(node2, type, value) {
-      "number" === type && getActiveElement(node2.ownerDocument) === node2 || node2.defaultValue === "" + value || (node2.defaultValue = "" + value);
+    function setDefaultValue(node2, type, value2) {
+      "number" === type && getActiveElement(node2.ownerDocument) === node2 || node2.defaultValue === "" + value2 || (node2.defaultValue = "" + value2);
     }
     function updateOptions(node2, multiple, propValue, setDefaultSelected) {
       node2 = node2.options;
@@ -3356,15 +3356,15 @@ var require_react_dom_client_production = __commonJS({
         null !== multiple && (multiple.selected = true);
       }
     }
-    function updateTextarea(element, value, defaultValue) {
-      if (null != value && (value = "" + getToStringValue(value), value !== element.value && (element.value = value), null == defaultValue)) {
-        element.defaultValue !== value && (element.defaultValue = value);
+    function updateTextarea(element, value2, defaultValue) {
+      if (null != value2 && (value2 = "" + getToStringValue(value2), value2 !== element.value && (element.value = value2), null == defaultValue)) {
+        element.defaultValue !== value2 && (element.defaultValue = value2);
         return;
       }
       element.defaultValue = null != defaultValue ? "" + getToStringValue(defaultValue) : "";
     }
-    function initTextarea(element, value, defaultValue, children) {
-      if (null == value) {
+    function initTextarea(element, value2, defaultValue, children) {
+      if (null == value2) {
         if (null != children) {
           if (null != defaultValue) throw Error(formatProdErrorMessage(92));
           if (isArrayImpl(children)) {
@@ -3374,9 +3374,9 @@ var require_react_dom_client_production = __commonJS({
           defaultValue = children;
         }
         null == defaultValue && (defaultValue = "");
-        value = defaultValue;
+        value2 = defaultValue;
       }
-      defaultValue = getToStringValue(value);
+      defaultValue = getToStringValue(value2);
       element.defaultValue = defaultValue;
       children = element.textContent;
       children === defaultValue && "" !== children && null !== children && (element.value = children);
@@ -3397,9 +3397,9 @@ var require_react_dom_client_production = __commonJS({
         " "
       )
     );
-    function setValueForStyle(style2, styleName, value) {
+    function setValueForStyle(style2, styleName, value2) {
       var isCustomProperty = 0 === styleName.indexOf("--");
-      null == value || "boolean" === typeof value || "" === value ? isCustomProperty ? style2.setProperty(styleName, "") : "float" === styleName ? style2.cssFloat = "" : style2[styleName] = "" : isCustomProperty ? style2.setProperty(styleName, value) : "number" !== typeof value || 0 === value || unitlessNumbers.has(styleName) ? "float" === styleName ? style2.cssFloat = value : style2[styleName] = ("" + value).trim() : style2[styleName] = value + "px";
+      null == value2 || "boolean" === typeof value2 || "" === value2 ? isCustomProperty ? style2.setProperty(styleName, "") : "float" === styleName ? style2.cssFloat = "" : style2[styleName] = "" : isCustomProperty ? style2.setProperty(styleName, value2) : "number" !== typeof value2 || 0 === value2 || unitlessNumbers.has(styleName) ? "float" === styleName ? style2.cssFloat = value2 : style2[styleName] = ("" + value2).trim() : style2[styleName] = value2 + "px";
     }
     function setValueForStyles(node2, styles, prevStyles) {
       if (null != styles && "object" !== typeof styles)
@@ -3678,12 +3678,12 @@ var require_react_dom_client_production = __commonJS({
       assign(SyntheticBaseEvent.prototype, {
         preventDefault: function() {
           this.defaultPrevented = true;
-          var event = this.nativeEvent;
-          event && (event.preventDefault ? event.preventDefault() : "unknown" !== typeof event.returnValue && (event.returnValue = false), this.isDefaultPrevented = functionThatReturnsTrue);
+          var event2 = this.nativeEvent;
+          event2 && (event2.preventDefault ? event2.preventDefault() : "unknown" !== typeof event2.returnValue && (event2.returnValue = false), this.isDefaultPrevented = functionThatReturnsTrue);
         },
         stopPropagation: function() {
-          var event = this.nativeEvent;
-          event && (event.stopPropagation ? event.stopPropagation() : "unknown" !== typeof event.cancelBubble && (event.cancelBubble = true), this.isPropagationStopped = functionThatReturnsTrue);
+          var event2 = this.nativeEvent;
+          event2 && (event2.stopPropagation ? event2.stopPropagation() : "unknown" !== typeof event2.cancelBubble && (event2.cancelBubble = true), this.isPropagationStopped = functionThatReturnsTrue);
         },
         persist: function() {
         },
@@ -3695,8 +3695,8 @@ var require_react_dom_client_production = __commonJS({
       eventPhase: 0,
       bubbles: 0,
       cancelable: 0,
-      timeStamp: function(event) {
-        return event.timeStamp || Date.now();
+      timeStamp: function(event2) {
+        return event2.timeStamp || Date.now();
       },
       defaultPrevented: 0,
       isTrusted: 0
@@ -3721,16 +3721,16 @@ var require_react_dom_client_production = __commonJS({
       getModifierState: getEventModifierState,
       button: 0,
       buttons: 0,
-      relatedTarget: function(event) {
-        return void 0 === event.relatedTarget ? event.fromElement === event.srcElement ? event.toElement : event.fromElement : event.relatedTarget;
+      relatedTarget: function(event2) {
+        return void 0 === event2.relatedTarget ? event2.fromElement === event2.srcElement ? event2.toElement : event2.fromElement : event2.relatedTarget;
       },
-      movementX: function(event) {
-        if ("movementX" in event) return event.movementX;
-        event !== lastMouseEvent && (lastMouseEvent && "mousemove" === event.type ? (lastMovementX = event.screenX - lastMouseEvent.screenX, lastMovementY = event.screenY - lastMouseEvent.screenY) : lastMovementY = lastMovementX = 0, lastMouseEvent = event);
+      movementX: function(event2) {
+        if ("movementX" in event2) return event2.movementX;
+        event2 !== lastMouseEvent && (lastMouseEvent && "mousemove" === event2.type ? (lastMovementX = event2.screenX - lastMouseEvent.screenX, lastMovementY = event2.screenY - lastMouseEvent.screenY) : lastMovementY = lastMovementX = 0, lastMouseEvent = event2);
         return lastMovementX;
       },
-      movementY: function(event) {
-        return "movementY" in event ? event.movementY : lastMovementY;
+      movementY: function(event2) {
+        return "movementY" in event2 ? event2.movementY : lastMovementY;
       }
     });
     var SyntheticMouseEvent = createSyntheticEvent(MouseEventInterface);
@@ -3745,8 +3745,8 @@ var require_react_dom_client_production = __commonJS({
     });
     var SyntheticAnimationEvent = createSyntheticEvent(AnimationEventInterface);
     var ClipboardEventInterface = assign({}, EventInterface, {
-      clipboardData: function(event) {
-        return "clipboardData" in event ? event.clipboardData : window.clipboardData;
+      clipboardData: function(event2) {
+        return "clipboardData" in event2 ? event2.clipboardData : window.clipboardData;
       }
     });
     var SyntheticClipboardEvent = createSyntheticEvent(ClipboardEventInterface);
@@ -3834,14 +3834,14 @@ var require_react_dom_client_production = __commonJS({
       repeat: 0,
       locale: 0,
       getModifierState: getEventModifierState,
-      charCode: function(event) {
-        return "keypress" === event.type ? getEventCharCode(event) : 0;
+      charCode: function(event2) {
+        return "keypress" === event2.type ? getEventCharCode(event2) : 0;
       },
-      keyCode: function(event) {
-        return "keydown" === event.type || "keyup" === event.type ? event.keyCode : 0;
+      keyCode: function(event2) {
+        return "keydown" === event2.type || "keyup" === event2.type ? event2.keyCode : 0;
       },
-      which: function(event) {
-        return "keypress" === event.type ? getEventCharCode(event) : "keydown" === event.type || "keyup" === event.type ? event.keyCode : 0;
+      which: function(event2) {
+        return "keypress" === event2.type ? getEventCharCode(event2) : "keydown" === event2.type || "keyup" === event2.type ? event2.keyCode : 0;
       }
     });
     var SyntheticKeyboardEvent = createSyntheticEvent(KeyboardEventInterface);
@@ -3876,11 +3876,11 @@ var require_react_dom_client_production = __commonJS({
     });
     var SyntheticTransitionEvent = createSyntheticEvent(TransitionEventInterface);
     var WheelEventInterface = assign({}, MouseEventInterface, {
-      deltaX: function(event) {
-        return "deltaX" in event ? event.deltaX : "wheelDeltaX" in event ? -event.wheelDeltaX : 0;
+      deltaX: function(event2) {
+        return "deltaX" in event2 ? event2.deltaX : "wheelDeltaX" in event2 ? -event2.wheelDeltaX : 0;
       },
-      deltaY: function(event) {
-        return "deltaY" in event ? event.deltaY : "wheelDeltaY" in event ? -event.wheelDeltaY : "wheelDelta" in event ? -event.wheelDelta : 0;
+      deltaY: function(event2) {
+        return "deltaY" in event2 ? event2.deltaY : "wheelDeltaY" in event2 ? -event2.wheelDeltaY : "wheelDelta" in event2 ? -event2.wheelDelta : 0;
       },
       deltaZ: 0,
       deltaMode: 0
@@ -4171,13 +4171,13 @@ var require_react_dom_client_production = __commonJS({
     }
     var reportGlobalError = "function" === typeof reportError ? reportError : function(error) {
       if ("object" === typeof window && "function" === typeof window.ErrorEvent) {
-        var event = new window.ErrorEvent("error", {
+        var event2 = new window.ErrorEvent("error", {
           bubbles: true,
           cancelable: true,
           message: "object" === typeof error && null !== error && "string" === typeof error.message ? String(error.message) : String(error),
           error
         });
-        if (!window.dispatchEvent(event)) return;
+        if (!window.dispatchEvent(event2)) return;
       } else if ("object" === typeof process && "function" === typeof process.emit) {
         process.emit("uncaughtException", error);
         return;
@@ -4381,20 +4381,20 @@ var require_react_dom_client_production = __commonJS({
       return mode;
     }
     var CapturedStacks = /* @__PURE__ */ new WeakMap();
-    function createCapturedValueAtFiber(value, source) {
-      if ("object" === typeof value && null !== value) {
-        var existing = CapturedStacks.get(value);
+    function createCapturedValueAtFiber(value2, source) {
+      if ("object" === typeof value2 && null !== value2) {
+        var existing = CapturedStacks.get(value2);
         if (void 0 !== existing) return existing;
         source = {
-          value,
+          value: value2,
           source,
           stack: getStackByFiberInDevAndProd(source)
         };
-        CapturedStacks.set(value, source);
+        CapturedStacks.set(value2, source);
         return source;
       }
       return {
-        value,
+        value: value2,
         source,
         stack: getStackByFiberInDevAndProd(source)
       };
@@ -4706,15 +4706,15 @@ var require_react_dom_client_production = __commonJS({
       return readContextForConsumer(consumer, context);
     }
     function readContextForConsumer(consumer, context) {
-      var value = context._currentValue;
-      context = { context, memoizedValue: value, next: null };
+      var value2 = context._currentValue;
+      context = { context, memoizedValue: value2, next: null };
       if (null === lastContextDependency) {
         if (null === consumer) throw Error(formatProdErrorMessage(308));
         lastContextDependency = context;
         consumer.dependencies = { lanes: 0, firstContext: context };
         consumer.flags |= 524288;
       } else lastContextDependency = lastContextDependency.next = context;
-      return value;
+      return value2;
     }
     var AbortControllerLocal = "undefined" !== typeof AbortController ? AbortController : function() {
       var listeners2 = [], signal = this.signal = {
@@ -5531,10 +5531,10 @@ var require_react_dom_client_production = __commonJS({
         workInProgress$jscomp$0.memoizedState = newState;
       }
     }
-    function callCallback(callback, context) {
-      if ("function" !== typeof callback)
-        throw Error(formatProdErrorMessage(191, callback));
-      callback.call(context);
+    function callCallback(callback2, context) {
+      if ("function" !== typeof callback2)
+        throw Error(formatProdErrorMessage(191, callback2));
+      callback2.call(context);
     }
     function commitCallbacks(updateQueue, context) {
       var callbacks = updateQueue.callbacks;
@@ -6238,9 +6238,9 @@ var require_react_dom_client_production = __commonJS({
         null === events ? componentUpdateQueue.events = [payload] : events.push(payload);
       }
     }
-    function updateEvent(callback) {
+    function updateEvent(callback2) {
       var ref = updateWorkInProgressHook().memoizedState;
-      useEffectEventImpl({ ref, nextImpl: callback });
+      useEffectEventImpl({ ref, nextImpl: callback2 });
       return function() {
         if (0 !== (executionContext & 2)) throw Error(formatProdErrorMessage(440));
         return ref.impl.apply(void 0, arguments);
@@ -6271,14 +6271,14 @@ var require_react_dom_client_production = __commonJS({
     }
     function mountDebugValue() {
     }
-    function updateCallback(callback, deps) {
+    function updateCallback(callback2, deps) {
       var hook = updateWorkInProgressHook();
       deps = void 0 === deps ? null : deps;
       var prevState = hook.memoizedState;
       if (null !== deps && areHookInputsEqual(deps, prevState[1]))
         return prevState[0];
-      hook.memoizedState = [callback, deps];
-      return callback;
+      hook.memoizedState = [callback2, deps];
+      return callback2;
     }
     function updateMemo(nextCreate, deps) {
       var hook = updateWorkInProgressHook();
@@ -6298,34 +6298,34 @@ var require_react_dom_client_production = __commonJS({
       hook.memoizedState = [prevState, deps];
       return prevState;
     }
-    function mountDeferredValueImpl(hook, value, initialValue) {
+    function mountDeferredValueImpl(hook, value2, initialValue) {
       if (void 0 === initialValue || 0 !== (renderLanes & 1073741824) && 0 === (workInProgressRootRenderLanes & 261930))
-        return hook.memoizedState = value;
+        return hook.memoizedState = value2;
       hook.memoizedState = initialValue;
       hook = requestDeferredLane();
       currentlyRenderingFiber.lanes |= hook;
       workInProgressRootSkippedLanes |= hook;
       return initialValue;
     }
-    function updateDeferredValueImpl(hook, prevValue, value, initialValue) {
-      if (objectIs(value, prevValue)) return value;
+    function updateDeferredValueImpl(hook, prevValue, value2, initialValue) {
+      if (objectIs(value2, prevValue)) return value2;
       if (null !== currentTreeHiddenStackCursor.current)
-        return hook = mountDeferredValueImpl(hook, value, initialValue), objectIs(hook, prevValue) || (didReceiveUpdate = true), hook;
+        return hook = mountDeferredValueImpl(hook, value2, initialValue), objectIs(hook, prevValue) || (didReceiveUpdate = true), hook;
       if (0 === (renderLanes & 42) || 0 !== (renderLanes & 1073741824) && 0 === (workInProgressRootRenderLanes & 261930))
-        return didReceiveUpdate = true, hook.memoizedState = value;
+        return didReceiveUpdate = true, hook.memoizedState = value2;
       hook = requestDeferredLane();
       currentlyRenderingFiber.lanes |= hook;
       workInProgressRootSkippedLanes |= hook;
       return prevValue;
     }
-    function startTransition(fiber, queue, pendingState, finishedState, callback) {
+    function startTransition(fiber, queue, pendingState, finishedState, callback2) {
       var previousPriority = ReactDOMSharedInternals.p;
       ReactDOMSharedInternals.p = 0 !== previousPriority && 8 > previousPriority ? previousPriority : 8;
       var prevTransition = ReactSharedInternals.T, currentTransition = {};
       ReactSharedInternals.T = currentTransition;
       dispatchOptimisticSetState(fiber, false, queue, pendingState);
       try {
-        var returnValue = callback(), onStartTransitionFinish = ReactSharedInternals.S;
+        var returnValue = callback2(), onStartTransitionFinish = ReactSharedInternals.S;
         null !== onStartTransitionFinish && onStartTransitionFinish(currentTransition, returnValue);
         if (null !== returnValue && "object" === typeof returnValue && "function" === typeof returnValue.then) {
           var thenableForFinishedState = chainThenableValue(
@@ -6557,12 +6557,12 @@ var require_react_dom_client_production = __commonJS({
     var HooksDispatcherOnMount = {
       readContext,
       use,
-      useCallback: function(callback, deps) {
+      useCallback: function(callback2, deps) {
         mountWorkInProgressHook().memoizedState = [
-          callback,
+          callback2,
           void 0 === deps ? null : deps
         ];
-        return callback;
+        return callback2;
       },
       useContext: readContext,
       useEffect: mountEffect,
@@ -6637,9 +6637,9 @@ var require_react_dom_client_production = __commonJS({
         return [initialState.memoizedState, dispatch];
       },
       useDebugValue: mountDebugValue,
-      useDeferredValue: function(value, initialValue) {
+      useDeferredValue: function(value2, initialValue) {
         var hook = mountWorkInProgressHook();
-        return mountDeferredValueImpl(hook, value, initialValue);
+        return mountDeferredValueImpl(hook, value2, initialValue);
       },
       useTransition: function() {
         var stateHook = mountStateImpl(false);
@@ -6730,8 +6730,8 @@ var require_react_dom_client_production = __commonJS({
           currentlyRenderingFiber
         );
       },
-      useEffectEvent: function(callback) {
-        var hook = mountWorkInProgressHook(), ref = { impl: callback };
+      useEffectEvent: function(callback2) {
+        var hook = mountWorkInProgressHook(), ref = { impl: callback2 };
         hook.memoizedState = ref;
         return function() {
           if (0 !== (executionContext & 2))
@@ -6756,12 +6756,12 @@ var require_react_dom_client_production = __commonJS({
         return updateReducer(basicStateReducer);
       },
       useDebugValue: mountDebugValue,
-      useDeferredValue: function(value, initialValue) {
+      useDeferredValue: function(value2, initialValue) {
         var hook = updateWorkInProgressHook();
         return updateDeferredValueImpl(
           hook,
           currentHook.memoizedState,
-          value,
+          value2,
           initialValue
         );
       },
@@ -6801,12 +6801,12 @@ var require_react_dom_client_production = __commonJS({
         return rerenderReducer(basicStateReducer);
       },
       useDebugValue: mountDebugValue,
-      useDeferredValue: function(value, initialValue) {
+      useDeferredValue: function(value2, initialValue) {
         var hook = updateWorkInProgressHook();
-        return null === currentHook ? mountDeferredValueImpl(hook, value, initialValue) : updateDeferredValueImpl(
+        return null === currentHook ? mountDeferredValueImpl(hook, value2, initialValue) : updateDeferredValueImpl(
           hook,
           currentHook.memoizedState,
-          value,
+          value2,
           initialValue
         );
       },
@@ -6841,30 +6841,30 @@ var require_react_dom_client_production = __commonJS({
       0 === workInProgress2.lanes && (workInProgress2.updateQueue.baseState = getDerivedStateFromProps);
     }
     var classComponentUpdater = {
-      enqueueSetState: function(inst, payload, callback) {
+      enqueueSetState: function(inst, payload, callback2) {
         inst = inst._reactInternals;
         var lane = requestUpdateLane(), update = createUpdate(lane);
         update.payload = payload;
-        void 0 !== callback && null !== callback && (update.callback = callback);
+        void 0 !== callback2 && null !== callback2 && (update.callback = callback2);
         payload = enqueueUpdate(inst, update, lane);
         null !== payload && (scheduleUpdateOnFiber(payload, inst, lane), entangleTransitions(payload, inst, lane));
       },
-      enqueueReplaceState: function(inst, payload, callback) {
+      enqueueReplaceState: function(inst, payload, callback2) {
         inst = inst._reactInternals;
         var lane = requestUpdateLane(), update = createUpdate(lane);
         update.tag = 1;
         update.payload = payload;
-        void 0 !== callback && null !== callback && (update.callback = callback);
+        void 0 !== callback2 && null !== callback2 && (update.callback = callback2);
         payload = enqueueUpdate(inst, update, lane);
         null !== payload && (scheduleUpdateOnFiber(payload, inst, lane), entangleTransitions(payload, inst, lane));
       },
-      enqueueForceUpdate: function(inst, callback) {
+      enqueueForceUpdate: function(inst, callback2) {
         inst = inst._reactInternals;
         var lane = requestUpdateLane(), update = createUpdate(lane);
         update.tag = 2;
-        void 0 !== callback && null !== callback && (update.callback = callback);
-        callback = enqueueUpdate(inst, update, lane);
-        null !== callback && (scheduleUpdateOnFiber(callback, inst, lane), entangleTransitions(callback, inst, lane));
+        void 0 !== callback2 && null !== callback2 && (update.callback = callback2);
+        callback2 = enqueueUpdate(inst, update, lane);
+        null !== callback2 && (scheduleUpdateOnFiber(callback2, inst, lane), entangleTransitions(callback2, inst, lane));
       }
     };
     function checkShouldComponentUpdate(workInProgress2, ctor, oldProps, newProps, oldState, newState, nextContext) {
@@ -6958,9 +6958,9 @@ var require_react_dom_client_production = __commonJS({
         });
       });
     }
-    function throwException(root2, returnFiber, sourceFiber, value, rootRenderLanes) {
+    function throwException(root2, returnFiber, sourceFiber, value2, rootRenderLanes) {
       sourceFiber.flags |= 32768;
-      if (null !== value && "object" === typeof value && "function" === typeof value.then) {
+      if (null !== value2 && "object" === typeof value2 && "function" === typeof value2.then) {
         returnFiber = sourceFiber.alternate;
         null !== returnFiber && propagateParentContextChanges(
           returnFiber,
@@ -6973,48 +6973,48 @@ var require_react_dom_client_production = __commonJS({
           switch (sourceFiber.tag) {
             case 31:
             case 13:
-              return null === shellBoundary ? renderDidSuspendDelayIfPossible() : null === sourceFiber.alternate && 0 === workInProgressRootExitStatus && (workInProgressRootExitStatus = 3), sourceFiber.flags &= -257, sourceFiber.flags |= 65536, sourceFiber.lanes = rootRenderLanes, value === noopSuspenseyCommitThenable ? sourceFiber.flags |= 16384 : (returnFiber = sourceFiber.updateQueue, null === returnFiber ? sourceFiber.updateQueue = /* @__PURE__ */ new Set([value]) : returnFiber.add(value), attachPingListener(root2, value, rootRenderLanes)), false;
+              return null === shellBoundary ? renderDidSuspendDelayIfPossible() : null === sourceFiber.alternate && 0 === workInProgressRootExitStatus && (workInProgressRootExitStatus = 3), sourceFiber.flags &= -257, sourceFiber.flags |= 65536, sourceFiber.lanes = rootRenderLanes, value2 === noopSuspenseyCommitThenable ? sourceFiber.flags |= 16384 : (returnFiber = sourceFiber.updateQueue, null === returnFiber ? sourceFiber.updateQueue = /* @__PURE__ */ new Set([value2]) : returnFiber.add(value2), attachPingListener(root2, value2, rootRenderLanes)), false;
             case 22:
-              return sourceFiber.flags |= 65536, value === noopSuspenseyCommitThenable ? sourceFiber.flags |= 16384 : (returnFiber = sourceFiber.updateQueue, null === returnFiber ? (returnFiber = {
+              return sourceFiber.flags |= 65536, value2 === noopSuspenseyCommitThenable ? sourceFiber.flags |= 16384 : (returnFiber = sourceFiber.updateQueue, null === returnFiber ? (returnFiber = {
                 transitions: null,
                 markerInstances: null,
-                retryQueue: /* @__PURE__ */ new Set([value])
-              }, sourceFiber.updateQueue = returnFiber) : (sourceFiber = returnFiber.retryQueue, null === sourceFiber ? returnFiber.retryQueue = /* @__PURE__ */ new Set([value]) : sourceFiber.add(value)), attachPingListener(root2, value, rootRenderLanes)), false;
+                retryQueue: /* @__PURE__ */ new Set([value2])
+              }, sourceFiber.updateQueue = returnFiber) : (sourceFiber = returnFiber.retryQueue, null === sourceFiber ? returnFiber.retryQueue = /* @__PURE__ */ new Set([value2]) : sourceFiber.add(value2)), attachPingListener(root2, value2, rootRenderLanes)), false;
           }
           throw Error(formatProdErrorMessage(435, sourceFiber.tag));
         }
-        attachPingListener(root2, value, rootRenderLanes);
+        attachPingListener(root2, value2, rootRenderLanes);
         renderDidSuspendDelayIfPossible();
         return false;
       }
       if (isHydrating)
-        return returnFiber = suspenseHandlerStackCursor.current, null !== returnFiber ? (0 === (returnFiber.flags & 65536) && (returnFiber.flags |= 256), returnFiber.flags |= 65536, returnFiber.lanes = rootRenderLanes, value !== HydrationMismatchException && (root2 = Error(formatProdErrorMessage(422), { cause: value }), queueHydrationError(createCapturedValueAtFiber(root2, sourceFiber)))) : (value !== HydrationMismatchException && (returnFiber = Error(formatProdErrorMessage(423), {
-          cause: value
+        return returnFiber = suspenseHandlerStackCursor.current, null !== returnFiber ? (0 === (returnFiber.flags & 65536) && (returnFiber.flags |= 256), returnFiber.flags |= 65536, returnFiber.lanes = rootRenderLanes, value2 !== HydrationMismatchException && (root2 = Error(formatProdErrorMessage(422), { cause: value2 }), queueHydrationError(createCapturedValueAtFiber(root2, sourceFiber)))) : (value2 !== HydrationMismatchException && (returnFiber = Error(formatProdErrorMessage(423), {
+          cause: value2
         }), queueHydrationError(
           createCapturedValueAtFiber(returnFiber, sourceFiber)
-        )), root2 = root2.current.alternate, root2.flags |= 65536, rootRenderLanes &= -rootRenderLanes, root2.lanes |= rootRenderLanes, value = createCapturedValueAtFiber(value, sourceFiber), rootRenderLanes = createRootErrorUpdate(
+        )), root2 = root2.current.alternate, root2.flags |= 65536, rootRenderLanes &= -rootRenderLanes, root2.lanes |= rootRenderLanes, value2 = createCapturedValueAtFiber(value2, sourceFiber), rootRenderLanes = createRootErrorUpdate(
           root2.stateNode,
-          value,
+          value2,
           rootRenderLanes
         ), enqueueCapturedUpdate(root2, rootRenderLanes), 4 !== workInProgressRootExitStatus && (workInProgressRootExitStatus = 2)), false;
-      var wrapperError = Error(formatProdErrorMessage(520), { cause: value });
+      var wrapperError = Error(formatProdErrorMessage(520), { cause: value2 });
       wrapperError = createCapturedValueAtFiber(wrapperError, sourceFiber);
       null === workInProgressRootConcurrentErrors ? workInProgressRootConcurrentErrors = [wrapperError] : workInProgressRootConcurrentErrors.push(wrapperError);
       4 !== workInProgressRootExitStatus && (workInProgressRootExitStatus = 2);
       if (null === returnFiber) return true;
-      value = createCapturedValueAtFiber(value, sourceFiber);
+      value2 = createCapturedValueAtFiber(value2, sourceFiber);
       sourceFiber = returnFiber;
       do {
         switch (sourceFiber.tag) {
           case 3:
-            return sourceFiber.flags |= 65536, root2 = rootRenderLanes & -rootRenderLanes, sourceFiber.lanes |= root2, root2 = createRootErrorUpdate(sourceFiber.stateNode, value, root2), enqueueCapturedUpdate(sourceFiber, root2), false;
+            return sourceFiber.flags |= 65536, root2 = rootRenderLanes & -rootRenderLanes, sourceFiber.lanes |= root2, root2 = createRootErrorUpdate(sourceFiber.stateNode, value2, root2), enqueueCapturedUpdate(sourceFiber, root2), false;
           case 1:
             if (returnFiber = sourceFiber.type, wrapperError = sourceFiber.stateNode, 0 === (sourceFiber.flags & 128) && ("function" === typeof returnFiber.getDerivedStateFromError || null !== wrapperError && "function" === typeof wrapperError.componentDidCatch && (null === legacyErrorBoundariesThatAlreadyFailed || !legacyErrorBoundariesThatAlreadyFailed.has(wrapperError))))
               return sourceFiber.flags |= 65536, rootRenderLanes &= -rootRenderLanes, sourceFiber.lanes |= rootRenderLanes, rootRenderLanes = createClassErrorUpdate(rootRenderLanes), initializeClassErrorUpdate(
                 rootRenderLanes,
                 root2,
                 sourceFiber,
-                value
+                value2
               ), enqueueCapturedUpdate(sourceFiber, rootRenderLanes), false;
         }
         sourceFiber = sourceFiber.return;
@@ -11122,8 +11122,8 @@ var require_react_dom_client_production = __commonJS({
       null !== retryCache && retryCache.delete(wakeable);
       retryTimedOutBoundary(boundaryFiber, retryLane);
     }
-    function scheduleCallback$1(priorityLevel, callback) {
-      return scheduleCallback$3(priorityLevel, callback);
+    function scheduleCallback$1(priorityLevel, callback2) {
+      return scheduleCallback$3(priorityLevel, callback2);
     }
     var firstScheduledRoot = null;
     var lastScheduledRoot = null;
@@ -11287,7 +11287,7 @@ var require_react_dom_client_production = __commonJS({
           (nativeEventTarget[internalPropsKey] || null).action
         ), submitter = nativeEvent.submitter;
         submitter && (domEventName = (domEventName = submitter[internalPropsKey] || null) ? coerceFormActionProp(domEventName.formAction) : submitter.getAttribute("formAction"), null !== domEventName && (action = domEventName, submitter = null));
-        var event = new SyntheticEvent(
+        var event2 = new SyntheticEvent(
           "action",
           "action",
           null,
@@ -11295,7 +11295,7 @@ var require_react_dom_client_production = __commonJS({
           nativeEventTarget
         );
         dispatchQueue.push({
-          event,
+          event: event2,
           listeners: [
             {
               instance: null,
@@ -11316,7 +11316,7 @@ var require_react_dom_client_production = __commonJS({
                     );
                   }
                 } else
-                  "function" === typeof action && (event.preventDefault(), formData = submitter ? createFormDataWithSubmitter(nativeEventTarget, submitter) : new FormData(nativeEventTarget), startHostTransition(
+                  "function" === typeof action && (event2.preventDefault(), formData = submitter ? createFormDataWithSubmitter(nativeEventTarget, submitter) : new FormData(nativeEventTarget), startHostTransition(
                     maybeTargetInst,
                     {
                       pending: true,
@@ -11396,7 +11396,7 @@ var require_react_dom_client_production = __commonJS({
     function processDispatchQueue(dispatchQueue, eventSystemFlags) {
       eventSystemFlags = 0 !== (eventSystemFlags & 4);
       for (var i = 0; i < dispatchQueue.length; i++) {
-        var _dispatchQueue$i = dispatchQueue[i], event = _dispatchQueue$i.event;
+        var _dispatchQueue$i = dispatchQueue[i], event2 = _dispatchQueue$i.event;
         _dispatchQueue$i = _dispatchQueue$i.listeners;
         a: {
           var previousInstance = void 0;
@@ -11404,16 +11404,16 @@ var require_react_dom_client_production = __commonJS({
             for (var i$jscomp$0 = _dispatchQueue$i.length - 1; 0 <= i$jscomp$0; i$jscomp$0--) {
               var _dispatchListeners$i = _dispatchQueue$i[i$jscomp$0], instance = _dispatchListeners$i.instance, currentTarget = _dispatchListeners$i.currentTarget;
               _dispatchListeners$i = _dispatchListeners$i.listener;
-              if (instance !== previousInstance && event.isPropagationStopped())
+              if (instance !== previousInstance && event2.isPropagationStopped())
                 break a;
               previousInstance = _dispatchListeners$i;
-              event.currentTarget = currentTarget;
+              event2.currentTarget = currentTarget;
               try {
-                previousInstance(event);
+                previousInstance(event2);
               } catch (error) {
                 reportGlobalError(error);
               }
-              event.currentTarget = null;
+              event2.currentTarget = null;
               previousInstance = instance;
             }
           else
@@ -11422,16 +11422,16 @@ var require_react_dom_client_production = __commonJS({
               instance = _dispatchListeners$i.instance;
               currentTarget = _dispatchListeners$i.currentTarget;
               _dispatchListeners$i = _dispatchListeners$i.listener;
-              if (instance !== previousInstance && event.isPropagationStopped())
+              if (instance !== previousInstance && event2.isPropagationStopped())
                 break a;
               previousInstance = _dispatchListeners$i;
-              event.currentTarget = currentTarget;
+              event2.currentTarget = currentTarget;
               try {
-                previousInstance(event);
+                previousInstance(event2);
               } catch (error) {
                 reportGlobalError(error);
               }
-              event.currentTarget = null;
+              event2.currentTarget = null;
               previousInstance = instance;
             }
         }
@@ -11834,8 +11834,8 @@ var require_react_dom_client_production = __commonJS({
       while (inst && 5 !== inst.tag && 27 !== inst.tag);
       return inst ? inst : null;
     }
-    function accumulateEnterLeaveListenersForEvent(dispatchQueue, event, target, common, inCapturePhase) {
-      for (var registrationName = event._reactName, listeners2 = []; null !== target && target !== common; ) {
+    function accumulateEnterLeaveListenersForEvent(dispatchQueue, event2, target, common, inCapturePhase) {
+      for (var registrationName = event2._reactName, listeners2 = []; null !== target && target !== common; ) {
         var _instance3 = target, alternate = _instance3.alternate, stateNode = _instance3.stateNode;
         _instance3 = _instance3.tag;
         if (null !== alternate && alternate === common) break;
@@ -11846,7 +11846,7 @@ var require_react_dom_client_production = __commonJS({
         )));
         target = target.return;
       }
-      0 !== listeners2.length && dispatchQueue.push({ event, listeners: listeners2 });
+      0 !== listeners2.length && dispatchQueue.push({ event: event2, listeners: listeners2 });
     }
     var NORMALIZE_NEWLINES_REGEX = /\r\n?/g;
     var NORMALIZE_NULL_AND_REPLACEMENT_REGEX = /\u0000|\uFFFD/g;
@@ -11857,48 +11857,48 @@ var require_react_dom_client_production = __commonJS({
       clientText = normalizeMarkupForTextOrAttribute(clientText);
       return normalizeMarkupForTextOrAttribute(serverText) === clientText ? true : false;
     }
-    function setProp(domElement, tag, key, value, props, prevValue) {
+    function setProp(domElement, tag, key, value2, props, prevValue) {
       switch (key) {
         case "children":
-          "string" === typeof value ? "body" === tag || "textarea" === tag && "" === value || setTextContent(domElement, value) : ("number" === typeof value || "bigint" === typeof value) && "body" !== tag && setTextContent(domElement, "" + value);
+          "string" === typeof value2 ? "body" === tag || "textarea" === tag && "" === value2 || setTextContent(domElement, value2) : ("number" === typeof value2 || "bigint" === typeof value2) && "body" !== tag && setTextContent(domElement, "" + value2);
           break;
         case "className":
-          setValueForKnownAttribute(domElement, "class", value);
+          setValueForKnownAttribute(domElement, "class", value2);
           break;
         case "tabIndex":
-          setValueForKnownAttribute(domElement, "tabindex", value);
+          setValueForKnownAttribute(domElement, "tabindex", value2);
           break;
         case "dir":
         case "role":
         case "viewBox":
         case "width":
         case "height":
-          setValueForKnownAttribute(domElement, key, value);
+          setValueForKnownAttribute(domElement, key, value2);
           break;
         case "style":
-          setValueForStyles(domElement, value, prevValue);
+          setValueForStyles(domElement, value2, prevValue);
           break;
         case "data":
           if ("object" !== tag) {
-            setValueForKnownAttribute(domElement, "data", value);
+            setValueForKnownAttribute(domElement, "data", value2);
             break;
           }
         case "src":
         case "href":
-          if ("" === value && ("a" !== tag || "href" !== key)) {
+          if ("" === value2 && ("a" !== tag || "href" !== key)) {
             domElement.removeAttribute(key);
             break;
           }
-          if (null == value || "function" === typeof value || "symbol" === typeof value || "boolean" === typeof value) {
+          if (null == value2 || "function" === typeof value2 || "symbol" === typeof value2 || "boolean" === typeof value2) {
             domElement.removeAttribute(key);
             break;
           }
-          value = sanitizeURL("" + value);
-          domElement.setAttribute(key, value);
+          value2 = sanitizeURL("" + value2);
+          domElement.setAttribute(key, value2);
           break;
         case "action":
         case "formAction":
-          if ("function" === typeof value) {
+          if ("function" === typeof value2) {
             domElement.setAttribute(
               key,
               "javascript:throw new Error('A React form was unexpectedly submitted. If you called form.submit() manually, consider using form.requestSubmit() instead. If you\\'re trying to use event.stopPropagation() in a submit event handler, consider also calling event.preventDefault().')"
@@ -11927,27 +11927,27 @@ var require_react_dom_client_production = __commonJS({
               props,
               null
             )) : (setProp(domElement, tag, "encType", props.encType, props, null), setProp(domElement, tag, "method", props.method, props, null), setProp(domElement, tag, "target", props.target, props, null)));
-          if (null == value || "symbol" === typeof value || "boolean" === typeof value) {
+          if (null == value2 || "symbol" === typeof value2 || "boolean" === typeof value2) {
             domElement.removeAttribute(key);
             break;
           }
-          value = sanitizeURL("" + value);
-          domElement.setAttribute(key, value);
+          value2 = sanitizeURL("" + value2);
+          domElement.setAttribute(key, value2);
           break;
         case "onClick":
-          null != value && (domElement.onclick = noop$1);
+          null != value2 && (domElement.onclick = noop$1);
           break;
         case "onScroll":
-          null != value && listenToNonDelegatedEvent("scroll", domElement);
+          null != value2 && listenToNonDelegatedEvent("scroll", domElement);
           break;
         case "onScrollEnd":
-          null != value && listenToNonDelegatedEvent("scrollend", domElement);
+          null != value2 && listenToNonDelegatedEvent("scrollend", domElement);
           break;
         case "dangerouslySetInnerHTML":
-          if (null != value) {
-            if ("object" !== typeof value || !("__html" in value))
+          if (null != value2) {
+            if ("object" !== typeof value2 || !("__html" in value2))
               throw Error(formatProdErrorMessage(61));
-            key = value.__html;
+            key = value2.__html;
             if (null != key) {
               if (null != props.children) throw Error(formatProdErrorMessage(60));
               domElement.innerHTML = key;
@@ -11955,10 +11955,10 @@ var require_react_dom_client_production = __commonJS({
           }
           break;
         case "multiple":
-          domElement.multiple = value && "function" !== typeof value && "symbol" !== typeof value;
+          domElement.multiple = value2 && "function" !== typeof value2 && "symbol" !== typeof value2;
           break;
         case "muted":
-          domElement.muted = value && "function" !== typeof value && "symbol" !== typeof value;
+          domElement.muted = value2 && "function" !== typeof value2 && "symbol" !== typeof value2;
           break;
         case "suppressContentEditableWarning":
         case "suppressHydrationWarning":
@@ -11970,11 +11970,11 @@ var require_react_dom_client_production = __commonJS({
         case "autoFocus":
           break;
         case "xlinkHref":
-          if (null == value || "function" === typeof value || "boolean" === typeof value || "symbol" === typeof value) {
+          if (null == value2 || "function" === typeof value2 || "boolean" === typeof value2 || "symbol" === typeof value2) {
             domElement.removeAttribute("xlink:href");
             break;
           }
-          key = sanitizeURL("" + value);
+          key = sanitizeURL("" + value2);
           domElement.setAttributeNS(
             "http://www.w3.org/1999/xlink",
             "xlink:href",
@@ -11989,7 +11989,7 @@ var require_react_dom_client_production = __commonJS({
         case "externalResourcesRequired":
         case "focusable":
         case "preserveAlpha":
-          null != value && "function" !== typeof value && "symbol" !== typeof value ? domElement.setAttribute(key, "" + value) : domElement.removeAttribute(key);
+          null != value2 && "function" !== typeof value2 && "symbol" !== typeof value2 ? domElement.setAttribute(key, "" + value2) : domElement.removeAttribute(key);
           break;
         case "inert":
         case "allowFullScreen":
@@ -12014,33 +12014,33 @@ var require_react_dom_client_production = __commonJS({
         case "scoped":
         case "seamless":
         case "itemScope":
-          value && "function" !== typeof value && "symbol" !== typeof value ? domElement.setAttribute(key, "") : domElement.removeAttribute(key);
+          value2 && "function" !== typeof value2 && "symbol" !== typeof value2 ? domElement.setAttribute(key, "") : domElement.removeAttribute(key);
           break;
         case "capture":
         case "download":
-          true === value ? domElement.setAttribute(key, "") : false !== value && null != value && "function" !== typeof value && "symbol" !== typeof value ? domElement.setAttribute(key, value) : domElement.removeAttribute(key);
+          true === value2 ? domElement.setAttribute(key, "") : false !== value2 && null != value2 && "function" !== typeof value2 && "symbol" !== typeof value2 ? domElement.setAttribute(key, value2) : domElement.removeAttribute(key);
           break;
         case "cols":
         case "rows":
         case "size":
         case "span":
-          null != value && "function" !== typeof value && "symbol" !== typeof value && !isNaN(value) && 1 <= value ? domElement.setAttribute(key, value) : domElement.removeAttribute(key);
+          null != value2 && "function" !== typeof value2 && "symbol" !== typeof value2 && !isNaN(value2) && 1 <= value2 ? domElement.setAttribute(key, value2) : domElement.removeAttribute(key);
           break;
         case "rowSpan":
         case "start":
-          null == value || "function" === typeof value || "symbol" === typeof value || isNaN(value) ? domElement.removeAttribute(key) : domElement.setAttribute(key, value);
+          null == value2 || "function" === typeof value2 || "symbol" === typeof value2 || isNaN(value2) ? domElement.removeAttribute(key) : domElement.setAttribute(key, value2);
           break;
         case "popover":
           listenToNonDelegatedEvent("beforetoggle", domElement);
           listenToNonDelegatedEvent("toggle", domElement);
-          setValueForAttribute(domElement, "popover", value);
+          setValueForAttribute(domElement, "popover", value2);
           break;
         case "xlinkActuate":
           setValueForNamespacedAttribute(
             domElement,
             "http://www.w3.org/1999/xlink",
             "xlink:actuate",
-            value
+            value2
           );
           break;
         case "xlinkArcrole":
@@ -12048,7 +12048,7 @@ var require_react_dom_client_production = __commonJS({
             domElement,
             "http://www.w3.org/1999/xlink",
             "xlink:arcrole",
-            value
+            value2
           );
           break;
         case "xlinkRole":
@@ -12056,7 +12056,7 @@ var require_react_dom_client_production = __commonJS({
             domElement,
             "http://www.w3.org/1999/xlink",
             "xlink:role",
-            value
+            value2
           );
           break;
         case "xlinkShow":
@@ -12064,7 +12064,7 @@ var require_react_dom_client_production = __commonJS({
             domElement,
             "http://www.w3.org/1999/xlink",
             "xlink:show",
-            value
+            value2
           );
           break;
         case "xlinkTitle":
@@ -12072,7 +12072,7 @@ var require_react_dom_client_production = __commonJS({
             domElement,
             "http://www.w3.org/1999/xlink",
             "xlink:title",
-            value
+            value2
           );
           break;
         case "xlinkType":
@@ -12080,7 +12080,7 @@ var require_react_dom_client_production = __commonJS({
             domElement,
             "http://www.w3.org/1999/xlink",
             "xlink:type",
-            value
+            value2
           );
           break;
         case "xmlBase":
@@ -12088,7 +12088,7 @@ var require_react_dom_client_production = __commonJS({
             domElement,
             "http://www.w3.org/XML/1998/namespace",
             "xml:base",
-            value
+            value2
           );
           break;
         case "xmlLang":
@@ -12096,7 +12096,7 @@ var require_react_dom_client_production = __commonJS({
             domElement,
             "http://www.w3.org/XML/1998/namespace",
             "xml:lang",
-            value
+            value2
           );
           break;
         case "xmlSpace":
@@ -12104,30 +12104,30 @@ var require_react_dom_client_production = __commonJS({
             domElement,
             "http://www.w3.org/XML/1998/namespace",
             "xml:space",
-            value
+            value2
           );
           break;
         case "is":
-          setValueForAttribute(domElement, "is", value);
+          setValueForAttribute(domElement, "is", value2);
           break;
         case "innerText":
         case "textContent":
           break;
         default:
           if (!(2 < key.length) || "o" !== key[0] && "O" !== key[0] || "n" !== key[1] && "N" !== key[1])
-            key = aliases.get(key) || key, setValueForAttribute(domElement, key, value);
+            key = aliases.get(key) || key, setValueForAttribute(domElement, key, value2);
       }
     }
-    function setPropOnCustomElement(domElement, tag, key, value, props, prevValue) {
+    function setPropOnCustomElement(domElement, tag, key, value2, props, prevValue) {
       switch (key) {
         case "style":
-          setValueForStyles(domElement, value, prevValue);
+          setValueForStyles(domElement, value2, prevValue);
           break;
         case "dangerouslySetInnerHTML":
-          if (null != value) {
-            if ("object" !== typeof value || !("__html" in value))
+          if (null != value2) {
+            if ("object" !== typeof value2 || !("__html" in value2))
               throw Error(formatProdErrorMessage(61));
-            key = value.__html;
+            key = value2.__html;
             if (null != key) {
               if (null != props.children) throw Error(formatProdErrorMessage(60));
               domElement.innerHTML = key;
@@ -12135,16 +12135,16 @@ var require_react_dom_client_production = __commonJS({
           }
           break;
         case "children":
-          "string" === typeof value ? setTextContent(domElement, value) : ("number" === typeof value || "bigint" === typeof value) && setTextContent(domElement, "" + value);
+          "string" === typeof value2 ? setTextContent(domElement, value2) : ("number" === typeof value2 || "bigint" === typeof value2) && setTextContent(domElement, "" + value2);
           break;
         case "onScroll":
-          null != value && listenToNonDelegatedEvent("scroll", domElement);
+          null != value2 && listenToNonDelegatedEvent("scroll", domElement);
           break;
         case "onScrollEnd":
-          null != value && listenToNonDelegatedEvent("scrollend", domElement);
+          null != value2 && listenToNonDelegatedEvent("scrollend", domElement);
           break;
         case "onClick":
-          null != value && (domElement.onclick = noop$1);
+          null != value2 && (domElement.onclick = noop$1);
           break;
         case "suppressContentEditableWarning":
         case "suppressHydrationWarning":
@@ -12157,12 +12157,12 @@ var require_react_dom_client_production = __commonJS({
         default:
           if (!registrationNameDependencies.hasOwnProperty(key))
             a: {
-              if ("o" === key[0] && "n" === key[1] && (props = key.endsWith("Capture"), tag = key.slice(2, props ? key.length - 7 : void 0), prevValue = domElement[internalPropsKey] || null, prevValue = null != prevValue ? prevValue[key] : null, "function" === typeof prevValue && domElement.removeEventListener(tag, prevValue, props), "function" === typeof value)) {
+              if ("o" === key[0] && "n" === key[1] && (props = key.endsWith("Capture"), tag = key.slice(2, props ? key.length - 7 : void 0), prevValue = domElement[internalPropsKey] || null, prevValue = null != prevValue ? prevValue[key] : null, "function" === typeof prevValue && domElement.removeEventListener(tag, prevValue, props), "function" === typeof value2)) {
                 "function" !== typeof prevValue && null !== prevValue && (key in domElement ? domElement[key] = null : domElement.hasAttribute(key) && domElement.removeAttribute(key));
-                domElement.addEventListener(tag, value, props);
+                domElement.addEventListener(tag, value2, props);
                 break a;
               }
-              key in domElement ? domElement[key] = value : true === value ? domElement.setAttribute(key, "") : setValueForAttribute(domElement, key, value);
+              key in domElement ? domElement[key] = value2 : true === value2 ? domElement.setAttribute(key, "") : setValueForAttribute(domElement, key, value2);
             }
       }
     }
@@ -12380,7 +12380,7 @@ var require_react_dom_client_production = __commonJS({
         case "li":
           break;
         case "input":
-          var name = null, type = null, value = null, defaultValue = null, lastDefaultValue = null, checked = null, defaultChecked = null;
+          var name = null, type = null, value2 = null, defaultValue = null, lastDefaultValue = null, checked = null, defaultChecked = null;
           for (propKey in lastProps) {
             var lastProp = lastProps[propKey];
             if (lastProps.hasOwnProperty(propKey) && null != lastProp)
@@ -12413,7 +12413,7 @@ var require_react_dom_client_production = __commonJS({
                   defaultChecked = propKey;
                   break;
                 case "value":
-                  value = propKey;
+                  value2 = propKey;
                   break;
                 case "defaultValue":
                   defaultValue = propKey;
@@ -12436,7 +12436,7 @@ var require_react_dom_client_production = __commonJS({
           }
           updateInput(
             domElement,
-            value,
+            value2,
             defaultValue,
             lastDefaultValue,
             checked,
@@ -12446,7 +12446,7 @@ var require_react_dom_client_production = __commonJS({
           );
           return;
         case "select":
-          propKey = value = defaultValue = propKey$201 = null;
+          propKey = value2 = defaultValue = propKey$201 = null;
           for (type in lastProps)
             if (lastDefaultValue = lastProps[type], lastProps.hasOwnProperty(type) && null != lastDefaultValue)
               switch (type) {
@@ -12474,7 +12474,7 @@ var require_react_dom_client_production = __commonJS({
                   defaultValue = type;
                   break;
                 case "multiple":
-                  value = type;
+                  value2 = type;
                 default:
                   type !== lastDefaultValue && setProp(
                     domElement,
@@ -12486,7 +12486,7 @@ var require_react_dom_client_production = __commonJS({
                   );
               }
           tag = defaultValue;
-          lastProps = value;
+          lastProps = value2;
           nextProps = propKey;
           null != propKey$201 ? updateOptions(domElement, !!lastProps, propKey$201, false) : !!nextProps !== !!lastProps && (null != tag ? updateOptions(domElement, !!lastProps, tag, true) : updateOptions(domElement, !!lastProps, lastProps ? [] : "", false));
           return;
@@ -12502,9 +12502,9 @@ var require_react_dom_client_production = __commonJS({
                 default:
                   setProp(domElement, tag, defaultValue, null, nextProps, name);
               }
-          for (value in nextProps)
-            if (name = nextProps[value], type = lastProps[value], nextProps.hasOwnProperty(value) && (null != name || null != type))
-              switch (value) {
+          for (value2 in nextProps)
+            if (name = nextProps[value2], type = lastProps[value2], nextProps.hasOwnProperty(value2) && (null != name || null != type))
+              switch (value2) {
                 case "value":
                   propKey$201 = name;
                   break;
@@ -12517,7 +12517,7 @@ var require_react_dom_client_production = __commonJS({
                   if (null != name) throw Error(formatProdErrorMessage(91));
                   break;
                 default:
-                  name !== type && setProp(domElement, tag, value, name, nextProps, type);
+                  name !== type && setProp(domElement, tag, value2, name, nextProps, type);
               }
           updateTextarea(domElement, propKey$201, propKey);
           return;
@@ -12688,10 +12688,10 @@ var require_react_dom_client_production = __commonJS({
     }
     var currentPopstateTransitionEvent = null;
     function shouldAttemptEagerTransition() {
-      var event = window.event;
-      if (event && "popstate" === event.type) {
-        if (event === currentPopstateTransitionEvent) return false;
-        currentPopstateTransitionEvent = event;
+      var event2 = window.event;
+      if (event2 && "popstate" === event2.type) {
+        if (event2 === currentPopstateTransitionEvent) return false;
+        currentPopstateTransitionEvent = event2;
         return true;
       }
       currentPopstateTransitionEvent = null;
@@ -12700,8 +12700,8 @@ var require_react_dom_client_production = __commonJS({
     var scheduleTimeout = "function" === typeof setTimeout ? setTimeout : void 0;
     var cancelTimeout = "function" === typeof clearTimeout ? clearTimeout : void 0;
     var localPromise = "function" === typeof Promise ? Promise : void 0;
-    var scheduleMicrotask = "function" === typeof queueMicrotask ? queueMicrotask : "undefined" !== typeof localPromise ? function(callback) {
-      return localPromise.resolve(null).then(callback).catch(handleErrorInNextTick);
+    var scheduleMicrotask = "function" === typeof queueMicrotask ? queueMicrotask : "undefined" !== typeof localPromise ? function(callback2) {
+      return localPromise.resolve(null).then(callback2).catch(handleErrorInNextTick);
     } : scheduleTimeout;
     function handleErrorInNextTick(error) {
       setTimeout(function() {
@@ -12844,14 +12844,14 @@ var require_react_dom_client_production = __commonJS({
     function isSuspenseInstanceFallback(instance) {
       return "$!" === instance.data || "$?" === instance.data && "loading" !== instance.ownerDocument.readyState;
     }
-    function registerSuspenseInstanceRetry(instance, callback) {
+    function registerSuspenseInstanceRetry(instance, callback2) {
       var ownerDocument = instance.ownerDocument;
-      if ("$~" === instance.data) instance._reactRetry = callback;
+      if ("$~" === instance.data) instance._reactRetry = callback2;
       else if ("$?" !== instance.data || "loading" !== ownerDocument.readyState)
-        callback();
+        callback2();
       else {
         var listener = function() {
-          callback();
+          callback2();
           ownerDocument.removeEventListener("DOMContentLoaded", listener);
         };
         ownerDocument.addEventListener("DOMContentLoaded", listener);
@@ -13368,7 +13368,7 @@ var require_react_dom_client_production = __commonJS({
     var estimatedBytesWithinLimit = 0;
     function waitForCommitToBeReady(state, timeoutOffset) {
       state.stylesheets && 0 === state.count && insertSuspendedStylesheets(state, state.stylesheets);
-      return 0 < state.count || 0 < state.imgCount ? function(commit) {
+      return 0 < state.count || 0 < state.imgCount ? function(commit2) {
         var stylesheetTimer = setTimeout(function() {
           state.stylesheets && insertSuspendedStylesheets(state, state.stylesheets);
           if (state.unsuspend) {
@@ -13389,7 +13389,7 @@ var require_react_dom_client_production = __commonJS({
           },
           (state.imgBytes > estimatedBytesWithinLimit ? 50 : 800) + timeoutOffset
         );
-        state.unsuspend = commit;
+        state.unsuspend = commit2;
         return function() {
           state.unsuspend = null;
           clearTimeout(stylesheetTimer);
@@ -13504,13 +13504,13 @@ var require_react_dom_client_production = __commonJS({
       parentComponent = emptyContextObject;
       return parentComponent;
     }
-    function updateContainerImpl(rootFiber, lane, element, container, parentComponent, callback) {
+    function updateContainerImpl(rootFiber, lane, element, container, parentComponent, callback2) {
       parentComponent = getContextForSubtree(parentComponent);
       null === container.context ? container.context = parentComponent : container.pendingContext = parentComponent;
       container = createUpdate(lane);
       container.payload = { element };
-      callback = void 0 === callback ? null : callback;
-      null !== callback && (container.callback = callback);
+      callback2 = void 0 === callback2 ? null : callback2;
+      null !== callback2 && (container.callback = callback2);
       element = enqueueUpdate(rootFiber, container, lane);
       null !== element && (scheduleUpdateOnFiber(element, rootFiber, lane), entangleTransitions(element, rootFiber, lane));
     }
@@ -13987,8 +13987,8 @@ var require_react_dom_client_production = __commonJS({
         }
     }
     function defaultOnDefaultTransitionIndicator() {
-      function handleNavigate(event) {
-        event.canIntercept && "react-transition" === event.info && event.intercept({
+      function handleNavigate(event2) {
+        event2.canIntercept && "react-transition" === event2.info && event2.intercept({
           handler: function() {
             return new Promise(function(resolve) {
               return pendingResolve = resolve;
@@ -14157,9 +14157,9 @@ var require_react_dom_client_production = __commonJS({
   }
 });
 
-// ../node_modules/react-dom/cjs/react-dom-client.development.js
+// node_modules/react-dom/cjs/react-dom-client.development.js
 var require_react_dom_client_development = __commonJS({
-  "../node_modules/react-dom/cjs/react-dom-client.development.js"(exports) {
+  "node_modules/react-dom/cjs/react-dom-client.development.js"(exports) {
     "use strict";
     "production" !== process.env.NODE_ENV && function() {
       function findHook(fiber, id) {
@@ -14167,10 +14167,10 @@ var require_react_dom_client_development = __commonJS({
           fiber = fiber.next, id--;
         return fiber;
       }
-      function copyWithSetImpl(obj, path, index, value) {
-        if (index >= path.length) return value;
+      function copyWithSetImpl(obj, path, index, value2) {
+        if (index >= path.length) return value2;
         var key = path[index], updated = isArrayImpl(obj) ? obj.slice() : assign({}, obj);
-        updated[key] = copyWithSetImpl(obj[key], path, index + 1, value);
+        updated[key] = copyWithSetImpl(obj[key], path, index + 1, value2);
         return updated;
       }
       function copyWithRename(obj, oldPath, newPath) {
@@ -14226,8 +14226,8 @@ var require_react_dom_client_development = __commonJS({
       }
       function setToSortedString(set) {
         var array = [];
-        set.forEach(function(value) {
-          array.push(value);
+        set.forEach(function(value2) {
+          array.push(value2);
         });
         return array.sort().join(", ");
       }
@@ -14496,11 +14496,11 @@ var require_react_dom_client_development = __commonJS({
       function pop(cursor, fiber) {
         0 > index$jscomp$0 ? console.error("Unexpected pop.") : (fiber !== fiberStack[index$jscomp$0] && console.error("Unexpected Fiber popped."), cursor.current = valueStack[index$jscomp$0], valueStack[index$jscomp$0] = null, fiberStack[index$jscomp$0] = null, index$jscomp$0--);
       }
-      function push(cursor, value, fiber) {
+      function push(cursor, value2, fiber) {
         index$jscomp$0++;
         valueStack[index$jscomp$0] = cursor.current;
         fiberStack[index$jscomp$0] = fiber;
-        cursor.current = value;
+        cursor.current = value2;
       }
       function requiredContext(c) {
         null === c && console.error(
@@ -14868,13 +14868,13 @@ var require_react_dom_client_development = __commonJS({
         }
         return JSCompiler_inline_result;
       }
-      function runWithFiberInDEV(fiber, callback, arg0, arg1, arg2, arg3, arg4) {
+      function runWithFiberInDEV(fiber, callback2, arg0, arg1, arg2, arg3, arg4) {
         var previousFiber = current;
         setCurrentFiber(fiber);
         try {
           return null !== fiber && fiber._debugTask ? fiber._debugTask.run(
-            callback.bind(null, arg0, arg1, arg2, arg3, arg4)
-          ) : callback(arg0, arg1, arg2, arg3, arg4);
+            callback2.bind(null, arg0, arg1, arg2, arg3, arg4)
+          ) : callback2(arg0, arg1, arg2, arg3, arg4);
         } finally {
           setCurrentFiber(previousFiber);
         }
@@ -14887,41 +14887,41 @@ var require_react_dom_client_development = __commonJS({
         isRendering = false;
         current = fiber;
       }
-      function typeName(value) {
-        return "function" === typeof Symbol && Symbol.toStringTag && value[Symbol.toStringTag] || value.constructor.name || "Object";
+      function typeName(value2) {
+        return "function" === typeof Symbol && Symbol.toStringTag && value2[Symbol.toStringTag] || value2.constructor.name || "Object";
       }
-      function willCoercionThrow(value) {
+      function willCoercionThrow(value2) {
         try {
-          return testStringCoercion(value), false;
+          return testStringCoercion(value2), false;
         } catch (e2) {
           return true;
         }
       }
-      function testStringCoercion(value) {
-        return "" + value;
+      function testStringCoercion(value2) {
+        return "" + value2;
       }
-      function checkAttributeStringCoercion(value, attributeName) {
-        if (willCoercionThrow(value))
+      function checkAttributeStringCoercion(value2, attributeName) {
+        if (willCoercionThrow(value2))
           return console.error(
             "The provided `%s` attribute is an unsupported type %s. This value must be coerced to a string before using it here.",
             attributeName,
-            typeName(value)
-          ), testStringCoercion(value);
+            typeName(value2)
+          ), testStringCoercion(value2);
       }
-      function checkCSSPropertyStringCoercion(value, propName) {
-        if (willCoercionThrow(value))
+      function checkCSSPropertyStringCoercion(value2, propName) {
+        if (willCoercionThrow(value2))
           return console.error(
             "The provided `%s` CSS property is an unsupported type %s. This value must be coerced to a string before using it here.",
             propName,
-            typeName(value)
-          ), testStringCoercion(value);
+            typeName(value2)
+          ), testStringCoercion(value2);
       }
-      function checkFormFieldValueStringCoercion(value) {
-        if (willCoercionThrow(value))
+      function checkFormFieldValueStringCoercion(value2) {
+        if (willCoercionThrow(value2))
           return console.error(
             "Form field values (value, checked, defaultValue, or defaultChecked props) must be strings, not %s. This value must be coerced to a string before using it here.",
-            typeName(value)
-          ), testStringCoercion(value);
+            typeName(value2)
+          ), testStringCoercion(value2);
       }
       function injectInternals(internals) {
         if ("undefined" === typeof __REACT_DEVTOOLS_GLOBAL_HOOK__) return false;
@@ -15309,11 +15309,11 @@ var require_react_dom_client_development = __commonJS({
           return node2 === "" + expected ? expected : node2;
         }
       }
-      function setValueForAttribute(node2, name, value) {
+      function setValueForAttribute(node2, name, value2) {
         if (isAttributeNameSafe(name))
-          if (null === value) node2.removeAttribute(name);
+          if (null === value2) node2.removeAttribute(name);
           else {
-            switch (typeof value) {
+            switch (typeof value2) {
               case "undefined":
               case "function":
               case "symbol":
@@ -15326,14 +15326,14 @@ var require_react_dom_client_development = __commonJS({
                   return;
                 }
             }
-            checkAttributeStringCoercion(value, name);
-            node2.setAttribute(name, "" + value);
+            checkAttributeStringCoercion(value2, name);
+            node2.setAttribute(name, "" + value2);
           }
       }
-      function setValueForKnownAttribute(node2, name, value) {
-        if (null === value) node2.removeAttribute(name);
+      function setValueForKnownAttribute(node2, name, value2) {
+        if (null === value2) node2.removeAttribute(name);
         else {
-          switch (typeof value) {
+          switch (typeof value2) {
             case "undefined":
             case "function":
             case "symbol":
@@ -15341,14 +15341,14 @@ var require_react_dom_client_development = __commonJS({
               node2.removeAttribute(name);
               return;
           }
-          checkAttributeStringCoercion(value, name);
-          node2.setAttribute(name, "" + value);
+          checkAttributeStringCoercion(value2, name);
+          node2.setAttribute(name, "" + value2);
         }
       }
-      function setValueForNamespacedAttribute(node2, namespace, name, value) {
-        if (null === value) node2.removeAttribute(name);
+      function setValueForNamespacedAttribute(node2, namespace, name, value2) {
+        if (null === value2) node2.removeAttribute(name);
         else {
-          switch (typeof value) {
+          switch (typeof value2) {
             case "undefined":
             case "function":
             case "symbol":
@@ -15356,20 +15356,20 @@ var require_react_dom_client_development = __commonJS({
               node2.removeAttribute(name);
               return;
           }
-          checkAttributeStringCoercion(value, name);
-          node2.setAttributeNS(namespace, name, "" + value);
+          checkAttributeStringCoercion(value2, name);
+          node2.setAttributeNS(namespace, name, "" + value2);
         }
       }
-      function getToStringValue(value) {
-        switch (typeof value) {
+      function getToStringValue(value2) {
+        switch (typeof value2) {
           case "bigint":
           case "boolean":
           case "number":
           case "string":
           case "undefined":
-            return value;
+            return value2;
           case "object":
-            return checkFormFieldValueStringCoercion(value), value;
+            return checkFormFieldValueStringCoercion(value2), value2;
           default:
             return "";
         }
@@ -15384,16 +15384,16 @@ var require_react_dom_client_development = __commonJS({
           valueField
         );
         if (!node2.hasOwnProperty(valueField) && "undefined" !== typeof descriptor && "function" === typeof descriptor.get && "function" === typeof descriptor.set) {
-          var get = descriptor.get, set = descriptor.set;
+          var get2 = descriptor.get, set = descriptor.set;
           Object.defineProperty(node2, valueField, {
             configurable: true,
             get: function() {
-              return get.call(this);
+              return get2.call(this);
             },
-            set: function(value) {
-              checkFormFieldValueStringCoercion(value);
-              currentValue = "" + value;
-              set.call(this, value);
+            set: function(value2) {
+              checkFormFieldValueStringCoercion(value2);
+              currentValue = "" + value2;
+              set.call(this, value2);
             }
           });
           Object.defineProperty(node2, valueField, {
@@ -15403,9 +15403,9 @@ var require_react_dom_client_development = __commonJS({
             getValue: function() {
               return currentValue;
             },
-            setValue: function(value) {
-              checkFormFieldValueStringCoercion(value);
-              currentValue = "" + value;
+            setValue: function(value2) {
+              checkFormFieldValueStringCoercion(value2);
+              currentValue = "" + value2;
             },
             stopTracking: function() {
               node2._valueTracker = null;
@@ -15429,9 +15429,9 @@ var require_react_dom_client_development = __commonJS({
         var tracker = node2._valueTracker;
         if (!tracker) return true;
         var lastValue = tracker.getValue();
-        var value = "";
-        node2 && (value = isCheckable(node2) ? node2.checked ? "true" : "false" : node2.value);
-        node2 = value;
+        var value2 = "";
+        node2 && (value2 = isCheckable(node2) ? node2.checked ? "true" : "false" : node2.value);
+        node2 = value2;
         return node2 !== lastValue ? (tracker.setValue(node2), true) : false;
       }
       function getActiveElement(doc) {
@@ -15443,8 +15443,8 @@ var require_react_dom_client_development = __commonJS({
           return doc.body;
         }
       }
-      function escapeSelectorAttributeValueInsideDoubleQuotes(value) {
-        return value.replace(
+      function escapeSelectorAttributeValueInsideDoubleQuotes(value2) {
+        return value2.replace(
           escapeSelectorAttributeValueInsideDoubleQuotesRegex,
           function(ch) {
             return "\\" + ch.charCodeAt(0).toString(16) + " ";
@@ -15463,33 +15463,33 @@ var require_react_dom_client_development = __commonJS({
           props.type
         ), didWarnValueDefaultValue$1 = true);
       }
-      function updateInput(element, value, defaultValue, lastDefaultValue, checked, defaultChecked, type, name) {
+      function updateInput(element, value2, defaultValue, lastDefaultValue, checked, defaultChecked, type, name) {
         element.name = "";
         null != type && "function" !== typeof type && "symbol" !== typeof type && "boolean" !== typeof type ? (checkAttributeStringCoercion(type, "type"), element.type = type) : element.removeAttribute("type");
-        if (null != value)
+        if (null != value2)
           if ("number" === type) {
-            if (0 === value && "" === element.value || element.value != value)
-              element.value = "" + getToStringValue(value);
+            if (0 === value2 && "" === element.value || element.value != value2)
+              element.value = "" + getToStringValue(value2);
           } else
-            element.value !== "" + getToStringValue(value) && (element.value = "" + getToStringValue(value));
+            element.value !== "" + getToStringValue(value2) && (element.value = "" + getToStringValue(value2));
         else
           "submit" !== type && "reset" !== type || element.removeAttribute("value");
-        null != value ? setDefaultValue(element, type, getToStringValue(value)) : null != defaultValue ? setDefaultValue(element, type, getToStringValue(defaultValue)) : null != lastDefaultValue && element.removeAttribute("value");
+        null != value2 ? setDefaultValue(element, type, getToStringValue(value2)) : null != defaultValue ? setDefaultValue(element, type, getToStringValue(defaultValue)) : null != lastDefaultValue && element.removeAttribute("value");
         null == checked && null != defaultChecked && (element.defaultChecked = !!defaultChecked);
         null != checked && (element.checked = checked && "function" !== typeof checked && "symbol" !== typeof checked);
         null != name && "function" !== typeof name && "symbol" !== typeof name && "boolean" !== typeof name ? (checkAttributeStringCoercion(name, "name"), element.name = "" + getToStringValue(name)) : element.removeAttribute("name");
       }
-      function initInput(element, value, defaultValue, checked, defaultChecked, type, name, isHydrating2) {
+      function initInput(element, value2, defaultValue, checked, defaultChecked, type, name, isHydrating2) {
         null != type && "function" !== typeof type && "symbol" !== typeof type && "boolean" !== typeof type && (checkAttributeStringCoercion(type, "type"), element.type = type);
-        if (null != value || null != defaultValue) {
-          if (!("submit" !== type && "reset" !== type || void 0 !== value && null !== value)) {
+        if (null != value2 || null != defaultValue) {
+          if (!("submit" !== type && "reset" !== type || void 0 !== value2 && null !== value2)) {
             track(element);
             return;
           }
           defaultValue = null != defaultValue ? "" + getToStringValue(defaultValue) : "";
-          value = null != value ? "" + getToStringValue(value) : defaultValue;
-          isHydrating2 || value === element.value || (element.value = value);
-          element.defaultValue = value;
+          value2 = null != value2 ? "" + getToStringValue(value2) : defaultValue;
+          isHydrating2 || value2 === element.value || (element.value = value2);
+          element.defaultValue = value2;
         }
         checked = null != checked ? checked : defaultChecked;
         checked = "function" !== typeof checked && "symbol" !== typeof checked && !!checked;
@@ -15498,8 +15498,8 @@ var require_react_dom_client_development = __commonJS({
         null != name && "function" !== typeof name && "symbol" !== typeof name && "boolean" !== typeof name && (checkAttributeStringCoercion(name, "name"), element.name = name);
         track(element);
       }
-      function setDefaultValue(node2, type, value) {
-        "number" === type && getActiveElement(node2.ownerDocument) === node2 || node2.defaultValue === "" + value || (node2.defaultValue = "" + value);
+      function setDefaultValue(node2, type, value2) {
+        "number" === type && getActiveElement(node2.ownerDocument) === node2 || node2.defaultValue === "" + value2 || (node2.defaultValue = "" + value2);
       }
       function validateOptionProps(element, props) {
         null == props.value && ("object" === typeof props.children && null !== props.children ? React8.Children.forEach(props.children, function(child) {
@@ -15568,15 +15568,15 @@ var require_react_dom_client_development = __commonJS({
           "Use the `defaultValue` or `value` props instead of setting children on <textarea>."
         );
       }
-      function updateTextarea(element, value, defaultValue) {
-        if (null != value && (value = "" + getToStringValue(value), value !== element.value && (element.value = value), null == defaultValue)) {
-          element.defaultValue !== value && (element.defaultValue = value);
+      function updateTextarea(element, value2, defaultValue) {
+        if (null != value2 && (value2 = "" + getToStringValue(value2), value2 !== element.value && (element.value = value2), null == defaultValue)) {
+          element.defaultValue !== value2 && (element.defaultValue = value2);
           return;
         }
         element.defaultValue = null != defaultValue ? "" + getToStringValue(defaultValue) : "";
       }
-      function initTextarea(element, value, defaultValue, children) {
-        if (null == value) {
+      function initTextarea(element, value2, defaultValue, children) {
+        if (null == value2) {
           if (null != children) {
             if (null != defaultValue)
               throw Error(
@@ -15590,9 +15590,9 @@ var require_react_dom_client_development = __commonJS({
             defaultValue = children;
           }
           null == defaultValue && (defaultValue = "");
-          value = defaultValue;
+          value2 = defaultValue;
         }
-        defaultValue = getToStringValue(value);
+        defaultValue = getToStringValue(value2);
         element.defaultValue = defaultValue;
         children = element.textContent;
         children === defaultValue && "" !== children && null !== children && (element.value = children);
@@ -15654,26 +15654,26 @@ var require_react_dom_client_development = __commonJS({
           return p0;
         });
       }
-      function describeValue(value, maxLength) {
-        switch (typeof value) {
+      function describeValue(value2, maxLength) {
+        switch (typeof value2) {
           case "string":
-            return value = JSON.stringify(value), value.length > maxLength ? 5 > maxLength ? '"..."' : value.slice(0, maxLength - 4) + '..."' : value;
+            return value2 = JSON.stringify(value2), value2.length > maxLength ? 5 > maxLength ? '"..."' : value2.slice(0, maxLength - 4) + '..."' : value2;
           case "object":
-            if (null === value) return "null";
-            if (isArrayImpl(value)) return "[...]";
-            if (value.$$typeof === REACT_ELEMENT_TYPE)
-              return (maxLength = getComponentNameFromType(value.type)) ? "<" + maxLength + ">" : "<...>";
-            var name = objectName(value);
+            if (null === value2) return "null";
+            if (isArrayImpl(value2)) return "[...]";
+            if (value2.$$typeof === REACT_ELEMENT_TYPE)
+              return (maxLength = getComponentNameFromType(value2.type)) ? "<" + maxLength + ">" : "<...>";
+            var name = objectName(value2);
             if ("Object" === name) {
               name = "";
               maxLength -= 2;
-              for (var propName in value)
-                if (value.hasOwnProperty(propName)) {
+              for (var propName in value2)
+                if (value2.hasOwnProperty(propName)) {
                   var jsonPropName = JSON.stringify(propName);
                   jsonPropName !== '"' + propName + '"' && (propName = jsonPropName);
                   maxLength -= propName.length - 2;
                   jsonPropName = describeValue(
-                    value[propName],
+                    value2[propName],
                     15 > maxLength ? maxLength : 15
                   );
                   maxLength -= jsonPropName.length;
@@ -15687,13 +15687,13 @@ var require_react_dom_client_development = __commonJS({
             }
             return name;
           case "function":
-            return (maxLength = value.displayName || value.name) ? "function " + maxLength : "function";
+            return (maxLength = value2.displayName || value2.name) ? "function " + maxLength : "function";
           default:
-            return String(value);
+            return String(value2);
         }
       }
-      function describePropValue(value, maxLength) {
-        return "string" !== typeof value || needsEscaping.test(value) ? "{" + describeValue(value, maxLength - 2) + "}" : value.length > maxLength - 2 ? 5 > maxLength ? '"..."' : '"' + value.slice(0, maxLength - 5) + '..."' : '"' + value + '"';
+      function describePropValue(value2, maxLength) {
+        return "string" !== typeof value2 || needsEscaping.test(value2) ? "{" + describeValue(value2, maxLength - 2) + "}" : value2.length > maxLength - 2 ? 5 > maxLength ? '"..."' : '"' + value2.slice(0, maxLength - 5) + '..."' : '"' + value2 + '"';
       }
       function describeExpandedElement(type, props, rowPrefix) {
         var remainingRowLength = 120 - rowPrefix.length - type.length, properties = [], propName;
@@ -16084,7 +16084,7 @@ var require_react_dom_client_development = __commonJS({
           return character.toUpperCase();
         });
       }
-      function setValueForStyle(style2, styleName, value) {
+      function setValueForStyle(style2, styleName, value2) {
         var isCustomProperty = 0 === styleName.indexOf("--");
         isCustomProperty || (-1 < styleName.indexOf("-") ? warnedStyleNames.hasOwnProperty(styleName) && warnedStyleNames[styleName] || (warnedStyleNames[styleName] = true, console.error(
           "Unsupported style property %s. Did you mean %s?",
@@ -16094,18 +16094,18 @@ var require_react_dom_client_development = __commonJS({
           "Unsupported vendor-prefixed style property %s. Did you mean %s?",
           styleName,
           styleName.charAt(0).toUpperCase() + styleName.slice(1)
-        )) : !badStyleValueWithSemicolonPattern.test(value) || warnedStyleValues.hasOwnProperty(value) && warnedStyleValues[value] || (warnedStyleValues[value] = true, console.error(
+        )) : !badStyleValueWithSemicolonPattern.test(value2) || warnedStyleValues.hasOwnProperty(value2) && warnedStyleValues[value2] || (warnedStyleValues[value2] = true, console.error(
           `Style property values shouldn't contain a semicolon. Try "%s: %s" instead.`,
           styleName,
-          value.replace(badStyleValueWithSemicolonPattern, "")
-        )), "number" === typeof value && (isNaN(value) ? warnedForNaNValue || (warnedForNaNValue = true, console.error(
+          value2.replace(badStyleValueWithSemicolonPattern, "")
+        )), "number" === typeof value2 && (isNaN(value2) ? warnedForNaNValue || (warnedForNaNValue = true, console.error(
           "`NaN` is an invalid value for the `%s` css style property.",
           styleName
-        )) : isFinite(value) || warnedForInfinityValue || (warnedForInfinityValue = true, console.error(
+        )) : isFinite(value2) || warnedForInfinityValue || (warnedForInfinityValue = true, console.error(
           "`Infinity` is an invalid value for the `%s` css style property.",
           styleName
         ))));
-        null == value || "boolean" === typeof value || "" === value ? isCustomProperty ? style2.setProperty(styleName, "") : "float" === styleName ? style2.cssFloat = "" : style2[styleName] = "" : isCustomProperty ? style2.setProperty(styleName, value) : "number" !== typeof value || 0 === value || unitlessNumbers.has(styleName) ? "float" === styleName ? style2.cssFloat = value : (checkCSSPropertyStringCoercion(value, styleName), style2[styleName] = ("" + value).trim()) : style2[styleName] = value + "px";
+        null == value2 || "boolean" === typeof value2 || "" === value2 ? isCustomProperty ? style2.setProperty(styleName, "") : "float" === styleName ? style2.cssFloat = "" : style2[styleName] = "" : isCustomProperty ? style2.setProperty(styleName, value2) : "number" !== typeof value2 || 0 === value2 || unitlessNumbers.has(styleName) ? "float" === styleName ? style2.cssFloat = value2 : (checkCSSPropertyStringCoercion(value2, styleName), style2[styleName] = ("" + value2).trim()) : style2[styleName] = value2 + "px";
       }
       function setValueForStyles(node2, styles, prevStyles) {
         if (null != styles && "object" !== typeof styles)
@@ -16136,11 +16136,11 @@ var require_react_dom_client_development = __commonJS({
               if (key = expandedUpdates[_key2], (longhands = _key[_key2]) && key !== longhands && (i = key + "," + longhands, !key$jscomp$0[i])) {
                 key$jscomp$0[i] = true;
                 i = console;
-                var value = styles[key];
+                var value2 = styles[key];
                 i.error.call(
                   i,
                   "%s a style property during rerender (%s) when a conflicting property is set (%s) can lead to styling bugs. To avoid this, don't mix shorthand and non-shorthand properties for the same value; instead, replace the shorthand with separate values.",
-                  null == value || "boolean" === typeof value || "" === value ? "Removing" : "Updating",
+                  null == value2 || "boolean" === typeof value2 || "" === value2 ? "Removing" : "Updating",
                   key,
                   longhands
                 );
@@ -16220,7 +16220,7 @@ var require_react_dom_client_development = __commonJS({
           type
         );
       }
-      function validateProperty(tagName, name, value, eventRegistry) {
+      function validateProperty(tagName, name, value2, eventRegistry) {
         if (hasOwnProperty.call(warnedProperties, name) && warnedProperties[name])
           return true;
         var lowerCasedName = name.toLowerCase();
@@ -16228,7 +16228,7 @@ var require_react_dom_client_development = __commonJS({
           return console.error(
             "React uses onFocus and onBlur instead of onFocusIn and onFocusOut. All React events are normalized to bubble, so onFocusIn and onFocusOut are not needed/supported by React."
           ), warnedProperties[name] = true;
-        if ("function" === typeof value && ("form" === tagName && "action" === name || "input" === tagName && "formAction" === name || "button" === tagName && "formAction" === name))
+        if ("function" === typeof value2 && ("form" === tagName && "action" === name || "input" === tagName && "formAction" === name || "button" === tagName && "formAction" === name))
           return true;
         if (null != eventRegistry) {
           tagName = eventRegistry.possibleRegistrationNames;
@@ -16260,12 +16260,12 @@ var require_react_dom_client_development = __commonJS({
           return console.error(
             "The `aria` attribute is reserved for future use in React. Pass individual `aria-` attributes instead."
           ), warnedProperties[name] = true;
-        if ("is" === lowerCasedName && null !== value && void 0 !== value && "string" !== typeof value)
+        if ("is" === lowerCasedName && null !== value2 && void 0 !== value2 && "string" !== typeof value2)
           return console.error(
             "Received a `%s` for a string attribute `is`. If this is expected, cast the value to a string.",
-            typeof value
+            typeof value2
           ), warnedProperties[name] = true;
-        if ("number" === typeof value && isNaN(value))
+        if ("number" === typeof value2 && isNaN(value2))
           return console.error(
             "Received NaN for the `%s` attribute. If this is expected, cast the value to a string.",
             name
@@ -16298,7 +16298,7 @@ var require_react_dom_client_development = __commonJS({
           case "textContent":
             return true;
         }
-        switch (typeof value) {
+        switch (typeof value2) {
           case "boolean":
             switch (name) {
               case "autoFocus":
@@ -16344,19 +16344,19 @@ var require_react_dom_client_development = __commonJS({
                 lowerCasedName = name.toLowerCase().slice(0, 5);
                 if ("data-" === lowerCasedName || "aria-" === lowerCasedName)
                   return true;
-                value ? console.error(
+                value2 ? console.error(
                   'Received `%s` for a non-boolean attribute `%s`.\n\nIf you want to write it to the DOM, pass a string instead: %s="%s" or %s={value.toString()}.',
-                  value,
+                  value2,
                   name,
                   name,
-                  value,
+                  value2,
                   name
                 ) : console.error(
                   'Received `%s` for a non-boolean attribute `%s`.\n\nIf you want to write it to the DOM, pass a string instead: %s="%s" or %s={value.toString()}.\n\nIf you used to conditionally omit it with %s={condition && value}, pass %s={condition ? value : undefined} instead.',
-                  value,
+                  value2,
                   name,
                   name,
-                  value,
+                  value2,
                   name,
                   name,
                   name
@@ -16367,7 +16367,7 @@ var require_react_dom_client_development = __commonJS({
           case "symbol":
             return warnedProperties[name] = true, false;
           case "string":
-            if ("false" === value || "true" === value) {
+            if ("false" === value2 || "true" === value2) {
               switch (name) {
                 case "checked":
                 case "selected":
@@ -16402,11 +16402,11 @@ var require_react_dom_client_development = __commonJS({
               }
               console.error(
                 "Received the string `%s` for the boolean attribute `%s`. %s Did you mean %s={%s}?",
-                value,
+                value2,
                 name,
-                "false" === value ? "The browser will interpret it as a truthy value." : 'Although this works, it will not work as expected if you pass the string "false".',
+                "false" === value2 ? "The browser will interpret it as a truthy value." : 'Although this works, it will not work as expected if you pass the string "false".',
                 name,
-                value
+                value2
               );
               warnedProperties[name] = true;
             }
@@ -16578,12 +16578,12 @@ var require_react_dom_client_development = __commonJS({
         assign(SyntheticBaseEvent.prototype, {
           preventDefault: function() {
             this.defaultPrevented = true;
-            var event = this.nativeEvent;
-            event && (event.preventDefault ? event.preventDefault() : "unknown" !== typeof event.returnValue && (event.returnValue = false), this.isDefaultPrevented = functionThatReturnsTrue);
+            var event2 = this.nativeEvent;
+            event2 && (event2.preventDefault ? event2.preventDefault() : "unknown" !== typeof event2.returnValue && (event2.returnValue = false), this.isDefaultPrevented = functionThatReturnsTrue);
           },
           stopPropagation: function() {
-            var event = this.nativeEvent;
-            event && (event.stopPropagation ? event.stopPropagation() : "unknown" !== typeof event.cancelBubble && (event.cancelBubble = true), this.isPropagationStopped = functionThatReturnsTrue);
+            var event2 = this.nativeEvent;
+            event2 && (event2.stopPropagation ? event2.stopPropagation() : "unknown" !== typeof event2.cancelBubble && (event2.cancelBubble = true), this.isPropagationStopped = functionThatReturnsTrue);
           },
           persist: function() {
           },
@@ -16812,15 +16812,15 @@ var require_react_dom_client_development = __commonJS({
       }
       function getArrayKind(array) {
         for (var kind = EMPTY_ARRAY, i = 0; i < array.length; i++) {
-          var value = array[i];
-          if ("object" === typeof value && null !== value)
-            if (isArrayImpl(value) && 2 === value.length && "string" === typeof value[0]) {
+          var value2 = array[i];
+          if ("object" === typeof value2 && null !== value2)
+            if (isArrayImpl(value2) && 2 === value2.length && "string" === typeof value2[0]) {
               if (kind !== EMPTY_ARRAY && kind !== ENTRIES_ARRAY)
                 return COMPLEX_ARRAY;
               kind = ENTRIES_ARRAY;
             } else return COMPLEX_ARRAY;
           else {
-            if ("function" === typeof value || "string" === typeof value && 50 < value.length || kind !== EMPTY_ARRAY && kind !== PRIMITIVE_ARRAY)
+            if ("function" === typeof value2 || "string" === typeof value2 && 50 < value2.length || kind !== EMPTY_ARRAY && kind !== PRIMITIVE_ARRAY)
               return COMPLEX_ARRAY;
             kind = PRIMITIVE_ARRAY;
           }
@@ -16831,23 +16831,23 @@ var require_react_dom_client_development = __commonJS({
         for (var key in object)
           hasOwnProperty.call(object, key) && "_" !== key[0] && addValueToProperties(key, object[key], properties, indent, prefix2);
       }
-      function addValueToProperties(propertyName, value, properties, indent, prefix2) {
-        switch (typeof value) {
+      function addValueToProperties(propertyName, value2, properties, indent, prefix2) {
+        switch (typeof value2) {
           case "object":
-            if (null === value) {
-              value = "null";
+            if (null === value2) {
+              value2 = "null";
               break;
             } else {
-              if (value.$$typeof === REACT_ELEMENT_TYPE) {
-                var typeName2 = getComponentNameFromType(value.type) || "\u2026", key = value.key;
-                value = value.props;
-                var propsKeys = Object.keys(value), propsLength = propsKeys.length;
+              if (value2.$$typeof === REACT_ELEMENT_TYPE) {
+                var typeName2 = getComponentNameFromType(value2.type) || "\u2026", key = value2.key;
+                value2 = value2.props;
+                var propsKeys = Object.keys(value2), propsLength = propsKeys.length;
                 if (null == key && 0 === propsLength) {
-                  value = "<" + typeName2 + " />";
+                  value2 = "<" + typeName2 + " />";
                   break;
                 }
                 if (3 > indent || 1 === propsLength && "children" === propsKeys[0] && null == key) {
-                  value = "<" + typeName2 + " \u2026 />";
+                  value2 = "<" + typeName2 + " \u2026 />";
                   break;
                 }
                 properties.push([
@@ -16862,10 +16862,10 @@ var require_react_dom_client_development = __commonJS({
                   prefix2
                 );
                 propertyName = false;
-                for (var propKey in value)
-                  "children" === propKey ? null != value.children && (!isArrayImpl(value.children) || 0 < value.children.length) && (propertyName = true) : hasOwnProperty.call(value, propKey) && "_" !== propKey[0] && addValueToProperties(
+                for (var propKey in value2)
+                  "children" === propKey ? null != value2.children && (!isArrayImpl(value2.children) || 0 < value2.children.length) && (propertyName = true) : hasOwnProperty.call(value2, propKey) && "_" !== propKey[0] && addValueToProperties(
                     propKey,
-                    value[propKey],
+                    value2[propKey],
                     properties,
                     indent + 1,
                     prefix2
@@ -16876,19 +16876,19 @@ var require_react_dom_client_development = __commonJS({
                 ]);
                 return;
               }
-              typeName2 = Object.prototype.toString.call(value);
+              typeName2 = Object.prototype.toString.call(value2);
               typeName2 = typeName2.slice(8, typeName2.length - 1);
               if ("Array" === typeName2) {
-                if (propKey = getArrayKind(value), propKey === PRIMITIVE_ARRAY || propKey === EMPTY_ARRAY) {
-                  value = JSON.stringify(value);
+                if (propKey = getArrayKind(value2), propKey === PRIMITIVE_ARRAY || propKey === EMPTY_ARRAY) {
+                  value2 = JSON.stringify(value2);
                   break;
                 } else if (propKey === ENTRIES_ARRAY) {
                   properties.push([
                     prefix2 + "\xA0\xA0".repeat(indent) + propertyName,
                     ""
                   ]);
-                  for (propertyName = 0; propertyName < value.length; propertyName++)
-                    typeName2 = value[propertyName], addValueToProperties(
+                  for (propertyName = 0; propertyName < value2.length; propertyName++)
+                    typeName2 = value2[propertyName], addValueToProperties(
                       typeName2[0],
                       typeName2[1],
                       properties,
@@ -16899,10 +16899,10 @@ var require_react_dom_client_development = __commonJS({
                 }
               }
               if ("Promise" === typeName2) {
-                if ("fulfilled" === value.status) {
+                if ("fulfilled" === value2.status) {
                   if (typeName2 = properties.length, addValueToProperties(
                     propertyName,
-                    value.value,
+                    value2.value,
                     properties,
                     indent,
                     prefix2
@@ -16911,9 +16911,9 @@ var require_react_dom_client_development = __commonJS({
                     properties[1] = "Promise<" + (properties[1] || "Object") + ">";
                     return;
                   }
-                } else if ("rejected" === value.status && (typeName2 = properties.length, addValueToProperties(
+                } else if ("rejected" === value2.status && (typeName2 = properties.length, addValueToProperties(
                   propertyName,
-                  value.reason,
+                  value2.reason,
                   properties,
                   indent,
                   prefix2
@@ -16928,32 +16928,32 @@ var require_react_dom_client_development = __commonJS({
                 ]);
                 return;
               }
-              "Object" === typeName2 && (propKey = Object.getPrototypeOf(value)) && "function" === typeof propKey.constructor && (typeName2 = propKey.constructor.name);
+              "Object" === typeName2 && (propKey = Object.getPrototypeOf(value2)) && "function" === typeof propKey.constructor && (typeName2 = propKey.constructor.name);
               properties.push([
                 prefix2 + "\xA0\xA0".repeat(indent) + propertyName,
                 "Object" === typeName2 ? 3 > indent ? "" : "\u2026" : typeName2
               ]);
-              3 > indent && addObjectToProperties(value, properties, indent + 1, prefix2);
+              3 > indent && addObjectToProperties(value2, properties, indent + 1, prefix2);
               return;
             }
           case "function":
-            value = "" === value.name ? "() => {}" : value.name + "() {}";
+            value2 = "" === value2.name ? "() => {}" : value2.name + "() {}";
             break;
           case "string":
-            value = value === OMITTED_PROP_ERROR ? "\u2026" : JSON.stringify(value);
+            value2 = value2 === OMITTED_PROP_ERROR ? "\u2026" : JSON.stringify(value2);
             break;
           case "undefined":
-            value = "undefined";
+            value2 = "undefined";
             break;
           case "boolean":
-            value = value ? "true" : "false";
+            value2 = value2 ? "true" : "false";
             break;
           default:
-            value = String(value);
+            value2 = String(value2);
         }
         properties.push([
           prefix2 + "\xA0\xA0".repeat(indent) + propertyName,
-          value
+          value2
         ]);
       }
       function addObjectDiffToProperties(prev, next, properties, indent) {
@@ -17672,20 +17672,20 @@ var require_react_dom_client_development = __commonJS({
         };
         return mode;
       }
-      function createCapturedValueAtFiber(value, source) {
-        if ("object" === typeof value && null !== value) {
-          var existing = CapturedStacks.get(value);
+      function createCapturedValueAtFiber(value2, source) {
+        if ("object" === typeof value2 && null !== value2) {
+          var existing = CapturedStacks.get(value2);
           if (void 0 !== existing) return existing;
           source = {
-            value,
+            value: value2,
             source,
             stack: getStackByFiberInDevAndProd(source)
           };
-          CapturedStacks.set(value, source);
+          CapturedStacks.set(value2, source);
           return source;
         }
         return {
-          value,
+          value: value2,
           source,
           stack: getStackByFiberInDevAndProd(source)
         };
@@ -18107,8 +18107,8 @@ var require_react_dom_client_development = __commonJS({
         return readContextForConsumer(consumer, context);
       }
       function readContextForConsumer(consumer, context) {
-        var value = context._currentValue;
-        context = { context, memoizedValue: value, next: null };
+        var value2 = context._currentValue;
+        context = { context, memoizedValue: value2, next: null };
         if (null === lastContextDependency) {
           if (null === consumer)
             throw Error(
@@ -18122,7 +18122,7 @@ var require_react_dom_client_development = __commonJS({
           };
           consumer.flags |= 524288;
         } else lastContextDependency = lastContextDependency.next = context;
-        return value;
+        return value2;
       }
       function createCache() {
         return {
@@ -19361,12 +19361,12 @@ var require_react_dom_client_development = __commonJS({
         }
         currentlyProcessingQueue = null;
       }
-      function callCallback(callback, context) {
-        if ("function" !== typeof callback)
+      function callCallback(callback2, context) {
+        if ("function" !== typeof callback2)
           throw Error(
-            "Invalid argument passed as callback. Expected a function. Instead received: " + callback
+            "Invalid argument passed as callback. Expected a function. Instead received: " + callback2
           );
-        callback.call(context);
+        callback2.call(context);
       }
       function commitHiddenCallbacks(updateQueue, context) {
         var hiddenCallbacks = updateQueue.shared.hiddenCallbacks;
@@ -20312,8 +20312,8 @@ var require_react_dom_client_development = __commonJS({
           null === events ? componentUpdateQueue.events = [payload] : events.push(payload);
         }
       }
-      function mountEvent(callback) {
-        var hook = mountWorkInProgressHook(), ref = { impl: callback };
+      function mountEvent(callback2) {
+        var hook = mountWorkInProgressHook(), ref = { impl: callback2 };
         hook.memoizedState = ref;
         return function() {
           if ((executionContext & RenderContext) !== NoContext)
@@ -20323,9 +20323,9 @@ var require_react_dom_client_development = __commonJS({
           return ref.impl.apply(void 0, arguments);
         };
       }
-      function updateEvent(callback) {
+      function updateEvent(callback2) {
         var ref = updateWorkInProgressHook().memoizedState;
-        useEffectEventImpl({ ref, nextImpl: callback });
+        useEffectEventImpl({ ref, nextImpl: callback2 });
         return function() {
           if ((executionContext & RenderContext) !== NoContext)
             throw Error(
@@ -20383,21 +20383,21 @@ var require_react_dom_client_development = __commonJS({
           deps
         );
       }
-      function mountCallback(callback, deps) {
+      function mountCallback(callback2, deps) {
         mountWorkInProgressHook().memoizedState = [
-          callback,
+          callback2,
           void 0 === deps ? null : deps
         ];
-        return callback;
+        return callback2;
       }
-      function updateCallback(callback, deps) {
+      function updateCallback(callback2, deps) {
         var hook = updateWorkInProgressHook();
         deps = void 0 === deps ? null : deps;
         var prevState = hook.memoizedState;
         if (null !== deps && areHookInputsEqual(deps, prevState[1]))
           return prevState[0];
-        hook.memoizedState = [callback, deps];
-        return callback;
+        hook.memoizedState = [callback2, deps];
+        return callback2;
       }
       function mountMemo(nextCreate, deps) {
         var hook = mountWorkInProgressHook();
@@ -20432,43 +20432,43 @@ var require_react_dom_client_development = __commonJS({
         hook.memoizedState = [prevState, deps];
         return prevState;
       }
-      function mountDeferredValue(value, initialValue) {
+      function mountDeferredValue(value2, initialValue) {
         var hook = mountWorkInProgressHook();
-        return mountDeferredValueImpl(hook, value, initialValue);
+        return mountDeferredValueImpl(hook, value2, initialValue);
       }
-      function updateDeferredValue(value, initialValue) {
+      function updateDeferredValue(value2, initialValue) {
         var hook = updateWorkInProgressHook();
         return updateDeferredValueImpl(
           hook,
           currentHook.memoizedState,
-          value,
+          value2,
           initialValue
         );
       }
-      function rerenderDeferredValue(value, initialValue) {
+      function rerenderDeferredValue(value2, initialValue) {
         var hook = updateWorkInProgressHook();
-        return null === currentHook ? mountDeferredValueImpl(hook, value, initialValue) : updateDeferredValueImpl(
+        return null === currentHook ? mountDeferredValueImpl(hook, value2, initialValue) : updateDeferredValueImpl(
           hook,
           currentHook.memoizedState,
-          value,
+          value2,
           initialValue
         );
       }
-      function mountDeferredValueImpl(hook, value, initialValue) {
+      function mountDeferredValueImpl(hook, value2, initialValue) {
         if (void 0 === initialValue || 0 !== (renderLanes & 1073741824) && 0 === (workInProgressRootRenderLanes & 261930))
-          return hook.memoizedState = value;
+          return hook.memoizedState = value2;
         hook.memoizedState = initialValue;
         hook = requestDeferredLane();
         currentlyRenderingFiber.lanes |= hook;
         workInProgressRootSkippedLanes |= hook;
         return initialValue;
       }
-      function updateDeferredValueImpl(hook, prevValue, value, initialValue) {
-        if (objectIs(value, prevValue)) return value;
+      function updateDeferredValueImpl(hook, prevValue, value2, initialValue) {
+        if (objectIs(value2, prevValue)) return value2;
         if (null !== currentTreeHiddenStackCursor.current)
-          return hook = mountDeferredValueImpl(hook, value, initialValue), objectIs(hook, prevValue) || (didReceiveUpdate = true), hook;
+          return hook = mountDeferredValueImpl(hook, value2, initialValue), objectIs(hook, prevValue) || (didReceiveUpdate = true), hook;
         if (0 === (renderLanes & 42) || 0 !== (renderLanes & 1073741824) && 0 === (workInProgressRootRenderLanes & 261930))
-          return didReceiveUpdate = true, hook.memoizedState = value;
+          return didReceiveUpdate = true, hook.memoizedState = value2;
         hook = requestDeferredLane();
         currentlyRenderingFiber.lanes |= hook;
         workInProgressRootSkippedLanes |= hook;
@@ -20477,7 +20477,7 @@ var require_react_dom_client_development = __commonJS({
       function releaseAsyncTransition() {
         ReactSharedInternals.asyncTransitions--;
       }
-      function startTransition(fiber, queue, pendingState, finishedState, callback) {
+      function startTransition(fiber, queue, pendingState, finishedState, callback2) {
         var previousPriority = ReactDOMSharedInternals.p;
         ReactDOMSharedInternals.p = 0 !== previousPriority && previousPriority < ContinuousEventPriority ? previousPriority : ContinuousEventPriority;
         var prevTransition = ReactSharedInternals.T, currentTransition = {};
@@ -20485,7 +20485,7 @@ var require_react_dom_client_development = __commonJS({
         ReactSharedInternals.T = currentTransition;
         dispatchOptimisticSetState(fiber, false, queue, pendingState);
         try {
-          var returnValue = callback(), onStartTransitionFinish = ReactSharedInternals.S;
+          var returnValue = callback2(), onStartTransitionFinish = ReactSharedInternals.S;
           null !== onStartTransitionFinish && onStartTransitionFinish(currentTransition, returnValue);
           if (null !== returnValue && "object" === typeof returnValue && "function" === typeof returnValue.then) {
             ReactSharedInternals.asyncTransitions++;
@@ -20757,12 +20757,12 @@ var require_react_dom_client_development = __commonJS({
           markRootEntangled(root2, lane);
         }
       }
-      function warnOnInvalidCallback(callback) {
-        if (null !== callback && "function" !== typeof callback) {
-          var key = String(callback);
+      function warnOnInvalidCallback(callback2) {
+        if (null !== callback2 && "function" !== typeof callback2) {
+          var key = String(callback2);
           didWarnOnInvalidCallback.has(key) || (didWarnOnInvalidCallback.add(key), console.error(
             "Expected the last optional `callback` argument to be a function. Instead received: %s.",
-            callback
+            callback2
           ));
         }
       }
@@ -20968,10 +20968,10 @@ var require_react_dom_client_development = __commonJS({
           );
         });
       }
-      function throwException(root2, returnFiber, sourceFiber, value, rootRenderLanes) {
+      function throwException(root2, returnFiber, sourceFiber, value2, rootRenderLanes) {
         sourceFiber.flags |= 32768;
         isDevToolsPresent && restorePendingUpdaters(root2, rootRenderLanes);
-        if (null !== value && "object" === typeof value && "function" === typeof value.then) {
+        if (null !== value2 && "object" === typeof value2 && "function" === typeof value2.then) {
           returnFiber = sourceFiber.alternate;
           null !== returnFiber && propagateParentContextChanges(
             returnFiber,
@@ -20985,62 +20985,62 @@ var require_react_dom_client_development = __commonJS({
             switch (sourceFiber.tag) {
               case 31:
               case 13:
-                return null === shellBoundary ? renderDidSuspendDelayIfPossible() : null === sourceFiber.alternate && workInProgressRootExitStatus === RootInProgress && (workInProgressRootExitStatus = RootSuspended), sourceFiber.flags &= -257, sourceFiber.flags |= 65536, sourceFiber.lanes = rootRenderLanes, value === noopSuspenseyCommitThenable ? sourceFiber.flags |= 16384 : (returnFiber = sourceFiber.updateQueue, null === returnFiber ? sourceFiber.updateQueue = /* @__PURE__ */ new Set([value]) : returnFiber.add(value), attachPingListener(root2, value, rootRenderLanes)), false;
+                return null === shellBoundary ? renderDidSuspendDelayIfPossible() : null === sourceFiber.alternate && workInProgressRootExitStatus === RootInProgress && (workInProgressRootExitStatus = RootSuspended), sourceFiber.flags &= -257, sourceFiber.flags |= 65536, sourceFiber.lanes = rootRenderLanes, value2 === noopSuspenseyCommitThenable ? sourceFiber.flags |= 16384 : (returnFiber = sourceFiber.updateQueue, null === returnFiber ? sourceFiber.updateQueue = /* @__PURE__ */ new Set([value2]) : returnFiber.add(value2), attachPingListener(root2, value2, rootRenderLanes)), false;
               case 22:
-                return sourceFiber.flags |= 65536, value === noopSuspenseyCommitThenable ? sourceFiber.flags |= 16384 : (returnFiber = sourceFiber.updateQueue, null === returnFiber ? (returnFiber = {
+                return sourceFiber.flags |= 65536, value2 === noopSuspenseyCommitThenable ? sourceFiber.flags |= 16384 : (returnFiber = sourceFiber.updateQueue, null === returnFiber ? (returnFiber = {
                   transitions: null,
                   markerInstances: null,
-                  retryQueue: /* @__PURE__ */ new Set([value])
-                }, sourceFiber.updateQueue = returnFiber) : (sourceFiber = returnFiber.retryQueue, null === sourceFiber ? returnFiber.retryQueue = /* @__PURE__ */ new Set([value]) : sourceFiber.add(value)), attachPingListener(root2, value, rootRenderLanes)), false;
+                  retryQueue: /* @__PURE__ */ new Set([value2])
+                }, sourceFiber.updateQueue = returnFiber) : (sourceFiber = returnFiber.retryQueue, null === sourceFiber ? returnFiber.retryQueue = /* @__PURE__ */ new Set([value2]) : sourceFiber.add(value2)), attachPingListener(root2, value2, rootRenderLanes)), false;
             }
             throw Error(
               "Unexpected Suspense handler tag (" + sourceFiber.tag + "). This is a bug in React."
             );
           }
-          attachPingListener(root2, value, rootRenderLanes);
+          attachPingListener(root2, value2, rootRenderLanes);
           renderDidSuspendDelayIfPossible();
           return false;
         }
         if (isHydrating)
-          return didSuspendOrErrorDEV = true, returnFiber = suspenseHandlerStackCursor.current, null !== returnFiber ? (0 === (returnFiber.flags & 65536) && (returnFiber.flags |= 256), returnFiber.flags |= 65536, returnFiber.lanes = rootRenderLanes, value !== HydrationMismatchException && queueHydrationError(
+          return didSuspendOrErrorDEV = true, returnFiber = suspenseHandlerStackCursor.current, null !== returnFiber ? (0 === (returnFiber.flags & 65536) && (returnFiber.flags |= 256), returnFiber.flags |= 65536, returnFiber.lanes = rootRenderLanes, value2 !== HydrationMismatchException && queueHydrationError(
             createCapturedValueAtFiber(
               Error(
                 "There was an error while hydrating but React was able to recover by instead client rendering from the nearest Suspense boundary.",
-                { cause: value }
+                { cause: value2 }
               ),
               sourceFiber
             )
-          )) : (value !== HydrationMismatchException && queueHydrationError(
+          )) : (value2 !== HydrationMismatchException && queueHydrationError(
             createCapturedValueAtFiber(
               Error(
                 "There was an error while hydrating but React was able to recover by instead client rendering the entire root.",
-                { cause: value }
+                { cause: value2 }
               ),
               sourceFiber
             )
-          ), root2 = root2.current.alternate, root2.flags |= 65536, rootRenderLanes &= -rootRenderLanes, root2.lanes |= rootRenderLanes, value = createCapturedValueAtFiber(value, sourceFiber), rootRenderLanes = createRootErrorUpdate(
+          ), root2 = root2.current.alternate, root2.flags |= 65536, rootRenderLanes &= -rootRenderLanes, root2.lanes |= rootRenderLanes, value2 = createCapturedValueAtFiber(value2, sourceFiber), rootRenderLanes = createRootErrorUpdate(
             root2.stateNode,
-            value,
+            value2,
             rootRenderLanes
           ), enqueueCapturedUpdate(root2, rootRenderLanes), workInProgressRootExitStatus !== RootSuspendedWithDelay && (workInProgressRootExitStatus = RootErrored)), false;
         var error = createCapturedValueAtFiber(
           Error(
             "There was an error during concurrent rendering but React was able to recover by instead synchronously rendering the entire root.",
-            { cause: value }
+            { cause: value2 }
           ),
           sourceFiber
         );
         null === workInProgressRootConcurrentErrors ? workInProgressRootConcurrentErrors = [error] : workInProgressRootConcurrentErrors.push(error);
         workInProgressRootExitStatus !== RootSuspendedWithDelay && (workInProgressRootExitStatus = RootErrored);
         if (null === returnFiber) return true;
-        value = createCapturedValueAtFiber(value, sourceFiber);
+        value2 = createCapturedValueAtFiber(value2, sourceFiber);
         sourceFiber = returnFiber;
         do {
           switch (sourceFiber.tag) {
             case 3:
               return sourceFiber.flags |= 65536, root2 = rootRenderLanes & -rootRenderLanes, sourceFiber.lanes |= root2, root2 = createRootErrorUpdate(
                 sourceFiber.stateNode,
-                value,
+                value2,
                 root2
               ), enqueueCapturedUpdate(sourceFiber, root2), false;
             case 1:
@@ -21049,7 +21049,7 @@ var require_react_dom_client_development = __commonJS({
                   rootRenderLanes,
                   root2,
                   sourceFiber,
-                  value
+                  value2
                 ), enqueueCapturedUpdate(sourceFiber, rootRenderLanes), false;
           }
           sourceFiber = sourceFiber.return;
@@ -23297,10 +23297,10 @@ var require_react_dom_client_development = __commonJS({
                 addendum = null === lastEffect ? " You returned null. If your effect does not require clean up, return undefined (or nothing)." : "function" === typeof lastEffect.then ? "\n\nIt looks like you wrote " + hookName + "(async () => ...) or returned a Promise. Instead, write the async function inside your effect and call it immediately:\n\n" + hookName + "(() => {\n  async function fetchData() {\n    // You can await here\n    const response = await MyAPI.getData(someId);\n    // ...\n  }\n  fetchData();\n}, [someId]); // Or [] if effect doesn't need props or state\n\nLearn more about data fetching with Hooks: https://react.dev/link/hooks-data-fetching" : " You returned: " + lastEffect;
                 runWithFiberInDEV(
                   finishedWork,
-                  function(n, a) {
+                  function(n2, a) {
                     console.error(
                       "%s must not return anything besides a function, which is used for clean-up.%s",
-                      n,
+                      n2,
                       a
                     );
                   },
@@ -27250,9 +27250,9 @@ var require_react_dom_client_development = __commonJS({
           addFiberToLanesMap(root2, schedulingFiber, lanes);
         });
       }
-      function scheduleCallback$1(priorityLevel, callback) {
+      function scheduleCallback$1(priorityLevel, callback2) {
         var actQueue = ReactSharedInternals.actQueue;
-        return null !== actQueue ? (actQueue.push(callback), fakeActCallbackNode$1) : scheduleCallback$3(priorityLevel, callback);
+        return null !== actQueue ? (actQueue.push(callback2), fakeActCallbackNode$1) : scheduleCallback$3(priorityLevel, callback2);
       }
       function warnIfUpdatesNotWrappedWithActDEV(fiber) {
         isConcurrentActEnvironment() && null === ReactSharedInternals.actQueue && runWithFiberInDEV(fiber, function() {
@@ -27440,7 +27440,7 @@ var require_react_dom_client_development = __commonJS({
             (nativeEventTarget[internalPropsKey] || null).action
           ), submitter = nativeEvent.submitter;
           submitter && (domEventName = (domEventName = submitter[internalPropsKey] || null) ? coerceFormActionProp(domEventName.formAction) : submitter.getAttribute("formAction"), null !== domEventName && (action = domEventName, submitter = null));
-          var event = new SyntheticEvent(
+          var event2 = new SyntheticEvent(
             "action",
             "action",
             null,
@@ -27448,7 +27448,7 @@ var require_react_dom_client_development = __commonJS({
             nativeEventTarget
           );
           dispatchQueue.push({
-            event,
+            event: event2,
             listeners: [
               {
                 instance: null,
@@ -27473,7 +27473,7 @@ var require_react_dom_client_development = __commonJS({
                       );
                     }
                   } else
-                    "function" === typeof action && (event.preventDefault(), formData = submitter ? createFormDataWithSubmitter(
+                    "function" === typeof action && (event2.preventDefault(), formData = submitter ? createFormDataWithSubmitter(
                       nativeEventTarget,
                       submitter
                     ) : new FormData(nativeEventTarget), pendingState = {
@@ -27494,35 +27494,35 @@ var require_react_dom_client_development = __commonJS({
           });
         }
       }
-      function executeDispatch(event, listener, currentTarget) {
-        event.currentTarget = currentTarget;
+      function executeDispatch(event2, listener, currentTarget) {
+        event2.currentTarget = currentTarget;
         try {
-          listener(event);
+          listener(event2);
         } catch (error) {
           reportGlobalError(error);
         }
-        event.currentTarget = null;
+        event2.currentTarget = null;
       }
       function processDispatchQueue(dispatchQueue, eventSystemFlags) {
         eventSystemFlags = 0 !== (eventSystemFlags & 4);
         for (var i = 0; i < dispatchQueue.length; i++) {
           var _dispatchQueue$i = dispatchQueue[i];
           a: {
-            var previousInstance = void 0, event = _dispatchQueue$i.event;
+            var previousInstance = void 0, event2 = _dispatchQueue$i.event;
             _dispatchQueue$i = _dispatchQueue$i.listeners;
             if (eventSystemFlags)
               for (var i$jscomp$0 = _dispatchQueue$i.length - 1; 0 <= i$jscomp$0; i$jscomp$0--) {
                 var _dispatchListeners$i = _dispatchQueue$i[i$jscomp$0], instance = _dispatchListeners$i.instance, currentTarget = _dispatchListeners$i.currentTarget;
                 _dispatchListeners$i = _dispatchListeners$i.listener;
-                if (instance !== previousInstance && event.isPropagationStopped())
+                if (instance !== previousInstance && event2.isPropagationStopped())
                   break a;
                 null !== instance ? runWithFiberInDEV(
                   instance,
                   executeDispatch,
-                  event,
+                  event2,
                   _dispatchListeners$i,
                   currentTarget
-                ) : executeDispatch(event, _dispatchListeners$i, currentTarget);
+                ) : executeDispatch(event2, _dispatchListeners$i, currentTarget);
                 previousInstance = instance;
               }
             else
@@ -27531,15 +27531,15 @@ var require_react_dom_client_development = __commonJS({
                 instance = _dispatchListeners$i.instance;
                 currentTarget = _dispatchListeners$i.currentTarget;
                 _dispatchListeners$i = _dispatchListeners$i.listener;
-                if (instance !== previousInstance && event.isPropagationStopped())
+                if (instance !== previousInstance && event2.isPropagationStopped())
                   break a;
                 null !== instance ? runWithFiberInDEV(
                   instance,
                   executeDispatch,
-                  event,
+                  event2,
                   _dispatchListeners$i,
                   currentTarget
-                ) : executeDispatch(event, _dispatchListeners$i, currentTarget);
+                ) : executeDispatch(event2, _dispatchListeners$i, currentTarget);
                 previousInstance = instance;
               }
           }
@@ -27977,8 +27977,8 @@ var require_react_dom_client_development = __commonJS({
         while (inst && 5 !== inst.tag && 27 !== inst.tag);
         return inst ? inst : null;
       }
-      function accumulateEnterLeaveListenersForEvent(dispatchQueue, event, target, common, inCapturePhase) {
-        for (var registrationName = event._reactName, listeners2 = []; null !== target && target !== common; ) {
+      function accumulateEnterLeaveListenersForEvent(dispatchQueue, event2, target, common, inCapturePhase) {
+        for (var registrationName = event2._reactName, listeners2 = []; null !== target && target !== common; ) {
           var _instance4 = target, alternate = _instance4.alternate, stateNode = _instance4.stateNode;
           _instance4 = _instance4.tag;
           if (null !== alternate && alternate === common) break;
@@ -27989,7 +27989,7 @@ var require_react_dom_client_development = __commonJS({
           )));
           target = target.return;
         }
-        0 !== listeners2.length && dispatchQueue.push({ event, listeners: listeners2 });
+        0 !== listeners2.length && dispatchQueue.push({ event: event2, listeners: listeners2 });
       }
       function validatePropertiesInDevelopment(type, props) {
         validateProperties$2(type, props);
@@ -28048,38 +28048,38 @@ var require_react_dom_client_development = __commonJS({
         clientText = normalizeMarkupForTextOrAttribute(clientText);
         return normalizeMarkupForTextOrAttribute(serverText) === clientText ? true : false;
       }
-      function setProp(domElement, tag, key, value, props, prevValue) {
+      function setProp(domElement, tag, key, value2, props, prevValue) {
         switch (key) {
           case "children":
-            if ("string" === typeof value)
-              validateTextNesting(value, tag, false), "body" === tag || "textarea" === tag && "" === value || setTextContent(domElement, value);
-            else if ("number" === typeof value || "bigint" === typeof value)
-              validateTextNesting("" + value, tag, false), "body" !== tag && setTextContent(domElement, "" + value);
+            if ("string" === typeof value2)
+              validateTextNesting(value2, tag, false), "body" === tag || "textarea" === tag && "" === value2 || setTextContent(domElement, value2);
+            else if ("number" === typeof value2 || "bigint" === typeof value2)
+              validateTextNesting("" + value2, tag, false), "body" !== tag && setTextContent(domElement, "" + value2);
             break;
           case "className":
-            setValueForKnownAttribute(domElement, "class", value);
+            setValueForKnownAttribute(domElement, "class", value2);
             break;
           case "tabIndex":
-            setValueForKnownAttribute(domElement, "tabindex", value);
+            setValueForKnownAttribute(domElement, "tabindex", value2);
             break;
           case "dir":
           case "role":
           case "viewBox":
           case "width":
           case "height":
-            setValueForKnownAttribute(domElement, key, value);
+            setValueForKnownAttribute(domElement, key, value2);
             break;
           case "style":
-            setValueForStyles(domElement, value, prevValue);
+            setValueForStyles(domElement, value2, prevValue);
             break;
           case "data":
             if ("object" !== tag) {
-              setValueForKnownAttribute(domElement, "data", value);
+              setValueForKnownAttribute(domElement, "data", value2);
               break;
             }
           case "src":
           case "href":
-            if ("" === value && ("a" !== tag || "href" !== key)) {
+            if ("" === value2 && ("a" !== tag || "href" !== key)) {
               "src" === key ? console.error(
                 'An empty string ("") was passed to the %s attribute. This may cause the browser to download the whole page again over the network. To fix this, either do not render the element at all or pass null to %s instead of an empty string.',
                 key,
@@ -28092,25 +28092,25 @@ var require_react_dom_client_development = __commonJS({
               domElement.removeAttribute(key);
               break;
             }
-            if (null == value || "function" === typeof value || "symbol" === typeof value || "boolean" === typeof value) {
+            if (null == value2 || "function" === typeof value2 || "symbol" === typeof value2 || "boolean" === typeof value2) {
               domElement.removeAttribute(key);
               break;
             }
-            checkAttributeStringCoercion(value, key);
-            value = sanitizeURL("" + value);
-            domElement.setAttribute(key, value);
+            checkAttributeStringCoercion(value2, key);
+            value2 = sanitizeURL("" + value2);
+            domElement.setAttribute(key, value2);
             break;
           case "action":
           case "formAction":
-            null != value && ("form" === tag ? "formAction" === key ? console.error(
+            null != value2 && ("form" === tag ? "formAction" === key ? console.error(
               "You can only pass the formAction prop to <input> or <button>. Use the action prop on <form>."
-            ) : "function" === typeof value && (null == props.encType && null == props.method || didWarnFormActionMethod || (didWarnFormActionMethod = true, console.error(
+            ) : "function" === typeof value2 && (null == props.encType && null == props.method || didWarnFormActionMethod || (didWarnFormActionMethod = true, console.error(
               "Cannot specify a encType or method for a form that specifies a function as the action. React provides those automatically. They will get overridden."
             )), null == props.target || didWarnFormActionTarget || (didWarnFormActionTarget = true, console.error(
               "Cannot specify a target for a form that specifies a function as the action. The function will always be executed in the same window."
             ))) : "input" === tag || "button" === tag ? "action" === key ? console.error(
               "You can only pass the action prop to <form>. Use the formAction prop on <input> or <button>."
-            ) : "input" !== tag || "submit" === props.type || "image" === props.type || didWarnFormActionType ? "button" !== tag || null == props.type || "submit" === props.type || didWarnFormActionType ? "function" === typeof value && (null == props.name || didWarnFormActionName || (didWarnFormActionName = true, console.error(
+            ) : "input" !== tag || "submit" === props.type || "image" === props.type || didWarnFormActionType ? "button" !== tag || null == props.type || "submit" === props.type || didWarnFormActionType ? "function" === typeof value2 && (null == props.name || didWarnFormActionName || (didWarnFormActionName = true, console.error(
               'Cannot specify a "name" prop for a button that specifies a function as a formAction. React needs it to encode which action should be invoked. It will get overridden.'
             )), null == props.formEncType && null == props.formMethod || didWarnFormActionMethod || (didWarnFormActionMethod = true, console.error(
               "Cannot specify a formEncType or formMethod for a button that specifies a function as a formAction. React provides those automatically. They will get overridden."
@@ -28125,7 +28125,7 @@ var require_react_dom_client_development = __commonJS({
             ) : console.error(
               "You can only pass the formAction prop to <input> or <button>."
             ));
-            if ("function" === typeof value) {
+            if ("function" === typeof value2) {
               domElement.setAttribute(
                 key,
                 "javascript:throw new Error('A React form was unexpectedly submitted. If you called form.submit() manually, consider using form.requestSubmit() instead. If you\\'re trying to use event.stopPropagation() in a submit event handler, consider also calling event.preventDefault().')"
@@ -28168,30 +28168,30 @@ var require_react_dom_client_development = __commonJS({
                 props,
                 null
               )));
-            if (null == value || "symbol" === typeof value || "boolean" === typeof value) {
+            if (null == value2 || "symbol" === typeof value2 || "boolean" === typeof value2) {
               domElement.removeAttribute(key);
               break;
             }
-            checkAttributeStringCoercion(value, key);
-            value = sanitizeURL("" + value);
-            domElement.setAttribute(key, value);
+            checkAttributeStringCoercion(value2, key);
+            value2 = sanitizeURL("" + value2);
+            domElement.setAttribute(key, value2);
             break;
           case "onClick":
-            null != value && ("function" !== typeof value && warnForInvalidEventListener(key, value), domElement.onclick = noop$1);
+            null != value2 && ("function" !== typeof value2 && warnForInvalidEventListener(key, value2), domElement.onclick = noop$1);
             break;
           case "onScroll":
-            null != value && ("function" !== typeof value && warnForInvalidEventListener(key, value), listenToNonDelegatedEvent("scroll", domElement));
+            null != value2 && ("function" !== typeof value2 && warnForInvalidEventListener(key, value2), listenToNonDelegatedEvent("scroll", domElement));
             break;
           case "onScrollEnd":
-            null != value && ("function" !== typeof value && warnForInvalidEventListener(key, value), listenToNonDelegatedEvent("scrollend", domElement));
+            null != value2 && ("function" !== typeof value2 && warnForInvalidEventListener(key, value2), listenToNonDelegatedEvent("scrollend", domElement));
             break;
           case "dangerouslySetInnerHTML":
-            if (null != value) {
-              if ("object" !== typeof value || !("__html" in value))
+            if (null != value2) {
+              if ("object" !== typeof value2 || !("__html" in value2))
                 throw Error(
                   "`props.dangerouslySetInnerHTML` must be in the form `{__html: ...}`. Please visit https://react.dev/link/dangerously-set-inner-html for more information."
                 );
-              key = value.__html;
+              key = value2.__html;
               if (null != key) {
                 if (null != props.children)
                   throw Error(
@@ -28202,10 +28202,10 @@ var require_react_dom_client_development = __commonJS({
             }
             break;
           case "multiple":
-            domElement.multiple = value && "function" !== typeof value && "symbol" !== typeof value;
+            domElement.multiple = value2 && "function" !== typeof value2 && "symbol" !== typeof value2;
             break;
           case "muted":
-            domElement.muted = value && "function" !== typeof value && "symbol" !== typeof value;
+            domElement.muted = value2 && "function" !== typeof value2 && "symbol" !== typeof value2;
             break;
           case "suppressContentEditableWarning":
           case "suppressHydrationWarning":
@@ -28217,12 +28217,12 @@ var require_react_dom_client_development = __commonJS({
           case "autoFocus":
             break;
           case "xlinkHref":
-            if (null == value || "function" === typeof value || "boolean" === typeof value || "symbol" === typeof value) {
+            if (null == value2 || "function" === typeof value2 || "boolean" === typeof value2 || "symbol" === typeof value2) {
               domElement.removeAttribute("xlink:href");
               break;
             }
-            checkAttributeStringCoercion(value, key);
-            key = sanitizeURL("" + value);
+            checkAttributeStringCoercion(value2, key);
+            key = sanitizeURL("" + value2);
             domElement.setAttributeNS(xlinkNamespace, "xlink:href", key);
             break;
           case "contentEditable":
@@ -28233,10 +28233,10 @@ var require_react_dom_client_development = __commonJS({
           case "externalResourcesRequired":
           case "focusable":
           case "preserveAlpha":
-            null != value && "function" !== typeof value && "symbol" !== typeof value ? (checkAttributeStringCoercion(value, key), domElement.setAttribute(key, "" + value)) : domElement.removeAttribute(key);
+            null != value2 && "function" !== typeof value2 && "symbol" !== typeof value2 ? (checkAttributeStringCoercion(value2, key), domElement.setAttribute(key, "" + value2)) : domElement.removeAttribute(key);
             break;
           case "inert":
-            "" !== value || didWarnForNewBooleanPropsWithEmptyValue[key] || (didWarnForNewBooleanPropsWithEmptyValue[key] = true, console.error(
+            "" !== value2 || didWarnForNewBooleanPropsWithEmptyValue[key] || (didWarnForNewBooleanPropsWithEmptyValue[key] = true, console.error(
               "Received an empty string for a boolean attribute `%s`. This will treat the attribute as if it were false. Either pass `false` to silence this warning, or pass `true` if you used an empty string in earlier versions of React to indicate this attribute is true.",
               key
             ));
@@ -28262,33 +28262,33 @@ var require_react_dom_client_development = __commonJS({
           case "scoped":
           case "seamless":
           case "itemScope":
-            value && "function" !== typeof value && "symbol" !== typeof value ? domElement.setAttribute(key, "") : domElement.removeAttribute(key);
+            value2 && "function" !== typeof value2 && "symbol" !== typeof value2 ? domElement.setAttribute(key, "") : domElement.removeAttribute(key);
             break;
           case "capture":
           case "download":
-            true === value ? domElement.setAttribute(key, "") : false !== value && null != value && "function" !== typeof value && "symbol" !== typeof value ? (checkAttributeStringCoercion(value, key), domElement.setAttribute(key, value)) : domElement.removeAttribute(key);
+            true === value2 ? domElement.setAttribute(key, "") : false !== value2 && null != value2 && "function" !== typeof value2 && "symbol" !== typeof value2 ? (checkAttributeStringCoercion(value2, key), domElement.setAttribute(key, value2)) : domElement.removeAttribute(key);
             break;
           case "cols":
           case "rows":
           case "size":
           case "span":
-            null != value && "function" !== typeof value && "symbol" !== typeof value && !isNaN(value) && 1 <= value ? (checkAttributeStringCoercion(value, key), domElement.setAttribute(key, value)) : domElement.removeAttribute(key);
+            null != value2 && "function" !== typeof value2 && "symbol" !== typeof value2 && !isNaN(value2) && 1 <= value2 ? (checkAttributeStringCoercion(value2, key), domElement.setAttribute(key, value2)) : domElement.removeAttribute(key);
             break;
           case "rowSpan":
           case "start":
-            null == value || "function" === typeof value || "symbol" === typeof value || isNaN(value) ? domElement.removeAttribute(key) : (checkAttributeStringCoercion(value, key), domElement.setAttribute(key, value));
+            null == value2 || "function" === typeof value2 || "symbol" === typeof value2 || isNaN(value2) ? domElement.removeAttribute(key) : (checkAttributeStringCoercion(value2, key), domElement.setAttribute(key, value2));
             break;
           case "popover":
             listenToNonDelegatedEvent("beforetoggle", domElement);
             listenToNonDelegatedEvent("toggle", domElement);
-            setValueForAttribute(domElement, "popover", value);
+            setValueForAttribute(domElement, "popover", value2);
             break;
           case "xlinkActuate":
             setValueForNamespacedAttribute(
               domElement,
               xlinkNamespace,
               "xlink:actuate",
-              value
+              value2
             );
             break;
           case "xlinkArcrole":
@@ -28296,7 +28296,7 @@ var require_react_dom_client_development = __commonJS({
               domElement,
               xlinkNamespace,
               "xlink:arcrole",
-              value
+              value2
             );
             break;
           case "xlinkRole":
@@ -28304,7 +28304,7 @@ var require_react_dom_client_development = __commonJS({
               domElement,
               xlinkNamespace,
               "xlink:role",
-              value
+              value2
             );
             break;
           case "xlinkShow":
@@ -28312,7 +28312,7 @@ var require_react_dom_client_development = __commonJS({
               domElement,
               xlinkNamespace,
               "xlink:show",
-              value
+              value2
             );
             break;
           case "xlinkTitle":
@@ -28320,7 +28320,7 @@ var require_react_dom_client_development = __commonJS({
               domElement,
               xlinkNamespace,
               "xlink:title",
-              value
+              value2
             );
             break;
           case "xlinkType":
@@ -28328,7 +28328,7 @@ var require_react_dom_client_development = __commonJS({
               domElement,
               xlinkNamespace,
               "xlink:type",
-              value
+              value2
             );
             break;
           case "xmlBase":
@@ -28336,7 +28336,7 @@ var require_react_dom_client_development = __commonJS({
               domElement,
               xmlNamespace,
               "xml:base",
-              value
+              value2
             );
             break;
           case "xmlLang":
@@ -28344,7 +28344,7 @@ var require_react_dom_client_development = __commonJS({
               domElement,
               xmlNamespace,
               "xml:lang",
-              value
+              value2
             );
             break;
           case "xmlSpace":
@@ -28352,39 +28352,39 @@ var require_react_dom_client_development = __commonJS({
               domElement,
               xmlNamespace,
               "xml:space",
-              value
+              value2
             );
             break;
           case "is":
             null != prevValue && console.error(
               'Cannot update the "is" prop after it has been initialized.'
             );
-            setValueForAttribute(domElement, "is", value);
+            setValueForAttribute(domElement, "is", value2);
             break;
           case "innerText":
           case "textContent":
             break;
           case "popoverTarget":
-            didWarnPopoverTargetObject || null == value || "object" !== typeof value || (didWarnPopoverTargetObject = true, console.error(
+            didWarnPopoverTargetObject || null == value2 || "object" !== typeof value2 || (didWarnPopoverTargetObject = true, console.error(
               "The `popoverTarget` prop expects the ID of an Element as a string. Received %s instead.",
-              value
+              value2
             ));
           default:
-            !(2 < key.length) || "o" !== key[0] && "O" !== key[0] || "n" !== key[1] && "N" !== key[1] ? (key = getAttributeAlias(key), setValueForAttribute(domElement, key, value)) : registrationNameDependencies.hasOwnProperty(key) && null != value && "function" !== typeof value && warnForInvalidEventListener(key, value);
+            !(2 < key.length) || "o" !== key[0] && "O" !== key[0] || "n" !== key[1] && "N" !== key[1] ? (key = getAttributeAlias(key), setValueForAttribute(domElement, key, value2)) : registrationNameDependencies.hasOwnProperty(key) && null != value2 && "function" !== typeof value2 && warnForInvalidEventListener(key, value2);
         }
       }
-      function setPropOnCustomElement(domElement, tag, key, value, props, prevValue) {
+      function setPropOnCustomElement(domElement, tag, key, value2, props, prevValue) {
         switch (key) {
           case "style":
-            setValueForStyles(domElement, value, prevValue);
+            setValueForStyles(domElement, value2, prevValue);
             break;
           case "dangerouslySetInnerHTML":
-            if (null != value) {
-              if ("object" !== typeof value || !("__html" in value))
+            if (null != value2) {
+              if ("object" !== typeof value2 || !("__html" in value2))
                 throw Error(
                   "`props.dangerouslySetInnerHTML` must be in the form `{__html: ...}`. Please visit https://react.dev/link/dangerously-set-inner-html for more information."
                 );
-              key = value.__html;
+              key = value2.__html;
               if (null != key) {
                 if (null != props.children)
                   throw Error(
@@ -28395,16 +28395,16 @@ var require_react_dom_client_development = __commonJS({
             }
             break;
           case "children":
-            "string" === typeof value ? setTextContent(domElement, value) : ("number" === typeof value || "bigint" === typeof value) && setTextContent(domElement, "" + value);
+            "string" === typeof value2 ? setTextContent(domElement, value2) : ("number" === typeof value2 || "bigint" === typeof value2) && setTextContent(domElement, "" + value2);
             break;
           case "onScroll":
-            null != value && ("function" !== typeof value && warnForInvalidEventListener(key, value), listenToNonDelegatedEvent("scroll", domElement));
+            null != value2 && ("function" !== typeof value2 && warnForInvalidEventListener(key, value2), listenToNonDelegatedEvent("scroll", domElement));
             break;
           case "onScrollEnd":
-            null != value && ("function" !== typeof value && warnForInvalidEventListener(key, value), listenToNonDelegatedEvent("scrollend", domElement));
+            null != value2 && ("function" !== typeof value2 && warnForInvalidEventListener(key, value2), listenToNonDelegatedEvent("scrollend", domElement));
             break;
           case "onClick":
-            null != value && ("function" !== typeof value && warnForInvalidEventListener(key, value), domElement.onclick = noop$1);
+            null != value2 && ("function" !== typeof value2 && warnForInvalidEventListener(key, value2), domElement.onclick = noop$1);
             break;
           case "suppressContentEditableWarning":
           case "suppressHydrationWarning":
@@ -28416,15 +28416,15 @@ var require_react_dom_client_development = __commonJS({
             break;
           default:
             if (registrationNameDependencies.hasOwnProperty(key))
-              null != value && "function" !== typeof value && warnForInvalidEventListener(key, value);
+              null != value2 && "function" !== typeof value2 && warnForInvalidEventListener(key, value2);
             else
               a: {
-                if ("o" === key[0] && "n" === key[1] && (props = key.endsWith("Capture"), tag = key.slice(2, props ? key.length - 7 : void 0), prevValue = domElement[internalPropsKey] || null, prevValue = null != prevValue ? prevValue[key] : null, "function" === typeof prevValue && domElement.removeEventListener(tag, prevValue, props), "function" === typeof value)) {
+                if ("o" === key[0] && "n" === key[1] && (props = key.endsWith("Capture"), tag = key.slice(2, props ? key.length - 7 : void 0), prevValue = domElement[internalPropsKey] || null, prevValue = null != prevValue ? prevValue[key] : null, "function" === typeof prevValue && domElement.removeEventListener(tag, prevValue, props), "function" === typeof value2)) {
                   "function" !== typeof prevValue && null !== prevValue && (key in domElement ? domElement[key] = null : domElement.hasAttribute(key) && domElement.removeAttribute(key));
-                  domElement.addEventListener(tag, value, props);
+                  domElement.addEventListener(tag, value2, props);
                   break a;
                 }
-                key in domElement ? domElement[key] = value : true === value ? domElement.setAttribute(key, "") : setValueForAttribute(domElement, key, value);
+                key in domElement ? domElement[key] = value2 : true === value2 ? domElement.setAttribute(key, "") : setValueForAttribute(domElement, key, value2);
               }
         }
       }
@@ -28674,7 +28674,7 @@ var require_react_dom_client_development = __commonJS({
           case "li":
             break;
           case "input":
-            var name = null, type = null, value = null, defaultValue = null, lastDefaultValue = null, checked = null, defaultChecked = null;
+            var name = null, type = null, value2 = null, defaultValue = null, lastDefaultValue = null, checked = null, defaultChecked = null;
             for (propKey in lastProps) {
               var lastProp = lastProps[propKey];
               if (lastProps.hasOwnProperty(propKey) && null != lastProp)
@@ -28714,7 +28714,7 @@ var require_react_dom_client_development = __commonJS({
                     defaultChecked = propKey;
                     break;
                   case "value":
-                    value = propKey;
+                    value2 = propKey;
                     break;
                   case "defaultValue":
                     defaultValue = propKey;
@@ -28747,7 +28747,7 @@ var require_react_dom_client_development = __commonJS({
             ), didWarnControlledToUncontrolled = true);
             updateInput(
               domElement,
-              value,
+              value2,
               defaultValue,
               lastDefaultValue,
               checked,
@@ -28757,7 +28757,7 @@ var require_react_dom_client_development = __commonJS({
             );
             return;
           case "select":
-            propKey = value = defaultValue = _propKey8 = null;
+            propKey = value2 = defaultValue = _propKey8 = null;
             for (type in lastProps)
               if (lastDefaultValue = lastProps[type], lastProps.hasOwnProperty(type) && null != lastDefaultValue)
                 switch (type) {
@@ -28785,7 +28785,7 @@ var require_react_dom_client_development = __commonJS({
                     defaultValue = type;
                     break;
                   case "multiple":
-                    value = type;
+                    value2 = type;
                   default:
                     type !== lastDefaultValue && setProp(
                       domElement,
@@ -28797,7 +28797,7 @@ var require_react_dom_client_development = __commonJS({
                     );
                 }
             nextProps = defaultValue;
-            tag = value;
+            tag = value2;
             lastProps = propKey;
             null != _propKey8 ? updateOptions(domElement, !!tag, _propKey8, false) : !!lastProps !== !!tag && (null != nextProps ? updateOptions(domElement, !!tag, nextProps, true) : updateOptions(domElement, !!tag, tag ? [] : "", false));
             return;
@@ -28813,9 +28813,9 @@ var require_react_dom_client_development = __commonJS({
                   default:
                     setProp(domElement, tag, defaultValue, null, nextProps, name);
                 }
-            for (value in nextProps)
-              if (name = nextProps[value], type = lastProps[value], nextProps.hasOwnProperty(value) && (null != name || null != type))
-                switch (value) {
+            for (value2 in nextProps)
+              if (name = nextProps[value2], type = lastProps[value2], nextProps.hasOwnProperty(value2) && (null != name || null != type))
+                switch (value2) {
                   case "value":
                     _propKey8 = name;
                     break;
@@ -28831,7 +28831,7 @@ var require_react_dom_client_development = __commonJS({
                       );
                     break;
                   default:
-                    name !== type && setProp(domElement, tag, value, name, nextProps, type);
+                    name !== type && setProp(domElement, tag, value2, name, nextProps, type);
                 }
             updateTextarea(domElement, _propKey8, propKey);
             return;
@@ -28971,125 +28971,125 @@ var require_react_dom_client_development = __commonJS({
           var delimiter = clientValue = "", styleName;
           for (styleName in value$jscomp$0)
             if (value$jscomp$0.hasOwnProperty(styleName)) {
-              var value = value$jscomp$0[styleName];
-              null != value && "boolean" !== typeof value && "" !== value && (0 === styleName.indexOf("--") ? (checkCSSPropertyStringCoercion(value, styleName), clientValue += delimiter + styleName + ":" + ("" + value).trim()) : "number" !== typeof value || 0 === value || unitlessNumbers.has(styleName) ? (checkCSSPropertyStringCoercion(value, styleName), clientValue += delimiter + styleName.replace(uppercasePattern, "-$1").toLowerCase().replace(msPattern$1, "-ms-") + ":" + ("" + value).trim()) : clientValue += delimiter + styleName.replace(uppercasePattern, "-$1").toLowerCase().replace(msPattern$1, "-ms-") + ":" + value + "px", delimiter = ";");
+              var value2 = value$jscomp$0[styleName];
+              null != value2 && "boolean" !== typeof value2 && "" !== value2 && (0 === styleName.indexOf("--") ? (checkCSSPropertyStringCoercion(value2, styleName), clientValue += delimiter + styleName + ":" + ("" + value2).trim()) : "number" !== typeof value2 || 0 === value2 || unitlessNumbers.has(styleName) ? (checkCSSPropertyStringCoercion(value2, styleName), clientValue += delimiter + styleName.replace(uppercasePattern, "-$1").toLowerCase().replace(msPattern$1, "-ms-") + ":" + ("" + value2).trim()) : clientValue += delimiter + styleName.replace(uppercasePattern, "-$1").toLowerCase().replace(msPattern$1, "-ms-") + ":" + value2 + "px", delimiter = ";");
             }
           clientValue = clientValue || null;
           value$jscomp$0 = domElement.getAttribute("style");
           value$jscomp$0 !== clientValue && (clientValue = normalizeMarkupForTextOrAttribute(clientValue), normalizeMarkupForTextOrAttribute(value$jscomp$0) !== clientValue && (serverDifferences.style = getStylesObjectFromElement(domElement)));
         }
       }
-      function hydrateAttribute(domElement, propKey, attributeName, value, extraAttributes, serverDifferences) {
+      function hydrateAttribute(domElement, propKey, attributeName, value2, extraAttributes, serverDifferences) {
         extraAttributes.delete(attributeName);
         domElement = domElement.getAttribute(attributeName);
         if (null === domElement)
-          switch (typeof value) {
+          switch (typeof value2) {
             case "undefined":
             case "function":
             case "symbol":
             case "boolean":
               return;
           }
-        else if (null != value)
-          switch (typeof value) {
+        else if (null != value2)
+          switch (typeof value2) {
             case "function":
             case "symbol":
             case "boolean":
               break;
             default:
-              if (checkAttributeStringCoercion(value, propKey), domElement === "" + value)
+              if (checkAttributeStringCoercion(value2, propKey), domElement === "" + value2)
                 return;
           }
-        warnForPropDifference(propKey, domElement, value, serverDifferences);
+        warnForPropDifference(propKey, domElement, value2, serverDifferences);
       }
-      function hydrateBooleanAttribute(domElement, propKey, attributeName, value, extraAttributes, serverDifferences) {
+      function hydrateBooleanAttribute(domElement, propKey, attributeName, value2, extraAttributes, serverDifferences) {
         extraAttributes.delete(attributeName);
         domElement = domElement.getAttribute(attributeName);
         if (null === domElement) {
-          switch (typeof value) {
+          switch (typeof value2) {
             case "function":
             case "symbol":
               return;
           }
-          if (!value) return;
+          if (!value2) return;
         } else
-          switch (typeof value) {
+          switch (typeof value2) {
             case "function":
             case "symbol":
               break;
             default:
-              if (value) return;
+              if (value2) return;
           }
-        warnForPropDifference(propKey, domElement, value, serverDifferences);
+        warnForPropDifference(propKey, domElement, value2, serverDifferences);
       }
-      function hydrateBooleanishAttribute(domElement, propKey, attributeName, value, extraAttributes, serverDifferences) {
+      function hydrateBooleanishAttribute(domElement, propKey, attributeName, value2, extraAttributes, serverDifferences) {
         extraAttributes.delete(attributeName);
         domElement = domElement.getAttribute(attributeName);
         if (null === domElement)
-          switch (typeof value) {
+          switch (typeof value2) {
             case "undefined":
             case "function":
             case "symbol":
               return;
           }
-        else if (null != value)
-          switch (typeof value) {
+        else if (null != value2)
+          switch (typeof value2) {
             case "function":
             case "symbol":
               break;
             default:
-              if (checkAttributeStringCoercion(value, attributeName), domElement === "" + value)
+              if (checkAttributeStringCoercion(value2, attributeName), domElement === "" + value2)
                 return;
           }
-        warnForPropDifference(propKey, domElement, value, serverDifferences);
+        warnForPropDifference(propKey, domElement, value2, serverDifferences);
       }
-      function hydrateNumericAttribute(domElement, propKey, attributeName, value, extraAttributes, serverDifferences) {
+      function hydrateNumericAttribute(domElement, propKey, attributeName, value2, extraAttributes, serverDifferences) {
         extraAttributes.delete(attributeName);
         domElement = domElement.getAttribute(attributeName);
         if (null === domElement)
-          switch (typeof value) {
+          switch (typeof value2) {
             case "undefined":
             case "function":
             case "symbol":
             case "boolean":
               return;
             default:
-              if (isNaN(value)) return;
+              if (isNaN(value2)) return;
           }
-        else if (null != value)
-          switch (typeof value) {
+        else if (null != value2)
+          switch (typeof value2) {
             case "function":
             case "symbol":
             case "boolean":
               break;
             default:
-              if (!isNaN(value) && (checkAttributeStringCoercion(value, propKey), domElement === "" + value))
+              if (!isNaN(value2) && (checkAttributeStringCoercion(value2, propKey), domElement === "" + value2))
                 return;
           }
-        warnForPropDifference(propKey, domElement, value, serverDifferences);
+        warnForPropDifference(propKey, domElement, value2, serverDifferences);
       }
-      function hydrateSanitizedAttribute(domElement, propKey, attributeName, value, extraAttributes, serverDifferences) {
+      function hydrateSanitizedAttribute(domElement, propKey, attributeName, value2, extraAttributes, serverDifferences) {
         extraAttributes.delete(attributeName);
         domElement = domElement.getAttribute(attributeName);
         if (null === domElement)
-          switch (typeof value) {
+          switch (typeof value2) {
             case "undefined":
             case "function":
             case "symbol":
             case "boolean":
               return;
           }
-        else if (null != value)
-          switch (typeof value) {
+        else if (null != value2)
+          switch (typeof value2) {
             case "function":
             case "symbol":
             case "boolean":
               break;
             default:
-              if (checkAttributeStringCoercion(value, propKey), attributeName = sanitizeURL("" + value), domElement === attributeName)
+              if (checkAttributeStringCoercion(value2, propKey), attributeName = sanitizeURL("" + value2), domElement === attributeName)
                 return;
           }
-        warnForPropDifference(propKey, domElement, value, serverDifferences);
+        warnForPropDifference(propKey, domElement, value2, serverDifferences);
       }
       function diffHydratedProperties(domElement, tag, props, hostContext) {
         for (var serverDifferences = {}, extraAttributes = /* @__PURE__ */ new Set(), attributes = domElement.attributes, i = 0; i < attributes.length; i++)
@@ -29106,17 +29106,17 @@ var require_react_dom_client_development = __commonJS({
         if (isCustomElement(tag))
           for (var propKey in props) {
             if (props.hasOwnProperty(propKey)) {
-              var value = props[propKey];
-              if (null != value) {
+              var value2 = props[propKey];
+              if (null != value2) {
                 if (registrationNameDependencies.hasOwnProperty(propKey))
-                  "function" !== typeof value && warnForInvalidEventListener(propKey, value);
+                  "function" !== typeof value2 && warnForInvalidEventListener(propKey, value2);
                 else if (true !== props.suppressHydrationWarning)
                   switch (propKey) {
                     case "children":
-                      "string" !== typeof value && "number" !== typeof value || warnForPropDifference(
+                      "string" !== typeof value2 && "number" !== typeof value2 || warnForPropDifference(
                         "children",
                         domElement.textContent,
-                        value,
+                        value2,
                         serverDifferences
                       );
                       continue;
@@ -29129,17 +29129,17 @@ var require_react_dom_client_development = __commonJS({
                       continue;
                     case "dangerouslySetInnerHTML":
                       attributes = domElement.innerHTML;
-                      value = value ? value.__html : void 0;
-                      null != value && (value = normalizeHTML(domElement, value), warnForPropDifference(
+                      value2 = value2 ? value2.__html : void 0;
+                      null != value2 && (value2 = normalizeHTML(domElement, value2), warnForPropDifference(
                         propKey,
                         attributes,
-                        value,
+                        value2,
                         serverDifferences
                       ));
                       continue;
                     case "style":
                       extraAttributes.delete(propKey);
-                      diffHydratedStyles(domElement, value, serverDifferences);
+                      diffHydratedStyles(domElement, value2, serverDifferences);
                       continue;
                     case "offsetParent":
                     case "offsetTop":
@@ -29160,12 +29160,12 @@ var require_react_dom_client_development = __commonJS({
                       attributes = getValueForAttributeOnCustomComponent(
                         domElement,
                         "class",
-                        value
+                        value2
                       );
                       warnForPropDifference(
                         "className",
                         attributes,
-                        value,
+                        value2,
                         serverDifferences
                       );
                       continue;
@@ -29173,11 +29173,11 @@ var require_react_dom_client_development = __commonJS({
                       hostContext.context === HostContextNamespaceNone && "svg" !== tag && "math" !== tag ? extraAttributes.delete(propKey.toLowerCase()) : extraAttributes.delete(propKey), attributes = getValueForAttributeOnCustomComponent(
                         domElement,
                         propKey,
-                        value
+                        value2
                       ), warnForPropDifference(
                         propKey,
                         attributes,
-                        value,
+                        value2,
                         serverDifferences
                       );
                   }
@@ -29185,12 +29185,12 @@ var require_react_dom_client_development = __commonJS({
             }
           }
         else
-          for (value in props)
-            if (props.hasOwnProperty(value) && (propKey = props[value], null != propKey)) {
-              if (registrationNameDependencies.hasOwnProperty(value))
-                "function" !== typeof propKey && warnForInvalidEventListener(value, propKey);
+          for (value2 in props)
+            if (props.hasOwnProperty(value2) && (propKey = props[value2], null != propKey)) {
+              if (registrationNameDependencies.hasOwnProperty(value2))
+                "function" !== typeof propKey && warnForInvalidEventListener(value2, propKey);
               else if (true !== props.suppressHydrationWarning)
-                switch (value) {
+                switch (value2) {
                   case "children":
                     "string" !== typeof propKey && "number" !== typeof propKey || warnForPropDifference(
                       "children",
@@ -29212,12 +29212,12 @@ var require_react_dom_client_development = __commonJS({
                   case "dangerouslySetInnerHTML":
                     attributes = domElement.innerHTML;
                     propKey = propKey ? propKey.__html : void 0;
-                    null != propKey && (propKey = normalizeHTML(domElement, propKey), attributes !== propKey && (serverDifferences[value] = { __html: attributes }));
+                    null != propKey && (propKey = normalizeHTML(domElement, propKey), attributes !== propKey && (serverDifferences[value2] = { __html: attributes }));
                     continue;
                   case "className":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "class",
                       propKey,
                       extraAttributes,
@@ -29227,7 +29227,7 @@ var require_react_dom_client_development = __commonJS({
                   case "tabIndex":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "tabindex",
                       propKey,
                       extraAttributes,
@@ -29235,22 +29235,22 @@ var require_react_dom_client_development = __commonJS({
                     );
                     continue;
                   case "style":
-                    extraAttributes.delete(value);
+                    extraAttributes.delete(value2);
                     diffHydratedStyles(domElement, propKey, serverDifferences);
                     continue;
                   case "multiple":
-                    extraAttributes.delete(value);
+                    extraAttributes.delete(value2);
                     warnForPropDifference(
-                      value,
+                      value2,
                       domElement.multiple,
                       propKey,
                       serverDifferences
                     );
                     continue;
                   case "muted":
-                    extraAttributes.delete(value);
+                    extraAttributes.delete(value2);
                     warnForPropDifference(
-                      value,
+                      value2,
                       domElement.muted,
                       propKey,
                       serverDifferences
@@ -29259,7 +29259,7 @@ var require_react_dom_client_development = __commonJS({
                   case "autoFocus":
                     extraAttributes.delete("autofocus");
                     warnForPropDifference(
-                      value,
+                      value2,
                       domElement.autofocus,
                       propKey,
                       serverDifferences
@@ -29267,10 +29267,10 @@ var require_react_dom_client_development = __commonJS({
                     continue;
                   case "data":
                     if ("object" !== tag) {
-                      extraAttributes.delete(value);
+                      extraAttributes.delete(value2);
                       attributes = domElement.getAttribute("data");
                       warnForPropDifference(
-                        value,
+                        value2,
                         attributes,
                         propKey,
                         serverDifferences
@@ -29279,22 +29279,22 @@ var require_react_dom_client_development = __commonJS({
                     }
                   case "src":
                   case "href":
-                    if (!("" !== propKey || "a" === tag && "href" === value || "object" === tag && "data" === value)) {
-                      "src" === value ? console.error(
+                    if (!("" !== propKey || "a" === tag && "href" === value2 || "object" === tag && "data" === value2)) {
+                      "src" === value2 ? console.error(
                         'An empty string ("") was passed to the %s attribute. This may cause the browser to download the whole page again over the network. To fix this, either do not render the element at all or pass null to %s instead of an empty string.',
-                        value,
-                        value
+                        value2,
+                        value2
                       ) : console.error(
                         'An empty string ("") was passed to the %s attribute. To fix this, either do not render the element at all or pass null to %s instead of an empty string.',
-                        value,
-                        value
+                        value2,
+                        value2
                       );
                       continue;
                     }
                     hydrateSanitizedAttribute(
                       domElement,
-                      value,
-                      value,
+                      value2,
+                      value2,
                       propKey,
                       extraAttributes,
                       serverDifferences
@@ -29302,15 +29302,15 @@ var require_react_dom_client_development = __commonJS({
                     continue;
                   case "action":
                   case "formAction":
-                    attributes = domElement.getAttribute(value);
+                    attributes = domElement.getAttribute(value2);
                     if ("function" === typeof propKey) {
-                      extraAttributes.delete(value.toLowerCase());
-                      "formAction" === value ? (extraAttributes.delete("name"), extraAttributes.delete("formenctype"), extraAttributes.delete("formmethod"), extraAttributes.delete("formtarget")) : (extraAttributes.delete("enctype"), extraAttributes.delete("method"), extraAttributes.delete("target"));
+                      extraAttributes.delete(value2.toLowerCase());
+                      "formAction" === value2 ? (extraAttributes.delete("name"), extraAttributes.delete("formenctype"), extraAttributes.delete("formmethod"), extraAttributes.delete("formtarget")) : (extraAttributes.delete("enctype"), extraAttributes.delete("method"), extraAttributes.delete("target"));
                       continue;
                     } else if (attributes === EXPECTED_FORM_ACTION_URL) {
-                      extraAttributes.delete(value.toLowerCase());
+                      extraAttributes.delete(value2.toLowerCase());
                       warnForPropDifference(
-                        value,
+                        value2,
                         "function",
                         propKey,
                         serverDifferences
@@ -29319,8 +29319,8 @@ var require_react_dom_client_development = __commonJS({
                     }
                     hydrateSanitizedAttribute(
                       domElement,
-                      value,
-                      value.toLowerCase(),
+                      value2,
+                      value2.toLowerCase(),
                       propKey,
                       extraAttributes,
                       serverDifferences
@@ -29329,7 +29329,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xlinkHref":
                     hydrateSanitizedAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xlink:href",
                       propKey,
                       extraAttributes,
@@ -29339,7 +29339,7 @@ var require_react_dom_client_development = __commonJS({
                   case "contentEditable":
                     hydrateBooleanishAttribute(
                       domElement,
-                      value,
+                      value2,
                       "contenteditable",
                       propKey,
                       extraAttributes,
@@ -29349,7 +29349,7 @@ var require_react_dom_client_development = __commonJS({
                   case "spellCheck":
                     hydrateBooleanishAttribute(
                       domElement,
-                      value,
+                      value2,
                       "spellcheck",
                       propKey,
                       extraAttributes,
@@ -29363,8 +29363,8 @@ var require_react_dom_client_development = __commonJS({
                   case "preserveAlpha":
                     hydrateBooleanishAttribute(
                       domElement,
-                      value,
-                      value,
+                      value2,
+                      value2,
                       propKey,
                       extraAttributes,
                       serverDifferences
@@ -29394,8 +29394,8 @@ var require_react_dom_client_development = __commonJS({
                   case "itemScope":
                     hydrateBooleanAttribute(
                       domElement,
-                      value,
-                      value.toLowerCase(),
+                      value2,
+                      value2.toLowerCase(),
                       propKey,
                       extraAttributes,
                       serverDifferences
@@ -29405,7 +29405,7 @@ var require_react_dom_client_development = __commonJS({
                   case "download":
                     a: {
                       i = domElement;
-                      var attributeName = attributes = value, serverDifferences$jscomp$0 = serverDifferences;
+                      var attributeName = attributes = value2, serverDifferences$jscomp$0 = serverDifferences;
                       extraAttributes.delete(attributeName);
                       i = i.getAttribute(attributeName);
                       if (null === i)
@@ -29443,7 +29443,7 @@ var require_react_dom_client_development = __commonJS({
                   case "span":
                     a: {
                       i = domElement;
-                      attributeName = attributes = value;
+                      attributeName = attributes = value2;
                       serverDifferences$jscomp$0 = serverDifferences;
                       extraAttributes.delete(attributeName);
                       i = i.getAttribute(attributeName);
@@ -29478,7 +29478,7 @@ var require_react_dom_client_development = __commonJS({
                   case "rowSpan":
                     hydrateNumericAttribute(
                       domElement,
-                      value,
+                      value2,
                       "rowspan",
                       propKey,
                       extraAttributes,
@@ -29488,8 +29488,8 @@ var require_react_dom_client_development = __commonJS({
                   case "start":
                     hydrateNumericAttribute(
                       domElement,
-                      value,
-                      value,
+                      value2,
+                      value2,
                       propKey,
                       extraAttributes,
                       serverDifferences
@@ -29498,7 +29498,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xHeight":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "x-height",
                       propKey,
                       extraAttributes,
@@ -29508,7 +29508,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xlinkActuate":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xlink:actuate",
                       propKey,
                       extraAttributes,
@@ -29518,7 +29518,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xlinkArcrole":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xlink:arcrole",
                       propKey,
                       extraAttributes,
@@ -29528,7 +29528,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xlinkRole":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xlink:role",
                       propKey,
                       extraAttributes,
@@ -29538,7 +29538,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xlinkShow":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xlink:show",
                       propKey,
                       extraAttributes,
@@ -29548,7 +29548,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xlinkTitle":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xlink:title",
                       propKey,
                       extraAttributes,
@@ -29558,7 +29558,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xlinkType":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xlink:type",
                       propKey,
                       extraAttributes,
@@ -29568,7 +29568,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xmlBase":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xml:base",
                       propKey,
                       extraAttributes,
@@ -29578,7 +29578,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xmlLang":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xml:lang",
                       propKey,
                       extraAttributes,
@@ -29588,7 +29588,7 @@ var require_react_dom_client_development = __commonJS({
                   case "xmlSpace":
                     hydrateAttribute(
                       domElement,
-                      value,
+                      value2,
                       "xml:space",
                       propKey,
                       extraAttributes,
@@ -29596,26 +29596,26 @@ var require_react_dom_client_development = __commonJS({
                     );
                     continue;
                   case "inert":
-                    "" !== propKey || didWarnForNewBooleanPropsWithEmptyValue[value] || (didWarnForNewBooleanPropsWithEmptyValue[value] = true, console.error(
+                    "" !== propKey || didWarnForNewBooleanPropsWithEmptyValue[value2] || (didWarnForNewBooleanPropsWithEmptyValue[value2] = true, console.error(
                       "Received an empty string for a boolean attribute `%s`. This will treat the attribute as if it were false. Either pass `false` to silence this warning, or pass `true` if you used an empty string in earlier versions of React to indicate this attribute is true.",
-                      value
+                      value2
                     ));
                     hydrateBooleanAttribute(
                       domElement,
-                      value,
-                      value,
+                      value2,
+                      value2,
                       propKey,
                       extraAttributes,
                       serverDifferences
                     );
                     continue;
                   default:
-                    if (!(2 < value.length) || "o" !== value[0] && "O" !== value[0] || "n" !== value[1] && "N" !== value[1]) {
-                      i = getAttributeAlias(value);
+                    if (!(2 < value2.length) || "o" !== value2[0] && "O" !== value2[0] || "n" !== value2[1] && "N" !== value2[1]) {
+                      i = getAttributeAlias(value2);
                       attributes = false;
-                      hostContext.context === HostContextNamespaceNone && "svg" !== tag && "math" !== tag ? extraAttributes.delete(i.toLowerCase()) : (attributeName = value.toLowerCase(), attributeName = possibleStandardNames.hasOwnProperty(
+                      hostContext.context === HostContextNamespaceNone && "svg" !== tag && "math" !== tag ? extraAttributes.delete(i.toLowerCase()) : (attributeName = value2.toLowerCase(), attributeName = possibleStandardNames.hasOwnProperty(
                         attributeName
-                      ) ? possibleStandardNames[attributeName] || null : null, null !== attributeName && attributeName !== value && (attributes = true, extraAttributes.delete(attributeName)), extraAttributes.delete(i));
+                      ) ? possibleStandardNames[attributeName] || null : null, null !== attributeName && attributeName !== value2 && (attributes = true, extraAttributes.delete(attributeName)), extraAttributes.delete(i));
                       a: if (attributeName = domElement, serverDifferences$jscomp$0 = i, i = propKey, isAttributeNameSafe(serverDifferences$jscomp$0))
                         if (attributeName.hasAttribute(serverDifferences$jscomp$0))
                           attributeName = attributeName.getAttribute(
@@ -29637,7 +29637,7 @@ var require_react_dom_client_development = __commonJS({
                         }
                       else i = void 0;
                       attributes || warnForPropDifference(
-                        value,
+                        value2,
                         i,
                         propKey,
                         serverDifferences
@@ -29726,22 +29726,22 @@ var require_react_dom_client_development = __commonJS({
         return "textarea" === type || "noscript" === type || "string" === typeof props.children || "number" === typeof props.children || "bigint" === typeof props.children || "object" === typeof props.dangerouslySetInnerHTML && null !== props.dangerouslySetInnerHTML && null != props.dangerouslySetInnerHTML.__html;
       }
       function shouldAttemptEagerTransition() {
-        var event = window.event;
-        if (event && "popstate" === event.type) {
-          if (event === currentPopstateTransitionEvent) return false;
-          currentPopstateTransitionEvent = event;
+        var event2 = window.event;
+        if (event2 && "popstate" === event2.type) {
+          if (event2 === currentPopstateTransitionEvent) return false;
+          currentPopstateTransitionEvent = event2;
           return true;
         }
         currentPopstateTransitionEvent = null;
         return false;
       }
       function resolveEventType() {
-        var event = window.event;
-        return event && event !== schedulerEvent ? event.type : null;
+        var event2 = window.event;
+        return event2 && event2 !== schedulerEvent ? event2.type : null;
       }
       function resolveEventTimeStamp() {
-        var event = window.event;
-        return event && event !== schedulerEvent ? event.timeStamp : -1.1;
+        var event2 = window.event;
+        return event2 && event2 !== schedulerEvent ? event2.timeStamp : -1.1;
       }
       function handleErrorInNextTick(error) {
         setTimeout(function() {
@@ -29955,15 +29955,15 @@ var require_react_dom_client_development = __commonJS({
       function isSuspenseInstanceFallback(instance) {
         return instance.data === SUSPENSE_FALLBACK_START_DATA || instance.data === SUSPENSE_PENDING_START_DATA && instance.ownerDocument.readyState !== DOCUMENT_READY_STATE_LOADING;
       }
-      function registerSuspenseInstanceRetry(instance, callback) {
+      function registerSuspenseInstanceRetry(instance, callback2) {
         var ownerDocument = instance.ownerDocument;
         if (instance.data === SUSPENSE_QUEUED_START_DATA)
-          instance._reactRetry = callback;
+          instance._reactRetry = callback2;
         else if (instance.data !== SUSPENSE_PENDING_START_DATA || ownerDocument.readyState !== DOCUMENT_READY_STATE_LOADING)
-          callback();
+          callback2();
         else {
           var listener = function() {
-            callback();
+            callback2();
             ownerDocument.removeEventListener("DOMContentLoaded", listener);
           };
           ownerDocument.addEventListener("DOMContentLoaded", listener);
@@ -30445,7 +30445,7 @@ var require_react_dom_client_development = __commonJS({
       }
       function waitForCommitToBeReady(state, timeoutOffset) {
         state.stylesheets && 0 === state.count && insertSuspendedStylesheets(state, state.stylesheets);
-        return 0 < state.count || 0 < state.imgCount ? function(commit) {
+        return 0 < state.count || 0 < state.imgCount ? function(commit2) {
           var stylesheetTimer = setTimeout(function() {
             state.stylesheets && insertSuspendedStylesheets(state, state.stylesheets);
             if (state.unsuspend) {
@@ -30466,7 +30466,7 @@ var require_react_dom_client_development = __commonJS({
             },
             (state.imgBytes > estimatedBytesWithinLimit ? 50 : SUSPENSEY_IMAGE_TIMEOUT) + timeoutOffset
           );
-          state.unsuspend = commit;
+          state.unsuspend = commit2;
           return function() {
             state.unsuspend = null;
             clearTimeout(stylesheetTimer);
@@ -30579,7 +30579,7 @@ var require_react_dom_client_development = __commonJS({
         parentComponent = emptyContextObject;
         return parentComponent;
       }
-      function updateContainerImpl(rootFiber, lane, element, container, parentComponent, callback) {
+      function updateContainerImpl(rootFiber, lane, element, container, parentComponent, callback2) {
         if (injectedHook && "function" === typeof injectedHook.onScheduleFiberRoot)
           try {
             injectedHook.onScheduleFiberRoot(rendererID, container, element);
@@ -30597,11 +30597,11 @@ var require_react_dom_client_development = __commonJS({
         ));
         container = createUpdate(lane);
         container.payload = { element };
-        callback = void 0 === callback ? null : callback;
-        null !== callback && ("function" !== typeof callback && console.error(
+        callback2 = void 0 === callback2 ? null : callback2;
+        null !== callback2 && ("function" !== typeof callback2 && console.error(
           "Expected the last optional `callback` argument to be a function. Instead received: %s.",
-          callback
-        ), container.callback = callback);
+          callback2
+        ), container.callback = callback2);
         element = enqueueUpdate(rootFiber, container, lane);
         null !== element && (startUpdateTimerByLane(lane, "root.render()", null), scheduleUpdateOnFiber(element, rootFiber, lane), entangleTransitions(element, rootFiber, lane));
       }
@@ -30978,11 +30978,11 @@ var require_react_dom_client_development = __commonJS({
             var nativeEventClone = new nextBlockedOn.constructor(
               nextBlockedOn.type,
               nextBlockedOn
-            ), event = nativeEventClone;
+            ), event2 = nativeEventClone;
             null !== currentReplayingEvent && console.error(
               "Expected currently replaying event to be null. This error is likely caused by a bug in React. Please file an issue."
             );
-            currentReplayingEvent = event;
+            currentReplayingEvent = event2;
             nextBlockedOn.target.dispatchEvent(nativeEventClone);
             null === currentReplayingEvent && console.error(
               "Expected currently replaying event to not be null. This error is likely caused by a bug in React. Please file an issue."
@@ -31074,8 +31074,8 @@ var require_react_dom_client_development = __commonJS({
           }
       }
       function defaultOnDefaultTransitionIndicator() {
-        function handleNavigate(event) {
-          event.canIntercept && "react-transition" === event.info && event.intercept({
+        function handleNavigate(event2) {
+          event2.canIntercept && "react-transition" === event2.info && event2.intercept({
             handler: function() {
               return new Promise(function(resolve) {
                 return pendingResolve = resolve;
@@ -31965,8 +31965,8 @@ var require_react_dom_client_development = __commonJS({
         eventPhase: 0,
         bubbles: 0,
         cancelable: 0,
-        timeStamp: function(event) {
-          return event.timeStamp || Date.now();
+        timeStamp: function(event2) {
+          return event2.timeStamp || Date.now();
         },
         defaultPrevented: 0,
         isTrusted: 0
@@ -31984,24 +31984,24 @@ var require_react_dom_client_development = __commonJS({
         getModifierState: getEventModifierState,
         button: 0,
         buttons: 0,
-        relatedTarget: function(event) {
-          return void 0 === event.relatedTarget ? event.fromElement === event.srcElement ? event.toElement : event.fromElement : event.relatedTarget;
+        relatedTarget: function(event2) {
+          return void 0 === event2.relatedTarget ? event2.fromElement === event2.srcElement ? event2.toElement : event2.fromElement : event2.relatedTarget;
         },
-        movementX: function(event) {
-          if ("movementX" in event) return event.movementX;
-          event !== lastMouseEvent && (lastMouseEvent && "mousemove" === event.type ? (lastMovementX = event.screenX - lastMouseEvent.screenX, lastMovementY = event.screenY - lastMouseEvent.screenY) : lastMovementY = lastMovementX = 0, lastMouseEvent = event);
+        movementX: function(event2) {
+          if ("movementX" in event2) return event2.movementX;
+          event2 !== lastMouseEvent && (lastMouseEvent && "mousemove" === event2.type ? (lastMovementX = event2.screenX - lastMouseEvent.screenX, lastMovementY = event2.screenY - lastMouseEvent.screenY) : lastMovementY = lastMovementX = 0, lastMouseEvent = event2);
           return lastMovementX;
         },
-        movementY: function(event) {
-          return "movementY" in event ? event.movementY : lastMovementY;
+        movementY: function(event2) {
+          return "movementY" in event2 ? event2.movementY : lastMovementY;
         }
       }), SyntheticMouseEvent = createSyntheticEvent(MouseEventInterface), DragEventInterface = assign({}, MouseEventInterface, { dataTransfer: 0 }), SyntheticDragEvent = createSyntheticEvent(DragEventInterface), FocusEventInterface = assign({}, UIEventInterface, { relatedTarget: 0 }), SyntheticFocusEvent = createSyntheticEvent(FocusEventInterface), AnimationEventInterface = assign({}, EventInterface, {
         animationName: 0,
         elapsedTime: 0,
         pseudoElement: 0
       }), SyntheticAnimationEvent = createSyntheticEvent(AnimationEventInterface), ClipboardEventInterface = assign({}, EventInterface, {
-        clipboardData: function(event) {
-          return "clipboardData" in event ? event.clipboardData : window.clipboardData;
+        clipboardData: function(event2) {
+          return "clipboardData" in event2 ? event2.clipboardData : window.clipboardData;
         }
       }), SyntheticClipboardEvent = createSyntheticEvent(ClipboardEventInterface), CompositionEventInterface = assign({}, EventInterface, { data: 0 }), SyntheticCompositionEvent = createSyntheticEvent(
         CompositionEventInterface
@@ -32077,14 +32077,14 @@ var require_react_dom_client_development = __commonJS({
         repeat: 0,
         locale: 0,
         getModifierState: getEventModifierState,
-        charCode: function(event) {
-          return "keypress" === event.type ? getEventCharCode(event) : 0;
+        charCode: function(event2) {
+          return "keypress" === event2.type ? getEventCharCode(event2) : 0;
         },
-        keyCode: function(event) {
-          return "keydown" === event.type || "keyup" === event.type ? event.keyCode : 0;
+        keyCode: function(event2) {
+          return "keydown" === event2.type || "keyup" === event2.type ? event2.keyCode : 0;
         },
-        which: function(event) {
-          return "keypress" === event.type ? getEventCharCode(event) : "keydown" === event.type || "keyup" === event.type ? event.keyCode : 0;
+        which: function(event2) {
+          return "keypress" === event2.type ? getEventCharCode(event2) : "keydown" === event2.type || "keyup" === event2.type ? event2.keyCode : 0;
         }
       }), SyntheticKeyboardEvent = createSyntheticEvent(KeyboardEventInterface), PointerEventInterface = assign({}, MouseEventInterface, {
         pointerId: 0,
@@ -32111,11 +32111,11 @@ var require_react_dom_client_development = __commonJS({
         elapsedTime: 0,
         pseudoElement: 0
       }), SyntheticTransitionEvent = createSyntheticEvent(TransitionEventInterface), WheelEventInterface = assign({}, MouseEventInterface, {
-        deltaX: function(event) {
-          return "deltaX" in event ? event.deltaX : "wheelDeltaX" in event ? -event.wheelDeltaX : 0;
+        deltaX: function(event2) {
+          return "deltaX" in event2 ? event2.deltaX : "wheelDeltaX" in event2 ? -event2.wheelDeltaX : 0;
         },
-        deltaY: function(event) {
-          return "deltaY" in event ? event.deltaY : "wheelDeltaY" in event ? -event.wheelDeltaY : "wheelDelta" in event ? -event.wheelDelta : 0;
+        deltaY: function(event2) {
+          return "deltaY" in event2 ? event2.deltaY : "wheelDeltaY" in event2 ? -event2.wheelDeltaY : "wheelDelta" in event2 ? -event2.wheelDelta : 0;
         },
         deltaZ: 0,
         deltaMode: 0
@@ -32170,13 +32170,13 @@ var require_react_dom_client_development = __commonJS({
       }
       var reportGlobalError = "function" === typeof reportError ? reportError : function(error) {
         if ("object" === typeof window && "function" === typeof window.ErrorEvent) {
-          var event = new window.ErrorEvent("error", {
+          var event2 = new window.ErrorEvent("error", {
             bubbles: true,
             cancelable: true,
             message: "object" === typeof error && null !== error && "string" === typeof error.message ? String(error.message) : String(error),
             error
           });
-          if (!window.dispatchEvent(event)) return;
+          if (!window.dispatchEvent(event2)) return;
         } else if ("object" === typeof process && "function" === typeof process.emit) {
           process.emit("uncaughtException", error);
           return;
@@ -32542,11 +32542,11 @@ var require_react_dom_client_development = __commonJS({
           return readContext(context);
         },
         use,
-        useCallback: function(callback, deps) {
+        useCallback: function(callback2, deps) {
           currentHookNameInDev = "useCallback";
           mountHookTypesDev();
           checkDepsAreArrayDev(deps);
-          return mountCallback(callback, deps);
+          return mountCallback(callback2, deps);
         },
         useContext: function(context) {
           currentHookNameInDev = "useContext";
@@ -32620,10 +32620,10 @@ var require_react_dom_client_development = __commonJS({
           currentHookNameInDev = "useDebugValue";
           mountHookTypesDev();
         },
-        useDeferredValue: function(value, initialValue) {
+        useDeferredValue: function(value2, initialValue) {
           currentHookNameInDev = "useDeferredValue";
           mountHookTypesDev();
-          return mountDeferredValue(value, initialValue);
+          return mountDeferredValue(value2, initialValue);
         },
         useTransition: function() {
           currentHookNameInDev = "useTransition";
@@ -32667,10 +32667,10 @@ var require_react_dom_client_development = __commonJS({
           mountHookTypesDev();
           return mountRefresh();
         },
-        useEffectEvent: function(callback) {
+        useEffectEvent: function(callback2) {
           currentHookNameInDev = "useEffectEvent";
           mountHookTypesDev();
-          return mountEvent(callback);
+          return mountEvent(callback2);
         }
       };
       HooksDispatcherOnMountWithHookTypesInDEV = {
@@ -32678,10 +32678,10 @@ var require_react_dom_client_development = __commonJS({
           return readContext(context);
         },
         use,
-        useCallback: function(callback, deps) {
+        useCallback: function(callback2, deps) {
           currentHookNameInDev = "useCallback";
           updateHookTypesDev();
-          return mountCallback(callback, deps);
+          return mountCallback(callback2, deps);
         },
         useContext: function(context) {
           currentHookNameInDev = "useContext";
@@ -32750,10 +32750,10 @@ var require_react_dom_client_development = __commonJS({
           currentHookNameInDev = "useDebugValue";
           updateHookTypesDev();
         },
-        useDeferredValue: function(value, initialValue) {
+        useDeferredValue: function(value2, initialValue) {
           currentHookNameInDev = "useDeferredValue";
           updateHookTypesDev();
-          return mountDeferredValue(value, initialValue);
+          return mountDeferredValue(value2, initialValue);
         },
         useTransition: function() {
           currentHookNameInDev = "useTransition";
@@ -32797,10 +32797,10 @@ var require_react_dom_client_development = __commonJS({
           updateHookTypesDev();
           return mountRefresh();
         },
-        useEffectEvent: function(callback) {
+        useEffectEvent: function(callback2) {
           currentHookNameInDev = "useEffectEvent";
           updateHookTypesDev();
-          return mountEvent(callback);
+          return mountEvent(callback2);
         }
       };
       HooksDispatcherOnUpdateInDEV = {
@@ -32808,10 +32808,10 @@ var require_react_dom_client_development = __commonJS({
           return readContext(context);
         },
         use,
-        useCallback: function(callback, deps) {
+        useCallback: function(callback2, deps) {
           currentHookNameInDev = "useCallback";
           updateHookTypesDev();
-          return updateCallback(callback, deps);
+          return updateCallback(callback2, deps);
         },
         useContext: function(context) {
           currentHookNameInDev = "useContext";
@@ -32880,10 +32880,10 @@ var require_react_dom_client_development = __commonJS({
           currentHookNameInDev = "useDebugValue";
           updateHookTypesDev();
         },
-        useDeferredValue: function(value, initialValue) {
+        useDeferredValue: function(value2, initialValue) {
           currentHookNameInDev = "useDeferredValue";
           updateHookTypesDev();
-          return updateDeferredValue(value, initialValue);
+          return updateDeferredValue(value2, initialValue);
         },
         useTransition: function() {
           currentHookNameInDev = "useTransition";
@@ -32927,10 +32927,10 @@ var require_react_dom_client_development = __commonJS({
           updateHookTypesDev();
           return updateWorkInProgressHook().memoizedState;
         },
-        useEffectEvent: function(callback) {
+        useEffectEvent: function(callback2) {
           currentHookNameInDev = "useEffectEvent";
           updateHookTypesDev();
-          return updateEvent(callback);
+          return updateEvent(callback2);
         }
       };
       HooksDispatcherOnRerenderInDEV = {
@@ -32938,10 +32938,10 @@ var require_react_dom_client_development = __commonJS({
           return readContext(context);
         },
         use,
-        useCallback: function(callback, deps) {
+        useCallback: function(callback2, deps) {
           currentHookNameInDev = "useCallback";
           updateHookTypesDev();
-          return updateCallback(callback, deps);
+          return updateCallback(callback2, deps);
         },
         useContext: function(context) {
           currentHookNameInDev = "useContext";
@@ -33010,10 +33010,10 @@ var require_react_dom_client_development = __commonJS({
           currentHookNameInDev = "useDebugValue";
           updateHookTypesDev();
         },
-        useDeferredValue: function(value, initialValue) {
+        useDeferredValue: function(value2, initialValue) {
           currentHookNameInDev = "useDeferredValue";
           updateHookTypesDev();
-          return rerenderDeferredValue(value, initialValue);
+          return rerenderDeferredValue(value2, initialValue);
         },
         useTransition: function() {
           currentHookNameInDev = "useTransition";
@@ -33057,10 +33057,10 @@ var require_react_dom_client_development = __commonJS({
           updateHookTypesDev();
           return updateWorkInProgressHook().memoizedState;
         },
-        useEffectEvent: function(callback) {
+        useEffectEvent: function(callback2) {
           currentHookNameInDev = "useEffectEvent";
           updateHookTypesDev();
-          return updateEvent(callback);
+          return updateEvent(callback2);
         }
       };
       InvalidNestedHooksDispatcherOnMountInDEV = {
@@ -33072,11 +33072,11 @@ var require_react_dom_client_development = __commonJS({
           warnInvalidHookAccess();
           return use(usable);
         },
-        useCallback: function(callback, deps) {
+        useCallback: function(callback2, deps) {
           currentHookNameInDev = "useCallback";
           warnInvalidHookAccess();
           mountHookTypesDev();
-          return mountCallback(callback, deps);
+          return mountCallback(callback2, deps);
         },
         useContext: function(context) {
           currentHookNameInDev = "useContext";
@@ -33155,11 +33155,11 @@ var require_react_dom_client_development = __commonJS({
           warnInvalidHookAccess();
           mountHookTypesDev();
         },
-        useDeferredValue: function(value, initialValue) {
+        useDeferredValue: function(value2, initialValue) {
           currentHookNameInDev = "useDeferredValue";
           warnInvalidHookAccess();
           mountHookTypesDev();
-          return mountDeferredValue(value, initialValue);
+          return mountDeferredValue(value2, initialValue);
         },
         useTransition: function() {
           currentHookNameInDev = "useTransition";
@@ -33211,11 +33211,11 @@ var require_react_dom_client_development = __commonJS({
           mountHookTypesDev();
           return mountRefresh();
         },
-        useEffectEvent: function(callback) {
+        useEffectEvent: function(callback2) {
           currentHookNameInDev = "useEffectEvent";
           warnInvalidHookAccess();
           mountHookTypesDev();
-          return mountEvent(callback);
+          return mountEvent(callback2);
         }
       };
       InvalidNestedHooksDispatcherOnUpdateInDEV = {
@@ -33227,11 +33227,11 @@ var require_react_dom_client_development = __commonJS({
           warnInvalidHookAccess();
           return use(usable);
         },
-        useCallback: function(callback, deps) {
+        useCallback: function(callback2, deps) {
           currentHookNameInDev = "useCallback";
           warnInvalidHookAccess();
           updateHookTypesDev();
-          return updateCallback(callback, deps);
+          return updateCallback(callback2, deps);
         },
         useContext: function(context) {
           currentHookNameInDev = "useContext";
@@ -33310,11 +33310,11 @@ var require_react_dom_client_development = __commonJS({
           warnInvalidHookAccess();
           updateHookTypesDev();
         },
-        useDeferredValue: function(value, initialValue) {
+        useDeferredValue: function(value2, initialValue) {
           currentHookNameInDev = "useDeferredValue";
           warnInvalidHookAccess();
           updateHookTypesDev();
-          return updateDeferredValue(value, initialValue);
+          return updateDeferredValue(value2, initialValue);
         },
         useTransition: function() {
           currentHookNameInDev = "useTransition";
@@ -33366,11 +33366,11 @@ var require_react_dom_client_development = __commonJS({
           updateHookTypesDev();
           return updateWorkInProgressHook().memoizedState;
         },
-        useEffectEvent: function(callback) {
+        useEffectEvent: function(callback2) {
           currentHookNameInDev = "useEffectEvent";
           warnInvalidHookAccess();
           updateHookTypesDev();
-          return updateEvent(callback);
+          return updateEvent(callback2);
         }
       };
       InvalidNestedHooksDispatcherOnRerenderInDEV = {
@@ -33382,11 +33382,11 @@ var require_react_dom_client_development = __commonJS({
           warnInvalidHookAccess();
           return use(usable);
         },
-        useCallback: function(callback, deps) {
+        useCallback: function(callback2, deps) {
           currentHookNameInDev = "useCallback";
           warnInvalidHookAccess();
           updateHookTypesDev();
-          return updateCallback(callback, deps);
+          return updateCallback(callback2, deps);
         },
         useContext: function(context) {
           currentHookNameInDev = "useContext";
@@ -33465,11 +33465,11 @@ var require_react_dom_client_development = __commonJS({
           warnInvalidHookAccess();
           updateHookTypesDev();
         },
-        useDeferredValue: function(value, initialValue) {
+        useDeferredValue: function(value2, initialValue) {
           currentHookNameInDev = "useDeferredValue";
           warnInvalidHookAccess();
           updateHookTypesDev();
-          return rerenderDeferredValue(value, initialValue);
+          return rerenderDeferredValue(value2, initialValue);
         },
         useTransition: function() {
           currentHookNameInDev = "useTransition";
@@ -33521,11 +33521,11 @@ var require_react_dom_client_development = __commonJS({
           updateHookTypesDev();
           return updateWorkInProgressHook().memoizedState;
         },
-        useEffectEvent: function(callback) {
+        useEffectEvent: function(callback2) {
           currentHookNameInDev = "useEffectEvent";
           warnInvalidHookAccess();
           updateHookTypesDev();
-          return updateEvent(callback);
+          return updateEvent(callback2);
         }
       };
       var fakeInternalInstance = {};
@@ -33541,30 +33541,30 @@ var require_react_dom_client_development = __commonJS({
       var didWarnOnInvalidCallback = /* @__PURE__ */ new Set();
       Object.freeze(fakeInternalInstance);
       var classComponentUpdater = {
-        enqueueSetState: function(inst, payload, callback) {
+        enqueueSetState: function(inst, payload, callback2) {
           inst = inst._reactInternals;
           var lane = requestUpdateLane(inst), update = createUpdate(lane);
           update.payload = payload;
-          void 0 !== callback && null !== callback && (warnOnInvalidCallback(callback), update.callback = callback);
+          void 0 !== callback2 && null !== callback2 && (warnOnInvalidCallback(callback2), update.callback = callback2);
           payload = enqueueUpdate(inst, update, lane);
           null !== payload && (startUpdateTimerByLane(lane, "this.setState()", inst), scheduleUpdateOnFiber(payload, inst, lane), entangleTransitions(payload, inst, lane));
         },
-        enqueueReplaceState: function(inst, payload, callback) {
+        enqueueReplaceState: function(inst, payload, callback2) {
           inst = inst._reactInternals;
           var lane = requestUpdateLane(inst), update = createUpdate(lane);
           update.tag = ReplaceState;
           update.payload = payload;
-          void 0 !== callback && null !== callback && (warnOnInvalidCallback(callback), update.callback = callback);
+          void 0 !== callback2 && null !== callback2 && (warnOnInvalidCallback(callback2), update.callback = callback2);
           payload = enqueueUpdate(inst, update, lane);
           null !== payload && (startUpdateTimerByLane(lane, "this.replaceState()", inst), scheduleUpdateOnFiber(payload, inst, lane), entangleTransitions(payload, inst, lane));
         },
-        enqueueForceUpdate: function(inst, callback) {
+        enqueueForceUpdate: function(inst, callback2) {
           inst = inst._reactInternals;
           var lane = requestUpdateLane(inst), update = createUpdate(lane);
           update.tag = ForceUpdate;
-          void 0 !== callback && null !== callback && (warnOnInvalidCallback(callback), update.callback = callback);
-          callback = enqueueUpdate(inst, update, lane);
-          null !== callback && (startUpdateTimerByLane(lane, "this.forceUpdate()", inst), scheduleUpdateOnFiber(callback, inst, lane), entangleTransitions(callback, inst, lane));
+          void 0 !== callback2 && null !== callback2 && (warnOnInvalidCallback(callback2), update.callback = callback2);
+          callback2 = enqueueUpdate(inst, update, lane);
+          null !== callback2 && (startUpdateTimerByLane(lane, "this.forceUpdate()", inst), scheduleUpdateOnFiber(callback2, inst, lane), entangleTransitions(callback2, inst, lane));
         }
       }, componentName = null, errorBoundaryName = null, SelectiveHydrationException = Error(
         "This is not a real error. It's an implementation detail of React's selective hydration feature. If this leaks into userspace, it's a bug in React. Please file an issue."
@@ -33664,8 +33664,8 @@ var require_react_dom_client_development = __commonJS({
         "beforetoggle cancel close invalid load scroll scrollend toggle".split(" ").concat(mediaEventTypes)
       ), listeningMarker = "_reactListening" + Math.random().toString(36).slice(2), didWarnControlledToUncontrolled = false, didWarnUncontrolledToControlled = false, didWarnFormActionType = false, didWarnFormActionName = false, didWarnFormActionTarget = false, didWarnFormActionMethod = false, didWarnPopoverTargetObject = false;
       var didWarnForNewBooleanPropsWithEmptyValue = {};
-      var NORMALIZE_NEWLINES_REGEX = /\r\n?/g, NORMALIZE_NULL_AND_REPLACEMENT_REGEX = /\u0000|\uFFFD/g, xlinkNamespace = "http://www.w3.org/1999/xlink", xmlNamespace = "http://www.w3.org/XML/1998/namespace", EXPECTED_FORM_ACTION_URL = "javascript:throw new Error('React form unexpectedly submitted.')", SUPPRESS_HYDRATION_WARNING = "suppressHydrationWarning", ACTIVITY_START_DATA = "&", ACTIVITY_END_DATA = "/&", SUSPENSE_START_DATA = "$", SUSPENSE_END_DATA = "/$", SUSPENSE_PENDING_START_DATA = "$?", SUSPENSE_QUEUED_START_DATA = "$~", SUSPENSE_FALLBACK_START_DATA = "$!", PREAMBLE_CONTRIBUTION_HTML = "html", PREAMBLE_CONTRIBUTION_BODY = "body", PREAMBLE_CONTRIBUTION_HEAD = "head", FORM_STATE_IS_MATCHING = "F!", FORM_STATE_IS_NOT_MATCHING = "F", DOCUMENT_READY_STATE_LOADING = "loading", STYLE = "style", HostContextNamespaceNone = 0, HostContextNamespaceSvg = 1, HostContextNamespaceMath = 2, eventsEnabled = null, selectionInformation = null, warnedUnknownTags = { dialog: true, webview: true }, currentPopstateTransitionEvent = null, schedulerEvent = void 0, scheduleTimeout = "function" === typeof setTimeout ? setTimeout : void 0, cancelTimeout = "function" === typeof clearTimeout ? clearTimeout : void 0, noTimeout = -1, localPromise = "function" === typeof Promise ? Promise : void 0, scheduleMicrotask = "function" === typeof queueMicrotask ? queueMicrotask : "undefined" !== typeof localPromise ? function(callback) {
-        return localPromise.resolve(null).then(callback).catch(handleErrorInNextTick);
+      var NORMALIZE_NEWLINES_REGEX = /\r\n?/g, NORMALIZE_NULL_AND_REPLACEMENT_REGEX = /\u0000|\uFFFD/g, xlinkNamespace = "http://www.w3.org/1999/xlink", xmlNamespace = "http://www.w3.org/XML/1998/namespace", EXPECTED_FORM_ACTION_URL = "javascript:throw new Error('React form unexpectedly submitted.')", SUPPRESS_HYDRATION_WARNING = "suppressHydrationWarning", ACTIVITY_START_DATA = "&", ACTIVITY_END_DATA = "/&", SUSPENSE_START_DATA = "$", SUSPENSE_END_DATA = "/$", SUSPENSE_PENDING_START_DATA = "$?", SUSPENSE_QUEUED_START_DATA = "$~", SUSPENSE_FALLBACK_START_DATA = "$!", PREAMBLE_CONTRIBUTION_HTML = "html", PREAMBLE_CONTRIBUTION_BODY = "body", PREAMBLE_CONTRIBUTION_HEAD = "head", FORM_STATE_IS_MATCHING = "F!", FORM_STATE_IS_NOT_MATCHING = "F", DOCUMENT_READY_STATE_LOADING = "loading", STYLE = "style", HostContextNamespaceNone = 0, HostContextNamespaceSvg = 1, HostContextNamespaceMath = 2, eventsEnabled = null, selectionInformation = null, warnedUnknownTags = { dialog: true, webview: true }, currentPopstateTransitionEvent = null, schedulerEvent = void 0, scheduleTimeout = "function" === typeof setTimeout ? setTimeout : void 0, cancelTimeout = "function" === typeof clearTimeout ? clearTimeout : void 0, noTimeout = -1, localPromise = "function" === typeof Promise ? Promise : void 0, scheduleMicrotask = "function" === typeof queueMicrotask ? queueMicrotask : "undefined" !== typeof localPromise ? function(callback2) {
+        return localPromise.resolve(null).then(callback2).catch(handleErrorInNextTick);
       } : scheduleTimeout, previousHydratableOnEnteringScopedSingleton = null, NotLoaded = 0, Loaded = 1, Errored = 2, Settled = 3, Inserted = 4, preloadPropsMap = /* @__PURE__ */ new Map(), preconnectsSet = /* @__PURE__ */ new Set(), previousDispatcher = ReactDOMSharedInternals.d;
       ReactDOMSharedInternals.d = {
         f: function() {
@@ -33836,9 +33836,9 @@ var require_react_dom_client_development = __commonJS({
       }, badgeFormat = "%c%s%c", badgeStyle = "background: #e6e6e6;background: light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.25));color: #000000;color: light-dark(#000000, #ffffff);border-radius: 2px", resetStyle = "", pad = " ", bind = Function.prototype.bind;
       var didWarnAboutNestedUpdates = false;
       var overrideHookState = null, overrideHookStateDeletePath = null, overrideHookStateRenamePath = null, overrideProps = null, overridePropsDeletePath = null, overridePropsRenamePath = null, scheduleUpdate = null, scheduleRetry = null, setErrorHandler = null, setSuspenseHandler = null;
-      overrideHookState = function(fiber, id, path, value) {
+      overrideHookState = function(fiber, id, path, value2) {
         id = findHook(fiber, id);
-        null !== id && (path = copyWithSetImpl(id.memoizedState, path, 0, value), id.memoizedState = path, id.baseState = path, fiber.memoizedProps = assign({}, fiber.memoizedProps), path = enqueueConcurrentRenderForLane(fiber, 2), null !== path && scheduleUpdateOnFiber(path, fiber, 2));
+        null !== id && (path = copyWithSetImpl(id.memoizedState, path, 0, value2), id.memoizedState = path, id.baseState = path, fiber.memoizedProps = assign({}, fiber.memoizedProps), path = enqueueConcurrentRenderForLane(fiber, 2), null !== path && scheduleUpdateOnFiber(path, fiber, 2));
       };
       overrideHookStateDeletePath = function(fiber, id, path) {
         id = findHook(fiber, id);
@@ -33848,8 +33848,8 @@ var require_react_dom_client_development = __commonJS({
         id = findHook(fiber, id);
         null !== id && (oldPath = copyWithRename(id.memoizedState, oldPath, newPath), id.memoizedState = oldPath, id.baseState = oldPath, fiber.memoizedProps = assign({}, fiber.memoizedProps), oldPath = enqueueConcurrentRenderForLane(fiber, 2), null !== oldPath && scheduleUpdateOnFiber(oldPath, fiber, 2));
       };
-      overrideProps = function(fiber, path, value) {
-        fiber.pendingProps = copyWithSetImpl(fiber.memoizedProps, path, 0, value);
+      overrideProps = function(fiber, path, value2) {
+        fiber.pendingProps = copyWithSetImpl(fiber.memoizedProps, path, 0, value2);
         fiber.alternate && (fiber.alternate.pendingProps = fiber.pendingProps);
         path = enqueueConcurrentRenderForLane(fiber, 2);
         null !== path && scheduleUpdateOnFiber(path, fiber, 2);
@@ -34056,9 +34056,9 @@ var require_react_dom_client_development = __commonJS({
   }
 });
 
-// ../node_modules/react-dom/client.js
+// node_modules/react-dom/client.js
 var require_client = __commonJS({
-  "../node_modules/react-dom/client.js"(exports, module) {
+  "node_modules/react-dom/client.js"(exports, module) {
     "use strict";
     function checkDCE() {
       if (typeof __REACT_DEVTOOLS_GLOBAL_HOOK__ === "undefined" || typeof __REACT_DEVTOOLS_GLOBAL_HOOK__.checkDCE !== "function") {
@@ -34082,11 +34082,11 @@ var require_client = __commonJS({
   }
 });
 
-// ../node_modules/@comfyorg/litegraph/dist/litegraph.es.js
+// node_modules/@comfyorg/litegraph/dist/litegraph.es.js
 var CustomEventTarget = class extends EventTarget {
   dispatch(type, detail) {
-    const event = new CustomEvent(type, { detail, cancelable: true });
-    return super.dispatchEvent(event);
+    const event2 = new CustomEvent(type, { detail, cancelable: true });
+    return super.dispatchEvent(event2);
   }
   addEventListener(type, listener, options) {
     super.addEventListener(type, listener, options);
@@ -34095,8 +34095,8 @@ var CustomEventTarget = class extends EventTarget {
     super.removeEventListener(type, listener, options);
   }
   /** @deprecated Use {@link dispatch}. */
-  dispatchEvent(event) {
-    return super.dispatchEvent(event);
+  dispatchEvent(event2) {
+    return super.dispatchEvent(event2);
   }
 };
 var SUBGRAPH_INPUT_ID = -10;
@@ -34148,8 +34148,8 @@ var LLink = class _LLink {
   get color() {
     return this.#color;
   }
-  set color(value) {
-    this.#color = value === "" ? null : value;
+  set color(value2) {
+    this.#color = value2 === "" ? null : value2;
   }
   get isFloatingOutput() {
     return this.origin_id === -1 && this.origin_slot === -1;
@@ -34577,10 +34577,10 @@ function createBounds(objects, padding = 10) {
     bounds[3] - bounds[1] + 2 * padding
   ];
 }
-function snapPoint(pos, snapTo) {
+function snapPoint(pos2, snapTo) {
   if (!snapTo) return false;
-  pos[0] = snapTo * Math.round(pos[0] / snapTo);
-  pos[1] = snapTo * Math.round(pos[1] / snapTo);
+  pos2[0] = snapTo * Math.round(pos2[0] / snapTo);
+  pos2[1] = snapTo * Math.round(pos2[1] / snapTo);
   return true;
 }
 function alignToContainer(rect, anchors, [containerX, containerY, containerWidth, containerHeight], [insetX, insetY] = [0, 0]) {
@@ -34617,8 +34617,8 @@ function alignOutsideContainer(rect, anchors, [otherX, otherY, otherWidth, other
   }
   return rect;
 }
-function clamp(value, min, max) {
-  return value < min ? min : value > max ? max : value;
+function clamp(value2, min, max) {
+  return value2 < min ? min : value2 > max ? max : value2;
 }
 var Rectangle = class _Rectangle extends Float64Array {
   #pos;
@@ -34662,9 +34662,9 @@ var Rectangle = class _Rectangle extends Float64Array {
     this.#pos ??= this.subarray(0, 2);
     return this.#pos;
   }
-  set pos(value) {
-    this[0] = value[0];
-    this[1] = value[1];
+  set pos(value2) {
+    this[0] = value2[0];
+    this[1] = value2[1];
   }
   /**
    * A reference to the size of this rectangle.
@@ -34675,66 +34675,66 @@ var Rectangle = class _Rectangle extends Float64Array {
     this.#size ??= this.subarray(2, 4);
     return this.#size;
   }
-  set size(value) {
-    this[2] = value[0];
-    this[3] = value[1];
+  set size(value2) {
+    this[2] = value2[0];
+    this[3] = value2[1];
   }
   // #region Property accessors
   /** The x co-ordinate of the top-left corner of this rectangle. */
   get x() {
     return this[0];
   }
-  set x(value) {
-    this[0] = value;
+  set x(value2) {
+    this[0] = value2;
   }
   /** The y co-ordinate of the top-left corner of this rectangle. */
   get y() {
     return this[1];
   }
-  set y(value) {
-    this[1] = value;
+  set y(value2) {
+    this[1] = value2;
   }
   /** The width of this rectangle. */
   get width() {
     return this[2];
   }
-  set width(value) {
-    this[2] = value;
+  set width(value2) {
+    this[2] = value2;
   }
   /** The height of this rectangle. */
   get height() {
     return this[3];
   }
-  set height(value) {
-    this[3] = value;
+  set height(value2) {
+    this[3] = value2;
   }
   /** The x co-ordinate of the left edge of this rectangle. */
   get left() {
     return this[0];
   }
-  set left(value) {
-    this[0] = value;
+  set left(value2) {
+    this[0] = value2;
   }
   /** The y co-ordinate of the top edge of this rectangle. */
   get top() {
     return this[1];
   }
-  set top(value) {
-    this[1] = value;
+  set top(value2) {
+    this[1] = value2;
   }
   /** The x co-ordinate of the right edge of this rectangle. */
   get right() {
     return this[0] + this[2];
   }
-  set right(value) {
-    this[0] = value - this[2];
+  set right(value2) {
+    this[0] = value2 - this[2];
   }
   /** The y co-ordinate of the bottom edge of this rectangle. */
   get bottom() {
     return this[1] + this[3];
   }
-  set bottom(value) {
-    this[1] = value - this[3];
+  set bottom(value2) {
+    this[1] = value2 - this[3];
   }
   /** The x co-ordinate of the centre of this rectangle. */
   get centreX() {
@@ -34940,18 +34940,18 @@ function getNodeInputOnPos(node2, x2, y) {
   const { inputs } = node2;
   if (!inputs) return;
   for (const [index, input] of inputs.entries()) {
-    const pos = node2.getInputPos(index);
+    const pos2 = node2.getInputPos(index);
     const nameLength = input.label?.length ?? input.localized_name?.length ?? input.name?.length;
     const width2 = 20 + (nameLength || 3) * 7;
     if (isInRectangle(
       x2,
       y,
-      pos[0] - 10,
-      pos[1] - 10,
+      pos2[0] - 10,
+      pos2[1] - 10,
       width2,
       20
     )) {
-      return { index, input, pos };
+      return { index, input, pos: pos2 };
     }
   }
 }
@@ -34959,16 +34959,16 @@ function getNodeOutputOnPos(node2, x2, y) {
   const { outputs } = node2;
   if (!outputs) return;
   for (const [index, output] of outputs.entries()) {
-    const pos = node2.getOutputPos(index);
+    const pos2 = node2.getOutputPos(index);
     if (isInRectangle(
       x2,
       y,
-      pos[0] - 10,
-      pos[1] - 10,
+      pos2[0] - 10,
+      pos2[1] - 10,
       40,
       20
     )) {
-      return { index, output, pos };
+      return { index, output, pos: pos2 };
     }
   }
 }
@@ -35405,7 +35405,7 @@ var NodeSlot = class extends SlotBase {
     const originalStrokeStyle = ctx.strokeStyle;
     const originalLineWidth = ctx.lineWidth;
     const labelColor = highlight ? this.highlightColor : LiteGraph.NODE_TEXT_COLOR;
-    const pos = this.#centreOffset;
+    const pos2 = this.#centreOffset;
     const slot_type = this.type;
     const slot_shape = slot_type === SlotType.Array ? SlotShape.Grid : this.shape;
     ctx.beginPath();
@@ -35413,11 +35413,11 @@ var NodeSlot = class extends SlotBase {
     ctx.fillStyle = this.renderingColor(colorContext);
     ctx.lineWidth = 1;
     if (slot_type === SlotType.Event || slot_shape === SlotShape.Box) {
-      ctx.rect(pos[0] - 6 + 0.5, pos[1] - 5 + 0.5, 14, 10);
+      ctx.rect(pos2[0] - 6 + 0.5, pos2[1] - 5 + 0.5, 14, 10);
     } else if (slot_shape === SlotShape.Arrow) {
-      ctx.moveTo(pos[0] + 8, pos[1] + 0.5);
-      ctx.lineTo(pos[0] - 4, pos[1] + 6 + 0.5);
-      ctx.lineTo(pos[0] - 4, pos[1] - 6 + 0.5);
+      ctx.moveTo(pos2[0] + 8, pos2[1] + 0.5);
+      ctx.lineTo(pos2[0] - 4, pos2[1] + 6 + 0.5);
+      ctx.lineTo(pos2[0] - 4, pos2[1] - 6 + 0.5);
       ctx.closePath();
     } else if (slot_shape === SlotShape.Grid) {
       const gridSize = 3;
@@ -35426,8 +35426,8 @@ var NodeSlot = class extends SlotBase {
       for (let x2 = 0; x2 < gridSize; x2++) {
         for (let y = 0; y < gridSize; y++) {
           ctx.rect(
-            pos[0] - 4 + x2 * spacing,
-            pos[1] - 4 + y * spacing,
+            pos2[0] - 4 + x2 * spacing,
+            pos2[1] - 4 + y * spacing,
             cellSize,
             cellSize
           );
@@ -35436,7 +35436,7 @@ var NodeSlot = class extends SlotBase {
       doStroke = false;
     } else {
       if (lowQuality) {
-        ctx.rect(pos[0] - 4, pos[1] - 4, 8, 8);
+        ctx.rect(pos2[0] - 4, pos2[1] - 4, 8, 8);
       } else {
         let radius;
         if (slot_shape === SlotShape.HollowCircle) {
@@ -35448,7 +35448,7 @@ var NodeSlot = class extends SlotBase {
         } else {
           radius = highlight ? 5 : 4;
         }
-        ctx.arc(pos[0], pos[1], radius, 0, Math.PI * 2);
+        ctx.arc(pos2[0], pos2[1], radius, 0, Math.PI * 2);
       }
     }
     if (doFill) ctx.fill();
@@ -35460,15 +35460,15 @@ var NodeSlot = class extends SlotBase {
         ctx.fillStyle = labelColor;
         if (labelPosition === LabelPosition.Right) {
           if (this.dir == LinkDirection.UP) {
-            ctx.fillText(text, pos[0], pos[1] - 10);
+            ctx.fillText(text, pos2[0], pos2[1] - 10);
           } else {
-            ctx.fillText(text, pos[0] + 10, pos[1] + 5);
+            ctx.fillText(text, pos2[0] + 10, pos2[1] + 5);
           }
         } else {
           if (this.dir == LinkDirection.DOWN) {
-            ctx.fillText(text, pos[0], pos[1] - 8);
+            ctx.fillText(text, pos2[0], pos2[1] - 8);
           } else {
-            ctx.fillText(text, pos[0] - 10, pos[1] + 5);
+            ctx.fillText(text, pos2[0] - 10, pos2[1] + 5);
           }
         }
       }
@@ -35477,7 +35477,7 @@ var NodeSlot = class extends SlotBase {
       ctx.lineWidth = 2;
       ctx.strokeStyle = "red";
       ctx.beginPath();
-      ctx.arc(pos[0], pos[1], 12, 0, Math.PI * 2);
+      ctx.arc(pos2[0], pos2[1], 12, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.fillStyle = originalFillStyle;
@@ -35535,9 +35535,9 @@ var LGraphGroup = class _LGraphGroup {
   graph;
   flags = {};
   selected;
-  constructor(title, id) {
+  constructor(title2, id) {
     this.id = id ?? -1;
-    this.title = title || "Group";
+    this.title = title2 || "Group";
     const { pale_blue } = LGraphCanvas.node_colors;
     this.color = pale_blue ? pale_blue.groupcolor : "#AAA";
   }
@@ -35592,8 +35592,8 @@ var LGraphGroup = class _LGraphGroup {
    * Prevents the group being accidentally moved or resized by mouse interaction.
    * Toggles pinned state if no value is provided.
    */
-  pin(value) {
-    const newState = value === void 0 ? !this.pinned : value;
+  pin(value2) {
+    const newState = value2 === void 0 ? !this.pinned : value2;
     if (newState) this.flags.pinned = true;
     else delete this.flags.pinned;
   }
@@ -35777,11 +35777,11 @@ var Reroute = class _Reroute {
    * @param pos Position in graph coordinates
    * @param linkIds Link IDs ({@link LLink.id}) of all links that use this reroute
    */
-  constructor(id, network, pos, parentId, linkIds, floatingLinkIds) {
+  constructor(id, network, pos2, parentId, linkIds, floatingLinkIds) {
     this.id = id;
     this.#network = new WeakRef(network);
     this.parentId = parentId;
-    if (pos) this.pos = pos;
+    if (pos2) this.pos = pos2;
     this.linkIds = new Set(linkIds);
     this.floatingLinkIds = new Set(floatingLinkIds);
   }
@@ -35803,10 +35803,10 @@ var Reroute = class _Reroute {
     return this.#parentId;
   }
   /** Ignores attempts to create an infinite loop. @inheritdoc */
-  set parentId(value) {
-    if (value === this.id) return;
+  set parentId(value2) {
+    if (value2 === this.id) return;
     if (this.getReroutes() === null) return;
-    this.#parentId = value;
+    this.#parentId = value2;
   }
   get parent() {
     return this.#network.deref()?.getReroute(this.#parentId);
@@ -35818,11 +35818,11 @@ var Reroute = class _Reroute {
   get pos() {
     return this.#pos;
   }
-  set pos(value) {
-    if (!(value?.length >= 2))
+  set pos(value2) {
+    if (!(value2?.length >= 2))
       throw new TypeError("Reroute.pos is an x,y point, and expects an indexable with at least two values.");
-    this.#pos[0] = value[0];
-    this.#pos[1] = value[1];
+    this.#pos[0] = value2[0];
+    this.#pos[1] = value2[1];
   }
   /** @inheritdoc */
   get boundingRect() {
@@ -35909,9 +35909,9 @@ var Reroute = class _Reroute {
    * @param pos The position of this reroute
    * @param linkIds All link IDs that pass through this reroute
    */
-  update(parentId, pos, linkIds, floating) {
+  update(parentId, pos2, linkIds, floating) {
     this.parentId = parentId;
-    if (pos) this.pos = pos;
+    if (pos2) this.pos = pos2;
     if (linkIds) this.linkIds = new Set(linkIds);
     this.floating = floating;
   }
@@ -36043,9 +36043,9 @@ var Reroute = class _Reroute {
   /** @inheritdoc */
   snapToGrid(snapTo) {
     if (!snapTo) return false;
-    const { pos } = this;
-    pos[0] = snapTo * Math.round(pos[0] / snapTo);
-    pos[1] = snapTo * Math.round(pos[1] / snapTo);
+    const { pos: pos2 } = this;
+    pos2[0] = snapTo * Math.round(pos2[0] / snapTo);
+    pos2[1] = snapTo * Math.round(pos2[1] / snapTo);
     return true;
   }
   removeAllFloatingLinks() {
@@ -36117,9 +36117,9 @@ var Reroute = class _Reroute {
     function calculateAngles(linkIds, links) {
       for (const linkId of linkIds) {
         const link = links.get(linkId);
-        const pos = getNextPos(network, link, id);
-        if (!pos) continue;
-        const angle = getDirection(thisPos, pos);
+        const pos2 = getNextPos(network, link, id);
+        if (!pos2) continue;
+        const angle = getDirection(thisPos, pos2);
         angles.push(angle);
         sum += angle;
       }
@@ -36133,9 +36133,9 @@ var Reroute = class _Reroute {
    */
   draw(ctx, backgroundPattern) {
     const { globalAlpha } = ctx;
-    const { pos } = this;
+    const { pos: pos2 } = this;
     ctx.beginPath();
-    ctx.arc(pos[0], pos[1], _Reroute.radius, 0, 2 * Math.PI);
+    ctx.arc(pos2[0], pos2[1], _Reroute.radius, 0, 2 * Math.PI);
     if (this.linkIds.size === 0) {
       ctx.fillStyle = backgroundPattern ?? "#797979";
       ctx.fill();
@@ -36149,19 +36149,19 @@ var Reroute = class _Reroute {
     ctx.fillStyle = "#ffffff55";
     ctx.strokeStyle = "rgb(0,0,0,0.3)";
     ctx.beginPath();
-    ctx.arc(pos[0], pos[1], _Reroute.radius * 0.8, 0, 2 * Math.PI);
+    ctx.arc(pos2[0], pos2[1], _Reroute.radius * 0.8, 0, 2 * Math.PI);
     ctx.fill();
     ctx.stroke();
     if (this.selected) {
       ctx.strokeStyle = "#fff";
       ctx.beginPath();
-      ctx.arc(pos[0], pos[1], _Reroute.radius * 1.2, 0, 2 * Math.PI);
+      ctx.arc(pos2[0], pos2[1], _Reroute.radius * 1.2, 0, 2 * Math.PI);
       ctx.stroke();
     }
     if (_Reroute.drawIdBadge) {
       const idBadge = new LGraphBadge({ text: this.id.toString() });
-      const x2 = pos[0] - idBadge.getWidth(ctx) * 0.5;
-      const y = pos[1] - idBadge.height - _Reroute.radius - 2;
+      const x2 = pos2[0] - idBadge.getWidth(ctx) * 0.5;
+      const y = pos2[1] - idBadge.height - _Reroute.radius - 2;
       idBadge.draw(ctx, x2, y);
     }
     ctx.globalAlpha = globalAlpha;
@@ -36175,12 +36175,12 @@ var Reroute = class _Reroute {
     this.#outputSlot.draw(ctx);
   }
   drawHighlight(ctx, colour) {
-    const { pos } = this;
+    const { pos: pos2 } = this;
     const { strokeStyle, lineWidth } = ctx;
     ctx.strokeStyle = colour;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(pos[0], pos[1], _Reroute.radius * 1.5, 0, 2 * Math.PI);
+    ctx.arc(pos2[0], pos2[1], _Reroute.radius * 1.5, 0, 2 * Math.PI);
     ctx.stroke();
     ctx.strokeStyle = strokeStyle;
     ctx.lineWidth = lineWidth;
@@ -36190,7 +36190,7 @@ var Reroute = class _Reroute {
    * @param pos The position of the pointer.
    * @returns `true` if any changes require a redraw.
    */
-  updateVisibility(pos) {
+  updateVisibility(pos2) {
     const input = this.#inputSlot;
     const output = this.#outputSlot;
     input.dirty = false;
@@ -36200,10 +36200,10 @@ var Reroute = class _Reroute {
     const showInput = hasLink || firstFloatingLink?.isFloatingOutput;
     const showOutput = hasLink || firstFloatingLink?.isFloatingInput;
     const showEither = showInput || showOutput;
-    if (showEither && isPointInRect(pos, this.#hoverArea)) {
-      const outlineOnly = this.#contains(pos);
-      if (showInput) input.update(pos, outlineOnly);
-      if (showOutput) output.update(pos, outlineOnly);
+    if (showEither && isPointInRect(pos2, this.#hoverArea)) {
+      const outlineOnly = this.#contains(pos2);
+      if (showInput) input.update(pos2, outlineOnly);
+      if (showOutput) output.update(pos2, outlineOnly);
     } else {
       this.hideSlots();
     }
@@ -36219,19 +36219,19 @@ var Reroute = class _Reroute {
    * @param pos The position to check (canvas space)
    * @returns `true` if {@link pos} is within the reroute's radius.
    */
-  containsPoint(pos) {
-    return isPointInRect(pos, this.#hoverArea) && this.#contains(pos);
+  containsPoint(pos2) {
+    return isPointInRect(pos2, this.#hoverArea) && this.#contains(pos2);
   }
-  #contains(pos) {
-    return distance(this.pos, pos) <= _Reroute.radius;
+  #contains(pos2) {
+    return distance(this.pos, pos2) <= _Reroute.radius;
   }
   /** @inheritdoc */
   asSerialisable() {
-    const { id, parentId, pos, linkIds } = this;
+    const { id, parentId, pos: pos2, linkIds } = this;
     return {
       id,
       parentId,
-      pos: [pos[0], pos[1]],
+      pos: [pos2[0], pos2[1]],
       linkIds: [...linkIds],
       floating: this.floating ? { slotType: this.floating.slotType } : void 0
     };
@@ -36253,9 +36253,9 @@ var RerouteSlot = class {
   get hovering() {
     return this.#hovering;
   }
-  set hovering(value) {
-    if (!Object.is(this.#hovering, value)) {
-      this.#hovering = value;
+  set hovering(value2) {
+    if (!Object.is(this.#hovering, value2)) {
+      this.#hovering = value2;
       this.dirty = true;
     }
   }
@@ -36264,9 +36264,9 @@ var RerouteSlot = class {
   get showOutline() {
     return this.#showOutline;
   }
-  set showOutline(value) {
-    if (!Object.is(this.#showOutline, value)) {
-      this.#showOutline = value;
+  set showOutline(value2) {
+    if (!Object.is(this.#showOutline, value2)) {
+      this.#showOutline = value2;
       this.dirty = true;
     }
   }
@@ -36279,12 +36279,12 @@ var RerouteSlot = class {
    * @param pos The position of the pointer.
    * @param outlineOnly If `true`, slot will display with the faded outline only ({@link showOutline}).
    */
-  update(pos, outlineOnly) {
+  update(pos2, outlineOnly) {
     if (outlineOnly) {
       this.hovering = false;
       this.showOutline = true;
     } else {
-      const dist = distance(this.pos, pos);
+      const dist = distance(this.pos, pos2);
       this.hovering = dist <= 2 * Reroute.slotRadius;
       this.showOutline = dist <= 5 * Reroute.slotRadius;
     }
@@ -36327,8 +36327,8 @@ function getNextPos(network, link, id) {
 function getDirection(fromPos, toPos) {
   return Math.atan2(toPos[1] - fromPos[1], toPos[0] - fromPos[0]);
 }
-function stringOrEmpty(value) {
-  return value == null ? "" : String(value);
+function stringOrEmpty(value2) {
+  return value2 == null ? "" : String(value2);
 }
 function parseSlotTypes(type) {
   return type == "" || type == "0" ? ["*"] : String(type).toLowerCase().split(",");
@@ -36359,16 +36359,16 @@ var ConstrainedSize = class _ConstrainedSize {
   get desiredWidth() {
     return this.#desiredWidth;
   }
-  set desiredWidth(value) {
-    this.#desiredWidth = value;
-    this.#width = clamp(value, this.minWidth, this.maxWidth);
+  set desiredWidth(value2) {
+    this.#desiredWidth = value2;
+    this.#width = clamp(value2, this.minWidth, this.maxWidth);
   }
   get desiredHeight() {
     return this.#desiredHeight;
   }
-  set desiredHeight(value) {
-    this.#desiredHeight = value;
-    this.#height = clamp(value, this.minHeight, this.maxHeight);
+  set desiredHeight(value2) {
+    this.#desiredHeight = value2;
+    this.#height = clamp(value2, this.minHeight, this.maxHeight);
   }
   constructor(width2, height) {
     this.desiredWidth = width2;
@@ -36406,10 +36406,10 @@ var SubgraphSlot = class _SubgraphSlot extends SlotBase {
   get pos() {
     return this.#pos;
   }
-  set pos(value) {
-    if (!value || value.length < 2) return;
-    this.#pos[0] = value[0];
-    this.#pos[1] = value[1];
+  set pos(value2) {
+    if (!value2 || value2.length < 2) return;
+    this.#pos[0] = value2[0];
+    this.#pos[1] = value2[1];
   }
   /** Whether this slot is connected to another slot. */
   get isConnected() {
@@ -36502,8 +36502,8 @@ var SubgraphSlot = class _SubgraphSlot extends SlotBase {
     ctx.globalAlpha = previousAlpha;
   }
   asSerialisable() {
-    const { id, name, type, linkIds, localized_name, label, dir, shape, color_off, color_on, pos } = this;
-    return { id, name, type, linkIds, localized_name, label, dir, shape, color_off, color_on, pos };
+    const { id, name, type, linkIds, localized_name, label, dir, shape, color_off, color_on, pos: pos2 } = this;
+    return { id, name, type, linkIds, localized_name, label, dir, shape, color_off, color_on, pos: pos2 };
   }
 };
 var SubgraphOutput = class extends SubgraphSlot {
@@ -36566,13 +36566,13 @@ var SubgraphOutput = class extends SubgraphSlot {
   }
   arrange(rect) {
     const [left, top, width2, height] = rect;
-    const { boundingRect: b, pos } = this;
+    const { boundingRect: b, pos: pos2 } = this;
     b[0] = left;
     b[1] = top;
     b[2] = width2;
     b[3] = height;
-    pos[0] = left + height * 0.5;
-    pos[1] = top + height * 0.5;
+    pos2[0] = left + height * 0.5;
+    pos2[1] = top + height * 0.5;
   }
   /**
    * Checks if this slot is a valid target for a connection from the given slot.
@@ -36627,14 +36627,14 @@ var SubgraphIONodeBase = class _SubgraphIONodeBase {
   get pos() {
     return this.boundingRect.pos;
   }
-  set pos(value) {
-    this.boundingRect.pos = value;
+  set pos(value2) {
+    this.boundingRect.pos = value2;
   }
   get size() {
     return this.boundingRect.size;
   }
-  set size(value) {
-    this.boundingRect.size = value;
+  set size(value2) {
+    this.boundingRect.size = value2;
   }
   get sideLineWidth() {
     return this.isPointerOver ? 2.5 : 2;
@@ -36695,16 +36695,16 @@ var SubgraphIONodeBase = class _SubgraphIONodeBase {
    * @param slot The slot to show the context menu for.
    * @param event The event that triggered the context menu.
    */
-  showSlotContextMenu(slot, event) {
+  showSlotContextMenu(slot, event2) {
     const options = this.#getSlotMenuOptions(slot);
     if (!(options.length > 0)) return;
     new LiteGraph.ContextMenu(
       options,
       {
-        event,
+        event: event2,
         title: slot.name || "Subgraph Output",
         callback: (item) => {
-          this.#onSlotMenuAction(item, slot, event);
+          this.#onSlotMenuAction(item, slot, event2);
         }
       }
     );
@@ -36733,7 +36733,7 @@ var SubgraphIONodeBase = class _SubgraphIONodeBase {
    * @param slot The slot
    * @param event The event that triggered the context menu.
    */
-  #onSlotMenuAction(selectedItem, slot, event) {
+  #onSlotMenuAction(selectedItem, slot, event2) {
     switch (selectedItem.value) {
       // Disconnect all links from this output
       case "disconnect":
@@ -36754,7 +36754,7 @@ var SubgraphIONodeBase = class _SubgraphIONodeBase {
             (newName) => {
               if (newName) this.renameSlot(slot, newName);
             },
-            event
+            event2
           ));
         }
         break;
@@ -37128,8 +37128,8 @@ var NodeInputSlot = class extends NodeSlot {
   get _widget() {
     return this.#widget?.deref();
   }
-  set _widget(widget) {
-    this.#widget = widget ? new WeakRef(widget) : void 0;
+  set _widget(widget2) {
+    this.#widget = widget2 ? new WeakRef(widget2) : void 0;
   }
   get collapsedPos() {
     return [0, LiteGraph.NODE_TITLE_HEIGHT * -0.5];
@@ -37221,12 +37221,12 @@ function inputAsSerialisable(slot) {
   };
 }
 function outputAsSerialisable(slot) {
-  const { pos, slot_index, links, widget } = slot;
-  const outputWidget = widget ? { widget: { name: widget.name } } : null;
+  const { pos: pos2, slot_index, links, widget: widget2 } = slot;
+  const outputWidget = widget2 ? { widget: { name: widget2.name } } : null;
   return {
     ...shallowCloneCommonProps(slot),
     ...outputWidget,
-    pos,
+    pos: pos2,
     slot_index,
     links
   };
@@ -37245,8 +37245,8 @@ function warnDeprecated(message, source) {
     if (sentWarnings.size > UNIQUE_MESSAGE_LIMIT) return;
     sentWarnings.add(message);
   }
-  for (const callback of LiteGraph.onDeprecationWarning) {
-    callback(message, source);
+  for (const callback2 of LiteGraph.onDeprecationWarning) {
+    callback2(message, source);
   }
 }
 function distributeSpace(totalSpace, requests) {
@@ -37349,15 +37349,15 @@ var BaseWidget = class _BaseWidget {
   get value() {
     return this.#value;
   }
-  set value(value) {
-    this.#value = value;
+  set value(value2) {
+    this.#value = value2;
   }
-  constructor(widget, node2) {
-    this.#node = node2 ?? widget.node;
-    this.name = widget.name;
-    this.options = widget.options;
-    this.type = widget.type;
-    const { node: _, outline_color, background_color, height, text_color, secondary_text_color, disabledTextColor, displayName, displayValue, labelBaseline, ...safeValues } = widget;
+  constructor(widget2, node2) {
+    this.#node = node2 ?? widget2.node;
+    this.name = widget2.name;
+    this.options = widget2.options;
+    this.type = widget2.type;
+    const { node: _, outline_color, background_color, height, text_color, secondary_text_color, disabledTextColor, displayName, displayValue, labelBaseline, ...safeValues } = widget2;
     Object.assign(this, safeValues);
   }
   get outline_color() {
@@ -37460,16 +37460,16 @@ var BaseWidget = class _BaseWidget {
    * @param value The value to set
    * @param options The options for setting the value
    */
-  setValue(value, { e: e2, node: node2, canvas: canvas2 }) {
+  setValue(value2, { e: e2, node: node2, canvas: canvas2 }) {
     const oldValue = this.value;
-    if (value === this.value) return;
-    const v2 = this.type === "number" ? Number(value) : value;
+    if (value2 === this.value) return;
+    const v2 = this.type === "number" ? Number(value2) : value2;
     this.value = v2;
     if (this.options?.property && node2.properties[this.options.property] !== void 0) {
       node2.setProperty(this.options.property, v2);
     }
-    const pos = canvas2.graph_mouse;
-    this.callback?.(this.value, canvas2, node2, pos, e2);
+    const pos2 = canvas2.graph_mouse;
+    this.callback?.(this.value, canvas2, node2, pos2, e2);
     node2.onWidgetChanged?.(this.name ?? "", v2, oldValue, this);
     if (node2.graph) node2.graph._version++;
   }
@@ -37519,8 +37519,8 @@ var BooleanWidget = class extends BaseWidget {
   drawValue(ctx, x2) {
     ctx.fillStyle = this.value ? this.text_color : this.secondary_text_color;
     ctx.textAlign = "right";
-    const value = this.value ? this.options.on || "true" : this.options.off || "false";
-    ctx.fillText(value, x2, this.labelBaseline);
+    const value2 = this.value ? this.options.on || "true" : this.options.off || "false";
+    ctx.fillText(value2, x2, this.labelBaseline);
   }
   onClick(options) {
     this.setValue(!this.value, options);
@@ -37529,8 +37529,8 @@ var BooleanWidget = class extends BaseWidget {
 var ButtonWidget = class extends BaseWidget {
   type = "button";
   clicked;
-  constructor(widget, node2) {
-    super(widget, node2);
+  constructor(widget2, node2) {
+    super(widget2, node2);
     this.clicked ??= false;
   }
   /**
@@ -37564,10 +37564,10 @@ var ButtonWidget = class extends BaseWidget {
     ctx.fillText(this.displayName, x2, this.y + this.height * 0.7);
   }
   onClick({ e: e2, node: node2, canvas: canvas2 }) {
-    const pos = canvas2.graph_mouse;
+    const pos2 = canvas2.graph_mouse;
     this.clicked = true;
     canvas2.setDirty(true);
-    this.callback?.(this, canvas2, node2, pos, e2);
+    this.callback?.(this, canvas2, node2, pos2, e2);
   }
 };
 var BaseSteppedWidget = class extends BaseWidget {
@@ -37662,8 +37662,8 @@ var ComboWidget = class extends BaseSteppedWidget {
     options.canvas.last_mouseclick = 0;
     const foundIndex = typeof values === "object" ? indexedValues.indexOf(String(this.value)) + delta2 : indexedValues.indexOf(this.value) + delta2;
     const index = clamp(foundIndex, 0, indexedValues.length - 1);
-    const value = Array.isArray(values) ? values[index] : index;
-    this.setValue(value, options);
+    const value2 = Array.isArray(values) ? values[index] : index;
+    this.setValue(value2, options);
   }
   onClick({ e: e2, node: node2, canvas: canvas2 }) {
     const x2 = e2.canvasX - node2.pos[0];
@@ -37680,9 +37680,9 @@ var ComboWidget = class extends BaseSteppedWidget {
       scale: Math.max(1, canvas2.ds.scale),
       event: e2,
       className: "dark",
-      callback: (value) => {
+      callback: (value2) => {
         this.setValue(
-          values != values_list ? text_values.indexOf(value) : value,
+          values != values_list ? text_values.indexOf(value2) : value2,
           { e: e2, node: node2, canvas: canvas2 }
         );
       }
@@ -37901,8 +37901,8 @@ var NumberWidget = class extends BaseSteppedWidget {
   decrementValue(options) {
     this.setValue(this.value - getWidgetStep(this.options), options);
   }
-  setValue(value, options) {
-    let newValue2 = value;
+  setValue(value2, options) {
+    let newValue2 = value2;
     if (this.options.min != null && newValue2 < this.options.min) {
       newValue2 = this.options.min;
     }
@@ -38023,10 +38023,10 @@ var SliderWidget = class extends BaseWidget {
   }
 };
 var TextWidget = class extends BaseWidget {
-  constructor(widget, node2) {
-    super(widget, node2);
+  constructor(widget2, node2) {
+    super(widget2, node2);
     this.type ??= "string";
-    this.value = widget.value?.toString() ?? "";
+    this.value = widget2.value?.toString() ?? "";
   }
   /**
    * Draws the widget
@@ -38058,9 +38058,9 @@ var TextWidget = class extends BaseWidget {
     );
   }
 };
-function toConcreteWidget(widget, node2, wrapLegacyWidgets = true) {
-  if (widget instanceof BaseWidget) return widget;
-  const narrowedWidget = widget;
+function toConcreteWidget(widget2, node2, wrapLegacyWidgets = true) {
+  if (widget2 instanceof BaseWidget) return widget2;
+  const narrowedWidget = widget2;
   switch (narrowedWidget.type) {
     case "button":
       return toClass(ButtonWidget, narrowedWidget, node2);
@@ -38079,12 +38079,12 @@ function toConcreteWidget(widget, node2, wrapLegacyWidgets = true) {
     case "text":
       return toClass(TextWidget, narrowedWidget, node2);
     default: {
-      if (wrapLegacyWidgets) return toClass(LegacyWidget, widget, node2);
+      if (wrapLegacyWidgets) return toClass(LegacyWidget, widget2, node2);
     }
   }
 }
-function isComboWidget(widget) {
-  return widget.type === "combo";
+function isComboWidget(widget2) {
+  return widget2.type === "combo";
 }
 var LGraphNode = class _LGraphNode {
   // Static properties used by dynamic child classes
@@ -38260,18 +38260,18 @@ var LGraphNode = class _LGraphNode {
     return this._pos;
   }
   /** Node position does not necessarily correlate to the top-left corner. */
-  set pos(value) {
-    if (!value || value.length < 2) return;
-    this._pos[0] = value[0];
-    this._pos[1] = value[1];
+  set pos(value2) {
+    if (!value2 || value2.length < 2) return;
+    this._pos[0] = value2[0];
+    this._pos[1] = value2[1];
   }
   get size() {
     return this._size;
   }
-  set size(value) {
-    if (!value || value.length < 2) return;
-    this._size[0] = value[0];
-    this._size[1] = value[1];
+  set size(value2) {
+    if (!value2 || value2.length < 2) return;
+    this._size[0] = value2[0];
+    this._size[1] = value2[1];
   }
   /**
    * The size of the node used for rendering.
@@ -38312,8 +38312,8 @@ var LGraphNode = class _LGraphNode {
   get is_selected() {
     return this.selected;
   }
-  set is_selected(value) {
-    this.selected = value;
+  set is_selected(value2) {
+    this.selected = value2;
   }
   get title_mode() {
     return this.constructor.title_mode ?? TitleMode.NORMAL_TITLE;
@@ -38334,9 +38334,9 @@ var LGraphNode = class _LGraphNode {
       };
     }
   }
-  constructor(title, type) {
+  constructor(title2, type) {
     this.id = LiteGraph.use_uuids ? LiteGraph.uuidv4() : -1;
-    this.title = title || "Unnamed";
+    this.title = title2 || "Unnamed";
     this.type = type ?? "";
     this.size = [LiteGraph.NODE_WIDTH, 60];
     this.pos = [10, 10];
@@ -38344,10 +38344,10 @@ var LGraphNode = class _LGraphNode {
       error: this.#getErrorStrokeStyle,
       selected: this.#getSelectedStrokeStyle
     };
-    this.onMouseDown = (e2, pos, canvas2) => {
+    this.onMouseDown = (e2, pos2, canvas2) => {
       if (this.title_buttons?.length && !this.flags.collapsed) {
-        const nodeRelativeX = pos[0];
-        const nodeRelativeY = pos[1];
+        const nodeRelativeX = pos2[0];
+        const nodeRelativeY = pos2[1];
         for (let i = 0; i < this.title_buttons.length; i++) {
           const button = this.title_buttons[i];
           if (button.visible && button.isPointInside(nodeRelativeX, nodeRelativeY)) {
@@ -38416,9 +38416,9 @@ var LGraphNode = class _LGraphNode {
       if (info.widgets_values) {
         const widgetsWithValue = this.widgets.filter((w) => w.serialize !== false);
         for (let i = 0; i < info.widgets_values.length; ++i) {
-          const widget = widgetsWithValue[i];
-          if (widget) {
-            widget.value = info.widgets_values[i];
+          const widget2 = widgetsWithValue[i];
+          if (widget2) {
+            widget2.value = info.widgets_values[i];
           }
         }
       }
@@ -38449,9 +38449,9 @@ var LGraphNode = class _LGraphNode {
     const { widgets } = this;
     if (widgets && this.serialize_widgets) {
       o.widgets_values = [];
-      for (const [i, widget] of widgets.entries()) {
-        if (widget.serialize === false) continue;
-        o.widgets_values[i] = widget ? widget.value : null;
+      for (const [i, widget2] of widgets.entries()) {
+        if (widget2.serialize === false) continue;
+        o.widgets_values[i] = widget2 ? widget2.value : null;
       }
     }
     if (!o.type) o.type = this.constructor.type;
@@ -38501,18 +38501,18 @@ var LGraphNode = class _LGraphNode {
    * @param name
    * @param value
    */
-  setProperty(name, value) {
+  setProperty(name, value2) {
     this.properties ||= {};
-    if (value === this.properties[name]) return;
+    if (value2 === this.properties[name]) return;
     const prev_value = this.properties[name];
-    this.properties[name] = value;
-    if (this.onPropertyChanged?.(name, value, prev_value) === false)
+    this.properties[name] = value2;
+    if (this.onPropertyChanged?.(name, value2, prev_value) === false)
       this.properties[name] = prev_value;
     if (this.widgets) {
       for (const w of this.widgets) {
         if (!w) continue;
         if (w.options.property == name) {
-          w.value = value;
+          w.value = value2;
           break;
         }
       }
@@ -39020,8 +39020,8 @@ var LGraphNode = class _LGraphNode {
         const text = input.label || input.localized_name || input.name || "";
         const text_width = compute_text_size(text, this.innerFontStyle);
         if (isWidgetInputSlot(input)) {
-          const widget = this.getWidgetFromSlot(input);
-          if (widget && !this.isWidgetVisible(widget)) continue;
+          const widget2 = this.getWidgetFromSlot(input);
+          if (widget2 && !this.isWidgetVisible(widget2)) continue;
           if (text_width > widgetWidth) widgetWidth = text_width;
         } else {
           if (text_width > input_width) input_width = text_width;
@@ -39046,13 +39046,13 @@ var LGraphNode = class _LGraphNode {
     size[1] = (this.constructor.slot_start_y || 0) + rows * LiteGraph.NODE_SLOT_HEIGHT;
     let widgets_height = 0;
     if (widgets?.length) {
-      for (const widget of widgets) {
-        if (!this.isWidgetVisible(widget)) continue;
+      for (const widget2 of widgets) {
+        if (!this.isWidgetVisible(widget2)) continue;
         let widget_height = 0;
-        if (widget.computeSize) {
-          widget_height += widget.computeSize(size[0])[1];
-        } else if (widget.computeLayoutSize) {
-          const { minHeight, minWidth: minWidth2 } = widget.computeLayoutSize(this);
+        if (widget2.computeSize) {
+          widget_height += widget2.computeSize(size[0])[1];
+        } else if (widget2.computeLayoutSize) {
+          const { minHeight, minWidth: minWidth2 } = widget2.computeLayoutSize(this);
           const widgetWidth2 = minWidth2 + widgetPadding;
           if (widgetWidth2 > size[0]) size[0] = widgetWidth2;
           widget_height += minHeight;
@@ -39138,46 +39138,46 @@ var LGraphNode = class _LGraphNode {
    * @param options the object that contains special properties of this widget
    * @returns the created widget object
    */
-  addWidget(type, name, value, callback, options) {
+  addWidget(type, name, value2, callback2, options) {
     this.widgets ||= [];
-    if (!options && callback && typeof callback === "object") {
-      options = callback;
-      callback = null;
+    if (!options && callback2 && typeof callback2 === "object") {
+      options = callback2;
+      callback2 = null;
     }
     options ||= {};
     if (typeof options === "string")
       options = { property: options };
-    if (callback && typeof callback === "string") {
-      options.property = callback;
-      callback = null;
+    if (callback2 && typeof callback2 === "string") {
+      options.property = callback2;
+      callback2 = null;
     }
     const w = {
       // @ts-expect-error
       type: type.toLowerCase(),
       name,
-      value,
-      callback: typeof callback !== "function" ? void 0 : callback,
+      value: value2,
+      callback: typeof callback2 !== "function" ? void 0 : callback2,
       options,
       y: 0
     };
     if (w.options.y !== void 0) {
       w.y = w.options.y;
     }
-    if (!callback && !w.options.callback && !w.options.property) {
+    if (!callback2 && !w.options.callback && !w.options.property) {
       console.warn("LiteGraph addWidget(...) without a callback or property assigned");
     }
     if (type == "combo" && !w.options.values) {
       throw "LiteGraph addWidget('combo',...) requires to pass values in options: { values:['red','blue'] }";
     }
-    const widget = this.addCustomWidget(w);
+    const widget2 = this.addCustomWidget(w);
     this.expandToFitContent();
-    return widget;
+    return widget2;
   }
   addCustomWidget(custom_widget) {
     this.widgets ||= [];
-    const widget = toConcreteWidget(custom_widget, this, false) ?? custom_widget;
-    this.widgets.push(widget);
-    return widget;
+    const widget2 = toConcreteWidget(custom_widget, this, false) ?? custom_widget;
+    this.widgets.push(widget2);
+    return widget2;
   }
   addTitleButton(options) {
     this.title_buttons ||= [];
@@ -39192,16 +39192,16 @@ var LGraphNode = class _LGraphNode {
     });
   }
   removeWidgetByName(name) {
-    const widget = this.widgets?.find((x2) => x2.name === name);
-    if (widget) this.removeWidget(widget);
+    const widget2 = this.widgets?.find((x2) => x2.name === name);
+    if (widget2) this.removeWidget(widget2);
   }
-  removeWidget(widget) {
+  removeWidget(widget2) {
     if (!this.widgets) throw new Error("removeWidget called on node without widgets");
-    const widgetIndex = this.widgets.indexOf(widget);
+    const widgetIndex = this.widgets.indexOf(widget2);
     if (widgetIndex === -1) throw new Error("Widget not found on this node");
     if (this.inputs) {
       for (const input of this.inputs) {
-        if (input._widget === widget) {
+        if (input._widget === widget2) {
           input._widget = void 0;
           delete input.widget;
         }
@@ -39209,9 +39209,9 @@ var LGraphNode = class _LGraphNode {
     }
     this.widgets.splice(widgetIndex, 1);
   }
-  ensureWidgetRemoved(widget) {
+  ensureWidgetRemoved(widget2) {
     try {
-      this.removeWidget(widget);
+      this.removeWidget(widget2);
     } catch (error) {
       console.debug("Failed to remove widget", error);
     }
@@ -39308,16 +39308,16 @@ var LGraphNode = class _LGraphNode {
    * @param pos The graph co-ordinates to check
    * @returns The input slot at the given position if found, otherwise `undefined`.
    */
-  getInputOnPos(pos) {
-    return getNodeInputOnPos(this, pos[0], pos[1])?.input;
+  getInputOnPos(pos2) {
+    return getNodeInputOnPos(this, pos2[0], pos2[1])?.input;
   }
   /**
    * Returns the output slot at the given position. Uses full 20x20 box for the slot.
    * @param pos The graph co-ordinates to check
    * @returns The output slot at the given position if found, otherwise `undefined`.
    */
-  getOutputOnPos(pos) {
-    return getNodeOutputOnPos(this, pos[0], pos[1])?.output;
+  getOutputOnPos(pos2) {
+    return getNodeOutputOnPos(this, pos2[0], pos2[1])?.output;
   }
   /**
    * Returns the input or output slot at the given position.
@@ -39326,9 +39326,9 @@ var LGraphNode = class _LGraphNode {
    * @param pos The graph co-ordinates to check
    * @returns The input or output slot at the given position if found, otherwise `undefined`.
    */
-  getSlotOnPos(pos) {
-    if (!isPointInRect(pos, this.boundingRect)) return;
-    return this.getInputOnPos(pos) ?? this.getOutputOnPos(pos);
+  getSlotOnPos(pos2) {
+    if (!isPointInRect(pos2, this.boundingRect)) return;
+    return this.getInputOnPos(pos2) ?? this.getOutputOnPos(pos2);
   }
   /**
    * @deprecated Use {@link getSlotOnPos} instead.
@@ -39341,17 +39341,17 @@ var LGraphNode = class _LGraphNode {
     const { inputs, outputs } = this;
     if (inputs) {
       for (const [i, input] of inputs.entries()) {
-        const pos = this.getInputPos(i);
-        if (isInRectangle(x2, y, pos[0] - 10, pos[1] - 10, 20, 20)) {
-          return { input, slot: i, link_pos: pos };
+        const pos2 = this.getInputPos(i);
+        if (isInRectangle(x2, y, pos2[0] - 10, pos2[1] - 10, 20, 20)) {
+          return { input, slot: i, link_pos: pos2 };
         }
       }
     }
     if (outputs) {
       for (const [i, output] of outputs.entries()) {
-        const pos = this.getOutputPos(i);
-        if (isInRectangle(x2, y, pos[0] - 10, pos[1] - 10, 20, 20)) {
-          return { output, slot: i, link_pos: pos };
+        const pos2 = this.getOutputPos(i);
+        if (isInRectangle(x2, y, pos2[0] - 10, pos2[1] - 10, 20, 20)) {
+          return { output, slot: i, link_pos: pos2 };
         }
       }
     }
@@ -39364,19 +39364,19 @@ var LGraphNode = class _LGraphNode {
    * @returns The widget found, otherwise `null`
    */
   getWidgetOnPos(canvasX, canvasY, includeDisabled = false) {
-    const { widgets, pos, size } = this;
+    const { widgets, pos: pos2, size } = this;
     if (!widgets?.length) return;
-    const x2 = canvasX - pos[0];
-    const y = canvasY - pos[1];
+    const x2 = canvasX - pos2[0];
+    const y = canvasY - pos2[1];
     const nodeWidth = size[0];
-    for (const widget of widgets) {
-      if (widget.computedDisabled && !includeDisabled || !this.isWidgetVisible(widget)) {
+    for (const widget2 of widgets) {
+      if (widget2.computedDisabled && !includeDisabled || !this.isWidgetVisible(widget2)) {
         continue;
       }
-      const h = widget.computedHeight ?? widget.computeSize?.(nodeWidth)[1] ?? LiteGraph.NODE_WIDGET_HEIGHT;
-      const w = widget.width || nodeWidth;
-      if (widget.last_y !== void 0 && isInRectangle(x2, y, 6, widget.last_y, w - 12, h)) {
-        return widget;
+      const h = widget2.computedHeight ?? widget2.computeSize?.(nodeWidth)[1] ?? LiteGraph.NODE_WIDGET_HEIGHT;
+      const w = widget2.width || nodeWidth;
+      if (widget2.last_y !== void 0 && isInRectangle(x2, y, 6, widget2.last_y, w - 12, h)) {
+        return widget2;
       }
     }
   }
@@ -39759,7 +39759,7 @@ var LGraphNode = class _LGraphNode {
     graph.afterChange();
     return link;
   }
-  connectFloatingReroute(pos, slot, afterRerouteId) {
+  connectFloatingReroute(pos2, slot, afterRerouteId) {
     const { graph, id } = this;
     if (!graph) throw new NullGraphError();
     const inputIndex = this.inputs.indexOf(slot);
@@ -39767,7 +39767,7 @@ var LGraphNode = class _LGraphNode {
     if (inputIndex === -1 && outputIndex === -1) throw new Error("Invalid slot");
     const slotType = outputIndex === -1 ? "input" : "output";
     const reroute = graph.setReroute({
-      pos,
+      pos: pos2,
       parentId: afterRerouteId,
       linkIds: [],
       floating: { slotType }
@@ -40036,8 +40036,8 @@ var LGraphNode = class _LGraphNode {
       const halfTitle = LiteGraph.NODE_TITLE_HEIGHT * 0.5;
       return [nodeX, nodeY - halfTitle];
     }
-    const { pos } = input;
-    if (pos) return [nodeX + pos[0], nodeY + pos[1]];
+    const { pos: pos2 } = input;
+    if (pos2) return [nodeX + pos2[0], nodeY + pos2[1]];
     const offsetX = LiteGraph.NODE_SLOT_HEIGHT * 0.5;
     const nodeOffsetY = this.constructor.slot_start_y || 0;
     const slotIndex = this.#defaultVerticalInputs.indexOf(input);
@@ -40316,8 +40316,8 @@ var LGraphNode = class _LGraphNode {
     }
     ctx.font = this.titleFontStyle;
     const rawTitle = this.getTitle() ?? `\u274C ${this.type}`;
-    const title = String(rawTitle) + (this.pinned ? "\u{1F4CC}" : "");
-    if (title) {
+    const title2 = String(rawTitle) + (this.pinned ? "\u{1F4CC}" : "");
+    if (title2) {
       if (selected) {
         ctx.fillStyle = LiteGraph.NODE_SELECTED_TITLE_COLOR;
       } else {
@@ -40338,11 +40338,11 @@ var LGraphNode = class _LGraphNode {
           availableWidth -= buttonsWidth;
         }
       }
-      let displayTitle = title;
+      let displayTitle = title2;
       if (this.collapsed) {
-        displayTitle = title.substr(0, 20);
+        displayTitle = title2.substr(0, 20);
       } else if (availableWidth > 0) {
-        displayTitle = truncateText(ctx, title, availableWidth);
+        displayTitle = truncateText(ctx, title2, availableWidth);
       }
       ctx.textAlign = "left";
       ctx.fillText(
@@ -40417,8 +40417,8 @@ var LGraphNode = class _LGraphNode {
   /**
    * Returns `true` if the widget is visible, otherwise `false`.
    */
-  isWidgetVisible(widget) {
-    const isHidden = this.collapsed || widget.hidden || widget.advanced && !this.showAdvanced;
+  isWidgetVisible(widget2) {
+    const isHidden = this.collapsed || widget2.hidden || widget2.advanced && !this.showAdvanced;
     return !isHidden;
   }
   drawWidgets(ctx, {
@@ -40432,21 +40432,21 @@ var LGraphNode = class _LGraphNode {
     const showText = !lowQuality;
     ctx.save();
     ctx.globalAlpha = editorAlpha;
-    for (const widget of widgets) {
-      if (!this.isWidgetVisible(widget)) continue;
-      const { y } = widget;
-      const outlineColour = widget.advanced ? LiteGraph.WIDGET_ADVANCED_OUTLINE_COLOR : LiteGraph.WIDGET_OUTLINE_COLOR;
-      widget.last_y = y;
-      widget.computedDisabled = widget.disabled || this.getSlotFromWidget(widget)?.link != null;
+    for (const widget2 of widgets) {
+      if (!this.isWidgetVisible(widget2)) continue;
+      const { y } = widget2;
+      const outlineColour = widget2.advanced ? LiteGraph.WIDGET_ADVANCED_OUTLINE_COLOR : LiteGraph.WIDGET_OUTLINE_COLOR;
+      widget2.last_y = y;
+      widget2.computedDisabled = widget2.disabled || this.getSlotFromWidget(widget2)?.link != null;
       ctx.strokeStyle = outlineColour;
       ctx.fillStyle = "#222";
       ctx.textAlign = "left";
-      if (widget.computedDisabled) ctx.globalAlpha *= 0.5;
-      const width2 = widget.width || nodeWidth;
-      if (typeof widget.draw === "function") {
-        widget.draw(ctx, this, width2, y, H, lowQuality);
+      if (widget2.computedDisabled) ctx.globalAlpha *= 0.5;
+      const width2 = widget2.width || nodeWidth;
+      if (typeof widget2.draw === "function") {
+        widget2.draw(ctx, this, width2, y, H, lowQuality);
       } else {
-        toConcreteWidget(widget, this, false)?.drawWidget(ctx, { width: width2, showText });
+        toConcreteWidget(widget2, this, false)?.drawWidget(ctx, { width: width2, showText });
       }
       ctx.globalAlpha = editorAlpha;
     }
@@ -40473,9 +40473,9 @@ var LGraphNode = class _LGraphNode {
     return [...this.inputs, ...this.outputs];
   }
   #measureSlot(slot, slotIndex, isInput) {
-    const pos = isInput ? this.getInputPos(slotIndex) : this.getOutputPos(slotIndex);
-    slot.boundingRect[0] = pos[0] - LiteGraph.NODE_SLOT_HEIGHT * 0.5;
-    slot.boundingRect[1] = pos[1] - LiteGraph.NODE_SLOT_HEIGHT * 0.5;
+    const pos2 = isInput ? this.getInputPos(slotIndex) : this.getOutputPos(slotIndex);
+    slot.boundingRect[0] = pos2[0] - LiteGraph.NODE_SLOT_HEIGHT * 0.5;
+    slot.boundingRect[1] = pos2[1] - LiteGraph.NODE_SLOT_HEIGHT * 0.5;
     slot.boundingRect[2] = slot.isWidgetInputSlot ? BaseWidget.margin : LiteGraph.NODE_SLOT_HEIGHT;
     slot.boundingRect[3] = LiteGraph.NODE_SLOT_HEIGHT;
   }
@@ -40503,15 +40503,15 @@ var LGraphNode = class _LGraphNode {
   #isMouseOverSlot(slot) {
     return this.#getMouseOverSlot(slot) === slot;
   }
-  #isMouseOverWidget(widget) {
-    if (!widget) return false;
-    return this.mouseOver?.overWidget === widget;
+  #isMouseOverWidget(widget2) {
+    if (!widget2) return false;
+    return this.mouseOver?.overWidget === widget2;
   }
   /**
    * Returns the input slot that is associated with the given widget.
    */
-  getSlotFromWidget(widget) {
-    if (widget) return this.inputs.find((slot) => isWidgetInputSlot(slot) && slot.widget.name === widget.name);
+  getSlotFromWidget(widget2) {
+    if (widget2) return this.inputs.find((slot) => isWidgetInputSlot(slot) && slot.widget.name === widget2.name);
   }
   /**
    * Returns the widget that is associated with the given input slot.
@@ -40608,12 +40608,12 @@ var LGraphNode = class _LGraphNode {
       slotByWidgetName.set(slot.widget.name, { ...slot, index: i });
     }
     if (!slotByWidgetName.size) return;
-    for (const widget of this.widgets) {
-      const slot = slotByWidgetName.get(widget.name);
+    for (const widget2 of this.widgets) {
+      const slot = slotByWidgetName.get(widget2.name);
       if (!slot) continue;
       const actualSlot = this.#concreteInputs[slot.index];
       const offset = LiteGraph.NODE_SLOT_HEIGHT * 0.5;
-      actualSlot.pos = [offset, widget.y + offset];
+      actualSlot.pos = [offset, widget2.y + offset];
       this.#measureSlot(actualSlot, slot.index, true);
     }
   }
@@ -40700,8 +40700,8 @@ function findFreeSlotOfType(slots, type, hasNoLinks) {
   }
   return wildSlot ?? occupiedSlot ?? occupiedWildSlot;
 }
-function removeFromArray(array, value) {
-  const index = array.indexOf(value);
+function removeFromArray(array, value2) {
+  const index = array.indexOf(value2);
   const found = index !== -1;
   if (found) array.splice(index, 1);
   return found;
@@ -40713,8 +40713,8 @@ var SubgraphInput = class extends SubgraphSlot {
   get _widget() {
     return this.#widgetRef?.deref();
   }
-  set _widget(widget) {
-    this.#widgetRef = widget ? new WeakRef(widget) : void 0;
+  set _widget(widget2) {
+    this.#widgetRef = widget2 ? new WeakRef(widget2) : void 0;
   }
   connect(slot, node2, afterRerouteId) {
     const { subgraph } = this.parent;
@@ -40793,12 +40793,12 @@ var SubgraphInput = class extends SubgraphSlot {
           console.warn("Invalid widget name", widgetNamePojo);
           continue;
         }
-        const widget = resolved.inputNode.widgets.find((w) => w.name === widgetNamePojo.name);
-        if (!widget) {
+        const widget2 = resolved.inputNode.widgets.find((w) => w.name === widgetNamePojo.name);
+        if (!widget2) {
           console.warn("Widget not found", widgetNamePojo);
           continue;
         }
-        widgets.push(widget);
+        widgets.push(widget2);
       } else {
         console.debug("No input found on link id", linkId, link);
       }
@@ -40812,9 +40812,9 @@ var SubgraphInput = class extends SubgraphSlot {
    * @returns `true` if the connection is valid, otherwise `false`.
    */
   matchesWidget(otherWidget) {
-    const widget = this.#widgetRef?.deref();
-    if (!widget) return true;
-    if (otherWidget.type !== widget.type || otherWidget.options.min !== widget.options.min || otherWidget.options.max !== widget.options.max || otherWidget.options.step !== widget.options.step || otherWidget.options.step2 !== widget.options.step2 || otherWidget.options.precision !== widget.options.precision) {
+    const widget2 = this.#widgetRef?.deref();
+    if (!widget2) return true;
+    if (otherWidget.type !== widget2.type || otherWidget.options.min !== widget2.options.min || otherWidget.options.max !== widget2.options.max || otherWidget.options.step !== widget2.options.step || otherWidget.options.step2 !== widget2.options.step2 || otherWidget.options.precision !== widget2.options.precision) {
       return false;
     }
     return true;
@@ -40826,13 +40826,13 @@ var SubgraphInput = class extends SubgraphSlot {
   /** For inputs, x is the right edge of the input node. */
   arrange(rect) {
     const [right, top, width2, height] = rect;
-    const { boundingRect: b, pos } = this;
+    const { boundingRect: b, pos: pos2 } = this;
     b[0] = right - width2;
     b[1] = top;
     b[2] = width2;
     b[3] = height;
-    pos[0] = right - height * 0.5;
-    pos[1] = top + height * 0.5;
+    pos2[0] = right - height * 0.5;
+    pos2[1] = top + height * 0.5;
   }
   /**
    * Checks if this slot is a valid target for a connection from the given slot.
@@ -41845,37 +41845,37 @@ var LinkConnector = class {
    * Connects the links being dropped
    * @param event Contains the drop location, in canvas space
    */
-  dropLinks(locator, event) {
+  dropLinks(locator, event2) {
     if (!this.isConnecting) {
-      const mayContinue = this.events.dispatch("before-drop-links", { renderLinks: this.renderLinks, event });
+      const mayContinue = this.events.dispatch("before-drop-links", { renderLinks: this.renderLinks, event: event2 });
       if (mayContinue === false) return;
     }
     try {
-      const { canvasX, canvasY } = event;
+      const { canvasX, canvasY } = event2;
       const ioNode = locator.getIoNodeOnPos?.(canvasX, canvasY);
       if (ioNode) {
-        this.dropOnIoNode(ioNode, event);
+        this.dropOnIoNode(ioNode, event2);
         return;
       }
       const node2 = locator.getNodeOnPos(canvasX, canvasY) ?? void 0;
       if (node2) {
-        this.dropOnNode(node2, event);
+        this.dropOnNode(node2, event2);
       } else {
         const reroute = locator.getRerouteOnPos(canvasX, canvasY);
         if (reroute && this.isRerouteValidDrop(reroute)) {
-          this.dropOnReroute(reroute, event);
+          this.dropOnReroute(reroute, event2);
         } else {
-          this.dropOnNothing(event);
+          this.dropOnNothing(event2);
         }
       }
     } finally {
-      this.events.dispatch("after-drop-links", { renderLinks: this.renderLinks, event });
+      this.events.dispatch("after-drop-links", { renderLinks: this.renderLinks, event: event2 });
     }
   }
-  dropOnIoNode(ioNode, event) {
+  dropOnIoNode(ioNode, event2) {
     const { renderLinks, state } = this;
     const { connectingTo } = state;
-    const { canvasX, canvasY } = event;
+    const { canvasX, canvasY } = event2;
     if (connectingTo === "input" && ioNode instanceof SubgraphOutputNode) {
       const output = ioNode.getSlotInPosition(canvasX, canvasY);
       if (!output) throw new Error("No output slot found for link.");
@@ -41892,17 +41892,17 @@ var LinkConnector = class {
       console.error("Invalid connectingTo state &/ ioNode", connectingTo, ioNode);
     }
   }
-  dropOnNode(node2, event) {
+  dropOnNode(node2, event2) {
     const { renderLinks, state } = this;
     const { connectingTo } = state;
-    const { canvasX, canvasY } = event;
+    const { canvasX, canvasY } = event2;
     if (renderLinks.every((link) => link.node === node2)) return;
     if (connectingTo === "output") {
       const output = node2.getOutputOnPos([canvasX, canvasY]);
       if (output) {
         this.#dropOnOutput(node2, output);
       } else {
-        this.connectToNode(node2, event);
+        this.connectToNode(node2, event2);
       }
     } else if (connectingTo === "input") {
       const input = node2.getInputOnPos([canvasX, canvasY]);
@@ -41910,12 +41910,12 @@ var LinkConnector = class {
       if (inputOrSocket) {
         this.#dropOnInput(node2, inputOrSocket);
       } else {
-        this.connectToNode(node2, event);
+        this.connectToNode(node2, event2);
       }
     }
   }
-  dropOnReroute(reroute, event) {
-    const mayContinue = this.events.dispatch("dropped-on-reroute", { reroute, event });
+  dropOnReroute(reroute, event2) {
+    const mayContinue = this.events.dispatch("dropped-on-reroute", { reroute, event: event2 });
     if (mayContinue === false) return;
     if (this.state.connectingTo === "input") {
       if (this.renderLinks.length !== 1) throw new Error(`Attempted to connect ${this.renderLinks.length} input links to a reroute.`);
@@ -41957,8 +41957,8 @@ var LinkConnector = class {
     }
     return;
   }
-  dropOnNothing(event) {
-    const mayContinue = this.events.dispatch("dropped-on-canvas", event);
+  dropOnNothing(event2) {
+    const mayContinue = this.events.dispatch("dropped-on-canvas", event2);
     if (mayContinue === false) return;
     this.disconnectLinks();
   }
@@ -41979,9 +41979,9 @@ var LinkConnector = class {
    * @param node The node that the links are being dropped on
    * @param event Contains the drop location, in canvas space
    */
-  connectToNode(node2, event) {
+  connectToNode(node2, event2) {
     const { state: { connectingTo } } = this;
-    const mayContinue = this.events.dispatch("dropped-on-node", { node: node2, event });
+    const mayContinue = this.events.dispatch("dropped-on-node", { node: node2, event: event2 });
     if (mayContinue === false) return;
     const firstLink = this.renderLinks[0];
     if (!firstLink) return;
@@ -42148,9 +42148,9 @@ var CanvasPointer = class _CanvasPointer {
   static get maxClickDrift() {
     return this.#maxClickDrift;
   }
-  static set maxClickDrift(value) {
-    this.#maxClickDrift = value;
-    this.#maxClickDrift2 = value * value;
+  static set maxClickDrift(value2) {
+    this.#maxClickDrift = value2;
+    this.#maxClickDrift2 = value2 * value2;
   }
   static #maxClickDrift = 6;
   /** {@link maxClickDrift} squared.  Used to calculate click drift without `sqrt`. */
@@ -42191,11 +42191,11 @@ var CanvasPointer = class _CanvasPointer {
   get finally() {
     return this.#finally;
   }
-  set finally(value) {
+  set finally(value2) {
     try {
       this.#finally?.();
     } finally {
-      this.#finally = value;
+      this.#finally = value2;
     }
   }
   #finally;
@@ -42344,15 +42344,15 @@ var DragAndScale = class {
   get offset() {
     return this.state.offset;
   }
-  set offset(value) {
-    this.state.offset[0] = value[0];
-    this.state.offset[1] = value[1];
+  set offset(value2) {
+    this.state.offset[0] = value2[0];
+    this.state.offset[1] = value2[1];
   }
   get scale() {
     return this.state.scale;
   }
-  set scale(value) {
-    this.state.scale = value;
+  set scale(value2) {
+    this.state.scale = value2;
   }
   constructor(element) {
     this.state = {
@@ -42404,16 +42404,16 @@ var DragAndScale = class {
     ctx.scale(this.scale, this.scale);
     ctx.translate(this.offset[0], this.offset[1]);
   }
-  convertOffsetToCanvas(pos) {
+  convertOffsetToCanvas(pos2) {
     return [
-      (pos[0] + this.offset[0]) * this.scale,
-      (pos[1] + this.offset[1]) * this.scale
+      (pos2[0] + this.offset[0]) * this.scale,
+      (pos2[1] + this.offset[1]) * this.scale
     ];
   }
-  convertCanvasToOffset(pos, out) {
+  convertCanvasToOffset(pos2, out) {
     out = out || [0, 0];
-    out[0] = pos[0] / this.scale - this.offset[0];
-    out[1] = pos[1] / this.scale - this.offset[1];
+    out[0] = pos2[0] / this.scale - this.offset[0];
+    out[1] = pos2[1] / this.scale - this.offset[1];
     return out;
   }
   /** @deprecated Has not been kept up to date */
@@ -42422,13 +42422,13 @@ var DragAndScale = class {
     this.offset[1] += y / this.scale;
     this.onredraw?.(this);
   }
-  changeScale(value, zooming_center, roundToScaleOne = true) {
-    if (value < this.min_scale) {
-      value = this.min_scale;
-    } else if (value > this.max_scale) {
-      value = this.max_scale;
+  changeScale(value2, zooming_center, roundToScaleOne = true) {
+    if (value2 < this.min_scale) {
+      value2 = this.min_scale;
+    } else if (value2 > this.max_scale) {
+      value2 = this.max_scale;
     }
-    if (value == this.scale) return;
+    if (value2 == this.scale) return;
     const rect = this.element.getBoundingClientRect();
     if (!rect) return;
     zooming_center = zooming_center ?? [rect.width * 0.5, rect.height * 0.5];
@@ -42437,7 +42437,7 @@ var DragAndScale = class {
       zooming_center[1] - rect.y
     ];
     const center = this.convertCanvasToOffset(normalizedCenter);
-    this.scale = value;
+    this.scale = value2;
     if (roundToScaleOne && Math.abs(this.scale - 1) < 0.01) this.scale = 1;
     const new_center = this.convertCanvasToOffset(normalizedCenter);
     const delta_offset = [
@@ -42448,8 +42448,8 @@ var DragAndScale = class {
     this.offset[1] += delta_offset[1];
     this.onredraw?.(this);
   }
-  changeDeltaScale(value, zooming_center) {
-    this.changeScale(this.scale * value, zooming_center);
+  changeDeltaScale(value2, zooming_center) {
+    this.changeScale(this.scale * value2, zooming_center);
   }
   /**
    * Fits the view to the specified bounds.
@@ -42671,15 +42671,15 @@ var LGraphCanvas = class _LGraphCanvas {
   get subgraph() {
     return this.#subgraph;
   }
-  set subgraph(value) {
-    if (value !== this.#subgraph) {
-      this.#subgraph = value;
-      if (value) this.dispatch("litegraph:set-graph", { oldGraph: this.#subgraph, newGraph: value });
+  set subgraph(value2) {
+    if (value2 !== this.#subgraph) {
+      this.#subgraph = value2;
+      if (value2) this.dispatch("litegraph:set-graph", { oldGraph: this.#subgraph, newGraph: value2 });
     }
   }
   dispatch(type, detail) {
-    const event = new CustomEvent(type, { detail, bubbles: true });
-    return this.canvas.dispatchEvent(event);
+    const event2 = new CustomEvent(type, { detail, bubbles: true });
+    return this.canvas.dispatchEvent(event2);
   }
   dispatchEvent(type, detail) {
     this.canvas.dispatchEvent(new CustomEvent(type, { detail }));
@@ -42709,21 +42709,21 @@ var LGraphCanvas = class _LGraphCanvas {
   get read_only() {
     return this.state.readOnly;
   }
-  set read_only(value) {
-    this.state.readOnly = value;
+  set read_only(value2) {
+    this.state.readOnly = value2;
     this.#updateCursorStyle();
   }
   get isDragging() {
     return this.state.draggingItems;
   }
-  set isDragging(value) {
-    this.state.draggingItems = value;
+  set isDragging(value2) {
+    this.state.draggingItems = value2;
   }
   get hoveringOver() {
     return this.state.hoveringOver;
   }
-  set hoveringOver(value) {
-    this.state.hoveringOver = value;
+  set hoveringOver(value2) {
+    this.state.hoveringOver = value2;
     this.#updateCursorStyle();
   }
   /** @deprecated Replace all references with {@link pointer}.{@link CanvasPointer.isDown isDown}. */
@@ -42738,8 +42738,8 @@ var LGraphCanvas = class _LGraphCanvas {
   get dragging_canvas() {
     return this.state.draggingCanvas;
   }
-  set dragging_canvas(value) {
-    this.state.draggingCanvas = value;
+  set dragging_canvas(value2) {
+    this.state.draggingCanvas = value2;
     this.#updateCursorStyle();
   }
   /**
@@ -42757,8 +42757,8 @@ var LGraphCanvas = class _LGraphCanvas {
   get maximumFps() {
     return this.#maximumFrameGap > Number.EPSILON ? this.#maximumFrameGap / 1e3 : 0;
   }
-  set maximumFps(value) {
-    this.#maximumFrameGap = value > Number.EPSILON ? 1e3 / value : 0;
+  set maximumFps(value2) {
+    this.#maximumFrameGap = value2 > Number.EPSILON ? 1e3 / value2 : 0;
   }
   /**
    * @deprecated Use {@link LiteGraphGlobal.ROUND_RADIUS} instead.
@@ -42769,8 +42769,8 @@ var LGraphCanvas = class _LGraphCanvas {
   /**
    * @deprecated Use {@link LiteGraphGlobal.ROUND_RADIUS} instead.
    */
-  set round_radius(value) {
-    LiteGraph.ROUND_RADIUS = value;
+  set round_radius(value2) {
+    LiteGraph.ROUND_RADIUS = value2;
   }
   /**
    * Render low quality when zoomed out.
@@ -43119,48 +43119,48 @@ var LGraphCanvas = class _LGraphCanvas {
     alignNodes(Object.values(nodes), direction, align_to);
     _LGraphCanvas.active_canvas.setDirty(true, true);
   }
-  static onNodeAlign(value, options, event, prev_menu, node2) {
+  static onNodeAlign(value2, options, event2, prev_menu, node2) {
     new LiteGraph.ContextMenu(["Top", "Bottom", "Left", "Right"], {
-      event,
+      event: event2,
       callback: inner_clicked,
       parentMenu: prev_menu
     });
-    function inner_clicked(value2) {
+    function inner_clicked(value22) {
       alignNodes(
         Object.values(_LGraphCanvas.active_canvas.selected_nodes),
-        value2.toLowerCase(),
+        value22.toLowerCase(),
         node2
       );
       _LGraphCanvas.active_canvas.setDirty(true, true);
     }
   }
-  static onGroupAlign(value, options, event, prev_menu) {
+  static onGroupAlign(value2, options, event2, prev_menu) {
     new LiteGraph.ContextMenu(["Top", "Bottom", "Left", "Right"], {
-      event,
+      event: event2,
       callback: inner_clicked,
       parentMenu: prev_menu
     });
-    function inner_clicked(value2) {
+    function inner_clicked(value22) {
       alignNodes(
         Object.values(_LGraphCanvas.active_canvas.selected_nodes),
-        value2.toLowerCase()
+        value22.toLowerCase()
       );
       _LGraphCanvas.active_canvas.setDirty(true, true);
     }
   }
-  static createDistributeMenu(value, options, event, prev_menu) {
+  static createDistributeMenu(value2, options, event2, prev_menu) {
     new LiteGraph.ContextMenu(["Vertically", "Horizontally"], {
-      event,
+      event: event2,
       callback: inner_clicked,
       parentMenu: prev_menu
     });
-    function inner_clicked(value2) {
+    function inner_clicked(value22) {
       const canvas2 = _LGraphCanvas.active_canvas;
-      distributeNodes(Object.values(canvas2.selected_nodes), value2 === "Horizontally");
+      distributeNodes(Object.values(canvas2.selected_nodes), value22 === "Horizontally");
       canvas2.setDirty(true, true);
     }
   }
-  static onMenuAdd(value, options, e2, prev_menu, callback) {
+  static onMenuAdd(value2, options, e2, prev_menu, callback2) {
     const canvas2 = _LGraphCanvas.active_canvas;
     const ref_window = canvas2.getCanvasWindow();
     const { graph } = canvas2;
@@ -43184,8 +43184,8 @@ var LGraphCanvas = class _LGraphCanvas {
             value: category_path,
             content: name,
             has_submenu: true,
-            callback: function(value2, event, mouseEvent, contextMenu) {
-              inner_onMenuAdded(value2.value, contextMenu);
+            callback: function(value22, event2, mouseEvent, contextMenu) {
+              inner_onMenuAdded(value22.value, contextMenu);
             }
           });
         }
@@ -43200,19 +43200,19 @@ var LGraphCanvas = class _LGraphCanvas {
           value: node2.type,
           content: node2.title,
           has_submenu: false,
-          callback: function(value2, event, mouseEvent, contextMenu) {
+          callback: function(value22, event2, mouseEvent, contextMenu) {
             if (!canvas2.graph) throw new NullGraphError();
             const first_event = contextMenu.getFirstEvent();
             canvas2.graph.beforeChange();
-            const node22 = LiteGraph.createNode(value2.value);
+            const node22 = LiteGraph.createNode(value22.value);
             if (node22) {
               if (!first_event) throw new TypeError("Context menu event was null. This should not occur in normal usage.");
               node22.pos = canvas2.convertEventToCanvasOffset(first_event);
               canvas2.graph.add(node22);
             } else {
-              console.warn("Failed to create node of type:", value2.value);
+              console.warn("Failed to create node of type:", value22.value);
             }
-            callback?.(node22);
+            callback2?.(node22);
             canvas2.graph.afterChange();
           }
         };
@@ -43249,11 +43249,11 @@ var LGraphCanvas = class _LGraphCanvas {
       if (!node2) return;
       if (v22.callback) v22.callback.call(this, node2, v22, e22, prev);
       if (!v22.value) return;
-      const value = v22.value[1];
-      if (value && (typeof value === "object" || Array.isArray(value))) {
+      const value2 = v22.value[1];
+      if (value2 && (typeof value2 === "object" || Array.isArray(value2))) {
         const entries2 = [];
-        for (const i in value) {
-          entries2.push({ content: i, value: value[i] });
+        for (const i in value2) {
+          entries2.push({ content: i, value: value2[i] });
         }
         new LiteGraph.ContextMenu(entries2, {
           event: e22,
@@ -43274,21 +43274,21 @@ var LGraphCanvas = class _LGraphCanvas {
     return false;
   }
   /** @param value Parameter is never used */
-  static onShowMenuNodeProperties(value, options, e2, prev_menu, node2) {
+  static onShowMenuNodeProperties(value2, options, e2, prev_menu, node2) {
     if (!node2 || !node2.properties) return;
     const canvas2 = _LGraphCanvas.active_canvas;
     const ref_window = canvas2.getCanvasWindow();
     const entries = [];
     for (const i in node2.properties) {
-      value = node2.properties[i] !== void 0 ? node2.properties[i] : " ";
-      if (typeof value == "object")
-        value = JSON.stringify(value);
+      value2 = node2.properties[i] !== void 0 ? node2.properties[i] : " ";
+      if (typeof value2 == "object")
+        value2 = JSON.stringify(value2);
       const info = node2.getPropertyInfo(i);
       if (info.type == "enum" || info.type == "combo")
-        value = _LGraphCanvas.getPropertyPrintableValue(value, info.values);
-      value = _LGraphCanvas.decodeHTML(stringOrEmpty(value));
+        value2 = _LGraphCanvas.getPropertyPrintableValue(value2, info.values);
+      value2 = _LGraphCanvas.decodeHTML(stringOrEmpty(value2));
       entries.push({
-        content: `<span class='property_name'>${info.label || i}</span><span class='property_value'>${value}</span>`,
+        content: `<span class='property_name'>${info.label || i}</span><span class='property_value'>${value2}</span>`,
         value: i
       });
     }
@@ -43322,7 +43322,7 @@ var LGraphCanvas = class _LGraphCanvas {
     e2.textContent = str;
     return e2.innerHTML;
   }
-  static onMenuResizeNode(value, options, e2, menu, node2) {
+  static onMenuResizeNode(value2, options, e2, menu, node2) {
     if (!node2) return;
     const fApplyMultiNode = function(node22) {
       node22.setSize(node22.computeSize());
@@ -43340,10 +43340,10 @@ var LGraphCanvas = class _LGraphCanvas {
   // TODO refactor :: this is used fot title but not for properties!
   static onShowPropertyEditor(item, options, e2, menu, node2) {
     const property = item.property || "title";
-    const value = node2[property];
-    const title = document.createElement("span");
-    title.className = "name";
-    title.textContent = property;
+    const value2 = node2[property];
+    const title2 = document.createElement("span");
+    title2.className = "name";
+    title2.textContent = property;
     const input = document.createElement("input");
     Object.assign(input, { type: "text", className: "value", autofocus: true });
     const button = document.createElement("button");
@@ -43353,8 +43353,8 @@ var LGraphCanvas = class _LGraphCanvas {
       className: "graphdialog",
       close: () => dialog.remove()
     });
-    dialog.append(title, input, button);
-    input.value = String(value);
+    dialog.append(title2, input, button);
+    input.value = String(value2);
     input.addEventListener("blur", function() {
       this.focus();
     });
@@ -43405,33 +43405,33 @@ var LGraphCanvas = class _LGraphCanvas {
     function inner() {
       if (input) setValue(input.value);
     }
-    function setValue(value2) {
+    function setValue(value22) {
       if (item.type == "Number") {
-        value2 = Number(value2);
+        value22 = Number(value22);
       } else if (item.type == "Boolean") {
-        value2 = Boolean(value2);
+        value22 = Boolean(value22);
       }
-      node2[property] = value2;
+      node2[property] = value22;
       dialog.remove();
       canvas2.setDirty(true, true);
     }
   }
-  static getPropertyPrintableValue(value, values) {
-    if (!values) return String(value);
+  static getPropertyPrintableValue(value2, values) {
+    if (!values) return String(value2);
     if (Array.isArray(values)) {
-      return String(value);
+      return String(value2);
     }
     if (typeof values === "object") {
       let desc_value = "";
       for (const k in values) {
-        if (values[k] != value) continue;
+        if (values[k] != value2) continue;
         desc_value = k;
         break;
       }
-      return `${String(value)} (${desc_value})`;
+      return `${String(value2)} (${desc_value})`;
     }
   }
-  static onMenuNodeCollapse(value, options, e2, menu, node2) {
+  static onMenuNodeCollapse(value2, options, e2, menu, node2) {
     if (!node2.graph) throw new NullGraphError();
     node2.graph.beforeChange();
     const fApplyMultiNode = function(node22) {
@@ -43447,7 +43447,7 @@ var LGraphCanvas = class _LGraphCanvas {
     }
     node2.graph.afterChange();
   }
-  static onMenuToggleAdvanced(value, options, e2, menu, node2) {
+  static onMenuToggleAdvanced(value2, options, e2, menu, node2) {
     if (!node2.graph) throw new NullGraphError();
     node2.graph.beforeChange();
     const fApplyMultiNode = function(node22) {
@@ -43463,7 +43463,7 @@ var LGraphCanvas = class _LGraphCanvas {
     }
     node2.graph.afterChange();
   }
-  static onMenuNodeMode(value, options, e2, menu, node2) {
+  static onMenuNodeMode(value2, options, e2, menu, node2) {
     new LiteGraph.ContextMenu(
       LiteGraph.NODE_MODES,
       { event: e2, callback: inner_clicked, parentMenu: menu, node: node2 }
@@ -43491,7 +43491,7 @@ var LGraphCanvas = class _LGraphCanvas {
     return false;
   }
   /** @param value Parameter is never used */
-  static onMenuNodeColors(value, options, e2, menu, node2) {
+  static onMenuNodeColors(value2, options, e2, menu, node2) {
     if (!node2) throw "no node for color";
     const values = [];
     values.push({
@@ -43500,11 +43500,11 @@ var LGraphCanvas = class _LGraphCanvas {
     });
     for (const i in _LGraphCanvas.node_colors) {
       const color = _LGraphCanvas.node_colors[i];
-      value = {
+      value2 = {
         value: i,
         content: `<span style='display: block; color: #999; padding-left: 4px; border-left: 8px solid ${color.color}; background-color:${color.bgcolor}'>${i}</span>`
       };
-      values.push(value);
+      values.push(value2);
     }
     new LiteGraph.ContextMenu(values, {
       event: e2,
@@ -43530,7 +43530,7 @@ var LGraphCanvas = class _LGraphCanvas {
     }
     return false;
   }
-  static onMenuNodeShapes(value, options, e2, menu, node2) {
+  static onMenuNodeShapes(value2, options, e2, menu, node2) {
     if (!node2) throw "no node passed";
     new LiteGraph.ContextMenu(LiteGraph.VALID_SHAPES, {
       event: e2,
@@ -43561,7 +43561,7 @@ var LGraphCanvas = class _LGraphCanvas {
   static onMenuNodeRemove() {
     _LGraphCanvas.active_canvas.deleteSelected();
   }
-  static onMenuNodeClone(value, options, e2, menu, node2) {
+  static onMenuNodeClone(value2, options, e2, menu, node2) {
     const { graph } = node2;
     if (!graph) throw new NullGraphError();
     graph.beforeChange();
@@ -44079,12 +44079,12 @@ var LGraphCanvas = class _LGraphCanvas {
           pointer.onDragStart = () => this.resizingGroup = group;
           pointer.onDrag = (eMove) => {
             if (this.read_only) return;
-            const pos = [
+            const pos2 = [
               eMove.canvasX - group.pos[0] - offsetX,
               eMove.canvasY - group.pos[1] - offsetY
             ];
-            if (this.#snapToGrid) snapPoint(pos, this.#snapToGrid);
-            const resized = group.resize(pos[0], pos[1]);
+            if (this.#snapToGrid) snapPoint(pos2, this.#snapToGrid);
+            const resized = group.resize(pos2[0], pos2[1]);
             if (resized) this.dirty_bgcanvas = true;
           };
           pointer.finally = () => this.resizingGroup = null;
@@ -44225,19 +44225,19 @@ var LGraphCanvas = class _LGraphCanvas {
         }
       }
     }
-    const pos = [x2 - node2.pos[0], y - node2.pos[1]];
-    const widget = node2.getWidgetOnPos(x2, y);
-    if (widget) {
-      this.#processWidgetClick(e2, node2, widget);
-      this.node_widget = [node2, widget];
+    const pos2 = [x2 - node2.pos[0], y - node2.pos[1]];
+    const widget2 = node2.getWidgetOnPos(x2, y);
+    if (widget2) {
+      this.#processWidgetClick(e2, node2, widget2);
+      this.node_widget = [node2, widget2];
     } else {
       pointer.onDoubleClick = () => {
-        if (pos[1] < 0 && !inCollapse) {
-          node2.onNodeTitleDblClick?.(e2, pos, this);
+        if (pos2[1] < 0 && !inCollapse) {
+          node2.onNodeTitleDblClick?.(e2, pos2, this);
         } else if (node2 instanceof SubgraphNode) {
           this.openSubgraph(node2.subgraph);
         }
-        node2.onDblClick?.(e2, pos, this);
+        node2.onDblClick?.(e2, pos2, this);
         this.emitEvent({
           subType: "node-double-click",
           originalEvent: e2,
@@ -44245,7 +44245,7 @@ var LGraphCanvas = class _LGraphCanvas {
         });
         this.processNodeDblClicked(node2);
       };
-      if (node2.onMouseDown?.(e2, pos, this)) {
+      if (node2.onMouseDown?.(e2, pos2, this)) {
         pointer.onClick = () => {
         };
         return;
@@ -44335,17 +44335,17 @@ var LGraphCanvas = class _LGraphCanvas {
     }
     this.dirty_canvas = true;
   }
-  #processWidgetClick(e2, node2, widget) {
+  #processWidgetClick(e2, node2, widget2) {
     const { pointer } = this;
-    if (typeof widget.onPointerDown === "function") {
-      const handled = widget.onPointerDown(pointer, node2, this);
+    if (typeof widget2.onPointerDown === "function") {
+      const handled = widget2.onPointerDown(pointer, node2, this);
       if (handled) return;
     }
-    const oldValue = widget.value;
-    const pos = this.graph_mouse;
-    const x2 = pos[0] - node2.pos[0];
-    const y = pos[1] - node2.pos[1];
-    const widgetInstance = toConcreteWidget(widget, node2, false);
+    const oldValue = widget2.value;
+    const pos2 = this.graph_mouse;
+    const x2 = pos2[0] - node2.pos[0];
+    const y = pos2[1] - node2.pos[1];
+    const widgetInstance = toConcreteWidget(widget2, node2, false);
     if (widgetInstance) {
       pointer.onClick = () => widgetInstance.onClick({
         e: e2,
@@ -44357,21 +44357,21 @@ var LGraphCanvas = class _LGraphCanvas {
         node: node2,
         canvas: this
       });
-    } else if (widget.mouse) {
-      const result = widget.mouse(e2, [x2, y], node2);
+    } else if (widget2.mouse) {
+      const result = widget2.mouse(e2, [x2, y], node2);
       if (result != null) this.dirty_canvas = result;
     }
-    if (oldValue != widget.value) {
-      node2.onWidgetChanged?.(widget.name, widget.value, oldValue, widget);
+    if (oldValue != widget2.value) {
+      node2.onWidgetChanged?.(widget2.name, widget2.value, oldValue, widget2);
       if (!node2.graph) throw new NullGraphError();
       node2.graph._version++;
     }
     pointer.finally = () => {
-      if (widget.mouse) {
+      if (widget2.mouse) {
         const { eUp } = pointer;
         if (!eUp) return;
         const { canvasX, canvasY } = eUp;
-        widget.mouse(eUp, [canvasX - node2.pos[0], canvasY - node2.pos[1]], node2);
+        widget2.mouse(eUp, [canvasX - node2.pos[0], canvasY - node2.pos[1]], node2);
       }
       this.node_widget = null;
     };
@@ -44485,11 +44485,11 @@ var LGraphCanvas = class _LGraphCanvas {
     }
     e2.dragging = this.last_mouse_dragging;
     if (this.node_widget) {
-      const [node22, widget] = this.node_widget;
-      if (widget?.mouse) {
+      const [node22, widget2] = this.node_widget;
+      if (widget2?.mouse) {
         const relativeX = x2 - node22.pos[0];
         const relativeY = y - node22.pos[1];
-        const result = widget.mouse(e2, [relativeX, relativeY], node22);
+        const result = widget2.mouse(e2, [relativeX, relativeY], node22);
         if (result != null) this.dirty_canvas = result;
       }
     }
@@ -44516,9 +44516,9 @@ var LGraphCanvas = class _LGraphCanvas {
       if (node2) {
         underPointer |= CanvasItem.Node;
         if (node2.redraw_on_mouse) this.dirty_canvas = true;
-        const pos = [0, 0];
-        const inputId = isOverNodeInput(node2, x2, y, pos);
-        const outputId = isOverNodeOutput(node2, x2, y, pos);
+        const pos2 = [0, 0];
+        const inputId = isOverNodeInput(node2, x2, y, pos2);
+        const outputId = isOverNodeOutput(node2, x2, y, pos2);
         const overWidget = node2.getWidgetOnPos(x2, y, true) ?? void 0;
         if (!node2.mouseOver) {
           node2.mouseOver = {};
@@ -44559,12 +44559,12 @@ var LGraphCanvas = class _LGraphCanvas {
                     highlightPos = node2.getInputSlotPos(result.slot);
                   }
                 } else if (inputId != -1 && node2.inputs[inputId] && LiteGraph.isValidConnection(firstLink.fromSlot.type, node2.inputs[inputId].type)) {
-                  highlightPos = pos;
+                  highlightPos = pos2;
                   highlightInput = node2.inputs[inputId];
                 }
                 if (highlightInput) {
-                  const widget = node2.getWidgetFromSlot(highlightInput);
-                  if (widget) linkConnector.overWidget = widget;
+                  const widget2 = node2.getWidgetFromSlot(highlightInput);
+                  if (widget2) linkConnector.overWidget = widget2;
                 }
               }
             } else if (linkConnector.state.connectingTo === "output") {
@@ -44575,7 +44575,7 @@ var LGraphCanvas = class _LGraphCanvas {
                 }
               } else {
                 if (outputId != -1 && node2.outputs[outputId] && LiteGraph.isValidConnection(firstLink.fromSlot.type, node2.outputs[outputId].type)) {
-                  highlightPos = pos;
+                  highlightPos = pos2;
                 }
               }
             }
@@ -44763,8 +44763,8 @@ var LGraphCanvas = class _LGraphCanvas {
     if (!this.graph || !this.allow_dragcanvas) return;
     const delta2 = e2.wheelDeltaY ?? e2.detail * -60;
     this.adjustMouseEvent(e2);
-    const pos = [e2.clientX, e2.clientY];
-    if (this.viewport && !isPointInRect(pos, this.viewport)) return;
+    const pos2 = [e2.clientX, e2.clientY];
+    if (this.viewport && !isPointInRect(pos2, this.viewport)) return;
     let { scale } = this.ds;
     if (LiteGraph.canvasNavigationMode === "legacy" || LiteGraph.canvasNavigationMode === "standard" && e2.ctrlKey) {
       if (delta2 > 0) {
@@ -44796,8 +44796,8 @@ var LGraphCanvas = class _LGraphCanvas {
     return;
   }
   #noItemsSelected() {
-    const event = new CustomEvent("litegraph:no-items-selected", { bubbles: true });
-    this.canvas.dispatchEvent(event);
+    const event2 = new CustomEvent("litegraph:no-items-selected", { bubbles: true });
+    this.canvas.dispatchEvent(event2);
   }
   /**
    * process a key event
@@ -45051,9 +45051,9 @@ var LGraphCanvas = class _LGraphCanvas {
       this.emitAfterChange();
     }
   }
-  processNodeDblClicked(n) {
-    this.onShowNodePanel?.(n);
-    this.onNodeDblClicked?.(n);
+  processNodeDblClicked(n2) {
+    this.onShowNodePanel?.(n2);
+    this.onNodeDblClicked?.(n2);
     this.setDirty(true);
   }
   #handleMultiSelect(e2, dragRect) {
@@ -45360,21 +45360,21 @@ var LGraphCanvas = class _LGraphCanvas {
   /**
    * changes the zoom level of the graph (default is 1), you can pass also a place used to pivot the zoom
    */
-  setZoom(value, zooming_center) {
-    this.ds.changeScale(value, zooming_center);
+  setZoom(value2, zooming_center) {
+    this.ds.changeScale(value2, zooming_center);
     this.#dirty();
   }
   /**
    * converts a coordinate from graph coordinates to canvas2D coordinates
    */
-  convertOffsetToCanvas(pos, out) {
-    return this.ds.convertOffsetToCanvas(pos, out);
+  convertOffsetToCanvas(pos2, out) {
+    return this.ds.convertOffsetToCanvas(pos2, out);
   }
   /**
    * converts a coordinate from Canvas2D coordinates to graph space
    */
-  convertCanvasToOffset(pos, out) {
-    return this.ds.convertCanvasToOffset(pos, out);
+  convertCanvasToOffset(pos2, out) {
+    return this.ds.convertCanvasToOffset(pos2, out);
   }
   // converts event coordinates from canvas2D to graph coordinates
   convertEventToCanvasOffset(e2) {
@@ -45521,13 +45521,13 @@ var LGraphCanvas = class _LGraphCanvas {
         const highlightPos = this.#getHighlightPosition();
         ctx.lineWidth = this.connections_width;
         for (const renderLink of renderLinks) {
-          const { fromSlot, fromPos: pos, fromDirection, dragDirection } = renderLink;
+          const { fromSlot, fromPos: pos2, fromDirection, dragDirection } = renderLink;
           const connShape = fromSlot.shape;
           const connType = fromSlot.type;
           const colour = connType === LiteGraph.EVENT ? LiteGraph.EVENT_LINK_COLOR : LiteGraph.CONNECTING_LINK_COLOR;
           this.renderLink(
             ctx,
-            pos,
+            pos2,
             highlightPos,
             null,
             false,
@@ -45538,7 +45538,7 @@ var LGraphCanvas = class _LGraphCanvas {
           );
           ctx.beginPath();
           if (connType === LiteGraph.EVENT || connShape === RenderShape.BOX) {
-            ctx.rect(pos[0] - 6 + 0.5, pos[1] - 5 + 0.5, 14, 10);
+            ctx.rect(pos2[0] - 6 + 0.5, pos2[1] - 5 + 0.5, 14, 10);
             ctx.rect(
               highlightPos[0] - 6 + 0.5,
               highlightPos[1] - 5 + 0.5,
@@ -45546,12 +45546,12 @@ var LGraphCanvas = class _LGraphCanvas {
               10
             );
           } else if (connShape === RenderShape.ARROW) {
-            ctx.moveTo(pos[0] + 8, pos[1] + 0.5);
-            ctx.lineTo(pos[0] - 4, pos[1] + 6 + 0.5);
-            ctx.lineTo(pos[0] - 4, pos[1] - 6 + 0.5);
+            ctx.moveTo(pos2[0] + 8, pos2[1] + 0.5);
+            ctx.lineTo(pos2[0] - 4, pos2[1] + 6 + 0.5);
+            ctx.lineTo(pos2[0] - 4, pos2[1] - 6 + 0.5);
             ctx.closePath();
           } else {
-            ctx.arc(pos[0], pos[1], 4, 0, Math.PI * 2);
+            ctx.arc(pos2[0], pos2[1], 4, 0, Math.PI * 2);
             ctx.arc(highlightPos[0], highlightPos[1], 4, 0, Math.PI * 2);
           }
           ctx.fill();
@@ -45892,19 +45892,19 @@ var LGraphCanvas = class _LGraphCanvas {
    * @todo Split tooltip from hover, so it can be drawn / eased separately
    */
   drawLinkTooltip(ctx, link) {
-    const pos = link._pos;
+    const pos2 = link._pos;
     ctx.fillStyle = "black";
     ctx.beginPath();
     if (this.linkMarkerShape === LinkMarkerShape.Arrow) {
       const transform = ctx.getTransform();
-      ctx.translate(pos[0], pos[1]);
+      ctx.translate(pos2[0], pos2[1]);
       if (Number.isFinite(link._centreAngle)) ctx.rotate(link._centreAngle);
       ctx.moveTo(-2, -3);
       ctx.lineTo(4, 0);
       ctx.lineTo(-2, 3);
       ctx.setTransform(transform);
     } else if (this.linkMarkerShape == null || this.linkMarkerShape === LinkMarkerShape.Circle) {
-      ctx.arc(pos[0], pos[1], 3, 0, Math.PI * 2);
+      ctx.arc(pos2[0], pos2[1], 3, 0, Math.PI * 2);
     }
     ctx.fill();
     const { data } = link;
@@ -45933,15 +45933,15 @@ var LGraphCanvas = class _LGraphCanvas {
     ctx.shadowBlur = 3;
     ctx.fillStyle = "#454";
     ctx.beginPath();
-    ctx.roundRect(pos[0] - w * 0.5, pos[1] - 15 - h, w, h, [3]);
-    ctx.moveTo(pos[0] - 10, pos[1] - 15);
-    ctx.lineTo(pos[0] + 10, pos[1] - 15);
-    ctx.lineTo(pos[0], pos[1] - 5);
+    ctx.roundRect(pos2[0] - w * 0.5, pos2[1] - 15 - h, w, h, [3]);
+    ctx.moveTo(pos2[0] - 10, pos2[1] - 15);
+    ctx.lineTo(pos2[0] + 10, pos2[1] - 15);
+    ctx.lineTo(pos2[0], pos2[1] - 5);
     ctx.fill();
     ctx.shadowColor = "transparent";
     ctx.textAlign = "center";
     ctx.fillStyle = "#CEC";
-    ctx.fillText(text, pos[0], pos[1] - 15 - h * 0.3);
+    ctx.fillText(text, pos2[0], pos2[1] - 15 - h * 0.3);
   }
   /**
    * Draws the shape of the given node on the canvas
@@ -46036,9 +46036,9 @@ var LGraphCanvas = class _LGraphCanvas {
   drawSnapGuide(ctx, item, shape = RenderShape.ROUND) {
     const snapGuide = _LGraphCanvas.#temp;
     snapGuide.set(item.boundingRect);
-    const { pos } = item;
-    const offsetX = pos[0] - snapGuide[0];
-    const offsetY = pos[1] - snapGuide[1];
+    const { pos: pos2 } = item;
+    const offsetX = pos2[0] - snapGuide[0];
+    const offsetY = pos2[1] - snapGuide[1];
     snapGuide[0] += offsetX;
     snapGuide[1] += offsetY;
     if (this.#snapToGrid) snapPoint(snapGuide, this.#snapToGrid);
@@ -46303,7 +46303,7 @@ var LGraphCanvas = class _LGraphCanvas {
     if (linkSegment) linkSegment.path = path;
     const innerA = _LGraphCanvas.#lTempA;
     const innerB = _LGraphCanvas.#lTempB;
-    const pos = linkSegment?._pos ?? [0, 0];
+    const pos2 = linkSegment?._pos ?? [0, 0];
     for (let i = 0; i < num_sublines; i++) {
       const offsety = (i - (num_sublines - 1) * 0.5) * 5;
       innerA[0] = a[0];
@@ -46332,13 +46332,13 @@ var LGraphCanvas = class _LGraphCanvas {
           b[0],
           b[1] + offsety
         );
-        findPointOnCurve(pos, a, b, innerA, innerB, 0.5);
+        findPointOnCurve(pos2, a, b, innerA, innerB, 0.5);
         if (linkSegment && this.linkMarkerShape === LinkMarkerShape.Arrow) {
           const justPastCentre = _LGraphCanvas.#lTempC;
           findPointOnCurve(justPastCentre, a, b, innerA, innerB, 0.51);
           linkSegment._centreAngle = Math.atan2(
-            justPastCentre[1] - pos[1],
-            justPastCentre[0] - pos[0]
+            justPastCentre[1] - pos2[1],
+            justPastCentre[0] - pos2[0]
           );
         }
       } else {
@@ -46376,8 +46376,8 @@ var LGraphCanvas = class _LGraphCanvas {
           path.lineTo(innerA[0], innerA[1] + offsety);
           path.lineTo(innerB[0], innerB[1] + offsety);
           path.lineTo(b[0], b[1] + offsety);
-          pos[0] = (innerA[0] + innerB[0]) * 0.5;
-          pos[1] = (innerA[1] + innerB[1]) * 0.5;
+          pos2[0] = (innerA[0] + innerB[0]) * 0.5;
+          pos2[1] = (innerA[1] + innerB[1]) * 0.5;
           if (linkSegment && this.linkMarkerShape === LinkMarkerShape.Arrow) {
             linkSegment._centreAngle = Math.atan2(
               innerB[1] - innerA[1],
@@ -46392,8 +46392,8 @@ var LGraphCanvas = class _LGraphCanvas {
           path.lineTo(midX, innerB[1]);
           path.lineTo(innerB[0], innerB[1]);
           path.lineTo(b[0], b[1]);
-          pos[0] = midX;
-          pos[1] = (innerA[1] + innerB[1]) * 0.5;
+          pos2[0] = midX;
+          pos2[1] = (innerA[1] + innerB[1]) * 0.5;
           if (linkSegment && this.linkMarkerShape === LinkMarkerShape.Arrow) {
             const diff = innerB[1] - innerA[1];
             if (Math.abs(diff) < 4) linkSegment._centreAngle = 0;
@@ -46447,14 +46447,14 @@ var LGraphCanvas = class _LGraphCanvas {
       ctx.beginPath();
       if (this.linkMarkerShape === LinkMarkerShape.Arrow) {
         const transform = ctx.getTransform();
-        ctx.translate(pos[0], pos[1]);
+        ctx.translate(pos2[0], pos2[1]);
         if (linkSegment._centreAngle) ctx.rotate(linkSegment._centreAngle);
         ctx.moveTo(-3.2, -5);
         ctx.lineTo(7, 0);
         ctx.lineTo(-3.2, 5);
         ctx.setTransform(transform);
       } else if (this.linkMarkerShape == null || this.linkMarkerShape === LinkMarkerShape.Circle) {
-        ctx.arc(pos[0], pos[1], 5, 0, Math.PI * 2);
+        ctx.arc(pos2[0], pos2[1], 5, 0, Math.PI * 2);
       }
       if (disabled) {
         const { fillStyle, globalAlpha } = ctx;
@@ -46474,8 +46474,8 @@ var LGraphCanvas = class _LGraphCanvas {
         ctx.font = "16px Arial";
         const text = String(linkSegment.id);
         const { width: width2, actualBoundingBoxAscent } = ctx.measureText(text);
-        const x2 = pos[0] - width2 * 0.5;
-        const y = pos[1] + actualBoundingBoxAscent * 0.5;
+        const x2 = pos2[0] - width2 * 0.5;
+        const y = pos2[1] + actualBoundingBoxAscent * 0.5;
         ctx.strokeText(text, x2, y);
         ctx.fillText(text, x2, y);
         ctx.font = font;
@@ -46635,12 +46635,12 @@ var LGraphCanvas = class _LGraphCanvas {
   showLinkMenu(segment, e2) {
     const { graph } = this;
     if (!graph) throw new NullGraphError();
-    const title = "data" in segment && segment.data != null ? segment.data.constructor.name : void 0;
+    const title2 = "data" in segment && segment.data != null ? segment.data.constructor.name : void 0;
     const { origin_id, origin_slot } = segment;
     if (origin_id == null || origin_slot == null) {
       new LiteGraph.ContextMenu(["Link has no origin"], {
         event: e2,
-        title
+        title: title2
       });
       return false;
     }
@@ -46649,7 +46649,7 @@ var LGraphCanvas = class _LGraphCanvas {
     const options = ["Add Node", "Add Reroute", null, "Delete", null];
     const menu = new LiteGraph.ContextMenu(options, {
       event: e2,
-      title,
+      title: title2,
       callback: inner_clicked.bind(this)
     });
     return false;
@@ -46955,13 +46955,13 @@ var LGraphCanvas = class _LGraphCanvas {
     }
   }
   // refactor: there are different dialogs, some uses createDialog some dont
-  prompt(title, value, callback, event, multiline) {
+  prompt(title2, value2, callback2, event2, multiline2) {
     const that = this;
-    title = title || "";
+    title2 = title2 || "";
     const customProperties = {
       is_modified: false,
       className: "graphdialog rounded",
-      innerHTML: multiline ? "<span class='name'></span> <textarea autofocus class='value'></textarea><button class='rounded'>OK</button>" : "<span class='name'></span> <input autofocus type='text' class='value'/><button class='rounded'>OK</button>",
+      innerHTML: multiline2 ? "<span class='name'></span> <textarea autofocus class='value'></textarea><button class='rounded'>OK</button>" : "<span class='name'></span> <input autofocus type='text' class='value'/><button class='rounded'>OK</button>",
       close() {
         that.prompt_box = null;
         if (dialog.parentNode) {
@@ -47011,10 +47011,10 @@ var LGraphCanvas = class _LGraphCanvas {
     this.prompt_box = dialog;
     const name_element = dialog.querySelector(".name");
     if (!name_element) throw new TypeError("name_element was null");
-    name_element.textContent = title;
+    name_element.textContent = title2;
     const value_element = dialog.querySelector(".value");
     if (!value_element) throw new TypeError("value_element was null");
-    value_element.value = value;
+    value_element.value = value2;
     value_element.select();
     const input = value_element;
     input.addEventListener("keydown", function(e2) {
@@ -47022,8 +47022,8 @@ var LGraphCanvas = class _LGraphCanvas {
       if (e2.key == "Escape") {
         dialog.close();
       } else if (e2.key == "Enter" && e2.target.localName != "textarea") {
-        if (callback) {
-          callback(this.value);
+        if (callback2) {
+          callback2(this.value);
         }
         dialog.close();
       } else {
@@ -47035,7 +47035,7 @@ var LGraphCanvas = class _LGraphCanvas {
     const button = dialog.querySelector("button");
     if (!button) throw new TypeError("button was null when opening prompt");
     button.addEventListener("click", function() {
-      callback?.(input.value);
+      callback2?.(input.value);
       that.setDirty(true);
       dialog.close();
     });
@@ -47046,9 +47046,9 @@ var LGraphCanvas = class _LGraphCanvas {
       offsetx -= rect.left;
       offsety -= rect.top;
     }
-    if (event) {
-      dialog.style.left = `${event.clientX + offsetx}px`;
-      dialog.style.top = `${event.clientY + offsety}px`;
+    if (event2) {
+      dialog.style.left = `${event2.clientX + offsetx}px`;
+      dialog.style.top = `${event2.clientY + offsety}px`;
     } else {
       dialog.style.left = `${canvas2.width * 0.5 + offsetx}px`;
       dialog.style.top = `${canvas2.height * 0.5 + offsety}px`;
@@ -47068,7 +47068,7 @@ var LGraphCanvas = class _LGraphCanvas {
     }, 10);
     return dialog;
   }
-  showSearchBox(event, searchOptions) {
+  showSearchBox(event2, searchOptions) {
     const options = {
       slot_from: null,
       node_from: null,
@@ -47247,12 +47247,12 @@ var LGraphCanvas = class _LGraphCanvas {
       }
     }
     const rect = canvas2.getBoundingClientRect();
-    const left = (event ? event.clientX : rect.left + rect.width * 0.5) - 80;
-    const top = (event ? event.clientY : rect.top + rect.height * 0.5) - 20;
+    const left = (event2 ? event2.clientX : rect.left + rect.width * 0.5) - 80;
+    const top = (event2 ? event2.clientY : rect.top + rect.height * 0.5) - 20;
     dialog.style.left = `${left}px`;
     dialog.style.top = `${top}px`;
-    if (event.layerY > rect.height - 200) {
-      helper.style.maxHeight = `${rect.height - event.layerY - 20}px`;
+    if (event2.layerY > rect.height - 200) {
+      helper.style.maxHeight = `${rect.height - event2.layerY - 20}px`;
     }
     requestAnimationFrame(function() {
       input.focus();
@@ -47261,13 +47261,13 @@ var LGraphCanvas = class _LGraphCanvas {
     function select(name) {
       if (name) {
         if (that.onSearchBoxSelection) {
-          that.onSearchBoxSelection(name, event, graphcanvas);
+          that.onSearchBoxSelection(name, event2, graphcanvas);
         } else {
           if (!graphcanvas.graph) throw new NullGraphError();
           graphcanvas.graph.beforeChange();
           const node2 = LiteGraph.createNode(name);
           if (node2) {
-            node2.pos = graphcanvas.convertEventToCanvasOffset(event);
+            node2.pos = graphcanvas.convertEventToCanvasOffset(event2);
             graphcanvas.graph.add(node2, false);
           }
           if (options.node_from) {
@@ -47525,21 +47525,21 @@ var LGraphCanvas = class _LGraphCanvas {
       setValue(input?.value);
     }
     const dirty = () => this.#dirty();
-    function setValue(value) {
-      if (info?.values && typeof info.values === "object" && info.values[value] != void 0) {
-        value = info.values[value];
+    function setValue(value2) {
+      if (info?.values && typeof info.values === "object" && info.values[value2] != void 0) {
+        value2 = info.values[value2];
       }
       if (typeof node2.properties[property] == "number") {
-        value = Number(value);
+        value2 = Number(value2);
       }
       if (type == "array" || type == "object") {
-        value = JSON.parse(value);
+        value2 = JSON.parse(value2);
       }
-      node2.properties[property] = value;
+      node2.properties[property] = value2;
       if (node2.graph) {
         node2.graph._version++;
       }
-      node2.onPropertyChanged?.(property, value);
+      node2.onPropertyChanged?.(property, value2);
       options.onclose?.();
       dialog.close();
       dirty();
@@ -47638,7 +47638,7 @@ var LGraphCanvas = class _LGraphCanvas {
     }
     return dialog;
   }
-  createPanel(title, options) {
+  createPanel(title2, options) {
     options = options || {};
     const ref_window = options.window || window;
     const root = document.createElement("div");
@@ -47659,7 +47659,7 @@ var LGraphCanvas = class _LGraphCanvas {
       root.header.append(close);
     }
     root.title_element = root.querySelector(".dialog-title");
-    root.title_element.textContent = title;
+    root.title_element.textContent = title2;
     root.content = root.querySelector(".dialog-content");
     root.alt_content = root.querySelector(".dialog-alt-content");
     root.footer = root.querySelector(".dialog-footer");
@@ -47701,12 +47701,12 @@ var LGraphCanvas = class _LGraphCanvas {
       else root.content.append(elem);
       return elem;
     };
-    root.addButton = function(name, callback, options2) {
+    root.addButton = function(name, callback2, options2) {
       const elem = document.createElement("button");
       elem.textContent = name;
       elem.options = options2;
       elem.classList.add("btn");
-      elem.addEventListener("click", callback);
+      elem.addEventListener("click", callback2);
       root.footer.append(elem);
       return elem;
     };
@@ -47715,11 +47715,11 @@ var LGraphCanvas = class _LGraphCanvas {
       elem.className = "separator";
       root.content.append(elem);
     };
-    root.addWidget = function(type, name, value, options2, callback) {
+    root.addWidget = function(type, name, value2, options2, callback2) {
       options2 = options2 || {};
-      let str_value = String(value);
+      let str_value = String(value2);
       type = type.toLowerCase();
-      if (type == "number" && typeof value === "number") str_value = value.toFixed(3);
+      if (type == "number" && typeof value2 === "number") str_value = value2.toFixed(3);
       const elem = document.createElement("div");
       elem.className = "property";
       elem.innerHTML = "<span class='property_name'></span><span class='property_value'></span>";
@@ -47732,14 +47732,14 @@ var LGraphCanvas = class _LGraphCanvas {
       elem.dataset["property"] = name;
       elem.dataset["type"] = options2.type || type;
       elem.options = options2;
-      elem.value = value;
+      elem.value = value2;
       if (type == "code") {
         elem.addEventListener("click", function() {
           root.inner_showCodePad(this.dataset["property"]);
         });
       } else if (type == "boolean") {
         elem.classList.add("boolean");
-        if (value) elem.classList.add("bool-on");
+        if (value2) elem.classList.add("bool-on");
         elem.addEventListener("click", () => {
           const propname = elem.dataset["property"];
           elem.value = !elem.value;
@@ -47765,10 +47765,10 @@ var LGraphCanvas = class _LGraphCanvas {
           innerChange(propname, v2);
         });
       } else if (type == "enum" || type == "combo") {
-        const str_value2 = _LGraphCanvas.getPropertyPrintableValue(value, options2.values);
+        const str_value2 = _LGraphCanvas.getPropertyPrintableValue(value2, options2.values);
         if (!value_element) throw new TypeError("Property name element was null.");
         value_element.textContent = str_value2 ?? "";
-        value_element.addEventListener("click", function(event) {
+        value_element.addEventListener("click", function(event2) {
           const values = options2.values || [];
           const propname = this.parentElement?.dataset["property"];
           const inner_clicked = (v2) => {
@@ -47779,7 +47779,7 @@ var LGraphCanvas = class _LGraphCanvas {
           new LiteGraph.ContextMenu(
             values,
             {
-              event,
+              event: event2,
               className: "dark",
               callback: inner_clicked
             },
@@ -47789,9 +47789,9 @@ var LGraphCanvas = class _LGraphCanvas {
         });
       }
       root.content.append(elem);
-      function innerChange(name2, value2) {
-        options2.callback?.(name2, value2, options2);
-        callback?.(name2, value2, options2);
+      function innerChange(name2, value22) {
+        options2.callback?.(name2, value22, options2);
+        callback2?.(name2, value22, options2);
       }
       return elem;
     };
@@ -47825,35 +47825,35 @@ var LGraphCanvas = class _LGraphCanvas {
       panel.content.innerHTML = "";
       panel.addHTML(`<span class='node_type'>${node2.type}</span><span class='node_desc'>${node2.constructor.desc || ""}</span><span class='separator'></span>`);
       panel.addHTML("<h3>Properties</h3>");
-      const fUpdate = (name, value) => {
+      const fUpdate = (name, value2) => {
         if (!this.graph) throw new NullGraphError();
         this.graph.beforeChange(node2);
         switch (name) {
           case "Title":
-            if (typeof value !== "string") throw new TypeError("Attempting to set title to non-string value.");
-            node2.title = value;
+            if (typeof value2 !== "string") throw new TypeError("Attempting to set title to non-string value.");
+            node2.title = value2;
             break;
           case "Mode": {
-            if (typeof value !== "string") throw new TypeError("Attempting to set mode to non-string value.");
-            const kV = Object.values(LiteGraph.NODE_MODES).indexOf(value);
+            if (typeof value2 !== "string") throw new TypeError("Attempting to set mode to non-string value.");
+            const kV = Object.values(LiteGraph.NODE_MODES).indexOf(value2);
             if (kV !== -1 && LiteGraph.NODE_MODES[kV]) {
               node2.changeMode(kV);
             } else {
-              console.warn(`unexpected mode: ${value}`);
+              console.warn(`unexpected mode: ${value2}`);
             }
             break;
           }
           case "Color":
-            if (typeof value !== "string") throw new TypeError("Attempting to set colour to non-string value.");
-            if (_LGraphCanvas.node_colors[value]) {
-              node2.color = _LGraphCanvas.node_colors[value].color;
-              node2.bgcolor = _LGraphCanvas.node_colors[value].bgcolor;
+            if (typeof value2 !== "string") throw new TypeError("Attempting to set colour to non-string value.");
+            if (_LGraphCanvas.node_colors[value2]) {
+              node2.color = _LGraphCanvas.node_colors[value2].color;
+              node2.bgcolor = _LGraphCanvas.node_colors[value2].bgcolor;
             } else {
-              console.warn(`unexpected color: ${value}`);
+              console.warn(`unexpected color: ${value2}`);
             }
             break;
           default:
-            node2.setProperty(name, value);
+            node2.setProperty(name, value2);
             break;
         }
         this.graph.afterChange();
@@ -47867,10 +47867,10 @@ var LGraphCanvas = class _LGraphCanvas {
       }) : "";
       panel.addWidget("combo", "Color", nodeCol, { values: Object.keys(_LGraphCanvas.node_colors) }, fUpdate);
       for (const pName in node2.properties) {
-        const value = node2.properties[pName];
+        const value2 = node2.properties[pName];
         const info = node2.getPropertyInfo(pName);
         if (node2.onAddPropertyToPanel?.(pName, panel)) continue;
-        panel.addWidget(info.widget || info.type, pName, value, info, fUpdate);
+        panel.addWidget(info.widget || info.type, pName, value2, info, fUpdate);
       }
       panel.addSeparator();
       node2.onShowCustomPanelInfo?.(panel);
@@ -48084,19 +48084,19 @@ var LGraphCanvas = class _LGraphCanvas {
     console.warn("LGraphCanvas.getGroupMenuOptions is deprecated, use LGraphGroup.getMenuOptions instead");
     return group.getMenuOptions();
   }
-  processContextMenu(node2, event) {
+  processContextMenu(node2, event2) {
     const canvas2 = _LGraphCanvas.active_canvas;
     const ref_window = canvas2.getCanvasWindow();
     let menu_info;
     const options = {
-      event,
+      event: event2,
       callback: inner_option_clicked,
       extra: node2
     };
     if (node2) {
       options.title = node2.displayType ?? node2.type ?? void 0;
       _LGraphCanvas.active_node = node2;
-      const slot = node2.getSlotInPosition(event.canvasX, event.canvasY);
+      const slot = node2.getSlotInPosition(event2.canvasX, event2.canvasY);
       if (slot) {
         menu_info = [];
         if (node2.getSlotMenuOptions) {
@@ -48131,7 +48131,7 @@ var LGraphCanvas = class _LGraphCanvas {
       menu_info = this.getCanvasMenuOptions();
       if (!this.graph) throw new NullGraphError();
       if (this.links_render_mode !== LinkRenderType.HIDDEN_LINK) {
-        const reroute = this.graph.getRerouteOnPos(event.canvasX, event.canvasY, this.#visibleReroutes);
+        const reroute = this.graph.getRerouteOnPos(event2.canvasX, event2.canvasY, this.#visibleReroutes);
         if (reroute) {
           menu_info.unshift({
             content: "Delete Reroute",
@@ -48143,8 +48143,8 @@ var LGraphCanvas = class _LGraphCanvas {
         }
       }
       const group = this.graph.getGroupOnPos(
-        event.canvasX,
-        event.canvasY
+        event2.canvasX,
+        event2.canvasY
       );
       if (group) {
         menu_info.push(null, {
@@ -48253,12 +48253,12 @@ var LGraphCanvas = class _LGraphCanvas {
 };
 var MapProxyHandler = class {
   getOwnPropertyDescriptor(target, p) {
-    const value = this.get(target, p);
-    if (value) {
+    const value2 = this.get(target, p);
+    if (value2) {
       return {
         configurable: true,
         enumerable: true,
-        value
+        value: value2
       };
     }
   }
@@ -48409,15 +48409,15 @@ var LGraph = class _LGraph {
   get last_node_id() {
     return this.state.lastNodeId;
   }
-  set last_node_id(value) {
-    this.state.lastNodeId = value;
+  set last_node_id(value2) {
+    this.state.lastNodeId = value2;
   }
   /** @deprecated See {@link state}.{@link LGraphState.lastLinkId lastLinkId} */
   get last_link_id() {
     return this.state.lastLinkId;
   }
-  set last_link_id(value) {
-    this.state.lastLinkId = value;
+  set last_link_id(value2) {
+    this.state.lastLinkId = value2;
   }
   _input_nodes;
   /**
@@ -48515,8 +48515,8 @@ var LGraph = class _LGraph {
     canvas2.graph = null;
     const canvases = this.list_of_graphcanvas;
     if (canvases) {
-      const pos = canvases.indexOf(canvas2);
-      if (pos !== -1) canvases.splice(pos, 1);
+      const pos2 = canvases.indexOf(canvas2);
+      if (pos2 !== -1) canvases.splice(pos2, 1);
     }
   }
   /**
@@ -48913,8 +48913,8 @@ var LGraph = class _LGraph {
         canvas2.deselect(node2);
       }
     }
-    const pos = this._nodes.indexOf(node2);
-    if (pos != -1) this._nodes.splice(pos, 1);
+    const pos2 = this._nodes.indexOf(node2);
+    if (pos2 != -1) this._nodes.splice(pos2, 1);
     delete this._nodes_by_id[node2.id];
     this.onNodeRemoved?.(node2);
     this.canvasAction((c) => c.checkPanels());
@@ -48966,10 +48966,10 @@ var LGraph = class _LGraph {
    * @param title the name of the node to search
    * @returns the node or null
    */
-  findNodeByTitle(title) {
+  findNodeByTitle(title2) {
     const { _nodes } = this;
     for (const node2 of _nodes) {
-      if (node2.title == title)
+      if (node2.title == title2)
         return node2;
     }
     return null;
@@ -48979,11 +48979,11 @@ var LGraph = class _LGraph {
    * @param title the name of the node to search
    * @returns a list with all the nodes with this name
    */
-  findNodesByTitle(title) {
+  findNodesByTitle(title2) {
     const result = [];
     const { _nodes } = this;
     for (const node2 of _nodes) {
-      if (node2.title == title)
+      if (node2.title == title2)
         result.push(node2);
     }
     return result;
@@ -49085,10 +49085,10 @@ var LGraph = class _LGraph {
     this.onTrigger?.(action, param);
   }
   /** @todo Clean up - never implemented. */
-  triggerInput(name, value) {
+  triggerInput(name, value2) {
     const nodes = this.findNodesByTitle(name);
     for (const node2 of nodes) {
-      node2.onTrigger(value);
+      node2.onTrigger(value2);
     }
   }
   /** @todo Clean up - never implemented. */
@@ -49172,11 +49172,11 @@ var LGraph = class _LGraph {
    * Creates the object if it does not exist.
    * @param serialisedReroute See {@link SerialisableReroute}
    */
-  setReroute({ id, parentId, pos, linkIds, floating }) {
+  setReroute({ id, parentId, pos: pos2, linkIds, floating }) {
     id ??= ++this.state.lastRerouteId;
     if (id > this.state.lastRerouteId) this.state.lastRerouteId = id;
     const reroute = this.reroutes.get(id) ?? new Reroute(id, this);
-    reroute.update(parentId, pos, linkIds, floating);
+    reroute.update(parentId, pos2, linkIds, floating);
     this.reroutes.set(id, reroute);
     return reroute;
   }
@@ -49187,11 +49187,11 @@ var LGraph = class _LGraph {
    * going from the node output to input.
    * @returns The newly created reroute - typically ignored.
    */
-  createReroute(pos, before) {
+  createReroute(pos2, before) {
     const rerouteId = ++this.state.lastRerouteId;
     const linkIds = before instanceof Reroute ? before.linkIds : [before.id];
     const floatingLinkIds = before instanceof Reroute ? before.floatingLinkIds : [before.id];
-    const reroute = new Reroute(rerouteId, this, pos, before.parentId, linkIds, floatingLinkIds);
+    const reroute = new Reroute(rerouteId, this, pos2, before.parentId, linkIds, floatingLinkIds);
     this.reroutes.set(rerouteId, reroute);
     for (const linkId of linkIds) {
       const link = this._links.get(linkId);
@@ -49640,15 +49640,15 @@ var LGraph = class _LGraph {
   set primaryCanvas(canvas2) {
     this.rootGraph.#canvas = canvas2;
   }
-  load(url, callback) {
+  load(url, callback2) {
     const that = this;
     if (url instanceof Blob || url instanceof File) {
       const reader = new FileReader();
-      reader.addEventListener("load", function(event) {
-        const result = stringOrEmpty(event.target?.result);
+      reader.addEventListener("load", function(event2) {
+        const result = stringOrEmpty(event2.target?.result);
         const data = JSON.parse(result);
         that.configure(data);
-        callback?.();
+        callback2?.();
       });
       reader.readAsText(url);
       return;
@@ -49663,7 +49663,7 @@ var LGraph = class _LGraph {
       }
       const data = JSON.parse(req.response);
       that.configure(data);
-      callback?.();
+      callback2?.();
     });
     req.addEventListener("error", (err) => {
       console.error("Error loading graph:", err);
@@ -49719,8 +49719,8 @@ var Subgraph = class _Subgraph extends LGraph {
     }
     if (widgets) {
       this.widgets.length = 0;
-      for (const widget of widgets) {
-        this.widgets.push(widget);
+      for (const widget2 of widgets) {
+        this.widgets.push(widget2);
       }
     }
     this.inputNode.configure(data.inputNode);
@@ -50057,12 +50057,12 @@ var ContextMenu = class _ContextMenu {
       root.append(element);
     }
     for (let i = 0; i < values.length; i++) {
-      const value = values[i];
-      let name = Array.isArray(values) ? value : String(i);
+      const value2 = values[i];
+      let name = Array.isArray(values) ? value2 : String(i);
       if (typeof name !== "string") {
         name = name != null ? name.content === void 0 ? String(name) : name.content : name;
       }
-      this.addItem(name, value, options);
+      this.addItem(name, value2, options);
     }
     const ownerDocument = options.event?.target?.ownerDocument;
     const root_document = ownerDocument || document;
@@ -50106,38 +50106,38 @@ var ContextMenu = class _ContextMenu {
     visited.add(this);
     return this.current_submenu?.containsNode(node2, visited) || this.root.contains(node2);
   }
-  addItem(name, value, options) {
+  addItem(name, value2, options) {
     options ||= {};
     const element = document.createElement("div");
     element.className = "litemenu-entry submenu";
     let disabled = false;
-    if (value === null) {
+    if (value2 === null) {
       element.classList.add("separator");
     } else {
       const innerHtml = name === null ? "" : String(name);
-      if (typeof value === "string") {
+      if (typeof value2 === "string") {
         element.innerHTML = innerHtml;
       } else {
-        element.innerHTML = value?.title ?? innerHtml;
-        if (value.disabled) {
+        element.innerHTML = value2?.title ?? innerHtml;
+        if (value2.disabled) {
           disabled = true;
           element.classList.add("disabled");
           element.setAttribute("aria-disabled", "true");
         }
-        if (value.submenu || value.has_submenu) {
+        if (value2.submenu || value2.has_submenu) {
           element.classList.add("has_submenu");
           element.setAttribute("aria-haspopup", "true");
           element.setAttribute("aria-expanded", "false");
         }
-        if (value.className) element.className += ` ${value.className}`;
+        if (value2.className) element.className += ` ${value2.className}`;
       }
-      element.value = value;
+      element.value = value2;
       element.setAttribute("role", "menuitem");
-      if (typeof value === "function") {
+      if (typeof value2 === "function") {
         element.dataset["value"] = String(name);
-        element.onclick_callback = value;
+        element.onclick_callback = value2;
       } else {
-        element.dataset["value"] = String(value);
+        element.dataset["value"] = String(value2);
       }
     }
     this.root.append(element);
@@ -50154,23 +50154,23 @@ var ContextMenu = class _ContextMenu {
       element.setAttribute("aria-expanded", "true");
     };
     function inner_over(e2) {
-      const value2 = this.value;
-      if (!value2 || !value2.has_submenu) return;
+      const value22 = this.value;
+      if (!value22 || !value22.has_submenu) return;
       inner_onclick.call(this, e2);
       setAriaExpanded();
     }
     const that = this;
     function inner_onclick(e2) {
-      const value2 = this.value;
+      const value22 = this.value;
       let close_parent = true;
       that.current_submenu?.close(e2);
-      if (value2?.has_submenu || value2?.submenu) {
+      if (value22?.has_submenu || value22?.submenu) {
         setAriaExpanded();
       }
       if (options.callback) {
         const r = options.callback.call(
           this,
-          value2,
+          value22,
           options,
           e2,
           that,
@@ -50178,11 +50178,11 @@ var ContextMenu = class _ContextMenu {
         );
         if (r === true) close_parent = false;
       }
-      if (typeof value2 === "object") {
-        if (value2.callback && !options.ignore_item_callbacks && value2.disabled !== true) {
-          const r = value2.callback.call(
+      if (typeof value22 === "object") {
+        if (value22.callback && !options.ignore_item_callbacks && value22.disabled !== true) {
+          const r = value22.callback.call(
             this,
-            value2,
+            value22,
             options,
             e2,
             that,
@@ -50190,15 +50190,15 @@ var ContextMenu = class _ContextMenu {
           );
           if (r === true) close_parent = false;
         }
-        if (value2.submenu) {
-          if (!value2.submenu.options) throw "ContextMenu submenu needs options";
-          new that.constructor(value2.submenu.options, {
-            callback: value2.submenu.callback,
+        if (value22.submenu) {
+          if (!value22.submenu.options) throw "ContextMenu submenu needs options";
+          new that.constructor(value22.submenu.options, {
+            callback: value22.submenu.callback,
             event: e2,
             parentMenu: that,
-            ignore_item_callbacks: value2.submenu.ignore_item_callbacks,
-            title: value2.submenu.title,
-            extra: value2.submenu.extra,
+            ignore_item_callbacks: value22.submenu.ignore_item_callbacks,
+            title: value22.submenu.title,
+            extra: value22.submenu.extra,
             autoopen: options.autoopen
           });
           close_parent = false;
@@ -50242,9 +50242,9 @@ var ContextMenu = class _ContextMenu {
     return this.options.parentMenu ? this.options.parentMenu.getFirstEvent() : this.options.event;
   }
   /** @deprecated Unused. */
-  static isCursorOverElement(event, element) {
-    const left = event.clientX;
-    const top = event.clientY;
+  static isCursorOverElement(event2, element) {
+    const left = event2.clientX;
+    const top = event2.clientY;
     const rect = element.getBoundingClientRect();
     if (!rect) return false;
     if (top > rect.top && top < rect.top + rect.height && left > rect.left && left < rect.left + rect.width) {
@@ -50327,9 +50327,9 @@ var CurveEditor = class {
     const h = this.size[1] - this.margin * 2;
     const x2 = localpos[0] - this.margin;
     const y = localpos[1] - this.margin;
-    const pos = [x2, y];
+    const pos2 = [x2, y];
     const max_dist = 30 / graphcanvas.ds.scale;
-    this.selected = this.getCloserPoint(pos, max_dist);
+    this.selected = this.getCloserPoint(pos2, max_dist);
     if (this.selected == -1) {
       const point = [x2 / w, 1 - y / h];
       points.push(point);
@@ -50378,7 +50378,7 @@ var CurveEditor = class {
     this.selected = -1;
     return false;
   }
-  getCloserPoint(pos, max_dist) {
+  getCloserPoint(pos2, max_dist) {
     const points = this.points;
     if (!points) return -1;
     max_dist = max_dist || 30;
@@ -50393,7 +50393,7 @@ var CurveEditor = class {
       const p = points[i];
       p2[0] = p[0] * w;
       p2[1] = (1 - p[1]) * h;
-      const dist = distance(pos, p2);
+      const dist = distance(pos2, p2);
       if (dist > min_dist || dist > max_dist) continue;
       closest = i;
       min_dist = dist;
@@ -50691,8 +50691,8 @@ var LiteGraphGlobal = class {
     base_class.type = type;
     if (this.debug) console.log("Node registered:", type);
     const classname = base_class.name;
-    const pos = type.lastIndexOf("/");
-    base_class.category = type.substring(0, pos);
+    const pos2 = type.lastIndexOf("/");
+    base_class.category = type.substring(0, pos2);
     base_class.title ||= classname;
     for (const i in LGraphNode.prototype) {
       base_class.prototype[i] ||= LGraphNode.prototype[i];
@@ -50766,26 +50766,26 @@ var LiteGraphGlobal = class {
    * @param title a name to distinguish from other nodes
    * @param options to set options
    */
-  createNode(type, title, options) {
+  createNode(type, title2, options) {
     const base_class = this.registered_node_types[type];
     if (!base_class) {
       if (this.debug) console.log(`GraphNode type "${type}" not registered.`);
       return null;
     }
-    title = title || base_class.title || type;
+    title2 = title2 || base_class.title || type;
     let node2 = null;
     if (this.catch_exceptions) {
       try {
-        node2 = new base_class(title);
+        node2 = new base_class(title2);
       } catch (error) {
         console.error(error);
         return null;
       }
     } else {
-      node2 = new base_class(title);
+      node2 = new base_class(title2);
     }
     node2.type = type;
-    if (!node2.title && title) node2.title = title;
+    if (!node2.title && title2) node2.title = title2;
     node2.properties ||= {};
     node2.properties_info ||= [];
     node2.flags ||= {};
@@ -51050,16 +51050,16 @@ var LiteGraphGlobal = class {
     }
     hex = hex.toUpperCase();
     const hex_alphabets = "0123456789ABCDEF";
-    const value = new Array(3);
+    const value2 = new Array(3);
     let k = 0;
     let int1, int2;
     for (let i = 0; i < 6; i += 2) {
       int1 = hex_alphabets.indexOf(hex.charAt(i));
       int2 = hex_alphabets.indexOf(hex.charAt(i + 1));
-      value[k] = int1 * 16 + int2;
+      value2[k] = int1 * 16 + int2;
       k++;
     }
-    return value;
+    return value2;
   }
   // Give a array with three values as the argument and the function will return
   // the corresponding hex triplet.
@@ -51165,8 +51165,8 @@ function loadPolyfills() {
   }
   if (typeof window != "undefined" && !window["requestAnimationFrame"]) {
     window.requestAnimationFrame = // @ts-expect-error Legacy code
-    window.webkitRequestAnimationFrame || window.mozRequestAnimationFrame || function(callback) {
-      window.setTimeout(callback, 1e3 / 60);
+    window.webkitRequestAnimationFrame || window.mozRequestAnimationFrame || function(callback2) {
+      window.setTimeout(callback2, 1e3 / 60);
     };
   }
 }
@@ -51277,13 +51277,13 @@ var ExecutableNodeDTO = class {
       if (!subgraphNodeInput) throw new SlotIndexError(`No input found for slot [${link.origin_slot}] ${input.name}`);
       const linkId = subgraphNodeInput.link;
       if (linkId == null) {
-        const widget = subgraphNode.getWidgetFromSlot(subgraphNodeInput);
-        if (!widget) return;
+        const widget2 = subgraphNode.getWidgetFromSlot(subgraphNodeInput);
+        if (!widget2) return;
         return {
           node: this,
           origin_id: this.id,
           origin_slot: -1,
-          widgetInfo: { value: widget.value }
+          widgetInfo: { value: widget2.value }
         };
       }
       const outerLink = subgraphNode.graph.getLink(linkId);
@@ -51386,8 +51386,8 @@ var SubgraphNode = class extends LGraphNode {
       this.#addSubgraphInputListeners(subgraphInput, input);
     }, { signal });
     subgraphEvents.addEventListener("removing-input", (e2) => {
-      const widget = e2.detail.input._widget;
-      if (widget) this.ensureWidgetRemoved(widget);
+      const widget2 = e2.detail.input._widget;
+      if (widget2) this.ensureWidgetRemoved(widget2);
       this.removeInput(e2.detail.index);
       this.setDirtyCanvas(true, true);
     }, { signal });
@@ -51452,9 +51452,9 @@ var SubgraphNode = class extends LGraphNode {
       "input-connected",
       () => {
         if (input._widget) return;
-        const widget = subgraphInput._widget;
-        if (!widget) return;
-        this.#setWidget(subgraphInput, input, widget);
+        const widget2 = subgraphInput._widget;
+        if (!widget2) return;
+        this.#setWidget(subgraphInput, input, widget2);
       },
       { signal }
     );
@@ -51506,39 +51506,39 @@ var SubgraphNode = class extends LGraphNode {
           console.warn("Invalid resolved link", resolved, this);
           continue;
         }
-        const widget = resolved.inputNode.getWidgetFromSlot(resolved.input);
-        if (!widget) continue;
-        this.#setWidget(subgraphInput, input, widget);
+        const widget2 = resolved.inputNode.getWidgetFromSlot(resolved.input);
+        if (!widget2) continue;
+        this.#setWidget(subgraphInput, input, widget2);
         break;
       }
     }
   }
-  #setWidget(subgraphInput, input, widget) {
-    const promotedWidget = toConcreteWidget(widget, this).createCopyForNode(this);
+  #setWidget(subgraphInput, input, widget2) {
+    const promotedWidget = toConcreteWidget(widget2, this).createCopyForNode(this);
     Object.assign(promotedWidget, {
       get name() {
         return subgraphInput.name;
       },
-      set name(value) {
-        console.warn("Promoted widget: setting name is not allowed", this, value);
+      set name(value2) {
+        console.warn("Promoted widget: setting name is not allowed", this, value2);
       },
       get localized_name() {
         return subgraphInput.localized_name;
       },
-      set localized_name(value) {
-        console.warn("Promoted widget: setting localized_name is not allowed", this, value);
+      set localized_name(value2) {
+        console.warn("Promoted widget: setting localized_name is not allowed", this, value2);
       },
       get label() {
         return subgraphInput.label;
       },
-      set label(value) {
-        console.warn("Promoted widget: setting label is not allowed", this, value);
+      set label(value2) {
+        console.warn("Promoted widget: setting label is not allowed", this, value2);
       },
       get tooltip() {
-        return widget.tooltip;
+        return widget2.tooltip;
       },
-      set tooltip(value) {
-        console.warn("Promoted widget: setting tooltip is not allowed", this, value);
+      set tooltip(value2) {
+        console.warn("Promoted widget: setting tooltip is not allowed", this, value2);
       }
     });
     this.widgets.push(promotedWidget);
@@ -51621,22 +51621,22 @@ var SubgraphNode = class extends LGraphNode {
     return nodes;
   }
   removeWidgetByName(name) {
-    const widget = this.widgets.find((w) => w.name === name);
-    if (widget) {
-      this.subgraph.events.dispatch("widget-demoted", { widget, subgraphNode: this });
+    const widget2 = this.widgets.find((w) => w.name === name);
+    if (widget2) {
+      this.subgraph.events.dispatch("widget-demoted", { widget: widget2, subgraphNode: this });
     }
     super.removeWidgetByName(name);
   }
-  ensureWidgetRemoved(widget) {
-    if (this.widgets.includes(widget)) {
-      this.subgraph.events.dispatch("widget-demoted", { widget, subgraphNode: this });
+  ensureWidgetRemoved(widget2) {
+    if (this.widgets.includes(widget2)) {
+      this.subgraph.events.dispatch("widget-demoted", { widget: widget2, subgraphNode: this });
     }
-    super.ensureWidgetRemoved(widget);
+    super.ensureWidgetRemoved(widget2);
   }
   onRemoved() {
     this.#eventAbortController.abort();
-    for (const widget of this.widgets) {
-      this.subgraph.events.dispatch("widget-demoted", { widget, subgraphNode: this });
+    for (const widget2 of this.widgets) {
+      this.subgraph.events.dispatch("widget-demoted", { widget: widget2, subgraphNode: this });
     }
     for (const input of this.inputs) {
       input._listenerController?.abort();
@@ -51646,7 +51646,211 @@ var SubgraphNode = class extends LGraphNode {
 var LiteGraph = new LiteGraphGlobal();
 loadPolyfills();
 
-// ../src/features/workflowEditor/comfyHost/sarosisLiteGraphNodes.ts
+// src/features/workflowEditor/comfyNodeStyle.ts
+var FONT = 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif';
+var TEXT_FG = "#d0d0d0";
+var TEXT_MUTED = "#8a8a8a";
+function darkenColor(hex, factor) {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) {
+    return hex;
+  }
+  const n2 = parseInt(m[1], 16);
+  const r = Math.round((n2 >> 16 & 255) * factor);
+  const g = Math.round((n2 >> 8 & 255) * factor);
+  const b = Math.round((n2 & 255) * factor);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+function roundedRectPath(ctx, x2, y, w, h, r) {
+  const radius = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x2 + radius, y);
+  ctx.lineTo(x2 + w - radius, y);
+  ctx.quadraticCurveTo(x2 + w, y, x2 + w, y + radius);
+  ctx.lineTo(x2 + w, y + h - radius);
+  ctx.quadraticCurveTo(x2 + w, y + h, x2 + w - radius, y + h);
+  ctx.lineTo(x2 + radius, y + h);
+  ctx.quadraticCurveTo(x2, y + h, x2, y + h - radius);
+  ctx.lineTo(x2, y + radius);
+  ctx.quadraticCurveTo(x2, y, x2 + radius, y);
+  ctx.closePath();
+}
+function comfyTitleText(ctx, title_height, size, _scale) {
+  const [w] = size;
+  const fontSize = 11;
+  const padX = 8;
+  ctx.save();
+  ctx.textBaseline = "middle";
+  ctx.font = `${fontSize}px ${FONT}`;
+  ctx.fillStyle = "#8a8a8a";
+  const caret = this.collapsed ? "\u203A" : "\u2304";
+  ctx.fillText(caret, padX, -title_height / 2);
+  const caretW = ctx.measureText(caret).width + 6;
+  ctx.fillStyle = "#e6e6e6";
+  ctx.fillText(String(this.getTitle?.() ?? this.title ?? this.type ?? ""), padX + caretW, -title_height / 2);
+  ctx.restore();
+}
+function comfyDrawWidgets(ctx, _options) {
+  if (!this.widgets || this.collapsed) {
+    return;
+  }
+  const nodeWidth = this.size[0];
+  const titleBottom = 30;
+  const H = 22;
+  const isVisible = (w) => this.isWidgetVisible ? this.isWidgetVisible(w) : true;
+  let yCursor = titleBottom;
+  for (const widget2 of this.widgets) {
+    if (!widget2 || !isVisible(widget2)) {
+      continue;
+    }
+    widget2.y = yCursor;
+    widget2.last_y = widget2.y;
+    widget2.computedDisabled = !!widget2.disabled;
+    const cs = widget2.computeSize?.(nodeWidth);
+    const baseH = Array.isArray(cs) ? cs[1] : 0;
+    widget2.computedHeight = widget2.computedHeight ?? (baseH > 0 ? baseH + 4 : H + 4);
+    yCursor += widget2.computedHeight;
+  }
+  if (this.size[1] < yCursor + 8) {
+    const next = [this.size[0], yCursor + 8];
+    this.size = next;
+  }
+  ctx.save();
+  ctx.textBaseline = "middle";
+  for (const widget2 of this.widgets) {
+    if (!widget2 || !isVisible(widget2)) {
+      continue;
+    }
+    const y = widget2.y ?? 0;
+    const width2 = widget2.width || nodeWidth;
+    const wH = widget2.computedHeight ? Math.max(H, widget2.computedHeight) : H;
+    const label = widget2.label ?? widget2.name ?? "";
+    const type = widget2.type ?? "text";
+    const disabled = !!widget2.disabled || !!widget2.computedDisabled;
+    ctx.globalAlpha = disabled ? 0.45 : 1;
+    ctx.font = `11px ${FONT}`;
+    ctx.textAlign = "left";
+    ctx.fillStyle = TEXT_MUTED;
+    ctx.fillText(label, 8, y + wH / 2);
+    const labelW = Math.min(width2 * 0.35, 120);
+    const fieldX = labelW + 12;
+    const fieldW = width2 - fieldX - 8;
+    if (type === "button") {
+      ctx.fillStyle = "#2a2a2a";
+      roundedRectPath(ctx, fieldX, y + 2, fieldW, wH - 4, 4);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.12)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = "#ccc";
+      ctx.textAlign = "center";
+      ctx.fillText(String(widget2.value ?? label), fieldX + fieldW / 2, y + wH / 2);
+      continue;
+    }
+    if (type === "toggle" || type === "boolean") {
+      ctx.fillStyle = widget2.value ? "#4a9eff" : "#2a2a2a";
+      roundedRectPath(ctx, fieldX, y + 3, 14, 14, 3);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.15)";
+      ctx.stroke();
+      continue;
+    }
+    ctx.fillStyle = "#1a1a1a";
+    roundedRectPath(ctx, fieldX, y + 2, fieldW, wH - 4, 4);
+    ctx.fill();
+    ctx.strokeStyle = widget2.advanced ? "rgba(56,139,253,0.8)" : "rgba(255,255,255,0.08)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = TEXT_FG;
+    if (type === "number" || type === "slider") {
+      ctx.textAlign = "right";
+      ctx.fillText(String(widget2.value ?? 0), fieldX + fieldW - 8, y + wH / 2);
+    } else if (type === "combo" || type === "select") {
+      ctx.textAlign = "right";
+      const opts = widget2.options?.values ?? [];
+      const cur = opts.includes(widget2.value) ? widget2.value : String(widget2.value ?? "");
+      ctx.fillText(String(cur), fieldX + fieldW - 22, y + wH / 2);
+      ctx.fillStyle = TEXT_MUTED;
+      ctx.fillText("\u2304", fieldX + fieldW - 10, y + wH / 2);
+    } else {
+      ctx.textAlign = "left";
+      const v2 = String(widget2.value ?? "");
+      ctx.fillText(v2.length > 18 ? `${v2.slice(0, 18)}\u2026` : v2, fieldX + 8, y + wH / 2);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = "left";
+  }
+  ctx.restore();
+}
+function drawNodeErrorBanner(ctx, w, h, error) {
+  ctx.save();
+  const bannerH = 20;
+  ctx.fillStyle = "rgba(255, 80, 80, 0.14)";
+  roundedRectPath(ctx, 1, h - bannerH - 1, w - 2, bannerH, 4);
+  ctx.fill();
+  ctx.fillStyle = "#ff6b6b";
+  ctx.font = `11px ${FONT}`;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  const text = error.length > 44 ? `${error.slice(0, 44)}\u2026` : error;
+  ctx.fillText(`\u26A0 Error: ${text}`, 8, h - bannerH / 2);
+  ctx.restore();
+}
+var STATE_BORDER = {
+  running: "#4a9eff",
+  success: "#2ecc71",
+  error: "#ff5b5b"
+};
+function drawNodeStateOverlay(ctx, w, h, state, error) {
+  if (!state || !(state in STATE_BORDER)) {
+    return;
+  }
+  if (state === "error") {
+    drawNodeErrorBanner(ctx, w, h, error ?? "\u6267\u884C\u5931\u8D25");
+    return;
+  }
+  ctx.save();
+  ctx.strokeStyle = STATE_BORDER[state];
+  ctx.lineWidth = 2;
+  roundedRectPath(ctx, 1, 1, w - 2, h - 2, 8);
+  ctx.stroke();
+  ctx.restore();
+}
+function applyComfyNodeStyle(liteCanvas2, LGraphNodeCtor, LiteGraph2, getNodeState) {
+  liteCanvas2.node_title_color = "#e6e6e6";
+  LiteGraph2.NODE_DEFAULT_COLOR = "#2a2a2a";
+  LiteGraph2.NODE_DEFAULT_BGCOLOR = "#1f1f1f";
+  LiteGraph2.NODE_DEFAULT_BOXCOLOR = "#4a4a4a";
+  LiteGraph2.WIDGET_OUTLINE_COLOR = "#3a3a3a";
+  const proto = LGraphNodeCtor.prototype;
+  proto["onDrawTitleBox"] = function() {
+  };
+  proto["onDrawTitleBar"] = function(ctx, title_height, size, scale, fgcolor) {
+    ctx.fillStyle = darkenColor(fgcolor || "#2a2a2a", 0.4);
+    ctx.beginPath();
+    roundedRectPath(ctx, 0, -title_height, size[0], title_height, 6);
+    ctx.fill();
+  };
+  proto["onDrawTitleText"] = function(ctx, title_height, size, scale) {
+    comfyTitleText.call(this, ctx, title_height, size, scale);
+  };
+  proto["drawWidgets"] = function(ctx, options) {
+    comfyDrawWidgets.call(this, ctx, options);
+  };
+  proto["onDrawForeground"] = function(ctx) {
+    const state = getNodeState?.(String(this.properties?.["__sarosisId"] ?? this.id ?? ""));
+    if (!state) {
+      return;
+    }
+    const [w, h] = this.renderingSize ?? this.size ?? [0, 0];
+    if (w <= 0 || h <= 0) {
+      return;
+    }
+    drawNodeStateOverlay(ctx, w, h, state.runState, state.errorMsg);
+  };
+}
+
+// src/features/workflowEditor/comfyHost/sarosisLiteGraphNodes.ts
 var NODE_CONFIGS = [
   { type: "Sarosis.Start", title: "\u5F00\u59CB", color: "#22c55e", outputs: [{ name: "value", type: "SAROSIS_JSON" }] },
   { type: "Sarosis.End", title: "\u7ED3\u675F", color: "#ef4444", inputs: [{ name: "value", type: "SAROSIS_JSON" }] },
@@ -51658,7 +51862,19 @@ var NODE_CONFIGS = [
   { type: "Sarosis.IfElse", title: "If/Else", color: "#ef4444", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "true", type: "SAROSIS_JSON" }, { name: "false", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "evaluationTarget", value: "" }] },
   { type: "Sarosis.Switch", title: "Switch", color: "#a855f7", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "case", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "evaluationTarget", value: "" }] },
   { type: "Sarosis.AskUser", title: "\u8BE2\u95EE", color: "#06b6d4", inputs: [{ name: "value", type: "SAROSIS_JSON" }], outputs: [{ name: "answer", type: "SAROSIS_JSON" }], widgets: [{ type: "text", name: "questionText", value: "" }] },
-  { type: "Sarosis.Group", title: "\u5206\u7EC4", color: "#888780" }
+  { type: "Sarosis.Group", title: "\u5206\u7EC4", color: "#888780" },
+  { type: "Sarosis.ProviderPicker", title: "Provider \u9009\u62E9", color: "#8b5cf6", inputs: [], outputs: [{ name: "config", type: "TEXT" }], widgets: [
+    { type: "text", name: "providerId", value: "" },
+    { type: "text", name: "modelId", value: "" }
+  ] },
+  // Provider 文生图：经 imagegen.generate RPC 调已认证 LLM provider。
+  // kind='llm' → runNodeOrStage 走 runProviderImage，不依赖 ComfyUI runner。
+  { type: "Sarosis.ModelImageGen", title: "\u6A21\u578B\u6587\u751F\u56FE", color: "#06b6d4", inputs: [{ name: "prompt", type: "TEXT" }], outputs: [{ name: "image", type: "IMAGE" }], widgets: [
+    { type: "text", name: "providerId", value: "" },
+    { type: "text", name: "modelId", value: "" },
+    { type: "text", name: "prompt", value: "", multiline: true },
+    { type: "text", name: "size", value: "1024x1024" }
+  ] }
 ];
 function createSarosisNodeClass(cfg) {
   return class SarosisNode extends LGraphNode {
@@ -51678,20 +51894,20 @@ function createSarosisNodeClass(cfg) {
     _initWidgets() {
       for (const w of cfg.widgets ?? []) {
         const current = this.properties?.[w.name] ?? w.value;
-        const commit = (v2) => {
+        const commit2 = (v2) => {
           this.properties[w.name] = v2;
           this.graph?.change?.();
         };
         if (w.type === "text") {
-          const widget = this.addWidget("text", w.name, String(current), (v2) => {
-            commit(v2);
+          const widget2 = this.addWidget("text", w.name, String(current), (v2) => {
+            commit2(v2);
           });
           if (w.multiline) {
-            widget.options = { multiline: true };
+            widget2.options = { multiline: true };
           }
         } else if (w.type === "toggle") {
           this.addWidget("toggle", w.name, Boolean(current), (v2) => {
-            commit(v2);
+            commit2(v2);
           });
         } else if (w.type === "button") {
           this.addWidget("button", w.name, null, () => {
@@ -51706,12 +51922,25 @@ function createSarosisNodeClass(cfg) {
         this.title = label;
       }
       const props = this.properties ?? {};
-      for (const widget of this.widgets ?? []) {
-        const name = widget.name;
+      for (const widget2 of this.widgets ?? []) {
+        const name = widget2.name;
         if (name && name in props) {
-          widget.value = props[name];
+          widget2.value = props[name];
         }
       }
+    }
+    /**
+     * Override `drawWidgets` on the Sarosis subclass instead of relying on
+     * the `LGraphNode.prototype.drawWidgets` patch from
+     * `applyComfyNodeStyle`. LiteGraph 0.17's subclass `extends LGraphNode`
+     * still resolves `drawWidgets` through the prototype chain, so the
+     * Sarosis nodes were double-painted — once by the original
+     * 0.17 `drawWidgets` (TextWidget.draw 渲染 label+value 文字，无背景框
+     * 的"参数面板上面一层") and once by our `comfyDrawWidgets` (字段框).
+     * Owning the override on the subclass guarantees a single render path.
+     */
+    drawWidgets(ctx, options) {
+      comfyDrawWidgets.call(this, ctx, options);
     }
   };
 }
@@ -51727,13 +51956,13 @@ function registerSarosisLiteGraphNodes() {
   registered = true;
 }
 
-// ../src/features/workflowEditor/comfyHost/instantNodes.ts
+// src/features/workflowEditor/comfyHost/instantNodes.ts
 function isInstantNode(type) {
   return type === "ComfyTV.CropStage" || type === "ComfyTV.RotateStage" || type === "ComfyTV.MirrorStage";
 }
 function instantNum(values, key, fallback) {
-  const n = Number(values[key]);
-  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : fallback;
+  const n2 = Number(values[key]);
+  return Number.isFinite(n2) ? Math.max(0, Math.round(n2)) : fallback;
 }
 function cropRect(values, srcW, srcH) {
   const x2 = instantNum(values, "x", 0);
@@ -51743,11 +51972,11 @@ function cropRect(values, srcW, srcH) {
   return { x: x2, y, w: Math.max(1, w), h: Math.max(1, h) };
 }
 function rotateDegrees(values) {
-  const n = Number(values["angle"] ?? values["degrees"]);
-  if (!Number.isFinite(n)) {
+  const n2 = Number(values["angle"] ?? values["degrees"]);
+  if (!Number.isFinite(n2)) {
     return 90;
   }
-  return (n % 360 + 360) % 360;
+  return (n2 % 360 + 360) % 360;
 }
 function mirrorFlip(values) {
   return {
@@ -51799,27 +52028,85 @@ var INSTANT_WIDGETS = {
   ]
 };
 
-// ../src/features/workflowEditor/comfyHost/schemaLiteGraphNodes.ts
+// src/features/workflowEditor/comfyHost/schemaLiteGraphNodes.ts
 var STAGE_COLOR = "#e879f9";
+var PORT_TYPE_COLOR = {
+  // ComfyTV-style
+  "COMFYTV_IMAGE": "#a855f7",
+  // purple
+  "COMFYTV_IMAGES": "#a855f7",
+  "COMFYTV_TEXT": "#3b82f6",
+  // blue
+  "COMFYTV_VIDEO": "#10b981",
+  // green
+  "COMFYTV_AUDIO": "#f59e0b",
+  // amber
+  "COMFYTV_MODEL": "#ef4444",
+  // red
+  // Generic fallbacks
+  "IMAGE": "#a855f7",
+  "TEXT": "#3b82f6",
+  "STRING": "#3b82f6",
+  "VIDEO": "#10b981",
+  "AUDIO": "#f59e0b"
+};
+function portTypeColor(t) {
+  return PORT_TYPE_COLOR[t] ?? PORT_TYPE_COLOR[String(t).toUpperCase()] ?? "#22c55e";
+}
 function createSchemaNodeClass(spec) {
   class SchemaStageNode extends LGraphNode {
-    // Hide LiteGraph's own title bar so the overlay card owns the whole
-    // node header — this is what keeps the layer ordering correct.
-    static title_mode = TitleMode.NO_TITLE;
+    // LiteGraph's `configure()` falls back to `constructor.title` when the
+    // serialized node has no title, and `getTitle()` reads it too — so the
+    // display name must live here, not only on the instance.
+    static title = spec.title;
+    // NO override of title_mode — LiteGraph draws the title bar.
+    // NO override of drawSlots — LiteGraph draws the port dots/labels.
+    // NO override of getInputSlotPos/getOutputSlotPos — LiteGraph's default
+    // vertical stacking aligns with the canvas-drawn ports.
     constructor() {
       super(spec.title);
+      this.title = spec.title;
       this.color = spec.color ?? STAGE_COLOR;
       this.boxcolor = spec.color ?? STAGE_COLOR;
       for (const inp of spec.inputs ?? []) {
-        this.addInput(inp.name, inp.type, { label: inp.name });
+        const colour = portTypeColor(inp.type);
+        this.addInput(inp.name, inp.type, { label: inp.name, color_off: colour, color_on: colour });
       }
       for (const out of spec.outputs ?? []) {
-        this.addOutput(out.name, out.type, { label: out.name });
+        const colour = portTypeColor(out.type);
+        this.addOutput(out.name, out.type, { label: out.name, color_off: colour, color_on: colour });
       }
       this.size = [Math.max(this.size?.[0] ?? 220, 230), 300];
     }
+    // Older workflows persisted the node's TYPE (or a truncated fragment of
+    // it) as the title, e.g. "ComfyTV.ImageStage" or "t". Restoring such a
+    // value would show internal implementation detail in the title bar, so
+    // we drop it and keep the spec title. A genuine user rename (any other
+    // string) is preserved.
+    configure(info) {
+      super.configure(info);
+      if (!isUsableNodeTitle(this.title, spec.type)) {
+        this.title = spec.title;
+      }
+    }
   }
   return SchemaStageNode;
+}
+function isUsableNodeTitle(title2, specType) {
+  if (typeof title2 !== "string") {
+    return false;
+  }
+  const t = title2.trim();
+  if (t.length < 2) {
+    return false;
+  }
+  if (specType && t === specType) {
+    return false;
+  }
+  if (/^(?:ComfyTV|Comfy|Sarosis)\./i.test(t)) {
+    return false;
+  }
+  return true;
 }
 var registered2 = /* @__PURE__ */ new Set();
 function registerSchemaLiteGraphNode(spec) {
@@ -51830,7 +52117,7 @@ function registerSchemaLiteGraphNode(spec) {
   registered2.add(spec.type);
 }
 
-// ../src/features/workflowEditor/comfyHost/registry.ts
+// src/features/workflowEditor/comfyHost/registry.ts
 var registry = /* @__PURE__ */ new Map();
 var kinds = /* @__PURE__ */ new Map();
 var version = 0;
@@ -51944,8 +52231,8 @@ function buildComfyPaletteItems(kind) {
   return getSpecsByKind(kind).map((spec) => ({
     type: spec.type,
     label: spec.title ?? spec.type,
-    description: spec.kind === "native" ? `ComfyUI \u539F\u751F\u8282\u70B9 \xB7 ${spec.inputs.length} \u8F93\u5165 / ${spec.outputs.length} \u8F93\u51FA` : `ComfyTV stage \xB7 ${spec.comfyTV?.stageKind ?? "?"}`,
-    icon: spec.kind === "native" ? "\u{1F9E9}" : "\u{1F3A8}"
+    description: spec.kind === "native" ? `ComfyUI \u539F\u751F\u8282\u70B9 \xB7 ${spec.inputs.length} \u8F93\u5165 / ${spec.outputs.length} \u8F93\u51FA` : spec.kind === "llm" ? `Provider \u6587\u751F\u56FE \xB7 ${spec.backendKind ?? "provider"} \u540E\u7AEF` : `ComfyTV stage \xB7 ${spec.comfyTV?.stageKind ?? "?"}`,
+    icon: spec.kind === "native" ? "\u{1F9E9}" : spec.kind === "llm" ? "\u{1F5BC}\uFE0F" : "\u{1F3A8}"
   }));
 }
 function registerSarosisNodes() {
@@ -51957,6 +52244,38 @@ function registerSarosisNodes() {
   registerNodeSpec({ type: "Sarosis.Agent", kind: "react", title: "Agent", category: "basic", inputs: [json()], outputs: [json(false)], color: "#f97316" });
   registerNodeSpec({ type: "Sarosis.Skill", kind: "react", title: "Skill", category: "basic", inputs: [json()], outputs: [json(false)], color: "#eab308" });
   registerNodeSpec({ type: "Sarosis.Tool", kind: "react", title: "Tool", category: "basic", inputs: [json()], outputs: [json(false)], color: "#10b981" });
+  registerNodeSpec({
+    type: "Sarosis.ProviderPicker",
+    kind: "react",
+    title: "Provider \u9009\u62E9",
+    category: "basic",
+    inputs: [],
+    outputs: [{ name: "config", type: "TEXT" }],
+    widgets: [
+      { name: "providerId", type: "STRING", default: "" },
+      { name: "modelId", type: "STRING", default: "" }
+    ],
+    color: "#8b5cf6"
+  });
+  registerNodeSpec({
+    type: "Sarosis.ModelImageGen",
+    kind: "llm",
+    title: "\u6A21\u578B\u6587\u751F\u56FE",
+    category: "sarosis",
+    inputs: [{ name: "prompt", type: "TEXT" }],
+    outputs: [{ name: "image", type: "IMAGE" }],
+    widgets: [
+      { name: "providerId", type: "STRING", default: "" },
+      { name: "modelId", type: "STRING", default: "" },
+      { name: "prompt", type: "TEXT", default: "" },
+      { name: "negativePrompt", type: "TEXT", default: "" },
+      { name: "size", type: "STRING", default: "1024x1024" },
+      { name: "numImages", type: "INT", default: 1, min: 1, max: 4 }
+    ],
+    backendKind: "provider",
+    providerCaps: "imageGen",
+    color: "#06b6d4"
+  });
   registerNodeSpec({ type: "Sarosis.IfElse", kind: "react", title: "If/Else", category: "controlFlow", inputs: [json()], outputs: [{ name: "true", type: "SAROSIS_JSON" }, { name: "false", type: "SAROSIS_JSON" }], color: "#ef4444" });
   registerNodeSpec({ type: "Sarosis.Switch", kind: "react", title: "Switch", category: "controlFlow", inputs: [json()], outputs: [{ name: "case", type: "SAROSIS_JSON" }], color: "#a855f7" });
   registerNodeSpec({ type: "Sarosis.AskUser", kind: "react", title: "\u8BE2\u95EE", category: "controlFlow", inputs: [json()], outputs: [{ name: "answer", type: "SAROSIS_JSON" }], color: "#06b6d4" });
@@ -52009,27 +52328,41 @@ function registerComfyUINativeNode(def) {
 }
 function registerDefaultComfyTVStages() {
   const imageWidgets = [
-    { name: "prompt", type: "TEXT", default: "" },
+    { name: "workflow", type: "COMBO", default: "", options: [] },
     { name: "seed", type: "INT", default: -1 },
     { name: "width", type: "INT", default: 512 },
     { name: "height", type: "INT", default: 512 },
     { name: "steps", type: "INT", default: 20 },
-    { name: "workflow", type: "COMBO", default: "", options: [] }
+    { name: "prompt", type: "TEXT", default: "" }
   ];
-  const stage = (type, title, stageKind, workflowKind, widgets) => {
+  const stage = (type, title2, stageKind, workflowKind, widgets, extraInputs = [], extraOutputs = []) => {
     registerNodeSpec({
       type,
       kind: "schema",
-      title,
+      title: title2,
       category: "comfyTV",
-      inputs: [{ name: "input", type: "ANY" }],
-      outputs: [{ name: "output", type: normalizePortType(stageKind) }],
+      // ComfyTV-style: each stage exposes the autogrow lists it consumes
+      // (texts/images/videos/...) plus its own output channels. The
+      // single 'input'/'output' generic port is replaced by typed pins so
+      // users see `texts`, `images`, etc. on the canvas — matching the
+      // upstream ComfyTV reference layout (which exposes exactly the
+      // autogrow lists as connectable pins; everything else is socketless).
+      inputs: extraInputs.length > 0 ? extraInputs : [{ name: "input", type: "ANY" }],
+      outputs: extraOutputs.length > 0 ? extraOutputs : [{ name: "output", type: normalizePortType(stageKind) }],
       widgets,
       color: "#e879f9",
       comfyTV: { stageKind, workflowKind }
     });
   };
-  stage("ComfyTV.ImageStage", "\u6587\u751F\u56FE", "image", "image-to-image", imageWidgets);
+  stage(
+    "ComfyTV.ImageStage",
+    "Image Stage",
+    "image",
+    "image-to-image",
+    imageWidgets,
+    [{ name: "texts", type: "COMFYTV_TEXT" }, { name: "images", type: "COMFYTV_IMAGE" }],
+    [{ name: "images", type: "COMFYTV_IMAGES" }, { name: "image", type: "COMFYTV_IMAGE" }]
+  );
   stage("ComfyTV.VideoStage", "\u6587\u751F\u89C6\u9891", "video", "video");
   stage("ComfyTV.AudioStage", "\u6587\u751F\u97F3\u9891", "audio", "audio");
   stage("ComfyTV.TextStage", "\u6587\u751F\u6587\u672C", "text", "text");
@@ -52041,11 +52374,11 @@ function registerDefaultComfyTVStages() {
   stage("ComfyTV.VideoLoaderStage", "\u52A0\u8F7D\u89C6\u9891", "video", "video");
   stage("ComfyTV.AudioLoaderStage", "\u52A0\u8F7D\u97F3\u9891", "audio", "audio");
   stage("ComfyTV.TextLoaderStage", "\u52A0\u8F7D\u6587\u672C", "text", "text");
-  const bridge = (type, title, inType, outType) => {
+  const bridge = (type, title2, inType, outType) => {
     registerNodeSpec({
       type,
       kind: "native",
-      title,
+      title: title2,
       category: "comfyBridge",
       inputs: [{ name: "input", type: inType }],
       outputs: [{ name: "output", type: outType }],
@@ -52062,11 +52395,11 @@ function registerDefaultComfyTVStages() {
   bridge("ComfyTV.BridgeFromVideo", "Bridge \u2190 \u89C6\u9891\u5FEB\u7167", "VIDEO", "VIDEO");
   bridge("ComfyTV.BridgeFromAudio", "Bridge \u2190 \u97F3\u9891\u5FEB\u7167", "AUDIO", "AUDIO");
   bridge("ComfyTV.BridgeFromText", "Bridge \u2190 \u6587\u672C\u5FEB\u7167", "TEXT", "TEXT");
-  const instant = (type, title) => {
+  const instant = (type, title2) => {
     registerNodeSpec({
       type,
       kind: "native",
-      title,
+      title: title2,
       category: "comfyInstant",
       inputs: [{ name: "input", type: "IMAGE" }],
       outputs: [{ name: "output", type: "IMAGE" }],
@@ -52188,7 +52521,7 @@ function normalizeNativeType(t) {
   return "ANY";
 }
 
-// ../src/features/workflowEditor/comfyHost/ComfyGraphAdapter.ts
+// src/features/workflowEditor/comfyHost/ComfyGraphAdapter.ts
 function toLiteGraphType(nodeType) {
   if (nodeType.startsWith("Sarosis.") || nodeType.includes(".")) {
     return nodeType;
@@ -52216,12 +52549,15 @@ function toLiteGraph(wfNodes, wfConnections, options) {
     const position = normalizePosition(wfNode.position);
     const width2 = wfNode.style?.width ?? 220;
     const height = wfNode.style?.height ?? 60;
+    const savedTitle = wfNode.data?.label ?? wfNode.name;
+    const liteType = toLiteGraphType(wfNode.type);
+    const keepTitle = isUsableNodeTitle(savedTitle, liteType);
     liteNodes.push({
       id: liteId,
-      type: toLiteGraphType(wfNode.type),
+      type: liteType,
       pos: [position.x, position.y],
       size: [width2, height],
-      title: wfNode.data?.label ?? wfNode.name,
+      title: keepTitle ? savedTitle : void 0,
       properties: { ...wfNode.data ?? {}, __sarosisId: wfNode.id }
     });
   }
@@ -52294,7 +52630,7 @@ function round2(v2) {
   return Math.round(v2 * 100) / 100;
 }
 
-// ../node_modules/zustand/esm/vanilla.mjs
+// node_modules/zustand/esm/vanilla.mjs
 var createStoreImpl = (createState) => {
   let state;
   const listeners2 = /* @__PURE__ */ new Set();
@@ -52318,7 +52654,7 @@ var createStoreImpl = (createState) => {
 };
 var createStore = (createState) => createState ? createStoreImpl(createState) : createStoreImpl;
 
-// ../node_modules/zustand/esm/react.mjs
+// node_modules/zustand/esm/react.mjs
 var import_react = __toESM(require_react(), 1);
 var identity = (arg) => arg;
 function useStore(api, selector = identity) {
@@ -52338,21 +52674,21 @@ var createImpl = (createState) => {
 };
 var create = (createState) => createState ? createImpl(createState) : createImpl;
 
-// ../node_modules/zundo/dist/index.js
+// node_modules/zundo/dist/index.js
 var temporalStateCreator = (userSet, userGet, options) => {
-  const stateCreator = (set, get) => {
+  const stateCreator = (set, get2) => {
     return {
       pastStates: options?.pastStates || [],
       futureStates: options?.futureStates || [],
       undo: (steps = 1) => {
-        if (get().pastStates.length) {
+        if (get2().pastStates.length) {
           const currentState = options?.partialize?.(userGet()) || userGet();
-          const statesToApply = get().pastStates.splice(-steps, steps);
+          const statesToApply = get2().pastStates.splice(-steps, steps);
           const nextState = statesToApply.shift();
           userSet(nextState);
           set({
-            pastStates: get().pastStates,
-            futureStates: get().futureStates.concat(
+            pastStates: get2().pastStates,
+            futureStates: get2().futureStates.concat(
               options?.diff?.(currentState, nextState) || currentState,
               statesToApply.reverse()
             )
@@ -52360,17 +52696,17 @@ var temporalStateCreator = (userSet, userGet, options) => {
         }
       },
       redo: (steps = 1) => {
-        if (get().futureStates.length) {
+        if (get2().futureStates.length) {
           const currentState = options?.partialize?.(userGet()) || userGet();
-          const statesToApply = get().futureStates.splice(-steps, steps);
+          const statesToApply = get2().futureStates.splice(-steps, steps);
           const nextState = statesToApply.shift();
           userSet(nextState);
           set({
-            pastStates: get().pastStates.concat(
+            pastStates: get2().pastStates.concat(
               options?.diff?.(currentState, nextState) || currentState,
               statesToApply.reverse()
             ),
-            futureStates: get().futureStates
+            futureStates: get2().futureStates
           });
         }
       },
@@ -52382,12 +52718,12 @@ var temporalStateCreator = (userSet, userGet, options) => {
       // Internal properties
       _onSave: options?.onSave,
       _handleSet: (pastState, replace, currentState, deltaState) => {
-        if (options?.limit && get().pastStates.length >= options?.limit) {
-          get().pastStates.shift();
+        if (options?.limit && get2().pastStates.length >= options?.limit) {
+          get2().pastStates.shift();
         }
-        get()._onSave?.(pastState, currentState);
+        get2()._onSave?.(pastState, currentState);
         set({
-          pastStates: get().pastStates.concat(deltaState || pastState),
+          pastStates: get2().pastStates.concat(deltaState || pastState),
           futureStates: []
         });
       }
@@ -52396,16 +52732,16 @@ var temporalStateCreator = (userSet, userGet, options) => {
   return stateCreator;
 };
 var temporal = (config, options) => {
-  const configWithTemporal = (set, get, store) => {
+  const configWithTemporal = (set, get2, store) => {
     store.temporal = createStore(
-      options?.wrapTemporal?.(temporalStateCreator(set, get, options)) || temporalStateCreator(set, get, options)
+      options?.wrapTemporal?.(temporalStateCreator(set, get2, options)) || temporalStateCreator(set, get2, options)
     );
     const curriedHandleSet = options?.handleSet?.(
       store.temporal.getState()._handleSet
     ) || store.temporal.getState()._handleSet;
     const temporalHandleSet = (pastState) => {
       if (!store.temporal.getState().isTracking) return;
-      const currentState = options?.partialize?.(get()) || get();
+      const currentState = options?.partialize?.(get2()) || get2();
       const deltaState = options?.diff?.(pastState, currentState);
       if (
         // Don't call handleSet if state hasn't changed, as determined by diff fn or equality fn
@@ -52423,25 +52759,25 @@ var temporal = (config, options) => {
     };
     const setState = store.setState;
     store.setState = (...args) => {
-      const pastState = options?.partialize?.(get()) || get();
+      const pastState = options?.partialize?.(get2()) || get2();
       setState(...args);
       temporalHandleSet(pastState);
     };
     return config(
       // Modify the set function to call the userlandSet function
       (...args) => {
-        const pastState = options?.partialize?.(get()) || get();
+        const pastState = options?.partialize?.(get2()) || get2();
         set(...args);
         temporalHandleSet(pastState);
       },
-      get,
+      get2,
       store
     );
   };
   return configWithTemporal;
 };
 
-// ../src/features/workflowEditor/store.ts
+// src/features/workflowEditor/store.ts
 var _nodeCounter = 0;
 function uid(prefix) {
   return `${prefix}-${Date.now()}-${++_nodeCounter}`;
@@ -52558,12 +52894,12 @@ function defaultDataForType(type) {
     case "group":
       return { ...base, label: "Group", isCollapsed: false };
     default:
-      return { ...base, label: type };
+      return { ...base, label: /^(?:ComfyTV|Comfy|Sarosis)\./i.test(type) ? "" : type };
   }
 }
 var useWorkflowEditorStore = create()(
   temporal(
-    (set, get) => ({
+    (set, get2) => ({
       nodes: [DEFAULT_START, DEFAULT_END],
       edges: [],
       selectedNodeId: null,
@@ -52590,7 +52926,7 @@ var useWorkflowEditorStore = create()(
         const id = uid(type);
         const data = defaultDataForType(type);
         if (type === "agent") {
-          const defCfg = get().defaultAgentConfig;
+          const defCfg = get2().defaultAgentConfig;
           if (defCfg.agentId) {
             data.agentId = defCfg.agentId;
           }
@@ -52605,7 +52941,7 @@ var useWorkflowEditorStore = create()(
         const zIndex = type === "group" ? -1001 : void 0;
         const newNode = { id, type, position, data, ...style ? { style } : {}, ...zIndex !== void 0 ? { zIndex } : {} };
         set({
-          nodes: [...get().nodes, newNode],
+          nodes: [...get2().nodes, newNode],
           selectedNodeId: id,
           isPropertyPanelOpen: true
         });
@@ -52615,17 +52951,17 @@ var useWorkflowEditorStore = create()(
           return;
         }
         set({
-          nodes: get().nodes.filter((n) => n.id !== id),
-          edges: get().edges.filter((e2) => e2.source !== id && e2.target !== id),
-          selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId,
-          isPropertyPanelOpen: get().selectedNodeId === id ? false : get().isPropertyPanelOpen
+          nodes: get2().nodes.filter((n2) => n2.id !== id),
+          edges: get2().edges.filter((e2) => e2.source !== id && e2.target !== id),
+          selectedNodeId: get2().selectedNodeId === id ? null : get2().selectedNodeId,
+          isPropertyPanelOpen: get2().selectedNodeId === id ? false : get2().isPropertyPanelOpen
         });
       },
       duplicateNode: (id) => {
         if (id === "start" || id === "end") {
           return null;
         }
-        const source = get().nodes.find((n) => n.id === id);
+        const source = get2().nodes.find((n2) => n2.id === id);
         if (!source) {
           return null;
         }
@@ -52638,19 +52974,19 @@ var useWorkflowEditorStore = create()(
           selected: false
         };
         set({
-          nodes: [...get().nodes, clone],
+          nodes: [...get2().nodes, clone],
           selectedNodeId: newId,
           isPropertyPanelOpen: true
         });
         return newId;
       },
       deleteEdge: (id) => {
-        set({ edges: get().edges.filter((e2) => e2.id !== id) });
+        set({ edges: get2().edges.filter((e2) => e2.id !== id) });
       },
       updateNodeData: (id, data) => {
         set({
-          nodes: get().nodes.map(
-            (n) => n.id === id ? { ...n, data: { ...n.data, ...data } } : n
+          nodes: get2().nodes.map(
+            (n2) => n2.id === id ? { ...n2, data: { ...n2.data, ...data } } : n2
           )
         });
       },
@@ -52683,10 +53019,10 @@ var useWorkflowEditorStore = create()(
       }),
       // ── Validation ──
       validateWorkflow: () => {
-        const { nodes, edges } = get();
+        const { nodes, edges } = get2();
         const issues = [];
-        const hasStart = nodes.some((n) => n.type === "start");
-        const hasEnd = nodes.some((n) => n.type === "end");
+        const hasStart = nodes.some((n2) => n2.type === "start");
+        const hasEnd = nodes.some((n2) => n2.type === "end");
         if (!hasStart) {
           issues.push({ level: "error", message: "Workflow is missing a Start node." });
         }
@@ -52699,30 +53035,30 @@ var useWorkflowEditorStore = create()(
           outgoing.set(e2.source, (outgoing.get(e2.source) ?? 0) + 1);
           incoming.set(e2.target, (incoming.get(e2.target) ?? 0) + 1);
         }
-        for (const n of nodes) {
-          const inCount = incoming.get(n.id) ?? 0;
-          const outCount = outgoing.get(n.id) ?? 0;
-          if (n.type === "group") {
+        for (const n2 of nodes) {
+          const inCount = incoming.get(n2.id) ?? 0;
+          const outCount = outgoing.get(n2.id) ?? 0;
+          if (n2.type === "group") {
             continue;
           }
-          if (n.type === "start") {
+          if (n2.type === "start") {
             if (outCount === 0) {
-              issues.push({ level: "warning", nodeId: n.id, message: "Start node has no outgoing connection." });
+              issues.push({ level: "warning", nodeId: n2.id, message: "Start node has no outgoing connection." });
             }
             continue;
           }
-          if (n.type === "end") {
+          if (n2.type === "end") {
             if (inCount === 0) {
-              issues.push({ level: "warning", nodeId: n.id, message: "End node has no incoming connection." });
+              issues.push({ level: "warning", nodeId: n2.id, message: "End node has no incoming connection." });
             }
             continue;
           }
           if (inCount === 0 && outCount === 0) {
-            issues.push({ level: "warning", nodeId: n.id, message: `Node "${n.data?.label || n.id}" is not connected to anything.` });
+            issues.push({ level: "warning", nodeId: n2.id, message: `Node "${n2.data?.label || n2.id}" is not connected to anything.` });
           } else if (inCount === 0) {
-            issues.push({ level: "warning", nodeId: n.id, message: `Node "${n.data?.label || n.id}" has no incoming connection.` });
+            issues.push({ level: "warning", nodeId: n2.id, message: `Node "${n2.data?.label || n2.id}" has no incoming connection.` });
           } else if (outCount === 0) {
-            issues.push({ level: "warning", nodeId: n.id, message: `Node "${n.data?.label || n.id}" has no outgoing connection.` });
+            issues.push({ level: "warning", nodeId: n2.id, message: `Node "${n2.data?.label || n2.id}" has no outgoing connection.` });
           }
         }
         const adj = /* @__PURE__ */ new Map();
@@ -52733,7 +53069,7 @@ var useWorkflowEditorStore = create()(
         }
         const WHITE = 0, GRAY = 1, BLACK = 2;
         const color = /* @__PURE__ */ new Map();
-        nodes.forEach((n) => color.set(n.id, WHITE));
+        nodes.forEach((n2) => color.set(n2.id, WHITE));
         let cycleFound = false;
         const visit = (u) => {
           color.set(u, GRAY);
@@ -52751,9 +53087,9 @@ var useWorkflowEditorStore = create()(
           }
           color.set(u, BLACK);
         };
-        for (const n of nodes) {
-          if (color.get(n.id) === WHITE) {
-            visit(n.id);
+        for (const n2 of nodes) {
+          if (color.get(n2.id) === WHITE) {
+            visit(n2.id);
             if (cycleFound) {
               break;
             }
@@ -52867,15 +53203,15 @@ var useWorkflowEditorStore = create()(
         });
       },
       toWorkflowData: () => {
-        const state = get();
-        const graphNodes = state.nodes.map((n) => ({
-          id: n.id,
-          type: n.type,
-          name: n.data.label || n.id,
-          position: n.position,
-          data: n.data,
-          ...n.parentId && { parentId: n.parentId },
-          ...n.style && { style: n.style }
+        const state = get2();
+        const graphNodes = state.nodes.map((n2) => ({
+          id: n2.id,
+          type: n2.type,
+          name: n2.data.label || n2.id,
+          position: n2.position,
+          data: n2.data,
+          ...n2.parentId && { parentId: n2.parentId },
+          ...n2.style && { style: n2.style }
         }));
         const connections = state.edges.map((e2) => ({
           id: e2.id,
@@ -52907,7 +53243,7 @@ function redo() {
   useWorkflowEditorStore.temporal.getState().redo();
 }
 
-// ../src/features/workflowEditor/comfyHost/nodeEditorForm.ts
+// src/features/workflowEditor/comfyHost/nodeEditorForm.ts
 var STAGE_KIND_FIELDS = {
   image: [
     { label: "Seed", kind: "number", defaultValue: -1, placeholder: "-1 = random" },
@@ -52938,7 +53274,7 @@ var STAGE_KIND_FIELDS = {
     { label: "Count", kind: "number", defaultValue: 4, placeholder: "4" }
   ]
 };
-var SAROSIS_FIELDS = {
+var VSSAROS_FIELDS = {
   "Sarosis.Prompt": [
     { key: "prompt", label: "\u63D0\u793A\u8BCD", kind: "textarea", defaultValue: "", placeholder: "\u63D0\u793A\u8BCD\u6A21\u677F\uFF0C\u652F\u6301 {{input}} \u7B49\u53D8\u91CF\u66FF\u6362" },
     { key: "variables", label: "\u53D8\u91CF (JSON)", kind: "textarea", defaultValue: "{}" }
@@ -52969,10 +53305,14 @@ var SAROSIS_FIELDS = {
     { key: "questionText", label: "\u95EE\u9898\u6587\u672C", kind: "text", defaultValue: "Select an option" },
     { key: "options", label: "\u9009\u9879 (JSON)", kind: "textarea", defaultValue: '[{"label":"Option 1"},{"label":"Option 2"}]' },
     { key: "multiSelect", label: "\u591A\u9009", kind: "select", defaultValue: "no", options: ["yes", "no"] }
+  ],
+  "Sarosis.ProviderPicker": [
+    { key: "providerId", label: "Provider", kind: "provider", defaultValue: "" },
+    { key: "modelId", label: "Model", kind: "providerModel", defaultValue: "" }
   ]
 };
 function buildSarosisEditorFields(type) {
-  return SAROSIS_FIELDS[type] ?? [];
+  return VSSAROS_FIELDS[type] ?? [];
 }
 function buildEditorFields(spec, excludePrompt = false) {
   if (!spec) {
@@ -53025,21 +53365,21 @@ function buildEditorFields(spec, excludePrompt = false) {
   }
   return fields;
 }
-function coerceEditorValue(value, field) {
+function coerceEditorValue(value2, field) {
   if (field.kind === "number") {
-    const n = Number(value);
-    if (!Number.isFinite(n)) {
+    const n2 = Number(value2);
+    if (!Number.isFinite(n2)) {
       return field.defaultValue;
     }
-    if (field.label.toLowerCase().includes("seed") && n < 0) {
+    if (field.label.toLowerCase().includes("seed") && n2 < 0) {
       return -1;
     }
-    return n;
+    return n2;
   }
-  return String(value ?? "");
+  return String(value2 ?? "");
 }
 
-// ../src/features/workflowEditor/comfyHost/relightEditor.ts
+// src/features/workflowEditor/comfyHost/relightEditor.ts
 var LIGHT_TYPES = ["directional", "point", "spot"];
 function createDefaultLight(type) {
   if (type === "point") {
@@ -53058,12 +53398,12 @@ function createDefaultLight(type) {
   }
   return { type: "directional", color: "#ffffff", intensity: 1.5, position: { x: 0, y: 7.07, z: 7.07 }, target: { x: 0, y: 0, z: 0 } };
 }
-function normalizeLights(value) {
-  if (!Array.isArray(value)) {
+function normalizeLights(value2) {
+  if (!Array.isArray(value2)) {
     return [];
   }
   const out = [];
-  for (const raw of value) {
+  for (const raw of value2) {
     if (!raw || typeof raw !== "object") {
       continue;
     }
@@ -53072,7 +53412,7 @@ function normalizeLights(value) {
       continue;
     }
     const d = createDefaultLight(r.type);
-    const num = (n, fb) => typeof n === "number" && Number.isFinite(n) ? n : fb;
+    const num = (n2, fb) => typeof n2 === "number" && Number.isFinite(n2) ? n2 : fb;
     const vec = (v2, fb) => {
       const o = v2 ?? null;
       return {
@@ -53104,12 +53444,12 @@ function normalizeLights(value) {
   }
   return out;
 }
-function parseLightsData(value) {
-  if (typeof value !== "string" || !value.trim()) {
+function parseLightsData(value2) {
+  if (typeof value2 !== "string" || !value2.trim()) {
     return [];
   }
   try {
-    return normalizeLights(JSON.parse(value));
+    return normalizeLights(JSON.parse(value2));
   } catch {
     return [];
   }
@@ -53142,19 +53482,19 @@ function lightDirection(light) {
   }
   return { x: dx / m, y: dy / m, z: dz / m };
 }
-function orthographicProject(pos, radius) {
-  const r = Math.hypot(pos.x, pos.y, pos.z);
+function orthographicProject(pos2, radius) {
+  const r = Math.hypot(pos2.x, pos2.y, pos2.z);
   if (!r) {
     return { x: 0, y: 0, front: true, size: 0.5 };
   }
-  const ux = pos.x / r;
-  const uy = pos.y / r;
-  const uz = pos.z / r;
+  const ux = pos2.x / r;
+  const uy = pos2.y / r;
+  const uz = pos2.z / r;
   return { x: ux * radius, y: -uy * radius, front: uz >= 0, size: 0.4 + 0.6 * Math.max(0, uz) };
 }
-function screenToSphere(sx, sy, cx, cy, radius) {
-  const dx = (sx - cx) / radius;
-  const dy = -(sy - cy) / radius;
+function screenToSphere(sx, sy, cx2, cy2, radius) {
+  const dx = (sx - cx2) / radius;
+  const dy = -(sy - cy2) / radius;
   const dz2 = 1 - dx * dx - dy * dy;
   if (dz2 < 0) {
     return null;
@@ -53166,7 +53506,7 @@ function screenToSphere(sx, sy, cx, cy, radius) {
   return { x: dx / m, y: dy / m, z: Math.sqrt(dz2) / m };
 }
 
-// ../src/features/workflowEditor/comfyHost/relightExecutor.ts
+// src/features/workflowEditor/comfyHost/relightExecutor.ts
 async function runRelightNode(input) {
   const { nodeId, values, store } = input;
   const mine = store.byNode(nodeId);
@@ -53186,7 +53526,7 @@ async function runRelightNode(input) {
   return { promptId: "", status: "success", entries: [render, textEntry] };
 }
 
-// ../src/features/workflowEditor/comfyHost/posterEditor.ts
+// src/features/workflowEditor/comfyHost/posterEditor.ts
 function defaultPosterElements() {
   return [
     { id: "title", type: "text", bind: "title", label: "\u6807\u9898", x: 0.06, y: 0.05, w: 0.62, h: 0.12, font: "title", font_size: 64, align: "left", color: "#ffffff", text: "Your Title" },
@@ -53210,12 +53550,12 @@ function applyPosterLayout(defs, layout) {
     return el;
   });
 }
-function parsePosterLayout(value) {
-  if (typeof value !== "string" || !value.trim()) {
+function parsePosterLayout(value2) {
+  if (typeof value2 !== "string" || !value2.trim()) {
     return {};
   }
   try {
-    const data = JSON.parse(value);
+    const data = JSON.parse(value2);
     return data && typeof data === "object" ? data : {};
   } catch {
     return {};
@@ -53300,7 +53640,7 @@ function isPosterNode(type) {
   return type === "ComfyTV.PosterStage";
 }
 
-// ../src/features/workflowEditor/comfyHost/posterExecutor.ts
+// src/features/workflowEditor/comfyHost/posterExecutor.ts
 async function runPosterNode(input) {
   const render = input.store.byNode(input.nodeId).find((e2) => e2.media.kind === "image");
   if (!render) {
@@ -53309,16 +53649,16 @@ async function runPosterNode(input) {
   return { promptId: "", status: "success", entries: [render] };
 }
 
-// ../src/features/workflowEditor/comfyHost/cornerPinEditor.ts
+// src/features/workflowEditor/comfyHost/cornerPinEditor.ts
 function defaultCorners() {
   return [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]];
 }
-function parseCorners(value) {
-  if (typeof value !== "string" || !value.trim()) {
+function parseCorners(value2) {
+  if (typeof value2 !== "string" || !value2.trim()) {
     return defaultCorners();
   }
   try {
-    const data = JSON.parse(value);
+    const data = JSON.parse(value2);
     if (Array.isArray(data) && data.length === 4 && data.every((p) => Array.isArray(p) && p.length === 2 && typeof p[0] === "number" && typeof p[1] === "number")) {
       return data;
     }
@@ -53327,7 +53667,7 @@ function parseCorners(value) {
   return defaultCorners();
 }
 function cornersToJson(corners) {
-  return JSON.stringify(corners.map((p) => p.map((n) => Math.round(n * 100) / 100)));
+  return JSON.stringify(corners.map((p) => p.map((n2) => Math.round(n2 * 100) / 100)));
 }
 function clampCorner(point, min = 0.02, max = 0.98) {
   return [Math.max(min, Math.min(max, point[0])), Math.max(min, Math.min(max, point[1]))];
@@ -53336,7 +53676,7 @@ function isCornerPinNode(type) {
   return type === "ComfyTV.CornerPinStage";
 }
 
-// ../src/features/workflowEditor/comfyHost/rotoMaskEditor.ts
+// src/features/workflowEditor/comfyHost/rotoMaskEditor.ts
 function defaultShapePoints() {
   return [
     { x: 0.35, y: 0.35, lx: 0.27, ly: 0.35, rx: 0.43, ry: 0.35 },
@@ -53348,12 +53688,12 @@ function clampPoint(p, min = 0.01, max = 0.99) {
   const c = (v2) => Math.max(min, Math.min(max, v2));
   return { x: c(p.x), y: c(p.y), lx: c(p.lx), ly: c(p.ly), rx: c(p.rx), ry: c(p.ry) };
 }
-function parseShapeKeys(value) {
-  if (typeof value !== "string" || !value.trim()) {
+function parseShapeKeys(value2) {
+  if (typeof value2 !== "string" || !value2.trim()) {
     return null;
   }
   try {
-    const data = JSON.parse(value);
+    const data = JSON.parse(value2);
     if (Array.isArray(data) && data.length > 0 && Array.isArray(data[0].points) && data[0].points.length >= 3) {
       const points = data[0].points.filter((p) => p && typeof p === "object").map((p) => clampPoint({
         x: Number(p.x) || 0,
@@ -53411,7 +53751,7 @@ function isRotoMaskNode(type) {
   return type === "ComfyTV.RotoMaskStage";
 }
 
-// ../src/features/workflowEditor/comfyHost/layerEditor.ts
+// src/features/workflowEditor/comfyHost/layerEditor.ts
 var layerSeq = 0;
 function newLayerId(prefix = "layer") {
   layerSeq += 1;
@@ -53420,12 +53760,12 @@ function newLayerId(prefix = "layer") {
 function defaultLayerDoc(width2 = 1024, height = 1024) {
   return { width: width2, height, layers: [{ id: newLayerId(), name: "\u56FE\u5C42 1", visible: true, opacity: 1, ops: [] }] };
 }
-function parseLayerDoc(value, width2 = 1024, height = 1024) {
-  if (typeof value !== "string" || !value.trim()) {
+function parseLayerDoc(value2, width2 = 1024, height = 1024) {
+  if (typeof value2 !== "string" || !value2.trim()) {
     return defaultLayerDoc(width2, height);
   }
   try {
-    const data = JSON.parse(value);
+    const data = JSON.parse(value2);
     if (!data || typeof data !== "object" || !Array.isArray(data.layers)) {
       return defaultLayerDoc(width2, height);
     }
@@ -53500,12 +53840,12 @@ function drawLayerDoc(ctx, doc) {
         ctx.fillStyle = op.color;
         ctx.fillRect?.(x2, y, w, h);
       } else if (op.type === "circle") {
-        const cx = ((op.x ?? 0) + (op.w ?? 0) / 2) * doc.width;
-        const cy = ((op.y ?? 0) + (op.h ?? 0) / 2) * doc.height;
+        const cx2 = ((op.x ?? 0) + (op.w ?? 0) / 2) * doc.width;
+        const cy2 = ((op.y ?? 0) + (op.h ?? 0) / 2) * doc.height;
         const r = Math.max(op.w ?? 0, op.h ?? 0) * doc.width / 2;
         ctx.fillStyle = op.color;
         ctx.beginPath?.();
-        ctx.arc?.(cx, cy, r, 0, Math.PI * 2);
+        ctx.arc?.(cx2, cy2, r, 0, Math.PI * 2);
         ctx.fill?.();
       } else if (op.type === "text") {
         const size = (op.fontSize ?? 48) * doc.width;
@@ -53520,7 +53860,7 @@ function drawLayerDoc(ctx, doc) {
   }
 }
 
-// ../src/features/workflowEditor/comfyHost/layerExecutor.ts
+// src/features/workflowEditor/comfyHost/layerExecutor.ts
 async function runLayerEditorNode(input) {
   const render = input.store.byNode(input.nodeId).find((e2) => e2.media.kind === "image");
   if (!render) {
@@ -53529,7 +53869,7 @@ async function runLayerEditorNode(input) {
   return { promptId: "", status: "success", entries: [render] };
 }
 
-// ../src/features/workflowEditor/comfyHost/storyboardEditor.ts
+// src/features/workflowEditor/comfyHost/storyboardEditor.ts
 var boardSeq = 0;
 function newBoardId() {
   boardSeq += 1;
@@ -53548,12 +53888,12 @@ function defaultBoardState(width2 = 1280, height = 720) {
     }]
   };
 }
-function parseBoardState(value, width2 = 1280, height = 720) {
-  if (typeof value !== "string" || !value.trim()) {
+function parseBoardState(value2, width2 = 1280, height = 720) {
+  if (typeof value2 !== "string" || !value2.trim()) {
     return defaultBoardState(width2, height);
   }
   try {
-    const data = JSON.parse(value);
+    const data = JSON.parse(value2);
     if (!data || typeof data !== "object" || !Array.isArray(data.boards)) {
       return defaultBoardState(width2, height);
     }
@@ -53622,7 +53962,7 @@ function isStoryboardEditorNode(type) {
   return type === "ComfyTV.StoryboardEditorStage";
 }
 
-// ../src/features/workflowEditor/comfyHost/storyboardExecutor.ts
+// src/features/workflowEditor/comfyHost/storyboardExecutor.ts
 async function runStoryboardEditorNode(input) {
   const render = input.store.byNode(input.nodeId).find((e2) => e2.media.kind === "image");
   if (!render) {
@@ -53631,7 +53971,7 @@ async function runStoryboardEditorNode(input) {
   return { promptId: "", status: "success", entries: [render] };
 }
 
-// ../src/features/workflowEditor/comfyHost/materialEditor.ts
+// src/features/workflowEditor/comfyHost/materialEditor.ts
 var DEFAULT_MATERIAL = {
   color: "#8fbf8f",
   metalness: 0,
@@ -53665,12 +54005,12 @@ function normalizeMaterial(src) {
     clearcoatRoughness: num("clearcoatRoughness", DEFAULT_MATERIAL.clearcoatRoughness)
   };
 }
-function parseMaterialState(value) {
-  if (typeof value !== "string" || !value.trim()) {
+function parseMaterialState(value2) {
+  if (typeof value2 !== "string" || !value2.trim()) {
     return { ...DEFAULT_MATERIAL };
   }
   try {
-    const data = JSON.parse(value);
+    const data = JSON.parse(value2);
     return normalizeMaterial(data && typeof data === "object" ? data : {});
   } catch {
     return { ...DEFAULT_MATERIAL };
@@ -53685,23 +54025,23 @@ function applyPreset(base, preset) {
 function isMaterialNode(type) {
   return type === "ComfyTV.MaterialStage";
 }
-function renderMaterialBall(ctx, p, cx, cy, r) {
+function renderMaterialBall(ctx, p, cx2, cy2, r) {
   const hex = p.color;
   const lighten = (amt) => {
-    const n = parseInt(hex.slice(1), 16);
+    const n2 = parseInt(hex.slice(1), 16);
     const ch = (shift) => {
-      const v2 = n >> shift & 255;
+      const v2 = n2 >> shift & 255;
       return Math.round(Math.min(255, v2 + (255 - v2) * amt));
     };
     return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
   };
   ctx.fillStyle = "#17181c";
-  ctx.fillRect?.(0, 0, cx * 2, cy * 2);
+  ctx.fillRect?.(0, 0, cx2 * 2, cy2 * 2);
   ctx.fillStyle = "rgba(0,0,0,.45)";
   ctx.beginPath?.();
-  ctx.ellipse?.(cx, cy + r * 0.78, r * 0.85, r * 0.22, 0, 0, Math.PI * 2);
+  ctx.ellipse?.(cx2, cy2 + r * 0.78, r * 0.85, r * 0.22, 0, 0, Math.PI * 2);
   ctx.fill?.();
-  const grad = ctx.createRadialGradient?.(cx - r * 0.35, cy - r * 0.45, r * 0.1, cx, cy, r);
+  const grad = ctx.createRadialGradient?.(cx2 - r * 0.35, cy2 - r * 0.45, r * 0.1, cx2, cy2, r);
   if (grad) {
     grad.addColorStop(0, lighten(p.metalness * 0.35 + 0.35));
     grad.addColorStop(0.55, hex);
@@ -53709,12 +54049,12 @@ function renderMaterialBall(ctx, p, cx, cy, r) {
   }
   ctx.fillStyle = grad ?? hex;
   ctx.beginPath?.();
-  ctx.arc?.(cx, cy, r, 0, Math.PI * 2);
+  ctx.arc?.(cx2, cy2, r, 0, Math.PI * 2);
   ctx.fill?.();
   if (p.transmission > 0.02) {
     ctx.fillStyle = `rgba(255,255,255,${p.transmission * 0.22})`;
     ctx.beginPath?.();
-    ctx.arc?.(cx, cy, r * 0.98, 0, Math.PI * 2);
+    ctx.arc?.(cx2, cy2, r * 0.98, 0, Math.PI * 2);
     ctx.fill?.();
   }
   const rough = Math.max(0.05, p.roughness);
@@ -53723,16 +54063,16 @@ function renderMaterialBall(ctx, p, cx, cy, r) {
   ctx.fillStyle = p.metalness > 0.5 ? lighten(0.6) : `rgba(255,255,255,${alpha})`;
   ctx.globalAlpha = 1 - rough * 0.55;
   ctx.beginPath?.();
-  ctx.arc?.(cx - r * 0.32, cy - r * 0.4, hr, 0, Math.PI * 2);
+  ctx.arc?.(cx2 - r * 0.32, cy2 - r * 0.4, hr, 0, Math.PI * 2);
   ctx.fill?.();
   ctx.globalAlpha = 1;
   ctx.fillStyle = `rgba(255,255,255,${0.14 * (1 - p.metalness)})`;
   ctx.beginPath?.();
-  ctx.arc?.(cx + r * 0.5, cy + r * 0.5, r * 0.12, 0, Math.PI * 2);
+  ctx.arc?.(cx2 + r * 0.5, cy2 + r * 0.5, r * 0.12, 0, Math.PI * 2);
   ctx.fill?.();
 }
 
-// ../src/features/workflowEditor/comfyHost/materialExecutor.ts
+// src/features/workflowEditor/comfyHost/materialExecutor.ts
 async function runMaterialNode(input) {
   const { nodeId, values, store } = input;
   const mine = store.byNode(nodeId);
@@ -53755,7 +54095,7 @@ async function runMaterialNode(input) {
   return { promptId: "", status: "success", entries };
 }
 
-// ../src/features/workflowEditor/comfyHost/scene3dEditor.ts
+// src/features/workflowEditor/comfyHost/scene3dEditor.ts
 var sceneSeq = 0;
 function newSceneObjectId() {
   sceneSeq += 1;
@@ -53771,12 +54111,12 @@ function defaultSceneDoc(width2 = 1024, height = 1024) {
     ]
   };
 }
-function parseSceneDoc(value, width2 = 1024, height = 1024) {
-  if (typeof value !== "string" || !value.trim()) {
+function parseSceneDoc(value2, width2 = 1024, height = 1024) {
+  if (typeof value2 !== "string" || !value2.trim()) {
     return defaultSceneDoc(width2, height);
   }
   try {
-    const data = JSON.parse(value);
+    const data = JSON.parse(value2);
     if (!data || typeof data !== "object" || !Array.isArray(data.objects)) {
       return defaultSceneDoc(width2, height);
     }
@@ -53829,26 +54169,26 @@ function isScene3DNode(type) {
   return type === "ComfyTV.Scene3DStage";
 }
 function projectIso(x2, y, height, W, H) {
-  const cx = W / 2;
-  const cy = H / 2;
+  const cx2 = W / 2;
+  const cy2 = H / 2;
   const G = Math.min(W, H) * 0.72;
   const k = G / 2;
   const kh = G * 0.5;
   return {
     // (0.5,0.5) lands on the canvas center; the ground diamond spans
     // around it symmetrically.
-    sx: cx + (x2 - y) * k,
-    sy: cy + (x2 + y - 1) * k * 0.5 - height * kh,
+    sx: cx2 + (x2 - y) * k,
+    sy: cy2 + (x2 + y - 1) * k * 0.5 - height * kh,
     k,
     kh
   };
 }
 function screenToGround(sx, sy, W, H) {
-  const cx = W / 2;
-  const cy = H / 2;
+  const cx2 = W / 2;
+  const cy2 = H / 2;
   const k = Math.min(W, H) * 0.72 / 2;
-  const sum = (sy - cy) / (k * 0.5) + 1;
-  const diff = (sx - cx) / k;
+  const sum = (sy - cy2) / (k * 0.5) + 1;
+  const diff = (sx - cx2) / k;
   return {
     x: Math.max(0, Math.min(1, (sum + diff) / 2)),
     y: Math.max(0, Math.min(1, (sum - diff) / 2))
@@ -53942,15 +54282,15 @@ function drawPrimitive(ctx, obj, W, H) {
   ctx.fillText?.(obj.name, top.sx, top.sy - half - 4);
 }
 function shade(hex, amt) {
-  const n = parseInt(hex.slice(1), 16);
+  const n2 = parseInt(hex.slice(1), 16);
   const ch = (shift) => {
-    const v2 = n >> shift & 255;
+    const v2 = n2 >> shift & 255;
     return Math.round(Math.max(0, Math.min(255, v2 + amt * 255)));
   };
   return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
 }
 
-// ../src/features/workflowEditor/comfyHost/scene3dExecutor.ts
+// src/features/workflowEditor/comfyHost/scene3dExecutor.ts
 async function runScene3DNode(input) {
   const render = input.store.byNode(input.nodeId).find((e2) => e2.media.kind === "image");
   if (!render) {
@@ -53959,7 +54299,7 @@ async function runScene3DNode(input) {
   return { promptId: "", status: "success", entries: [render] };
 }
 
-// ../src/features/workflowEditor/comfyHost/capsLoader.ts
+// src/features/workflowEditor/comfyHost/capsLoader.ts
 async function loadComfyTVCaps(baseUrl, fetchImpl = fetch, signal) {
   try {
     const res = await fetchImpl(`${baseUrl}/comfytv/caps`, { method: "GET", signal });
@@ -53987,20 +54327,20 @@ async function loadComfyTVCaps(baseUrl, fetchImpl = fetch, signal) {
   }
 }
 
-// ../src/features/workflowEditor/minimap.ts
+// src/features/workflowEditor/minimap.ts
 function computeGraphBounds(nodes) {
   if (nodes.length === 0) {
     return null;
   }
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const n of nodes) {
-    if (n.collapsed) {
+  for (const n2 of nodes) {
+    if (n2.collapsed) {
       continue;
     }
-    minX = Math.min(minX, n.pos[0]);
-    minY = Math.min(minY, n.pos[1]);
-    maxX = Math.max(maxX, n.pos[0] + (n.size[0] ?? 1));
-    maxY = Math.max(maxY, n.pos[1] + (n.size[1] ?? 1));
+    minX = Math.min(minX, n2.pos[0]);
+    minY = Math.min(minY, n2.pos[1]);
+    maxX = Math.max(maxX, n2.pos[0] + (n2.size[0] ?? 1));
+    maxY = Math.max(maxY, n2.pos[1] + (n2.size[1] ?? 1));
   }
   if (!isFinite(minX)) {
     return null;
@@ -54019,16 +54359,16 @@ function buildMinimapScene(nodes, viewport, mmW, mmH, padding = 6) {
   const px2 = (gx) => padding + (gx - bounds.minX) / spanX * contentW;
   const py = (gy) => padding + (gy - bounds.minY) / spanY * contentH;
   const nodeRects = [];
-  for (const n of nodes) {
-    if (n.collapsed) {
+  for (const n2 of nodes) {
+    if (n2.collapsed) {
       continue;
     }
     nodeRects.push({
-      x: px2(n.pos[0]),
-      y: py(n.pos[1]),
-      w: Math.max(2, n.size[0] / spanX * contentW),
-      h: Math.max(2, n.size[1] / spanY * contentH),
-      color: n.color ?? "#3b82f6"
+      x: px2(n2.pos[0]),
+      y: py(n2.pos[1]),
+      w: Math.max(2, n2.size[0] / spanX * contentW),
+      h: Math.max(2, n2.size[1] / spanY * contentH),
+      color: n2.color ?? "#3b82f6"
     });
   }
   const vpLeft = -viewport.offsetX;
@@ -54076,233 +54416,7 @@ function renderMinimap(ctx, mmW, mmH, scene) {
   ctx.strokeRect(scene.viewportRect.x, scene.viewportRect.y, scene.viewportRect.w, scene.viewportRect.h);
 }
 
-// ../src/features/workflowEditor/comfyNodeStyle.ts
-var FONT = 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif';
-var OUTPUT_TYPE_COLORS = {
-  IMAGE: "#ffd700",
-  VIDEO: "#3b82f6",
-  AUDIO: "#eab308",
-  TEXT: "#a855f7",
-  MODEL: "#a78bfa",
-  CONDITIONING: "#fbbf24",
-  CLIP: "#a3e635",
-  VAE: "#f87171",
-  LATENT: "#fb7185",
-  SAROSIS_JSON: "#9ca3af",
-  ANY: "#e5e7eb",
-  "*": "#c0a000"
-};
-var TEXT_FG = "#d0d0d0";
-var TEXT_MUTED = "#8a8a8a";
-function darkenColor(hex, factor) {
-  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
-  if (!m) {
-    return hex;
-  }
-  const n = parseInt(m[1], 16);
-  const r = Math.round((n >> 16 & 255) * factor);
-  const g = Math.round((n >> 8 & 255) * factor);
-  const b = Math.round((n & 255) * factor);
-  return `rgb(${r}, ${g}, ${b})`;
-}
-function roundedRectPath(ctx, x2, y, w, h, r) {
-  const radius = Math.max(0, Math.min(r, w / 2, h / 2));
-  ctx.beginPath();
-  ctx.moveTo(x2 + radius, y);
-  ctx.lineTo(x2 + w - radius, y);
-  ctx.quadraticCurveTo(x2 + w, y, x2 + w, y + radius);
-  ctx.lineTo(x2 + w, y + h - radius);
-  ctx.quadraticCurveTo(x2 + w, y + h, x2 + w - radius, y + h);
-  ctx.lineTo(x2 + radius, y + h);
-  ctx.quadraticCurveTo(x2, y + h, x2, y + h - radius);
-  ctx.lineTo(x2, y + radius);
-  ctx.quadraticCurveTo(x2, y, x2 + radius, y);
-  ctx.closePath();
-}
-function comfyTitleText(ctx, title_height, size, scale) {
-  const [w] = size;
-  const fontSize = Math.max(10, 11 * scale);
-  const padX = 8 * scale;
-  ctx.save();
-  ctx.textBaseline = "middle";
-  ctx.font = `${fontSize}px ${FONT}`;
-  ctx.fillStyle = "#8a8a8a";
-  const caret = this.collapsed ? "\u203A" : "\u2304";
-  ctx.fillText(caret, padX, -title_height / 2);
-  const caretW = ctx.measureText(caret).width + 6 * scale;
-  ctx.fillStyle = "#e6e6e6";
-  ctx.fillText(String(this.getTitle?.() ?? this.title ?? this.type ?? ""), padX + caretW, -title_height / 2);
-  const types = [];
-  for (const out of this.outputs ?? []) {
-    const t = String(out?.type ?? out?.name ?? "").toUpperCase();
-    if (t && t !== "ANY") {
-      types.push({ label: t, color: OUTPUT_TYPE_COLORS[t] ?? OUTPUT_TYPE_COLORS["*"] });
-    }
-  }
-  if (types.length > 0) {
-    ctx.font = `${Math.max(8, 9 * scale)}px ${FONT}`;
-    ctx.textAlign = "right";
-    const rightPad = padX + 4 * scale;
-    let rightX = w - rightPad;
-    for (let i = types.length - 1; i >= 0; i--) {
-      const t = types[i];
-      ctx.fillStyle = t.color;
-      const tw = ctx.measureText(t.label).width;
-      if (rightX - tw < padX + caretW + 20 * scale) {
-        break;
-      }
-      ctx.fillText(t.label, rightX, -title_height / 2);
-      rightX -= tw + 6 * scale;
-    }
-    ctx.textAlign = "start";
-  }
-  ctx.restore();
-}
-function comfyDrawWidgets(ctx, _options) {
-  if (!this.widgets || this.collapsed) {
-    return;
-  }
-  const nodeWidth = this.size[0];
-  const H = 22;
-  ctx.save();
-  ctx.textBaseline = "middle";
-  for (const widget of this.widgets) {
-    if (!widget || (this.isWidgetVisible ? !this.isWidgetVisible(widget) : false)) {
-      continue;
-    }
-    const y = widget.y ?? 0;
-    const width2 = widget.width || nodeWidth;
-    const label = widget.label ?? widget.name ?? "";
-    const type = widget.type ?? "text";
-    const disabled = !!widget.disabled || !!widget.computedDisabled;
-    ctx.globalAlpha = disabled ? 0.45 : 1;
-    ctx.font = `11px ${FONT}`;
-    ctx.textAlign = "left";
-    ctx.fillStyle = TEXT_MUTED;
-    ctx.fillText(label, 8, y + H / 2);
-    const labelW = Math.min(width2 * 0.35, 120);
-    const fieldX = labelW + 12;
-    const fieldW = width2 - fieldX - 8;
-    if (type === "button") {
-      ctx.fillStyle = "#2a2a2a";
-      roundedRectPath(ctx, fieldX, y + 2, fieldW, H - 4, 4);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(255,255,255,0.12)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.fillStyle = "#ccc";
-      ctx.textAlign = "center";
-      ctx.fillText(String(widget.value ?? label), fieldX + fieldW / 2, y + H / 2);
-      continue;
-    }
-    if (type === "toggle" || type === "boolean") {
-      ctx.fillStyle = widget.value ? "#4a9eff" : "#2a2a2a";
-      roundedRectPath(ctx, fieldX, y + 3, 14, 14, 3);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(255,255,255,0.15)";
-      ctx.stroke();
-      continue;
-    }
-    ctx.fillStyle = "#1a1a1a";
-    roundedRectPath(ctx, fieldX, y + 2, fieldW, H - 4, 4);
-    ctx.fill();
-    ctx.strokeStyle = widget.advanced ? "rgba(56,139,253,0.8)" : "rgba(255,255,255,0.08)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fillStyle = TEXT_FG;
-    if (type === "number" || type === "slider") {
-      ctx.textAlign = "right";
-      ctx.fillText(String(widget.value ?? 0), fieldX + fieldW - 8, y + H / 2);
-    } else if (type === "combo" || type === "select") {
-      ctx.textAlign = "right";
-      const opts = widget.options?.values ?? [];
-      const cur = opts.includes(widget.value) ? widget.value : String(widget.value ?? "");
-      ctx.fillText(String(cur), fieldX + fieldW - 22, y + H / 2);
-      ctx.fillStyle = TEXT_MUTED;
-      ctx.fillText("\u2304", fieldX + fieldW - 10, y + H / 2);
-    } else {
-      ctx.textAlign = "left";
-      const v2 = String(widget.value ?? "");
-      ctx.fillText(v2.length > 18 ? `${v2.slice(0, 18)}\u2026` : v2, fieldX + 8, y + H / 2);
-    }
-    ctx.globalAlpha = 1;
-    ctx.textAlign = "left";
-  }
-  ctx.restore();
-}
-function drawNodeErrorBanner(ctx, w, h, error) {
-  ctx.save();
-  ctx.strokeStyle = "#ff5b5b";
-  ctx.lineWidth = 2;
-  roundedRectPath(ctx, 1, 1, w - 2, h - 2, 8);
-  ctx.stroke();
-  const bannerH = 20;
-  ctx.fillStyle = "rgba(255, 80, 80, 0.14)";
-  roundedRectPath(ctx, 1, h - bannerH - 1, w - 2, bannerH, 4);
-  ctx.fill();
-  ctx.fillStyle = "#ff6b6b";
-  ctx.font = `11px ${FONT}`;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "left";
-  const text = error.length > 44 ? `${error.slice(0, 44)}\u2026` : error;
-  ctx.fillText(`\u26A0 Error: ${text}`, 8, h - bannerH / 2);
-  ctx.restore();
-}
-var STATE_BORDER = {
-  running: "#4a9eff",
-  success: "#2ecc71",
-  error: "#ff5b5b"
-};
-function drawNodeStateOverlay(ctx, w, h, state, error) {
-  if (!state || !(state in STATE_BORDER)) {
-    return;
-  }
-  if (state === "error") {
-    drawNodeErrorBanner(ctx, w, h, error ?? "\u6267\u884C\u5931\u8D25");
-    return;
-  }
-  ctx.save();
-  ctx.strokeStyle = STATE_BORDER[state];
-  ctx.lineWidth = 2;
-  roundedRectPath(ctx, 1, 1, w - 2, h - 2, 8);
-  ctx.stroke();
-  ctx.restore();
-}
-function applyComfyNodeStyle(liteCanvas, LGraphNodeCtor, LiteGraph2, getNodeState) {
-  liteCanvas.node_title_color = "#e6e6e6";
-  LiteGraph2.NODE_DEFAULT_COLOR = "#2a2a2a";
-  LiteGraph2.NODE_DEFAULT_BGCOLOR = "#1f1f1f";
-  LiteGraph2.NODE_DEFAULT_BOXCOLOR = "#4a4a4a";
-  LiteGraph2.WIDGET_OUTLINE_COLOR = "#3a3a3a";
-  const proto = LGraphNodeCtor.prototype;
-  proto["onDrawTitleBox"] = function() {
-  };
-  proto["onDrawTitleBar"] = function(ctx, title_height, size, scale, fgcolor) {
-    ctx.fillStyle = darkenColor(fgcolor || "#2a2a2a", 0.4);
-    ctx.beginPath();
-    roundedRectPath(ctx, 0, -title_height, size[0], title_height, 6);
-    ctx.fill();
-  };
-  proto["onDrawTitleText"] = function(ctx, title_height, size, scale) {
-    comfyTitleText.call(this, ctx, title_height, size, scale);
-  };
-  proto["drawWidgets"] = function(ctx, options) {
-    comfyDrawWidgets.call(this, ctx, options);
-  };
-  proto["onDrawForeground"] = function(ctx) {
-    const state = getNodeState?.(String(this.properties?.["__sarosisId"] ?? this.id ?? ""));
-    if (!state) {
-      return;
-    }
-    const [w, h] = this.renderingSize ?? this.size ?? [0, 0];
-    if (w <= 0 || h <= 0) {
-      return;
-    }
-    drawNodeStateOverlay(ctx, w, h, state.runState, state.errorMsg);
-  };
-}
-
-// ../src/features/workflowEditor/NodeContextMenu.tsx
+// src/features/workflowEditor/NodeContextMenu.tsx
 var React2 = __toESM(require_react());
 var CATEGORY_COLORS = {
   system: "#6b7280",
@@ -54319,6 +54433,7 @@ function buildMenuGroups() {
   }));
   return [
     ...staticCats,
+    { id: "llm", label: "PROVIDER \u6587\u751F\u56FE", color: "#06b6d4", items: buildComfyPaletteItems("llm") },
     { id: "comfyTV", label: "COMFYTV STAGES", color: "#e879f9", items: buildComfyPaletteItems("schema") },
     { id: "comfyUI", label: "COMFYUI NATIVE", color: "#f59e0b", items: buildComfyPaletteItems("native") }
   ];
@@ -54331,7 +54446,7 @@ function filterMenuGroups(groups, query) {
   return groups.map((g) => ({ ...g, items: g.items.filter((it) => it.label.toLowerCase().includes(q) || it.type.toLowerCase().includes(q)) })).filter((g) => g.items.length > 0);
 }
 
-// ../src/features/workflowEditor/comfyHost/mediaSnapshot.ts
+// src/features/workflowEditor/comfyHost/mediaSnapshot.ts
 var KIND_BY_SLOT = {
   images: "image",
   gifs: "video",
@@ -54342,15 +54457,15 @@ var KIND_BY_SLOT = {
 function kindOfListName(name) {
   return KIND_BY_SLOT[name] ?? "unknown";
 }
-function normalizeOutputSlot(name, value) {
-  if (!Array.isArray(value)) {
-    if (typeof value === "string") {
-      return [{ kind: "text", ref: value }];
+function normalizeOutputSlot(name, value2) {
+  if (!Array.isArray(value2)) {
+    if (typeof value2 === "string") {
+      return [{ kind: "text", ref: value2 }];
     }
-    return [{ kind: "unknown", ref: JSON.stringify(value) }];
+    return [{ kind: "unknown", ref: JSON.stringify(value2) }];
   }
   const kind = kindOfListName(name);
-  return value.map((item) => {
+  return value2.map((item) => {
     if (typeof item === "string") {
       return { kind, ref: item };
     }
@@ -54380,7 +54495,7 @@ function primarySnapshotKey(nodeId, port = "") {
   return `${nodeId}:${port || "output"}:0`;
 }
 
-// ../src/features/workflowEditor/comfyHost/fxChain.ts
+// src/features/workflowEditor/comfyHost/fxChain.ts
 var FX_VIDEO_KEY = "__fxvideo__";
 function packFxVideo(url, entries) {
   return JSON.stringify({ [FX_VIDEO_KEY]: { url, chain: entries } });
@@ -54428,8 +54543,8 @@ function mergeFxChain(upstreamPacked, ownEntry) {
 }
 function fxDeliveryParams(values) {
   const num = (v2) => {
-    const n = Number(v2);
-    return Number.isFinite(n) ? n : 0;
+    const n2 = Number(v2);
+    return Number.isFinite(n2) ? n2 : 0;
   };
   return {
     colorspace: values["out_colorspace"] ?? "bt709",
@@ -54550,7 +54665,7 @@ function buildFxSpecEntry(kind, label, domain, specs, params, opts) {
   return entry;
 }
 
-// ../src/features/workflowEditor/comfyHost/nodeExecutor.ts
+// src/features/workflowEditor/comfyHost/nodeExecutor.ts
 var PROMPT_NODE_KEY = "1";
 function unwrapNodeOutputs(outputs) {
   if (!outputs) {
@@ -54664,9 +54779,10 @@ async function runSingleNode(options) {
   }
 }
 
-// ../src/features/workflowEditor/comfyHost/mediaSnapshotStore.ts
+// src/features/workflowEditor/comfyHost/mediaSnapshotStore.ts
 function createMemoryBackend() {
   const entries = /* @__PURE__ */ new Map();
+  const meta = /* @__PURE__ */ new Map();
   return {
     entries,
     async save(key, data) {
@@ -54678,6 +54794,16 @@ function createMemoryBackend() {
     },
     async remove(key) {
       entries.delete(key);
+      meta.delete(key);
+    },
+    async saveMeta(key, media) {
+      meta.set(key, media);
+    },
+    async removeMeta(key) {
+      meta.delete(key);
+    },
+    async listMeta() {
+      return Array.from(meta, ([key, media]) => ({ key, media }));
     }
   };
 }
@@ -54685,11 +54811,15 @@ var MediaSnapshotStore = class {
   constructor(backend, opts) {
     this.backend = backend;
     this.maxPreviewRefs = opts?.maxPreviewRefs ?? 200;
+    this.persistent = opts?.persistent ?? false;
+    this.onAsset = opts?.onAsset;
   }
   refs = /* @__PURE__ */ new Map();
   /** most-recently-used order for preview eviction */
   lru = [];
   maxPreviewRefs;
+  persistent;
+  onAsset;
   listeners = /* @__PURE__ */ new Set();
   /** opaque version bumped on every mutation (for useSyncExternalStore) */
   version = 0;
@@ -54714,6 +54844,8 @@ var MediaSnapshotStore = class {
   put(entry) {
     this.refs.set(entry.key, entry.media);
     this.touch(entry.key);
+    void this.backend.saveMeta?.(entry.key, entry.media);
+    this.onAsset?.(entry);
     this.evict();
     this.notify();
   }
@@ -54722,6 +54854,30 @@ var MediaSnapshotStore = class {
   }
   has(key) {
     return this.refs.has(key);
+  }
+  /** Restore refs previously persisted by the backend (refresh recovery).
+   *  In-memory refs from the current session win — persisted entries are only
+   *  added when absent, so a concurrent run is never masked. */
+  async hydrate() {
+    if (!this.backend.listMeta) {
+      return;
+    }
+    const metas = await this.backend.listMeta();
+    let changed = false;
+    for (const { key, media } of metas) {
+      if (!this.refs.has(key)) {
+        this.refs.set(key, media);
+        this.lru.unshift(key);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.notify();
+    }
+  }
+  /** Load a stored payload (for export/download of locally-saved blobs). */
+  async getPayload(key) {
+    return this.backend.load(key);
   }
   /** All entries for a node (for card previews / history). */
   byNode(nodeId) {
@@ -54745,6 +54901,7 @@ var MediaSnapshotStore = class {
     }
     this.notify();
     await this.backend.remove(key);
+    await this.backend.removeMeta?.(key);
   }
   clear() {
     this.refs.clear();
@@ -54770,17 +54927,21 @@ var MediaSnapshotStore = class {
     this.lru.unshift(key);
   }
   evict() {
+    if (this.persistent) {
+      return;
+    }
     while (this.lru.length > this.maxPreviewRefs) {
       const old = this.lru.pop();
       if (old !== void 0) {
         this.refs.delete(old);
         void this.backend.remove(old);
+        void this.backend.removeMeta?.(old);
       }
     }
   }
 };
 
-// ../src/features/workflowEditor/comfyHost/comfyRunner.ts
+// src/features/workflowEditor/comfyHost/comfyRunner.ts
 var DEFAULT_POLL_MS = 800;
 var HttpComfyRunner = class {
   constructor(id, kind, baseUrl, fetchImpl, pollMs = DEFAULT_POLL_MS, token) {
@@ -54912,7 +55073,7 @@ async function collectRunnerRows(runners, testFn = (r) => r.testConnection()) {
   return rows;
 }
 
-// ../src/features/workflowEditor/comfyHost/comfyApiAdapter.ts
+// src/features/workflowEditor/comfyHost/comfyApiAdapter.ts
 function parseGuiWorkflow(raw) {
   const issues = [];
   if (!raw || typeof raw !== "object") {
@@ -54923,30 +55084,30 @@ function parseGuiWorkflow(raw) {
     return { graph: { last_node_id: 0, last_link_id: 0, nodes: [], links: [] }, issues: ["workflow.nodes is not an array"] };
   }
   const nodes = [];
-  for (const n of wf.nodes) {
-    if (typeof n.id !== "number" || typeof n.type !== "string") {
-      issues.push(`skipping node without id/type: ${JSON.stringify(n)}`);
+  for (const n2 of wf.nodes) {
+    if (typeof n2.id !== "number" || typeof n2.type !== "string") {
+      issues.push(`skipping node without id/type: ${JSON.stringify(n2)}`);
       continue;
     }
     nodes.push({
-      id: n.id,
-      type: n.type,
-      pos: n.pos ?? [0, 0],
-      size: n.size,
-      title: n.title,
-      properties: n.properties ?? {},
-      widgets_values: n.widgets_values,
+      id: n2.id,
+      type: n2.type,
+      pos: n2.pos ?? [0, 0],
+      size: n2.size,
+      title: n2.title,
+      properties: n2.properties ?? {},
+      widgets_values: n2.widgets_values,
       // Keep slot descriptors so guiToApi() (export) can reconstruct the
       // connections: input links reference link ids that map back through
       // `links[]`. Dropping them here caused imported ComfyUI workflows to
       // lose every connection when re-exported.
-      inputs: n.inputs,
-      outputs: n.outputs
+      inputs: n2.inputs,
+      outputs: n2.outputs
     });
   }
   const links = (wf.links ?? []).map((l) => [l[0], l[1], l[2], l[3], l[4], l[5]]);
   links.sort((a, b) => a[0] - b[0]);
-  const lastNodeId = nodes.length ? Math.max(...nodes.map((n) => n.id)) : 0;
+  const lastNodeId = nodes.length ? Math.max(...nodes.map((n2) => n2.id)) : 0;
   const lastLinkId = links.length ? Math.max(...links.map((l) => l[0])) : 0;
   return { graph: { last_node_id: lastNodeId, last_link_id: lastLinkId, nodes, links, version: wf.version ?? 0.4 }, issues };
 }
@@ -54988,14 +55149,14 @@ function apiToGui(prompt) {
   Object.keys(prompt).forEach((id, i) => idToIdx.set(id, i));
   for (const [nodeId, entry] of Object.entries(prompt)) {
     const inputs = [];
-    for (const [field, value] of Object.entries(entry.inputs)) {
-      if (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "number") {
-        const fromIdx = idToIdx.get(value[0]);
+    for (const [field, value2] of Object.entries(entry.inputs)) {
+      if (Array.isArray(value2) && value2.length === 2 && typeof value2[0] === "string" && typeof value2[1] === "number") {
+        const fromIdx = idToIdx.get(value2[0]);
         if (fromIdx === void 0) {
           continue;
         }
         inputs.push({ name: field, type: "ANY", link: linkId });
-        links.push([linkId, fromIdx, value[1], idToIdx.get(nodeId), inputs.length - 1, "ANY"]);
+        links.push([linkId, fromIdx, value2[1], idToIdx.get(nodeId), inputs.length - 1, "ANY"]);
         linkId++;
       } else {
         inputs.push({ name: field, type: "ANY", link: null, widget: { name: field } });
@@ -55006,7 +55167,21 @@ function apiToGui(prompt) {
   return { nodes, links };
 }
 
-// ../src/features/workflowEditor/comfyHost/widgetBridge.ts
+// src/features/workflowEditor/comfyHost/widgetBridge.ts
+var DEFAULT_SIDE_INSET = 15;
+var DEFAULT_TOP_INSET = 50;
+var DEFAULT_BOTTOM_INSET = 8;
+var LITEGRAPH_TITLE_HEIGHT = 30;
+var LITEGRAPH_SLOT_HEIGHT = 20;
+function widgetAreaInsets(inputCount, outputCount) {
+  const rows = Math.max(inputCount, outputCount, 0);
+  return {
+    left: DEFAULT_SIDE_INSET,
+    right: DEFAULT_SIDE_INSET,
+    top: LITEGRAPH_TITLE_HEIGHT + rows * LITEGRAPH_SLOT_HEIGHT,
+    bottom: DEFAULT_BOTTOM_INSET
+  };
+}
 var STATE_RING_COLOR = {
   running: "rgba(74,158,255,0.95)",
   success: "rgba(46,204,113,0.95)",
@@ -55045,7 +55220,7 @@ function createWidgetBridgeHost(layer, doc = globalThis.document) {
       el.className = "wf-comfy-widget";
       el.style.position = "absolute";
       el.style.pointerEvents = "none";
-      el.style.overflow = "hidden";
+      el.style.overflow = "visible";
       el.style.zIndex = "1";
       el.dataset.nodeId = nodeId;
       layer.appendChild(el);
@@ -55064,24 +55239,26 @@ function createWidgetBridgeHost(layer, doc = globalThis.document) {
       }
     },
     sync(nodes, viewport) {
-      const SIDE_INSET = 8;
-      const TOP_INSET = 22;
-      const BOTTOM_INSET = 8;
       const seen = /* @__PURE__ */ new Set();
-      for (const { id, node: node2, fullCover, selected, state } of nodes) {
+      for (const { id, node: node2, fullCover, selected, state, insets } of nodes) {
         seen.add(id);
         const el = ensureContainer(id);
         const rect = nodeToOverlayRect(node2, viewport);
         const scale = viewport.scale;
+        const SIDE_INSET = insets?.left ?? DEFAULT_SIDE_INSET;
+        const RIGHT_INSET = insets?.right ?? insets?.left ?? DEFAULT_SIDE_INSET;
+        const TOP_INSET = insets?.top ?? DEFAULT_TOP_INSET;
+        const BOTTOM_INSET = insets?.bottom ?? DEFAULT_BOTTOM_INSET;
         const designW = rect.width / scale;
         const designH = rect.height / scale;
-        const sideInset = SIDE_INSET / scale;
-        const topInsetD = (fullCover ? 0 : TOP_INSET) / scale;
-        const bottomInsetD = (fullCover ? 0 : BOTTOM_INSET) / scale;
-        el.style.left = `${rect.left + SIDE_INSET}px`;
-        el.style.top = `${rect.top + (fullCover ? 0 : TOP_INSET)}px`;
-        el.style.width = `${Math.max(0, designW - 2 * sideInset)}px`;
-        el.style.height = `${Math.max(0, designH - topInsetD - bottomInsetD)}px`;
+        const insetL = fullCover ? 0 : SIDE_INSET;
+        const insetR = fullCover ? 0 : RIGHT_INSET;
+        const insetT = fullCover ? 0 : TOP_INSET;
+        const insetB = fullCover ? 0 : BOTTOM_INSET;
+        el.style.left = `${rect.left + insetL * scale}px`;
+        el.style.top = `${rect.top + insetT * scale}px`;
+        el.style.width = `${Math.max(0, designW - insetL - insetR)}px`;
+        el.style.height = `${Math.max(0, designH - insetT - insetB)}px`;
         el.style.transform = `scale(${scale})`;
         el.style.transformOrigin = "0 0";
         el.style.display = "block";
@@ -55120,10 +55297,10 @@ function attachOverlayLayer(canvasContainer, doc = globalThis.document) {
   };
 }
 
-// ../src/features/workflowEditor/LiteGraphCanvas.tsx
+// src/features/workflowEditor/LiteGraphCanvas.tsx
 var React6 = __toESM(require_react());
 
-// ../src/features/workflowEditor/shortcuts.ts
+// src/features/workflowEditor/shortcuts.ts
 var NODE_MODE_ALWAYS = 0;
 var NODE_MODE_MUTE = 2;
 var NODE_MODE_BYPASS = 4;
@@ -55174,19 +55351,19 @@ function resolveShortcutAction(e2) {
 }
 function toggleModeForNodes(nodes, targetMode) {
   let changed = 0;
-  for (const n of nodes) {
-    n.mode = n.mode === targetMode ? NODE_MODE_ALWAYS : targetMode;
+  for (const n2 of nodes) {
+    n2.mode = n2.mode === targetMode ? NODE_MODE_ALWAYS : targetMode;
     changed++;
   }
   return changed;
 }
 function toggleCollapseForNodes(nodes) {
   let changed = 0;
-  for (const n of nodes) {
-    if (typeof n.collapse === "function") {
-      n.collapse();
+  for (const n2 of nodes) {
+    if (typeof n2.collapse === "function") {
+      n2.collapse();
     } else {
-      n.collapsed = !n.collapsed;
+      n2.collapsed = !n2.collapsed;
     }
     changed++;
   }
@@ -55197,9 +55374,9 @@ function computeSelectionBounds(nodes) {
     return null;
   }
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const n of nodes) {
-    const [x2, y] = n.pos;
-    const [w, h] = n.size ?? [100, 60];
+  for (const n2 of nodes) {
+    const [x2, y] = n2.pos;
+    const [w, h] = n2.size ?? [100, 60];
     minX = Math.min(minX, x2);
     minY = Math.min(minY, y);
     maxX = Math.max(maxX, x2 + w);
@@ -55207,11 +55384,11 @@ function computeSelectionBounds(nodes) {
   }
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
-function createGroupForNodes(graph, nodes, title = "Group", padding = 12) {
+function createGroupForNodes(graph, nodes, title2 = "Group", padding = 12) {
   if (!nodes.length || !graph) {
     return null;
   }
-  const group = new LGraphGroup(title);
+  const group = new LGraphGroup(title2);
   graph.add(group);
   const b = computeSelectionBounds(nodes);
   if (!b) {
@@ -55225,7 +55402,7 @@ function removeGroupsContaining(graph, groups, nodes) {
   let removed = 0;
   for (const group of groups) {
     const b = group.boundingRect;
-    const contains = nodes.some((n) => n.pos[0] >= b[0] && n.pos[1] >= b[1] && n.pos[0] <= b[0] + b[2] && n.pos[1] <= b[1] + b[3]);
+    const contains = nodes.some((n2) => n2.pos[0] >= b[0] && n2.pos[1] >= b[1] && n2.pos[0] <= b[0] + b[2] && n2.pos[1] <= b[1] + b[3]);
     if (contains) {
       graph.remove(group);
       removed++;
@@ -55234,7 +55411,7 @@ function removeGroupsContaining(graph, groups, nodes) {
   return removed;
 }
 
-// ../src/features/workflowEditor/comfyHost/canvasNodeFilter.ts
+// src/features/workflowEditor/comfyHost/canvasNodeFilter.ts
 var SAROSIS_NODE_TYPES = /* @__PURE__ */ new Set([
   "Sarosis.Start",
   "Sarosis.End",
@@ -55246,28 +55423,30 @@ var SAROSIS_NODE_TYPES = /* @__PURE__ */ new Set([
   "Sarosis.IfElse",
   "Sarosis.Switch",
   "Sarosis.AskUser",
-  "Sarosis.Group"
+  "Sarosis.Group",
+  "Sarosis.ModelImageGen",
+  "Sarosis.ProviderPicker"
 ]);
 function filterNodesForLiteGraph(graph, hasSpec) {
   const dropped = [];
   const nodes = [];
-  for (const n of graph.nodes ?? []) {
-    if (SAROSIS_NODE_TYPES.has(n.type)) {
-      nodes.push(n);
+  for (const n2 of graph.nodes ?? []) {
+    if (SAROSIS_NODE_TYPES.has(n2.type)) {
+      nodes.push(n2);
       continue;
     }
-    if (!hasSpec(n.type)) {
-      dropped.push({ id: n.id, type: n.type, reason: "unknown" });
+    if (!hasSpec(n2.type)) {
+      dropped.push({ id: n2.id, type: n2.type, reason: "unknown" });
       continue;
     }
-    nodes.push(n);
+    nodes.push(n2);
   }
-  const keptIds = new Set(nodes.map((n) => n.id));
+  const keptIds = new Set(nodes.map((n2) => n2.id));
   const links = (graph.links ?? []).filter((l) => keptIds.has(l[1]) && keptIds.has(l[3]));
   return { keep: { ...graph, nodes, links }, dropped };
 }
 
-// ../src/features/workflowEditor/comfyHost/cardState.ts
+// src/features/workflowEditor/comfyHost/cardState.ts
 var React3 = __toESM(require_react());
 var IDLE = { runState: "idle", progress: 0 };
 var CardStateStore = class {
@@ -55327,12 +55506,12 @@ function useNodeCardState(store, nodeId) {
   return state;
 }
 
-// ../src/features/workflowEditor/comfyHost/nodeCard.tsx
+// src/features/workflowEditor/comfyHost/nodeCard.tsx
 var React5 = __toESM(require_react());
 var import_react2 = __toESM(require_react());
 var import_client = __toESM(require_client());
 
-// ../src/features/workflowEditor/comfyHost/useMediaSnapshot.ts
+// src/features/workflowEditor/comfyHost/useMediaSnapshot.ts
 var React4 = __toESM(require_react());
 function useStoreVersion(store) {
   return React4.useSyncExternalStore(
@@ -55350,7 +55529,7 @@ function useNodeSnapshots(store, nodeId) {
   return store.byNode(nodeId);
 }
 
-// ../src/features/workflowEditor/comfyHost/nodeCard.tsx
+// src/features/workflowEditor/comfyHost/nodeCard.tsx
 function toControls(spec, properties) {
   if (!spec?.widgets) {
     return void 0;
@@ -55390,15 +55569,11 @@ function firstNonEmpty(...values) {
   return "";
 }
 function getNodeCardMeta(spec, properties) {
-  const title = firstNonEmpty(
-    properties.title,
-    properties.label,
-    spec?.title,
-    spec?.type,
-    "Node"
-  );
+  const isSchema = spec?.kind === "schema";
+  const rawTitle = isSchema ? firstNonEmpty(spec?.title, properties.title, properties.label, spec?.type, "Node") : firstNonEmpty(properties.title, properties.label, spec?.title, spec?.type, "Node");
+  const title2 = rawTitle.replace(/^(?:ComfyTV\.|Comfy\.|Sarosis\.)/i, "");
   const kind = spec?.kind ?? "react";
-  const kindLabel = kind === "schema" ? "schema\u2192React" : kind === "native" ? "ComfyUI \u539F\u751F" : "React";
+  const kindLabel = kind === "schema" ? "schema\u2192React" : kind === "native" ? "ComfyUI \u539F\u751F" : kind === "llm" ? "Provider \u6587\u751F\u56FE" : "React";
   let widgetSummary = spec?.widgets?.length ? spec.widgets.slice(0, 4).map((w) => {
     const v2 = properties[w.name];
     return v2 === void 0 ? w.name : `${w.name}=${String(v2)}`;
@@ -55419,7 +55594,7 @@ function getNodeCardMeta(spec, properties) {
   }
   const schemaDetail = spec?.comfyTV ? `stage: ${spec.comfyTV.stageKind ?? "?"} \xB7 wf: ${spec.comfyTV.workflowKind ?? "?"}` : void 0;
   return {
-    title,
+    title: title2,
     kind,
     kindLabel,
     inputs: spec?.inputs ?? [],
@@ -55437,7 +55612,8 @@ function getNodeCardMeta(spec, properties) {
 var KIND_COLOR = {
   react: "#3b82f6",
   schema: "#e879f9",
-  native: "#f59e0b"
+  native: "#f59e0b",
+  llm: "#06b6d4"
 };
 var RUN_LABEL = {
   image: { label: "\u751F\u6210\u56FE\u50CF", icon: "\u25B6" },
@@ -55489,6 +55665,43 @@ function ErrorBanner({ message, cancel }) {
     /* @__PURE__ */ React5.createElement("span", null, message)
   );
 }
+function snapshotFileName(entry) {
+  const m = /[^/?#]+\.[A-Za-z0-9]{2,5}(?:[?#]|$)/.exec(entry.media.ref);
+  if (m) {
+    return m[0].replace(/[?#].*$/, "");
+  }
+  const safe = entry.key.replace(/[^A-Za-z0-9_.-]/g, "_");
+  const ext = entry.media.kind === "image" ? ".png" : entry.media.kind === "video" ? ".mp4" : ".bin";
+  return `${safe}${ext}`;
+}
+async function downloadSnapshot(store, entry) {
+  let blob = null;
+  const ref = entry.media.ref;
+  if (/^https?:\/\//i.test(ref) || ref.startsWith("data:")) {
+    try {
+      const res = await fetch(ref);
+      if (res.ok) {
+        blob = await res.blob();
+      }
+    } catch {
+      blob = null;
+    }
+  } else {
+    const data = await store.getPayload(entry.key);
+    if (data != null) {
+      blob = data instanceof Blob ? data : new Blob([data]);
+    }
+  }
+  if (!blob) {
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = snapshotFileName(entry);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1e3);
+}
 function SnapshotPreview({ store, nodeId }) {
   const entries = useNodeSnapshots(store, nodeId);
   if (entries.length === 0) {
@@ -55497,14 +55710,59 @@ function SnapshotPreview({ store, nodeId }) {
   const images = entries.filter((e2) => e2.media.kind === "image");
   const others = entries.filter((e2) => e2.media.kind !== "image");
   if (images.length > 0) {
-    return /* @__PURE__ */ React5.createElement("div", { style: { marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4 } }, images.map((e2, i) => /* @__PURE__ */ React5.createElement("div", { key: i, style: {
+    return /* @__PURE__ */ React5.createElement("div", { style: { marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4 } }, images.length > 1 && /* @__PURE__ */ React5.createElement("div", { style: {
+      width: "100%",
+      fontSize: 9,
+      fontFamily: "Consolas, monospace",
+      color: "var(--vscode-descriptionForeground, #858585)",
+      marginBottom: -1
+    } }, "BATCH: ", images.length), images.map((e2, i) => /* @__PURE__ */ React5.createElement("div", { key: i, style: {
+      position: "relative",
       width: 64,
       height: 64,
       borderRadius: 4,
       overflow: "hidden",
       border: "1px solid rgba(255,255,255,.12)",
-      background: "rgba(255,255,255,.03)"
-    } }, /* @__PURE__ */ React5.createElement("img", { src: e2.media.ref, alt: "preview", style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }))));
+      background: "rgba(255,255,255,.03)",
+      // thumbnails are interactive (download) even though the
+      // overlay container is pointer-events:none
+      pointerEvents: "auto"
+    } }, /* @__PURE__ */ React5.createElement("img", { src: e2.media.ref, alt: "preview", style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } }), /* @__PURE__ */ React5.createElement(
+      "button",
+      {
+        title: "\u4E0B\u8F7D",
+        onClick: (ev) => {
+          ev.stopPropagation();
+          void downloadSnapshot(store, e2);
+        },
+        style: {
+          position: "absolute",
+          right: 2,
+          bottom: 2,
+          width: 16,
+          height: 16,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 9,
+          lineHeight: 1,
+          cursor: "pointer",
+          background: "rgba(0,0,0,.55)",
+          color: "#fff",
+          border: "none",
+          borderRadius: 3,
+          opacity: 0,
+          transition: "opacity .12s"
+        },
+        onMouseEnter: (ev) => {
+          ev.currentTarget.style.opacity = "1";
+        },
+        onMouseLeave: (ev) => {
+          ev.currentTarget.style.opacity = "0";
+        }
+      },
+      "\u2913"
+    ))));
   }
   return /* @__PURE__ */ React5.createElement("div", { style: {
     fontSize: 9,
@@ -55572,6 +55830,16 @@ function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }) {
   const runLabel = RUN_LABEL[meta.stageKind ?? ""] ?? { label: "\u8FD0\u884C", icon: "\u25B6" };
   const showRun = meta.kind === "schema";
   const duration = run.durationMs != null && run.durationMs > 0 ? run.durationMs < 6e4 ? `${(run.durationMs / 1e3).toFixed(1)}s` : `${Math.floor(run.durationMs / 6e4)}m ${Math.round(run.durationMs % 6e4 / 1e3)}s` : "";
+  const primaryOutputType = (() => {
+    const outs = meta.outputs ?? [];
+    const prefer = outs.find((o) => o.type === "COMFYTV_IMAGES" || o.type === "COMFYTV_IMAGE");
+    const fallback = outs[0]?.type;
+    const raw = prefer?.type ?? fallback;
+    if (!raw) {
+      return void 0;
+    }
+    return raw.startsWith("COMFYTV_") ? raw.slice("COMFYTV_".length) : raw;
+  })();
   const showOutput = run.runState === "success" || run.runState === "error";
   const promptStore = getPromptStore();
   React5.useEffect(() => {
@@ -55593,10 +55861,10 @@ function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }) {
     }
     return init;
   });
-  const commitControl = React5.useCallback((name, value) => {
-    setControlDrafts((d) => ({ ...d, [name]: value }));
+  const commitControl = React5.useCallback((name, value2) => {
+    setControlDrafts((d) => ({ ...d, [name]: value2 }));
     if (nodeId) {
-      window.dispatchEvent(new CustomEvent("wf-node-control", { detail: { nodeId, name, value } }));
+      window.dispatchEvent(new CustomEvent("wf-node-control", { detail: { nodeId, name, value: value2 } }));
     }
   }, [nodeId]);
   return /* @__PURE__ */ React5.createElement(
@@ -55611,53 +55879,60 @@ function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }) {
         pointerEvents: "none",
         userSelect: "none",
         overflow: "hidden",
-        borderRadius: 8,
         border: `1.5px solid ${kindColor}55`,
-        // Opaque card background so overlapping cards fully occlude
-        // the card behind them (semi-transparent .94 let the lower
-        // card bleed through, which looked like "z-order" chaos).
-        background: "linear-gradient(180deg, rgb(38,38,46), rgb(24,24,28))",
         color: "var(--vscode-foreground, #ccc)",
         fontFamily: "inherit",
-        boxShadow: "0 4px 18px rgba(0,0,0,.45)",
         fontSize: 11,
-        padding: "6px 8px",
         display: "flex",
-        flexDirection: "column",
-        gap: 3
+        flexDirection: "column"
       }
     },
-    meta.kind === "schema" && /* @__PURE__ */ React5.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React5.createElement("span", { style: { fontSize: 11, fontWeight: 600, color: "var(--vscode-foreground, #e8e8e8)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, meta.title)),
-    meta.brand && /* @__PURE__ */ React5.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React5.createElement("span", { style: { fontSize: 8, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.45, color: "var(--vscode-descriptionForeground, #858585)" } }, meta.brand), meta.schemaDetail && /* @__PURE__ */ React5.createElement("span", { style: { marginLeft: "auto", fontSize: 9, color: "var(--vscode-descriptionForeground, #858585)", fontFamily: "Consolas, monospace" } }, meta.schemaDetail)),
-    !meta.brand && meta.schemaDetail && /* @__PURE__ */ React5.createElement("div", { style: { fontSize: 9, color: "var(--vscode-descriptionForeground, #858585)", fontFamily: "Consolas, monospace" } }, meta.schemaDetail),
-    meta.widgetSummary && /* @__PURE__ */ React5.createElement("div", { style: { fontSize: 9, color: "#9cdcfe", fontFamily: "Consolas, monospace" } }, meta.widgetSummary),
-    showRun && meta.controls && meta.controls.length > 0 && /* @__PURE__ */ React5.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 3 } }, meta.controls.map((c) => {
+    /* @__PURE__ */ React5.createElement("div", { style: {
+      background: "linear-gradient(180deg, rgb(38,38,46), rgb(24,24,28))",
+      boxShadow: "0 4px 18px rgba(0,0,0,.45)",
+      padding: "4px 4px 6px",
+      display: "flex",
+      flexDirection: "column",
+      gap: 3,
+      flex: 1,
+      minWidth: 0,
+      overflow: "hidden"
+    } }, meta.kind !== "schema" && meta.brand && /* @__PURE__ */ React5.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React5.createElement("span", { style: { fontSize: 8, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.45, color: "var(--vscode-descriptionForeground, #858585)" } }, meta.brand), meta.schemaDetail && /* @__PURE__ */ React5.createElement("span", { style: { marginLeft: "auto", fontSize: 9, color: "var(--vscode-descriptionForeground, #858585)", fontFamily: "Consolas, monospace" } }, meta.schemaDetail)), meta.kind !== "schema" && !meta.brand && meta.schemaDetail && /* @__PURE__ */ React5.createElement("div", { style: { fontSize: 9, color: "var(--vscode-descriptionForeground, #858585)", fontFamily: "Consolas, monospace" } }, meta.schemaDetail), meta.kind !== "schema" && meta.widgetSummary && /* @__PURE__ */ React5.createElement("div", { style: { fontSize: 9, color: "#9cdcfe", fontFamily: "Consolas, monospace" } }, meta.widgetSummary), showRun && meta.controls && meta.controls.length > 0 && /* @__PURE__ */ React5.createElement("div", { style: { display: "grid", gridTemplateColumns: meta.kind === "schema" ? "1fr" : "1fr 1fr", gap: meta.kind === "schema" ? 4 : 3 } }, meta.controls.map((c) => {
       const val = controlDrafts[c.name] ?? c.value;
+      const isSchema = meta.kind === "schema";
+      const labelStyle = {
+        color: "var(--vscode-descriptionForeground, #858585)",
+        width: isSchema ? 70 : 38,
+        flexShrink: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      };
+      const inputStyle = {
+        flex: 1,
+        padding: isSchema ? "3px 6px" : "1px 3px",
+        borderRadius: 3,
+        minWidth: 0,
+        background: "var(--vscode-input-background, rgba(255,255,255,.06))",
+        color: "var(--vscode-foreground, #e8e8e8)",
+        border: "1px solid var(--vscode-input-border, rgba(255,255,255,.14))",
+        fontSize: isSchema ? 11 : 9,
+        fontFamily: "inherit"
+      };
       if (c.type === "COMBO") {
         const wide = !c.options || c.options.length === 0;
-        return /* @__PURE__ */ React5.createElement("label", { key: c.name, style: { gridColumn: wide ? "1 / -1" : "auto", display: "flex", alignItems: "center", gap: 4, fontSize: 9, minWidth: 0 } }, /* @__PURE__ */ React5.createElement("span", { style: { color: "var(--vscode-descriptionForeground, #858585)", width: 38, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.name), /* @__PURE__ */ React5.createElement(
+        return /* @__PURE__ */ React5.createElement("label", { key: c.name, style: { gridColumn: wide ? "1 / -1" : "auto", display: "flex", alignItems: "center", gap: 6, fontSize: isSchema ? 11 : 9, minWidth: 0, pointerEvents: "auto" } }, /* @__PURE__ */ React5.createElement("span", { style: labelStyle }, c.name), /* @__PURE__ */ React5.createElement(
           "select",
           {
             value: String(val ?? ""),
             onChange: (e2) => commitControl(c.name, e2.target.value),
-            style: {
-              pointerEvents: "auto",
-              flex: 1,
-              padding: "1px 3px",
-              borderRadius: 3,
-              minWidth: 0,
-              background: "var(--vscode-input-background, rgba(255,255,255,.06))",
-              color: "var(--vscode-foreground, #e8e8e8)",
-              border: "1px solid var(--vscode-input-border, rgba(255,255,255,.14))",
-              fontSize: 9,
-              fontFamily: "inherit"
-            }
+            style: inputStyle
           },
           c.options && c.options.length > 0 ? c.options.map((o) => /* @__PURE__ */ React5.createElement("option", { key: String(o), value: String(o) }, String(o))) : /* @__PURE__ */ React5.createElement("option", { value: String(val ?? "") }, String(val ?? ""))
         ));
       }
       if (c.type === "INT" || c.type === "FLOAT") {
-        return /* @__PURE__ */ React5.createElement("label", { key: c.name, style: { display: "flex", alignItems: "center", gap: 4, fontSize: 9, minWidth: 0 } }, /* @__PURE__ */ React5.createElement("span", { style: { color: "var(--vscode-descriptionForeground, #858585)", width: 38, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.name), /* @__PURE__ */ React5.createElement(
+        return /* @__PURE__ */ React5.createElement("label", { key: c.name, style: { display: "flex", alignItems: "center", gap: 6, fontSize: isSchema ? 11 : 9, minWidth: 0, pointerEvents: "auto" } }, /* @__PURE__ */ React5.createElement("span", { style: labelStyle }, c.name), /* @__PURE__ */ React5.createElement(
           "input",
           {
             type: "number",
@@ -55665,35 +55940,22 @@ function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }) {
             min: c.min,
             max: c.max,
             onChange: (e2) => commitControl(c.name, c.type === "INT" ? Math.round(Number(e2.target.value)) : Number(e2.target.value)),
-            style: {
-              pointerEvents: "auto",
-              flex: 1,
-              padding: "1px 3px",
-              borderRadius: 3,
-              minWidth: 0,
-              background: "var(--vscode-input-background, rgba(255,255,255,.06))",
-              color: "var(--vscode-foreground, #e8e8e8)",
-              border: "1px solid var(--vscode-input-border, rgba(255,255,255,.14))",
-              fontSize: 9,
-              fontFamily: "inherit"
-            }
+            style: inputStyle
           }
         ));
       }
       if (c.type === "BOOLEAN") {
-        return /* @__PURE__ */ React5.createElement("label", { key: c.name, style: { display: "flex", alignItems: "center", gap: 4, fontSize: 9, minWidth: 0 } }, /* @__PURE__ */ React5.createElement(
+        return /* @__PURE__ */ React5.createElement("label", { key: c.name, style: { display: "flex", alignItems: "center", gap: 4, fontSize: 9, minWidth: 0, pointerEvents: "auto" } }, /* @__PURE__ */ React5.createElement(
           "input",
           {
             type: "checkbox",
             checked: !!val,
-            onChange: (e2) => commitControl(c.name, e2.target.checked),
-            style: { pointerEvents: "auto" }
+            onChange: (e2) => commitControl(c.name, e2.target.checked)
           }
         ), /* @__PURE__ */ React5.createElement("span", { style: { color: "var(--vscode-descriptionForeground, #858585)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, c.name));
       }
       return null;
-    })),
-    showRun && meta.hasPrompt && /* @__PURE__ */ React5.createElement(
+    })), showRun && meta.hasPrompt && /* @__PURE__ */ React5.createElement(
       "textarea",
       {
         value: promptValue,
@@ -55719,8 +55981,7 @@ function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }) {
           overflowY: "auto"
         }
       }
-    ),
-    showRun && /* @__PURE__ */ React5.createElement(React5.Fragment, null, /* @__PURE__ */ React5.createElement(
+    ), showRun && /* @__PURE__ */ React5.createElement(React5.Fragment, null, /* @__PURE__ */ React5.createElement(
       "button",
       {
         type: "button",
@@ -55753,7 +56014,15 @@ function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }) {
       },
       /* @__PURE__ */ React5.createElement("span", null, run.runState === "running" ? "\u23F9" : run.runState === "success" ? "\u21BB" : runLabel.icon),
       /* @__PURE__ */ React5.createElement("span", null, run.runState === "running" ? "\u53D6\u6D88" : run.runState === "success" ? "\u91CD\u65B0\u8FD0\u884C" : run.runState === "error" ? "\u91CD\u8BD5" : runLabel.label)
-    ), run.runState === "running" && /* @__PURE__ */ React5.createElement(RunProgress, { progress: run.progress }), run.runState === "error" && /* @__PURE__ */ React5.createElement(ErrorBanner, { message: run.errorMsg ?? "\u6267\u884C\u5931\u8D25", cancel: false }), showOutput && /* @__PURE__ */ React5.createElement(React5.Fragment, null, /* @__PURE__ */ React5.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5, marginTop: 2 } }, /* @__PURE__ */ React5.createElement(SectionLabel, null, "Output"), /* @__PURE__ */ React5.createElement("span", { style: { marginLeft: "auto", fontSize: 9, color: "var(--vscode-descriptionForeground, #858585)", fontFamily: "Consolas, monospace" } }, duration)), snapshotStore && nodeId && /* @__PURE__ */ React5.createElement(SnapshotPreview, { store: snapshotStore, nodeId })), meta.actions && meta.actions.length > 0 && /* @__PURE__ */ React5.createElement(React5.Fragment, null, /* @__PURE__ */ React5.createElement("div", { style: { marginTop: 3 } }, /* @__PURE__ */ React5.createElement(SectionLabel, null, "Actions")), /* @__PURE__ */ React5.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 4 } }, meta.actions.map((a) => /* @__PURE__ */ React5.createElement(
+    ), run.runState === "running" && /* @__PURE__ */ React5.createElement(RunProgress, { progress: run.progress }), run.runState === "error" && /* @__PURE__ */ React5.createElement(ErrorBanner, { message: run.errorMsg ?? "\u6267\u884C\u5931\u8D25", cancel: false }), showOutput && /* @__PURE__ */ React5.createElement(React5.Fragment, null, /* @__PURE__ */ React5.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5, marginTop: 4 } }, /* @__PURE__ */ React5.createElement("span", { style: { fontSize: 8, fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", color: "var(--vscode-descriptionForeground, #858585)" } }, "Output"), primaryOutputType && /* @__PURE__ */ React5.createElement("span", { style: {
+      fontSize: 8,
+      fontWeight: 700,
+      letterSpacing: 1,
+      padding: "1px 5px",
+      borderRadius: 3,
+      background: "rgba(168, 85, 247, .18)",
+      color: "#a855f7"
+    } }, "(", primaryOutputType, ")"), /* @__PURE__ */ React5.createElement("span", { style: { marginLeft: "auto", fontSize: 9, color: "var(--vscode-descriptionForeground, #858585)", fontFamily: "Consolas, monospace" } }, duration)), snapshotStore && nodeId && /* @__PURE__ */ React5.createElement(SnapshotPreview, { store: snapshotStore, nodeId })), meta.actions && meta.actions.length > 0 && /* @__PURE__ */ React5.createElement(React5.Fragment, null, /* @__PURE__ */ React5.createElement("div", { style: { marginTop: 3 } }, /* @__PURE__ */ React5.createElement(SectionLabel, null, "Actions")), /* @__PURE__ */ React5.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 4 } }, meta.actions.map((a) => /* @__PURE__ */ React5.createElement(
       "button",
       {
         key: a,
@@ -55777,7 +56046,7 @@ function NodeCard({ meta, snapshotStore, cardStateStore, nodeId }) {
         }
       },
       a
-    )))))
+    ))))), meta.kind === "schema" && /* @__PURE__ */ React5.createElement("div", { style: { marginTop: "auto", paddingTop: 4, fontSize: 7.5, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase", opacity: 0.35, color: "var(--vscode-descriptionForeground, #858585)", textAlign: "left" } }, "ComfyTV"))
   );
 }
 function createNodeCard(container, meta, options) {
@@ -55812,7 +56081,309 @@ function createNodeCard(container, meta, options) {
   };
 }
 
-// ../src/features/workflowEditor/LiteGraphCanvas.tsx
+// src/features/workflowEditor/comfyHost/inlineWidgetEditor.ts
+function showInlineEditor(opts) {
+  const { pos: pos2, value: value2, multiline: multiline2, onCommit } = opts;
+  const tag = multiline2 ? "textarea" : "input";
+  const input = document.createElement(tag);
+  input.className = "litegraph-inline-editor";
+  input.value = value2;
+  if (!multiline2) {
+    input.type = "text";
+  }
+  input.style.position = "fixed";
+  input.style.left = `${pos2.left}px`;
+  input.style.top = `${pos2.top}px`;
+  input.style.width = `${pos2.width}px`;
+  input.style.height = `${pos2.height}px`;
+  input.style.zIndex = "1000";
+  document.body.appendChild(input);
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) {
+      return;
+    }
+    disposed = true;
+    try {
+      document.body.removeChild(input);
+    } catch {
+    }
+  };
+  let committed = false;
+  const commit2 = (v2) => {
+    if (committed) {
+      return;
+    }
+    committed = true;
+    dispose();
+    onCommit(v2);
+  };
+  input.addEventListener("keydown", (e2) => {
+    e2.stopPropagation();
+    if (e2.key === "Escape") {
+      e2.preventDefault();
+      commit2(null);
+    } else if (e2.key === "Enter") {
+      if (multiline2 && e2.shiftKey) {
+        return;
+      }
+      e2.preventDefault();
+      commit2(input.value);
+    }
+  });
+  input.addEventListener("blur", () => {
+    setTimeout(() => commit2(input.value), 0);
+  });
+  setTimeout(() => {
+    input.focus();
+    input.select();
+  }, 0);
+  return dispose;
+}
+function widgetToScreen(liteCanvas2, node2, widget2) {
+  const ds = liteCanvas2.ds;
+  const rect = liteCanvas2.canvas.getBoundingClientRect();
+  if (!rect.width) {
+    return null;
+  }
+  const nodeWidth = widget2.width || node2.size[0];
+  const labelW = Math.min(nodeWidth * 0.35, 120);
+  const fieldX = labelW + 12;
+  const fieldW = Math.max(40, nodeWidth - fieldX - 8);
+  const H = Math.max(22, widget2.computedHeight ?? 22);
+  const fieldH = H - 4;
+  const fieldY = widget2.y + 2;
+  const left = (node2.pos[0] + fieldX + ds.offset[0]) * ds.scale + rect.left;
+  const top = (node2.pos[1] + fieldY + ds.offset[1]) * ds.scale + rect.top;
+  return {
+    left,
+    top,
+    width: fieldW * ds.scale,
+    height: fieldH * ds.scale
+  };
+}
+function patchInlineWidgetEditor(liteCanvas) {
+  const originalPrompt = liteCanvas.prompt.bind(liteCanvas);
+  liteCanvas.prompt = function patchedPrompt(title, value, callback, event, multiline = false) {
+    const cx = event?.canvasX;
+    const cy = event?.canvasY;
+    if (cx == null || cy == null) {
+      return originalPrompt(title, value, callback, event, multiline);
+    }
+    const node = liteCanvas.node_over;
+    if (!node || typeof node.getWidgetOnPos !== "function") {
+      return originalPrompt(title, value, callback, event, multiline);
+    }
+    const widget = node.getWidgetOnPos(cx, cy);
+    if (!widget) {
+      return originalPrompt(title, value, callback, event, multiline);
+    }
+    const pos = widgetToScreen(liteCanvas, node, widget);
+    if (!pos) {
+      return originalPrompt(title, value, callback, event, multiline);
+    }
+    const commit = (v) => {
+      if (v === null) {
+        callback(null);
+        return;
+      }
+      if (widget.type === "number") {
+        if (/^[\d\s()*+/-]+|\d+\.\d+$/.test(v)) {
+          try {
+            v = String(eval(v));
+          } catch {
+          }
+        }
+        const n = Number(v);
+        if (isNaN(n)) {
+          callback(null);
+          return;
+        }
+      }
+      callback(v);
+    };
+    return showInlineEditor({
+      value: String(value ?? ""),
+      multiline: !!multiline || !!widget.options?.multiline,
+      pos,
+      onCommit: commit
+    });
+  };
+}
+
+// src/features/workflowEditor/comfyHost/indexedDBBackend.ts
+var DB_VERSION = 1;
+var REFS_STORE = "refs";
+var PAYLOADS_STORE = "payloads";
+function openDb(idb, name) {
+  return new Promise((resolve, reject) => {
+    const req = idb.open(name, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(REFS_STORE)) {
+        db.createObjectStore(REFS_STORE, { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains(PAYLOADS_STORE)) {
+        db.createObjectStore(PAYLOADS_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
+  });
+}
+function request(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error ?? new Error("IndexedDB request failed"));
+  });
+}
+function put(db, store, value2, key) {
+  const tx = db.transaction(store, "readwrite");
+  const req = key === void 0 ? tx.objectStore(store).put(value2) : tx.objectStore(store).put(value2, key);
+  return request(req);
+}
+function del(db, store, key) {
+  const tx = db.transaction(store, "readwrite");
+  return request(tx.objectStore(store).delete(key));
+}
+function get(db, store, key) {
+  const tx = db.transaction(store, "readonly");
+  return request(tx.objectStore(store).get(key));
+}
+function getAll(db, store) {
+  const tx = db.transaction(store, "readonly");
+  return request(tx.objectStore(store).getAll());
+}
+function createIndexedDBBackend(opts = {}) {
+  const idbFactory = opts.idb ?? globalThis.indexedDB;
+  if (!idbFactory) {
+    return {
+      async save(key) {
+        return key;
+      },
+      async load() {
+        return null;
+      },
+      async remove() {
+      }
+    };
+  }
+  const dbName = opts.dbName ?? "vssaros-media";
+  const dbPromise = openDb(idbFactory, dbName);
+  return {
+    async save(key, data) {
+      const db = await dbPromise;
+      await put(db, PAYLOADS_STORE, data, key);
+      return key;
+    },
+    async load(key) {
+      const db = await dbPromise;
+      const value2 = await get(db, PAYLOADS_STORE, key);
+      return value2 ?? null;
+    },
+    async remove(key) {
+      const db = await dbPromise;
+      await del(db, PAYLOADS_STORE, key);
+    },
+    async saveMeta(key, media) {
+      const db = await dbPromise;
+      await put(db, REFS_STORE, { key, media });
+    },
+    async removeMeta(key) {
+      const db = await dbPromise;
+      await del(db, REFS_STORE, key);
+    },
+    async listMeta() {
+      const db = await dbPromise;
+      const rows = await getAll(db, REFS_STORE);
+      return rows.map((r) => ({ key: r.key, media: r.media }));
+    }
+  };
+}
+
+// src/bridge/messageClient.ts
+var DEFAULT_TIMEOUT = 3e4;
+var requestIdCounter = 0;
+var pendingRequests = /* @__PURE__ */ new Map();
+function safeAcquire() {
+  if (typeof window === "undefined") {
+    return makeStub();
+  }
+  if (window.__AS_VSCODE_API__) {
+    return window.__AS_VSCODE_API__;
+  }
+  try {
+    const api = acquireVsCodeApi();
+    window.__AS_VSCODE_API__ = api;
+    return api;
+  } catch {
+    return window.__AS_VSCODE_API__ ?? makeStub();
+  }
+}
+function makeStub() {
+  const noop = () => void 0;
+  const stub = {
+    postMessage: noop,
+    getState: () => ({}),
+    setState: noop
+  };
+  return stub;
+}
+var vscode = safeAcquire();
+function sendRequest(type, payload, timeout = DEFAULT_TIMEOUT) {
+  return new Promise((resolve, reject) => {
+    const id = `req_${++requestIdCounter}_${Date.now()}`;
+    const timer = timeout > 0 ? setTimeout(() => {
+      pendingRequests.delete(id);
+      reject(new Error(`Request ${type} timed out after ${timeout}ms`));
+    }, timeout) : void 0;
+    pendingRequests.set(id, {
+      resolve,
+      reject,
+      timer
+    });
+    vscode.postMessage({
+      id,
+      direction: "toHost",
+      type,
+      payload
+    });
+  });
+}
+
+// src/features/workflowEditor/mediaAssets.ts
+async function mediaImport(req) {
+  return sendRequest("media.import", req);
+}
+async function mediaGet(id) {
+  return sendRequest("media.get", { id });
+}
+async function resolveAssetUrl(a) {
+  if (/^(https?|data):/i.test(a.ref)) {
+    return a.ref;
+  }
+  if (a.filePath) {
+    return mediaGetUrl(a.id);
+  }
+  return null;
+}
+async function mediaGetUrl(id) {
+  return sendRequest("media.getUrl", { id });
+}
+
+// src/features/workflowEditor/comfyHost/mediaCollect.ts
+function shouldCollectMedia(workflowId, ref, collected) {
+  if (!ref || ref.startsWith("blob:")) {
+    return null;
+  }
+  const key = `${workflowId}:${ref}`;
+  if (collected.has(key)) {
+    return null;
+  }
+  return { key, provider: /^https?:\/\//i.test(ref) ? "comfyui" : "local" };
+}
+
+// src/features/workflowEditor/LiteGraphCanvas.tsx
 function applyNodeDragDelta(origPos, clientDx, clientDy, scale) {
   return [
     origPos[0] + clientDx / scale,
@@ -55852,8 +56423,23 @@ function ensureSarosisRegistration() {
   registerSarosisLiteGraphNodes();
   sarosisRegistered = true;
 }
+var collectedAssetKeys = /* @__PURE__ */ new Set();
+function collectAsset(workflowId, entry) {
+  const decision = shouldCollectMedia(workflowId, entry.media.ref, collectedAssetKeys);
+  if (!decision) {
+    return;
+  }
+  collectedAssetKeys.add(decision.key);
+  void mediaImport({
+    ref: entry.media.ref,
+    kind: entry.media.kind,
+    workflowId: workflowId || void 0,
+    nodeId: entry.nodeId,
+    provider: decision.provider
+  });
+}
 var LiteGraphCanvas = React6.forwardRef(
-  function LiteGraphCanvas2({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onRequestRun }, ref) {
+  function LiteGraphCanvas2({ className, style, onNodeDoubleClick, onNodeRun, onCanvasContextMenu, onGroupContextMenu, onRequestRun, workflowId }, ref) {
     const canvasRef = React6.useRef(null);
     const graphRef = React6.useRef(null);
     const canvasInstanceRef = React6.useRef(null);
@@ -55862,7 +56448,23 @@ var LiteGraphCanvas = React6.forwardRef(
     const suppressStoreSync = React6.useRef(false);
     const snapshotStoreRef = React6.useRef(null);
     if (!snapshotStoreRef.current) {
-      snapshotStoreRef.current = new MediaSnapshotStore(createMemoryBackend());
+      const dbName = workflowId ? `vssaros-media-${workflowId}` : "vssaros-media";
+      snapshotStoreRef.current = new MediaSnapshotStore(
+        createIndexedDBBackend({ dbName }),
+        {
+          persistent: true,
+          // P1 auto-collect: every produced media ref is also indexed in
+          // the host media library (media.db), so the gallery shows the
+          // workflow's generated images even before a manual "save".
+          onAsset: (entry) => {
+            if (entry.media.kind !== "image") {
+              return;
+            }
+            collectAsset(workflowId, entry);
+          }
+        }
+      );
+      void snapshotStoreRef.current.hydrate();
     }
     const cardStateStoreRef = React6.useRef(null);
     if (!cardStateStoreRef.current) {
@@ -55886,11 +56488,12 @@ var LiteGraphCanvas = React6.forwardRef(
       ensureSarosisRegistration();
       LiteGraph.isValidConnection = isValidLiteGraphConnection;
       const graph = new LGraph();
-      const liteCanvas = new LGraphCanvas(canvas2, graph);
-      liteCanvas.connectionColor = "#c0a000";
-      liteCanvas.linkColor = "#c0a000";
-      liteCanvas.link_width = 2;
-      applyComfyNodeStyle(liteCanvas, LGraphNode, LiteGraph, (nodeId) => {
+      const liteCanvas2 = new LGraphCanvas(canvas2, graph);
+      liteCanvas2.connectionColor = "#c0a000";
+      liteCanvas2.linkColor = "#c0a000";
+      liteCanvas2.link_width = 2;
+      patchInlineWidgetEditor(liteCanvas2);
+      applyComfyNodeStyle(liteCanvas2, LGraphNode, LiteGraph, (nodeId) => {
         const s = cardStateStoreRef.current?.get(nodeId);
         if (!s) {
           return void 0;
@@ -55901,30 +56504,30 @@ var LiteGraphCanvas = React6.forwardRef(
         const w = container.clientWidth;
         const h = container.clientHeight;
         if (w > 0 && h > 0) {
-          liteCanvas.resize(w, h);
+          liteCanvas2.resize(w, h);
         }
       };
       applyCanvasSize();
       const resizeObserver = new ResizeObserver(applyCanvasSize);
       resizeObserver.observe(container);
-      liteCanvas.clear_background_color = "#1e1e1e";
-      liteCanvas.onRender = (fgCanvas, ctx) => {
+      liteCanvas2.clear_background_color = "#1e1e1e";
+      liteCanvas2.onRender = (fgCanvas, ctx) => {
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.fillStyle = "#1e1e1e";
         ctx.fillRect(0, 0, fgCanvas.width, fgCanvas.height);
-        drawCanvasGrid(ctx, fgCanvas.width, fgCanvas.height, liteCanvas.ds.scale, liteCanvas.ds.offset[0], liteCanvas.ds.offset[1]);
+        drawCanvasGrid(ctx, fgCanvas.width, fgCanvas.height, liteCanvas2.ds.scale, liteCanvas2.ds.offset[0], liteCanvas2.ds.offset[1]);
         ctx.restore();
         ctx.save();
-        liteCanvas.ds.toCanvasContext(ctx);
-        liteCanvas.drawGroups(canvas2, ctx);
-        liteCanvas.drawConnections(ctx);
+        liteCanvas2.ds.toCanvasContext(ctx);
+        liteCanvas2.drawGroups(canvas2, ctx);
+        liteCanvas2.drawConnections(ctx);
         ctx.restore();
       };
       const wheelHandler = (e2) => {
         e2.preventDefault();
         e2.stopPropagation();
-        const ds = liteCanvas.ds;
+        const ds = liteCanvas2.ds;
         const factor = Math.pow(1.001, -e2.deltaY);
         const next = Math.max(ds.min_scale, Math.min(ds.max_scale, ds.scale * factor));
         if (next === ds.scale) {
@@ -55940,9 +56543,9 @@ var LiteGraphCanvas = React6.forwardRef(
           return;
         }
         const rect = canvas2.getBoundingClientRect();
-        const cx = (e2.clientX - rect.left) / liteCanvas.ds.scale - liteCanvas.ds.offset[0];
-        const cy = (e2.clientY - rect.top) / liteCanvas.ds.scale - liteCanvas.ds.offset[1];
-        const hit = graph.getNodeOnPos(cx, cy);
+        const cx2 = (e2.clientX - rect.left) / liteCanvas2.ds.scale - liteCanvas2.ds.offset[0];
+        const cy2 = (e2.clientY - rect.top) / liteCanvas2.ds.scale - liteCanvas2.ds.offset[1];
+        const hit = graph.getNodeOnPos(cx2, cy2);
         if (!hit) {
           dragRef = null;
           return;
@@ -55951,7 +56554,7 @@ var LiteGraphCanvas = React6.forwardRef(
           dragRef = null;
           return;
         }
-        if (hit.getInputOnPos?.([cx, cy]) || hit.getOutputOnPos?.([cx, cy])) {
+        if (hit.getInputOnPos?.([cx2, cy2]) || hit.getOutputOnPos?.([cx2, cy2])) {
           dragRef = null;
           return;
         }
@@ -55973,7 +56576,7 @@ var LiteGraphCanvas = React6.forwardRef(
           dragRef.origPos,
           clientDx,
           clientDy,
-          liteCanvas.ds.scale
+          liteCanvas2.ds.scale
         );
         if (!dragRef.graphBefore) {
           graph.beforeChange(dragRef.node);
@@ -55994,11 +56597,11 @@ var LiteGraphCanvas = React6.forwardRef(
       window.addEventListener("pointerup", dragPointerUp);
       window.addEventListener("pointercancel", dragPointerUp);
       const resetLinkConnector = () => {
-        const lc = liteCanvas.linkConnector;
+        const lc = liteCanvas2.linkConnector;
         if (lc && lc.isConnecting) {
           lc.reset(true);
         }
-        liteCanvas.dragging_node = null;
+        liteCanvas2.dragging_node = null;
       };
       container.addEventListener("pointerup", resetLinkConnector);
       container.addEventListener("pointercancel", resetLinkConnector);
@@ -56057,8 +56660,8 @@ var LiteGraphCanvas = React6.forwardRef(
       };
       container.addEventListener("keydown", handleKeyDown);
       graphRef.current = graph;
-      canvasInstanceRef.current = liteCanvas;
-      liteCanvas.onNodeDeselected = () => {
+      canvasInstanceRef.current = liteCanvas2;
+      liteCanvas2.onNodeDeselected = () => {
         storeApi.getState().setSelectedNode(null);
       };
       graph.on_change = () => {
@@ -56067,7 +56670,7 @@ var LiteGraphCanvas = React6.forwardRef(
         }
         window.setTimeout(() => syncGraphToStore(graph, storeApi.getState().setNodes, storeApi.getState().setEdges), 0);
       };
-      liteCanvas.startRendering();
+      liteCanvas2.startRendering();
       syncStoreToGraph(graph, storeApi.getState().nodes, storeApi.getState().edges);
       const overlay = attachOverlayLayer(container);
       const bridge = createWidgetBridgeHost(overlay.layer);
@@ -56084,37 +56687,42 @@ var LiteGraphCanvas = React6.forwardRef(
         const nodesForSync = [];
         const seen = /* @__PURE__ */ new Set();
         const hoverId = (() => {
-          const n = lc.node_over;
-          if (!n) {
+          const n2 = lc.node_over;
+          if (!n2) {
             return null;
           }
-          const p = n.properties ?? {};
-          return String(p["__sarosisId"] ?? n.id);
+          const p = n2.properties ?? {};
+          return String(p["__sarosisId"] ?? n2.id);
         })();
         const selectedIds = /* @__PURE__ */ new Set();
         for (const k of Object.keys(lc.selected_nodes ?? {})) {
-          const n = g.getNodeById(k);
-          if (!n) {
+          const n2 = g.getNodeById(k);
+          if (!n2) {
             continue;
           }
-          const p = n.properties ?? {};
-          selectedIds.add(String(p["__sarosisId"] ?? n.id));
+          const p = n2.properties ?? {};
+          selectedIds.add(String(p["__sarosisId"] ?? n2.id));
         }
         for (let nodeIdx = 0; nodeIdx < g.nodes.length; nodeIdx++) {
-          const n = g.nodes[nodeIdx];
-          const props = n.properties ?? {};
-          const nodeId = String(props["__sarosisId"] ?? n.id);
+          const n2 = g.nodes[nodeIdx];
+          const props = n2.properties ?? {};
+          const nodeId = String(props["__sarosisId"] ?? n2.id);
           seen.add(nodeId);
-          const type = String(props["__liteType"] ?? n.type ?? "");
+          const type = String(props["__liteType"] ?? n2.type ?? "");
           const spec = getNodeSpec(type);
-          if (!spec || spec.kind === "react") {
+          if (!spec || spec.kind === "react" || spec.kind === "llm") {
             continue;
           }
-          if (spec.kind === "schema" && (n.size?.[1] ?? 0) < 320) {
-            n.size = [Math.max(n.size?.[0] ?? 220, 230), 320];
+          if (n2.collapsed) {
+            bridge.releaseContainer(nodeId);
+            cardUnmounts.delete(nodeId);
+            continue;
+          }
+          if (spec.kind === "schema" && (n2.size?.[1] ?? 0) < 320) {
+            n2.size = [Math.max(n2.size?.[0] ?? 220, 230), 320];
           }
           const container2 = bridge.ensureContainer(nodeId);
-          const isSelected = selectedIds.has(nodeId) || !!n.selected;
+          const isSelected = selectedIds.has(nodeId) || !!n2.selected;
           const baseZ = nodeIdx + 1;
           const boosted = nodeId === hoverId || isSelected ? 1e3 : 0;
           container2.style.zIndex = String(baseZ + boosted);
@@ -56127,7 +56735,7 @@ var LiteGraphCanvas = React6.forwardRef(
             });
             cardUnmounts.set(nodeId, unmount);
             if (spec.kind === "schema") {
-              const nodeAny = n;
+              const nodeAny = n2;
               if (nodeAny.strokeStyles) {
                 delete nodeAny.strokeStyles["selected"];
                 delete nodeAny.strokeStyles["error"];
@@ -56138,8 +56746,9 @@ var LiteGraphCanvas = React6.forwardRef(
           }
           nodesForSync.push({
             id: nodeId,
-            node: { pos: n.pos, size: n.size },
-            fullCover: spec.kind === "schema",
+            node: { pos: n2.pos, size: n2.size },
+            fullCover: false,
+            insets: widgetAreaInsets(n2.inputs?.length ?? 0, n2.outputs?.length ?? 0),
             selected: isSelected,
             state: cardStateStoreRef.current?.get(nodeId)?.runState
           });
@@ -56159,7 +56768,7 @@ var LiteGraphCanvas = React6.forwardRef(
         if (!nodeId) {
           return;
         }
-        const node2 = graph.nodes.find((n) => String(n.properties?.["__sarosisId"] ?? n.id) === nodeId);
+        const node2 = graph.nodes.find((n2) => String(n2.properties?.["__sarosisId"] ?? n2.id) === nodeId);
         if (!node2) {
           return;
         }
@@ -56174,7 +56783,7 @@ var LiteGraphCanvas = React6.forwardRef(
         if (!detail?.nodeId) {
           return;
         }
-        const node2 = graph.nodes.find((n) => String(n.properties?.["__sarosisId"] ?? n.id) === detail.nodeId);
+        const node2 = graph.nodes.find((n2) => String(n2.properties?.["__sarosisId"] ?? n2.id) === detail.nodeId);
         if (!node2) {
           return;
         }
@@ -56188,7 +56797,7 @@ var LiteGraphCanvas = React6.forwardRef(
         if (!detail?.nodeId || !detail.name) {
           return;
         }
-        const node2 = graph.nodes.find((n) => String(n.properties?.["__sarosisId"] ?? n.id) === detail.nodeId);
+        const node2 = graph.nodes.find((n2) => String(n2.properties?.["__sarosisId"] ?? n2.id) === detail.nodeId);
         if (!node2) {
           return;
         }
@@ -56207,7 +56816,7 @@ var LiteGraphCanvas = React6.forwardRef(
         }
         cardUnmounts.clear();
         overlay.destroy();
-        liteCanvas.stopRendering();
+        liteCanvas2.stopRendering();
         resizeObserver.disconnect();
         container.removeEventListener("wheel", wheelHandler, true);
         canvas2.removeEventListener("pointerdown", dragPointerDown);
@@ -56231,18 +56840,18 @@ var LiteGraphCanvas = React6.forwardRef(
       const MM_W = 200, MM_H = 125;
       const readScene = () => {
         const graph = graphRef.current;
-        const liteCanvas = canvasInstanceRef.current;
+        const liteCanvas2 = canvasInstanceRef.current;
         const canvas2 = containerRef.current?.querySelector(':scope > canvas[data-testid="litegraph-canvas"]');
-        if (!graph || !liteCanvas || !canvas2) {
+        if (!graph || !liteCanvas2 || !canvas2) {
           return buildMinimapScene([], { offsetX: 0, offsetY: 0, scale: 1, canvasW: 1, canvasH: 1 }, MM_W, MM_H);
         }
-        const ds = liteCanvas.ds;
-        const nodes2 = graph.nodes.map((n) => ({
-          id: String(n.id),
-          pos: [n.pos[0], n.pos[1]],
-          size: [n.size[0] || 1, n.size[1] || 1],
-          color: n.color || "#3b82f6",
-          collapsed: !!n.collapsed
+        const ds = liteCanvas2.ds;
+        const nodes2 = graph.nodes.map((n2) => ({
+          id: String(n2.id),
+          pos: [n2.pos[0], n2.pos[1]],
+          size: [n2.size[0] || 1, n2.size[1] || 1],
+          color: n2.color || "#3b82f6",
+          collapsed: !!n2.collapsed
         }));
         return buildMinimapScene(nodes2, {
           offsetX: ds.offset[0],
@@ -56283,8 +56892,8 @@ var LiteGraphCanvas = React6.forwardRef(
         e2.preventDefault();
         e2.stopPropagation();
         const graph = graphRef.current;
-        const liteCanvas = canvasInstanceRef.current;
-        if (!graph || !liteCanvas) {
+        const liteCanvas2 = canvasInstanceRef.current;
+        if (!graph || !liteCanvas2) {
           return;
         }
         const [mx, my] = toLocal(e2);
@@ -56292,14 +56901,14 @@ var LiteGraphCanvas = React6.forwardRef(
         const [gx, gy] = minimapToGraph(mx, my, scene.bounds, MM_W, MM_H);
         const canvas2 = containerRef.current?.querySelector(':scope > canvas[data-testid="litegraph-canvas"]');
         if (canvas2) {
-          const ds = liteCanvas.ds;
+          const ds = liteCanvas2.ds;
           ds.offset[0] = canvas2.clientWidth / 2 / ds.scale - gx;
           ds.offset[1] = canvas2.clientHeight / 2 / ds.scale - gy;
           graph.change();
         }
         dragging = true;
         startGraph = [gx, gy];
-        startOffset = [...liteCanvas.ds.offset];
+        startOffset = [...liteCanvas2.ds.offset];
         minimapEl.setPointerCapture?.(e2.pointerId);
       };
       const onMove = (e2) => {
@@ -56307,15 +56916,15 @@ var LiteGraphCanvas = React6.forwardRef(
           return;
         }
         const graph = graphRef.current;
-        const liteCanvas = canvasInstanceRef.current;
-        if (!graph || !liteCanvas) {
+        const liteCanvas2 = canvasInstanceRef.current;
+        if (!graph || !liteCanvas2) {
           return;
         }
         const [mx, my] = toLocal(e2);
         const scene = readScene();
         const [gx, gy] = minimapToGraph(mx, my, scene.bounds, MM_W, MM_H);
         const next = applyMinimapPan(startOffset, startGraph, [gx, gy]);
-        const ds = liteCanvas.ds;
+        const ds = liteCanvas2.ds;
         ds.offset[0] = next[0];
         ds.offset[1] = next[1];
         graph.change();
@@ -56344,15 +56953,15 @@ var LiteGraphCanvas = React6.forwardRef(
         return;
       }
       const graphIds = new Set(
-        graph.nodes.map((n) => {
-          const p = n.properties ?? {};
-          return String(p["__sarosisId"] ?? n.id);
+        graph.nodes.map((n2) => {
+          const p = n2.properties ?? {};
+          return String(p["__sarosisId"] ?? n2.id);
         })
       );
-      const storeIds = new Set(nodes.map((n) => n.id));
+      const storeIds = new Set(nodes.map((n2) => n2.id));
       let hasNew = false;
-      for (const n of nodes) {
-        if (!graphIds.has(n.id)) {
+      for (const n2 of nodes) {
+        if (!graphIds.has(n2.id)) {
           hasNew = true;
           break;
         }
@@ -56378,15 +56987,15 @@ var LiteGraphCanvas = React6.forwardRef(
       }
     }, [nodes, edges]);
     React6.useEffect(() => {
-      const liteCanvas = canvasInstanceRef.current;
-      if (!liteCanvas || !onNodeDoubleClick) {
+      const liteCanvas2 = canvasInstanceRef.current;
+      if (!liteCanvas2 || !onNodeDoubleClick) {
         return;
       }
-      liteCanvas.onNodeDblClicked = (n) => {
-        const sarosisId = n.properties?.["__sarosisId"];
-        const props = n.properties ?? {};
-        const nodeType = String(props.__liteType ?? n.type ?? "");
-        onNodeDoubleClick(sarosisId ?? String(n.id), nodeType);
+      liteCanvas2.onNodeDblClicked = (n2) => {
+        const sarosisId = n2.properties?.["__sarosisId"];
+        const props = n2.properties ?? {};
+        const nodeType = String(props.__liteType ?? n2.type ?? "");
+        onNodeDoubleClick(sarosisId ?? String(n2.id), nodeType);
       };
     }, [onNodeDoubleClick]);
     React6.useImperativeHandle(ref, () => ({
@@ -56396,9 +57005,9 @@ var LiteGraphCanvas = React6.forwardRef(
           return ["canvas not ready"];
         }
         const { graph: imported, issues } = parseGuiWorkflow(raw);
-        for (const n of imported.nodes) {
-          if (!getNodeSpec(n.type)) {
-            registerComfyUINativeNode({ class_name: n.type, display_name: n.type });
+        for (const n2 of imported.nodes) {
+          if (!getNodeSpec(n2.type)) {
+            registerComfyUINativeNode({ class_name: n2.type, display_name: n2.type });
           }
         }
         suppressStoreSync.current = true;
@@ -56437,6 +57046,27 @@ var LiteGraphCanvas = React6.forwardRef(
         }
         g.remove(group);
         g.change();
+      },
+      getSelectedNodes() {
+        const lc = canvasInstanceRef.current;
+        const g = graphRef.current;
+        if (!lc || !g) {
+          return [];
+        }
+        const out = [];
+        for (const k of Object.keys(lc.selected_nodes ?? {})) {
+          const n2 = g.getNodeById(k);
+          if (!n2) {
+            continue;
+          }
+          const sarosisId = String(n2.properties?.__sarosisId ?? k);
+          out.push({
+            id: sarosisId,
+            type: String(n2.properties?.__liteType ?? n2.type ?? ""),
+            data: n2.properties?.__data ?? {}
+          });
+        }
+        return out;
       }
     }), [storeApi, ref]);
     return /* @__PURE__ */ React6.createElement(
@@ -56449,12 +57079,12 @@ var LiteGraphCanvas = React6.forwardRef(
           e2.preventDefault();
           LiteGraph.closeAllContextMenus?.(window);
           const rect = e2.currentTarget.getBoundingClientRect();
-          const liteCanvas = canvasInstanceRef.current;
+          const liteCanvas2 = canvasInstanceRef.current;
           const graph = graphRef.current;
-          if (!liteCanvas || !graph) {
+          if (!liteCanvas2 || !graph) {
             return;
           }
-          const ds = liteCanvas.ds;
+          const ds = liteCanvas2.ds;
           const gx = (e2.clientX - rect.left) / ds.scale - ds.offset[0];
           const gy = (e2.clientY - rect.top) / ds.scale - ds.offset[1];
           const group = graph.getGroupOnPos(gx, gy);
@@ -56498,13 +57128,13 @@ var LiteGraphCanvas = React6.forwardRef(
   }
 );
 function syncStoreToGraph(graph, storeNodes, storeEdges, existingGroups) {
-  const wfNodes = storeNodes.map((n) => ({
-    id: n.id,
-    type: n.type,
-    name: n.data?.label ?? n.id,
-    position: { x: n.position.x, y: n.position.y },
-    ...n.data && Object.keys(n.data).length ? { data: n.data } : {},
-    ...n.style?.width ? { style: { width: n.style.width, height: n.style.height ?? 150 } } : {}
+  const wfNodes = storeNodes.map((n2) => ({
+    id: n2.id,
+    type: n2.type,
+    name: n2.data?.label ?? n2.id,
+    position: { x: n2.position.x, y: n2.position.y },
+    ...n2.data && Object.keys(n2.data).length ? { data: n2.data } : {},
+    ...n2.style?.width ? { style: { width: n2.style.width, height: n2.style.height ?? 150 } } : {}
   }));
   const wfConnections = storeEdges.map((e2) => ({
     id: e2.id,
@@ -56522,12 +57152,12 @@ function syncStoreToGraph(graph, storeNodes, storeEdges, existingGroups) {
 function syncGraphToStore(graph, setNodes, setEdges) {
   const serialized = graph.serialize();
   const { nodes, connections } = fromLiteGraph(serialized);
-  setNodes(nodes.map((n) => ({
-    id: n.id,
-    type: n.type,
-    position: n.position,
-    ...n.data && Object.keys(n.data).length ? { data: n.data } : {},
-    ...n.style?.width ? { style: n.style } : {}
+  setNodes(nodes.map((n2) => ({
+    id: n2.id,
+    type: n2.type,
+    position: n2.position,
+    ...n2.data && Object.keys(n2.data).length ? { data: n2.data } : {},
+    ...n2.style?.width ? { style: n2.style } : {}
   })));
   setEdges(connections.map((c) => ({
     id: c.id,
@@ -56536,13 +57166,13 @@ function syncGraphToStore(graph, setNodes, setEdges) {
   })));
 }
 
-// ../src/features/workflowEditor/comfyHost/executionGraph.ts
+// src/features/workflowEditor/comfyHost/executionGraph.ts
 function computeExecutionOrder(nodes, edges) {
   const indegree = /* @__PURE__ */ new Map();
   const adj = /* @__PURE__ */ new Map();
-  for (const n of nodes) {
-    indegree.set(n.id, 0);
-    adj.set(n.id, []);
+  for (const n2 of nodes) {
+    indegree.set(n2.id, 0);
+    adj.set(n2.id, []);
   }
   for (const e2 of edges) {
     if (!adj.has(e2.source) || !indegree.has(e2.target)) {
@@ -56585,7 +57215,7 @@ function buildExecutionPlan(nodes, edges, isExecutable) {
   const steps = [];
   const skipped = [];
   for (const id of order) {
-    const node2 = nodes.find((n) => n.id === id);
+    const node2 = nodes.find((n2) => n2.id === id);
     if (!node2) {
       continue;
     }
@@ -56597,8 +57227,67 @@ function buildExecutionPlan(nodes, edges, isExecutable) {
   }
   return { steps, hasCycle, skipped };
 }
+function buildParallelExecutionPlan(nodes, edges, isExecutable) {
+  const indegree = /* @__PURE__ */ new Map();
+  const adj = /* @__PURE__ */ new Map();
+  for (const n2 of nodes) {
+    indegree.set(n2.id, 0);
+    adj.set(n2.id, []);
+  }
+  for (const e2 of edges) {
+    if (!adj.has(e2.source) || !indegree.has(e2.target)) {
+      continue;
+    }
+    adj.get(e2.source).push(e2.target);
+    indegree.set(e2.target, (indegree.get(e2.target) ?? 0) + 1);
+  }
+  const layerOf = /* @__PURE__ */ new Map();
+  const queue = [];
+  for (const [id, deg] of indegree) {
+    if (deg === 0) {
+      queue.push(id);
+      layerOf.set(id, 0);
+    }
+  }
+  let orderCount = 0;
+  while (queue.length > 0) {
+    const id = queue.shift();
+    orderCount++;
+    for (const next of adj.get(id) ?? []) {
+      const d = (indegree.get(next) ?? 0) - 1;
+      indegree.set(next, d);
+      if (d === 0) {
+        queue.push(next);
+      }
+      const candidate = (layerOf.get(id) ?? 0) + 1;
+      layerOf.set(next, Math.max(layerOf.get(next) ?? 0, candidate));
+    }
+  }
+  const hasCycle = orderCount < nodes.length;
+  if (hasCycle) {
+    return { layers: [], hasCycle, skipped: nodes.map((n2) => n2.id) };
+  }
+  const maxLayer = [...layerOf.values()].reduce((a, b) => Math.max(a, b), -1);
+  const layerBuckets = [];
+  for (let i = 0; i <= maxLayer; i++) {
+    layerBuckets.push([]);
+  }
+  const skipped = [];
+  for (const n2 of nodes) {
+    const l = layerOf.get(n2.id) ?? 0;
+    const executable = isExecutable(n2.type ?? "");
+    if (executable) {
+      const step = { id: n2.id, type: n2.type ?? "", upstreams: collectUpstreamNodeIds(n2.id, edges) };
+      layerBuckets[l].push({ step });
+    } else {
+      skipped.push(n2.id);
+    }
+  }
+  const layers = layerBuckets.filter((b) => b.length > 0).map((b) => b.map((x2) => x2.step));
+  return { layers, hasCycle, skipped };
+}
 
-// ../src/features/workflowEditor/comfyHost/stageWorkflowExecutor.ts
+// src/features/workflowEditor/comfyHost/stageWorkflowExecutor.ts
 var StageWorkflowUnavailableError = class extends Error {
 };
 var UPSTREAM_RE = /^upstream_(image|video|audio|text|model)(?::(annotated|value|masked))?(?:\[(\d+)\])?$/;
@@ -56798,7 +57487,7 @@ async function runStageWorkflow(options) {
   return { promptId: run.promptId, status: "success", durationMs, entries };
 }
 
-// ../src/features/workflowEditor/comfyHost/instantExecutor.ts
+// src/features/workflowEditor/comfyHost/instantExecutor.ts
 function firstUpstreamImage(store, upstreams) {
   for (const id of upstreams ?? []) {
     for (const entry of store.byNode(id)) {
@@ -56858,9 +57547,296 @@ async function runInstantNode(input) {
   }
 }
 
-// ../src/features/workflowEditor/comfyHost/workflowRun.ts
+// src/features/workflowEditor/comfyHost/imageGenBackend.ts
+function parseSize(size, width2, height) {
+  if (typeof size === "string") {
+    const m = /^\s*(\d+)\s*[xX×]\s*(\d+)\s*$/.exec(size);
+    if (m) {
+      const w = parseInt(m[1], 10);
+      const h = parseInt(m[2], 10);
+      if (w > 0 && h > 0) {
+        return { width: w, height: h };
+      }
+    }
+    return width2 || height ? { width: width2, height } : {};
+  }
+  return width2 || height ? { width: width2, height } : {};
+}
+function findUpstreamImageRef(store, upstreams) {
+  for (const up of upstreams ?? []) {
+    for (const entry of store.byNode(up)) {
+      if (entry.media.kind === "image" && typeof entry.media.ref === "string" && entry.media.ref) {
+        return entry.media.ref;
+      }
+    }
+  }
+  return void 0;
+}
+
+// src/features/workflowEditor/comfyHost/imageGenToComfyBridge.ts
+function isComfyViewRef(ref) {
+  return /\/view\?/.test(ref);
+}
+function classifyImageRef(ref) {
+  if (!ref) {
+    return { kind: "unknown" };
+  }
+  if (isComfyViewRef(ref)) {
+    return { kind: "comfy-view", url: ref };
+  }
+  if (ref.startsWith("data:")) {
+    return { kind: "data-url", dataUrl: ref };
+  }
+  if (/^https?:\/\//.test(ref)) {
+    return { kind: "http", url: ref };
+  }
+  return { kind: "unknown" };
+}
+function dataUrlToBlob(dataUrl) {
+  const comma = dataUrl.indexOf(",");
+  if (comma < 0) {
+    return void 0;
+  }
+  const header = dataUrl.slice(5, comma);
+  const mime = header.split(";")[0] || "image/png";
+  const isBase64 = /;base64$/i.test(header);
+  const raw = dataUrl.slice(comma + 1);
+  let bytes;
+  if (isBase64) {
+    bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+  } else {
+    bytes = new TextEncoder().encode(decodeURIComponent(raw));
+  }
+  return { blob: new Blob([bytes], { type: mime }), mime };
+}
+function uploadNameForRef(ref, index = 0) {
+  if (/^data:/.test(ref)) {
+    const m = /data:image\/(\w+)/.exec(ref);
+    const ext = m ? m[1].toLowerCase().replace("jpeg", "jpg") : "png";
+    return `sarosis_upload_${index}.${ext}`;
+  }
+  const path = ref.split(/[?#]/)[0];
+  const last = path.split("/").pop();
+  return last && /\.\w+$/.test(last) ? last : `sarosis_upload_${index}.png`;
+}
+async function uploadRefToComfy(opts) {
+  const { ref, baseUrl, fetchImpl, signal } = opts;
+  const cls = classifyImageRef(ref);
+  if (cls.kind === "comfy-view") {
+    return { ok: true, ref };
+  }
+  let blob;
+  let mime = "image/png";
+  if (cls.kind === "data-url" && cls.dataUrl) {
+    const parsed = dataUrlToBlob(cls.dataUrl);
+    if (!parsed) {
+      return { ok: false, error: "\u65E0\u6548\u7684 data URL \u56FE\u7247" };
+    }
+    blob = parsed.blob;
+    mime = parsed.mime;
+  } else if (cls.kind === "http" && cls.url) {
+    try {
+      const resp = await fetchImpl(cls.url, { signal });
+      if (!resp.ok) {
+        return { ok: false, error: `\u4E0B\u8F7D\u56FE\u7247\u5931\u8D25\uFF1AHTTP ${resp.status}` };
+      }
+      const buf = await resp.text();
+      blob = new Blob([buf], { type: mime });
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  } else {
+    return { ok: false, error: "\u65E0\u6CD5\u8BC6\u522B\u7684\u56FE\u7247\u5F15\u7528" };
+  }
+  const form = new FormData();
+  form.append("image", blob, uploadNameForRef(ref, 0));
+  form.append("type", "input");
+  form.append("overwrite", "true");
+  try {
+    const resp = await fetchImpl(`${baseUrl}/upload/image`, {
+      method: "POST",
+      body: form,
+      signal
+    });
+    if (!resp.ok) {
+      const t = await Promise.resolve(resp.text()).catch(() => "");
+      return { ok: false, error: `\u4E0A\u4F20\u56FE\u7247\u5931\u8D25\uFF1AHTTP ${resp.status}${t ? ` ${t}` : ""}` };
+    }
+    const data = await resp.json();
+    const name = String(data?.name ?? "");
+    if (!name) {
+      return { ok: false, error: "\u4E0A\u4F20\u63A5\u53E3\u672A\u8FD4\u56DE\u6587\u4EF6\u540D" };
+    }
+    const subfolder = String(data?.subfolder ?? "");
+    const typeOut = String(data?.type ?? "output");
+    const view = `${baseUrl}/view?filename=${encodeURIComponent(name)}${subfolder ? "&subfolder=" + encodeURIComponent(subfolder) : ""}&type=${typeOut}`;
+    return { ok: true, ref: view };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+async function resolveLoadImageImageRef(opts) {
+  if (!opts.ref) {
+    return { ok: false, error: "\u4E0A\u6E38\u6CA1\u6709\u53EF\u7528\u7684\u56FE\u7247\u8F93\u51FA" };
+  }
+  const up = await uploadRefToComfy(opts);
+  return up.ok ? { ok: true, image: up.ref } : { ok: false, error: up.error };
+}
+
+// src/features/workflowEditor/comfyHost/nodeMentions.ts
+var NODE_MENTION_RE = /@\[node:([^\]]+)\]/g;
+function resolveNodeMentions(text, nodes, options = {}) {
+  const lookup = options.lookup;
+  const result = { text, referenced: [], injected: [], images: [], unresolved: [] };
+  if (!text || !text.includes("@[")) {
+    return result;
+  }
+  const out = [];
+  let lastIndex = 0;
+  let m;
+  const re = new RegExp(NODE_MENTION_RE);
+  while ((m = re.exec(text)) !== null) {
+    const [token, label] = m;
+    const node2 = resolveMentionNode(nodes, label);
+    const replaced = resolveOneMention(node2, token, label, lookup, result);
+    out.push(text.slice(lastIndex, m.index));
+    out.push(replaced ?? token);
+    lastIndex = m.index + token.length;
+    if (re.lastIndex === m.index) {
+      re.lastIndex++;
+    }
+  }
+  out.push(text.slice(lastIndex));
+  result.text = out.join("");
+  return result;
+}
+function resolveMentionNode(nodes, label) {
+  const exact = nodes.find((n2) => n2.id === label);
+  if (exact) {
+    return { id: exact.id, label: exact.data?.label ?? exact.id };
+  }
+  const byLabel = nodes.find((n2) => n2.data?.label === label);
+  if (byLabel) {
+    return { id: byLabel.id, label: byLabel.data?.label };
+  }
+  const lower = label.toLowerCase();
+  const ci = nodes.find((n2) => (n2.data?.label ?? "").toLowerCase() === lower);
+  return ci ? { id: ci.id, label: ci.data?.label } : void 0;
+}
+function resolveOneMention(node2, token, label, lookup, result) {
+  if (!node2) {
+    result.unresolved.push(label);
+    return null;
+  }
+  const snapshots = lookup?.(node2.id) ?? [];
+  const textSnap = [...snapshots].reverse().find((s) => s.media.kind === "text");
+  const imgSnap = [...snapshots].reverse().find((s) => s.media.kind === "image");
+  if (textSnap) {
+    result.referenced.push(node2.label ?? node2.id);
+    result.injected.push(String(textSnap.media.ref));
+    return textSnap.media.ref;
+  }
+  if (imgSnap) {
+    result.referenced.push(node2.label ?? node2.id);
+    result.images.push(imgSnap.media.ref);
+    return "";
+  }
+  result.unresolved.push(label);
+  return null;
+}
+function createStoreLookup(store) {
+  return (nodeId) => store.byNode(nodeId).map((e2) => ({ port: e2.port, media: e2.media }));
+}
+
+// src/features/workflowEditor/comfyHost/subflow.ts
+function substituteSubflow(subflowNodeId, def, externalEdges, idPrefix) {
+  const prefixed = (id) => `${idPrefix}:${id}`;
+  const nodes = def.nodes.map((n2) => ({ ...n2, id: prefixed(n2.id) }));
+  const edges = [];
+  const remap = /* @__PURE__ */ new Map();
+  const incoming = externalEdges.filter((e2) => e2.target === subflowNodeId);
+  for (const e2 of incoming) {
+    const entryId = e2.source ?? "";
+    const internalEntry = def.entryIds[0];
+    if (!internalEntry) {
+      continue;
+    }
+    edges.push({ source: entryId, target: prefixed(internalEntry) });
+    remap.set(entryId, prefixed(internalEntry));
+  }
+  for (const e2 of def.edges) {
+    edges.push({ source: prefixed(e2.source), target: prefixed(e2.target) });
+  }
+  const outgoing = externalEdges.filter((e2) => e2.source === subflowNodeId);
+  for (const e2 of outgoing) {
+    const internalExit = def.exitIds[0];
+    if (!internalExit) {
+      continue;
+    }
+    edges.push({ source: prefixed(internalExit), target: e2.target });
+  }
+  return { nodes, edges, remap };
+}
+function flattenSubflows(nodes, edges) {
+  const subflowIds = new Set(
+    nodes.filter((n2) => n2.data?.subflow).map((n2) => n2.id)
+  );
+  const plainEdges = edges.filter((e2) => !subflowIds.has(e2.source) && !subflowIds.has(e2.target));
+  const subflowEdges = edges.filter((e2) => subflowIds.has(e2.source) || subflowIds.has(e2.target));
+  let resultNodes = [];
+  const resultEdges = [...plainEdges];
+  for (const n2 of nodes) {
+    const def = n2.data?.subflow;
+    if (!def) {
+      resultNodes.push({ ...n2 });
+      continue;
+    }
+    const substitution = substituteSubflow(n2.id, def, subflowEdges, n2.id);
+    resultNodes.push(...substitution.nodes);
+    resultEdges.push(...substitution.edges);
+  }
+  return { nodes: resultNodes, edges: resultEdges };
+}
+
+// src/features/workflowEditor/comfyHost/workflowRun.ts
 function isComfyExecutableSpec(spec) {
   return spec?.kind === "schema" || spec?.kind === "native";
+}
+function isExecutableSpec(spec) {
+  return isComfyExecutableSpec(spec) || spec?.kind === "llm";
+}
+function isLLMImageNode(spec) {
+  return spec?.kind === "llm";
+}
+function isProviderPickerNode(type) {
+  return type === "Sarosis.ProviderPicker";
+}
+var PROVIDER_PICKER_PREFIX = "provider:";
+function parseProviderPickerConfig(text) {
+  if (!text || !text.startsWith(PROVIDER_PICKER_PREFIX)) {
+    return void 0;
+  }
+  const rest = text.slice(PROVIDER_PICKER_PREFIX.length);
+  const sep = rest.indexOf(":");
+  if (sep < 0) {
+    return void 0;
+  }
+  const providerId = rest.slice(0, sep);
+  const modelId = rest.slice(sep + 1);
+  return providerId && modelId ? { providerId, modelId } : void 0;
+}
+function collectUpstreamProviderConfig(store, upstreams) {
+  for (const id of upstreams ?? []) {
+    for (const entry of store.byNode(id)) {
+      if ((entry.media.kind === "text" || entry.media.kind === "unknown") && typeof entry.media.ref === "string") {
+        const cfg = parseProviderPickerConfig(entry.media.ref);
+        if (cfg) {
+          return cfg;
+        }
+      }
+    }
+  }
+  return void 0;
 }
 function collectOrchestrationValues(nodes, upstreams) {
   const out = {};
@@ -56868,7 +57844,7 @@ function collectOrchestrationValues(nodes, upstreams) {
     return out;
   }
   for (const id of upstreams) {
-    const node2 = nodes.find((n) => n.id === id);
+    const node2 = nodes.find((n2) => n2.id === id);
     const data = node2?.data;
     if (!node2 || !data) {
       continue;
@@ -56881,6 +57857,35 @@ function collectOrchestrationValues(nodes, upstreams) {
     }
   }
   return out;
+}
+function isLoadImageNode(type) {
+  return type === "LoadImage";
+}
+async function resolveLoadImageInputForNode(input) {
+  const { type, values, upstreams, store } = input;
+  if (!isLoadImageNode(type)) {
+    return { status: "ok", values };
+  }
+  const ref = typeof values.image === "string" && values.image ? values.image : findUpstreamImageRef(store, upstreams);
+  if (!ref || isComfyViewRef(ref)) {
+    return { status: "ok", values };
+  }
+  const resolve = input.resolveLoadImageRef ?? defaultResolveLoadImageRef(input.runner);
+  const r = await resolve(ref);
+  if (!r.ok) {
+    return {
+      status: "error",
+      result: { promptId: "", status: "error", error: r.error ?? "\u56FE\u7247\u4E0A\u4F20\u5931\u8D25", entries: [] }
+    };
+  }
+  return { status: "ok", values: { ...values, image: r.image } };
+}
+function defaultResolveLoadImageRef(runner) {
+  return (ref) => resolveLoadImageImageRef({
+    ref,
+    baseUrl: runner.baseUrl,
+    fetchImpl: globalThis.fetch
+  });
 }
 function collectUpstreamValues(store, upstreams) {
   const out = {};
@@ -56912,6 +57917,17 @@ function collectUpstreamCandidates(store, upstreams) {
   return out;
 }
 async function runPickerNode(input) {
+  const mediaAssetId = typeof input.values?.mediaAssetId === "string" ? input.values.mediaAssetId : "";
+  if (mediaAssetId) {
+    const ref = await resolveMediaAssetUrl(mediaAssetId);
+    if (ref) {
+      const kind = inferPickerKind(input.type, mediaAssetId);
+      const entry2 = { nodeId: input.nodeId, port: "output", key: `${input.nodeId}:output:0`, media: { kind, ref }, index: 0 };
+      input.store.put(entry2);
+      return { promptId: "", status: "success", entries: [entry2] };
+    }
+    return { promptId: "", status: "error", error: "\u5A92\u4F53\u5E93\u8D44\u4EA7\u4E0D\u53EF\u7528\uFF08\u5DF2\u5220\u9664\uFF1F\uFF09", entries: [] };
+  }
   const candidates = collectUpstreamCandidates(input.store, input.upstreams);
   if (!candidates.length) {
     return { promptId: "", status: "error", error: "\u9009\u62E9\u5668\u6CA1\u6709\u4E0A\u6E38\u5019\u9009\uFF1A\u8BF7\u5148\u8FDE\u63A5\u4E0A\u6E38\u751F\u6210\u8282\u70B9\u5E76\u6267\u884C", entries: [] };
@@ -56928,6 +57944,26 @@ async function runPickerNode(input) {
   input.store.put(entry);
   return { promptId: "", status: "success", entries: [entry] };
 }
+async function resolveMediaAssetUrl(id) {
+  try {
+    const asset = await mediaGet(id);
+    if (!asset) {
+      return null;
+    }
+    return resolveAssetUrl(asset);
+  } catch {
+    return null;
+  }
+}
+function inferPickerKind(type, assetId) {
+  if (type === "ComfyTV.VideoPickerStage") {
+    return "video";
+  }
+  if (type === "ComfyTV.AudioPickerStage") {
+    return "audio";
+  }
+  return "image";
+}
 async function runLoaderNode(input) {
   const mine = input.store.byNode(input.nodeId).filter((e2) => e2.media.kind !== "unknown");
   if (!mine.length) {
@@ -56935,8 +57971,118 @@ async function runLoaderNode(input) {
   }
   return { promptId: "", status: "success", entries: [mine[0]] };
 }
+async function runProviderPickerNode(input) {
+  const { nodeId, store } = input;
+  const empty = { promptId: "", status: "error", entries: [] };
+  let providerId = typeof input.values?.providerId === "string" ? input.values.providerId : "";
+  let modelId = typeof input.values?.modelId === "string" ? input.values.modelId : "";
+  if (!providerId || !modelId) {
+    const defaults = await input.resolveImageGenDefaults?.();
+    if (defaults) {
+      providerId = providerId || defaults.providerId;
+      modelId = modelId || defaults.modelId;
+    }
+  }
+  if (!providerId || !modelId) {
+    return { ...empty, error: "\u8BF7\u5148\u5728\u8282\u70B9\u8BBE\u7F6E\u4E2D\u9009\u62E9 Provider \u548C\u6587\u751F\u56FE\u6A21\u578B" };
+  }
+  const ref = `${PROVIDER_PICKER_PREFIX}${providerId}:${modelId}`;
+  const entry = {
+    nodeId,
+    port: "output",
+    key: `${nodeId}:output:0`,
+    media: { kind: "text", ref },
+    index: 0
+  };
+  store.put(entry);
+  return { promptId: "", status: "success", entries: [entry] };
+}
+async function runProviderImage(input) {
+  const { nodeId, values, store, onProgress } = input;
+  const empty = { promptId: "", status: "error", entries: [] };
+  const send = input.sendImageGen;
+  if (!send) {
+    return { ...empty, error: "Provider \u6587\u751F\u56FE\u901A\u9053\u672A\u6CE8\u5165\uFF08imagegen.generate\uFF09" };
+  }
+  let providerId = typeof values.providerId === "string" ? values.providerId : "";
+  let modelId = typeof values.modelId === "string" ? values.modelId : "";
+  const picker = providerId && modelId ? void 0 : collectUpstreamProviderConfig(input.store, input.upstreams);
+  if (picker) {
+    providerId = providerId || picker.providerId;
+    modelId = modelId || picker.modelId;
+  }
+  if ((!providerId || !modelId) && input.resolveImageGenDefaults) {
+    const defaults = await input.resolveImageGenDefaults();
+    if (defaults) {
+      providerId = providerId || defaults.providerId;
+      modelId = modelId || defaults.modelId;
+    }
+  }
+  if (!providerId || !modelId) {
+    return { ...empty, error: "\u8BF7\u5148\u5728\u8282\u70B9\u8BBE\u7F6E\u4E2D\u9009\u62E9 Provider \u548C\u6587\u751F\u56FE\u6A21\u578B" };
+  }
+  const rawPrompt = typeof values.prompt === "string" ? values.prompt : "";
+  if (!rawPrompt.trim()) {
+    return { ...empty, error: "\u8BF7\u8F93\u5165\u63D0\u793A\u8BCD" };
+  }
+  const mentioned = resolveNodeMentions(rawPrompt, input.nodes ?? [], {
+    lookup: input.store ? createStoreLookup(input.store) : void 0
+  });
+  const prompt = mentioned.text.trim() || rawPrompt;
+  const mentionImageRef = mentioned.images[0];
+  const { width: width2, height } = parseSize(
+    typeof values.size === "string" ? values.size : void 0,
+    Number(values.width) || void 0,
+    Number(values.height) || void 0
+  );
+  onProgress?.({ progress: 10 });
+  const imageInput = typeof values.imageInput === "string" && values.imageInput ? values.imageInput : mentionImageRef ? mentionImageRef : findUpstreamImageRef(input.store, input.upstreams);
+  try {
+    const resp = await send({
+      providerId,
+      modelId,
+      prompt,
+      negativePrompt: typeof values.negativePrompt === "string" ? values.negativePrompt : void 0,
+      width: width2,
+      height,
+      numImages: Number(values.numImages) > 0 ? Math.floor(Number(values.numImages)) : 1,
+      imageInput
+    });
+    onProgress?.({ progress: 90 });
+    const images = resp?.images ?? [];
+    if (!images.length) {
+      return { ...empty, error: "\u56FE\u7247\u751F\u6210\u63A5\u53E3\u672A\u8FD4\u56DE\u56FE\u7247" };
+    }
+    const entries = images.map((img, i) => {
+      const ref = img.url ?? (img.b64 ? `data:image/png;base64,${img.b64}` : "");
+      if (!ref) {
+        return void 0;
+      }
+      return {
+        nodeId,
+        port: "output",
+        key: `${nodeId}:output:${i}`,
+        media: { kind: "image", ref },
+        index: i
+      };
+    }).filter((e2) => !!e2);
+    for (const e2 of entries) {
+      store.put(e2);
+    }
+    return { promptId: "", status: "success", entries };
+  } catch (err) {
+    return { ...empty, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 async function runNodeOrStage(input) {
-  const { runner, nodeId, type, getSpec, values, upstreams, store, onProgress, signal } = input;
+  const { runner, nodeId, type, getSpec, upstreams, store, onProgress, signal } = input;
+  let values = input.values;
+  if (isProviderPickerNode(type)) {
+    return runProviderPickerNode(input);
+  }
+  if (isLLMImageNode(getSpec(type))) {
+    return runProviderImage(input);
+  }
   if (isInstantNode(type)) {
     return runInstantNode(input);
   }
@@ -56999,18 +58145,82 @@ async function runNodeOrStage(input) {
       return { promptId: "", status: "error", error: err instanceof Error ? err.message : String(err), entries: [] };
     });
   }
+  if (isLoadImageNode(type)) {
+    const bridged = await resolveLoadImageInputForNode(input);
+    if (bridged.status === "error") {
+      return bridged.result;
+    }
+    if (bridged.values !== values) {
+      return runSingleNode({ runner, nodeId, type, values: bridged.values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
+    }
+  }
+  const pluginRunner = getPluginNodeRunner(type);
+  if (pluginRunner) {
+    try {
+      const upstream = {};
+      for (const pid of upstreams ?? []) {
+        const portRefs = store.byNode(pid).map((e2) => e2.media.ref);
+        upstream[pid] = portRefs;
+      }
+      const hookValues = await pluginRunner({
+        values,
+        upstream,
+        storage: {
+          get: (k) => localStorage.getItem(`plugin:${type}:${k}`) ?? void 0,
+          set: (k, v2) => localStorage.setItem(`plugin:${type}:${k}`, v2)
+        }
+      });
+      if (hookValues && typeof hookValues === "object") {
+        values = { ...values, ...hookValues };
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { promptId: "", status: "error", error: `\u63D2\u4EF6\u8282\u70B9\u6267\u884C\u5931\u8D25\uFF1A${msg}`, entries: [] };
+    }
+  }
   return runSingleNode({ runner, nodeId, type, values, store, onProgress: (p) => onProgress?.({ value: p.value }), signal });
 }
 async function runGraphExecution(options) {
-  const { nodes, edges, getSpec, resolveRunner, snapshotStore, cardState, nodeValues, onNodeStart, signal } = options;
-  const result = { success: false, hasCycle: false, ran: [], failed: null, results: {} };
-  const plan = buildExecutionPlan(nodes, edges, (type) => isComfyExecutableSpec(getSpec(type)));
+  const {
+    nodes,
+    edges,
+    getSpec,
+    resolveRunner,
+    snapshotStore,
+    cardState,
+    nodeValues,
+    onNodeStart,
+    signal,
+    sendImageGen,
+    resolveImageGenDefaults,
+    resolveLoadImageRef,
+    mode = "serial",
+    parallelConcurrency = 4,
+    taskId
+  } = options;
+  const result = {
+    success: false,
+    hasCycle: false,
+    ran: [],
+    failed: null,
+    results: {},
+    taskId,
+    mode
+  };
+  const flattened = flattenSubflows(nodes, edges);
+  const runNodes = flattened.nodes;
+  const runEdges = flattened.edges;
+  if (mode === "parallel") {
+    return runGraphExecutionParallel({ ...options, nodes: runNodes, edges: runEdges }, result);
+  }
+  const plan = buildExecutionPlan(runNodes, runEdges, (type) => isExecutableSpec(getSpec(type)));
   result.hasCycle = plan.hasCycle;
   if (plan.hasCycle) {
     return result;
   }
-  const runner = resolveRunner();
-  if (!runner) {
+  const needsRunner = plan.steps.some((s) => isComfyExecutableSpec(getSpec(s.type)));
+  const runner = needsRunner ? resolveRunner() : void 0;
+  if (needsRunner && !runner) {
     return result;
   }
   for (const step of plan.steps) {
@@ -57019,7 +58229,7 @@ async function runGraphExecution(options) {
     }
     onNodeStart?.(step);
     cardState.set(step.id, { runState: "running", progress: 5 });
-    const values = { ...collectOrchestrationValues(nodes, step.upstreams), ...nodeValues?.[step.id] ?? {} };
+    const values = { ...collectOrchestrationValues(runNodes, step.upstreams), ...nodeValues?.[step.id] ?? {} };
     const progress = (p) => cardState.set(step.id, { runState: "running", progress: p.progress ?? p.value ?? 50 });
     const r = await runNodeOrStage({
       runner,
@@ -57028,9 +58238,13 @@ async function runGraphExecution(options) {
       getSpec,
       values,
       upstreams: step.upstreams,
+      nodes: runNodes,
       store: snapshotStore,
       onProgress: progress,
-      signal
+      signal,
+      sendImageGen,
+      resolveImageGenDefaults,
+      resolveLoadImageRef
     });
     if (r.status === "success") {
       cardState.set(step.id, { runState: "success", progress: 100, durationMs: r.durationMs });
@@ -57045,11 +58259,98 @@ async function runGraphExecution(options) {
   result.success = true;
   return result;
 }
+async function runGraphExecutionParallel(options, result) {
+  const { nodes, edges, getSpec, resolveRunner, snapshotStore, cardState, nodeValues, onNodeStart, signal, sendImageGen, resolveImageGenDefaults, resolveLoadImageRef, parallelConcurrency = 4 } = options;
+  const plan = buildParallelExecutionPlan(nodes, edges, (type) => isExecutableSpec(getSpec(type)));
+  result.hasCycle = plan.hasCycle;
+  if (plan.hasCycle) {
+    return result;
+  }
+  const needsRunner = plan.layers.some((l) => l.some((s) => isComfyExecutableSpec(getSpec(s.type))));
+  const runner = needsRunner ? resolveRunner() : void 0;
+  if (needsRunner && !runner) {
+    return result;
+  }
+  const isBackend = (step) => isComfyExecutableSpec(getSpec(step.type));
+  const layerStats = [];
+  for (let li = 0; li < plan.layers.length; li++) {
+    if (signal?.aborted) {
+      break;
+    }
+    const layer = plan.layers[li];
+    const backend = layer.filter(isBackend);
+    const local = layer.filter((s) => !isBackend(s));
+    let layerFailed = 0;
+    let layerRan = 0;
+    const runStep = async (step) => {
+      if (signal?.aborted) {
+        return;
+      }
+      onNodeStart?.(step);
+      cardState.set(step.id, { runState: "running", progress: 5 });
+      const values = { ...collectOrchestrationValues(nodes, step.upstreams), ...nodeValues?.[step.id] ?? {} };
+      const progress = (p) => cardState.set(step.id, { runState: "running", progress: p.progress ?? p.value ?? 50 });
+      const r = await runNodeOrStage({
+        runner,
+        nodeId: step.id,
+        type: step.type,
+        getSpec,
+        values,
+        upstreams: step.upstreams,
+        nodes,
+        store: snapshotStore,
+        onProgress: progress,
+        signal,
+        sendImageGen,
+        resolveImageGenDefaults,
+        resolveLoadImageRef
+      });
+      if (r.status === "success") {
+        cardState.set(step.id, { runState: "success", progress: 100, durationMs: r.durationMs });
+        result.ran.push(step.id);
+        result.results[step.id] = r;
+        layerRan++;
+      } else {
+        cardState.set(step.id, { runState: "error", progress: 0, errorMsg: r.error ?? "\u6267\u884C\u5931\u8D25" });
+        if (!result.failed) {
+          result.failed = { nodeId: step.id, error: r.error ?? "\u6267\u884C\u5931\u8D25" };
+        }
+        layerFailed++;
+      }
+    };
+    const runBackendPool = runConcurrent(backend, 1, runStep);
+    const runLocalPool = runConcurrent(local, parallelConcurrency, runStep);
+    await Promise.all([runBackendPool, runLocalPool]);
+    layerStats.push({ layer: li, total: layer.length, ran: layerRan, failed: layerFailed });
+    result.layerStats = layerStats;
+    if (layerFailed > 0 || result.failed) {
+      break;
+    }
+  }
+  if (!result.failed) {
+    result.success = true;
+  }
+  return result;
+}
+async function runConcurrent(items, limit, fn) {
+  let cursor = 0;
+  const workers = Math.min(limit, items.length);
+  if (workers <= 0) {
+    return;
+  }
+  const slot = async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: workers }, () => slot()));
+}
 
-// entry.mjs
+// e2e/entry.mjs
 import { readFileSync } from "node:fs";
 
-// ../src/features/workflowEditor/groupMenu.tsx
+// src/features/workflowEditor/groupMenu.tsx
 var React7 = __toESM(require_react());
 var GROUP_COLORS = [
   "#4b6eaf",
@@ -57077,7 +58378,7 @@ function applyGroupEdit(group, edit) {
   }
 }
 
-// entry.mjs
+// e2e/entry.mjs
 var failures = [];
 function expect(cond, label) {
   if (cond) {
@@ -57138,16 +58439,16 @@ section("store addNode -> graph sync (e2e loop)");
   useWorkflowEditorStore.getState().addNode("prompt", { x: 300, y: 200 });
   const newStoreNodes = useWorkflowEditorStore.getState().nodes;
   expect(newStoreNodes.length === 3, "store now has 3 nodes (added Prompt)");
-  const newPrompt = newStoreNodes.find((n) => n.type === "prompt");
+  const newPrompt = newStoreNodes.find((n2) => n2.type === "prompt");
   expect(newPrompt != null && newPrompt.data?.label === "\u63D0\u793A", "Prompt node has default label \u63D0\u793A");
   const expected = newStoreNodes.length;
   const { graph: serialized2 } = toLiteGraph(
-    newStoreNodes.map((n) => ({ id: n.id, type: n.type, name: n.data?.label ?? n.id, position: n.position, data: n.data })),
+    newStoreNodes.map((n2) => ({ id: n2.id, type: n2.type, name: n2.data?.label ?? n2.id, position: n2.position, data: n2.data })),
     useWorkflowEditorStore.getState().edges.map((e2) => ({ id: e2.id, from: e2.source, to: e2.target }))
   );
   graph.configure({ ...serialized2, id: "wf", groups: [] });
   expect(graph.nodes.length === expected, "graph has " + expected + " nodes after addNode+sync");
-  const promptNode = graph.nodes.find((n) => n.properties?.__sarosisId === newPrompt.id);
+  const promptNode = graph.nodes.find((n2) => n2.properties?.__sarosisId === newPrompt.id);
   expect(promptNode != null, "new Prompt node exists in graph");
   expect(promptNode?.title === "\u63D0\u793A", "new Prompt node title is \u63D0\u793A (got: " + JSON.stringify(promptNode?.title) + ")");
 }
@@ -57160,7 +58461,7 @@ section("Multiple NodePalette clicks -> all nodes appear in graph");
   const nodes = useWorkflowEditorStore.getState().nodes;
   const edges = useWorkflowEditorStore.getState().edges;
   const { graph: serialized } = toLiteGraph(
-    nodes.map((n) => ({ id: n.id, type: n.type, name: n.data?.label ?? n.id, position: n.position, data: n.data })),
+    nodes.map((n2) => ({ id: n2.id, type: n2.type, name: n2.data?.label ?? n2.id, position: n2.position, data: n2.data })),
     edges.map((e2) => ({ id: e2.id, from: e2.source, to: e2.target }))
   );
   graph.configure({ ...serialized, id: "wf", groups: [] });
@@ -57171,7 +58472,7 @@ section("Connect Start->Prompt->End: graph links + fromLiteGraph round-trip");
   useWorkflowEditorStore.getState().clearWorkflow();
   useWorkflowEditorStore.getState().addNode("prompt", { x: 300, y: 200 });
   const startId = "start", endId = "end";
-  const promptId = useWorkflowEditorStore.getState().nodes.find((n) => n.type === "prompt")?.id;
+  const promptId = useWorkflowEditorStore.getState().nodes.find((n2) => n2.type === "prompt")?.id;
   if (promptId) {
     useWorkflowEditorStore.setState({
       edges: [
@@ -57185,7 +58486,7 @@ section("Connect Start->Prompt->End: graph links + fromLiteGraph round-trip");
   expect(finalEdges.length === 2, "store has 2 edges");
   const graph = new LGraph();
   const { graph: serialized } = toLiteGraph(
-    finalNodes.map((n) => ({ id: n.id, type: n.type, name: n.data?.label ?? n.id, position: n.position, data: n.data })),
+    finalNodes.map((n2) => ({ id: n2.id, type: n2.type, name: n2.data?.label ?? n2.id, position: n2.position, data: n2.data })),
     finalEdges.map((e2) => ({ id: e2.id, from: e2.source, to: e2.target }))
   );
   graph.configure({ ...serialized, id: "wf", groups: [] });
@@ -57206,23 +58507,23 @@ section("store.removeNode -> graph sync (e2e)");
   const graph = new LGraph();
   const initial = useWorkflowEditorStore.getState();
   const { graph: ser0 } = toLiteGraph(
-    initial.nodes.map((n) => ({ id: n.id, type: n.type, name: n.data?.label ?? n.id, position: n.position, data: n.data })),
+    initial.nodes.map((n2) => ({ id: n2.id, type: n2.type, name: n2.data?.label ?? n2.id, position: n2.position, data: n2.data })),
     initial.edges.map((e2) => ({ id: e2.id, from: e2.source, to: e2.target }))
   );
   graph.configure({ ...ser0, id: "wf", groups: [] });
   expect(graph.nodes.length === 3, "graph has 3 nodes before remove");
-  const promptId = useWorkflowEditorStore.getState().nodes.find((n) => n.type === "prompt")?.id;
+  const promptId = useWorkflowEditorStore.getState().nodes.find((n2) => n2.type === "prompt")?.id;
   useWorkflowEditorStore.getState().removeNode(promptId);
   const after = useWorkflowEditorStore.getState();
   expect(after.nodes.length === 2, "store has 2 nodes after remove (Start + End)");
   const { graph: ser1 } = toLiteGraph(
-    after.nodes.map((n) => ({ id: n.id, type: n.type, name: n.data?.label ?? n.id, position: n.position, data: n.data })),
+    after.nodes.map((n2) => ({ id: n2.id, type: n2.type, name: n2.data?.label ?? n2.id, position: n2.position, data: n2.data })),
     after.edges.map((e2) => ({ id: e2.id, from: e2.source, to: e2.target }))
   );
   graph.configure({ ...ser1, id: "wf", groups: [] });
   expect(graph.nodes.length === 2, "graph reflects 2 nodes after remove");
-  expect(!graph.nodes.find((n) => n.properties?.__sarosisId === promptId), "removed Prompt node is gone from graph");
-  expect(!!graph.nodes.find((n) => n.properties?.__sarosisId === "start") && !!graph.nodes.find((n) => n.properties?.__sarosisId === "end"), "Start and End remain");
+  expect(!graph.nodes.find((n2) => n2.properties?.__sarosisId === promptId), "removed Prompt node is gone from graph");
+  expect(!!graph.nodes.find((n2) => n2.properties?.__sarosisId === "start") && !!graph.nodes.find((n2) => n2.properties?.__sarosisId === "end"), "Start and End remain");
 }
 section("validateWorkflow: missing Start/End surfaces issues");
 {
@@ -57252,7 +58553,7 @@ section("toWorkflowData -> loadWorkflow round-trip");
   });
   const reloaded = useWorkflowEditorStore.getState();
   expect(reloaded.nodes.length === 3, "reload restores 3 nodes");
-  expect(reloaded.nodes.find((n) => n.type === "agent") != null, "agent node restored");
+  expect(reloaded.nodes.find((n2) => n2.type === "agent") != null, "agent node restored");
   expect(reloaded.workflowName === "round-trip", "workflowName restored");
 }
 section("FIX Bug-1: toLiteGraph emits size for every node (widgetBridge overlay alignment)");
@@ -57261,10 +58562,10 @@ section("FIX Bug-1: toLiteGraph emits size for every node (widgetBridge overlay 
     { id: "n1", type: "prompt", name: "\u63D0\u793A", position: { x: 100, y: 100 }, data: { label: "\u63D0\u793A" } },
     { id: "n2", type: "agent", name: "Agent", position: { x: 200, y: 200 }, data: { label: "Agent" } }
   ], []);
-  for (const n of ser.nodes) {
+  for (const n2 of ser.nodes) {
     expect(
-      Array.isArray(n.size) && n.size.length === 2 && n.size[0] > 0 && n.size[1] > 0,
-      `node ${n.id} emits size (got: ${JSON.stringify(n.size)})`
+      Array.isArray(n2.size) && n2.size.length === 2 && n2.size[0] > 0 && n2.size[1] > 0,
+      `node ${n2.id} emits size (got: ${JSON.stringify(n2.size)})`
     );
   }
 }
@@ -57303,12 +58604,12 @@ section("FIX Bug-3: wheel zoom anchored at the mouse (ds.changeScale + [clientX,
     max_scale: 10,
     offset: [0, 0],
     element: { getBoundingClientRect: () => ({ x: 0, y: 0, width: 800, height: 600 }) },
-    changeScale(value, anchor) {
+    changeScale(value2, anchor) {
       const rect = this.element.getBoundingClientRect();
       const norm = [anchor[0] - rect.x, anchor[1] - rect.y];
       const c2g = (p) => [p[0] / this.scale - this.offset[0], p[1] / this.scale - this.offset[1]];
       const center = c2g(norm);
-      this.scale = value;
+      this.scale = value2;
       const newCenter = c2g(norm);
       this.offset[0] += newCenter[0] - center[0];
       this.offset[1] += newCenter[1] - center[1];
@@ -57438,14 +58739,14 @@ section("E2E: widgetBridge nodeToOverlayRect + sync follows canvas transform");
   };
   const host = createWidgetBridgeHost(layerEl, doc);
   host.sync(
-    [{ id: "a", node: { pos: [10, 20], size: [100, 50] } }],
+    [{ id: "a", node: { pos: [10, 20], size: [100, 50] }, insets: { left: 15, right: 15, top: 22, bottom: 8 } }],
     { x: 0, y: 0, scale: 1 }
   );
   const cont = layerEl.children[0];
   expect(cont != null && cont.style.display === "block", "container visible after first sync");
   expect(cont.style.pointerEvents === "none", "container is click-through (pointerEvents:none)");
-  expect(parseFloat(cont.style.width) === 100 - 16 && parseFloat(cont.style.height) === 50 - 22 - 8, "container size insets 8 sides / 22 top");
-  expect(cont.style.left === "18px" && cont.style.top === "42px", "container offset by 8 sides / 22 top (LiteGraph title bar)");
+  expect(parseFloat(cont.style.width) === 100 - 30 && parseFloat(cont.style.height) === 50 - 22 - 8, "container size = node minus graph-unit insets");
+  expect(cont.style.left === "25px" && cont.style.top === "42px", "container offset by graph-unit insets (15 sides / 22 top)");
   host.sync([{ id: "b", node: { pos: [30, 40], size: [50, 25] } }], { x: 5, y: 5, scale: 2 });
   expect(cont.style.display === "none", "stale container hidden after re-sync");
 }
@@ -57889,7 +59190,7 @@ section("workflowRun: schema nodes run as full ComfyTV workflows (P1)");
     baseUrl: "http://fake.local",
     async invoke({ prompt }) {
       invokeLog.push(prompt);
-      const classes = Object.values(prompt).map((n) => n.class_type);
+      const classes = Object.values(prompt).map((n2) => n2.class_type);
       if (failOn && classes.includes(failOn)) {
         return { promptId: "p1", outputs: {}, status: "error", error: "boom" };
       }
@@ -58047,7 +59348,7 @@ section("workflowRun: chained stages inject upstream snapshots (P2)");
     baseUrl: "http://fake.local",
     async invoke({ prompt }) {
       invokeLog2.push(prompt);
-      const classes = Object.values(prompt).map((n) => n.class_type);
+      const classes = Object.values(prompt).map((n2) => n2.class_type);
       if (failOn && classes.includes(failOn)) {
         return { promptId: "p", outputs: {}, status: "error", error: "boom" };
       }
@@ -58359,8 +59660,8 @@ section("comfyNodeStyle: widget rendering & style application");
   expect(calls.filter((c) => c === "fill").length >= 4, "field backdrops filled (number/combo/text/toggle)");
   const constants2 = { NODE_DEFAULT_COLOR: "x", NODE_DEFAULT_BGCOLOR: "y", NODE_DEFAULT_BOXCOLOR: "z", WIDGET_OUTLINE_COLOR: "w" };
   const proto = {};
-  const liteCanvas = {};
-  applyComfyNodeStyle(liteCanvas, { prototype: proto }, constants2);
+  const liteCanvas2 = {};
+  applyComfyNodeStyle(liteCanvas2, { prototype: proto }, constants2);
   expect(constants2.NODE_DEFAULT_BGCOLOR === "#1f1f1f" && constants2.NODE_DEFAULT_COLOR === "#2a2a2a", "dark node palette applied");
   expect(constants2.WIDGET_OUTLINE_COLOR === "#3a3a3a", "widget outline dimmed");
   expect(
@@ -58404,8 +59705,8 @@ section("comfyNodeStyle: widget rendering & style application");
     lineWidth: 1
   };
   drawNodeErrorBanner(errCtx, 220, 120, "boom");
-  expect(errCalls.includes("stroke") && errCalls.some((t) => t.startsWith("text:\u26A0 Error: boom")), "error banner drawn (border + text)");
-  expect(errCalls.filter((c) => c === "fill").length >= 1, "banner backdrop filled");
+  expect(errCalls.some((t) => t.startsWith("text:\u26A0 Error: boom")) && errCalls.filter((c) => c === "fill").length >= 1, "error banner drawn (backdrop + text, no double border)");
+  expect(!errCalls.includes("stroke"), "error banner does not re-stroke the node border");
   const stCalls = [];
   const stCtx = {
     stroke() {
@@ -58445,7 +59746,7 @@ section("comfyNodeStyle: widget rendering & style application");
   drawNodeStateOverlay(stCtx, 200, 100, "success");
   drawNodeStateOverlay(stCtx, 200, 100, "error", "kaput");
   drawNodeStateOverlay(stCtx, 200, 100, "idle");
-  expect(stCalls.filter((c) => c === "stroke").length >= 3, "running+success+error draw borders");
+  expect(stCalls.filter((c) => c === "stroke").length >= 2, "running+success draw borders");
   expect(stCalls.filter((c) => c === "fill").length >= 1, "error banner backdrop filled");
   let stateHook = null;
   const proto2 = {};
@@ -58509,8 +59810,8 @@ section("ComfyUI node shortcuts: resolveShortcutAction");
 section("ComfyUI node shortcuts: mode/collapse toggles");
 {
   const nodes = [{ mode: 0 }, { mode: NODE_MODE_MUTE }, { mode: NODE_MODE_BYPASS }];
-  const n = toggleModeForNodes(nodes, NODE_MODE_MUTE);
-  expect(n === 3, "all three nodes toggled");
+  const n2 = toggleModeForNodes(nodes, NODE_MODE_MUTE);
+  expect(n2 === 3, "all three nodes toggled");
   expect(
     nodes[0].mode === NODE_MODE_MUTE && nodes[1].mode === 0 && nodes[2].mode === NODE_MODE_MUTE,
     "mute toggles to/from ALWAYS, other modes forced"

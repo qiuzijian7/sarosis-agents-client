@@ -255,7 +255,10 @@ function defaultDataForType(type: string): Record<string, unknown> {
 		case 'group':
 			return { ...base, label: 'Group', isCollapsed: false };
 		default:
-			return { ...base, label: type };
+			// Namespaced types (ComfyTV.ImageStage / Sarosis.ModelImageGen) must
+			// NOT leak their raw type into the visible label — the node's
+			// registered spec title is used instead (see isUsableNodeTitle).
+			return { ...base, label: /^(?:ComfyTV|Comfy|Sarosis)\./i.test(type) ? '' : type };
 	}
 }
 

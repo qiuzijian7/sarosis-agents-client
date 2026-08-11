@@ -10,11 +10,23 @@ import {
 	providerImagesToMedia,
 	buildComfyTxt2ImgPrompt,
 	comfyOutputsToMedia,
+	findUpstreamImageRef,
+	buildLoadImageInput,
 	createLLMProviderBackend,
 	createComfyImageBackend,
 	type ImageGenNodeValues,
 	type IImageGenProviderLike,
 } from '../../webview/src/features/workflowEditor/comfyHost/imageGenBackend.js';
+import { MediaSnapshotStore } from '../../webview/src/features/workflowEditor/comfyHost/mediaSnapshotStore.js';
+
+function makeStore(): MediaSnapshotStore {
+	const map = new Map<string, unknown>();
+	return new MediaSnapshotStore({
+		async save(key, data) { map.set(key, data); return key; },
+		async load(key) { return map.get(key) ?? null; },
+		async remove(key) { map.delete(key); },
+	});
+}
 import type { IComfyRunner } from '../../webview/src/features/workflowEditor/comfyHost/comfyRunner.js';
 
 // ─── Pure helpers ──────────────────────────────────────────────────────────────
@@ -200,6 +212,42 @@ suite('imageGenBackend — createLLMProviderBackend', () => {
 			provider: fakeProvider({ generateImage: async () => { throw new Error('API 401'); } }),
 		});
 		await assert.rejects(() => backend.generate({ prompt: 'x', numImages: 1, modelId: 'flux' }), /401/);
+	});
+});
+
+// ─── findUpstreamImageRef / buildLoadImageInput ──────────────────────────────
+
+suite('imageGenBackend — findUpstreamImageRef', () => {
+
+	test('returns first upstream IMAGE ref in execution order', () => {
+		const store = makeStore();
+		store.put({ nodeId: 'a', port: 'output', key: 'a:output:0', media: { kind: 'image', ref: 'u1' }, index: 0 });
+		store.put({ nodeId: 'b', port: 'output', key: 'b:output:0', media: { kind: 'image', ref: 'u2' }, index: 0 });
+		assert.strictEqual(findUpstreamImageRef(store, ['a', 'b']), 'u1');
+	});
+
+	test('skips non-image / empty refs', () => {
+		const store = makeStore();
+		store.put({ nodeId: 'a', port: 'output', key: 'a:output:0', media: { kind: 'text', ref: 'x' }, index: 0 });
+		store.put({ nodeId: 'b', port: 'output', key: 'b:output:0', media: { kind: 'image', ref: '' }, index: 0 });
+		store.put({ nodeId: 'c', port: 'output', key: 'c:output:0', media: { kind: 'image', ref: 'u3' }, index: 0 });
+		assert.strictEqual(findUpstreamImageRef(store, ['a', 'b', 'c']), 'u3');
+	});
+
+	test('undefined upstreams → undefined', () => {
+		assert.strictEqual(findUpstreamImageRef(makeStore(), undefined), undefined);
+	});
+});
+
+suite('imageGenBackend — buildLoadImageInput', () => {
+
+	test('maps ref to LoadImage image input', () => {
+		assert.deepStrictEqual(buildLoadImageInput('http://cdn/a.png'), { image: 'http://cdn/a.png', upload: 'image' });
+	});
+
+	test('empty ref → undefined', () => {
+		assert.strictEqual(buildLoadImageInput(undefined), undefined);
+		assert.strictEqual(buildLoadImageInput(''), undefined);
 	});
 });
 

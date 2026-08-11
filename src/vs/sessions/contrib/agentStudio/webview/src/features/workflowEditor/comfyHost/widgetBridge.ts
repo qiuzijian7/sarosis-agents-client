@@ -28,9 +28,35 @@ export interface CanvasViewport {
  *  - SIDE: 8px so LiteGraph's port dots (drawn at the node edge) stay visible
  *  - TOP:  22px so LiteGraph's own title bar (≈22px tall) is not painted over
  *  - BOTTOM: 8px so connection points / output labels stay visible */
-const DEFAULT_SIDE_INSET = 8;
-const DEFAULT_TOP_INSET = 22;
+const DEFAULT_SIDE_INSET = 15;
+const DEFAULT_TOP_INSET = 50;
 const DEFAULT_BOTTOM_INSET = 8;
+
+/** LiteGraph layout constants (litegraph.es.js: NODE_TITLE_HEIGHT / NODE_SLOT_HEIGHT). */
+export const LITEGRAPH_TITLE_HEIGHT = 30;
+export const LITEGRAPH_SLOT_HEIGHT = 20;
+
+/** Card insets in GRAPH units — the region of the node the DOM card covers.
+ *  Mirrors LiteGraph's widget area so canvas-drawn ports/title stay visible. */
+export interface OverlayInsets {
+	left: number;
+	right?: number;
+	top: number;
+	bottom?: number;
+}
+
+/** Widget-area insets for a node with the given slot counts.
+ *  top = title bar + one row per port pair, so the card starts below the pins
+ *  (LiteGraph stacks input/output slots vertically under the title). */
+export function widgetAreaInsets(inputCount: number, outputCount: number): OverlayInsets {
+	const rows = Math.max(inputCount, outputCount, 0);
+	return {
+		left: DEFAULT_SIDE_INSET,
+		right: DEFAULT_SIDE_INSET,
+		top: LITEGRAPH_TITLE_HEIGHT + rows * LITEGRAPH_SLOT_HEIGHT,
+		bottom: DEFAULT_BOTTOM_INSET,
+	};
+}
 
 /** One overlay node. `fullCover: true` (schema stages, which hide the canvas
  *  title bar) lets the card cover the whole node rect so the entire node is a
@@ -54,6 +80,8 @@ export interface OverlayNode {
 	 *  nodes' cards, so for fullCover nodes the colored ring is drawn here in
 	 *  the DOM layer. State rings take priority over the selection ring. */
 	state?: string;
+	/** Card insets in GRAPH units (see `widgetAreaInsets`). Omit for defaults. */
+	insets?: OverlayInsets;
 }
 
 /** Ring colors per overlay state (mirror drawNodeStateOverlay's palette). */
@@ -126,7 +154,10 @@ export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument 
 			// are presentational; any future interactive child must opt back
 			// in with its own pointerEvents:auto.
 			el.style.pointerEvents = 'none';
-			el.style.overflow = 'hidden';
+			// overflow: visible (NOT hidden) so schema-node port bars can sit
+			// on the node edge with labels just outside — card shadow is
+			// applied on the inner card root, so it still renders correctly.
+			el.style.overflow = 'visible';
 			el.style.zIndex = '1';
 			el.dataset.nodeId = nodeId;
 			layer.appendChild(el);
@@ -146,20 +177,37 @@ export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument 
 			}
 		},
 		sync(nodes, viewport): void {
-			// Cards default to sitting just below LiteGraph's title bar (22px)
-			// and inside the port dots (8px). Nodes that suppress the canvas
-			// title bar (schema stages) pass fullCover → the card covers the
-			// whole node rect so the entire node is one DOM layer.
-			const SIDE_INSET = 8;
-			const TOP_INSET = 22;
-			const BOTTOM_INSET = 8;
-			// hide any container whose node is not in this snapshot
+			// Cards default to sitting just below LiteGraph's title bar and
+			// INSIDE the port circles. Nodes that suppress the canvas title
+			// bar (schema stages) pass fullCover → the card covers the whole
+			// node rect so the entire node is one DOM layer.
+			//
+			// INSETS ARE IN GRAPH (design) UNITS, not screen px. LiteGraph draws
+			// the title bar and port dots in graph units scaled by the zoom, so
+			// a constant screen-px inset would shrink/grow relative to the ports
+			// and cover them at any zoom != 1 (that was the "缩放时遮挡 pin" bug).
+			// Multiplying by `scale` keeps the card locked to the same graph-space
+			// region — exactly the widget area — at every zoom level.
+			//
+			// Defaults mirror LiteGraph's own widget area:
+			//  - left/right: `BaseWidget.margin` = 15. Port circles are drawn at
+			//    x = NODE_SLOT_HEIGHT/2 = 10 with radius 4–5 → they span x=5..15,
+			//    so widgets starting at 15 never cover them.
+			//  - top: NODE_TITLE_HEIGHT (30) + one slot row (NODE_SLOT_HEIGHT 20).
+			//    Callers that know the node's real slot count should pass
+			//    `insets.top` = 30 + max(inputs, outputs) * 20 so the card starts
+			//    below the port rows (see LiteGraphCanvas).
+			//  - bottom: 8 so output labels near the bottom stay readable.
 			const seen = new Set<string>();
-			for (const { id, node, fullCover, selected, state } of nodes) {
+			for (const { id, node, fullCover, selected, state, insets } of nodes) {
 				seen.add(id);
 				const el = ensureContainer(id);
 				const rect = nodeToOverlayRect(node, viewport);
 				const scale = viewport.scale;
+				const SIDE_INSET = insets?.left ?? DEFAULT_SIDE_INSET;
+				const RIGHT_INSET = insets?.right ?? insets?.left ?? DEFAULT_SIDE_INSET;
+				const TOP_INSET = insets?.top ?? DEFAULT_TOP_INSET;
+				const BOTTOM_INSET = insets?.bottom ?? DEFAULT_BOTTOM_INSET;
 				// The container keeps its DESIGN size (unscaled CSS px) and is
 				// visually scaled with `transform: scale(scale)`. The card
 				// inside then lays out once at design size and zooms as one
@@ -171,15 +219,19 @@ export function createWidgetBridgeHost(layer: HTMLElement, doc: MinimalDocument 
 				// chaos" inside nodes.
 				const designW = rect.width / scale;   // = node.size[0]
 				const designH = rect.height / scale;  // = node.size[1]
-				// Insets are expressed in SCREEN px; convert to design px so
-				// the port-dot/title-bar margins stay constant on screen.
-				const sideInset = SIDE_INSET / scale;
-				const topInsetD = (fullCover ? 0 : TOP_INSET) / scale;
-				const bottomInsetD = (fullCover ? 0 : BOTTOM_INSET) / scale;
-				el.style.left = `${rect.left + SIDE_INSET}px`;
-				el.style.top = `${rect.top + (fullCover ? 0 : TOP_INSET)}px`;
-				el.style.width = `${Math.max(0, designW - 2 * sideInset)}px`;
-				el.style.height = `${Math.max(0, designH - topInsetD - bottomInsetD)}px`;
+				// Insets are GRAPH units. `fullCover` keeps the card flush with
+				// the node rect (the caller suppressed the canvas title bar and
+				// owns the whole node visual).
+				const insetL = fullCover ? 0 : SIDE_INSET;
+				const insetR = fullCover ? 0 : RIGHT_INSET;
+				const insetT = fullCover ? 0 : TOP_INSET;
+				const insetB = fullCover ? 0 : BOTTOM_INSET;
+				// Position in screen px: the graph-unit inset scales with zoom so
+				// the card stays locked to the widget area of the node.
+				el.style.left = `${rect.left + insetL * scale}px`;
+				el.style.top = `${rect.top + insetT * scale}px`;
+				el.style.width = `${Math.max(0, designW - insetL - insetR)}px`;
+				el.style.height = `${Math.max(0, designH - insetT - insetB)}px`;
 				el.style.transform = `scale(${scale})`;
 				el.style.transformOrigin = '0 0';
 				el.style.display = 'block';

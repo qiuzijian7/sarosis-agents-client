@@ -479,7 +479,7 @@ section('E2E: widgetBridge nodeToOverlayRect + sync follows canvas transform');
   };
   const host = createWidgetBridgeHost(layerEl, doc);
   host.sync(
-    [{ id: 'a', node: { pos: [10, 20], size: [100, 50] } }],
+    [{ id: 'a', node: { pos: [10, 20], size: [100, 50] }, insets: { left: 15, right: 15, top: 22, bottom: 8 } }],
     { x: 0, y: 0, scale: 1 },
   );
   // second sync without 'a' should hide it
@@ -488,11 +488,11 @@ section('E2E: widgetBridge nodeToOverlayRect + sync follows canvas transform');
   // Containers must stay click-through so the LiteGraph canvas receives
   // pointerdown (drag), wheel (zoom) and dblclick (editor) over node cards.
   expect(cont.style.pointerEvents === 'none', 'container is click-through (pointerEvents:none)');
-  // PORT_INSET keeps LiteGraph pin dots / connection start points visible
-  // (they're drawn at the node's edge — without inset the container would
-  // paint over them and connections would appear to vanish).
-  expect(parseFloat(cont.style.width) === 100 - 16 && parseFloat(cont.style.height) === 50 - 22 - 8, 'container size insets 8 sides / 22 top');
-  expect(cont.style.left === '18px' && cont.style.top === '42px', 'container offset by 8 sides / 22 top (LiteGraph title bar)');
+  // Insets are GRAPH units (they scale with zoom) so the card stays locked to
+  // LiteGraph's widget area: left/right = BaseWidget.margin (15) keeps the port
+  // circles (x=5..15) uncovered, top clears the title bar + port rows.
+  expect(parseFloat(cont.style.width) === 100 - 30 && parseFloat(cont.style.height) === 50 - 22 - 8, 'container size = node minus graph-unit insets');
+  expect(cont.style.left === '25px' && cont.style.top === '42px', 'container offset by graph-unit insets (15 sides / 22 top)');
   host.sync([{ id: 'b', node: { pos: [30, 40], size: [50, 25] } }], { x: 5, y: 5, scale: 2 });
   expect(cont.style.display === 'none', 'stale container hidden after re-sync');
 }
@@ -1437,8 +1437,11 @@ section('comfyNodeStyle: widget rendering & style application');
     textAlign: 'left', textBaseline: 'top', font: '', globalAlpha: 1, fillStyle: '', strokeStyle: '', lineWidth: 1,
   };
   drawNodeErrorBanner(errCtx, 220, 120, 'boom');
-  expect(errCalls.includes('stroke') && errCalls.some(t => t.startsWith('text:⚠ Error: boom')), 'error banner drawn (border + text)');
-  expect(errCalls.filter(c => c === 'fill').length >= 1, 'banner backdrop filled');
+  // The error banner is backdrop + text only — LiteGraph already colors the
+  // node's `boxcolor` red on error, so drawing a full-node stroke here would
+  // produce a double red border (see drawNodeErrorBanner doc).
+  expect(errCalls.some(t => t.startsWith('text:⚠ Error: boom')) && errCalls.filter(c => c === 'fill').length >= 1, 'error banner drawn (backdrop + text, no double border)');
+  expect(!errCalls.includes('stroke'), 'error banner does not re-stroke the node border');
 
   // execution-state overlay: running/success border, error banner, unknown → no-op
   const stCalls = [];
@@ -1453,7 +1456,9 @@ section('comfyNodeStyle: widget rendering & style application');
   drawNodeStateOverlay(stCtx, 200, 100, 'success');
   drawNodeStateOverlay(stCtx, 200, 100, 'error', 'kaput');
   drawNodeStateOverlay(stCtx, 200, 100, 'idle');
-  expect(stCalls.filter(c => c === 'stroke').length >= 3, 'running+success+error draw borders');
+  // running + success each stroke the node border; error goes through the
+  // banner path (backdrop + text, no extra full-node stroke)
+  expect(stCalls.filter(c => c === 'stroke').length >= 2, 'running+success draw borders');
   expect(stCalls.filter(c => c === 'fill').length >= 1, 'error banner backdrop filled');
 
   // onDrawForeground hook consults the getNodeState callback

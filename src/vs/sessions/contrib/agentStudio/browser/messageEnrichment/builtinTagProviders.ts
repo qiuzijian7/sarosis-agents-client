@@ -35,6 +35,7 @@
  */
 
 import { IUserMessageTagProvider, IEnrichContext } from './userMessageEnricher.js';
+import { canvasContextStore, type CanvasContextSnapshot } from './canvasContextStore.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 辅助
@@ -218,7 +219,72 @@ export class AdditionalDataTagProvider implements IUserMessageTagProvider {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Provider 8: system_reminder
+// Provider 8: canvas_context — Agent-driven canvas state snapshot
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface CanvasContextFormatOptions {
+	/** Max nodes to list (default 30). */
+	maxNodes?: number;
+}
+
+const SAFE_XML_RE = /[<>&]/g;
+const SAFE_XML_MAP: Record<string, string> = { '<': '&lt;', '>': '&gt;', '&': '&amp;' };
+
+function escapeXmlText(s: string): string {
+	return s.replace(SAFE_XML_RE, ch => SAFE_XML_MAP[ch] || ch);
+}
+
+/**
+ * Format a canvas context snapshot into tag content lines.
+ * Pure + exported for unit tests (no DOM / store dependency).
+ * Node label / error text are XML-escaped (the content sits inside <canvas_context>).
+ */
+export function formatCanvasContextContent(snapshot: CanvasContextSnapshot, options: CanvasContextFormatOptions = {}): string {
+	const maxNodes = options.maxNodes ?? 30;
+	const lines: string[] = [];
+	const total = snapshot.nodes.length;
+	const shown = snapshot.nodes.slice(0, maxNodes);
+
+	for (const n of shown) {
+		const stateLabel = n.runState === 'success' ? '成功'
+			: n.runState === 'error' ? '失败'
+			: n.runState === 'running' ? '运行中'
+			: '待执行';
+		const detail = n.runState === 'error' && n.errorMsg ? `，错误: ${escapeXmlText(n.errorMsg)}` : '';
+		const dur = n.durationMs != null ? `，耗时 ${n.durationMs}ms` : '';
+		lines.push(`- ${escapeXmlText(n.label)} [${escapeXmlText(n.type)}] → ${stateLabel}${detail}${dur}`);
+	}
+	if (total > shown.length) {
+		lines.push(`- ... 另有 ${total - shown.length} 个节点未列出`);
+	}
+	if (lines.length === 0) {
+		lines.push('- （画布当前无节点）');
+	}
+	if (snapshot.lastOpsSummary?.length) {
+		lines.push('');
+		lines.push('最近画布操作:');
+		for (const s of snapshot.lastOpsSummary) { lines.push(`  ${s}`); }
+	}
+	return lines.join('\n');
+}
+
+export class CanvasContextTagProvider implements IUserMessageTagProvider {
+	readonly tagName = 'canvas_context';
+	readonly tagDescription = 'Current workflow canvas state — nodes and their latest execution results (run state, errors, durations). Check this when the user references images/nodes generated on the canvas.';
+
+	/** Injectable for tests; defaults to the shared store. */
+	store: { get(workflowId: string): CanvasContextSnapshot | undefined } = canvasContextStore;
+
+	buildContent(ctx: IEnrichContext): string | null {
+		const workflowId = ctx.request.workflowTrigger?.workflowId ?? 'default';
+		const snapshot = this.store.get(workflowId);
+		if (!snapshot) { return null; }
+		return formatCanvasContextContent(snapshot);
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Provider 9: system_reminder
 // ═══════════════════════════════════════════════════════════════════════════
 
 export class SystemReminderTagProvider implements IUserMessageTagProvider {
@@ -255,6 +321,7 @@ export function createBuiltinTagProviders(): IUserMessageTagProvider[] {
 		new ConversationSummaryTagProvider(),
 		new WorkingMemoryTagProvider(),
 		new AdditionalDataTagProvider(),
+		new CanvasContextTagProvider(),
 		new SystemReminderTagProvider(),
 	];
 }

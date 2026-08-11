@@ -82,11 +82,16 @@ function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w:
 	ctx.closePath();
 }
 
-/** ComfyUI-style title text (P1). Bound as `onDrawTitleText`. */
-export function comfyTitleText(this: ComfyTitleNode, ctx: CanvasRenderingContext2D, title_height: number, size: [number, number], scale: number): void {
+/** ComfyUI-style title text (P1). Bound as `onDrawTitleText`.
+ *
+ * NOTE: LiteGraph's `toCanvasContext` already applies `ctx.scale(scale)` to the
+ * whole canvas, so everything drawn here is in *canvas* (pre-zoom) units. Using
+ * `11 * scale` here would double-scale the title (quadratic growth on zoom),
+ * which is why we use fixed pixels — exactly like `comfyDrawWidgets`. */
+export function comfyTitleText(this: ComfyTitleNode, ctx: CanvasRenderingContext2D, title_height: number, size: [number, number], _scale: number): void {
 	const [w] = size;
-	const fontSize = Math.max(10, 11 * scale);
-	const padX = 8 * scale;
+	const fontSize = 11;
+	const padX = 8;
 	ctx.save();
 	ctx.textBaseline = 'middle';
 	ctx.font = `${fontSize}px ${FONT}`;
@@ -94,33 +99,13 @@ export function comfyTitleText(this: ComfyTitleNode, ctx: CanvasRenderingContext
 	ctx.fillStyle = '#8a8a8a';
 	const caret = this.collapsed ? '›' : '⌄';
 	ctx.fillText(caret, padX, -title_height / 2);
-	const caretW = ctx.measureText(caret).width + 6 * scale;
+	const caretW = ctx.measureText(caret).width + 6;
 	// title
 	ctx.fillStyle = '#e6e6e6';
 	ctx.fillText(String(this.getTitle?.() ?? this.title ?? this.type ?? ''), padX + caretW, -title_height / 2);
-	// right-aligned output type chips
-	const types: Array<{ label: string; color: string }> = [];
-	for (const out of this.outputs ?? []) {
-		const t = String(out?.type ?? out?.name ?? '').toUpperCase();
-		if (t && t !== 'ANY') {
-			types.push({ label: t, color: OUTPUT_TYPE_COLORS[t] ?? OUTPUT_TYPE_COLORS['*'] });
-		}
-	}
-	if (types.length > 0) {
-		ctx.font = `${Math.max(8, 9 * scale)}px ${FONT}`;
-		ctx.textAlign = 'right';
-		const rightPad = padX + 4 * scale;
-		let rightX = w - rightPad;
-		for (let i = types.length - 1; i >= 0; i--) {
-			const t = types[i];
-			ctx.fillStyle = t.color;
-			const tw = ctx.measureText(t.label).width;
-			if (rightX - tw < padX + caretW + 20 * scale) { break; }
-			ctx.fillText(t.label, rightX, -title_height / 2);
-			rightX -= tw + 6 * scale;
-		}
-		ctx.textAlign = 'start';
-	}
+	// NOTE: no right-aligned output type chips — ComfyTV's reference UI does
+	// NOT draw type labels in the title bar. The chips (COMFYTV_IMAGES etc.)
+	// crowded the title and looked like internal implementation detail.
 	ctx.restore();
 }
 
@@ -128,6 +113,14 @@ export function comfyTitleText(this: ComfyTitleNode, ctx: CanvasRenderingContext
  * ComfyUI-style widget rendering (P2). Replaces LiteGraph's drawWidgets with a
  * rounded dark field + label; interactions are untouched (they live in the
  * widget's own mouse handling). `this` is the node.
+ *
+ * LiteGraph 0.17 widget note: widgets are objects (BaseWidget) arranged by the
+ * private `#arrangeWidgets` (invoked through `computeSize`), which sets
+ * `widget.y` and `widget.computedHeight`. Without those, every widget would
+ * stack at y=0 (the "ModelImageGen 内部 UI 错位" bug). We trigger
+ * `computeSize()` here to force arrangement on the first paint, and we use
+ * `computedHeight` for the field box (textarea / multiline widgets can be
+ * taller than 22px).
  */
 export function comfyDrawWidgets(
 	this: {
@@ -135,19 +128,50 @@ export function comfyDrawWidgets(
 		size: [number, number];
 		collapsed?: boolean;
 		isWidgetVisible?(w: WidgetLike): boolean;
+		computeSize?(): [number, number];
 	},
 	ctx: CanvasRenderingContext2D,
 	_options: unknown,
 ): void {
 	if (!this.widgets || this.collapsed) { return; }
+	// Manually arrange widgets. LiteGraph 0.17's private `#arrangeWidgets` is
+	// unreliable for our SarosisNode subclass (prototype-chain shadowing makes
+	// `widget.y` stay at 0 → every field overlaps at the same y). We force
+	// `widget.y` + `widget.computedHeight` here and let the loop below use them.
 	const nodeWidth = this.size[0];
+	const titleBottom = 30; // matches LiteGraph title_height
 	const H = 22;
+	const isVisible = (w: WidgetLike): boolean => (this.isWidgetVisible ? this.isWidgetVisible(w) : true);
+	let yCursor = titleBottom;
+	for (const widget of this.widgets) {
+		if (!widget || !isVisible(widget)) { continue; }
+		widget.y = yCursor;
+		// Mirror LiteGraph's built-in `drawWidgets` (line 6354): set `last_y` so
+		// `getWidgetOnPos` can hit-test the widget on click. Without this,
+		// `widget.last_y` stays undefined and clicks never reach the widget —
+		// every text/combo/number field on schema-style nodes is dead.
+		widget.last_y = widget.y;
+		widget.computedDisabled = !!widget.disabled;
+		const cs = widget.computeSize?.(nodeWidth);
+		const baseH = Array.isArray(cs) ? cs[1] : 0;
+		widget.computedHeight = widget.computedHeight ?? (baseH > 0 ? baseH + 4 : H + 4);
+		yCursor += widget.computedHeight;
+	}
+	// Resize the node box to wrap the widgets (LiteGraph also uses size for
+	// hit-testing and state-overlay coordinates).
+	if (this.size[1] < yCursor + 8) {
+		const next: [number, number] = [this.size[0], yCursor + 8];
+		this.size = next;
+	}
+
 	ctx.save();
 	ctx.textBaseline = 'middle';
 	for (const widget of this.widgets) {
-		if (!widget || (this.isWidgetVisible ? !this.isWidgetVisible(widget) : false)) { continue; }
+		if (!widget || !isVisible(widget)) { continue; }
 		const y = widget.y ?? 0;
 		const width = widget.width || nodeWidth;
+		// Per-widget height: LiteGraph 0.17 BaseWidget may compute > 22 (multiline).
+		const wH = widget.computedHeight ? Math.max(H, widget.computedHeight) : H;
 		const label = widget.label ?? widget.name ?? '';
 		const type = widget.type ?? 'text';
 		const disabled = !!widget.disabled || !!widget.computedDisabled;
@@ -156,21 +180,21 @@ export function comfyDrawWidgets(
 		// label (left)
 		ctx.textAlign = 'left';
 		ctx.fillStyle = TEXT_MUTED;
-		ctx.fillText(label, 8, y + H / 2);
+		ctx.fillText(label, 8, y + wH / 2);
 		const labelW = Math.min(width * 0.35, 120);
 		const fieldX = labelW + 12;
 		const fieldW = width - fieldX - 8;
 
 		if (type === 'button') {
 			ctx.fillStyle = '#2a2a2a';
-			roundedRectPath(ctx, fieldX, y + 2, fieldW, H - 4, 4);
+			roundedRectPath(ctx, fieldX, y + 2, fieldW, wH - 4, 4);
 			ctx.fill();
 			ctx.strokeStyle = 'rgba(255,255,255,0.12)';
 			ctx.lineWidth = 1;
 			ctx.stroke();
 			ctx.fillStyle = '#ccc';
 			ctx.textAlign = 'center';
-			ctx.fillText(String(widget.value ?? label), fieldX + fieldW / 2, y + H / 2);
+			ctx.fillText(String(widget.value ?? label), fieldX + fieldW / 2, y + wH / 2);
 			continue;
 		}
 		if (type === 'toggle' || type === 'boolean') {
@@ -184,7 +208,7 @@ export function comfyDrawWidgets(
 
 		// field backdrop
 		ctx.fillStyle = '#1a1a1a';
-		roundedRectPath(ctx, fieldX, y + 2, fieldW, H - 4, 4);
+		roundedRectPath(ctx, fieldX, y + 2, fieldW, wH - 4, 4);
 		ctx.fill();
 		ctx.strokeStyle = widget.advanced ? 'rgba(56,139,253,0.8)' : 'rgba(255,255,255,0.08)';
 		ctx.lineWidth = 1;
@@ -193,19 +217,19 @@ export function comfyDrawWidgets(
 		ctx.fillStyle = TEXT_FG;
 		if (type === 'number' || type === 'slider') {
 			ctx.textAlign = 'right';
-			ctx.fillText(String(widget.value ?? 0), fieldX + fieldW - 8, y + H / 2);
+			ctx.fillText(String(widget.value ?? 0), fieldX + fieldW - 8, y + wH / 2);
 		} else if (type === 'combo' || type === 'select') {
 			ctx.textAlign = 'right';
 			const opts = widget.options?.values ?? [];
 			const cur = opts.includes(widget.value as string) ? widget.value : String(widget.value ?? '');
-			ctx.fillText(String(cur), fieldX + fieldW - 22, y + H / 2);
+			ctx.fillText(String(cur), fieldX + fieldW - 22, y + wH / 2);
 			ctx.fillStyle = TEXT_MUTED;
-			ctx.fillText('⌄', fieldX + fieldW - 10, y + H / 2);
+			ctx.fillText('⌄', fieldX + fieldW - 10, y + wH / 2);
 		} else {
 			// text / textarea / string / fallback
 			ctx.textAlign = 'left';
 			const v = String(widget.value ?? '');
-			ctx.fillText(v.length > 18 ? `${v.slice(0, 18)}…` : v, fieldX + 8, y + H / 2);
+			ctx.fillText(v.length > 18 ? `${v.slice(0, 18)}…` : v, fieldX + 8, y + wH / 2);
 		}
 		ctx.globalAlpha = 1;
 		ctx.textAlign = 'left';
@@ -213,14 +237,15 @@ export function comfyDrawWidgets(
 	ctx.restore();
 }
 
-/** Draw a ComfyUI-style error banner + red border at the bottom of a node. */
+/**
+ * Draw a ComfyUI-style error banner at the bottom of a node. The red outer
+ * border is **not** drawn here — LiteGraph's `drawNode` already colors
+ * `boxcolor` red on error (`setIsExecutingError` / `onExecuted` failure), so
+ * adding another full-node stroke here would render a double red border
+ * around the node. Keep this function to the bottom banner + text only.
+ */
 export function drawNodeErrorBanner(ctx: CanvasRenderingContext2D, w: number, h: number, error: string): void {
 	ctx.save();
-	// red border around the whole node
-	ctx.strokeStyle = '#ff5b5b';
-	ctx.lineWidth = 2;
-	roundedRectPath(ctx, 1, 1, w - 2, h - 2, 8);
-	ctx.stroke();
 	// bottom banner
 	const bannerH = 20;
 	ctx.fillStyle = 'rgba(255, 80, 80, 0.14)';
