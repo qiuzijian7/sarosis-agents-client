@@ -140,7 +140,7 @@ export function compileTask(src: string, out: string, build: boolean, options: {
 		// task pipes `src/**` directly into the compiler, bypassing that exclude. Keep them out
 		// of the mangled production build to mirror the dev-compile semantics.
 		const excludeTestFilesFromMangleBuild = build && !options.disableMangle;
-		const srcPipe = gulp.src([
+		let srcPipe = gulp.src([
 			`${src}/**`,
 			`!${src}/**/node_modules/**`,
 			`!${src}/vs/sessions/contrib/agentStudio/webview/**`,
@@ -151,6 +151,20 @@ export function compileTask(src: string, out: string, build: boolean, options: {
 				`!${src}/vs/**/*.fixture.ts`,
 			] : []),
 		], { base: `${src}` });
+		if (excludeTestFilesFromMangleBuild) {
+			// Some production files dynamically import test helpers (e.g. agentHostServerMain.ts
+			// does `await import('../test/node/mockAgent.js')` for the `--enable-mock-agent`
+			// debugging flag). The TypeScript builder pulls those test files in through its
+			// dependency graph and compiles them, but since they are filtered out of the stream
+			// above, the mangler never rewrites their imports. With mangling enabled the module
+			// exports they reference get renamed, so the un-rewritten test files then fail with
+			// "has no exported member". Re-add the dynamically imported test files so the mangler
+			// can keep them consistent.
+			srcPipe = es.merge(srcPipe, gulp.src([
+				`${src}/vs/platform/agentHost/test/node/mockAgent.ts`,
+				`${src}/vs/platform/agentHost/test/node/historyRecordFixtures.ts`,
+			], { base: `${src}` }));
+		}
 		const generator = new MonacoGenerator(false);
 		if (src === 'src') {
 			generator.execute();

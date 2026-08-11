@@ -15,7 +15,6 @@ import { ProtectedResourceMetadata, type ModelSelection } from '../../common/sta
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import { CustomizationStatus, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, ToolResultContentType, parseSubagentSessionUri, type CustomizationRef, type PendingMessage, type SessionCustomization, type StringOrMarkdown, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
-import { hasKey } from '../../../../base/common/types.js';
 
 /** Well-known auto-generated title used by the 'with-title' prompt. */
 export const MOCK_AUTO_TITLE = 'Automatically generated title';
@@ -495,8 +494,8 @@ export class ScriptedMockAgent implements IAgent {
 			case 'with-reasoning': {
 				const initialReasoning = _reasoning(session, sessionStr, tid, 'Let me think');
 				const partId = initialReasoning.action.type === ActionType.SessionResponsePart
-					&& hasKey(initialReasoning.action.part, { id: true })
-					? initialReasoning.action.part.id
+					&& 'id' in initialReasoning.action.part
+					? (initialReasoning.action.part as { id: string }).id
 					: '';
 				this._fireSequence([
 					initialReasoning,

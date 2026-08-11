@@ -413,6 +413,12 @@ const MAX_LINE_LENGTH = 10000;   // 超过此行长的文件跳过（minified/�
 // ─── GraphStore (legacy compatibility wrapper) ─────────────────────────────
 
 class GraphStore {
+	// Index signature so the legacy compatibility wrapper can be accessed by
+	// bracket notation from CodebaseGraphService (e.g. `graph['_revIdMap']`).
+	// Without it TS reports "Element implicitly has an 'any' type" under
+	// noImplicitAny for those private-member accesses.
+	[key: string]: any;
+
 	private _store: CodebaseGraphStore = new CodebaseGraphStore();
 	get store(): CodebaseGraphStore { return this._store; }
 	/**

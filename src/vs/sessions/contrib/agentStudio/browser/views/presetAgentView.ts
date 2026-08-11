@@ -772,7 +772,7 @@ export class PresetAgentViewPane extends ViewPane {
 				return;
 			} else {
 				// 2. 打开新聊天 tab — 默认开在独立的 group 中
-				const { NativeChatEditorInput } = await import('../nativeChatEditorInput.js');
+				const NativeChatEditorInput = (await import('../nativeChatEditorInput.js')).NativeChatEditorInput;
 				const input = NativeChatEditorInput.create(undefined, preset.id, undefined, preset.name);
 				// 找到 agent part，创建新 group 确保新聊天开在独立 group 中
 				const agentPart = (this.editorGroupsService as any).agentPart;

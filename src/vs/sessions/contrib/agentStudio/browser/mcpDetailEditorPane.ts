@@ -613,7 +613,7 @@ export class McpDetailEditorPane extends EditorPane {
 			const data = JSON.parse(content.value.toString());
 			if (data.servers && slug in data.servers) {
 				delete data.servers[slug];
-				const { VSBuffer } = await import('../../../../base/common/buffer.js');
+				const VSBuffer = (await import('../../../../base/common/buffer.js')).VSBuffer;
 				await this.fileService.writeFile(mcpJsonUri, VSBuffer.fromString(JSON.stringify(data, null, 2)));
 			}
 		} catch (e) {

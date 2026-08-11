@@ -928,7 +928,7 @@ export class TaskOverviewEditorPane extends EditorPane {
 
 		// 2. Not found — create a new chat tab in the Agent Studio area.
 		try {
-			const { NativeChatEditorInput } = await import('./nativeChatEditorInput.js');
+			const NativeChatEditorInput = (await import('./nativeChatEditorInput.js')).NativeChatEditorInput;
 			const input = NativeChatEditorInput.create(undefined, agentId, undefined, agentName);
 
 			// Open in agent part if available; fall back to editorService.
