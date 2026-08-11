@@ -8,6 +8,8 @@ Write-Host ('Verifying staging dir: ' + $appRoot)
 $required = @(
   "node_modules\@vscode\ripgrep\bin\rg.exe",
   "extensions\agentmemory-memory\dist\extension.js",
+  "extensions\codebuddy-provider\dist\extension.cjs.js",
+  "extensions\tof-authentication\out\extension.js",
   "out\vs\sessions\contrib\agentStudio\browser\views\knowledgeBase\kbWorker.js",
   "out\vs\sessions\sessions.desktop.main.js",
   "out\vs\sessions\contrib\agentStudio\webview\media\kbblocks.js"

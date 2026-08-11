@@ -25,5 +25,45 @@ Remove-Item -Recurse -Force -EA SilentlyContinue node_modules\saros-shared
 npm install --ignore-scripts
 Pop-Location
 
+# ===== 编译本地 tsc 扩展（产物 out/ 或 dist/ 为 gitignored，CI checkout 后不存在）=====
+# gulp compile-extensions-build 对 esbuild 扩展（有 esbuild.mts/.esbuild.mts）会自动跑 esbuild 产出 dist/，
+# 但对纯 tsc 扩展只做 vsce 打包（不编译），产物必须预先存在。此前这些扩展的 out/ 从未在 CI 生成，
+# 导致打包后扩展激活失败（如 codebuddy-provider 缺 dist/extension.cjs.js -> command 'codebuddy.login'
+# not found；tof-authentication 缺 out/extension.js -> Timed out waiting for auth provider 'tof'）。
+# 这里动态扫描所有扩展：对「有 compile 脚本、main 指向 out/ 或 dist/、无 esbuild 配置、且非测试/示例」
+# 的扩展逐个执行 npm run compile。shared 需在其它扩展前编译（作为依赖被引用）。
+# （transpile-plugins 已用 esbuild 处理有 contributes.agentCapabilities 的 agentmemory-memory。）
+$extSkip = @('hermes-agent','execution-example','kanban-example','memory-example','planning-example',
+  'retrieval-example','tool-example','copilot','vscode-api-tests','vscode-colorize-tests',
+  'vscode-colorize-perf-tests','vscode-test-resolver','agent-studio')
+$compileTargets = @()
+foreach ($extDir in (Get-ChildItem extensions -Directory)) {
+  $ext = $extDir.Name
+  if ($extSkip -contains $ext) { continue }
+  $pkgPath = "extensions\$ext\package.json"
+  if (-not (Test-Path $pkgPath)) { continue }
+  $pkg = Get-Content $pkgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  # 无 esbuild 配置 + main 指向 out/dist + 有 compile 脚本
+  $hasEsbuild = (Test-Path "extensions\$ext\esbuild.mts") -or (Test-Path "extensions\$ext\esbuild.ts") `
+    -or (Test-Path "extensions\$ext\.esbuild.mts") -or (Test-Path "extensions\$ext\.esbuild.ts")
+  if ($hasEsbuild) { continue }
+  $main = [string]$pkg.main
+  $hasCompile = $null -ne $pkg.scripts.compile
+  if ($main -notmatch '(^|/)(out|dist)/') { continue }
+  if (-not $hasCompile) { continue }
+  $compileTargets += $ext
+}
+foreach ($ext in ($compileTargets | Sort-Object { $_ -eq 'shared' } -Descending)) {
+  Push-Location "extensions\$ext"
+  Write-Host ("[compile-ext] Compiling tsc extension: " + $ext)
+  npm run compile
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error ("FATAL: " + $ext + " npm run compile failed")
+    Pop-Location
+    exit 1
+  }
+  Pop-Location
+}
+
 npx gulp compile-extensions-build --verbose
 if ($LASTEXITCODE -ne 0) { Write-Error "Extensions build failed"; exit 1 }
