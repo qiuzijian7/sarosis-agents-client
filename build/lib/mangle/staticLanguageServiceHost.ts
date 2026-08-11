@@ -33,6 +33,14 @@ export class StaticLanguageServiceHost implements ts.LanguageServiceHost {
 		// pipeline by adding the excluded entry files (that actually exist) to the mangler program so
 		// their imports are renamed too. We derive them by re-parsing the config with `exclude: []`
 		// and diffing against the real program — that reuses TypeScript's own glob/`**` handling.
+		//
+		// IMPORTANT: we only add files the compile-src pipeline actually compiles. The raw
+		// exclude diff yields ~434 files, but most are tests (309) and webview bundles (109)
+		// that never flow through srcPipe, so the mangler never rewrites them and adding them to
+		// the program would only inflate the (already slow) findRenameLocations pass. We therefore
+		// keep just the real entry points, plus the two test files that agentHostServerMain.ts
+		// dynamically imports (`await import('../test/node/mockAgent.js')` for --enable-mock-agent);
+		// compileTask re-adds those two via es.merge so the mangler must know them too.
 		const base = path.dirname(projectPath);
 		const parsedNoExclude: ts.ParsedCommandLine = ts.parseJsonConfigFileContent(
 			{ ...parsed.config, exclude: [] },
@@ -41,12 +49,33 @@ export class StaticLanguageServiceHost implements ts.LanguageServiceHost {
 			existingOptions
 		);
 		const excludedSet = new Set(this._cmdLine.fileNames.map(f => path.resolve(f).replace(/\\/g, '/')));
+		// Test files dynamically imported by production code that compileTask re-adds to srcPipe.
+		const dynamicallyImportedTestFiles = new Set([
+			path.join(base, 'vs/platform/agentHost/test/node/mockAgent.ts').replace(/\\/g, '/'),
+			path.join(base, 'vs/platform/agentHost/test/node/historyRecordFixtures.ts').replace(/\\/g, '/'),
+		]);
 		const extraFiles = new Set<string>();
 		for (const f of parsedNoExclude.fileNames) {
 			const normalized = path.resolve(f).replace(/\\/g, '/');
-			if (!excludedSet.has(normalized)) {
-				extraFiles.add(normalized);
+			if (excludedSet.has(normalized)) {
+				continue;
 			}
+			if (dynamicallyImportedTestFiles.has(normalized)) {
+				extraFiles.add(normalized);
+				continue;
+			}
+			// Skip test fixtures, webview bundles and agentStudio test dirs — they are filtered
+			// out of srcPipe, so mangling them is pure overhead.
+			if (
+				/\/test\//.test(normalized) ||
+				/\.test\.ts$/.test(normalized) ||
+				/\.fixture\.ts$/.test(normalized) ||
+				normalized.includes('sessions/contrib/agentStudio/webview') ||
+				normalized.includes('sessions/contrib/agentStudio/test')
+			) {
+				continue;
+			}
+			extraFiles.add(normalized);
 		}
 		this._fileNames = [...this._cmdLine.fileNames, ...extraFiles];
 	}
