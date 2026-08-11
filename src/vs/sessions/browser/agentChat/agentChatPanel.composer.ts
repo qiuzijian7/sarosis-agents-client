@@ -26,7 +26,9 @@ interface IComposerClipSegment {
 export class AgentChatPanelComposer extends AgentChatPanelMarkdown {
 
 protected override _renderInputArea(): void {
-		const emp = this._agent!;
+		// 允许 _agent 为 null（agent 加载失败/竞态）：用一个最小占位 agent 让输入框始终可渲染，
+		// 避免 4 开聊天框时其中一个因 _agent=null 导致输入框丢失（详见 _render 修复）。
+		const emp = this._agent ?? { id: '', name: 'Assistant', role: '', avatarUrl: '', description: '', skills: [] };
 
 		// Resize handle — drag to adjust composer height (placed above input area)
 		// 已存在则跳过（_refreshInputArea 重复调用时不重建）
@@ -894,7 +896,7 @@ protected override _scheduleMentionSearch(query: string): void {
 		if (!this._textarea || this._mentionResults.length === 0) { return; }
 
 		const rect = this._textarea.getBoundingClientRect();
-		this._mentionEl = this._ownerDocument.createElement('div');
+		this._mentionEl = this._createEl('div');
 		this._mentionEl.className = 'mention-menu';
 		this._mentionEl.style.left = `${rect.left}px`;
 		this._mentionEl.style.maxWidth = `${Math.max(rect.width, 320)}px`;
@@ -903,23 +905,23 @@ protected override _scheduleMentionSearch(query: string): void {
 		// 超出视口顶部完全不可见（position:fixed 不会产生 body 滚动条）。
 		this._positionDropdownRelativeTo(this._mentionEl, rect, 280);
 
-		const list = this._ownerDocument.createElement('div');
+		const list = this._createEl('div');
 		list.className = 'mention-menu-list';
 		this._mentionResults.forEach((r, i) => {
-			const item = this._ownerDocument.createElement('div');
+			const item = this._createEl('div');
 			item.className = 'mention-menu-item';
 			item.dataset.path = r.path;
-			const icon = this._ownerDocument.createElement('span');
+			const icon = this._createEl('span');
 			icon.className = 'mention-menu-item-icon';
 			icon.textContent = '📄';
 			item.appendChild(icon);
-			const info = this._ownerDocument.createElement('span');
+			const info = this._createEl('span');
 			info.className = 'mention-menu-item-info';
-			const name = this._ownerDocument.createElement('span');
+			const name = this._createEl('span');
 			name.className = 'mention-menu-item-name';
 			name.textContent = r.name;
 			info.appendChild(name);
-			const path = this._ownerDocument.createElement('span');
+			const path = this._createEl('span');
 			path.className = 'mention-menu-item-path';
 			path.textContent = r.path;
 			info.appendChild(path);
@@ -1037,7 +1039,7 @@ protected override _openSlashMenu(filter: string): void {
 		const textarea = this._textarea;
 		const rect = textarea.getBoundingClientRect();
 
-		this._slashMenuEl = this._ownerDocument.createElement('div');
+		this._slashMenuEl = this._createEl('div');
 		this._slashMenuEl.className = 'slash-menu';
 		this._slashMenuEl.style.left = `${rect.left}px`;
 		this._slashMenuEl.style.maxWidth = `${Math.max(rect.width, 260)}px`;
@@ -1045,24 +1047,24 @@ protected override _openSlashMenu(filter: string): void {
 		this._positionDropdownRelativeTo(this._slashMenuEl, rect, 280);
 
 		// Items (render directly since we just created the element)
-		const list = this._ownerDocument.createElement('div');
+		const list = this._createEl('div');
 		list.className = 'slash-menu-list';
 		filtered.forEach((s, i) => {
-			const item = this._ownerDocument.createElement('div');
+			const item = this._createEl('div');
 			item.className = 'slash-menu-item';
 			item.dataset.skillId = s.id;
 			item.dataset.skillName = s.name || s.id;
-			const icon = this._ownerDocument.createElement('span');
+			const icon = this._createEl('span');
 			icon.className = 'slash-menu-item-icon';
 			icon.textContent = '/';
 			item.appendChild(icon);
-			const info = this._ownerDocument.createElement('span');
+			const info = this._createEl('span');
 			info.className = 'slash-menu-item-info';
-			const name = this._ownerDocument.createElement('span');
+			const name = this._createEl('span');
 			name.className = 'slash-menu-item-name';
 			name.textContent = s.id;
 			info.appendChild(name);
-			const desc = this._ownerDocument.createElement('span');
+			const desc = this._createEl('span');
 			desc.className = 'slash-menu-item-desc';
 			desc.textContent = s.name;
 			info.appendChild(desc);
@@ -1100,20 +1102,20 @@ protected override _renderSlashMenuItems(filter: string): void {
 		}
 
 		filtered.forEach((s, i) => {
-			const item = this._ownerDocument.createElement('div');
+			const item = this._createEl('div');
 			item.className = 'slash-menu-item';
 			item.dataset.skillId = s.id;
-			const icon = this._ownerDocument.createElement('span');
+			const icon = this._createEl('span');
 			icon.className = 'slash-menu-item-icon';
 			icon.textContent = '/';
 			item.appendChild(icon);
-			const info = this._ownerDocument.createElement('span');
+			const info = this._createEl('span');
 			info.className = 'slash-menu-item-info';
-			const name = this._ownerDocument.createElement('span');
+			const name = this._createEl('span');
 			name.className = 'slash-menu-item-name';
 			name.textContent = s.id;
 			info.appendChild(name);
-			const desc = this._ownerDocument.createElement('span');
+			const desc = this._createEl('span');
 			desc.className = 'slash-menu-item-desc';
 			desc.textContent = s.name;
 			info.appendChild(desc);
@@ -1143,23 +1145,23 @@ protected override _highlightSlashMenuItem(): void {
 
 /** 创建内联 skill chip 节点：嵌在 contentEditable 文本流中，与文字混排。 */
 protected _createSkillChipNode(id: string, name: string): HTMLElement {
-	const chip = this._ownerDocument.createElement('span');
+	const chip = this._createEl('span');
 	chip.className = 'inline-skill-chip';
 	chip.dataset.skillId = id;
 	chip.setAttribute('contenteditable', 'false');
 	chip.title = `技能: ${name} (${id})`;
 
-	const icon = this._ownerDocument.createElement('span');
+	const icon = this._createEl('span');
 	icon.className = 'inline-skill-chip-icon';
 	icon.textContent = '⚡';
 	chip.appendChild(icon);
 
-	const label = this._ownerDocument.createElement('span');
+	const label = this._createEl('span');
 	label.className = 'inline-skill-chip-name';
 	label.textContent = name;
 	chip.appendChild(label);
 
-	const removeBtn = this._ownerDocument.createElement('span');
+	const removeBtn = this._createEl('span');
 	removeBtn.className = 'inline-skill-chip-remove';
 	removeBtn.textContent = '✕';
 	chip.appendChild(removeBtn);

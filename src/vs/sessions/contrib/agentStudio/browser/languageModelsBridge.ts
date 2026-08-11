@@ -37,6 +37,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILanguageModelsService, IChatMessage, IChatMessagePart, IChatMessageToolResultPart, IChatResponsePart, IChatResponseToolUsePart, IChatResponseStepPart, ChatMessageRole, ILanguageModelChatMetadata, ChatImageMimeType } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import { normalizeMessages } from '../common/agentRunState.js';
+import { ContextManager } from '../common/contextManager.js';
 import { AGENT_STUDIO_CHAT_STREAM_LOG_ENABLED_SETTING, AGENT_STUDIO_CHAT_STREAM_LOG_DUMP_TOOLS_SETTING } from '../common/constants.js';
 import { join } from '../../../../base/common/path.js';
 import {
@@ -531,7 +532,20 @@ class LanguageModelVendorProvider extends Disposable implements IModelProvider {
 				`(merged ${messages.length - normalizedMessages.length} consecutive user/orphaned tool_calls)`,
 			);
 		}
-		const lmMessages = this._toLanguageModelMessages(normalizedMessages as any, options);
+		// ── 发送前 tool 配对守卫（2026-08-11，日志 1786432061200 HTTP 400 code 11133）──
+		// normalizeMessages 只补孤儿 tool 占位，不清理「assistant.tool_calls 无应答」或
+		// 「孤立 tool 消息引用不存在 toolCallId」的失配——IOA 网关强制
+		// assistant.tool_calls 必须被对应 tool 结果应答，任一失配即 400 invalid_parameter_value。
+		// 压缩产物经 _prePruneMessages 截断 / _enforceWindowCeiling 兜底后可能重新产生失配，
+		// 故发送前必须再跑一次 sanitizeToolPairs（静态方法注释即声明"供发送前守卫复用"）。
+		const sanitizedMessages = ContextManager.sanitizeToolPairs(normalizedMessages as any[]);
+		if (sanitizedMessages.length !== normalizedMessages.length) {
+			this._logService.warn(
+				`[LMBridge] sanitizeToolPairs: ${normalizedMessages.length} → ${sanitizedMessages.length} ` +
+				`(stripped ${normalizedMessages.length - sanitizedMessages.length} orphaned tool_call/tool_result pairs)`,
+			);
+		}
+		const lmMessages = this._toLanguageModelMessages(sanitizedMessages as any, options);
 
 		// Debug: write request payload to local file if switch is enabled
 		this._debugWriteRequest(modelId, messages, options, context);

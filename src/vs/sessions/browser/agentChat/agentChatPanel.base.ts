@@ -240,6 +240,17 @@ protected _scrollbarThumb: HTMLElement | null = null;
 		return this._textarea?.ownerDocument ?? document;
 	}
 
+	/**
+	 * 创建 HTML 元素——**始终用主窗口 document 创建**（经 dom.$，桌面端解析为主窗口 document）。
+	 * 不要在 popout（auxiliary window）里用 `this._ownerDocument.createElement`：
+	 * auxiliaryWindowService 会抛出 "Not allowed to create elements in child window
+	 * JavaScript context"（aux 窗口 document 的 createElement 被禁用，以保证
+	 * `el instanceof HTMLElement` 成立）。主窗口 document 创建的元素可 append 到任何窗口 DOM。
+	 */
+	protected _createEl<K extends keyof HTMLElementTagNameMap>(tagName: K): HTMLElementTagNameMap[K] {
+		return $<HTMLElementTagNameMap[K]>(tagName);
+	}
+
 protected _worktreeDropdownOutsideClick: IDisposable | null = null;
 
 protected _modeDropdownOutsideClick: IDisposable | null = null;
@@ -1576,7 +1587,14 @@ focusInput(): void {
 				// eslint-disable-next-line no-console
 				console.warn('[AgentChatPanel] _render: rendering empty state — _agent was previously loaded but is now null/undefined');
 			}
+			// Bug fix：4 开聊天框场景下，_selectAndLoadAgent 的 generation 竞态 / getAgent 失败
+			// 等原因可能让某个 pane 的 _agent 保持 null。原代码此分支直接 return → 不渲染
+			// 输入框，导致该面板「输入框丢失」。改为：仍渲染轻量 empty state（消息区空提示），
+			// 并继续渲染输入框（_renderInputArea 用占位 agent 兼容 null），用户可通过
+			// header 的 agent 下拉选择 agent 恢复。输入框始终可见是底线可用性。
 			this._renderEmptyState();
+			this._renderInputArea();
+			this._renderMessages();
 			return;
 		}
 

@@ -588,6 +588,24 @@ export function isTransientStreamError(error: unknown): boolean {
 	return false;
 }
 
+/**
+ * 上下文溢出错误检测（对齐 OpenClaw `isContextOverflow`）。
+ * HTTP 400 code 11133 / invalid_parameter_value / context_length_exceeded /
+ * token overflow 等均判定为「输入超服务端 maxInputTokens」或「消息结构非法」。
+ * 供 agentTurnExecutor 在流失败后触发「反应式压缩 + 自动重试」（P0-1）。
+ */
+export function isContextOverflowError(error: unknown): boolean {
+	if (!(error instanceof Error)) { return false; }
+	const msg = error.message;
+	// IOA 网关溢出：code 11133 / invalid_parameter_value（contextManager 注释确认二者即溢出）
+	if (msg.includes('11133') || msg.includes('invalid_parameter_value')) { return true; }
+	// OpenAI 风格
+	if (msg.includes('context_length_exceeded') || msg.includes('maximum context length')) { return true; }
+	// Anthropic 风格 / 通用 token 溢出
+	if (msg.includes('prompt is too long') || msg.includes('token overflow') || msg.includes('too many tokens')) { return true; }
+	return false;
+}
+
 /** 未完成轮分类结果。对齐 MiMo StepClassification + classifyAssistantStep。 */
 export type IncompleteTurnKind = 'complete' | 'length' | 'reasoning-only' | 'empty' | 'filtered' | 'failed';
 

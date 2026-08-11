@@ -30,6 +30,7 @@ import {
 	incompleteTurnDiscardReason,
 	incompleteTurnRetryLimit,
 	isTransientStreamError,
+	isContextOverflowError,
 	TRANSIENT_ERROR_MAX_RETRIES,
 	TRANSIENT_ERROR_BASE_DELAY_MS,
 	TRANSIENT_ERROR_BACKOFF_FACTOR,
@@ -708,7 +709,10 @@ interface ITurnContext {
 	// 每轮迭代开头执行：廉价剪枝 → 工具结果去重 → 消息数硬上限 → Hermes 三段式压缩。
 	// 闭包捕获 messages/runState/host/compressionWindow/contextManager/turnAbortSignal，
 	// 通过 yield 发出 phase_change / context_compacted delta。
-	async function* _compressContextIfNeeded(): AsyncGenerator<IChatStreamDelta> {
+	// force 参数（P0-1 溢出恢复）：溢出 400 时服务端 maxInputTokens 可能小于本地
+	// window×0.3，常规触发判定会误 skip；force=true 透传 contextManager.compressContext
+	// 的 force 参数，绕过阈值/消息数/冷却/防抖判定强制压缩（仅溢出恢复路径使用）。
+	async function* _compressContextIfNeeded(force?: boolean): AsyncGenerator<IChatStreamDelta> {
 		// P3: 廉价逐轮剪枝（无 LLM、不丢消息）—— 仅对最近 CHEAP_PRUNE_RECENT_KEEP 条之外的
 		// 旧 tool 输出做处理。对齐 MiMo prune.ts：累积预算保护(PRUNE_PROTECT=40K) +
 		// 受保护工具白名单(skill/memory/...) + 压力>=2 时硬清除(占位符)而非仅截断。
@@ -847,13 +851,27 @@ interface ITurnContext {
 					const retrieveContext = (memProviderForRetrieve && (memProviderForRetrieve as any).recallFormatted)
 						? (r: any) => host._retrieveCompactionContext(memProviderForRetrieve as any, r)
 						: undefined;
+					// P1-2（对齐 Hermes est_tools_tokens_rough）：估算工具 schema 的固定 token 开销
+					// 传给 compressContext，无真实 usage 时计入触发判定，避免 60+ 工具定义导致
+					// 请求规模被严重低估而压缩滞后（日志 1786432061200 HTTP 400 code 11133）。
+					let toolsSchemaTokens = 0;
+					try {
+						for (const t of enabledTools as ReadonlyArray<any>) {
+							const schemaStr = JSON.stringify({ name: t.name, description: t.description, parameters: (t as any).inputSchema ?? (t as any).schema ?? undefined });
+							if (schemaStr) { toolsSchemaTokens += Math.ceil(schemaStr.length / 4); }
+						}
+					} catch (e) {
+						toolsSchemaTokens = 0; // 序列化失败不阻断压缩
+					}
 					compressionResult = await contextManager.compressContext(
 						messages as unknown as ReadonlyArray<ChatMessage>,
 						undefined,
 						compressionWindow,
 						runState.lastRealPromptTokens,
 						preCompactInject as any,
-						retrieveContext as any
+						retrieveContext as any,
+						toolsSchemaTokens > 0 ? toolsSchemaTokens : undefined,
+						force === true ? true : undefined
 					);
 				} catch (compressionError) {
 					host._logService.error(
@@ -1500,6 +1518,11 @@ interface ITurnContext {
 		return undefined;
 	}
 
+	// P0-1（2026-08-11，日志 1786432061200）：上下文溢出反应式压缩重试标志。
+	// 流调用抛 HTTP 400 code 11133 / invalid_parameter_value 时，仅允许触发一次
+	// 「强制压缩 + 自动重试」；重试后仍失败则走原有 error 路径结束（防死循环）。
+	let overflowCompressionDone = false;
+
 	while (iteration < MAX_TOOL_ITERATIONS) {
 		iteration++;
 		// ─── V3: 显式 abort 检查点（每轮顶检查，不在迭代间隙期等待）──
@@ -2065,6 +2088,38 @@ interface ITurnContext {
 					);
 					await new Promise(r => setTimeout(r, delay));
 					continue;  // 回到 while loop 重试
+				}
+				// ── P0-1: 上下文溢出反应式压缩 + 自动重试（对齐 Hermes/OpenClaw）────
+				// HTTP 400 code 11133 / invalid_parameter_value / context_length_exceeded 等
+				// 溢出错误：先强制压缩当前消息，再用压缩产物重发一次，而非直接结束 turn。
+				// 触发前提：非 timeout、确认为溢出错误、且本次 turn 尚未做过溢出压缩。
+				// 压缩后 messages 更新为紧凑产物；若重试仍失败，第二次落入 error 分支正常结束。
+				if (
+					!isTimeout &&
+					isContextOverflowError(error) &&
+					!overflowCompressionDone
+				) {
+					overflowCompressionDone = true;
+					// 剥离最后一条失败的 assistant 消息（对齐 OpenClaw removeLastAssistantMessage），
+					// 避免把「触发 400 的悬空 tool_calls」留在压缩输入里再次污染。
+					if (messages.length > 0) {
+						const last = messages[messages.length - 1];
+						if (last && (last as any).role === 'assistant' && Array.isArray((last as any).toolCalls) && (last as any).toolCalls.length > 0) {
+							messages = messages.slice(0, -1) as typeof messages;
+							host._logService.warn(
+								`[AgentOS] Overflow recovery: dropped trailing assistant tool_calls message before re-compression`
+							);
+						}
+					}
+					// 强制压缩（force=true）：绕过 token 阈值/消息数下限/冷却/防抖判定，
+					// 因为溢出 400 时服务端 maxInputTokens 可能小于本地 window×0.3，
+					// 常规触发判定会误判为 below_token_threshold 而 skip。
+					host._logService.warn(
+						`[AgentOS] Context overflow detected (${error instanceof Error ? error.message.slice(0, 160) : String(error)}) — ` +
+						`force-compressing + retry (overflowCompressionDone=${overflowCompressionDone})`
+					);
+					yield* _compressContextIfNeeded(true);
+					continue;
 				}
 				host._logService.error(`[AgentOS] Model call failed on iteration ${iteration}:`, error);
 				// 流式 idle 超时（模型静默挂起）：作为硬失败向上抛出，

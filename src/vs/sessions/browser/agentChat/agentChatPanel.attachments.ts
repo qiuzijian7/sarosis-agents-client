@@ -86,7 +86,7 @@ protected override _resizeImage(file: File, maxWidth: number, maxHeight: number)
 				const ratio = Math.min(maxWidth / width, maxHeight / height);
 				width = Math.round(width * ratio);
 				height = Math.round(height * ratio);
-				const canvas = this._ownerDocument.createElement('canvas');
+				const canvas = this._createEl('canvas');
 				canvas.width = width;
 				canvas.height = height;
 				const ctx = canvas.getContext('2d');
@@ -130,17 +130,17 @@ protected override _insertInlineAttachmentChip(att: IChatAttachment): void {
 	}
 
 protected override _createReadOnlyAttachmentChip(att: IChatAttachment): HTMLElement {
-		const chip = this._ownerDocument.createElement('span');
+		const chip = this._createEl('span');
 		chip.className = 'inline-attachment-chip message-attachment-chip';
 		chip.dataset.attId = att.id;
 		chip.setAttribute('contenteditable', 'false');
 
-		const icon = this._ownerDocument.createElement('span');
+		const icon = this._createEl('span');
 		icon.className = 'inline-attachment-chip-icon';
 		icon.textContent = att.type === 'image' ? '\u{1F4F7}' : '\u{1F4C4}';
 		chip.appendChild(icon);
 
-		const label = this._ownerDocument.createElement('span');
+		const label = this._createEl('span');
 		label.className = 'inline-attachment-chip-label';
 		label.textContent = att.name;
 		chip.appendChild(label);
@@ -165,15 +165,15 @@ protected override _showLightbox(src: string): void {
 		// Remove any existing lightbox
 		this._ownerDocument.querySelector('.chat-lightbox-overlay')?.remove();
 
-		const overlay = this._ownerDocument.createElement('div');
+		const overlay = this._createEl('div');
 		overlay.className = 'chat-lightbox-overlay';
 
-		const img = this._ownerDocument.createElement('img');
+		const img = this._createEl('img');
 		img.src = src;
 		img.className = 'chat-lightbox-image';
 		overlay.appendChild(img);
 
-		const closeBtn = this._ownerDocument.createElement('button');
+		const closeBtn = this._createEl('button');
 		closeBtn.className = 'chat-lightbox-close';
 		closeBtn.textContent = '✕';
 		closeBtn.addEventListener('click', () => overlay.remove());
@@ -194,15 +194,15 @@ protected override _showImageTooltip(att: IChatAttachment, chip: HTMLElement): v
 		if (!att.data) { return; }
 		this._hideImageTooltip();
 
-		const tip = this._ownerDocument.createElement('div');
+		const tip = this._createEl('div');
 		tip.className = 'inline-attachment-thumb-tip';
 
-		const img = this._ownerDocument.createElement('img');
+		const img = this._createEl('img');
 		img.className = 'inline-attachment-thumb-tip-img';
 		img.src = `data:${att.mimeType};base64,${att.data}`;
 		tip.appendChild(img);
 
-		const caption = this._ownerDocument.createElement('div');
+		const caption = this._createEl('div');
 		caption.className = 'inline-attachment-thumb-tip-caption';
 		caption.textContent = att.name;
 		tip.appendChild(caption);

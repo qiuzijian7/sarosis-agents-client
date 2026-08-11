@@ -134,8 +134,8 @@ src/vs/**/*.js
 # Transpile outputs — .d.ts declaration files and .js.map source maps
 src/vs/**/*.d.ts
 src/vs/**/*.js.map
-console.log(lines.length-10+i+1
-console.log(lines.length-20+i+1
+# Agent Studio webview esbuild bundles (debug/prod) — build artifacts
+src/vs/sessions/contrib/agentStudio/webview/media-*/
 .sarosisworkspace
 .claude
 萨罗斯平台研发效能汇报.html
