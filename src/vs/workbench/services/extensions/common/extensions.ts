@@ -321,10 +321,16 @@ function extensionDescriptionArrayToMap(extensions: IExtensionDescription[]): Ex
 }
 
 export function isProposedApiEnabled(extension: IExtensionDescription, proposal: ApiProposalName): boolean {
-	if (!extension.enabledApiProposals) {
-		return false;
-	}
-	return true;// extension.enabledApiProposals.includes(proposal);
+	// This fork unconditionally allows all proposed APIs (the original
+	// `extension.enabledApiProposals.includes(proposal)` check was already
+	// replaced with `return true`). The previous `!enabledApiProposals → false`
+	// guard was still rejecting the `nullExtensionDescription` fallback
+	// (enabledApiProposals = []), which broke built-in extensions like
+	// vscode.git when their out/ is loaded via a worktree junction — the ext
+	// host resolves them to nullExtensionDescription and the workspaceTrust
+	// proposal check threw. Allow everything, consistent with the fork's
+	// existing "skip proposed API validation" intent.
+	return true;
 }
 
 export function checkProposedApiEnabled(extension: IExtensionDescription, proposal: ApiProposalName): void {
