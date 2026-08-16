@@ -237,7 +237,7 @@
 			"request": "attach",
 			"name": "Attach to VS Code",
 			"browserAttachLocation": "workspace",
-			"port": 9222,
+			"port": 9333,
 			"outFiles": [
 				"${workspaceFolder}/out/**/*.js"
 			],
@@ -260,7 +260,7 @@
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
-			"port": 9222,
+			"port": 9333,
 			"timeout": 0,
 			"env": {
 				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
@@ -271,7 +271,7 @@
 			"killBehavior": "polite",
 			"runtimeArgs": [
 				"--inspect=5875",
-				"--remote-debugging-port=9222",
+				"--remote-debugging-port=9333",
 				"--no-cached-data",
 				"--open-devtools",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
@@ -308,7 +308,7 @@
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
-			"port": 9222,
+			"port": 9333,
 			"timeout": 0,
 			"env": {
 				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
@@ -316,10 +316,10 @@
 				"VSCODE_DEV_DEBUG_OBSERVABLES": "1",
 			},
 			"cleanUp": "wholeBrowser",
-			"killBehavior": "polite",
+			"killBehavior": "forceful",
 			"runtimeArgs": [
 				"--inspect=5875",
-				"--remote-debugging-port=9222",
+				"--remote-debugging-port=9333",
 				"--no-cached-data",
 				"--open-devtools",
 				"--crash-reporter-directory=${workspaceFolder}/.profile-oss/crashes",
@@ -358,7 +358,7 @@
 			"linux": {
 				"runtimeExecutable": "${workspaceFolder}/scripts/code.sh"
 			},
-			"port": 9222,
+			"port": 9333,
 			"timeout": 0,
 			"env": {
 				"VSCODE_EXTHOST_WILL_SEND_SOCKET": null,
@@ -595,7 +595,7 @@
 			},
 			"outputCapture": "std",
 			"args": [
-				"--remote-debugging-port=9222"
+				"--remote-debugging-port=9333"
 			],
 			"cwd": "${workspaceFolder}",
 			"outFiles": [
@@ -628,7 +628,7 @@
 			],
 			"outputCapture": "std",
 			"args": [
-				"--remote-debugging-port=9222",
+				"--remote-debugging-port=9333",
 				"--run",
 				"${relativeFile}"
 			],
